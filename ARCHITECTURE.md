@@ -39,3 +39,27 @@ MineClaw.Client    TCP connection + packet dispatch, 20 TPS tick, physics, playe
 - Async APIs take a `CancellationToken`. No blocking `.Result`.
 - Build only your own project while other workstreams are active (`dotnet build src/MineClaw.X`), to avoid
   file locks; tests live in `tests/MineClaw.Tests/<Area>/`.
+
+## Token-efficiency design (Agent layer) — a hard requirement
+
+The LLM must never be on the hot path. Claude is a *planner and conversationalist*; C# does the playing.
+
+1. **Event-driven, not tick-driven.** The model is invoked only on meaningful events: chat addressed to the
+   bot, a task finishing/failing, danger (low health, falling toward void, death), or a timed idle check-in.
+   Everything else (movement, entity updates, block changes) is absorbed by C# state and never sent.
+2. **Macro tools.** One tool call = many game actions executed deterministically in C#
+   (`goto`, `mine`, `collect`, `craft` with recipe-tree resolution, `smelt`, `deposit`, `withdraw`, ...).
+   Tool results are terse one-liners (`ok: mined 12 cobblestone (inv 44)`), never raw dumps.
+3. **Pull, don't push, observations.** The model asks for what it needs (`look`, `inventory`, `nearby`);
+   each returns a compact, bounded summary. A tiny state header (pos, hp, food, held item, current task) rides
+   along with each event.
+4. **Prompt caching.** Static system prompt + tool definitions + Skyblock knowledge are a cached prefix; the
+   dynamic part stays small.
+5. **Bounded context.** Rolling window of recent turns; older turns are compacted into a short journal; old
+   tool results are truncated. Long-term facts live in the on-disk `MemoryStore`, recalled by tool.
+6. **Model tiers.** Cheap model for chat triage / small talk / compaction; stronger model for planning and
+   multi-step tasks. Both configurable. Small `max_tokens`, thinking off or minimal by default.
+7. **Routines.** The model can save a working sequence of tool calls as a named routine (e.g. "cobble_loop")
+   and later run it in pure C# with zero tokens per iteration.
+8. **Budget guard.** Usage + estimated USD tracked per call and per day; hard daily/monthly caps in config.
+   No Semantic Kernel or similar frameworks — a hand-rolled minimal loop on the official Anthropic SDK.
