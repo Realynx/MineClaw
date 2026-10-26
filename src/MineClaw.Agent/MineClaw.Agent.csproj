@@ -1,9 +1,12 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\MineClaw.Client\MineClaw.Client.csproj" />
-    <ProjectReference Include="..\MineClaw.World\MineClaw.World.csproj" />
     <ProjectReference Include="..\MineClaw.Data\MineClaw.Data.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Anthropic" Version="13.3.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.14" />
   </ItemGroup>
 
   <PropertyGroup>
