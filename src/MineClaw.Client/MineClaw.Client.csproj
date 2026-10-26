@@ -1,0 +1,15 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\MineClaw.Protocol\MineClaw.Protocol.csproj" />
+    <ProjectReference Include="..\MineClaw.World\MineClaw.World.csproj" />
+    <ProjectReference Include="..\MineClaw.Data\MineClaw.Data.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>
