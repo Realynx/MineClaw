@@ -185,7 +185,7 @@ public class BudgetLedgerTests
     public void Main_tracker_sees_hive_spend()
     {
         var (l, _, _) = Make(new HiveBudgetConfig { CloneDailyCapUsd = 100, RecallAtFraction = 1 });
-        var usage = new UsageTracker(new BudgetOptions { DailyCapUsd = 10, MonthlyCapUsd = 190 }, path: null) { ExternalSpend = l.ClonesSpend };
+        var usage = new UsageTracker(new BudgetOptions { DailyCapUsd = 10, MonthlyCapUsd = 190, WorkerBrainFraction = 0.6, CheapOnlyFraction = 0.8 }, path: null) { ExternalSpend = l.ClonesSpend };
         Assert.Equal(BudgetMode.Normal, usage.CheckMode());
         l.Record("maid_chan_67", 6.5m);
         Assert.Equal(BudgetMode.Economy, usage.CheckMode()); // clones' spend counts toward main's caps

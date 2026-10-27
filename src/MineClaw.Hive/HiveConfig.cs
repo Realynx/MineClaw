@@ -65,7 +65,7 @@ public sealed class HiveConfig
 public sealed class HiveBudgetConfig
 {
     /// <summary>Per-clone daily sub-cap (USD).</summary>
-    public decimal CloneDailyCapUsd { get; set; } = 1.50m;
+    public decimal CloneDailyCapUsd { get; set; } = 0m;
     public decimal CloneMonthlyCapUsd { get; set; } = 30m;
     /// <summary>Hive spend (main + clones) at this fraction of a cap: no new clones and running clones are recalled — before
     /// the main bot itself drops to Economy (Agent:Budget:WorkerBrainFraction).</summary>

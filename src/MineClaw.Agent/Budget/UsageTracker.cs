@@ -29,15 +29,15 @@ public enum BudgetMode
 public sealed class BudgetOptions
 {
     /// <summary>Hard daily cap (USD). Reaching it pauses the agent until local midnight.</summary>
-    public decimal DailyCapUsd { get; set; } = 10.00m;
+    public decimal DailyCapUsd { get; set; } = 50.00m;
     /// <summary>Hard monthly cap (USD). Reaching it pauses the agent until the 1st.</summary>
-    public decimal MonthlyCapUsd { get; set; } = 190.00m;
+    public decimal MonthlyCapUsd { get; set; } = 200.00m;
     /// <summary>Fraction of either cap after which the brain runs on the worker model (first fallback; 0 = skip).</summary>
-    public double WorkerBrainFraction { get; set; } = 0.6;
+    public double WorkerBrainFraction { get; set; } = 0;
     /// <summary>Fraction of either cap after which the agent drops to cheap-tier chat only (second fallback).</summary>
-    public double CheapOnlyFraction { get; set; } = 0.8;
+    public double CheapOnlyFraction { get; set; } = 1.0;
     /// <summary>Max model calls in any rolling hour (pauses until the window frees up).</summary>
-    public int MaxCallsPerHour { get; set; } = 90;
+    public int MaxCallsPerHour { get; set; } = 0;
     /// <summary>File name (under AgentOptions.DataDirectory) for persisted daily/monthly totals.</summary>
     public string UsageFile { get; set; } = "usage.json";
 }

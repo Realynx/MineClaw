@@ -307,7 +307,7 @@ public class BrainTierTests
     [Fact]
     public async Task Budget_Economy_RunsBrainOnWorkerModel_CheapOnly_DropsToHaikuWithoutDelegate()
     {
-        var (rt, llm, _) = Create(o => { o.Budget.DailyCapUsd = 1m; o.Budget.MonthlyCapUsd = 100m; });
+        var (rt, llm, _) = Create(o => { o.Budget.DailyCapUsd = 1m; o.Budget.MonthlyCapUsd = 100m; o.Budget.WorkerBrainFraction = 0.6; o.Budget.CheapOnlyFraction = 0.8; });
         GameTools(rt);
         rt.Usage.Record("claude-opus-5-5", new LlmUsage(0, 32_500, 0, 0)); // $0.65 → economy
         Assert.Equal(BudgetMode.Economy, rt.Usage.Mode);
