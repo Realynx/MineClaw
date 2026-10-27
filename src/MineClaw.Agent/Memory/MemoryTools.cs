@@ -51,6 +51,8 @@ public static class MemoryTools
                 var s = memory.UpsertStructure(name, s =>
                 {
                     s.Kind = input.Str("kind") ?? s.Kind;
+                    // Coordinates given here are in the dimension the bot stands in.
+                    if (min != null || keys.Count > 0) s.Dimension = memory.CurrentDimension;
                     if (min != null) { s.Min = min; s.Max = max ?? s.Max; }
                     foreach (var k in keys)
                     {
@@ -149,12 +151,13 @@ public static class MemoryTools
             "near=\"here\" or x,y,z lists what's known around a spot.",
             ToolSchema.Create().Str("query", required: false).Str("kind", required: false, enumValues: RecallKinds)
                 .Str("near", "\"here\" or x,y,z", required: false).Int("radius", "blocks, default 16", required: false)
-                .Int("limit", required: false).Build(),
+                .Int("limit", required: false).Str("dim", "overworld|nether|any; default yours", required: false).Build(),
             async (input, ct) =>
             {
                 var query = input.Str("query")?.Trim();
                 var kind = input.Str("kind")?.Trim().ToLowerInvariant();
                 int limit = Math.Clamp(input.Int("limit") ?? o.RecallLimit, 1, 12);
+                if (!WorldDim.TryParse(input.Str("dim"), memory.CurrentDimension, out var dim)) return ToolResult.Error("dim: overworld|nether|any");
                 (double, double, double)? near = null;
                 if (input.Str("near") is { Length: > 0 } ns)
                 {
@@ -180,6 +183,7 @@ public static class MemoryTools
                 var hits = await index.SearchAsync(new RagQuery
                 {
                     Text = query, Kinds = kinds, Near = near, Radius = Math.Clamp(input.Int("radius") ?? 16, 1, 128), Limit = limit,
+                    Dimension = dim,
                 }, ct).ConfigureAwait(false);
                 return ToolResult.Success(MemoryStore.FormatHits(index, hits, o.RecallMaxChars, 200));
             }, cheapTier: true);

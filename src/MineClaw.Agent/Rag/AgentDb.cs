@@ -114,7 +114,83 @@ public sealed class AgentDb : IDisposable
             ref TEXT, polarity INTEGER NOT NULL, weight REAL NOT NULL, note TEXT, at INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS claim_evidence_claim ON claim_evidence(claim_id, at);
         """,
+        // v5: dimension-aware memory (0 overworld, -1 nether). Every position-bearing row gets `dimension` (backfilled 0)
+        // by MigrateV5 (column adds are idempotent: hive processes share the file); observations are rebuilt so the
+        // idempotency key is (kind, key, dimension); the R*Tree gains a dimension axis (Init). Portal pairs live here.
+        """
+        CREATE TABLE IF NOT EXISTS portal_links(
+            id INTEGER PRIMARY KEY, a_dim INTEGER NOT NULL, a_key TEXT NOT NULL, a_x INTEGER NOT NULL, a_y INTEGER NOT NULL, a_z INTEGER NOT NULL,
+            b_dim INTEGER NOT NULL, b_key TEXT NOT NULL, b_x INTEGER NOT NULL, b_y INTEGER NOT NULL, b_z INTEGER NOT NULL,
+            created INTEGER NOT NULL, updated INTEGER NOT NULL, uses INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(a_dim, a_key, b_dim, b_key));
+        CREATE INDEX IF NOT EXISTS portal_links_a ON portal_links(a_dim, a_x, a_z);
+        CREATE INDEX IF NOT EXISTS portal_links_b ON portal_links(b_dim, b_x, b_z);
+        """,
     ];
+
+    /// <summary>Code steps run after the SQL of the same index (same transaction).</summary>
+    private static readonly Dictionary<int, Action<AgentDb>> CodeMigrations = new() { [4] = MigrateV5 };
+
+    /// <summary>Base columns of observations (v1) in order; anything else found (hive clone_id...) is carried over verbatim.</summary>
+    private static readonly string[] ObservationColumns =
+    [
+        "id", "kind", "key", "min_x", "min_y", "min_z", "max_x", "max_y", "max_z", "fields", "text", "source", "confidence", "annotation",
+        "first_seen", "last_seen", "seen_count", "removed",
+    ];
+
+    private static void MigrateV5(AgentDb db)
+    {
+        foreach (var t in new[] { "docs", "waypoints", "structures", "claims" })
+            db.EnsureColumn(t, "dimension", "INTEGER NOT NULL DEFAULT 0");
+        if (db.TableExists("observations") && !db.HasColumn("observations", "dimension")) RebuildObservations(db);
+    }
+
+    /// <summary>
+    /// UNIQUE(kind, key) can't be altered in SQLite: copy observations + container_items into v5 tables keyed by
+    /// (kind, key, dimension), every existing row as overworld. container_items is copied out first so dropping the
+    /// parent doesn't cascade-delete contents. Unknown extra columns (hive clone_id) are carried over.
+    /// </summary>
+    private static void RebuildObservations(AgentDb db)
+    {
+        static List<(string Name, string Decl)> Extras(AgentDb db, string table, ICollection<string> known) =>
+            db.Query($"PRAGMA table_info({table})", r => (Name: r.GetString(1), Type: r.IsDBNull(2) ? "" : r.GetString(2),
+                    NotNull: r.GetInt64(3) != 0, Default: r.IsDBNull(4) ? null : r.GetValue(4)?.ToString()))
+                .Where(c => !known.Contains(c.Name, StringComparer.OrdinalIgnoreCase))
+                .Select(c => (c.Name, $"{c.Name} {c.Type}" + (c.NotNull && c.Default != null ? " NOT NULL" : "") + (c.Default != null ? $" DEFAULT {c.Default}" : "")))
+                .ToList();
+        static string Decls(List<(string Name, string Decl)> e) => string.Concat(e.Select(x => ", " + x.Decl));
+        static string Names(List<(string Name, string Decl)> e) => string.Concat(e.Select(x => ", " + x.Name));
+        var obsExtra = Extras(db, "observations", ObservationColumns);
+        string[] ciBase = ["obs_id", "item_id", "damage", "name", "count"];
+        var ciExtra = Extras(db, "container_items", ciBase);
+        var obsCols = string.Join(", ", ObservationColumns) + Names(obsExtra);
+        var ciCols = string.Join(", ", ciBase) + Names(ciExtra);
+        db.Exec($"""
+            CREATE TABLE observations_v5(
+                id INTEGER PRIMARY KEY, kind TEXT NOT NULL, key TEXT NOT NULL,
+                min_x REAL, min_y REAL, min_z REAL, max_x REAL, max_y REAL, max_z REAL,
+                fields TEXT, text TEXT NOT NULL, source TEXT NOT NULL, confidence REAL NOT NULL, annotation TEXT,
+                first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, seen_count INTEGER NOT NULL, removed INTEGER{Decls(obsExtra)},
+                dimension INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(kind, key, dimension));
+            INSERT INTO observations_v5({obsCols}, dimension) SELECT {obsCols}, 0 FROM observations;
+            CREATE TABLE container_items_v5 AS SELECT * FROM container_items;
+            DROP TABLE container_items;
+            DROP TABLE observations;
+            ALTER TABLE observations_v5 RENAME TO observations;
+            CREATE TABLE container_items(
+                obs_id INTEGER NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+                item_id INTEGER NOT NULL, damage INTEGER NOT NULL DEFAULT 0, name TEXT NOT NULL, count INTEGER NOT NULL{Decls(ciExtra)},
+                dimension INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(obs_id, item_id, damage));
+            INSERT INTO container_items({ciCols}, dimension) SELECT {ciCols}, 0 FROM container_items_v5;
+            DROP TABLE container_items_v5;
+            CREATE INDEX observations_kind ON observations(kind, removed);
+            CREATE INDEX observations_dim ON observations(dimension, kind, removed);
+            CREATE INDEX container_items_item ON container_items(item_id);
+            CREATE INDEX container_items_name ON container_items(name);
+            """);
+    }
 
     private const string FtsSql = """
         CREATE VIRTUAL TABLE docs_fts USING fts5(title, body, content='docs', content_rowid='id', tokenize='porter unicode61 remove_diacritics 2');
@@ -134,16 +210,33 @@ public sealed class AgentDb : IDisposable
         INSERT INTO chat_fts(chat_fts) VALUES ('rebuild');
         """;
 
+    /// <summary>
+    /// Spatial index with the dimension as a 4th axis (min_d = max_d = dimension): one R*Tree, and a spatial match in one
+    /// dimension never visits the other's nodes (faster than a post-join filter, simpler than one tree per dimension).
+    /// </summary>
     private const string RtreeSql = """
-        CREATE VIRTUAL TABLE docs_rtree USING rtree(id, min_x, max_x, min_y, max_y, min_z, max_z);
+        CREATE VIRTUAL TABLE docs_rtree USING rtree(id, min_x, max_x, min_y, max_y, min_z, max_z, min_d, max_d);
         CREATE TRIGGER docs_rt_ai AFTER INSERT ON docs WHEN new.min_x IS NOT NULL BEGIN
-            INSERT INTO docs_rtree VALUES (new.id, new.min_x, new.max_x, new.min_y, new.max_y, new.min_z, new.max_z); END;
+            INSERT INTO docs_rtree VALUES (new.id, new.min_x, new.max_x, new.min_y, new.max_y, new.min_z, new.max_z, new.dimension, new.dimension); END;
         CREATE TRIGGER docs_rt_ad AFTER DELETE ON docs BEGIN DELETE FROM docs_rtree WHERE id = old.id; END;
-        CREATE TRIGGER docs_rt_au AFTER UPDATE OF min_x, min_y, min_z, max_x, max_y, max_z ON docs BEGIN
+        CREATE TRIGGER docs_rt_au AFTER UPDATE OF min_x, min_y, min_z, max_x, max_y, max_z, dimension ON docs BEGIN
             DELETE FROM docs_rtree WHERE id = old.id;
-            INSERT INTO docs_rtree SELECT new.id, new.min_x, new.max_x, new.min_y, new.max_y, new.min_z, new.max_z WHERE new.min_x IS NOT NULL; END;
-        INSERT INTO docs_rtree SELECT id, min_x, max_x, min_y, max_y, min_z, max_z FROM docs WHERE min_x IS NOT NULL;
+            INSERT INTO docs_rtree SELECT new.id, new.min_x, new.max_x, new.min_y, new.max_y, new.min_z, new.max_z, new.dimension, new.dimension
+                WHERE new.min_x IS NOT NULL; END;
+        INSERT INTO docs_rtree SELECT id, min_x, max_x, min_y, max_y, min_z, max_z, dimension, dimension FROM docs WHERE min_x IS NOT NULL;
         """;
+
+    /// <summary>A pre-v5 tree (no dimension axis) is dropped here and rebuilt from docs by <see cref="EnsureVirtual"/>.</summary>
+    private void DropStaleRtree(ILogger log)
+    {
+        if (Scalar("SELECT sql FROM sqlite_master WHERE name = 'docs_rtree'") is not string sql
+            || sql.Contains("min_d", StringComparison.OrdinalIgnoreCase)) return;
+        Tx(() => Exec("""
+            DROP TRIGGER IF EXISTS docs_rt_ai; DROP TRIGGER IF EXISTS docs_rt_ad; DROP TRIGGER IF EXISTS docs_rt_au;
+            DROP TABLE docs_rtree;
+            """));
+        log.LogInformation("R*Tree rebuilt with a dimension axis");
+    }
 
     private readonly SqliteConnection _conn;
     private SqliteTransaction? _tx;
@@ -215,18 +308,23 @@ public sealed class AgentDb : IDisposable
             throw new InvalidOperationException($"database schema v{version} is newer than this build (v{Migrations.Length})");
         for (int v = version; v < Migrations.Length; v++)
         {
-            Tx(() =>
+            bool ran = Tx(() =>
             {
+                // Another hive process may have migrated between our read and this (IMMEDIATE) transaction.
+                if ((int)ScalarLong("PRAGMA user_version;") > v) return false;
                 Exec(Migrations[v]);
+                if (CodeMigrations.TryGetValue(v, out var code)) code(this);
                 Exec($"PRAGMA user_version = {v + 1};");
+                return true;
             });
-            log.LogInformation("db schema migrated to v{Version}", v + 1);
+            if (ran) log.LogInformation("db schema migrated to v{Version}", v + 1);
         }
         SchemaVersion = Migrations.Length;
 
         bool ftsOk = !disableFts && Probe("CREATE VIRTUAL TABLE temp.__fts_probe USING fts5(x); DROP TABLE temp.__fts_probe;");
         bool rtOk = !disableRtree && Probe("CREATE VIRTUAL TABLE temp.__rt_probe USING rtree(id, a, b); DROP TABLE temp.__rt_probe;");
         HasFts = ftsOk && EnsureVirtual("docs_fts", FtsSql, log);
+        if (rtOk) DropStaleRtree(log);
         HasRtree = rtOk && EnsureVirtual("docs_rtree", RtreeSql, log);
         if (!HasFts) log.LogWarning("SQLite FTS5 unavailable: memory search falls back to LIKE scans");
         if (!HasRtree) log.LogInformation("SQLite R*Tree unavailable: spatial queries use range scans");
@@ -254,6 +352,23 @@ public sealed class AgentDb : IDisposable
     }
 
     // ---------------- helpers ----------------
+
+    public bool TableExists(string table) =>
+        ScalarLong("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = $n", ("$n", table)) > 0;
+
+    public bool HasColumn(string table, string column) =>
+        Query($"PRAGMA table_info({table})", r => r.GetString(1)).Any(n => n.Equals(column, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Adds a column when the table exists and lacks it (idempotent; safe when another process races us).</summary>
+    public void EnsureColumn(string table, string column, string declaration)
+    {
+        lock (Gate)
+        {
+            if (!TableExists(table) || HasColumn(table, column)) return;
+            try { Exec($"ALTER TABLE {table} ADD COLUMN {column} {declaration}"); }
+            catch (SqliteException ex) when (ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase)) { }
+        }
+    }
 
     public SqliteCommand Command(string sql, params (string Name, object? Value)[] args)
     {

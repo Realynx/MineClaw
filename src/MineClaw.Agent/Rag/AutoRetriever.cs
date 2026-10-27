@@ -73,6 +73,8 @@ public sealed class AutoRetriever
             Near = position is { } p && _o.AutoNearRadius > 0 ? (p.X, p.Y, p.Z) : null,
             Radius = _o.AutoNearRadius,
             NearKinds = SpatialKinds,
+            // Spatial memories of the other dimension never ride along (their coordinates would mislead); text-only docs pass.
+            Dimension = _index.CurrentDim,
             Limit = _o.AutoTopK,
             Strict = true,
             IgnoreWords = ignoreWords,

@@ -23,6 +23,18 @@ public interface IPlaceResolver
     IReadOnlyList<WPos> Positions(string name);
 }
 
+/// <summary>
+/// Named places stored in the OTHER dimension (overworld vs nether), for goto's portal planning. <see cref="IPlaceResolver.Resolve"/>
+/// only answers in the bot's current dimension, so nothing ever walks to nether coordinates in the overworld.
+/// </summary>
+public interface ICrossDimensionPlaces
+{
+    /// <summary>A waypoint/structure by name that lives in another dimension than the bot's, or null.</summary>
+    (WPos Pos, int Dim)? ResolveElsewhere(string name);
+    /// <summary>Linked portal pairs (null = none known).</summary>
+    PortalLinks? Portals { get; }
+}
+
 /// <summary>Boxes the bot must never break into (player builds recorded as structures).</summary>
 public interface IProtectedRegionSource
 {
@@ -48,15 +60,31 @@ public interface IStructureMemory
 /// its <see cref="ObservationStore"/> (indexed world: nearest chest/generator..., taught/llm world facts).
 /// </summary>
 public sealed partial class MemoryStoreAdapter(MemoryStore memory, ObservationStore? observations = null, Func<WPos?>? position = null)
-    : IPlaceResolver, IProtectedRegionSource, IReservedItemSource, IStructureMemory
+    : IPlaceResolver, IProtectedRegionSource, IReservedItemSource, IStructureMemory, ICrossDimensionPlaces
 {
+    private int Dim => memory.CurrentDimension;
+    public PortalLinks? Portals => observations?.Portals;
+
+    public (WPos Pos, int Dim)? ResolveElsewhere(string name)
+    {
+        int here = Dim;
+        if (memory.GetWaypoint(name) is { } w) return w.Dimension != here ? (new WPos(w.X, w.Y, w.Z), w.Dimension) : null;
+        if (memory.GetStructure(name) is { } s && s.Dimension != here)
+        {
+            if (s.Min is { } m) return (ToW(m), s.Dimension);
+            if (s.KeyBlocks.Count > 0) return (new WPos(s.KeyBlocks[0].X, s.KeyBlocks[0].Y, s.KeyBlocks[0].Z), s.Dimension);
+        }
+        return null;
+    }
+
     /// <summary>Structure kinds that are not player builds worth protecting as a whole box.</summary>
     private static readonly HashSet<string> Unprotected = new(StringComparer.OrdinalIgnoreCase) { StructureKinds.Unknown };
 
     public WPos? Resolve(string name, string? keyHint = null)
     {
-        if (memory.GetWaypoint(name) is { } w) return new WPos(w.X, w.Y, w.Z);
-        if (memory.GetStructure(name) is { } s)
+        // Only places in the bot's dimension: a nether waypoint's coordinates mean nothing here (goto plans portals instead).
+        if (memory.GetWaypoint(name) is { } w) return w.Dimension == Dim ? new WPos(w.X, w.Y, w.Z) : null;
+        if (memory.GetStructure(name) is { } s && s.Dimension == Dim)
         {
             if (keyHint != null && s.KeyBlocks.FirstOrDefault(k => k.Label.Contains(keyHint, StringComparison.OrdinalIgnoreCase)) is { } kb)
                 return new WPos(kb.X, kb.Y, kb.Z);
@@ -95,6 +123,7 @@ public sealed partial class MemoryStoreAdapter(MemoryStore memory, ObservationSt
     public IReadOnlyList<WPos> Positions(string name)
     {
         var s = memory.GetStructure(name);
+        if (s != null && s.Dimension != Dim) return [];
         if (s == null)
         {
             if (observations != null && IndexKinds.FromAlias(name) is IndexKinds.Chest)
@@ -117,8 +146,9 @@ public sealed partial class MemoryStoreAdapter(MemoryStore memory, ObservationSt
     /// </summary>
     public IReadOnlyList<(WPos Min, WPos Max)> ProtectedRegions()
     {
+        int dim = Dim;
         var list = memory.Read(d => d.Structures
-            .Where(s => s.Min != null && !Unprotected.Contains(s.Kind))
+            .Where(s => s.Min != null && !Unprotected.Contains(s.Kind) && s.Dimension == dim)
             .Select(s => (ToW(s.Min!), ToW(s.Max ?? s.Min!)))
             .ToList());
         if (observations == null) return list;
@@ -169,7 +199,7 @@ public sealed partial class MemoryStoreAdapter(MemoryStore memory, ObservationSt
     public (WPos Min, WPos Max)? Area(string name)
     {
         var s = memory.GetStructure(name);
-        if (s?.Min == null) return null;
+        if (s?.Min == null || s.Dimension != Dim) return null;
         return (ToW(s.Min), ToW(s.Max ?? s.Min));
     }
 
@@ -194,18 +224,19 @@ public sealed partial class MemoryStoreAdapter(MemoryStore memory, ObservationSt
                 FieldsJson = JsonSerializer.Serialize(new { @protected = true, steps = steps.Count, by = taughtBy }),
                 Source = ObservationSource.Taught,
                 Confidence = 0.8,
+                Dimension = s.Dimension,
             });
         }
         catch { /* memory steps are saved; the mirror is best effort */ }
     }
 
     /// <summary>True when a box overlaps a taught structure (so the indexer doesn't call it "unknown").</summary>
-    public bool IsKnownArea(WPos min, WPos max) => memory.Read(d => d.Structures.Any(s =>
-        s.Min != null && Overlaps(ToW(s.Min), ToW(s.Max ?? s.Min), min, max, 1)));
+    public bool IsKnownArea(WPos min, WPos max) { int dim = Dim; return memory.Read(d => d.Structures.Any(s =>
+        s.Min != null && s.Dimension == dim && Overlaps(ToW(s.Min), ToW(s.Max ?? s.Min), min, max, 1))); }
 
     /// <summary>Name of the taught structure at a position (how-to evidence), or null.</summary>
-    public string? TaughtStructureAt(WPos p) => memory.Read(d => d.Structures.FirstOrDefault(s =>
-        s.Min != null && s.TaughtBy != null && Overlaps(ToW(s.Min), ToW(s.Max ?? s.Min), p, p, 2))?.Name);
+    public string? TaughtStructureAt(WPos p) { int dim = Dim; return memory.Read(d => d.Structures.FirstOrDefault(s =>
+        s.Min != null && s.TaughtBy != null && s.Dimension == dim && Overlaps(ToW(s.Min), ToW(s.Max ?? s.Min), p, p, 2))?.Name); }
 
     private static bool Overlaps(WPos a0, WPos a1, WPos b0, WPos b1, int pad) =>
         Math.Min(a0.X, a1.X) - pad <= Math.Max(b0.X, b1.X) && Math.Max(a0.X, a1.X) + pad >= Math.Min(b0.X, b1.X) &&

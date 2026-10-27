@@ -76,6 +76,7 @@ public sealed class EpisodeIndexer
             {
                 Source = e.IsTest ? "test" : "episode",
                 Bounds = pos != null ? Box.Point(pos.X, pos.Y, pos.Z) : null,
+                Dimension = _index.CurrentDimension(),
                 At = e.Started,
             });
             lock (_lock) _docSeq[id] = e.Seq;

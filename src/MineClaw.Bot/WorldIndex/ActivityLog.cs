@@ -21,6 +21,8 @@ public sealed record ActivityRollup(string Player, DateTimeOffset Start, DateTim
     public double Salience { get; init; }
     /// <summary>Compact digest form without the time range.</summary>
     public string Short { get; init; } = "";
+    /// <summary>Dimension of the session (0 overworld, -1 nether).</summary>
+    public int Dimension { get; init; }
 }
 
 /// <summary>
@@ -59,6 +61,9 @@ public sealed class ActivityLog
             CREATE INDEX IF NOT EXISTS ix_rollups_player_end ON activity_rollups(player, end);
             CREATE INDEX IF NOT EXISTS ix_rollups_end ON activity_rollups(end);
             """);
+        // v5 memory: every positioned row knows its dimension (existing rows are overworld).
+        _db.EnsureColumn("activity_log", "dimension", "INTEGER NOT NULL DEFAULT 0");
+        _db.EnsureColumn("activity_rollups", "dimension", "INTEGER NOT NULL DEFAULT 0");
         if (db.HasFts)
         {
             try
@@ -71,6 +76,8 @@ public sealed class ActivityLog
     }
 
     public bool HasFts => _fts;
+    /// <summary>The bot's dimension (the tracker sets it): answers tag things that happened in the other one.</summary>
+    public Func<int> CurrentDimension { get; set; } = () => WorldDim.Overworld;
 
     // ---------------- writes ----------------
 
@@ -85,11 +92,11 @@ public sealed class ActivityLog
             {
                 var text = e.Text;
                 var id = (long)_db.Scalar("""
-                    INSERT INTO activity_log(at, player, kind, category, block_id, item_id, count, x, y, z, place_kind, place_key, place_name, confidence, detail, text)
-                    VALUES ($at, $p, $k, $c, $b, $i, $n, $x, $y, $z, $pk, $pkey, $pn, $conf, $d, $t) RETURNING id
+                    INSERT INTO activity_log(at, player, kind, category, block_id, item_id, count, x, y, z, place_kind, place_key, place_name, confidence, detail, text, dimension)
+                    VALUES ($at, $p, $k, $c, $b, $i, $n, $x, $y, $z, $pk, $pkey, $pn, $conf, $d, $t, $dim) RETURNING id
                     """, ("$at", AgentDb.ToUnixMs(e.At)), ("$p", e.Player), ("$k", e.Kind), ("$c", e.Category), ("$b", e.BlockId), ("$i", e.ItemId),
                     ("$n", e.Count), ("$x", e.Pos?.X), ("$y", e.Pos?.Y), ("$z", e.Pos?.Z), ("$pk", e.Place?.Kind), ("$pkey", e.Place?.Key),
-                    ("$pn", e.Place?.Name), ("$conf", e.Confidence), ("$d", e.Detail), ("$t", text))!;
+                    ("$pn", e.Place?.Name), ("$conf", e.Confidence), ("$d", e.Detail), ("$t", text), ("$dim", e.Dimension))!;
                 if (_fts) _db.Exec("INSERT INTO activity_fts(rowid, text, player) VALUES ($id, $t, $p)", ("$id", id), ("$t", text), ("$p", e.Player));
                 list.Add(e with { Id = id });
             }
@@ -105,17 +112,18 @@ public sealed class ActivityLog
             var docRef = $"{DocPrefix}{r.Player.ToLowerInvariant()}:{AgentDb.ToUnixMs(r.Start)}";
             var id = (long)_db.Scalar("""
                 INSERT INTO activity_rollups(player, start, end, place_kind, place_key, place_name, min_x, min_y, min_z, max_x, max_y, max_z,
-                    counts, text, short, confidence, salience, events, doc_ref)
-                VALUES ($p, $s, $e, $pk, $pkey, $pn, $x0, $y0, $z0, $x1, $y1, $z1, $c, $t, $sh, $conf, $sal, $n, $ref) RETURNING id
+                    counts, text, short, confidence, salience, events, doc_ref, dimension)
+                VALUES ($p, $s, $e, $pk, $pkey, $pn, $x0, $y0, $z0, $x1, $y1, $z1, $c, $t, $sh, $conf, $sal, $n, $ref, $dim) RETURNING id
                 """, ("$p", r.Player), ("$s", AgentDb.ToUnixMs(r.Start)), ("$e", AgentDb.ToUnixMs(r.End)), ("$pk", r.Place?.Kind), ("$pkey", r.Place?.Key),
                 ("$pn", r.Place?.Name), ("$x0", r.Min.X), ("$y0", r.Min.Y), ("$z0", r.Min.Z), ("$x1", r.Max.X), ("$y1", r.Max.Y), ("$z1", r.Max.Z),
                 ("$c", JsonSerializer.Serialize(r.Counts)), ("$t", r.Text), ("$sh", r.Short), ("$conf", r.Confidence), ("$sal", r.Salience),
-                ("$n", r.Events), ("$ref", docRef))!;
+                ("$n", r.Events), ("$ref", docRef), ("$dim", r.Dimension))!;
             foreach (var e in eventIds) _db.Exec("UPDATE activity_log SET rollup_id = $r WHERE id = $id", ("$r", id), ("$id", e));
             _rag?.Upsert(new RagDoc(docRef, "episode", $"{r.Player} activity", r.Text)
             {
                 Source = "activity",
                 Bounds = Box.Of(r.Min.X, r.Min.Y, r.Min.Z, r.Max.X, r.Max.Y, r.Max.Z),
+                Dimension = r.Dimension,
                 At = r.End,
             });
             return r with { Id = id };
@@ -149,18 +157,23 @@ public sealed class ActivityLog
             """, r => (r.GetInt64(0), r.GetString(1), r.GetString(2), AgentDb.FromUnixMs(r.GetInt64(3)), r.GetDouble(4), r.GetString(5), AgentDb.LongOrNull(r, 6)),
             ("$p", player), ("$s", since is { } s ? AgentDb.ToUnixMs(s) : 0L), ("$n", limit));
 
-    public List<ActivityRollup> Rollups(string? player = null, DateTimeOffset? since = null, DateTimeOffset? until = null, int limit = 20) =>
+    /// <param name="dimension">Only sessions in this dimension (null / <see cref="WorldDim.Any"/> = all).</param>
+    public List<ActivityRollup> Rollups(string? player = null, DateTimeOffset? since = null, DateTimeOffset? until = null, int limit = 20,
+        int? dimension = null) =>
         _db.Query("""
             SELECT id, player, start, end, text, short, confidence, salience, events, place_kind, place_key, place_name,
-                   min_x, min_y, min_z, max_x, max_y, max_z FROM activity_rollups
-            WHERE ($p IS NULL OR player = $p COLLATE NOCASE) AND end >= $s AND start <= $u ORDER BY end DESC LIMIT $n
+                   min_x, min_y, min_z, max_x, max_y, max_z, dimension FROM activity_rollups
+            WHERE ($p IS NULL OR player = $p COLLATE NOCASE) AND end >= $s AND start <= $u AND ($dim IS NULL OR dimension = $dim)
+            ORDER BY end DESC LIMIT $n
             """, r => new ActivityRollup(r.GetString(1), AgentDb.FromUnixMs(r.GetInt64(2)), AgentDb.FromUnixMs(r.GetInt64(3)), r.GetString(4), r.GetDouble(6))
             {
                 Id = r.GetInt64(0), Short = AgentDb.StrOrNull(r, 5) ?? "", Salience = r.GetDouble(7), Events = (int)r.GetInt64(8),
                 Place = r.IsDBNull(9) ? null : new PlaceRef(r.GetString(9), r.GetString(10), r.GetString(11), default, default),
                 Min = new BlockPos(r.GetInt32(12), r.GetInt32(13), r.GetInt32(14)), Max = new BlockPos(r.GetInt32(15), r.GetInt32(16), r.GetInt32(17)),
+                Dimension = r.GetInt32(18),
             },
-            ("$p", player), ("$s", since is { } s ? AgentDb.ToUnixMs(s) : 0L), ("$u", until is { } u ? AgentDb.ToUnixMs(u) : long.MaxValue), ("$n", limit));
+            ("$p", player), ("$s", since is { } s ? AgentDb.ToUnixMs(s) : 0L), ("$u", until is { } u ? AgentDb.ToUnixMs(u) : long.MaxValue), ("$n", limit),
+            ("$dim", dimension is { } d && d != WorldDim.Any ? d : null));
 
     public IReadOnlyList<string> Players() =>
         _db.Query("SELECT DISTINCT player FROM activity_rollups UNION SELECT DISTINCT player FROM activity_log", r => r.GetString(0));
@@ -221,7 +234,7 @@ public sealed class ActivityLog
         var targets = who.Count > 0 ? who.Cast<string?>().ToList() : [null];
         foreach (var p in targets)
         {
-            foreach (var r in Rollups(p, from, until, 12).OrderBy(r => r.Start)) Line(r.Text);
+            foreach (var r in Rollups(p, from, until, 12).OrderBy(r => r.Start)) Line(r.Text + WorldDim.Tag(r.Dimension, CurrentDimension()));
             var raw = Events(p, from, 30).Where(e => e.Rollup == null && e.At <= until && e.Confidence >= _o.MediumConfidence).Reverse().ToList();
             for (int i = 0; i < raw.Count;)
             {

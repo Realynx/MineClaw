@@ -70,13 +70,19 @@ public sealed partial class WorldIndexer
             foreach (var k in removed) if (Find(IndexKinds.Tree, k) is { } e) RemoveEntry(e);
             foreach (var c in changed) ApplyTree(c);
         }
+        if (_portals.HasWork) // before builds: a portal explains its obsidian frame
+        {
+            var (changed, removed) = _portals.Recluster(NewKey(IndexKinds.Portal, null, c => PosKey(MinOf(c))));
+            foreach (var k in removed) if (Find(IndexKinds.Portal, k) is { } e) RemoveEntry(e);
+            foreach (var c in changed) ApplyPortal(c);
+        }
         if (_builds.HasWork)
         {
             var (changed, removed) = _builds.Recluster(NewKey(IndexKinds.UnknownStructure, null, c => PosKey(MinOf(c))));
             foreach (var k in removed) if (Find(IndexKinds.UnknownStructure, k) is { } e) RemoveEntry(e);
             foreach (var c in changed) ApplyStructure(c);
         }
-        if (_islands.HasWork)
+        if (_islands.HasWork && IslandsOn)
         {
             var (changed, removed) = _islands.Recluster(NewKey(IndexKinds.Island, null, c =>
             {
@@ -315,7 +321,7 @@ public sealed partial class WorldIndexer
 
     private void ApplyStructure(ClusterChange c)
     {
-        var explainers = _entries.Values.Where(x => x.Kind is IndexKinds.Generator or IndexKinds.Farm).ToList();
+        var explainers = _entries.Values.Where(x => x.Kind is IndexKinds.Generator or IndexKinds.Farm or IndexKinds.Portal).ToList();
         var unexplained = c.Cells.Where(p => !explainers.Any(x => x.Contains(p, x.Kind == IndexKinds.Farm ? 2 : 1))).ToList();
         var (min, max) = (MinOf(c.Cells), MaxOf(c.Cells));
         bool qualifies = unexplained.Count >= _o.StructureMinBlocks && !(IsKnownArea?.Invoke(min, max) ?? false);

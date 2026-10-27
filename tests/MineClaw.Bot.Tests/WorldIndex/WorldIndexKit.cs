@@ -28,6 +28,10 @@ public sealed class CountingSink(IObservationSink inner) : IObservationSink
     }
     public bool Remove(string kind, string key) { RemoveCalls++; return inner.Remove(kind, key); }
     public IReadOnlyList<ObservationRow> Near(string? kind, double x, double y, double z, double radius, int limit) => inner.Near(kind, x, y, z, radius, limit);
+    public bool Remove(string kind, string key, int dimension) { RemoveCalls++; return inner.Remove(kind, key, dimension); }
+    public IReadOnlyList<ObservationRow> Near(string? kind, double x, double y, double z, double radius, int limit, int dimension) =>
+        inner.Near(kind, x, y, z, radius, limit, dimension);
+    public void LinkPortals(PortalEnd from, PortalEnd to) => inner.LinkPortals(from, to);
 }
 
 /// <summary>A synthetic world + a real SQLite observation store in a temp file.</summary>

@@ -78,6 +78,8 @@ public sealed record BeliefClaim
     public ClaimPos? Pos { get; init; }
     /// <summary>Second position (e.g. the door a button should open).</summary>
     public ClaimPos? Target { get; init; }
+    /// <summary>Dimension of <see cref="Pos"/>/<see cref="Target"/> (the bot's when the claim was told).</summary>
+    public int Dimension { get; init; }
     public ClaimCategory Category { get; init; }
     public ClaimStakes Stakes { get; init; }
     /// <summary>0..1: belief that the claim is true.</summary>

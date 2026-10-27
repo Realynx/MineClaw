@@ -135,6 +135,9 @@ public sealed class DangerMonitor
         PlaceAt = placeAt;
     }
 
+    /// <summary>Dimension switch: per-player motion/fight tracks describe the world the bot left (deaths stay deduped).</summary>
+    internal void ResetTracks() => _tracks.Clear();
+
     private Func<int, int, int?>? IslandBottom { get; }
     private Func<BlockPos, PlaceRef?>? PlaceAt { get; }
 

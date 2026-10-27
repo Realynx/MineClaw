@@ -33,6 +33,17 @@ internal sealed class ClusterIndex
         _offsets = list.ToArray();
     }
 
+    /// <summary>Forgets everything (dimension switch: these cells belong to the world the bot left).</summary>
+    public void Clear()
+    {
+        _cells.Clear();
+        _byChunk.Clear();
+        _owner.Clear();
+        _clusters.Clear();
+        _dirty.Clear();
+        _touched.Clear();
+    }
+
     public int CellCount => _cells.Count;
     public bool HasWork => _dirty.Count > 0 || _touched.Count > 0;
     public bool Contains(BlockPos p) => _cells.Contains(p);

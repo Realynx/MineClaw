@@ -8,7 +8,11 @@ public static class IndexKinds
     public const string Chest = "chest", Furnace = "furnace", CraftingTable = "crafting_table", Dispenser = "dispenser",
         Bed = "bed", Jukebox = "jukebox", NoteBlock = "note_block", Spawner = "spawner", Sign = "sign",
         Generator = "cobble_generator", Farm = "farm", Tree = "tree", Island = "island", Hangout = "hangout",
-        Activity = "player_activity", UnknownStructure = "unknown_structure";
+        Activity = "player_activity", UnknownStructure = "unknown_structure",
+        /// <summary>Nether portal: frame box + the exact spot to stand in (fields "stand"); pairs live in PortalLinks.</summary>
+        Portal = "portal", // == MineClaw.Agent.Rag.PortalLinks.Kind
+        /// <summary>Nether stand-in for islands: per 64x64 area, lava/fire/soul sand summary.</summary>
+        Hazard = "nether_hazard";
 
     /// <summary>Kinds anchored on a single block (key = "x,y,z"); gone when that block is gone.</summary>
     public static readonly IReadOnlySet<string> PointKinds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -16,14 +20,17 @@ public static class IndexKinds
 
     /// <summary>Kinds recomputed from clusters of cells.</summary>
     public static readonly IReadOnlySet<string> ClusterKinds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        { Generator, Farm, Tree, Island, UnknownStructure };
+        { Generator, Farm, Tree, Island, UnknownStructure, Portal };
 
     /// <summary>History-like kinds: never tombstoned by the indexer.</summary>
     public static readonly IReadOnlySet<string> HistoryKinds = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { Hangout, Activity };
 
     /// <summary>Kinds whose box must never be protected wholesale (it covers walkable/minable ground).</summary>
     public static readonly IReadOnlySet<string> NeverBoxProtected = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        { Island, Hangout, Activity, Tree, Sign };
+        { Island, Hangout, Activity, Tree, Sign, Hazard };
+
+    /// <summary>Area summaries (not things): never "near X", never a sign target, never a place for activity.</summary>
+    public static bool IsArea(string kind) => kind is Island or Hangout or Activity or Hazard;
 
     public static string? StationKind(int blockId) => blockId switch
     {
@@ -50,6 +57,7 @@ public static class IndexKinds
             "furnaces" => Furnace,
             "trees" or "sapling" or "saplings" => Tree,
             "farms" or "wheat" or "sugar_cane" or "sugarcane" or "cactus" => Farm,
+            "portals" or "nether_portal" => Portal,
             _ => n,
         };
         if (n.EndsWith('s') && !PointKinds.Contains(n) && !ClusterKinds.Contains(n)) n = n[..^1];
@@ -76,7 +84,14 @@ internal static class BlockClass
         GenOutput = 64,
         Farm = 128,
         Tree = 256,
+        /// <summary>Nether portal block.</summary>
+        Portal = 512,
     }
+
+    /// <summary>Blocks that are natural terrain in the nether (no "unknown build" from them there; mushrooms aren't farms).</summary>
+    public static bool NaturalNether(int id) =>
+        id is Blocks.Netherrack or Blocks.SoulSand or Blocks.Glowstone or Blocks.Gravel or Blocks.Obsidian or Blocks.BrownMushroom
+            or Blocks.RedMushroom or Blocks.Fire;
 
     public static readonly C[] Table = Build();
 
@@ -91,6 +106,7 @@ internal static class BlockClass
             t[id] = C.None;
         t[Blocks.Water] = t[Blocks.FlowingWater] = C.Water;
         t[Blocks.Lava] = t[Blocks.FlowingLava] = C.Lava;
+        t[Blocks.Portal] = C.Portal;
         foreach (var id in new[] { Blocks.Chest, Blocks.Furnace, Blocks.LitFurnace, Blocks.Workbench, Blocks.Dispenser, Blocks.Bed,
                      Blocks.Jukebox, Blocks.NoteBlock, Blocks.MobSpawner })
             t[id] |= C.Station;

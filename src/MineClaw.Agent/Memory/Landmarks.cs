@@ -41,7 +41,8 @@ public static class Landmarks
         double bestD = double.MaxValue, bx = 0, bz = 0;
         if (memory != null)
         {
-            var (wps, sts) = memory.Read(d => (d.Waypoints.ToList(), d.Structures.ToList()));
+            int dim = memory.CurrentDimension; // a landmark in the other dimension is never "near"
+            var (wps, sts) = memory.Read(d => (d.Waypoints.Where(w => w.Dimension == dim).ToList(), d.Structures.Where(s => s.Dimension == dim).ToList()));
             foreach (var w in wps)
                 Consider(w.Name, w.X + 0.5, w.Y, w.Z + 0.5);
             foreach (var s in sts)

@@ -72,7 +72,7 @@ public sealed record UnknownStructure(string Key, BlockPos Min, BlockPos Max, st
 /// <summary>Counters for the host/log ("indexer: 312 columns, 0.21 ms/column").</summary>
 public sealed class IndexerStats
 {
-    public long Passes, ColumnsScanned, BlockChanges, Upserts, Removes, Transactions;
+    public long Passes, ColumnsScanned, BlockChanges, Upserts, Removes, Transactions, DimensionSwitches, PortalLinks;
     public double ScanMs;
     public double MsPerColumn => ColumnsScanned == 0 ? 0 : ScanMs / ColumnsScanned;
     public override string ToString() =>

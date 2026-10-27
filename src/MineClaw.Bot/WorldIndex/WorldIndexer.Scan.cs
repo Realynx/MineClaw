@@ -67,7 +67,9 @@ public sealed partial class WorldIndexer
         var signs = new HashSet<BlockPos>();
         var trees = new HashSet<BlockPos>();
         var builds = new HashSet<BlockPos>();
+        var portals = new HashSet<BlockPos>();
         var footCells = new HashSet<BlockPos>();
+        bool islands = IslandsOn;
         var genCandidates = new List<BlockPos>();
         Dictionary<string, HashSet<BlockPos>> farms = BlockClass.FarmTypes.ToDictionary(t => t, _ => new HashSet<BlockPos>());
         int bx = cx << 4, bz = cz << 4;
@@ -94,9 +96,10 @@ public sealed partial class WorldIndexer
                 var p = new BlockPos(x, y, z);
                 if ((c & C.Station) != 0) stations.Add(p);
                 if ((c & C.Sign) != 0) signs.Add(p);
-                if ((c & C.Farm) != 0) farms[BlockClass.FarmType(id)!].Add(p);
+                if ((c & C.Portal) != 0) portals.Add(p);
+                if ((c & C.Farm) != 0 && !(InNether && BlockClass.NaturalNether(id))) farms[BlockClass.FarmType(id)!].Add(p);
                 if ((c & C.Tree) != 0) trees.Add(p);
-                if ((c & C.Build) != 0) builds.Add(p);
+                if (IsBuildBlock(id, c)) builds.Add(p); // natural nether terrain isn't a build there
                 else if (id == Blocks.Cobblestone && (below == Blocks.Cobblestone || (y + 1 < WorldState.Height && col.GetBlock(lx, y + 1, lz) == Blocks.Cobblestone)))
                     builds.Add(p); // walls/pillars, not one-thick floors
                 if ((c & C.GenOutput) != 0 && IsGenCell(p, id, false)) genCandidates.Add(p);
@@ -109,6 +112,11 @@ public sealed partial class WorldIndexer
                 below = id;
             }
             var cell = new BlockPos(x, 0, z);
+            if (!islands)
+            {
+                for (int i = 0; i < distinct; i++) _hist[ids[i]] = 0;
+                continue;
+            }
             if (minY >= 0)
             {
                 var hist = new int[distinct];
@@ -119,9 +127,11 @@ public sealed partial class WorldIndexer
             else _foot.Remove(XZ(x, z));
         }
 
-        _islands.ReplaceChunk(cx, cz, footCells);
+        if (islands) _islands.ReplaceChunk(cx, cz, footCells);
+        else if (InNether) NoteHazardColumn(cx, cz, ScanHazards(col));
         _trees.ReplaceChunk(cx, cz, trees);
         _builds.ReplaceChunk(cx, cz, builds);
+        _portals.ReplaceChunk(cx, cz, portals);
         foreach (var (t, set) in farms) _farms[t].ReplaceChunk(cx, cz, set);
 
         // Generators: re-check known cells here, add new candidates (which may lie in a neighbouring column).
@@ -183,7 +193,8 @@ public sealed partial class WorldIndexer
         lock (_columnsLock) queued = _dirtyColumns.Contains(ColKey(p.X >> 4, p.Z >> 4));
         if (queued) return; // the full scan covers it
 
-        if (((BlockClass.Of(ch.OldId) | BlockClass.Of(ch.NewId)) & C.Ground) != 0) UpdateFootColumn(p.X, p.Z);
+        if (IslandsOn && ((BlockClass.Of(ch.OldId) | BlockClass.Of(ch.NewId)) & C.Ground) != 0) UpdateFootColumn(p.X, p.Z);
+        if (ch.OldId == Blocks.Portal || ch.NewId == Blocks.Portal) _portals.Set(p, ch.NewId == Blocks.Portal);
 
         if (((BlockClass.Of(ch.OldId) | BlockClass.Of(ch.NewId)) & C.Station) != 0)
         {
@@ -210,7 +221,7 @@ public sealed partial class WorldIndexer
         foreach (var t in BlockClass.FarmTypes)
         {
             var layer = _farms[t];
-            bool member = BlockClass.FarmType(ch.NewId) == t;
+            bool member = BlockClass.FarmType(ch.NewId) == t && !(InNether && BlockClass.NaturalNether(ch.NewId));
             layer.Set(p, member);
             if (member) layer.Touch(p); // crops growing: re-render (throttled)
             else if (BlockClass.FarmType(ch.OldId) == t) layer.Touch(p);
@@ -229,7 +240,7 @@ public sealed partial class WorldIndexer
 
     private bool IsBuildCell(BlockPos p, int id)
     {
-        if ((BlockClass.Of(id) & C.Build) != 0) return true;
+        if (IsBuildBlock(id, BlockClass.Of(id))) return true;
         return id == Blocks.Cobblestone && (_world.GetBlock(p.Down()) == Blocks.Cobblestone || _world.GetBlock(p.Up()) == Blocks.Cobblestone);
     }
 

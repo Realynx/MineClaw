@@ -46,10 +46,13 @@ public sealed partial class WorldIndexer : IDisposable
     private Task? _loop;
     private readonly List<Action> _unsubscribe = new();
 
+    /// <param name="dimensions">Which dimension the bot is in (default: polls <see cref="WorldState.Dimension"/>).</param>
     public WorldIndexer(WorldState world, IObservationSink sink, IWorldIndexFeed? feed = null, WorldIndexOptions? options = null,
-        string? selfName = null, TimeProvider? time = null, ILogger? log = null)
+        string? selfName = null, TimeProvider? time = null, ILogger? log = null, IDimensionSource? dimensions = null)
     {
         _world = world;
+        _dims = dimensions ?? new WorldDimensionSource(world);
+        _dim = _dims.Dimension;
         _sink = sink;
         _feed = feed ?? new ManualIndexFeed();
         _o = options ?? new WorldIndexOptions();
@@ -86,8 +89,11 @@ public sealed partial class WorldIndexer : IDisposable
         _world.Inventory.WindowOpened += onOpen;
         _world.Inventory.WindowClosed += onClose;
         _world.Inventory.Changed += onInv;
+        Action<int, int> onDim = OnDimensionEvent;
+        _dims.DimensionChanged += onDim;
         _unsubscribe.Add(() =>
         {
+            _dims.DimensionChanged -= onDim;
             _world.BlockChanged -= onChange;
             _world.RegionUpdated -= onRegion;
             _world.ColumnUnloaded -= onUnload;
@@ -256,7 +262,8 @@ public sealed partial class WorldIndexer : IDisposable
         {
             var now = _time.GetUtcNow();
             Stats.Passes++;
-            bool active = _world.Dimension == 0;
+            CheckDimension(now);
+            bool active = _dim is WorldDim.Overworld or WorldDim.Nether;
             int n = 0;
             while (n < 50_000 && _changes.TryDequeue(out var ch))
             {
@@ -266,12 +273,14 @@ public sealed partial class WorldIndexer : IDisposable
             Stats.BlockChanges += n;
             if (active)
             {
+                TrackPortals(now);
                 ScanDirtyColumns(now);
                 HandleContainers(now);
                 PollSigns(now);
                 SamplePlayers(now);
                 FlushActivity(now);
                 ReclusterAll(now);
+                if (InNether) ApplyHazards();
                 AttachLabels();
                 ReconcilePending();
             }
@@ -320,7 +329,7 @@ public sealed partial class WorldIndexer : IDisposable
     {
         foreach (var (kind, key) in _removals)
         {
-            try { if (_sink.Remove(kind, key)) Stats.Removes++; }
+            try { if (_sink.Remove(kind, key, _dim)) Stats.Removes++; }
             catch (Exception ex) { _log.LogDebug(ex, "remove {Kind} {Key} failed", kind, key); }
         }
         _removals.Clear();
@@ -347,6 +356,7 @@ public sealed partial class WorldIndexer : IDisposable
                 Source = ObservationSource.Auto,
                 Confidence = Confidence(e),
                 Contents = e.ContentsDirty ? e.Contents : null,
+                Dimension = _dim,
             });
             written.Add((e, text, fields));
         }
@@ -389,13 +399,13 @@ public sealed partial class WorldIndexer : IDisposable
 
     /// <summary>World-derived text needs the area loaded; container snapshots and player facts don't.</summary>
     private bool CanRender(IndexEntry e) =>
-        e.Kind is IndexKinds.Hangout or IndexKinds.Activity or IndexKinds.Island || _world.IsLoaded(e.Anchor.X, e.Anchor.Z);
+        e.Kind is IndexKinds.Hangout or IndexKinds.Activity or IndexKinds.Island or IndexKinds.Hazard || _world.IsLoaded(e.Anchor.X, e.Anchor.Z);
 
     private static double Confidence(IndexEntry e) => e.Kind switch
     {
         IndexKinds.Generator => e.Extra.GetValueOrDefault("confirmed") is true ? 0.95 : 0.6,
         IndexKinds.UnknownStructure => 0.5,
-        IndexKinds.Hangout or IndexKinds.Activity => 0.7,
+        IndexKinds.Hangout or IndexKinds.Activity or IndexKinds.Hazard => 0.7,
         _ => 0.9,
     };
 

@@ -63,6 +63,8 @@ public sealed class MemoryStore : IDisposable
     public string? Path => _db.Path;
     public AgentDb Db => _db;
     public RagIndex Index => _index;
+    /// <summary>The bot's current dimension (new waypoints/structures are stamped with it; readers default to it).</summary>
+    public int CurrentDimension => _index.CurrentDimension();
 
     private DateTimeOffset Now => _time.GetUtcNow();
 
@@ -96,13 +98,15 @@ public sealed class MemoryStore : IDisposable
     private static bool Same(string a, string b) => string.Equals(a.Trim(), b.Trim(), StringComparison.OrdinalIgnoreCase);
 
     // ---- waypoints ----
-    public Waypoint SetWaypoint(string name, int x, int y, int z, string? note = null)
+    /// <param name="dimension">Null = the bot's current dimension.</param>
+    public Waypoint SetWaypoint(string name, int x, int y, int z, string? note = null, int? dimension = null)
     {
         lock (_lock)
         {
             var w = _data.Waypoints.FirstOrDefault(p => Same(p.Name, name));
             if (w == null) _data.Waypoints.Add(w = new Waypoint { Name = name.Trim() });
             w.X = x; w.Y = y; w.Z = z;
+            w.Dimension = dimension ?? CurrentDimension;
             if (note != null) w.Note = note;
             w.Updated = Now;
             _db.Tx(() => { SaveWaypoint(w); _index.Upsert(Doc(w)); });
@@ -118,7 +122,7 @@ public sealed class MemoryStore : IDisposable
         lock (_lock)
         {
             var s = _data.Structures.FirstOrDefault(p => Same(p.Name, name));
-            if (s == null) _data.Structures.Add(s = new Structure { Name = name.Trim() });
+            if (s == null) _data.Structures.Add(s = new Structure { Name = name.Trim(), Dimension = CurrentDimension });
             update(s);
             s.Updated = Now;
             _db.Tx(() => { SaveStructure(s); _index.Upsert(Doc(s)); });
@@ -225,8 +229,9 @@ public sealed class MemoryStore : IDisposable
         {
             kind = kind?.Trim().ToLowerInvariant().TrimEnd('s');
             var parts = new List<string>();
+            int cur = CurrentDimension;
             if (kind is null or "" or "waypoint" && _data.Waypoints.Count > 0)
-                parts.Add("waypoints: " + string.Join(", ", _data.Waypoints.Select(w => $"{w.Name}@{w.X},{w.Y},{w.Z}")));
+                parts.Add("waypoints: " + string.Join(", ", _data.Waypoints.Select(w => $"{w.Name}@{w.X},{w.Y},{w.Z}{WorldDim.Tag(w.Dimension, cur)}")));
             if (kind is null or "" or "structure" && _data.Structures.Count > 0)
                 parts.Add("structures: " + string.Join(", ", _data.Structures.Select(s => $"{s.Name}({s.Kind})")));
             if (kind is null or "" or "routine" && _data.Routines.Count > 0)
@@ -242,9 +247,10 @@ public sealed class MemoryStore : IDisposable
     /// Local search (FTS + spatial; no network) over everything indexed; one compact line per hit, prefixed with
     /// its id ("#12 wp home 1,64,2"). Bounded by <paramref name="maxHits"/> and <paramref name="maxChars"/>.
     /// </summary>
-    public string Recall(string query, int maxHits = 6, int maxChars = 700)
+    /// <param name="dimension">Null = current dimension; <see cref="WorldDim.Any"/> = all.</param>
+    public string Recall(string query, int maxHits = 6, int maxChars = 700, int? dimension = null)
     {
-        var hits = _index.Search(new RagQuery { Text = query, Limit = maxHits });
+        var hits = _index.Search(new RagQuery { Text = query, Limit = maxHits, Dimension = dimension ?? CurrentDimension });
         return FormatHits(_index, hits, maxChars, 240);
     }
 
@@ -288,7 +294,7 @@ public sealed class MemoryStore : IDisposable
 
     private static RagDoc Doc(Waypoint w) => new(Ref(w), "waypoint", w.Name, $"wp {w.Name} {w.X},{w.Y},{w.Z}" + (w.Note != null ? $" ({w.Note})" : ""))
     {
-        Bounds = Box.Point(w.X, w.Y, w.Z), Weight = MemoryWeight, Source = "memory",
+        Bounds = Box.Point(w.X, w.Y, w.Z), Dimension = w.Dimension, Weight = MemoryWeight, Source = "memory",
     };
 
     private static RagDoc Doc(Structure s)
@@ -301,7 +307,8 @@ public sealed class MemoryStore : IDisposable
         }
         foreach (var k in s.KeyBlocks)
             b = b is { } bb ? bb.Union(Box.Point(k.X, k.Y, k.Z)) : Box.Point(k.X, k.Y, k.Z);
-        return new RagDoc(Ref(s), "structure", $"{s.Name} {s.Kind.Replace('_', ' ')}", FormatStructure(s)) { Bounds = b, Weight = MemoryWeight, Source = "memory" };
+        return new RagDoc(Ref(s), "structure", $"{s.Name} {s.Kind.Replace('_', ' ')}", FormatStructure(s))
+            { Bounds = b, Dimension = s.Dimension, Weight = MemoryWeight, Source = "memory" };
     }
 
     private static RagDoc Doc(Note n) =>
@@ -325,8 +332,12 @@ public sealed class MemoryStore : IDisposable
     private MemoryData Load()
     {
         var d = new MemoryData();
-        d.Waypoints = _db.Query("SELECT name, x, y, z, note, updated FROM waypoints ORDER BY rowid",
-            r => new Waypoint { Name = r.GetString(0), X = r.GetInt32(1), Y = r.GetInt32(2), Z = r.GetInt32(3), Note = AgentDb.StrOrNull(r, 4), Updated = AgentDb.FromUnixMs(r.GetInt64(5)) });
+        d.Waypoints = _db.Query("SELECT name, x, y, z, note, updated, dimension FROM waypoints ORDER BY rowid",
+            r => new Waypoint
+            {
+                Name = r.GetString(0), X = r.GetInt32(1), Y = r.GetInt32(2), Z = r.GetInt32(3), Note = AgentDb.StrOrNull(r, 4),
+                Updated = AgentDb.FromUnixMs(r.GetInt64(5)), Dimension = r.GetInt32(6),
+            });
         d.Structures = _db.Query("SELECT data FROM structures ORDER BY rowid", r => JsonSerializer.Deserialize<Structure>(r.GetString(0), AtomicFile.Json)!)
             .Where(s => s != null).ToList();
         d.Notes = _db.Query("SELECT id, subject, text, created FROM notes ORDER BY id",
@@ -346,17 +357,18 @@ public sealed class MemoryStore : IDisposable
 
     private void SaveWaypoint(Waypoint w) =>
         _db.Exec("""
-            INSERT INTO waypoints(name, x, y, z, note, updated) VALUES ($n, $x, $y, $z, $note, $u)
-            ON CONFLICT(name) DO UPDATE SET name = excluded.name, x = excluded.x, y = excluded.y, z = excluded.z, note = excluded.note, updated = excluded.updated
-            """, ("$n", w.Name), ("$x", w.X), ("$y", w.Y), ("$z", w.Z), ("$note", w.Note), ("$u", AgentDb.ToUnixMs(w.Updated)));
+            INSERT INTO waypoints(name, x, y, z, note, updated, dimension) VALUES ($n, $x, $y, $z, $note, $u, $dim)
+            ON CONFLICT(name) DO UPDATE SET name = excluded.name, x = excluded.x, y = excluded.y, z = excluded.z, note = excluded.note,
+                updated = excluded.updated, dimension = excluded.dimension
+            """, ("$n", w.Name), ("$x", w.X), ("$y", w.Y), ("$z", w.Z), ("$note", w.Note), ("$u", AgentDb.ToUnixMs(w.Updated)), ("$dim", w.Dimension));
 
     private void SaveStructure(Structure s) =>
         _db.Exec("""
-            INSERT INTO structures(name, kind, taught_by, confidence, data, updated) VALUES ($n, $k, $t, $c, $d, $u)
+            INSERT INTO structures(name, kind, taught_by, confidence, data, updated, dimension) VALUES ($n, $k, $t, $c, $d, $u, $dim)
             ON CONFLICT(name) DO UPDATE SET name = excluded.name, kind = excluded.kind, taught_by = excluded.taught_by,
-                confidence = excluded.confidence, data = excluded.data, updated = excluded.updated
+                confidence = excluded.confidence, data = excluded.data, updated = excluded.updated, dimension = excluded.dimension
             """, ("$n", s.Name), ("$k", s.Kind), ("$t", s.TaughtBy), ("$c", s.Confidence),
-            ("$d", JsonSerializer.Serialize(s, AtomicFile.Json)), ("$u", AgentDb.ToUnixMs(s.Updated)));
+            ("$d", JsonSerializer.Serialize(s, AtomicFile.Json)), ("$u", AgentDb.ToUnixMs(s.Updated)), ("$dim", s.Dimension));
 
     private void SaveNote(Note n) =>
         _db.Exec("INSERT OR REPLACE INTO notes(id, subject, text, created) VALUES ($i, $s, $t, $c)",

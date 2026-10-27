@@ -59,6 +59,8 @@ public sealed class BeliefStore
     public TimeProvider Time { get; set; }
     /// <summary>Login name of this process (hive clone id); pending checks are per clone.</summary>
     public string CloneId { get; set; } = "main";
+    /// <summary>The bot's dimension: new positioned claims are stamped with it; checks and lookups only see their own.</summary>
+    public int CurrentDimension => _index?.CurrentDimension() ?? WorldDim.Overworld;
     /// <summary>Trust feed (null = no relationship signals).</summary>
     public SelfGrowth? Growth { get; set; }
     /// <summary>Bot-provided world view for zero-token checks (null offline).</summary>
@@ -119,17 +121,24 @@ public sealed class BeliefStore
 
     private long? FindSame(ParsedClaim p, string who)
     {
-        var spo = SpoKey(p);
+        int dim = CurrentDimension;
+        var spo = SpoKey(p, dim);
         if (p.Category == ClaimCategory.Social) // first-person: "my fav colour" from two people are two claims
             return LongOrNull(_db.Scalar("SELECT id FROM claims WHERE norm = $n AND claimant = $w COLLATE NOCASE AND directive = 0 ORDER BY id DESC LIMIT 1",
                 ("$n", p.Norm), ("$w", who)));
         if (spo != null)
             return LongOrNull(_db.Scalar("SELECT id FROM claims WHERE spo = $s AND directive = 0 ORDER BY id DESC LIMIT 1", ("$s", spo)));
-        return LongOrNull(_db.Scalar("SELECT id FROM claims WHERE norm = $n AND category = $c AND directive = 0 ORDER BY id DESC LIMIT 1",
-            ("$n", p.Norm), ("$c", BeliefRanks.Name(p.Category))));
+        // Same words about a spot in the other dimension are another claim.
+        return LongOrNull(_db.Scalar("""
+            SELECT id FROM claims WHERE norm = $n AND category = $c AND directive = 0 AND (x IS NULL OR dimension = $dim) ORDER BY id DESC LIMIT 1
+            """, ("$n", p.Norm), ("$c", BeliefRanks.Name(p.Category)), ("$dim", dim)));
     }
 
-    private static string? SpoKey(ParsedClaim p) => p.Category == ClaimCategory.Recipe || p.Pos != null ? p.Spo : null;
+    /// <summary>Subject-predicate-object key; positioned claims outside the overworld carry their dimension ("...@d-1").</summary>
+    private static string? SpoKey(ParsedClaim p, int dim) =>
+        p.Category == ClaimCategory.Recipe || p.Pos != null
+            ? (p.Pos != null && dim != WorldDim.Overworld && p.Spo != null ? $"{p.Spo}@d{dim}" : p.Spo)
+            : null;
     private static long? LongOrNull(object? o) => o is null ? null : Convert.ToInt64(o);
 
     private long Insert(ParsedClaim p, string who, DateTimeOffset now)
@@ -137,12 +146,12 @@ public sealed class BeliefStore
         long ms = AgentDb.ToUnixMs(now);
         _db.Exec("""
             INSERT INTO claims(claimant, text, norm, spo, subject, predicate, object, x, y, z, tx, ty, tz, category, stakes, confidence, status,
-                reason, plan, risk, directive, time_based, attempts, checked, created, updated, clone_id)
-            VALUES ($w, $t, $n, $spo, $s, $p, $o, $x, $y, $z, $tx, $ty, $tz, $cat, $st, 0.35, 'unverified', NULL, 'none', $risk, $d, $tb, 0, NULL, $ms, $ms, $clone)
-            """, ("$w", who), ("$t", p.Text), ("$n", p.Norm), ("$spo", SpoKey(p)), ("$s", p.Subject), ("$p", p.Predicate), ("$o", p.Object),
+                reason, plan, risk, directive, time_based, attempts, checked, created, updated, clone_id, dimension)
+            VALUES ($w, $t, $n, $spo, $s, $p, $o, $x, $y, $z, $tx, $ty, $tz, $cat, $st, 0.35, 'unverified', NULL, 'none', $risk, $d, $tb, 0, NULL, $ms, $ms, $clone, $dim)
+            """, ("$w", who), ("$t", p.Text), ("$n", p.Norm), ("$spo", SpoKey(p, CurrentDimension)), ("$s", p.Subject), ("$p", p.Predicate), ("$o", p.Object),
             ("$x", p.Pos?.X), ("$y", p.Pos?.Y), ("$z", p.Pos?.Z), ("$tx", p.Target?.X), ("$ty", p.Target?.Y), ("$tz", p.Target?.Z),
             ("$cat", BeliefRanks.Name(p.Category)), ("$st", BeliefRanks.Name(p.Stakes)), ("$risk", BeliefRanks.Name(p.Risk)),
-            ("$d", p.Directive ? 1 : 0), ("$tb", p.TimeBased ? 1 : 0), ("$ms", ms), ("$clone", CloneId));
+            ("$d", p.Directive ? 1 : 0), ("$tb", p.TimeBased ? 1 : 0), ("$ms", ms), ("$clone", CloneId), ("$dim", CurrentDimension));
         return _db.ScalarLong("SELECT last_insert_rowid()");
     }
 
@@ -199,8 +208,8 @@ public sealed class BeliefStore
     internal List<long> OpenContainerClaimsAt(ClaimPos a) =>
         _db.Query("""
             SELECT id FROM claims WHERE category = 'container' AND directive = 0 AND status IN ('unverified', 'disputed', 'provisional')
-              AND y = $y AND x BETWEEN $x0 AND $x1 AND z BETWEEN $z0 AND $z1
-            """, r => r.GetInt64(0), ("$y", a.Y), ("$x0", a.X - 1), ("$x1", a.X + 1), ("$z0", a.Z - 1), ("$z1", a.Z + 1));
+              AND y = $y AND x BETWEEN $x0 AND $x1 AND z BETWEEN $z0 AND $z1 AND dimension = $dim
+            """, r => r.GetInt64(0), ("$y", a.Y), ("$x0", a.X - 1), ("$x1", a.X + 1), ("$z0", a.Z - 1), ("$z1", a.Z + 1), ("$dim", CurrentDimension));
 
     /// <summary>Experiment result: <paramref name="pressed"/> = the trigger was used; <paramref name="changes"/> = block changes seen after.</summary>
     public BeliefClaim? RecordExperiment(long id, bool pressed, IReadOnlyList<ObservedChange> changes) =>
@@ -240,9 +249,10 @@ public sealed class BeliefStore
     internal void SetPlan(long id, ClaimPlan plan, ExperimentRisk risk, ClaimPos? pos = null)
     {
         _db.Exec("""
-            UPDATE claims SET plan = $p, risk = $r, x = coalesce($x, x), y = coalesce($y, y), z = coalesce($z, z), updated = $t WHERE id = $i
+            UPDATE claims SET plan = $p, risk = $r, x = coalesce($x, x), y = coalesce($y, y), z = coalesce($z, z), updated = $t,
+                dimension = CASE WHEN x IS NULL AND $x IS NOT NULL THEN $dim ELSE dimension END WHERE id = $i
             """, ("$p", BeliefRanks.Name(plan)), ("$r", BeliefRanks.Name(risk)), ("$x", pos?.X), ("$y", pos?.Y), ("$z", pos?.Z),
-            ("$t", AgentDb.ToUnixMs(Now)), ("$i", id));
+            ("$t", AgentDb.ToUnixMs(Now)), ("$i", id), ("$dim", CurrentDimension));
     }
 
     public bool HasEvidence(long id, EvidenceKind kind) =>
@@ -361,6 +371,7 @@ public sealed class BeliefStore
             Tag = BeliefRanks.Name(c.Category),
             Source = "claim",
             Bounds = c.Pos is { } p ? Box.Point(p.X, p.Y, p.Z) : null,
+            Dimension = c.Dimension,
             Weight = c.Status switch { ClaimStatus.Verified => 1.1, ClaimStatus.Refuted => 0.85, _ => 0.9 },
             At = c.Updated,
         });
@@ -370,7 +381,7 @@ public sealed class BeliefStore
 
     private const string Cols = """
         id, claimant, text, norm, subject, predicate, object, x, y, z, tx, ty, tz, category, stakes, confidence, status, reason,
-        plan, risk, directive, time_based, attempts, checked, created, updated, clone_id
+        plan, risk, directive, time_based, attempts, checked, created, updated, clone_id, dimension
         """;
 
     private BeliefClaim Map(SqliteDataReader r)
@@ -387,6 +398,7 @@ public sealed class BeliefStore
             Directive = r.GetInt64(20) != 0, TimeBased = r.GetInt64(21) != 0, Attempts = (int)r.GetInt64(22),
             Checked = AgentDb.LongOrNull(r, 23) is { } ck ? AgentDb.FromUnixMs(ck) : null,
             Created = AgentDb.FromUnixMs(r.GetInt64(24)), Updated = AgentDb.FromUnixMs(r.GetInt64(25)), CloneId = r.GetString(26),
+            Dimension = (int)r.GetInt64(27),
         };
     }
 
@@ -410,8 +422,9 @@ public sealed class BeliefStore
         _db.Query($"""
             SELECT {Cols} FROM claims WHERE plan IN ('container', 'experiment', 'location') AND risk = 'safe' AND directive = 0
               AND status IN ('unverified', 'disputed', 'provisional') AND attempts < $max AND clone_id = $c
+              AND (x IS NULL OR dimension = $dim)
             ORDER BY updated DESC LIMIT $n
-            """, Map, ("$max", Options.MaxAttempts), ("$c", CloneId), ("$n", limit)).Select(WithClaimants).ToList();
+            """, Map, ("$max", Options.MaxAttempts), ("$c", CloneId), ("$n", limit), ("$dim", CurrentDimension)).Select(WithClaimants).ToList();
 
     public List<BeliefClaim> Recent(int limit = 10, bool includeDirectives = false) =>
         _db.Query($"SELECT {Cols} FROM claims WHERE ($d = 1 OR directive = 0) ORDER BY updated DESC, id DESC LIMIT $n", Map,
@@ -425,9 +438,9 @@ public sealed class BeliefStore
         var resolved = ClaimParser.ResolveItem(item)?.Name;
         return _db.Query($"""
             SELECT {Cols} FROM claims WHERE category = 'container' AND directive = 0 AND status <> 'refuted'
-              AND (object LIKE $w OR ($r IS NOT NULL AND object = $r) OR text LIKE $t)
+              AND (object LIKE $w OR ($r IS NOT NULL AND object = $r) OR text LIKE $t) AND (x IS NULL OR dimension = $dim)
             ORDER BY CASE status WHEN 'verified' THEN 0 WHEN 'provisional' THEN 1 ELSE 2 END, updated DESC LIMIT $n
-            """, Map, ("$w", "%" + word + "%"), ("$r", resolved), ("$t", "%" + item.Trim() + "%"), ("$n", limit))
+            """, Map, ("$w", "%" + word + "%"), ("$r", resolved), ("$t", "%" + item.Trim() + "%"), ("$n", limit), ("$dim", CurrentDimension))
             .Select(WithClaimants).Select(Render).ToList();
     }
 

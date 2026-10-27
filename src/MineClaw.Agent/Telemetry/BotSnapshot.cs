@@ -63,6 +63,8 @@ public sealed record BotSnapshot
     public BotStatus Status { get; init; }
     public DateTimeOffset At { get; init; }
     public BotPos? Pos { get; init; }
+    /// <summary>Dimension of <see cref="Pos"/>: 0 overworld, -1 nether.</summary>
+    public int Dimension { get; init; }
     public int Hp { get; init; }
     public int Food { get; init; }
     public string? Task { get; init; }

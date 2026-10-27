@@ -226,4 +226,6 @@ public sealed class RaptorRetrievalIndex(RagIndex rag, RaptorMemory raptor) : IR
     public Task<List<RagHit>> SearchAsync(RagQuery query, CancellationToken ct = default) => rag.SearchAsync(query, raptor, ct);
 
     public string FormatHit(RagHit hit, int maxChars) => rag.FormatHit(hit, maxChars);
+
+    public int? CurrentDim => rag.CurrentDimension();
 }

@@ -57,6 +57,7 @@ public sealed class PlayerActivityTracker : IDisposable
         public readonly List<ActivityEvent> Events = new();
         public BlockPos Min, Max;
         public bool HasBounds;
+        public int Dimension;
     }
 
     private readonly WorldState _world;
@@ -88,14 +89,19 @@ public sealed class PlayerActivityTracker : IDisposable
     private readonly HashSet<string> _seenFirst = new(StringComparer.OrdinalIgnoreCase);
     private readonly Queue<DateTimeOffset> _globalRate = new();
     private DateTimeOffset _lastPrune;
+    private readonly IDimensionSource _dims;
+    private volatile int _dim;
     private CancellationTokenSource? _cts;
     private Task? _loop;
 
     public PlayerActivityTracker(WorldState world, IPlayerEventSource events, ActivityLog? log = null, WorldIndexer? indexer = null,
         ActivityOptions? options = null, string? selfName = null, Func<IEnumerable<string>>? botNames = null, Func<bool>? botBusy = null,
-        TimeProvider? time = null, ILogger? logger = null, ChatLineClassifier? classifier = null)
+        TimeProvider? time = null, ILogger? logger = null, ChatLineClassifier? classifier = null, IDimensionSource? dimensions = null)
     {
         _world = world;
+        _dims = dimensions ?? new WorldDimensionSource(world);
+        _dim = _dims.Dimension;
+        if (log != null) log.CurrentDimension = () => _dim;
         _src = events;
         _log = log;
         _index = indexer;
@@ -133,6 +139,10 @@ public sealed class PlayerActivityTracker : IDisposable
     public event Action<ActivityRollup>? RollupClosed;
     /// <summary>A rollup at a taught structure: evidence for its how-to steps (structure name, rollup).</summary>
     public event Action<string, ActivityRollup>? StructureEvidence;
+
+    /// <summary>The dimension sessions/digest describe (the bot's; b1.8 shows players only in your own dimension).</summary>
+    public int Dimension => _dim;
+    public long DimensionSwitches { get; private set; }
 
     public long Dropped { get; private set; }
     /// <summary>Block changes skipped because the bot itself made them.</summary>
@@ -291,6 +301,7 @@ public sealed class PlayerActivityTracker : IDisposable
         lock (_pumpLock)
         {
             var now = _time.GetUtcNow();
+            if (_dims.Dimension != _dim) SwitchDimension(_dims.Dimension);
             int n = 0;
             while (n++ < 20_000 && _in.TryDequeue(out var input))
             {
@@ -307,6 +318,26 @@ public sealed class PlayerActivityTracker : IDisposable
                 try { _log.Prune(now); } catch (Exception ex) { _logger.LogDebug(ex, "activity prune failed"); }
             }
         }
+    }
+
+    /// <summary>
+    /// The bot changed dimension: sessions of the old one close now (stored with their dimension), and everything tied to
+    /// entities/blocks of the old world is dropped. Queued inputs are discarded: they were sampled in a world that is gone.
+    /// </summary>
+    private void SwitchDimension(int to)
+    {
+        while (_in.TryDequeue(out _)) { }
+        CloseSessions(force: true);
+        FlushWrites();
+        _players.Clear();
+        _swings.Clear();
+        _recentBreaks.Clear();
+        _containers.Clear();
+        _signPlacers.Clear();
+        _collected.Clear();
+        Danger.ResetTracks();
+        _dim = to;
+        DimensionSwitches++;
     }
 
     private void Handle(Input input)
@@ -657,6 +688,7 @@ public sealed class PlayerActivityTracker : IDisposable
     private void Record(ActivityEvent e)
     {
         if (e.Confidence < _o.MinLogConfidence) return;
+        e = e with { Dimension = _dim };
         var now = e.At;
         // Merge an identical event moments ago (picking up a stack in pieces, a line of placements).
         var last = _pendingWrites.LastOrDefault(x => x.Player == e.Player && x.Kind == e.Kind && x.BlockId == e.BlockId && x.ItemId == e.ItemId
@@ -704,7 +736,7 @@ public sealed class PlayerActivityTracker : IDisposable
         if (s == null)
         {
             if (!IsWork(e)) return; // chat/travel alone never opens a session
-            _sessions[e.Player] = s = new Session { Player = e.Player, Start = e.At, Place = e.Place };
+            _sessions[e.Player] = s = new Session { Player = e.Player, Start = e.At, Place = e.Place, Dimension = e.Dimension };
         }
         s.Place ??= IsWork(e) ? e.Place : null;
         s.Events.Add(e);
@@ -780,6 +812,11 @@ public sealed class PlayerActivityTracker : IDisposable
     // ------------------------------------------------------------------ rollup text (deterministic)
 
     internal ActivityRollup? Rollup(IReadOnlyList<ActivityEvent> events, string player, PlaceRef? place, DateTimeOffset start, DateTimeOffset end,
+        BlockPos min, BlockPos max, bool includeTimes) =>
+        RollupCore(events, player, place, start, end, min, max, includeTimes) is { } r
+            ? r with { Dimension = events.Count > 0 ? events[0].Dimension : _dim } : null;
+
+    private ActivityRollup? RollupCore(IReadOnlyList<ActivityEvent> events, string player, PlaceRef? place, DateTimeOffset start, DateTimeOffset end,
         BlockPos min, BlockPos max, bool includeTimes)
     {
         var parts = new List<(string Text, double Conf, double Salience, string Cat, int N)>();
@@ -838,18 +875,20 @@ public sealed class PlayerActivityTracker : IDisposable
     {
         lock (_pumpLock)
         {
-            var closed = _rollups.Where(r => r.End >= since).ToList();
+            // Only the current dimension's activity (placeless events like chat death lines are global).
+            int dim = _dim;
+            var closed = _rollups.Where(r => r.End >= since && r.Dimension == dim).ToList();
             if (_log != null && (closed.Count == 0 || closed.Min(r => r.Start) > since))
                 try
                 {
-                    var stored = _log.Rollups(null, since, null, 30);
+                    var stored = _log.Rollups(null, since, null, 30, dim);
                     closed = closed.Concat(stored.Where(x => closed.All(c => c.Player != x.Player || c.Start != x.Start))).ToList();
                 }
                 catch { /* memory only */ }
-            var open = _sessions.Values.Where(s => s.Last >= since)
+            var open = _sessions.Values.Where(s => s.Last >= since && s.Dimension == dim)
                 .Select(s => Rollup(s.Events.Where(e => e.At >= since).ToList(), s.Player, s.Place, s.Start, s.Last, s.Min, s.Max, false))
                 .Where(r => r != null).Select(r => r!).ToList();
-            var events = _recent.Where(e => e.At >= since).ToList();
+            var events = _recent.Where(e => e.At >= since && (e.Dimension == dim || !e.IsSpatial)).ToList();
             return (closed, open, events, _world.Player.Position);
         }
     }

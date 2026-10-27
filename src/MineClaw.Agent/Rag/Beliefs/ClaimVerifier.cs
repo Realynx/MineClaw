@@ -49,13 +49,13 @@ internal static class ClaimVerifier
         if (pos is not { } p) return;
         if (s.Observations is { } obs)
         {
-            var row = obs.Nearest(null, p.X, p.Y, p.Z, 4, 1.6).Select(t => t.Row).FirstOrDefault(r => ContainerKinds.Contains(r.Kind));
+            var row = obs.Nearest(null, p.X, p.Y, p.Z, 4, 1.6, c.Pos != null ? c.Dimension : null).Select(t => t.Row).FirstOrDefault(r => ContainerKinds.Contains(r.Kind));
             if (row != null)
             {
                 var contents = obs.Contents(row.Id);
                 int have = contents.Where(i => Matches(i, c.Object)).Sum(i => i.Count);
                 var now = s.Now;
-                var reference = ObservationStore.DocRef(row.Kind, row.Key);
+                var reference = row.DocRef;
                 if (have > 0 && now - row.LastSeen <= s.Options.SnapshotMaxAge)
                 {
                     s.SetPlan(c.Id, ClaimPlan.None, ExperimentRisk.Safe, pos);
@@ -110,10 +110,10 @@ internal static class ClaimVerifier
     private static void Location(BeliefStore s, BeliefClaim c)
     {
         if (c.Pos is not { } p || c.Subject is not { Length: > 0 } kind) return;
-        if (s.Observations is { } obs && obs.Nearest(kind, p.X, p.Y, p.Z, 1, 2.5) is [var hit, ..])
+        if (s.Observations is { } obs && obs.Nearest(kind, p.X, p.Y, p.Z, 1, 2.5, c.Dimension) is [var hit, ..])
         {
             s.SetPlan(c.Id, ClaimPlan.None, ExperimentRisk.Safe);
-            s.AddEvidence(c.Id, EvidenceKind.Observation, +1, 0.95, ObservationStore.DocRef(hit.Row.Kind, hit.Row.Key), $"seen {kind.Replace('_', ' ')} there");
+            s.AddEvidence(c.Id, EvidenceKind.Observation, +1, 0.95, hit.Row.DocRef, $"seen {kind.Replace('_', ' ')} there");
             return;
         }
         if (ClaimParser.KindBlocks(kind) is not { } ids) return; // farm, island, "robin's house": nothing to look for block-wise

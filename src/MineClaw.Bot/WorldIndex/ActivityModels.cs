@@ -53,6 +53,10 @@ public sealed record ActivityEvent(string Player, string Kind, DateTimeOffset At
     public string Category => ActivityKinds.CategoryOf(Kind, BlockId);
     /// <summary>Row id once stored.</summary>
     public long Id { get; init; }
+    /// <summary>Dimension it happened in. b1.8 only shows players in the bot's own dimension, so this is the bot's.</summary>
+    public int Dimension { get; init; }
+    /// <summary>Has a place (block position or indexed place); placeless events (chat, joins, chat death lines) are global.</summary>
+    public bool IsSpatial => Pos != null || Place != null;
 
     public string Text => ActivityText.Describe(this);
 }

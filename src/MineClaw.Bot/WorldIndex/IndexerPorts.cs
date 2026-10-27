@@ -35,13 +35,23 @@ public sealed class ManualIndexFeed : IWorldIndexFeed
     public BlockPos? LastOpenedContainer { get; set; }
 }
 
-/// <summary>Where observations go (the Agent's <see cref="ObservationStore"/>; tests wrap it to count transactions).</summary>
+/// <summary>
+/// Where observations go (the Agent's <see cref="ObservationStore"/>; tests wrap it to count transactions). The indexer
+/// stamps every <see cref="Observation.Dimension"/> and calls the dimension overloads; the old two-argument forms remain
+/// for dimension-unaware sinks (they default to the overworld-only behaviour of v4).
+/// </summary>
 public interface IObservationSink
 {
     int UpsertMany(IReadOnlyList<Observation> batch);
     bool Remove(string kind, string key);
     /// <summary>Live rows (any source) whose box is within <paramref name="radius"/> of a point.</summary>
     IReadOnlyList<ObservationRow> Near(string? kind, double x, double y, double z, double radius, int limit);
+
+    bool Remove(string kind, string key, int dimension) => Remove(kind, key);
+    IReadOnlyList<ObservationRow> Near(string? kind, double x, double y, double z, double radius, int limit, int dimension) =>
+        Near(kind, x, y, z, radius, limit);
+    /// <summary>The bot went through a portal: entry and exit as one linked pair.</summary>
+    void LinkPortals(PortalEnd from, PortalEnd to) { }
 }
 
 public sealed class ObservationStoreSink(ObservationStore store) : IObservationSink
@@ -49,6 +59,43 @@ public sealed class ObservationStoreSink(ObservationStore store) : IObservationS
     public ObservationStore Store { get; } = store;
     public int UpsertMany(IReadOnlyList<Observation> batch) => batch.Count == 0 ? 0 : Store.UpsertMany(batch);
     public bool Remove(string kind, string key) => Store.Remove(kind, key);
+    public bool Remove(string kind, string key, int dimension) => Store.Remove(kind, key, dimension: dimension);
     public IReadOnlyList<ObservationRow> Near(string? kind, double x, double y, double z, double radius, int limit) =>
         Store.Nearest(kind, x, y, z, limit, radius).Select(t => t.Row).ToList();
+    public IReadOnlyList<ObservationRow> Near(string? kind, double x, double y, double z, double radius, int limit, int dimension) =>
+        Store.Nearest(kind, x, y, z, limit, radius, dimension).Select(t => t.Row).ToList();
+    public void LinkPortals(PortalEnd from, PortalEnd to) => Store.Portals.Link(from, to);
+}
+
+/// <summary>
+/// Which dimension the bot is in (0 overworld, -1 nether), for the memory side. Consumers (indexer, activity tracker) also
+/// poll <see cref="Dimension"/> at the start of every pass, so a source without the event is still correct.
+/// <para>TODO(client): the Client has no dimension event yet. Wanted on <c>MinecraftClient</c> (raised on the event
+/// dispatcher after the 0x09 world reset, only when the dimension actually changed):
+/// <c>public event Action&lt;int, int&gt;? DimensionChanged; // (from, to)</c> — then implement
+/// <see cref="ClientDimensionSource"/> by forwarding it.</para>
+/// </summary>
+public interface IDimensionSource
+{
+    int Dimension { get; }
+    /// <summary>(from, to); may be raised on any thread.</summary>
+    event Action<int, int>? DimensionChanged;
+}
+
+/// <summary>Polled source over <see cref="WorldState.Dimension"/> (set by the client on login / 0x09); never raises the event.</summary>
+public sealed class WorldDimensionSource(WorldState world) : IDimensionSource
+{
+    public int Dimension => world.Dimension;
+#pragma warning disable CS0067 // stub until the client raises DimensionChanged
+    public event Action<int, int>? DimensionChanged;
+#pragma warning restore CS0067
+}
+
+/// <summary>Real client: today the same polled view (see the TODO on <see cref="IDimensionSource"/>).</summary>
+public sealed class ClientDimensionSource(MinecraftClient client) : IDimensionSource
+{
+    public int Dimension => client.World.Dimension;
+#pragma warning disable CS0067
+    public event Action<int, int>? DimensionChanged; // TODO(client): add { client.DimensionChanged += value; remove ... }
+#pragma warning restore CS0067
 }

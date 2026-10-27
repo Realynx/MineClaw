@@ -41,6 +41,8 @@ public sealed record RagDoc(string Ref, string Kind, string Title, string Body)
     public string? Tag { get; init; }
     public string? Source { get; init; }
     public Box? Bounds { get; init; }
+    /// <summary>Dimension of <see cref="Bounds"/> (0 overworld, -1 nether); meaningless for positionless docs.</summary>
+    public int Dimension { get; init; }
     /// <summary>False keeps the doc out of the embedding queue (FTS + structured columns only).</summary>
     public bool Embed { get; init; } = true;
     /// <summary>Score multiplier (taught/llm facts outrank automatic observations).</summary>
@@ -61,6 +63,12 @@ public sealed record RagQuery
     public double Radius { get; init; } = 16;
     /// <summary>Kinds eligible for the spatial list (null = same as <see cref="Kinds"/>).</summary>
     public IReadOnlyCollection<string>? NearKinds { get; init; }
+    /// <summary>
+    /// Only docs with a position in this dimension (positionless docs always pass; episodes pass the text/vector lists and
+    /// are tagged "(overworld)" when rendered, but only same-dimension ones are "near"); null or <see cref="WorldDim.Any"/> =
+    /// every dimension. Readers that answer "where" (recall, auto-retrieval) pass the bot's current one.
+    /// </summary>
+    public int? Dimension { get; init; }
     public int Limit { get; init; } = 6;
     /// <summary>Apply the auto-retrieval relevance gate (MinLexical / MinSimilarity) instead of "any match".</summary>
     public bool Strict { get; init; }
@@ -71,7 +79,11 @@ public sealed record RagQuery
 }
 
 public sealed record RagHit(long Id, string Ref, string Kind, string? Tag, string Title, string Body, string? Snippet,
-    double Score, double Lexical, double Cosine, double? Distance, DateTimeOffset Updated, Box? Bounds);
+    double Score, double Lexical, double Cosine, double? Distance, DateTimeOffset Updated, Box? Bounds)
+{
+    /// <summary>Dimension of <see cref="Bounds"/> (0 for positionless docs).</summary>
+    public int Dimension { get; init; }
+}
 
 /// <summary>
 /// Retrieval seam: the flat hybrid <see cref="RagIndex"/> implements it; a hierarchical (tree/summary-node) retriever
@@ -84,6 +96,9 @@ public interface IRetrievalIndex
 
     /// <summary>One compact model-facing line for a hit.</summary>
     string FormatHit(RagHit hit, int maxChars);
+
+    /// <summary>The bot's current dimension, used as the default spatial filter by auto-retrieval (null = unknown: no filter).</summary>
+    int? CurrentDim => null;
 }
 
 /// <summary>One extra ranked candidate list (best first) for reciprocal-rank fusion, e.g. from the RAPTOR tree.</summary>
@@ -119,8 +134,9 @@ public sealed record ChatRow(long Id, DateTimeOffset At, string Kind, string? Pl
 /// </summary>
 public sealed class RagIndex : IRetrievalIndex, IDisposable
 {
-    private sealed record VecEntry(string Kind, string? Tag, float[] Vec);
-    private sealed record Pending(long Id, string Text, string Hash, string Kind, string? Tag);
+    /// <param name="Dim">Dimension of a positioned doc; null for positionless docs (never dimension-filtered).</param>
+    private sealed record VecEntry(string Kind, string? Tag, float[] Vec, int? Dim);
+    private sealed record Pending(long Id, string Text, string Hash, string Kind, string? Tag, int? Dim);
 
     private const int CandidateLimit = 40;
 
@@ -169,6 +185,10 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
     /// <summary>Raised after docs are deleted, with their refs (keep handlers tiny; they run on the deleting thread).</summary>
     public event Action<IReadOnlyList<string>>? Deleted;
     public IEmbeddingProvider Embedder => _embedder;
+    /// <summary>The bot's current dimension (the host wires it to the client's world): default filter of the "where" readers
+    /// and the reference for the "(overworld)" render tag. Overworld when no host sets it.</summary>
+    public Func<int> CurrentDimension { get; set; } = () => WorldDim.Overworld;
+    int? IRetrievalIndex.CurrentDim => CurrentDimension();
     public bool VectorsAvailable => _embedder.IsAvailable && DateTimeOffset.UtcNow >= _disabledUntil;
     public int VectorCount { get { lock (_vecLock) return _vecs.Count; } }
     /// <summary>Texts actually sent to the provider (cache hits excluded) — for tests/diagnostics.</summary>
@@ -213,10 +233,11 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
         var b = d.Bounds;
         lock (_db.Gate)
         {
-            var existing = _db.Query("SELECT id, kind, tag, title, body, hash, source, embed, weight, min_x, min_y, min_z, max_x, max_y, max_z FROM docs WHERE ref = $r",
+            var existing = _db.Query("SELECT id, kind, tag, title, body, hash, source, embed, weight, min_x, min_y, min_z, max_x, max_y, max_z, dimension FROM docs WHERE ref = $r",
                 r => (Id: r.GetInt64(0), Kind: r.GetString(1), Tag: AgentDb.StrOrNull(r, 2), Title: r.GetString(3), Body: r.GetString(4),
                     Hash: r.GetString(5), Source: AgentDb.StrOrNull(r, 6), Embed: r.GetInt64(7) != 0, Weight: r.GetDouble(8),
-                    Bounds: r.IsDBNull(9) ? (Box?)null : new Box(r.GetDouble(9), r.GetDouble(10), r.GetDouble(11), r.GetDouble(12), r.GetDouble(13), r.GetDouble(14))),
+                    Bounds: r.IsDBNull(9) ? (Box?)null : new Box(r.GetDouble(9), r.GetDouble(10), r.GetDouble(11), r.GetDouble(12), r.GetDouble(13), r.GetDouble(14)),
+                    Dim: (int)r.GetInt64(15)),
                 ("$r", d.Ref)).FirstOrDefault();
 
             var args = new (string, object?)[]
@@ -224,21 +245,22 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
                 ("$ref", d.Ref), ("$kind", d.Kind), ("$tag", d.Tag), ("$title", d.Title), ("$body", d.Body), ("$hash", hash),
                 ("$source", d.Source), ("$embed", d.Embed ? 1 : 0), ("$weight", d.Weight), ("$t", ms),
                 ("$x0", b?.MinX), ("$y0", b?.MinY), ("$z0", b?.MinZ), ("$x1", b?.MaxX), ("$y1", b?.MaxY), ("$z1", b?.MaxZ),
-                ("$level", d.Level), ("$tok", TextUtil.EstimateTokens(d.Title) + TextUtil.EstimateTokens(d.Body)),
+                ("$level", d.Level), ("$tok", TextUtil.EstimateTokens(d.Title) + TextUtil.EstimateTokens(d.Body)), ("$dim", d.Dimension),
             };
             if (existing.Id == 0)
             {
                 _db.Exec("""
                     INSERT INTO docs(ref, kind, tag, title, body, hash, source, embed, weight, created, updated, min_x, min_y, min_z, max_x, max_y, max_z,
-                        level, token_count, dirty)
-                    VALUES ($ref, $kind, $tag, $title, $body, $hash, $source, $embed, $weight, $t, $t, $x0, $y0, $z0, $x1, $y1, $z1, $level, $tok, 1)
+                        level, token_count, dirty, dimension)
+                    VALUES ($ref, $kind, $tag, $title, $body, $hash, $source, $embed, $weight, $t, $t, $x0, $y0, $z0, $x1, $y1, $z1, $level, $tok, 1, $dim)
                     """, args);
                 signal = d.Embed;
                 return _db.ScalarLong("SELECT last_insert_rowid()");
             }
 
             bool same = existing.Kind == d.Kind && existing.Tag == d.Tag && existing.Title == d.Title && existing.Body == d.Body &&
-                        existing.Source == d.Source && existing.Embed == d.Embed && existing.Weight == d.Weight && existing.Bounds == b;
+                        existing.Source == d.Source && existing.Embed == d.Embed && existing.Weight == d.Weight && existing.Bounds == b &&
+                        existing.Dim == d.Dimension;
             if (same)
             {
                 if (d.At != null) _db.Exec("UPDATE docs SET updated = $t WHERE id = $id", ("$t", ms), ("$id", existing.Id));
@@ -246,10 +268,10 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
             }
 
             bool textChanged = existing.Title != d.Title || existing.Body != d.Body;
-            bool boundsChanged = existing.Bounds != b;
+            bool boundsChanged = existing.Bounds != b || existing.Dim != d.Dimension;
             var sql = new StringBuilder("UPDATE docs SET kind = $kind, tag = $tag, hash = $hash, source = $source, embed = $embed, weight = $weight, level = $level, updated = $t");
             if (textChanged) sql.Append(", title = $title, body = $body, token_count = $tok, dirty = 1"); // only then do the FTS triggers fire
-            if (boundsChanged) sql.Append(", min_x = $x0, min_y = $y0, min_z = $z0, max_x = $x1, max_y = $y1, max_z = $z1");
+            if (boundsChanged) sql.Append(", min_x = $x0, min_y = $y0, min_z = $z0, max_x = $x1, max_y = $y1, max_z = $z1, dimension = $dim");
             sql.Append(" WHERE id = $id");
             _db.Exec(sql.ToString(), [.. args, ("$id", existing.Id)]);
 
@@ -259,10 +281,10 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
                 lock (_vecLock) _vecs.Remove(existing.Id);
                 signal = d.Embed;
             }
-            else if (existing.Kind != d.Kind || existing.Tag != d.Tag)
+            else if (existing.Kind != d.Kind || existing.Tag != d.Tag || boundsChanged)
             {
                 lock (_vecLock)
-                    if (_vecs.TryGetValue(existing.Id, out var v)) _vecs[existing.Id] = v with { Kind = d.Kind, Tag = d.Tag };
+                    if (_vecs.TryGetValue(existing.Id, out var v)) _vecs[existing.Id] = v with { Kind = d.Kind, Tag = d.Tag, Dim = b != null ? d.Dimension : null };
             }
             return existing.Id;
         }
@@ -315,12 +337,15 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
 
     // ======================= reads =======================
 
-    private const string HitColumns = "d.id, d.ref, d.kind, d.tag, d.title, d.body, d.updated, d.weight, d.min_x, d.min_y, d.min_z, d.max_x, d.max_y, d.max_z";
+    private const string HitColumns = "d.id, d.ref, d.kind, d.tag, d.title, d.body, d.updated, d.weight, d.min_x, d.min_y, d.min_z, d.max_x, d.max_y, d.max_z, d.dimension";
 
     private static RagHit ReadHit(SqliteDataReader r, double score = 0, string? snippet = null) => new(
         r.GetInt64(0), r.GetString(1), r.GetString(2), AgentDb.StrOrNull(r, 3), r.GetString(4), r.GetString(5), snippet,
         score, 0, 0, null, AgentDb.FromUnixMs(r.GetInt64(6)),
-        r.IsDBNull(8) ? null : new Box(r.GetDouble(8), r.GetDouble(9), r.GetDouble(10), r.GetDouble(11), r.GetDouble(12), r.GetDouble(13)));
+        r.IsDBNull(8) ? null : new Box(r.GetDouble(8), r.GetDouble(9), r.GetDouble(10), r.GetDouble(11), r.GetDouble(12), r.GetDouble(13)))
+    {
+        Dimension = (int)r.GetInt64(14),
+    };
 
     public RagHit? Get(long id) =>
         _db.Query($"SELECT {HitColumns} FROM docs d WHERE d.id = $id", r => ReadHit(r), ("$id", id)).FirstOrDefault();
@@ -370,17 +395,18 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
         var cosines = new Dictionary<long, double>();
         var kinds = q.Kinds?.ToArray();
         var tags = q.Tags?.ToArray();
+        int? dim = q.Dimension is { } qd && qd != WorldDim.Any ? qd : null;
 
         lock (_db.Gate)
         {
             if (terms.Count > 0)
             {
-                var order = _db.HasFts ? FtsCandidates(terms, kinds, tags, snippets, lexical) : LikeCandidates(terms, kinds, tags, lexical);
+                var order = _db.HasFts ? FtsCandidates(terms, kinds, tags, dim, snippets, lexical) : LikeCandidates(terms, kinds, tags, dim, lexical);
                 if (order.Count > 0) lists.Add(order);
             }
             if (q.Near is { } p && q.Radius > 0)
             {
-                var near = Spatial(p.X, p.Y, p.Z, q.Radius, q.NearKinds?.ToArray() ?? kinds, tags, CandidateLimit);
+                var near = Spatial(p.X, p.Y, p.Z, q.Radius, q.NearKinds?.ToArray() ?? kinds, tags, CandidateLimit, dim ?? WorldDim.Any);
                 foreach (var (id, d) in near) distances[id] = d;
                 if (near.Count > 0) lists.Add(near.Select(n => n.Id).ToList());
             }
@@ -388,7 +414,7 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
 
         if (queryVector != null && queryVector.Length > 0)
         {
-            var sem = VectorTop(VectorMath.Normalize(queryVector), kinds, tags, CandidateLimit, _o.MinSimilarity * 0.75, augment?.SkipFlatVector);
+            var sem = VectorTop(VectorMath.Normalize(queryVector), kinds, tags, CandidateLimit, _o.MinSimilarity * 0.75, augment?.SkipFlatVector, dim);
             foreach (var (id, c) in sem) cosines[id] = c;
             if (sem.Count > 0) lists.Add(sem.Select(s => s.Id).ToList());
         }
@@ -425,6 +451,8 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
                 ? lex >= _o.MinLexical || cos >= _o.MinSimilarity || dist != null
                 : lex > 0 || cos >= _o.MinSimilarity || dist != null;
             if (!pass) continue;
+            // Positioned docs of another dimension are dropped (e.g. RAPTOR leaves); episodes stay (tagged when rendered).
+            if (dim is { } wantDim && h.Bounds != null && h.Dimension != wantDim && h.Kind != EpisodeKind) continue;
             if (q.Exclude?.Invoke(h.Id) == true) continue;
 
             double score = fused[h.Id] * weight;
@@ -438,9 +466,14 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
         return hits.OrderByDescending(h => h.Score).ThenByDescending(h => h.Updated).Take(Math.Max(1, q.Limit)).ToList();
     }
 
-    private static string KindFilter(string[]? kinds, string[]? tags, List<(string, object?)> args)
+    private static string KindFilter(string[]? kinds, string[]? tags, List<(string, object?)> args, int? dim = null)
     {
         var sb = new StringBuilder();
+        if (dim is { } dm)
+        {
+            sb.Append(" AND (d.min_x IS NULL OR d.dimension = $dim OR d.kind = 'episode')");
+            args.Add(("$dim", dm));
+        }
         if (kinds is { Length: > 0 })
         {
             sb.Append(" AND d.kind IN (").Append(string.Join(",", kinds.Select((_, i) => "$k" + i))).Append(')');
@@ -471,10 +504,10 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
         return 1 - Math.Exp(-sum / 2.0);
     }
 
-    private List<long> FtsCandidates(List<string> terms, string[]? kinds, string[]? tags, Dictionary<long, string> snippets, Dictionary<long, double> lexical)
+    private List<long> FtsCandidates(List<string> terms, string[]? kinds, string[]? tags, int? dim, Dictionary<long, string> snippets, Dictionary<long, double> lexical)
     {
         var args = new List<(string, object?)> { ("$q", TextTokens.FtsQuery(terms)), ("$n", CandidateLimit) };
-        var filter = KindFilter(kinds, tags, args);
+        var filter = KindFilter(kinds, tags, args, dim);
         List<(long Id, string Snip)> rows;
         try
         {
@@ -507,10 +540,10 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
         return rows.Select(r => r.Id).ToList();
     }
 
-    private List<long> LikeCandidates(List<string> terms, string[]? kinds, string[]? tags, Dictionary<long, double> lexical)
+    private List<long> LikeCandidates(List<string> terms, string[]? kinds, string[]? tags, int? dim, Dictionary<long, double> lexical)
     {
         var args = new List<(string, object?)>();
-        var filter = KindFilter(kinds, tags, args);
+        var filter = KindFilter(kinds, tags, args, dim);
         var docs = _db.Query($"SELECT d.id, lower(d.title || ' ' || d.body) FROM docs d WHERE 1 = 1{filter}", r => (r.GetInt64(0), r.GetString(1)), [.. args]);
         var stems = terms.Select(TextTokens.Stem).ToArray();
         var df = new int[stems.Length];
@@ -529,18 +562,21 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
         return scored.Select(s => s.Id).ToList();
     }
 
-    private List<(long Id, double Distance)> Spatial(double x, double y, double z, double r, string[]? kinds, string[]? tags, int limit)
+    /// <param name="dim">Dimension to match (<see cref="WorldDim.Any"/> = all). It is an R*Tree axis, so the tree prunes it.</param>
+    private List<(long Id, double Distance)> Spatial(double x, double y, double z, double r, string[]? kinds, string[]? tags, int limit, int dim = WorldDim.Any)
     {
         var args = new List<(string, object?)> { ("$x0", x - r), ("$x1", x + r), ("$y0", y - r), ("$y1", y + r), ("$z0", z - r), ("$z1", z + r) };
         var filter = KindFilter(kinds, tags, args);
+        bool anyDim = dim == WorldDim.Any;
+        if (!anyDim) args.Add(("$dim", dim));
         string sql = _db.HasRtree
             ? $"""
                SELECT d.id, d.min_x, d.min_y, d.min_z, d.max_x, d.max_y, d.max_z FROM docs_rtree t JOIN docs d ON d.id = t.id
-               WHERE t.max_x >= $x0 AND t.min_x <= $x1 AND t.max_y >= $y0 AND t.min_y <= $y1 AND t.max_z >= $z0 AND t.min_z <= $z1{filter}
+               WHERE t.max_x >= $x0 AND t.min_x <= $x1 AND t.max_y >= $y0 AND t.min_y <= $y1 AND t.max_z >= $z0 AND t.min_z <= $z1{(anyDim ? "" : " AND t.min_d <= $dim AND t.max_d >= $dim")}{filter}
                """
             : $"""
                SELECT d.id, d.min_x, d.min_y, d.min_z, d.max_x, d.max_y, d.max_z FROM docs d
-               WHERE d.min_x IS NOT NULL AND d.max_x >= $x0 AND d.min_x <= $x1 AND d.max_y >= $y0 AND d.min_y <= $y1 AND d.max_z >= $z0 AND d.min_z <= $z1{filter}
+               WHERE d.min_x IS NOT NULL AND d.max_x >= $x0 AND d.min_x <= $x1 AND d.max_y >= $y0 AND d.min_y <= $y1 AND d.max_z >= $z0 AND d.min_z <= $z1{(anyDim ? "" : " AND d.dimension = $dim")}{filter}
                """;
         return _db.Query(sql, rd => (rd.GetInt64(0), new Box(rd.GetDouble(1), rd.GetDouble(2), rd.GetDouble(3), rd.GetDouble(4), rd.GetDouble(5), rd.GetDouble(6))), [.. args])
             .Select(t => (t.Item1, D: t.Item2.Distance(x, y, z)))
@@ -549,13 +585,15 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
     }
 
     /// <summary>Spatial-only lookup (no text): what's known within r of a point.</summary>
-    public List<RagHit> Nearby(double x, double y, double z, double r, IReadOnlyCollection<string>? kinds = null, int limit = 6) =>
-        Search(new RagQuery { Near = (x, y, z), Radius = r, Kinds = kinds, Limit = limit });
+    /// <param name="dimension">Null = the bot's current dimension; <see cref="WorldDim.Any"/> = all.</param>
+    public List<RagHit> Nearby(double x, double y, double z, double r, IReadOnlyCollection<string>? kinds = null, int limit = 6, int? dimension = null) =>
+        Search(new RagQuery { Near = (x, y, z), Radius = r, Kinds = kinds, Limit = limit, Dimension = dimension ?? CurrentDimension() });
 
     /// <summary>Doc kind of hierarchical summary nodes (RAPTOR); ranked by the tree retriever, not the flat vector list.</summary>
     public const string SummaryKind = "summary";
+    private const string EpisodeKind = "episode";
 
-    private List<(long Id, double Cos)> VectorTop(float[] q, string[]? kinds, string[]? tags, int limit, double floor, Func<long, bool>? skip = null)
+    private List<(long Id, double Cos)> VectorTop(float[] q, string[]? kinds, string[]? tags, int limit, double floor, Func<long, bool>? skip = null, int? dim = null)
     {
         var top = new List<(long Id, double Cos)>(limit + 1);
         lock (_vecLock)
@@ -565,6 +603,7 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
                 if (kinds is { Length: > 0 } ? Array.IndexOf(kinds, e.Kind) < 0 : e.Kind is "chat" or SummaryKind) continue;
                 if (skip != null && skip(id)) continue;
                 if (tags is { Length: > 0 } && (e.Tag == null || Array.IndexOf(tags, e.Tag) < 0)) continue;
+                if (dim is { } dm && e.Dim is { } ed && ed != dm && e.Kind != EpisodeKind) continue;
                 double c = VectorMath.Dot(q, e.Vec);
                 if (c < floor) continue;
                 if (top.Count == limit && c <= top[^1].Cos) continue;
@@ -602,7 +641,9 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
             SummaryKind => "sum " + h.Body,
             _ => h.Body,
         };
-        return TextUtil.Truncate(TextUtil.OneLine($"#{h.Id} {text}"), maxChars);
+        // Things in the other dimension say so up front (survives truncation): "#12 (overworld) furnace at 3,64,0".
+        var tag = h.Bounds != null ? WorldDim.Tag(h.Dimension, CurrentDimension()) : "";
+        return TextUtil.Truncate(TextUtil.OneLine($"#{h.Id}{tag} {text}"), maxChars);
     }
 
     // ======================= chat log =======================
@@ -668,12 +709,15 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
     private void LoadVectors(bool clear = false)
     {
         if (!_embedder.IsAvailable) return;
-        var rows = _db.Query("SELECT v.doc_id, d.kind, d.tag, v.vec FROM vectors v JOIN docs d ON d.id = v.doc_id WHERE v.model = $m AND v.dims = $d AND v.hash = d.hash",
-            r => (r.GetInt64(0), r.GetString(1), AgentDb.StrOrNull(r, 2), (byte[])r.GetValue(3)), ("$m", VecModel), ("$d", _embedder.Dimensions));
+        var rows = _db.Query("""
+            SELECT v.doc_id, d.kind, d.tag, v.vec, CASE WHEN d.min_x IS NULL THEN NULL ELSE d.dimension END
+            FROM vectors v JOIN docs d ON d.id = v.doc_id WHERE v.model = $m AND v.dims = $d AND v.hash = d.hash
+            """, r => (r.GetInt64(0), r.GetString(1), AgentDb.StrOrNull(r, 2), (byte[])r.GetValue(3), r.IsDBNull(4) ? (int?)null : (int)r.GetInt64(4)),
+            ("$m", VecModel), ("$d", _embedder.Dimensions));
         lock (_vecLock)
         {
             if (clear) _vecs.Clear();
-            foreach (var (id, kind, tag, blob) in rows) _vecs[id] = new VecEntry(kind, tag, VectorMath.FromBlob(blob));
+            foreach (var (id, kind, tag, blob, dim) in rows) _vecs[id] = new VecEntry(kind, tag, VectorMath.FromBlob(blob), dim);
         }
     }
 
@@ -711,9 +755,11 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
             for (int guard = 0; guard < 1000; guard++)
             {
                 var pending = _db.Query("""
-                    SELECT d.id, d.title, d.body, d.hash, d.kind, d.tag FROM docs d LEFT JOIN vectors v ON v.doc_id = d.id
+                    SELECT d.id, d.title, d.body, d.hash, d.kind, d.tag, CASE WHEN d.min_x IS NULL THEN NULL ELSE d.dimension END
+                    FROM docs d LEFT JOIN vectors v ON v.doc_id = d.id
                     WHERE d.embed = 1 AND (v.doc_id IS NULL OR v.model <> $m OR v.dims <> $d OR v.hash <> d.hash) LIMIT 256
-                    """, r => new Pending(r.GetInt64(0), r.GetString(1) + "\n" + r.GetString(2), r.GetString(3), r.GetString(4), AgentDb.StrOrNull(r, 5)),
+                    """, r => new Pending(r.GetInt64(0), r.GetString(1) + "\n" + r.GetString(2), r.GetString(3), r.GetString(4), AgentDb.StrOrNull(r, 5),
+                        r.IsDBNull(6) ? null : (int)r.GetInt64(6)),
                     ("$m", VecModel), ("$d", _embedder.Dimensions));
                 if (pending.Count == 0) break;
 
@@ -772,7 +818,7 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
                 INSERT OR REPLACE INTO vectors(doc_id, model, dims, hash, vec)
                 SELECT id, $m, $d, $h, $v FROM docs WHERE id = $id AND hash = $h
                 """, ("$id", p.Id), ("$m", VecModel), ("$d", _embedder.Dimensions), ("$h", p.Hash), ("$v", VectorMath.ToBlob(v)));
-            if (n > 0) lock (_vecLock) _vecs[p.Id] = new VecEntry(p.Kind, p.Tag, v);
+            if (n > 0) lock (_vecLock) _vecs[p.Id] = new VecEntry(p.Kind, p.Tag, v, p.Dim);
         }
     }
 

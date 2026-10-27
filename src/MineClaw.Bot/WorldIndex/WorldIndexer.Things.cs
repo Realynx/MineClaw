@@ -323,7 +323,7 @@ public sealed partial class WorldIndexer
     private void QueueReconcile(int cx, int cz)
     {
         IReadOnlyList<ObservationRow> rows;
-        try { rows = _sink.Near(null, (cx << 4) + 8, 64, (cz << 4) + 8, 72, 400); }
+        try { rows = _sink.Near(null, (cx << 4) + 8, 64, (cz << 4) + 8, 72, 400, _dim); }
         catch { return; }
         foreach (var r in rows)
         {
@@ -372,7 +372,7 @@ public sealed partial class WorldIndexer
         double cx = (min.X + max.X) / 2.0, cy = (min.Y + max.Y) / 2.0, cz = (min.Z + max.Z) / 2.0;
         double r = Math.Sqrt(Math.Pow(max.X - min.X, 2) + Math.Pow(max.Y - min.Y, 2) + Math.Pow(max.Z - min.Z, 2)) / 2 + 3;
         IReadOnlyList<ObservationRow> rows;
-        try { rows = _sink.Near(kind, cx, cy, cz, r, 10); }
+        try { rows = _sink.Near(kind, cx, cy, cz, r, 10, _dim); }
         catch { return fresh; }
         string? best = null;
         double bestOverlap = -1;

@@ -42,7 +42,7 @@ public sealed partial class WorldIndexer
         var sb = new StringBuilder();
         var f = new Dictionary<string, object?>(StringComparer.Ordinal);
         string? on = On(e);
-        string? near = e.Kind is IndexKinds.Hangout or IndexKinds.Activity or IndexKinds.Island ? null : Near(e);
+        string? near = IndexKinds.IsArea(e.Kind) ? null : Near(e);
         if (on != null) f["island"] = on;
         if (e.Label != null) f["label"] = e.Label;
 
@@ -151,6 +151,20 @@ public sealed partial class WorldIndexer
                 foreach (var k in new[] { "columns", "blocks", "top", "edges" }) f[k] = e.Extra[k];
                 break;
             }
+            case IndexKinds.Portal:
+            {
+                var st = (int[])e.Extra["stand"]!;
+                var fr = (List<int[]>)e.Extra["frame"]!;
+                sb.Append($"nether portal at {P(e.Anchor)} (frame {string.Join(",", fr[0])}..{string.Join(",", fr[1])})");
+                Where();
+                sb.Append($"; step in at {string.Join(",", st)}");
+                if (e.Extra["approach"] is int[] ap) sb.Append($", approach {string.Join(",", ap)}");
+                foreach (var (k, v) in e.Extra) f[k] = v;
+                break;
+            }
+            case IndexKinds.Hazard:
+                sb.Append(RenderHazard(e, f));
+                break;
             case IndexKinds.Hangout:
                 sb.Append($"{e.Extra["player"]} hangs out around {P(e.Anchor)}");
                 if (on != null) sb.Append(" on ").Append(on);
@@ -205,7 +219,7 @@ public sealed partial class WorldIndexer
                 d.Seeded = true;
                 try
                 {
-                    var old = _sink.Near(IndexKinds.Hangout, anchor.X, anchor.Y, anchor.Z, b * 2, 10).FirstOrDefault(r => r.Key == e.Key);
+                    var old = _sink.Near(IndexKinds.Hangout, anchor.X, anchor.Y, anchor.Z, b * 2, 10, _dim).FirstOrDefault(r => r.Key == e.Key);
                     if (old?.FieldsJson is { } json && System.Text.Json.JsonDocument.Parse(json).RootElement.TryGetProperty("minutes", out var m))
                         d.Seconds += m.GetDouble() * 60;
                 }

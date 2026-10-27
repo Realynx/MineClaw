@@ -158,7 +158,7 @@ public sealed class BeliefChecker : IDisposable
         var bp = new BlockPos(p.X, p.Y, p.Z);
         if (_client.World.IsLoaded(p.X, p.Z) && !ContainerIds.Contains(_client.World.GetBlock(bp)))
             return Done(_store.MarkAttempt(c.Id, "no container there"));
-        if (!_claims.IsFree(ClaimKey.Chest(bp))) return "skip: claimed by another bot";
+        if (!_claims.IsFree(ClaimKey.Chest(bp, _client.World.Dimension))) return "skip: claimed by another bot";
         if (!await ApproachAsync(p, ct).ConfigureAwait(false)) return Done(_store.MarkAttempt(c.Id, "couldn't reach it"));
         int id = _client.World.GetBlock(bp);
         var open = await _client.OpenContainerAsync(p.X, p.Y, p.Z, ct).ConfigureAwait(false);
@@ -183,7 +183,7 @@ public sealed class BeliefChecker : IDisposable
         if (!_client.World.IsLoaded(p.X, p.Z)) return "skip: not loaded";
         int trigger = _client.World.GetBlock(bp);
         if (trigger is not (Blocks.StoneButton or Blocks.Lever)) return Done(_store.MarkAttempt(c.Id, "no button or lever there"));
-        var key = ClaimKey.Block(bp);
+        var key = ClaimKey.Block(bp, _client.World.Dimension);
         if (!_claims.IsFree(key)) return "skip: claimed by another bot";
         var lease = await _claims.TryClaimAsync(key, TimeSpan.FromSeconds(30), "belief experiment", ct).ConfigureAwait(false);
         if (!lease.Ok) return "skip: claimed by another bot";

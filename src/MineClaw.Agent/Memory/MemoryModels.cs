@@ -13,6 +13,8 @@ public sealed class Waypoint
     public int X { get; set; }
     public int Y { get; set; }
     public int Z { get; set; }
+    /// <summary>0 overworld, -1 nether (the bot's dimension when it was saved).</summary>
+    public int Dimension { get; set; }
     public string? Note { get; set; }
     public DateTimeOffset Updated { get; set; }
 }
@@ -44,6 +46,8 @@ public sealed class Structure
     public string Kind { get; set; } = StructureKinds.Unknown;
     public BlockPos? Min { get; set; }
     public BlockPos? Max { get; set; }
+    /// <summary>Dimension of <see cref="Min"/>/<see cref="Max"/>/<see cref="KeyBlocks"/> (0 overworld, -1 nether).</summary>
+    public int Dimension { get; set; }
     public List<KeyBlock> KeyBlocks { get; set; } = new();
     /// <summary>How to use it, in short imperative steps ("stand at 3,65,-2", "mine cobble at 4,65,-2 repeatedly").</summary>
     public List<string> Steps { get; set; } = new();
