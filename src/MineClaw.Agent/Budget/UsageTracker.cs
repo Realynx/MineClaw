@@ -36,6 +36,32 @@ public sealed class UsageTotals
     public long CacheReadTokens { get; set; }
     public long CacheWriteTokens { get; set; }
 
+    /// <summary>Embedding spend is a separate line item (it still counts toward the caps).</summary>
+    public decimal EmbeddingUsd { get; set; }
+    public long EmbeddingTokens { get; set; }
+    public int EmbeddingCalls { get; set; }
+
+    /// <summary>Fraction of prompt tokens served from cache: cache_read / (input + cache_read + cache_write).</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public double CacheHitRatio
+    {
+        get
+        {
+            long total = InputTokens + CacheReadTokens + CacheWriteTokens;
+            return total == 0 ? 0 : (double)CacheReadTokens / total;
+        }
+    }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public decimal TotalUsd => Usd + EmbeddingUsd;
+
+    internal void AddEmbedding(decimal usd, long tokens)
+    {
+        EmbeddingUsd += usd;
+        EmbeddingTokens += tokens;
+        EmbeddingCalls++;
+    }
+
     internal void Add(decimal usd, LlmUsage u)
     {
         Usd += usd;
@@ -67,6 +93,7 @@ public sealed class UsageTracker
     private readonly Queue<DateTimeOffset> _recentCalls = new();
     private State _state;
     private BudgetMode _lastMode = BudgetMode.Normal;
+    private double _lastCacheHit;
 
     /// <param name="path">Persistence file; null keeps totals in memory only (tests).</param>
     public UsageTracker(BudgetOptions options, PriceTable? prices = null, TimeProvider? time = null, string? path = "")
@@ -95,12 +122,38 @@ public sealed class UsageTracker
         get { lock (_lock) { Prune(); return _recentCalls.Count; } }
     }
 
+    /// <summary>Cache hit ratio of the most recent call (see <see cref="UsageTotals.CacheHitRatio"/>).</summary>
+    public double LastCacheHitRatio { get { lock (_lock) return _lastCacheHit; } }
+
+    public static double CacheHit(LlmUsage u)
+    {
+        long total = u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens;
+        return total == 0 ? 0 : (double)u.CacheReadTokens / total;
+    }
+
+    /// <summary>Records embedding tokens (separate line item, counted toward the caps). Returns the cost.</summary>
+    public decimal RecordEmbedding(string model, long tokens, decimal pricePerMTok)
+    {
+        decimal cost = tokens * pricePerMTok / 1_000_000m;
+        lock (_lock)
+        {
+            Get(_state.Days, DayKey).AddEmbedding(cost, tokens);
+            Get(_state.Months, MonthKey).AddEmbedding(cost, tokens);
+            if (_path != null)
+            {
+                try { AtomicFile.WriteJson(_path, _state); } catch (IOException) { }
+            }
+        }
+        return cost;
+    }
+
     /// <summary>Records one API call and returns its estimated cost in USD.</summary>
     public decimal Record(string model, LlmUsage usage)
     {
         decimal cost = _prices.Cost(model, usage);
         lock (_lock)
         {
+            _lastCacheHit = CacheHit(usage);
             Get(_state.Days, DayKey).Add(cost, usage);
             Get(_state.Months, MonthKey).Add(cost, usage);
             _recentCalls.Enqueue(Now);
@@ -141,14 +194,16 @@ public sealed class UsageTracker
             var d = Get(_state.Days, DayKey);
             var m = Get(_state.Months, MonthKey);
             Prune();
-            return $"today ${d.Usd:0.000}/{_options.DailyCapUsd:0.00} ({d.Calls} calls), month ${m.Usd:0.00}/{_options.MonthlyCapUsd:0.00}, {_recentCalls.Count} calls/h";
+            return $"today ${d.TotalUsd:0.000}/{_options.DailyCapUsd:0.00} ({d.Calls} calls, cache {d.CacheHitRatio:P0}" +
+                   (d.EmbeddingTokens > 0 ? $", emb ${d.EmbeddingUsd:0.0000}" : "") +
+                   $"), month ${m.TotalUsd:0.00}/{_options.MonthlyCapUsd:0.00}, {_recentCalls.Count} calls/h";
         }
     }
 
     private (BudgetMode Mode, string Reason) Evaluate()
     {
-        var d = Get(_state.Days, DayKey).Usd;
-        var m = Get(_state.Months, MonthKey).Usd;
+        var d = Get(_state.Days, DayKey).TotalUsd;
+        var m = Get(_state.Months, MonthKey).TotalUsd;
         Prune();
         if (_options.MonthlyCapUsd > 0 && m >= _options.MonthlyCapUsd) return (BudgetMode.Paused, "monthly budget used up");
         if (_options.DailyCapUsd > 0 && d >= _options.DailyCapUsd) return (BudgetMode.Paused, "daily budget used up");

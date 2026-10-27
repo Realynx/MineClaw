@@ -1,5 +1,21 @@
 # SkyBlock on Beta 1.8.1 — field notes
 
+<!--
+Knowledge convention (MineClaw RAG): the block between the "core" and "/core" HTML-comment markers below is always
+in the bot's cached system prompt, so keep it short (most important rules only). Everything else is split by heading
+into ~150-300-token chunks and retrieved on demand (auto [memory] lines or the recall tool). A file without core
+markers contributes its first section as core. Editing a file re-indexes it automatically at the next start.
+-->
+
+<!-- core -->
+## Core rules
+- The void is below: falling under y=0 kills you and the items are gone for good. Stay 1+ block from edges, sneak near edges, never dig the block you stand on, don't walk off the island, no bridges to land.
+- Unrenewable: the single lava source (water onto a lava SOURCE makes obsidian, no undo), dirt (keep at least one grass block), sand and clay, the one bucket, saplings (always replant; catch them before they fall).
+- Cobble generator: build it away from wood. Water touching flowing lava makes cobblestone; mine that cell and it refills. Wall it in and test the water side before placing the lava; if the layout looks wrong, scoop the lava back at once.
+- Infinite water: two sources in opposite corners of a 2x2 hole, 1 deep. Never let it near the lava.
+- Health regenerates only while food is 18+; eat before long jobs.
+<!-- /core -->
+
 ## Start
 - Noobcrew's original map (Sept 2011, v1.0/1.1): an L-shaped island of about 27 dirt/grass blocks with one oak tree and a chest. There are no other islands. v2.x adds a sand island and the Nether.
 - v1 chest (per wiki): 12 string, 1 lava bucket, 1 bone, 1 sugar cane, 1 red + 1 brown mushroom, 2 ice, 1 pumpkin seeds, 1 melon slice, 1 cactus. **[unverified for this server — open the chest and check]**. Server plugins often use their own starter chest.

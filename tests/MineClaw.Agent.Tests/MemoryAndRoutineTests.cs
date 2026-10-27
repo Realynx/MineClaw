@@ -14,8 +14,8 @@ public class MemoryTests
     public void RoundTrip_AllKinds()
     {
         using var dir = new TempDir();
-        var path = dir.File("memory.json");
-        var a = new MemoryStore(path);
+        var path = dir.File("memory.db");
+        using var a = new MemoryStore(path);
         a.SetWaypoint("spawn", 0, 64, 0, "island center");
         a.UpsertStructure("gen1", s =>
         {
@@ -29,7 +29,7 @@ public class MemoryTests
         a.AddNote("Alice", "likes birch");
         a.SaveRoutine(new Routine { Name = "cobble_loop", Repeat = 0, StopWhen = "full", Steps = [new RoutineStep { Tool = "mine", Args = J(new { block = "cobblestone" }) }] });
 
-        var b = new MemoryStore(path);
+        using var b = new MemoryStore(path);
         Assert.Equal(64, b.GetWaypoint("SPAWN")!.Y);
         var s = b.GetStructure("gen1")!;
         Assert.Equal((StructureKinds.CobbleGenerator, 4, "Alice", 0.9), (s.Kind, s.KeyBlocks[0].X, s.TaughtBy, s.Confidence));
@@ -41,12 +41,12 @@ public class MemoryTests
     [Fact]
     public void Recall_IsBounded_AndRanked()
     {
-        var m = new MemoryStore(null);
+        using var m = new MemoryStore(null);
         for (int i = 0; i < 50; i++) m.AddNote("world", $"fact number {i} about trees and stuff that goes on for a while");
         m.SetWaypoint("tree farm", 10, 64, 10);
         var r = m.Recall("tree farm", maxHits: 5, maxChars: 300);
         Assert.True(r.Length <= 300);
-        Assert.StartsWith("wp tree farm", r);
+        Assert.Matches(@"^#\d+ wp tree farm 10,64,10", r);   // ids let recall_detail fetch the full record
         Assert.Equal("no memories match", m.Recall("zzzz"));
     }
 

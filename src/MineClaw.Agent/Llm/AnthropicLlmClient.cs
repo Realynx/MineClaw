@@ -6,9 +6,9 @@ namespace MineClaw.Agent.Llm;
 
 /// <summary>
 /// <see cref="ILlmClient"/> over the official Anthropic C# SDK (Messages API, non-streaming — responses are
-/// tiny). Applies: tier → model, small max_tokens, thinking off/minimal per model, effort, a cache breakpoint
-/// after the static system prefix (tools render before system, so they're covered too) and an optional
-/// short-TTL breakpoint on the last message for in-loop history reuse.
+/// tiny). Applies: tier → model, small max_tokens, thinking off/minimal per model, effort, and up to three cache
+/// breakpoints: after the static system prefix (tools render before system, so they're covered too), after the
+/// identity/self block, and a moving 5m breakpoint on the last message so the next call reads all history from cache.
 /// </summary>
 public sealed class AnthropicLlmClient : ILlmClient
 {
@@ -37,11 +37,18 @@ public sealed class AnthropicLlmClient : ILlmClient
     internal MessageCreateParams BuildParams(LlmRequest request, string model)
     {
         var system = new List<TextBlockParam>();
+        bool firstCached = true;
         foreach (var s in request.System)
         {
-            system.Add(s.Cache
-                ? new TextBlockParam { Text = s.Text, CacheControl = StaticCache() }
-                : new TextBlockParam { Text = s.Text });
+            if (!s.Cache)
+            {
+                system.Add(new TextBlockParam { Text = s.Text });
+                continue;
+            }
+            // Breakpoint 1 (static prefix) defaults to the configured TTL; later ones (identity/self) to 5m.
+            var ttl = s.Ttl ?? (firstCached ? _options.StaticPrefixTtl : "5m");
+            firstCached = false;
+            system.Add(new TextBlockParam { Text = s.Text, CacheControl = CacheFor(ttl) });
         }
 
         var tools = new List<ToolUnion>();
@@ -91,8 +98,8 @@ public sealed class AnthropicLlmClient : ILlmClient
         return p;
     }
 
-    private CacheControlEphemeral StaticCache() =>
-        _options.StaticPrefixTtl == "1h" ? new CacheControlEphemeral { Ttl = Ttl.Ttl1h } : new CacheControlEphemeral();
+    private static CacheControlEphemeral CacheFor(string? ttl) =>
+        ttl == "1h" ? new CacheControlEphemeral { Ttl = Ttl.Ttl1h } : new CacheControlEphemeral();
 
     private static ThinkingConfigParam? ThinkingParam(string model, string mode)
     {

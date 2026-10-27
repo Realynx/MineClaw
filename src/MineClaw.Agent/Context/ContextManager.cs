@@ -7,16 +7,25 @@ namespace MineClaw.Agent.Context;
 
 public sealed class ContextOptions
 {
-    /// <summary>Approximate token budget for the rolling history (journal + episodes) sent to the main tier.</summary>
-    public int HistoryTokenBudget { get; set; } = 4000;
-    /// <summary>After compaction, history should be at most this fraction of the budget.</summary>
-    public double CompactTargetFraction { get; set; } = 0.5;
-    /// <summary>The newest N episodes keep their tool results in full; older ones are truncated.</summary>
+    /// <summary>
+    /// Main-tier history (journal + episodes, estimated tokens) that triggers compaction. History is append-only
+    /// between compactions so every request re-reads it from the prompt cache; compaction is rare and batched.
+    /// </summary>
+    public int CompactAtTokens { get; set; } = 30_000;
+    /// <summary>Compaction folds the oldest episodes until history is at most this (hysteresis).</summary>
+    public int CompactToTokens { get; set; } = 20_000;
+    /// <summary>Hard ceiling: if one compaction can't get under it, tool results are cut harder.</summary>
+    public int MaxTokens { get; set; } = 100_000;
+    /// <summary>Cheap tier sees a text-only transcript of the same episodes; it compacts at/to these sizes.</summary>
+    public int CheapCompactAtTokens { get; set; } = 16_000;
+    public int CheapCompactToTokens { get; set; } = 10_000;
+    /// <summary>At compaction, the newest N surviving episodes keep their tool results in full; older ones are truncated.</summary>
     public int KeepFullEpisodes { get; set; } = 2;
     public int OldToolResultChars { get; set; } = 80;
-    public int JournalMaxChars { get; set; } = 1200;
-    /// <summary>Cheap tier sees a flattened text digest of recent episodes, capped at this many chars.</summary>
-    public int CheapDigestChars { get; set; } = 1200;
+    /// <summary>Older history is retrievable (RAG episodes), so the journal can stay short.</summary>
+    public int JournalMaxChars { get; set; } = 900;
+    /// <summary>Per-episode cap for the cheap tier's text rendering.</summary>
+    public int CheapEpisodeChars { get; set; } = 500;
 }
 
 /// <summary>One model turn: the first user message (state + events) through the final assistant message.</summary>
@@ -31,50 +40,91 @@ public sealed class Episode
     public ModelTier Tier { get; }
     public DateTimeOffset Started { get; }
     public List<LlmMessage> Messages { get; } = new();
+    /// <summary>Monotonic sequence number assigned at commit.</summary>
+    public long Seq { get; internal set; } = -1;
+    internal LlmMessage? CheapUser { get; set; }
+    internal LlmMessage? CheapAssistant { get; set; }
+    internal int MainTokens { get; set; }
+    internal int CheapTokens { get; set; }
 }
 
 /// <summary>
-/// Rolling, bounded conversation context. Completed episodes are sealed (every tool_use has its tool_result),
-/// stripped of thinking blocks (so later history edits never invalidate a replayed signature), old tool results
-/// are truncated, and when over budget the oldest whole episodes are folded into a short journal — whole
-/// episodes only, so tool_use/tool_result pairs are never split.
+/// Rolling, bounded, prompt-cache-friendly conversation context. Committed episodes are sealed (every tool_use
+/// answered) and stripped of thinking blocks, then never touched again until the next compaction: each request is
+/// the previous one plus new messages, so the history prefix is byte-identical turn to turn and comes from cache.
+/// When history passes <see cref="ContextOptions.CompactAtTokens"/> the oldest whole episodes are folded into a
+/// short journal in one go (down to <see cref="ContextOptions.CompactToTokens"/>), and only then are older tool
+/// results truncated — one cache rebuild per compaction, not per turn. The cheap tier gets an equally append-only
+/// text transcript (user: events + actions, assistant: what was said), never main-tier tool blocks.
 /// </summary>
 public sealed class ContextManager
 {
     private readonly ContextOptions _options;
     private readonly List<Episode> _episodes = new();
     private readonly object _lock = new();
+    private long _nextSeq;
 
     public ContextManager(ContextOptions? options = null) => _options = options ?? new ContextOptions();
+
+    public ContextOptions Options => _options;
 
     public string Journal { get; private set; } = "";
 
     public IReadOnlyList<Episode> Episodes { get { lock (_lock) return _episodes.ToArray(); } }
 
+    /// <summary>Sequence number the next committed episode will get.</summary>
+    public long NextSeq { get { lock (_lock) return _nextSeq; } }
+
+    /// <summary>Lowest sequence number still in the window (= <see cref="NextSeq"/> when empty).</summary>
+    public long OldestSeq { get { lock (_lock) return _episodes.Count > 0 ? _episodes[0].Seq : _nextSeq; } }
+
+    /// <summary>Raised after an episode is committed (outside the lock).</summary>
+    public event Action<Episode>? Committed;
+
+    /// <summary>Raised after compaction with the folded episodes and the new journal (outside the lock).</summary>
+    public event Action<IReadOnlyList<Episode>, string>? Compacted;
+
     public void SetJournal(string journal) { lock (_lock) Journal = journal; }
 
-    /// <summary>Adds a finished episode (sealed + stripped) and truncates older tool results.</summary>
+    /// <summary>Adds a finished episode (sealed + stripped). Never rewrites earlier history.</summary>
     public void Commit(Episode episode)
     {
         Seal(episode.Messages);
         StripThinking(episode.Messages);
+        var (cu, ca) = CheapRendering(episode, _options.CheapEpisodeChars);
+        episode.CheapUser = cu;
+        episode.CheapAssistant = ca;
+        episode.MainTokens = EstimateTokens(episode.Messages);
+        episode.CheapTokens = EstimateTokens([cu, ca]);
         lock (_lock)
         {
+            episode.Seq = _nextSeq++;
             _episodes.Add(episode);
-            for (int i = 0; i < _episodes.Count - _options.KeepFullEpisodes; i++)
-                TruncateToolResults(_episodes[i].Messages, _options.OldToolResultChars);
         }
+        Committed?.Invoke(episode);
     }
 
     public int EstimateTokens()
     {
-        lock (_lock) return TextUtil.EstimateTokens(Journal) + _episodes.Sum(e => EstimateTokens(e.Messages));
+        lock (_lock) return TextUtil.EstimateTokens(Journal) + _episodes.Sum(e => e.MainTokens);
     }
 
-    public bool NeedsCompaction => EstimateTokens() > _options.HistoryTokenBudget;
+    public int EstimateCheapTokens()
+    {
+        lock (_lock) return TextUtil.EstimateTokens(Journal) + _episodes.Sum(e => e.CheapTokens);
+    }
+
+    public bool NeedsCompaction
+    {
+        get
+        {
+            int main = EstimateTokens(), cheap = EstimateCheapTokens();
+            return main > _options.CompactAtTokens || cheap > _options.CheapCompactAtTokens || main > _options.MaxTokens;
+        }
+    }
 
     /// <summary>
-    /// Folds the oldest episodes into the journal until history fits the target. <paramref name="summarize"/>
+    /// Folds the oldest episodes into the journal until both renderings fit their targets. <paramref name="summarize"/>
     /// gets a prompt and returns the new journal (cheap tier); on failure a mechanical digest is used instead.
     /// </summary>
     public async Task<int> CompactAsync(Func<string, CancellationToken, Task<string>>? summarize, CancellationToken ct)
@@ -83,92 +133,126 @@ public sealed class ContextManager
         string journal;
         lock (_lock)
         {
-            int target = (int)(_options.HistoryTokenBudget * _options.CompactTargetFraction);
-            int total = TextUtil.EstimateTokens(Journal) + _episodes.Sum(e => EstimateTokens(e.Messages));
+            int jt = TextUtil.EstimateTokens(Journal);
+            int main = jt + _episodes.Sum(e => e.MainTokens);
+            int cheap = jt + _episodes.Sum(e => e.CheapTokens);
             int take = 0;
-            while (take < _episodes.Count - 1 && total > target)
+            while (take < _episodes.Count - 1 && (main > _options.CompactToTokens || cheap > _options.CheapCompactToTokens))
             {
-                total -= EstimateTokens(_episodes[take].Messages);
+                main -= _episodes[take].MainTokens;
+                cheap -= _episodes[take].CheapTokens;
                 take++;
             }
-            if (take == 0) return 0;
             old = _episodes.Take(take).ToList();
             journal = Journal;
         }
 
-        var digest = string.Join("\n", old.Select(e => Flatten(e, 160)));
-        string next;
-        try
+        string next = journal;
+        if (old.Count > 0)
         {
-            if (summarize == null) throw new InvalidOperationException("no summarizer");
-            var prompt = $"Journal so far:\n{(journal.Length > 0 ? journal : "(empty)")}\n\nNewer log to fold in:\n{digest}";
-            next = (await summarize(prompt, ct).ConfigureAwait(false)).Trim();
-            if (next.Length == 0) throw new InvalidOperationException("empty summary");
+            var digest = string.Join("\n", old.Select(e => Flatten(e, 160)));
+            try
+            {
+                if (summarize == null) throw new InvalidOperationException("no summarizer");
+                var prompt = $"Journal so far:\n{(journal.Length > 0 ? journal : "(empty)")}\n\nNewer log to fold in:\n{digest}";
+                next = (await summarize(prompt, ct).ConfigureAwait(false)).Trim();
+                if (next.Length == 0) throw new InvalidOperationException("empty summary");
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                next = (journal + "\n" + digest).Trim();
+                // Keep the most recent part if the mechanical digest is too long.
+                if (next.Length > _options.JournalMaxChars) next = "..." + next[^(_options.JournalMaxChars - 3)..];
+            }
+            next = TextUtil.Truncate(next, _options.JournalMaxChars);
         }
-        catch (Exception) when (!ct.IsCancellationRequested)
-        {
-            next = (journal + "\n" + digest).Trim();
-            // Keep the most recent part if the mechanical digest is too long.
-            if (next.Length > _options.JournalMaxChars) next = "..." + next[^(_options.JournalMaxChars - 3)..];
-        }
-        next = TextUtil.Truncate(next, _options.JournalMaxChars);
 
         lock (_lock)
         {
             foreach (var e in old) _episodes.Remove(e);
             Journal = next;
+            // The cache is being rebuilt anyway: this is the only time older tool results get truncated.
+            for (int i = 0; i < _episodes.Count - _options.KeepFullEpisodes; i++) Retruncate(_episodes[i], _options.OldToolResultChars);
+            int total = TextUtil.EstimateTokens(Journal) + _episodes.Sum(e => e.MainTokens);
+            if (total > _options.MaxTokens)
+                foreach (var e in _episodes) Retruncate(e, Math.Max(40, _options.OldToolResultChars / 2));
         }
+        if (old.Count > 0) Compacted?.Invoke(old, next);
         return old.Count;
+    }
+
+    private static void Retruncate(Episode e, int chars)
+    {
+        TruncateToolResults(e.Messages, chars);
+        e.MainTokens = EstimateTokens(e.Messages);
     }
 
     /// <summary>System prompt for the compaction call.</summary>
     public const string CompactionInstructions =
         "You maintain a Minecraft bot's memory journal. Merge the journal and the newer log into an updated journal: " +
-        "at most 10 terse lines, oldest first. Keep open requests and promises, who asked for what, what was built or found and where " +
-        "(coordinates), things learned about players, and current goals. Drop small talk and routine tool chatter. Output only the journal.";
+        "at most 8 terse lines, oldest first. Keep open requests and promises, who asked for what, current goals and plans. " +
+        "Older details stay searchable elsewhere, so drop small talk, routine tool chatter and finished one-offs. Output only the journal.";
 
     /// <summary>
-    /// Messages for a request. Main tier: journal + structured past episodes + the current episode.
-    /// Cheap tier: a flattened digest of recent episodes in the first user message + the current episode
-    /// (cheap requests never carry main-tier tool blocks).
+    /// Messages for a request: journal (on the first message) + past episodes + the current episode. Main tier
+    /// replays the structured episodes; the cheap tier gets their text renderings. Both are append-only.
     /// </summary>
     public IReadOnlyList<LlmMessage> BuildMessages(ModelTier tier, IReadOnlyList<LlmMessage> current)
     {
         lock (_lock)
         {
             var result = new List<LlmMessage>();
-            string prefix;
-            if (tier == ModelTier.Main)
+            foreach (var e in _episodes)
             {
-                prefix = Journal.Length > 0 ? "[journal]\n" + Journal : "";
-                foreach (var e in _episodes) result.AddRange(e.Messages);
+                if (tier == ModelTier.Main) result.AddRange(e.Messages);
+                else { result.Add(e.CheapUser!); result.Add(e.CheapAssistant!); }
             }
-            else
-            {
-                var sb = new StringBuilder();
-                if (Journal.Length > 0) sb.Append("[journal]\n").Append(Journal).Append('\n');
-                var recent = new List<string>();
-                int budget = _options.CheapDigestChars;
-                for (int i = _episodes.Count - 1; i >= 0 && budget > 0; i--)
-                {
-                    var f = Flatten(_episodes[i], 100);
-                    if (f.Length > budget) break;
-                    budget -= f.Length;
-                    recent.Insert(0, f);
-                }
-                if (recent.Count > 0) sb.Append("[recent]\n").Append(string.Join("\n", recent));
-                prefix = sb.ToString().TrimEnd();
-            }
-
             result.AddRange(current);
-            if (prefix.Length > 0 && result.Count > 0 && result[0].Role == LlmRole.User)
+            if (Journal.Length > 0 && result.Count > 0 && result[0].Role == LlmRole.User)
             {
                 var first = result[0];
-                result[0] = first with { Content = [new LlmText(prefix), .. first.Content] };
+                result[0] = first with { Content = [new LlmText("[journal]\n" + Journal), .. first.Content] };
             }
             return result;
         }
     }
+
+    /// <summary>Cheap-tier text rendering of an episode: user = events + actions taken, assistant = what was said.</summary>
+    internal static (LlmMessage User, LlmMessage Assistant) CheapRendering(Episode e, int maxChars)
+    {
+        var user = new List<string>();
+        var said = new List<string>();
+        var uses = new Dictionary<string, LlmToolUse>();
+        foreach (var m in e.Messages)
+        {
+            foreach (var b in m.Content)
+            {
+                switch (b)
+                {
+                    case LlmText t when m.Role == LlmRole.User:
+                        user.AddRange(EventLines(t.Text).Select(l => TextUtil.Truncate(l, 160)));
+                        break;
+                    case LlmText t when m.Role == LlmRole.Assistant && t.Text != "(silent)" && t.Text != "(stopped)":
+                        said.Add(TextUtil.OneLine(t.Text));
+                        break;
+                    case LlmToolUse u:
+                        uses[u.Id] = u;
+                        break;
+                    case LlmToolResult r:
+                        var name = uses.TryGetValue(r.ToolUseId, out var tu) ? $"{tu.Name}({CompactArgs(tu.Input)})" : "tool";
+                        user.Add($"[did] {name} {(r.IsError ? "!" : "=")} {TextUtil.Truncate(TextUtil.OneLine(r.Content), 80)}");
+                        break;
+                }
+            }
+        }
+        var u1 = TextUtil.Truncate(user.Count > 0 ? string.Join("\n", user) : "(nothing)", maxChars);
+        var a1 = TextUtil.Truncate(said.Count > 0 ? string.Join(" ", said) : "(silent)", maxChars);
+        return (LlmMessage.User(u1), LlmMessage.Assistant(a1));
+    }
+
+    /// <summary>Event lines of a turn text (state header, journal and auto-recalled memory dropped).</summary>
+    internal static IEnumerable<string> EventLines(string text) =>
+        text.Split('\n').Where(l => l.StartsWith('[') && !l.StartsWith("[journal]") && !l.StartsWith("[recent]") && !l.StartsWith("[memory]"));
 
     // ---------- helpers ----------
 
@@ -251,9 +335,8 @@ public sealed class ContextManager
                 switch (b)
                 {
                     case LlmText t when m.Role == LlmRole.User:
-                        // Drop the state header line; keep the events.
-                        var lines = t.Text.Split('\n').Where(l => l.StartsWith('[') && !l.StartsWith("[journal]") && !l.StartsWith("[recent]"));
-                        parts.AddRange(lines.Select(l => TextUtil.Truncate(l, maxPart)));
+                        // Drop the state header line and recalled memory; keep the events.
+                        parts.AddRange(EventLines(t.Text).Select(l => TextUtil.Truncate(l, maxPart)));
                         break;
                     case LlmText t when t.Text != "(silent)":
                         parts.Add("you: " + TextUtil.Truncate(TextUtil.OneLine(t.Text), maxPart));

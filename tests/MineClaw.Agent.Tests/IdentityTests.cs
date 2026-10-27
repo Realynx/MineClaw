@@ -38,7 +38,7 @@ public class IdentityTests
     public async Task Rename_IsImmediate_Persisted_AndReappliedAtStartup()
     {
         using var dir = new TempDir();
-        var mem = new MemoryStore(dir.File("memory.json"));
+        using var mem = new MemoryStore(dir.File("mineclaw.db"));
         var chat = Router();
         chat.SetOnlinePlayers(["Alice", "Bob"]);
         var reg = new ToolRegistry();
@@ -59,7 +59,8 @@ public class IdentityTests
 
         // New process: identity comes back from memory over config defaults.
         var chat2 = Router();
-        IdentityTools.ApplyPersisted(new MemoryStore(dir.File("memory.json")), chat2);
+        using var mem2 = new MemoryStore(dir.File("mineclaw.db"));
+        IdentityTools.ApplyPersisted(mem2, chat2);
         Assert.Equal("Mochi", chat2.DisplayName);
         Assert.Contains("mo", chat2.Aliases);
         Assert.DoesNotContain("claude", chat2.Aliases);
@@ -78,7 +79,8 @@ public class IdentityTests
         var after = llm.Requests[2].System;
         Assert.Equal(before[0], after[0]);                 // cached static block unchanged
         Assert.True(before[0].Cache);
-        Assert.False(before[1].Cache);
+        Assert.True(before[1].Cache);                      // breakpoint 2: identity/self block (small rewrite on change)
+        Assert.Equal("5m", before[1].Ttl);
         Assert.Equal(before[1], sameTurn[1]);              // stable within the turn
         Assert.Contains("Clawd", before[1].Text);
         Assert.Contains("Your name in chat is Mochi", after[1].Text);

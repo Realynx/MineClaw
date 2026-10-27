@@ -43,7 +43,7 @@ public class ContextTests
     [Fact]
     public async Task Compaction_FoldsWholeEpisodes_KeepsPairsIntact()
     {
-        var ctx = new ContextManager(new ContextOptions { HistoryTokenBudget = 400, KeepFullEpisodes = 1 });
+        var ctx = new ContextManager(new ContextOptions { CompactAtTokens = 400, CompactToTokens = 200, KeepFullEpisodes = 1 });
         for (int i = 0; i < 8; i++) ctx.Commit(ToolEpisode(i));
         Assert.True(ctx.NeedsCompaction);
 
@@ -66,7 +66,7 @@ public class ContextTests
     [Fact]
     public async Task Compaction_FallsBackToMechanicalDigest()
     {
-        var ctx = new ContextManager(new ContextOptions { HistoryTokenBudget = 300, JournalMaxChars = 200 });
+        var ctx = new ContextManager(new ContextOptions { CompactAtTokens = 300, CompactToTokens = 150, JournalMaxChars = 200 });
         for (int i = 0; i < 6; i++) ctx.Commit(ToolEpisode(i));
         await ctx.CompactAsync((_, _) => throw new HttpRequestException("down"), default);
         Assert.True(ctx.Journal.Length is > 0 and <= 200);
@@ -74,15 +74,24 @@ public class ContextTests
     }
 
     [Fact]
-    public void Commit_StripsThinking_AndTruncatesOldResults()
+    public async Task Commit_IsAppendOnly_TruncationOnlyAtCompaction()
     {
-        var ctx = new ContextManager(new ContextOptions { KeepFullEpisodes = 1, OldToolResultChars = 50, HistoryTokenBudget = 100_000 });
-        ctx.Commit(ToolEpisode(1));
-        ctx.Commit(ToolEpisode(2));
+        var opts = new ContextOptions { KeepFullEpisodes = 1, OldToolResultChars = 50, CompactAtTokens = 100_000, CompactToTokens = 100_000 };
+        var ctx = new ContextManager(opts);
+        for (int i = 1; i <= 3; i++) ctx.Commit(ToolEpisode(i));
         var eps = ctx.Episodes;
         Assert.DoesNotContain(eps.SelectMany(e => e.Messages).SelectMany(m => m.Content), b => b is LlmThinking);
-        Assert.True(eps[0].Messages[2].ToolResults.First().Content.Length <= 50);  // old: truncated
+        Assert.All(eps, e => Assert.Equal(300, e.Messages[2].ToolResults.First().Content.Length)); // history untouched turn to turn
+        Assert.Equal([0L, 1L, 2L], eps.Select(e => e.Seq));
+
+        // One compaction: fold exactly the oldest episode, then (only now) truncate older survivors.
+        opts.CompactToTokens = ctx.EstimateTokens() - eps[0].MainTokens;
+        Assert.Equal(1, await ctx.CompactAsync((_, _) => Task.FromResult("j"), default));
+        eps = ctx.Episodes;
+        Assert.Equal(2, eps.Count);
+        Assert.True(eps[0].Messages[2].ToolResults.First().Content.Length <= 50);  // older survivor: truncated
         Assert.Equal(300, eps[1].Messages[2].ToolResults.First().Content.Length);  // newest: full
+        Assert.Equal(1, ctx.OldestSeq);
     }
 
     [Fact]
@@ -102,15 +111,23 @@ public class ContextTests
     }
 
     [Fact]
-    public void CheapTier_GetsFlattenedDigest_NoToolBlocks()
+    public void CheapTier_GetsAppendOnlyTextTranscript_NoToolBlocks()
     {
         var ctx = new ContextManager();
         ctx.Commit(ToolEpisode(1));
         var msgs = ctx.BuildMessages(ModelTier.Cheap, [LlmMessage.User("pos\n[chat] Bob: hi")]);
-        var m = Assert.Single(msgs);
-        Assert.DoesNotContain(m.Content, b => b is LlmToolUse or LlmToolResult);
-        Assert.Contains("[recent]", m.Text);
-        Assert.Contains("did mine", m.Text);
-        Assert.Contains("[chat] Bob: hi", m.Text);
+        Assert.Equal(3, msgs.Count);
+        Assert.DoesNotContain(msgs.SelectMany(m => m.Content), b => b is LlmToolUse or LlmToolResult);
+        Assert.Contains("[chat] Alice: job 1", msgs[0].Text);
+        Assert.Contains("[did] mine(cobblestone) = rrr", msgs[0].Text);
+        Assert.DoesNotContain("pos 0,64,0", msgs[0].Text);          // state header is per-turn only
+        Assert.Equal("ok done with job 1", msgs[1].Text);
+        Assert.Contains("[chat] Bob: hi", msgs[2].Text);
+
+        // Next turn: the earlier messages are identical (cache prefix holds).
+        ctx.Commit(ToolEpisode(2));
+        var next = ctx.BuildMessages(ModelTier.Cheap, [LlmMessage.User("pos\n[chat] Bob: again")]);
+        Assert.Equal(msgs[0].Text, next[0].Text);
+        Assert.Equal(msgs[1].Text, next[1].Text);
     }
 }

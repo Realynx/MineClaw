@@ -1,0 +1,762 @@
+using System.Text;
+using MineClaw.Agent.Budget;
+using MineClaw.Agent.Tools;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
+namespace MineClaw.Agent.Rag;
+
+/// <summary>Axis-aligned box in block coordinates (a point is a zero-size box).</summary>
+public readonly record struct Box(double MinX, double MinY, double MinZ, double MaxX, double MaxY, double MaxZ)
+{
+    public static Box Point(double x, double y, double z) => new(x, y, z, x, y, z);
+
+    public static Box Of(double x1, double y1, double z1, double x2, double y2, double z2) =>
+        new(Math.Min(x1, x2), Math.Min(y1, y2), Math.Min(z1, z2), Math.Max(x1, x2), Math.Max(y1, y2), Math.Max(z1, z2));
+
+    public static Box Around(double x, double y, double z, double r) => new(x - r, y - r, z - r, x + r, y + r, z + r);
+
+    public Box Union(Box o) => new(Math.Min(MinX, o.MinX), Math.Min(MinY, o.MinY), Math.Min(MinZ, o.MinZ),
+        Math.Max(MaxX, o.MaxX), Math.Max(MaxY, o.MaxY), Math.Max(MaxZ, o.MaxZ));
+
+    /// <summary>Euclidean distance from a point to the box (0 inside).</summary>
+    public double Distance(double x, double y, double z)
+    {
+        double dx = Math.Max(Math.Max(MinX - x, 0), x - MaxX);
+        double dy = Math.Max(Math.Max(MinY - y, 0), y - MaxY);
+        double dz = Math.Max(Math.Max(MinZ - z, 0), z - MaxZ);
+        return Math.Sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    public bool IsPoint => MinX == MaxX && MinY == MaxY && MinZ == MaxZ;
+
+    public string Format() => IsPoint ? $"{MinX:0},{MinY:0},{MinZ:0}" : $"{MinX:0},{MinY:0},{MinZ:0}..{MaxX:0},{MaxY:0},{MaxZ:0}";
+}
+
+/// <summary>One searchable record. <see cref="Ref"/> is the stable unique key ("wp:home", "kb:file.md:3", "obs:chest:1,2,3").</summary>
+public sealed record RagDoc(string Ref, string Kind, string Title, string Body)
+{
+    /// <summary>Sub-kind (world observation kind such as "chest").</summary>
+    public string? Tag { get; init; }
+    public string? Source { get; init; }
+    public Box? Bounds { get; init; }
+    /// <summary>False keeps the doc out of the embedding queue (FTS + structured columns only).</summary>
+    public bool Embed { get; init; } = true;
+    /// <summary>Score multiplier (taught/llm facts outrank automatic observations).</summary>
+    public double Weight { get; init; } = 1.0;
+    /// <summary>0 = leaf; &gt;0 = summary node of a hierarchical index (children linked via doc_edges).</summary>
+    public int Level { get; init; }
+    /// <summary>Timestamp for "updated" (defaults to now). Re-upserting identical content with At set just touches it.</summary>
+    public DateTimeOffset? At { get; init; }
+}
+
+public sealed record RagQuery
+{
+    public string? Text { get; init; }
+    /// <summary>Doc kinds to include (null = all except chat, which lives in its own table).</summary>
+    public IReadOnlyCollection<string>? Kinds { get; init; }
+    public IReadOnlyCollection<string>? Tags { get; init; }
+    public (double X, double Y, double Z)? Near { get; init; }
+    public double Radius { get; init; } = 16;
+    /// <summary>Kinds eligible for the spatial list (null = same as <see cref="Kinds"/>).</summary>
+    public IReadOnlyCollection<string>? NearKinds { get; init; }
+    public int Limit { get; init; } = 6;
+    /// <summary>Apply the auto-retrieval relevance gate (MinLexical / MinSimilarity) instead of "any match".</summary>
+    public bool Strict { get; init; }
+    /// <summary>Words never used as search terms (the bot's own names...).</summary>
+    public IEnumerable<string>? IgnoreWords { get; init; }
+    /// <summary>Docs to skip (dedupe against the context window) before taking the top <see cref="Limit"/>.</summary>
+    public Func<long, bool>? Exclude { get; init; }
+}
+
+public sealed record RagHit(long Id, string Ref, string Kind, string? Tag, string Title, string Body, string? Snippet,
+    double Score, double Lexical, double Cosine, double? Distance, DateTimeOffset Updated, Box? Bounds);
+
+/// <summary>
+/// Retrieval seam: the flat hybrid <see cref="RagIndex"/> implements it; a hierarchical (tree/summary-node) retriever
+/// can implement it too and be fused with or replace the flat one in <see cref="AutoRetriever"/> and the recall tool.
+/// </summary>
+public interface IRetrievalIndex
+{
+    /// <summary>Scored hits (node id + text) for a query with kind/tag/spatial filters; never throws for "no results".</summary>
+    Task<List<RagHit>> SearchAsync(RagQuery query, CancellationToken ct = default);
+
+    /// <summary>One compact model-facing line for a hit.</summary>
+    string FormatHit(RagHit hit, int maxChars);
+}
+
+public sealed record ChatRow(long Id, DateTimeOffset At, string Kind, string? Player, string Text)
+{
+    public string Format() => $"c{Id} {At:MM-dd HH:mm} {Player ?? Kind}: {Text}";
+}
+
+/// <summary>
+/// Hybrid local retrieval over <see cref="AgentDb"/>: FTS5 BM25 (porter/unicode61) + cosine similarity over
+/// cached float32 vectors + R*Tree spatial hits, fused with reciprocal-rank fusion, weighted, recency-boosted for
+/// episodes. Embedding happens off the hot path in a background queue, de-duplicated by content hash; when the
+/// provider is missing or failing the index silently runs FTS-only. Thread-safe.
+/// </summary>
+public sealed class RagIndex : IRetrievalIndex, IDisposable
+{
+    private sealed record VecEntry(string Kind, string? Tag, float[] Vec);
+    private sealed record Pending(long Id, string Text, string Hash, string Kind, string? Tag);
+
+    private const int CandidateLimit = 40;
+
+    private readonly AgentDb _db;
+    private readonly RagOptions _o;
+    private readonly IEmbeddingProvider _embedder;
+    private readonly EmbeddingOptions _embOptions;
+    private readonly UsageTracker? _usage;
+    private readonly TimeProvider _time;
+    private readonly ILogger _log;
+    private readonly Dictionary<long, VecEntry> _vecs = new();
+    private readonly object _vecLock = new();
+    private readonly Dictionary<string, float[]> _queryCache = new();
+    private readonly SemaphoreSlim _embedGate = new(1, 1);
+    private readonly SemaphoreSlim _signal = new(0, int.MaxValue);
+    private readonly CancellationTokenSource _cts = new();
+    private readonly Task? _worker;
+    private DateTimeOffset _disabledUntil = DateTimeOffset.MinValue;
+    private int _failures;
+    private bool _loggedUnavailable;
+    private int _chatInserts;
+
+    public RagIndex(AgentDb db, RagOptions? options = null, IEmbeddingProvider? embedder = null, UsageTracker? usage = null,
+        EmbeddingOptions? embeddingOptions = null, TimeProvider? time = null, ILogger? log = null, bool backgroundEmbedding = true)
+    {
+        _db = db;
+        _o = options ?? new RagOptions();
+        _embedder = embedder ?? NullEmbeddingProvider.Instance;
+        _embOptions = embeddingOptions ?? new EmbeddingOptions();
+        _usage = usage;
+        _time = time ?? TimeProvider.System;
+        _log = log ?? NullLogger.Instance;
+        LoadVectors();
+        if (!_embedder.IsAvailable) _log.LogInformation("embeddings not configured: retrieval runs FTS-only");
+        else if (backgroundEmbedding)
+        {
+            _worker = Task.Run(() => WorkerAsync(_cts.Token));
+            SignalEmbedding();
+        }
+    }
+
+    public AgentDb Db => _db;
+    public RagOptions Options => _o;
+    public IEmbeddingProvider Embedder => _embedder;
+    public bool VectorsAvailable => _embedder.IsAvailable && DateTimeOffset.UtcNow >= _disabledUntil;
+    public int VectorCount { get { lock (_vecLock) return _vecs.Count; } }
+    /// <summary>Texts actually sent to the provider (cache hits excluded) — for tests/diagnostics.</summary>
+    public int EmbeddedTexts { get; private set; }
+    public int EmbedRequests { get; private set; }
+
+    private DateTimeOffset Now => _time.GetUtcNow();
+
+    // ======================= writes =======================
+
+    public long Upsert(RagDoc d)
+    {
+        long id = UpsertCore(d, out bool signal);
+        if (signal) SignalEmbedding();
+        return id;
+    }
+
+    /// <summary>Batched upsert in one transaction (one embedding wake-up for the whole batch).</summary>
+    public int UpsertMany(IEnumerable<RagDoc> docs)
+    {
+        bool any = false;
+        int n = _db.Tx(() =>
+        {
+            int c = 0;
+            foreach (var d in docs)
+            {
+                UpsertCore(d, out bool s);
+                any |= s;
+                c++;
+            }
+            return c;
+        });
+        if (any) SignalEmbedding();
+        return n;
+    }
+
+    private long UpsertCore(RagDoc d, out bool signal)
+    {
+        signal = false;
+        long ms = AgentDb.ToUnixMs(d.At ?? Now);
+        string hash = TextTokens.MaterialHash(d.Title, d.Body);
+        var b = d.Bounds;
+        lock (_db.Gate)
+        {
+            var existing = _db.Query("SELECT id, kind, tag, title, body, hash, source, embed, weight, min_x, min_y, min_z, max_x, max_y, max_z FROM docs WHERE ref = $r",
+                r => (Id: r.GetInt64(0), Kind: r.GetString(1), Tag: AgentDb.StrOrNull(r, 2), Title: r.GetString(3), Body: r.GetString(4),
+                    Hash: r.GetString(5), Source: AgentDb.StrOrNull(r, 6), Embed: r.GetInt64(7) != 0, Weight: r.GetDouble(8),
+                    Bounds: r.IsDBNull(9) ? (Box?)null : new Box(r.GetDouble(9), r.GetDouble(10), r.GetDouble(11), r.GetDouble(12), r.GetDouble(13), r.GetDouble(14))),
+                ("$r", d.Ref)).FirstOrDefault();
+
+            var args = new (string, object?)[]
+            {
+                ("$ref", d.Ref), ("$kind", d.Kind), ("$tag", d.Tag), ("$title", d.Title), ("$body", d.Body), ("$hash", hash),
+                ("$source", d.Source), ("$embed", d.Embed ? 1 : 0), ("$weight", d.Weight), ("$t", ms),
+                ("$x0", b?.MinX), ("$y0", b?.MinY), ("$z0", b?.MinZ), ("$x1", b?.MaxX), ("$y1", b?.MaxY), ("$z1", b?.MaxZ),
+                ("$level", d.Level), ("$tok", TextUtil.EstimateTokens(d.Title) + TextUtil.EstimateTokens(d.Body)),
+            };
+            if (existing.Id == 0)
+            {
+                _db.Exec("""
+                    INSERT INTO docs(ref, kind, tag, title, body, hash, source, embed, weight, created, updated, min_x, min_y, min_z, max_x, max_y, max_z,
+                        level, token_count, dirty)
+                    VALUES ($ref, $kind, $tag, $title, $body, $hash, $source, $embed, $weight, $t, $t, $x0, $y0, $z0, $x1, $y1, $z1, $level, $tok, 1)
+                    """, args);
+                signal = d.Embed;
+                return _db.ScalarLong("SELECT last_insert_rowid()");
+            }
+
+            bool same = existing.Kind == d.Kind && existing.Tag == d.Tag && existing.Title == d.Title && existing.Body == d.Body &&
+                        existing.Source == d.Source && existing.Embed == d.Embed && existing.Weight == d.Weight && existing.Bounds == b;
+            if (same)
+            {
+                if (d.At != null) _db.Exec("UPDATE docs SET updated = $t WHERE id = $id", ("$t", ms), ("$id", existing.Id));
+                return existing.Id;
+            }
+
+            bool textChanged = existing.Title != d.Title || existing.Body != d.Body;
+            bool boundsChanged = existing.Bounds != b;
+            var sql = new StringBuilder("UPDATE docs SET kind = $kind, tag = $tag, hash = $hash, source = $source, embed = $embed, weight = $weight, level = $level, updated = $t");
+            if (textChanged) sql.Append(", title = $title, body = $body, token_count = $tok, dirty = 1"); // only then do the FTS triggers fire
+            if (boundsChanged) sql.Append(", min_x = $x0, min_y = $y0, min_z = $z0, max_x = $x1, max_y = $y1, max_z = $z1");
+            sql.Append(" WHERE id = $id");
+            _db.Exec(sql.ToString(), [.. args, ("$id", existing.Id)]);
+
+            if (existing.Hash != hash || !d.Embed)
+            {
+                _db.Exec("DELETE FROM vectors WHERE doc_id = $id", ("$id", existing.Id));
+                lock (_vecLock) _vecs.Remove(existing.Id);
+                signal = d.Embed;
+            }
+            else if (existing.Kind != d.Kind || existing.Tag != d.Tag)
+            {
+                lock (_vecLock)
+                    if (_vecs.TryGetValue(existing.Id, out var v)) _vecs[existing.Id] = v with { Kind = d.Kind, Tag = d.Tag };
+            }
+            return existing.Id;
+        }
+    }
+
+    public bool Delete(string reference)
+    {
+        lock (_db.Gate)
+        {
+            var id = _db.ScalarLong("SELECT id FROM docs WHERE ref = $r", ("$r", reference));
+            if (id == 0) return false;
+            _db.Exec("DELETE FROM docs WHERE id = $id", ("$id", id));
+            lock (_vecLock) _vecs.Remove(id);
+            return true;
+        }
+    }
+
+    /// <summary>Deletes every doc whose ref starts with <paramref name="prefix"/> except those in <paramref name="keep"/>.</summary>
+    public int DeleteByPrefix(string prefix, IReadOnlySet<string>? keep = null)
+    {
+        lock (_db.Gate)
+        {
+            var rows = _db.Query("SELECT id, ref FROM docs WHERE substr(ref, 1, length($p)) = $p", r => (r.GetInt64(0), r.GetString(1)), ("$p", prefix));
+            int n = 0;
+            _db.Tx(() =>
+            {
+                foreach (var (id, rf) in rows)
+                {
+                    if (keep != null && keep.Contains(rf)) continue;
+                    _db.Exec("DELETE FROM docs WHERE id = $id", ("$id", id));
+                    lock (_vecLock) _vecs.Remove(id);
+                    n++;
+                }
+            });
+            return n;
+        }
+    }
+
+    public int Count(string? kind = null) =>
+        (int)(kind == null ? _db.ScalarLong("SELECT count(*) FROM docs") : _db.ScalarLong("SELECT count(*) FROM docs WHERE kind = $k", ("$k", kind)));
+
+    // ======================= reads =======================
+
+    private const string HitColumns = "d.id, d.ref, d.kind, d.tag, d.title, d.body, d.updated, d.weight, d.min_x, d.min_y, d.min_z, d.max_x, d.max_y, d.max_z";
+
+    private static RagHit ReadHit(SqliteDataReader r, double score = 0, string? snippet = null) => new(
+        r.GetInt64(0), r.GetString(1), r.GetString(2), AgentDb.StrOrNull(r, 3), r.GetString(4), r.GetString(5), snippet,
+        score, 0, 0, null, AgentDb.FromUnixMs(r.GetInt64(6)),
+        r.IsDBNull(8) ? null : new Box(r.GetDouble(8), r.GetDouble(9), r.GetDouble(10), r.GetDouble(11), r.GetDouble(12), r.GetDouble(13)));
+
+    public RagHit? Get(long id) =>
+        _db.Query($"SELECT {HitColumns} FROM docs d WHERE d.id = $id", r => ReadHit(r), ("$id", id)).FirstOrDefault();
+
+    public RagHit? GetByRef(string reference) =>
+        _db.Query($"SELECT {HitColumns} FROM docs d WHERE d.ref = $r", r => ReadHit(r), ("$r", reference)).FirstOrDefault();
+
+    /// <summary>Newest docs of a kind (optionally since a time / with a ref prefix), newest first.</summary>
+    public List<RagHit> Recent(string kind, DateTimeOffset? since = null, int limit = 10, string? refPrefix = null) =>
+        _db.Query($"""
+            SELECT {HitColumns} FROM docs d WHERE d.kind = $k AND d.updated >= $s
+              AND ($p IS NULL OR substr(d.ref, 1, length($p)) = $p)
+            ORDER BY d.updated DESC, d.id DESC LIMIT $n
+            """, r => ReadHit(r), ("$k", kind), ("$s", since is { } t ? AgentDb.ToUnixMs(t) : 0L), ("$p", refPrefix), ("$n", limit));
+
+    /// <summary>Hybrid search with query embedding (bounded by <see cref="RagOptions.QueryEmbedTimeoutMs"/>; falls back to FTS-only).</summary>
+    public async Task<List<RagHit>> SearchAsync(RagQuery q, CancellationToken ct = default)
+    {
+        float[]? qv = null;
+        if (!string.IsNullOrWhiteSpace(q.Text)) qv = await EmbedQueryAsync(q.Text!, ct).ConfigureAwait(false);
+        return Search(q, qv);
+    }
+
+    /// <summary>Synchronous hybrid search; pass a query vector to include the semantic list.</summary>
+    public List<RagHit> Search(RagQuery q, float[]? queryVector = null)
+    {
+        var terms = TextTokens.Terms(q.Text, q.IgnoreWords);
+        var lists = new List<List<long>>(3);
+        var lexical = new Dictionary<long, double>();
+        var snippets = new Dictionary<long, string>();
+        var distances = new Dictionary<long, double>();
+        var cosines = new Dictionary<long, double>();
+        var kinds = q.Kinds?.ToArray();
+        var tags = q.Tags?.ToArray();
+
+        lock (_db.Gate)
+        {
+            if (terms.Count > 0)
+            {
+                var order = _db.HasFts ? FtsCandidates(terms, kinds, tags, snippets, lexical) : LikeCandidates(terms, kinds, tags, lexical);
+                if (order.Count > 0) lists.Add(order);
+            }
+            if (q.Near is { } p && q.Radius > 0)
+            {
+                var near = Spatial(p.X, p.Y, p.Z, q.Radius, q.NearKinds?.ToArray() ?? kinds, tags, CandidateLimit);
+                foreach (var (id, d) in near) distances[id] = d;
+                if (near.Count > 0) lists.Add(near.Select(n => n.Id).ToList());
+            }
+        }
+
+        if (queryVector != null && queryVector.Length > 0)
+        {
+            var sem = VectorTop(VectorMath.Normalize(queryVector), kinds, tags, CandidateLimit, _o.MinSimilarity * 0.75);
+            foreach (var (id, c) in sem) cosines[id] = c;
+            if (sem.Count > 0) lists.Add(sem.Select(s => s.Id).ToList());
+        }
+        if (lists.Count == 0) return [];
+
+        var fused = new Dictionary<long, double>();
+        foreach (var list in lists)
+            for (int rank = 0; rank < list.Count; rank++)
+                fused[list[rank]] = fused.GetValueOrDefault(list[rank]) + 1.0 / (_o.RrfK + rank + 1);
+
+        var meta = LoadHits(fused.Keys);
+        var now = Now;
+        var hits = new List<RagHit>(meta.Count);
+        foreach (var (h, weight) in meta)
+        {
+            double lex = lexical.GetValueOrDefault(h.Id);
+            double cos = cosines.GetValueOrDefault(h.Id);
+            double? dist = distances.TryGetValue(h.Id, out var dd) ? dd : null;
+            bool pass = q.Strict
+                ? lex >= _o.MinLexical || cos >= _o.MinSimilarity || dist != null
+                : lex > 0 || cos >= _o.MinSimilarity || dist != null;
+            if (!pass) continue;
+            if (q.Exclude?.Invoke(h.Id) == true) continue;
+
+            double score = fused[h.Id] * weight;
+            if (h.Kind == "episode" && _o.RecencyBoost > 0 && _o.RecencyHalfLifeHours > 0)
+            {
+                double ageH = Math.Max(0, (now - h.Updated).TotalHours);
+                score *= 1 + _o.RecencyBoost * Math.Pow(0.5, ageH / _o.RecencyHalfLifeHours);
+            }
+            hits.Add(h with { Score = score, Lexical = lex, Cosine = cos, Distance = dist, Snippet = snippets.GetValueOrDefault(h.Id) });
+        }
+        return hits.OrderByDescending(h => h.Score).ThenByDescending(h => h.Updated).Take(Math.Max(1, q.Limit)).ToList();
+    }
+
+    private static string KindFilter(string[]? kinds, string[]? tags, List<(string, object?)> args)
+    {
+        var sb = new StringBuilder();
+        if (kinds is { Length: > 0 })
+        {
+            sb.Append(" AND d.kind IN (").Append(string.Join(",", kinds.Select((_, i) => "$k" + i))).Append(')');
+            for (int i = 0; i < kinds.Length; i++) args.Add(("$k" + i, kinds[i]));
+        }
+        else sb.Append(" AND d.kind <> 'chat'");
+        if (tags is { Length: > 0 })
+        {
+            sb.Append(" AND d.tag IN (").Append(string.Join(",", tags.Select((_, i) => "$g" + i))).Append(')');
+            for (int i = 0; i < tags.Length; i++) args.Add(("$g" + i, tags[i]));
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Lexical relevance: 1 − exp(−Σ idf(matched terms) / 2), with N floored at 50 (small corpora stay meaningful)
+    /// and terms present in over half the docs ignored — length-independent, so a long event text isn't penalised.
+    /// </summary>
+    private static double Relevance(IEnumerable<int> dfs, long n)
+    {
+        double sum = 0;
+        long nn = Math.Max(50, n);
+        foreach (var df in dfs)
+        {
+            if (n >= 4 && df > n * 0.5) continue;
+            sum += Math.Log((nn - df + 0.5) / (df + 0.5) + 1);
+        }
+        return 1 - Math.Exp(-sum / 2.0);
+    }
+
+    private List<long> FtsCandidates(List<string> terms, string[]? kinds, string[]? tags, Dictionary<long, string> snippets, Dictionary<long, double> lexical)
+    {
+        var args = new List<(string, object?)> { ("$q", TextTokens.FtsQuery(terms)), ("$n", CandidateLimit) };
+        var filter = KindFilter(kinds, tags, args);
+        List<(long Id, string Snip)> rows;
+        try
+        {
+            rows = _db.Query($"""
+                SELECT d.id, snippet(docs_fts, 1, '', '', '..', 16) FROM docs_fts JOIN docs d ON d.id = docs_fts.rowid
+                WHERE docs_fts MATCH $q{filter} ORDER BY bm25(docs_fts, 3.0, 1.0) LIMIT $n
+                """, r => (r.GetInt64(0), r.IsDBNull(1) ? "" : r.GetString(1)), [.. args]);
+        }
+        catch (SqliteException ex)
+        {
+            _log.LogDebug(ex, "fts query failed");
+            return [];
+        }
+        if (rows.Count == 0) return [];
+
+        long n = _db.ScalarLong("SELECT count(*) FROM docs");
+        var ids = rows.Select(r => r.Id).ToHashSet();
+        var matched = ids.ToDictionary(id => id, _ => new List<int>());
+        foreach (var t in terms)
+        {
+            var hits = _db.Query("SELECT rowid FROM docs_fts WHERE docs_fts MATCH $t", r => r.GetInt64(0), ("$t", TextTokens.FtsQuery([t])));
+            foreach (var id in hits)
+                if (matched.TryGetValue(id, out var l)) l.Add(hits.Count);
+        }
+        foreach (var (id, snip) in rows)
+        {
+            lexical[id] = Relevance(matched[id], n);
+            if (snip.Length > 0) snippets[id] = snip;
+        }
+        return rows.Select(r => r.Id).ToList();
+    }
+
+    private List<long> LikeCandidates(List<string> terms, string[]? kinds, string[]? tags, Dictionary<long, double> lexical)
+    {
+        var args = new List<(string, object?)>();
+        var filter = KindFilter(kinds, tags, args);
+        var docs = _db.Query($"SELECT d.id, lower(d.title || ' ' || d.body) FROM docs d WHERE 1 = 1{filter}", r => (r.GetInt64(0), r.GetString(1)), [.. args]);
+        var stems = terms.Select(TextTokens.Stem).ToArray();
+        var df = new int[stems.Length];
+        var matches = new List<(long Id, int[] Terms)>();
+        foreach (var (id, text) in docs)
+        {
+            var m = new List<int>();
+            for (int i = 0; i < stems.Length; i++)
+                if (text.Contains(stems[i], StringComparison.Ordinal)) { m.Add(i); df[i]++; }
+            if (m.Count > 0) matches.Add((id, m.ToArray()));
+        }
+        long n = docs.Count;
+        var scored = matches.Select(x => (x.Id, Rel: Relevance(x.Terms.Select(i => df[i]), n), Cnt: x.Terms.Length))
+            .OrderByDescending(x => x.Cnt).ThenByDescending(x => x.Rel).Take(CandidateLimit).ToList();
+        foreach (var s in scored) lexical[s.Id] = s.Rel;
+        return scored.Select(s => s.Id).ToList();
+    }
+
+    private List<(long Id, double Distance)> Spatial(double x, double y, double z, double r, string[]? kinds, string[]? tags, int limit)
+    {
+        var args = new List<(string, object?)> { ("$x0", x - r), ("$x1", x + r), ("$y0", y - r), ("$y1", y + r), ("$z0", z - r), ("$z1", z + r) };
+        var filter = KindFilter(kinds, tags, args);
+        string sql = _db.HasRtree
+            ? $"""
+               SELECT d.id, d.min_x, d.min_y, d.min_z, d.max_x, d.max_y, d.max_z FROM docs_rtree t JOIN docs d ON d.id = t.id
+               WHERE t.max_x >= $x0 AND t.min_x <= $x1 AND t.max_y >= $y0 AND t.min_y <= $y1 AND t.max_z >= $z0 AND t.min_z <= $z1{filter}
+               """
+            : $"""
+               SELECT d.id, d.min_x, d.min_y, d.min_z, d.max_x, d.max_y, d.max_z FROM docs d
+               WHERE d.min_x IS NOT NULL AND d.max_x >= $x0 AND d.min_x <= $x1 AND d.max_y >= $y0 AND d.min_y <= $y1 AND d.max_z >= $z0 AND d.min_z <= $z1{filter}
+               """;
+        return _db.Query(sql, rd => (rd.GetInt64(0), new Box(rd.GetDouble(1), rd.GetDouble(2), rd.GetDouble(3), rd.GetDouble(4), rd.GetDouble(5), rd.GetDouble(6))), [.. args])
+            .Select(t => (t.Item1, D: t.Item2.Distance(x, y, z)))
+            .Where(t => t.D <= r)
+            .OrderBy(t => t.D).Take(limit).ToList();
+    }
+
+    /// <summary>Spatial-only lookup (no text): what's known within r of a point.</summary>
+    public List<RagHit> Nearby(double x, double y, double z, double r, IReadOnlyCollection<string>? kinds = null, int limit = 6) =>
+        Search(new RagQuery { Near = (x, y, z), Radius = r, Kinds = kinds, Limit = limit });
+
+    private List<(long Id, double Cos)> VectorTop(float[] q, string[]? kinds, string[]? tags, int limit, double floor)
+    {
+        var top = new List<(long Id, double Cos)>(limit + 1);
+        lock (_vecLock)
+        {
+            foreach (var (id, e) in _vecs)
+            {
+                if (kinds is { Length: > 0 } ? Array.IndexOf(kinds, e.Kind) < 0 : e.Kind == "chat") continue;
+                if (tags is { Length: > 0 } && (e.Tag == null || Array.IndexOf(tags, e.Tag) < 0)) continue;
+                double c = VectorMath.Dot(q, e.Vec);
+                if (c < floor) continue;
+                if (top.Count == limit && c <= top[^1].Cos) continue;
+                int i = top.Count;
+                while (i > 0 && top[i - 1].Cos < c) i--;
+                top.Insert(i, (id, c));
+                if (top.Count > limit) top.RemoveAt(top.Count - 1);
+            }
+        }
+        return top;
+    }
+
+    private List<(RagHit Hit, double Weight)> LoadHits(IEnumerable<long> ids)
+    {
+        var list = ids.ToList();
+        var result = new List<(RagHit, double)>(list.Count);
+        for (int i = 0; i < list.Count; i += 200)
+        {
+            var chunk = list.Skip(i).Take(200).ToList();
+            var args = chunk.Select((id, k) => ("$i" + k, (object?)id)).ToArray();
+            result.AddRange(_db.Query($"SELECT {HitColumns} FROM docs d WHERE d.id IN ({string.Join(",", args.Select(a => a.Item1))})",
+                r => (ReadHit(r), r.GetDouble(7)), args));
+        }
+        return result;
+    }
+
+    /// <summary>One compact line for the model ("#12 struct gen1 [...]", "#40 ep 10-26 14:02: ...").</summary>
+    public string FormatHit(RagHit h, int maxChars)
+    {
+        string text = h.Kind switch
+        {
+            "knowledge" => $"kb {h.Title}: {(h.Snippet != null && h.Body.Length > 180 ? h.Snippet : h.Body)}",
+            "episode" => "ep " + h.Body,
+            "world" => $"{h.Body} (seen {TextTokens.Ago(Now - h.Updated)})",
+            _ => h.Body,
+        };
+        return TextUtil.Truncate(TextUtil.OneLine($"#{h.Id} {text}"), maxChars);
+    }
+
+    // ======================= chat log =======================
+
+    public void LogChat(DateTimeOffset at, string kind, string? player, string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+        lock (_db.Gate)
+        {
+            _db.Exec("INSERT INTO chat_log(at, kind, player, text) VALUES ($a, $k, $p, $t)",
+                ("$a", AgentDb.ToUnixMs(at)), ("$k", kind), ("$p", player), ("$t", TextUtil.Truncate(text, 400)));
+            if (++_chatInserts % 500 == 0 && _o.ChatLogMaxRows > 0)
+                _db.Exec("DELETE FROM chat_log WHERE id <= (SELECT max(id) FROM chat_log) - $m", ("$m", _o.ChatLogMaxRows));
+        }
+    }
+
+    public List<ChatRow> SearchChat(string? query, string? player = null, int limit = 6)
+    {
+        var terms = TextTokens.Terms(query);
+        static ChatRow Map(SqliteDataReader r) => new(r.GetInt64(0), AgentDb.FromUnixMs(r.GetInt64(1)), r.GetString(2), AgentDb.StrOrNull(r, 3), r.GetString(4));
+        lock (_db.Gate)
+        {
+            if (terms.Count == 0)
+                return _db.Query("SELECT id, at, kind, player, text FROM chat_log WHERE ($p IS NULL OR player = $p COLLATE NOCASE) ORDER BY id DESC LIMIT $n",
+                    Map, ("$p", player), ("$n", limit));
+            if (_db.HasFts)
+            {
+                try
+                {
+                    return _db.Query("""
+                        SELECT c.id, c.at, c.kind, c.player, c.text FROM chat_fts JOIN chat_log c ON c.id = chat_fts.rowid
+                        WHERE chat_fts MATCH $q AND ($p IS NULL OR c.player = $p COLLATE NOCASE) ORDER BY bm25(chat_fts), c.id DESC LIMIT $n
+                        """, Map, ("$q", TextTokens.FtsQuery(terms)), ("$p", player), ("$n", limit));
+                }
+                catch (SqliteException) { return []; }
+            }
+            var like = string.Join(" OR ", terms.Select((_, i) => $"lower(text) LIKE $t{i}"));
+            var args = terms.Select((t, i) => ("$t" + i, (object?)("%" + TextTokens.Stem(t) + "%"))).Append(("$p", player)).Append(("$n", limit)).ToArray();
+            return _db.Query($"SELECT id, at, kind, player, text FROM chat_log WHERE ({like}) AND ($p IS NULL OR player = $p COLLATE NOCASE) ORDER BY id DESC LIMIT $n", Map, args);
+        }
+    }
+
+    public List<ChatRow> ChatAround(long id, int before = 3, int after = 3)
+    {
+        static ChatRow Map(SqliteDataReader r) => new(r.GetInt64(0), AgentDb.FromUnixMs(r.GetInt64(1)), r.GetString(2), AgentDb.StrOrNull(r, 3), r.GetString(4));
+        return _db.Query("SELECT id, at, kind, player, text FROM chat_log WHERE id BETWEEN $a AND $b ORDER BY id", Map, ("$a", id - before), ("$b", id + after));
+    }
+
+    public bool PlayerSpokeSince(string player, DateTimeOffset since) =>
+        _db.ScalarLong("SELECT count(*) FROM chat_log WHERE player = $p COLLATE NOCASE AND kind IN ('chat','whisper') AND at >= $s",
+            ("$p", player), ("$s", AgentDb.ToUnixMs(since))) > 0;
+
+    // ======================= embeddings =======================
+
+    private string VecModel => _embedder.Model;
+
+    private void LoadVectors()
+    {
+        if (!_embedder.IsAvailable) return;
+        var rows = _db.Query("SELECT v.doc_id, d.kind, d.tag, v.vec FROM vectors v JOIN docs d ON d.id = v.doc_id WHERE v.model = $m AND v.dims = $d AND v.hash = d.hash",
+            r => (r.GetInt64(0), r.GetString(1), AgentDb.StrOrNull(r, 2), (byte[])r.GetValue(3)), ("$m", VecModel), ("$d", _embedder.Dimensions));
+        lock (_vecLock)
+            foreach (var (id, kind, tag, blob) in rows) _vecs[id] = new VecEntry(kind, tag, VectorMath.FromBlob(blob));
+    }
+
+    public void SignalEmbedding()
+    {
+        if (_worker != null) _signal.Release();
+    }
+
+    private async Task WorkerAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await _signal.WaitAsync(TimeSpan.FromSeconds(60), ct).ConfigureAwait(false);
+                while (_signal.CurrentCount > 0) _signal.Wait(0);
+                await Task.Delay(250, ct).ConfigureAwait(false); // debounce bursts (chunk loads, startup re-index)
+                var wait = _disabledUntil - DateTimeOffset.UtcNow;
+                if (wait > TimeSpan.Zero) await Task.Delay(wait, ct).ConfigureAwait(false);
+                await FlushEmbeddingsAsync(ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+            catch (Exception ex) { _log.LogWarning(ex, "embedding worker error"); }
+        }
+    }
+
+    /// <summary>Embeds every doc whose vector is missing or stale. Returns how many vectors were written.</summary>
+    public async Task<int> FlushEmbeddingsAsync(CancellationToken ct = default)
+    {
+        if (!_embedder.IsAvailable || DateTimeOffset.UtcNow < _disabledUntil) return 0;
+        await _embedGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            int written = 0;
+            for (int guard = 0; guard < 1000; guard++)
+            {
+                var pending = _db.Query("""
+                    SELECT d.id, d.title, d.body, d.hash, d.kind, d.tag FROM docs d LEFT JOIN vectors v ON v.doc_id = d.id
+                    WHERE d.embed = 1 AND (v.doc_id IS NULL OR v.model <> $m OR v.dims <> $d OR v.hash <> d.hash) LIMIT 256
+                    """, r => new Pending(r.GetInt64(0), r.GetString(1) + "\n" + r.GetString(2), r.GetString(3), r.GetString(4), AgentDb.StrOrNull(r, 5)),
+                    ("$m", VecModel), ("$d", _embedder.Dimensions));
+                if (pending.Count == 0) break;
+
+                var need = new List<Pending>();
+                foreach (var p in pending)
+                {
+                    var blob = _db.Scalar("SELECT vec FROM embed_cache WHERE hash = $h AND model = $m AND dims = $d",
+                        ("$h", p.Hash), ("$m", VecModel), ("$d", _embedder.Dimensions)) as byte[];
+                    if (blob != null) { StoreVector(p, VectorMath.FromBlob(blob)); written++; }
+                    else if (!need.Any(x => x.Hash == p.Hash)) need.Add(p);
+                }
+
+                int batch = Math.Max(1, _embOptions.MaxBatch);
+                for (int i = 0; i < need.Count; i += batch)
+                {
+                    var chunk = need.Skip(i).Take(batch).ToList();
+                    EmbeddingResponse resp;
+                    try
+                    {
+                        resp = await _embedder.EmbedAsync(chunk.Select(c => c.Text).ToList(), ct).ConfigureAwait(false);
+                        EmbedRequests++;
+                    }
+                    catch (Exception ex) when (!ct.IsCancellationRequested)
+                    {
+                        Fail(ex);
+                        return written;
+                    }
+                    RecordUsage(resp.Tokens);
+                    EmbeddedTexts += chunk.Count;
+                    for (int k = 0; k < chunk.Count; k++)
+                    {
+                        var v = VectorMath.Normalize(resp.Vectors[k]);
+                        _db.Exec("INSERT OR REPLACE INTO embed_cache(hash, model, dims, vec, created) VALUES ($h, $m, $d, $v, $t)",
+                            ("$h", chunk[k].Hash), ("$m", VecModel), ("$d", _embedder.Dimensions), ("$v", VectorMath.ToBlob(v)), ("$t", AgentDb.ToUnixMs(Now)));
+                        StoreVector(chunk[k], v);
+                        written++;
+                    }
+                }
+                // Same-hash duplicates in this round now hit the cache on the next loop.
+                if (_failures > 0) { _log.LogInformation("embeddings recovered"); _failures = 0; }
+            }
+            return written;
+        }
+        finally
+        {
+            _embedGate.Release();
+        }
+    }
+
+    private void StoreVector(Pending p, float[] v)
+    {
+        lock (_db.Gate)
+        {
+            // The doc may have changed or vanished meanwhile: only store if its hash still matches.
+            int n = _db.Exec("""
+                INSERT OR REPLACE INTO vectors(doc_id, model, dims, hash, vec)
+                SELECT id, $m, $d, $h, $v FROM docs WHERE id = $id AND hash = $h
+                """, ("$id", p.Id), ("$m", VecModel), ("$d", _embedder.Dimensions), ("$h", p.Hash), ("$v", VectorMath.ToBlob(v)));
+            if (n > 0) lock (_vecLock) _vecs[p.Id] = new VecEntry(p.Kind, p.Tag, v);
+        }
+    }
+
+    private void Fail(Exception ex)
+    {
+        _failures++;
+        var backoff = TimeSpan.FromSeconds(Math.Min(600, 15 * Math.Pow(2, Math.Min(_failures - 1, 6))));
+        _disabledUntil = DateTimeOffset.UtcNow + backoff;
+        if (_failures == 1 || !_loggedUnavailable)
+        {
+            _loggedUnavailable = true;
+            _log.LogWarning("embeddings failing ({Error}); running FTS-only, retry in {Backoff}", TextUtil.OneLine(ex.Message), backoff);
+        }
+        else _log.LogDebug("embeddings still failing ({Failures}): {Error}", _failures, ex.Message);
+    }
+
+    private void RecordUsage(long tokens)
+    {
+        if (tokens > 0) _usage?.RecordEmbedding(VecModel, tokens, _embOptions.PricePerMTok);
+    }
+
+    /// <summary>Embeds a query (cached; time-boxed). Null when unavailable, slow or failing — callers go FTS-only.</summary>
+    public async Task<float[]?> EmbedQueryAsync(string text, CancellationToken ct)
+    {
+        if (!VectorsAvailable || VectorCount == 0) return null;
+        text = TextUtil.Truncate(text.Trim(), 1000);
+        var key = VectorMath.Hash(text);
+        lock (_queryCache)
+            if (_queryCache.TryGetValue(key, out var hit)) return hit;
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(Math.Max(100, _o.QueryEmbedTimeoutMs));
+        try
+        {
+            var resp = await _embedder.EmbedAsync([text], cts.Token).ConfigureAwait(false);
+            RecordUsage(resp.Tokens);
+            var v = VectorMath.Normalize(resp.Vectors[0]);
+            lock (_queryCache)
+            {
+                if (_queryCache.Count >= 256) _queryCache.Clear();
+                _queryCache[key] = v;
+            }
+            return v;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _log.LogDebug("query embedding timed out; FTS-only for this turn");
+            return null;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            Fail(ex);
+            return null;
+        }
+    }
+
+    public void Dispose()
+    {
+        _cts.Cancel();
+        try { _worker?.Wait(TimeSpan.FromSeconds(2)); } catch (AggregateException) { }
+        _cts.Dispose();
+    }
+}

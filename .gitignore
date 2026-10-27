@@ -484,3 +484,7 @@ testserver/
 src/MineClaw.App/appsettings.json
 src/MineClaw.App/appsettings.*.json
 !src/MineClaw.App/appsettings.example.json
+
+# runtime output of the bot (logs, memory/usage state)
+/logs/
+/data/

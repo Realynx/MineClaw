@@ -237,7 +237,7 @@ public class AgentLoopTests
     [Fact]
     public async Task ManyEpisodes_TriggerCompaction_WithCheapSummary()
     {
-        var (rt, llm, _) = TestRuntime.Create(o => o.Context.HistoryTokenBudget = 300);
+        var (rt, llm, _) = TestRuntime.Create(o => { o.Context.CompactAtTokens = 300; o.Context.CompactToTokens = 150; });
         llm.Fallback = r => r.Purpose == "compact"
             ? llm.Resp(r, StopReasons.EndTurn, new LlmText("journal: chatted a lot"))
             : llm.Resp(r, StopReasons.EndTurn, new LlmText(new string('x', 200)));

@@ -5,9 +5,12 @@ using MineClaw.Agent.Events;
 using MineClaw.Agent.Human;
 using MineClaw.Agent.Llm;
 using MineClaw.Agent.Memory;
+using MineClaw.Agent.Rag;
+using MineClaw.Agent.Self;
 using MineClaw.Agent.Routines;
 using MineClaw.Agent.Tools;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace MineClaw.Agent;
 
@@ -23,9 +26,9 @@ namespace MineClaw.Agent;
 /// rt.Agent.StateHeader = () => $"pos {x},{y},{z} hp {hp}/20 food {food} held {item}";
 /// await rt.Agent.RunAsync(ct);
 /// </code>
-/// Register game tools before the first turn; the tool list is part of the cached prefix.
+/// Register game tools before the first turn; the tool list is part of the cached prefix. Dispose to flush/close the db.
 /// </summary>
-public sealed class AgentRuntime
+public sealed class AgentRuntime : IDisposable
 {
     public required AgentOptions Options { get; init; }
     public required ToolRegistry Tools { get; init; }
@@ -38,53 +41,116 @@ public sealed class AgentRuntime
     public required RoutineExecutor Routines { get; init; }
     public required BotAgent Agent { get; init; }
     public required ILlmClient Llm { get; init; }
-    /// <summary>True if the knowledge text hit <see cref="AgentOptions.MaxKnowledgeChars"/>.</summary>
+    /// <summary>The single SQLite database (memory, RAG index, chat log, observations, self-profile).</summary>
+    public required AgentDb Db { get; init; }
+    /// <summary>Hybrid local retrieval (FTS5 + vectors + R*Tree).</summary>
+    public required RagIndex Rag { get; init; }
+    /// <summary>
+    /// World-fact ingestion + structured queries for the C# WorldIndexer: <c>Upsert</c>/<c>UpsertMany</c>/<c>Remove</c>,
+    /// <c>FindItemInContainers</c>, <c>Nearest</c>, <c>ListKinds</c>.
+    /// </summary>
+    public required ObservationStore Observations { get; init; }
+    public required EpisodeIndexer Episodes { get; init; }
+    public AutoRetriever? Retriever { get; init; }
+    public SelfProfile? Self { get; init; }
+    public ReflectionPass? Reflection { get; init; }
+    public required IEmbeddingProvider Embeddings { get; init; }
+    /// <summary>True if the in-prompt knowledge hit its cap (MaxKnowledgeChars, or Rag.MaxCoreChars for core rules).</summary>
     public bool KnowledgeTruncated { get; init; }
+    /// <summary>Chars of knowledge in the cached prompt (core rules only when RAG is on).</summary>
     public int KnowledgeChars { get; init; }
+    /// <summary>Knowledge chunks available to retrieval.</summary>
+    public int KnowledgeChunks { get; init; }
 
     /// <param name="sendChat">Sends one raw chat line (≤100 chars) to the server.</param>
     /// <param name="llm">Defaults to <see cref="AnthropicLlmClient"/> (API key from ANTHROPIC_API_KEY).</param>
-    /// <param name="position">Current block position, for memory tools that default to "here".</param>
+    /// <param name="position">Current block position, for memory tools that default to "here" and spatial retrieval.</param>
     /// <param name="demonstrations">Enables <c>watch_demo</c> when the client layer can record players.</param>
+    /// <param name="persist">False = in-memory database and no usage file (tests).</param>
+    /// <param name="embeddings">Overrides the provider built from <see cref="AgentOptions.Embeddings"/> (tests use a fake).</param>
     public static AgentRuntime Create(AgentOptions options, Func<string, CancellationToken, Task> sendChat,
         ILlmClient? llm = null, Func<BlockPos?>? position = null, IDemonstrationSource? demonstrations = null,
-        ILoggerFactory? loggers = null, TimeProvider? time = null, bool persist = true)
+        ILoggerFactory? loggers = null, TimeProvider? time = null, bool persist = true, IEmbeddingProvider? embeddings = null)
     {
         time ??= TimeProvider.System;
         llm ??= new AnthropicLlmClient(options.Llm);
         string? Data(string file) => persist ? Path.Combine(options.DataDirectory, file) : null;
+        ILogger Log(string name) => loggers?.CreateLogger(name) ?? NullLogger.Instance;
 
         var tools = new ToolRegistry(options.MaxToolResultChars);
         var events = new EventQueue(options.Events, time);
         var chat = new ChatRouter(options.Chat, events, sendChat, time);
         var usage = new UsageTracker(options.Budget, options.Prices, time, Data(options.Budget.UsageFile));
-        var memory = new MemoryStore(Data("memory.json"), time);
+
+        var rag = options.Rag;
+        string Under(string f) => Path.IsPathRooted(f) ? f : Path.Combine(options.DataDirectory, f);
+        var db = AgentDb.Open(persist ? Under(rag.DbFile) : null, Log("MineClaw.Db"),
+            seedPath: persist && !string.IsNullOrWhiteSpace(rag.SeedFile) ? Under(rag.SeedFile) : null);
+        var embedder = embeddings
+            ?? (rag.Enabled && options.Embeddings.IsConfigured ? new AzureOpenAIEmbeddingProvider(options.Embeddings) : NullEmbeddingProvider.Instance);
+        if (!rag.Enabled) embedder = NullEmbeddingProvider.Instance;
+        var index = new RagIndex(db, rag, embedder, usage, options.Embeddings, time, Log("MineClaw.Rag"));
+        var memory = new MemoryStore(db, index, time, Data("memory.json"));
+        var observations = new ObservationStore(index, time);
         var context = new ContextManager(options.Context);
+        var episodes = new EpisodeIndexer(index, context, position, time, Log("MineClaw.Rag"));
         var activities = new ActivityManager(tools, events, time);
         var routines = new RoutineExecutor(tools);
+        SelfProfile? self = options.Self.Enabled ? new SelfProfile(db, options.Self, index, time) : null;
 
-        // Built-in, game-agnostic tools (registered first so their order is stable).
+        // Built-in, game-agnostic tools (registered first so their order is stable — it's part of the cached prefix).
         tools.Register("stop", "Stop the current task/activity.", ToolSchema.Empty, (_, _) =>
         {
             var what = activities.Cancel("stop");
             return Task.FromResult(ToolResult.Success(what != null ? $"stopped {what}" : "nothing running"));
         }, cheapTier: true);
         MemoryTools.RegisterAll(tools, memory, position);
+        WorldTools.Register(tools, observations, position, time);
         IdentityTools.ApplyPersisted(memory, chat);
         IdentityTools.RegisterAll(tools, memory, chat);
         RoutineTools.RegisterAll(tools, memory, routines);
         HumanTools.RegisterAskPlayer(tools, chat);
         if (demonstrations != null) HumanTools.RegisterWatchDemo(tools, chat, memory, demonstrations);
+        if (self != null) SelfTools.RegisterAll(tools, self, index, time);
 
-        var knowledge = Prompts.LoadKnowledge(options.KnowledgeDirectory, options.MaxKnowledgeChars, out bool truncated);
+        string knowledge;
+        bool truncated;
+        int chunks = 0;
+        if (rag.Enabled)
+        {
+            var k = KnowledgeIndexer.Sync(index, options.KnowledgeDirectory, rag);
+            knowledge = k.Core;
+            truncated = k.CoreTruncated;
+            chunks = k.Chunks;
+        }
+        else knowledge = Prompts.LoadKnowledge(options.KnowledgeDirectory, options.MaxKnowledgeChars, out truncated);
+
         var agent = new BotAgent(options, llm, tools, events, chat, usage, context, activities, knowledge, time,
-            loggers?.CreateLogger<BotAgent>());
+            loggers?.CreateLogger<BotAgent>(), knowledgeIsCore: rag.Enabled);
+        var retriever = rag.Enabled && rag.AutoRetrieve ? new AutoRetriever(index, context, episodes) : null;
+        var reflection = self != null ? new ReflectionPass(self, index, llm, usage, time, Log("MineClaw.Self")) : null;
+        agent.Position = position;
+        agent.Rag = index;
+        agent.Retriever = retriever;
+        agent.Self = self;
+        agent.Reflection = reflection;
+        if (rag.Enabled && rag.RestoreJournal && episodes.LatestJournal() is { Length: > 0 } journal) context.SetJournal(journal);
 
         return new AgentRuntime
         {
             Options = options, Tools = tools, Events = events, Chat = chat, Usage = usage, Memory = memory,
             Context = context, Activities = activities, Routines = routines, Agent = agent, Llm = llm,
-            KnowledgeTruncated = truncated, KnowledgeChars = knowledge.Length,
+            Db = db, Rag = index, Observations = observations, Episodes = episodes, Retriever = retriever, Self = self,
+            Reflection = reflection, Embeddings = embedder,
+            KnowledgeTruncated = truncated, KnowledgeChars = knowledge.Length, KnowledgeChunks = chunks,
         };
+    }
+
+    public void Dispose()
+    {
+        Rag.Dispose();
+        Memory.Dispose();
+        (Embeddings as IDisposable)?.Dispose();
+        Db.Dispose();
     }
 }

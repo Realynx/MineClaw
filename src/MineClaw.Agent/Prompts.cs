@@ -9,7 +9,8 @@ public static class Prompts
     public const string DefaultPersona =
         "Friendly and playful; match the players' affectionate, casual vibe without being sappy. Light teasing is ok. Lowercase casual tone is fine.";
 
-    public static string System(string persona, string personaExtra, string knowledge)
+    /// <param name="knowledge">Knowledge text; with <paramref name="retrieval"/> it is only the core rules (the rest is retrieved).</param>
+    public static string System(string persona, string personaExtra, string knowledge, bool retrieval = false)
     {
         var sb = new StringBuilder();
         sb.Append($"""
@@ -37,8 +38,11 @@ How turns work
 - When a sequence of tool calls works and will be repeated, save it with save_routine and use run_routine later.
 
 Memory
-- Use recall before guessing about places, structures, players or routines. Save useful things (waypoints,
-  structures and how to use them, facts about players) as you learn them.
+- "[memory]" lines in a turn are auto-recalled notes (#id), possibly irrelevant. For more, use recall (places,
+  structures, players, routines, past episodes, chat log, Skyblock knowledge; near="here" for what's around) and
+  recall_detail #id for a full entry. where_is finds items in known chests and the nearest known furnace/bed/etc.
+- Recall before guessing. Save useful things (waypoints, structures and how to use them, facts about players)
+  as you learn them.
 - If you see a structure you don't recognise, or don't know how to use something the players built, ask them
   (ask_player) or ask them to show you (watch_demo), then record it with mark_structure/describe_structure.
 
@@ -47,13 +51,17 @@ Safety
 - On danger events, deal with them first (stop, retreat, eat), then tell the players briefly.
 """);
         if (!string.IsNullOrWhiteSpace(personaExtra)) sb.Append("\n").Append(personaExtra.Trim()).Append('\n');
-        if (!string.IsNullOrWhiteSpace(knowledge)) sb.Append("\n# Skyblock knowledge\n").Append(knowledge.Trim()).Append('\n');
+        if (!string.IsNullOrWhiteSpace(knowledge))
+        {
+            sb.Append(retrieval ? "\n# Skyblock core rules\n" : "\n# Skyblock knowledge\n").Append(knowledge.Trim()).Append('\n');
+            if (retrieval) sb.Append("(More Skyblock know-how: recall kind=knowledge; relevant bits also appear under [memory].)\n");
+        }
         return sb.ToString();
     }
 
     /// <summary>
-    /// Small uncached block placed after the cached prefix, so a rename never invalidates the cached tools,
-    /// instructions and knowledge.
+    /// Small block placed after the static prefix (its own cache breakpoint), so a rename or personality update never
+    /// invalidates the cached tools, instructions and knowledge.
     /// </summary>
     public static string Identity(string username, string displayName, IReadOnlyList<string> aliases) =>
         $"Your name in chat is {displayName}" + (aliases.Count > 0 ? $" (you also answer to: {string.Join(", ", aliases)})" : "") +

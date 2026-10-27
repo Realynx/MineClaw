@@ -64,14 +64,7 @@ public static class IdentityTools
 
     private static void Save(MemoryStore memory, ChatRouter chat, string displayName, List<string> aliases, string? by)
     {
-        memory.Update(d =>
-        {
-            d.Identity ??= new BotIdentity();
-            d.Identity.DisplayName = displayName;
-            d.Identity.Aliases = aliases.ToList();
-            if (by != null) d.Identity.NamedBy = by;
-            d.Identity.Updated = DateTimeOffset.UtcNow;
-        });
+        memory.SetIdentity(displayName, aliases, by);
         chat.SetIdentity(displayName, aliases);
     }
 

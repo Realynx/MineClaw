@@ -28,7 +28,7 @@ MineClaw.Client    TCP connection + packet dispatch, 20 TPS tick, physics, playe
 | Data | `BlockInfo`, `ItemInfo`, `Blocks`, `Items`, `Recipes`, `Smelting`, `Tools` (dig-time math) | `Blocks.Get(id)`, `Blocks.ByName(name)`, `Items.Get(id)`, `Items.ByName(name)`, `Recipes.*`, `Smelting.*`, `Tools.*` |
 | World | chunk columns (16x128x16: ids, metadata, block light, sky light), `WorldState`, entity tracker, inventory/window model, AABB collision, A* pathfinder | `WorldState.GetBlock(x,y,z)`, `SetBlock`, `LoadChunk(...)`, `Pathfinder.FindPath(...)` |
 | Client | `MinecraftClient`, packet → world/event wiring, physics tick, action primitives | async action API used by Agent tools |
-| Agent | Anthropic client, tool loop, tools, `MemoryStore` (JSON on disk), prompts | `BotAgent.RunAsync(ct)` |
+| Agent | Anthropic client, tool loop, tools, SQLite memory + local RAG (`AgentDb`, `RagIndex`, `ObservationStore`), self-profile, prompts | `BotAgent.RunAsync(ct)`; world ingestion via `AgentRuntime.Observations` |
 | App | `Program.cs`, `appsettings.json` | — |
 
 ## Conventions
@@ -53,10 +53,15 @@ The LLM must never be on the hot path. Claude is a *planner and conversationalis
 3. **Pull, don't push, observations.** The model asks for what it needs (`look`, `inventory`, `nearby`);
    each returns a compact, bounded summary. A tiny state header (pos, hp, food, held item, current task) rides
    along with each event.
-4. **Prompt caching.** Static system prompt + tool definitions + Skyblock knowledge are a cached prefix; the
-   dynamic part stays small.
-5. **Bounded context.** Rolling window of recent turns; older turns are compacted into a short journal; old
-   tool results are truncated. Long-term facts live in the on-disk `MemoryStore`, recalled by tool.
+4. **Prompt caching.** Order: tools + static system + *core* knowledge (breakpoint 1) → identity + self-profile
+   block (breakpoint 2, 5m) → append-only history with a moving breakpoint on the last message. Per-turn data
+   (state header, `[memory]`, events) lives only in the newest user message, so each request is the previous one
+   plus new messages.
+5. **Bounded context + local retrieval.** History compacts rarely and in one go (30k → 20k tokens main, 16k → 10k
+   cheap) into a short journal; old tool results are truncated only then. Everything (memory, episodes, chat log,
+   knowledge chunks, world observations) is indexed in one SQLite db (FTS5 + cached vectors + R*Tree) and pulled
+   back by a zero-token auto-retrieval `[memory]` block (≤~250 tokens) or the `recall`/`where_is` tools.
+   Knowledge docs: `<!-- core -->…<!-- /core -->` stays in the prompt, the rest is retrieved.
 6. **Model tiers.** Cheap model for chat triage / small talk / compaction; stronger model for planning and
    multi-step tasks. Both configurable. Small `max_tokens`, thinking off or minimal by default.
 7. **Routines.** The model can save a working sequence of tool calls as a named routine (e.g. "cobble_loop")

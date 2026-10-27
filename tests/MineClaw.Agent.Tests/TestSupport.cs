@@ -55,7 +55,8 @@ public sealed class TempDir : IDisposable
 
 public static class TestRuntime
 {
-    public static (AgentRuntime Rt, FakeLlm Llm, List<string> Sent) Create(Action<AgentOptions>? configure = null, TimeProvider? time = null)
+    public static (AgentRuntime Rt, FakeLlm Llm, List<string> Sent) Create(Action<AgentOptions>? configure = null, TimeProvider? time = null,
+        MineClaw.Agent.Rag.IEmbeddingProvider? embeddings = null, Func<MineClaw.Agent.Memory.BlockPos?>? position = null)
     {
         var options = new AgentOptions { KnowledgeDirectory = null, IdleCheckInMinutes = 0 };
         options.Chat.Username = "Clawd_bot";
@@ -68,7 +69,7 @@ public static class TestRuntime
         var llm = new FakeLlm();
         var sent = new List<string>();
         var rt = AgentRuntime.Create(options, (line, _) => { lock (sent) sent.Add(line); return Task.CompletedTask; },
-            llm, persist: false, time: time);
+            llm, position: position, persist: false, time: time, embeddings: embeddings);
         return (rt, llm, sent);
     }
 }

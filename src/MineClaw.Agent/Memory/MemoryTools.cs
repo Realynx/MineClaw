@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
+using MineClaw.Agent.Rag;
 using MineClaw.Agent.Tools;
 
 namespace MineClaw.Agent.Memory;
@@ -89,9 +90,7 @@ public static class MemoryTools
                 return Task.FromResult(ToolResult.Success($"note#{n.Id} saved"));
             }, cheapTier: true);
 
-        registry.Register("recall", "Search memory (waypoints, structures, notes, routines) by keywords.",
-            ToolSchema.Create().Str("query").Build(),
-            (input, _) => Task.FromResult(ToolResult.Success(memory.Recall(input.Str("query") ?? ""))), cheapTier: true);
+        RegisterRecall(registry, memory, position);
 
         registry.Register("forget", "Delete a memory by name (note: id like #3).",
             ToolSchema.Create().Str("name").Str("kind", required: false, enumValues: ["waypoint", "structure", "note", "routine"]).Build(),
@@ -104,6 +103,111 @@ public static class MemoryTools
         registry.Register("list_memory", "List saved names (optionally one kind).",
             ToolSchema.Create().Str("kind", required: false, enumValues: ["waypoint", "structure", "note", "routine"]).Build(),
             (input, _) => Task.FromResult(ToolResult.Success(memory.List(input.Str("kind")))), cheapTier: true);
+    }
+
+    public static readonly string[] RecallKinds =
+        ["waypoint", "structure", "note", "player", "routine", "episode", "knowledge", "world", "chat"];
+
+    /// <summary><c>recall</c> (hybrid search, optional kind/near) and <c>recall_detail</c> (full record by id, paged).</summary>
+    public static void RegisterRecall(ToolRegistry registry, MemoryStore memory, Func<BlockPos?>? position)
+    {
+        var index = memory.Index;
+        var o = index.Options;
+        registry.Register("recall",
+            "Search memory: places, structures, players, notes, routines, past episodes, chat log, Skyblock knowledge, world objects. " +
+            "near=\"here\" or x,y,z lists what's known around a spot.",
+            ToolSchema.Create().Str("query", required: false).Str("kind", required: false, enumValues: RecallKinds)
+                .Str("near", "\"here\" or x,y,z", required: false).Int("radius", "blocks, default 16", required: false)
+                .Int("limit", required: false).Build(),
+            async (input, ct) =>
+            {
+                var query = input.Str("query")?.Trim();
+                var kind = input.Str("kind")?.Trim().ToLowerInvariant();
+                int limit = Math.Clamp(input.Int("limit") ?? o.RecallLimit, 1, 12);
+                (double, double, double)? near = null;
+                if (input.Str("near") is { Length: > 0 } ns)
+                {
+                    var p = ParseNear(ns, position);
+                    if (p == null) return ToolResult.Error("near must be \"here\" or x,y,z");
+                    near = p;
+                }
+                if (string.IsNullOrEmpty(query) && near == null) return ToolResult.Error("give a query or near");
+
+                if (kind == "chat")
+                {
+                    var rows = index.SearchChat(query, null, limit);
+                    if (rows.Count == 0) return ToolResult.Success("no chat matches");
+                    return ToolResult.Success(Bounded(rows.Select(r => TextUtil.Truncate(r.Format(), 160)), o.RecallMaxChars));
+                }
+
+                IReadOnlyCollection<string>? kinds = kind switch
+                {
+                    null or "" => null,
+                    "note" => ["note", "player"],
+                    _ => [kind],
+                };
+                var hits = await index.SearchAsync(new RagQuery
+                {
+                    Text = query, Kinds = kinds, Near = near, Radius = Math.Clamp(input.Int("radius") ?? 16, 1, 128), Limit = limit,
+                }, ct).ConfigureAwait(false);
+                return ToolResult.Success(MemoryStore.FormatHits(index, hits, o.RecallMaxChars, 200));
+            }, cheapTier: true);
+
+        registry.Register("recall_detail", "Full text of a recall/[memory] entry by id (#12, or c34 for chat). Long ones are paged.",
+            ToolSchema.Create().Str("id").Int("page", required: false).Build(),
+            (input, _) =>
+            {
+                var raw = input.ReqStr("id").Trim().TrimStart('#');
+                int page = Math.Max(1, input.Int("page") ?? 1);
+                string? text = null;
+                if (raw.StartsWith('c') && long.TryParse(raw[1..], out var cid))
+                {
+                    var rows = index.ChatAround(cid);
+                    if (rows.Count > 0) text = string.Join("\n", rows.Select(r => r.Format()));
+                }
+                else if (long.TryParse(raw, out var id) && index.Get(id) is { } h)
+                {
+                    text = h.Kind switch
+                    {
+                        "knowledge" => $"{h.Title}\n{h.Body}",
+                        "episode" => h.Body,
+                        _ => h.Body,
+                    };
+                    if (h.Bounds is { } b && h.Kind is "world" or "episode") text += $" @{b.Format()}";
+                    text = $"#{h.Id} [{h.Tag ?? h.Kind}] " + text;
+                }
+                if (text == null) return Task.FromResult(ToolResult.Error("no such id"));
+                int size = Math.Max(100, o.RecallMaxChars - 20);
+                int pages = (text.Length + size - 1) / size;
+                if (page > pages) return Task.FromResult(ToolResult.Error($"only {pages} page(s)"));
+                var slice = text.Substring((page - 1) * size, Math.Min(size, text.Length - (page - 1) * size));
+                return Task.FromResult(ToolResult.Success(pages > 1 ? $"{slice} (page {page}/{pages})" : slice));
+            }, cheapTier: true);
+    }
+
+    internal static (double, double, double)? ParseNear(string s, Func<BlockPos?>? position)
+    {
+        s = s.Trim();
+        if (s.Equals("here", StringComparison.OrdinalIgnoreCase) || s.Equals("me", StringComparison.OrdinalIgnoreCase))
+            return position?.Invoke() is { } p ? (p.X, p.Y, p.Z) : null;
+        var parts = s.Split([',', ' '], StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 3 && parts.All(x => double.TryParse(x, NumberStyles.Float, CultureInfo.InvariantCulture, out _)))
+            return (double.Parse(parts[0], CultureInfo.InvariantCulture), double.Parse(parts[1], CultureInfo.InvariantCulture), double.Parse(parts[2], CultureInfo.InvariantCulture));
+        if (parts.Length == 2 && parts.All(x => double.TryParse(x, NumberStyles.Float, CultureInfo.InvariantCulture, out _)))
+            return (double.Parse(parts[0], CultureInfo.InvariantCulture), position?.Invoke()?.Y ?? 64, double.Parse(parts[1], CultureInfo.InvariantCulture));
+        return null;
+    }
+
+    internal static string Bounded(IEnumerable<string> lines, int maxChars)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (var l in lines)
+        {
+            if (sb.Length + l.Length + 1 > maxChars) break;
+            if (sb.Length > 0) sb.Append('\n');
+            sb.Append(l);
+        }
+        return sb.ToString();
     }
 
     private static (int, int, int) Coords(System.Text.Json.JsonElement input, string xs, string ys, string zs, Func<BlockPos?>? position)

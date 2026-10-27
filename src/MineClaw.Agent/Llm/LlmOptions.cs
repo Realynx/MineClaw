@@ -23,8 +23,15 @@ public sealed class LlmOptions
     public string CheapThinking { get; set; } = "off";
     public string MainThinking { get; set; } = "off";
 
-    /// <summary>Cache TTL for the static prefix (system + tools + knowledge): "1h" survives idle gaps; "5m" is cheaper to write.</summary>
-    public string StaticPrefixTtl { get; set; } = "1h";
+    /// <summary>
+    /// Cache TTL for the static prefix (tools + system + core knowledge): "5m" (default; 1.25x write, refreshed free by
+    /// every hit), "1h" (2x write, survives idle gaps), or "auto" = 1h while a session is active (chat within
+    /// <see cref="ActiveSessionMinutes"/>), else 5m. The identity/self block and history always use 5m.
+    /// </summary>
+    public string StaticPrefixTtl { get; set; } = "5m";
+
+    /// <summary>For StaticPrefixTtl "auto": a session counts as active this long after the last chat to the bot.</summary>
+    public int ActiveSessionMinutes { get; set; } = 30;
 
     /// <summary>API key; null means the SDK default (ANTHROPIC_API_KEY env var).</summary>
     public string? ApiKey { get; set; }

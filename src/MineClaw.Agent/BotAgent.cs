@@ -4,6 +4,9 @@ using MineClaw.Agent.Chat;
 using MineClaw.Agent.Context;
 using MineClaw.Agent.Events;
 using MineClaw.Agent.Llm;
+using MineClaw.Agent.Memory;
+using MineClaw.Agent.Rag;
+using MineClaw.Agent.Self;
 using MineClaw.Agent.Tools;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -38,13 +41,14 @@ public sealed class BotAgent
     private readonly Triage _triage;
     private readonly TimeProvider _time;
     private readonly ILogger _log;
-    private readonly LlmSystemBlock _staticSystem;
+    private readonly string _staticText;
     private DateTimeOffset _lastEpisode;
+    private DateTimeOffset _lastActive = DateTimeOffset.MinValue;
     private DateTimeOffset _lastPausedNotice = DateTimeOffset.MinValue;
 
     public BotAgent(AgentOptions options, ILlmClient llm, ToolRegistry tools, EventQueue events, ChatRouter chat,
         UsageTracker usage, ContextManager context, ActivityManager activities, string knowledge = "",
-        TimeProvider? time = null, ILogger? log = null)
+        TimeProvider? time = null, ILogger? log = null, bool knowledgeIsCore = false)
     {
         _options = options;
         _llm = llm;
@@ -57,7 +61,7 @@ public sealed class BotAgent
         _time = time ?? TimeProvider.System;
         _log = log ?? NullLogger.Instance;
         _triage = new Triage(options.Triage);
-        _staticSystem = new LlmSystemBlock(Prompts.System(options.Persona, options.PersonaExtra, knowledge), Cache: true);
+        _staticText = Prompts.System(options.Persona, options.PersonaExtra, knowledge, knowledgeIsCore);
         _lastEpisode = _time.GetUtcNow();
 
         _events.Posted += OnEventPosted;
@@ -67,13 +71,46 @@ public sealed class BotAgent
     /// <summary>Compact one-line game state ("pos 12,64,-3 hp 18/20 food 17 held stone_pickaxe"), supplied by the client layer.</summary>
     public Func<string>? StateHeader { get; set; }
 
+    /// <summary>Current block position (spatial auto-retrieval, episode positions).</summary>
+    public Func<BlockPos?>? Position { get; set; }
+
+    /// <summary>Builds the per-turn [memory] block (null = no auto-retrieval).</summary>
+    public AutoRetriever? Retriever { get; set; }
+
+    /// <summary>Chat log sink (null = no chat logging).</summary>
+    public RagIndex? Rag { get; set; }
+
+    /// <summary>Evolving personality rendered into the identity block (null = off).</summary>
+    public SelfProfile? Self { get; set; }
+
+    /// <summary>Periodic cheap-tier personality reflection (null = off).</summary>
+    public ReflectionPass? Reflection { get; set; }
+
     public ContextManager Context => _context;
+
     /// <summary>
-    /// Current system prompt: the cached static block (instructions + knowledge; tools render before it and share
-    /// its breakpoint) followed by a tiny uncached identity block, so renames never bust the cached prefix.
+    /// Current system prompt, in cache order: (1) the static block — instructions + core knowledge; tools render
+    /// before it and share its breakpoint; (2) the identity + self-profile block with its own 5m breakpoint, so a rename
+    /// or personality update only rewrites that small block plus history. Per-turn data never goes here — state header,
+    /// [memory] and events ride in the newest user message.
     /// </summary>
     public IReadOnlyList<LlmSystemBlock> SystemPrompt =>
-        [_staticSystem, new LlmSystemBlock(Prompts.Identity(_chat.Username, _chat.DisplayName, _chat.Aliases))];
+        [new LlmSystemBlock(_staticText, Cache: true, Ttl: StaticTtl()), new LlmSystemBlock(DynamicSystemText(), Cache: true, Ttl: "5m")];
+
+    private string DynamicSystemText()
+    {
+        var identity = Prompts.Identity(_chat.Username, _chat.DisplayName, _chat.Aliases);
+        string self = "";
+        try { self = Self?.Render() ?? ""; } catch (Exception ex) { _log.LogWarning(ex, "self profile render failed"); }
+        return self.Length > 0 ? identity + "\n\n" + self : identity;
+    }
+
+    private string StaticTtl() => _options.Llm.StaticPrefixTtl?.ToLowerInvariant() switch
+    {
+        "1h" => "1h",
+        "auto" => _time.GetUtcNow() - _lastActive <= TimeSpan.FromMinutes(Math.Max(1, _options.Llm.ActiveSessionMinutes)) ? "1h" : "5m",
+        _ => "5m",
+    };
 
     /// <summary>Raised after each handled batch.</summary>
     public event Action<EpisodeOutcome>? EpisodeCompleted;
@@ -109,6 +146,8 @@ public sealed class BotAgent
     public async Task<EpisodeOutcome> HandleBatchAsync(EventBatch batch, CancellationToken ct)
     {
         _lastEpisode = _time.GetUtcNow();
+        LogChat(batch);
+        if (batch.Waking.Any(e => e.Kind is EventKind.Chat or EventKind.Whisper)) _lastActive = _lastEpisode;
         var mode = _usage.CheckMode();
         if (mode == BudgetMode.Paused)
         {
@@ -144,6 +183,20 @@ public sealed class BotAgent
             catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "compaction failed"); }
         }
 
+        if (Reflection != null)
+        {
+            Reflection.NoteEpisode();
+            if (Reflection.IsDue && _usage.CheckMode() == BudgetMode.Normal)
+            {
+                try
+                {
+                    int changed = await Reflection.RunAsync(ct).ConfigureAwait(false);
+                    _log.LogInformation("self reflection: {Changed} change(s)", changed);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "self reflection failed"); }
+            }
+        }
+
         return Done(new EpisodeOutcome(outcome.Tier, outcome.Calls, outcome.Usage, outcome.Cost, outcome.Said, outcome.Escalation != null));
     }
 
@@ -163,7 +216,7 @@ public sealed class BotAgent
     private async Task<RunResult> RunEpisodeAsync(EventBatch batch, ModelTier tier, bool canEscalate, BudgetMode mode, string? prelude, CancellationToken ct)
     {
         var episode = new Episode(tier, _time.GetUtcNow());
-        episode.Messages.Add(LlmMessage.User(BuildTurnText(batch, tier, canEscalate, mode, prelude)));
+        episode.Messages.Add(LlmMessage.User(await BuildTurnTextAsync(batch, tier, canEscalate, mode, prelude, ct).ConfigureAwait(false)));
 
         string? whisperTo = batch.WhisperOnlyFrom;
         var audience = batch.Waking.Where(e => e.Player != null).Select(e => e.Player!).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
@@ -192,6 +245,7 @@ public sealed class BotAgent
             calls++;
             usage = usage.Add(response.Usage);
             cost += _usage.Record(response.Model, response.Usage);
+            _log.LogDebug("call {Tier} round {Round}: {Usage} cache hit {Hit:P0}", tier, round, response.Usage, UsageTracker.CacheHit(response.Usage));
 
             var content = response.Content.Where(b => b is not LlmText t || !string.IsNullOrWhiteSpace(t.Text)).ToList();
             if (content.Count == 0) content.Add(new LlmText("(silent)"));
@@ -202,6 +256,7 @@ public sealed class BotAgent
             {
                 var lines = await _chat.SayAsync(text, whisperTo, audience, ct).ConfigureAwait(false);
                 said.AddRange(lines);
+                LogSaid(lines, whisperTo);
             }
 
             if (response.StopReason == StopReasons.Refusal)
@@ -227,6 +282,7 @@ public sealed class BotAgent
             var fresh = _events.TryTakeUrgent(EventPriority.Normal);
             if (fresh != null)
             {
+                LogChat(fresh);
                 blocks.Add(new LlmText("[new events]\n" + fresh.Format()));
                 foreach (var p in fresh.Waking.Where(e => e.Player != null).Select(e => e.Player!))
                     if (!audience.Contains(p, StringComparer.OrdinalIgnoreCase)) audience.Add(p);
@@ -239,8 +295,19 @@ public sealed class BotAgent
         return new RunResult(tier, calls, usage, cost, said, null);
     }
 
-    private string BuildTurnText(EventBatch batch, ModelTier tier, bool canEscalate, BudgetMode mode, string? prelude)
+    private async Task<string> BuildTurnTextAsync(EventBatch batch, ModelTier tier, bool canEscalate, BudgetMode mode, string? prelude, CancellationToken ct)
     {
+        string memory = "";
+        if (Retriever != null)
+        {
+            try
+            {
+                BlockPos? pos = null;
+                try { pos = Position?.Invoke(); } catch (Exception) { }
+                memory = await Retriever.BuildAsync(batch, tier, pos, NameWords(), ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "auto-retrieval failed"); }
+        }
         var sb = new StringBuilder();
         string header = "";
         try { header = StateHeader?.Invoke() ?? ""; } catch (Exception ex) { _log.LogWarning(ex, "state header failed"); }
@@ -251,6 +318,7 @@ public sealed class BotAgent
         if (mode == BudgetMode.CheapOnly) sb.Append(Prompts.CheapOnlyHint).Append('\n');
         else if (tier == ModelTier.Cheap && canEscalate) sb.Append(Prompts.CheapTierHint).Append('\n');
         if (prelude != null) sb.Append(prelude).Append('\n');
+        if (memory.Length > 0) sb.Append(memory).Append('\n');
         sb.Append(batch.Format());
         return sb.ToString().TrimEnd();
     }
@@ -315,6 +383,35 @@ public sealed class BotAgent
         text.Length == 0 || text is "." or "-" or "..." || text.Equals("(silent)", StringComparison.OrdinalIgnoreCase);
 
     // ---------------- support ----------------
+
+    private IEnumerable<string> NameWords() => [_chat.Username, _chat.DisplayName, .. _chat.Aliases];
+
+    private void LogChat(EventBatch batch)
+    {
+        if (Rag == null) return;
+        try
+        {
+            foreach (var e in batch.Events)
+            {
+                string? kind = e.Kind switch
+                {
+                    EventKind.Chat => "chat", EventKind.Whisper => "whisper", EventKind.PlayerJoined => "join", EventKind.PlayerLeft => "leave", _ => null,
+                };
+                if (kind != null) Rag.LogChat(e.At, kind, e.Player, e.Text);
+            }
+        }
+        catch (Exception ex) { _log.LogWarning(ex, "chat log write failed"); }
+    }
+
+    private void LogSaid(IReadOnlyList<string> lines, string? whisperTo)
+    {
+        if (Rag == null) return;
+        try
+        {
+            foreach (var l in lines) Rag.LogChat(_time.GetUtcNow(), whisperTo != null ? "bot_whisper" : "bot", _chat.Username, l);
+        }
+        catch (Exception ex) { _log.LogWarning(ex, "chat log write failed"); }
+    }
 
     private async Task<string> SummarizeAsync(string prompt, CancellationToken ct)
     {

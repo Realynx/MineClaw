@@ -3,6 +3,8 @@ using MineClaw.Agent.Chat;
 using MineClaw.Agent.Context;
 using MineClaw.Agent.Events;
 using MineClaw.Agent.Llm;
+using MineClaw.Agent.Rag;
+using MineClaw.Agent.Self;
 
 namespace MineClaw.Agent;
 
@@ -16,14 +18,23 @@ public sealed class AgentOptions
     public EventQueueOptions Events { get; set; } = new();
     public ContextOptions Context { get; set; } = new();
     public TriageOptions Triage { get; set; } = new();
+    /// <summary>Local retrieval (SQLite FTS5 + vectors + R*Tree): "Agent:Rag".</summary>
+    public RagOptions Rag { get; set; } = new();
+    /// <summary>Embedding provider: "Agent:Embeddings" (empty key/endpoint = FTS-only).</summary>
+    public EmbeddingOptions Embeddings { get; set; } = new();
+    /// <summary>Evolving personality layer on top of <see cref="Persona"/>: "Agent:Self".</summary>
+    public SelfOptions Self { get; set; } = new();
 
-    /// <summary>Directory for memory.json and usage.json.</summary>
+    /// <summary>Directory for the SQLite db (mineclaw.db), usage.json and a legacy memory.json (imported once).</summary>
     public string DataDirectory { get; set; } = "data";
 
-    /// <summary>Every *.md here is appended to the cached system prompt at startup (null/missing = none).</summary>
+    /// <summary>
+    /// Knowledge *.md files. With RAG on, only each file's core section (&lt;!-- core --&gt;...&lt;!-- /core --&gt;, else its first
+    /// section) goes into the cached prompt; the rest is chunked by heading and retrieved. RAG off: everything in the prompt.
+    /// </summary>
     public string? KnowledgeDirectory { get; set; } = "docs/knowledge";
 
-    /// <summary>Cap on knowledge text (chars) so a big doc can't silently inflate every request.</summary>
+    /// <summary>Cap on in-prompt knowledge text (chars, RAG off) so a big doc can't silently inflate every request.</summary>
     public int MaxKnowledgeChars { get; set; } = 40_000;
 
     /// <summary>

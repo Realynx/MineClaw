@@ -44,8 +44,11 @@ public sealed record LlmMessage(LlmRole Role, IReadOnlyList<LlmBlock> Content)
 
 public sealed record LlmToolDefinition(string Name, string Description, JsonElement InputSchema);
 
-/// <summary>A system-prompt segment. Segments with <see cref="Cache"/> set get a cache breakpoint after them.</summary>
-public sealed record LlmSystemBlock(string Text, bool Cache = false);
+/// <summary>
+/// A system-prompt segment. Segments with <see cref="Cache"/> set get a cache breakpoint after them; <see cref="Ttl"/>
+/// is "5m" or "1h" (null = client default). Longer TTLs must come before shorter ones in a request.
+/// </summary>
+public sealed record LlmSystemBlock(string Text, bool Cache = false, string? Ttl = null);
 
 public sealed class LlmRequest
 {
