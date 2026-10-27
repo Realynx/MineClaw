@@ -24,6 +24,12 @@ public sealed class AgentDbRaptorStore : IRaptorStore
 
     public AgentDbRaptorStore(AgentDb db) => _db = db;
 
+    /// <summary>
+    /// False in a process that only reads the shared tree (a hive clone, maintenance off): a load never writes back
+    /// (unmapping leaves whose doc text changed would make main re-insert them: churn from every clone reload, B23).
+    /// </summary>
+    public bool LoadWritesBack { get; set; } = true;
+
     /// <summary>Test hook: throw while applying this record (checks that a change set is all-or-nothing).</summary>
     internal Func<RaptorNodeRecord, bool>? FailOn { get; set; }
 
@@ -103,7 +109,7 @@ public sealed class AgentDbRaptorStore : IRaptorStore
                         foreach (var p in ps) if (byIdx.ContainsKey(p) && dirty.Add(p)) stack.Push(p);
             }
             var dropped = rows.Where(r => !byIdx.ContainsKey(r.Idx)).ToList();
-            if (dropped.Count > 0)
+            if (dropped.Count > 0 && LoadWritesBack)
                 _db.Tx(() =>
                 {
                     foreach (var d in dropped)
@@ -124,8 +130,10 @@ public sealed class AgentDbRaptorStore : IRaptorStore
                     (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, r.Seq));
             }
             int numLayers = Math.Min(meta.NumLayers, nodes.Count == 0 ? 0 : nodes.Max(n => n.Layer));
-            if (droppedLeaves > 0 || numLayers != meta.NumLayers)
-                meta = meta with { RemovedSinceBuild = meta.RemovedSinceBuild + droppedLeaves, NumLayers = numLayers };
+            // A leaf dropped here is a doc whose text changed while it was out of the tree: the sync re-inserts it and that
+            // insert is its one change. Counting the drop as well doubled every restart's edits toward the rebuild (B23).
+            if (numLayers != meta.NumLayers)
+                meta = meta with { NumLayers = numLayers };
 
             Publish(byIdx.Values.ToDictionary(r => r.Idx, r => r.Id));
             Orphans = droppedLeaves;

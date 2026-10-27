@@ -191,7 +191,7 @@ public sealed class UsageTracker
     private readonly TimeProvider _time;
     private readonly string? _path;
     private readonly object _lock = new();
-    private readonly Queue<DateTimeOffset> _recentCalls = new();
+    private readonly Queue<(DateTimeOffset At, string Tier)> _recentCalls = new();
     private State _state;
     private BudgetMode _lastMode = BudgetMode.Normal;
     private double _lastCacheHit;
@@ -245,6 +245,15 @@ public sealed class UsageTracker
         get { lock (_lock) { Prune(); return _recentCalls.Count; } }
     }
 
+    /// <summary>Calls in the last hour per tier label (opus/worker/memory/other), tiers with calls only.</summary>
+    public IReadOnlyDictionary<string, int> CallsLastHourByTier
+    {
+        get { lock (_lock) { Prune(); return CallsByTier(); } }
+    }
+
+    private Dictionary<string, int> CallsByTier() =>
+        _recentCalls.GroupBy(c => c.Tier).ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
+
     /// <summary>Cache hit ratio of the most recent call (see <see cref="UsageTotals.CacheHitRatio"/>).</summary>
     public double LastCacheHitRatio { get { lock (_lock) return _lastCacheHit; } }
 
@@ -289,7 +298,7 @@ public sealed class UsageTracker
             _lastCacheHit = CacheHit(usage);
             Get(_state.Days, DayKey).Add(cost, usage, label, provider, profile);
             Get(_state.Months, MonthKey).Add(cost, usage, label, provider, profile);
-            _recentCalls.Enqueue(Now);
+            _recentCalls.Enqueue((Now, label));
             TrimOldDays();
             if (_path != null)
             {
@@ -357,9 +366,22 @@ public sealed class UsageTracker
             var d = Get(_state.Days, DayKey);
             var m = Get(_state.Months, MonthKey);
             Prune();
-            return $"today ${d.TotalUsd:0.000}/{_options.DailyCapUsd:0.00} ({d.Calls} calls, cache {d.CacheHitRatio:P0}" +
+            // Hive main (night review B22): the caps are shared, so "today" is main + clones against the cap, main's own part
+            // in brackets; calls/h per tier (RAPTOR's Haiku bursts were read as 245 brain calls an hour).
+            (decimal Today, decimal Month)? ext = null;
+            if (ExternalSpend is { } f)
+            {
+                try { ext = f(); } catch (Exception) { /* ledger unavailable: own spend only */ }
+            }
+            string today = ext is { } x
+                ? $"today ${d.TotalUsd + x.Today:0.000}/{_options.DailyCapUsd:0.00} (main ${d.TotalUsd:0.000}, clones ${x.Today:0.000}, {d.Calls} calls"
+                : $"today ${d.TotalUsd:0.000}/{_options.DailyCapUsd:0.00} ({d.Calls} calls";
+            var perTier = CallsByTier();
+            string perHour = perTier.Count == 0 ? "0 calls/h"
+                : "calls/h " + string.Join(" ", TierLabels.Where(perTier.ContainsKey).Select(l => $"{l} {perTier[l]}"));
+            return today + $", cache {d.CacheHitRatio:P0}" +
                    (d.EmbeddingTokens > 0 ? $", emb ${d.EmbeddingUsd:0.0000}" : "") +
-                   $"), month ${m.TotalUsd:0.00}/{_options.MonthlyCapUsd:0.00}, {_recentCalls.Count} calls/h" +
+                   $"), month ${m.TotalUsd + (ext?.Month ?? 0):0.00}/{_options.MonthlyCapUsd:0.00}, {perHour}" +
                    (d.Tiers is { Count: > 0 } ? " | " + TierSummary(d) : "") +
                    (d.Providers?.TryGetValue(LlmProviders.Ollama, out var ol) == true ? $" | ollama {ol.Calls}c ${ol.Usd:0.000}" : "");
         }
@@ -404,7 +426,7 @@ public sealed class UsageTracker
     private void Prune()
     {
         var cutoff = Now - TimeSpan.FromHours(1);
-        while (_recentCalls.Count > 0 && _recentCalls.Peek() <= cutoff) _recentCalls.Dequeue();
+        while (_recentCalls.Count > 0 && _recentCalls.Peek().At <= cutoff) _recentCalls.Dequeue();
     }
 
     private void TrimOldDays()

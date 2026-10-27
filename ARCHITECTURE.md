@@ -186,7 +186,7 @@ connects its pipe before opening anything and exits 75 without one (never unsupe
   deposits only if quick and safe (`ParentLossDepositSeconds`), records leftovers as stranded, logs out. Next spawn of a
   stranded clone deposits first.
 - **Logout gate**: every planned logout (task done, recall, budget, making room, main SIGTERM) deposits the ENTIRE inventory
-  (WorldIndexer chests with free-slot estimates → hand-off to main by tossing at its feet, confirmed by its collect events →
+  (WorldIndexer chests with free-slot estimates → hand-off to main by tossing at its feet (main stands still, job paused, from offer to confirmation), confirmed by its collect events →
   place a chest, labelled as a shared-memory waypoint) and logs out only when the inventory window is verified empty (or the
   deposit timeout hits → stranded). SIGTERM: main recalls clones first (`ShutdownRecallSeconds`, under systemd's 90 s).
 - **Shared memory**: one SQLite file (WAL, busy_timeout, the per-process AgentDb gate = single writer, IMMEDIATE txs). Hive

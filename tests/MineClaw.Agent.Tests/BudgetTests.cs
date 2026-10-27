@@ -16,6 +16,29 @@ public class BudgetTests
         Assert.Equal(5m, p.Cost("some-unknown-model", new LlmUsage(1_000_000, 0, 0, 0))); // conservative fallback
     }
 
+    [Fact] // Night review 10-27 B22: 07:52:36 main logged "today $2.980/50.00" while the ledger said "hive today $4.882/50.00 (clones $1.902)"
+    public void B22_hive_main_summary_shows_hive_spend_against_the_cap_and_calls_per_tier()
+    {
+        var time = new ManualTime();
+        var t = new UsageTracker(new BudgetOptions { DailyCapUsd = 50m, MonthlyCapUsd = 200m }, time: time, path: null)
+        {
+            Classify = m => new LlmOptions().TierOfModel(m),
+        };
+        t.Record("claude-sonnet-5-5", new LlmUsage(0, 298_000, 0, 0));          // $2.98 main
+        for (int i = 0; i < 5; i++) t.Record("claude-haiku-5-5", new LlmUsage(0, 0, 0, 0)); // RAPTOR summaries
+        t.ExternalSpend = () => (1.902m, 1.902m);
+
+        var s = t.Summary();
+        Assert.StartsWith("today $4.882/50.00 (main $2.980, clones $1.902, 6 calls", s);
+        Assert.Contains("month $4.88/200.00", s);
+        Assert.Contains("calls/h worker 1 memory 5", s);                       // never one "6 calls/h" for the brain
+        Assert.Equal(5, t.CallsLastHourByTier["memory"]);
+        Assert.Equal(6, t.CallsLastHour);
+
+        t.ExternalSpend = null;                                                 // single bot / clone: own spend only
+        Assert.StartsWith("today $2.980/50.00 (6 calls", t.Summary());
+    }
+
     [Fact]
     public void Caps_DriveModes_AndFireNotices()
     {

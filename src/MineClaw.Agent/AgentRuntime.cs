@@ -145,6 +145,7 @@ public sealed class AgentRuntime : IDisposable
             raptor = new RaptorMemory(db, index, new CachedEmbedder(db, embedder, options.Embeddings, usage), summarizer, rag.Raptor,
                 log: Log("MineClaw.Raptor"));
             index.Augmenter = raptor; // recall / ask_memory / auto-retrieval: hybrid lists + RAPTOR, fused by RRF
+            raptor.Store.LoadWritesBack = rag.Raptor.Maintenance; // a clone only reads main's tree
             if (persist && rag.Raptor.Maintenance)
                 raptorJobs = new RaptorScheduler(raptor, summarizer, db, usage, time, Log("MineClaw.Raptor"));
         }

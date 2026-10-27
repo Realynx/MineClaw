@@ -10,9 +10,22 @@ namespace MineClaw.Agent.Chat;
 public static partial class MetaSpeech
 {
     [GeneratedRegex(
-        @"^\W*(?:ok(?:ay)?[,!. ]+|now[,!. ]+|let me\s+|i'?ll\s+|i'?m\s+)?(?:delegat(?:e|ing|ed)\b|checking (?:my )?memory\b|asking (?:my )?memory\b|using (?:a |the )?tools?\b|calling (?:a |the |my )?(?:tool|worker|delegate|script|hive|ask_memory)\b|running (?:a |the |my |this )?(?:script|routine|tool|delegate|worker|task\b)|script\b|(?:spawning|recalling) (?:a |the )?clone\b|hive\b|tool call\b)",
+        @"^\W*(?:ok(?:ay)?[,!. ]+|now[,!. ]+|let me\s+|i'?ll\s+|i'?m\s+|i'?ve\s+)?(?:delegat(?:e|ing|ed)\b|checking (?:my )?memory\b|asking (?:my )?memory\b|using (?:a |the )?tools?\b|calling (?:a |the |my )?(?:tool|worker|delegate|script|hive|ask_memory)\b|running (?:a |the |my |this )?(?:script|routine|tool|delegate|worker|task\b)|script\b|(?:spawning|recalling) (?:a |the )?clone\b|hive\b|tool call\b)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MetaRx();
+
+    /// <summary>
+    /// Turn/wake/background-job plumbing anywhere in a sentence (night review B17, L4): "Since nothing is waking me up for a
+    /// reason, I'll keep it short", "The floor job is running in the background, I'll wait for its result.". Never real talk
+    /// in game chat, so the sentence goes even when it is longer than the 10 words <see cref="IsMeta"/> allows.
+    /// </summary>
+    [GeneratedRegex(
+        @"\bnothing(?:'s|\s+is)?\s+(?:wak(?:e|es|ing)|woke)\s+me\b|\bwak(?:e|es|ing|ed)\s+me\s+(?:up\s+)?for\s+(?:a|no)\s+reason\b|\bno\s+reason\s+to\s+(?:wake|be\s+woken)\b|\bthis\s+(?:turn|wake-?up|prompt|check-?in)\b(?!\s+of)|\bin\s+the\s+background\b|\bwait(?:ing)?\s+for\s+(?:its|the|a|their)\s+(?:tool\s+)?(?:result|report)s?\b|\b(?:the|my)\s+\w+\s+(?:job|task)\s+is\s+(?:still\s+)?running\b|\bi'?ve\s+started\s+(?:the|a|my)\s+(?:job|task)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex PlumbingRx();
+
+    /// <summary>Longest sentence <see cref="PlumbingRx"/> drops whole; a longer one keeps its real content.</summary>
+    private const int MaxPlumbingWords = 25;
 
     [GeneratedRegex(@"(?<=[.!?])\s+")]
     private static partial Regex SentenceRx();
@@ -37,8 +50,20 @@ public static partial class MetaSpeech
             {
                 var t = s.Trim();
                 if (t.Length == 0) continue;
-                if (IsMeta(t)) suppressed.Add(t);
-                else kept.Add(t);
+                if (IsMeta(t)) { suppressed.Add(t); continue; }
+                if (PlumbingRx().Match(t) is { Success: true } pm)
+                {
+                    // "I've started the job in the background: grab a stone axe and torches, ..." keeps what the job is.
+                    int colon = t.IndexOf(':', pm.Index + pm.Length);
+                    if (colon > 0 && t[(colon + 1)..].Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length >= 3)
+                    {
+                        suppressed.Add(t[..(colon + 1)]);
+                        kept.Add("on it: " + t[(colon + 1)..].Trim());
+                        continue;
+                    }
+                    if (t.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length <= MaxPlumbingWords) { suppressed.Add(t); continue; }
+                }
+                kept.Add(t);
             }
             if (kept.Count > 0) lines.Add(string.Join(" ", kept));
         }

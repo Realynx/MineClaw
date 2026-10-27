@@ -285,7 +285,13 @@ public sealed class RaptorIndex : IDisposable
     }
 
     /// <summary>Removes every leaf whose Key is in <paramref name="keys"/>; empty summaries are pruned upward.</summary>
-    public async Task<int> RemoveAsync(IEnumerable<string> keys, CancellationToken ct = default)
+    public Task<int> RemoveAsync(IEnumerable<string> keys, CancellationToken ct = default) => RemoveAsync(keys, replacing: false, ct);
+
+    /// <summary>
+    /// <paramref name="replacing"/> = the leaves are about to be re-inserted with their doc's new text (an in-place update):
+    /// the re-insert alone counts toward the rebuild threshold, so one edited doc is one change, not two (night review B23).
+    /// </summary>
+    public async Task<int> RemoveAsync(IEnumerable<string> keys, bool replacing, CancellationToken ct = default)
     {
         var set = new HashSet<string>(keys, StringComparer.Ordinal);
         if (set.Count == 0) return 0;
@@ -306,7 +312,7 @@ public sealed class RaptorIndex : IDisposable
                     tree.Remove(i);
                     _deletes.Add(i);
                     _upserts.Remove(i);
-                    if (node.IsLeaf) { removed++; tree.RemovedSinceBuild++; }
+                    if (node.IsLeaf) { removed++; if (!replacing) tree.RemovedSinceBuild++; }
                     foreach (var p in parents)
                     {
                         if (!tree.TryGet(p, out var pn)) continue;

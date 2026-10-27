@@ -22,6 +22,7 @@ public sealed class ChatRouter
     private readonly Regex _groupRegex;
     private readonly object _lock = new();
     private readonly HashSet<string> _online = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTimeOffset> _joinedAt = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _lastTalkedWith = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Queue<DateTimeOffset>> _incoming = new(StringComparer.OrdinalIgnoreCase);
     private readonly Queue<(string Line, DateTimeOffset At)> _recentSent = new();
@@ -122,6 +123,12 @@ public sealed class ChatRouter
     /// <summary>Humans currently online (bot excluded).</summary>
     public IReadOnlyCollection<string> OnlinePlayers { get { lock (_lock) return _online.ToArray(); } }
 
+    /// <summary>Humans who joined at or after <paramref name="since"/> and are online now (a turn's "X logged off" is stale).</summary>
+    public IReadOnlyCollection<string> JoinedSince(DateTimeOffset since)
+    {
+        lock (_lock) return _joinedAt.Where(kv => kv.Value >= since && _online.Contains(kv.Key)).Select(kv => kv.Key).ToArray();
+    }
+
     /// <summary>Replace the online player list (e.g. from the tab-list packets).</summary>
     public void SetOnlinePlayers(IEnumerable<string> players)
     {
@@ -199,7 +206,7 @@ public sealed class ChatRouter
             case ChatKind.Join or ChatKind.Leave when IsHive(msg.Player):
                 break; // a hive bot logging in/out is not a player event
             case ChatKind.Join when msg.Player != null && !IsSelf(msg.Player):
-                lock (_lock) _online.Add(msg.Player);
+                lock (_lock) { _online.Add(msg.Player); _joinedAt[msg.Player] = Now; }
                 Post(GameEvent.Joined(msg.Player));
                 break;
             case ChatKind.Leave when msg.Player != null && !IsSelf(msg.Player):
@@ -512,7 +519,7 @@ public sealed class ChatRouter
             pending.Clear();
             if (clean.Length > 0) lines.AddRange(ChatText.Split(clean, max).Select(l => (l, false)));
         }
-        foreach (var segment in (text ?? "").Replace("\r", "").Split('\n'))
+        foreach (var segment in (text ?? "").Replace("\r", "").Split('\n').SelectMany(SplitInlineEmotes))
         {
             var t = segment.Trim();
             if (t.Length == 0) continue;
@@ -594,4 +601,33 @@ public sealed class ChatRouter
     }
 
     private static string TextUtilTruncate(string s, int max) => s.Length <= max ? s : s[..max];
+
+    private static readonly System.Text.RegularExpressions.Regex InlineMeRx = new(@"(?<=\s)/me\s+",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private static readonly System.Text.RegularExpressions.Regex SentenceEndRx = new(@"(?<=[.!?])\s+", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// "Hai, foxy sama~ /me curtsies. Your maid has chopped..." (night review B18: sent literally) becomes the chat part,
+    /// the emote (up to its sentence end) as its own "/me" line, then the rest. A command line ("/tell ...") is left alone.
+    /// </summary>
+    internal static IEnumerable<string> SplitInlineEmotes(string segment)
+    {
+        var t = segment.Trim();
+        if (t.StartsWith('/') && !t.StartsWith("/me ", StringComparison.OrdinalIgnoreCase)) { yield return segment; yield break; }
+        while (true)
+        {
+            var m = InlineMeRx.Match(t);
+            if (!m.Success) { yield return t; yield break; }
+            var after = t[(m.Index + m.Length)..];
+            var end = SentenceEndRx.Match(after);
+            var action = (end.Success ? after[..end.Index] : after).Trim();
+            var before = t[..m.Index].TrimEnd();
+            if (before.Length > 0) yield return before;
+            if (action.Length > 0) yield return "/me " + action;
+            if (!end.Success) yield break;
+            t = after[(end.Index + end.Length)..].Trim();
+            if (t.Length == 0) yield break;
+        }
+    }
 }

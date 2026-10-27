@@ -148,7 +148,10 @@ public sealed class MainHive : IAsyncDisposable
         }
 
         public Vec3d? Position => _client.IsPlaying ? _client.World.Player.Position : null;
+
         public void BeginCounting(string from) { lock (_counts) _counts[from] = 0; }
         public int Collected(string from) { lock (_counts) return _counts.GetValueOrDefault(from); }
+        /// <summary>Night review B24: main stands still (its job paused, not aborted) while a clone tosses at its feet.</summary>
+        public IDisposable? HoldStill(TimeSpan max) => _client.IsPlaying ? _client.HoldStill(max) : null;
     }
 }

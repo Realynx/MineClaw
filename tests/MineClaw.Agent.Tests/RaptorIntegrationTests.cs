@@ -166,6 +166,57 @@ public class RaptorIntegrationTests
         Assert.True(f.Raptor.Index.DirtyCount > 0);
     }
 
+    // Night review 10-27 B23: "raptor rebuild (changed fraction 26 % > 25 %)" right after a restart. An edited doc counted twice
+    // (remove + insert), a leaf dropped at load for a changed text counted as removed and again when the sync re-inserted it, and
+    // every clone reload unmapped such leaves in the shared db so main re-inserted them once more.
+    private static void Edit(RagIndex rag, int from, int n)
+    {
+        for (int i = from; i < from + n; i++)
+            rag.Upsert(new RagDoc($"kb:t.md:{i}", "knowledge", $"note {i}", $"edited nether portal obsidian text {i}") { Source = "t.md" });
+    }
+
+    [Fact]
+    public async Task B23_an_edited_doc_counts_once_toward_the_rebuild_threshold()
+    {
+        using var f = await BuiltAsync();                // 40 leaves at build
+        Edit(f.Rag, 0, 7);
+        await f.Rag.FlushEmbeddingsAsync();
+        var sync = await f.Raptor.SyncAsync();
+        Assert.Equal(7, sync.Reinserted);
+        var d = f.Raptor.Index.ShouldRebuild();
+        Assert.Equal(7 / 40.0, d.ChangedFraction, 3);    // was 14/40 = 35 % > 25 %: a rebuild for seven edits
+        Assert.False(d.Rebuild, d.Reason);
+    }
+
+    [Fact]
+    public async Task B23_a_restart_never_double_counts_leaves_dropped_for_a_changed_text()
+    {
+        using var f = await BuiltAsync();
+        Edit(f.Rag, 0, 7);                               // edited while main was down: the stored vectors no longer match
+
+        // A clone's reload (maintenance off) only reads: it never unmaps main's leaves in the shared db.
+        var before = DbState(f.Db).Map;
+        using (var clone = new RaptorMemory(f.Db, f.Rag, new CachedEmbedder(f.Db, f.Embedder), f.Summarizer,
+            new RaptorMemoryOptions { Maintenance = false }, Opts()))
+        {
+            clone.Store.LoadWritesBack = false;
+            Assert.True(await clone.LoadAsync());
+            Assert.Equal(33, clone.Index.LeafCount);
+        }
+        Assert.Equal(before, DbState(f.Db).Map);
+
+        var main = f.Reopen();                           // main restarts: the seven leaves are dropped, then re-inserted once
+        Assert.True(await main.LoadAsync());
+        Assert.Equal(33, main.Index.LeafCount);
+        await f.Rag.FlushEmbeddingsAsync();
+        var sync = await main.SyncAsync();
+        Assert.Equal(7, sync.Inserted + sync.Reinserted);
+        Assert.Equal(40, main.Index.LeafCount);
+        var d = main.Index.ShouldRebuild();
+        Assert.Equal(7 / 40.0, d.ChangedFraction, 3);
+        Assert.False(d.Rebuild, d.Reason);
+    }
+
     // ======================= policy =======================
 
     [Fact]

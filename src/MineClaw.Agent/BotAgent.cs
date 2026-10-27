@@ -468,6 +468,7 @@ public sealed partial class BotAgent
                 foreach (var d in dup) _log.LogInformation("[repeat suppressed] {Line}", d);
                 if (!IsSilent(text) && said.Count > 0 && response.ToolUses.Any()) { held = text; text = ""; }
             }
+            if (!IsSilent(text)) text = LastLook(text, audience);
             if (!IsSilent(text))
             {
                 held = null;
@@ -518,7 +519,8 @@ public sealed partial class BotAgent
             }
             episode.Messages.Add(new LlmMessage(LlmRole.User, blocks));
         }
-        if (held != null && SpeechDedupe.DropRepeats(held, said, out _) is { Length: > 0 } last && !IsSilent(last))
+        if (held != null && SpeechDedupe.DropRepeats(held, said, out _) is { Length: > 0 } heldText && LastLook(heldText, audience) is { Length: > 0 } last
+            && !IsSilent(last))
         {
             var lines = await _chat.SayAsync(last, whisperTo, audience, ct).ConfigureAwait(false);
             said.AddRange(lines);
@@ -542,6 +544,36 @@ public sealed partial class BotAgent
         }
         _context.Commit(episode);
         return new RunResult(tier, calls, usage, cost, said, null);
+    }
+
+    /// <summary>
+    /// Right before sending (night review B20, L3): drop claims the live state already contradicts (a player "logged off" who
+    /// re-joined during the turn; "I'm back"/"done" while this turn's walk/job still runs), and say places as landmarks
+    /// ("the west cell of the gen") instead of raw x,y,z unless the player talks in coordinates.
+    /// </summary>
+    private string LastLook(string text, IReadOnlyCollection<string> audience)
+    {
+        var dropped = new List<string>();
+        var since = TurnStartedAt ?? _time.GetUtcNow();
+        try
+        {
+            text = SpeechFacts.DropStalePresence(text, _chat.OnlinePlayers, _chat.JoinedSince(since), dropped);
+            if (_activities.Current is { } cur && cur.Started >= since)
+            {
+                bool moving = cur.Kind == ActivityKind.Move || (cur.Steps.Count > 0 && cur.Steps.All(st => ActivityManager.MovementTools.Contains(st.Tool)));
+                text = SpeechFacts.DropPrematureClaims(text, moving, working: cur.Kind == ActivityKind.Job, dropped);
+            }
+            if (_chat.Landmark is { } landmark && Human.Questions.HasCoords(text))
+            {
+                var recent = audience.Count > 0 ? audience.SelectMany(p => _chat.RecentFrom(p)).ToList() : _chat.RecentFrom(null);
+                var human = Human.Questions.Humanize(text, recent, landmark);
+                if (human != text) _log.LogInformation("[coords as landmarks] {Text}", human);
+                text = human;
+            }
+        }
+        catch (Exception ex) { _log.LogWarning(ex, "speech fact check failed"); }
+        foreach (var d in dropped) _log.LogInformation("[stale claim suppressed] {Line}", d);
+        return text.Trim();
     }
 
     /// <summary>When the brain's current turn started (null = idle). The brainstem's "thinking" fidget reads it.</summary>

@@ -156,7 +156,7 @@ public sealed class RaptorMemory : ISearchAugmenter, IDisposable
 
         var batch = EligibleDocs(onlyPending: true, limit: Math.Max(1, _o.InsertBatch));
         var changed = batch.Where(d => inTree.Contains(d.Ref)).Select(d => d.Ref).ToList();
-        if (changed.Count > 0) await Index.RemoveAsync(changed, ct).ConfigureAwait(false);
+        if (changed.Count > 0) await Index.RemoveAsync(changed, replacing: true, ct).ConfigureAwait(false);
         long tokens = 0;
         if (batch.Count > 0)
         {

@@ -123,7 +123,8 @@ public sealed partial class MinecraftClient
         bool allowDrop = false;
         ParkourCommit? parkour = null;
         var d = _driver;
-        if (d is not null && !(_combatInstance?.Engaged ?? false)) // a fight owns the body: the driver is paused (and aborted)
+        // A fight owns the body: the driver is paused (and aborted). A hand-off hold pauses it without aborting.
+        if (d is not null && !(_combatInstance?.Engaged ?? false) && !IsHeldStill)
         {
             try
             {

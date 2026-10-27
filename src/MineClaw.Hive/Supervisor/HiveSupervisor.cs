@@ -24,6 +24,11 @@ public interface IHandoffReceiver
     /// <summary>Starts counting items this bot picks up; returns a counter read by <see cref="Collected"/>.</summary>
     void BeginCounting(string from);
     int Collected(string from);
+    /// <summary>
+    /// Stand still for at most <paramref name="max"/> (dispose = move again). Night review B24: 67 tossed 29 items at the feet
+    /// main had offered while main walked on chopping; main collected 28. Null = can't hold.
+    /// </summary>
+    IDisposable? HoldStill(TimeSpan max) => null;
 }
 
 /// <summary>One configured clone: its process, pipe, task and health.</summary>
@@ -37,6 +42,8 @@ public sealed class CloneSlot(string name)
     /// <summary>The clone's result event for <see cref="Task"/> arrived (until then the task is pending: nothing to report).</summary>
     public bool ResultIn { get; internal set; }
     public string? ResultText { get; internal set; }
+    /// <summary>The result event said ok (false = failed); meaningful only while <see cref="ResultIn"/>.</summary>
+    public bool ResultOk { get; internal set; }
     /// <summary>The player whose request this task serves (from the turn that spawned it), if any.</summary>
     public string? ForPlayer { get; internal set; }
     /// <summary>The task was given without naming this clone (main let the supervisor pick a free one).</summary>
@@ -69,6 +76,8 @@ public sealed class CloneSlot(string name)
     public bool IsLive => State is CloneState.Running or CloneState.Stopping && Connected;
     /// <summary>The brain turn that gave <see cref="Task"/> (a recall in that same turn keeps it for the next login).</summary>
     internal object? AssignedTurn;
+    /// <summary>Main standing still for this clone's hand-off toss (offer → confirmation, or the clone gone).</summary>
+    internal IDisposable? HandoffHold;
     /// <summary>A task given while this clone was logging out (or recalled in the turn that gave it): relaunch with it.</summary>
     internal (TaskMsg Task, string? ForPlayer, bool Unnamed)? RespawnWith;
     /// <summary>The recall came from the brain (hive recall), not budget/slot policy or shutdown.</summary>
@@ -421,6 +430,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
     /// </summary>
     public string GuardSpeech(string text)
     {
+        text = GuardArrivals(text ?? "");
         var pending = _slots.Values.Where(s => s.Pending).ToList();
         if (pending.Count == 0 || string.IsNullOrWhiteSpace(text)) return text;
         var refs = pending.SelectMany(s => new[] { s.Number, s.Name }).Concat(["clone", "clones", "the other maid", "my sister", "lil me"]);
@@ -434,7 +444,9 @@ public sealed class HiveSupervisor : IAsyncDisposable
             // Only the clause about the clone (and what follows it in the sentence) is a claim; main's own part stays.
             int cut = new[] { s.LastIndexOf(", ", m.Index, StringComparison.Ordinal), s.LastIndexOf(" and ", m.Index, StringComparison.OrdinalIgnoreCase) }.Max();
             var tail = cut > 0 ? s[cut..] : s;
-            if (!ClaimsResult.IsMatch(tail) || StillWorking.IsMatch(tail)) return s;
+            // The clone must be the one reporting: "67 has the picks", never main's own "the only helpers I've got are 67
+            // and 69" (07:54:53, night review B17: that clause was dropped as a pending-result claim).
+            if (!ClaimsResult.IsMatch(s[m.Index..]) || StillWorking.IsMatch(tail)) return s;
             _log.LogInformation("hive: dropped a pending-result claim from main's chat: {Text}", tail.Trim());
             var keep = cut > 0 ? s[..cut].TrimEnd(',', ' ') + "." : "";
             if (replaced) return keep;
@@ -444,6 +456,52 @@ public sealed class HiveSupervisor : IAsyncDisposable
         });
         return string.Join(" ", parts.Where(p => p.Length > 0)).Trim();
     }
+
+    /// <summary>
+    /// Night review B20 (07:52:17): "420 is spawning back in" was sent 350 ms after 420 reported "failed: spawned ... in the
+    /// void". A clone spawned in THIS turn whose outing already failed (failed result, or retired) isn't coming:
+    /// the arrival clause becomes what really happened. Only this turn's spawn: a respawn in the same response as the line
+    /// (tools run after the text) still has an older turn's failure on the slot and is left alone.
+    /// </summary>
+    private string GuardArrivals(string text)
+    {
+        var turn = MineClaw.Agent.TurnContext.Current;
+        if (turn == null || text.Length == 0 || !Arriving.IsMatch(text)) return text;
+        var gone = new List<(CloneSlot Slot, string Note)>();
+        foreach (var s in _slots.Values)
+            lock (s.Lock)
+            {
+                if (!ReferenceEquals(s.AssignedTurn, turn)) continue;
+                string? note = s.ResultIn && !s.ResultOk ? $"{s.Number} couldn't get in"
+                    : s.State == CloneState.Retired ? $"{s.Number} couldn't get in"
+                    : null; // Idle may just be a reserved launch waiting for the login gap: not a failure
+                if (note != null) gone.Add((s, note));
+            }
+        if (gone.Count == 0) return text;
+        var parts = System.Text.RegularExpressions.Regex.Split(text, @"(?<=[.!?])\s+").Select(sentence =>
+        {
+            foreach (var (slot, note) in gone)
+            {
+                var who = new System.Text.RegularExpressions.Regex(@"(?<![A-Za-z0-9_,])(?:" + System.Text.RegularExpressions.Regex.Escape(slot.Number) + "|"
+                    + System.Text.RegularExpressions.Regex.Escape(slot.Name) + @")(?![A-Za-z0-9_]|,\d)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                var m = who.Match(sentence);
+                if (!m.Success) continue;
+                var claim = Arriving.Match(sentence, m.Index);
+                if (!claim.Success) continue;
+                // The clause runs from the clone's name to the next clause break after the claim.
+                var brk = System.Text.RegularExpressions.Regex.Match(sentence[(claim.Index + claim.Length)..], @",\s|\s(?:and|but|so)\s|[.!?]");
+                int end = brk.Success ? claim.Index + claim.Length + brk.Index : sentence.Length;
+                _log.LogInformation("hive: dropped a stale arrival claim from main's chat: {Text} ({Note})", sentence[m.Index..end].Trim(), note);
+                sentence = sentence[..m.Index] + note + sentence[end..];
+            }
+            return sentence;
+        });
+        return string.Join(" ", parts).Trim();
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex Arriving = new(
+        @"\b(?:re)?spawn(?:ing|s)?\b(?!\s+(?:point|spot|area))|\b(?:logging|coming|popping|hopping|getting|joining)\s+(?:back\s+)?(?:in|on)\b|\bjoining\b|\bon\s+(?:its|her|their)\s+way\s+in\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     private static readonly System.Text.RegularExpressions.Regex ClaimsResult = new(
         @"\b(?:dropped|dropped off|mined|got|put|deposited|stashed|did|done|finished|made|crafted|brought|delivered|has (?:the|\d|a|it|them)|ready|is back|came back|completed?)\b",
@@ -734,6 +792,8 @@ public sealed class HiveSupervisor : IAsyncDisposable
         lock (slot.Lock)
         {
             if (gen != slot.Generation || slot.State is CloneState.Idle or CloneState.Retired or CloneState.Backoff) return; // already handled
+            slot.HandoffHold?.Dispose();
+            slot.HandoffHold = null;
             gone = slot.Gone;
             inv = slot.Inventory;
             slot.Connected = false;
@@ -863,7 +923,10 @@ public sealed class HiveSupervisor : IAsyncDisposable
 
     // ================================================================ messages from a clone
 
-    private async Task<object?> HandleAsync(CloneSlot slot, int gen, HiveMessage m, CancellationToken ct)
+    /// <summary>Longest main stands still for one hand-off (the clone walks over, tosses, waits 2 s, confirms).</summary>
+    public static readonly TimeSpan HandoffHoldTime = TimeSpan.FromSeconds(15);
+
+    internal async Task<object?> HandleAsync(CloneSlot slot, int gen, HiveMessage m, CancellationToken ct)
     {
         if (gen != slot.Generation)
         {
@@ -903,6 +966,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
                 slot.Progress = 1;
                 slot.ResultIn = true;
                 slot.ResultText = r.Text;
+                slot.ResultOk = r.Ok;
                 Post(GameEvent.Notice($"[hive] {slot.Number} {(r.Ok ? "done" : "failed")}: {Trunc(r.Text, 200)}", EventPriority.Low));
                 return null;
             case Msg.Claim when m.As<ClaimMsg>() is { } c:
@@ -944,12 +1008,20 @@ public sealed class HiveSupervisor : IAsyncDisposable
                 }
             case Msg.Handoff when m.As<HandoffMsg>() is { } ho:
                 {
-                    if (Handoff is not { Position: { } pos } h) return new HandoffReplyMsg(false, 0, 0, 0, "main can't take items");
+                    if (Handoff is not { } h) return new HandoffReplyMsg(false, 0, 0, 0, "main can't take items");
+                    // Stand still first, then read the feet the clone will toss at (night review B24: main walked on).
+                    var hold = h.HoldStill(HandoffHoldTime);
+                    if (h.Position is not { } pos) { hold?.Dispose(); return new HandoffReplyMsg(false, 0, 0, 0, "main can't take items"); }
+                    lock (slot.Lock) { slot.HandoffHold?.Dispose(); slot.HandoffHold = hold; }
                     h.BeginCounting(slot.Name);
                     return new HandoffReplyMsg(true, pos.X, pos.Y, pos.Z, null);
                 }
             case Msg.HandoffAck:
-                return new HandoffAckMsg(Handoff?.Collected(slot.Name) ?? 0);
+                {
+                    int got = Handoff?.Collected(slot.Name) ?? 0;
+                    lock (slot.Lock) { slot.HandoffHold?.Dispose(); slot.HandoffHold = null; }
+                    return new HandoffAckMsg(got);
+                }
             case Msg.Bye when m.As<ByeMsg>() is { } bye:
                 lock (slot.Lock) { slot.ByeReceived = true; slot.RecallReason ??= bye.Reason; }
                 _log.LogInformation("hive: {Clone} bye ({Reason}, deposited {Dep}, stranded {N})", slot.Name, bye.Reason, bye.Deposited, bye.Stranded);
