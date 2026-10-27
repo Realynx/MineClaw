@@ -70,7 +70,12 @@ public sealed class Window
         }
         else
         {
-            ContainerSlots = containerSlots > 0 ? containerSlots : DefaultSize(type);
+            // b1.8.1 EntityPlayer.b(x,y,z) opens the crafting table with Packet100OpenWindow(id, 1, "Crafting", 9): the 9 counts
+            // the grid only, but ContainerWorkbench has 10 own slots (output + 3x3). Taking the 9 shifted the whole player part
+            // by one (grid cell 9 seen as the first inventory slot, the last hotbar slot invisible): a leftover stashed into
+            // "slot 9" landed in the grid and broke the recipe (live 10-27 22:50, bread rejected 3x per craft).
+            ContainerSlots = type == WindowType.Workbench ? DefaultSize(type)
+                : containerSlots > 0 ? containerSlots : DefaultSize(type);
             Container = new ItemStack[ContainerSlots];
             Array.Fill(Container, ItemStack.Empty);
         }
