@@ -84,6 +84,7 @@ public sealed partial class MinecraftClient
         phys.Velocity = vel;
         Interlocked.Increment(ref _knockbacks);
         bool near = Guard.IsNearEdge(World, phys);
+        _combatInstance?.OnKnockback(vel, near);
         Debug($"safety: server velocity {vel.X:0.###},{vel.Y:0.###},{vel.Z:0.###} at {Fmt(phys.Position)}{(near ? " NEAR EDGE" : "")}");
     }
 

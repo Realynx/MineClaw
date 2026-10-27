@@ -73,6 +73,18 @@ public sealed partial class MinecraftClient : IAsyncDisposable
     public event Action<DangerEvent>? Danger;
     /// <summary>(entity id, animation) from 0x12 for other entities (1 = arm swing, 2 = hurt). Used to watch players teach.</summary>
     public event Action<int, int>? EntityAnimated;
+    /// <summary>(collector entity id, item entity id, stack if the item entity was tracked) from 0x16 Collect Item.</summary>
+    public event Action<int, int, ItemStack?>? ItemCollected;
+    /// <summary>(entity id, slot 0 held / 1-4 armor boots..helmet, item id (-1 empty), damage) from 0x05.</summary>
+    public event Action<int, int, int, int>? EquipmentChanged;
+    /// <summary>(entity id, status) from 0x26: 2 hurt, 3 dead, 6/7 wolf taming, 8 wolf shaking, 9 eating accepted (self).</summary>
+    public event Action<int, int>? EntityStatus;
+    /// <summary>(entity id, bed head x, y, z) from 0x11 Use Bed.</summary>
+    public event Action<int, int, int, int>? EntityUsedBed;
+    /// <summary>(entity id, vehicle id or -1 = dismount) from 0x27.</summary>
+    public event Action<int, int>? EntityAttached;
+    /// <summary>(x, y, z, four lines) from 0x82 Update Sign.</summary>
+    public event Action<int, int, int, string[]>? SignUpdated;
     /// <summary>(block, data1, data2) from 0x36 block action (note blocks, pistons; chest lids on servers that send them).</summary>
     public event Action<BlockPos, int, int>? BlockAction;
 
@@ -180,6 +192,8 @@ public sealed partial class MinecraftClient : IAsyncDisposable
         _lastSprint = _lastSneak = false;
         _voidAlerted = _lavaAlerted = false;
         _hostileAlerted.Clear();
+        _combatBlocking = false;
+        _combatInstance?.RequestStop("disconnected");
         ResetSafety();
     }
 
@@ -202,6 +216,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
     {
         await DisconnectAsync().ConfigureAwait(false);
         _eventQueue.Writer.TryComplete();
+        if (_telemetry is not null) await _telemetry.DisposeAsync().ConfigureAwait(false);
         try { await _eventPump.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch { /* ignore */ }
     }
 

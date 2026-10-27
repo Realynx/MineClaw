@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using MineClaw.Client.Combat;
 using MineClaw.Protocol.Packets;
 using MineClaw.World;
 
@@ -113,7 +114,7 @@ public sealed partial class MinecraftClient
         MoveInput input;
         bool allowDrop = false;
         var d = _driver;
-        if (d is not null)
+        if (d is not null && !(_combatInstance?.Engaged ?? false)) // a fight owns the body: the driver is paused (and aborted)
         {
             try
             {
@@ -137,17 +138,23 @@ public sealed partial class MinecraftClient
         }
         else input = IdleInput(phys);
 
+        // ---- combat: reflexes / fight / spar replace the input while engaged ----
+        var combat = CombatBeforePhysics(phys, input);
+        input = combat.Input;
+
         // ---- safety: below every action, every tick, before the position goes out ----
-        input = RetreatOverride(phys, input);
-        var guard = SafetyFilter(phys, input, allowDrop);
+        if (!combat.Overrides) input = RetreatOverride(phys, input);
+        var guard = SafetyFilter(phys, input, allowDrop && !combat.Overrides);
         input = guard.Input;
+        Combat.OnGuard(guard);
 
         PlayerPhysics.Tick(World, phys, input);
-        if (d is not null) { _lookYaw = phys.Yaw; _lookPitch = phys.Pitch; } // idle keeps the driver's last look
+        if (d is not null || combat.Overrides) { _lookYaw = phys.Yaw; _lookPitch = phys.Pitch; } // idle keeps the last look
         player.SyncFromPhysics();
 
         CheckDangers(phys);
         if (!teleported) SendMovement(s, phys);
+        CombatAfterMovement(s, combat);
         AfterTickSafety(s, phys, guard);
         EndTick();
     }
@@ -245,7 +252,7 @@ public sealed partial class MinecraftClient
             var near = World.Entities.Nearby(phys.Position, Options.HostileAlertRadius, e => e.IsHostileMob);
             _hostileAlerted.IntersectWith(near.Select(e => e.Id));
             foreach (var e in near)
-                if (_hostileAlerted.Add(e.Id))
+                if (_hostileAlerted.Add(e.Id) && !(Combat.DefendSelf && CombatRules.IsThreat(e) && e.TypeId != MobTypes.Enderman))
                     RaiseDanger(DangerKind.HostileNearby,
                         $"{e.DisplayName} {phys.Position.DistanceTo(e.Position):0} blocks away at {Fmt(e.Position)}", abort: false);
         }
@@ -255,6 +262,7 @@ public sealed partial class MinecraftClient
     {
         var ev = new DangerEvent(kind, message) { Critical = critical };
         Raise(() => Danger?.Invoke(ev));
+        _combatInstance?.OnDanger(ev);
         if (abort && Options.AbortActionsOnDanger) AbortCurrentAction(message);
     }
 

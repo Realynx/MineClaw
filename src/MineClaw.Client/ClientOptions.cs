@@ -1,3 +1,4 @@
+using MineClaw.Client.Combat;
 using MineClaw.Protocol;
 using MineClaw.World;
 
@@ -50,6 +51,9 @@ public sealed record ClientOptions
     public double EdgeRetreatHostileRadius { get; init; } = 4;
     /// <summary>Freeze movement after a teleport/respawn until the chunks below are loaded and there is ground under the bot.</summary>
     public bool FreezeUntilSupportVerified { get; init; } = true;
+
+    /// <summary>Combat engine: reflex defense, guarding, sparring, telemetry (see <see cref="CombatOptions"/>).</summary>
+    public CombatOptions Combat { get; init; } = new();
 
     /// <summary>Blocks the bot must never break (player builds, generator walls...). Evaluated for (position, block id).
     /// May be replaced at runtime via <see cref="MinecraftClient.IsProtected"/>.</summary>

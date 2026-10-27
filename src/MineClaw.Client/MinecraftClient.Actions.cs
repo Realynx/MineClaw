@@ -20,6 +20,7 @@ public sealed partial class MinecraftClient
     /// signals can cancel. Exceptions become failure results.</summary>
     private async Task<ActionResult> RunActionAsync(string name, CancellationToken ct, Func<CancellationToken, Task<ActionResult>> body)
     {
+        if (CombatBlocks(name) is { } busy) return ActionResult.Fail(busy);
         try
         {
             await _actionLock.WaitAsync(ct).ConfigureAwait(false);

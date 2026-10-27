@@ -89,6 +89,19 @@ public sealed class EntityTracker
     /// <summary>0x05 equipment slot 0 (held item) for players.</summary>
     public bool SetHeldItem(int id, int itemId) => Update(id, e => e with { HeldItem = itemId });
 
+    /// <summary>0x05 equipment: stores any slot 0..4 (0 = held, 1-4 = armor boots..helmet); slot 0 also sets <see cref="Entity.HeldItem"/>.</summary>
+    public bool SetEquipment(int id, int slot, ItemStack item)
+    {
+        if (slot < 0 || slot > 4) return false;
+        return Update(id, e =>
+        {
+            var eq = new ItemStack[5];
+            for (int i = 0; i < 5; i++) eq[i] = e.EquipmentAt(i);
+            eq[slot] = item;
+            return e with { Equipment = eq, HeldItem = slot == 0 ? (item.IsEmpty ? 0 : item.Id) : e.HeldItem };
+        });
+    }
+
     /// <summary>0x27 attach entity (vehicleId -1 = dismount).</summary>
     public bool Attach(int id, int vehicleId) => Update(id, e => e with { VehicleId = vehicleId });
 

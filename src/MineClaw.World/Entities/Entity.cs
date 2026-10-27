@@ -37,8 +37,17 @@ public sealed record Entity(
     int Count = 0,
     int HeldItem = 0,
     int VehicleId = -1,
-    IReadOnlyDictionary<int, object>? Metadata = null)
+    IReadOnlyDictionary<int, object>? Metadata = null,
+    IReadOnlyList<ItemStack>? Equipment = null)
 {
+    /// <summary>Metadata value at <paramref name="index"/> widened to int (byte/short/int), or null.</summary>
+    public int? MetaInt(int index) =>
+        Metadata is not null && Metadata.TryGetValue(index, out var v) && v is sbyte or byte or short or int ? Convert.ToInt32(v) : null;
+
+    /// <summary>0x05 equipment slot (0 held, 1 boots, 2 leggings, 3 chestplate, 4 helmet); empty when never sent.</summary>
+    public ItemStack EquipmentAt(int slot) =>
+        Equipment is not null && slot >= 0 && slot < Equipment.Count ? Equipment[slot] : ItemStack.Empty;
+
     public DateTime SpawnedAt { get; init; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; init; } = DateTime.UtcNow;
 

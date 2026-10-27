@@ -57,6 +57,7 @@ public sealed partial class MinecraftClient
                 return;
             case ChatPacket chat:
                 Raise(() => ChatReceived?.Invoke(chat.Message));
+                if (ChatText.TryParsePlayerChat(chat.Message, out var chatFrom, out var chatText)) Combat.OnChat(chatFrom, chatText);
                 break;
 
             // ---- world-level ----
@@ -120,6 +121,7 @@ public sealed partial class MinecraftClient
                 break;
             case UpdateSignPacket sign:
                 _signs[new BlockPos(sign.X, sign.Y, sign.Z)] = sign.Lines;
+                { int sx = sign.X, sy = sign.Y, sz = sign.Z; var lines = (string[])sign.Lines.Clone(); Raise(() => SignUpdated?.Invoke(sx, sy, sz, lines)); }
                 break;
 
             // ---- entities ----
@@ -177,21 +179,46 @@ public sealed partial class MinecraftClient
                 w.Entities.SetMetadata(md.EntityId, ToDictionary(md.Metadata));
                 break;
             case EntityEquipmentPacket eq:
-                if (eq.Slot == 0) w.Entities.SetHeldItem(eq.EntityId, eq.ItemId < 0 ? 0 : eq.ItemId);
+            {
+                w.Entities.SetEquipment(eq.EntityId, eq.Slot, eq.ItemId < 0 ? ItemStack.Empty : new ItemStack(eq.ItemId, 1, eq.Damage));
+                int eid = eq.EntityId, slot = eq.Slot, item = eq.ItemId, dmg = eq.Damage;
+                Raise(() => EquipmentChanged?.Invoke(eid, slot, item, dmg));
                 break;
+            }
             case AttachEntityPacket at:
+            {
                 w.Entities.Attach(at.EntityId, at.VehicleId);
+                int eid = at.EntityId, vid = at.VehicleId;
+                Raise(() => EntityAttached?.Invoke(eid, vid));
                 break;
+            }
             case CollectItemPacket ci:
+            {
                 if (ci.CollectorEntityId == w.Player.EntityId) Interlocked.Increment(ref _collectedCount);
+                int collector = ci.CollectorEntityId, itemEntity = ci.CollectedEntityId;
+                ItemStack? stack = w.Entities.Get(itemEntity) is { Kind: EntityKind.Item } ie ? ie.Item : null;
+                Raise(() => ItemCollected?.Invoke(collector, itemEntity, stack));
                 break;
+            }
             case EntityStatusPacket st:
+            {
                 if (st.EntityId == w.Player.EntityId && st.Status == 9) Interlocked.Increment(ref _eatAcceptedCount);
+                if (st.EntityId != w.Player.EntityId) Combat.OnEntityStatus(st.EntityId, st.Status);
+                int eid = st.EntityId, status = st.Status;
+                Raise(() => EntityStatus?.Invoke(eid, status));
                 break;
+            }
+            case UseBedPacket ub:
+            {
+                int eid = ub.EntityId, bx = ub.X, by = ub.Y, bz = ub.Z;
+                Raise(() => EntityUsedBed?.Invoke(eid, bx, by, bz));
+                break;
+            }
             case AnimationPacket an:
                 if (an.EntityId != w.Player.EntityId)
                 {
                     int eid = an.EntityId, anim = an.Animation;
+                    Combat.OnAnimation(eid, anim);
                     Raise(() => EntityAnimated?.Invoke(eid, anim));
                 }
                 break;

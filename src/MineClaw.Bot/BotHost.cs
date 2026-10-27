@@ -4,6 +4,7 @@ using MineClaw.Bot.Demo;
 using MineClaw.Bot.Game;
 using MineClaw.Bot.GameTools;
 using MineClaw.Bot.Memory;
+using MineClaw.Bot.WorldIndex;
 using Microsoft.Extensions.Logging;
 using MPos = MineClaw.Agent.Memory.BlockPos;
 
@@ -22,9 +23,14 @@ public sealed class BotHost : IDisposable
     public required Protection Protection { get; init; }
     public required DemonstrationRecorder Recorder { get; init; }
     public required MemoryStoreAdapter MemoryAdapter { get; init; }
+    /// <summary>Zero-token map memory (chests, generators, farms, islands...) built from the client's world copy.</summary>
+    public WorldIndexer? Indexer { get; init; }
+    /// <summary>Other players' activity: attributed events, rollups, digest, wake rules.</summary>
+    public PlayerActivityTracker? Activity { get; init; }
 
     public static BotHost Create(IGameClient client, AgentOptions agentOptions, BotOptions? botOptions = null, ILlmClient? llm = null,
-        ILoggerFactory? loggers = null, TimeProvider? time = null, bool persist = true)
+        ILoggerFactory? loggers = null, TimeProvider? time = null, bool persist = true,
+        WorldIndexOptions? worldIndex = null, ActivityOptions? activity = null)
     {
         botOptions ??= new BotOptions();
         var log = loggers?.CreateLogger("MineClaw.Bot");
@@ -40,11 +46,12 @@ public sealed class BotHost : IDisposable
             position: () => client.IsPlaying && client.World.Player.Position.ToBlockPos() is var p ? new MPos(p.X, p.Y, p.Z) : null,
             demonstrations: recorder, loggers: loggers, time: time, persist: persist);
 
-        // TODO(rag-rework): rewire these adapters to the Agent's new memory API when it lands.
-        var memory = new MemoryStoreAdapter(rt.Memory);
+        var memory = new MemoryStoreAdapter(rt.Memory, rt.Observations,
+            () => (MineClaw.World.BlockPos?)client.World.Player.Position.ToBlockPos());
         var protection = new Protection(botOptions, memory, memory, time);
         foreach (var u in protection.Unknown) log?.LogWarning("Bot config: unknown {Name}", u);
-        client.IsProtected = protection.IsProtected;
+        var (indexer, activityTracker) = StartWorldIndex(client, rt, memory, worldIndex, activity, time, loggers);
+        client.IsProtected = indexer == null ? protection.IsProtected : (p, id) => protection.IsProtected(p, id) || indexer.IsProtected(p, id);
         client.ReservedItems = protection.ReservedItems();
 
         GameToolSet.RegisterAll(rt.Tools, client, memory, botOptions,
@@ -60,8 +67,47 @@ public sealed class BotHost : IDisposable
         return new BotHost
         {
             Runtime = rt, Client = client, Bridge = bridge, Protection = protection, Recorder = recorder, MemoryAdapter = memory,
+            Indexer = indexer, Activity = activityTracker,
         };
     }
 
-    public void Dispose() => Bridge.Dispose();
+    /// <summary>World indexer + activity tracker (background passes; never on the network thread, never the LLM).</summary>
+    private static (WorldIndexer?, PlayerActivityTracker?) StartWorldIndex(IGameClient client, AgentRuntime rt, MemoryStoreAdapter memory,
+        WorldIndexOptions? o, ActivityOptions? a, TimeProvider? time, ILoggerFactory? loggers)
+    {
+        o ??= new WorldIndexOptions();
+        a ??= new ActivityOptions();
+        if (!o.Enabled) return (null, null);
+        IWorldIndexFeed feed = client is MinecraftGameClient mg ? new ClientIndexFeed(mg.Inner) : new ManualIndexFeed();
+        var indexer = new WorldIndexer(client.World, new ObservationStoreSink(rt.Observations), feed, o, client.Username, time,
+            loggers?.CreateLogger("MineClaw.WorldIndex")) { IsKnownArea = memory.IsKnownArea };
+        indexer.Start();
+        if (!a.Enabled) return (indexer, null);
+        var tracker = new PlayerActivityTracker(client.World, new GameClientPlayerEvents(client), new ActivityLog(rt.Db, rt.Rag, a, time),
+            indexer, a, client.Username,
+            botNames: () => new[] { client.Username, rt.Chat.DisplayName }.Concat(rt.Chat.Aliases),
+            botBusy: () => client.CurrentAction != null, time: time, logger: loggers?.CreateLogger("MineClaw.Activity"))
+        { TaughtStructureAt = memory.TaughtStructureAt };
+        tracker.Wake += e => rt.Events.Post(e);
+        var lastEvidence = new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase);
+        tracker.StructureEvidence += (name, r) =>
+        {
+            lock (lastEvidence)
+            {
+                if (lastEvidence.TryGetValue(name, out var t) && r.End - t < TimeSpan.FromHours(1)) return;
+                lastEvidence[name] = r.End;
+            }
+            rt.Memory.AddNote(name, "seen: " + r.Text);
+        };
+        rt.Agent.TurnDigest = since => tracker.Digest.Since(since, rt.Options.TurnDigestMaxChars, prefix: "");
+        tracker.Start();
+        return (indexer, tracker);
+    }
+
+    public void Dispose()
+    {
+        Bridge.Dispose();
+        Activity?.Dispose();
+        Indexer?.Dispose();
+    }
 }
