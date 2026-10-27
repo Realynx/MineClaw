@@ -185,9 +185,16 @@ public sealed class SurvivalReflex
         if (health < o.GateMinHealth)
             return $"hp {health}/20 too low to {what} (need {o.GateMinHealth})"
                    + (food >= HungerRules.RegenFood ? "; regenerating" : hasFood ? "; eating to regenerate" : $" (food {food}, no food)");
-        if (food < o.GateMinFood && !hasFood) return $"too hungry to {what} (food {food}, no food)";
+        if (food < o.GateMinFood && !hasFood && NeedsFood(what)) return $"too hungry to {what} (food {food}, no food)";
         return null;
     }
+
+    /// <summary>
+    /// Vanilla b1.8.1 has no hunger penalty on mining, digging, placing or bridging, so only actions where low food
+    /// means no health regen mid-danger (fights, spars) are food-gated; everything else is gated on health alone.
+    /// </summary>
+    public static bool NeedsFood(string what) =>
+        what.StartsWith("fight", StringComparison.OrdinalIgnoreCase) || what.StartsWith("spar", StringComparison.OrdinalIgnoreCase);
 
     // ------------------------------------------------------------------ status
 

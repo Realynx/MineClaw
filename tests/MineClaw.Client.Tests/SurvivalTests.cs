@@ -123,7 +123,9 @@ public class SurvivalRuleTests
     [Fact]
     public void Gate_RefusesRiskyStarts_WithClearReasons()
     {
-        Assert.Equal("too hungry to bridge (food 5, no food)", SurvivalReflex.GateReason("bridge", 20, 5, false, O));
+        Assert.Null(SurvivalReflex.GateReason("bridge", 20, 5, false, O));                    // b1.8.1: hunger never blocks digging/placing
+        Assert.Null(SurvivalReflex.GateReason("mine 64 blocks", 20, 2, false, O));
+        Assert.Equal("too hungry to fight (food 5, no food)", SurvivalReflex.GateReason("fight", 20, 5, false, O));
         Assert.Null(SurvivalReflex.GateReason("bridge", 20, 5, true, O));                     // eats first
         Assert.Equal("hp 7/20 too low to fight (need 10) (food 9, no food)", SurvivalReflex.GateReason("fight", 7, 9, false, O));
         Assert.Equal("hp 7/20 too low to spar (need 10); eating to regenerate", SurvivalReflex.GateReason("spar", 7, 9, true, O));
@@ -165,7 +167,7 @@ public class SurvivalClientTests
     }
 
     [Fact]
-    public async Task NoFood_OneHungryEvent_AndBridgingIsRefused()
+    public async Task NoFood_OneHungryEvent_AndHungerDoesNotGateBuilding()
     {
         var (c, s) = await Harness.StartAsync(srv => srv.Inventory[36] = Harness.Stack(Blocks.Cobblestone, 32));
         await using var _ = c;
@@ -179,9 +181,7 @@ public class SurvivalClientTests
         Assert.Single(hunger);
         Assert.Equal("starving: food 5, no food in inventory (no sprint, no regen)", hunger[0].Message);
         var r = await c.GotoAsync(new GoalBlock(14, 64, 8), GotoOptions.Default with { AllowPlace = true });
-        Assert.False(r.Ok);
-        Assert.Equal("fail: too hungry to bridge (food 5, no food)", r.ToString());
-        Assert.Empty(s.Got<PlayerBlockPlacementPacket>());
+        Assert.True(r.Ok, r.ToString()); // b1.8.1: hunger never blocks placing/bridging
         Assert.True((await c.GotoAsync(new GoalBlock(9, 64, 9))).Ok); // plain walking is not gated
     }
 

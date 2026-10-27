@@ -202,7 +202,8 @@ public sealed partial class MinecraftClient
         if (p.Food < o.GateMinFood && pick is { } f)
         {
             var r = await UseCoreAsync(f.ItemId, ct).ConfigureAwait(false);
-            if (!r.Ok || World.Player.Food < o.GateMinFood) return ActionResult.Fail($"too hungry to {what} (food {World.Player.Food}; eating failed: {r.Message})");
+            if (SurvivalReflex.NeedsFood(what) && (!r.Ok || World.Player.Food < o.GateMinFood))
+                return ActionResult.Fail($"too hungry to {what} (food {World.Player.Food}; eating failed: {r.Message})");
         }
         _actionRisk = what;
         return null;
