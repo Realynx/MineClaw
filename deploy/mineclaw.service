@@ -1,40 +1,51 @@
-# /etc/systemd/system/mineclaw.service — MineClaw headless bot (see deploy/README.md).
+# /etc/systemd/system/mineclaw.service: MineClaw headless bot (see deploy/README.md).
+# deploy/deploy-alice.ps1 installs and refreshes this file. By hand:
 #   systemctl daemon-reload && systemctl enable --now mineclaw
 #   journalctl -u mineclaw -f            # one line per event, levels as journald priorities
 [Unit]
 Description=MineClaw Minecraft b1.8.1 Skyblock bot (Claude agent)
 Wants=network-online.target
 After=network-online.target
-# Don't hammer the API/server with a broken setup: at most 5 starts per 10 minutes.
-StartLimitIntervalSec=600
-StartLimitBurst=5
+# 24/7: never stop retrying. Restart= below spaces the attempts out (10 s growing to 5 min).
+StartLimitIntervalSec=0
 
 [Service]
 Type=exec
 User=mineclaw
 Group=mineclaw
 WorkingDirectory=/var/lib/mineclaw
-# Creates /var/lib/mineclaw and /var/log/mineclaw owned by User= (and keeps them writable under ProtectSystem=strict).
+# Keeps /var/lib/mineclaw and /var/log/mineclaw owned by User= and writable under ProtectSystem=strict.
 StateDirectory=mineclaw
 LogsDirectory=mineclaw
 StateDirectoryMode=0750
 LogsDirectoryMode=0750
 
-# Non-secret config; secrets (API keys) come from the EnvironmentFile as MINECLAW_Section__Key=value.
+# /etc/mineclaw/appsettings.json (0640 root:mineclaw) holds the config including the API keys. The optional env file
+# can override any key as MINECLAW_Section__Key=value (see mineclaw.env.example).
 EnvironmentFile=-/etc/mineclaw/mineclaw.env
-ExecStart=/opt/mineclaw/MineClaw.App --no-tui --config /etc/mineclaw/appsettings.json \
+Environment=MINECLAW_Agent__KnowledgeDirectory=/opt/mineclaw/current/docs/knowledge
+Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
+# /opt/mineclaw/current is a symlink to releases/<id>; deploy-alice.ps1 swaps it atomically (and -Rollback).
+ExecStart=/opt/mineclaw/current/MineClaw.App --no-tui --config /etc/mineclaw/appsettings.json \
           --data-dir /var/lib/mineclaw --log-dir /var/log/mineclaw
+SyslogIdentifier=mineclaw
+StandardOutput=journal
+StandardError=journal
 
-# Graceful stop: SIGTERM → stop actions, (hive: deposit items), disconnect, flush db/logs. The app's own budget is
-# Host:ShutdownTimeoutSeconds (default 30); keep this comfortably above it so systemd never SIGKILLs mid-flush.
+# Graceful stop: SIGTERM, then stop actions, (hive: deposit items), disconnect, flush db/logs. The app's own budget is
+# Host:ShutdownTimeoutSeconds (default 30); keep this well above it (and above future clone deposits).
 KillSignal=SIGTERM
 KillMode=mixed
-TimeoutStopSec=90
+TimeoutStopSec=120
 
 # Exit codes: 0 clean, 1 crash, 2 config, 3 auth (bad key/model), 64 usage, 75 transient (API unreachable at start).
-Restart=on-failure
-RestartSec=15
-RestartPreventExitStatus=2 3 64
+# Restart on everything (including exit 0 and auth errors), except a broken config or command line: those need a human
+# and a redeploy restarts the service anyway. Server drops/kicks never exit; the client reconnects by itself.
+Restart=always
+RestartSec=10
+RestartSteps=10
+RestartMaxDelaySec=300
+RestartPreventExitStatus=2 64
 
 # ---- hardening (network + the state/log dirs stay available) ----
 NoNewPrivileges=yes
@@ -60,7 +71,7 @@ AmbientCapabilities=
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
-# IPv4/IPv6 for the Minecraft server + Anthropic API; AF_UNIX for journald and the upcoming hive IPC.
+# IPv4/IPv6 for the Minecraft server + Anthropic/Azure APIs; AF_UNIX for journald and the upcoming hive IPC.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 # Not set on purpose: MemoryDenyWriteExecute=yes (breaks the .NET JIT).
 ReadOnlyPaths=/opt/mineclaw /etc/mineclaw
