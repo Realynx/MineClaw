@@ -206,7 +206,7 @@ public static partial class SignalExtractor
     private static readonly HashSet<string> MacroTools = new(StringComparer.OrdinalIgnoreCase)
     {
         "mine", "harvest_generator", "collect_drops", "craft", "smelt", "collect_furnace", "deposit", "withdraw", "organize_chest",
-        "place", "dig", "use_block", "build", "farm", "plant", "chop",
+        "place", "dig", "use_block", "build", "farm", "plant", "chop", "chop_tree", "skill", "move_items", "arrange_chest", "organize_storage",
     };
 
     private static void Count(Dictionary<string, int> c, string subject) => c[subject] = c.GetValueOrDefault(subject) + 1;
