@@ -4,7 +4,6 @@
 ## Get latest from `dotnet new gitignore`
 
 # dotenv files
-.env
 
 # User-specific files
 *.rsuser
@@ -481,3 +480,7 @@ $RECYCLE.BIN/
 # Vim temporary swap files
 *.swp
 testserver/
+# secrets: real config holds the API key; commit appsettings.example.json instead
+src/MineClaw.App/appsettings.json
+src/MineClaw.App/appsettings.*.json
+!src/MineClaw.App/appsettings.example.json
