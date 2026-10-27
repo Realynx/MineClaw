@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using MineClaw.Agent.Chat;
 using MineClaw.Agent.Memory;
 using MineClaw.Agent.Tools;
@@ -29,6 +28,10 @@ public static class HumanTools
                 var name = input.Str("name");
                 int timeout = Math.Clamp(input.Int("timeout") ?? defaultTimeoutSeconds, 5, 180);
                 var text = name != null && !question.Contains(name, StringComparison.OrdinalIgnoreCase) ? $"{name}, {question}" : question;
+                // Coordinates only when the player used them first or asked for them; otherwise landmarks ("the one by the lava").
+                text = Questions.Humanize(text, chat.RecentFrom(name), chat.Landmark);
+                // Hive: this bot owns the conversation thread with that player until they answer or it times out.
+                using var thread = name != null ? chat.HoldThread(name, TimeSpan.FromSeconds(timeout + 5)) : null;
                 // Register the waiter before speaking so a fast reply can't be missed.
                 var wait = chat.WaitForReplyAsync(name, TimeSpan.FromSeconds(timeout), ct);
                 await chat.SayAsync(text, audience: name != null ? [name] : null, ct: ct).ConfigureAwait(false);
@@ -41,7 +44,7 @@ public static class HumanTools
     public static void RegisterWatchDemo(ToolRegistry registry, ChatRouter chat, MemoryStore memory, IDemonstrationSource source)
     {
         registry.Register(new DelegateTool("watch_demo",
-            "Watch a player show how to use a structure; they say 'done' when finished. Steps get saved to the structure.",
+            DemoWait.ToolDescription,
             ToolSchema.Create().Str("player").Str("structure").Int("max_seconds", "default 120", required: false).Build(),
             async (input, ct) =>
             {
@@ -57,20 +60,11 @@ public static class HumanTools
                 }
 
                 await using var session = await source.StartAsync(player, area, ct).ConfigureAwait(false);
-                await chat.SayAsync($"{player}, show me! say done when finished", audience: [player], ct: ct).ConfigureAwait(false);
-
-                var deadline = DateTimeOffset.UtcNow.AddSeconds(max);
-                while (true)
-                {
-                    var left = deadline - DateTimeOffset.UtcNow;
-                    if (left <= TimeSpan.Zero) break;
-                    var reply = await chat.WaitForReplyAsync(player, left, ct).ConfigureAwait(false);
-                    if (reply == null || Regex.IsMatch(reply, @"\b(done|finished|that's it|thats it|ok that's all)\b", RegexOptions.IgnoreCase)) break;
-                }
+                var waited = await DemoWait.RunAsync(chat, session, player, max, null, ct).ConfigureAwait(false);
 
                 var actions = await session.StopAsync(ct).ConfigureAwait(false);
                 var steps = DemonstrationSummarizer.Summarize(actions, known?.Min);
-                if (steps.Count == 0) return ToolResult.Error("saw nothing to learn");
+                if (steps.Count == 0) return ToolResult.Error("saw nothing to learn" + DemoWait.SaidSuffix(waited));
                 memory.UpsertStructure(name, s =>
                 {
                     s.Steps.Clear();
@@ -78,7 +72,7 @@ public static class HumanTools
                     s.TaughtBy = player;
                     s.Confidence = Math.Max(s.Confidence, 0.7);
                 });
-                return ToolResult.Success($"learned {name} ({steps.Count} steps): " + string.Join("; ", steps));
+                return ToolResult.Success($"learned {name} ({steps.Count} steps): " + string.Join("; ", steps) + DemoWait.SaidSuffix(waited));
             }, longRunning: false));
     }
 }

@@ -19,6 +19,27 @@ public sealed record TreeInfo(BlockPos Base, BlockPos Soil, int SoilId, int Wood
 /// <summary>Pure tree analysis over any <see cref="IBlockAccess"/> (no client needed: unit-testable and reusable by the index).</summary>
 public static class TreeScan
 {
+    /// <summary>
+    /// b1.8.1 <c>world.k</c> (what BlockFlower.canBlockStay reads): max(raw sky light, block light), with NO night
+    /// subtraction, so night alone never makes a spot too dark. Block-change packets carry no light, so a cell that just
+    /// stopped being opaque (the chopped trunk) still holds its old 0: the server relights it from its neighbours, so the
+    /// estimate is max(stored, brightest non-opaque neighbour - 1) for both sky and block light.
+    /// </summary>
+    public static int SaplingLight(WorldState world, BlockPos cell)
+    {
+        int Light(int x, int y, int z) => Math.Max(world.GetSkyLight(x, y, z), world.GetBlockLight(x, y, z));
+        int best = Light(cell.X, cell.Y, cell.Z);
+        foreach (var f in BlockFaceExtensions.All)
+        {
+            var n = cell.Offset(f);
+            if ((uint)n.Y >= WorldState.Height) continue;
+            int id = world.GetBlock(n);
+            if (id != 0 && Blocks.Get(id) is { Solid: true } && id != Blocks.Leaves && id != Blocks.Glass) continue; // opaque: holds no light
+            best = Math.Max(best, Light(n.X, n.Y, n.Z) - 1);
+        }
+        return best;
+    }
+
     public const int MaxLogs = 96;
     /// <summary>Vanilla leaf decay range: a leaf lives while a log is within 4 steps through leaves/logs.</summary>
     public const int LeafRange = 4;

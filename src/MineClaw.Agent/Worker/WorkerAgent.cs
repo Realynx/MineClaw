@@ -68,6 +68,17 @@ public sealed class WorkerAgent
         _system = [_system[0] with { Text = _system[0].Text.TrimEnd() + "\n" + block.Trim() + "\n" }, .. _system.Skip(1)];
     }
 
+    private volatile string? _trail;
+
+    /// <summary>
+    /// What the running (or last) task did, newest last: "craft! need 3 planks > chop_tree (running)". The stop tool reports
+    /// it, so the brain can tell players what really happened instead of inventing a reason.
+    /// </summary>
+    public string? Trail => _trail;
+
+    /// <summary>Landmark describer for coordinates in needs_input results ("4,64,6 (the west gen cell)"); null = none.</summary>
+    public Func<int, int, int, string?>? Landmark { get; set; }
+
     /// <summary>The worker's tool definitions (its cached prefix, stable for the run).</summary>
     public IReadOnlyList<LlmToolDefinition> ToolDefinitions => _tools.Definitions(ModelTier.Worker);
 
@@ -82,9 +93,11 @@ public sealed class WorkerAgent
             async (input, ct) =>
             {
                 var o = await RunAsync(input.ReqStr("task"), input.Str("done_when"), input.Int("max_minutes"), ct).ConfigureAwait(false);
-                return o.Ok ? ToolResult.Success(o.Summary) : ToolResult.Error(o.Summary);
+                // needs_input usually ends in a question for the players: give the brain landmarks next to the coordinates.
+                var summary = o.NeedsInput ? Human.Questions.Annotate(o.Summary, Landmark) : o.Summary;
+                return o.Ok ? ToolResult.Success(summary) : ToolResult.Error(summary);
             },
-            longRunning: true, tiers: ToolTiers.Main, maxResultChars: _o.SummaryChars + 20);
+            longRunning: true, tiers: ToolTiers.Main, maxResultChars: _o.SummaryChars + 140);
     }
 
     /// <summary>Runs one task to completion. Throws <see cref="OperationCanceledException"/> when <paramref name="ct"/> is cancelled.</summary>
@@ -105,6 +118,7 @@ public sealed class WorkerAgent
         decimal cost = 0;
         string? summary = null, stop = "done";
         var log = new List<string>();
+        _trail = null;
 
         try
         {
@@ -141,11 +155,13 @@ public sealed class WorkerAgent
                     else
                     {
                         // Sequential: the bot has one body. Each game tool honours the task token.
+                        _trail = TrailOf(log, $"{u.Name} {TextUtil.Truncate(TextUtil.OneLine(u.Input.GetRawText()), 50)} (running)");
                         r = await _tools.ExecuteAsync(tool, u.Input, token).ConfigureAwait(false);
                         toolCalls++;
                     }
                     token.ThrowIfCancellationRequested();
                     log.Add($"{u.Name}{(r.Ok ? "" : "!")} {TextUtil.Truncate(TextUtil.OneLine(r.Text), 60)}");
+                    _trail = TrailOf(log, null);
                     results.Add(new LlmToolResult(u.Id, r.Text.Length == 0 ? (r.Ok ? "ok" : "error") : r.Text, !r.Ok));
                 }
                 messages.Add(new LlmMessage(LlmRole.User, results));
@@ -179,6 +195,13 @@ public sealed class WorkerAgent
         _log.LogInformation("worker task \"{Task}\": {Summary} ({Calls} calls, {Tools} tools, ${Cost:0.0000}, {Stop})",
             TextUtil.Truncate(task, 60), outcome.Summary, calls, toolCalls, cost, stop);
         return Done(outcome);
+    }
+
+    private static string TrailOf(List<string> log, string? running)
+    {
+        var parts = log.TakeLast(running == null ? 3 : 2).ToList();
+        if (running != null) parts.Add(running);
+        return string.Join(" > ", parts);
     }
 
     private WorkerOutcome Done(WorkerOutcome o)

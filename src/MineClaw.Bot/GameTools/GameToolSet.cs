@@ -24,9 +24,28 @@ public static class GameToolSet
 
     private const string At = "x,y,z or saved name";
 
+    /// <summary>
+    /// The dig cell to harvest: the asked one when free, else the nearest unclaimed cell of the same generator ("6,64,8 is
+    /// maid_chan's; took 4,64,6"). Without a hive every cell is free.
+    /// </summary>
+    internal static (BlockPos? Cell, string? Note) PickGeneratorCell(IGameClient c, BlockPos asked, Func<BlockPos, IReadOnlyList<BlockPos>>? cells)
+    {
+        var claims = (c as ClaimAwareGameClient)?.Claims;
+        int dim = c.World.Dimension;
+        if (claims == null || claims.IsFree(MineClaw.World.Claims.ClaimKey.Block(asked, dim))) return (asked, null);
+        var all = (cells?.Invoke(asked) ?? Perception.BlockDescriber.GenCellsNear(c.World, asked, 4))
+            .Where(x => x != asked).Distinct().OrderBy(x => x.DistanceSquaredTo(asked)).ToList();
+        foreach (var x in all)
+            if (claims.IsFree(MineClaw.World.Claims.ClaimKey.Block(x, dim)))
+                return (x, $"{Locations.Fmt(asked)} is taken by another bot; took the free cell {Locations.Fmt(x)}");
+        return (null, $"busy: every dig cell of that generator is taken ({Locations.Fmt(asked)}{(all.Count > 0 ? " +" + all.Count : "")})");
+    }
+
     /// <param name="landmark">Nearest named landmark of a point, phrased relationally ("2 E of cobble_gen"); null = no hints.</param>
+    /// <param name="generatorCells">All dig cells of the generator around a block (dual generators have several); null = the
+    /// world geometry only.</param>
     public static void RegisterAll(ToolRegistry tools, IGameClient c, IPlaceResolver places, BotOptions? options = null,
-        Func<double, double, double, string?>? landmark = null)
+        Func<double, double, double, string?>? landmark = null, Func<BlockPos, IReadOnlyList<BlockPos>>? generatorCells = null)
     {
         options ??= new BotOptions();
         var crafter = new Crafter(c);
@@ -94,7 +113,11 @@ public static class GameToolSet
                 var at = i.ReqStr("at");
                 var p = Locations.ParseCoords(at) ?? places.Resolve(at, "mine") ?? places.Resolve(at, "output") ?? places.Resolve(at);
                 if (p is not { } g) return ToolResult.Error($"unknown generator '{at}'");
-                return R(await c.HarvestGeneratorAsync(g.X, g.Y, g.Z, Math.Clamp(i.Int("count") ?? 16, 1, 512), ct));
+                // Hive: another bot already mines that cell -> take a free dig cell of the same generator instead.
+                var (cell, note) = PickGeneratorCell(c, g, generatorCells);
+                if (cell is not { } pick) return ToolResult.Error(note ?? $"no free dig cell at {Locations.Fmt(g)}");
+                var r = R(await c.HarvestGeneratorAsync(pick.X, pick.Y, pick.Z, Math.Clamp(i.Int("count") ?? 16, 1, 512), ct));
+                return note == null ? r : r with { Text = note + "; " + r.Text };
             }, longRunning: true);
         tools.Register("collect_drops", "Pick up dropped items nearby.",
             ToolSchema.Create().Int("radius", "default 8", required: false).Build(),

@@ -241,7 +241,8 @@ public class LiveHiveChatTests(Xunit.Abstractions.ITestOutputHelper output)
         var group = await Say("<kiwi> both of you");
         Assert.NotEmpty(group);
         Assert.True(h.Arbiter.IsGroupAsk(main.Chat.Parse("<kiwi> both of you")));
-        Assert.Equal("[hive: 1 clone online: maid_chan_67 (idle)] group ask: split it, hive spawn name+task for the clone's part; reply once",
+        // Its task never reports a result: pending, so main has nothing to report about it yet (live 2: no fabricated results).
+        Assert.Equal("[hive: 67 saying (pending)] pending = no result yet, don't report it group ask: split it, hive spawn name+task for the clone's part; reply once",
             h.Supervisor.HintLine(groupAsk: true));
         Assert.Empty(await Say("kiwi fell out of the world"));
         Assert.Empty(await Say("kiwi hit the ground too hard"));
@@ -253,7 +254,7 @@ public class LiveHiveChatTests(Xunit.Abstractions.ITestOutputHelper output)
             Assert.DoesNotContain(bad, turns);
 
         // Main splits the group ask: the clone gets its part as an IPC task and acts without chatting.
-        Assert.Equal("ok: 67 got the new task", h.Supervisor.Spawn("chop the second tree by the cobble gen", "67"));
+        Assert.StartsWith("ok: 67 got the new task", h.Supervisor.Spawn("chop the second tree by the cobble gen", "67"));
         await Wait.Until(() => TurnCount() >= 3, 20, "delegated task turn");
         Assert.Contains("TURN MUTE: [note] [hive task] chop the second tree", Turns());
 

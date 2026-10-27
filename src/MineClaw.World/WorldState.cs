@@ -70,9 +70,70 @@ public sealed class WorldState : IBlockAccess
     private ChunkColumn GetOrCreate(int cx, int cz, out bool created)
     {
         bool c = false;
-        var col = _columns.GetOrAdd(Key(cx, cz), _ => { c = true; return new ChunkColumn(cx, cz); });
+        var col = _columns.GetOrAdd(Key(cx, cz), _ => { c = true; return new ChunkColumn(cx, cz) { Dimension = Dimension }; });
         created = c;
         return col;
+    }
+
+    // ---- remembered world (stale, from an earlier visit; never live) ----
+
+    private readonly ConcurrentDictionary<long, RememberedColumn> _remembered = new();
+
+    /// <summary>Raised after a live column was removed (unload, dimension change), with the removed column (its data is
+    /// final): the remembered-world store snapshots it.</summary>
+    public event Action<ChunkColumn>? ColumnDropped;
+
+    /// <summary>
+    /// Adds a remembered column of the current dimension. Ignored when a live column with data is there (live always wins)
+    /// or the column belongs to another dimension. Remembered data is for planning/answers only: <see cref="GetBlock(int,int,int)"/>,
+    /// <see cref="IsLoaded"/> and everything movement/safety use stay live-only.
+    /// </summary>
+    public bool Remember(RememberedColumn column)
+    {
+        if (column.Dimension != Dimension) return false;
+        if (GetColumn(column.ChunkX, column.ChunkZ) is { HasData: true }) return false;
+        _remembered[Key(column.ChunkX, column.ChunkZ)] = column;
+        return true;
+    }
+
+    public RememberedColumn? GetRemembered(int chunkX, int chunkZ) => _remembered.GetValueOrDefault(Key(chunkX, chunkZ));
+
+    public int RememberedCount => _remembered.Count;
+
+    /// <summary>True when block column (x, z) is only known from memory (no live data yet).</summary>
+    public bool IsStale(int x, int z) => !IsLoaded(x, z) && _remembered.ContainsKey(Key(x >> 4, z >> 4));
+
+    /// <summary>When the remembered column holding (x, z) was last seen live, or null (live or unknown).</summary>
+    public DateTimeOffset? RememberedAt(int x, int z) => IsLoaded(x, z) ? null : _remembered.GetValueOrDefault(Key(x >> 4, z >> 4))?.LastSeen;
+
+    /// <summary>Drops every remembered column (dimension change; the store reloads the new dimension's).</summary>
+    public void ForgetRemembered() => _remembered.Clear();
+
+    private RememberedView? _planning;
+
+    /// <summary>
+    /// Live blocks where loaded, remembered blocks elsewhere — for route/size ESTIMATES before live chunks arrive (after a
+    /// portal, answering about the other dimension). Never use it for stepping, jumping or EdgeGuard decisions.
+    /// </summary>
+    public IBlockAccess PlanningView => _planning ??= new RememberedView(this);
+
+    private sealed class RememberedView(WorldState w) : IBlockAccess
+    {
+        public int GetBlock(int x, int y, int z)
+        {
+            if (w.IsLoaded(x, z)) return w.GetBlock(x, y, z);
+            return w._remembered.TryGetValue(Key(x >> 4, z >> 4), out var r) ? r.GetBlock(x & 15, y, z & 15) : 0;
+        }
+
+        public int GetMeta(int x, int y, int z)
+        {
+            if (w.IsLoaded(x, z)) return w.GetMeta(x, y, z);
+            return w._remembered.TryGetValue(Key(x >> 4, z >> 4), out var r) ? r.GetMeta(x & 15, y, z & 15) : 0;
+        }
+
+        public bool IsLoaded(int x, int z) => w.IsLoaded(x, z) || w._remembered.ContainsKey(Key(x >> 4, z >> 4));
+
+        public BlockInfo Info(int id) => w.Info(id);
     }
 
     // ---- column lifecycle (0x32 Pre-Chunk) ----
@@ -87,14 +148,23 @@ public sealed class WorldState : IBlockAccess
     /// <summary>0x32 with mode=false: forget a column.</summary>
     public void UnloadColumn(int chunkX, int chunkZ)
     {
-        if (_columns.TryRemove(Key(chunkX, chunkZ), out _)) ColumnUnloaded?.Invoke(chunkX, chunkZ);
+        if (_columns.TryRemove(Key(chunkX, chunkZ), out var gone))
+        {
+            ColumnUnloaded?.Invoke(chunkX, chunkZ);
+            if (gone.HasData) ColumnDropped?.Invoke(gone);
+        }
     }
 
-    /// <summary>Drops every column (respawn / dimension change).</summary>
+    /// <summary>Drops every column (respawn / dimension change), remembered ones included.</summary>
     public void Clear()
     {
         foreach (var k in _columns.Keys.ToArray())
-            if (_columns.TryRemove(k, out var c)) ColumnUnloaded?.Invoke(c.ChunkX, c.ChunkZ);
+            if (_columns.TryRemove(k, out var c))
+            {
+                ColumnUnloaded?.Invoke(c.ChunkX, c.ChunkZ);
+                if (c.HasData) ColumnDropped?.Invoke(c);
+            }
+        _remembered.Clear();
     }
 
     /// <summary>True when the column containing block (x, z) exists and has received block data.</summary>
@@ -195,6 +265,11 @@ public sealed class WorldState : IBlockAccess
                 }
             }
         }
+        // Live data replaces what was remembered of these columns.
+        if (!_remembered.IsEmpty)
+            for (int cx = originX >> 4; cx <= (originX + sizeX - 1) >> 4; cx++)
+            for (int cz = originZ >> 4; cz <= (originZ + sizeZ - 1) >> 4; cz++)
+                _remembered.TryRemove(Key(cx, cz), out _);
         foreach (var (cx, cz) in newColumns) ColumnLoaded?.Invoke(cx, cz);
         RegionUpdated?.Invoke(new BlockPos(originX, originY, originZ), new BlockPos(sizeX, sizeY, sizeZ));
     }

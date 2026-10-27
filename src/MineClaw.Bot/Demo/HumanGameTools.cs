@@ -12,9 +12,6 @@ namespace MineClaw.Bot.Demo;
 /// <summary>Player-in-the-loop game tools: <c>watch_demo</c> (with the bot's richer summary) and <c>ask_stand</c>.</summary>
 public static partial class HumanGameTools
 {
-    [GeneratedRegex(@"\b(done|finished|that'?s it|that'?s all|all done)\b", RegexOptions.IgnoreCase)]
-    private static partial Regex DoneRx();
-
     /// <summary>
     /// Replaces the runtime's <c>watch_demo</c> (same name and inputs) so steps use <see cref="DemoSummary"/>
     /// ("stood at .. facing lava; right-clicked water bucket on ..; cobblestone appeared at ..").
@@ -22,7 +19,7 @@ public static partial class HumanGameTools
     public static void RegisterWatchDemo(ToolRegistry tools, ChatRouter chat, IDemonstrationSource source, IStructureMemory structures)
     {
         tools.Register(new DelegateTool("watch_demo",
-            "Watch a player show how to use a structure; they say 'done' when finished. Steps get saved to the structure.",
+            DemoWait.ToolDescription,
             ToolSchema.Create().Str("player").Str("structure").Int("max_seconds", "default 120", required: false).Build(),
             async (input, ct) =>
             {
@@ -35,20 +32,12 @@ public static partial class HumanGameTools
                     : null;
 
                 await using var session = await source.StartAsync(player, area, ct).ConfigureAwait(false);
-                await chat.SayAsync($"{player}, show me! say done when finished", audience: [player], ct: ct).ConfigureAwait(false);
-                var deadline = DateTimeOffset.UtcNow.AddSeconds(max);
-                while (true)
-                {
-                    var left = deadline - DateTimeOffset.UtcNow;
-                    if (left <= TimeSpan.Zero) break;
-                    var reply = await chat.WaitForReplyAsync(player, left, ct).ConfigureAwait(false);
-                    if (reply == null || DoneRx().IsMatch(reply)) break;
-                }
+                var waited = await DemoWait.RunAsync(chat, session, player, max, null, ct).ConfigureAwait(false);
                 var actions = await session.StopAsync(ct).ConfigureAwait(false);
                 var steps = DemoSummary.Summarize(actions, known?.Min);
-                if (steps.Count == 0) return ToolResult.Error("saw nothing to learn");
+                if (steps.Count == 0) return ToolResult.Error("saw nothing to learn" + DemoWait.SaidSuffix(waited));
                 structures.SaveSteps(name, steps, player);
-                return ToolResult.Success($"learned {name} ({steps.Count} steps): " + string.Join("; ", steps));
+                return ToolResult.Success($"learned {name} ({steps.Count} steps): " + string.Join("; ", steps) + DemoWait.SaidSuffix(waited));
             }));
     }
 
@@ -56,8 +45,10 @@ public static partial class HumanGameTools
     /// <c>ask_stand</c>: with <c>at</c>, asks the player to stand there and waits until their position confirms it;
     /// without, asks them to stand at the spot they mean and say "here", then reports where they stand.
     /// </summary>
+    /// <param name="digCells">When given, a spot at a cobblestone generator ("stand where the clone should mine") registers the
+    /// generator cell the player faces/stands by as a dig cell.</param>
     public static void RegisterAskStand(ToolRegistry tools, ChatRouter chat, IGameClient client, int timeoutSeconds = 90,
-        TimeSpan? pollInterval = null)
+        TimeSpan? pollInterval = null, Perception.DigCells? digCells = null)
     {
         var poll = pollInterval ?? TimeSpan.FromMilliseconds(500);
         tools.Register("ask_stand", "Ask a player to stand at x,y,z and wait until they do; omit at = they stand where they mean, say here, you get the spot.",
@@ -68,10 +59,16 @@ public static partial class HumanGameTools
                 var target = Locations.ParseCoords(input.Str("at"));
                 if (input.Str("at") is { Length: > 0 } && target == null) return ToolResult.Error("at must be x,y,z");
                 var deadline = DateTimeOffset.UtcNow.AddSeconds(timeoutSeconds);
+                // Hive: this bot owns the conversation with that player until they answer or it times out.
+                using var thread = chat.HoldThread(player, TimeSpan.FromSeconds(timeoutSeconds + 5));
+                // One prompt only: the brain's own line wins; the tool speaks only if the brain said nothing this turn.
+                bool quiet = chat.ModelSpokeThisTurn && input.Str("say") == null;
 
                 if (target is { } t)
                 {
-                    await chat.SayAsync(input.Str("say") ?? $"{player}, can you stand at {Locations.Fmt(t)}?", audience: [player], ct: ct).ConfigureAwait(false);
+                    if (!quiet)
+                        await chat.SayAsync(input.Str("say") ?? $"{player}, can you stand at {chat.Landmark?.Invoke(t.X, t.Y, t.Z) ?? Locations.Fmt(t)}?",
+                            audience: [player], ct: ct).ConfigureAwait(false);
                     int hits = 0;
                     while (DateTimeOffset.UtcNow < deadline)
                     {
@@ -85,15 +82,42 @@ public static partial class HumanGameTools
                 }
 
                 var wait = chat.WaitForReplyAsync(player, TimeSpan.FromSeconds(timeoutSeconds), ct);
-                await chat.SayAsync(input.Str("say") ?? $"{player}, stand on the spot and say here", audience: [player], ct: ct).ConfigureAwait(false);
-                var reply = await wait.ConfigureAwait(false);
+                if (!quiet)
+                    await chat.SayAsync(input.Str("say") ?? $"{player}, stand on the spot and tell me when you're there", audience: [player], ct: ct).ConfigureAwait(false);
+                // "here", "here is the cell", "ok", "this spot"...; anything else first: keep waiting a little, it may be chatter.
+                var said = new List<string>();
+                string? reply = await wait.ConfigureAwait(false);
+                while (reply != null && !ReplyIntent.IsHere(reply) && said.Count < 3 && DateTimeOffset.UtcNow < deadline)
+                {
+                    said.Add(ReplyIntent.Strip(reply));
+                    reply = await chat.WaitForReplyAsync(player, deadline - DateTimeOffset.UtcNow, ct).ConfigureAwait(false);
+                }
+                reply ??= said.LastOrDefault();
                 if (reply == null) return ToolResult.Error($"no reply in {timeoutSeconds}s");
                 var p = client.World.Entities.FindPlayer(player);
                 if (p == null) return ToolResult.Error($"{player} said \"{reply}\" but I can't see them");
-                var facing = Demo.DemonstrationRecorder.LookTarget(client.World, p.Position, p.Yaw, p.Pitch) is { } lt
-                    ? $" facing {GameTools.Names.Block(lt.Id)} at {Locations.Fmt(lt.Pos)}" : "";
-                return ToolResult.Success($"{player} stands at {Locations.Fmt(p.Position)}{facing} (said \"{reply}\")");
+                var look = Demo.DemonstrationRecorder.LookTarget(client.World, p.Position, p.Yaw, p.Pitch, solidOnly: true);
+                var facing = look is { } lt ? $" facing {GameTools.Names.Block(lt.Id)} at {Locations.Fmt(lt.Pos)}" : "";
+                string taught = "";
+                if (digCells != null && DigCellAt(client.World, p.Position.ToBlockPos(), look?.Pos) is { } cell)
+                {
+                    digCells.Register(cell, player);
+                    taught = $"; dig cell {Locations.Fmt(cell)} ({Perception.BlockDescriber.GenCellName(client.World, cell) ?? "gen cell"}) saved, never protected";
+                }
+                return ToolResult.Success($"{player} stands at {Locations.Fmt(p.Position)}{facing} (said \"{ReplyIntent.Strip(reply)}\"){taught}");
             }, cheapTier: false);
+    }
+
+    /// <summary>
+    /// The generator cell a player at <paramref name="feet"/> means: the gen cell they face, else the nearest one within reach
+    /// of where they stand (a spot at a cobble generator during a gen conversation is a dig cell). Null when none.
+    /// </summary>
+    public static BlockPos? DigCellAt(WorldState w, BlockPos feet, BlockPos? facing)
+    {
+        if (facing is { } f && Perception.BlockDescriber.IsGenCell(w, f)) return f;
+        var near = Perception.BlockDescriber.GenCellsNear(w, feet, 3)
+            .Where(c => new Vec3d(feet.X + 0.5, feet.Y + 1.62, feet.Z + 0.5).DistanceTo(c.Center) <= 4.5).ToList();
+        return near.Count > 0 ? near[0] : null;
     }
 
     /// <summary>Same cell horizontally (±1 tolerance) and within 1 block vertically.</summary>

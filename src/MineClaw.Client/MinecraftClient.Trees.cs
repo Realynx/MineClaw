@@ -32,8 +32,9 @@ public sealed partial class MinecraftClient
     /// <summary>Raised (on the event dispatcher) after every chop_tree, success or not.</summary>
     public event Action<TreeChopReport>? TreeChopped;
 
-    /// <summary>Cheap blocks a short tree pillar may use (never dirt: unrenewable on Skyblock).</summary>
-    private static readonly int[] PillarBlocks = [Blocks.Cobblestone, Blocks.Netherrack];
+    /// <summary>Cheap blocks a short tree pillar may use (dug back afterwards; never dirt: unrenewable on Skyblock; no logs:
+    /// a placed log would read as part of the tree being felled).</summary>
+    private static readonly int[] PillarBlocks = [Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Planks, Blocks.Sandstone, Blocks.StoneBricks];
 
     private sealed class ChopState(TreeInfo tree)
     {
@@ -197,7 +198,7 @@ public sealed partial class MinecraftClient
             }
             int top = remaining.Max(l => l.Y);
             return $"{remaining.Count} log(s) out of reach (up to y {top})"
-                   + (st.Pillar.Count == 0 && PillarBlock() is null ? "; no cobblestone to pillar" : "");
+                   + (st.Pillar.Count == 0 && PillarBlock() is null ? "; no cobble/planks to pillar" : "");
         }
     }
 
@@ -497,10 +498,11 @@ public sealed partial class MinecraftClient
             if (id != 0 && id != Blocks.Leaves && BlockShapes.HasCollision(World, cell.X, cell.Y + dy, cell.Z))
                 return $"no room to grow ({BlockName(id, 0)} at {Fmt(cell.Up(dy))})";
         }
-        if (!SeesSky(cell) && Math.Max(World.GetSkyLight(cell.X, cell.Y, cell.Z), World.GetBlockLight(cell.X, cell.Y, cell.Z)) < 8)
+        if (!SeesSky(cell) && TreeScan.SaplingLight(World, cell) < 8)
             return $"too dark at {Fmt(cell)} (needs light 8+)";
         return null;
     }
+
 
     /// <summary>Vanilla canBlockSeeTheSky: nothing with light opacity above (leaves and water count, glass/torches don't).</summary>
     private bool SeesSky(BlockPos p)

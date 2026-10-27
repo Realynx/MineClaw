@@ -38,8 +38,22 @@ public sealed class FakePort : IInventoryPort
             int n = Math.Min(free, Stacks.Count);
             Stacks.RemoveRange(0, n);
             ChestFree[chest] = free - n;
+            Hidden.AddRange(RejectedOnDeposit);
+            RejectedOnDeposit.Clear();
             return Task.FromResult(n > 0 ? ActionResult.Success($"deposited {n} stacks", n) : ActionResult.Fail("nothing to deposit"));
         }
+    }
+
+    /// <summary>Items the server has but the (stale/predicted) local copy doesn't show until <see cref="SettleAsync"/>.</summary>
+    public List<ItemMsg> Hidden { get; } = new();
+    /// <summary>Moved into <see cref="Hidden"/> by the next deposit (a click the server rejected after we predicted it).</summary>
+    public List<ItemMsg> RejectedOnDeposit { get; } = new();
+    public int Settles;
+
+    public Task<bool> SettleAsync(CancellationToken ct)
+    {
+        lock (_lock) { Settles++; Stacks.AddRange(Hidden); Hidden.Clear(); }
+        return Task.FromResult(true);
     }
 
     public Task<ActionResult> TossAllAtAsync(Vec3d at, CancellationToken ct) => Task.FromResult(ActionResult.Fail("can't toss in a test"));

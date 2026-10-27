@@ -154,10 +154,15 @@ public sealed class AgentRuntime : IDisposable
         }
 
         // Built-in, game-agnostic tools (registered first so their order is stable — it's part of the cached prefix).
+        WorkerAgent? worker = null;
         tools.Register("stop", "Stop the current task/activity.", ToolSchema.Empty, (_, _) =>
         {
+            // What the worker was actually doing (and why), so a correction to the players is the real story, not a guess.
+            var trail = worker?.Trail;
             var what = activities.Cancel("stop");
-            return Task.FromResult(ToolResult.Success(what != null ? $"stopped {what}" : "nothing running"));
+            if (what == null) return Task.FromResult(ToolResult.Success("nothing running"));
+            return Task.FromResult(ToolResult.Success($"stopped {what}" +
+                (what.Contains(WorkerAgent.ToolName, StringComparison.Ordinal) && !string.IsNullOrEmpty(trail) ? $"; worker was: {trail}" : "")));
         }, cheapTier: true);
         MemoryTools.RegisterAll(tools, memory, position);
         WorldTools.Register(tools, observations, position, time, memory);
@@ -182,7 +187,6 @@ public sealed class AgentRuntime : IDisposable
         else knowledge = Prompts.LoadKnowledge(options.KnowledgeDirectory, options.MaxKnowledgeChars, out truncated);
 
         // Brain-only delegation tools (registered after the built-ins so the cached tool order stays stable).
-        WorkerAgent? worker = null;
         if (options.Worker.Enabled)
         {
             worker = new WorkerAgent(options.Worker, options.Llm, llm, tools, usage, knowledge, time, Log("MineClaw.Worker"),

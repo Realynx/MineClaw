@@ -64,12 +64,23 @@ public sealed class HiveConfig
 /// <summary>"Hive:Budget": the caps themselves are Agent:Budget (shared by the whole hive); these are the clone sub-caps.</summary>
 public sealed class HiveBudgetConfig
 {
-    /// <summary>Per-clone daily sub-cap (USD).</summary>
+    /// <summary>Optional per-clone daily sub-cap (USD). 0 or unset = no sub-cap: the clone runs under main's hard caps
+    /// (Agent:Budget, shared by the whole hive and enforced by main's ledger).</summary>
     public decimal CloneDailyCapUsd { get; set; } = 0m;
-    public decimal CloneMonthlyCapUsd { get; set; } = 30m;
-    /// <summary>Hive spend (main + clones) at this fraction of a cap: no new clones and running clones are recalled — before
-    /// the main bot itself drops to Economy (Agent:Budget:WorkerBrainFraction).</summary>
-    public double RecallAtFraction { get; set; } = 0.5;
+    /// <summary>Optional per-clone monthly sub-cap (USD). 0 or unset = no sub-cap (main's hard caps apply).</summary>
+    public decimal CloneMonthlyCapUsd { get; set; } = 0m;
+    /// <summary>Hive spend (main + clones) at this fraction of a cap: no new clones and running clones are recalled. Default
+    /// 1.0 = only at the hard cap itself (no early throttling); values outside (0, 1] mean 1.</summary>
+    public double RecallAtFraction { get; set; } = 1.0;
+
+    /// <summary><see cref="RecallAtFraction"/> clamped: (0, 1], anything else = 1 (the hard cap).</summary>
+    public double RecallFraction => RecallAtFraction is > 0 and <= 1 ? RecallAtFraction : 1.0;
+
+    /// <summary>The daily cap a clone process runs with: its sub-cap when set, else main's hard cap.</summary>
+    public decimal CloneDailyCap(decimal mainDailyCapUsd) => CloneDailyCapUsd > 0 ? CloneDailyCapUsd : mainDailyCapUsd;
+
+    /// <summary>The monthly cap a clone process runs with: its sub-cap when set, else main's hard cap.</summary>
+    public decimal CloneMonthlyCap(decimal mainMonthlyCapUsd) => CloneMonthlyCapUsd > 0 ? CloneMonthlyCapUsd : mainMonthlyCapUsd;
     /// <summary>Spend authorisation is granted in chunks of at least this much (a "batch"); the clone asks again when it runs low.</summary>
     public decimal GrantUsd { get; set; } = 0.10m;
     /// <summary>Per-call estimates used to size a request (USD).</summary>

@@ -32,4 +32,10 @@ public interface IDemonstrationSession : IAsyncDisposable
 {
     /// <summary>Stops recording and returns everything captured, oldest first.</summary>
     Task<IReadOnlyList<DemoAction>> StopAsync(CancellationToken ct);
+
+    /// <summary>When the demonstrator last did something (moved a cell, swung, changed a block); null = nothing yet.</summary>
+    DateTimeOffset? LastActivity => null;
+
+    /// <summary>How many things the demonstrator did so far (moves excluded).</summary>
+    int ActionCount => 0;
 }

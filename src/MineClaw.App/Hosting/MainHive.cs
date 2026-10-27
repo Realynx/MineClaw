@@ -62,8 +62,7 @@ public sealed class MainHive : IAsyncDisposable
     {
         var rt = bot.Runtime;
         var chat = rt.Chat;
-        chat.IsHiveBot = Arbiter.IsHiveBot;
-        chat.Arbiter = Arbiter.Decide;
+        Arbiter.Bind(chat); // ownership, thread leases (who asked owns the reply), never eating a clone's reply
         void Names() => Arbiter.SetLive(Arbiter.Live, [chat.DisplayName, .. chat.Aliases, chat.Username]);
         Names();
         chat.IdentityChanged += Names;
@@ -86,6 +85,9 @@ public sealed class MainHive : IAsyncDisposable
             Handoff = new Receiver(client),
         };
         _supervisor.Notice += e => rt.Events.Post(e);
+        // A clone's result is reportable only after its result event arrives: drop pending-result claims from main's chat.
+        var sup = _supervisor;
+        rt.Agent.SpeechGate ??= (_, text, _) => sup.GuardSpeech(text);
         // Uncached tail, only while clones are online: who's out and idle, plus a split reminder on a group ask.
         rt.Agent.TurnHint = batch => _supervisor.HintLine(groupAsk: batch.Waking.Any(e =>
             e.Kind is Agent.Events.EventKind.Chat or Agent.Events.EventKind.Whisper && e.Player != null

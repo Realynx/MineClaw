@@ -114,6 +114,10 @@ public sealed partial class ScriptSession
     public DateTimeOffset? PausedAt { get; private set; }
     /// <summary>"go: no route" — the most recent failed action.</summary>
     public string? LastFailure { get; private set; }
+    /// <summary>True while the most recent action (say/emote included) failed: a script ending right after it without
+    /// returning its own result is reported as failed, never "ok".</summary>
+    public bool LastActionFailed { get; private set; }
+    private string? _lastFailureMsg;
     /// <summary>Why it failed/was cancelled (null while running or when done).</summary>
     public string? Reason { get; private set; }
     /// <summary>The terse result line once ended.</summary>
@@ -222,6 +226,7 @@ public sealed partial class ScriptSession
             ThrowIfStopping();
             if (_resumeTarget != null) throw new ScriptFailException($"checkpoint '{_resumeTarget}' not reached");
             final = ScriptStatus.Done;
+            if (UnhandledFailure(result) is { } unhandled) { final = ScriptStatus.Failed; reason = unhandled; }
         }
         catch (Exception ex)
         {
@@ -474,8 +479,39 @@ public sealed partial class ScriptSession
     private static string? Completed(LuaValue[] r)
     {
         if (r.Length == 0) return null;
-        var parts = r.Take(3).Where(v => v.Type is LuaValueType.String or LuaValueType.Number or LuaValueType.Boolean).Select(Str).ToList();
+        // `return ok, msg` (an action's own result): the run's status says ok/failed, so a leading boolean is not text.
+        var vals = r.Take(3).ToList();
+        if (vals.Count > 0 && vals[0].Type == LuaValueType.Boolean) vals.RemoveAt(0);
+        var parts = vals.Where(v => v.Type is LuaValueType.String or LuaValueType.Number or LuaValueType.Boolean).Select(Str)
+            .Where(t => t.Length > 0).ToList();
         return parts.Count > 0 ? string.Join(" ", parts) : null;
+    }
+
+    /// <summary>
+    /// The script ended right after a failed action without saying how it went: reported as failed ("goto: no route").
+    /// Handled = a later action succeeded, or the script returned its own result (a string, number or true) instead of
+    /// nothing / false / the failure itself.
+    /// </summary>
+    private string? UnhandledFailure(LuaValue[] result)
+    {
+        if (!LastActionFailed || LastFailure == null) return null;
+        if (result.Length == 0 || result[0].Type == LuaValueType.Nil) return LastFailure;
+        var first = result[0];
+        if (first.Type == LuaValueType.Boolean) return first.Read<bool>() ? null : LastFailure;
+        if (first.Type == LuaValueType.String)
+        {
+            // `return ok .. msg` / `return tostring(ok) .. msg` ("falseno skill 'toss'..") or just the failure text again.
+            var text = OneLine(first.Read<string>());
+            var fm = OneLine(_lastFailureMsg);
+            if (fm.Length > 0)
+            {
+                foreach (var head in new[] { "false", "nil" })
+                    if (text.StartsWith(head, StringComparison.OrdinalIgnoreCase) && text[head.Length..].TrimStart(' ', ':', ',', '-').StartsWith(fm, StringComparison.Ordinal))
+                        return LastFailure;
+                if (string.Equals(text, fm, StringComparison.Ordinal)) return LastFailure;
+            }
+        }
+        return null;
     }
 
     internal static string OneLine(string? s) => (s ?? "").Replace('\r', ' ').Replace('\n', ' ').Trim();

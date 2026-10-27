@@ -68,6 +68,9 @@ public sealed partial class WorldIndexer : IDisposable
     /// <summary>Raised (on the indexer thread) when a new cluster of unusual player-placed blocks matches nothing known.</summary>
     public event Action<UnknownStructure>? UnknownStructureFound;
 
+    /// <summary>Optional gate for <see cref="UnknownStructureFound"/> (structure, dimension): false = known scenery, stay quiet.</summary>
+    public Func<UnknownStructure, int, bool>? ShouldAnnounce { get; set; }
+
     /// <summary>Optional: true when a box is already known from memory (a taught structure), so it isn't "unknown".</summary>
     public Func<BlockPos, BlockPos, bool>? IsKnownArea { get; set; }
 
@@ -196,7 +199,10 @@ public sealed partial class WorldIndexer : IDisposable
         if (!_protectDirty) return;
         var set = new HashSet<BlockPos>();
         foreach (var e in _entries.Values) set.UnionWith(e.Protect);
+        // A generator dig cell is never a wall: a dual generator's second cell sits next to the first cell's lava/water.
+        foreach (var g in _gens.AllCells()) set.Remove(g);
         _protected = set;
+        _confirmedDig = _regens.Where(kv => kv.Value > 0).Select(kv => kv.Key).ToHashSet();
         _protectDirty = false;
     }
 
@@ -389,9 +395,13 @@ public sealed partial class WorldIndexer : IDisposable
             if (e.Kind == IndexKinds.UnknownStructure && e.Extra.ContainsKey("new"))
             {
                 e.Extra.Remove("new");
-                var u = new UnknownStructure(e.Key, e.Min, e.Max, text);
+                var u = new UnknownStructure(e.Key, e.Min, e.Max, text) { Blocks = e.Extra.GetValueOrDefault("blocks") as Dictionary<string, int> };
                 lock (_unknownLock) _pendingUnknown[e.Key] = u;
-                try { UnknownStructureFound?.Invoke(u); }
+                try
+                {
+                    // The scenery ledger (persisted) decides: already announced/asked before, or unchanged since last seen = silent.
+                    if (ShouldAnnounce?.Invoke(u, _dim) ?? true) UnknownStructureFound?.Invoke(u);
+                }
                 catch (Exception ex) { _log.LogDebug(ex, "UnknownStructureFound handler failed"); }
             }
         }

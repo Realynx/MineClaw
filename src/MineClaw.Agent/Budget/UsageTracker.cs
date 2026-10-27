@@ -36,7 +36,8 @@ public sealed class BudgetOptions
     public double WorkerBrainFraction { get; set; } = 0;
     /// <summary>Fraction of either cap after which the agent drops to cheap-tier chat only (second fallback).</summary>
     public double CheapOnlyFraction { get; set; } = 1.0;
-    /// <summary>Max model calls in any rolling hour (pauses until the window frees up).</summary>
+    /// <summary>Ignored (kept so old configs still bind): budgets are hard USD caps only. An hourly call cap paused the
+    /// brain mid-conversation when background memory jobs (RAPTOR summaries) burned the calls.</summary>
     public int MaxCallsPerHour { get; set; } = 0;
     /// <summary>File name (under AgentOptions.DataDirectory) for persisted daily/monthly totals.</summary>
     public string UsageFile { get; set; } = "usage.json";
@@ -360,10 +361,13 @@ public sealed class UsageTracker
         Prune();
         if (_options.MonthlyCapUsd > 0 && m >= _options.MonthlyCapUsd) return (BudgetMode.Paused, "monthly budget used up");
         if (_options.DailyCapUsd > 0 && d >= _options.DailyCapUsd) return (BudgetMode.Paused, "daily budget used up");
-        if (_options.MaxCallsPerHour > 0 && _recentCalls.Count >= _options.MaxCallsPerHour) return (BudgetMode.Paused, "hourly call limit hit");
-        var f = (decimal)_options.CheapOnlyFraction;
-        if (_options.MonthlyCapUsd > 0 && m >= _options.MonthlyCapUsd * f) return (BudgetMode.CheapOnly, "monthly budget nearly used");
-        if (_options.DailyCapUsd > 0 && d >= _options.DailyCapUsd * f) return (BudgetMode.CheapOnly, "daily budget nearly used");
+        // Hard caps only: no hourly call cap (MaxCallsPerHour is ignored); CheapOnlyFraction 0 = no cheap-only stage.
+        var f = _options.CheapOnlyFraction > 0 ? (decimal)_options.CheapOnlyFraction : 1m;
+        if (f < 1m)
+        {
+            if (_options.MonthlyCapUsd > 0 && m >= _options.MonthlyCapUsd * f) return (BudgetMode.CheapOnly, "monthly budget nearly used");
+            if (_options.DailyCapUsd > 0 && d >= _options.DailyCapUsd * f) return (BudgetMode.CheapOnly, "daily budget nearly used");
+        }
         var w = (decimal)_options.WorkerBrainFraction;
         if (w > 0 && w < f)
         {

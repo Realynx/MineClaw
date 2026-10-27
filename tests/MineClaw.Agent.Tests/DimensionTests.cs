@@ -87,6 +87,8 @@ public class DimensionTests(ITestOutputHelper output)
         Assert.Contains("furnace@3,64,0 (overworld)", any);
         Assert.Contains("furnace@3,64,0 (overworld)", k.Run("where_is", new { kind = "furnace", dim = "overworld" }));
         Assert.Contains("chest@5,64,5 (overworld)", k.Run("where_is", new { item = "iron_ingot", dim = "any" }));
+        Assert.Contains("(remembered ", any); // the other dimension is memory, not live: tagged with its age
+        Assert.DoesNotContain("(seen ", any);
         Assert.Contains("dim", k.Run("where_is", new { kind = "furnace", dim = "end" }));
 
         k.Dim = WorldDim.Overworld; // back home: no tag

@@ -50,6 +50,7 @@ public static class Msg
     // chat arbitration
     public const string Roster = "roster";        // M→C      RosterMsg (live clones, main names, sticky owners)
     public const string ChatAccepted = "chat_ok"; // C→M      ChatAcceptedMsg (this clone took a player's message)
+    public const string Thread = "thread";        // C→M      ThreadMsg (this clone owns / released a player's replies)
     public const string Inject = "inject";        // M→C      InjectMsg (console /as test chat, so every process arbitrates it)
     // budget ledger
     public const string SpendAuth = "spend_auth"; // C→M req  SpendAuthMsg → SpendGrantMsg
@@ -78,7 +79,10 @@ public sealed record ReleaseMsg(string Key);
 public sealed record LeaseMsg(string Key, string Owner, long ExpiresMs);
 public sealed record ClaimsMsg(List<LeaseMsg> Leases);
 public sealed record StickyMsg(string Owner, long UntilMs);
-public sealed record RosterMsg(string Main, string[] MainNames, string[] Live, Dictionary<string, StickyMsg> Sticky);
+public sealed record RosterMsg(string Main, string[] MainNames, string[] Live, Dictionary<string, StickyMsg> Sticky,
+    Dictionary<string, StickyMsg>? Threads = null);
+/// <summary>A clone opened (or closed) a conversation-thread lease on a player (it asked them / watches their demo).</summary>
+public sealed record ThreadMsg(string Player, bool Open, double TtlSeconds);
 public sealed record ChatAcceptedMsg(string Player);
 public sealed record InjectMsg(string Raw);
 public sealed record SpendAuthMsg(decimal EstimateUsd, string Tier);

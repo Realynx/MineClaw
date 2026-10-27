@@ -32,6 +32,33 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
         }
     }
 
+    /// <summary>Like <see cref="Held"/> for long jobs (a generator run can take minutes): the lease is renewed every half TTL.</summary>
+    private async Task<ActionResult> HeldRenewing(ClaimKey key, Func<Task<ActionResult>> action, CancellationToken ct)
+    {
+        var r = await claims.TryClaimAsync(key, Ttl, null, ct).ConfigureAwait(false);
+        if (!r.Ok) return ActionResult.Fail($"busy: {r.Holder ?? "another bot"} is using {key.Kind.ToString().ToLowerInvariant()} {key.Min.X},{key.Min.Y},{key.Min.Z}");
+        using var stop = new CancellationTokenSource();
+        var renew = Task.Run(async () =>
+        {
+            try
+            {
+                while (!stop.IsCancellationRequested)
+                {
+                    await Task.Delay(TimeSpan.FromTicks(Math.Max(TimeSpan.FromSeconds(1).Ticks, Ttl.Ticks / 2)), stop.Token).ConfigureAwait(false);
+                    await claims.TryClaimAsync(key, Ttl, null, stop.Token).ConfigureAwait(false);
+                }
+            }
+            catch (Exception) { /* stopped, or the board is gone: the lease just expires */ }
+        });
+        try { return await action().ConfigureAwait(false); }
+        finally
+        {
+            stop.Cancel();
+            try { await renew.ConfigureAwait(false); } catch (Exception) { }
+            try { await claims.ReleaseAsync(key, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { /* lease expires anyway */ }
+        }
+    }
+
     private Task<ActionResult> Chest(BlockPos? p, Func<Task<ActionResult>> action, CancellationToken ct) =>
         p is { } pos ? Held(ClaimKey.Chest(pos, inner.World.Dimension), action, ct) : action();
 
@@ -54,7 +81,7 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
     public Task<ActionResult> PlaceBlockAsync(int x, int y, int z, int itemId, CancellationToken ct = default) =>
         Held(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.PlaceBlockAsync(x, y, z, itemId, ct), ct);
     public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, CancellationToken ct = default) =>
-        Held(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.HarvestGeneratorAsync(x, y, z, count, ct), ct);
+        HeldRenewing(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.HarvestGeneratorAsync(x, y, z, count, ct), ct);
 
     // ---- forwarded ----
     public WorldState World => inner.World;

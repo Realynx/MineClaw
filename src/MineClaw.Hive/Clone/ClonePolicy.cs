@@ -81,8 +81,7 @@ public static class ClonePolicy
     /// </summary>
     public static void Apply(ChatRouter chat, EventQueue events, ChatArbiter arbiter, BotAgent? agent = null, Action<string>? muted = null)
     {
-        chat.IsHiveBot = arbiter.IsHiveBot;
-        chat.Arbiter = arbiter.Decide;
+        arbiter.Bind(chat); // ownership, thread leases, never eating another bot's reply
         chat.ExplicitlyAddressed = arbiter.AddressesSelf;
         chat.DropBackgroundChat = true;
         events.Intake = Intake;

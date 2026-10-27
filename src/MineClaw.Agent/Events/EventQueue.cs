@@ -93,7 +93,7 @@ public sealed class EventQueue
     private readonly EventQueueOptions _options;
     private readonly TimeProvider _time;
     private readonly List<GameEvent> _pending = new();
-    private readonly Dictionary<string, DateTimeOffset> _recentlyTaken = new();
+    private readonly Dictionary<string, DateTimeOffset> _recentlyTaken = new(StringComparer.OrdinalIgnoreCase); // keys carry player names
     private readonly object _lock = new();
     private TaskCompletionSource _signal = NewSignal();
     private DateTimeOffset _lastPost;

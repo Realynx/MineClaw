@@ -140,7 +140,7 @@ public class HiveProcessTests(Xunit.Abstractions.ITestOutputHelper output)
         await Wait.Until(() => h.Supervisor.Slot("maid_chan_67")!.Progress > 0, what: "progress");
         await Wait.Until(() => h.Supervisor.Slot("maid_chan_69")!.Connected, what: "69 up");
         Assert.Equal(["maid_chan_69", "maid_chan_67"], h.Supervisor.BudgetRecallOrder());
-        h.MainToday = 5.5m; // past the recall line (0.5 × $10)
+        h.MainToday = 10.5m; // past the hard cap ($10): recall happens only at a hard cap now
         Assert.StartsWith("no: budget", h.Supervisor.Spawn("one more", "420"));
         await Wait.Until(() => h.Supervisor.Slots.All(s => s.State is CloneState.Idle or CloneState.Retired), 30, "budget recall");
         Assert.Contains("budget: recalling 69, 67", h.NoticeText());

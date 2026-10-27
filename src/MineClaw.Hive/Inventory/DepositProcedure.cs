@@ -26,6 +26,12 @@ public interface IInventoryPort
     Task<ActionResult> TossAllAtAsync(Vec3d at, CancellationToken ct);
     /// <summary>Place a chest from the inventory near here and label it with a sign. Returns its position.</summary>
     Task<(ActionResult Result, BlockPos? Chest)> PlaceLabelledChestAsync(string label, CancellationToken ct);
+    /// <summary>
+    /// Makes <see cref="Items"/> reflect the server, not a predicted/stale copy: no open window, no click still waiting for
+    /// its 0x6A, the latest set-slot/window-items applied (and, on the real client, a forced full resync). False when the
+    /// state couldn't be confirmed (the caller then trusts nothing it can't re-read).
+    /// </summary>
+    Task<bool> SettleAsync(CancellationToken ct) => Task.FromResult(true);
 }
 
 /// <summary>Who to hand items to when storage is full (main), over IPC.</summary>
@@ -58,14 +64,25 @@ public sealed class DepositProcedure(IInventoryPort port, IClaimBoard claims, st
     public async Task<DepositReport> RunAsync(TimeSpan timeout, CancellationToken ct)
     {
         var deadline = _time.GetUtcNow() + timeout;
+        // Never decide "empty" from a stale snapshot (a cancelled worker may leave predicted clicks / an open window behind).
+        await SettleAsync(ct).ConfigureAwait(false);
         int start = CountOf(port.Items());
+        bool fresh = true; // Items() was just settled and nothing has changed it since
         var full = new HashSet<BlockPos>();
         int handoffTries = 0, placeTries = 0;
         var notes = new List<string>();
         while (!ct.IsCancellationRequested && _time.GetUtcNow() < deadline)
         {
             int left = CountOf(port.Items());
+            if (left == 0 && !fresh)
+            {
+                await SettleAsync(ct).ConfigureAwait(false);
+                fresh = true;
+                left = CountOf(port.Items());
+                if (left > 0) _log.LogInformation("deposit: fresh inventory still holds {N} item(s)", left);
+            }
             if (left == 0) break;
+            fresh = false; // whatever happens next changes the inventory: settle again before trusting "empty"
             if (!port.CanActSafely) { await Delay(ct); continue; }
 
             // 1. Storage chests with room (nearest first), skipping ones another bot is using.
@@ -121,11 +138,22 @@ public sealed class DepositProcedure(IInventoryPort port, IClaimBoard claims, st
             handoffTries = Math.Min(handoffTries, 1);
             await Delay(ct);
         }
+        if (!fresh) await SettleAsync(CancellationToken.None).ConfigureAwait(false);
         int remaining = CountOf(port.Items());
         string text = remaining == 0
             ? $"inventory empty (deposited {start})" + (notes.Count > 0 ? "; " + string.Join("; ", notes) : "")
             : $"{remaining} item(s) still held (no storage space)" + (notes.Count > 0 ? "; " + string.Join("; ", notes) : "");
         return new DepositReport(remaining == 0, remaining, start - remaining, text);
+    }
+
+    private async Task SettleAsync(CancellationToken ct)
+    {
+        try
+        {
+            if (!await port.SettleAsync(ct).ConfigureAwait(false)) _log.LogWarning("deposit: couldn't confirm the inventory with the server");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _log.LogWarning(ex, "deposit: inventory settle failed"); }
     }
 
     private async Task Delay(CancellationToken ct)

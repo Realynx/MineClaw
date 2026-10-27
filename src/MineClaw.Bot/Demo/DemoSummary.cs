@@ -44,7 +44,8 @@ public static class DemoSummary
             string at = P(a.X, a.Y, a.Z), block = a.Block ?? "block";
             Add(a.Kind switch
             {
-                DemoActionKind.UseBlock => a.Detail != null ? $"right-clicked {a.Detail} on {block} at {at}" : $"used {block} at {at}",
+                DemoActionKind.UseBlock => a.Detail == Perception.Gestures.Punched ? $"punched {block} at {at}"
+                    : a.Detail != null ? $"right-clicked {a.Detail} on {block} at {at}" : $"used {block} at {at}",
                 DemoActionKind.OpenContainer => $"opened {block} at {at}",
                 DemoActionKind.BlockPlaced => a.Detail switch
                 {

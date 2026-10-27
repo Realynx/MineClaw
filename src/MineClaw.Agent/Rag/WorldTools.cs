@@ -26,6 +26,8 @@ public static class WorldTools
         int cur = world.CurrentDimension;
         if (!WorldDim.TryParse(dim, cur, out var want)) return ToolResult.Error("dim must be overworld|nether|any");
         string Ago(DateTimeOffset t) => TextTokens.Ago(now - t);
+        // Another dimension is only remembered (not live): say so, with its age ("remembered 2h ago").
+        string Seen(ObservationRow r) => r.Dimension != cur ? $"remembered {Ago(r.LastSeen)}" : $"seen {Ago(r.LastSeen)}";
         // "4m NE" from you, plus the nearest named landmark of the spot when one is close ("4m NE, by cobble_gen"); only in your dimension.
         string Dist(ObservationRow r)
         {
@@ -52,7 +54,7 @@ public static class WorldTools
                                           (claims is { Count: > 0 } ? " | " + string.Join("; ", claims) : ""));
             }
             var name = hits[0].Name;
-            var parts = hits.Select(h => $"x{h.Count}: {h.Container.Kind}@{h.Container.Where}{Tag(h.Container)}{Dist(h.Container)} (seen {Ago(h.Container.LastSeen)})");
+            var parts = hits.Select(h => $"x{h.Count}: {h.Container.Kind}@{h.Container.Where}{Tag(h.Container)}{Dist(h.Container)} ({Seen(h.Container)})");
             return ToolResult.Success($"{name} " + string.Join("; ", parts) + (hits.Count > 1 ? $" | total {hits.Sum(h => h.Count)}" : ""));
         }
 
@@ -76,7 +78,7 @@ public static class WorldTools
                                           (there ? $" (some in the {WorldDim.Name(other!.Value)}: dim=any)" : ""));
             }
             return ToolResult.Success(string.Join("; ", near.Select(n =>
-                $"{n.Row.Kind}@{n.Row.Where}{Tag(n.Row)}{Dist(n.Row)}{Link(n.Row)} (seen {Ago(n.Row.LastSeen)})" +
+                $"{n.Row.Kind}@{n.Row.Where}{Tag(n.Row)}{Dist(n.Row)}{Link(n.Row)} ({Seen(n.Row)})" +
                 (n.Row.Source != ObservationSource.Auto ? " [" + ObservationStore.Source(n.Row.Source) + "]" : ""))));
         }
 

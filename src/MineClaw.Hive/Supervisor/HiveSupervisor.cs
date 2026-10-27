@@ -33,6 +33,13 @@ public sealed class CloneSlot(string name)
     public string Number => ChatArbiter.NumberOf(Name) ?? Name;
     public CloneState State { get; internal set; } = CloneState.Idle;
     public TaskMsg? Task { get; internal set; }
+    /// <summary>The clone's result event for <see cref="Task"/> arrived (until then the task is pending: nothing to report).</summary>
+    public bool ResultIn { get; internal set; }
+    public string? ResultText { get; internal set; }
+    /// <summary>The player whose request this task serves (from the turn that spawned it), if any.</summary>
+    public string? ForPlayer { get; internal set; }
+    /// <summary>A task was given and its result hasn't arrived yet.</summary>
+    public bool Pending => Task != null && !ResultIn && State is not (CloneState.Idle or CloneState.Retired);
     public double Progress { get; internal set; }
     public string? LastProgress { get; internal set; }
     public DateTimeOffset Started { get; internal set; }
@@ -134,7 +141,10 @@ public sealed class HiveSupervisor : IAsyncDisposable
 
     // ================================================================ spawn / recall / list
 
-    public string Spawn(string task, string? name = null)
+    /// <param name="forPlayer">The player whose request this is (default: the speaker of the current turn).</param>
+    /// <param name="handover">Explicitly move a request another clone owns (talking with that player / doing its job) to this
+    /// clone; the previous owner is told. Without it main never duplicates or reassigns a clone's conversation.</param>
+    public string Spawn(string task, string? name = null, bool handover = false, string? forPlayer = null)
     {
         if (!_cfg.Enabled) return "error: hive is off";
         if (_shuttingDown) return "error: shutting down";
@@ -142,6 +152,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
         if (task.Length == 0) return "error: task required";
         if (task.Length > 400) task = task[..400];
         if (Ledger.AtRecallLine(out var why)) return "no: budget (" + why + ")";
+        forPlayer ??= MineClaw.Agent.TurnContext.Current?.Speaker;
 
         CloneSlot? slot;
         if (name != null)
@@ -151,7 +162,18 @@ public sealed class HiveSupervisor : IAsyncDisposable
             slot = _slots[r];
         }
         else slot = _slots.Values.FirstOrDefault(s => s.State == CloneState.Idle);
+
+        // One owner per request: a clone already talking with this player (thread/sticky) or doing their job keeps it.
+        CloneSlot? owner = forPlayer != null ? OwnerSlot(forPlayer) : null;
+        if (owner != null && !ReferenceEquals(owner, slot))
+        {
+            if (!handover)
+                return name == null
+                    ? $"no: {owner.Number} already owns {forPlayer}'s request; give it to {owner.Number} (name {owner.Number}) or op handover"
+                    : $"no: {owner.Number} already owns {forPlayer}'s request; name {owner.Number}, or op handover to move it to {slot?.Number ?? name}";
+        }
         if (slot == null) return "no: all clones busy or retired";
+        CloneSlot? previous = handover && owner != null && !ReferenceEquals(owner, slot) ? owner : null;
 
         var t = new TaskMsg(Guid.NewGuid().ToString("N")[..8], task);
         lock (slot.Lock)
@@ -162,16 +184,23 @@ public sealed class HiveSupervisor : IAsyncDisposable
                 case CloneState.Stopping: return $"no: {slot.Number} is logging out";
                 case CloneState.Running or CloneState.Starting or CloneState.Backoff:
                     slot.Task = t;
+                    slot.ResultIn = false;
+                    slot.ResultText = null;
+                    slot.ForPlayer = forPlayer;
                     slot.Progress = 0;
                     slot.LastProgress = null;
                     if (slot.Link is { IsOpen: true } l) _ = l.SendAsync(Msg.Task, t);
-                    return $"ok: {slot.Number} got the new task";
+                    AfterAssign(slot, previous, forPlayer, task);
+                    return $"ok: {slot.Number} got the new task (pending until its result arrives)";
             }
             var facts = SlotFacts();
             int pending = _slots.Values.Count(s => s.State is CloneState.Starting && !facts.Online.Contains(s.Name, StringComparer.OrdinalIgnoreCase));
             var d = SlotPolicy.CanSpawn(facts, Regulars, pending, _cfg.MaxPlayersFallback);
             if (!d.Ok) return "no: " + d.Reason;
             slot.Task = t;
+            slot.ResultIn = false;
+            slot.ResultText = null;
+            slot.ForPlayer = forPlayer;
             slot.Progress = 0;
             slot.LastProgress = null;
             slot.Recalled = false;
@@ -180,8 +209,69 @@ public sealed class HiveSupervisor : IAsyncDisposable
             slot.Started = Now;
         }
         Launch(slot);
-        return $"ok: {slot.Number} spawning";
+        AfterAssign(slot, previous, forPlayer, task);
+        return $"ok: {slot.Number} spawning (its part is pending until its result arrives)";
     }
+
+    /// <summary>The clone that owns a player's request right now: holds their thread/sticky, or has a pending job for them.</summary>
+    public CloneSlot? OwnerSlot(string player)
+    {
+        if (Arbiter.ConversationOwner(player) is { } o && Resolve(o) is { } on && _slots[on] is { } s
+            && s.State is CloneState.Running or CloneState.Starting && (s.IsLive || s.Pending))
+            return s;
+        return _slots.Values.FirstOrDefault(x => x.Pending && x.ForPlayer != null && x.ForPlayer.Equals(player, StringComparison.OrdinalIgnoreCase)
+            && x.State is CloneState.Running or CloneState.Starting);
+    }
+
+    private void AfterAssign(CloneSlot slot, CloneSlot? previous, string? forPlayer, string task)
+    {
+        if (previous == null || forPlayer == null) return;
+        // Explicit handover: the player's conversation moves to the new clone and the old owner is told to drop it.
+        Arbiter.HandOver(forPlayer, slot.Name);
+        lock (previous.Lock) previous.ForPlayer = null;
+        var note = new TaskMsg(Guid.NewGuid().ToString("N")[..8],
+            $"main handed {forPlayer}'s request ({Trunc(task, 80)}) to {slot.Number}. Drop your part of it; stay idle unless told otherwise.");
+        if (previous.Link is { IsOpen: true } pl) _ = pl.SendAsync(Msg.Task, note);
+        Post(GameEvent.Notice($"[hive] handed {forPlayer}'s request from {previous.Number} to {slot.Number}", EventPriority.Low));
+    }
+
+    /// <summary>
+    /// Main's speech guard: a sentence reporting a clone's result while that clone's task is still pending is replaced by
+    /// "still working" (the result is reportable only after its result event arrives). Null-safe; returns the text to say.
+    /// </summary>
+    public string GuardSpeech(string text)
+    {
+        var pending = _slots.Values.Where(s => s.Pending).ToList();
+        if (pending.Count == 0 || string.IsNullOrWhiteSpace(text)) return text;
+        var refs = pending.SelectMany(s => new[] { s.Number, s.Name }).Concat(["clone", "clones", "the other maid", "my sister", "lil me"]);
+        var who = new System.Text.RegularExpressions.Regex(@"(?<![A-Za-z0-9_])(?:" + string.Join("|", refs.Distinct().Select(System.Text.RegularExpressions.Regex.Escape)) + @")(?![A-Za-z0-9_])",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        bool replaced = false;
+        var parts = System.Text.RegularExpressions.Regex.Split(text, @"(?<=[.!?])\s+").Select(s =>
+        {
+            var m = who.Match(s);
+            if (!m.Success) return s;
+            // Only the clause about the clone (and what follows it in the sentence) is a claim; main's own part stays.
+            int cut = new[] { s.LastIndexOf(", ", m.Index, StringComparison.Ordinal), s.LastIndexOf(" and ", m.Index, StringComparison.OrdinalIgnoreCase) }.Max();
+            var tail = cut > 0 ? s[cut..] : s;
+            if (!ClaimsResult.IsMatch(tail) || StillWorking.IsMatch(tail)) return s;
+            _log.LogInformation("hive: dropped a pending-result claim from main's chat: {Text}", tail.Trim());
+            var keep = cut > 0 ? s[..cut].TrimEnd(',', ' ') + "." : "";
+            if (replaced) return keep;
+            replaced = true;
+            var note = pending.Count == 1 ? $"{pending[0].Number}'s still on its part, I'll tell you when it reports." : "the clones are still on their parts.";
+            return (keep + " " + note).Trim();
+        });
+        return string.Join(" ", parts.Where(p => p.Length > 0)).Trim();
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex ClaimsResult = new(
+        @"\b(?:dropped|dropped off|mined|got|put|deposited|stashed|did|done|finished|made|crafted|brought|delivered|has (?:the|\d|a|it|them)|ready|is back|came back|completed?)\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private static readonly System.Text.RegularExpressions.Regex StillWorking = new(
+        @"\b(?:will|gonna|going to|is (?:mining|going|working|heading|on)|still|working on|on (?:it|its way)|when (?:it|she|they)|once (?:it|she|they)|should|soon|doing|started|starting|spawn(?:ing|ed)?|sent)\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     public string Recall(string? nameOrAll, string reason = "recalled")
     {
@@ -247,7 +337,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
             var line = $"{s.Number} {st}";
             if (s.State is not (CloneState.Idle or CloneState.Retired) && s.Task != null)
             {
-                line += $": {Trunc(s.Task.Text, 50)}";
+                line += $": {Trunc(s.Task.Text, 50)}" + (s.Pending ? " (pending, no result yet)" : s.ResultIn ? $" (result: {Trunc(s.ResultText ?? "", 60)})" : "");
                 if (s.Progress > 0) line += $" {s.Progress:P0}";
                 if (s.Snapshot?.Pos is { } p) line += $" @{p}";
             }
@@ -266,12 +356,36 @@ public sealed class HiveSupervisor : IAsyncDisposable
     /// </summary>
     public string? HintLine(bool groupAsk = false)
     {
-        var live = _slots.Values.Where(s => s.IsLive).ToList();
+        var live = _slots.Values.Where(s => s.IsLive || s.Pending).ToList();
         if (live.Count == 0) return null;
-        var parts = live.Select(s => $"{s.Name} ({CloneActivity(s)})");
-        var line = $"[hive: {live.Count} clone{(live.Count == 1 ? "" : "s")} online: {string.Join(", ", parts)}]";
+        string line;
+        if (live.Any(s => s.Pending))
+            // "[hive: 67 mining (pending)]": its result isn't in, so there is nothing to report about it yet.
+            line = $"[hive: {string.Join(", ", live.Select(s => s.Pending ? $"{s.Number} {Verb(s.Task!.Text)} (pending)" : $"{s.Number} {CloneActivity(s)}"))}] pending = no result yet, don't report it";
+        else
+            line = $"[hive: {live.Count} clone{(live.Count == 1 ? "" : "s")} online: {string.Join(", ", live.Select(s => $"{s.Name} ({CloneActivity(s)})"))}]";
         if (groupAsk) line += " group ask: split it, hive spawn name+task for the clone's part; reply once";
         return line;
+    }
+
+    /// <summary>"mine 10 cobble at the gen" -> "mining".</summary>
+    internal static string Verb(string task)
+    {
+        var w = System.Text.RegularExpressions.Regex.Match(task ?? "", @"[A-Za-z]+").Value.ToLowerInvariant();
+        return w switch
+        {
+            "" => "working",
+            "mine" or "dig" or "harvest" or "grind" => "mining",
+            "chop" or "cut" => "chopping",
+            "craft" or "make" => "crafting",
+            "build" or "place" => "building",
+            "smelt" or "cook" => "smelting",
+            "organize" or "organise" or "sort" => "sorting",
+            "deposit" or "store" or "stash" => "storing",
+            "fetch" or "get" or "bring" or "collect" or "gather" => "fetching",
+            "farm" or "plant" => "farming",
+            _ => w.EndsWith('e') ? w[..^1] + "ing" : w + "ing",
+        };
     }
 
     private static string CloneActivity(CloneSlot s)
@@ -459,6 +573,8 @@ public sealed class HiveSupervisor : IAsyncDisposable
                 return null;
             case Msg.Result when m.As<ResultMsg>() is { } r:
                 slot.Progress = 1;
+                slot.ResultIn = true;
+                slot.ResultText = r.Text;
                 Post(GameEvent.Notice($"[hive] {slot.Number} {(r.Ok ? "done" : "failed")}: {Trunc(r.Text, 200)}", EventPriority.Low));
                 return null;
             case Msg.Claim when m.As<ClaimMsg>() is { } c:
@@ -481,6 +597,10 @@ public sealed class HiveSupervisor : IAsyncDisposable
                 return null;
             case Msg.ChatAccepted when m.As<ChatAcceptedMsg>() is { } ca:
                 Arbiter.Accept(ca.Player, slot.Name);
+                return null;
+            case Msg.Thread when m.As<ThreadMsg>() is { } th:
+                if (th.Open) Arbiter.OpenThread(th.Player, slot.Name, TimeSpan.FromSeconds(Math.Clamp(th.TtlSeconds, 5, 900)));
+                else Arbiter.CloseThread(th.Player, slot.Name);
                 return null;
             case Msg.Inventory when m.As<InventoryMsg>() is { } inv:
                 slot.Inventory = inv.Items;

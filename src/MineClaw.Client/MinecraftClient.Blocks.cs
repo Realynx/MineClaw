@@ -171,6 +171,10 @@ public sealed partial class MinecraftClient
         if (await SelectItemAsync(itemId, damage, ct).ConfigureAwait(false) < 0) return ActionResult.Fail($"couldn't hold {ItemName(itemId)}");
         var a = aim.Value;
         await LookCoreAsync(a.Yaw, a.Pitch, ct).ConfigureAwait(false);
+        // Vanilla World.mayPlace refuses a block whose box holds an entity: a pillar jump that fell back while the slot
+        // switch/look ticked would otherwise be sent (and on a lenient server embed us in it).
+        if (AABB.ForPlayer(World.Player.Position).Intersects(AABB.Block(pos.X, pos.Y, pos.Z)))
+            return ActionResult.Fail(InTheWay + Fmt(pos));
         Send(new PlayerBlockPlacementPacket
         {
             X = a.Against.X, Y = a.Against.Y, Z = a.Against.Z, Direction = (byte)a.Face, HeldItem = HeldStack(),
@@ -388,13 +392,37 @@ public sealed partial class MinecraftClient
         return d <= 16 ? $" (within {d} of spawn: spawn protection needs op?)" : "";
     }
 
-    /// <summary>Scaffold block to use for bridging: cobblestone, then dirt, then planks (never reserved items).</summary>
+    /// <summary>
+    /// Blocks the bot may spend on pillaring/bridging, cheapest first: full, non-falling, non-precious cubes. Never dirt
+    /// or grass (on a skyblock island every dirt block is a future tree or farm), sand/gravel (they fall), ores, wool,
+    /// glass or anything else worth keeping. Logs are allowed (and can be crafted into 4 planks each when short).
+    /// </summary>
+    public static readonly IReadOnlyList<int> ScaffoldBlocks =
+        [Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Planks, Blocks.Log, Blocks.Sandstone, Blocks.StoneBricks];
+
+    /// <summary>Scaffold block to use for bridging/pillaring: the first of <see cref="ScaffoldBlocks"/> held (never reserved items).</summary>
     private int? ScaffoldItem()
     {
-        foreach (int id in new[] { Blocks.Cobblestone, Blocks.Dirt, Blocks.Netherrack, Blocks.Planks, Blocks.Stone })
+        foreach (int id in ScaffoldBlocks)
             if (!ReservedItems.Contains(id) && World.Inventory.CountItem(id) > 0) return id;
         return null;
     }
+
+    /// <summary>All scaffold blocks held (the placer moves on to the next kind when one runs out).</summary>
+    private int ScaffoldCount() => ScaffoldBlocks.Where(id => !ReservedItems.Contains(id)).Sum(id => World.Inventory.CountItem(id));
+
+    /// <summary>Scaffold kinds held now, for "used 5 planks, 2 log" after a build-mode goto.</summary>
+    private Dictionary<int, int> ScaffoldSnapshot() =>
+        ScaffoldBlocks.ToDictionary(id => id, id => World.Inventory.CountItem(id));
+
+    private static string ScaffoldUsed(Dictionary<int, int> before, Dictionary<int, int> after)
+    {
+        var used = before.Where(kv => kv.Value > after.GetValueOrDefault(kv.Key)).Select(kv => $"{kv.Value - after.GetValueOrDefault(kv.Key)} {BlockName(kv.Key, 0)}")
+            .ToList();
+        return used.Count == 0 ? "" : $"; built with {string.Join(", ", used)}";
+    }
+
+    private const string InTheWay = "I'm in the way of ";
 
     private static string BlockName(int id, int meta) => Blocks.Get(id).Name;
     private static string ItemName(int id, int damage = 0) => Items.DisplayName(id, damage).ToLowerInvariant();

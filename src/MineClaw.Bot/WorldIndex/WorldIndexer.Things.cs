@@ -388,6 +388,9 @@ public sealed partial class WorldIndexer
             if (overlap > bestOverlap) { bestOverlap = overlap; best = row.Key; }
         }
         _pendingClusterRows.RemoveAll(x => x.Kind == kind && x.Key == best);
+        // A stored row matched: this is a thing already known from an earlier pass/session, even when its fresh key happens
+        // to equal the stored one (an unchanged structure) - it is not "new" (was: re-announced on every join).
+        if (best != null) _adopted.Add(kind + "|" + best);
         return best ?? fresh;
     }
 

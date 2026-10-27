@@ -90,6 +90,12 @@ public sealed class BotAgent
     /// </summary>
     public Func<DateTimeOffset, string>? TurnDigest { get; set; }
 
+    /// <summary>
+    /// Optional live-perception line for this turn, e.g. the latest player gestures ("[pointing] PoofimaFox punched
+    /// cobblestone at the gen (west cell) 3s ago"), so "this one" + a punch resolves to a block. Main and clones.
+    /// </summary>
+    public Func<string?>? TurnPerception { get; set; }
+
     /// <summary>Builds the per-turn [memory] block (null = no auto-retrieval).</summary>
     public AutoRetriever? Retriever { get; set; }
 
@@ -274,6 +280,7 @@ public sealed class BotAgent
         var speaker = batch.Waking.FirstOrDefault(e => e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote && e.Player != null)?.Player;
         // Ambient for tools (and background tasks started from this turn): who asked, and whether it's injected test chat.
         TurnContext.Current = new TurnInfo(speaker, audience.ToArray(), batch.IsTest);
+        _chat.MarkTurnStart(); // tools (watch_demo, ask_stand) stay quiet when the brain already said its line
         var said = new List<string>();
         var usage = LlmUsage.Zero;
         decimal cost = 0;
@@ -334,7 +341,14 @@ public sealed class BotAgent
             }
             if (!IsSilent(text))
             {
+                // Never narrate plumbing ("Delegating the craft.", "running script"): drop purely meta sentences.
+                text = MetaSpeech.Strip(text, out var meta);
+                foreach (var m in meta) _log.LogInformation("[meta suppressed] {Line}", m);
+            }
+            if (!IsSilent(text))
+            {
                 var lines = await _chat.SayAsync(text, whisperTo, audience, ct).ConfigureAwait(false);
+                if (lines.Count > 0) _chat.NoteModelSpeech();
                 said.AddRange(lines);
                 LogSaid(lines, whisperTo, episode.IsTest);
             }
@@ -399,6 +413,9 @@ public sealed class BotAgent
         sb.Append(status.TrimStart('[')).Append('\n');
         var digest = BuildDigest(memory);
         if (digest.Length > 0) sb.Append(digest).Append('\n');
+        string perception = "";
+        try { perception = TurnPerception?.Invoke()?.Trim() ?? ""; } catch (Exception ex) { _log.LogWarning(ex, "turn perception failed"); }
+        if (perception.Length > 0) sb.Append(perception).Append('\n');
         if (mode == BudgetMode.CheapOnly) sb.Append(Prompts.CheapOnlyHint).Append('\n');
         else if (tier == ModelTier.Cheap && canEscalate) sb.Append(Prompts.CheapTierHint).Append('\n');
         if (prelude != null) sb.Append(prelude).Append('\n');

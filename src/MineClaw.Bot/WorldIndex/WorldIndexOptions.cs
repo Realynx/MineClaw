@@ -57,4 +57,7 @@ public sealed class WorldIndexOptions
 
     /// <summary>Islands smaller than this many columns are ignored (stray blocks, bridges' crumbs).</summary>
     public int IslandMinColumns { get; set; } = 4;
+
+    /// <summary>The remembered world: per-dimension chunk baselines in the db, "since last time" diffs, stale planning data.</summary>
+    public RememberedWorldOptions Remembered { get; set; } = new();
 }

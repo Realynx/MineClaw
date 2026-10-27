@@ -159,6 +159,9 @@ public sealed class SelfStore
     /// distinct episodes (the caller then emits a candidate signal).
     /// </summary>
     public bool NotePhrase(string scope, string player, string kind, string phrase, string episode, DateTimeOffset at, int threshold) =>
+        NotePhraseCore(scope, (player ?? "").ToLowerInvariant(), kind, phrase, episode, at, threshold); // same key as Phrases()
+
+    private bool NotePhraseCore(string scope, string player, string kind, string phrase, string episode, DateTimeOffset at, int threshold) =>
         _db.Tx(() =>
         {
             var row = _db.Query("SELECT episodes, last_episode, flagged FROM self_phrases WHERE scope = $s AND player = $p AND kind = $k AND phrase = $ph",

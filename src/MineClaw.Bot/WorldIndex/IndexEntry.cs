@@ -67,12 +67,16 @@ internal sealed class IndexEntry(string kind, string key)
 }
 
 /// <summary>An unknown structure the brain may want to ask players about.</summary>
-public sealed record UnknownStructure(string Key, BlockPos Min, BlockPos Max, string Description);
+public sealed record UnknownStructure(string Key, BlockPos Min, BlockPos Max, string Description)
+{
+    /// <summary>Most common blocks (name → count), the content signature the scenery ledger matches on.</summary>
+    public IReadOnlyDictionary<string, int>? Blocks { get; init; }
+}
 
 /// <summary>Counters for the host/log ("indexer: 312 columns, 0.21 ms/column").</summary>
 public sealed class IndexerStats
 {
-    public long Passes, ColumnsScanned, BlockChanges, Upserts, Removes, Transactions, DimensionSwitches, PortalLinks;
+    public long Passes, ColumnsScanned, BlockChanges, Upserts, Removes, Transactions, DimensionSwitches, PortalLinks, ClusterErrors;
     public double ScanMs;
     public double MsPerColumn => ColumnsScanned == 0 ? 0 : ScanMs / ColumnsScanned;
     public override string ToString() =>

@@ -257,7 +257,7 @@ public class ChopTreeTests(Xunit.Abstractions.ITestOutputHelper log)
         using var __ = s;
         var r = await c.ChopTreeAsync(options: TreeWorld.Fast);
         Assert.False(r.Ok);
-        Assert.Matches(@"^2 log\(s\) out of reach \(up to y 73\); no cobblestone to pillar; chopped 8/10 oak logs", r.Message);
+        Assert.Matches(@"^2 log\(s\) out of reach \(up to y 73\); no cobble/planks to pillar; chopped 8/10 oak logs", r.Message);
         Assert.DoesNotContain(s.Got<PlayerBlockPlacementPacket>(), p => p.HeldItem.Id == Blocks.Dirt);
     }
 

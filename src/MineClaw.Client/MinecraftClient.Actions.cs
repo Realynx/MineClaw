@@ -162,7 +162,7 @@ public sealed partial class MinecraftClient
                 return ticks == int.MaxValue ? double.PositiveInfinity : ticks + 5;
             },
             AllowPlace = o.AllowPlace && scaffold > 0,
-            ScaffoldBudget = o.AllowPlace && scaffold > 0 ? Math.Min(o.ScaffoldBudget, World.Inventory.CountItem(scaffold)) : 0,
+            ScaffoldBudget = o.AllowPlace && scaffold > 0 ? Math.Min(o.ScaffoldBudget, ScaffoldCount()) : 0,
             Timeout = o.PlanTimeout,
             AllowPartial = o.AllowPartial,
             AllowOpenDoors = o.AllowOpenDoors,
@@ -182,29 +182,42 @@ public sealed partial class MinecraftClient
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(o.Timeout);
         var token = timeout.Token;
-        int replans = 0;
+        int replans = 0, airWaits = 0;
         string? lastFailure = null;
         var blockedJumps = new HashSet<(BlockPos From, BlockPos To)>();
         var lockedDoors = new HashSet<BlockPos>();
         var jumps = new List<ParkourPlan>();
+        var scaffoldBefore = o.AllowPlace ? ScaffoldSnapshot() : null;
+        string crafted = "";
+        string Built() => scaffoldBefore is null ? "" : crafted + ScaffoldUsed(scaffoldBefore, ScaffoldSnapshot());
+        bool craftedPlanks = false;
         try
         {
             while (true)
             {
                 var start = World.Player.Position;
                 if (goal.IsReached(Pathfinder.StartCellFor(World, start) ?? start.ToBlockPos()))
-                    return ActionResult.Success($"arrived at {Fmt(start)}{JumpSummary(jumps)}");
+                    return ActionResult.Success($"arrived at {Fmt(start)}{JumpSummary(jumps)}{Built()}");
 
                 var popts = BuildPathOptions(o, lockedDoors);
                 if (blockedJumps.Count > 0) popts = popts with { AvoidJumps = blockedJumps.ToHashSet() };
                 var path = await Task.Run(() => Pathfinder.FindPath(World, start, goal, popts, token), token).ConfigureAwait(false);
                 if (path.Status is PathStatus.NoPath or PathStatus.InvalidStart || path.Steps.Count == 0)
                 {
-                    if (path.Status == PathStatus.InvalidStart && replans < o.MaxReplans)
+                    if (path.Status == PathStatus.InvalidStart && airWaits < 12)
                     {
-                        // Usually mid-air or a chunk not yet loaded: wait a moment and retry.
-                        replans++;
+                        // Usually mid-air (a pillar jump, a stuck re-plan mid-hop) or a chunk not yet loaded: wait a moment and
+                        // retry. Its own budget: landing must never use up the re-plans.
+                        airWaits++;
                         await WaitTicksAsync(10, token).ConfigureAwait(false);
+                        continue;
+                    }
+                    // Short on blocks to climb with but carrying logs: 1 log = 4 planks (2x2 grid, no table), once.
+                    if (o.AllowPlace && !craftedPlanks && await CraftPlanksToBuildAsync(goal, o, start, token).ConfigureAwait(false) is { } made)
+                    {
+                        craftedPlanks = true;
+                        crafted = "; " + made;
+                        scaffoldBefore = ScaffoldSnapshot();
                         continue;
                     }
                     return ActionResult.Fail($"no path to {goal} ({path.Reason ?? path.Status.ToString()}{(lastFailure is null ? "" : ", last: " + lastFailure)})"
@@ -214,7 +227,7 @@ public sealed partial class MinecraftClient
                 var r = await FollowPathAsync(path.Steps, o, token, blockedJumps, lockedDoors, jumps).ConfigureAwait(false);
                 if (r is null)
                 {
-                    if (path.Status == PathStatus.Found) return ActionResult.Success($"arrived at {Fmt(World.Player.Position)}{JumpSummary(jumps)}");
+                    if (path.Status == PathStatus.Found) return ActionResult.Success($"arrived at {Fmt(World.Player.Position)}{JumpSummary(jumps)}{Built()}");
                     if (++replans > o.MaxReplans) return ActionResult.Fail($"only got partway to {goal}; now at {Fmt(World.Player.Position)}");
                     continue;
                 }
@@ -257,6 +270,7 @@ public sealed partial class MinecraftClient
     private async Task<string?> FollowCoreAsync(PathFollower follower, CancellationToken ct,
         HashSet<(BlockPos From, BlockPos To)>? blockedJumps, HashSet<BlockPos>? lockedDoors)
     {
+        int pillarRetries = 0;
         while (true)
         {
             FollowerOutput last = default;
@@ -291,6 +305,10 @@ public sealed partial class MinecraftClient
                         _ => await PlaceCoreAsync(a.Pos, ScaffoldItem() ?? -1, ct, allowPathing: false).ConfigureAwait(false),
                     };
                     _idleSneak = false;
+                    // Pillar jump fell back before the block went out: jump again (the follower re-centers), not a failure.
+                    if (!r.Ok && a.Kind == FollowerActionKind.Place && r.Message.StartsWith(InTheWay, StringComparison.Ordinal)
+                        && ++pillarRetries <= 6)
+                        break;
                     if (!r.Ok)
                     {
                         if (a.Kind == FollowerActionKind.Activate && follower.CurrentStep is { } st)
@@ -312,10 +330,14 @@ public sealed partial class MinecraftClient
     /// </summary>
     private string NoRouteHint(Goal goal, GotoOptions o, Vec3d start, CancellationToken ct)
     {
-        BlockPos? target = goal switch { GoalBlock b => b.Target, GoalNear n => n.Target, _ => null };
+        BlockPos? target = goal switch
+        {
+            GoalBlock b => b.Target, GoalNear n => n.Target, GoalNearPosition np => np.Position.ToBlockPos(), _ => null,
+        };
         if (target is not { } t) return "";
         int dy = t.Y - (int)Math.Floor(start.Y + 1e-6);
-        int have = ScaffoldItem() is { } sc ? World.Inventory.CountItem(sc) : 0;
+        int have = ScaffoldCount();
+        int logs = ReservedItems.Contains(MineClaw.Data.Blocks.Log) ? 0 : World.Inventory.CountItem(MineClaw.Data.Blocks.Log);
         if (dy < 2 && o.AllowPlace) return "";
         var probe = BuildPathOptions(o) with
         {
@@ -329,9 +351,40 @@ public sealed partial class MinecraftClient
             return $"{up}; unreachable even by pillaring/bridging" + (_protectedRegion is not null ? " (no edits inside spawn protection)" : "");
         int need = Math.Max(1, r.ScaffoldUsed);
         if (o.AllowPlace && have >= need) return up;
-        return have >= need
-            ? $"{up}; reachable by building: need {need} blocks to pillar/bridge, have {have} - retry with build mode (allow_place)"
-            : $"{up}; need {need} blocks to pillar/bridge, have {have} (cobblestone/dirt/netherrack/planks/stone)";
+        string using_ = have > 0 ? $" ({ScaffoldMix()})" : "";
+        if (have >= need)
+            return $"{up}; reachable by building: need {need} blocks to pillar/bridge, have {have}{using_} - retry with build mode (allow_place)";
+        if (have + logs * 3 >= need)
+            return $"{up}; reachable by building: need {need} blocks, have {have}{using_} + {logs} log (crafts into planks) - retry with build mode (allow_place)";
+        return $"{up}; need {need} blocks to pillar/bridge, have {have}{using_} (cobblestone/netherrack/stone/planks/logs; never dirt)";
+    }
+
+    /// <summary>"12 cobblestone, 4 planks": scaffold held, for hints.</summary>
+    private string ScaffoldMix() => string.Join(", ", ScaffoldSnapshot().Where(kv => kv.Value > 0 && !ReservedItems.Contains(kv.Key))
+        .Select(kv => $"{kv.Value} {BlockName(kv.Key, 0)}"));
+
+    /// <summary>
+    /// Build-mode goto with no route on the blocks held: when the probe says the climb needs more than we carry and logs
+    /// would cover it (each log → 4 planks, net +3), crafts just enough planks. False when crafting can't help.
+    /// </summary>
+    private async Task<string?> CraftPlanksToBuildAsync(Goal goal, GotoOptions o, Vec3d start, CancellationToken ct)
+    {
+        if (ReservedItems.Contains(MineClaw.Data.Blocks.Log) || ReservedItems.Contains(MineClaw.Data.Blocks.Planks)) return null;
+        int logs = World.Inventory.CountItem(MineClaw.Data.Blocks.Log);
+        if (logs == 0) return null;
+        int have = ScaffoldCount();
+        var probe = BuildPathOptions(o) with
+        {
+            AllowPlace = true, ScaffoldBudget = Math.Min(64, have + logs * 3), AllowPartial = false, Timeout = TimeSpan.FromMilliseconds(600),
+        };
+        PathResult r;
+        try { r = await Task.Run(() => Pathfinder.FindPath(World, start, goal, probe, ct), ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { return null; }
+        if (!r.Success || r.ScaffoldUsed <= have) return null;
+        int useLogs = Math.Min(logs, (r.ScaffoldUsed - have + 2) / 3);
+        var c = await CraftCoreAsync(MineClaw.Data.Blocks.Planks, -1, useLogs * 4, ct).ConfigureAwait(false);
+        Log($"goto: short on blocks to build with (need {r.ScaffoldUsed}, have {have}): crafting {useLogs * 4} planks from logs: {c.Message}");
+        return c.Ok ? $"crafted {useLogs * 4} planks from {useLogs} log" : null;
     }
 
     /// <summary>

@@ -79,9 +79,10 @@ The LLM must never be on the hot path. Claude is a *planner and conversationalis
 7. **Routines.** The model can save a working sequence of tool calls as a named routine (e.g. "cobble_loop")
    and later run it in pure C# with zero tokens per iteration.
 8. **Budget guard.** Usage + estimated USD tracked per call, per day and per tier (opus/worker/memory, shown by `/usage`);
-   hard daily/monthly caps apply to the sum of all tiers. Fallback order as spend rises: Normal → **Economy** (≥60% of a
-   cap: brain turns run on the worker model) → **CheapOnly** (≥80%: Haiku chat only, no game actions or delegation;
-   running worker tasks stop) → **Paused** (cap reached, or the hourly call cap).
+   hard daily/monthly caps ($50/day, $200/month by default) apply to the sum of all tiers and are the ONLY throttle: Normal
+   until a cap is reached → **Paused**. Optional soft stages stay off by default (`WorkerBrainFraction` → **Economy**: brain on
+   the worker model; `CheapOnlyFraction` < 1 → **CheapOnly**: Haiku chat only). There is no hourly call cap (`MaxCallsPerHour`
+   is ignored: background RAPTOR summaries once burned it and paused the brain mid-conversation).
    Test chat injected with console `/as` is tagged (`test_*` chat-log kinds, `eptest:` episode docs, source=test), never
    changes the self-profile and is skipped by reflection.
 9. **Personality growth (`Agent/Self`).** The config persona is the base. Every committed episode yields deterministic
@@ -119,9 +120,9 @@ connects its pipe before opening anything and exits 75 without one (never unsupe
 - **Claim board** (main, `Claims/ClaimBoard.cs`): leases with TTLs on blocks, areas, chests, furnaces, tasks. Contract
   `MineClaw.World.Claims.IClaimBoard` (`IsFree` local/fast, `TryClaimAsync`, `ReleaseAsync`); clones use a pushed mirror.
   BotHost wires it into `IsProtected` (claimed blocks are skipped) and `ClaimAwareGameClient` (chest/furnace/dig/place leases).
-- **Chat arbiter**: one deterministic owner per player message in every process — named clone > sticky partner > main;
+- **Chat arbiter**: one deterministic owner per player message in every process — named clone > thread lease (the bot that asked the player something or is watching their demo owns their replies until resolved/timeout; `thread` IPC) > sticky partner > main; a clone that owns a player's request keeps it (main hands it over only with `hive op=handover`); a clone's task is *pending* in main's turn hint until its result event arrives, and main's speech guard drops claims about pending results;
   hive bots' chat, /me, joins/leaves are internal. Main pushes live roster + sticky map.
 - **Budget**: Agent:Budget caps are shared by the hive; main's ledger adds clone spend to main's tracker, grants clones spend in
-  chunks within per-clone sub-caps, refuses at `RecallAtFraction`, and recalls clones (furthest from finishing first) when the
+  chunks (optional per-clone sub-caps; 0/unset = inherit main's hard caps), refuses at `RecallAtFraction` (default 1.0 = the cap), and recalls clones (furthest from finishing first) when the
   mode drops. Slots: a spawn must leave one free slot per offline regular; if the server fills up, the clone furthest from
   finishing logs out.

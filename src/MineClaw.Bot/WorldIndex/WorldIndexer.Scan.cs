@@ -280,6 +280,7 @@ public sealed partial class WorldIndexer
             if (now - t <= TimeSpan.FromSeconds(_o.GeneratorRegenSeconds))
             {
                 _regens[p] = _regens.GetValueOrDefault(p) + 1;
+                _protectDirty = true; // a confirmed dig cell leaves the protected set (and joins the dig-cell snapshot)
                 _gens.Add(p);
                 _gens.Touch(p);
             }
@@ -290,4 +291,20 @@ public sealed partial class WorldIndexer
 
     /// <summary>True when a block change at <paramref name="p"/> is a generator refilling (not a player placing).</summary>
     internal bool IsGeneratorCell(BlockPos p) { lock (_pumpLock) return _gens.Contains(p); }
+
+    private volatile HashSet<BlockPos> _confirmedDig = new();
+
+    /// <summary>
+    /// A generator cell whose refill was observed (after anyone's dig, the bot's or a player's). Lock-free snapshot, safe in the
+    /// pathfinder's inner loop; such a cell is never protected.
+    /// </summary>
+    public bool IsConfirmedDigCell(BlockPos p) => _confirmedDig.Contains(p);
+
+    /// <summary>Every known generator dig cell (candidates and confirmed) near <paramref name="p"/>, nearest first.</summary>
+    public IReadOnlyList<BlockPos> GeneratorCellsNear(BlockPos p, int radius = 6)
+    {
+        lock (_pumpLock)
+            return _gens.AllCells().Where(c => Math.Abs(c.X - p.X) <= radius && Math.Abs(c.Y - p.Y) <= 3 && Math.Abs(c.Z - p.Z) <= radius)
+                .OrderBy(c => c.DistanceSquaredTo(p)).ToList();
+    }
 }

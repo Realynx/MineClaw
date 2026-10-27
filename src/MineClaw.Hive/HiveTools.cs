@@ -16,17 +16,19 @@ public static class HiveTools
 
     public static void RegisterMain(ToolRegistry tools, HiveSupervisor hive) =>
         tools.Register(MainTool,
-            "Your clones: spawn a task, recall (name|all), list.",
-            ToolSchema.Create().Str("op", enumValues: ["spawn", "recall", "list"]).Str("task", required: false).Str("name", "e.g. 67", required: false).Build(),
+            "Clones: spawn a task, recall name|all, list.",
+            ToolSchema.Create().Str("op", enumValues: ["spawn", "recall", "list", "handover"]).Str("task", required: false).Str("name", "e.g. 67", required: false).Build(),
             (input, _) =>
             {
                 var op = input.ReqStr("op").Trim().ToLowerInvariant();
                 var r = op switch
                 {
                     "spawn" => hive.Spawn(input.Str("task") ?? "", input.Str("name")),
+                    // Explicitly move a job another clone owns to this one (the old owner is told).
+                    "handover" => hive.Spawn(input.Str("task") ?? "", input.Str("name"), handover: true),
                     "recall" => hive.Recall(input.Str("name") ?? "all"),
                     "list" => hive.List(),
-                    _ => "error: op is spawn|recall|list",
+                    _ => "error: op is spawn|recall|list|handover",
                 };
                 return Task.FromResult(r.StartsWith("error") ? ToolResult.Error(r) : ToolResult.Success(r));
             }, tiers: ToolTiers.Main);

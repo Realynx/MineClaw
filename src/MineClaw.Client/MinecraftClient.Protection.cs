@@ -31,6 +31,12 @@ public sealed partial class MinecraftClient
     /// successful edit inside it. The Bot records it as an observation of kind <c>protected_region</c>.</summary>
     public event Action<LearnedProtectedRegion?>? ProtectedRegionChanged;
 
+    /// <summary>
+    /// A dig/place near spawn worked (event dispatcher). Lets the Bot retract a protected_region fact remembered from an
+    /// earlier session (the client's own learned region is per session; ops lift spawn protection).
+    /// </summary>
+    public event Action<BlockPos, int>? EditSucceededNearSpawn;
+
     /// <summary>True while edits at <paramref name="p"/> should be skipped: inside the learned region and the fact is
     /// fresh. Once stale, one probe is allowed (its outcome refreshes or clears the fact).</summary>
     public bool EditBlocked(BlockPos p) =>
@@ -43,6 +49,12 @@ public sealed partial class MinecraftClient
     private void NoteEditOk(BlockPos p)
     {
         Interlocked.Increment(ref _actionEditsOk);
+        var sp = World.Spawn;
+        if (World.Dimension == 0 && Math.Max(Math.Abs(p.X - sp.X), Math.Abs(p.Z - sp.Z)) <= VanillaSpawnProtection * 2)
+        {
+            int dim = World.Dimension;
+            Raise(() => EditSucceededNearSpawn?.Invoke(p, dim));
+        }
         if (_protectedRegion is { } r && r.Contains(p, World.Dimension))
         {
             _protectedRegion = null;

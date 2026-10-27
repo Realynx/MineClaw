@@ -30,7 +30,42 @@ public sealed partial class ScriptSession
     {
         ["go"] = "goto", ["chop"] = "chop_tree", ["take"] = "withdraw", ["use"] = "use_block", ["collect"] = "collect_drops",
         ["gen"] = "harvest_generator", ["sort"] = "organize_chest", ["move"] = "move_items",
+        // Giving things to a player: what players and models actually say ("toss me the logs", "give foxy 5 wood").
+        ["toss"] = "give_items", ["give"] = "give_items", ["drop"] = "drop_items",
     };
+
+    /// <summary>
+    /// Up to <paramref name="max"/> names closest to <paramref name="name"/> (substring hits first, then edit distance ≤ 3),
+    /// for "no skill 'x'; closest: a, b" errors.
+    /// </summary>
+    public static IReadOnlyList<string> Closest(string name, IEnumerable<string> candidates, int max = 3)
+    {
+        var n = (name ?? "").Trim().ToLowerInvariant();
+        if (n.Length == 0) return [];
+        return candidates.Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(c => (c, d: Score(n, c.ToLowerInvariant())))
+            .Where(t => t.d <= 3)
+            .OrderBy(t => t.d).ThenBy(t => t.c.Length).ThenBy(t => t.c, StringComparer.Ordinal)
+            .Take(max).Select(t => t.c).ToList();
+
+        static int Score(string a, string b)
+        {
+            if (a == b) return 0;
+            if (b.Contains(a) || a.Contains(b)) return 1;
+            var parts = a.Split('_', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length > 0 && b.Split('_').Any(bp => parts.Contains(bp))) return 2;
+            int[] prev = new int[b.Length + 1], cur = new int[b.Length + 1];
+            for (int j = 0; j <= b.Length; j++) prev[j] = j;
+            for (int i = 1; i <= a.Length; i++)
+            {
+                cur[0] = i;
+                for (int j = 1; j <= b.Length; j++)
+                    cur[j] = Math.Min(Math.Min(cur[j - 1] + 1, prev[j] + 1), prev[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1));
+                (prev, cur) = (cur, prev);
+            }
+            return prev[b.Length];
+        }
+    }
 
     /// <summary>Globals the API owns (skills with these names are only reachable via skill()).</summary>
     public static readonly IReadOnlySet<string> BuiltinNames = new HashSet<string>(StringComparer.Ordinal)
@@ -241,7 +276,18 @@ public sealed partial class ScriptSession
 
         env["skill"] = F("skill", c =>
         {
-            if (!c.GetArgument(0).TryRead<string>(out var name)) throw Bug("skill(name, {args}) needs a name");
+            if (!c.GetArgument(0).TryRead<string>(out var asked)) throw Bug("skill(name, {args}) needs a name");
+            var name = asked.Trim();
+            // skill("toss", ..) / skill("go", ..): an alias works here too; an action name runs the action.
+            if (!skills.Contains(name) && Aliases.TryGetValue(name, out var target)) name = target;
+            if (!skills.Contains(name) && byName.TryGetValue(name, out var act))
+                return Ret(c, RunAction(act.Name, act.Atomic, ct => _host.Act(act.Name, MapArgs(Params(act), c, skip: 1), ct)));
+            if (!skills.Contains(name) && skills.Count > 0)
+            {
+                var near = Closest(name, skills.Concat(byName.Keys).Concat(Aliases.Keys));
+                return Ret(c, RunAction(name, true, _ => Task.FromResult(ActResult.Fail($"no skill '{asked}'" +
+                    (near.Count > 0 ? $"; closest: {string.Join(", ", near)}" : "; use find_skill")))));
+            }
             return Ret(c, RunAction(name, _host.SkillIsAtomic(name), ct => _host.Skill(name, MapArgs(SkillParams(name), c, skip: 1), ct)));
         });
 
@@ -399,7 +445,8 @@ public sealed partial class ScriptSession
             Locate();
         }
         SafePoint();
-        if (!r.Ok) LastFailure = $"{label}: {Short(OneLine(r.Msg), 80)}";
+        if (!r.Ok) { LastFailure = $"{label}: {Short(OneLine(r.Msg), 80)}"; _lastFailureMsg = r.Msg; }
+        LastActionFailed = !r.Ok;
         SnapshotVars();
         TouchSegment();
         return r;

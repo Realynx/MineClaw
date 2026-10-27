@@ -47,14 +47,35 @@ public class BudgetTests
     }
 
     [Fact]
-    public void HourlyCallCap_PausesUntilWindowPasses()
+    public void Hard_caps_only_no_hourly_call_cap_even_when_configured()
     {
+        // Live session 2: ~37 background RAPTOR summaries hit "hourly call limit" and paused the brain mid-conversation.
         var time = new ManualTime();
         var t = new UsageTracker(new BudgetOptions { MaxCallsPerHour = 3 }, time: time, path: null);
-        for (int i = 0; i < 3; i++) t.Record("claude-haiku-5-5", new LlmUsage(10, 10, 0, 0));
-        Assert.Equal(BudgetMode.Paused, t.Mode);
-        time.Advance(TimeSpan.FromMinutes(61));
+        var modes = new List<BudgetMode>();
+        t.ModeChanged += (m, _) => modes.Add(m);
+        for (int i = 0; i < 100; i++) t.Record("claude-haiku-5-5", new LlmUsage(10, 10, 0, 0));
         Assert.Equal(BudgetMode.Normal, t.Mode);
+        Assert.Empty(modes);
+    }
+
+    [Fact]
+    public void Default_budget_never_leaves_Normal_below_the_hard_cap()
+    {
+        var time = new ManualTime();
+        var o = new BudgetOptions();
+        Assert.Equal(50m, o.DailyCapUsd);
+        Assert.Equal(200m, o.MonthlyCapUsd);
+        var t = new UsageTracker(o, time: time, path: null);
+        // ~$49.9 of opus spend today: still Normal (no soft fallback stage by default).
+        while (t.Today.TotalUsd < 49.5m) t.Record("claude-opus-5-5", new LlmUsage(100_000, 10_000, 0, 0));
+        Assert.Equal(BudgetMode.Normal, t.Mode);
+        while (t.Today.TotalUsd < 50m) t.Record("claude-opus-5-5", new LlmUsage(100_000, 10_000, 0, 0));
+        Assert.Equal(BudgetMode.Paused, t.Mode);
+        Assert.Contains("daily budget", t.Reason);
+
+        var zero = new UsageTracker(new BudgetOptions { DailyCapUsd = 10m, CheapOnlyFraction = 0 }, time: time, path: null);
+        Assert.Equal(BudgetMode.Normal, zero.Mode); // 0 = no cheap-only stage, not "always cheap-only"
     }
 
     [Fact]

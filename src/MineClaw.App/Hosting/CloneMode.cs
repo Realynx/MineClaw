@@ -40,8 +40,9 @@ public static class CloneMode
         agent.Chat.Aliases = [$"{mainDisplay} {num}"];
         agent.Hive.MainUsername = mainLogin;                  // personality: main's lines are a bot's, not a player's
         agent.Budget.UsageFile = $"usage-{clone}.json";        // own totals (main's ledger enforces the shared caps)
-        agent.Budget.DailyCapUsd = hive.Budget.CloneDailyCapUsd;
-        agent.Budget.MonthlyCapUsd = hive.Budget.CloneMonthlyCapUsd;
+        // Sub-caps are optional: 0/unset = inherit main's hard caps (main's ledger still enforces the shared hive total).
+        agent.Budget.DailyCapUsd = hive.Budget.CloneDailyCap(agent.Budget.DailyCapUsd);
+        agent.Budget.MonthlyCapUsd = hive.Budget.CloneMonthlyCap(agent.Budget.MonthlyCapUsd);
         agent.Rag.Raptor.Maintenance = false;                  // background RAPTOR jobs run in the main process only
         agent.Rag.RestoreJournal = false;                      // the latest journal is main's, not this clone's
         agent.IdleCheckInMinutes = 0;                          // a clone wakes only for its name, its tasks and its own danger

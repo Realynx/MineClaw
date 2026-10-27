@@ -23,6 +23,15 @@ public sealed class ChunkColumn
     /// <summary>True once any block data has been received (0x33) — a column only pre-loaded via 0x32 is empty air.</summary>
     public bool HasData { get; internal set; }
 
+    /// <summary>Dimension the column belongs to (stamped by <see cref="WorldState"/> when it is created).</summary>
+    public int Dimension { get; internal set; }
+
+    /// <summary>Raw block ids (read-only view, <see cref="Index"/> layout); used for snapshots.</summary>
+    public ReadOnlySpan<byte> IdData => Ids;
+
+    /// <summary>Raw metadata, one byte per block (read-only view, <see cref="Index"/> layout); used for snapshots.</summary>
+    public ReadOnlySpan<byte> MetaData => Meta;
+
     public ChunkColumn(int chunkX, int chunkZ)
     {
         ChunkX = chunkX;

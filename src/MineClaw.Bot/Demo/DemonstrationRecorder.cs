@@ -36,8 +36,11 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
 
     internal static readonly HashSet<int> Containers = [Blocks.Chest, Blocks.Furnace, Blocks.LitFurnace, Blocks.Workbench, Blocks.Dispenser];
 
-    /// <summary>First non-air block (liquids included) along an entity's look ray.</summary>
-    public static (BlockPos Pos, int Id)? LookTarget(WorldState w, Vec3d feet, float yaw, float pitch, double reach = 5)
+    /// <summary>
+    /// First non-air block along an entity's look ray. <paramref name="solidOnly"/> = what a punch/dig hits: vanilla's
+    /// left-click ray passes through liquids (b1.8 rayTrace without liquids), so lava/water are skipped.
+    /// </summary>
+    public static (BlockPos Pos, int Id)? LookTarget(WorldState w, Vec3d feet, float yaw, float pitch, double reach = 5, bool solidOnly = false)
     {
         var eye = feet + new Vec3d(0, PlayerPhysics.EyeHeight, 0);
         var dir = PlayerPhysics.LookVector(yaw, pitch);
@@ -48,7 +51,7 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
             if (last == p) continue;
             last = p;
             int id = w.GetBlock(p);
-            if (id != 0) return (p, id);
+            if (id != 0 && !(solidOnly && (BlockShapes.IsLiquid(id) || id == Blocks.Fire))) return (p, id);
         }
         return null;
     }
@@ -72,6 +75,8 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
         private string? _lastFacing;
         private (DateTimeOffset At, BlockPos? Target, int Held) _lastSwing = (DateTimeOffset.MinValue, null, 0);
         private bool _stopped;
+        private DateTimeOffset? _lastActivity;
+        private int _actionCount;
         private readonly PlayerActivityTracker? _activity;
         private readonly List<ActivityEvent> _attributed = new();
 
@@ -88,6 +93,16 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
         }
 
         private DateTimeOffset Now => _time.GetUtcNow();
+
+        public DateTimeOffset? LastActivity { get { lock (_lock) return _lastActivity; } }
+        public int ActionCount { get { lock (_lock) return _actionCount; } }
+
+        // caller holds _lock
+        private void Touch(bool action)
+        {
+            _lastActivity = Now;
+            if (action) _actionCount++;
+        }
 
         public void Start()
         {
@@ -125,6 +140,7 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
                 if (_stopped) return;
                 if (cell != _lastCell)
                 {
+                    if (_lastCell != null) Touch(false);
                     _raw.Add(new Raw(new DemoAction(Now, DemoActionKind.Move, cell.X, cell.Y, cell.Z, Detail: facing)));
                     _lastCell = cell;
                     _lastFacing = facing;
@@ -143,16 +159,20 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
             var e = Player();
             if (e == null || e.Id != entityId) return;
             Sample();
-            var target = LookTarget(_c.World, e.Position, e.Yaw, e.Pitch);
+            // A right-click with a usable item (bucket, flint, seeds, a block) can target a liquid; a punch never does.
+            bool use = Perception.Gestures.IsUseItem(e.HeldItem);
+            var target = LookTarget(_c.World, e.Position, e.Yaw, e.Pitch, solidOnly: !use);
             lock (_lock)
             {
                 if (_stopped) return;
                 _lastSwing = (Now, target?.Pos, e.HeldItem);
                 if (target is not { } t) return;
+                Touch(true);
                 var kind = Containers.Contains(t.Id) ? DemoActionKind.OpenContainer : DemoActionKind.UseBlock;
                 string? held = e.HeldItem > 0 && Items.Exists(e.HeldItem) ? Names.Item(e.HeldItem) : null;
-                _raw.Add(new Raw(new DemoAction(Now, kind, t.Pos.X, t.Pos.Y, t.Pos.Z, Names.Block(t.Id), kind == DemoActionKind.UseBlock ? held : null),
-                    e.HeldItem, true));
+                // "Punch the regenerating brick" is a valid teaching action: a swing that isn't an item use is pointing.
+                string? detail = kind != DemoActionKind.UseBlock ? null : use ? held : Perception.Gestures.Punched;
+                _raw.Add(new Raw(new DemoAction(Now, kind, t.Pos.X, t.Pos.Y, t.Pos.Z, Names.Block(t.Id), detail), e.HeldItem, true));
             }
         }
 
@@ -197,6 +217,7 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
             lock (_lock)
             {
                 if (_stopped) return;
+                if (mine) Touch(true);
                 _raw.Add(new Raw(a, 0, mine));
             }
         }

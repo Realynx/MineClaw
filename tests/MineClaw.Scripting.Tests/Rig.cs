@@ -52,7 +52,7 @@ public sealed class Rig : IDisposable
                 Calls.Enqueue($"{name} {args.GetRawText()}");
                 return On.TryGetValue(name, out var f) ? f(args, ct) : Task.FromResult(ActResult.Success($"{name} ok"));
             },
-            Skills = () => ["move_items", "harvest_cane", "log"],
+            Skills = () => ["move_items", "harvest_cane", "log", "give_items", "drop_items"],
             Skill = (name, args, ct) =>
             {
                 Calls.Enqueue($"skill:{name} {args.GetRawText()}");

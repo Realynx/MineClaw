@@ -32,6 +32,33 @@ public sealed partial class MinecraftClient
             return ActionResult.Success(w is null ? "no window open" : $"closed {w.Type.ToString().ToLowerInvariant()}");
         });
 
+    /// <summary>
+    /// Fresh inventory from the server, not the client's (possibly predicted) copy: closes any window (cursor and grid back
+    /// into the inventory first), then sends a no-op click on the empty crafting-output slot whose "expected item" can't
+    /// match. b1.8.1 NetServerHandler answers a mismatch with 0x6A accepted=false plus the full window contents (0x68) and
+    /// the cursor (0x67), which replace the local model. True once that resync arrived (or the server agreed).
+    /// </summary>
+    public Task<ActionResult> ResyncInventoryAsync(CancellationToken ct = default) =>
+        RunActionAsync("resync", ct, async c =>
+        {
+            await EnsureNoWindowAsync(c).ConfigureAwait(false);
+            int version = Volatile.Read(ref _windowItemsVersion);
+            short action = World.Inventory.NextActionNumber();
+            Send(new WindowClickPacket
+            {
+                WindowId = 0, Slot = 0, RightClick = false, ActionNumber = action, Shift = false,
+                ClickedItem = new ItemStack(1, 64, 0x7FFF), // never the server's (empty) result: forces the rejection + resync
+            });
+            var key = (0, action);
+            if (!await WaitUntilAsync(() => _txResults.ContainsKey(key), TimeSpan.FromSeconds(3), c).ConfigureAwait(false))
+                return ActionResult.Fail("no reply to the inventory resync");
+            _txResults.TryRemove(key, out bool accepted);
+            if (accepted) return ActionResult.Success("inventory confirmed by the server");
+            if (!await WaitUntilAsync(() => Volatile.Read(ref _windowItemsVersion) > version, TimeSpan.FromSeconds(2), c).ConfigureAwait(false))
+                return ActionResult.Fail("server rejected the probe but sent no window contents");
+            return ActionResult.Success("inventory resynced from the server");
+        });
+
     /// <summary>Moves up to <paramref name="count"/> of an item between the open container and the inventory
     /// (<paramref name="toContainer"/> = inventory → container).</summary>
     public Task<ActionResult> TransferAsync(int itemId, int count, bool toContainer, int? damage = null, CancellationToken ct = default) =>

@@ -37,6 +37,37 @@ public sealed class GameInventoryPort(IGameClient client, ObservationStore obser
 
     public IReadOnlyList<ItemMsg> Items() => Snapshot(client.World);
 
+    /// <summary>
+    /// Window closed (cursor/grid back into the inventory), the slot packets quiet, then a forced server resync: the
+    /// server answers after every earlier click (TCP order), so the model it leaves behind is the server's, not a
+    /// prediction left over from a cancelled worker action.
+    /// </summary>
+    public async Task<bool> SettleAsync(CancellationToken ct)
+    {
+        if (!client.IsPlaying) return false;
+        if (client.World.Inventory.OpenWindow != null) await client.CloseWindowAsync(ct).ConfigureAwait(false);
+        await QuietAsync(client.World.Inventory, TimeSpan.FromMilliseconds(300), TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+        if (client is not MinecraftGameClient mg) return true;
+        var r = await mg.Inner.ResyncInventoryAsync(ct).ConfigureAwait(false);
+        await QuietAsync(client.World.Inventory, TimeSpan.FromMilliseconds(150), TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
+        return r.Ok;
+    }
+
+    /// <summary>Waits until no inventory change for <paramref name="quiet"/> (or <paramref name="max"/> elapsed).</summary>
+    internal static async Task QuietAsync(InventoryManager inv, TimeSpan quiet, TimeSpan max, CancellationToken ct)
+    {
+        long last = Environment.TickCount64;
+        void OnChanged() => Interlocked.Exchange(ref last, Environment.TickCount64);
+        inv.Changed += OnChanged;
+        try
+        {
+            long start = Environment.TickCount64;
+            while (Environment.TickCount64 - Interlocked.Read(ref last) < quiet.TotalMilliseconds && Environment.TickCount64 - start < max.TotalMilliseconds)
+                await Task.Delay(25, ct).ConfigureAwait(false);
+        }
+        finally { inv.Changed -= OnChanged; }
+    }
+
     public bool CanActSafely
     {
         get

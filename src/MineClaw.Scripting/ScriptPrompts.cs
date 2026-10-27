@@ -22,9 +22,9 @@ public static class ScriptPrompts
     /// <summary>Worker system-prompt block. Keep ≤ 250 tokens (≈ 875 chars).</summary>
     public const string CheatSheet = """
 
-# script tool: Lua 5.2, runs in C# with no model calls. Use it for >3 steps or any loop. SHORT scripts (2-6 lines).
+# script tool: Lua 5.2 in C#, no model calls. Use it for >3 steps or any loop. SHORT scripts (2-6 lines).
 Actions return ok,msg,n; table args, positional or named: go{"x,y,z"|place|player} mine{"cobblestone",16} chop{}
-craft{"planks",4} smelt{"iron_ore",8} deposit{} take{"coal",8} place{"torch","x,y,z"} dig{"x,y,z"} use{"x,y,z"} eat{}
+craft{"planks",4} smelt{"iron_ore",8} deposit{} take{"coal",8} place{"torch","x,y,z"} dig{"x,y,z"} use{"x,y,z"} eat{} give{p,"log",5}
 move{{item="log",n="all",to="wood chest"}}, any catalog skill by name, skill("name",{..})
 Ask: inv"log" inv.free() me.hp me.food me.pos block(x,y,z) near"chest" where"iron" night() players()
 Do: wait(s) waitfor("chat"|"item"|"block"|"night",filter,s) say"hi" emote"waves" ask(p,q) wake"why" cp"label"

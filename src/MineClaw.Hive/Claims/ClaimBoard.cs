@@ -150,7 +150,7 @@ public sealed class RemoteClaimBoard(string owner, Func<HiveLink?> link, TimePro
             var r = await l.RequestAsync<ClaimReplyMsg>(Msg.Claim, new ClaimMsg(key.Id, (ttl ?? TimeSpan.Zero).TotalSeconds, note), RequestTimeout, ct).ConfigureAwait(false);
             if (r == null) return new ClaimResult(false, null, default, "no answer from main");
             var exp = DateTimeOffset.FromUnixTimeMilliseconds(r.ExpiresMs);
-            if (r.Ok) lock (_lock) { _mirror.RemoveAll(x => x.Key == key && x.Owner == owner); _mirror.Add(new Lease(key, owner, exp, note)); }
+            if (r.Ok) lock (_lock) { _mirror.RemoveAll(x => x.Key == key && string.Equals(x.Owner, owner, StringComparison.OrdinalIgnoreCase)); _mirror.Add(new Lease(key, owner, exp, note)); }
             return r.Ok ? ClaimResult.Granted(owner, exp) : ClaimResult.Refused(r.Holder ?? "?", exp);
         }
         catch (HiveIpcException ex) { return new ClaimResult(false, null, default, ex.Message); }

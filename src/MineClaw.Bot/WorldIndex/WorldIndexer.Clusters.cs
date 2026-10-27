@@ -1,6 +1,7 @@
 using MineClaw.Agent.Rag;
 using MineClaw.Data;
 using MineClaw.World;
+using Microsoft.Extensions.Logging;
 
 namespace MineClaw.Bot.WorldIndex;
 
@@ -51,47 +52,55 @@ public sealed partial class WorldIndexer
     {
         // Order matters: generators and farms first (they explain blocks the structure pass would otherwise flag).
         if (_gens.HasWork)
-        {
-            var (changed, removed) = _gens.Recluster(NewKey(IndexKinds.Generator, null, c => PosKey(First(c))));
-            foreach (var k in removed) if (Find(IndexKinds.Generator, k) is { } e) RemoveEntry(e);
-            foreach (var c in changed) ApplyGenerator(c);
-        }
+            RunLayer(IndexKinds.Generator, _gens, NewKey(IndexKinds.Generator, null, c => PosKey(First(c))), ApplyGenerator);
         foreach (var (type, layer) in _farms)
         {
             if (!layer.HasWork) continue;
-            var (changed, removed) = layer.Recluster(NewKey(IndexKinds.Farm, type, c => $"{type}@{PosKey(MinOf(c))}"));
-            foreach (var k in removed) if (Find(IndexKinds.Farm, k) is { } e) RemoveEntry(e);
-            foreach (var c in changed) ApplyFarm(type, c);
+            RunLayer(IndexKinds.Farm, layer, NewKey(IndexKinds.Farm, type, c => $"{type}@{PosKey(MinOf(c))}"), c => ApplyFarm(type, c));
         }
         ApplyTreeNotes();
         if (_trees.HasWork)
-        {
-            var (changed, removed) = _trees.Recluster(NewKey(IndexKinds.Tree, null, c => PosKey(MinOf(c))));
-            foreach (var k in removed) if (Find(IndexKinds.Tree, k) is { } e) RemoveEntry(e);
-            foreach (var c in changed) ApplyTree(c);
-        }
+            RunLayer(IndexKinds.Tree, _trees, NewKey(IndexKinds.Tree, null, c => PosKey(MinOf(c))), ApplyTree);
         if (_portals.HasWork) // before builds: a portal explains its obsidian frame
-        {
-            var (changed, removed) = _portals.Recluster(NewKey(IndexKinds.Portal, null, c => PosKey(MinOf(c))));
-            foreach (var k in removed) if (Find(IndexKinds.Portal, k) is { } e) RemoveEntry(e);
-            foreach (var c in changed) ApplyPortal(c);
-        }
+            RunLayer(IndexKinds.Portal, _portals, NewKey(IndexKinds.Portal, null, c => PosKey(MinOf(c))), ApplyPortal);
         if (_builds.HasWork)
-        {
-            var (changed, removed) = _builds.Recluster(NewKey(IndexKinds.UnknownStructure, null, c => PosKey(MinOf(c))));
-            foreach (var k in removed) if (Find(IndexKinds.UnknownStructure, k) is { } e) RemoveEntry(e);
-            foreach (var c in changed) ApplyStructure(c);
-        }
+            RunLayer(IndexKinds.UnknownStructure, _builds, NewKey(IndexKinds.UnknownStructure, null, c => PosKey(MinOf(c))), ApplyStructure);
         if (_islands.HasWork && IslandsOn)
         {
-            var (changed, removed) = _islands.Recluster(NewKey(IndexKinds.Island, null, c =>
+            RunLayer(IndexKinds.Island, _islands, NewKey(IndexKinds.Island, null, c =>
             {
                 var (a, b) = (MinOf(c), MaxOf(c));
                 return $"{(a.X + b.X) / 2},{(a.Z + b.Z) / 2}";
-            }));
-            foreach (var k in removed) if (Find(IndexKinds.Island, k) is { } e) RemoveEntry(e);
-            foreach (var c in changed) ApplyIsland(c);
+            }), ApplyIsland);
             UpdateMainIsland();
+        }
+    }
+
+    /// <summary>
+    /// One layer's recluster + apply, isolated: a failing cluster is logged and skipped, a failing recluster repairs the
+    /// layer (rebuilt from its cells next pass) instead of failing every later pass.
+    /// </summary>
+    private void RunLayer(string kind, ClusterIndex layer, Func<HashSet<BlockPos>, string> newKey, Action<ClusterChange> apply)
+    {
+        List<ClusterChange> changed;
+        List<string> removed;
+        try { (changed, removed) = layer.Recluster(newKey); }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "world index: {Kind} recluster failed; rebuilding that layer", kind);
+            Stats.ClusterErrors++;
+            foreach (var k in layer.Repair()) if (Find(kind, k) is { } stale) RemoveEntry(stale);
+            return;
+        }
+        foreach (var k in removed) if (Find(kind, k) is { } e) RemoveEntry(e);
+        foreach (var c in changed)
+        {
+            try { apply(c); }
+            catch (Exception ex)
+            {
+                Stats.ClusterErrors++;
+                _log.LogWarning(ex, "world index: {Kind} {Key} skipped this pass", kind, c.Key);
+            }
         }
     }
 
@@ -139,6 +148,7 @@ public sealed partial class WorldIndexer
                 var q = f + o;
                 if (digSet.Contains(q) || protect.Contains(q)) continue;
                 int id = _world.GetBlock(q);
+                if (_gens.Contains(q) || IsGenCell(q, id, false)) continue; // another dig cell (dual generator), not a wall
                 if (id != 0 && !Blocks.IsLava(id) && !Blocks.IsWater(id)) protect.Add(q); // the walls holding the fluids
             }
         SetProtect(e, protect);
@@ -336,7 +346,9 @@ public sealed partial class WorldIndexer
         e.Extra.Clear();
         e.Extra["blocks"] = counts.OrderByDescending(kv => kv.Value).Take(5).ToDictionary(kv => Blocks.Get(kv.Key).Name, kv => kv.Value);
         e.Extra["ask"] = true;
-        if (created && !_adopted.Contains(e.Id)) e.Extra["new"] = true;
+        // First sighting this pass/session. With a scenery ledger (ShouldAnnounce) it decides: known = quiet, materially
+        // changed = ask again; without one, a key adopted from a stored row means "known".
+        if (created && (ShouldAnnounce != null || !_adopted.Contains(e.Id))) e.Extra["new"] = true;
         SetProtect(e, new HashSet<BlockPos>(c.Cells));
     }
 

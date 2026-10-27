@@ -206,6 +206,9 @@ public sealed partial class MinecraftClient
             if (count >= Options.Survival.LongMiningCount && await SurvivalGateAsync($"mine {count} blocks", c).ConfigureAwait(false) is { } refused)
                 return refused;
             var pos = new BlockPos(x, y, z);
+            // Never silently do something else: without a pickaxe the generator's output drops nothing, so say so.
+            if (Drops.Primary(Blocks.Cobblestone, 0, BestToolId(Blocks.Cobblestone)) is null)
+                return ActionResult.Fail("no pickaxe: cobblestone drops nothing without one (get a pickaxe first: withdraw or craft one)");
             int haveBefore = World.Inventory.CountItem(Blocks.Cobblestone);
             int mined = 0, failures = 0;
             string stop = "";

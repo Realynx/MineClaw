@@ -32,6 +32,8 @@ public sealed class ChatArbiter
         @"(?<![A-Za-z0-9_])(?:both of (?:you|u|ya)|you both|u both|you two|all of (?:you|u|ya)|you all|y'?all|every(?:one|body)|all (?:the |you )?(?:maids?|bots|clones)|(?:maids|bots|clones|you guys),|hey (?:maids|bots|guys))(?![A-Za-z0-9_])",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private readonly Dictionary<string, (string Owner, DateTimeOffset Until)> _sticky = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Conversation-thread leases: the bot that asked a player something / is watching their demo owns their replies.</summary>
+    private readonly Dictionary<string, (string Owner, DateTimeOffset Until)> _threads = new(StringComparer.OrdinalIgnoreCase);
     private readonly TimeProvider _time;
     private string _main;
     private string[] _mainNames;
@@ -58,6 +60,94 @@ public sealed class ChatArbiter
     /// <summary>Raised when the sticky map or roster changed here (main pushes the new roster to clones).</summary>
     public event Action? Changed;
 
+    /// <summary>(player, open, ttl): THIS bot opened/closed a thread lease (a clone forwards it to main over IPC).</summary>
+    public event Action<string, bool, TimeSpan>? LocalThreadChanged;
+
+    // ---------------------------------------------------------------- thread ownership leases
+
+    /// <summary>
+    /// <paramref name="owner"/> asked <paramref name="player"/> something or is watching their demo: it owns that player's
+    /// replies until <see cref="CloseThread"/> or the TTL. Other bots ignore those replies (unless the player names one).
+    /// </summary>
+    public void OpenThread(string player, string owner, TimeSpan ttl)
+    {
+        lock (_lock) _threads[player] = (owner, _time.GetUtcNow() + (ttl <= TimeSpan.Zero ? TimeSpan.FromSeconds(60) : ttl));
+        if (string.Equals(owner, _self, StringComparison.OrdinalIgnoreCase)) { try { LocalThreadChanged?.Invoke(player, true, ttl); } catch (Exception) { } }
+        Changed?.Invoke();
+    }
+
+    /// <summary>Ends <paramref name="owner"/>'s lease on <paramref name="player"/> (no-op when someone else holds it).</summary>
+    public void CloseThread(string player, string owner)
+    {
+        bool removed;
+        lock (_lock)
+            removed = _threads.TryGetValue(player, out var t) && string.Equals(t.Owner, owner, StringComparison.OrdinalIgnoreCase) && _threads.Remove(player);
+        if (!removed) return;
+        if (string.Equals(owner, _self, StringComparison.OrdinalIgnoreCase)) { try { LocalThreadChanged?.Invoke(player, false, TimeSpan.Zero); } catch (Exception) { } }
+        Changed?.Invoke();
+    }
+
+    /// <summary>The live thread owner for a player (null = nobody holds one).</summary>
+    public string? ThreadOwner(string player)
+    {
+        lock (_lock) return LiveThread(player);
+    }
+
+    /// <summary>Who owns a player's conversation right now: thread lease, else sticky partner (null = nobody / main default).</summary>
+    public string? ConversationOwner(string player)
+    {
+        lock (_lock)
+        {
+            if (LiveThread(player) is { } t) return t;
+            return _sticky.TryGetValue(player, out var s) && s.Until > _time.GetUtcNow() ? s.Owner : null;
+        }
+    }
+
+    /// <summary>Main: hands a player's conversation to <paramref name="owner"/> explicitly (sticky + any thread move over).</summary>
+    public void HandOver(string player, string owner)
+    {
+        lock (_lock)
+        {
+            _threads.Remove(player);
+            _sticky[player] = (owner, _time.GetUtcNow() + StickyWindow);
+        }
+        Changed?.Invoke();
+    }
+
+    // caller holds _lock
+    private string? LiveThread(string player)
+    {
+        if (!_threads.TryGetValue(player, out var t)) return null;
+        if (t.Until <= _time.GetUtcNow()) { _threads.Remove(player); return null; }
+        bool ownerUp = string.Equals(t.Owner, _main, StringComparison.OrdinalIgnoreCase) || string.Equals(t.Owner, _self, StringComparison.OrdinalIgnoreCase) || _live.Contains(t.Owner);
+        return ownerUp ? t.Owner : null;
+    }
+
+    /// <summary>
+    /// Wires this arbiter into a bot's chat router (main and clones): ownership of each player message, thread leases while
+    /// this bot waits on a player, and never completing our own waiters with another bot's reply.
+    /// </summary>
+    public void Bind(ChatRouter chat)
+    {
+        chat.IsHiveBot = IsHiveBot;
+        chat.Arbiter = Decide;
+        chat.OwnedElsewhere = OwnedElsewhere;
+        chat.ThreadChanged += (player, open, ttl) =>
+        {
+            if (open) OpenThread(player, _self, ttl);
+            else CloseThread(player, _self);
+        };
+    }
+
+    /// <summary>True when the message belongs to another bot: it holds the thread, or the player named it explicitly.</summary>
+    public bool OwnedElsewhere(ChatMessage msg)
+    {
+        if (msg.Player == null) return false;
+        var r = Route(msg);
+        if (r.Owner == null) return false;
+        return r.Explicit && !string.Equals(r.Owner, _self, StringComparison.OrdinalIgnoreCase);
+    }
+
     public bool IsHiveBot(string name) { lock (_lock) return _hiveBots.Contains(name); }
 
     /// <summary>"maid_chan_67" → "67" (the clone's number), or null.</summary>
@@ -82,7 +172,8 @@ public sealed class ChatArbiter
         {
             var now = _time.GetUtcNow();
             return new RosterMsg(_main, _mainNames, _live.ToArray(),
-                _sticky.Where(kv => kv.Value.Until > now).ToDictionary(kv => kv.Key, kv => new StickyMsg(kv.Value.Owner, kv.Value.Until.ToUnixTimeMilliseconds())));
+                _sticky.Where(kv => kv.Value.Until > now).ToDictionary(kv => kv.Key, kv => new StickyMsg(kv.Value.Owner, kv.Value.Until.ToUnixTimeMilliseconds())),
+                _threads.Where(kv => kv.Value.Until > now).ToDictionary(kv => kv.Key, kv => new StickyMsg(kv.Value.Owner, kv.Value.Until.ToUnixTimeMilliseconds())));
         }
     }
 
@@ -97,6 +188,11 @@ public sealed class ChatArbiter
             _mainNames = r.MainNames;
             _sticky.Clear();
             foreach (var (p, s) in r.Sticky) _sticky[p] = (s.Owner, DateTimeOffset.FromUnixTimeMilliseconds(s.UntilMs));
+            // Main's thread map is authoritative, except our own fresh leases it may not have echoed yet.
+            var mine = _threads.Where(kv => string.Equals(kv.Value.Owner, _self, StringComparison.OrdinalIgnoreCase)).ToList();
+            _threads.Clear();
+            foreach (var (p, s) in r.Threads ?? []) _threads[p] = (s.Owner, DateTimeOffset.FromUnixTimeMilliseconds(s.UntilMs));
+            foreach (var (p, t) in mine) if (!_threads.ContainsKey(p)) _threads[p] = t;
             Rebuild();
         }
     }
@@ -172,6 +268,8 @@ public sealed class ChatArbiter
             if (mm.Success && mm.Index < best) return new(_main, true, false);
             if (owner != null) return new(owner, true, false);
             if (MainVocative.IsMatch(msg.Text)) return new(_main, true, false); // "main do a little hop"
+            // A bot that asked this player something (or is watching their demo) owns their replies until resolved/timeout.
+            if (LiveThread(msg.Player) is { } holder) return new(holder, true, false);
             if (_sticky.TryGetValue(msg.Player, out var s) && s.Until > _time.GetUtcNow()
                 && (string.Equals(s.Owner, _main, StringComparison.OrdinalIgnoreCase) || _live.Contains(s.Owner)))
                 return new(s.Owner, false, false);
@@ -208,10 +306,14 @@ public sealed class ChatArbiter
         Changed?.Invoke();
     }
 
-    /// <summary>A clone left: its sticky conversations fall back to main.</summary>
+    /// <summary>A clone left: its sticky conversations and thread leases fall back to main.</summary>
     public void Forget(string owner)
     {
-        lock (_lock) foreach (var k in _sticky.Where(kv => string.Equals(kv.Value.Owner, owner, StringComparison.OrdinalIgnoreCase)).Select(kv => kv.Key).ToList()) _sticky.Remove(k);
+        lock (_lock)
+        {
+            foreach (var k in _sticky.Where(kv => string.Equals(kv.Value.Owner, owner, StringComparison.OrdinalIgnoreCase)).Select(kv => kv.Key).ToList()) _sticky.Remove(k);
+            foreach (var k in _threads.Where(kv => string.Equals(kv.Value.Owner, owner, StringComparison.OrdinalIgnoreCase)).Select(kv => kv.Key).ToList()) _threads.Remove(k);
+        }
     }
 }
 

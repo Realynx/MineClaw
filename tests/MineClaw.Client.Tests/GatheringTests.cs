@@ -15,6 +15,7 @@ public class GatheringTests
             srv.Blocks[(10, 64, 8)] = Blocks.Cobblestone;
             srv.Regenerate[(10, 64, 8)] = Blocks.Cobblestone;
             srv.DropOnDig = true;
+            srv.Inventory[36] = Harness.Stack(Items.WoodenPickaxe, 1); // cobblestone drops nothing without a pickaxe
         });
         await using var _ = c;
         using var __ = s;

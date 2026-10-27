@@ -23,7 +23,20 @@ public sealed class BudgetLedger
 {
     private sealed class Day
     {
-        public Dictionary<string, decimal> Clones { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, decimal> _clones = new(StringComparer.OrdinalIgnoreCase);
+        // JSON replaces the dictionary on load: re-wrap it so "Maid_Chan_67" and "maid_chan_67" stay one entry.
+        public Dictionary<string, decimal> Clones
+        {
+            get => _clones;
+            set => _clones = Merge(value);
+        }
+
+        private static Dictionary<string, decimal> Merge(Dictionary<string, decimal>? src)
+        {
+            var d = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+            if (src != null) foreach (var (k, v) in src) d[k] = d.GetValueOrDefault(k) + v;
+            return d;
+        }
     }
     private sealed class State
     {
@@ -87,7 +100,7 @@ public sealed class BudgetLedger
         decimal Frac(double f) => (decimal)f;
         bool Past(decimal f) => (_caps.MonthlyCapUsd > 0 && m >= _caps.MonthlyCapUsd * f) || (_caps.DailyCapUsd > 0 && d >= _caps.DailyCapUsd * f);
         if (Past(1)) return BudgetMode.Paused;
-        if (Past(Frac(_caps.CheapOnlyFraction))) return BudgetMode.CheapOnly;
+        if (_caps.CheapOnlyFraction > 0 && Past(Frac(_caps.CheapOnlyFraction))) return BudgetMode.CheapOnly; // 0 = no cheap-only stage
         if (_caps.WorkerBrainFraction > 0 && Past(Frac(_caps.WorkerBrainFraction))) return BudgetMode.Economy;
         return BudgetMode.Normal;
     }
@@ -98,7 +111,7 @@ public sealed class BudgetLedger
         var (d, m) = HiveSpend();
         decimal outstanding;
         lock (_lock) outstanding = _outstanding.Values.Sum();
-        var f = (decimal)_o.RecallAtFraction;
+        var f = (decimal)_o.RecallFraction;
         if (_caps.DailyCapUsd > 0 && d + outstanding >= _caps.DailyCapUsd * f) { reason = $"hive spend ${d:0.00} at the recall line (${_caps.DailyCapUsd * f:0.00} today)"; return true; }
         if (_caps.MonthlyCapUsd > 0 && m + outstanding >= _caps.MonthlyCapUsd * f) { reason = $"hive spend ${m:0.00} at the recall line (${_caps.MonthlyCapUsd * f:0.00} this month)"; return true; }
         var mode = HiveMode();
@@ -124,7 +137,7 @@ public sealed class BudgetLedger
             if (_o.CloneMonthlyCapUsd > 0 && cm + mine + estimateUsd > _o.CloneMonthlyCapUsd)
                 return new SpendGrant(false, 0, mode, $"clone monthly sub-cap ${_o.CloneMonthlyCapUsd:0.00} reached");
             if (mode != BudgetMode.Normal) return new SpendGrant(false, 0, mode, "hive budget mode " + mode);
-            var f = (decimal)_o.RecallAtFraction;
+            var f = (decimal)_o.RecallFraction;
             if (_caps.DailyCapUsd > 0 && hd + all + estimateUsd > _caps.DailyCapUsd * f)
                 return new SpendGrant(false, 0, mode, "hive daily budget at the recall line");
             if (_caps.MonthlyCapUsd > 0 && hm + all + estimateUsd > _caps.MonthlyCapUsd * f)

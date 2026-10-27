@@ -76,6 +76,8 @@ public sealed class CloneHost : IHandoffTarget
         _log = log ?? NullLogger.Instance;
         Claims = new RemoteClaimBoard(name, () => _link);
         Arbiter = new ChatArbiter(name, "main", cfg.Clones(), sticky: TimeSpan.FromSeconds(cfg.StickySeconds));
+        // This clone asked a player something / watches their demo: main (the arbiter authority) and the other clones must know.
+        Arbiter.LocalThreadChanged += (player, open, ttl) => _ = Send(Msg.Thread, new ThreadMsg(player, open, ttl.TotalSeconds));
     }
 
     public string Name { get; }

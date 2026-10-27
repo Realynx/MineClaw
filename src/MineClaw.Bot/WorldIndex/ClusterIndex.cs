@@ -47,6 +47,8 @@ internal sealed class ClusterIndex
     public int CellCount => _cells.Count;
     public bool HasWork => _dirty.Count > 0 || _touched.Count > 0;
     public bool Contains(BlockPos p) => _cells.Contains(p);
+    /// <summary>Every member cell (live set: only from the owning thread).</summary>
+    public IReadOnlyCollection<BlockPos> AllCells() => _cells;
     public string? OwnerOf(BlockPos p) => _owner.GetValueOrDefault(p);
     public IReadOnlyCollection<BlockPos>? CellsOf(string key) => _clusters.GetValueOrDefault(key);
     public IEnumerable<string> Keys => _clusters.Keys;
@@ -117,7 +119,7 @@ internal sealed class ClusterIndex
         var seeds = new List<BlockPos>();
         foreach (var d in _dirty) if (_cells.Contains(d)) seeds.Add(d);
         foreach (var k in affected)
-            foreach (var c in _clusters[k]) if (_cells.Contains(c)) seeds.Add(c);
+            foreach (var c in ClusterCells(k)) if (_cells.Contains(c)) seeds.Add(c);
 
         var visited = new HashSet<BlockPos>();
         var components = new List<HashSet<BlockPos>>();
@@ -140,8 +142,8 @@ internal sealed class ClusterIndex
             components.Add(comp);
         }
         // Cells of clusters pulled in by the walk above but not seeded must still be covered.
-        foreach (var k in affected)
-            foreach (var c in _clusters[k])
+        foreach (var k in affected.ToList())
+            foreach (var c in ClusterCells(k))
             {
                 if (!_cells.Contains(c) || visited.Contains(c)) continue;
                 var comp = new HashSet<BlockPos>();
@@ -177,18 +179,23 @@ internal sealed class ClusterIndex
 
         foreach (var k in affected)
         {
-            foreach (var c in _clusters[k]) if (_owner.TryGetValue(c, out var ok) && ok == k) _owner.Remove(c);
+            foreach (var c in ClusterCells(k)) if (_owner.TryGetValue(c, out var ok) && ok == k) _owner.Remove(c);
             _clusters.Remove(k);
             if (!usedKeys.Contains(k)) removed.Add(k);
         }
-        for (int i = 0; i < components.Count; i++)
+        // Components keeping an old key first, then brand-new ones: a fresh key must never take a key another component of
+        // this pass still holds (that left cells owned by a key whose cluster was later replaced: KeyNotFound next pass).
+        foreach (var i in Enumerable.Range(0, components.Count).OrderBy(i => compKey[i] == null ? 1 : 0))
         {
             bool isNew = compKey[i] == null;
-            var key = compKey[i] ?? Unique(newKey(components[i]));
+            var key = compKey[i] ?? Unique(newKey(components[i]), usedKeys);
+            usedKeys.Add(key);
             _clusters[key] = components[i];
             foreach (var c in components[i]) _owner[c] = key;
             changed.Add(new ClusterChange(key, components[i], isNew));
         }
+        // Cells that left the layer keep no owner.
+        foreach (var d in _dirty) if (!_cells.Contains(d)) _owner.Remove(d);
         foreach (var t in _touched)
             if (_clusters.TryGetValue(t, out var cells) && changed.All(c => c.Key != t)) changed.Add(new ClusterChange(t, cells, false));
         _dirty.Clear();
@@ -196,10 +203,26 @@ internal sealed class ClusterIndex
         return (changed, removed);
     }
 
-    private string Unique(string key)
+    private IEnumerable<BlockPos> ClusterCells(string key) => _clusters.TryGetValue(key, out var cells) ? cells : [];
+
+    private string Unique(string key, HashSet<string> taken)
     {
-        if (!_clusters.ContainsKey(key)) return key;
+        if (!_clusters.ContainsKey(key) && !taken.Contains(key)) return key;
         for (int i = 2; ; i++)
-            if (!_clusters.ContainsKey($"{key}#{i}")) return $"{key}#{i}";
+            if (!_clusters.ContainsKey($"{key}#{i}") && !taken.Contains($"{key}#{i}")) return $"{key}#{i}";
+    }
+
+    /// <summary>
+    /// Recovery after a failed recluster: forgets cluster membership and marks every cell dirty, so the next
+    /// <see cref="Recluster"/> rebuilds all components (keys are re-derived/adopted by the caller). Returns the keys dropped.
+    /// </summary>
+    public List<string> Repair()
+    {
+        var keys = _clusters.Keys.ToList();
+        _owner.Clear();
+        _clusters.Clear();
+        _touched.Clear();
+        _dirty.UnionWith(_cells);
+        return keys;
     }
 }

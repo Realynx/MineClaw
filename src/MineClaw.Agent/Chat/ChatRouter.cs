@@ -217,7 +217,12 @@ public sealed class ChatRouter
     {
         var player = msg.Player!;
         if (IsSelf(player) || IsHive(player) || IsEcho(msg.Text) || msg.Text.Length == 0) return;
-        lock (_lock) _online.Add(player);
+        lock (_lock)
+        {
+            _online.Add(player);
+            _recentHeard.Enqueue((player, msg.Text, Now));
+            while (_recentHeard.Count > 24) _recentHeard.Dequeue();
+        }
 
         bool addressed = IsAddressed(msg);
         if (Arbiter != null)
@@ -246,7 +251,15 @@ public sealed class ChatRouter
             return;
         }
 
-        if (TryCompleteWaiter(player, msg.Text, addressed)) return;
+        // Hive: another bot owns this conversation thread (it asked / is watching a demo), or the player named another bot:
+        // that reply is theirs; never let our own waiter eat it.
+        bool elsewhere = false;
+        if (OwnedElsewhere != null)
+        {
+            try { elsewhere = OwnedElsewhere(msg); } catch (Exception) { }
+        }
+        if (elsewhere) addressed = false;
+        else if (TryCompleteWaiter(player, msg.Text, addressed)) return;
 
         if (addressed && !AllowIncoming(player)) addressed = false; // spam: keep as context only
         if (!addressed && DropBackgroundChat) return;
@@ -258,6 +271,68 @@ public sealed class ChatRouter
 
         if (addressed) lock (_lock) _lastTalkedWith[player] = Now;
     }
+
+    /// <summary>
+    /// Hive hook: true when a player's message belongs to ANOTHER bot (it holds the thread lease, or the player named it),
+    /// so this router neither answers it nor completes its own waiters with it. Null = single bot.
+    /// </summary>
+    public Func<ChatMessage, bool>? OwnedElsewhere { get; set; }
+
+    /// <summary>(player, open, ttl): this bot opened/closed a conversation thread (a question or demo waiting on that player).</summary>
+    public event Action<string, bool, TimeSpan>? ThreadChanged;
+
+    /// <summary>
+    /// Holds the conversation thread with <paramref name="player"/> while this bot waits on them (ask_player, ask_stand,
+    /// watch_demo): the hive arbiter gives this bot their replies until the handle is disposed or the lease times out.
+    /// </summary>
+    public IDisposable HoldThread(string player, TimeSpan ttl)
+    {
+        try { ThreadChanged?.Invoke(player, true, ttl); } catch (Exception) { }
+        return new ThreadHandle(this, player);
+    }
+
+    private sealed class ThreadHandle(ChatRouter chat, string player) : IDisposable
+    {
+        private int _done;
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _done, 1) != 0) return;
+            try { chat.ThreadChanged?.Invoke(player, false, TimeSpan.Zero); } catch (Exception) { }
+        }
+    }
+
+    // ---------- this turn's speech (so a tool doesn't repeat what the brain just said) ----------
+
+    private DateTimeOffset _turnStart = DateTimeOffset.MaxValue;
+    private DateTimeOffset _modelSpokeAt = DateTimeOffset.MinValue;
+
+    private readonly Queue<(string Player, string Text, DateTimeOffset At)> _recentHeard = new();
+
+    /// <summary>
+    /// Landmark describer for a block ("the west cell of the gen, next to the lava"), set by the bot layer; questions use it
+    /// instead of raw coordinates. Null = none.
+    /// </summary>
+    public Func<int, int, int, string?>? Landmark { get; set; }
+
+    /// <summary>The last few lines (at most 10 min old) a player said (any player when null), oldest first.</summary>
+    public IReadOnlyList<string> RecentFrom(string? player)
+    {
+        lock (_lock)
+        {
+            var cutoff = Now - TimeSpan.FromMinutes(10);
+            return _recentHeard.Where(h => h.At >= cutoff && (player == null || h.Player.Equals(player, StringComparison.OrdinalIgnoreCase)))
+                .Select(h => h.Text).ToList();
+        }
+    }
+
+    /// <summary>The brain started a turn (BotAgent).</summary>
+    public void MarkTurnStart() { lock (_lock) _turnStart = Now; }
+
+    /// <summary>The brain's own text went to chat this turn (BotAgent).</summary>
+    public void NoteModelSpeech() { lock (_lock) _modelSpokeAt = Now; }
+
+    /// <summary>True when the brain already said something in the current turn (tools then stay quiet).</summary>
+    public bool ModelSpokeThisTurn { get { lock (_lock) return _modelSpokeAt >= _turnStart && _turnStart != DateTimeOffset.MaxValue; } }
 
     /// <summary>Whether the bot should treat this message as directed at it.</summary>
     public bool IsAddressed(ChatMessage msg)
