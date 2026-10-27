@@ -1,0 +1,282 @@
+using System.Diagnostics;
+using MineClaw.Data;
+using MineClaw.World;
+using C = MineClaw.Bot.WorldIndex.BlockClass.C;
+
+namespace MineClaw.Bot.WorldIndex;
+
+public sealed partial class WorldIndexer
+{
+    /// <summary>Per island-footprint column: vertical extent and block histogram (packed id&lt;&lt;16 | count).</summary>
+    private sealed record Foot(int MinY, int MaxY, int[] Hist);
+
+    private readonly Dictionary<long, Foot> _foot = new();
+    private readonly ClusterIndex _islands = new(1, flat: true);
+    private readonly ClusterIndex _gens = new(2);
+    private readonly ClusterIndex _trees = new(2);
+    private readonly ClusterIndex _builds = new(1);
+    private readonly Dictionary<string, ClusterIndex> _farms;
+    private readonly Dictionary<BlockPos, DateTimeOffset> _dug = new();
+    private readonly Dictionary<BlockPos, int> _regens = new();
+    private readonly int[] _hist = new int[256];
+
+    private static readonly BlockPos[] Six = [new(1, 0, 0), new(-1, 0, 0), new(0, 1, 0), new(0, -1, 0), new(0, 0, 1), new(0, 0, -1)];
+    /// <summary>Directions lava can flow into a cell from / water can harden it from (b1.8: four sides and above).</summary>
+    private static readonly BlockPos[] FlowIn = [new(1, 0, 0), new(-1, 0, 0), new(0, 0, 1), new(0, 0, -1), new(0, 1, 0)];
+
+    private static long XZ(int x, int z) => ((long)x << 32) | (uint)z;
+
+    // ------------------------------------------------------------------ column scans
+
+    private void ScanDirtyColumns(DateTimeOffset now)
+    {
+        List<long> pick;
+        lock (_columnsLock)
+        {
+            if (_dirtyColumns.Count == 0) return;
+            var me = _world.Player.Position;
+            int px = (int)Math.Floor(me.X) >> 4, pz = (int)Math.Floor(me.Z) >> 4;
+            pick = _dirtyColumns.Count <= _o.MaxColumnsPerPass
+                ? _dirtyColumns.ToList()
+                : _dirtyColumns.OrderBy(k => { var (x, z) = ColOf(k); return (long)(x - px) * (x - px) + (long)(z - pz) * (z - pz); })
+                    .Take(Math.Max(1, _o.MaxColumnsPerPass)).ToList();
+        }
+        long start = Stopwatch.GetTimestamp();
+        foreach (var k in pick)
+        {
+            lock (_columnsLock) _dirtyColumns.Remove(k);
+            var (cx, cz) = ColOf(k);
+            long t0 = Stopwatch.GetTimestamp();
+            if (ScanColumn(cx, cz, now))
+            {
+                Stats.ColumnsScanned++;
+                Stats.ScanMs += ElapsedMs(t0);
+            }
+            if (ElapsedMs(start) > _o.ScanBudgetMs) break;
+        }
+    }
+
+    /// <summary>Full scan of one 16x128x16 column: stations, signs, fluids/generators, farms, trees, unusual blocks, footprint.</summary>
+    private bool ScanColumn(int cx, int cz, DateTimeOffset now)
+    {
+        var col = _world.GetColumn(cx, cz);
+        if (col is null || !col.HasData) return false;
+        bool firstScan = _scannedColumns.Add(ColKey(cx, cz));
+
+        var stations = new List<BlockPos>();
+        var signs = new HashSet<BlockPos>();
+        var trees = new HashSet<BlockPos>();
+        var builds = new HashSet<BlockPos>();
+        var footCells = new HashSet<BlockPos>();
+        var genCandidates = new List<BlockPos>();
+        Dictionary<string, HashSet<BlockPos>> farms = BlockClass.FarmTypes.ToDictionary(t => t, _ => new HashSet<BlockPos>());
+        int bx = cx << 4, bz = cz << 4;
+        Span<int> ids = stackalloc int[256];
+
+        for (int lx = 0; lx < 16; lx++)
+        for (int lz = 0; lz < 16; lz++)
+        {
+            int x = bx + lx, z = bz + lz;
+            int minY = -1, maxY = -1, distinct = 0;
+            int below = 0;
+            for (int y = 0; y < WorldState.Height; y++)
+            {
+                int id = col.GetBlock(lx, y, lz);
+                if (id == 0) { below = 0; continue; }
+                var c = BlockClass.Of(id);
+                if ((c & C.Ground) != 0)
+                {
+                    if (minY < 0) minY = y;
+                    maxY = y;
+                    if (_hist[id]++ == 0 && distinct < ids.Length) ids[distinct++] = id;
+                }
+                if (c == C.None) { below = id; continue; }
+                var p = new BlockPos(x, y, z);
+                if ((c & C.Station) != 0) stations.Add(p);
+                if ((c & C.Sign) != 0) signs.Add(p);
+                if ((c & C.Farm) != 0) farms[BlockClass.FarmType(id)!].Add(p);
+                if ((c & C.Tree) != 0) trees.Add(p);
+                if ((c & C.Build) != 0) builds.Add(p);
+                else if (id == Blocks.Cobblestone && (below == Blocks.Cobblestone || (y + 1 < WorldState.Height && col.GetBlock(lx, y + 1, lz) == Blocks.Cobblestone)))
+                    builds.Add(p); // walls/pillars, not one-thick floors
+                if ((c & C.GenOutput) != 0 && IsGenCell(p, id, false)) genCandidates.Add(p);
+                else if ((c & C.Lava) != 0)
+                    foreach (var o in FlowIn)
+                    {
+                        var q = new BlockPos(x - o.X, y - o.Y, z - o.Z); // cells this lava can flow into
+                        if (IsGenCell(q, _world.GetBlock(q), false)) genCandidates.Add(q);
+                    }
+                below = id;
+            }
+            var cell = new BlockPos(x, 0, z);
+            if (minY >= 0)
+            {
+                var hist = new int[distinct];
+                for (int i = 0; i < distinct; i++) { hist[i] = (ids[i] << 16) | Math.Min(_hist[ids[i]], 0xFFFF); _hist[ids[i]] = 0; }
+                SetFoot(cell, new Foot(minY, maxY, hist));
+                footCells.Add(cell);
+            }
+            else _foot.Remove(XZ(x, z));
+        }
+
+        _islands.ReplaceChunk(cx, cz, footCells);
+        _trees.ReplaceChunk(cx, cz, trees);
+        _builds.ReplaceChunk(cx, cz, builds);
+        foreach (var (t, set) in farms) _farms[t].ReplaceChunk(cx, cz, set);
+
+        // Generators: re-check known cells here, add new candidates (which may lie in a neighbouring column).
+        foreach (var g in _gens.CellsInChunk(cx, cz).ToList()) _gens.Set(g, IsGenCell(g, _world.GetBlock(g), true));
+        foreach (var g in genCandidates) _gens.Add(g);
+
+        // Stations: everything previously known in this column is re-evaluated, then everything found.
+        if (_stationsByChunk.TryGetValue(ColKey(cx, cz), out var known))
+            foreach (var p in known.ToList()) EvaluateStation(p);
+        foreach (var p in stations) EvaluateStation(p, seen: true);
+
+        if (_signsByChunk.TryGetValue(ColKey(cx, cz), out var knownSigns))
+            foreach (var p in knownSigns.Where(p => !signs.Contains(p)).ToList()) EvaluateSign(p);
+        foreach (var p in signs) EvaluateSign(p);
+
+        MarkSeenInColumn(cx, cz);
+        if (firstScan) QueueReconcile(cx, cz);
+        return true;
+    }
+
+    private void SetFoot(BlockPos cell, Foot f)
+    {
+        var k = XZ(cell.X, cell.Z);
+        if (_foot.TryGetValue(k, out var old) && old.MinY == f.MinY && old.MaxY == f.MaxY && old.Hist.AsSpan().SequenceEqual(f.Hist)) return;
+        _foot[k] = f;
+        _islands.Touch(cell);
+    }
+
+    private void UpdateFootColumn(int x, int z)
+    {
+        int minY = -1, maxY = -1;
+        var counts = new Dictionary<int, int>();
+        for (int y = 0; y < WorldState.Height; y++)
+        {
+            int id = _world.GetBlock(x, y, z);
+            if (id == 0 || (BlockClass.Of(id) & C.Ground) == 0) continue;
+            if (minY < 0) minY = y;
+            maxY = y;
+            counts[id] = counts.GetValueOrDefault(id) + 1;
+        }
+        var cell = new BlockPos(x, 0, z);
+        if (minY < 0)
+        {
+            _foot.Remove(XZ(x, z));
+            _islands.Remove(cell);
+            return;
+        }
+        SetFoot(cell, new Foot(minY, maxY, counts.Select(kv => (kv.Key << 16) | Math.Min(kv.Value, 0xFFFF)).ToArray()));
+        _islands.Add(cell);
+    }
+
+    // ------------------------------------------------------------------ single block changes
+
+    private void HandleChange(BlockChange ch, DateTimeOffset now)
+    {
+        var p = ch.Pos;
+        TrackRegen(ch, now);
+        bool queued;
+        lock (_columnsLock) queued = _dirtyColumns.Contains(ColKey(p.X >> 4, p.Z >> 4));
+        if (queued) return; // the full scan covers it
+
+        if (((BlockClass.Of(ch.OldId) | BlockClass.Of(ch.NewId)) & C.Ground) != 0) UpdateFootColumn(p.X, p.Z);
+
+        if (((BlockClass.Of(ch.OldId) | BlockClass.Of(ch.NewId)) & C.Station) != 0)
+        {
+            EvaluateStation(p, seen: true);
+            if (ch.OldId == Blocks.Chest || ch.NewId == Blocks.Chest)
+                foreach (var o in Six)
+                    if (o.Y == 0 && _world.GetBlock(p + o) == Blocks.Chest) EvaluateStation(p + o);
+            if (ch.OldId == Blocks.Bed || ch.NewId == Blocks.Bed)
+                foreach (var o in Six)
+                    if (o.Y == 0 && _world.GetBlock(p + o) == Blocks.Bed) EvaluateStation(p + o);
+        }
+        if (((BlockClass.Of(ch.OldId) | BlockClass.Of(ch.NewId)) & C.Sign) != 0) EvaluateSign(p);
+
+        // Generators: this cell and the cells it can affect.
+        _gens.Set(p, IsGenCell(p, ch.NewId, _gens.Contains(p)));
+        foreach (var o in Six)
+        {
+            var q = p + o;
+            int id = _world.GetBlock(q);
+            if (_gens.Contains(q) || (BlockClass.Of(id) & C.GenOutput) != 0) _gens.Set(q, IsGenCell(q, id, _gens.Contains(q)));
+        }
+        if (_gens.Contains(p)) _gens.Touch(p);
+
+        foreach (var t in BlockClass.FarmTypes)
+        {
+            var layer = _farms[t];
+            bool member = BlockClass.FarmType(ch.NewId) == t;
+            layer.Set(p, member);
+            if (member) layer.Touch(p); // crops growing: re-render (throttled)
+            else if (BlockClass.FarmType(ch.OldId) == t) layer.Touch(p);
+        }
+        // Water/sand/dirt next to a farm changes its irrigation/soil description.
+        if (Blocks.IsWater(ch.OldId) || Blocks.IsWater(ch.NewId))
+            foreach (var o in Six) foreach (var layer in _farms.Values) layer.Touch(p + o);
+        _trees.Set(p, (BlockClass.Of(ch.NewId) & C.Tree) != 0);
+        _builds.Set(p, IsBuildCell(p, ch.NewId));
+        foreach (var q in new[] { p.Up(), p.Down() })
+        {
+            int id = _world.GetBlock(q);
+            if (id == Blocks.Cobblestone || _builds.Contains(q)) _builds.Set(q, IsBuildCell(q, id));
+        }
+    }
+
+    private bool IsBuildCell(BlockPos p, int id)
+    {
+        if ((BlockClass.Of(id) & C.Build) != 0) return true;
+        return id == Blocks.Cobblestone && (_world.GetBlock(p.Down()) == Blocks.Cobblestone || _world.GetBlock(p.Up()) == Blocks.Cobblestone);
+    }
+
+    /// <summary>
+    /// A cell where flowing lava meets water and hardens: it holds (or, once dug, held) cobblestone/stone and has lava
+    /// flowing in from a side/above and water touching a side/above. <paramref name="sticky"/> keeps a known cell while
+    /// it is momentarily air/lava after a dig.
+    /// </summary>
+    private bool IsGenCell(BlockPos p, int id, bool sticky)
+    {
+        if ((uint)p.Y >= WorldState.Height) return false;
+        bool output = (BlockClass.Of(id) & C.GenOutput) != 0;
+        if (!output && !(sticky && (id == 0 || Blocks.IsLava(id) || Blocks.IsWater(id)))) return false;
+        bool lava = false, water = false;
+        foreach (var o in FlowIn)
+        {
+            int n = _world.GetBlock(p.X + o.X, p.Y + o.Y, p.Z + o.Z);
+            lava |= Blocks.IsLava(n);
+            water |= Blocks.IsWater(n);
+            if (lava && water) return true;
+        }
+        return false;
+    }
+
+    /// <summary>Generator confirmation: a gen-ish cell dug to air that refills with cobble/stone within the window.</summary>
+    private void TrackRegen(BlockChange ch, DateTimeOffset now)
+    {
+        var p = ch.Pos;
+        bool oldOut = (BlockClass.Of(ch.OldId) & C.GenOutput) != 0, newOut = (BlockClass.Of(ch.NewId) & C.GenOutput) != 0;
+        if (oldOut && !newOut && (ch.NewId == 0 || Blocks.IsLava(ch.NewId)))
+        {
+            if (_gens.Contains(p) || IsGenCell(p, ch.OldId, true)) _dug[p] = now;
+        }
+        else if (newOut && _dug.TryGetValue(p, out var t))
+        {
+            _dug.Remove(p);
+            if (now - t <= TimeSpan.FromSeconds(_o.GeneratorRegenSeconds))
+            {
+                _regens[p] = _regens.GetValueOrDefault(p) + 1;
+                _gens.Add(p);
+                _gens.Touch(p);
+            }
+        }
+        if (_dug.Count > 256)
+            foreach (var k in _dug.Where(kv => now - kv.Value > TimeSpan.FromMinutes(1)).Select(kv => kv.Key).ToList()) _dug.Remove(k);
+    }
+
+    /// <summary>True when a block change at <paramref name="p"/> is a generator refilling (not a player placing).</summary>
+    internal bool IsGeneratorCell(BlockPos p) { lock (_pumpLock) return _gens.Contains(p); }
+}
