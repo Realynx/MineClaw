@@ -374,7 +374,8 @@ public sealed class CombatEngine
         var me = phys.Position;
         if (_fight?.Spar is { } s && _w.Entities.Get(s.OpponentId) is { } opp && opp.Position.DistanceTo(me) <= 5
             && _lastSwing.TryGetValue(opp.Id, out var sw) && _tick - sw <= 10) return opp;
-        var melee = _w.Entities.Nearest(me, 4, e => e.Kind == EntityKind.Mob && CombatRules.Profile(e.TypeId).MeleeDamage > 0);
+        var melee = _w.Entities.Nearest(me, 4, e => e.Kind == EntityKind.Mob
+                                                    && (CombatRules.MeleeDamageOf(e) > 0 || e.TypeId == MobTypes.Silverfish));
         if (melee is not null) return melee;
         var swinger = _w.Entities.Nearest(me, 4.5, e => e.Kind == EntityKind.Player && _lastSwing.TryGetValue(e.Id, out var t) && _tick - t <= 10);
         if (swinger is not null) return swinger;
@@ -718,13 +719,15 @@ public sealed class CombatEngine
         double reach = CombatRules.ReachTo(phys.EyePosition, CombatRules.Hitbox(opp));
         Vec3d? moveTo = null;
         // Positioning: my knockback (away from them) and theirs (away from me) should both point into the zone.
-        bool myBackUnsafe = CombatGeometry.EdgeBehind(_w, me, opp.Position, Options.KnockbackDepth);
+        // A sprinting player's hit throws ~4x further (b1.8 sprint knockback, CombatRules.SprintKnockbackHorizontal).
+        double myDepth = opp.IsSprinting ? Math.Max(Options.KnockbackDepth, Options.SprintKnockbackDepth) : Options.KnockbackDepth;
+        bool myBackUnsafe = CombatGeometry.EdgeBehind(_w, me, opp.Position, myDepth);
         bool theirBackUnsafe = CombatGeometry.EdgeBehind(_w, opp.Position, me, Options.KnockbackDepth);
         if (myBackUnsafe || theirBackUnsafe || (s.Stance is not null && _tick <= s.StanceUntil))
         {
-            if (s.Stance is null || _tick > s.StanceUntil || CombatGeometry.EdgeBehind(_w, s.Stance.Value.BottomCenter, opp.Position, Options.KnockbackDepth))
+            if (s.Stance is null || _tick > s.StanceUntil || CombatGeometry.EdgeBehind(_w, s.Stance.Value.BottomCenter, opp.Position, myDepth))
             {
-                s.Stance = s.Zone.Stance(_w, me, opp.Position, Options.KnockbackDepth);
+                s.Stance = s.Zone.Stance(_w, me, opp.Position, myDepth);
                 s.StanceUntil = _tick + 20;
                 Log("reposition", phys, opp.Position, new() { ["to"] = s.Stance?.ToString() ?? "none", ["why"] = myBackUnsafe ? "edge behind me" : "edge behind them" });
             }

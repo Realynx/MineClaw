@@ -51,9 +51,12 @@ public sealed record CombatOptions
     public int DisengageHealth { get; init; } = 6;
     /// <summary>Eat after a fight when food is at or below this (b1.8 regenerates only at food ≥ 18).</summary>
     public int EatBelowFood { get; init; } = 17;
-    /// <summary>How far behind the bot (away from the threat) knockback is assumed to carry it. Vanilla knockback
-    /// sets ~0.4 b/t horizontal + 0.4 up; with air drag 0.91 that is ≈2.7 blocks.</summary>
+    /// <summary>How far behind the bot (away from the threat) knockback is assumed to carry it. b1.8 knockback is
+    /// 0.4 b/t horizontal + 0.4 up (EntityLiving.java:449), which slides ≈ 2.1 blocks (<see cref="CombatRules.KnockbackTravel"/>).</summary>
     public double KnockbackDepth { get; init; } = 3.5;
+    /// <summary>Same for a hit from a sprinting player: b1.8 adds 1.0 b/t horizontal + 0.1 up (EntityHuman.java:631-636),
+    /// ≈ 7.9 blocks of travel. Used in spars while the opponent's sprint flag (metadata 0, bit 3) is set.</summary>
+    public double SprintKnockbackDepth { get; init; } = 9;
     /// <summary>Give up a fight whose target hasn't been hit or come closer for this long.</summary>
     public int StaleFightTicks { get; init; } = 400;
     /// <summary>Item ids never wielded (besides the client's reserved items).</summary>

@@ -199,7 +199,7 @@ public static class Blocks
         Add(103, "melon_block", "Melon", 1f, 1);
         Add(104, "pumpkin_stem", "Pumpkin Stem", 0f, 0, f: T);
         Add(105, "melon_stem", "Melon Stem", 0f, 0, f: T);
-        Add(106, "vine", "Vines", 0.2f, 0, f: T | F.Climb);
+        Add(106, "vine", "Vines", 0.2f, 0, f: T);  // not climbable in b1.8 (EntityLiving.p() = ladder only; vines climb since 1.2)
         Add(107, "fence_gate", "Fence Gate", 2f, 1.5, f: T | U);  // closed; open gates have no collision
         Add(108, "brick_stairs", "Brick Stairs", 2f, 1, P, 0, T);
         Add(109, "stone_brick_stairs", "Stone Brick Stairs", 1.5f, 1, P, 0, T);

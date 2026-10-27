@@ -29,8 +29,9 @@ public static class HungerRules
     /// <summary>Difficulty 1 (easy) starvation stops at this health.</summary>
     public const int EasyStarveFloor = 10;
 
-    /// <summary>Health starvation stops at for a difficulty (0 = never damaged, 3 = kills).</summary>
-    public static int StarvationFloor(int difficulty) => difficulty switch { <= 0 => 20, 1 => EasyStarveFloor, 2 => 1, _ => 0 };
+    /// <summary>Health starvation stops at for a difficulty (FoodMetaData.java:44: damage while health &gt; 10, or
+    /// difficulty ≥ 3, or health &gt; 1 on difficulty ≥ 2). Peaceful counts like easy (food never drops there, though).</summary>
+    public static int StarvationFloor(int difficulty) => difficulty switch { <= 1 => EasyStarveFloor, 2 => 1, _ => 0 };
 
     /// <summary>Saturation gained by eating (before the cap at the new food level).</summary>
     public static float SaturationGain(int hunger, float modifier) => hunger * modifier * 2f;

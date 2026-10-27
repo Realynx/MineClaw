@@ -54,6 +54,8 @@ public sealed record Entity(
     /// <summary>Entity flags from metadata index 0 (bit 0 on fire, bit 1 crouched, bit 2 riding, bit 3 sprinting, bit 4 eating).</summary>
     public int Flags => Metadata is not null && Metadata.TryGetValue(0, out var v) && v is IConvertible c ? c.ToInt32(null) : 0;
     public bool IsCrouched => (Flags & 2) != 0;
+    /// <summary>Sprint flag (Entity.at() = data bit 3, Entity.java:1001-1007). A sprinting player's hit adds 1.0 b/t knockback.</summary>
+    public bool IsSprinting => (Flags & 8) != 0;
 
     public bool IsHostileMob => Kind == EntityKind.Mob && MobTypes.IsHostile(TypeId);
 

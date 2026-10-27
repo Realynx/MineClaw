@@ -1,5 +1,8 @@
 namespace MineClaw.World;
 
+/// <summary>Result of <see cref="Safety.WaterLanding"/>.</summary>
+public readonly record struct WaterLandingInfo(bool BreaksFall, double FallToFloor);
+
 /// <summary>Void / hazard safety checks shared by the world queries, pathfinder and path follower.</summary>
 public static class Safety
 {
@@ -70,11 +73,56 @@ public static class Safety
             int id = w.GetBlock(x, yy, z);
             if (id == 0) continue;
             if (BlockShapes.IsLava(id)) return true;
-            if (BlockShapes.IsWater(id)) return IsOverVoid(w, x, yy, z);
+            if (BlockShapes.IsWater(id))
+            {
+                if (IsOverVoid(w, x, yy, z)) return true;
+                var landing = WaterLanding(w, x, z, feetY, yy);
+                return !landing.BreaksFall && landing.FallToFloor > maxFall + 1e-6;
+            }
             if (BlockShapes.HasCollision(w, x, yy, z))
                 return feetY - (yy + BlockShapes.CollisionTop(w, x, yy, z)) > maxFall + 1e-6;
         }
         return true;
+    }
+
+    /// <summary>Feet must be below this offset above the top water cell for Entity.f_() to see the water: the check box is
+    /// the hitbox shrunk by 0.4 vertically (and 0.001), so feet + 0.401 &lt; waterTop + 1. mc-dev Entity.java:563-565.</summary>
+    public const double WaterWindowAboveTop = 0.599;
+
+    /// <summary>
+    /// Whether a fall from feet height <paramref name="feetY"/> into the water column whose top water cell is
+    /// <paramref name="waterTopY"/> is guaranteed to cancel fall damage. In b1.8 the fall distance is only reset when
+    /// the per-tick water check (Entity.aa → f_(), run before the move; server: NetServerHandler.java:165 before the
+    /// position is applied) samples the feet inside the window [floor, waterTop + 0.6). A tick step longer than that
+    /// window can skip it and land on the floor with the whole fall (EntityLiving.a(float): ceil(fall − 3)). 1-deep water
+    /// (window 0.6) is no better than dry ground (a 3.35-block fall already steps 0.65); 2-deep (1.6) holds up to ≈ 23 blocks.
+    /// <see cref="WaterLandingInfo.FallToFloor"/> is the fall onto the floor under the water (∞ over the void).
+    /// </summary>
+    public static WaterLandingInfo WaterLanding(IBlockAccess w, int x, int z, double feetY, int waterTopY)
+    {
+        int bottom = waterTopY;
+        while (bottom - 1 >= 0 && BlockShapes.IsWater(w.GetBlock(x, bottom - 1, z))) bottom--;
+        int below = SupportBelow(w, x, bottom - 1, z);
+        if (below < 0) return new WaterLandingInfo(false, double.PositiveInfinity);
+        double floorTop = below + BlockShapes.CollisionTop(w, x, below, z);
+        double fall = feetY - floorTop;
+        if (fall <= 3 + 1e-9) return new WaterLandingInfo(true, fall); // no fall damage either way
+        double window = waterTopY + WaterWindowAboveTop - floorTop;
+        return new WaterLandingInfo(MaxFallStep(fall) <= window - 1e-6, fall);
+    }
+
+    /// <summary>Largest per-tick vertical step while falling <paramref name="fall"/> blocks from rest (gravity 0.08, drag
+    /// 0.98, move before gravity): an upper bound for the step that crosses any window ending at the floor.</summary>
+    public static double MaxFallStep(double fall)
+    {
+        double v = 0, d = 0;
+        for (int i = 0; i < 1000; i++)
+        {
+            v = (v - 0.08) * 0.98;
+            d -= v;
+            if (d >= fall) return -v;
+        }
+        return -v;
     }
 
     /// <summary>

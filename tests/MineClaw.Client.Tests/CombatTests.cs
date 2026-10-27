@@ -78,7 +78,7 @@ public class CombatRulesTests
         Assert.Equal(5, CombatRules.WeaponDamage(Items.DiamondPickaxe));
         Assert.Equal(2, CombatRules.WeaponDamage(Items.StoneShovel));
         Assert.Equal(1, CombatRules.WeaponDamage(Items.DiamondHoe));
-        Assert.Equal(16, CombatRules.MaxCritDamage(10)); // + rand(10/2 + 2) → at most +6
+        Assert.Equal(16, CombatRules.MaxCritDamage(10)); // b1.8: 10 * 3 / 2 + 1, deterministic
         Assert.Equal(4, CombatRules.BlockedDamage(7));   // (1 + 7) >> 1
     }
 

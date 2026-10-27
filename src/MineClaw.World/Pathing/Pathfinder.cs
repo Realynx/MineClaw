@@ -331,6 +331,20 @@ public sealed partial class Pathfinder
             double fall = here.Floor - c.Floor;
             if (fall <= 0.5) return false; // that's a walk, not a drop
             bool soft = c.Water;
+            if (soft)
+            {
+                // Water only cancels the fall if a tick samples the feet inside it (Safety.WaterLanding): shallow water
+                // under a long drop is a hard landing on its floor.
+                int top = ty;
+                while (top + 1 < WorldState.Height && BlockShapes.IsWater(_w.GetBlock(tx, top + 1, tz))) top++;
+                var landing = Safety.WaterLanding(_w, tx, tz, here.Floor, top);
+                if (!landing.BreaksFall)
+                {
+                    if (landing.FallToFloor > _o.MaxDrop + 1e-6) return false;
+                    soft = false;
+                    fall = landing.FallToFloor;
+                }
+            }
             if (!soft && fall > _o.MaxDrop + 1e-6) return false;
             if (soft && (!_o.AllowSwim || fall > _o.MaxWaterDrop + 1e-6)) return false;
             // Overshoot guard: the cell beyond the landing spot must not be a deadly drop.
@@ -548,7 +562,12 @@ public sealed partial class Pathfinder
         for (int yy = y - 2; yy >= 0; yy--)
         {
             int id = _w.GetBlock(x, yy, z);
-            if (BlockShapes.IsWater(id)) return Safety.IsOverVoid(_w, x, yy, z);
+            if (BlockShapes.IsWater(id))
+            {
+                if (Safety.IsOverVoid(_w, x, yy, z)) return true;
+                var landing = Safety.WaterLanding(_w, x, z, y, yy);
+                return !landing.BreaksFall && landing.FallToFloor > _o.MaxDrop + 1e-6;
+            }
             if (Safety.IsHazard(_w, id) && BlockShapes.IsLava(id)) return true;
             if (HasCollisionAt(x, yy, z)) return y - (yy + 1) > _o.MaxDrop;
         }

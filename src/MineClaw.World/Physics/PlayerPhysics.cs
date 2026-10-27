@@ -366,7 +366,8 @@ public static class PlayerPhysics
             int l1 = FlowDecay(w, nx, y, nz, water);
             if (l1 < 0)
             {
-                if (!BlockShapes.HasCollision(w, nx, y, nz))
+                // BlockFluids.java:106: the neighbour's material must not block movement (signs and plates do; ladders don't).
+                if (!BlockShapes.MaterialBlocksMovement(w.GetBlock(nx, y, nz)))
                 {
                     l1 = FlowDecay(w, nx, y - 1, nz, water);
                     if (l1 >= 0)
@@ -391,12 +392,14 @@ public static class PlayerPhysics
         return vec.Normalized();
     }
 
+    /// <summary>BlockFluids.b(IBlockAccess, x, y, z, face) (BlockFluids.java:60-64 → Block.java:240): not the same
+    /// liquid, not ice, and a buildable material (slabs, fences, glass, web... count; plants, torches, snow layers don't).</summary>
     private static bool SolidForFlow(IBlockAccess w, int x, int y, int z, bool water)
     {
         int id = w.GetBlock(x, y, z);
         if (water ? BlockShapes.IsWater(id) : BlockShapes.IsLava(id)) return false;
         if (id == BlockShapes.Ice) return false;
-        return BlockShapes.IsFullCube(w, x, y, z);
+        return BlockShapes.MaterialIsBuildable(id);
     }
 
     // MathHelper.sin/cos use a 65536-entry table; replicate for bit-closeness with the vanilla client.

@@ -60,8 +60,8 @@ public sealed partial class MinecraftClient
                 .OrderBy(e => e.Position.DistanceSquaredTo(me)).FirstOrDefault();
             if (drop is null) break;
             int id = drop.Id;
-            bool inRange = Math.Abs(drop.Position.X - me.X) <= 1.2 && Math.Abs(drop.Position.Z - me.Z) <= 1.2
-                           && Math.Abs(drop.Position.Y - me.Y) <= 1.2;
+            // mc-dev pickup box (ItemEntityRules): an item one block below the feet is not in range.
+            bool inRange = ItemEntityRules.InPickupRange(me, drop.Position);
             if (!inRange)
             {
                 if (!HasSafePickupSpot(drop.Position))
@@ -77,7 +77,9 @@ public sealed partial class MinecraftClient
                     .ConfigureAwait(false);
                 if (!g.Ok && World.Entities.Get(id) is not null) { skip.Add(id); continue; }
             }
-            if (await WaitUntilAsync(() => World.Entities.Get(id) is null, TimeSpan.FromSeconds(1.5), ct).ConfigureAwait(false)) picked++;
+            // A freshly thrown item (player hand-off) has a 40-tick pickup delay: wait it out on top of the usual 1.5 s.
+            var wait = TimeSpan.FromSeconds(1.5) + ItemEntityRules.RemainingPickupDelay(DateTime.UtcNow - drop.SpawnedAt);
+            if (await WaitUntilAsync(() => World.Entities.Get(id) is null, wait, ct).ConfigureAwait(false)) picked++;
             else skip.Add(id);
         }
         return new CollectResult(picked, Math.Max(0, TotalItems() - startCount), lost, lostItems);

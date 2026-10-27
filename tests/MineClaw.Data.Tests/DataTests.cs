@@ -57,6 +57,8 @@ public class BlockTests
         Assert.Equal(0.5, Blocks.Get(Blocks.Slab).CollisionHeight);
         Assert.Equal(1.5, Blocks.Get(Blocks.Fence).CollisionHeight);
         Assert.True(Blocks.Get(Blocks.Ladder).Climbable);
+        Assert.False(Blocks.Get(Blocks.Vine).Climbable);   // mc-dev EntityLiving.p(): ladder only in b1.8
+        Assert.Equal(1.0, Blocks.Get(Blocks.Farmland).CollisionHeight); // BlockSoil.e(): full-block collision
         Assert.True(Blocks.Get(Blocks.Lava).Hazard);
         Assert.True(Blocks.Get(Blocks.Chest).Interactable);
         Assert.False(Blocks.Get(Blocks.TallGrass).Solid);
@@ -386,5 +388,44 @@ public class DropTests
         Assert.Equal(Items.String, Drops.For(Blocks.Web, 0, Items.WoodenSword).Single().ItemId);
         Assert.Equal(new Drop(Items.MelonSlice, 0, 3, 7), Drops.For(Blocks.Melon).Single());
         Assert.Contains(Blocks.Stone, Drops.SourcesOf(Blocks.Cobblestone));
+    }
+}
+
+/// <summary>Spot checks of the jar-derived tables against mc-dev 218a2a71 (docs/mechanics-audit.md, section 5).</summary>
+public class McDevSpotChecks
+{
+    [Theory]
+    [InlineData(Blocks.Stone, 1.5f)] [InlineData(Blocks.Cobblestone, 2f)] [InlineData(Blocks.Dirt, 0.5f)]
+    [InlineData(Blocks.Grass, 0.6f)] [InlineData(Blocks.Sand, 0.5f)] [InlineData(Blocks.Gravel, 0.6f)]
+    [InlineData(Blocks.Log, 2f)] [InlineData(Blocks.Planks, 2f)] [InlineData(Blocks.Leaves, 0.2f)]
+    [InlineData(Blocks.IronOre, 3f)] [InlineData(Blocks.Obsidian, 10f)] [InlineData(Blocks.Glass, 0.3f)]
+    [InlineData(Blocks.Chest, 2.5f)] [InlineData(Blocks.Furnace, 3.5f)] [InlineData(Blocks.Ice, 0.5f)]
+    [InlineData(Blocks.Web, 4f)] [InlineData(Blocks.IronBars, 5f)] [InlineData(Blocks.StoneBrickStairs, 1.5f)]
+    public void Hardness_matches_Block_static_init(int id, float hardness) => Assert.Equal(hardness, Blocks.Get(id).Hardness);
+
+    [Fact]
+    public void Tool_lists_and_harvest_rules_match_mcdev()
+    {
+        // ItemPickaxe.bt: no obsidian, furnace, bricks, stone bricks or redstone ore in the speed list.
+        Assert.Equal(1f, Tools.StrVsBlock(Blocks.Obsidian, Items.DiamondPickaxe));
+        Assert.Equal(1f, Tools.StrVsBlock(Blocks.RedstoneOre, Items.IronPickaxe));
+        Assert.Equal(8f, Tools.StrVsBlock(Blocks.Ice, Items.DiamondPickaxe));
+        Assert.Equal(12f, Tools.StrVsBlock(Blocks.Stone, Items.GoldenPickaxe));
+        // ItemSpade only *needs* to harvest snow; ItemShears 15x on web/leaves, 5x on wool.
+        Assert.True(Tools.CanHarvest(Blocks.Dirt, -1));
+        Assert.False(Tools.CanHarvest(Blocks.SnowBlock, -1));
+        Assert.Equal(15f, Tools.StrVsBlock(Blocks.Leaves, Items.Shears));
+        // Block.getDamage: not harvestable → 1 / hardness / 100, no water/air penalty in that branch.
+        Assert.Equal(1f / 1.5f / 100f, Tools.DigProgressPerTick(Blocks.Stone, -1, onGround: false, inWater: true));
+        Assert.Equal(1f / 0.5f / 30f / 25f, Tools.DigProgressPerTick(Blocks.Dirt, -1, onGround: false, inWater: true), 6);
+    }
+
+    [Fact]
+    public void Food_values_match_ItemFood()
+    {
+        Assert.Equal((8, 0.6f), Items.Food(Items.MushroomStew)!.Value);   // ItemSoup → ItemFood(i, j, false) = 0.6
+        Assert.Equal((4, 0.1f), Items.Food(Items.RottenFlesh)!.Value);
+        Assert.Equal(0.8f, Items.FoodPoisonChance(Items.RottenFlesh));
+        Assert.Equal(0.3f, Items.FoodPoisonChance(Items.RawChicken));
     }
 }
