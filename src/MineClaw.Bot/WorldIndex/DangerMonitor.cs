@@ -87,6 +87,11 @@ public sealed class DangerMonitor
         public readonly Hysteresis Fall = new(), Knock = new(), Hurt = new();
         public MobSession? Fight;
         public bool Vanished;
+        /// <summary>Held void-fall wake (text, since).</summary>
+        public (string Text, DateTimeOffset At, string Edge)? PendingFall;
+        public DateTimeOffset FallWokeAt;
+        public string LastEdge = "";
+        public PlaceRef? LastIsland;
         public DateTimeOffset VanishedAt;
         public double VanishY;
     }
@@ -209,9 +214,17 @@ public sealed class DangerMonitor
             var c = Cell(p.Pos);
             if (IslandBottom?.Invoke(c.X, c.Z) is { } bottom && p.Pos.Y < bottom - 2) level = DangerLevel.Critical;
         }
-        // One fall, one wake: entering danger alarms; going critical mid-fall (below the island) doesn't re-alarm.
-        if (t.Fall.Update(level, now, TimeSpan.FromMilliseconds(_o.FallEnterMs), exit) is { } fx && fx.From < DangerLevel.Danger && fx.To >= DangerLevel.Danger)
-            Post(p.Name, "fall", fx.To, $"{p.Name} is falling into the void{Where(p.Pos)}", EventPriority.High);
+        if (level == DangerLevel.None && !OverVoid(p.Pos) && PlaceAt?.Invoke(Cell(p.Pos)) is { Kind: IndexKinds.Island } isl) t.LastIsland = isl;
+        // One fall, one wake: entering danger starts a held alarm (a death inside the window merges into it); going
+        // critical mid-fall doesn't re-alarm.
+        if (t.Fall.Update(level, now, TimeSpan.FromMilliseconds(_o.FallEnterMs), exit) is { } fx && fx.From < DangerLevel.Danger && fx.To >= DangerLevel.Danger
+            && t.PendingFall == null)
+        {
+            var edge = EdgeOf(t.LastIsland, p.Pos);
+            t.PendingFall = ($"{p.Name} is falling into the void{(edge.Length > 0 ? $" ({edge})" : Where(p.Pos))}", now, edge);
+            t.LastEdge = edge;
+        }
+        FlushFalls(now);
 
         // Knockback toward an edge right after a hit (never while they're deliberately working the edge).
         var kl = DangerLevel.None;
@@ -238,6 +251,29 @@ public sealed class DangerMonitor
         }
         t.Hurt.Update(DangerLevel.None, now, TimeSpan.Zero, exit);
         CheckDeaths(now);
+    }
+
+    /// <summary>"east edge of main island" from where the player left the island's box.</summary>
+    private static string EdgeOf(PlaceRef? island, Vec3d p)
+    {
+        if (island == null) return "";
+        var o = new (string Name, double Over)[]
+        {
+            ("east", p.X - (island.Max.X + 1)), ("west", island.Min.X - p.X), ("south", p.Z - (island.Max.Z + 1)), ("north", island.Min.Z - p.Z),
+        }.MaxBy(t => t.Over);
+        return o.Over > -0.5 ? $"{o.Name} edge" : "";
+    }
+
+    /// <summary>Emits held void-fall wakes whose window passed without a death.</summary>
+    private void FlushFalls(DateTimeOffset now)
+    {
+        foreach (var (name, t) in _tracks)
+        {
+            if (t.PendingFall is not { } f || now - f.At < TimeSpan.FromSeconds(_o.VoidFallCoalesceSeconds)) continue;
+            t.PendingFall = null;
+            t.FallWokeAt = now;
+            Post(name, "fall", DangerLevel.Danger, f.Text, EventPriority.High);
+        }
     }
 
     /// <summary>0x12 animation 2 / 0x26 status 2 for a player.</summary>
@@ -368,12 +404,24 @@ public sealed class DangerMonitor
             var cause = d.Cause ?? "died";
             var place = d.Pos is { } p ? PlaceAt?.Invoke(p) : null;
             string where = place == null ? "" : place.Kind == IndexKinds.Island ? (cause.Contains("void") ? " off the " : " on ") + place.Name : ActivityText.At(place, d.Pos);
+            var track = _tracks.GetValueOrDefault(d.Player);
+            if (track?.PendingFall is { Edge.Length: > 0 } hf) where = $" ({hf.Edge})";
+            else if (track?.LastEdge is { Length: > 0 } le && cause.Contains("void")) where = $" ({le})";
             Activity?.Invoke(new ActivityEvent(d.Player, ActivityKinds.Died, now, conf) { Detail = cause + where, Pos = d.Pos });
             var text = $"{(conf < 0.7 ? "probably: " : "")}{d.Player} {cause}{where}";
-            // One incident, one wake: a death right after a fall alarm rides along as context.
-            bool afterFall = _gate.LastWake(d.Player, "fall") is { } fw && now - fw <= TimeSpan.FromSeconds(_o.DeathAfterFallSeconds);
-            if (!_w.PlayerDeath || afterFall)
+            if (track?.PendingFall is { } held)
+            {
+                // The fall alarm was still held: one wake carrying both facts.
+                track.PendingFall = null;
+                track.FallWokeAt = now;
+                text = $"{(conf < 0.7 ? "probably: " : "")}{d.Player} fell into the void and died{where}";
+                if (_gate.TryWake(d.Player, "death", DangerLevel.Critical, TimeSpan.FromSeconds(_o.CooldownSeconds), _w.MaxWakesPer5Min))
+                    Wake?.Invoke(GameEvent.Activity(text, d.Player, EventPriority.High) with { At = now });
+            }
+            else if (!_w.PlayerDeath)
                 Wake?.Invoke(GameEvent.Activity(text, d.Player, EventPriority.Background) with { At = now });
+            else if (track != null && track.FallWokeAt != default && now - track.FallWokeAt <= TimeSpan.FromSeconds(_o.FollowUpSeconds))
+                Wake?.Invoke(GameEvent.Activity(text, d.Player, EventPriority.Normal) with { At = now }); // follow-up to the fall alarm
             else if (_gate.TryWake(d.Player, "death", DangerLevel.Critical, TimeSpan.FromSeconds(_o.CooldownSeconds), _w.MaxWakesPer5Min))
                 Wake?.Invoke(GameEvent.Activity(text, d.Player, EventPriority.High) with { At = now });
             if (_tracks.TryGetValue(d.Player, out var t)) { t.Fall.Reset(); t.Fight = null; }
@@ -381,5 +429,10 @@ public sealed class DangerMonitor
     }
 
     /// <summary>Re-checks pending deaths whose corroboration window ran out (call each pass).</summary>
-    public void Tick() => CheckDeaths(_time.GetUtcNow());
+    public void Tick()
+    {
+        var now = _time.GetUtcNow();
+        CheckDeaths(now);
+        FlushFalls(now);
+    }
 }

@@ -360,3 +360,72 @@ public class ActivityDigestTests(ITestOutputHelper output)
         Assert.Equal(EventKind.Activity, a.Posted[0].Kind);
     }
 }
+
+public class ActivityToolAndRecorderTests(ITestOutputHelper output)
+{
+    [Fact]
+    public void Activity_tool_answers_bounded_and_is_registered_for_brain_and_ask_memory()
+    {
+        using var a = new ActivityFixture();
+        var dig = a.F.Generator(-3, 64, 2);
+        a.Step();
+        int robin = a.Player("robin", 0.5, 64, 3.5);
+        a.Step();
+        for (int i = 0; i < 4; i++)
+        {
+            a.Look(robin, dig);
+            a.Events.Swing(robin);
+            a.World.SetBlock(dig.X, dig.Y, dig.Z, 0, 0);
+            a.Step(0.5);
+            a.World.SetBlock(dig.X, dig.Y, dig.Z, Blocks.Cobblestone, 0);
+            a.Step(4);
+        }
+        a.Step(400);
+        var now = a.F.Clock.GetUtcNow();
+        var text = ActivityTools.Answer(a.Log, "robin", "today", null, now);
+        output.WriteLine(text);
+        Assert.Contains("robin mined 4 cobblestone at the cobble gen", text);
+        Assert.True(text.Length <= ActivityTools.MaxChars);
+        Assert.Contains("robin mined", ActivityTools.Answer(a.Log, "robin", "2h", null, now));
+        Assert.DoesNotContain("robin mined", ActivityTools.Answer(a.Log, "robin", "1m", null, now));
+        Assert.Contains("robin", ActivityTools.Answer(a.Log, null, null, "cobblestone", now));
+
+        var (h, _) = TestBot.Create();
+        Assert.True(h.Runtime.Tools.TryGet(ActivityTools.ToolName, out _));
+        Assert.Contains(ActivityTools.ToolName, h.Runtime.Options.AskMemory.Tools);
+        h.Dispose();
+    }
+
+    [Fact]
+    public async Task Demonstration_recorder_uses_tracker_attribution()
+    {
+        var c = new FakeGameClient();
+        c.Floor(64, 6);
+        var clock = new ManualClock(DateTimeOffset.UtcNow);
+        var tracker = new PlayerActivityTracker(c.World, new GameClientPlayerEvents(c), null, null, new ActivityOptions(), c.Username, time: clock).Attach();
+        var recorder = new Demo.DemonstrationRecorder(c, time: clock) { Activity = tracker, PollInterval = TimeSpan.FromMilliseconds(20) };
+        c.World.Entities.SpawnPlayer(201, "kiwi", new Vec3d(0.5, 65, 0.5), 0, 0);
+        c.World.Entities.SpawnPlayer(202, "robin", new Vec3d(2.5, 65, 2.5), 0, 0);
+        var mine = new BlockPos(1, 64, 0);
+        var theirs = new BlockPos(2, 64, 1);
+        void Face(int id, BlockPos p)
+        {
+            var e = c.World.Entities.Get(id)!;
+            var (yaw, pitch) = PlayerPhysics.YawPitchTo(e.Position + new Vec3d(0, PlayerPhysics.EyeHeight, 0), p.Center);
+            c.World.Entities.Look(id, yaw, pitch);
+        }
+        var session = await recorder.StartAsync("kiwi", null, CancellationToken.None);
+        Face(201, mine);
+        Face(202, theirs);
+        c.RaiseSwing(201);
+        c.World.SetBlock(mine.X, mine.Y, mine.Z, 0, 0);   // kiwi digs
+        c.RaiseSwing(202);
+        c.World.SetBlock(theirs.X, theirs.Y, theirs.Z, 0, 0); // robin digs right next to kiwi, 0.1 s later
+        tracker.Pump();
+        var steps = await session.StopAsync(CancellationToken.None);
+        foreach (var s in steps) output.WriteLine($"{s.Kind} {s.X},{s.Y},{s.Z} {s.Block} {s.Detail}");
+        Assert.Contains(steps, s => s.Kind == MineClaw.Agent.Human.DemoActionKind.BlockBroken && s.X == mine.X && s.Z == mine.Z && s.Detail == null);
+        Assert.Contains(steps, s => s.Kind == MineClaw.Agent.Human.DemoActionKind.BlockBroken && s.X == theirs.X && s.Z == theirs.Z && s.Detail == "vanished");
+        tracker.Dispose();
+    }
+}

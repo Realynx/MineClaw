@@ -1,6 +1,7 @@
 using MineClaw.Agent.Human;
 using MineClaw.Bot.Game;
 using MineClaw.Bot.GameTools;
+using MineClaw.Bot.WorldIndex;
 using MineClaw.Data;
 using MineClaw.World;
 using MPos = MineClaw.Agent.Memory.BlockPos;
@@ -21,10 +22,14 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
     /// <summary>Position poll interval (tests shorten it).</summary>
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromMilliseconds(250);
 
+    /// <summary>When set, solid block place/break steps use the tracker's attribution (facing + swing + bystanders +
+    /// physics filtering) instead of the recorder's own swing heuristic, and its sign/craft events become steps.</summary>
+    public PlayerActivityTracker? Activity { get; set; }
+
     public Task<IDemonstrationSession> StartAsync(string player, (MPos Min, MPos Max)? area, CancellationToken ct)
     {
         (BlockPos, BlockPos)? a = area is { } r ? (new BlockPos(r.Min.X, r.Min.Y, r.Min.Z), new BlockPos(r.Max.X, r.Max.Y, r.Max.Z)) : null;
-        var s = new Session(client, player, a, _options.DemoRadius, _time, PollInterval);
+        var s = new Session(client, player, a, _options.DemoRadius, _time, PollInterval, Activity);
         s.Start();
         return Task.FromResult<IDemonstrationSession>(s);
     }
@@ -67,10 +72,19 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
         private string? _lastFacing;
         private (DateTimeOffset At, BlockPos? Target, int Held) _lastSwing = (DateTimeOffset.MinValue, null, 0);
         private bool _stopped;
+        private readonly PlayerActivityTracker? _activity;
+        private readonly List<ActivityEvent> _attributed = new();
 
-        public Session(IGameClient c, string player, (BlockPos, BlockPos)? area, double radius, TimeProvider time, TimeSpan poll)
+        public Session(IGameClient c, string player, (BlockPos, BlockPos)? area, double radius, TimeProvider time, TimeSpan poll,
+            PlayerActivityTracker? activity = null)
         {
-            _c = c; _player = player; _area = area; _radius = radius; _time = time; _poll = poll;
+            _c = c; _player = player; _area = area; _radius = radius; _time = time; _poll = poll; _activity = activity;
+        }
+
+        private void OnActivity(ActivityEvent e)
+        {
+            if (!e.Player.Equals(_player, StringComparison.OrdinalIgnoreCase)) return;
+            lock (_lock) if (!_stopped) _attributed.Add(e);
         }
 
         private DateTimeOffset Now => _time.GetUtcNow();
@@ -80,6 +94,7 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
             _c.World.BlockChanged += OnBlockChanged;
             _c.EntityAnimated += OnAnimated;
             _c.BlockAction += OnBlockAction;
+            if (_activity != null) _activity.EventRecorded += OnActivity;
             Sample();
             _pollTask = Task.Run(async () =>
             {
@@ -198,10 +213,13 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
 
         public async Task<IReadOnlyList<DemoAction>> StopAsync(CancellationToken ct)
         {
+            _activity?.Pump(); // let the tracker attribute the last changes first
             Detach();
             await _pollTask.ConfigureAwait(false);
             List<Raw> raw;
-            lock (_lock) raw = _raw.ToList();
+            List<ActivityEvent> attributed;
+            lock (_lock) { raw = _raw.ToList(); attributed = _attributed.ToList(); }
+            if (_activity != null) raw = Reattribute(raw, attributed, _activity.Options.MediumConfidence);
             return PostProcess(raw);
         }
 
@@ -215,7 +233,43 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
             _c.World.BlockChanged -= OnBlockChanged;
             _c.EntityAnimated -= OnAnimated;
             _c.BlockAction -= OnBlockAction;
+            if (_activity != null) _activity.EventRecorded -= OnActivity;
             _cts.Cancel();
+        }
+
+        /// <summary>
+        /// Tracker attribution decides whether a solid place/break was the teacher's ("" detail) or the world's
+        /// ("appeared"/"vanished"); liquids keep the recorder's own pour/scoop rule. Sign and craft events become steps.
+        /// </summary>
+        private static List<Raw> Reattribute(List<Raw> raw, List<ActivityEvent> attributed, double minConfidence)
+        {
+            static bool Solid(DemoAction a) => a.Detail is null or "appeared" or "vanished";
+            var mine = attributed.Where(e => e.Confidence >= minConfidence && e.Pos != null).ToList();
+            var list = new List<Raw>(raw.Count);
+            foreach (var r in raw)
+            {
+                var a = r.A;
+                if (a.Kind is DemoActionKind.BlockPlaced or DemoActionKind.BlockBroken && Solid(a))
+                {
+                    bool placed = a.Kind == DemoActionKind.BlockPlaced;
+                    bool theirs = mine.Any(e => e.Pos is { } p && p.X == a.X && p.Y == a.Y && p.Z == a.Z
+                                                && (placed ? e.Kind is ActivityKinds.Placed or ActivityKinds.Planted or ActivityKinds.WroteSign
+                                                           : e.Kind is ActivityKinds.Broke or ActivityKinds.Harvested)
+                                                && (e.At - a.At).Duration() <= TimeSpan.FromSeconds(3));
+                    list.Add(r with { A = a with { Detail = theirs ? null : placed ? "appeared" : "vanished" }, PlayerCaused = theirs });
+                }
+                else list.Add(r);
+            }
+            foreach (var e in attributed.Where(e => e.Confidence >= minConfidence && e.Kind is ActivityKinds.WroteSign or ActivityKinds.Crafted))
+            {
+                var p = e.Pos ?? default;
+                var a = e.Kind == ActivityKinds.WroteSign
+                    ? new DemoAction(e.At, DemoActionKind.UseBlock, p.X, p.Y, p.Z, "sign", $"wrote \"{e.Detail}\"")
+                    : new DemoAction(e.At, DemoActionKind.UseBlock, p.X, p.Y, p.Z, "crafting_table", "crafted " + ActivityText.Item(e.ItemId ?? 0));
+                list.Add(new Raw(a, 0, true));
+            }
+            return list.OrderBy(x => x.A.At).ToList(); // stable
+
         }
 
         /// <summary>

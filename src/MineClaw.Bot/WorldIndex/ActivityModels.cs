@@ -111,8 +111,11 @@ public sealed class DangerOptions
     public int MobEscalateSeconds { get; set; } = 20;
     /// <summary>Deaths from different sources within this window are one death.</summary>
     public int DeathDedupeSeconds { get; set; } = 5;
-    /// <summary>A death right after a fall alarm for the same player is posted as context, not a second wake.</summary>
-    public int DeathAfterFallSeconds { get; set; } = 30;
+    /// <summary>A void-fall wake is held this long (island height to kill depth ≈ 5 s); a death inside the window
+    /// merges into ONE wake ("fell into the void and died"). Non-void dangers wake immediately.</summary>
+    public int VoidFallCoalesceSeconds { get; set; } = 6;
+    /// <summary>A death within this long after an emitted fall wake is posted as a Normal-priority follow-up.</summary>
+    public int FollowUpSeconds { get; set; } = 60;
 }
 
 /// <summary>Which detections wake the brain (most never do; they wait in the digest).</summary>
@@ -164,7 +167,7 @@ public static class ActivityText
             ActivityKinds.Crafted => $"{p} crafted {itm}{at}",
             ActivityKinds.Hurt => $"{p} got hurt{at}",
             ActivityKinds.Fought => $"{p} fought a {e.Detail ?? "mob"}, {e.Count} hit{(e.Count == 1 ? "" : "s")} taken{at}",
-            ActivityKinds.Died => $"{p} {e.Detail ?? "died"}{at}",
+            ActivityKinds.Died => $"{p} {e.Detail ?? "died"}{(e.Place != null ? at : "")}",
             ActivityKinds.Slept => $"{p} slept in a bed{at}",
             ActivityKinds.Rode => $"{p} got in a {e.Detail ?? "vehicle"}",
             ActivityKinds.WroteSign => $"{p} placed sign \"{e.Detail}\"{at}",

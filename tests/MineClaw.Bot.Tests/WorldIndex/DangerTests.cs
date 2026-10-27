@@ -42,34 +42,61 @@ public class DangerReplayTests(ITestOutputHelper output)
         Assert.Contains(a.Recorded, r => r.Kind == ActivityKinds.Placed && r.Player == "kiwi");
     }
 
-    [Fact]
-    public void Real_void_fall_wakes_exactly_once()
+    private static void FallOffEastEdge(ActivityFixture a, int id)
     {
-        using var a = new ActivityFixture();
-        int kiwi = a.Player("kiwi", 4.5, 64, 0.5);
         a.Step();
         a.Step();
-        a.MoveTo(kiwi, 5.5, 64, 0.5); // stepped off
+        a.MoveTo(id, 5.5, 64, 0.5); // stepped off the east edge
         a.Step();
         double y = 64, v = 0;
         while (y > -8)
         {
             v += 0.08 * 5 * 4; // ~gravity, in blocks/s per 250 ms
             y -= v * 0.25;
-            a.MoveTo(kiwi, 5.5, y, 0.5);
+            a.MoveTo(id, 5.5, y, 0.5);
             a.Step();
         }
-        a.World.Entities.Destroy(kiwi);
+        a.World.Entities.Destroy(id);
         a.Step();
+    }
+
+    [Fact]
+    public void Void_fall_that_ends_in_death_is_exactly_one_wake_with_both_facts()
+    {
+        using var a = new ActivityFixture();
+        int kiwi = a.Player("kiwi", 4.5, 64, 0.5);
+        FallOffEastEdge(a, kiwi);
         a.Events.Chat("kiwi fell out of the world"); // verbatim from the live server
         a.Step();
-        a.Step(6);
+        a.Step(10);
         Dump(output, a);
-        Assert.Equal(1, a.Wakes);
-        Assert.Contains("falling into the void", a.Posted.First(e => e.Wakes).Text);
+        var w = Assert.Single(a.Posted, e => e.Wakes);
+        Assert.Equal("kiwi fell into the void and died (east edge)", w.Text);
+        Assert.Equal(EventPriority.High, w.Priority);
         var death = Assert.Single(a.Recorded, r => r.Kind == ActivityKinds.Died);
         Assert.True(death.Confidence >= 0.9);
-        Assert.Contains("fell into the void", death.Text);
+        Assert.Equal("kiwi fell into the void (east edge)", death.Text);
+    }
+
+    [Fact]
+    public void Void_fall_without_a_death_wakes_when_the_window_ends_and_a_late_death_follows_up()
+    {
+        using var a = new ActivityFixture();
+        int kiwi = a.Player("kiwi", 4.5, 64, 0.5);
+        FallOffEastEdge(a, kiwi);
+        Assert.Equal(0, a.Wakes); // still held
+        a.Step(5);
+        Dump(output, a);
+        var fall = Assert.Single(a.Posted, e => e.Wakes);
+        Assert.Equal("kiwi is falling into the void (east edge)", fall.Text);
+        a.Step(5);
+        a.Events.Chat("kiwi fell out of the world"); // the death line arrives late
+        a.Step();
+        Dump(output, a);
+        var wakes = a.Posted.Where(e => e.Wakes).ToList();
+        Assert.Equal(2, wakes.Count);
+        Assert.Equal(EventPriority.Normal, wakes[1].Priority);
+        Assert.Equal("kiwi fell into the void (east edge)", wakes[1].Text);
     }
 
     [Fact]

@@ -196,17 +196,18 @@ public sealed class ActivityLog
     /// Answers "what did robin do today" deterministically: resolves player names and a time window (today, yesterday,
     /// last hour, this morning...) and lists rollups, then raw events not yet rolled up. Bounded output.
     /// </summary>
-    public string Ask(string question, DateTimeOffset? now = null, int maxChars = 500)
+    public string Ask(string question, DateTimeOffset? now = null, int maxChars = 500, DateTimeOffset? since = null)
     {
         var t = now ?? _time.GetUtcNow();
         var q = question.ToLowerInvariant();
         var local = t.ToLocalTime();
-        DateTimeOffset since = t - TimeSpan.FromDays(1), until = t;
-        if (q.Contains("yesterday")) { since = new DateTimeOffset(local.Date.AddDays(-1), local.Offset); until = new DateTimeOffset(local.Date, local.Offset); }
-        else if (q.Contains("today") || q.Contains("tonight")) since = new DateTimeOffset(local.Date, local.Offset);
-        else if (q.Contains("this morning")) since = new DateTimeOffset(local.Date, local.Offset);
-        else if (q.Contains("last hour") || q.Contains("past hour")) since = t - TimeSpan.FromHours(1);
-        else if (q.Contains("this week") || q.Contains("lately")) since = t - TimeSpan.FromDays(7);
+        DateTimeOffset from = t - TimeSpan.FromDays(1), until = t;
+        if (since is { } explicitSince) from = explicitSince;
+        else if (q.Contains("yesterday")) { from = new DateTimeOffset(local.Date.AddDays(-1), local.Offset); until = new DateTimeOffset(local.Date, local.Offset); }
+        else if (q.Contains("today") || q.Contains("tonight")) from = new DateTimeOffset(local.Date, local.Offset);
+        else if (q.Contains("this morning")) from = new DateTimeOffset(local.Date, local.Offset);
+        else if (q.Contains("last hour") || q.Contains("past hour")) from = t - TimeSpan.FromHours(1);
+        else if (q.Contains("this week") || q.Contains("lately")) from = t - TimeSpan.FromDays(7);
 
         var players = Players();
         var who = players.Where(p => Regex.IsMatch(q, $@"\b{Regex.Escape(p.ToLowerInvariant())}\b")).ToList();
@@ -220,8 +221,8 @@ public sealed class ActivityLog
         var targets = who.Count > 0 ? who.Cast<string?>().ToList() : [null];
         foreach (var p in targets)
         {
-            foreach (var r in Rollups(p, since, until, 12).OrderBy(r => r.Start)) Line(r.Text);
-            var raw = Events(p, since, 30).Where(e => e.Rollup == null && e.At <= until && e.Confidence >= _o.MediumConfidence).Reverse().ToList();
+            foreach (var r in Rollups(p, from, until, 12).OrderBy(r => r.Start)) Line(r.Text);
+            var raw = Events(p, from, 30).Where(e => e.Rollup == null && e.At <= until && e.Confidence >= _o.MediumConfidence).Reverse().ToList();
             for (int i = 0; i < raw.Count;)
             {
                 int j = i;
@@ -233,7 +234,7 @@ public sealed class ActivityLog
             }
         }
         if (sb.Length == 0 && who.Count == 0)
-            foreach (var e in Search(question, since, 8)) Line(e.Text);
+            foreach (var e in Search(question, from, 8)) Line(e.Text);
         return sb.Length == 0 ? (who.Count > 0 ? $"nothing recorded for {string.Join(", ", who)} in that window" : "no matching activity") : sb.ToString();
     }
 }

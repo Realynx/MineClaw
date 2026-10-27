@@ -51,6 +51,7 @@ public sealed class BotHost : IDisposable
         var protection = new Protection(botOptions, memory, memory, time);
         foreach (var u in protection.Unknown) log?.LogWarning("Bot config: unknown {Name}", u);
         var (indexer, activityTracker) = StartWorldIndex(client, rt, memory, worldIndex, activity, time, loggers);
+        recorder.Activity = activityTracker; // teaching sessions reuse the tracker's attribution
         client.IsProtected = indexer == null ? protection.IsProtected : (p, id) => protection.IsProtected(p, id) || indexer.IsProtected(p, id);
         client.ReservedItems = protection.ReservedItems();
 
@@ -100,6 +101,8 @@ public sealed class BotHost : IDisposable
             rt.Memory.AddNote(name, "seen: " + r.Text);
         };
         rt.Agent.TurnDigest = since => tracker.Digest.Since(since, rt.Options.TurnDigestMaxChars, prefix: "");
+        ActivityTools.Register(rt.Tools, tracker.Log!, time);
+        if (!rt.Options.AskMemory.Tools.Contains(ActivityTools.ToolName)) rt.Options.AskMemory.Tools = [.. rt.Options.AskMemory.Tools, ActivityTools.ToolName];
         tracker.Start();
         return (indexer, tracker);
     }
