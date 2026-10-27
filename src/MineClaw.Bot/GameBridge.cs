@@ -90,6 +90,7 @@ public sealed class GameBridge : IDisposable
     {
         if (string.Equals(name, _c.Username, StringComparison.OrdinalIgnoreCase)) return;
         SyncOnline();
+        if (_rt.Chat.IsHiveBot?.Invoke(name) == true) return; // hive bots logging in/out are not player events
         var started = _time.GetUtcNow();
         _ = Task.Run(async () =>
         {

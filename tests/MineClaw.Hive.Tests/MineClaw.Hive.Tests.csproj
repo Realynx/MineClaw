@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <!-- CloneStub/ is a separate exe (a fake clone process: fake game, fake LLM, real CloneHost/IPC); built first, run by the tests. -->
+  <ItemGroup>
+    <Compile Remove="CloneStub/**" />
+    <Compile Include="CloneStub/Fakes.cs" Link="Fakes.cs" />
+    <None Remove="CloneStub/**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\MineClaw.Hive\MineClaw.Hive.csproj" />
+    <ProjectReference Include="CloneStub\MineClaw.Hive.CloneStub.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+</Project>

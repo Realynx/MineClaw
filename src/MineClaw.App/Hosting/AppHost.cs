@@ -8,6 +8,7 @@ using MineClaw.App.Viewport;
 using MineClaw.Bot;
 using MineClaw.Bot.Game;
 using MineClaw.Client;
+using MineClaw.Hive;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -27,6 +28,7 @@ public static class AppHost
     public static async Task<int> RunAsync(AppCli cli)
     {
         var root = AppPaths.FindRoot();
+        if (cli.CloneName != null) cli = cli with { Tui = TuiChoice.Off, NoKeyCheck = true }; // hive clone: headless, main checked the key
 
         // ------------------------------------------------------------ config
         IConfigurationRoot config;
@@ -42,7 +44,8 @@ public static class AppHost
         var botOptions = new BotOptions();
         config.GetSection("Bot").Bind(botOptions);
         var host = config.GetSection("Host").Get<HostSettings>() ?? new HostSettings();
-        var hive = config.GetSection("Hive").Get<HiveSettings>() ?? new HiveSettings();
+        var hive = config.GetSection("Hive").Get<HiveConfig>() ?? new HiveConfig();
+        config.GetSection("Hive").Bind(agentOptions.Hive); // personality scope: main | clone username (Self shards)
         var telemetryOptions = config.GetSection("Telemetry").Get<TelemetryOptions>() ?? new TelemetryOptions();
         if (string.IsNullOrWhiteSpace(agentOptions.Llm.ApiKey) || agentOptions.Llm.ApiKey.EndsWith("..."))
             agentOptions.Llm.ApiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
@@ -50,6 +53,8 @@ public static class AppHost
         if (agentOptions.KnowledgeDirectory != null) agentOptions.KnowledgeDirectory = AppPaths.UnderOrBeside(root, agentOptions.KnowledgeDirectory);
         var logDir = AppPaths.Under(root, host.LogDirectory);
         var telemetryDir = string.IsNullOrWhiteSpace(telemetryOptions.Directory) ? logDir : AppPaths.Under(root, telemetryOptions.Directory);
+        var mainLogDir = logDir;
+        if (cli.CloneName != null) (logDir, telemetryDir) = CloneMode.Prepare(cli.CloneName, mc, agentOptions, hive, logDir, telemetryDir);
 
         var problems = ConfigCheck.Validate(mc, agentOptions);
         if (problems.Count > 0)
@@ -97,7 +102,9 @@ public static class AppHost
                 }
                 log.LogInformation("Anthropic key ok: {Models}", check.Message);
             }
-            return await RunBotAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, useTui, ring, loggers, log, signals);
+            if (cli.CloneName != null)
+                return await CloneMode.RunAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, loggers, log, signals);
+            return await RunBotAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, useTui, ring, loggers, log, signals, mainLogDir);
         }
         finally
         {
@@ -107,8 +114,8 @@ public static class AppHost
     }
 
     private static async Task<int> RunBotAsync(AppCli cli, MinecraftSettings mc, AgentOptions agentOptions, BotOptions botOptions, HostSettings host,
-        HiveSettings hive, TelemetryOptions telemetryOptions, string telemetryDir, bool useTui, RingLoggerProvider ring, ILoggerFactory loggers,
-        ILogger log, ShutdownSignals signals)
+        HiveConfig hive, TelemetryOptions telemetryOptions, string telemetryDir, bool useTui, RingLoggerProvider ring, ILoggerFactory loggers,
+        ILogger log, ShutdownSignals signals, string logDir)
     {
         var telemetry = new PromptTelemetry(agentOptions, telemetryOptions, telemetryOptions.Enabled ? telemetryDir : null);
         int seeded = telemetry.SeedFromLogs();
@@ -120,10 +127,12 @@ public static class AppHost
         {
             Host = mc.Host, Port = mc.Port, Username = mc.Username,
             AutoReconnect = true, AutoRespawn = true,
+            DuplicateLoginBackoff = TimeSpan.FromSeconds(Math.Max(0, mc.DuplicateLoginBackoffSeconds)),
             Log = m => clientLog.LogDebug("{Msg}", m),
         });
         var game = new MinecraftGameClient(client);
-        var bot = BotHost.Create(game, agentOptions, botOptions, llm: llm, loggers: loggers);
+        var mainHive = MainHive.Create(hive, mc.Username, cli, agentOptions, logDir, loggers.CreateLogger("MineClaw.Hive"));
+        var bot = BotHost.Create(game, agentOptions, botOptions, llm: llm, loggers: loggers, claims: mainHive?.MainClaims, hiveBots: mainHive != null ? mainHive.HiveBots : null);
         var rt = bot.Runtime;
         telemetry.Attach(rt);
         log.LogInformation("telemetry: {Dir} ({Seeded} records seeded)", telemetry.Directory ?? "off", seeded);
@@ -135,19 +144,27 @@ public static class AppHost
         rt.Usage.ModeChanged += (mode, reason) => log.LogWarning("budget mode {Mode}: {Why}", mode, reason);
         client.ChatReceived += line => log.LogInformation("chat: {Line}", ChatText.StripColours(line));
         client.Kicked += r => log.LogWarning("kicked: {Reason}", r);
+        client.Kicked += r =>
+        {
+            var wait = MinecraftClient.FirstReconnectDelay(r, client.Options);
+            if (wait > client.Options.ReconnectInitialDelay)
+                log.LogWarning("another session is using {User}; backing off {S:0}s before reconnecting", mc.Username, wait.TotalSeconds);
+        };
+        client.Spawned += () => log.LogInformation("joined {Host}:{Port} as {User}", mc.Host, mc.Port, mc.Username);
         client.Disconnected += r => log.LogWarning("disconnected: {Reason}", r);
         client.Danger += d => log.LogWarning("danger {Kind}: {Msg}", d.Kind, d.Message);
 
         var agent = new PausableAgent(rt, log);
         var commands = new ConsoleCommands(game, rt, agent, log, signals.Source);
         var source = new InProcessBotSource(game, rt, telemetry, agent, commands, host.Tui.Viewport, signals.Token);
+        mainHive?.Attach(bot, client, commands, agentOptions);
 
         Task tuiTask = Task.CompletedTask;
         if (useTui)
         {
-            var roster = new HiveRoster([mc.Username, .. hive.CloneUsernames.Take(Math.Max(0, hive.MaxClones))]);
+            var roster = new HiveRoster([mc.Username, .. hive.Clones()]);
             var sources = roster.Names.Select(n => string.Equals(n, mc.Username, StringComparison.OrdinalIgnoreCase)
-                ? (IBotTelemetrySource)source : new OfflineBotSource(n)).ToList();
+                ? (IBotTelemetrySource)source : mainHive?.SourceFor(n) ?? new OfflineBotSource(n)).ToList();
             var tui = new TuiApp(sources, roster, ring, host.Tui, w => signals.Request("tui " + w), log, cli.Bot - 1, ParseView(cli.ViewMode));
             tuiTask = tui.RunAsync(signals.Token);
         }
@@ -185,10 +202,17 @@ public static class AppHost
 
         // ------------------------------------------------------------ graceful shutdown (time-boxed)
         var budget = TimeSpan.FromSeconds(Math.Clamp(host.ShutdownTimeoutSeconds, 3, 600));
+        // Hive: clones need time to deposit; stay under systemd's TimeoutStopSec=90 (deploy/mineclaw.service).
+        if (mainHive?.Supervisor?.Slots.Any(s => s.State != MineClaw.Hive.Supervisor.CloneState.Idle && s.State != MineClaw.Hive.Supervisor.CloneState.Retired) == true)
+            budget = TimeSpan.FromSeconds(Math.Max(budget.TotalSeconds, Math.Min(85, hive.ShutdownRecallSeconds + 25)));
         var seq = new ShutdownSequence(budget, log);
         log.LogInformation("stopping ({Why}, budget {S:0}s): {Usage}", signals.Reason ?? "requested", budget.TotalSeconds, rt.Usage.Summary());
         await seq.StepAsync("tui", TimeSpan.FromSeconds(2), _ => tuiTask);
         if (useTui) Console.Out.WriteLine("MineClaw: shutting down...");
+        // Hive first: clones deposit everything and log out while main is still online (handoff receiver), then main stops.
+        if (mainHive != null)
+            await seq.StepAsync("hive recall", TimeSpan.FromSeconds(hive.ShutdownRecallSeconds), _ =>
+                mainHive.RecallAllAsync("main shutting down", TimeSpan.FromSeconds(Math.Max(5, Math.Min(hive.ShutdownRecallSeconds, seq.Remaining.TotalSeconds) - 1))));
         await seq.StepAsync("stop actions", TimeSpan.FromSeconds(5), ct =>
         {
             rt.Activities.Cancel("shutdown");
@@ -201,6 +225,7 @@ public static class AppHost
         await seq.StepAsync("background tasks", TimeSpan.FromSeconds(3), _ => Task.WhenAll(tasks));
         seq.Final("bot", () => { source.Dispose(); bot.Dispose(); });
         await seq.StepAsync("client", TimeSpan.FromSeconds(3), _ => client.DisposeAsync().AsTask());
+        if (mainHive != null) await seq.StepAsync("hive", TimeSpan.FromSeconds(3), _ => mainHive.DisposeAsync().AsTask());
         seq.Final("db", rt.Dispose);
         seq.Final("telemetry", telemetry.Dispose);
         log.LogInformation("bye{Late}", seq.TimedOut.Count > 0 ? " (timed out: " + string.Join(", ", seq.TimedOut) + ")" : "");
@@ -217,7 +242,7 @@ public static class AppHost
     {
         var root = AppPaths.FindRoot();
         var host = new HostSettings();
-        var hive = new HiveSettings { CloneUsernames = ["maid_chan_67", "maid_chan_69", "maid_chan_420", "maid_chan_1337"] };
+        var hive = new HiveConfig { CloneUsernames = ["maid_chan_67", "maid_chan_69", "maid_chan_420", "maid_chan_1337"] };
         string main = "maid_chan";
         try
         {

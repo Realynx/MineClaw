@@ -44,6 +44,10 @@ public sealed record AppCli
     /// <summary>auto | simple | systemd | json.</summary>
     public string? LogFormat { get; init; }
     public bool Help { get; init; }
+    /// <summary>Hive clone mode (started by the main process's supervisor): this process logs in as that clone, headless.</summary>
+    public string? CloneName { get; init; }
+    /// <summary>Hive clone mode: the supervisor's named pipe (no pipe = no clone: clones never run unsupervised).</summary>
+    public string? ParentPipe { get; init; }
     public IReadOnlyList<string> Errors { get; init; } = [];
 
     public const string Usage = """
@@ -63,6 +67,7 @@ Usage: MineClaw.App [options]
   --demo [--demo-bots n]   offline TUI demo with fake bots (no server, no API key)
   --frame <WxH>            print one plain-text TUI frame and exit (use with --demo)
   --bot <n>                initially selected bot (1-5)   --view top|side
+  --clone <name> --parent-pipe <pipe>   hive clone mode (started by the main process; headless)
 Env: MINECLAW_<Section>__<Key> overrides config, e.g. MINECLAW_Agent__Llm__ApiKey.
 Exit codes: 0 clean, 1 crash, 2 config, 3 auth, 64 usage, 75 transient startup failure.
 """;
@@ -127,11 +132,14 @@ Exit codes: 0 clean, 1 crash, 2 config, 3 auth, 64 usage, 75 transient startup f
                         else if (v != null) errors.Add($"--log-format: '{v}' (auto|simple|systemd|json)");
                         break;
                     }
+                case "--clone": c = c with { CloneName = Value() }; break;
+                case "--parent-pipe": c = c with { ParentPipe = Value() }; break;
                 case "-h" or "--help" or "-?": c = c with { Help = true }; break;
                 default: errors.Add($"unknown option '{a}'"); break;
             }
         }
         if (c.Frame != null && !c.Demo) errors.Add("--frame needs --demo");
+        if ((c.CloneName == null) != (c.ParentPipe == null)) errors.Add("--clone and --parent-pipe go together (clones never run unsupervised)");
         return c with { Errors = errors };
     }
 }

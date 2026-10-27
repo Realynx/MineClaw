@@ -5,6 +5,7 @@ using MineClaw.Bot.Game;
 using MineClaw.Bot.GameTools;
 using MineClaw.Bot.Memory;
 using MineClaw.Bot.WorldIndex;
+using MineClaw.World.Claims;
 using Microsoft.Extensions.Logging;
 using MPos = MineClaw.Agent.Memory.BlockPos;
 
@@ -27,10 +28,13 @@ public sealed class BotHost : IDisposable
     public WorldIndexer? Indexer { get; init; }
     /// <summary>Other players' activity: attributed events, rollups, digest, wake rules.</summary>
     public PlayerActivityTracker? Activity { get; init; }
+    /// <summary>Hive claim board this bot honours (<see cref="NullClaimBoard"/> without a hive).</summary>
+    public IClaimBoard Claims { get; init; } = NullClaimBoard.Instance;
 
     public static BotHost Create(IGameClient client, AgentOptions agentOptions, BotOptions? botOptions = null, ILlmClient? llm = null,
         ILoggerFactory? loggers = null, TimeProvider? time = null, bool persist = true,
-        WorldIndexOptions? worldIndex = null, ActivityOptions? activity = null)
+        WorldIndexOptions? worldIndex = null, ActivityOptions? activity = null,
+        IClaimBoard? claims = null, Func<IEnumerable<string>>? hiveBots = null)
     {
         botOptions ??= new BotOptions();
         var log = loggers?.CreateLogger("MineClaw.Bot");
@@ -50,16 +54,23 @@ public sealed class BotHost : IDisposable
             () => (MineClaw.World.BlockPos?)client.World.Player.Position.ToBlockPos());
         var protection = new Protection(botOptions, memory, memory, time);
         foreach (var u in protection.Unknown) log?.LogWarning("Bot config: unknown {Name}", u);
-        var (indexer, activityTracker) = StartWorldIndex(client, rt, memory, worldIndex, activity, time, loggers);
+        var (indexer, activityTracker) = StartWorldIndex(client, rt, memory, worldIndex, activity, time, loggers, hiveBots);
         recorder.Activity = activityTracker; // teaching sessions reuse the tracker's attribution
-        client.IsProtected = indexer == null ? protection.IsProtected : (p, id) => protection.IsProtected(p, id) || indexer.IsProtected(p, id);
+        Func<MineClaw.World.BlockPos, int, bool> isProtected = indexer == null ? protection.IsProtected : (p, id) => protection.IsProtected(p, id) || indexer.IsProtected(p, id);
+        // Hive: a block another bot holds a lease on is off limits too (mining/harvest skip it).
+        client.IsProtected = claims == null ? isProtected : (p, id) => isProtected(p, id) || !claims.IsFree(ClaimKey.Block(p));
         client.ReservedItems = protection.ReservedItems();
 
-        GameToolSet.RegisterAll(rt.Tools, client, memory, botOptions,
+        // Hive: container/block actions of the game tools take a lease first (ClaimAwareGameClient).
+        IGameClient toolClient = claims == null ? client : new ClaimAwareGameClient(client, claims);
+        GameToolSet.RegisterAll(rt.Tools, toolClient, memory, botOptions,
             landmark: (x, y, z) => Agent.Memory.Landmarks.Near(rt.Memory, rt.Observations, x, y, z));
         HumanGameTools.RegisterAskStand(rt.Tools, rt.Chat, client, botOptions.AskStandTimeoutSeconds);
         HumanGameTools.RegisterWatchDemo(rt.Tools, rt.Chat, recorder, memory);
         if (client is MinecraftGameClient mg) CombatTools.Register(rt.Tools, mg.Inner, rt.Events);
+        if (client is MinecraftGameClient mgc) TreeTools.AttachReports(mgc.Inner, indexer, rt.Events);
+        Beliefs.BeliefBot.Attach(rt, toolClient, claims, time, log, indexer); // belief system: claim checks when idle (zero tokens)
+        SkillTools.Register(rt, client, claims); // worker: skill + find_skill over the whole catalog (zero prefix growth)
         // Brain gets the cheap single-shot tools + delegate/ask_memory; the worker gets the game macro tools.
         rt.ApplyBrainSplit();
 
@@ -68,13 +79,13 @@ public sealed class BotHost : IDisposable
         return new BotHost
         {
             Runtime = rt, Client = client, Bridge = bridge, Protection = protection, Recorder = recorder, MemoryAdapter = memory,
-            Indexer = indexer, Activity = activityTracker,
+            Indexer = indexer, Activity = activityTracker, Claims = claims ?? NullClaimBoard.Instance,
         };
     }
 
     /// <summary>World indexer + activity tracker (background passes; never on the network thread, never the LLM).</summary>
     private static (WorldIndexer?, PlayerActivityTracker?) StartWorldIndex(IGameClient client, AgentRuntime rt, MemoryStoreAdapter memory,
-        WorldIndexOptions? o, ActivityOptions? a, TimeProvider? time, ILoggerFactory? loggers)
+        WorldIndexOptions? o, ActivityOptions? a, TimeProvider? time, ILoggerFactory? loggers, Func<IEnumerable<string>>? hiveBots)
     {
         o ??= new WorldIndexOptions();
         a ??= new ActivityOptions();
@@ -86,7 +97,7 @@ public sealed class BotHost : IDisposable
         if (!a.Enabled) return (indexer, null);
         var tracker = new PlayerActivityTracker(client.World, new GameClientPlayerEvents(client), new ActivityLog(rt.Db, rt.Rag, a, time),
             indexer, a, client.Username,
-            botNames: () => new[] { client.Username, rt.Chat.DisplayName }.Concat(rt.Chat.Aliases),
+            botNames: () => new[] { client.Username, rt.Chat.DisplayName }.Concat(rt.Chat.Aliases).Concat(hiveBots?.Invoke() ?? []),
             botBusy: () => client.CurrentAction != null, time: time, logger: loggers?.CreateLogger("MineClaw.Activity"))
         { TaughtStructureAt = memory.TaughtStructureAt };
         tracker.Wake += e => rt.Events.Post(e);

@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\MineClaw.Bot\MineClaw.Bot.csproj" />
+    <ProjectReference Include="..\MineClaw.Hive\MineClaw.Hive.csproj" />
   </ItemGroup>
 
   <ItemGroup>

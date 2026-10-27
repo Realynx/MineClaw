@@ -11,6 +11,8 @@ public sealed class MinecraftSettings
     public string Host { get; set; } = "localhost";
     public int Port { get; set; } = 25565;
     public string Username { get; set; } = "";
+    /// <summary>Wait this long before reconnecting after "You logged in from another location" (someone else is on the account).</summary>
+    public int DuplicateLoginBackoffSeconds { get; set; } = 600;
 }
 
 public static class ConfigCheck
@@ -129,6 +131,9 @@ public static class VoidWatch
 
 public sealed class ConsoleCommands(IGameClient c, AgentRuntime rt, PausableAgent agent, ILogger log, CancellationTokenSource shutdown)
 {
+    /// <summary>Hive: raised with each injected /as line so every hive process arbitrates the same message.</summary>
+    public Action<string>? Injected { get; set; }
+
     private const string Help = "commands: <text> (say in chat) | /as <player> <msg> | /status | /usage | /pause | /resume | /tool <name> [json] | /walktest | /wait <s> | /quit";
 
     public void StartStdin(CancellationToken ct)
@@ -183,7 +188,9 @@ public sealed class ConsoleCommands(IGameClient c, AgentRuntime rt, PausableAgen
                 case "/as" when parts.Length == 3:
                     // Pretend a player said this (vanilla "<name> msg" line) — test the agent without a second account.
                     // Tagged as test chat: memory stores it as source=test and the self-profile ignores it.
-                    var msg = rt.Chat.OnServerChat($"<{parts[1]}> {parts[2]}", test: true);
+                    var raw = $"<{parts[1]}> {parts[2]}";
+                    var msg = rt.Chat.OnServerChat(raw, test: true);
+                    Injected?.Invoke(raw);
                     log.LogInformation("injected chat from {Player} ({Kind})", msg.Player, msg.Kind);
                     break;
                 case "/status":

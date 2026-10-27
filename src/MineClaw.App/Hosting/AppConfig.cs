@@ -24,12 +24,6 @@ public sealed class TuiSettings
     public ViewportOptions Viewport { get; set; } = new();
 }
 
-/// <summary>"Hive" section (clones arrive with the hive work; the TUI already lists them).</summary>
-public sealed class HiveSettings
-{
-    public int MaxClones { get; set; } = 4;
-    public string[] CloneUsernames { get; set; } = [];
-}
 
 /// <summary>
 /// Layered configuration. Lowest to highest: appsettings.json next to the exe → src/MineClaw.App/appsettings.json in a
