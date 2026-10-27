@@ -45,7 +45,10 @@ public sealed partial class MinecraftClient
 
     // ------------------------------------------------------------------ cores
 
-    private async Task<ActionResult> DigCoreAsync(BlockPos pos, CancellationToken ct, bool allowPathing = true, bool ignoreProtection = false)
+    /// <param name="generator">Digging a cobblestone generator's output: lava next to it is expected, so instead of
+    /// refusing, the bot must stand where released lava can't reach it.</param>
+    private async Task<ActionResult> DigCoreAsync(BlockPos pos, CancellationToken ct, bool allowPathing = true, bool ignoreProtection = false,
+        bool generator = false)
     {
         int id = World.GetBlock(pos);
         string name = BlockName(id, World.GetMeta(pos));
@@ -53,19 +56,21 @@ public sealed partial class MinecraftClient
         if (id == 0 || BlockShapes.IsLiquid(id)) return ActionResult.Success($"{Fmt(pos)} already clear");
         if (!ignoreProtection && IsBlockProtected(pos, id)) return ActionResult.Fail($"{name} at {Fmt(pos)} is protected");
         if (Blocks.Get(id).Hardness < 0) return ActionResult.Fail($"{name} is unbreakable");
-        if (WouldDropIntoVoid(pos)) return ActionResult.Fail($"digging {name} at {Fmt(pos)} would drop me into the void");
+        if (DigSafetyVeto(pos, name, generator, positioned: !allowPathing) is { } veto) return ActionResult.Fail(veto);
 
         await EnsureNoWindowAsync(ct).ConfigureAwait(false);
         var aim = Aiming.FindDigAim(World, World.Player.EyePosition, pos, Options.Reach);
-        if (aim is null)
+        // Edge blocks are dug from the inward side; generators from a spot released lava can't reach.
+        bool reposition = aim is not null && allowPathing
+                          && (OnRimDiggingRim(pos) || (generator && (LavaPathToMe(pos) || LavaNearMe())));
+        if (aim is null || reposition)
         {
             if (!allowPathing) return ActionResult.Fail($"can't see/reach {name} at {Fmt(pos)}");
-            var g = await GotoCoreAsync(new GoalWithinReach(pos, Options.Reach - 0.6), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(30) }, ct)
-                .ConfigureAwait(false);
+            var g = await GotoReachSafelyAsync(pos, generator, ct).ConfigureAwait(false);
             aim = Aiming.FindDigAim(World, World.Player.EyePosition, pos, Options.Reach);
             if (aim is null) return ActionResult.Fail($"can't reach {name} at {Fmt(pos)}" + (g.Ok ? "" : $" ({g.Message})"));
-            if (WouldDropIntoVoid(pos)) return ActionResult.Fail($"digging {name} at {Fmt(pos)} would drop me into the void");
         }
+        if (DigSafetyVeto(pos, name, generator, positioned: true) is { } veto2) return ActionResult.Fail(veto2);
 
         int held = await SelectToolForAsync(id, ct).ConfigureAwait(false);
         var snap = World.Player.Snapshot;
@@ -109,6 +114,21 @@ public sealed partial class MinecraftClient
         if (!World.IsLoaded(pos.X, pos.Z)) return ActionResult.Fail($"{Fmt(pos)} is not loaded");
 
         await EnsureNoWindowAsync(ct).ConfigureAwait(false);
+        // Placing (and bridging) always sneaks: vanilla edge clamping while the arm is busy.
+        bool sneakBefore = _idleSneak;
+        _idleSneak = true;
+        try
+        {
+            return await PlaceSneakingAsync(pos, itemId, ct, allowPathing).ConfigureAwait(false);
+        }
+        finally
+        {
+            _idleSneak = sneakBefore;
+        }
+    }
+
+    private async Task<ActionResult> PlaceSneakingAsync(BlockPos pos, int itemId, CancellationToken ct, bool allowPathing)
+    {
         var aim = Aiming.FindPlaceAim(World, World.Player.EyePosition, pos, Options.Reach, AABB.ForPlayer(World.Player.Position));
         if (aim is null)
         {
@@ -308,40 +328,29 @@ public sealed partial class MinecraftClient
     }
 
     /// <summary>The blocks currently holding the player up (top layer under the hitbox).</summary>
-    private List<BlockPos> SupportBlocks()
+    private List<BlockPos> SupportBlocks() => Safety.SupportBlocks(World, World.Player.Position);
+
+    /// <summary>True when removing <paramref name="target"/> would leave nothing but void below the hitbox.</summary>
+    private bool WouldDropIntoVoid(BlockPos target) => Safety.RemovalLeavesOverVoid(World, World.Player.Position, target);
+
+    /// <summary>Why digging <paramref name="pos"/> from where the bot stands is unsafe, or null.</summary>
+    private string? DigSafetyVeto(BlockPos pos, string name, bool generator, bool positioned)
     {
-        var feet = World.Player.Position;
-        var box = AABB.ForPlayer(feet);
-        int y = (int)Math.Floor(feet.Y - 0.01);
-        var list = new List<BlockPos>();
-        for (int x = (int)Math.Floor(box.MinX); x <= (int)Math.Floor(box.MaxX - 1e-9); x++)
-        for (int z = (int)Math.Floor(box.MinZ); z <= (int)Math.Floor(box.MaxZ - 1e-9); z++)
-            if (BlockShapes.HasCollision(World, x, y, z)) list.Add(new BlockPos(x, y, z));
-        return list;
+        if (SupportBlocks().Contains(pos))
+            return $"won't dig the {name} I'm standing on at {Fmt(pos)}" + (WouldDropIntoVoid(pos) ? " (it's all that holds me over the void)" : "");
+        if (WouldDropIntoVoid(pos)) return $"won't dig {name} at {Fmt(pos)}: it's the last block between me and the void";
+        if (LavaCouldFlowInto(pos))
+        {
+            if (!generator) return $"won't dig {name} at {Fmt(pos)}: lava next to it would flow out";
+            if (positioned && LavaPathToMe(pos)) return $"won't dig {name} at {Fmt(pos)} from here: released lava could reach me";
+        }
+        return null;
     }
 
-    /// <summary>True when <paramref name="target"/> is one of the blocks under the player and removing it would leave
-    /// nothing but void below the hitbox.</summary>
-    private bool WouldDropIntoVoid(BlockPos target)
+    private bool LavaNearMe()
     {
-        var feet = World.Player.Position;
-        var box = AABB.ForPlayer(feet);
-        int y = (int)Math.Floor(feet.Y - 0.01);
-        bool underMe = false;
-        for (int x = (int)Math.Floor(box.MinX); x <= (int)Math.Floor(box.MaxX - 1e-9); x++)
-        for (int z = (int)Math.Floor(box.MinZ); z <= (int)Math.Floor(box.MaxZ - 1e-9); z++)
-            if (x == target.X && z == target.Z && target.Y == y) underMe = true;
-        if (!underMe) return false;
-        for (int x = (int)Math.Floor(box.MinX); x <= (int)Math.Floor(box.MaxX - 1e-9); x++)
-        for (int z = (int)Math.Floor(box.MinZ); z <= (int)Math.Floor(box.MaxZ - 1e-9); z++)
-        {
-            for (int yy = Math.Min(y, WorldState.Height - 1); yy >= 0; yy--)
-            {
-                if (x == target.X && yy == target.Y && z == target.Z) continue;
-                if (BlockShapes.HasCollision(World, x, yy, z)) return false;
-            }
-        }
-        return true;
+        var p = World.Player.Position;
+        return Safety.LavaNear(World, (int)Math.Floor(p.X), (int)Math.Floor(p.Y + 1e-6), (int)Math.Floor(p.Z));
     }
 
     private string SpawnProtectionHint(BlockPos pos)

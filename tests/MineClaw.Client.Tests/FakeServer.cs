@@ -261,8 +261,10 @@ internal sealed class FakeServer : IDisposable
     {
         foreach (var (id, d) in Drops)
         {
+            // Vanilla EntityPlayer.onLivingUpdate: items intersecting the player box expanded by 1 on x/z
+            // (0.3 + 1 + item half-width 0.125 per axis).
             double dx = d.X - x, dz = d.Z - z;
-            if (dx * dx + dz * dz > 1.3 * 1.3 || Math.Abs(d.Y - y) > 1.5) continue;
+            if (Math.Abs(dx) > 1.425 || Math.Abs(dz) > 1.425 || Math.Abs(d.Y - y) > 1.5) continue;
             if (!Drops.TryRemove(id, out _)) continue;
             int slot = Array.FindIndex(Inventory, 36, 9, s => s.IsEmpty || s.Id == d.Item.Id);
             if (slot < 0) slot = Array.FindIndex(Inventory, 9, 27, s => s.IsEmpty || s.Id == d.Item.Id);
@@ -272,6 +274,13 @@ internal sealed class FakeServer : IDisposable
             Send(new DestroyEntityPacket { EntityId = id });
             Send(new SetSlotPacket { WindowId = 0, Slot = (short)slot, Item = Inventory[slot] });
         }
+    }
+
+    /// <summary>(Re)sends one chunk column built from <see cref="Blocks"/> (e.g. after a respawn).</summary>
+    public void SendChunk(int cx, int cz)
+    {
+        Send(new PreChunkPacket { ChunkX = cx, ChunkZ = cz, Load = true });
+        Send(ChunkDataDecoder.Encode(BuildChunk(cx, cz)));
     }
 
     private ChunkRegion BuildChunk(int cx, int cz)

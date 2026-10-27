@@ -27,10 +27,18 @@ public enum DangerKind
     HostileNearby,
     /// <summary>Food is at 6 or below (can't sprint, no regeneration).</summary>
     Hunger,
+    /// <summary>After a teleport/respawn the ground under the bot is missing or not loaded: movement is frozen.</summary>
+    UnsafePosition,
+    /// <summary>A previous critical danger is over (e.g. landed safely after a void clutch).</summary>
+    Recovered,
 }
 
-/// <summary>A danger signal for the Agent (fires at most once per episode, not every tick).</summary>
-public sealed record DangerEvent(DangerKind Kind, string Message);
+/// <summary>A danger signal for the Agent (fires at most once per episode, not every tick).
+/// <see cref="Critical"/> = life or inventory at stake right now (the running action has been cancelled).</summary>
+public sealed record DangerEvent(DangerKind Kind, string Message)
+{
+    public bool Critical { get; init; }
+}
 
 /// <summary>Connection lifecycle state.</summary>
 public enum ClientState { Disconnected, Connecting, Playing, Reconnecting }
@@ -49,6 +57,8 @@ public sealed record GotoOptions
     public bool AllowSprint { get; init; }
     /// <summary>Max path search time per plan.</summary>
     public TimeSpan PlanTimeout { get; init; } = TimeSpan.FromSeconds(2);
+    /// <summary>Walk toward the closest reachable point when the goal itself can't be reached.</summary>
+    public bool AllowPartial { get; init; } = true;
 
     public static GotoOptions Default { get; } = new();
 }

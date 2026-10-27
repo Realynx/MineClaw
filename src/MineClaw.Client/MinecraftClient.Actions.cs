@@ -154,11 +154,14 @@ public sealed partial class MinecraftClient
             AllowPlace = o.AllowPlace && scaffold > 0,
             ScaffoldBudget = o.AllowPlace && scaffold > 0 ? Math.Min(o.ScaffoldBudget, World.Inventory.CountItem(scaffold)) : 0,
             Timeout = o.PlanTimeout,
+            AllowPartial = o.AllowPartial,
         };
     }
 
     private async Task<ActionResult> GotoCoreAsync(Goal goal, GotoOptions o, CancellationToken ct)
     {
+        // A goal with nothing under it can only be reached by bridging (AllowPlace builds the floor first).
+        if (!o.AllowPlace && GoalOverVoid(goal) is { } overVoid) return ActionResult.Fail(overVoid);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(o.Timeout);
         var token = timeout.Token;
@@ -217,8 +220,9 @@ public sealed partial class MinecraftClient
             {
                 var output = follower.Tick(World, phys);
                 last = output;
+                bool drop = follower.CurrentStep?.Kind == MoveKind.Drop;
                 return output.Status == FollowerStatus.Moving
-                    ? new DriverStep(output.Input)
+                    ? new DriverStep(output.Input, AllowDrop: drop)
                     : new DriverStep(output.Input, Done: true);
             }, ct).ConfigureAwait(false);
 
@@ -273,11 +277,22 @@ public sealed partial class MinecraftClient
                         await WaitTicksAsync(5, c).ConfigureAwait(false);
                         continue;
                     }
-                    // Plan to the target's current spot, follow for up to ~2 s, then re-plan as it moves.
-                    var goal = new GoalNearPosition(target.Position, distance);
-                    var popts = BuildPathOptions(o);
+                    // Plan to the target's current spot, follow for up to ~2 s, then re-plan as it moves. Keep a margin
+                    // from the void: only stop on cells at least 2 from any edge and prefer paths away from edges, so a
+                    // player walking along the rim is followed from the inside rather than mirrored.
+                    var goal = GoalFiltered.AwayFromEdge(World, new GoalNearPosition(target.Position, distance + 1));
+                    var popts = BuildPathOptions(o) with { EdgeCostMultiplier = 8 };
                     var path = await Task.Run(() => Pathfinder.FindPath(World, me, goal, popts, c), c).ConfigureAwait(false);
-                    if (path.Steps.Count == 0)
+                    var steps = path.Steps;
+                    if (path.Status != PathStatus.Found)
+                    {
+                        // A partial path must still end away from the edge: cut it back to the last safe cell.
+                        int keep = -1;
+                        for (int i = 0; i < steps.Count; i++)
+                            if (Safety.EdgeDistance(World, steps[i].X, steps[i].Y, steps[i].Z, 2) >= 2) keep = i;
+                        steps = steps.Take(keep + 1).ToList();
+                    }
+                    if (steps.Count == 0)
                     {
                         await WaitTicksAsync(10, c).ConfigureAwait(false);
                         continue;
@@ -286,7 +301,7 @@ public sealed partial class MinecraftClient
                     slice.CancelAfter(TimeSpan.FromSeconds(2));
                     try
                     {
-                        var r = await FollowPathAsync(path.Steps, o, slice.Token).ConfigureAwait(false);
+                        var r = await FollowPathAsync(steps, o, slice.Token).ConfigureAwait(false);
                         if (r is not null && r.Contains("void", StringComparison.Ordinal)) return ActionResult.Fail(r);
                     }
                     catch (OperationCanceledException) when (!c.IsCancellationRequested) { /* re-plan */ }

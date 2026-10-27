@@ -26,8 +26,9 @@ public static class Safety
     public static bool IsPlayerOverVoid(IBlockAccess w, Vec3d feet)
     {
         var box = AABB.ForPlayer(feet);
-        int x0 = (int)Math.Floor(box.MinX), x1 = (int)Math.Floor(box.MaxX - 1e-9);
-        int z0 = (int)Math.Floor(box.MinZ), z1 = (int)Math.Floor(box.MaxZ - 1e-9);
+        // Same overlap rule as collision (any positive overlap supports): columns [floor(min), ceil(max) - 1].
+        int x0 = (int)Math.Floor(box.MinX), x1 = (int)Math.Ceiling(box.MaxX) - 1;
+        int z0 = (int)Math.Floor(box.MinZ), z1 = (int)Math.Ceiling(box.MaxZ) - 1;
         int y = (int)Math.Floor(feet.Y + 1e-6);
         for (int x = x0; x <= x1; x++)
         for (int z = z0; z <= z1; z++)
@@ -54,4 +55,102 @@ public static class Safety
     /// <summary>Lava, fire, cactus or any block flagged <c>Hazard</c>.</summary>
     public static bool IsHazard(IBlockAccess w, int id) =>
         id != 0 && (BlockShapes.IsLava(id) || id == BlockShapes.Fire || id == BlockShapes.Cactus || w.Info(id).Hazard);
+
+    /// <summary>
+    /// True when stepping into column (x,z) with feet at block level <paramref name="feetY"/> means falling into the
+    /// void, into lava, into water that hangs over the void, or further than <paramref name="maxFall"/> blocks.
+    /// A wall (collision at feet level) is not a drop. Unloaded columns are deadly (unknown = unsafe).
+    /// </summary>
+    public static bool IsDeadlyColumn(IBlockAccess w, int x, int feetY, int z, double maxFall)
+    {
+        if (!w.IsLoaded(x, z)) return true;
+        if (feetY >= 0 && feetY < WorldState.Height && BlockShapes.HasCollision(w, x, feetY, z)) return false;
+        for (int yy = Math.Min(feetY - 1, WorldState.Height - 1); yy >= 0; yy--)
+        {
+            int id = w.GetBlock(x, yy, z);
+            if (id == 0) continue;
+            if (BlockShapes.IsLava(id)) return true;
+            if (BlockShapes.IsWater(id)) return IsOverVoid(w, x, yy, z);
+            if (BlockShapes.HasCollision(w, x, yy, z))
+                return feetY - (yy + BlockShapes.CollisionTop(w, x, yy, z)) > maxFall + 1e-6;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Chebyshev distance (1..max) from foot cell (x,y,z) to the nearest deadly column at that level, or max+1 when
+    /// none is within <paramref name="max"/>. 1 = the cell is on the rim of the island.
+    /// </summary>
+    public static int EdgeDistance(IBlockAccess w, int x, int y, int z, int max = 3, double maxFall = 3)
+    {
+        for (int r = 1; r <= max; r++)
+        for (int dx = -r; dx <= r; dx++)
+        for (int dz = -r; dz <= r; dz++)
+        {
+            if (Math.Max(Math.Abs(dx), Math.Abs(dz)) != r) continue;
+            if (IsDeadlyColumn(w, x + dx, y, z + dz, maxFall)) return r;
+        }
+        return max + 1;
+    }
+
+    /// <summary>A player centered in foot cell (x,y,z) would stand on solid ground with a clear body, out of hazards,
+    /// and not over the void.</summary>
+    public static bool IsStandable(IBlockAccess w, int x, int y, int z)
+    {
+        if (!w.IsLoaded(x, z) || y < 1 || y + 1 >= WorldState.Height) return false;
+        if (!BlockShapes.HasCollision(w, x, y - 1, z) || BlockShapes.CollisionTop(w, x, y - 1, z) < 1 - 1e-9) return false;
+        if (BlockShapes.HasCollision(w, x, y, z) || BlockShapes.HasCollision(w, x, y + 1, z)) return false;
+        return !IsHazard(w, w.GetBlock(x, y, z)) && !IsHazard(w, w.GetBlock(x, y + 1, z)) && !IsHazard(w, w.GetBlock(x, y - 1, z));
+    }
+
+    /// <summary>The box overlaps a cell holding lava, fire or cactus (contact = damage).</summary>
+    public static bool TouchesHazard(IBlockAccess w, AABB box)
+    {
+        var bb = box.Grow(-0.001, -0.001, -0.001);
+        int x0 = (int)Math.Floor(bb.MinX), x1 = (int)Math.Floor(bb.MaxX);
+        int y0 = (int)Math.Floor(bb.MinY), y1 = (int)Math.Floor(bb.MaxY);
+        int z0 = (int)Math.Floor(bb.MinZ), z1 = (int)Math.Floor(bb.MaxZ);
+        for (int x = x0; x <= x1; x++)
+        for (int y = y0; y <= y1; y++)
+        for (int z = z0; z <= z1; z++)
+        {
+            int id = w.GetBlock(x, y, z);
+            if (id != 0 && (BlockShapes.IsLava(id) || id == BlockShapes.Fire || id == BlockShapes.Cactus)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>Lava within Chebyshev distance <paramref name="r"/> of the feet or head cell of foot cell (x,y,z).</summary>
+    public static bool LavaNear(IBlockAccess w, int x, int y, int z, int r = 1)
+    {
+        for (int dx = -r; dx <= r; dx++)
+        for (int dy = -r; dy <= r + 1; dy++)
+        for (int dz = -r; dz <= r; dz++)
+            if (BlockShapes.IsLava(w.GetBlock(x + dx, y + dy, z + dz))) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Whether removing block <paramref name="target"/> would leave a player at <paramref name="feet"/> with nothing but
+    /// void below the hitbox (it is "the last block between the player and the void").
+    /// </summary>
+    public static bool RemovalLeavesOverVoid(IBlockAccess w, Vec3d feet, BlockPos target)
+    {
+        if (target.Y > feet.Y + 1e-6) return false;
+        var overlay = new BlockOverlay(w);
+        overlay.Set(target, 0);
+        return IsPlayerOverVoid(overlay, feet) && !IsPlayerOverVoid(w, feet);
+    }
+
+    /// <summary>Blocks directly holding up a player at <paramref name="feet"/> (top layer under the hitbox).</summary>
+    public static List<BlockPos> SupportBlocks(IBlockAccess w, Vec3d feet)
+    {
+        var box = AABB.ForPlayer(feet);
+        int y = (int)Math.Floor(feet.Y - 0.01);
+        var list = new List<BlockPos>();
+        for (int x = (int)Math.Floor(box.MinX); x <= (int)Math.Ceiling(box.MaxX) - 1; x++)
+        for (int z = (int)Math.Floor(box.MinZ); z <= (int)Math.Ceiling(box.MaxZ) - 1; z++)
+            if (BlockShapes.HasCollision(w, x, y, z)) list.Add(new BlockPos(x, y, z));
+        return list;
+    }
 }

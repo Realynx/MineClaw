@@ -95,3 +95,40 @@ public sealed class GoalAny(params Goal[] goals) : Goal
     public override double Distance(int x, int y, int z) => Goals.Min(g => g.Distance(x, y, z));
     public override string ToString() => $"any({string.Join(", ", Goals)})";
 }
+
+/// <summary>An inner goal restricted to cells accepted by a predicate (results cached per cell).</summary>
+public sealed class GoalFiltered(Goal inner, Func<int, int, int, bool> accept, string label) : Goal
+{
+    private readonly Dictionary<BlockPos, bool> _cache = new();
+
+    public Goal Inner { get; } = inner;
+
+    public override bool IsReached(int x, int y, int z) => Inner.IsReached(x, y, z) && Accepts(x, y, z);
+
+    private bool Accepts(int x, int y, int z)
+    {
+        var p = new BlockPos(x, y, z);
+        if (!_cache.TryGetValue(p, out bool ok)) _cache[p] = ok = accept(x, y, z);
+        return ok;
+    }
+
+    /// <summary>Rejected cells close to the goal look further away, so a partial path ends on an accepted cell
+    /// rather than the nearest rejected one (e.g. on the rim of the island).</summary>
+    public override double Distance(int x, int y, int z)
+    {
+        double d = Inner.Distance(x, y, z);
+        return d < 2.5 && !Accepts(x, y, z) ? d + 2.5 : d;
+    }
+    public override string ToString() => $"{Inner} ({label})";
+
+    /// <summary>
+    /// <paramref name="inner"/>, but only standing cells at least <paramref name="minEdgeDistance"/> from any deadly
+    /// drop (2 = never on the rim of the island) and, optionally, with no lava within 1 block of feet/head.
+    /// </summary>
+    public static GoalFiltered AwayFromEdge(IBlockAccess w, Goal inner, int minEdgeDistance = 2, bool avoidLava = true,
+        double maxSafeFall = 3) =>
+        new(inner, (x, y, z) =>
+                Safety.EdgeDistance(w, x, y, z, minEdgeDistance, maxSafeFall) >= minEdgeDistance
+                && (!avoidLava || !Safety.LavaNear(w, x, y, z)),
+            avoidLava ? "away from edges and lava" : "away from edges");
+}

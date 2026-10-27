@@ -71,6 +71,10 @@ public sealed partial class MinecraftClient : IAsyncDisposable
     public event Action<string>? PlayerJoined;
     public event Action<string>? PlayerLeft;
     public event Action<DangerEvent>? Danger;
+    /// <summary>(entity id, animation) from 0x12 for other entities (1 = arm swing, 2 = hurt). Used to watch players teach.</summary>
+    public event Action<int, int>? EntityAnimated;
+    /// <summary>(block, data1, data2) from 0x36 block action (note blocks, pistons; chest lids on servers that send them).</summary>
+    public event Action<BlockPos, int, int>? BlockAction;
 
     private void Raise(Action a) => _eventQueue.Writer.TryWrite(a);
 
@@ -176,6 +180,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
         _lastSprint = _lastSneak = false;
         _voidAlerted = _lavaAlerted = false;
         _hostileAlerted.Clear();
+        ResetSafety();
     }
 
     /// <summary>Sends a clean quit (0xFF), closes the connection and stops auto-reconnect.</summary>

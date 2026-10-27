@@ -42,6 +42,15 @@ public sealed record ClientOptions
     /// <summary>Sneak automatically whenever idle on a block next to the void.</summary>
     public bool SneakAtEdgesWhenIdle { get; init; } = true;
 
+    /// <summary>Void protection applied to every tick of movement, whatever action runs (see <see cref="MineClaw.World.EdgeGuard"/>).</summary>
+    public EdgeGuardOptions EdgeGuard { get; init; } = new();
+    /// <summary>When falling with nothing below, place any block from the inventory under/beside the bot.</summary>
+    public bool ClutchEnabled { get; init; } = true;
+    /// <summary>Hostile mobs within this distance while the bot is near an edge make it step toward the island interior (0 = off).</summary>
+    public double EdgeRetreatHostileRadius { get; init; } = 4;
+    /// <summary>Freeze movement after a teleport/respawn until the chunks below are loaded and there is ground under the bot.</summary>
+    public bool FreezeUntilSupportVerified { get; init; } = true;
+
     /// <summary>Blocks the bot must never break (player builds, generator walls...). Evaluated for (position, block id).
     /// May be replaced at runtime via <see cref="MinecraftClient.IsProtected"/>.</summary>
     public Func<BlockPos, int, bool>? IsProtected { get; init; }
@@ -51,6 +60,9 @@ public sealed record ClientOptions
 
     /// <summary>Diagnostic log sink (one line per call). Null = silent.</summary>
     public Action<string>? Log { get; init; }
+
+    /// <summary>Debug-level sink (safety interventions, knockback). Null = silent.</summary>
+    public Action<string>? DebugLog { get; init; }
 
     /// <summary>Opens the connection. Default: TCP to <see cref="Host"/>:<see cref="Port"/>. Tests inject in-memory streams.</summary>
     public Func<CancellationToken, PacketConnection>? ConnectionFactory { get; init; }

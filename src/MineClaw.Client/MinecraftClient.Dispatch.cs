@@ -149,10 +149,14 @@ public sealed partial class MinecraftClient
                 w.Entities.Spawn(new Entity(tb.EntityId, EntityKind.Weather, Abs(tb.X, tb.Y, tb.Z)));
                 break;
             case EntityVelocityPacket ev:
-                if (ev.EntityId != w.Player.EntityId)
-                    w.Entities.SetVelocity(ev.EntityId, new Vec3d(FixedPoint.FromVelocity(ev.VelocityX),
-                        FixedPoint.FromVelocity(ev.VelocityY), FixedPoint.FromVelocity(ev.VelocityZ)));
+            {
+                var vel = new Vec3d(FixedPoint.FromVelocity(ev.VelocityX), FixedPoint.FromVelocity(ev.VelocityY), FixedPoint.FromVelocity(ev.VelocityZ));
+                // Vanilla b1.8.1 (NetClientHandler.handleEntityVelocity → getEntityByID returns thePlayer for our own id)
+                // applies this to the local player too: knockback from mobs, arrows, explosions. Handed to the tick thread.
+                if (ev.EntityId == w.Player.EntityId) _selfVelocity.Enqueue(vel);
+                else w.Entities.SetVelocity(ev.EntityId, vel);
                 break;
+            }
             case DestroyEntityPacket de:
                 w.Entities.Destroy(de.EntityId);
                 break;
@@ -183,6 +187,20 @@ public sealed partial class MinecraftClient
                 break;
             case EntityStatusPacket st:
                 if (st.EntityId == w.Player.EntityId && st.Status == 9) Interlocked.Increment(ref _eatAcceptedCount);
+                break;
+            case AnimationPacket an:
+                if (an.EntityId != w.Player.EntityId)
+                {
+                    int eid = an.EntityId, anim = an.Animation;
+                    Raise(() => EntityAnimated?.Invoke(eid, anim));
+                }
+                break;
+            case BlockActionPacket ba:
+                {
+                    var bp = new BlockPos(ba.X, ba.Y, ba.Z);
+                    int d1 = ba.Data1, d2 = ba.Data2;
+                    Raise(() => BlockAction?.Invoke(bp, d1, d2));
+                }
                 break;
             case PlayerListItemPacket pl:
                 OnPlayerList(s, pl);

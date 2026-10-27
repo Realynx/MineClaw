@@ -6,8 +6,9 @@ namespace MineClaw.Client;
 
 public sealed partial class MinecraftClient
 {
-    /// <summary>One tick of a driver: the input to apply and whether the driver is finished.</summary>
-    private readonly record struct DriverStep(MoveInput Input, bool Done = false);
+    /// <summary>One tick of a driver: the input to apply and whether the driver is finished. <paramref name="AllowDrop"/>
+    /// marks a planned drop to a lower floor (the edge guard then verifies the landing instead of forcing sneak).</summary>
+    private readonly record struct DriverStep(MoveInput Input, bool Done = false, bool AllowDrop = false);
 
     /// <summary>Per-tick movement logic installed by an action; runs on the tick thread.</summary>
     private sealed class Driver(Func<PhysicsState, DriverStep> step)
@@ -73,6 +74,7 @@ public sealed partial class MinecraftClient
             _lookYaw = t.Yaw; _lookPitch = t.Pitch;
             _ticksSincePos = 0;
             teleported = true;
+            OnServerTeleportForSafety();
             if (!s.PositionKnown)
             {
                 s.PositionKnown = true;
@@ -94,8 +96,22 @@ public sealed partial class MinecraftClient
             return;
         }
 
+        // ---- knockback: vanilla applies 0x1C to the local player (replacing motion) ----
+        ApplyServerVelocity(phys);
+
+        // ---- after a teleport/respawn: no movement until the ground below is loaded and verified ----
+        if (HoldForSafety(phys))
+        {
+            phys.Frozen = true;
+            player.SyncFromPhysics();
+            if (!teleported) SendMovement(s, phys);
+            EndTick();
+            return;
+        }
+
         // ---- input from the active driver, or idle ----
         MoveInput input;
+        bool allowDrop = false;
         var d = _driver;
         if (d is not null)
         {
@@ -103,6 +119,7 @@ public sealed partial class MinecraftClient
             {
                 var step = d.Step(phys);
                 input = step.Input;
+                allowDrop = step.AllowDrop;
                 if (step.Done)
                 {
                     Interlocked.CompareExchange(ref _driver, null, d);
@@ -120,12 +137,18 @@ public sealed partial class MinecraftClient
         }
         else input = IdleInput(phys);
 
+        // ---- safety: below every action, every tick, before the position goes out ----
+        input = RetreatOverride(phys, input);
+        var guard = SafetyFilter(phys, input, allowDrop);
+        input = guard.Input;
+
         PlayerPhysics.Tick(World, phys, input);
         if (d is not null) { _lookYaw = phys.Yaw; _lookPitch = phys.Pitch; } // idle keeps the driver's last look
         player.SyncFromPhysics();
 
         CheckDangers(phys);
         if (!teleported) SendMovement(s, phys);
+        AfterTickSafety(s, phys, guard);
         EndTick();
     }
 
@@ -199,12 +222,12 @@ public sealed partial class MinecraftClient
     {
         // Falling with nothing below.
         if (phys.OnGround || phys.InWater || phys.OnLadder) _voidAlerted = false;
-        else if (!_voidAlerted && phys.Velocity.Y < -0.3 && World.IsPlayerOverVoid(phys.Position))
+        else if (!_voidAlerted && !_voidEpisode && phys.Velocity.Y < -0.3 && World.IsPlayerOverVoid(phys.Position))
         {
             _voidAlerted = true;
             var msg = $"falling into the void at {Fmt(phys.Position)}";
             Log(msg);
-            RaiseDanger(DangerKind.FallingIntoVoid, msg, abort: true);
+            RaiseDanger(DangerKind.FallingIntoVoid, msg, abort: true, critical: true);
         }
 
         if (phys.InLava)
@@ -228,9 +251,9 @@ public sealed partial class MinecraftClient
         }
     }
 
-    private void RaiseDanger(DangerKind kind, string message, bool abort)
+    private void RaiseDanger(DangerKind kind, string message, bool abort, bool critical = false)
     {
-        var ev = new DangerEvent(kind, message);
+        var ev = new DangerEvent(kind, message) { Critical = critical };
         Raise(() => Danger?.Invoke(ev));
         if (abort && Options.AbortActionsOnDanger) AbortCurrentAction(message);
     }
