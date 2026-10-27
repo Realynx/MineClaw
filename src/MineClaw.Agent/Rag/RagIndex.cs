@@ -86,6 +86,26 @@ public interface IRetrievalIndex
     string FormatHit(RagHit hit, int maxChars);
 }
 
+/// <summary>One extra ranked candidate list (best first) for reciprocal-rank fusion, e.g. from the RAPTOR tree.</summary>
+/// <param name="Items">Doc ids with the cosine similarity that produced the rank (used by the relevance gates).</param>
+public sealed record RankedList(string Name, IReadOnlyList<(long Id, double Cosine)> Items);
+
+/// <summary>Extra lists to fuse into a hybrid search, plus docs whose flat vector match they replace.</summary>
+/// <param name="SkipFlatVector">Docs left out of the flat cosine list (already ranked semantically by <see cref="Lists"/>).</param>
+public sealed record SearchAugment(IReadOnlyList<RankedList> Lists, Func<long, bool>? SkipFlatVector = null)
+{
+    public static readonly SearchAugment None = new([]);
+}
+
+/// <summary>
+/// Adds ranked lists to <see cref="RagIndex.SearchAsync(RagQuery, CancellationToken)"/> (hierarchical / tree retrievers).
+/// Gets the query vector the index already computed, so the query is embedded once. Must not throw for "no results".
+/// </summary>
+public interface ISearchAugmenter
+{
+    SearchAugment? Augment(RagQuery query, float[]? queryVector);
+}
+
 public sealed record ChatRow(long Id, DateTimeOffset At, string Kind, string? Player, string Text)
 {
     public string Format() => $"c{Id} {At:MM-dd HH:mm} {Player ?? Kind}: {Text}";
@@ -144,6 +164,10 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
 
     public AgentDb Db => _db;
     public RagOptions Options => _o;
+    /// <summary>Optional extra ranked lists (RAPTOR) fused into every <see cref="SearchAsync(RagQuery, CancellationToken)"/>.</summary>
+    public ISearchAugmenter? Augmenter { get; set; }
+    /// <summary>Raised after docs are deleted, with their refs (keep handlers tiny; they run on the deleting thread).</summary>
+    public event Action<IReadOnlyList<string>>? Deleted;
     public IEmbeddingProvider Embedder => _embedder;
     public bool VectorsAvailable => _embedder.IsAvailable && DateTimeOffset.UtcNow >= _disabledUntil;
     public int VectorCount { get { lock (_vecLock) return _vecs.Count; } }
@@ -252,17 +276,25 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
             if (id == 0) return false;
             _db.Exec("DELETE FROM docs WHERE id = $id", ("$id", id));
             lock (_vecLock) _vecs.Remove(id);
-            return true;
         }
+        RaiseDeleted([reference]);
+        return true;
+    }
+
+    private void RaiseDeleted(IReadOnlyList<string> refs)
+    {
+        if (refs.Count == 0) return;
+        try { Deleted?.Invoke(refs); }
+        catch (Exception ex) { _log.LogWarning(ex, "doc delete handler failed"); }
     }
 
     /// <summary>Deletes every doc whose ref starts with <paramref name="prefix"/> except those in <paramref name="keep"/>.</summary>
     public int DeleteByPrefix(string prefix, IReadOnlySet<string>? keep = null)
     {
+        var gone = new List<string>();
         lock (_db.Gate)
         {
             var rows = _db.Query("SELECT id, ref FROM docs WHERE substr(ref, 1, length($p)) = $p", r => (r.GetInt64(0), r.GetString(1)), ("$p", prefix));
-            int n = 0;
             _db.Tx(() =>
             {
                 foreach (var (id, rf) in rows)
@@ -270,11 +302,12 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
                     if (keep != null && keep.Contains(rf)) continue;
                     _db.Exec("DELETE FROM docs WHERE id = $id", ("$id", id));
                     lock (_vecLock) _vecs.Remove(id);
-                    n++;
+                    gone.Add(rf);
                 }
             });
-            return n;
         }
+        RaiseDeleted(gone);
+        return gone.Count;
     }
 
     public int Count(string? kind = null) =>
@@ -303,16 +336,31 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
             ORDER BY d.updated DESC, d.id DESC LIMIT $n
             """, r => ReadHit(r), ("$k", kind), ("$s", since is { } t ? AgentDb.ToUnixMs(t) : 0L), ("$p", refPrefix), ("$n", limit));
 
-    /// <summary>Hybrid search with query embedding (bounded by <see cref="RagOptions.QueryEmbedTimeoutMs"/>; falls back to FTS-only).</summary>
-    public async Task<List<RagHit>> SearchAsync(RagQuery q, CancellationToken ct = default)
+    /// <summary>
+    /// Hybrid search with query embedding (bounded by <see cref="RagOptions.QueryEmbedTimeoutMs"/>; falls back to FTS-only),
+    /// fused with the <see cref="Augmenter"/>'s lists (RAPTOR) when one is set.
+    /// </summary>
+    public Task<List<RagHit>> SearchAsync(RagQuery q, CancellationToken ct = default) => SearchAsync(q, Augmenter, ct);
+
+    /// <summary>Hybrid search fused with an explicit augmenter (null = flat only).</summary>
+    public async Task<List<RagHit>> SearchAsync(RagQuery q, ISearchAugmenter? augmenter, CancellationToken ct = default)
     {
         float[]? qv = null;
         if (!string.IsNullOrWhiteSpace(q.Text)) qv = await EmbedQueryAsync(q.Text!, ct).ConfigureAwait(false);
-        return Search(q, qv);
+        SearchAugment? aug = null;
+        if (augmenter != null)
+        {
+            try { aug = augmenter.Augment(q, qv); }
+            catch (Exception ex) { _log.LogWarning(ex, "search augmenter failed; flat retrieval only"); }
+        }
+        return Search(q, qv, aug);
     }
 
-    /// <summary>Synchronous hybrid search; pass a query vector to include the semantic list.</summary>
-    public List<RagHit> Search(RagQuery q, float[]? queryVector = null)
+    /// <summary>
+    /// Synchronous hybrid search; pass a query vector to include the semantic list. <paramref name="augment"/> adds
+    /// further ranked lists (RAPTOR) to the reciprocal-rank fusion; their cosines feed the same relevance gates.
+    /// </summary>
+    public List<RagHit> Search(RagQuery q, float[]? queryVector = null, SearchAugment? augment = null)
     {
         var terms = TextTokens.Terms(q.Text, q.IgnoreWords);
         var lists = new List<List<long>>(3);
@@ -340,10 +388,24 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
 
         if (queryVector != null && queryVector.Length > 0)
         {
-            var sem = VectorTop(VectorMath.Normalize(queryVector), kinds, tags, CandidateLimit, _o.MinSimilarity * 0.75);
+            var sem = VectorTop(VectorMath.Normalize(queryVector), kinds, tags, CandidateLimit, _o.MinSimilarity * 0.75, augment?.SkipFlatVector);
             foreach (var (id, c) in sem) cosines[id] = c;
             if (sem.Count > 0) lists.Add(sem.Select(s => s.Id).ToList());
         }
+        if (augment != null)
+            foreach (var extra in augment.Lists)
+            {
+                if (extra.Items.Count == 0) continue;
+                var ids = new List<long>(extra.Items.Count);
+                var seen = new HashSet<long>();
+                foreach (var (id, c) in extra.Items)
+                {
+                    if (!seen.Add(id)) continue;
+                    ids.Add(id);
+                    if (c > cosines.GetValueOrDefault(id)) cosines[id] = c;
+                }
+                lists.Add(ids);
+            }
         if (lists.Count == 0) return [];
 
         var fused = new Dictionary<long, double>();
@@ -490,14 +552,18 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
     public List<RagHit> Nearby(double x, double y, double z, double r, IReadOnlyCollection<string>? kinds = null, int limit = 6) =>
         Search(new RagQuery { Near = (x, y, z), Radius = r, Kinds = kinds, Limit = limit });
 
-    private List<(long Id, double Cos)> VectorTop(float[] q, string[]? kinds, string[]? tags, int limit, double floor)
+    /// <summary>Doc kind of hierarchical summary nodes (RAPTOR); ranked by the tree retriever, not the flat vector list.</summary>
+    public const string SummaryKind = "summary";
+
+    private List<(long Id, double Cos)> VectorTop(float[] q, string[]? kinds, string[]? tags, int limit, double floor, Func<long, bool>? skip = null)
     {
         var top = new List<(long Id, double Cos)>(limit + 1);
         lock (_vecLock)
         {
             foreach (var (id, e) in _vecs)
             {
-                if (kinds is { Length: > 0 } ? Array.IndexOf(kinds, e.Kind) < 0 : e.Kind == "chat") continue;
+                if (kinds is { Length: > 0 } ? Array.IndexOf(kinds, e.Kind) < 0 : e.Kind is "chat" or SummaryKind) continue;
+                if (skip != null && skip(id)) continue;
                 if (tags is { Length: > 0 } && (e.Tag == null || Array.IndexOf(tags, e.Tag) < 0)) continue;
                 double c = VectorMath.Dot(q, e.Vec);
                 if (c < floor) continue;
@@ -533,6 +599,7 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
             "knowledge" => $"kb {h.Title}: {(h.Snippet != null && h.Body.Length > 180 ? h.Snippet : h.Body)}",
             "episode" => "ep " + h.Body,
             "world" => $"{h.Body} (seen {TextTokens.Ago(Now - h.Updated)})",
+            SummaryKind => "sum " + h.Body,
             _ => h.Body,
         };
         return TextUtil.Truncate(TextUtil.OneLine($"#{h.Id} {text}"), maxChars);

@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\MineClaw.Data\MineClaw.Data.csproj" />
+    <ProjectReference Include="..\MineClaw.Raptor\MineClaw.Raptor.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -84,6 +84,15 @@ public sealed class AgentDb : IDisposable
         CREATE INDEX doc_edges_child ON doc_edges(child);
         UPDATE docs SET token_count = (length(title) + length(body) + 3) / 4;
         """,
+        // v3: RAPTOR tree mapping (Rag/Raptor/AgentDbRaptorStore). raptor_idx = RaptorNode.Index (leaves: the doc itself;
+        // summaries: kind 'summary', ref 'raptor:{idx}'); raptor_flags = pinned 1 | dirty 2 | summary-pending 4;
+        // raptor_seq = insertion sequence. Tree metadata lives in meta('raptor_meta').
+        """
+        ALTER TABLE docs ADD COLUMN raptor_idx INTEGER;
+        ALTER TABLE docs ADD COLUMN raptor_flags INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE docs ADD COLUMN raptor_seq INTEGER NOT NULL DEFAULT 0;
+        CREATE UNIQUE INDEX docs_raptor ON docs(raptor_idx) WHERE raptor_idx IS NOT NULL;
+        """,
     ];
 
     private const string FtsSql = """

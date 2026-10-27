@@ -6,6 +6,7 @@ using MineClaw.Agent.Human;
 using MineClaw.Agent.Llm;
 using MineClaw.Agent.Memory;
 using MineClaw.Agent.Rag;
+using MineClaw.Agent.Rag.Raptor;
 using MineClaw.Agent.Self;
 using MineClaw.Agent.Routines;
 using MineClaw.Agent.Tools;
@@ -53,6 +54,10 @@ public sealed class AgentRuntime : IDisposable
     public required ObservationStore Observations { get; init; }
     public required EpisodeIndexer Episodes { get; init; }
     public AutoRetriever? Retriever { get; init; }
+    /// <summary>RAPTOR tree fused into retrieval (null when RAG/RAPTOR is off or embeddings are not configured).</summary>
+    public RaptorMemory? Raptor { get; init; }
+    /// <summary>Background RAPTOR maintenance (incremental insert, RefreshDirty, off-peak rebuild); persistent runtimes only.</summary>
+    public RaptorScheduler? RaptorMaintenance { get; init; }
     public SelfProfile? Self { get; init; }
     public ReflectionPass? Reflection { get; init; }
     /// <summary>Worker/builder tier behind the brain's <c>delegate</c> tool (null when Agent:Worker:Enabled is false).</summary>
@@ -105,6 +110,17 @@ public sealed class AgentRuntime : IDisposable
             ?? (rag.Enabled && options.Embeddings.IsConfigured ? new AzureOpenAIEmbeddingProvider(options.Embeddings) : NullEmbeddingProvider.Instance);
         if (!rag.Enabled) embedder = NullEmbeddingProvider.Instance;
         var index = new RagIndex(db, rag, embedder, usage, options.Embeddings, time, Log("MineClaw.Rag"));
+        RaptorMemory? raptor = null;
+        RaptorScheduler? raptorJobs = null;
+        if (rag.Enabled && rag.Raptor.Enabled && embedder.IsAvailable)
+        {
+            var summarizer = new HaikuSummarizer(llm, options.Llm, usage);
+            raptor = new RaptorMemory(db, index, new CachedEmbedder(db, embedder, options.Embeddings, usage), summarizer, rag.Raptor,
+                log: Log("MineClaw.Raptor"));
+            index.Augmenter = raptor; // recall / ask_memory / auto-retrieval: hybrid lists + RAPTOR, fused by RRF
+            if (persist && rag.Raptor.Maintenance)
+                raptorJobs = new RaptorScheduler(raptor, summarizer, db, usage, time, Log("MineClaw.Raptor"));
+        }
         var memory = new MemoryStore(db, index, time, Data("memory.json"));
         var observations = new ObservationStore(index, time);
         var context = new ContextManager(options.Context);
@@ -157,7 +173,9 @@ public sealed class AgentRuntime : IDisposable
         var agent = new BotAgent(options, llm, tools, events, chat, usage, context, activities, knowledge, time,
             loggers?.CreateLogger<BotAgent>(), knowledgeIsCore: rag.Enabled);
         if (worker != null) worker.StateHeader = () => agent.StateHeader?.Invoke() ?? "";
-        var retriever = rag.Enabled && rag.AutoRetrieve ? new AutoRetriever(index, context, episodes) : null;
+        var retriever = !rag.Enabled || !rag.AutoRetrieve ? null
+            : raptor != null ? new AutoRetriever(new RaptorRetrievalIndex(index, raptor), rag, context, episodes)
+            : new AutoRetriever(index, context, episodes);
         var reflection = self != null ? new ReflectionPass(self, index, llm, usage, time, Log("MineClaw.Self")) : null;
         agent.Position = position;
         agent.Rag = index;
@@ -165,19 +183,24 @@ public sealed class AgentRuntime : IDisposable
         agent.Self = self;
         agent.Reflection = reflection;
         if (rag.Enabled && rag.RestoreJournal && episodes.LatestJournal() is { Length: > 0 } journal) context.SetJournal(journal);
+        // Off the caller's thread: loads the stored tree, then (persistent runtimes) runs maintenance in the background.
+        if (raptorJobs != null) raptorJobs.Start();
+        else raptor?.StartLoading();
 
         return new AgentRuntime
         {
             Options = options, Tools = tools, Events = events, Chat = chat, Usage = usage, Memory = memory,
             Context = context, Activities = activities, Routines = routines, Agent = agent, Llm = llm,
             Db = db, Rag = index, Observations = observations, Episodes = episodes, Retriever = retriever, Self = self,
-            Reflection = reflection, Embeddings = embedder, Worker = worker, MemoryAgent = memAgent,
+            Reflection = reflection, Embeddings = embedder, Worker = worker, MemoryAgent = memAgent, Raptor = raptor, RaptorMaintenance = raptorJobs,
             KnowledgeTruncated = truncated, KnowledgeChars = knowledge.Length, KnowledgeChunks = chunks,
         };
     }
 
     public void Dispose()
     {
+        RaptorMaintenance?.Dispose();
+        Raptor?.Dispose();
         Rag.Dispose();
         Memory.Dispose();
         (Embeddings as IDisposable)?.Dispose();

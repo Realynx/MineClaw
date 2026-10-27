@@ -52,6 +52,8 @@ public sealed class RagOptions
     public string[] NoEmbedKinds { get; set; } = ["chest", "container", "furnace", "event", "player_activity"];
     /// <summary>Reciprocal-rank-fusion constant.</summary>
     public int RrfK { get; set; } = 60;
+    /// <summary>RAPTOR tree over episodes/knowledge/notes ("Agent:Rag:Raptor"), fused with the flat lists by RRF.</summary>
+    public Raptor.RaptorMemoryOptions Raptor { get; set; } = new();
 }
 
 /// <summary>Embedding provider settings ("Agent:Embeddings"). Empty key/endpoint = FTS-only.</summary>
