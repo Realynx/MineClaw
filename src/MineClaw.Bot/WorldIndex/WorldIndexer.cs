@@ -40,7 +40,7 @@ public sealed partial class WorldIndexer : IDisposable
     private readonly List<ObservationRow> _pendingClusterRows = new();
     private readonly List<(string Kind, string Key)> _removals = new();
     private bool _protectDirty = true;
-    private volatile HashSet<BlockPos> _protected = new();
+    private volatile Dictionary<BlockPos, string> _protected = new();
 
     private CancellationTokenSource? _cts;
     private Task? _loop;
@@ -193,15 +193,26 @@ public sealed partial class WorldIndexer : IDisposable
     /// True for blocks memory says must not be broken: containers/stations, generators' lava/water and the walls
     /// holding them, farmland/irrigation/soil, sign posts, unknown player builds. Lock-free (pathfinder inner loop).
     /// </summary>
-    public bool IsProtected(BlockPos p, int blockId) => _protected.Contains(p);
+    public bool IsProtected(BlockPos p, int blockId) => _protected.ContainsKey(p);
+
+    /// <summary>Which indexed thing protects <paramref name="p"/> (its kind: cobble_generator, farm, tree, unknown_structure,
+    /// portal, sign, chest...), or null. For refusal texts and telemetry (protection policy: all of these are SOFT).</summary>
+    public string? ProtectionKind(BlockPos p) => _protected.GetValueOrDefault(p);
+
+    /// <summary>Protection kind of a placed floor/wall/path cell (not an observation kind).</summary>
+    public const string FloorKind = "floor";
 
     public int ProtectedCount => _protected.Count;
 
     private void RebuildProtection()
     {
         if (!_protectDirty) return;
-        var set = new HashSet<BlockPos>();
-        foreach (var e in _entries.Values) set.UnionWith(e.Protect);
+        var set = new Dictionary<BlockPos, string>();
+        // Specific things first (a generator wall inside an unknown build reads as the generator).
+        foreach (var e in _entries.Values.OrderBy(e => e.Kind == IndexKinds.UnknownStructure ? 1 : 0))
+            foreach (var p in e.Protect) set.TryAdd(p, e.Kind);
+        // Placed floors/walls/paths (cobble, planks, slabs...): soft-protected from the bot's own choices.
+        foreach (var p in FloorCells()) set.TryAdd(p, FloorKind);
         // A generator dig cell is never a wall: a dual generator's second cell sits next to the first cell's lava/water.
         foreach (var g in _gens.AllCells()) set.Remove(g);
         _protected = set;

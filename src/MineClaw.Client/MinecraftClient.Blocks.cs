@@ -61,14 +61,11 @@ public sealed partial class MinecraftClient
         string name = BlockName(id, World.GetMeta(pos));
         if (!World.IsLoaded(pos.X, pos.Z)) return ActionResult.Fail($"{Fmt(pos)} is not loaded");
         if (id == 0 || BlockShapes.IsLiquid(id)) return ActionResult.Success($"{Fmt(pos)} already clear");
-        if (!ignoreProtection && IsBlockProtected(pos, id))
-            return ActionResult.Fail(id == Blocks.Log && !UserProtected(pos, id)
-                ? $"won't dig the log at {Fmt(pos)}: that tree is one of the island's last {MinTrees} (chop_tree fells and replants it once I hold a sapling)"
-                : $"{name} at {Fmt(pos)} is protected");
+        if (!ignoreProtection && IsBlockProtected(pos, id)) return ActionResult.Fail(ProtectedRefusal(pos, id));
         if (Blocks.Get(id).Hardness < 0) return ActionResult.Fail($"{name} is unbreakable");
         if (EditBlocked(pos)) return ActionResult.Fail(BlockedReason(pos));
         if (DigSafetyVeto(pos, name, generator, positioned: !allowPathing) is { } veto) return ActionResult.Fail(veto);
-        if (floorGuard && !generator && WalkwayFloorVeto(pos, name) is { } floor) return ActionResult.Fail(floor);
+        if (floorGuard && !generator && !OverridesSoft(pos, id) && WalkwayFloorVeto(pos, name) is { } floor) return ActionResult.Fail(floor);
 
         await EnsureNoWindowAsync(ct).ConfigureAwait(false);
         var aim = Aiming.FindDigAim(World, World.Player.EyePosition, pos, Options.Reach);
@@ -447,7 +444,8 @@ public sealed partial class MinecraftClient
     // ------------------------------------------------------------------ safety helpers
 
     /// <summary>Owner protection plus tree stewardship (<see cref="TreeGuarded"/>: the island's last trees' logs).</summary>
-    private bool IsBlockProtected(BlockPos pos, int id) => (IsProtected?.Invoke(pos, id) ?? false) || (id == Blocks.Log && TreeGuarded(pos));
+    private bool IsBlockProtected(BlockPos pos, int id) =>
+        (IsProtected?.Invoke(pos, id) ?? false) || (id == Blocks.Log && !OverridesSoft(pos, id) && TreeGuarded(pos));
 
     private bool NextToWater(BlockPos p)
     {
@@ -475,8 +473,21 @@ public sealed partial class MinecraftClient
     /// <summary>Why digging <paramref name="pos"/> from where the bot stands is unsafe, or null.</summary>
     private string? DigSafetyVeto(BlockPos pos, string name, bool generator, bool positioned)
     {
+        // Hard safety: never the block another player (hive bot or human) stands on, leaves included (live 10-27: main broke
+        // the crown leaves clone 67 stood on; it fell 6 blocks to hp 7).
+        if (Safety.OtherPlayersSupport(World).Contains(pos))
+            return $"won't dig the {name} at {Fmt(pos)}: someone is standing on it";
         if (SupportBlocks().Contains(pos))
-            return $"won't dig the {name} I'm standing on at {Fmt(pos)}" + (WouldDropIntoVoid(pos) ? " (it's all that holds me over the void)" : "");
+        {
+            // Mining down my own pillar (a block a hive bot placed) is a 1-block step onto the next solid block: fine.
+            // Leaves, a longer drop or the void below never are (hard safety), and ground I didn't build stays a floor.
+            int under = World.GetBlock(pos);
+            bool shortStep = under != Blocks.Leaves && OverridesSoft(pos, under) && !NextToLava(pos)
+                             && Safety.RemovalIsShortSafeDrop(World, World.Player.Position, pos);
+            if (!shortStep)
+                return $"won't dig the {name} I'm standing on at {Fmt(pos)}" + (WouldDropIntoVoid(pos) ? " (it's all that holds me over the void)"
+                    : World.GetBlock(pos) == Blocks.Leaves ? " (leaves up high: I'd fall)" : " (the drop below is too far)");
+        }
         if (WouldDropIntoVoid(pos)) return $"won't dig {name} at {Fmt(pos)}: it's the last block between me and the void";
         if (LavaCouldFlowInto(pos))
         {

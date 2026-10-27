@@ -27,9 +27,12 @@ public static class TreeTools
             async (i, ct) =>
             {
                 var spec = i.Str("at")?.Trim();
-                if (string.IsNullOrEmpty(spec) || spec is "nearest" or "tree" or "the tree") return GameToolSet.R(await chopper.ChopTreeAsync(null, null, ct));
-                if (TreeScan.ParseWood(spec) is { } wood) return GameToolSet.R(await chopper.ChopTreeAsync(null, wood, ct));
-                if (GameToolSet.Resolve(spec, places) is { } p) return GameToolSet.R(await chopper.ChopTreeAsync(p, null, ct));
+                // Work at height (pillar up to the crown): carry clutch blocks first (live 10-27: 67 fell off a crown with none).
+                var clutch = await ClutchBlocks.EnsureAsync(c, ct);
+                ToolResult With(ToolResult r) => clutch == null ? r : r with { Text = clutch + "; " + r.Text };
+                if (string.IsNullOrEmpty(spec) || spec is "nearest" or "tree" or "the tree") return With(GameToolSet.R(await chopper.ChopTreeAsync(null, null, ct)));
+                if (TreeScan.ParseWood(spec) is { } wood) return With(GameToolSet.R(await chopper.ChopTreeAsync(null, wood, ct)));
+                if (GameToolSet.Resolve(spec, places) is { } p) return With(GameToolSet.R(await chopper.ChopTreeAsync(p, null, ct)));
                 return ToolResult.Error($"unknown tree '{spec}' (x,y,z, a saved name, or oak/birch/spruce)");
             }, longRunning: true);
     }

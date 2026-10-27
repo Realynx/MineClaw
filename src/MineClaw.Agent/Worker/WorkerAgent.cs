@@ -249,6 +249,13 @@ public sealed class WorkerAgent
                     log.Add($"{u.Name}{(r.Ok ? "" : "!")} {TextUtil.Truncate(TextUtil.OneLine(r.Text), 60)}");
                     _trail = TrailOf(log, null);
                     results.Add(new LlmToolResult(u.Id, r.Text.Length == 0 ? (r.Ok ? "ok" : "error") : r.Text, !r.Ok) { Image = r.Image });
+                    // Protection rule 5: the first protected refusal ends the task and goes back as-is (why + unlock phrase),
+                    // never retried a second way (live 10-27: two workers and a script hit the same protected log).
+                    if (!r.Ok && summary == null && IsProtectionRefusal(r.Text))
+                    {
+                        stop = "repeated failure";
+                        summary = $"failed: {u.Name}: {TextUtil.Truncate(TextUtil.OneLine(r.Text), 260)}";
+                    }
                     if (!r.Ok && _o.MaxIdenticalFailures > 0)
                     {
                         var key = FailureKey(u.Name, r.Text);
@@ -299,6 +306,12 @@ public sealed class WorkerAgent
     }
 
     /// <summary>"fill_bucket" + "no water source at 1,64,-9" → "fill_bucket|no water source at ,,-": coordinates/counts don't make a failure new.</summary>
+
+    /// <summary>A refusal of the protection policy (MineClaw.World.ProtectionText: "... is protected (why); say '...'").</summary>
+    public static bool IsProtectionRefusal(string? text) =>
+        text is { Length: > 0 } && text.Contains(" is protected", StringComparison.Ordinal)
+        && !text.Contains("spawn protection", StringComparison.OrdinalIgnoreCase);
+
     internal static string FailureKey(string tool, string error)
     {
         var t = System.Text.RegularExpressions.Regex.Replace(TextUtil.OneLine(error ?? "").ToLowerInvariant(), @"[\d.]+", "");

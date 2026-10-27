@@ -24,19 +24,19 @@ public class BodyAndProtectionTests
         {
             Floor(srv);
             srv.BreakOnFinish = false; // the server ignores the digs (spawn protection, not op)
-            foreach (var x in new[] { 9, 10, 11 }) srv.Blocks[(x, 64, 10)] = Blocks.Cobblestone;
+            foreach (var x in new[] { 9, 10, 11 }) srv.Blocks[(x, 64, 10)] = Blocks.Gravel;
         });
         await using var _ = c;
         using var __ = s;
         LearnedProtectedRegion? seen = null;
         c.ProtectedRegionChanged += r => seen = r;
-        var r = await c.MineAsync("cobblestone", 3);
+        var r = await c.MineAsync("gravel", 3);
         Assert.False(r.Ok);
         Assert.Equal("server undid my digs within 16 of spawn (spawn protection? need op)", r.Message);
         Assert.Equal(1, s.Got<PlayerDiggingPacket>().Count(d => d.Status == PlayerDiggingPacket.StatusStarted));
         await Task.Delay(100);
         Assert.Null(c.ProtectedRegion); // one undone dig is lag/a race, not yet spawn protection
-        Assert.False((await c.MineAsync("cobblestone", 3)).Ok); // a second, independent attempt (separate action)
+        Assert.False((await c.MineAsync("gravel", 3)).Ok); // a second, independent attempt (separate action)
         Assert.True(await Harness.WaitAsync(() => seen is not null));
         Assert.Equal(new BlockPos(8, 64, 8), seen!.Center);
         Assert.Equal(16, seen.Radius);
@@ -44,7 +44,7 @@ public class BodyAndProtectionTests
 
         // Up front now: no dig is even tried, and the reason says why.
         int before = s.Got<PlayerDiggingPacket>().Count();
-        var again = await c.MineAsync("cobblestone", 3);
+        var again = await c.MineAsync("gravel", 3);
         Assert.False(again.Ok);
         Assert.Contains("spawn protection", again.Message);
         var dig = await c.DigBlockAsync(10, 64, 10);
@@ -86,14 +86,14 @@ public class BodyAndProtectionTests
         {
             Floor(srv);
             srv.BreakOnFinish = false;
-            srv.Blocks[(10, 64, 10)] = Blocks.Cobblestone;
-            srv.Blocks[(11, 64, 10)] = Blocks.Cobblestone;
+            srv.Blocks[(10, 64, 10)] = Blocks.Gravel;
+            srv.Blocks[(11, 64, 10)] = Blocks.Gravel;
         });
         await using var _ = c;
         using var __ = s;
         s.Send(new SpawnPositionPacket { X = 200, Y = 64, Z = 200 });
         Assert.True(await Harness.WaitAsync(() => c.World.Spawn.X == 200));
-        var r = await c.MineAsync("cobblestone", 2);
+        var r = await c.MineAsync("gravel", 2);
         Assert.False(r.Ok);
         Assert.Contains("protected area?", r.Message);
         Assert.Null(c.ProtectedRegion);

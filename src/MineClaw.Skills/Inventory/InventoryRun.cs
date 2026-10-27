@@ -85,7 +85,7 @@ public sealed class InventoryRun(SkillContext ctx)
         if (Open == pos && World.Inventory.OpenWindow is not null) return null;
         var close = await CloseAsync(ct);
         if (close is not null) return close;
-        if (ctx.Protected(pos)) return $"{SkillJson.Fmt(pos)} is protected";
+        if (ctx.Protected(pos)) return ctx.ProtectedText(pos, SkillJson.Fmt(pos));
         if (!ContainerDirectory.IsContainer(ctx.Block(pos))) return $"no container at {SkillJson.Fmt(pos)}";
         var claim = await ctx.Claims.TryClaimAsync(ClaimKey.Chest(pos, ctx.World.Dimension), TimeSpan.FromMinutes(2), "inventory", ct);
         if (!claim.Ok) return $"chest {SkillJson.Fmt(pos)} {claim.Message ?? "claimed"}";

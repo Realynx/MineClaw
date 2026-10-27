@@ -44,8 +44,41 @@ public sealed class SelfEditLog
         return false;
     }
 
+    // ---- placements (which item went where), for the placed-block log
+
+    private readonly (BlockPos Pos, int Item, long At)[] _places = new (BlockPos, int, long)[Capacity];
+    private int _pNext, _pCount;
+
+    /// <summary>The bot sent a placement of <paramref name="itemId"/> filling <paramref name="p"/> (also noted as an edit).</summary>
+    public void NotePlace(BlockPos p, int itemId)
+    {
+        Note(p);
+        long now = Clock();
+        lock (_lock)
+        {
+            _places[_pNext] = (p, itemId, now);
+            _pNext = (_pNext + 1) % Capacity;
+            if (_pCount < Capacity) _pCount++;
+        }
+    }
+
+    /// <summary>Item id of a placement the bot sent into <paramref name="p"/> within <see cref="WindowMs"/>, or null.</summary>
+    public int? RecentPlace(BlockPos p)
+    {
+        long now = Clock();
+        lock (_lock)
+        {
+            for (int i = 0; i < _pCount; i++)
+            {
+                var (pos, item, at) = _places[i];
+                if (pos == p && now - at <= WindowMs && now >= at - 50) return item;
+            }
+        }
+        return null;
+    }
+
     public void Clear()
     {
-        lock (_lock) { _count = 0; _next = 0; }
+        lock (_lock) { _count = 0; _next = 0; _pCount = 0; _pNext = 0; }
     }
 }

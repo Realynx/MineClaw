@@ -40,6 +40,8 @@ public interface IGameActions
     double Reach { get; }
     IReadOnlySet<int> ReservedItems { get; }
     bool IsProtected(BlockPos pos, int id);
+    /// <summary>Why a block is protected and how to unlock it (refusal text); None when unknown.</summary>
+    ProtectionVerdict ExplainProtection(BlockPos pos, int id) => ProtectionVerdict.None;
     /// <summary>Sign text the server sent (0x82), by sign position.</summary>
     IReadOnlyDictionary<BlockPos, string[]> Signs { get; }
 

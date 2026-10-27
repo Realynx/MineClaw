@@ -17,6 +17,75 @@ public sealed record LearnedProtectedRegion(BlockPos Center, int Radius, int Dim
 
 public sealed partial class MinecraftClient
 {
+    // ------------------------------------------------------------------ protection policy hooks (ARCHITECTURE.md "Protection policy")
+
+    /// <summary>
+    /// Explains why <see cref="IsProtected"/> holds for a block, for the refusal text (why + how to unlock it). Set by the Bot's
+    /// policy, which also counts the refusal by reason. Called only when refusing, never in the pathfinder loop.
+    /// </summary>
+    public Func<BlockPos, int, ProtectionVerdict>? ExplainProtection { get; set; }
+
+    /// <summary>
+    /// True when soft protection yields at this block: a block a hive bot placed itself (rule 1) or a trusted player's explicit
+    /// permit (rule 3). Set by the Bot's policy; without one, the bot's own <see cref="WorldState.Placed"/> log decides.
+    /// The client applies it to the protection it owns itself (tree stewardship, the walkway-floor rule).
+    /// </summary>
+    public Func<BlockPos, int, bool>? SoftOverride { get; set; }
+
+    /// <summary>Counts a refusal the client decided on its own (tree stewardship), by reason. Set by the Bot's telemetry.</summary>
+    public Action<string>? CountRefusal { get; set; }
+
+    /// <summary>
+    /// Extra resource sources for autonomous <c>mine</c> (Bot: taught/regen-confirmed generator dig cells). See
+    /// <see cref="IsMineSource"/>.
+    /// </summary>
+    public Func<BlockPos, int, bool>? MineSource { get; set; }
+
+    /// <summary>A player's never-break mark (hard; Bot policy): even the generator loop, which ignores soft protection, honours it.</summary>
+    public Func<BlockPos, bool>? NeverBreak { get; set; }
+
+    /// <summary>
+    /// Live 10-27 15:55: "mine cobble" at the dual gen dug the island floor next to it. Autonomous <c>mine &lt;type&gt;</c> only
+    /// takes RESOURCE sources: generator dig cells (geometry: lava + water next to it, or taught/confirmed via
+    /// <see cref="MineSource"/>), natural tree logs (with leaves), ores, sand, gravel, clay, leaves, natural nether blocks,
+    /// and blocks a hive bot placed itself or a trusted player permitted. Never floors, walls, paths or any other placed block.
+    /// </summary>
+    internal bool IsMineSource(BlockPos p, int id)
+    {
+        if (NeverBreak?.Invoke(p) == true) return false;
+        if (MineSource?.Invoke(p, id) == true || OverridesSoft(p, id)) return true;
+        if (NaturalResource(id, World.Dimension)) return true;
+        if (id is Blocks.Cobblestone or Blocks.Stone) return LavaCouldFlowInto(p) && NextToWater(p);
+        if (id == Blocks.Log) return Trees.TreeScan.Analyze(World, p) is { } t && t.Leaves.Count >= 3;
+        return false;
+    }
+
+    /// <summary>Blocks that are a resource wherever they are (nobody builds floors from ore or gravel).</summary>
+    public static bool NaturalResource(int id, int dimension) => id switch
+    {
+        Blocks.CoalOre or Blocks.IronOre or Blocks.GoldOre or Blocks.DiamondOre or Blocks.LapisOre or Blocks.RedstoneOre or Blocks.LitRedstoneOre
+            or Blocks.Gravel or Blocks.Sand or Blocks.Clay or Blocks.Leaves => true,
+        Blocks.Netherrack or Blocks.SoulSand or Blocks.Glowstone => dimension == -1,
+        _ => false,
+    };
+
+    internal bool OverridesSoft(BlockPos p, int id) =>
+        SoftOverride?.Invoke(p, id) ?? World.Placed.IsPlaced(p, World.Dimension, id);
+
+    /// <summary>The refusal line for a protected block: why, and the phrase that unlocks it (rule 5).</summary>
+    internal string ProtectedRefusal(BlockPos pos, int id, string? what = null)
+    {
+        what ??= $"{BlockName(id, World.GetMeta(pos))} at {Fmt(pos)}";
+        if (!UserProtected(pos, id) && id == Blocks.Log && TreeGuarded(pos))
+        {
+            CountRefusal?.Invoke("last_trees");
+            return ProtectionText.Refusal(what, new ProtectionVerdict(ProtectionLevel.Soft, "last_trees",
+                $"that tree is one of the island's last {MinTrees}; chop_tree fells and replants it once I hold a sapling"));
+        }
+        var v = ExplainProtection?.Invoke(pos, id) ?? ProtectionVerdict.None;
+        return v.Protected ? ProtectionText.Refusal(what, v) : ProtectionText.Generic(what);
+    }
+
     /// <summary>b1.8.1 NetServerHandler: edits within this Chebyshev distance of spawn need op.</summary>
     public const int VanillaSpawnProtection = 16;
 

@@ -50,16 +50,17 @@ public class GatheringTests
     [Fact]
     public async Task MineSkipsProtectedAndSupportingBlocks()
     {
+        // Sand: autonomous mine only takes resource sources (never a placed floor or dirt).
         var (c, s) = await Harness.StartAsync(srv =>
         {
-            srv.Blocks[(8, 63, 8)] = Blocks.Dirt;  // under my feet
-            srv.Blocks[(10, 64, 7)] = Blocks.Dirt;
-            srv.Blocks[(6, 64, 9)] = Blocks.Dirt;  // protected
+            srv.Blocks[(8, 63, 8)] = Blocks.Sand;  // under my feet
+            srv.Blocks[(10, 64, 7)] = Blocks.Sand;
+            srv.Blocks[(6, 64, 9)] = Blocks.Sand;  // protected
             srv.DropOnDig = false;                 // stay put: (8,63,8) remains the block holding me up
         });
         await using var _ = c;
         using var __ = s;
-        var r = await c.MineAsync("dirt", 5, 8, protect: (p, _) => p == new BlockPos(6, 64, 9));
+        var r = await c.MineAsync("sand", 5, 8, protect: (p, _) => p == new BlockPos(6, 64, 9));
         Assert.True(r.Ok, r.ToString());
         Assert.Equal(1, r.Count);
         var digs = s.Got<PlayerDiggingPacket>().Where(d => d.Status == 0).Select(d => new BlockPos(d.X, d.Y, d.Z)).Distinct().ToList();

@@ -150,10 +150,11 @@ public sealed partial class MinecraftClient
     {
         int scaffold = ScaffoldItem() ?? -1;
         var slots = World.Inventory.PlayerSlots();
+        var othersStandOn = Safety.OtherPlayersSupport(World); // hard safety: never dig out from under another player
         return PathOptions.Default with
         {
             AllowBreak = o.AllowBreak,
-            CanBreak = (id, meta, pos) => !IsBlockProtected(pos, id) && !NextToLava(pos) && !EditBlocked(pos),
+            CanBreak = (id, meta, pos) => !IsBlockProtected(pos, id) && !NextToLava(pos) && !EditBlocked(pos) && !othersStandOn.Contains(pos),
             CanPlace = pos => !EditBlocked(pos),
             DigCost = (id, meta) =>
             {

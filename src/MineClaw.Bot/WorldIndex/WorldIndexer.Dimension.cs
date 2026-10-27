@@ -90,7 +90,8 @@ public sealed partial class WorldIndexer
         _hazCols.Clear(); _hazDirty.Clear();
         _departure = null;
         lock (_unknownLock) _pendingUnknown.Clear();
-        _protected = new HashSet<BlockPos>();
+        _protected = new Dictionary<BlockPos, string>();
+        _floorByChunk.Clear();
         _protectDirty = true;
     }
 

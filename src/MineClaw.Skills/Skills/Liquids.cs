@@ -234,7 +234,7 @@ public static class BucketOps
         if (!BlockShapes.IsLiquid(id)) return SkillResult.Fail($"no liquid at {SkillJson.Fmt(src)} ({ctx.BlockName(src)})");
         if (ctx.Meta(src) != 0) return SkillResult.Fail($"{SkillJson.Fmt(src)} is {FluidRules.Describe(id, ctx.Meta(src))}, not a source");
         if (!ctx.Has(Items.Bucket)) return SkillResult.Fail("no empty bucket");
-        if (ctx.Protected(src)) return SkillResult.Fail($"{(lava ? "lava" : "water")} source at {SkillJson.Fmt(src)} is protected");
+        if (ctx.Protected(src)) return SkillResult.Fail(ctx.ProtectedText(src, $"{(lava ? "lava" : "water")} source at {SkillJson.Fmt(src)}"));
         var reach = await ctx.ReachAsync(src, ct, Math.Min(4.5, ctx.Game.Reach)).ConfigureAwait(false);
         if (!reach.Ok) return SkillResult.Fail($"can't reach {SkillJson.Fmt(src)}: {reach.Message}");
         var aim = SourceAim(ctx.World, ctx.World.Player.EyePosition, src, 4.5);
@@ -261,7 +261,7 @@ public static class BucketOps
         if (!ctx.Has(bucket)) return SkillResult.Fail($"no {(lava ? "lava" : "water")} bucket");
         if (!lava && ctx.InNether) return SkillResult.Fail("water evaporates in the nether");
         if (!SkillWorld.Replaceable(ctx.World, cell)) return SkillResult.Fail($"{SkillJson.Fmt(cell)} is not empty ({ctx.BlockName(cell)})");
-        if (ctx.Protected(cell)) return SkillResult.Fail($"{SkillJson.Fmt(cell)} is protected");
+        if (ctx.Protected(cell)) return SkillResult.Fail(ctx.ProtectedText(cell, SkillJson.Fmt(cell)));
         var eye = ctx.World.Player.EyePosition;
         var aim = Aiming.FindPlaceAim(ctx.World, eye, cell, 4.5, AABB.ForPlayer(ctx.Feet));
         if (aim is null)
@@ -346,7 +346,7 @@ public sealed class InfiniteWaterSkill : Skill
         // Dig out the basin (never my own floor, never protected blocks).
         foreach (var c in cells.Where(c => !SkillWorld.Replaceable(ctx.World, c)))
         {
-            if (ctx.Protected(c)) return Fail($"{P(c)} is protected");
+            if (ctx.Protected(c)) return Fail(ctx.ProtectedText(c, P(c)));
             var d = await ctx.Game.DigAsync(c, ct);
             if (!d.Ok) return Fail($"couldn't dig the basin at {P(c)}: {d.Message}");
         }
@@ -438,7 +438,7 @@ public sealed class MoveLavaSkill : Skill
     public static string? Check(SkillContext ctx, BlockPos to, bool allowObsidian)
     {
         if (!SkillWorld.Replaceable(ctx.World, to)) return $"{P(to)} is not empty";
-        if (ctx.Protected(to)) return $"{P(to)} is protected";
+        if (ctx.Protected(to)) return ctx.ProtectedText(to, P(to));
         if (!allowObsidian && FluidRules.LavaContact(ctx.World, to, ctx.InNether) is { } why) return why;
         if (FluidRules.FlammableNear(ctx.World, to) is { } burn) return $"{SkillWorld.Name(ctx.Block(burn))} at {P(burn)} would catch fire";
         var area = FluidRules.FlowArea(ctx.World, to, ctx.InNether ? FluidRules.NetherLavaReach : FluidRules.LavaReach);

@@ -64,6 +64,7 @@ public sealed partial class MinecraftClient
     internal bool TreeGuarded(BlockPos p)
     {
         if (MinTrees <= 0 || _chopping is { } t && t.Logs.Contains(p)) return false;
+        if (World.Placed.IsPlaced(p, World.Dimension, Blocks.Log)) return false; // my own log pillar is never a tree (rule 1/2)
         long now = Environment.TickCount64;
         HashSet<BlockPos> logs;
         lock (_treeGuardLock)
@@ -81,9 +82,10 @@ public sealed partial class MinecraftClient
     /// <summary>Forget the cached census (trees felled/planted).</summary>
     private void InvalidateTreeGuard() { lock (_treeGuardLock) _treeGuard = null; }
 
-    /// <summary>Cheap blocks a short tree pillar may use (dug back afterwards; never dirt: unrenewable on Skyblock; no logs:
-    /// a placed log would read as part of the tree being felled).</summary>
-    private static readonly int[] PillarBlocks = [Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Planks, Blocks.Sandstone, Blocks.StoneBricks];
+    /// <summary>Cheap blocks a short tree pillar may use (dug back afterwards; never dirt: unrenewable on Skyblock). A log is
+    /// the last resort: the bot stands on its OWN pillar, never on the tree's leaves, and a placed log is in the placed-block
+    /// log, so it never reads as part of the tree (<see cref="TreeScan"/>) and is always minable afterwards (rule 1).</summary>
+    private static readonly int[] PillarBlocks = [Blocks.Cobblestone, Blocks.Netherrack, Blocks.Stone, Blocks.Planks, Blocks.Sandstone, Blocks.StoneBricks, Blocks.Log];
 
     private sealed class ChopState(TreeInfo tree)
     {
@@ -374,7 +376,8 @@ public sealed partial class MinecraftClient
         var me = World.Player.Position;
         int fx = (int)Math.Floor(me.X), fy = (int)Math.Floor(me.Y + 1e-6), fz = (int)Math.Floor(me.Z);
         if (!World.Player.OnGround || Safety.EdgeDistance(World, fx, fy, fz, 2) < 2 || BlockShapes.HasCollision(World, fx, fy + 2, fz)) return false;
-        var target = remaining.Where(l => l.Center.DistanceTo(World.Player.EyePosition) <= Options.Reach + JumpEyeBoost + 0.9)
+        var standOn = Safety.OtherPlayersSupport(World); // never dig out from under another player (hard safety)
+        var target = remaining.Where(l => !standOn.Contains(l) && l.Center.DistanceTo(World.Player.EyePosition) <= Options.Reach + JumpEyeBoost + 0.9)
             .OrderBy(l => l.Y).Cast<BlockPos?>().FirstOrDefault();
         if (target is not { } t) return false;
         int id = World.GetBlock(t);

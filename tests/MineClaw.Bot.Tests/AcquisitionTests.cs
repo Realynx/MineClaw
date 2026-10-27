@@ -233,7 +233,8 @@ public class AcquisitionTests
         var r = await i.H.Run("mine", new { block = "stone", count = 4 });
         Assert.True(r.Ok, r.Text);
         var calls = i.C.CallList;
-        Assert.True(calls.FindIndex(x => x.StartsWith("withdraw")) < calls.FindIndex(x => x.StartsWith("mine stone")), i.Calls);
+        // Stone/cobble come from the generator's dig cells only (live 10-27 15:55: "mine cobble" dug the island floor).
+        Assert.True(calls.FindIndex(x => x.StartsWith("withdraw")) < calls.FindIndex(x => x.StartsWith("generator")), i.Calls);
         Assert.StartsWith("stone pickaxe from 2,65,2; ", r.Text);
     }
 

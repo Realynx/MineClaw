@@ -39,6 +39,10 @@ public interface ICrossDimensionPlaces
 public interface IProtectedRegionSource
 {
     IReadOnlyList<(WPos Min, WPos Max)> ProtectedRegions();
+
+    /// <summary>The same boxes with what they are ("main house"), for refusal texts. Default: unlabelled.</summary>
+    IReadOnlyList<(WPos Min, WPos Max, string? Label)> LabeledRegions() =>
+        ProtectedRegions().Select(r => (r.Min, r.Max, (string?)null)).ToList();
 }
 
 /// <summary>Items memory says to keep (e.g. "don't use the diamonds"). Config covers the static part.</summary>
@@ -144,12 +148,15 @@ public sealed partial class MemoryStoreAdapter(MemoryStore memory, ObservationSt
     /// Taught structures (memory) plus taught/llm world facts with a box, or any fact marked "protected". Auto-indexed
     /// things are protected per block by the indexer's own fast predicate, so they aren't repeated here.
     /// </summary>
-    public IReadOnlyList<(WPos Min, WPos Max)> ProtectedRegions()
+    public IReadOnlyList<(WPos Min, WPos Max)> ProtectedRegions() => LabeledRegions().Select(r => (r.Min, r.Max)).ToList();
+
+    /// <summary>Taught/marked structures (by name) and taught/llm facts with a box (by their key), for refusal texts.</summary>
+    public IReadOnlyList<(WPos Min, WPos Max, string? Label)> LabeledRegions()
     {
         int dim = Dim;
         var list = memory.Read(d => d.Structures
             .Where(s => s.Min != null && !Unprotected.Contains(s.Kind) && s.Dimension == dim)
-            .Select(s => (ToW(s.Min!), ToW(s.Max ?? s.Min!)))
+            .Select(s => (ToW(s.Min!), ToW(s.Max ?? s.Min!), (string?)s.Name))
             .ToList());
         if (observations == null) return list;
         var here = position?.Invoke() ?? new WPos(0, 64, 0);
@@ -159,7 +166,7 @@ public sealed partial class MemoryStoreAdapter(MemoryStore memory, ObservationSt
             bool flagged = row.FieldsJson?.Contains("\"protected\":true", StringComparison.OrdinalIgnoreCase) == true;
             if (!flagged && IndexKinds.NeverBoxProtected.Contains(row.Kind)) continue;
             list.Add((new WPos((int)Math.Floor(b.MinX), (int)Math.Floor(b.MinY), (int)Math.Floor(b.MinZ)),
-                new WPos((int)Math.Floor(b.MaxX), (int)Math.Floor(b.MaxY), (int)Math.Floor(b.MaxZ))));
+                new WPos((int)Math.Floor(b.MaxX), (int)Math.Floor(b.MaxY), (int)Math.Floor(b.MaxZ)), (string?)row.Key));
         }
         return list;
     }

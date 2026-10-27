@@ -62,7 +62,7 @@ public static class TreeScan
     /// <summary>The tree that <paramref name="log"/> belongs to, or null when it isn't a log.</summary>
     public static TreeInfo? Analyze(IBlockAccess w, BlockPos log)
     {
-        if (w.GetBlock(log.X, log.Y, log.Z) != Blocks.Log) return null;
+        if (w.GetBlock(log.X, log.Y, log.Z) != Blocks.Log || SelfPlaced(w, log)) return null;
         int wood = w.GetMeta(log.X, log.Y, log.Z) & 3;
         var cluster = LogCluster(w, log, wood);
 
@@ -81,6 +81,7 @@ public static class TreeScan
                 if (owner == mine) logs.Add(p);
             }
 
+        DropBarePillars(w, logs, mine);
         var leaves = OwnLeaves(w, logs);
         var soil = mine.Down();
         return new TreeInfo(mine, soil, w.GetBlock(soil.X, soil.Y, soil.Z), wood, logs, leaves);
@@ -181,6 +182,29 @@ public static class TreeScan
         return (null, null, null);
     }
 
+    /// <summary>
+    /// Protection rule 2: a tree is logs with leaves on a dirt/grass base; a bare log pillar or log build is not. A log column
+    /// next to the trunk (other x,z) that rests on a solid non-log block and touches no leaf is someone's pillar or build that
+    /// merely touches the tree: it is not this tree's (never stewarded, never felled as part of it). Branches hang in the crown
+    /// (on air/leaves, or touching leaves) and stay.
+    /// </summary>
+    private static void DropBarePillars(IBlockAccess w, HashSet<BlockPos> logs, BlockPos trunkBase)
+    {
+        foreach (var col in logs.Where(l => l.X != trunkBase.X || l.Z != trunkBase.Z).GroupBy(l => (l.X, l.Z)).ToList())
+        {
+            var cells = col.ToList();
+            var bottom = cells.MinBy(c => c.Y);
+            int under = w.GetBlock(bottom.X, bottom.Y - 1, bottom.Z);
+            bool grounded = under != 0 && under != Blocks.Log && under != Blocks.Leaves && BlockShapes.HasCollision(w, bottom.X, bottom.Y - 1, bottom.Z);
+            if (!grounded) continue;
+            bool leafy = cells.Any(c => Six.Any(o => w.GetBlock(c.X + o.X, c.Y + o.Y, c.Z + o.Z) == Blocks.Leaves));
+            if (!leafy) logs.ExceptWith(cells);
+        }
+    }
+
+    /// <summary>A log a hive bot placed itself (its pillar/bridge): never part of a tree.</summary>
+    private static bool SelfPlaced(IBlockAccess w, BlockPos p) => w is WorldState ws && ws.Placed.IsPlaced(p, ws.Dimension, Blocks.Log);
+
     private static HashSet<BlockPos> LogCluster(IBlockAccess w, BlockPos seed, int wood)
     {
         var set = new HashSet<BlockPos> { seed };
@@ -196,7 +220,7 @@ public static class TreeScan
                 if (dx == 0 && dy == 0 && dz == 0) continue;
                 var n = p.Offset(dx, dy, dz);
                 if (n.Y is < 0 or >= WorldState.Height || Math.Abs(n.X - seed.X) > MaxSpread || Math.Abs(n.Z - seed.Z) > MaxSpread) continue;
-                if (set.Contains(n) || w.GetBlock(n.X, n.Y, n.Z) != Blocks.Log || (w.GetMeta(n.X, n.Y, n.Z) & 3) != wood) continue;
+                if (set.Contains(n) || w.GetBlock(n.X, n.Y, n.Z) != Blocks.Log || (w.GetMeta(n.X, n.Y, n.Z) & 3) != wood || SelfPlaced(w, n)) continue;
                 set.Add(n);
                 q.Enqueue(n);
             }

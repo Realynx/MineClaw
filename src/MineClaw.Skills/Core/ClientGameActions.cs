@@ -20,6 +20,7 @@ public sealed class ClientGameActions(MinecraftClient client) : IGameActions
     public double Reach => Inner.Options.Reach;
     public IReadOnlySet<int> ReservedItems => Inner.ReservedItems;
     public bool IsProtected(BlockPos pos, int id) => Inner.IsProtected?.Invoke(pos, id) ?? false;
+    public ProtectionVerdict ExplainProtection(BlockPos pos, int id) => Inner.ExplainProtection?.Invoke(pos, id) ?? ProtectionVerdict.None;
     public IReadOnlyDictionary<BlockPos, string[]> Signs => Inner.Signs;
 
     public Task<ActionResult> GotoAsync(Goal goal, GotoOptions? options, CancellationToken ct) => Inner.GotoAsync(goal, options, ct);

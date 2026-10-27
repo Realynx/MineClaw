@@ -56,6 +56,7 @@ public sealed class FakeGameClient : IGameClient
     public void RaiseChat(string line) => ChatReceived?.Invoke(line);
     public void RaiseKicked(string r) => Kicked?.Invoke(r);
     public void RaiseDied() => Died?.Invoke();
+    public void RaiseRespawned() => Respawned?.Invoke();
     public void RaiseDanger(DangerEvent d) => Danger?.Invoke(d);
     public void RaiseJoined(string n) => PlayerJoined?.Invoke(n);
     public void RaiseLeft(string n) => PlayerLeft?.Invoke(n);

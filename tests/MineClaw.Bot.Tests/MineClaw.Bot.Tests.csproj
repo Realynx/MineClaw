@@ -18,6 +18,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The client tests' in-process fake server: protection tests drive a real MinecraftClient through a real BotHost. -->
+    <Compile Include="..\MineClaw.Client.Tests\FakeServer.cs" Link="Shared\FakeServer.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\MineClaw.Bot\MineClaw.Bot.csproj" />
     <ProjectReference Include="..\..\tools\ReplayKit\ReplayKit.csproj" />
   </ItemGroup>

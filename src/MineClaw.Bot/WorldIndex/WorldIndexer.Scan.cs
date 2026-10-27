@@ -67,6 +67,7 @@ public sealed partial class WorldIndexer
         var signs = new HashSet<BlockPos>();
         var trees = new HashSet<BlockPos>();
         var builds = new HashSet<BlockPos>();
+        var floors = new HashSet<BlockPos>();
         var portals = new HashSet<BlockPos>();
         var footCells = new HashSet<BlockPos>();
         bool islands = IslandsOn;
@@ -102,6 +103,7 @@ public sealed partial class WorldIndexer
                 if (IsBuildBlock(id, c)) builds.Add(p); // natural nether terrain isn't a build there
                 else if (id == Blocks.Cobblestone && (below == Blocks.Cobblestone || (y + 1 < WorldState.Height && col.GetBlock(lx, y + 1, lz) == Blocks.Cobblestone)))
                     builds.Add(p); // walls/pillars, not one-thick floors
+                if (IsFloorCandidate(id, c)) floors.Add(p); // gen cells are dropped when protection is rebuilt
                 if ((c & C.GenOutput) != 0 && IsGenCell(p, id, false)) genCandidates.Add(p);
                 else if ((c & C.Lava) != 0)
                     foreach (var o in FlowIn)
@@ -131,6 +133,7 @@ public sealed partial class WorldIndexer
         else if (InNether) NoteHazardColumn(cx, cz, ScanHazards(col));
         _trees.ReplaceChunk(cx, cz, trees);
         _builds.ReplaceChunk(cx, cz, builds);
+        ReplaceFloors(cx, cz, floors);
         _portals.ReplaceChunk(cx, cz, portals);
         foreach (var (t, set) in farms) _farms[t].ReplaceChunk(cx, cz, set);
 
@@ -231,12 +234,52 @@ public sealed partial class WorldIndexer
             foreach (var o in Six) foreach (var layer in _farms.Values) layer.Touch(p + o);
         _trees.Set(p, (BlockClass.Of(ch.NewId) & C.Tree) != 0);
         _builds.Set(p, IsBuildCell(p, ch.NewId));
+        SetFloor(p, !_gens.Contains(p) && IsFloorCandidate(ch.NewId, BlockClass.Of(ch.NewId)));
         foreach (var q in new[] { p.Up(), p.Down() })
         {
             int id = _world.GetBlock(q);
             if (id == Blocks.Cobblestone || _builds.Contains(q)) _builds.Set(q, IsBuildCell(q, id));
         }
     }
+
+    // ------------------------------------------------------------------ placed floors (live 10-27 15:55)
+
+    private readonly Dictionary<long, HashSet<BlockPos>> _floorByChunk = new();
+
+    /// <summary>
+    /// A placed solid block that may be someone's floor, wall or path: cobblestone/stone (on Skyblock only generators make
+    /// them) and every build block. One-thick floors included: "mine cobble" once dug the island floor next to the dual gen
+    /// because cobble only counted as a build in walls 2+ high. Floors are protected (kind "floor": soft, never announced as an
+    /// unknown structure); a generator's dig cells never are.
+    /// </summary>
+    private bool IsFloorCandidate(int id, C c)
+    {
+        if (id == 0 || InNether && BlockClass.NaturalNether(id)) return false;
+        if (!Blocks.Get(id).Solid || Blocks.Get(id).Interactable) return false;
+        return id is Blocks.Cobblestone or Blocks.Stone or Blocks.MossyCobblestone || IsBuildBlock(id, c);
+    }
+
+    private void ReplaceFloors(int cx, int cz, HashSet<BlockPos> floors)
+    {
+        long k = ColKey(cx, cz);
+        if (_floorByChunk.TryGetValue(k, out var old) && old.SetEquals(floors)) return;
+        if (floors.Count == 0) _floorByChunk.Remove(k);
+        else _floorByChunk[k] = floors;
+        _protectDirty = true;
+    }
+
+    private void SetFloor(BlockPos p, bool floor)
+    {
+        long k = ColKey(p.X >> 4, p.Z >> 4);
+        if (!_floorByChunk.TryGetValue(k, out var set))
+        {
+            if (!floor) return;
+            _floorByChunk[k] = set = new HashSet<BlockPos>();
+        }
+        if (floor ? set.Add(p) : set.Remove(p)) _protectDirty = true;
+    }
+
+    private IEnumerable<BlockPos> FloorCells() => _floorByChunk.Values.SelectMany(s => s);
 
     private bool IsBuildCell(BlockPos p, int id)
     {

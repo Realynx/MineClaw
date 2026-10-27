@@ -177,7 +177,7 @@ public sealed partial class MinecraftClient
         if (d.Unrecoverable && !_voidEpisode)
         {
             _voidEpisode = true;
-            Log($"safety: no input avoids the void at {Fmt(phys.Position)} (velocity {phys.Velocity.X:0.##},{phys.Velocity.Y:0.##},{phys.Velocity.Z:0.##})");
+            Log($"safety: no input avoids {(World.IsPlayerOverVoid(phys.Position) ? "the void" : "a high fall")} at {Fmt(phys.Position)} (velocity {phys.Velocity.X:0.##},{phys.Velocity.Y:0.##},{phys.Velocity.Z:0.##})");
         }
         return d;
     }
@@ -218,6 +218,7 @@ public sealed partial class MinecraftClient
     {
         if (_clutchPlaced >= 6 || TickCount == _lastClutchTick) return;
         _lastClutchTick = TickCount;
+        bool voidBelow = VoidAhead(phys); // before the clutch block changes what's below
         int hb = PrepareClutchBlock(s, out int blockId);
         if (hb < 0)
         {
@@ -251,9 +252,10 @@ public sealed partial class MinecraftClient
         {
             _clutchReported = true;
             _voidAlerted = true;
-            var msg = $"knocked off toward the void at {Fmt(phys.Position)}; placed {BlockName(blockId, 0)} at {Fmt(p.Target)} to catch myself"
+            var msg = (voidBelow ? $"knocked off toward the void at {Fmt(phys.Position)}" : $"falling {FallText(phys)} at {Fmt(phys.Position)}")
+                      + $"; placed {BlockName(blockId, 0)} at {Fmt(p.Target)} to catch myself"
                       + (p.Saves ? " (should land safely)" : " (not sure it is enough)");
-            RaiseDanger(DangerKind.FallingIntoVoid, msg, abort: false, critical: true);
+            RaiseDanger(voidBelow ? DangerKind.FallingIntoVoid : DangerKind.HighFall, msg, abort: false, critical: true);
             AbortCurrentAction("falling into the void");
         }
     }
@@ -263,10 +265,34 @@ public sealed partial class MinecraftClient
         if (_clutchReported) return;
         _clutchReported = true;
         _voidAlerted = true;
-        var msg = $"falling into the void at {Fmt(phys.Position)}: {why}" + (_clutchPlaced > 0 ? $" (placed {_clutchPlaced} block(s) already)" : "");
+        // Classify honestly: "the void" only when nothing is below; a long drop onto ground is a high fall (damage, no item loss).
+        bool voidBelow = VoidAhead(phys);
+        var msg = (voidBelow ? $"falling into the void at {Fmt(phys.Position)}" : $"falling {FallText(phys)} at {Fmt(phys.Position)}")
+                  + $": {why}" + (_clutchPlaced > 0 ? $" (placed {_clutchPlaced} block(s) already)" : "");
         Log("safety: " + msg);
-        RaiseDanger(DangerKind.FallingIntoVoid, msg, abort: false, critical: true);
+        RaiseDanger(voidBelow ? DangerKind.FallingIntoVoid : DangerKind.HighFall, msg, abort: false, critical: true);
         AbortCurrentAction("falling into the void");
+    }
+
+    /// <summary>The void is under me or where I'm drifting (knockback carries me past an edge): ground right under a
+    /// sideways fall isn't where it lands. A purely vertical drop over ground is a high fall.</summary>
+    private bool VoidAhead(PhysicsState phys)
+    {
+        var v = phys.Velocity;
+        return World.IsPlayerOverVoid(phys.Position)
+               || World.IsPlayerOverVoid(phys.Position + new Vec3d(v.X * 10, 0, v.Z * 10))
+               || World.IsPlayerOverVoid(phys.Position + new Vec3d(v.X * 4, 0, v.Z * 4));
+    }
+
+    /// <summary>"~6 blocks onto ground at y 65 (not the void)": the highest block under the hitbox.</summary>
+    private string FallText(PhysicsState phys)
+    {
+        var box = phys.BoundingBox;
+        int fy = (int)Math.Floor(phys.Position.Y - 0.01), ground = -1;
+        for (int x = (int)Math.Floor(box.MinX); x <= (int)Math.Ceiling(box.MaxX) - 1; x++)
+        for (int z = (int)Math.Floor(box.MinZ); z <= (int)Math.Ceiling(box.MaxZ) - 1; z++)
+            ground = Math.Max(ground, Safety.SupportBelow(World, x, fy, z));
+        return ground < 0 ? "a long way" : $"~{Math.Max(1, phys.Position.Y - (ground + 1)):0} blocks onto ground at y {ground + 1} (not the void)";
     }
 
     private static readonly int[] PreferredClutchBlocks =

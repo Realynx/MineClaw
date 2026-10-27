@@ -36,6 +36,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
         Survival = new SurvivalReflex(options.Survival);
         World.Inventory.CraftResult = (grid, width) => Recipes.Match(grid, width)?.Output ?? ItemStack.Empty;
         World.Inventory.WindowOpened += _ => Interlocked.Increment(ref _windowsOpened);
+        World.BlockChanged += TrackPlacedBlock;
         _eventPump = Task.Run(PumpEventsAsync);
     }
 
@@ -357,10 +358,37 @@ public sealed partial class MinecraftClient : IAsyncDisposable
                 World.SelfEdits.Note(new BlockPos(d.X, d.Y, d.Z));
                 break;
             case PlayerBlockPlacementPacket b when b.Direction != PlayerBlockPlacementPacket.NoDirection:
-                World.SelfEdits.Note(PlacementTarget(b.X, b.Y, b.Z, b.Direction));
+                var target = PlacementTarget(b.X, b.Y, b.Z, b.Direction);
+                if (b.HeldItem.IsEmpty) World.SelfEdits.Note(target);
+                else World.SelfEdits.NotePlace(target, b.HeldItem.Id);
                 break;
         }
     }
+
+    /// <summary>
+    /// Protection rule 1 bookkeeping (network thread, O(1)): a block appearing where I just sent a placement is mine
+    /// (<see cref="WorldState.Placed"/>, persisted and shared by the Bot layer); a cell of mine that now holds something else
+    /// (dug, reverted, replaced) is forgotten.
+    /// </summary>
+    private void TrackPlacedBlock(BlockChange c)
+    {
+        try
+        {
+            int dim = World.Dimension;
+            if (c.NewId != 0 && !BlockShapes.IsLiquid(c.NewId) && World.SelfEdits.RecentPlace(c.Pos) is { } item && PlacedFrom(item, c.NewId))
+            {
+                World.Placed.Note(c.Pos, dim, c.NewId, Options.Username, DateTimeOffset.UtcNow);
+                return;
+            }
+            World.Placed.Observe(c, dim);
+        }
+        catch (Exception) { /* bookkeeping never breaks the packet thread */ }
+    }
+
+    /// <summary>The block that appeared is what the held item places (blocks as themselves; doors, signs, reeds, beds,
+    /// redstone, repeaters, cake and seeds place their block form). Bucketed liquids are never "placed blocks".</summary>
+    private static bool PlacedFrom(int item, int block) =>
+        item == block || PlacedBlockLog.SameBlock(item, block) || (Items.ItemFormOf(block) == item && !BlockShapes.IsLiquid(block));
 
     /// <summary>The cell a 0x0F placement fills: the clicked block offset by the face (0 -y, 1 +y, 2 -z, 3 +z, 4 -x, 5 +x).</summary>
     public static BlockPos PlacementTarget(int x, int y, int z, int face) => face switch

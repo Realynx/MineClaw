@@ -92,7 +92,7 @@ public class ToolMappingTests
         c.World.SetBlock(2, 65, 0, Blocks.Chest, 0);
         c.Results["withdraw"] = () => ActionResult.Fail("chest empty");
 
-        Assert.True((await h.Run("mine", new { block = "cobblestone", count = 5 })).Ok);
+        Assert.True((await h.Run("mine", new { block = "sand", count = 5 })).Ok); // cobble goes to the generator (own test)
         await h.Run("follow", new { player = "poofimafox" });
         await h.Run("collect_drops", new { });
         await h.Run("dig", new { at = "1,64,0" });
@@ -105,7 +105,7 @@ public class ToolMappingTests
         await h.Run("collect_furnace", new { });
 
         var calls = c.CallList;
-        Assert.Contains("mine cobblestone 5 16", calls);
+        Assert.Contains("mine sand 5 16", calls);
         Assert.Contains("follow poofimafox 3", calls);
         Assert.Contains("collect 8", calls);
         Assert.Contains("dig 1,64,0", calls);

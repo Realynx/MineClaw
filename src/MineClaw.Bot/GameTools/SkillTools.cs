@@ -42,7 +42,20 @@ public sealed class SkillHub
         Claims = Claims, Directory = Directory, Layouts = Layouts, State = State,
     };
 
-    public Task<SkillResult> RunAsync(string name, JsonElement args, CancellationToken ct) => Registry.RunAsync(NewContext(), name, args, ct);
+    public async Task<SkillResult> RunAsync(string name, JsonElement args, CancellationToken ct)
+    {
+        // Pillar/bridge/edge/build work happens at height or over the void: carry clutch blocks first (best effort).
+        if (Client != null && IsHeightWork(name)) await ClutchBlocks.EnsureAsync(Client, ct).ConfigureAwait(false);
+        return await Registry.RunAsync(NewContext(), name, args, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>The game client the skills drive (clutch-block preparation).</summary>
+    public IGameClient? Client { get; set; }
+
+    private bool IsHeightWork(string name) =>
+        name.Contains("pillar", StringComparison.OrdinalIgnoreCase) || name.Contains("bridge", StringComparison.OrdinalIgnoreCase)
+        || name.Contains("edge", StringComparison.OrdinalIgnoreCase) || name.Contains("expand", StringComparison.OrdinalIgnoreCase)
+        || (Registry.TryGet(name, out var sk) && sk.Spec.Category == SkillCategory.Building);
 }
 
 public static class SkillTools
@@ -58,8 +71,14 @@ public static class SkillTools
         var hub = new SkillHub
         {
             Registry = registry ?? SkillRegistry.CreateDefault(), Game = game, Claims = claims ?? NullClaimBoard.Instance,
-            Directory = directory, Layouts = new MemoryLayoutStore(rt),
+            Directory = directory, Layouts = new MemoryLayoutStore(rt), Client = client,
         };
+        // Portal pairs the world indexer recorded (any trip, even an accidental one) are known to return_portal too.
+        hub.State.Known = () => rt.Observations.Portals.All()
+            .Select(l => (Ow: l.From(MineClaw.Agent.Rag.WorldDim.Overworld), l))
+            .Where(t => t.Ow is { } p && p.To.Dim == MineClaw.Agent.Rag.WorldDim.Nether)
+            .Select(t => new PortalPair(new BlockPos(t.Ow!.Value.From.X, t.Ow.Value.From.Y, t.Ow.Value.From.Z),
+                new BlockPos(t.Ow.Value.To.X, t.Ow.Value.To.Y, t.Ow.Value.To.Z), t.l.Updated));
         hub.Registry.Add(PromoteRoutineSkill(rt, hub));
         // Self-reliant preconditions: a missing hoe/bucket/torch/sapling is acquired (chest, hive, craft, bootstrap) first.
         hub.Registry.AcquireMissing ??= async (_, _, ids, ct) =>

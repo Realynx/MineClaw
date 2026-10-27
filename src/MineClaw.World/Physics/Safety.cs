@@ -1,3 +1,5 @@
+using MineClaw.Data;
+
 namespace MineClaw.World;
 
 /// <summary>Result of <see cref="Safety.WaterLanding"/>.</summary>
@@ -200,5 +202,56 @@ public static class Safety
         for (int z = (int)Math.Floor(box.MinZ); z <= (int)Math.Ceiling(box.MaxZ) - 1; z++)
             if (BlockShapes.HasCollision(w, x, y, z)) list.Add(new BlockPos(x, y, z));
         return list;
+    }
+    /// <summary>
+    /// Blocks that hold up another player (a hive bot or a human): the top block layer under each tracked player's hitbox
+    /// whose feet rest on it. Breaking one drops that player (live 10-27: main broke the crown leaves clone 67 stood on, a
+    /// 6-block fall to hp 7). Hard safety: never dug, leaves included.
+    /// </summary>
+    public static HashSet<BlockPos> OtherPlayersSupport(WorldState w)
+    {
+        var set = new HashSet<BlockPos>();
+        foreach (var e in w.Entities.All())
+        {
+            if (e.Kind != EntityKind.Player || e.Id == w.Entities.SelfId || e.Id == w.Player.EntityId) continue;
+            var feet = e.Position;
+            double frac = feet.Y - Math.Floor(feet.Y);
+            int y = frac < 0.05 ? (int)Math.Floor(feet.Y) - 1 : (int)Math.Floor(feet.Y - 0.01);
+            var box = AABB.ForPlayer(feet);
+            for (int x = (int)Math.Floor(box.MinX); x <= (int)Math.Ceiling(box.MaxX) - 1; x++)
+            for (int z = (int)Math.Floor(box.MinZ); z <= (int)Math.Ceiling(box.MaxZ) - 1; z++)
+            {
+                // Standing on it, or hanging just above it (a remote position lags a little).
+                for (int yy = y; yy >= y - 1; yy--)
+                    if (BlockShapes.HasCollision(w, x, yy, z)) { set.Add(new BlockPos(x, yy, z)); break; }
+            }
+        }
+        return set;
+    }
+
+    /// <summary>
+    /// Removing <paramref name="target"/> (one of the blocks I stand on) drops me onto solid footing at most
+    /// <paramref name="maxDrop"/> below, never onto leaves, never over the void: the safe "mine down my own pillar" step.
+    /// </summary>
+    public static bool RemovalIsShortSafeDrop(IBlockAccess w, Vec3d feet, BlockPos target, double maxDrop = 1.0)
+    {
+        var overlay = new BlockOverlay(w);
+        overlay.Set(target, 0);
+        if (IsPlayerOverVoid(overlay, feet)) return false;
+        var box = AABB.ForPlayer(feet);
+        int fy = (int)Math.Floor(feet.Y - 0.01);
+        double landing = double.MinValue;
+        int landingId = 0;
+        for (int x = (int)Math.Floor(box.MinX); x <= (int)Math.Ceiling(box.MaxX) - 1; x++)
+        for (int z = (int)Math.Floor(box.MinZ); z <= (int)Math.Ceiling(box.MaxZ) - 1; z++)
+        {
+            int s = SupportBelow(overlay, x, fy, z);
+            if (s < 0) continue;
+            double top = s + BlockShapes.CollisionTop(overlay, x, s, z);
+            if (top > landing) { landing = top; landingId = overlay.GetBlock(x, s, z); }
+        }
+        if (landing == double.MinValue) return false;
+        if (landingId == Blocks.Leaves) return false;
+        return feet.Y - landing <= maxDrop + 1e-6;
     }
 }

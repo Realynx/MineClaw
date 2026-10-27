@@ -176,6 +176,39 @@ a non-trivial plan is logged and leads the result ("no pick, making one: logs→
 Callers: Lua `ensure` (hidden `acquire` tool, no prompt bytes), `Loadout.FetchAsync` (clone loadouts, gen loop re-tool), `mine`
 (the block's tool first, so `do mine` too), skill preconditions (`SkillRegistry.AcquireMissing`). Lint warns on a tool job without `ensure`.
 
+## Protection policy (Bot/Protection + ProtectionPolicy/, Client hooks)
+
+One place decides whether the bot may break a block, why not, and how a player unlocks it: `Protection` builds the client's
+`IsProtected` (fast; the pathfinder asks), `ExplainProtection` (refusal text + telemetry) and `SoftOverride`.
+- **Sources.** Config blocks/boxes (`Bot:ProtectedBlocks/ProtectedRegions`), memory structures (taught or `mark_structure`,
+  e.g. the guessed "main house"), the world index (`WorldIndexer.ProtectionKind`: unknown builds, generator walls/fluids, farms,
+  tree soil, portals, signs, stations, and placed **floors**: cobble/stone/planks/slabs, one-thick included), other hive bots'
+  leases (claims), the client's tree stewardship (`MinTrees`), and players' marks (`ProtectionMarks`, db `protection_marks`).
+  Generator dig cells (taught/confirmed) are never soft-protected.
+- **Soft** (all of the above): stops only the bot's own choices (materials, clearing space). Yields to (1) blocks any hive bot
+  placed itself (`WorldState.Placed`, recorded from the bot's own confirmed 0x0F placements, persisted + shared in db
+  `placed_blocks` by `PlacedBlockStore`: pillars, bridges, scaffolding survive restarts and clones can take main's down) and (2)
+  a trusted player's explicit permit (`ProtectionCommands`, zero tokens): "break that" with a punch, "you can break it" right
+  after a refusal, "you can break the main house"; more than `Bot:Protection:ConfirmAboveBlocks` (32) asks one "say 'yes'"
+  line first; permits last `PermitMinutes` (30). Containers open only for an exact permit (punch/coords). Untrusted players
+  unlock nothing.
+- **Hard**: a "never break X" mark (any player; "don't mine the middle one" marks the middle gen cell) never yields to a
+  command; a trusted "you can break X" unmarks it. Hard safety lives in the client's dig vetoes and never yields: void support,
+  lava release, and the block another player stands on (leaves included). Mining down the bot's own pillar is allowed one
+  1-block step at a time onto solid, non-leaf footing.
+- **Trees** (rule 2): a tree is logs with leaves on dirt/grass. Bare log pillars and the bot's own placed logs are never part of
+  a tree (`TreeScan`), so stewardship never applies to them.
+- **Autonomous `mine`** takes resource sources only: generator dig cells, natural tree logs, ores, sand, gravel, clay, leaves,
+  natural nether blocks, and own/permitted blocks; never floors, walls, paths. `mine cobblestone/stone` runs the generator loop
+  on the nearest known dig cell, else answers `needs_input` (which cells?). Protection filters dig candidates only: doors,
+  chests, stations and portals stay findable (`SkillContext.Find`).
+- **Refusals** use one format (`ProtectionText`): "X is protected (part of the main house build); say 'you can break it' if
+  you want it gone"; a repeat within 10 min says "already asked". The worker stops at the first protected refusal and returns it.
+  Every refusal is counted by reason (`ProtectionTelemetry`, log + `protection-YYYY-MM-DD.jsonl`).
+- **Spawn protection**: with `Bot:Protection:ServerOp` (default true) a remembered spawn-protection region and its notes are
+  dropped at startup; only real server reverts this session re-learn it. High falls onto ground are reported as `HighFall`, not
+  "the void". Height work (chop_tree, build-mode goto, building skills) first ensures 4 clutch blocks (`ClutchBlocks`, never dirt).
+
 ## Providers, profiles (Agent/Llm)
 
 - **Per-tier provider**: `Agent:Llm:MainProvider|WorkerProvider|CheapProvider` = `anthropic` (default) | `ollama`; the

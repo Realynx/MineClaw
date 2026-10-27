@@ -29,6 +29,10 @@ public sealed class HereBlock(IGameClient client, MemoryStore? memory, Observati
         var w = client.World;
         var me = w.Player.Position;
         var parts = new List<string>();
+        // The dimension first: in the nether every island/landmark reflex is wrong (live: "back at spawn" in the nether).
+        if (w.Dimension != 0)
+            parts.Add((w.Dimension == -1 ? "IN THE NETHER" : "IN DIMENSION " + w.Dimension)
+                      + (MineClaw.Client.PortalEntry.InPortal(w, me) ? " (standing in the portal: step out, then back in for 4 s to travel)" : ""));
         try { if (landmark?.Invoke(me.X, me.Y, me.Z) is { Length: > 0 } lm) parts.Add("you: " + lm); } catch (Exception) { }
         parts.Add("inv: " + Inventory(w));
 

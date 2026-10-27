@@ -95,11 +95,15 @@ public static class GameToolSet
                 var to = i.ReqStr("to");
                 bool build = i.Bool("build") == true;
                 var parkour = i.Str("allow_parkour") switch { "off" => ParkourMode.Off, "void" => ParkourMode.Void, _ => ParkourMode.Ground };
+                if (build) await ClutchBlocks.EnsureAsync(c, ct); // bridging/pillaring = edge work: carry clutch blocks first
                 var opts = GotoOptions.Default with { AllowBreak = build, AllowPlace = build, Parkour = parkour };
                 double? dist = i.Num("dist");
                 // A saved place in the other dimension: through a known linked portal, or an honest "no known portal".
                 if (Locations.ParseCoords(to) == null && places is ICrossDimensionPlaces xd && xd.ResolveElsewhere(to) is { } far)
                     return await WorldIndex.PortalTravel.GotoAsync(c, xd.Portals, far.Pos, far.Dim, opts, dist ?? 1, ct);
+                // A portal block (no dist): step into the sheet and go through, never "within 1" of it.
+                if (dist is null && Resolve(to, places) is { } portal && c.World.GetBlock(portal) == Blocks.Portal)
+                    return await WorldIndex.PortalTravel.GoThroughAsync(c, portal, opts, ct);
                 Goal goal;
                 // A container/door/lever named by its coordinates (no dist): stop where it can be USED, i.e. seen within
                 // reach, so a goto>withdraw chain doesn't end outside the wall next to it (live 10-27, chest 14,64,-5).
@@ -119,9 +123,18 @@ public static class GameToolSet
             ToolSchema.Create().Str("block").Int("count", required: false).Int("radius", required: false).Build(),
             async (i, ct) =>
             {
+                // Live 10-27 15:55: "mine cobble" dug the island floor next to the dual gen. Cobble/stone come from the
+                // generator's dig cells only: route to the generator loop, or ask which blocks are its cells.
                 // A missing pickaxe is acquired first (chest, hive, craft, bootstrap); if that fails the client's own honest
                 // result follows, led by why no tool could be had.
                 var tool = await AcquireTool.ToolForBlockAsync(c, i.ReqStr("block"), ct);
+                if (Blocks.ByName(i.ReqStr("block")) is { Id: Blocks.Cobblestone or Blocks.Stone } gb)
+                {
+                    int n = Math.Clamp(i.Int("count") ?? options.DefaultMineCount, 1, 20000);
+                    var gr = await MineFromGeneratorAsync(c, gb.Id, n, generatorCells, generator, ct,
+                        () => c.MineAsync(gb.Name, Math.Min(n, 256), Math.Clamp(i.Int("radius") ?? options.DefaultMineRadius, 2, 48), ct));
+                    return tool is { } gt && !gt.Note.StartsWith("had ", StringComparison.Ordinal) ? gr with { Text = gt.Note + "; " + gr.Text } : gr;
+                }
                 var r = R(await c.MineAsync(i.ReqStr("block"), Math.Clamp(i.Int("count") ?? options.DefaultMineCount, 1, 256),
                     Math.Clamp(i.Int("radius") ?? options.DefaultMineRadius, 2, 48), ct));
                 return tool is { } t && !t.Note.StartsWith("had ", StringComparison.Ordinal) ? r with { Text = t.Note + "; " + r.Text } : r;
@@ -275,6 +288,35 @@ public static class GameToolSet
     }
 
     // ------------------------------------------------------------------ helpers
+
+    /// <summary>
+    /// <c>mine cobblestone/stone</c> → the generator loop on the nearest known dig cell (taught first, then regen-confirmed or
+    /// lava+water geometry). Never the floor around it. No known cell → ask which blocks are the generator's cells.
+    /// </summary>
+    private static async Task<ToolResult> MineFromGeneratorAsync(IGameClient c, int blockId, int count,
+        Func<BlockPos, IReadOnlyList<BlockPos>>? generatorCells, GeneratorSupport? generator, CancellationToken ct,
+        Func<Task<ActionResult>>? ownBlocksOnly = null)
+    {
+        var me = c.World.Player.Position.ToBlockPos();
+        var cells = (Acquisition.Of(c)?.GeneratorCells?.Invoke() ?? generatorCells?.Invoke(me) ?? [])
+            .Where(p => c.World.GetBlock(p) is Blocks.Cobblestone or Blocks.Stone or 0 || BlockShapes.IsLava(c.World.GetBlock(p)))
+            .OrderBy(p => p.DistanceSquaredTo(me)).ToList();
+        if (cells.Count == 0 && ownBlocksOnly != null)
+        {
+            // No generator known: the client's mine still takes only my own/permitted cobble (never floors or walls).
+            var own = await ownBlocksOnly().ConfigureAwait(false);
+            if (own.Ok) return R(own) with { Text = "no known generator, took only my own placed blocks; " + own.Message };
+        }
+        if (cells.Count == 0)
+            return ToolResult.Error($"needs_input: which blocks are the cobble generator's cells? Punch them and I'll mine only those " +
+                                    $"(default: none: I never dig floors or walls for {Names.Item(blockId)})");
+        var (cell, note) = PickGeneratorCell(c, cells[0], generatorCells);
+        if (cell is not { } pick) return ToolResult.Error(note ?? $"no free dig cell at {Locations.Fmt(cells[0])}");
+        BlockPos? stand = null;
+        try { stand = generator?.TaughtStand?.Invoke(pick); } catch (Exception) { /* memory busy: the client picks a spot */ }
+        var r = R(await new GeneratorLoop(c, generator).RunAsync(pick, count, null, ct, stand));
+        return r with { Text = $"mining at the generator cell {Locations.Fmt(pick)} (never the floor around it)" + (note == null ? "" : "; " + note) + "; " + r.Text };
+    }
 
     internal static ToolResult R(ActionResult a) => a.Ok ? ToolResult.Success(a.Message) : ToolResult.Error(a.Message);
 

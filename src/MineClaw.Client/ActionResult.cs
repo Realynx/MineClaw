@@ -32,6 +32,9 @@ public enum DangerKind
     UnsafePosition,
     /// <summary>A previous critical danger is over (e.g. landed safely after a void clutch).</summary>
     Recovered,
+    /// <summary>Falling farther than a safe drop onto ground that IS there (not the void): fall damage, not item loss.
+    /// Live 10-27: clone 67 fell 6 blocks off a tree crown and was told "falling into the void".</summary>
+    HighFall,
 }
 
 /// <summary>A danger signal for the Agent (fires at most once per episode, not every tick).

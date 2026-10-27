@@ -18,7 +18,7 @@ public sealed class SetRepeaterSkill : Skill
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
         if (args.Pos() is not { } p || ctx.Block(p) is not (Blocks.RepeaterOff or Blocks.RepeaterOn)) return Fail("no repeater there");
-        if (ctx.Protected(p)) return Fail("repeater is protected");
+        if (ctx.Protected(p)) return Fail(ctx.ProtectedText(p, "repeater"));
         int want = Clamp(args.Int("delay"), 1, 1, 4);
         // b1.8.1 repeater meta: bits 0-1 facing, bits 2-3 = delay-1; each right-click adds one (wrapping).
         int Delay() => ((ctx.Meta(p) >> 2) & 3) + 1;
@@ -100,7 +100,7 @@ public sealed class EatCakeSkill : Skill
         if (ctx.World.Player.Food >= 20) return Fail("not hungry");
         var p = args.Pos() ?? ctx.Find(Blocks.Cake, 12, 1).Select(f => (BlockPos?)f.Pos).FirstOrDefault();
         if (p is not { } c || ctx.Block(c) != Blocks.Cake) return Fail("no cake nearby");
-        if (ctx.Protected(c)) return Fail("cake is protected");
+        if (ctx.Protected(c)) return Fail(ctx.ProtectedText(c, "cake"));
         int bites = ctx.Meta(c);
         var reach = await ctx.ReachAsync(c, ct);
         if (!reach.Ok) return Fail(reach.Message);

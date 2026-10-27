@@ -46,8 +46,10 @@ public sealed class GameBridge : IDisposable
     {
         Sub(h => _c.ChatReceived += h, h => _c.ChatReceived -= h, (Action<string>)OnChat);
         Sub(h => _c.Danger += h, h => _c.Danger -= h, (Action<DangerEvent>)OnDanger);
-        Sub(h => _c.Died += h, h => _c.Died -= h, (Action)(() => Post(GameEvent.Died())));
-        Sub(h => _c.Respawned += h, h => _c.Respawned -= h, (Action)(() => Post(GameEvent.Notice("respawned at spawn", EventPriority.Background))));
+        Sub(h => _c.Died += h, h => _c.Died -= h, (Action)(() => { _died = true; Post(GameEvent.Died()); }));
+        Sub(h => _c.Respawned += h, h => _c.Respawned -= h, (Action)OnRespawned);
+        Sub(h => _c.Spawned += h, h => _c.Spawned -= h, (Action)(() => Volatile.Write(ref _dim, _c.World.Dimension)));
+        Volatile.Write(ref _dim, _c.World.Dimension);
         Sub(h => _c.Kicked += h, h => _c.Kicked -= h, (Action<string>)(r => Post(MapKick(r))));
         Sub(h => _c.Disconnected += h, h => _c.Disconnected -= h, (Action<string>)(r => _log.LogInformation("disconnected: {Reason}", r)));
         Sub(h => _c.Spawned += h, h => _c.Spawned -= h, (Action)SyncOnline);
@@ -67,6 +69,76 @@ public sealed class GameBridge : IDisposable
             return StateHeader(_c);
         };
     }
+
+    // ------------------------------------------------------------------ dimension changes
+
+    private int _dim;
+    private volatile bool _died;
+
+    /// <summary>"portal pair recorded: overworld -40,65,6 &lt;-&gt; nether 2,66,0" for the portal at (dim, pos), or null while
+    /// the world indexer hasn't linked it yet (BotHost wires it to the portal_links store).</summary>
+    public Func<int, Vec3d, string?>? PortalPairText { get; init; }
+
+    /// <summary>How long the dimension-change wake waits for the arrival chunks / the indexer's pair before posting anyway.</summary>
+    public TimeSpan ArrivalWait { get; init; } = TimeSpan.FromSeconds(8);
+    public TimeSpan PairWait { get; init; } = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// 0x09 Respawn: after a death it's the respawn at spawn (context only); without one it's a portal trip (b1.8.1 sends
+    /// Respawn with the other dimension). Live: the bot walked through a lit portal, got "respawned at spawn" as background
+    /// context and told players "I somehow ended up back at spawn" while standing in the nether. A trip is a wake the brain
+    /// can't miss (MustWake, normal priority: it never cancels the job that walked in on purpose).
+    /// </summary>
+    private void OnRespawned()
+    {
+        int to = _c.World.Dimension;
+        int from = Interlocked.Exchange(ref _dim, to);
+        bool died = _died;
+        _died = false;
+        if (died || from == to)
+        {
+            Post(GameEvent.Notice(from == to ? "respawned at spawn" : $"respawned at spawn in the {DimName(to)}", EventPriority.Background));
+            return;
+        }
+        _ = AnnounceDimensionAsync(from, to);
+    }
+
+    private async Task AnnounceDimensionAsync(int from, int to)
+    {
+        try
+        {
+            bool Arrived()
+            {
+                var p = _c.World.Player.Position;
+                return _c.World.Dimension == to && _c.IsPlaying && _c.World.IsLoaded((int)Math.Floor(p.X), (int)Math.Floor(p.Z));
+            }
+            await PollAsync(Arrived, ArrivalWait).ConfigureAwait(false);
+            if (_c.World.Dimension != to) return; // already went on/back: that switch announces itself
+            var pos = _c.World.Player.Position;
+            string? pair = null;
+            if (PortalPairText is { } f)
+                await PollAsync(() => (pair = SafePair(f, to, _c.World.Player.Position)) != null, PairWait).ConfigureAwait(false);
+            if (_c.World.Dimension != to) return;
+            var text = $"went through a portal: now in the {DimName(to).ToUpperInvariant()} at {Locations.Fmt(pos)} (from the {DimName(from)}); "
+                       + (pair ?? "portal pair not recorded yet") + "; return_portal (or goto the portal block) goes back";
+            Post(GameEvent.Notice(text, EventPriority.Normal) with { MustWake = true });
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "dimension announcement failed"); }
+    }
+
+    private static string? SafePair(Func<int, Vec3d, string?> f, int dim, Vec3d pos)
+    {
+        try { return f(dim, pos); }
+        catch (Exception) { return null; }
+    }
+
+    private static async Task PollAsync(Func<bool> done, TimeSpan timeout)
+    {
+        var until = DateTime.UtcNow + timeout;
+        while (!done() && DateTime.UtcNow < until) await Task.Delay(50).ConfigureAwait(false);
+    }
+
+    private static string DimName(int dim) => dim switch { -1 => "nether", 0 => "overworld", 1 => "end", _ => "dimension " + dim };
 
     private int EatAtFood() => (_c as MinecraftGameClient)?.Inner.Survival.Options.EatAtFood ?? new SurvivalOptions().EatAtFood;
 
@@ -149,6 +221,7 @@ public sealed class GameBridge : IDisposable
     public static GameEvent MapDanger(DangerEvent d, int health, double y) => d.Kind switch
     {
         DangerKind.FallingIntoVoid => GameEvent.VoidFall(y),
+        DangerKind.HighFall => GameEvent.Notice(d.Message, EventPriority.High), // fall damage ahead, not the void
         DangerKind.LowHealth => new GameEvent(EventKind.LowHealth, d.Message.Contains("/20") ? d.Message : $"hp {health}/20 {d.Message}",
             priority: d.Critical ? EventPriority.Critical : EventPriority.High),
         DangerKind.Lava => new GameEvent(EventKind.LowHealth, $"hp {health}/20 {d.Message}", priority: EventPriority.High),
@@ -173,6 +246,7 @@ public sealed class GameBridge : IDisposable
         string heldText = held.IsEmpty ? "nothing" : Names.Item(held.Id, held.Damage) + (held.Count > 1 ? " x" + held.Count : "");
         var vitals = SurvivalReflex.HeaderText(p.Health, p.Food, w.Inventory.PlayerSlots(), c.ReservedItems);
         var s = $"pos {Locations.Fmt(p.Position)} {vitals} held {heldText} {(w.IsNight ? "night" : "day")}";
+        if (w.Dimension != 0) s = $"IN THE {DimName(w.Dimension).ToUpperInvariant()} " + s; // never mistaken for the island
         if (w.IsPlayerOverVoid(p.Position)) s += " OVER VOID";
         if (c.CurrentAction is { } a) s += " | doing " + a;
         return s;

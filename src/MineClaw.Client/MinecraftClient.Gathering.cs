@@ -190,6 +190,14 @@ public sealed partial class MinecraftClient
                         stop = $"no more reachable {name} within {radius:0}";
                         if (PickMineTarget(blockIds, radius, failed, protect) is { } inside && EditBlocked(inside))
                             stop += $" outside spawn protection (the server undid my digs within {_protectedRegion?.Radius ?? VanillaSpawnProtection} of spawn; needs op)";
+                        // Never refuse silently (rule 5): protected candidates were skipped, say which and how to unlock them.
+                        else if (_lastMineSkip is { } skip)
+                            stop += $"; skipped {_lastMineSkipCount} protected: " + ProtectedRefusal(skip, World.GetBlock(skip));
+                        if (_lastMineNonSource > 0)
+                            stop += $"; left {_lastMineNonSource} placed {name} alone (floors/walls/builds): mine only takes generator cells, "
+                                    + "ores, sand/gravel, tree logs and my own blocks"
+                                    + (firstId is Blocks.Cobblestone or Blocks.Stone ? " (for cobble use harvest_generator)" : "")
+                                    + "; a trusted player can point at one and say 'you can break it'";
                         break;
                     }
                     var r = await DigCoreAsync(target.Value, c, floorGuard: true).ConfigureAwait(false);
@@ -223,10 +231,20 @@ public sealed partial class MinecraftClient
         return idx < 0 ? -1 : slots[idx].Id;
     }
 
+    /// <summary>Nearest candidate the last <see cref="PickMineTarget"/> skipped for protection, and how many it skipped.</summary>
+    private BlockPos? _lastMineSkip;
+    private int _lastMineSkipCount;
+    /// <summary>Candidates the last pick left alone because they aren't a resource source (placed floors, walls...).</summary>
+    private int _lastMineNonSource;
+
     private BlockPos? PickMineTarget(IReadOnlySet<int> ids, double radius, HashSet<BlockPos> failed, Func<BlockPos, int, bool>? protect)
     {
         var eye = World.Player.EyePosition;
         var support = SupportBlocks().ToHashSet();
+        support.UnionWith(Safety.OtherPlayersSupport(World));
+        _lastMineSkip = null;
+        _lastMineSkipCount = 0;
+        _lastMineNonSource = 0;
         var found = World.FindBlocks(World.Player.Position, radius, (id, _) => ids.Contains(id), 512);
         BlockPos? best = null;
         double bestScore = double.MaxValue;
@@ -234,7 +252,13 @@ public sealed partial class MinecraftClient
         {
             var p = f.Pos;
             if (failed.Contains(p) || support.Contains(p)) continue;
-            if (IsBlockProtected(p, f.Id) || (protect?.Invoke(p, f.Id) ?? false)) continue;
+            if (IsBlockProtected(p, f.Id))
+            {
+                if (_lastMineSkipCount++ == 0) _lastMineSkip = p; // found nearest first
+                continue;
+            }
+            if (protect?.Invoke(p, f.Id) ?? false) continue;
+            if (!IsMineSource(p, f.Id)) { _lastMineNonSource++; continue; }
             if (NextToLava(p) || WouldDropIntoVoid(p)) continue;
             if (WalkwayFloorVeto(p, "") is not null) continue; // never the island floor next to the void (B21)
             if (!IsExposed(p)) continue;
@@ -273,6 +297,7 @@ public sealed partial class MinecraftClient
             if (count >= Options.Survival.LongMiningCount && await SurvivalGateAsync($"mine {count} blocks", c).ConfigureAwait(false) is { } refused)
                 return refused;
             var pos = new BlockPos(x, y, z);
+            if (NeverBreak?.Invoke(pos) == true) return ActionResult.Fail(ProtectedRefusal(pos, World.GetBlock(pos)));
             // Never silently do something else: without a pickaxe the generator's output drops nothing, so say so.
             if (Drops.Primary(Blocks.Cobblestone, 0, BestToolId(Blocks.Cobblestone)) is null)
                 return ActionResult.Fail("no pickaxe: cobblestone drops nothing without one (get a pickaxe first: withdraw or craft one)");

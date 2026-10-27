@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using MineClaw.Client;
 using MineClaw.Data;
 using MineClaw.World;
 
@@ -13,7 +14,24 @@ public sealed class SkillState
     private readonly List<PortalPair> _portals = new();
     public ConcurrentDictionary<string, string> Bag { get; } = new(StringComparer.OrdinalIgnoreCase);
 
-    public IReadOnlyList<PortalPair> Portals { get { lock (_portals) return _portals.ToArray(); } }
+    /// <summary>Pairs recorded elsewhere (the world indexer's <c>portal_links</c>, wired by the Bot layer): a portal the bot
+    /// walked through by accident is as known as one entered by a skill. Live: "return_portal: no portal known" while the
+    /// indexer had logged the pair.</summary>
+    public Func<IEnumerable<PortalPair>>? Known { get; set; }
+
+    public IReadOnlyList<PortalPair> Portals
+    {
+        get
+        {
+            PortalPair[] mine;
+            lock (_portals) mine = _portals.ToArray();
+            IEnumerable<PortalPair> known = [];
+            try { if (Known?.Invoke() is { } k) known = k.ToList(); }
+            catch (Exception) { /* store unavailable: the skill-recorded pairs stand */ }
+            return mine.Concat(known.Where(k => !mine.Any(m => m.Overworld.ManhattanTo(k.Overworld) <= 4 || m.Nether.ManhattanTo(k.Nether) <= 4)))
+                .ToArray();
+        }
+    }
 
     public void AddPortal(PortalPair p)
     {
@@ -90,7 +108,7 @@ internal static class PortalFrames
 
     public static (BlockPos Inside, bool AlongX)? FindFrame(SkillContext ctx, double radius = 12)
     {
-        foreach (var f in ctx.Find(Blocks.Obsidian, radius, 256))
+        foreach (var f in ctx.World.FindBlocks(ctx.Feet, radius, Blocks.Obsidian, 256))
         {
             var i = f.Pos.Up();
             foreach (bool x in new[] { true, false })
@@ -161,7 +179,7 @@ public sealed class LightPortalSkill : Skill
 
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
-        if (ctx.Find(Blocks.Portal, 12, 1).Count > 0 && args.Pos() is null) return Ok("portal already lit");
+        if (EnterPortalSkill.PortalBlocks(ctx, 12, 1).Count > 0 && args.Pos() is null) return Ok("portal already lit");
         var frame = args.Pos() is { } p ? (PortalFrames.IsFrame(ctx.World, p, true) ? (p, true) : PortalFrames.IsFrame(ctx.World, p, false) ? (p, false) : ((BlockPos, bool)?)null)
                                         : PortalFrames.FindFrame(ctx);
         if (frame is not { } f) return Fail("no complete obsidian frame nearby");
@@ -186,19 +204,27 @@ public sealed class EnterPortalSkill : Skill
 
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
-        var portal = args.Pos() ?? ctx.Find(Blocks.Portal, 24, 1).Select(x => (BlockPos?)x.Pos).FirstOrDefault();
+        var portal = args.Pos() ?? PortalBlocks(ctx, 24, 1).Select(x => (BlockPos?)x.Pos).FirstOrDefault();
         if (portal is not { } pp || ctx.Block(pp) != Blocks.Portal) return Fail("no lit portal nearby");
         return await Travel(ctx, pp, ct);
     }
 
+    /// <summary>Portal blocks near the bot. Never <see cref="SkillContext.Find(int, double?, int)"/>: that hides protected
+    /// blocks, and the world indexer protects every portal sheet (live: "no lit portal nearby" while standing next to one).</summary>
+    internal static List<FoundBlock> PortalBlocks(SkillContext ctx, double radius, int max) =>
+        ctx.World.FindBlocks(ctx.Feet, radius, Blocks.Portal, max);
+
+    /// <summary>Allowance for the ~4 s portal timer plus walking in (and out first when standing in it).</summary>
+    public static TimeSpan SwitchTimeout { get; set; } = TimeSpan.FromSeconds(15);
+
     internal static async Task<SkillResult> Travel(SkillContext ctx, BlockPos portal, CancellationToken ct)
     {
         int dim = ctx.World.Dimension;
-        var g = await ctx.Game.GotoAsync(new GoalBlock(portal), null, ct);
-        if (!g.Ok && ctx.World.Dimension == dim) return Fail($"couldn't step into the portal: {g.Message}");
-        // b1.8.1: ~4 s standing in the portal, then 0x09 Respawn with the other dimension; then chunks + a 0x0D.
-        if (!await ctx.Game.WaitUntilAsync(() => ctx.World.Dimension != dim, TimeSpan.FromSeconds(15), ct))
-            return Fail("stood in the portal but nothing happened");
+        // b1.8.1: step out first when already inside (the cooldown refreshes in the sheet), walk in, stand still ~4 s,
+        // then 0x09 Respawn with the other dimension; then chunks + a 0x0D.
+        var g = await PortalEntry.EnterAsync(ctx.World, (goal, c) => ctx.Game.GotoAsync(goal, null, c),
+            (ticks, c) => ctx.Game.WaitTicksAsync(ticks, c), portal, SwitchTimeout, ct);
+        if (!g.Ok || ctx.World.Dimension == dim) return Fail(g.Message);
         await ctx.Game.WaitUntilAsync(() => ctx.World.IsLoaded(ctx.Me.X, ctx.Me.Z) && !ctx.World.IsPlayerOverVoid(ctx.Feet), TimeSpan.FromSeconds(15), ct);
         var arrived = ctx.Me;
         bool toNether = ctx.World.Dimension == -1;
@@ -223,13 +249,13 @@ public sealed class ReturnPortalSkill : Skill
     {
         var pair = ctx.State.Nearest(ctx.Me, ctx.InNether);
         var mine = pair is null ? (BlockPos?)null : ctx.InNether ? pair.Nether : pair.Overworld;
-        var portal = ctx.Find(Blocks.Portal, 32, 64).Select(f => f.Pos)
+        var portal = EnterPortalSkill.PortalBlocks(ctx, 32, 64).Select(f => f.Pos)
             .OrderBy(p => mine is { } m ? p.DistanceSquaredTo(m) : p.DistanceSquaredTo(ctx.Me)).Cast<BlockPos?>().FirstOrDefault();
         if (portal is null && mine is { } known)
         {
             var g = await ctx.Game.GotoAsync(new GoalNear(known, 3), null, ct);
             if (!g.Ok) return Fail($"can't get back to the portal at {P(known)}: {g.Message}");
-            portal = ctx.Find(Blocks.Portal, 6, 1).Select(f => (BlockPos?)f.Pos).FirstOrDefault();
+            portal = EnterPortalSkill.PortalBlocks(ctx, 6, 1).Select(f => (BlockPos?)f.Pos).FirstOrDefault();
         }
         if (portal is not { } p) return Fail("no portal known or in sight" + (ctx.InNether ? $"; overworld spawn is ~{P(SkillState.Scale(ctx.World.Spawn, true))} here" : ""));
         return await EnterPortalSkill.Travel(ctx, p, ct);

@@ -68,11 +68,11 @@ public sealed partial class MinecraftClient
         if (id != 0 && Blocks.Get(id).Interactable)
             return ActionResult.Fail($"{name} at {Fmt(pos)} would be opened/used instead (b1.8.1 activates the block first)");
         if ((IsHoe(itemId) || itemId == Items.FlintAndSteel) && IsBlockProtected(pos, id))
-            return ActionResult.Fail($"{name} at {Fmt(pos)} is protected");
+            return ActionResult.Fail(ProtectedRefusal(pos, id));
         var beside = pos.Offset(face);
         if (itemId == Items.FlintAndSteel)
         {
-            if (IsBlockProtected(beside, World.GetBlock(beside))) return ActionResult.Fail($"{Fmt(beside)} is protected");
+            if (IsBlockProtected(beside, World.GetBlock(beside))) return ActionResult.Fail(ProtectedRefusal(beside, World.GetBlock(beside), $"{Fmt(beside)}"));
             if (id == Blocks.Tnt || BlockFaceExtensions.All.Any(f => World.GetBlock(beside.Offset(f)) == Blocks.Tnt))
                 return ActionResult.Fail("won't light a fire next to TNT");
         }

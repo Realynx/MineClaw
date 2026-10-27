@@ -88,10 +88,29 @@ public sealed class BotHost : IDisposable
         corrections.Changed += line => log?.LogInformation("dig cells corrected: {Line}", line);
         rt.Chat.Accepted += m => corrections.OnChat(m.Player, m.Text);
         digCells.TaughtCell += (p, by) => corrections.OnTaught(p, by);
-        Func<MineClaw.World.BlockPos, int, bool> boxed = indexer == null ? protection.IsProtected : (p, id) => protection.IsProtected(p, id) || indexer.IsProtected(p, id);
-        Func<MineClaw.World.BlockPos, int, bool> isProtected = (p, id) => boxed(p, id) && !digCells.IsDigCell(p);
-        // Hive: a block another bot holds a lease on is off limits too (mining/harvest skip it).
-        client.IsProtected = claims == null ? isProtected : (p, id) => isProtected(p, id) || !claims.IsFree(ClaimKey.Block(p, client.World.Dimension));
+        // The protection policy (ARCHITECTURE.md "Protection policy"): every source in one place, soft vs hard, overrides.
+        var placedStore = new PlacedBlockStore(rt.Db, client.World.Placed, log); // rule 1: own/hive placements, shared + persistent
+        if (persist) placedStore.Start();
+        var marks = new ProtectionMarks(rt.Db, time); // rule 3/4: trusted permits, never-break marks (shared db)
+        var telemetry = new ProtectionTelemetry(log, persist ? agentOptions.DataDirectory : null, time); // rule 6
+        protection.IndexerKind = indexer == null ? null : indexer.ProtectionKind;
+        protection.IsDigCell = digCells.IsDigCell;
+        protection.Claims = claims; // hive: a block another bot holds a lease on is soft-protected while it works there
+        protection.Placed = client.World.Placed;
+        protection.Marks = marks;
+        protection.Dimension = () => client.World.Dimension;
+        protection.Telemetry = telemetry;
+        client.IsProtected = protection.IsProtected;
+        if (client is MinecraftGameClient mgx)
+        {
+            mgx.Inner.ExplainProtection = protection.Explain;
+            mgx.Inner.SoftOverride = protection.OverridesSoft;
+            mgx.Inner.CountRefusal = r => telemetry.Count(r);
+            mgx.Inner.NeverBreak = p => marks.HasNever && marks.NeverAt(p, client.World.Dimension) != null;
+            // Autonomous mine: taught / regen-confirmed generator cells are resource sources too.
+            mgx.Inner.MineSource = (p, _) => digCells.IsDigCell(p) || indexer?.IsConfirmedDigCell(p) == true;
+        }
+        if (botOptions.Protection.ServerOp) ForgetSpawnProtection(rt, log);
         client.ReservedItems = protection.ReservedItems();
 
         // Hive: container/block actions of the game tools take a lease first (ClaimAwareGameClient).
@@ -129,6 +148,21 @@ public sealed class BotHost : IDisposable
         };
         // The speaker's facing rides along for a while after they talk to me ("that way" = where they face).
         rt.Chat.Accepted += m => { if (m.Player is { Length: > 0 } p) gestures.NoteSpoke(p, m.Text); };
+        // Protection from chat: trusted "break that" (+ punch) / "you can break it" permits, anyone's "never break X" (zero tokens).
+        var protectCmds = new ProtectionCommands(marks, protection, client.World, botOptions.Protection, time)
+        {
+            Trusted = () => rt.Options.Self.TrustedPlayers,
+            PointedBy = name => gestures.Recent().LastOrDefault(g => g.Player.Equals(name, StringComparison.OrdinalIgnoreCase))?.Pos,
+            NamedArea = name => NamedStructure(rt, client, name),
+            GenCells = () => acquisition.GeneratorCells?.Invoke() ?? [],
+            Say = line => _ = rt.Chat.SayAsync(line),
+            Notice = line => rt.Events.Post(Agent.Events.GameEvent.Notice(line, Agent.Events.EventPriority.Low)),
+        };
+        rt.Chat.Accepted += m =>
+        {
+            try { if (protectCmds.OnChat(m.Player, m.Text) is { } did) log?.LogInformation("protection: {Line}", did); }
+            catch (Exception ex) { log?.LogWarning(ex, "protection command failed"); }
+        };
         rt.Agent.TurnPerception = gestures.Line;
         // Idle check-ins: hourly at most while no human is online (the tab list, hive bots and this bot excluded).
         rt.Agent.HumansOnline = () => client.World.Entities.OnlinePlayers.Any(n => !n.Equals(client.Username, StringComparison.OrdinalIgnoreCase)
@@ -162,6 +196,7 @@ public sealed class BotHost : IDisposable
         var bridge = new GameBridge(client, rt, log, time)
         {
             Hunger = new HungerLatch(persist ? Path.Combine(agentOptions.DataDirectory, $"hunger-latch-{client.Username}.json") : null, time),
+            PortalPairText = (dim, pos) => PortalPairText(rt.Observations.Portals, dim, pos),
         };
         bridge.Attach();
         var scripts = ScriptTools.Register(rt, client, skillHub, botOptions.Scripts, time, log); // script tool (brain+worker), after split + header
@@ -187,13 +222,68 @@ public sealed class BotHost : IDisposable
             Indexer = indexer, Activity = activityTracker, WorldMemory = worldMemory, Claims = claims ?? NullClaimBoard.Instance,
             Gestures = gestures, DigCells = digCells, Mechanisms = mechanisms, Brainstem = brainstem, ProtectionSync = protectionSync,
             Acquisition = acquisition,
+            PlacedBlocks = placedStore, ProtectionMarks = marks, ProtectionCommands = protectCmds, ProtectionTelemetry = telemetry,
         };
+    }
+
+    /// <summary>Rule 1 persistence: own/hive placed blocks in the shared db.</summary>
+    public PlacedBlockStore? PlacedBlocks { get; init; }
+    /// <summary>Trusted permits and never-break marks (shared db).</summary>
+    public ProtectionMarks? ProtectionMarks { get; init; }
+    /// <summary>Chat → permits/marks.</summary>
+    public ProtectionCommands? ProtectionCommands { get; init; }
+    /// <summary>Refusals counted by reason.</summary>
+    public ProtectionTelemetry? ProtectionTelemetry { get; init; }
+
+    /// <summary>A remembered structure by name ("main house", "the house" → the one whose name contains it), as a box.</summary>
+    private static (MineClaw.World.BlockPos Min, MineClaw.World.BlockPos Max)? NamedStructure(AgentRuntime rt, IGameClient client, string name)
+    {
+        int dim = client.World.Dimension;
+        var n = name.Trim();
+        var s = rt.Memory.Read(d => d.Structures.Where(x => x.Min != null && x.Dimension == dim)
+            .OrderBy(x => x.Name.Equals(n, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .FirstOrDefault(x => x.Name.Equals(n, StringComparison.OrdinalIgnoreCase) || x.Name.Contains(n, StringComparison.OrdinalIgnoreCase)
+                                 || n.Contains(x.Name, StringComparison.OrdinalIgnoreCase)));
+        if (s?.Min is not { } a) return null;
+        var b = s.Max ?? a;
+        return (new MineClaw.World.BlockPos(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Min(a.Z, b.Z)),
+            new MineClaw.World.BlockPos(Math.Max(a.X, b.X), Math.Max(a.Y, b.Y), Math.Max(a.Z, b.Z)));
+    }
+
+    /// <summary>
+    /// The bot is op (Bot:Protection:ServerOp): spawn protection doesn't apply, so a remembered spawn-protection region (and the
+    /// notes about it) from earlier sessions is dropped. Only real server reverts this session re-learn it.
+    /// </summary>
+    public static void ForgetSpawnProtection(AgentRuntime rt, ILogger? log)
+    {
+        try
+        {
+            int n = 0;
+            foreach (int dim in new[] { 0, -1 })
+                if (rt.Observations.Get("protected_region", "spawn", dimension: dim) != null)
+                {
+                    rt.Observations.Remove("protected_region", "spawn", tombstone: false, dimension: dim);
+                    n++;
+                }
+            int notes = RetractSpawnProtectionNotes(rt);
+            if (n + notes > 0) log?.LogInformation("op: forgot the remembered spawn protection ({Rows} region(s), {Notes} note(s))", n, notes);
+        }
+        catch (Exception ex) { log?.LogWarning(ex, "forgetting spawn protection failed"); }
     }
 
     /// <summary>Stall watchdog: a job/script/order that claims to work while the body hasn't changed for 45 s wakes the brain.</summary>
     public Brainstem.StallWatchdog? Watchdog { get; init; }
 
     private static readonly string[] PassiveTools = ["follow", "guard", "watch_demo", "ask_player", "ask_stand", "wait", "sit", "look", "see"];
+
+    /// <summary>The recorded pair whose end in <paramref name="dim"/> is where the bot came out (within 4 blocks), as text.</summary>
+    public static string? PortalPairText(MineClaw.Agent.Rag.PortalLinks links, int dim, MineClaw.World.Vec3d pos)
+    {
+        foreach (var l in links.All())
+            if (l.From(dim) is { } p && p.From.Distance(pos.X, pos.Y, pos.Z) <= 4)
+                return $"portal pair recorded: {MineClaw.Agent.Rag.WorldDim.Name(p.To.Dim)} {p.To.Pos} <-> {MineClaw.Agent.Rag.WorldDim.Name(p.From.Dim)} {p.From.Pos}";
+        return null;
+    }
 
     private static Brainstem.StallWatchdog AttachWatchdog(AgentRuntime rt, IGameClient client, ScriptBridge scripts, TimeProvider? time)
     {
@@ -428,6 +518,7 @@ public sealed class BotHost : IDisposable
     public void Dispose()
     {
         ProtectionSync?.Dispose();
+        PlacedBlocks?.Dispose();
         Watchdog?.Dispose();
         Bridge.Dispose();
         Brainstem?.Dispose();

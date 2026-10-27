@@ -55,6 +55,13 @@ public sealed class SkillContext(IGameActions game, SkillRegistry registry, Skil
 
     public bool Protected(BlockPos p) => Game.IsProtected(p, Block(p));
 
+    /// <summary>The refusal for a protected block: why + the unlock phrase (protection rule 5).</summary>
+    public string ProtectedText(BlockPos p, string what)
+    {
+        var v = Game.ExplainProtection(p, Block(p));
+        return v.Protected ? ProtectionText.Refusal(what, v) : ProtectionText.Generic(what);
+    }
+
     /// <summary>Runs another skill as part of this one (same token; preconditions checked).</summary>
     public Task<SkillResult> RunAsync(string skill, object? args, CancellationToken ct) =>
         Registry.RunAsync(this, skill, args is null ? SkillJson.Empty : args as JsonElement? ?? JsonSerializer.SerializeToElement(args), ct);
@@ -82,11 +89,15 @@ public sealed class SkillContext(IGameActions game, SkillRegistry registry, Skil
             .ConfigureAwait(false);
     }
 
-    /// <summary>Nearest blocks matching (id, meta) within <paramref name="radius"/>, protected ones excluded.</summary>
+    /// <summary>Nearest blocks matching (id, meta) within <paramref name="radius"/>. Protection filters only DIG candidates:
+    /// blocks you use or walk through (doors, chests, stations, levers, portals) stay findable however protected they are.</summary>
     public List<FoundBlock> Find(Func<int, int, bool> match, double? radius = null, int max = 64) =>
         // Filter BEFORE limiting: with max 1 a protected nearest block used to hide every unprotected one behind it.
         World.FindBlocks(Feet, radius ?? Options.SearchRadius, match, int.MaxValue)
-            .Where(b => !Game.IsProtected(b.Pos, b.Id)).Take(max).ToList();
+            .Where(b => IsUseTarget(b.Id) || !Game.IsProtected(b.Pos, b.Id)).Take(max).ToList();
+
+    /// <summary>A block that is used, opened or walked through rather than dug: never hidden by protection.</summary>
+    public static bool IsUseTarget(int id) => id == Blocks.Portal || (id != 0 && Blocks.Get(id).Interactable);
 
     public List<FoundBlock> Find(int id, double? radius = null, int max = 64) => Find((i, _) => i == id, radius, max);
 }
