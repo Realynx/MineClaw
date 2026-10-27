@@ -98,6 +98,22 @@ public class PillarMaterialTests(Xunit.Abstractions.ITestOutputHelper log)
     }
 
     [Fact]
+    public async Task Embedded_in_a_block_jumps_out_instead_of_failing_with_no_start()
+    {
+        // The flaky-pillar root cause: a pillar placement sent while already falling back landed in the bot's own feet cell
+        // (a lenient server accepts it), leaving it inside the block: "not standing on anything" on every re-plan.
+        var (c, s) = await Harness.StartAsync(srv =>
+        {
+            Floor(srv);
+            srv.Blocks[(4, 64, 8)] = Blocks.Log; // spawn inside it
+        }, Logged);
+        await using var _ = c;
+        using var __ = s;
+        var r = await c.GotoAsync(new GoalBlock(7, 64, 8), GotoOptions.Default with { AllowPartial = false });
+        Assert.True(r.Ok, r.ToString());
+    }
+
+    [Fact]
     public async Task Dirt_alone_is_not_counted_as_pillar_material()
     {
         var (c, s) = await Harness.StartAsync(srv => { Floor(srv); srv.Inventory[36] = Harness.Stack(Blocks.Dirt, 16); });

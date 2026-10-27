@@ -209,6 +209,8 @@ public sealed partial class MinecraftClient
                         // Usually mid-air (a pillar jump, a stuck re-plan mid-hop) or a chunk not yet loaded: wait a moment and
                         // retry. Its own budget: landing must never use up the re-plans.
                         airWaits++;
+                        // Embedded in a block (a placement that landed in my own feet cell): jump out on top of it.
+                        await EscapeEmbeddedAsync(token).ConfigureAwait(false);
                         await WaitTicksAsync(10, token).ConfigureAwait(false);
                         continue;
                     }
@@ -321,6 +323,29 @@ public sealed partial class MinecraftClient
                     return "path follower stopped";
             }
         }
+    }
+
+    /// <summary>
+    /// The feet cell holds a solid block while the two above are free: a placement landed in my own body (a race with the
+    /// fall back from a pillar jump on a lenient server). Overlapping boxes don't block movement, so one jump lifts me out
+    /// on top of it. False when not embedded.
+    /// </summary>
+    private async Task<bool> EscapeEmbeddedAsync(CancellationToken ct)
+    {
+        var fc = World.Player.Position.ToBlockPos();
+        if (!BlockShapes.HasCollision(World, fc.X, fc.Y, fc.Z) || BlockShapes.HasCollision(World, fc.X, fc.Y + 1, fc.Z)
+            || BlockShapes.HasCollision(World, fc.X, fc.Y + 2, fc.Z)) return false;
+        Log($"goto: embedded in {BlockName(World.GetBlock(fc), World.GetMeta(fc))} at {Fmt(fc)}: jumping out");
+        int ticks = 0;
+        bool left = false;
+        await DriveAsync(phys =>
+        {
+            ticks++;
+            if (!phys.OnGround) left = true;
+            bool done = (left && phys.OnGround) || ticks > 40;
+            return new DriverStep(new MoveInput(Jump: !left && phys.OnGround, Yaw: _lookYaw, Pitch: _lookPitch), Done: done);
+        }, ct).ConfigureAwait(false);
+        return true;
     }
 
     /// <summary>

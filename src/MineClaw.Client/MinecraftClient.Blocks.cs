@@ -173,7 +173,7 @@ public sealed partial class MinecraftClient
         await LookCoreAsync(a.Yaw, a.Pitch, ct).ConfigureAwait(false);
         // Vanilla World.mayPlace refuses a block whose box holds an entity: a pillar jump that fell back while the slot
         // switch/look ticked would otherwise be sent (and on a lenient server embed us in it).
-        if (AABB.ForPlayer(World.Player.Position).Intersects(AABB.Block(pos.X, pos.Y, pos.Z)))
+        if (AABB.ForPlayer(World.Player.Position).Intersects(AABB.Block(pos.X, pos.Y, pos.Z)) || FallingIntoCell(pos))
             return ActionResult.Fail(InTheWay + Fmt(pos));
         Send(new PlayerBlockPlacementPacket
         {
@@ -423,6 +423,19 @@ public sealed partial class MinecraftClient
     }
 
     private const string InTheWay = "I'm in the way of ";
+
+    /// <summary>
+    /// Pillar placement under my own feet while airborne: the packet takes a few ticks to reach the server, so a placement
+    /// sent while already falling back lands the block inside my body (a lenient server accepts it; vanilla's mayPlace
+    /// refuses it). Only send it rising, or with enough height left above the cell that the fall can't reach it first.
+    /// </summary>
+    private bool FallingIntoCell(BlockPos pos)
+    {
+        var p = World.Player.Position;
+        if (World.Player.OnGround || (int)Math.Floor(p.X) != pos.X || (int)Math.Floor(p.Z) != pos.Z || p.Y < pos.Y + 1 - 1e-6 || p.Y > pos.Y + 2) return false;
+        double vy = World.Player.Physics.Velocity.Y;
+        return vy <= 0.05 && p.Y < pos.Y + 1.15;
+    }
 
     private static string BlockName(int id, int meta) => Blocks.Get(id).Name;
     private static string ItemName(int id, int damage = 0) => Items.DisplayName(id, damage).ToLowerInvariant();

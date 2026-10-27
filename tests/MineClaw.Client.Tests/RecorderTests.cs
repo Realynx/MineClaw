@@ -61,6 +61,9 @@ public class RecorderTests
         bool seen = false;
         c.World.BlockChanged += ch => { if (ch.Pos == new MineClaw.World.BlockPos(10, 64, 8)) seen = c.World.SelfEdits.IsRecent(ch.Pos); };
         Assert.True((await c.DigBlockAsync(10, 64, 8)).Ok);
+        // The dig returns once the world shows air; the BlockChanged handler runs right after the write on the network
+        // thread, so give it a moment instead of racing it.
+        for (int i = 0; i < 100 && !Volatile.Read(ref seen); i++) await Task.Delay(10);
         Assert.True(seen);
         Assert.False(c.World.SelfEdits.IsRecent(new MineClaw.World.BlockPos(0, 0, 0)));
     }
