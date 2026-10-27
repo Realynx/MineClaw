@@ -446,7 +446,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
             case Msg.Heartbeat:
                 return null;
             case Msg.Snapshot:
-                if (m.D is { ValueKind: JsonValueKind.String } sj && BotSnapshot.FromJson(sj.GetString()!) is { } snap) slot.Snapshot = snap;
+                if (m.D is { ValueKind: JsonValueKind.String } sj && BotSnapshot.FromJson(sj.GetString()!) is { } snap) slot.Snapshot = VoxelSendGate.Merge(slot.Snapshot, snap);
                 return null;
             case Msg.Usage:
                 if (m.D is { ValueKind: JsonValueKind.String } uj && JsonSerializer.Deserialize<PromptUsageRecord>(uj.GetString()!, BotSnapshot.Json) is { } rec)

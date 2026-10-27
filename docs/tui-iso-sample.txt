@@ -1,0 +1,40 @@
+╭─MineClaw — maid_chan─────────────────────────────────────────────────────────────────────────────────────────────────╮
+│● online  maid_chan  @ 0,64,-3  hp 20/20 food 18  task: delegate #9 102s  budget: Normal                              │
+│ 1 maid_chan ●   2 maid_chan_67 ●   3 maid_chan_69 ●   4 maid_chan_420 ○   5 maid_chan_1337 ○  23:44:28               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─Viewport — maid_chan (@ 0,64,-3) · iso N↗──────────────────────────╮╭─Tokens — maid_chan─────────────────────────────╮
+│                                                                W N ││today $0.060/10     ░░░░░░░░░░░░░░ 1%  Normal   │
+│                                                                 ┼  ││month $0.060/190    ░░░░░░░░░░░░░░ 0%           │
+│                                 **                             S E ││tier       today  calls  cache     month        │
+│                             **********               kkkk          ││opus      $0.032      1    74%     $0.03        │
+│                            ************             +kkkk+         ││worker    $0.027      2    82%     $0.03        │
+│                            ************         ==,++kkkk++,,,     ││memory    $0.001      1    65%     $0.00        │
+│                         WWc************     =======++++++++,,,,    ││cache today 77% · last 78% · 4 calls/h          │
+│                      fFFWWw************ ==========,,++,,++,,,,,    ││last worker delegate_round r1 23.1k→98 $0.0153 1│
+│             %%   cCCcfff•w•"p*•H@*H **========  ,,,,,,,,,,,,,,     ││███████████████████████████████████████████████ │
+│          %%%%%~~%ccc•"•"""9""""HHHH"==z===          ,,,,,,         ││tools 17% sys 19% know 9% id 2% hist 48% mem 2% │
+│          %%%%%%%%%i!""yy""||""""6H""""|                            ││calls/h                        █ 24h            │
+│          %%%%%%%%%%%%%%=d|..||||""||||.                            ││hive 3/5 up · today $0.179 · month $0.18 · 12 ca│
+│             %%%%%%%%%%%=====....||.....                            ││                                                │
+│                 %%%%%%..=====.........                             ││                                                │
+│                     ..          ..                                 │╰────────────────────────────────────────────────╯
+│                                                                    │╭─Brain — maid_chan──────────────────────────────╮
+│                                                                    ││        cobble chest                            │
+│                                                                    ││digest  [since last turn] kiwi placed 4 torches │
+│                                                                    ││        near the bridge                         │
+│, . rotate + - zoom c cut y labels v view  @ me 6941 hive z s c S mo││memory  [memory] #12 chest by the tree:         │
+╰────────────────────────────────────────────────────────────────────╯│        cobblestone x210, saplings x5           │
+╭─Chat & log — maid_chan─────────────────────────────────────────────╮│said    done, chest's topped up :)              │
+│23:44:27 INF demo mode: fake bots, no server, no API calls          ││tool    ✓ delegate(task=mine 16 cobblestone at  │
+│23:44:28 <kiwi> claude where did we put the saplings                ││        the generator and deposit, do...) → ok: │
+│23:44:28 <maid_chan> on it!                                         ││        mined 16 cobblestone (inv 16), deposited│
+│23:44:28 [task ok] ok: mined 16 cobblestone, deposited in chest by t││        at chest 2                              │
+│23:44:28 <maid_chan> on it!                                         ││task    idle                                    │
+│23:44:28 <poofimafox> nice, thanks!                                 ││worker  running, round 5: mine 16 cobblestone at│
+│23:44:28 <maid_chan> on it!                                         ││        the generator and deposit               │
+│23:44:28 <poofimafox> can you top up the cobble chest               ││journal players asked for cobble; generator east│
+│23:44:28 <maid_chan> on it!                                         ││        of the tree works                       │
+╰────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────╯
+╭─Input — to maid_chan─────────────────────────────────────────────────────────────────────────────────────────────────╮
+│t chat  / command  tab [ ] bots  1-5 jump  v view  , . rotate  c cut  p panel  PgUp/PgDn brain  q quit                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

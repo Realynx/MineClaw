@@ -2,7 +2,8 @@ using MineClaw.Agent.Telemetry;
 
 namespace MineClaw.App.Viewport;
 
-public enum ViewMode { Top, Side }
+/// <summary>Viewport modes, in the order <c>v</c> cycles through them.</summary>
+public enum ViewMode { Top, Side, Iso }
 
 /// <summary>What a cell shows (the TUI maps it to a colour).</summary>
 public enum CellKind { Void, Stone, Dirt, Water, Lava, Log, Leaves, Chest, Furnace, Workbench, Other, Self, Hive, Player, Mob, Item }
@@ -21,6 +22,7 @@ public static class ViewportRenderer
     {
         if (width <= 0 || height <= 0) return [];
         int n = 2 * grid.Radius + 1;
+        if (mode == ViewMode.Iso) mode = ViewMode.Top; // iso has its own renderer (IsoRenderer); this is its 2D fallback
         var src = mode == ViewMode.Top ? grid.Top : grid.Side;
         int srcRows = src.Length;
         if (srcRows == 0 || n <= 0) return [];
@@ -127,6 +129,23 @@ public sealed class HiveRoster
     }
 
     public IReadOnlyList<string> Names { get; }
+
+    /// <summary>Display colours of hive members by roster index (0xRRGGBB).</summary>
+    public static readonly uint[] BotColours = [0xffd75f, 0x5fd7ff, 0xff87d7, 0x87ff5f, 0xffaf5f, 0xaf87ff];
+    private static readonly uint[] PlayerColours = [0x00ffff, 0x5fff87, 0xff5fff, 0xffaf00, 0x00afff, 0xff5faf];
+
+    /// <summary>Colour of a hive member (by roster index) or another player (stable by name).</summary>
+    public uint ColourOf(string name)
+    {
+        for (int i = 0; i < Names.Count; i++)
+            if (string.Equals(Names[i], name, StringComparison.OrdinalIgnoreCase)) return BotColours[i % BotColours.Length];
+        unchecked
+        {
+            int h = 17;
+            foreach (char ch in name.ToLowerInvariant()) h = h * 31 + ch;
+            return PlayerColours[(h & 0x7fffffff) % PlayerColours.Length];
+        }
+    }
 
     /// <summary>Map glyph of a hive member (null for anyone else). The main bot (no numeric suffix) is <c>M</c>.</summary>
     public char? Glyph(string name) => _glyphs.TryGetValue(name, out var g) ? g : null;

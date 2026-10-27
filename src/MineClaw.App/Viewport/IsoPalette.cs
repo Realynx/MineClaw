@@ -98,16 +98,35 @@ public static class IsoPalette
         0x808080, 0xff0000, 0x00ff00, 0xffff00, 0x0000ff, 0xff00ff, 0x00ffff, 0xffffff,
     ];
 
+    /// <summary>Nearest of the 16 ANSI colours, with a hue penalty between saturated colours (so grass maps to green, not olive).</summary>
     public static int To16(uint rgb)
     {
         int best = 0;
         long bd = long.MaxValue;
+        var (h, sat) = HueSat(rgb);
         for (int i = 0; i < 16; i++)
         {
             long d = Dist(rgb, Ansi16Rgb[i]);
+            var (h2, s2) = HueSat(Ansi16Rgb[i]);
+            if (sat > 0.25 && s2 > 0.25)
+            {
+                double dh = Math.Abs(h - h2);
+                dh = Math.Min(dh, 360 - dh);
+                d += (long)(dh * dh * 20);
+            }
+            else if (sat > 0.35 && s2 < 0.1) d += 30_000; // a clearly coloured block shouldn't turn grey
             if (d < bd) { bd = d; best = i; }
         }
         return best;
+    }
+
+    private static (double Hue, double Sat) HueSat(uint rgb)
+    {
+        double r = ((rgb >> 16) & 0xff) / 255.0, g = ((rgb >> 8) & 0xff) / 255.0, b = (rgb & 0xff) / 255.0;
+        double max = Math.Max(r, Math.Max(g, b)), min = Math.Min(r, Math.Min(g, b)), c = max - min;
+        if (max <= 0 || c <= 0) return (0, 0);
+        double h = max == r ? 60 * (((g - b) / c) % 6) : max == g ? 60 * ((b - r) / c + 2) : 60 * ((r - g) / c + 4);
+        return (h < 0 ? h + 360 : h, c / max);
     }
 
     /// <summary>One step darker in the 16-colour set (bright → normal → grey/black).</summary>
@@ -131,16 +150,25 @@ public static class IsoPalette
 
     private static int Darker(int idx, uint rgb, IsoColours c, int avoid1, int avoid2 = -1)
     {
+        int start = idx;
         if (c == IsoColours.Ansi16)
-        {
             for (int k = 0; k < 4 && (idx == avoid1 || idx == avoid2); k++) idx = Darker16(idx);
-            if (idx == avoid1 || idx == avoid2) idx = idx == 0 ? 8 : 0;
-            return idx;
+        else
+        {
+            float f = 0.8f;
+            for (int k = 0; k < 6 && (idx == avoid1 || idx == avoid2); k++, f *= 0.8f) idx = To256(Scale(rgb, f));
         }
-        float f = 0.8f;
-        for (int k = 0; k < 6 && (idx == avoid1 || idx == avoid2); k++, f *= 0.8f) idx = To256(Scale(rgb, f));
-        if (idx == avoid1 || idx == avoid2) idx = idx == 16 ? 232 : 16;
-        return idx;
+        if (idx != avoid1 && idx != avoid2) return idx;
+        // Still clashing (e.g. black): the nearest other entry.
+        int n = c == IsoColours.Ansi16 ? 16 : 256, best = start;
+        long bd = long.MaxValue;
+        for (int i = c == IsoColours.Ansi16 ? 0 : 16; i < n; i++)
+        {
+            if (i == avoid1 || i == avoid2) continue;
+            long d = Dist(rgb, c == IsoColours.Ansi16 ? Ansi16Rgb[i] : Rgb256(i));
+            if (d < bd) { bd = d; best = i; }
+        }
+        return best;
     }
 
     private static long Dist(uint a, uint b)

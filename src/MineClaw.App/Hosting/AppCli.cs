@@ -68,8 +68,8 @@ Usage: MineClaw.App [options]
   --record [dir]           record all packets (default logs/recordings; env MINECLAW_RECORD=1)
   --no-key-check           skip the Anthropic models check at startup
   --demo [--demo-bots n]   offline TUI demo with fake bots (no server, no API key)
-  --frame <WxH>            print one plain-text TUI frame and exit (use with --demo)
-  --bot <n>                initially selected bot (1-5)   --view top|side
+  --frame <WxH>            print one ANSI TUI frame and exit (use with --demo; NO_COLOR=1 for plain text)
+  --bot <n>                initially selected bot (1-5)   --view top|side|iso (default iso on 24-bit terminals)
   --clone <name> --parent-pipe <pipe>   hive clone mode (started by the main process; headless)
 Env: MINECLAW_<Section>__<Key> overrides config, e.g. MINECLAW_Agent__Llm__ApiKey.
 Exit codes: 0 clean, 1 crash, 2 config, 3 auth, 64 usage, 75 transient startup failure.

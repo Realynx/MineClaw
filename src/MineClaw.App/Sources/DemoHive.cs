@@ -30,10 +30,11 @@ public sealed class DemoHive : IDisposable
         for (int i = 0; i < names.Count; i++)
             _bots.Add(new DemoBotSource(this, names[i], i, online: i < online));
         // Humans and mobs.
-        _world.Entities.SpawnPlayer(900, "poofimafox", new Vec3d(-1.5, 64, 3.5), 0, 0);
-        _world.Entities.SpawnPlayer(901, "kiwi", new Vec3d(4.5, 64, -1.5), 0, 0);
-        _world.Entities.SpawnMob(902, MobTypes.Zombie, new Vec3d(9.5, 64, 9.5), 0, 0);
-        _world.Entities.SpawnItem(903, new ItemStack(Blocks.Cobblestone, 3, 0), new Vec3d(5.5, 64, 4.5));
+        _world.Entities.SpawnPlayer(900, "poofimafox", new Vec3d(-0.5, 64, -1.5), 0, 0);
+        _world.Entities.SpawnPlayer(901, "kiwi", new Vec3d(1.5, 64, 2.5), 0, 0);  // on the plank landing south of the cut-out
+        _world.Entities.SpawnMob(902, MobTypes.Zombie, new Vec3d(2.5, 64, -3.5), 0, 0);
+        _world.Entities.SpawnMob(904, MobTypes.Creeper, new Vec3d(-3.5, 64, -3.5), 0, 0);
+        _world.Entities.SpawnItem(903, new ItemStack(Blocks.Cobblestone, 3, 0), new Vec3d(-1.5, 64, 2.5));
         foreach (var b in _bots.Where(b => b.Online)) _world.Entities.SpawnPlayer(1000 + b.Index, b.Name, b.Position, 0, 0);
     }
 
@@ -54,7 +55,50 @@ public sealed class DemoHive : IDisposable
             _world.Entities.Teleport(1000 + b.Index, b.Position, 0, 0);
             if ((t + b.Index * 5) % 16 == 0) b.FakeCall(t);
         }
-        if (t % 8 == 0) _world.Entities.Teleport(902, new Vec3d(9.5 - (t / 8 % 6), 64, 9.5), 0, 0);
+        if (t % 8 == 0) _world.Entities.Teleport(902, new Vec3d(2.5 - (t / 8 % 4), 64, -3.5), 0, 0);
+    }
+
+    /// <summary>Closed walk loop around the L (16 blocks long, clear of the trunk, chest and bench); bots are spaced along it.</summary>
+    private static readonly (double X, double Z)[] Walk = [(-1.5, 1.5), (-1.5, -2.5), (2.5, -2.5), (2.5, -0.5), (-0.5, -0.5), (-0.5, 1.5), (-1.5, 1.5)];
+
+    internal static double WalkLength { get; } = Enumerable.Range(0, Walk.Length - 1)
+        .Sum(i => Math.Abs(Walk[i + 1].X - Walk[i].X) + Math.Abs(Walk[i + 1].Z - Walk[i].Z));
+
+    internal static Vec3d WalkAt(double s)
+    {
+        double t = s % WalkLength;
+        if (t < 0) t += WalkLength;
+        for (int i = 0; i + 1 < Walk.Length; i++)
+        {
+            var (ax, az) = Walk[i];
+            var (bx, bz) = Walk[i + 1];
+            double len = Math.Abs(bx - ax) + Math.Abs(bz - az);
+            if (t <= len || i + 2 == Walk.Length)
+            {
+                double f = len <= 0 ? 0 : Math.Min(1, t / len);
+                return new Vec3d(ax + (bx - ax) * f, 64, az + (bz - az) * f);
+            }
+            t -= len;
+        }
+        return new Vec3d(Walk[0].X, 64, Walk[0].Z);
+    }
+
+    /// <summary>The demo bots' work target (the cobble generator's output block).</summary>
+    internal static readonly int[] GenTarget = [-2, 64, 3];
+
+    /// <summary>Straight walk from the feet block to the block next to <paramref name="target"/> (flat world x,y,z triples).</summary>
+    internal static int[] PathTo(Vec3d feet, int[] target)
+    {
+        var c = feet.ToBlockPos();
+        int tx = target[0], tz = target[2] - 1;
+        var pts = new List<int>();
+        int x = c.X, z = c.Z;
+        for (int guard = 0; guard < 32 && (x != tx || z != tz); guard++)
+        {
+            if (x != tx) x += Math.Sign(tx - x); else z += Math.Sign(tz - z);
+            pts.Add(x); pts.Add(c.Y); pts.Add(z);
+        }
+        return pts.ToArray();
     }
 
     public void Dispose()
@@ -63,7 +107,11 @@ public sealed class DemoHive : IDisposable
         foreach (var b in _bots) b.Dispose();
     }
 
-    /// <summary>Main island (grass on dirt, tree, chest, furnace, bench, cobble generator) plus a sand island to the north.</summary>
+    /// <summary>
+    /// Classic skyblock start: an L of grass on two layers of dirt (6×6 minus the south-east 3×3), an oak tree on the north
+    /// arm, chest + furnace + bench on the west arm, a cobble generator (water | cobble | lava in a cobble trough) off the south
+    /// end, a plank landing in the cut-out, and a small sand island with a glass-walled cactus to the north via a plank bridge.
+    /// </summary>
     private static void BuildWorld(WorldState w)
     {
         var air = new byte[16 * 128 * 16];
@@ -72,32 +120,40 @@ public sealed class DemoHive : IDisposable
                 w.ApplyChunkRegion(cx * 16, 0, cz * 16, 16, 128, 16, air, null, null, null);
 
         void Set(int x, int y, int z, int id) => w.SetBlock(x, y, z, id, 0);
-        for (int x = -3; x <= 6; x++)
-            for (int z = -3; z <= 6; z++)
+        for (int x = -3; x <= 2; x++)
+            for (int z = -3; z <= 2; z++)
             {
-                if (x > 2 && z > 2) continue; // the L cut-out
+                if (x >= 0 && z >= 0) continue; // the L cut-out
                 Set(x, 61, z, Blocks.Dirt); Set(x, 62, z, Blocks.Dirt); Set(x, 63, z, Blocks.Grass);
             }
-        for (int y = 64; y <= 68; y++) Set(1, y, 1, Blocks.Log);
+        // Oak tree on the north arm.
+        for (int y = 64; y <= 68; y++) Set(1, y, -2, Blocks.Log);
         for (int x = -1; x <= 3; x++)
-            for (int z = -1; z <= 3; z++)
+            for (int z = -4; z <= 0; z++)
                 for (int y = 67; y <= 69; y++)
-                    if ((x != 1 || z != 1 || y == 69) && Math.Abs(x - 1) + Math.Abs(z - 1) + (y - 67) <= 4) Set(x, y, z, Blocks.Leaves);
-        Set(-3, 64, 0, Blocks.Chest); Set(-3, 64, 1, Blocks.Chest);
-        Set(0, 64, -3, Blocks.Furnace); Set(-1, 64, -3, Blocks.Workbench);
-        Set(4, 64, -2, Blocks.Torch);
-        // Cobble generator on the east arm.
-        Set(5, 63, 0, Blocks.Cobblestone); Set(5, 63, -1, Blocks.Cobblestone); Set(5, 63, 1, Blocks.Cobblestone);
-        Set(6, 64, -1, Blocks.Water); Set(6, 64, 1, Blocks.Lava); Set(6, 64, 0, Blocks.Cobblestone);
-        Set(7, 63, -1, Blocks.Cobblestone); Set(7, 63, 0, Blocks.Cobblestone); Set(7, 63, 1, Blocks.Cobblestone);
-        // Sand island to the north.
+                {
+                    int d = Math.Abs(x - 1) + Math.Abs(z + 2);
+                    if ((x == 1 && z == -2 && y < 69) || d + (y - 67) > 3 || (d == 3 && y == 67 && (x + z) % 2 == 0)) continue;
+                    Set(x, y, z, Blocks.Leaves);
+                }
+        Set(1, 70, -2, Blocks.Leaves);
+        // Starter kit on the west arm.
+        Set(-3, 64, 1, Blocks.Chest);
+        Set(-3, 64, -1, Blocks.Furnace); Set(-3, 64, -2, Blocks.Workbench);
+        Set(0, 64, -3, Blocks.Torch);
+        Set(-1, 64, 1, Blocks.Sapling);
+        // Cobble generator off the south end: trough floor + rim, water | cobble | lava.
+        for (int x = -4; x <= 0; x++) for (int z = 3; z <= 4; z++) Set(x, 63, z, Blocks.Cobblestone);
+        for (int x = -4; x <= 0; x++) Set(x, 64, 4, Blocks.Cobblestone);
+        Set(-4, 64, 3, Blocks.Cobblestone); Set(0, 64, 3, Blocks.Cobblestone);
+        Set(-3, 64, 3, Blocks.Water); Set(-2, 64, 3, Blocks.Cobblestone); Set(-1, 64, 3, Blocks.Lava);
+        // Plank landing in the cut-out and a plank bridge north to the sand island.
+        for (int x = 0; x <= 2; x++) Set(x, 63, 2, Blocks.Planks);
+        for (int z = -10; z <= -4; z++) Set(1, 63, z, Blocks.Planks);
         for (int x = 0; x <= 3; x++)
             for (int z = -14; z <= -11; z++) { Set(x, 61, z, Blocks.Sand); Set(x, 62, z, Blocks.Sand); }
-        Set(1, 63, -12, Blocks.Cactus); Set(1, 64, -12, Blocks.Cactus);
-        // A bridge of planks back to the main island.
-        for (int z = -10; z <= -4; z++) Set(1, 63, z, Blocks.Planks);
-        // Stone platform.
-        for (int x = -2; x <= 0; x++) for (int z = 4; z <= 6; z++) Set(x, 63, z, Blocks.Stone);
+        Set(2, 63, -12, Blocks.Sand); Set(2, 64, -12, Blocks.Cactus); Set(2, 65, -12, Blocks.Cactus);
+        Set(1, 63, -12, Blocks.Glass); Set(3, 63, -12, Blocks.Glass); Set(2, 63, -13, Blocks.Glass); Set(2, 63, -11, Blocks.Glass);
     }
 }
 
@@ -120,6 +176,7 @@ public sealed class DemoBotSource : IBotTelemetrySource, IDisposable
     private readonly LinkedList<string> _chat = new();
     private readonly object _lock = new();
     private readonly double _phase;
+    private readonly VoxelCache _voxels = new();
 
     internal DemoBotSource(DemoHive hive, string name, int index, bool online)
     {
@@ -127,14 +184,14 @@ public sealed class DemoBotSource : IBotTelemetrySource, IDisposable
         Name = name;
         Index = index;
         Online = online;
-        _phase = index * 2.1;
+        _phase = index * DemoHive.WalkLength / 5;
         _agent = new AgentOptions();
         _agent.Chat.Username = name;
         _usage = new UsageTracker(_agent.Budget, _agent.Prices, path: null) { Classify = m => _agent.Llm.TierOfModel(m) };
         _telemetry = new PromptTelemetry(_agent);
         _telemetry.AttachUsage(_usage);
         _telemetry.Recorded += r => UsageRecorded?.Invoke(r);
-        Position = new Vec3d(0.5 + index, 64, 0.5);
+        Position = DemoHive.WalkAt(_phase);
         if (online) AddChat($"{name} joined the game");
     }
 
@@ -145,11 +202,7 @@ public sealed class DemoBotSource : IBotTelemetrySource, IDisposable
 
     public event Action<PromptUsageRecord>? UsageRecorded;
 
-    internal void Move(int tick)
-    {
-        double a = tick / 12.0 + _phase;
-        Position = new Vec3d(1.5 + Math.Cos(a) * (2 + Index), 64, 1.5 + Math.Sin(a) * (2 + Index % 2));
-    }
+    internal void Move(int tick) => Position = DemoHive.WalkAt(tick / 10.0 + _phase);
 
     public BotSnapshot Snapshot(bool full)
     {
@@ -171,6 +224,7 @@ public sealed class DemoBotSource : IBotTelemetrySource, IDisposable
             Thought = full ? _telemetry.Thoughts.Snapshot() : null,
             Usage = UsageSnapshots.From(_usage, _telemetry),
             Viewport = full ? ViewportBuilder.Build(_hive.World, p, _hive.View, Name) : null,
+            Voxels = full ? _voxels.Get(_hive.World, p, _hive.View, DemoHive.GenTarget, Index == 0 ? DemoHive.PathTo(p, DemoHive.GenTarget) : null) : null,
             Chat = chat,
         };
     }

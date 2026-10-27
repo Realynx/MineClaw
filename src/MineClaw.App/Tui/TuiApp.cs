@@ -57,7 +57,7 @@ public sealed class TuiApp
     private bool _stop;
 
     public TuiApp(IReadOnlyList<IBotTelemetrySource> sources, HiveRoster roster, RingLoggerProvider? ring, TuiSettings settings,
-        Action<string> quit, ILogger? log = null, int selected = 0, ViewMode view = ViewMode.Top)
+        Action<string> quit, ILogger? log = null, int selected = 0, ViewMode? view = null)
     {
         _sources = sources;
         _roster = roster;
@@ -66,16 +66,47 @@ public sealed class TuiApp
         _quit = quit;
         _log = log;
         _state.Selected = Math.Clamp(selected, 0, Math.Max(0, sources.Count - 1));
-        _state.View = view;
+        _state.View = view ?? ViewMode.Top;
+        _autoView = view == null;
+    }
+
+    private readonly bool _autoView;
+
+    /// <summary>Default viewport mode for a terminal: isometric when it has 24-bit colour, else top-down.</summary>
+    public static ViewMode DefaultView(ColorSystemSupport colours) => colours == ColorSystemSupport.TrueColor ? ViewMode.Iso : ViewMode.Top;
+
+    /// <summary><c>--view</c> value → mode; null/unknown = auto (<see cref="DefaultView"/>).</summary>
+    public static ViewMode? ParseView(string? v) => v?.Trim().ToLowerInvariant() switch
+    {
+        "top" or "map" => ViewMode.Top,
+        "side" => ViewMode.Side,
+        "iso" or "isometric" or "3d" => ViewMode.Iso,
+        _ => null,
+    };
+
+    public static IsoColours IsoColoursOf(ColorSystemSupport c) => c switch
+    {
+        ColorSystemSupport.TrueColor => IsoColours.TrueColor,
+        ColorSystemSupport.EightBit => IsoColours.Ansi256,
+        ColorSystemSupport.Standard or ColorSystemSupport.Legacy => IsoColours.Ansi16,
+        _ => IsoColours.None,
+    };
+
+    /// <summary>One frame as text (<c>--frame</c>): ANSI with the given colours, or plain text (glyph-only viewport).</summary>
+    public string RenderOnce(int width, int height, bool ansi, ColorSystemSupport colours = ColorSystemSupport.TrueColor, bool unicode = true)
+    {
+        if (!ansi) colours = ColorSystemSupport.NoColors;
+        if (_autoView) _state.View = DefaultView(colours);
+        return FrameRenderer.Render(BuildFrame(width, height, unicode, IsoColoursOf(colours)), width, height, ansi, ansi ? colours : ColorSystemSupport.NoColors, unicode);
     }
 
     public TuiState State => _state;
 
     /// <summary>Snapshots + frame for the current state (also used by <c>--frame</c>).</summary>
-    public IRenderable BuildFrame(int width, int height, bool unicode)
+    public IRenderable BuildFrame(int width, int height, bool unicode, IsoColours colours = IsoColours.TrueColor)
     {
         var bots = _sources.Select((s, i) => i == _state.Selected ? s.Snapshot(full: true) : s.Snapshot(full: false)).ToList();
-        var input = new FrameInput(_state, bots, bots[_state.Selected], _ring?.Lines() ?? [], _roster, unicode, DateTimeOffset.Now);
+        var input = new FrameInput(_state, bots, bots[_state.Selected], _ring?.Lines() ?? [], _roster, unicode, DateTimeOffset.Now, colours);
         return TuiFrame.Build(input, width, height);
     }
 
@@ -85,6 +116,8 @@ public sealed class TuiApp
     {
         var colours = (ColorSystemSupport)(int)AnsiConsole.Profile.Capabilities.ColorSystem;
         bool unicode = AnsiConsole.Profile.Capabilities.Unicode;
+        if (_autoView) _state.View = DefaultView(colours);
+        var isoColours = IsoColoursOf(colours);
         var stdout = Console.OpenStandardOutput();
         var enc = new UTF8Encoding(false);
         void Write(string s) { var b = enc.GetBytes(s); stdout.Write(b, 0, b.Length); stdout.Flush(); }
@@ -114,7 +147,7 @@ public sealed class TuiApp
                     try
                     {
                         // One column short: writing the last cell of a line can trigger auto-wrap/scroll on some terminals.
-                        frame = FrameRenderer.Render(BuildFrame(w - 1, h, unicode), w - 1, h, ansi: true, colours, unicode);
+                        frame = FrameRenderer.Render(BuildFrame(w - 1, h, unicode, isoColours), w - 1, h, ansi: true, colours, unicode);
                     }
                     catch (Exception ex)
                     {
@@ -196,7 +229,13 @@ public sealed class TuiApp
             case '/': st.Mode = InputMode.Command; return;
             case ']': Select(st.Selected + 1); return;
             case '[': Select(st.Selected - 1); return;
-            case 'v' or 'V': st.View = st.View == ViewMode.Top ? ViewMode.Side : ViewMode.Top; return;
+            case 'v' or 'V': st.View = st.View switch { ViewMode.Top => ViewMode.Side, ViewMode.Side => ViewMode.Iso, _ => ViewMode.Top }; return;
+            case ',' or '<': st.Iso.Rotate(-1); return;
+            case '.' or '>': st.Iso.Rotate(1); return;
+            case '+' or '=': st.Iso.ZoomBy(1); return;
+            case '-' or '_': st.Iso.ZoomBy(-1); return;
+            case 'c' or 'C': st.Iso.Cutaway = !st.Iso.Cutaway; return;
+            case 'y' or 'Y': st.Iso.Labels = !st.Iso.Labels; return;
             case 'p' or 'P': st.NarrowPanel = (st.NarrowPanel + 1) % 3; return;
             case >= '1' and <= '9':
                 int i = k.KeyChar - '1';

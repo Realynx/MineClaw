@@ -50,6 +50,7 @@ public sealed class InProcessBotSource : IBotTelemetrySource, IDisposable
     private readonly CancellationToken _ct;
     private readonly LinkedList<string> _chat = new();
     private readonly object _lock = new();
+    private readonly VoxelCache _voxels = new();
     private volatile bool _everPlayed;
 
     public InProcessBotSource(IGameClient game, AgentRuntime rt, PromptTelemetry telemetry, PausableAgent agent, ConsoleCommands commands,
@@ -90,6 +91,7 @@ public sealed class InProcessBotSource : IBotTelemetrySource, IDisposable
                 Status = status,
                 At = DateTimeOffset.UtcNow,
                 Pos = pos,
+                Dimension = w.Dimension,
                 Hp = p.Health,
                 Food = p.Food,
                 Task = _rt.Activities.Describe() ?? _game.CurrentAction,
@@ -98,6 +100,7 @@ public sealed class InProcessBotSource : IBotTelemetrySource, IDisposable
                 Thought = full ? _telemetry.Thoughts.Snapshot() : null,
                 Usage = UsageSnapshots.From(_rt.Usage, _telemetry),
                 Viewport = full && pos != null ? ViewportBuilder.Build(w, p.Position, _view, Name) : null,
+                Voxels = full && pos != null ? _voxels.Get(w, p.Position, _view) : null,
                 Chat = chat,
             };
         }

@@ -22,11 +22,16 @@ public sealed class TuiState
     /// <summary>Narrow terminals: which panel takes the top slot (0 viewport, 1 tokens, 2 brain).</summary>
     public int NarrowPanel { get; set; }
     public string? Flash { get; set; }
+    /// <summary>Isometric view settings (rotation, zoom, cutaway, labels) — shared by all bots.</summary>
+    public IsoView Iso { get; } = new();
+    /// <summary>Reused render buffers and styles of the isometric viewport.</summary>
+    internal IsoRenderer IsoRenderer { get; } = new();
+    internal Dictionary<(uint, uint, IsoCellFlags), Style> IsoStyles { get; } = new();
 }
 
 /// <summary>Everything one frame needs (snapshots already taken).</summary>
 public sealed record FrameInput(TuiState State, IReadOnlyList<BotSnapshot> Bots, BotSnapshot Selected, IReadOnlyList<LogLine> Logs,
-    HiveRoster Roster, bool Unicode, DateTimeOffset Now);
+    HiveRoster Roster, bool Unicode, DateTimeOffset Now, IsoColours Colours = IsoColours.TrueColor);
 
 /// <summary>
 /// Builds one full-screen frame. Wide (≥100 cols): header / [viewport + chat | tokens + brain] / input. Narrow: header /
@@ -156,8 +161,20 @@ public static class TuiFrame
     private static Panel ViewportPanel(FrameInput f, int w, int h, string dash)
     {
         var s = f.Selected;
-        string mode = f.State.View == ViewMode.Top ? "top" : "side, looking north";
-        string title = $"Viewport {dash} {s.Name}" + (s.Pos is { } p ? $" (@ {p})" : "") + $" [{mode}]";
+        var st = f.State;
+        bool nether = s.Dimension == -1;
+        bool iso = st.View == ViewMode.Iso && s.Voxels != null && s.Viewport != null;
+        var view = st.View == ViewMode.Iso && !iso ? ViewMode.Top : st.View;
+        string mode = view switch
+        {
+            ViewMode.Iso => "iso " + (f.Unicode ? "N" + IsoProjection.Arrows[st.Iso.Rotation & 3] : "N:" + IsoProjection.AsciiArrows[st.Iso.Rotation & 3])
+                + (st.Iso.Cutaway && s.Voxels is { } vx ? (f.Unicode ? " · cut y≤" : " - cut y<=") + (vx.Cy + 1) : "")
+                + (st.Iso.Zoom != 1 ? (f.Unicode ? " · zoom " : " - zoom ") + st.Iso.Zoom : ""),
+            ViewMode.Side => "side, looking north",
+            _ => st.View == ViewMode.Iso ? "top (no 3D data yet)" : "top",
+        };
+        string sep = f.Unicode ? " · " : " - ";
+        string title = $"Viewport {dash} {s.Name}" + (s.Pos is { } p ? $" (@ {p})" : "") + sep + mode + (nether ? sep + "nether" : "");
         int iw = w - 2, ih = h - 2;
         var lines = new List<string>();
         if (s.Viewport is not { } grid)
@@ -167,7 +184,9 @@ public static class TuiFrame
         }
         bool legend = ih >= 12;
         int mapH = ih - (legend ? 1 : 0);
-        var cells = ViewportRenderer.Render(grid, f.State.View, iw, mapH, f.Roster.Glyph);
+        if (iso) return IsoPanel(f, s, grid, title, w, h, iw, mapH, legend, nether);
+
+        var cells = ViewportRenderer.Render(grid, view, iw, mapH, f.Roster.Glyph);
         int padTop = Math.Max(0, (mapH - cells.Length) / 2);
         int padLeft = cells.Length > 0 ? Math.Max(0, (iw - cells[0].Length) / 2) : 0;
         for (int i = 0; i < padTop; i++) lines.Add("");
@@ -179,6 +198,36 @@ public static class TuiFrame
             lines.Add(new MLine(iw).Add("# stone . dirt ~ water ! lava T log * leaves C chest F furnace W bench + solid  @ me " + hive + " hive m mob i item  v: view", "grey").ToString());
         }
         return Box(title, lines, w, h);
+    }
+
+    /// <summary>The isometric viewport: an <see cref="IsoRenderer"/> canvas plus a one-line key/legend.</summary>
+    private static Panel IsoPanel(FrameInput f, BotSnapshot s, ViewportGrid grid, string title, int w, int h, int iw, int mapH, bool legend, bool nether)
+    {
+        var st = f.State;
+        var input = new IsoInput(s.Voxels!, grid.Markers, st.Iso, f.Colours, f.Unicode, nether, f.Roster.Glyph, f.Roster.ColourOf, f.Roster.ColourOf(s.Name));
+        var frame = st.IsoRenderer.Render(input, iw, mapH);
+        IRenderable content = new CanvasRenderable(frame, st.IsoStyles);
+        if (legend)
+        {
+            var hive = string.Join("", f.Roster.Names.Where(n => !string.Equals(n, s.Name, StringComparison.OrdinalIgnoreCase))
+                .Select(n => f.Roster.Glyph(n)).OfType<char>());
+            var l = new MLine(iw).Add(", .", "bold").Add(" rotate ", "grey").Add("+ -", "bold").Add(" zoom ", "grey").Add("c", "bold")
+                .Add(st.Iso.Cutaway ? " cut:on " : " cut ", "grey").Add("y", "bold").Add(" labels ", "grey").Add("v", "bold").Add(" view  ", "grey")
+                .Add("@", "bold yellow").Add(" me ", "grey");
+            if (hive.Length > 0) l.Add(hive, "bold fuchsia").Add(" hive ", "grey");
+            l.Add("z s c S", "bold red").Add(" mobs ", "grey").Add("i", "bold yellow").Add(" item", "grey");
+            content = new Rows(content, new Markup(l.ToString()));
+        }
+        return new Panel(content)
+        {
+            Header = new PanelHeader(" " + Markup.Escape(title) + " "),
+            Border = BoxBorder.Rounded,
+            BorderStyle = new Style(nether ? Color.IndianRed : Color.Grey58),
+            Padding = new Padding(0, 0, 0, 0),
+            Expand = true,
+            Width = w,
+            Height = h,
+        };
     }
 
     private static Panel ChatPanel(FrameInput f, int w, int h, string dash)
@@ -300,7 +349,7 @@ public static class TuiFrame
         var l = new MLine(iw);
         if (st.Mode == InputMode.None)
             return l.Add("t", "bold").Add(" chat  ").Add("/", "bold").Add(" command  ").Add("tab [ ]", "bold").Add(" bots  ").Add("1-5", "bold")
-                .Add(" jump  ").Add("v", "bold").Add(" view  ").Add("p", "bold").Add(" panel  ").Add("PgUp/PgDn", "bold").Add(" brain  ")
+                .Add(" jump  ").Add("v", "bold").Add(st.View == ViewMode.Iso ? " view  , . rotate  c cut  " : " view  ").Add("p", "bold").Add(" panel  ").Add("PgUp/PgDn", "bold").Add(" brain  ")
                 .Add("q", "bold").Add(" quit", null).ToString();
         string prompt = st.Mode == InputMode.Command ? "/" : "say> ";
         var text = st.Input.ToString();

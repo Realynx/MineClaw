@@ -233,11 +233,12 @@ public sealed class CloneHost : IHandoffTarget
         var hbEvery = _cfg.Heartbeat;
         var lastHb = DateTimeOffset.MinValue;
         var lastInvCheck = DateTimeOffset.MinValue;
+        var voxelGate = new VoxelSendGate();
         while (!ct.IsCancellationRequested && _link is { IsOpen: true })
         {
             try
             {
-                await Send(Msg.Snapshot, _body.Snapshot(full: true).ToJson()).ConfigureAwait(false);
+                await Send(Msg.Snapshot, voxelGate.Thin(_body.Snapshot(full: true)).ToJson()).ConfigureAwait(false); // unchanged voxels: Seq only
                 var now = DateTimeOffset.UtcNow;
                 if (now - lastHb >= hbEvery) { lastHb = now; await Send(Msg.Heartbeat, null).ConfigureAwait(false); }
                 if (now - lastInvCheck >= TimeSpan.FromSeconds(2)) { lastInvCheck = now; await SyncInventoryAsync().ConfigureAwait(false); }

@@ -93,6 +93,8 @@ public class TuiTests
         app.HandleKey(Key('v'));
         Assert.Equal(ViewMode.Side, app.State.View);
         app.HandleKey(Key('v'));
+        Assert.Equal(ViewMode.Iso, app.State.View); // v cycles top → side → iso
+        app.HandleKey(Key('v'));
         Assert.Equal(ViewMode.Top, app.State.View);
 
         app.HandleKey(Key('1'));

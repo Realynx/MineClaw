@@ -235,7 +235,7 @@ public static class AppHost
         return ExitCodes.Ok;
     }
 
-    internal static ViewMode ParseView(string? v) => string.Equals(v, "side", StringComparison.OrdinalIgnoreCase) ? ViewMode.Side : ViewMode.Top;
+    internal static ViewMode? ParseView(string? v) => TuiApp.ParseView(v);
 
     // ================================================================ demo
 
@@ -266,7 +266,9 @@ public static class AppHost
             for (int i = 0; i < 64; i++) demo.Tick();
             var (w, h) = cli.Frame ?? (120, 40);
             var app = new TuiApp(demo.Sources, roster, ring, host.Tui, _ => { }, NullLogger.Instance, cli.Bot - 1, ParseView(cli.ViewMode));
-            Console.Out.WriteLine(FrameRenderer.Render(app.BuildFrame(w, h, unicode: true), w, h, ansi: false));
+            // --frame: ANSI 24-bit colour (NO_COLOR=1 for plain text); the headless fallback prints plain text.
+            bool ansi = cli.Frame != null && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"));
+            Console.Out.WriteLine(app.RenderOnce(w, h, ansi));
             if (cli.Frame == null) Console.Error.WriteLine($"(demo: printed one frame because {why}; run in a terminal for the live TUI)");
             return ExitCodes.Ok;
         }
