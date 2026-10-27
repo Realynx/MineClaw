@@ -109,6 +109,19 @@ internal sealed class FakeServer : IDisposable
     public bool PlaceBlocks { get; set; } = true;
     public volatile bool LoggedIn;
     private int _windowId;
+    /// <summary>Server-side vitals; eating (0x0F use item with food, then 32 ticks ≈ <see cref="EatDelayMs"/>) raises food.</summary>
+    public volatile int Health = 20, Food = 20;
+    public int EatDelayMs { get; set; } = 40;
+    /// <summary>Food items the server finished eating (id per meal).</summary>
+    public ConcurrentQueue<int> Eaten { get; } = new();
+
+    /// <summary>Sets health/food server-side and sends 0x08.</summary>
+    public void SetVitals(int health, int food, float saturation = 0)
+    {
+        Health = health;
+        Food = food;
+        Send(new UpdateHealthPacket { Health = (short)health, Food = (short)food, FoodSaturation = saturation });
+    }
 
     public FakeServer()
     {
@@ -214,6 +227,26 @@ internal sealed class FakeServer : IDisposable
                 break;
             case PlayerPositionLookPacket ppl:
                 CheckPickups(ppl.X, ppl.Y, ppl.Z);
+                break;
+            case PlayerBlockPlacementPacket use when use.Direction == PlayerBlockPlacementPacket.NoDirection:
+                if (!use.HeldItem.IsEmpty && MineClaw.Data.Items.Food(use.HeldItem.Id) is { } meal && Food < 20)
+                {
+                    int id = use.HeldItem.Id;
+                    _ = Task.Delay(EatDelayMs).ContinueWith(_ =>
+                    {
+                        int slot = Array.FindIndex(Inventory, 36, 9, st => !st.IsEmpty && st.Id == id);
+                        if (slot < 0) slot = Array.FindIndex(Inventory, 9, 27, st => !st.IsEmpty && st.Id == id);
+                        if (slot >= 0)
+                        {
+                            var cur = Inventory[slot];
+                            Inventory[slot] = cur.Count <= 1 ? ItemStack.Empty : new ItemStack(cur.Id, (byte)(cur.Count - 1), cur.Damage);
+                            Send(new SetSlotPacket { WindowId = 0, Slot = (short)slot, Item = Inventory[slot] });
+                        }
+                        Send(new EntityStatusPacket { EntityId = EntityId, Status = 9 });
+                        Eaten.Enqueue(id);
+                        SetVitals(Health, Math.Min(20, Food + meal.Hunger), meal.Hunger * meal.Saturation * 2);
+                    });
+                }
                 break;
             case PlayerBlockPlacementPacket place when place.Direction != PlayerBlockPlacementPacket.NoDirection:
                 if (Chests.TryGetValue((place.X, place.Y, place.Z), out var contents))

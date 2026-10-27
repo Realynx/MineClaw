@@ -108,6 +108,8 @@ public sealed partial class MinecraftClient
         CancellationToken ct = default) =>
         RunActionAsync("mine", ct, async c =>
         {
+            if (count >= Options.Survival.LongMiningCount && await SurvivalGateAsync($"mine {count} blocks", c).ConfigureAwait(false) is { } refused)
+                return refused;
             int firstId = blockIds.First();
             string name = BlockName(firstId, 0);
             var dropItem = Drops.Primary(firstId, 0, BestToolId(firstId))?.ItemId ?? firstId;
@@ -120,6 +122,7 @@ public sealed partial class MinecraftClient
                 while (mined < count)
                 {
                     if (World.Inventory.RoomFor(new ItemStack((short)dropItem, 1, 0)) == 0) { stop = "inventory full"; break; }
+                    await SurvivalWindowAsync(c).ConfigureAwait(false);
                     var target = PickMineTarget(blockIds, radius, failed, protect);
                     if (target is null) { stop = $"no more reachable {name} within {radius:0}"; break; }
                     var r = await DigCoreAsync(target.Value, c).ConfigureAwait(false);
@@ -190,6 +193,8 @@ public sealed partial class MinecraftClient
     public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, CancellationToken ct = default) =>
         RunActionAsync("generator", ct, async c =>
         {
+            if (count >= Options.Survival.LongMiningCount && await SurvivalGateAsync($"mine {count} blocks", c).ConfigureAwait(false) is { } refused)
+                return refused;
             var pos = new BlockPos(x, y, z);
             int haveBefore = World.Inventory.CountItem(Blocks.Cobblestone);
             int mined = 0, failures = 0;
@@ -208,6 +213,7 @@ public sealed partial class MinecraftClient
                 while (mined < count)
                 {
                     if (World.Inventory.RoomFor(new ItemStack(Blocks.Cobblestone, 1, 0)) == 0) { stop = "inventory full"; break; }
+                    await SurvivalWindowAsync(c).ConfigureAwait(false);
                     if (!await WaitUntilAsync(() => IsGen(World.GetBlock(pos)), TimeSpan.FromSeconds(8), c).ConfigureAwait(false))
                     {
                         stop = $"generator at {Fmt(pos)} stopped producing (now {BlockName(World.GetBlock(pos), 0)})";

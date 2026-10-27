@@ -56,6 +56,7 @@ public sealed partial class MinecraftClient
             var d = _driver;
             if (d is not null && Interlocked.CompareExchange(ref _driver, null, d) == d) d.Tcs.TrySetCanceled();
             _idleSneak = false;
+            _actionRisk = null;
             CurrentAction = null;
             _actionCts = null;
             _actionLock.Release();
@@ -136,7 +137,12 @@ public sealed partial class MinecraftClient
     /// <summary>Pathfinds and walks to <paramref name="goal"/>, re-planning on "stuck"/"off path" and performing
     /// the dig/place steps the path needs (only if allowed by <paramref name="options"/>).</summary>
     public Task<ActionResult> GotoAsync(Goal goal, GotoOptions? options = null, CancellationToken ct = default) =>
-        RunActionAsync("goto", ct, c => GotoCoreAsync(goal, options ?? GotoOptions.Default, c));
+        RunActionAsync("goto", ct, async c =>
+        {
+            var o = options ?? GotoOptions.Default;
+            if (o.AllowPlace && await SurvivalGateAsync("bridge", c).ConfigureAwait(false) is { } refused) return refused;
+            return await GotoCoreAsync(goal, o, c).ConfigureAwait(false);
+        });
 
     private PathOptions BuildPathOptions(GotoOptions o)
     {
@@ -168,6 +174,7 @@ public sealed partial class MinecraftClient
         var token = timeout.Token;
         int replans = 0;
         string? lastFailure = null;
+        var blockedJumps = new HashSet<(BlockPos From, BlockPos To)>();
         try
         {
             while (true)
@@ -177,6 +184,7 @@ public sealed partial class MinecraftClient
                     return ActionResult.Success($"arrived at {Fmt(start)}");
 
                 var popts = BuildPathOptions(o);
+                if (blockedJumps.Count > 0) popts = popts with { AvoidJumps = blockedJumps.ToHashSet() };
                 var path = await Task.Run(() => Pathfinder.FindPath(World, start, goal, popts, token), token).ConfigureAwait(false);
                 if (path.Status is PathStatus.NoPath or PathStatus.InvalidStart || path.Steps.Count == 0)
                 {
@@ -190,7 +198,7 @@ public sealed partial class MinecraftClient
                     return ActionResult.Fail($"no path to {goal} ({path.Reason ?? path.Status.ToString()}{(lastFailure is null ? "" : ", last: " + lastFailure)})");
                 }
 
-                var r = await FollowPathAsync(path.Steps, o, token).ConfigureAwait(false);
+                var r = await FollowPathAsync(path.Steps, o, token, blockedJumps).ConfigureAwait(false);
                 if (r is null)
                 {
                     if (path.Status == PathStatus.Found) return ActionResult.Success($"arrived at {Fmt(World.Player.Position)}");
@@ -211,7 +219,10 @@ public sealed partial class MinecraftClient
     }
 
     /// <summary>Follows one path. Returns null when finished, else the failure reason.</summary>
-    private async Task<string?> FollowPathAsync(IReadOnlyList<PathStep> steps, GotoOptions o, CancellationToken ct)
+    /// <param name="blockedJumps">Receives a jump move the edge guard kept refusing (landing not verified), so the
+    /// re-plan avoids it instead of retrying the same jump forever.</param>
+    private async Task<string?> FollowPathAsync(IReadOnlyList<PathStep> steps, GotoOptions o, CancellationToken ct,
+        HashSet<(BlockPos From, BlockPos To)>? blockedJumps = null)
     {
         var follower = new PathFollower(steps, new PathFollowerOptions { AllowSprint = o.AllowSprint, Reach = Options.Reach });
         while (true)
@@ -219,6 +230,7 @@ public sealed partial class MinecraftClient
             FollowerOutput last = default;
             await DriveAsync(phys =>
             {
+                if ((_lastGuardActions & GuardActions.CancelledJump) != 0) follower.NoteJumpCancelled(phys);
                 var output = follower.Tick(World, phys);
                 last = output;
                 bool drop = follower.CurrentStep?.Kind == MoveKind.Drop;
@@ -232,6 +244,7 @@ public sealed partial class MinecraftClient
                 case FollowerStatus.Finished:
                     return null;
                 case FollowerStatus.Failed:
+                    if (follower.BlockedJump is { } bj) blockedJumps?.Add(bj);
                     return last.Reason ?? "path failed";
                 case FollowerStatus.NeedsAction when last.Action is { } a:
                 {
@@ -268,6 +281,7 @@ public sealed partial class MinecraftClient
                         continue;
                     }
                     lostTicks = 0;
+                    await SurvivalWindowAsync(c).ConfigureAwait(false);
                     var me = World.Player.Position;
                     double d = me.DistanceTo(target.Position);
                     if (d <= distance + 0.5)

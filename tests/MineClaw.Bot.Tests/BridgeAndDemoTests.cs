@@ -26,6 +26,16 @@ public class BridgeTests
     }
 
     [Fact]
+    public void Survival_events_escalate_with_severity()
+    {
+        Assert.Equal(EventPriority.Normal, GameBridge.MapDanger(new DangerEvent(DangerKind.Hunger, "starving: food 5, no food in inventory") { Level = 2 }, 14, 64).Priority);
+        Assert.Equal(EventPriority.High, GameBridge.MapDanger(new DangerEvent(DangerKind.Hunger, "starving: food 0") { Level = 3 }, 12, 64).Priority);
+        var crit = GameBridge.MapDanger(new DangerEvent(DangerKind.LowHealth, "critical hp 3/20 (food 9)") { Critical = true }, 3, 64);
+        Assert.Equal(EventPriority.Critical, crit.Priority);
+        Assert.Equal("critical hp 3/20 (food 9)", crit.Text); // no duplicated "hp x/20"
+    }
+
+    [Fact]
     public void Kick_is_background_context()
     {
         var e = GameBridge.MapKick("Flying is not enabled");
@@ -80,7 +90,9 @@ public class BridgeTests
         c.Give(36, Blocks.Cobblestone, 12);
         c.CurrentAction = "goto";
         var s = h.Runtime.Agent.StateHeader!();
-        Assert.Equal("pos 0,65,0 hp 20 food 20 held cobblestone x12 day | doing goto", s);
+        Assert.Equal("pos 0,65,0 hp 20/20 food 20 held cobblestone x12 day | doing goto", s);
+        c.World.Player.SetHealth(14, 9, 0);
+        Assert.StartsWith("pos 0,65,0 hp 14/20 food 9 (no food!) held", h.Runtime.Agent.StateHeader!());
         c.IsPlaying = false;
         Assert.Equal("offline (reconnecting)", h.Runtime.Agent.StateHeader!());
     }

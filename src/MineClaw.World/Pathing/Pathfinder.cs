@@ -124,6 +124,7 @@ public sealed class Pathfinder
             foreach (var m in moves)
             {
                 if (_o.Avoid is { } avoid && avoid.Contains(new BlockPos(m.X, m.Y, m.Z))) continue;
+                if (m.Kind == MoveKind.Jump && _o.AvoidJumps is { } aj && aj.Contains((new BlockPos(n.X, n.Y, n.Z), new BlockPos(m.X, m.Y, m.Z)))) continue;
                 int scaffold = n.Scaffold + (m.Place is null ? 0 : 1);
                 if (scaffold > _o.ScaffoldBudget && m.Place is not null) continue;
                 long k = Key(m.X, m.Y, m.Z);

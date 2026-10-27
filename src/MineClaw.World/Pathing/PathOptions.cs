@@ -33,6 +33,9 @@ public sealed record PathOptions
 
     /// <summary>Cells the path must not enter.</summary>
     public IReadOnlySet<BlockPos>? Avoid { get; init; }
+    /// <summary>Jump moves (from foot cell, to foot cell) not to plan again: the edge guard refused to verify their landing
+    /// (see <see cref="PathFollower.BlockedJump"/>), so re-plans route around them instead of retrying forever.</summary>
+    public IReadOnlySet<(BlockPos From, BlockPos To)>? AvoidJumps { get; init; }
 
     public int MaxNodes { get; init; } = 30_000;
     public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(2);

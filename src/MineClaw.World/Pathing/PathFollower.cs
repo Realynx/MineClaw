@@ -28,6 +28,9 @@ public sealed record PathFollowerOptions
     public double Reach { get; init; } = Aiming.DefaultReach;
     /// <summary>Max horizontal deviation from the current segment before reporting "off path".</summary>
     public double MaxDeviation { get; init; } = 2.0;
+    /// <summary>Ticks a Jump step may have its jump cancelled by the edge guard (<see cref="PathFollower.NoteJumpCancelled"/>)
+    /// before the follower gives up on that move and reports it in <see cref="PathFollower.BlockedJump"/>.</summary>
+    public int JumpCancelLimit { get; init; } = 8;
 }
 
 /// <summary>
@@ -43,6 +46,8 @@ public sealed class PathFollower
     private Vec3d? _segmentStart;
     private double _bestDist = double.MaxValue;
     private int _noProgress;
+    private int _jumpCancels;
+    private BlockPos? _jumpFrom;
 
     public PathFollower(IReadOnlyList<PathStep> steps, PathFollowerOptions? options = null)
     {
@@ -54,6 +59,18 @@ public sealed class PathFollower
     public int StepIndex { get; private set; }
     public PathStep? CurrentStep => StepIndex < _steps.Count ? _steps[StepIndex] : null;
     public bool IsFinished => StepIndex >= _steps.Count;
+
+    /// <summary>Set when the follower failed because the edge guard kept cancelling the jump of a Jump step: the move
+    /// (from foot cell, to foot cell) to put into <see cref="PathOptions.AvoidJumps"/> for the re-plan.</summary>
+    public (BlockPos From, BlockPos To)? BlockedJump { get; private set; }
+
+    /// <summary>The safety layer cancelled the jump this follower asked for on the previous tick (landing not verified).</summary>
+    public void NoteJumpCancelled(PhysicsState s)
+    {
+        if (CurrentStep is not { Kind: MoveKind.Jump }) return;
+        _jumpCancels++;
+        if (s.OnGround) _jumpFrom = new BlockPos((int)Math.Floor(s.Position.X), (int)Math.Floor(s.Position.Y + 1e-6), (int)Math.Floor(s.Position.Z));
+    }
 
     public FollowerOutput Tick(IBlockAccess w, PhysicsState s)
     {
@@ -70,6 +87,8 @@ public sealed class PathFollower
                 _segmentStart = s.Position;
                 _bestDist = double.MaxValue;
                 _noProgress = 0;
+                _jumpCancels = 0;
+                _jumpFrom = null;
                 continue;
             }
             return Drive(w, s, step);
@@ -137,6 +156,11 @@ public sealed class PathFollower
             return Fail(idle, "fell below the path");
         if (SegmentDeviation(pos, _segmentStart.Value, target) > _o.MaxDeviation)
             return Fail(idle, "off path");
+        if (step.Kind == MoveKind.Jump && _jumpCancels >= _o.JumpCancelLimit && _jumpFrom is { } from)
+        {
+            BlockedJump = (from, step.Pos);
+            return Fail(idle, $"jump to {step.Pos} refused by the edge guard (landing not verified)");
+        }
         double progressMetric = dist + Math.Abs(pos.Y - step.Floor);
         if (progressMetric < _bestDist - 0.05) { _bestDist = progressMetric; _noProgress = 0; }
         else if (++_noProgress > _o.StuckTicks) return Fail(idle, "stuck");

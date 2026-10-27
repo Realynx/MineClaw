@@ -1,3 +1,4 @@
+using MineClaw.Client.Survival;
 using System.Collections.Concurrent;
 using System.Threading.Channels;
 using MineClaw.Data;
@@ -32,6 +33,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
         World = world ?? new WorldState();
         IsProtected = options.IsProtected;
         ReservedItems = options.ReservedItems ?? new HashSet<int>();
+        Survival = new SurvivalReflex(options.Survival);
         World.Inventory.CraftResult = (grid, width) => Recipes.Match(grid, width)?.Output ?? ItemStack.Empty;
         World.Inventory.WindowOpened += _ => Interlocked.Increment(ref _windowsOpened);
         _eventPump = Task.Run(PumpEventsAsync);
@@ -85,6 +87,9 @@ public sealed partial class MinecraftClient : IAsyncDisposable
     public event Action<int, int>? EntityAttached;
     /// <summary>(x, y, z, four lines) from 0x82 Update Sign.</summary>
     public event Action<int, int, int, string[]>? SignUpdated;
+    /// <summary>(window id, window type 0 chest / 1 workbench / 2 furnace / 3 dispenser, x, y, z) when a 0x64 Open Window
+    /// arrives for the block the bot just right-clicked (<see cref="ActivateBlockAsync"/> / <see cref="OpenContainerAsync"/>).</summary>
+    public event Action<int, int, int, int, int>? ContainerOpened;
     /// <summary>(block, data1, data2) from 0x36 block action (note blocks, pistons; chest lids on servers that send them).</summary>
     public event Action<BlockPos, int, int>? BlockAction;
 
@@ -195,6 +200,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
         _combatBlocking = false;
         _combatInstance?.RequestStop("disconnected");
         ResetSafety();
+        ResetSurvival();
     }
 
     /// <summary>Sends a clean quit (0xFF), closes the connection and stops auto-reconnect.</summary>

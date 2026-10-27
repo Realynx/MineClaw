@@ -143,7 +143,7 @@ public sealed partial class MinecraftClient
         input = combat.Input;
 
         // ---- safety: below every action, every tick, before the position goes out ----
-        if (!combat.Overrides) input = RetreatOverride(phys, input);
+        if (!combat.Overrides) input = RetreatOverride(phys, HealRetreatOverride(phys, input, idle: d is null));
         var guard = SafetyFilter(phys, input, allowDrop && !combat.Overrides);
         input = guard.Input;
         Combat.OnGuard(guard);
@@ -153,6 +153,7 @@ public sealed partial class MinecraftClient
         player.SyncFromPhysics();
 
         CheckDangers(phys);
+        SurvivalTick(phys);
         if (!teleported) SendMovement(s, phys);
         CombatAfterMovement(s, combat);
         AfterTickSafety(s, phys, guard);

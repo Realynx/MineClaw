@@ -1,3 +1,4 @@
+using MineClaw.Client.Survival;
 using MineClaw.Client.Combat;
 using MineClaw.Protocol;
 using MineClaw.World;
@@ -33,9 +34,10 @@ public sealed record ClientOptions
     /// <summary>Reach used for digging/placing/using (vanilla survival ≈ 4.5).</summary>
     public double Reach { get; init; } = 4.25;
 
-    /// <summary>Health (half-hearts) at or below which <see cref="DangerKind.LowHealth"/> fires.</summary>
-    public int LowHealthThreshold { get; init; } = 8;
-    /// <summary>Cancel the running action when health drops to <see cref="LowHealthThreshold"/> or the player starts falling into the void.</summary>
+    /// <summary>Survival reflexes: auto-eat, low-health retreat and action gating, out-of-food events (see
+    /// <see cref="SurvivalOptions"/>; its LowHealth replaces the old LowHealthThreshold).</summary>
+    public SurvivalOptions Survival { get; init; } = new();
+    /// <summary>Cancel the running action on danger (void fall, lava; at low health only risky actions, at critical health any).</summary>
     public bool AbortActionsOnDanger { get; init; } = true;
     /// <summary>Distance at which a hostile mob triggers <see cref="DangerKind.HostileNearby"/>.</summary>
     public double HostileAlertRadius { get; init; } = 8;

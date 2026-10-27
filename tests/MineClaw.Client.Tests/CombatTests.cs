@@ -389,31 +389,168 @@ public class SparTests
         return done.Result;
     }
 
+    // ---- adaptive arena (no designated pad: the island as it is)
+
+    private static SparZoneResult Zone(CombatRig r, double x, double z, CombatOptions? o = null) =>
+        SparZone.Find(r.W, new Vec3d(x, 64, z), o ?? Opts());
+
     [Fact]
-    public void Arena_AcceptsABigFlatSafeArea_RefusesEdgesLavaCactusAndSteps()
+    public void Zone_OnABigPlatform_KeepsEveryCellThreeFromTheVoid_CenterDeepAndNearThePlayers()
     {
         var r = new CombatRig(Opts(), half: 10);
-        Assert.Null(SparArena.Check(r.W, new BlockPos(0, 64, 0), 2, 3));
-        Assert.Contains("void", SparArena.Check(r.W, new BlockPos(7, 64, 0), 2, 3));
-        r.W.SetBlock(1, 63, 4, Blocks.Lava, 0);
-        Assert.Contains("lava", SparArena.Check(r.W, new BlockPos(0, 64, 0), 2, 3));
-        r.W.SetBlock(1, 63, 4, Blocks.Stone, 0);
-        r.W.SetBlock(-3, 64, -1, Blocks.Cactus, 0);
-        Assert.Contains("cactus", SparArena.Check(r.W, new BlockPos(0, 64, 0), 2, 3));
-        r.W.SetBlock(-3, 64, -1, 0, 0);
-        r.W.SetBlock(1, 64, 1, Blocks.Stone, 0);
-        Assert.Contains("not flat", SparArena.Check(r.W, new BlockPos(0, 64, 0), 2, 3));
+        var z = Zone(r, 6.5, 6.5);
+        Assert.NotNull(z.Zone);
+        Assert.All(z.Zone!.Cells, c => Assert.True(Safety.EdgeDistance(r.W, c.X, c.Y, c.Z, 4) >= 3, c.ToString()));
+        Assert.Equal(17 * 17, z.Zone.Count);                   // x,z in -8..8
+        Assert.True(z.Zone.CenterEdge >= 8);
+        // Deep enough (8+ from the void counts as "max"), then the spot nearest the players.
+        Assert.Equal(new BlockPos(3, 64, 3), z.Zone.Center);
+        Assert.True(z.Zone.Contains(new Vec3d(8.5, 64, 0.5)));
+        Assert.False(z.Zone.Contains(new Vec3d(9.5, 64, 0.5)));
     }
 
     [Fact]
-    public void Arena_FindsASaferSpotNearby()
+    public void Zone_UnevenTerrainIsFine_HazardsAndTheVoidAreKeptAway()
+    {
+        var r = new CombatRig(Opts(), half: 6);
+        for (int x = -1; x <= 1; x++) r.W.SetBlock(x, 64, 2, Blocks.Dirt, 0); // a 1-block bump
+        var z = Zone(r, 0.5, 0.5);
+        Assert.NotNull(z.Zone);
+        Assert.Contains(new BlockPos(0, 65, 2), z.Zone!.Cells);
+        r.W.SetBlock(3, 64, -3, Blocks.Cactus, 0);
+        r.W.SetBlock(-3, 63, 3, Blocks.Lava, 0);
+        z = Zone(r, 0.5, 0.5);
+        Assert.NotNull(z.Zone);
+        Assert.All(z.Zone!.Cells, c => Assert.True(Math.Max(Math.Abs(c.X - 3), Math.Abs(c.Z + 3)) > 2 && Math.Max(Math.Abs(c.X + 3), Math.Abs(c.Z - 3)) > 2, c.ToString()));
+    }
+
+    [Fact]
+    public void Zone_TooSmallOrHazardous_RefusesWithAnHonestReason()
+    {
+        var tiny = new CombatRig(Opts(), half: 2);                       // 5x5: only the center is 3 from the void
+        Assert.Equal("only 1 connected cell(s) 3+ blocks from the void, need 12", Zone(tiny, 0.5, 0.5).Reason);
+        var small = new CombatRig(Opts(), half: 3);                      // 7x7: a 3x3 core
+        Assert.Equal("only 9 connected cell(s) 3+ blocks from the void, need 12", Zone(small, 0.5, 0.5).Reason);
+        Assert.NotNull(Zone(small, 0.5, 0.5, Opts(o => o with { ArenaMinCells = 9 })).Zone);
+        var r = new CombatRig(Opts(), half: 6);
+        r.W.SetBlock(0, 63, 0, Blocks.Lava, 0);
+        r.W.SetBlock(0, 63, 4, Blocks.Lava, 0); r.W.SetBlock(0, 63, -4, Blocks.Lava, 0);
+        r.W.SetBlock(4, 63, 0, Blocks.Lava, 0); r.W.SetBlock(-4, 63, 0, Blocks.Lava, 0);
+        r.W.SetBlock(4, 63, 4, Blocks.Lava, 0); r.W.SetBlock(-4, 63, -4, Blocks.Lava, 0);
+        r.W.SetBlock(4, 63, -4, Blocks.Lava, 0); r.W.SetBlock(-4, 63, 4, Blocks.Lava, 0);
+        var why = Zone(r, 0.5, 0.5).Reason;
+        Assert.NotNull(why);
+        Assert.Contains("lava/fire/cactus", why);
+    }
+
+    /// <summary>The classic Skyblock starter island: 6x6 minus a 3x3 corner (an L with 3-wide legs), 3 deep, grass on
+    /// dirt, oak tree on one leg, chest on the other.</summary>
+    private static CombatRig StarterIsland(int leg = 3, int size = 6)
+    {
+        var r = new CombatRig(Opts(), half: -1, x: 1.5, z: 1.5);
+        for (int x = 0; x < size; x++)
+        for (int z = 0; z < size; z++)
+        {
+            if (x >= leg && z >= leg) continue;
+            for (int y = 61; y <= 62; y++) r.W.SetBlock(x, y, z, Blocks.Dirt, 0);
+            r.W.SetBlock(x, 63, z, Blocks.Grass, 0);
+        }
+        int tx = size - 2, tz = 1;
+        for (int y = 64; y <= 68; y++) r.W.SetBlock(tx, y, tz, Blocks.Log, 0);
+        for (int x = tx - 2; x <= tx + 2; x++)
+        for (int z = tz - 2; z <= tz + 2; z++)
+        for (int y = 67; y <= 68; y++)
+            if ((x, z) != (tx, tz) && r.W.GetBlock(x, y, z) == 0) r.W.SetBlock(x, y, z, Blocks.Leaves, 0);
+        r.W.SetBlock(0, 64, size - 1, Blocks.Chest, 0);
+        return r;
+    }
+
+    [Fact]
+    public void StarterIsland_Classic_HasNoSafeZone_AtTheDefaults_AndSaysWhy()
+    {
+        var r = StarterIsland();
+        var z = SparZone.Find(r.W, new Vec3d(1.5, 64, 1.5), Opts(), [new Vec3d(1.5, 64, 1.5), new Vec3d(1.5, 64, 4.5)]);
+        Assert.Null(z.Zone);
+        Assert.Equal("island too small: the best spot is 2 block(s) from the void, need 3", z.Reason);
+    }
+
+    [Fact]
+    public void StarterIsland_WithSixWideLegs_FindsAZone_OnTheLegsAwayFromTheTree()
+    {
+        var r = StarterIsland(leg: 6, size: 12);                            // 12x12 minus 6x6: each leg 6x12
+        var z = SparZone.Find(r.W, new Vec3d(3.5, 64, 3.5), Opts(), [new Vec3d(3.5, 64, 3.5), new Vec3d(3.5, 64, 6.5)]);
+        Assert.NotNull(z.Zone);
+        Assert.True(z.Zone!.Count >= 12, $"{z.Zone.Count} cells");
+        Assert.Equal(3, z.Zone.CenterEdge);
+        Assert.DoesNotContain(z.Zone.Cells, c => c.X == 10 && c.Z == 1);    // the tree trunk is not standable
+        Assert.All(z.Zone.Cells, c => Assert.True(Safety.EdgeDistance(r.W, c.X, c.Y, c.Z, 4) >= 3));
+        Assert.True(z.Zone.Contains(new Vec3d(3.5, 64, 3.5)));
+    }
+
+    [Fact]
+    public void Spar_OnTheSixWideStarterIsland_EndsSafely_NobodyNearTheEdge()
+    {
+        var r = StarterIsland(leg: 6, size: 12);
+        r.P.Teleport(new Vec3d(3.5, 64, 2.5), 0, 0);
+        r.P.OnGround = true;
+        r.W.Player.SyncFromPhysics();
+        var opp = r.Player(77, "kiwi", 3.5, 4.5);
+        var done = r.E.StartSpar("kiwi", 77, new BlockPos(3, 64, 3), null);
+        bool over = false;
+        int minEdge = 9;
+        for (int i = 0; i < 600 && !done.IsCompleted; i++)
+        {
+            if (r.Step(physics: true).AttackId == 77) r.E.OnEntityStatus(77, CombatRules.StatusHurt);
+            over |= r.W.IsPlayerOverVoid(r.P.Position);
+            if (r.P.OnGround) minEdge = Math.Min(minEdge, SparZone.EdgeAt(r.W, r.P.Position, 8));
+        }
+        Assert.True(done.IsCompleted, r.E.Status);
+        Assert.DoesNotContain("refused", done.Result);
+        Assert.DoesNotContain("edge", done.Result);                     // ended by the hit/hp rules, not by drifting outward
+        Assert.Contains(r.Json("hit"), _ => true);
+        Assert.False(over);
+        Assert.True(minEdge >= 2, $"bot got to {minEdge} from the edge");
+    }
+
+    [Fact]
+    public void StartSpar_WithoutAnyZone_IsRefused()
+    {
+        var r = StarterIsland();
+        r.Player(77, "kiwi", 1.5, 4.5);
+        var done = r.E.StartSpar("kiwi", 77, new BlockPos(1, 64, 1), null);
+        r.Step();
+        Assert.True(done.IsCompleted);
+        Assert.StartsWith("refused: no safe arena: island too small", done.Result);
+        Assert.False(r.E.Engaged);
+    }
+
+    [Fact]
+    public void Spar_HoldsFire_WhenTheOpponentIsNearAnEdge_AndStopsAtMinEdgeMinusOne()
+    {
+        var (r, opp, done) = StartSpar(oppX: 1.8);
+        r.W.Entities.Teleport(77, new Vec3d(8.5, 64, 0.5), 0, 0);       // edge 3: still inside the zone
+        r.P.Teleport(new Vec3d(6.7, 64, 0.5), 0, 0);                     // hitting would push them toward x = 11
+        r.P.OnGround = true;
+        r.W.Player.SyncFromPhysics();
+        for (int i = 0; i < 15; i++) Assert.NotEqual(77, r.Step().AttackId);
+        Assert.Contains(r.Json("hold_fire"), j => j.GetProperty("why").GetString()!.Contains("knockback"));
+        Assert.False(done.IsCompleted);
+        r.W.Entities.Teleport(77, new Vec3d(9.5, 64, 0.5), 0, 0);       // edge 2 = MinEdgeDistance - 1
+        r.Step();
+        Assert.True(done.IsCompleted);
+        Assert.Contains("kiwi got too close to the edge", done.Result);
+    }
+
+    [Fact]
+    public void ZoneStance_PutsTheBotsBackToTheInterior()
     {
         var r = new CombatRig(Opts(), half: 10);
-        var alt = SparArena.FindNearby(r.W, new Vec3d(8.5, 64, 8.5), 2, 3);
-        Assert.NotNull(alt);
-        Assert.Null(SparArena.Check(r.W, alt!.Value, 2, 3));
-        var tiny = new CombatRig(Opts(), half: 3);
-        Assert.Null(SparArena.FindNearby(tiny.W, new Vec3d(0.5, 64, 0.5), 2, 3));
+        var zone = Zone(r, 0.5, 0.5).Zone!;
+        var me = new Vec3d(8.5, 64, 0.5);                                // edge 3, opponent on the inner side
+        var st = zone.Stance(r.W, me, new Vec3d(6.5, 64, 0.5), 3.5);
+        Assert.NotNull(st);
+        Assert.False(CombatGeometry.EdgeBehind(r.W, st!.Value.BottomCenter, new Vec3d(6.5, 64, 0.5), 3.5));
+        Assert.True(zone.Contains(st.Value));
     }
 
     [Theory]
@@ -537,9 +674,9 @@ public class SparTests
     public void LeavingTheArena_MobsAndDanger_StopTheSpar()
     {
         var (r, opp, done) = StartSpar();
-        r.W.Entities.Teleport(77, new Vec3d(8.5, 64, 0.5), 0, 0);
+        r.W.Entities.Teleport(77, new Vec3d(9.5, 64, 0.5), 0, 0);
         r.Step();
-        Assert.Contains("kiwi left the arena", done.Result);
+        Assert.Contains("kiwi got too close to the edge", done.Result);
 
         (r, _, done) = StartSpar();
         r.Mob(9, MobTypes.Zombie, -6.5, 0.5);
@@ -682,7 +819,7 @@ public class CombatClientTests
         Assert.True(await Harness.WaitAsync(() => c.Combat.HasSparRequest("kiwi")));
         r = await c.SparAsync("kiwi");
         Assert.False(r.Ok);
-        Assert.Contains("no safe arena", r.Message); // the 5x5 test platform is too small
+        Assert.Contains("no safe arena: only 1 connected cell(s) 3+ blocks from the void", r.Message); // the 5x5 test platform
         Assert.Empty(s.Got<UseEntityPacket>());
     }
 

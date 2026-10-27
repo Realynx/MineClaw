@@ -35,12 +35,15 @@ public sealed class CombatEngine
         public required string Opponent;
         public int OpponentId;
         public BlockPos Center;
+        public required SparZone Zone;
         public required OpponentHpModel Model;
         public int? Rounds;
         public int Round = 1, RoundBot, RoundOpp;
         public long PauseUntil;
         public long MissingSince = -1;
         public int WeaponId;
+        public BlockPos? Stance;
+        public long StanceUntil;
     }
 
     private sealed class Fight
@@ -65,7 +68,7 @@ public sealed class CombatEngine
     private sealed record StatusSig(int Id, int Status) : Signal;
     private sealed record AnimSig(int Id, int Anim) : Signal;
     private sealed record DangerSig(DangerEvent Danger) : Signal;
-    private sealed record SparCmd(string Opponent, int OpponentId, BlockPos Center, int? Rounds, TaskCompletionSource<string> Done) : Signal;
+    private sealed record SparCmd(string Opponent, int OpponentId, SparZone? Zone, BlockPos Center, int? Rounds, TaskCompletionSource<string> Done) : Signal;
     private sealed record AttackCmd(int TargetId, TaskCompletionSource<string> Done) : Signal;
     private sealed record StopCmd(string Reason) : Signal;
 
@@ -139,11 +142,19 @@ public sealed class CombatEngine
     public double SparStartHealth(string player) =>
         _sparMemory.TryGetValue(player, out var m) && _clock() - m.At <= Options.SparMemory ? m.Estimate : 20;
 
-    /// <summary>Hands a prepared spar (consent, arena and countdown done) to the engine; completes with the summary.</summary>
+    /// <summary>Hands a prepared spar (consent, zone and countdown done) to the engine; completes with the summary.</summary>
+    public Task<string> StartSpar(string opponent, int opponentId, SparZone zone, int? rounds)
+    {
+        var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _signals.Enqueue(new SparCmd(opponent, opponentId, zone, zone.Center, rounds, tcs));
+        return tcs.Task;
+    }
+
+    /// <summary>As above, computing the zone around <paramref name="center"/> when the spar starts (refused if none).</summary>
     public Task<string> StartSpar(string opponent, int opponentId, BlockPos center, int? rounds)
     {
         var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _signals.Enqueue(new SparCmd(opponent, opponentId, center, rounds, tcs));
+        _signals.Enqueue(new SparCmd(opponent, opponentId, null, center, rounds, tcs));
         return tcs.Task;
     }
 
@@ -261,10 +272,12 @@ public sealed class CombatEngine
             case SparCmd sc:
                 if (_fight is not null) { sc.Done.TrySetResult($"refused: already fighting {_fight.TargetName}"); break; }
                 if (_w.Entities.Get(sc.OpponentId) is not { Kind: EntityKind.Player } opp) { sc.Done.TrySetResult("refused: opponent not visible"); break; }
+                var zr = sc.Zone is { } given ? new SparZoneResult(given, null) : SparZone.Find(_w, sc.Center.BottomCenter, Options, [phys.Position, opp.Position]);
+                if (zr.Zone is not { } zone) { sc.Done.TrySetResult("refused: no safe arena: " + zr.Reason); break; }
                 StartFight(FightKind.Spar, opp, "spar", phys, sc.Done);
                 _fight!.Spar = new SparState
                 {
-                    Opponent = sc.Opponent, OpponentId = sc.OpponentId, Center = sc.Center, Rounds = sc.Rounds,
+                    Opponent = sc.Opponent, OpponentId = sc.OpponentId, Center = zone.Center, Zone = zone, Rounds = sc.Rounds,
                     Model = new OpponentHpModel(Options, SparStartHealth(sc.Opponent)),
                     WeaponId = _w.Inventory.HeldItem(_w.Player.HeldSlot).Id,
                 };
@@ -704,10 +717,20 @@ public sealed class CombatEngine
 
         double reach = CombatRules.ReachTo(phys.EyePosition, CombatRules.Hitbox(opp));
         Vec3d? moveTo = null;
-        if (CombatGeometry.EdgeBehind(_w, me, opp.Position, Options.KnockbackDepth))
-            moveTo = CombatGeometry.ChooseStance(_w, me, opp.Position, Options.KnockbackDepth, 3)?.BottomCenter;
-        else if (reach > Options.Reach - 0.3 && SafeApproachPoint(me, opp.Position, 2.2) is { } p
-                 && SparArena.Outside(s.Center, Options.ArenaRadius, p) <= 0)
+        // Positioning: my knockback (away from them) and theirs (away from me) should both point into the zone.
+        bool myBackUnsafe = CombatGeometry.EdgeBehind(_w, me, opp.Position, Options.KnockbackDepth);
+        bool theirBackUnsafe = CombatGeometry.EdgeBehind(_w, opp.Position, me, Options.KnockbackDepth);
+        if (myBackUnsafe || theirBackUnsafe || (s.Stance is not null && _tick <= s.StanceUntil))
+        {
+            if (s.Stance is null || _tick > s.StanceUntil || CombatGeometry.EdgeBehind(_w, s.Stance.Value.BottomCenter, opp.Position, Options.KnockbackDepth))
+            {
+                s.Stance = s.Zone.Stance(_w, me, opp.Position, Options.KnockbackDepth);
+                s.StanceUntil = _tick + 20;
+                Log("reposition", phys, opp.Position, new() { ["to"] = s.Stance?.ToString() ?? "none", ["why"] = myBackUnsafe ? "edge behind me" : "edge behind them" });
+            }
+            if (s.Stance is { } st && Horizontal(me, st.BottomCenter) > 0.3) moveTo = st.BottomCenter;
+        }
+        else if (reach > Options.Reach - 0.3 && SafeApproachPoint(me, opp.Position, 2.2) is { } p && s.Zone.Contains(p))
             moveTo = p;
 
         int cooldown = Cooldown(opp.Id);
@@ -718,8 +741,12 @@ public sealed class CombatEngine
             int weapon = _w.Inventory.HeldItem(_w.Player.HeldSlot).Id;
             double worst = s.Model.WorstHit(weapon, couldCrit: false, Armor(opp));
             if (s.Model.NextHitRisky(worst)) { EndFight(f, "next hit could be dangerous for the opponent", phys, ctx); return face; }
-            if (!CombatGeometry.EdgeBehind(_w, opp.Position, me, Options.KnockbackDepth)) Swing(f, opp, phys, ctx);
-            else Log("hold_fire", phys, opp.Position, new() { ["why"] = "opponent's knockback would carry them near an edge" });
+            int oppEdge = SparZone.EdgeAt(_w, opp.Position);
+            if (oppEdge <= Options.SparNoSwingEdge)
+                Log("hold_fire", phys, opp.Position, new() { ["why"] = $"opponent {oppEdge} from an edge" });
+            else if (theirBackUnsafe)
+                Log("hold_fire", phys, opp.Position, new() { ["why"] = "opponent's knockback would carry them near an edge" });
+            else Swing(f, opp, phys, ctx);
         }
         return moveTo is { } m ? CombatGeometry.SteerTo(me, m, look.Yaw, look.Pitch) : look;
     }
@@ -736,11 +763,14 @@ public sealed class CombatEngine
             if (hp - incoming <= 1) return $"my hp {hp}: their next hit could take {incoming}";
         }
         if (s.Model.StopReason() is { } r) return r;
-        if (SparArena.Outside(s.Center, Options.ArenaRadius, me) > Options.ArenaLeaveSlack) return "I left the arena";
-        if (opp is not null && SparArena.Outside(s.Center, Options.ArenaRadius, opp.Position) > Options.ArenaLeaveSlack) return $"{s.Opponent} left the arena";
+        int stopEdge = Options.MinEdgeDistance - 1;
+        if (phys.OnGround && SparZone.EdgeAt(_w, me) <= stopEdge) return "I got too close to the edge";
+        if (opp is not null && SparZone.EdgeAt(_w, opp.Position) <= stopEdge) return $"{s.Opponent} got too close to the edge";
+        if (s.Zone.OutsideDistance(me) > Options.ArenaLeaveSlack) return "I left the arena";
+        if (opp is not null && s.Zone.OutsideDistance(opp.Position) > Options.ArenaLeaveSlack) return $"{s.Opponent} left the arena";
         var center = s.Center.BottomCenter;
-        var mob = _w.Entities.Nearest(center, Options.ArenaRadius + 12, e => e.Kind == EntityKind.Mob
-            && (CombatRules.IsThreat(e) || e.Position.DistanceTo(center) <= Options.ArenaRadius + 2));
+        var mob = _w.Entities.Nearest(center, 16, e => e.Kind == EntityKind.Mob
+            && (CombatRules.IsThreat(e) || s.Zone.OutsideDistance(e.Position) <= 2));
         if (mob is not null) return $"mob appeared: {mob.DisplayName}";
         if (_tick - f.StartTick > Options.SparMaxDuration.TotalSeconds * 20) return "time limit";
         return null;

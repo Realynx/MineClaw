@@ -11,7 +11,7 @@ public sealed partial class MinecraftClient
     private readonly ConcurrentDictionary<(int Window, short Action), bool> _txResults = new();
     private readonly ConcurrentDictionary<BlockPos, string[]> _signs = new();
     private int _lastHealth = -1, _lastFood = -1;
-    private bool _wasDead, _lowHealthAlerted, _hungerAlerted;
+    private bool _wasDead;
     private int _windowItemsVersion;
     private int _eatAcceptedCount;
     private int _collectedCount;
@@ -236,6 +236,12 @@ public sealed partial class MinecraftClient
             // ---- windows ----
             case OpenWindowPacket ow:
                 w.Inventory.Open(ow.WindowId, (WindowType)ow.InventoryType, ow.Title, ow.SlotCount);
+                if (_lastActivated is { } act && Environment.TickCount64 - act.At <= 5000)
+                {
+                    _lastActivated = null;
+                    int wid = ow.WindowId, wtype = ow.InventoryType;
+                    Raise(() => ContainerOpened?.Invoke(wid, wtype, act.Pos.X, act.Pos.Y, act.Pos.Z));
+                }
                 break;
             case CloseWindowPacket cw:
                 w.Inventory.Close(cw.WindowId);
@@ -299,25 +305,7 @@ public sealed partial class MinecraftClient
 
         if (oldHealth > 0 && health < oldHealth)
             RaiseDanger(DangerKind.Damage, $"took {oldHealth - health} damage (hp {health}/20)", abort: false);
-        if (health <= Options.LowHealthThreshold)
-        {
-            if (!_lowHealthAlerted)
-            {
-                _lowHealthAlerted = true;
-                RaiseDanger(DangerKind.LowHealth, $"low health {health}/20", abort: true);
-            }
-        }
-        else if (health > Options.LowHealthThreshold + 2) _lowHealthAlerted = false;
-
-        if (food <= 6)
-        {
-            if (!_hungerAlerted)
-            {
-                _hungerAlerted = true;
-                RaiseDanger(DangerKind.Hunger, $"hungry (food {food}/20)", abort: false);
-            }
-        }
-        else if (food > 8) _hungerAlerted = false;
+        SurvivalOnHealth(health, food);
     }
 
     private async Task RespawnLaterAsync(Session s)

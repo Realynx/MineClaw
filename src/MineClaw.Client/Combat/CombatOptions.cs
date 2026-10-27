@@ -64,12 +64,22 @@ public sealed record CombatOptions
     public IReadOnlyList<string> SparPlayers { get; init; } = ["poofimafox", "kiwi"];
     /// <summary>The opponent must have asked ("spar", "duel", "fight me", "pvp", "1v1") in chat within this window.</summary>
     public TimeSpan SparConsentWindow { get; init; } = TimeSpan.FromMinutes(2);
-    /// <summary>Arena: every cell within this Chebyshev radius of the center is flat, solid and standable.</summary>
-    public int ArenaRadius { get; init; } = 2;
-    /// <summary>No void/deadly drop within ArenaRadius + this of the arena center.</summary>
-    public int ArenaEdgeMargin { get; init; } = 3;
-    /// <summary>Leaving the arena by more than this ends the spar.</summary>
+    /// <summary>Arena (adaptive, from the island as it is — see <see cref="SparZone"/>): every zone cell is at least this
+    /// far from the nearest void/deadly column (rim cell = 1). A spar stops when either party gets within
+    /// MinEdgeDistance − 1 of an edge.</summary>
+    public int MinEdgeDistance { get; init; } = 3;
+    /// <summary>The zone must be a connected area of at least this many standable cells.</summary>
+    public int ArenaMinCells { get; init; } = 12;
+    /// <summary>No lava/fire/cactus within this many blocks of a zone cell.</summary>
+    public int ArenaHazardRadius { get; init; } = 2;
+    /// <summary>Neighbouring zone cells may differ by this many blocks (1 = a jump; uneven terrain is fine).</summary>
+    public int ArenaMaxStep { get; init; } = 1;
+    /// <summary>How far around the players the zone is searched for.</summary>
+    public int ArenaSearchRadius { get; init; } = 16;
+    /// <summary>Being further than this outside the zone ends the spar.</summary>
     public double ArenaLeaveSlack { get; init; } = 2;
+    /// <summary>Never swing while the opponent is this close to an edge (or the knockback would carry them toward one).</summary>
+    public int SparNoSwingEdge { get; init; } = 2;
     /// <summary>Bot stops at or below this health (exact, from 0x08).</summary>
     public int SparSelfStopHealth { get; init; } = 8;
     /// <summary>Stop when the opponent's estimated health is at or below this.</summary>

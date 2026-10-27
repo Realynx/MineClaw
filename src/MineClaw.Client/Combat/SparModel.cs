@@ -64,62 +64,6 @@ public sealed class OpponentHpModel
     public bool NextHitRisky(double worstHit) => Estimate - worstHit <= 2;
 }
 
-/// <summary>Arena validation for a spar: flat, solid, far from the void, no lava/fire/cactus.</summary>
-public static class SparArena
-{
-    /// <summary>Null when the arena centered on foot cell <paramref name="center"/> is safe, else the reason.</summary>
-    public static string? Check(IBlockAccess w, BlockPos center, int radius, int edgeMargin)
-    {
-        int y = center.Y;
-        for (int x = center.X - radius; x <= center.X + radius; x++)
-        for (int z = center.Z - radius; z <= center.Z + radius; z++)
-        {
-            if (!w.IsLoaded(x, z)) return "area not loaded";
-            if (!Safety.IsStandable(w, x, y, z)) return BlockShapes.HasCollision(w, x, y, z) || BlockShapes.HasCollision(w, x, y + 1, z)
-                ? $"not flat/clear at {x},{y},{z}"
-                : $"no solid floor at {x},{y - 1},{z}";
-        }
-        int reach = radius + edgeMargin;
-        for (int x = center.X - reach; x <= center.X + reach; x++)
-        for (int z = center.Z - reach; z <= center.Z + reach; z++)
-        {
-            for (int dy = -1; dy <= 2; dy++)
-            {
-                int id = w.GetBlock(x, y + dy, z);
-                if (Safety.IsHazard(w, id)) return $"{w.Info(id).Name} at {x},{y + dy},{z}";
-            }
-            if (Safety.IsDeadlyColumn(w, x, y, z, 3)) return $"void/drop within {Math.Max(Math.Abs(x - center.X), Math.Abs(z - center.Z))} at {x},{z}";
-        }
-        return null;
-    }
-
-    /// <summary>The nearest safe arena center within <paramref name="searchRadius"/> of <paramref name="near"/> (same
-    /// level ±2), or null.</summary>
-    public static BlockPos? FindNearby(IBlockAccess w, Vec3d near, int radius, int edgeMargin, int searchRadius = 16)
-    {
-        var c = near.ToBlockPos();
-        BlockPos? best = null;
-        double bestD = double.MaxValue;
-        for (int dy = -2; dy <= 2; dy++)
-        for (int x = c.X - searchRadius; x <= c.X + searchRadius; x++)
-        for (int z = c.Z - searchRadius; z <= c.Z + searchRadius; z++)
-        {
-            double d = (x - c.X) * (x - c.X) + (z - c.Z) * (z - c.Z) + dy * dy * 4;
-            if (d >= bestD || !Safety.IsStandable(w, x, c.Y + dy, z)) continue;
-            if (Check(w, new BlockPos(x, c.Y + dy, z), radius, edgeMargin) is null) { bestD = d; best = new BlockPos(x, c.Y + dy, z); }
-        }
-        return best;
-    }
-
-    /// <summary>Horizontal Chebyshev distance outside the arena square (0 = inside).</summary>
-    public static double Outside(BlockPos center, int radius, Vec3d p)
-    {
-        double dx = Math.Abs(p.X - (center.X + 0.5)) - (radius + 0.5), dz = Math.Abs(p.Z - (center.Z + 0.5)) - (radius + 0.5);
-        double dy = Math.Abs(Math.Floor(p.Y + 1e-6) - center.Y);
-        return Math.Max(Math.Max(Math.Max(dx, dz), 0), dy > 1 ? dy : 0);
-    }
-}
-
 /// <summary>Chat words that start or stop sparring.</summary>
 public static partial class SparWords
 {

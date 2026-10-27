@@ -3,6 +3,7 @@ using MineClaw.Agent.Events;
 using MineClaw.Bot.Game;
 using MineClaw.Bot.GameTools;
 using MineClaw.Client;
+using MineClaw.Client.Survival;
 using MineClaw.Data;
 using MineClaw.World;
 using Microsoft.Extensions.Logging;
@@ -111,17 +112,19 @@ public sealed class GameBridge : IDisposable
     public static GameEvent MapDanger(DangerEvent d, int health, double y) => d.Kind switch
     {
         DangerKind.FallingIntoVoid => GameEvent.VoidFall(y),
-        DangerKind.LowHealth => GameEvent.LowHealth(health, 20, d.Message),
+        DangerKind.LowHealth => new GameEvent(EventKind.LowHealth, d.Message.Contains("/20") ? d.Message : $"hp {health}/20 {d.Message}",
+            priority: d.Critical ? EventPriority.Critical : EventPriority.High),
         DangerKind.Lava => new GameEvent(EventKind.LowHealth, $"hp {health}/20 {d.Message}", priority: EventPriority.High),
         DangerKind.HostileNearby => GameEvent.Notice(d.Message, EventPriority.Low),
-        DangerKind.Hunger => GameEvent.Notice(d.Message, EventPriority.Low),
+        // Survival reflex "hungry, no food" (re-sent only when it gets worse): 1 hungry, 2 starving, 3 food 0.
+        DangerKind.Hunger => GameEvent.Notice(d.Message, d.Level >= 3 ? EventPriority.High : d.Level == 2 ? EventPriority.Normal : EventPriority.Low),
         _ => GameEvent.Notice(d.Message, EventPriority.Background), // Damage: context only
     };
 
     /// <summary>Kicks ride along as context (the host reconnects; there is nothing to say while offline).</summary>
     public static GameEvent MapKick(string reason) => GameEvent.Notice($"kicked: {reason}; reconnecting", EventPriority.Background);
 
-    /// <summary>"pos 3,65,-2 hp 20 food 18 held cobblestone x12 day | doing goto" (≈15 tokens).</summary>
+    /// <summary>"pos 3,65,-2 hp 14/20 food 9 (no food!) held cobblestone x12 day | doing goto" (≈15-20 tokens).</summary>
     public static string StateHeader(IGameClient c)
     {
         var w = c.World;
@@ -129,7 +132,8 @@ public sealed class GameBridge : IDisposable
         if (!c.IsPlaying) return p.IsDead ? "DEAD (respawning)" : "offline (reconnecting)";
         var held = w.Inventory.HeldItem(p.HeldSlot);
         string heldText = held.IsEmpty ? "nothing" : Names.Item(held.Id, held.Damage) + (held.Count > 1 ? " x" + held.Count : "");
-        var s = $"pos {Locations.Fmt(p.Position)} hp {p.Health} food {p.Food} held {heldText} {(w.IsNight ? "night" : "day")}";
+        var vitals = SurvivalReflex.HeaderText(p.Health, p.Food, w.Inventory.PlayerSlots(), c.ReservedItems);
+        var s = $"pos {Locations.Fmt(p.Position)} {vitals} held {heldText} {(w.IsNight ? "night" : "day")}";
         if (w.IsPlayerOverVoid(p.Position)) s += " OVER VOID";
         if (c.CurrentAction is { } a) s += " | doing " + a;
         return s;

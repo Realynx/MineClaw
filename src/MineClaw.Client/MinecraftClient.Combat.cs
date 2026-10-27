@@ -137,9 +137,10 @@ public sealed partial class MinecraftClient
     // ------------------------------------------------------------------ public API (tools)
 
     /// <summary>
-    /// Consent-based spar: the opponent must be on the spar list and have asked in chat; the arena (here, or a nearby
-    /// safe spot the bot walks to) must be flat and far from the void and hazards; the opponent must step into it; then
-    /// a chat countdown. Completes with the one-line summary when any stop condition fires.
+    /// Consent-based spar: the opponent must be on the spar list and have asked in chat; health/food must pass the
+    /// survival gate; the arena is the best adaptive <see cref="SparZone"/> of the island near both players (walked to
+    /// if needed); the opponent must step into it; then a chat countdown. Completes with the one-line summary when any
+    /// stop condition fires. No safe zone = an honest refusal.
     /// </summary>
     public async Task<ActionResult> SparAsync(string player, int? rounds = null, CancellationToken ct = default)
     {
@@ -159,21 +160,19 @@ public sealed partial class MinecraftClient
             var me = World.Player.Position;
             if (me.DistanceTo(opp.Position) > 24) return ActionResult.Fail($"{player} is too far ({me.DistanceTo(opp.Position):0}m)");
             if (World.Entities.Nearest(me, 16, CombatRules.IsThreat) is { } mob) return ActionResult.Fail($"not with a {mob.DisplayName} around");
+            if (await SurvivalGateAsync("spar", c).ConfigureAwait(false) is { } refused) return refused;
 
-            int r = o.ArenaRadius;
-            var here = Pathfinder.StartCellFor(World, me) ?? me.ToBlockPos();
-            var center = here;
-            if (SparArena.Check(World, here, r, o.ArenaEdgeMargin) is { } why)
+            var mid = new Vec3d((me.X + opp.Position.X) / 2, me.Y, (me.Z + opp.Position.Z) / 2);
+            var found = SparZone.Find(World, mid, o, [me, opp.Position]);
+            if (found.Zone is null && SparZone.Find(World, me, o, [me, opp.Position]) is { Zone: not null } nearMe) found = nearMe;
+            if (found.Zone is not { } zone) return ActionResult.Fail($"no safe arena: {found.Reason}");
+            var center = zone.Center;
+            if (!zone.Contains(World.Player.Position))
             {
-                var mid = new Vec3d((me.X + opp.Position.X) / 2, me.Y, (me.Z + opp.Position.Z) / 2);
-                var alt = SparArena.FindNearby(World, mid, r, o.ArenaEdgeMargin) ?? SparArena.FindNearby(World, me, r, o.ArenaEdgeMargin);
-                if (alt is not { } a)
-                    return ActionResult.Fail($"no safe arena: {why} (need {2 * r + 1}x{2 * r + 1} flat, no void within {r + o.ArenaEdgeMargin})");
-                Log($"combat: arena here unsafe ({why}); walking to {Fmt(a)}");
-                var g = await GotoCoreAsync(new GoalBlock(a.X, a.Y, a.Z), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(30) }, c).ConfigureAwait(false);
-                if (!g.Ok) return ActionResult.Fail($"arena {Fmt(a)} unreachable: {g.Message}");
-                if (SparArena.Check(World, a, r, o.ArenaEdgeMargin) is { } why2) return ActionResult.Fail($"arena {Fmt(a)} unsafe: {why2}");
-                center = a;
+                Log($"combat: walking into the spar zone at {Fmt(center)} ({zone.Count} cells, {zone.CenterEdge} from the edge)");
+                var g = await GotoCoreAsync(new GoalBlock(center.X, center.Y, center.Z), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(30) }, c).ConfigureAwait(false);
+                if (!g.Ok) return ActionResult.Fail($"spar zone {Fmt(center)} unreachable: {g.Message}");
+                if (!zone.Contains(World.Player.Position)) return ActionResult.Fail($"couldn't get into the spar zone at {Fmt(center)}");
             }
 
             var pick = WeaponChoice.ForSpar(o.SparWeapon, World.Inventory.PlayerSlots(), ReservedItems, o.NeverWield);
@@ -187,13 +186,13 @@ public sealed partial class MinecraftClient
                 if (engine.Engaged) return "a fight started (mob?)";
                 if (World.Entities.Nearest(World.Player.Position, 16, CombatRules.IsThreat) is { } m) return $"mob appeared: {m.DisplayName}";
                 var p = World.Entities.FindPlayer(player);
-                if (p is null || SparArena.Outside(center, r, p.Position) > o.ArenaLeaveSlack) return $"{player} isn't in the arena";
+                if (p is null || zone.OutsideDistance(p.Position) > o.ArenaLeaveSlack) return $"{player} isn't in the arena";
                 return null;
             }
 
-            await SendChatAsync($"{player}: spar at {Fmt(center)}, stay within {r} blocks. say stop, yield or gg to end", c).ConfigureAwait(false);
+            await SendChatAsync($"{player}: spar around {Fmt(center)}, keep {o.MinEdgeDistance}+ blocks from the edge. say stop, yield or gg to end", c).ConfigureAwait(false);
             bool came = await WaitUntilAsync(() => engine.StopWordCount != stops
-                    || (World.Entities.FindPlayer(player) is { } p && SparArena.Outside(center, r, p.Position) <= 0.5),
+                    || (World.Entities.FindPlayer(player) is { } p && zone.Contains(p.Position)),
                 TimeSpan.FromSeconds(30), c).ConfigureAwait(false);
             if (engine.StopWordCount != stops) return ActionResult.Fail("cancelled: stop word before the start");
             if (!came) return ActionResult.Fail($"{player} didn't come into the arena at {Fmt(center)}");
@@ -207,7 +206,7 @@ public sealed partial class MinecraftClient
 
             var oppNow = World.Entities.FindPlayer(player);
             if (oppNow is null) return ActionResult.Fail($"lost sight of {player}");
-            return await AwaitFightAsync(engine.StartSpar(player, oppNow.Id, center, rounds), c).ConfigureAwait(false);
+            return await AwaitFightAsync(engine.StartSpar(player, oppNow.Id, zone, rounds), c).ConfigureAwait(false);
         }).ConfigureAwait(false);
     }
 
@@ -232,7 +231,11 @@ public sealed partial class MinecraftClient
         if (e.Kind != EntityKind.Mob) return ActionResult.Fail("mobs only");
         if (CombatRules.IsTamedWolf(e)) return ActionResult.Fail("that wolf is tamed");
         if (engine.Engaged) return ActionResult.Fail("busy: " + engine.Status);
-        return await RunActionAsync("attack", ct, c => AwaitFightAsync(engine.StartAttack(e.Id), c)).ConfigureAwait(false);
+        return await RunActionAsync("attack", ct, async c =>
+        {
+            if (await SurvivalGateAsync("fight", c).ConfigureAwait(false) is { } refused) return refused;
+            return await AwaitFightAsync(engine.StartAttack(e.Id), c).ConfigureAwait(false);
+        }).ConfigureAwait(false);
     }
 
     private async Task<ActionResult> AwaitFightAsync(Task<string> fight, CancellationToken ct)

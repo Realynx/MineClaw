@@ -1,3 +1,4 @@
+using MineClaw.Client.Survival;
 using MineClaw.Data;
 using MineClaw.Protocol.Packets;
 using MineClaw.World;
@@ -39,7 +40,10 @@ public sealed partial class MinecraftClient
         {
             if (World.Player.Food >= 20) return ActionResult.Fail("not hungry (food 20/20)");
             var food = PickFood();
-            if (food is null) return ActionResult.Fail("no food (or only reserved food)");
+            if (food is null)
+                return ActionResult.Fail(SurvivalReflex.HasAnyFood(World.Inventory.PlayerSlots(), ReservedItems)
+                    ? $"only food-poisoning risks left (rotten flesh/raw chicken), eaten automatically at food {Options.Survival.StarvingFood}; use_item to eat one anyway"
+                    : "no food (or only reserved food)");
             return await UseCoreAsync(food.Value, c).ConfigureAwait(false);
         });
 
@@ -153,6 +157,11 @@ public sealed partial class MinecraftClient
     }
 
     /// <summary>Path into reach of an interactable block and right-click it.</summary>
+    /// <summary>Last block right-clicked by <see cref="ClickBlockAsync"/> (activate / open) and when (ms tick count), so
+    /// the next 0x64 can be attributed to it (<see cref="ContainerOpened"/>).</summary>
+    private volatile Activation? _lastActivated;
+    private sealed record Activation(BlockPos Pos, long At);
+
     private async Task<ActionResult> ClickBlockAsync(BlockPos pos, CancellationToken ct)
     {
         int id = World.GetBlock(pos);
@@ -168,6 +177,7 @@ public sealed partial class MinecraftClient
         }
         var a = aim.Value;
         await LookCoreAsync(a.Yaw, a.Pitch, ct).ConfigureAwait(false);
+        _lastActivated = new Activation(pos, Environment.TickCount64);
         Send(new PlayerBlockPlacementPacket { X = pos.X, Y = pos.Y, Z = pos.Z, Direction = (byte)a.Face, HeldItem = HeldStack() });
         Send(new AnimationPacket { EntityId = World.Player.EntityId, Animation = 1 });
         return ActionResult.Success("clicked");
@@ -294,23 +304,11 @@ public sealed partial class MinecraftClient
         if (!World.Inventory.Cursor.IsEmpty) await StashCursorAsync(ct).ConfigureAwait(false);
     }
 
+    /// <summary>Best non-reserved food for the current hunger (see <see cref="SurvivalReflex.PickFood"/>).</summary>
     private int? PickFood()
     {
-        var slots = World.Inventory.PlayerSlots();
-        int? best = null;
-        double bestScore = double.MinValue;
-        for (int i = 9; i < 45; i++)
-        {
-            var s = slots[i];
-            if (s.IsEmpty || ReservedItems.Contains(s.Id) || Items.Food(s.Id) is not { } f) continue;
-            if (s.Id == Items.GoldenApple && World.Player.Health > 6) continue;
-            double score = f.Hunger * (1 + f.Saturation) - Items.FoodPoisonChance(s.Id) * 20;
-            // Don't waste a big meal on a small hunger gap.
-            int gap = 20 - World.Player.Food;
-            if (f.Hunger > gap + 2) score -= (f.Hunger - gap) * 0.5;
-            if (score > bestScore) { bestScore = score; best = s.Id; }
-        }
-        return best;
+        var p = World.Player;
+        return SurvivalReflex.PickFood(World.Inventory.PlayerSlots(), ReservedItems, p.Health, p.Food, Options.Survival)?.ItemId;
     }
 
     // ------------------------------------------------------------------ safety helpers

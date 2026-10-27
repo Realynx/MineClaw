@@ -19,13 +19,14 @@ public enum DangerKind
     FallingIntoVoid,
     /// <summary>Health went down.</summary>
     Damage,
-    /// <summary>Health at or below <see cref="ClientOptions.LowHealthThreshold"/>.</summary>
+    /// <summary>Health at or below <see cref="Survival.SurvivalOptions.LowHealth"/> (critical at CriticalHealth).</summary>
     LowHealth,
     /// <summary>Standing in lava or on fire.</summary>
     Lava,
     /// <summary>A hostile mob came within <see cref="ClientOptions.HostileAlertRadius"/>.</summary>
     HostileNearby,
-    /// <summary>Food is at 6 or below (can't sprint, no regeneration).</summary>
+    /// <summary>Hungry with nothing (safe) to eat in the inventory; <see cref="DangerEvent.Level"/> 1 hungry, 2 starving
+    /// (food ≤ 6: no sprint), 3 food 0 (starvation damage). Re-sent only when the level rises.</summary>
     Hunger,
     /// <summary>After a teleport/respawn the ground under the bot is missing or not loaded: movement is frozen.</summary>
     UnsafePosition,
@@ -38,6 +39,8 @@ public enum DangerKind
 public sealed record DangerEvent(DangerKind Kind, string Message)
 {
     public bool Critical { get; init; }
+    /// <summary>Severity within the kind (e.g. hunger level 1..3); 0 when not graded.</summary>
+    public int Level { get; init; }
 }
 
 /// <summary>Connection lifecycle state.</summary>
