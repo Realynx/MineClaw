@@ -1,12 +1,10 @@
-using System.Reflection;
 using MineClaw.Data;
 
 namespace MineClaw.World;
 
 /// <summary>
 /// Item properties needed for click prediction. Defaults read <c>MineClaw.Data.Items.Get(id).MaxStack/MaxDamage</c>
-/// when that API exists (looked up by reflection so World builds against any Data version), otherwise a built-in
-/// b1.8.1 table. Every rule can be overridden (tests, or the Client wiring Data explicitly).
+/// for known ids, otherwise a built-in b1.8.1 table. Every rule can be overridden (tests, or the Client wiring Data explicitly).
 /// </summary>
 public sealed class ItemRules
 {
@@ -26,40 +24,12 @@ public sealed class ItemRules
 
     // ---- defaults ----
 
-    private static readonly Func<int, object?>? DataItemsGet = FindDataItemsGet();
-
-    private static Func<int, object?>? FindDataItemsGet()
+    /// <summary>Max stack / durability from <see cref="Items"/> for known ids, else null (fallback table below).</summary>
+    private static int? DataInt(int id, string prop)
     {
-        try
-        {
-            var t = typeof(Blocks).Assembly.GetType("MineClaw.Data.Items");
-            var m = t?.GetMethod("Get", BindingFlags.Public | BindingFlags.Static, [typeof(int)]);
-            if (m is null) return null;
-            return id => m.Invoke(null, [id]);
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(int, string), int?> DataCache = new();
-
-    private static int? DataInt(int id, string prop) =>
-        DataItemsGet is null ? null : DataCache.GetOrAdd((id, prop), k => ReadDataInt(k.Item1, k.Item2));
-
-    private static int? ReadDataInt(int id, string prop)
-    {
-        try
-        {
-            var info = DataItemsGet!(id);
-            var p = info?.GetType().GetProperty(prop);
-            return p?.GetValue(info) is int v ? v : null;
-        }
-        catch
-        {
-            return null;
-        }
+        if (!Items.Exists(id)) return null;
+        var info = Items.Get(id);
+        return prop == "MaxStack" ? info.MaxStack : info.MaxDamage;
     }
 
     public static int DefaultMaxStack(int id)
