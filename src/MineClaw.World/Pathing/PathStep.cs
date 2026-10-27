@@ -27,6 +27,10 @@ public enum MoveKind
     OpenGate,
     /// <summary>Walk under a closed trapdoor (head height) after opening it.</summary>
     OpenTrapdoor,
+    /// <summary>Sprint run-up and jump over a gap (Δy −3..+1); see <see cref="PathStep.Jump"/> for the validated schedule.</summary>
+    SprintJump,
+    /// <summary>Jump over a gap without sprinting (short gaps, or too hungry to sprint).</summary>
+    JumpGap,
 }
 
 /// <summary>An openable the follower must flip before (and optionally restore after) a step. <see cref="Pos"/> is the
@@ -63,7 +67,8 @@ public sealed record PathStep(
     IReadOnlyList<BlockPos> Break,
     BlockPos? Place = null,
     bool Sneak = false,
-    IReadOnlyList<DoorToggle>? Open = null)
+    IReadOnlyList<DoorToggle>? Open = null,
+    ParkourPlan? Jump = null)
 {
     public BlockPos Pos => new(X, Y, Z);
 
@@ -77,7 +82,8 @@ public sealed record PathStep(
 
     public override string ToString() =>
         $"{Kind} -> {Pos}" + (Break.Count > 0 ? $" break[{string.Join(",", Break)}]" : "") +
-        (Place is { } p ? $" place{p}" : "") + (Opens.Count > 0 ? $" open[{string.Join(",", Opens)}]" : "") + (Sneak ? " sneak" : "");
+        (Place is { } p ? $" place{p}" : "") + (Opens.Count > 0 ? $" open[{string.Join(",", Opens)}]" : "") + (Sneak ? " sneak" : "") +
+        (Jump is { } j ? $" {j.Describe()}{(j.OverVoid ? " over void" : "")}" : "");
 }
 
 public enum PathStatus

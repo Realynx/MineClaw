@@ -43,6 +43,17 @@ public sealed record DangerEvent(DangerKind Kind, string Message)
     public int Level { get; init; }
 }
 
+/// <summary>Which gap jumps a goto may plan.</summary>
+public enum ParkourMode
+{
+    /// <summary>No gap jumps.</summary>
+    Off,
+    /// <summary>Gaps where a miss is a fall within the safe height.</summary>
+    Ground,
+    /// <summary>Also gaps over the void (explicitly requested; see <see cref="GotoOptions.Parkour"/>).</summary>
+    Void,
+}
+
 /// <summary>Connection lifecycle state.</summary>
 public enum ClientState { Disconnected, Connecting, Playing, Reconnecting }
 
@@ -68,6 +79,11 @@ public sealed record GotoOptions
     public bool AllowOpenDoors { get; init; } = true;
     /// <summary>Put opened doors/gates/hatches back the way they were once past them.</summary>
     public bool RestoreDoors { get; init; } = true;
+    /// <summary>Gap jumps (sprint-jump / plain gap jump): <see cref="ParkourMode.Ground"/> (default) only where a miss is a
+    /// small fall; <see cref="ParkourMode.Void"/> also over the void — honoured only with
+    /// <see cref="ClientOptions.AllowVoidParkour"/> or a trusted player's chat in the last few minutes, and a clutch block
+    /// in the hotbar.</summary>
+    public ParkourMode Parkour { get; init; } = ParkourMode.Ground;
 
     public static GotoOptions Default { get; } = new();
 }

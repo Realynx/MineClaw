@@ -67,6 +67,7 @@ public sealed partial class MinecraftClient
         _clutchPlaced = 0;
         _clutchReported = false;
         _retreatTarget = null;
+        _flight = null;
         if (Options.FreezeUntilSupportVerified)
         {
             _safetyFreeze = true;
@@ -156,9 +157,11 @@ public sealed partial class MinecraftClient
     }
 
     /// <summary>The EdgeGuard pass: runs every tick right before physics, for drivers and idle alike.</summary>
-    private GuardDecision SafetyFilter(PhysicsState phys, MoveInput input, bool allowDrop)
+    private GuardDecision SafetyFilter(PhysicsState phys, MoveInput input, bool allowDrop, ParkourCommit? parkour = null)
     {
-        var d = Guard.Filter(World, phys, input, allowDrop);
+        var d = Guard.Filter(World, phys, input, allowDrop, parkour);
+        if ((d.Actions & GuardActions.ParkourRejected) != 0 && (_lastGuardActions & GuardActions.ParkourRejected) == 0)
+            Log($"safety: gap jump to {Fmt(parkour!.Value.Plan.To)} no longer lands safely at {Fmt(phys.Position)} (tick {parkour.Value.Tick}); guard takes over");
         bool edgeSneak = (d.Actions & GuardActions.ForcedSneak) != 0;
         if (edgeSneak != _wasEdgeSneaking)
         {

@@ -41,6 +41,10 @@ public sealed record PathFollowerOptions
     public int MaxActivations { get; init; } = 3;
     /// <summary>Ticks to stand on an iron door's pressure plate waiting for it to open.</summary>
     public int PlateWaitTicks { get; init; } = 30;
+    /// <summary>Whether sprinting is possible right now (b1.8.1: food &gt; 6). Checked before and during a sprint-jump run-up.</summary>
+    public Func<bool>? CanSprint { get; init; }
+    /// <summary>Max distance between the run-up and its planned trajectory before the jump is aborted.</summary>
+    public double ParkourDeviation { get; init; } = 0.12;
 }
 
 /// <summary>
@@ -61,6 +65,8 @@ public sealed class PathFollower
     private readonly Dictionary<BlockPos, int> _activations = new();
     private readonly List<(DoorToggle Toggle, int StepIndex)> _restore = new();
     private int _plateWait;
+    private readonly ParkourRun _pk = new();
+    private readonly List<ParkourPlan> _jumps = new();
 
     public PathFollower(IReadOnlyList<PathStep> steps, PathFollowerOptions? options = null)
     {
@@ -85,11 +91,25 @@ public sealed class PathFollower
         if (s.OnGround) _jumpFrom = new BlockPos((int)Math.Floor(s.Position.X), (int)Math.Floor(s.Position.Y + 1e-6), (int)Math.Floor(s.Position.Z));
     }
 
+    /// <summary>The gap jump being executed this tick (run-up or flight), for the edge guard's planned-parkour exemption.
+    /// Null outside a committed run.</summary>
+    public ParkourCommit? Commitment { get; private set; }
+
+    /// <summary>Gap jumps completed (landed and settled) so far.</summary>
+    public IReadOnlyList<ParkourPlan> CompletedJumps => _jumps;
+
+    /// <summary>The edge guard refused the committed jump on the previous tick (its re-simulation no longer lands safely).</summary>
+    public void NoteParkourRejected()
+    {
+        if (CurrentStep?.Jump is not null) _pk.Rejected = true;
+    }
+
     /// <summary>Openables that were flipped and are still waiting to be put back (or could not be).</summary>
     public IReadOnlyList<DoorToggle> Unrestored => _restore.Select(r => r.Toggle).ToArray();
 
     public FollowerOutput Tick(IBlockAccess w, PhysicsState s)
     {
+        Commitment = null;
         for (int guard = 0; guard < 4; guard++)
         {
             if (RestoreRequest(w, s) is { } restore) return restore;
@@ -104,6 +124,8 @@ public sealed class PathFollower
                     foreach (var tg in step.Opens)
                         if (tg.CanRestore(w) && !_restore.Any(r => r.Toggle.Pos == tg.Pos)) _restore.Add((tg, StepIndex));
                 _plateWait = 0;
+                if (step.Jump is { } done) _jumps.Add(done);
+                _pk.Reset();
                 StepIndex++;
                 _segmentStart = s.Position;
                 _bestDist = double.MaxValue;
@@ -123,7 +145,8 @@ public sealed class PathFollower
         var next = StepIndex + 1 < _steps.Count ? _steps[StepIndex + 1] : null;
         // Doorways are 0.81 wide once the panel swings in: line up on the cell centre before and inside them.
         return next is not null && (next.Kind is MoveKind.Pillar or MoveKind.Bridge or MoveKind.ClimbUp or MoveKind.ClimbDown
-            or MoveKind.OpenDoor or MoveKind.OpenGate or MoveKind.OpenTrapdoor || next.Sneak || next.Opens.Count > 0);
+            or MoveKind.OpenDoor or MoveKind.OpenGate or MoveKind.OpenTrapdoor || next.Sneak || next.Opens.Count > 0
+            || next.Jump is not null);
     }
 
     /// <summary>Restores a door once the body is a full step past it, still within reach, and clear of its old box.</summary>
@@ -168,6 +191,14 @@ public sealed class PathFollower
         if ((int)Math.Floor(pos.X) != step.X || (int)Math.Floor(pos.Z) != step.Z) return false;
         bool settled = s.OnGround || s.InWater || s.OnLadder || PlayerPhysics.IsOnLadder(w, s);
         if (!settled) return false;
+        if (step.Jump is not null)
+        {
+            // Landed and braked on the landing cell (the plan's own settle condition, a little looser).
+            var c = step.Target;
+            double ex = c.X - pos.X, ez = c.Z - pos.Z;
+            return _pk.Phase == ParkourPhase.Landed && Math.Abs(pos.Y - step.Floor) < 0.02 && ex * ex + ez * ez <= 0.3 * 0.3
+                   && s.Velocity.HorizontalLength < 0.02;
+        }
         switch (step.Kind)
         {
             case MoveKind.Swim:
@@ -196,6 +227,7 @@ public sealed class PathFollower
 
     private FollowerOutput Drive(IBlockAccess w, PhysicsState s, PathStep step)
     {
+        if (step.Jump is { } plan) return DriveParkour(w, s, step, plan);
         var pos = s.Position;
         var target = step.Target;
         float yaw = s.Yaw;
@@ -323,6 +355,133 @@ public sealed class PathFollower
         bool sprint = _o.AllowSprint && !sneak && forward > 0 && step.Kind is MoveKind.Walk or MoveKind.Diagonal
                       && StepIndex + 3 < _steps.Count && dist > 0.8;
         return Move(new MoveInput(forward, 0, jump, sneak, sprint, moveYaw, 0));
+    }
+
+    // ------------------------------------------------------------------ gap jumps
+
+    private enum ParkourPhase { Align, Run, Landed }
+
+    private sealed class ParkourRun
+    {
+        public ParkourPhase Phase;
+        public int Tick;
+        public int Ticks;
+        public bool Rejected;
+        public IReadOnlyList<Vec3d>? Nominal;
+
+        public void Reset()
+        {
+            Phase = ParkourPhase.Align;
+            Tick = 0;
+            Ticks = 0;
+            Rejected = false;
+            Nominal = null;
+        }
+    }
+
+    /// <summary>
+    /// Executes a validated gap jump: (1) align — sneak onto the takeoff cell centre and stand still, then re-validate
+    /// the jump from the actual state (world changes since planning, food); (2) run — feed the plan's schedule tick by
+    /// tick (forward + sprint, jump at the planned tick, hold through the flight) while publishing
+    /// <see cref="Commitment"/>; before the takeoff, abort (sneak-brake at the edge, re-plan) when the run deviates
+    /// from the planned trajectory, sprint is lost or no longer possible, the guard refused it, or the re-simulated
+    /// landing is no longer safe; (3) landed — verify the landing height/cell, then brake onto the cell centre.
+    /// </summary>
+    private FollowerOutput DriveParkour(IBlockAccess w, PhysicsState s, PathStep step, ParkourPlan plan)
+    {
+        var pos = s.Position;
+        var idle = new MoveInput(Yaw: s.Yaw, Pitch: s.Pitch, Sneak: true);
+        _pk.Ticks++;
+        switch (_pk.Phase)
+        {
+            case ParkourPhase.Align:
+            {
+                if (_pk.Ticks > _o.StuckTicks) return Fail(idle, "stuck lining up a gap jump");
+                if (!s.OnGround) return Move(idle);
+                var start = plan.Start;
+                double dx = start.X - pos.X, dz = start.Z - pos.Z;
+                double dist = Math.Sqrt(dx * dx + dz * dz);
+                if (dist > 1.6 || Math.Abs(pos.Y - plan.FromFloor) > 0.05) return Fail(idle, "not at the takeoff of the planned jump");
+                double speed = Speed(s);
+                if (dist > 0.07)
+                {
+                    float yaw = PlayerPhysics.YawPitchTo(pos, start with { Y = pos.Y }).Yaw;
+                    return Move(new MoveInput(Forward: dist > Math.Max(0.05, speed * 2.5) ? 1 : 0, Sneak: true, Yaw: yaw, Pitch: s.Pitch));
+                }
+                if (speed > 0.003) return Move(idle);
+                if (plan.Schedule.Sprint && !(_o.CanSprint?.Invoke() ?? true)) return Fail(idle, "too hungry to sprint-jump");
+                var check = Parkour.Check(w, s, new ParkourCommit(plan, 0), record: true);
+                if (!check.Ok || check.Margin < plan.RequiredMargin)
+                    return Abort(idle, plan, $"jump to {plan.To} no longer safe ({check.Reason ?? $"margin {check.Margin:0.00}"})");
+                _pk.Nominal = check.Track;
+                _pk.Phase = ParkourPhase.Run;
+                _pk.Tick = 0;
+                _pk.Rejected = false;
+                goto case ParkourPhase.Run;
+            }
+            case ParkourPhase.Run:
+            {
+                int k = _pk.Tick;
+                var sch = plan.Schedule;
+                if (k <= sch.JumpTick)
+                {
+                    if (_pk.Rejected) return Abort(idle, plan, "the edge guard refused the run-up");
+                    if (_pk.Nominal is { } nom && k < nom.Count)
+                    {
+                        var e = nom[k];
+                        double dev = Math.Sqrt(Math.Pow(e.X - pos.X, 2) + Math.Pow(e.Y - pos.Y, 2) + Math.Pow(e.Z - pos.Z, 2));
+                        if (dev > _o.ParkourDeviation) return Abort(idle, plan, $"run-up off its line by {dev:0.00}");
+                    }
+                    if (sch.Sprint && k >= 1 && !s.Sprinting) return Abort(idle, plan, "lost sprint on the run-up");
+                    if (sch.Sprint && !(_o.CanSprint?.Invoke() ?? true)) return Abort(idle, plan, "too hungry to keep sprinting");
+                    if (!s.OnGround) return Abort(idle, plan, "left the ground before the takeoff");
+                    if (k > 0)
+                    {
+                        var chk = Parkour.Check(w, s, new ParkourCommit(plan, k));
+                        if (!chk.Ok || chk.Margin < plan.RequiredMargin)
+                            return Abort(idle, plan, $"landing no longer safe ({chk.Reason ?? $"margin {chk.Margin:0.00}"})");
+                    }
+                }
+                else if (s.OnGround || s.InWater || s.OnLadder)
+                {
+                    // Touched down: verify the landing — at the target floor (a stair's lower half counts), near the
+                    // planned touchdown or on the target cell; the landed phase then brakes onto the cell centre.
+                    var tgt = step.Target;
+                    double off = Math.Sqrt((tgt.X - pos.X) * (tgt.X - pos.X) + (tgt.Z - pos.Z) * (tgt.Z - pos.Z));
+                    double fromNominal = _pk.Nominal is { } nm && k < nm.Count
+                        ? Math.Sqrt(Math.Pow(nm[k].X - pos.X, 2) + Math.Pow(nm[k].Z - pos.Z, 2)) : double.MaxValue;
+                    bool onTarget = (int)Math.Floor(pos.X) == step.X && (int)Math.Floor(pos.Z) == step.Z;
+                    if (pos.Y < step.Floor - 0.55 || pos.Y > step.Floor + 0.05 || s.InWater || s.OnLadder
+                        || !(onTarget || (fromNominal < 0.5 && off < 3.2)))
+                        return Fail(idle, $"gap jump missed: landed at {pos} instead of {step.Pos}");
+                    _pk.Phase = ParkourPhase.Landed;
+                    _pk.Ticks = 0;
+                    goto default;
+                }
+                else if (k - sch.JumpTick > Parkour.MaxFlightTicks) return Fail(idle, "gap jump: still in the air");
+                var input = sch.InputAt(k, s);
+                Commitment = new ParkourCommit(plan, k);
+                _pk.Tick = k + 1;
+                _noProgress = 0;
+                return Move(input);
+            }
+            default:
+            {
+                if (_pk.Ticks > Parkour.SettleTicks + 20) return Fail(idle, "stuck after a gap jump");
+                if (!s.OnGround && !s.InWater && s.Velocity.Y < -0.2 && Safety.IsPlayerOverVoid(w, pos))
+                    return Fail(idle, "falling into the void");
+                return Move(plan.Schedule.InputAt(plan.Schedule.JumpTick + 1, s));
+            }
+        }
+    }
+
+    /// <summary>Gives up on a jump before the takeoff: brake with sneak (vanilla edge clamping stops at the edge) and
+    /// mark the move so the re-plan avoids it.</summary>
+    private FollowerOutput Abort(MoveInput idle, ParkourPlan plan, string reason)
+    {
+        BlockedJump = (plan.From, plan.To);
+        _pk.Reset();
+        return Fail(idle with { Sneak = true }, "gap jump aborted: " + reason);
     }
 
     private static double Speed(PhysicsState s) => s.Velocity.HorizontalLength;

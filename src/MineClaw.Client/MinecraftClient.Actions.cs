@@ -167,6 +167,11 @@ public sealed partial class MinecraftClient
             AllowPartial = o.AllowPartial,
             AllowOpenDoors = o.AllowOpenDoors,
             CanOpen = (pos, id) => !IsBlockProtected(pos, id) && !(lockedDoors?.Contains(pos) ?? false),
+            AllowParkour = o.Parkour != ParkourMode.Off,
+            CanSprint = CanSprintNow(),
+            AllowVoidParkour = VoidParkourAuthorized(o),
+            HasClutchBlock = HotbarHasClutchBlock(),
+            ParkourCache = _parkourCache,
         };
     }
 
@@ -181,13 +186,14 @@ public sealed partial class MinecraftClient
         string? lastFailure = null;
         var blockedJumps = new HashSet<(BlockPos From, BlockPos To)>();
         var lockedDoors = new HashSet<BlockPos>();
+        var jumps = new List<ParkourPlan>();
         try
         {
             while (true)
             {
                 var start = World.Player.Position;
                 if (goal.IsReached(Pathfinder.StartCellFor(World, start) ?? start.ToBlockPos()))
-                    return ActionResult.Success($"arrived at {Fmt(start)}");
+                    return ActionResult.Success($"arrived at {Fmt(start)}{JumpSummary(jumps)}");
 
                 var popts = BuildPathOptions(o, lockedDoors);
                 if (blockedJumps.Count > 0) popts = popts with { AvoidJumps = blockedJumps.ToHashSet() };
@@ -205,10 +211,10 @@ public sealed partial class MinecraftClient
                                              + NoRouteHint(goal, o, start, token));
                 }
 
-                var r = await FollowPathAsync(path.Steps, o, token, blockedJumps, lockedDoors).ConfigureAwait(false);
+                var r = await FollowPathAsync(path.Steps, o, token, blockedJumps, lockedDoors, jumps).ConfigureAwait(false);
                 if (r is null)
                 {
-                    if (path.Status == PathStatus.Found) return ActionResult.Success($"arrived at {Fmt(World.Player.Position)}");
+                    if (path.Status == PathStatus.Found) return ActionResult.Success($"arrived at {Fmt(World.Player.Position)}{JumpSummary(jumps)}");
                     if (++replans > o.MaxReplans) return ActionResult.Fail($"only got partway to {goal}; now at {Fmt(World.Player.Position)}");
                     continue;
                 }
@@ -231,23 +237,38 @@ public sealed partial class MinecraftClient
     /// <param name="lockedDoors">Receives doors/gates/hatches that didn't open after the follower's clicks (a protection
     /// plugin, an iron door ignoring its button), so the re-plan routes around them.</param>
     private async Task<string?> FollowPathAsync(IReadOnlyList<PathStep> steps, GotoOptions o, CancellationToken ct,
-        HashSet<(BlockPos From, BlockPos To)>? blockedJumps = null, HashSet<BlockPos>? lockedDoors = null)
+        HashSet<(BlockPos From, BlockPos To)>? blockedJumps = null, HashSet<BlockPos>? lockedDoors = null,
+        List<ParkourPlan>? jumps = null)
     {
         var follower = new PathFollower(steps, new PathFollowerOptions
         {
-            AllowSprint = o.AllowSprint, Reach = Options.Reach, RestoreDoors = o.RestoreDoors,
+            AllowSprint = o.AllowSprint, Reach = Options.Reach, RestoreDoors = o.RestoreDoors, CanSprint = CanSprintNow,
         });
+        try
+        {
+            return await FollowCoreAsync(follower, ct, blockedJumps, lockedDoors).ConfigureAwait(false);
+        }
+        finally
+        {
+            jumps?.AddRange(follower.CompletedJumps);
+        }
+    }
+
+    private async Task<string?> FollowCoreAsync(PathFollower follower, CancellationToken ct,
+        HashSet<(BlockPos From, BlockPos To)>? blockedJumps, HashSet<BlockPos>? lockedDoors)
+    {
         while (true)
         {
             FollowerOutput last = default;
             await DriveAsync(phys =>
             {
                 if ((_lastGuardActions & GuardActions.CancelledJump) != 0) follower.NoteJumpCancelled(phys);
+                if ((_lastGuardActions & GuardActions.ParkourRejected) != 0) follower.NoteParkourRejected();
                 var output = follower.Tick(World, phys);
                 last = output;
                 bool drop = follower.CurrentStep?.Kind == MoveKind.Drop;
                 return output.Status == FollowerStatus.Moving
-                    ? new DriverStep(output.Input, AllowDrop: drop)
+                    ? new DriverStep(output.Input, AllowDrop: drop, Parkour: follower.Commitment)
                     : new DriverStep(output.Input, Done: true);
             }, ct).ConfigureAwait(false);
 

@@ -49,9 +49,31 @@ public sealed record PathOptions
 
     /// <summary>Cells the path must not enter.</summary>
     public IReadOnlySet<BlockPos>? Avoid { get; init; }
-    /// <summary>Jump moves (from foot cell, to foot cell) not to plan again: the edge guard refused to verify their landing
+    /// <summary>Jump and gap-jump moves (from foot cell, to foot cell) not to plan again: the edge guard refused to verify their landing
     /// (see <see cref="PathFollower.BlockedJump"/>), so re-plans route around them instead of retrying forever.</summary>
     public IReadOnlySet<(BlockPos From, BlockPos To)>? AvoidJumps { get; init; }
+
+    /// <summary>Plan gap jumps (<see cref="MoveKind.SprintJump"/>/<see cref="MoveKind.JumpGap"/>) validated by forward physics
+    /// simulation. Gaps where a miss is a fall within <see cref="MaxDrop"/> are allowed by default.</summary>
+    public bool AllowParkour { get; init; } = true;
+    /// <summary>Sprinting is possible (b1.8.1: food &gt; 6). False = only non-sprint gap jumps.</summary>
+    public bool CanSprint { get; init; } = true;
+    /// <summary>Allow gap jumps where a miss means the void (or lava / a deadly fall). Also requires
+    /// <see cref="HasClutchBlock"/> and passes the stricter margin and perturbation set.</summary>
+    public bool AllowVoidParkour { get; init; }
+    /// <summary>A placeable clutch block is in the hotbar (void parkour precondition).</summary>
+    public bool HasClutchBlock { get; init; }
+    /// <summary>Largest landing fall of a gap jump, measured from the jump apex (≈1.25 above the takeoff floor). Default
+    /// 4.3 = a jump down 3 blocks (fall damage ceil(fall − 3) ≤ 2 hp); 3.0 = never any damage (jumps down ≤ 1.75).</summary>
+    public double ParkourMaxFall { get; init; } = 4.3;
+    /// <summary>Risk penalty (ticks) of any gap jump: walking ~6 blocks around is preferred.</summary>
+    public double ParkourPenalty { get; init; } = 30;
+    /// <summary>Extra penalty for a void gap jump (bridging is preferred when allowed).</summary>
+    public double VoidParkourPenalty { get; init; } = 80;
+    /// <summary>Validated jumps shared across plans (null = a per-search cache only).</summary>
+    public ParkourCache? ParkourCache { get; init; }
+    /// <summary>Candidate gap jumps simulated per expanded node (closest first).</summary>
+    public int MaxParkourCandidates { get; init; } = 16;
 
     public int MaxNodes { get; init; } = 30_000;
     public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(2);

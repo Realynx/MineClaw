@@ -12,7 +12,7 @@ namespace MineClaw.World;
 /// drops and jumps are cardinal only, and a drop is refused if overshooting the landing cell would fall into a deadly
 /// drop. Unloaded chunks are treated as void.</para>
 /// </summary>
-public sealed class Pathfinder
+public sealed partial class Pathfinder
 {
     private readonly IBlockAccess _world;
     private readonly PathOptions _o;
@@ -124,7 +124,7 @@ public sealed class Pathfinder
             foreach (var m in moves)
             {
                 if (_o.Avoid is { } avoid && avoid.Contains(new BlockPos(m.X, m.Y, m.Z))) continue;
-                if (m.Kind == MoveKind.Jump && _o.AvoidJumps is { } aj && aj.Contains((new BlockPos(n.X, n.Y, n.Z), new BlockPos(m.X, m.Y, m.Z)))) continue;
+                if (m.Kind is MoveKind.Jump or MoveKind.SprintJump or MoveKind.JumpGap && _o.AvoidJumps is { } aj && aj.Contains((new BlockPos(n.X, n.Y, n.Z), new BlockPos(m.X, m.Y, m.Z)))) continue;
                 int scaffold = n.Scaffold + (m.Place is null ? 0 : 1);
                 if (scaffold > _o.ScaffoldBudget && m.Place is not null) continue;
                 long k = Key(m.X, m.Y, m.Z);
@@ -144,7 +144,7 @@ public sealed class Pathfinder
                 if (m.Place is { } p) mods = new Mod(p, _o.ScaffoldBlockId, mods);
                 if (m.Open is { } opens) foreach (var tg in opens) mods = ToggleMods(tg, mods);
                 t.Mods = mods;
-                t.Step = new PathStep(m.X, m.Y, m.Z, m.Kind, m.Floor, m.Cost, m.Break, m.Place, m.Sneak, m.Open);
+                t.Step = new PathStep(m.X, m.Y, m.Z, m.Kind, m.Floor, m.Cost, m.Break, m.Place, m.Sneak, m.Open, m.Jump);
                 open.Enqueue((t, ng), ng + t.H * PathOptions.WalkCost);
             }
         }
@@ -169,7 +169,7 @@ public sealed class Pathfinder
     // ------------------------------------------------------------------ moves
 
     private readonly record struct Candidate(int X, int Y, int Z, MoveKind Kind, double Floor, double Cost,
-        IReadOnlyList<BlockPos> Break, BlockPos? Place, bool Sneak, IReadOnlyList<DoorToggle>? Open = null);
+        IReadOnlyList<BlockPos> Break, BlockPos? Place, bool Sneak, IReadOnlyList<DoorToggle>? Open = null, ParkourPlan? Jump = null);
 
     private static readonly (int Dx, int Dz)[] Cardinals = [(1, 0), (-1, 0), (0, 1), (0, -1)];
     private static readonly (int Dx, int Dz)[] Diagonals = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
@@ -275,6 +275,9 @@ public sealed class Pathfinder
             output.Add(new Candidate(x, y + 1, z, MoveKind.Pillar, y + 1, _o.PlaceCost + PathOptions.JumpExtra + 4, [],
                 new BlockPos(x, y, z), hereEdge));
         }
+
+        // Gap jumps (sprint / plain), each validated by forward physics simulation.
+        if (_o.AllowParkour && here.Ground && !here.Water && !here.Climb) TryParkour(output, here, x, y, z);
     }
 
     private void AddWalk(List<Candidate> output, CellInfo here, bool hereEdge, int tx, int ty, int tz, CellInfo t,

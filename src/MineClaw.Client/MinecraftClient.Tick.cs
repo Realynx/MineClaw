@@ -8,8 +8,9 @@ namespace MineClaw.Client;
 public sealed partial class MinecraftClient
 {
     /// <summary>One tick of a driver: the input to apply and whether the driver is finished. <paramref name="AllowDrop"/>
-    /// marks a planned drop to a lower floor (the edge guard then verifies the landing instead of forcing sneak).</summary>
-    private readonly record struct DriverStep(MoveInput Input, bool Done = false, bool AllowDrop = false);
+    /// marks a planned drop to a lower floor (the edge guard then verifies the landing instead of forcing sneak);
+    /// <paramref name="Parkour"/> a committed gap jump (the guard's planned-parkour exemption re-simulates it).</summary>
+    private readonly record struct DriverStep(MoveInput Input, bool Done = false, bool AllowDrop = false, ParkourCommit? Parkour = null);
 
     /// <summary>Per-tick movement logic installed by an action; runs on the tick thread.</summary>
     private sealed class Driver(Func<PhysicsState, DriverStep> step)
@@ -120,6 +121,7 @@ public sealed partial class MinecraftClient
         // ---- input from the active driver, or idle ----
         MoveInput input;
         bool allowDrop = false;
+        ParkourCommit? parkour = null;
         var d = _driver;
         if (d is not null && !(_combatInstance?.Engaged ?? false)) // a fight owns the body: the driver is paused (and aborted)
         {
@@ -128,6 +130,7 @@ public sealed partial class MinecraftClient
                 var step = d.Step(phys);
                 input = step.Input;
                 allowDrop = step.AllowDrop;
+                parkour = step.Done ? null : step.Parkour;
                 if (step.Done)
                 {
                     Interlocked.CompareExchange(ref _driver, null, d);
@@ -144,6 +147,7 @@ public sealed partial class MinecraftClient
             }
         }
         else input = IdleInput(phys);
+        parkour = ContinueFlight(phys, ref input, parkour);
 
         // ---- combat: reflexes / fight / spar replace the input while engaged ----
         var combat = CombatBeforePhysics(phys, input);
@@ -151,7 +155,7 @@ public sealed partial class MinecraftClient
 
         // ---- safety: below every action, every tick, before the position goes out ----
         if (!combat.Overrides) input = RetreatOverride(phys, HealRetreatOverride(phys, input, idle: d is null));
-        var guard = SafetyFilter(phys, input, allowDrop && !combat.Overrides);
+        var guard = SafetyFilter(phys, input, allowDrop && !combat.Overrides, combat.Overrides ? null : parkour);
         input = guard.Input;
         Combat.OnGuard(guard);
 
@@ -237,6 +241,8 @@ public sealed partial class MinecraftClient
     {
         // Falling with nothing below.
         if (phys.OnGround || phys.InWater || phys.OnLadder) _voidAlerted = false;
+        // A committed gap jump over the void whose re-simulated landing still holds is not a fall.
+        else if ((_lastGuardActions & GuardActions.ParkourExempt) != 0) { }
         else if (!_voidAlerted && !_voidEpisode && phys.Velocity.Y < -0.3 && World.IsPlayerOverVoid(phys.Position))
         {
             _voidAlerted = true;

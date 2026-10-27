@@ -56,6 +56,14 @@ public sealed record ClientOptions
     public double EdgeRetreatHostileRadius { get; init; } = 4;
     /// <summary>Freeze movement after a teleport/respawn until the chunks below are loaded and there is ground under the bot.</summary>
     public bool FreezeUntilSupportVerified { get; init; } = true;
+    /// <summary>Config switch: gap jumps over the void (a miss = death) are planned for every goto. Off by default: then only a
+    /// goto with <see cref="ParkourMode.Void"/> asked for by a trusted player within <see cref="VoidParkourRequestWindow"/>
+    /// may plan them. Either way the bot needs a clutch block in its hotbar and the jump must pass the strict margin.</summary>
+    public bool AllowVoidParkour { get; init; }
+    /// <summary>Players whose recent chat authorizes a <see cref="ParkourMode.Void"/> goto.</summary>
+    public IReadOnlyList<string> ParkourTrustedPlayers { get; init; } = ["poofimafox", "kiwi"];
+    /// <summary>How recent a trusted player's chat must be for a void-parkour goto.</summary>
+    public TimeSpan VoidParkourRequestWindow { get; init; } = TimeSpan.FromMinutes(5);
 
     /// <summary>Combat engine: reflex defense, guarding, sparring, telemetry (see <see cref="CombatOptions"/>).</summary>
     public CombatOptions Combat { get; init; } = new();

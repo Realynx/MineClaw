@@ -33,13 +33,19 @@ public enum GuardActions
     AirSteer = 16,
     /// <summary>No legal input avoids a deadly fall: a clutch block is needed now.</summary>
     Unrecoverable = 32,
+    /// <summary>A committed gap jump (run-up or flight) whose re-simulation still lands safely with margin: the planned
+    /// input passed unchanged (no sneak clamp, no sprint stop, no jump cancel).</summary>
+    ParkourExempt = 64,
+    /// <summary>A committed gap jump no longer re-simulates to a safe landing (knockback, a block change, a deviating
+    /// input): the normal guard rules (and air steering toward the landing) apply instead.</summary>
+    ParkourRejected = 128,
 }
 
 public readonly record struct GuardDecision(MoveInput Input, GuardActions Actions, bool NearEdge)
 {
     public bool Unrecoverable => (Actions & GuardActions.Unrecoverable) != 0;
-    /// <summary>Anything beyond the routine forced sneak (worth logging).</summary>
-    public bool Notable => (Actions & ~GuardActions.ForcedSneak) != 0;
+    /// <summary>Anything beyond the routine forced sneak / parkour exemption (worth logging).</summary>
+    public bool Notable => (Actions & ~(GuardActions.ForcedSneak | GuardActions.ParkourExempt)) != 0;
 }
 
 /// <summary>A block to place right now to catch a fall: click <see cref="Aim"/>.Against on <see cref="Aim"/>.Face.</summary>
@@ -48,7 +54,7 @@ public readonly record struct ClutchPlan(BlockPos Target, PlaceAim Aim, bool Sav
 /// <summary>Intervention counters (thread-safe reads).</summary>
 public sealed class EdgeGuardStats
 {
-    private long _sneak, _sprint, _jump, _clamp, _steer, _doomed, _clutchTry, _clutchSave;
+    private long _sneak, _sprint, _jump, _clamp, _steer, _doomed, _clutchTry, _clutchSave, _pkExempt, _pkReject;
 
     public long ForcedSneakTicks => Interlocked.Read(ref _sneak);
     public long SprintStops => Interlocked.Read(ref _sprint);
@@ -58,6 +64,10 @@ public sealed class EdgeGuardStats
     public long UnrecoverableTicks => Interlocked.Read(ref _doomed);
     public long ClutchAttempts => Interlocked.Read(ref _clutchTry);
     public long ClutchSaves => Interlocked.Read(ref _clutchSave);
+    /// <summary>Ticks a committed gap jump was let through after re-simulation.</summary>
+    public long ParkourExemptTicks => Interlocked.Read(ref _pkExempt);
+    /// <summary>Ticks a committed gap jump was refused (prediction no longer safe).</summary>
+    public long ParkourRejections => Interlocked.Read(ref _pkReject);
     /// <summary>All interventions except routine forced-sneak ticks.</summary>
     public long Interventions => SprintStops + JumpsCancelled + InputsClamped + AirSteerTicks + UnrecoverableTicks + ClutchAttempts;
 
@@ -69,6 +79,8 @@ public sealed class EdgeGuardStats
         if ((a & GuardActions.ClampedInput) != 0) Interlocked.Increment(ref _clamp);
         if ((a & GuardActions.AirSteer) != 0) Interlocked.Increment(ref _steer);
         if ((a & GuardActions.Unrecoverable) != 0) Interlocked.Increment(ref _doomed);
+        if ((a & GuardActions.ParkourExempt) != 0) Interlocked.Increment(ref _pkExempt);
+        if ((a & GuardActions.ParkourRejected) != 0) Interlocked.Increment(ref _pkReject);
     }
 
     public void CountClutch(bool saved)
@@ -79,7 +91,8 @@ public sealed class EdgeGuardStats
 
     public override string ToString() =>
         $"sneak-ticks {ForcedSneakTicks}, sprint-stops {SprintStops}, jumps-cancelled {JumpsCancelled}, clamps {InputsClamped}, " +
-        $"air-steer {AirSteerTicks}, doomed {UnrecoverableTicks}, clutch {ClutchSaves}/{ClutchAttempts}";
+        $"air-steer {AirSteerTicks}, doomed {UnrecoverableTicks}, clutch {ClutchSaves}/{ClutchAttempts}" +
+        (ParkourExemptTicks + ParkourRejections > 0 ? $", parkour {ParkourExemptTicks}/-{ParkourRejections}" : "");
 }
 
 /// <summary>
@@ -152,8 +165,13 @@ public sealed class EdgeGuard
     /// <summary>
     /// Returns the input to actually apply this tick. <paramref name="allowDrop"/> marks an intentional, planned drop
     /// to a lower floor (path step): forced sneak is skipped only if the unsneaked step is verified to land safely.
+    /// <paramref name="parkour"/> marks a committed gap jump (planned-parkour exemption): the proposed input passes
+    /// unchanged — never sneak-clamped during the run-up — as long as it is exactly the plan's input for that tick and
+    /// re-simulating the rest of the trajectory from the current state still lands on the target with the plan's margin.
+    /// Otherwise (knockback, a changed block, a deviating input) the normal rules apply, with air steering toward the
+    /// planned landing tried first.
     /// </summary>
-    public GuardDecision Filter(IBlockAccess w, PhysicsState s, MoveInput proposed, bool allowDrop = false)
+    public GuardDecision Filter(IBlockAccess w, PhysicsState s, MoveInput proposed, bool allowDrop = false, ParkourCommit? parkour = null)
     {
         if (!Options.Enabled) return new GuardDecision(proposed, GuardActions.None, false);
         if (!w.IsLoaded((int)Math.Floor(s.Position.X), (int)Math.Floor(s.Position.Z)))
@@ -162,6 +180,13 @@ public sealed class EdgeGuard
         bool near = IsNearEdge(w, s);
         var acts = GuardActions.None;
         var input = proposed;
+        Vec3d? landing = null;
+        if (parkour is { } pc)
+        {
+            if (ParkourHolds(w, s, proposed, pc)) return Done(proposed, GuardActions.ParkourExempt, near);
+            acts |= GuardActions.ParkourRejected;
+            landing = pc.Plan.Landing;
+        }
 
         if (near && input.Sprint)
         {
@@ -188,7 +213,7 @@ public sealed class EdgeGuard
         foreach (var c in Fallbacks(s, input))
             if (IsViable(w, s, c)) return Done(c, acts | GuardActions.ClampedInput, near);
 
-        var steers = SteerPolicies(w, s, input);
+        var steers = SteerPolicies(w, s, input, landing);
         foreach (var p in steers)
             if (Simulate(w, s, p, true, Options.MaxSafeFall, out _)) return Done(p(0, s), acts | GuardActions.AirSteer, near);
         // Already committed to leaving support (e.g. knocked out over the void): accept any path that settles safely.
@@ -235,10 +260,12 @@ public sealed class EdgeGuard
         if (b.Forward != 0 || b.Strafe != 0) yield return b with { Forward = -b.Forward, Strafe = -b.Strafe };
     }
 
-    private List<Func<int, PhysicsState, MoveInput>> SteerPolicies(IBlockAccess w, PhysicsState s, MoveInput proposed)
+    private List<Func<int, PhysicsState, MoveInput>> SteerPolicies(IBlockAccess w, PhysicsState s, MoveInput proposed,
+        Vec3d? landing = null)
     {
-        var list = new List<Func<int, PhysicsState, MoveInput>>(4);
+        var list = new List<Func<int, PhysicsState, MoveInput>>(5);
         if (_clutchTarget is { } ct) list.Add(Homing(ct));
+        if (landing is { } pl && !s.OnGround) list.Add(Homing(pl));
         if (LastSupport is { } ls) list.Add(Homing(ls));
         if (NearestSupport(w, s) is { } ns && (LastSupport is not { } l || l.DistanceSquaredTo(ns) > 0.01)) list.Add(Homing(ns));
         list.Add(HeldAir(proposed));
@@ -325,6 +352,18 @@ public sealed class EdgeGuard
             }
         }
         return false;
+    }
+
+    /// <summary>The planned-parkour exemption test: the proposed input is the plan's input for this tick, and the
+    /// re-simulated remainder lands on the target cell with at least the plan's required margin.</summary>
+    public static bool ParkourHolds(IBlockAccess w, PhysicsState s, MoveInput proposed, ParkourCommit c)
+    {
+        var expected = c.Plan.Schedule.InputAt(c.Tick, s);
+        if (proposed.Forward != expected.Forward || proposed.Strafe != expected.Strafe || proposed.Jump != expected.Jump
+            || proposed.Sneak != expected.Sneak || proposed.Sprint != expected.Sprint || Math.Abs(proposed.Yaw - expected.Yaw) > 0.01f)
+            return false;
+        var o = Parkour.Check(w, s, c);
+        return o.Ok && o.Margin >= c.Plan.RequiredMargin;
     }
 
     // ------------------------------------------------------------------ last-chance clutch

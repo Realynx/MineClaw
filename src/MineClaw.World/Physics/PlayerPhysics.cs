@@ -184,8 +184,9 @@ public static class PlayerPhysics
         double ox = dx, oy = dy, oz = dz;
         var box = s.BoundingBox;
         var startBox = box;
+        bool sneakOnGround = s.OnGround && s.Sneaking; // mc-dev Entity.move: flag = onGround && isSneaking()
 
-        if (s.OnGround && s.Sneaking)
+        if (sneakOnGround)
         {
             const double step = SneakEdgeStep;
             while (dx != 0 && BlockShapes.GetCollidingBoxes(w, box.Offset(dx, -1, 0), boxes).Count == 0)
@@ -213,7 +214,8 @@ public static class PlayerPhysics
         foreach (var b in boxes) dz = b.CalculateZOffset(box, dz);
         box = box.Offset(0, 0, dz);
 
-        if (StepHeight > 0 && canStep && s.YSize < 0.05f && (ox != dx || oz != dz))
+        // mc-dev 1.8 Entity.move: `bI > 0 && flag1 && (flag || bH < 0.05F)`: sneaking on ground may step up whatever ySize is.
+        if (StepHeight > 0 && canStep && (sneakOnGround || s.YSize < 0.05f) && (ox != dx || oz != dz))
         {
             double sx = dx, sy = dy, sz = dz;
             var afterBox = box;

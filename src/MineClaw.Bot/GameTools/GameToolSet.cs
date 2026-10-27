@@ -60,12 +60,14 @@ public static class GameToolSet
         // ---- movement
         tools.Register("goto", "Walk to x,y,z, a saved place or player (come here).",
             ToolSchema.Create().Str("to", "x,y,z, name or player").Num("dist", required: false)
-                .Bool("build", "may dig/place on the way", required: false).Build(),
+                .Bool("build", "may dig/place on the way", required: false)
+                .Str("allow_parkour", "void = gap jumps over the void too; only when poofimafox/kiwi asked for this jump", required: false, enumValues: ["off", "ground", "void"]).Build(),
             async (i, ct) =>
             {
                 var to = i.ReqStr("to");
                 bool build = i.Bool("build") == true;
-                var opts = GotoOptions.Default with { AllowBreak = build, AllowPlace = build };
+                var parkour = i.Str("allow_parkour") switch { "off" => ParkourMode.Off, "void" => ParkourMode.Void, _ => ParkourMode.Ground };
+                var opts = GotoOptions.Default with { AllowBreak = build, AllowPlace = build, Parkour = parkour };
                 double? dist = i.Num("dist");
                 // A saved place in the other dimension: through a known linked portal, or an honest "no known portal".
                 if (Locations.ParseCoords(to) == null && places is ICrossDimensionPlaces xd && xd.ResolveElsewhere(to) is { } far)

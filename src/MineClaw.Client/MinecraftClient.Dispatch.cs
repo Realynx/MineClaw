@@ -60,6 +60,7 @@ public sealed partial class MinecraftClient
                 if (ChatText.TryParsePlayerChat(chat.Message, out var chatFrom, out var chatText))
                 {
                     Combat.OnChat(chatFrom, chatText);
+                    NoteChatForParkour(chatFrom);
                     OnChatForBody(chatFrom, chatText);
                 }
                 break;
