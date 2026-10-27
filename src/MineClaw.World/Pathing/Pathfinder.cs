@@ -269,6 +269,7 @@ public sealed class Pathfinder
 
         // Pillar: jump and place a block in the current foot cell.
         if (_o.AllowPlace && !here.Water && !here.Climb && Math.Abs(here.Floor - y) < 1e-6
+            && (_o.CanPlace is null || _o.CanPlace(new BlockPos(x, y, z)))
             && Aiming.IsReplaceable(_w, _w.GetBlock(x, y, z)) && BodyClear(x, z, y + 1) && y + 2 < WorldState.Height)
         {
             output.Add(new Candidate(x, y + 1, z, MoveKind.Pillar, y + 1, _o.PlaceCost + PathOptions.JumpExtra + 4, [],
@@ -346,6 +347,7 @@ public sealed class Pathfinder
         int fy = y - 1;
         if (fy < 0) return;
         if (!Aiming.IsReplaceable(_w, _w.GetBlock(tx, fy, tz))) return;
+        if (_o.CanPlace is { } veto && !veto(new BlockPos(tx, fy, tz))) return;
         if (!HasCollisionAt(x, fy, z) || _w.Info(_w.GetBlock(x, fy, z)).Interactable) return; // block we stand on = placement support
         if (!BodyClear(tx, tz, y) || HazardInColumn(tx, y, y + 1, tz)) return;
         // Evaluate the target with the scaffold in place.
@@ -738,12 +740,22 @@ public sealed class Pathfinder
     {
         int id = _w.GetBlock(x, y + 2, z);
         if (id != Openables.Trapdoor || Openables.IsOpen(_w.GetMeta(x, y + 2, z))) return;
+        // Hinged on the ladder's own wall, the opened panel hangs exactly where the climber's head goes (the body presses
+        // into that wall to climb): impassable in b1.8.1 as well.
+        if (HatchHingeOnLadderWall(_w.GetMeta(x, y + 2, z), _w.GetBlock(x, y + 1, z) == BlockShapes.Ladder ? _w.GetMeta(x, y + 1, z) : _w.GetMeta(x, y, z))) return;
         var tg = MakeToggle(new BlockPos(x, y + 2, z), new BlockPos(x, y, z), new BlockPos(x, y + 1, z));
         if (tg is null) return;
         var r = WithToggles([tg], () => (CellUncached(x, y + 1, z), BodyClear(x, z, y + 1)));
         if (!r.Item1.Ok || !r.Item2) return;
         output.Add(new Candidate(x, y + 1, z, MoveKind.ClimbUp, r.Item1.Floor, PathOptions.ClimbUpCost + OpenCosts([tg]), [], null, false, [tg]));
     }
+
+    /// <summary>Trapdoor hinge (meta bits 0-1: 0 z+1, 1 z−1, 2 x+1, 3 x−1) on the same side as the ladder's wall
+    /// (ladder meta 2 z+1, 3 z−1, 4 x+1, 5 x−1).</summary>
+    private static bool HatchHingeOnLadderWall(int trapMeta, int ladderMeta) => (trapMeta & 3) switch
+    {
+        0 => ladderMeta == 2, 1 => ladderMeta == 3, 2 => ladderMeta == 4, _ => ladderMeta == 5,
+    };
 
     private bool TrapdoorOverDrop(int x, int y, int z)
     {

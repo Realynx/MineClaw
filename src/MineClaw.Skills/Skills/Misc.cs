@@ -135,7 +135,7 @@ public sealed class WriteSignSkill : Skill
     public override SkillSpec Spec { get; } = new()
     {
         Name = "write_sign", Category = SkillCategory.Misc, Summary = "place a sign and write up to 4 lines", Args = "pos,text",
-        Schema = SkillJson.Schema("pos:pos,text:str"), Status = SkillStatus.NeedsPrimitive, Estimate = TimeSpan.FromSeconds(8),
+        Schema = SkillJson.Schema("pos:pos,text:str"), Estimate = TimeSpan.FromSeconds(8),
         Pre = new() { Items = [[Items.Sign]], Needs = "sign", Primitives = Primitive.WriteSign },
         Keywords = "write sign text place label message",
     };
@@ -143,9 +143,15 @@ public sealed class WriteSignSkill : Skill
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
         if (args.Pos() is not { } p) return Fail("pos required");
-        var place = await ctx.Game.PlaceAsync(p, Items.Sign, ct);
-        if (!place.Ok) return SkillResult.From(place);
         var lines = LabelChestSkill.Wrap(args.Str("text") ?? "");
+        if (ctx.Block(p) is not (Blocks.SignPost or Blocks.WallSign))
+        {
+            // A sign post on solid ground, else a wall sign on a solid neighbour (never on a chest/door).
+            BlockFace? face = MineClaw.Client.FaceAim.IsWallSupport(ctx.World, p.Down()) ? BlockFace.Top : ctx.Game.WallFace(p);
+            if (face is not { } f) return Fail($"nothing solid under or beside {P(p)} to hold a sign");
+            var place = await ctx.Game.PlaceAsync(p, Items.Sign, f, ct);
+            if (!place.Ok) return SkillResult.From(place);
+        }
         return SkillResult.From(await ctx.Game.WriteSignAsync(p, lines, ct));
     }
 }
@@ -241,29 +247,34 @@ public sealed class ShootBowSkill : Skill
     public override SkillSpec Spec { get; } = new()
     {
         Name = "shoot_bow", Category = SkillCategory.Combat, Summary = "charge bow, aim w/ gravity, shoot hostile", Args = "target?,shots?",
-        Schema = SkillJson.Schema("target:str?,shots:int?"), Safety = SafetyClass.Combat, Status = SkillStatus.NeedsPrimitive, Estimate = TimeSpan.FromSeconds(8),
+        Schema = SkillJson.Schema("target:str?,shots:int?"), Safety = SafetyClass.Combat, Estimate = TimeSpan.FromSeconds(8),
         Pre = new() { Items = [[Items.Bow], [Items.Arrow]], Needs = "bow+arrows", Primitives = Primitive.ReleaseUse },
         Keywords = "bow arrow shoot ranged skeleton ghast archer snipe",
     };
 
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
-        var mob = ctx.World.Entities.NearestHostile(ctx.Feet, 32);
-        if (mob is null || NetherHazards.NeverAttack(mob)) return Fail("no hostile mob in range");
+        Vec3d spot = default;
+        MineClaw.World.Entity? mob = null;
+        var t = args.Str("target");
+        if (t is not null && SkillJson.Parse($"{{\"p\":\"{t}\"}}").Pos("p") is { } pos) spot = pos.Center;
+        else
+        {
+            mob = ctx.World.Entities.NearestHostile(ctx.Feet, 32);
+            if (mob is null || NetherHazards.NeverAttack(mob)) return Fail("no hostile mob in range");
+        }
         int shots = Clamp(args.Int("shots"), 1, 1, 8), fired = 0;
+        string? last = null;
         for (int i = 0; i < shots && ctx.Has(Items.Arrow); i++)
         {
-            var target = (ctx.World.Entities.Get(mob.Id) ?? mob).Position + new Vec3d(0, 1, 0);
-            var use = await ctx.Game.UseItemAsync(Items.Bow, ct); // starts drawing (b1.8 bows charge)
-            if (!use.Ok) return SkillResult.From(use);
-            await ctx.Game.WaitTicksAsync(20, ct); // full charge: arrow speed 3.0
-            target = (ctx.World.Entities.Get(mob.Id) ?? mob).Position + new Vec3d(0, 1, 0);
-            await ctx.Game.LookAtAsync(Ballistics.Aim(ctx.World.Player.EyePosition, target, 3.0, 0.05), ct);
-            var rel = await ctx.Game.ReleaseUseAsync(ct);
-            if (!rel.Ok) return SkillResult.From(rel);
+            if (mob is not null && ctx.World.Entities.Get(mob.Id) is null) break; // dead or gone
+            // Full charge (20 ticks, arrow speed 3.0); the client solves b1.8 arrow gravity/drag and leads the target.
+            var r = await ctx.Game.ShootAsync(mob?.Position ?? spot, mob?.Id, 20, ct);
+            last = r.Message;
+            if (!r.Ok) return fired > 0 ? Ok($"shot {fired} arrow(s), then {r.Message}") : SkillResult.From(r);
             fired++;
         }
-        return Ok($"shot {fired} arrow(s) at {mob.DisplayName}");
+        return fired > 0 ? Ok($"shot {fired} arrow(s) at {mob?.DisplayName ?? P(spot.ToBlockPos())}") : Fail(last ?? "no arrows");
     }
 }
 
@@ -275,6 +286,9 @@ public abstract class UseOnMobSkill : Skill
     protected abstract string Verb { get; }
     protected virtual bool Accept(MineClaw.World.Entity e) => true;
     protected virtual Func<SkillContext, int, bool>? Verify => null;
+    /// <summary>Uses per mob until <see cref="Finished"/> (wolves take several bones).</summary>
+    protected virtual int Attempts => 1;
+    protected virtual bool Finished(MineClaw.World.Entity e) => true;
 
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
@@ -287,11 +301,18 @@ public abstract class UseOnMobSkill : Skill
             used.Add(mob.Id);
             var g = await ctx.Game.GotoAsync(new GoalNearPosition(mob.Position, 2), null, ct);
             if (!g.Ok) continue;
-            int before = ItemId is { } it ? ctx.Count(it) : 0;
-            var r = await ctx.Game.UseEntityAsync(mob.Id, ItemId, ct);
-            if (!r.Ok) return done > 0 ? Ok($"{Verb} {done}, then {r.Message}") : SkillResult.From(r);
-            if (Verify is { } v && !await ctx.Game.WaitUntilAsync(() => v(ctx, before), TimeSpan.FromSeconds(2), ct)) continue;
-            done++;
+            bool ok = false;
+            for (int k = 0; k < Attempts && !ok; k++)
+            {
+                if (ItemId is { } need && !ctx.Has(need)) break;
+                int before = ItemId is { } it ? ctx.Count(it) : 0;
+                var r = await ctx.Game.UseEntityAsync(mob.Id, ItemId, ct);
+                if (!r.Ok) return done > 0 ? Ok($"{Verb} {done}, then {r.Message}") : SkillResult.From(r);
+                if (Verify is { } v && !await ctx.Game.WaitUntilAsync(() => v(ctx, before), TimeSpan.FromSeconds(2), ct)) continue;
+                ok = Attempts == 1 || (ctx.World.Entities.Get(mob.Id) is { } now && Finished(now));
+                if (!ok) await ctx.Game.WaitTicksAsync(10, ct);
+            }
+            if (ok) done++;
         }
         await ctx.Game.CollectDropsAsync(6, ct);
         return done > 0 ? Ok($"{Verb} {done} {MobTypes.Name(MobType)}") : Fail($"no {MobTypes.Name(MobType)} to {Verb.TrimEnd('d', 'e')} nearby");
@@ -309,7 +330,7 @@ public sealed class ShearSheepSkill : UseOnMobSkill
     public override SkillSpec Spec { get; } = new()
     {
         Name = "shear_sheep", Category = SkillCategory.Animals, Summary = "shear unsheared sheep, collect wool", Args = "count?",
-        Schema = SkillJson.Schema("count:int?"), Status = SkillStatus.NeedsPrimitive, Estimate = TimeSpan.FromSeconds(20),
+        Schema = SkillJson.Schema("count:int?"), Estimate = TimeSpan.FromSeconds(20),
         Pre = new() { Items = [[Items.Shears]], Needs = "shears", Dimension = Dim.Overworld, Primitives = Primitive.UseEntity },
         Keywords = "shear sheep wool shears white",
     };
@@ -325,7 +346,7 @@ public sealed class MilkCowSkill : UseOnMobSkill
     public override SkillSpec Spec { get; } = new()
     {
         Name = "milk_cow", Category = SkillCategory.Animals, Summary = "fill a bucket with milk from a cow", Args = "",
-        Status = SkillStatus.NeedsPrimitive, Estimate = TimeSpan.FromSeconds(10),
+        Estimate = TimeSpan.FromSeconds(10),
         Pre = new() { Items = [[Items.Bucket]], Needs = "bucket", Dimension = Dim.Overworld, Primitives = Primitive.UseEntity },
         Keywords = "milk cow bucket cake",
     };
@@ -337,12 +358,14 @@ public sealed class TameWolfSkill : UseOnMobSkill
     protected override int MobType => MobTypes.Wolf;
     protected override int? ItemId => Items.Bone;
     protected override string Verb => "fed";
-    // Wolf metadata 16: 0x4 tamed, 0x2 angry.
+    // Wolf metadata 16: 0x4 tamed, 0x2 angry. Each bone tames with chance 1/3 (0x26 status 7 hearts, 6 smoke).
     protected override bool Accept(MineClaw.World.Entity e) => ((e.MetaInt(16) ?? 0) & 0x6) == 0;
+    protected override int Attempts => 10;
+    protected override bool Finished(MineClaw.World.Entity e) => ((e.MetaInt(16) ?? 0) & 0x4) != 0;
     public override SkillSpec Spec { get; } = new()
     {
         Name = "tame_wolf", Category = SkillCategory.Animals, Summary = "feed bones to a wild wolf until tamed", Args = "count?",
-        Schema = SkillJson.Schema("count:int?"), Status = SkillStatus.NeedsPrimitive, Estimate = TimeSpan.FromSeconds(20),
+        Schema = SkillJson.Schema("count:int?"), Estimate = TimeSpan.FromSeconds(20),
         Pre = new() { Items = [[Items.Bone]], Needs = "bones", Dimension = Dim.Overworld, Primitives = Primitive.UseEntity },
         Keywords = "tame wolf dog bone pet",
     };
@@ -393,15 +416,24 @@ public sealed class RideVehicleSkill : Skill
     public override SkillSpec Spec { get; } = new()
     {
         Name = "ride_vehicle", Category = SkillCategory.Vehicles, Summary = "get in/out of the nearest boat or minecart", Args = "exit?",
-        Schema = SkillJson.Schema("exit:bool?"), Status = SkillStatus.NeedsPrimitive, Estimate = TimeSpan.FromSeconds(6),
+        Schema = SkillJson.Schema("exit:bool?"), Estimate = TimeSpan.FromSeconds(6),
         Pre = new() { Primitives = Primitive.UseEntity }, Keywords = "ride boat minecart enter mount get in exit dismount vehicle cart",
     };
 
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
-        var v = ctx.World.Entities.Nearest(ctx.Feet, 6, e => e.Kind == EntityKind.Object && e.TypeId is 1 or 10 or 11 or 12);
+        int riding = ctx.Game.RidingEntityId;
+        if (args.Flag("exit") || riding >= 0)
+        {
+            if (!args.Flag("exit")) return Ok($"already riding the {ObjectTypes.Name(ctx.World.Entities.Get(riding)?.TypeId ?? 1)}");
+            return SkillResult.From(await ctx.Game.DismountAsync(ct)); // sneak, else right-click the vehicle again (b1.8.1 toggles)
+        }
+        // Rideable: boat (1) and the plain minecart (10); storage (11) / powered (12) carts open or take fuel instead.
+        var v = ctx.World.Entities.Nearest(ctx.Feet, 6, e => e.Kind == EntityKind.Object && e.TypeId is 1 or 10);
         if (v is null) return Fail("no boat/minecart within 6");
-        var r = await ctx.Game.UseEntityAsync(v.Id, null, ct); // 0x07 right-click toggles riding
-        return r.Ok ? Ok($"{(args.Flag("exit") ? "left" : "in")} the {ObjectTypes.Name(v.TypeId)}") : SkillResult.From(r);
+        var r = await ctx.Game.UseEntityAsync(v.Id, null, ct);
+        if (!r.Ok) return SkillResult.From(r);
+        return await ctx.Game.WaitUntilAsync(() => ctx.Game.RidingEntityId == v.Id, TimeSpan.FromSeconds(1), ct)
+            ? Ok($"in the {ObjectTypes.Name(v.TypeId)}") : Fail($"the {ObjectTypes.Name(v.TypeId)} didn't take me ({r.Message})");
     }
 }

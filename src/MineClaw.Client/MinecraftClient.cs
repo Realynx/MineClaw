@@ -220,6 +220,8 @@ public sealed partial class MinecraftClient : IAsyncDisposable
         _driver = null;
         _txResults.Clear();
         _signs.Clear();
+        _vehicleId = -1;
+        _entityStatusSeq.Clear();
         _wasDead = false;
         _lastHealth = -1;
         _lastFood = -1;

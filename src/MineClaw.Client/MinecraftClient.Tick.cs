@@ -97,6 +97,13 @@ public sealed partial class MinecraftClient
             return;
         }
 
+        // ---- riding a boat/minecart: the server drives the body ----
+        if (HoldWhileRiding(s, phys, teleported))
+        {
+            EndTick();
+            return;
+        }
+
         // ---- knockback: vanilla applies 0x1C to the local player (replacing motion) ----
         ApplyServerVelocity(phys);
 
@@ -168,7 +175,7 @@ public sealed partial class MinecraftClient
 
     private MoveInput IdleInput(PhysicsState phys)
     {
-        bool sneak = _idleSneak;
+        bool sneak = _idleSneak || _crouchHold;
         if (!sneak && Options.SneakAtEdgesWhenIdle && phys.OnGround && !phys.Frozen)
         {
             var p = phys.Position;

@@ -61,6 +61,7 @@ public sealed partial class MinecraftClient
         if (id == 0 || BlockShapes.IsLiquid(id)) return ActionResult.Success($"{Fmt(pos)} already clear");
         if (!ignoreProtection && IsBlockProtected(pos, id)) return ActionResult.Fail($"{name} at {Fmt(pos)} is protected");
         if (Blocks.Get(id).Hardness < 0) return ActionResult.Fail($"{name} is unbreakable");
+        if (EditBlocked(pos)) return ActionResult.Fail(BlockedReason(pos));
         if (DigSafetyVeto(pos, name, generator, positioned: !allowPathing) is { } veto) return ActionResult.Fail(veto);
 
         await EnsureNoWindowAsync(ct).ConfigureAwait(false);
@@ -106,17 +107,24 @@ public sealed partial class MinecraftClient
 
         var wait = TimeSpan.FromMilliseconds(1500 + ticks * Options.TickInterval.TotalMilliseconds * 0.4);
         if (!await WaitUntilAsync(() => World.GetBlock(pos) != id, wait, ct).ConfigureAwait(false))
+        {
+            NoteEditReverted(pos, "dig"); // first edit of the macro: aborts it (spawn protection, claims)
             return ActionResult.Fail($"{name} at {Fmt(pos)} didn't break" + SpawnProtectionHint(pos));
+        }
+        NoteEditOk(pos);
         return ActionResult.Success($"dug {name} at {Fmt(pos)} ({ticks} ticks, {(held > 0 ? ItemName(held) : "hand")})");
     }
 
-    private async Task<ActionResult> PlaceCoreAsync(BlockPos pos, int itemId, CancellationToken ct, bool allowPathing = true, int? damage = null)
+    /// <param name="face">Click this face of the neighbour at pos − normal(face) (wall-mounted blocks); null = any visible support.</param>
+    private async Task<ActionResult> PlaceCoreAsync(BlockPos pos, int itemId, CancellationToken ct, bool allowPathing = true, int? damage = null,
+        BlockFace? face = null)
     {
         if (itemId <= 0) return ActionResult.Fail("no block to place");
         if (World.Inventory.CountItem(itemId, damage) == 0) return ActionResult.Fail($"no {ItemName(itemId, damage ?? 0)} in inventory");
         int existing = World.GetBlock(pos);
         if (!Aiming.IsReplaceable(World, existing)) return ActionResult.Fail($"{Fmt(pos)} is occupied by {BlockName(existing, World.GetMeta(pos))}");
         if (!World.IsLoaded(pos.X, pos.Z)) return ActionResult.Fail($"{Fmt(pos)} is not loaded");
+        if (EditBlocked(pos)) return ActionResult.Fail(BlockedReason(pos));
 
         await EnsureNoWindowAsync(ct).ConfigureAwait(false);
         // Placing (and bridging) always sneaks: vanilla edge clamping while the arm is busy.
@@ -124,7 +132,7 @@ public sealed partial class MinecraftClient
         _idleSneak = true;
         try
         {
-            return await PlaceSneakingAsync(pos, itemId, ct, allowPathing, damage).ConfigureAwait(false);
+            return await PlaceSneakingAsync(pos, itemId, ct, allowPathing, damage, face).ConfigureAwait(false);
         }
         finally
         {
@@ -132,16 +140,32 @@ public sealed partial class MinecraftClient
         }
     }
 
-    private async Task<ActionResult> PlaceSneakingAsync(BlockPos pos, int itemId, CancellationToken ct, bool allowPathing, int? damage = null)
+    private async Task<ActionResult> PlaceSneakingAsync(BlockPos pos, int itemId, CancellationToken ct, bool allowPathing, int? damage = null,
+        BlockFace? face = null)
     {
-        var aim = Aiming.FindPlaceAim(World, World.Player.EyePosition, pos, Options.Reach, AABB.ForPlayer(World.Player.Position));
+        PlaceAim? FindAim() => face is { } f
+            ? FacePlaceAim(pos, f)
+            : Aiming.FindPlaceAim(World, World.Player.EyePosition, pos, Options.Reach, AABB.ForPlayer(World.Player.Position));
+        if (face is { } wf)
+        {
+            var n = wf.Normal();
+            var against = new BlockPos(pos.X - n.X, pos.Y - n.Y, pos.Z - n.Z);
+            int aid = World.GetBlock(against);
+            if (aid == 0 || BlockShapes.IsLiquid(aid) || !BlockShapes.HasCollision(World, against.X, against.Y, against.Z))
+                return ActionResult.Fail($"nothing solid at {Fmt(against)} to place against ({wf.ToString().ToLowerInvariant()} face)");
+            if (Blocks.Get(aid).Interactable) return ActionResult.Fail($"{BlockName(aid, 0)} at {Fmt(against)} would open instead of taking the block");
+        }
+        var aim = FindAim();
         if (aim is null)
         {
             if (!allowPathing) return ActionResult.Fail($"no visible support face for {Fmt(pos)}");
             await GotoCoreAsync(new GoalWithinReach(pos, Options.Reach - 0.6), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(30) }, ct)
                 .ConfigureAwait(false);
-            aim = Aiming.FindPlaceAim(World, World.Player.EyePosition, pos, Options.Reach, AABB.ForPlayer(World.Player.Position));
-            if (aim is null) return ActionResult.Fail($"can't place at {Fmt(pos)}: no solid neighbour face in reach (or I'm in the way)");
+            aim = FindAim();
+            if (aim is null)
+                return ActionResult.Fail(face is { } f2
+                    ? $"can't place at {Fmt(pos)} on the {f2.ToString().ToLowerInvariant()} face: not visible/in reach (or I'm in the way)"
+                    : $"can't place at {Fmt(pos)}: no solid neighbour face in reach (or I'm in the way)");
         }
 
         if (await SelectItemAsync(itemId, damage, ct).ConfigureAwait(false) < 0) return ActionResult.Fail($"couldn't hold {ItemName(itemId)}");
@@ -153,7 +177,11 @@ public sealed partial class MinecraftClient
         });
         Send(new AnimationPacket { EntityId = World.Player.EntityId, Animation = 1 });
         if (!await WaitUntilAsync(() => !Aiming.IsReplaceable(World, World.GetBlock(pos)), TimeSpan.FromMilliseconds(1500), ct).ConfigureAwait(false))
+        {
+            NoteEditReverted(pos, "placement");
             return ActionResult.Fail($"{ItemName(itemId)} didn't appear at {Fmt(pos)}" + SpawnProtectionHint(pos));
+        }
+        NoteEditOk(pos);
         return ActionResult.Success($"placed {ItemName(itemId)} at {Fmt(pos)}");
     }
 
@@ -163,7 +191,7 @@ public sealed partial class MinecraftClient
     private volatile Activation? _lastActivated;
     private sealed record Activation(BlockPos Pos, long At);
 
-    private async Task<ActionResult> ClickBlockAsync(BlockPos pos, CancellationToken ct)
+    private async Task<ActionResult> ClickBlockAsync(BlockPos pos, CancellationToken ct, bool allowPathing = true)
     {
         int id = World.GetBlock(pos);
         if (id == 0 || !Blocks.Get(id).Interactable)
@@ -171,6 +199,7 @@ public sealed partial class MinecraftClient
         var aim = Aiming.FindDigAim(World, World.Player.EyePosition, pos, Options.Reach);
         if (aim is null)
         {
+            if (!allowPathing) return ActionResult.Fail($"can't see/reach {BlockName(id, 0)} at {Fmt(pos)} from here");
             var g = await GotoCoreAsync(new GoalWithinReach(pos, Options.Reach - 0.6), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(30) }, ct)
                 .ConfigureAwait(false);
             aim = Aiming.FindDigAim(World, World.Player.EyePosition, pos, Options.Reach);
@@ -362,7 +391,7 @@ public sealed partial class MinecraftClient
     /// <summary>Scaffold block to use for bridging: cobblestone, then dirt, then planks (never reserved items).</summary>
     private int? ScaffoldItem()
     {
-        foreach (int id in new[] { Blocks.Cobblestone, Blocks.Dirt, Blocks.Planks, Blocks.Stone })
+        foreach (int id in new[] { Blocks.Cobblestone, Blocks.Dirt, Blocks.Netherrack, Blocks.Planks, Blocks.Stone })
             if (!ReservedItems.Contains(id) && World.Inventory.CountItem(id) > 0) return id;
         return null;
     }

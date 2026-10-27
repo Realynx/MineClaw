@@ -377,8 +377,63 @@ public sealed class FakeGame : IGameActions
         return Ok("used on block");
     }
 
-    public Task<ActionResult> UseEntityAsync(int entityId, int? itemId, CancellationToken ct) { Log.Add($"use_entity {entityId}"); return Ok("used"); }
+    public Task<ActionResult> UseEntityAsync(int entityId, int? itemId, CancellationToken ct)
+    {
+        Log.Add($"use_entity {entityId}");
+        var e = World.Entities.Get(entityId);
+        if (e is { Kind: EntityKind.Object, TypeId: 1 or 10 }) { RidingEntityId = RidingEntityId == entityId ? -1 : entityId; return Ok("riding"); }
+        if (e is { Kind: EntityKind.Mob, TypeId: MobTypes.Wolf } && itemId == Items.Bone && Take(Items.Bone))
+        {
+            int left = WolfBonesToTame.GetValueOrDefault(entityId, 1) - 1;
+            WolfBonesToTame[entityId] = left;
+            if (left <= 0) World.Entities.SetMetadata(entityId, new Dictionary<int, object> { [16] = (sbyte)4 });
+            return Ok(left <= 0 ? "hearts" : "smoke");
+        }
+        return Ok("used");
+    }
     public Task<ActionResult> WriteSignAsync(BlockPos pos, string[] lines, CancellationToken ct) { SignText[pos] = lines; return Ok("written"); }
     public Task<ActionResult> ReleaseUseAsync(CancellationToken ct) { Take(Items.Arrow); return Ok("released"); }
+
+    // ---- face placement, bow, vehicles ----
+    public List<(BlockPos Pos, int Item, BlockFace Face)> FacePlacements { get; } = new();
+
+    public Task<ActionResult> PlaceAsync(BlockPos p, int itemId, BlockFace face, CancellationToken ct)
+    {
+        var n = face.Normal();
+        var against = new BlockPos(p.X - n.X, p.Y - n.Y, p.Z - n.Z);
+        Log.Add($"place {p} {itemId} face {face}");
+        FacePlacements.Add((p, itemId, face));
+        if (World.Inventory.CountItem(itemId) == 0) return No($"no item {itemId}");
+        if (!Aiming.IsReplaceable(World, World.GetBlock(p))) return No("occupied");
+        int aid = World.GetBlock(against);
+        if (aid == 0 || Blocks.Get(aid).Interactable) return No($"can't place against {Blocks.Get(aid).Name}");
+        if (itemId != Items.Sign) return PlaceAsync(p, itemId, ct);
+        if (face == BlockFace.Bottom) return No("signs don't hang under blocks");
+        Take(itemId);
+        if (face == BlockFace.Top) Set(p, Blocks.SignPost, 0);
+        else Set(p, Blocks.WallSign, (int)face);
+        return Ok("placed sign");
+    }
+
+    public int Shots { get; private set; }
+
+    public Task<ActionResult> ShootAsync(Vec3d target, int? entityId, int chargeTicks, CancellationToken ct)
+    {
+        Log.Add($"shoot {entityId?.ToString() ?? target.ToString()} charge {chargeTicks}");
+        if (World.Inventory.CountItem(Items.Bow) == 0) return No("no bow");
+        if (!Take(Items.Arrow)) return No("no arrows");
+        Shots++;
+        return Ok("shot an arrow");
+    }
+
+    public int RidingEntityId { get; set; } = -1;
+    public Dictionary<int, int> WolfBonesToTame { get; } = new();
+
+    public Task<ActionResult> DismountAsync(CancellationToken ct)
+    {
+        if (RidingEntityId < 0) return Ok("not riding anything");
+        RidingEntityId = -1;
+        return Ok("got out");
+    }
     public Task<ActionResult> DropHeldAsync(bool wholeStack, CancellationToken ct) => Ok("dropped");
 }

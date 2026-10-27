@@ -124,6 +124,18 @@ internal sealed class FakeServer : IDisposable
     public int EatDelayMs { get; set; } = 40;
     /// <summary>Food items the server finished eating (id per meal).</summary>
     public ConcurrentQueue<int> Eaten { get; } = new();
+    /// <summary>Runs first for every client packet; return true to skip the default handling.</summary>
+    public Func<IPacket, bool>? Hook { get; set; }
+    /// <summary>Openables (state block) whose right-clicks are swallowed (a protection plugin): the server re-sends the
+    /// unchanged block.</summary>
+    public HashSet<(int, int, int)> Locked { get; } = new();
+    /// <summary>Signs the server refuses to update (not editable).</summary>
+    public bool SignsLocked { get; set; }
+    /// <summary>Server tick count at which the bow draw started (0x0F use with a bow), or -1.</summary>
+    private int _drawStartTicks = -1;
+    private int _flyingPackets;
+    /// <summary>Draw lengths (server ticks = movement packets) of every released bow shot.</summary>
+    public ConcurrentQueue<int> Shots { get; } = new();
 
     /// <summary>Sets health/food server-side and sends 0x08.</summary>
     public void SetVitals(int health, int food, float saturation = 0)
@@ -184,8 +196,35 @@ internal sealed class FakeServer : IDisposable
 
     private void Handle(IPacket p)
     {
+        if (p is PlayerOnGroundPacket or PlayerPositionPacket or PlayerLookPacket or PlayerPositionLookPacket) Interlocked.Increment(ref _flyingPackets);
+        if (Hook?.Invoke(p) == true) return;
         switch (p)
         {
+            case UpdateSignPacket sign:
+                if (!SignsLocked)
+                {
+                    var lines = sign.Lines.Select(l => l.Length > 15 || l.Any(c => c < 0x20 || c > 0x7E) ? "!?" : l).ToArray();
+                    Send(new UpdateSignPacket { X = sign.X, Y = sign.Y, Z = sign.Z, Lines = lines });
+                }
+                break;
+            case PlayerBlockPlacementPacket bow when bow.Direction == PlayerBlockPlacementPacket.NoDirection && bow.HeldItem.Id == MineClaw.Data.Items.Bow:
+                if (Array.Exists(Inventory, st => !st.IsEmpty && st.Id == MineClaw.Data.Items.Arrow)) _drawStartTicks = _flyingPackets;
+                break;
+            case PlayerDiggingPacket rel when rel.Status == PlayerDiggingPacket.StatusReleaseUseItem:
+                if (_drawStartTicks >= 0)
+                {
+                    int held = _flyingPackets - _drawStartTicks;
+                    _drawStartTicks = -1;
+                    Shots.Enqueue(held);
+                    int slot = Array.FindIndex(Inventory, st => !st.IsEmpty && st.Id == MineClaw.Data.Items.Arrow);
+                    if (slot >= 0)
+                    {
+                        var cur = Inventory[slot];
+                        Inventory[slot] = cur.Count <= 1 ? ItemStack.Empty : new ItemStack(cur.Id, (byte)(cur.Count - 1), cur.Damage);
+                        Send(new SetSlotPacket { WindowId = 0, Slot = (short)slot, Item = Inventory[slot] });
+                    }
+                }
+                break;
             case HandshakePacket:
                 Send(new HandshakePacket("-"));
                 break;
@@ -270,6 +309,9 @@ internal sealed class FakeServer : IDisposable
                     });
                 }
                 break;
+            case PlayerBlockPlacementPacket place when place.Direction != PlayerBlockPlacementPacket.NoDirection
+                                                       && ToggleOpenable(place.X, place.Y, place.Z):
+                break;
             case PlayerBlockPlacementPacket place when place.Direction != PlayerBlockPlacementPacket.NoDirection:
                 if (Chests.TryGetValue((place.X, place.Y, place.Z), out var contents))
                 {
@@ -307,6 +349,24 @@ internal sealed class FakeServer : IDisposable
                 }
                 break;
         }
+    }
+
+    /// <summary>BlockDoor/BlockTrapDoor/BlockFenceGate.blockActivated: flips the open bit (both door halves) and sends the
+    /// block changes; locked ones get the unchanged block re-sent. False when (x,y,z) is not a wooden openable.</summary>
+    private bool ToggleOpenable(int x, int y, int z)
+    {
+        Blocks.TryGetValue((x, y, z), out int id);
+        if (id is not (MineClaw.Data.Blocks.WoodenDoor or MineClaw.Data.Blocks.Trapdoor or MineClaw.Data.Blocks.FenceGate)) return false;
+        Metas.TryGetValue((x, y, z), out int meta);
+        if (id == MineClaw.Data.Blocks.WoodenDoor && (meta & 8) != 0 && Blocks.TryGetValue((x, y - 1, z), out int below) && below == id) { y--; Metas.TryGetValue((x, y, z), out meta); }
+        if (Locked.Contains((x, y, z)))
+        {
+            Send(new BlockChangePacket { X = x, Y = y, Z = z, BlockId = (byte)id, Metadata = (byte)meta });
+            return true;
+        }
+        SetBlock(x, y, z, id, meta ^ 4);
+        if (id == MineClaw.Data.Blocks.WoodenDoor && Blocks.TryGetValue((x, y + 1, z), out int up) && up == id) SetBlock(x, y + 1, z, id, (meta ^ 4) | 8);
+        return true;
     }
 
     /// <summary>Item gravity: drops resting on a removed block fall to the next block below (or out of the world).</summary>

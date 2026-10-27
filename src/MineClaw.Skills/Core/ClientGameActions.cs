@@ -5,9 +5,9 @@ using MineClaw.World;
 namespace MineClaw.Skills;
 
 /// <summary>
-/// <see cref="IGameActions"/> over the real <see cref="MinecraftClient"/>, using only its public API. Primitives the
-/// client doesn't expose yet (see <see cref="Primitive"/>) return "needs client primitive ..." so skills report the gap
-/// honestly; <c>CATALOG.md</c> lists the exact Client additions that light them up.
+/// <see cref="IGameActions"/> over the real <see cref="MinecraftClient"/>, using only its public API. Every optional
+/// primitive except <see cref="Primitive.DropHeld"/>/<see cref="Primitive.LeaveBed"/> is implemented by the client
+/// (use on block face, use entity, write sign, bow release); the rest return "needs client primitive ..." honestly.
 /// </summary>
 public sealed class ClientGameActions(MinecraftClient client) : IGameActions
 {
@@ -15,7 +15,7 @@ public sealed class ClientGameActions(MinecraftClient client) : IGameActions
 
     public WorldState World => Inner.World;
     public string Username => Inner.Options.Username;
-    public Primitive Supported => Primitive.None;
+    public Primitive Supported => Primitive.UseOnBlock | Primitive.UseEntity | Primitive.WriteSign | Primitive.ReleaseUse;
     public bool IsRaining => Inner.IsRaining;
     public double Reach => Inner.Options.Reach;
     public IReadOnlySet<int> ReservedItems => Inner.ReservedItems;
@@ -63,10 +63,18 @@ public sealed class ClientGameActions(MinecraftClient client) : IGameActions
         }
     }
 
-    public Task<ActionResult> UseOnBlockAsync(BlockPos pos, BlockFace face, int itemId, CancellationToken ct) => Missing("use_on_block");
-    public Task<ActionResult> UseEntityAsync(int entityId, int? itemId, CancellationToken ct) => Missing("use_entity");
-    public Task<ActionResult> WriteSignAsync(BlockPos pos, string[] lines, CancellationToken ct) => Missing("write_sign");
-    public Task<ActionResult> ReleaseUseAsync(CancellationToken ct) => Missing("release_use");
+    /// <summary>Dye = bone meal here: it is the only dye with a block action in b1.8.1.</summary>
+    public Task<ActionResult> UseOnBlockAsync(BlockPos pos, BlockFace face, int itemId, CancellationToken ct) =>
+        Inner.UseItemOnBlockAsync(pos, face, itemId, itemId == Items.Dye ? Items.BoneMeal : null, ct);
+    public Task<ActionResult> UseEntityAsync(int entityId, int? itemId, CancellationToken ct) => Inner.UseEntityAsync(entityId, itemId, null, ct);
+    public Task<ActionResult> WriteSignAsync(BlockPos pos, string[] lines, CancellationToken ct) => Inner.WriteSignAsync(pos, lines, ct);
+    public Task<ActionResult> ReleaseUseAsync(CancellationToken ct) => Inner.ReleaseUseItemAsync(ct);
+    public Task<ActionResult> PlaceAsync(BlockPos p, int itemId, BlockFace face, CancellationToken ct) => Inner.PlaceBlockAsync(p.X, p.Y, p.Z, itemId, face, ct);
+    public BlockFace? WallFace(BlockPos pos, Func<BlockPos, bool>? exclude = null) => Inner.WallFaceFor(pos, exclude);
+    public Task<ActionResult> ShootAsync(Vec3d target, int? entityId, int chargeTicks, CancellationToken ct) =>
+        entityId is { } id ? Inner.ShootAsync(id, chargeTicks, ct) : Inner.ShootAsync(target, chargeTicks, ct);
+    public int RidingEntityId => Inner.RidingEntityId;
+    public Task<ActionResult> DismountAsync(CancellationToken ct) => Inner.DismountAsync(ct);
     public Task<ActionResult> DropHeldAsync(bool wholeStack, CancellationToken ct) => Missing("drop_held");
 
     private static Task<ActionResult> Missing(string name) => Task.FromResult(ActionResult.Fail($"needs client primitive {name}"));

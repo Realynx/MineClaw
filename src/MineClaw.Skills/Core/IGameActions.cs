@@ -76,4 +76,39 @@ public interface IGameActions
     Task<ActionResult> WriteSignAsync(BlockPos pos, string[] lines, CancellationToken ct);
     Task<ActionResult> ReleaseUseAsync(CancellationToken ct);
     Task<ActionResult> DropHeldAsync(bool wholeStack, CancellationToken ct);
+
+    // ---- face-aware placement, bow, vehicles (defaults compose the members above) ----
+
+    /// <summary>Places <paramref name="itemId"/> into <paramref name="pos"/> by clicking <paramref name="face"/> of the
+    /// neighbour at pos − normal(face): Top = on the block below (sign post), horizontal = hung on that wall (wall sign,
+    /// torch, ladder, button, lever, trapdoor). Default: plain <see cref="PlaceAsync(BlockPos,int,CancellationToken)"/>.</summary>
+    Task<ActionResult> PlaceAsync(BlockPos pos, int itemId, BlockFace face, CancellationToken ct) => PlaceAsync(pos, itemId, ct);
+
+    /// <summary>The face to click to hang a wall-mounted block in <paramref name="pos"/> on a solid, non-interactable
+    /// horizontal neighbour (<paramref name="exclude"/> vetoes walls), or null.</summary>
+    BlockFace? WallFace(BlockPos pos, Func<BlockPos, bool>? exclude = null) =>
+        FaceAim.WallFace(World, pos, World.Player.EyePosition, Reach, exclude);
+
+    /// <summary>Draw the bow <paramref name="chargeTicks"/> (20 = full), aim with gravity at <paramref name="target"/>
+    /// (tracking <paramref name="entityId"/> when given) and release. Default: use + wait + look + release.</summary>
+    async Task<ActionResult> ShootAsync(Vec3d target, int? entityId, int chargeTicks, CancellationToken ct)
+    {
+        var use = await UseItemAsync(Items.Bow, ct).ConfigureAwait(false);
+        if (!use.Ok) return use;
+        await WaitTicksAsync(chargeTicks, ct).ConfigureAwait(false);
+        var at = entityId is { } id && World.Entities.Get(id) is { } e ? e.Position + new Vec3d(0, 0.9, 0) : target;
+        double speed = MineClaw.Client.Combat.ArrowBallistics.Speed(chargeTicks);
+        var aim = MineClaw.Client.Combat.ArrowBallistics.Solve(World.Player.EyePosition, at, speed);
+        if (aim is null) return ActionResult.Fail("target out of bow range");
+        var dir = PlayerPhysics.LookVector(aim.Value.Yaw, aim.Value.Pitch);
+        await LookAtAsync(World.Player.EyePosition + dir * 10, ct).ConfigureAwait(false);
+        return await ReleaseUseAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Entity id of the vehicle I'm riding, or −1.</summary>
+    int RidingEntityId => -1;
+
+    /// <summary>Get out of the boat/minecart. Default: right-click it again (b1.8.1 mounting toggles).</summary>
+    Task<ActionResult> DismountAsync(CancellationToken ct) =>
+        RidingEntityId < 0 ? Task.FromResult(ActionResult.Success("not riding anything")) : UseEntityAsync(RidingEntityId, null, ct);
 }

@@ -57,7 +57,11 @@ public sealed partial class MinecraftClient
                 return;
             case ChatPacket chat:
                 Raise(() => ChatReceived?.Invoke(chat.Message));
-                if (ChatText.TryParsePlayerChat(chat.Message, out var chatFrom, out var chatText)) Combat.OnChat(chatFrom, chatText);
+                if (ChatText.TryParsePlayerChat(chat.Message, out var chatFrom, out var chatText))
+                {
+                    Combat.OnChat(chatFrom, chatText);
+                    OnChatForBody(chatFrom, chatText);
+                }
                 break;
 
             // ---- world-level ----
@@ -68,6 +72,8 @@ public sealed partial class MinecraftClient
                 w.Spawn = new BlockPos(sp.X, sp.Y, sp.Z);
                 break;
             case RespawnPacket rp:
+            {
+                int fromDim = w.Dimension;
                 w.Clear();
                 w.Entities.Clear();
                 w.Inventory.Close(-1);
@@ -76,8 +82,11 @@ public sealed partial class MinecraftClient
                 w.Player.GameMode = rp.GameMode;
                 s.AwaitingTeleport = true;
                 _wasDead = false;
+                _vehicleId = -1;
                 Raise(() => Respawned?.Invoke());
+                if (rp.Dimension != fromDim) OnDimensionChanged(fromDim, rp.Dimension);
                 break;
+            }
             case NewStatePacket ns:
                 if (ns.Reason == NewStatePacket.ReasonGameModeChanged) w.Player.GameMode = ns.GameMode;
                 else if (ns.Reason == NewStatePacket.ReasonBeginRain) IsRaining = true;
@@ -188,6 +197,7 @@ public sealed partial class MinecraftClient
             case AttachEntityPacket at:
             {
                 w.Entities.Attach(at.EntityId, at.VehicleId);
+                if (at.EntityId == w.Player.EntityId) OnSelfAttached(at.VehicleId);
                 int eid = at.EntityId, vid = at.VehicleId;
                 Raise(() => EntityAttached?.Invoke(eid, vid));
                 break;
@@ -204,6 +214,8 @@ public sealed partial class MinecraftClient
             {
                 if (st.EntityId == w.Player.EntityId && st.Status == 9) Interlocked.Increment(ref _eatAcceptedCount);
                 if (st.EntityId != w.Player.EntityId) Combat.OnEntityStatus(st.EntityId, st.Status);
+                OnEntityStatusSeen(st.EntityId);
+                if (st.Status == 2 && st.EntityId != w.Player.EntityId) OnPlayerHurtForPunch(st.EntityId);
                 int eid = st.EntityId, status = st.Status;
                 Raise(() => EntityStatus?.Invoke(eid, status));
                 break;

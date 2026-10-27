@@ -93,7 +93,7 @@ public sealed class TillSoilSkill : Skill
     public override SkillSpec Spec { get; } = new()
     {
         Name = "till_soil", Category = SkillCategory.Farming, Summary = "hoe dirt/grass near water into farmland, plant", Args = "pos?,count?",
-        Schema = SkillJson.Schema("pos:pos?,count:int?"), Status = SkillStatus.NeedsPrimitive, Estimate = TimeSpan.FromSeconds(30),
+        Schema = SkillJson.Schema("pos:pos?,count:int?"), Estimate = TimeSpan.FromSeconds(30),
         Pre = new() { Items = [FarmOps.Hoes], Needs = "hoe", Dimension = Dim.Overworld, Primitives = Primitive.UseOnBlock },
         Keywords = "till hoe farmland dirt grass farm prepare soil plow",
     };
@@ -216,7 +216,7 @@ public sealed class BonemealSkill : Skill
     public override SkillSpec Spec { get; } = new()
     {
         Name = "apply_bonemeal", Category = SkillCategory.Farming, Summary = "bonemeal crops/saplings to grow now", Args = "pos?,count?",
-        Schema = SkillJson.Schema("pos:pos?,count:int?"), Status = SkillStatus.NeedsPrimitive, Estimate = TimeSpan.FromSeconds(15),
+        Schema = SkillJson.Schema("pos:pos?,count:int?"), Estimate = TimeSpan.FromSeconds(15),
         Pre = new() { Needs = "bone meal", Dimension = Dim.Overworld, Primitives = Primitive.UseOnBlock },
         Keywords = "bonemeal bone meal fertilize grow sapling crops instant",
     };

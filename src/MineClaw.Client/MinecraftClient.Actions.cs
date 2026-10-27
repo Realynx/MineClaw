@@ -32,6 +32,7 @@ public sealed partial class MinecraftClient
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct, SessionToken);
         _actionCts = cts;
         _abortReason = null;
+        Volatile.Write(ref _actionEditsOk, 0);
         CurrentAction = name;
         try
         {
@@ -144,14 +145,16 @@ public sealed partial class MinecraftClient
             return await GotoCoreAsync(goal, o, c).ConfigureAwait(false);
         });
 
-    private PathOptions BuildPathOptions(GotoOptions o)
+    /// <param name="lockedDoors">Openables (state blocks) that ignored our clicks this goto: never planned through again.</param>
+    private PathOptions BuildPathOptions(GotoOptions o, IReadOnlySet<BlockPos>? lockedDoors = null)
     {
         int scaffold = ScaffoldItem() ?? -1;
         var slots = World.Inventory.PlayerSlots();
         return PathOptions.Default with
         {
             AllowBreak = o.AllowBreak,
-            CanBreak = (id, meta, pos) => !IsBlockProtected(pos, id) && !NextToLava(pos),
+            CanBreak = (id, meta, pos) => !IsBlockProtected(pos, id) && !NextToLava(pos) && !EditBlocked(pos),
+            CanPlace = pos => !EditBlocked(pos),
             DigCost = (id, meta) =>
             {
                 int idx = MineClaw.Data.Tools.BestToolIndex(id, slots);
@@ -162,6 +165,8 @@ public sealed partial class MinecraftClient
             ScaffoldBudget = o.AllowPlace && scaffold > 0 ? Math.Min(o.ScaffoldBudget, World.Inventory.CountItem(scaffold)) : 0,
             Timeout = o.PlanTimeout,
             AllowPartial = o.AllowPartial,
+            AllowOpenDoors = o.AllowOpenDoors,
+            CanOpen = (pos, id) => !IsBlockProtected(pos, id) && !(lockedDoors?.Contains(pos) ?? false),
         };
     }
 
@@ -175,6 +180,7 @@ public sealed partial class MinecraftClient
         int replans = 0;
         string? lastFailure = null;
         var blockedJumps = new HashSet<(BlockPos From, BlockPos To)>();
+        var lockedDoors = new HashSet<BlockPos>();
         try
         {
             while (true)
@@ -183,7 +189,7 @@ public sealed partial class MinecraftClient
                 if (goal.IsReached(Pathfinder.StartCellFor(World, start) ?? start.ToBlockPos()))
                     return ActionResult.Success($"arrived at {Fmt(start)}");
 
-                var popts = BuildPathOptions(o);
+                var popts = BuildPathOptions(o, lockedDoors);
                 if (blockedJumps.Count > 0) popts = popts with { AvoidJumps = blockedJumps.ToHashSet() };
                 var path = await Task.Run(() => Pathfinder.FindPath(World, start, goal, popts, token), token).ConfigureAwait(false);
                 if (path.Status is PathStatus.NoPath or PathStatus.InvalidStart || path.Steps.Count == 0)
@@ -195,10 +201,11 @@ public sealed partial class MinecraftClient
                         await WaitTicksAsync(10, token).ConfigureAwait(false);
                         continue;
                     }
-                    return ActionResult.Fail($"no path to {goal} ({path.Reason ?? path.Status.ToString()}{(lastFailure is null ? "" : ", last: " + lastFailure)})");
+                    return ActionResult.Fail($"no path to {goal} ({path.Reason ?? path.Status.ToString()}{(lastFailure is null ? "" : ", last: " + lastFailure)})"
+                                             + NoRouteHint(goal, o, start, token));
                 }
 
-                var r = await FollowPathAsync(path.Steps, o, token, blockedJumps).ConfigureAwait(false);
+                var r = await FollowPathAsync(path.Steps, o, token, blockedJumps, lockedDoors).ConfigureAwait(false);
                 if (r is null)
                 {
                     if (path.Status == PathStatus.Found) return ActionResult.Success($"arrived at {Fmt(World.Player.Position)}");
@@ -221,10 +228,15 @@ public sealed partial class MinecraftClient
     /// <summary>Follows one path. Returns null when finished, else the failure reason.</summary>
     /// <param name="blockedJumps">Receives a jump move the edge guard kept refusing (landing not verified), so the
     /// re-plan avoids it instead of retrying the same jump forever.</param>
+    /// <param name="lockedDoors">Receives doors/gates/hatches that didn't open after the follower's clicks (a protection
+    /// plugin, an iron door ignoring its button), so the re-plan routes around them.</param>
     private async Task<string?> FollowPathAsync(IReadOnlyList<PathStep> steps, GotoOptions o, CancellationToken ct,
-        HashSet<(BlockPos From, BlockPos To)>? blockedJumps = null)
+        HashSet<(BlockPos From, BlockPos To)>? blockedJumps = null, HashSet<BlockPos>? lockedDoors = null)
     {
-        var follower = new PathFollower(steps, new PathFollowerOptions { AllowSprint = o.AllowSprint, Reach = Options.Reach });
+        var follower = new PathFollower(steps, new PathFollowerOptions
+        {
+            AllowSprint = o.AllowSprint, Reach = Options.Reach, RestoreDoors = o.RestoreDoors,
+        });
         while (true)
         {
             FollowerOutput last = default;
@@ -245,21 +257,88 @@ public sealed partial class MinecraftClient
                     return null;
                 case FollowerStatus.Failed:
                     if (follower.BlockedJump is { } bj) blockedJumps?.Add(bj);
+                    if (follower.CurrentStep is { Opens.Count: > 0 } door)
+                        foreach (var tg in door.Opens.Where(t => !t.Done(World))) lockedDoors?.Add(tg.Pos);
                     return last.Reason ?? "path failed";
                 case FollowerStatus.NeedsAction when last.Action is { } a:
                 {
                     _idleSneak = last.Input.Sneak;
-                    var r = a.Kind == FollowerActionKind.Break
-                        ? await DigCoreAsync(a.Pos, ct, allowPathing: false).ConfigureAwait(false)
-                        : await PlaceCoreAsync(a.Pos, ScaffoldItem() ?? -1, ct, allowPathing: false).ConfigureAwait(false);
+                    var r = a.Kind switch
+                    {
+                        FollowerActionKind.Break => await DigCoreAsync(a.Pos, ct, allowPathing: false).ConfigureAwait(false),
+                        FollowerActionKind.Activate => await ActivateForPathAsync(a.Pos, follower.CurrentStep, ct).ConfigureAwait(false),
+                        _ => await PlaceCoreAsync(a.Pos, ScaffoldItem() ?? -1, ct, allowPathing: false).ConfigureAwait(false),
+                    };
                     _idleSneak = false;
-                    if (!r.Ok) return $"path step {a.Kind} at {Fmt(a.Pos)} failed: {r.Message}";
+                    if (!r.Ok)
+                    {
+                        if (a.Kind == FollowerActionKind.Activate && follower.CurrentStep is { } st)
+                            foreach (var tg in st.Opens) lockedDoors?.Add(tg.Pos);
+                        return $"path step {a.Kind} at {Fmt(a.Pos)} failed: {r.Message}";
+                    }
                     break;
                 }
                 default:
                     return "path follower stopped";
             }
         }
+    }
+
+    /// <summary>
+    /// Why there is no route, for goals above me ("climb to the top"): re-plans once with pillaring/bridging allowed and
+    /// a generous budget to tell "need N blocks to pillar, have M" (retry with build mode = AllowPlace) from truly
+    /// unreachable. Empty for other goals.
+    /// </summary>
+    private string NoRouteHint(Goal goal, GotoOptions o, Vec3d start, CancellationToken ct)
+    {
+        BlockPos? target = goal switch { GoalBlock b => b.Target, GoalNear n => n.Target, _ => null };
+        if (target is not { } t) return "";
+        int dy = t.Y - (int)Math.Floor(start.Y + 1e-6);
+        int have = ScaffoldItem() is { } sc ? World.Inventory.CountItem(sc) : 0;
+        if (dy < 2 && o.AllowPlace) return "";
+        var probe = BuildPathOptions(o) with
+        {
+            AllowPlace = true, ScaffoldBudget = 64, AllowPartial = false, Timeout = TimeSpan.FromMilliseconds(600),
+        };
+        PathResult r;
+        try { r = Pathfinder.FindPath(World, start, goal, probe, ct); }
+        catch (OperationCanceledException) { return ""; }
+        string up = dy >= 2 ? $"; it's {dy} blocks up" : "";
+        if (!r.Success)
+            return $"{up}; unreachable even by pillaring/bridging" + (_protectedRegion is not null ? " (no edits inside spawn protection)" : "");
+        int need = Math.Max(1, r.ScaffoldUsed);
+        if (o.AllowPlace && have >= need) return up;
+        return have >= need
+            ? $"{up}; reachable by building: need {need} blocks to pillar/bridge, have {have} - retry with build mode (allow_place)"
+            : $"{up}; need {need} blocks to pillar/bridge, have {have} (cobblestone/dirt/netherrack/planks/stone)";
+    }
+
+    /// <summary>
+    /// The follower's right-click step for a door, fence gate, trapdoor hatch, or an iron door's button/lever: the body is
+    /// already stopped (idle input), so face the block, right-click it without pathing, and wait for the server's block
+    /// change: the clicked block's metadata, or the open bit of the step's openables (an iron door follows its button a
+    /// tick or two later). No change is not an error here: the follower re-checks the open bit, clicks again up to its
+    /// limit and then fails "won't open (locked?)", which the goto loop turns into a re-plan around that door.
+    /// </summary>
+    private async Task<ActionResult> ActivateForPathAsync(BlockPos pos, PathStep? step, CancellationToken ct)
+    {
+        int id = World.GetBlock(pos), meta = World.GetMeta(pos);
+        var opens = step?.Opens ?? [];
+        var before = opens.Select(t => World.GetMeta(t.Pos)).ToArray();
+        bool OpensMoved()
+        {
+            for (int i = 0; i < opens.Count; i++)
+                if (World.GetMeta(opens[i].Pos) != before[i] || World.GetBlock(opens[i].Pos) != opens[i].Id) return true;
+            return false;
+        }
+        var r = await ClickBlockAsync(pos, ct, allowPathing: false).ConfigureAwait(false);
+        if (!r.Ok) return r;
+        var wait = TimeSpan.FromMilliseconds(Math.Max(400, Options.TickInterval.TotalMilliseconds * 20));
+        bool changed = await WaitUntilAsync(() => World.GetBlock(pos) != id || World.GetMeta(pos) != meta || OpensMoved(), wait, ct)
+            .ConfigureAwait(false);
+        if (changed && opens.Count > 0 && !Openables.IsOpenable(id)) // button/lever pressed: give the door its redstone tick
+            await WaitUntilAsync(() => opens.All(t => t.Done(World)), wait, ct).ConfigureAwait(false);
+        return ActionResult.Success(changed ? $"toggled {Openables.Name(id)} at {Fmt(pos)}" : $"{Openables.Name(id)} at {Fmt(pos)} didn't change");
     }
 
     /// <summary>Keeps within <paramref name="distance"/> blocks of a player until cancelled/stopped or the player is lost.</summary>

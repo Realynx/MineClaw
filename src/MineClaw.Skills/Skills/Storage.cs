@@ -112,7 +112,7 @@ public sealed class LabelChestSkill : Skill
     public override SkillSpec Spec { get; } = new()
     {
         Name = "label_chest", Category = SkillCategory.Storage, Summary = "place a sign on a chest and write a label", Args = "chest,text",
-        Schema = SkillJson.Schema("chest:str,text:str"), Status = SkillStatus.NeedsPrimitive, Estimate = TimeSpan.FromSeconds(10),
+        Schema = SkillJson.Schema("chest:str,text:str"), Estimate = TimeSpan.FromSeconds(10),
         Pre = new() { Items = [[Items.Sign]], Needs = "sign", Primitives = Primitive.WriteSign },
         Keywords = "label sign chest name tag write mark storage",
     };
@@ -122,18 +122,31 @@ public sealed class LabelChestSkill : Skill
         if (args.Str("chest") is not { } name || ctx.Directory.Resolve(ctx, name) is not { } chest) return Fail("chest required");
         var text = (args.Str("text") ?? "").Trim();
         if (text.Length == 0) return Fail("text required");
-        // A wall sign on a free side of the chest is placed against the block behind it... b1.8 wall signs attach to
-        // solid blocks, so use the cell above the chest when there's something solid to hang it on, else beside it.
-        var cell = new[] { chest.Up() }.Concat(SkillWorld.Horizontal.Select(o => chest + o))
-            .FirstOrDefault(c => SkillWorld.Air(ctx.World, c) && BlockFaceExtensions.All.Any(f => SkillWorld.Solid(ctx.World, c.Offset(f)) && c.Offset(f) != chest));
-        if (cell == default) return Fail("no free spot with a wall to hang the sign on");
-        var p = await ctx.Game.PlaceAsync(cell, Items.Sign, ct);
+        // b1.8.1 signs can't go on the chest itself (clicking it opens it): hang a wall sign in a free cell above/beside
+        // the chest on another solid block, else stand a sign post on solid ground beside it.
+        if (SignSpot(ctx, chest) is not { } spot) return Fail("no free spot next to the chest with a wall or floor for a sign");
+        var (cell, face) = spot;
+        var p = await ctx.Game.PlaceAsync(cell, Items.Sign, face, ct);
         if (!p.Ok) return SkillResult.From(p);
         var lines = Wrap(text);
         var w = await ctx.Game.WriteSignAsync(cell, lines, ct);
         if (!w.Ok) return SkillResult.From(w);
         if (StorageCategory.Parse(text) is { } cat) ctx.Directory.Assign(chest, cat);
         return Ok($"labelled chest {P(chest)} \"{string.Join(" ", lines).Trim()}\"");
+    }
+
+    /// <summary>A free cell above/beside <paramref name="chest"/> and the 0x0F face that hangs (or stands) a sign there.</summary>
+    internal static (BlockPos Cell, BlockFace Face)? SignSpot(SkillContext ctx, BlockPos chest)
+    {
+        bool IsChest(BlockPos b) => b == chest || ctx.Block(b) == Blocks.Chest;
+        foreach (var c in new[] { chest.Up() }.Concat(SkillWorld.Horizontal.Select(o => chest + o)))
+        {
+            if (!SkillWorld.Air(ctx.World, c) || ctx.Protected(c)) continue;
+            if (ctx.Game.WallFace(c, IsChest) is { } wall) return (c, wall);
+            var below = c.Down();
+            if (!IsChest(below) && MineClaw.Client.FaceAim.IsWallSupport(ctx.World, below)) return (c, BlockFace.Top);
+        }
+        return null;
     }
 
     /// <summary>Four lines of ≤ 15 chars (b1.8.1 sign limit).</summary>

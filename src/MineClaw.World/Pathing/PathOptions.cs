@@ -23,6 +23,9 @@ public sealed record PathOptions
     /// <summary>Maximum scaffold blocks a path may place.</summary>
     public int ScaffoldBudget { get; init; } = 0;
     public double PlaceCost { get; init; } = 12;
+    /// <summary>Veto for placing a scaffold block at a cell (e.g. inside a spawn-protected area where the server undoes
+    /// placements). Null = allowed.</summary>
+    public Func<BlockPos, bool>? CanPlace { get; init; }
     /// <summary>Block id assumed for placed scaffolding when evaluating later moves (any full cube; default cobblestone).</summary>
     public int ScaffoldBlockId { get; init; } = 4;
 
@@ -33,8 +36,9 @@ public sealed record PathOptions
 
     /// <summary>Plan through closed wooden doors, fence gates and head-height trapdoors (and iron doors with a reachable
     /// button/lever/plate on the near side) as <see cref="MoveKind.OpenDoor"/>/<see cref="MoveKind.OpenGate"/>/
-    /// <see cref="MoveKind.OpenTrapdoor"/> steps. Off by default: the executor must handle
-    /// <see cref="FollowerActionKind.Activate"/>. Closed doors are obstacles either way (never walked into).</summary>
+    /// <see cref="MoveKind.OpenTrapdoor"/> steps. Off here (raw planners and executors without
+    /// <see cref="FollowerActionKind.Activate"/>); the Client's goto turns it on by default via GotoOptions.AllowOpenDoors.
+    /// Closed doors are obstacles either way (never walked into).</summary>
     public bool AllowOpenDoors { get; init; }
     /// <summary>Extra cost (ticks) of stopping, right-clicking and waiting for the server's block change.</summary>
     public double OpenCost { get; init; } = 20;

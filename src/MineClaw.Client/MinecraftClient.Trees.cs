@@ -105,11 +105,18 @@ public sealed partial class MinecraftClient
             var log = TreeScan.LogNear(World, p);
             tree = log is { } l ? TreeScan.Analyze(World, l) : null;
             if (tree is null) { why = $"no tree at {Fmt(p)}"; return null; }
+            if (tree.Logs.All(EditBlocked)) { why = $"tree at {Fmt(p)} is inside spawn protection (the server undid my digs there; needs op)"; return null; }
         }
         else
         {
-            var trees = TreeScan.FindTrees(World, World.Player.Position, o.SearchRadius, wood)
+            var all = TreeScan.FindTrees(World, World.Player.Position, o.SearchRadius, wood)
                 .Where(t => t.Logs.Any(l => !IsBlockProtected(l, Blocks.Log)) && (t.OnSoil || t.Leaves.Count >= 3)).ToList();
+            var trees = all.Where(t => !t.Logs.All(EditBlocked)).ToList();
+            if (trees.Count == 0 && all.Count > 0)
+            {
+                why = $"the trees within {o.SearchRadius:0} are inside spawn protection (the server undid my digs within {_protectedRegion?.Radius ?? VanillaSpawnProtection} of spawn; needs op)";
+                return null;
+            }
             tree = trees.OrderBy(t => t.OnSoil ? 0 : 1).ThenBy(t => t.Base.Center.DistanceSquaredTo(World.Player.Position)).FirstOrDefault();
             if (tree is null)
             {
@@ -308,6 +315,8 @@ public sealed partial class MinecraftClient
         Send(new PlayerDiggingPacket { Status = PlayerDiggingPacket.StatusFinished, X = t.X, Y = t.Y, Z = t.Z, Face = face });
         bool broke = await WaitUntilAsync(() => World.GetBlock(t) != id, TimeSpan.FromMilliseconds(1500), ct).ConfigureAwait(false);
         Log($"chop: jump-dig {Fmt(t)} {(broke ? "ok" : "didn't break")}");
+        if (broke) NoteEditOk(t);
+        else NoteEditReverted(t, "dig");
         if (broke) st.Felled++;
         else st.Failed.Add(t);
         return broke;

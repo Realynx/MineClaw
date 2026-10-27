@@ -291,6 +291,73 @@ public class MiscWaveOneTests
     }
 
     [Fact]
+    public async Task Label_chest_hangs_a_wall_sign_beside_the_chest_never_on_it()
+    {
+        var g = LiquidTests.Island();
+        g.Set(2, 64, 2, Blocks.Chest);
+        g.Set(3, 64, 2, Blocks.Stone); // a wall east of the chest
+        g.Chests[new BlockPos(2, 64, 2)] = Enumerable.Repeat(ItemStack.Empty, 27).ToArray();
+        g.Give(Items.Sign, 1);
+        var r = await g.Run("label_chest", new { chest = "2,64,2", text = "ores and gems" });
+        Assert.True(r.Ok, r.Text);
+        var (pos, _, face) = Assert.Single(g.FacePlacements);
+        var n = face.Normal();
+        Assert.NotEqual(new BlockPos(2, 64, 2), new BlockPos(pos.X - n.X, pos.Y - n.Y, pos.Z - n.Z));
+        Assert.Contains(g.World.GetBlock(pos), new[] { Blocks.WallSign, Blocks.SignPost });
+        Assert.Equal(["ores and gems", "", "", ""], g.SignText[pos]);
+    }
+
+    [Fact]
+    public async Task Write_sign_stands_a_post_on_solid_ground()
+    {
+        var g = LiquidTests.Island();
+        g.Give(Items.Sign, 1);
+        var r = await g.Run("write_sign", new { pos = "-1,64,2", text = "hello" });
+        Assert.True(r.Ok, r.Text);
+        Assert.Equal(BlockFace.Top, Assert.Single(g.FacePlacements).Face);
+        Assert.Equal(Blocks.SignPost, g.World.GetBlock(-1, 64, 2));
+    }
+
+    [Fact]
+    public async Task Shoot_bow_uses_the_client_shot_per_arrow()
+    {
+        var g = LiquidTests.Island();
+        g.Give(Items.Bow, 1);
+        g.Give(Items.Arrow, 2);
+        g.World.Entities.SpawnMob(77, MobTypes.Zombie, new Vec3d(3.5, 64, 3.5), 0, 0, null);
+        var r = await g.Run("shoot_bow", new { shots = 4 });
+        Assert.True(r.Ok, r.Text);
+        Assert.Equal(2, g.Shots);
+        Assert.Contains("shot 2 arrow", r.Text);
+    }
+
+    [Fact]
+    public async Task Tame_wolf_feeds_bones_until_tamed()
+    {
+        var g = LiquidTests.Island();
+        g.Give(Items.Bone, 5);
+        g.World.Entities.SpawnMob(55, MobTypes.Wolf, new Vec3d(2.5, 64, 0.5), 0, 0, null);
+        g.WolfBonesToTame[55] = 3;
+        var r = await g.Run("tame_wolf");
+        Assert.True(r.Ok, r.Text);
+        Assert.Equal(2, g.World.Inventory.CountItem(Items.Bone));
+        Assert.Equal(4, g.World.Entities.Get(55)!.MetaInt(16));
+    }
+
+    [Fact]
+    public async Task Ride_vehicle_enters_and_exits()
+    {
+        var g = LiquidTests.Island();
+        g.World.Entities.SpawnObject(90, 1, new Vec3d(1.5, 64, 0.5), default);
+        var r = await g.Run("ride_vehicle");
+        Assert.True(r.Ok, r.Text);
+        Assert.Equal(90, g.RidingEntityId);
+        var x = await g.Run("ride_vehicle", new { exit = true });
+        Assert.True(x.Ok, x.Text);
+        Assert.Equal(-1, g.RidingEntityId);
+    }
+
+    [Fact]
     public async Task Stubs_and_missing_primitives_fail_honestly()
     {
         var g = LiquidTests.Island();

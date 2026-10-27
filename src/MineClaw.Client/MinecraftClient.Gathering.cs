@@ -125,8 +125,14 @@ public sealed partial class MinecraftClient
                 {
                     if (World.Inventory.RoomFor(new ItemStack((short)dropItem, 1, 0)) == 0) { stop = "inventory full"; break; }
                     await SurvivalWindowAsync(c).ConfigureAwait(false);
-                    var target = PickMineTarget(blockIds, radius, failed, protect);
-                    if (target is null) { stop = $"no more reachable {name} within {radius:0}"; break; }
+                    var target = PickMineTarget(blockIds, radius, failed, (p, id) => EditBlocked(p) || (protect?.Invoke(p, id) ?? false));
+                    if (target is null)
+                    {
+                        stop = $"no more reachable {name} within {radius:0}";
+                        if (PickMineTarget(blockIds, radius, failed, protect) is { } inside && EditBlocked(inside))
+                            stop += $" outside spawn protection (the server undid my digs within {_protectedRegion?.Radius ?? VanillaSpawnProtection} of spawn; needs op)";
+                        break;
+                    }
                     var r = await DigCoreAsync(target.Value, c).ConfigureAwait(false);
                     if (!r.Ok)
                     {

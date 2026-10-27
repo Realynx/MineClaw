@@ -77,6 +77,9 @@ public sealed record ClientOptions
     /// <c>&lt;dir&gt;/yyyyMMdd-HHmmss.mcrec</c> (see <see cref="MineClaw.Protocol.Recording.RecordingFormat"/>). Null = off,
     /// unless the environment variable <c>MINECLAW_RECORD</c> is <c>1</c> (→ <c>logs/recordings</c>) or a directory.</summary>
     public string? RecordDirectory { get; init; }
+    /// <summary>How long a learned protected region (server undid my edits near spawn) is skipped up front before one
+    /// probe edit there is allowed again.</summary>
+    public TimeSpan ProtectedRegionRetry { get; init; } = TimeSpan.FromMinutes(10);
     /// <summary>Gzip the recording body (chunks are already zlib'd; the rest shrinks ~5x).</summary>
     public bool RecordGzip { get; init; } = true;
 
