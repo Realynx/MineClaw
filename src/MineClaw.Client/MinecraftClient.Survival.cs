@@ -40,8 +40,22 @@ public sealed partial class MinecraftClient
     private bool HasUsableFood(int food)
     {
         var slots = World.Inventory.PlayerSlots();
-        return SurvivalReflex.HasSafeFood(slots, ReservedItems)
-               || (food <= Options.Survival.StarvingFood && SurvivalReflex.HasAnyFood(slots, ReservedItems));
+        var reserved = EatReserved(World.Player.Health);
+        return SurvivalReflex.HasSafeFood(slots, reserved)
+               || (food <= Options.Survival.StarvingFood && SurvivalReflex.HasAnyFood(slots, reserved));
+    }
+
+    /// <summary>
+    /// Items the survival reflex must not eat: the configured <see cref="ReservedItems"/> plus food held for a hand-off
+    /// (<see cref="Handoffs"/>), the latter only while health is above <see cref="HandoffReservations.CriticalHp"/>.
+    /// </summary>
+    private IReadOnlySet<int> EatReserved(int health)
+    {
+        var held = Handoffs.Blocked(health, id => World.Inventory.CountItem(id));
+        if (held.Count == 0) return ReservedItems;
+        var set = new HashSet<int>(ReservedItems);
+        set.UnionWith(held);
+        return set;
     }
 
     // ------------------------------------------------------------------ packet thread
@@ -89,7 +103,8 @@ public sealed partial class MinecraftClient
         int hp = p.Health, food = p.Food;
         if (hp <= 0) return;
         var slots = World.Inventory.PlayerSlots();
-        var reserved = ReservedItems;
+        Handoffs.Reconcile(id => World.Inventory.CountItem(id)); // delivered / timed-out holds end
+        var reserved = EatReserved(hp);
         var me = phys.Position;
         var cell = new BlockPos((int)Math.Floor(me.X), (int)Math.Floor(me.Y + 1e-6), (int)Math.Floor(me.Z));
         int edge = Safety.EdgeDistance(World, cell.X, cell.Y, cell.Z, 4);
@@ -174,7 +189,7 @@ public sealed partial class MinecraftClient
         if (!o.Enabled || !o.AutoEat || TickCount < _eatRetryTick || (_combatInstance?.Engaged ?? false)) return;
         var p = World.Player;
         if (!p.OnGround || World.Entities.NearestHostile(p.Position, 4) is not null) return;
-        if (SurvivalReflex.EatNow(World.Inventory.PlayerSlots(), ReservedItems, p.Health, p.Food, o) is not { } pick) return;
+        if (SurvivalReflex.EatNow(World.Inventory.PlayerSlots(), EatReserved(p.Health), p.Health, p.Food, o) is not { } pick) return;
         var r = await UseCoreAsync(pick.ItemId, ct).ConfigureAwait(false);
         Log($"survival: ate during {CurrentAction}: {r}");
         if (r.Ok) Interlocked.Increment(ref _autoMeals);
@@ -191,8 +206,9 @@ public sealed partial class MinecraftClient
         var o = Options.Survival;
         if (!o.Enabled) return null;
         var p = World.Player;
-        var pick = SurvivalReflex.PickFood(World.Inventory.PlayerSlots(), ReservedItems, p.Health, p.Food, o);
-        if (SurvivalReflex.GateReason(what, p.Health, p.Food, pick is not null || SurvivalReflex.HasSafeFood(World.Inventory.PlayerSlots(), ReservedItems), o) is { } why)
+        var reserved = EatReserved(p.Health);
+        var pick = SurvivalReflex.PickFood(World.Inventory.PlayerSlots(), reserved, p.Health, p.Food, o);
+        if (SurvivalReflex.GateReason(what, p.Health, p.Food, pick is not null || SurvivalReflex.HasSafeFood(World.Inventory.PlayerSlots(), reserved), o) is { } why)
         {
             if (pick is { } eat && p.Food < HungerRules.RegenFood)
                 Log($"survival: gate ate before refusing: {await UseCoreAsync(eat.ItemId, ct).ConfigureAwait(false)}");

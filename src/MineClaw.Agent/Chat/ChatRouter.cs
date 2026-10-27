@@ -171,6 +171,9 @@ public sealed class ChatRouter
     /// <summary>Raised with a line the bot tried to send that was dropped because it was a server command (not /me).</summary>
     public event Action<string>? CommandBlocked;
 
+    /// <summary>The bot's own outgoing text (whole, before line splitting), e.g. "I'll pass it to 67" opens a hand-off.</summary>
+    public event Action<string>? Said;
+
     public ChatMessage Parse(string raw)
     {
         var line = ChatText.StripColors(raw ?? "").Trim();
@@ -734,6 +737,7 @@ public sealed class ChatRouter
             }
         }
         if (cap <= 0) return [];
+        try { Said?.Invoke(text); } catch (Exception) { /* listeners never break chat */ }
         if (lines.Count > cap)
         {
             lines = lines.Take(cap).ToList();

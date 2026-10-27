@@ -231,7 +231,10 @@ public sealed class UsageTracker
         _ => "memory",
     };
 
-    public static readonly string[] TierLabels = ["opus", "worker", "memory", "other"];
+    public static readonly string[] TierLabels = ["opus", "worker", "memory", PerceptionLabel, "other"];
+
+    /// <summary>Ledger label of the perception tier (vision v2: the model that looks at pictures for the brain).</summary>
+    public const string PerceptionLabel = "perception";
 
     private DateTimeOffset Now => _time.GetLocalNow();
     private string DayKey => Now.ToString("yyyy-MM-dd");
@@ -284,13 +287,13 @@ public sealed class UsageTracker
     /// model that actually answered (so a brain turn on the worker model in <see cref="BudgetMode.Economy"/> is worker spend),
     /// else <paramref name="tier"/>, else "other".
     /// </summary>
-    public decimal Record(string model, LlmUsage usage, ModelTier? tier = null)
+    public decimal Record(string model, LlmUsage usage, ModelTier? tier = null, string? label = null)
     {
         decimal cost = _prices.Cost(model, usage);
         // A worker-tier call is worker spend whatever model a delegate profile picked (a haiku/opus worker was booked as
-        // memory/opus, which hid worker spend in /usage).
+        // memory/opus, which hid worker spend in /usage). An explicit label (the perception tier) wins over both.
         var t = tier == ModelTier.Worker ? ModelTier.Worker : Classify?.Invoke(model) ?? tier;
-        string label = t is { } tt ? TierLabel(tt) : "other";
+        label ??= t is { } tt ? TierLabel(tt) : "other";
         // Every provider and profile counts toward the same hard caps; Ollama calls are recorded too ($0 unless priced).
         string provider = _prices.ProviderOf(model);
         string? profile = null;

@@ -46,7 +46,8 @@ public sealed class GameBridge : IDisposable
     {
         Sub(h => _c.ChatReceived += h, h => _c.ChatReceived -= h, (Action<string>)OnChat);
         Sub(h => _c.Danger += h, h => _c.Danger -= h, (Action<DangerEvent>)OnDanger);
-        Sub(h => _c.Died += h, h => _c.Died -= h, (Action)(() => { _died = true; Post(GameEvent.Died()); }));
+        Sub(h => _c.Died += h, h => _c.Died -= h, (Action)(() => { _died = true; _diedAt = _c.World.Player.Position; Post(GameEvent.Died()); }));
+        Sub(h => _c.ServerMoved += h, h => _c.ServerMoved -= h, (Action<Vec3d, Vec3d>)OnServerMoved);
         Sub(h => _c.Respawned += h, h => _c.Respawned -= h, (Action)OnRespawned);
         Sub(h => _c.Spawned += h, h => _c.Spawned -= h, (Action)(() => Volatile.Write(ref _dim, _c.World.Dimension)));
         Volatile.Write(ref _dim, _c.World.Dimension);
@@ -97,7 +98,11 @@ public sealed class GameBridge : IDisposable
         _died = false;
         if (died || from == to)
         {
-            Post(GameEvent.Notice(from == to ? "respawned at spawn" : $"respawned at spawn in the {DimName(to)}", EventPriority.Background));
+            // A respawn moves the body too: say from where (live 10-27: "I somehow ended up back at spawn").
+            var where = _diedAt is { } d ? $"server moved me from {Locations.Fmt(d)} (where I died) to spawn {_c.World.Spawn.X},{_c.World.Spawn.Y},{_c.World.Spawn.Z} (respawn)" : null;
+            _diedAt = null;
+            var text = from == to ? "respawned at spawn" : $"respawned at spawn in the {DimName(to)}";
+            Post(GameEvent.Notice(where != null && died ? text + ": " + where : text, EventPriority.Background));
             return;
         }
         _ = AnnounceDimensionAsync(from, to);
@@ -167,8 +172,67 @@ public sealed class GameBridge : IDisposable
         _unsubscribe.Clear();
     }
 
+    private Vec3d? _diedAt;
+    private readonly Queue<(DateTimeOffset At, string Line)> _recentChat = new();
+
+    /// <summary>How far back a chat line can explain a teleport ("tp maid to me", "Teleporting maid_chan to kiwi").</summary>
+    public TimeSpan TeleportChatWindow { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// A server-forced move (0x0D far from where the body was, not a login/respawn/portal: those announce themselves) becomes a
+    /// note for the brain: "server moved me from A to B (teleport)" with the likely cause when visible: a recent tp line in chat
+    /// (who asked), a player standing at the destination. Normal priority, never interrupting the body.
+    /// </summary>
+    private void OnServerMoved(Vec3d from, Vec3d to)
+    {
+        try
+        {
+            var text = ServerMoveText(from, to, RecentChat(), _c.Username,
+                _c.World.Entities.Nearby(to, 2.5, e => e.Kind == EntityKind.Player).Select(e => e.Name).FirstOrDefault(n => n != null));
+            Post(GameEvent.Notice(text, EventPriority.Normal));
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "server move note failed"); }
+    }
+
+    private IReadOnlyList<string> RecentChat()
+    {
+        var since = _time.GetUtcNow() - TeleportChatWindow;
+        lock (_recentChat)
+        {
+            while (_recentChat.Count > 0 && _recentChat.Peek().At < since) _recentChat.Dequeue();
+            return _recentChat.Select(c => c.Line).ToList();
+        }
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex TpWords = new(@"(?:^|[\s/<>:])(?:tp|tphere|tpa|teleport\w*|summon\w*|warp)\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>The note text (pure, for tests): "server moved me from A to B (teleport): kiwi asked "tp maid to me" just before".</summary>
+    public static string ServerMoveText(Vec3d from, Vec3d to, IReadOnlyList<string> recentChat, string self, string? playerAtDestination)
+    {
+        var sb = new System.Text.StringBuilder($"server moved me from {Locations.Fmt(from)} to {Locations.Fmt(to)} ({from.DistanceTo(to):0} blocks; teleport)");
+        var tp = recentChat.LastOrDefault(l => TpWords.IsMatch(ChatText.StripColours(l)));
+        if (tp != null)
+        {
+            var clean = ChatText.StripColours(tp).Trim();
+            var m = PlayerLine.Match(clean);
+            sb.Append(m.Success ? $": {m.Groups[1].Value} said \"{Trunc(m.Groups[2].Value)}\" just before" : $": server said \"{Trunc(clean)}\"");
+        }
+        if (playerAtDestination != null && !playerAtDestination.Equals(self, StringComparison.OrdinalIgnoreCase))
+            sb.Append($"; {playerAtDestination} is right here (probably a tp to them)");
+        else if (tp == null) sb.Append("; cause not visible (an op's /tp or a plugin)");
+        return sb.ToString();
+    }
+
+    private static string Trunc(string s) => s.Length <= 60 ? s : s[..57] + "...";
+
     private void OnChat(string raw)
     {
+        lock (_recentChat)
+        {
+            _recentChat.Enqueue((_time.GetUtcNow(), raw));
+            while (_recentChat.Count > 30) _recentChat.Dequeue();
+        }
         if (Hunger is { } h && PlayerLine.Match(MineClaw.Client.ChatText.StripColours(raw)) is { Success: true } m
             && !m.Groups[1].Value.Equals(_c.Username, StringComparison.OrdinalIgnoreCase) && _rt.Chat.IsHiveBot?.Invoke(m.Groups[1].Value) != true
             && h.OnChat(m.Groups[2].Value))

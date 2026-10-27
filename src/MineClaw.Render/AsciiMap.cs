@@ -44,16 +44,39 @@ public static class AsciiMap
         return ' ';
     }
 
+    /// <summary>
+    /// Role letter of a column (vision v2): the feet block's role, else the role of the block below it (the floor). Only roles
+    /// with a glyph (G gen cell, P portal, X never-break, B player build, + own placed, $ protected) replace the block glyph.
+    /// </summary>
+    public static char? RoleGlyph(IBlockAccess w, RoleMap roles, int x, int y, int z, out BlockRole role)
+    {
+        role = BlockRole.None;
+        if (!w.IsLoaded(x, z)) return null;
+        try
+        {
+            role = roles(x, y, z);
+            if (BlockRoles.Glyph(role) is null && (w.GetBlock(x, y, z) == 0 || role == BlockRole.None)) role = roles(x, y - 1, z);
+        }
+        catch (Exception) { role = BlockRole.None; }
+        return BlockRoles.Glyph(role);
+    }
+
     /// <summary>Renders the map around (cx, cy, cz). Entities: players by lower-case initial, hive bots by their glyph,
-    /// mobs 'm'. Returns the text (header, x ruler, rows, legend + who is who).</summary>
+    /// mobs 'm'. With <paramref name="roles"/>, role letters replace block glyphs (and their legend is appended).
+    /// Returns the text (header, x ruler, rows, legend + who is who).</summary>
     public static string Render(IBlockAccess w, int cx, int cy, int cz, int size = 15, (int X, int Y, int Z)? self = null,
-        IReadOnlyList<VisionEntity>? entities = null, IReadOnlyList<VisionMark>? marks = null)
+        IReadOnlyList<VisionEntity>? entities = null, IReadOnlyList<VisionMark>? marks = null, RoleMap? roles = null)
     {
         size = Math.Clamp(size | 1, 5, 25);
         int r = size / 2, x0 = cx - r, z0 = cz - r;
         var grid = new char[size, size];
+        var present = new HashSet<BlockRole>();
         for (int iz = 0; iz < size; iz++)
-            for (int ix = 0; ix < size; ix++) grid[iz, ix] = Cell(w, x0 + ix, cy, z0 + iz);
+            for (int ix = 0; ix < size; ix++)
+            {
+                grid[iz, ix] = Cell(w, x0 + ix, cy, z0 + iz);
+                if (roles != null && RoleGlyph(w, roles, x0 + ix, cy, z0 + iz, out var role) is { } g) { grid[iz, ix] = g; present.Add(role); }
+            }
         var who = new List<string>();
         foreach (var e in entities ?? [])
         {
@@ -91,6 +114,7 @@ public static class AsciiMap
             sb.Append('|').Append('\n');
         }
         sb.Append(Legend);
+        if (present.Count > 0) sb.Append("; roles: ").Append(BlockRoles.Legend(present));
         if (who.Count > 0) sb.Append("; ").Append(string.Join(' ', who));
         var inView = (marks ?? []).Where(m => m.MaxX >= x0 && m.MinX < x0 + size && m.MaxZ >= z0 && m.MinZ < z0 + size).Take(6).ToList();
         if (inView.Count > 0)

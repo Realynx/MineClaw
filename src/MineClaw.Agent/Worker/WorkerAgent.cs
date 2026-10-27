@@ -107,6 +107,21 @@ public sealed class WorkerAgent
         return true;
     }
 
+    /// <summary>
+    /// Per-round context from the body (auto-vision: "[vision] ..." after a spatial step, ≈100 tokens of verified text), appended
+    /// to the newest tool results. Null/empty = nothing. Bounded by the hook itself (it never waits long).
+    /// </summary>
+    public Func<CancellationToken, Task<string?>>? RoundNote { get; set; }
+
+    private async Task ApplyRoundNoteAsync(List<LlmMessage> messages, CancellationToken ct)
+    {
+        if (RoundNote == null || messages.Count == 0 || messages[^1].Role != LlmRole.User) return;
+        string? note = null;
+        try { note = await RoundNote(ct).ConfigureAwait(false); }
+        catch (Exception) when (!ct.IsCancellationRequested) { /* vision never breaks a task */ }
+        if (!string.IsNullOrWhiteSpace(note)) AppendText(messages, TextUtil.Truncate(note.Trim(), 600));
+    }
+
     private void ApplyAmendments(List<LlmMessage> messages)
     {
         var notes = new List<string>();
@@ -197,6 +212,7 @@ public sealed class WorkerAgent
                 var m = _usage.CheckMode();
                 if (m is BudgetMode.Paused or BudgetMode.CheapOnly) { stop = "budget low"; break; }
                 ApplyAmendments(messages);
+                if (round > 0) await ApplyRoundNoteAsync(messages, token).ConfigureAwait(false);
                 if (!FitContext(messages, tools)) { stop = "context full"; break; }
 
                 var response = await CallAsync(messages, tools, token, profile, prof).ConfigureAwait(false);

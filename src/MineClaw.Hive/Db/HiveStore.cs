@@ -40,6 +40,10 @@ public sealed class HiveStore
         {
             db.Exec(Schema);
             db.EnsureColumn("hive_inventory", "dimension", "INTEGER NOT NULL DEFAULT 0"); // where the clone was (0 overworld, -1 nether)
+            // Last known body (hp/food survive a logout; main restarts lost them: live 10-27 15:44 69's hp 20/food 20 was unknown).
+            foreach (var c in new[] { "hp", "food" }) db.EnsureColumn("hive_inventory", c, "INTEGER");
+            foreach (var c in new[] { "pos_x", "pos_y", "pos_z" }) db.EnsureColumn("hive_inventory", c, "REAL");
+            db.EnsureColumn("hive_inventory", "vitals_at", "INTEGER");
             foreach (var t in TaggedTables)
             {
                 if (!TableExists(t) || HasColumn(t, "clone_id")) continue;
@@ -79,6 +83,22 @@ public sealed class HiveStore
             INSERT INTO hive_inventory(clone, items, updated, dimension) VALUES ($c, $i, $u, coalesce($d, 0))
             ON CONFLICT(clone) DO UPDATE SET items = excluded.items, updated = excluded.updated, dimension = coalesce($d, dimension)
             """, ("$c", clone), ("$i", JsonSerializer.Serialize(items, HiveJson.Options)), ("$u", Now), ("$d", dimension));
+
+    /// <summary>The clone's last known hp/food/position (kept when items change; items untouched).</summary>
+    public void SaveVitals(string clone, int hp, int food, double? x, double? y, double? z, int? dimension = null) =>
+        Db.Exec("""
+            INSERT INTO hive_inventory(clone, items, updated, dimension, hp, food, pos_x, pos_y, pos_z, vitals_at)
+            VALUES ($c, '[]', $u, coalesce($d, 0), $hp, $f, $x, $y, $z, $u)
+            ON CONFLICT(clone) DO UPDATE SET hp = $hp, food = $f, pos_x = coalesce($x, pos_x), pos_y = coalesce($y, pos_y),
+                pos_z = coalesce($z, pos_z), vitals_at = $u, dimension = coalesce($d, dimension)
+            """, ("$c", clone), ("$u", Now), ("$d", dimension), ("$hp", hp), ("$f", food), ("$x", x), ("$y", y), ("$z", z));
+
+    /// <summary>(hp, food, x, y, z, dimension, at) last saved for a clone; null = never seen.</summary>
+    public (int Hp, int Food, double? X, double? Y, double? Z, int Dimension, DateTimeOffset At)? Vitals(string clone) =>
+        Db.Query("SELECT hp, food, pos_x, pos_y, pos_z, dimension, vitals_at FROM hive_inventory WHERE clone = $c AND hp IS NOT NULL",
+            r => ((int Hp, int Food, double? X, double? Y, double? Z, int Dimension, DateTimeOffset At)?)(r.GetInt32(0), r.GetInt32(1),
+                r.IsDBNull(2) ? null : r.GetDouble(2), r.IsDBNull(3) ? null : r.GetDouble(3), r.IsDBNull(4) ? null : r.GetDouble(4),
+                r.GetInt32(5), AgentDb.FromUnixMs(r.IsDBNull(6) ? 0 : r.GetInt64(6))), ("$c", clone)).FirstOrDefault();
 
     /// <summary>Dimension of the clone's last inventory snapshot (stranded items are there).</summary>
     public int InventoryDimension(string clone) =>

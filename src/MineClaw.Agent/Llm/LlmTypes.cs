@@ -41,6 +41,9 @@ public sealed record LlmImage(byte[] Data, int Width, int Height, string Stub, s
     public int Tokens => (Width * Height + 749) / 750;
 }
 
+/// <summary>An image in a user message (the perception tier: picture + question). The brain never gets these.</summary>
+public sealed record LlmImageBlock(LlmImage Image) : LlmBlock;
+
 /// <summary>Opaque thinking block; must be passed back unchanged within the turn that produced it.</summary>
 public sealed record LlmThinking(string Thinking, string Signature) : LlmBlock;
 

@@ -65,7 +65,7 @@ public class PortalWakeTests
         c.RaiseDied();
         c.World.Dimension = 0;
         c.RaiseRespawned();
-        Assert.NotNull(await WaitEvent(h, x => x.Text == "respawned at spawn in the overworld" && !x.Wakes));
+        Assert.NotNull(await WaitEvent(h, x => x.Text.StartsWith("respawned at spawn in the overworld: server moved me from 2,66,1 (where I died)") && !x.Wakes));
         await Task.Delay(200);
         Assert.Single(h.Runtime.Events.Snapshot(), x => x.Text.Contains("went through a portal"));
     }

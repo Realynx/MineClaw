@@ -1,0 +1,122 @@
+[
+  {
+    "Case": "edge_distance",
+    "Model": "claude-haiku-5-5",
+    "Purpose": "perception",
+    "Text": "Looking at the TOP panel, the grey platform spans from about x=-4 to x=\u002B4 (9 cells wide), and I am at x=1. The platform\u0027s east edge is at x=\u002B4 (the panel shows the grey block area extending to the right of my position by roughly 3 cells).\n\nCounting from my position at x=1: cells at x=2, 3, 4 are floor, and x=5 is void (navy beyond the grey edge).\n\nSo there are 3 floor blocks east of me before the void edge.\n\n{\u0022answer\u0022:\u00223 floor blocks east of me before the void edge.\u0022,\u0022facts\u0022:[{\u0022claim\u0022:\u0022Floor extends east to x=4; x=5 is void.\u0022,\u0022coords\u0022:[[2,62,0],[3,62,0],[4,62,0]],\u0022role\u0022:\u0022floor\u0022,\u0022confidence\u0022:0.7}]}",
+    "InputTokens": 1041,
+    "OutputTokens": 257
+  },
+  {
+    "Case": "edge_distance",
+    "Model": "claude-opus-5-5",
+    "Purpose": "visioneval",
+    "Text": "The floor runs from x = -4 to x = 4. I am at x = 1, so the floor blocks east of me are at x = 2, 3 and 4, with void beyond x = 4. The top view and the side view looking north agree on this.\n\nANSWER: 3",
+    "InputTokens": 769,
+    "OutputTokens": 439
+  },
+  {
+    "Case": "edge_distance",
+    "Model": "claude-sonnet-5-5",
+    "Purpose": "perception",
+    "Text": "In the TOP panel, the x ticks are -5 at x\u224835, 1 at \u2248137, 5 at \u2248205, so one cell is about 17px. The floor spans pixel x 44 to 197. The player is at x=137, with its cell covering about 129 to 146. The floor\u0027s east edge at 197 leaves (197-146)/17 = 3 cells east of the player\u0027s cell.\n\nCheck against the SIDE view: the floor runs from about x=308 to 461, and the player is at x=1 (pixel 401). The scale is 17px per block (x=-5 at 299, x=5 at 469), so the cell containing x=1 spans about 393 to 410. The remaining distance is (461-410)/17 = 3 cells, so the floor ends at x=4.\n\nFloor x range: -4 to 4, with the player at 1, so 3 more blocks lie east (x=2, 3, 4).\n\n{\u0022answer\u0022:\u00223\u0022,\u0022facts\u0022:[{\u0022claim\u0022:\u0022Floor blocks east of the player at x=2,3,4; void beyond x=4\u0022,\u0022coords\u0022:[[2,62,0],[3,62,0],[4,62,0]],\u0022role\u0022:\u0022floor\u0022,\u0022confidence\u0022:0.85},{\u0022claim\u0022:\u0022East of x=4 is void edge\u0022,\u0022coords\u0022:[[5,62,0]],\u0022role\u0022:\u0022void\u0022,\u0022confidence\u0022:0.8}]}",
+    "InputTokens": 1041,
+    "OutputTokens": 424
+  },
+  {
+    "Case": "floor_vs_gen",
+    "Model": "claude-haiku-5-5",
+    "Purpose": "perception",
+    "Text": "The generator cell (G) is the cyan-boxed green block at the focus. In the TOP panel it sits at the center, with the focus labelled 5,63,7; the cyan box and yellow tick confirm x=5, z=7 at feet height y=63.\n\nChecking the SIDE panel: the green G cell is at the same height as the floor step around it (y=63 row), consistent with the focus.\n\nThe answer is the focus block itself.\n\n{\u0022answer\u0022:\u0022Mine the green G generator cell at 5,63,7, directly north of you.\u0022,\u0022facts\u0022:[{\u0022claim\u0022:\u0022Green G generator cell is the only cobble to mine.\u0022,\u0022coords\u0022:[[5,63,7]],\u0022role\u0022:\u0022gen cell\u0022,\u0022confidence\u0022:0.9},{\u0022claim\u0022:\u0022Surrounding blocks are plain floor, not gen cells.\u0022,\u0022coords\u0022:[[4,63,7],[6,63,7]],\u0022role\u0022:\u0022floor\u0022,\u0022confidence\u0022:0.6}]}",
+    "InputTokens": 1091,
+    "OutputTokens": 292
+  },
+  {
+    "Case": "floor_vs_gen",
+    "Model": "claude-opus-5-5",
+    "Purpose": "visioneval",
+    "Text": "The cyan focus box is on the cell marked G at x=5, z=7. The layers panel shows that cell at feet height (y63), so it sits on top of the floor rather than being part of it.\n\nANSWER: 5,63,7",
+    "InputTokens": 819,
+    "OutputTokens": 150
+  },
+  {
+    "Case": "floor_vs_gen",
+    "Model": "claude-sonnet-5-5",
+    "Purpose": "perception",
+    "Text": "The focus is at (5,63,7), the cell marked G in the top panel. Water (blue) is on its west at (4,63,7) and lava (orange) on its east at (6,63,7), so this cell is where they meet to form cobble. The bot is at (5,63,9), two blocks south, and the floor below is at y62.\n\n{\u0022answer\u0022:\u0022Mine the gen cell at (5,63,7), between water on the west and lava on the east.\u0022,\u0022facts\u0022:[{\u0022claim\u0022:\u0022Generator cobblestone cell, focus block\u0022,\u0022coords\u0022:[[5,63,7]],\u0022role\u0022:\u0022gen cell\u0022,\u0022confidence\u0022:0.93},{\u0022claim\u0022:\u0022Water source west of the gen cell\u0022,\u0022coords\u0022:[[4,63,7]],\u0022role\u0022:\u0022water\u0022,\u0022confidence\u0022:0.7},{\u0022claim\u0022:\u0022Lava east of the gen cell\u0022,\u0022coords\u0022:[[6,63,7]],\u0022role\u0022:\u0022lava\u0022,\u0022confidence\u0022:0.7}]}",
+    "InputTokens": 1091,
+    "OutputTokens": 284
+  },
+  {
+    "Case": "hole_faces",
+    "Model": "claude-haiku-5-5",
+    "Purpose": "perception",
+    "Text": "Reasoning: The bot is at 7,62,9 inside a pit. The FEET layer (y62) shows a solid grid of blocks around the centre cell with the focus cell itself marked; the surrounding ring at y62 is solid stone, so walls are on all sides at feet height. The BELOW layer (y61) is a full solid floor, so the bot stands on stone. Green dots mark air cells with a solid face to place against; in the FEET grid the bot\u0027s own cell is the only open one, so the adjacent edge-of-hole cells at y62 are walls, not placement targets for climbing out.\n\nSince the question asks which adjacent solid blocks can be placed against, the only air-with-face cells adjacent to the bot at feet height are those just beyond the walls at y62, which the sheet does not show as green dots within the bot\u0027s immediate ring. I cannot confirm a placeable face next to the bot at 7,62,9 with certainty, so I report low confidence.\n\n{\u0022answer\u0022:\u0022Adjacent walls at feet height are solid; no clear placeable face confirmed next to 7,62,9.\u0022,\u0022facts\u0022:[{\u0022claim\u0022:\u0022Floor under bot is solid stone at y61\u0022,\u0022coords\u0022:[[7,61,9]],\u0022role\u0022:\u0022floor\u0022,\u0022confidence\u0022:0.8},{\u0022claim\u0022:\u0022Solid wall block beside bot at feet height\u0022,\u0022coords\u0022:[[6,62,9]],\u0022role\u0022:\u0022wall\u0022,\u0022confidence\u0022:0.4},{\u0022claim\u0022:\u0022No confirmed green placement dot adjacent to bot\u0022,\u0022coords\u0022:[[7,62,9]],\u0022role\u0022:\u0022null\u0022,\u0022confidence\u0022:0.3}]}",
+    "InputTokens": 1086,
+    "OutputTokens": 508
+  },
+  {
+    "Case": "hole_faces",
+    "Model": "claude-opus-5-5",
+    "Purpose": "visioneval",
+    "Text": "You\u0027re standing in a one-block-deep hole, so solid blocks surround you on all sides and below.\n\n- **Feet layer (y62):** The FEET Y62 panel is solid all around your cell. In the TOP view, those cells are beveled, which marks them as walls at foot height. That means all four horizontal neighbours are solid:\n  - east 8,62,9\n  - west 6,62,9\n  - north 7,62,8\n  - south 7,62,10\n- **Below you (y61):** The BELOW Y61 panel is solid under you at 7,61,9. You can place against its top face by jumping and placing under yourself (pillaring up).\n- **Above you:** The side view shows air at y63 and higher, so there is nothing to place against up there. Once you\u0027re one block higher, you can step out onto the y62 rim.\n\nANSWER: 8,62,9; 6,62,9; 7,62,8; 7,62,10; 7,61,9",
+    "InputTokens": 814,
+    "OutputTokens": 543
+  },
+  {
+    "Case": "hole_faces",
+    "Model": "claude-sonnet-5-5",
+    "Purpose": "perception",
+    "Text": "The bot is at 7,62,9 on a flat slab. The side view shows the slab is a single layer of solid blocks at y61, with the bot at y62 standing on top of it. The FEET layer (y62) is mostly filled with gray cells. The TOP view shows a flat plateau of cells with no walls, and no hole is visible. The feet-height grid looks like a grid of gray cells, but the top view bevel suggests these are the floor tops. The side view confirms the slab is at y61 only, so the y62 layer is air.\n\nThe only solid blocks adjacent to the bot are the floor below it and the floor cells around it at y61. Placing against the floor below at 7,61,9 puts a block at 7,62,9, which is the bot\u0027s own cell. Placing against the neighbouring floor tops at y61 puts blocks at y62 in the adjacent cells:\n- 6,61,9 gives a block at 6,62,9\n- 8,61,9 gives a block at 8,62,9\n- 7,61,8 gives a block at 7,62,8\n- 7,61,10 gives a block at 7,62,10\n\nThere is no wall at the bot\u0027s feet height, so there is no hole and nothing to climb out of. The bot can step off in any direction.\n\n\u0060\u0060\u0060json\n{\u0022answer\u0022:\u0022No walls at y62; only floor. Place against floor blocks 7,61,9 (below), 6,61,9, 8,61,9, 7,61,8, 7,61,10.\u0022,\u0022facts\u0022:[{\u0022claim\u0022:\u0022Floor block directly below the bot, usable as a placement face\u0022,\u0022coords\u0022:[[7,61,9]],\u0022role\u0022:\u0022floor\u0022,\u0022confidence\u0022:0.9},{\u0022claim\u0022:\u0022Adjacent floor blocks at y61 around the bot\u0022,\u0022coords\u0022:[[6,61,9],[8,61,9],[7,61,8],[7,61,10]],\u0022role\u0022:\u0022floor\u0022,\u0022confidence\u0022:0.85},{\u0022claim\u0022:\u0022No solid wall blocks at feet height y62 beside the bot\u0022,\u0022coords\u0022:[[6,62,9],[8,62,9],[7,62,8],[7,62,10]],\u0022role\u0022:\u0022null\u0022,\u0022confidence\u0022:0.7}]}\n\u0060\u0060\u0060",
+    "InputTokens": 1086,
+    "OutputTokens": 678
+  },
+  {
+    "Case": "middle_one",
+    "Model": "claude-haiku-5-5",
+    "Purpose": "perception",
+    "Text": "Reading the TOP panel: the three G cells sit in the middle row at z=7, at x=3, 4, 5 (the centre G at x=4). Middle of three is x=4.\n\nIn the SIDE panel the G cells appear at y=63 along the row, with the centre one at the focus (x=4, z=7). The LAYERS panel confirms the G cells at feet height y63.\n\n{\u0022answer\u0022:\u0022The middle generator cell is at x=4, y=63, z=7.\u0022,\u0022facts\u0022:[{\u0022claim\u0022:\u0022Middle gen cell of the three in the centre row.\u0022,\u0022coords\u0022:[[4,63,7]],\u0022role\u0022:\u0022gen cell\u0022,\u0022confidence\u0022:0.8},{\u0022claim\u0022:\u0022Gen cell left of middle, same row.\u0022,\u0022coords\u0022:[[3,63,7]],\u0022role\u0022:\u0022gen cell\u0022,\u0022confidence\u0022:0.6},{\u0022claim\u0022:\u0022Gen cell right of middle, same row.\u0022,\u0022coords\u0022:[[5,63,7]],\u0022role\u0022:\u0022gen cell\u0022,\u0022confidence\u0022:0.6}]}",
+    "InputTokens": 1059,
+    "OutputTokens": 309
+  },
+  {
+    "Case": "middle_one",
+    "Model": "claude-opus-5-5",
+    "Purpose": "visioneval",
+    "Text": "The three generator (G) cells sit in a row at z=7, y=63, with x = 3, 4 and 5. The middle one is x=4, which is also the cyan focus cell. The side view confirms it is at y63.\n\nANSWER: 4,63,7",
+    "InputTokens": 787,
+    "OutputTokens": 150
+  },
+  {
+    "Case": "middle_one",
+    "Model": "claude-sonnet-5-5",
+    "Purpose": "perception",
+    "Text": "The three G cells sit in a row at z=7 in the TOP panel, labelled with the x ticks 0 and 4. The focus is at x=4, and the focus cell (cyan box) is the middle G of the three. The G cells are at x=3, 4, 5 on z=7, y=63.\n\n{\u0022answer\u0022:\u0022The middle generator cell is at 4,63,7 (the focus cell).\u0022,\u0022facts\u0022:[{\u0022claim\u0022:\u0022Middle of three G cells in a row along x at z=7\u0022,\u0022coords\u0022:[[4,63,7]],\u0022role\u0022:\u0022gen cell\u0022,\u0022confidence\u0022:0.9},{\u0022claim\u0022:\u0022Neighbouring gen cells to the west and east\u0022,\u0022coords\u0022:[[3,63,7],[5,63,7]],\u0022role\u0022:\u0022gen cell\u0022,\u0022confidence\u0022:0.8}]}",
+    "InputTokens": 1059,
+    "OutputTokens": 244
+  },
+  {
+    "Case": "portal_void_nether",
+    "Model": "claude-haiku-5-5",
+    "Purpose": "perception",
+    "Text": "Reading the panels: the TOP view shows portal P blocks (purple) at x=2 column, z=-1 through z=1, with the focus cyan box at (2,66,0). The SIDE (looking north) shows P blocks stacked at x=2, y=65 to 68 roughly, with the focus at y66. The LAYERS panel at feet height y66 shows P cells at x=2 and x=3 region around z=0 and z=1.\n\n1. Portal column is x=2 (focus column), spanning z from -1 to 1.\n2. Vertically the portal runs from about y=64/65 up to y=68 in the side view.\n3. East of the portal (x=3) at feet height there is only air; the LAYERS left grid shows no solid cell east of x=2 at y66.\n4. Floor under the east side (y65) is plain grey/tan floor, no gen cell or void marked nearby.\n\nAnswer: The portal occupies x=2, y about 65 to 68, z -1 to 1. Walking east out of it you reach open air over floor blocks at y65, with no void or gen cell shown.\n\n{\u0022answer\u0022:\u0022Portal at x=2, y~65-68, z-1..1; east of it is open air over solid floor, no void.\u0022,\u0022facts\u0022:[{\u0022claim\u0022:\u0022Portal blocks in column x=2 spanning z -1 to 1\u0022,\u0022coords\u0022:[[2,66,-1],[2,66,0],[2,66,1]],\u0022role\u0022:\u0022portal\u0022,\u0022confidence\u0022:0.6},{\u0022claim\u0022:\u0022Portal extends vertically up to about y=68\u0022,\u0022coords\u0022:[[2,68,0]],\u0022role\u0022:\u0022portal\u0022,\u0022confidence\u0022:0.45},{\u0022claim\u0022:\u0022East of portal at feet height is air, floor below\u0022,\u0022coords\u0022:[[3,65,0]],\u0022role\u0022:\u0022floor\u0022,\u0022confidence\u0022:0.5}]}",
+    "InputTokens": 1062,
+    "OutputTokens": 571
+  },
+  {
+    "Case": "portal_void_nether",
+    "Model": "claude-opus-5-5",
+    "Purpose": "visioneval",
+    "Text": "**Reading the panels**\n\n- **TOP view:** the portal (P) cells form a single column at x = 2, from z = \u22121 to z = 2.\n- **SIDE view (looking north):** the P cells stack at x = 2, from y = 65 up to y = 69.\n- **Layer views:** at feet height (y66) the portal fills z = \u22121 to 1. At y65 it fills z = 0 to 1.\n- **Orientation:** the portal\u0027s x is constant, so it is a north\u2013south sheet. Its two open faces point west and east.\n\n**Walking east out of it**\n\nYou would step into x = 3. Every panel shows x = 3 as navy hatch, meaning void. There is no floor there at all. At y65, x = 3 only has green dots, which are spots where a block could be placed, not existing blocks. Stepping east means falling into the void.\n\nThe safe side is west. You stand at 1,66,1, and there is sand floor at y65 around x = \u22122 to 1.\n\nANSWER: Portal at x=2 (single plane), y 65\u201369, z \u22121 to 2 (y66 spans z \u22121..1; y65 spans z 0..1). Walking east puts you at x=3, which is void with no floor, so you would fall. Exit west onto the sand platform instead, or place a block at 3,65,z first.",
+    "InputTokens": 790,
+    "OutputTokens": 829
+  },
+  {
+    "Case": "portal_void_nether",
+    "Model": "claude-sonnet-5-5",
+    "Purpose": "perception",
+    "Text": "Top view: the P cells sit in column x=2, spanning z=-1 to z=2 (z=-1 at the top ruler tick, z=0 at the focus, 1, 2 below). The side view (looking N through z0) shows P at x=2 stacked from y=66 up to y=70, with the focus at y=66 as the bottom block. This is a portal frame seen edge-on, so it is one block thick in x.\n\nEast of x=2 (x=3 and beyond) on the top panel is plain dark void hatch, with no floor at y=65 and nothing at feet height. The floor (tan) ends at x=2 for z=0; at y=65 the layers panel shows floor only at x=-2..1, with portal blocks at x=2 below. So walking east leads straight into void.\n\n{\u0022answer\u0022:\u0022Portal is at x=2, y=66-70, z=-1..2 (one block thick); east of it (x\u003E=3) is only void, a fatal fall.\u0022,\u0022facts\u0022:[{\u0022claim\u0022:\u0022Portal blocks in column x=2, z=-1..2, y from 66 upward\u0022,\u0022coords\u0022:[[2,66,-1],[2,66,0],[2,66,1],[2,66,2],[2,70,0]],\u0022role\u0022:\u0022portal\u0022,\u0022confidence\u0022:0.7},{\u0022claim\u0022:\u0022East of portal (x=3) is void, no floor\u0022,\u0022coords\u0022:[[3,65,0],[3,66,0]],\u0022role\u0022:\u0022void\u0022,\u0022confidence\u0022:0.8},{\u0022claim\u0022:\u0022Floor west of portal at y=65 supports the standing area\u0022,\u0022coords\u0022:[[1,65,0],[0,65,0]],\u0022role\u0022:\u0022floor\u0022,\u0022confidence\u0022:0.7}]}",
+    "InputTokens": 1062,
+    "OutputTokens": 517
+  }
+]

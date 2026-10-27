@@ -215,6 +215,8 @@ public sealed partial class MinecraftClient
                 if (ci.CollectorEntityId == w.Player.EntityId) Interlocked.Increment(ref _collectedCount);
                 int collector = ci.CollectorEntityId, itemEntity = ci.CollectedEntityId;
                 ItemStack? stack = w.Entities.Get(itemEntity) is { Kind: EntityKind.Item } ie ? ie.Item : null;
+                // Before the next survival tick can eat it: a pickup during a hand-off intent is held for its target.
+                if (collector == w.Player.EntityId && stack is { IsEmpty: false } got) Handoffs.OnPickup(got.Id, got.Count);
                 Raise(() => ItemCollected?.Invoke(collector, itemEntity, stack));
                 break;
             }

@@ -57,6 +57,8 @@ public sealed class FakeGameClient : IGameClient
     public void RaiseKicked(string r) => Kicked?.Invoke(r);
     public void RaiseDied() => Died?.Invoke();
     public void RaiseRespawned() => Respawned?.Invoke();
+    public event Action<MineClaw.World.Vec3d, MineClaw.World.Vec3d>? ServerMoved;
+    public void RaiseServerMoved(MineClaw.World.Vec3d from, MineClaw.World.Vec3d to) => ServerMoved?.Invoke(from, to);
     public void RaiseDanger(DangerEvent d) => Danger?.Invoke(d);
     public void RaiseJoined(string n) => PlayerJoined?.Invoke(n);
     public void RaiseLeft(string n) => PlayerLeft?.Invoke(n);

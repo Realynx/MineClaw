@@ -2,8 +2,11 @@ using MineClaw.World;
 
 namespace MineClaw.Render;
 
-/// <summary>Projection of a <c>see</c> picture.</summary>
-public enum VisionView { Top, Side, Iso }
+/// <summary>Projection of a <c>see</c> picture. <see cref="Layers"/>: the feet layer and the layer below, side by side.</summary>
+public enum VisionView { Top, Side, Iso, Layers }
+
+/// <summary>Side view direction: looking north (slice along x, the default) or looking east (slice along z).</summary>
+public enum SideAxis { LookNorth, LookEast }
 
 /// <summary>A labelled thing from memory or the world index: a box (structure) or a single block (waypoint, chest...).</summary>
 /// <param name="Box">True = draw the box outline (structures with an extent).</param>
@@ -59,10 +62,27 @@ public sealed class VisionScene
     /// <summary>Iso volume: Cy−IsoDown .. Cy+IsoUp.</summary>
     public int IsoUp { get; init; } = 6;
     public int IsoDown { get; init; } = 8;
+
+    // ---- vision v2 (contact sheet panels)
+
+    /// <summary>Role layer: tinted cells + role letters (G gen cell, P portal, X never-break...). Null = none.</summary>
+    public RoleMap? Roles { get; init; }
+    /// <summary>The shared focus marker (cyan box with corner ticks) and its coordinates highlighted on the rulers.</summary>
+    public (int X, int Y, int Z)? Focus { get; init; }
+    /// <summary>Cell size override in pixels (contact sheet panels); null = <see cref="VisionRenderer.CellSize"/>.</summary>
+    public int? CellPx { get; init; }
+    /// <summary>Side view: looking north (slice along x) or east (slice along z: the work axis runs north-south).</summary>
+    public SideAxis Axis { get; init; } = SideAxis.LookNorth;
+    /// <summary>Iso: the largest width/height in pixels (the sprite shrinks to fit); null = <see cref="VisionRenderer.MaxSide"/>.</summary>
+    public int? MaxPx { get; init; }
 }
 
 /// <summary>A rendered picture: PNG bytes, size, the API's token estimate (w·h/750) and a short text legend.</summary>
 public sealed record VisionImage(byte[] Png, int Width, int Height, ulong Key, string Legend, IReadOnlyList<string> Labels)
 {
     public int Tokens => (Width * Height + 749) / 750;
+    /// <summary>The raw 0xRRGGBB pixels (top/side/iso/layers renders), so the contact sheet pastes panels without decoding.</summary>
+    internal uint[]? Pixels { get; init; }
+    /// <summary>Hash of the blocks in view (no overlays): "nothing changed here" for auto-vision and the perception cache.</summary>
+    public ulong BlocksHash { get; init; }
 }

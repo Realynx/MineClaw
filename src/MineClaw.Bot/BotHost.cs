@@ -22,6 +22,8 @@ public sealed class BotHost : IDisposable
     public required IGameClient Client { get; init; }
     public required GameBridge Bridge { get; init; }
     public required Protection Protection { get; init; }
+    /// <summary>Vision v2: the see hub, the perception tier (telemetry) and auto-vision (null parts when off).</summary>
+    public Perception.Vision.VisionWiring.Result? Vision { get; init; }
     public required DemonstrationRecorder Recorder { get; init; }
     public required MemoryStoreAdapter MemoryAdapter { get; init; }
     /// <summary>Zero-token map memory (chests, generators, farms, islands...) built from the client's world copy.</summary>
@@ -87,6 +89,7 @@ public sealed class BotHost : IDisposable
         var corrections = new Perception.DigCellCorrections(digCells, rt.Memory, time) { Dimension = () => client.World.Dimension };
         corrections.Changed += line => log?.LogInformation("dig cells corrected: {Line}", line);
         rt.Chat.Accepted += m => corrections.OnChat(m.Player, m.Text);
+        AttachHandoffIntents(client, rt, hiveBots, log);
         digCells.TaughtCell += (p, by) => corrections.OnTaught(p, by);
         // The protection policy (ARCHITECTURE.md "Protection policy"): every source in one place, soft vs hard, overrides.
         var placedStore = new PlacedBlockStore(rt.Db, client.World.Placed, log); // rule 1: own/hive placements, shared + persistent
@@ -200,7 +203,9 @@ public sealed class BotHost : IDisposable
         };
         bridge.Attach();
         var scripts = ScriptTools.Register(rt, client, skillHub, botOptions.Scripts, time, log); // script tool (brain+worker), after split + header
-        VisionTools.Register(rt, client, memory, botOptions.Vision, gestures, hiveBots, time, log); // see (brain+worker) + look map marks
+        // Vision v2: see = contact sheet + role layer; with a perception model (Agent:Llm:Perception) the brain gets verified text.
+        var vision = Perception.Vision.VisionWiring.Attach(rt, client, memory, botOptions, protection,
+            p => digCells.IsDigCell(p) || indexer?.IsConfirmedDigCell(p) == true, indexer, gestures, genCells, hiveBots, time, log, persist);
         // do {action, args, then?, queue?}: the brain's one compact door to the single-step macros (after every macro exists).
         Agent.Tools.DoTool.Register(rt.Tools);
 
@@ -223,6 +228,7 @@ public sealed class BotHost : IDisposable
             Gestures = gestures, DigCells = digCells, Mechanisms = mechanisms, Brainstem = brainstem, ProtectionSync = protectionSync,
             Acquisition = acquisition,
             PlacedBlocks = placedStore, ProtectionMarks = marks, ProtectionCommands = protectCmds, ProtectionTelemetry = telemetry,
+            Vision = vision,
         };
     }
 
@@ -236,6 +242,32 @@ public sealed class BotHost : IDisposable
     public ProtectionTelemetry? ProtectionTelemetry { get; init; }
 
     /// <summary>A remembered structure by name ("main house", "the house" → the one whose name contains it), as a box.</summary>
+    /// <summary>
+    /// Hand-off intents from chat (live 10-27 15:48: bread dropped "for 67" was auto-eaten the tick it was picked up): the bot's
+    /// own "I'll pass it to 67" or a player's "pass this to 69" / "bread for 67" opens a short intent on the client, so what the
+    /// bot picks up next is held for that target (auto-eat skips it unless hp is critical) until delivered or timed out.
+    /// </summary>
+    private static void AttachHandoffIntents(IGameClient client, AgentRuntime rt, Func<IEnumerable<string>>? hiveBots, ILogger? log)
+    {
+        if (client is not MinecraftGameClient mg) return;
+        IEnumerable<string> Names() => (hiveBots?.Invoke() ?? []).Concat(client.World.Entities.OnlinePlayers)
+            .Where(n => !n.Equals(rt.Chat.Username, StringComparison.OrdinalIgnoreCase)).Distinct(StringComparer.OrdinalIgnoreCase);
+        IEnumerable<string> Self() => [rt.Chat.Username, rt.Chat.DisplayName, .. rt.Chat.Aliases];
+        void On(string? text, string who)
+        {
+            try
+            {
+                if (text is null || Perception.HandoffIntent.Detect(text, Names(), Self()) is not { } hit) return;
+                mg.Inner.Handoffs.Open(hit.Target, hit.ItemId);
+                log?.LogInformation("hand-off intent ({Who}): pickups{Item} are for {Target}", who,
+                    hit.ItemId is { } id ? " of " + MineClaw.Data.Items.DisplayName(id, 0) : "", hit.Target);
+            }
+            catch (Exception ex) { log?.LogWarning(ex, "hand-off intent failed"); }
+        }
+        rt.Chat.Accepted += m => On(m.Text, m.Player ?? "?");
+        rt.Chat.Said += t => On(t, "me");
+    }
+
     private static (MineClaw.World.BlockPos Min, MineClaw.World.BlockPos Max)? NamedStructure(AgentRuntime rt, IGameClient client, string name)
     {
         int dim = client.World.Dimension;

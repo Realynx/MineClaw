@@ -265,6 +265,16 @@ public sealed class AnthropicLlmClient : ILlmClient
                         ? new ToolResultBlockParam { ToolUseID = r.ToolUseId, Content = r.Content, IsError = r.IsError, CacheControl = new CacheControlEphemeral() }
                         : new ToolResultBlockParam { ToolUseID = r.ToolUseId, Content = r.Content, IsError = r.IsError });
                     break;
+                case LlmImageBlock ib:
+                    blocks.Add(new ImageBlockParam
+                    {
+                        Source = new Base64ImageSource
+                        {
+                            Data = Convert.ToBase64String(ib.Image.Data),
+                            MediaType = ib.Image.MediaType == "image/jpeg" ? MediaType.ImageJpeg : MediaType.ImagePng,
+                        },
+                    });
+                    break;
                 case LlmThinking th:
                     blocks.Add(new ThinkingBlockParam { Thinking = th.Thinking, Signature = th.Signature });
                     break;

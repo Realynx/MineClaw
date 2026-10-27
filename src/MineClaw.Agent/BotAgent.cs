@@ -73,6 +73,7 @@ public sealed partial class BotAgent
 
         Guard = new ToolCallGuard(activities, _time, TimeSpan.FromMinutes(Math.Max(0, options.FailureMemoryMinutes)));
         _events.Posted += OnEventPosted;
+        _context.Compacted += (_, _) => Interlocked.Exchange(ref _compactedSinceCall, 1);
         _usage.ModeChanged += OnBudgetModeChanged;
         _chat.CommandBlocked += line => _log.LogWarning("blocked outgoing server command: {Line}", line);
     }
@@ -365,7 +366,7 @@ public sealed partial class BotAgent
         // Simple chat (a reflex, one clear job, small talk): a cheaper, faster effort for the WHOLE turn (an effort change
         // resets the history cache, so it never flips between rounds). Planning/multi-step turns keep the configured effort.
         bool chatTurn = batch.HasTypedChat;
-        var (effort, thinking) = TurnEffort(batch, tier, chatTurn);
+        var (effort, thinking) = TurnEffort(batch, tier, chatTurn, model);
         Latency?.BeginTurn(chatTurn);
         if (chatTurn) Latency?.NoteEffort(effort ?? _options.Llm.EffortFor(tier));
         TurnStartedAt = _time.GetUtcNow();
@@ -390,21 +391,34 @@ public sealed partial class BotAgent
             speech.BeginRound();
             AddAckNote(speech, episode.Messages);
             bool streamThis = tier == ModelTier.Main && said.Count == 0; // once the brain spoke, later rounds keep the held-line rule
+            var messages = _context.BuildMessages(tier, episode.Messages);
+            // A call that re-writes a big cold history is not cut for a new chat line: the cut call's cache write never lands,
+            // so its restart writes it all again (live 10-27 15:55: 2 × 38K). The new line joins at the next round instead.
+            bool coldBig = tier == ModelTier.Main && _context.EstimateTokens() * _context.TokenScale > 15_000
+                && Warmth.ColdReason(CacheWarmth.Key(model ?? _options.Llm.ModelFor(tier), effort, thinking), _time.GetUtcNow(), BlockCount(messages)) != null;
             var request = new LlmRequest
             {
                 Tier = tier,
                 Model = model,
                 System = system,
                 Tools = tools,
-                Messages = _context.BuildMessages(tier, episode.Messages),
+                Messages = messages,
                 Purpose = tier == ModelTier.Cheap ? "chat" : "task",
-                Interruptible = round == 0 && CanRestart(flow),
+                Interruptible = round == 0 && CanRestart(flow) && !coldBig,
                 Effort = effort,
                 Thinking = thinking,
                 OnToolUse = EarlyStarter(tier, retry, model ?? _options.Llm.ModelFor(tier), ct),
                 OnTextDelta = streamThis ? StreamHook(speech, cx, ct) : null,
             };
             LastRequestTokens = EstimateRequestTokens(request, maxOut);
+            var variant = CacheWarmth.Key(model ?? _options.Llm.ModelFor(tier), effort, thinking);
+            var callAt = _time.GetUtcNow();
+            int reqBlocks = BlockCount(request.Messages);
+            bool compactedBefore = Interlocked.Exchange(ref _compactedSinceCall, 0) != 0;
+            string cacheCause = tier == ModelTier.Main
+                ? CacheWriteGuard.Cause(Warmth.Last, variant, Warmth.ColdReason(variant, callAt, reqBlocks), Warmth.LastCallAt, callAt, compactedBefore)
+                : "cheap-tier call (its own prefix: cold or new)";
+            if (tier == ModelTier.Main) { Warmth.Note(variant, callAt, reqBlocks); _lastMainVariant = (effort, thinking); }
             LlmResponse response;
             if (!request.Interruptible)
             {
@@ -428,6 +442,7 @@ public sealed partial class BotAgent
                         calls++;
                         usage = usage.Add(partial);
                         cost += call.PartialCost;
+                        WarnCacheWrite(partial, tier, round, cacheCause, interrupted: true);
                     }
                     var more = await TakeAfterTypingAsync(flow, ct).ConfigureAwait(false);
                     if (more != null)
@@ -454,6 +469,8 @@ public sealed partial class BotAgent
             _avgOutTokens = _avgOutTokens <= 0 ? response.Usage.OutputTokens : 0.8 * _avgOutTokens + 0.2 * response.Usage.OutputTokens;
             usage = usage.Add(response.Usage);
             cost += _usage.Record(response.Model, response.Usage, tier);
+            WarnCacheWrite(response.Usage, tier, round, cacheCause);
+            if (tier == ModelTier.Main) Calibrate(request, response.Usage);
             _log.LogInformation("call {Label} ({Model}) round {Round}: {Usage} cache {Hit:P0}",
                 UsageTracker.TierLabel(_options.Llm.TierOfModel(response.Model) ?? tier), response.Model, round, response.Usage, UsageTracker.CacheHit(response.Usage));
 
@@ -621,7 +638,7 @@ public sealed partial class BotAgent
     public const string HereTag = "[here]";
     public const string BodyTag = "[body:";
 
-    private (string? Effort, string? Thinking) TurnEffort(EventBatch batch, ModelTier tier, bool chatTurn)
+    private (string? Effort, string? Thinking) TurnEffort(EventBatch batch, ModelTier tier, bool chatTurn, string? model = null)
     {
         var bs = _options.Brainstem;
         if (!chatTurn || tier != ModelTier.Main || bs is not { Enabled: true }) return (null, null);
@@ -630,8 +647,25 @@ public sealed partial class BotAgent
         var kind = simple ? KindOf(lines) : "plan";
         Latency?.NoteKind(kind);
         if (!simple) return (null, null);
-        return (bs.SimpleTurnEffort is { Length: > 0 } e ? e : null, bs.SimpleTurnThinking is { Length: > 0 } t ? t : null);
+        (string? Effort, string? Thinking) want = (bs.SimpleTurnEffort is { Length: > 0 } e ? e : null, bs.SimpleTurnThinking is { Length: > 0 } t ? t : null);
+        // The history cache is per effort/thinking variant: a cheaper-effort turn whose variant went cold (>4.5 min) would
+        // re-write the whole history (live 10-27 15:55: 2 × 38K cache-write tokens). Stay on the warm variant instead.
+        var key = CacheWarmth.Key(model ?? _options.Llm.ModelFor(tier), want.Effort, want.Thinking);
+        int blocks = BlockCount(_context.BuildMessages(ModelTier.Main, [LlmMessage.User("(turn)")]));
+        if (_lastMainVariant is { } last && Warmth.ShouldStay(key, downgrade: true, (int)(_context.EstimateTokens() * _context.TokenScale), _time.GetUtcNow(), blocks))
+        {
+            _log.LogDebug("effort: staying on {Effort} (the {Want} history cache is cold; switching would re-write ~{Tokens} tokens)",
+                last.Effort ?? _options.Llm.EffortFor(tier), want.Effort, (int)(_context.EstimateTokens() * _context.TokenScale));
+            return last;
+        }
+        return want;
     }
+
+    /// <summary>Which brain effort/thinking variants have a warm history cache (see <see cref="CacheWarmth"/>).</summary>
+    public CacheWarmth Warmth { get; } = new();
+
+    /// <summary>Effort/thinking of the last main-tier call (null/null = configured).</summary>
+    private (string? Effort, string? Thinking)? _lastMainVariant;
 
     private string KindOf(IReadOnlyList<string> lines)
     {
@@ -759,6 +793,29 @@ public sealed partial class BotAgent
     // ---------------- restart on new chat ----------------
 
     private int _restartsThisTurn;
+    private int _compactedSinceCall;
+
+    /// <summary>Content blocks of a request's messages (the API's cache lookback counts these).</summary>
+    internal static int BlockCount(IReadOnlyList<LlmMessage> messages) => messages.Sum(m => m.Content.Count);
+
+    /// <summary>WARN on a call that re-wrote more than <see cref="CacheWriteGuard.WarnTokens"/> of prompt cache, with its likely cause.</summary>
+    private void WarnCacheWrite(LlmUsage u, ModelTier tier, int round, string cause, bool interrupted = false)
+    {
+        if (CacheWriteGuard.Check(u, UsageTracker.TierLabel(tier), round, cause, interrupted) is { } w) _log.LogWarning("{Warning}", w);
+    }
+
+    /// <summary>
+    /// Real prompt tokens vs the 3.5-chars/token estimate (live 10-27: 47K real at 30K estimated, so the 30K compaction threshold
+    /// never fired and history reached 36K+). The scale feeds compaction so its thresholds mean real tokens.
+    /// </summary>
+    private void Calibrate(LlmRequest request, LlmUsage u)
+    {
+        long real = u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens;
+        int est = EstimateRequestTokens(request, 0);
+        if (real < 2_000 || est < 2_000) return; // tiny/fake calls say nothing about the ratio
+        double ratio = Math.Clamp(real / (double)est, 1.0, 2.5);
+        _context.TokenScale = Math.Round(0.7 * _context.TokenScale + 0.3 * ratio, 3);
+    }
     private double _avgOutTokens;
 
     private bool CanRestart(ChatDebounceOptions flow) =>

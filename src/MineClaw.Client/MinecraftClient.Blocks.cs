@@ -158,6 +158,14 @@ public sealed partial class MinecraftClient
                 return ActionResult.Fail($"nothing solid at {Fmt(against)} to place against ({wf.ToString().ToLowerInvariant()} face)");
             if (Blocks.Get(aid).Interactable) return ActionResult.Fail($"{BlockName(aid, 0)} at {Fmt(against)} would open instead of taking the block");
         }
+        // Unplaceable whatever the angle: say exactly why (live 10-27 16:36: "no solid neighbour face in reach" for a sapling at
+        // 15,65,1, whose real problem was air under it) instead of walking around looking for a face.
+        if (PlaceRules.SoilProblem(World, pos, itemId) is { } soil)
+        {
+            var alt = PlaceRules.NearestSoil(World, pos, itemId);
+            return ActionResult.Fail(soil + (alt is { } a2 ? $"; nearest free spot: {Fmt(a2)}" : ""));
+        }
+        if (face is null && PlaceRules.NoSupportProblem(World, pos) is { } none) return ActionResult.Fail(none);
         var aim = FindAim();
         if (aim is null)
         {
@@ -168,10 +176,24 @@ public sealed partial class MinecraftClient
             // An island edge cell whose only support is the outer face of the floor block beside it: that face is only in
             // view when leaning out over the edge, never from a cell centre.
             if (aim is null && face is null && await LeanForPlaceAsync(pos, ct).ConfigureAwait(false)) aim = FindAim();
+            if (aim is null && AABB.ForPlayer(World.Player.Position).Intersects(AABB.Block(pos.X, pos.Y, pos.Z)))
+                return ActionResult.Fail($"can't place at {Fmt(pos)}: I'm standing in it ({Fmt(World.Player.Position)})");
+            // b1.8.1's server never raytraces 0x0F (distance only), so a support face hidden from every reachable spot (live
+            // 10-27 15:56: refilling 7,62,9 under the floor from inside its own hole, the only support the south face of
+            // 7,62,8) is still a valid click: aim at it unseen, the same last resort as BlindUseAim for containers.
+            if (aim is null && face is null && PlaceRules.BlindAim(World, World.Player.EyePosition, pos, Options.Reach) is { } blind)
+            {
+                Log($"place: no visible support face for {Fmt(pos)}; clicking {BlockName(World.GetBlock(blind.Against), World.GetMeta(blind.Against))} at {Fmt(blind.Against)} ({blind.Face.ToString().ToLowerInvariant()} face) unseen");
+                aim = blind;
+            }
             if (aim is null)
-                return ActionResult.Fail(face is { } f2
-                    ? $"can't place at {Fmt(pos)} on the {f2.ToString().ToLowerInvariant()} face: not visible/in reach (or I'm in the way)"
-                    : $"can't place at {Fmt(pos)}: no solid neighbour face in reach (or I'm in the way)");
+            {
+                if (face is { } f2)
+                    return ActionResult.Fail($"can't place at {Fmt(pos)} on the {f2.ToString().ToLowerInvariant()} face: not visible/in reach");
+                var d = PlaceRules.NearestSupportDistance(World, World.Player.EyePosition, pos);
+                return ActionResult.Fail($"can't place at {Fmt(pos)}: its nearest support face is {d:0.0} blocks from my eyes at {Fmt(World.Player.Position)} " +
+                    $"(reach {Options.Reach:0.#}) and I couldn't get closer");
+            }
         }
 
         if (await SelectItemAsync(itemId, damage, ct).ConfigureAwait(false) < 0) return ActionResult.Fail($"couldn't hold {ItemName(itemId)}");

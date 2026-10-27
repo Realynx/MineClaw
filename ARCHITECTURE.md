@@ -53,10 +53,12 @@ The LLM must never be on the hot path. Claude is a *planner and conversationalis
 3. **Pull, don't push, observations.** The model asks for what it needs (`look`, `inventory`, `nearby`);
    each returns a compact, bounded summary. A tiny state header (pos, hp, food, held item, current task) rides
    along with each event.
-   Spatial work pulls pictures: `see {view: top|iso|side|eye}` returns a small PNG (≤~384 px, ≈100-200 image tokens;
+   Spatial work pulls pictures: `see {views[], focus, radius, question}` renders ONE contact sheet of a focused spot (vision v2,
+   below) and, with a perception model configured, the brain gets ≈100 tokens of voxel-verified text instead of the image.
+   In direct mode the sheet (≈280-310 image tokens; the legacy `see {view}` = one ≤~384 px picture, ≈100-200 tokens;
    MineClaw.Render: grid + coordinates + compass + labels from memory; b1.8.1 textures read at runtime from the user's own
-   client jar, never committed) only in the newest tool_result; compaction swaps it for a one-line stub and a rolling hourly
-   cap (`Bot:Vision:ImagesPerHour`, 30) bounds spend. `look {map:true}` is the cheap ASCII grid.
+   client jar, never committed) rides only in the newest tool_result; compaction swaps it for a one-line stub and a rolling
+   hourly cap (`Bot:Vision:ImagesPerHour`, 30) bounds spend. `look {map:true}` is the cheap ASCII grid (role letters included).
 4. **Prompt caching.** Order: tools + static system + *core* knowledge (breakpoint 1) → identity block
    (breakpoint 2, 5m) → append-only history with a moving breakpoint on the last message. Per-turn data
    (state header, `[self]`, `[memory]`, events) lives only in the newest user message, so each request is the previous one
@@ -144,6 +146,11 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
   header): landmark, inventory, the speaker's place and facing, nearby builds, void edges — so the brain acts in round 0.
 - **Effort**: simple chat turns (a reflex, one clear job, small talk) run at `Brainstem:SimpleTurnEffort` (low) for the
   whole turn; planning turns keep the tier's effort. Debounce: 1.2 s when the line looks complete, else 1.8 s.
+  The message cache is per effort/thinking/model variant and found again only within 5 min and ~20 content blocks
+  (`Context/CacheWarmth`): a simple turn whose low variant is cold stays on the warm variant once history passes ~6K tokens
+  (live 10-27 15:55: a low turn after an 8-round medium turn re-wrote 2 × 38K), and a cold big-history call is never cut
+  for a restart. Any call writing > 30K cache tokens logs a WARN with its likely cause (`Telemetry/CacheWriteGuard`).
+  Compaction thresholds use estimate × `ContextManager.TokenScale`, calibrated from real prompt tokens (≈1.5× the estimate).
 - **Telemetry** (`LatencyTracker`): per chat `reaction_ms`, `first_chat_ms` (ack or first line), `conclusive_ms` (final chat), `first_move_ms`, `first_action_ms`, `rounds_before_action`, cheap-only share and misses,
   speculation adopted/cancelled → `latency-YYYY-MM-DD.jsonl` and the TUI tokens panel's p50 line.
 - **Addressing** (`ChatRouter.ReasonFor`, `Chat/Addressing.cs`): name/whisper > group word > obvious player-to-player (calls
@@ -160,6 +167,15 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
   interrupt a job either (High only at hp ≤ 6).
 - **Standing-order backoff**: a pass that found nothing to do yet ("still growing", "0 chopped") is quiet context, not a failure;
   C# waits 2 → 4 → 8 → 15 min and polls `WorkProbe` (a grown tree, a regenerated gen cell, a mature crop) to resume earlier.
+- **Hand-off holds** (`Client/Survival/HandoffReservations`, `Bot/Perception/HandoffIntent`): a chat line either side ("I'll pass
+  it to 67", "bread for 67") opens a 3-min intent; pickups during it are held for that target and auto-eat skips them unless
+  hp ≤ 4; a hold ends when the item leaves the inventory (delivered) or after 10 min.
+- **Server moves**: a 0x0D more than 8 blocks from the body that doesn't answer a login/respawn raises `ServerMoved`; the brain
+  gets "server moved me from A to B (teleport)" plus a visible cause (a recent tp line, the player standing there). A death
+  respawn note says where it died. Portal trips keep their own wake.
+- **Placement** (`World/Physics/PlaceRules`): plant soil rules (sapling/flowers: dirt/grass/farmland under; reeds; cactus) and
+  "nothing solid on any side" are refused up front with the exact reason; a support face hidden from every reachable spot
+  is clicked unseen (b1.8.1's server checks distance only, like `BlindUseAim`).
 - **Workers stay on the worker model**: `delegate {profile}` may pick a cheaper profile, but an Opus-class profile runs the worker
   on `WorkerModel` unless that profile names `Worker` explicitly; a worker stops after 2 identical failures (numbers ignored).
   Worker-tier calls are booked as worker spend whatever model answered.
@@ -234,6 +250,42 @@ One place decides whether the bot may break a block, why not, and how a player u
   Llm:Ollama). Vectors are keyed by (model, dims): a different model re-embeds; a different *dimension count* than the db
   holds is refused (FTS-only + warning) unless `Agent:Embeddings:Reembed=true` drops the old vectors. Azure stays default.
 
+## Vision v2 (Render/ContactSheet + Bot/Perception/Vision) — several angles, a separate perception brain
+
+- **Contact sheet** (`ContactSheet`): one `see` = one image of the SAME focus: TOP (role layer), SIDE cut along the work axis
+  (bot→focus line, else the way it faces: looking N or E), ISO, LAYERS (feet layer + the one below; a green dot = air with a
+  side/top face to place against: holes, floor gaps, edges) and optionally EYE (the bot or a named player). Every panel draws the
+  focus (cyan box/ring), the compass and ruler ticks with the focus coordinates in yellow. ≈280-310 tokens for 4 panels (≈300
+  for 5) vs ≈500 image + ≈230 legend tokens for the same views as separate pictures (and 4 tool rounds). Focus: x,y,z, a player,
+  a saved place, `pointed`/`this`; default the current job's target, else the bot.
+- **Role layer** (`RoleClassifier`, `BlockRole`): floor, wall, gen cell (G = MINE HERE), water, lava, void, door, station, player
+  build (B), own placed (+), protected ($), never-break (X), portal (P), from the protection policy's `Check` verdicts, the world
+  index, dig cells (taught/confirmed/geometry) and the placed-block log. Tinted cells + letters in every panel, letters in `look map`.
+- **Perception tier** (`Agent/Perception`, `Agent:Llm:Perception {Provider, Model, Endpoint, ApiKey, Deployment, ApiVersion, Mode}`):
+  `IPerceptionModel` = anthropic (default `claude-sonnet-5-5`, the shared client and key: Claude to Claude) | azure-openai
+  (chat completions, `image_url` data URI, `api-key`, deployment + api-version or the v1 API) | openai (any compatible endpoint,
+  bearer) | ollama (`/api/chat` images, `format: json`). Swapping is config only. The model gets sheet + legend + question and must
+  answer strict JSON `{answer, facts:[{claim, coords[], role?, confidence}]}`.
+- **Verification** (`PerceptionVerifier`, zero tokens): every claim's coordinates, block names, roles (incl. "not a gen cell")
+  and air/solid expectations are checked against WorldState voxels; a single-target claim one block off is snapped to the
+  matching neighbour (floor vs feet misread), the rest dropped; the answer line survives only if every coordinate in it belongs
+  to a kept fact and it doesn't repeat a refuted claim. Deterministic role grounding (gen cells, portal, never-break near the
+  focus) is appended. Hallucination rate = refuted / checked claims, logged per call. The brain gets the ≈100-token text, never
+  the image. `Mode = direct` (or no model / no key) keeps the old image-to-caller path.
+- **Cost/telemetry** (`PerceptionService`, `PerceptionTelemetry`): answers cached by (view hash, question); `PerHour` cap (60);
+  booked in the budget ledger as its own `perception` tier (never "worker"); latency/tokens/$/hallucinations per call in
+  `perception-YYYY-MM-DD.jsonl`. Non-Anthropic models are priced by `InputPerMTok/OutputPerMTok` (Ollama $0).
+- **Auto-vision** (`AutoVision`, `Perception:Auto`): spatial job steps (gen mining, place/dig, build/repair skills, "this
+  one"/"the middle one" after a punch-point) start ONE background look per step; the brain's next turn gets it through
+  `TurnPerception` (never waits), the worker's next round through `WorkerAgent.RoundNote` (waits ≤ `WorkerWaitMs`). A spot whose
+  view hash didn't change since the last answer is skipped. Builds/repairs end with a before/after check ("[vision check] floor
+  patched, 1 gap at x,y,z"); a build that changed nothing is not checked.
+- **Eval** (`Perception/Vision/Eval/VisionEval`, `tools/VisionAB sheets|perception`): today's failures as cases (floor vs gen cell,
+  faces in a hole at 7,62,9, edge distance, the middle one, the portal on the void nether platform from
+  `tests/fixtures/portal-trip`) × arms (Opus reading the sheet, Sonnet perception, Haiku perception): accuracy before/after
+  verification, tokens, brain tokens, $ per question, hallucinations. Offline in the tests (recorded/fake answers); live is opt-in,
+  ≤20 calls and ≤$0.50.
+
 ## Hive (MineClaw.Hive) — clones as supervised processes
 
 `App → Hive → Bot`. Up to `Hive:MaxClones` clones (`maid_chan_67/69/420/1337`), each a **separate OS process**: the same App
@@ -247,6 +299,12 @@ connects its pipe before opening anything and exits 75 without one (never unsupe
   Heartbeats both ways from each link's own threads (blocking reader + heartbeat writer: never stalled by an Opus turn, tools,
   the db or a starved thread pool); every frame counts as liveness; after `HeartbeatTimeoutSeconds` (45) of silence a
   ping/pong probe (answered by the other side's link itself) decides; pipe closed or a failed probe = that side is dead.
+- **Assignment fit** (`Clone/CloneFitness`, `Supervisor/AssignFailureMemory`): an unnamed spawn scores every free clone (offline
+  idle or online without a pending task) on hp, food, tools/armor for the task's intent (fight/mine/chop/...) and distance to
+  main; hp/food persist in `hive_inventory` across main restarts. A clone that can't safely do it is skipped, and when none
+  fits the result says why and the fix ("67 hp 7, food 0 ... needs food"). A failed result is remembered by (clone, intent)
+  until that clone's hp/food/inventory or day/night changes, or a player says try again / brings what was missing; meanwhile
+  the same intent is refused for it (named or unnamed) with the reason.
 - **Failure handling**: clone crash/kill → claims + grants released at once, last inventory snapshot marked *stranded*, quiet
   event to main, restart with exponential backoff (resuming its unfinished, uncancelled task with its loadout and re-granted
   leases), retired after `MaxCrashes` in `CrashWindowMinutes`. Spawns are serialized (parallel tool calls never share a slot), launches are spaced by `LaunchGapSeconds` (4.5 s, the server's login throttle), a config-error exit (2) retires the slot at once, and a task given to a clone being recalled (same turn, either order) relaunches it with that task

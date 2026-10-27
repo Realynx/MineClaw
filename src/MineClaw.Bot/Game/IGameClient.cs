@@ -24,6 +24,8 @@ public interface IGameClient
     event Action? Spawned;
     event Action? Died;
     event Action? Respawned;
+    /// <summary>Server-forced move (from, to): see <see cref="MinecraftClient.ServerMoved"/>. Default: never raised.</summary>
+    event Action<Vec3d, Vec3d>? ServerMoved { add { } remove { } }
     event Action<int, int>? HealthChanged;
     event Action<string>? PlayerJoined;
     event Action<string>? PlayerLeft;
@@ -99,6 +101,7 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
     public event Action? Spawned { add => Inner.Spawned += value; remove => Inner.Spawned -= value; }
     public event Action? Died { add => Inner.Died += value; remove => Inner.Died -= value; }
     public event Action? Respawned { add => Inner.Respawned += value; remove => Inner.Respawned -= value; }
+    public event Action<Vec3d, Vec3d>? ServerMoved { add => Inner.ServerMoved += value; remove => Inner.ServerMoved -= value; }
     public event Action<int, int>? HealthChanged { add => Inner.HealthChanged += value; remove => Inner.HealthChanged -= value; }
     public event Action<string>? PlayerJoined { add => Inner.PlayerJoined += value; remove => Inner.PlayerJoined -= value; }
     public event Action<string>? PlayerLeft { add => Inner.PlayerLeft += value; remove => Inner.PlayerLeft -= value; }

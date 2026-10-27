@@ -86,6 +86,10 @@ public sealed class CloneSlot(string name)
     /// <summary>Main standing still for a hand-off TO this clone (lend offer → toss), and what it offered.</summary>
     internal IDisposable? LendHold;
     internal HiveLending.Pick? PendingLend;
+    /// <summary>What <see cref="Task"/> asks of the body (fight, mine...): the key of the refused-assignment memory.</summary>
+    internal TaskIntent Intent;
+    /// <summary>Last hp/food written to the store (only changes are saved).</summary>
+    internal (int Hp, int Food)? SavedVitals;
 }
 
 /// <summary>
@@ -192,6 +196,82 @@ public sealed class HiveSupervisor : IAsyncDisposable
     /// <summary>A clone gets a new (non-resume) assignment: drop the standing order an earlier hive script left for it.</summary>
     public Action<string>? ResetClone { get; set; }
 
+    /// <summary>Main's world is at night (null = unknown): a day/night change clears remembered refusals.</summary>
+    public Func<bool?>? IsNight { get; set; }
+
+    /// <summary>Refused assignments by (clone, intent) (live 10-27: "fight mobs" re-sent to 67 three times).</summary>
+    public AssignFailureMemory Refusals { get; } = new();
+
+    /// <summary>
+    /// A clone's last known body: the live snapshot (hp, food, position) and items while it is out, else what the store kept
+    /// from its last session (hp/food survive a logout; items were deposited).
+    /// </summary>
+    public CloneVitals VitalsOf(CloneSlot s)
+    {
+        var snap = s.Snapshot;
+        IReadOnlyList<ItemMsg>? items = s.IsLive ? s.Inventory : null;
+        if (snap is { Hp: > 0 } sn)
+            return new CloneVitals(sn.Hp, sn.Food, items, sn.Pos?.X, sn.Pos?.Y, sn.Pos?.Z, sn.Dimension, sn.At);
+        try
+        {
+            if (Store?.Vitals(s.Name) is { } v) return new CloneVitals(v.Hp, v.Food, items, v.X, v.Y, v.Z, v.Dimension, v.At);
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "hive: vitals of {Clone} unreadable", s.Name); }
+        return CloneVitals.Unknown with { Items = items };
+    }
+
+    /// <summary>A player's line (main's addressed chat): a retry or new information clears matching refusals.</summary>
+    public void NotePlayerChat(string? player, string text)
+    {
+        int n = Refusals.OnPlayerChat(text, clone => _slots.TryGetValue(clone, out var sl) && Mentions(text, sl));
+        if (n > 0) _log.LogInformation("hive: {N} refused assignment(s) cleared by {Player}: {Text}", n, player ?? "?", text);
+    }
+
+    private bool? Night() { try { return IsNight?.Invoke(); } catch (Exception) { return null; } }
+
+    private (double X, double Z)? MainXZ() { try { return Handoff?.Position is { } p ? (p.X, p.Z) : null; } catch (Exception) { return null; } }
+
+    /// <summary>A free clone (offline idle, or logged in with nothing to finish) that can take a new job.</summary>
+    private static bool Free(CloneSlot s) => s.State == CloneState.Idle
+        // Online and free: no task, or asleep after a script that ended with after: sleep. A clone whose result just came in is
+        // depositing before its logout: not free.
+        || (s.State == CloneState.Running && s.Connected && !s.Recalled && (s.Task == null || (s.ResultIn && s.Task.SleepsAfter)));
+
+    /// <summary>
+    /// Picks the best free clone for an unnamed task: scored on hp, food, tools and gear for the intent and distance to main;
+    /// clones that can't safely do it (blocker) or refused this intent with nothing changed since are skipped. Null pick =
+    /// none qualifies, with the reason and a fix for the brain.
+    /// </summary>
+    internal (CloneSlot? Slot, string? Why) PickFor(TaskIntent intent, CloneSlot? except = null)
+    {
+        var free = _slots.Values.Where(s => Free(s) && !ReferenceEquals(s, except)).ToList();
+        if (free.Count == 0) return (null, null);
+        var main = MainXZ();
+        bool? night = Night();
+        var scored = free.Select(s =>
+        {
+            var v = VitalsOf(s);
+            var fit = CloneFitness.Score(s.Number, v, intent, online: s.IsLive, main?.X, main?.Z);
+            var refused = Refusals.Blocking(s.Name, intent, v, night);
+            return (Slot: s, Fit: fit, Refused: refused);
+        }).OrderByDescending(x => x.Fit.Score).ToList();
+        var ok = scored.FirstOrDefault(x => x.Fit.Blocker == null && x.Refused == null);
+        if (ok.Slot != null)
+        {
+            if (scored.Count > 1)
+                _log.LogInformation("hive: picked {Clone} for {Intent} ({Fits})", ok.Slot.Name, intent,
+                    string.Join("; ", scored.Select(x => $"{x.Slot.Number} {x.Fit.Score:0.0} {x.Fit.Summary}" + (x.Fit.Blocker != null ? " BLOCKED" : x.Refused != null ? " REFUSED" : ""))));
+            return (ok.Slot, null);
+        }
+        var why = string.Join("; ", scored.Select(x => x.Refused != null
+            ? $"{x.Slot.Number} already refused {CloneFitness.Verb(intent)}: {x.Refused}, and nothing changed since"
+            : $"{x.Slot.Number} {x.Fit.Blocker}"));
+        bool food = scored.Any(x => (x.Fit.Blocker ?? x.Refused ?? "").Contains("food", StringComparison.OrdinalIgnoreCase));
+        var fix = food ? "fix: a clone needs food first (toss it bread or cooked meat, or put some in a chest), then spawn again"
+            : "fix: tell the player what's missing, or wait until it changes";
+        return (null, $"no clone fits {CloneFitness.Verb(intent)}: {why}; {fix}");
+    }
+
     private string SpawnCore(string task, string? name, bool handover, string? forPlayer, HiveSpawnOptions? opts = null)
     {
         if (!_cfg.Enabled) return "error: hive is off";
@@ -213,14 +293,32 @@ public sealed class HiveSupervisor : IAsyncDisposable
         if (task.Length > 400) task = task[..400];
         if (Ledger.AtRecallLine(out var why)) return "no: budget (" + why + ")";
 
+        var intent = CloneFitness.IntentOf(code != null ? task + " " + code : task);
         CloneSlot? slot;
+        string? fitNote = null;
         if (name != null)
         {
             var r = Resolve(name);
             if (r == null) return $"error: no clone '{name}' (have {string.Join(", ", _slots.Values.Select(s => s.Number))})";
             slot = _slots[r];
+            // The same intent this clone refused, with nothing changed since: don't send it again (main re-sent "fight" 3x).
+            if (!handover && Refusals.Blocking(slot.Name, intent, VitalsOf(slot), Night()) is { } refused)
+            {
+                var (alt, _) = PickFor(intent, except: slot);
+                return $"no: not reassigned: {slot.Number} already refused {CloneFitness.Verb(intent)}: {refused}; nothing changed since (hp/food/inventory, day/night). " +
+                    (alt != null ? $"{alt.Number} fits ({CloneFitness.Score(alt.Number, VitalsOf(alt), intent, alt.IsLive).Summary}): give it to {alt.Number}"
+                        : "Tell the player what it needs") + "; it reruns if a player says try again or brings what was missing";
+            }
+            if (CloneFitness.Score(slot.Number, VitalsOf(slot), intent, slot.IsLive) is { Blocker: { } b })
+                fitNote = $" (warning: {slot.Number} {b})";
         }
-        else slot = _slots.Values.FirstOrDefault(s => s.State == CloneState.Idle);
+        else
+        {
+            // Unnamed: the best fit among free clones, not the first idle slot (live 10-27 15:44: 67 at hp 7/food 0 got "fight").
+            var (best, noFit) = PickFor(intent);
+            if (best == null && noFit != null) return "no: " + noFit;
+            slot = best;
+        }
 
         // Ownership covers a player's CONVERSATION about a request, not every task done for them (10-27: "67 already owns
         // PoofimaFox's request" refused a tree clone, both spar clones, and made main recall 67 mid-job). Main may add clones
@@ -260,6 +358,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
                     if (!slot.BrainRecall || _shuttingDown) return $"no: {slot.Number} is logging out";
                     slot.RespawnWith = (t, forPlayer, name == null);
                     slot.AssignedTurn = MineClaw.Agent.TurnContext.Current;
+                    slot.Intent = intent;
                     respawnQueued = true;
                     break;
                 case CloneState.Running or CloneState.Starting or CloneState.Backoff:
@@ -272,6 +371,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
                         displacedFor = slot.ForPlayer;
                     }
                     slot.Task = t;
+                    slot.Intent = intent;
                     slot.ResultIn = false;
                     slot.ResultText = null;
                     slot.ForPlayer = forPlayer;
@@ -288,6 +388,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
                     var d = SlotPolicy.CanSpawn(facts, Regulars, pending, _cfg.MaxPlayersFallback);
                     if (!d.Ok) return "no: " + d.Reason;
                     Reserve(slot, t, forPlayer, name == null);
+                    slot.Intent = intent;
                     launch = true;
                     break;
             }
@@ -299,7 +400,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
             Launch(slot);
             AfterAssign(slot, previous, forPlayer, task);
             NotifyGroup(slot, forPlayer, task);
-            return $"ok: {slot.Number} spawning (its part is pending until its result arrives)";
+            return $"ok: {slot.Number} spawning (its part is pending until its result arrives){fitNote}";
         }
         string moved = "";
         if (displaced != null)
@@ -312,7 +413,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
         }
         AfterAssign(slot, previous, forPlayer, task);
         NotifyGroup(slot, forPlayer, task);
-        return $"ok: {slot.Number} got the new task (pending until its result arrives){moved}";
+        return $"ok: {slot.Number} got the new task (pending until its result arrives){moved}{fitNote}";
     }
 
     // caller holds slot.Lock: a fresh outing for an Idle/Backoff slot (reserved now: nobody else picks it; Launch runs later).
@@ -622,6 +723,18 @@ public sealed class HiveSupervisor : IAsyncDisposable
         });
         var (d, _) = Ledger.ClonesSpend();
         return string.Join(" | ", parts) + $" | clones today ${d:0.00}";
+    }
+
+    /// <summary>Persists a clone's hp/food/position when they change (main restarts keep knowing who is fit for what).</summary>
+    private void SaveVitals(CloneSlot slot, BotSnapshot snap)
+    {
+        if (Store is null || snap.Hp <= 0 || slot.SavedVitals == (snap.Hp, snap.Food)) return;
+        try
+        {
+            Store.SaveVitals(slot.Name, snap.Hp, snap.Food, snap.Pos?.X, snap.Pos?.Y, snap.Pos?.Z, snap.Dimension);
+            slot.SavedVitals = (snap.Hp, snap.Food);
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "hive: saving {Clone}'s vitals failed", slot.Name); }
     }
 
     private static string Trunc(string s, int n) => s.Length <= n ? s : s[..(n - 1)] + "…";
@@ -968,7 +1081,11 @@ public sealed class HiveSupervisor : IAsyncDisposable
             case Msg.Heartbeat:
                 return null;
             case Msg.Snapshot:
-                if (m.D is { ValueKind: JsonValueKind.String } sj && BotSnapshot.FromJson(sj.GetString()!) is { } snap) slot.Snapshot = VoxelSendGate.Merge(slot.Snapshot, snap);
+                if (m.D is { ValueKind: JsonValueKind.String } sj && BotSnapshot.FromJson(sj.GetString()!) is { } snap)
+                {
+                    slot.Snapshot = VoxelSendGate.Merge(slot.Snapshot, snap);
+                    SaveVitals(slot, snap);
+                }
                 return null;
             case Msg.Usage:
                 if (m.D is { ValueKind: JsonValueKind.String } uj && JsonSerializer.Deserialize<PromptUsageRecord>(uj.GetString()!, BotSnapshot.Json) is { } rec)
@@ -984,6 +1101,9 @@ public sealed class HiveSupervisor : IAsyncDisposable
                 slot.ResultIn = true;
                 slot.ResultText = r.Text;
                 slot.ResultOk = r.Ok;
+                // Remember a refusal by (clone, intent) with the body it had, so main doesn't re-send the same job unchanged.
+                if (r.Ok) Refusals.Clear(slot.Name, slot.Intent);
+                else Refusals.Record(slot.Name, slot.Intent, r.Text, VitalsOf(slot), Night());
                 // A failure must reach main's brain even while a script sleeps it; "done" stays a low notice.
                 Post(r.Ok ? GameEvent.Notice($"[hive] {slot.Number} done: {Trunc(r.Text, 200)}", EventPriority.Low)
                     : GameEvent.Notice($"[hive] {slot.Number} failed: {Trunc(r.Text, 200)}", EventPriority.Normal) with { MustWake = true });

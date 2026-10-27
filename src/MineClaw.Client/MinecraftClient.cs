@@ -34,6 +34,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
         IsProtected = options.IsProtected;
         ReservedItems = options.ReservedItems ?? new HashSet<int>();
         Survival = new SurvivalReflex(options.Survival);
+        Handoffs = new HandoffReservations { Log = Log };
         World.Inventory.CraftResult = (grid, width) => Recipes.Match(grid, width)?.Output ?? ItemStack.Empty;
         World.Inventory.WindowOpened += _ => Interlocked.Increment(ref _windowsOpened);
         World.BlockChanged += TrackPlacedBlock;
@@ -53,6 +54,9 @@ public sealed partial class MinecraftClient : IAsyncDisposable
     /// <summary>Items not to eat or deposit automatically.</summary>
     public IReadOnlySet<int> ReservedItems { get; set; }
 
+    /// <summary>Items picked up to pass on to someone (auto-eat skips them unless health is critical).</summary>
+    public HandoffReservations Handoffs { get; }
+
     public int Difficulty { get; private set; }
     /// <summary>Unexpected server position corrections (rubber-banding) since connect.</summary>
     public int PositionCorrections => _session?.Corrections ?? 0;
@@ -69,6 +73,10 @@ public sealed partial class MinecraftClient : IAsyncDisposable
     public event Action? Spawned;
     public event Action? Died;
     public event Action? Respawned;
+    /// <summary>(from, to) of a server-forced position change (0x0D farther than <see cref="ServerMoveMinDistance"/> that
+    /// doesn't answer a login/respawn): a /tp or plugin move. Respawns and portal trips raise <see cref="Respawned"/> instead.</summary>
+    public event Action<Vec3d, Vec3d>? ServerMoved;
+    public const double ServerMoveMinDistance = 8;
     /// <summary>(health, food) after a 0x08 update that changed either.</summary>
     public event Action<int, int>? HealthChanged;
     public event Action<string>? PlayerJoined;

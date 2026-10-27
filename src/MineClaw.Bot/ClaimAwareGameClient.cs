@@ -100,6 +100,7 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
     public event Action? Spawned { add => inner.Spawned += value; remove => inner.Spawned -= value; }
     public event Action? Died { add => inner.Died += value; remove => inner.Died -= value; }
     public event Action? Respawned { add => inner.Respawned += value; remove => inner.Respawned -= value; }
+    public event Action<Vec3d, Vec3d>? ServerMoved { add => inner.ServerMoved += value; remove => inner.ServerMoved -= value; }
     public event Action<int, int>? HealthChanged { add => inner.HealthChanged += value; remove => inner.HealthChanged -= value; }
     public event Action<string>? PlayerJoined { add => inner.PlayerJoined += value; remove => inner.PlayerJoined -= value; }
     public event Action<string>? PlayerLeft { add => inner.PlayerLeft += value; remove => inner.PlayerLeft -= value; }

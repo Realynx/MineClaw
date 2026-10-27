@@ -60,6 +60,9 @@ public sealed class LlmOptions
     /// <summary>The local Ollama server ("Agent:Llm:Ollama"). Empty endpoint = no Ollama anywhere (behaviour unchanged).</summary>
     public OllamaOptions Ollama { get; set; } = new();
 
+    /// <summary>The perception tier ("Agent:Llm:Perception"): the model that looks at <c>see</c> pictures for the brain.</summary>
+    public Perception.PerceptionOptions Perception { get; set; } = new();
+
     /// <summary>
     /// Named model profiles ("Agent:Llm:Profiles") the brain can pick for a delegated task or a clone's brain. Built-ins:
     /// opus, sonnet, haiku. A profile without a model, or on an unconfigured provider, is never offered or accepted.

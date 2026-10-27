@@ -19,6 +19,8 @@ public sealed class VisionOptions
     /// <summary>Hard cap on pictures per rolling hour (per bot); over it, <c>see</c> answers with the text map instead.</summary>
     public int ImagesPerHour { get; set; } = 30;
     public int DefaultRadius { get; set; } = 12;
+    /// <summary>Radius of a contact sheet (vision v2: a focused spot, 3..12).</summary>
+    public int SheetRadius { get; set; } = 6;
     public int EyeWidth { get; set; } = 320;
     public int EyeHeight { get; set; } = 240;
     /// <summary>Use the b1.8.1 textures when a client jar / extracted atlas is available (flat colours otherwise).</summary>
@@ -34,28 +36,32 @@ public sealed class VisionOptions
 }
 
 /// <summary>
-/// The <c>see</c> tool (a PNG for the model: top map / iso / side slice / first-person eye view, with grid, coordinates,
-/// compass, labels from memory) and the data behind <c>look {map:true}</c>. Pictures ride in the tool_result of the newest
-/// turn only: compaction swaps each for a one-line stub, and a rolling hourly cap keeps the bots from spamming screenshots.
+/// The <c>see</c> tool and the data behind <c>look {map:true}</c>. Vision v2 (<see cref="VisionHub"/>): one call = one contact
+/// sheet of the SAME focus (top with the role layer, a side cut along the work axis, iso, the feet+below layers, optionally a
+/// first-person panel); with a perception model configured (Agent:Llm:Perception, default Sonnet) the sheet goes to that model
+/// with the question and the caller gets ≈100 tokens of voxel-verified text, never the image. Mode "direct" (or no model)
+/// keeps today's path: the picture rides in the newest tool_result only (compaction stubs it) under the hourly cap.
+/// The legacy <c>view</c> parameter still returns one classic picture.
 /// </summary>
 public static class VisionTools
 {
     public const string ToolName = "see";
 
     public const string Description =
-        "PNG picture: top=map, 1-block grid+coords (default); iso=3D; side=slice facing N; eye=first-person. For building, " +
-        "edges/rows/cells, which-cell disputes, unfamiliar builds, checking work. Quick check: look map. 30/h.";
+        "Look at a spot: one sheet of views (top+roles, side cut, iso, layers=feet+below; eye) around focus; question → a vision " +
+        "model answers in checked text. For gen cells vs floor, holes/place faces, edges, which-one, checking builds. Quick: look map.";
 
-    /// <summary>Per-world context for the look map (marks from memory), set by <see cref="Register"/>.</summary>
+    /// <summary>Per-world context for the look map (marks from memory, role letters), set by <see cref="Register"/>.</summary>
     private static readonly ConditionalWeakTable<WorldState, Context> Contexts = new();
 
     private sealed class Context
     {
         public Func<int, int, int, int, IReadOnlyList<VisionMark>>? Marks;
         public Func<string, bool>? IsHive;
+        public RoleMap? Roles;
     }
 
-    /// <summary>The text map for <c>look {map:true}</c> (size 5..25, default 15).</summary>
+    /// <summary>The text map for <c>look {map:true}</c> (size 5..25, default 15), role letters included when known.</summary>
     public static string LookMap(IGameClient c, int? size)
     {
         if (!c.IsPlaying) return "not in game";
@@ -65,7 +71,7 @@ public static class VisionTools
         Contexts.TryGetValue(w, out var ctx);
         var ents = Entities(c, feet, n / 2 + 1, ctx?.IsHive);
         var marks = ctx?.Marks?.Invoke(feet.X, feet.Y, feet.Z, n / 2) ?? [];
-        return AsciiMap.Render(w.PlanningView, feet.X, feet.Y, feet.Z, n, (feet.X, feet.Y, feet.Z), ents, marks);
+        return AsciiMap.Render(w.PlanningView, feet.X, feet.Y, feet.Z, n, (feet.X, feet.Y, feet.Z), ents, marks, ctx?.Roles);
     }
 
     internal static List<VisionEntity> Entities(IGameClient c, BlockPos centre, int radius, Func<string, bool>? isHive)
@@ -111,9 +117,13 @@ public static class VisionTools
         _ => null,
     };
 
-    /// <summary>Registers <c>see</c> (brain + worker) after the brain split; also enables marks in the look map.</summary>
-    public static void Register(AgentRuntime rt, IGameClient c, IPlaceResolver places, VisionOptions? options = null,
-        Perception.GestureTracker? gestures = null, Func<IEnumerable<string>>? hiveBots = null, TimeProvider? time = null, ILogger? log = null)
+    /// <summary>
+    /// Registers <c>see</c> (brain + worker) after the brain split; also enables marks and role letters in the look map.
+    /// Returns the hub that auto-vision renders and asks through (null when vision is disabled).
+    /// </summary>
+    public static VisionHub? Register(AgentRuntime rt, IGameClient c, IPlaceResolver places, VisionOptions? options = null,
+        Perception.GestureTracker? gestures = null, Func<IEnumerable<string>>? hiveBots = null, TimeProvider? time = null, ILogger? log = null,
+        Perception.Vision.RoleClassifier? roles = null, Perception.Vision.PerceptionService? perception = null)
     {
         var o = options ?? new VisionOptions();
         time ??= TimeProvider.System;
@@ -149,8 +159,8 @@ public static class VisionTools
             catch (Exception ex) { log?.LogDebug(ex, "see: marks unavailable"); }
             return list.Take(14).ToList();
         }
-        Contexts.AddOrUpdate(c.World, new Context { Marks = Marks, IsHive = IsHive });
-        if (!o.Enabled) return;
+        Contexts.AddOrUpdate(c.World, new Context { Marks = Marks, IsHive = IsHive, Roles = roles?.Map });
+        if (!o.Enabled) return null;
 
         // Textures: found once in the background (local jar, extracted atlas, or a verified download); flat colours meanwhile.
         var texOptions = new TextureOptions
@@ -168,35 +178,52 @@ public static class VisionTools
         var voxels = new WorldVoxels(c.World);
         var gate = new object();
         var shots = new Queue<DateTimeOffset>();
-        Perception.Gesture? lastPoint = null;
-        if (gestures != null) gestures.Pointed += g => lastPoint = g;
+        var hub = new VisionHub(rt, c, places, o, voxels, Marks, IsHive, roles, perception, time, log);
+        if (gestures != null) gestures.Pointed += g => hub.LastPoint = g;
+
+        // The image budget (direct pictures only; perception calls have their own hourly cap).
+        bool TakeShot(DateTimeOffset now)
+        {
+            lock (gate)
+            {
+                while (shots.Count > 0 && now - shots.Peek() > TimeSpan.FromHours(1)) shots.Dequeue();
+                if (shots.Count >= Math.Max(0, o.ImagesPerHour)) return false;
+                shots.Enqueue(now);
+                return true;
+            }
+        }
+        hub.Atlas = () =>
+        {
+            var at = atlasTask.Value;
+            return at.Wait(TimeSpan.FromSeconds(3)) ? at.Result : null; // still loading: flat colours this once
+        };
 
         rt.Tools.Register(ToolName, Description,
-            ToolSchema.Create().Str("view", required: false, enumValues: ["top", "iso", "side", "eye"])
-                .Int("radius", "8-24", required: false)
-                .Str("focus", "player, place or x,y,z", required: false).Build(),
-            (i, ct) =>
+            ToolSchema.Create().StrArray("views", "top side iso layers eye", required: false)
+                .Str("question", required: false)
+                .Str("focus", "x,y,z, player, place, pointed", required: false)
+                .Int("radius", required: false)
+                .Str("view", "one old picture", required: false, enumValues: ["top", "iso", "side", "eye"]).Build(),
+            async (i, ct) =>
             {
-                if (!c.IsPlaying) return Task.FromResult(ToolResult.Error("not in game"));
+                if (!c.IsPlaying) return ToolResult.Error("not in game");
                 var now = time.GetUtcNow();
-                lock (gate)
+                // Legacy single picture: `view` without views/question (the old contract, unchanged).
+                if (i.Str("view") is { Length: > 0 } && i.StrList("views").Count == 0 && string.IsNullOrWhiteSpace(i.Str("question")))
                 {
-                    while (shots.Count > 0 && now - shots.Peek() > TimeSpan.FromHours(1)) shots.Dequeue();
-                    if (shots.Count >= Math.Max(0, o.ImagesPerHour))
-                        return Task.FromResult(ToolResult.Success($"image budget used ({o.ImagesPerHour}/h); text map instead:\n" + LookMap(c, 15)));
+                    if (!TakeShot(now)) return ToolResult.Success($"image budget used ({o.ImagesPerHour}/h); text map instead:\n" + LookMap(c, 15));
+                    var atlas = hub.Atlas();
+                    return Render(i, c, places, rt, o, renderer, eye, voxels, atlas, Marks, IsHive, hub.LastPoint, now, roles?.Map);
                 }
-                var at = atlasTask.Value;
-                var atlas = at.Wait(TimeSpan.FromSeconds(3)) ? at.Result : null; // still loading: flat colours this once
-                var result = Render(i, c, places, rt, o, renderer, eye, voxels, atlas, Marks, IsHive, lastPoint, now);
-                if (result.Image != null) lock (gate) shots.Enqueue(now);
-                return Task.FromResult(result);
+                return await hub.SeeAsync(i, TakeShot, ct).ConfigureAwait(false);
             }, tiers: ToolTiers.Main | ToolTiers.Worker, maxResultChars: 700);
+        return hub;
     }
 
     private static readonly string[] TargetKeys = ["to", "at", "target", "pos"];
 
     /// <summary>The block the current activity works on (its first coordinate argument), if any.</summary>
-    private static BlockPos? ActivityTarget(AgentRuntime rt, IPlaceResolver places)
+    internal static BlockPos? ActivityTarget(AgentRuntime rt, IPlaceResolver places)
     {
         if (rt.Activities.Current is not { } a) return null;
         foreach (var (_, input) in a.Steps)
@@ -211,7 +238,8 @@ public static class VisionTools
 
     internal static ToolResult Render(JsonElement i, IGameClient c, IPlaceResolver places, AgentRuntime rt, VisionOptions o,
         VisionRenderer renderer, EyeRenderer eye, WorldVoxels voxels, TextureAtlas? atlas,
-        Func<int, int, int, int, IReadOnlyList<VisionMark>> marks, Func<string, bool> isHive, Perception.Gesture? lastPoint, DateTimeOffset now)
+        Func<int, int, int, int, IReadOnlyList<VisionMark>> marks, Func<string, bool> isHive, Perception.Gesture? lastPoint, DateTimeOffset now,
+        RoleMap? roles = null)
     {
         var w = c.World;
         var me = w.Player.Position;
@@ -283,7 +311,7 @@ public static class VisionTools
                 View = v, Radius = radius, Cx = centre.X, Cy = centre.Y, Cz = centre.Z, Blocks = w.PlanningView,
                 Self = (feet.X, feet.Y, feet.Z), Entities = ents, Marks = ms, Target = target is { } tt ? (tt.X, tt.Y, tt.Z) : null,
                 Pointed = pointed is { } pp ? (pp.Pos.X, pp.Pos.Y, pp.Pos.Z) : null, PointedBy = pointed?.Player, Nether = nether,
-                Atlas = atlas, Light = voxels, Time = w.Time,
+                Atlas = atlas, Light = voxels, Time = w.Time, Roles = roles,
             });
             kind = v.ToString().ToLowerInvariant();
         }

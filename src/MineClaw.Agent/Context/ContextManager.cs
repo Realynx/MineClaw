@@ -131,11 +131,20 @@ public sealed class ContextManager
         lock (_lock) return TextUtil.EstimateTokens(Journal) + _episodes.Sum(e => e.CheapTokens);
     }
 
+    /// <summary>
+    /// Real tokens per estimated token for the main rendering (≥ 1; the brain loop calibrates it from API usage). The
+    /// 3.5-chars/token estimate runs ~1.5× low on tool JSON (live 10-27: 47K real at 30K estimated), so without it the 30K
+    /// compaction threshold meant ~45K real and never fired. Compaction thresholds compare estimate × scale.
+    /// </summary>
+    public double TokenScale { get; set; } = 1.0;
+
+    private int Scaled(int estimate) => (int)Math.Min(int.MaxValue, estimate * Math.Max(1.0, TokenScale));
+
     public bool NeedsCompaction
     {
         get
         {
-            int main = EstimateTokens(), cheap = EstimateCheapTokens();
+            int main = Scaled(EstimateTokens()), cheap = EstimateCheapTokens();
             return main > _options.CompactAtTokens || cheap > _options.CheapCompactAtTokens || main > _options.MaxTokens;
         }
     }
@@ -154,7 +163,7 @@ public sealed class ContextManager
             int main = jt + _episodes.Sum(e => e.MainTokens);
             int cheap = jt + _episodes.Sum(e => e.CheapTokens);
             int take = 0;
-            while (take < _episodes.Count - 1 && (main > _options.CompactToTokens || cheap > _options.CheapCompactToTokens))
+            while (take < _episodes.Count - 1 && (Scaled(main) > _options.CompactToTokens || cheap > _options.CheapCompactToTokens))
             {
                 main -= _episodes[take].MainTokens;
                 cheap -= _episodes[take].CheapTokens;

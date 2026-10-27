@@ -66,6 +66,13 @@ public sealed partial class MinecraftClient
         bool teleported = false;
         while (s.Teleports.TryDequeue(out var t))
         {
+            // A server-forced move (/tp, a plugin, a far correction): not the answer to a login/respawn (AwaitingTeleport) and
+            // farther than any rubber-band. Raised so the brain hears "server moved me from A to B" (live 10-27: "I somehow
+            // ended up back at spawn").
+            var before = player.Position;
+            bool forced = s.PositionKnown && !s.AwaitingTeleport && !player.IsDead;
+            var after = new Vec3d(t.X, t.Y, t.Z);
+            if (forced && before.DistanceTo(after) > ServerMoveMinDistance) Raise(() => ServerMoved?.Invoke(before, after));
             player.ServerTeleport(new Vec3d(t.X, t.Y, t.Z), t.Stance, t.Yaw, t.Pitch, t.OnGround);
             Send(s, t.EchoForServer(t.OnGround));
             if (s.PositionKnown && !s.AwaitingTeleport) s.Corrections++;

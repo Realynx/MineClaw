@@ -257,6 +257,8 @@ public sealed class OllamaLlmClient : ILlmClient, IDisposable
             if (names.TryGetValue(r.ToolUseId, out var name)) t["tool_name"] = name;
             yield return t;
         }
+        foreach (var ib in m.Content.OfType<LlmImageBlock>())
+            if (vision) images.Add(Convert.ToBase64String(ib.Image.Data));
         var text = string.Join("\n", m.Content.OfType<LlmText>().Select(t => t.Text).Where(t => t.Length > 0));
         if (text.Length == 0 && images.Count == 0) yield break;
         var u = new JsonObject { ["role"] = "user", ["content"] = text.Length > 0 ? text : "(image from the tool result above)" };

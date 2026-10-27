@@ -91,6 +91,9 @@ public sealed class MainHive : IAsyncDisposable
         };
         _supervisor.Donor = (Receiver)_supervisor.Handoff; // a clone short of a tool gets main's spare (live 3, 14:16:58)
         _supervisor.Notice += e => rt.Events.Post(e);
+        // Assignment fitness + refused-assignment memory (live 10-27 15:44: "fight" sent to 67 at hp 7/food 0, three times).
+        _supervisor.IsNight = () => client.IsPlaying ? client.World.IsNight : (bool?)null;
+        rt.Chat.Accepted += m => { try { _supervisor?.NotePlayerChat(m.Player, m.Text); } catch (Exception ex) { _log.LogDebug(ex, "hive: refusal memory chat hook failed"); } };
         // A clone's result is reportable only after its result event arrives: drop pending-result claims from main's chat.
         var sup = _supervisor;
         // ...and an instruction to a clone in main's chat goes to the clone over IPC (clones ignore hive chat; live 3, 14:34).
