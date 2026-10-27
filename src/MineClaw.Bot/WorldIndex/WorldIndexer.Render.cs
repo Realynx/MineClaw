@@ -119,6 +119,7 @@ public sealed partial class WorldIndexer
                 sb.Append(e.Extra["saplings"] is int sp && sp > 0 && e.Extra["logs"] is 0 ? $"tree spot at {P(e.Anchor)}" : $"tree at {P(e.Anchor)}");
                 Where();
                 sb.Append($": {e.Extra["trees"]} trees, {e.Extra["logs"]} logs, {e.Extra["saplings"]} saplings");
+                if (e.Extra.GetValueOrDefault("note") is string note) sb.Append("; ").Append(note).Append(" (by me)");
                 foreach (var (k, v) in e.Extra) f[k] = v;
                 break;
             case IndexKinds.UnknownStructure:

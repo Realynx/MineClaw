@@ -63,6 +63,7 @@ public sealed partial class WorldIndexer
             foreach (var k in removed) if (Find(IndexKinds.Farm, k) is { } e) RemoveEntry(e);
             foreach (var c in changed) ApplyFarm(type, c);
         }
+        ApplyTreeNotes();
         if (_trees.HasWork)
         {
             var (changed, removed) = _trees.Recluster(NewKey(IndexKinds.Tree, null, c => PosKey(MinOf(c))));
@@ -276,6 +277,38 @@ public sealed partial class WorldIndexer
         e.Extra["trees"] = trunks;
         e.Extra["logs"] = logs;
         e.Extra["saplings"] = saplings;
+        // Dirt is unrenewable and the tree is the only wood: never mine the soil under a trunk or a sapling.
+        var protect = new HashSet<BlockPos>();
+        foreach (var p in c.Cells)
+        {
+            int id = _world.GetBlock(p);
+            if ((id == Blocks.Sapling || (id == Blocks.Log && _world.GetBlock(p.Down()) != Blocks.Log))
+                && _world.GetBlock(p.Down()) is Blocks.Dirt or Blocks.Grass) protect.Add(p.Down());
+            if (id == Blocks.Sapling) protect.Add(p);
+        }
+        SetProtect(e, protect);
+        // The bot's own notes ("replanted oak sapling, growing") on any cell of this cluster.
+        foreach (var p in c.Cells)
+            if (_treeNotes.TryGetValue(p, out var note)) { e.Extra["note"] = note.Text; e.Extra["noted"] = note.At.ToString("u"); break; }
+    }
+
+    // ------------------------------------------------------------------ tree notes (from chop_tree)
+
+    private readonly Dictionary<BlockPos, (string Text, DateTimeOffset At)> _treeNotes = new();
+    private readonly System.Collections.Concurrent.ConcurrentQueue<(BlockPos Pos, string Text, DateTimeOffset At)> _treeNoteQueue = new();
+
+    /// <summary>Attaches the bot's own note to the tree cluster at <paramref name="p"/> (a sapling it planted, a felled
+    /// tree it couldn't replant). Any thread; applied on the next pass.</summary>
+    public void NoteTree(BlockPos p, string text) => _treeNoteQueue.Enqueue((p, text, _time.GetUtcNow()));
+
+    private void ApplyTreeNotes()
+    {
+        while (_treeNoteQueue.TryDequeue(out var n))
+        {
+            _treeNotes[n.Pos] = (n.Text, n.At);
+            if (_treeNotes.Count > 64) _treeNotes.Remove(_treeNotes.MinBy(kv => kv.Value.At).Key);
+            _trees.Touch(n.Pos);
+        }
     }
 
     // ------------------------------------------------------------------ unknown structures

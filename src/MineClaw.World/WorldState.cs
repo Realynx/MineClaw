@@ -32,6 +32,8 @@ public sealed class WorldState : IBlockAccess
     public EntityTracker Entities { get; } = new();
     public PlayerState Player { get; } = new();
     public InventoryManager Inventory { get; } = new();
+    /// <summary>Cells the bot itself just dug/placed (attribution: the bot's own edits are never a player's).</summary>
+    public SelfEditLog SelfEdits { get; } = new();
 
     // ---- world-level state ----
     private long _time;

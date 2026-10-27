@@ -119,6 +119,8 @@ public sealed class FakeGameClient : IGameClient
     public Task<ActionResult> DigBlockAsync(int x, int y, int z, CancellationToken ct = default) => Act($"dig {x},{y},{z}");
     public Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default) => Act($"activate {x},{y},{z}");
     public Task<ActionResult> EatAsync(CancellationToken ct = default) => Act("eat");
+    public Task<ActionResult> ChopTreeAsync(MineClaw.World.BlockPos? at = null, int? wood = null, CancellationToken ct = default) =>
+        Act($"chop at={(at is { } p ? $"{p.X},{p.Y},{p.Z}" : "")} wood={wood}");
 
     // ---- world helpers
     public void Floor(int y = 64, int r = 6, int id = Blocks.Stone)

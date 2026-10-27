@@ -125,6 +125,35 @@ public sealed partial class MinecraftClient : IAsyncDisposable
         public string? EndReason;
         public readonly ConcurrentQueue<PlayerPositionLookPacket> Teleports = new();
         public readonly HashSet<string> Online = new(StringComparer.OrdinalIgnoreCase);
+        public MineClaw.Protocol.Recording.PacketRecorder? Recorder;
+    }
+
+    /// <summary>Path of the current session's packet recording, or null.</summary>
+    public string? RecordingPath => _session?.Recorder?.Path;
+
+    /// <summary>Directory to record into: <see cref="ClientOptions.RecordDirectory"/>, else env MINECLAW_RECORD.</summary>
+    public static string? ResolveRecordDirectory(string? configured, string? env)
+    {
+        if (!string.IsNullOrWhiteSpace(configured)) return configured;
+        if (string.IsNullOrWhiteSpace(env) || env is "0" or "false" or "off") return null;
+        return env is "1" or "true" or "on" ? Path.Combine(Environment.CurrentDirectory, "logs", "recordings") : env;
+    }
+
+    private void StartRecording(Session s)
+    {
+        var dir = ResolveRecordDirectory(Options.RecordDirectory, Environment.GetEnvironmentVariable("MINECLAW_RECORD"));
+        if (dir is null) return;
+        try
+        {
+            s.Recorder = MineClaw.Protocol.Recording.PacketRecorder.CreateFile(dir, Options.RecordGzip,
+                $"user={Options.Username};host={Options.Host}:{Options.Port};protocol={ProtocolInfo.ProtocolVersion}");
+            s.Recorder.Attach(s.Conn);
+            Log($"recording packets to {s.Recorder.Path}");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Log($"can't record packets in {dir}: {ex.Message}");
+        }
     }
 
     private CancellationToken SessionToken => _session?.Cts.Token ?? new CancellationToken(true);
@@ -158,6 +187,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
 
         var s = new Session(conn);
         ResetForNewSession();
+        StartRecording(s);
         lock (_lifecycle) _session = s;
         s.Reader = new Thread(() => ReaderLoop(s)) { IsBackground = true, Name = "mc-reader" };
         s.Ticker = new Thread(() => TickLoop(s)) { IsBackground = true, Name = "mc-tick" };
@@ -240,6 +270,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
         }
         s.Cts.Cancel();
         try { s.Conn.Dispose(); } catch { /* ignore */ }
+        s.Recorder?.Dispose();
         s.SpawnedTcs.TrySetException(new IOException(reason));
         _driver?.Tcs.TrySetException(new ActionAbortedException("disconnected"));
         _driver = null;
@@ -251,17 +282,24 @@ public sealed partial class MinecraftClient : IAsyncDisposable
         if (wasPlaying || s.PositionKnown) Raise(() => Disconnected?.Invoke(reason));
 
         if (Options.AutoReconnect && !_userDisconnect && wasPlaying)
-            StartReconnectLoop();
+            StartReconnectLoop(reason);
     }
 
-    private void StartReconnectLoop()
+    /// <summary>First reconnect delay after a session ended for <paramref name="endReason"/>: long after a duplicate-login
+    /// kick (another session owns the account), otherwise <see cref="ClientOptions.ReconnectInitialDelay"/>.</summary>
+    public static TimeSpan FirstReconnectDelay(string? endReason, ClientOptions o) =>
+        endReason is not null && endReason.Contains("logged in from another location", StringComparison.OrdinalIgnoreCase)
+            ? o.DuplicateLoginBackoff
+            : o.ReconnectInitialDelay;
+
+    private void StartReconnectLoop(string endReason)
     {
         var cts = new CancellationTokenSource();
         _reconnectCts = cts;
         _state = ClientState.Reconnecting;
         _ = Task.Run(async () =>
         {
-            var delay = Options.ReconnectInitialDelay;
+            var delay = FirstReconnectDelay(endReason, Options);
             while (!cts.IsCancellationRequested && !_userDisconnect)
             {
                 Log($"reconnecting in {delay.TotalSeconds:0}s");
@@ -297,6 +335,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
     private void Send(Session s, IPacket p)
     {
         if (s.Ended) return;
+        NoteSelfEdit(p);
         try
         {
             s.Conn.Send(p);
@@ -306,6 +345,26 @@ public sealed partial class MinecraftClient : IAsyncDisposable
             EndSession(s, "send failed: " + ex.Message);
         }
     }
+
+    /// <summary>Own digs/placements go into <see cref="WorldState.SelfEdits"/> so observers never credit them to a player.</summary>
+    private void NoteSelfEdit(IPacket p)
+    {
+        switch (p)
+        {
+            case PlayerDiggingPacket d when d.Status is PlayerDiggingPacket.StatusStarted or PlayerDiggingPacket.StatusFinished:
+                World.SelfEdits.Note(new BlockPos(d.X, d.Y, d.Z));
+                break;
+            case PlayerBlockPlacementPacket b when b.Direction != PlayerBlockPlacementPacket.NoDirection:
+                World.SelfEdits.Note(PlacementTarget(b.X, b.Y, b.Z, b.Direction));
+                break;
+        }
+    }
+
+    /// <summary>The cell a 0x0F placement fills: the clicked block offset by the face (0 -y, 1 +y, 2 -z, 3 +z, 4 -x, 5 +x).</summary>
+    public static BlockPos PlacementTarget(int x, int y, int z, int face) => face switch
+    {
+        0 => new(x, y - 1, z), 1 => new(x, y + 1, z), 2 => new(x, y, z - 1), 3 => new(x, y, z + 1), 4 => new(x - 1, y, z), _ => new(x + 1, y, z),
+    };
 
     // ------------------------------------------------------------------ reader thread
 

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Offline replay of .mcrec packet recordings through the bot's world/index/activity/danger pipeline.
+       Used by tools/Replay, tools/CalibrationReport and the regression tests. Not in the .sln on purpose. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>MineClaw.Replay</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\MineClaw.Bot\MineClaw.Bot.csproj" />
+  </ItemGroup>
+
+</Project>

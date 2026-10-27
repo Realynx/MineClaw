@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\MineClaw.Bot\MineClaw.Bot.csproj" />
+    <ProjectReference Include="..\..\tools\ReplayKit\ReplayKit.csproj" />
   </ItemGroup>
 
 </Project>

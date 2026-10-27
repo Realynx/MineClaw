@@ -142,8 +142,9 @@ public sealed class Pathfinder
                 Mod? mods = n.Mods;
                 foreach (var b in m.Break) mods = new Mod(b, 0, mods);
                 if (m.Place is { } p) mods = new Mod(p, _o.ScaffoldBlockId, mods);
+                if (m.Open is { } opens) foreach (var tg in opens) mods = ToggleMods(tg, mods);
                 t.Mods = mods;
-                t.Step = new PathStep(m.X, m.Y, m.Z, m.Kind, m.Floor, m.Cost, m.Break, m.Place, m.Sneak);
+                t.Step = new PathStep(m.X, m.Y, m.Z, m.Kind, m.Floor, m.Cost, m.Break, m.Place, m.Sneak, m.Open);
                 open.Enqueue((t, ng), ng + t.H * PathOptions.WalkCost);
             }
         }
@@ -168,7 +169,7 @@ public sealed class Pathfinder
     // ------------------------------------------------------------------ moves
 
     private readonly record struct Candidate(int X, int Y, int Z, MoveKind Kind, double Floor, double Cost,
-        IReadOnlyList<BlockPos> Break, BlockPos? Place, bool Sneak);
+        IReadOnlyList<BlockPos> Break, BlockPos? Place, bool Sneak, IReadOnlyList<DoorToggle>? Open = null);
 
     private static readonly (int Dx, int Dz)[] Cardinals = [(1, 0), (-1, 0), (0, 1), (0, -1)];
     private static readonly (int Dx, int Dz)[] Diagonals = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
@@ -186,14 +187,20 @@ public sealed class Pathfinder
             var t = Cell(tx, y, tz);
             bool walked = false;
 
+            // Doors and trapdoors are thin panels on a cell edge: the centred boxes never touch them, so the move
+            // between the cells is checked too (closed = obstacle, or an Open* step when allowed).
+            List<DoorToggle>? opens = null;
+            bool transit = !t.Ok || TransitOk(x, z, tx, tz, y, Math.Max(here.Floor, t.Floor), out opens);
+
             // Same level (with ≤0.5 step-ups, or a <1 block step down e.g. slab → ground).
             if (t.Ok && t.Floor - here.Floor <= 0.5 + 1e-6 && BodyClear(x, z, Math.Max(here.Floor, t.Floor)))
             {
-                AddWalk(output, here, hereEdge, tx, y, tz, t, MoveKind.Walk, 1.0, []);
+                if (transit) AddWalk(output, here, hereEdge, tx, y, tz, t, MoveKind.Walk, 1.0, [], opens);
                 walked = true;
             }
             else if (t.Ok && t.Floor - here.Floor <= 1.25 && !here.Water && BodyClear(x, z, t.Floor))
             {
+                if (!transit || opens != null) continue;
                 // Higher partial block in the same cell row (soul sand, 0.875): needs a jump.
                 AddJump(output, here, hereEdge, tx, y, tz, t, []);
                 walked = true;
@@ -201,12 +208,16 @@ public sealed class Pathfinder
 
             // Jump up one block.
             var up = Cell(tx, y + 1, tz);
-            if (up.Ok && up.Floor - here.Floor > 0.5 && up.Floor - here.Floor <= 1.25 + 1e-6 && BodyClear(x, z, up.Floor))
+            if (up.Ok && up.Floor - here.Floor > 0.5 && up.Floor - here.Floor <= 1.25 + 1e-6 && BodyClear(x, z, up.Floor)
+                && TransitOk(x, z, tx, tz, y, up.Floor, out var jumpOpens) && jumpOpens == null)
                 AddJump(output, here, hereEdge, tx, y + 1, tz, up, []);
             else if (!up.Ok && _o.AllowBreak && !here.Water)
                 TryBreakJump(output, here, hereEdge, x, y, z, tx, tz);
 
             if (walked) continue;
+
+            // A closed fence gate in the target cell, or a closed trapdoor at head height: open it and walk through.
+            if (!t.Ok && _o.AllowOpenDoors) TryOpenThrough(output, here, hereEdge, x, y, z, tx, tz);
 
             // Drop down.
             TryDrop(output, here, x, y, z, dx, dz);
@@ -230,6 +241,8 @@ public sealed class Pathfinder
                 var b = Cell(x, y, tz);
                 if (!a.Ok || !b.Ok || Math.Abs(a.Floor - here.Floor) > 0.01 || Math.Abs(b.Floor - here.Floor) > 0.01) continue;
                 if (IsDeadly(tx, y, z) || IsDeadly(x, y, tz)) continue;
+                // Never cut a corner past a door/trapdoor panel.
+                if (HasPanels(x, z, tx, tz, y, y + 2) || HasPanels(tx, z, x, tz, y, y + 2)) continue;
                 AddWalk(output, here, hereEdge, tx, y, tz, t, MoveKind.Diagonal, Math.Sqrt(2), []);
             }
         }
@@ -243,6 +256,8 @@ public sealed class Pathfinder
             else if (_o.AllowSwim && here.Water && (above.Water || above.Climb))
                 output.Add(new Candidate(x, y + 1, z, MoveKind.Swim, above.Floor, PathOptions.SwimCost, [], null, false));
         }
+        else if (_o.AllowOpenDoors && _o.AllowClimb && here.Climb && y + 2 < WorldState.Height)
+            TryClimbHatch(output, x, y, z);
         var below = Cell(x, y - 1, z);
         if (below.Ok && Math.Abs(here.Floor - y) < 1e-6)
         {
@@ -262,7 +277,7 @@ public sealed class Pathfinder
     }
 
     private void AddWalk(List<Candidate> output, CellInfo here, bool hereEdge, int tx, int ty, int tz, CellInfo t,
-        MoveKind kind, double dist, IReadOnlyList<BlockPos> breaks)
+        MoveKind kind, double dist, IReadOnlyList<BlockPos> breaks, IReadOnlyList<DoorToggle>? open = null)
     {
         bool targetEdge = IsEdge(tx, ty, tz);
         bool water = here.Water || t.Water;
@@ -271,7 +286,13 @@ public sealed class Pathfinder
         bool sneak = (hereEdge || targetEdge) && !water;
         if (sneak) cost *= _o.EdgeCostMultiplier;
         cost += HazardPenalty(tx, ty, tz) + DigCosts(breaks);
-        output.Add(new Candidate(tx, ty, tz, water && kind == MoveKind.Walk ? MoveKind.Swim : kind, t.Floor, cost, breaks, null, sneak));
+        if (open is { Count: > 0 })
+        {
+            cost += OpenCosts(open);
+            kind = OpenKind(open);
+        }
+        else open = null;
+        output.Add(new Candidate(tx, ty, tz, water && kind == MoveKind.Walk ? MoveKind.Swim : kind, t.Floor, cost, breaks, null, sneak, open));
     }
 
     private void AddJump(List<Candidate> output, CellInfo here, bool hereEdge, int tx, int ty, int tz, CellInfo t,
@@ -291,6 +312,7 @@ public sealed class Pathfinder
         if (here.Climb && !here.Ground) return false;
         // Must be able to step off into the target column at the current height.
         if (!BodyClear(tx, tz, Math.Max(here.Floor, y))) return false;
+        if (!TransitOk(x, z, tx, tz, y, Math.Max(here.Floor, y), out var dropOpens) || dropOpens != null) return false;
         if (HazardInColumn(tx, y, y + 1, tz)) return false;
         int maxScan = Math.Max(_o.MaxDrop, _o.AllowSwim ? _o.MaxWaterDrop : 0) + 1;
         for (int d = 1; d <= maxScan && y - d >= 0; d++)
@@ -444,6 +466,9 @@ public sealed class Pathfinder
         bool climb = BlockShapes.IsClimbable(_w, feet);
 
         double? support = SupportHeight(x, y, z);
+        // A closed trapdoor is a floor anyone can open: never stand on one over the void or a deadly drop.
+        if (support is { } sh && feet == Openables.Trapdoor && !Openables.IsOpen(_w.GetMeta(x, y, z)) && sh - y < 0.25
+            && TrapdoorOverDrop(x, y, z)) return CellInfo.Invalid;
         bool ground = support is not null;
         if (!ground && !(water && _o.AllowSwim) && !(climb && _o.AllowClimb)) return CellInfo.Invalid;
         double floor = support ?? y;
@@ -554,8 +579,181 @@ public sealed class Pathfinder
 
     // ------------------------------------------------------------------ overlay
 
-    /// <summary>Persistent list of hypothetical block changes along a path (breaks → air, places → scaffold).</summary>
-    private sealed record Mod(BlockPos Pos, int Id, Mod? Next);
+    // ------------------------------------------------------------------ doors, gates, trapdoors
+
+    private static bool IsPanel(int id) => Openables.IsDoor(id) || id == Openables.Trapdoor;
+
+    /// <summary>Any door/trapdoor in columns (x,z) or (tx,tz) between y0 and y1.</summary>
+    private bool HasPanels(int x, int z, int tx, int tz, int y0, int y1)
+    {
+        for (int yy = Math.Max(0, y0); yy <= Math.Min(WorldState.Height - 1, y1); yy++)
+            if (IsPanel(_w.GetBlock(x, yy, z)) || IsPanel(_w.GetBlock(tx, yy, tz))) return true;
+        return false;
+    }
+
+    private static AABB Sweep(int x, int z, int tx, int tz, double floor) =>
+        new(Math.Min(x, tx) + 0.2, floor, Math.Min(z, tz) + 0.2, Math.Max(x, tx) + 0.8, floor + PlayerPhysics.Height, Math.Max(z, tz) + 0.8);
+
+    /// <summary>
+    /// Whether the body can move from column (x,z) to (tx,tz) at <paramref name="floor"/> past door/trapdoor panels.
+    /// True + null toggles: nothing in the way. True + toggles: passable after flipping them (AllowOpenDoors only).
+    /// False: a closed panel blocks and can't (or may not) be opened.
+    /// </summary>
+    private bool TransitOk(int x, int z, int tx, int tz, int y, double floor, out List<DoorToggle>? toggles)
+    {
+        toggles = null;
+        if (!HasPanels(x, z, tx, tz, y - 1, y + 2)) return true;
+        var sweep = Sweep(x, z, tx, tz, floor);
+        BlockShapes.GetCollidingBoxes(_w, sweep, _boxes);
+        if (_boxes.Count == 0) return true;
+        if (!_o.AllowOpenDoors) return false;
+
+        var hereCell = new BlockPos(x, y, z);
+        var list = new List<DoorToggle>(2);
+        var tmp = new List<AABB>(2);
+        foreach (var (cx, cz) in new[] { (x, z), (tx, tz) })
+        for (int yy = Math.Max(0, y - 1); yy <= Math.Min(WorldState.Height - 1, y + 2); yy++)
+        {
+            int id = _w.GetBlock(cx, yy, cz);
+            if (!IsPanel(id)) continue;
+            tmp.Clear();
+            BlockShapes.AddCollisionBoxes(_w, id, _w.GetMeta(cx, yy, cz), cx, yy, cz, tmp);
+            if (!tmp.Any(b => b.Intersects(sweep))) continue;
+            var tg = MakeToggle(new BlockPos(cx, yy, cz), hereCell, new BlockPos(tx, y, tz));
+            if (tg is null) return false;
+            if (!list.Any(o => o.Pos == tg.Pos)) list.Add(tg);
+        }
+        if (list.Count == 0) return false; // something other than a panel is in the gap
+        bool clear = WithToggles(list, () => BlockShapes.GetCollidingBoxes(_w, sweep, _boxes).Count == 0);
+        if (!clear) return false;
+        toggles = list;
+        return true;
+    }
+
+    /// <summary>The toggle that flips the openable at <paramref name="p"/>, or null when it can't be opened from
+    /// <paramref name="from"/> (iron door without a known actuator on the near side, vetoed, not an openable).</summary>
+    private DoorToggle? MakeToggle(BlockPos p, BlockPos from, BlockPos to)
+    {
+        var s = Openables.StateBlock(_w, p);
+        int id = _w.GetBlock(s.X, s.Y, s.Z), meta = _w.GetMeta(s.X, s.Y, s.Z);
+        if (!Openables.IsOpenable(id)) return null;
+        if (_o.CanOpen is { } veto && !veto(s, id)) return null;
+        if (Openables.OpensByHand(id)) return new DoorToggle(s, id, meta);
+        if (id != Openables.IronDoor) return null;
+        return FindActuator(s, from, to) is { } a ? new DoorToggle(s, id, meta, a) : null;
+    }
+
+    /// <summary>A pressure plate in the near-side cell, else a lever/button within reach of the near-side cell and
+    /// closer to it than to the far side. Iron doors with neither are obstacles.</summary>
+    private BlockPos? FindActuator(BlockPos door, BlockPos from, BlockPos to)
+    {
+        if (Openables.IsPlate(_w.GetBlock(from.X, from.Y, from.Z))) return from;
+        var eye = new Vec3d(from.X + 0.5, from.Y + PlayerPhysics.EyeHeight, from.Z + 0.5);
+        BlockPos? best = null;
+        double bestD = double.MaxValue;
+        for (int dx = -2; dx <= 2; dx++)
+        for (int dz = -2; dz <= 2; dz++)
+        for (int dy = -1; dy <= 2; dy++)
+        {
+            int ax = door.X + dx, ay = door.Y + dy, az = door.Z + dz;
+            int id = _w.GetBlock(ax, ay, az);
+            if (id is not (Openables.Lever or Openables.StoneButton)) continue;
+            double ex = ax + 0.5 - eye.X, ey = ay + 0.5 - eye.Y, ez = az + 0.5 - eye.Z;
+            double d = Math.Sqrt(ex * ex + ey * ey + ez * ez);
+            double dFrom = Math.Pow(ax - from.X, 2) + Math.Pow(az - from.Z, 2);
+            double dTo = Math.Pow(ax - to.X, 2) + Math.Pow(az - to.Z, 2);
+            if (d > _o.ActuatorReach || dFrom >= dTo) continue;
+            if (d < bestD) { bestD = d; best = new BlockPos(ax, ay, az); }
+        }
+        return best;
+    }
+
+    private Mod? ToggleMods(DoorToggle tg, Mod? mods)
+    {
+        var saved = _w.Mods;
+        _w.Mods = mods;
+        try
+        {
+            var upper = new BlockPos(tg.Pos.X, tg.Pos.Y + 1, tg.Pos.Z);
+            bool hasUpper = Openables.IsDoor(tg.Id) && _w.GetBlock(upper.X, upper.Y, upper.Z) == tg.Id;
+            int upperMeta = hasUpper ? _w.GetMeta(upper.X, upper.Y, upper.Z) : 0;
+            mods = new Mod(tg.Pos, tg.Id, mods, Openables.Toggled(tg.FromMeta));
+            if (hasUpper) mods = new Mod(upper, tg.Id, mods, Openables.Toggled(upperMeta));
+            return mods;
+        }
+        finally { _w.Mods = saved; }
+    }
+
+    private T WithToggles<T>(IReadOnlyList<DoorToggle> toggles, Func<T> f)
+    {
+        var saved = _w.Mods;
+        var mods = saved;
+        foreach (var tg in toggles) mods = ToggleMods(tg, mods);
+        _w.Mods = mods;
+        try { return f(); }
+        finally { _w.Mods = saved; }
+    }
+
+    private double OpenCosts(IReadOnlyList<DoorToggle> open) =>
+        open.Sum(o => _o.OpenCost + (o.Actuator is null ? 0 : _o.ActuatorCost));
+
+    private static MoveKind OpenKind(IReadOnlyList<DoorToggle> open) => open[0].Id switch
+    {
+        Openables.FenceGate => MoveKind.OpenGate,
+        Openables.Trapdoor => MoveKind.OpenTrapdoor,
+        _ => MoveKind.OpenDoor,
+    };
+
+    /// <summary>Closed gate in the target cell (feet or head) or closed trapdoor at head height: open, then walk.</summary>
+    private void TryOpenThrough(List<Candidate> output, CellInfo here, bool hereEdge, int x, int y, int z, int tx, int tz)
+    {
+        if (here.Water) return;
+        var list = new List<DoorToggle>(2);
+        for (int yy = y; yy <= y + 1; yy++)
+        {
+            int id = _w.GetBlock(tx, yy, tz);
+            bool closed = !Openables.IsOpen(_w.GetMeta(tx, yy, tz));
+            bool gate = id == Openables.FenceGate && closed;
+            bool headTrapdoor = id == Openables.Trapdoor && yy == y + 1 && closed;
+            if (!gate && !headTrapdoor) continue;
+            var tg = MakeToggle(new BlockPos(tx, yy, tz), new BlockPos(x, y, z), new BlockPos(tx, y, tz));
+            if (tg is null) return;
+            list.Add(tg);
+        }
+        if (list.Count == 0) return;
+        var r = WithToggles(list, () =>
+        {
+            var c = CellUncached(tx, y, tz);
+            if (!c.Ok || c.Floor - here.Floor > 0.5 + 1e-6 || c.Floor < here.Floor - 0.5 - 1e-6) return (c, false);
+            double f = Math.Max(here.Floor, c.Floor);
+            bool ok = BodyClear(x, z, f) && TransitOk(x, z, tx, tz, y, f, out var more) && more == null;
+            return (c, ok);
+        });
+        if (!r.Item2) return;
+        AddWalk(output, here, hereEdge, tx, y, tz, r.Item1, MoveKind.Walk, 1.0, [], list);
+    }
+
+    /// <summary>Ladder up into a hatch: a closed trapdoor at the head of the cell above.</summary>
+    private void TryClimbHatch(List<Candidate> output, int x, int y, int z)
+    {
+        int id = _w.GetBlock(x, y + 2, z);
+        if (id != Openables.Trapdoor || Openables.IsOpen(_w.GetMeta(x, y + 2, z))) return;
+        var tg = MakeToggle(new BlockPos(x, y + 2, z), new BlockPos(x, y, z), new BlockPos(x, y + 1, z));
+        if (tg is null) return;
+        var r = WithToggles([tg], () => (CellUncached(x, y + 1, z), BodyClear(x, z, y + 1)));
+        if (!r.Item1.Ok || !r.Item2) return;
+        output.Add(new Candidate(x, y + 1, z, MoveKind.ClimbUp, r.Item1.Floor, PathOptions.ClimbUpCost + OpenCosts([tg]), [], null, false, [tg]));
+    }
+
+    private bool TrapdoorOverDrop(int x, int y, int z)
+    {
+        int below = Safety.SupportBelow(_w, x, y - 1, z);
+        return below < 0 || y - (below + 1) > _o.MaxDrop || BlockShapes.IsLava(_w.GetBlock(x, below + 1, z));
+    }
+
+    /// <summary>Persistent list of hypothetical block changes along a path (breaks → air, places → scaffold,
+    /// toggles → same id with the open bit flipped).</summary>
+    private sealed record Mod(BlockPos Pos, int Id, Mod? Next, int Meta = 0);
 
     private sealed class Overlay(IBlockAccess inner) : IBlockAccess
     {
@@ -571,7 +769,7 @@ public sealed class Pathfinder
         public int GetMeta(int x, int y, int z)
         {
             for (var m = Mods; m is not null; m = m.Next)
-                if (m.Pos.X == x && m.Pos.Y == y && m.Pos.Z == z) return 0;
+                if (m.Pos.X == x && m.Pos.Y == y && m.Pos.Z == z) return m.Meta;
             return inner.GetMeta(x, y, z);
         }
 

@@ -19,7 +19,7 @@ public static class GameToolSet
     public static readonly string[] ToolNames =
     [
         "status", "inventory", "look", "window", "goto", "follow", "mine", "harvest_generator", "collect_drops", "craft", "smelt",
-        "collect_furnace", "deposit", "withdraw", "organize_chest", "place", "dig", "use_block", "eat",
+        "collect_furnace", "deposit", "withdraw", "organize_chest", "place", "dig", "use_block", "eat", TreeTools.ToolName,
     ];
 
     private const string At = "x,y,z or saved name";
@@ -41,9 +41,9 @@ public static class GameToolSet
                 return Ok(h.Length > 0 ? $"{c.DescribeStatus()} | {h}" : c.DescribeStatus());
             }, cheapTier: true);
         tools.Register("inventory", "Your inventory, grouped.",
-            ToolSchema.Create().Bool("detail", "add hotbar layout", required: false).Build(),
+            ToolSchema.Create().Bool("detail", "with hotbar", required: false).Build(),
             (i, _) => Ok(c.DescribeInventory(i.Bool("detail") == true, max())), cheapTier: true);
-        tools.Register("look", "Surroundings: footing, void edges, blocks, nearest chests/ores/etc, players, mobs, drops. detail=more.",
+        tools.Register("look", "Surroundings: footing, edges, blocks, chests, ores, players, mobs, drops. detail=more.",
             ToolSchema.Create().Int("radius", "default 12", required: false).Bool("detail", required: false).Build(),
             (i, _) =>
             {
@@ -58,9 +58,9 @@ public static class GameToolSet
             (_, _) => Ok(c.DescribeOpenWindow(tools.CapFor("window"))));
 
         // ---- movement
-        tools.Register("goto", "Walk to coords, a saved place, or a player (e.g. come here).",
-            ToolSchema.Create().Str("to", "x,y,z, saved name, or player").Num("dist", "stop within N, default 1", required: false)
-                .Bool("build", "may break/place blocks on the way", required: false).Build(),
+        tools.Register("goto", "Walk to x,y,z, a saved place or player (come here).",
+            ToolSchema.Create().Str("to", "x,y,z, name or player").Num("dist", required: false)
+                .Bool("build", "may dig/place on the way", required: false).Build(),
             async (i, ct) =>
             {
                 var to = i.ReqStr("to");
@@ -74,7 +74,7 @@ public static class GameToolSet
                 return R(await c.GotoAsync(goal, opts, ct));
             }, longRunning: true);
         tools.Register("follow", "Follow a player until stopped.",
-            ToolSchema.Create().Str("player").Num("dist", "default 3", required: false).Build(),
+            ToolSchema.Create().Str("player").Num("dist", required: false).Build(),
             async (i, ct) => R(await c.FollowPlayerAsync(i.ReqStr("player"), Math.Clamp(i.Num("dist") ?? 3, 1, 16), ct)), longRunning: true);
 
         // ---- gathering / crafting
@@ -192,6 +192,7 @@ public static class GameToolSet
                 return R(await c.ActivateBlockAsync(p.X, p.Y, p.Z, ct));
             }, longRunning: true);
         tools.Register("eat", "Eat the best spare food.", ToolSchema.Empty, async (_, ct) => R(await c.EatAsync(ct)), longRunning: true);
+        TreeTools.Register(tools, c, places);
     }
 
     // ------------------------------------------------------------------ helpers

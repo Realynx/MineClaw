@@ -84,7 +84,7 @@ public static class CloneMode
 
         // Identity: the identity row in the shared db is main's; a clone has its own fixed chat name and can't rename it.
         rt.Chat.SetIdentity(agentOptions.Chat.DisplayName, agentOptions.Chat.Aliases);
-        foreach (var t in new[] { "set_name", "add_alias", "remove_alias" }) rt.Tools.Remove(t);
+        rt.Tools.Remove(MineClaw.Agent.Memory.IdentityTools.ToolName);
         rt.Chat.IsHiveBot = n => host0.Arbiter.IsHiveBot(n);
         rt.Chat.Arbiter = host0.Arbiter.Decide;
         rt.Chat.Accepted += m => { if (m.Player != null) host0.ChatAccepted(m.Player); };

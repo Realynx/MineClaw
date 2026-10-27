@@ -140,7 +140,7 @@ public sealed class WorkerOptions
     [
         "stop", "status", "inventory", "look", "where_is", "goto", "follow", "run_routine",
         "recall_detail", "remember_waypoint", "mark_structure", "describe_structure", "remember_note", "forget", "list_memory",
-        "set_name", "add_alias", "remove_alias", "reflect_self", "personality_admin",
+        "identity", "reflect_self", "personality_admin",
         "ask_player", "ask_stand", "watch_demo", "chop_tree",
     ];
 

@@ -104,6 +104,16 @@ internal sealed class FakeServer : IDisposable
     public ConcurrentDictionary<int, (double X, double Y, double Z, ItemStack Item)> Drops { get; } = new();
     /// <summary>Drop an item entity here whenever a block is dug.</summary>
     public bool DropOnDig { get; set; }
+    /// <summary>Block metadata (wood type of logs/leaves...); sent in chunks and block changes.</summary>
+    public Dictionary<(int, int, int), int> Metas { get; } = new();
+    /// <summary>With <see cref="DropOnDig"/>: what a dug block drops (null = nothing); default = the block itself (stone → cobble).
+    /// Drops fall to the first block below (gone when only void is below).</summary>
+    public Func<(int X, int Y, int Z), int, int, ItemStack?>? DigDrop { get; set; }
+    /// <summary>Placing a block takes one from the held stack (SetSlot from the packet's held item, like the real server).</summary>
+    public bool ConsumeOnPlace { get; set; }
+    private volatile int _heldSlot;
+    /// <summary>Blocks dug (status 2) in order.</summary>
+    public ConcurrentQueue<(int X, int Y, int Z, int Id)> Dug { get; } = new();
     private int _nextEntity = 1000;
     public bool BreakOnFinish { get; set; } = true;
     public bool PlaceBlocks { get; set; } = true;
@@ -204,13 +214,25 @@ internal sealed class FakeServer : IDisposable
                 }
                 else Send(new TransactionPacket { WindowId = click.WindowId, ActionNumber = click.ActionNumber, Accepted = true });
                 break;
+            case HoldingChangePacket hc:
+                _heldSlot = hc.Slot;
+                break;
             case PlayerDiggingPacket dig:
                 if (BreakOnFinish && dig.Status == PlayerDiggingPacket.StatusFinished)
                 {
                     Blocks.TryGetValue((dig.X, dig.Y, dig.Z), out int was);
+                    Metas.Remove((dig.X, dig.Y, dig.Z), out int wasMeta);
                     Blocks.Remove((dig.X, dig.Y, dig.Z));
+                    if (was != 0) Dug.Enqueue((dig.X, dig.Y, dig.Z, was));
                     Send(new BlockChangePacket { X = dig.X, Y = dig.Y, Z = dig.Z, BlockId = 0, Metadata = 0 });
-                    if (DropOnDig && was != 0) SpawnDrop(dig.X + 0.5, dig.Y + 0.1, dig.Z + 0.5, new ItemStack((short)(was == MineClaw.Data.Blocks.Stone ? MineClaw.Data.Blocks.Cobblestone : was), 1, 0));
+                    if (DigDrop is not null) SettleDrops(dig.X, dig.Y, dig.Z);
+                    if (DropOnDig && was != 0)
+                    {
+                        var drop = DigDrop is { } dd ? dd((dig.X, dig.Y, dig.Z), was, wasMeta)
+                            : new ItemStack((short)(was == MineClaw.Data.Blocks.Stone ? MineClaw.Data.Blocks.Cobblestone : was), 1, 0);
+                        if (drop is { IsEmpty: false } d && DigDrop is null) SpawnDrop(dig.X + 0.5, dig.Y + 0.1, dig.Z + 0.5, d);
+                        else if (drop is { IsEmpty: false } d2 && GroundBelow(dig.X, dig.Y, dig.Z) is { } gy) SpawnDrop(dig.X + 0.5, gy + 0.1, dig.Z + 0.5, d2);
+                    }
                     if (Regenerate.TryGetValue((dig.X, dig.Y, dig.Z), out int regenId))
                     {
                         var key = (dig.X, dig.Y, dig.Z);
@@ -272,10 +294,50 @@ internal sealed class FakeServer : IDisposable
                     var (dx, dy, dz) = place.Direction switch { 0 => (0, -1, 0), 1 => (0, 1, 0), 2 => (0, 0, -1), 3 => (0, 0, 1), 4 => (-1, 0, 0), _ => (1, 0, 0) };
                     int x = place.X + dx, y = place.Y + dy, z = place.Z + dz;
                     Blocks[(x, y, z)] = place.HeldItem.Id;
-                    Send(new BlockChangePacket { X = x, Y = y, Z = z, BlockId = (byte)place.HeldItem.Id, Metadata = 0 });
+                    int meta = place.HeldItem.Id is MineClaw.Data.Blocks.Sapling or MineClaw.Data.Blocks.Log or MineClaw.Data.Blocks.Wool ? place.HeldItem.Damage : 0;
+                    if (meta != 0) Metas[(x, y, z)] = meta;
+                    Send(new BlockChangePacket { X = x, Y = y, Z = z, BlockId = (byte)place.HeldItem.Id, Metadata = (byte)meta });
+                    if (ConsumeOnPlace)
+                    {
+                        var h = place.HeldItem;
+                        var left = h.Count <= 1 ? ItemStack.Empty : new ItemStack(h.Id, (byte)(h.Count - 1), h.Damage);
+                        Inventory[36 + _heldSlot] = left;
+                        Send(new SetSlotPacket { WindowId = 0, Slot = (short)(36 + _heldSlot), Item = left });
+                    }
                 }
                 break;
         }
+    }
+
+    /// <summary>Item gravity: drops resting on a removed block fall to the next block below (or out of the world).</summary>
+    private void SettleDrops(int x, int y, int z)
+    {
+        foreach (var (id, d) in Drops)
+        {
+            if ((int)Math.Floor(d.X) != x || (int)Math.Floor(d.Z) != z || Math.Abs(d.Y - (y + 1.1)) > 0.25) continue;
+            if (GroundBelow(x, y + 1, z) is { } gy)
+            {
+                Drops[id] = (d.X, gy + 0.1, d.Z, d.Item);
+                Send(new EntityTeleportPacket { EntityId = id, X = FixedPoint.ToAbsolute(d.X), Y = FixedPoint.ToAbsolute(gy + 0.1), Z = FixedPoint.ToAbsolute(d.Z) });
+            }
+            else if (Drops.TryRemove(id, out _)) Send(new DestroyEntityPacket { EntityId = id });
+        }
+    }
+
+    /// <summary>Top of the first block below (x, y, z), or null over the void.</summary>
+    public int? GroundBelow(int x, int y, int z)
+    {
+        for (int yy = y - 1; yy >= 0; yy--)
+            if (Blocks.TryGetValue((x, yy, z), out int id) && id != 0) return yy + 1;
+        return null;
+    }
+
+    /// <summary>Server-side block change (decay, another player...).</summary>
+    public void SetBlock(int x, int y, int z, int id, int meta = 0)
+    {
+        if (id == 0) { Blocks.Remove((x, y, z)); Metas.Remove((x, y, z)); }
+        else { Blocks[(x, y, z)] = id; if (meta != 0) Metas[(x, y, z)] = meta; else Metas.Remove((x, y, z)); }
+        Send(new BlockChangePacket { X = x, Y = y, Z = z, BlockId = (byte)id, Metadata = (byte)meta });
     }
 
     public int SpawnDrop(double x, double y, double z, ItemStack item)
@@ -324,6 +386,7 @@ internal sealed class FakeServer : IDisposable
         {
             if (x >> 4 != cx || z >> 4 != cz) continue;
             r.BlockIds[r.Index(x - cx * 16, y, z - cz * 16)] = (byte)id;
+            if (Metas.TryGetValue((x, y, z), out int m)) r.Metadata[r.Index(x - cx * 16, y, z - cz * 16)] = (byte)m;
         }
         return r;
     }

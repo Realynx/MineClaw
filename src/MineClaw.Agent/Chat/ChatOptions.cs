@@ -7,7 +7,7 @@ public sealed class ChatOptions
     public string Username { get; set; } = "maid_chan";
 
     /// <summary>
-    /// Default name the bot answers to in chat. Players can rename it at runtime (set_name/add_alias/remove_alias);
+    /// Default name the bot answers to in chat. Players can rename it at runtime (identity tool);
     /// the current identity is persisted in MemoryStore and overrides these defaults.
     /// </summary>
     public string DisplayName { get; set; } = "claudechan";

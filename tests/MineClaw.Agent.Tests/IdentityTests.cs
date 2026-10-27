@@ -44,18 +44,18 @@ public class IdentityTests
         var reg = new ToolRegistry();
         IdentityTools.RegisterAll(reg, mem, chat);
 
-        var r = await reg.ExecuteAsync("set_name", J(new { name = "Mochi", by = "Alice" }), default);
+        var r = await reg.ExecuteAsync("identity", J(new { op = "rename", name = "Mochi", by = "Alice" }), default);
         Assert.True(r.Ok, r.Text);
         Assert.Equal("Mochi", chat.DisplayName);
         Assert.Contains("claudechan", chat.Aliases); // old name kept as alias
         Assert.True(chat.IsAddressed(chat.Parse("<Bob> mochi wanna help?")));
 
-        Assert.True((await reg.ExecuteAsync("add_alias", J(new { alias = "mo" }), default)).Ok);
+        Assert.True((await reg.ExecuteAsync("identity", J(new { op = "add_alias", name = "mo" }), default)).Ok);
         Assert.True(chat.IsAddressed(chat.Parse("<Bob> mo!")));
-        Assert.True((await reg.ExecuteAsync("remove_alias", J(new { alias = "claude" }), default)).Ok);
+        Assert.True((await reg.ExecuteAsync("identity", J(new { op = "remove_alias", name = "claude" }), default)).Ok);
         Assert.False(chat.IsAddressed(chat.Parse("<Bob> claude is an ai")));
-        Assert.False((await reg.ExecuteAsync("remove_alias", J(new { alias = "Mochi" }), default)).Ok);
-        Assert.False((await reg.ExecuteAsync("set_name", J(new { name = "§c" }), default)).Ok);
+        Assert.False((await reg.ExecuteAsync("identity", J(new { op = "remove_alias", name = "Mochi" }), default)).Ok);
+        Assert.False((await reg.ExecuteAsync("identity", J(new { op = "rename", name = "§c" }), default)).Ok);
 
         // New process: identity comes back from memory over config defaults.
         var chat2 = Router();
@@ -70,7 +70,7 @@ public class IdentityTests
     public async Task Rename_ChangesOnlyUncachedTail_OfSystemPrompt()
     {
         var (rt, llm, _) = TestRuntime.Create();
-        llm.ThenTool("set_name", new { name = "Mochi" }).ThenText("mochi it is!").ThenText("hi");
+        llm.ThenTool("identity", new { op = "rename", name = "Mochi" }).ThenText("mochi it is!").ThenText("hi");
         await rt.Agent.HandleBatchAsync(new EventBatch([GameEvent.Chat("Alice", "clawd your name is now mochi")]), default);
         await rt.Agent.HandleBatchAsync(new EventBatch([GameEvent.Chat("Alice", "hey mochi")]), default);
 

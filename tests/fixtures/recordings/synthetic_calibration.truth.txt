@@ -1,0 +1,8 @@
+# synthetic calibration session: t  player  kind  [block]  [xN]
+00:05.3  poofimafox  broke       cobblestone  x5
+00:15.3  kiwi        placed      cobblestone  x3
+00:22.0  kiwi        chat
+00:25.0  poofimafox  chat
+00:28.1  maid_chan   self_dug    log
+00:32.0  poofimafox  wrote_sign
+00:40.0  kiwi        died

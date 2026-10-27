@@ -28,7 +28,7 @@ public class BrainSplitTests(Xunit.Abstractions.ITestOutputHelper output)
             Assert.DoesNotContain(n, b);
         // Worker: every game macro tool except open-ended follow; never player-facing or identity tools.
         foreach (var n in GameToolSet.ToolNames.Where(n => n != "follow")) Assert.Contains(n, w);
-        foreach (var n in new[] { "delegate", "ask_memory", "ask_player", "ask_stand", "watch_demo", "set_name", "reflect_self", "stop", "follow" })
+        foreach (var n in new[] { "delegate", "ask_memory", "ask_player", "ask_stand", "watch_demo", "identity", "reflect_self", "stop", "follow" })
             Assert.DoesNotContain(n, w);
 
         var brainSys = h.Runtime.Agent.SystemPrompt[0].Text;
@@ -39,7 +39,10 @@ public class BrainSplitTests(Xunit.Abstractions.ITestOutputHelper output)
         output.WriteLine($"cheap tools: {cheap.Count} ≈{Tokens(cheap)} tok [{string.Join(", ", cheap.Select(d => d.Name))}]");
         output.WriteLine($"brain system ≈{brainSys.Length / 3.5:0} tok (no knowledge), worker system ≈{workerSys.Length / 3.5:0} tok (no knowledge)");
         foreach (var d in brain.OrderByDescending(d => Tokens([d]))) output.WriteLine($"  {d.Name} ≈{Tokens([d])}");
-        Assert.True(bt <= 2000, $"brain tools ≈{bt}");
+        // The main process also registers the merged hive tool (≤75 tok, pinned by MineClaw.Hive.Tests.HiveToolTests).
+        const int hiveTool = 75;
+        output.WriteLine($"brain tools + hive ≈{bt + hiveTool} tok");
+        Assert.True(bt + hiveTool <= 2000, $"brain tools ≈{bt} + hive {hiveTool}");
         Assert.True(wt <= 1800, $"worker tools ≈{wt}");
     }
 

@@ -109,7 +109,7 @@ public class BrainTierTests
         Assert.Contains("recall", worker);
         Assert.DoesNotContain("delegate", worker);
         Assert.DoesNotContain("ask_player", worker);   // the worker never talks to players
-        Assert.DoesNotContain("set_name", worker);
+        Assert.DoesNotContain("identity", worker);
         Assert.DoesNotContain("stop", worker);
 
         Assert.DoesNotContain("ask_player", cheap);

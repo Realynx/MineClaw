@@ -16,7 +16,7 @@ public static class HiveTools
 
     public static void RegisterMain(ToolRegistry tools, HiveSupervisor hive) =>
         tools.Register(MainTool,
-            "Your clones: spawn {task}, recall {name|all} (they deposit first), list.",
+            "Your clones: spawn a task, recall (name|all), list.",
             ToolSchema.Create().Str("op", enumValues: ["spawn", "recall", "list"]).Str("task", required: false).Str("name", "e.g. 67", required: false).Build(),
             (input, _) =>
             {

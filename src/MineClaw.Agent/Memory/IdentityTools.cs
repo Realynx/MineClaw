@@ -57,7 +57,7 @@ public static class IdentityTools
         var aliases = chat.Aliases.ToList();
         if (aliases.RemoveAll(x => x.Equals(alias?.Trim(), StringComparison.OrdinalIgnoreCase)) == 0)
             return ToolResult.Error(chat.DisplayName.Equals(alias?.Trim(), StringComparison.OrdinalIgnoreCase)
-                ? "that's the main name; use set_name" : "no such alias");
+                ? "that's the main name; use op=rename" : "no such alias");
         Save(memory, chat, chat.DisplayName, aliases, null);
         return ToolResult.Success(aliases.Count > 0 ? $"aliases: {string.Join(", ", aliases)}" : "no aliases left");
     }
@@ -68,19 +68,21 @@ public static class IdentityTools
         chat.SetIdentity(displayName, aliases);
     }
 
+    public const string ToolName = "identity";
+
+    /// <summary>One merged tool (rename / add_alias / remove_alias): a third of the cached-prefix cost of three tools.</summary>
     public static void RegisterAll(ToolRegistry registry, MemoryStore memory, ChatRouter chat)
     {
-        registry.Register("set_name", "Change the name you go by in chat (when players rename you). Old name stays as an alias unless keep_old=false.",
-            ToolSchema.Create().Str("name").Bool("keep_old", required: false).Str("by", "who named you", required: false).Build(),
-            (input, _) => Task.FromResult(SetName(memory, chat, input.Str("name"), input.Bool("keep_old") ?? true, input.Str("by"))),
+        registry.Register(ToolName, "Players rename you or add/drop a nickname (rename keeps old name as alias).",
+            ToolSchema.Create().Str("op", enumValues: ["rename", "add_alias", "remove_alias"]).Str("name").Bool("keep_old", required: false)
+                .Str("by", required: false).Build(),
+            (input, _) => Task.FromResult(input.ReqStr("op").Trim().ToLowerInvariant() switch
+            {
+                "rename" => SetName(memory, chat, input.Str("name"), input.Bool("keep_old") ?? true, input.Str("by")),
+                "add_alias" => AddAlias(memory, chat, input.Str("name"), input.Str("by")),
+                "remove_alias" => RemoveAlias(memory, chat, input.Str("name")),
+                _ => ToolResult.Error("op is rename|add_alias|remove_alias"),
+            }),
             cheapTier: true);
-
-        registry.Register("add_alias", "Add a nickname you answer to.",
-            ToolSchema.Create().Str("alias").Str("by", required: false).Build(),
-            (input, _) => Task.FromResult(AddAlias(memory, chat, input.Str("alias"), input.Str("by"))), cheapTier: true);
-
-        registry.Register("remove_alias", "Stop answering to a nickname.",
-            ToolSchema.Create().Str("alias").Build(),
-            (input, _) => Task.FromResult(RemoveAlias(memory, chat, input.Str("alias"))), cheapTier: true);
     }
 }

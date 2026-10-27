@@ -109,7 +109,7 @@ Safety
     public static string Identity(string username, string displayName, IReadOnlyList<string> aliases) =>
         $"Your name in chat is {displayName}" + (aliases.Count > 0 ? $" (you also answer to: {string.Join(", ", aliases)})" : "") +
         $". Your login username is {username}; that is what shows in <{username}> chat lines. " +
-        "If players rename you or give you a nickname, use set_name / add_alias (remove_alias to drop one).";
+        "If players rename you or give you a nickname, use the identity tool.";
 
     /// <summary>
     /// Header note of the per-turn "[self]" personality block (uncached tail, after the state line): grown impressions rank

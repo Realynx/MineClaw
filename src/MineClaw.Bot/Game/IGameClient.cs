@@ -55,6 +55,11 @@ public interface IGameClient
     Task<ActionResult> DigBlockAsync(int x, int y, int z, CancellationToken ct = default);
     Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default);
     Task<ActionResult> EatAsync(CancellationToken ct = default);
+
+    /// <summary>Fell one tree (nearest / near <paramref name="at"/> / of a wood type), gather saplings, replant
+    /// (<see cref="MinecraftClient.ChopTreeAsync"/>). Default: unsupported, so wrappers and fakes needn't implement it.</summary>
+    Task<ActionResult> ChopTreeAsync(BlockPos? at = null, int? wood = null, CancellationToken ct = default) =>
+        Task.FromResult(ActionResult.Fail("chop_tree isn't available on this client"));
 }
 
 /// <summary>Thin forwarding adapter over the real client.</summary>
@@ -108,4 +113,5 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
     public Task<ActionResult> DigBlockAsync(int x, int y, int z, CancellationToken ct = default) => Inner.DigBlockAsync(x, y, z, ct);
     public Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default) => Inner.ActivateBlockAsync(x, y, z, ct);
     public Task<ActionResult> EatAsync(CancellationToken ct = default) => Inner.EatAsync(ct);
+    public Task<ActionResult> ChopTreeAsync(BlockPos? at = null, int? wood = null, CancellationToken ct = default) => Inner.ChopTreeAsync(at, wood, null, ct);
 }

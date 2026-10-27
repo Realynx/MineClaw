@@ -20,7 +20,7 @@ public class HiveToolTests(Xunit.Abstractions.ITestOutputHelper output)
         Assert.Empty(tools.Definitions(ModelTier.Worker));
         int t = Tokens(brain);
         output.WriteLine($"hive tool ≈{t} tokens");
-        Assert.True(t <= 85, $"hive tool ≈{t} tok");
+        Assert.True(t <= 75, $"hive tool ≈{t} tok");
 
         var list = await tools.ExecuteAsync("hive", System.Text.Json.JsonSerializer.SerializeToElement(new { op = "list" }), default);
         Assert.StartsWith("67 idle | 69 idle | 420 idle | 1337 idle", list.Text);

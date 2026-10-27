@@ -45,12 +45,13 @@ public sealed partial class MinecraftClient
         return false;
     }
 
-    private async Task<CollectResult> CollectDropsCoreAsync(double radius, int maxEntities, CancellationToken ct)
+    private async Task<CollectResult> CollectDropsCoreAsync(double radius, int maxEntities, CancellationToken ct, Vec3d? around = null,
+        ISet<int>? lostIds = null)
     {
         var skip = new HashSet<int>();
         int picked = 0, lost = 0, lostItems = 0;
         int startCount = TotalItems();
-        var origin = World.Player.Position;
+        var origin = around ?? World.Player.Position;
         for (int guard = 0; guard < maxEntities * 2 && picked < maxEntities; guard++)
         {
             var me = World.Player.Position;
@@ -66,6 +67,7 @@ public sealed partial class MinecraftClient
                 if (!HasSafePickupSpot(drop.Position))
                 {
                     skip.Add(id);
+                    lostIds?.Add(id);
                     lost++;
                     lostItems += drop.Item.Count;
                     Log($"collect: not chasing {drop.DisplayName} at {Fmt(drop.Position)}: over or next to the void");

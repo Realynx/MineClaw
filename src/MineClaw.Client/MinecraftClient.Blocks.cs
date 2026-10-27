@@ -51,8 +51,9 @@ public sealed partial class MinecraftClient
 
     /// <param name="generator">Digging a cobblestone generator's output: lava next to it is expected, so instead of
     /// refusing, the bot must stand where released lava can't reach it.</param>
+    /// <param name="noShears">Leaves for saplings: shears would drop the leaf block instead of the sapling chance.</param>
     private async Task<ActionResult> DigCoreAsync(BlockPos pos, CancellationToken ct, bool allowPathing = true, bool ignoreProtection = false,
-        bool generator = false)
+        bool generator = false, bool noShears = false)
     {
         int id = World.GetBlock(pos);
         string name = BlockName(id, World.GetMeta(pos));
@@ -76,7 +77,7 @@ public sealed partial class MinecraftClient
         }
         if (DigSafetyVeto(pos, name, generator, positioned: true) is { } veto2) return ActionResult.Fail(veto2);
 
-        int held = await SelectToolForAsync(id, ct).ConfigureAwait(false);
+        int held = await SelectToolForAsync(id, ct, noShears).ConfigureAwait(false);
         var snap = World.Player.Snapshot;
         bool inWater = BlockShapes.IsWater(World.GetBlock((int)Math.Floor(snap.Position.X), (int)Math.Floor(snap.Position.Y + PlayerPhysics.EyeHeight), (int)Math.Floor(snap.Position.Z)));
         int ticks = Tools.DigTicks(id, held, snap.OnGround, inWater);
@@ -109,10 +110,10 @@ public sealed partial class MinecraftClient
         return ActionResult.Success($"dug {name} at {Fmt(pos)} ({ticks} ticks, {(held > 0 ? ItemName(held) : "hand")})");
     }
 
-    private async Task<ActionResult> PlaceCoreAsync(BlockPos pos, int itemId, CancellationToken ct, bool allowPathing = true)
+    private async Task<ActionResult> PlaceCoreAsync(BlockPos pos, int itemId, CancellationToken ct, bool allowPathing = true, int? damage = null)
     {
         if (itemId <= 0) return ActionResult.Fail("no block to place");
-        if (World.Inventory.CountItem(itemId) == 0) return ActionResult.Fail($"no {ItemName(itemId)} in inventory");
+        if (World.Inventory.CountItem(itemId, damage) == 0) return ActionResult.Fail($"no {ItemName(itemId, damage ?? 0)} in inventory");
         int existing = World.GetBlock(pos);
         if (!Aiming.IsReplaceable(World, existing)) return ActionResult.Fail($"{Fmt(pos)} is occupied by {BlockName(existing, World.GetMeta(pos))}");
         if (!World.IsLoaded(pos.X, pos.Z)) return ActionResult.Fail($"{Fmt(pos)} is not loaded");
@@ -123,7 +124,7 @@ public sealed partial class MinecraftClient
         _idleSneak = true;
         try
         {
-            return await PlaceSneakingAsync(pos, itemId, ct, allowPathing).ConfigureAwait(false);
+            return await PlaceSneakingAsync(pos, itemId, ct, allowPathing, damage).ConfigureAwait(false);
         }
         finally
         {
@@ -131,7 +132,7 @@ public sealed partial class MinecraftClient
         }
     }
 
-    private async Task<ActionResult> PlaceSneakingAsync(BlockPos pos, int itemId, CancellationToken ct, bool allowPathing)
+    private async Task<ActionResult> PlaceSneakingAsync(BlockPos pos, int itemId, CancellationToken ct, bool allowPathing, int? damage = null)
     {
         var aim = Aiming.FindPlaceAim(World, World.Player.EyePosition, pos, Options.Reach, AABB.ForPlayer(World.Player.Position));
         if (aim is null)
@@ -143,7 +144,7 @@ public sealed partial class MinecraftClient
             if (aim is null) return ActionResult.Fail($"can't place at {Fmt(pos)}: no solid neighbour face in reach (or I'm in the way)");
         }
 
-        if (await SelectItemAsync(itemId, null, ct).ConfigureAwait(false) < 0) return ActionResult.Fail($"couldn't hold {ItemName(itemId)}");
+        if (await SelectItemAsync(itemId, damage, ct).ConfigureAwait(false) < 0) return ActionResult.Fail($"couldn't hold {ItemName(itemId)}");
         var a = aim.Value;
         await LookCoreAsync(a.Yaw, a.Pitch, ct).ConfigureAwait(false);
         Send(new PlayerBlockPlacementPacket
@@ -253,11 +254,11 @@ public sealed partial class MinecraftClient
     }
 
     /// <summary>Selects the best tool for the block (or a harmless slot for bare-hand blocks). Returns the held item id (-1 = hand).</summary>
-    private async Task<int> SelectToolForAsync(int blockId, CancellationToken ct)
+    private async Task<int> SelectToolForAsync(int blockId, CancellationToken ct, bool noShears = false)
     {
         var slots = World.Inventory.PlayerSlots();
         var usable = new ItemStack[45];
-        for (int i = 0; i < 45; i++) usable[i] = i >= 9 ? slots[i] : ItemStack.Empty;
+        for (int i = 0; i < 45; i++) usable[i] = i >= 9 && !(noShears && slots[i].Id == Items.Shears) ? slots[i] : ItemStack.Empty;
         int best = Tools.BestToolIndex(blockId, usable);
         if (best >= 0)
         {
@@ -267,7 +268,7 @@ public sealed partial class MinecraftClient
         }
         // Bare hand is best: avoid wearing down a tool/sword in hand.
         var held = HeldStack();
-        if (!held.IsEmpty && Items.Get(held.Id).MaxDamage > 0)
+        if (!held.IsEmpty && (Items.Get(held.Id).MaxDamage > 0 || (noShears && held.Id == Items.Shears)))
         {
             for (int i = 0; i < 9; i++)
             {

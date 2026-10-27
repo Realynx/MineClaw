@@ -12,7 +12,9 @@ public enum FollowerStatus
     Failed,
 }
 
-public enum FollowerActionKind { Break, Place }
+/// <summary>Break/Place a block, or Activate = right-click <see cref="FollowerAction.Pos"/> (a door/gate/trapdoor, or the
+/// button/lever of an iron door) and wait for the server's block change before calling Tick again.</summary>
+public enum FollowerActionKind { Break, Place, Activate }
 
 /// <summary>An action the Client must perform for the path to continue. For Place, use
 /// <see cref="Aiming.FindPlaceAim"/> (the follower only requests it once an aim exists from the current position).</summary>
@@ -31,6 +33,14 @@ public sealed record PathFollowerOptions
     /// <summary>Ticks a Jump step may have its jump cancelled by the edge guard (<see cref="PathFollower.NoteJumpCancelled"/>)
     /// before the follower gives up on that move and reports it in <see cref="PathFollower.BlockedJump"/>.</summary>
     public int JumpCancelLimit { get; init; } = 8;
+    /// <summary>Put doors/gates/trapdoors back the way they were found once past them (default; buttons and plates
+    /// reset themselves).</summary>
+    public bool RestoreDoors { get; init; } = true;
+    /// <summary>Right-clicks per openable before giving up ("locked": a protection plugin, or an iron door that ignored
+    /// its button).</summary>
+    public int MaxActivations { get; init; } = 3;
+    /// <summary>Ticks to stand on an iron door's pressure plate waiting for it to open.</summary>
+    public int PlateWaitTicks { get; init; } = 30;
 }
 
 /// <summary>
@@ -48,6 +58,9 @@ public sealed class PathFollower
     private int _noProgress;
     private int _jumpCancels;
     private BlockPos? _jumpFrom;
+    private readonly Dictionary<BlockPos, int> _activations = new();
+    private readonly List<(DoorToggle Toggle, int StepIndex)> _restore = new();
+    private int _plateWait;
 
     public PathFollower(IReadOnlyList<PathStep> steps, PathFollowerOptions? options = null)
     {
@@ -72,10 +85,14 @@ public sealed class PathFollower
         if (s.OnGround) _jumpFrom = new BlockPos((int)Math.Floor(s.Position.X), (int)Math.Floor(s.Position.Y + 1e-6), (int)Math.Floor(s.Position.Z));
     }
 
+    /// <summary>Openables that were flipped and are still waiting to be put back (or could not be).</summary>
+    public IReadOnlyList<DoorToggle> Unrestored => _restore.Select(r => r.Toggle).ToArray();
+
     public FollowerOutput Tick(IBlockAccess w, PhysicsState s)
     {
         for (int guard = 0; guard < 4; guard++)
         {
+            if (RestoreRequest(w, s) is { } restore) return restore;
             if (StepIndex >= _steps.Count)
                 return new FollowerOutput(FollowerStatus.Finished, MoveInput.Idle(s.Yaw, s.Pitch));
             var step = _steps[StepIndex];
@@ -83,6 +100,10 @@ public sealed class PathFollower
 
             if (Reached(w, s, step))
             {
+                if (_o.RestoreDoors)
+                    foreach (var tg in step.Opens)
+                        if (tg.CanRestore(w) && !_restore.Any(r => r.Toggle.Pos == tg.Pos)) _restore.Add((tg, StepIndex));
+                _plateWait = 0;
                 StepIndex++;
                 _segmentStart = s.Position;
                 _bestDist = double.MaxValue;
@@ -98,13 +119,49 @@ public sealed class PathFollower
 
     private bool NeedsPrecision(PathStep step)
     {
-        if (StepIndex == _steps.Count - 1 || step.Sneak) return true;
+        if (StepIndex == _steps.Count - 1 || step.Sneak || step.Opens.Count > 0) return true;
         var next = StepIndex + 1 < _steps.Count ? _steps[StepIndex + 1] : null;
-        return next is not null && (next.Kind is MoveKind.Pillar or MoveKind.Bridge or MoveKind.ClimbUp or MoveKind.ClimbDown || next.Sneak);
+        // Doorways are 0.81 wide once the panel swings in: line up on the cell centre before and inside them.
+        return next is not null && (next.Kind is MoveKind.Pillar or MoveKind.Bridge or MoveKind.ClimbUp or MoveKind.ClimbDown
+            or MoveKind.OpenDoor or MoveKind.OpenGate or MoveKind.OpenTrapdoor || next.Sneak || next.Opens.Count > 0);
+    }
+
+    /// <summary>Restores a door once the body is a full step past it, still within reach, and clear of its old box.</summary>
+    private FollowerOutput? RestoreRequest(IBlockAccess w, PhysicsState s)
+    {
+        for (int i = _restore.Count - 1; i >= 0; i--)
+        {
+            var (tg, at) = _restore[i];
+            if (tg.Restored(w)) { _restore.RemoveAt(i); continue; }
+            if (StepIndex <= at + 1 && StepIndex < _steps.Count) continue; // not past it yet
+            var target = tg.Actuator ?? tg.Pos;
+            var c = new Vec3d(target.X + 0.5, target.Y + 0.5, target.Z + 0.5);
+            if ((c - s.EyePosition).Length > _o.Reach) { if (StepIndex >= _steps.Count) _restore.RemoveAt(i); continue; }
+            var box = s.BoundingBox;
+            var after = new List<AABB>(2);
+            BlockShapes.AddCollisionBoxes(w, tg.Id, tg.FromMeta, tg.Pos.X, tg.Pos.Y, tg.Pos.Z, after);
+            if (Openables.IsDoor(tg.Id))
+                BlockShapes.AddCollisionBoxes(w, tg.Id, tg.FromMeta | Openables.UpperBit, tg.Pos.X, tg.Pos.Y + 1, tg.Pos.Z, after);
+            if (after.Any(b => b.Intersects(box))) continue; // would close it on myself
+            if (!Activation(target)) { _restore.RemoveAt(i); continue; }
+            return new FollowerOutput(FollowerStatus.NeedsAction, MoveInput.Idle(s.Yaw, s.Pitch),
+                new FollowerAction(FollowerActionKind.Activate, target));
+        }
+        return null;
+    }
+
+    /// <summary>Counts a right-click on <paramref name="p"/>; false once <see cref="PathFollowerOptions.MaxActivations"/> is used up.</summary>
+    private bool Activation(BlockPos p)
+    {
+        _activations.TryGetValue(p, out int n);
+        if (n >= _o.MaxActivations) return false;
+        _activations[p] = n + 1;
+        return true;
     }
 
     private bool Reached(IBlockAccess w, PhysicsState s, PathStep step)
     {
+        if (step.Opens.Count > 0 && step.Opens.Any(o => !o.Done(w))) return false;
         if (step.Break.Count > 0 && step.Break.Any(b => BlockPresent(w, b))) return false;
         if (step.Place is { } p && Aiming.IsReplaceable(w, w.GetBlock(p.X, p.Y, p.Z))) return false;
         var pos = s.Position;
@@ -164,6 +221,24 @@ public sealed class PathFollower
         double progressMetric = dist + Math.Abs(pos.Y - step.Floor);
         if (progressMetric < _bestDist - 0.05) { _bestDist = progressMetric; _noProgress = 0; }
         else if (++_noProgress > _o.StuckTicks) return Fail(idle, "stuck");
+
+        // ---- actions: doors/gates/trapdoors to open (state read from the world's metadata, never by bumping) ----
+        foreach (var tg in step.Opens)
+        {
+            if (tg.Done(w)) continue;
+            _noProgress = 0;
+            if (w.GetBlock(tg.Pos.X, tg.Pos.Y, tg.Pos.Z) != tg.Id) return Fail(idle, $"{Openables.Name(tg.Id)} at {tg.Pos} is gone");
+            if (tg.Actuator is { } plate && Openables.IsPlate(w.GetBlock(plate.X, plate.Y, plate.Z)))
+            {
+                // Iron door behind a pressure plate: stand on it and wait for the door.
+                if (++_plateWait > _o.PlateWaitTicks) return Fail(idle, $"iron door at {tg.Pos} didn't open from its plate");
+                return Move(idle);
+            }
+            var click = tg.Actuator ?? tg.Pos;
+            if (!Activation(click))
+                return Fail(idle, $"{Openables.Name(tg.Id)} at {tg.Pos} won't open (locked?)");
+            return new FollowerOutput(FollowerStatus.NeedsAction, idle, new FollowerAction(FollowerActionKind.Activate, click));
+        }
 
         // ---- actions: blocks to break first ----
         foreach (var b in step.Break)

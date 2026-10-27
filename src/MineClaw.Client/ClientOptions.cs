@@ -21,6 +21,9 @@ public sealed record ClientOptions
     public bool AutoReconnect { get; init; }
     public TimeSpan ReconnectInitialDelay { get; init; } = TimeSpan.FromSeconds(5);
     public TimeSpan ReconnectMaxDelay { get; init; } = TimeSpan.FromMinutes(2);
+    /// <summary>First reconnect delay after a "logged in from another location" kick: someone else is using this account
+    /// (e.g. a dev test), so don't instantly reconnect and kick them back.</summary>
+    public TimeSpan DuplicateLoginBackoff { get; init; } = TimeSpan.FromMinutes(10);
 
     /// <summary>Time allowed from TCP connect to the first server position (login + spawn).</summary>
     public TimeSpan LoginTimeout { get; init; } = TimeSpan.FromSeconds(30);
@@ -69,6 +72,13 @@ public sealed record ClientOptions
 
     /// <summary>Debug-level sink (safety interventions, knockback). Null = silent.</summary>
     public Action<string>? DebugLog { get; init; }
+
+    /// <summary>Packet recorder: when set, every connection records both directions to
+    /// <c>&lt;dir&gt;/yyyyMMdd-HHmmss.mcrec</c> (see <see cref="MineClaw.Protocol.Recording.RecordingFormat"/>). Null = off,
+    /// unless the environment variable <c>MINECLAW_RECORD</c> is <c>1</c> (→ <c>logs/recordings</c>) or a directory.</summary>
+    public string? RecordDirectory { get; init; }
+    /// <summary>Gzip the recording body (chunks are already zlib'd; the rest shrinks ~5x).</summary>
+    public bool RecordGzip { get; init; } = true;
 
     /// <summary>Opens the connection. Default: TCP to <see cref="Host"/>:<see cref="Port"/>. Tests inject in-memory streams.</summary>
     public Func<CancellationToken, PacketConnection>? ConnectionFactory { get; init; }

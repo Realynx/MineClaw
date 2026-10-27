@@ -19,7 +19,8 @@ namespace MineClaw.Bot.WorldIndex;
 public sealed class PlayerActivityTracker : IDisposable
 {
     private abstract record Input(DateTimeOffset At);
-    private sealed record BlockIn(DateTimeOffset At, BlockChange Ch, PlayerSample[] Near, PlayerSample? Bot, bool BotBusy) : Input(At);
+    /// <param name="Self">The bot's own dig/placement (its outbound 0x0E/0x0F, <see cref="WorldState.SelfEdits"/>): never a player's.</param>
+    private sealed record BlockIn(DateTimeOffset At, BlockChange Ch, PlayerSample[] Near, PlayerSample? Bot, bool BotBusy, bool Self = false) : Input(At);
     private sealed record AnimIn(DateTimeOffset At, int Entity, int Anim) : Input(At);
     private sealed record BlockActionIn(DateTimeOffset At, BlockPos Pos, PlayerSample[] Near) : Input(At);
     private sealed record ChatIn(DateTimeOffset At, string Raw) : Input(At);
@@ -134,6 +135,8 @@ public sealed class PlayerActivityTracker : IDisposable
     public event Action<string, ActivityRollup>? StructureEvidence;
 
     public long Dropped { get; private set; }
+    /// <summary>Block changes skipped because the bot itself made them.</summary>
+    public long SelfEdits { get; private set; }
 
     // ------------------------------------------------------------------ lifecycle
 
@@ -269,7 +272,7 @@ public sealed class PlayerActivityTracker : IDisposable
         PlayerSample? bot = me.Position.DistanceTo(ch.Pos.Center) <= _o.Reach + 2
             ? new PlayerSample(me.EntityId, _self, me.Position, me.Yaw, me.Pitch, false, -1, 0) : null;
         if (near.Length == 0) return;
-        _in.Enqueue(new BlockIn(_time.GetUtcNow(), ch, near, bot, _botBusy?.Invoke() ?? false));
+        _in.Enqueue(new BlockIn(_time.GetUtcNow(), ch, near, bot, _botBusy?.Invoke() ?? false, _world.SelfEdits.IsRecent(ch.Pos)));
     }
 
     private void OnUnknownStructure(UnknownStructure u)
@@ -455,6 +458,7 @@ public sealed class PlayerActivityTracker : IDisposable
         bool lit = ch.OldId == Blocks.Furnace && ch.NewId == Blocks.LitFurnace;
         if (!placed && !broke && !lit) return;
         if (broke) { _recentBreaks.Add((b.At, ch.Pos)); if (_recentBreaks.Count > 64) _recentBreaks.RemoveRange(0, 32); }
+        if (b.Self) { SelfEdits++; return; } // the bot did it (kept above only so its drops/cascades aren't blamed on anyone)
         // Blocks that change by themselves too often need a swing to count.
         bool needSwing = ch.OldId is Blocks.Leaves || ch.NewId is Blocks.Sand or Blocks.Gravel;
         var who = Attribute(ch.Pos, b.Near, b.Bot, b.BotBusy, b.At, needSwing);

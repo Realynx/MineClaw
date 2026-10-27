@@ -31,6 +31,18 @@ public sealed record PathOptions
     /// <summary>Penalty for cells adjacent to lava, fire or cactus.</summary>
     public double HazardAdjacentPenalty { get; init; } = 40;
 
+    /// <summary>Plan through closed wooden doors, fence gates and head-height trapdoors (and iron doors with a reachable
+    /// button/lever/plate on the near side) as <see cref="MoveKind.OpenDoor"/>/<see cref="MoveKind.OpenGate"/>/
+    /// <see cref="MoveKind.OpenTrapdoor"/> steps. Off by default: the executor must handle
+    /// <see cref="FollowerActionKind.Activate"/>. Closed doors are obstacles either way (never walked into).</summary>
+    public bool AllowOpenDoors { get; init; }
+    /// <summary>Extra cost (ticks) of stopping, right-clicking and waiting for the server's block change.</summary>
+    public double OpenCost { get; init; } = 20;
+    /// <summary>Extra cost when an iron door needs its button/lever pressed first.</summary>
+    public double ActuatorCost { get; init; } = 30;
+    /// <summary>Veto for toggling an openable (pos, id): e.g. protected/claimed doors. Null = allowed.</summary>
+    public Func<BlockPos, int, bool>? CanOpen { get; init; }
+
     /// <summary>Cells the path must not enter.</summary>
     public IReadOnlySet<BlockPos>? Avoid { get; init; }
     /// <summary>Jump moves (from foot cell, to foot cell) not to plan again: the edge guard refused to verify their landing
@@ -43,6 +55,9 @@ public sealed record PathOptions
     public bool AllowPartial { get; init; } = true;
 
     public static PathOptions Default { get; } = new();
+
+    /// <summary>Reach used to decide whether an iron door's button/lever can be pressed from the near-side cell.</summary>
+    public double ActuatorReach { get; init; } = 4.0;
 
     // Movement costs (ticks)
     public const double WalkCost = 1 / 0.21585; // ≈4.633 ticks per block at walking speed
