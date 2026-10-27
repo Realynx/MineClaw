@@ -223,7 +223,7 @@ public class ScriptReliabilityTests
         var r = ScriptLint.Check(ScriptPrompts.Exemplar, Acts);
         Assert.Empty(r.Findings);
         Assert.Equal("mine n cobble at the gen, store it", ScriptLint.Purpose(ScriptPrompts.Exemplar));
-        Assert.Equal(["n"], ScriptLint.ArgNames(ScriptPrompts.Exemplar));
+        Assert.Equal(["n", "at"], ScriptLint.ArgNames(ScriptPrompts.Exemplar));
     }
 
     [Fact]

@@ -126,6 +126,12 @@ public sealed class AgentDb : IDisposable
         CREATE INDEX IF NOT EXISTS portal_links_a ON portal_links(a_dim, a_x, a_z);
         CREATE INDEX IF NOT EXISTS portal_links_b ON portal_links(b_dim, b_x, b_z);
         """,
+        // v6: container freshness (live 10-27 21:06: "bread x5 (seen just now)" was main's deposit a minute earlier, the chest
+        // block's last_seen, while a player had emptied it). When and by which bot the contents were last read from an open.
+        """
+        ALTER TABLE observations ADD COLUMN contents_at INTEGER;
+        ALTER TABLE observations ADD COLUMN contents_by TEXT;
+        """,
     ];
 
     /// <summary>Code steps run after the SQL of the same index (same transaction).</summary>

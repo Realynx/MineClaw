@@ -22,6 +22,8 @@ public static class Loadout
         ["pickaxe"] = new("pickaxe", [Items.DiamondPickaxe, Items.IronPickaxe, Items.StonePickaxe, Items.WoodenPickaxe], 1, [Items.StonePickaxe, Items.WoodenPickaxe]),
         ["axe"] = new("axe", [Items.DiamondAxe, Items.IronAxe, Items.StoneAxe, Items.WoodenAxe], 1, [Items.StoneAxe, Items.WoodenAxe]),
         ["shovel"] = new("shovel", [Items.DiamondShovel, Items.IronShovel, Items.StoneShovel, Items.WoodenShovel], 1, [Items.StoneShovel, Items.WoodenShovel]),
+        // Farming (Fox, live 10-27: "it needs to replant, and sometimes that means hoeing the soil").
+        ["hoe"] = new("hoe", [Items.DiamondHoe, Items.IronHoe, Items.StoneHoe, Items.GoldenHoe, Items.WoodenHoe], 1, [Items.StoneHoe, Items.WoodenHoe]),
         ["sword"] = new("sword", [Items.DiamondSword, Items.IronSword, Items.StoneSword, Items.WoodenSword], 1, [Items.StoneSword, Items.WoodenSword]),
         ["food"] = new("food", [Items.CookedPorkchop, Items.Steak, Items.CookedChicken, Items.Bread, Items.CookedFish, Items.MushroomStew,
             Items.Apple, Items.GoldenApple, Items.Cookie, Items.MelonSlice, Items.Porkchop, Items.RawBeef, Items.RawFish], 8, []),

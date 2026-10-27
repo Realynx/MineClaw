@@ -32,6 +32,7 @@ public sealed class CountingSink(IObservationSink inner) : IObservationSink
     public IReadOnlyList<ObservationRow> Near(string? kind, double x, double y, double z, double radius, int limit, int dimension) =>
         inner.Near(kind, x, y, z, radius, limit, dimension);
     public void LinkPortals(PortalEnd from, PortalEnd to) => inner.LinkPortals(from, to);
+    public ContainerMemory? PreviousContents(string kind, string key, int dimension) => inner.PreviousContents(kind, key, dimension);
 }
 
 /// <summary>A synthetic world + a real SQLite observation store in a temp file.</summary>

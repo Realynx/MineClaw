@@ -48,8 +48,8 @@ public static class VisionTools
     public const string ToolName = "see";
 
     public const string Description =
-        "Look at a spot: one sheet of views (top+roles, side cut, iso, layers=feet+below; eye) around focus; question → a vision " +
-        "model answers in checked text. For gen cells vs floor, holes/place faces, edges, which-one, checking builds. Quick: look map.";
+        "Look at a spot: one sheet (top+roles, side cut, iso, layers=feet+below; eye) around focus; question → checked text " +
+        "(gen cells, faces, edges). focus=hive: all bots, jobs, claims. Quick: look map.";
 
     /// <summary>Per-world context for the look map (marks from memory, role letters), set by <see cref="Register"/>.</summary>
     private static readonly ConditionalWeakTable<WorldState, Context> Contexts = new();
@@ -201,7 +201,7 @@ public static class VisionTools
         rt.Tools.Register(ToolName, Description,
             ToolSchema.Create().StrArray("views", "top side iso layers eye", required: false)
                 .Str("question", required: false)
-                .Str("focus", "x,y,z, player, place, pointed", required: false)
+                .Str("focus", "x,y,z, place, player, clone, hive", required: false)
                 .Int("radius", required: false)
                 .Str("view", "one old picture", required: false, enumValues: ["top", "iso", "side", "eye"]).Build(),
             async (i, ct) =>

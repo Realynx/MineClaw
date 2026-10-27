@@ -22,6 +22,8 @@ public sealed class BotOptions
 
     /// <summary>Max seconds <c>ask_stand</c> waits for a player.</summary>
     public int AskStandTimeoutSeconds { get; set; } = 90;
+    /// <summary>harvest_generator with every dig cell leased to other bots: wait this long for one to free up (0 = fail at once).</summary>
+    public int GeneratorQueueSeconds { get; set; } = 60;
 
     /// <summary>Radius (blocks) around the teaching player in which block changes are recorded.</summary>
     public double DemoRadius { get; set; } = 6;

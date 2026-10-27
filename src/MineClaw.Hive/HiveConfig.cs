@@ -39,6 +39,9 @@ public sealed class HiveConfig
     // ---- logout / inventory ----
     /// <summary>Planned logout: how long the clone keeps trying to empty its inventory before it gives up (items recorded as stranded).</summary>
     public double DepositTimeoutSeconds { get; set; } = 180;
+    /// <summary>After a failed task the clone stays online, idle and safe, this long for main to reassign or retry with a fix
+    /// (live 10-27 21:53: 420 logged out 4 s after a transient gen stall). 0 = log out at once (old behaviour).</summary>
+    public double FailureGraceSeconds { get; set; } = 180;
     /// <summary>Main process gone: the clone deposits only if it can within this, then logs out anyway.</summary>
     public double ParentLossDepositSeconds { get; set; } = 20;
     /// <summary>Main shutting down (SIGTERM): time the clones get to deposit and log out (keep systemd TimeoutStopSec above Host:ShutdownTimeoutSeconds).</summary>
@@ -51,6 +54,8 @@ public sealed class HiveConfig
     public double ClaimTtlSeconds { get; set; } = 60;
     /// <summary>A player who talked to a specific hive bot keeps talking to it for this long (follow-ups without a name).</summary>
     public double StickySeconds { get; set; } = 45;
+    /// <summary>A clone keeps a player's unnamed follow-ups only this long after it last heard or answered them (else main).</summary>
+    public double CloneThreadSeconds { get; set; } = 30;
     /// <summary>Clone chat name: {0} = main display name, {1} = the clone's number ("maid-chan 67").</summary>
     public string CloneDisplayFormat { get; set; } = "{0} {1}";
 

@@ -29,6 +29,7 @@ public sealed class PerceptionService
     private readonly object _lock = new();
     private readonly LinkedList<(ulong Key, VerifiedAnswer Answer)> _cache = new();
     private readonly Queue<DateTimeOffset> _calls = new(), _auto = new();
+    private readonly HashSet<string> _lowValue = new();
 
     public PerceptionService(IPerceptionModel? model, PerceptionOptions options, UsageTracker? usage = null, PriceTable? prices = null,
         PerceptionTelemetry? telemetry = null, TimeProvider? time = null, ILogger? log = null)
@@ -61,6 +62,19 @@ public sealed class PerceptionService
         ulong h = viewKey * 1099511628211UL;
         unchecked { foreach (char c in Norm(question)) h = (h ^ c) * 1099511628211UL; }
         return h;
+    }
+
+    /// <summary>A question's shape (numbers masked): "is 4,64,6 free" and "is 7,62,9 free" are one shape.</summary>
+    public static string Shape(string q) => Norm(System.Text.RegularExpressions.Regex.Replace(q, @"-?\d+", "#"));
+
+    /// <summary>A question shape whose model answer had nothing checkable (0 claims verified): answer it from voxels next time.</summary>
+    public bool LowValue(string question) { lock (_lock) return _lowValue.Contains(Shape(question)); }
+
+    /// <summary>An exact answer from the voxels/roles (zero tokens): counted, never cached (it is cheaper to recompute).</summary>
+    public VerifiedAnswer Exact(string question, string text, string source)
+    {
+        Telemetry.RecordExact(source, question);
+        return new VerifiedAnswer(question, null, [], 0, 0, 0, 0, 0, text) { ModelText = text, Exact = true };
     }
 
     private static string Norm(string q) => string.Join(' ', q.ToLowerInvariant().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)).TrimEnd('?', '.', '!');
@@ -128,6 +142,11 @@ public sealed class PerceptionService
             catch (Exception ex) { _log?.LogDebug(ex, "perception usage not booked"); }
         }
         var verified = PerceptionVerifier.Verify(look.Question, r, look.World, look.Roles, look.Focus, look.Radius);
+        if (verified.Error == null && verified.Checked == 0)
+        {
+            lock (_lock) _lowValue.Add(Shape(look.Question));
+            _log?.LogInformation("perception: no checkable claim for \"{Q}\" (low value): that question shape is answered from voxels next time", look.Question);
+        }
         if (verified.Error == null)
         {
             var grounding = Grounding(look.World, look.Roles, look.Focus, look.Radius, verified.Facts);

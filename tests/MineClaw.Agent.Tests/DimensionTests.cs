@@ -211,8 +211,8 @@ public class DimensionTests(ITestOutputHelper output)
             }
 
             using var db = AgentDb.Open(path);
-            Assert.Equal(5, db.SchemaVersion);
-            Assert.Equal(5, (int)db.ScalarLong("PRAGMA user_version"));
+            Assert.Equal(AgentDb.LatestSchemaVersion, db.SchemaVersion);
+            Assert.Equal(AgentDb.LatestSchemaVersion, (int)db.ScalarLong("PRAGMA user_version"));
             foreach (var t in new[] { "observations", "container_items", "waypoints", "structures", "docs", "claims" })
                 Assert.Equal(0, db.ScalarLong($"SELECT count(*) FROM {t} WHERE dimension <> 0"));
             Assert.Equal("maid_chan_67", db.Scalar("SELECT clone_id FROM observations WHERE id = 7"));

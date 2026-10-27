@@ -28,11 +28,18 @@ public sealed class HarvestWheatSkill : Skill
 {
     public override SkillSpec Spec { get; } = new()
     {
-        Name = "harvest_wheat", Category = SkillCategory.Farming, Summary = "harvest ripe wheat (meta 7) + replant seeds", Args = "radius?,replant?",
+        Name = "harvest_wheat", Category = SkillCategory.Farming, Summary = "harvest ripe wheat (meta 7), hoe, replant seeds", Args = "radius?,replant?",
         Schema = SkillJson.Schema("radius:int?,replant:bool?"), Estimate = TimeSpan.FromSeconds(40), Pre = new() { Dimension = Dim.Overworld },
-        Keywords = "wheat crops farm harvest ripe bread seeds replant reap",
+        Keywords = "wheat crops farm harvest ripe bread seeds replant reap hoe till",
     };
 
+    /// <summary>
+    /// Fox's farming procedure (live 10-27): per cell, always harvest → hoe → plant. The hoe goes on every time, even on what
+    /// looks like farmland: a trampled or dried-out cell is dirt again (mc-dev BlockSoil: dry farmland with nothing planted
+    /// reverts; an entity walking on it reverts it 1 in 4), and a hoe on farmland is a harmless no-op (mc-dev ItemHoe only
+    /// tills grass/dirt with air above). No hoe: one is acquired (chest, hive, craft 2 sticks + 2 planks/cobble); still none =
+    /// plant on whatever is farmland already.
+    /// </summary>
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
         int radius = Clamp(args.Int("radius"), 12, 2, 24);
@@ -40,22 +47,38 @@ public sealed class HarvestWheatSkill : Skill
         var ripe = ctx.Find((id, m) => id == Blocks.Crops && m >= 7, radius);
         int growing = ctx.Find((id, m) => id == Blocks.Crops && m < 7, radius).Count;
         if (ripe.Count == 0) return Fail($"no ripe wheat within {radius} ({growing} still growing)");
-        int cut = 0, planted = 0;
+        bool canHoe = replant && (ctx.Game.Supported & Primitive.UseOnBlock) != 0;
+        string? hoeNote = null;
+        if (canHoe && ctx.FirstOwned(FarmOps.Hoes) is null && ctx.Registry.AcquireMissing is { } acquire)
+        {
+            try { hoeNote = await acquire(ctx, Spec, FarmOps.Hoes, ct); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex) { ctx.Log?.Invoke($"harvest_wheat: hoe acquisition threw: {ex.Message}"); }
+        }
+        int? hoe = canHoe ? ctx.FirstOwned(FarmOps.Hoes) : null;
+        int cut = 0, planted = 0, tilled = 0;
         foreach (var c in ripe)
         {
             ct.ThrowIfCancellationRequested();
             if (ctx.Block(c.Pos) != Blocks.Crops || ctx.Meta(c.Pos) < 7) continue;
-            var d = await ctx.Game.DigAsync(c.Pos, ct);
+            var d = await ctx.Game.DigAsync(c.Pos, ct);                                        // 1. harvest
             if (!d.Ok) continue;
             cut++;
-            if (replant && ctx.Block(c.Pos.Down()) == Blocks.Farmland)
+            if (!replant) continue;
+            var soil = c.Pos.Down();
+            await FarmOps.CollectAsync(ctx, 3, ct);
+            if (hoe is { } h && ctx.Block(soil) is Blocks.Farmland or Blocks.Dirt or Blocks.Grass && SkillWorld.Air(ctx.World, c.Pos))
             {
-                await FarmOps.CollectAsync(ctx, 3, ct);
-                if (await FarmOps.PlantAsync(ctx, c.Pos.Down(), Items.Seeds, ct)) planted++;
+                bool wasSoil = ctx.Block(soil) != Blocks.Farmland;
+                var u = await ctx.Game.UseOnBlockAsync(soil, BlockFace.Top, h, ct);           // 2. hoe (always)
+                if (u.Ok && wasSoil && await ctx.WaitBlockAsync(soil, (id, _) => id == Blocks.Farmland, ct)) tilled++;
             }
+            if (ctx.Block(soil) == Blocks.Farmland && await FarmOps.PlantAsync(ctx, soil, Items.Seeds, ct)) planted++; // 3. plant
         }
         await FarmOps.CollectAsync(ctx, radius, ct);
-        return cut > 0 ? Ok($"harvested {cut} wheat, replanted {planted} (wheat {ctx.Count(Items.Wheat)}, seeds {ctx.Count(Items.Seeds)}; {growing} growing)")
+        string re = $"replanted {planted}" + (tilled > 0 ? $" (re-tilled {tilled})" : "") + (replant && hoe is null ? " (no hoe: planted only on farmland)" : "");
+        return cut > 0 ? Ok($"harvested {cut} wheat, {re} (wheat {ctx.Count(Items.Wheat)}, seeds {ctx.Count(Items.Seeds)}; {growing} growing)"
+                            + (hoeNote != null ? "; " + hoeNote : ""))
                        : Fail("couldn't harvest any wheat");
     }
 }
@@ -258,9 +281,38 @@ public sealed class PlantSaplingSkill : Skill
     {
         var soil = args.Pos() is { } p ? (ctx.Block(p) is Blocks.Dirt or Blocks.Grass ? p : p.Down()) : Spot(ctx);
         if (soil is not { } s) return Fail("no dirt/grass with 2 blocks clearance and 5 of open sky nearby");
+        // An idempotent goal (live 10-27: "skill failed 2x the same way: 9,65,3 is occupied" by the sapling planted before):
+        // a sapling or a standing tree there already = done.
+        int there = ctx.Block(s.Up());
+        if (there == Blocks.Sapling) return Ok($"already planted at {P(s.Up())}");
+        if (there == Blocks.Log) return Ok($"already a tree at {P(s.Up())}");
         if (ctx.Block(s) is not (Blocks.Dirt or Blocks.Grass)) return Fail($"{P(s)} is {ctx.BlockName(s)}, needs dirt/grass");
-        if (!SkillWorld.Air(ctx.World, s.Up())) return Fail($"{P(s.Up())} is occupied");
+        if (!SkillWorld.Air(ctx.World, s.Up())) return Fail($"{P(s.Up())} is occupied by {Blocks.Get(there).Name}");
+        // Someone standing on the spot: wait a moment, then skip it (ok, so a replant loop carries on with the other spots).
+        if (await WaitClearAsync(ctx, s.Up(), ct) is { } who) return Ok($"skipped {P(s.Up())} ({who} standing there)");
         return await FarmOps.PlantAsync(ctx, s, Blocks.Sapling, ct) ? Ok($"planted sapling at {P(s.Up())}") : Fail($"sapling didn't take at {P(s.Up())}");
+    }
+
+    /// <summary>Who (another player/bot, not us) stands in <paramref name="cell"/> after up to ~3 s of waiting; null = clear.</summary>
+    internal static async Task<string?> WaitClearAsync(SkillContext ctx, BlockPos cell, CancellationToken ct, int waitMs = 3000)
+    {
+        string? Occupant()
+        {
+            foreach (var e in ctx.World.Entities.All())
+            {
+                if (e.Kind != EntityKind.Player || e.Id == ctx.World.Player.EntityId) continue;
+                var box = AABB.ForPlayer(e.Position);
+                if (box.MaxX > cell.X && box.MinX < cell.X + 1 && box.MaxZ > cell.Z && box.MinZ < cell.Z + 1
+                    && box.MaxY > cell.Y && box.MinY < cell.Y + 1) return e.Name ?? "someone";
+            }
+            return null;
+        }
+        for (int waited = 0; Occupant() is { } who; waited += 250)
+        {
+            if (waited >= waitMs) return who;
+            await Task.Delay(250, ct);
+        }
+        return null;
     }
 
     private static BlockPos? Spot(SkillContext ctx) =>

@@ -64,11 +64,27 @@ public sealed class ProtectionMarks
         return _marks.Where(m => m.Expires is not { } e || e > now).ToArray();
     }
 
+    /// <summary>Generator regen cells (taught / regen-confirmed): an area mark ("never break the gen") doesn't cover them; only a
+    /// mark on exactly that cell does.</summary>
+    public Func<BlockPos, bool>? IsGenCell { get; set; }
+
     public ProtectionMark? NeverAt(BlockPos p, int dim)
     {
         MaybeReload();
-        foreach (var m in _marks) if (m.Kind == MarkKind.Never && m.Dimension == dim && m.Contains(p)) return m;
+        bool? gen = null;
+        foreach (var m in _marks)
+        {
+            if (m.Kind != MarkKind.Never || m.Dimension != dim || !m.Contains(p)) continue;
+            bool single = m.Boxes.Count == 1 && m.Boxes[0].Min == p && m.Boxes[0].Max == p;
+            if (!single && (gen ??= SafeGen(p))) continue;
+            return m;
+        }
         return null;
+    }
+
+    private bool SafeGen(BlockPos p)
+    {
+        try { return IsGenCell?.Invoke(p) == true; } catch (Exception) { return false; }
     }
 
     public ProtectionMark? PermitAt(BlockPos p, int dim, bool exactOnly = false)

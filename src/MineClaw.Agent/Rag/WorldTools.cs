@@ -28,6 +28,16 @@ public static class WorldTools
         string Ago(DateTimeOffset t) => TextTokens.Ago(now - t);
         // Another dimension is only remembered (not live): say so, with its age ("remembered 2h ago").
         string Seen(ObservationRow r) => r.Dimension != cur ? $"remembered {Ago(r.LastSeen)}" : $"seen {Ago(r.LastSeen)}";
+        // Contents are as old as the last OPEN, not the chest block's last sighting (live 10-27 21:06: "bread x5 (seen just now)"
+        // was main's deposit a minute earlier; a player had emptied the chest since, unseen: no packets for their clicks).
+        string Contents(ObservationRow r)
+        {
+            if (r.ContentsAt is not { } at) return "contents age unknown, may have changed";
+            var age = now - at;
+            string ago = age < TimeSpan.FromSeconds(60) ? $"{Math.Max(0, (int)age.TotalSeconds)}s ago" : TextTokens.Ago(age);
+            string by = string.IsNullOrWhiteSpace(r.ContentsBy) ? "" : " by " + r.ContentsBy;
+            return $"opened{by} {ago}" + (age >= TimeSpan.FromSeconds(30) ? ", may have changed" : "");
+        }
         // "4m NE" from you, plus the nearest named landmark of the spot when one is close ("4m NE, by cobble_gen"); only in your dimension.
         string Dist(ObservationRow r)
         {
@@ -54,7 +64,7 @@ public static class WorldTools
                                           (claims is { Count: > 0 } ? " | " + string.Join("; ", claims) : ""));
             }
             var name = hits[0].Name;
-            var parts = hits.Select(h => $"x{h.Count}: {h.Container.Kind}@{h.Container.Where}{Tag(h.Container)}{Dist(h.Container)} ({Seen(h.Container)})");
+            var parts = hits.Select(h => $"x{h.Count}: {h.Container.Kind}@{h.Container.Where}{Tag(h.Container)}{Dist(h.Container)} ({Contents(h.Container)})");
             return ToolResult.Success($"{name} " + string.Join("; ", parts) + (hits.Count > 1 ? $" | total {hits.Sum(h => h.Count)}" : ""));
         }
 

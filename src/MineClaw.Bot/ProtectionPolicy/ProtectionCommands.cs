@@ -53,6 +53,10 @@ public sealed partial class ProtectionCommands
     public Func<string, (BlockPos Min, BlockPos Max)?>? NamedArea { get; set; }
     /// <summary>Generator dig cells near the bot ("the middle one").</summary>
     public Func<IReadOnlyList<BlockPos>>? GenCells { get; set; }
+
+    /// <summary>A trusted player allowed mining a generator cell (cell, player, said "the middle one"): memory notes that
+    /// forbade it are cleared (<see cref="Perception.DigCellCorrections.UnmarkGenCell"/>).</summary>
+    public Action<BlockPos, string, bool>? GenCellAllowed { get; set; }
     /// <summary>One chat line from the bot (the large-area confirmation).</summary>
     public Action<string>? Say { get; set; }
     /// <summary>A quiet note for the brain ("[permit] kiwi allowed ...").</summary>
@@ -134,6 +138,14 @@ public sealed partial class ProtectionCommands
         if (intent.Kind == ProtectionIntentKind.Never)
         {
             if (Resolve(player, intent) is not { } nt) return null;
+            // Live 10-27: a vague "don't mine the middle one" took one of the gen's three regen cells away for good. A gen cell
+            // takes a never-break mark only when the player names that exact cell (coordinates or a punch).
+            if (nt.GenCell && intent.Coords is null)
+            {
+                var no = $"[protect] not marking {nt.Label} never-break from '{intent.Target}': generator cells are what I mine; name the exact cell (x,y,z) to keep me off one";
+                Notice?.Invoke(no);
+                return "ignored: " + no;
+            }
             var mark = _marks.Add(MarkKind.Never, Dim, nt.Boxes, nt.Label, player, null, nt.Exact);
             var line = $"[protect] {player} marked {nt.Label} never-break (hard: no command overrides it; a trusted 'you can break it' unmarks it)";
             Notice?.Invoke(line);
@@ -146,6 +158,13 @@ public sealed partial class ProtectionCommands
             return "ignored: " + line;
         }
         if (Resolve(player, intent) is not { } t) return null;
+        if (intent.Kind == ProtectionIntentKind.Allow && GenCellAllowed is { } allowed)
+        {
+            var cells = GenCells?.Invoke() ?? [];
+            foreach (var (a, b) in t.Boxes)
+                if (a == b && (t.GenCell || cells.Contains(a)))
+                    try { allowed(a, player, t.GenCell && intent.Coords is null); } catch (Exception) { /* memory busy */ }
+        }
         var draft = new ProtectionMark(0, MarkKind.Permit, Dim, t.Boxes, t.Label, player, now, null, t.Exact);
         int count = CountBlocks(t.Boxes);
         bool unmark = intent.Kind == ProtectionIntentKind.Allow;
@@ -170,7 +189,8 @@ public sealed partial class ProtectionCommands
         return line;
     }
 
-    private sealed record Target(IReadOnlyList<(BlockPos Min, BlockPos Max)> Boxes, string Label, bool Exact);
+    /// <param name="GenCell">Resolved as a generator cell by a vague phrase ("the middle one").</param>
+    private sealed record Target(IReadOnlyList<(BlockPos Min, BlockPos Max)> Boxes, string Label, bool Exact, bool GenCell = false);
 
     private Target? Resolve(string player, ProtectionIntent intent)
     {
@@ -188,7 +208,7 @@ public sealed partial class ProtectionCommands
         if (Regex.IsMatch(name, @"^(?:middle|center|centre)(?:\s+(?:one|cell|block))?$") && GenCells?.Invoke() is { Count: > 0 } cells)
         {
             var mid = Middle(cells);
-            return new([(mid, mid)], $"the middle generator cell {Locations.Fmt(mid)}", true);
+            return new([(mid, mid)], $"the middle generator cell {Locations.Fmt(mid)}", true, GenCell: true);
         }
         if (NamedArea?.Invoke(name) is { } box) return new([box], "the " + name, false);
         // A block type near me ("you can break the planks"): the protected ones within 6 (Allow only: "mine cobble" is a job).

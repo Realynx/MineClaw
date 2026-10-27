@@ -47,6 +47,8 @@ public sealed class InventoryManager
     public event Action<Window>? WindowClosed;
     /// <summary>Fired after any slot/cursor change from the server or a predicted click.</summary>
     public event Action? Changed;
+    /// <summary>A container window's full contents arrived (0x68 for a window other than the player's): its real state.</summary>
+    public event Action<int>? WindowItemsSet;
 
     /// <summary>Lock to hold while doing several reads/clicks that must be consistent.</summary>
     public object SyncRoot => _sync;
@@ -114,6 +116,7 @@ public sealed class InventoryManager
             for (int i = 0; i < items.Count && i < w.SlotCount; i++) w.Set(i, items[i]);
         }
         Changed?.Invoke();
+        if (windowId != 0) WindowItemsSet?.Invoke(windowId);
     }
 
     /// <summary>0x69 Update Window Property (furnace progress bars).</summary>

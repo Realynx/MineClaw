@@ -28,6 +28,13 @@ public sealed class AssignFailureMemory(TimeProvider? time = null)
     /// <summary>A clone's task for <paramref name="intent"/> failed with <paramref name="reason"/> (its body as it was then).</summary>
     public void Record(string clone, TaskIntent intent, string reason, CloneVitals v, bool? night)
     {
+        // Live 10-27 21:53:36: "420 already refused mining: ... the cobble gen stalled: 4,64,6 turned to water ..." blocked an
+        // immediate retry on another cell. Environment/transient failures are not refusals: they never block.
+        if (Classify(reason) == FailureKind.Transient)
+        {
+            Clear(clone, intent);
+            return;
+        }
         var e = new Entry(clone, intent, OneLine(reason), _time.GetUtcNow(), v.Hp, v.Food, ItemsSig(v.Items), night);
         lock (_lock)
         {
@@ -35,6 +42,25 @@ public sealed class AssignFailureMemory(TimeProvider? time = null)
             _entries.Add(e);
             if (_entries.Count > 40) _entries.RemoveAt(0);
         }
+    }
+
+    public enum FailureKind { State, Transient, Unknown }
+
+    /// <summary>Something about the clone itself (hp, food, tools/gear, a safety refusal): blocks until that changes.</summary>
+    private static readonly Regex StateReason = new(
+        @"\b(?:starv\w*|hungry|no food|out of food|food (?:is )?(?:at )?[0-9]|hp (?:is )?(?:at )?[0-9]|low (?:hp|health)|too weak|(?:(?:no|without|lacks?|lacking|missing|out of)\s+|need(?:s)?\s+(?:a |an |some )?)(?:stone |iron |wood(?:en)? |diamond )?(?:pick(?:axe)?|sword|axe|shovel|hoe|weapon|armou?r|tools?|bucket|shears)|not (?:safe|allowed)|unsafe|too dangerous|refus\w*|won'?t)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    /// <summary>The world, not the clone: a busy/stalled/flooded cell, contention, a blocked path, a race, a timeout.</summary>
+    private static readonly Regex TransientReason = new(
+        @"\b(?:stall\w*|isn'?t regenerating|not regenerating|turned (?:to|into) (?:water|lava|obsidian)|water|lava|flow\w*|busy|taken|in use|occupied|contention|racing|race|another (?:bot|clone|player|miner)|other miners?|someone (?:else )?(?:was )?(?:mining|using)|blocked|no path|unreachable|timed? ?out|gave 0|0 cobble|yield [0-9]+ ?%|regen\w*|needs repair)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>State-based (blocks a retry until hp/food/inventory/day changes) or transient (an immediate retry is fine).</summary>
+    public static FailureKind Classify(string reason)
+    {
+        if (string.IsNullOrWhiteSpace(reason)) return FailureKind.Unknown;
+        if (StateReason.IsMatch(reason)) return FailureKind.State;
+        return TransientReason.IsMatch(reason) ? FailureKind.Transient : FailureKind.Unknown;
     }
 
     /// <summary>A success clears the memory for that (clone, intent).</summary>
@@ -70,6 +96,8 @@ public sealed class AssignFailureMemory(TimeProvider? time = null)
 
     private static readonly Regex Retry = new(@"\b(?:try (?:it |that |again|one more)|try again|retry|do it again|one more (?:time|try)|send (?:her|him|it|them) (?:again|back))\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex Ask = new(@"\b(?:have|make|let|send|get|tell|ask|can|could|please|pls|go|mine|chop|fight|craft|build|bring|do)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex Gave = new(@"\b(?:gave|give|given|giving|got|has|have|had|now has|fed|feed|dropped|brought|here'?s|healed|ate|eaten|full|crafted|made|left)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex FoodTalk = new(@"\b(?:food|bread|apple|meat|pork\w*|fish|steak|cookie|stew|eat\w*|hungry|starv\w*|fed)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -87,6 +115,7 @@ public sealed class AssignFailureMemory(TimeProvider? time = null)
         if (string.IsNullOrWhiteSpace(text)) return 0;
         bool retry = Retry.IsMatch(text);
         bool gave = Gave.IsMatch(text);
+        bool asks = Ask.IsMatch(text);
         lock (_lock)
         {
             var named = _entries.Where(e => names?.Invoke(e.Bot) == true).ToList();
@@ -94,7 +123,8 @@ public sealed class AssignFailureMemory(TimeProvider? time = null)
             int n = 0;
             foreach (var e in scope)
             {
-                bool answers = retry || (gave && Answers(text, e.Reason));
+                // A player re-asking for that clone by name ("have 420 mine the gen") always clears it.
+                bool answers = retry || (gave && Answers(text, e.Reason)) || (asks && named.Contains(e));
                 if (!answers) continue;
                 _entries.Remove(e);
                 n++;

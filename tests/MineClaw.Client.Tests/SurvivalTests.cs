@@ -131,6 +131,14 @@ public class SurvivalRuleTests
         Assert.Equal("hp 7/20 too low to spar (need 10); eating to regenerate", SurvivalReflex.GateReason("spar", 7, 9, true, O));
         Assert.Null(SurvivalReflex.GateReason("mine 32 blocks", 14, 12, false, O));
         Assert.Null(SurvivalReflex.GateReason("bridge", 1, 1, false, O with { Enabled = false }));
+        // Item 13: hp 7, food 0, no food: mining, chopping, building and bridging all go ahead; only fights/spars wait.
+        Assert.Null(SurvivalReflex.GateReason("mine 32 blocks", 7, 0, false, O));
+        Assert.Null(SurvivalReflex.GateReason("chop a tree", 7, 0, false, O));
+        Assert.Null(SurvivalReflex.GateReason("pillar_up", 7, 0, false, O));
+        Assert.Null(SurvivalReflex.GateReason("bridge", 7, 0, false, O));
+        Assert.Equal("hp 4/20 too low to bridge over the void (need more than 4)", SurvivalReflex.GateReason("bridge", 4, 0, false, O));
+        Assert.Equal("hp 3/20 too low to expand_island over the void (need more than 4)", SurvivalReflex.GateReason("expand_island", 3, 0, false, O, edge: true));
+        Assert.NotNull(SurvivalReflex.GateReason("fight", 7, 0, false, O));
     }
 
     [Fact]
@@ -186,7 +194,7 @@ public class SurvivalClientTests
     }
 
     [Fact]
-    public async Task LowHealth_CancelsBridging_ButCraftingStyleActionsAreNotTouched()
+    public async Task LowHealth_BridgingGoesOn_OnlyCriticalHpRefusesVoidWork()
     {
         var (c, s) = await Harness.StartAsync(srv =>
         {
@@ -201,14 +209,14 @@ public class SurvivalClientTests
         Assert.True(await Harness.WaitAsync(() => c.CurrentAction == "goto", 1000));
         await Task.Delay(50);
         s.SetVitals(7, 20);
-        var r = await bridge.WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.False(r.Ok);
-        Assert.Contains("low health 7/20: stopped bridge", r.Message);
+        // Item 13 (the user's rule): low hp no longer stops work; only fights/spars, and void work at critical hp.
+        var r = await bridge.WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.True(r.Ok, r.ToString());
         Assert.Single(dangers, d => d.Kind == DangerKind.LowHealth && !d.Critical);
-        Assert.False(c.World.IsPlayerOverVoid(c.World.Player.Position));
-        // Back to health: gate opens again; at 7 hp it is refused up front.
-        var refused = await c.GotoAsync(new GoalBlock(20, 64, 8), GotoOptions.Default with { AllowPlace = true });
-        Assert.Contains("hp 7/20 too low to bridge (need 10)", refused.Message);
+        s.SetVitals(4, 20);
+        Assert.True(await Harness.WaitAsync(() => c.World.Player.Health == 4));
+        var refused = await c.GotoAsync(new GoalBlock(26, 64, 8), GotoOptions.Default with { AllowPlace = true });
+        Assert.Contains("hp 4/20 too low to bridge over the void (need more than 4)", refused.Message);
     }
 
     [Fact]

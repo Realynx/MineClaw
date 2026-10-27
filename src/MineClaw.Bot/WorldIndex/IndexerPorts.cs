@@ -50,12 +50,31 @@ public interface IObservationSink
     bool Remove(string kind, string key, int dimension) => Remove(kind, key);
     IReadOnlyList<ObservationRow> Near(string? kind, double x, double y, double z, double radius, int limit, int dimension) =>
         Near(kind, x, y, z, radius, limit);
+    /// <summary>The persisted contents of a container (any bot's last open) with when/who read them; null = none known.</summary>
+    ContainerMemory? PreviousContents(string kind, string key, int dimension) => null;
     /// <summary>The bot went through a portal: entry and exit as one linked pair.</summary>
     void LinkPortals(PortalEnd from, PortalEnd to) { }
 }
 
+/// <summary>What shared memory said a container held, and when/by which bot that was read.</summary>
+public sealed record ContainerMemory(IReadOnlyList<ItemCount> Items, DateTimeOffset? At, string? By);
+
+/// <summary>
+/// The bot opened a container and some of what memory said it held is gone (taken by someone the bot couldn't see: no packets
+/// for other players' clicks). <see cref="Gone"/> = items × missing count; <see cref="Before"/> = the memory it contradicts.
+/// </summary>
+public sealed record ContainerVanished(string Kind, string Key, BlockPos Pos, IReadOnlyList<ItemCount> Gone, ContainerMemory Before, DateTimeOffset At);
+
 public sealed class ObservationStoreSink(ObservationStore store) : IObservationSink
 {
+    public ContainerMemory? PreviousContents(string kind, string key, int dimension)
+    {
+        var row = Store.Get(kind, key, dimension: dimension);
+        if (row is null) return null;
+        var items = Store.Contents(row.Id);
+        return row.ContentsAt is null && items.Count == 0 ? null : new ContainerMemory(items, row.ContentsAt, row.ContentsBy);
+    }
+
     public ObservationStore Store { get; } = store;
     public int UpsertMany(IReadOnlyList<Observation> batch) => batch.Count == 0 ? 0 : Store.UpsertMany(batch);
     public bool Remove(string kind, string key) => Store.Remove(kind, key);

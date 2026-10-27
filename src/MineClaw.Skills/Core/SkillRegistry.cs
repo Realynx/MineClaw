@@ -81,7 +81,7 @@ public sealed class SkillRegistry
             if (!group.Any(id => ctx.Has(id))) return $"needs {pre.Needs}";
         if (pre.DaylightOnly && ctx.World.IsNight && !args.Flag("night_ok")) return "it's night (mobs spawn); pass night_ok=true to do it anyway";
         bool gate = pre.SurvivalGate || spec.Safety is SafetyClass.Edge or SafetyClass.Combat;
-        if (gate && ctx.SurvivalVeto(spec.Name) is { } veto) return veto;
+        if (gate && ctx.SurvivalVeto(spec.Name, spec.Safety) is { } veto) return veto;
         if (spec.Safety is SafetyClass.Edge or SafetyClass.Combat && NetherHazards.EdgeVeto(ctx) is { } ghast) return ghast;
         return null;
     }

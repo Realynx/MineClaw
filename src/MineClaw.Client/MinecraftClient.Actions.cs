@@ -21,6 +21,7 @@ public sealed partial class MinecraftClient
     private async Task<ActionResult> RunActionAsync(string name, CancellationToken ct, Func<CancellationToken, Task<ActionResult>> body)
     {
         if (CombatBlocks(name) is { } busy) return ActionResult.Fail(busy);
+        if (VoidHoldBlocks(name) is { } stuck) return ActionResult.Fail(stuck);
         try
         {
             await _actionLock.WaitAsync(ct).ConfigureAwait(false);

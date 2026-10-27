@@ -47,6 +47,16 @@ public sealed class RoleClassifier
             && Safe(() => IsGenGeometry?.Invoke(p) == true));
         if (id == 0)
         {
+            // Air between lava and water is a refilling gen cell only when taught/confirmed or not stacked on one: the air
+            // over a dual gen's cells (lava and water at y+1 too, live 10-27) is not a place to mine.
+            if (gen && !Safe(() => IsGenCell?.Invoke(p) == true))
+            {
+                var down = new BlockPos(x, y - 1, z);
+                int below = Blocks.GetBlock(x, y - 1, z);
+                if (Safe(() => IsGenCell?.Invoke(down) == true)
+                    || (below is MineClaw.Data.Blocks.Cobblestone or MineClaw.Data.Blocks.Stone && Safe(() => IsGenGeometry?.Invoke(down) == true)))
+                    gen = false;
+            }
             if (gen) return BlockRole.GenCell;
             for (int yy = y - 1; yy >= 0; yy--) if (Blocks.GetBlock(x, yy, z) != 0) return BlockRole.None;
             return BlockRole.Void;

@@ -41,8 +41,12 @@ public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = nul
 
     /// <param name="stand">A player-taught stand spot for <paramref name="cell"/>: every batch digs from there (null = the
     /// client picks a safe spot itself).</param>
-    public async Task<ActionResult> RunAsync(BlockPos cell, int count, BlockPos? store, CancellationToken ct, BlockPos? stand = null)
+    /// <param name="rotation">Other dig cells of the same generator: dug in turn whenever they're in reach from where the bot
+    /// stands (never hammering one cell while the others sit ready). Null = <paramref name="cell"/> only.</param>
+    public async Task<ActionResult> RunAsync(BlockPos cell, int count, BlockPos? store, CancellationToken ct, BlockPos? stand = null,
+        IReadOnlyList<BlockPos>? rotation = null)
     {
+        IReadOnlyList<BlockPos> cells = [cell, .. (rotation ?? []).Where(p => p != cell).Distinct()];
         int mined = 0, deposited = 0, fails = 0;
         bool upgraded = false;
         var notes = new List<string>();
@@ -66,9 +70,11 @@ public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = nul
                 deposited += d.Count;
                 if (d.Message.Contains("placed", StringComparison.Ordinal)) notes.Add(d.Message);
             }
-            var res = stand is { } st
-                ? await c.HarvestGeneratorAsync(cell.X, cell.Y, cell.Z, Math.Min(Batch, count - mined), st, ct).ConfigureAwait(false)
-                : await c.HarvestGeneratorAsync(cell.X, cell.Y, cell.Z, Math.Min(Batch, count - mined), ct).ConfigureAwait(false);
+            var res = cells.Count > 1
+                ? await c.HarvestGeneratorAsync(cells, Math.Min(Batch, count - mined), stand, ct).ConfigureAwait(false)
+                : stand is { } st
+                    ? await c.HarvestGeneratorAsync(cell.X, cell.Y, cell.Z, Math.Min(Batch, count - mined), st, ct).ConfigureAwait(false)
+                    : await c.HarvestGeneratorAsync(cell.X, cell.Y, cell.Z, Math.Min(Batch, count - mined), ct).ConfigureAwait(false);
             if (stand != null && res.Count == 0 && res.Message.Contains("taught stand spot", StringComparison.Ordinal))
             {
                 stop = res.Message; // never dig the cell from anywhere but where the player showed
@@ -77,6 +83,12 @@ public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = nul
             }
             mined += res.Count;
             var msg = res.Message;
+            if (res.Count == 0 && msg.StartsWith("busy:", StringComparison.Ordinal))
+            {
+                stop = msg; // another bot holds this cell: the caller picks another one (never wait out retries on it)
+                ok = mined > 0;
+                break;
+            }
             if (msg.Contains("isn't regenerating", StringComparison.Ordinal) || msg.Contains("stopped producing", StringComparison.Ordinal))
             {
                 stop = msg.StartsWith("generator: ", StringComparison.Ordinal) ? msg["generator: ".Length..] : msg;
@@ -118,6 +130,18 @@ public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = nul
             // 3) interrupted (mob, danger, can't reach): pause and resume; stop only after repeated failures.
             if (++fails >= MaxConsecutiveFailures) { stop = msg; ok = mined > 0; break; }
             await Task.Delay(RetryPause, ct).ConfigureAwait(false);
+        }
+        // Live 10-27 21:12: "chest 14,64,-5 not topped up (have 8 cobble in inventory)": whatever the job got goes into the store
+        // at the end, target met or not (a stop for storage itself excepted).
+        if (store != null && mined > 0 && c.World.Inventory.CountItem(Blocks.Cobblestone) > 0 && stop?.StartsWith("storage full", StringComparison.Ordinal) != true)
+        {
+            try
+            {
+                var d = await DepositAsync(store, ct).ConfigureAwait(false);
+                if (d.Ok) deposited += d.Count;
+                else notes.Add("final deposit: " + d.Message);
+            }
+            catch (OperationCanceledException) { /* cancelled: keep the partial result */ }
         }
         var text = $"generator: dug {mined}/{count} at {cell.X},{cell.Y},{cell.Z}" + (deposited > 0 ? $", deposited {deposited} item(s)" : "")
                    + $" (have {c.World.Inventory.CountItem(Blocks.Cobblestone)} cobblestone)"

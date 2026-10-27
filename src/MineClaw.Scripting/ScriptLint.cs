@@ -10,6 +10,9 @@ public sealed record LintFinding(LintSeverity Severity, int Line, string Rule, s
     public override string ToString() => $"L{Line} {Message}";
 }
 
+/// <summary>A Lua binding's args: positional order and the params it can't run without (see <see cref="ScriptLint.SignatureOf"/>).</summary>
+public sealed record BindingSignature(IReadOnlyList<string> Params, IReadOnlySet<string> Required);
+
 /// <summary>Lint result: errors reject the run (the brain fixes and resubmits); warnings ride along with the run result.</summary>
 public sealed record LintReport(IReadOnlyList<LintFinding> Findings)
 {
@@ -78,10 +81,15 @@ public static class ScriptLint
 
     /// <param name="actions">Game action / skill / alias names the script can call (results worth checking).</param>
     /// <param name="longScriptActions">More static action call sites than this and no <c>cp</c> → warning.</param>
-    public static LintReport Check(string code, IEnumerable<string> actions, int longScriptActions = 6)
+    /// <param name="signatures">Binding signatures by tool name (aliases resolved through <see cref="ScriptSession.Aliases"/>): a
+    /// call that can't fill a required arg is an error before anything runs (live 10-27 21:12: <c>gen{}</c> failed at line 3
+    /// with "bad input: missing 'at'" after 5 actions).</param>
+    public static LintReport Check(string code, IEnumerable<string> actions, int longScriptActions = 6,
+        IReadOnlyDictionary<string, BindingSignature>? signatures = null)
     {
         var acts = new HashSet<string>(actions, StringComparer.Ordinal);
         var toks = Tokenize(code ?? "");
+        var ownFunctions = signatures is { Count: > 0 } ? DefinedNames(toks) : [];
         var findings = new List<LintFinding>();
         var stack = new List<Block>();
         var parens = new Stack<string?>();   // callee name per open '(' / '{' call
@@ -172,6 +180,10 @@ public static class ScriptLint
                 if (!PureCalls.Contains(t.Text))
                     foreach (var b in stack) b.Acts = true;
                 if (isAction) actionSites++;
+                if (signatures is { Count: > 0 } && !ownFunctions.Contains(t.Text) && SignatureFor(t.Text, signatures) is { } sig
+                    && MissingArgs(sig, toks, i + 1) is { Count: > 0 } missing)
+                    findings.Add(new(LintSeverity.Error, t.Line, "missing-arg",
+                        $"{t.Text} needs {string.Join(" ", missing.Select(m => m + "="))} (args in order: {string.Join(",", sig.Params.Take(4))})"));
                 if (LoopActive())
                 {
                     if (t.Text == "say")
@@ -220,6 +232,187 @@ public static class ScriptLint
         if (j >= toks.Count || toks[j].Kind != T.Str) return null;
         var b = MineClaw.Data.Blocks.ByName(toks[j].Text.Trim());
         return b != null && MineClaw.Data.Tools.RequiresTool(b.Id) && MineClaw.Data.Tools.PickaxeEffective.Contains(b.Id) ? "pickaxe" : null;
+    }
+
+    // ------------------------------------------------------------------ required binding args
+
+    /// <summary>
+    /// A binding's signature from the input schema of the tool it forwards to: <see cref="BindingSignature.Params"/> = the
+    /// positional order (the same order <c>MapArgs</c> fills), <see cref="BindingSignature.Required"/> = the schema's required
+    /// string params. Required numbers/booleans are left out: the game tools always default them (<c>count</c> → 16...),
+    /// while a missing required string (<c>at</c>, <c>item</c>, <c>block</c>, <c>to</c>) fails the call ("missing 'at'").
+    /// Null when the schema has no properties.
+    /// </summary>
+    public static BindingSignature? SignatureOf(System.Text.Json.JsonElement schema)
+    {
+        if (schema.ValueKind != System.Text.Json.JsonValueKind.Object || !schema.TryGetProperty("properties", out var props)
+            || props.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
+        var ps = new List<string>();
+        var strings = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var p in props.EnumerateObject())
+        {
+            ps.Add(p.Name);
+            if (p.Value.ValueKind == System.Text.Json.JsonValueKind.Object && p.Value.TryGetProperty("type", out var ty)
+                && ty.ValueKind == System.Text.Json.JsonValueKind.String && ty.GetString() == "string") strings.Add(p.Name);
+        }
+        var req = new HashSet<string>(StringComparer.Ordinal);
+        if (schema.TryGetProperty("required", out var r) && r.ValueKind == System.Text.Json.JsonValueKind.Array)
+            foreach (var x in r.EnumerateArray())
+                if (x.ValueKind == System.Text.Json.JsonValueKind.String && x.GetString() is { } n && strings.Contains(n)) req.Add(n);
+        return new BindingSignature(ps, req);
+    }
+
+    private static BindingSignature? SignatureFor(string call, IReadOnlyDictionary<string, BindingSignature> sigs) =>
+        sigs.TryGetValue(call, out var s) ? s
+        : ScriptSession.Aliases.TryGetValue(call, out var target) && sigs.TryGetValue(target, out var a) ? a : null;
+
+    /// <summary>Names the script defines itself (<c>function f</c>, <c>local function f</c>, <c>local f =</c>, <c>f = function</c>).</summary>
+    private static HashSet<string> DefinedNames(List<Tok> toks)
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        for (int i = 0; i + 1 < toks.Count; i++)
+        {
+            if (toks[i].Kind == T.Ident && toks[i].Text is "function" or "local" && toks[i + 1].Kind == T.Ident && toks[i + 1].Text != "function")
+                set.Add(toks[i + 1].Text);
+            if (toks[i].Kind == T.Ident && toks[i].Text == "local" && i + 2 < toks.Count && toks[i + 1].Text == "function" && toks[i + 2].Kind == T.Ident)
+                set.Add(toks[i + 2].Text);
+        }
+        return set;
+    }
+
+    private enum ArgKind { Str, Num, Nil, Table, Multi, Other }
+
+    private sealed record Arg(ArgKind Kind, string? Name, int Start, int End);
+
+    /// <summary>
+    /// Required params a call can't fill, simulating the binding's Lua → JSON mapping: one table literal = its array part
+    /// positional + its named keys (<c>n</c> = count); otherwise the arguments are positional; a position param takes three
+    /// numbers. A call whose args can't be known statically (one variable/table expression, a trailing call or <c>...</c>
+    /// that may expand) is never flagged. Null = not a checkable call.
+    /// </summary>
+    private static List<string>? MissingArgs(BindingSignature sig, List<Tok> toks, int j)
+    {
+        if (sig.Required.Count == 0 || j >= toks.Count) return null;
+        List<Arg> args;
+        var first = toks[j];
+        if (first.Kind == T.Str) args = [new Arg(ArgKind.Str, null, j, j)];
+        else if (first.Kind == T.Sym && first.Text == "{") args = Elements(toks, j, "}") ?? [];
+        else if (first.Kind == T.Sym && first.Text == "(")
+        {
+            if (Elements(toks, j, ")") is not { } list) return null;
+            if (list.Count == 1 && list[0].Kind == ArgKind.Table && list[0].Name == null)
+                args = Elements(toks, list[0].Start, "}") ?? [];
+            else if (list.Count == 1 && list[0].Kind is ArgKind.Other or ArgKind.Multi) return null; // go(p), place(t): runtime shape
+            else args = list;
+        }
+        else return null;
+
+        var filled = new HashSet<string>(StringComparer.Ordinal);
+        var pos = args.Where(a => a.Name == null).ToList();
+        // dig{x=1,y=64,z=2}: a position table as the whole argument fills the first (position) param.
+        if (sig.Params.Count > 0 && PosParamNames.Contains(sig.Params[0]) && pos.Count == 0
+            && new[] { "x", "y", "z" }.All(k => args.Any(a => a.Name == k))) filled.Add(sig.Params[0]);
+        foreach (var a in args.Where(a => a.Name != null && a.Kind != ArgKind.Nil))
+            filled.Add(a.Name == "n" && sig.Params.Contains("count") ? "count" : a.Name!);
+        // A single position table ({1,64,2} / {x=..}) as the whole call fills the first (position) param.
+        int pi = 0;
+        for (int i = 0; i < pos.Count && pi < sig.Params.Count;)
+        {
+            var name = sig.Params[pi];
+            // Only a trailing call / ... can expand to several values; elsewhere it is one value.
+            if (pos[i].Kind == ArgKind.Multi && i == pos.Count - 1) { foreach (var p in sig.Params.Skip(pi)) filled.Add(p); break; }
+            if (PosParamNames.Contains(name) && i + 2 < pos.Count && pos[i].Kind == ArgKind.Num && pos[i + 1].Kind == ArgKind.Num && pos[i + 2].Kind == ArgKind.Num)
+            {
+                filled.Add(name);
+                i += 3;
+                pi++;
+                continue;
+            }
+            if (pos[i].Kind != ArgKind.Nil) filled.Add(name);
+            i++;
+            pi++;
+        }
+        return sig.Params.Where(p => sig.Required.Contains(p) && !filled.Contains(p)).ToList();
+    }
+
+    private static readonly HashSet<string> PosParamNames = new(StringComparer.OrdinalIgnoreCase) { "to", "at", "pos" };
+
+    /// <summary>Top-level elements between the bracket at <paramref name="open"/> and its match (null = unbalanced).</summary>
+    private static List<Arg>? Elements(List<Tok> toks, int open, string close)
+    {
+        var list = new List<Arg>();
+        int depth = 0, blocks = 0, start = open + 1;
+        for (int k = open + 1; k < toks.Count; k++)
+        {
+            var t = toks[k];
+            if (t.Kind == T.Ident)
+            {
+                if (t.Text is "function" or "if" or "do" or "repeat") blocks++;
+                else if (t.Text is "end" or "until") blocks--;
+            }
+            else if (t.Kind == T.Sym)
+            {
+                if (t.Text is "(" or "{" or "[") depth++;
+                else if (t.Text is ")" or "}" or "]")
+                {
+                    if (depth == 0 && blocks <= 0)
+                    {
+                        if (t.Text != close) return null;
+                        if (k > start) list.Add(Classify(toks, start, k - 1));
+                        return list;
+                    }
+                    depth--;
+                }
+                else if (t.Text is "," or ";" && depth == 0 && blocks <= 0)
+                {
+                    if (k > start) list.Add(Classify(toks, start, k - 1));
+                    start = k + 1;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static Arg Classify(List<Tok> toks, int s, int e)
+    {
+        string? name = null;
+        // key = value / ["key"] = value (not ==)
+        if (e - s >= 2 && toks[s].Kind == T.Ident && toks[s + 1].Kind == T.Sym && toks[s + 1].Text == "=" && !(toks[s + 2].Kind == T.Sym && toks[s + 2].Text == "="))
+        {
+            name = toks[s].Text;
+            s += 2;
+        }
+        else if (e - s >= 4 && toks[s].Text == "[" && toks[s + 1].Kind == T.Str && toks[s + 2].Text == "]" && toks[s + 3].Text == "=")
+        {
+            name = toks[s + 1].Text;
+            s += 4;
+        }
+        int len = e - s + 1;
+        var kind = len switch
+        {
+            1 when toks[s].Kind == T.Str => ArgKind.Str,
+            1 when toks[s].Kind == T.Num => ArgKind.Num,
+            2 when toks[s].Text == "-" && toks[s + 1].Kind == T.Num => ArgKind.Num,
+            1 when toks[s].Kind == T.Ident && toks[s].Text == "nil" => ArgKind.Nil,
+            _ when toks[s].Kind == T.Sym && toks[s].Text == "{" && MatchClose(toks, s) == e => ArgKind.Table,
+            _ when toks[e].Kind == T.Sym && toks[e].Text is ")" || toks[e].Kind == T.Str && len >= 2 && toks[e - 1].Kind == T.Ident
+                   || toks[e].Kind == T.Sym && toks[e].Text == "}" && len >= 2 && toks[s].Kind == T.Ident => ArgKind.Multi, // f(x), f"x", f{..}
+            2 when toks[s].Text == ".." && toks[s + 1].Text == "." => ArgKind.Multi, // ... (tokenized ".." ".")
+            _ => ArgKind.Other,
+        };
+        return new Arg(kind, name, s, e);
+    }
+
+    private static int MatchClose(List<Tok> toks, int open)
+    {
+        int depth = 0;
+        for (int k = open; k < toks.Count; k++)
+        {
+            if (toks[k].Kind != T.Sym) continue;
+            if (toks[k].Text is "(" or "{" or "[") depth++;
+            else if (toks[k].Text is ")" or "}" or "]" && --depth == 0) return k;
+        }
+        return -1;
     }
 
     private static readonly HashSet<string> ExprKeywords = new(StringComparer.Ordinal)

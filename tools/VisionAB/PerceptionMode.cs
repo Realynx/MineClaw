@@ -16,7 +16,8 @@ static class PerceptionMode
     public static int Sheets(string root, string outDir)
     {
         var fixture = File.ReadAllText(Path.Combine(root, "tests", "fixtures", "portal-trip", "nether.txt"));
-        foreach (var c in VisionEval.Cases(fixture))
+        var dualGen = File.ReadAllText(Path.Combine(root, "tests", "fixtures", "vision-eval", "dual-gen.txt"));
+        foreach (var c in VisionEval.Cases(fixture, dualGen))
         {
             var s = VisionEval.Sheet(c);
             File.WriteAllBytes(Path.Combine(outDir, $"sheet-{c.Id}.png"), s.Png);
@@ -35,7 +36,8 @@ static class PerceptionMode
         decimal cap = Math.Min(HardCapUsd, decimal.TryParse(arg("cap"), NumberStyles.Number, CultureInfo.InvariantCulture, out var cv) ? cv : HardCapUsd);
         var fixture = File.ReadAllText(Path.Combine(root, "tests", "fixtures", "portal-trip", "nether.txt"));
         var only = arg("only")?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var cases = VisionEval.Cases(fixture).Where(c => only == null || only.Contains(c.Id)).ToList();
+        var dualGen = File.ReadAllText(Path.Combine(root, "tests", "fixtures", "vision-eval", "dual-gen.txt"));
+        var cases = VisionEval.Cases(fixture, dualGen).Where(c => only == null || only.Contains(c.Id)).ToList();
         var armNames = arg("arms")?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var arms = VisionEvalArm.Default.Where(a => armNames == null || armNames.Contains(a.Name)).ToList();
         var recorder = new RecordingLlm(new AnthropicLlmClient(llm));
@@ -47,13 +49,13 @@ static class PerceptionMode
         var log = Path.Combine(outDir, $"perception-{DateTime.Now:yyyyMMdd-HHmmss}.jsonl");
         foreach (var c in cases)
         {
-            var sheet = VisionEval.Sheet(c);
+            var sheet = VisionEval.Sheet(c, cutAway: arg("nocut") == null); // --nocut=1: the pre-fix sheet (roofs hide what's under them)
             foreach (var arm in arms)
             {
                 if (calls >= maxCalls || spent >= cap - 0.02m) { Console.WriteLine($"stopping: {calls} calls, ${spent:0.0000}"); goto done; }
                 recorder.Case = c.Id;
                 var row = await VisionEval.RunAsync(c, arm, recorder, prices, CancellationToken.None, sheet);
-                calls++;
+                if (row.InputTokens > 0 || row.Error != null) calls++; // an exact (voxel) answer makes no call
                 spent += row.Usd;
                 rows.Add(row);
                 Console.WriteLine($"{c.Id,-19} {arm.Name,-18} {(row.Ok ? "OK " : "BAD")} raw {(row.RawOk ? "ok " : "bad")} in {row.InputTokens,5} out {row.OutputTokens,4} " +

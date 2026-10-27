@@ -108,6 +108,21 @@ public sealed class WorkerAgent
     }
 
     /// <summary>
+    /// A player's correction straight from chat (zero tokens, no brain round): "just like 5" while a torch task runs reaches the
+    /// worker's next round as "[player amends task] ...". True when a task was running and the line was an amendment.
+    /// </summary>
+    public bool AmendFromChat(string player, string text)
+    {
+        if (!IsRunning || TaskAmendment.Detect(text) is not { } a) return false;
+        _amendments.Enqueue(TextUtil.Truncate(TextUtil.OneLine("[player] " + a.Note(player)), 300));
+        LastLiveAmendment = $"{player}: \"{a.Text}\"";
+        return true;
+    }
+
+    /// <summary>The last amendment forwarded from chat during the running task (the brain's busy detail says it's done).</summary>
+    public string? LastLiveAmendment { get; private set; }
+
+    /// <summary>
     /// Per-round context from the body (auto-vision: "[vision] ..." after a spatial step, ≈100 tokens of verified text), appended
     /// to the newest tool results. Null/empty = nothing. Bounded by the hook itself (it never waits long).
     /// </summary>
@@ -195,6 +210,7 @@ public sealed class WorkerAgent
         var tools = ToolDefinitions;
         var messages = new List<LlmMessage> { LlmMessage.User(FirstMessage(task, doneWhen, minutes)) };
         while (_amendments.TryDequeue(out _)) { } // notes for an earlier task never leak into this one
+        LastLiveAmendment = null;
         Interlocked.Increment(ref _running);
         int calls = 0, toolCalls = 0, continued = 0;
         decimal cost = 0;

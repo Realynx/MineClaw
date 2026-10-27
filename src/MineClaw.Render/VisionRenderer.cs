@@ -86,6 +86,21 @@ public sealed class VisionRenderer
             return (uint)ix < (uint)N && (uint)iz < (uint)N && Loaded[iz * N + ix];
         }
 
+        /// <summary>
+        /// A block above <paramref name="feetY"/> hanging over air/fluid/non-solid down to the feet layer (a roof, a canopy):
+        /// cut away in top/iso views so it never hides what is at feet height (a gen cell under a roof).
+        /// </summary>
+        public bool Overhangs(int x, int y, int z, int feetY)
+        {
+            if (y <= feetY) return false;
+            for (int yy = feetY; yy < y; yy++)
+            {
+                int id = At(x, yy, z);
+                if (id == 0 || !Blocks.Get(id).Solid) return true;
+            }
+            return false;
+        }
+
         public bool HasBelow(int x, int z)
         {
             int ix = x - X0, iz = z - Z0;
@@ -165,7 +180,7 @@ public sealed class VisionRenderer
           .Append(s.Atlas != null).Append(s.Light != null ? Lighting.SkylightSubtracted(s.Time) : -1).Append('|')
           .Append(s.Self).Append('|').Append(s.Target).Append('|').Append(s.Pointed).Append(s.PointedBy).Append('|')
           .Append(s.Roles != null).Append(s.Focus).Append('|').Append(s.CellPx).Append('|').Append(s.Axis).Append('|').Append(s.MaxPx).Append('|')
-          .Append(s.Up).Append(s.Down).Append(s.SideUp).Append(s.SideDown).Append(s.SideDepth).Append(s.IsoUp).Append(s.IsoDown).Append('|');
+          .Append(s.Up).Append(s.Down).Append(s.SideUp).Append(s.SideDown).Append(s.SideDepth).Append(s.IsoUp).Append(s.IsoDown).Append(s.CutAway).Append('|');
         foreach (var e in s.Entities) sb.Append(e.Kind).Append(e.Name).Append((int)Math.Floor(e.X)).Append(',').Append((int)Math.Floor(e.Y)).Append(',').Append((int)Math.Floor(e.Z)).Append(';');
         foreach (var m in s.Marks) sb.Append(m).Append(';');
         foreach (var p in s.Path) sb.Append(p).Append(';');
@@ -348,13 +363,28 @@ public sealed class VisionRenderer
 
     // ------------------------------------------------------------------ top view
 
-    private VisionImage RenderTop(VisionScene s, Slab slab, ulong key)
+    /// <summary>Top view layout: left/top margins and the cell size (shared by the renderer and <see cref="TopCellPixel"/>).</summary>
+    private static (int ML, int MT, int Cs, int N, int X0, int Z0) TopLayout(VisionScene s)
     {
-        int n = slab.N, cs = s.CellPx ?? CellSize(s.Radius);
-        int x0 = slab.X0, z0 = slab.Z0;
+        int r = Math.Clamp(s.Radius, 2, 32), n = 2 * r + 1, cs = s.CellPx ?? CellSize(s.Radius);
+        int x0 = s.Cx - r, z0 = s.Cz - r;
         int zlw = 0;
         for (int i = 0; i < n; i++) if (Mod5(z0 + i) == 0) zlw = Math.Max(zlw, PixelFont.Width((z0 + i).ToString(CultureInfo.InvariantCulture)));
-        int ML = 2 + 9 + 2 + zlw + 3, MT = 11, MR = 12, MB = 12;
+        return (2 + 9 + 2 + zlw + 3, 11, cs, n, x0, z0);
+    }
+
+    /// <summary>Top-left pixel and size of world column (x, z) in the top view of <paramref name="s"/> (tests, overlays).</summary>
+    public static (int X, int Y, int Cell) TopCellPixel(VisionScene s, int x, int z)
+    {
+        var (ml, mt, cs, _, x0, z0) = TopLayout(s);
+        return (ml + (x - x0) * cs, mt + (z - z0) * cs, cs);
+    }
+
+    private VisionImage RenderTop(VisionScene s, Slab slab, ulong key)
+    {
+        var (ML, MT, cs, n, x0, z0) = TopLayout(s);
+        int MR = 12, MB = 12;
+        int cut = 0;
         int W = ML + n * cs + MR, H = MT + n * cs + MB;
         var c = new Canvas(W, H, Margin);
         int mx = ML, my = MT;
@@ -371,6 +401,7 @@ public sealed class VisionRenderer
                 {
                     int id = slab.At(wx, wy, wz);
                     if (id == 0 || IsoPalette.Mat(id) is not { } m) continue;
+                    if (s.CutAway && slab.Overhangs(wx, wy, wz, s.Cy)) { cut++; continue; } // a roof: show what is under it
                     if (IsDoor(id)) { baseId = id; baseY = wy; break; }
                     if ((m.Flags & (MatFlags.Small | MatFlags.Flat)) != 0) { if (deco == 0) deco = id; continue; }
                     baseId = id; baseY = wy;
@@ -413,6 +444,8 @@ public sealed class VisionRenderer
                 }
                 if (IsDoor(baseId)) { c.Fill(px + 1, py + 1, cs - 2, cs - 2, 0x6b4a1e); c.Outline(px, py, cs, cs, 0xfff2b0); col = 0x6b4a1e; }
                 var role = slab.RoleAt(wx, baseY, wz);
+                // A refilling (air) gen cell above the visible block is still the place to mine.
+                if (baseY < s.Cy && slab.RoleAt(wx, s.Cy, wz) == BlockRole.GenCell) role = BlockRole.GenCell;
                 bool roleLetter = BlockRoles.Glyph(role) != null;
                 if (Letter(baseId) is { } L && cs >= 8 && !roleLetter) c.Text(px + (cs - 5) / 2, py + (cs - 7) / 2, L.ToString(), IsDoor(baseId) ? 0xfff2b0u : InkFor(col));
                 if (deco != 0) Deco(c, px, py, cs, deco);
@@ -543,6 +576,7 @@ public sealed class VisionRenderer
         legend.Append(CultureInfo.InvariantCulture, $"N up, 1 cell=1 block, coords every 5 (x top, z left). ");
         if (s.Self is { } self) legend.Append(CultureInfo.InvariantCulture, $"@=you {Fmt(self.X, self.Y, self.Z)}. ");
         legend.Append(CultureInfo.InvariantCulture, $"Bevel=block at y{s.Cy}+ (wall), plain=floor y{floorY}, darker=lower, navy hatch=void, grey dots=unknown. C chest F furnace W bench D door.");
+        if (cut > 0) legend.Append(CultureInfo.InvariantCulture, $" Roof above y{s.Cy} cut away ({cut} blocks).");
         if (s.Target != null) legend.Append(" Gold box=target.");
         if (s.Pointed is { } ptd) legend.Append(CultureInfo.InvariantCulture, $" Pink box=pointed {Fmt(ptd.X, ptd.Y, ptd.Z)}{(s.PointedBy != null ? " by " + s.PointedBy : "")}.");
         if (s.Focus is { } fl) legend.Append(CultureInfo.InvariantCulture, $" Cyan box=focus {Fmt(fl.X, fl.Y, fl.Z)} (yellow ticks).");
@@ -595,7 +629,7 @@ public sealed class VisionRenderer
     {
         if (!BlockRoles.Highlight(r)) return;
         uint col = BlockRoles.Colour(r);
-        if (r is not (BlockRole.Door or BlockRole.Station)) c.FillBlend(px + 1, py + 1, cs - 2, cs - 2, col, r == BlockRole.GenCell ? 0.5f : 0.38f);
+        if (r is not (BlockRole.Door or BlockRole.Station or BlockRole.SoftProtected)) c.FillBlend(px + 1, py + 1, cs - 2, cs - 2, col, r == BlockRole.GenCell ? 0.5f : 0.38f);
         c.Outline(px + 1, py + 1, cs - 2, cs - 2, col, cs >= 12 ? 2 : 1);
         if (letter && cs >= 8 && BlockRoles.Glyph(r) is { } g && PixelFont.Has(g))
         {
@@ -914,6 +948,11 @@ public sealed class VisionRenderer
             int src = iy + (y0 - slab.Y0);
             if ((uint)src >= (uint)slab.Sy) continue;
             Array.Copy(slab.Cells, src * n * n, cells, iy * n * n, n * n);
+            int wy = y0 + iy;
+            if (!s.CutAway || wy <= s.Cy) continue;
+            for (int iz = 0; iz < n; iz++)
+                for (int ix = 0; ix < n; ix++)
+                    if (cells[(iy * n + iz) * n + ix] != 0 && slab.Overhangs(slab.X0 + ix, wy, slab.Z0 + iz, s.Cy)) cells[(iy * n + iz) * n + ix] = 0;
         }
         _ = down;
         int[]? target = s.Target is { } t0 ? [t0.X, t0.Y, t0.Z] : null;
@@ -981,7 +1020,7 @@ public sealed class VisionRenderer
                 : IsoPalette.Mat(id) is { } m ? IsoPalette.Scale(p.Face == IsoFace.Top ? m.Top : m.Side, k) : null;
             // Role layer: highlighted blocks are tinted on every face (gen cells glow), so the 3D view agrees with the map.
             var role = slab.RoleAt(wx, wy, wz);
-            if (col is { } cc && BlockRoles.Highlight(role) && role is not (BlockRole.Door or BlockRole.Station))
+            if (col is { } cc && BlockRoles.Highlight(role) && role is not (BlockRole.Door or BlockRole.Station or BlockRole.SoftProtected))
                 return IsoPalette.Mix(cc, BlockRoles.Colour(role), role == BlockRole.GenCell ? 0.55f : 0.4f);
             if (s.Atlas == null && s.Light == null) return null;
             return col;

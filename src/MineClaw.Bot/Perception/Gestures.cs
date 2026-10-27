@@ -259,6 +259,18 @@ public static class BlockDescriber
         return lava && water;
     }
 
+    /// <summary>Why <paramref name="p"/> is not a generator dig cell by geometry ("it's planks", "no lava flowing in"), null = it is.</summary>
+    public static string? GenCellRejection(WorldState w, BlockPos p)
+    {
+        if (IsGenCell(w, p)) return null;
+        if ((uint)p.Y >= WorldState.Height) return "out of the world";
+        int id = w.GetBlock(p);
+        if (!(id is Blocks.Cobblestone or Blocks.Stone or 0 || id == Blocks.FlowingLava))
+            return $"it's {(Blocks.Exists(id) ? Blocks.Get(id).Name : "block " + id)}, not cobblestone/stone";
+        bool lava = FlowIn.Any(o => Blocks.IsLava(w.GetBlock(p + o))), water = FlowIn.Any(o => Blocks.IsWater(w.GetBlock(p + o)));
+        return !lava && !water ? "no lava or water next to it" : !lava ? "no lava flowing in" : "no water touching it";
+    }
+
     /// <summary>Generator cells within <paramref name="radius"/> of <paramref name="p"/> (geometry), nearest first.</summary>
     public static List<BlockPos> GenCellsNear(WorldState w, BlockPos p, int radius = 4)
     {

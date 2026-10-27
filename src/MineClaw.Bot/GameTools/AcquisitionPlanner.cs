@@ -121,7 +121,7 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
 
     private static string Short(Loadout.Kind k) => k.Name == "pickaxe" ? "pick" : k.Name;
 
-    private static int HeadCount(Loadout.Kind k) => k.Name switch { "shovel" => 1, "sword" => 2, _ => 3 };
+    private static int HeadCount(Loadout.Kind k) => k.Name switch { "shovel" => 1, "sword" or "hoe" => 2, _ => 3 };
 
     private static int SticksFor(Loadout.Kind k) => k.Name == "sword" ? 1 : 2;
 

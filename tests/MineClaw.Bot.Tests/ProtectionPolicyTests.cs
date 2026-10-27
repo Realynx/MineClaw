@@ -351,13 +351,17 @@ public class ProtectionPolicyTests
     }
 
     [Fact]
-    public void Dont_mine_the_middle_one_marks_the_middle_generator_cell_never_break()
+    public void Dont_mine_the_middle_one_is_too_vague_for_a_gen_cell_but_its_coordinates_mark_it_never_break()
     {
+        // Live 10-27 21:17 (Fox: all 3 cells are minable): a vague "the middle one" took a regen cell away for good. Only the
+        // exact cell named again marks it.
         var (h, c) = Host();
         var cells = new[] { new BlockPos(4, 64, 6), new BlockPos(5, 64, 7), new BlockPos(6, 64, 8) };
         h.ProtectionCommands!.GenCells = () => cells;
         c.RaiseChat("<kiwi> claudechan don't mine the middle one");
-        Assert.NotNull(h.ProtectionMarks!.NeverAt(new BlockPos(5, 64, 7), 0));
+        Assert.Null(h.ProtectionMarks!.NeverAt(new BlockPos(5, 64, 7), 0));
+        c.RaiseChat("<kiwi> claudechan don't mine 5,64,7");
+        Assert.NotNull(h.ProtectionMarks.NeverAt(new BlockPos(5, 64, 7), 0));
         Assert.Null(h.ProtectionMarks.NeverAt(new BlockPos(4, 64, 6), 0));
         Assert.True(h.Protection.IsProtected(new BlockPos(5, 64, 7), Blocks.Cobblestone)); // even a dig cell: hard
     }

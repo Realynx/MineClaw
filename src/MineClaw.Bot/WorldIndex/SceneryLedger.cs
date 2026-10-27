@@ -77,8 +77,10 @@ public sealed class SceneryLedger(IWorldMemoryStore store, TimeProvider? time = 
     }
 
     /// <summary>
-    /// Records a sighting and says whether to announce it. <paramref name="unchangedSinceLastSeen"/>: its chunks match the
-    /// stored baseline (it was there, untouched, last time) — recorded silently when the ledger doesn't know it yet.
+    /// Records a sighting and says whether to announce it. <paramref name="unchangedSinceLastSeen"/>: it was already there
+    /// last time (its chunks match the stored baseline, its blocks stood in the remembered world, or hive bots built it) -
+    /// recorded silently, also when a known record re-clusters into a materially different box (a classifier change is not
+    /// news: only blocks that weren't there before are).
     /// </summary>
     public Verdict Observe(int dim, string kind, BlockPos min, BlockPos max, IReadOnlyDictionary<string, int> blocks, bool unchangedSinceLastSeen)
     {
@@ -87,7 +89,7 @@ public sealed class SceneryLedger(IWorldMemoryStore store, TimeProvider? time = 
         if (m != null)
         {
             bool material = Material(Decode(m.Blocks), blocks);
-            if (!material)
+            if (!material || unchangedSinceLastSeen)
             {
                 // Keep the original key (stable); follow small edits of the box/mix.
                 store.PutScenery(m with { MinX = min.X, MinY = min.Y, MinZ = min.Z, MaxX = max.X, MaxY = max.Y, MaxZ = max.Z,

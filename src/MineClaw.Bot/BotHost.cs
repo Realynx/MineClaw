@@ -40,6 +40,8 @@ public sealed class BotHost : IDisposable
     public MechanismWatcher? Mechanisms { get; init; }
     /// <summary>The brainstem: head turn, reflexes, speculative first steps, social idle (zero tokens).</summary>
     public Brainstem.BrainstemController? Brainstem { get; init; }
+    /// <summary>Body-language gestures from the bot's own chat/emotes and addressed player chat (zero tokens).</summary>
+    public Brainstem.Gestures? BodyGestures { get; init; }
     /// <summary>Hive claim board this bot honours (<see cref="NullClaimBoard"/> without a hive).</summary>
     public IClaimBoard Claims { get; init; } = NullClaimBoard.Instance;
     /// <summary>The acquisition planner's sources for this bot. Seam for the hive: set <c>RequestHandoff</c> (ask main / a clone
@@ -95,8 +97,13 @@ public sealed class BotHost : IDisposable
         var placedStore = new PlacedBlockStore(rt.Db, client.World.Placed, log); // rule 1: own/hive placements, shared + persistent
         if (persist) placedStore.Start();
         var marks = new ProtectionMarks(rt.Db, time); // rule 3/4: trusted permits, never-break marks (shared db)
+        // Gen regen cells take a never-break mark only on that exact cell; vague old ones on confirmed regen cells go (one-time, idempotent).
+        marks.IsGenCell = digCells.IsDigCell;
+        corrections.Marks = marks;
+        corrections.UnmarkConfirmedGenCells(rt.Observations, rt.Options.Self.TrustedPlayers.FirstOrDefault() ?? "a trusted player");
         var telemetry = new ProtectionTelemetry(log, persist ? agentOptions.DataDirectory : null, time); // rule 6
         protection.IndexerKind = indexer == null ? null : indexer.ProtectionKind;
+        protection.BlockMeta = p => client.World.GetMeta(p); // crop growth stage: ripe crops are harvestable anywhere
         protection.IsDigCell = digCells.IsDigCell;
         protection.Claims = claims; // hive: a block another bot holds a lease on is soft-protected while it works there
         protection.Placed = client.World.Placed;
@@ -144,10 +151,33 @@ public sealed class BotHost : IDisposable
         var gestures = new Perception.GestureTracker(client, isBot: n => hiveBots?.Invoke().Contains(n, StringComparer.OrdinalIgnoreCase) == true
                 || n.Equals(rt.Chat.Username, StringComparison.OrdinalIgnoreCase), time,
             describe: (w, p, _) => Perception.BlockDescriber.Describe(w, p, (a, b, c2) => landmark(a, b, c2)));
+        var punched = new Dictionary<string, List<(MineClaw.World.BlockPos Pos, DateTimeOffset At)>>(StringComparer.OrdinalIgnoreCase);
         gestures.Pointed += g =>
         {
-            if (!Perception.BlockDescriber.IsGenCell(client.World, g.Pos)) return;
-            if (digCells.Register(g.Pos, g.Player)) log?.LogInformation("dig cell taught by {Player}'s punch: {Pos}", g.Player, g.Pos);
+            // Live 10-27 21:46: Fox punched 3 cells, the log showed 2 — the third was already known, so nothing was logged.
+            if (Perception.BlockDescriber.GenCellRejection(client.World, g.Pos) is { } why)
+            {
+                bool nearGen = genCells(g.Pos).Any(c => Math.Abs(c.X - g.Pos.X) <= 3 && Math.Abs(c.Y - g.Pos.Y) <= 1 && Math.Abs(c.Z - g.Pos.Z) <= 3);
+                if (nearGen) log?.LogInformation("punch by {Player} at {Pos} next to the gen isn't a dig cell: {Why}", g.Player, g.Pos, why);
+                return;
+            }
+            bool added = digCells.Register(g.Pos, g.Player);
+            if (added) log?.LogInformation("dig cell taught by {Player}'s punch: {Pos}", g.Player, g.Pos);
+            else log?.LogInformation("dig cell confirmed by {Player}'s punch (already known): {Pos}", g.Player, g.Pos);
+            var now = (time ?? TimeProvider.System).GetUtcNow();
+            List<MineClaw.World.BlockPos> recent;
+            lock (punched)
+            {
+                if (!punched.TryGetValue(g.Player, out var list)) punched[g.Player] = list = new();
+                list.RemoveAll(x => now - x.At > TimeSpan.FromSeconds(90) || x.Pos == g.Pos);
+                list.Add((g.Pos, now));
+                recent = list.Select(x => x.Pos).ToList();
+            }
+            // The brain's confirmation counts every punched cell, known ones included ("got 3 of 3").
+            rt.Events.Post(Agent.Events.GameEvent.Notice(
+                $"{g.Player} punched gen cell {g.Pos.X},{g.Pos.Y},{g.Pos.Z}{(added ? " (new)" : " (already known)")}; " +
+                $"{recent.Count} gen cell(s) punched in the last 90s: {string.Join(" ", recent.Select(p => $"{p.X},{p.Y},{p.Z}"))}",
+                Agent.Events.EventPriority.Background));
         };
         // The speaker's facing rides along for a while after they talk to me ("that way" = where they face).
         rt.Chat.Accepted += m => { if (m.Player is { Length: > 0 } p) gestures.NoteSpoke(p, m.Text); };
@@ -160,6 +190,7 @@ public sealed class BotHost : IDisposable
             GenCells = () => acquisition.GeneratorCells?.Invoke() ?? [],
             Say = line => _ = rt.Chat.SayAsync(line),
             Notice = line => rt.Events.Post(Agent.Events.GameEvent.Notice(line, Agent.Events.EventPriority.Low)),
+            GenCellAllowed = (cell, by, middle) => corrections.UnmarkGenCell(cell, by, middle),
         };
         rt.Chat.Accepted += m =>
         {
@@ -193,6 +224,12 @@ public sealed class BotHost : IDisposable
         var skillHub = SkillTools.Register(rt, client, claims); // worker: skill + find_skill over the whole catalog (zero prefix growth)
         // Inventory ledger: every toss/drop/use/consume/correction is recorded; inventory/where_is {item} answer "where did X go".
         if (client is MinecraftGameClient mgl) Ledger.InventoryLedgerTools.Attach(rt, mgl.Inner, skillHub.Registry, log, time);
+        IntentionalReset.Attach(rt, client, log); // into_void: announce once, intentional-reset outcome, the void-reset claim's evidence
+        // Shared chest memory vs what an open shows: "bread x5 gone since maid_chan opened it 1m ago; Fox may have taken it".
+        if (indexer != null)
+            WorldIndex.ChestChanges.Attach(rt, client, indexer,
+                n => n.Equals(client.Username, StringComparison.OrdinalIgnoreCase) || hiveBots?.Invoke().Contains(n, StringComparer.OrdinalIgnoreCase) == true
+                     || rt.Chat.IsHiveBot?.Invoke(n) == true, time, log);
         // Brain gets the cheap single-shot tools + delegate/ask_memory; the worker gets the game macro tools.
         rt.ApplyBrainSplit();
 
@@ -216,16 +253,21 @@ public sealed class BotHost : IDisposable
         Func<string, bool> isBot = n => hiveBots?.Invoke().Contains(n, StringComparer.OrdinalIgnoreCase) == true || rt.Chat.IsHiveBot?.Invoke(n) == true;
         var brainstem = new Brainstem.BrainstemController(rt, client, memory, isBot, time, loggers?.CreateLogger("MineClaw.Brainstem"));
         brainstem.Attach(gestures, timer: persist); // in-memory (test) hosts drive SocialTick by hand
+        // Body language from static text matching (nod/shake/wave/bow/bob/hop/look-at; zero tokens, social priority).
+        var bodyGestures = new Brainstem.Gestures(rt, client, agentOptions.Gestures, isBot, time, loggers?.CreateLogger("MineClaw.Gestures"));
+        bodyGestures.Attach();
         var watchdog = AttachWatchdog(rt, client, scripts, time);
         // A standing-order pass that found nothing to do backs off in C#; the world model says when there's work again.
         if (rt.Agent.Orders is { } standing) standing.WorkReady = o => MineClaw.Bot.Brainstem.WorkProbe.Ready(o, client, genCells);
         if (persist) watchdog.Start(); // in-memory (test) hosts drive Tick by hand
+        var (handovers, handoverPump) = AttachHandovers(client, rt, isBot, time, log, timer: persist);
         return new BotHost
         {
             Watchdog = watchdog,
+            Handovers = handovers, HandoverPump = handoverPump,
             Runtime = rt, Client = client, Bridge = bridge, Protection = protection, Recorder = recorder, MemoryAdapter = memory,
             Indexer = indexer, Activity = activityTracker, WorldMemory = worldMemory, Claims = claims ?? NullClaimBoard.Instance,
-            Gestures = gestures, DigCells = digCells, Mechanisms = mechanisms, Brainstem = brainstem, ProtectionSync = protectionSync,
+            Gestures = gestures, DigCells = digCells, Mechanisms = mechanisms, Brainstem = brainstem, BodyGestures = bodyGestures, ProtectionSync = protectionSync,
             Acquisition = acquisition,
             PlacedBlocks = placedStore, ProtectionMarks = marks, ProtectionCommands = protectCmds, ProtectionTelemetry = telemetry,
             Vision = vision,
@@ -374,6 +416,12 @@ public sealed class BotHost : IDisposable
             {
                 if (rt.Agent.HumansOnline?.Invoke() != true) return null;
                 if (rt.Agent.SpeechGate is { } gate && gate(new Agent.Events.EventBatch([]), question, false) == null) return null; // a muted clone
+                // Another hive bot asked the players this a few minutes ago: no second ask (its answer is in chat already).
+                if (Agent.Human.AskedBefore.For(rt.Db, rt.Chat, TimeProvider.System)(question, null) is { } prior)
+                {
+                    log?.LogInformation("acquire: not asking again: {Prior}", prior);
+                    return null;
+                }
                 var wait = rt.Chat.WaitForReplyAsync(null, timeout, ct);
                 await rt.Chat.SayAsync(question, ct: ct).ConfigureAwait(false);
                 return await wait.ConfigureAwait(false);
@@ -438,7 +486,7 @@ public sealed class BotHost : IDisposable
     {
         var opts = (o ?? new WorldIndexOptions()).Remembered;
         if (indexer == null || !opts.Enabled) return null;
-        var store = new SqliteWorldMemoryStore(rt.Db);
+        var store = new SqliteWorldMemoryStore(rt.Db, client.Username); // seen_by: whose eyes (main or a clone) last saw a column
         var wm = new WorldMemory(client.World, store, opts, time, loggers?.CreateLogger("MineClaw.WorldMemory"));
         WorldMemory.GateAnnouncements(indexer, wm, new SceneryLedger(store, time));
         wm.SinceLastTime += line => rt.Events.Post(Agent.Events.GameEvent.Activity(line)); // clones drop Activity (main's job)
@@ -547,8 +595,76 @@ public sealed class BotHost : IDisposable
         return (indexer, tracker);
     }
 
+    /// <summary>Hand-overs and spoken promises (zero tokens): "Fox gave you 21 wheat; you said you'd make bread when ...".</summary>
+    public Brainstem.HandoverWatch? Handovers { get; init; }
+    private System.Threading.Timer? HandoverPump { get; init; }
+
+    /// <summary>Posts settled hand-overs / kept promises as wake events (the timer does this live; tests call it by hand).</summary>
+    public int PollHandovers() => Handovers is { } h ? PostHandovers(h, Runtime, Client) : 0;
+
+    private static int PostHandovers(Brainstem.HandoverWatch h, AgentRuntime rt, IGameClient client)
+    {
+        int n = 0;
+        foreach (var (text, player) in h.Poll(id => client.World.Inventory.CountItem(id)))
+        {
+            // A kept promise wakes the brain even while a script has the body (it said it would act on this).
+            bool promise = text.Contains("you said you'd", StringComparison.Ordinal);
+            rt.Events.Post(new Agent.Events.GameEvent(Agent.Events.EventKind.Notice, text, player, Agent.Events.EventPriority.Normal) { MustWake = promise });
+            n++;
+        }
+        return n;
+    }
+
+    /// <summary>
+    /// Live 10-27 21:04: Fox tossed 21 wheat after "come here I'll give it to you, make bread"; the bot had said "I'll make bread
+    /// the second you hand it over" and then idled 40 s. Item spawns at a player's eye height / in front of them are attributed,
+    /// the bot's pickups of them become one debounced event, and the bot's own "I'll X when Y" lines become pending promises.
+    /// </summary>
+    private static (Brainstem.HandoverWatch?, System.Threading.Timer?) AttachHandovers(IGameClient client, AgentRuntime rt, Func<string, bool> isBot,
+        TimeProvider? time, ILogger? log, bool timer)
+    {
+        var watch = new Brainstem.HandoverWatch(time);
+        var w = client.World;
+        string self = client.Username;
+        IEnumerable<Brainstem.HandoverWatch.PlayerView> Others() => w.Entities.All()
+            .Where(e => e.Kind == MineClaw.World.EntityKind.Player && e.Name is { Length: > 0 } n && !n.Equals(self, StringComparison.OrdinalIgnoreCase) && !isBot(n))
+            .Select(e => new Brainstem.HandoverWatch.PlayerView(e.Name!, e.Position, e.Yaw, e.Pitch));
+        w.Entities.Spawned += e =>
+        {
+            try
+            {
+                if (e.Kind != MineClaw.World.EntityKind.Item || e.Item.IsEmpty) return;
+                if (watch.OnItemSpawn(e.Id, e.Position, Others()) is { } who) log?.LogDebug("hand-over: {Item} x{Count} thrown by {Who}", e.Item.Id, e.Item.Count, who);
+            }
+            catch (Exception ex) { log?.LogDebug(ex, "hand-over spawn failed"); }
+        };
+        w.BlockChanged += c => { if (c.NewId == 0 && c.OldId != 0) watch.OnBlockGone(c.Pos); };
+        if (client is MinecraftGameClient mg)
+            mg.Inner.ItemCollected += (collector, entity, stack) =>
+            {
+                if (collector != w.Player.EntityId || stack is not { IsEmpty: false } s) return;
+                watch.OnPickup(entity, s.Id, s.Count);
+            };
+        rt.Chat.Accepted += m => { if (m.Player is { Length: > 0 } p && !isBot(p)) watch.OnPlayerLine(p, m.Text); };
+        rt.Chat.Said += t =>
+        {
+            try
+            {
+                if (watch.OnBotLine(t, id => w.Inventory.CountItem(id)) is { } p)
+                    log?.LogInformation("promise: \"{Intent}\" when {Cond}{Item}", p.Intent, p.Condition,
+                        p.ItemId is { } id ? $" (watching for {MineClaw.Data.Items.DisplayName(id, 0)}{(p.From is { } f ? " from " + f : "")})" : "");
+            }
+            catch (Exception ex) { log?.LogDebug(ex, "promise parse failed"); }
+        };
+        var pump = timer
+            ? new System.Threading.Timer(_ => { try { PostHandovers(watch, rt, client); } catch (Exception) { /* next tick */ } }, null, 500, 250)
+            : null;
+        return (watch, pump);
+    }
+
     public void Dispose()
     {
+        HandoverPump?.Dispose();
         ProtectionSync?.Dispose();
         PlacedBlocks?.Dispose();
         Watchdog?.Dispose();

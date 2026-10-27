@@ -46,7 +46,14 @@ public sealed class GameBridge : IDisposable
     {
         Sub(h => _c.ChatReceived += h, h => _c.ChatReceived -= h, (Action<string>)OnChat);
         Sub(h => _c.Danger += h, h => _c.Danger -= h, (Action<DangerEvent>)OnDanger);
-        Sub(h => _c.Died += h, h => _c.Died -= h, (Action)(() => { _died = true; _diedAt = _c.World.Player.Position; Post(GameEvent.Died()); }));
+        Sub(h => _c.Died += h, h => _c.Died -= h, (Action)(() =>
+        {
+            _died = true;
+            _diedAt = _c.World.Player.Position;
+            // A deliberate void step (into_void): the death is the plan — context only, no alarm, no grief (no Death event).
+            if (_c.ActiveVoidStep is { } step) Post(GameEvent.Notice($"intentional reset ({step.Reason}): died in the void as planned, respawning", EventPriority.Background));
+            else Post(GameEvent.Died());
+        }));
         Sub(h => _c.ServerMoved += h, h => _c.ServerMoved -= h, (Action<Vec3d, Vec3d>)OnServerMoved);
         Sub(h => _c.Respawned += h, h => _c.Respawned -= h, (Action)OnRespawned);
         Sub(h => _c.Spawned += h, h => _c.Spawned -= h, (Action)(() => Volatile.Write(ref _dim, _c.World.Dimension)));
@@ -308,10 +315,11 @@ public sealed class GameBridge : IDisposable
         if (!c.IsPlaying) return p.IsDead ? "DEAD (respawning)" : "offline (reconnecting)";
         var held = w.Inventory.HeldItem(p.HeldSlot);
         string heldText = held.IsEmpty ? "nothing" : Names.Item(held.Id, held.Damage) + (held.Count > 1 ? " x" + held.Count : "");
-        var vitals = SurvivalReflex.HeaderText(p.Health, p.Food, w.Inventory.PlayerSlots(), c.ReservedItems);
+        var vitals = c.VitalsKnown ? SurvivalReflex.HeaderText(p.Health, p.Food, w.Inventory.PlayerSlots(), c.ReservedItems) : "hp/food loading…";
         var s = $"pos {Locations.Fmt(p.Position)} {vitals} held {heldText} {(w.IsNight ? "night" : "day")}";
         if (w.Dimension != 0) s = $"IN THE {DimName(w.Dimension).ToUpperInvariant()} " + s; // never mistaken for the island
-        if (w.IsPlayerOverVoid(p.Position)) s += " OVER VOID";
+        if (!c.GroundKnown) s += " ground loading…";
+        else if (w.IsPlayerOverVoid(p.Position)) s += " OVER VOID";
         if (c.CurrentAction is { } a) s += " | doing " + a;
         return s;
     }

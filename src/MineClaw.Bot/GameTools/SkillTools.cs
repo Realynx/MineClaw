@@ -162,8 +162,16 @@ public static class SkillTools
     public static string HintedTask(SkillRegistry registry, string task)
     {
         var hints = SkillCatalog.Hints(registry.Specs, task);
+        // A hand-off job always carries the give skill (live 10-27 21:26: "Make torches for PoofimaFox" ended "no drop/give tool").
+        if (HandOffTask.IsMatch(task) && registry.TryGet("give_items", out var give) && !hints.Contains("give_items", StringComparison.Ordinal))
+            hints = (hints.Length == 0 ? "skills (call via skill):" : hints) + "\n" + give.Spec.Signature;
         return hints.Length == 0 ? task : task + "\n" + hints;
     }
+
+    /// <summary>A task that ends with handing items to someone ("... for PoofimaFox", "bring kiwi 5 bread", "give ... to 67").</summary>
+    private static readonly System.Text.RegularExpressions.Regex HandOffTask = new(
+        @"\b(?:give|hand|bring|deliver|toss)\b|\bfor\s+(?!a\b|an\b|the\b|later\b|now\b|me\b|it\b|them\b|that\b|this\b|now\b|food\b|\d)[A-Za-z_]\w{2,15}\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
 
     private sealed class HintedTool(IAgentTool inner, Func<JsonElement, JsonElement> rewrite) : IAgentTool
     {

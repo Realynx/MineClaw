@@ -55,6 +55,10 @@ public sealed class WorldMemory : IDisposable
     private bool _started;
     private int _dim;
     private readonly Dictionary<long, BaselineState> _state = new();
+    /// <summary>The stored baseline of each column that arrived CHANGED this visit, kept before it is overwritten with the
+    /// live column (block-level "was this already here?" for announcements; decoded lazily).</summary>
+    private readonly Dictionary<long, ChunkRow> _baseline = new();
+    private readonly Dictionary<long, ChunkSnapshot> _baselineDecoded = new();
     private bool _arrivalOpen;
     private bool _arrivedAny;
     private DateTimeOffset _arrivalStart, _arrivalLast, _lastFlush;
@@ -160,10 +164,21 @@ public sealed class WorldMemory : IDisposable
         indexer.ShouldAnnounce = (u, dim) =>
         {
             memory.Pump(); // baseline states of the columns that just arrived
-            return ledger.Observe(dim, IndexKinds.UnknownStructure, u.Min, u.Max, u.Blocks ?? new Dictionary<string, int>(),
-                memory.UnchangedSinceLastSeen(dim, u.Min, u.Max)) != SceneryLedger.Verdict.Known;
+            var blocks = u.Blocks ?? new Dictionary<string, int>();
+            // Live 10-27 16:33 / 21:20: long-standing builds (gen housing, a cobble+torch build by the cactus farm) were asked
+            // about as "new" right after restarts: the classifier flagged them for the first time, the ledger had no row, and
+            // their columns' hashes differed (the gen and the cactus farm change every visit). Old = its blocks were already
+            // in the remembered world; ours = hive bots placed them. Neither is ever news.
+            bool old = memory.UnchangedSinceLastSeen(dim, u.Min, u.Max) || memory.BaselineShare(dim, u.Min, u.Max, blocks) >= OldShare;
+            bool ours = memory.SelfPlacedShare(dim, u.Min, u.Max, blocks) >= OursShare;
+            return ledger.Observe(dim, IndexKinds.UnknownStructure, u.Min, u.Max, blocks, old || ours) != SceneryLedger.Verdict.Known;
         };
     }
+
+    /// <summary>Share of a build's blocks that already stood there in the remembered world for it to count as old scenery.</summary>
+    public const double OldShare = 0.6;
+    /// <summary>Share of a build's blocks that hive bots placed for it to count as the bots' own.</summary>
+    public const double OursShare = 0.5;
 
     // ------------------------------------------------------------------ queries
 
@@ -190,6 +205,72 @@ public sealed class WorldMemory : IDisposable
         }
     }
 
+    /// <summary>
+    /// Block-level baseline check: the share (0..1) of the build's block counts (<paramref name="blocks"/>: name -> count) that
+    /// the remembered world already held inside the box before this visit. Columns that arrived unchanged count from the live
+    /// world (identical), changed ones from the kept pre-visit baseline; new/unknown columns contribute nothing.
+    /// </summary>
+    public double BaselineShare(int dim, BlockPos min, BlockPos max, IReadOnlyDictionary<string, int> blocks)
+    {
+        int total = blocks.Values.Sum();
+        if (total <= 0) return 0;
+        lock (_pumpLock)
+        {
+            if (dim != _dim) return 0;
+            var have = new Dictionary<string, int>(StringComparer.Ordinal);
+            int y0 = Math.Max(0, min.Y), y1 = Math.Min(ChunkColumn.SizeY - 1, max.Y);
+            for (int cx = min.X >> 4; cx <= max.X >> 4; cx++)
+            for (int cz = min.Z >> 4; cz <= max.Z >> 4; cz++)
+            {
+                long k = Key(cx, cz);
+                var st = _state.GetValueOrDefault(k);
+                ChunkSnapshot? before = null;
+                if (st == BaselineState.Changed)
+                {
+                    if (!_baselineDecoded.TryGetValue(k, out before))
+                    {
+                        if (!_baseline.TryGetValue(k, out var row)) continue;
+                        try { before = ChunkSnapshot.Decode(row.Data); }
+                        catch (Exception ex) { _log.LogDebug(ex, "stored column {X},{Z} unreadable", cx, cz); continue; }
+                        _baselineDecoded[k] = before;
+                    }
+                }
+                else if (st != BaselineState.Unchanged) continue;
+                int xa = Math.Max(min.X, cx * 16), xb = Math.Min(max.X, cx * 16 + 15);
+                int za = Math.Max(min.Z, cz * 16), zb = Math.Min(max.Z, cz * 16 + 15);
+                for (int x = xa; x <= xb; x++)
+                for (int z = za; z <= zb; z++)
+                for (int y = y0; y <= y1; y++)
+                {
+                    int id = before != null ? before.Ids[ChunkColumn.Index(x & 15, y, z & 15)] : _world.GetBlock(x, y, z);
+                    if (id == 0 || !Blocks.Exists(id)) continue;
+                    var name = Blocks.Get(id).Name;
+                    if (blocks.ContainsKey(name)) have[name] = have.GetValueOrDefault(name) + 1;
+                }
+            }
+            int overlap = blocks.Sum(kv => Math.Min(kv.Value, have.GetValueOrDefault(kv.Key)));
+            return (double)overlap / total;
+        }
+    }
+
+    /// <summary>Share (0..1) of the build's blocks in the box that hive bots placed themselves (<see cref="WorldState.Placed"/>).</summary>
+    public double SelfPlacedShare(int dim, BlockPos min, BlockPos max, IReadOnlyDictionary<string, int> blocks)
+    {
+        if (blocks.Count == 0 || _world.Placed.Count == 0) return 0;
+        int n = 0, placed = 0;
+        int y0 = Math.Max(0, min.Y), y1 = Math.Min(ChunkColumn.SizeY - 1, max.Y);
+        for (int x = min.X; x <= max.X; x++)
+        for (int z = min.Z; z <= max.Z; z++)
+        for (int y = y0; y <= y1; y++)
+        {
+            int id = _world.GetBlock(x, y, z);
+            if (id == 0 || !Blocks.Exists(id) || !blocks.ContainsKey(Blocks.Get(id).Name)) continue;
+            n++;
+            if (_world.Placed.IsPlaced(new BlockPos(x, y, z), dim, id)) placed++;
+        }
+        return n == 0 ? 0 : (double)placed / n;
+    }
+
     // ------------------------------------------------------------------ the pass
 
     public void Pump()
@@ -206,7 +287,12 @@ public sealed class WorldMemory : IDisposable
             while (_dropped.TryDequeue(out var gone))
             {
                 puts.Add(RowOf(ChunkSnapshot.Capture(gone), gone.Dimension, gone.ChunkX, gone.ChunkZ, now));
-                if (gone.Dimension == _dim) _state.Remove(Key(gone.ChunkX, gone.ChunkZ));
+                if (gone.Dimension == _dim)
+                {
+                    _state.Remove(Key(gone.ChunkX, gone.ChunkZ));
+                    _baseline.Remove(Key(gone.ChunkX, gone.ChunkZ));
+                    _baselineDecoded.Remove(Key(gone.ChunkX, gone.ChunkZ));
+                }
                 _dirty.TryRemove(Key(gone.ChunkX, gone.ChunkZ), out _);
             }
 
@@ -227,6 +313,7 @@ public sealed class WorldMemory : IDisposable
                 else
                 {
                     _state[k] = BaselineState.Changed;
+                    _baseline[k] = stored;
                     ColumnsChanged++;
                     if (_arrivalOpen) Diff(stored, snap, cx, cz);
                     puts.Add(RowOf(snap, _dim, cx, cz, now));
@@ -265,6 +352,20 @@ public sealed class WorldMemory : IDisposable
             puts.AddRange(DirtyRows(now));
             Write(puts, [], now);
         }
+    }
+
+    /// <summary>
+    /// "Send me your view" (hive IPC): writes every changed live column now and stamps every live column as seen now (by this
+    /// bot), so main renders this bot's surroundings from the shared db with fresh data and an honest age. Returns the columns.
+    /// </summary>
+    public int FlushForView()
+    {
+        Flush();
+        var now = _time.GetUtcNow();
+        var live = _world.Columns.Where(c => c.HasData && c.Dimension == _dim).Select(c => (c.ChunkX, c.ChunkZ)).ToList();
+        try { _store.TouchChunks(_dim, live, now); }
+        catch (Exception ex) { _log.LogDebug(ex, "world memory: touch for view failed"); }
+        return live.Count;
     }
 
     private List<ChunkRow> DirtyRows(DateTimeOffset now)
@@ -311,6 +412,8 @@ public sealed class WorldMemory : IDisposable
         _started = true;
         _dim = dim;
         _state.Clear();
+        _baseline.Clear();
+        _baselineDecoded.Clear();
         _diff.Clear();
         _arrivalOpen = true;
         _arrivedAny = false;

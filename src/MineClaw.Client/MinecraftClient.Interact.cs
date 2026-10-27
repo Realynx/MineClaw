@@ -67,7 +67,8 @@ public sealed partial class MinecraftClient
         string name = BlockName(id, World.GetMeta(pos));
         if (id != 0 && Blocks.Get(id).Interactable)
             return ActionResult.Fail($"{name} at {Fmt(pos)} would be opened/used instead (b1.8.1 activates the block first)");
-        if ((IsHoe(itemId) || itemId == Items.FlintAndSteel) && IsBlockProtected(pos, id))
+        // A hoe on farmland is a harmless no-op (mc-dev ItemHoe tills only grass/dirt): re-tilling a field is never refused.
+        if ((IsHoe(itemId) && id != Blocks.Farmland || itemId == Items.FlintAndSteel) && IsBlockProtected(pos, id))
             return ActionResult.Fail(ProtectedRefusal(pos, id));
         var beside = pos.Offset(face);
         if (itemId == Items.FlintAndSteel)

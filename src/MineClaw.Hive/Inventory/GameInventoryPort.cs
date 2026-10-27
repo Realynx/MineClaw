@@ -73,8 +73,10 @@ public sealed class GameInventoryPort(IGameClient client, ObservationStore obser
         get
         {
             if (!client.IsPlaying) return false;
+            // Putting things away is not combat: no hp gate (live 10-27: 67 at hp 7 and 1337 must still deposit before logging out;
+            // an hp ≤ 6 gate made the logout deposit wait out its deadline and leave carrying everything). Over the void: no.
             var p = client.World.Player;
-            return p.Health > 6 && !client.World.IsPlayerOverVoid(p.Position);
+            return !client.World.IsPlayerOverVoid(p.Position);
         }
     }
 

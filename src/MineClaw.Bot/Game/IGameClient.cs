@@ -47,6 +47,11 @@ public interface IGameClient
     /// <summary>Harvest from a player-taught stand spot (walks onto it first, refuses to dig from elsewhere). Default: no stand.</summary>
     Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, BlockPos? stand, CancellationToken ct = default) =>
         stand is null ? HarvestGeneratorAsync(x, y, z, count, ct) : Task.FromResult(ActionResult.Fail("this client can't use a taught stand spot"));
+    /// <summary>Harvest several cells of one generator in rotation (the first positions the bot; the rest are dug while in reach).
+    /// Default: the first cell only.</summary>
+    Task<ActionResult> HarvestGeneratorAsync(IReadOnlyList<BlockPos> cells, int count, BlockPos? stand, CancellationToken ct = default) =>
+        cells.Count == 0 ? Task.FromResult(ActionResult.Fail("no generator cell given"))
+            : HarvestGeneratorAsync(cells[0].X, cells[0].Y, cells[0].Z, count, stand, ct);
     Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default);
     Task<ActionResult> CraftAsync(int itemId, int damage = -1, int count = 1, CancellationToken ct = default);
     Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, BlockPos? furnace = null, CancellationToken ct = default);
@@ -77,7 +82,26 @@ public interface IGameClient
     /// <summary>A client safety reflex owns the body (fight/defence, safety hold, heal retreat): the top of the priority stack.</summary>
     bool SafetyEngaged => false;
 
+    /// <summary>Plays a brainstem gesture tick by tick, no action lock (<see cref="MinecraftClient.PlayGesture"/>).
+    /// False = refused (busy body for sneak/jump, safety) or unsupported.</summary>
+    bool PlayGesture(GesturePlan plan) => false;
+    /// <summary>Stops the running gesture (the real look and "stop sneaking" go out next tick).</summary>
+    void CancelGesture() { }
+    /// <summary>The gesture playing now, or null.</summary>
+    string? CurrentGesture => null;
+
+    /// <summary>The first 0x08 health of this session arrived (false = health/food are still defaults).</summary>
+    bool VitalsKnown => true;
+    /// <summary>The ground under the feet is loaded and verified (false = "airborne/over void" would be a guess).</summary>
+    bool GroundKnown => true;
+
     /// <summary>Body language: jump | spin | look | wave | crouch | punch (<see cref="MinecraftClient.ActAsync"/>).</summary>
+    /// <summary>The explicit, deliberate step off the island into the void (<see cref="MinecraftClient.StepIntoVoidAsync"/>).</summary>
+    Task<ActionResult> StepIntoVoidAsync(string reason, bool keepItemsOk = false, CancellationToken ct = default) =>
+        Task.FromResult(ActionResult.Fail("into_void isn't available on this client"));
+    /// <summary>A deliberate void step in progress (its fall/death are the plan, not dangers), or null.</summary>
+    IntentionalVoidStep? ActiveVoidStep => null;
+
     Task<ActionResult> GestureAsync(string move, string? target = null, int? times = null, CancellationToken ct = default) =>
         Task.FromResult(ActionResult.Fail("body language isn't available on this client"));
 }
@@ -90,6 +114,8 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
     public WorldState World => Inner.World;
     public string Username => Inner.Options.Username;
     public bool IsPlaying => Inner.IsPlaying;
+    public bool VitalsKnown => Inner.VitalsKnown;
+    public bool GroundKnown => Inner.GroundKnown;
     public string? CurrentAction => Inner.CurrentAction;
     public double StationSearchRadius => Inner.StationSearchRadius;
     public Func<BlockPos, int, bool>? IsProtected { get => Inner.IsProtected; set => Inner.IsProtected = value; }
@@ -130,6 +156,8 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
     public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, CancellationToken ct = default) => Inner.HarvestGeneratorAsync(x, y, z, count, ct);
     public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, BlockPos? stand, CancellationToken ct = default) =>
         Inner.HarvestGeneratorAsync(x, y, z, count, stand, ct);
+    public Task<ActionResult> HarvestGeneratorAsync(IReadOnlyList<BlockPos> cells, int count, BlockPos? stand, CancellationToken ct = default) =>
+        Inner.HarvestGeneratorAsync(cells, count, stand, ct);
     public Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default) => Inner.CollectDropsAsync(radius, ct);
     public Task<ActionResult> CraftAsync(int itemId, int damage = -1, int count = 1, CancellationToken ct = default) => Inner.CraftAsync(itemId, damage, count, ct);
     public Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, BlockPos? furnace = null, CancellationToken ct = default) =>
@@ -148,6 +176,12 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
     public bool FaceIdle(Vec3d point) => Inner.FaceIdle(point);
     public bool SwingIdle() => Inner.SwingIdle();
     public bool SafetyEngaged => Inner.SafetyEngaged;
+    public bool PlayGesture(GesturePlan plan) => Inner.PlayGesture(plan);
+    public void CancelGesture() => Inner.CancelGesture();
+    public string? CurrentGesture => Inner.CurrentGesture;
     public Task<ActionResult> GestureAsync(string move, string? target = null, int? times = null, CancellationToken ct = default) =>
         Inner.ActAsync(move, target, times, ct);
+    public Task<ActionResult> StepIntoVoidAsync(string reason, bool keepItemsOk = false, CancellationToken ct = default) =>
+        Inner.StepIntoVoidAsync(reason, keepItemsOk, ct);
+    public IntentionalVoidStep? ActiveVoidStep => Inner.ActiveVoidStep;
 }

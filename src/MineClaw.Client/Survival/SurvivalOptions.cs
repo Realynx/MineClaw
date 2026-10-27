@@ -33,8 +33,10 @@ public sealed record SurvivalOptions
     public int RetreatEdgeDistance { get; init; } = 3;
 
     // ---- task gating (refuse to START risky actions)
-    /// <summary>Bridging, fights, spars and long mining trips need at least this much health.</summary>
+    /// <summary>Fights and spars need at least this much health (nothing else is hp-gated, see <see cref="EdgeMinHealth"/>).</summary>
     public int GateMinHealth { get; init; } = 10;
+    /// <summary>Void-edge work (bridging, island expansion) is refused at or below this hp; mining/digging/placing never are.</summary>
+    public int EdgeMinHealth { get; init; } = 4;
     /// <summary>...and at least this much food (eats first when it has food). 6 and below: no sprinting.</summary>
     public int GateMinFood { get; init; } = 7;
     /// <summary>A mine/generator task of at least this many blocks counts as a long mining trip.</summary>

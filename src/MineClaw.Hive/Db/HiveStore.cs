@@ -5,6 +5,10 @@ using Microsoft.Data.Sqlite;
 
 namespace MineClaw.Hive.Db;
 
+/// <summary>A clone's login history: <see cref="Joined"/> = it has been in game before; <see cref="Good"/> = last position on
+/// verified ground (x, y, z, dimension, when); <see cref="Void"/> = where it was left holding over the void (its saved spot).</summary>
+public sealed record CloneHistory(bool Joined, (double X, double Y, double Z, int Dimension, DateTimeOffset At)? Good, (double X, double Y, double Z)? Void);
+
 /// <summary>A clone's stranded inventory (it crashed or was killed holding these).</summary>
 public sealed record StrandedRecord(string Bot, IReadOnlyList<ItemMsg> Items, DateTimeOffset At, string Reason)
 {
@@ -44,6 +48,15 @@ public sealed class HiveStore
             foreach (var c in new[] { "hp", "food" }) db.EnsureColumn("hive_inventory", c, "INTEGER");
             foreach (var c in new[] { "pos_x", "pos_y", "pos_z" }) db.EnsureColumn("hive_inventory", c, "REAL");
             db.EnsureColumn("hive_inventory", "vitals_at", "INTEGER");
+            // Where a clone was left holding over the void (its saved login spot: it would spawn there again).
+            foreach (var c in new[] { "void_x", "void_y", "void_z" }) db.EnsureColumn("hive_inventory", c, "REAL");
+            db.EnsureColumn("hive_inventory", "void_at", "INTEGER");
+            // First time in game ("never joined" = null: its first login lands at the server's fresh-player spawn) and the last
+            // position it stood on verified ground (never a void hold).
+            db.EnsureColumn("hive_inventory", "joined_at", "INTEGER");
+            foreach (var c in new[] { "good_x", "good_y", "good_z" }) db.EnsureColumn("hive_inventory", c, "REAL");
+            db.EnsureColumn("hive_inventory", "good_dim", "INTEGER");
+            db.EnsureColumn("hive_inventory", "good_at", "INTEGER");
             foreach (var t in TaggedTables)
             {
                 if (!TableExists(t) || HasColumn(t, "clone_id")) continue;
@@ -129,6 +142,84 @@ public sealed class HiveStore
 
     public void ClearStranded(string clone) =>
         Db.Exec("UPDATE hive_inventory SET stranded = 0, stranded_at = NULL, reason = NULL WHERE clone = $c", ("$c", clone));
+
+    // ---------------- void spawns ----------------
+
+    /// <summary>
+    /// The clone is holding still over the void at (x, y, z): the server saves that spot, so its next login lands there again
+    /// (live 10-27 07:49/07:51: fresh maid_chan_420 spawned twice at -5.5,0.62,-8.5). Cleared once it stands on ground.
+    /// </summary>
+    public void MarkVoidSpawn(string clone, double x, double y, double z) =>
+        Db.Exec("""
+            INSERT INTO hive_inventory(clone, items, updated, joined_at, void_x, void_y, void_z, void_at) VALUES ($c, '[]', $u, $u, $x, $y, $z, $u)
+            ON CONFLICT(clone) DO UPDATE SET void_x = $x, void_y = $y, void_z = $z, void_at = $u, joined_at = coalesce(joined_at, $u)
+            """, ("$c", clone), ("$u", Now), ("$x", x), ("$y", y), ("$z", z));
+
+    public void ClearVoidSpawn(string clone) =>
+        Db.Exec("UPDATE hive_inventory SET void_x = NULL, void_y = NULL, void_z = NULL, void_at = NULL WHERE clone = $c", ("$c", clone));
+
+    /// <summary>Where the clone was last left over the void (its saved login spot), or null.</summary>
+    public (double X, double Y, double Z, DateTimeOffset At)? VoidSpawn(string clone) =>
+        Db.Query("SELECT void_x, void_y, void_z, void_at FROM hive_inventory WHERE clone = $c AND void_x IS NOT NULL",
+            r => ((double X, double Y, double Z, DateTimeOffset At)?)(r.GetDouble(0), r.GetDouble(1), r.GetDouble(2),
+                AgentDb.FromUnixMs(r.IsDBNull(3) ? 0 : r.GetInt64(3))), ("$c", clone)).FirstOrDefault();
+
+    // ---------------- join history ----------------
+
+    /// <summary>The clone is in game (first time = its joined_at; later calls keep the first).</summary>
+    public void NoteJoined(string clone) =>
+        Db.Exec("""
+            INSERT INTO hive_inventory(clone, items, updated, joined_at) VALUES ($c, '[]', $u, $u)
+            ON CONFLICT(clone) DO UPDATE SET joined_at = coalesce(joined_at, $u)
+            """, ("$c", clone), ("$u", Now));
+
+    /// <summary>The clone stands on verified ground here (its last known good position).</summary>
+    public void SaveGoodPosition(string clone, double x, double y, double z, int dimension) =>
+        Db.Exec("""
+            INSERT INTO hive_inventory(clone, items, updated, joined_at, good_x, good_y, good_z, good_dim, good_at)
+            VALUES ($c, '[]', $u, $u, $x, $y, $z, $d, $u)
+            ON CONFLICT(clone) DO UPDATE SET joined_at = coalesce(joined_at, $u), good_x = $x, good_y = $y, good_z = $z, good_dim = $d, good_at = $u
+            """, ("$c", clone), ("$u", Now), ("$x", x), ("$y", y), ("$z", z), ("$d", dimension));
+
+    /// <summary>
+    /// What the hive knows about a clone's logins: joined before (joined_at, or any saved vitals: rows from before the column),
+    /// its last good position, and where it was left over the void. A saved position below y 1 in the overworld counts as a
+    /// void spot too (nothing stands there in a skyblock; 420's 07:49 vitals were saved at -5.5,0.62,-8.5 before void marks).
+    /// </summary>
+    public CloneHistory History(string clone)
+    {
+        var row = Db.Query("""
+            SELECT joined_at, hp, good_x, good_y, good_z, good_dim, good_at, void_x, void_y, void_z, pos_x, pos_y, pos_z, dimension
+            FROM hive_inventory WHERE clone = $c
+            """, r => (Joined: !r.IsDBNull(0) || !r.IsDBNull(1),
+                Good: r.IsDBNull(2) ? ((double, double, double, int, DateTimeOffset)?)null
+                    : (r.GetDouble(2), r.GetDouble(3), r.GetDouble(4), r.IsDBNull(5) ? 0 : r.GetInt32(5), AgentDb.FromUnixMs(r.IsDBNull(6) ? 0 : r.GetInt64(6))),
+                Void: r.IsDBNull(7) ? ((double, double, double)?)null : (r.GetDouble(7), r.GetDouble(8), r.GetDouble(9)),
+                Pos: r.IsDBNull(10) || r.IsDBNull(11) || r.IsDBNull(12) ? ((double, double, double)?)null : (r.GetDouble(10), r.GetDouble(11), r.GetDouble(12)),
+                Dim: r.GetInt32(13)), ("$c", clone)).FirstOrDefault();
+        if (row == default) return new CloneHistory(false, null, null);
+        var voidAt = row.Void ?? (row.Pos is { } p && row.Dim == 0 && p.Item2 < 1.0 && row.Good is null ? p : null);
+        return new CloneHistory(row.Joined, row.Good, voidAt);
+    }
+
+    /// <summary>Where a fresh account's first login landed over the void (any clone's first-login void hold, else any saved
+    /// overworld position below y 1), or null when the hive has never seen one.</summary>
+    public (double X, double Y, double Z)? FreshVoidSpawn()
+    {
+        var t = Db.Query("SELECT text FROM hive_events WHERE kind = 'fresh_void_spawn' ORDER BY at DESC LIMIT 1", r => r.GetString(0)).FirstOrDefault();
+        if (t != null && t.Split(',') is { Length: 3 } parts && parts.All(x => double.TryParse(x, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out _)))
+        {
+            var v = parts.Select(x => double.Parse(x, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+            return (v[0], v[1], v[2]);
+        }
+        return Db.Query("SELECT pos_x, pos_y, pos_z FROM hive_inventory WHERE dimension = 0 AND pos_y IS NOT NULL AND pos_y < 1.0 ORDER BY vitals_at DESC LIMIT 1",
+            r => ((double, double, double)?)(r.GetDouble(0), r.GetDouble(1), r.GetDouble(2))).FirstOrDefault();
+    }
+
+    /// <summary>A clone's FIRST login held over the void here: the server's fresh-player spawn (world spawn ±10, top block).</summary>
+    public void NoteFreshVoidSpawn(string clone, double x, double y, double z) =>
+        RecordOnce("fresh_void_spawn", "fresh_void_spawn:" + clone, clone,
+            string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{x:0.###},{y:0.###},{z:0.###}"));
 
     // ---------------- once-only events ----------------
 

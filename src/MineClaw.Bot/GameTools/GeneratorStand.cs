@@ -44,6 +44,28 @@ public static partial class GeneratorStand
         return found;
     }
 
+    /// <summary>The client's dig reach (<c>ClientOptions.Reach</c>).</summary>
+    public const double DigReach = 4.25;
+
+    /// <summary>
+    /// Whether standing on <paramref name="stand"/> (feet on its floor, or on a bottom slab in that cell) puts the eyes within
+    /// <paramref name="reach"/> of the aim points of <paramref name="cell"/> (its faces inset 0.1, like the client's aim samples).
+    /// Distance only: b1.8.1's server checks no line of sight. Live 21:12: 6,64,8 from 3,64,4 is 4.5 away, out of reach.
+    /// </summary>
+    public static bool Reaches(MineClaw.World.WorldState w, BlockPos stand, BlockPos cell, double reach = DigReach)
+    {
+        double feet = stand.Y;
+        if (MineClaw.World.BlockShapes.HasCollision(w, stand.X, stand.Y, stand.Z))
+        {
+            double top = MineClaw.World.BlockShapes.CollisionTop(w, stand.X, stand.Y, stand.Z);
+            if (top > 0.5 + 1e-9) return false; // a full block: nobody stands inside it
+            feet += top;
+        }
+        double ex = stand.X + 0.5, ey = feet + MineClaw.World.PlayerPhysics.EyeHeight, ez = stand.Z + 0.5;
+        double dx = ex - Math.Clamp(ex, cell.X + 0.1, cell.X + 0.9), dy = ey - Math.Clamp(ey, cell.Y + 0.1, cell.Y + 0.9), dz = ez - Math.Clamp(ez, cell.Z + 0.1, cell.Z + 0.9);
+        return Math.Sqrt(dx * dx + dy * dy + dz * dz) <= reach;
+    }
+
     /// <summary>The taught stand for <paramref name="cell"/> from memory: generator structures' demo steps (nearest first),
     /// else a key block labelled "stand" within reach of the cell.</summary>
     public static BlockPos? Find(MemoryStore memory, BlockPos cell)

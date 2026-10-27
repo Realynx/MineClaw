@@ -43,6 +43,7 @@ public class BrainSplitTests(Xunit.Abstractions.ITestOutputHelper output)
         output.WriteLine($"cheap tools: {cheap.Count} ≈{Tokens(cheap)} tok [{string.Join(", ", cheap.Select(d => d.Name))}]");
         output.WriteLine($"brain system ≈{brainSys.Length / 3.5:0} tok (no knowledge), worker system ≈{workerSys.Length / 3.5:0} tok (no knowledge)");
         foreach (var d in brain.OrderByDescending(d => Tokens([d]))) output.WriteLine($"  {d.Name} ≈{Tokens([d])}");
+        foreach (var d in worker.OrderByDescending(d => Tokens([d]))) output.WriteLine($"  W {d.Name} ≈{Tokens([d])}");
         // The main process also registers the merged hive tool (≤115 tok with script spawn + profile, pinned by
         // MineClaw.Hive.Tests.HiveToolTests; was 75).
         const int hiveTool = Agent.Tools.ToolBudgets.HiveTool;

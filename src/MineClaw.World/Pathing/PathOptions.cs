@@ -122,6 +122,8 @@ public sealed record PathOptions
     // Movement costs (ticks)
     public const double WalkCost = 1 / 0.21585; // ≈4.633 ticks per block at walking speed
     public const double SneakFactor = 1 / 0.3;
+    /// <summary>Extra cost per move on farmland (walked sneaking so it isn't trampled; paths go around fields when they can).</summary>
+    public const double FarmlandPenalty = 4;
     public const double JumpExtra = 2.0;
     public const double ClimbUpCost = 8.5, ClimbDownCost = 6.7, SwimCost = 9.0;
 }

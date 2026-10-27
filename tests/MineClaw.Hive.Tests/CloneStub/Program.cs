@@ -169,6 +169,7 @@ switch (mode)
                     try { while (true) { await llm.CompleteAsync(new LlmRequest { Tier = ModelTier.Cheap }, default); Out("CALL"); } }
                     catch (HiveBudgetDeniedException) { }
                 }
+                if (t.Text.Contains("void reset")) body.Die(CloneHost.IntentionalResetCause + " (reset hp and hunger)"); // a deliberate into_void step
                 if (t.Text.Contains("die")) body.Die("fell into the void");
                 if (t.Text.Contains("done")) await host.ReportAsync("done", "finished the fake task");
             };

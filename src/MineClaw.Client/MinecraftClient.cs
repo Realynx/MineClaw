@@ -86,6 +86,8 @@ public sealed partial class MinecraftClient : IAsyncDisposable
     public event Action<int, int>? EntityAnimated;
     /// <summary>(collector entity id, item entity id, stack if the item entity was tracked) from 0x16 Collect Item.</summary>
     public event Action<int, int, ItemStack?>? ItemCollected;
+    /// <summary>The bot started eating (item id, true = the survival reflex's auto-eat). Raised before the item leaves the inventory.</summary>
+    public event Action<int, bool>? EatingStarted;
     /// <summary>(entity id, slot 0 held / 1-4 armor boots..helmet, item id (-1 empty), damage) from 0x05.</summary>
     public event Action<int, int, int, int>? EquipmentChanged;
     /// <summary>(entity id, status) from 0x26: 2 hurt, 3 dead, 6/7 wolf taming, 8 wolf shaking, 9 eating accepted (self).</summary>
@@ -346,6 +348,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
     private void Send(Session s, IPacket p)
     {
         if (s.Ended) return;
+        GestureBeforeUse(s, p); // a dig/place/use never goes out under a gesture's head overlay
         NoteSelfEdit(p);
         try
         {

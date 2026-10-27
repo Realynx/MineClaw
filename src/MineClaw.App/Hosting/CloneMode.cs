@@ -88,7 +88,9 @@ public static class CloneMode
         });
         var game = new MinecraftGameClient(client);
         var bot = BotHost.Create(game, agentOptions, botOptions, llm: gated, loggers: loggers, claims: host0.Claims,
-            hiveBots: () => [host0.Main ?? "", .. hive.Clones()]);
+            hiveBots: () => [host0.Main ?? "", .. hive.Clones()],
+            // A clone's eyes feed main's hive vision through the shared world memory: changed columns go to the db every 15 s.
+            worldIndex: new MineClaw.Bot.WorldIndex.WorldIndexOptions { Remembered = new MineClaw.Bot.WorldIndex.RememberedWorldOptions { FlushSeconds = 15 } });
         var rt = bot.Runtime;
         telemetry.Attach(rt);
         _ = rt.Rag.WarmUpAsync(signals.Token); // DNS + first TLS to the embedding provider now, not in the first turn
@@ -102,6 +104,7 @@ public static class CloneMode
         ClonePolicy.Apply(rt.Chat, rt.Events, host0.Arbiter, rt.Agent,
             muted: text => _ = host0.ReportAsync("progress", text.Length > 160 ? text[..160] : text));
         rt.Chat.Accepted += m => { if (m.Player != null) host0.ChatAccepted(m.Player); };
+        rt.Chat.SpokeTo += p => host0.ChatSpoke(p); // "it spoke to that player within ~30 s" keeps the thread with this clone
         HiveTools.RegisterClone(rt.Tools, host0);
         // The acquisition planner's hive seam (loadout, ensure, skill preconditions): main hands over a spare it carries.
         if (bot.Acquisition is { } acquisition)
@@ -119,6 +122,14 @@ public static class CloneMode
         var taskOrders = rt.Agent.Orders is { } so ? new CloneTaskOrders(so, rt.Memory, rt.Activities, loggers.CreateLogger("MineClaw.Hive")) : null;
         if (welcome.Task is { } first) { runner?.Prepare(first); taskOrders?.HoldForTask(); }
 
+        // "Send me your view" (main's hive vision): fresh columns into the shared world memory, then this clone's eye pose.
+        host0.View = _ =>
+        {
+            int flushed = 0;
+            try { flushed = bot.WorldMemory?.FlushForView() ?? 0; } catch (Exception ex) { log.LogDebug(ex, "view: world memory flush failed"); }
+            var me = client.World.Player;
+            return Task.FromResult<CloneViewMsg?>(new CloneViewMsg(me.Position.X, me.Position.Y, me.Position.Z, me.Yaw, me.Pitch, client.World.Dimension, flushed));
+        };
         var store = new HiveStore(rt.Db, clone);
         host0.Store = store;
         host0.RecordExperience = (key, text) =>
@@ -140,8 +151,14 @@ public static class CloneMode
         var commands = new ConsoleCommands(game, rt, agent, log, signals.Source);
         var source = new InProcessBotSource(game, rt, telemetry, agent, commands, host.Tui.Viewport, signals.Token);
         var body = new GameCloneBody(client, game, rt, agent, commands, source, telemetry, new GameInventoryPort(game, rt.Observations, rt.Memory), log,
-            () => DateTimeOffset.UtcNow - lastDangerAt < TimeSpan.FromSeconds(15) ? lastDanger : "died", runner, taskOrders);
+            () => client.ActiveVoidStep is { } vs ? MineClaw.Hive.Clone.CloneHost.IntentionalResetCause + " (" + vs.Reason + ")"
+                : DateTimeOffset.UtcNow - lastDangerAt < TimeSpan.FromSeconds(15) ? lastDanger : "died", runner, taskOrders);
         host0.Body = body;
+        // Spawned/teleported over the void: the client holds still (never falls, never confirms the teleport, so no floating kick);
+        // the host asks the trusted players for a /tp once, tells main, pauses the task, and resumes it on landing.
+        host0.TrustedPlayers = () => rt.Options.Self.TrustedPlayers;
+        client.HoldingOverVoid += p => _ = host0.OnVoidHoldAsync(p.X, p.Y, p.Z);
+        client.VoidHoldEnded += p => _ = host0.OnVoidHoldEndedAsync(p.X, p.Y, p.Z);
         log.LogInformation("clone {Clone} starting (pipe {Pipe}, scope {Scope})", clone, cli.ParentPipe, agentOptions.Hive.ScopeFor(clone));
 
         int code = await host0.RunAsync(signals.Token, welcome);
@@ -191,6 +208,7 @@ public static class CloneMode
                 {
                     log.LogInformation("connecting to {Host}:{Port} as {User}", client.Options.Host, client.Options.Port, client.Options.Username);
                     await client.ConnectAsync(ct);
+                    await client.WaitForJoinStateAsync(TimeSpan.FromSeconds(3), ct); // no default 20/20 or fake void in the line
                     log.LogInformation("in game: {Status}", client.DescribeStatus());
                     return;
                 }
@@ -243,6 +261,10 @@ public static class CloneMode
         public void InjectChat(string raw) => rt.Chat.OnServerChat(raw, test: true);
 
         public void Note(string text) => rt.Events.Post(GameEvent.Notice(text, EventPriority.Normal));
+
+        public Task SayAsync(string text) => rt.Chat.SayAsync(text);
+
+        public bool HoldingStill => client.IsFrozenForSafety;
 
         public Task DisconnectAsync(string reason) => client.DisconnectAsync(reason);
     }

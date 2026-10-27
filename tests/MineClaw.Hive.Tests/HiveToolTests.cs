@@ -23,7 +23,8 @@ public class HiveToolTests(Xunit.Abstractions.ITestOutputHelper output)
         Assert.True(t <= 75, $"hive tool ≈{t} tok");
 
         var list = await tools.ExecuteAsync("hive", System.Text.Json.JsonSerializer.SerializeToElement(new { op = "list" }), default);
-        Assert.StartsWith("67 idle | 69 idle | 420 idle | 1337 idle", list.Text);
+        // Item 10: a clone that has never been in game is "never joined" (its first login lands at the fresh-player spawn), not "idle".
+        Assert.StartsWith("67 never joined; first login lands at the world spawn (maybe over the void: have a /tp ready) | 69 never joined", list.Text);
         var bad = await tools.ExecuteAsync("hive", System.Text.Json.JsonSerializer.SerializeToElement(new { op = "spawn", name = "99", task = "x" }), default);
         Assert.False(bad.Ok);
     }

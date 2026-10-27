@@ -75,6 +75,104 @@ public sealed partial class DigCellCorrections
         return Replace(cell, set, player, "corrected");
     }
 
+    [GeneratedRegex(@"\b(?:never|don'?t|dont|do\s+not|avoid|leave|skip|not)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex NeverWords();
+
+    [GeneratedRegex(@"\b(?:dig|mine)\s+only\b|\bonly\s+(?:dig|mine)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex OnlyWords();
+
+    [GeneratedRegex(@"(?<![\d-])(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)(?!\d)")]
+    private static partial Regex CoordWords();
+
+    /// <summary>Never-break marks on generator cells (the migration drops vague ones on confirmed regen cells).</summary>
+    public MineClaw.Bot.ProtectionMarks? Marks { get; set; }
+
+    /// <summary>
+    /// A generator cell is minable after all (a trusted "you can mine the middle one", or the one-time migration for a
+    /// confirmed regenerating cell): memory steps that forbid it ("never mine the middle cell 5,64,7 (kiwi)", "dig only 4,64,6
+    /// and 6,64,8") move to the structure's history, and the cell is a dig cell again. Live 10-27 21:17: a vague "don't mine the
+    /// middle one" left the bot one cell of three to hammer. Returns the logged line ("unmarked gen cell 5,64,7 per PoofimaFox:
+    /// ..."), or null when nothing forbade it.
+    /// </summary>
+    public string? UnmarkGenCell(WPos cell, string by, bool middle = false)
+    {
+        if (_memory == null) return null;
+        int dim = Dim;
+        bool NamesCell(string t) => Regex.IsMatch(t, $@"(?<![\d-]){cell.X}\s*,\s*{cell.Y}\s*,\s*{cell.Z}(?!\d)");
+        bool Forbids(string t)
+        {
+            if (NamesCell(t) || (middle && t.Contains("middle", StringComparison.OrdinalIgnoreCase)))
+                return NeverWords().IsMatch(t);
+            // "dig only 4,64,6 and 6,64,8": an exclusive list of other cells near this one leaves it out.
+            if (!OnlyWords().IsMatch(t)) return false;
+            var named = CoordWords().Matches(t).Select(m => new WPos(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), int.Parse(m.Groups[3].Value))).ToList();
+            return named.Count > 0 && named.All(n => n != cell) && named.Any(n => Math.Abs(n.X - cell.X) <= 4 && Math.Abs(n.Y - cell.Y) <= 2 && Math.Abs(n.Z - cell.Z) <= 4);
+        }
+        var hits = _memory.Read(d => d.Structures.Where(x => x.Dimension == dim && x.Steps.Any(Forbids)).Select(x => x.Name).ToList());
+        var stamp = _time.GetUtcNow().ToLocalTime().ToString("MM-dd HH:mm");
+        var removed = new List<string>();
+        foreach (var name in hits)
+            _memory.UpsertStructure(name, st =>
+            {
+                foreach (var step in st.Steps.Where(Forbids).ToList())
+                {
+                    st.Steps.Remove(step);
+                    st.History.Add($"step (unmarked {stamp} per {by}: gen cell {cell.X},{cell.Y},{cell.Z} is minable): {step}");
+                    removed.Add($"{name}: {step}");
+                }
+                if (st.History.Count > 40) st.History.RemoveRange(0, st.History.Count - 40);
+            });
+        int marks = 0;
+        if (Marks is { } mk && mk.NeverAt(cell, dim) is { } never && (middle || !never.Exact || never.Label.Contains("middle", StringComparison.OrdinalIgnoreCase)))
+            marks = mk.Unmark(dim, [(cell, cell)]).Count;
+        if (removed.Count == 0 && marks == 0) return null;
+        _cells.Register(cell, by);
+        _cells.Invalidate();
+        var line = $"unmarked gen cell {cell.X},{cell.Y},{cell.Z} per {by}"
+                   + (removed.Count > 0 ? ": " + string.Join("; ", removed) : "") + (marks > 0 ? $" (+{marks} never-break mark(s))" : "");
+        try { Changed?.Invoke(line); } catch (Exception) { }
+        return line;
+    }
+
+    /// <summary>
+    /// One-time migration (idempotent: a second run finds nothing): every confirmed regenerating cell of an indexed generator
+    /// (observation <c>cobble_generator</c> with <c>confirmed</c> and its <c>dig</c> list) loses vague never-break notes/marks.
+    /// </summary>
+    public int UnmarkConfirmedGenCells(MineClaw.Agent.Rag.ObservationStore? observations, string by)
+    {
+        if (observations == null) return 0;
+        int n = 0;
+        try
+        {
+            foreach (var cell in ConfirmedGenCells(observations, Dim))
+                if (UnmarkGenCell(cell, by) != null) n++;
+        }
+        catch (Exception) { /* db busy: next start */ }
+        return n;
+    }
+
+    /// <summary>Dig cells of confirmed (regen-observed) generators in the shared db.</summary>
+    public static List<WPos> ConfirmedGenCells(MineClaw.Agent.Rag.ObservationStore observations, int dim)
+    {
+        var list = new List<WPos>();
+        foreach (var row in observations.OfKind("cobble_generator", dim))
+        {
+            if (row.FieldsJson is not { Length: > 0 } f) continue;
+            try
+            {
+                using var j = System.Text.Json.JsonDocument.Parse(f);
+                var root = j.RootElement;
+                if (!root.TryGetProperty("confirmed", out var conf) || conf.ValueKind != System.Text.Json.JsonValueKind.True) continue;
+                if (!root.TryGetProperty("dig", out var dig) || dig.ValueKind != System.Text.Json.JsonValueKind.Array) continue;
+                foreach (var e in dig.EnumerateArray())
+                    if (e.ValueKind == System.Text.Json.JsonValueKind.Array && e.GetArrayLength() == 3)
+                        list.Add(new WPos(e[0].GetInt32(), e[1].GetInt32(), e[2].GetInt32()));
+            }
+            catch (System.Text.Json.JsonException) { }
+        }
+        return list.Distinct().ToList();
+    }
+
     /// <summary>The yield guard proved a cell wrong: retract its keys (no replacement).</summary>
     public string? RetractBad(WPos cell, string reason) => Retract(cell, [cell], "yield guard", reason);
 

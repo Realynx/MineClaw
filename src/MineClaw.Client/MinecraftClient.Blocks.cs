@@ -38,7 +38,8 @@ public sealed partial class MinecraftClient
     public Task<ActionResult> EatAsync(CancellationToken ct = default) =>
         RunActionAsync("eat", ct, async c =>
         {
-            if (World.Player.Food >= 20) return ActionResult.Fail("not hungry (food 20/20)");
+            // An idempotent goal, not an error: the survival reflex often ate a moment ago (live 10-27 21:05 a script failed here).
+            if (World.Player.Food >= 20) return ActionResult.Success("already full (food 20/20)");
             var food = PickFood();
             if (food is null)
                 return ActionResult.Fail(SurvivalReflex.HasAnyFood(World.Inventory.PlayerSlots(), ReservedItems)
@@ -345,11 +346,14 @@ public sealed partial class MinecraftClient
         var held = HeldStack();
         if (held.IsEmpty) return ActionResult.Fail("holding nothing");
         bool isFood = Items.Food(held.Id) is not null;
-        if (isFood && World.Player.Food >= 20 && held.Id != Items.GoldenApple) return ActionResult.Fail("not hungry (food 20/20)");
+        if (isFood && World.Player.Food >= 20 && held.Id != Items.GoldenApple) return ActionResult.Success("already full (food 20/20)");
 
         int eatsBefore = Volatile.Read(ref _eatAcceptedCount);
         int foodBefore = World.Player.Food;
         int countBefore = World.Inventory.CountItem(held.Id);
+        // Told before the server's slot update: the item leaves the inventory after the action may have ended (the ledger said
+        // "vanished without an action" for every reflex meal, live 10-27 21:05/21:07).
+        if (isFood) { int id = held.Id; bool auto = Volatile.Read(ref _autoEating) == 1; Raise(() => EatingStarted?.Invoke(id, auto)); }
         Send(PlayerBlockPlacementPacket.UseItem(held));
         if (!isFood)
         {

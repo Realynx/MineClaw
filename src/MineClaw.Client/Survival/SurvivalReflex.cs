@@ -129,7 +129,7 @@ public sealed class SurvivalReflex
             if (health <= o.LowHealth && !_low)
             {
                 _low = true;
-                return new HealthAlert(false, $"low health {health}/20 ({foodText}): risky actions cancelled" + (hasFood ? ", eating" : ""));
+                return new HealthAlert(false, $"low health {health}/20 ({foodText}): no fights/spars until it recovers, work goes on" + (hasFood ? ", eating" : ""));
             }
             return null;
         }
@@ -176,18 +176,35 @@ public sealed class SurvivalReflex
     // ------------------------------------------------------------------ gating
 
     /// <summary>
-    /// Why a risky action (<paramref name="what"/>: "bridge", "fight", "spar", "mining trip") must not start now, or null.
+    /// Why a risky action (<paramref name="what"/>: "bridge", "fight", "spar", "mine 32 blocks") must not start now, or null.
     /// <paramref name="hasFood"/> = safe food in the inventory (eaten first when hungry; then only health matters).
+    /// The user's rule (and b1.8.1's): nothing stops a pickaxe at low hp or no food. Only fights/spars are gated (hp and food);
+    /// void-edge work (bridging, island expansion) only at critical hp; mining, digging, chopping, placing never (live 10-27:
+    /// clone 67 at 7/20 with no food, "tools refuse mining below HP 10").
     /// </summary>
-    public static string? GateReason(string what, int health, int food, bool hasFood, SurvivalOptions o)
+    public static string? GateReason(string what, int health, int food, bool hasFood, SurvivalOptions o, bool edge = false)
     {
         if (!o.Enabled) return null;
-        if (health < o.GateMinHealth)
-            return $"hp {health}/20 too low to {what} (need {o.GateMinHealth})"
-                   + (food >= HungerRules.RegenFood ? "; regenerating" : hasFood ? "; eating to regenerate" : $" (food {food}, no food)");
-        if (food < o.GateMinFood && !hasFood && NeedsFood(what)) return $"too hungry to {what} (food {food}, no food)";
+        if (NeedsFood(what))
+        {
+            if (health < o.GateMinHealth)
+                return $"hp {health}/20 too low to {what} (need {o.GateMinHealth})"
+                       + (food >= HungerRules.RegenFood ? "; regenerating" : hasFood ? "; eating to regenerate" : $" (food {food}, no food)");
+            if (food < o.GateMinFood && !hasFood) return $"too hungry to {what} (food {food}, no food)";
+            return null;
+        }
+        if ((edge || IsEdgeWork(what)) && health <= o.EdgeMinHealth)
+            return $"hp {health}/20 too low to {what} over the void (need more than {o.EdgeMinHealth})"
+                   + (hasFood ? "; eating to regenerate" : food >= HungerRules.RegenFood ? "; regenerating" : "");
         return null;
     }
+
+    /// <summary>Work at a void edge where a knock or a misstep at critical hp is a death: bridging, island expansion.</summary>
+    public static bool IsEdgeWork(string what) =>
+        what.StartsWith("bridge", StringComparison.OrdinalIgnoreCase) || what.StartsWith("expand", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Whether a started action stays "risky" for the low-health reflex (cancelled at low hp): fights and spars only.</summary>
+    public static bool CancelAtLowHealth(string what) => NeedsFood(what);
 
     /// <summary>
     /// Vanilla b1.8.1 has no hunger penalty on mining, digging, placing or bridging, so only actions where low food

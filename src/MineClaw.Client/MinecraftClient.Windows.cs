@@ -59,10 +59,12 @@ public sealed partial class MinecraftClient
         {
             var w = World.Inventory.OpenWindow;
             if (w is null) return ActionResult.Fail("no container open");
-            int n = await TransferCoreAsync(w, s => s.Id == itemId && (damage is null || s.Damage == damage), count, toContainer, c).ConfigureAwait(false);
+            Func<ItemStack, bool> match = s => s.Id == itemId && (damage is null || s.Damage == damage);
+            int n = await TransferCoreAsync(w, match, count, toContainer, c).ConfigureAwait(false);
             string dir = toContainer ? "into" : "out of";
             return n > 0 ? ActionResult.Success($"moved {n} {ItemName(itemId, damage ?? 0)} {dir} the {w.Type.ToString().ToLowerInvariant()}", n)
-                         : ActionResult.Fail($"moved no {ItemName(itemId, damage ?? 0)} ({(toContainer ? "none in inventory or container full" : "none in container or inventory full")})");
+                         : ActionResult.Fail(toContainer ? $"moved no {ItemName(itemId, damage ?? 0)} (none in inventory or container full)"
+                             : EmptyTakeReason(w, match, itemId, damage, _lastContainerPos));
         });
 
     /// <summary>Deposits every inventory stack matching <paramref name="filter"/> (default: everything except tools,
@@ -105,12 +107,34 @@ public sealed partial class MinecraftClient
             }
             var w = World.Inventory.OpenWindow;
             if (w is null) return ActionResult.Fail("no container open");
-            int n = await TransferCoreAsync(w, s => s.Id == itemId && (damage is null || s.Damage == damage), count, false, c).ConfigureAwait(false);
+            Func<ItemStack, bool> match = s => s.Id == itemId && (damage is null || s.Damage == damage);
+            int n = await TransferCoreAsync(w, match, count, false, c).ConfigureAwait(false);
+            // Nothing moved: say which it was, from the window as it stands now (a click race resyncs it from the server first).
+            string? why = n > 0 ? null : EmptyTakeReason(w, match, itemId, damage, container);
             if (container is not null) await EnsureNoWindowAsync(c).ConfigureAwait(false);
             return n > 0
                 ? ActionResult.Success($"took {n} {ItemName(itemId, damage ?? 0)} (have {World.Inventory.CountItem(itemId)})", n)
-                : ActionResult.Fail($"no {ItemName(itemId, damage ?? 0)} taken (none in container or inventory full)");
+                : ActionResult.Fail(why!);
         });
+
+    /// <summary>
+    /// Why a take moved nothing, naming what the container actually held (live 10-27 21:06: "none in container or inventory full"
+    /// left the brain unable to tell an emptied chest from a bug): "no bread in the chest at 14,64,-5 (it had: stone axe x1,
+    /// oak log x40)" / "... is empty" / "inventory full (bread x5 still in the chest)".
+    /// </summary>
+    private string EmptyTakeReason(Window w, Func<ItemStack, bool> match, int itemId, int? damage, BlockPos? at)
+    {
+        string name = ItemName(itemId, damage ?? 0);
+        string where = $"the {w.Type.ToString().ToLowerInvariant()}" + (at is { } p ? $" at {Fmt(p)}" : "");
+        var held = w.ContainerContents().Select(t => t.Item).Where(i => !i.IsEmpty).ToList();
+        int there = held.Where(match).Sum(i => i.Count);
+        if (there > 0) return $"no {name} taken: inventory full ({name} x{there} still in {where})";
+        if (held.Count == 0) return $"no {name} in {where}: it is empty";
+        var parts = held.GroupBy(i => (i.Id, Items.Get(i.Id).MaxDamage > 0 ? 0 : (int)i.Damage)).OrderByDescending(g => g.Sum(i => i.Count))
+            .Select(g => $"{ItemName(g.Key.Id, g.Key.Item2)} x{g.Sum(i => i.Count)}").ToList();
+        string list = string.Join(", ", parts.Take(8)) + (parts.Count > 8 ? $" +{parts.Count - 8} more" : "");
+        return $"no {name} in {where} (it had: {list})";
+    }
 
     /// <summary>Compact listing of the open container's contents.</summary>
     public string DescribeOpenWindow(int maxChars = 600)

@@ -75,6 +75,11 @@ public sealed class VisionScene
     public SideAxis Axis { get; init; } = SideAxis.LookNorth;
     /// <summary>Iso: the largest width/height in pixels (the sprite shrinks to fit); null = <see cref="VisionRenderer.MaxSide"/>.</summary>
     public int? MaxPx { get; init; }
+    /// <summary>
+    /// Top and iso views cut away blocks above the feet layer that hang over air or fluid down to it (a roof over a cobble
+    /// generator, a canopy): what sits at feet height is what the bot works on, and a roof must never hide a gen cell.
+    /// </summary>
+    public bool CutAway { get; init; }
 }
 
 /// <summary>A rendered picture: PNG bytes, size, the API's token estimate (w·h/750) and a short text legend.</summary>

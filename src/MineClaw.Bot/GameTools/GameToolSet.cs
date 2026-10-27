@@ -87,11 +87,16 @@ public static class GameToolSet
 
         // ---- movement
         tools.Register("goto", "Walk to x,y,z, a saved place or player (come here).",
-            ToolSchema.Create().Str("to", "x,y,z, name or player").Num("dist", required: false)
+            ToolSchema.Create().Str("to", "x,y,z, name or player", required: false).Num("dist", required: false)
                 .Bool("build", "may dig/place on the way", required: false)
-                .Str("allow_parkour", "void = gap jumps over the void too; only when poofimafox/kiwi asked for this jump", required: false, enumValues: ["off", "ground", "void"]).Build(),
+                .Str("allow_parkour", "void = gap jumps over the void too; only when poofimafox/kiwi asked for this jump", required: false, enumValues: ["off", "ground", "void"])
+                .Str("into_void", "reason: deliberately step off the nearest edge into the void", required: false)
+                .Bool("keep_items_ok", required: false).Build(),
             async (i, ct) =>
             {
+                // The one explicit way off the island (a deliberate, reasoned opt-in; every other walk keeps full void safety).
+                if (i.Str("into_void") is { } why)
+                    return R(await c.StepIntoVoidAsync(why, i.Bool("keep_items_ok") == true, ct));
                 var to = i.ReqStr("to");
                 bool build = i.Bool("build") == true;
                 var parkour = i.Str("allow_parkour") switch { "off" => ParkourMode.Off, "void" => ParkourMode.Void, _ => ParkourMode.Ground };
@@ -150,16 +155,35 @@ public static class GameToolSet
                 if (p is not { } g) return ToolResult.Error($"unknown generator '{at}'");
                 // Hive: another bot already mines that cell -> take a free dig cell of the same generator instead.
                 var (cell, note) = PickGeneratorCell(c, g, generatorCells);
+                if (cell is null && c is ClaimAwareGameClient && (options?.GeneratorQueueSeconds ?? 0) > 0)
+                {
+                    // More bots than cells (live 21:44: main, 67 and 1337 on one gen): queue for a free cell instead of failing.
+                    var until = DateTime.UtcNow.AddSeconds(options!.GeneratorQueueSeconds);
+                    while (cell is null && DateTime.UtcNow < until)
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(Math.Min(2, Math.Max(0.05, options.GeneratorQueueSeconds / 10.0))), ct);
+                        (cell, note) = PickGeneratorCell(c, g, generatorCells);
+                    }
+                    if (cell is null)
+                        return ToolResult.Success($"standing by: {note}; waited {options.GeneratorQueueSeconds}s, dug nothing (help another way: a deposit run, or try again)");
+                    note = "waited for a free cell" + (note == null ? "" : "; " + note);
+                }
                 if (cell is not { } pick) return ToolResult.Error(note ?? $"no free dig cell at {Locations.Fmt(g)}");
                 // Only a generator cell (lava + water next to it, or a taught/regen-confirmed one) is ever dug here.
                 // (A named place is a taught key; the yield guard still stops on a wrong one.)
                 if (Locations.ParseCoords(at) != null && !IsGeneratorCell(c, pick, generatorCells))
                     return ToolResult.Error($"{Locations.Fmt(pick)} isn't a generator cell (no lava and water next to it): need the right cell");
-                BlockPos? store = i.Str("store") is { } st ? Locations.ParseCoords(st) ?? places.Resolve(st, "chest") ?? places.Resolve(st) : null;
-                if (store == null && i.Str("store") is { } bad) return ToolResult.Error($"unknown chest '{bad}'");
+                // store:true (live 21:12 "unknown chest 'true'") = the gen's own store / nearest chest; store:false = keep it.
+                var storeArg = i.Str("store")?.Trim();
+                bool storeYes = storeArg is not null && storeArg.ToLowerInvariant() is "true" or "yes" or "1" or "chest" or "default";
+                bool storeNo = storeArg is not null && storeArg.ToLowerInvariant() is "false" or "no" or "0" or "none";
+                if (storeYes || storeNo) storeArg = null;
+                BlockPos? store = storeArg is { } st ? Locations.ParseCoords(st) ?? places.Resolve(st, "chest") ?? places.Resolve(st) : null;
+                if (store == null && storeArg is { } bad) return ToolResult.Error($"unknown chest '{bad}' (store takes true, x,y,z or a chest/waypoint name)");
                 // Default: the generator's own store key (only if that really is a chest; Resolve falls back to corners).
                 BlockPos? IfChest(BlockPos? q) => q is { } x && c.World.GetBlock(x.X, x.Y, x.Z) == MineClaw.Data.Blocks.Chest ? x : null;
-                store ??= IfChest(places.Resolve(at, "store")) ?? IfChest(places.Resolve(at, "chest"));
+                if (!storeNo) store ??= IfChest(places.Resolve(at, "store")) ?? IfChest(places.Resolve(at, "chest"));
+                if (storeYes) store ??= NearestChest(c);
                 // Taught stand spot (B12/B21): dig the cell only from where the player stood in the demo, staying put there.
                 BlockPos? stand = null;
                 if (i.Str("stand") is { Length: > 0 } sa)
@@ -167,12 +191,38 @@ public static class GameToolSet
                     stand = Locations.ParseCoords(sa);
                     if (stand == null) return ToolResult.Error($"stand must be x,y,z (got '{sa}')");
                 }
-                else
+                BlockPos? Taught(BlockPos cellPos)
                 {
-                    try { stand = generator?.TaughtStand?.Invoke(pick); } catch (Exception) { /* memory busy: the client picks a spot */ }
+                    // A taught stand that can't reach this cell (taught for another one) is no stand for it.
+                    try { return generator?.TaughtStand?.Invoke(cellPos) is { } t && GeneratorStand.Reaches(c.World, t, cellPos) ? t : null; }
+                    catch (Exception) { return null; } // memory busy: the client picks a spot
                 }
+                if (stand is { } given && !GeneratorStand.Reaches(c.World, given, pick))
+                {
+                    // Live 21:12: one stand (3,64,4) passed for every cell; 6,64,8 was out of reach from it. The cell's own taught
+                    // stand, else a spot the client finds itself; never a refusal for a stand that can't work this cell.
+                    var own = Taught(pick);
+                    note = (note == null ? "" : note + "; ") + $"stand {Locations.Fmt(given)} can't reach {Locations.Fmt(pick)}: "
+                           + (own is { } o ? $"using its taught stand {Locations.Fmt(o)}" : "finding a spot that reaches it");
+                    stand = own;
+                }
+                else if (stand == null) stand = Taught(pick);
+                // Every cell of this generator the stand reaches is dug in rotation (never hammering one cell).
+                var rotation = (generatorCells?.Invoke(pick) ?? Perception.BlockDescriber.GenCellsNear(c.World, pick, 4))
+                    .Where(x => x != pick && Math.Abs(x.X - pick.X) <= 4 && Math.Abs(x.Y - pick.Y) <= 2 && Math.Abs(x.Z - pick.Z) <= 4)
+                    .Where(x => IsGeneratorCell(c, x, generatorCells)).Distinct().ToList();
                 var loop = new GeneratorLoop(c, generator);
-                var r = R(await loop.RunAsync(pick, Math.Clamp(i.Int("count") ?? 16, 1, 20000), store, ct, stand));
+                var r = R(await loop.RunAsync(pick, Math.Clamp(i.Int("count") ?? 16, 1, 20000), store, ct, stand, rotation));
+                // Two bots picked the same free cell at once: the lease went to the other one. Take the next free cell.
+                for (int retry = 0; retry < 2 && !r.Ok && r.Text.Contains("busy:", StringComparison.Ordinal); retry++)
+                {
+                    var (next, why) = PickGeneratorCell(c, pick, generatorCells);
+                    if (next is not { } n2 || n2 == pick) break;
+                    note = (note == null ? "" : note + "; ") + why;
+                    pick = n2;
+                    stand = Taught(pick);
+                    r = R(await loop.RunAsync(pick, Math.Clamp(i.Int("count") ?? 16, 1, 20000), store, ct, stand));
+                }
                 return note == null ? r : r with { Text = note + "; " + r.Text };
             }, longRunning: true);
         tools.Register("collect_drops", "Pick up dropped items nearby.",

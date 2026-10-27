@@ -64,8 +64,22 @@ public sealed class CloneSlot(string name)
     public bool ByeReceived { get; internal set; }
     public string? LastExit { get; internal set; }
     public int Deaths { get; internal set; }
+    /// <summary>Deliberate void steps (into_void) that reset it: not deaths.</summary>
+    public int IntentionalResets { get; internal set; }
     public List<DateTimeOffset> Crashes { get; } = new();
     public BotSnapshot? Snapshot { get; internal set; }
+    /// <summary>This session's first in-game snapshot was recorded (joined_at); reset on every hello.</summary>
+    internal bool JoinNoted;
+    /// <summary>This login is the clone's first ever (nothing in the store before its hello).</summary>
+    internal bool FirstLogin;
+    internal DateTimeOffset InGameSince;
+    internal DateTimeOffset GoodSavedAt;
+    /// <summary>The clone reported holding still over the void (no good position while it lasts).</summary>
+    internal bool VoidHolding;
+    /// <summary>A trusted player said they'd /tp this clone (or to log it in anyway): its void spot doesn't block a login until then.</summary>
+    internal DateTimeOffset VoidConfirmedUntil;
+    /// <summary>Its task failed and it stays online, idle and safe, for the grace period: free for a new assignment.</summary>
+    internal bool AwaitingOrders;
     public List<ItemMsg>? Inventory { get; internal set; }
     internal ICloneProcess? Process;
     internal HiveLink? Link;
@@ -155,6 +169,67 @@ public sealed class HiveSupervisor : IAsyncDisposable
 
     private DateTimeOffset Now => _time.GetUtcNow();
 
+    /// <summary>
+    /// Where an OFFLINE clone was last left holding over the void (its saved login spot), "x,y,z"; null = fine. A live clone is
+    /// already in (holding or not), so a new task for it needs no login.
+    /// </summary>
+    private string? VoidSpawnOf(CloneSlot s)
+    {
+        if (s.IsLive) return null;
+        try
+        {
+            if (Store is not { } st) return null;
+            var h = st.History(s.Name);
+            if (h.Void is { } v) return Block(v);
+            // Never in game: its first login lands at the server's fresh-player spawn, over the void here (seen before).
+            if (!h.Joined && st.FreshVoidSpawn() is { } f) return Block(f);
+            return null;
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "hive: void spawn of {Clone} unreadable", s.Name); return null; }
+    }
+
+    private static string Block((double X, double Y, double Z) p) => $"{(int)Math.Floor(p.X)},{(int)Math.Floor(p.Y)},{(int)Math.Floor(p.Z)}";
+
+    private bool NeverJoined(CloneSlot s)
+    {
+        try { return Store is { } st && !s.IsLive && !st.History(s.Name).Joined; }
+        catch (Exception) { return false; }
+    }
+
+    private string VoidRefusal(CloneSlot s) => NeverJoined(s)
+        ? $"{s.Number} never joined: its first login lands at the void spawn {VoidSpawnOf(s)} and needs a /tp; ask a trusted player to " +
+          $"/tp it when it's in (/tp {s.Name} {_main}); once they say they will, spawn it again (or use another clone)"
+        : $"{s.Number}'s saved login spot is over the void at {VoidSpawnOf(s)} (it held there and nobody /tp'd it), so it would spawn " +
+          $"there again; ask a trusted player to /tp it when it's in (/tp {s.Name} {_main}); once they say they will, spawn it again " +
+          "(or use another clone)";
+
+    private bool VoidConfirmed(CloneSlot s) => _time.GetUtcNow() < s.VoidConfirmedUntil;
+
+    private static readonly System.Text.RegularExpressions.Regex TpConsent = new(
+        @"\b(?:tp|teleport|/tp|bring\s+(?:it|them|him|her)\s+(?:up|over|here)|log\s+(?:it|them)\s+in|spawn\s+(?:it|them)|go\s+ahead|confirm(?:ed)?)\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// What an offline clone's next login means (hive list): never joined (the fresh-player spawn, a /tp needed), left over the
+    /// void, or logged out at a known safe spot. "Idle" alone is never said for a clone that has not been in game.
+    /// </summary>
+    private string OfflineState(CloneSlot s)
+    {
+        try
+        {
+            if (Store is not { } st) return "idle";
+            var h = st.History(s.Name);
+            if (!h.Joined)
+                return st.FreshVoidSpawn() is { } f
+                    ? $"never joined; first login lands at void spawn {Block(f)} and needs a /tp"
+                    : "never joined; first login lands at the world spawn (maybe over the void: have a /tp ready)";
+            if (h.Void is { } v) return $"logged out over the void at {Block(v)}; next login lands there and needs a /tp";
+            if (h.Good is { } g) return $"idle (logged out safe at {Block((g.X, g.Y, g.Z))}{(g.Dimension == -1 ? " nether" : "")})";
+            return "idle (logged out, position unknown)";
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "hive: history of {Clone} unreadable", s.Name); return "idle"; }
+    }
+
     private void Post(GameEvent e)
     {
         _log.LogInformation("hive: {Event}", e.Format());
@@ -223,6 +298,19 @@ public sealed class HiveSupervisor : IAsyncDisposable
     /// <summary>A player's line (main's addressed chat): a retry or new information clears matching refusals.</summary>
     public void NotePlayerChat(string? player, string text)
     {
+        // A trusted player agreeing to /tp a clone whose login lands over the void ("I'll tp 420", "log 1337 in, I'll tp it",
+        // "if they keep falling, tp them to you", 07:52:15): its next login goes ahead for 10 min. A line naming no clone covers
+        // every clone that is blocked that way.
+        if (player != null && Regulars.Contains(player, StringComparer.OrdinalIgnoreCase) && TpConsent.IsMatch(text ?? ""))
+        {
+            var blocked = _slots.Values.Where(sl => !sl.IsLive && VoidSpawnOf(sl) != null).ToList();
+            var named = blocked.Where(sl => Mentions(text!, sl)).ToList();
+            foreach (var sl in named.Count > 0 ? named : blocked)
+            {
+                sl.VoidConfirmedUntil = _time.GetUtcNow() + TimeSpan.FromMinutes(10);
+                _log.LogInformation("hive: {Player} will /tp {Clone}; its void login is allowed for 10 min", player, sl.Name);
+            }
+        }
         int n = Refusals.OnPlayerChat(text, clone => _slots.TryGetValue(clone, out var sl) && Mentions(text, sl));
         if (n > 0) _log.LogInformation("hive: {N} refused assignment(s) cleared by {Player}: {Text}", n, player ?? "?", text);
     }
@@ -235,17 +323,20 @@ public sealed class HiveSupervisor : IAsyncDisposable
     private static bool Free(CloneSlot s) => s.State == CloneState.Idle
         // Online and free: no task, or asleep after a script that ended with after: sleep. A clone whose result just came in is
         // depositing before its logout: not free.
-        || (s.State == CloneState.Running && s.Connected && !s.Recalled && (s.Task == null || (s.ResultIn && s.Task.SleepsAfter)));
+        || (s.State == CloneState.Running && s.Connected && !s.Recalled && (s.Task == null || (s.ResultIn && (s.Task.SleepsAfter || s.AwaitingOrders))));
 
     /// <summary>
     /// Picks the best free clone for an unnamed task: scored on hp, food, tools and gear for the intent and distance to main;
     /// clones that can't safely do it (blocker) or refused this intent with nothing changed since are skipped. Null pick =
     /// none qualifies, with the reason and a fix for the brain.
     /// </summary>
-    internal (CloneSlot? Slot, string? Why) PickFor(TaskIntent intent, CloneSlot? except = null)
+    internal (CloneSlot? Slot, string? Why) PickFor(TaskIntent intent, CloneSlot? except = null, bool confirmVoid = false)
     {
         var free = _slots.Values.Where(s => Free(s) && !ReferenceEquals(s, except)).ToList();
-        if (free.Count == 0) return (null, null);
+        // Never log a clone in where it was left holding over the void (it would spawn there again) unless a player confirmed.
+        var stuck = confirmVoid ? [] : free.Where(s => VoidSpawnOf(s) != null && !VoidConfirmed(s)).ToList();
+        free = free.Except(stuck).ToList();
+        if (free.Count == 0) return (null, stuck.Count > 0 ? string.Join("; ", stuck.Select(VoidRefusal)) : null);
         var main = MainXZ();
         bool? night = Night();
         var scored = free.Select(s =>
@@ -311,11 +402,12 @@ public sealed class HiveSupervisor : IAsyncDisposable
             }
             if (CloneFitness.Score(slot.Number, VitalsOf(slot), intent, slot.IsLive) is { Blocker: { } b })
                 fitNote = $" (warning: {slot.Number} {b})";
+            if (opts?.ConfirmVoid != true && !VoidConfirmed(slot) && VoidSpawnOf(slot) != null) return "no: " + VoidRefusal(slot);
         }
         else
         {
             // Unnamed: the best fit among free clones, not the first idle slot (live 10-27 15:44: 67 at hp 7/food 0 got "fight").
-            var (best, noFit) = PickFor(intent);
+            var (best, noFit) = PickFor(intent, confirmVoid: opts?.ConfirmVoid == true);
             if (best == null && noFit != null) return "no: " + noFit;
             slot = best;
         }
@@ -373,6 +465,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
                     slot.Task = t;
                     slot.Intent = intent;
                     slot.ResultIn = false;
+                    slot.AwaitingOrders = false;
                     slot.ResultText = null;
                     slot.ForPlayer = forPlayer;
                     slot.Unnamed = name == null;
@@ -421,6 +514,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
     {
         slot.Task = t;
         slot.ResultIn = false;
+        slot.AwaitingOrders = false;
         slot.ResultText = null;
         slot.ForPlayer = forPlayer;
         slot.Unnamed = unnamed;
@@ -521,7 +615,9 @@ public sealed class HiveSupervisor : IAsyncDisposable
 
     private void AfterAssign(CloneSlot slot, CloneSlot? previous, string? forPlayer, string task)
     {
-        if (previous == null || forPlayer == null) return;
+        if (forPlayer == null) return;
+        // The player's next few lines continue with the clone now doing their request (user requirement 10-27).
+        if (previous == null) { Arbiter.Delegated(forPlayer, slot.Name); return; }
         // Explicit handover: the player's conversation moves to the new clone and the old owner is told to drop it.
         Arbiter.HandOver(forPlayer, slot.Name);
         lock (previous.Lock) previous.ForPlayer = null;
@@ -701,7 +797,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
                 CloneState.Stopping => "logging out",
                 CloneState.Backoff => "restarting",
                 CloneState.Retired => $"retired ({s.Crashes.Count} crashes)",
-                _ => "idle",
+                _ => OfflineState(s),
             };
             var line = $"{s.Number} {st}";
             if (s.State is not (CloneState.Idle or CloneState.Retired) && s.Task is { Script: { } script } st2)
@@ -735,6 +831,30 @@ public sealed class HiveSupervisor : IAsyncDisposable
             slot.SavedVitals = (snap.Hp, snap.Food);
         }
         catch (Exception ex) { _log.LogDebug(ex, "hive: saving {Clone}'s vitals failed", slot.Name); }
+    }
+
+    /// <summary>
+    /// Join history from the snapshot stream: the first in-game snapshot records joined_at; after 5 s in game without a void
+    /// hold (detected after ~2 s) the position is a known good one, saved at most every 30 s.
+    /// </summary>
+    private void NoteInGame(CloneSlot slot, BotSnapshot snap)
+    {
+        if (Store is null || snap.Status != BotStatus.Online || snap.Pos is not { } p) return;
+        var now = _time.GetUtcNow();
+        try
+        {
+            if (!slot.JoinNoted)
+            {
+                slot.JoinNoted = true;
+                slot.InGameSince = now;
+                Store.NoteJoined(slot.Name);
+                return;
+            }
+            if (slot.VoidHolding || now - slot.InGameSince < TimeSpan.FromSeconds(5) || now - slot.GoodSavedAt < TimeSpan.FromSeconds(30)) return;
+            Store.SaveGoodPosition(slot.Name, p.X, p.Y, p.Z, snap.Dimension);
+            slot.GoodSavedAt = now;
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "hive: join history of {Clone} not saved", slot.Name); }
     }
 
     private static string Trunc(string s, int n) => s.Length <= n ? s : s[..(n - 1)] + "…";
@@ -1069,6 +1189,10 @@ public sealed class HiveSupervisor : IAsyncDisposable
                 {
                     ReclaimFor(slot);
                     var stranded = Store?.Stranded(slot.Name);
+                    slot.JoinNoted = false;
+                    slot.VoidHolding = false;
+                    slot.GoodSavedAt = default;
+                    try { slot.FirstLogin = Store != null && !Store.History(slot.Name).Joined; } catch (Exception) { slot.FirstLogin = false; }
                     lock (slot.Lock)
                     {
                         slot.Connected = true;
@@ -1085,6 +1209,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
                 {
                     slot.Snapshot = VoxelSendGate.Merge(slot.Snapshot, snap);
                     SaveVitals(slot, snap);
+                    NoteInGame(slot, snap);
                 }
                 return null;
             case Msg.Usage:
@@ -1101,12 +1226,15 @@ public sealed class HiveSupervisor : IAsyncDisposable
                 slot.ResultIn = true;
                 slot.ResultText = r.Text;
                 slot.ResultOk = r.Ok;
+                slot.AwaitingOrders = !r.Ok && r.Online;
                 // Remember a refusal by (clone, intent) with the body it had, so main doesn't re-send the same job unchanged.
                 if (r.Ok) Refusals.Clear(slot.Name, slot.Intent);
                 else Refusals.Record(slot.Name, slot.Intent, r.Text, VitalsOf(slot), Night());
                 // A failure must reach main's brain even while a script sleeps it; "done" stays a low notice.
                 Post(r.Ok ? GameEvent.Notice($"[hive] {slot.Number} done: {Trunc(r.Text, 200)}", EventPriority.Low)
-                    : GameEvent.Notice($"[hive] {slot.Number} failed: {Trunc(r.Text, 200)}", EventPriority.Normal) with { MustWake = true });
+                    : GameEvent.Notice($"[hive] {slot.Number} failed: {Trunc(r.Text, 200)}" + (r.Online
+                        ? $"; still online, awaiting orders ({_cfg.FailureGraceSeconds / 60:0.#} min): reassign it (hive spawn name={slot.Number}) or retry with a fix"
+                        : ""), EventPriority.Normal) with { MustWake = true });
                 return null;
             case Msg.Claim when m.As<ClaimMsg>() is { } c:
                 {
@@ -1127,7 +1255,8 @@ public sealed class HiveSupervisor : IAsyncDisposable
                 Ledger.Record(slot.Name, sp.Usd);
                 return null;
             case Msg.ChatAccepted when m.As<ChatAcceptedMsg>() is { } ca:
-                Arbiter.AcceptFromClone(ca.Player, slot.Name);
+                if (ca.Spoke) Arbiter.SpokeFromClone(ca.Player, slot.Name);
+                else Arbiter.AcceptFromClone(ca.Player, slot.Name);
                 return null;
             case Msg.Thread when m.As<ThreadMsg>() is { } th:
                 if (th.Open) Arbiter.OpenThread(th.Player, slot.Name, TimeSpan.FromSeconds(Math.Clamp(th.TtlSeconds, 5, 900)));
@@ -1136,6 +1265,52 @@ public sealed class HiveSupervisor : IAsyncDisposable
             case Msg.Inventory when m.As<InventoryMsg>() is { } inv:
                 slot.Inventory = inv.Items;
                 return null;
+            case Msg.NeedsInput when m.As<NeedsInputMsg>() is { } ni:
+                slot.LastProgress = ni.Text;
+                _log.LogInformation("hive: {Clone} needs input (online, task paused): {Text}", slot.Name, ni.Text);
+                Post(GameEvent.Notice($"[hive] {slot.Number} needs input (still online, items kept): {Trunc(ni.Text, 200)} — give it another " +
+                    "cell or task (hive spawn name=" + slot.Number + "), or recall it", EventPriority.Normal) with { MustWake = true });
+                return null;
+            case Msg.VoidHold when m.As<VoidHoldMsg>() is { } vh:
+                {
+                    var at = $"{(int)Math.Floor(vh.X)},{(int)Math.Floor(vh.Y)},{(int)Math.Floor(vh.Z)}";
+                    if (vh.Held)
+                    {
+                        slot.VoidHolding = true;
+                        try
+                        {
+                            Store?.MarkVoidSpawn(slot.Name, vh.X, vh.Y, vh.Z);
+                            if (slot.FirstLogin) Store?.NoteFreshVoidSpawn(slot.Name, vh.X, vh.Y, vh.Z); // where fresh accounts land
+                        }
+                        catch (Exception ex) { _log.LogDebug(ex, "void spawn record failed"); }
+                        _log.LogWarning("hive: {Clone} is holding still over the void at {At}; it asked for {Tp}", slot.Name, at, vh.Asked);
+                        // Main relays the ask; it runs the /tp itself only when a trusted player names that exact command (op policy).
+                        Post(GameEvent.Notice($"[hive] {slot.Number} spawned over the void at {at} and is holding still (safe, can't move); it asked " +
+                            $"the trusted players in chat for {vh.Asked}. Relay that ask once if nobody answered; run the /tp only when a trusted " +
+                            "player names that exact command", EventPriority.Normal) with { MustWake = true });
+                    }
+                    else
+                    {
+                        slot.VoidHolding = false;
+                        try
+                        {
+                            Store?.ClearVoidSpawn(slot.Name);
+                            Store?.SaveGoodPosition(slot.Name, vh.X, vh.Y, vh.Z, slot.Snapshot?.Dimension ?? 0);
+                            slot.GoodSavedAt = _time.GetUtcNow();
+                        }
+                        catch (Exception ex) { _log.LogDebug(ex, "void spawn clear failed"); }
+                        _log.LogInformation("hive: {Clone} is on ground again at {At}; resuming", slot.Name, at);
+                        Post(GameEvent.Notice($"[hive] {slot.Number} landed on ground at {at} (tp'd); its task resumes", EventPriority.Low));
+                    }
+                    return null;
+                }
+            case Msg.Death when m.As<DeathMsg>() is { } dm && dm.Cause.StartsWith(Clone.CloneHost.IntentionalResetCause, StringComparison.Ordinal):
+                {
+                    // A deliberate void step: the clone respawns and continues; not a death to count, claims stay.
+                    slot.IntentionalResets++;
+                    _log.LogInformation("hive: {Clone}: {Cause}", slot.Name, dm.Cause);
+                    return null;
+                }
             case Msg.Death when m.As<DeathMsg>() is { } dm:
                 {
                     slot.Deaths++;
@@ -1245,6 +1420,24 @@ public sealed class HiveSupervisor : IAsyncDisposable
     // ================================================================ broadcasts, heartbeats, policies
 
     /// <summary>Sends a notification to every connected clone.</summary>
+    /// <summary>
+    /// "Send me your view": the live clone flushes its world memory to the shared db (fresh columns, stamped with its name)
+    /// and answers with its eye pose. Null when it isn't connected or doesn't answer within <paramref name="timeout"/>.
+    /// </summary>
+    public async Task<CloneViewMsg?> RequestViewAsync(string name, TimeSpan timeout, CancellationToken ct = default)
+    {
+        if (Resolve(name) is not { } n || !_slots.TryGetValue(n, out var slot)) return null;
+        HiveLink? link;
+        lock (slot.Lock) link = slot.Connected ? slot.Link : null;
+        if (link is not { IsOpen: true }) return null;
+        try { return await link.RequestAsync<CloneViewMsg>(Msg.View, null, timeout, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _log.LogDebug(ex, "view request to {Clone} failed", n);
+            return null;
+        }
+    }
+
     public async Task BroadcastAsync(string type, object? payload)
     {
         foreach (var s in _slots.Values)

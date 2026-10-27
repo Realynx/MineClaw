@@ -73,6 +73,39 @@ public sealed partial class Protection
     public ProtectionMarks? Marks { get; set; }
     /// <summary>The bot's dimension (default overworld).</summary>
     public Func<int>? Dimension { get; set; }
+    /// <summary>Block metadata (crop growth stage). Null = unknown: a crop then counts as harvestable.</summary>
+    public Func<BlockPos, int>? BlockMeta { get; set; }
+
+    /// <summary>
+    /// Farm plants (live 10-27 21:35, clone 69: "wheat at 4,65,-10 is protected (part of the main house build)": the guessed
+    /// house box covered the field). Harvesting a ripe crop, replanting and tilling are always allowed, whatever structure box
+    /// or indexed build they fall in; an unripe crop is left alone ("not ripe"). Saplings keep their config protection.
+    /// </summary>
+    public static bool IsFarmPlant(int id) => id is Blocks.Crops or Blocks.SugarCane or Blocks.Cactus or Blocks.PumpkinStem or Blocks.MelonStem
+        or Blocks.Pumpkin or Blocks.Melon or Blocks.Sapling;
+
+    /// <summary>
+    /// Ground, fluids and plants: never "part of a build" by volume alone. A remembered/guessed structure box protects only the
+    /// blocks it is actually made of (planks, cobble, glass, doors, slabs...), plus what the indexer itself tags per block.
+    /// </summary>
+    public static bool IsNaturalFill(int id) => id is Blocks.Air or Blocks.Grass or Blocks.Dirt or Blocks.Sand or Blocks.Gravel
+        or Blocks.FlowingWater or Blocks.Water or Blocks.FlowingLava or Blocks.Lava or Blocks.Leaves or Blocks.TallGrass or Blocks.DeadBush
+        or 37 or 38 or Blocks.BrownMushroom or Blocks.RedMushroom or Blocks.SnowLayer or Blocks.Clay or Blocks.Vine
+        || IsFarmPlant(id) || id == Blocks.Farmland;
+
+    /// <summary>"wheat is a farm crop (ripe? no: stage 5/7)" for an unripe crop; null = ripe/harvestable (or no stage known).</summary>
+    public string? UnripeReason(BlockPos p, int id)
+    {
+        if (BlockMeta is not { } meta) return null;
+        int m;
+        try { m = meta(p); } catch (Exception) { return null; }
+        return id switch
+        {
+            Blocks.Crops when m < 7 => $"wheat is a farm crop (ripe? no: stage {m}/7): not ripe ({m}/7)",
+            Blocks.PumpkinStem or Blocks.MelonStem => $"a {(id == Blocks.MelonStem ? "melon" : "pumpkin")} stem (stage {Math.Min(m, 7)}/7): it grows the fruit, harvest the {(id == Blocks.MelonStem ? "melon" : "pumpkin")} next to it",
+            _ => null,
+        };
+    }
     /// <summary>Refusals counted by reason (rule 6).</summary>
     public ProtectionTelemetry Telemetry { get; set; } = new();
 
@@ -105,11 +138,33 @@ public sealed partial class Protection
     {
         if (_blockIds.Contains(id)) return true;
         foreach (var r in _configRegions) if (Inside(p, r.Min, r.Max)) return true;
-        MaybeRefresh();
-        foreach (var r in _memoryRegions) if (Inside(p, r.Min, r.Max)) return true;
+        if (IsFarmPlant(id))
+        {
+            // Crops are farm plants wherever they grow: no structure box or indexed build owns them; unripe ones wait.
+            if (UnripeReason(p, id) != null) return true;
+            return Claims != null && !Claims.IsFree(ClaimKey.Block(p, dim));
+        }
+        if (InMemoryRegion(p, id) != null) return true;
         if (IndexerKind?.Invoke(p) != null) return true;
         return Claims != null && !Claims.IsFree(ClaimKey.Block(p, dim));
     }
+
+    /// <summary>The remembered structure box holding <paramref name="p"/> as one of its parts (farmland: as its farm), or null.
+    /// Natural fill (dirt, grass, water, leaves, plants) inside a box is not a part: boxes are guesses, the blocks are facts.</summary>
+    private (BlockPos Min, BlockPos Max, string? Label)? InMemoryRegion(BlockPos p, int id)
+    {
+        MaybeRefresh();
+        bool natural = IsNaturalFill(id) && id != Blocks.Farmland;
+        // A remembered FARM is made of its soil and irrigation: dirt/grass/water there are parts (tilling stays allowed).
+        bool soil = id is Blocks.Dirt or Blocks.Grass or Blocks.Water or Blocks.FlowingWater;
+        foreach (var r in _memoryRegions)
+            if (Inside(p, r.Min, r.Max) && (!natural || soil && IsFarmLabel(r.Label))) return r;
+        return null;
+    }
+
+    private static bool IsFarmLabel(string? label) =>
+        label is { } l && (l.Contains("farm", StringComparison.OrdinalIgnoreCase) || l.Contains("field", StringComparison.OrdinalIgnoreCase)
+                           || l.Contains("garden", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>The verdict without counting it (tests, diagnostics).</summary>
     public ProtectionVerdict Check(BlockPos p, int blockId)
@@ -158,9 +213,11 @@ public sealed partial class Protection
             return IsContainer(id)
                 ? S("container", $"a {name}: it may hold items", containerUnlock)
                 : S(id is Blocks.Sapling ? "sapling" : id is Blocks.Farmland ? "farm" : "station", $"a {name}");
-        foreach (var r in _memoryRegions)
-            if (Inside(p, r.Min, r.Max))
-                return S("structure", string.IsNullOrWhiteSpace(r.Label) ? "part of a remembered build" : $"part of the {r.Label} build");
+        if (IsFarmPlant(id) && UnripeReason(p, id) is { } unripe) return S("farm", unripe);
+        if (id == Blocks.Farmland && (InMemoryRegion(p, id) != null || IndexerKind?.Invoke(p) is IndexKinds.Farm or IndexKinds.UnknownStructure))
+            return S("farm", "farmland: breaking or trampling it undoes the farm (tilling and planting are fine)");
+        if (!IsFarmPlant(id) && InMemoryRegion(p, id) is { } mr)
+            return S("structure", string.IsNullOrWhiteSpace(mr.Label) ? "part of a remembered build" : $"part of the {mr.Label} build");
         foreach (var r in _configRegions)
             if (Inside(p, r.Min, r.Max)) return S("config_region", "inside a protected region from my config");
         if (IndexerKind?.Invoke(p) is { } kind)

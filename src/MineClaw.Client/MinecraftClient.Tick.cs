@@ -74,7 +74,10 @@ public sealed partial class MinecraftClient
             var after = new Vec3d(t.X, t.Y, t.Z);
             if (forced && before.DistanceTo(after) > ServerMoveMinDistance) Raise(() => ServerMoved?.Invoke(before, after));
             player.ServerTeleport(new Vec3d(t.X, t.Y, t.Z), t.Stance, t.Yaw, t.Pitch, t.OnGround);
-            Send(s, t.EchoForServer(t.OnGround));
+            // Over the void (or chunks not here yet) the confirmation waits until the ground is verified: unconfirmed, b1.8.1
+            // never runs its movement checks, so a bot holding still in the void can't be kicked for floating (see DeferEcho).
+            if (DeferEcho(after)) _pendingEcho = t.EchoForServer(t.OnGround);
+            else { _pendingEcho = null; Send(s, t.EchoForServer(t.OnGround)); }
             if (s.PositionKnown && !s.AwaitingTeleport) s.Corrections++;
             s.TeleportsReceived++;
             s.AwaitingTeleport = false;
@@ -124,8 +127,16 @@ public sealed partial class MinecraftClient
             EndTick();
             return;
         }
+        // Ground verified under a teleport we hadn't confirmed yet: confirm it now (same spot, the body never moved).
+        if (_pendingEcho is { } echo)
+        {
+            _pendingEcho = null;
+            Send(s, echo);
+            teleported = true; // the echo is this tick's movement packet
+        }
 
         // ---- input from the active driver, or idle ----
+        GestureTick(s, phys); // brainstem gesture frame: look overlay (sent only), idle sneak/jump, arm swing
         MoveInput input;
         bool allowDrop = false;
         ParkourCommit? parkour = null;
@@ -154,7 +165,7 @@ public sealed partial class MinecraftClient
                 input = IdleInput(phys);
             }
         }
-        else input = IdleInput(phys);
+        else input = GestureIdle(IdleInput(phys));
         parkour = ContinueFlight(phys, ref input, parkour);
 
         // ---- combat: reflexes / fight / spar replace the input while engaged ----
@@ -163,8 +174,9 @@ public sealed partial class MinecraftClient
 
         // ---- safety: below every action, every tick, before the position goes out ----
         if (!combat.Overrides) input = RetreatOverride(phys, HealRetreatOverride(phys, input, idle: d is null));
-        var guard = SafetyFilter(phys, input, allowDrop && !combat.Overrides, combat.Overrides ? null : parkour);
+        var guard = GuardOrVoidStep(phys, input, allowDrop && !combat.Overrides, combat.Overrides ? null : parkour); // yields only to into_void
         input = guard.Input;
+        GestureAfterGuard(combat.Overrides || parkour is not null || allowDrop);
         Combat.OnGuard(guard);
 
         PlayerPhysics.Tick(World, phys, input);
@@ -181,6 +193,7 @@ public sealed partial class MinecraftClient
 
     private void EndTick()
     {
+        _gNow = null;
         Interlocked.Increment(ref _tickCount);
         _changed.Pulse();
     }
@@ -221,15 +234,16 @@ public sealed partial class MinecraftClient
         double stance = phys.Stance;
         double dx = pos.X - _lastX, dy = pos.Y - _lastY, dz = pos.Z - _lastZ, ds = stance - _lastStance;
         bool moved = dx * dx + dy * dy + dz * dz + ds * ds > 0.0009 || _ticksSincePos >= 20;
-        bool rotated = phys.Yaw != _lastYaw || phys.Pitch != _lastPitch;
+        var (yaw, pitch) = SentLook(phys); // a gesture's head overlay rides here only; physics keeps the real look
+        bool rotated = yaw != _lastYaw || pitch != _lastPitch;
         _ticksSincePos++;
 
         if (moved && rotated)
-            Send(s, new PlayerPositionLookPacket { X = pos.X, Y = pos.Y, Stance = stance, Z = pos.Z, Yaw = phys.Yaw, Pitch = phys.Pitch, OnGround = phys.OnGround });
+            Send(s, new PlayerPositionLookPacket { X = pos.X, Y = pos.Y, Stance = stance, Z = pos.Z, Yaw = yaw, Pitch = pitch, OnGround = phys.OnGround });
         else if (moved)
             Send(s, new PlayerPositionPacket { X = pos.X, Y = pos.Y, Stance = stance, Z = pos.Z, OnGround = phys.OnGround });
         else if (rotated)
-            Send(s, new PlayerLookPacket { Yaw = phys.Yaw, Pitch = phys.Pitch, OnGround = phys.OnGround });
+            Send(s, new PlayerLookPacket { Yaw = yaw, Pitch = pitch, OnGround = phys.OnGround });
         else
             Send(s, new PlayerOnGroundPacket { OnGround = phys.OnGround });
 
@@ -240,8 +254,8 @@ public sealed partial class MinecraftClient
         }
         if (rotated)
         {
-            _lastYaw = phys.Yaw;
-            _lastPitch = phys.Pitch;
+            _lastYaw = yaw;
+            _lastPitch = pitch;
         }
     }
 
@@ -282,6 +296,12 @@ public sealed partial class MinecraftClient
 
     private void RaiseDanger(DangerKind kind, string message, bool abort, bool critical = false)
     {
+        // A deliberate void step (into_void): the fall, the void damage and the death are the plan, not dangers.
+        if (ActiveVoidStep is not null && kind != DangerKind.Recovered)
+        {
+            Debug($"into_void: not a danger ({kind}): {message}");
+            return;
+        }
         var ev = new DangerEvent(kind, message) { Critical = critical };
         Raise(() => Danger?.Invoke(ev));
         _combatInstance?.OnDanger(ev);

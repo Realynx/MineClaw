@@ -201,11 +201,14 @@ public class VisionV2Tests(ITestOutputHelper output)
         Assert.Contains(v.Facts, f => f.Status == FactStatus.Verified && f.Claim.StartsWith("floor under"));
         Assert.DoesNotContain(v.Facts, f => f.Coords.Contains((0, 63, 0)));                 // air over the floor is no gen cell
         Assert.Equal(2, v.Dropped);                                                          // + the vague low-confidence one
-        Assert.Equal("mine the gen cell at 5,63,7", v.Answer);                               // rewritten with the fixed coords
+        Assert.Null(v.Answer);                       // the model made a refuted claim: its free-text answer isn't passed on
         Assert.Equal(2, v.Mismatched);
         Assert.Equal(4, v.Checked);
         Assert.Equal(0.5, v.HallucinationRate, 3);
-        Assert.StartsWith("[vision] mine the gen cell at 5,63,7. seen: ", v.Text);
+        Assert.StartsWith("[vision] seen: gen cell between water and lava @5,63,7 (coords fixed)", v.Text);
+        // Without a refuted claim the snapped answer survives, rewritten with the fixed coords.
+        var snapOnly = Result("""{"answer":"mine the gen cell at 5,62,7","facts":[{"claim":"gen cell","coords":[[5,62,7]],"role":"gen cell","confidence":0.9}]}""");
+        Assert.Equal("mine the gen cell at 5,63,7", PerceptionVerifier.Verify(c.Question, snapOnly, c.World.PlanningView, roles, c.Focus, c.Radius).Answer);
         Assert.True(v.Text.Length <= PerceptionVerifier.MaxChars);
         Assert.True(v.Text.Length / 3.5 <= 120, $"~{v.Text.Length / 3.5:0} tokens: {v.Text}");
 
@@ -227,7 +230,7 @@ public class VisionV2Tests(ITestOutputHelper output)
               {"claim":"hole west of you (air)","coords":[[6,62,9]],"role":null,"confidence":0.8}]}
             """);
         var v = PerceptionVerifier.Verify(hole.Question, r, hole.World.PlanningView, VisionEval.Roles(hole).Map, hole.Focus, hole.Radius);
-        var faces = v.Facts.First(f => f.Claim.StartsWith("solid"));
+        var faces = v.Facts.First(f => f.Claim.StartsWith("solid face"));     // partly refuted: rewritten from the voxels
         Assert.Equal([(8, 62, 9), (7, 62, 8)], faces.Coords.ToArray()); // the air cell is not a face
         Assert.Contains(v.Facts, f => f.Claim.StartsWith("hole") && f.Status == FactStatus.Verified);
         // Deterministic grounding for an air focus (the live 7,62,9 hole): its solid faces, never the dug cell west of it.
@@ -385,7 +388,8 @@ public class VisionV2Tests(ITestOutputHelper output)
         Assert.Equal("off", req.Thinking);
         Assert.IsType<LlmImageBlock>(req.Messages[0].Content[0]);
         Assert.Contains("question: which block is the gen cell?", ((LlmText)req.Messages[0].Content[1]).Text);
-        Assert.Contains("end with this JSON", req.System[0].Text);
+        Assert.Contains("ONLY this JSON", req.System[0].Text);
+        Assert.Equal(250, req.MaxTokens);                               // terse schema, capped output
 
         // Same view + question (whitespace/case aside): the cache answers, no second call.
         var again = await svc.AskAsync(look with { Question = "Which block is the gen cell" }, CancellationToken.None);
@@ -429,7 +433,12 @@ public class VisionV2Tests(ITestOutputHelper output)
     {
         var (h, _, llm) = PerceptionBot();
         Assert.True(h.Vision!.Perception.Available);
-        var r = await h.Run("see", new { question = "which block is the gen cell?", focus = "5,65,7" });
+        // A deterministic question is answered from the voxels: no model call.
+        var exact = await h.Run("see", new { question = "which block is the gen cell?", focus = "5,65,7" });
+        Assert.StartsWith("[vision] exact: gen cells (G, mine only these): 5,65,7 water W lava E", exact.Text);
+        Assert.Empty(llm.Perception);
+        // A relational one goes to the perception model and comes back as verified text.
+        var r = await h.Run("see", new { question = "which one is the middle block of the gen?", focus = "5,65,7" });
         Assert.True(r.Ok, r.Text);
         Assert.Null(r.Image);
         Assert.StartsWith("[vision] mine 5,65,7. seen: gen cell", r.Text);
@@ -473,32 +482,31 @@ public class VisionV2Tests(ITestOutputHelper output)
         Assert.True(build.Build);
         Assert.Equal(new BlockPos(1, 64, 1), build.Focus);
 
-        // A non-spatial tool: nothing. A dig (through the registry, as brain/worker/script would run it): one background look.
+        // A non-spatial tool: nothing. A dig (through the registry, as brain/worker/script would run it): one look, answered
+        // exactly from the voxels (what is at the focus, what's under it): no model call.
         await h.Run("look", new { map = true });
         await auto.Idle();
-        Assert.Empty(llm.Perception);
+        Assert.Null(h.Runtime.Agent.TurnPerception!());
         await h.RunAs(Agent.Llm.ModelTier.Worker, "dig", new { at = "5,65,7" });
         await auto.Idle();
-        Assert.Single(llm.Perception);
-        Assert.Contains("question: What is the block at the focus", ((LlmText)llm.Perception[0].Messages[0].Content[1]).Text);
+        Assert.Empty(llm.Perception);
         // The brain's next turn gets it once (TurnPerception composes with the pointing line); it never waits for it.
         var line = h.Runtime.Agent.TurnPerception!();
-        Assert.Contains("[vision] mine 5,65,7", line);
+        Assert.Contains("[vision] exact: 5,65,7 cobblestone, gen cell (MINE HERE); under 5,64,7 cobblestone | void under: no", line);
         Assert.DoesNotContain("[vision]", h.Runtime.Agent.TurnPerception!() ?? "");
-        // The same step again over an unchanged spot: skipped (no call).
+        // The same step again over an unchanged spot: skipped.
         await h.RunAs(Agent.Llm.ModelTier.Worker, "dig", new { at = "5,65,7" });
         await auto.Idle();
-        Assert.Single(llm.Perception);
         Assert.True(auto.SkippedUnchanged >= 1);
-        // The cell was mined (the spot changed): the next step looks again and the worker's round waits (bounded) for it.
+        // The cell was mined (the spot changed): the next gen step looks again (gen cells, exact) and the worker's round gets it.
         c.World.SetBlock(5, 65, 7, 0, 0);
         auto.OnToolStarted("harvest_generator", TestBot.J(new { at = "5,65,7", count = 1 }));
         var note = await auto.ForWorkerAsync(CancellationToken.None);
-        Assert.StartsWith("[vision]", note);
-        Assert.Contains("generator cells", ((LlmText)llm.Perception[1].Messages[0].Content[1]).Text);
-        Assert.Equal(2, llm.Perception.Count);
+        Assert.StartsWith("[vision] exact: gen cells (G, mine only these): 5,65,7 (air: refilling) water W lava E", note);
+        Assert.Empty(llm.Perception);
         Assert.Same(auto, h.Runtime.Worker!.RoundNote!.Target);
-        Assert.Contains("perception: 2 calls (2 auto", h.Vision.Perception.Telemetry.Summary());
+        Assert.StartsWith("perception: 0 calls (0 auto", h.Vision.Perception.Telemetry.Summary());
+        Assert.Contains("2 exact", h.Vision.Perception.Telemetry.Summary());
     }
 
     [Fact]
@@ -526,6 +534,38 @@ public class VisionV2Tests(ITestOutputHelper output)
         auto.OnStepFinished("skill");
         await auto.Idle();
         Assert.StartsWith("[vision check] floor complete, no gaps", auto.TakeReady());
+    }
+
+    /// <summary>
+    /// Live 10-27: clone 69 dug 5,64,6, a cell that came from perception output. Only voxel-verified coordinates may reach a
+    /// brain or worker: a refuted or unchecked coordinate never appears in the round note (not even marked uncertain), and
+    /// harvest digs only real generator cells (taught / indexer / geometry).
+    /// </summary>
+    [Fact]
+    public async Task A_wrong_perception_gen_cell_never_reaches_the_worker_or_the_dig()
+    {
+        var (h, c, llm) = PerceptionBot();
+        var auto = h.Vision!.Auto!;
+        // The model names a wrong gen cell (a wall), an unchecked spot and puts both in its answer.
+        llm.Json = """{"answer":"the gen cell is 4,65,6; also 3,65,6","facts":[{"claim":"gen cell west of the lava","coords":[[4,65,8]],"role":"gen cell","confidence":0.9},{"claim":"a spot to note","coords":[[3,65,6]],"confidence":0.9},{"claim":"cobble to mine at 4,65,6","coords":[],"confidence":0.9}]}""";
+        c.World.SetBlock(1, 64, 1, 0, 0);
+        var job = TestBot.J(new { name = "fill_floor", args = new { at = "1,64,1" } });
+        auto.OnToolStarted("skill", job);                            // a model question (build check): perception answers
+        c.World.SetBlock(1, 64, 1, Blocks.Cobblestone, 0);
+        var note = await auto.ForWorkerAsync(CancellationToken.None);
+        Assert.Single(llm.Perception);
+        Assert.NotNull(note);
+        foreach (var wrong in new[] { "4,65,8", "3,65,6", "4,65,6" }) Assert.DoesNotContain(wrong, note);
+        Assert.DoesNotContain("the gen cell is", note);              // a model with refuted claims loses its answer line
+        // The gen step itself is answered from voxels: the real cell only.
+        c.World.SetBlock(5, 65, 6, Blocks.Cobblestone, 0);           // the spot changed: a fresh gen look
+        auto.OnToolStarted("harvest_generator", TestBot.J(new { at = "5,65,7", count = 1 }));
+        var gen = await auto.ForWorkerAsync(CancellationToken.None);
+        Assert.StartsWith("[vision] exact: gen cells (G, mine only these): 5,65,7 ", gen);
+        Assert.Single(llm.Perception);
+        // A worker that still tries the wrong cell is refused: harvest only digs generator cells.
+        var r = await h.RunAs(Agent.Llm.ModelTier.Worker, "harvest_generator", new { at = "4,65,8", count = 1, store = "false" });
+        Assert.DoesNotContain(c.CallList, call => call.StartsWith("dig 4,65,8", StringComparison.Ordinal));
     }
 
     // ------------------------------------------------------------------ eval (offline, recorded/fake answers)
@@ -573,7 +613,7 @@ public class VisionV2Tests(ITestOutputHelper output)
         var report = VisionEval.Report(rows);
         output.WriteLine(report);
         foreach (var r in rows) output.WriteLine($"{r.Case,-19} {r.Arm,-18} {(r.Ok ? "OK " : "BAD")} raw {(r.RawOk ? "ok " : "bad")} {r.Mismatched}/{r.Checked} {r.Answer}");
-        Assert.Equal(15, rows.Count);
+        Assert.Equal(20, rows.Count);
         Assert.All(rows, r => Assert.Null(r.Error));
         // The live failure reproduced: Opus reading the sheet offered the air cell west of the hole as a face.
         Assert.False(rows.Single(r => r is { Case: "hole_faces", Arm: "opus-direct" }).Ok);
@@ -598,8 +638,8 @@ public class VisionV2Tests(ITestOutputHelper output)
     [Fact]
     public async Task Eval_runs_offline_and_scores_accuracy_tokens_cost_and_hallucinations()
     {
-        var cases = VisionEval.Cases(NetherFixture());
-        Assert.Equal(["floor_vs_gen", "hole_faces", "edge_distance", "middle_one", "portal_void_nether"], cases.Select(c => c.Id));
+        var cases = VisionEval.Cases(NetherFixture(), File.ReadAllText(RepoFile("tests", "fixtures", "vision-eval", "dual-gen.txt")));
+        Assert.Equal(["floor_vs_gen", "hole_faces", "edge_distance", "middle_one", "portal_void_nether", "dual_gen_live"], cases.Select(c => c.Id));
         foreach (var c in cases)
         {
             var s = VisionEval.Sheet(c);
@@ -624,6 +664,8 @@ public class VisionV2Tests(ITestOutputHelper output)
             [(haiku, "hole_faces")] = """{"answer":"place against 8,62,9","facts":[{"claim":"solid face","coords":[[8,62,9],[7,62,10]],"role":"floor","confidence":0.7}]}""",
             [(haiku, "edge_distance")] = """{"answer":"4 blocks","facts":[]}""",
             [(haiku, "middle_one")] = """{"answer":"the middle one is 4,63,9","facts":[{"claim":"middle gen cell","coords":[[4,63,9]],"role":"gen cell","confidence":0.6}]}""",
+            // Live 21:12 on the roofed dual gen: cells read one column off, one right (the verifier keeps only that one).
+            [(sonnet, "dual_gen_live")] = """{"answer":"gen cells at 6,64,7 and 7,64,8","facts":[{"claim":"gen cells in rows z7-z8","coords":[[6,64,7],[7,64,8],[6,64,8]],"role":"gen cell","confidence":0.7},{"claim":"island floor","coords":[[4,63,6]],"role":"floor","confidence":0.8}]}""",
             [(haiku, "portal_void_nether")] = """{"answer":"portal at 2,67,0; glowstone floor east","facts":[{"claim":"portal","coords":[[2,67,0]],"role":"portal","confidence":0.8},{"claim":"glowstone floor east of the portal","coords":[[3,65,0]],"role":"floor","confidence":0.6}]}""",
         };
         string CaseOf(LlmRequest r)
@@ -641,11 +683,14 @@ public class VisionV2Tests(ITestOutputHelper output)
         }
         var report = VisionEval.Report(rows);
         output.WriteLine(report);
-        Assert.Equal(15, llm.Calls);
+        Assert.Equal(19, llm.Calls);                // 6 cases x 3 model arms + the router's one model question (the middle one)
         int Acc(string arm) => rows.Count(r => r.Arm == arm && r.Ok);
-        Assert.Equal(4, Acc("opus-direct"));        // offered the air cell in the hole
-        Assert.Equal(5, Acc("sonnet-perception"));  // the verifier removed the air cell from its faces
+        Assert.Equal(4, Acc("opus-direct"));        // offered the air cell in the hole; no answer for the dual gen
+        Assert.Equal(5, Acc("sonnet-perception"));  // the verifier removed the air cell from its faces; the dual gen stays wrong
         Assert.Equal(1, Acc("haiku-perception"));   // only the hole faces survive; the rest are dropped, never handed on
+        Assert.Equal(6, Acc("router+sonnet"));      // 5 exact from voxels (0 tokens), the middle one by Sonnet
+        Assert.All(rows.Where(r => r.Arm == "router+sonnet" && r.Case != "middle_one"), r => Assert.Equal(0, r.InputTokens));
+        Assert.DoesNotContain("6,64,7", rows.Single(r => r is { Case: "dual_gen_live", Arm: "sonnet-perception" }).Answer);
         var haikuRows = rows.Where(r => r.Arm == "haiku-perception").ToList();
         Assert.True(haikuRows.Sum(r => r.Mismatched) >= 4, report);
         Assert.DoesNotContain(haikuRows, r => r.Answer.Contains("glowstone floor east") || r.Answer.Contains("5,62,8") || r.Answer.Contains("4,63,9"));

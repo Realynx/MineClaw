@@ -23,6 +23,10 @@ public sealed record Observation(string Kind, string Key, string Text)
     public double Confidence { get; init; } = 1.0;
     /// <summary>Container snapshot; when non-null it replaces the previous contents.</summary>
     public IReadOnlyList<ItemCount>? Contents { get; init; }
+    /// <summary>Which bot read <see cref="Contents"/> from an open window (stored with the time as the contents' freshness).</summary>
+    public string? ContentsBy { get; init; }
+    /// <summary>When <see cref="Contents"/> were read (null = <see cref="SeenAt"/> / now).</summary>
+    public DateTimeOffset? ContentsAt { get; init; }
     public DateTimeOffset? SeenAt { get; init; }
     /// <summary>0 overworld, -1 nether; null = the bot's current dimension (writers that may lag a switch pass it explicitly).</summary>
     public int? Dimension { get; init; }
@@ -33,6 +37,10 @@ public sealed record ObservationRow(long Id, string Kind, string Key, Box? Bound
     int SeenCount, DateTimeOffset? Removed)
 {
     public int Dimension { get; init; }
+    /// <summary>When the contents were last read from an open window (null = unknown: a row from before v6).</summary>
+    public DateTimeOffset? ContentsAt { get; init; }
+    /// <summary>Which bot read them.</summary>
+    public string? ContentsBy { get; init; }
     public string Where => Bounds?.Format() ?? Key;
     public string DocRef => ObservationStore.DocRef(Kind, Key, Dimension);
 }
@@ -142,6 +150,9 @@ public sealed class ObservationStore
         var row = Get(kind, key, includeRemoved: true, dim)!;
         if (o.Contents != null)
         {
+            _db.Exec("UPDATE observations SET contents_at = $t, contents_by = $by WHERE id = $id",
+                ("$t", AgentDb.ToUnixMs(o.ContentsAt ?? now)), ("$by", o.ContentsBy), ("$id", row.Id));
+            row = row with { ContentsAt = o.ContentsAt ?? now, ContentsBy = o.ContentsBy };
             _db.Exec("DELETE FROM container_items WHERE obs_id = $id", ("$id", row.Id));
             foreach (var g in o.Contents.Where(c => c.Count > 0).GroupBy(c => (c.ItemId, c.Damage)))
                 _db.Exec("INSERT INTO container_items(obs_id, item_id, damage, name, count, dimension) VALUES ($o, $i, $d, $n, $c, $dim)",
@@ -200,8 +211,8 @@ public sealed class ObservationStore
 
     // ---------------- reads ----------------
 
-    private const string Cols = "id, kind, key, min_x, min_y, min_z, max_x, max_y, max_z, fields, text, source, confidence, annotation, first_seen, last_seen, seen_count, removed, dimension";
-    private const int NCols = 19;
+    private const string Cols = "id, kind, key, min_x, min_y, min_z, max_x, max_y, max_z, fields, text, source, confidence, annotation, first_seen, last_seen, seen_count, removed, dimension, contents_at, contents_by";
+    private const int NCols = 21;
     private static readonly string OCols = string.Join(", ", Cols.Split(", ").Select(c => "o." + c));
 
     /// <summary>SQL filter on a dimension column ($dim = <see cref="WorldDim.Any"/> matches all).</summary>
@@ -215,6 +226,8 @@ public sealed class ObservationStore
         AgentDb.LongOrNull(r, o + 17) is { } rm ? AgentDb.FromUnixMs(rm) : null)
     {
         Dimension = (int)r.GetInt64(o + 18),
+        ContentsAt = AgentDb.LongOrNull(r, o + 19) is { } ca ? AgentDb.FromUnixMs(ca) : null,
+        ContentsBy = AgentDb.StrOrNull(r, o + 20),
     };
 
     /// <param name="dimension">Null = current; <see cref="WorldDim.Any"/> = first match in any dimension (current preferred).</param>

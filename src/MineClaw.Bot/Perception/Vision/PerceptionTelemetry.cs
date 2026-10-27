@@ -14,6 +14,52 @@ public sealed class PerceptionTelemetry(ILogger? log = null, string? directory =
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly object _lock = new();
     private readonly List<long> _latency = new();
+    private readonly Queue<bool> _window = new();
+    private bool _paused;
+
+    /// <summary>Rolling hallucination guard: over the last <see cref="WindowSize"/> checked claims, a refuted share above
+    /// <see cref="PauseRate"/> switches auto-vision to deterministic-only (explicit <c>see</c> still asks the model).</summary>
+    public const int WindowSize = 10;
+    public const double PauseRate = 0.40;
+
+    /// <summary>Questions answered exactly from voxels (no model call).</summary>
+    public int Exact { get; private set; }
+    /// <summary>Model answers with nothing checkable (0 checked claims): low value, the question shape goes deterministic next time.</summary>
+    public int NoClaims { get; private set; }
+
+    /// <summary>Refuted share of the last <see cref="WindowSize"/> checked claims (0 until the window is full).</summary>
+    public double RollingRate
+    {
+        get { lock (_lock) return _window.Count < WindowSize ? 0 : (double)_window.Count(b => b) / _window.Count; }
+    }
+
+    /// <summary>Auto-vision answers deterministically only while the rolling hallucination rate is above <see cref="PauseRate"/>.</summary>
+    public bool DeterministicOnly { get { lock (_lock) return _paused; } }
+
+    /// <summary>An exact (voxel) answer: zero tokens, never a hallucination.</summary>
+    public void RecordExact(string source, string question)
+    {
+        lock (_lock) Exact++;
+        log?.LogDebug("perception ({Source}) exact from voxels, no model call | {Q}", source, question);
+    }
+
+    private void Window(int checkedN, int mismatched)
+    {
+        // Called under _lock. Refuted claims first, then the good ones (order inside one answer doesn't matter).
+        for (int i = 0; i < checkedN; i++)
+        {
+            _window.Enqueue(i < mismatched);
+            while (_window.Count > WindowSize) _window.Dequeue();
+        }
+        double rate = _window.Count < WindowSize ? 0 : (double)_window.Count(b => b) / _window.Count;
+        bool pause = _window.Count >= WindowSize && rate > PauseRate;
+        if (pause == _paused) return;
+        _paused = pause;
+        if (pause)
+            log?.LogWarning("perception: rolling hallucination rate {Rate:P0} over the last {N} checked claims > {Max:P0}: auto-vision is deterministic-only (see still asks the model)",
+                rate, _window.Count, PauseRate);
+        else log?.LogInformation("perception: rolling hallucination rate back to {Rate:P0}: auto-vision may ask the model again", rate);
+    }
 
     public int Calls { get; private set; }
     public int CacheHits { get; private set; }
@@ -54,6 +100,8 @@ public sealed class PerceptionTelemetry(ILogger? log = null, string? directory =
                     Mismatched += a.Mismatched;
                     Dropped += a.Dropped;
                     Corrected += a.Corrected;
+                    if (a.Error == null && a.Checked == 0) NoClaims++;
+                    if (a.Error == null) Window(a.Checked, a.Mismatched);
                     if (r != null)
                     {
                         InputTokens += r.Usage.InputTokens + r.Usage.CacheReadTokens + r.Usage.CacheWriteTokens;
@@ -90,7 +138,7 @@ public sealed class PerceptionTelemetry(ILogger? log = null, string? directory =
     {
         lock (_lock)
             return string.Create(CultureInfo.InvariantCulture,
-                $"perception: {Calls} calls ({Auto} auto, {CacheHits} cached, {Skipped} skipped, {Errors} failed), p50 {(_latency.Count == 0 ? 0 : _latency.Order().ElementAt(_latency.Count / 2)) / 1000.0:0.0}s, " +
+                $"perception: {Calls} calls ({Auto} auto, {CacheHits} cached, {Skipped} skipped, {Errors} failed, {Exact} exact, {NoClaims} no-claim), p50 {(_latency.Count == 0 ? 0 : _latency.Order().ElementAt(_latency.Count / 2)) / 1000.0:0.0}s, " +
                 $"halluc {(Checked == 0 ? 0 : (double)Mismatched / Checked):P0} ({Mismatched}/{Checked}), {Dropped} dropped, {Corrected} fixed, ${Usd:0.000}");
     }
 }

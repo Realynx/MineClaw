@@ -205,6 +205,7 @@ public static class AppHost
             {
                 log.LogInformation("connecting to {Host}:{Port} as {User}", mc.Host, mc.Port, mc.Username);
                 await client.ConnectAsync(token);
+                await client.WaitForJoinStateAsync(TimeSpan.FromSeconds(3), token); // no default 20/20 or fake void in the line
                 log.LogInformation("in game: {Status}", client.DescribeStatus());
                 break;
             }

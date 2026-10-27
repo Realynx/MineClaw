@@ -18,17 +18,20 @@ public static class DoTool
     public static readonly string[] Actions =
     [
         "goto", "follow", "mine", "harvest_generator", "chop_tree", "deposit", "withdraw", "move_items", "craft", "act", "see",
+        // Food and hand-offs for every bot and tier (live 10-27 21:07: clone 67 was handed bread and said it couldn't eat).
+        "eat", "give_items", "drop_items", "equip_armor",
     ];
 
     /// <summary>Actions that are skills of the catalog (run through the worker's <c>skill</c> tool).</summary>
-    public static readonly IReadOnlySet<string> SkillActions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "move_items" };
+    public static readonly IReadOnlySet<string> SkillActions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "move_items", "give_items", "drop_items", "equip_armor" };
 
     public const string Description =
         "Run a game macro yourself (delegate multi-step jobs). then: next steps, skipped if one fails. goto returns at once, " +
         "walking in the background: plan meanwhile; jobs called now run on arrival. queue=true: after the busy script. " +
-        "goto{to,dist?,build?,allow_parkour?(only if poofimafox/kiwi asked)} follow{player} mine{block,count?} " +
+        "goto{to,dist?,build?,allow_parkour?(only if poofimafox/kiwi asked),into_void?:reason,keep_items_ok?} follow{player} mine{block,count?} " +
         "harvest_generator{at,count,store?} chop_tree{at?} deposit{at?,items?} withdraw{item,count?,at?} craft{item,count?} " +
-        "move_items{moves} act{move:jump|spin|wave|crouch|look|punch,target?} see{view?}";
+        "move_items{moves} act{move:jump|spin|wave|crouch|look|punch,target?} see{view?} eat{} give_items{player,item,count?} " +
+        "drop_items{item,count?} equip_armor{}";
 
     public static JsonElement Schema(IEnumerable<string> actions) => ToolSchema.Create()
         .Str("action", enumValues: actions)
@@ -135,7 +138,7 @@ public static class DoTool
         {
             var key = action switch
             {
-                "goto" => "to", "follow" => "player", "mine" => "block", "withdraw" or "craft" => "item", "act" => "move",
+                "goto" => "to", "follow" or "give_items" => "player", "drop_items" => "item", "mine" => "block", "withdraw" or "craft" => "item", "act" => "move",
                 "harvest_generator" or "chop_tree" or "deposit" => "at", "see" => "view", _ => "value",
             };
             var o = new JsonObject { [key] = JsonNode.Parse(args.GetRawText()) };

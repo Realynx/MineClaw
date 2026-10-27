@@ -24,6 +24,7 @@ var outDir = Arg("out") ?? Path.Combine(root, "data", "visionab");
 Directory.CreateDirectory(outDir);
 // Vision v2 (contact sheet + perception tier): built-in cases, no db snapshot.
 if (mode == "sheets") return PerceptionMode.Sheets(root, outDir);
+if (mode == "livegen") return LiveGen.Run(root, outDir, Arg);
 if (mode == "perception")
 {
     var pcfg = new ConfigurationBuilder().AddJsonFile(Path.Combine(root, "src", "MineClaw.App", "appsettings.json"), optional: true).Build();

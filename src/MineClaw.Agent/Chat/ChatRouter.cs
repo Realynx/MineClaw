@@ -174,6 +174,10 @@ public sealed class ChatRouter
     /// <summary>The bot's own outgoing text (whole, before line splitting), e.g. "I'll pass it to 67" opens a hand-off.</summary>
     public event Action<string>? Said;
 
+    /// <summary>The bot just spoke to this player (its line's audience): a hive clone tells main, so the player's unnamed
+    /// follow-ups continue with it for a short window.</summary>
+    public event Action<string>? SpokeTo;
+
     public ChatMessage Parse(string raw)
     {
         var line = ChatText.StripColors(raw ?? "").Trim();
@@ -768,11 +772,15 @@ public sealed class ChatRouter
         }
 
         if (!lines.Any(l => !l.Emote) && audience == null) to.Clear(); // an emote alone isn't talking to anyone
+        string[] spoke;
         lock (_lock)
         {
             if (whisperTo != null) _lastTalkedWith[whisperTo] = Now;
             foreach (var p in to) _lastTalkedWith[p] = Now;
+            spoke = [.. to, .. whisperTo != null ? [whisperTo] : Array.Empty<string>()];
         }
+        foreach (var p in spoke.Distinct(StringComparer.OrdinalIgnoreCase))
+            try { SpokeTo?.Invoke(p); } catch (Exception) { /* listeners never break chat */ }
         return lines.Select(l => l.Text).ToList();
     }
 

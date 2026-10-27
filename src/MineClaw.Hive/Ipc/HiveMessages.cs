@@ -64,11 +64,14 @@ public static class Msg
     // inventory
     public const string Inventory = "inv";        // C→M      InventoryMsg (live snapshot for the hive ledger)
     public const string Death = "death";          // C→M      DeathMsg (cause + lost items)
+    public const string NeedsInput = "needs_input"; // C→M     NeedsInputMsg (stays online, task paused: a new cell/task, or take my items)
+    public const string VoidHold = "void_hold";   // C→M      VoidHoldMsg (holding still over the void, asked for a /tp; Held=false: tp landed)
     public const string Handoff = "handoff";      // C→M req  HandoffMsg → HandoffReplyMsg (where to toss items)
     public const string HandoffAck = "handoff_ack"; // C→M req (no payload) → HandoffAckMsg (items main collected since)
     public const string Lend = "lend";            // C→M req  LendMsg → LendReplyMsg (main hands a clone an item it has spare)
     public const string LendGo = "lend_go";       // C→M req  LendGoMsg → LendDoneMsg (the clone stands next to main: toss now)
     // replies
+    public const string View = "view";            // M→C req  (no payload) → CloneViewMsg ("send me your view": flush world memory, pose)
     public const string Reply = "re";
 }
 
@@ -89,21 +92,27 @@ public sealed record TaskMsg(string Id, string Text, bool Restarted = false, str
 /// <summary>What <c>hive spawn</c> may add to a task: a model profile, a script (saved name or inline code) and its options.</summary>
 public sealed record HiveSpawnOptions(string? Profile = null, string? Script = null, string? Code = null, string? Args = null, string? After = null)
 {
+    /// <summary>Log in although the saved spot is over the void (a player will /tp it). Main's chat path sets the same per clone
+    /// from a trusted player's line (HiveSupervisor.NotePlayerChat); not a tool argument (zero prompt bytes).</summary>
+    public bool ConfirmVoid { get; init; }
     public bool HasScript => !string.IsNullOrWhiteSpace(Script) || !string.IsNullOrWhiteSpace(Code);
 }
 public sealed record ProgressMsg(string TaskId, string Text, double? Pct = null);
-public sealed record ResultMsg(string TaskId, bool Ok, string Text);
+/// <param name="Online">A failure the clone stays online after (idle, safe, awaiting orders for <c>HiveConfig.FailureGraceSeconds</c>).</param>
+public sealed record ResultMsg(string TaskId, bool Ok, string Text, bool Online = false);
 public sealed record ClaimMsg(string Key, double TtlSeconds, string? Note = null);
 public sealed record ClaimReplyMsg(bool Ok, string? Holder, long ExpiresMs);
 public sealed record ReleaseMsg(string Key);
 public sealed record LeaseMsg(string Key, string Owner, long ExpiresMs);
 public sealed record ClaimsMsg(List<LeaseMsg> Leases);
-public sealed record StickyMsg(string Owner, long UntilMs);
+/// <param name="Delegated">Main handed the player's request to this clone: their follow-ups are its (explicit) for the window.</param>
+public sealed record StickyMsg(string Owner, long UntilMs, bool Delegated = false);
 public sealed record RosterMsg(string Main, string[] MainNames, string[] Live, Dictionary<string, StickyMsg> Sticky,
     Dictionary<string, StickyMsg>? Threads = null);
 /// <summary>A clone opened (or closed) a conversation-thread lease on a player (it asked them / watches their demo).</summary>
 public sealed record ThreadMsg(string Player, bool Open, double TtlSeconds);
-public sealed record ChatAcceptedMsg(string Player);
+/// <param name="Spoke">True: the clone spoke to the player (continuation window), not took a line from them.</param>
+public sealed record ChatAcceptedMsg(string Player, bool Spoke = false);
 public sealed record InjectMsg(string Raw);
 public sealed record NoteMsg(string Text);
 public sealed record SpendAuthMsg(decimal EstimateUsd, string Tier);
@@ -113,6 +122,10 @@ public sealed record CmdMsg(string Line);
 public sealed record ItemMsg(int Id, int Damage, int Count, string Name);
 public sealed record InventoryMsg(List<ItemMsg> Items);
 public sealed record DeathMsg(string Cause, List<ItemMsg> Lost);
+/// <summary>The clone can't go on without main (a stalled gen cell, items it couldn't put away) and stays online waiting.</summary>
+public sealed record NeedsInputMsg(string TaskId, string Text);
+/// <summary>The clone spawned/was moved over the void and holds still (Held), or a /tp put it on ground again (!Held).</summary>
+public sealed record VoidHoldMsg(bool Held, double X, double Y, double Z, string? Asked = null);
 public sealed record HandoffMsg(int Items);
 public sealed record HandoffReplyMsg(bool Ok, double X, double Y, double Z, string? Reason);
 public sealed record HandoffAckMsg(int Collected);
@@ -123,5 +136,7 @@ public sealed record LendMsg(string Item, int Count, int[]? Ids = null);
 public sealed record LendReplyMsg(bool Ok, int Id, int Count, string? Name, double X, double Y, double Z, string? Reason, string[]? Holders = null);
 public sealed record LendGoMsg(double X, double Y, double Z);
 public sealed record LendDoneMsg(int Tossed, string? Reason);
+/// <summary>A clone's live eye pose; <paramref name="Flushed"/> live columns were written/stamped in the shared world memory first.</summary>
+public sealed record CloneViewMsg(double X, double Y, double Z, float Yaw, float Pitch, int Dim, int Flushed);
 public sealed record RecallMsg(string Reason, double? DeadlineSeconds = null);
 public sealed record ByeMsg(string Reason, bool Deposited, int Stranded);

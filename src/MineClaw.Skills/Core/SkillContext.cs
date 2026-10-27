@@ -71,12 +71,14 @@ public sealed class SkillContext(IGameActions game, SkillRegistry registry, Skil
     public Task<bool> WaitBlockAsync(BlockPos p, Func<int, int, bool> cond, CancellationToken ct, TimeSpan? timeout = null) =>
         Game.WaitUntilAsync(() => cond(World.GetBlock(p), World.GetMeta(p)), timeout ?? Options.BlockChangeTimeout, ct);
 
-    /// <summary>Survival gate (hp/food/food-in-inventory) for risky work; null = fine.</summary>
-    public string? SurvivalVeto(string what)
+    /// <summary>Survival gate for risky work; null = fine. <paramref name="safety"/>: combat skills are hp/food-gated, edge
+    /// skills only at critical hp, everything else never (no hp gate on mining/digging/building).</summary>
+    public string? SurvivalVeto(string what, SafetyClass? safety = null)
     {
         var p = World.Player;
         bool hasFood = SurvivalReflex.HasSafeFood(World.Inventory.PlayerSlots(), Game.ReservedItems);
-        return SurvivalReflex.GateReason(what, p.Health, p.Food, hasFood, Options.Survival);
+        string kind = safety == SafetyClass.Combat ? "fight: " + what : what;
+        return SurvivalReflex.GateReason(kind, p.Health, p.Food, hasFood, Options.Survival, edge: safety == SafetyClass.Edge);
     }
 
     /// <summary>Walks within reach of <paramref name="p"/> (no-op when already there).</summary>

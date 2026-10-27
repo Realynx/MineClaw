@@ -43,10 +43,12 @@ public static partial class PerceptionPrompt
         "labelled tick, never guess. Role letters: G gen cell (MINE HERE: the only cobble to mine), P portal, X never-break, " +
         "B player build, + placed by the bot, $ protected. Plain floor/walls are NOT gen cells. Navy hatch = void (a fall kills). " +
         "LAYERS panel: left grid = blocks AT feet height (a solid cell there is a wall beside the bot at body height, NOT floor), right grid = the layer below (what it stands on); a green dot = air with a solid side/top face (a block can be placed there). " +
-        "To count cells, reason in at most 4 short lines first (from a labelled tick); then end with this JSON and nothing after it: {\"answer\":\"<=20 words\",\"facts\":[{\"claim\":\"<=14 words\",\"coords\":[[x,y,z]]," +
+        "TOP and ISO cut away roofs above feet height. Count cells from a labelled tick, never guess. " +
+        "Reply with ONLY this JSON, starting with { (do any counting inside \"look\", never before the JSON): " +
+        "{\"look\":\"<=30 words: the ticks/panels you counted from\",\"answer\":\"<=15 words\",\"facts\":[{\"claim\":\"<=10 words\",\"coords\":[[x,y,z]]," +
         "\"role\":\"floor|wall|gen cell|water|lava|void|door|station|player build|own placed|protected|never-break|portal|null\"," +
-        "\"confidence\":0.0-1.0}]}. 1-5 facts, most useful first, each about specific blocks with their exact coords. " +
-        "Low confidence instead of guessing.";
+        "\"confidence\":0.0-1.0}]}. 1-4 facts, most useful first, each about specific blocks with their exact coords. " +
+        "Say only what you see; omit a fact rather than guess (absence claims like 'no water' need coords too).";
 
     public static string UserText(PerceptionQuery q) => "legend: " + q.Legend.Trim() + "\nquestion: " + q.Question.Trim();
 

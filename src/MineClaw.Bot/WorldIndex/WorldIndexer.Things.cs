@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using System.Text.Json;
 using MineClaw.Agent.Rag;
 using MineClaw.Data;
@@ -249,7 +250,11 @@ public sealed partial class WorldIndexer
             else if (_open is { } o && o.Window == ev.Window)
             {
                 // Only trust the snapshot if the window's items actually arrived after it opened.
-                if (ev.InvVersion > o.InvVersion && ev.Snapshot != null) ApplySnapshot(o.Entry, ev.Window.Type, ev.Snapshot, ev.Burning, force: true, first: _openFirst);
+                if (ev.InvVersion > o.InvVersion && ev.Snapshot != null)
+                {
+                    if (_openFirst) NoteVanished(o.Entry, ev.Initial, now);
+                    ApplySnapshot(o.Entry, ev.Window.Type, ev.Snapshot, ev.Burning, force: true, first: _openFirst, now);
+                }
                 _open = null;
             }
         }
@@ -261,7 +266,9 @@ public sealed partial class WorldIndexer
                 _openSeenVersion = v;
                 MineClaw.Data.ItemStack[] snap;
                 lock (_world.Inventory.SyncRoot) snap = cur.Window.ContainerContents().Select(t => t.Item).ToArray();
-                ApplySnapshot(cur.Entry, cur.Window.Type, snap, cur.Window.IsBurning, force: false, first: _openFirst);
+                if (_openFirst) NoteVanished(cur.Entry, _initialContents.TryGetValue(cur.Window, out var first0) ? first0 : snap, now);
+                // The first look after an open is written at once (forced): other hive bots must not act on stale contents.
+                ApplySnapshot(cur.Entry, cur.Window.Type, snap, cur.Window.IsBurning, force: _openFirst, first: _openFirst, now);
                 _openFirst = false;
             }
         }
@@ -282,7 +289,32 @@ public sealed partial class WorldIndexer
         return near.Count > 0 ? near[0].Pos : null;
     }
 
-    private void ApplySnapshot(IndexEntry e, WindowType type, MineClaw.Data.ItemStack[] slots, bool burning, bool force, bool first)
+    /// <summary>
+    /// First look after an open: what shared memory said the container held (any bot's last open, from the db) versus what it
+    /// really holds now (<paramref name="initial"/>, before our own clicks). Anything missing was taken by someone unseen.
+    /// </summary>
+    private void NoteVanished(IndexEntry e, MineClaw.Data.ItemStack[]? initial, DateTimeOffset now)
+    {
+        if (initial is null || e.Kind != IndexKinds.Chest) return;
+        ContainerMemory? before = null;
+        try { before = _sink.PreviousContents(e.Kind, e.Key, _dim); }
+        catch (Exception ex) { _log.LogDebug(ex, "previous contents of {Key} unavailable", e.Key); }
+        if (before is null && e.Contents is { } mem) before = new ContainerMemory(mem, e.ContentsAt, _selfName);
+        if (before is null || before.Items.Count == 0) return;
+        static int Dmg(int id, int damage) => Items.Exists(id) && Items.Get(id).MaxDamage > 0 ? 0 : damage;
+        var have = initial.Where(s => !s.IsEmpty).GroupBy(s => ((int)s.Id, Dmg(s.Id, s.Damage)))
+            .ToDictionary(g => g.Key, g => g.Sum(s => (int)s.Count));
+        var gone = before.Items
+            .Select(c => (c, missing: c.Count - have.GetValueOrDefault((c.ItemId, Dmg(c.ItemId, c.Damage)), 0)))
+            .Where(t => t.missing > 0).Select(t => t.c with { Count = t.missing }).ToList();
+        if (gone.Count == 0) return;
+        var v = new ContainerVanished(e.Kind, e.Key, e.Anchor, gone, before, now);
+        _lastVanished[e.Anchor] = v;
+        try { ContentsVanished?.Invoke(v); }
+        catch (Exception ex) { _log.LogDebug(ex, "ContentsVanished handler failed"); }
+    }
+
+    private void ApplySnapshot(IndexEntry e, WindowType type, MineClaw.Data.ItemStack[] slots, bool burning, bool force, bool first, DateTimeOffset now)
     {
         var list = slots.Where(s => !s.IsEmpty)
             .GroupBy(s => (s.Id, Items.Get(s.Id).MaxDamage > 0 ? 0 : (int)s.Damage))
@@ -296,7 +328,9 @@ public sealed partial class WorldIndexer
         }
         bool same = e.Contents != null && e.Contents.Count == list.Count && e.Contents.Zip(list).All(t => t.First == t.Second);
         e.Contents = list;
-        if (!same) e.ContentsDirty = true;
+        e.ContentsAt = now;
+        // Every open re-stamps the contents (freshness for every hive bot), even when they didn't change.
+        if (!same || first || force) e.ContentsDirty = true;
         e.Seen = true;
         e.Dirty = true;
         e.MinWriteInterval = force ? TimeSpan.Zero : TimeSpan.FromSeconds(_o.ContainerMinWriteSeconds);

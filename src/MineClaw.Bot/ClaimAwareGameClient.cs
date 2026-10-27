@@ -84,11 +84,22 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
         HeldRenewing(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.HarvestGeneratorAsync(x, y, z, count, ct), ct);
     public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, BlockPos? stand, CancellationToken ct = default) =>
         HeldRenewing(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.HarvestGeneratorAsync(x, y, z, count, stand, ct), ct);
+    /// <summary>Hive: one cell per bot (the leased one). Rotating through unleased cells would put two bots on one cell
+    /// (live 21:44 "my clone partner was using the cell at 4,64,6 at the same time"); the other cells are for the other bots.</summary>
+    public Task<ActionResult> HarvestGeneratorAsync(IReadOnlyList<BlockPos> cells, int count, BlockPos? stand, CancellationToken ct = default)
+    {
+        if (cells.Count == 0) return Task.FromResult(ActionResult.Fail("no generator cell given"));
+        var first = cells[0];
+        return HeldRenewing(ClaimKey.Block(first.X, first.Y, first.Z, inner.World.Dimension),
+            () => inner.HarvestGeneratorAsync([first], count, stand, ct), ct);
+    }
 
     // ---- forwarded ----
     public WorldState World => inner.World;
     public string Username => inner.Username;
     public bool IsPlaying => inner.IsPlaying;
+    public bool VitalsKnown => inner.VitalsKnown;
+    public bool GroundKnown => inner.GroundKnown;
     public string? CurrentAction => inner.CurrentAction;
     public double StationSearchRadius => inner.StationSearchRadius;
     public Func<BlockPos, int, bool>? IsProtected { get => inner.IsProtected; set => inner.IsProtected = value; }
@@ -127,6 +138,12 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
     public bool FaceIdle(Vec3d point) => inner.FaceIdle(point);
     public bool SwingIdle() => inner.SwingIdle();
     public bool SafetyEngaged => inner.SafetyEngaged;
+    public bool PlayGesture(GesturePlan plan) => inner.PlayGesture(plan);
+    public void CancelGesture() => inner.CancelGesture();
+    public string? CurrentGesture => inner.CurrentGesture;
     public Task<ActionResult> GestureAsync(string move, string? target = null, int? times = null, CancellationToken ct = default) =>
         inner.GestureAsync(move, target, times, ct);
+    public Task<ActionResult> StepIntoVoidAsync(string reason, bool keepItemsOk = false, CancellationToken ct = default) =>
+        inner.StepIntoVoidAsync(reason, keepItemsOk, ct);
+    public IntentionalVoidStep? ActiveVoidStep => inner.ActiveVoidStep;
 }

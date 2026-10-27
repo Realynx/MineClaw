@@ -32,6 +32,8 @@ public sealed class ContactSheetRequest
     public EyeScene? Eye { get; init; }
     /// <summary>Pixel budget of the whole sheet (≈ tokens × 750). 300k px ≈ 400 tokens.</summary>
     public int PixelBudget { get; init; } = 300_000;
+    /// <summary>TOP and ISO cut away roofs above the feet layer (default; off only for A/B against the old sheet).</summary>
+    public bool CutAway { get; init; } = true;
 }
 
 /// <summary>
@@ -99,7 +101,7 @@ public sealed class ContactSheet
                     Radius = r, Cx = q.Focus.X, Cy = feet, Cz = q.Focus.Z, Blocks = q.Blocks, Self = q.Self, Entities = q.Entities, Marks = q.Marks,
                     Target = q.Target, Pointed = q.Pointed, PointedBy = q.PointedBy, Nether = q.Nether, Atlas = q.Atlas, Light = q.Light, Time = q.Time,
                     Roles = q.Roles, Focus = q.Focus, CellPx = v == "layers" ? Math.Clamp((side - 34) / (2 * Math.Min(r, 6) * 2 + 2), 6, 12) : cs,
-                    Axis = q.Axis, MaxPx = side, Up = 2, Down = 8, SideUp = 4, SideDown = 5, SideDepth = 3, IsoUp = 4, IsoDown = 5,
+                    Axis = q.Axis, MaxPx = side, Up = 2, Down = 8, SideUp = 4, SideDown = 5, SideDepth = 3, IsoUp = 4, IsoDown = 5, CutAway = q.CutAway,
                 };
                 img = _renderer.Render(scene);
                 unchecked { hash = (hash ^ img.BlocksHash) * 1099511628211UL; }
@@ -125,16 +127,17 @@ public sealed class ContactSheet
                 for (int x = 0; x < img.Width; x++) c.Set(ox + x, oy + y, px[y * img.Width + x]);
             // Panel name chip (top-left corner; the top/layers/side/iso panels keep that corner free).
             var title = view switch { "top" => "TOP", "iso" => "ISO", "eye" => "EYE" + (q.Eye?.Viewer is { } who ? " " + Short(who) : ""), _ => null };
-            if (title != null) c.Chip(ox, oy, title, Light, ChipBg, 1f);
+            // The iso compass uses all four corners: its name goes top-centre so it never hides the W/N letter.
+            if (title != null) c.Chip(view == "iso" ? ox + (img.Width - PixelFont.Width(title) - 4) / 2 : ox, oy, title, Light, ChipBg, 1f);
         }
 
         var legend = new StringBuilder();
         legend.Append(CultureInfo.InvariantCulture, $"see sheet focus {q.Focus.X},{q.Focus.Y},{q.Focus.Z} r{r}, {W}x{H}px ~{(W * H + 749) / 750}tok; panels L>R, top>bottom: ");
         legend.Append(string.Join(", ", panels.Select(p => p.View switch
         {
-            "top" => "TOP (N up, 1 cell=1 block, bevel=wall at feet y" + feet + ")",
+            "top" => "TOP (N up, 1 cell=1 block, bevel=wall at feet y" + feet + (q.CutAway ? ", roofs above it cut away)" : ")"),
             "side" => q.Axis == SideAxis.LookEast ? $"SIDE looking E through x{q.Focus.X} (z bottom, y left)" : $"SIDE looking N through z{q.Focus.Z} (x bottom, y left)",
-            "iso" => "ISO (corner letters = compass)",
+            "iso" => q.CutAway ? "ISO (corner letters = compass, roofs cut away)" : "ISO (corner letters = compass)",
             "layers" => $"LAYERS (left: blocks AT feet height y{feet}, a solid cell there is a wall beside you, not floor; right: y{feet - 1}, what you stand on; green dot = air with a side/top face to place against)",
             _ => "EYE (first person" + (q.Eye?.Viewer is { } v2 ? " of " + v2 : "") + ")",
         })));

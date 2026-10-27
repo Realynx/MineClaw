@@ -16,6 +16,32 @@ public sealed partial class MinecraftClient
         Blocks.BrownMushroom, Blocks.Ice, Blocks.Sand, Blocks.Obsidian, Blocks.PumpkinStem, Blocks.MelonStem, Blocks.Farmland,
     ];
 
+    /// <summary>True once the server sent this session's first 0x08 health (before that health/food are defaults).</summary>
+    public bool VitalsKnown => Volatile.Read(ref _lastHealth) >= 0;
+
+    /// <summary>True once the column under the feet is loaded and the post-login/teleport safety freeze verified the ground.</summary>
+    public bool GroundKnown
+    {
+        get
+        {
+            var p = World.Player.Position;
+            return !IsFrozenForSafety && World.IsLoaded((int)Math.Floor(p.X), (int)Math.Floor(p.Z));
+        }
+    }
+
+    /// <summary>Waits (at most <paramref name="max"/>) until health and the ground under the feet are known, so a join status
+    /// line never shows the defaults. True when both arrived.</summary>
+    public async Task<bool> WaitForJoinStateAsync(TimeSpan max, CancellationToken ct = default)
+    {
+        var until = DateTime.UtcNow + max;
+        while (!(VitalsKnown && GroundKnown))
+        {
+            if (DateTime.UtcNow >= until) return false;
+            await Task.Delay(25, ct).ConfigureAwait(false);
+        }
+        return true;
+    }
+
     /// <summary>One line: position, health, food, held item, dimension, time of day, current action.</summary>
     public string DescribeStatus()
     {
@@ -26,11 +52,17 @@ public sealed partial class MinecraftClient
         int hours = (int)((tod / 1000 + 6) % 24), minutes = (int)(tod % 1000 * 60 / 1000);
         var sb = new StringBuilder();
         sb.Append($"pos {p.Position.X:0.#},{p.Position.Y:0.#},{p.Position.Z:0.#}");
-        sb.Append(p.IsDead ? " | DEAD" : $" | hp {p.Health}/20 food {p.Food}/20");
+        // Live 10-27 21:03: the join line said "hp 20/20 food 20/20 | airborne | OVER VOID" from the defaults before the 0x08
+        // health and the chunks under the feet arrived (a second later: food 10, ground verified). Unknown = "loading…".
+        sb.Append(p.IsDead ? " | DEAD" : VitalsKnown ? $" | hp {p.Health}/20 food {p.Food}/20" : " | hp/food loading…");
         sb.Append($" | held {(held.IsEmpty ? "nothing" : ItemName(held.Id, held.Damage) + (held.Count > 1 ? " x" + held.Count : ""))}");
         sb.Append($" | {dim} {hours:00}:{minutes:00} {(World.IsNight ? "night" : "day")}{(IsRaining ? " rain" : "")}");
-        if (!p.OnGround) sb.Append(" | airborne");
-        if (World.IsPlayerOverVoid(p.Position)) sb.Append(" | OVER VOID");
+        if (!GroundKnown) sb.Append(" | ground loading…");
+        else
+        {
+            if (!p.OnGround) sb.Append(" | airborne");
+            if (World.IsPlayerOverVoid(p.Position)) sb.Append(" | OVER VOID");
+        }
         sb.Append(CurrentAction is { } a ? $" | doing {a}" : " | idle");
         if (_state != ClientState.Playing) sb.Append($" | {_state.ToString().ToLowerInvariant()}");
         return sb.ToString();

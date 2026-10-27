@@ -214,6 +214,7 @@ public sealed partial class Pathfinder
         var here = Cell(x, y, z);
         if (!here.Ok) return; // e.g. a broken/placed block invalidated it
         bool hereEdge = IsEdge(x, y, z);
+        _hereFarmland = OnFarmland(x, y, z);
 
         foreach (var (dx, dz) in Cardinals)
         {
@@ -317,6 +318,15 @@ public sealed partial class Pathfinder
         if (_view is not null) TryTriggers(output, n, here);
     }
 
+    /// <summary>The node being expanded stands on farmland (set per <see cref="Expand"/>).</summary>
+    private bool _hereFarmland;
+
+    /// <summary>
+    /// Farmland under the feet of foot cell (x,y,z). mc-dev Entity.move calls Block.b(world, x, y, z, entity) on each step of a
+    /// non-sneaking walker, and BlockSoil.b reverts farmland to dirt 1 time in 4: walking a field tramples it, sneaking doesn't.
+    /// </summary>
+    private bool OnFarmland(int x, int y, int z) => y > 0 && (_w.GetBlock(x, y - 1, z) == BlockShapes.Farmland || _w.GetBlock(x, y, z) == BlockShapes.Farmland);
+
     private void AddWalk(List<Candidate> output, CellInfo here, bool hereEdge, int tx, int ty, int tz, CellInfo t,
         MoveKind kind, double dist, IReadOnlyList<BlockPos> breaks, IReadOnlyList<DoorToggle>? open = null)
     {
@@ -326,6 +336,13 @@ public sealed partial class Pathfinder
         if (t.Floor > here.Floor + 1e-6) cost += 0.5;
         bool sneak = (hereEdge || targetEdge) && !water;
         if (sneak) cost *= _o.EdgeCostMultiplier;
+        // Across a field: sneak (no trampling) and prefer the paths around it.
+        if (!water && (_hereFarmland || OnFarmland(tx, ty, tz)))
+        {
+            if (!sneak) cost *= PathOptions.SneakFactor;
+            sneak = true;
+            cost += PathOptions.FarmlandPenalty;
+        }
         double time = cost + (breaks.Count > 0 ? DigCosts(breaks) : 0);
         cost += HazardPenalty(tx, ty, tz) + DigCosts(breaks);
         if (open is { Count: > 0 })
@@ -345,6 +362,8 @@ public sealed partial class Pathfinder
         double cost = PathOptions.WalkCost + PathOptions.JumpExtra;
         bool sneak = hereEdge || targetEdge;
         if (sneak) cost *= _o.EdgeCostMultiplier;
+        // Jumping onto/off a field: sneak through it like a walk (steps on farmland trample it), and avoid it when possible.
+        if (_hereFarmland || OnFarmland(tx, ty, tz)) { sneak = true; cost += PathOptions.FarmlandPenalty * 2; }
         cost += HazardPenalty(tx, ty, tz) + DigCosts(breaks);
         output.Add(new Candidate(tx, ty, tz, MoveKind.Jump, t.Floor, cost, breaks, null, sneak && !here.Water));
     }

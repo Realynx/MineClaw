@@ -3,7 +3,11 @@ using MineClaw.Agent.Rag;
 namespace MineClaw.Bot.WorldIndex;
 
 /// <summary>One remembered chunk column: content hash (the diff key), per-section block summary, deflated blocks.</summary>
-public sealed record ChunkRow(int Dim, int X, int Z, long Hash, string Summary, byte[] Data, DateTimeOffset LastSeen);
+public sealed record ChunkRow(int Dim, int X, int Z, long Hash, string Summary, byte[] Data, DateTimeOffset LastSeen)
+{
+    /// <summary>The hive bot whose client last saw this column (shared db: main and every clone write here). Null = unknown.</summary>
+    public string? SeenBy { get; init; }
+}
 
 /// <summary>
 /// Notified state of one unknown/auto structure, keyed by a content-anchored key ("min corner ~ block signature"); matched
@@ -36,9 +40,13 @@ public sealed class SqliteWorldMemoryStore : IWorldMemoryStore
 {
     private readonly AgentDb _db;
 
-    public SqliteWorldMemoryStore(AgentDb db)
+    private readonly string _owner;
+
+    /// <param name="owner">This process's bot name, stored as <c>seen_by</c> with every column it writes or touches.</param>
+    public SqliteWorldMemoryStore(AgentDb db, string? owner = null)
     {
         _db = db;
+        _owner = owner ?? "";
         lock (_db.Gate)
             _db.Exec("""
                 CREATE TABLE IF NOT EXISTS world_chunks(dim INTEGER NOT NULL, cx INTEGER NOT NULL, cz INTEGER NOT NULL,
@@ -50,15 +58,19 @@ public sealed class SqliteWorldMemoryStore : IWorldMemoryStore
                     max_z INTEGER NOT NULL, blocks TEXT NOT NULL, announced_at INTEGER, asked_at INTEGER, last_seen INTEGER NOT NULL,
                     PRIMARY KEY(dim, key));
                 """);
+        lock (_db.Gate) _db.EnsureColumn("world_chunks", "seen_by", "TEXT");
     }
 
+    private const string Cols = "dim,cx,cz,hash,summary,data,last_seen,seen_by";
+
     private static ChunkRow Row(Microsoft.Data.Sqlite.SqliteDataReader r) => new(r.GetInt32(0), r.GetInt32(1), r.GetInt32(2), r.GetInt64(3),
-        r.GetString(4), (byte[])r.GetValue(5), AgentDb.FromUnixMs(r.GetInt64(6)));
+        r.GetString(4), (byte[])r.GetValue(5), AgentDb.FromUnixMs(r.GetInt64(6)))
+    { SeenBy = r.IsDBNull(7) || r.GetString(7).Length == 0 ? null : r.GetString(7) };
 
     public ChunkRow? GetChunk(int dim, int x, int z)
     {
         lock (_db.Gate)
-            return _db.Query("SELECT dim,cx,cz,hash,summary,data,last_seen FROM world_chunks WHERE dim=$d AND cx=$x AND cz=$z", Row,
+            return _db.Query($"SELECT {Cols} FROM world_chunks WHERE dim=$d AND cx=$x AND cz=$z", Row,
                 ("$d", dim), ("$x", x), ("$z", z)).FirstOrDefault();
     }
 
@@ -75,8 +87,8 @@ public sealed class SqliteWorldMemoryStore : IWorldMemoryStore
     public IReadOnlyList<ChunkRow> Chunks(int dim, int nearX, int nearZ, int max)
     {
         lock (_db.Gate)
-            return _db.Query("""
-                SELECT dim,cx,cz,hash,summary,data,last_seen FROM world_chunks WHERE dim=$d
+            return _db.Query($"""
+                SELECT {Cols} FROM world_chunks WHERE dim=$d
                 ORDER BY (cx-$x)*(cx-$x)+(cz-$z)*(cz-$z) LIMIT $n
                 """, Row, ("$d", dim), ("$x", nearX), ("$z", nearZ), ("$n", max));
     }
@@ -89,10 +101,10 @@ public sealed class SqliteWorldMemoryStore : IWorldMemoryStore
             {
                 foreach (var c in rows)
                     _db.Exec("""
-                        INSERT INTO world_chunks(dim,cx,cz,hash,summary,data,bytes,last_seen) VALUES($d,$x,$z,$h,$s,$b,$n,$t)
-                        ON CONFLICT(dim,cx,cz) DO UPDATE SET hash=$h, summary=$s, data=$b, bytes=$n, last_seen=$t
+                        INSERT INTO world_chunks(dim,cx,cz,hash,summary,data,bytes,last_seen,seen_by) VALUES($d,$x,$z,$h,$s,$b,$n,$t,$by)
+                        ON CONFLICT(dim,cx,cz) DO UPDATE SET hash=$h, summary=$s, data=$b, bytes=$n, last_seen=$t, seen_by=$by
                         """, ("$d", c.Dim), ("$x", c.X), ("$z", c.Z), ("$h", c.Hash), ("$s", c.Summary), ("$b", c.Data),
-                        ("$n", c.Data.Length + c.Summary.Length + 32), ("$t", AgentDb.ToUnixMs(c.LastSeen)));
+                        ("$n", c.Data.Length + c.Summary.Length + 32), ("$t", AgentDb.ToUnixMs(c.LastSeen)), ("$by", c.SeenBy ?? _owner));
             });
     }
 
@@ -103,8 +115,8 @@ public sealed class SqliteWorldMemoryStore : IWorldMemoryStore
             _db.Tx(() =>
             {
                 foreach (var (x, z) in cells)
-                    _db.Exec("UPDATE world_chunks SET last_seen=$t WHERE dim=$d AND cx=$x AND cz=$z",
-                        ("$t", AgentDb.ToUnixMs(at)), ("$d", dim), ("$x", x), ("$z", z));
+                    _db.Exec("UPDATE world_chunks SET last_seen=$t, seen_by=$by WHERE dim=$d AND cx=$x AND cz=$z",
+                        ("$t", AgentDb.ToUnixMs(at)), ("$d", dim), ("$x", x), ("$z", z), ("$by", _owner));
             });
     }
 

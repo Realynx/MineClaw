@@ -35,8 +35,9 @@ public static class HumanTools
 
     /// <param name="events">Where answers to non-blocking questions go (as chat from the player, so they wake a sleeping brain).</param>
     /// <param name="timedOut">Called when a question went with its default (the bot returns to its standing order).</param>
+    /// <param name="askedBefore">Hive dedupe (question, player) → the earlier ask by another hive bot and its answer, or null.</param>
     public static void RegisterAskPlayer(ToolRegistry registry, ChatRouter chat, QuestionOptions? options = null, EventQueue? events = null,
-        Action<string>? timedOut = null)
+        Action<string>? timedOut = null, Func<string, string?, string?>? askedBefore = null)
     {
         var q = options ?? new QuestionOptions();
         // Brain only: the worker never talks to players and the cheap tier replies in plain text.
@@ -50,6 +51,12 @@ public static class HumanTools
                 // A normal answer sent through ask_player swallows the player's next message and holds the turn: refuse it.
                 if (!question.Contains('?')) return ToolResult.Error(NotAQuestion);
                 var name = input.Str("name");
+                // Another hive bot asked this player the same thing minutes ago: never ask twice (user requirement 10-27).
+                if (askedBefore?.Invoke(question, name) is { } prior)
+                {
+                    var d0 = input.Str("default")?.Trim();
+                    return ToolResult.Success($"not asked again: {prior}" + (string.IsNullOrEmpty(d0) ? "" : $"; go ahead with \"{d0}\" unless that answer says otherwise"));
+                }
                 int timeout = Math.Clamp(input.Int("timeout") ?? q.TimeoutSeconds, Math.Max(1, q.MinTimeoutSeconds), Math.Max(q.MinTimeoutSeconds, q.MaxTimeoutSeconds));
                 var text = name != null && !question.Contains(name, StringComparison.OrdinalIgnoreCase) ? $"{name}, {question}" : question;
                 // Coordinates only when the player used them first or asked for them; otherwise landmarks ("the one by the lava").

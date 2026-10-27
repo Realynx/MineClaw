@@ -124,6 +124,9 @@ public sealed class FakeGame : IGameActions
         return Ok($"arrived at {World.Player.Position}");
     }
 
+    /// <summary>Called right after a dig changes the world (simulates what the server does next, e.g. trampled farmland).</summary>
+    public Action<BlockPos>? AfterDig { get; set; }
+
     // ---- blocks ----
     public Task<ActionResult> DigAsync(BlockPos p, CancellationToken ct)
     {
@@ -140,6 +143,7 @@ public sealed class FakeGame : IGameActions
             return Ok($"dug {n}");
         }
         Set(p, 0);
+        AfterDig?.Invoke(p);
         if (id == Blocks.Crops) { if (meta >= 7) Give(Items.Wheat, 1); Give(Items.Seeds, meta >= 7 ? 2 : 1); }
         else if (id == Blocks.Melon) Give(Items.MelonSlice, 4);
         else if (Drops.Primary(id, meta) is { } d) Give(d.ItemId, Math.Max(1, d.Min), d.Damage);
@@ -320,7 +324,7 @@ public sealed class FakeGame : IGameActions
         }
     }
 
-    public Task<ActionResult> EatAsync(CancellationToken ct) => World.Player.Food >= 20 ? No("not hungry") : Ok("ate bread");
+    public Task<ActionResult> EatAsync(CancellationToken ct) => World.Player.Food >= 20 ? Ok("already full (food 20/20)") : Ok("ate bread");
     public Task<ActionResult> CollectDropsAsync(double radius, CancellationToken ct) { Log.Add("collect"); return Ok("collected"); }
     public Task<ActionResult> MineAsync(string blockName, int count, double radius, CancellationToken ct) { Log.Add($"mine {blockName} {count}"); return Ok($"mined {count} {blockName}"); }
     public Task<ActionResult> CraftAsync(string itemName, int count, CancellationToken ct) { Log.Add($"craft {itemName} {count}"); return Ok($"crafted {count} {itemName}"); }
@@ -371,6 +375,7 @@ public sealed class FakeGame : IGameActions
     // ---- optional primitives ----
     public Task<ActionResult> UseOnBlockAsync(BlockPos pos, BlockFace face, int itemId, CancellationToken ct)
     {
+        Log.Add($"use {pos} {itemId}");
         int id = World.GetBlock(pos);
         if (itemId is >= Items.WoodenHoe and <= Items.GoldenHoe && id is Blocks.Dirt or Blocks.Grass && World.GetBlock(pos.Up()) == 0) Set(pos, Blocks.Farmland);
         else if (itemId == Items.Dye && id == Blocks.Crops) { Set(pos, id, 7); Take(Items.Dye); }

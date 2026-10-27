@@ -29,7 +29,8 @@ public sealed class PerceptionOptions
     /// (today's path: the picture goes to the caller's model).</summary>
     public string Mode { get; set; } = PerceptionModes.Perception;
 
-    public int MaxTokens { get; set; } = 1000;
+    /// <summary>Output cap: the answer is a terse JSON (≈4 facts ≈ 150-200 tokens); 250 bounds latency and cost.</summary>
+    public int MaxTokens { get; set; } = 250;
     public int TimeoutSeconds { get; set; } = 30;
     /// <summary>Anthropic only: output_config.effort ("" = omit) and thinking ("off" | "adaptive" | "omit").</summary>
     public string Effort { get; set; } = "low";

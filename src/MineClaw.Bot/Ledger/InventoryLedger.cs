@@ -28,6 +28,7 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
     private readonly List<LedgerEntry> _entries = new();
     private readonly List<(DateTimeOffset At, int Id, int Damage, int Delta, string? Scope, string? Action)> _pending = new();
     private readonly List<(DateTimeOffset At, int Id, int Count)> _pickups = new();
+    private readonly List<(DateTimeOffset At, int Id, bool Auto)> _meals = new();
     private readonly List<(long Token, string Cause)> _scopes = new();
     private Dictionary<(int Id, int Damage), int>? _last;
     private DateTimeOffset? _diedAt;
@@ -86,6 +87,13 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
         lock (_lock) _pickups.Add((_time.GetUtcNow(), itemId, count));
     }
 
+    /// <summary>The bot started eating <paramref name="itemId"/> (<paramref name="auto"/> = the survival reflex): the next loss of
+    /// one of it is "ate (reflex)" / "eaten", even when the slot update lands after the eat action ended.</summary>
+    public void NoteEat(int itemId, bool auto)
+    {
+        lock (_lock) _meals.Add((_time.GetUtcNow(), itemId, auto));
+    }
+
     /// <summary>Another player picked up an item entity: credited to a recent toss/drop of that item.</summary>
     public void NoteOtherPickup(string player, int itemId, int count)
     {
@@ -140,6 +148,7 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
             raised.Add(e);
         }
         _pickups.RemoveAll(x => now - x.At > TimeSpan.FromSeconds(10));
+        _meals.RemoveAll(x => now - x.At > TimeSpan.FromSeconds(15));
         if (raised.Count > 0 && Recorded is { } h)
             ThreadPool.QueueUserWorkItem(_ => { foreach (var e in raised) h(e); });
     }
@@ -157,6 +166,17 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
             {
                 _pickups.RemoveAt(k);
                 return scope is null && action is null ? "picked up" : $"picked up ({scope ?? action})";
+            }
+        }
+        if (delta < 0 && scope != Correction)
+        {
+            // Eating takes 32 ticks (1.6 s) after it starts; the slot update may come a little later still.
+            int m = _meals.FindIndex(x => x.Id == id && at >= x.At - TimeSpan.FromSeconds(0.5) && at - x.At <= TimeSpan.FromSeconds(6));
+            if (m >= 0)
+            {
+                bool auto = _meals[m].Auto;
+                _meals.RemoveAt(m);
+                return auto ? "ate (reflex)" : "eaten";
             }
         }
         if (delta < 0 && _diedAt is { } died && (at - died).Duration() <= TimeSpan.FromSeconds(3))

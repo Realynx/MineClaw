@@ -105,6 +105,11 @@ public sealed class FakeBody : ICloneBody
     public Task<bool> ExecuteAsync(string line, CancellationToken ct) { Call("cmd " + line); return Task.FromResult(true); }
     public void InjectChat(string raw) { Call("inject " + raw); OnInject?.Invoke(raw); }
     public void Note(string text) => Call("note " + text);
+    /// <summary>Public chat the host said from C# (the void-spawn help request).</summary>
+    public List<string> Said { get; } = new();
+    public Task SayAsync(string text) { lock (Said) Said.Add(text); return Task.CompletedTask; }
+    /// <summary>The client's post-login/teleport safety hold (over the void it lasts until a /tp).</summary>
+    public bool HoldingStill { get; set; }
     public Task DisconnectAsync(string reason)
     {
         ItemsAtDisconnect = Port.Items().Count;

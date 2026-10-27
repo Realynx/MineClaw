@@ -193,7 +193,8 @@ public sealed class AgentRuntime : IDisposable
         IdentityTools.RegisterAll(tools, memory, chat);
         RoutineTools.RegisterAll(tools, memory, routines);
         var orders = new StandingOrders(memory, tools, activities, events, options.Chat.Username, options.Idle, time, Log("MineClaw.Orders"));
-        HumanTools.RegisterAskPlayer(tools, chat, options.Questions, events, _ => orders.ResumeIfIdle("question timed out", activities.Shutdown));
+        HumanTools.RegisterAskPlayer(tools, chat, options.Questions, events, _ => orders.ResumeIfIdle("question timed out", activities.Shutdown),
+            AskedBefore.For(db, chat, time));
         orders.Register();
         if (demonstrations != null) HumanTools.RegisterWatchDemo(tools, chat, memory, demonstrations);
         if (self != null) SelfTools.RegisterAll(tools, self, index, time, growth);
@@ -242,7 +243,16 @@ public sealed class AgentRuntime : IDisposable
                 $"worker asks: {TextUtil.Truncate(q, 120)} (it carries on with \"{d}\"; ask the player with a default, amend_task if they differ)",
                 EventPriority.Normal));
             // Chat that wakes the brain mid-task says what the worker is doing, so it can amend instead of restarting.
-            agent.BusyDetail = () => worker.IsRunning && worker.Trail is { Length: > 0 } t ? "worker: " + t : null;
+            agent.BusyDetail = () => worker.IsRunning && worker.Trail is { Length: > 0 } t
+                ? "worker: " + t + (worker.LastLiveAmendment is { } la ? $" (already forwarded to the worker: {la})" : "")
+                : null;
+            // A player's "just like 5" / "never mind" mid-task goes to the worker at once (brainstem path, zero tokens): the brain's
+            // amend_task arrived 6 s later, after the worker had crafted 24 torches (live 10-27 21:26).
+            chat.Accepted += m =>
+            {
+                try { if (m.Player is { Length: > 0 } p) worker.AmendFromChat(p, m.Text); }
+                catch (Exception) { /* chat never breaks */ }
+            };
         }
         var retriever = !rag.Enabled || !rag.AutoRetrieve ? null
             : raptor != null ? new AutoRetriever(new RaptorRetrievalIndex(index, raptor), rag, context, episodes)

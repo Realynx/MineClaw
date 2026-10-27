@@ -159,7 +159,7 @@ public sealed class ExpandIslandSkill : Skill
             var edge = EdgeCells(ctx, start, y, dir).Take(max - placed).ToList();
             if (edge.Count == 0) { if (ring == 0) stop = "no open edge on that side"; break; }
             if (BuildOps.HostileVeto(ctx) is { } h) { stop = h; break; }
-            if (ctx.SurvivalVeto("expand_island") is { } sv) { stop = sv; break; }
+            if (ctx.SurvivalVeto("expand_island", SafetyClass.Edge) is { } sv) { stop = sv; break; }
             var r = await FillRowAsync(ctx, edge, block, c => !SkillWorld.Solid(ctx.World, c - (dir ?? Inward(ctx.World, c))), ct);
             placed += r.Placed;
             missed.UnionWith(r.Missed);

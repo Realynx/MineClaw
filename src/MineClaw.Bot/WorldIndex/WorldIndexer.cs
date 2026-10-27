@@ -86,12 +86,14 @@ public sealed partial class WorldIndexer : IDisposable
         Action<Window> onOpen = OnWindowOpened;
         Action<Window> onClose = OnWindowClosed;
         Action onInv = () => Interlocked.Increment(ref _inventoryVersion);
+        Action<int> onItems = OnWindowItems;
         _world.BlockChanged += onChange;
         _world.RegionUpdated += onRegion;
         _world.ColumnUnloaded += onUnload;
         _world.Inventory.WindowOpened += onOpen;
         _world.Inventory.WindowClosed += onClose;
         _world.Inventory.Changed += onInv;
+        _world.Inventory.WindowItemsSet += onItems;
         Action<int, int> onDim = OnDimensionEvent;
         _dims.DimensionChanged += onDim;
         _unsubscribe.Add(() =>
@@ -103,6 +105,7 @@ public sealed partial class WorldIndexer : IDisposable
             _world.Inventory.WindowOpened -= onOpen;
             _world.Inventory.WindowClosed -= onClose;
             _world.Inventory.Changed -= onInv;
+            _world.Inventory.WindowItemsSet -= onItems;
         });
         foreach (var c in _world.Columns)
             if (c.HasData) MarkColumn(c.ChunkX, c.ChunkZ);
@@ -121,8 +124,12 @@ public sealed partial class WorldIndexer : IDisposable
             var interval = TimeSpan.FromMilliseconds(Math.Max(50, _o.PassIntervalMs));
             while (!ct.IsCancellationRequested)
             {
-                try { await Task.Delay(interval, _time, ct).ConfigureAwait(false); }
+                // A closed container is written at once (shared chest memory for every hive bot), not on the next tick.
+                var wake = Volatile.Read(ref _wake);
+                try { await Task.WhenAny(Task.Delay(interval, _time, ct), wake.Task).ConfigureAwait(false); }
                 catch (OperationCanceledException) { break; }
+                if (ct.IsCancellationRequested) break;
+                if (wake.Task.IsCompleted) Interlocked.CompareExchange(ref _wake, NewWake(), wake);
                 try { Pump(); }
                 catch (Exception ex) { PassFailed.Report(ex, _time.GetUtcNow(), _log); }
             }
@@ -177,14 +184,57 @@ public sealed partial class WorldIndexer : IDisposable
         if (w.Type is not (WindowType.Chest or WindowType.Furnace or WindowType.Dispenser)) return;
         // Copy now: the window object outlives the close but its player half is shared with window 0.
         var snap = w.ContainerContents().Select(t => t.Item).ToArray();
+        _initialContents.TryGetValue(w, out var first);
+        _initialContents.Remove(w);
         _containerEvents.Enqueue(new ContainerEvent(false, w, default, 0, 0, null, Volatile.Read(ref _inventoryVersion), snap)
-            { Burning = w.IsBurning });
+            { Burning = w.IsBurning, Initial = first });
+        Volatile.Read(ref _wake).TrySetResult();
+    }
+
+    /// <summary>Packet thread: a container's first full contents (0x68) after it opened, before any click of ours changes them.
+    /// What the chest REALLY held, so "gone since memory" never counts what the bot itself is about to take.</summary>
+    private void OnWindowItems(int windowId)
+    {
+        if (_world.Inventory.OpenWindow is not { } w || w.Id != windowId) return;
+        if (w.Type is not (WindowType.Chest or WindowType.Furnace or WindowType.Dispenser)) return;
+        MineClaw.Data.ItemStack[] snap;
+        lock (_world.Inventory.SyncRoot) snap = w.ContainerContents().Select(t => t.Item).ToArray();
+        _initialContents.TryAdd(w, snap);
+    }
+
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<Window, MineClaw.Data.ItemStack[]> _initialContents = new();
+    private TaskCompletionSource _wake = NewWake();
+    private static TaskCompletionSource NewWake() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Raised on the indexer thread when an open shows that items memory listed in a container are gone.</summary>
+    public event Action<ContainerVanished>? ContentsVanished;
+
+    private readonly ConcurrentDictionary<BlockPos, ContainerVanished> _lastVanished = new();
+
+    /// <summary>The newest "gone since memory" finding of any container within <paramref name="maxAge"/>.</summary>
+    public ContainerVanished? RecentVanished(TimeSpan maxAge)
+    {
+        var now = _time.GetUtcNow();
+        return _lastVanished.Values.Where(v => now - v.At <= maxAge).OrderByDescending(v => v.At).FirstOrDefault();
+    }
+
+    /// <summary>The latest "gone since memory" finding for the container at (or one block beside, a double chest) <paramref name="pos"/>.</summary>
+    public ContainerVanished? LastVanished(BlockPos pos, TimeSpan? maxAge = null)
+    {
+        var now = _time.GetUtcNow();
+        foreach (var v in _lastVanished.Values)
+            if ((v.Pos == pos || (Math.Abs(v.Pos.X - pos.X) + Math.Abs(v.Pos.Z - pos.Z) == 1 && v.Pos.Y == pos.Y))
+                && now - v.At <= (maxAge ?? TimeSpan.FromMinutes(2)))
+                return v;
+        return null;
     }
 
     private sealed record ContainerEvent(bool Open, Window Window, Vec3d Eye, float Yaw, float Pitch, BlockPos? FeedPos, int InvVersion,
         MineClaw.Data.ItemStack[]? Snapshot)
     {
         public bool Burning { get; init; }
+        /// <summary>The window's first full contents (before our clicks), when they arrived.</summary>
+        public MineClaw.Data.ItemStack[]? Initial { get; init; }
     }
 
     // ------------------------------------------------------------------ protection
@@ -376,6 +426,8 @@ public sealed partial class WorldIndexer : IDisposable
                 Source = ObservationSource.Auto,
                 Confidence = Confidence(e),
                 Contents = e.ContentsDirty ? e.Contents : null,
+                ContentsAt = e.ContentsDirty ? e.ContentsAt : null,
+                ContentsBy = e.ContentsDirty && _selfName.Length > 0 ? _selfName : null,
                 Dimension = _dim,
             });
             written.Add((e, text, fields));

@@ -42,6 +42,51 @@ public sealed partial class MinecraftClient
     /// <summary>True while movement is frozen after a teleport/respawn waiting for verified ground.</summary>
     public bool IsFrozenForSafety => _safetyFreeze;
 
+    /// <summary>The server's last 0x0D, not confirmed yet because the ground under it isn't verified (tick thread).</summary>
+    private Protocol.Packets.PlayerPositionLookPacket? _pendingEcho;
+    private Vec3d? _voidHoldAt;
+
+    /// <summary>
+    /// Where the bot is holding still with loaded chunks and only void below (a spawn/teleport into the void: live 10-27 07:49,
+    /// fresh clone maid_chan_420 spawned at -5.5,0.62,-8.5), null otherwise. It stays there until verified ground is under it
+    /// (a block placed below) or the server moves it (a /tp), then <see cref="VoidHoldEnded"/>.
+    /// </summary>
+    public Vec3d? HoldingOverVoidAt => _voidHoldAt;
+
+    /// <summary>Raised once per hold when the bot is stuck still over the void (loaded area, nothing below).</summary>
+    public event Action<Vec3d>? HoldingOverVoid;
+    /// <summary>Raised when a void hold ends on verified ground (after a /tp or a block below): the bot may move again.</summary>
+    public event Action<Vec3d>? VoidHoldEnded;
+
+    /// <summary>
+    /// Whether to hold back the C→S confirmation of a server 0x0D. b1.8.1 (mc-dev 218a2a71) NetLoginHandler.java:104 and every
+    /// teleport go through NetServerHandler.a(x,y,z,yaw,pitch) (NetServerHandler.java:237), which sets checkMovement = false;
+    /// only a C→S position with exactly that X and Z and |Y−n| &lt; 0.1 sets it true again (NetServerHandler.java:66-71; a bare
+    /// 0x0A carries x = z = 0, Packet10Flying.java:8). With checkMovement false the whole movement handler is skipped,
+    /// including the floating counter (NetServerHandler.java:216-226: no block within the box grown 0.0625 and lowered 0.55
+    /// → ++g each flying packet — d6 is always zeroed at :194, so even falling counts — and g &gt; 80 kicks "Flying is not enabled
+    /// on this server" unless allow-flight). So the safest legal hold over the void is: never confirm, send only 0x0A, stay put.
+    /// The server keeps us at its own m,n,o; a /tp is a new 0x0D. Ground verified → the held-back echo goes out.
+    /// </summary>
+    private bool DeferEcho(Vec3d at) => Options.FreezeUntilSupportVerified && !SupportVerified(at);
+
+    /// <summary>Actions that work in place while holding over the void (no walking, no block in reach needed).</summary>
+    private static readonly HashSet<string> VoidHoldActions = new(StringComparer.Ordinal)
+    {
+        "eat", "use", "release_use", "look", "spin", "wave", "crouch", "punch", "click", "close", "resync", "transfer", "craft",
+        "place", "shoot", "use_entity", "dismount",
+    };
+
+    /// <summary>
+    /// Holding over the void: walking/pathing/reaching jobs fail at once with the reason (live 10-27 21:30: 420 at -6,0,-9 tried
+    /// a walk back to the island, "pathing back failed", from y 0). Null = the action may run.
+    /// </summary>
+    private string? VoidHoldBlocks(string action) =>
+        _voidHoldAt is { } v && !VoidHoldActions.Contains(action)
+            ? $"can't {action}: holding still over the void at {Fmt(v.ToBlockPos())} (nothing to stand on or reach; any move falls). " +
+              "Wait for a /tp: ask a trusted player once"
+            : null;
+
     private void Debug(string msg) => Options.DebugLog?.Invoke(msg);
 
     private void ResetSafety()
@@ -56,6 +101,8 @@ public sealed partial class MinecraftClient
         _retreatTarget = null;
         _wasEdgeSneaking = false;
         _guardInstance?.Reset();
+        _pendingEcho = null;
+        _voidHoldAt = null;
     }
 
     /// <summary>Called for every server 0x0D (login, correction, respawn): hold still until the ground is verified.</summary>
@@ -91,7 +138,8 @@ public sealed partial class MinecraftClient
 
     /// <summary>
     /// True while frozen after a teleport: the columns under and around the hitbox must be loaded and something solid
-    /// must be below it. Over the void we stay frozen (a kick for "flying" is better than dying).
+    /// must be below it. Over the void we stay frozen, the teleport unconfirmed, so the server never counts us as floating
+    /// (<see cref="DeferEcho"/>) and we never fall.
     /// </summary>
     private bool HoldForSafety(PhysicsState phys)
     {
@@ -102,6 +150,12 @@ public sealed partial class MinecraftClient
             if (_freezeTicks > 0) Log($"safety: ground verified under {Fmt(phys.Position)} after {_freezeTicks} ticks; moving again");
             if (_freezeAlerted)
                 RaiseDanger(DangerKind.Recovered, $"ground loaded under me at {Fmt(phys.Position)}; moving again", abort: false);
+            if (_voidHoldAt is not null)
+            {
+                _voidHoldAt = null;
+                var at = phys.Position;
+                Raise(() => VoidHoldEnded?.Invoke(at));
+            }
             return false;
         }
         _freezeTicks++;
@@ -111,10 +165,17 @@ public sealed partial class MinecraftClient
         {
             _freezeAlerted = true;
             var msg = loaded
-                ? $"teleported to {Fmt(phys.Position)} with only void below; holding still"
+                ? $"teleported to {Fmt(phys.Position)} with only void below; holding still until someone /tp's me or puts a block under me (walking is impossible)"
                 : $"chunks under {Fmt(phys.Position)} not loaded yet; holding still";
             Log("safety: " + msg);
             RaiseDanger(DangerKind.UnsafePosition, msg, abort: true, critical: loaded);
+        }
+        // Loaded and still nothing below for 2 s (the chunks may have come in after a "not loaded yet"): a void hold, once.
+        if (loaded && _voidHoldAt is null && _freezeTicks >= 40)
+        {
+            var at = phys.Position;
+            _voidHoldAt = at;
+            Raise(() => HoldingOverVoid?.Invoke(at));
         }
         return true;
     }

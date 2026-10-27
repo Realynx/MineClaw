@@ -117,6 +117,16 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
 
 - **Instant acknowledgement**: addressed chat turns the head to the speaker on the next tick (`MinecraftClient.FaceIdle`, no
   action lock) plus a nod, before the debounce or any model call. No auto text: the persona speaks through the brain.
+- **Gestures** (`Bot/Brainstem/Gestures`, `Agent/Brainstem/GestureClassifier`, `Agent:Gestures`, zero tokens): the bot's own
+  chat (`ChatRouter.Said`, before its lines go out) and `/me`/`*bows*` play body language from a static, config-extendable
+  rule table: agree → nod, refuse/sorry → shake, hello → wave + look at them, thanks → bow, excitement → crouch-bob/hop;
+  addressed player chat → look at the speaker; a yes/no to the bot's own question → a small nod. One per `MinIntervalMs`
+  (3 s); per-login/clone switch. Client side (`MinecraftClient.Gestures`, vanilla 0x0C/0x0D, 0x12, 0x13): the head look is
+  an overlay on the **sent** look only (physics keeps the driver's yaw, so a walk's heading is untouched), ≥ 20° swings
+  (mc-dev EntityTrackerEntry: others see a look change only at ≥ 8/256 turn, every 2 ticks); any dig/place/use cancels the
+  overlay and resends the real look first. Social priority: never in a safety reflex/fight, after a danger, near a
+  hostile, at low hp, off the ground, or within 2 blocks of a deadly edge; sneak/hop only on an idle body (a job or script
+  gets the head-only bow / an arm wave), hop needs ground under all four corners; sneak pulses always end unsneaked.
 - **Reflexes** (`IntentMatcher.Reflex`, `Agent:Brainstem:Reflexes`): the whole line must be an exact command — stop/wait/halt,
   come here, follow me, jump/spin/wave/crouch, look at me, give/drop me <held item> [n] (trusted players). They run through
   the normal gated tools; the brain's turn gets `[reflex] ...` and may comment or stay silent. Anything ambiguous goes to the
@@ -170,6 +180,16 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
 - **Hand-off holds** (`Client/Survival/HandoffReservations`, `Bot/Perception/HandoffIntent`): a chat line either side ("I'll pass
   it to 67", "bread for 67") opens a 3-min intent; pickups during it are held for that target and auto-eat skips them unless
   hp ≤ 4; a hold ends when the item leaves the inventory (delivered) or after 10 min.
+- **Hand-overs and spoken promises** (`Bot/Brainstem/HandoverWatch`, zero tokens): an item entity spawning at a player's eye height
+  (a toss) or just ahead along their look is attributed to them; the bot's pickups of it, debounced 2 s, post one Normal wake
+  "Fox gave you 21 wheat". The bot's own "I'll X when/once/the second Y" lines become pending promises (item from the condition,
+  the partner's last line, or the recipe input; 5 min); when the item arrives (hand-over or inventory) the brain wakes with the
+  intent: "…; you said you'd make bread when Fox handed it over (now 21 wheat)" (MustWake).
+- **Shared chest memory is dated by the last open** (schema v6 `contents_at/contents_by`): `where_is` says "opened by maid_chan
+  49s ago, may have changed", never the chest block's sighting. An open writes at once for every hive bot; when it shows items
+  memory listed are gone (vs the window's first 0x68, so our own takes never count), `ChestChanges` posts "chest at …: bread x5
+  gone since maid_chan opened it 49s ago; Fox may have taken it (holding bread)" and a failed `withdraw` appends it. An empty
+  take names what the container held. Eating when full is ok ("already full"); reflex meals are booked "ate (reflex)".
 - **Server moves**: a 0x0D more than 8 blocks from the body that doesn't answer a login/respawn raises `ServerMoved`; the brain
   gets "server moved me from A to B (teleport)" plus a visible cause (a recent tp line, the player standing there). A death
   respawn note says where it died. Portal trips keep their own wake.
@@ -255,21 +275,33 @@ One place decides whether the bot may break a block, why not, and how a player u
 - **Contact sheet** (`ContactSheet`): one `see` = one image of the SAME focus: TOP (role layer), SIDE cut along the work axis
   (bot→focus line, else the way it faces: looking N or E), ISO, LAYERS (feet layer + the one below; a green dot = air with a
   side/top face to place against: holes, floor gaps, edges) and optionally EYE (the bot or a named player). Every panel draws the
-  focus (cyan box/ring), the compass and ruler ticks with the focus coordinates in yellow. ≈280-310 tokens for 4 panels (≈300
+  focus (cyan box/ring), the compass and ruler ticks with the focus coordinates in yellow. TOP and ISO cut away blocks above the
+  feet layer that hang over air/fluid down to it (`CutAway`: a roof over a gen hid every gen cell and its water, live 10-27). ≈280-310 tokens for 4 panels (≈300
   for 5) vs ≈500 image + ≈230 legend tokens for the same views as separate pictures (and 4 tool rounds). Focus: x,y,z, a player,
   a saved place, `pointed`/`this`; default the current job's target, else the bot.
 - **Role layer** (`RoleClassifier`, `BlockRole`): floor, wall, gen cell (G = MINE HERE), water, lava, void, door, station, player
-  build (B), own placed (+), protected ($), never-break (X), portal (P), from the protection policy's `Check` verdicts, the world
-  index, dig cells (taught/confirmed/geometry) and the placed-block log. Tinted cells + letters in every panel, letters in `look map`.
+  build (B), own placed (+), protected ($, outline only: floors under a remembered build still read as floors), never-break (X), portal (P), from the protection policy's `Check` verdicts, the world
+  index, dig cells (taught/confirmed/geometry; air over a gen cell is never one) and the placed-block log. Tinted cells + letters in
+  every panel (every role glyph is drawable), letters in `look map`.
+- **Deterministic first** (`VisionRouter`, rules, zero tokens): every `see`/auto-vision question is classified before any model
+  call. Gen cells vs floor/walls (+ which fluids touch each cell), gen health ("water isn't touching"), placeable faces, void
+  under / distance to the edge, the focus block + role, the portal sheet + what is beside it, and trees (TreeScan: logs, leaves,
+  soil), saplings, crops, chests, doors, stations and ores are answered exactly from voxels + roles ("[vision] exact: ...").
+  Only visual/relational questions (the middle one, what a build looks like, shapes, pointing, build completeness) reach the
+  perception model. A question shape whose model answer had 0 checkable claims is answered from voxels next time.
 - **Perception tier** (`Agent/Perception`, `Agent:Llm:Perception {Provider, Model, Endpoint, ApiKey, Deployment, ApiVersion, Mode}`):
   `IPerceptionModel` = anthropic (default `claude-sonnet-5-5`, the shared client and key: Claude to Claude) | azure-openai
   (chat completions, `image_url` data URI, `api-key`, deployment + api-version or the v1 API) | openai (any compatible endpoint,
   bearer) | ollama (`/api/chat` images, `format: json`). Swapping is config only. The model gets sheet + legend + question and must
-  answer strict JSON `{answer, facts:[{claim, coords[], role?, confidence}]}`.
+  answer strict JSON `{look, answer, facts:[{claim, coords[], role?, confidence}]}` ("look" = its counting, inside the JSON),
+  capped at `MaxTokens` 250 (was ≈880 tokens of prose + JSON, 7 s).
 - **Verification** (`PerceptionVerifier`, zero tokens): every claim's coordinates, block names, roles (incl. "not a gen cell")
   and air/solid expectations are checked against WorldState voxels; a single-target claim one block off is snapped to the
   matching neighbour (floor vs feet misread), the rest dropped; the answer line survives only if every coordinate in it belongs
-  to a kept fact and it doesn't repeat a refuted claim. Deterministic role grounding (gen cells, portal, never-break near the
+  to a kept fact and the model made no refuted claim at all. A partly refuted claim keeps only its confirmed coords under the
+  voxels' own words ("gen cell @6,64,8"); claims without checked coords are marked "(uncertain)" and keep no coordinates: any x,y,z the voxels didn't
+  confirm is scrubbed to "?" from every claim and answer (live 10-27: clone 69 dug 5,64,6, a cell from perception text). Perception never writes memory,
+  dig cells or beliefs (a source-scan test guards it): it is advisory text for the next turn only. Deterministic role grounding (gen cells, portal, never-break near the
   focus) is appended. Hallucination rate = refuted / checked claims, logged per call. The brain gets the ≈100-token text, never
   the image. `Mode = direct` (or no model / no key) keeps the old image-to-caller path.
 - **Cost/telemetry** (`PerceptionService`, `PerceptionTelemetry`): answers cached by (view hash, question); `PerHour` cap (60);
@@ -278,11 +310,22 @@ One place decides whether the bot may break a block, why not, and how a player u
 - **Auto-vision** (`AutoVision`, `Perception:Auto`): spatial job steps (gen mining, place/dig, build/repair skills, "this
   one"/"the middle one" after a punch-point) start ONE background look per step; the brain's next turn gets it through
   `TurnPerception` (never waits), the worker's next round through `WorkerAgent.RoundNote` (waits ≤ `WorkerWaitMs`). A spot whose
-  view hash didn't change since the last answer is skipped. Builds/repairs end with a before/after check ("[vision check] floor
+  view hash didn't change since the last answer is skipped. Rolling guard: when more than 40 % of the last 10 checked claims were
+  refuted, auto-vision goes deterministic-only (WARN; explicit `see` still asks the model, and recovers it). Builds/repairs end with a before/after check ("[vision check] floor
   patched, 1 gap at x,y,z"); a build that changed nothing is not checked.
-- **Eval** (`Perception/Vision/Eval/VisionEval`, `tools/VisionAB sheets|perception`): today's failures as cases (floor vs gen cell,
+- **Hive vision** (main = the hive mind sees anywhere): `see focus=` coords, a landmark/saved place in any dimension ("mob
+  chamber", "cobble gen", "main house"), a clone ("67", "at 67", "what 1337 sees": `view` IPC → the clone flushes its world
+  memory to the shared db and answers with its pose; the sheet adds an EYE panel from that pose), or `hive` (deterministic
+  overview: every bot's position, job, vitals, claims, dangers; the ≈150-300-token top-down picture with any `views` or in
+  direct mode). Remote spots render from `RegionWorld`: main's live columns + the shared `world_chunks` (all dimensions, every
+  hive bot writes them; `seen_by` says whose eyes; clones flush every 15 s), and the text/legend carry staleness per region
+  ("mob chamber seen by 67 40 min ago; E side seen by 69 12 s ago"). Positions, jobs and claims are data (`IHiveVision`,
+  Hive `HiveVisionSource`); the perception model only answers visual questions about the rendered spot.
+- **Eval** (`Perception/Vision/Eval/VisionEval`, `tools/VisionAB sheets|perception|livegen`): today's failures as cases (floor vs gen cell,
   faces in a hole at 7,62,9, edge distance, the middle one, the portal on the void nether platform from
-  `tests/fixtures/portal-trip`) × arms (Opus reading the sheet, Sonnet perception, Haiku perception): accuracy before/after
+  `tests/fixtures/portal-trip`, the roofed dual gen from `tests/fixtures/vision-eval/dual-gen.txt`) × arms (Opus reading the
+  sheet, Sonnet perception, Haiku perception, router+Sonnet). `livegen` rebuilds a live spot from a db snapshot (+ its WAL) and
+  renders the sheet as the bot did. Reported: accuracy before/after
   verification, tokens, brain tokens, $ per question, hallucinations. Offline in the tests (recorded/fake answers); live is opt-in,
   ≤20 calls and ≤$0.50.
 

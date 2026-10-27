@@ -83,12 +83,8 @@ public sealed partial class MinecraftClient
             case null: return null;
             case "attack": return "fighting";
             case "spar": return "sparring";
-            case "mine" or "generator" or "dig" or "place" or "collect" or "follow":
-            {
-                var p = World.Player.Position;
-                int ed = Safety.EdgeDistance(World, (int)Math.Floor(p.X), (int)Math.Floor(p.Y + 1e-6), (int)Math.Floor(p.Z), 2);
-                return ed <= 2 ? CurrentAction + " near the edge" : null;
-            }
+            // Mining/digging/placing/collecting go on at low hp (the user's rule); the edge guard and the lava rule still apply,
+            // and critical hp stops everything but eating.
             default: return null;
         }
     }
@@ -221,7 +217,8 @@ public sealed partial class MinecraftClient
             if (SurvivalReflex.NeedsFood(what) && (!r.Ok || World.Player.Food < o.GateMinFood))
                 return ActionResult.Fail($"too hungry to {what} (food {World.Player.Food}; eating failed: {r.Message})");
         }
-        _actionRisk = what;
+        // Only fights/spars are cancelled by the low-health reflex; mining, chopping, bridging carry on (critical hp stops all).
+        if (SurvivalReflex.CancelAtLowHealth(what)) _actionRisk = what;
         return null;
     }
 }

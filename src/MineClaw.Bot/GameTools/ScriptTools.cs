@@ -439,7 +439,11 @@ public sealed class ScriptBridge
         var names = new HashSet<string>(_actions, StringComparer.Ordinal);
         foreach (var (alias, target) in ScriptSession.Aliases) if (_actions.Contains(target) || (_skills?.Registry.TryGet(target, out _) ?? false)) names.Add(alias);
         if (_skills != null) foreach (var sk in _skills.Registry.Specs) names.Add(sk.Name);
-        return ScriptLint.Check(code, names, Options.LintLongScriptActions);
+        // Required args from the real tool schemas: "gen{} needs at=" before any action runs (live 10-27 21:12).
+        var sigs = new Dictionary<string, BindingSignature>(StringComparer.Ordinal);
+        foreach (var a in _actions)
+            if (_rt.Tools.TryGet(a, out var tool) && ScriptLint.SignatureOf(tool.InputSchema) is { } sig) sigs[a] = sig;
+        return ScriptLint.Check(code, names, Options.LintLongScriptActions, sigs);
     }
 
     /// <summary>

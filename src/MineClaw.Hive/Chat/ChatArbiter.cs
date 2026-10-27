@@ -36,17 +36,21 @@ public sealed class ChatArbiter
     private readonly Dictionary<string, (string Owner, DateTimeOffset Until)> _sticky = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>Conversation-thread leases: the bot that asked a player something / is watching their demo owns their replies.</summary>
     private readonly Dictionary<string, (string Owner, DateTimeOffset Until)> _threads = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Main handed a player's request to a clone: that clone owns their follow-ups (explicitly) for <see cref="CloneWindow"/>.</summary>
+    private readonly Dictionary<string, (string Owner, DateTimeOffset Until)> _delegated = new(StringComparer.OrdinalIgnoreCase);
     private readonly TimeProvider _time;
     private string _main;
     private string[] _mainNames;
     private HashSet<string> _live = new(StringComparer.OrdinalIgnoreCase);
 
-    public ChatArbiter(string self, string main, IEnumerable<string> clones, IEnumerable<string>? mainNames = null, TimeSpan? sticky = null, TimeProvider? time = null)
+    public ChatArbiter(string self, string main, IEnumerable<string> clones, IEnumerable<string>? mainNames = null, TimeSpan? sticky = null, TimeProvider? time = null,
+        TimeSpan? cloneWindow = null)
     {
         _self = self;
         _main = main;
         _time = time ?? TimeProvider.System;
         StickyWindow = sticky ?? TimeSpan.FromSeconds(45);
+        CloneWindow = cloneWindow ?? TimeSpan.FromSeconds(30);
         Clones = clones.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         _hiveBots = new HashSet<string>([main, .. Clones], StringComparer.OrdinalIgnoreCase);
         _mainNames = (mainNames ?? [main]).ToArray();
@@ -57,6 +61,12 @@ public sealed class ChatArbiter
     public string Main => _main;
     public IReadOnlyList<string> Clones { get; }
     public TimeSpan StickyWindow { get; }
+    /// <summary>
+    /// How long a clone keeps a player's unnamed follow-ups after it last took a line from them or spoke to them (user
+    /// requirement 10-27: unnamed chat is main's; a clone only continues its own conversation, ~30 s). Main's own sticky uses
+    /// <see cref="StickyWindow"/>; a request main hands over (<see cref="HandOver"/>) keeps the longer of the two.
+    /// </summary>
+    public TimeSpan CloneWindow { get; }
     public bool IsMain => string.Equals(_self, _main, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Raised when the sticky map or roster changed here (main pushes the new roster to clones).</summary>
@@ -111,9 +121,35 @@ public sealed class ChatArbiter
         lock (_lock)
         {
             _threads.Remove(player);
-            _sticky[player] = (owner, _time.GetUtcNow() + StickyWindow);
+            _delegated.Remove(player);
+            _sticky[player] = (owner, _time.GetUtcNow() + (StickyWindow > CloneWindow ? StickyWindow : CloneWindow));
         }
         Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// Main: it just handed <paramref name="player"/>'s request to <paramref name="clone"/> (hive assign). The player's follow-ups
+    /// for the next <see cref="CloneWindow"/> ("just like 5", "never mind") go to that clone, which is now in the conversation;
+    /// unless another bot holds the player's thread right now (main waiting on an answer keeps it).
+    /// </summary>
+    public void Delegated(string player, string clone)
+    {
+        lock (_lock)
+        {
+            if (LiveThread(player) is { } holder && !string.Equals(holder, clone, StringComparison.OrdinalIgnoreCase)) return;
+            var until = _time.GetUtcNow() + CloneWindow;
+            _delegated[player] = (clone, until);
+            _sticky[player] = (clone, until);
+        }
+        Changed?.Invoke();
+    }
+
+    // caller holds _lock: a live delegation of the player's request (owner online), else null.
+    private string? LiveDelegation(string player)
+    {
+        if (!_delegated.TryGetValue(player, out var d)) return null;
+        if (d.Until <= _time.GetUtcNow()) { _delegated.Remove(player); return null; }
+        return string.Equals(d.Owner, _self, StringComparison.OrdinalIgnoreCase) || _live.Contains(d.Owner) ? d.Owner : null;
     }
 
     // caller holds _lock
@@ -174,7 +210,8 @@ public sealed class ChatArbiter
         {
             var now = _time.GetUtcNow();
             return new RosterMsg(_main, _mainNames, _live.ToArray(),
-                _sticky.Where(kv => kv.Value.Until > now).ToDictionary(kv => kv.Key, kv => new StickyMsg(kv.Value.Owner, kv.Value.Until.ToUnixTimeMilliseconds())),
+                _sticky.Where(kv => kv.Value.Until > now).ToDictionary(kv => kv.Key, kv => new StickyMsg(kv.Value.Owner, kv.Value.Until.ToUnixTimeMilliseconds(),
+                    _delegated.TryGetValue(kv.Key, out var d) && d.Until > now && string.Equals(d.Owner, kv.Value.Owner, StringComparison.OrdinalIgnoreCase))),
                 _threads.Where(kv => kv.Value.Until > now).ToDictionary(kv => kv.Key, kv => new StickyMsg(kv.Value.Owner, kv.Value.Until.ToUnixTimeMilliseconds())));
         }
     }
@@ -189,7 +226,12 @@ public sealed class ChatArbiter
             _live = new HashSet<string>(r.Live, StringComparer.OrdinalIgnoreCase);
             _mainNames = r.MainNames;
             _sticky.Clear();
-            foreach (var (p, s) in r.Sticky) _sticky[p] = (s.Owner, DateTimeOffset.FromUnixTimeMilliseconds(s.UntilMs));
+            _delegated.Clear();
+            foreach (var (p, s) in r.Sticky)
+            {
+                _sticky[p] = (s.Owner, DateTimeOffset.FromUnixTimeMilliseconds(s.UntilMs));
+                if (s.Delegated) _delegated[p] = _sticky[p];
+            }
             // Main's thread map is authoritative, except our own fresh leases it may not have echoed yet.
             var mine = _threads.Where(kv => string.Equals(kv.Value.Owner, _self, StringComparison.OrdinalIgnoreCase)).ToList();
             _threads.Clear();
@@ -273,6 +315,8 @@ public sealed class ChatArbiter
             if (delegated) return new(_main, true, false);
             // A bot that asked this player something (or is watching their demo) owns their replies until resolved/timeout.
             if (LiveThread(msg.Player) is { } holder) return new(holder, true, false);
+            // Main just handed this player's request to a clone: their follow-ups ("just like 5") are that clone's.
+            if (LiveDelegation(msg.Player) is { } doer) return new(doer, true, false);
             if (_sticky.TryGetValue(msg.Player, out var s) && s.Until > _time.GetUtcNow()
                 && (string.Equals(s.Owner, _main, StringComparison.OrdinalIgnoreCase) || _live.Contains(s.Owner)))
                 return new(s.Owner, false, false);
@@ -449,8 +493,30 @@ public sealed class ChatArbiter
     /// <summary>Records that <paramref name="owner"/> is talking with <paramref name="player"/>.</summary>
     public void Accept(string player, string owner)
     {
-        lock (_lock) _sticky[player] = (owner, _time.GetUtcNow() + StickyWindow);
+        var window = string.Equals(owner, _main, StringComparison.OrdinalIgnoreCase) ? StickyWindow : CloneWindow;
+        lock (_lock)
+        {
+            // A handed-over request keeps its longer lease: a quick "ok" from the clone must not shorten it.
+            var until = _time.GetUtcNow() + window;
+            if (_sticky.TryGetValue(player, out var cur) && string.Equals(cur.Owner, owner, StringComparison.OrdinalIgnoreCase) && cur.Until > until) until = cur.Until;
+            _sticky[player] = (owner, until);
+        }
         Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// Main: a clone spoke to <paramref name="player"/> (its line was addressed to them): their unnamed follow-ups continue
+    /// with that clone for <see cref="CloneWindow"/> — unless another bot holds the player's conversation right now.
+    /// </summary>
+    public void SpokeFromClone(string player, string clone)
+    {
+        lock (_lock)
+        {
+            if (_groupHold.TryGetValue(player, out var until) && until > _time.GetUtcNow()) return;
+            if (LiveThread(player) is { } holder && !string.Equals(holder, clone, StringComparison.OrdinalIgnoreCase)) return;
+            if (_sticky.TryGetValue(player, out var s) && s.Until > _time.GetUtcNow() && !string.Equals(s.Owner, clone, StringComparison.OrdinalIgnoreCase)) return;
+        }
+        Accept(player, clone);
     }
 
     /// <summary>A clone left: its sticky conversations and thread leases fall back to main.</summary>
@@ -460,6 +526,7 @@ public sealed class ChatArbiter
         {
             foreach (var k in _sticky.Where(kv => string.Equals(kv.Value.Owner, owner, StringComparison.OrdinalIgnoreCase)).Select(kv => kv.Key).ToList()) _sticky.Remove(k);
             foreach (var k in _threads.Where(kv => string.Equals(kv.Value.Owner, owner, StringComparison.OrdinalIgnoreCase)).Select(kv => kv.Key).ToList()) _threads.Remove(k);
+            foreach (var k in _delegated.Where(kv => string.Equals(kv.Value.Owner, owner, StringComparison.OrdinalIgnoreCase)).Select(kv => kv.Key).ToList()) _delegated.Remove(k);
         }
     }
 }

@@ -296,8 +296,17 @@ public sealed class BeliefStore
         consensus = Math.Round(Math.Min(consensus, 0.75), 3);
 
         if (c.Directive) return (ClaimStatus.Unverified, 0, "instruction, not a fact");
-        // Safety claims are informational: never verified, never provisional, never an input to gating.
-        if (c.Category == ClaimCategory.Safety) return (ClaimStatus.Unverified, Math.Min(consensus, 0.5), "info only");
+        // Safety claims are informational: never verified by what players say, never provisional, never an input to gating.
+        // The one exception is the bot's OWN deliberate experiment (Experiment evidence, e.g. an explicit into_void step that
+        // respawned it at full hp/food): then it's a learned, proven strategy for memory — still never a gate.
+        if (c.Category == ClaimCategory.Safety)
+        {
+            var own = ev.Where(e => e.Kind == EvidenceKind.Experiment && e.Polarity != 0).OrderBy(e => e.At).ThenBy(e => e.Id).LastOrDefault();
+            if (own is null) return (ClaimStatus.Unverified, Math.Min(consensus, 0.5), "info only");
+            return own.Polarity > 0
+                ? (ClaimStatus.Verified, Math.Round(Math.Max(consensus, own.Weight), 3), own.Note)
+                : (ClaimStatus.Refuted, Math.Round(Math.Min(consensus, 1 - own.Weight), 3), own.Note);
+        }
 
         var strong = ev.Where(e => BeliefRanks.Of(e.Kind) >= 2).ToList();
         if (strong.Count > 0)

@@ -116,6 +116,9 @@ public sealed class AgentOptions
     /// </summary>
     public Brainstem.BrainstemOptions Brainstem { get; set; } = new();
 
+    /// <summary>"Agent:Gestures": nod/shake/wave/bow/bob/hop/look-at from static text matching (zero tokens).</summary>
+    public Brainstem.GestureOptions Gestures { get; set; } = new();
+
     /// <summary>When paused by budget, reply to addressed chat with a canned notice at most this often.</summary>
     public int PausedNoticeMinutes { get; set; } = 15;
 }

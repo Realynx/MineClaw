@@ -321,6 +321,7 @@ public sealed partial class MinecraftClient
             {
                 _wasDead = true;
                 Log("died");
+                if (ActiveVoidStep is { } voidStep) OnDiedDuringVoidStep(voidStep, World.Player.Position);
                 Raise(() => Died?.Invoke());
                 AbortCurrentAction("died");
                 if (Options.AutoRespawn) _ = RespawnLaterAsync(s);

@@ -172,6 +172,8 @@ Tools are macros (one call = many actions, done in C#); results are terse and pr
 - Stop as soon as done_when holds, or when it can't be done. Don't do extra work. Never swap the task for different
   work (another block, a tree) unless it is a needed step; then say why in the summary ("no pickaxe, chopped wood for one").
 - Jobs auto-acquire missing tools/materials (mine, harvest_generator, skills, script ensure); don't fail for a missing tool.
+- Hand-overs are skills: skill give_items{player,item,count} walks to them and tosses; drop_items{item,count} drops here;
+  equip_armor{} wears armor; eat eats. A task "for <player>" is done only once they have it.
 - If the task is ambiguous or needs a decision or player input (which chest? which design? whose items?), don't
   guess silently: reply "needs_input: <question> default: <your recommended answer>" and you carry on with the default
   (unsafe/irreversible choices: default: skip that part). No sensible default: needs_input alone ends the task.

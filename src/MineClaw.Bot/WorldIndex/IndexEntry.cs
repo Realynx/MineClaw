@@ -25,6 +25,8 @@ internal sealed class IndexEntry(string kind, string key)
     /// <summary>Last container snapshot (null = never opened).</summary>
     public List<ItemCount>? Contents;
     public bool ContentsDirty;
+    /// <summary>When <see cref="Contents"/> were read from an open window.</summary>
+    public DateTimeOffset? ContentsAt;
     public bool FurnaceLit;
     public (ItemCount? In, ItemCount? Fuel, ItemCount? Out) FurnaceSlots;
 

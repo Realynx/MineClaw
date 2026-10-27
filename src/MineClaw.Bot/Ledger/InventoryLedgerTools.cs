@@ -79,6 +79,7 @@ public static class InventoryLedgerTools
             if (collector == client.World.Player.EntityId) ledger.NotePickup(s.Id, s.Count);
             else if (client.World.Entities.Get(collector) is { Name: { Length: > 0 } name }) ledger.NoteOtherPickup(name, s.Id, s.Count);
         };
+        client.EatingStarted += (id, auto) => ledger.NoteEat(id, auto);
         client.Died += () =>
         {
             var p = client.World.Player.Position.ToBlockPos();
@@ -150,7 +151,7 @@ public static class InventoryLedgerTools
         return JsonSerializer.SerializeToElement(node);
     }
 
-    private sealed class WrappedTool(IAgentTool inner, JsonElement? schema, Func<JsonElement, CancellationToken, Task<ToolResult>> run,
+    internal sealed class WrappedTool(IAgentTool inner, JsonElement? schema, Func<JsonElement, CancellationToken, Task<ToolResult>> run,
         string? description = null) : IAgentTool
     {
         public string Name => inner.Name;

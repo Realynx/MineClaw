@@ -13,7 +13,8 @@ namespace MineClaw.Bot.Perception.Vision.Eval;
 
 /// <summary>One spatial question about a small world, with a grader for the answer text.</summary>
 public sealed record VisionEvalCase(string Id, string Title, WorldState World, (int X, int Y, int Z) Self, (int X, int Y, int Z) Focus,
-    string Question, string Expected, Func<string, bool> Grade, Func<BlockPos, bool>? GenCells = null, int Radius = 6, float Yaw = 180);
+    string Question, string Expected, Func<string, bool> Grade, Func<BlockPos, bool>? GenCells = null, int Radius = 6, float Yaw = 180,
+    Func<BlockPos, bool>? Protected = null);
 
 /// <summary>An eval arm: "direct" = the brain model reads the sheet itself; "perception" = a perception model + verifier.</summary>
 public sealed record VisionEvalArm(string Name, string Kind, string Model)
@@ -21,7 +22,9 @@ public sealed record VisionEvalArm(string Name, string Kind, string Model)
     public static readonly VisionEvalArm OpusDirect = new("opus-direct", "direct", "claude-opus-5-5");
     public static readonly VisionEvalArm SonnetPerception = new("sonnet-perception", "perception", "claude-sonnet-5-5");
     public static readonly VisionEvalArm HaikuPerception = new("haiku-perception", "perception", "claude-haiku-5-5");
-    public static readonly IReadOnlyList<VisionEvalArm> Default = [OpusDirect, SonnetPerception, HaikuPerception];
+    /// <summary>Deterministic first (<see cref="VisionRouter"/>: voxels + roles, zero tokens), Sonnet perception for the rest.</summary>
+    public static readonly VisionEvalArm RouterSonnet = new("router+sonnet", "router", "claude-sonnet-5-5");
+    public static readonly IReadOnlyList<VisionEvalArm> Default = [OpusDirect, SonnetPerception, HaikuPerception, RouterSonnet];
 }
 
 public sealed record VisionEvalRow(string Case, string Arm, bool Ok, string Answer, long InputTokens, long OutputTokens, int ImageTokens,
@@ -211,11 +214,72 @@ public static partial class VisionEval
         }
     }
 
-    public static List<VisionEvalCase> Cases(string? netherFixture)
+    public static List<VisionEvalCase> Cases(string? netherFixture, string? dualGenFixture = null)
     {
         var list = new List<VisionEvalCase> { FloorVsGen(), HoleFaces(), EdgeDistance(), MiddleOne() };
         if (PortalVoidNether(netherFixture) is { } p) list.Add(p);
+        if (DualGenLive(dualGenFixture) is { } g) list.Add(g);
         return list;
+    }
+
+    /// <summary>The auto-vision gen question (AutoVision.Classify "gen").</summary>
+    public const string GenQuestion = "Which blocks here are generator cells (G, MINE HERE) and which are island floor or gen walls? Coords of the gen cells.";
+
+    /// <summary>
+    /// Live 10-27 21:12: the roofed dual gen on the main island (tests/fixtures/vision-eval/dual-gen.txt from the db snapshot):
+    /// dig cells 4,64,6 5,64,7 6,64,8 on a diagonal, lava/water between them, a cobble roof at y66 over x3..6 z6..9.
+    /// Sonnet perception: 6 claims checked, 5 wrong (the roof hid every gen cell in TOP and ISO).
+    /// </summary>
+    public static VisionEvalCase? DualGenLive(string? fixture)
+    {
+        if (string.IsNullOrWhiteSpace(fixture)) return null;
+        var w = Load(fixture, 0);
+        var truth = new HashSet<(int, int, int)> { (4, 64, 6), (5, 64, 7), (6, 64, 8) };
+        return new("dual_gen_live", "roofed dual gen (live 21:12)", w, (3, 64, 4), (4, 64, 6), GenQuestion, "4,64,6 5,64,7 6,64,8",
+            a => GenCellsExact(a, truth), GenCells: p => truth.Contains((p.X, p.Y, p.Z)), Radius: 5, // taught + regen-confirmed, as live
+            // The remembered "gen housing" build (0,62,4..7,67,9): soft-protected ($) as live.
+            Protected: p => p.X is >= 0 and <= 7 && p.Y is >= 62 and <= 67 && p.Z is >= 4 and <= 9);
+    }
+
+    /// <summary>A world from an "x y z id [meta]" fixture (64x64 columns around the origin).</summary>
+    public static WorldState Load(string fixture, int dim)
+    {
+        var w = new WorldState { Dimension = dim };
+        const int size = 64, x0 = -32, z0 = -32;
+        var ids = new byte[size * 128 * size];
+        var metas = new List<(int X, int Y, int Z, int Meta)>();
+        foreach (var line in fixture.Split('\n'))
+        {
+            var t = line.Trim();
+            if (t.Length == 0 || t.StartsWith('#')) continue;
+            var p = t.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (p.Length < 4) continue;
+            int x = int.Parse(p[0], CultureInfo.InvariantCulture), y = int.Parse(p[1], CultureInfo.InvariantCulture), z = int.Parse(p[2], CultureInfo.InvariantCulture);
+            int lx = x - x0, lz = z - z0;
+            if (lx < 0 || lz < 0 || lx >= size || lz >= size || (uint)y >= 128) continue;
+            ids[(lx * size + lz) * 128 + y] = (byte)int.Parse(p[3], CultureInfo.InvariantCulture);
+            if (p.Length > 4 && int.Parse(p[4], CultureInfo.InvariantCulture) is var m and not 0) metas.Add((x, y, z, m));
+        }
+        w.ApplyChunkRegion(x0, 0, z0, size, 128, size, ids, null, null, null);
+        foreach (var (x, y, z, m) in metas) w.SetBlock(x, y, z, w.GetBlock(x, y, z), m);
+        return w;
+    }
+
+    /// <summary>
+    /// Every true gen cell is named, and no clause that calls something a gen cell / the thing to mine (without negating it)
+    /// names any other coordinate.
+    /// </summary>
+    public static bool GenCellsExact(string a, IReadOnlySet<(int, int, int)> truth)
+    {
+        var all = Triples(a);
+        if (!truth.All(all.Contains)) return false;
+        foreach (var clause in Regex.Split(a, @";|\.(?:\s|$)|\|"))
+        {
+            if (!Regex.IsMatch(clause, @"\b(gen|generator|G|mine)\b", RegexOptions.IgnoreCase)) continue;
+            if (Regex.IsMatch(clause, @"\b(not|no|isn't|aren't|never)\b", RegexOptions.IgnoreCase)) continue;
+            if (Triples(clause).Any(t => !truth.Contains(t))) return false;
+        }
+        return true;
     }
 
     // ------------------------------------------------------------------ rendering
@@ -225,19 +289,28 @@ public static partial class VisionEval
         Blocks = c.World.PlanningView,
         IsGenCell = c.GenCells,
         IsGenGeometry = p => BlockDescriber.IsGenCell(c.World, p),
+        Verdict = c.Protected is { } prot
+            ? (p, _) => prot(p) ? new ProtectionVerdict(ProtectionLevel.Soft, "structure", "part of the gen housing build") : ProtectionVerdict.None
+            : null,
     };
 
-    /// <summary>The same contact sheet the bot's <c>see</c> renders (no textures: deterministic).</summary>
-    public static VisionImage Sheet(VisionEvalCase c, ContactSheet? sheets = null)
+    /// <summary>The side cut the bot picks (<c>VisionHub.AxisFor</c>): the bot→focus line, else the way it faces.</summary>
+    public static SideAxis AxisFor((int X, int Y, int Z) focus, (int X, int Y, int Z) self, float yaw)
     {
-        int dx = c.Focus.X - c.Self.X, dz = c.Focus.Z - c.Self.Z;
-        var axis = Math.Abs(dx) + Math.Abs(dz) >= 2
+        int dx = focus.X - self.X, dz = focus.Z - self.Z;
+        return Math.Abs(dx) + Math.Abs(dz) >= 2
             ? (Math.Abs(dx) >= Math.Abs(dz) ? SideAxis.LookNorth : SideAxis.LookEast)
-            : (Math.Abs(Math.Cos(c.Yaw * Math.PI / 180)) >= Math.Abs(Math.Sin(c.Yaw * Math.PI / 180)) ? SideAxis.LookEast : SideAxis.LookNorth);
+            : (Math.Abs(Math.Cos(yaw * Math.PI / 180)) >= Math.Abs(Math.Sin(yaw * Math.PI / 180)) ? SideAxis.LookEast : SideAxis.LookNorth);
+    }
+
+    /// <summary>The same contact sheet the bot's <c>see</c> renders (no textures: deterministic).</summary>
+    public static VisionImage Sheet(VisionEvalCase c, ContactSheet? sheets = null, bool cutAway = true)
+    {
+        var axis = AxisFor(c.Focus, c.Self, c.Yaw);
         return (sheets ?? new ContactSheet()).Render(new ContactSheetRequest
         {
             Blocks = c.World.PlanningView, Focus = c.Focus, Radius = c.Radius, Self = c.Self, Nether = c.World.Dimension == -1,
-            Roles = Roles(c).Map, Axis = axis, Light = new WorldVoxels(c.World),
+            Roles = Roles(c).Map, Axis = axis, Light = new WorldVoxels(c.World), CutAway = cutAway,
         });
     }
 
@@ -272,6 +345,11 @@ public static partial class VisionEval
             {
                 return new VisionEvalRow(c.Id, arm.Name, false, "", 0, 0, sheet.Tokens, 0, 0, sw.ElapsedMilliseconds, 0, 0, false, ex.GetType().Name + ": " + ex.Message);
             }
+        }
+        if (arm.Kind == "router" && VisionRouter.Answer(c.Question, c.World.PlanningView, Roles(c).Map, c.Focus, c.Radius) is { } exact)
+        {
+            int bt = (int)Math.Ceiling(exact.Length / 3.5);
+            return new VisionEvalRow(c.Id, arm.Name, c.Grade(exact), exact, 0, 0, 0, bt, bt * brainInputPerMTok / 1_000_000m, sw.ElapsedMilliseconds, 0, 0, c.Grade(exact));
         }
         var model = new AnthropicPerceptionModel(llm, new PerceptionOptions { Model = arm.Model });
         var r = await model.AskAsync(new PerceptionQuery(sheet.Png, sheet.Width, sheet.Height, c.Question, sheet.Legend), ct).ConfigureAwait(false);

@@ -23,6 +23,8 @@ public sealed record VerifiedAnswer(string Question, string? Answer, IReadOnlyLi
     public double HallucinationRate => Checked == 0 ? 0 : (double)Mismatched / Checked;
     /// <summary>The model's verified answer + facts without the deterministic role grounding (what the eval grades).</summary>
     public string ModelText { get; init; } = "";
+    /// <summary>Answered exactly from voxels + roles (<see cref="VisionRouter"/>), no model call.</summary>
+    public bool Exact { get; init; }
 }
 
 /// <summary>
@@ -77,6 +79,7 @@ public static partial class PerceptionVerifier
         int checkedN = 0, mismatched = 0, dropped = 0, corrected = 0, unverified = 0;
         var replace = new Dictionary<(int, int, int), (int, int, int)>();
         var droppedSubjects = new List<string>();
+        bool refuted = false;
         foreach (var f in r.Facts.Take(8))
         {
             var subject = Subject(f.Claim);
@@ -97,10 +100,11 @@ public static partial class PerceptionVerifier
             }
             if (!checkable)
             {
-                // Coordinates with nothing to compare: keep only loaded, in-area ones (unverified).
+                // Coordinates with nothing to compare: the words may stay (uncertain), the coordinates never do (live 10-27: an
+                // unchecked cell from perception became clone 69's dig target).
                 var near = f.Coords.Where(c => Plausible(world, c, focus, radius)).ToList();
-                if (near.Count == 0) { dropped++; continue; }
-                facts.Add(new VerifiedFact(f.Claim, near, role, f.Confidence, FactStatus.Unverified));
+                if (near.Count == 0 || f.Confidence < 0.7) { dropped++; continue; }
+                facts.Add(new VerifiedFact(f.Claim, [], role, f.Confidence, FactStatus.Unverified));
                 unverified++;
                 continue;
             }
@@ -122,10 +126,14 @@ public static partial class PerceptionVerifier
                 else anyLost = true;
             }
             if (anyBad) mismatched++;
-            if (kept.Count == 0) { dropped++; droppedSubjects.Add(subject.Trim().ToLowerInvariant()); continue; }
+            if (kept.Count == 0) { dropped++; refuted = true; droppedSubjects.Add(subject.Trim().ToLowerInvariant()); continue; }
             var status = anyBad ? FactStatus.Corrected : FactStatus.Verified;
             if (anyBad) corrected++;
-            facts.Add(new VerifiedFact(f.Claim, kept, role, f.Confidence, status,
+            // Some of its coords were refuted: the claim's words ("gen cells in rows z7-z8 near x4-8") are not to be trusted,
+            // only what the voxels confirm at the kept coords.
+            string claim = f.Claim;
+            if (anyLost) { refuted = true; claim = Canonical(world, role, expectAir, expectSolid, kept[0]); }
+            facts.Add(new VerifiedFact(claim, kept, role, f.Confidence, status,
                 anySnap ? "coords corrected" : anyLost ? "some coords dropped" : null));
         }
 
@@ -133,7 +141,7 @@ public static partial class PerceptionVerifier
         string? answer = r.Answer;
         if (!string.IsNullOrWhiteSpace(answer))
         {
-            var keptCoords = facts.SelectMany(x => x.Coords).ToHashSet();
+            var keptCoords = facts.Where(x => x.Status is FactStatus.Verified or FactStatus.Corrected).SelectMany(x => x.Coords).ToHashSet();
             bool bad = false;
             answer = TripleRx().Replace(answer, m =>
             {
@@ -145,6 +153,9 @@ public static partial class PerceptionVerifier
             // ... and it must not repeat a claim the voxels just refuted ("glowstone floor east" when there's void).
             bad |= droppedSubjects.Any(d => d.Length >= 8 && answer.Contains(d, StringComparison.OrdinalIgnoreCase));
             if (bad) { answer = null; mismatched++; checkedN++; }
+            // A model that just made refuted claims doesn't get its free-text answer passed on either (live 21:14: "the water
+            // is about 8 blocks west, no water touching the lava" rode along with one true coordinate): verified facts only.
+            else if (refuted) answer = null;
         }
         var ordered = facts.OrderByDescending(x => x.Status is FactStatus.Verified or FactStatus.Corrected).ThenByDescending(x => x.Confidence).ToList();
         string modelText = Format(question, answer, ordered, dropped, false);
@@ -154,16 +165,21 @@ public static partial class PerceptionVerifier
     /// <summary>"[vision] answer | facts: claim @x,y,z (role); ... | 1 dropped" within <see cref="MaxChars"/>.</summary>
     public static string Format(string question, string? answer, IReadOnlyList<VerifiedFact> facts, int dropped, bool cached, string? grounding = null)
     {
+        // Only voxel-verified coordinates ever leave the verifier: any other x,y,z in a claim or answer text becomes "?" (the
+        // brain or a worker must never act on a perception coordinate the world didn't confirm).
+        var verified = facts.Where(f => f.Status is FactStatus.Verified or FactStatus.Corrected).SelectMany(f => f.Coords).ToHashSet();
+        string Scrub(string t) => TripleRx().Replace(t, m =>
+            verified.Contains((int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), int.Parse(m.Groups[3].Value))) ? m.Value : "?");
         var sb = new StringBuilder("[vision] ");
-        if (!string.IsNullOrWhiteSpace(answer)) sb.Append(Trunc(answer.Trim().TrimEnd('.'), 120)).Append(". ");
+        if (!string.IsNullOrWhiteSpace(answer)) sb.Append(Trunc(Scrub(answer.Trim().TrimEnd('.')), 120)).Append(". ");
         var parts = new List<string>();
         foreach (var f in facts.Take(5))
         {
-            var claim = Trunc(f.Claim.Trim().TrimEnd('.'), 80);
+            var claim = Trunc(Scrub(f.Claim.Trim().TrimEnd('.')), 80);
             var coords = f.Coords.Where(c => !claim.Contains($"{c.X},{c.Y},{c.Z}", StringComparison.Ordinal)).Take(3).ToList();
             var s = claim + (coords.Count > 0 ? " @" + string.Join(" ", coords.Select(c => $"{c.X},{c.Y},{c.Z}")) : "");
-            if (f.Status == FactStatus.Unverified) s += " (unverified)";
-            else if (f.Status == FactStatus.Corrected) s += f.Note == "some coords dropped" ? " (wrong coords dropped)" : " (coords fixed)";
+            if (f.Status == FactStatus.Unverified) s += " (uncertain)";
+            else if (f.Status == FactStatus.Corrected && f.Note != "some coords dropped") s += " (coords fixed)";
             parts.Add(s);
         }
         if (parts.Count > 0) sb.Append("seen: ").Append(string.Join("; ", parts));
@@ -249,6 +265,17 @@ public static partial class PerceptionVerifier
             if (dy != 0) return found;
         }
         return found;
+    }
+
+    /// <summary>What the voxels say is at <paramref name="c"/>, in the claim's terms ("gen cell", "water", "cobblestone").</summary>
+    private static string Canonical(IBlockAccess w, BlockRole? role, bool air, bool solid, (int X, int Y, int Z) c)
+    {
+        if (role is { } r && r is not (BlockRole.None or BlockRole.Floor or BlockRole.Wall)) return BlockRoles.Name(r);
+        if (air) return "air";
+        int id = w.GetBlock(c.X, c.Y, c.Z);
+        var name = id == 0 ? "air" : Blocks.Get(id).Name.Replace('_', ' ');
+        if (solid) return $"solid face ({name})";
+        return role is BlockRole.Floor or BlockRole.Wall ? $"{BlockRoles.Name(role.Value)} ({name})" : name;
     }
 
     private static BlockRole? RoleFromClaim(string claim)

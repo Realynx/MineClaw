@@ -4,7 +4,7 @@ using MineClaw.Hive.Ipc;
 namespace MineClaw.Hive.Clone;
 
 /// <summary>What a hive task mostly asks of a clone's body (zero tokens, from the task text and any inline script).</summary>
-public enum TaskIntent { General, Fight, Mine, Chop, Build, Farm, Explore }
+public enum TaskIntent { General, Fight, Mine, Chop, Build, Farm, Explore, Deliver }
 
 /// <summary>A clone's last known body: health, food, items, where it logged out. Null fields = never seen.</summary>
 public sealed record CloneVitals(int? Hp, int? Food, IReadOnlyList<ItemMsg>? Items, double? X, double? Y, double? Z, int Dimension = 0,
@@ -27,29 +27,41 @@ public static class CloneFitness
 {
     private static readonly Regex Fight = new(@"\b(?:fight\w*|kill\w*|hunt\w*|mobs?|zombies?|spiders?|skeletons?|creepers?|attack\w*|spar\w*|combat|defend\w*|guard\w*|slay\w*)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private static readonly Regex Mine = new(@"\b(?:mine|mining|dig\w*|cobble\w*|stone|gen|generator|ore|quarry|pickaxe)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private static readonly Regex Chop = new(@"\b(?:chop\w*|trees?|logs?|wood|lumber\w*|axe|saplings?)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private static readonly Regex Build = new(@"\b(?:build\w*|bridge\w*|place|wall|floor|pillar|extend\w*|platform)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private static readonly Regex Farm = new(@"\b(?:farm\w*|wheat|seeds?|harvest\w*|crops?|plant\w*|hoe)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private static readonly Regex Explore = new(@"\b(?:explore\w*|nether|scout\w*|look around|find)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    // Each intent: STRONG words name the job itself (2 points), WEAK words are tools/materials that ride along in any task text
+    // (1 point): live 10-27 21:57 "get 420 to harvest the trees" (a stone axe, logs, the chest) was read as MINE because "stone"
+    // matched first, so a gen failure blocked tree work.
+    private static readonly (TaskIntent Intent, Regex Strong, Regex? Weak)[] Intents =
+    [
+        (TaskIntent.Mine, R(@"\b(?:mine|mining|dig\w*|cobble\w*|gen|generator|harvest_generator|ore|quarry)\b"), R(@"\b(?:stone|pickaxe|pick)\b")),
+        (TaskIntent.Chop, R(@"\b(?:chop\w*|trees?|logs?|lumber\w*|tree farm|chop_tree)\b"), R(@"\b(?:wood|axe|saplings?|replant\w*)\b")),
+        (TaskIntent.Farm, R(@"\b(?:farm\w*|wheat|seeds?|crops?|plant\w*|till\w*)\b"), R(@"\b(?:harvest\w*|hoe|bread)\b")),
+        (TaskIntent.Build, R(@"\b(?:build\w*|bridge\w*|wall|floor|pillar|extend\w*|platform)\b"), R(@"\b(?:place|planks?)\b")),
+        (TaskIntent.Deliver, R(@"\b(?:deliver\w*|bring|fetch\w*|hand (?:over|it|them)|give (?:it|them|\w+ (?:to|the))|toss\w*)\b"), null),
+        (TaskIntent.Explore, R(@"\b(?:explore\w*|nether|scout\w*|look around|find)\b"), null),
+    ];
 
-    /// <summary>The task's main intent (fighting wins: it is the one that can kill a weak clone).</summary>
+    private static Regex R(string p) => new(p, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>The task's main intent: fighting wins (it is the one that can kill a weak clone); otherwise the best-scoring job
+    /// (strong words 2, tool/material words 1; ties in table order).</summary>
     public static TaskIntent IntentOf(string? task)
     {
         var t = task ?? "";
         if (Fight.IsMatch(t)) return TaskIntent.Fight;
-        if (Mine.IsMatch(t)) return TaskIntent.Mine;
-        if (Chop.IsMatch(t)) return TaskIntent.Chop;
-        if (Farm.IsMatch(t)) return TaskIntent.Farm;
-        if (Build.IsMatch(t)) return TaskIntent.Build;
-        if (Explore.IsMatch(t)) return TaskIntent.Explore;
-        return TaskIntent.General;
+        var best = TaskIntent.General;
+        int bestScore = 0;
+        foreach (var (intent, strong, weak) in Intents)
+        {
+            int score = 2 * strong.Matches(t).Count + (weak?.Matches(t).Count ?? 0);
+            if (score > bestScore) { best = intent; bestScore = score; }
+        }
+        return best;
     }
 
     public static string Verb(TaskIntent i) => i switch
     {
         TaskIntent.Fight => "fighting", TaskIntent.Mine => "mining", TaskIntent.Chop => "chopping", TaskIntent.Build => "building",
-        TaskIntent.Farm => "farming", TaskIntent.Explore => "exploring", _ => "this job",
+        TaskIntent.Farm => "farming", TaskIntent.Explore => "exploring", TaskIntent.Deliver => "delivering", _ => "this job",
     };
 
     private static readonly string[] FoodWords = ["bread", "apple", "porkchop", "pork", "fish", "cookie", "steak", "beef", "chicken", "stew", "melon", "cake", "rotten"];

@@ -33,6 +33,49 @@ public static partial class MetaSpeech
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MemoryChoreRx();
 
+    /// <summary>
+    /// Talk about its own tools/functions/capabilities/prompt/model (live 10-27 21:07, clone 67: "Eating isn't something I can
+    /// trigger with my current tools, so I'll stop fiddling and just thank Fox."). Implementation detail, never game chat.
+    /// Minecraft "tools" (my tools broke, better tools) are NOT matched: only the self-referential phrasings below.
+    /// </summary>
+    [GeneratedRegex(
+        @"\b(?:with|using|in)\s+(?:my|the)\s+(?:current|available|existing|own)\s+(?:functions?|commands?|toolset|tool\s*set)\b|\b(?:trigger|invok)\w*\b.*\btools?\b|\btools?\b.*\b(?:trigger|invok)\w*\b|\b(?:my|the)\s+(?:current\s+|available\s+)?(?:toolset|tool\s+set|tool\s+list|function\s+calls?|functions|capabilit(?:y|ies)|system\s+prompt|prompt|context\s+window)\b|\b(?:isn'?t|is\s+not|not)\s+something\s+i\s+(?:can|could|am\s+able\s+to)\s+(?:trigger|call|invoke|do\s+with)\b|\bi\s+(?:can'?t|cannot|can\s+not|couldn'?t)\s+(?:trigger|invoke|call)\b|\b(?:no|a|any)\s+function\s+(?:for|to)\b|\bfunctions?\s+(?:i\s+have|available\s+to\s+me)\b|\bas\s+an\s+ai\b|\b(?:language\s+model|llm)\b|\b(?:the|my)\s+model\s+(?:is|can'?t|cannot|doesn'?t)\b|\bmy\s+(?:script|scripts|worker|delegate)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex CapabilityRx();
+
+    /// <summary>
+    /// Narration of its own reasoning (live 10-27 21:5x, clone 420: "Fox is asking about the mob chamber, so I'll check memory for
+    /// it."): third-person "X is asking …, so I'll …" and looking things up in its own memory/map/notes. Never game chat.
+    /// </summary>
+    [GeneratedRegex(
+        @"\b(?:i'?ll|i\s+will|let\s+me|lemme|i\s+need\s+to|i\s+should|gonna|i'?m\s+going\s+to)\s+(?:quickly\s+)?(?:check|look\s+(?:in|at|through|up\s+in)|search|consult|query|scan)\s+(?:in\s+)?(?:(?:my\s+|the\s+|our\s+)?(?:memory|memories|notes|records|index|logs?|ledger|knowledge)|my\s+maps?)\b|\b(?:checking|searching|consulting|querying)\s+(?:my\s+|the\s+)?(?:memory|memories|notes|records|index|ledger|knowledge)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex NarrationRx();
+
+    /// <summary>"Fox is asking about X, so I'll …": the third-person lead-in goes, what follows stays (if it's real speech).</summary>
+    [GeneratedRegex(@"^\W*[\w']+\s+(?:is|was|'s)\s+(?:asking|wondering|talking|telling\s+me|saying|wanting)\b[^.!?]*?,\s*so\s+(?=(?:i'?ll|i\s+will|i'?m|let\s+me)\b)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex AskingLeadRx();
+
+    [GeneratedRegex(@"\s*(?:,\s*|\s+-\s+|;\s*)(?:so|but|and|then)\s+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ClauseRx();
+
+    /// <summary>
+    /// A sentence with capability talk in one clause keeps the other clause when it is real speech ("…with my current tools, so
+    /// I'll stop fiddling and just thank Fox." → "I'll stop fiddling and just thank Fox."); otherwise null = drop it.
+    /// </summary>
+    internal static string? WithoutCapabilityTalk(string sentence)
+    {
+        if (!CapabilityRx().IsMatch(sentence)) return sentence;
+        var parts = ClauseRx().Split(sentence);
+        var keep = parts.Where(c => !CapabilityRx().IsMatch(c) && c.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length >= 3).ToList();
+        if (keep.Count == 0 || keep.Count == parts.Length) return null;
+        var t = string.Join(", ", keep.Select(k => k.Trim())).Trim();
+        if (t.Length == 0) return null;
+        t = char.ToUpperInvariant(t[0]) + t[1..];
+        return t.EndsWith('.') || t.EndsWith('!') || t.EndsWith('?') || t.EndsWith('~') ? t : t + ".";
+    }
+
     /// <summary>Longest sentence <see cref="PlumbingRx"/> drops whole; a longer one keeps its real content.</summary>
     private const int MaxPlumbingWords = 25;
 
@@ -60,6 +103,20 @@ public static partial class MetaSpeech
                 var t = s.Trim();
                 if (t.Length == 0) continue;
                 if (IsMeta(t) || MemoryChoreRx().IsMatch(t)) { suppressed.Add(t); continue; }
+                if (AskingLeadRx().Match(t) is { Success: true } lead)
+                {
+                    suppressed.Add(t);
+                    var rest = t[(lead.Index + lead.Length)..].Trim();
+                    if (rest.Length == 0) continue;
+                    t = char.ToUpperInvariant(rest[0]) + rest[1..];
+                }
+                if (NarrationRx().IsMatch(t) && t.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length <= MaxPlumbingWords)
+                {
+                    if (suppressed.Count == 0 || !ReferenceEquals(suppressed[^1], t)) suppressed.Add(t);
+                    continue;
+                }
+                if (WithoutCapabilityTalk(t) is not { } plain) { suppressed.Add(t); continue; }
+                if (!ReferenceEquals(plain, t)) { suppressed.Add(t); t = plain; }
                 if (PlumbingRx().Match(t) is { Success: true } pm)
                 {
                     // "I've started the job in the background: grab a stone axe and torches, ..." keeps what the job is.

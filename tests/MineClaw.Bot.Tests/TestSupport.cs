@@ -56,6 +56,8 @@ public sealed class FakeGameClient : IGameClient
     public void RaiseChat(string line) => ChatReceived?.Invoke(line);
     public void RaiseKicked(string r) => Kicked?.Invoke(r);
     public void RaiseDied() => Died?.Invoke();
+    /// <summary>A deliberate void step in progress (item 18), as the real client reports it.</summary>
+    public MineClaw.Client.IntentionalVoidStep? ActiveVoidStep { get; set; }
     public void RaiseRespawned() => Respawned?.Invoke();
     public event Action<MineClaw.World.Vec3d, MineClaw.World.Vec3d>? ServerMoved;
     public void RaiseServerMoved(MineClaw.World.Vec3d from, MineClaw.World.Vec3d to) => ServerMoved?.Invoke(from, to);
@@ -154,6 +156,18 @@ public sealed class FakeGameClient : IGameClient
     }
     public bool SwingIdle() { if (CurrentAction != null || Safety) return false; Interlocked.Increment(ref Swings); return true; }
     public bool SafetyEngaged => Safety;
+    /// <summary>Gestures played (brainstem body language), in order; <see cref="PlayingGesture"/> simulates one running.</summary>
+    public ConcurrentQueue<GesturePlan> GesturePlans { get; } = new();
+    public string? PlayingGesture { get; set; }
+    public int GestureCancels;
+    public bool PlayGesture(GesturePlan plan)
+    {
+        if (!IsPlaying || Safety || (plan.UsesBody && CurrentAction != null)) return false;
+        GesturePlans.Enqueue(plan);
+        return true;
+    }
+    public void CancelGesture() => Interlocked.Increment(ref GestureCancels);
+    public string? CurrentGesture => PlayingGesture;
     public Task<ActionResult> GestureAsync(string move, string? target = null, int? times = null, CancellationToken ct = default) =>
         Act($"act {move} {target}");
 

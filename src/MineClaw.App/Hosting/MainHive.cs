@@ -39,7 +39,8 @@ public sealed class MainHive : IAsyncDisposable
         _log = log;
         _passThrough = passThrough;
         Board = new ClaimBoard(TimeSpan.FromSeconds(cfg.ClaimTtlSeconds));
-        Arbiter = new ChatArbiter(main, main, cfg.Clones(), sticky: TimeSpan.FromSeconds(cfg.StickySeconds));
+        Arbiter = new ChatArbiter(main, main, cfg.Clones(), sticky: TimeSpan.FromSeconds(cfg.StickySeconds),
+            cloneWindow: TimeSpan.FromSeconds(cfg.CloneThreadSeconds));
     }
 
     public ClaimBoard Board { get; }
@@ -90,6 +91,8 @@ public sealed class MainHive : IAsyncDisposable
             Handoff = new Receiver(client, bot.Client),
         };
         _supervisor.Donor = (Receiver)_supervisor.Handoff; // a clone short of a tool gets main's spare (live 3, 14:16:58)
+        // Hive vision: main sees anywhere (clones' snapshots + claims; "send me your view" over IPC; the shared world memory).
+        if (bot.Vision?.Hub is { } hub) hub.Hive = new HiveVisionSource(() => _supervisor, Board);
         _supervisor.Notice += e => rt.Events.Post(e);
         // Assignment fitness + refused-assignment memory (live 10-27 15:44: "fight" sent to 67 at hp 7/food 0, three times).
         _supervisor.IsNight = () => client.IsPlaying ? client.World.IsNight : (bool?)null;
