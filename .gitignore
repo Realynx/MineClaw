@@ -487,4 +487,5 @@ src/MineClaw.App/appsettings.*.json
 
 # runtime output of the bot (logs, memory/usage state)
 /logs/
-/data/
+/data/*
+!/data/seed/
