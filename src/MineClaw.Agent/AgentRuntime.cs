@@ -112,11 +112,13 @@ public sealed class AgentRuntime : IDisposable
             ?? (rag.Enabled && options.Embeddings.IsConfigured ? new AzureOpenAIEmbeddingProvider(options.Embeddings) : NullEmbeddingProvider.Instance);
         if (!rag.Enabled) embedder = NullEmbeddingProvider.Instance;
         var index = new RagIndex(db, rag, embedder, usage, options.Embeddings, time, Log("MineClaw.Rag"));
+        var terse = options.Terse ?? new TerseOptions();
+        var raptorStyle = Prompts.RaptorStyle(terse.For(TersePurpose.Raptor)) is { Length: > 0 } rs ? rs : null;
         RaptorMemory? raptor = null;
         RaptorScheduler? raptorJobs = null;
         if (rag.Enabled && rag.Raptor.Enabled && embedder.IsAvailable)
         {
-            var summarizer = new HaikuSummarizer(llm, options.Llm, usage);
+            var summarizer = new HaikuSummarizer(llm, options.Llm, usage) { StyleHint = raptorStyle };
             raptor = new RaptorMemory(db, index, new CachedEmbedder(db, embedder, options.Embeddings, usage), summarizer, rag.Raptor,
                 log: Log("MineClaw.Raptor"));
             index.Augmenter = raptor; // recall / ask_memory / auto-retrieval: hybrid lists + RAPTOR, fused by RRF
@@ -141,7 +143,7 @@ public sealed class AgentRuntime : IDisposable
             growth.Attach(context); // zero-token signal hook on every committed episode
             if (rag.Enabled && options.Self.SelfTree && embedder.IsAvailable)
                 growth.Tree = new SelfTree(index, raptor?.Embedder ?? new CachedEmbedder(db, embedder, options.Embeddings, usage),
-                    new HaikuSummarizer(llm, options.Llm, usage), options.Self, time, Log("MineClaw.Self"));
+                    new HaikuSummarizer(llm, options.Llm, usage) { StyleHint = raptorStyle }, options.Self, time, Log("MineClaw.Self"));
         }
 
         // Built-in, game-agnostic tools (registered first so their order is stable — it's part of the cached prefix).
@@ -175,13 +177,14 @@ public sealed class AgentRuntime : IDisposable
         WorkerAgent? worker = null;
         if (options.Worker.Enabled)
         {
-            worker = new WorkerAgent(options.Worker, options.Llm, llm, tools, usage, knowledge, time, Log("MineClaw.Worker"));
+            worker = new WorkerAgent(options.Worker, options.Llm, llm, tools, usage, knowledge, time, Log("MineClaw.Worker"),
+                terse.For(TersePurpose.Worker));
             worker.Register();
         }
         MemoryAgent? memAgent = null;
         if (options.AskMemory.Enabled)
         {
-            memAgent = new MemoryAgent(options.AskMemory, llm, tools, usage, Log("MineClaw.Memory"));
+            memAgent = new MemoryAgent(options.AskMemory, llm, tools, usage, Log("MineClaw.Memory"), terse.For(TersePurpose.AskMemory));
             memAgent.Register();
         }
 
@@ -191,7 +194,7 @@ public sealed class AgentRuntime : IDisposable
         var retriever = !rag.Enabled || !rag.AutoRetrieve ? null
             : raptor != null ? new AutoRetriever(new RaptorRetrievalIndex(index, raptor), rag, context, episodes)
             : new AutoRetriever(index, context, episodes);
-        var reflection = self != null ? new ReflectionPass(self, index, llm, usage, time, Log("MineClaw.Self")) { Growth = growth } : null;
+        var reflection = self != null ? new ReflectionPass(self, index, llm, usage, time, Log("MineClaw.Self")) { Growth = growth, Terse = terse.For(TersePurpose.Reflection) } : null;
         agent.Position = position;
         agent.Rag = index;
         agent.Retriever = retriever;

@@ -12,7 +12,9 @@ public static class Prompts
 
     /// <param name="knowledge">Knowledge text; with <paramref name="retrieval"/> it is only the core rules (the rest is retrieved).</param>
     /// <param name="delegation">The brain has a worker (<c>delegate</c>) and <c>ask_memory</c>; game macro tools live with the worker.</param>
-    public static string System(string persona, string personaExtra, string knowledge, bool retrieval = false, bool delegation = false)
+    /// <param name="terse">Internal register (thinking, delegate specs); null = off. Never touches the chat rules.</param>
+    public static string System(string persona, string personaExtra, string knowledge, bool retrieval = false, bool delegation = false,
+        TerseOptions? terse = null)
     {
         var sb = new StringBuilder();
         sb.Append($"""
@@ -32,6 +34,8 @@ Chat rules (always apply, whatever the persona)
   bad: "I have 23 cobblestone, 4 oak_log." good: "got a stack-ish of cobble and a few logs"
 - Never state world facts (what's in chests, where things are, what you see or have) unless they came from a tool
   result, the [memory] block or chat. If unsure, look, ask_memory, or ask.
+- 'X says: ... (status)' lines are claims, not facts. Don't act on unverified high-stakes or safety claims; mention
+  refutations gently, in persona.
 - Be honest about what you can't do or don't know. Don't pretend an action worked.
 - If nothing needs saying (e.g. chatter not meant for you, or a routine update), end your turn with no text.
 - When you use a tool you may say a brief sentence first. If no tool can do what was asked, say so instead of guessing.
@@ -88,6 +92,7 @@ Safety
 - Skyblock: the void is below. Never dig the block you stand on near an edge; don't walk off the island.
 - On danger events, deal with them first (stop, retreat, eat), then tell the players briefly.
 """);
+        if (terse != null) sb.Append(BrainStyle(terse.For(TersePurpose.Thinking), delegation ? terse.For(TersePurpose.Delegate) : TerseLevel.Off));
         if (!string.IsNullOrWhiteSpace(personaExtra)) sb.Append("\n").Append(personaExtra.Trim()).Append('\n');
         if (!string.IsNullOrWhiteSpace(knowledge))
         {
@@ -121,7 +126,7 @@ Safety
         "(budget low: chat only, no game actions. If asked to do something, say you're saving energy for now.)";
 
     /// <summary>Cached system prompt of the worker tier (its tools are the rest of its cached prefix).</summary>
-    public static string WorkerSystem(string knowledge)
+    public static string WorkerSystem(string knowledge, TerseLevel terse = TerseLevel.Off)
     {
         var sb = new StringBuilder("""
 You are the hands of a Minecraft Beta 1.8.1 Skyblock bot. The planner gave you ONE task; do it with the game tools.
@@ -136,6 +141,7 @@ Tools are macros (one call = many actions, done in C#); results are terse and pr
 - Finish with ONE plain line, no tools, max 300 chars, starting with one of:
   ok: <outcome with counts>    failed: <what went wrong, what's left>    needs_input: <the question for the planner>
 """);
+        sb.Append(WorkerStyle(terse));
         if (!string.IsNullOrWhiteSpace(knowledge)) sb.Append("\n# Skyblock core rules\n").Append(knowledge.Trim()).Append('\n');
         return sb.ToString();
     }
@@ -147,6 +153,59 @@ Tools are macros (one call = many actions, done in C#); results are terse and pr
         "(try synonyms, kind filters, where_is for items or stations), then answer in ONE plain line, max 300 chars, citing " +
         "record ids like #12 or c34. Only state what the results say; if nothing relevant turns up, answer \"not in memory\" " +
         "plus what you searched. No preamble.";
+
+    /// <summary><see cref="MemorySystem"/> plus the ask_memory answer style.</summary>
+    public static string MemorySystemFor(TerseLevel terse) => MemorySystem + StyleSuffix(terse, "Answer", "#ids, ");
+
+    // ---------------- terse internal register ----------------
+    // Short static text (≤ ~80 tokens per tier) placed in each tier's cached system prompt, never in the uncached tail.
+    // It targets thinking, tool inputs and internal result fields only. Brain chat (plain text = game chat) keeps the persona,
+    // so the brain's rules live in their own section after Safety, far from the chat rules, and say so explicitly.
+
+    /// <summary>Never compressed, at any level.</summary>
+    public const string TerseKeep = "numbers, coords, item/block ids, tool names, JSON args, errors, player names";
+
+    /// <summary>One-phrase description of a level ("" for off).</summary>
+    public static string TerseStyle(TerseLevel level) => level switch
+    {
+        TerseLevel.Lite => "concise, no filler/hedging",
+        TerseLevel.Full => "caveman-terse fragments, no articles/filler",
+        TerseLevel.Ultra => "ultra-terse: key=value, symbols, abbrevs",
+        _ => "",
+    };
+
+    /// <summary>The brain's "Internal style" section ("" when both levels are off).</summary>
+    public static string BrainStyle(TerseLevel thinking, TerseLevel delegateSpecs)
+    {
+        if (thinking == TerseLevel.Off && delegateSpecs == TerseLevel.Off) return "";
+        var sb = new StringBuilder("\nInternal style (never chat; chat keeps the persona voice)\n");
+        if (thinking == delegateSpecs) sb.Append("- Thinking and delegate/ask_memory inputs: ").Append(TerseStyle(thinking)).Append(".\n");
+        else
+        {
+            if (thinking != TerseLevel.Off) sb.Append("- Thinking: ").Append(TerseStyle(thinking)).Append(".\n");
+            if (delegateSpecs != TerseLevel.Off) sb.Append("- delegate/ask_memory inputs: ").Append(TerseStyle(delegateSpecs)).Append(".\n");
+        }
+        sb.Append("- Drop no detail. Keep exact: ").Append(TerseKeep).Append(".\n");
+        return sb.ToString();
+    }
+
+    /// <summary>The worker's style lines: reasoning, no inter-tool narration, the result line ("" when off).</summary>
+    public static string WorkerStyle(TerseLevel level) => level == TerseLevel.Off ? "" :
+        $"- Style: {TerseStyle(level)}. No narration between tool calls. Result line same style, " +
+        $"e.g. \"ok: 8 oak_log, 2 sapling replanted\". Keep exact: {TerseKeep}.\n";
+
+    /// <summary>Compaction journal style (appended to <c>ContextManager.CompactionInstructions</c>).</summary>
+    public static string CompactionStyle(TerseLevel level) => StyleSuffix(level, "Lines", "");
+
+    /// <summary>Reflection style for entry text and reasons (appended to the reflection instructions).</summary>
+    public static string ReflectionStyle(TerseLevel level) => StyleSuffix(level, "text and reason", "");
+
+    /// <summary>RAPTOR/self-tree summary hint (at most lite; appended after the paper's system line).</summary>
+    public static string RaptorStyle(TerseLevel level) => level == TerseLevel.Off ? "" :
+        "Be " + TerseStyle(level > TerseLevel.Lite ? TerseLevel.Lite : level) + "; keep names and numbers exact.";
+
+    private static string StyleSuffix(TerseLevel level, string what, string extraKeep) => level == TerseLevel.Off ? "" :
+        $" {what}: {TerseStyle(level)}. Keep exact: {extraKeep}{TerseKeep}.";
 
     /// <summary>Loads every *.md file in <paramref name="directory"/> (sorted), capped at <paramref name="maxChars"/>.</summary>
     public static string LoadKnowledge(string? directory, int maxChars, out bool truncated)

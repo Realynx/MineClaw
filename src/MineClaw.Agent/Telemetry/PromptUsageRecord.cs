@@ -12,8 +12,13 @@ public static class PromptSection
     public const string System = "system";
     /// <summary>Core Skyblock knowledge inside the static block.</summary>
     public const string Knowledge = "knowledge";
-    /// <summary>Identity + self-profile block (breakpoint 2).</summary>
+    /// <summary>Identity block: system block 2's first paragraph (name, aliases, login; breakpoint 2).</summary>
     public const string Identity = "identity";
+    /// <summary>
+    /// Grown personality: the per-turn <c>[self]</c> block in the newest user message (personality v2), or the legacy
+    /// self-profile rendered after the identity paragraph in system block 2 (v1, Growth off).
+    /// </summary>
+    public const string Self = "self";
     /// <summary>Committed history: journal + past episodes.</summary>
     public const string History = "history";
     /// <summary>Per-turn <c>[memory]</c> auto-retrieval block.</summary>
@@ -25,7 +30,7 @@ public static class PromptSection
     /// <summary>This turn's tool traffic: tool calls, tool results, mid-turn [new events], earlier rounds' text.</summary>
     public const string TurnTools = "turn_tools";
 
-    public static readonly string[] All = [Tools, System, Knowledge, Identity, History, Memory, Digest, Events, TurnTools];
+    public static readonly string[] All = [Tools, System, Knowledge, Identity, Self, History, Memory, Digest, Events, TurnTools];
 }
 
 /// <summary>Normalised call purposes (<see cref="PromptUsageRecord.Purpose"/>).</summary>

@@ -48,6 +48,9 @@ public sealed class ReflectionPass
         "{{\"changes\":[{{\"op\":\"add|reinforce|adjust|remove\",\"section\":\"trait|like|dislike|opinion|joke|nickname|relationship|milestone\"," +
         "\"id\":<existing id for reinforce/adjust/remove>,\"text\":\"...\",\"player\":\"<for relationship/nickname>\",\"signals\":[12,40],\"reason\":\"short\"}}]}}";
 
+    /// <summary>Terse register for entry text and reasons (Agent:Terse:Purposes:reflection).</summary>
+    public TerseLevel Terse { get; set; }
+
     /// <summary>v2: signal aggregates + self subtree + grounding (null = legacy episode-based pass).</summary>
     public SelfGrowth? Growth { get; set; }
 
@@ -111,7 +114,7 @@ public sealed class ReflectionPass
             resp = await _llm.CompleteAsync(new LlmRequest
             {
                 Tier = ModelTier.Cheap,
-                System = [new LlmSystemBlock(string.Format(Instructions, O.MaxChangesPerPass))],
+                System = [new LlmSystemBlock(string.Format(Instructions, O.MaxChangesPerPass) + Prompts.ReflectionStyle(Terse))],
                 Messages = [LlmMessage.User(prompt)],
                 MaxTokens = 350,
                 CacheHistory = false,
@@ -188,7 +191,7 @@ public sealed class ReflectionPass
                 resp = await _llm.CompleteAsync(new LlmRequest
                 {
                     Tier = ModelTier.Cheap,
-                    System = [new LlmSystemBlock(string.Format(InstructionsV2, O.MaxChangesPerPass))],
+                    System = [new LlmSystemBlock(string.Format(InstructionsV2, O.MaxChangesPerPass) + Prompts.ReflectionStyle(Terse))],
                     Messages = [LlmMessage.User(prompt.ToString())],
                     MaxTokens = 400,
                     CacheHistory = false,

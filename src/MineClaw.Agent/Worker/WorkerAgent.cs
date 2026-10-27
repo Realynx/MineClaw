@@ -36,7 +36,7 @@ public sealed class WorkerAgent
     private readonly IReadOnlyList<LlmSystemBlock> _system;
 
     public WorkerAgent(WorkerOptions options, LlmOptions llmOptions, ILlmClient llm, ToolRegistry tools, UsageTracker usage,
-        string coreKnowledge = "", TimeProvider? time = null, ILogger? log = null)
+        string coreKnowledge = "", TimeProvider? time = null, ILogger? log = null, TerseLevel terse = TerseLevel.Off)
     {
         _o = options;
         _llmOptions = llmOptions;
@@ -47,7 +47,7 @@ public sealed class WorkerAgent
         _log = log ?? NullLogger.Instance;
         // Core rules only (RAG on); with RAG off the knowledge is the whole doc set, so keep the worker's share bounded.
         var k = options.IncludeCoreKnowledge ? TextUtil.Truncate(coreKnowledge ?? "", 6000) : "";
-        _system = [new LlmSystemBlock(Prompts.WorkerSystem(k), Cache: true, Ttl: "5m")];
+        _system = [new LlmSystemBlock(Prompts.WorkerSystem(k, terse), Cache: true, Ttl: "5m")];
     }
 
     /// <summary>One-line game state for the task's first message (the bot agent's state header).</summary>
@@ -177,9 +177,27 @@ public sealed class WorkerAgent
         return o;
     }
 
+    /// <summary>
+    /// The result line: the text from the last "ok:" / "failed:" / "needs_input:" that starts a line or sentence, so a
+    /// short reasoning preface ("Two chests could be Fox's. needs_input: ...") never hides or mislabels the outcome.
+    /// </summary>
+    internal static string ResultLine(string text)
+    {
+        var t = text.Trim();
+        if (StartsWithPrefix(t)) return t;
+        var m = ResultPrefix.Matches(t);
+        return m.Count > 0 ? t[m[^1].Groups[1].Index..].Trim() : t;
+    }
+
+    private static bool StartsWithPrefix(string s) =>
+        System.Text.RegularExpressions.Regex.IsMatch(s, @"^(?:ok|failed|needs_input)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    private static readonly System.Text.RegularExpressions.Regex ResultPrefix =
+        new(@"(?:^|[\n.!?]\s*)((?:ok|failed|needs_input):)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
     private WorkerOutcome Classify(string text, int calls, int toolCalls, decimal cost, string stop)
     {
-        var s = TextUtil.Truncate(TextUtil.OneLine(text), Math.Max(40, _o.SummaryChars));
+        var s = TextUtil.Truncate(TextUtil.OneLine(ResultLine(text)), Math.Max(40, _o.SummaryChars));
         bool ok = s.StartsWith("ok", StringComparison.OrdinalIgnoreCase) && !s.StartsWith(NeedsInputPrefix, StringComparison.OrdinalIgnoreCase);
         bool known = ok || s.StartsWith("failed", StringComparison.OrdinalIgnoreCase) || s.StartsWith(NeedsInputPrefix, StringComparison.OrdinalIgnoreCase);
         if (!known)

@@ -71,6 +71,23 @@ public sealed class ToolRegistry
         return this;
     }
 
+    /// <summary>
+    /// Swaps in a tool with the same name at the SAME position (cached-prefix order unchanged). Used to wrap a tool's
+    /// execution (e.g. append skill hints to a delegated task) without changing its definition. False if absent.
+    /// </summary>
+    public bool Replace(IAgentTool tool)
+    {
+        lock (_lock)
+        {
+            if (!_byName.TryGetValue(tool.Name, out var old)) return false;
+            int i = _tools.IndexOf(old);
+            _tools[i] = tool;
+            _byName[tool.Name] = tool;
+        }
+        Changed?.Invoke();
+        return true;
+    }
+
     /// <summary>Registers a lambda-backed tool.</summary>
     public ToolRegistry Register(string name, string description, JsonElement schema,
         Func<JsonElement, CancellationToken, Task<ToolResult>> execute, bool longRunning = false, bool cheapTier = false,

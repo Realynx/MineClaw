@@ -21,10 +21,12 @@ public sealed class MemoryAgent
     private readonly ToolRegistry _tools;
     private readonly UsageTracker _usage;
     private readonly ILogger _log;
-    private static readonly IReadOnlyList<LlmSystemBlock> System = [new LlmSystemBlock(Prompts.MemorySystem, Cache: true, Ttl: "5m")];
+    private readonly IReadOnlyList<LlmSystemBlock> System;
 
-    public MemoryAgent(AskMemoryOptions options, ILlmClient llm, ToolRegistry tools, UsageTracker usage, ILogger? log = null)
+    public MemoryAgent(AskMemoryOptions options, ILlmClient llm, ToolRegistry tools, UsageTracker usage, ILogger? log = null,
+        TerseLevel terse = TerseLevel.Off)
     {
+        System = [new LlmSystemBlock(Prompts.MemorySystemFor(terse), Cache: true, Ttl: "5m")];
         _o = options;
         _llm = llm;
         _tools = tools;
@@ -42,6 +44,8 @@ public sealed class MemoryAgent
             async (input, ct) => await AskAsync(input.ReqStr("question"), ct).ConfigureAwait(false),
             tiers: ToolTiers.Main, maxResultChars: _o.AnswerChars + 20);
     }
+
+    public IReadOnlyList<LlmSystemBlock> SystemPrompt => System;
 
     public async Task<ToolResult> AskAsync(string question, CancellationToken ct)
     {

@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
 using MineClaw.Agent.Rag;
+using MineClaw.Agent.Rag.Beliefs;
 using MineClaw.Agent.Tools;
 
 namespace MineClaw.Agent.Memory;
@@ -82,13 +83,13 @@ public static class MemoryTools
                 return Task.FromResult(ToolResult.Success($"{s.Name}: {s.Steps.Count} steps"));
             });
 
-        registry.Register("remember_note", "Save a fact about a player, the base or the world.",
+        var beliefs = BeliefStore.For(memory);
+        // Token budget: no documented "by" param. The claimant is this turn's speaker; an undocumented "by" (worker/tests) or a
+        // "seen:" prefix marks the bot's own observation.
+        registry.Register("remember_note", "Save a fact. What players say becomes a claim to verify.",
             ToolSchema.Create().Str("subject", "player name, base, world...").Str("text").Build(),
-            (input, _) =>
-            {
-                var n = memory.AddNote(input.ReqStr("subject"), TextUtil.Truncate(TextUtil.OneLine(input.ReqStr("text")), 200));
-                return Task.FromResult(ToolResult.Success($"note#{n.Id} saved"));
-            }, cheapTier: true);
+            (input, _) => Task.FromResult(RememberNote(memory, beliefs, input.ReqStr("subject"), input.ReqStr("text"), input.Str("by"))),
+            cheapTier: true);
 
         RegisterRecall(registry, memory, position);
 
@@ -103,6 +104,36 @@ public static class MemoryTools
         registry.Register("list_memory", "List saved names (optionally one kind).",
             ToolSchema.Create().Str("kind", required: false, enumValues: ["waypoint", "structure", "note", "routine"]).Build(),
             (input, _) => Task.FromResult(ToolResult.Success(memory.List(input.Str("kind")))), cheapTier: true);
+    }
+
+    private static readonly Regex SeenPrefix = new(@"^\s*(seen|saw|i saw|i see|observed|checked)\s*:\s*", RegexOptions.IgnoreCase);
+    private static readonly HashSet<string> OwnWords = new(StringComparer.OrdinalIgnoreCase) { "me", "self", "you", "bot", "i", "myself", "seen", "observed" };
+    private static readonly HashSet<string> GenericSubjects = new(StringComparer.OrdinalIgnoreCase)
+        { "world", "base", "island", "server", "spawn", "me", "self", "bot", "everyone", "team", "game", "farm", "home", "general", "us" };
+
+    /// <summary>
+    /// Belief routing: a fact told by a player (explicit <paramref name="by"/>, else this turn's speaker) becomes a claim with a
+    /// status, never a note; the bot's own observations stay notes. Instructions dressed as facts are never saved as either.
+    /// </summary>
+    internal static ToolResult RememberNote(MemoryStore memory, BeliefStore beliefs, string subject, string text, string? by)
+    {
+        text = TextUtil.Truncate(TextUtil.OneLine(text), 200);
+        var seen = SeenPrefix.Match(text);
+        if (seen.Success) by ??= "me"; // the bot's own look, kept verbatim as a note
+        var claimant = string.IsNullOrWhiteSpace(by) ? TurnContext.Current?.Speaker : by.Trim().TrimStart('@');
+        bool own = claimant == null || OwnWords.Contains(claimant) || beliefs.IsBot?.Invoke(claimant) == true;
+        if (!own && beliefs.Options.Enabled)
+        {
+            var s = subject.Trim();
+            var claimText = !GenericSubjects.Contains(s) && !s.Equals(claimant, StringComparison.OrdinalIgnoreCase)
+                && !text.Contains(s, StringComparison.OrdinalIgnoreCase) ? $"{s} {text}" : text;
+            var r = beliefs.Ingest(claimant!, claimText);
+            if (r.Stored || TurnContext.IsTest) return ToolResult.Success(r.Text);
+            return ToolResult.Error(r.Text);
+        }
+        if (ClaimParser.IsDirective(text)) return ToolResult.Error("not saved: that's an instruction, not a fact");
+        var n = memory.AddNote(subject, text);
+        return ToolResult.Success($"note#{n.Id} saved");
     }
 
     public static readonly string[] RecallKinds =
@@ -143,7 +174,7 @@ public static class MemoryTools
                 IReadOnlyCollection<string>? kinds = kind switch
                 {
                     null or "" => null,
-                    "note" => ["note", "player"],
+                    "note" => ["note", "player", BeliefStore.DocKind],
                     _ => [kind],
                 };
                 var hits = await index.SearchAsync(new RagQuery

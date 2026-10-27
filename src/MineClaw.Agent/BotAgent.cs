@@ -43,6 +43,7 @@ public sealed class BotAgent
     private readonly TimeProvider _time;
     private readonly ILogger _log;
     private readonly string _staticText;
+    private readonly string _compactionSystem;
     private DateTimeOffset _lastEpisode;
     private DateTimeOffset _lastTurnAt;
     private DateTimeOffset _turnSince;
@@ -64,7 +65,9 @@ public sealed class BotAgent
         _time = time ?? TimeProvider.System;
         _log = log ?? NullLogger.Instance;
         _triage = new Triage(options.Triage);
-        _staticText = Prompts.System(options.Persona, options.PersonaExtra, knowledge, knowledgeIsCore, delegation: options.Worker.Enabled);
+        _staticText = Prompts.System(options.Persona, options.PersonaExtra, knowledge, knowledgeIsCore, delegation: options.Worker.Enabled,
+            terse: options.Terse ?? new TerseOptions());
+        _compactionSystem = ContextManager.CompactionInstructions + Prompts.CompactionStyle((options.Terse ?? new TerseOptions()).For(TersePurpose.Compaction));
         _lastEpisode = _time.GetUtcNow();
         _lastTurnAt = _turnSince = _lastEpisode;
 
@@ -364,7 +367,7 @@ public sealed class BotAgent
         var events = batch.Format();
         sb.Append(events);
         var text = sb.ToString().TrimEnd();
-        try { TurnBuilt?.Invoke(new TurnInput(_time.GetUtcNow(), tier, status, digest, memory, events, text)); }
+        try { TurnBuilt?.Invoke(new TurnInput(_time.GetUtcNow(), tier, status, digest, memory, events, text, self)); }
         catch (Exception ex) { _log.LogDebug(ex, "TurnBuilt handler failed"); }
         return text;
     }
@@ -537,7 +540,7 @@ public sealed class BotAgent
         var response = await _llm.CompleteAsync(new LlmRequest
         {
             Tier = ModelTier.Cheap,
-            System = [new LlmSystemBlock(ContextManager.CompactionInstructions)],
+            System = [new LlmSystemBlock(_compactionSystem)],
             Messages = [LlmMessage.User(prompt)],
             MaxTokens = 500,
             CacheHistory = false,

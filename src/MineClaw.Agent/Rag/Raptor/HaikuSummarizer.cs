@@ -37,6 +37,15 @@ public sealed class HaikuSummarizer : ISummarizer
     /// max_tokens mid-sentence, and the next layer up then summarizes "fragments" (and says so). Null/empty = paper only.
     /// </summary>
     public string? LengthHint { get; set; } = "Reply with the summary only: plain prose, no headings, lists or preamble, at most 60 words.";
+    /// <summary>Optional terse hint after <see cref="LengthHint"/> (Agent:Terse:Purposes:raptor, default off = paper prompt).</summary>
+    public string? StyleHint { get; set; }
+
+    internal string SystemText(string paper)
+    {
+        var s = string.IsNullOrWhiteSpace(LengthHint) ? paper : paper + ". " + LengthHint;
+        return string.IsNullOrWhiteSpace(StyleHint) ? s : s + " " + StyleHint;
+    }
+
     /// <summary>max_tokens = summarization_length × this, so a summary can finish its sentence (trimmed to the last full one).</summary>
     public double MaxTokensHeadroom { get; set; } = 1.5;
     /// <summary>Per-job hard stop: no new call starts once <see cref="CostUsd"/> reaches this (set by the scheduler).</summary>
@@ -76,7 +85,7 @@ public sealed class HaikuSummarizer : ISummarizer
         var response = await _llm.CompleteAsync(new LlmRequest
         {
             Tier = ModelTier.Cheap,
-            System = [new LlmSystemBlock(string.IsNullOrWhiteSpace(LengthHint) ? request.SystemPrompt : request.SystemPrompt + ". " + LengthHint)],
+            System = [new LlmSystemBlock(SystemText(request.SystemPrompt))],
             Messages = [LlmMessage.User(request.UserPrompt)],
             MaxTokens = Math.Max(16, (int)Math.Round(request.MaxTokens * Math.Max(1.0, MaxTokensHeadroom))),
             CacheHistory = false,

@@ -93,6 +93,27 @@ public sealed class AgentDb : IDisposable
         ALTER TABLE docs ADD COLUMN raptor_seq INTEGER NOT NULL DEFAULT 0;
         CREATE UNIQUE INDEX docs_raptor ON docs(raptor_idx) WHERE raptor_idx IS NOT NULL;
         """,
+        // v4: belief system (Rag/Beliefs). Player-told facts are claims with a status, never facts; evidence rows link
+        // seed refs (gd:*), observation refs (obs:*) and experiment results. IF NOT EXISTS: hive processes share the file.
+        """
+        CREATE TABLE IF NOT EXISTS claims(
+            id INTEGER PRIMARY KEY, claimant TEXT NOT NULL, text TEXT NOT NULL, norm TEXT NOT NULL, spo TEXT,
+            subject TEXT, predicate TEXT, object TEXT, x INTEGER, y INTEGER, z INTEGER, tx INTEGER, ty INTEGER, tz INTEGER,
+            category TEXT NOT NULL, stakes TEXT NOT NULL, confidence REAL NOT NULL, status TEXT NOT NULL, reason TEXT,
+            plan TEXT NOT NULL DEFAULT 'none', risk TEXT NOT NULL DEFAULT 'safe', directive INTEGER NOT NULL DEFAULT 0,
+            time_based INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, checked INTEGER,
+            created INTEGER NOT NULL, updated INTEGER NOT NULL, clone_id TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS claims_norm ON claims(norm);
+        CREATE INDEX IF NOT EXISTS claims_spo ON claims(spo);
+        CREATE INDEX IF NOT EXISTS claims_plan ON claims(plan, status);
+        CREATE TABLE IF NOT EXISTS claim_sources(
+            claim_id INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE, claimant TEXT NOT NULL COLLATE NOCASE,
+            at INTEGER NOT NULL, signaled TEXT, PRIMARY KEY(claim_id, claimant)) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS claim_evidence(
+            id INTEGER PRIMARY KEY, claim_id INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE, kind TEXT NOT NULL,
+            ref TEXT, polarity INTEGER NOT NULL, weight REAL NOT NULL, note TEXT, at INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS claim_evidence_claim ON claim_evidence(claim_id, at);
+        """,
     ];
 
     private const string FtsSql = """

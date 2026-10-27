@@ -34,7 +34,12 @@ public static class WorldTools
         if (!string.IsNullOrWhiteSpace(item))
         {
             var hits = world.FindItemInContainers(item.Trim(), 6);
-            if (hits.Count == 0) return ToolResult.Success($"no {item.Trim()} in known chests");
+            if (hits.Count == 0)
+            {
+                // Verified observations first; player claims only as a labelled fallback ("fox says: ... (unverified)").
+                var claims = memory != null ? Beliefs.BeliefStore.Find(memory.Db)?.ContainerClaims(item, 2) : null;
+                return ToolResult.Success($"no {item.Trim()} in known chests" + (claims is { Count: > 0 } ? " | " + string.Join("; ", claims) : ""));
+            }
             var name = hits[0].Name;
             var parts = hits.Select((h, i) => $"{(i == 0 ? "" : "")}x{h.Count}: {h.Container.Kind}@{h.Container.Where}{Dist(h.Container)} (seen {Ago(h.Container.LastSeen)})");
             return ToolResult.Success($"{name} " + string.Join("; ", parts) + (hits.Count > 1 ? $" | total {hits.Sum(h => h.Count)}" : ""));

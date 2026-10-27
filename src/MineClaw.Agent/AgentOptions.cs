@@ -33,6 +33,11 @@ public sealed class AgentOptions
     public WorkerOptions Worker { get; set; } = new();
     /// <summary>The brain's <c>ask_memory</c> tool (cheap-tier retrieval loop): "Agent:AskMemory".</summary>
     public AskMemoryOptions AskMemory { get; set; } = new();
+    /// <summary>
+    /// Caveman-style terse register for non-chat output (thinking, delegate specs, worker/ask_memory results, journal,
+    /// reflection): "Agent:Terse" = off|lite|full|ultra, or an object with per-purpose overrides. Chat is never affected.
+    /// </summary>
+    public TerseOptions Terse { get; set; } = new();
 
     /// <summary>Directory for the SQLite db (mineclaw.db), usage.json and a legacy memory.json (imported once).</summary>
     public string DataDirectory { get; set; } = "data";
@@ -136,7 +141,7 @@ public sealed class WorkerOptions
         "stop", "status", "inventory", "look", "where_is", "goto", "follow", "run_routine",
         "recall_detail", "remember_waypoint", "mark_structure", "describe_structure", "remember_note", "forget", "list_memory",
         "set_name", "add_alias", "remove_alias", "reflect_self", "personality_admin",
-        "ask_player", "ask_stand", "watch_demo",
+        "ask_player", "ask_stand", "watch_demo", "chop_tree",
     ];
 
     /// <summary>Tools the worker may call (game macro tools + lookups). Never chat/identity/self/player-facing tools.</summary>
@@ -144,7 +149,7 @@ public sealed class WorkerOptions
     [
         "status", "inventory", "look", "window", "goto", "mine", "harvest_generator", "collect_drops", "craft", "smelt",
         "collect_furnace", "deposit", "withdraw", "organize_chest", "place", "dig", "use_block", "eat",
-        "where_is", "recall", "remember_waypoint", "save_routine", "run_routine",
+        "where_is", "recall", "remember_waypoint", "save_routine", "run_routine", "chop_tree",
     ];
 }
 

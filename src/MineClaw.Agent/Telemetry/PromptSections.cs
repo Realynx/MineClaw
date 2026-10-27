@@ -13,7 +13,9 @@ namespace MineClaw.Agent.Telemetry;
 /// <param name="Memory">The <c>[memory]</c> block ("" when none).</param>
 /// <param name="Events">The formatted event batch.</param>
 /// <param name="Text">The full turn text exactly as sent (used to find the turn in a request).</param>
-public sealed record TurnInput(DateTimeOffset At, ModelTier Tier, string Header, string Digest, string Memory, string Events, string Text);
+/// <param name="Self">The per-turn <c>[self]</c> personality block ("" when not sent this turn).</param>
+public sealed record TurnInput(DateTimeOffset At, ModelTier Tier, string Header, string Digest, string Memory, string Events, string Text,
+    string Self = "");
 
 /// <summary>Per-section token estimate of a request, and calibration of the estimate to the API's actual prompt tokens.</summary>
 public static class PromptSections
@@ -32,7 +34,18 @@ public static class PromptSections
         for (int i = 0; i < r.System.Count; i++)
         {
             var text = r.System[i].Text;
-            if (i > 0) { s[PromptSection.Identity] += TextUtil.EstimateTokens(text); continue; }
+            if (i > 0)
+            {
+                // Block 2: identity is one paragraph; anything after the first blank line is the legacy (v1) self-profile.
+                int p = i == 1 ? text.IndexOf("\n\n", StringComparison.Ordinal) : -1;
+                if (p < 0) s[PromptSection.Identity] += TextUtil.EstimateTokens(text);
+                else
+                {
+                    s[PromptSection.Identity] += TextUtil.EstimateTokens(text[..p]);
+                    s[PromptSection.Self] += TextUtil.EstimateTokens(text[p..]);
+                }
+                continue;
+            }
             int k = KnowledgeMarkers.Select(m => text.IndexOf(m, StringComparison.Ordinal)).Where(x => x >= 0).DefaultIfEmpty(-1).Min();
             if (k < 0) s[PromptSection.System] += TextUtil.EstimateTokens(text);
             else
@@ -64,10 +77,12 @@ public static class PromptSections
                 if (j != anchorBlock) { s[PromptSection.History] += Tokens(am.Content[j]); continue; }
                 int total = TextUtil.EstimateTokens(turn!.Text);
                 int dig = Math.Min(total, TextUtil.EstimateTokens(turn.Digest));
-                int mem = Math.Min(total - dig, TextUtil.EstimateTokens(turn.Memory));
+                int self = Math.Min(total - dig, TextUtil.EstimateTokens(turn.Self));
+                int mem = Math.Min(total - dig - self, TextUtil.EstimateTokens(turn.Memory));
                 s[PromptSection.Digest] += dig;
+                s[PromptSection.Self] += self;
                 s[PromptSection.Memory] += mem;
-                s[PromptSection.Events] += total - dig - mem + 4;
+                s[PromptSection.Events] += total - dig - self - mem + 4;
             }
             for (int i = anchor + 1; i < msgs.Count; i++)
             {
