@@ -3,7 +3,7 @@ using MineClaw.Agent.Events;
 
 namespace MineClaw.Agent.Chat;
 
-public enum ChatKind { Public, Whisper, Join, Leave, System }
+public enum ChatKind { Public, Whisper, Join, Leave, System, Emote }
 
 public sealed record ChatMessage(ChatKind Kind, string? Player, string Text, string Raw);
 
@@ -99,9 +99,20 @@ public sealed class ChatRouter
 
     // ---------- incoming ----------
 
+    /// <summary>
+    /// /me as relayed by the server: "* name action". The server inserts the name, so it reliably identifies the sender;
+    /// the action is never a system event ("* kiwi fell out of the world" is kiwi emoting, not a death).
+    /// </summary>
+    private static readonly Regex EmoteLine = new(@"^\* (?<name>[A-Za-z0-9_]{1,16}) (?<msg>.+)$", RegexOptions.Compiled);
+
+    /// <summary>Raised with a line the bot tried to send that was dropped because it was a server command (not /me).</summary>
+    public event Action<string>? CommandBlocked;
+
     public ChatMessage Parse(string raw)
     {
         var line = ChatText.StripColors(raw ?? "").Trim();
+        if (EmoteLine.Match(line) is { Success: true } em)
+            return new(ChatKind.Emote, em.Groups["name"].Value, em.Groups["msg"].Value.Trim(), raw!);
         foreach (var r in _whisper)
             if (r.Match(line) is { Success: true } m) return new(ChatKind.Whisper, CleanName(m.Groups["name"].Value), m.Groups["msg"].Value.Trim(), raw!);
         foreach (var r in _join)
@@ -125,20 +136,37 @@ public sealed class ChatRouter
     }
 
     /// <summary>Feed every raw chat line from the server here.</summary>
-    public ChatMessage OnServerChat(string raw)
+    public ChatMessage OnServerChat(string raw) => OnServerChat(raw, test: false);
+
+    /// <summary>
+    /// <paramref name="test"/> = the line was injected by a harness impersonating a player (console <c>/as</c>): it is handled
+    /// normally but its events carry <see cref="GameEvent.IsTest"/>, so memory tags it source=test and reflection ignores it.
+    /// </summary>
+    public ChatMessage OnServerChat(string raw, bool test)
+    {
+        _injectingTest = test;
+        try { return Route(raw); }
+        finally { _injectingTest = false; }
+    }
+
+    [ThreadStatic] private static bool _injectingTest;
+
+    private void Post(GameEvent e) => _events.Post(_injectingTest ? e with { IsTest = true } : e);
+
+    private ChatMessage Route(string raw)
     {
         var msg = Parse(raw);
         switch (msg.Kind)
         {
             case ChatKind.Join when msg.Player != null && !IsSelf(msg.Player):
                 lock (_lock) _online.Add(msg.Player);
-                _events.Post(GameEvent.Joined(msg.Player));
+                Post(GameEvent.Joined(msg.Player));
                 break;
             case ChatKind.Leave when msg.Player != null && !IsSelf(msg.Player):
                 lock (_lock) _online.Remove(msg.Player);
-                _events.Post(GameEvent.Left(msg.Player));
+                Post(GameEvent.Left(msg.Player));
                 break;
-            case ChatKind.Public or ChatKind.Whisper when msg.Player != null:
+            case ChatKind.Public or ChatKind.Whisper or ChatKind.Emote when msg.Player != null:
                 HandleMessage(msg);
                 break;
         }
@@ -153,14 +181,23 @@ public sealed class ChatRouter
 
         bool addressed = IsAddressed(msg);
 
+        if (msg.Kind == ChatKind.Emote)
+        {
+            // Emotes are personality/treatment signals, never answers to ask_player.
+            if (addressed && !AllowIncoming(player)) addressed = false;
+            Post(GameEvent.Emote(player, msg.Text, addressed));
+            if (addressed) lock (_lock) _lastTalkedWith[player] = Now;
+            return;
+        }
+
         if (TryCompleteWaiter(player, msg.Text, addressed)) return;
 
         if (addressed && !AllowIncoming(player)) addressed = false; // spam: keep as context only
 
         if (msg.Kind == ChatKind.Whisper && addressed)
-            _events.Post(GameEvent.Whisper(player, msg.Text));
+            Post(GameEvent.Whisper(player, msg.Text));
         else
-            _events.Post(GameEvent.Chat(player, msg.Text, addressed));
+            Post(GameEvent.Chat(player, msg.Text, addressed));
 
         if (addressed) lock (_lock) _lastTalkedWith[player] = Now;
     }
@@ -170,6 +207,7 @@ public sealed class ChatRouter
     {
         if (msg.Player == null || IsSelf(msg.Player)) return false;
         if (msg.Kind == ChatKind.Whisper) return true;
+        if (msg.Kind == ChatKind.Emote) return _identity.NameRegex.IsMatch(msg.Text); // "* kiwi pats claudechan"
         if (msg.Kind != ChatKind.Public) return false;
         if (_identity.NameRegex.IsMatch(msg.Text)) return true;
 
@@ -277,27 +315,54 @@ public sealed class ChatRouter
     /// </summary>
     public async Task<IReadOnlyList<string>> SayAsync(string text, string? whisperTo = null, IEnumerable<string>? audience = null, CancellationToken ct = default)
     {
-        var clean = ChatText.Sanitize(text);
-        if (clean.Length == 0) return [];
-
         string prefix = whisperTo != null ? string.Format(_options.WhisperFormat, whisperTo, "") : "";
         int max = ChatText.MaxLineLength - prefix.Length;
-        var lines = ChatText.Split(clean, max);
+        // A line of model text starting with "/me " is an emote (sent as-is, always public); any other "/..." line would be a
+        // server command: logged and dropped. Everything else is chat, in order.
+        var lines = new List<(string Text, bool Emote)>();
+        var pending = new List<string>();
+        void FlushText()
+        {
+            if (pending.Count == 0) return;
+            var clean = ChatText.Sanitize(string.Join(" ", pending));
+            pending.Clear();
+            if (clean.Length > 0) lines.AddRange(ChatText.Split(clean, max).Select(l => (l, false)));
+        }
+        foreach (var segment in (text ?? "").Replace("\r", "").Split('\n'))
+        {
+            var t = segment.Trim();
+            if (t.Length == 0) continue;
+            if (t.StartsWith("/me ", StringComparison.OrdinalIgnoreCase))
+            {
+                FlushText();
+                var action = ChatText.Sanitize(t[4..]);
+                if (action.Length > 0) lines.Add(("/me " + TextUtilTruncate(action, ChatText.MaxLineLength - 4), true));
+            }
+            else if (t.StartsWith('/'))
+            {
+                FlushText();
+                CommandBlocked?.Invoke(t);
+            }
+            else pending.Add(t);
+        }
+        FlushText();
+        if (lines.Count == 0) return [];
         if (lines.Count > _options.MaxLinesPerReply)
         {
             lines = lines.Take(_options.MaxLinesPerReply).ToList();
-            var last = lines[^1];
-            lines[^1] = last.Length + 3 <= max ? last + "..." : last[..(max - 3)] + "...";
+            var (last, emote) = lines[^1];
+            int lim = emote ? ChatText.MaxLineLength : max;
+            lines[^1] = (last.Length + 3 <= lim ? last + "..." : last[..(lim - 3)] + "...", emote);
         }
 
         await _sendLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            foreach (var line in lines)
+            foreach (var (line, emote) in lines)
             {
                 var wait = _lastSend + TimeSpan.FromMilliseconds(_options.LineDelayMs) - Now;
                 if (wait > TimeSpan.Zero) await Task.Delay(wait, _time, ct).ConfigureAwait(false);
-                await _sendRaw(prefix + line, ct).ConfigureAwait(false);
+                await _sendRaw(emote ? line : prefix + line, ct).ConfigureAwait(false);
                 _lastSend = Now;
                 lock (_lock)
                 {
@@ -316,6 +381,8 @@ public sealed class ChatRouter
             if (whisperTo != null) _lastTalkedWith[whisperTo] = Now;
             if (audience != null) foreach (var p in audience) _lastTalkedWith[p] = Now;
         }
-        return lines;
+        return lines.Select(l => l.Text).ToList();
     }
+
+    private static string TextUtilTruncate(string s, int max) => s.Length <= max ? s : s[..max];
 }

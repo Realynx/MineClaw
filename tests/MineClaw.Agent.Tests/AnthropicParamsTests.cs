@@ -30,13 +30,31 @@ public class AnthropicParamsTests
     [Fact]
     public void MainTier_Sonnet55_UsesBetweenTools_CachesPrefixAndHistory()
     {
-        var json = Build(ModelTier.Main, new LlmOptions { ApiKey = "sk-test-not-real", StaticPrefixTtl = "1h" });
+        var json = Build(ModelTier.Main, new LlmOptions { ApiKey = "sk-test-not-real", StaticPrefixTtl = "1h", MainModel = "claude-sonnet-5-5" });
         Assert.Contains("claude-sonnet-5-5", json);
         Assert.Contains("between_tools", json);
         Assert.Contains("\"1h\"", json);           // static prefix TTL
         Assert.Contains("tool_result", json);
         Assert.Contains("\"medium\"", json);
         Assert.Contains("\"max_tokens\":1200", json);
+    }
+
+    [Fact]
+    public void Tiers_MapToOpusSonnetHaiku_WithOwnLimits()
+    {
+        var opus = Build(ModelTier.Main);
+        Assert.Contains("claude-opus-5-5", opus);
+        Assert.DoesNotContain("\"thinking\"", opus); // Opus 5.5: thinking can't be disabled, so it's omitted
+        var worker = Build(ModelTier.Worker);
+        Assert.Contains("claude-sonnet-5-5", worker);
+        Assert.Contains("between_tools", worker);
+        Assert.Contains("\"max_tokens\":800", worker);
+        Assert.Contains("\"low\"", worker);
+        var o = new LlmOptions();
+        Assert.Equal(ModelTier.Worker, o.TierOfModel("claude-sonnet-5-5"));
+        Assert.Equal(ModelTier.Main, o.TierOfModel("claude-opus-5-5"));
+        Assert.Equal(ModelTier.Cheap, o.TierOfModel("claude-haiku-5-5"));
+        Assert.Null(o.TierOfModel("gpt-whatever"));
     }
 
     [Fact]

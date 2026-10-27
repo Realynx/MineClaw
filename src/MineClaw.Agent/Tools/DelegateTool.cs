@@ -7,16 +7,20 @@ public sealed class DelegateTool : IAgentTool
 {
     private readonly Func<JsonElement, CancellationToken, Task<ToolResult>> _execute;
 
+    /// <param name="tiers">Explicit tier set; null = brain + worker, plus cheap when <paramref name="cheapTier"/>.</param>
+    /// <param name="maxResultChars">Per-tool result cap; null = the registry default.</param>
     public DelegateTool(string name, string description, JsonElement inputSchema,
         Func<JsonElement, CancellationToken, Task<ToolResult>> execute,
-        bool longRunning = false, bool cheapTier = false)
+        bool longRunning = false, bool cheapTier = false, ToolTiers? tiers = null, int? maxResultChars = null)
     {
         Name = name;
         Description = description;
         InputSchema = inputSchema;
         _execute = execute;
         IsLongRunning = longRunning;
-        AvailableToCheapTier = cheapTier;
+        Tiers = tiers ?? (ToolTiers.Default | (cheapTier ? ToolTiers.Cheap : ToolTiers.None));
+        AvailableToCheapTier = Tiers.HasFlag(ToolTiers.Cheap);
+        MaxResultChars = maxResultChars;
     }
 
     public string Name { get; }
@@ -24,6 +28,8 @@ public sealed class DelegateTool : IAgentTool
     public JsonElement InputSchema { get; }
     public bool IsLongRunning { get; }
     public bool AvailableToCheapTier { get; }
+    public ToolTiers Tiers { get; }
+    public int? MaxResultChars { get; }
 
     public Task<ToolResult> ExecuteAsync(JsonElement input, CancellationToken ct) => _execute(input, ct);
 }

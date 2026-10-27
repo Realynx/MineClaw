@@ -70,7 +70,7 @@ log.LogInformation("MineClaw starting (root {Root}, data {Data}, log {Log})", ro
 // ---------------------------------------------------------------- key check (models API: free)
 if (!cli.NoKeyCheck)
 {
-    var check = await KeyCheck.RunAsync(agentOptions.Llm.ApiKey!, [agentOptions.Llm.CheapModel, agentOptions.Llm.MainModel]);
+    var check = await KeyCheck.RunAsync(agentOptions.Llm.ApiKey!, [agentOptions.Llm.CheapModel, agentOptions.Llm.MainModel, agentOptions.Llm.WorkerModel]);
     if (!check.Ok)
     {
         Console.Error.WriteLine("Anthropic API check failed: " + check.Message);
@@ -359,7 +359,8 @@ internal sealed class ConsoleCommands(IGameClient c, AgentRuntime rt, PausableAg
             {
                 case "/as" when parts.Length == 3:
                     // Pretend a player said this (vanilla "<name> msg" line) — test the agent without a second account.
-                    var msg = rt.Chat.OnServerChat($"<{parts[1]}> {parts[2]}");
+                    // Tagged as test chat: memory stores it as source=test and the self-profile ignores it.
+                    var msg = rt.Chat.OnServerChat($"<{parts[1]}> {parts[2]}", test: true);
                     log.LogInformation("injected chat from {Player} ({Kind})", msg.Player, msg.Kind);
                     break;
                 case "/status":

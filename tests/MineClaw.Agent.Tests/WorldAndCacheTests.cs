@@ -43,7 +43,7 @@ public class ObservationTests
         Assert.Equal(30, world.Contents(row.Id).Single(c => c.ItemId == 4).Count);   // snapshot replaced
 
         var r = WorldTools.WhereIs(world, "iron_ingot", null, new BlockPos(0, 64, 0), time.GetUtcNow().AddMinutes(5));
-        Assert.Equal("iron_ingot x12: chest@10,64,-3 10m (seen 5m ago); x3: chest@0,64,0 0m (seen 5m ago) | total 15", r.Text);
+        Assert.Equal("iron_ingot x12: chest@10,64,-3 10m E (seen 5m ago); x3: chest@0,64,0 0m (seen 5m ago) | total 15", r.Text);
 
         Assert.True(world.Remove("chest", "0,64,0"));                    // block gone: tombstoned
         Assert.Single(world.FindItemInContainers(265));

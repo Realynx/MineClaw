@@ -8,15 +8,24 @@ namespace MineClaw.Agent.Human;
 /// <summary>Human-in-the-loop tools: ask a player something and wait; watch a player demonstrate a structure.</summary>
 public static class HumanTools
 {
+    public const string AskPlayerDescription =
+        "ONLY for a real question you need answered to continue; waits for and eats their next message. " +
+        "To answer or chat, write plain text.";
+
+    /// <summary>Error returned (nothing is sent) when ask_player is called without a question.</summary>
+    public const string NotAQuestion = "not sent: ask_player is only for questions you need answered. To reply, write plain text.";
+
     public static void RegisterAskPlayer(ToolRegistry registry, ChatRouter chat, int defaultTimeoutSeconds = 60)
     {
-        registry.Register("ask_player",
-            "Ask in chat and wait for the player's reply (returned as the result). Use when unsure what something is or what they want.",
-            ToolSchema.Create().Str("question").Str("name", "player to ask; omit for anyone", required: false)
+        // Brain only: the worker never talks to players and the cheap tier replies in plain text.
+        registry.Register("ask_player", AskPlayerDescription,
+            ToolSchema.Create().Str("question", "ends with ?").Str("name", "player to ask; omit for anyone", required: false)
                 .Int("timeout", "seconds, default 60, max 180", required: false).Build(),
             async (input, ct) =>
             {
-                var question = input.ReqStr("question");
+                var question = input.ReqStr("question").Trim();
+                // A normal answer sent through ask_player swallows the player's next message and holds the turn: refuse it.
+                if (!question.Contains('?')) return ToolResult.Error(NotAQuestion);
                 var name = input.Str("name");
                 int timeout = Math.Clamp(input.Int("timeout") ?? defaultTimeoutSeconds, 5, 180);
                 var text = name != null && !question.Contains(name, StringComparison.OrdinalIgnoreCase) ? $"{name}, {question}" : question;
@@ -25,7 +34,7 @@ public static class HumanTools
                 await chat.SayAsync(text, audience: name != null ? [name] : null, ct: ct).ConfigureAwait(false);
                 var reply = await wait.ConfigureAwait(false);
                 return reply != null ? ToolResult.Success(reply) : ToolResult.Error($"no reply in {timeout}s");
-            }, cheapTier: true);
+            }, tiers: ToolTiers.Main);
     }
 
     /// <summary>Registers <c>watch_demo</c> (only when the client layer supplies a demonstration source).</summary>

@@ -151,7 +151,9 @@ public class ToolMappingTests
     public async Task Observation_tools_respect_result_cap()
     {
         var (h, c) = TestBot.Create();
-        Assert.Equal($"look r=6 detail=True max={h.Runtime.Tools.MaxResultLength}", (await h.Run("look", new { radius = 6, detail = true })).Text);
+        // detail=true may use look's own larger cap (1200); plain look stays at the small default.
+        Assert.Equal("look r=6 detail=True max=1200", (await h.Run("look", new { radius = 6, detail = true })).Text);
+        Assert.Equal($"look r=12 detail=False max={h.Runtime.Tools.MaxResultLength}", (await h.Run("look", new { })).Text);
         Assert.Equal($"inv detail=False max={h.Runtime.Tools.MaxResultLength}", (await h.Run("inventory", new { })).Text);
         Assert.Equal("status-line", (await h.Run("status", new { })).Text);
     }

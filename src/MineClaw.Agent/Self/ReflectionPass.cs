@@ -68,7 +68,10 @@ public sealed class ReflectionPass
     {
         var since = LastRun;
         _profile.Decay();
-        var eps = _index.Recent("episode", since, 14).Where(h => !h.Ref.StartsWith("self:", StringComparison.Ordinal)).Take(12).ToList();
+        // Test chat (source=test, console /as impersonation) is never evidence about how players treat the bot.
+        var eps = _index.Recent("episode", since, 20)
+            .Where(h => !h.Ref.StartsWith("self:", StringComparison.Ordinal) && !h.Ref.StartsWith(EpisodeIndexer.TestRefPrefix, StringComparison.Ordinal))
+            .Take(12).ToList();
         Done();
         if (eps.Count == 0) return 0;
 

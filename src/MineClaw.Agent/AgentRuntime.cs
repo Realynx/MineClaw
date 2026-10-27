@@ -9,6 +9,7 @@ using MineClaw.Agent.Rag;
 using MineClaw.Agent.Self;
 using MineClaw.Agent.Routines;
 using MineClaw.Agent.Tools;
+using MineClaw.Agent.Worker;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -54,6 +55,16 @@ public sealed class AgentRuntime : IDisposable
     public AutoRetriever? Retriever { get; init; }
     public SelfProfile? Self { get; init; }
     public ReflectionPass? Reflection { get; init; }
+    /// <summary>Worker/builder tier behind the brain's <c>delegate</c> tool (null when Agent:Worker:Enabled is false).</summary>
+    public WorkerAgent? Worker { get; init; }
+    /// <summary>Cheap-tier retrieval loop behind the brain's <c>ask_memory</c> tool (null when disabled).</summary>
+    public MemoryAgent? MemoryAgent { get; init; }
+
+    /// <summary>
+    /// Splits the registered tools between brain and worker (<see cref="WorkerOptions.BrainTools"/> / <see cref="WorkerOptions.WorkerTools"/>).
+    /// Call once after the host has registered its game tools, before the first turn. No-op when the worker is disabled.
+    /// </summary>
+    public void ApplyBrainSplit() => BrainSplit.Apply(Tools, Options.Worker);
     public required IEmbeddingProvider Embeddings { get; init; }
     /// <summary>True if the in-prompt knowledge hit its cap (MaxKnowledgeChars, or Rag.MaxCoreChars for core rules).</summary>
     public bool KnowledgeTruncated { get; init; }
@@ -78,9 +89,13 @@ public sealed class AgentRuntime : IDisposable
         ILogger Log(string name) => loggers?.CreateLogger(name) ?? NullLogger.Instance;
 
         var tools = new ToolRegistry(options.MaxToolResultChars);
+        foreach (var (name, cap) in options.ToolResultCaps) tools.SetCap(name, cap);
         var events = new EventQueue(options.Events, time);
         var chat = new ChatRouter(options.Chat, events, sendChat, time);
-        var usage = new UsageTracker(options.Budget, options.Prices, time, Data(options.Budget.UsageFile));
+        var usage = new UsageTracker(options.Budget, options.Prices, time, Data(options.Budget.UsageFile))
+        {
+            Classify = m => options.Llm.TierOfModel(m),
+        };
 
         var rag = options.Rag;
         string Under(string f) => Path.IsPathRooted(f) ? f : Path.Combine(options.DataDirectory, f);
@@ -105,7 +120,7 @@ public sealed class AgentRuntime : IDisposable
             return Task.FromResult(ToolResult.Success(what != null ? $"stopped {what}" : "nothing running"));
         }, cheapTier: true);
         MemoryTools.RegisterAll(tools, memory, position);
-        WorldTools.Register(tools, observations, position, time);
+        WorldTools.Register(tools, observations, position, time, memory);
         IdentityTools.ApplyPersisted(memory, chat);
         IdentityTools.RegisterAll(tools, memory, chat);
         RoutineTools.RegisterAll(tools, memory, routines);
@@ -125,8 +140,23 @@ public sealed class AgentRuntime : IDisposable
         }
         else knowledge = Prompts.LoadKnowledge(options.KnowledgeDirectory, options.MaxKnowledgeChars, out truncated);
 
+        // Brain-only delegation tools (registered after the built-ins so the cached tool order stays stable).
+        WorkerAgent? worker = null;
+        if (options.Worker.Enabled)
+        {
+            worker = new WorkerAgent(options.Worker, options.Llm, llm, tools, usage, knowledge, time, Log("MineClaw.Worker"));
+            worker.Register();
+        }
+        MemoryAgent? memAgent = null;
+        if (options.AskMemory.Enabled)
+        {
+            memAgent = new MemoryAgent(options.AskMemory, llm, tools, usage, Log("MineClaw.Memory"));
+            memAgent.Register();
+        }
+
         var agent = new BotAgent(options, llm, tools, events, chat, usage, context, activities, knowledge, time,
             loggers?.CreateLogger<BotAgent>(), knowledgeIsCore: rag.Enabled);
+        if (worker != null) worker.StateHeader = () => agent.StateHeader?.Invoke() ?? "";
         var retriever = rag.Enabled && rag.AutoRetrieve ? new AutoRetriever(index, context, episodes) : null;
         var reflection = self != null ? new ReflectionPass(self, index, llm, usage, time, Log("MineClaw.Self")) : null;
         agent.Position = position;
@@ -141,7 +171,7 @@ public sealed class AgentRuntime : IDisposable
             Options = options, Tools = tools, Events = events, Chat = chat, Usage = usage, Memory = memory,
             Context = context, Activities = activities, Routines = routines, Agent = agent, Llm = llm,
             Db = db, Rag = index, Observations = observations, Episodes = episodes, Retriever = retriever, Self = self,
-            Reflection = reflection, Embeddings = embedder,
+            Reflection = reflection, Embeddings = embedder, Worker = worker, MemoryAgent = memAgent,
             KnowledgeTruncated = truncated, KnowledgeChars = knowledge.Length, KnowledgeChunks = chunks,
         };
     }

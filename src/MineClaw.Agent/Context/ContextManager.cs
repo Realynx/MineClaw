@@ -14,8 +14,14 @@ public sealed class ContextOptions
     public int CompactAtTokens { get; set; } = 30_000;
     /// <summary>Compaction folds the oldest episodes until history is at most this (hysteresis).</summary>
     public int CompactToTokens { get; set; } = 20_000;
-    /// <summary>Hard ceiling: if one compaction can't get under it, tool results are cut harder.</summary>
+    /// <summary>
+    /// Hard ceiling for any request's context (system + tools + history + current turn + max output). Enforced before
+    /// every brain/cheap call: history is folded mechanically, then tool results and long texts are cut; if it still
+    /// doesn't fit the call is skipped. Never exceeded.
+    /// </summary>
     public int MaxTokens { get; set; } = 100_000;
+    /// <summary>Token estimates are rough (≈3.5 chars/token); the guard keeps the estimate under MaxTokens × this.</summary>
+    public double HardCapSafety { get; set; } = 0.85;
     /// <summary>Cheap tier sees a text-only transcript of the same episodes; it compacts at/to these sizes.</summary>
     public int CheapCompactAtTokens { get; set; } = 16_000;
     public int CheapCompactToTokens { get; set; } = 10_000;
@@ -39,6 +45,8 @@ public sealed class Episode
 
     public ModelTier Tier { get; }
     public DateTimeOffset Started { get; }
+    /// <summary>Driven by injected test chat (console /as): indexed as source=test and kept out of reflection.</summary>
+    public bool IsTest { get; init; }
     public List<LlmMessage> Messages { get; } = new();
     /// <summary>Monotonic sequence number assigned at commit.</summary>
     public long Seq { get; internal set; } = -1;
@@ -187,6 +195,96 @@ public sealed class ContextManager
         e.MainTokens = EstimateTokens(e.Messages);
     }
 
+    /// <summary>
+    /// Emergency, synchronous (no model call) squeeze of committed history to at most <paramref name="maxTokens"/> for
+    /// <paramref name="tier"/>'s rendering: cut every old tool result hard, then fold whole episodes (oldest first, the newest
+    /// too if needed) into the journal mechanically, then shorten the journal. Busts the history cache, so it only runs when
+    /// a request would otherwise break <see cref="ContextOptions.MaxTokens"/>. Returns the resulting estimate.
+    /// </summary>
+    public int EnforceHardCap(int maxTokens, ModelTier tier)
+    {
+        maxTokens = Math.Max(0, maxTokens);
+        List<Episode> folded = new();
+        string journal;
+        int total;
+        lock (_lock)
+        {
+            int Measure() => TextUtil.EstimateTokens(Journal) + _episodes.Sum(e => tier == ModelTier.Main ? e.MainTokens : e.CheapTokens);
+            if (Measure() <= maxTokens) return Measure();
+            foreach (var e in _episodes) Retruncate(e, 40);
+            while (_episodes.Count > 0 && Measure() > maxTokens)
+            {
+                var e = _episodes[0];
+                _episodes.RemoveAt(0);
+                folded.Add(e);
+            }
+            if (folded.Count > 0)
+            {
+                var digest = string.Join("\n", folded.Select(e => Flatten(e, 80)));
+                var next = (Journal + "\n" + digest).Trim();
+                if (next.Length > _options.JournalMaxChars) next = "..." + next[^(_options.JournalMaxChars - 3)..];
+                Journal = next;
+            }
+            // Last resort: the journal itself (bounded by JournalMaxChars, so only an absurdly small cap gets here).
+            int journalBudget = maxTokens - _episodes.Sum(e => tier == ModelTier.Main ? e.MainTokens : e.CheapTokens);
+            if (TextUtil.EstimateTokens(Journal) > journalBudget)
+            {
+                int chars = (int)(journalBudget * 3.5) - 4;
+                Journal = chars > 20 ? TextUtil.Truncate(Journal, chars) : "";
+            }
+            journal = Journal;
+            total = Measure();
+        }
+        if (folded.Count > 0) Compacted?.Invoke(folded, journal);
+        return total;
+    }
+
+    /// <summary>
+    /// Shrinks an in-flight message list (the current episode) to at most <paramref name="maxTokens"/>: tool results are cut
+    /// (older messages first, then all), then the longest text blocks. Tool-use/result pairing is preserved. Returns the estimate.
+    /// </summary>
+    public static int Shrink(List<LlmMessage> messages, int maxTokens, int toolResultChars = 80)
+    {
+        int est = EstimateTokens(messages);
+        if (est <= maxTokens) return est;
+        // 1. tool results of all but the newest message, then of every message.
+        if (messages.Count > 1)
+        {
+            var older = messages.GetRange(0, messages.Count - 1);
+            TruncateToolResults(older, toolResultChars);
+            for (int i = 0; i < older.Count; i++) messages[i] = older[i];
+            est = EstimateTokens(messages);
+            if (est <= maxTokens) return est;
+        }
+        TruncateToolResults(messages, toolResultChars);
+        est = EstimateTokens(messages);
+        // 2. halve the longest text / tool-result block until it fits (bounded loop).
+        for (int guard = 0; est > maxTokens && guard < 200; guard++)
+        {
+            int bestMsg = -1, bestBlock = -1, bestLen = 0;
+            for (int i = 0; i < messages.Count; i++)
+                for (int j = 0; j < messages[i].Content.Count; j++)
+                {
+                    int len = messages[i].Content[j] switch { LlmText t => t.Text.Length, LlmToolResult r => r.Content.Length, _ => 0 };
+                    if (len > bestLen) { bestLen = len; bestMsg = i; bestBlock = j; }
+                }
+            if (bestMsg < 0 || bestLen <= 24) break;
+            int over = (int)Math.Ceiling((est - maxTokens) * 3.5) + 8;
+            int keep = Math.Max(20, Math.Min(bestLen / 2, bestLen - over));
+            var m = messages[bestMsg];
+            var blocks = m.Content.ToList();
+            blocks[bestBlock] = blocks[bestBlock] switch
+            {
+                LlmText t => new LlmText(TextUtil.Truncate(t.Text, keep)),
+                LlmToolResult r => r with { Content = TextUtil.Truncate(r.Content, keep) },
+                var b => b,
+            };
+            messages[bestMsg] = m with { Content = blocks };
+            est = EstimateTokens(messages);
+        }
+        return est;
+    }
+
     /// <summary>System prompt for the compaction call.</summary>
     public const string CompactionInstructions =
         "You maintain a Minecraft bot's memory journal. Merge the journal and the newer log into an updated journal: " +
@@ -252,7 +350,8 @@ public sealed class ContextManager
 
     /// <summary>Event lines of a turn text (state header, journal and auto-recalled memory dropped).</summary>
     internal static IEnumerable<string> EventLines(string text) =>
-        text.Split('\n').Where(l => l.StartsWith('[') && !l.StartsWith("[journal]") && !l.StartsWith("[recent]") && !l.StartsWith("[memory]"));
+        text.Split('\n').Where(l => l.StartsWith('[') && !l.StartsWith("[journal]") && !l.StartsWith("[recent]") && !l.StartsWith("[memory]")
+            && !l.StartsWith("[since last turn]"));
 
     // ---------- helpers ----------
 

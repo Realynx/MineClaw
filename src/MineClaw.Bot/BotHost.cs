@@ -47,9 +47,13 @@ public sealed class BotHost : IDisposable
         client.IsProtected = protection.IsProtected;
         client.ReservedItems = protection.ReservedItems();
 
-        GameToolSet.RegisterAll(rt.Tools, client, memory, botOptions);
+        GameToolSet.RegisterAll(rt.Tools, client, memory, botOptions,
+            landmark: (x, y, z) => Agent.Memory.Landmarks.Near(rt.Memory, rt.Observations, x, y, z));
         HumanGameTools.RegisterAskStand(rt.Tools, rt.Chat, client, botOptions.AskStandTimeoutSeconds);
         HumanGameTools.RegisterWatchDemo(rt.Tools, rt.Chat, recorder, memory);
+        if (client is MinecraftGameClient mg) CombatTools.Register(rt.Tools, mg.Inner, rt.Events);
+        // Brain gets the cheap single-shot tools + delegate/ask_memory; the worker gets the game macro tools.
+        rt.ApplyBrainSplit();
 
         var bridge = new GameBridge(client, rt, log, time);
         bridge.Attach();

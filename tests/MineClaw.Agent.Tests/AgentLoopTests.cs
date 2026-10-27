@@ -56,7 +56,7 @@ public class AgentLoopTests
     [Fact]
     public async Task CheapTier_Escalates_ToMain_AndEscalationNotInHistory()
     {
-        var (rt, llm, sent) = TestRuntime.Create();
+        var (rt, llm, sent) = TestRuntime.Create(o => o.Triage.CheapFirstForChat = true);
         llm.ThenTool(BotAgent.EscalateToolName, new { reason = "needs a plan" }, text: "ooh ok one sec")
            .ThenText("plan: build a cobble gen next to the tree");
 
@@ -171,7 +171,7 @@ public class AgentLoopTests
     [Fact]
     public async Task CheapTier_CannotCallMainOnlyTools()
     {
-        var (rt, llm, _) = TestRuntime.Create();
+        var (rt, llm, _) = TestRuntime.Create(o => o.Triage.CheapFirstForChat = true);
         bool ran = false;
         rt.Tools.Register("dig", "Dig.", ToolSchema.Empty, (_, _) => { ran = true; return Task.FromResult(ToolResult.Success("dug")); });
         llm.ThenTool("dig", new { }).ThenText("hm can't");

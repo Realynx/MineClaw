@@ -43,6 +43,8 @@ public sealed class BotAgent
     private readonly ILogger _log;
     private readonly string _staticText;
     private DateTimeOffset _lastEpisode;
+    private DateTimeOffset _lastTurnAt;
+    private DateTimeOffset _turnSince;
     private DateTimeOffset _lastActive = DateTimeOffset.MinValue;
     private DateTimeOffset _lastPausedNotice = DateTimeOffset.MinValue;
 
@@ -61,11 +63,13 @@ public sealed class BotAgent
         _time = time ?? TimeProvider.System;
         _log = log ?? NullLogger.Instance;
         _triage = new Triage(options.Triage);
-        _staticText = Prompts.System(options.Persona, options.PersonaExtra, knowledge, knowledgeIsCore);
+        _staticText = Prompts.System(options.Persona, options.PersonaExtra, knowledge, knowledgeIsCore, delegation: options.Worker.Enabled);
         _lastEpisode = _time.GetUtcNow();
+        _lastTurnAt = _turnSince = _lastEpisode;
 
         _events.Posted += OnEventPosted;
         _usage.ModeChanged += OnBudgetModeChanged;
+        _chat.CommandBlocked += line => _log.LogWarning("blocked outgoing server command: {Line}", line);
     }
 
     /// <summary>Compact one-line game state ("pos 12,64,-3 hp 18/20 food 17 held stone_pickaxe"), supplied by the client layer.</summary>
@@ -73,6 +77,13 @@ public sealed class BotAgent
 
     /// <summary>Current block position (spatial auto-retrieval, episode positions).</summary>
     public Func<BlockPos?>? Position { get; set; }
+
+    /// <summary>
+    /// Optional "what happened since the brain's last turn" hook (e.g. the WorldIndexer's activity digest: what other players
+    /// did, salience-ranked). Gets the time of the last turn; its output goes right after the state header as
+    /// <c>[since last turn] ...</c> — uncached tail only, capped, deduped against [memory]. Null/empty = nothing.
+    /// </summary>
+    public Func<DateTimeOffset, string>? TurnDigest { get; set; }
 
     /// <summary>Builds the per-turn [memory] block (null = no auto-retrieval).</summary>
     public AutoRetriever? Retriever { get; set; }
@@ -146,8 +157,9 @@ public sealed class BotAgent
     public async Task<EpisodeOutcome> HandleBatchAsync(EventBatch batch, CancellationToken ct)
     {
         _lastEpisode = _time.GetUtcNow();
+        _turnSince = _lastTurnAt;
         LogChat(batch);
-        if (batch.Waking.Any(e => e.Kind is EventKind.Chat or EventKind.Whisper)) _lastActive = _lastEpisode;
+        if (batch.Waking.Any(e => e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote)) _lastActive = _lastEpisode;
         var mode = _usage.CheckMode();
         if (mode == BudgetMode.Paused)
         {
@@ -155,6 +167,7 @@ public sealed class BotAgent
             return Done(new EpisodeOutcome(null, 0, LlmUsage.Zero, 0, [], false, "paused: " + _usage.Reason));
         }
 
+        _lastTurnAt = _lastEpisode; // only turns that actually reach a model move the digest window
         var decision = _triage.Choose(batch, mode);
         _log.LogDebug("triage → {Tier} ({Why})", decision.Tier, decision.Why);
         var outcome = await RunEpisodeAsync(batch, decision.Tier, decision.CanEscalate, mode, null, ct).ConfigureAwait(false);
@@ -215,11 +228,14 @@ public sealed class BotAgent
 
     private async Task<RunResult> RunEpisodeAsync(EventBatch batch, ModelTier tier, bool canEscalate, BudgetMode mode, string? prelude, CancellationToken ct)
     {
-        var episode = new Episode(tier, _time.GetUtcNow());
+        var episode = new Episode(tier, _time.GetUtcNow()) { IsTest = batch.IsTest };
         episode.Messages.Add(LlmMessage.User(await BuildTurnTextAsync(batch, tier, canEscalate, mode, prelude, ct).ConfigureAwait(false)));
 
         string? whisperTo = batch.WhisperOnlyFrom;
         var audience = batch.Waking.Where(e => e.Player != null).Select(e => e.Player!).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var speaker = batch.Waking.FirstOrDefault(e => e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote && e.Player != null)?.Player;
+        // Ambient for tools (and background tasks started from this turn): who asked, and whether it's injected test chat.
+        TurnContext.Current = new TurnInfo(speaker, audience.ToArray(), batch.IsTest);
         var said = new List<string>();
         var usage = LlmUsage.Zero;
         decimal cost = 0;
@@ -227,25 +243,37 @@ public sealed class BotAgent
         var tools = ToolsFor(tier, canEscalate);
         // Snapshot per episode: a rename mid-turn applies from the next turn, keeping this turn's prefix byte-stable.
         var system = SystemPrompt;
+        // Budget fallback 1 (Economy): the brain's turn runs on the worker model; same tools and history.
+        string? model = tier == ModelTier.Main && mode == BudgetMode.Economy ? _options.Llm.WorkerModel : null;
+        int maxOut = _options.Llm.MaxTokensFor(tier);
 
         for (int round = 0; round < _options.MaxToolRounds; round++)
         {
             var nowMode = _usage.CheckMode();
             if (nowMode == BudgetMode.Paused || (tier == ModelTier.Main && nowMode == BudgetMode.CheapOnly && round > 0)) break;
 
+            if (!FitHardCap(tier, system, tools, episode.Messages, maxOut))
+            {
+                _log.LogError("context can't fit under the {Cap} token hard cap; ending turn without a call", _context.Options.MaxTokens);
+                break;
+            }
+
             var request = new LlmRequest
             {
                 Tier = tier,
+                Model = model,
                 System = system,
                 Tools = tools,
                 Messages = _context.BuildMessages(tier, episode.Messages),
                 Purpose = tier == ModelTier.Cheap ? "chat" : "task",
             };
+            LastRequestTokens = EstimateRequestTokens(request, maxOut);
             var response = await _llm.CompleteAsync(request, ct).ConfigureAwait(false);
             calls++;
             usage = usage.Add(response.Usage);
-            cost += _usage.Record(response.Model, response.Usage);
-            _log.LogDebug("call {Tier} round {Round}: {Usage} cache hit {Hit:P0}", tier, round, response.Usage, UsageTracker.CacheHit(response.Usage));
+            cost += _usage.Record(response.Model, response.Usage, tier);
+            _log.LogInformation("call {Label} ({Model}) round {Round}: {Usage} cache {Hit:P0}",
+                UsageTracker.TierLabel(_options.Llm.TierOfModel(response.Model) ?? tier), response.Model, round, response.Usage, UsageTracker.CacheHit(response.Usage));
 
             var content = response.Content.Where(b => b is not LlmText t || !string.IsNullOrWhiteSpace(t.Text)).ToList();
             if (content.Count == 0) content.Add(new LlmText("(silent)"));
@@ -256,7 +284,7 @@ public sealed class BotAgent
             {
                 var lines = await _chat.SayAsync(text, whisperTo, audience, ct).ConfigureAwait(false);
                 said.AddRange(lines);
-                LogSaid(lines, whisperTo);
+                LogSaid(lines, whisperTo, episode.IsTest);
             }
 
             if (response.StopReason == StopReasons.Refusal)
@@ -315,6 +343,8 @@ public sealed class BotAgent
         var status = string.Join(" | ", new[] { header.Trim(), activity != null ? "task: " + activity : (header.Contains("task:") ? "" : "task: idle") }
             .Where(s => s.Length > 0));
         sb.Append(status.TrimStart('[')).Append('\n');
+        var digest = BuildDigest(memory);
+        if (digest.Length > 0) sb.Append(digest).Append('\n');
         if (mode == BudgetMode.CheapOnly) sb.Append(Prompts.CheapOnlyHint).Append('\n');
         else if (tier == ModelTier.Cheap && canEscalate) sb.Append(Prompts.CheapTierHint).Append('\n');
         if (prelude != null) sb.Append(prelude).Append('\n');
@@ -323,12 +353,67 @@ public sealed class BotAgent
         return sb.ToString().TrimEnd();
     }
 
+    /// <summary>
+    /// "[since last turn] ..." from <see cref="TurnDigest"/>: one line, capped at <see cref="AgentOptions.TurnDigestMaxChars"/>,
+    /// with parts already present in the [memory] block dropped. Lives in the uncached newest user message only.
+    /// </summary>
+    private string BuildDigest(string memory)
+    {
+        if (TurnDigest == null || _options.TurnDigestMaxChars <= 0) return "";
+        string raw;
+        try { raw = TurnDigest(_turnSince) ?? ""; }
+        catch (Exception ex) { _log.LogWarning(ex, "turn digest failed"); return ""; }
+        if (string.IsNullOrWhiteSpace(raw)) return "";
+        var mem = memory.Length > 0 ? Norm(memory) : "";
+        var parts = raw.Replace("\r", "").Split(['\n', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(p => p.StartsWith(DigestTag, StringComparison.OrdinalIgnoreCase) ? p[DigestTag.Length..].Trim() : p)
+            .Where(p => p.Length > 0 && (mem.Length == 0 || !mem.Contains(Norm(p), StringComparison.Ordinal)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (parts.Count == 0) return "";
+        var line = DigestTag + " " + string.Join("; ", parts);
+        return TextUtil.Truncate(line, _options.TurnDigestMaxChars);
+
+        static string Norm(string s) => string.Join(' ', s.ToLowerInvariant().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    public const string DigestTag = "[since last turn]";
+
     private IReadOnlyList<LlmToolDefinition> ToolsFor(ModelTier tier, bool canEscalate)
     {
-        if (tier == ModelTier.Main) return _tools.Definitions();
-        var defs = _tools.Definitions(t => t.AvailableToCheapTier).ToList();
+        if (tier == ModelTier.Main) return _tools.Definitions(ModelTier.Main);
+        var defs = _tools.Definitions(ModelTier.Cheap).ToList();
         if (canEscalate) defs.Add(EscalateTool);
         return defs;
+    }
+
+    /// <summary>Estimated tokens of the most recent brain/cheap request (system + tools + messages + max output).</summary>
+    public int LastRequestTokens { get; private set; }
+
+    internal static int EstimateRequestTokens(LlmRequest r, int maxOut) =>
+        r.System.Sum(s => TextUtil.EstimateTokens(s.Text)) + Worker.WorkerAgent.ToolTokens(r.Tools) + ContextManager.EstimateTokens(r.Messages) + maxOut;
+
+    /// <summary>
+    /// Enforces <see cref="ContextOptions.MaxTokens"/> (× <see cref="ContextOptions.HardCapSafety"/>) before a call, whatever
+    /// grew: the current turn is cut first (tool results, then long texts) down to half the room if it's the hog, then history
+    /// is folded mechanically, then the current turn is cut to whatever is left. False = it can't fit; don't call.
+    /// </summary>
+    private bool FitHardCap(ModelTier tier, IReadOnlyList<LlmSystemBlock> system, IReadOnlyList<LlmToolDefinition> tools, List<LlmMessage> current, int maxOut)
+    {
+        var o = _context.Options;
+        int cap = (int)(o.MaxTokens * Math.Clamp(o.HardCapSafety, 0.1, 1.0));
+        int fixedTokens = system.Sum(s => TextUtil.EstimateTokens(s.Text)) + Worker.WorkerAgent.ToolTokens(tools) + maxOut + 16;
+        int History() => tier == ModelTier.Main ? _context.EstimateTokens() : _context.EstimateCheapTokens();
+        int cur = ContextManager.EstimateTokens(current);
+        if (fixedTokens + History() + cur <= cap) return true;
+
+        int room = cap - fixedTokens;
+        if (room <= 0) return false;
+        _log.LogWarning("hard cap: request ≈{Tokens} tokens > {Cap}; trimming", fixedTokens + History() + cur, cap);
+        if (cur > room - History() && cur > room / 2) cur = ContextManager.Shrink(current, Math.Max(room / 2, room - History()), o.OldToolResultChars);
+        if (History() + cur > room) _context.EnforceHardCap(room - cur, tier);
+        if (History() + cur > room) cur = ContextManager.Shrink(current, room - History(), o.OldToolResultChars);
+        return fixedTokens + History() + cur <= cap;
     }
 
     private async Task<IReadOnlyList<LlmToolResult>> ExecuteToolsAsync(List<LlmToolUse> uses, ModelTier tier, CancellationToken ct)
@@ -345,9 +430,10 @@ public sealed class BotAgent
                 results[i] = ToolResult.Error(u.Name == EscalateToolName ? "can't escalate right now" : $"unknown tool '{u.Name}'");
                 continue;
             }
-            if (tier == ModelTier.Cheap && !tool.AvailableToCheapTier)
+            if (!_tools.Allows(tool, tier))
             {
-                results[i] = ToolResult.Error("not available in quick mode");
+                results[i] = ToolResult.Error(tier == ModelTier.Cheap ? "not available in quick mode"
+                    : $"'{u.Name}' is a worker tool: use delegate");
                 continue;
             }
             if (tool.IsLongRunning) chain.Add((i, tool, u));
@@ -395,20 +481,22 @@ public sealed class BotAgent
             {
                 string? kind = e.Kind switch
                 {
-                    EventKind.Chat => "chat", EventKind.Whisper => "whisper", EventKind.PlayerJoined => "join", EventKind.PlayerLeft => "leave", _ => null,
+                    EventKind.Chat => "chat", EventKind.Whisper => "whisper", EventKind.Emote => "emote",
+                    EventKind.PlayerJoined => "join", EventKind.PlayerLeft => "leave", _ => null,
                 };
-                if (kind != null) Rag.LogChat(e.At, kind, e.Player, e.Text);
+                // Injected test chat (console /as) is kept, tagged: it never counts as the real player speaking.
+                if (kind != null) Rag.LogChat(e.At, e.IsTest ? "test_" + kind : kind, e.Player, e.Text);
             }
         }
         catch (Exception ex) { _log.LogWarning(ex, "chat log write failed"); }
     }
 
-    private void LogSaid(IReadOnlyList<string> lines, string? whisperTo)
+    private void LogSaid(IReadOnlyList<string> lines, string? whisperTo, bool test = false)
     {
         if (Rag == null) return;
         try
         {
-            foreach (var l in lines) Rag.LogChat(_time.GetUtcNow(), whisperTo != null ? "bot_whisper" : "bot", _chat.Username, l);
+            foreach (var l in lines) Rag.LogChat(_time.GetUtcNow(), (test ? "test_" : "") + (whisperTo != null ? "bot_whisper" : "bot"), _chat.Username, l);
         }
         catch (Exception ex) { _log.LogWarning(ex, "chat log write failed"); }
     }
@@ -424,7 +512,7 @@ public sealed class BotAgent
             CacheHistory = false,
             Purpose = "compact",
         }, ct).ConfigureAwait(false);
-        _usage.Record(response.Model, response.Usage);
+        _usage.Record(response.Model, response.Usage, ModelTier.Cheap);
         return response.Text;
     }
 
@@ -444,6 +532,7 @@ public sealed class BotAgent
             BudgetMode.Paused => $"heads up: pausing my brain ({reason}). i'll be back when it resets",
             BudgetMode.CheapOnly => $"heads up: {reason}, so i'm in chat-only mode for now",
             BudgetMode.Normal => "budget's fine again, back to full brain",
+            BudgetMode.Economy => null, // quiet: brain on the worker model, players won't notice much
             _ => null,
         };
         _log.LogWarning("budget mode → {Mode}: {Reason}", mode, reason);

@@ -15,6 +15,9 @@ public sealed class EpisodeIndexer
 {
     public const string Kind = "episode";
 
+    /// <summary>Doc ref prefix of test-driven episodes (source=test).</summary>
+    public const string TestRefPrefix = "eptest:";
+
     private readonly RagIndex _index;
     private readonly ContextManager _context;
     private readonly RagOptions _o;
@@ -67,9 +70,11 @@ public sealed class EpisodeIndexer
             try { pos = _position?.Invoke(); } catch (Exception) { }
             var title = TextUtil.Truncate(lines[0], 90);
             var body = $"{e.Started.ToLocalTime():MM-dd HH:mm}" + (pos != null ? $" @{pos}" : "") + ": " + string.Join(" | ", lines.Select(l => l.Trim()));
-            var id = _index.Upsert(new RagDoc($"ep:{_run}:{e.Seq}", Kind, title, TextUtil.Truncate(body, _o.EpisodeSummaryChars))
+            // Test-driven episodes (console /as impersonating a player) stay searchable but are tagged and kept out of reflection.
+            var id = _index.Upsert(new RagDoc($"{(e.IsTest ? TestRefPrefix : "ep:")}{_run}:{e.Seq}", Kind, title,
+                TextUtil.Truncate((e.IsTest ? "[test] " : "") + body, _o.EpisodeSummaryChars))
             {
-                Source = "episode",
+                Source = e.IsTest ? "test" : "episode",
                 Bounds = pos != null ? Box.Point(pos.X, pos.Y, pos.Z) : null,
                 At = e.Started,
             });

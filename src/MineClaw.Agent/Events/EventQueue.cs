@@ -23,9 +23,12 @@ public sealed record EventBatch(IReadOnlyList<GameEvent> Events)
     public bool HasDanger => Events.Any(e => e.Kind is EventKind.LowHealth or EventKind.VoidFall or EventKind.Death);
     public IEnumerable<GameEvent> Waking => Events.Where(e => e.Wakes);
 
+    /// <summary>True if any waking event was injected test chat (the episode is then tagged source=test).</summary>
+    public bool IsTest => Waking.Any(e => e.IsTest);
+
     /// <summary>True when everything that woke us is chat/whisper/join/idle (no task or danger) — triage candidate.</summary>
     public bool IsConversational => Waking.All(e => e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.PlayerJoined
-        or EventKind.PlayerLeft or EventKind.IdleTick or EventKind.Notice);
+        or EventKind.PlayerLeft or EventKind.IdleTick or EventKind.Notice or EventKind.Activity or EventKind.Emote);
 
     /// <summary>The single player to whisper back to, if every waking message was a whisper from them.</summary>
     public string? WhisperOnlyFrom

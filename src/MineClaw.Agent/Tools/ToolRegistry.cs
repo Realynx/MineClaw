@@ -13,12 +13,45 @@ public sealed class ToolRegistry
 {
     private readonly List<IAgentTool> _tools = new();
     private readonly Dictionary<string, IAgentTool> _byName = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ToolTiers> _tiers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _caps = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _lock = new();
 
     public ToolRegistry(int maxResultLength = 400) => MaxResultLength = maxResultLength;
 
-    /// <summary>Hard cap on result text length seen by the model.</summary>
+    /// <summary>Default hard cap on result text length seen by the model (per-tool caps may raise or lower it).</summary>
     public int MaxResultLength { get; set; }
+
+    /// <summary>Overrides one tool's result cap (e.g. look/window detail up to 1200 while the default stays small).</summary>
+    public void SetCap(string name, int maxChars) { lock (_lock) _caps[name] = Math.Max(20, maxChars); }
+
+    /// <summary>Effective result cap for a tool: registry override, else the tool's own, else <see cref="MaxResultLength"/>.</summary>
+    public int CapFor(string name)
+    {
+        lock (_lock)
+        {
+            if (_caps.TryGetValue(name, out var c)) return c;
+            return _byName.TryGetValue(name, out var t) && t.MaxResultChars is { } own ? own : MaxResultLength;
+        }
+    }
+
+    /// <summary>Overrides which tiers see a tool (applied by the brain/worker split). Changes the cached prefix: startup only.</summary>
+    public void SetTiers(string name, ToolTiers tiers)
+    {
+        lock (_lock) _tiers[name] = tiers;
+        Changed?.Invoke();
+    }
+
+    /// <summary>Effective tiers of a tool (override, else its own <see cref="IAgentTool.Tiers"/>).</summary>
+    public ToolTiers TiersOf(IAgentTool tool)
+    {
+        lock (_lock) return _tiers.TryGetValue(tool.Name, out var t) ? t : tool.Tiers;
+    }
+
+    public bool Allows(IAgentTool tool, ModelTier tier) => (TiersOf(tool) & tier.Flag()) != 0;
+
+    /// <summary>Tool definitions one tier sees, in registration order.</summary>
+    public IReadOnlyList<LlmToolDefinition> Definitions(ModelTier tier) => Definitions(t => Allows(t, tier));
 
     /// <summary>Raised when the tool list changes (the agent rebuilds its cached tool definitions).</summary>
     public event Action? Changed;
@@ -40,8 +73,9 @@ public sealed class ToolRegistry
 
     /// <summary>Registers a lambda-backed tool.</summary>
     public ToolRegistry Register(string name, string description, JsonElement schema,
-        Func<JsonElement, CancellationToken, Task<ToolResult>> execute, bool longRunning = false, bool cheapTier = false) =>
-        Register(new DelegateTool(name, description, schema, execute, longRunning, cheapTier));
+        Func<JsonElement, CancellationToken, Task<ToolResult>> execute, bool longRunning = false, bool cheapTier = false,
+        ToolTiers? tiers = null, int? maxResultChars = null) =>
+        Register(new DelegateTool(name, description, schema, execute, longRunning, cheapTier, tiers, maxResultChars));
 
     public bool Remove(string name)
     {
@@ -94,6 +128,6 @@ public sealed class ToolRegistry
         {
             result = ToolResult.Error(ex.GetType().Name + ": " + TextUtil.OneLine(ex.Message));
         }
-        return result.Truncate(MaxResultLength);
+        return result.Truncate(CapFor(tool.Name));
     }
 }

@@ -3,14 +3,27 @@ using MineClaw.Agent.Runtime;
 
 namespace MineClaw.Agent.Budget;
 
+/// <summary>
+/// Budget fallback order (spend = today's or this month's total across ALL tiers, checked against each cap):
+/// <list type="number">
+/// <item><see cref="Normal"/>: Opus brain, Sonnet worker for delegated tasks, Haiku memory.</item>
+/// <item><see cref="Economy"/> (≥ <see cref="BudgetOptions.WorkerBrainFraction"/> of a cap): the brain's turns run on the
+/// worker model (same tools; delegation and ask_memory still work).</item>
+/// <item><see cref="CheapOnly"/> (≥ <see cref="BudgetOptions.CheapOnlyFraction"/>): Haiku chat only — no game actions, no
+/// delegation; running worker tasks stop at their next round.</item>
+/// <item><see cref="Paused"/> (≥ a cap, or the hourly call cap): no model calls at all.</item>
+/// </list>
+/// </summary>
 public enum BudgetMode
 {
-    /// <summary>Both tiers, all tools.</summary>
+    /// <summary>All tiers, all tools.</summary>
     Normal,
     /// <summary>Cheap tier only, chat only (no escalation, no game tools).</summary>
     CheapOnly,
     /// <summary>No model calls at all until the window rolls over.</summary>
     Paused,
+    /// <summary>First fallback: brain turns run on the worker model instead of the main (Opus) model.</summary>
+    Economy,
 }
 
 public sealed class BudgetOptions
@@ -19,12 +32,45 @@ public sealed class BudgetOptions
     public decimal DailyCapUsd { get; set; } = 10.00m;
     /// <summary>Hard monthly cap (USD). Reaching it pauses the agent until the 1st.</summary>
     public decimal MonthlyCapUsd { get; set; } = 190.00m;
-    /// <summary>Fraction of either cap after which the agent drops to cheap-tier chat only.</summary>
+    /// <summary>Fraction of either cap after which the brain runs on the worker model (first fallback; 0 = skip).</summary>
+    public double WorkerBrainFraction { get; set; } = 0.6;
+    /// <summary>Fraction of either cap after which the agent drops to cheap-tier chat only (second fallback).</summary>
     public double CheapOnlyFraction { get; set; } = 0.8;
     /// <summary>Max model calls in any rolling hour (pauses until the window frees up).</summary>
     public int MaxCallsPerHour { get; set; } = 90;
     /// <summary>File name (under AgentOptions.DataDirectory) for persisted daily/monthly totals.</summary>
     public string UsageFile { get; set; } = "usage.json";
+}
+
+/// <summary>Totals for one tier (opus / worker / memory).</summary>
+public sealed class TierTotals
+{
+    public decimal Usd { get; set; }
+    public int Calls { get; set; }
+    public long InputTokens { get; set; }
+    public long OutputTokens { get; set; }
+    public long CacheReadTokens { get; set; }
+    public long CacheWriteTokens { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public double CacheHitRatio
+    {
+        get
+        {
+            long total = InputTokens + CacheReadTokens + CacheWriteTokens;
+            return total == 0 ? 0 : (double)CacheReadTokens / total;
+        }
+    }
+
+    internal void Add(decimal usd, LlmUsage u)
+    {
+        Usd += usd;
+        Calls++;
+        InputTokens += u.InputTokens;
+        OutputTokens += u.OutputTokens;
+        CacheReadTokens += u.CacheReadTokens;
+        CacheWriteTokens += u.CacheWriteTokens;
+    }
 }
 
 public sealed class UsageTotals
@@ -35,6 +81,14 @@ public sealed class UsageTotals
     public long OutputTokens { get; set; }
     public long CacheReadTokens { get; set; }
     public long CacheWriteTokens { get; set; }
+
+    /// <summary>Per-tier breakdown keyed by <see cref="UsageTracker.TierLabel"/> ("opus", "worker", "memory"; "other" = unknown model).</summary>
+    public Dictionary<string, TierTotals> Tiers { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Totals for one tier label (empty totals if none yet).</summary>
+    public TierTotals Tier(string label) => Tiers.TryGetValue(label, out var t) ? t : new TierTotals();
+
+    public TierTotals Tier(ModelTier tier) => Tier(UsageTracker.TierLabel(tier));
 
     /// <summary>Embedding spend is a separate line item (it still counts toward the caps).</summary>
     public decimal EmbeddingUsd { get; set; }
@@ -62,7 +116,7 @@ public sealed class UsageTotals
         EmbeddingCalls++;
     }
 
-    internal void Add(decimal usd, LlmUsage u)
+    internal void Add(decimal usd, LlmUsage u, string tier)
     {
         Usd += usd;
         Calls++;
@@ -70,6 +124,9 @@ public sealed class UsageTotals
         OutputTokens += u.OutputTokens;
         CacheReadTokens += u.CacheReadTokens;
         CacheWriteTokens += u.CacheWriteTokens;
+        Tiers ??= new(StringComparer.OrdinalIgnoreCase);
+        if (!Tiers.TryGetValue(tier, out var t)) Tiers[tier] = t = new TierTotals();
+        t.Add(usd, u);
     }
 }
 
@@ -110,6 +167,19 @@ public sealed class UsageTracker
 
     public PriceTable Prices => _prices;
 
+    /// <summary>Maps a model id to its tier for the per-tier breakdown (the runtime sets it from <c>LlmOptions.TierOfModel</c>).</summary>
+    public Func<string, ModelTier?>? Classify { get; set; }
+
+    /// <summary>Report label of a tier: the brain is "opus", the builder "worker", the Haiku tier "memory".</summary>
+    public static string TierLabel(ModelTier tier) => tier switch
+    {
+        ModelTier.Main => "opus",
+        ModelTier.Worker => "worker",
+        _ => "memory",
+    };
+
+    public static readonly string[] TierLabels = ["opus", "worker", "memory", "other"];
+
     private DateTimeOffset Now => _time.GetLocalNow();
     private string DayKey => Now.ToString("yyyy-MM-dd");
     private string MonthKey => Now.ToString("yyyy-MM");
@@ -147,15 +217,21 @@ public sealed class UsageTracker
         return cost;
     }
 
-    /// <summary>Records one API call and returns its estimated cost in USD.</summary>
-    public decimal Record(string model, LlmUsage usage)
+    /// <summary>
+    /// Records one API call and returns its estimated cost in USD. The tier bucket is <see cref="Classify"/> applied to the
+    /// model that actually answered (so a brain turn on the worker model in <see cref="BudgetMode.Economy"/> is worker spend),
+    /// else <paramref name="tier"/>, else "other".
+    /// </summary>
+    public decimal Record(string model, LlmUsage usage, ModelTier? tier = null)
     {
         decimal cost = _prices.Cost(model, usage);
+        var t = Classify?.Invoke(model) ?? tier;
+        string label = t is { } tt ? TierLabel(tt) : "other";
         lock (_lock)
         {
             _lastCacheHit = CacheHit(usage);
-            Get(_state.Days, DayKey).Add(cost, usage);
-            Get(_state.Months, MonthKey).Add(cost, usage);
+            Get(_state.Days, DayKey).Add(cost, usage, label);
+            Get(_state.Months, MonthKey).Add(cost, usage, label);
             _recentCalls.Enqueue(Now);
             TrimOldDays();
             if (_path != null)
@@ -196,9 +272,18 @@ public sealed class UsageTracker
             Prune();
             return $"today ${d.TotalUsd:0.000}/{_options.DailyCapUsd:0.00} ({d.Calls} calls, cache {d.CacheHitRatio:P0}" +
                    (d.EmbeddingTokens > 0 ? $", emb ${d.EmbeddingUsd:0.0000}" : "") +
-                   $"), month ${m.TotalUsd:0.00}/{_options.MonthlyCapUsd:0.00}, {_recentCalls.Count} calls/h";
+                   $"), month ${m.TotalUsd:0.00}/{_options.MonthlyCapUsd:0.00}, {_recentCalls.Count} calls/h" +
+                   (d.Tiers is { Count: > 0 } ? " | " + TierSummary(d) : "");
         }
     }
+
+    /// <summary>"opus $0.041 3c cache 82% | worker $0.012 5c cache 71% | memory $0.000 1c cache 0%" (tiers with calls only).</summary>
+    public static string TierSummary(UsageTotals totals) =>
+        string.Join(" | ", TierLabels.Where(l => totals.Tiers?.ContainsKey(l) == true).Select(l =>
+        {
+            var t = totals.Tiers[l];
+            return $"{l} ${t.Usd:0.000} {t.Calls}c cache {t.CacheHitRatio:P0}";
+        }));
 
     private (BudgetMode Mode, string Reason) Evaluate()
     {
@@ -211,6 +296,12 @@ public sealed class UsageTracker
         var f = (decimal)_options.CheapOnlyFraction;
         if (_options.MonthlyCapUsd > 0 && m >= _options.MonthlyCapUsd * f) return (BudgetMode.CheapOnly, "monthly budget nearly used");
         if (_options.DailyCapUsd > 0 && d >= _options.DailyCapUsd * f) return (BudgetMode.CheapOnly, "daily budget nearly used");
+        var w = (decimal)_options.WorkerBrainFraction;
+        if (w > 0 && w < f)
+        {
+            if (_options.MonthlyCapUsd > 0 && m >= _options.MonthlyCapUsd * w) return (BudgetMode.Economy, "monthly budget past the economy mark");
+            if (_options.DailyCapUsd > 0 && d >= _options.DailyCapUsd * w) return (BudgetMode.Economy, "daily budget past the economy mark");
+        }
         return (BudgetMode.Normal, "ok");
     }
 

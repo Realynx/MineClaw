@@ -5,10 +5,12 @@ namespace MineClaw.Agent.Llm;
 /// <summary>Which model tier a call runs on. Model IDs come from <see cref="LlmOptions"/>.</summary>
 public enum ModelTier
 {
-    /// <summary>Haiku-class: chat triage, small talk, compaction.</summary>
+    /// <summary>Haiku-class "memory" tier: compaction, reflection, ask_memory retrieval, budget-fallback chat.</summary>
     Cheap,
-    /// <summary>Sonnet-class: planning and multi-step tasks.</summary>
+    /// <summary>Opus-class "frontal lobe": planning, decisions and all conversation with players.</summary>
     Main,
+    /// <summary>Sonnet-class worker/builder: runs delegated multi-step tasks in its own short-lived tool loop.</summary>
+    Worker,
 }
 
 public enum LlmRole { User, Assistant }

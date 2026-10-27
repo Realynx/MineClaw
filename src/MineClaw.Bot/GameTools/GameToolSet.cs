@@ -24,7 +24,9 @@ public static class GameToolSet
 
     private const string At = "x,y,z or saved name";
 
-    public static void RegisterAll(ToolRegistry tools, IGameClient c, IPlaceResolver places, BotOptions? options = null)
+    /// <param name="landmark">Nearest named landmark of a point, phrased relationally ("2 E of cobble_gen"); null = no hints.</param>
+    public static void RegisterAll(ToolRegistry tools, IGameClient c, IPlaceResolver places, BotOptions? options = null,
+        Func<double, double, double, string?>? landmark = null)
     {
         options ??= new BotOptions();
         var crafter = new Crafter(c);
@@ -33,15 +35,27 @@ public static class GameToolSet
 
         // ---- observation (instant)
         tools.Register("status", "Your full status line.", ToolSchema.Empty,
-            (_, _) => Ok(c.DescribeStatus()), cheapTier: true);
+            (_, _) =>
+            {
+                var h = Hints(c, landmark);
+                return Ok(h.Length > 0 ? $"{c.DescribeStatus()} | {h}" : c.DescribeStatus());
+            }, cheapTier: true);
         tools.Register("inventory", "Your inventory, grouped.",
             ToolSchema.Create().Bool("detail", "add hotbar layout", required: false).Build(),
             (i, _) => Ok(c.DescribeInventory(i.Bool("detail") == true, max())), cheapTier: true);
-        tools.Register("look", "Surroundings: footing, void edges, blocks, nearest chests/ores/etc, players, mobs, drops.",
+        tools.Register("look", "Surroundings: footing, void edges, blocks, nearest chests/ores/etc, players, mobs, drops. detail=more.",
             ToolSchema.Create().Int("radius", "default 12", required: false).Bool("detail", required: false).Build(),
-            (i, _) => Ok(c.DescribeSurroundings(Math.Clamp(i.Int("radius") ?? 12, 3, 32), i.Bool("detail") == true, max())), cheapTier: true);
+            (i, _) =>
+            {
+                bool detail = i.Bool("detail") == true;
+                // detail may use the tool's own (bigger) cap; plain look stays at the small default.
+                int cap = detail ? tools.CapFor("look") : max();
+                var h = Hints(c, landmark);
+                var body = c.DescribeSurroundings(Math.Clamp(i.Int("radius") ?? 12, 3, 32), detail, h.Length > 0 ? Math.Max(80, cap - h.Length - 3) : cap);
+                return Ok(h.Length > 0 ? $"{h} | {body}" : body);
+            }, cheapTier: true);
         tools.Register("window", "Contents of the open container.", ToolSchema.Empty,
-            (_, _) => Ok(c.DescribeOpenWindow(max())));
+            (_, _) => Ok(c.DescribeOpenWindow(tools.CapFor("window"))));
 
         // ---- movement
         tools.Register("goto", "Walk to coords, a saved place, or a player (e.g. come here).",
@@ -183,6 +197,29 @@ public static class GameToolSet
     // ------------------------------------------------------------------ helpers
 
     internal static ToolResult R(ActionResult a) => a.Ok ? ToolResult.Success(a.Message) : ToolResult.Error(a.Message);
+
+    /// <summary>
+    /// Cheap relational hints next to the precise output, so the model can talk like a player: where the bot is relative to
+    /// the nearest named landmark, and where the player who asked is relative to the bot ("you: 2 E of cobble_gen; kiwi 3 W of you").
+    /// </summary>
+    internal static string Hints(IGameClient c, Func<double, double, double, string?>? landmark)
+    {
+        if (!c.IsPlaying) return "";
+        var p = c.World.Player.Position;
+        var parts = new List<string>(2);
+        try
+        {
+            if (landmark?.Invoke(p.X, p.Y, p.Z) is { Length: > 0 } lm) parts.Add("you: " + lm);
+        }
+        catch (Exception) { /* hints are best-effort */ }
+        if (Agent.TurnContext.Current?.Speaker is { } who && !who.Equals(c.Username, StringComparison.OrdinalIgnoreCase)
+            && c.World.Entities.FindPlayer(who) is { } e)
+        {
+            var off = Agent.Memory.Landmarks.Offset(p.X, p.Z, e.Position.X, e.Position.Z);
+            parts.Add(off == "here" ? $"{who} right by you" : $"{who} {off} of you");
+        }
+        return string.Join("; ", parts);
+    }
 
     private static Task<ToolResult> Ok(string text) => Task.FromResult(ToolResult.Success(text));
 

@@ -8,6 +8,9 @@ public static class SelfTools
 {
     private static readonly string[] Sections = ["trait", "like", "dislike", "opinion", "joke", "nickname", "relationship", "milestone"];
 
+    /// <summary>Test chat (console /as) impersonates players: it never changes the personality.</summary>
+    public const string TestTurnRefusal = "test chat: personality unchanged";
+
     public static void RegisterAll(ToolRegistry registry, SelfProfile profile, RagIndex? index, TimeProvider? time = null)
     {
         time ??= TimeProvider.System;
@@ -22,6 +25,7 @@ public static class SelfTools
                 .Str("player", "for relationship/nickname", required: false).Str("reason").Build(),
             (input, _) =>
             {
+                if (TurnContext.IsTest) return Task.FromResult(ToolResult.Error(TestTurnRefusal));
                 var now = time.GetUtcNow();
                 lock (recent)
                 {
@@ -51,6 +55,7 @@ public static class SelfTools
                     return Task.FromResult(ToolResult.Success(rows.Count == 0 ? "no changes yet" : string.Join("; ", rows.Select(h =>
                         $"v{h.Version} {h.At:MM-dd} {h.Op}{(h.Text != null ? " '" + h.Text + "'" : "")}"))));
                 }
+                if (TurnContext.IsTest) return Task.FromResult(ToolResult.Error(TestTurnRefusal));
                 var by = input.Str("by")?.Trim();
                 var trusted = by != null ? o.TrustedPlayers.FirstOrDefault(p => p.Equals(by, StringComparison.OrdinalIgnoreCase)) : null;
                 if (trusted == null) return Task.FromResult(ToolResult.Error("only trusted players can change that"));
