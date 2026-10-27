@@ -12,6 +12,9 @@ namespace MineClaw.Hive.Chat;
 /// <item>a message that addresses a live clone ("67, come here", "maid chan 420", "#69", "clone 1337") → that clone
 ///   (first one mentioned);</item>
 /// <item>otherwise the player's sticky partner (the hive bot that last took a message from them, within the window);</item>
+/// <item>a message to several/all bots ("both of you", "everyone", "all maids") while a clone is live → main, which splits
+///   the work and hands clones their part over IPC (clones never take group asks themselves);</item>
+/// <item>"main, ..." / main's names → main;</item>
 /// <item>otherwise the main bot (which still applies its own addressed-or-not rules).</item>
 /// </list>
 /// The main process is the authority for the live roster and the sticky map and pushes them to clones (<see cref="RosterMsg"/>).
@@ -24,6 +27,10 @@ public sealed class ChatArbiter
     private readonly Dictionary<string, Regex> _explicit = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Regex> _bare = new(StringComparer.OrdinalIgnoreCase);
     private Regex _mainRegex = new("(?!)");
+    private static readonly Regex MainVocative = new(@"^\W*(?:(?:hey|yo|ok|okay|oi)\s+)?main(?![A-Za-z0-9_])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex GroupAddress = new(
+        @"(?<![A-Za-z0-9_])(?:both of (?:you|u|ya)|you both|u both|you two|all of (?:you|u|ya)|you all|y'?all|every(?:one|body)|all (?:the |you )?(?:maids?|bots|clones)|(?:maids|bots|clones|you guys),|hey (?:maids|bots|guys))(?![A-Za-z0-9_])",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private readonly Dictionary<string, (string Owner, DateTimeOffset Until)> _sticky = new(StringComparer.OrdinalIgnoreCase);
     private readonly TimeProvider _time;
     private string _main;
@@ -125,13 +132,32 @@ public sealed class ChatArbiter
     /// <summary>The bot that should handle this message: null for hive-internal lines, else a hive login.</summary>
     public string? OwnerOf(ChatMessage msg) => Resolve(msg).Owner;
 
+    /// <summary>True when the text addresses several/all bots at once ("both of you", "everyone", "all maids").</summary>
+    public static bool IsGroupAddress(string? text) => text != null && GroupAddress.IsMatch(text);
+
+    /// <summary>
+    /// Main: a player line (not a hive bot's) addressing several bots while at least one clone is live, i.e. a group ask
+    /// main should split between the bots.
+    /// </summary>
+    public bool IsGroupAsk(ChatMessage msg) =>
+        msg.Player != null && !IsHiveBot(msg.Player) && Live.Count > 0 && IsGroupAddress(msg.Text);
+
     /// <summary>Owner + whether the owner was explicitly addressed (a clone named in the message).</summary>
     public (string? Owner, bool Explicit) Resolve(ChatMessage msg)
     {
-        if (msg.Player == null) return (null, false);
+        var r = Route(msg);
+        return (r.Owner, r.Explicit);
+    }
+
+    /// <summary>Full routing verdict: owner, explicit address, group ask (owner is then main).</summary>
+    public ChatRoute Route(ChatMessage msg)
+    {
+        if (msg.Player == null) return new(null, false, false);
         lock (_lock)
         {
-            if (_hiveBots.Contains(msg.Player)) return (null, false);
+            if (_hiveBots.Contains(msg.Player)) return new(null, false, false);
+            // Several bots at once: main owns it and splits the work (clones get their part as an IPC task).
+            if (_live.Count > 0 && msg.Kind != ChatKind.Emote && GroupAddress.IsMatch(msg.Text)) return new(_main, true, true);
             int best = int.MaxValue;
             string? owner = null;
             foreach (var c in Clones)
@@ -143,14 +169,21 @@ public sealed class ChatArbiter
             }
             // Main named before (or instead of) any clone: main was addressed explicitly ("claude chan, ..." ends a clone's sticky).
             var mm = _mainRegex.Match(msg.Text);
-            if (mm.Success && mm.Index < best) return (_main, true);
-            if (owner != null) return (owner, true);
+            if (mm.Success && mm.Index < best) return new(_main, true, false);
+            if (owner != null) return new(owner, true, false);
+            if (MainVocative.IsMatch(msg.Text)) return new(_main, true, false); // "main do a little hop"
             if (_sticky.TryGetValue(msg.Player, out var s) && s.Until > _time.GetUtcNow()
                 && (string.Equals(s.Owner, _main, StringComparison.OrdinalIgnoreCase) || _live.Contains(s.Owner)))
-                return (s.Owner, false);
-            return (_main, false);
+                return new(s.Owner, false, false);
+            return new(_main, false, false);
         }
     }
+
+    /// <summary>
+    /// Clone hook (<see cref="ChatRouter.ExplicitlyAddressed"/>): THIS bot was named in the message ("67, ...").
+    /// </summary>
+    public bool AddressesSelf(ChatMessage msg) =>
+        Route(msg) is { Explicit: true, Group: false } r && string.Equals(r.Owner, _self, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// ChatRouter hook (<see cref="ChatRouter.Arbiter"/>): whether THIS bot handles the message. An explicitly addressed clone
@@ -181,3 +214,6 @@ public sealed class ChatArbiter
         lock (_lock) foreach (var k in _sticky.Where(kv => string.Equals(kv.Value.Owner, owner, StringComparison.OrdinalIgnoreCase)).Select(kv => kv.Key).ToList()) _sticky.Remove(k);
     }
 }
+
+/// <summary>Arbitration verdict for one player message.</summary>
+public sealed record ChatRoute(string? Owner, bool Explicit, bool Group);

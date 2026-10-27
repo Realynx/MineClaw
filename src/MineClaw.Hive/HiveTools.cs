@@ -6,7 +6,7 @@ namespace MineClaw.Hive;
 
 /// <summary>
 /// Hive tools. Main brain: ONE merged tool, <c>hive</c> (op spawn | recall | list), instead of spawn_clone/recall_clone/
-/// list_clones — a third of the cached-prefix cost, keeping the brain's tool budget under 2,000 tokens. Clone brain:
+/// list_clones — a third of the cached-prefix cost, keeping the brain's tool budget under 2,300 tokens. Clone brain:
 /// <c>hive_report</c> (progress/done/failed back to main; done/failed starts the deposit-then-logout).
 /// </summary>
 public static class HiveTools

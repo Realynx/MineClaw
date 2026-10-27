@@ -87,10 +87,10 @@ public sealed class InventoryRun(SkillContext ctx)
         if (close is not null) return close;
         if (ctx.Protected(pos)) return $"{SkillJson.Fmt(pos)} is protected";
         if (!ContainerDirectory.IsContainer(ctx.Block(pos))) return $"no container at {SkillJson.Fmt(pos)}";
-        var claim = await ctx.Claims.TryClaimAsync(ClaimKey.Chest(pos), TimeSpan.FromMinutes(2), "inventory", ct);
+        var claim = await ctx.Claims.TryClaimAsync(ClaimKey.Chest(pos, ctx.World.Dimension), TimeSpan.FromMinutes(2), "inventory", ct);
         if (!claim.Ok) return $"chest {SkillJson.Fmt(pos)} {claim.Message ?? "claimed"}";
         var r = await Game.OpenContainerAsync(pos, ct);
-        if (!r.Ok) { await ctx.Claims.ReleaseAsync(ClaimKey.Chest(pos), ct); return r.Message; }
+        if (!r.Ok) { await ctx.Claims.ReleaseAsync(ClaimKey.Chest(pos, ctx.World.Dimension), ct); return r.Message; }
         Opens++;
         Containers.Add(pos);
         Open = pos;
@@ -113,7 +113,7 @@ public sealed class InventoryRun(SkillContext ctx)
         if (Open is { } pos)
         {
             ctx.Directory.Snapshot(pos, Enumerable.Range(0, w.ContainerSlots).Select(w.Get).ToArray());
-            await ctx.Claims.ReleaseAsync(ClaimKey.Chest(pos), ct);
+            await ctx.Claims.ReleaseAsync(ClaimKey.Chest(pos, ctx.World.Dimension), ct);
         }
         await Game.CloseWindowAsync(ct);
         Open = null;

@@ -39,7 +39,8 @@ Chat rules (always apply, whatever the persona)
 - Be honest about what you can't do or don't know. Don't pretend an action worked.
 - If nothing needs saying (e.g. chatter not meant for you, or a routine update), end your turn with no text.
 - When you use a tool you may say a brief sentence first. If no tool can do what was asked, say so instead of guessing.
-- You can roleplay with /me on its own line ("/me curtsies"). Any other /command is blocked.
+- You can roleplay with /me on its own line ("/me curtsies"). Never run other commands unless a trusted player
+  explicitly gives the exact command; then use run_command. Op powers are not yours to use otherwise.
 - ask_player is only for a real question you need answered to continue (it waits for and eats their next message).
   Answers, greetings and small talk are plain text, never ask_player.
 - Do not include internal or system XML tags in your chat.
@@ -50,7 +51,8 @@ How turns work
 - Lines like "[chat(not to you)]" are context only; don't butt in unless it's natural. "[emote] kiwi pats you" is a /me.
 - "[since last turn]" and "[noticed]" lines are things you noticed happening in the world ("probably" = unsure). React
   naturally if it fits ("ooh robin's been grinding cobble"); don't narrate them all.
-- Long tasks continue in the background; you get a "[task ok]" or "[task failed]" event when they end. Don't poll.
+- Long tasks continue in the background; you get a "[task ok]" or "[task failed]" event when they end. Don't poll
+  or re-issue a running task: wait for its event.
 """);
         if (delegation)
             sb.Append("""
@@ -101,6 +103,13 @@ Safety
         }
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Main bot with hive clones: one cached line (appended to the persona extra, ≤30 tokens) so a group ask is split
+    /// between the bots instead of answered by one. The per-turn "[hive: ...]" line says who is online.
+    /// </summary>
+    public const string HiveMainHint =
+        "- Asked as a group (\"both of you\", \"everyone\")? Give clones a part via hive spawn; reply once yourself.";
 
     /// <summary>
     /// Small block placed after the static prefix (its own cache breakpoint), so a rename or personality update never

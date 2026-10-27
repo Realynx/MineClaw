@@ -317,7 +317,7 @@ public sealed class OrganizeStorageSkill : Skill
     private static List<BlockPos> Pick(SkillContext ctx, string scope)
     {
         var all = ctx.Find(Blocks.Chest, ctx.Options.SearchRadius, 64).Select(f => f.Pos)
-            .Where(p => ctx.Claims.IsFree(MineClaw.World.Claims.ClaimKey.Chest(p))).ToList();
+            .Where(p => ctx.Claims.IsFree(MineClaw.World.Claims.ClaimKey.Chest(p, ctx.World.Dimension))).ToList();
         // Large chests are two blocks: keep one per pair.
         all = all.Where(p => !all.Any(q => q != p && q.ManhattanTo(p) == 1 && q.Y == p.Y && (q.X < p.X || q.Z < p.Z))).ToList();
         if (scope is "all" or "") return all;
@@ -328,7 +328,7 @@ public sealed class OrganizeStorageSkill : Skill
             var b = SkillJson.Parse($"{{\"p\":\"{parts[1]}\"}}").Pos("p");
             if (a is { } pa && b is { } pb)
             {
-                var key = MineClaw.World.Claims.ClaimKey.Area(pa, pb);
+                var key = MineClaw.World.Claims.ClaimKey.Area(pa, pb, ctx.World.Dimension);
                 return all.Where(key.Contains).ToList();
             }
         }

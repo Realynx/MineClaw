@@ -36,6 +36,8 @@ public sealed class AgentRuntime : IDisposable
     public required ToolRegistry Tools { get; init; }
     public required EventQueue Events { get; init; }
     public required ChatRouter Chat { get; init; }
+    /// <summary>Server-command gate: every outgoing chat line passes it; <c>run_command</c> needs a trusted player's exact line.</summary>
+    public required CommandGate Commands { get; init; }
     public required UsageTracker Usage { get; init; }
     public required MemoryStore Memory { get; init; }
     public required ContextManager Context { get; init; }
@@ -98,7 +100,12 @@ public sealed class AgentRuntime : IDisposable
         var tools = new ToolRegistry(options.MaxToolResultChars);
         foreach (var (name, cap) in options.ToolResultCaps) tools.SetCap(name, cap);
         var events = new EventQueue(options.Events, time);
-        var chat = new ChatRouter(options.Chat, events, sendChat, time);
+        var commandLog = Log("MineClaw.Commands");
+        var commands = new CommandGate(options.Commands, () => options.Self.TrustedPlayers, time, commandLog,
+            persist && !string.IsNullOrWhiteSpace(options.Commands.AuditFile) ? Data(options.Commands.AuditFile) : null);
+        // The agent's outgoing choke point: a '/' line that isn't always-allowed or armed by run_command never leaves.
+        Func<string, CancellationToken, Task> gatedSend = (line, ct) => commands.AllowOutgoing(line) ? sendChat(line, ct) : Task.CompletedTask;
+        var chat = new ChatRouter(options.Chat, events, gatedSend, time) { Commands = commands };
         var usage = new UsageTracker(options.Budget, options.Prices, time, Data(options.Budget.UsageFile))
         {
             Classify = m => options.Llm.TierOfModel(m),
@@ -160,6 +167,7 @@ public sealed class AgentRuntime : IDisposable
         HumanTools.RegisterAskPlayer(tools, chat);
         if (demonstrations != null) HumanTools.RegisterWatchDemo(tools, chat, memory, demonstrations);
         if (self != null) SelfTools.RegisterAll(tools, self, index, time, growth);
+        CommandTools.Register(tools, commands, chat);
 
         string knowledge;
         bool truncated;
@@ -210,7 +218,7 @@ public sealed class AgentRuntime : IDisposable
 
         return new AgentRuntime
         {
-            Options = options, Tools = tools, Events = events, Chat = chat, Usage = usage, Memory = memory,
+            Options = options, Tools = tools, Events = events, Chat = chat, Commands = commands, Usage = usage, Memory = memory,
             Context = context, Activities = activities, Routines = routines, Agent = agent, Llm = llm,
             Db = db, Rag = index, Observations = observations, Episodes = episodes, Retriever = retriever, Self = self,
             Reflection = reflection, Growth = growth, Embeddings = embedder, Worker = worker, MemoryAgent = memAgent, Raptor = raptor, RaptorMaintenance = raptorJobs,

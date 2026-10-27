@@ -113,9 +113,21 @@ public sealed class EventQueue
 
     public IReadOnlyList<GameEvent> Snapshot() { lock (_lock) return _pending.ToArray(); }
 
-    /// <summary>Adds an event, applying coalescing. Returns false if it was dropped as a low-value repeat.</summary>
+    /// <summary>
+    /// Optional intake filter applied to every posted event before anything else: return the event (possibly changed) to
+    /// keep it, or null to drop it. A hive clone uses it so world noticing, joins and other players' deaths never reach
+    /// (or wake) its brain.
+    /// </summary>
+    public Func<GameEvent, GameEvent?>? Intake { get; set; }
+
+    /// <summary>Adds an event, applying coalescing. Returns false if it was dropped as a low-value repeat (or by <see cref="Intake"/>).</summary>
     public bool Post(GameEvent e)
     {
+        if (Intake is { } intake)
+        {
+            if (intake(e) is not { } kept) return false;
+            e = kept;
+        }
         bool accepted;
         lock (_lock)
         {

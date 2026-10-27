@@ -17,6 +17,7 @@ public sealed class ActivityManager
         public required string Label;
         public required CancellationTokenSource Cts;
         public required DateTimeOffset Started;
+        public required IReadOnlyList<(string Tool, JsonElement Input)> Steps;
         public string? CancelReason;
         public bool Detached;
         public bool Finished;
@@ -50,6 +51,22 @@ public sealed class ActivityManager
             return $"{a.Label} #{a.Id} {(int)(_time.GetUtcNow() - a.Started).TotalSeconds}s";
         }
     }
+
+    /// <summary>The running activity (id, label, start, its steps), or null when idle.</summary>
+    public RunningActivity? Current
+    {
+        get
+        {
+            lock (_lock)
+                return _current is { Finished: false } a ? new RunningActivity(a.Id, a.Label, a.Started, a.Steps) : null;
+        }
+    }
+
+    /// <summary>
+    /// Raised after each step of a chain finishes: (tool, input, result, cancel reason or null). Cancelled/superseded steps
+    /// carry the reason, so listeners can tell a real failure from a stop.
+    /// </summary>
+    public event Action<string, JsonElement, ToolResult, string?>? StepFinished;
 
     /// <summary>Cancels the current activity. Returns its label (or null if idle).</summary>
     public string? Cancel(string reason)
@@ -86,6 +103,7 @@ public sealed class ActivityManager
                 Label = label,
                 Cts = CancellationTokenSource.CreateLinkedTokenSource(Shutdown),
                 Started = _time.GetUtcNow(),
+                Steps = steps.Select(s => (s.Tool.Name, s.Input.Clone())).ToArray(),
             };
             _current = act;
         }
@@ -106,6 +124,8 @@ public sealed class ActivityManager
                 if (act.Cts.IsCancellationRequested && r.Ok == false && act.CancelReason != null)
                     r = ToolResult.Error("cancelled: " + act.CancelReason);
                 results[i] = r;
+                try { StepFinished?.Invoke(steps[i].Tool.Name, steps[i].Input, r, act.Cts.IsCancellationRequested ? act.CancelReason ?? "cancelled" : null); }
+                catch (Exception) { }
                 if (!r.Ok) { failure = r; failedAt = i; }
             }
             Finish(act, steps, results, failure, failedAt);
@@ -158,3 +178,6 @@ public sealed class ActivityManager
         _events.Post(GameEvent.TaskFail($"#{act.Id} {steps[failedAt].Tool.Name}: {failure.Text}", wakes));
     }
 }
+
+/// <summary>Snapshot of the running activity (see <see cref="ActivityManager.Current"/>).</summary>
+public sealed record RunningActivity(int Id, string Label, DateTimeOffset Started, IReadOnlyList<(string Tool, JsonElement Input)> Steps);

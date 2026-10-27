@@ -260,6 +260,28 @@ public sealed class HiveSupervisor : IAsyncDisposable
 
     private static string Trunc(string s, int n) => s.Length <= n ? s : s[..(n - 1)] + "…";
 
+    /// <summary>
+    /// The main brain's per-turn hive line (uncached tail), only while clones are online:
+    /// "[hive: 1 clone online: maid_chan_67 (idle)]", plus a split reminder when the turn holds a group ask.
+    /// </summary>
+    public string? HintLine(bool groupAsk = false)
+    {
+        var live = _slots.Values.Where(s => s.IsLive).ToList();
+        if (live.Count == 0) return null;
+        var parts = live.Select(s => $"{s.Name} ({CloneActivity(s)})");
+        var line = $"[hive: {live.Count} clone{(live.Count == 1 ? "" : "s")} online: {string.Join(", ", parts)}]";
+        if (groupAsk) line += " group ask: split it, hive spawn name+task for the clone's part; reply once";
+        return line;
+    }
+
+    private static string CloneActivity(CloneSlot s)
+    {
+        if (s.State == CloneState.Stopping) return "logging out";
+        var task = s.Snapshot?.Task;
+        if (string.IsNullOrWhiteSpace(task) || task.StartsWith("idle", StringComparison.OrdinalIgnoreCase)) return "idle";
+        return "busy: " + Trunc(task, 30);
+    }
+
     // ================================================================ process lifecycle
 
     private void Launch(CloneSlot slot)

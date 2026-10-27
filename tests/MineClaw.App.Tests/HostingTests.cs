@@ -42,6 +42,16 @@ public class HostingTests
     }
 
     [Fact]
+    public void Cli_RecordFlag_DefaultsAndExplicitDirectory()
+    {
+        Assert.Null(AppCli.Parse([]).Record);
+        Assert.Equal(Path.Combine("logs", "recordings"), AppCli.Parse(["--record", "--no-tui"]).Record);
+        Assert.Equal("/tmp/rec", AppCli.Parse(["--record", "/tmp/rec"]).Record);
+        Assert.Equal("/tmp/rec2", AppCli.Parse(["--record=/tmp/rec2"]).Record);
+        Assert.Empty(AppCli.Parse(["--record"]).Errors);
+    }
+
+    [Fact]
     public void Cli_ReportsErrors()
     {
         var c = AppCli.Parse(["--bogus", "--minutes", "abc", "--data-dir", "--log-format", "xml", "--frame", "1x1"]);

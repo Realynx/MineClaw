@@ -76,6 +76,47 @@ switch (mode)
                 if (n % 500 == 0) Out("WROTE " + n);
             }
         }
+    case "chat":
+        {
+            // Real clone chat intake: ChatRouter + EventQueue + command gate wired by ClonePolicy (as CloneMode does), fed by
+            // the lines main forwards; every brain wake-up and its speech verdict is reported to main over IPC as progress.
+            var body = new FakeBody(name, new FakePort()) { TaskText = "idle" };
+            host.Body = body;
+            var chatOptions = new MineClaw.Agent.Chat.ChatOptions
+            {
+                Username = name, DisplayName = "claudechan " + ChatArbiterNumber(name), Aliases = ["claudechan " + ChatArbiterNumber(name)], LineDelayMs = 0,
+            };
+            var events = new MineClaw.Agent.Events.EventQueue(new MineClaw.Agent.Events.EventQueueOptions { CoalesceWindowMs = 300, MaxBatchDelayMs = 600 });
+            var chat = new MineClaw.Agent.Chat.ChatRouter(chatOptions, events, (_, _) => Task.CompletedTask);
+            var gate = new MineClaw.Agent.Chat.CommandGate(new MineClaw.Agent.Chat.CommandOptions(), () => ["kiwi", "poofimafox"]);
+            chat.Commands = gate;
+            ClonePolicy.Apply(chat, events, host.Arbiter);
+            chat.Accepted += m => { if (m.Player != null) host.ChatAccepted(m.Player); };
+            body.OnInject = raw =>
+            {
+                chat.OnServerChat(raw);
+                if (raw.Contains("/time set day")) _ = host.ReportAsync("progress", "CMD " + (gate.Authorize("/time set day").Ok ? "ran" : "refused"));
+            };
+            body.OnTask = t =>
+            {
+                events.Post(MineClaw.Agent.Events.GameEvent.Notice($"{ClonePolicy.TaskTag} {t.Text} — take what you need from storage first", MineClaw.Agent.Events.EventPriority.Normal));
+                return Task.CompletedTask;
+            };
+            _ = Task.Run(async () =>
+            {
+                while (true)
+                {
+                    var batch = await events.WaitBatchAsync(default);
+                    var speech = ClonePolicy.Speech(batch, "on it robin uwu", alreadySpoke: false) != null ? "SAY" : "MUTE";
+                    var woke = string.Join(" / ", batch.Waking.Select(e => e.Format()));
+                    await host.ReportAsync("progress", $"TURN {speech}: {(woke.Length > 120 ? woke[..120] : woke)}");
+                }
+            });
+            Out("READY");
+            int code = await host.RunAsync(default);
+            Out("EXIT " + code);
+            return code;
+        }
     default:
         {
             var port = new FakePort(stacks, chest);
@@ -107,3 +148,5 @@ switch (mode)
             return code;
         }
 }
+
+static string ChatArbiterNumber(string clone) => MineClaw.Hive.Chat.ChatArbiter.NumberOf(clone) ?? clone;

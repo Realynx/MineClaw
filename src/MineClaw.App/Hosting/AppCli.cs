@@ -48,6 +48,8 @@ public sealed record AppCli
     public string? CloneName { get; init; }
     /// <summary>Hive clone mode: the supervisor's named pipe (no pipe = no clone: clones never run unsupervised).</summary>
     public string? ParentPipe { get; init; }
+    /// <summary>Record every packet into this directory (<c>--record [dir]</c>; default logs/recordings).</summary>
+    public string? Record { get; init; }
     public IReadOnlyList<string> Errors { get; init; } = [];
 
     public const string Usage = """
@@ -63,6 +65,7 @@ Usage: MineClaw.App [options]
   --script <file>          run console commands from a file ("/wait N" pauses)
   --minutes <n>            quit after n minutes
   --void-abort             quit if the bot is ever over the void (test runs)
+  --record [dir]           record all packets (default logs/recordings; env MINECLAW_RECORD=1)
   --no-key-check           skip the Anthropic models check at startup
   --demo [--demo-bots n]   offline TUI demo with fake bots (no server, no API key)
   --frame <WxH>            print one plain-text TUI frame and exit (use with --demo)
@@ -104,6 +107,7 @@ Exit codes: 0 clean, 1 crash, 2 config, 3 auth, 64 usage, 75 transient startup f
                 case "--script": c = c with { Script = Value() }; break;
                 case "--minutes": c = c with { Minutes = Number() }; break;
                 case "--void-abort": c = c with { VoidAbort = true }; break;
+                case "--record": c = c with { Record = inline ?? (i + 1 < args.Length && !args[i + 1].StartsWith("--") ? args[++i] : Path.Combine("logs", "recordings")) }; break;
                 case "--no-key-check": c = c with { NoKeyCheck = true }; break;
                 case "--no-tui": c = c with { Tui = TuiChoice.Off }; break;
                 case "--tui": c = c with { Tui = TuiChoice.On }; break;

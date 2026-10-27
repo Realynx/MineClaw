@@ -39,6 +39,7 @@ public sealed class HiveStore
         db.Tx(() =>
         {
             db.Exec(Schema);
+            db.EnsureColumn("hive_inventory", "dimension", "INTEGER NOT NULL DEFAULT 0"); // where the clone was (0 overworld, -1 nether)
             foreach (var t in TaggedTables)
             {
                 if (!TableExists(t) || HasColumn(t, "clone_id")) continue;
@@ -72,11 +73,16 @@ public sealed class HiveStore
     // ---------------- inventory ledger ----------------
 
     /// <summary>Live snapshot of a clone's inventory (keeps a pending stranded flag: only a deposit clears it).</summary>
-    public void SaveInventory(string clone, IReadOnlyList<ItemMsg> items) =>
+    /// <param name="dimension">The clone's dimension when known (null keeps the stored one).</param>
+    public void SaveInventory(string clone, IReadOnlyList<ItemMsg> items, int? dimension = null) =>
         Db.Exec("""
-            INSERT INTO hive_inventory(clone, items, updated) VALUES ($c, $i, $u)
-            ON CONFLICT(clone) DO UPDATE SET items = excluded.items, updated = excluded.updated
-            """, ("$c", clone), ("$i", JsonSerializer.Serialize(items, HiveJson.Options)), ("$u", Now));
+            INSERT INTO hive_inventory(clone, items, updated, dimension) VALUES ($c, $i, $u, coalesce($d, 0))
+            ON CONFLICT(clone) DO UPDATE SET items = excluded.items, updated = excluded.updated, dimension = coalesce($d, dimension)
+            """, ("$c", clone), ("$i", JsonSerializer.Serialize(items, HiveJson.Options)), ("$u", Now), ("$d", dimension));
+
+    /// <summary>Dimension of the clone's last inventory snapshot (stranded items are there).</summary>
+    public int InventoryDimension(string clone) =>
+        (int)Db.ScalarLong("SELECT dimension FROM hive_inventory WHERE clone = $c", ("$c", clone));
 
     public IReadOnlyList<ItemMsg> Inventory(string clone) =>
         Db.Query("SELECT items FROM hive_inventory WHERE clone = $c", r => r.GetString(0), ("$c", clone)).FirstOrDefault() is { } j

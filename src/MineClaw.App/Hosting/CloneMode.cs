@@ -44,9 +44,11 @@ public static class CloneMode
         agent.Budget.MonthlyCapUsd = hive.Budget.CloneMonthlyCapUsd;
         agent.Rag.Raptor.Maintenance = false;                  // background RAPTOR jobs run in the main process only
         agent.Rag.RestoreJournal = false;                      // the latest journal is main's, not this clone's
+        agent.IdleCheckInMinutes = 0;                          // a clone wakes only for its name, its tasks and its own danger
         agent.PersonaExtra = (agent.PersonaExtra + $"\nYou are {agent.Chat.DisplayName} (login {clone}), one of {mainDisplay}'s hive clones, " +
             $"sent out for one task. {mainLogin} and the other maid_chan_* clones are your hive, not players: never chat with them; " +
-            "report to the main bot with hive_report (done/failed ends your outing).").Trim();
+            "report to the main bot with hive_report (done/failed ends your outing). Chat only when a player names you " +
+            "(or your task says to greet/tell someone, then one short line); never mention the hive, clones or your task status in chat.").Trim();
         var dir = Path.Combine(logDir, "hive", clone);
         var tdir = Path.Combine(telemetryDir, "hive", clone);
         return (dir, tdir);
@@ -85,8 +87,10 @@ public static class CloneMode
         // Identity: the identity row in the shared db is main's; a clone has its own fixed chat name and can't rename it.
         rt.Chat.SetIdentity(agentOptions.Chat.DisplayName, agentOptions.Chat.Aliases);
         rt.Tools.Remove(MineClaw.Agent.Memory.IdentityTools.ToolName);
-        rt.Chat.IsHiveBot = n => host0.Arbiter.IsHiveBot(n);
-        rt.Chat.Arbiter = host0.Arbiter.Decide;
+        // Hears only what's for it (its name, its IPC tasks, its own danger), speaks only when addressed, never narrates the
+        // hive; main is the single chat_log writer for public chat. Muted narration goes to main as task progress.
+        ClonePolicy.Apply(rt.Chat, rt.Events, host0.Arbiter, rt.Agent,
+            muted: text => _ = host0.ReportAsync("progress", text.Length > 160 ? text[..160] : text));
         rt.Chat.Accepted += m => { if (m.Player != null) host0.ChatAccepted(m.Player); };
         HiveTools.RegisterClone(rt.Tools, host0);
 

@@ -256,7 +256,7 @@ public sealed class CloneHost : IHandoffTarget
         if (key == _lastInv) return;
         _lastInv = key;
         _inventory = items;
-        try { _store?.SaveInventory(Name, items); } catch (Exception ex) { _log.LogDebug(ex, "inventory save failed"); }
+        try { _store?.SaveInventory(Name, items, _body.Snapshot(false).Dimension); } catch (Exception ex) { _log.LogDebug(ex, "inventory save failed"); }
         await Send(Msg.Inventory, new InventoryMsg(items)).ConfigureAwait(false);
     }
 

@@ -58,6 +58,10 @@ public sealed class FakeBody : ICloneBody
     public IInventoryPort Inventory => Port;
     public List<string> Calls { get; } = new();
     public Func<TaskMsg, Task>? OnTask { get; set; }
+    /// <summary>Chat lines main forwards (console /as): the "chat" mode routes them through a real ChatRouter.</summary>
+    public Action<string>? OnInject { get; set; }
+    /// <summary>What the streamed snapshot says the clone is doing.</summary>
+    public string TaskText { get; set; } = "fake";
     public TaskCompletionSource Disconnected { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public int ItemsAtDisconnect = -1;
 
@@ -70,7 +74,7 @@ public sealed class FakeBody : ICloneBody
     public BotSnapshot Snapshot(bool full) => new()
     {
         Name = Name, Status = IsPlaying ? BotStatus.Online : BotStatus.Connecting, At = DateTimeOffset.UtcNow,
-        Pos = new BotPos(1.5, 64, 1.5), Hp = 20, Food = 20, Task = "fake",
+        Pos = new BotPos(1.5, 64, 1.5), Hp = 20, Food = 20, Task = TaskText,
         Viewport = full ? new ViewportGrid { Radius = 1, Top = ["...", ".@.", "..."] } : null,
     };
 
@@ -80,7 +84,7 @@ public sealed class FakeBody : ICloneBody
     public Task StopAgentAsync() { Call("stop"); return Task.CompletedTask; }
     public void AssignTask(TaskMsg task) { Call("task " + task.Text); if (OnTask is { } f) _ = Task.Run(() => f(task)); }
     public Task<bool> ExecuteAsync(string line, CancellationToken ct) { Call("cmd " + line); return Task.FromResult(true); }
-    public void InjectChat(string raw) => Call("inject " + raw);
+    public void InjectChat(string raw) { Call("inject " + raw); OnInject?.Invoke(raw); }
     public Task DisconnectAsync(string reason)
     {
         ItemsAtDisconnect = Port.Items().Count;

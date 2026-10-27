@@ -17,6 +17,8 @@ public interface IInventoryPort
     IReadOnlyList<ItemMsg> Items();
     /// <summary>In game, alive, not in danger: safe to walk to a chest.</summary>
     bool CanActSafely { get; }
+    /// <summary>The bot's current dimension (0 overworld, -1 nether): claims are per dimension.</summary>
+    int Dimension => 0;
     /// <summary>Known chests, nearest first, with free-slot estimates.</summary>
     IReadOnlyList<StorageChest> Chests();
     Task<ActionResult> DepositToAsync(BlockPos chest, CancellationToken ct);
@@ -67,10 +69,10 @@ public sealed class DepositProcedure(IInventoryPort port, IClaimBoard claims, st
             if (!port.CanActSafely) { await Delay(ct); continue; }
 
             // 1. Storage chests with room (nearest first), skipping ones another bot is using.
-            var chest = port.Chests().FirstOrDefault(c => c.FreeSlots > 0 && !full.Contains(c.Pos) && claims.IsFree(ClaimKey.Chest(c.Pos)));
+            var chest = port.Chests().FirstOrDefault(c => c.FreeSlots > 0 && !full.Contains(c.Pos) && claims.IsFree(ClaimKey.Chest(c.Pos, port.Dimension)));
             if (chest != null)
             {
-                var key = ClaimKey.Chest(chest.Pos);
+                var key = ClaimKey.Chest(chest.Pos, port.Dimension);
                 var lease = await claims.TryClaimAsync(key, TimeSpan.FromSeconds(60), "deposit", ct).ConfigureAwait(false);
                 if (!lease.Ok) { full.Add(chest.Pos); continue; }
                 try

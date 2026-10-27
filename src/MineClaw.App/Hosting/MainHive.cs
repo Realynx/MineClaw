@@ -52,6 +52,9 @@ public sealed class MainHive : IAsyncDisposable
         var args = new List<string> { "--no-tui", "--no-key-check", "--data-dir", agent.DataDirectory, "--log-dir", logDir };
         if (cli.ConfigPath != null) args.AddRange(["--config", Path.GetFullPath(cli.ConfigPath)]);
         if (cli.LogFormat != null) args.AddRange(["--log-format", cli.LogFormat]);
+        // Cached prefix (built with the bot): group asks get split between the bots.
+        if (!agent.PersonaExtra.Contains(Agent.Prompts.HiveMainHint, StringComparison.Ordinal))
+            agent.PersonaExtra = (agent.PersonaExtra + "\n" + Agent.Prompts.HiveMainHint).Trim();
         return new MainHive(cfg, main, args, log);
     }
 
@@ -83,6 +86,10 @@ public sealed class MainHive : IAsyncDisposable
             Handoff = new Receiver(client),
         };
         _supervisor.Notice += e => rt.Events.Post(e);
+        // Uncached tail, only while clones are online: who's out and idle, plus a split reminder on a group ask.
+        rt.Agent.TurnHint = batch => _supervisor.HintLine(groupAsk: batch.Waking.Any(e =>
+            e.Kind is Agent.Events.EventKind.Chat or Agent.Events.EventKind.Whisper && e.Player != null
+            && Arbiter.IsGroupAsk(new Agent.Chat.ChatMessage(Agent.Chat.ChatKind.Public, e.Player, e.Text, e.Text))));
         rt.Usage.ModeChanged += (mode, reason) =>
         {
             if (mode != Agent.Budget.BudgetMode.Normal) _supervisor.RecallBudget($"budget mode {mode}: {reason}");

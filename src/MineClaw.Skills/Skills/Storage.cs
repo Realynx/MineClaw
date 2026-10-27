@@ -23,7 +23,7 @@ public sealed class DepositEverythingSkill : Skill
         var items = ctx.World.Inventory.PlayerSlots().Skip(9).Where(s => !Keep(s)).GroupBy(s => (s.Id, s.Damage)).ToList();
         if (items.Count == 0) return Ok("nothing to deposit");
         var chests = args.Str("chest") is { } name && ctx.Directory.Resolve(ctx, name) is { } one ? [one]
-            : ctx.Find(Blocks.Chest, ctx.Options.SearchRadius, 16).Select(f => f.Pos).Where(p => ctx.Claims.IsFree(MineClaw.World.Claims.ClaimKey.Chest(p))).ToList();
+            : ctx.Find(Blocks.Chest, ctx.Options.SearchRadius, 16).Select(f => f.Pos).Where(p => ctx.Claims.IsFree(MineClaw.World.Claims.ClaimKey.Chest(p, ctx.World.Dimension))).ToList();
         if (chests.Count == 0) return Fail("no free chest nearby");
         var moves = new List<MoveSpec>();
         foreach (var g in items)
@@ -40,7 +40,7 @@ public sealed class DepositEverythingSkill : Skill
         {
             var left = ctx.World.Inventory.PlayerSlots().Skip(9).Where(s => !Keep(s)).ToList();
             if (left.Count == 0) break;
-            if (ctx.Protected(c) || !ctx.Claims.IsFree(MineClaw.World.Claims.ClaimKey.Chest(c))) continue;
+            if (ctx.Protected(c) || !ctx.Claims.IsFree(MineClaw.World.Claims.ClaimKey.Chest(c, ctx.World.Dimension))) continue;
             await run.CloseAsync(ct);
             await ctx.Game.DepositAllAsync(c, s => !Keep(s), ct);
         }

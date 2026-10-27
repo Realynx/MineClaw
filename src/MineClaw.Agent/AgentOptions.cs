@@ -39,6 +39,15 @@ public sealed class AgentOptions
     /// </summary>
     public TerseOptions Terse { get; set; } = new();
 
+    /// <summary>Server-command gate (always-allowed list, blocklist, authorisation window, audit file): "Agent:Commands".</summary>
+    public CommandOptions Commands { get; set; } = new();
+
+    /// <summary>
+    /// A long-running call that failed on a target is not re-run on that target for this long (the previous failure is
+    /// returned instead) unless the args materially differ or a player says "try again". 0 = off.
+    /// </summary>
+    public int FailureMemoryMinutes { get; set; } = 10;
+
     /// <summary>Directory for the SQLite db (mineclaw.db), usage.json and a legacy memory.json (imported once).</summary>
     public string DataDirectory { get; set; } = "data";
 

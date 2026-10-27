@@ -15,6 +15,12 @@ public sealed class ViewportOptions
     /// <summary>Side view rows: feet+SideUp down to feet−SideDown.</summary>
     public int SideUp { get; set; } = 6;
     public int SideDown { get; set; } = 8;
+    /// <summary>Isometric view volume: (2·VoxelRadius+1)² columns, feet−VoxelDown .. feet+VoxelUp (default 25×25×16).</summary>
+    public int VoxelRadius { get; set; } = 12;
+    public int VoxelUp { get; set; } = 7;
+    public int VoxelDown { get; set; } = 8;
+    /// <summary>Max rebuilds per second of the voxel volume (the snapshot reuses the last one in between).</summary>
+    public double VoxelHz { get; set; } = 2;
 }
 
 /// <summary>

@@ -84,7 +84,7 @@ public class CatalogAndBudgetTests(Xunit.Abstractions.ITestOutputHelper output)
         Assert.DoesNotContain(brain, d => d.Name is "skill" or "find_skill");
         Assert.Contains(worker, d => d.Name == "skill");
         Assert.Contains(worker, d => d.Name == "find_skill");
-        Assert.True(bt <= 2000, $"brain ≈{bt}");
+        Assert.True(bt <= 2300, $"brain ≈{bt}"); // same cap as Bot.Tests BrainSplitTests (raised for act + run_command)
         Assert.True(wt <= 1800, $"worker ≈{wt}");
 
         // Full catalog (wave 1 + wave 2 stubs + learned skills) vs an empty catalog: identical tool prefix.

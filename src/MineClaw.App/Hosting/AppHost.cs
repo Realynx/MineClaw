@@ -126,7 +126,7 @@ public static class AppHost
         var client = new MinecraftClient(new ClientOptions
         {
             Host = mc.Host, Port = mc.Port, Username = mc.Username,
-            AutoReconnect = true, AutoRespawn = true,
+            AutoReconnect = true, AutoRespawn = true, RecordDirectory = cli.Record,
             DuplicateLoginBackoff = TimeSpan.FromSeconds(Math.Max(0, mc.DuplicateLoginBackoffSeconds)),
             Log = m => clientLog.LogDebug("{Msg}", m),
         });
@@ -169,8 +169,11 @@ public static class AppHost
             tuiTask = tui.RunAsync(signals.Token);
         }
 
-        // Connect (retry with backoff until it works or we're told to stop; the client reconnects by itself afterwards).
+        // Console commands (/quit etc.) work from the start, also while still connecting or backing off.
         var token = signals.Token;
+        if (!useTui && cli.StdinCommands) commands.StartStdin(token);
+
+        // Connect (retry with backoff until it works or we're told to stop; the client reconnects by itself afterwards).
         var delay = TimeSpan.FromSeconds(3);
         while (!token.IsCancellationRequested)
         {
@@ -196,7 +199,6 @@ public static class AppHost
             agent.Start(token);
             if (cli.VoidAbort) tasks.Add(VoidWatch.RunAsync(game, log, signals.Source));
             if (cli.Script != null) tasks.Add(commands.RunScriptAsync(cli.Script, token));
-            if (!useTui && cli.StdinCommands) commands.StartStdin(token);
             try { await Task.Delay(Timeout.Infinite, token); } catch (OperationCanceledException) { }
         }
 

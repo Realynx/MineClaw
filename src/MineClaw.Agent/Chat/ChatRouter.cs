@@ -96,6 +96,27 @@ public sealed class ChatRouter
     /// <summary>Raised after an addressed player message was accepted by this bot (hive: sticky conversation owner).</summary>
     public event Action<ChatMessage>? Accepted;
 
+    /// <summary>
+    /// Server-command gate: sees every player line with this bot's final verdict (trusted players' exact "/x" lines become
+    /// one-shot authorisations) and decides which /commands model text may contain. Null = only /me is ever sent.
+    /// </summary>
+    public CommandGate? Commands { get; set; }
+
+    /// <summary>
+    /// Hive: extra "explicitly addressed" test (a clone's arbiter knows "67, ..." is for it even though "67" isn't a name).
+    /// Used for command authorisations, which need an explicit address (or a whisper).
+    /// </summary>
+    public Func<ChatMessage, bool>? ExplicitlyAddressed { get; set; }
+
+    /// <summary>
+    /// Hive clone: chat not handled by this bot is dropped instead of riding along as background context, so it can never
+    /// wake (or be answered by) a clone and costs no tokens. ask_player waiters still get their player's lines.
+    /// </summary>
+    public bool DropBackgroundChat { get; set; }
+
+    /// <summary>True when the message names this bot (display name, aliases or login).</summary>
+    public bool Names(string text) => _identity.NameRegex.IsMatch(text ?? "");
+
     private bool IsHive(string? name) => name != null && IsHiveBot?.Invoke(name) == true;
 
     /// <summary>Humans currently online (bot excluded).</summary>
@@ -205,9 +226,19 @@ public sealed class ChatRouter
             catch (Exception) { /* arbiter failure: fall back to the local decision */ }
         }
         if (addressed) Accepted?.Invoke(msg);
+        if (Commands != null)
+        {
+            bool named = msg.Kind == ChatKind.Whisper || _identity.NameRegex.IsMatch(msg.Text);
+            if (!named && ExplicitlyAddressed != null)
+            {
+                try { named = ExplicitlyAddressed(msg); } catch (Exception) { }
+            }
+            Commands.Observe(msg, addressed, named);
+        }
 
         if (msg.Kind == ChatKind.Emote)
         {
+            if (!addressed && DropBackgroundChat) return;
             // Emotes are personality/treatment signals, never answers to ask_player.
             if (addressed && !AllowIncoming(player)) addressed = false;
             Post(GameEvent.Emote(player, msg.Text, addressed));
@@ -218,6 +249,7 @@ public sealed class ChatRouter
         if (TryCompleteWaiter(player, msg.Text, addressed)) return;
 
         if (addressed && !AllowIncoming(player)) addressed = false; // spam: keep as context only
+        if (!addressed && DropBackgroundChat) return;
 
         if (msg.Kind == ChatKind.Whisper && addressed)
             Post(GameEvent.Whisper(player, msg.Text));
@@ -363,6 +395,11 @@ public sealed class ChatRouter
                 var action = ChatText.Sanitize(t[4..]);
                 if (action.Length > 0) lines.Add(("/me " + TextUtilTruncate(action, ChatText.MaxLineLength - 4), true));
             }
+            else if (t.StartsWith('/') && Commands != null && Commands.IsAlwaysAllowed(t) && !Commands.IsBlocked(t))
+            {
+                FlushText(); // e.g. "/tell kiwi psst": always-allowed commands from model text are sent as typed (one line)
+                lines.Add((TextUtilTruncate("/" + ChatText.Sanitize(t[1..]), ChatText.MaxLineLength), true));
+            }
             else if (t.StartsWith('/'))
             {
                 FlushText();
@@ -407,6 +444,26 @@ public sealed class ChatRouter
             if (audience != null) foreach (var p in audience) _lastTalkedWith[p] = Now;
         }
         return lines.Select(l => l.Text).ToList();
+    }
+
+    /// <summary>
+    /// Sends one command line exactly as given (run_command after <see cref="CommandGate.Authorize"/>; the gated sender
+    /// still checks it). Paced like chat. False if it was too long to send.
+    /// </summary>
+    public async Task<bool> SendCommandAsync(string command, CancellationToken ct = default)
+    {
+        var line = (command ?? "").Trim();
+        if (line.Length == 0 || line.Length > ChatText.MaxLineLength) return false;
+        await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var wait = _lastSend + TimeSpan.FromMilliseconds(_options.LineDelayMs) - Now;
+            if (wait > TimeSpan.Zero) await Task.Delay(wait, _time, ct).ConfigureAwait(false);
+            await _sendRaw(line, ct).ConfigureAwait(false);
+            _lastSend = Now;
+        }
+        finally { _sendLock.Release(); }
+        return true;
     }
 
     private static string TextUtilTruncate(string s, int max) => s.Length <= max ? s : s[..max];

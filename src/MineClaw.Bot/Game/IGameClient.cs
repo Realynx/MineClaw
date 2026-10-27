@@ -93,7 +93,15 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
     public string DescribeSurroundings(double radius = 12, bool detail = false, int maxChars = 600) => Inner.DescribeSurroundings(radius, detail, maxChars);
     public string DescribeOpenWindow(int maxChars = 600) => Inner.DescribeOpenWindow(maxChars);
 
-    public Task<ActionResult> SendChatAsync(string text, CancellationToken ct = default) => Inner.SendChatAsync(text, ct);
+    /// <summary>
+    /// Outgoing chat choke point for everything that chats through this adapter (skills, tools, console): false = the line
+    /// is dropped. BotHost installs the agent's command gate here, so no code path can send an unauthorised /command.
+    /// </summary>
+    public Func<string, bool>? OutgoingFilter { get; set; }
+
+    public Task<ActionResult> SendChatAsync(string text, CancellationToken ct = default) =>
+        OutgoingFilter is { } f && !f(text) ? Task.FromResult(ActionResult.Fail("blocked: commands need a trusted player's exact authorisation"))
+            : Inner.SendChatAsync(text, ct);
     public Task<ActionResult> GotoAsync(Goal goal, GotoOptions? options = null, CancellationToken ct = default) => Inner.GotoAsync(goal, options, ct);
     public Task<ActionResult> FollowPlayerAsync(string name, double distance = 3, CancellationToken ct = default) => Inner.FollowPlayerAsync(name, distance, ct);
     public Task<ActionResult> StopAsync(CancellationToken ct = default) => Inner.StopAsync(ct);

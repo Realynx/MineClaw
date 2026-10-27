@@ -42,7 +42,9 @@ public class BrainSplitTests(Xunit.Abstractions.ITestOutputHelper output)
         // The main process also registers the merged hive tool (≤75 tok, pinned by MineClaw.Hive.Tests.HiveToolTests).
         const int hiveTool = 75;
         output.WriteLine($"brain tools + hive ≈{bt + hiveTool} tok");
-        Assert.True(bt + hiveTool <= 2000, $"brain tools ≈{bt} + hive {hiveTool}");
+        // Cap raised from 2,000 to 2,300 for act + run_command: cached tool tokens cost ~$0.0001/call; the real limit is bloat.
+        foreach (var n in new[] { "act", "run_command" }) Assert.Contains(n, b);
+        Assert.True(bt + hiveTool <= 2300, $"brain tools ≈{bt} + hive {hiveTool}");
         Assert.True(wt <= 1800, $"worker tools ≈{wt}");
     }
 

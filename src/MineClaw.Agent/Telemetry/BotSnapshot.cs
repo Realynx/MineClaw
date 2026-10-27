@@ -74,6 +74,12 @@ public sealed record BotSnapshot
     public ThoughtSnapshot? Thought { get; init; }
     public UsageSnapshot? Usage { get; init; }
     public ViewportGrid? Viewport { get; init; }
+    /// <summary>3D block volume around the bot for the isometric viewport (full snapshots; entities are in
+    /// <see cref="ViewportGrid.Markers"/>). Null when not built or elided by <see cref="VoxelSendGate"/>.</summary>
+    public VoxelVolume? Voxels { get; init; }
+    /// <summary>Set instead of <see cref="Voxels"/> when an IPC sender skipped an unchanged volume: the receiver keeps the
+    /// volume it already has with this <see cref="VoxelVolume.Seq"/>.</summary>
+    public long? VoxelsSeq { get; init; }
     /// <summary>Recent chat lines (oldest first, capped).</summary>
     public IReadOnlyList<string> Chat { get; init; } = [];
 

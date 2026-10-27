@@ -199,7 +199,8 @@ public static class SkillTools
     /// <summary>Chest by WorldIndex label / waypoint name ("Iron storage").</summary>
     private static BlockPos? FindLabelled(AgentRuntime rt, IGameClient client, string name)
     {
-        if (rt.Memory.GetWaypoint(name) is { } w) return new BlockPos(w.X, w.Y, w.Z);
+        // Waypoints are per dimension: an overworld chest name never resolves while in the nether.
+        if (rt.Memory.GetWaypoint(name) is { } w && w.Dimension == client.World.Dimension) return new BlockPos(w.X, w.Y, w.Z);
         var p = client.World.Player.Position;
         foreach (var (row, _) in rt.Observations.Nearest("chest", p.X, p.Y, p.Z, limit: 32, maxDistance: 64))
             if (row.Text.Contains(name, StringComparison.OrdinalIgnoreCase) && row.Bounds is { } b)

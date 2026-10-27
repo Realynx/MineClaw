@@ -67,6 +67,9 @@ public static class GameToolSet
                 bool build = i.Bool("build") == true;
                 var opts = GotoOptions.Default with { AllowBreak = build, AllowPlace = build };
                 double? dist = i.Num("dist");
+                // A saved place in the other dimension: through a known linked portal, or an honest "no known portal".
+                if (Locations.ParseCoords(to) == null && places is ICrossDimensionPlaces xd && xd.ResolveElsewhere(to) is { } far)
+                    return await WorldIndex.PortalTravel.GotoAsync(c, xd.Portals, far.Pos, far.Dim, opts, dist ?? 1, ct);
                 Goal goal;
                 if (Resolve(to, places) is { } p) goal = Near(p, dist ?? 1);
                 else if (c.World.Entities.FindPlayer(to) is { } e) goal = new GoalNearPosition(e.Position, Math.Max(1, dist ?? 2));

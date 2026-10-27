@@ -33,10 +33,10 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
     }
 
     private Task<ActionResult> Chest(BlockPos? p, Func<Task<ActionResult>> action, CancellationToken ct) =>
-        p is { } pos ? Held(ClaimKey.Chest(pos), action, ct) : action();
+        p is { } pos ? Held(ClaimKey.Chest(pos, inner.World.Dimension), action, ct) : action();
 
     private Task<ActionResult> Furnace(BlockPos? p, Func<Task<ActionResult>> action, CancellationToken ct) =>
-        p is { } pos ? Held(ClaimKey.Furnace(pos), action, ct) : action();
+        p is { } pos ? Held(ClaimKey.Furnace(pos, inner.World.Dimension), action, ct) : action();
 
     // ---- claimed actions ----
     public Task<ActionResult> OpenContainerAsync(int x, int y, int z, CancellationToken ct = default) =>
@@ -50,11 +50,11 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
     public Task<ActionResult> CollectFurnaceAsync(BlockPos? furnace = null, CancellationToken ct = default) =>
         Furnace(furnace, () => inner.CollectFurnaceAsync(furnace, ct), ct);
     public Task<ActionResult> DigBlockAsync(int x, int y, int z, CancellationToken ct = default) =>
-        Held(ClaimKey.Block(x, y, z), () => inner.DigBlockAsync(x, y, z, ct), ct);
+        Held(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.DigBlockAsync(x, y, z, ct), ct);
     public Task<ActionResult> PlaceBlockAsync(int x, int y, int z, int itemId, CancellationToken ct = default) =>
-        Held(ClaimKey.Block(x, y, z), () => inner.PlaceBlockAsync(x, y, z, itemId, ct), ct);
+        Held(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.PlaceBlockAsync(x, y, z, itemId, ct), ct);
     public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, CancellationToken ct = default) =>
-        Held(ClaimKey.Block(x, y, z), () => inner.HarvestGeneratorAsync(x, y, z, count, ct), ct);
+        Held(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.HarvestGeneratorAsync(x, y, z, count, ct), ct);
 
     // ---- forwarded ----
     public WorldState World => inner.World;

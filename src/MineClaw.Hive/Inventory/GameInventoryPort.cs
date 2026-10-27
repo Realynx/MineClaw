@@ -20,6 +20,8 @@ public sealed class GameInventoryPort(IGameClient client, ObservationStore obser
 {
     private const int ChestSlots = 27;
 
+    public int Dimension => client.World.Dimension;
+
     public static List<ItemMsg> Snapshot(WorldState w)
     {
         var slots = w.Inventory.PlayerSlots();

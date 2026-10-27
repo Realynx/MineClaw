@@ -71,6 +71,7 @@ public sealed class BotAgent
         _lastEpisode = _time.GetUtcNow();
         _lastTurnAt = _turnSince = _lastEpisode;
 
+        Guard = new ToolCallGuard(activities, _time, TimeSpan.FromMinutes(Math.Max(0, options.FailureMemoryMinutes)));
         _events.Posted += OnEventPosted;
         _usage.ModeChanged += OnBudgetModeChanged;
         _chat.CommandBlocked += line => _log.LogWarning("blocked outgoing server command: {Line}", line);
@@ -108,6 +109,31 @@ public sealed class BotAgent
     public SelfGrowth? Growth { get; set; }
 
     public ContextManager Context => _context;
+
+    /// <summary>In-flight dedupe + short-term failure memory for long-running tool calls.</summary>
+    public ToolCallGuard Guard { get; }
+
+    /// <summary>
+    /// Optional deterministic hint for the newest user message (uncached tail), e.g. the hive's
+    /// "[hive: 1 clone online: maid_chan_67 (idle)]". Null/empty = nothing.
+    /// </summary>
+    public Func<EventBatch, string?>? TurnHint { get; set; }
+
+    /// <summary>
+    /// Final say over what this bot types into public chat: (everything this turn has seen so far, the text, whether it
+    /// already spoke this turn) -> the text to send, or null to stay silent. A hive clone uses it to speak only when a player
+    /// addressed it (or a hive task needs a short ack) and never to narrate hive status. Null = always speak.
+    /// </summary>
+    public Func<EventBatch, string, bool, string?>? SpeechGate { get; set; }
+
+    /// <summary>Raised with text the <see cref="SpeechGate"/> kept out of chat (a clone forwards it to main as progress).</summary>
+    public event Action<string>? Muted;
+
+    /// <summary>
+    /// Write public chat, emotes and joins/leaves to the chat log. Off in hive clones: the main process is the single writer
+    /// of public chat (every process sees the same lines); clones still log their own lines and whispers.
+    /// </summary>
+    public bool LogPublicChat { get; set; } = true;
 
     /// <summary>
     /// Current system prompt, in cache order: (1) the static block — instructions + core knowledge; tools render
@@ -253,6 +279,7 @@ public sealed class BotAgent
         decimal cost = 0;
         int calls = 0;
         var tools = ToolsFor(tier, canEscalate);
+        bool retry = RetryAsked(batch);
         // Snapshot per episode: a rename mid-turn applies from the next turn, keeping this turn's prefix byte-stable.
         var system = SystemPrompt;
         // Budget fallback 1 (Economy): the brain's turn runs on the worker model; same tools and history.
@@ -292,6 +319,19 @@ public sealed class BotAgent
             episode.Messages.Add(new LlmMessage(LlmRole.Assistant, content));
 
             var text = response.Text.Trim();
+            if (!IsSilent(text) && whisperTo == null && SpeechGate != null)
+            {
+                string? gated;
+                try { gated = SpeechGate(new EventBatch(episode.Events), text, said.Count > 0); }
+                catch (Exception ex) { _log.LogWarning(ex, "speech gate failed"); gated = text; }
+                if (gated == null || IsSilent(gated.Trim()))
+                {
+                    _log.LogDebug("muted: {Text}", text);
+                    try { Muted?.Invoke(text); } catch (Exception) { }
+                    text = "";
+                }
+                else text = gated.Trim();
+            }
             if (!IsSilent(text))
             {
                 var lines = await _chat.SayAsync(text, whisperTo, audience, ct).ConfigureAwait(false);
@@ -315,7 +355,7 @@ public sealed class BotAgent
                 return new RunResult(tier, calls, usage, cost, said, new Escalation(esc.Input.Str("reason") ?? "needs planning", said));
             }
 
-            var results = await ExecuteToolsAsync(uses, tier, ct).ConfigureAwait(false);
+            var results = await ExecuteToolsAsync(uses, tier, retry, ct).ConfigureAwait(false);
             var blocks = new List<LlmBlock>(results);
 
             // Let urgent/new events reach the model mid-turn (appended after the tool results — append-only).
@@ -328,6 +368,7 @@ public sealed class BotAgent
                 foreach (var p in fresh.Waking.Where(e => e.Player != null).Select(e => e.Player!))
                     if (!audience.Contains(p, StringComparer.OrdinalIgnoreCase)) audience.Add(p);
                 if (fresh.WhisperOnlyFrom == null && fresh.Waking.Any()) whisperTo = null;
+                retry |= RetryAsked(fresh);
             }
             episode.Messages.Add(new LlmMessage(LlmRole.User, blocks));
         }
@@ -364,6 +405,13 @@ public sealed class BotAgent
         var self = SelfBlock(batch, tier);
         if (self.Length > 0) sb.Append(self).Append('\n');
         if (memory.Length > 0) sb.Append(memory).Append('\n');
+        string hint = "";
+        if (TurnHint != null)
+        {
+            try { hint = TurnHint(batch)?.Trim() ?? ""; }
+            catch (Exception ex) { _log.LogWarning(ex, "turn hint failed"); }
+            if (hint.Length > 0) sb.Append(hint).Append('\n');
+        }
         var events = batch.Format();
         sb.Append(events);
         var text = sb.ToString().TrimEnd();
@@ -450,8 +498,13 @@ public sealed class BotAgent
         return fixedTokens + History() + cur <= cap;
     }
 
-    private async Task<IReadOnlyList<LlmToolResult>> ExecuteToolsAsync(List<LlmToolUse> uses, ModelTier tier, CancellationToken ct)
+    /// <summary>A player explicitly asked to try again in this batch (bypasses the failure memory).</summary>
+    private static bool RetryAsked(EventBatch batch) =>
+        batch.Waking.Any(e => e.Kind is EventKind.Chat or EventKind.Whisper && ToolCallGuard.IsRetryRequest(e.Text));
+
+    private async Task<IReadOnlyList<LlmToolResult>> ExecuteToolsAsync(List<LlmToolUse> uses, ModelTier tier, bool retry, CancellationToken ct)
     {
+        bool stopping = uses.Any(u => u.Name == "stop");
         var results = new ToolResult?[uses.Count];
         var instant = new List<Task>();
         var chain = new List<(int Index, IAgentTool Tool, LlmToolUse Use)>();
@@ -470,7 +523,16 @@ public sealed class BotAgent
                     : $"'{u.Name}' is a worker tool: use delegate");
                 continue;
             }
-            if (tool.IsLongRunning) chain.Add((i, tool, u));
+            if (tool.IsLongRunning)
+            {
+                // Same call (or same target) already running, or it just failed there: say so instead of re-issuing.
+                ToolResult? held = null;
+                try { held = Guard.Check(u.Name, u.Input, retry, stopping); } catch (Exception ex) { _log.LogDebug(ex, "tool guard failed"); }
+                if (held == null && chain.Any(c => ToolCallGuard.Signature(c.Use.Name, c.Use.Input) == ToolCallGuard.Signature(u.Name, u.Input)))
+                    held = ToolResult.Success("already queued in this turn");
+                if (held != null) results[i] = held;
+                else chain.Add((i, tool, u));
+            }
             else
             {
                 int idx = i;
@@ -513,6 +575,7 @@ public sealed class BotAgent
         {
             foreach (var e in batch.Events)
             {
+                if (!LogPublicChat && e.Kind != EventKind.Whisper) continue; // hive clone: main logs public chat
                 string? kind = e.Kind switch
                 {
                     EventKind.Chat => "chat", EventKind.Whisper => "whisper", EventKind.Emote => "emote",
