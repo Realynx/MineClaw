@@ -186,6 +186,7 @@ internal sealed class FakeServer : IDisposable
             while (_conn.ReadPacket() is { } p)
             {
                 Received.Enqueue(p);
+                MaybeConfirm(p);
                 Handle(p);
             }
         }
@@ -233,12 +234,8 @@ internal sealed class FakeServer : IDisposable
                 Send(new SpawnPositionPacket { X = 8, Y = 64, Z = 8 });
                 Send(new TimeUpdatePacket { Time = 6000 });
                 Send(new PlayerListItemPacket { PlayerName = "tester", Online = true, Ping = 1 });
-                for (int cx = -1; cx <= 1; cx++)
-                for (int cz = -1; cz <= 1; cz++)
-                {
-                    Send(new PreChunkPacket { ChunkX = cx, ChunkZ = cz, Load = true });
-                    Send(ChunkDataDecoder.Encode(BuildChunk(cx, cz)));
-                }
+                if (ChunksAfterConfirm) _chunksPending = true;
+                else SendSpawnChunks();
                 Send(new WindowItemsPacket { WindowId = 0, Items = (ItemStack[])Inventory.Clone() });
                 Send(new UpdateHealthPacket { Health = 20, Food = 20, FoodSaturation = 5 });
                 Send(new PlayerPositionLookPacket { X = SpawnAt.X, Y = SpawnAt.Y, Stance = SpawnAt.Y + 1.62, Z = SpawnAt.Z, Yaw = 0, Pitch = 0, OnGround = false });
@@ -429,6 +426,38 @@ internal sealed class FakeServer : IDisposable
             Send(new DestroyEntityPacket { EntityId = id });
             Send(new SetSlotPacket { WindowId = 0, Slot = (short)slot, Item = Inventory[slot] });
         }
+    }
+
+    /// <summary>
+    /// Like the real b1.8.1 server: the spawn chunks stream only after the client confirms the login 0x0D (EntityPlayerMP.a(true)
+    /// runs from NetServerHandler.a(Packet10Flying) once checkMovement is set). Off by default (chunks before the 0x0D).
+    /// </summary>
+    public bool ChunksAfterConfirm { get; set; }
+    private volatile bool _chunksPending;
+
+    private void SendSpawnChunks()
+    {
+        for (int cx = -1; cx <= 1; cx++)
+        for (int cz = -1; cz <= 1; cz++)
+        {
+            Send(new PreChunkPacket { ChunkX = cx, ChunkZ = cz, Load = true });
+            Send(ChunkDataDecoder.Encode(BuildChunk(cx, cz)));
+        }
+    }
+
+    /// <summary>A C→S position matching the login 0x0D's X/Z confirms it (NetServerHandler.java:66-71): stream the chunks.</summary>
+    private void MaybeConfirm(IPacket p)
+    {
+        if (!_chunksPending) return;
+        (bool has, double x, double z) = p switch
+        {
+            PlayerPositionLookPacket pl => (true, pl.X, pl.Z),
+            PlayerPositionPacket pp => (true, pp.X, pp.Z),
+            _ => (false, 0, 0),
+        };
+        if (!has || x != SpawnAt.X || z != SpawnAt.Z) return;
+        _chunksPending = false;
+        SendSpawnChunks();
     }
 
     /// <summary>(Re)sends one chunk column built from <see cref="Blocks"/> (e.g. after a respawn).</summary>

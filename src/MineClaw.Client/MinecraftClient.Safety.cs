@@ -68,7 +68,19 @@ public sealed partial class MinecraftClient
     /// on this server" unless allow-flight). So the safest legal hold over the void is: never confirm, send only 0x0A, stay put.
     /// The server keeps us at its own m,n,o; a /tp is a new 0x0D. Ground verified → the held-back echo goes out.
     /// </summary>
-    private bool DeferEcho(Vec3d at) => Options.FreezeUntilSupportVerified && !SupportVerified(at);
+    /// <remarks>
+    /// Only over a LOADED void. The real server streams chunks only after the confirmation (EntityPlayerMP.a(true) runs from
+    /// NetServerHandler.a(Packet10Flying) only once checkMovement is set), so withholding it while the chunks are still missing
+    /// deadlocks the login: live 10-27 22:33, main and 420 both stuck at "chunks … not loaded yet; holding still".
+    /// </remarks>
+    private bool DeferEcho(Vec3d at) => Options.FreezeUntilSupportVerified && AreaLoaded(at) && World.IsPlayerOverVoid(at);
+
+    /// <summary>
+    /// Hovering over a loaded void after the confirmation already went out (a login: chunks only arrive once confirmed): send no
+    /// flying packets at all, so the server's floating counter (NetServerHandler.java:216-226) never advances. Keepalives keep
+    /// the connection; a /tp is a new 0x0D.
+    /// </summary>
+    private bool SilentOverVoid(Vec3d at) => Options.FreezeUntilSupportVerified && AreaLoaded(at) && World.IsPlayerOverVoid(at);
 
     /// <summary>Actions that work in place while holding over the void (no walking, no block in reach needed).</summary>
     private static readonly HashSet<string> VoidHoldActions = new(StringComparer.Ordinal)

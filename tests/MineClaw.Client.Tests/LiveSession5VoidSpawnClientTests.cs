@@ -114,6 +114,60 @@ public class LiveSession5VoidSpawnClientTests
         Assert.False(c.IsFrozenForSafety);
     }
 
+    /// <summary>
+    /// Live 10-27 22:33 after the session-4 deploy: main and 420 both froze at "chunks … not loaded yet; holding still". The real
+    /// server streams the spawn chunks only after the login 0x0D is confirmed, so the confirmation must not wait for them.
+    /// </summary>
+    [Fact]
+    public async Task Login_confirms_before_the_chunks_arrive_like_the_real_server()
+    {
+        var server = new FakeServer { ChunksAfterConfirm = true };
+        var o = new ClientOptions
+        {
+            Username = "maid_chan", TickInterval = TimeSpan.FromMilliseconds(5), ChatInterval = TimeSpan.Zero,
+            ConnectionFactory = server.CreateClientConnection, HostileAlertRadius = 0,
+        };
+        await using var c = new MinecraftClient(o);
+        using var _s = server;
+        using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10))) await c.ConnectAsync(cts.Token);
+        Assert.True(await Harness.WaitAsync(() => !c.IsFrozenForSafety && c.World.Player.OnGround, 3000),
+            "login deadlocked: the client withheld the confirmation the server needs before it sends chunks");
+        Assert.Null(c.HoldingOverVoidAt);
+    }
+
+    /// <summary>The same real-server ordering for a void spawn: confirmed (chunks need it), then silent so it never floats.</summary>
+    [Fact]
+    public async Task Void_spawn_with_late_chunks_holds_silently_and_never_reaches_the_floating_kick()
+    {
+        var model = new FloatingKickModel();
+        var server = new FakeServer { SpawnAt = (-5.5, 0.594, -8.5), ChunksAfterConfirm = true };
+        model.Teleport(-5.5, 0.594, -8.5);
+        server.Hook = p =>
+        {
+            switch (p)
+            {
+                case PlayerPositionLookPacket pl: model.Flying(true, pl.X, pl.Y, pl.Z, NearBlock(server, pl.X, pl.Y, pl.Z)); break;
+                case PlayerPositionPacket pp: model.Flying(true, pp.X, pp.Y, pp.Z, NearBlock(server, pp.X, pp.Y, pp.Z)); break;
+                case PlayerLookPacket or PlayerOnGroundPacket: model.Flying(false, 0, 0, 0, NearBlock(server, model.At.X, model.At.Y, model.At.Z)); break;
+            }
+            return false;
+        };
+        var o = new ClientOptions
+        {
+            Username = "maid_chan_420", TickInterval = TimeSpan.FromMilliseconds(5), ChatInterval = TimeSpan.Zero,
+            ConnectionFactory = server.CreateClientConnection, HostileAlertRadius = 0,
+        };
+        await using var c = new MinecraftClient(o);
+        using var _s = server;
+        using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10))) await c.ConnectAsync(cts.Token);
+        Assert.True(await Harness.WaitAsync(() => c.HoldingOverVoidAt is not null, 3000), "void hold raised");
+        long t0 = c.TickCount;
+        Assert.True(await Harness.WaitAsync(() => c.TickCount > t0 + 120, 5000));
+        Assert.True(model.CheckMovement); // confirmed: the chunks needed it
+        Assert.True(model.MaxFloating < 80, $"floating counter reached {model.MaxFloating}: would be kicked");
+        Assert.Equal(0.594, c.World.Player.Position.Y, 6);
+    }
+
     /// <summary>World.b(AABB) over the player box (0.6 × 1.8) grown 0.0625 and moved down 0.55, on the fake server's blocks.</summary>
     private static bool NearBlock(FakeServer s, double x, double y, double z)
     {

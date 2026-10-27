@@ -123,7 +123,7 @@ public sealed partial class MinecraftClient
         {
             phys.Frozen = true;
             player.SyncFromPhysics();
-            if (!teleported) SendMovement(s, phys);
+            if (!teleported && !SilentOverVoid(phys.Position)) SendMovement(s, phys);
             EndTick();
             return;
         }
