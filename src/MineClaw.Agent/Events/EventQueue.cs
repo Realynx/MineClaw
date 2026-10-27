@@ -120,13 +120,26 @@ public sealed class EventQueue
     /// </summary>
     public Func<GameEvent, GameEvent?>? Intake { get; set; }
 
-    /// <summary>Adds an event, applying coalescing. Returns false if it was dropped as a low-value repeat (or by <see cref="Intake"/>).</summary>
+    /// <summary>
+    /// Optional second filter, applied after <see cref="Intake"/>: the script engine's "brain sleeps" gate. While a script runs
+    /// it keeps only real wakes (task end, danger, addressed chat, script wake) waking; the rest is kept as non-waking
+    /// context for the next real wake (or dropped, e.g. idle check-ins). Separate from Intake so a clone's policy and the
+    /// gate compose.
+    /// </summary>
+    public Func<GameEvent, GameEvent?>? Gate { get; set; }
+
+    /// <summary>Adds an event, applying coalescing. Returns false if it was dropped as a low-value repeat (or by <see cref="Intake"/>/<see cref="Gate"/>).</summary>
     public bool Post(GameEvent e)
     {
         if (Intake is { } intake)
         {
             if (intake(e) is not { } kept) return false;
             e = kept;
+        }
+        if (Gate is { } gate)
+        {
+            if (gate(e) is not { } passed) return false;
+            e = passed;
         }
         bool accepted;
         lock (_lock)

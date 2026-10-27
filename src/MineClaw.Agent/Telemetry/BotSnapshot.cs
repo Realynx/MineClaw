@@ -71,6 +71,8 @@ public sealed record BotSnapshot
     /// <summary>The state header line the brain sees (pos, hp, held item, day/night).</summary>
     public string? Header { get; init; }
     public string BudgetMode { get; init; } = "Normal";
+    /// <summary>"awake", or "asleep (script cobble_loop 34%)" while a script runs and the brain makes no model calls. Additive (null = unknown).</summary>
+    public string? Brain { get; init; }
     public ThoughtSnapshot? Thought { get; init; }
     public UsageSnapshot? Usage { get; init; }
     public ViewportGrid? Viewport { get; init; }

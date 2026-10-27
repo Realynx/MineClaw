@@ -42,8 +42,16 @@ public sealed class RoutineExecutor
         return null;
     }
 
+    /// <summary>
+    /// Set by the game layer (the script engine): routines run as scripts — saved scripts directly, step routines after
+    /// migrating to an equivalent script. Returns null to fall back to the step replay below.
+    /// </summary>
+    public Func<Routine, int?, CancellationToken, Task<ToolResult?>>? ScriptRunner { get; set; }
+
     public async Task<ToolResult> RunAsync(Routine routine, int? repeatOverride, CancellationToken ct)
     {
+        if (ScriptRunner is { } script && await script(routine, repeatOverride, ct).ConfigureAwait(false) is { } viaScript) return viaScript;
+        if (routine.Steps.Count == 0 && routine.Script != null) return ToolResult.Error($"routine {routine.Name} is a script; the script engine isn't attached");
         var invalid = Validate(routine);
         if (invalid != null) return ToolResult.Error($"routine {routine.Name}: {invalid}");
 

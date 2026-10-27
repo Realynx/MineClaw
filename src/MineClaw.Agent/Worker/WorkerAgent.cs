@@ -33,7 +33,7 @@ public sealed class WorkerAgent
     private readonly UsageTracker _usage;
     private readonly TimeProvider _time;
     private readonly ILogger _log;
-    private readonly IReadOnlyList<LlmSystemBlock> _system;
+    private IReadOnlyList<LlmSystemBlock> _system;
 
     public WorkerAgent(WorkerOptions options, LlmOptions llmOptions, ILlmClient llm, ToolRegistry tools, UsageTracker usage,
         string coreKnowledge = "", TimeProvider? time = null, ILogger? log = null, TerseLevel terse = TerseLevel.Off)
@@ -57,6 +57,16 @@ public sealed class WorkerAgent
     public event Action<WorkerOutcome>? Finished;
 
     public IReadOnlyList<LlmSystemBlock> SystemPrompt => _system;
+
+    /// <summary>
+    /// Appends a static block to the worker's cached system prompt (e.g. the script API cheat-sheet). Startup only, before
+    /// the first task: it is part of the cached prefix.
+    /// </summary>
+    public void ExtendSystem(string block)
+    {
+        if (string.IsNullOrWhiteSpace(block) || _system[0].Text.Contains(block, StringComparison.Ordinal)) return;
+        _system = [_system[0] with { Text = _system[0].Text.TrimEnd() + "\n" + block.Trim() + "\n" }, .. _system.Skip(1)];
+    }
 
     /// <summary>The worker's tool definitions (its cached prefix, stable for the run).</summary>
     public IReadOnlyList<LlmToolDefinition> ToolDefinitions => _tools.Definitions(ModelTier.Worker);

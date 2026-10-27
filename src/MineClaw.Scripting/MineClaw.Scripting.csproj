@@ -1,10 +1,15 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
     <ProjectReference Include="..\MineClaw.Skills\MineClaw.Skills.csproj" />
     <ProjectReference Include="..\MineClaw.Client\MineClaw.Client.csproj" />
     <ProjectReference Include="..\MineClaw.World\MineClaw.World.csproj" />
     <ProjectReference Include="..\MineClaw.Data\MineClaw.Data.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Pure-managed Lua 5.2 VM (no native libs: ships in the self-contained linux-x64 single file). Pinned. -->
+    <PackageReference Include="LuaCSharp" Version="0.5.7" />
   </ItemGroup>
 
   <PropertyGroup>

@@ -97,6 +97,7 @@ public sealed class InProcessBotSource : IBotTelemetrySource, IDisposable
                 Task = _rt.Activities.Describe() ?? _game.CurrentAction,
                 Header = full ? GameBridge.StateHeader(_game) : null,
                 BudgetMode = _rt.Usage.Mode.ToString(),
+                Brain = MineClaw.Bot.GameTools.ScriptTools.BrainState(_rt),
                 Thought = full ? _telemetry.Thoughts.Snapshot() : null,
                 Usage = UsageSnapshots.From(_rt.Usage, _telemetry),
                 Viewport = full && pos != null ? ViewportBuilder.Build(w, p.Position, _view, Name) : null,

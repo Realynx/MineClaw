@@ -115,6 +115,7 @@ public static class TuiFrame
         if (s.Status != BotStatus.Offline) l1.Add($"hp {s.Hp}/20 ", s.Hp <= 6 ? "bold red" : null).Add($"food {s.Food}  ", s.Food <= 6 ? "yellow" : null);
         l1.Add("task: ", "grey").Add((s.Task ?? "idle") + "  ");
         l1.Add("budget: ", "grey").Add(s.BudgetMode, ModeStyle(s.BudgetMode));
+        if (s.Brain != null) l1.Add("  brain: ", "grey").Add(s.Brain, s.Brain.StartsWith("asleep", StringComparison.Ordinal) ? "aqua" : null);
         if (f.State.Flash != null) l1.Add("  " + f.State.Flash, "italic aqua");
         yield return l1.ToString();
 

@@ -80,12 +80,13 @@ public sealed class BotHost : IDisposable
         BodyLanguageTools.Register(rt.Tools, client); // act {move, target?, times?}: brain-only body language
         if (client is MinecraftGameClient mgp) WireProtectedRegion(mgp.Inner, rt, log);
         Beliefs.BeliefBot.Attach(rt, toolClient, claims, time, log, indexer); // belief system: claim checks when idle (zero tokens)
-        SkillTools.Register(rt, client, claims); // worker: skill + find_skill over the whole catalog (zero prefix growth)
+        var skillHub = SkillTools.Register(rt, client, claims); // worker: skill + find_skill over the whole catalog (zero prefix growth)
         // Brain gets the cheap single-shot tools + delegate/ask_memory; the worker gets the game macro tools.
         rt.ApplyBrainSplit();
 
         var bridge = new GameBridge(client, rt, log, time);
         bridge.Attach();
+        ScriptTools.Register(rt, client, skillHub, botOptions.Scripts, time, log); // script tool (brain+worker), after split + header
         return new BotHost
         {
             Runtime = rt, Client = client, Bridge = bridge, Protection = protection, Recorder = recorder, MemoryAdapter = memory,

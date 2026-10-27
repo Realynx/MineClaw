@@ -25,4 +25,7 @@ public sealed class BotOptions
 
     /// <summary>Radius (blocks) around the teaching player in which block changes are recorded.</summary>
     public double DemoRadius { get; set; } = 6;
+
+    /// <summary>Script engine limits and interrupt policy ("Bot:Scripts").</summary>
+    public MineClaw.Scripting.ScriptOptions Scripts { get; set; } = new();
 }

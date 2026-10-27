@@ -281,8 +281,10 @@ public sealed class MemoryStore : IDisposable
         return sb.ToString();
     }
 
-    public static string FormatRoutine(Routine r) =>
-        $"routine {r.Name}: {string.Join(">", r.Steps.Select(x => x.Tool))}" + (r.Repeat != 1 ? $" x{(r.Repeat == 0 ? "inf" : r.Repeat)}" : "") +
+    public static string FormatRoutine(Routine r) => r.Script is { Migrated: false } s
+        ? $"script {r.Name} v{s.Version}" + (r.Note != null ? $": {r.Note}" : "") + (s.Runs > 0 ? $" ({s.Successes}/{s.Runs} ok, avg {s.AvgSeconds:0}s)" : "") +
+          (s.PromotedAs != null ? $" skill {s.PromotedAs}" : "")
+        : $"routine {r.Name}: {string.Join(">", r.Steps.Select(x => x.Tool))}" + (r.Repeat != 1 ? $" x{(r.Repeat == 0 ? "inf" : r.Repeat)}" : "") +
         (r.StopWhen != null ? $" until '{r.StopWhen}'" : "") + (r.Note != null ? $" ({r.Note})" : "");
 
     // ---------------- index docs ----------------

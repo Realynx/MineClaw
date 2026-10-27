@@ -84,6 +84,8 @@ public sealed class Routine
     public string? StopWhen { get; set; }
     public string? Note { get; set; }
     public DateTimeOffset Updated { get; set; }
+    /// <summary>Script form (code, versions, run stats); set for saved scripts and for step routines once migrated.</summary>
+    public Routines.RoutineScript? Script { get; set; }
 }
 
 /// <summary>The name(s) players call the bot in chat (separate from its login username).</summary>
