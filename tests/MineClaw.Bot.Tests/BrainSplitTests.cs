@@ -45,7 +45,7 @@ public class BrainSplitTests(Xunit.Abstractions.ITestOutputHelper output)
         // Cap raised from 2,000 to 2,300 for act + run_command: cached tool tokens cost ~$0.0001/call; the real limit is bloat.
         foreach (var n in new[] { "act", "run_command" }) Assert.Contains(n, b);
         Assert.True(bt + hiveTool <= 2300, $"brain tools ≈{bt} + hive {hiveTool}");
-        Assert.True(wt <= 1800, $"worker tools ≈{wt}");
+        Assert.True(wt <= 2000, $"worker tools ≈{wt}"); // raised for the Lua script tool
     }
 
     [Fact]

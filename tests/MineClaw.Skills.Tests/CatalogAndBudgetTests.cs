@@ -85,7 +85,7 @@ public class CatalogAndBudgetTests(Xunit.Abstractions.ITestOutputHelper output)
         Assert.Contains(worker, d => d.Name == "skill");
         Assert.Contains(worker, d => d.Name == "find_skill");
         Assert.True(bt <= 2300, $"brain ≈{bt}"); // same cap as Bot.Tests BrainSplitTests (raised for act + run_command)
-        Assert.True(wt <= 1800, $"worker ≈{wt}");
+        Assert.True(wt <= 2000, $"worker ≈{wt}"); // raised for the Lua script tool; cached prefix, ~$0.00004/call
 
         // Full catalog (wave 1 + wave 2 stubs + learned skills) vs an empty catalog: identical tool prefix.
         string Prefix(SkillRegistry reg)
