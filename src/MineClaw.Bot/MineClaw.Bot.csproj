@@ -4,6 +4,7 @@
     <ProjectReference Include="..\MineClaw.Agent\MineClaw.Agent.csproj" />
     <ProjectReference Include="..\MineClaw.Client\MineClaw.Client.csproj" />
     <ProjectReference Include="..\MineClaw.Skills\MineClaw.Skills.csproj" />
+    <ProjectReference Include="..\MineClaw.Scripting\MineClaw.Scripting.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
