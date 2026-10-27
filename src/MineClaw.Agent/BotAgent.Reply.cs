@@ -19,7 +19,7 @@ namespace MineClaw.Agent;
 /// never streamed. Once a line of a call is out, the call can't be cut for new chat (no half-sent restarts).</item>
 /// <item>Quick ack: no brain line <see cref="ReplyOptions.AckAfterMs"/> after the addressed message → one Haiku call writes a
 /// ≤5-word non-committal line; linted, else silence. At most one per turn; the brain's next round gets
-/// <c>(you already said: "…")</c> in its newest user message.</item>
+/// <c>(already in chat: "…"; don't repeat or mention it)</c> in its newest user message.</item>
 /// <item>Cheap-only: safe small talk is triaged by the same single cheap call; a final answer there means no brain call.
 /// A correction right after it escalates and counts a miss.</item>
 /// </list>
@@ -28,7 +28,7 @@ public sealed partial class BotAgent
 {
     public const string AckPurpose = "quick_ack";
     public const string QuickReplyPurpose = "quick_reply";
-    public const string AckNoteFormat = "(you already said: \"{0}\")";
+    public const string AckNoteFormat = "(already in chat: \"{0}\"; don't repeat or mention it)";
     public const string QuickReplyTag = "[quick reply: cheap tier answered, no brain call]";
 
     private static readonly Regex SentenceEnd = new(@"[.!?~]+(?=\s)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -193,7 +193,7 @@ public sealed partial class BotAgent
             }
             text = gated.Trim();
         }
-        text = MetaSpeech.Strip(text, out var meta);
+        text = MetaSpeech.Strip(text, out var meta, _turnStatusAsked);
         foreach (var m in meta) _log.LogInformation("[meta suppressed] {Line}", m);
         if (IsSilent(text.Trim())) return "";
         text = SpeechDedupe.DropRepeats(text, said, out var dup);
@@ -438,7 +438,7 @@ public sealed partial class BotAgent
             }
             if (!IsSilent(text))
             {
-                text = MetaSpeech.Strip(text, out _);
+                text = MetaSpeech.Strip(text, out _, MetaSpeech.AsksStatus(batch.Waking.Where(EventQueue.IsTyped).Select(e => e.Text)));
                 if (!IsSilent(text.Trim())) text = LastLook(text, players);
             }
             if (!IsSilent(text))

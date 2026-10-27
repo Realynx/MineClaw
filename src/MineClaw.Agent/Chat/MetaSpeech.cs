@@ -57,6 +57,59 @@ public static partial class MetaSpeech
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex AskingLeadRx();
 
+    /// <summary>
+    /// The bot narrating its own speech or silence (live 10-27 23:30, every background run: "I didn't say anything in chat.";
+    /// 23:36: "I'd already answered robin in chat ("robin-sama noticed~") and saved a note"). Never game chat.
+    /// </summary>
+    [GeneratedRegex(
+        @"\bi\s+(?:didn'?t|did\s+not|haven'?t|have\s+not|won'?t|will\s+not|wasn'?t\s+going\s+to)\s+(?:say|said|post|posted|write|written|type|typed|reply|replied|answer|answered|respond|responded)\s+(?:anything|nothing|a\s+thing|a\s+word)\b" +
+        @"|\bi\s+(?:said|posted|wrote|typed)\s+nothing\b|\bnothing\s+(?:was\s+)?(?:said|posted)\s+in\s+(?:the\s+)?chat\b" +
+        @"|\b(?:i'?d|i\s+had|i'?ve|i\s+have|i)\s+already\s+(?:answered|replied|said|responded|told)\b[^.!?]*\bin\s+(?:the\s+)?chat\b" +
+        @"|\bin\s+(?:the\s+)?chat\s+(?:already|earlier)\b|\b(?:i|i'?ve|i\s+have)\s+(?:said|posted|written|typed)\s+(?:it\s+|that\s+)?in\s+(?:the\s+)?chat\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex SelfSpeechRx();
+
+    /// <summary>
+    /// Its own reasoning about who a line was for (live 10-27 23:4x: "Robin said "don't say anything unless addressed" while
+    /// talking to robinchan, so I'm treating it as..."). Never game chat.
+    /// </summary>
+    [GeneratedRegex(
+        @"\bi'?m\s+treating\s+(?:it|this|that|them|the\s+\w+)\s+as\b|\btreat(?:ing)?\s+(?:it|this|that)\s+as\s+(?:not\s+)?(?:addressed|meant|for\s+me)\b" +
+        @"|\b(?:that|this|it|the)(?:\s+(?:line|message|one))?\s+(?:wasn'?t|isn'?t|was\s+not|is\s+not)\s+(?:addressed\s+to|meant\s+for|for)\s+me\b" +
+        @"|\b\w+\s+said\s+""[^""]*""\s*(?:while|so|,|which|because)" +
+        @"|\b(?:unless|until)\s+(?:i'?m\s+|i\s+am\s+)?(?:addressed|spoken\s+to|talked\s+to)\b|\bwhile\s+talking\s+to\s+\w+\s*,\s*so\b" +
+        // Its own silence as a decision (live 10-27: "...but she's asked me to stay quiet unless spoken to, ... so I didn't step in.")
+        @"|\b(?:asked|told|wants?|wanted)\s+me\s+to\s+(?:stay|be|keep)\s+(?:quiet|silent|out\s+of\s+it)\b" +
+        @"|\bi\s+(?:didn'?t|did\s+not|won'?t|will\s+not|shouldn'?t)\s+(?:step|jump|chime|butt)\s+in\b|\bstaying\s+(?:quiet|silent|out\s+of\s+it)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ReasoningRx();
+
+    /// <summary>
+    /// Routine run status of a background job (live 10-27 23:30-23:37 on every standing-order run: "The fourth run worked:
+    /// another 32 cobble mined and stored.", "I started a fifth 32-cobble run."). Kept only when a player asked for status.
+    /// </summary>
+    [GeneratedRegex(
+        @"\b(?:the\s+)?(?:last|latest|previous|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|next|new|\d+(?:st|nd|rd|th))\s+(?:\d+[- ]?\w+\s+)?(?:run|batch|pass|round|loop)\s+(?:worked|finished|is\s+done|was\s+done|went\s+fine|succeeded|failed|mined|ended|completed|is\s+going|has\s+started|started|is\s+running)\b" +
+        @"|\b(?:started|starting|kicked\s+off|began|beginning|queued)\s+(?:another|a\s+new|the\s+next|a\s+(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th)))\s+(?:\d+[- ]?\w+\s+)?(?:run|batch|pass|round|loop)\b" +
+        @"|\banother\s+(?:\d+[- ]?\w+\s+)?(?:run|batch|pass)\b[^.!?]*\b(?:has\s+)?(?:started|going|running)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex RunStatusRx();
+
+    /// <summary>A player line asking for status/progress ("how's it going", "how much cobble", "status?", "done yet?").</summary>
+    [GeneratedRegex(
+        @"\b(?:status|progress|update|report|how'?s\s+it\s+going|how\s+is\s+it\s+going|how\s+(?:much|many)|how\s+far|done\s+yet|finished\s+yet|what\s+are\s+(?:you|u)\s+doing|wyd|what'?s\s+up\s+with|how\s+did\s+(?:it|that)\s+go|did\s+(?:it|that)\s+work)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex StatusAskRx();
+
+    /// <summary>True when one of these player lines asks for status (run reports may then be said).</summary>
+    public static bool AsksStatus(IEnumerable<string> lines) => lines.Any(l => StatusAskRx().IsMatch(l ?? ""));
+
+    /// <summary>A sentence that narrates the bot's own chat/silence or its addressing reasoning.</summary>
+    public static bool IsSelfNarration(string sentence) => SelfSpeechRx().IsMatch(sentence ?? "") || ReasoningRx().IsMatch(sentence ?? "");
+
+    /// <summary>A routine background-run status sentence ("the fourth run worked", "started another run").</summary>
+    public static bool IsRunStatus(string sentence) => RunStatusRx().IsMatch(sentence ?? "");
+
     [GeneratedRegex(@"\s*(?:,\s*|\s+-\s+|;\s*)(?:so|but|and|then)\s+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex ClauseRx();
 
@@ -84,9 +137,10 @@ public static partial class MetaSpeech
 
     /// <summary>
     /// The text with purely meta sentences removed (short, at most 10 words); <paramref name="suppressed"/> lists what was dropped.
-    /// Emote lines ("/me ...") are left alone.
+    /// Emote lines ("/me ...") are left alone. Sentences narrating the bot's own speech/silence or addressing reasoning always go;
+    /// routine run status goes unless <paramref name="statusAsked"/> (a player asked how the job is going).
     /// </summary>
-    public static string Strip(string text, out List<string> suppressed)
+    public static string Strip(string text, out List<string> suppressed, bool statusAsked = false)
     {
         suppressed = new List<string>();
         if (string.IsNullOrWhiteSpace(text)) return text ?? "";
@@ -102,7 +156,7 @@ public static partial class MetaSpeech
             {
                 var t = s.Trim();
                 if (t.Length == 0) continue;
-                if (IsMeta(t) || MemoryChoreRx().IsMatch(t)) { suppressed.Add(t); continue; }
+                if (IsMeta(t) || MemoryChoreRx().IsMatch(t) || IsSelfNarration(t) || (!statusAsked && IsRunStatus(t))) { suppressed.Add(t); continue; }
                 if (AskingLeadRx().Match(t) is { Success: true } lead)
                 {
                     suppressed.Add(t);

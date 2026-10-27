@@ -293,7 +293,7 @@ public sealed class ChatRouter
             // Emotes are personality/treatment signals, never answers to ask_player.
             if (addressed && !AllowIncoming(player)) addressed = false;
             Post(GameEvent.Emote(player, msg.Text, addressed));
-            if (addressed) lock (_lock) _lastTalkedWith[player] = Now;
+            if (addressed) lock (_lock) { _lastTalkedWith[player] = Now; _lastAddressedAt = Now; }
             return;
         }
 
@@ -315,7 +315,15 @@ public sealed class ChatRouter
         else
             Post(GameEvent.Chat(player, msg.Text, addressed));
 
-        if (addressed) lock (_lock) _lastTalkedWith[player] = Now;
+        if (addressed) lock (_lock) { _lastTalkedWith[player] = Now; _lastAddressedAt = Now; }
+    }
+
+    private DateTimeOffset _lastAddressedAt = DateTimeOffset.MinValue;
+
+    /// <summary>A player addressed the bot (chat or whisper it took) within <paramref name="window"/>.</summary>
+    public bool AddressedWithin(TimeSpan window)
+    {
+        lock (_lock) return _lastAddressedAt != DateTimeOffset.MinValue && Now - _lastAddressedAt <= window;
     }
 
     /// <summary>

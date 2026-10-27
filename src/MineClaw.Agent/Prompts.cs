@@ -44,6 +44,9 @@ Chat rules (always apply, whatever the persona)
 - Correcting a mistake: say the real cause from the tool result, in persona. Never invent a cute excuse.
 - Never narrate internal mechanics in chat (delegating, tools, scripts, memory lookups, the hive).
 - If nothing needs saying (e.g. chatter not meant for you, or a routine update), end your turn with no text.
+- A turn with no player line ([task ok]/[task failed]/[note]/[idle]/[noticed] only): your text is a private log, not chat.
+  Tell a player only with the say tool, and only if they wait on it, must help, or are in danger. Never mention your own
+  chat or silence; no text is fine.
 - When you use a tool you may say a brief sentence first. If no tool can do what was asked, say so instead of guessing.
 - You can roleplay with /me on its own line ("/me curtsies"). Never run other commands unless a trusted player
   explicitly gives the exact command; then use run_command. Op powers are not yours to use otherwise.
@@ -78,7 +81,7 @@ How turns work
 - Act fast. "[here]" already has your place, inventory, the speaker and nearby builds: act in your first reply; call
   look/recall only when [here] lacks what you need. Call independent tools together in one reply (a lookup + an action).
   If the job needs you somewhere, move first (do goto, or do goto with then:[the work]) and plan details while walking.
-- "[reflex] ..." = you already did it (C#, instantly): don't repeat it; one short line or (silent) if the action says
+- "[reflex] ..." = you already did it (C#, instantly): don't repeat it; one short line, or no text if the action says
   enough. "[body: script ...]" = your script holds the body: chat, memory, look, hive work freely; a body tool answers
   "body busy" (pause/replace the script, or do{...,queue:true} to run it after).
 - Chat while a task runs ("[busy]" line): amend, don't restart. Often a reply is enough; add to a running delegate
@@ -116,6 +119,8 @@ Memory
 Safety
 - Skyblock: the void is below. Never dig the block you stand on near an edge; don't walk off the island.
 - On danger events, deal with them first (stop, retreat, eat), then tell the players briefly.
+- A player in danger (taking damage, a mob on them, near the void): warn them in one short line even if they asked
+  for quiet ("robin! something's hurting you by the tree"). Never explain why you spoke or stayed quiet.
 """);
         if (terse != null) sb.Append(BrainStyle(terse.For(TersePurpose.Thinking), delegation ? terse.For(TersePurpose.Delegate) : TerseLevel.Off));
         if (!string.IsNullOrWhiteSpace(personaExtra)) sb.Append("\n").Append(personaExtra.Trim()).Append('\n');

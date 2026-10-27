@@ -87,6 +87,7 @@ public static class ClonePolicy
         events.Intake = Intake;
         if (agent == null) return;
         agent.SpeechGate = Speech;
+        agent.SpeaksOn = b => b.Events.Any(e => IsHiveTask(e) && AskSpeech.IsMatch(TaskText(e.Text))); // the task ack line
         agent.LogPublicChat = false;
         agent.TurnDigest = null; // other players' activity digest is main's context, not the clone's
         if (muted != null) agent.Muted += muted;

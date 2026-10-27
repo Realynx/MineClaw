@@ -76,6 +76,7 @@ public sealed partial class BotAgent
         _context.Compacted += (_, _) => Interlocked.Exchange(ref _compactedSinceCall, 1);
         _usage.ModeChanged += OnBudgetModeChanged;
         _chat.CommandBlocked += line => _log.LogWarning("blocked outgoing server command: {Line}", line);
+        RegisterSayTool();
     }
 
     /// <summary>Compact one-line game state ("pos 12,64,-3 hp 18/20 food 17 held stone_pickaxe"), supplied by the client layer.</summary>
@@ -281,7 +282,7 @@ public sealed partial class BotAgent
 
         if (outcome.Escalation is { } esc)
         {
-            var prelude = $"(escalated from quick mode: {esc.Reason}" + (esc.Said.Count > 0 ? $"; you already said: \"{string.Join(" ", esc.Said)}\")" : ")");
+            var prelude = $"(escalated from quick mode: {esc.Reason}" + (esc.Said.Count > 0 ? $"; already in chat: \"{string.Join(" ", esc.Said)}\", don't repeat or mention it)" : ")");
             var main = await RunEpisodeAsync(batch, ModelTier.Main, false, mode, prelude, ct).ConfigureAwait(false);
             outcome = main with
             {
@@ -358,6 +359,12 @@ public sealed partial class BotAgent
         int calls = 0;
         var tools = ToolsFor(tier, canEscalate);
         bool retry = RetryAsked(batch);
+        // A turn woken only by task/system events (a standing-order run finishing, a hive notice, an idle check-in): the brain's
+        // plain text is a private log line, never public chat (live 10-27 23:30: "I didn't say anything in chat." + a run report
+        // on every run). Only the say tool speaks there, and only while a player is engaged.
+        bool quiet = IsQuietBatch(batch);
+        try { if (quiet && SpeaksOn?.Invoke(batch) == true) quiet = false; } catch (Exception ex) { _log.LogDebug(ex, "speaks-on hook failed"); }
+        _turnStatusAsked = MetaSpeech.AsksStatus(batch.Waking.Where(EventQueue.IsTyped).Select(e => e.Text));
         // Snapshot per episode: a rename mid-turn applies from the next turn, keeping this turn's prefix byte-stable.
         var system = SystemPrompt;
         // Budget fallback 1 (Economy): the brain's turn runs on the worker model; same tools and history.
@@ -374,6 +381,7 @@ public sealed partial class BotAgent
         using var speech = new TurnSpeech(ct);
         var cx = new SpeechCtx(episode.Events, said, audience, () => whisperTo, episode.IsTest);
         StartAck(speech, batch, tier, turnHead, preAck, whisperTo, audience.ToArray(), ct);
+        _turnSay = (t, c) => SayToolAsync(t, quiet, episode.Events, speech, cx, c);
         try
         {
 
@@ -390,7 +398,8 @@ public sealed partial class BotAgent
 
             speech.BeginRound();
             AddAckNote(speech, episode.Messages);
-            bool streamThis = tier == ModelTier.Main && said.Count == 0; // once the brain spoke, later rounds keep the held-line rule
+            // once the brain spoke, later rounds keep the held-line rule; a quiet turn never streams (its text isn't chat)
+            bool streamThis = tier == ModelTier.Main && said.Count == 0 && !quiet;
             var messages = _context.BuildMessages(tier, episode.Messages);
             // A call that re-writes a big cold history is not cut for a new chat line: the cut call's cache write never lands,
             // so its restart writes it all again (live 10-27 15:55: 2 × 38K). The new line joins at the next round instead.
@@ -454,6 +463,8 @@ public sealed partial class BotAgent
                             if (!audience.Contains(p, StringComparer.OrdinalIgnoreCase)) audience.Add(p);
                         whisperTo = batch.WhisperOnlyFrom;
                         retry |= RetryAsked(more);
+                        if (quiet && more.Waking.Any(IsPlayerFacing)) quiet = false;
+                        _turnStatusAsked |= MetaSpeech.AsksStatus(more.Waking.Where(EventQueue.IsTyped).Select(e => e.Text));
                         TurnContext.Current = new TurnInfo(speaker, audience.ToArray(), batch.IsTest);
                     }
                     turnHead = RefreshHere(turnHead, batch);
@@ -489,6 +500,11 @@ public sealed partial class BotAgent
                 text = "";
             }
             else if (wasCut) await DrainAsync(streamChain).ConfigureAwait(false); // cut too late to cancel: nothing of it was sent, speak it whole
+            if (quiet && !IsSilent(text))
+            {
+                KeepInternal(text);
+                text = "";
+            }
             if (!IsSilent(text) && whisperTo == null && SpeechGate != null)
             {
                 string? gated;
@@ -505,7 +521,7 @@ public sealed partial class BotAgent
             if (!IsSilent(text))
             {
                 // Never narrate plumbing ("Delegating the craft.", "running script"): drop purely meta sentences.
-                text = MetaSpeech.Strip(text, out var meta);
+                text = MetaSpeech.Strip(text, out var meta, _turnStatusAsked);
                 foreach (var m in meta) _log.LogInformation("[meta suppressed] {Line}", m);
             }
             if (!IsSilent(text))
@@ -562,6 +578,9 @@ public sealed partial class BotAgent
                     if (!audience.Contains(p, StringComparer.OrdinalIgnoreCase)) audience.Add(p);
                 if (fresh.WhisperOnlyFrom == null && fresh.Waking.Any()) whisperTo = null;
                 retry |= RetryAsked(fresh);
+                // A player spoke mid-turn: from here on the turn answers them (its text is chat again).
+                if (quiet && fresh.Waking.Any(IsPlayerFacing)) quiet = false;
+                _turnStatusAsked |= MetaSpeech.AsksStatus(fresh.Waking.Where(EventQueue.IsTyped).Select(e => e.Text));
             }
             episode.Messages.Add(new LlmMessage(LlmRole.User, blocks));
         }
@@ -573,6 +592,7 @@ public sealed partial class BotAgent
         }
         finally
         {
+            _turnSay = null;
             _early.Clear();
             Interlocked.Exchange(ref _earlyChains, 0);
             TurnStartedAt = null;
