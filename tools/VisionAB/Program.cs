@@ -22,6 +22,17 @@ string mode = args.FirstOrDefault(a => !a.StartsWith("--")) ?? "render";
 var dbPath = Arg("db") ?? Path.Combine(root, "data", "alice-snap", "mineclaw3.db");
 var outDir = Arg("out") ?? Path.Combine(root, "data", "visionab");
 Directory.CreateDirectory(outDir);
+// Vision v2 (contact sheet + perception tier): built-in cases, no db snapshot.
+if (mode == "sheets") return PerceptionMode.Sheets(root, outDir);
+if (mode == "perception")
+{
+    var pcfg = new ConfigurationBuilder().AddJsonFile(Path.Combine(root, "src", "MineClaw.App", "appsettings.json"), optional: true).Build();
+    var pllm = new LlmOptions();
+    pcfg.GetSection("Agent:Llm").Bind(pllm);
+    if (string.IsNullOrWhiteSpace(pllm.ApiKey)) pllm.ApiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
+    if (string.IsNullOrWhiteSpace(pllm.ApiKey)) { Console.Error.WriteLine("no API key"); return 2; }
+    return await PerceptionMode.Live(root, outDir, Arg, pllm);
+}
 decimal spent = decimal.TryParse(Arg("spent"), NumberStyles.Number, CultureInfo.InvariantCulture, out var prior) ? prior : 0m;
 
 var (world, marks) = LoadWorld(dbPath);

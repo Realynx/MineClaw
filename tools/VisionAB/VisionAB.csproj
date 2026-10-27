@@ -11,6 +11,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\MineClaw.Render\MineClaw.Render.csproj" />
+    <!-- Vision v2 eval (cases, perception arms, verifier) lives in the bot so the tests run it offline. -->
+    <ProjectReference Include="..\..\src\MineClaw.Bot\MineClaw.Bot.csproj" />
   </ItemGroup>
 
   <ItemGroup>
