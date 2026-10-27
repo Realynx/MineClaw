@@ -57,7 +57,7 @@ public sealed class BotAgent
         _time = time ?? TimeProvider.System;
         _log = log ?? NullLogger.Instance;
         _triage = new Triage(options.Triage);
-        _staticSystem = new LlmSystemBlock(Prompts.System(options.PersonaExtra, knowledge), Cache: true);
+        _staticSystem = new LlmSystemBlock(Prompts.System(options.Persona, options.PersonaExtra, knowledge), Cache: true);
         _lastEpisode = _time.GetUtcNow();
 
         _events.Posted += OnEventPosted;

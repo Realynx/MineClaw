@@ -26,7 +26,13 @@ public sealed class AgentOptions
     /// <summary>Cap on knowledge text (chars) so a big doc can't silently inflate every request.</summary>
     public int MaxKnowledgeChars { get; set; } = 40_000;
 
-    /// <summary>Extra persona/context lines for the system prompt (e.g. who the humans are). Static: changing it busts the cache.</summary>
+    /// <summary>
+    /// The bot's personality: replaces the persona section of the system prompt (empty = <see cref="Prompts.DefaultPersona"/>).
+    /// Core rules (short ASCII chat, tool use, void safety) still apply. Static per run: changing it busts the prompt cache.
+    /// </summary>
+    public string Persona { get; set; } = "";
+
+    /// <summary>Extra context lines for the system prompt (e.g. who the humans are). Static: changing it busts the cache.</summary>
     public string PersonaExtra { get; set; } = "";
 
     /// <summary>Max model calls per episode before the turn is forcibly ended.</summary>
