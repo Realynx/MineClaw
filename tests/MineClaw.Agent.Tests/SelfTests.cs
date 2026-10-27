@@ -173,19 +173,25 @@ public class SelfTests
         var (rt, llm, _) = TestRuntime.Create();
         using var _r = rt;
         llm.ThenText("hi").ThenTool("reflect_self", new { op = "add", section = "joke", text = "blames creepers for everything", reason = "running gag" })
-           .ThenText("lol").ThenText("hey");
+           .ThenText("lol").ThenText("hey").ThenText("yo");
         await rt.Agent.HandleBatchAsync(new EventBatch([GameEvent.Chat("Alice", "hi clawd")]), default);
         await rt.Agent.HandleBatchAsync(new EventBatch([GameEvent.Chat("Alice", "clawd it was a creeper again huh")]), default);
         await rt.Agent.HandleBatchAsync(new EventBatch([GameEvent.Chat("Alice", "hey clawd")]), default);
+        await rt.Agent.HandleBatchAsync(new EventBatch([GameEvent.Chat("Alice", "sup clawd")]), default);
 
-        var before = llm.Requests[0].System;
-        var after = llm.Requests[^1].System;
-        Assert.Equal(before[0].Text, after[0].Text);                    // tools/instructions/knowledge prefix: same bytes
+        // v2: both cached system blocks (static prefix + identity) are byte-identical after the profile changed...
+        Assert.Equal(Snapshot.Of(llm.Requests[0].System), Snapshot.Of(llm.Requests[^1].System));
         Assert.Equal(Snapshot.Of(llm.Requests[0].Tools), Snapshot.Of(llm.Requests[^1].Tools));
-        Assert.DoesNotContain("creepers", before[1].Text);
-        Assert.Contains("blames creepers for everything", after[1].Text);
-        Assert.Contains("take precedence", after[1].Text);
-        Assert.DoesNotContain("creepers", after[0].Text);
+        Assert.DoesNotContain("creepers", Snapshot.Of(llm.Requests[^1].System));
+        // ...the grown personality rides in the uncached tail of the next turn, ranked below persona and rules...
+        var turn3 = llm.Requests[3].Messages[^1].Text;
+        Assert.Contains("[self]", turn3);
+        Assert.Contains("blames creepers for everything", turn3);
+        Assert.Contains("take precedence", turn3);
+        Assert.DoesNotContain("[self]", llm.Requests[0].Messages[^1].Text); // nothing grown yet: no block at all
+        // ...and is not re-sent while unchanged: the copy in (cached) history is still visible.
+        Assert.DoesNotContain("[self]", llm.Requests[4].Messages[^1].Text);
+        Assert.Contains("blames creepers for everything", Snapshot.Of(llm.Requests[4].Messages));
     }
 
     [Fact]

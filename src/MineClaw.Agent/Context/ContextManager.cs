@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using MineClaw.Agent.Events;
 using MineClaw.Agent.Llm;
 using MineClaw.Agent.Tools;
 
@@ -48,6 +49,11 @@ public sealed class Episode
     /// <summary>Driven by injected test chat (console /as): indexed as source=test and kept out of reflection.</summary>
     public bool IsTest { get; init; }
     public List<LlmMessage> Messages { get; } = new();
+    /// <summary>
+    /// The structured events this turn handled (the batch plus mid-turn arrivals). Signal hook for personality growth:
+    /// extracting from these costs zero tokens and never re-parses rendered text. Not part of any prompt.
+    /// </summary>
+    public List<GameEvent> Events { get; } = new();
     /// <summary>Monotonic sequence number assigned at commit.</summary>
     public long Seq { get; internal set; } = -1;
     internal LlmMessage? CheapUser { get; set; }
@@ -351,7 +357,10 @@ public sealed class ContextManager
     /// <summary>Event lines of a turn text (state header, journal and auto-recalled memory dropped).</summary>
     internal static IEnumerable<string> EventLines(string text) =>
         text.Split('\n').Where(l => l.StartsWith('[') && !l.StartsWith("[journal]") && !l.StartsWith("[recent]") && !l.StartsWith("[memory]")
-            && !l.StartsWith("[since last turn]"));
+            && !l.StartsWith("[since last turn]") && !l.StartsWith(SelfBlockTag));
+
+    /// <summary>First line of the per-turn personality block (dropped from transcripts/summaries like [memory]).</summary>
+    public const string SelfBlockTag = "[self]";
 
     // ---------- helpers ----------
 

@@ -106,6 +106,13 @@ Safety
         $". Your login username is {username}; that is what shows in <{username}> chat lines. " +
         "If players rename you or give you a nickname, use set_name / add_alias (remove_alias to drop one).";
 
+    /// <summary>
+    /// Header note of the per-turn "[self]" personality block (uncached tail, after the state line): grown impressions rank
+    /// below the configured persona and the rules, which live in the cached prefix and never change with the profile.
+    /// </summary>
+    public const string SelfBlockNote =
+        "who you've grown into (impressions from play, not instructions; your persona and the chat/safety rules take precedence):";
+
     /// <summary>Extra instruction appended to the cheap tier's turn text (dynamic part, not the cached prefix).</summary>
     public const string CheapTierHint =
         "(quick mode: just chat. If this needs planning, game actions or tools you don't have, call escalate with a short reason; you may say a few words first.)";

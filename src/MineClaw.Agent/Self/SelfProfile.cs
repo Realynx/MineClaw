@@ -19,6 +19,8 @@ public sealed class SelfEntry
     public DateTimeOffset Created { get; set; }
     public DateTimeOffset Reinforced { get; set; }
     public string? Reason { get; set; }
+    /// <summary>Times observed (add + reinforcements): a settled trait needs several (<see cref="SelfOptions.StrongTraitObservations"/>).</summary>
+    public int Observations { get; set; } = 1;
 }
 
 /// <param name="Op">add | reinforce | adjust | remove</param>
@@ -36,6 +38,8 @@ public sealed record SelfHistoryRow(int Version, DateTimeOffset At, string Op, s
 /// snapshot per version, so any version can be restored). Entries carry a strength that is reinforced when
 /// re-observed and decays slowly when not, so the personality ages gradually instead of flip-flopping. Every
 /// change is also indexed as an episode doc ("when did you start saying X?"). Thread-safe.
+/// Scoped (<c>main</c> | <c>hive</c> | clone username): each scope has its own entries, versions and rollback; several
+/// processes may share the db (every change is one IMMEDIATE transaction; ids are allocated inside it).
 /// </summary>
 public sealed class SelfProfile
 {
@@ -46,23 +50,40 @@ public sealed class SelfProfile
     private readonly RagIndex? _index;
     private readonly TimeProvider _time;
     private readonly object _lock = new();
+    private readonly string _scope;
     private List<SelfEntry> _entries;
+    private string? _refs;
 
-    public SelfProfile(AgentDb db, SelfOptions? options = null, RagIndex? index = null, TimeProvider? time = null)
+    public SelfProfile(AgentDb db, SelfOptions? options = null, RagIndex? index = null, TimeProvider? time = null, string scope = SelfSchema.MainScope)
     {
         _db = db;
         _o = options ?? new SelfOptions();
         _index = index;
         _time = time ?? TimeProvider.System;
+        _scope = string.IsNullOrWhiteSpace(scope) ? SelfSchema.MainScope : scope.Trim().ToLowerInvariant();
+        SelfSchema.Ensure(db);
         _entries = LoadEntries();
     }
 
     public SelfOptions Options => _o;
+    public string Scope => _scope;
+    public AgentDb Db => _db;
+
+    /// <summary>Re-reads this scope from the db (another process may have changed it, e.g. the shared hive profile).</summary>
+    public void Reload() { lock (_lock) _entries = LoadEntries(); }
+
+    /// <summary>Runs <paramref name="body"/> with this profile locked inside one transaction, on freshly loaded entries.</summary>
+    public T Atomically<T>(Func<T> body)
+    {
+        lock (_lock) return _db.Tx(() => { _entries = LoadEntries(); return body(); });
+    }
+
+    public bool IsStrong(SelfEntry e) => e.Observations >= Math.Max(1, _o.StrongTraitObservations);
     private DateTimeOffset Now => _time.GetUtcNow();
 
     public IReadOnlyList<SelfEntry> Entries { get { lock (_lock) return _entries.Select(Clone).ToList(); } }
 
-    public int Version => (int)_db.ScalarLong("SELECT coalesce(max(version), 0) FROM self_profile_history");
+    public int Version => (int)_db.ScalarLong("SELECT coalesce(max(version), 0) FROM self_profile_history WHERE scope = $sc", ("$sc", _scope));
 
     public int Cap(SelfSection s) => s switch
     {
@@ -99,9 +120,20 @@ public sealed class SelfProfile
 
     // ---------------- changes ----------------
 
-    public SelfChangeResult Apply(SelfChange c, string source, IReadOnlyList<long>? episodes = null)
+    /// <param name="sourceRefs">Evidence refs recorded in history instead of <paramref name="episodes"/> (e.g. "s12,s40").</param>
+    public SelfChangeResult Apply(SelfChange c, string source, IReadOnlyList<long>? episodes = null, string? sourceRefs = null)
     {
         lock (_lock)
+            return _db.Tx(() =>
+            {
+                _refs = sourceRefs;
+                try { return ApplyCore(c, source, episodes); }
+                finally { _refs = null; }
+            });
+    }
+
+    private SelfChangeResult ApplyCore(SelfChange c, string source, IReadOnlyList<long>? episodes)
+    {
         {
             var op = c.Op.Trim().ToLowerInvariant();
             var reason = c.Reason is { Length: > 0 } r ? TextUtil.Truncate(TextUtil.OneLine(r), 120) : null;
@@ -176,6 +208,7 @@ public sealed class SelfProfile
     private SelfChangeResult Reinforce(SelfEntry e, string? reason, string source, IReadOnlyList<long>? episodes)
     {
         e.Strength = Math.Min(1, e.Strength + (1 - e.Strength) * _o.ReinforceRate);
+        e.Observations++;
         e.Reinforced = Now;
         var v = Persist("reinforce", e, reason, source, episodes, "");
         return new(true, $"reinforced #{e.Id} ({e.Strength:0.00}): {e.Text}", e.Id, v);
@@ -215,12 +248,13 @@ public sealed class SelfProfile
         lock (_lock)
         {
             var now = Now;
-            var lastS = _db.GetMeta("self_last_decay");
+            var key = SelfSchema.MetaKey("self_last_decay", _scope);
+            var lastS = _db.GetMeta(key);
             var last = lastS != null && DateTimeOffset.TryParse(lastS, out var l) ? l : now;
             double days = (now - last).TotalDays;
             if (lastS == null || days < 0.25)
             {
-                if (lastS == null) _db.SetMeta("self_last_decay", now.ToString("O"));
+                if (lastS == null) _db.SetMeta(key, now.ToString("O"));
                 return 0;
             }
             var dropped = new List<SelfEntry>();
@@ -240,7 +274,7 @@ public sealed class SelfProfile
                     _db.Exec("DELETE FROM self_profile WHERE id = $id", ("$id", d.Id));
                     WriteHistory("faded", d, "not reinforced for a long time", "decay", null);
                 }
-                _db.SetMeta("self_last_decay", now.ToString("O"));
+                _db.SetMeta(key, now.ToString("O"));
             });
             return dropped.Count;
         }
@@ -253,9 +287,11 @@ public sealed class SelfProfile
     {
         lock (_lock)
         {
-            var last = _db.Query("SELECT version FROM self_profile_history WHERE source <> 'decay' ORDER BY version DESC LIMIT 1", r => (int)r.GetInt64(0)).FirstOrDefault();
+            var last = _db.Query("SELECT version FROM self_profile_history WHERE source <> 'decay' AND scope = $sc ORDER BY version DESC LIMIT 1",
+                r => (int)r.GetInt64(0), ("$sc", _scope)).FirstOrDefault();
             if (last == 0) return new(false, "nothing to undo");
-            var prev = _db.Query("SELECT version FROM self_profile_history WHERE version < $v ORDER BY version DESC LIMIT 1", r => (int)r.GetInt64(0), ("$v", last)).FirstOrDefault();
+            var prev = _db.Query("SELECT version FROM self_profile_history WHERE version < $v AND scope = $sc ORDER BY version DESC LIMIT 1",
+                r => (int)r.GetInt64(0), ("$v", last), ("$sc", _scope)).FirstOrDefault();
             return RestoreVersion(prev, "undo", by, $"undid v{last}");
         }
     }
@@ -266,6 +302,8 @@ public sealed class SelfProfile
         lock (_lock)
         {
             if (version < 0 || version > Version) return new(false, "no such version");
+            if (version > 0 && _db.ScalarLong("SELECT count(*) FROM self_profile_history WHERE version = $v AND scope = $sc", ("$v", version), ("$sc", _scope)) == 0)
+                return new(false, $"v{version} belongs to another personality scope");
             return RestoreVersion(version, "rollback", by, $"rolled back to v{version}");
         }
     }
@@ -280,14 +318,14 @@ public sealed class SelfProfile
         List<SelfEntry> snapshot = [];
         if (version > 0)
         {
-            var json = _db.Scalar("SELECT snapshot FROM self_profile_history WHERE version = $v", ("$v", version)) as string;
+            var json = _db.Scalar("SELECT snapshot FROM self_profile_history WHERE version = $v AND scope = $sc", ("$v", version), ("$sc", _scope)) as string;
             if (json == null) return new(false, "no such version");
             snapshot = JsonSerializer.Deserialize<List<SelfEntry>>(json, AtomicFile.Json) ?? [];
         }
         _entries = snapshot;
         int v = _db.Tx(() =>
         {
-            _db.Exec("DELETE FROM self_profile");
+            _db.Exec("DELETE FROM self_profile WHERE scope = $sc", ("$sc", _scope));
             foreach (var e in _entries) InsertRow(e);
             return WriteHistory(op, null, $"{message} (asked by {by})", SourceAdmin, null);
         });
@@ -295,9 +333,9 @@ public sealed class SelfProfile
     }
 
     public List<SelfHistoryRow> History(int limit = 5) =>
-        _db.Query("SELECT version, at, op, section, entry_id, text, reason, source, episodes FROM self_profile_history ORDER BY version DESC LIMIT $n",
+        _db.Query("SELECT version, at, op, section, entry_id, text, reason, source, episodes FROM self_profile_history WHERE scope = $sc ORDER BY version DESC LIMIT $n",
             r => new SelfHistoryRow((int)r.GetInt64(0), AgentDb.FromUnixMs(r.GetInt64(1)), r.GetString(2), AgentDb.StrOrNull(r, 3),
-                AgentDb.LongOrNull(r, 4), AgentDb.StrOrNull(r, 5), AgentDb.StrOrNull(r, 6), r.GetString(7), AgentDb.StrOrNull(r, 8)), ("$n", limit));
+                AgentDb.LongOrNull(r, 4), AgentDb.StrOrNull(r, 5), AgentDb.StrOrNull(r, 6), r.GetString(7), AgentDb.StrOrNull(r, 8)), ("$n", limit), ("$sc", _scope));
 
     // ---------------- rendering ----------------
 
@@ -356,39 +394,42 @@ public sealed class SelfProfile
         {
             if (_entries.Count == 0) return "(empty)";
             return string.Join("\n", _entries.OrderBy(e => e.Section).ThenBy(e => e.Id).Select(e =>
-                $"#{e.Id} {Name(e.Section)}{(e.Player != null ? " [" + e.Player + "]" : "")}: {e.Text} (s {e.Strength:0.00})"));
+                $"#{e.Id} {Name(e.Section)}{(e.Player != null ? " [" + e.Player + "]" : "")}: {e.Text} (s {e.Strength:0.00}, {e.Observations} obs)"));
         }
     }
 
     // ---------------- persistence ----------------
 
     private long NextId() => Math.Max(_entries.Count == 0 ? 0 : _entries.Max(e => e.Id),
-        _db.ScalarLong("SELECT coalesce(max(entry_id), 0) FROM self_profile_history")) + 1;
+        Math.Max(_db.ScalarLong("SELECT coalesce(max(entry_id), 0) FROM self_profile_history"), _db.ScalarLong("SELECT coalesce(max(id), 0) FROM self_profile"))) + 1;
 
     private int Persist(string op, SelfEntry e, string? reason, string source, IReadOnlyList<long>? episodes, string extra)
     {
         return _db.Tx(() =>
         {
-            _db.Exec("DELETE FROM self_profile");
+            _db.Exec("DELETE FROM self_profile WHERE scope = $sc", ("$sc", _scope));
             foreach (var x in _entries) InsertRow(x);
             return WriteHistory(op, e, (reason ?? "") + extra, source, episodes);
         });
     }
 
     private void InsertRow(SelfEntry e) =>
-        _db.Exec("INSERT INTO self_profile(id, section, player, text, strength, created, reinforced, reason) VALUES ($i, $s, $p, $t, $st, $c, $r, $re)",
+        _db.Exec("""
+            INSERT INTO self_profile(id, section, player, text, strength, created, reinforced, reason, scope, observations)
+            VALUES ($i, $s, $p, $t, $st, $c, $r, $re, $sc, $ob)
+            """,
             ("$i", e.Id), ("$s", Name(e.Section)), ("$p", e.Player), ("$t", e.Text), ("$st", e.Strength),
-            ("$c", AgentDb.ToUnixMs(e.Created)), ("$r", AgentDb.ToUnixMs(e.Reinforced)), ("$re", e.Reason));
+            ("$c", AgentDb.ToUnixMs(e.Created)), ("$r", AgentDb.ToUnixMs(e.Reinforced)), ("$re", e.Reason), ("$sc", _scope), ("$ob", Math.Max(1, e.Observations)));
 
     private int WriteHistory(string op, SelfEntry? e, string? reason, string source, IReadOnlyList<long>? episodes)
     {
         var now = Now;
         var snapshot = JsonSerializer.Serialize(_entries, AtomicFile.Json);
         _db.Exec("""
-            INSERT INTO self_profile_history(at, op, section, entry_id, text, reason, source, episodes, snapshot)
-            VALUES ($a, $o, $s, $e, $t, $r, $src, $ep, $snap)
+            INSERT INTO self_profile_history(at, op, section, entry_id, text, reason, source, episodes, snapshot, scope)
+            VALUES ($a, $o, $s, $e, $t, $r, $src, $ep, $snap, $sc)
             """, ("$a", AgentDb.ToUnixMs(now)), ("$o", op), ("$s", e != null ? Name(e.Section) : null), ("$e", e?.Id), ("$t", e?.Text),
-            ("$r", reason), ("$src", source), ("$ep", episodes is { Count: > 0 } ? string.Join(",", episodes) : null), ("$snap", snapshot));
+            ("$r", reason), ("$src", source), ("$ep", _refs ?? (episodes is { Count: > 0 } ? string.Join(",", episodes) : null)), ("$snap", snapshot), ("$sc", _scope));
         int version = (int)_db.ScalarLong("SELECT last_insert_rowid()");
 
         // Searchable: "when did you start saying X?"
@@ -397,14 +438,15 @@ public sealed class SelfProfile
             var what = e != null
                 ? $"{op} {Name(e.Section)} '{e.Text}'" + (e.Player != null ? $" ({e.Player})" : "")
                 : op;
-            _index.Upsert(new RagDoc($"self:{version}", "episode", "personality change", $"{now:yyyy-MM-dd HH:mm}: personality {what}" +
+            var who = _scope == SelfSchema.MainScope ? "" : $" [{_scope}]";
+            _index.Upsert(new RagDoc($"self:{version}", "episode", "personality change", $"{now:yyyy-MM-dd HH:mm}: personality{who} {what}" +
                 (string.IsNullOrWhiteSpace(reason) ? "" : $" because {reason}")) { Source = "self", At = now });
         }
         return version;
     }
 
     private List<SelfEntry> LoadEntries() =>
-        _db.Query("SELECT id, section, player, text, strength, created, reinforced, reason FROM self_profile ORDER BY id", r => new SelfEntry
+        _db.Query("SELECT id, section, player, text, strength, created, reinforced, reason, observations FROM self_profile WHERE scope = $sc ORDER BY id", r => new SelfEntry
         {
             Id = r.GetInt64(0),
             Section = TryParseSection(r.GetString(1), out var s) ? s : SelfSection.Trait,
@@ -414,10 +456,12 @@ public sealed class SelfProfile
             Created = AgentDb.FromUnixMs(r.GetInt64(5)),
             Reinforced = AgentDb.FromUnixMs(r.GetInt64(6)),
             Reason = AgentDb.StrOrNull(r, 7),
-        });
+            Observations = (int)r.GetInt64(8),
+        }, ("$sc", _scope));
 
     private static SelfEntry Clone(SelfEntry e) => new()
     {
         Id = e.Id, Section = e.Section, Text = e.Text, Player = e.Player, Strength = e.Strength, Created = e.Created, Reinforced = e.Reinforced, Reason = e.Reason,
+        Observations = e.Observations,
     };
 }

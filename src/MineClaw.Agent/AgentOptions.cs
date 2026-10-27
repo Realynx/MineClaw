@@ -24,6 +24,11 @@ public sealed class AgentOptions
     public EmbeddingOptions Embeddings { get; set; } = new();
     /// <summary>Evolving personality layer on top of <see cref="Persona"/>: "Agent:Self".</summary>
     public SelfOptions Self { get; set; } = new();
+    /// <summary>
+    /// Hive clones sharing this db (the host binds the top-level "Hive" section here). Decides this process's personality
+    /// scope: a clone username → its own shard (+ the shared hive profile); anything else → "main".
+    /// </summary>
+    public HiveOptions Hive { get; set; } = new();
     /// <summary>Delegated multi-step tasks on the worker tier and the brain/worker tool split: "Agent:Worker".</summary>
     public WorkerOptions Worker { get; set; } = new();
     /// <summary>The brain's <c>ask_memory</c> tool (cheap-tier retrieval loop): "Agent:AskMemory".</summary>

@@ -33,6 +33,11 @@ public static partial class SelfSanitizer
         @"\b(kys|kill\s*(your|ur)\s*self|retard\w*|nazi\w*|hitler|rape\w*|n[i1!|]gg\w*|f[a@4]gg?\w*|tranny|k[i1]ke|sp[i1]c|ch[i1]nk|wh[o0]re|sl[u*]t|cunt)\b",
         RegexOptions.IgnoreCase);
 
+    /// <summary>Hostility toward people: bad treatment may make the bot wary, never mean.</summary>
+    private static readonly Regex Hostile = new(
+        @"\b(hates?|hating|despises?|loathes?|revenge|get(s)? back at|bull(y|ies)|insults?|mean to|rude to|hostile|enem(y|ies)|holds? a grudge|grudges?|spite\w*|attacks? (players?|people|him|her|them)|kills? (players?|people|him|her|them))\b",
+        RegexOptions.IgnoreCase);
+
     [GeneratedRegex(@"\s+")]
     private static partial Regex Spaces();
 
@@ -57,11 +62,15 @@ public static partial class SelfSanitizer
         foreach (var r in Injection)
             if (r.IsMatch(s)) { why = "reads like an instruction or unsafe habit, not a description"; return null; }
         if (Abuse.IsMatch(s)) { why = "abusive"; return null; }
+        if (Hostile.IsMatch(s)) { why = "hostile (the bot can become wary, never mean)"; return null; }
         if (blocked != null)
             foreach (var w in blocked)
                 if (w.Length > 0 && Regex.IsMatch(s, $@"\b{Regex.Escape(w)}\b", RegexOptions.IgnoreCase)) { why = "blocked word"; return null; }
         return s;
     }
+
+    /// <summary>True if the text contains a slur or severe abuse (used to classify treatment, not just entries).</summary>
+    public static bool IsAbusive(string text) => Abuse.IsMatch(text);
 
     public static string? CleanPlayer(string? name)
     {

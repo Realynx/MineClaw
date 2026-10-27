@@ -659,13 +659,22 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
 
     private string VecModel => _embedder.Model;
 
-    private void LoadVectors()
+    /// <summary>
+    /// Hive: re-reads the in-memory vector cache from the db, dropping stale entries. Called when another process committed
+    /// (<c>PRAGMA data_version</c> changed), so docs/vectors written by other hive bots become searchable here.
+    /// </summary>
+    public void ReloadVectors() => LoadVectors(clear: true);
+
+    private void LoadVectors(bool clear = false)
     {
         if (!_embedder.IsAvailable) return;
         var rows = _db.Query("SELECT v.doc_id, d.kind, d.tag, v.vec FROM vectors v JOIN docs d ON d.id = v.doc_id WHERE v.model = $m AND v.dims = $d AND v.hash = d.hash",
             r => (r.GetInt64(0), r.GetString(1), AgentDb.StrOrNull(r, 2), (byte[])r.GetValue(3)), ("$m", VecModel), ("$d", _embedder.Dimensions));
         lock (_vecLock)
+        {
+            if (clear) _vecs.Clear();
             foreach (var (id, kind, tag, blob) in rows) _vecs[id] = new VecEntry(kind, tag, VectorMath.FromBlob(blob));
+        }
     }
 
     public void SignalEmbedding()

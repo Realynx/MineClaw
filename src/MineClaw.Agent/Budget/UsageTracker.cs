@@ -194,6 +194,12 @@ public sealed class UsageTracker
 
     public PriceTable Prices => _prices;
 
+    /// <summary>
+    /// Hive: spend of the OTHER hive processes (today, this month) from the main process's budget ledger. Added to this
+    /// tracker's own totals when deriving the mode, so the caps are shared across the hive. Null = none (single bot, clones).
+    /// </summary>
+    public Func<(decimal Today, decimal Month)>? ExternalSpend { get; set; }
+
     /// <summary>Maps a model id to its tier for the per-tier breakdown (the runtime sets it from <c>LlmOptions.TierOfModel</c>).</summary>
     public Func<string, ModelTier?>? Classify { get; set; }
 
@@ -346,6 +352,11 @@ public sealed class UsageTracker
     {
         var d = Get(_state.Days, DayKey).TotalUsd;
         var m = Get(_state.Months, MonthKey).TotalUsd;
+        if (ExternalSpend is { } ext)
+        {
+            try { var (xd, xm) = ext(); d += xd; m += xm; }
+            catch (Exception) { /* ledger unavailable: own spend only */ }
+        }
         Prune();
         if (_options.MonthlyCapUsd > 0 && m >= _options.MonthlyCapUsd) return (BudgetMode.Paused, "monthly budget used up");
         if (_options.DailyCapUsd > 0 && d >= _options.DailyCapUsd) return (BudgetMode.Paused, "daily budget used up");

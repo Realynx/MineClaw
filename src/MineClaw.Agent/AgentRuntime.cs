@@ -60,6 +60,8 @@ public sealed class AgentRuntime : IDisposable
     public RaptorScheduler? RaptorMaintenance { get; init; }
     public SelfProfile? Self { get; init; }
     public ReflectionPass? Reflection { get; init; }
+    /// <summary>Personality growth v2: signals, aggregates, the [self] block, hive shard/promotion (null when Self is off).</summary>
+    public SelfGrowth? Growth { get; init; }
     /// <summary>Worker/builder tier behind the brain's <c>delegate</c> tool (null when Agent:Worker:Enabled is false).</summary>
     public WorkerAgent? Worker { get; init; }
     /// <summary>Cheap-tier retrieval loop behind the brain's <c>ask_memory</c> tool (null when disabled).</summary>
@@ -127,7 +129,20 @@ public sealed class AgentRuntime : IDisposable
         var episodes = new EpisodeIndexer(index, context, position, time, Log("MineClaw.Rag"));
         var activities = new ActivityManager(tools, events, time);
         var routines = new RoutineExecutor(tools);
-        SelfProfile? self = options.Self.Enabled ? new SelfProfile(db, options.Self, index, time) : null;
+        var selfScope = options.Hive.ScopeFor(options.Chat.Username);
+        if (selfScope == SelfSchema.MainScope) options.Hive.MainUsername ??= options.Chat.Username;
+        SelfProfile? self = options.Self.Enabled ? new SelfProfile(db, options.Self, index, time, selfScope) : null;
+        SelfGrowth? growth = null;
+        if (self != null)
+        {
+            var hiveProfile = selfScope != SelfSchema.MainScope ? new SelfProfile(db, options.Self, index, time, SelfSchema.HiveScope) : null;
+            growth = new SelfGrowth(new SelfStore(db, options.Self), self, options.Chat.Username, options.Hive, hiveProfile,
+                () => [chat.Username, chat.DisplayName, .. chat.Aliases], options.Triage.ActionWords, llm, usage, time, Log("MineClaw.Self"));
+            growth.Attach(context); // zero-token signal hook on every committed episode
+            if (rag.Enabled && options.Self.SelfTree && embedder.IsAvailable)
+                growth.Tree = new SelfTree(index, raptor?.Embedder ?? new CachedEmbedder(db, embedder, options.Embeddings, usage),
+                    new HaikuSummarizer(llm, options.Llm, usage), options.Self, time, Log("MineClaw.Self"));
+        }
 
         // Built-in, game-agnostic tools (registered first so their order is stable — it's part of the cached prefix).
         tools.Register("stop", "Stop the current task/activity.", ToolSchema.Empty, (_, _) =>
@@ -142,7 +157,7 @@ public sealed class AgentRuntime : IDisposable
         RoutineTools.RegisterAll(tools, memory, routines);
         HumanTools.RegisterAskPlayer(tools, chat);
         if (demonstrations != null) HumanTools.RegisterWatchDemo(tools, chat, memory, demonstrations);
-        if (self != null) SelfTools.RegisterAll(tools, self, index, time);
+        if (self != null) SelfTools.RegisterAll(tools, self, index, time, growth);
 
         string knowledge;
         bool truncated;
@@ -176,12 +191,15 @@ public sealed class AgentRuntime : IDisposable
         var retriever = !rag.Enabled || !rag.AutoRetrieve ? null
             : raptor != null ? new AutoRetriever(new RaptorRetrievalIndex(index, raptor), rag, context, episodes)
             : new AutoRetriever(index, context, episodes);
-        var reflection = self != null ? new ReflectionPass(self, index, llm, usage, time, Log("MineClaw.Self")) : null;
+        var reflection = self != null ? new ReflectionPass(self, index, llm, usage, time, Log("MineClaw.Self")) { Growth = growth } : null;
         agent.Position = position;
         agent.Rag = index;
         agent.Retriever = retriever;
         agent.Self = self;
         agent.Reflection = reflection;
+        agent.Growth = growth;
+        // A clone's seed quirks are created once at first spawn (config, else one cheap call), then frozen.
+        if (persist && growth is { IsClone: true }) _ = Task.Run(() => growth.EnsureSeedsAsync());
         if (rag.Enabled && rag.RestoreJournal && episodes.LatestJournal() is { Length: > 0 } journal) context.SetJournal(journal);
         // Off the caller's thread: loads the stored tree, then (persistent runtimes) runs maintenance in the background.
         if (raptorJobs != null) raptorJobs.Start();
@@ -192,7 +210,7 @@ public sealed class AgentRuntime : IDisposable
             Options = options, Tools = tools, Events = events, Chat = chat, Usage = usage, Memory = memory,
             Context = context, Activities = activities, Routines = routines, Agent = agent, Llm = llm,
             Db = db, Rag = index, Observations = observations, Episodes = episodes, Retriever = retriever, Self = self,
-            Reflection = reflection, Embeddings = embedder, Worker = worker, MemoryAgent = memAgent, Raptor = raptor, RaptorMaintenance = raptorJobs,
+            Reflection = reflection, Growth = growth, Embeddings = embedder, Worker = worker, MemoryAgent = memAgent, Raptor = raptor, RaptorMaintenance = raptorJobs,
             KnowledgeTruncated = truncated, KnowledgeChars = knowledge.Length, KnowledgeChunks = chunks,
         };
     }

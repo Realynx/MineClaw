@@ -98,6 +98,12 @@ public sealed class BotAgent
     /// <summary>Periodic cheap-tier personality reflection (null = off).</summary>
     public ReflectionPass? Reflection { get; set; }
 
+    /// <summary>
+    /// Personality growth v2. When set, the grown personality is NOT in the cached system blocks: it rides as a compact
+    /// "[self]" block in the newest user message, and only when it changed (or left the history window).
+    /// </summary>
+    public SelfGrowth? Growth { get; set; }
+
     public ContextManager Context => _context;
 
     /// <summary>
@@ -113,7 +119,8 @@ public sealed class BotAgent
     {
         var identity = Prompts.Identity(_chat.Username, _chat.DisplayName, _chat.Aliases);
         string self = "";
-        try { self = Self?.Render() ?? ""; } catch (Exception ex) { _log.LogWarning(ex, "self profile render failed"); }
+        if (Growth == null)
+            try { self = Self?.Render() ?? ""; } catch (Exception ex) { _log.LogWarning(ex, "self profile render failed"); }
         return self.Length > 0 ? identity + "\n\n" + self : identity;
     }
 
@@ -230,6 +237,7 @@ public sealed class BotAgent
     private async Task<RunResult> RunEpisodeAsync(EventBatch batch, ModelTier tier, bool canEscalate, BudgetMode mode, string? prelude, CancellationToken ct)
     {
         var episode = new Episode(tier, _time.GetUtcNow()) { IsTest = batch.IsTest };
+        episode.Events.AddRange(batch.Events);
         episode.Messages.Add(LlmMessage.User(await BuildTurnTextAsync(batch, tier, canEscalate, mode, prelude, ct).ConfigureAwait(false)));
 
         string? whisperTo = batch.WhisperOnlyFrom;
@@ -312,6 +320,7 @@ public sealed class BotAgent
             if (fresh != null)
             {
                 LogChat(fresh);
+                episode.Events.AddRange(fresh.Events);
                 blocks.Add(new LlmText("[new events]\n" + fresh.Format()));
                 foreach (var p in fresh.Waking.Where(e => e.Player != null).Select(e => e.Player!))
                     if (!audience.Contains(p, StringComparer.OrdinalIgnoreCase)) audience.Add(p);
@@ -349,6 +358,8 @@ public sealed class BotAgent
         if (mode == BudgetMode.CheapOnly) sb.Append(Prompts.CheapOnlyHint).Append('\n');
         else if (tier == ModelTier.Cheap && canEscalate) sb.Append(Prompts.CheapTierHint).Append('\n');
         if (prelude != null) sb.Append(prelude).Append('\n');
+        var self = SelfBlock(batch, tier);
+        if (self.Length > 0) sb.Append(self).Append('\n');
         if (memory.Length > 0) sb.Append(memory).Append('\n');
         var events = batch.Format();
         sb.Append(events);
@@ -356,6 +367,18 @@ public sealed class BotAgent
         try { TurnBuilt?.Invoke(new TurnInput(_time.GetUtcNow(), tier, status, digest, memory, events, text)); }
         catch (Exception ex) { _log.LogDebug(ex, "TurnBuilt handler failed"); }
         return text;
+    }
+
+    /// <summary>The "[self]" block for this turn ("" when unchanged and still visible in history, or nothing grown yet).</summary>
+    private string SelfBlock(EventBatch batch, ModelTier tier)
+    {
+        if (Growth == null) return "";
+        try
+        {
+            var block = Growth.RenderBlock(batch.Events.Where(e => e.Player != null && !e.IsTest).Select(e => e.Player!));
+            return Growth.Gate.Next(block, tier, _context);
+        }
+        catch (Exception ex) { _log.LogWarning(ex, "self block render failed"); return ""; }
     }
 
     /// <summary>Raised with the parts of each turn's first user message (telemetry/display only; never changes the prompt).</summary>

@@ -81,6 +81,23 @@ public sealed class ChatRouter
         IdentityChanged?.Invoke();
     }
 
+    /// <summary>
+    /// Hive: true for the logins of the other hive bots (main + clones). Their chat lines, /me emotes, joins and leaves are
+    /// hive-internal: never addressed, never "players", never a reason to reply. Null = no hive.
+    /// </summary>
+    public Func<string, bool>? IsHiveBot { get; set; }
+
+    /// <summary>
+    /// Hive chat arbiter: final say on whether THIS bot handles a player message, given (message, locally addressed).
+    /// Every hive process runs the same deterministic owner rule, so each player message gets exactly one replier. Null = no hive.
+    /// </summary>
+    public Func<ChatMessage, bool, bool>? Arbiter { get; set; }
+
+    /// <summary>Raised after an addressed player message was accepted by this bot (hive: sticky conversation owner).</summary>
+    public event Action<ChatMessage>? Accepted;
+
+    private bool IsHive(string? name) => name != null && IsHiveBot?.Invoke(name) == true;
+
     /// <summary>Humans currently online (bot excluded).</summary>
     public IReadOnlyCollection<string> OnlinePlayers { get { lock (_lock) return _online.ToArray(); } }
 
@@ -91,7 +108,7 @@ public sealed class ChatRouter
         {
             _online.Clear();
             foreach (var p in players)
-                if (!IsSelf(p)) _online.Add(p);
+                if (!IsSelf(p) && !IsHive(p)) _online.Add(p);
         }
     }
 
@@ -158,6 +175,8 @@ public sealed class ChatRouter
         var msg = Parse(raw);
         switch (msg.Kind)
         {
+            case ChatKind.Join or ChatKind.Leave when IsHive(msg.Player):
+                break; // a hive bot logging in/out is not a player event
             case ChatKind.Join when msg.Player != null && !IsSelf(msg.Player):
                 lock (_lock) _online.Add(msg.Player);
                 Post(GameEvent.Joined(msg.Player));
@@ -176,10 +195,16 @@ public sealed class ChatRouter
     private void HandleMessage(ChatMessage msg)
     {
         var player = msg.Player!;
-        if (IsSelf(player) || IsEcho(msg.Text) || msg.Text.Length == 0) return;
+        if (IsSelf(player) || IsHive(player) || IsEcho(msg.Text) || msg.Text.Length == 0) return;
         lock (_lock) _online.Add(player);
 
         bool addressed = IsAddressed(msg);
+        if (Arbiter != null)
+        {
+            try { addressed = Arbiter(msg, addressed); }
+            catch (Exception) { /* arbiter failure: fall back to the local decision */ }
+        }
+        if (addressed) Accepted?.Invoke(msg);
 
         if (msg.Kind == ChatKind.Emote)
         {

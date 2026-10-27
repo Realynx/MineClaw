@@ -66,6 +66,20 @@ public sealed class MemoryStore : IDisposable
 
     private DateTimeOffset Now => _time.GetUtcNow();
 
+    /// <summary>
+    /// Hive: re-reads waypoints/structures/notes/routines/identity from the db (another process committed). The RAG docs are
+    /// already shared through the db, so nothing is re-indexed.
+    /// </summary>
+    public void Reload()
+    {
+        lock (_lock)
+        {
+            var d = Load();
+            d.NextNoteId = Math.Max(d.NextNoteId, _data.NextNoteId);
+            _data = d;
+        }
+    }
+
     /// <summary>Read under the lock (don't keep references to mutable objects after returning).</summary>
     public T Read<T>(Func<MemoryData, T> read) { lock (_lock) return read(_data); }
 
@@ -121,9 +135,16 @@ public sealed class MemoryStore : IDisposable
         {
             var existing = _data.Notes.FirstOrDefault(n => Same(n.Subject, subject) && Same(n.Text, text));
             if (existing != null) return existing;
-            var n = new Note { Id = _data.NextNoteId++, Subject = subject.Trim(), Text = text.Trim(), Created = Now };
+            var n = new Note { Subject = subject.Trim(), Text = text.Trim(), Created = Now };
+            _db.Tx(() =>
+            {
+                // Id from the db inside the (IMMEDIATE) transaction: several hive processes share the notes table.
+                n.Id = (int)Math.Max(_data.NextNoteId, _db.ScalarLong("SELECT COALESCE(MAX(id), 0) + 1 FROM notes"));
+                SaveNote(n);
+                _index.Upsert(Doc(n));
+            });
+            _data.NextNoteId = n.Id + 1;
             _data.Notes.Add(n);
-            _db.Tx(() => { SaveNote(n); _index.Upsert(Doc(n)); });
             return n;
         }
     }
