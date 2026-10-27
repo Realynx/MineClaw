@@ -1,0 +1,254 @@
+using MineClaw.Agent;
+
+using MineClaw.Agent.Llm;
+using MineClaw.Agent.Telemetry;
+using MineClaw.App.Sources;
+using MineClaw.App.Tui;
+using MineClaw.App.Viewport;
+using MineClaw.Bot;
+using MineClaw.Bot.Game;
+using MineClaw.Client;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
+namespace MineClaw.App.Hosting;
+
+/// <summary>
+/// The real run: config → logging → key check → bot → TUI or headless → connect (retrying) → run until a signal, /quit,
+/// q in the TUI or --minutes → graceful, time-boxed shutdown → exit code.
+/// </summary>
+public static class AppHost
+{
+    /// <summary>Hive seam: runs before the bot disconnects on shutdown (e.g. "deposit items before logout"), inside
+    /// Host:PreLogoutSeconds of the shutdown budget. Null = nothing.</summary>
+    public static Func<BotHost, CancellationToken, Task>? BeforeLogout { get; set; }
+
+    public static async Task<int> RunAsync(AppCli cli)
+    {
+        var root = AppPaths.FindRoot();
+
+        // ------------------------------------------------------------ config
+        IConfigurationRoot config;
+        try { config = AppConfig.Build(cli, root); }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"MineClaw: can't read the configuration: {ex.Message}");
+            return ExitCodes.Config;
+        }
+        var mc = config.GetSection("Minecraft").Get<MinecraftSettings>() ?? new MinecraftSettings();
+        var agentOptions = new AgentOptions();
+        config.GetSection("Agent").Bind(agentOptions);
+        var botOptions = new BotOptions();
+        config.GetSection("Bot").Bind(botOptions);
+        var host = config.GetSection("Host").Get<HostSettings>() ?? new HostSettings();
+        var hive = config.GetSection("Hive").Get<HiveSettings>() ?? new HiveSettings();
+        var telemetryOptions = config.GetSection("Telemetry").Get<TelemetryOptions>() ?? new TelemetryOptions();
+        if (string.IsNullOrWhiteSpace(agentOptions.Llm.ApiKey) || agentOptions.Llm.ApiKey.EndsWith("..."))
+            agentOptions.Llm.ApiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
+        agentOptions.DataDirectory = AppPaths.Under(root, agentOptions.DataDirectory);
+        if (agentOptions.KnowledgeDirectory != null) agentOptions.KnowledgeDirectory = AppPaths.UnderOrBeside(root, agentOptions.KnowledgeDirectory);
+        var logDir = AppPaths.Under(root, host.LogDirectory);
+        var telemetryDir = string.IsNullOrWhiteSpace(telemetryOptions.Directory) ? logDir : AppPaths.Under(root, telemetryOptions.Directory);
+
+        var problems = ConfigCheck.Validate(mc, agentOptions);
+        if (problems.Count > 0)
+        {
+            Console.Error.WriteLine("MineClaw can't start, the config needs attention:");
+            foreach (var p in problems) Console.Error.WriteLine("  - " + p);
+            Console.Error.WriteLine("Edit appsettings.json (copy appsettings.example.json), pass --config <file>, or set env vars like MINECLAW_Agent__Llm__ApiKey.");
+            return ExitCodes.Config;
+        }
+        try
+        {
+            Directory.CreateDirectory(agentOptions.DataDirectory);
+            Directory.CreateDirectory(logDir);
+            Directory.CreateDirectory(telemetryDir);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"MineClaw: can't create data/log directories: {ex.Message}");
+            return ExitCodes.Config;
+        }
+
+        // ------------------------------------------------------------ console mode + logging
+        var (useTui, why) = TerminalDetect.Decide(cli.Tui, TerminalDetect.Current());
+        var fileLog = new FileLoggerProvider(logDir);
+        var ring = new RingLoggerProvider();
+        var format = AppLogging.ResolveFormat(host.LogFormat, TerminalDetect.UnderJournal());
+        var loggers = AppLogging.Create(useTui, format, fileLog, ring);
+        var log = loggers.CreateLogger("MineClaw.App");
+        using var signals = new ShutdownSignals(sig => log.LogInformation("{Signal}: shutting down", sig));
+        log.LogInformation("MineClaw starting (root {Root}, data {Data}, log {Log}, console {Mode}: {Why})", root, agentOptions.DataDirectory, logDir,
+            useTui ? "tui" : "headless/" + format, why);
+        using var minutesTimer = cli.Minutes is { } minutes ? new Timer(_ => signals.Request("--minutes elapsed"), null, TimeSpan.FromMinutes(minutes), Timeout.InfiniteTimeSpan) : null;
+
+        try
+        {
+            // -------------------------------------------------------- key check (models API: free)
+            if (!cli.NoKeyCheck)
+            {
+                var check = await KeyCheck.RunAsync(agentOptions.Llm.ApiKey!, [agentOptions.Llm.CheapModel, agentOptions.Llm.MainModel, agentOptions.Llm.WorkerModel], signals.Token);
+                if (!check.Ok)
+                {
+                    log.LogCritical("Anthropic API check failed: {Message}", check.Message);
+                    if (useTui) Console.Error.WriteLine("Anthropic API check failed: " + check.Message);
+                    return signals.Token.IsCancellationRequested ? ExitCodes.Ok : check.Transient ? ExitCodes.TempFail : ExitCodes.Auth;
+                }
+                log.LogInformation("Anthropic key ok: {Models}", check.Message);
+            }
+            return await RunBotAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, useTui, ring, loggers, log, signals);
+        }
+        finally
+        {
+            loggers.Dispose();
+            fileLog.Dispose();
+        }
+    }
+
+    private static async Task<int> RunBotAsync(AppCli cli, MinecraftSettings mc, AgentOptions agentOptions, BotOptions botOptions, HostSettings host,
+        HiveSettings hive, TelemetryOptions telemetryOptions, string telemetryDir, bool useTui, RingLoggerProvider ring, ILoggerFactory loggers,
+        ILogger log, ShutdownSignals signals)
+    {
+        var telemetry = new PromptTelemetry(agentOptions, telemetryOptions, telemetryOptions.Enabled ? telemetryDir : null);
+        int seeded = telemetry.SeedFromLogs();
+        ILlmClient llm = new AnthropicLlmClient(agentOptions.Llm);
+        if (telemetryOptions.Enabled) llm = telemetry.Wrap(llm);
+
+        var clientLog = loggers.CreateLogger("MineClaw.Client");
+        var client = new MinecraftClient(new ClientOptions
+        {
+            Host = mc.Host, Port = mc.Port, Username = mc.Username,
+            AutoReconnect = true, AutoRespawn = true,
+            Log = m => clientLog.LogDebug("{Msg}", m),
+        });
+        var game = new MinecraftGameClient(client);
+        var bot = BotHost.Create(game, agentOptions, botOptions, llm: llm, loggers: loggers);
+        var rt = bot.Runtime;
+        telemetry.Attach(rt);
+        log.LogInformation("telemetry: {Dir} ({Seeded} records seeded)", telemetry.Directory ?? "off", seeded);
+        var toolChars = rt.Tools.Definitions().Sum(d => d.Name.Length + d.Description.Length + d.InputSchema.GetRawText().Length);
+        log.LogInformation("{Tools} tools (~{Tok} tokens of definitions), knowledge {K} chars{Trunc}", rt.Tools.All.Count, (int)Math.Ceiling(toolChars / 3.5),
+            rt.KnowledgeChars, rt.KnowledgeTruncated ? " (TRUNCATED)" : "");
+        rt.Agent.EpisodeCompleted += o => log.LogInformation("episode: {Tier} {Calls} call(s) ${Cost:0.0000} [{Usage}] said: {Said}{Skip}",
+            o.Tier?.ToString() ?? "-", o.Calls, o.CostUsd, o.Usage, string.Join(" | ", o.Said), o.Skipped != null ? " skipped: " + o.Skipped : "");
+        rt.Usage.ModeChanged += (mode, reason) => log.LogWarning("budget mode {Mode}: {Why}", mode, reason);
+        client.ChatReceived += line => log.LogInformation("chat: {Line}", ChatText.StripColours(line));
+        client.Kicked += r => log.LogWarning("kicked: {Reason}", r);
+        client.Disconnected += r => log.LogWarning("disconnected: {Reason}", r);
+        client.Danger += d => log.LogWarning("danger {Kind}: {Msg}", d.Kind, d.Message);
+
+        var agent = new PausableAgent(rt, log);
+        var commands = new ConsoleCommands(game, rt, agent, log, signals.Source);
+        var source = new InProcessBotSource(game, rt, telemetry, agent, commands, host.Tui.Viewport, signals.Token);
+
+        Task tuiTask = Task.CompletedTask;
+        if (useTui)
+        {
+            var roster = new HiveRoster([mc.Username, .. hive.CloneUsernames.Take(Math.Max(0, hive.MaxClones))]);
+            var sources = roster.Names.Select(n => string.Equals(n, mc.Username, StringComparison.OrdinalIgnoreCase)
+                ? (IBotTelemetrySource)source : new OfflineBotSource(n)).ToList();
+            var tui = new TuiApp(sources, roster, ring, host.Tui, w => signals.Request("tui " + w), log, cli.Bot - 1, ParseView(cli.ViewMode));
+            tuiTask = tui.RunAsync(signals.Token);
+        }
+
+        // Connect (retry with backoff until it works or we're told to stop; the client reconnects by itself afterwards).
+        var token = signals.Token;
+        var delay = TimeSpan.FromSeconds(3);
+        while (!token.IsCancellationRequested)
+        {
+            try
+            {
+                log.LogInformation("connecting to {Host}:{Port} as {User}", mc.Host, mc.Port, mc.Username);
+                await client.ConnectAsync(token);
+                log.LogInformation("in game: {Status}", client.DescribeStatus());
+                break;
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
+            catch (Exception ex)
+            {
+                log.LogWarning("connect failed: {Error}; retrying in {Delay}s", ex.Message, delay.TotalSeconds);
+                try { await Task.Delay(delay, token); } catch (OperationCanceledException) { break; }
+                delay = TimeSpan.FromSeconds(Math.Min(60, delay.TotalSeconds * 2));
+            }
+        }
+
+        var tasks = new List<Task>();
+        if (!token.IsCancellationRequested)
+        {
+            agent.Start(token);
+            if (cli.VoidAbort) tasks.Add(VoidWatch.RunAsync(game, log, signals.Source));
+            if (cli.Script != null) tasks.Add(commands.RunScriptAsync(cli.Script, token));
+            if (!useTui && cli.StdinCommands) commands.StartStdin(token);
+            try { await Task.Delay(Timeout.Infinite, token); } catch (OperationCanceledException) { }
+        }
+
+        // ------------------------------------------------------------ graceful shutdown (time-boxed)
+        var budget = TimeSpan.FromSeconds(Math.Clamp(host.ShutdownTimeoutSeconds, 3, 600));
+        var seq = new ShutdownSequence(budget, log);
+        log.LogInformation("stopping ({Why}, budget {S:0}s): {Usage}", signals.Reason ?? "requested", budget.TotalSeconds, rt.Usage.Summary());
+        await seq.StepAsync("tui", TimeSpan.FromSeconds(2), _ => tuiTask);
+        if (useTui) Console.Out.WriteLine("MineClaw: shutting down...");
+        await seq.StepAsync("stop actions", TimeSpan.FromSeconds(5), ct =>
+        {
+            rt.Activities.Cancel("shutdown");
+            return client.StopAsync(ct);
+        });
+        await seq.StepAsync("agent", TimeSpan.FromSeconds(10), _ => agent.StopAsync());
+        if (BeforeLogout is { } before && host.PreLogoutSeconds > 0 && client.IsPlaying)
+            await seq.StepAsync("pre-logout", TimeSpan.FromSeconds(host.PreLogoutSeconds), ct => before(bot, ct));
+        await seq.StepAsync("disconnect", TimeSpan.FromSeconds(5), _ => client.DisconnectAsync("Bye!"));
+        await seq.StepAsync("background tasks", TimeSpan.FromSeconds(3), _ => Task.WhenAll(tasks));
+        seq.Final("bot", () => { source.Dispose(); bot.Dispose(); });
+        await seq.StepAsync("client", TimeSpan.FromSeconds(3), _ => client.DisposeAsync().AsTask());
+        seq.Final("db", rt.Dispose);
+        seq.Final("telemetry", telemetry.Dispose);
+        log.LogInformation("bye{Late}", seq.TimedOut.Count > 0 ? " (timed out: " + string.Join(", ", seq.TimedOut) + ")" : "");
+        if (useTui) Console.Out.WriteLine("MineClaw: bye");
+        return ExitCodes.Ok;
+    }
+
+    internal static ViewMode ParseView(string? v) => string.Equals(v, "side", StringComparison.OrdinalIgnoreCase) ? ViewMode.Side : ViewMode.Top;
+
+    // ================================================================ demo
+
+    /// <summary><c>--demo</c>: fake bots in a fake world, real TUI. No config, server or API key needed.</summary>
+    public static async Task<int> RunDemoAsync(AppCli cli)
+    {
+        var root = AppPaths.FindRoot();
+        var host = new HostSettings();
+        var hive = new HiveSettings { CloneUsernames = ["maid_chan_67", "maid_chan_69", "maid_chan_420", "maid_chan_1337"] };
+        string main = "maid_chan";
+        try
+        {
+            var config = AppConfig.Build(cli, root);
+            config.GetSection("Host").Bind(host);
+            config.GetSection("Hive").Bind(hive);
+            main = config["Minecraft:Username"] is { Length: > 0 } u ? u : main;
+        }
+        catch (Exception) { /* demo works without config */ }
+
+        var roster = new HiveRoster([main, .. hive.CloneUsernames.Take(Math.Max(0, hive.MaxClones))]);
+        using var demo = new DemoHive(roster.Names, Math.Min(cli.DemoBots, roster.Names.Count), host.Tui.Viewport);
+        var ring = new RingLoggerProvider();
+        ring.Add(new LogLine(DateTimeOffset.Now, LogLevel.Information, "MineClaw.App", "demo mode: fake bots, no server, no API calls"));
+
+        var (useTui, why) = TerminalDetect.Decide(cli.Tui, TerminalDetect.Current());
+        if (cli.Frame is { } size || !useTui)
+        {
+            for (int i = 0; i < 64; i++) demo.Tick();
+            var (w, h) = cli.Frame ?? (120, 40);
+            var app = new TuiApp(demo.Sources, roster, ring, host.Tui, _ => { }, NullLogger.Instance, cli.Bot - 1, ParseView(cli.ViewMode));
+            Console.Out.WriteLine(FrameRenderer.Render(app.BuildFrame(w, h, unicode: true), w, h, ansi: false));
+            if (cli.Frame == null) Console.Error.WriteLine($"(demo: printed one frame because {why}; run in a terminal for the live TUI)");
+            return ExitCodes.Ok;
+        }
+
+        using var signals = new ShutdownSignals();
+        using var minutesTimer = cli.Minutes is { } minutes ? new Timer(_ => signals.Request("--minutes elapsed"), null, TimeSpan.FromMinutes(minutes), Timeout.InfiniteTimeSpan) : null;
+        demo.Start();
+        var tui = new TuiApp(demo.Sources, roster, ring, host.Tui, w => signals.Request("tui " + w), NullLogger.Instance, cli.Bot - 1, ParseView(cli.ViewMode));
+        await tui.RunAsync(signals.Token);
+        return ExitCodes.Ok;
+    }
+}

@@ -1,0 +1,69 @@
+# /etc/systemd/system/mineclaw.service — MineClaw headless bot (see deploy/README.md).
+#   systemctl daemon-reload && systemctl enable --now mineclaw
+#   journalctl -u mineclaw -f            # one line per event, levels as journald priorities
+[Unit]
+Description=MineClaw Minecraft b1.8.1 Skyblock bot (Claude agent)
+Wants=network-online.target
+After=network-online.target
+# Don't hammer the API/server with a broken setup: at most 5 starts per 10 minutes.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=mineclaw
+Group=mineclaw
+WorkingDirectory=/var/lib/mineclaw
+# Creates /var/lib/mineclaw and /var/log/mineclaw owned by User= (and keeps them writable under ProtectSystem=strict).
+StateDirectory=mineclaw
+LogsDirectory=mineclaw
+StateDirectoryMode=0750
+LogsDirectoryMode=0750
+
+# Non-secret config; secrets (API keys) come from the EnvironmentFile as MINECLAW_Section__Key=value.
+EnvironmentFile=-/etc/mineclaw/mineclaw.env
+ExecStart=/opt/mineclaw/MineClaw.App --no-tui --config /etc/mineclaw/appsettings.json \
+          --data-dir /var/lib/mineclaw --log-dir /var/log/mineclaw
+
+# Graceful stop: SIGTERM → stop actions, (hive: deposit items), disconnect, flush db/logs. The app's own budget is
+# Host:ShutdownTimeoutSeconds (default 30); keep this comfortably above it so systemd never SIGKILLs mid-flush.
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=90
+
+# Exit codes: 0 clean, 1 crash, 2 config, 3 auth (bad key/model), 64 usage, 75 transient (API unreachable at start).
+Restart=on-failure
+RestartSec=15
+RestartPreventExitStatus=2 3 64
+
+# ---- hardening (network + the state/log dirs stay available) ----
+NoNewPrivileges=yes
+UMask=0027
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# IPv4/IPv6 for the Minecraft server + Anthropic API; AF_UNIX for journald and the upcoming hive IPC.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Not set on purpose: MemoryDenyWriteExecute=yes (breaks the .NET JIT).
+ReadOnlyPaths=/opt/mineclaw /etc/mineclaw
+
+[Install]
+WantedBy=multi-user.target

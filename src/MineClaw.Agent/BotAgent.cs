@@ -7,6 +7,7 @@ using MineClaw.Agent.Llm;
 using MineClaw.Agent.Memory;
 using MineClaw.Agent.Rag;
 using MineClaw.Agent.Self;
+using MineClaw.Agent.Telemetry;
 using MineClaw.Agent.Tools;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -349,9 +350,16 @@ public sealed class BotAgent
         else if (tier == ModelTier.Cheap && canEscalate) sb.Append(Prompts.CheapTierHint).Append('\n');
         if (prelude != null) sb.Append(prelude).Append('\n');
         if (memory.Length > 0) sb.Append(memory).Append('\n');
-        sb.Append(batch.Format());
-        return sb.ToString().TrimEnd();
+        var events = batch.Format();
+        sb.Append(events);
+        var text = sb.ToString().TrimEnd();
+        try { TurnBuilt?.Invoke(new TurnInput(_time.GetUtcNow(), tier, status, digest, memory, events, text)); }
+        catch (Exception ex) { _log.LogDebug(ex, "TurnBuilt handler failed"); }
+        return text;
     }
+
+    /// <summary>Raised with the parts of each turn's first user message (telemetry/display only; never changes the prompt).</summary>
+    public event Action<TurnInput>? TurnBuilt;
 
     /// <summary>
     /// "[since last turn] ..." from <see cref="TurnDigest"/>: one line, capped at <see cref="AgentOptions.TurnDigestMaxChars"/>,

@@ -62,6 +62,8 @@ public sealed class TierTotals
         }
     }
 
+    internal TierTotals Clone() => (TierTotals)MemberwiseClone();
+
     internal void Add(decimal usd, LlmUsage u)
     {
         Usd += usd;
@@ -71,6 +73,16 @@ public sealed class TierTotals
         CacheReadTokens += u.CacheReadTokens;
         CacheWriteTokens += u.CacheWriteTokens;
     }
+}
+
+/// <summary>Per-purpose daily rollup (from prompt telemetry).</summary>
+public sealed record PurposeTotals
+{
+    public int Calls { get; set; }
+    public decimal Usd { get; set; }
+    public long PromptTokens { get; set; }
+    public long OutputTokens { get; set; }
+    public long LatencyMs { get; set; }
 }
 
 public sealed class UsageTotals
@@ -108,6 +120,21 @@ public sealed class UsageTotals
 
     [System.Text.Json.Serialization.JsonIgnore]
     public decimal TotalUsd => Usd + EmbeddingUsd;
+
+    /// <summary>Daily telemetry rollup: per call purpose (chat_turn, delegate_round, ask_memory, compaction, ...).</summary>
+    public Dictionary<string, PurposeTotals>? Purposes { get; set; }
+
+    /// <summary>Daily telemetry rollup: calibrated prompt tokens per request section (tools, system, history, memory, ...).</summary>
+    public Dictionary<string, long>? Sections { get; set; }
+
+    internal UsageTotals Copy()
+    {
+        var c = (UsageTotals)MemberwiseClone();
+        c.Tiers = Tiers?.ToDictionary(kv => kv.Key, kv => kv.Value.Clone(), StringComparer.OrdinalIgnoreCase) ?? new(StringComparer.OrdinalIgnoreCase);
+        c.Purposes = Purposes?.ToDictionary(kv => kv.Key, kv => kv.Value with { }, StringComparer.OrdinalIgnoreCase);
+        c.Sections = Sections != null ? new Dictionary<string, long>(Sections, StringComparer.OrdinalIgnoreCase) : null;
+        return c;
+    }
 
     internal void AddEmbedding(decimal usd, long tokens)
     {
@@ -242,6 +269,36 @@ public sealed class UsageTracker
         CheckMode();
         return cost;
     }
+
+    /// <summary>
+    /// Adds one call to today's telemetry rollup (<see cref="UsageTotals.Purposes"/>, <see cref="UsageTotals.Sections"/>).
+    /// In memory only: persisted with the next <see cref="Record"/> (which follows every call). Spend and caps are unaffected.
+    /// </summary>
+    public void AddRollup(string purpose, decimal usd, long promptTokens, long outputTokens, long latencyMs, IReadOnlyDictionary<string, long>? sections)
+    {
+        lock (_lock)
+        {
+            var d = Get(_state.Days, DayKey);
+            d.Purposes ??= new(StringComparer.OrdinalIgnoreCase);
+            if (!d.Purposes.TryGetValue(purpose, out var p)) d.Purposes[purpose] = p = new PurposeTotals();
+            p.Calls++;
+            p.Usd += usd;
+            p.PromptTokens += promptTokens;
+            p.OutputTokens += outputTokens;
+            p.LatencyMs += latencyMs;
+            if (sections == null) return;
+            d.Sections ??= new(StringComparer.OrdinalIgnoreCase);
+            foreach (var (k, v) in sections) d.Sections[k] = d.Sections.GetValueOrDefault(k) + v;
+        }
+    }
+
+    /// <summary>Deep copies of today's and this month's totals (safe to read from another thread).</summary>
+    public (UsageTotals Today, UsageTotals Month) SnapshotTotals()
+    {
+        lock (_lock) return (Get(_state.Days, DayKey).Copy(), Get(_state.Months, MonthKey).Copy());
+    }
+
+    public BudgetOptions Options => _options;
 
     /// <summary>Current mode; also fires <see cref="ModeChanged"/> on transitions (day rollover, caps).</summary>
     public BudgetMode CheckMode()
