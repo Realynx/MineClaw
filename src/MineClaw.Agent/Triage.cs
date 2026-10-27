@@ -28,6 +28,10 @@ public sealed class Triage
     {
         if (mode == BudgetMode.CheapOnly) return new(ModelTier.Cheap, false, "budget: cheap only");
         if (batch.HasDanger) return new(ModelTier.Main, false, "danger");
+        // A plain idle check-in (nobody asked for anything) runs on the cheap tier; it escalates if there's real work.
+        // On Opus with an expired cache these were the night's two costliest turns.
+        if (_options.IdleCheckInsOnCheapTier && batch.Waking.Any() && batch.Waking.All(e => e.Kind == EventKind.IdleTick && e.Text == "idle check-in"))
+            return new(ModelTier.Cheap, true, "idle check-in");
         if (!batch.IsConversational) return new(ModelTier.Main, false, "task event");
         if (!_options.CheapFirstForChat) return new(ModelTier.Main, false, "config");
         if (batch.Waking.Any(e => e.Kind is EventKind.Chat or EventKind.Whisper && _action.IsMatch(e.Text)))

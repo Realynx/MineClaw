@@ -73,6 +73,32 @@ public sealed partial class MinecraftClient
             return ActionResult.Success($"looking at {p.Name ?? name}");
         });
 
+    // ------------------------------------------------------------------ brainstem: idle head/arm (no action lock)
+
+    /// <summary>
+    /// Turns the head toward <paramref name="point"/> on the next tick when nothing drives the body (no action, no fight, no
+    /// safety hold): no action lock, no waiting, so it can run the instant chat arrives. False when the body is busy.
+    /// </summary>
+    public bool FaceIdle(Vec3d point)
+    {
+        if (!IsPlaying || CurrentAction is not null || _driver is not null || SafetyEngaged) return false;
+        var (yaw, pitch) = PlayerPhysics.YawPitchTo(World.Player.EyePosition, point);
+        _lookYaw = yaw;
+        _lookPitch = Math.Clamp(pitch, -90f, 90f);
+        return true;
+    }
+
+    /// <summary>One arm swing (a "nod") without the action lock; skipped while an action, a fight or a safety hold runs.</summary>
+    public bool SwingIdle()
+    {
+        if (!IsPlaying || CurrentAction is not null || SafetyEngaged) return false;
+        Send(new AnimationPacket { EntityId = World.Player.EntityId, Animation = 1 });
+        return true;
+    }
+
+    /// <summary>A safety reflex owns the body: a fight/defence, the post-teleport ground hold, or the low-health retreat.</summary>
+    public bool SafetyEngaged => (_combatInstance?.Engaged ?? false) || _safetyFreeze || _healRetreat is not null;
+
     /// <summary>Waves: <paramref name="times"/> arm swings (0x12 animation 1), a few ticks apart.</summary>
     public Task<ActionResult> SwingArmAsync(int times = 3, CancellationToken ct = default) =>
         RunActionAsync("wave", ct, async c =>

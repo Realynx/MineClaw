@@ -15,11 +15,13 @@ public class TreeToolTests(Xunit.Abstractions.ITestOutputHelper output)
     private static int Tokens(LlmToolDefinition d) => (int)Math.Ceiling((d.Name.Length + d.Description.Length + d.InputSchema.GetRawText().Length) / 3.5) + 6;
 
     [Fact]
-    public void Chop_tree_is_on_both_the_brain_and_the_worker_and_stays_tiny()
+    public void Chop_tree_is_a_worker_tool_the_brain_reaches_through_do_and_stays_tiny()
     {
         var (h, _) = TestBot.Create();
-        var brain = h.Runtime.Tools.Definitions(ModelTier.Main).Single(d => d.Name == "chop_tree");
-        Assert.Contains(h.Runtime.Tools.Definitions(ModelTier.Worker), d => d.Name == "chop_tree");
+        // The brain runs it with do {action:"chop_tree"} (one compact meta-tool instead of a definition per macro).
+        Assert.DoesNotContain(h.Runtime.Tools.Definitions(ModelTier.Main), d => d.Name == "chop_tree");
+        Assert.Contains("chop_tree", h.Runtime.Tools.Definitions(ModelTier.Main).Single(d => d.Name == "do").InputSchema.GetRawText());
+        var brain = h.Runtime.Tools.Definitions(ModelTier.Worker).Single(d => d.Name == "chop_tree");
         Assert.DoesNotContain(h.Runtime.Tools.Definitions(ModelTier.Cheap), d => d.Name == "chop_tree");
         output.WriteLine($"chop_tree ≈{Tokens(brain)} tokens: {brain.Description} {brain.InputSchema.GetRawText()}");
         Assert.True(Tokens(brain) <= 60, $"≈{Tokens(brain)}");

@@ -103,6 +103,12 @@ public sealed class UsageTotals
 
     public TierTotals Tier(ModelTier tier) => Tier(UsageTracker.TierLabel(tier));
 
+    /// <summary>Per-provider breakdown ("anthropic", "ollama"): every call, priced or free.</summary>
+    public Dictionary<string, TierTotals>? Providers { get; set; }
+
+    /// <summary>Per-profile breakdown ("opus", "haiku", "local"...; calls whose model matches no profile aren't listed).</summary>
+    public Dictionary<string, TierTotals>? Profiles { get; set; }
+
     /// <summary>Embedding spend is a separate line item (it still counts toward the caps).</summary>
     public decimal EmbeddingUsd { get; set; }
     public long EmbeddingTokens { get; set; }
@@ -132,6 +138,8 @@ public sealed class UsageTotals
     {
         var c = (UsageTotals)MemberwiseClone();
         c.Tiers = Tiers?.ToDictionary(kv => kv.Key, kv => kv.Value.Clone(), StringComparer.OrdinalIgnoreCase) ?? new(StringComparer.OrdinalIgnoreCase);
+        c.Providers = Providers?.ToDictionary(kv => kv.Key, kv => kv.Value.Clone(), StringComparer.OrdinalIgnoreCase);
+        c.Profiles = Profiles?.ToDictionary(kv => kv.Key, kv => kv.Value.Clone(), StringComparer.OrdinalIgnoreCase);
         c.Purposes = Purposes?.ToDictionary(kv => kv.Key, kv => kv.Value with { }, StringComparer.OrdinalIgnoreCase);
         c.Sections = Sections != null ? new Dictionary<string, long>(Sections, StringComparer.OrdinalIgnoreCase) : null;
         return c;
@@ -144,8 +152,10 @@ public sealed class UsageTotals
         EmbeddingCalls++;
     }
 
-    internal void Add(decimal usd, LlmUsage u, string tier)
+    internal void Add(decimal usd, LlmUsage u, string tier, string? provider = null, string? profile = null)
     {
+        if (provider != null) Bucket(Providers ??= new(StringComparer.OrdinalIgnoreCase), provider).Add(usd, u);
+        if (profile != null) Bucket(Profiles ??= new(StringComparer.OrdinalIgnoreCase), profile).Add(usd, u);
         Usd += usd;
         Calls++;
         InputTokens += u.InputTokens;
@@ -155,6 +165,12 @@ public sealed class UsageTotals
         Tiers ??= new(StringComparer.OrdinalIgnoreCase);
         if (!Tiers.TryGetValue(tier, out var t)) Tiers[tier] = t = new TierTotals();
         t.Add(usd, u);
+    }
+
+    private static TierTotals Bucket(Dictionary<string, TierTotals> map, string key)
+    {
+        if (!map.TryGetValue(key, out var t)) map[key] = t = new TierTotals();
+        return t;
     }
 }
 
@@ -203,6 +219,9 @@ public sealed class UsageTracker
 
     /// <summary>Maps a model id to its tier for the per-tier breakdown (the runtime sets it from <c>LlmOptions.TierOfModel</c>).</summary>
     public Func<string, ModelTier?>? Classify { get; set; }
+
+    /// <summary>Maps a model id to its profile for the per-profile breakdown (the runtime sets it from <c>LlmOptions.ProfileOfModel</c>).</summary>
+    public Func<string, string?>? ProfileOf { get; set; }
 
     /// <summary>Report label of a tier: the brain is "opus", the builder "worker", the Haiku tier "memory".</summary>
     public static string TierLabel(ModelTier tier) => tier switch
@@ -261,11 +280,15 @@ public sealed class UsageTracker
         decimal cost = _prices.Cost(model, usage);
         var t = Classify?.Invoke(model) ?? tier;
         string label = t is { } tt ? TierLabel(tt) : "other";
+        // Every provider and profile counts toward the same hard caps; Ollama calls are recorded too ($0 unless priced).
+        string provider = _prices.ProviderOf(model);
+        string? profile = null;
+        try { profile = ProfileOf?.Invoke(model); } catch (Exception) { }
         lock (_lock)
         {
             _lastCacheHit = CacheHit(usage);
-            Get(_state.Days, DayKey).Add(cost, usage, label);
-            Get(_state.Months, MonthKey).Add(cost, usage, label);
+            Get(_state.Days, DayKey).Add(cost, usage, label, provider, profile);
+            Get(_state.Months, MonthKey).Add(cost, usage, label, provider, profile);
             _recentCalls.Enqueue(Now);
             TrimOldDays();
             if (_path != null)
@@ -337,7 +360,8 @@ public sealed class UsageTracker
             return $"today ${d.TotalUsd:0.000}/{_options.DailyCapUsd:0.00} ({d.Calls} calls, cache {d.CacheHitRatio:P0}" +
                    (d.EmbeddingTokens > 0 ? $", emb ${d.EmbeddingUsd:0.0000}" : "") +
                    $"), month ${m.TotalUsd:0.00}/{_options.MonthlyCapUsd:0.00}, {_recentCalls.Count} calls/h" +
-                   (d.Tiers is { Count: > 0 } ? " | " + TierSummary(d) : "");
+                   (d.Tiers is { Count: > 0 } ? " | " + TierSummary(d) : "") +
+                   (d.Providers?.TryGetValue(LlmProviders.Ollama, out var ol) == true ? $" | ollama {ol.Calls}c ${ol.Usd:0.000}" : "");
         }
     }
 

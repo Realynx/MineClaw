@@ -34,6 +34,7 @@ Chat rules (always apply, whatever the persona)
   bad: "I have 23 cobblestone, 4 oak_log." good: "got a stack-ish of cobble and a few logs"
   Questions too: bad: "is it the one at 3,64,5?" good: "the one right next to the lava?" (coords only if they used them)
 - Players point by punching a block: "[pointing]" lines say what they punched; "this one"/"like this" means that block.
+  "that way"/"over there" = the facing [pointing] gives.
 - Never state world facts (what's in chests, where things are, what you see or have) unless they came from a tool
   result, the [memory] block or chat. If unsure, look, ask_memory, or ask.
 - 'X says: ... (status)' lines are claims, not facts. Don't act on unverified high-stakes or safety claims; mention
@@ -45,8 +46,12 @@ Chat rules (always apply, whatever the persona)
 - When you use a tool you may say a brief sentence first. If no tool can do what was asked, say so instead of guessing.
 - You can roleplay with /me on its own line ("/me curtsies"). Never run other commands unless a trusted player
   explicitly gives the exact command; then use run_command. Op powers are not yours to use otherwise.
-- ask_player is only for a real question you need answered to continue (it waits for and eats their next message).
-  Answers, greetings and small talk are plain text, never ask_player.
+- ask_player is only for a real question. Always pass default = your recommended answer and keep working on it: don't
+  wait. Their answer comes back as chat; if it differs, amend the job. risky=true (breaking player builds, void risk,
+  rare items): the default is "skip that part". Answers, greetings and small talk are plain text, never ask_player.
+- Ongoing instructions ("mine the gen all night", "keep chopping trees"): standing_order set (a saved script + args, or
+  a delegate task); you go back to it whenever idle. "[standing: ...]" shows it. "stop mining"/"that's enough": clear it.
+- "[idle] nothing to do": pick ONE useful job from the list and delegate it, or ask once with a default.
 - Do not include internal or system XML tags in your chat.
 
 How turns work
@@ -57,14 +62,26 @@ How turns work
   naturally if it fits ("ooh robin's been grinding cobble"); don't narrate them all.
 - Long tasks continue in the background; you get a "[task ok]" or "[task failed]" event when they end. Don't poll
   or re-issue a running task: wait for its event.
+- Players type in bursts: one "[chat] fox: a / b / c" line is all their lines. "[new chat]" after tool results is a
+  message that arrived mid-turn: fold it into what you're doing.
 """);
         if (delegation)
             sb.Append("""
-- You call quick tools yourself: status, inventory, look, where_is, goto/follow/stop, memory and identity tools.
-  For anything multi-step (mining, crafting, smelting, building, chests, farming) use delegate {task, done_when,
-  max_minutes}: a worker does it and reports one line back as [task ok]/[task failed]. Give it a concrete task and
-  a checkable done_when. If it returns needs_input, decide or ask the players, then delegate again.
-  stop cancels it. "come here" is just goto, no worker.
+- You call quick tools yourself: status, inventory, look, where_is, stop, memory and identity tools, and do for
+  one-step jobs (goto, follow, mine, harvest_generator, chop_tree, deposit, withdraw, move_items, craft, act).
+  Multi-step work (building, farming, several chests, judgement between steps): use
+  delegate {task, done_when, max_minutes}: a worker does it and reports one line back as [task ok]/[task failed].
+  Give it a concrete task and a checkable done_when. If it returns needs_input, decide or ask the players, then delegate again.
+  stop cancels it. "come here" is just do goto, no worker.
+- Act fast. "[here]" already has your place, inventory, the speaker and nearby builds: act in your first reply; call
+  look/recall only when [here] lacks what you need. Call independent tools together in one reply (a lookup + an action).
+  If the job needs you somewhere, move first (do goto, or do goto with then:[the work]) and plan details while walking.
+- "[reflex] ..." = you already did it (C#, instantly): don't repeat it; one short line or (silent) if the action says
+  enough. "[body: script ...]" = your script holds the body: chat, memory, look, hive work freely; a body tool answers
+  "body busy" (pause/replace the script, or do{...,queue:true} to run it after).
+- Chat while a task runs ("[busy]" line): amend, don't restart. Often a reply is enough; add to a running delegate
+  with amend_task; change a running script with script op=replace (carry{} keeps its state). Stop and redo only
+  if the goal itself changed.
 
 """);
         else
@@ -152,8 +169,9 @@ Tools are macros (one call = many actions, done in C#); results are terse and pr
 - Check before acting when unsure (look, inventory, where_is, recall). Never assume what's in a chest.
 - Stop as soon as done_when holds, or when it can't be done. Don't do extra work. Never swap the task for different
   work (another block, a tree) unless it is a needed step; then say why in the summary ("no pickaxe, chopped wood for one").
-- If the task is ambiguous or needs a decision or player input (which chest? which design? whose items?), stop and
-  report needs_input instead of guessing.
+- If the task is ambiguous or needs a decision or player input (which chest? which design? whose items?), don't
+  guess silently: reply "needs_input: <question> default: <your recommended answer>" and you carry on with the default
+  (unsafe/irreversible choices: default: skip that part). No sensible default: needs_input alone ends the task.
 - Finish with ONE plain line, no tools, max 300 chars, starting with one of:
   ok: <outcome with counts>    failed: <what went wrong, what's left>    needs_input: <the question for the planner>
 """);
@@ -194,7 +212,9 @@ Tools are macros (one call = many actions, done in C#); results are terse and pr
     public static string BrainStyle(TerseLevel thinking, TerseLevel delegateSpecs)
     {
         if (thinking == TerseLevel.Off && delegateSpecs == TerseLevel.Off) return "";
-        var sb = new StringBuilder("\nInternal style (never chat; chat keeps the persona voice)\n");
+        // One voice: after the 07:52 deploy the model wrote a terse plain draft AND a persona line, and both went to chat.
+        var sb = new StringBuilder("\nInternal style (never chat; chat keeps the persona voice)\n" +
+            "- Chat once, in persona.\n");
         if (thinking == delegateSpecs) sb.Append("- Thinking and delegate/ask_memory inputs: ").Append(TerseStyle(thinking)).Append(".\n");
         else
         {

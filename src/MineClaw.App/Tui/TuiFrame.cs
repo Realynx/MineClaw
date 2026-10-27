@@ -284,6 +284,8 @@ public static class TuiFrame
                 lines.Add(SectionLegend(last, iw));
             }
             lines.Add(new MLine(iw).Add("calls/h ", "grey").Add(Sparkline(u.CallsPerHour, f.Unicode), "aqua").Add(" 24h", "grey").ToString());
+            // Chat latency p50 (zero-token telemetry): first visible reaction, first game action, first move, model rounds before it.
+            if (u.Latency is { Turns: > 0 } lat) lines.Add(new MLine(iw).Add("p50 ", "grey").Add(lat.Line()).ToString());
         }
         var online = f.Bots.Where(b => b.Usage != null).ToList();
         decimal hd = online.Sum(b => b.Usage!.TodayUsd), hm = online.Sum(b => b.Usage!.MonthUsd);

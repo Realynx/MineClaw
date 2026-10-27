@@ -54,6 +54,19 @@ public sealed class EpisodeIndexer
     /// <summary>Newest journal stored (for restoring continuity after a restart).</summary>
     public string? LatestJournal() => _index.Recent(Kind, null, 1, "journal:").FirstOrDefault()?.Body is { } b ? StripDate(b) : null;
 
+    /// <summary>
+    /// The last episodes of earlier runs (mechanical summaries, zero tokens) committed within <paramref name="within"/>,
+    /// oldest first: what the bot was doing right before a restart. Test-driven episodes are skipped.
+    /// </summary>
+    public IReadOnlyList<string> RecentBeforeRestart(TimeSpan within, int max = 6, DateTimeOffset? now = null)
+    {
+        var since = (now ?? DateTimeOffset.UtcNow) - within;
+        return _index.Recent(Kind, since, Math.Max(1, max), "ep:")
+            .Where(h => !h.Ref.StartsWith($"ep:{_run}:", StringComparison.Ordinal))
+            .OrderBy(h => h.Updated).ThenBy(h => h.Id)
+            .Select(h => h.Body).ToList();
+    }
+
     private static string StripDate(string body)
     {
         int i = body.IndexOf(": ", StringComparison.Ordinal);

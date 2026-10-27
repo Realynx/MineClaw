@@ -1,3 +1,4 @@
+using MineClaw.Data;
 using MineClaw.World;
 
 namespace MineClaw.Client;
@@ -21,6 +22,25 @@ public sealed partial class MinecraftClient
 
     private volatile LearnedProtectedRegion? _protectedRegion;
     private int _actionEditsOk;
+    /// <summary>Last edit that WORKED within <see cref="VanillaSpawnProtection"/> of spawn (Environment.TickCount64, pos):
+    /// proof the bot can edit there, so a later single failure nearby is something else (lag, a race, decay).</summary>
+    private (long At, BlockPos Pos)? _lastOkInsideSpawn;
+    /// <summary>How long a successful edit inside the spawn square disproves spawn protection.</summary>
+    private static readonly TimeSpan SpawnProofWindow = TimeSpan.FromMinutes(15);
+    /// <summary>Undone edits near spawn not yet believed (one alone is lag, a race with another bot, leaf decay...):
+    /// (Environment.TickCount64, pos, action instance). A region is learned only from two INDEPENDENT ones.</summary>
+    private readonly List<(long At, BlockPos Pos, object? Action)> _undoneNearSpawn = new();
+    /// <summary>How long an unconfirmed undone edit waits for an independent second one.</summary>
+    private static readonly TimeSpan UndoneWindow = TimeSpan.FromMinutes(10);
+    /// <summary>Two undone edits this far apart (Chebyshev, blocks) are independent even within one action: one tree crown
+    /// (radius 2) never spans it.</summary>
+    public const int IndependentEditDistance = 5;
+
+    /// <summary>
+    /// Hive: true when another bot is working at/next to this block (a lease it holds, or its body is right there), so the
+    /// server "undoing" my edit is a race with it, never evidence of spawn protection. Set by the Bot layer.
+    /// </summary>
+    public Func<BlockPos, bool>? EditContested { get; set; }
 
     /// <summary>The learned area where the server undoes my digs/placements, or null. Mining, chop_tree and the
     /// pathfinder's dig/place moves skip it up front while it is fresh (<see cref="ClientOptions.ProtectedRegionRetry"/>);
@@ -50,6 +70,11 @@ public sealed partial class MinecraftClient
     {
         Interlocked.Increment(ref _actionEditsOk);
         var sp = World.Spawn;
+        if (World.Dimension == 0 && Math.Max(Math.Abs(p.X - sp.X), Math.Abs(p.Z - sp.Z)) <= VanillaSpawnProtection)
+        {
+            _lastOkInsideSpawn = (Environment.TickCount64, p);
+            lock (_undoneNearSpawn) _undoneNearSpawn.Clear(); // a success near spawn disproves the unconfirmed failures
+        }
         if (World.Dimension == 0 && Math.Max(Math.Abs(p.X - sp.X), Math.Abs(p.Z - sp.Z)) <= VanillaSpawnProtection * 2)
         {
             int dim = World.Dimension;
@@ -73,15 +98,50 @@ public sealed partial class MinecraftClient
         var sp = World.Spawn;
         int d = Math.Max(Math.Abs(p.X - sp.X), Math.Abs(p.Z - sp.Z));
         bool nearSpawn = World.Dimension == 0 && d <= VanillaSpawnProtection;
-        if (nearSpawn)
+        if (nearSpawn && _lastOkInsideSpawn is { } proof && Environment.TickCount64 - proof.At < SpawnProofWindow.TotalMilliseconds)
+        {
+            // My digs/placements inside the spawn square worked minutes ago (op, or protection off): one that didn't take
+            // is a lag/race failure, not spawn protection. Learning a region here once blocked replanting a tree whose
+            // logs I had just felled at that very spot.
+            Log($"server didn't take my {what} at {Fmt(p)}, but my edit at {Fmt(proof.Pos)} ({d} from spawn too) worked "
+                + $"{(Environment.TickCount64 - proof.At) / 1000}s ago: not spawn protection");
+            nearSpawn = false;
+        }
+        else if (nearSpawn && World.GetBlock(p) == Blocks.Leaves)
+        {
+            // Leaves race with decay and with another bot chopping the same crown: never evidence of protection.
+            Log($"server didn't take my {what} at {Fmt(p)} (leaves): not counted as spawn protection");
+        }
+        else if (nearSpawn && EditContested?.Invoke(p) == true)
+        {
+            Log($"server didn't take my {what} at {Fmt(p)}, but another hive bot is working right there: a race, not spawn protection");
+            nearSpawn = false;
+        }
+        else if (nearSpawn)
         {
             var old = _protectedRegion;
-            int fails = (old?.Failures ?? 0) + 1;
-            int radius = Math.Max(VanillaSpawnProtection, Math.Max(d, old?.Radius ?? 0));
-            var r = new LearnedProtectedRegion(sp, radius, World.Dimension, fails, $"server undid {what} at {Fmt(p)}, {d} from spawn", DateTime.UtcNow);
-            _protectedRegion = r;
-            Log("learned " + r);
-            Raise(() => ProtectedRegionChanged?.Invoke(r));
+            int fails;
+            bool confirmed;
+            long now = Environment.TickCount64;
+            object? action = _actionCts;
+            lock (_undoneNearSpawn)
+            {
+                _undoneNearSpawn.RemoveAll(f => now - f.At > UndoneWindow.TotalMilliseconds);
+                // Independent = from a separate action, or far enough apart that it isn't one tree crown / one spot.
+                confirmed = old != null || _undoneNearSpawn.Any(f => !ReferenceEquals(f.Action, action) || ChebyshevDistance(f.Pos, p) >= IndependentEditDistance);
+                _undoneNearSpawn.Add((now, p, action));
+                fails = (old?.Failures ?? 0) + (old == null ? _undoneNearSpawn.Count : 1);
+                if (confirmed) _undoneNearSpawn.Clear();
+            }
+            if (confirmed)
+            {
+                int radius = Math.Max(VanillaSpawnProtection, Math.Max(d, old?.Radius ?? 0));
+                var r = new LearnedProtectedRegion(sp, radius, World.Dimension, fails, $"server undid {what} at {Fmt(p)}, {d} from spawn ({fails} undone edits)", DateTime.UtcNow);
+                _protectedRegion = r;
+                Log("learned " + r);
+                Raise(() => ProtectedRegionChanged?.Invoke(r));
+            }
+            else Log($"server didn't take my {what} at {Fmt(p)} ({d} from spawn): one undone edit, not yet spawn protection (needs a second, independent one)");
         }
         if (Volatile.Read(ref _actionEditsOk) == 0)
         {
@@ -91,5 +151,33 @@ public sealed partial class MinecraftClient
             _abortReason ??= reason;
             throw new ActionAbortedException(reason);
         }
+    }
+
+    private static int ChebyshevDistance(BlockPos a, BlockPos b) =>
+        Math.Max(Math.Abs(a.X - b.X), Math.Max(Math.Abs(a.Y - b.Y), Math.Abs(a.Z - b.Z)));
+
+    /// <summary>
+    /// The region was retracted elsewhere (another hive process's successful edit removed the shared protected_region fact):
+    /// forget my in-memory copy too. No <see cref="ProtectedRegionChanged"/> (the fact is already gone).
+    /// </summary>
+    public bool ForgetProtectedRegion(string why)
+    {
+        lock (_undoneNearSpawn) _undoneNearSpawn.Clear();
+        if (Interlocked.Exchange(ref _protectedRegion, null) is not { } r) return false;
+        Log($"forgetting {r}: {why}");
+        return true;
+    }
+
+    /// <summary>
+    /// Adopt a region another hive process learned (the shared protected_region fact). It keeps the learner's time, so a
+    /// stale one only allows a probe (<see cref="EditBlocked"/>). No <see cref="ProtectedRegionChanged"/> (no echo).
+    /// </summary>
+    public bool AdoptProtectedRegion(LearnedProtectedRegion r)
+    {
+        if (_protectedRegion != null) return false;
+        if (_lastOkInsideSpawn is { } proof && Environment.TickCount64 - proof.At < SpawnProofWindow.TotalMilliseconds) return false; // my edits work here
+        _protectedRegion = r;
+        Log("adopted shared " + r);
+        return true;
     }
 }

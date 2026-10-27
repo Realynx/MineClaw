@@ -188,6 +188,7 @@ public class LiveSession2BotTests
         var (west, east) = DualGen(c.World);
         var board = new Board("maid_chan_67", new() { [east] = "maid_chan" }); // main is harvesting the east cell
         var h = BotHost.Create(c, TestBot.Options(), null, new NoLlm(), persist: false, claims: board);
+        c.Give(36, MineClaw.Data.Items.StonePickaxe, 1); // the gen loop never digs bare-handed
         var r = await h.Run("harvest_generator", new { at = "3,64,0", count = 10 });
         Assert.True(r.Ok, r.Text);
         Assert.Contains("took the free cell 1,64,0", r.Text);

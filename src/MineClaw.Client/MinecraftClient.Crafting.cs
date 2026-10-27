@@ -27,17 +27,26 @@ public sealed partial class MinecraftClient
         return CraftAsync(r.Item.Id, r.Damage, count, ct);
     }
 
+    /// <summary>Crafting steps restarted from the server's fresh state after a desync, at most (then an honest failure).</summary>
+    internal const int MaxCraftResyncs = 2;
+
     private async Task<ActionResult> CraftCoreAsync(int itemId, int damage, int count, CancellationToken ct)
     {
         if (count <= 0) return ActionResult.Fail("count must be positive");
         string target = ItemName(itemId, Math.Max(damage, 0));
         if (Recipes.ForOutput(itemId, damage).Count == 0) return ActionResult.Fail($"{target} has no crafting recipe");
 
-        var invStacks = World.Inventory.PlayerSlots().Skip(9).Where(s => !s.IsEmpty).ToList();
-        var plan = RecipePlanner.Plan(itemId, count, invStacks, damage, new PlannerOptions { AllowSmelting = false, HasCraftingTable = true });
+        var opts = new PlannerOptions { AllowSmelting = false, HasCraftingTable = true };
+        var plan = RecipePlanner.Plan(itemId, count, PlannerStacks(), damage, opts);
+        if (!plan.Complete && await ProbeCoreAsync(ct).ConfigureAwait(false) == ProbeOutcome.Resynced)
+        {
+            // "Missing" may be a stale local copy (the server holds stacks a desync hid): plan again on the server's contents.
+            Log("craft: inventory resynced before giving up on missing materials");
+            plan = RecipePlanner.Plan(itemId, count, PlannerStacks(), damage, opts);
+        }
         if (!plan.Complete)
         {
-            var withSmelt = RecipePlanner.Plan(itemId, count, invStacks, damage, new PlannerOptions { AllowSmelting = true, HasCraftingTable = true });
+            var withSmelt = RecipePlanner.Plan(itemId, count, PlannerStacks(), damage, opts with { AllowSmelting = true });
             if (withSmelt.Complete)
                 return ActionResult.Fail($"need smelting first: {string.Join("; ", withSmelt.Steps.Where(s => s.IsSmelt))}");
             return ActionResult.Fail($"missing {string.Join(", ", plan.Missing)} for {count} {target}");
@@ -54,6 +63,7 @@ public sealed partial class MinecraftClient
                     : $"{target} needs a crafting table and none is within {StationSearchRadius:0} blocks");
         }
 
+        int resyncsBefore = Volatile.Read(ref _windowResyncs);
         int before = World.Inventory.CountItem(itemId, damage < 0 ? null : damage);
         try
         {
@@ -83,12 +93,28 @@ public sealed partial class MinecraftClient
                 catch (Exception ex) { Log($"cleanup after craft failed: {ex.Message}"); }
             }
         }
-        int made = World.Inventory.CountItem(itemId, damage < 0 ? null : damage) - before;
-        if (made <= 0) return ActionResult.Fail($"crafting {target} produced nothing");
-        return ActionResult.Success($"crafted {made} {target} (have {World.Inventory.CountItem(itemId)})", made);
+        string synced = "";
+        if (Volatile.Read(ref _windowResyncs) != resyncsBefore)
+        {
+            // The model was replaced by the server's during this craft: confirm the end state too, so the count reported
+            // is the server's (no phantom "+N" from a prediction the server never made).
+            if (_session is { Ended: false }) await ProbeCoreAsync(ct).ConfigureAwait(false);
+            synced = ", server-confirmed after a resync";
+        }
+        int have = World.Inventory.CountItem(itemId, damage < 0 ? null : damage);
+        int made = have - before;
+        if (made <= 0) return ActionResult.Fail($"crafting {target} produced nothing (have {have}{synced})");
+        return ActionResult.Success($"crafted {made} {target} (have {World.Inventory.CountItem(itemId)}{synced})", made);
     }
 
-    /// <summary>Crafts one recipe <paramref name="times"/> times in the given (player or workbench) window.</summary>
+    private List<ItemStack> PlannerStacks() => World.Inventory.PlayerSlots().Skip(9).Where(s => !s.IsEmpty).ToList();
+
+    /// <summary>
+    /// Crafts one recipe <paramref name="times"/> times in the given (player or workbench) window. Progress is counted from
+    /// the output that actually reached the inventory, so a click the server rejected (or a slot update that raced one)
+    /// restarts the batch from the server's fresh contents instead of trusting a broken prediction; after
+    /// <see cref="MaxCraftResyncs"/> restarts it fails with what it really made and has.
+    /// </summary>
     private async Task<ActionResult> CraftRecipeAsync(Window w, Recipe recipe, int times, CancellationToken ct)
     {
         int gridSize = w.Type == WindowType.Workbench ? 3 : 2;
@@ -96,69 +122,107 @@ public sealed partial class MinecraftClient
         if (layout is null) return ActionResult.Fail($"{recipe.Output} doesn't fit a {gridSize}x{gridSize} grid");
         string name = ItemName(recipe.OutputId, recipe.OutputDamage);
         var rules = World.Inventory.Rules;
+        var groups = layout.Select((ing, i) => (ing, i)).Where(t => t.ing is not null).GroupBy(t => t.ing!.Value).ToList();
+        int perCraft = Math.Max(1, recipe.OutputCount);
+        int outStart = CountInWindowInventory(w, recipe.OutputId);
+        int Crafted() => Math.Max(0, (CountInWindowInventory(w, recipe.OutputId) - outStart) / perCraft);
+        string Have() => string.Join(", ", groups.Select(g => $"{CountMatching(w, g.Key)} {g.Key}"));
+        int resyncs = 0;
 
-        int remaining = times;
-        for (int guard = 0; remaining > 0 && guard < 64; guard++)
+        for (int guard = 0; Crafted() < times && guard < 64; guard++)
         {
+            if (!ReferenceEquals(World.Inventory.ActiveWindow, w))
+                return ActionResult.Fail($"the crafting window closed; crafted {Crafted()}/{times} {name}");
+            int snap = Volatile.Read(ref _windowResyncs);
+            bool Desynced() => Volatile.Read(ref _windowResyncs) != snap;
+            int remaining = times - Crafted();
+
             // Batch size: limited by stack size of every ingredient and by what we have.
             int batch = remaining;
-            foreach (var group in layout.Select((ing, i) => (ing, i)).Where(t => t.ing is not null).GroupBy(t => t.ing!.Value))
+            foreach (var group in groups)
             {
-                int have = CountMatching(w, group.Key);
-                batch = Math.Min(batch, have / group.Count());
+                batch = Math.Min(batch, CountMatching(w, group.Key) / group.Count());
                 batch = Math.Min(batch, rules.MaxStack(group.Key.Id));
             }
-            if (batch <= 0) return ActionResult.Fail($"ran out of ingredients for {name}");
+            if (batch <= 0)
+                return ActionResult.Fail($"ran out of ingredients for {name} (crafted {Crafted()}/{times}; have {Have()})");
 
+            string? fail = null;
             // Lay out the pattern: for each distinct ingredient, distribute `batch` items to each of its cells.
-            foreach (var group in layout.Select((ing, i) => (ing, i)).Where(t => t.ing is not null).GroupBy(t => t.ing!.Value))
+            foreach (var group in groups)
             {
                 var cells = group.Select(t => t.i + 1).ToList();
                 var need = cells.ToDictionary(c => c, _ => batch);
-                for (int g2 = 0; g2 < 32 && need.Values.Any(v => v > 0); g2++)
+                for (int g2 = 0; g2 < 32 && need.Values.Any(v => v > 0) && !Desynced(); g2++)
                 {
                     if (World.Inventory.Cursor.IsEmpty)
                     {
                         int src = FindIngredientSlot(w, group.Key);
-                        if (src < 0) return ActionResult.Fail($"lost track of {group.Key} while crafting {name}");
-                        await ClickCoreAsync(src, false, false, ct).ConfigureAwait(false);
+                        if (src < 0) { fail = $"lost track of {group.Key} while crafting {name}"; break; }
+                        if (!await ClickCoreAsync(src, false, false, ct).ConfigureAwait(false)) break;
                     }
                     foreach (int cell in cells)
                     {
                         var cur = World.Inventory.Cursor;
-                        if (cur.IsEmpty || need[cell] <= 0) continue;
+                        if (cur.IsEmpty || need[cell] <= 0 || Desynced()) continue;
                         int k = Math.Min(need[cell], cur.Count);
                         if (k == cur.Count) await ClickCoreAsync(cell, false, false, ct).ConfigureAwait(false);
-                        else for (int i = 0; i < k; i++) await ClickCoreAsync(cell, true, false, ct).ConfigureAwait(false);
+                        else for (int i = 0; i < k && !Desynced(); i++) await ClickCoreAsync(cell, true, false, ct).ConfigureAwait(false);
                         need[cell] -= cur.Count - World.Inventory.Cursor.Count;
                     }
-                    if (need.Values.All(v => v <= 0) && !World.Inventory.Cursor.IsEmpty)
+                    if (!Desynced() && need.Values.All(v => v <= 0) && !World.Inventory.Cursor.IsEmpty)
                         await StashCursorAsync(ct).ConfigureAwait(false);
                 }
-                if (need.Values.Any(v => v > 0)) return ActionResult.Fail($"couldn't lay out {group.Key} for {name}");
+                if (fail != null || Desynced()) break;
+                if (need.Values.Any(v => v > 0)) { fail = $"couldn't lay out {group.Key} for {name}"; break; }
             }
 
-            // Wait for the output (predicted locally; the server confirms with 0x67 on slot 0).
-            if (!await WaitUntilAsync(() => w.Get(0) is { IsEmpty: false } o && o.Id == recipe.OutputId, TimeSpan.FromSeconds(1.5), ct).ConfigureAwait(false))
-                return ActionResult.Fail($"grid didn't produce {name} (recipe mismatch?)");
-
-            int outBefore = CountInWindowInventory(w, recipe.OutputId);
-            await ClickCoreAsync(0, false, true, ct).ConfigureAwait(false); // shift-click: craft all, straight into the inventory
-            int got = CountInWindowInventory(w, recipe.OutputId) - outBefore;
-            if (got <= 0)
+            if (fail == null && !Desynced())
             {
-                // Inventory full for shift-click: take it on the cursor and stash.
-                await ClickCoreAsync(0, false, false, ct).ConfigureAwait(false);
-                if (!await StashCursorAsync(ct).ConfigureAwait(false)) return ActionResult.Fail("inventory full while crafting " + name);
-                got = recipe.OutputCount;
+                // The output is predicted locally (b1.8.1 never sends 0x67 for a crafting-result slot): wait for our recipe
+                // evaluator to show it.
+                if (!await WaitUntilAsync(() => w.Get(0) is { IsEmpty: false } o && o.Id == recipe.OutputId, TimeSpan.FromSeconds(1.5), ct).ConfigureAwait(false))
+                    fail = $"grid didn't produce {name} (recipe mismatch?)";
+                else
+                {
+                    int outBefore = CountInWindowInventory(w, recipe.OutputId);
+                    await ClickCoreAsync(0, false, true, ct).ConfigureAwait(false); // shift-click: craft all, straight into the inventory
+                    if (!Desynced() && CountInWindowInventory(w, recipe.OutputId) <= outBefore)
+                    {
+                        // Inventory full for shift-click: take it on the cursor and stash.
+                        await ClickCoreAsync(0, false, false, ct).ConfigureAwait(false);
+                        if (!Desynced() && !await StashCursorAsync(ct).ConfigureAwait(false))
+                            fail = "inventory full while crafting " + name;
+                    }
+                }
             }
-            int crafted = Math.Max(1, got / Math.Max(1, recipe.OutputCount));
-            remaining -= crafted;
-            // Anything left in the grid (uneven counts) goes back to the inventory.
-            for (int cell = 1; cell <= gridSize * gridSize; cell++)
-                if (!w.Get(cell).IsEmpty) await ClickCoreAsync(cell, false, true, ct).ConfigureAwait(false);
+
+            // Anything left on the cursor or in the grid (uneven counts, an aborted layout) goes back to the inventory.
+            await ReturnGridAsync(w, gridSize, ct).ConfigureAwait(false);
+            if (fail != null) return ActionResult.Fail(fail + $" (crafted {Crafted()}/{times})");
+            if (Desynced())
+            {
+                if (++resyncs > MaxCraftResyncs)
+                    return ActionResult.Fail($"crafting {name}: the server kept rejecting my window clicks ({resyncs} resyncs); " +
+                        $"crafted {Crafted()}/{times}, server-confirmed inventory has {Have()}");
+                Log($"craft {name}: inventory resynced ({resyncs}/{MaxCraftResyncs}); retrying from the server's contents");
+            }
         }
-        return remaining <= 0 ? ActionResult.Success($"crafted {name} x{times}") : ActionResult.Fail($"crafted only {times - remaining}/{times} {name}");
+        int made = Crafted();
+        return made >= times ? ActionResult.Success($"crafted {name} x{made}") : ActionResult.Fail($"crafted only {made}/{times} {name}");
+    }
+
+    /// <summary>Cursor and crafting-grid contents back into the inventory part of the window.</summary>
+    private async Task ReturnGridAsync(Window w, int gridSize, CancellationToken ct)
+    {
+        for (int pass = 0; pass < 2; pass++)
+        {
+            if (!World.Inventory.Cursor.IsEmpty) await StashCursorAsync(ct).ConfigureAwait(false);
+            bool any = false;
+            for (int cell = 1; cell <= gridSize * gridSize; cell++)
+                if (!w.Get(cell).IsEmpty) { any = true; await ClickCoreAsync(cell, false, true, ct).ConfigureAwait(false); }
+            if (!any && World.Inventory.Cursor.IsEmpty) return;
+        }
     }
 
     private static int CountMatching(Window w, Ingredient ing)

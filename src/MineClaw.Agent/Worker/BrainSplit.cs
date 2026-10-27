@@ -23,7 +23,10 @@ public static class BrainSplit
             bool b = brain.Contains(t.Name), w = worker.Contains(t.Name);
             if (b) tiers |= ToolTiers.Main;
             if (w) tiers |= ToolTiers.Worker;
-            if (!b && !w) tiers |= current.HasFlag(ToolTiers.Worker) ? ToolTiers.Worker : current & ToolTiers.Main;
+            // A brain macro reached through `do` (follow, act): no definition of its own for anyone (do runs it).
+            bool viaDo = brain.Contains(DoTool.ToolName) && DoTool.Actions.Contains(t.Name, StringComparer.OrdinalIgnoreCase);
+            if (!b && !w && viaDo) { }
+            else if (!b && !w) tiers |= current.HasFlag(ToolTiers.Worker) ? ToolTiers.Worker : current & ToolTiers.Main;
             if (tiers != current) tools.SetTiers(t.Name, tiers);
         }
     }

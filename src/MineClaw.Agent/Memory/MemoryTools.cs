@@ -210,6 +210,7 @@ public static class MemoryTools
                     };
                     if (h.Bounds is { } b && h.Kind is "world" or "episode") text += $" @{b.Format()}";
                     text = $"#{h.Id} [{h.Tag ?? h.Kind}] " + text;
+                    if (index.Corrections?.Superseding(h) is { } fix) text = $"[{fix.Correction}] " + text; // stale lesson, corrected
                 }
                 if (text == null) return Task.FromResult(ToolResult.Error("no such id"));
                 int size = Math.Max(100, o.RecallMaxChars - 20);

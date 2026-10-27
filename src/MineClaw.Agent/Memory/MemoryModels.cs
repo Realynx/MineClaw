@@ -56,6 +56,10 @@ public sealed class Structure
     public double Confidence { get; set; } = 0.5;
     public string? Note { get; set; }
     public DateTimeOffset Updated { get; set; }
+    /// <summary>Key blocks a correction retracted ("wrong cell"): kept for history, never used (labels carry when/who/why).</summary>
+    public List<KeyBlock> RetiredKeys { get; set; } = new();
+    /// <summary>Version history of corrections, oldest first ("v2 10-27 07:00 PoofimaFox: dig cells 6,64,8 -> 4,64,6").</summary>
+    public List<string> History { get; set; } = new();
 }
 
 public sealed class Note

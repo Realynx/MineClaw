@@ -68,12 +68,20 @@ public sealed class AgentRuntime : IDisposable
     public WorkerAgent? Worker { get; init; }
     /// <summary>Cheap-tier retrieval loop behind the brain's <c>ask_memory</c> tool (null when disabled).</summary>
     public MemoryAgent? MemoryAgent { get; init; }
+    /// <summary>Chat → reaction / first move / first action latency (zero tokens; TUI p50s, latency-*.jsonl).</summary>
+    public required Telemetry.LatencyTracker Latency { get; init; }
 
     /// <summary>
     /// Splits the registered tools between brain and worker (<see cref="WorkerOptions.BrainTools"/> / <see cref="WorkerOptions.WorkerTools"/>).
     /// Call once after the host has registered its game tools, before the first turn. No-op when the worker is disabled.
     /// </summary>
-    public void ApplyBrainSplit() => BrainSplit.Apply(Tools, Options.Worker);
+    public void ApplyBrainSplit()
+    {
+        BrainSplit.Apply(Tools, Options.Worker);
+        // The brain's door to the single-step macros it no longer has definitions for (hosts re-register it once every
+        // macro exists, e.g. after vision tools).
+        if (Options.Worker.Enabled && Options.Worker.BrainTools.Contains(DoTool.ToolName, StringComparer.OrdinalIgnoreCase)) DoTool.Register(Tools);
+    }
     public required IEmbeddingProvider Embeddings { get; init; }
     /// <summary>True if the in-prompt knowledge hit its cap (MaxKnowledgeChars, or Rag.MaxCoreChars for core rules).</summary>
     public bool KnowledgeTruncated { get; init; }
@@ -93,31 +101,39 @@ public sealed class AgentRuntime : IDisposable
         ILoggerFactory? loggers = null, TimeProvider? time = null, bool persist = true, IEmbeddingProvider? embeddings = null)
     {
         time ??= TimeProvider.System;
-        llm ??= new AnthropicLlmClient(options.Llm);
+        llm ??= LlmClientFactory.Create(options.Llm); // nothing on Ollama = the plain AnthropicLlmClient, as before
+        options.Prices.RegisterProviders(options.Llm);  // Ollama models: tracked, priced from Prices:Ollama ($0 default)
         string? Data(string file) => persist ? Path.Combine(options.DataDirectory, file) : null;
         ILogger Log(string name) => loggers?.CreateLogger(name) ?? NullLogger.Instance;
 
         var tools = new ToolRegistry(options.MaxToolResultChars);
         foreach (var (name, cap) in options.ToolResultCaps) tools.SetCap(name, cap);
-        var events = new EventQueue(options.Events, time);
+        var events = new EventQueue(options.Events, time, options.ChatDebounce);
         var commandLog = Log("MineClaw.Commands");
         var commands = new CommandGate(options.Commands, () => options.Self.TrustedPlayers, time, commandLog,
             persist && !string.IsNullOrWhiteSpace(options.Commands.AuditFile) ? Data(options.Commands.AuditFile) : null);
         // The agent's outgoing choke point: a '/' line that isn't always-allowed or armed by run_command never leaves.
         Func<string, CancellationToken, Task> gatedSend = (line, ct) => commands.AllowOutgoing(line) ? sendChat(line, ct) : Task.CompletedTask;
-        var chat = new ChatRouter(options.Chat, events, gatedSend, time) { Commands = commands };
+        var chat = new ChatRouter(options.Chat, events, gatedSend, time) { Commands = commands, Debounce = options.ChatDebounce, Stats = events.Stats };
         var usage = new UsageTracker(options.Budget, options.Prices, time, Data(options.Budget.UsageFile))
         {
             Classify = m => options.Llm.TierOfModel(m),
+            ProfileOf = m => options.Llm.ProfileOfModel(m),
         };
 
         var rag = options.Rag;
         string Under(string f) => Path.IsPathRooted(f) ? f : Path.Combine(options.DataDirectory, f);
         var db = AgentDb.Open(persist ? Under(rag.DbFile) : null, Log("MineClaw.Db"),
             seedPath: persist && !string.IsNullOrWhiteSpace(rag.SeedFile) ? Under(rag.SeedFile) : null);
-        var embedder = embeddings
-            ?? (rag.Enabled && options.Embeddings.IsConfigured ? new AzureOpenAIEmbeddingProvider(options.Embeddings) : NullEmbeddingProvider.Instance);
+        var embedder = embeddings ?? (rag.Enabled ? EmbeddingProviders.Create(options.Embeddings, options.Llm.Ollama) : NullEmbeddingProvider.Instance);
         if (!rag.Enabled) embedder = NullEmbeddingProvider.Instance;
+        else if (embeddings == null)
+        {
+            // One db never mixes vector sizes (a provider/model switch with another dimension count is refused unless Reembed).
+            var (checkedEmbedder, note) = EmbeddingDimensionGuard.Check(db, embedder, options.Embeddings.Reembed);
+            embedder = checkedEmbedder;
+            if (note != null) Log("MineClaw.Rag").LogWarning("{Note}", note);
+        }
         var index = new RagIndex(db, rag, embedder, usage, options.Embeddings, time, Log("MineClaw.Rag"));
         var terse = options.Terse ?? new TerseOptions();
         var raptorStyle = Prompts.RaptorStyle(terse.For(TersePurpose.Raptor)) is { Length: > 0 } rs ? rs : null;
@@ -169,10 +185,15 @@ public sealed class AgentRuntime : IDisposable
         IdentityTools.ApplyPersisted(memory, chat);
         IdentityTools.RegisterAll(tools, memory, chat);
         RoutineTools.RegisterAll(tools, memory, routines);
-        HumanTools.RegisterAskPlayer(tools, chat);
+        var orders = new StandingOrders(memory, tools, activities, events, options.Chat.Username, options.Idle, time, Log("MineClaw.Orders"));
+        HumanTools.RegisterAskPlayer(tools, chat, options.Questions, events, _ => orders.ResumeIfIdle("question timed out", activities.Shutdown));
+        orders.Register();
         if (demonstrations != null) HumanTools.RegisterWatchDemo(tools, chat, memory, demonstrations);
         if (self != null) SelfTools.RegisterAll(tools, self, index, time, growth);
         CommandTools.Register(tools, commands, chat);
+
+        // Stale lessons in memory (e.g. "saplings can't be planted in the dark"): zero-token, idempotent, every start.
+        KnowledgeCorrections.Apply(index, options.KnowledgeDirectory, Log("MineClaw.Rag"));
 
         string knowledge;
         bool truncated;
@@ -202,12 +223,36 @@ public sealed class AgentRuntime : IDisposable
 
         var agent = new BotAgent(options, llm, tools, events, chat, usage, context, activities, knowledge, time,
             loggers?.CreateLogger<BotAgent>(), knowledgeIsCore: rag.Enabled);
-        if (worker != null) worker.StateHeader = () => agent.StateHeader?.Invoke() ?? "";
+        agent.Orders = orders;
+        // Cached line (startup only): which delegate/hive profile fits what. Absent unless ≥2 profiles are usable.
+        if (worker != null && ProfilePrompts.GuidanceLine(options.Llm) is { } profiles) agent.ExtendSystem(profiles);
+        if (worker != null)
+        {
+            worker.StateHeader = () => agent.StateHeader?.Invoke() ?? "";
+            // needs_input with a default: the worker carries on; the brain hears the question (and asks/amends).
+            worker.Questions = options.Questions;
+            worker.Asked += (q, d) => events.Post(GameEvent.Notice(
+                $"worker asks: {TextUtil.Truncate(q, 120)} (it carries on with \"{d}\"; ask the player with a default, amend_task if they differ)",
+                EventPriority.Normal));
+            // Chat that wakes the brain mid-task says what the worker is doing, so it can amend instead of restarting.
+            agent.BusyDetail = () => worker.IsRunning && worker.Trail is { Length: > 0 } t ? "worker: " + t : null;
+        }
         var retriever = !rag.Enabled || !rag.AutoRetrieve ? null
             : raptor != null ? new AutoRetriever(new RaptorRetrievalIndex(index, raptor), rag, context, episodes)
             : new AutoRetriever(index, context, episodes);
         var reflection = self != null ? new ReflectionPass(self, index, llm, usage, time, Log("MineClaw.Self")) { Growth = growth, Terse = terse.For(TersePurpose.Reflection) } : null;
         agent.Position = position;
+        // Latency telemetry: chat → first visible reaction / movement / game action, and the model rounds before it.
+        var latency = new Telemetry.LatencyTracker(time) { Bot = options.Chat.Username };
+        agent.Latency = latency;
+        tools.Executing += (name, _) => latency.NoteTool(name, ActivityManager.RunningKind is ActivityKind.Speculative or ActivityKind.Social);
+        activities.Started += (_, kind, steps) =>
+        {
+            if (kind != ActivityKind.Social && steps.Count > 0 && ActivityManager.MovementTools.Contains(steps[0].Tool))
+                latency.NoteMove(kind == ActivityKind.Speculative);
+        };
+        activities.SpeculationResolved += (adopted, _) => latency.NoteSpeculation(adopted);
+        if (worker != null) worker.CallCompleted += latency.NoteRound;
         agent.Rag = index;
         agent.Retriever = retriever;
         agent.Self = self;
@@ -215,7 +260,7 @@ public sealed class AgentRuntime : IDisposable
         agent.Growth = growth;
         // A clone's seed quirks are created once at first spawn (config, else one cheap call), then frozen.
         if (persist && growth is { IsClone: true }) _ = Task.Run(() => growth.EnsureSeedsAsync());
-        if (rag.Enabled && rag.RestoreJournal && episodes.LatestJournal() is { Length: > 0 } journal) context.SetJournal(journal);
+        if (rag.Enabled && rag.RestoreJournal) context.SetJournal(RestoredJournal(episodes, time.GetUtcNow()));
         // Off the caller's thread: loads the stored tree, then (persistent runtimes) runs maintenance in the background.
         if (raptorJobs != null) raptorJobs.Start();
         else raptor?.StartLoading();
@@ -226,8 +271,23 @@ public sealed class AgentRuntime : IDisposable
             Context = context, Activities = activities, Routines = routines, Agent = agent, Llm = llm,
             Db = db, Rag = index, Observations = observations, Episodes = episodes, Retriever = retriever, Self = self,
             Reflection = reflection, Growth = growth, Embeddings = embedder, Worker = worker, MemoryAgent = memAgent, Raptor = raptor, RaptorMaintenance = raptorJobs,
+            Latency = latency,
             KnowledgeTruncated = truncated, KnowledgeChars = knowledge.Length, KnowledgeChunks = chunks,
         };
+    }
+
+    /// <summary>
+    /// Continuity across a restart: the newest journal plus the last episodes of the previous run (mechanical summaries,
+    /// zero tokens) when they are under 30 minutes old. A redeploy no longer starts from an empty history (no compaction
+    /// had ever run, so there was no journal to restore).
+    /// </summary>
+    internal static string RestoredJournal(EpisodeIndexer episodes, DateTimeOffset now)
+    {
+        var journal = episodes.LatestJournal() ?? "";
+        var recent = episodes.RecentBeforeRestart(TimeSpan.FromMinutes(30), 6, now);
+        if (recent.Count == 0) return journal;
+        var tail = "[before restart] " + string.Join("\n", recent.Select(r => TextUtil.Truncate(TextUtil.OneLine(r), 260)));
+        return journal.Length > 0 ? journal + "\n" + tail : tail;
     }
 
     public void Dispose()

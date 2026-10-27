@@ -21,11 +21,15 @@ public class BrainSplitTests(Xunit.Abstractions.ITestOutputHelper output)
         var b = brain.Select(d => d.Name).ToHashSet();
         var w = worker.Select(d => d.Name).ToHashSet();
 
-        // Brain: cheap single-shot tools + delegate/ask_memory; no multi-step game tools.
-        foreach (var n in new[] { "status", "inventory", "look", "where_is", "goto", "follow", "stop", "delegate", "ask_memory", "ask_player", "ask_stand" })
+        // Brain: cheap single-shot tools + do (single-step macros) + delegate/ask_memory; no macro definitions of its own.
+        foreach (var n in new[] { "status", "inventory", "look", "where_is", "do", "stop", "delegate", "ask_memory", "ask_player", "ask_stand" })
             Assert.Contains(n, b);
-        foreach (var n in new[] { "mine", "craft", "smelt", "deposit", "withdraw", "dig", "place", "organize_chest", "window", "recall", "save_routine" })
+        foreach (var n in new[] { "goto", "follow", "chop_tree", "act", "mine", "craft", "smelt", "deposit", "withdraw", "dig", "place", "organize_chest", "window", "recall", "save_routine" })
             Assert.DoesNotContain(n, b);
+        // do reaches every single-step macro that exists here.
+        var doDef = Assert.Single(brain, d => d.Name == "do");
+        foreach (var n in new[] { "goto", "follow", "mine", "harvest_generator", "chop_tree", "deposit", "withdraw", "move_items", "craft", "act", "see" })
+            Assert.Contains($"\"{n}\"", doDef.InputSchema.GetRawText());
         // Worker: every game macro tool except open-ended follow; never player-facing or identity tools.
         foreach (var n in GameToolSet.ToolNames.Where(n => n != "follow")) Assert.Contains(n, w);
         foreach (var n in new[] { "delegate", "ask_memory", "ask_player", "ask_stand", "watch_demo", "identity", "reflect_self", "stop", "follow" })
@@ -39,13 +43,18 @@ public class BrainSplitTests(Xunit.Abstractions.ITestOutputHelper output)
         output.WriteLine($"cheap tools: {cheap.Count} ≈{Tokens(cheap)} tok [{string.Join(", ", cheap.Select(d => d.Name))}]");
         output.WriteLine($"brain system ≈{brainSys.Length / 3.5:0} tok (no knowledge), worker system ≈{workerSys.Length / 3.5:0} tok (no knowledge)");
         foreach (var d in brain.OrderByDescending(d => Tokens([d]))) output.WriteLine($"  {d.Name} ≈{Tokens([d])}");
-        // The main process also registers the merged hive tool (≤75 tok, pinned by MineClaw.Hive.Tests.HiveToolTests).
-        const int hiveTool = 75;
+        // The main process also registers the merged hive tool (≤115 tok with script spawn + profile, pinned by
+        // MineClaw.Hive.Tests.HiveToolTests; was 75).
+        const int hiveTool = Agent.Tools.ToolBudgets.HiveTool;
         output.WriteLine($"brain tools + hive ≈{bt + hiveTool} tok");
         // Cap raised from 2,000 to 2,300 for act + run_command: cached tool tokens cost ~$0.0001/call; the real limit is bloat.
-        foreach (var n in new[] { "act", "run_command" }) Assert.Contains(n, b);
-        Assert.True(bt + hiveTool <= 2300, $"brain tools ≈{bt} + hive {hiveTool}");
-        Assert.True(wt <= 2000, $"worker tools ≈{wt}"); // raised for the Lua script tool
+        Assert.Contains("run_command", b);
+        // 2,300 → 2,400 for amend_task (≈40) and the script tool's save/rollback/list ops + args/force fields (≈20);
+        // → 2,600 for standing_order (≈130) and ask_player default/risky (≈40). Cached: ≈$0.00005/call more.
+        // → 2,700 for see (≈127, brain + worker: pictures for building/layout) and look's map flag (≈5).
+        // → 2,800 (ToolBudgets.Brain, shared by every budget test) for do, which replaced goto/follow/chop_tree/act.
+        Assert.True(bt + hiveTool <= Agent.Tools.ToolBudgets.Brain, $"brain tools ≈{bt} + hive {hiveTool}");
+        Assert.True(wt <= Agent.Tools.ToolBudgets.Worker, $"worker tools ≈{wt}"); // raised for the Lua script tool, then see
     }
 
     [Fact]

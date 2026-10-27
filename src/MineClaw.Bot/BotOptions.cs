@@ -28,4 +28,7 @@ public sealed class BotOptions
 
     /// <summary>Script engine limits and interrupt policy ("Bot:Scripts").</summary>
     public MineClaw.Scripting.ScriptOptions Scripts { get; set; } = new();
+
+    /// <summary>The <c>see</c> tool: picture budget, textures (client jar path), eye-view size ("Bot:Vision").</summary>
+    public GameTools.VisionOptions Vision { get; set; } = new();
 }

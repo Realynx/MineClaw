@@ -42,67 +42,90 @@ public sealed record EventBatch(IReadOnlyList<GameEvent> Events)
         }
     }
 
-    /// <summary>Compact multi-line rendering; consecutive chat lines from the same speaker are merged.</summary>
-    public string Format()
+    /// <summary>True when a waking chat/whisper/emote line from a player is in the batch (a person typed to us).</summary>
+    public bool HasTypedChat => Waking.Any(EventQueue.IsTyped);
+
+    /// <summary>
+    /// Compact multi-line rendering. Each speaker's chat lines (same kind and priority) are merged into one line at their first
+    /// line's place, in order ("[chat] fox: mine the gen / actually the left cell / and bring me 10"); repeats show "(xN)".
+    /// <paramref name="fresh"/> = mid-turn injection: addressed chat is tagged "[new chat]".
+    /// </summary>
+    public string Format(bool fresh = false)
     {
-        var sb = new StringBuilder();
-        GameEvent? pendingChat = null;
-        var chatParts = new List<string>();
+        static bool ChatLine(GameEvent e) => e.Kind is EventKind.Chat or EventKind.Whisper && e.Player != null;
+        static string GroupKey(GameEvent e) => $"{(int)e.Kind}|{(int)e.Priority}|{e.Player!.ToLowerInvariant()}";
 
-        void Flush()
-        {
-            if (pendingChat == null) return;
-            sb.AppendLine((pendingChat with { Text = string.Join(" / ", chatParts) }).Format());
-            pendingChat = null;
-            chatParts.Clear();
-        }
-
+        var groups = new Dictionary<string, List<string>>();
         foreach (var e in Events)
         {
-            bool chatLike = e.Kind is EventKind.Chat or EventKind.Whisper;
-            if (chatLike && pendingChat != null && pendingChat.Kind == e.Kind && pendingChat.Priority == e.Priority &&
-                string.Equals(pendingChat.Player, e.Player, StringComparison.OrdinalIgnoreCase) && e.Count == 1)
-            {
-                chatParts.Add(e.Text);
-                continue;
-            }
-            Flush();
-            if (chatLike && e.Count == 1)
-            {
-                pendingChat = e;
-                chatParts.Add(e.Text);
-            }
-            else
-            {
-                sb.AppendLine(e.Format());
-            }
+            if (!ChatLine(e)) continue;
+            var k = GroupKey(e);
+            if (!groups.TryGetValue(k, out var parts)) groups[k] = parts = new List<string>();
+            parts.Add(e.Count > 1 ? $"{e.Text} (x{e.Count})" : e.Text);
         }
-        Flush();
+
+        var sb = new StringBuilder();
+        var done = new HashSet<string>();
+        foreach (var e in Events)
+        {
+            string line;
+            if (ChatLine(e))
+            {
+                var k = GroupKey(e);
+                if (!done.Add(k)) continue;
+                line = (e with { Text = string.Join(" / ", groups[k]), Count = 1 }).Format();
+            }
+            else line = e.Format();
+            if (fresh && e.Wakes && e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote && line.StartsWith('['))
+                line = "[new " + line[1..];
+            sb.AppendLine(line);
+        }
         return sb.ToString().TrimEnd();
     }
 }
+
 
 /// <summary>
 /// Thread-safe queue that coalesces game events so the model is only woken for meaningful batches:
 /// identical repeats merge (xN) or are dropped, progress/health updates keep only the latest, idle ticks
 /// vanish when anything else is pending, non-addressed chat is capped background context, and chat bursts
-/// are debounced into one batch.
+/// are debounced into one batch: per player (wait <see cref="ChatDebounceOptions.QuietMs"/> after their last line, capped at
+/// <see cref="ChatDebounceOptions.MaxMs"/>), with "stop"/"wait"/"no", a lone question and danger firing at once.
 /// </summary>
 public sealed class EventQueue
 {
     private readonly EventQueueOptions _options;
+    private readonly ChatDebounceOptions? _debounce;
     private readonly TimeProvider _time;
     private readonly List<GameEvent> _pending = new();
     private readonly Dictionary<string, DateTimeOffset> _recentlyTaken = new(StringComparer.OrdinalIgnoreCase); // keys carry player names
+    // Typing debounce state for the pending batch (cleared on take).
+    private readonly Dictionary<string, DateTimeOffset> _firstLine = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTimeOffset> _lastLine = new(StringComparer.OrdinalIgnoreCase);
+    // Whether each player's last pending line looks complete (shorter quiet window).
+    private readonly Dictionary<string, bool> _lastComplete = new(StringComparer.OrdinalIgnoreCase);
+    // Chat lines already handed to the brain (player|text -> when), for in-turn repeat drops.
+    private readonly Dictionary<string, DateTimeOffset> _takenChat = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _lock = new();
     private TaskCompletionSource _signal = NewSignal();
     private DateTimeOffset _lastPost;
+    private DateTimeOffset? _firstWake;
+    private bool _fireNow;
+    private bool _turnActive;
 
-    public EventQueue(EventQueueOptions? options = null, TimeProvider? time = null)
+    /// <param name="debounce">Per-player typing debounce; null = the legacy global window for everything.</param>
+    public EventQueue(EventQueueOptions? options = null, TimeProvider? time = null, ChatDebounceOptions? debounce = null)
     {
         _options = options ?? new EventQueueOptions();
         _time = time ?? TimeProvider.System;
+        _debounce = debounce;
     }
+
+    /// <summary>The typing-debounce settings in force (null = legacy coalescing).</summary>
+    public ChatDebounceOptions? Debounce => _debounce;
+
+    /// <summary>Counters for tuning the chat windows (debounce, restarts, injections...).</summary>
+    public ChatFlowStats Stats { get; } = new();
 
     /// <summary>Raised (outside the lock) for every accepted event — the agent uses it to interrupt activities on danger.</summary>
     public event Action<GameEvent>? Posted;
@@ -110,6 +133,9 @@ public sealed class EventQueue
     public int Count { get { lock (_lock) return _pending.Count; } }
 
     public bool HasWaking { get { lock (_lock) return _pending.Any(e => e.Wakes); } }
+
+    /// <summary>True when addressed chat from a player is pending.</summary>
+    public bool HasTypedChat { get { lock (_lock) return _pending.Any(IsTyped); } }
 
     public IReadOnlyList<GameEvent> Snapshot() { lock (_lock) return _pending.ToArray(); }
 
@@ -127,6 +153,18 @@ public sealed class EventQueue
     /// gate compose.
     /// </summary>
     public Func<GameEvent, GameEvent?>? Gate { get; set; }
+
+    /// <summary>A waking chat/whisper/emote from a player: someone typed to us (the debounce's unit).</summary>
+    public static bool IsTyped(GameEvent e) =>
+        e.Wakes && e.Player != null && e.Priority >= EventPriority.Low && e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote;
+
+    /// <summary>
+    /// The brain is handling a turn (BotAgent): until <see cref="EndTurn"/>, a repeat of a chat line it already took within
+    /// <see cref="ChatDebounceOptions.RepeatWindowSeconds"/> is dropped instead of waking/restarting anything.
+    /// </summary>
+    public void BeginTurn() { lock (_lock) _turnActive = true; }
+
+    public void EndTurn() { lock (_lock) _turnActive = false; }
 
     /// <summary>Adds an event, applying coalescing. Returns false if it was dropped as a low-value repeat (or by <see cref="Intake"/>/<see cref="Gate"/>).</summary>
     public bool Post(GameEvent e)
@@ -164,13 +202,36 @@ public sealed class EventQueue
         var window = TimeSpan.FromSeconds(_options.DedupeWindowSeconds);
         string key = Key(e);
         bool chatLike = e.Kind is EventKind.Chat or EventKind.Whisper;
+        bool typed = IsTyped(e);
+        var d = _debounce is { Enabled: true } dd ? dd : null;
+        var repeatWindow = TimeSpan.FromSeconds(Math.Max(0, d?.RepeatWindowSeconds ?? 0));
 
-        // Identical event already pending: bump its count.
-        int dup = _pending.FindIndex(p => Key(p) == key);
+        if (!_pending.Any(p => p.Wakes))
+        {
+            _firstWake = null;
+            _firstLine.Clear();
+            _lastLine.Clear(); _lastComplete.Clear();
+            _fireNow = false;
+        }
+
+        // A repeat of a line the running turn already has adds nothing: never wake/restart/inject for it.
+        if (typed && d != null && _turnActive && _takenChat.TryGetValue(ChatKey(e), out var taken) && now - taken <= repeatWindow)
+        {
+            Stats.Repeat();
+            return false;
+        }
+
+        // Identical event already pending: bump its count (chat only within the repeat window when debouncing).
+        int dup = _pending.FindIndex(p => Key(p) == key && (!typed || d == null || now - p.At <= repeatWindow));
         if (dup >= 0)
         {
             var p = _pending[dup];
             _pending[dup] = p with { Count = p.Count + 1, At = now, Wakes = p.Wakes || e.Wakes, Priority = Max(p.Priority, e.Priority) };
+            if (typed && d != null)
+            {
+                Stats.Repeat();
+                _lastLine[e.Player!] = now;
+            }
             return true;
         }
 
@@ -198,6 +259,20 @@ public sealed class EventQueue
         }
 
         if (e.Wakes && e.Kind != EventKind.IdleTick) _pending.RemoveAll(p => p.Kind == EventKind.IdleTick);
+
+        if (typed && d != null)
+        {
+            bool hadFromPlayer = _pending.Any(p => IsTyped(p) && string.Equals(p.Player, e.Player, StringComparison.OrdinalIgnoreCase));
+            if (d.IsImmediate(e.Text) || (d.ImmediateOnQuestion && !hadFromPlayer && e.Text.TrimEnd().EndsWith('?')))
+            {
+                if (!_fireNow) Stats.Immediate();
+                _fireNow = true;
+            }
+            _firstLine.TryAdd(e.Player!, now);
+            _lastLine[e.Player!] = now;
+            _lastComplete[e.Player!] = d.CompleteQuietMs > 0 && d.LooksComplete(e.Text);
+        }
+        if (e.Wakes) _firstWake ??= now;
 
         _pending.Add(e);
 
@@ -235,7 +310,7 @@ public sealed class EventQueue
         }
     }
 
-    private EventBatch TakeAllLocked()
+    private EventBatch TakeAllLocked(bool afterWait = false)
     {
         var now = _time.GetUtcNow();
         var batch = _pending.OrderBy(e => e.At).ToList();
@@ -246,59 +321,113 @@ public sealed class EventQueue
             var cutoff = now - TimeSpan.FromSeconds(_options.DedupeWindowSeconds);
             foreach (var k in _recentlyTaken.Where(kv => kv.Value < cutoff).Select(kv => kv.Key).ToList()) _recentlyTaken.Remove(k);
         }
+
+        var typed = batch.Where(IsTyped).ToList();
+        if (_debounce is { Enabled: true } d && typed.Count > 0)
+        {
+            foreach (var e in typed) _takenChat[ChatKey(e)] = now;
+            if (_takenChat.Count > 100)
+            {
+                var cutoff = now - TimeSpan.FromSeconds(Math.Max(1, d.RepeatWindowSeconds));
+                foreach (var k in _takenChat.Where(kv => kv.Value < cutoff).Select(kv => kv.Key).ToList()) _takenChat.Remove(k);
+            }
+            int speakers = typed.Select(e => e.Player!.ToLowerInvariant()).Distinct().Count();
+            Stats.Merged(typed.Count - speakers);
+            if (afterWait && _firstWake is { } fw && !_fireNow) Stats.Debounced(now - fw);
+        }
+        _firstWake = null;
+        _firstLine.Clear();
+        _lastLine.Clear(); _lastComplete.Clear();
+        _fireNow = false;
         return new EventBatch(batch);
     }
 
     /// <summary>
-    /// Waits until at least one waking event is pending, then debounces (unless it's High/Critical) so a burst
+    /// When the pending batch should be handed to the brain (null = nothing waking). Danger and immediate lines: now. Typed
+    /// chat: when every speaker has been quiet for <see cref="ChatDebounceOptions.QuietMs"/> (each capped at MaxMs from their
+    /// first line), and at most MaxMs after the first waking event; other players' pending lines ride in the same turn.
+    /// Anything else: the legacy window (<see cref="EventQueueOptions.CoalesceWindowMs"/> after the last post, capped).
+    /// </summary>
+    private DateTimeOffset? ReadyAtLocked(DateTimeOffset now)
+    {
+        if (!_pending.Any(e => e.Wakes)) return null;
+        if (_pending.Any(e => e.Wakes && e.Priority >= EventPriority.High)) return now;
+        var first = _firstWake ?? now;
+        if (_debounce is { Enabled: true } d)
+        {
+            if (_fireNow) return now;
+            var players = _pending.Where(IsTyped).Select(e => e.Player!).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (players.Count > 0)
+            {
+                var quiet = TimeSpan.FromMilliseconds(Math.Max(0, d.QuietMs));
+                var max = TimeSpan.FromMilliseconds(Math.Max(0, d.MaxMs));
+                var ready = DateTimeOffset.MinValue;
+                foreach (var p in players)
+                {
+                    var last = _lastLine.TryGetValue(p, out var l) ? l : first;
+                    var pf = _firstLine.TryGetValue(p, out var f) ? f : first;
+                    var q = _lastComplete.TryGetValue(p, out var complete) && complete
+                        ? TimeSpan.FromMilliseconds(Math.Max(0, Math.Min(d.QuietMs, d.CompleteQuietMs))) : quiet;
+                    var r = Min(last + q, pf + max);
+                    if (r > ready) ready = r;
+                }
+                return Min(ready, first + max);
+            }
+        }
+        return Min(_lastPost + TimeSpan.FromMilliseconds(_options.CoalesceWindowMs), first + TimeSpan.FromMilliseconds(_options.MaxBatchDelayMs));
+    }
+
+    /// <summary>Waits until a waking batch is pending and its debounce window has closed (see <see cref="ReadyAtLocked"/>).</summary>
+    public async Task WaitReadyAsync(CancellationToken ct)
+    {
+        while (true)
+        {
+            Task signal;
+            DateTimeOffset? at;
+            var now = _time.GetUtcNow();
+            lock (_lock)
+            {
+                signal = _signal.Task;
+                at = ReadyAtLocked(now);
+            }
+            if (at == null)
+            {
+                await signal.WaitAsync(ct).ConfigureAwait(false);
+                continue;
+            }
+            var remaining = at.Value - now;
+            if (remaining <= TimeSpan.Zero) return;
+            await Task.WhenAny(signal, Task.Delay(remaining, _time, ct)).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+        }
+    }
+
+    /// <summary>
+    /// Waits until at least one waking event is pending, then debounces (danger and "stop"-like lines skip it) so a burst
     /// of chat becomes one batch, and returns everything pending.
     /// </summary>
     public async Task<EventBatch> WaitBatchAsync(CancellationToken ct)
     {
         while (true)
         {
-            Task signal;
-            DateTimeOffset firstWake = default;
+            await WaitReadyAsync(ct).ConfigureAwait(false);
             lock (_lock)
             {
-                signal = _signal.Task;
-                if (_pending.Any(e => e.Wakes)) firstWake = _time.GetUtcNow();
+                if (_pending.Any(e => e.Wakes)) return TakeAllLocked(afterWait: true);
             }
-            if (firstWake == default)
-            {
-                await signal.WaitAsync(ct).ConfigureAwait(false);
-                continue;
-            }
-
-            // Debounce.
-            while (true)
-            {
-                DateTimeOffset until;
-                lock (_lock)
-                {
-                    if (_pending.Any(e => e.Wakes && e.Priority >= EventPriority.High)) break;
-                    signal = _signal.Task;
-                    var a = _lastPost + TimeSpan.FromMilliseconds(_options.CoalesceWindowMs);
-                    var b = firstWake + TimeSpan.FromMilliseconds(_options.MaxBatchDelayMs);
-                    until = a < b ? a : b;
-                }
-                var remaining = until - _time.GetUtcNow();
-                if (remaining <= TimeSpan.Zero) break;
-                await Task.WhenAny(signal, Task.Delay(remaining, _time, ct)).ConfigureAwait(false);
-                ct.ThrowIfCancellationRequested();
-            }
-
-            var batch = TryTakeBatch();
-            if (batch != null) return batch;
         }
     }
 
     private static string Key(GameEvent e) => $"{(int)e.Kind}|{e.Player?.ToLowerInvariant()}|{e.Text}|{(e.Wakes ? 1 : 0)}";
 
+    private static string ChatKey(GameEvent e) => $"{e.Player?.ToLowerInvariant()}|{e.Text.Trim().ToLowerInvariant()}";
+
     // Health warnings repeat with changing numbers; one per window is enough (Critical events always pass).
     private static string RepeatKey(GameEvent e) => e.Kind == EventKind.LowHealth ? "lowhealth" : Key(e);
 
     private static EventPriority Max(EventPriority a, EventPriority b) => a > b ? a : b;
+
+    private static DateTimeOffset Min(DateTimeOffset a, DateTimeOffset b) => a < b ? a : b;
 
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 }

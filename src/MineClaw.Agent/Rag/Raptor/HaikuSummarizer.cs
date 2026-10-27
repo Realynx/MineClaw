@@ -46,8 +46,12 @@ public sealed class HaikuSummarizer : ISummarizer
         return string.IsNullOrWhiteSpace(StyleHint) ? s : s + " " + StyleHint;
     }
 
-    /// <summary>max_tokens = summarization_length × this, so a summary can finish its sentence (trimmed to the last full one).</summary>
-    public double MaxTokensHeadroom { get; set; } = 1.5;
+    /// <summary>
+    /// max_tokens = summarization_length × this, so a summary can finish its sentence (trimmed to the last full one). 1.5
+    /// (150 tokens) cut 178 of 305 summaries on 10-27: the paper's "as many key details as possible" outweighs the 60-word
+    /// hint, and Haiku lands at 120–200 tokens. 2.5 (250) lets nearly all of them end on their own; output is $0.50/MTok.
+    /// </summary>
+    public double MaxTokensHeadroom { get; set; } = 2.5;
     /// <summary>Per-job hard stop: no new call starts once <see cref="CostUsd"/> reaches this (set by the scheduler).</summary>
     public decimal? JobLimitUsd { get; set; }
     public decimal CostUsd { get; private set; }
@@ -107,12 +111,23 @@ public sealed class HaikuSummarizer : ISummarizer
             (int)response.Usage.OutputTokens, (double)cost);
     }
 
-    /// <summary>Drops a trailing unfinished sentence (keeps the text if no sentence end is past its first third).</summary>
+    /// <summary>
+    /// Drops a trailing unfinished sentence. A sentence end may carry closing quotes/brackets (<c>."</c>, <c>.)</c>). With no
+    /// sentence end past the first third, the text is cut back to its last whole word and marked with "…" (never a dangling
+    /// half word that the next RAPTOR layer would treat as a fact).
+    /// </summary>
     internal static string TrimToSentence(string text)
     {
-        int cut = -1;
+        text = text.TrimEnd();
         for (int i = text.Length - 1; i >= text.Length / 3; i--)
-            if (text[i] is '.' or '!' or '?' && (i == text.Length - 1 || char.IsWhiteSpace(text[i + 1]))) { cut = i; break; }
-        return cut < 0 ? text : text[..(cut + 1)];
+        {
+            if (text[i] is not ('.' or '!' or '?')) continue;
+            int j = i + 1;
+            while (j < text.Length && text[j] is '"' or '\'' or ')' or ']' or '”' or '’') j++;
+            if (j == text.Length || char.IsWhiteSpace(text[j])) return text[..j];
+        }
+        int sp = text.LastIndexOf(' ');
+        if (sp < text.Length / 3) return text;
+        return text[..sp].TrimEnd(',', ';', ':', ' ', '-') + "…";
     }
 }

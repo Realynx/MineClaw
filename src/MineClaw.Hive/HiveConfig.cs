@@ -19,8 +19,12 @@ public sealed class HiveConfig
     // ---- supervision ----
     /// <summary>Both sides send a heartbeat this often.</summary>
     public double HeartbeatSeconds { get; set; } = 2;
-    /// <summary>No message for this long = the other side is dead (clone: killed and treated as a crash; main: pipe lost).</summary>
-    public double HeartbeatTimeoutSeconds { get; set; } = 15;
+    /// <summary>No message at all for this long = probe the other side (ping/pong, <see cref="PingTimeoutSeconds"/>); only a
+    /// failed probe means it's dead (clone: killed and treated as a crash; main: pipe lost). Heartbeats come from a dedicated
+    /// thread on each side, so a busy agent loop or db never stalls them; this is the tolerance for everything else.</summary>
+    public double HeartbeatTimeoutSeconds { get; set; } = 45;
+    /// <summary>How long the ping/pong probe waits for an answer before the other side is declared dead.</summary>
+    public double PingTimeoutSeconds { get; set; } = 10;
     /// <summary>A launched clone must connect and say hello within this.</summary>
     public double StartTimeoutSeconds { get; set; } = 30;
     /// <summary>Crashes within <see cref="CrashWindowMinutes"/> before a clone is retired for this session.</summary>
@@ -29,6 +33,8 @@ public sealed class HiveConfig
     /// <summary>Restart backoff: base * 2^(crashes-1), capped.</summary>
     public double BackoffBaseSeconds { get; set; } = 2;
     public double BackoffMaxSeconds { get; set; } = 60;
+    /// <summary>Minimum spacing between clone launches (the server's login throttle rejects joins from one IP &lt; ~4 s apart).</summary>
+    public double LaunchGapSeconds { get; set; } = 4.5;
 
     // ---- logout / inventory ----
     /// <summary>Planned logout: how long the clone keeps trying to empty its inventory before it gives up (items recorded as stranded).</summary>
@@ -59,6 +65,7 @@ public sealed class HiveConfig
 
     public TimeSpan Heartbeat => TimeSpan.FromSeconds(Math.Clamp(HeartbeatSeconds, 0.2, 30));
     public TimeSpan HeartbeatTimeout => TimeSpan.FromSeconds(Math.Max(HeartbeatTimeoutSeconds, HeartbeatSeconds * 3));
+    public TimeSpan PingTimeout => TimeSpan.FromSeconds(Math.Clamp(PingTimeoutSeconds, 0.5, 60));
 }
 
 /// <summary>"Hive:Budget": the caps themselves are Agent:Budget (shared by the whole hive); these are the clone sub-caps.</summary>

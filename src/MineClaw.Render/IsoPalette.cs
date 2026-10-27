@@ -1,6 +1,6 @@
 using MineClaw.Data;
 
-namespace MineClaw.App.Viewport;
+namespace MineClaw.Render;
 
 /// <summary>What the terminal can show; picks how the iso canvas is coloured.</summary>
 public enum IsoColours { None, Ansi16, Ansi256, TrueColor }

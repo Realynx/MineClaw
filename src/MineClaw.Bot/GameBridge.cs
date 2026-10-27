@@ -24,6 +24,11 @@ public sealed class GameBridge : IDisposable
     private readonly Dictionary<string, DateTimeOffset> _joinSeen = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<Action> _unsubscribe = new();
 
+    /// <summary>Out-of-food reports: once, then only when worse/unacknowledged or at low health (null = every signal wakes).</summary>
+    public HungerLatch? Hunger { get; init; }
+
+    private static readonly System.Text.RegularExpressions.Regex PlayerLine = new(@"^<([^>]+)>\s*(.*)$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
     /// <summary>How long a join/leave from the player list waits for the matching chat line before being posted itself.</summary>
     public TimeSpan JoinDedupeDelay { get; init; } = TimeSpan.FromSeconds(2);
 
@@ -38,7 +43,7 @@ public sealed class GameBridge : IDisposable
     public void Attach()
     {
         Sub(h => _c.ChatReceived += h, h => _c.ChatReceived -= h, (Action<string>)OnChat);
-        Sub(h => _c.Danger += h, h => _c.Danger -= h, (Action<DangerEvent>)(d => Post(MapDanger(d, _c.World.Player.Health, _c.World.Player.Position.Y))));
+        Sub(h => _c.Danger += h, h => _c.Danger -= h, (Action<DangerEvent>)OnDanger);
         Sub(h => _c.Died += h, h => _c.Died -= h, (Action)(() => Post(GameEvent.Died())));
         Sub(h => _c.Respawned += h, h => _c.Respawned -= h, (Action)(() => Post(GameEvent.Notice("respawned at spawn", EventPriority.Background))));
         Sub(h => _c.Kicked += h, h => _c.Kicked -= h, (Action<string>)(r => Post(MapKick(r))));
@@ -48,7 +53,30 @@ public sealed class GameBridge : IDisposable
         Sub(h => _c.PlayerLeft += h, h => _c.PlayerLeft -= h, (Action<string>)(n => OnPlayerList(n, joined: false)));
         _rt.Events.Posted += OnPosted;
         _unsubscribe.Add(() => _rt.Events.Posted -= OnPosted);
-        _rt.Agent.StateHeader = () => StateHeader(_c);
+        _rt.Agent.StateHeader = () =>
+        {
+            if (Hunger is { } h && _c.IsPlaying)
+            {
+                var p = _c.World.Player;
+                h.Observe(p.Food, SurvivalReflex.HasSafeFood(_c.World.Inventory.PlayerSlots(), _c.ReservedItems), EatAtFood());
+            }
+            return StateHeader(_c);
+        };
+    }
+
+    private int EatAtFood() => (_c as MinecraftGameClient)?.Inner.Survival.Options.EatAtFood ?? new SurvivalOptions().EatAtFood;
+
+    private void OnDanger(DangerEvent d)
+    {
+        int health = _c.World.Player.Health;
+        if (d.Kind == DangerKind.Hunger && Hunger is { } h && !h.ShouldWake(d, health))
+        {
+            // Already reported (or the player said not to worry): context only, never another begging turn.
+            _log.LogDebug("hunger already reported: {Msg}", d.Message);
+            Post(GameEvent.Notice(d.Message + " (already reported; don't ask again)", EventPriority.Background));
+            return;
+        }
+        Post(MapDanger(d, health, _c.World.Player.Position.Y));
     }
 
     private void Sub<T>(Action<T> add, Action<T> remove, T handler)
@@ -65,6 +93,10 @@ public sealed class GameBridge : IDisposable
 
     private void OnChat(string raw)
     {
+        if (Hunger is { } h && PlayerLine.Match(MineClaw.Client.ChatText.StripColours(raw)) is { Success: true } m
+            && !m.Groups[1].Value.Equals(_c.Username, StringComparison.OrdinalIgnoreCase) && _rt.Chat.IsHiveBot?.Invoke(m.Groups[1].Value) != true
+            && h.OnChat(m.Groups[2].Value))
+            _log.LogInformation("hunger acknowledged by {Player}: {Text}", m.Groups[1].Value, m.Groups[2].Value);
         try { _rt.Chat.OnServerChat(raw); }
         catch (Exception ex) { _log.LogWarning(ex, "chat routing failed for {Line}", raw); }
     }

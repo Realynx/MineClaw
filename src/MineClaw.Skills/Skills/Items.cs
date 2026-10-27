@@ -40,6 +40,20 @@ internal static class ItemOps
         await run.ClearCursorAsync(ct);
         return dropped;
     }
+
+    /// <summary>
+    /// Drops like <see cref="DropAsync"/>, then asks the server for the real inventory: the count returned is how many
+    /// actually left (server-confirmed when the client supports a resync). A stale local stack can no longer make a toss
+    /// look done (or hide one), which once left 12 "ghost" slabs in the model after they had been handed over.
+    /// </summary>
+    public static async Task<(int Dropped, bool Confirmed)> DropVerifiedAsync(SkillContext ctx, int id, int? damage, int count, CancellationToken ct)
+    {
+        int before = ctx.Count(id, damage);
+        int n = await DropAsync(ctx, id, damage, count, ct);
+        var sync = await ctx.Game.ResyncInventoryAsync(ct);
+        if (!sync.Ok) return (n, false);
+        return (Math.Max(0, before - ctx.Count(id, damage)), true);
+    }
 }
 
 [Skill]
@@ -66,8 +80,9 @@ public sealed class GiveItemsSkill : Skill
         if (!g.Ok) return Fail($"couldn't reach {name}: {g.Message}");
         var now = ctx.World.Entities.FindPlayer(name)?.Position ?? pl.Position;
         await ctx.Game.LookAtAsync(now + new Vec3d(0, 1.2, 0), ct);
-        int n = await ItemOps.DropAsync(ctx, it.Id, dmg, count, ct);
-        return n >= count ? Ok($"tossed {n} {Item(it.Id, Math.Max(0, it.Damage))} to {name}") : Fail($"only dropped {n}/{count}");
+        var (n, confirmed) = await ItemOps.DropVerifiedAsync(ctx, it.Id, dmg, count, ct);
+        string sure = confirmed ? " (server-confirmed)" : "";
+        return n >= count ? Ok($"tossed {n} {Item(it.Id, Math.Max(0, it.Damage))} to {name}{sure}") : Fail($"only dropped {n}/{count}{sure}");
     }
 }
 
@@ -88,7 +103,7 @@ public sealed class DropItemsSkill : Skill
         int? dmg = it.Damage < 0 || Items.Get(it.Id).MaxDamage > 0 ? null : it.Damage;
         int have = ctx.Count(it.Id, dmg);
         if (have == 0) return Fail($"no {Item(it.Id, Math.Max(0, it.Damage))}");
-        int n = await ItemOps.DropAsync(ctx, it.Id, dmg, Clamp(args.Int("count"), have, 1, have), ct);
+        var (n, _) = await ItemOps.DropVerifiedAsync(ctx, it.Id, dmg, Clamp(args.Int("count"), have, 1, have), ct);
         return n > 0 ? Ok($"dropped {n} {Item(it.Id, Math.Max(0, it.Damage))}") : Fail("nothing dropped");
     }
 }

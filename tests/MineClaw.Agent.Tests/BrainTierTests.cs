@@ -67,6 +67,9 @@ public class BrainTierTests
         options.Chat.LineDelayMs = 0;
         options.Events.CoalesceWindowMs = 10;
         options.Events.MaxBatchDelayMs = 50;
+        options.ChatDebounce.QuietMs = 10;
+        options.ChatDebounce.MaxMs = 50;
+        options.ChatDebounce.ReplyQuietMs = 0;
         configure?.Invoke(options);
         var llm = new TieredLlm();
         var sent = new List<string>();
@@ -97,7 +100,8 @@ public class BrainTierTests
 
         Assert.Contains("delegate", brain);
         Assert.Contains("ask_memory", brain);
-        Assert.Contains("goto", brain);
+        Assert.Contains("do", brain);                  // goto/follow/... run through the compact do meta-tool
+        Assert.DoesNotContain("goto", brain);
         Assert.Contains("status", brain);
         Assert.Contains("ask_player", brain);
         Assert.DoesNotContain("mine", brain);          // multi-step work goes through delegate
@@ -446,7 +450,8 @@ public class BrainTierTests
         Assert.Empty(sent); // nothing was said, and no reply waiter swallowed the next message
         rt.Tools.TryGet("ask_player", out var tool);
         Assert.Equal(ToolTiers.Main, rt.Tools.TiersOf(tool));
-        Assert.Contains("ONLY", tool.Description);
+        Assert.Contains("real question", tool.Description);
+        Assert.Contains("default", tool.Description);
         Assert.Contains("plain text", tool.Description);
         Assert.Contains("ask_player is only for a real question", rt.Agent.SystemPrompt[0].Text);
 

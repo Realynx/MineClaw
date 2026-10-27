@@ -168,6 +168,90 @@ public sealed class MemoryStore : IDisposable
 
     public Routine? GetRoutine(string name) { lock (_lock) return _data.Routines.FirstOrDefault(r => Same(r.Name, name)); }
 
+    // ---- standing orders (hive-shared; always read from the db) ----
+    private bool _ordersTable;
+
+    private void EnsureOrdersTable()
+    {
+        if (_ordersTable) return;
+        _db.Exec("CREATE TABLE IF NOT EXISTS standing_orders(bot TEXT PRIMARY KEY COLLATE NOCASE, data TEXT NOT NULL, updated INTEGER NOT NULL)");
+        _ordersTable = true;
+    }
+
+    /// <summary>
+    /// The active standing order of <paramref name="bot"/> (a login: main or a clone), or null. Read from the shared db every
+    /// time, so a clone sees an order main set for it, and the hive supervisor can re-send a respawned clone its job.
+    /// </summary>
+    public StandingOrder? GetStandingOrder(string bot)
+    {
+        lock (_lock)
+        {
+            EnsureOrdersTable();
+            return _db.Query("SELECT data FROM standing_orders WHERE bot = $b", r => JsonSerializer.Deserialize<StandingOrder>(r.GetString(0), AtomicFile.Json),
+                ("$b", bot.Trim())).FirstOrDefault() is { Active: true } o ? o : null;
+        }
+    }
+
+    /// <summary>Every stored order (active and ended), newest first: the hive supervisor's view.</summary>
+    public IReadOnlyList<StandingOrder> StandingOrders(bool activeOnly = true)
+    {
+        lock (_lock)
+        {
+            EnsureOrdersTable();
+            return _db.Query("SELECT data FROM standing_orders ORDER BY updated DESC", r => JsonSerializer.Deserialize<StandingOrder>(r.GetString(0), AtomicFile.Json)!)
+                .Where(o => o != null && (!activeOnly || o.Active)).ToList();
+        }
+    }
+
+    /// <summary>Sets (or replaces) a bot's single standing order.</summary>
+    public StandingOrder SetStandingOrder(StandingOrder order)
+    {
+        lock (_lock)
+        {
+            EnsureOrdersTable();
+            var now = Now;
+            order.Bot = order.Bot.Trim();
+            if (order.Created == default) order.Created = now;
+            order.Updated = now;
+            SaveOrderRow(order);
+            return order;
+        }
+    }
+
+    /// <summary>Ends a bot's standing order (kept as an inactive row with who ended it). False when it had none.</summary>
+    public bool ClearStandingOrder(string bot, string? endedBy = null)
+    {
+        lock (_lock)
+        {
+            var o = GetStandingOrder(bot);
+            if (o == null) return false;
+            o.Active = false;
+            o.EndedBy = endedBy ?? "cleared";
+            o.Updated = Now;
+            SaveOrderRow(o);
+            return true;
+        }
+    }
+
+    /// <summary>Updates resume bookkeeping of the active order (no-op when it changed or ended meanwhile).</summary>
+    public void UpdateStandingOrder(string bot, Action<StandingOrder> mutate)
+    {
+        lock (_lock)
+        {
+            var o = GetStandingOrder(bot);
+            if (o == null) return;
+            mutate(o);
+            o.Updated = Now;
+            SaveOrderRow(o);
+        }
+    }
+
+    private void SaveOrderRow(StandingOrder o) =>
+        _db.Exec("""
+            INSERT INTO standing_orders(bot, data, updated) VALUES ($b, $d, $u)
+            ON CONFLICT(bot) DO UPDATE SET data = excluded.data, updated = excluded.updated
+            """, ("$b", o.Bot), ("$d", JsonSerializer.Serialize(o, AtomicFile.Json)), ("$u", AgentDb.ToUnixMs(o.Updated)));
+
     // ---- identity ----
     public BotIdentity? Identity { get { lock (_lock) return _data.Identity; } }
 
@@ -276,6 +360,9 @@ public sealed class MemoryStore : IDisposable
         if (s.KeyBlocks.Count > 0) sb.Append(" keys: " + string.Join("; ", s.KeyBlocks.Select(k => $"{k.Label}@{k.X},{k.Y},{k.Z}")));
         if (s.Steps.Count > 0) sb.Append(" how: " + string.Join("; ", s.Steps.Select((x, i) => $"{i + 1}) {x}")));
         if (s.Note != null) sb.Append($" note: {s.Note}");
+        // Corrected cells: shown as NOT to use, so recall never resurrects a stale "mine_here".
+        if (s.RetiredKeys.Count > 0)
+            sb.Append(" retracted (don't use): " + string.Join(", ", s.RetiredKeys.TakeLast(4).Select(k => $"{k.X},{k.Y},{k.Z}").Distinct()));
         if (s.TaughtBy != null) sb.Append($" (by {s.TaughtBy}");
         sb.Append(s.TaughtBy != null ? $", conf {s.Confidence:0.#})" : $" (conf {s.Confidence:0.#})");
         return sb.ToString();

@@ -2,7 +2,7 @@ using MineClaw.Agent.Telemetry;
 using MineClaw.Data;
 using MineClaw.World;
 
-namespace MineClaw.App.Viewport;
+namespace MineClaw.Render;
 
 /// <summary>Viewport window settings (host section "Host:Tui").</summary>
 public sealed class ViewportOptions

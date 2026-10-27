@@ -103,8 +103,11 @@ public sealed class ContextManager
     /// <summary>Adds a finished episode (sealed + stripped). Never rewrites earlier history.</summary>
     public void Commit(Episode episode)
     {
+        // Byte-stable history: the episode is committed exactly as it was sent. Thinking blocks stay (the API cached the
+        // turn's rounds WITH them; stripping them here rewrote the whole turn's cache on the next request: ≈$0.75 one
+        // night). They leave only with the episode (compaction) or a hard-cap squeeze. Seal only fills what was never
+        // sent (a cut turn's unanswered tool_use), so it can't change a cached message.
         Seal(episode.Messages);
-        StripThinking(episode.Messages);
         var (cu, ca) = CheapRendering(episode, _options.CheapEpisodeChars);
         episode.CheapUser = cu;
         episode.CheapAssistant = ca;
@@ -185,7 +188,9 @@ public sealed class ContextManager
         {
             foreach (var e in old) _episodes.Remove(e);
             Journal = next;
-            // The cache is being rebuilt anyway: this is the only time older tool results get truncated.
+            // The cache is being rebuilt anyway: this is the only time older tool results get truncated, and the only time
+            // images (see) leave history: each becomes its one-line stub, so a picture is never re-sent past a compaction.
+            foreach (var e in _episodes) StripImages(e);
             for (int i = 0; i < _episodes.Count - _options.KeepFullEpisodes; i++) Retruncate(_episodes[i], _options.OldToolResultChars);
             int total = TextUtil.EstimateTokens(Journal) + _episodes.Sum(e => e.MainTokens);
             if (total > _options.MaxTokens)
@@ -193,6 +198,24 @@ public sealed class ContextManager
         }
         if (old.Count > 0) Compacted?.Invoke(old, next);
         return old.Count;
+    }
+
+    private static void StripImages(Episode e)
+    {
+        if (!e.Messages.Any(m => m.Content.Any(b => b is LlmToolResult { Image: not null }))) return;
+        StripImages(e.Messages);
+        e.MainTokens = EstimateTokens(e.Messages);
+    }
+
+    /// <summary>Replaces every tool-result image with its text stub (see <see cref="LlmToolResult.WithoutImage"/>).</summary>
+    public static void StripImages(List<LlmMessage> messages)
+    {
+        for (int i = 0; i < messages.Count; i++)
+        {
+            var m = messages[i];
+            if (!m.Content.Any(b => b is LlmToolResult { Image: not null })) continue;
+            messages[i] = m with { Content = m.Content.Select(b => b is LlmToolResult r ? r.WithoutImage() : b).ToList() };
+        }
     }
 
     private static void Retruncate(Episode e, int chars)
@@ -410,6 +433,7 @@ public sealed class ContextManager
 
     public static void TruncateToolResults(List<LlmMessage> messages, int maxChars)
     {
+        StripImages(messages); // any squeeze drops pictures first (they're the priciest blocks)
         for (int i = 0; i < messages.Count; i++)
         {
             var m = messages[i];
@@ -427,7 +451,7 @@ public sealed class ContextManager
         {
             LlmText t => TextUtil.EstimateTokens(t.Text),
             LlmToolUse u => 10 + TextUtil.EstimateTokens(u.Input.GetRawText()),
-            LlmToolResult r => 8 + TextUtil.EstimateTokens(r.Content),
+            LlmToolResult r => 8 + TextUtil.EstimateTokens(r.Content) + (r.Image?.Tokens ?? 0),
             LlmThinking th => TextUtil.EstimateTokens(th.Thinking) + 50,
             _ => 20,
         }));

@@ -18,7 +18,7 @@ public class BodyAndProtectionTests
     }
 
     [Fact]
-    public async Task First_undone_dig_near_spawn_aborts_the_macro_and_learns_the_region()
+    public async Task Undone_digs_near_spawn_abort_the_macro_and_two_independent_ones_learn_the_region()
     {
         var (c, s) = await Harness.StartAsync(srv =>
         {
@@ -34,6 +34,9 @@ public class BodyAndProtectionTests
         Assert.False(r.Ok);
         Assert.Equal("server undid my digs within 16 of spawn (spawn protection? need op)", r.Message);
         Assert.Equal(1, s.Got<PlayerDiggingPacket>().Count(d => d.Status == PlayerDiggingPacket.StatusStarted));
+        await Task.Delay(100);
+        Assert.Null(c.ProtectedRegion); // one undone dig is lag/a race, not yet spawn protection
+        Assert.False((await c.MineAsync("cobblestone", 3)).Ok); // a second, independent attempt (separate action)
         Assert.True(await Harness.WaitAsync(() => seen is not null));
         Assert.Equal(new BlockPos(8, 64, 8), seen!.Center);
         Assert.Equal(16, seen.Radius);
@@ -65,6 +68,8 @@ public class BodyAndProtectionTests
         LearnedProtectedRegion? last = null;
         c.ProtectedRegionChanged += r => { events++; last = r; };
         Assert.False((await c.DigBlockAsync(9, 64, 10)).Ok);
+        Assert.Null(c.ProtectedRegion);
+        Assert.False((await c.DigBlockAsync(9, 64, 10)).Ok); // second, separate attempt
         Assert.NotNull(c.ProtectedRegion);
         s.BreakOnFinish = true; // e.g. the account was opped
         var ok = await c.DigBlockAsync(10, 64, 10);

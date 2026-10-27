@@ -30,12 +30,23 @@ public interface ICloneBody
     Task StopAgentAsync();
     /// <summary>Hand a task to the brain (wakes it).</summary>
     void AssignTask(TaskMsg task);
+    /// <summary>
+    /// Fetch the task's loadout ("pickaxe", "axe", "food"...) from storage before the brain starts (WorldIndexer chest
+    /// data). Returns a short honest line ("took stone_pickaxe from 14,64,-5" / "no pickaxe in storage"), or null when
+    /// nothing was needed. Default: unsupported (null).
+    /// </summary>
+    Task<LoadoutReport?> PrepareLoadoutAsync(IReadOnlyList<string> loadout, CancellationToken ct) => Task.FromResult<LoadoutReport?>(null);
     /// <summary>A TUI console line for this clone.</summary>
     Task<bool> ExecuteAsync(string line, CancellationToken ct);
     /// <summary>A console /as test line forwarded by main (same line every process arbitrates).</summary>
     void InjectChat(string raw);
+    /// <summary>An update from main for the running task (a partner joined or changed): context for the brain, the task stays.</summary>
+    void Note(string text) { }
     Task DisconnectAsync(string reason);
 }
+
+/// <summary>Outcome of a loadout fetch: <see cref="Missing"/> lists what neither the inventory nor storage had.</summary>
+public sealed record LoadoutReport(string Text, IReadOnlyList<string> Missing);
 
 public static class CloneExitCodes
 {
@@ -112,6 +123,7 @@ public sealed class CloneHost : IHandoffTarget
         link.Closed += reason => _ = OnParentLostAsync(reason);
         _link = link;
         link.Start();
+        link.StartHeartbeat(_cfg.Heartbeat); // dedicated thread: never stalled by the brain, the db or the thread pool
         try
         {
             var w = await link.RequestAsync<WelcomeMsg>(Msg.Hello, new HelloMsg(Name, Environment.ProcessId), TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
@@ -158,7 +170,7 @@ public sealed class CloneHost : IHandoffTarget
         if (!LoggingOut)
         {
             _body.StartAgent(ct);
-            if (_task != null) _body.AssignTask(_task);
+            if (_task != null) await StartTaskAsync(_task, ct).ConfigureAwait(false);
         }
         return await _exit.Task.ConfigureAwait(false);
     }
@@ -172,7 +184,7 @@ public sealed class CloneHost : IHandoffTarget
             case Msg.Heartbeat: return null;
             case Msg.Task when m.As<TaskMsg>() is { } t:
                 _task = t;
-                if (!LoggingOut) _body.AssignTask(t);
+                if (!LoggingOut) _ = StartTaskAsync(t, _cts.Token); // the loadout walk never blocks the message queue
                 return null;
             case Msg.Recall when m.As<RecallMsg>() is { } r:
                 _ = LogoutAsync(r.Reason, planned: true, r.DeadlineSeconds is { } d ? TimeSpan.FromSeconds(d) : null);
@@ -188,8 +200,38 @@ public sealed class CloneHost : IHandoffTarget
             case Msg.Inject when m.As<InjectMsg>() is { } inj:
                 _body.InjectChat(inj.Raw);
                 return null;
+            case Msg.Note when m.As<NoteMsg>() is { } note:
+                _body.Note(note.Text);
+                return null;
             default: return null;
         }
+    }
+
+    /// <summary>
+    /// Loadout first (a pickaxe for mining, an axe for trees, food), then the task goes to the brain with an honest note.
+    /// Anything storage didn't have is reported to main as progress ("no pickaxe in storage"), so main can tell the player.
+    /// </summary>
+    internal async Task StartTaskAsync(TaskMsg t, CancellationToken ct)
+    {
+        string? note = null;
+        if (t.Loadout is { Length: > 0 } want)
+        {
+            try
+            {
+                var r = await _body.PrepareLoadoutAsync(want, ct).ConfigureAwait(false);
+                if (r != null)
+                {
+                    note = "loadout: " + r.Text;
+                    _log.LogInformation("clone {Name}: {Note}", Name, note);
+                    if (r.Missing.Count > 0)
+                        await ReportAsync("progress", $"loadout short: no {string.Join(", no ", r.Missing)} in my inventory or storage").ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) { return; }
+            catch (Exception ex) { _log.LogWarning(ex, "clone {Name}: loadout fetch failed", Name); note = "loadout: fetch failed (" + ex.Message + ")"; }
+        }
+        if (LoggingOut || !ReferenceEquals(_task, t) && _task?.Id != t.Id) return; // replaced meanwhile
+        _body.AssignTask(note == null ? t : t with { Text = $"({note}) {t.Text}" });
     }
 
     // ---------------------------------------------------------------- to main
@@ -207,6 +249,13 @@ public sealed class CloneHost : IHandoffTarget
         }
         await Send(Msg.Progress, new ProgressMsg(id, text, pct)).ConfigureAwait(false);
         return "ok: reported";
+    }
+
+    /// <summary>A hive script ended on its own: one result line to main, then logout (deposit first) or stay asleep online.</summary>
+    public async Task ReportResultAsync(bool ok, string text, bool logout)
+    {
+        await Send(Msg.Result, new ResultMsg(_task?.Id ?? "-", ok, text)).ConfigureAwait(false);
+        if (logout) _ = LogoutAsync("script " + (ok ? "done" : "failed"), planned: true);
     }
 
     /// <summary>This clone accepted a player's message (sticky partner).</summary>
@@ -232,8 +281,6 @@ public sealed class CloneHost : IHandoffTarget
     private async Task StreamLoopAsync(CancellationToken ct)
     {
         var snapEvery = TimeSpan.FromSeconds(Math.Clamp(_cfg.SnapshotSeconds, 0.2, 10));
-        var hbEvery = _cfg.Heartbeat;
-        var lastHb = DateTimeOffset.MinValue;
         var lastInvCheck = DateTimeOffset.MinValue;
         var voxelGate = new VoxelSendGate();
         while (!ct.IsCancellationRequested && _link is { IsOpen: true })
@@ -241,8 +288,7 @@ public sealed class CloneHost : IHandoffTarget
             try
             {
                 await Send(Msg.Snapshot, voxelGate.Thin(_body.Snapshot(full: true)).ToJson()).ConfigureAwait(false); // unchanged voxels: Seq only
-                var now = DateTimeOffset.UtcNow;
-                if (now - lastHb >= hbEvery) { lastHb = now; await Send(Msg.Heartbeat, null).ConfigureAwait(false); }
+                var now = DateTimeOffset.UtcNow; // heartbeats: the link's own thread (HiveLink.StartHeartbeat)
                 if (now - lastInvCheck >= TimeSpan.FromSeconds(2)) { lastInvCheck = now; await SyncInventoryAsync().ConfigureAwait(false); }
             }
             catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogDebug(ex, "stream tick failed"); }
@@ -263,18 +309,28 @@ public sealed class CloneHost : IHandoffTarget
         await Send(Msg.Inventory, new InventoryMsg(items)).ConfigureAwait(false);
     }
 
-    /// <summary>Main alive check: no message for the heartbeat timeout = parent lost (even if the pipe looks open).</summary>
+    /// <summary>
+    /// Main alive check: any frame counts; after <see cref="HiveConfig.HeartbeatTimeout"/> of total silence a ping/pong
+    /// probe decides (the pong comes from main's link threads, so a busy main still answers). Only a failed probe = lost.
+    /// </summary>
     private async Task WatchdogAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
             try { await Task.Delay(_cfg.Heartbeat, ct).ConfigureAwait(false); } catch (OperationCanceledException) { return; }
-            if (_link is { IsOpen: true } l && DateTimeOffset.UtcNow - l.LastReceived > _cfg.HeartbeatTimeout)
+            if (_link is not { IsOpen: true } l || DateTimeOffset.UtcNow - l.LastReceived <= _cfg.HeartbeatTimeout) continue;
+            var silent = DateTimeOffset.UtcNow - l.LastReceived;
+            _log.LogInformation("clone {Name}: main silent for {S:0}s; probing", Name, silent.TotalSeconds);
+            if (await l.ProbeAsync(_cfg.PingTimeout, ct).ConfigureAwait(false))
             {
-                _log.LogWarning("clone {Name}: main silent for {S:0}s", Name, (DateTimeOffset.UtcNow - l.LastReceived).TotalSeconds);
-                await l.DisposeAsync().ConfigureAwait(false); // → OnParentLostAsync
-                return;
+                _log.LogInformation("clone {Name}: main answered the probe; staying", Name);
+                continue;
             }
+            if (!l.IsOpen) return; // closed meanwhile: OnParentLostAsync runs
+            _log.LogWarning("clone {Name}: main silent for {S:0}s and no answer to a ping in {P:0}s", Name,
+                (DateTimeOffset.UtcNow - l.LastReceived).TotalSeconds, _cfg.PingTimeout.TotalSeconds);
+            await l.DisposeAsync().ConfigureAwait(false); // → OnParentLostAsync
+            return;
         }
     }
 

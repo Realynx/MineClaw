@@ -42,10 +42,14 @@ public static class ScriptText
     public static string Outcome(ScriptSession s, string? completion, IReadOnlyList<string> gained, int max = 300)
     {
         var dur = Dur(s.Elapsed);
+        List<string> reports;
+        lock (s.Reports) reports = s.Reports.ToList();
+        var report = reports.Count == 0 ? null : "report: " + ScriptSession.Short(string.Join(" | ", reports), 160);
         if (s.Status == ScriptStatus.Done)
         {
             var parts = new List<string>();
-            if (!string.IsNullOrWhiteSpace(completion)) parts.Add(ScriptSession.Short(ScriptSession.OneLine(completion), 80));
+            if (!string.IsNullOrWhiteSpace(completion)) parts.Add(ScriptSession.Short(ScriptSession.OneLine(completion), 200));
+            if (report != null) parts.Add(report);
             parts.AddRange(gained);
             if (parts.Count == 0) parts.Add($"{s.Actions} acts");
             parts.Add(dur);
@@ -57,7 +61,7 @@ public static class ScriptText
         // An error right after a failed action is usually about it: "failed at line 12 (goto: no route)".
         if (reason == "fail()" && s.LastFailure != null) reason = s.LastFailure;
         var progress = s.CheckpointTotal > 0 ? $"cp {s.CheckpointsPassed}/{s.CheckpointTotal}, {s.Actions} acts" : $"{s.Actions} acts";
-        var tail = gained.Count > 0 ? ", " + string.Join(", ", gained) : "";
+        var tail = (gained.Count > 0 ? ", " + string.Join(", ", gained) : "") + (report != null ? ", " + report : "");
         return Cap($"{head}: script {s.Name}{where} ({reason}): {progress}{tail}, {dur}", max);
     }
 

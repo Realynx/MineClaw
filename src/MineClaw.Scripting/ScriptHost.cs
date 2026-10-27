@@ -58,6 +58,9 @@ public sealed class ScriptHost
 
     /// <summary>Persona chat through the normal sender (command gate included).</summary>
     public Func<string, CancellationToken, Task<ActResult>> Say { get; init; } = (_, _) => Task.FromResult(ActResult.Success("said"));
+    /// <summary>True when this bot's chat is muted (a hive clone speaks only when addressed): say/emote then don't fail the
+    /// script; the text goes back to the brain in the script's result as report output.</summary>
+    public Func<string, bool>? Muted { get; init; }
     /// <summary>/me action text (without "/me ").</summary>
     public Func<string, CancellationToken, Task<ActResult>> Emote { get; init; } = (_, _) => Task.FromResult(ActResult.Success("emoted"));
     /// <summary>Posts a question and waits for that player's reply (null player = anyone); null on timeout.</summary>

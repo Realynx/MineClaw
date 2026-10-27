@@ -14,6 +14,7 @@ markers contributes its first section as core. Editing a file re-indexes it auto
 - Cobble generator: build it away from wood. Water touching flowing lava makes cobblestone; mine that cell and it refills. Wall it in and test the water side before placing the lava; if the layout looks wrong, scoop the lava back at once.
 - Infinite water: two sources in opposite corners of a 2x2 hole, 1 deep. Never let it near the lava.
 - Health regenerates only while food is 18+; eat before long jobs.
+- Saplings can be **planted** any time, night included, on dirt/grass/farmland that can see the sky (or has light ≥8), so night alone never blocks planting. They only **grow** at light ≥9, so at night growth pauses unless torches are nearby.
 <!-- /core -->
 
 ## Start
@@ -34,7 +35,7 @@ Cobble generator; house; expand the island; farms for melon, pumpkin, sugar cane
 ## Core builds
 - **Cobble generator** (build it away from wood, because lava sets nearby flammable blocks alight): dig a 1-deep straight trench 4 long. Make the 3rd cell 2 deep. Pour water into the 4th cell; it falls into the pit. Put lava in the 1st cell; it flows into the 2nd, touches the water and turns to cobblestone. Mine the 2nd cell repeatedly and it refills. Wall it in first, test the water side, then place the lava. **[Layout is the classic one, but test it before committing the lava]**
 - **Infinite water**: two ice blocks give two sources. Break ice that sits on a solid block and it becomes water; ice drops no item. Put the sources in opposite corners of a 2×2 hole, 1 deep, with a solid floor. Any cell you take from refills. Never let this water near the lava.
-- **Trees**: plant saplings on dirt/grass with light and space (a big oak needs a lot). Leaves decay once the logs are cut. Catch saplings with a floor or walls so they don't fall into the void.
+- **Trees**: plant saplings on dirt, grass or farmland with space (a big oak needs a lot). A sapling can be **planted** any time it can see the sky (or the light there is ≥8), so night is no reason to skip a replant. It only **grows** when the light at the sapling is ≥9 (a 1-in-30 check per random tick), so at night growth pauses unless torches are nearby. Leaves decay once the logs are cut. Catch saplings with a floor or walls so they don't fall into the void.
 - **Sugar cane**: plant on grass, dirt or sand with water directly beside it horizontally. Grows to 3 tall; harvest the top 2. Paper is 3 canes for 3 paper; a book is 3 paper (no leather in beta); a bookshelf is 6 planks + 3 books.
 - **Cactus**: only on sand, with no blocks touching its sides. Grows to 3 tall and hurts on contact. Smelt it for cactus green.
 - **Wheat**: seeds come from tall grass (1 in 8). Use bone meal on grass to grow tall grass. Hoe dirt within 4 blocks of water. Harvest only when fully grown.

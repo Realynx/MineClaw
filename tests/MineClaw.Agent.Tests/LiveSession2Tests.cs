@@ -201,6 +201,9 @@ public class LiveSession2Tests
         options.Chat.LineDelayMs = 0;
         options.Events.CoalesceWindowMs = 10;
         options.Events.MaxBatchDelayMs = 50;
+        options.ChatDebounce.QuietMs = 10;
+        options.ChatDebounce.MaxMs = 50;
+        options.ChatDebounce.ReplyQuietMs = 0;
         var llm = new TieredLlm();
         var sent = new List<string>();
         var rt = AgentRuntime.Create(options, (line, _) => { lock (sent) sent.Add(line); return Task.CompletedTask; }, llm, persist: false);

@@ -42,6 +42,9 @@ public interface IGameClient
     Task<ActionResult> StopAsync(CancellationToken ct = default);
     Task<ActionResult> MineAsync(string blockName, int count, double radius = 16, CancellationToken ct = default);
     Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, CancellationToken ct = default);
+    /// <summary>Harvest from a player-taught stand spot (walks onto it first, refuses to dig from elsewhere). Default: no stand.</summary>
+    Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, BlockPos? stand, CancellationToken ct = default) =>
+        stand is null ? HarvestGeneratorAsync(x, y, z, count, ct) : Task.FromResult(ActionResult.Fail("this client can't use a taught stand spot"));
     Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default);
     Task<ActionResult> CraftAsync(int itemId, int damage = -1, int count = 1, CancellationToken ct = default);
     Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, BlockPos? furnace = null, CancellationToken ct = default);
@@ -60,6 +63,21 @@ public interface IGameClient
     /// (<see cref="MinecraftClient.ChopTreeAsync"/>). Default: unsupported, so wrappers and fakes needn't implement it.</summary>
     Task<ActionResult> ChopTreeAsync(BlockPos? at = null, int? wood = null, CancellationToken ct = default) =>
         Task.FromResult(ActionResult.Fail("chop_tree isn't available on this client"));
+
+    // ---- brainstem body (defaults: unsupported, so wrappers and fakes needn't implement them)
+
+    /// <summary>Head turn toward a point on the next tick while the body is idle (no action lock). False = busy/unsupported.</summary>
+    bool FaceIdle(Vec3d point) => false;
+
+    /// <summary>One arm swing ("nod") while the body is idle. False = busy/unsupported.</summary>
+    bool SwingIdle() => false;
+
+    /// <summary>A client safety reflex owns the body (fight/defence, safety hold, heal retreat): the top of the priority stack.</summary>
+    bool SafetyEngaged => false;
+
+    /// <summary>Body language: jump | spin | look | wave | crouch | punch (<see cref="MinecraftClient.ActAsync"/>).</summary>
+    Task<ActionResult> GestureAsync(string move, string? target = null, int? times = null, CancellationToken ct = default) =>
+        Task.FromResult(ActionResult.Fail("body language isn't available on this client"));
 }
 
 /// <summary>Thin forwarding adapter over the real client.</summary>
@@ -107,6 +125,8 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
     public Task<ActionResult> StopAsync(CancellationToken ct = default) => Inner.StopAsync(ct);
     public Task<ActionResult> MineAsync(string blockName, int count, double radius = 16, CancellationToken ct = default) => Inner.MineAsync(blockName, count, radius, null, ct);
     public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, CancellationToken ct = default) => Inner.HarvestGeneratorAsync(x, y, z, count, ct);
+    public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, BlockPos? stand, CancellationToken ct = default) =>
+        Inner.HarvestGeneratorAsync(x, y, z, count, stand, ct);
     public Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default) => Inner.CollectDropsAsync(radius, ct);
     public Task<ActionResult> CraftAsync(int itemId, int damage = -1, int count = 1, CancellationToken ct = default) => Inner.CraftAsync(itemId, damage, count, ct);
     public Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, BlockPos? furnace = null, CancellationToken ct = default) =>
@@ -122,4 +142,9 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
     public Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default) => Inner.ActivateBlockAsync(x, y, z, ct);
     public Task<ActionResult> EatAsync(CancellationToken ct = default) => Inner.EatAsync(ct);
     public Task<ActionResult> ChopTreeAsync(BlockPos? at = null, int? wood = null, CancellationToken ct = default) => Inner.ChopTreeAsync(at, wood, null, ct);
+    public bool FaceIdle(Vec3d point) => Inner.FaceIdle(point);
+    public bool SwingIdle() => Inner.SwingIdle();
+    public bool SafetyEngaged => Inner.SafetyEngaged;
+    public Task<ActionResult> GestureAsync(string move, string? target = null, int? times = null, CancellationToken ct = default) =>
+        Inner.ActAsync(move, target, times, ct);
 }

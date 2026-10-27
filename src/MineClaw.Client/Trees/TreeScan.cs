@@ -124,6 +124,63 @@ public static class TreeScan
 
     private static int H2(BlockPos a, BlockPos b) => (a.X - b.X) * (a.X - b.X) + (a.Z - b.Z) * (a.Z - b.Z);
 
+    /// <summary>
+    /// The leaf block a dropped item is lying on (item gravity stops on leaves: they have a full collision box), or null
+    /// when it rests on anything else / is still falling. A drop up in the crown is out of pickup range from the ground
+    /// (the b1.8.1 pickup box only grows sideways) but it is NOT lost: break that leaf and it falls.
+    /// </summary>
+    public static BlockPos? SupportingLeaf(IBlockAccess w, Vec3d item)
+    {
+        int x = (int)Math.Floor(item.X), z = (int)Math.Floor(item.Z);
+        // An item at rest sits ~0.1-0.125 above the top of the block under it; allow a little bounce either way.
+        int y = (int)Math.Floor(item.Y - 0.3);
+        if (y is < 0 or >= WorldState.Height) return null;
+        double above = item.Y - (y + 1);
+        return above is >= -0.05 and <= 0.45 && w.GetBlock(x, y, z) == Blocks.Leaves ? new BlockPos(x, y, z) : null;
+    }
+
+    /// <summary>
+    /// Of <paramref name="leaves"/>, the ones still kept alive by some log (vanilla BlockLeaves: a log within
+    /// <see cref="LeafRange"/> steps through leaves). The rest decay by random ticks; these never will while that log stands
+    /// (a neighbouring tree in a dense grove keeps a shared crown alive), so waiting for them is pointless.
+    /// </summary>
+    public static HashSet<BlockPos> SupportedLeaves(IBlockAccess w, IReadOnlyCollection<BlockPos> leaves)
+    {
+        var result = new HashSet<BlockPos>();
+        if (leaves.Count == 0) return result;
+        int x0 = leaves.Min(l => l.X) - LeafRange, x1 = leaves.Max(l => l.X) + LeafRange;
+        int y0 = Math.Max(0, leaves.Min(l => l.Y) - LeafRange), y1 = Math.Min(WorldState.Height - 1, leaves.Max(l => l.Y) + LeafRange);
+        int z0 = leaves.Min(l => l.Z) - LeafRange, z1 = leaves.Max(l => l.Z) + LeafRange;
+        var logs = new HashSet<BlockPos>();
+        for (int x = x0; x <= x1; x++)
+        for (int y = y0; y <= y1; y++)
+        for (int z = z0; z <= z1; z++)
+            if (w.GetBlock(x, y, z) == Blocks.Log) logs.Add(new BlockPos(x, y, z));
+        if (logs.Count == 0) return result;
+        var reach = LeafDistances(w, logs);
+        foreach (var l in leaves) if (reach.ContainsKey(l)) result.Add(l);
+        return result;
+    }
+
+    /// <summary>
+    /// For logs that weren't growing from dirt (a remnant left hanging after its lower trunk was cut): what is under them.
+    /// Walks down through air/leaves from <paramref name="below"/>: a sapling already planted there (on dirt/grass), bare
+    /// dirt/grass with room (the real replant spot is the cell above it), or something else.
+    /// </summary>
+    public static (BlockPos? Sapling, BlockPos? Dirt, BlockPos? Other) ColumnUnder(IBlockAccess w, BlockPos below, int maxDepth = 12)
+    {
+        for (int y = below.Y; y >= Math.Max(0, below.Y - maxDepth); y--)
+        {
+            int id = w.GetBlock(below.X, y, below.Z);
+            if (id == 0 || id == Blocks.Leaves) continue;
+            var p = new BlockPos(below.X, y, below.Z);
+            if (id == Blocks.Sapling && w.GetBlock(p.X, p.Y - 1, p.Z) is Blocks.Dirt or Blocks.Grass) return (p, p.Down(), null);
+            if (id is Blocks.Dirt or Blocks.Grass) return (null, p, null);
+            return (null, null, p);
+        }
+        return (null, null, null);
+    }
+
     private static HashSet<BlockPos> LogCluster(IBlockAccess w, BlockPos seed, int wood)
     {
         var set = new HashSet<BlockPos> { seed };

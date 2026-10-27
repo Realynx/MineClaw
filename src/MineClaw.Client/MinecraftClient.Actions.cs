@@ -166,7 +166,13 @@ public sealed partial class MinecraftClient
             Timeout = o.PlanTimeout,
             AllowPartial = o.AllowPartial,
             AllowOpenDoors = o.AllowOpenDoors,
-            CanOpen = (pos, id) => !IsBlockProtected(pos, id) && !(lockedDoors?.Contains(pos) ?? false),
+            // Not IsBlockProtected: protection means "never break/edit" and the indexer protects every cell of a player build,
+            // doors included, which sealed the bot inside the house. Opening is reversible (RestoreDoors puts it back); only
+            // openables that ignored our clicks this goto are vetoed.
+            CanOpen = (pos, _) => !(lockedDoors?.Contains(pos) ?? false),
+            // Learned mechanisms (buttons/levers/plates → doors, piston doors); unknown levers in builds are left alone.
+            Mechanisms = World.Mechanisms.View(World.Dimension),
+            IsBuild = (pos, id) => IsBlockProtected(pos, id),
             AllowParkour = o.Parkour != ParkourMode.Off,
             CanSprint = CanSprintNow(),
             AllowVoidParkour = VoidParkourAuthorized(o),
@@ -294,6 +300,7 @@ public sealed partial class MinecraftClient
                     return null;
                 case FollowerStatus.Failed:
                     if (follower.BlockedJump is { } bj) blockedJumps?.Add(bj);
+                    if (follower.FailedTrigger is { } ft) lockedDoors?.Add(ft); // a mechanism that didn't respond
                     if (follower.CurrentStep is { Opens.Count: > 0 } door)
                         foreach (var tg in door.Opens.Where(t => !t.Done(World))) lockedDoors?.Add(tg.Pos);
                     return last.Reason ?? "path failed";

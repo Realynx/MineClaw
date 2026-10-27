@@ -32,6 +32,11 @@ public interface IInventoryPort
     /// state couldn't be confirmed (the caller then trusts nothing it can't re-read).
     /// </summary>
     Task<bool> SettleAsync(CancellationToken ct) => Task.FromResult(true);
+    /// <summary>
+    /// Walk to an open, standable spot nearby (out of a hole or a generator cell) so a chest that "can't be reached" from
+    /// here may be reachable from there. False when there's nowhere better to stand. Default: unsupported.
+    /// </summary>
+    Task<bool> StepOutAsync(CancellationToken ct) => Task.FromResult(false);
 }
 
 /// <summary>Who to hand items to when storage is full (main), over IPC.</summary>
@@ -69,7 +74,8 @@ public sealed class DepositProcedure(IInventoryPort port, IClaimBoard claims, st
         int start = CountOf(port.Items());
         bool fresh = true; // Items() was just settled and nothing has changed it since
         var full = new HashSet<BlockPos>();
-        int handoffTries = 0, placeTries = 0;
+        int handoffTries = 0, placeTries = 0, stepOuts = 0;
+        var unreachable = new HashSet<BlockPos>();
         var notes = new List<string>();
         while (!ct.IsCancellationRequested && _time.GetUtcNow() < deadline)
         {
@@ -96,10 +102,32 @@ public sealed class DepositProcedure(IInventoryPort port, IClaimBoard claims, st
                 {
                     var r = await port.DepositToAsync(chest.Pos, ct).ConfigureAwait(false);
                     _log.LogInformation("deposit into chest {Pos}: {Result}", chest.Pos, r.Message);
+                    if (!r.Ok && IsUnreachable(r)) unreachable.Add(chest.Pos);
                     if (!r.Ok || CountOf(port.Items()) >= left) full.Add(chest.Pos); // full or unusable: next one
                 }
                 finally { await claims.ReleaseAsync(key, CancellationToken.None).ConfigureAwait(false); }
                 continue;
+            }
+
+            // 1b. A chest with room was only out of reach from HERE (live2: a recall from inside the generator hole handed
+            // Fox's pickaxe to main on the first "can't reach chest"): step out to open ground and try those chests again
+            // before handing anything off. Tools and items belong in storage, not at main's feet.
+            if (unreachable.Count > 0 && stepOuts < 2)
+            {
+                stepOuts++;
+                bool moved = false;
+                try { moved = await port.StepOutAsync(ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { _log.LogWarning(ex, "deposit: step-out failed"); }
+                _log.LogInformation("deposit: {N} chest(s) out of reach from here; stepped out: {Moved}", unreachable.Count, moved);
+                if (moved)
+                {
+                    foreach (var u in unreachable) full.Remove(u);
+                    unreachable.Clear();
+                    notes.Add("stepped out to reach storage");
+                    continue;
+                }
+                unreachable.Clear();
             }
 
             // 2. Storage full: hand the items to main (toss at its feet, confirmed by its collect events).
@@ -145,6 +173,11 @@ public sealed class DepositProcedure(IInventoryPort port, IClaimBoard claims, st
             : $"{remaining} item(s) still held (no storage space)" + (notes.Count > 0 ? "; " + string.Join("; ", notes) : "");
         return new DepositReport(remaining == 0, remaining, start - remaining, text);
     }
+
+    /// <summary>The deposit failed because the chest couldn't be reached (path/reach), not because it was full.</summary>
+    internal static bool IsUnreachable(ActionResult r) =>
+        r.Message is { } m && (m.Contains("reach", StringComparison.OrdinalIgnoreCase) || m.Contains("no route", StringComparison.OrdinalIgnoreCase)
+            || m.Contains("no path", StringComparison.OrdinalIgnoreCase));
 
     private async Task SettleAsync(CancellationToken ct)
     {

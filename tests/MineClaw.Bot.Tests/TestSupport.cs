@@ -80,12 +80,28 @@ public sealed class FakeGameClient : IGameClient
     public Task<ActionResult> GotoAsync(Goal goal, GotoOptions? options = null, CancellationToken ct = default)
     {
         LastGoal = goal; LastGotoOptions = options;
+        Gotos.Enqueue((goal, options));
+        if (GotoGate is { } gate) return GatedGotoAsync(gate, goal, options, ct);
         return Act($"goto {goal.GetType().Name} break={options?.AllowBreak} place={options?.AllowPlace}");
+    }
+    /// <summary>Every goto (goal, options), in order.</summary>
+    public ConcurrentQueue<(Goal Goal, GotoOptions? Options)> Gotos { get; } = new();
+    /// <summary>When set, goto waits on it (a walk "in progress"); cancellation fails the goto like the real client.</summary>
+    public Func<CancellationToken, Task>? GotoGate { get; set; }
+    private async Task<ActionResult> GatedGotoAsync(Func<CancellationToken, Task> gate, Goal goal, GotoOptions? options, CancellationToken ct)
+    {
+        CurrentAction = "goto";
+        try { await gate(ct); }
+        catch (OperationCanceledException) { return ActionResult.Fail("cancelled"); }
+        finally { CurrentAction = null; }
+        return await Act($"goto {goal.GetType().Name} break={options?.AllowBreak} place={options?.AllowPlace}");
     }
     public Task<ActionResult> FollowPlayerAsync(string name, double distance = 3, CancellationToken ct = default) => Act($"follow {name} {distance}");
     public Task<ActionResult> StopAsync(CancellationToken ct = default) => Act("stop");
     public Task<ActionResult> MineAsync(string blockName, int count, double radius = 16, CancellationToken ct = default) => Act($"mine {blockName} {count} {radius}");
     public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, CancellationToken ct = default) => Act($"generator {x},{y},{z} {count}");
+    public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, MineClaw.World.BlockPos? stand, CancellationToken ct = default) =>
+        stand is { } s ? Act($"generator {x},{y},{z} {count} stand {s.X},{s.Y},{s.Z}") : HarvestGeneratorAsync(x, y, z, count, ct);
     public Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default) => Act($"collect {radius}");
     public Task<ActionResult> CraftAsync(int itemId, int damage = -1, int count = 1, CancellationToken ct = default) => Act($"craft {itemId} {count}");
     public Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, MineClaw.World.BlockPos? furnace = null, CancellationToken ct = default) =>
@@ -122,6 +138,22 @@ public sealed class FakeGameClient : IGameClient
     public Task<ActionResult> ChopTreeAsync(MineClaw.World.BlockPos? at = null, int? wood = null, CancellationToken ct = default) =>
         Act($"chop at={(at is { } p ? $"{p.X},{p.Y},{p.Z}" : "")} wood={wood}");
 
+    // ---- brainstem body
+    /// <summary>Points the head was turned to (FaceIdle), in order.</summary>
+    public ConcurrentQueue<Vec3d> Looks { get; } = new();
+    public int Swings;
+    public bool Safety { get; set; }
+    public bool FaceIdle(Vec3d point)
+    {
+        if (!IsPlaying || CurrentAction != null || Safety) return false;
+        Looks.Enqueue(point);
+        return true;
+    }
+    public bool SwingIdle() { if (CurrentAction != null || Safety) return false; Interlocked.Increment(ref Swings); return true; }
+    public bool SafetyEngaged => Safety;
+    public Task<ActionResult> GestureAsync(string move, string? target = null, int? times = null, CancellationToken ct = default) =>
+        Act($"act {move} {target}");
+
     // ---- world helpers
     public void Floor(int y = 64, int r = 6, int id = Blocks.Stone)
     {
@@ -152,6 +184,9 @@ public static class TestBot
         o.Chat.LineDelayMs = 0;
         o.Events.CoalesceWindowMs = 10;
         o.Events.MaxBatchDelayMs = 50;
+        o.ChatDebounce.QuietMs = 10;
+        o.ChatDebounce.MaxMs = 50;
+        o.ChatDebounce.ReplyQuietMs = 0;
         return o;
     }
 
@@ -165,6 +200,18 @@ public static class TestBot
 
     public static JsonElement J(object o) => JsonSerializer.SerializeToElement(o);
 
-    public static async Task<Agent.Tools.ToolResult> Run(this BotHost h, string tool, object input) =>
-        await h.Runtime.Tools.ExecuteAsync(tool, J(input), CancellationToken.None);
+    /// <summary>Runs a tool as the Opus brain would (the caller identity tool policies check, e.g. only the brain writes scripts).</summary>
+    public static async Task<Agent.Tools.ToolResult> Run(this BotHost h, string tool, object input)
+    {
+        using (Agent.Tools.ToolCaller.Push(Agent.Llm.ModelTier.Main, h.Runtime.Options.Llm.MainModel))
+            return await h.Runtime.Tools.ExecuteAsync(tool, J(input), CancellationToken.None);
+    }
+
+    /// <summary>Runs a tool as another tier/model (worker, cheap, economy-mode brain), or with no model caller when null.</summary>
+    public static async Task<Agent.Tools.ToolResult> RunAs(this BotHost h, Agent.Llm.ModelTier? tier, string tool, object input, string? model = null)
+    {
+        if (tier is not { } t) return await h.Runtime.Tools.ExecuteAsync(tool, J(input), CancellationToken.None);
+        using (Agent.Tools.ToolCaller.Push(t, model ?? h.Runtime.Options.Llm.ModelFor(t)))
+            return await h.Runtime.Tools.ExecuteAsync(tool, J(input), CancellationToken.None);
+    }
 }

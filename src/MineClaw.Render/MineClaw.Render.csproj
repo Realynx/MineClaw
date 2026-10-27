@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Viewport rendering core shared by the TUI (App) and the bot's `see` tool: voxel extraction, top/side/iso projection,
+       palette, and a tiny managed PNG encoder + bitmap font. No native deps (self-contained linux-x64 deploy). -->
+  <ItemGroup>
+    <ProjectReference Include="..\MineClaw.Agent\MineClaw.Agent.csproj" />
+    <ProjectReference Include="..\MineClaw.World\MineClaw.World.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="MineClaw.App" />
+    <InternalsVisibleTo Include="MineClaw.App.Tests" />
+    <InternalsVisibleTo Include="MineClaw.Bot" />
+    <InternalsVisibleTo Include="MineClaw.Bot.Tests" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

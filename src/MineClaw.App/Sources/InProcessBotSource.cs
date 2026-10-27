@@ -34,6 +34,7 @@ public static class UsageSnapshots
             CallsLastHour = usage.CallsLastHour,
             CallsPerHour = telemetry?.CallsPerHour(24) ?? [],
             Last = telemetry?.Last,
+            Latency = telemetry?.Latency?.Summary(),
         };
     }
 }

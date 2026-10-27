@@ -18,6 +18,9 @@ public class TelemetryTests(ITestOutputHelper output)
         options.Chat.LineDelayMs = 0;
         options.Events.CoalesceWindowMs = 10;
         options.Events.MaxBatchDelayMs = 50;
+        options.ChatDebounce.QuietMs = 10;
+        options.ChatDebounce.MaxMs = 50;
+        options.ChatDebounce.ReplyQuietMs = 0;
         var fake = new FakeLlm();
         var tel = new PromptTelemetry(options, new TelemetryOptions(), dir, time);
         var rt = AgentRuntime.Create(options, (_, _) => Task.CompletedTask, tel.Wrap(fake), persist: false, time: time);

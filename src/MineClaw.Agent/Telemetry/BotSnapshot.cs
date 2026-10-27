@@ -30,6 +30,8 @@ public sealed record UsageSnapshot
     /// <summary>Calls per clock hour, oldest first (24 entries; last = current hour).</summary>
     public int[] CallsPerHour { get; init; } = [];
     public PromptUsageRecord? Last { get; init; }
+    /// <summary>Chat latency medians (reaction / first action / first move / rounds before action). Additive (null = unknown).</summary>
+    public LatencySummary? Latency { get; init; }
 }
 
 /// <summary>A hive member or player/mob/item on the map, relative to the grid centre (the bot's feet block).</summary>

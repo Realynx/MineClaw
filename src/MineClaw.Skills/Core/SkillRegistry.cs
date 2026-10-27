@@ -23,6 +23,12 @@ public sealed class SkillRegistry
     /// <summary>Raised when skills are added (the catalog re-indexes; tool definitions never change).</summary>
     public event Action<ISkill>? Added;
 
+    /// <summary>
+    /// Opened around every skill run (name, args) and disposed when it ends: the Bot's inventory ledger attributes every
+    /// item the skill moves to it ("tossed to PoofimaFox" for give_items), so nothing leaves the inventory silently.
+    /// </summary>
+    public Func<string, JsonElement, IDisposable?>? RunScope { get; set; }
+
     /// <summary>Registers every non-abstract <see cref="ISkill"/> marked <see cref="SkillAttribute"/> in <paramref name="assembly"/>.</summary>
     public SkillRegistry Discover(Assembly assembly)
     {
@@ -84,9 +90,11 @@ public sealed class SkillRegistry
         if (spec.Status == SkillStatus.Stub) return SkillResult.Fail($"{spec.Name} is not implemented yet (stub): {spec.Summary}");
         if (CheckPreconditions(ctx, spec, args) is { } why) return SkillResult.Fail($"{spec.Name}: {why}");
         SkillResult r;
+        IDisposable? scope = null;
         try
         {
             ct.ThrowIfCancellationRequested();
+            try { scope = RunScope?.Invoke(spec.Name, args); } catch (Exception) { scope = null; }
             r = await skill.ExecuteAsync(ctx, args, ct).ConfigureAwait(false) ?? SkillResult.Fail("no result");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -97,6 +105,10 @@ public sealed class SkillRegistry
         {
             ctx.Log?.Invoke($"skill {spec.Name} threw: {ex}");
             r = SkillResult.Fail($"{spec.Name} error: {ex.GetType().Name}: {ex.Message.Replace('\n', ' ')}");
+        }
+        finally
+        {
+            scope?.Dispose();
         }
         var text = r.Text.Replace('\r', ' ').Replace('\n', ' ').Trim();
         int cap = ctx.Options.MaxResultChars;

@@ -36,7 +36,8 @@ public static class Msg
 {
     // lifecycle
     public const string Hello = "hello";          // C→M req  HelloMsg → WelcomeMsg
-    public const string Heartbeat = "hb";         // both     (no payload)
+    public const string Heartbeat = "hb";         // both     (no payload; sent by each link's own heartbeat thread)
+    public const string Ping = "ping";            // both req (no payload) → empty reply, answered by the link itself (liveness probe)
     public const string Bye = "bye";              // C→M      ByeMsg (planned logout finished; pipe closes next)
     public const string Recall = "recall";        // M→C      RecallMsg (deposit everything, log out)
     // tasks
@@ -52,6 +53,7 @@ public static class Msg
     public const string ChatAccepted = "chat_ok"; // C→M      ChatAcceptedMsg (this clone took a player's message)
     public const string Thread = "thread";        // C→M      ThreadMsg (this clone owns / released a player's replies)
     public const string Inject = "inject";        // M→C      InjectMsg (console /as test chat, so every process arbitrates it)
+    public const string Note = "note";            // M→C      NoteMsg (an update for the running task: a partner joined/changed; never replaces it)
     // budget ledger
     public const string SpendAuth = "spend_auth"; // C→M req  SpendAuthMsg → SpendGrantMsg
     public const string Spend = "spend";          // C→M      SpendMsg (actual cost of a finished call)
@@ -70,7 +72,23 @@ public static class Msg
 
 public sealed record HelloMsg(string Name, int Pid);
 public sealed record WelcomeMsg(string Main, TaskMsg? Task, RosterMsg Roster, ClaimsMsg Claims, bool Stranded, int StrandedItems);
-public sealed record TaskMsg(string Id, string Text, bool Restarted = false);
+/// <param name="Loadout">What to fetch from storage before starting ("pickaxe", "axe", "food"...): derived from the task text.</param>
+/// <param name="Claims">Lease keys the clone held when it crashed (re-granted on restart when still free).</param>
+/// <param name="Profile">Model profile for the clone's brain tier (null = the clone's config).</param>
+/// <param name="Script">Saved script the clone starts at once with its brain asleep (null = a normal brain task).</param>
+/// <param name="Args">The script's args (JSON object).</param>
+/// <param name="After">When the script ends normally: "logout" (default; deposit first) or "sleep" (stay online, brain asleep).</param>
+public sealed record TaskMsg(string Id, string Text, bool Restarted = false, string[]? Loadout = null, string[]? Claims = null,
+    string? Profile = null, string? Script = null, string? Args = null, string? After = null)
+{
+    public bool SleepsAfter => string.Equals(After, "sleep", StringComparison.OrdinalIgnoreCase);
+}
+
+/// <summary>What <c>hive spawn</c> may add to a task: a model profile, a script (saved name or inline code) and its options.</summary>
+public sealed record HiveSpawnOptions(string? Profile = null, string? Script = null, string? Code = null, string? Args = null, string? After = null)
+{
+    public bool HasScript => !string.IsNullOrWhiteSpace(Script) || !string.IsNullOrWhiteSpace(Code);
+}
 public sealed record ProgressMsg(string TaskId, string Text, double? Pct = null);
 public sealed record ResultMsg(string TaskId, bool Ok, string Text);
 public sealed record ClaimMsg(string Key, double TtlSeconds, string? Note = null);
@@ -85,6 +103,7 @@ public sealed record RosterMsg(string Main, string[] MainNames, string[] Live, D
 public sealed record ThreadMsg(string Player, bool Open, double TtlSeconds);
 public sealed record ChatAcceptedMsg(string Player);
 public sealed record InjectMsg(string Raw);
+public sealed record NoteMsg(string Text);
 public sealed record SpendAuthMsg(decimal EstimateUsd, string Tier);
 public sealed record SpendGrantMsg(bool Ok, decimal GrantUsd, string Mode, string? Reason);
 public sealed record SpendMsg(decimal Usd, string Tier, string Model);

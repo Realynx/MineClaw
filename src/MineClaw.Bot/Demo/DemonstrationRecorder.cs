@@ -318,6 +318,11 @@ public sealed class DemonstrationRecorder(IGameClient client, BotOptions? option
                             explained = true;
                     }
                     if (explained) continue;
+                    // Live 10-27: "right-clicked cobblestone on cobblestone" were two PUNCHES with cobblestone in hand. A swing
+                    // with a block in hand that placed nothing is a left-click (pointing/digging), not a use.
+                    if (r.Held is > 0 and < 256 && a.Detail != Perception.Gestures.Punched
+                        && !(a.Block is { } bn && Blocks.ByName(bn) is { } bi && BlockShapes.IsLiquid(bi.Id)))
+                        a = a with { Detail = Perception.Gestures.Punched };
                 }
                 if (a.Kind == DemoActionKind.OpenContainer && keep.Count > 0 && keep.FindLast(k => k.Kind == DemoActionKind.OpenContainer) is { } prev &&
                     prev.X == a.X && prev.Y == a.Y && prev.Z == a.Z && a.At - prev.At < TimeSpan.FromSeconds(3))

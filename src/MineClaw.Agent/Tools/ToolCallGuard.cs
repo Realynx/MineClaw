@@ -18,7 +18,52 @@ namespace MineClaw.Agent.Tools;
 /// </summary>
 public sealed class ToolCallGuard
 {
-    private sealed record Failure(string Tool, IReadOnlySet<string> Targets, string Signature, string Reason, DateTimeOffset At);
+    private sealed record Failure(string Tool, IReadOnlySet<string> Targets, string Signature, string Reason, DateTimeOffset At)
+    {
+        /// <summary>A delegate's task words (coordinates and boilerplate removed): its intent.</summary>
+        public IReadOnlySet<string>? Task { get; init; }
+    }
+
+    /// <summary>Two delegated tasks are the same job at this content-word Jaccard (or more).</summary>
+    public const double SameTaskThreshold = 0.7;
+
+    private static readonly HashSet<string> Boilerplate = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "the", "and", "for", "from", "with", "into", "onto", "then", "that", "this", "your", "you", "near", "next", "chest", "house",
+        "stash", "storage", "food", "eat", "pickaxe", "tool", "tools", "deposit", "inventory", "when", "done", "until", "all", "any",
+        "some", "use", "get", "put", "back", "at", "to", "of", "in", "on", "it", "if", "or", "a", "an", "is", "be", "by", "keep",
+    };
+
+    /// <summary>Content words of a delegate's task/done_when (lower case, coordinates and boilerplate dropped).</summary>
+    public static IReadOnlySet<string> TaskWords(JsonElement input)
+    {
+        var text = (input.Str("task") ?? "") + " " + (input.Str("done_when") ?? "");
+        text = Coords.Replace(text.ToLowerInvariant(), " ");
+        return Regex.Matches(text, "[a-z_]{3,}").Select(m => m.Value).Where(w => !Boilerplate.Contains(w)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool SameTask(JsonElement a, JsonElement b) => Jaccard(TaskWords(a), TaskWords(b)) >= SameTaskThreshold;
+
+    private static double Jaccard(IReadOnlySet<string> a, IReadOnlySet<string> b)
+    {
+        if (a.Count == 0 || b.Count == 0) return 0;
+        int inter = a.Count(b.Contains);
+        return inter / (double)(a.Count + b.Count - inter);
+    }
+
+    /// <summary>
+    /// Forgets every remembered failure (the world changed: a player said something new, e.g. "opened the door for you").
+    /// The guard only stops the brain from repeating a dead end on its own, never from trying what a player asks next.
+    /// </summary>
+    public int ForgetAll()
+    {
+        lock (_lock)
+        {
+            int n = _failures.Count;
+            _failures.Clear();
+            return n;
+        }
+    }
 
     public const string DelegateTool = "delegate";
     private static readonly Regex Coords = new(@"(-?\d{1,7})(?:\.\d+)?\s*[, ]\s*(-?\d{1,3})(?:\.\d+)?\s*[, ]\s*(-?\d{1,7})(?:\.\d+)?", RegexOptions.Compiled);
@@ -60,9 +105,11 @@ public sealed class ToolCallGuard
         {
             foreach (var (t, i) in run.Steps)
             {
+                // Same call, same tool on the same target, or the same delegated job. A delegate never shadows a game
+                // tool (or the reverse) just because both mention the house chest's coordinates.
                 bool same = Signature(t, i) == sig
-                    || (string.Equals(t, tool, StringComparison.OrdinalIgnoreCase) && Overlap(Targets(t, i), targets))
-                    || ((tool == DelegateTool || t == DelegateTool) && Overlap(Targets(t, i), targets) && targets.Count > 0);
+                    || (string.Equals(t, tool, StringComparison.OrdinalIgnoreCase) && tool != DelegateTool && Overlap(Targets(t, i), targets))
+                    || (tool == DelegateTool && t == DelegateTool && SameTask(i, input));
                 if (same)
                     return ToolResult.Success($"already running: {run.Label} #{run.Id} (started {(int)(now - run.Started).TotalSeconds}s ago); " +
                         "wait for its [task] event, or stop it first");
@@ -70,17 +117,20 @@ public sealed class ToolCallGuard
         }
 
         if (retryRequested) return null;
+        // Movement is never refused from memory: a door opens, a bridge gets built, the player moves; just try.
+        if (ActivityManager.MovementTools.Contains(tool)) return null;
         lock (_lock)
         {
             _failures.RemoveAll(f => now - f.At > Memory);
             for (int k = _failures.Count - 1; k >= 0; k--)
             {
                 var f = _failures[k];
-                bool toolMatch = string.Equals(f.Tool, tool, StringComparison.OrdinalIgnoreCase) || tool == DelegateTool || f.Tool == DelegateTool;
-                if (!toolMatch) continue;
-                bool sameTarget = targets.Count > 0 || f.Targets.Count > 0
-                    ? Overlap(f.Targets, targets)
-                    : string.Equals(f.Tool, tool, StringComparison.OrdinalIgnoreCase) && f.Signature == sig;
+                // Keyed on (tool, intent): the same game tool on the same target, or the same delegated job (task words,
+                // coordinates and boilerplate ignored). Never across tools.
+                if (!string.Equals(f.Tool, tool, StringComparison.OrdinalIgnoreCase)) continue;
+                bool sameTarget = tool == DelegateTool
+                    ? f.Signature == sig || (f.Task != null && Jaccard(f.Task, TaskWords(input)) >= SameTaskThreshold)
+                    : targets.Count > 0 || f.Targets.Count > 0 ? Overlap(f.Targets, targets) : f.Signature == sig;
                 if (!sameTarget) continue;
                 return ToolResult.Error($"not retried: {f.Tool} failed here {Ago(now - f.At)} ago: {f.Reason}. " +
                     "Try something else or tell the player; it reruns if they say try again");
@@ -92,7 +142,12 @@ public sealed class ToolCallGuard
     /// <summary>Records a failure (normally fed by <see cref="ActivityManager.StepFinished"/>).</summary>
     public void RecordFailure(string tool, JsonElement input, string reason)
     {
-        var f = new Failure(tool, Targets(tool, input), Signature(tool, input), TextUtil.Truncate(TextUtil.OneLine(reason), 160), _time.GetUtcNow());
+        // A question back to the brain is not a failure, and a walk is never remembered as impossible.
+        if (reason.Contains("needs_input", StringComparison.OrdinalIgnoreCase) || ActivityManager.MovementTools.Contains(tool)) return;
+        var f = new Failure(tool, Targets(tool, input), Signature(tool, input), TextUtil.Truncate(TextUtil.OneLine(reason), 160), _time.GetUtcNow())
+        {
+            Task = tool == DelegateTool ? TaskWords(input) : null,
+        };
         lock (_lock)
         {
             _failures.RemoveAll(o => o.Signature == f.Signature);

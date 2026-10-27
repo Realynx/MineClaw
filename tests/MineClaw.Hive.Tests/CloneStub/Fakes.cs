@@ -99,6 +99,7 @@ public sealed class FakeBody : ICloneBody
     public void AssignTask(TaskMsg task) { Call("task " + task.Text); if (OnTask is { } f) _ = Task.Run(() => f(task)); }
     public Task<bool> ExecuteAsync(string line, CancellationToken ct) { Call("cmd " + line); return Task.FromResult(true); }
     public void InjectChat(string raw) { Call("inject " + raw); OnInject?.Invoke(raw); }
+    public void Note(string text) => Call("note " + text);
     public Task DisconnectAsync(string reason)
     {
         ItemsAtDisconnect = Port.Items().Count;

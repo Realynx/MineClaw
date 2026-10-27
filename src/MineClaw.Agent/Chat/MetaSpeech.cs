@@ -30,6 +30,8 @@ public static partial class MetaSpeech
         {
             var line = raw.Trim();
             if (line.Length == 0 || line.StartsWith('/')) { lines.Add(raw); continue; }
+            // A whole line of data ("4,64,6 cobblestone", "4,6=cobblestone 5,6=water"): a tool/scan dump, never speech.
+            if (IsData(line)) { suppressed.Add(line); continue; }
             var kept = new List<string>();
             foreach (var s in SentenceRx().Split(line))
             {
@@ -41,6 +43,48 @@ public static partial class MetaSpeech
             if (kept.Count > 0) lines.Add(string.Join(" ", kept));
         }
         return string.Join("\n", lines).Trim();
+    }
+
+    [GeneratedRegex(@"^(?:-?\d+(?:\.\d+)?(?:\s*,\s*-?\d+(?:\.\d+)?){1,2}|\(-?\d+(?:\s*,\s*-?\d+){1,2}\))$", RegexOptions.CultureInvariant)]
+    private static partial Regex CoordRx();
+
+    [GeneratedRegex(@"^[a-z][a-z_]*$", RegexOptions.CultureInvariant)]
+    private static partial Regex NameRx();
+
+    private static readonly HashSet<string> SpeechWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "i", "im", "i'm", "me", "my", "you", "your", "u", "we", "us", "it", "is", "are", "was", "the", "a", "an", "at", "on", "in", "to",
+        "of", "and", "or", "but", "so", "here", "there", "this", "that", "now", "ok", "okay", "yes", "no", "not", "got", "have", "has",
+        "go", "going", "gonna", "will", "can", "need", "want", "see", "look", "with", "from", "by", "for", "foxy", "robin", "uwu", "nya",
+        "pls", "please", "sorry", "thanks", "hi", "hey", "found", "mining", "mine", "put", "left", "right", "next", "near", "by",
+    };
+
+    /// <summary>
+    /// A line that is pure data: coordinates plus block/item names (and numbers / separators), no sentence. Needs at least one
+    /// coordinate; any word of normal speech ("I'm", "at", "the", "foxy") makes it speech.
+    /// </summary>
+    public static bool IsData(string line)
+    {
+        var t = (line ?? "").Trim();
+        if (t.Length == 0) return false;
+        int coords = 0, names = 0;
+        foreach (var raw in Regex.Split(t, @"[\s|;]+"))
+        {
+            var tok = raw.Trim().Trim('(', ')', '[', ']', '{', '}').TrimEnd(',', '.', ':');
+            if (tok.Length == 0) continue;
+            // "4,6=cobblestone" / "4,64,6:water" / "stone@4,63,6" / "x3"
+            foreach (var part in Regex.Split(tok, @"[=:@]"))
+            {
+                if (part.Length == 0) continue;
+                if (CoordRx().IsMatch(part)) { coords++; continue; }
+                if (Regex.IsMatch(part, @"^(?:x?\d+|\d+x|-?\d+(?:\.\d+)?%?)$")) continue;
+                if (Regex.IsMatch(part, @"^\W+$")) continue;
+                if (!NameRx().IsMatch(part) || SpeechWords.Contains(part)) return false;
+                names++;
+            }
+        }
+        // A bare coordinate is an answer ("14,64,-5"); coordinates WITH block/item names and nothing else are a dump.
+        return coords > 0 && names > 0 && names <= coords * 4 + 2;
     }
 
     /// <summary>A short sentence that only narrates internal mechanics.</summary>

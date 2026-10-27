@@ -13,6 +13,13 @@ public sealed partial class MinecraftClient
     private int _lastHealth = -1, _lastFood = -1;
     private bool _wasDead;
     private int _windowItemsVersion;
+
+    /// <summary>
+    /// Raised on the network thread right BEFORE a 0x68 (full window contents from the server) replaces the local
+    /// inventory model. Any count change it causes is the server correcting a wrong prediction, not a real gain/loss
+    /// (the Bot's inventory ledger records it as such). Handlers must be quick and must not touch the inventory.
+    /// </summary>
+    public event Action<int>? WindowItemsArriving;
     private int _eatAcceptedCount;
     private int _collectedCount;
 
@@ -260,9 +267,12 @@ public sealed partial class MinecraftClient
                 w.Inventory.Close(cw.WindowId);
                 break;
             case SetSlotPacket ss:
+                NoteSlotPacket(ss.WindowId, ss.Slot, fullWindow: false);
                 w.Inventory.SetSlot(ss.WindowId, ss.Slot, ss.Item);
                 break;
             case WindowItemsPacket wi:
+                WindowItemsArriving?.Invoke(wi.WindowId); // synchronous: the inventory ledger tags the model change it causes
+                NoteSlotPacket(wi.WindowId, -1, fullWindow: true);
                 w.Inventory.SetWindowItems(wi.WindowId, wi.Items);
                 Interlocked.Increment(ref _windowItemsVersion);
                 break;
@@ -276,6 +286,7 @@ public sealed partial class MinecraftClient
                     Send(s, new TransactionPacket { WindowId = tx.WindowId, ActionNumber = tx.ActionNumber, Accepted = true });
                     Log($"click {tx.ActionNumber} in window {tx.WindowId} rejected; resyncing");
                 }
+                NoteTransaction(tx.WindowId, tx.ActionNumber); // before the result is visible to the waiting click
                 _txResults[(tx.WindowId, tx.ActionNumber)] = tx.Accepted;
                 break;
         }

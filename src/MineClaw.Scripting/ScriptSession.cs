@@ -28,6 +28,12 @@ public sealed record ScriptRequest
     public required string Code { get; init; }
     public string? CarryJson { get; init; }
     public string? ArgsJson { get; init; }
+    /// <summary>Who wrote the code ("main/claude-opus-5-5"; null = C#/saved script run by name).</summary>
+    public string? Author { get; init; }
+    /// <summary>Saved-script version this run executes (stats are kept per version), or null for an unsaved run.</summary>
+    public int? Version { get; init; }
+    /// <summary>Lint warnings found before the run (attached to the result).</summary>
+    public string? LintWarnings { get; init; }
     /// <summary>Fast-forward (actions skipped, stages not run) until <c>cp"label"</c>.</summary>
     public string? ResumeFrom { get; init; }
 }
@@ -129,6 +135,10 @@ public sealed partial class ScriptSession
     /// <summary>carry snapshot per checkpoint label (resume_from).</summary>
     public Dictionary<string, string> CheckpointCarry { get; } = new(StringComparer.Ordinal);
     public List<string> Logs { get; } = new();
+    /// <summary>What say/emote would have said while chat is muted (hive clone): returned to the brain in the result.</summary>
+    public List<string> Reports { get; } = new();
+    /// <summary>Total items gained during the run (all kinds): the run's "yield" for reliability stats.</summary>
+    public int ItemsGained { get; private set; }
     /// <summary>Active (unpaused) run time.</summary>
     public TimeSpan Elapsed => _active.Elapsed;
     /// <summary>Set by the host adapter: non-null = this run lost the bot's body (another activity took over) → cancel.</summary>
@@ -243,6 +253,12 @@ public sealed partial class ScriptSession
             Reason = reason;
             Finished = _time.GetUtcNow();
             outcome = Outcome = ScriptText.Outcome(this, final == ScriptStatus.Done ? Completed(result) : null, InventoryDelta(), _o.ResultChars);
+            try
+            {
+                var now = InventoryCounts();
+                ItemsGained = now.Sum(kv => Math.Max(0, kv.Value - _invStart.GetValueOrDefault(kv.Key)));
+            }
+            catch (Exception) { }
             settled = _settled;
         }
         _owner.OnEnded(this); // stats, saves, promotion before anyone waiting sees the end

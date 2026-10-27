@@ -82,6 +82,8 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
         Held(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.PlaceBlockAsync(x, y, z, itemId, ct), ct);
     public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, CancellationToken ct = default) =>
         HeldRenewing(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.HarvestGeneratorAsync(x, y, z, count, ct), ct);
+    public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, BlockPos? stand, CancellationToken ct = default) =>
+        HeldRenewing(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.HarvestGeneratorAsync(x, y, z, count, stand, ct), ct);
 
     // ---- forwarded ----
     public WorldState World => inner.World;
@@ -121,4 +123,9 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
     public Task<ActionResult> CloseWindowAsync(CancellationToken ct = default) => inner.CloseWindowAsync(ct);
     public Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default) => inner.ActivateBlockAsync(x, y, z, ct);
     public Task<ActionResult> EatAsync(CancellationToken ct = default) => inner.EatAsync(ct);
+    public bool FaceIdle(Vec3d point) => inner.FaceIdle(point);
+    public bool SwingIdle() => inner.SwingIdle();
+    public bool SafetyEngaged => inner.SafetyEngaged;
+    public Task<ActionResult> GestureAsync(string move, string? target = null, int? times = null, CancellationToken ct = default) =>
+        inner.GestureAsync(move, target, times, ct);
 }

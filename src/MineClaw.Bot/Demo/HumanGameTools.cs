@@ -34,7 +34,9 @@ public static partial class HumanGameTools
                 await using var session = await source.StartAsync(player, area, ct).ConfigureAwait(false);
                 var waited = await DemoWait.RunAsync(chat, session, player, max, null, ct).ConfigureAwait(false);
                 var actions = await session.StopAsync(ct).ConfigureAwait(false);
-                var steps = DemoSummary.Summarize(actions, known?.Min);
+                // Absolute coordinates: offsets from the structure's min corner (live2 "stood at -1,+1,-1") were misread as
+                // places ("is the clone's brick the one at 3,64,5?") and carried no anchor.
+                var steps = DemoSummary.Summarize(actions);
                 if (steps.Count == 0) return ToolResult.Error("saw nothing to learn" + DemoWait.SaidSuffix(waited));
                 structures.SaveSteps(name, steps, player);
                 return ToolResult.Success($"learned {name} ({steps.Count} steps): " + string.Join("; ", steps) + DemoWait.SaidSuffix(waited));
@@ -92,8 +94,16 @@ public static partial class HumanGameTools
                     said.Add(ReplyIntent.Strip(reply));
                     reply = await chat.WaitForReplyAsync(player, deadline - DateTimeOffset.UtcNow, ct).ConfigureAwait(false);
                 }
-                reply ??= said.LastOrDefault();
-                if (reply == null) return ToolResult.Error($"no reply in {timeoutSeconds}s");
+                if (reply != null && !ReplyIntent.IsHere(reply)) { said.Add(ReplyIntent.Strip(reply)); reply = null; }
+                if (reply == null)
+                {
+                    if (said.Count == 0) return ToolResult.Error($"no reply in {timeoutSeconds}s");
+                    // Live2 01:12:31: chatter ("that is wood not cobble 67") was taken as the answer and its spot as the
+                    // place. Without a "here" the spot is NOT confirmed: say so, with where they are, and let the brain ask.
+                    var now = client.World.Entities.FindPlayer(player);
+                    return ToolResult.Error($"not confirmed: {player} didn't say \"here\" (said \"{Short(said[^1])}\")"
+                        + (now != null ? $"; they're at {Locations.Fmt(now.Position)} now, which may not be the spot" : "") + "; ask again");
+                }
                 var p = client.World.Entities.FindPlayer(player);
                 if (p == null) return ToolResult.Error($"{player} said \"{reply}\" but I can't see them");
                 var look = Demo.DemonstrationRecorder.LookTarget(client.World, p.Position, p.Yaw, p.Pitch, solidOnly: true);
@@ -119,6 +129,8 @@ public static partial class HumanGameTools
             .Where(c => new Vec3d(feet.X + 0.5, feet.Y + 1.62, feet.Z + 0.5).DistanceTo(c.Center) <= 4.5).ToList();
         return near.Count > 0 ? near[0] : null;
     }
+
+    private static string Short(string s) => s.Length <= 80 ? s : s[..77] + "...";
 
     /// <summary>Same cell horizontally (±1 tolerance) and within 1 block vertically.</summary>
     public static bool IsAt(Vec3d pos, BlockPos t)

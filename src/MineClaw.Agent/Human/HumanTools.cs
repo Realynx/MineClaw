@@ -1,4 +1,5 @@
 using MineClaw.Agent.Chat;
+using MineClaw.Agent.Events;
 using MineClaw.Agent.Memory;
 using MineClaw.Agent.Tools;
 
@@ -8,36 +9,115 @@ namespace MineClaw.Agent.Human;
 public static class HumanTools
 {
     public const string AskPlayerDescription =
-        "ONLY for a real question you need answered to continue; waits for and eats their next message. " +
-        "To answer or chat, write plain text.";
+        "Ask a player a real question. Always give default (your recommended answer) and keep working on it: the answer " +
+        "comes back as chat. risky=true for builds/void/rare items. Replies and small talk are plain text.";
 
     /// <summary>Error returned (nothing is sent) when ask_player is called without a question.</summary>
     public const string NotAQuestion = "not sent: ask_player is only for questions you need answered. To reply, write plain text.";
 
-    public static void RegisterAskPlayer(ToolRegistry registry, ChatRouter chat, int defaultTimeoutSeconds = 60)
+    private static readonly System.Text.RegularExpressions.Regex Negative = new(
+        @"^\W*(?:no|nope|nah|don'?t|do not|skip|leave (?:it|that)|not now|none)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    private static readonly System.Text.RegularExpressions.Regex Yes = new(
+        @"^\W*(?:y|yes|yep|yup|yeah|ya|ye|ok|okay|k|kk|sure|fine|sounds good|do (?:that|it)|go (?:ahead|for it)|that'?s fine|default|whatever)\W*$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    /// <summary>True when an answer just confirms the default ("yep", "sure", or it repeats the default).</summary>
+    public static bool Agrees(string answer, string? dflt)
     {
+        var a = (answer ?? "").Trim();
+        if (a.Length == 0) return false;
+        if (Yes.IsMatch(a)) return true;
+        if (string.IsNullOrWhiteSpace(dflt)) return false;
+        static string N(string x) => string.Join(' ', System.Text.RegularExpressions.Regex.Matches(x.ToLowerInvariant(), "[a-z0-9]+").Select(m => m.Value));
+        var (na, nd) = (N(a), N(dflt));
+        return na.Length > 0 && !Negative.IsMatch(a) && (na == nd || (nd.Length >= 3 && na.Contains(nd) && na.Length <= nd.Length + 12));
+    }
+
+    /// <param name="events">Where answers to non-blocking questions go (as chat from the player, so they wake a sleeping brain).</param>
+    /// <param name="timedOut">Called when a question went with its default (the bot returns to its standing order).</param>
+    public static void RegisterAskPlayer(ToolRegistry registry, ChatRouter chat, QuestionOptions? options = null, EventQueue? events = null,
+        Action<string>? timedOut = null)
+    {
+        var q = options ?? new QuestionOptions();
         // Brain only: the worker never talks to players and the cheap tier replies in plain text.
         registry.Register("ask_player", AskPlayerDescription,
-            ToolSchema.Create().Str("question", "ends with ?").Str("name", "player to ask; omit for anyone", required: false)
-                .Int("timeout", "seconds, default 60, max 180", required: false).Build(),
+            ToolSchema.Create().Str("question", "ends with ?").Str("default", required: false)
+                .Str("name", "player to ask; omit for anyone", required: false)
+                .Bool("risky", required: false).Int("timeout", $"seconds, default {q.TimeoutSeconds}", required: false).Build(),
             async (input, ct) =>
             {
                 var question = input.ReqStr("question").Trim();
                 // A normal answer sent through ask_player swallows the player's next message and holds the turn: refuse it.
                 if (!question.Contains('?')) return ToolResult.Error(NotAQuestion);
                 var name = input.Str("name");
-                int timeout = Math.Clamp(input.Int("timeout") ?? defaultTimeoutSeconds, 5, 180);
+                int timeout = Math.Clamp(input.Int("timeout") ?? q.TimeoutSeconds, Math.Max(1, q.MinTimeoutSeconds), Math.Max(q.MinTimeoutSeconds, q.MaxTimeoutSeconds));
                 var text = name != null && !question.Contains(name, StringComparison.OrdinalIgnoreCase) ? $"{name}, {question}" : question;
                 // Coordinates only when the player used them first or asked for them; otherwise landmarks ("the one by the lava").
                 text = Questions.Humanize(text, chat.RecentFrom(name), chat.Landmark);
-                // Hive: this bot owns the conversation thread with that player until they answer or it times out.
-                using var thread = name != null ? chat.HoldThread(name, TimeSpan.FromSeconds(timeout + 5)) : null;
-                // Register the waiter before speaking so a fast reply can't be missed.
-                var wait = chat.WaitForReplyAsync(name, TimeSpan.FromSeconds(timeout), ct);
+
+                var dflt = input.Str("default")?.Trim();
+                if (dflt?.Length == 0) dflt = null;
+                // Unsafe or irreversible choices never proceed on a guess: their only default is the safe one.
+                bool risky = input.Bool("risky") == true || q.IsRisky(question + " " + dflt);
+                if (risky && (dflt == null || !Negative.IsMatch(dflt))) dflt = q.SafeDefault;
+
+                if (dflt == null || events == null)
+                {
+                    // Legacy blocking ask (no recommended answer): hold the turn until they reply.
+                    using var thread = name != null ? chat.HoldThread(name, TimeSpan.FromSeconds(timeout + 5)) : null;
+                    // Register the waiter before speaking so a fast reply can't be missed.
+                    var wait = chat.WaitForReplyAsync(name, TimeSpan.FromSeconds(timeout), ct);
+                    await chat.SayAsync(text, audience: name != null ? [name] : null, ct: ct).ConfigureAwait(false);
+                    var reply = await wait.ConfigureAwait(false);
+                    return reply != null ? ToolResult.Success(reply) : ToolResult.Error($"no reply in {timeout}s");
+                }
+
+                // Non-blocking: the waiter outlives this turn (the bot keeps working on the default meanwhile).
+                var lease = name != null ? chat.HoldThread(name, TimeSpan.FromSeconds(timeout + 5)) : null;
+                var pending = chat.WaitForReplyAsync(name, TimeSpan.FromSeconds(timeout), CancellationToken.None);
                 await chat.SayAsync(text, audience: name != null ? [name] : null, ct: ct).ConfigureAwait(false);
-                var reply = await wait.ConfigureAwait(false);
-                return reply != null ? ToolResult.Success(reply) : ToolResult.Error($"no reply in {timeout}s");
+                _ = FollowUpAsync(chat, events, q, question, name, dflt, risky, pending, lease, timedOut);
+                return ToolResult.Success($"asked{(name != null ? " " + name : "")}; don't wait: go ahead with \"{dflt}\" now" +
+                    (risky ? " (do everything except the risky part)" : "") + ". Their answer comes back as chat; amend the job if it differs.");
             }, tiers: ToolTiers.Main);
+    }
+
+    /// <summary>Answer → chat from the player (wakes the brain to amend) or a quiet confirmation; timeout → say so, use the default.</summary>
+    private static async Task FollowUpAsync(ChatRouter chat, EventQueue events, QuestionOptions q, string question, string? name, string dflt,
+        bool risky, Task<string?> pending, IDisposable? lease, Action<string>? timedOut)
+    {
+        string? reply;
+        bool late = false;
+        try { reply = await pending.ConfigureAwait(false); }
+        catch (Exception) { reply = null; }
+        finally { lease?.Dispose(); }
+
+        if (reply == null)
+        {
+            var line = (risky ? q.RiskyTimeoutLine : q.TimeoutLine).Replace("{player}", name ?? "").Replace("{default}", dflt).Trim(' ', ',');
+            if (line.Length > 0)
+            {
+                try { await chat.SayAsync(line, audience: name != null ? [name] : null).ConfigureAwait(false); }
+                catch (Exception) { }
+            }
+            events.Post(GameEvent.Notice($"question timed out: \"{TextUtil.Truncate(question, 80)}\" -> went with \"{dflt}\"", EventPriority.Background));
+            try { timedOut?.Invoke(question); } catch (Exception) { }
+            if (name == null || q.LateAnswerSeconds <= 0) return;
+            // A late answer still applies: their next line within the window comes back marked as such.
+            try { reply = await chat.WaitForReplyAsync(name, TimeSpan.FromSeconds(q.LateAnswerSeconds), CancellationToken.None).ConfigureAwait(false); }
+            catch (Exception) { reply = null; }
+            if (reply == null) return;
+            late = true;
+        }
+
+        int c = reply.IndexOf(": ", StringComparison.Ordinal);
+        var player = c > 0 ? reply[..c] : name ?? "someone";
+        var answer = ReplyIntent.Strip(reply);
+        var q80 = TextUtil.Truncate(question, 80);
+        if (Agrees(answer, dflt))
+            events.Post(GameEvent.Notice($"{player} answered \"{q80}\": {answer} (same as your default)", EventPriority.Background));
+        else
+            events.Post(GameEvent.Chat(player, $"{answer} ({(late ? "maybe a late answer" : "answer")} to your \"{q80}\"; you went with \"{dflt}\": amend the job if this changes it)"));
     }
 
     /// <summary>Registers <c>watch_demo</c> (only when the client layer supplies a demonstration source).</summary>

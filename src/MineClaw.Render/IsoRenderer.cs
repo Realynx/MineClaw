@@ -1,6 +1,6 @@
 using MineClaw.Agent.Telemetry;
 
-namespace MineClaw.App.Viewport;
+namespace MineClaw.Render;
 
 /// <summary>Isometric view settings (mutable, owned by the TUI loop): rotation in 90° steps, zoom 0-2, cutaway, y labels.</summary>
 public sealed class IsoView
@@ -62,6 +62,11 @@ public static class IsoProjection
 
     /// <summary>Zoom 0: 2×1 chars (compact), 1: 4×2 chars, 2: 8×4 chars.</summary>
     public static IsoSprite Sprite(int zoom) => _sprites[Math.Clamp(zoom, 0, _sprites.Length - 1)];
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(int, int, int), IsoSprite> _custom = new();
+
+    /// <summary>A bigger sprite for images (half-axes a, b; side height c), e.g. (6, 3, 6). Treated like zoom 2+ (outlines, seams).</summary>
+    public static IsoSprite Custom(int a, int b, int c) => _custom.GetOrAdd((a, b, c), k => Make(3, k.Item1, k.Item2, k.Item3));
 
     private static IsoSprite Make(int zoom, int a, int b, int c)
     {
@@ -251,118 +256,7 @@ public sealed class IsoRenderer
         if (_bgRow.Length < PH) _bgRow = new uint[PH];
         int ox = W / 2 - s.A;
         int oy = (int)(PH * 0.45) - (s.B + s.C / 2);
-
-        // 1. Void background (vertical gradient; reddish in the Nether).
-        for (int py = 0; py < PH; py++)
-        {
-            uint bg = colours switch
-            {
-                IsoColours.TrueColor => IsoPalette.Mix(IsoPalette.VoidTop(input.Nether), IsoPalette.VoidBottom(input.Nether), PH <= 1 ? 0 : py / (float)(PH - 1)),
-                IsoColours.Ansi256 => IsoPalette.Indexed | (uint)IsoPalette.To256(IsoPalette.Mix(IsoPalette.VoidTop(input.Nether), IsoPalette.VoidBottom(input.Nether), PH <= 1 ? 0 : py / (float)(PH - 1))),
-                IsoColours.Ansi16 => IsoPalette.Indexed | 0u,
-                _ => 0u,
-            };
-            _bgRow[py] = bg;
-            int row = py * W;
-            Array.Fill(_px, bg, row, W);
-            Array.Fill(_depth, int.MinValue, row, W);
-            Array.Clear(_mat, row, W);
-            Array.Clear(_face, row, W);
-            Array.Clear(_grid, row, W);
-        }
-
-        // 2. Faint lattice one level below the volume, so the drop off the island edge reads as void.
-        if (colours is IsoColours.TrueColor or IsoColours.Ansi256) // 16 colours: plain black void (any grid colour is too loud)
-        {
-            uint grid = Colour(IsoPalette.VoidGrid(input.Nether), colours, input.Nether ? 1 : 4);
-            int gdy = vol.Y0 - 1 - vol.Cy;
-            // Compact sprites and ASCII get a sparser lattice (every other tile), or it turns into a checkerboard.
-            int gstep = zoom == 0 || glyphMode ? 2 : 1;
-            for (int du = -r; du <= r; du += gstep)
-                for (int dv = -r; dv <= r; dv += gstep)
-                {
-                    var (bx, by) = IsoProjection.Project(du, dv, gdy, s);
-                    bx += ox; by += oy;
-                    if (bx + s.W < 0 || bx >= W || by + s.H < 0 || by >= PH) continue;
-                    foreach (var p in s.Full)
-                    {
-                        if (p.Face != IsoFace.Top) continue;
-                        bool on = zoom == 2 ? p.Edge && p.Y < s.B : p.Y == 0 && p.X == s.A - 1;
-                        if (!on) continue;
-                        int X = bx + p.X, Y = by + p.Y;
-                        if ((uint)X >= (uint)W || (uint)Y >= (uint)PH) continue;
-                        int k = Y * W + X;
-                        _px[k] = grid;
-                        _grid[k] = true;
-                    }
-                }
-        }
-
-        // 3. Blocks, back to front.
-        var cells = vol.Cells();
-        var order = PaintOrder(vol, rot, s);
-        int sxz = vol.SizeX * vol.SizeZ, drawn = 0;
-        foreach (int i in order)
-        {
-            int id = cells[i];
-            if (id == 0) continue;
-            int y = i / sxz, wy = vol.Y0 + y;
-            if (cutY is { } cy && wy > cy) continue;
-            int dx = i % vol.SizeX + vol.X0 - vol.Cx, dz = i / vol.SizeX % vol.SizeZ + vol.Z0 - vol.Cz;
-            if (Math.Abs(dx) > r || Math.Abs(dz) > r) continue;
-            var mat = IsoPalette.Mat(id);
-            if (mat == null) continue;
-            var (u, v) = IsoProjection.Rotate(dx, dz, rot);
-            int dy = wy - vol.Cy;
-            var (bx, by) = IsoProjection.Project(u, v, dy, s);
-            bx += ox; by += oy;
-            if (bx + s.W <= 0 || bx >= W || by + s.H <= 0 || by >= PH) continue;
-            int key = IsoProjection.Depth(u, v, dy, s);
-            var flags = mat.Flags;
-            var pixels = (flags & MatFlags.Small) != 0 ? s.Small : (flags & MatFlags.Flat) != 0 ? s.Flat : s.Full;
-            bool outline = (flags & MatFlags.Outline) != 0, translucent = (flags & MatFlags.Translucent) != 0;
-            bool occludes = !outline && !translucent;
-            float df = 1f - 0.045f * Math.Max(0, -dy) - 0.012f * Math.Max(0, -(u + v));
-            df = Math.Clamp(df, 0.5f, 1f);
-            if ((flags & MatFlags.Emissive) != 0) df = 1f - (1f - df) * 0.3f;
-            int wx = vol.Cx + dx, wz = vol.Cz + dz;
-            drawn++;
-            foreach (var p in pixels)
-            {
-                if (outline && !p.Edge) continue;
-                int X = bx + p.X, Y = by + p.Y;
-                if ((uint)X >= (uint)W || (uint)Y >= (uint)PH) continue;
-                int k = Y * W + X;
-                uint c = glyphMode && colours == IsoColours.None ? 0 : Shade(mat, p, wx, wy, wz, df, colours, s);
-                if (translucent && colours == IsoColours.TrueColor && (_px[k] & IsoPalette.Indexed) == 0) c = IsoPalette.Mix(_px[k], c, 0.62f);
-                _px[k] = c;
-                _mat[k] = (byte)id;
-                _face[k] = p.Face;
-                _grid[k] = false;
-                if (occludes) _depth[k] = key;
-            }
-        }
-        f.BlocksDrawn = drawn;
-
-        // 4. Target outline.
-        if (vol.Target is { Length: >= 3 } tgt)
-        {
-            int dx = tgt[0] - vol.Cx, dy = tgt[1] - vol.Cy, dz = tgt[2] - vol.Cz;
-            var (u, v) = IsoProjection.Rotate(dx, dz, rot);
-            var (bx, by) = IsoProjection.Project(u, v, dy, s);
-            uint hc = Colour(HighlightColour, colours, 11);
-            // Big sprites: a solid outline. Small ones: a yellow tint, so the block underneath (lava, chest...) still reads.
-            bool tint = zoom < 2 && colours == IsoColours.TrueColor;
-            foreach (var p in s.Full)
-            {
-                if (!p.Edge && !tint) continue;
-                int X = bx + ox + p.X, Y = by + oy + p.Y;
-                if ((uint)X >= (uint)W || (uint)Y >= (uint)PH) continue;
-                int k = Y * W + X;
-                _px[k] = tint && (_px[k] & IsoPalette.Indexed) == 0 ? IsoPalette.Mix(_px[k], hc, 0.5f) : hc;
-                if (_mat[k] == 0) { _mat[k] = 255; _face[k] = IsoFace.Top; }
-            }
-        }
+        f.BlocksDrawn = Rasterize(input, s, zoom, r, cutY, W, PH, ox, oy, glyphMode);
 
         // 5. Pixels → character cells.
         for (int row = 0; row < height; row++)
@@ -460,6 +354,170 @@ public sealed class IsoRenderer
             }
         }
         return f;
+    }
+
+    /// <summary>
+    /// Steps 1-4 of a render into the pixel buffers (<c>W</c>×<c>PH</c> pixels, origin offset ox/oy): void background, the faint
+    /// lattice under the volume, the blocks back to front, the target outline. Returns the number of blocks drawn.
+    /// </summary>
+    private int Rasterize(IsoInput input, IsoSprite s, int zoom, int r, int? cutY, int W, int PH, int ox, int oy, bool glyphMode)
+    {
+        var vol = input.Volume;
+        var colours = input.Colours;
+        int rot = input.View.Rotation & 3;
+        int nPx = W * PH;
+        if (_px.Length < nPx) { _px = new uint[nPx]; _depth = new int[nPx]; _mat = new byte[nPx]; _face = new IsoFace[nPx]; _grid = new bool[nPx]; }
+        if (_bgRow.Length < PH) _bgRow = new uint[PH];
+
+        // 1. Void background (vertical gradient; reddish in the Nether).
+        for (int py = 0; py < PH; py++)
+        {
+            uint bg = colours switch
+            {
+                IsoColours.TrueColor => IsoPalette.Mix(IsoPalette.VoidTop(input.Nether), IsoPalette.VoidBottom(input.Nether), PH <= 1 ? 0 : py / (float)(PH - 1)),
+                IsoColours.Ansi256 => IsoPalette.Indexed | (uint)IsoPalette.To256(IsoPalette.Mix(IsoPalette.VoidTop(input.Nether), IsoPalette.VoidBottom(input.Nether), PH <= 1 ? 0 : py / (float)(PH - 1))),
+                IsoColours.Ansi16 => IsoPalette.Indexed | 0u,
+                _ => 0u,
+            };
+            _bgRow[py] = bg;
+            int row = py * W;
+            Array.Fill(_px, bg, row, W);
+            Array.Fill(_depth, int.MinValue, row, W);
+            Array.Clear(_mat, row, W);
+            Array.Clear(_face, row, W);
+            Array.Clear(_grid, row, W);
+        }
+
+        // 2. Faint lattice one level below the volume, so the drop off the island edge reads as void.
+        if (colours is IsoColours.TrueColor or IsoColours.Ansi256) // 16 colours: plain black void (any grid colour is too loud)
+        {
+            uint grid = Colour(IsoPalette.VoidGrid(input.Nether), colours, input.Nether ? 1 : 4);
+            int gdy = vol.Y0 - 1 - vol.Cy;
+            // Compact sprites and ASCII get a sparser lattice (every other tile), or it turns into a checkerboard.
+            int gstep = zoom == 0 || glyphMode ? 2 : 1;
+            for (int du = -r; du <= r; du += gstep)
+                for (int dv = -r; dv <= r; dv += gstep)
+                {
+                    var (bx, by) = IsoProjection.Project(du, dv, gdy, s);
+                    bx += ox; by += oy;
+                    if (bx + s.W < 0 || bx >= W || by + s.H < 0 || by >= PH) continue;
+                    foreach (var p in s.Full)
+                    {
+                        if (p.Face != IsoFace.Top) continue;
+                        bool on = zoom >= 2 ? p.Edge && p.Y < s.B : p.Y == 0 && p.X == s.A - 1;
+                        if (!on) continue;
+                        int X = bx + p.X, Y = by + p.Y;
+                        if ((uint)X >= (uint)W || (uint)Y >= (uint)PH) continue;
+                        int k = Y * W + X;
+                        _px[k] = grid;
+                        _grid[k] = true;
+                    }
+                }
+        }
+
+        // 3. Blocks, back to front.
+        var cells = vol.Cells();
+        var order = PaintOrder(vol, rot, s);
+        int sxz = vol.SizeX * vol.SizeZ, drawn = 0;
+        foreach (int i in order)
+        {
+            int id = cells[i];
+            if (id == 0) continue;
+            int y = i / sxz, wy = vol.Y0 + y;
+            if (cutY is { } cy && wy > cy) continue;
+            int dx = i % vol.SizeX + vol.X0 - vol.Cx, dz = i / vol.SizeX % vol.SizeZ + vol.Z0 - vol.Cz;
+            if (Math.Abs(dx) > r || Math.Abs(dz) > r) continue;
+            var mat = IsoPalette.Mat(id);
+            if (mat == null) continue;
+            var (u, v) = IsoProjection.Rotate(dx, dz, rot);
+            int dy = wy - vol.Cy;
+            var (bx, by) = IsoProjection.Project(u, v, dy, s);
+            bx += ox; by += oy;
+            if (bx + s.W <= 0 || bx >= W || by + s.H <= 0 || by >= PH) continue;
+            int key = IsoProjection.Depth(u, v, dy, s);
+            var flags = mat.Flags;
+            var pixels = (flags & MatFlags.Small) != 0 ? s.Small : (flags & MatFlags.Flat) != 0 ? s.Flat : s.Full;
+            bool outline = (flags & MatFlags.Outline) != 0, translucent = (flags & MatFlags.Translucent) != 0;
+            bool occludes = !outline && !translucent;
+            float df = 1f - 0.045f * Math.Max(0, -dy) - 0.012f * Math.Max(0, -(u + v));
+            df = Math.Clamp(df, 0.5f, 1f);
+            if ((flags & MatFlags.Emissive) != 0) df = 1f - (1f - df) * 0.3f;
+            int wx = vol.Cx + dx, wz = vol.Cz + dz;
+            drawn++;
+            foreach (var p in pixels)
+            {
+                if (outline && !p.Edge) continue;
+                int X = bx + p.X, Y = by + p.Y;
+                if ((uint)X >= (uint)W || (uint)Y >= (uint)PH) continue;
+                int k = Y * W + X;
+                uint c = glyphMode && colours == IsoColours.None ? 0
+                    : _texturer?.Invoke(id, wx, wy, wz, p, s) is { } tc ? IsoPalette.Scale(tc, df) : Shade(mat, p, wx, wy, wz, df, colours, s);
+                if (translucent && colours == IsoColours.TrueColor && (_px[k] & IsoPalette.Indexed) == 0) c = IsoPalette.Mix(_px[k], c, 0.62f);
+                _px[k] = c;
+                _mat[k] = (byte)id;
+                _face[k] = p.Face;
+                _grid[k] = false;
+                if (occludes) _depth[k] = key;
+            }
+        }
+
+        // 4. Target outline.
+        if (vol.Target is { Length: >= 3 } tgt)
+        {
+            int dx = tgt[0] - vol.Cx, dy = tgt[1] - vol.Cy, dz = tgt[2] - vol.Cz;
+            var (u, v) = IsoProjection.Rotate(dx, dz, rot);
+            var (bx, by) = IsoProjection.Project(u, v, dy, s);
+            uint hc = Colour(HighlightColour, colours, 11);
+            // Big sprites: a solid outline. Small ones: a yellow tint, so the block underneath (lava, chest...) still reads.
+            bool tint = zoom < 2 && colours == IsoColours.TrueColor;
+            foreach (var p in s.Full)
+            {
+                if (!p.Edge && !tint) continue;
+                int X = bx + ox + p.X, Y = by + oy + p.Y;
+                if ((uint)X >= (uint)W || (uint)Y >= (uint)PH) continue;
+                int k = Y * W + X;
+                _px[k] = tint && (_px[k] & IsoPalette.Indexed) == 0 ? IsoPalette.Mix(_px[k], hc, 0.5f) : hc;
+                if (_mat[k] == 0) { _mat[k] = 255; _face[k] = IsoFace.Top; }
+            }
+        }
+        return drawn;
+    }
+
+    /// <summary>
+    /// True-colour pixel render for images (the <c>see</c> tool): the same rasteriser as the TUI with any sprite (e.g.
+    /// <see cref="IsoProjection.Custom"/>), <paramref name="radius"/> blocks around the volume's centre, origin at (ox, oy).
+    /// Returns a copy of the W×H 0xRRGGBB pixels; <see cref="PixelAnchor"/> then places overlays.
+    /// </summary>
+    /// <summary>Per-pixel texture hook for image renders: (id, world x, y, z, sprite pixel, sprite) → 0xRRGGBB already lit, or
+    /// null for the palette shading. Only <see cref="RenderPixels"/> uses it; the TUI path never does.</summary>
+    public delegate uint? Texturer(int id, int wx, int wy, int wz, SpritePx p, IsoSprite s);
+
+    private Texturer? _texturer;
+
+    public uint[] RenderPixels(IsoInput input, IsoSprite s, int radius, int W, int H, int ox, int oy, out int drawn, Texturer? texturer)
+    {
+        _texturer = texturer;
+        try { return RenderPixels(input, s, radius, W, H, ox, oy, out drawn); }
+        finally { _texturer = null; }
+    }
+
+    public uint[] RenderPixels(IsoInput input, IsoSprite s, int radius, int W, int H, int ox, int oy, out int drawn)
+    {
+        var tc = input with { Colours = IsoColours.TrueColor, Unicode = true };
+        int? cutY = input.View.Cutaway ? input.Volume.Cy + 1 : null;
+        drawn = Rasterize(tc, s, Math.Max(s.Zoom, 2), radius, cutY, W, H, ox, oy, glyphMode: false);
+        return _px.AsSpan(0, W * H).ToArray();
+    }
+
+    /// <summary>Pixel where an entity standing in cell (dx, dy, dz) (relative to the volume centre) is drawn after
+    /// <see cref="RenderPixels"/>, and whether a nearer opaque block covers it. Null when off the image.</summary>
+    public (int X, int Y, bool Hidden)? PixelAnchor(int dx, int dy, int dz, int rot, IsoSprite s, int ox, int oy, int W, int H)
+    {
+        var (u, v) = IsoProjection.Rotate(dx, dz, rot);
+        var (bx, by) = IsoProjection.Project(u, v, dy, s);
+        int x = ox + bx + s.A - 1, y = oy + by + s.B + s.C / 2;
+        if ((uint)x >= (uint)W || (uint)y >= (uint)H) return null;
+        return (x, y, _depth[y * W + x] > IsoProjection.Depth(u, v, dy, s));
     }
 
     /// <summary>Character cell where an entity standing in cell (dx, dy, dz) is drawn, its depth, and whether a nearer opaque

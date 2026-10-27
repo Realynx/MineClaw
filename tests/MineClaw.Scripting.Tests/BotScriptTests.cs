@@ -79,13 +79,16 @@ public class BotScriptTests
         int tool = Tokens(def.Name, def.Description, def.InputSchema);
         int pointer = (int)Math.Ceiling(ScriptPrompts.BrainPointer.Length / 3.5);
         int sheet = (int)Math.Ceiling(ScriptPrompts.CheatSheet.Length / 3.5);
-        Assert.True(tool <= 150, $"script tool ≈{tool} tok");
+        // Tool: +save/rollback/list ops, args and force fields (was ≤150). Sheet: reliability rules + an exemplar, and it
+        // moved from the worker's prefix to the brain's (only Opus writes scripts); the worker keeps one ≤20-token line.
+        Assert.True(tool <= 170, $"script tool ≈{tool} tok");
         Assert.True(pointer <= 60, $"brain pointer ≈{pointer} tok");
-        Assert.True(sheet <= 250, $"cheat-sheet ≈{sheet} tok");
-        Assert.Contains("SHORT scripts", h.Runtime.Worker!.SystemPrompt[0].Text);
-        Assert.DoesNotContain("# script tool", h.Runtime.Agent.SystemPrompt[0].Text);
+        Assert.True(sheet <= 420, $"cheat-sheet ≈{sheet} tok");
+        Assert.Contains("# script tool", h.Runtime.Agent.SystemPrompt[0].Text);
+        Assert.DoesNotContain("# script tool", h.Runtime.Worker!.SystemPrompt[0].Text);
+        Assert.Contains(ScriptPrompts.WorkerLine.Trim(), h.Runtime.Worker!.SystemPrompt[0].Text);
         int bt = brain.Sum(d => Tokens(d.Name, d.Description, d.InputSchema));
-        Assert.True(bt + 75 <= 2300, $"brain tools ≈{bt} + hive 75"); // same cap as BrainSplitTests
+        Assert.True(bt + Agent.Tools.ToolBudgets.HiveTool <= Agent.Tools.ToolBudgets.Brain, $"brain tools ≈{bt} + hive"); // the one shared cap
     }
 
     [Fact]
@@ -125,13 +128,48 @@ public class BotScriptTests
     [Fact]
     public async Task No_commands_reach_the_server_through_the_real_chat_path()
     {
-        var (h, c, _) = Bot();
+        var (h, c, _) = Bot(scripts: new ScriptOptions { MaxSayPerRun = 5, SayMinIntervalSeconds = 0 });
         var r = await Script(h, new { op = "run", code = "say'/op maid_chan' emote'waves' say(string.rep('a', 95) .. ' /kill @a')" });
         Assert.True(r.Ok, r.Text);
         await Rig.Until(() => c.Said.Count >= 3);
         Assert.Contains("/me waves", c.Said);
         Assert.DoesNotContain(c.Said, l => l.TrimStart().StartsWith('/') && !l.StartsWith("/me "));
         Assert.DoesNotContain(c.Said, l => l.Contains("/kill") || l.Contains("/op"));
+    }
+
+    [Fact]
+    public async Task A_scan_that_says_every_block_sends_at_most_one_line_and_logs_the_rest()
+    {
+        // Live 10-27: a brain script say-ed each scanned block ("4,64,6 cobblestone", "5,64,6 water"...) into public chat.
+        var (h, c, _) = Bot();
+        var r = await Script(h, new { op = "run", code =
+            "say'checking the gen foxy' for x=4,6 do say(x..',64,6 cobblestone') end say'all done'" });
+        Assert.True(r.Ok, r.Text);
+        await Task.Delay(300);
+        Assert.Equal(["checking the gen foxy"], c.Said);      // 1 per 10 s: the rest went to the log
+        Assert.DoesNotContain(c.Said, l => l.Contains("cobblestone"));
+    }
+
+    [Fact]
+    public async Task A_pure_data_say_is_logged_not_said()
+    {
+        var (h, c, _) = Bot(scripts: new ScriptOptions { SayMinIntervalSeconds = 0 });
+        var r = await Script(h, new { op = "run", code = "say'4,64,6 cobblestone'" });
+        Assert.True(r.Ok, r.Text);
+        await Task.Delay(200);
+        Assert.Empty(c.Said);
+    }
+
+    [Fact]
+    public async Task Fail_used_to_return_scan_data_says_to_use_return()
+    {
+        var (h, _, _) = Bot();
+        var r = await Script(h, new { op = "run", code = "fail('4,6=cobblestone 5,6=water 6,6=water 4,7=lava')" });
+        Assert.False(r.Ok);
+        Assert.Contains("fail() is for errors, not data", r.Text);
+        var ok = await Script(h, new { op = "run", code = "return '4,6=cobblestone 5,6=water 6,6=water 4,7=lava 5,7=cobblestone 6,7=water'" });
+        Assert.True(ok.Ok, ok.Text);
+        Assert.Contains("6,7=water", ok.Text);                // return carries the data back (up to 200 chars)
     }
 
     [Fact]

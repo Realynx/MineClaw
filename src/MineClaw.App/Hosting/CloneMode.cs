@@ -64,8 +64,16 @@ public static class CloneMode
         var welcome = await host0.ConnectParentAsync(TimeSpan.FromSeconds(10), signals.Token);
         if (welcome == null) return CloneExitCodes.NoParent;
 
+        // Main chose a model profile for this clone's brain (worker/memory too when the profile says so). A non-Opus brain runs
+        // saved scripts but never writes them (LlmOptions.BrainAuthorsScripts, enforced by the script tool policy).
+        if (welcome.Task?.Profile is { Length: > 0 } profile)
+        {
+            if (agentOptions.Llm.ApplyBrainProfile(profile) is { } bad) log.LogWarning("clone {Clone}: profile {Profile} not applied: {Why}", clone, profile, bad);
+            else log.LogInformation("clone {Clone}: brain on profile {Profile} ({Provider}/{Model}){Scripts}", clone, profile,
+                agentOptions.Llm.MainProvider, agentOptions.Llm.MainModel, agentOptions.Llm.BrainAuthorsScripts ? "" : "; runs saved scripts only");
+        }
         var telemetry = new PromptTelemetry(agentOptions, telemetryOptions, telemetryOptions.Enabled ? telemetryDir : null);
-        ILlmClient llm = new AnthropicLlmClient(agentOptions.Llm);
+        ILlmClient llm = LlmClientFactory.Create(agentOptions.Llm);
         if (telemetryOptions.Enabled) llm = telemetry.Wrap(llm);
         var gated = new GatedLlmClient(llm, agentOptions.Prices, hive.Budget, () => host0.Link);
         gated.Denied += why => { log.LogWarning("hive budget refused a call: {Why}; logging out", why); _ = host0.LogoutAsync("budget", planned: true); };
@@ -83,6 +91,7 @@ public static class CloneMode
             hiveBots: () => [host0.Main ?? "", .. hive.Clones()]);
         var rt = bot.Runtime;
         telemetry.Attach(rt);
+        _ = rt.Rag.WarmUpAsync(signals.Token); // DNS + first TLS to the embedding provider now, not in the first turn
         game.ReservedItems = new HashSet<int>(); // a clone keeps nothing back: everything goes into storage before logout
 
         // Identity: the identity row in the shared db is main's; a clone has its own fixed chat name and can't rename it.
@@ -94,6 +103,12 @@ public static class CloneMode
             muted: text => _ = host0.ReportAsync("progress", text.Length > 160 ? text[..160] : text));
         rt.Chat.Accepted += m => { if (m.Player != null) host0.ChatAccepted(m.Player); };
         HiveTools.RegisterClone(rt.Tools, host0);
+        // Script spawn: semi-sleep (zero calls until a wake), the script as this clone's standing order, results over IPC.
+        using var runner = MineClaw.Bot.GameTools.ScriptTools.Of(rt) is { } bridge
+            ? new CloneScriptRunner(rt, bridge, (text, pct) => host0.ReportAsync("progress", text, pct),
+                (ok, text, logout) => host0.ReportResultAsync(ok, text, logout), loggers.CreateLogger("MineClaw.Hive"))
+            : null;
+        if (welcome.Task is { } first) runner?.Prepare(first);
 
         var store = new HiveStore(rt.Db, clone);
         host0.Store = store;
@@ -116,7 +131,7 @@ public static class CloneMode
         var commands = new ConsoleCommands(game, rt, agent, log, signals.Source);
         var source = new InProcessBotSource(game, rt, telemetry, agent, commands, host.Tui.Viewport, signals.Token);
         var body = new GameCloneBody(client, game, rt, agent, commands, source, telemetry, new GameInventoryPort(game, rt.Observations, rt.Memory), log,
-            () => DateTimeOffset.UtcNow - lastDangerAt < TimeSpan.FromSeconds(15) ? lastDanger : "died");
+            () => DateTimeOffset.UtcNow - lastDangerAt < TimeSpan.FromSeconds(15) ? lastDanger : "died", runner);
         host0.Body = body;
         log.LogInformation("clone {Clone} starting (pipe {Pipe}, scope {Scope})", clone, cli.ParentPipe, agentOptions.Hive.ScopeFor(clone));
 
@@ -134,7 +149,8 @@ public static class CloneMode
 
     /// <summary>The real clone body: client + brain + console + telemetry of this process.</summary>
     private sealed class GameCloneBody(MinecraftClient client, IGameClient game, AgentRuntime rt, PausableAgent agent, ConsoleCommands commands,
-        InProcessBotSource source, PromptTelemetry telemetry, IInventoryPort inventory, ILogger log, Func<string> deathCause) : ICloneBody
+        InProcessBotSource source, PromptTelemetry telemetry, IInventoryPort inventory, ILogger log, Func<string> deathCause,
+        CloneScriptRunner? runner = null) : ICloneBody
     {
         private bool _wired;
 
@@ -190,14 +206,32 @@ public static class CloneMode
 
         public void AssignTask(TaskMsg task)
         {
+            // A later task may move the brain to another profile (the next call uses it).
+            if (task.Profile is { Length: > 0 } p && !string.Equals(p, rt.Options.Llm.MainProfile, StringComparison.OrdinalIgnoreCase)
+                && rt.Options.Llm.ApplyBrainProfile(p) is { } bad)
+                log.LogWarning("profile {Profile} not applied: {Why}", p, bad);
+            // Script task: started by C# at once, brain asleep (no notice, no turn).
+            if (runner != null && CloneScriptRunner.Handles(task)) { runner.Start(task); return; }
+            if (runner?.Task != null) runner.Release("new task from main");
             var text = (task.Restarted ? "(restarted after a crash: check your inventory first) " : "") +
                 $"[hive task] {task.Text} — take what you need from storage first; when finished call hive_report done (or failed).";
             rt.Events.Post(GameEvent.Notice(text, EventPriority.Normal));
         }
 
+        /// <summary>Task loadout from storage (WorldIndexer chest data in the shared db), crafting a tool when the parts are there.</summary>
+        public async Task<LoadoutReport?> PrepareLoadoutAsync(IReadOnlyList<string> loadout, CancellationToken ct)
+        {
+            if (!game.IsPlaying || loadout.Count == 0) return null;
+            if (MineClaw.Bot.GameTools.Loadout.Lacking(game.World, loadout).Count == 0) return null;
+            var r = await MineClaw.Bot.GameTools.Loadout.FetchAsync(game, rt.Observations, loadout, ct);
+            return new LoadoutReport(r.Text, r.Missing);
+        }
+
         public async Task<bool> ExecuteAsync(string line, CancellationToken ct) { await commands.ExecuteAsync(line, ct); return true; }
 
         public void InjectChat(string raw) => rt.Chat.OnServerChat(raw, test: true);
+
+        public void Note(string text) => rt.Events.Post(GameEvent.Notice(text, EventPriority.Normal));
 
         public Task DisconnectAsync(string reason) => client.DisconnectAsync(reason);
     }

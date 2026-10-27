@@ -6,6 +6,9 @@ namespace MineClaw.Agent.Tools;
 /// </summary>
 public sealed record ToolResult(bool Ok, string Text)
 {
+    /// <summary>Optional picture for the model (the <c>see</c> tool); travels into the tool_result block next to <see cref="Text"/>.</summary>
+    public Llm.LlmImage? Image { get; init; }
+
     public static ToolResult Success(string text) => new(true, text);
     public static ToolResult Error(string text) => new(false, text);
 

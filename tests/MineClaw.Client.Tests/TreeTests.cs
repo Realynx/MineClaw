@@ -79,7 +79,11 @@ internal static class TreeWorld
         };
     }
 
-    public static TreeChopOptions Fast => new() { DecayWait = TimeSpan.FromMilliseconds(200), LeafPhase = TimeSpan.FromSeconds(20), Timeout = TimeSpan.FromSeconds(50) };
+    /// <summary>Short waits; stewardship off (single-tree test islands) unless a test turns it on.</summary>
+    public static TreeChopOptions Fast => new()
+    {
+        DecayWait = TimeSpan.FromMilliseconds(200), LeafPhase = TimeSpan.FromSeconds(20), Timeout = TimeSpan.FromSeconds(50), MinTrees = 0,
+    };
 
     /// <summary>Every position the client reported had ground under it (it never stood/walked over the void).</summary>
     public static void AssertNeverOverVoid(FakeServer s)
@@ -300,7 +304,7 @@ public class ChopTreeTests(Xunit.Abstractions.ITestOutputHelper log)
         using var __ = s;
         var r = await c.ChopTreeAsync(options: TreeWorld.Fast);
         Assert.False(r.Ok);
-        Assert.Equal("no sapling dropped, NOT replanted (chopped oak tree: 4 logs, 0 saplings; dirt at 8,63,8 is free)", r.Message);
+        Assert.Matches(@"^no sapling dropped, NOT replanted \(chopped oak tree: 4 logs, 0 saplings; dirt at 8,63,8 is free; broke \d+ leaves, \d+ decayed\)$", r.Message);
         Assert.False(s.Blocks.ContainsKey((8, 64, 8)));
     }
 

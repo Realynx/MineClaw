@@ -53,6 +53,37 @@ switch (mode)
             Environment.Exit(w == null ? CloneExitCodes.NoParent : 3);
             return 3;
         }
+    case "crashonce":
+        {
+            // First run: takes a claim, then crashes. Restarted run (marker file exists): reports what the welcome resumed.
+            var marker = Arg("--marker");
+            var w = await host.ConnectParentAsync(TimeSpan.FromSeconds(10), default);
+            if (w == null) { Out("NOPARENT"); return CloneExitCodes.NoParent; }
+            if (!File.Exists(marker))
+            {
+                var c = await host.Claims.TryClaimAsync(ClaimKey.Block(9, 64, 9));
+                File.WriteAllText(marker, "crashed");
+                Out("READY claim=" + c.Ok);
+                await Task.Delay(300);
+                Environment.Exit(3);
+                return 3;
+            }
+            var t = w.Task;
+            // ReclaimFor ran before the welcome was built: the mirror already shows the lease as this clone's again.
+            bool regranted = w.Claims.Leases.Any(l => l.Owner == name && l.Key == ClaimKey.Block(9, 64, 9).Id);
+            var body = new FakeBody(name, new FakePort());
+            host.Body = body;
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(500);
+                await host.ReportAsync("progress", $"WELCOME restarted={t?.Restarted} task={t?.Text} loadout={string.Join(",", t?.Loadout ?? [])} " +
+                    $"claims={string.Join(",", t?.Claims ?? [])} regranted={regranted}");
+            });
+            Out("READY");
+            int code = await host.RunAsync(default, w);
+            Out("EXIT " + code);
+            return code;
+        }
     case "dbwrite":
         {
             // Holds a claim, saves an inventory snapshot, then hammers the shared db until it is killed.

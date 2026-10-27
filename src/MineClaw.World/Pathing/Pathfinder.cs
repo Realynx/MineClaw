@@ -27,12 +27,19 @@ public sealed partial class Pathfinder
         _world = world;
         _o = options;
         _w = new Overlay(world);
+        _view = options.Mechanisms is { IsEmpty: false } v ? v : null;
     }
 
-    /// <summary>Finds a path from foot cell <paramref name="start"/> to <paramref name="goal"/>.</summary>
+    /// <summary>Finds a path from foot cell <paramref name="start"/> to <paramref name="goal"/>. Routes through mechanism
+    /// doors are kept only when there is a known way back out (see <see cref="PathOptions.AllowOneWay"/>).</summary>
     public static PathResult FindPath(IBlockAccess world, BlockPos start, Goal goal, PathOptions? options = null,
-        CancellationToken ct = default) =>
-        new Pathfinder(world, options ?? PathOptions.Default).Search(start, goal, ct);
+        CancellationToken ct = default)
+    {
+        var o = options ?? PathOptions.Default;
+        var pf = new Pathfinder(world, o);
+        var r = pf.Search(start, goal, ct);
+        return o.AllowOneWay || r.Steps.Count == 0 ? r : pf.CheckReturn(r, start, goal, ct);
+    }
 
     /// <summary>Finds a path from a feet position (see <see cref="StartCellFor"/>).</summary>
     public static PathResult FindPath(IBlockAccess world, Vec3d feet, Goal goal, PathOptions? options = null,
@@ -74,28 +81,36 @@ public sealed partial class Pathfinder
         public readonly int X = x, Y = y, Z = z;
         public double G = double.MaxValue;
         public double H;
+        /// <summary>Estimated elapsed ticks (physics move times, not costs): pulse windows are checked against it.</summary>
+        public double T;
         public Node? Parent;
         public PathStep? Step;
         public Mod? Mods;
         public int Scaffold;
         public bool Closed;
+        /// <summary>Active button/plate pulse (its effects are in the world until the deadline).</summary>
+        public PulseState? Pulse;
+        /// <summary>Levers flipped so far on this path (their effects are in <see cref="Mods"/>).</summary>
+        public LeverUse? Levers;
+        public BlockPos Pos => new(X, Y, Z);
     }
 
     private PathResult Search(BlockPos start, Goal goal, CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
-        _w.Mods = null;
+        _w.Mods = _baseMods;
+        _w.Pulse = null;
         var startCell = Cell(start.X, start.Y, start.Z);
         if (!startCell.Ok)
             return new PathResult(PathStatus.InvalidStart, [], 0, 0, sw.Elapsed, 0, $"start {start} is not a standable cell");
 
-        var nodes = new Dictionary<long, Node>();
+        var nodes = new Dictionary<(long, int), Node>();
         var open = new PriorityQueue<(Node N, double G), double>();
-        var s = new Node(start.X, start.Y, start.Z) { G = 0, H = goal.Distance(start.X, start.Y, start.Z) };
-        nodes[Key(start.X, start.Y, start.Z)] = s;
+        var s = new Node(start.X, start.Y, start.Z) { G = 0, H = goal.Distance(start.X, start.Y, start.Z), Mods = _baseMods };
+        nodes[(Key(start.X, start.Y, start.Z), 0)] = s;
         open.Enqueue((s, 0), s.H * PathOptions.WalkCost);
         Node best = s;
-        int explored = 0;
+        int explored = 0, tooSlow = 0;
         var moves = new List<Candidate>(32);
         string? reason = null;
 
@@ -106,7 +121,7 @@ public sealed partial class Pathfinder
             n.Closed = true;
             explored++;
 
-            if (goal.IsReached(n.X, n.Y, n.Z))
+            if (goal.IsReached(n.X, n.Y, n.Z) && !InPulseSolid(n))
                 return Build(PathStatus.Found, n, explored, sw.Elapsed, null);
 
             if (n.H < best.H || (n.H == best.H && n.G < best.G)) best = n;
@@ -120,36 +135,45 @@ public sealed partial class Pathfinder
 
             moves.Clear();
             _w.Mods = n.Mods;
+            _w.Pulse = n.Pulse?.Mods;
             Expand(n, moves);
-            foreach (var m in moves)
+            foreach (var mv in moves)
             {
+                var m = mv;
                 if (_o.Avoid is { } avoid && avoid.Contains(new BlockPos(m.X, m.Y, m.Z))) continue;
                 if (m.Kind is MoveKind.Jump or MoveKind.SprintJump or MoveKind.JumpGap && _o.AvoidJumps is { } aj && aj.Contains((new BlockPos(n.X, n.Y, n.Z), new BlockPos(m.X, m.Y, m.Z)))) continue;
                 int scaffold = n.Scaffold + (m.Place is null ? 0 : 1);
                 if (scaffold > _o.ScaffoldBudget && m.Place is not null) continue;
+                // Mechanisms: pulse windows, plates walked onto, lever/button effects.
+                if (!MechanismStep(n, ref m, out var pulse, out var levers, out var requires, out double time)) { tooSlow++; continue; }
                 long k = Key(m.X, m.Y, m.Z);
-                if (!nodes.TryGetValue(k, out var t))
+                var key = (k, StateKey(pulse, levers, n.T + time));
+                if (!nodes.TryGetValue(key, out var t))
                 {
                     t = new Node(m.X, m.Y, m.Z) { H = goal.Distance(m.X, m.Y, m.Z) };
-                    nodes[k] = t;
+                    nodes[key] = t;
                 }
                 if (t.Closed) continue;
                 double ng = n.G + m.Cost;
                 if (ng >= t.G) continue;
                 t.G = ng;
+                t.T = n.T + time;
                 t.Parent = n;
                 t.Scaffold = scaffold;
                 Mod? mods = n.Mods;
                 foreach (var b in m.Break) mods = new Mod(b, 0, mods);
                 if (m.Place is { } p) mods = new Mod(p, _o.ScaffoldBlockId, mods);
                 if (m.Open is { } opens) foreach (var tg in opens) mods = ToggleMods(tg, mods);
+                if (m.Trigger is { Link.IsPulse: false } lever) mods = LeverMods(lever, mods);
                 t.Mods = mods;
-                t.Step = new PathStep(m.X, m.Y, m.Z, m.Kind, m.Floor, m.Cost, m.Break, m.Place, m.Sneak, m.Open, m.Jump);
+                t.Pulse = pulse;
+                t.Levers = levers;
+                t.Step = new PathStep(m.X, m.Y, m.Z, m.Kind, m.Floor, m.Cost, m.Break, m.Place, m.Sneak, m.Open, m.Jump, m.Trigger, requires);
                 open.Enqueue((t, ng), ng + t.H * PathOptions.WalkCost);
             }
         }
 
-        reason ??= "no route";
+        reason ??= tooSlow > 0 && _view is not null ? "no route (mechanism pulses too short to make it)" : "no route";
         if (_o.AllowPartial && best != s)
             return Build(PathStatus.Partial, best, explored, sw.Elapsed, reason);
         return new PathResult(PathStatus.NoPath, [], 0, explored, sw.Elapsed, 0, reason);
@@ -160,6 +184,14 @@ public sealed partial class Pathfinder
         var steps = new List<PathStep>();
         for (var n = end; n.Parent is not null; n = n.Parent) steps.Add(n.Step!);
         steps.Reverse();
+        // A plate walked over that no later step needs is just a walk (the follower doesn't wait on it).
+        for (int i = 0; i < steps.Count; i++)
+        {
+            if (steps[i] is not { Kind: MoveKind.Trigger, Trigger: { IsPlate: true } tu }) continue;
+            bool needed = false;
+            for (int j = i + 1; j < steps.Count && !needed; j++) needed = steps[j].Requires == tu;
+            if (!needed) steps[i] = steps[i] with { Kind = MoveKind.Walk, Trigger = null };
+        }
         return new PathResult(status, steps, end.G, explored, elapsed, end.Scaffold, reason);
     }
 
@@ -168,8 +200,10 @@ public sealed partial class Pathfinder
 
     // ------------------------------------------------------------------ moves
 
+    /// <param name="Time">Estimated ticks the move takes (negative = use <see cref="Cost"/>, which never underestimates).</param>
     private readonly record struct Candidate(int X, int Y, int Z, MoveKind Kind, double Floor, double Cost,
-        IReadOnlyList<BlockPos> Break, BlockPos? Place, bool Sneak, IReadOnlyList<DoorToggle>? Open = null, ParkourPlan? Jump = null);
+        IReadOnlyList<BlockPos> Break, BlockPos? Place, bool Sneak, IReadOnlyList<DoorToggle>? Open = null, ParkourPlan? Jump = null,
+        double Time = -1, TriggerUse? Trigger = null);
 
     private static readonly (int Dx, int Dz)[] Cardinals = [(1, 0), (-1, 0), (0, 1), (0, -1)];
     private static readonly (int Dx, int Dz)[] Diagonals = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
@@ -278,6 +312,9 @@ public sealed partial class Pathfinder
 
         // Gap jumps (sprint / plain), each validated by forward physics simulation.
         if (_o.AllowParkour && here.Ground && !here.Water && !here.Climb) TryParkour(output, here, x, y, z);
+
+        // Known mechanisms: press a button / flip a lever within reach.
+        if (_view is not null) TryTriggers(output, n, here);
     }
 
     private void AddWalk(List<Candidate> output, CellInfo here, bool hereEdge, int tx, int ty, int tz, CellInfo t,
@@ -289,14 +326,16 @@ public sealed partial class Pathfinder
         if (t.Floor > here.Floor + 1e-6) cost += 0.5;
         bool sneak = (hereEdge || targetEdge) && !water;
         if (sneak) cost *= _o.EdgeCostMultiplier;
+        double time = cost + (breaks.Count > 0 ? DigCosts(breaks) : 0);
         cost += HazardPenalty(tx, ty, tz) + DigCosts(breaks);
         if (open is { Count: > 0 })
         {
             cost += OpenCosts(open);
+            time += open.Count * 6;
             kind = OpenKind(open);
         }
         else open = null;
-        output.Add(new Candidate(tx, ty, tz, water && kind == MoveKind.Walk ? MoveKind.Swim : kind, t.Floor, cost, breaks, null, sneak, open));
+        output.Add(new Candidate(tx, ty, tz, water && kind == MoveKind.Walk ? MoveKind.Swim : kind, t.Floor, cost, breaks, null, sneak, open, Time: time));
     }
 
     private void AddJump(List<Candidate> output, CellInfo here, bool hereEdge, int tx, int ty, int tz, CellInfo t,
@@ -450,6 +489,7 @@ public sealed partial class Pathfinder
 
     private double HazardPenalty(int x, int y, int z)
     {
+        if (Openables.IsPlate(_w.GetBlock(x, y, z))) return PlatePenalty(x, y, z);
         foreach (var (dx, dz) in Cardinals)
             if (Safety.IsHazard(_w, _w.GetBlock(x + dx, y, z + dz)) || Safety.IsHazard(_w, _w.GetBlock(x + dx, y + 1, z + dz)))
                 return _o.HazardAdjacentPenalty;
@@ -465,7 +505,7 @@ public sealed partial class Pathfinder
 
     private CellInfo Cell(int x, int y, int z)
     {
-        if (_w.Mods is not null) return CellUncached(x, y, z);
+        if (_w.Mods is not null || _w.Pulse is not null) return CellUncached(x, y, z);
         long k = Key(x, y, z);
         if (_cellCache.TryGetValue(k, out var c)) return c;
         c = CellUncached(x, y, z);
@@ -481,6 +521,8 @@ public sealed partial class Pathfinder
         if (!_w.IsLoaded(x, z)) return CellInfo.Invalid;
         int feet = _w.GetBlock(x, y, z), head = _w.GetBlock(x, y + 1, z);
         if (Safety.IsHazard(_w, feet) || Safety.IsHazard(_w, head)) return CellInfo.Invalid;
+        if (Openables.IsPlate(feet) && !PlateOk(x, y, z)) return CellInfo.Invalid;
+        if (_o.AvoidPistonPaths && (InPistonPath(x, y, z) || InPistonPath(x, y + 1, z))) return CellInfo.Invalid;
         bool water = BlockShapes.IsWater(feet);
         bool climb = BlockShapes.IsClimbable(_w, feet);
 
@@ -547,7 +589,7 @@ public sealed partial class Pathfinder
     /// (without water to land in).</summary>
     private bool IsDeadly(int x, int y, int z)
     {
-        bool cache = _w.Mods is null;
+        bool cache = _w.Mods is null && _w.Pulse is null;
         long k = Key(x, y, z);
         if (cache && _deadlyCache.TryGetValue(k, out bool v)) return v;
         v = ComputeDeadly(x, y, z);
@@ -663,7 +705,9 @@ public sealed partial class Pathfinder
         if (!Openables.IsOpenable(id)) return null;
         if (_o.CanOpen is { } veto && !veto(s, id)) return null;
         if (Openables.OpensByHand(id)) return new DoorToggle(s, id, meta);
-        if (id != Openables.IronDoor) return null;
+        if (id != Openables.IronDoor || _banned.Contains(s)) return null;
+        // Known triggers of an iron door work through their Trigger steps (timing-aware); the near-side heuristic only
+        // considers actuators we know nothing about.
         return FindActuator(s, from, to) is { } a ? new DoorToggle(s, id, meta, a) : null;
     }
 
@@ -671,7 +715,9 @@ public sealed partial class Pathfinder
     /// closer to it than to the far side. Iron doors with neither are obstacles.</summary>
     private BlockPos? FindActuator(BlockPos door, BlockPos from, BlockPos to)
     {
-        if (Openables.IsPlate(_w.GetBlock(from.X, from.Y, from.Z))) return from;
+        // Safety: never fire an unknown trigger next to TNT/dispensers.
+        if (Openables.IsPlate(_w.GetBlock(from.X, from.Y, from.Z)) && _view?.ForTrigger(from) is null)
+            return Explosives(from) ? null : from;
         var eye = new Vec3d(from.X + 0.5, from.Y + PlayerPhysics.EyeHeight, from.Z + 0.5);
         BlockPos? best = null;
         double bestD = double.MaxValue;
@@ -687,7 +733,11 @@ public sealed partial class Pathfinder
             double dFrom = Math.Pow(ax - from.X, 2) + Math.Pow(az - from.Z, 2);
             double dTo = Math.Pow(ax - to.X, 2) + Math.Pow(az - to.Z, 2);
             if (d > _o.ActuatorReach || dFrom >= dTo) continue;
-            if (d < bestD) { bestD = d; best = new BlockPos(ax, ay, az); }
+            var ap = new BlockPos(ax, ay, az);
+            if (_view?.ForTrigger(ap) is not null || Explosives(ap)) continue;
+            // An unknown lever inside someone's build might run anything: only levers we learned (or were allowed).
+            if (id == Openables.Lever && !_o.AllowUnknownLevers && _o.IsBuild is { } build && build(ap, id)) continue;
+            if (d < bestD) { bestD = d; best = ap; }
         }
         return best;
     }
@@ -792,9 +842,13 @@ public sealed partial class Pathfinder
     private sealed class Overlay(IBlockAccess inner) : IBlockAccess
     {
         public Mod? Mods;
+        /// <summary>Effects of the active button/plate pulse (on top of <see cref="Mods"/>).</summary>
+        public Mod? Pulse;
 
         public int GetBlock(int x, int y, int z)
         {
+            for (var m = Pulse; m is not null; m = m.Next)
+                if (m.Pos.X == x && m.Pos.Y == y && m.Pos.Z == z) return m.Id;
             for (var m = Mods; m is not null; m = m.Next)
                 if (m.Pos.X == x && m.Pos.Y == y && m.Pos.Z == z) return m.Id;
             return inner.GetBlock(x, y, z);
@@ -802,6 +856,8 @@ public sealed partial class Pathfinder
 
         public int GetMeta(int x, int y, int z)
         {
+            for (var m = Pulse; m is not null; m = m.Next)
+                if (m.Pos.X == x && m.Pos.Y == y && m.Pos.Z == z) return m.Meta;
             for (var m = Mods; m is not null; m = m.Next)
                 if (m.Pos.X == x && m.Pos.Y == y && m.Pos.Z == z) return m.Meta;
             return inner.GetMeta(x, y, z);

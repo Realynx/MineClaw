@@ -21,6 +21,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\MineClaw.Scripting\MineClaw.Scripting.csproj" />
     <ProjectReference Include="..\..\src\MineClaw.Bot\MineClaw.Bot.csproj" />
+    <!-- Hive script spawns (semi-sleep clone runner, hive tool policy) run on the same in-memory bot. -->
+    <ProjectReference Include="..\..\src\MineClaw.Hive\MineClaw.Hive.csproj" />
     <!-- Reuse the Bot tests' in-memory IGameClient/NoLlm/TestBot without referencing that project. -->
     <Compile Include="..\MineClaw.Bot.Tests\TestSupport.cs" Link="Linked\BotTestSupport.cs" />
   </ItemGroup>

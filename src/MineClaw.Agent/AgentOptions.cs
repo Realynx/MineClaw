@@ -16,6 +16,15 @@ public sealed class AgentOptions
     public PriceTable Prices { get; set; } = new();
     public ChatOptions Chat { get; set; } = new();
     public EventQueueOptions Events { get; set; } = new();
+    /// <summary>
+    /// "Agent:ChatDebounce": per-player typing debounce before a turn, one cancel-and-restart while the first response is
+    /// still generating, "[new chat]" injection at round boundaries, and reply merging for ask_player &amp; co.
+    /// </summary>
+    public ChatDebounceOptions ChatDebounce { get; set; } = new();
+    /// <summary>"Agent:Questions": ask_player with a recommended default never parks the bot; timeouts go with the default.</summary>
+    public Human.QuestionOptions Questions { get; set; } = new();
+    /// <summary>"Agent:Idle": standing-order resume and the idle default job while players are online.</summary>
+    public Human.IdleOptions Idle { get; set; } = new();
     public ContextOptions Context { get; set; } = new();
     public TriageOptions Triage { get; set; } = new();
     /// <summary>Local retrieval (SQLite FTS5 + vectors + R*Tree): "Agent:Rag".</summary>
@@ -46,7 +55,7 @@ public sealed class AgentOptions
     /// A long-running call that failed on a target is not re-run on that target for this long (the previous failure is
     /// returned instead) unless the args materially differ or a player says "try again". 0 = off.
     /// </summary>
-    public int FailureMemoryMinutes { get; set; } = 10;
+    public int FailureMemoryMinutes { get; set; } = 3;
 
     /// <summary>Directory for the SQLite db (mineclaw.db), usage.json and a legacy memory.json (imported once).</summary>
     public string DataDirectory { get; set; } = "data";
@@ -81,6 +90,10 @@ public sealed class AgentOptions
     /// <summary>Post an idle check-in after this many minutes with no episodes and no activity (0 = off).</summary>
     public int IdleCheckInMinutes { get; set; } = 20;
 
+    /// <summary>Idle check-in interval while no human player is online (at least <see cref="IdleCheckInMinutes"/>; 0 = none
+    /// then). Default hourly: an unattended hive mostly sleeps while its scripts and delegated loops run.</summary>
+    public int IdleCheckInMinutesNoPlayers { get; set; } = 60;
+
     /// <summary>Cap (chars) on the per-turn <c>[since last turn]</c> digest line (0 = never include it).</summary>
     public int TurnDigestMaxChars { get; set; } = 500;
 
@@ -96,6 +109,12 @@ public sealed class AgentOptions
         ["look"] = 1200,
         ["window"] = 1200,
     };
+
+    /// <summary>
+    /// "Agent:Brainstem": the deterministic controller under the brain (head turn, reflex commands, speculative first steps,
+    /// social idle, the [here] pre-observation, non-blocking moves, streaming execution, simple-turn effort).
+    /// </summary>
+    public Brainstem.BrainstemOptions Brainstem { get; set; } = new();
 
     /// <summary>When paused by budget, reply to addressed chat with a canned notice at most this often.</summary>
     public int PausedNoticeMinutes { get; set; } = 15;
@@ -117,6 +136,9 @@ public sealed class TriageOptions
     /// main (Opus) tier is the brain and handles all player conversation.
     /// </summary>
     public bool CheapFirstForChat { get; set; } = false;
+
+    /// <summary>Plain idle check-ins run on the cheap tier (with escalate) instead of the brain.</summary>
+    public bool IdleCheckInsOnCheapTier { get; set; } = true;
 }
 
 /// <summary>
@@ -147,10 +169,11 @@ public sealed class WorkerOptions
     /// </summary>
     public string[] BrainTools { get; set; } =
     [
-        "stop", "status", "inventory", "look", "where_is", "goto", "follow", "run_routine",
+        // goto/follow/chop_tree/act/mine/... are reached through the compact `do` meta-tool (one ~200-token definition).
+        "stop", "status", "inventory", "look", "where_is", "do", "run_routine",
         "recall_detail", "remember_waypoint", "mark_structure", "describe_structure", "remember_note", "forget", "list_memory",
         "identity", "reflect_self", "personality_admin",
-        "ask_player", "ask_stand", "watch_demo", "chop_tree",
+        "ask_player", "ask_stand", "watch_demo",
     ];
 
     /// <summary>Tools the worker may call (game macro tools + lookups). Never chat/identity/self/player-facing tools.</summary>

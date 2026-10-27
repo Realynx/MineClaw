@@ -27,6 +27,27 @@ public class GatheringTests
     }
 
     [Fact]
+    public async Task HarvestGeneratorStopsWhenTheCellDoesNotYieldCobble()
+    {
+        // Live 10-27: "dug 64, +33 cobblestone" at a remembered but wrong cell. The yield guard stops after one window.
+        var (c, s) = await Harness.StartAsync(srv =>
+        {
+            srv.Blocks[(10, 64, 8)] = Blocks.Cobblestone;
+            srv.Regenerate[(10, 64, 8)] = Blocks.Cobblestone;
+            srv.DropOnDig = false; // the block comes back but nothing reaches the inventory
+            srv.Inventory[36] = Harness.Stack(Items.WoodenPickaxe, 1);
+        });
+        await using var _ = c;
+        using var __ = s;
+        var r = await c.HarvestGeneratorAsync(10, 64, 8, 64);
+        Assert.False(r.Ok, r.ToString());
+        Assert.Contains("10,64,8 isn't regenerating cobble for me (yield 0%", r.Message);
+        Assert.Contains("need the right cell", r.Message);
+        Assert.Equal(MineClaw.Client.MinecraftClient.YieldWindow,
+            s.Got<PlayerDiggingPacket>().Count(d => d.Status == PlayerDiggingPacket.StatusFinished)); // never digs on
+    }
+
+    [Fact]
     public async Task MineSkipsProtectedAndSupportingBlocks()
     {
         var (c, s) = await Harness.StartAsync(srv =>

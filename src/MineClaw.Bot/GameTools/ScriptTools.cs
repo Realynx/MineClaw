@@ -38,7 +38,7 @@ public sealed class ScriptBridge
     };
 
     private static readonly AsyncLocal<bool> InWorker = new();
-    private static readonly Regex StopWord = new(@"^\W*(?:stop|halt|freeze)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex StopWord = new(@"^\W*(?:stop|halt|freeze|wait|hold on|hold up)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private sealed class Link
     {
@@ -68,7 +68,11 @@ public sealed class ScriptBridge
         _skills = skills;
         _log = log;
         _time = time;
-        Library = new ScriptLibrary(rt.Memory);
+        Library = new ScriptLibrary(rt.Memory)
+        {
+            Now = time.GetUtcNow, MinRuns = options.PromoteMinRuns, MinRate = options.PromoteMinSuccessRate,
+            AutoRevertMinRuns = options.AutoRevertMinRuns,
+        };
         _actions = ActionTools.Where(rt.Tools.Contains).ToHashSet(StringComparer.OrdinalIgnoreCase);
         Controller = new ScriptController(BuildHost(), options, time);
         Controller.Paused += OnPaused;
@@ -112,6 +116,7 @@ public sealed class ScriptBridge
             SkillIsAtomic = name => _skills != null && _skills.Registry.TryGet(name, out var sk)
                 && sk.Spec.Category is SkillCategory.Storage or SkillCategory.Items or SkillCategory.Smelting,
             Say = (text, ct) => ChatAsync(text, ct),
+            Muted = text => Muted(text) == null,
             Emote = (text, ct) => ChatAsync("/me " + text, ct),
             Ask = async (player, question, timeout, ct) =>
             {
@@ -149,6 +154,14 @@ public sealed class ScriptBridge
     private async Task<ActResult> ChatAsync(string text, CancellationToken ct)
     {
         if (Muted(text) is not { } t) return ActResult.Fail("muted (hive clone speaks only when addressed)");
+        // Same last line of defence as the brain's speech: plumbing and pure data dumps ("4,64,6 cobblestone") never reach chat.
+        if (!t.StartsWith("/me ", StringComparison.Ordinal))
+        {
+            var kept = Agent.Chat.MetaSpeech.Strip(t, out var meta);
+            foreach (var m in meta) _log?.LogInformation("[meta suppressed] {Line}", m);
+            if (string.IsNullOrWhiteSpace(kept)) return ActResult.Success("logged, not said: data isn't chat (use log() for debugging)");
+            t = kept;
+        }
         var lines = await _rt.Chat.SayAsync(t, ct: ct).ConfigureAwait(false);
         return lines.Count > 0 ? ActResult.Success("said") : ActResult.Fail("not sent");
     }
@@ -181,9 +194,37 @@ public sealed class ScriptBridge
     /// <summary>"asleep (script cobble_loop 34%)" while a script runs, else "awake" (TUI header, BotSnapshot.Brain).</summary>
     public string BrainState()
     {
-        if (Controller.Current is not { } s) return "awake";
-        if (s.Status == ScriptStatus.Paused) return $"awake (script {s.Name} paused)";
-        return $"asleep (script {s.Name}{(s.ProgressPct is { } p ? $" {p:0}%" : "")})";
+        // A hive clone on a profile says so ("asleep (script cobble_loop 42%, profile haiku)").
+        var prof = _rt.Options.Llm.MainProfile is { } mp ? ", profile " + mp : "";
+        if (Controller.Current is not { } s) return IdleState?.Invoke() is { } idle ? $"{idle}{(prof.Length > 0 ? $" ({prof[2..]})" : "")}" : "awake";
+        if (s.Status == ScriptStatus.Paused) return $"awake (script {s.Name} paused{prof})";
+        return $"asleep (script {s.Name}{(s.ProgressPct is { } p ? $" {p:0}%" : "")}{prof})";
+    }
+
+    /// <summary>Brain state while no script runs (a hive clone sleeping between scripts: "asleep"); null = awake.</summary>
+    public Func<string?>? IdleState { get; set; }
+
+    /// <summary>
+    /// Main's side of <c>hive spawn</c> with a script: a saved name must exist; inline code (already authorised as the Opus
+    /// brain's by the hive tool's policy) is linted here — errors block the spawn and come back as the findings — and saved
+    /// under <paramref name="name"/> with the caller as author, so the clone runs it by name (zero tokens, standing order).
+    /// </summary>
+    public (string? Name, string? Error, string? Code) PrepareForHive(string? name, string? code, string? author)
+    {
+        // Unnamed inline code: a name from its hash, so two clones' different code never share one script (same code = same name).
+        var reference = CleanRef(!string.IsNullOrWhiteSpace(name) ? name
+            : "hive_" + (string.IsNullOrWhiteSpace(code) ? "script" : Agent.Rag.VectorMath.Hash(code)[..6].ToLowerInvariant()));
+        var clean = ScriptLibrary.ParseRef(reference).Name;
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            var v = Library.Resolve(reference, IsScriptable, out var why);
+            return v == null ? (null, why ?? $"no saved script '{clean}'", null) : (clean, null, v.Code);
+        }
+        var lint = Lint(code);
+        if (lint.HasErrors) return (null, lint.Format(LintSeverity.Error, 300), null); // "lint errors (fix and resubmit): ..."
+        var res = Library.SaveVersion(clean, code, author: author, purpose: ScriptLint.Purpose(code), argNames: ScriptLint.ArgNames(code));
+        _log?.LogInformation("hive script {Name} saved v{Version} by {Author}", clean, res.Routine?.Script?.Version, author ?? "c#");
+        return (clean, null, code);
     }
 
     /// <summary>
@@ -226,7 +267,11 @@ public sealed class ScriptBridge
             if (!e.Wakes || e.Priority < EventPriority.Normal || e.Player == null) return null;
             if (string.Equals(e.Player, _client.Username, StringComparison.OrdinalIgnoreCase) || _rt.Chat.IsHiveBot?.Invoke(e.Player) == true) return null;
             bool trusted = _rt.Options.Self.TrustedPlayers.Any(p => string.Equals(p, e.Player, StringComparison.OrdinalIgnoreCase));
-            return new ScriptEvent(trusted && StopWord.IsMatch(e.Text) ? ScriptEventKind.Stop : ScriptEventKind.Chat, e.Text, e.Player);
+            // "claudechan stop" / "wait!" / "both of you stop": the bot's name and filler don't hide a trusted stop.
+            string[] names = [_rt.Chat.Username, _rt.Chat.DisplayName, .. _rt.Chat.Aliases];
+            bool stop = trusted && (StopWord.IsMatch(e.Text) || StopWord.IsMatch(Agent.Brainstem.IntentMatcher.Normalize(e.Text, names))
+                || Agent.Brainstem.IntentMatcher.Reflex(e.Text, names).Kind == Agent.Brainstem.IntentKind.Stop);
+            return new ScriptEvent(stop ? ScriptEventKind.Stop : ScriptEventKind.Chat, e.Text, e.Player);
         }
         bool danger = e.Kind is EventKind.LowHealth or EventKind.VoidFall or EventKind.Death
             || (e.Wakes && e.Priority >= _rt.Options.InterruptPriority);
@@ -249,17 +294,30 @@ public sealed class ScriptBridge
     private void OnEnded(ScriptSession s)
     {
         var l = L(s);
-        _log?.LogInformation("script {Name} {Status}: {Actions} actions in {Seconds:0}s — {Outcome}", s.Name, s.Status, s.Actions, s.Elapsed.TotalSeconds, s.Outcome);
+        _log?.LogInformation("script {Name}{Version} by {Author} {Status}: {Actions} actions in {Seconds:0}s — {Outcome}", s.Name,
+            s.Request.Version is { } v ? " v" + v : "", s.Request.Author ?? "c#", s.Status, s.Actions, s.Elapsed.TotalSeconds, s.Outcome);
         try
         {
             var saved = Library.Get(s.Name);
-            if (saved?.Script is { } code && code.Code == s.Code && s.Status != ScriptStatus.Cancelled)
+            if (saved?.Script is { } sc && s.Status != ScriptStatus.Cancelled)
             {
-                var stats = Library.RecordRun(s.Name, s.Ok, s.Elapsed, s.Actions, s.Outcome ?? "");
-                if (stats is { PromotedAs: null } && stats.Successes >= Options.PromoteAfterSuccesses) Promote(s.Name);
+                ScriptLibrary.Active(sc);
+                // Stats go to the version that ran (by number, else by identical code); ad-hoc code under a saved name doesn't count.
+                var ran = s.Request.Version is { } rv ? sc.Versions.FirstOrDefault(x => x.V == rv) : sc.Versions.LastOrDefault(x => x.Code == s.Code);
+                if (ran != null && ran.Code == s.Code)
+                {
+                    var stats = Library.RecordRun(s.Name, ran.V, s.Ok, s.Elapsed, s.Actions, s.Outcome ?? "", s.ItemsGained, s.Reason, out var revert);
+                    if (revert != null)
+                    {
+                        _log?.LogWarning("{Note}", revert);
+                        PostOwn(GameEvent.Notice("script " + revert, EventPriority.Background));
+                    }
+                    if (stats is { PromotedAs: null } && Library.Proven(ScriptLibrary.Active(stats))) Promote(s.Name);
+                }
             }
         }
         catch (Exception ex) { _log?.LogWarning(ex, "script stats for {Name} failed", s.Name); }
+        MaybeHousekeep();
         // Detached from a worker and never adopted as an activity: nobody else will report it.
         if (l.DetachedFromWorker && !l.Attached && !l.PlannerEnded)
             PostOwn(s.Ok ? GameEvent.TaskDone(s.Outcome ?? "") : GameEvent.TaskFail(s.Outcome ?? "", wakes: s.Status != ScriptStatus.Cancelled));
@@ -303,32 +361,140 @@ public sealed class ScriptBridge
             }
             case "run" or "replace":
                 return await RunOrReplaceAsync(op == "replace", input, ct).ConfigureAwait(false);
+            case "save":
+                return SaveOp(input);
+            case "rollback":
+            {
+                var n = ToolInput.Str(input, "name");
+                if (string.IsNullOrWhiteSpace(n)) return ToolResult.Error("rollback needs name (x, or x@v2 for a version)");
+                var (r, msg) = Library.Rollback(CleanRef(n));
+                return r != null ? ToolResult.Success(msg) : ToolResult.Error(msg);
+            }
+            case "list":
+                return ToolResult.Success(Library.Catalog());
             default:
-                return ToolResult.Error("op is run|status|pause|resume|cancel|replace");
+                return ToolResult.Error("op is " + string.Join("|", ScriptPrompts.Ops));
         }
     }
 
     private async Task<ToolResult> RunOrReplaceAsync(bool replace, JsonElement input, CancellationToken ct)
     {
         var code = ToolInput.Str(input, "code");
-        var name = ScriptController.CleanName(ToolInput.Str(input, "name") ?? (replace ? Controller.Current?.Name : null) ?? "script");
+        var rawName = ToolInput.Str(input, "name");
+        var reference = CleanRef(rawName ?? (replace ? Controller.Current?.Name : null) ?? "script");
+        var name = ScriptLibrary.ParseRef(reference).Name;
+        string? author = ToolCaller.Current?.Tag;
+        int? version = null;
+        var notes = new List<string>();
+        string? warnings = null;
         if (string.IsNullOrWhiteSpace(code))
         {
-            code = Library.CodeOf(name, IsScriptable);
-            if (code == null) return ToolResult.Error(ToolInput.Str(input, "name") == null ? "need code (or the name of a saved script)" : $"no saved script '{name}'");
+            // A saved script (or name@v2) runs as saved: its own author and version, args from the call.
+            var v = Library.Resolve(reference, IsScriptable, out var why);
+            if (v == null) return ToolResult.Error(rawName == null ? "need code (or the name of a saved script)" : why ?? $"no saved script '{name}'");
+            code = v.Code;
+            version = Library.Get(name)?.Script is { Migrated: true } ? null : v.V;
+            author = v.Author;
         }
-        else if (ToolInput.Str(input, "name") != null && ToolInput.Bool(input, "save") != false)
+        else
         {
-            // A named run with code is saved (versioned; same code = same version). save:false opts out.
-            var r = Library.Save(name, code);
-            _log?.LogInformation("script {Name} saved v{Version}", name, r.Script?.Version);
+            var lint = Lint(code);
+            if (lint.HasErrors) return ToolResult.Error(lint.Format(LintSeverity.Error, 300));
+            warnings = lint.Format(LintSeverity.Warning);
+            if (rawName != null && ToolInput.Bool(input, "save") != false)
+            {
+                // A named run with code is saved (versioned; same code = same version). save:false opts out; a near-duplicate
+                // of another saved script runs unsaved and says so.
+                var (saved, note) = SaveChecked(name, code, author, ToolInput.Str(input, "force"));
+                if (note != null) notes.Add(note);
+                if (saved?.Script is { } sc) version = sc.Version;
+            }
         }
         string? argsJson = input.ValueKind == JsonValueKind.Object && input.TryGetProperty("args", out var a) && a.ValueKind == JsonValueKind.Object ? a.GetRawText() : null;
-        var req = new ScriptRequest { Name = name, Code = code, ArgsJson = argsJson, ResumeFrom = ToolInput.Str(input, "resume_from") };
+        var req = new ScriptRequest
+        {
+            Name = name, Code = code, ArgsJson = argsJson, ResumeFrom = ToolInput.Str(input, "resume_from"), Author = author, Version = version,
+            LintWarnings = string.IsNullOrEmpty(warnings) ? null : warnings,
+        };
         if (replace && Controller.Current is { } old) L(old).PlannerEnded = true;
         var (s, err) = replace ? await Controller.ReplaceAsync(req, ct).ConfigureAwait(false) : Controller.Start(req);
         if (s == null) return ToolResult.Error(err ?? "can't start");
-        return await FollowAsync(s, ct).ConfigureAwait(false);
+        var result = await FollowAsync(s, ct).ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(warnings)) notes.Add(warnings);
+        return notes.Count == 0 ? result : result with { Text = result.Text + " | " + string.Join(" | ", notes) };
+    }
+
+    /// <summary>"Cobble Loop@v2" → "cobble_loop@v2" (CleanName would turn '@' into '_').</summary>
+    private static string CleanRef(string raw)
+    {
+        var (n, v) = ScriptLibrary.ParseRef(raw);
+        return ScriptController.CleanName(n) + (v is { } x ? "@v" + x : "");
+    }
+
+    /// <summary>Lint with this bot's action/skill names (so unchecked-result warnings know what an action is).</summary>
+    internal LintReport Lint(string code)
+    {
+        var names = new HashSet<string>(_actions, StringComparer.Ordinal);
+        foreach (var (alias, target) in ScriptSession.Aliases) if (_actions.Contains(target) || (_skills?.Registry.TryGet(target, out _) ?? false)) names.Add(alias);
+        if (_skills != null) foreach (var sk in _skills.Registry.Specs) names.Add(sk.Name);
+        return ScriptLint.Check(code, names, Options.LintLongScriptActions);
+    }
+
+    /// <summary>
+    /// Saves a version unless it's a near-duplicate of ANOTHER saved script (≥ DuplicateThreshold) and no force reason was
+    /// given: then nothing is saved and the note says which script to update instead.
+    /// </summary>
+    private (Agent.Memory.Routine? Saved, string? Note) SaveChecked(string name, string code, string? author, string? force)
+    {
+        if (string.IsNullOrWhiteSpace(force) && Library.Similar(name, code, Options.DuplicateThreshold, Similarity) is { } sim)
+            return (null, $"not saved: similar to {sim.Name} ({sim.Score:0.00}) - update it instead? (use op=save name={sim.Name}; force=reason to keep both)");
+        var res = Library.SaveVersion(name, code, author: author, purpose: ScriptLint.Purpose(code), argNames: ScriptLint.ArgNames(code),
+            forcedReason: string.IsNullOrWhiteSpace(force) ? null : force.Trim());
+        var sc = res.Routine!.Script!;
+        if (res.NewVersion) _log?.LogInformation("script {Name} saved v{Version} by {Author}", name, sc.Version, author ?? "c#");
+        return (res.Routine, res.NewVersion && sc.Version > 1 ? $"saved {name} v{sc.Version}" : null);
+    }
+
+    private static double Similarity(string code, RoutineScript other) =>
+        ScriptLint.Similarity(code, other.Code, Words(ScriptLint.Purpose(code)), Words(other.Purpose));
+
+    private static IEnumerable<string> Words(string? s) =>
+        Regex.Matches(s ?? "", "[a-z]{3,}", RegexOptions.IgnoreCase).Select(m => m.Value.ToLowerInvariant());
+
+    /// <summary>op=save: lint, near-duplicate check, new version (no run).</summary>
+    private ToolResult SaveOp(JsonElement input)
+    {
+        var code = ToolInput.Str(input, "code");
+        var rawName = ToolInput.Str(input, "name");
+        if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(rawName)) return ToolResult.Error("save needs name and code");
+        var name = ScriptLibrary.ParseRef(CleanRef(rawName)).Name;
+        var lint = Lint(code);
+        if (lint.HasErrors) return ToolResult.Error(lint.Format(LintSeverity.Error, 300));
+        int before = Library.Get(name)?.Script?.Version ?? 0;
+        var (saved, note) = SaveChecked(name, code, ToolCaller.Current?.Tag, ToolInput.Str(input, "force"));
+        if (saved?.Script is not { } sc) return ToolResult.Error(note ?? "not saved");
+        var args = sc.ArgNames.Count > 0 ? $" args({string.Join(",", sc.ArgNames)})" : "";
+        var warn = lint.Format(LintSeverity.Warning);
+        var head = sc.Version == before ? $"ok: {name} unchanged (v{sc.Version})" : $"ok: saved {name} v{sc.Version}{args}" +
+            (sc.Version > 1 ? $"; v{sc.Version - 1} stays callable as {name}@v{sc.Version - 1} until v{sc.Version} proves reliable" : "");
+        return ToolResult.Success(warn.Length > 0 ? head + " | " + warn : head);
+    }
+
+    private DateTimeOffset _lastHousekeep = DateTimeOffset.MinValue;
+
+    /// <summary>At most every 6 hours (C#, zero tokens): merge exact duplicates' stats, flag stale scripts for archive.</summary>
+    internal string MaybeHousekeep(bool force = false)
+    {
+        var now = _time.GetUtcNow();
+        if (!force && now - _lastHousekeep < TimeSpan.FromHours(6)) return "";
+        _lastHousekeep = now;
+        try
+        {
+            var note = Library.Housekeep(Options.StaleDays, ScriptLint.ExactKey);
+            if (note.Length > 0) _log?.LogInformation("script housekeeping: {Note}", note);
+            return note;
+        }
+        catch (Exception ex) { _log?.LogWarning(ex, "script housekeeping failed"); return ""; }
     }
 
     /// <summary>Brain: the script becomes the bot's activity (inline wait, then background). Worker: inline, then detaches.</summary>
@@ -484,7 +650,7 @@ public sealed class ScriptBridge
         if (r?.Script is not { } sc) return null;
         var skill = PromotedSkill.SkillName(name);
         if (_skills.Registry.TryGet(skill, out var existing) && existing.Spec.Source != "script") skill = "script_" + skill;
-        var summary = (r.Note ?? $"saved script {name} ({sc.Successes} ok runs)").Trim();
+        var summary = (sc.Purpose ?? r.Note ?? $"saved script {name} ({ScriptLibrary.Active(sc).Reliability} ok)").Trim();
         if (summary.Length > 60) summary = summary[..57] + "...";
         _skills.Registry.Add(new PromotedSkill(new SkillSpec
         {
@@ -523,6 +689,14 @@ public sealed class ScriptBridge
         return await FollowInlineAsync(s, null, ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// "script cobble_loop 40%" while a running (not paused) script holds the body, else null: the brain's body lock
+    /// (<see cref="BotAgent.BodyHolder"/>, shown as "[body: ...]").
+    /// </summary>
+    internal string? BodyState() =>
+        Controller.Current is { Status: ScriptStatus.Starting or ScriptStatus.Running } s
+            ? $"script {s.Name}{(s.ProgressPct is { } p ? $" {p:0}%" : "")}" : null;
+
     /// <summary>"script x L12 3m" for the state header while a script exists (≈ 8 tokens).</summary>
     internal string? HeaderTag() =>
         Controller.Current is { } s ? $"script {s.Name} {(s.Status == ScriptStatus.Paused ? "PAUSED" : "L" + s.Line)} {ScriptText.Dur(s.Elapsed)}" : null;
@@ -531,6 +705,15 @@ public sealed class ScriptBridge
 public static class ScriptTools
 {
     public const string ToolName = ScriptPrompts.ToolName;
+
+    /// <summary>True when a script call writes code: op run/replace/save with code (or no op and code), or rollback.</summary>
+    public static bool WritesCode(JsonElement input)
+    {
+        var code = ToolInput.Str(input, "code");
+        var op = (ToolInput.Str(input, "op") ?? (code != null ? "run" : "status")).Trim().ToLowerInvariant();
+        if (op == "rollback") return true;
+        return op is "run" or "replace" or "save" && !string.IsNullOrWhiteSpace(code);
+    }
 
     private static readonly ConditionalWeakTable<AgentRuntime, ScriptBridge> Bridges = new();
 
@@ -551,9 +734,14 @@ public static class ScriptTools
 
         rt.Tools.Register(ToolName, ScriptPrompts.ToolDescription,
             ToolSchema.Create().Str("op", enumValues: ScriptPrompts.Ops).Str("code", required: false).Str("name", required: false)
-                .Str("resume_from", required: false).Build(),
+                .Raw("args", """{"type":"object"}""", required: false).Str("resume_from", required: false).Str("force", required: false).Build(),
             bridge.ExecuteAsync, tiers: ToolTiers.Main | ToolTiers.Worker);
-        rt.Worker?.ExtendSystem(ScriptPrompts.CheatSheet);
+        // Only the Opus brain writes scripts: code (run/replace/save) and rollback from any other tier — or from no model at all —
+        // is refused in the registry, whatever path the call takes. Saved scripts by name, status and cancel stay open to all.
+        rt.Tools.AddPolicy(ToolName, (input, caller) => WritesCode(input) && caller?.IsBrainModel(rt.Options.Llm) != true ? ScriptPrompts.BrainOnly : null);
+        rt.Agent.ExtendSystem(ScriptPrompts.CheatSheet);
+        rt.Worker?.ExtendSystem(ScriptPrompts.WorkerLine);
+        bridge.MaybeHousekeep(force: true);
 
         if (rt.Tools.TryGet("stop", out var stop))
             rt.Tools.Replace(new ScriptBridge.Scope(stop, (_, _, run) => { bridge.OnStopTool(); return run(); }));
@@ -570,6 +758,7 @@ public static class ScriptTools
             var prev = skills.SyncLearned;
             skills.SyncLearned = () => { prev?.Invoke(); bridge.SyncPromoted(); };
         }
+        rt.Agent.BodyHolder = bridge.BodyState; // body lock: brain body tools answer "body busy" while a script runs
         var header = rt.Agent.StateHeader;
         rt.Agent.StateHeader = () =>
         {

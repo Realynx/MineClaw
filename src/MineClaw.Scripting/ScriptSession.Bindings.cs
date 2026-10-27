@@ -20,6 +20,8 @@ public sealed partial class ScriptSession
     private long _eventSeq;
     private string? _waitingFor;
     private readonly Queue<DateTimeOffset> _said = new();
+    private int _sayRun;
+    private DateTimeOffset? _lastSay;
     private DateTimeOffset _lastWake = DateTimeOffset.MinValue;
 
     /// <summary>Params that take a position: <c>go{1,64,2}</c>, <c>dig{me.pos}</c>, <c>place{"torch", {x=1,y=2,z=3}}</c>.</summary>
@@ -72,6 +74,7 @@ public sealed partial class ScriptSession
     {
         "skill", "inv", "me", "block", "near", "where", "time", "night", "players", "say", "emote", "wait", "waitfor", "log", "print",
         "prog", "cp", "on", "ask", "fail", "wake", "carry", "args", "os", "string", "table", "math",
+        "retry", "upto", "expect", "room", "ensure",
     };
 
     private static readonly Regex Ident = new("^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
@@ -224,6 +227,8 @@ public sealed partial class ScriptSession
         s.SetHook(new LuaFunction("hook", (_, _) => { Hook(); return new ValueTask<int>(0); }), "", HookEvery);
         _lua = s;
         Install(env);
+        // Reliability helpers (retry/upto/expect/room/ensure) in their own chunk: user line numbers stay intact.
+        s.DoStringAsync(ScriptPrelude.Lua, "prelude", _hardCt).AsTask().GetAwaiter().GetResult();
         foreach (var kv in env) if (kv.Key.TryRead<string>(out var name)) _baseGlobals.Add(name);
         return s;
     }
@@ -385,6 +390,11 @@ public sealed partial class ScriptSession
         {
             Locate();
             var m = Arg(c, 0);
+            if (m.Type == LuaValueType.Table) throw Bug("fail(msg) takes a string reason; return a result as a string instead");
+            // Live 10-27: scans "returned" their data through fail ("4,6=cobblestone 5,6=water ..."): a run that worked
+            // then read as failed. Say so, so the next script uses return / log.
+            if (m.Type == LuaValueType.String && Regex.Matches(m.Read<string>(), @"-?\d+(?:,-?\d+){1,2}\s*[=:]\s*[a-z_]+").Count >= 2)
+                throw new ScriptFailException("fail() is for errors, not data: return \"...\" for results, log() for debugging: " + Short(Str(m), 100));
             throw new ScriptFailException(m.Type == LuaValueType.Nil ? LastFailure ?? "fail()" : Short(Str(m), 120));
         });
         env["carry"] = FromJson(Request.CarryJson) ?? new LuaTable();
@@ -469,12 +479,33 @@ public sealed partial class ScriptSession
         t = Regex.Replace(t, @"(^|\s)/+", "$1").Trim();
         if (t.Length == 0) return ActResult.Fail("nothing to say");
         if (t.Length > 200) t = t[..200];
+        // Live 10-27 (B15): a hive clone's say() threw "muted" and aborted real work (a chop script after 30 s, +4 oak wood).
+        // Muted chat is report output for the brain, never a failure.
+        if (_host.Muted?.Invoke(t) == true)
+        {
+            var said = Short(t, 160);
+            lock (Reports) { Reports.Add(said); if (Reports.Count > 8) Reports.RemoveAt(0); }
+            _host.Log?.Invoke($"script {Name}: [muted, reported] {said}");
+            return ActResult.Success("not said (chat muted): it goes back to the brain in this script's result");
+        }
+        string? limited = null;
         lock (_lock)
         {
             var now = _time.GetUtcNow();
             while (_said.Count > 0 && now - _said.Peek() > TimeSpan.FromMinutes(1)) _said.Dequeue();
             if (_said.Count >= _o.MaxSayPerMinute) return ActResult.Fail("chat rate limit");
-            _said.Enqueue(now);
+            // Live 10-27: a scan loop say-ed every block ("4,64,6 cobblestone"...) into public chat. A run gets a couple of
+            // lines, spaced out; anything beyond goes to the log (debug output belongs there).
+            if (_sayRun >= Math.Max(0, _o.MaxSayPerRun)) limited = $"say limit ({_o.MaxSayPerRun}/run)";
+            else if (_lastSay is { } last && now - last < TimeSpan.FromSeconds(_o.SayMinIntervalSeconds)) limited = $"say limit (1 per {_o.SayMinIntervalSeconds:0}s)";
+            else { _said.Enqueue(now); _sayRun++; _lastSay = now; }
+        }
+        if (limited != null)
+        {
+            var msg = Short(t, 160);
+            lock (_lock) { Logs.Add(msg); if (Logs.Count > 20) Logs.RemoveAt(0); }
+            _host.Log?.Invoke($"script {Name}: [{limited}, logged] {msg}");
+            return ActResult.Success($"logged, not said ({limited}): use log() for data, say() only to talk to players");
         }
         return RunAction(emote ? "emote" : "say", atomic: true, ct => emote ? _host.Emote(t, ct) : _host.Say(t, ct));
     }

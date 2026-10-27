@@ -22,19 +22,39 @@ public sealed class ScriptOptions
     public int MaxCodeChars { get; set; } = 4_000;
     /// <summary>A paused script is cancelled after this long without resume/replace.</summary>
     public double MaxPauseMinutes { get; set; } = 10;
-    /// <summary>Addressed chat pauses the script (the brain may re-script); it resumes by itself after this many seconds.</summary>
-    public bool PauseOnChat { get; set; } = true;
+    /// <summary>
+    /// Addressed chat pauses the script (it resumes by itself after <see cref="ChatAutoResumeSeconds"/>). Off by default: chat
+    /// wakes the brain while the script keeps running (body lock, not brain lock); only danger, a trusted "stop"/"wait" and
+    /// the brain's own script op=pause|replace|cancel pause it.
+    /// </summary>
+    public bool PauseOnChat { get; set; } = false;
     public int ChatAutoResumeSeconds { get; set; } = 30;
     /// <summary>say/emote rate limit.</summary>
     public int MaxSayPerMinute { get; set; } = 6;
+    /// <summary>say/emote lines one script run may send to chat; the rest go to <c>log</c> (say is for players, not data).</summary>
+    public int MaxSayPerRun { get; set; } = 2;
+    /// <summary>Minimum gap between two say/emote lines of a script; a line sooner than this goes to <c>log</c>.</summary>
+    public double SayMinIntervalSeconds { get; set; } = 10;
     /// <summary>Longest single wait/wait_for/ask, seconds.</summary>
     public int MaxWaitSeconds { get; set; } = 600;
     /// <summary>Worker calls wait this long for the script inline, then it continues as the bot's task.</summary>
     public int WorkerInlineSeconds { get; set; } = 60;
     /// <summary>Actions skipped while fast-forwarding to a resume_from checkpoint before giving up.</summary>
     public int MaxSkippedActions { get; set; } = 500;
-    /// <summary>Successful runs before a saved script joins the skill catalog.</summary>
+    /// <summary>Obsolete (kept for config binding): promotion now needs <see cref="PromoteMinRuns"/> runs at <see cref="PromoteMinSuccessRate"/>.</summary>
     public int PromoteAfterSuccesses { get; set; } = 3;
+    /// <summary>A saved script's current version joins the skill catalog after this many runs...</summary>
+    public int PromoteMinRuns { get; set; } = 3;
+    /// <summary>...with at least this success rate (0..1).</summary>
+    public double PromoteMinSuccessRate { get; set; } = 0.9;
+    /// <summary>A new version that falls below the previous version's success rate over this many runs is reverted.</summary>
+    public int AutoRevertMinRuns { get; set; } = 3;
+    /// <summary>Saving a script this similar (0..1) to another saved one is refused with "update it instead?" unless forced.</summary>
+    public double DuplicateThreshold { get; set; } = 0.8;
+    /// <summary>Saved scripts unused this long are flagged for archive by housekeeping (never deleted).</summary>
+    public int StaleDays { get; set; } = 14;
+    /// <summary>Lint: more static action call sites than this without a cp"label" is a warning.</summary>
+    public int LintLongScriptActions { get; set; } = 6;
     /// <summary>wake"reason" at most this often (seconds); extra calls return false.</summary>
     public int MinWakeIntervalSeconds { get; set; } = 30;
     public int StateChars { get; set; } = 400;

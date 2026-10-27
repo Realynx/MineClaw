@@ -13,24 +13,73 @@ public sealed record TreeChopOptions
     /// <summary>Leaves broken by hand for the 1-in-20 sapling chance (b1.8.1 BlockLeaves; no apples from leaves in b1.8.1).</summary>
     public int MaxLeafBreaks { get; init; } = 64;
     public TimeSpan LeafPhase { get; init; } = TimeSpan.FromSeconds(75);
-    /// <summary>Wait for the rest of the crown to decay when no sapling came yet (bounded).</summary>
-    public TimeSpan DecayWait { get; init; } = TimeSpan.FromSeconds(30);
+    /// <summary>Wait for the rest of the crown to decay when no sapling came yet (bounded). Vanilla decay is random-tick
+    /// driven (a given leaf ticks every ~20 s on average), so a crown needs most of a minute.</summary>
+    public TimeSpan DecayWait { get; init; } = TimeSpan.FromSeconds(60);
+    /// <summary>Stop waiting for decay early when no leaf disappeared for this long.</summary>
+    public TimeSpan DecayStall { get; init; } = TimeSpan.FromSeconds(20);
     /// <summary>Stop waiting for decay once this many saplings were collected.</summary>
     public int WantSaplings { get; init; } = 2;
     /// <summary>Blocks the bot may pillar up next to the trunk for logs above reach (cobblestone/netherrack only, never dirt).</summary>
     public int MaxPillar { get; init; } = 2;
     public TimeSpan Timeout { get; init; } = TimeSpan.FromMinutes(5);
+    /// <summary>Stewardship: never leave fewer trees (planted saplings count) than this unless the replant is certain.
+    /// Null = the client's <see cref="MinecraftClient.MinTrees"/>.</summary>
+    public int? MinTrees { get; init; }
+    /// <summary>Live 10-27 (L6): a worker chopped 10 trees and replanted none. After this many consecutive chops that felled a
+    /// tree without replanting it, chop_tree refuses until a replant works again (0 = never refuse).</summary>
+    public int MaxUnreplantedChops { get; init; } = 2;
     public static TreeChopOptions Default { get; } = new();
 }
 
 /// <summary>What one <see cref="MinecraftClient.ChopTreeAsync"/> did (raised as <see cref="MinecraftClient.TreeChopped"/>).</summary>
 public sealed record TreeChopReport(string Wood, BlockPos Base, BlockPos Soil, int LogsTotal, int LogsFelled, int Logs, int Saplings, int Apples,
-    int LostDrops, BlockPos? Replanted, string? ReplantProblem, bool Ok, string Message);
+    int LostDrops, BlockPos? Replanted, string? ReplantProblem, bool Ok, string Message)
+{
+    public int LeavesBroken { get; init; }
+    public int LeavesDecayed { get; init; }
+    /// <summary>Drops still lying up in the leaves when the macro ended (not lost: break the leaf under them).</summary>
+    public int StuckDrops { get; init; }
+}
 
 public sealed partial class MinecraftClient
 {
     /// <summary>Raised (on the event dispatcher) after every chop_tree, success or not.</summary>
     public event Action<TreeChopReport>? TreeChopped;
+
+    /// <summary>Tree stewardship (<see cref="TreeStewardship"/>): the island keeps at least this many trees + planted
+    /// saplings. chop_tree refuses below it unless it can replant; plain digs/mines of those trees' logs are protected.
+    /// 0 = off.</summary>
+    public int MinTrees { get; set; } = TreeStewardship.DefaultMinTrees;
+
+    /// <summary>The tree chop_tree is felling right now (its logs are exempt from the stewardship guard).</summary>
+    private volatile TreeInfo? _chopping;
+    private readonly object _treeGuardLock = new();
+    private (long At, HashSet<BlockPos> Logs)? _treeGuard;
+
+    /// <summary>
+    /// Stewardship guard for every non-chop path (dig, mine, pathfinder dig moves, scripts): true for a log of a living
+    /// tree while felling any tree would leave the island below <see cref="MinTrees"/>. Census cached for 3 s.
+    /// </summary>
+    internal bool TreeGuarded(BlockPos p)
+    {
+        if (MinTrees <= 0 || _chopping is { } t && t.Logs.Contains(p)) return false;
+        long now = Environment.TickCount64;
+        HashSet<BlockPos> logs;
+        lock (_treeGuardLock)
+        {
+            if (_treeGuard is not { } g || now - g.At > 3000)
+            {
+                try { _treeGuard = (now, TreeStewardship.GuardedLogs(TreeStewardship.Census(World, p.Center), MinTrees)); }
+                catch (Exception ex) { Log($"tree guard: census failed: {ex.Message}"); _treeGuard = (now, []); }
+            }
+            logs = _treeGuard!.Value.Logs;
+        }
+        return logs.Contains(p);
+    }
+
+    /// <summary>Forget the cached census (trees felled/planted).</summary>
+    private void InvalidateTreeGuard() { lock (_treeGuardLock) _treeGuard = null; }
 
     /// <summary>Cheap blocks a short tree pillar may use (dug back afterwards; never dirt: unrenewable on Skyblock; no logs:
     /// a placed log would read as part of the tree being felled).</summary>
@@ -39,10 +88,16 @@ public sealed partial class MinecraftClient
     private sealed class ChopState(TreeInfo tree)
     {
         public TreeInfo Tree { get; } = tree;
-        public int LogsBefore, SaplingsBefore, ApplesBefore, Felled, LeavesBroken;
+        public int LogsBefore, SaplingsBefore, ApplesBefore, Felled, LeavesBroken, LeavesDecayed;
         public int TrunkEdge;
         public bool PlacedSapling;
+        /// <summary>The spot under a hanging remnant already had a sapling (nothing to plant).</summary>
+        public bool AlreadyPlanted;
         public readonly List<BlockPos> Pillar = new();
+        /// <summary>Block id the bot itself placed at each pillar cell: dig-back only takes exactly those back.</summary>
+        public readonly Dictionary<BlockPos, int> PillarIds = new();
+        /// <summary>Drops lying on leaves (out of pickup reach until the leaf under them goes).</summary>
+        public readonly HashSet<int> StuckIds = new();
         public readonly HashSet<BlockPos> Failed = new();
         /// <summary>Item entities left lying near the void (counted once however often we look).</summary>
         public readonly HashSet<int> LostIds = new();
@@ -62,8 +117,13 @@ public sealed partial class MinecraftClient
         {
             var o = options ?? TreeChopOptions.Default;
             if (await SurvivalGateAsync("chop a tree", c).ConfigureAwait(false) is { } refused) return refused;
+            if (DateTime.UtcNow - _lastUnreplanted > UnreplantedMemory) _unreplantedChops = 0;
+            if (o.MaxUnreplantedChops > 0 && _unreplantedChops >= o.MaxUnreplantedChops)
+                return ActionResult.Fail($"stopping: the last {_unreplantedChops} trees I chopped weren't replanted (last: {_lastReplantProblem ?? "not replanted"}); " +
+                                         "fix the replanting first (a sapling, free lit dirt) before felling more");
             var tree = ResolveTree(at, wood, o, out var why);
             if (tree is null) return ActionResult.Fail(why!);
+            _chopping = tree;
             using var limit = CancellationTokenSource.CreateLinkedTokenSource(c);
             limit.CancelAfter(o.Timeout);
             var st = new ChopState(tree)
@@ -92,12 +152,42 @@ public sealed partial class MinecraftClient
             {
                 stop = _abortReason ?? "stopped";
             }
+            finally
+            {
+                _chopping = null;
+                InvalidateTreeGuard();
+            }
             return Finish(st, stop, planted, problem);
         });
 
     // ------------------------------------------------------------------ target
 
     private TreeInfo? ResolveTree(BlockPos? at, int? wood, TreeChopOptions o, out string? why)
+    {
+        int minTrees = o.MinTrees ?? MinTrees;
+        int saplings = World.Inventory.CountItem(Blocks.Sapling);
+        TreeCensus? census = null;
+        TreeCensus Census(TreeInfo t) => census ??= TreeStewardship.Census(World, t.Base.Center);
+        string? Refusal(TreeInfo t) => minTrees <= 0 ? null : TreeStewardship.Refusal(Census(t), t, saplings, ReplantPrecheck(t), minTrees);
+        var tree = PickTree(at, wood, o, Refusal, out why);
+        if (tree is not null && Refusal(tree) is { } no)
+        {
+            Log($"chop: refused {tree}: {no} (island: {Census(tree)})");
+            why = no;
+            return null;
+        }
+        return tree;
+    }
+
+    /// <summary>Why the bot couldn't replant <paramref name="t"/>'s spot even holding a sapling (null = it can).</summary>
+    private string? ReplantPrecheck(TreeInfo t)
+    {
+        if (!t.OnSoil) return $"it grows from {BlockName(t.SoilId, 0)}, not dirt";
+        if (EditBlocked(t.Base)) return BlockedReason(t.Base);
+        return null;
+    }
+
+    private TreeInfo? PickTree(BlockPos? at, int? wood, TreeChopOptions o, Func<TreeInfo, string?> refusal, out string? why)
     {
         why = null;
         TreeInfo? tree;
@@ -111,14 +201,20 @@ public sealed partial class MinecraftClient
         else
         {
             var all = TreeScan.FindTrees(World, World.Player.Position, o.SearchRadius, wood)
-                .Where(t => t.Logs.Any(l => !IsBlockProtected(l, Blocks.Log)) && (t.OnSoil || t.Leaves.Count >= 3)).ToList();
+                .Where(t => t.Logs.Any(l => !UserProtected(l, Blocks.Log)) && (t.OnSoil || t.Leaves.Count >= 3)).ToList();
             var trees = all.Where(t => !t.Logs.All(EditBlocked)).ToList();
             if (trees.Count == 0 && all.Count > 0)
             {
                 why = $"the trees within {o.SearchRadius:0} are inside spawn protection (the server undid my digs within {_protectedRegion?.Radius ?? VanillaSpawnProtection} of spawn; needs op)";
                 return null;
             }
-            tree = trees.OrderBy(t => t.OnSoil ? 0 : 1).ThenBy(t => t.Base.Center.DistanceSquaredTo(World.Player.Position)).FirstOrDefault();
+            // Stewardship first (allowed trees), then the tree whose replant is most certain: on dirt, outside any protected
+            // area, not on the rim (drops there fall into the void), then the nearest.
+            tree = trees.OrderBy(t => refusal(t) is null ? 0 : 1)
+                .ThenBy(t => t.OnSoil ? 0 : 1)
+                .ThenBy(t => ReplantPrecheck(t) is null ? 0 : 1)
+                .ThenBy(t => Safety.EdgeDistance(World, t.Base.X, t.Base.Y, t.Base.Z, 2) >= 2 ? 0 : 1)
+                .ThenBy(t => t.Base.Center.DistanceSquaredTo(World.Player.Position)).FirstOrDefault();
             if (tree is null)
             {
                 why = $"no {(wood is { } w ? TreeScan.WoodName(w) + " " : "")}tree within {o.SearchRadius:0}";
@@ -130,13 +226,17 @@ public sealed partial class MinecraftClient
             why = $"logs at {Fmt(tree.Base)} sit on {BlockName(tree.SoilId, 0)} with no leaves: a build, not a tree";
             return null;
         }
-        if (tree.Logs.All(l => IsBlockProtected(l, Blocks.Log)))
+        if (tree.Logs.All(l => UserProtected(l, Blocks.Log)))
         {
             why = $"the {tree.WoodName} tree at {Fmt(tree.Base)} is protected";
             return null;
         }
         return tree;
     }
+
+    /// <summary>Protection set by the owner (config, memory, claims) without the stewardship guard: chop_tree applies
+    /// stewardship itself, with the precise refusal.</summary>
+    private bool UserProtected(BlockPos p, int id) => IsProtected?.Invoke(p, id) ?? false;
 
     // ------------------------------------------------------------------ felling
 
@@ -359,7 +459,8 @@ public sealed partial class MinecraftClient
         if (!there) return false;
         var feet = Pathfinder.StartCellFor(World, World.Player.Position) ?? World.Player.Position.ToBlockPos();
         bool ok = await PillarOnceAsync(feet, block, ct).ConfigureAwait(false);
-        if (World.GetBlock(feet) == block) st.Pillar.Add(feet);
+        // The feet cell was air (the bot stood in it): a block there now is the one just placed.
+        if (World.GetBlock(feet) == block) { st.Pillar.Add(feet); st.PillarIds[feet] = block; }
         Log($"chop: pillar {BlockName(block, 0)} at {Fmt(feet)}: {(ok ? "ok" : "failed")}");
         return ok && st.Pillar.Contains(feet);
     }
@@ -412,9 +513,11 @@ public sealed partial class MinecraftClient
         return World.GetBlock(feet) == block && World.Player.Position.Y >= feet.Y + 1 - 1e-3;
     }
 
-    /// <summary>Steps off the pillar and digs it back (it's our own cobblestone).</summary>
+    /// <summary>Steps off the pillar and digs it back: only cells the bot itself placed this chop, only while they still
+    /// hold exactly the block it placed (never dirt/grass, never someone else's block).</summary>
     private async Task CleanupPillarAsync(ChopState st, CancellationToken ct)
     {
+        st.Pillar.RemoveAll(p => !IsOwnPillarBlock(st, p));
         if (st.Pillar.Count == 0) return;
         var bottom = st.Pillar.OrderBy(p => p.Y).First();
         Goal ground = new GoalFiltered(new GoalNear(bottom, 3),
@@ -422,10 +525,19 @@ public sealed partial class MinecraftClient
         await GotoCoreAsync(ground, GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(20), MaxReplans = 2, AllowPartial = false }, ct).ConfigureAwait(false);
         foreach (var p in st.Pillar.OrderByDescending(p => p.Y).ToList())
         {
+            if (!IsOwnPillarBlock(st, p)) { st.Pillar.Remove(p); continue; }
             var r = await DigCoreAsync(p, ct).ConfigureAwait(false);
             if (r.Ok) st.Pillar.Remove(p);
             else Log($"chop: couldn't take the pillar block back: {r.Message}");
         }
+    }
+
+    private bool IsOwnPillarBlock(ChopState st, BlockPos p)
+    {
+        int id = World.GetBlock(p);
+        bool own = st.PillarIds.TryGetValue(p, out int placed) && placed == id && id is not (Blocks.Dirt or Blocks.Grass or Blocks.Farmland);
+        if (!own) Log($"chop: leaving {BlockName(id, World.GetMeta(p))} at {Fmt(p)}: not a pillar block I placed");
+        return own;
     }
 
     // ------------------------------------------------------------------ saplings
@@ -439,10 +551,72 @@ public sealed partial class MinecraftClient
 
     private async Task CollectAroundTreeAsync(ChopState st, CancellationToken ct, int max = 32)
     {
-        await CollectDropsCoreAsync(7, max, ct, TreeCenter(st), st.LostIds).ConfigureAwait(false);
+        await CollectDropsCoreAsync(7, max, ct, TreeCenter(st), st.LostIds, st.StuckIds).ConfigureAwait(false);
     }
 
-    /// <summary>Breaks the tree's reachable leaves (none over the void), then waits a bounded time for decay; collects drops.</summary>
+    /// <summary>Drops near the tree lying on a leaf that can be broken without sending them into the void.</summary>
+    private List<(int Id, int Item, BlockPos Leaf)> StuckDrops(ChopState st) =>
+        World.Entities.Nearby(TreeCenter(st), 9, e => e.Kind == EntityKind.Item && World.Inventory.RoomFor(e.Item) > 0)
+            .Select(e => (e.Id, Item: (int)e.Item.Id, Leaf: TreeScan.SupportingLeaf(World, e.Position)))
+            .Where(t => t.Leaf is { } l && !st.Failed.Contains(l) && !DropsIntoVoid(l) && !IsBlockProtected(l, Blocks.Leaves) && !EditBlocked(l))
+            .Select(t => (t.Id, t.Item, t.Leaf!.Value))
+            .ToList();
+
+    /// <summary>
+    /// Saplings (and logs) that landed up in the crown sit out of pickup range: the b1.8.1 pickup box only grows sideways,
+    /// so from the ground nothing above head height is collected. Break the leaf each one rests on (saplings first) so it
+    /// drops to the ground, then collect. Bounded; a leaf over the void is never broken for this.
+    /// </summary>
+    private async Task<int> FreeStuckDropsAsync(ChopState st, CancellationToken ct, int maxDigs = 12)
+    {
+        int freed = 0;
+        for (int guard = 0; guard < maxDigs; guard++)
+        {
+            var stuck = StuckDrops(st);
+            if (stuck.Count == 0) break;
+            var leaves = stuck.OrderBy(t => t.Item == Blocks.Sapling ? 0 : 1).ThenBy(t => t.Leaf.Y)
+                .Select(t => t.Leaf).Distinct().ToList();
+            // A support leaf boxed in by other leaves can't be seen: open a way through a leaf beside it.
+            var openers = leaves.SelectMany(l => BlockFaceExtensions.All.Select(f => l.Offset(f)))
+                .Where(n => !leaves.Contains(n) && World.GetBlock(n) == Blocks.Leaves && !st.Failed.Contains(n) && !DropsIntoVoid(n)
+                            && !IsBlockProtected(n, Blocks.Leaves) && !EditBlocked(n))
+                .Distinct().OrderBy(n => n.Y).ToList();
+            BlockPos? pick = DiggableNow(leaves) ?? DiggableNow(openers);
+            if (pick is null)
+            {
+                var seen = await GotoSeeingAsync(st, leaves.Take(8).ToList(), ct).ConfigureAwait(false);
+                if (!seen.Ok && openers.Count > 0) seen = await GotoSeeingAsync(st, openers.Take(12).ToList(), ct).ConfigureAwait(false);
+                if (!seen.Ok) break;
+                pick = DiggableNow(leaves) ?? DiggableNow(openers);
+                if (pick is null) break;
+            }
+            var leaf = pick.Value;
+            var r = await DigCoreAsync(leaf, ct, allowPathing: false, noShears: true).ConfigureAwait(false);
+            if (r.Ok) { st.LeavesBroken++; freed++; }
+            else { st.Failed.Add(leaf); continue; }
+            await WaitTicksAsync(8, ct).ConfigureAwait(false); // b1.8 item gravity: a few ticks to land on the next block
+        }
+        if (freed > 0)
+        {
+            Log($"chop: broke {freed} leaf/leaves holding drops up in the crown");
+            await CollectAroundTreeAsync(st, ct).ConfigureAwait(false);
+        }
+        return freed;
+    }
+
+    /// <summary>The tree's leaves that will decay by themselves (no log keeps them alive any more).</summary>
+    private List<BlockPos> DecayingLeaves(ChopState st)
+    {
+        var left = LeavesLeft(st);
+        if (left.Count == 0) return left;
+        var alive = TreeScan.SupportedLeaves(World, left);
+        return left.Where(l => !alive.Contains(l)).ToList();
+    }
+
+    /// <summary>
+    /// Breaks the tree's reachable leaves (none over the void), frees drops stuck in the crown, then waits a bounded time
+    /// for the rest to decay (only while some leaf can still decay and decay is making progress); collects drops.
+    /// </summary>
     private async Task GatherSaplingsAsync(ChopState st, TreeChopOptions o, CancellationToken ct)
     {
         await CollectAroundTreeAsync(st, ct).ConfigureAwait(false);
@@ -451,7 +625,7 @@ public sealed partial class MinecraftClient
         int sinceCollect = 0, misses = 0;
         while (sw.Elapsed < o.LeafPhase && st.LeavesBroken < o.MaxLeafBreaks)
         {
-            var cands = LeavesLeft(st).Where(p => !skip.Contains(p) && !DropsIntoVoid(p) && !IsBlockProtected(p, Blocks.Leaves)).ToList();
+            var cands = LeavesLeft(st).Where(p => !skip.Contains(p) && !DropsIntoVoid(p) && !IsBlockProtected(p, Blocks.Leaves) && !EditBlocked(p)).ToList();
             if (cands.Count == 0) break;
             if (DiggableNow(cands) is not { } leaf)
             {
@@ -470,26 +644,52 @@ public sealed partial class MinecraftClient
             }
         }
         await CollectAroundTreeAsync(st, ct).ConfigureAwait(false);
+        await FreeStuckDropsAsync(st, ct).ConfigureAwait(false);
 
-        // The rest decays by itself (random ticks): wait a little for the sapling chance, picking up safe drops.
+        // The rest decays by itself (random ticks, ~20 s per leaf on average): wait while that is still happening.
+        int leftBefore = LeavesLeft(st).Count, prev = leftBefore, brokenBefore = st.LeavesBroken;
         var wait = Stopwatch.StartNew();
-        while (wait.Elapsed < o.DecayWait && SaplingsGained(st) < o.WantSaplings && LeavesLeft(st).Count > 0)
+        var progress = Stopwatch.StartNew();
+        while (wait.Elapsed < o.DecayWait && SaplingsGained(st) < o.WantSaplings)
         {
+            var decaying = DecayingLeaves(st);
+            if (decaying.Count == 0 && StuckDrops(st).Count == 0) break;
             await WaitUntilAsync(() => false, TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+            await FreeStuckDropsAsync(st, ct, maxDigs: 4).ConfigureAwait(false);
             await CollectAroundTreeAsync(st, ct, 16).ConfigureAwait(false);
+            int now = LeavesLeft(st).Count;
+            if (now < prev) { prev = now; progress.Restart(); }
+            else if (progress.Elapsed > o.DecayStall) break;
         }
-        if (wait.Elapsed > TimeSpan.Zero) await CollectAroundTreeAsync(st, ct).ConfigureAwait(false);
+        st.LeavesDecayed = Math.Max(0, leftBefore - LeavesLeft(st).Count - (st.LeavesBroken - brokenBefore));
+        if (wait.Elapsed > TimeSpan.Zero)
+        {
+            await FreeStuckDropsAsync(st, ct, maxDigs: 4).ConfigureAwait(false);
+            await CollectAroundTreeAsync(st, ct).ConfigureAwait(false);
+        }
     }
 
     // ------------------------------------------------------------------ replanting
 
+    /// <summary>Consecutive chops that felled a tree but left its spot unplanted (see <see cref="TreeChopOptions.MaxUnreplantedChops"/>).</summary>
+    private int _unreplantedChops;
+    private DateTime _lastUnreplanted;
+    private string? _lastReplantProblem;
+    /// <summary>The unreplanted-chop streak is forgotten after this long without another failed replant.</summary>
+    private static readonly TimeSpan UnreplantedMemory = TimeSpan.FromMinutes(15);
+
+    /// <summary>A sapling was planted some other way (plant tool, a player): the unreplanted-chop streak starts over.</summary>
+    public void NoteSaplingPlanted() => _unreplantedChops = 0;
+
     /// <summary>b1.8.1 BlockSapling.canBlockStay: dirt/grass below and (full light ≥ 8 or sees the sky). Plus room for
     /// the tree to grow (4 cells of air/leaves above), otherwise the sapling never becomes a tree.</summary>
-    private string? ReplantProblem(TreeInfo tree)
+    private string? ReplantProblem(TreeInfo tree) => ReplantProblem(tree.Base, tree.Soil);
+
+    private string? ReplantProblem(BlockPos cell, BlockPos soilPos)
     {
-        var cell = tree.Base;
-        int soil = World.GetBlock(tree.Soil);
-        if (soil is not (Blocks.Dirt or Blocks.Grass)) return $"the dirt under the tree at {Fmt(tree.Soil)} is gone ({BlockName(soil, 0)})";
+        int soil = World.GetBlock(soilPos);
+        // Only a tree that grew from dirt gets here (hanging remnants are handled before): the dirt really was there.
+        if (soil is not (Blocks.Dirt or Blocks.Grass)) return $"the dirt under the tree at {Fmt(soilPos)} is gone (now {BlockName(soil, 0)})";
         int here = World.GetBlock(cell);
         if (!Aiming.IsReplaceable(World, here)) return $"{BlockName(here, World.GetMeta(cell))} on the dirt at {Fmt(cell)}";
         for (int dy = 1; dy <= 4; dy++)
@@ -522,14 +722,34 @@ public sealed partial class MinecraftClient
         var tree = st.Tree;
         if (World.GetBlock(tree.Base) == Blocks.Sapling) return (tree.Base, null); // someone (or decay timing) beat us to it
         if (RemainingLogs(st).Any(l => l == tree.Base)) return (null, "the trunk is still standing");
-        if (ReplantProblem(tree) is { } p) return (null, p);
+        var cell = tree.Base;
+        var soilPos = tree.Soil;
+        if (!tree.OnSoil)
+        {
+            // Logs left hanging after their lower trunk was cut: the tree's real spot is the dirt under the gap. Never
+            // report that dirt as "gone": it was never under these logs.
+            var (sapling, dirt, other) = TreeScan.ColumnUnder(World, tree.Soil);
+            if (sapling is { } sp)
+            {
+                st.AlreadyPlanted = true;
+                return (sp, null);
+            }
+            if (dirt is not { } d)
+                return (null, other is { } o
+                    ? $"these logs hung above {BlockName(World.GetBlock(o), World.GetMeta(o))} at {Fmt(o)}, not dirt; nothing to replant"
+                    : "these logs hung over the void; nothing to replant");
+            soilPos = d;
+            cell = d.Up();
+        }
+        if (World.GetBlock(cell) == Blocks.Sapling) { st.AlreadyPlanted = cell != tree.Base; return (cell, null); }
+        if (ReplantProblem(cell, soilPos) is { } p) return (null, p);
         int? damage = World.Inventory.CountItem(Blocks.Sapling, tree.Wood) > 0 ? tree.Wood
             : World.Inventory.FindSlots(Blocks.Sapling) is { Count: > 0 } any ? World.Inventory.GetPlayerSlot(any[0]).Damage : null;
         if (damage is null) return (null, "no sapling");
-        var r = await PlaceCoreAsync(tree.Base, Blocks.Sapling, ct, allowPathing: true, damage: damage).ConfigureAwait(false);
+        var r = await PlaceCoreAsync(cell, Blocks.Sapling, ct, allowPathing: true, damage: damage).ConfigureAwait(false);
         if (!r.Ok) return (null, "placing the sapling failed: " + r.Message);
         st.PlacedSapling = true;
-        return World.GetBlock(tree.Base) == Blocks.Sapling ? (tree.Base, null) : (null, "the sapling popped off");
+        return World.GetBlock(cell) == Blocks.Sapling ? (cell, null) : (null, "the sapling popped off");
     }
 
     // ------------------------------------------------------------------ result
@@ -543,18 +763,45 @@ public sealed partial class MinecraftClient
         int left = RemainingLogs(st).Count + st.Failed.Count(f => World.GetBlock(f) == Blocks.Log);
         string counts = $"{logs} log{(logs == 1 ? "" : "s")}, {saplings} sapling{(saplings == 1 ? "" : "s")}"
                         + (apples > 0 ? $", {apples} apple{(apples == 1 ? "" : "s")}" : "");
-        string lost = st.Lost > 0 ? $"; {st.Lost} drop(s) lost near the void" : "";
+        // Lost = fell (or will fall) into the void. Drops still lying in the crown aren't lost: say where they are.
+        int stuck = StuckDrops(st).Count;
+        int stuckSaplings = StuckDrops(st).Count(d => d.Item == Blocks.Sapling);
+        string lost = (st.Lost > 0 ? $"; {st.Lost} drop(s) lost near the void" : "")
+                      + (stuck > 0 ? $"; {stuck} drop(s) ({stuckSaplings} sapling(s)) still lying on the leaves" : "");
+        string leafStats = $"broke {st.LeavesBroken} leaves, {st.LeavesDecayed} decayed";
         bool allDown = left == 0;
         bool ok = allDown && stop is null && planted is not null;
         string msg;
-        if (ok) msg = $"chopped {t.WoodName} tree ({counts}), replanted at {Fmt(planted!.Value)}{lost}";
+        if (ok && st.AlreadyPlanted) msg = $"chopped {t.WoodName} tree ({counts}); its spot {Fmt(planted!.Value)} already has a sapling (dirt intact){lost}";
+        else if (ok) msg = $"chopped {t.WoodName} tree ({counts}), replanted at {Fmt(planted!.Value)}{lost}";
         else if (!allDown || stop is not null)
             msg = $"{stop ?? $"{left} log(s) left"}; chopped {st.Felled}/{t.Logs.Count} {t.WoodName} logs ({counts})"
                   + (planted is { } pl ? $", replanted at {Fmt(pl)}" : ", not replanted") + lost;
         else if (problem == "no sapling")
-            msg = $"no sapling dropped, NOT replanted (chopped {t.WoodName} tree: {counts}; dirt at {Fmt(t.Soil)} is free){lost}";
-        else msg = $"replant blocked: {problem} (chopped {t.WoodName} tree: {counts}, sapling kept){lost}";
-        var report = new TreeChopReport(t.WoodName, t.Base, t.Soil, t.Logs.Count, st.Felled, logs, saplings, apples, st.Lost, planted, problem, ok, msg);
+        {
+            var soil = t.OnSoil ? t.Soil : TreeScan.ColumnUnder(World, t.Soil).Dirt ?? t.Soil;
+            msg = $"no sapling dropped, NOT replanted (chopped {t.WoodName} tree: {counts}; dirt at {Fmt(soil)} is free; {leafStats}){lost}";
+        }
+        else
+        {
+            // Live 10-27 (L6): ", sapling kept" was appended with 0 saplings. Say "kept" only when one is really held.
+            int held = World.Inventory.CountItem(Blocks.Sapling);
+            string keep = held > 0 ? ", sapling kept" : ", no sapling to plant either";
+            msg = $"replant blocked: {problem} (chopped {t.WoodName} tree: {counts}{keep}){lost}";
+        }
+        // Consecutive chops that felled a tree without replanting it: the next chop_tree refuses after MaxUnreplantedChops.
+        if (planted is not null) _unreplantedChops = 0;
+        else if (st.Felled > 0)
+        {
+            _unreplantedChops++;
+            _lastUnreplanted = DateTime.UtcNow;
+            _lastReplantProblem = stop ?? problem;
+        }
+        var report = new TreeChopReport(t.WoodName, t.Base, t.Soil, t.Logs.Count, st.Felled, logs, saplings, apples, st.Lost, planted, problem, ok, msg)
+        {
+            LeavesBroken = st.LeavesBroken, LeavesDecayed = st.LeavesDecayed, StuckDrops = stuck,
+        };
+        if (!msg.Contains(leafStats)) Log($"chop: {leafStats}, {stuck} drop(s) still on the leaves");
         Log("chop: " + msg);
         Raise(() => TreeChopped?.Invoke(report));
         return ok ? ActionResult.Success(msg, logs) : ActionResult.Fail(msg, logs);

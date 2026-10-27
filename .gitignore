@@ -489,3 +489,11 @@ src/MineClaw.App/appsettings.*.json
 /logs/
 /data/*
 !/data/seed/
+
+# Mojang textures (copyrighted): read at runtime from the user's own b1.8.1 client jar (or Mojang's official download)
+# into data/assets/; never committed, never embedded in the build.
+/data/assets/
+**/terrain.png
+**/items.png
+**/char.png
+*.jar

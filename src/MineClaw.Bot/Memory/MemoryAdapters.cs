@@ -203,12 +203,41 @@ public sealed partial class MemoryStoreAdapter(MemoryStore memory, ObservationSt
         return (ToW(s.Min), ToW(s.Max ?? s.Min));
     }
 
+    /// <summary>Header line before each later demo's steps ("demo 2 by PoofimaFox (variant):").</summary>
+    public const string DemoHeader = "demo ";
+    private const int MaxStructureSteps = 30;
+
+    private static bool ContainsRun(List<string> have, IReadOnlyList<string> run)
+    {
+        if (run.Count == 0) return true;
+        for (int i = 0; i + run.Count <= have.Count; i++)
+        {
+            int k = 0;
+            while (k < run.Count && have[i + k] == run[k]) k++;
+            if (k == run.Count) return true;
+        }
+        return false;
+    }
+
     public void SaveSteps(string name, IReadOnlyList<string> steps, string taughtBy)
     {
         var s = memory.UpsertStructure(name, s =>
         {
-            s.Steps.Clear();
-            s.Steps.AddRange(steps);
+            // A second demo of the same structure (the other gen cell) is a variant: appended, never wiping the first.
+            if (s.Steps.Count == 0) s.Steps.AddRange(steps);
+            else if (!ContainsRun(s.Steps, steps))
+            {
+                int n = 1 + s.Steps.Count(x => x.StartsWith(DemoHeader, StringComparison.Ordinal)) + 1;
+                s.Steps.Add($"{DemoHeader}{n} by {taughtBy} (variant):");
+                s.Steps.AddRange(steps);
+                // Bounded: the oldest whole demo goes first.
+                while (s.Steps.Count > MaxStructureSteps)
+                {
+                    int next = s.Steps.FindIndex(1, x => x.StartsWith(DemoHeader, StringComparison.Ordinal));
+                    if (next <= 0) { s.Steps.RemoveRange(0, s.Steps.Count - MaxStructureSteps); break; }
+                    s.Steps.RemoveRange(0, next);
+                }
+            }
             s.TaughtBy = taughtBy;
             s.Confidence = Math.Max(s.Confidence, 0.7);
         });

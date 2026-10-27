@@ -23,12 +23,26 @@ public static class ConfigCheck
         if (string.IsNullOrWhiteSpace(mc.Host)) p.Add("Minecraft:Host is empty");
         if (mc.Port is <= 0 or > 65535) p.Add($"Minecraft:Port {mc.Port} is not a valid port");
         if (string.IsNullOrWhiteSpace(mc.Username) || mc.Username.Length > 16) p.Add("Minecraft:Username must be 1-16 characters");
-        if (string.IsNullOrWhiteSpace(a.Llm.ApiKey)) p.Add("Agent:Llm:ApiKey is missing (or set ANTHROPIC_API_KEY)");
-        else if (!a.Llm.ApiKey.StartsWith("sk-ant-")) p.Add("Agent:Llm:ApiKey doesn't look like an Anthropic key (sk-ant-...)");
+        // Provider routing (Agent:Llm:*Provider, Agent:Llm:Ollama). Nothing set to ollama = no new checks, same as before.
+        p.AddRange(a.Llm.ValidateProviders());
+        // The Anthropic key is needed only when some tier runs on Anthropic.
+        if (a.Llm.TiersUseAnthropic)
+        {
+            if (string.IsNullOrWhiteSpace(a.Llm.ApiKey)) p.Add("Agent:Llm:ApiKey is missing (or set ANTHROPIC_API_KEY)");
+            else if (!a.Llm.ApiKey.StartsWith("sk-ant-")) p.Add("Agent:Llm:ApiKey doesn't look like an Anthropic key (sk-ant-...)");
+        }
         if (string.IsNullOrWhiteSpace(a.Llm.CheapModel) || string.IsNullOrWhiteSpace(a.Llm.MainModel)) p.Add("Agent:Llm:CheapModel/MainModel must be set");
         if (a.Budget.DailyCapUsd <= 0) p.Add("Agent:Budget:DailyCapUsd must be > 0");
-        foreach (var m in new[] { a.Llm.CheapModel, a.Llm.MainModel })
-            if (!string.IsNullOrWhiteSpace(m) && !a.Prices.Models.ContainsKey(m)) p.Add($"no price for model {m}: add Agent:Prices:Models:{m}");
+        foreach (var (tier, m) in new[] { (Agent.Llm.ModelTier.Cheap, a.Llm.CheapModel), (Agent.Llm.ModelTier.Main, a.Llm.MainModel) })
+            if (!string.IsNullOrWhiteSpace(m) && a.Llm.ProviderFor(tier) == Agent.Llm.LlmProviders.Anthropic && !a.Prices.Models.ContainsKey(m))
+                p.Add($"no price for model {m}: add Agent:Prices:Models:{m}"); // Ollama models are priced from Agent:Prices:Ollama ($0 default)
+        if (a.Embeddings.IsOllama && a.Rag.Enabled)
+        {
+            if (string.IsNullOrWhiteSpace(a.Embeddings.Model)) p.Add("Agent:Embeddings:Provider is ollama but Agent:Embeddings:Model is empty");
+            if (a.Embeddings.Dimensions <= 0) p.Add("Agent:Embeddings:Dimensions must be the Ollama model's vector size");
+            if (string.IsNullOrWhiteSpace(a.Embeddings.Endpoint) && !a.Llm.Ollama.IsConfigured)
+                p.Add("Agent:Embeddings:Provider is ollama but neither Agent:Embeddings:Endpoint nor Agent:Llm:Ollama:Endpoint is set");
+        }
         if (!string.Equals(a.Chat.Username, mc.Username, StringComparison.OrdinalIgnoreCase))
             p.Add($"Agent:Chat:Username ({a.Chat.Username}) should equal Minecraft:Username ({mc.Username})");
         return p;
@@ -57,6 +71,59 @@ public static class KeyCheck
             catch (Exception ex) { return (false, $"{ex.GetType().Name}: {ex.Message}", true); }
         }
         return (true, string.Join(", ", found), false);
+    }
+
+    /// <summary>
+    /// The models the Anthropic key check retrieves: tier models on Anthropic only (none = skip the check). With every tier
+    /// on Anthropic this is exactly the old list.
+    /// </summary>
+    public static List<string> AnthropicModels(Agent.Llm.LlmOptions o) =>
+        new[] { Agent.Llm.ModelTier.Cheap, Agent.Llm.ModelTier.Main, Agent.Llm.ModelTier.Worker }
+            .Where(t => o.ProviderFor(t) == Agent.Llm.LlmProviders.Anthropic).Select(o.ModelFor).ToList();
+
+    /// <summary>Ollama tier models, for <c>GET /api/tags</c> + <c>/api/show</c>. Every tier calls tools, so each needs tool support.</summary>
+    public static List<(string Model, string Use, bool NeedsTools)> OllamaModels(Agent.Llm.LlmOptions o)
+    {
+        var list = new List<(string, string, bool)>();
+        foreach (var (t, use) in new[] { (Agent.Llm.ModelTier.Main, "brain tier"), (Agent.Llm.ModelTier.Worker, "worker tier"), (Agent.Llm.ModelTier.Cheap, "memory tier") })
+            if (o.ProviderFor(t) == Agent.Llm.LlmProviders.Ollama) list.Add((o.ModelFor(t), use, true));
+        return list;
+    }
+
+    /// <summary>Startup check of the Ollama server: only when a tier is on Ollama (else nothing is called).</summary>
+    public static async Task<(bool Ok, string Message, bool Transient)> RunOllamaAsync(Agent.Llm.LlmOptions o, HttpClient? http = null, CancellationToken ct = default)
+    {
+        var wanted = OllamaModels(o);
+        if (wanted.Count == 0) return (true, "not used", false);
+        var client = http ?? Agent.Llm.OllamaLlmClient.CreateHttp(o.Ollama);
+        try { return await new Agent.Llm.OllamaCatalog(o.Ollama, client).CheckAsync(wanted, ct).ConfigureAwait(false); }
+        finally { if (http == null) client.Dispose(); }
+    }
+
+    /// <summary>
+    /// Usable Ollama profiles whose model is missing or can't call tools are disabled (with the reason, so delegate/hive spawn
+    /// refuse them clearly) instead of failing startup. Returns one line per disabled profile.
+    /// </summary>
+    public static async Task<List<string>> CheckOllamaProfilesAsync(Agent.Llm.LlmOptions o, HttpClient? http = null, CancellationToken ct = default)
+    {
+        var notes = new List<string>();
+        var names = o.Profiles.Where(kv => Agent.Llm.LlmProviders.Normalize(kv.Value.Provider) == Agent.Llm.LlmProviders.Ollama && o.CheckProfile(kv.Key) == null)
+            .Select(kv => kv.Key).ToList();
+        if (names.Count == 0) return notes;
+        var client = http ?? Agent.Llm.OllamaLlmClient.CreateHttp(o.Ollama);
+        try
+        {
+            var catalog = new Agent.Llm.OllamaCatalog(o.Ollama, client);
+            foreach (var n in names)
+            {
+                var r = await catalog.CheckAsync([(o.Profiles[n].Model.Trim(), $"profile {n}", true)], ct).ConfigureAwait(false);
+                if (r.Ok) continue;
+                o.DisableProfile(n, r.Message);
+                notes.Add($"profile {n} disabled: {r.Message}");
+            }
+        }
+        finally { if (http == null) client.Dispose(); }
+        return notes;
     }
 }
 

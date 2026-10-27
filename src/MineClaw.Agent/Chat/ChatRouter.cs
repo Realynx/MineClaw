@@ -25,7 +25,7 @@ public sealed class ChatRouter
     private readonly Dictionary<string, DateTimeOffset> _lastTalkedWith = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Queue<DateTimeOffset>> _incoming = new(StringComparer.OrdinalIgnoreCase);
     private readonly Queue<(string Line, DateTimeOffset At)> _recentSent = new();
-    private readonly List<(string? Player, TaskCompletionSource<string> Tcs)> _waiters = new();
+    private readonly List<Waiter> _waiters = new();
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private DateTimeOffset _lastSend = DateTimeOffset.MinValue;
 
@@ -397,45 +397,97 @@ public sealed class ChatRouter
     // ---------- ask_player support ----------
 
     /// <summary>
+    /// ask_player &amp; co. reply merging: after a waiter's first line, more lines from the same player within
+    /// <see cref="ChatDebounceOptions.ReplyQuietMs"/> are added to the same answer ("the left / one near the lava") instead of
+    /// waking a separate turn. Null (or ReplyQuietMs 0) = the first line completes the waiter at once.
+    /// </summary>
+    public ChatDebounceOptions? Debounce { get; set; }
+
+    /// <summary>Counters (reply merges) shared with the event queue.</summary>
+    public ChatFlowStats? Stats { get; set; }
+
+    private sealed class Waiter(string? player)
+    {
+        public readonly string? Player = player;
+        public readonly TaskCompletionSource<string> Tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public readonly List<string> Parts = new();
+        public string? From;
+        public DateTimeOffset First;
+        public ITimer? Timer;
+        public string Result => From + ": " + string.Join(" / ", Parts);
+    }
+
+    /// <summary>
     /// Waits for the next message from <paramref name="player"/> (any of their messages counts), or the next
-    /// addressed message from anyone if null. The reply is consumed (not posted as an event). Null on timeout.
+    /// addressed message from anyone if null. The reply is consumed (not posted as an event); a burst of lines becomes one
+    /// reply (see <see cref="Debounce"/>). Null on timeout.
     /// </summary>
     public async Task<string?> WaitForReplyAsync(string? player, TimeSpan timeout, CancellationToken ct)
     {
-        var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var entry = (player, tcs);
-        lock (_lock) _waiters.Add(entry);
+        var w = new Waiter(player);
+        lock (_lock) _waiters.Add(w);
         try
         {
-            return await tcs.Task.WaitAsync(timeout, _time, ct).ConfigureAwait(false);
+            return await w.Tcs.Task.WaitAsync(timeout, _time, ct).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
-            return null;
+            // Timed out while a reply was still being typed: what arrived is the answer.
+            lock (_lock) return w.Parts.Count > 0 ? w.Result : null;
         }
         finally
         {
-            lock (_lock) _waiters.Remove(entry);
+            lock (_lock) _waiters.Remove(w);
+            w.Timer?.Dispose();
         }
     }
 
     private bool TryCompleteWaiter(string player, string text, bool addressed)
     {
-        TaskCompletionSource<string>? hit = null;
+        Waiter? done = null;
         lock (_lock)
         {
-            int i = _waiters.FindIndex(w => w.Player != null && w.Player.Equals(player, StringComparison.OrdinalIgnoreCase));
-            if (i < 0 && addressed) i = _waiters.FindIndex(w => w.Player == null);
-            if (i >= 0)
+            // A reply already being collected from this player first, then their own waiter, then an "anyone" waiter.
+            var w = _waiters.FirstOrDefault(x => x.Parts.Count > 0 && string.Equals(x.From, player, StringComparison.OrdinalIgnoreCase))
+                ?? _waiters.FirstOrDefault(x => x.Parts.Count == 0 && x.Player != null && x.Player.Equals(player, StringComparison.OrdinalIgnoreCase))
+                ?? (addressed ? _waiters.FirstOrDefault(x => x.Parts.Count == 0 && x.Player == null) : null);
+            if (w == null) return false;
+            if (w.Parts.Count == 0) { w.From = player; w.First = Now; }
+            w.Parts.Add(text);
+            _lastTalkedWith[player] = Now;
+
+            int quiet = Debounce is { Enabled: true } d ? Math.Max(0, d.ReplyQuietMs) : 0;
+            int max = Debounce?.MaxMs ?? 0;
+            if (quiet == 0 || Debounce!.IsImmediate(text) || Now - w.First >= TimeSpan.FromMilliseconds(max))
             {
-                hit = _waiters[i].Tcs;
-                _waiters.RemoveAt(i);
-                _lastTalkedWith[player] = Now;
+                _waiters.Remove(w);
+                done = w;
+            }
+            else
+            {
+                w.Timer?.Dispose();
+                w.Timer = _time.CreateTimer(_ => FinishWaiter(w), null, TimeSpan.FromMilliseconds(quiet), Timeout.InfiniteTimeSpan);
             }
         }
-        if (hit == null) return false;
-        hit.TrySetResult(player + ": " + text);
+        if (done != null) Complete(done);
         return true;
+    }
+
+    private void FinishWaiter(Waiter w)
+    {
+        lock (_lock)
+        {
+            if (!_waiters.Remove(w)) return;
+        }
+        Complete(w);
+    }
+
+    private void Complete(Waiter w)
+    {
+        string result;
+        lock (_lock) result = w.Result;
+        if (w.Parts.Count > 1) Stats?.ReplyMerged();
+        w.Tcs.TrySetResult(result);
     }
 
     // ---------- outgoing ----------

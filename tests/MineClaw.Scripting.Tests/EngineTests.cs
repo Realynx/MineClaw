@@ -242,7 +242,7 @@ public class BindingTests
     [Fact]
     public async Task No_server_commands_from_scripts()
     {
-        using var rig = new Rig();
+        using var rig = new Rig(new ScriptOptions { MaxSayPerRun = 10, SayMinIntervalSeconds = 0 });
         var s = await rig.Run("say'/op maid_chan' say'hi /kill @a' emote'/gamemode 1 waves' ask('kiwi', '/stop now?', 5)");
         Assert.Equal(ScriptStatus.Done, s.Status);
         Assert.Equal(["op maid_chan", "hi kill @a", "kiwi: stop now?"], rig.Said);
@@ -253,7 +253,7 @@ public class BindingTests
     [Fact]
     public async Task Chat_is_rate_limited_and_ask_returns_the_reply()
     {
-        using var rig = new Rig();
+        using var rig = new Rig(new ScriptOptions { MaxSayPerRun = 10, SayMinIntervalSeconds = 0 });
         var s = await rig.Run("local ok = 0 for i = 1, 8 do if say('hi ' .. i) then ok = ok + 1 end end\nreturn ok .. ' ' .. ask('kiwi', 'which chest?', 10)");
         Assert.Contains("(6 yes,", s.Outcome);
     }
@@ -439,7 +439,7 @@ public class InterruptTests
     [Fact]
     public async Task Stop_from_a_trusted_player_is_a_hard_pause()
     {
-        using var rig = new Rig(new ScriptOptions { ChatAutoResumeSeconds = 1 });
+        using var rig = new Rig(new ScriptOptions { ChatAutoResumeSeconds = 1, PauseOnChat = true }); // opt-in: chat no longer pauses by default
         var s = rig.Start("while true do wait(0.05) end");
         s.Deliver(new ScriptEvent(ScriptEventKind.Stop, "stop!", "kiwi"));
         await s.WhenSettled().WaitAsync(TimeSpan.FromSeconds(5));
@@ -475,7 +475,7 @@ public class InterruptTests
     [Fact]
     public async Task Chat_handlers_take_matching_chat_and_other_chat_pauses_with_auto_resume()
     {
-        using var rig = new Rig(new ScriptOptions { ChatAutoResumeSeconds = 1 });
+        using var rig = new Rig(new ScriptOptions { ChatAutoResumeSeconds = 1, PauseOnChat = true }); // opt-in: chat no longer pauses by default
         var resumed = new TaskCompletionSource<bool>();
         rig.C.Resumed += (_, auto) => resumed.TrySetResult(auto);
         var s = rig.Start("on('chat', {from = 'kiwi'}, function(e) carry.said = e.text end)\nwait(0.4)\nwait(0.4)\nwait(0.2)\nreturn carry.said");

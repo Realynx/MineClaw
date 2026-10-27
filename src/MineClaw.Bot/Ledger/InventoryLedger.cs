@@ -1,0 +1,270 @@
+using MineClaw.Data;
+
+namespace MineClaw.Bot.Ledger;
+
+/// <summary>One net inventory change of one item kind, with what caused it.</summary>
+/// <param name="Delta">Positive = gained, negative = gone from the inventory.</param>
+/// <param name="Cause">"crafted", "tossed to PoofimaFox", "deposited", "picked up", "lost when I died", ...</param>
+/// <param name="Detail">Follow-up facts ("PoofimaFox picked up 12 at 07:34:18").</param>
+public sealed record LedgerEntry(DateTimeOffset At, int ItemId, int Damage, int Delta, string Cause, string? Detail = null)
+{
+    public string ItemName => Items.DisplayName(ItemId, Damage);
+
+    public override string ToString() =>
+        $"{At.ToLocalTime():HH:mm:ss} {(Delta > 0 ? "+" : "")}{Delta} {ItemName}: {Cause}" + (Detail is null ? "" : $" ({Detail})");
+}
+
+/// <summary>
+/// Inventory ledger: every gain and loss of every item, attributed (toss/give, drop, deposit, craft, place, eat, pickup,
+/// death, tool wear, server correction). Items never vanish silently: whatever leaves the inventory gets an entry, and
+/// "where did the slabs go" is answered from here. Fed with full count snapshots (diffed here), cause scopes from the
+/// running tool/skill, and pickup/death notes; changes settle briefly before attribution because the pickup packet and the
+/// slot update arrive in either order. Thread-safe; bounded ring. Zero tokens.
+/// </summary>
+public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 600)
+{
+    private readonly TimeProvider _time = time ?? TimeProvider.System;
+    private readonly object _lock = new();
+    private readonly List<LedgerEntry> _entries = new();
+    private readonly List<(DateTimeOffset At, int Id, int Damage, int Delta, string? Scope, string? Action)> _pending = new();
+    private readonly List<(DateTimeOffset At, int Id, int Count)> _pickups = new();
+    private readonly List<(long Token, string Cause)> _scopes = new();
+    private Dictionary<(int Id, int Damage), int>? _last;
+    private DateTimeOffset? _diedAt;
+    private string? _diedWhere;
+    private DateTimeOffset? _resyncUntil;
+    private const string Correction = "server correction";
+    private long _nextToken;
+
+    /// <summary>How long a change waits for its pickup/death note before it is attributed.</summary>
+    public TimeSpan Settle { get; init; } = TimeSpan.FromMilliseconds(300);
+    /// <summary>Same item, same cause, same direction within this window = one entry.</summary>
+    public TimeSpan MergeWindow { get; init; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>The client's running action ("craft", "deposit", "place", "goto", "click"...), the fallback cause.</summary>
+    public Func<string?>? CurrentAction { get; set; }
+
+    /// <summary>The host's flush timer (kept alive with the ledger).</summary>
+    public IDisposable? Pump { get; set; }
+
+    /// <summary>Raised for every new (or grown) entry: the host logs it.</summary>
+    public event Action<LedgerEntry>? Recorded;
+
+    // ------------------------------------------------------------------ inputs
+
+    /// <summary>A full snapshot of the inventory's counts (player slots + cursor). The first one is the baseline.</summary>
+    public void Observe(IReadOnlyDictionary<(int Id, int Damage), int> counts)
+    {
+        var now = _time.GetUtcNow();
+        string? action = SafeAction();
+        lock (_lock)
+        {
+            if (_last is null) { _last = new(counts); return; }
+            bool correction = _resyncUntil is { } until && now <= until;
+            _resyncUntil = null;
+            string? scope = correction ? Correction : _scopes.Count > 0 ? _scopes[^1].Cause : null;
+            foreach (var key in _last.Keys.Union(counts.Keys).ToList())
+            {
+                int d = counts.GetValueOrDefault(key) - _last.GetValueOrDefault(key);
+                if (d != 0) _pending.Add((now, key.Id, key.Damage, d, scope, action));
+            }
+            _last = new(counts);
+        }
+    }
+
+    /// <summary>Changes until disposal are caused by <paramref name="cause"/> (innermost scope wins).</summary>
+    public IDisposable Scope(string cause)
+    {
+        long token;
+        lock (_lock) { token = ++_nextToken; _scopes.Add((token, cause)); }
+        return new ScopeHandle(this, token);
+    }
+
+    /// <summary>The bot itself picked up an item entity (0x16 collect).</summary>
+    public void NotePickup(int itemId, int count)
+    {
+        lock (_lock) _pickups.Add((_time.GetUtcNow(), itemId, count));
+    }
+
+    /// <summary>Another player picked up an item entity: credited to a recent toss/drop of that item.</summary>
+    public void NoteOtherPickup(string player, int itemId, int count)
+    {
+        var now = _time.GetUtcNow();
+        LedgerEntry? updated = null;
+        lock (_lock)
+        {
+            Flush(now, force: true);
+            for (int i = _entries.Count - 1; i >= 0; i--)
+            {
+                var e = _entries[i];
+                if (now - e.At > TimeSpan.FromMinutes(5)) break;
+                if (e.ItemId != itemId || e.Delta >= 0 || !(e.Cause.StartsWith("tossed", StringComparison.Ordinal) || e.Cause.StartsWith("dropped", StringComparison.Ordinal))) continue;
+                string note = $"{player} picked up {count} at {now.ToLocalTime():HH:mm:ss}";
+                updated = _entries[i] = e with { Detail = e.Detail is null ? note : e.Detail + "; " + note };
+                break;
+            }
+        }
+        if (updated is not null) Recorded?.Invoke(updated);
+    }
+
+    /// <summary>The bot died: everything that leaves the inventory now was dropped where it died.</summary>
+    public void NoteDeath(string? where = null)
+    {
+        lock (_lock) { _diedAt = _time.GetUtcNow(); _diedWhere = where; }
+    }
+
+    /// <summary>The server is about to replace the inventory model (0x68 window contents): the very next snapshot's
+    /// changes are a correction of a wrong local model (predicted or stale stacks), not a real gain/loss.</summary>
+    public void NoteResync()
+    {
+        lock (_lock) _resyncUntil = _time.GetUtcNow() + TimeSpan.FromMilliseconds(250);
+    }
+
+    // ------------------------------------------------------------------ attribution
+
+    /// <summary>Attributes settled changes (called by a timer and before every query).</summary>
+    public void Flush()
+    {
+        lock (_lock) Flush(_time.GetUtcNow(), force: false);
+    }
+
+    private void Flush(DateTimeOffset now, bool force)
+    {
+        var raised = new List<LedgerEntry>();
+        for (int i = 0; i < _pending.Count;)
+        {
+            var p = _pending[i];
+            if (!force && now - p.At < Settle) { i++; continue; }
+            _pending.RemoveAt(i);
+            var e = Record(new LedgerEntry(p.At, p.Id, p.Damage, p.Delta, CauseOf(p.At, p.Id, p.Delta, p.Scope, p.Action)));
+            raised.Add(e);
+        }
+        _pickups.RemoveAll(x => now - x.At > TimeSpan.FromSeconds(10));
+        if (raised.Count > 0 && Recorded is { } h)
+            ThreadPool.QueueUserWorkItem(_ => { foreach (var e in raised) h(e); });
+    }
+
+    private string CauseOf(DateTimeOffset at, int id, int delta, string? scope, string? action)
+    {
+        if (scope == Correction)
+            return delta < 0
+                ? "server correction: my inventory model listed them but the server didn't have them (gone earlier, unrecorded)"
+                : "server correction: the server had more than my model showed";
+        if (delta > 0)
+        {
+            int k = _pickups.FindIndex(x => x.Id == id && (at - x.At).Duration() <= TimeSpan.FromSeconds(1.5));
+            if (k >= 0)
+            {
+                _pickups.RemoveAt(k);
+                return scope is null && action is null ? "picked up" : $"picked up ({scope ?? action})";
+            }
+        }
+        if (delta < 0 && _diedAt is { } died && (at - died).Duration() <= TimeSpan.FromSeconds(3))
+            return "lost when I died" + (_diedWhere is { } w ? $" at {w}" : "") + " (dropped there, despawns after 5 min)";
+        if (scope is not null) return scope;
+        if (delta < 0 && Items.Get(id) is { MaxDamage: > 0 } && action is "dig" or "mine" or "chop" or "harvest" or "attack" or "spar" or "collect")
+            return $"wore out ({action})";
+        if (action is not null && action != "click") return ActionCause(action, delta);
+        return action == "click"
+            ? (delta < 0 ? "moved out of the inventory by a window click" : "moved into the inventory by a window click")
+            : (delta < 0 ? "vanished without an action (server correction of my inventory model?)" : "appeared without an action (server correction?)");
+    }
+
+    private static string ActionCause(string action, int delta) => (action, delta < 0) switch
+    {
+        ("craft", true) => "used in crafting",
+        ("craft", false) => "crafted",
+        ("deposit", true) => "deposited into a chest",
+        ("withdraw", false) => "taken from a chest",
+        ("place", true) or ("build", true) => "placed as a block",
+        ("goto", true) or ("follow", true) => "placed while moving (bridge/pillar block)",
+        ("eat", true) => "eaten",
+        ("smelt", true) => "put in a furnace",
+        ("collect_furnace", false) => "taken from a furnace",
+        ("chop", true) => "placed by chop_tree (pillar/replant)",
+        _ => $"{(delta < 0 ? "used" : "gained")} during {action}",
+    };
+
+    private LedgerEntry Record(LedgerEntry e)
+    {
+        if (_entries.Count > 0)
+        {
+            for (int i = _entries.Count - 1; i >= 0 && e.At - _entries[i].At <= MergeWindow; i--)
+            {
+                var x = _entries[i];
+                if (x.ItemId == e.ItemId && x.Damage == e.Damage && x.Cause == e.Cause && Math.Sign(x.Delta) == Math.Sign(e.Delta))
+                    return _entries[i] = x with { Delta = x.Delta + e.Delta };
+            }
+        }
+        _entries.Add(e);
+        if (_entries.Count > capacity) _entries.RemoveRange(0, _entries.Count - capacity);
+        return e;
+    }
+
+    private string? SafeAction()
+    {
+        try { return CurrentAction?.Invoke(); } catch (Exception) { return null; }
+    }
+
+    // ------------------------------------------------------------------ queries
+
+    public IReadOnlyList<LedgerEntry> Entries
+    {
+        get { lock (_lock) { Flush(_time.GetUtcNow(), force: true); return _entries.ToList(); } }
+    }
+
+    /// <summary>Entries for items whose name matches <paramref name="query"/> ("slabs", "cobble slab", "logs"), newest last.</summary>
+    public IReadOnlyList<LedgerEntry> History(string query) => Entries.Where(e => Matches(e, query)).ToList();
+
+    /// <summary>
+    /// "where did the slabs go": the item's recent movements, terse (≤ <paramref name="maxChars"/>), or null when the
+    /// ledger has nothing on it this session.
+    /// </summary>
+    public string? Explain(string query, int? haveNow = null, int maxChars = 360)
+    {
+        var h = History(query);
+        if (h.Count == 0) return null;
+        var lines = h.Select(e => e.ToString()).ToList();
+        string head = haveNow is { } n ? $"{h[^1].ItemName}: have {n} now. " : "";
+        string body = string.Join("; ", lines);
+        while (head.Length + body.Length > maxChars && lines.Count > 1)
+        {
+            lines.RemoveAt(0);
+            body = "...; " + string.Join("; ", lines);
+        }
+        var text = head + body;
+        return text.Length > maxChars ? text[..(maxChars - 3)] + "..." : text;
+    }
+
+    public static bool Matches(LedgerEntry e, string query) => Matches(e.ItemName, query);
+
+    /// <summary>Loose item-name match: every query word (singular, "cobble" = cobblestone) appears in the name.</summary>
+    public static bool Matches(string itemName, string query)
+    {
+        var name = itemName.ToLowerInvariant().Replace('_', ' ');
+        var words = query.ToLowerInvariant().Replace('_', ' ').Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Where(w => w is not ("the" or "my" or "a" or "some" or "of"))
+            .Select(w => w == "cobble" ? "cobblestone" : w)
+            .Select(w => w.Length > 3 && w.EndsWith("es", StringComparison.Ordinal) && !w.EndsWith("ses", StringComparison.Ordinal) && !name.Contains(w) ? w[..^1] : w)
+            .Select(w => w.Length > 2 && w.EndsWith('s') && !name.Contains(w) ? w[..^1] : w)
+            .ToList();
+        // "cobblestone slab" vs the wire name "stone slab" (b1.8.1 slab damage 3 = cobblestone): accept either material.
+        return words.Count > 0 && words.All(w => name.Contains(w) || (w == "cobblestone" && name.Contains("slab")));
+    }
+
+    private sealed class ScopeHandle(InventoryLedger ledger, long token) : IDisposable
+    {
+        private int _done;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _done, 1) != 0) return;
+            lock (ledger._lock)
+            {
+                // Changes already observed keep the scope they were seen under; flush now so late slot updates still get it.
+                int i = ledger._scopes.FindIndex(s => s.Token == token);
+                if (i >= 0) ledger._scopes.RemoveAt(i);
+            }
+        }
+    }
+}

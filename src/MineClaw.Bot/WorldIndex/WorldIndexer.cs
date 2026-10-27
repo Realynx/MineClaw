@@ -124,10 +124,13 @@ public sealed partial class WorldIndexer : IDisposable
                 try { await Task.Delay(interval, _time, ct).ConfigureAwait(false); }
                 catch (OperationCanceledException) { break; }
                 try { Pump(); }
-                catch (Exception ex) { _log.LogWarning(ex, "world indexer pass failed"); }
+                catch (Exception ex) { PassFailed.Report(ex, _time.GetUtcNow(), _log); }
             }
         }, ct);
     }
+
+    /// <summary>Live 10-27 (L7): a failing pass logged a full stack trace every second. Same failure = one stack, then a count per minute.</summary>
+    internal FailureThrottle PassFailed { get; } = new("world indexer pass failed");
 
     public void Stop()
     {

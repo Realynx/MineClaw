@@ -1,7 +1,7 @@
 using MineClaw.Agent.Telemetry;
 using MineClaw.World;
 
-namespace MineClaw.App.Viewport;
+namespace MineClaw.Render;
 
 /// <summary>
 /// Builds the isometric viewport's <see cref="VoxelVolume"/> around a bot from its world copy, at most

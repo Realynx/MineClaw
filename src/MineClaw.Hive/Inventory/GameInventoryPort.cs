@@ -133,6 +133,47 @@ public sealed class GameInventoryPort(IGameClient client, ObservationStore obser
         return tossed > 0 ? ActionResult.Success($"tossed {tossed} item(s)", tossed) : ActionResult.Fail("nothing tossed");
     }
 
+    /// <summary>
+    /// Out of a hole / generator cell: the nearest standable spot within 6 blocks, no lower than here, with open air on at
+    /// least 3 sides and solid ground (never over the void, never in liquid), then walk there.
+    /// </summary>
+    public async Task<bool> StepOutAsync(CancellationToken ct)
+    {
+        if (!client.IsPlaying) return false;
+        var w = client.World;
+        var me = w.Player.Position.ToBlockPos();
+        var spot = OpenSpot(w, me);
+        if (spot is not { } p) return false;
+        var r = await client.GotoAsync(new GoalNear(p, 0), null, ct).ConfigureAwait(false);
+        return r.Ok;
+    }
+
+    /// <summary>The nearest open standable cell around <paramref name="me"/> (see <see cref="StepOutAsync"/>), or null.</summary>
+    internal static BlockPos? OpenSpot(WorldState w, BlockPos me, int radius = 6)
+    {
+        static bool Air(WorldState w, int x, int y, int z) => w.GetBlock(x, y, z) == 0;
+        int Open(int x, int y, int z) =>
+            (Air(w, x + 1, y, z) ? 1 : 0) + (Air(w, x - 1, y, z) ? 1 : 0) + (Air(w, x, y, z + 1) ? 1 : 0) + (Air(w, x, y, z - 1) ? 1 : 0);
+        if (Open(me.X, me.Y, me.Z) >= 3) return null; // already in the open
+        BlockPos? best = null;
+        double bestD = double.MaxValue;
+        for (int dx = -radius; dx <= radius; dx++)
+        for (int dz = -radius; dz <= radius; dz++)
+        for (int dy = 0; dy <= 2; dy++)
+        {
+            int x = me.X + dx, y = me.Y + dy, z = me.Z + dz;
+            if (dx == 0 && dz == 0 && dy == 0) continue;
+            if (!Air(w, x, y, z) || !Air(w, x, y + 1, z)) continue;
+            int below = w.GetBlock(x, y - 1, z);
+            if (below == 0 || !BlockShapes.HasCollision(w, x, y - 1, z) || BlockShapes.IsLiquid(below)) continue;
+            if (w.IsPlayerOverVoid(new Vec3d(x + 0.5, y, z + 0.5))) continue;
+            if (Open(x, y, z) < 3) continue;
+            double d = dx * dx + dz * dz + dy * 0.5;
+            if (d < bestD) { bestD = d; best = new BlockPos(x, y, z); }
+        }
+        return best;
+    }
+
     public async Task<(ActionResult Result, BlockPos? Chest)> PlaceLabelledChestAsync(string label, CancellationToken ct)
     {
         if (client.World.Inventory.CountItem(Blocks.Chest) <= 0) return (ActionResult.Fail("no chest item to place"), null);

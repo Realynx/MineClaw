@@ -90,7 +90,9 @@ public sealed class MemoryAgent
             foreach (var u in uses.Take(4))
             {
                 var tool = tools.FirstOrDefault(t => t.Name.Equals(u.Name, StringComparison.OrdinalIgnoreCase));
-                var r = tool != null ? await _tools.ExecuteAsync(tool, u.Input, ct).ConfigureAwait(false) : ToolResult.Error($"no tool '{u.Name}'");
+                ToolResult r;
+                using (ToolCaller.Push(ModelTier.Cheap, response.Model))
+                    r = tool != null ? await _tools.ExecuteAsync(tool, u.Input, ct).ConfigureAwait(false) : ToolResult.Error($"no tool '{u.Name}'");
                 if (r.Ok) raw.Add(TextUtil.OneLine(r.Text));
                 results.Add(new LlmToolResult(u.Id, r.Text.Length == 0 ? "(empty)" : r.Text, !r.Ok));
             }

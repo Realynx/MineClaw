@@ -15,6 +15,7 @@ public sealed class ToolRegistry
     private readonly Dictionary<string, IAgentTool> _byName = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ToolTiers> _tiers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _caps = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<ToolCallerPolicy>> _policies = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _lock = new();
 
     public ToolRegistry(int maxResultLength = 400) => MaxResultLength = maxResultLength;
@@ -118,6 +119,33 @@ public sealed class ToolRegistry
            .Select(t => new LlmToolDefinition(t.Name, t.Description, t.InputSchema))
            .ToArray();
 
+    /// <summary>
+    /// Adds a caller policy to a tool (e.g. "only the Opus brain may pass code to script"): checked on every execution with
+    /// the ambient <see cref="ToolCaller.Current"/>; a non-null result is returned as the tool's error without running it.
+    /// </summary>
+    public void AddPolicy(string name, ToolCallerPolicy policy)
+    {
+        lock (_lock)
+        {
+            if (!_policies.TryGetValue(name, out var list)) _policies[name] = list = new List<ToolCallerPolicy>();
+            list.Add(policy);
+        }
+    }
+
+    /// <summary>The refusal a call would get right now (null = allowed).</summary>
+    public string? Refusal(string name, JsonElement input, ToolCallerInfo? caller)
+    {
+        ToolCallerPolicy[] list;
+        lock (_lock) list = _policies.TryGetValue(name, out var l) ? l.ToArray() : [];
+        foreach (var p in list)
+        {
+            string? r;
+            try { r = p(input, caller); } catch (Exception ex) { r = "refused: " + ex.GetType().Name; }
+            if (r != null) return r;
+        }
+        return null;
+    }
+
     /// <summary>Runs a tool to completion (no activity management). Used by routines and for instant tools.</summary>
     public async Task<ToolResult> ExecuteAsync(string name, JsonElement input, CancellationToken ct)
     {
@@ -125,12 +153,23 @@ public sealed class ToolRegistry
         return await ExecuteAsync(tool, input, ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Raised as a tool is about to run (after its caller policies passed): (name, input). Telemetry (first action of a chat
+    /// turn, whoever runs it: brain, worker, script, reflex). Handlers must be quick.
+    /// </summary>
+    public event Action<string, JsonElement>? Executing;
+
     public async Task<ToolResult> ExecuteAsync(IAgentTool tool, JsonElement input, CancellationToken ct)
     {
         ToolResult result;
         try
         {
             ct.ThrowIfCancellationRequested();
+            // A model sent arguments that weren't JSON (even after the client's repair attempt): answer, never run.
+            if (Llm.LlmToolArgs.IsInvalid(input, out var raw))
+                return ToolResult.Error($"invalid arguments for {tool.Name} (not a JSON object): {TextUtil.Truncate(raw, 120)}; call it again with valid JSON");
+            if (Refusal(tool.Name, input, ToolCaller.Current) is { } refused) return ToolResult.Error(refused).Truncate(CapFor(tool.Name));
+            try { Executing?.Invoke(tool.Name, input); } catch (Exception) { /* telemetry only */ }
             result = await tool.ExecuteAsync(input, ct).ConfigureAwait(false) ?? ToolResult.Error("no result");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)

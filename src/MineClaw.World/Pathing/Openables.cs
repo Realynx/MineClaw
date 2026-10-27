@@ -50,6 +50,27 @@ public static class Openables
         return IsOpenable(id) ? IsOpen(w.GetMeta(s.X, s.Y, s.Z)) : null;
     }
 
+    /// <summary>
+    /// Whether the openable at <paramref name="p"/> lets a body through its doorway. Gates and trapdoors: the open bit.
+    /// Doors: by geometry, because a b1.8.1 door pair stores its second door with the open bit SET while shut
+    /// (ItemDoor: facing ((f−1)&amp;3)+4 puts the panel on the same plane as its partner's). The panel side (state 0 z−,
+    /// 1 x+, 2 z+, 3 x−) is compared with the doorway's axis (walls/doors on two opposite sides); no clear axis → the bit.
+    /// </summary>
+    public static bool LooksOpen(IBlockAccess w, BlockPos p)
+    {
+        var s = StateBlock(w, p);
+        int id = w.GetBlock(s.X, s.Y, s.Z), meta = w.GetMeta(s.X, s.Y, s.Z);
+        if (!IsOpenable(id)) return false;
+        if (!IsDoor(id)) return IsOpen(meta);
+        int state = (meta & OpenBit) == 0 ? (meta - 1) & 3 : meta & 3;
+        bool zFace = state is 0 or 2;
+        bool Side(int x, int z) => BlockShapes.HasCollision(w, x, s.Y, z) || IsDoor(w.GetBlock(x, s.Y, z));
+        bool wallsX = Side(s.X - 1, s.Z) && Side(s.X + 1, s.Z), wallsZ = Side(s.X, s.Z - 1) && Side(s.X, s.Z + 1);
+        if (wallsZ && !wallsX) return zFace;   // passage along x: x-face panels block it
+        if (wallsX && !wallsZ) return !zFace;  // passage along z
+        return IsOpen(meta);
+    }
+
     /// <summary>Metadata after one right-click / redstone flip (door lower half or trapdoor/gate). Gates swing away from
     /// the player in vanilla, but the open bit is what passability depends on, so the planner just flips it.</summary>
     public static int Toggled(int meta) => meta ^ OpenBit;

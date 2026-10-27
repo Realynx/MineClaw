@@ -384,7 +384,7 @@ public class RaptorIntegrationTests
         Assert.Equal(ModelTier.Cheap, sent.Tier);
         Assert.StartsWith("You are a Summarizing Text Portal", sent.System[0].Text);
         Assert.Equal("Write a summary of the following, including as many key details as possible: ctx:", sent.Messages[0].Text);
-        Assert.Equal(150, sent.MaxTokens);
+        Assert.Equal(250, sent.MaxTokens); // 100 × 2.5: 10-27 had 178/305 summaries cut at 150
         Assert.False(sent.CacheHistory);
         Assert.Equal(0.00205, r1.CostUsd!.Value, 6);
         Assert.Equal(1, usage.Today.Tier(ModelTier.Cheap).Calls);

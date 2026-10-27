@@ -2,6 +2,12 @@
 
   <ItemGroup>
     <ProjectReference Include="..\MineClaw.Hive\MineClaw.Hive.csproj" />
+    <ProjectReference Include="..\MineClaw.Render\MineClaw.Render.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The viewport core lives in MineClaw.Render (shared with the bot's `see` tool). -->
+    <Using Include="MineClaw.Render" />
   </ItemGroup>
 
   <ItemGroup>

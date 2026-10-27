@@ -279,7 +279,10 @@ public class ActionTests
         var r = await c.CraftAsync("wooden pickaxe");
         Assert.False(r.Ok);
         Assert.Contains("missing", r.Message);
-        Assert.Empty(Clicks(s));
+        // Only the resync probe (a no-op shift-click on the empty crafting output): "missing" is checked against the server.
+        var probe = Assert.Single(Clicks(s));
+        Assert.Equal((0, 0, true), ((int)probe.WindowId, (int)probe.Slot, probe.Shift));
+        Assert.Equal(0x7FFF, probe.ClickedItem.Damage);
     }
 
     [Fact]

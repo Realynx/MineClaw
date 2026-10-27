@@ -182,6 +182,9 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
     public RagOptions Options => _o;
     /// <summary>Optional extra ranked lists (RAPTOR) fused into every <see cref="SearchAsync(RagQuery, CancellationToken)"/>.</summary>
     public ISearchAugmenter? Augmenter { get; set; }
+    /// <summary>Stale-lesson corrections (set by <see cref="KnowledgeCorrections.Apply"/>): superseded hits are dropped from every
+    /// search and the correction doc takes their place; matching chat-log lines are annotated. Null = no filtering.</summary>
+    public KnowledgeCorrections? Corrections { get; set; }
     /// <summary>Raised after docs are deleted, with their refs (keep handlers tiny; they run on the deleting thread).</summary>
     public event Action<IReadOnlyList<string>>? Deleted;
     public IEmbeddingProvider Embedder => _embedder;
@@ -463,7 +466,9 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
             }
             hits.Add(h with { Score = score, Lexical = lex, Cosine = cos, Distance = dist, Snippet = snippets.GetValueOrDefault(h.Id) });
         }
-        return hits.OrderByDescending(h => h.Score).ThenByDescending(h => h.Updated).Take(Math.Max(1, q.Limit)).ToList();
+        IEnumerable<RagHit> ranked = hits.OrderByDescending(h => h.Score).ThenByDescending(h => h.Updated);
+        if (Corrections is { } cx) ranked = cx.Filter(this, ranked, q.Exclude); // retrieval time: catches later writes too
+        return ranked.Take(Math.Max(1, q.Limit)).ToList();
     }
 
     private static string KindFilter(string[]? kinds, string[]? tags, List<(string, object?)> args, int? dim = null)
@@ -660,7 +665,28 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
         }
     }
 
-    public List<ChatRow> SearchChat(string? query, string? player = null, int limit = 6)
+    public List<ChatRow> SearchChat(string? query, string? player = null, int limit = 6) => AnnotateChat(SearchChatRaw(query, player, limit));
+
+    /// <summary>
+    /// Chat-log lines matching a <see cref="Corrections"/> entry get a "[superseded: …]" prefix. A long bot message is split
+    /// over consecutive rows, so each row is checked together with its same-speaker neighbours (within 5 s).
+    /// </summary>
+    private List<ChatRow> AnnotateChat(List<ChatRow> rows)
+    {
+        if (Corrections is not { } cx || rows.Count == 0) return rows;
+        return cx.AnnotateChat(rows, row =>
+        {
+            var around = ChatAroundRaw(row.Id, 1, 1);
+            var parts = new List<string>(3);
+            foreach (var r in around)
+                if (r.Id == row.Id || (string.Equals(r.Player, row.Player, StringComparison.OrdinalIgnoreCase) && r.Kind == row.Kind
+                                       && Math.Abs((r.At - row.At).TotalSeconds) <= 5))
+                    parts.Add(r.Id == row.Id ? row.Text : r.Text);
+            return string.Join(" ", parts);
+        });
+    }
+
+    private List<ChatRow> SearchChatRaw(string? query, string? player, int limit)
     {
         var terms = TextTokens.Terms(query);
         static ChatRow Map(SqliteDataReader r) => new(r.GetInt64(0), AgentDb.FromUnixMs(r.GetInt64(1)), r.GetString(2), AgentDb.StrOrNull(r, 3), r.GetString(4));
@@ -686,7 +712,9 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
         }
     }
 
-    public List<ChatRow> ChatAround(long id, int before = 3, int after = 3)
+    public List<ChatRow> ChatAround(long id, int before = 3, int after = 3) => AnnotateChat(ChatAroundRaw(id, before, after));
+
+    private List<ChatRow> ChatAroundRaw(long id, int before, int after)
     {
         static ChatRow Map(SqliteDataReader r) => new(r.GetInt64(0), AgentDb.FromUnixMs(r.GetInt64(1)), r.GetString(2), AgentDb.StrOrNull(r, 3), r.GetString(4));
         return _db.Query("SELECT id, at, kind, player, text FROM chat_log WHERE id BETWEEN $a AND $b ORDER BY id", Map, ("$a", id - before), ("$b", id + after));
@@ -780,6 +808,7 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
                     try
                     {
                         resp = await _embedder.EmbedAsync(chunk.Select(c => c.Text).ToList(), ct).ConfigureAwait(false);
+                        Interlocked.Exchange(ref _warm, 1);
                         EmbedRequests++;
                     }
                     catch (Exception ex) when (!ct.IsCancellationRequested)
@@ -840,7 +869,52 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
         if (tokens > 0) _usage?.RecordEmbedding(VecModel, tokens, _embOptions.PricePerMTok);
     }
 
-    /// <summary>Embeds a query (cached; time-boxed). Null when unavailable, slow or failing — callers go FTS-only.</summary>
+    /// <summary>True once one embedding call succeeded in this process (DNS, TCP and TLS to the provider are warm).</summary>
+    public bool EmbeddingsWarm => Volatile.Read(ref _warm) != 0;
+    private int _warm;
+    private Task? _warmup;
+
+    /// <summary>
+    /// Warms the provider connection at startup (DNS + first TLS handshake are the slow part on a fresh container: they blew
+    /// the per-turn query budget, "query embedding timed out; FTS-only"). One tiny embed in the background, retried with
+    /// backoff; never blocks a turn and never throws. Idempotent.
+    /// </summary>
+    public Task WarmUpAsync(CancellationToken ct = default)
+    {
+        if (!_embedder.IsAvailable || _o.WarmUpAttempts <= 0) return Task.CompletedTask;
+        lock (_queryCache) return _warmup ??= Task.Run(() => WarmCoreAsync(ct));
+    }
+
+    private async Task WarmCoreAsync(CancellationToken ct)
+    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token);
+        for (int attempt = 0; attempt < _o.WarmUpAttempts; attempt++)
+        {
+            try
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var resp = await _embedder.EmbedAsync(["warm up"], linked.Token).ConfigureAwait(false);
+                RecordUsage(resp.Tokens);
+                Interlocked.Exchange(ref _warm, 1);
+                _log.LogInformation("embeddings warm ({Ms} ms)", sw.ElapsedMilliseconds);
+                return;
+            }
+            catch (OperationCanceledException) when (linked.IsCancellationRequested) { return; }
+            catch (Exception ex)
+            {
+                _log.LogDebug("embedding warm-up {Attempt} failed: {Error}", attempt + 1, ex.Message);
+                try { await Task.Delay(TimeSpan.FromSeconds(2 * Math.Pow(2, attempt)), linked.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException) { return; }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Embeds a query (cached; time-boxed: the turn waits at most <see cref="RagOptions.QueryEmbedTimeoutMs"/>, a bit longer
+    /// while the connection is still cold). Null when unavailable, slow or failing — callers go FTS-only for this turn. A
+    /// timed-out request is NOT abandoned: it finishes in the background (provider timeout + retries), warms the connection
+    /// and lands in the cache, so the same query next turn is instant.
+    /// </summary>
     public async Task<float[]?> EmbedQueryAsync(string text, CancellationToken ct)
     {
         if (!VectorsAvailable || VectorCount == 0) return null;
@@ -849,12 +923,36 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
         lock (_queryCache)
             if (_queryCache.TryGetValue(key, out var hit)) return hit;
 
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(Math.Max(100, _o.QueryEmbedTimeoutMs));
+        if (!EmbeddingsWarm) _ = WarmUpAsync();
+        int budget = Math.Max(100, _o.QueryEmbedTimeoutMs) + (EmbeddingsWarm ? 0 : Math.Max(0, _o.ColdQueryExtraMs));
+        Task<float[]> call;
+        lock (_queryCache)
+        {
+            if (!_inflight.TryGetValue(key, out call!))
+            {
+                call = EmbedAndCacheAsync(text, key);
+                _inflight[key] = call;
+            }
+        }
+        try { return await call.WaitAsync(TimeSpan.FromMilliseconds(budget), ct).ConfigureAwait(false); }
+        catch (TimeoutException)
+        {
+            _log.LogDebug("query embedding slower than {Ms} ms; FTS-only for this turn (it finishes in the background)", budget);
+            return null;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception) { return null; } // Fail() already ran in EmbedAndCacheAsync
+    }
+
+    private readonly Dictionary<string, Task<float[]>> _inflight = new();
+
+    private async Task<float[]> EmbedAndCacheAsync(string text, string key)
+    {
         try
         {
-            var resp = await _embedder.EmbedAsync([text], cts.Token).ConfigureAwait(false);
+            var resp = await _embedder.EmbedAsync([text], _cts.Token).ConfigureAwait(false);
             RecordUsage(resp.Tokens);
+            Interlocked.Exchange(ref _warm, 1);
             var v = VectorMath.Normalize(resp.Vectors[0]);
             lock (_queryCache)
             {
@@ -863,16 +961,12 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
             }
             return v;
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        catch (Exception ex) when (ex is not OperationCanceledException || !_cts.IsCancellationRequested)
         {
-            _log.LogDebug("query embedding timed out; FTS-only for this turn");
-            return null;
+            if (ex is not OperationCanceledException) Fail(ex);
+            throw;
         }
-        catch (Exception ex) when (!ct.IsCancellationRequested)
-        {
-            Fail(ex);
-            return null;
-        }
+        finally { lock (_queryCache) _inflight.Remove(key); }
     }
 
     public void Dispose()

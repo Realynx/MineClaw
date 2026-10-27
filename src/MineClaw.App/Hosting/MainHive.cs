@@ -5,6 +5,7 @@ using MineClaw.Client;
 using MineClaw.Hive;
 using MineClaw.Hive.Budget;
 using MineClaw.Hive.Chat;
+using MineClaw.Hive.Clone;
 using MineClaw.Hive.Claims;
 using MineClaw.Hive.Db;
 using MineClaw.Hive.Slots;
@@ -55,6 +56,8 @@ public sealed class MainHive : IAsyncDisposable
         // Cached prefix (built with the bot): group asks get split between the bots.
         if (!agent.PersonaExtra.Contains(Agent.Prompts.HiveMainHint, StringComparison.Ordinal))
             agent.PersonaExtra = (agent.PersonaExtra + "\n" + Agent.Prompts.HiveMainHint).Trim();
+        if (!agent.PersonaExtra.Contains(HiveTools.ScriptHint, StringComparison.Ordinal))
+            agent.PersonaExtra = (agent.PersonaExtra + "\n" + HiveTools.ScriptHint).Trim();
         return new MainHive(cfg, main, args, log);
     }
 
@@ -89,15 +92,29 @@ public sealed class MainHive : IAsyncDisposable
         var sup = _supervisor;
         rt.Agent.SpeechGate ??= (_, text, _) => sup.GuardSpeech(text);
         // Uncached tail, only while clones are online: who's out and idle, plus a split reminder on a group ask.
-        rt.Agent.TurnHint = batch => _supervisor.HintLine(groupAsk: batch.Waking.Any(e =>
-            e.Kind is Agent.Events.EventKind.Chat or Agent.Events.EventKind.Whisper && e.Player != null
-            && Arbiter.IsGroupAsk(new Agent.Chat.ChatMessage(Agent.Chat.ChatKind.Public, e.Player, e.Text, e.Text))));
+        rt.Agent.TurnHint = batch =>
+        {
+            var asks = batch.Waking.Where(e => e.Kind is Agent.Events.EventKind.Chat or Agent.Events.EventKind.Whisper && e.Player != null)
+                .Select(e => new Agent.Chat.ChatMessage(Agent.Chat.ChatKind.Public, e.Player!, e.Text, e.Text)).ToList();
+            // A line naming several bots (night review B2): the named clones answer their part, main coordinates.
+            var named = asks.Select(Arbiter.Route).Where(r => r.Group && r.Addressed != null)
+                .SelectMany(r => r.Addressed!).Where(n => !n.Equals(_main, StringComparison.OrdinalIgnoreCase)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            return _supervisor.HintLine(groupAsk: asks.Any(Arbiter.IsGroupAsk), named: named);
+        };
         rt.Usage.ModeChanged += (mode, reason) =>
         {
             if (mode != Agent.Budget.BudgetMode.Normal) _supervisor.RecallBudget($"budget mode {mode}: {reason}");
         };
         commands.Injected = raw => _ = _supervisor.InjectAsync(raw);
-        HiveTools.RegisterMain(rt.Tools, _supervisor);
+        // Model profiles for clone brains; script spawns (lint + save on main, the clone runs it by name, brain asleep).
+        _supervisor.ProfileCheck = name => agent.Llm.CheckProfile(name);
+        if (MineClaw.Bot.GameTools.ScriptTools.Of(rt) is { } bridge)
+            _supervisor.ScriptPrep = (script, code) => bridge.PrepareForHive(script, code, Agent.Tools.ToolCaller.Current?.Tag);
+        _supervisor.ResetClone = clone =>
+        {
+            if (rt.Memory.GetStandingOrder(clone) is { Player: CloneScriptRunner.OrderPlayer }) rt.Memory.ClearStandingOrder(clone, "new hive task");
+        };
+        HiveTools.RegisterMain(rt.Tools, _supervisor, agent.Llm);
         _log.LogInformation("hive: {N} clone(s) configured ({Names}); regulars {Regulars}; {Budget}", _cfg.Clones().Count,
             string.Join(", ", _cfg.Clones()), string.Join(", ", regulars), ledger.Summary());
     }

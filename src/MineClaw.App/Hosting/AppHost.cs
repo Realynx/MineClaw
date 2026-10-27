@@ -93,15 +93,38 @@ public static class AppHost
             // -------------------------------------------------------- key check (models API: free)
             if (!cli.NoKeyCheck)
             {
-                var check = await KeyCheck.RunAsync(agentOptions.Llm.ApiKey!, [agentOptions.Llm.CheapModel, agentOptions.Llm.MainModel, agentOptions.Llm.WorkerModel], signals.Token);
-                if (!check.Ok)
+                // Anthropic: only the tiers that run there (all three by default = the old check, unchanged).
+                var anthropicModels = KeyCheck.AnthropicModels(agentOptions.Llm);
+                if (anthropicModels.Count > 0)
                 {
-                    log.LogCritical("Anthropic API check failed: {Message}", check.Message);
-                    if (useTui) Console.Error.WriteLine("Anthropic API check failed: " + check.Message);
-                    return signals.Token.IsCancellationRequested ? ExitCodes.Ok : check.Transient ? ExitCodes.TempFail : ExitCodes.Auth;
+                    var check = await KeyCheck.RunAsync(agentOptions.Llm.ApiKey!, anthropicModels, signals.Token);
+                    if (!check.Ok)
+                    {
+                        log.LogCritical("Anthropic API check failed: {Message}", check.Message);
+                        if (useTui) Console.Error.WriteLine("Anthropic API check failed: " + check.Message);
+                        return signals.Token.IsCancellationRequested ? ExitCodes.Ok : check.Transient ? ExitCodes.TempFail : ExitCodes.Auth;
+                    }
+                    log.LogInformation("Anthropic key ok: {Models}", check.Message);
                 }
-                log.LogInformation("Anthropic key ok: {Models}", check.Message);
+                // Ollama: only when a tier uses it (GET /api/tags + /api/show: the models exist and can call tools).
+                if (agentOptions.Llm.TiersUseOllama)
+                {
+                    var oc = await KeyCheck.RunOllamaAsync(agentOptions.Llm, ct: signals.Token);
+                    if (!oc.Ok)
+                    {
+                        log.LogCritical("Ollama check failed: {Message}", oc.Message);
+                        if (useTui) Console.Error.WriteLine("Ollama check failed: " + oc.Message);
+                        return signals.Token.IsCancellationRequested ? ExitCodes.Ok : oc.Transient ? ExitCodes.TempFail : ExitCodes.Config;
+                    }
+                    log.LogInformation("Ollama ok ({Endpoint}): {Models}", agentOptions.Llm.Ollama.Endpoint, oc.Message);
+                }
+                if (agentOptions.Llm.Ollama.IsConfigured)
+                    foreach (var note in await KeyCheck.CheckOllamaProfilesAsync(agentOptions.Llm, ct: signals.Token)) log.LogWarning("{Note}", note);
             }
+            // Script authorship is keyed to the brain tier: a brain that isn't Opus 5.5 still writes Lua, so say so loudly.
+            if (cli.CloneName == null && !(LlmOptions.IsOpus55(agentOptions.Llm.MainModel) && agentOptions.Llm.ProviderFor(ModelTier.Main) == LlmProviders.Anthropic))
+                log.LogWarning("brain tier runs {Provider}/{Model}, not Opus 5.5: it still writes Lua scripts (authorship belongs to the brain tier)",
+                    agentOptions.Llm.ProviderFor(ModelTier.Main), agentOptions.Llm.MainModel);
             if (cli.CloneName != null)
                 return await CloneMode.RunAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, loggers, log, signals);
             return await RunBotAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, useTui, ring, loggers, log, signals, mainLogDir);
@@ -119,7 +142,7 @@ public static class AppHost
     {
         var telemetry = new PromptTelemetry(agentOptions, telemetryOptions, telemetryOptions.Enabled ? telemetryDir : null);
         int seeded = telemetry.SeedFromLogs();
-        ILlmClient llm = new AnthropicLlmClient(agentOptions.Llm);
+        ILlmClient llm = LlmClientFactory.Create(agentOptions.Llm); // nothing on Ollama = the AnthropicLlmClient, as before
         if (telemetryOptions.Enabled) llm = telemetry.Wrap(llm);
 
         var clientLog = loggers.CreateLogger("MineClaw.Client");
@@ -135,6 +158,7 @@ public static class AppHost
         var bot = BotHost.Create(game, agentOptions, botOptions, llm: llm, loggers: loggers, claims: mainHive?.MainClaims, hiveBots: mainHive != null ? mainHive.HiveBots : null);
         var rt = bot.Runtime;
         telemetry.Attach(rt);
+        _ = rt.Rag.WarmUpAsync(signals.Token); // DNS + first TLS to the embedding provider now, not in the first turn
         log.LogInformation("telemetry: {Dir} ({Seeded} records seeded)", telemetry.Directory ?? "off", seeded);
         var toolChars = rt.Tools.Definitions().Sum(d => d.Name.Length + d.Description.Length + d.InputSchema.GetRawText().Length);
         log.LogInformation("{Tools} tools (~{Tok} tokens of definitions), knowledge {K} chars{Trunc}", rt.Tools.All.Count, (int)Math.Ceiling(toolChars / 3.5),

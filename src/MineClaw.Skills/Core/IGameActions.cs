@@ -77,6 +77,10 @@ public interface IGameActions
     Task<ActionResult> ReleaseUseAsync(CancellationToken ct);
     Task<ActionResult> DropHeldAsync(bool wholeStack, CancellationToken ct);
 
+    /// <summary>Replaces the local inventory model with the server's (closes any window). Used after tossing so the count
+    /// reported (and the inventory ledger) is the server's, not a prediction. Default: unsupported (fakes keep their model).</summary>
+    Task<ActionResult> ResyncInventoryAsync(CancellationToken ct) => Task.FromResult(ActionResult.Fail("inventory resync unsupported"));
+
     // ---- face-aware placement, bow, vehicles (defaults compose the members above) ----
 
     /// <summary>Places <paramref name="itemId"/> into <paramref name="pos"/> by clicking <paramref name="face"/> of the

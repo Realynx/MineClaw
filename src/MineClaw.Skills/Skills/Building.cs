@@ -150,40 +150,90 @@ public sealed class ExpandIslandSkill : Skill
         };
         int y = ctx.Me.Y - 1; // the floor layer I'm standing on
         if (!SkillWorld.Solid(ctx.World, ctx.Me.Down()) && Safety.SupportBlocks(ctx.World, ctx.Feet).FirstOrDefault() is { } sup) y = sup.Y;
-        int placed = 0, skipped = 0;
+        int placed = 0;
         string? stop = null;
+        var start = ctx.Feet;
+        var missed = new HashSet<BlockPos>(); // edge cells left air (protected, no support, refused): "skipped"
         for (int ring = 0; ring < rows && placed < max && stop is null; ring++)
         {
-            var edge = EdgeCells(ctx, y, dir).Take(max - placed).ToList();
-            if (edge.Count == 0) { stop = "no open edge on that side"; break; }
+            var edge = EdgeCells(ctx, start, y, dir).Take(max - placed).ToList();
+            if (edge.Count == 0) { if (ring == 0) stop = "no open edge on that side"; break; }
             if (BuildOps.HostileVeto(ctx) is { } h) { stop = h; break; }
             if (ctx.SurvivalVeto("expand_island") is { } sv) { stop = sv; break; }
-            var r = await BuildOps.PlaceAllAsync(ctx, edge, block, ct, veto: c => !SkillWorld.Solid(ctx.World, c - (dir ?? Inward(ctx.World, c))));
+            var r = await FillRowAsync(ctx, edge, block, c => !SkillWorld.Solid(ctx.World, c - (dir ?? Inward(ctx.World, c))), ct);
             placed += r.Placed;
-            skipped += r.Skipped;
+            missed.UnionWith(r.Missed);
             stop = r.Error;
         }
-        string text = $"expanded island by {placed} block(s) at y {y}" + (skipped > 0 ? $", skipped {skipped}" : "") + (stop is null ? "" : $" ({stop})")
+        missed.RemoveWhere(c => !SkillWorld.Air(ctx.World, c));
+        string text = $"expanded island by {placed} block(s) at y {y}" + (missed.Count > 0 ? $", skipped {missed.Count}" : "") + (stop is null ? "" : $" ({stop})")
                       + $"; {ctx.Count(block)} {SkillWorld.Name(block)} left";
         return new SkillResult(placed > 0, text);
     }
 
-    /// <summary>Open floor cells at layer y next to existing floor (optionally only on one side), nearest first.</summary>
-    private static IEnumerable<BlockPos> EdgeCells(SkillContext ctx, int y, BlockPos? dir)
+    /// <summary>
+    /// One row along a (possibly jagged) edge, re-planned after every placement so each new block is support for the next:
+    /// cells placeable from where I stand first, then the neighbours of the newest block (its side face), then the nearest.
+    /// A cell that failed is retried once a new block touches it. The client sneaks every placement and leans out over the
+    /// edge (EdgeGuard on) when the floor block's outer face is the only support.
+    /// </summary>
+    private static async Task<(int Placed, List<BlockPos> Missed, string? Error)> FillRowAsync(SkillContext ctx, List<BlockPos> cells, int block,
+        Func<BlockPos, bool> veto, CancellationToken ct)
     {
         var w = ctx.World;
-        var me = ctx.Me;
+        var todo = new HashSet<BlockPos>(cells.Where(c => SkillWorld.Replaceable(w, c)));
+        var missed = todo.Where(c => ctx.Protected(c) || veto(c)).ToList();
+        todo.ExceptWith(missed);
+        var failedAt = new Dictionary<BlockPos, int>(); // cell → its support count when it failed
+        int placed = 0;
+        BlockPos? last = null;
+        int Supports(BlockPos c) => BlockFaceExtensions.All.Count(f => SkillWorld.Solid(w, c.Offset(f)));
+        while (todo.Count > 0)
+        {
+            ct.ThrowIfCancellationRequested();
+            var me = ctx.Feet;
+            var eye = w.Player.EyePosition;
+            var next = todo.Where(c => Supports(c) > (failedAt.TryGetValue(c, out int n) ? n : 0))
+                .OrderBy(c => Aiming.FindPlaceAim(w, eye, c, ctx.Game.Reach, AABB.ForPlayer(me)) is null ? 1 : 0)
+                .ThenBy(c => last is { } l && Math.Abs(c.X - l.X) + Math.Abs(c.Z - l.Z) == 1 && c.Y == l.Y ? 0 : 1)
+                .ThenBy(c => Math.Pow(c.X + 0.5 - me.X, 2) + Math.Pow(c.Z + 0.5 - me.Z, 2))
+                .Cast<BlockPos?>().FirstOrDefault();
+            if (next is not { } c) break; // nothing left touches (new) support
+            if (!ctx.Has(block)) return (placed, missed.Concat(todo).ToList(), $"out of {SkillWorld.Name(block)}");
+            var r = await ctx.Game.PlaceAsync(c, block, ct);
+            if (r.Ok && !SkillWorld.Replaceable(w, c))
+            {
+                placed++;
+                todo.Remove(c);
+                last = c;
+                continue;
+            }
+            failedAt[c] = Supports(c);
+            if (r.Message.Contains("void", StringComparison.OrdinalIgnoreCase) || r.Message.Contains("danger", StringComparison.OrdinalIgnoreCase))
+                return (placed, missed.Concat(todo).ToList(), r.Message);
+        }
+        return (placed, missed.Concat(todo).ToList(), null);
+    }
+
+    /// <summary>Open floor cells at layer y next to existing floor within 16 of <paramref name="center"/> (where the skill
+    /// started, so row 2 follows row 1 wherever I ended up), optionally only on one side, nearest to me first. Protected
+    /// floor still counts as support (nothing is broken); cells in chunks I don't have live are left out.</summary>
+    private static IEnumerable<BlockPos> EdgeCells(SkillContext ctx, Vec3d center, int y, BlockPos? dir)
+    {
+        var w = ctx.World;
+        var me = ctx.Feet;
         var seen = new HashSet<BlockPos>();
-        foreach (var f in ctx.Find((id, _) => id != 0 && !BlockShapes.IsLiquid(id), 16, 2048).Where(f => f.Pos.Y == y))
+        foreach (var f in w.FindBlocks(center, 16, (id, _) => id != 0 && !BlockShapes.IsLiquid(id), 4096).Where(f => f.Pos.Y == y))
         {
             if (!SkillWorld.Solid(w, f.Pos)) continue;
             foreach (var o in dir is { } d ? [d] : SkillWorld.Horizontal)
             {
                 var c = f.Pos + o;
-                if (!SkillWorld.Air(w, c) || !SkillWorld.OverVoid(w, c) || !SkillWorld.Air(w, c.Up())) continue;
-                if (seen.Add(c)) yield return c;
+                if (!w.IsLoaded(c.X, c.Z) || !SkillWorld.Air(w, c) || !SkillWorld.OverVoid(w, c) || !SkillWorld.Air(w, c.Up())) continue;
+                seen.Add(c);
             }
         }
+        return seen.OrderBy(c => Math.Pow(c.X + 0.5 - me.X, 2) + Math.Pow(c.Z + 0.5 - me.Z, 2));
     }
 
     private static BlockPos Inward(IBlockAccess w, BlockPos c) =>

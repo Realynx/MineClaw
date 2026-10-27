@@ -5,7 +5,7 @@ using Anthropic.Models.Messages;
 namespace MineClaw.Agent.Llm;
 
 /// <summary>
-/// <see cref="ILlmClient"/> over the official Anthropic C# SDK (Messages API, non-streaming — responses are
+/// <see cref="ILlmClient"/> over the official Anthropic C# SDK (Messages API; non-streaming except interruptible calls — responses are
 /// tiny). Applies: tier → model, small max_tokens, thinking off/minimal per model, effort, and up to three cache
 /// breakpoints: after the static system prefix (tools render before system, so they're covered too), after the
 /// identity/self block, and a moving 5m breakpoint on the last message so the next call reads all history from cache.
@@ -30,8 +30,89 @@ public sealed class AnthropicLlmClient : ILlmClient
     {
         string model = request.Model ?? _options.ModelFor(request.Tier);
         var parameters = BuildParams(request, model);
-        Message response = await _client.Messages.Create(parameters, ct).ConfigureAwait(false);
-        return MapResponse(response, model);
+        if ((request.Interruptible || request.OnToolUse != null) && _options.StreamInterruptible)
+            return await StreamAsync(parameters, model, ct, request.OnToolUse).ConfigureAwait(false);
+        try
+        {
+            Message response = await _client.Messages.Create(parameters, ct).ConfigureAwait(false);
+            return MapResponse(response, model);
+        }
+        catch (Exception ex) when (ct.IsCancellationRequested && request.Interruptible && ex is not LlmInterruptedException)
+        {
+            throw new LlmInterruptedException(null, model, ex);
+        }
+    }
+
+    /// <summary>
+    /// Streamed call, aggregated into the same <see cref="Message"/> a plain call returns. Cancelling <paramref name="ct"/>
+    /// drops the stream (the API stops generating) and throws <see cref="LlmInterruptedException"/> with the usage seen so far:
+    /// input/cache tokens from message_start, output from the last message_delta or ~4 chars per token of the deltas.
+    /// </summary>
+    private async Task<LlmResponse> StreamAsync(MessageCreateParams parameters, string model, CancellationToken ct, Action<LlmToolUse>? onToolUse = null)
+    {
+        LlmUsage? partial = null;
+        long deltaChars = 0, reportedOut = 0;
+        // Streaming execution: tool_use blocks by index, handed to the caller the moment each block stops.
+        var open = new Dictionary<long, (string Id, string Name, System.Text.StringBuilder Json)>();
+
+        async IAsyncEnumerable<RawMessageStreamEvent> Watch()
+        {
+            await foreach (RawMessageStreamEvent ev in _client.Messages.CreateStreaming(parameters, ct).WithCancellation(ct).ConfigureAwait(false))
+            {
+                if (ev.TryPickStart(out var start)) partial = MapUsage(start.Message.Usage);
+                else if (ev.TryPickContentBlockStart(out var cbs))
+                {
+                    if (onToolUse != null && cbs.ContentBlock.TryPickToolUse(out var tu)) open[cbs.Index] = (tu.ID, tu.Name, new System.Text.StringBuilder());
+                }
+                else if (ev.TryPickContentBlockDelta(out var cbd))
+                {
+                    if (cbd.Delta.TryPickText(out var t)) deltaChars += t.Text.Length;
+                    else if (cbd.Delta.TryPickInputJson(out var j))
+                    {
+                        deltaChars += j.PartialJson.Length;
+                        if (open.TryGetValue(cbd.Index, out var tb)) tb.Json.Append(j.PartialJson);
+                    }
+                }
+                else if (ev.TryPickContentBlockStop(out var cbe))
+                {
+                    if (onToolUse != null && open.Remove(cbe.Index, out var done)) EmitToolUse(onToolUse, done.Id, done.Name, done.Json.ToString());
+                }
+                else if (ev.TryPickDelta(out var md)) reportedOut = md.Usage.OutputTokens;
+                yield return ev;
+            }
+        }
+
+        try
+        {
+            Message message = await Watch().Aggregate().ConfigureAwait(false);
+            return MapResponse(message, model);
+        }
+        // A torn-down stream can surface as an IO/HTTP error rather than OperationCanceledException.
+        catch (Exception ex) when (ct.IsCancellationRequested && ex is not LlmInterruptedException)
+        {
+            var used = partial is { } p ? p with { OutputTokens = Math.Max(reportedOut, (deltaChars + 3) / 4) } : null;
+            throw new LlmInterruptedException(used, model, ex);
+        }
+    }
+
+    /// <summary>A completed streamed tool_use → the caller's early-execution hook (unparseable input: skipped, the final message runs it).</summary>
+    private static void EmitToolUse(Action<LlmToolUse> onToolUse, string id, string name, string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return;
+            onToolUse(new LlmToolUse(id, name, doc.RootElement.Clone()));
+        }
+        catch (JsonException) { }
+        catch (Exception) { /* the hook never breaks the stream */ }
+    }
+
+    private static LlmUsage MapUsage(Usage u)
+    {
+        long cw1h = 0;
+        try { cw1h = u.CacheCreation?.Ephemeral1hInputTokens ?? 0; } catch { /* field absent */ }
+        return new LlmUsage(u.InputTokens, u.OutputTokens, u.CacheReadInputTokens ?? 0, u.CacheCreationInputTokens ?? 0, cw1h);
     }
 
     internal MessageCreateParams BuildParams(LlmRequest request, string model)
@@ -69,8 +150,8 @@ public sealed class AnthropicLlmClient : ILlmClient
             messages.Add(ToParam(request.Messages[i], cacheLast));
         }
 
-        var thinkingMode = _options.ThinkingFor(request.Tier);
-        string effort = _options.EffortFor(request.Tier);
+        var thinkingMode = request.Thinking ?? _options.ThinkingFor(request.Tier);
+        string effort = request.Effort ?? _options.EffortFor(request.Tier);
 
         var p = new MessageCreateParams
         {
@@ -151,6 +232,19 @@ public sealed class AnthropicLlmClient : ILlmClient
                 case LlmToolUse u:
                     blocks.Add(new ToolUseBlockParam { ID = u.Id, Name = u.Name, Input = ToDict(u.Input) });
                     break;
+                case LlmToolResult { Image: { } img } r:
+                    // Text + PNG in one tool_result (vision). Only the newest turns carry it (compaction stubs old ones).
+                    {
+                        List<Block> content =
+                        [
+                            new TextBlockParam { Text = r.Content },
+                            new ImageBlockParam { Source = new Base64ImageSource { Data = Convert.ToBase64String(img.Data), MediaType = MediaType.ImagePng } },
+                        ];
+                        blocks.Add(cache
+                            ? new ToolResultBlockParam { ToolUseID = r.ToolUseId, Content = content, IsError = r.IsError, CacheControl = new CacheControlEphemeral() }
+                            : new ToolResultBlockParam { ToolUseID = r.ToolUseId, Content = content, IsError = r.IsError });
+                    }
+                    break;
                 case LlmToolResult r:
                     blocks.Add(cache
                         ? new ToolResultBlockParam { ToolUseID = r.ToolUseId, Content = r.Content, IsError = r.IsError, CacheControl = new CacheControlEphemeral() }
@@ -189,10 +283,7 @@ public sealed class AnthropicLlmClient : ILlmClient
             else if (block.TryPickRedactedThinking(out RedactedThinkingBlock? rt)) blocks.Add(new LlmRedactedThinking(rt.Data));
         }
 
-        var u = response.Usage;
-        long cw1h = 0;
-        try { cw1h = u.CacheCreation?.Ephemeral1hInputTokens ?? 0; } catch { /* field absent */ }
-        var usage = new LlmUsage(u.InputTokens, u.OutputTokens, u.CacheReadInputTokens ?? 0, u.CacheCreationInputTokens ?? 0, cw1h);
+        var usage = MapUsage(response.Usage);
 
         string stop = response.StopReason?.Raw() ?? StopReasons.EndTurn;
         return new LlmResponse(blocks, stop, usage, model);

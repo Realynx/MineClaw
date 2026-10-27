@@ -3,7 +3,8 @@ using System.Text.RegularExpressions;
 namespace MineClaw.Scripting;
 
 /// <summary>Telemetry row for one finished run.</summary>
-public sealed record ScriptRunRecord(string Name, ScriptStatus Status, int Actions, TimeSpan Duration, DateTimeOffset At, string Outcome);
+public sealed record ScriptRunRecord(string Name, ScriptStatus Status, int Actions, TimeSpan Duration, DateTimeOffset At, string Outcome,
+    string? Author = null, int? Version = null, int ItemsGained = 0);
 
 /// <summary>
 /// One per bot: at most one script runs at a time. Brain/worker ops (run, status, pause, resume, cancel, replace), the
@@ -140,7 +141,8 @@ public sealed class ScriptController : IDisposable
             if (ReferenceEquals(_current, s)) _current = null;
             _last = s;
             if (s.CheckpointCarry.Count > 0) _checkpoints[s.Name] = new Dictionary<string, string>(s.CheckpointCarry, StringComparer.Ordinal);
-            _runs.Add(new ScriptRunRecord(s.Name, s.Status, s.Actions, s.Elapsed, s.Finished ?? Time.GetUtcNow(), s.Outcome ?? ""));
+            _runs.Add(new ScriptRunRecord(s.Name, s.Status, s.Actions, s.Elapsed, s.Finished ?? Time.GetUtcNow(), s.Outcome ?? "",
+                s.Request.Author, s.Request.Version, s.ItemsGained));
             if (_runs.Count > 50) _runs.RemoveAt(0);
         }
         Safe(() => Ended?.Invoke(s));

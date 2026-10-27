@@ -26,6 +26,8 @@ public sealed class ChatArbiter
     private readonly HashSet<string> _hiveBots;
     private readonly Dictionary<string, Regex> _explicit = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Regex> _bare = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>A clone's number as a whole token anywhere in the line (never part of a coordinate like 6,67,8).</summary>
+    private readonly Dictionary<string, Regex> _number = new(StringComparer.OrdinalIgnoreCase);
     private Regex _mainRegex = new("(?!)");
     private static readonly Regex MainVocative = new(@"^\W*(?:(?:hey|yo|ok|okay|oi)\s+)?main(?![A-Za-z0-9_])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex GroupAddress = new(
@@ -145,7 +147,7 @@ public sealed class ChatArbiter
         if (msg.Player == null) return false;
         var r = Route(msg);
         if (r.Owner == null) return false;
-        return r.Explicit && !string.Equals(r.Owner, _self, StringComparison.OrdinalIgnoreCase);
+        return r.Explicit && !string.Equals(r.Owner, _self, StringComparison.OrdinalIgnoreCase) && !r.Names(_self);
     }
 
     public bool IsHiveBot(string name) { lock (_lock) return _hiveBots.Contains(name); }
@@ -209,6 +211,7 @@ public sealed class ChatArbiter
         _mainRegex = new Regex($@"(?<![A-Za-z0-9_])@?(?:{string.Join("|", own)})(?![A-Za-z0-9_])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         _explicit.Clear();
         _bare.Clear();
+        _number.Clear();
         foreach (var c in Clones)
         {
             var num = NumberOf(c);
@@ -217,6 +220,7 @@ public sealed class ChatArbiter
             if (num != null)
             {
                 parts.Add($@"^[\s@#]*{num}(?![0-9])");                                  // "67, come here"
+                _number[c] = new Regex($@"(?<![0-9A-Za-z_.,#-]){num}(?![0-9A-Za-z_]|[.,]-?[0-9]|,\s*-?[0-9]+\s*,\s*-?[0-9])", RegexOptions.CultureInvariant);
                 parts.Add($@"(?<![A-Za-z0-9_])(?:{nameAlt})[\s_#-]*{num}(?![0-9])");    // "maid chan 420", "clone 69"
                 parts.Add($@"(?<![A-Za-z0-9_])#{num}(?![0-9])");                         // "#1337"
                 _bare[c] = new Regex($@"(?<![0-9]){num}(?![0-9])", RegexOptions.CultureInvariant);
@@ -236,7 +240,7 @@ public sealed class ChatArbiter
     /// main should split between the bots.
     /// </summary>
     public bool IsGroupAsk(ChatMessage msg) =>
-        msg.Player != null && !IsHiveBot(msg.Player) && Live.Count > 0 && IsGroupAddress(msg.Text);
+        msg.Player != null && !IsHiveBot(msg.Player) && Live.Count > 0 && (IsGroupAddress(msg.Text) || Route(msg).Group);
 
     /// <summary>Owner + whether the owner was explicitly addressed (a clone named in the message).</summary>
     public (string? Owner, bool Explicit) Resolve(ChatMessage msg)
@@ -254,20 +258,11 @@ public sealed class ChatArbiter
             if (_hiveBots.Contains(msg.Player)) return new(null, false, false);
             // Several bots at once: main owns it and splits the work (clones get their part as an IPC task).
             if (_live.Count > 0 && msg.Kind != ChatKind.Emote && GroupAddress.IsMatch(msg.Text)) return new(_main, true, true);
-            int best = int.MaxValue;
-            string? owner = null;
-            foreach (var c in Clones)
-            {
-                if (!_live.Contains(c)) continue;
-                var m = _explicit[c].Match(msg.Text);
-                if (!m.Success && msg.Kind == ChatKind.Emote && _bare.TryGetValue(c, out var b)) m = b.Match(msg.Text); // "* kiwi pats 67"
-                if (m.Success && m.Index < best) { best = m.Index; owner = c; }
-            }
-            // Main named before (or instead of) any clone: main was addressed explicitly ("claude chan, ..." ends a clone's sticky).
-            var mm = _mainRegex.Match(msg.Text);
-            if (mm.Success && mm.Index < best) return new(_main, true, false);
-            if (owner != null) return new(owner, true, false);
-            if (MainVocative.IsMatch(msg.Text)) return new(_main, true, false); // "main do a little hop"
+            var named = AddressedBots(msg.Text, msg.Kind);
+            // Two or more bots named in one line ("67 and 69, come here", "hey 67 ... and maid chan"): each named bot hears
+            // it, main coordinates (it owns the line and splits the work; the named clones answer their own part).
+            if (named.Count >= 2) return new(_main, true, true, named);
+            if (named.Count == 1) return new(named[0], true, false);
             // A bot that asked this player something (or is watching their demo) owns their replies until resolved/timeout.
             if (LiveThread(msg.Player) is { } holder) return new(holder, true, false);
             if (_sticky.TryGetValue(msg.Player, out var s) && s.Until > _time.GetUtcNow()
@@ -277,11 +272,100 @@ public sealed class ChatArbiter
         }
     }
 
+    // Words after which a bot's name/number is a mention, not an address ("tell 67 to...", "get 67 cobble", "with 67?").
+    private static readonly HashSet<string> RefWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "to", "for", "with", "from", "than", "of", "at", "by", "about", "like", "and", "or", "nor", "is", "was", "are", "were", "be",
+        "been", "am", "tell", "ask", "give", "gave", "send", "sent", "bring", "brought", "get", "got", "have", "has", "had", "let",
+        "make", "made", "need", "needs", "want", "wants", "help", "told", "asked", "see", "saw", "call", "called", "me", "it", "that",
+        "this", "the", "a", "an", "x", "only", "just", "around", "over", "under", "maybe", "exactly", "least", "most", "all", "did",
+        "does", "do", "can", "could", "will", "would", "should", "where", "what", "who", "how", "whats", "wheres", "whos", "if",
+        "when", "on", "in", "into", "onto", "my", "your", "his", "her", "their", "our", "take", "took", "use", "used", "mine", "dig",
+        "collect", "grab", "fetch", "gather", "chop", "craft", "place", "put", "drop", "toss", "deposit", "withdraw", "leave", "keep",
+        "spawn", "recall", "respawn", "summon", "pick", "picked", "not", "both", "either", "between", "via", "per",
+    };
+    // A number right after these is a vocative ("hello 67?", "hey 69, just deliver tools", "ok 67 go").
+    private static readonly HashSet<string> Greetings = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "hey", "hi", "hello", "yo", "oi", "hiya", "heya", "sup", "ok", "okay", "thanks", "thank", "thx", "ty", "please", "pls", "plz",
+        "sorry", "dear", "nice", "gj", "gm", "gn", "bye", "cya", "wb", "welcome", "oy", "ayo", "yay",
+    };
+    // A number after these is a vocative only when a comma/colon follows ("also 67, this block is yours", not "and 69 will").
+    private static readonly HashSet<string> Discourse = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "also", "so", "and", "but", "now", "then", "well", "alright", "oh", "um", "uh", "anyway", "btw", "wait", "right", "yes", "yeah",
+        "yea", "no", "nope", "good", "great",
+    };
+    private static readonly Regex LastWord = new(@"([A-Za-z']+)[^A-Za-z0-9']*$", RegexOptions.CultureInvariant);
+    private static readonly Regex Joiner = new(@"^\s*(?:,|&|\+|and|n|or)?\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex CoordBefore = new(@"-?[0-9]+\s*,\s*$", RegexOptions.CultureInvariant);
+    private static readonly Regex LineTail = new(@"^[\s!?.~:;3<>()*^_-]*$", RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Every hive bot addressed in the line, in order of first mention (live clones and main). A clone's login/"maid chan 67"/
+    /// "#67"/"clone 67" and main's names address it anywhere unless a mention word precedes them ("tell maid chan 67 ...").
+    /// A bare clone number is an address at the start of a line or sentence, after a greeting ("hello 67?"), after a
+    /// discourse word with a comma ("also 67, ..."), chained to an addressed bot ("67 and 69"), or as a vocative before
+    /// , ? ! : or the end of the line ("good job 67!"); but not as a quantity or mention ("get 67 cobble", "with 67?",
+    /// "and 69 will be on crafting duty") and never inside a coordinate ("6,67,8"). Caller holds <see cref="_lock"/>.
+    /// </summary>
+    private List<string> AddressedBots(string text, ChatKind kind)
+    {
+        var cands = new List<(string Bot, int Index, int End, bool Strong)>();
+        foreach (var c in Clones)
+        {
+            if (!_live.Contains(c)) continue;
+            foreach (Match m in _explicit[c].Matches(text)) cands.Add((c, m.Index, m.Index + m.Length, true));
+            if (_number.TryGetValue(c, out var n))
+                foreach (Match m in n.Matches(text)) cands.Add((c, m.Index, m.Index + m.Length, false));
+            if (kind == ChatKind.Emote && _bare.TryGetValue(c, out var b))
+                foreach (Match m in b.Matches(text)) cands.Add((c, m.Index, m.Index + m.Length, true)); // "* kiwi pats 67"
+        }
+        var clonesStrong = cands.Where(x => x.Strong).ToList();
+        foreach (Match m in _mainRegex.Matches(text))
+            if (!clonesStrong.Any(x => x.Index < m.Index + m.Length && m.Index < x.End)) // "maid chan 69" is 69, not main
+                cands.Add((_main, m.Index, m.Index + m.Length, true));
+        if (MainVocative.Match(text) is { Success: true } mv) cands.Add((_main, mv.Index, mv.Index + mv.Length, true)); // "main spin"
+        // A weak (bare number) hit inside a strong one is the same mention ("maid chan 67", "67, come" at the start).
+        var strong = cands.Where(x => x.Strong).ToList();
+        cands = cands.Where(x => x.Strong || !strong.Any(y => y.Index <= x.Index && x.End <= y.End))
+            .OrderBy(x => x.Index).ThenByDescending(x => x.Strong).ToList();
+
+        var named = new List<string>();
+        int prevEnd = -1;
+        foreach (var x in cands)
+        {
+            if (x.Index < prevEnd) continue; // overlaps the previous addressed hit
+            if (!IsAddress(text, x.Index, x.End, x.Strong, prevEnd)) continue;
+            prevEnd = x.End;
+            if (!named.Contains(x.Bot, StringComparer.OrdinalIgnoreCase)) named.Add(x.Bot);
+        }
+        return named;
+    }
+
+    private static bool IsAddress(string text, int index, int end, bool strong, int prevAddressedEnd)
+    {
+        var before = text[..index];
+        var trimmed = before.TrimEnd().TrimStart(' ', '\t', '@', '#');
+        if (trimmed.Length == 0) return true;                                       // start of the line
+        if (trimmed[^1] is '.' or '!' or '?' or ';') return true;                   // start of a sentence
+        if (prevAddressedEnd >= 0 && prevAddressedEnd <= index && Joiner.IsMatch(text[prevAddressedEnd..index])) return true; // "67 and 69"
+        var lw = LastWord.Match(before) is { Success: true } w ? w.Groups[1].Value.Trim('\'') : "";
+        if (strong) return !RefWords.Contains(lw);
+        if (CoordBefore.IsMatch(before)) return false;                              // "14, 67, -5"
+        if (Greetings.Contains(lw)) return true;
+        var after = text[end..];
+        char next = after.TrimStart() is { Length: > 0 } a ? a[0] : '\0';
+        if (Discourse.Contains(lw)) return next is ',' or ':';
+        if (RefWords.Contains(lw)) return false;
+        return next is ',' or '?' or '!' or ':' || LineTail.IsMatch(after);
+    }
+
     /// <summary>
     /// Clone hook (<see cref="ChatRouter.ExplicitlyAddressed"/>): THIS bot was named in the message ("67, ...").
     /// </summary>
     public bool AddressesSelf(ChatMessage msg) =>
-        Route(msg) is { Explicit: true, Group: false } r && string.Equals(r.Owner, _self, StringComparison.OrdinalIgnoreCase);
+        Route(msg) is { Explicit: true } r && (!r.Group && string.Equals(r.Owner, _self, StringComparison.OrdinalIgnoreCase) || r.Names(_self));
 
     /// <summary>
     /// ChatRouter hook (<see cref="ChatRouter.Arbiter"/>): whether THIS bot handles the message. An explicitly addressed clone
@@ -290,13 +374,32 @@ public sealed class ChatArbiter
     /// </summary>
     public bool Decide(ChatMessage msg, bool locallyAddressed)
     {
-        var (owner, isExplicit) = Resolve(msg);
+        var r = Route(msg);
+        var (owner, isExplicit) = (r.Owner, r.Explicit);
         if (owner == null || msg.Player == null) return false;
+        // A line naming several bots: every named bot answers its part; main (the owner) coordinates and keeps the sticky.
+        if (r.Group && r.Names(_self) && !IsMain) return true;
         bool mine = string.Equals(owner, _self, StringComparison.OrdinalIgnoreCase);
         bool handle = mine && (isExplicit || locallyAddressed);
         if (handle) Accept(msg.Player, _self);
         else if (IsMain && isExplicit) Accept(msg.Player, owner); // main is the sticky authority (pushed to clones)
+        if (IsMain && r.Group) lock (_lock) _groupHold[msg.Player] = _time.GetUtcNow() + GroupHold;
         return handle;
+    }
+
+    /// <summary>How long after a group/multi-named line main ignores clones' chat_ok for that player (they all answered it).</summary>
+    public static readonly TimeSpan GroupHold = TimeSpan.FromSeconds(5);
+    private readonly Dictionary<string, DateTimeOffset> _groupHold = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Main: a clone reports it took a player's message (chat_ok). Ignored right after a line naming several bots: each named
+    /// clone answers its part, but the conversation stays with main (otherwise the sticky flips to whichever clone was last).
+    /// </summary>
+    public void AcceptFromClone(string player, string clone)
+    {
+        lock (_lock)
+            if (_groupHold.TryGetValue(player, out var until) && until > _time.GetUtcNow()) return;
+        Accept(player, clone);
     }
 
     /// <summary>Records that <paramref name="owner"/> is talking with <paramref name="player"/>.</summary>
@@ -318,4 +421,8 @@ public sealed class ChatArbiter
 }
 
 /// <summary>Arbitration verdict for one player message.</summary>
-public sealed record ChatRoute(string? Owner, bool Explicit, bool Group);
+/// <param name="Addressed">Every bot named in the line when it named several (owner is then main, <paramref name="Group"/> true).</param>
+public sealed record ChatRoute(string? Owner, bool Explicit, bool Group, IReadOnlyList<string>? Addressed = null)
+{
+    public bool Names(string bot) => Addressed?.Contains(bot, StringComparer.OrdinalIgnoreCase) == true;
+}

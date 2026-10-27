@@ -5,7 +5,15 @@ namespace MineClaw.World;
 /// <summary>Outcome of a predicted window click.</summary>
 /// <param name="ExpectedItem">The item stack to send in 0x66 Window Click (what Container.slotClick returns).</param>
 /// <param name="ActionNumber">Transaction id to put in 0x66 (match against 0x6A).</param>
-public readonly record struct ClickResult(int WindowId, int Slot, bool RightClick, bool Shift, ItemStack ExpectedItem, short ActionNumber);
+public readonly record struct ClickResult(int WindowId, int Slot, bool RightClick, bool Shift, ItemStack ExpectedItem, short ActionNumber)
+{
+    /// <summary>Window slots whose predicted content this click changed (a server 0x67 for one of them that arrives before
+    /// the click's 0x6A was generated before the server applied the click, so it overwrites the prediction with stale
+    /// contents).</summary>
+    public IReadOnlyList<int> ChangedSlots { get; init; } = [];
+    /// <summary>The predicted cursor changed.</summary>
+    public bool CursorChanged { get; init; }
+}
 
 /// <summary>
 /// Player inventory (window 0), the currently open window and the cursor stack, plus b1.8.1 click prediction.
@@ -136,8 +144,17 @@ public sealed class InventoryManager
         lock (_sync)
         {
             var w = _open ?? _playerWindow;
+            var before = new ItemStack[w.SlotCount];
+            for (int i = 0; i < before.Length; i++) before[i] = w.Get(i);
+            var cursorBefore = _cursor;
             var expected = SlotClick(w, slot, rightClick, shift);
-            r = new ClickResult(w.Id, slot, rightClick, shift, expected, ++_actionCounter);
+            var changed = new List<int>();
+            for (int i = 0; i < before.Length; i++) if (!before[i].Equals(w.Get(i))) changed.Add(i);
+            r = new ClickResult(w.Id, slot, rightClick, shift, expected, ++_actionCounter)
+            {
+                ChangedSlots = changed,
+                CursorChanged = !cursorBefore.Equals(_cursor),
+            };
         }
         Changed?.Invoke();
         return r;

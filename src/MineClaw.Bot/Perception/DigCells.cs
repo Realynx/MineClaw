@@ -32,6 +32,10 @@ public sealed partial class DigCells
         Reload();
     }
 
+    /// <summary>Raised on every teach (punch / "here" / demo / correction), known or new: cell + who taught it.</summary>
+    public event Action<WPos, string?>? TaughtCell;
+    [ThreadStatic] private static bool _raising;
+
     /// <summary>Current dimension (taught cells are per dimension).</summary>
     public Func<int>? Dimension { get; set; }
 
@@ -64,6 +68,9 @@ public sealed partial class DigCells
     {
         int dim = Dim;
         bool added = _taught.TryAdd((dim, p), 0);
+        try { if (!_raising) { _raising = true; TaughtCell?.Invoke(p, by); } }
+        catch (Exception) { /* listeners are best effort */ }
+        finally { _raising = false; }
         if (_memory == null) return added;
         try
         {
@@ -89,6 +96,24 @@ public sealed partial class DigCells
         double dz = Math.Max(0, Math.Max(Math.Min(a.Z, b.Z) - p.Z, p.Z - Math.Max(a.Z, b.Z)));
         return Math.Sqrt(dx * dx + dy * dy + dz * dz);
     }
+
+    /// <summary>A correction retracted this cell: no longer taught in this process (memory's key moved to the history).</summary>
+    public bool Retract(WPos p)
+    {
+        bool removed = _taught.TryRemove((Dim, p), out _);
+        Invalidate();
+        Reload();
+        return removed;
+    }
+
+    /// <summary>The gen structure nearest <paramref name="p"/> (within <paramref name="max"/> blocks), or null.</summary>
+    public static Structure? GeneratorNear(MemoryStore memory, int dim, WPos p, double max = 6) =>
+        memory.Read(d => d.Structures.Where(x => x.Dimension == dim && x.Min != null
+                && (x.Kind == StructureKinds.CobbleGenerator || x.Name.Contains("gen", StringComparison.OrdinalIgnoreCase)))
+            .Select(x => (x, Dist(x, p))).Where(t => t.Item2 <= max).OrderBy(t => t.Item2).Select(t => t.x).FirstOrDefault());
+
+    /// <summary>A key label that marks a dig cell ("mine_here", "dig (taught by Fox)", "output", "cell").</summary>
+    public static bool IsDigLabel(string label) => DigLabel().IsMatch(label ?? "");
 
     /// <summary>Re-read memory's key blocks on the next check (after a structure was edited).</summary>
     public void Invalidate() => _lastLoad = DateTimeOffset.MinValue;

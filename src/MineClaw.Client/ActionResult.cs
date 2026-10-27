@@ -74,8 +74,9 @@ public sealed record GotoOptions
     /// <summary>Walk toward the closest reachable point when the goal itself can't be reached.</summary>
     public bool AllowPartial { get; init; } = true;
     /// <summary>Plan through closed wooden doors, fence gates and trapdoor hatches (iron doors only with a known
-    /// button/lever/plate on the near side): stop, face it, right-click, wait for the open bit, pass. Protected doors
-    /// and doors that didn't open (locked) are never planned through.</summary>
+    /// button/lever/plate on the near side): stop, face it, right-click, wait for the open bit, pass. Doors of protected
+    /// builds are used too (protection forbids breaking, not opening; they're put back); doors that didn't open (locked)
+    /// are never planned through again.</summary>
     public bool AllowOpenDoors { get; init; } = true;
     /// <summary>Put opened doors/gates/hatches back the way they were once past them.</summary>
     public bool RestoreDoors { get; init; } = true;

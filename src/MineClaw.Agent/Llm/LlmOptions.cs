@@ -44,6 +44,168 @@ public sealed class LlmOptions
 
     public int MaxRetries { get; set; } = 2;
     public int TimeoutSeconds { get; set; } = 60;
+    /// <summary>
+    /// Stream interruptible calls (the brain's first call of a turn) so a restart for a new chat line aborts generation
+    /// server-side and reports partial usage. Off = plain requests (cancel still drops the HTTP call client-side).
+    /// </summary>
+    public bool StreamInterruptible { get; set; } = true;
+
+    // ------------------------------------------------------------------ providers (per tier) and named profiles
+
+    /// <summary>Provider per tier: "anthropic" (default) or "ollama" (then the tier's *Model is an Ollama model name).</summary>
+    public string MainProvider { get; set; } = LlmProviders.Anthropic;
+    public string WorkerProvider { get; set; } = LlmProviders.Anthropic;
+    public string CheapProvider { get; set; } = LlmProviders.Anthropic;
+
+    /// <summary>The local Ollama server ("Agent:Llm:Ollama"). Empty endpoint = no Ollama anywhere (behaviour unchanged).</summary>
+    public OllamaOptions Ollama { get; set; } = new();
+
+    /// <summary>
+    /// Named model profiles ("Agent:Llm:Profiles") the brain can pick for a delegated task or a clone's brain. Built-ins:
+    /// opus, sonnet, haiku. A profile without a model, or on an unconfigured provider, is never offered or accepted.
+    /// </summary>
+    public Dictionary<string, LlmProfile> Profiles { get; set; } = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["opus"] = new() { Model = "claude-opus-5-5", Notes = "planning, tricky building", CostHint = "$$$" },
+        ["sonnet"] = new() { Model = "claude-sonnet-5-5", Notes = "normal multi-step work", CostHint = "$$" },
+        ["haiku"] = new() { Model = "claude-haiku-5-5", Notes = "simple repetitive chores", CostHint = "$" },
+    };
+
+    /// <summary>Profile the brain tier runs on (set by <see cref="ApplyBrainProfile"/> for a clone; telemetry tag). Null = config.</summary>
+    public string? MainProfile { get; private set; }
+
+    /// <summary>
+    /// Whether the brain tier may write Lua scripts. True for the configured brain (keyed to the tier; a warning is logged when
+    /// it isn't Opus 5.5); false once a non-Opus profile was applied to this process's brain (a hive clone on haiku...).
+    /// </summary>
+    public bool BrainAuthorsScripts { get; private set; } = true;
+
+    /// <summary>The brain model the user requires for script authorship.</summary>
+    public const string ScriptAuthorModel = "claude-opus-5-5";
+
+    public static bool IsOpus55(string? model) => model != null && model.StartsWith(ScriptAuthorModel, StringComparison.OrdinalIgnoreCase);
+
+    public string ProviderFor(ModelTier tier) => LlmProviders.Normalize(tier switch { ModelTier.Cheap => CheapProvider, ModelTier.Worker => WorkerProvider, _ => MainProvider });
+
+    /// <summary>Any tier configured for Ollama.</summary>
+    public bool TiersUseOllama => new[] { ModelTier.Main, ModelTier.Worker, ModelTier.Cheap }.Any(t => ProviderFor(t) == LlmProviders.Ollama);
+
+    /// <summary>Any tier configured for Anthropic (the API key is required only then).</summary>
+    public bool TiersUseAnthropic => new[] { ModelTier.Main, ModelTier.Worker, ModelTier.Cheap }.Any(t => ProviderFor(t) == LlmProviders.Anthropic);
+
+    /// <summary>Ollama is reachable from some call: a tier uses it, or the endpoint is set (profiles may use it).</summary>
+    public bool OllamaInUse => TiersUseOllama || Ollama.IsConfigured;
+
+    /// <summary>A provider counts as configured: anthropic = an API key is set; ollama = the endpoint is set.</summary>
+    public bool ProviderConfigured(string provider) => LlmProviders.Normalize(provider) switch
+    {
+        LlmProviders.Anthropic => !string.IsNullOrWhiteSpace(ApiKey),
+        LlmProviders.Ollama => Ollama.IsConfigured,
+        _ => false,
+    };
+
+    /// <summary>Provider of a model id: the tier that names it, else a profile that names it, else anthropic.</summary>
+    public string ProviderOfModel(string? model)
+    {
+        if (string.IsNullOrEmpty(model)) return ProviderFor(ModelTier.Main);
+        if (TierOfModel(model) is { } t) return ProviderFor(t);
+        foreach (var p in Profiles.Values)
+            if (string.Equals(p.Model, model, StringComparison.OrdinalIgnoreCase)) return LlmProviders.Normalize(p.Provider);
+        return LlmProviders.Anthropic;
+    }
+
+    /// <summary>Profile name of a model id (telemetry / budget tag): the tier's applied profile, else the first profile naming it.</summary>
+    public string? ProfileOfModel(string? model)
+    {
+        if (string.IsNullOrEmpty(model)) return null;
+        if (MainProfile != null && string.Equals(model, MainModel, StringComparison.OrdinalIgnoreCase)) return MainProfile;
+        foreach (var (name, p) in Profiles)
+            if (string.Equals(p.Model, model, StringComparison.OrdinalIgnoreCase) && string.Equals(LlmProviders.Normalize(p.Provider), ProviderOfModel(model), StringComparison.Ordinal))
+                return name;
+        return null;
+    }
+
+    /// <summary>Which provider serves a request: its profile, else the provider of its model override, else the tier's.</summary>
+    public string ProviderFor(LlmRequest request)
+    {
+        if (request.Profile != null && Profiles.TryGetValue(request.Profile, out var p)) return LlmProviders.Normalize(p.Provider);
+        return request.Model != null ? ProviderOfModel(request.Model) : ProviderFor(request.Tier);
+    }
+
+    /// <summary>Profiles that can be used right now (model set, provider configured), cheapest-first as configured.</summary>
+    public IEnumerable<string> UsableProfiles() => Profiles.Where(kv => CheckProfile(kv.Key) == null).Select(kv => kv.Key);
+
+    /// <summary>Null when <paramref name="name"/> can be used; else a clear refusal ("no profile 'x' (have ...)").</summary>
+    public string? CheckProfile(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "no profile given";
+        name = name.Trim();
+        if (!Profiles.TryGetValue(name, out var p))
+            return $"no profile '{name}' (have {string.Join(", ", Profiles.Keys.Where(k => CheckProfile(k) == null))})";
+        if (_disabled.TryGetValue(name, out var why)) return $"profile '{name}' is unavailable: {why}";
+        if (string.IsNullOrWhiteSpace(p.Model)) return $"profile '{name}' isn't configured (no model)";
+        var provider = LlmProviders.Normalize(p.Provider);
+        if (!LlmProviders.IsKnown(provider)) return $"profile '{name}' has an invalid provider '{p.Provider}' (anthropic|ollama)";
+        if (!ProviderConfigured(provider))
+            return provider == LlmProviders.Ollama ? $"profile '{name}' needs Agent:Llm:Ollama:Endpoint" : $"profile '{name}' needs an Anthropic API key";
+        foreach (var sub in new[] { p.Worker, p.Memory })
+            if (!string.IsNullOrWhiteSpace(sub) && !string.Equals(sub, name, StringComparison.OrdinalIgnoreCase) && CheckProfile(sub) is { } e)
+                return $"profile '{name}': {e}";
+        return null;
+    }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _disabled = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Startup found the profile's model missing or tool-less: refuse it with <paramref name="why"/>.</summary>
+    public void DisableProfile(string name, string why) => _disabled[name.Trim()] = why;
+
+    public LlmProfile? Profile(string? name) => name != null && Profiles.TryGetValue(name.Trim(), out var p) ? p : null;
+
+    /// <summary>
+    /// Hive clone spawned with a profile: its brain tier (and worker/memory when the profile names them) runs on that profile.
+    /// A non-Opus brain loses script authorship. Returns an error (profile unusable) or null.
+    /// </summary>
+    public string? ApplyBrainProfile(string name)
+    {
+        if (CheckProfile(name) is { } err) return err;
+        var p = Profiles[name.Trim()];
+        MainModel = p.Model.Trim();
+        MainProvider = LlmProviders.Normalize(p.Provider);
+        if (p.MaxTokens is { } mt and > 0) MainMaxTokens = mt;
+        if (!string.IsNullOrWhiteSpace(p.Thinking)) MainThinking = p.Thinking!;
+        MainProfile = name.Trim();
+        BrainAuthorsScripts = IsOpus55(MainModel) && MainProvider == LlmProviders.Anthropic;
+        if (Profile(p.Worker) is { } w)
+        {
+            WorkerModel = w.Model.Trim();
+            WorkerProvider = LlmProviders.Normalize(w.Provider);
+            if (w.MaxTokens is { } wmt and > 0) WorkerMaxTokens = wmt;
+        }
+        if (Profile(p.Memory) is { } c)
+        {
+            CheapModel = c.Model.Trim();
+            CheapProvider = LlmProviders.Normalize(c.Provider);
+            if (c.MaxTokens is { } cmt and > 0) CheapMaxTokens = cmt;
+        }
+        return null;
+    }
+
+    /// <summary>Config problems of the provider settings (empty = fine). With nothing set to ollama this is always empty.</summary>
+    public List<string> ValidateProviders()
+    {
+        var p = new List<string>();
+        foreach (var (key, value) in new[] { ("MainProvider", MainProvider), ("WorkerProvider", WorkerProvider), ("CheapProvider", CheapProvider) })
+            if (!LlmProviders.IsKnown(LlmProviders.Normalize(value))) p.Add($"Agent:Llm:{key} '{value}' is not a provider (anthropic|ollama)");
+        foreach (var (tier, key) in new[] { (ModelTier.Main, "MainProvider"), (ModelTier.Worker, "WorkerProvider"), (ModelTier.Cheap, "CheapProvider") })
+            if (ProviderFor(tier) == LlmProviders.Ollama && !Ollama.IsConfigured)
+                p.Add($"Agent:Llm:{key} is ollama but Agent:Llm:Ollama:Endpoint is empty");
+        foreach (var (name, prof) in Profiles)
+            if (!string.IsNullOrWhiteSpace(prof.Model) && !LlmProviders.IsKnown(LlmProviders.Normalize(prof.Provider)))
+                p.Add($"Agent:Llm:Profiles:{name}:Provider '{prof.Provider}' is not a provider (anthropic|ollama)");
+        if (Ollama.IsConfigured && !Uri.TryCreate(Ollama.Endpoint.Trim(), UriKind.Absolute, out _))
+            p.Add($"Agent:Llm:Ollama:Endpoint '{Ollama.Endpoint}' is not an absolute URL");
+        return p;
+    }
 
     public string ModelFor(ModelTier tier) => tier switch { ModelTier.Cheap => CheapModel, ModelTier.Worker => WorkerModel, _ => MainModel };
     public int MaxTokensFor(ModelTier tier) => tier switch { ModelTier.Cheap => CheapMaxTokens, ModelTier.Worker => WorkerMaxTokens, _ => MainMaxTokens };
@@ -56,6 +218,60 @@ public sealed class LlmOptions
         : string.Equals(model, WorkerModel, StringComparison.OrdinalIgnoreCase) ? ModelTier.Worker
         : string.Equals(model, CheapModel, StringComparison.OrdinalIgnoreCase) ? ModelTier.Cheap
         : null;
+}
+
+public static class LlmProviders
+{
+    public const string Anthropic = "anthropic";
+    public const string Ollama = "ollama";
+
+    /// <summary>"Ollama " → "ollama"; empty → anthropic (the default).</summary>
+    public static string Normalize(string? provider) => string.IsNullOrWhiteSpace(provider) ? Anthropic : provider.Trim().ToLowerInvariant();
+
+    public static bool IsKnown(string provider) => provider is Anthropic or Ollama;
+}
+
+/// <summary>A named model choice ("Agent:Llm:Profiles:&lt;name&gt;").</summary>
+public sealed class LlmProfile
+{
+    public string Provider { get; set; } = LlmProviders.Anthropic;
+    public string Model { get; set; } = "";
+    /// <summary>When to pick it (shown to the brain in the tool description).</summary>
+    public string? Notes { get; set; }
+    public int? MaxTokens { get; set; }
+    /// <summary>Thinking override ("off" | "adaptive" | "omit").</summary>
+    public string? Thinking { get; set; }
+    /// <summary>"$", "$$", "free"... for the brain's choice.</summary>
+    public string? CostHint { get; set; }
+    /// <summary>For a clone's brain: the profile its worker tier uses (null = the clone's config).</summary>
+    public string? Worker { get; set; }
+    /// <summary>For a clone's brain: the profile its memory tier uses (null = the clone's config).</summary>
+    public string? Memory { get; set; }
+}
+
+/// <summary>The local Ollama server. It proxies cloud models itself, so one endpoint covers both.</summary>
+public sealed class OllamaOptions
+{
+    /// <summary>"http://localhost:11434". Empty = Ollama unused.</summary>
+    public string Endpoint { get; set; } = "";
+    /// <summary>Optional bearer token (for a proxy in front of Ollama).</summary>
+    public string ApiKey { get; set; } = "";
+    /// <summary>options.num_ctx (0 = server default). Too small silently truncates the prompt's head.</summary>
+    public int DefaultNumCtx { get; set; }
+    /// <summary>keep_alive ("30m", "-1"...; empty = server default). Keeping the model loaded keeps the KV-cache prefix warm.</summary>
+    public string KeepAlive { get; set; } = "";
+    /// <summary>Per call, streams included (0 = 120 s).</summary>
+    public int TimeoutSeconds { get; set; } = 120;
+    public int EffectiveTimeoutSeconds => TimeoutSeconds > 0 ? TimeoutSeconds : 120;
+    public int MaxRetries { get; set; } = 1;
+    /// <summary>options.temperature (null = model default).</summary>
+    public double? Temperature { get; set; }
+    /// <summary>Models that accept images (besides those whose /api/show capabilities say "vision").</summary>
+    public string[] VisionModels { get; set; } = [];
+
+    public bool IsConfigured => !string.IsNullOrWhiteSpace(Endpoint);
+
+    public Uri BaseUri => new(Endpoint.Trim().TrimEnd('/') + "/");
 }
 
 /// <summary>Per-model request-shape quirks (which thinking-off form is accepted, whether effort is supported).</summary>

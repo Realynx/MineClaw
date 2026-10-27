@@ -194,6 +194,7 @@ public class TerseTests(ITestOutputHelper output)
         Assert.True(style > p.IndexOf("Safety", StringComparison.Ordinal));
         Assert.True(p.IndexOf(Persona, StringComparison.Ordinal) < p.IndexOf("Chat rules", StringComparison.Ordinal));
         Assert.Contains("never chat; chat keeps the persona voice", p[style..]);
+        Assert.Contains("Chat once, in persona.", p[style..]); // no plain draft + persona restatement (night review B5)
         // Everything before the style section is byte-identical to the off prompt.
         Assert.StartsWith(p[..(style - 1)], off.Agent.SystemPrompt[0].Text);
     }

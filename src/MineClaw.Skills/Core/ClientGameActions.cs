@@ -39,6 +39,7 @@ public sealed class ClientGameActions(MinecraftClient client) : IGameActions
     public Task<ActionResult> OpenContainerAsync(BlockPos p, CancellationToken ct) => Inner.OpenContainerAsync(p.X, p.Y, p.Z, ct);
     public Task<ActionResult> CloseWindowAsync(CancellationToken ct) => Inner.CloseWindowAsync(ct);
     public Task<ActionResult> ClickSlotAsync(int slot, bool rightClick, bool shift, CancellationToken ct) => Inner.ClickSlotAsync(slot, rightClick, shift, ct);
+    public Task<ActionResult> ResyncInventoryAsync(CancellationToken ct) => Inner.ResyncInventoryAsync(ct);
     public Task<ActionResult> DepositAllAsync(BlockPos? container, Func<ItemStack, bool>? filter, CancellationToken ct) =>
         Inner.DepositAllAsync(container, filter, ct);
     public Task<ActionResult> WithdrawAsync(int itemId, int count, BlockPos? container, int? damage, CancellationToken ct) =>

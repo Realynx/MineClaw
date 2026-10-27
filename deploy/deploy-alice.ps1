@@ -97,6 +97,16 @@ try {
         $cfgPush = "pct push $Vmid $remote/appsettings.json /etc/mineclaw/appsettings.json --user root --group mineclaw --perms 0640; " +
                    "rm -f $remote/appsettings.json; echo 'config: pushed /etc/mineclaw/appsettings.json (0640 root:mineclaw)'"
     }
+    # b1.8.1 textures for the `see` tool (copyrighted: extracted locally from the user's own client jar into the gitignored
+    # data/assets/, never in the repo or the build). Pushed to the CT's data dir when present; without them `see` uses flat colours.
+    $assetPush = ''
+    $assetFiles = @('terrain.png', 'items.png', 'char.png') | Where-Object { Test-Path (Join-Path $repo "data/assets/$_") }
+    if ($assetFiles -contains 'terrain.png') {
+        foreach ($a in $assetFiles) { Copy-Item (Join-Path $repo "data/assets/$a") (Join-Path $stage $a) }
+        $assetPush = "pct exec `$v -- install -d -o mineclaw -g mineclaw -m 0755 /var/lib/mineclaw/assets; " +
+            (($assetFiles | ForEach-Object { "pct push `$v `$d/$_ /var/lib/mineclaw/assets/$_ --user mineclaw --group mineclaw --perms 0644" }) -join '; ') +
+            "; echo 'assets: pushed $($assetFiles -join ', ')'"
+    }
     $startFlag = if ($NoStart) { ' --no-start' } else { '' }
     $script = @"
 set -euo pipefail
@@ -107,12 +117,13 @@ pct push `$v `$d/mineclaw.tgz /root/mineclaw-deploy/mineclaw.tgz
 pct push `$v `$d/mineclaw.service /root/mineclaw-deploy/mineclaw.service
 pct push `$v `$d/ct-release.sh $release --perms 0755
 $cfgPush
+$assetPush
 pct exec `$v -- $release install /root/mineclaw-deploy/mineclaw.tgz $id --unit /root/mineclaw-deploy/mineclaw.service --timeout $HealthTimeoutSec$startFlag
 "@
     [IO.File]::WriteAllText((Join-Path $stage 'run.sh'), ($script -replace "`r`n", "`n"))
 
     $null = Invoke-Pve "rm -rf $remote && install -d -m 0700 $remote"
-    $files = @('mineclaw.tgz', 'mineclaw.service', 'ct-release.sh', 'run.sh' | ForEach-Object { Join-Path $stage $_ })
+    $files = @(@('mineclaw.tgz', 'mineclaw.service', 'ct-release.sh', 'run.sh') + @($assetFiles | Where-Object { $assetPush }) | ForEach-Object { Join-Path $stage $_ })
     & scp @ssh -q @files "${PveHost}:$remote/"
     if ($LASTEXITCODE -ne 0) { throw "scp failed ($LASTEXITCODE)" }
     if ($sendCfg) {

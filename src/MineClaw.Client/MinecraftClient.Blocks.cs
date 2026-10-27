@@ -12,7 +12,7 @@ public sealed partial class MinecraftClient
     /// <summary>Digs one block: paths into reach if needed, picks the best tool, aims at a visible face, digs for the
     /// computed time and verifies the server broke it.</summary>
     public Task<ActionResult> DigBlockAsync(int x, int y, int z, CancellationToken ct = default) =>
-        RunActionAsync("dig", ct, c => DigCoreAsync(new BlockPos(x, y, z), c));
+        RunActionAsync("dig", ct, c => DigCoreAsync(new BlockPos(x, y, z), c, floorGuard: true));
 
     /// <summary>Places a block of <paramref name="itemId"/> at (x,y,z) against a solid neighbour; verifies it appeared.</summary>
     public Task<ActionResult> PlaceBlockAsync(int x, int y, int z, int itemId, CancellationToken ct = default) =>
@@ -52,17 +52,23 @@ public sealed partial class MinecraftClient
     /// <param name="generator">Digging a cobblestone generator's output: lava next to it is expected, so instead of
     /// refusing, the bot must stand where released lava can't reach it.</param>
     /// <param name="noShears">Leaves for saplings: shears would drop the leaf block instead of the sapling chance.</param>
+    /// <param name="floorGuard">A free-standing dig/mine (the model or a script picked the block): never the floor of a walkway
+    /// near the void (see <see cref="WalkwayFloorVeto"/>). Macros that dig their own blocks (pillars, trees, paths) skip it.</param>
     private async Task<ActionResult> DigCoreAsync(BlockPos pos, CancellationToken ct, bool allowPathing = true, bool ignoreProtection = false,
-        bool generator = false, bool noShears = false)
+        bool generator = false, bool noShears = false, bool floorGuard = false)
     {
         int id = World.GetBlock(pos);
         string name = BlockName(id, World.GetMeta(pos));
         if (!World.IsLoaded(pos.X, pos.Z)) return ActionResult.Fail($"{Fmt(pos)} is not loaded");
         if (id == 0 || BlockShapes.IsLiquid(id)) return ActionResult.Success($"{Fmt(pos)} already clear");
-        if (!ignoreProtection && IsBlockProtected(pos, id)) return ActionResult.Fail($"{name} at {Fmt(pos)} is protected");
+        if (!ignoreProtection && IsBlockProtected(pos, id))
+            return ActionResult.Fail(id == Blocks.Log && !UserProtected(pos, id)
+                ? $"won't dig the log at {Fmt(pos)}: that tree is one of the island's last {MinTrees} (chop_tree fells and replants it once I hold a sapling)"
+                : $"{name} at {Fmt(pos)} is protected");
         if (Blocks.Get(id).Hardness < 0) return ActionResult.Fail($"{name} is unbreakable");
         if (EditBlocked(pos)) return ActionResult.Fail(BlockedReason(pos));
         if (DigSafetyVeto(pos, name, generator, positioned: !allowPathing) is { } veto) return ActionResult.Fail(veto);
+        if (floorGuard && !generator && WalkwayFloorVeto(pos, name) is { } floor) return ActionResult.Fail(floor);
 
         await EnsureNoWindowAsync(ct).ConfigureAwait(false);
         var aim = Aiming.FindDigAim(World, World.Player.EyePosition, pos, Options.Reach);
@@ -162,6 +168,9 @@ public sealed partial class MinecraftClient
             await GotoCoreAsync(new GoalWithinReach(pos, Options.Reach - 0.6), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(30) }, ct)
                 .ConfigureAwait(false);
             aim = FindAim();
+            // An island edge cell whose only support is the outer face of the floor block beside it: that face is only in
+            // view when leaning out over the edge, never from a cell centre.
+            if (aim is null && face is null && await LeanForPlaceAsync(pos, ct).ConfigureAwait(false)) aim = FindAim();
             if (aim is null)
                 return ActionResult.Fail(face is { } f2
                     ? $"can't place at {Fmt(pos)} on the {f2.ToString().ToLowerInvariant()} face: not visible/in reach (or I'm in the way)"
@@ -186,7 +195,48 @@ public sealed partial class MinecraftClient
             return ActionResult.Fail($"{ItemName(itemId)} didn't appear at {Fmt(pos)}" + SpawnProtectionHint(pos));
         }
         NoteEditOk(pos);
+        if (itemId == Blocks.Sapling) NoteSaplingPlanted();
         return ActionResult.Success($"placed {ItemName(itemId)} at {Fmt(pos)}");
+    }
+
+    /// <summary>
+    /// Vanilla edge bridging for one placement: walks onto a solid block beside <paramref name="pos"/> (its outer face is
+    /// the support) and sneaks out toward the cell until that face is in view. Sneaking plus the EdgeGuard keep the body on
+    /// the block (never over the void). True when a support face became visible.
+    /// </summary>
+    private async Task<bool> LeanForPlaceAsync(BlockPos pos, CancellationToken ct)
+    {
+        if (BlockShapes.HasCollision(World, pos.X, pos.Y + 1, pos.Z) || BlockShapes.HasCollision(World, pos.X, pos.Y + 2, pos.Z)) return false;
+        var me = World.Player.Position;
+        var stances = new[] { new BlockPos(1, 0, 0), new BlockPos(-1, 0, 0), new BlockPos(0, 0, 1), new BlockPos(0, 0, -1) }
+            .Select(o => new BlockPos(pos.X + o.X, pos.Y, pos.Z + o.Z))
+            .Where(s => BlockShapes.HasCollision(World, s.X, s.Y, s.Z) && !BlockShapes.IsLiquid(World.GetBlock(s)) && !Blocks.Get(World.GetBlock(s)).Interactable
+                        && !BlockShapes.HasCollision(World, s.X, s.Y + 1, s.Z) && !BlockShapes.HasCollision(World, s.X, s.Y + 2, s.Z))
+            .Select(s => new BlockPos(s.X, s.Y + 1, s.Z))
+            .OrderBy(s => Math.Pow(s.X + 0.5 - me.X, 2) + Math.Pow(s.Z + 0.5 - me.Z, 2));
+        foreach (var stance in stances)
+        {
+            if (!new GoalBlock(stance).IsReached(Pathfinder.StartCellFor(World, World.Player.Position) ?? World.Player.Position.ToBlockPos()))
+            {
+                var g = await GotoCoreAsync(new GoalBlock(stance), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(20), AllowPartial = false }, ct)
+                    .ConfigureAwait(false);
+                if (!g.Ok) continue;
+            }
+            var toward = new Vec3d(pos.X + 0.5, stance.Y, pos.Z + 0.5);
+            bool seen = false;
+            int ticks = 0;
+            await DriveAsync(phys =>
+            {
+                ticks++;
+                seen = phys.OnGround && Aiming.FindPlaceAim(World, phys.EyePosition, pos, Options.Reach, phys.BoundingBox) is not null;
+                float yaw = PlayerPhysics.YawPitchTo(phys.Position, toward).Yaw;
+                return seen || ticks > 40
+                    ? new DriverStep(new MoveInput(Sneak: true, Yaw: yaw, Pitch: 75), Done: true)
+                    : new DriverStep(new MoveInput(Forward: 1, Sneak: true, Yaw: yaw, Pitch: 75));
+            }, ct).ConfigureAwait(false);
+            if (seen) return true;
+        }
+        return false;
     }
 
     /// <summary>Path into reach of an interactable block and right-click it.</summary>
@@ -347,7 +397,15 @@ public sealed partial class MinecraftClient
 
     // ------------------------------------------------------------------ safety helpers
 
-    private bool IsBlockProtected(BlockPos pos, int id) => IsProtected?.Invoke(pos, id) ?? false;
+    /// <summary>Owner protection plus tree stewardship (<see cref="TreeGuarded"/>: the island's last trees' logs).</summary>
+    private bool IsBlockProtected(BlockPos pos, int id) => (IsProtected?.Invoke(pos, id) ?? false) || (id == Blocks.Log && TreeGuarded(pos));
+
+    private bool NextToWater(BlockPos p)
+    {
+        foreach (var f in BlockFaceExtensions.All)
+            if (Blocks.IsWater(World.GetBlock(p.Offset(f)))) return true;
+        return false;
+    }
 
     private bool NextToLava(BlockPos p)
     {
@@ -373,11 +431,36 @@ public sealed partial class MinecraftClient
         if (WouldDropIntoVoid(pos)) return $"won't dig {name} at {Fmt(pos)}: it's the last block between me and the void";
         if (LavaCouldFlowInto(pos))
         {
+            // Lava that flows into a cell touching water hardens straight back into cobble/stone: that is how every
+            // cobble generator works, so treat such a cell like a generator cell and only refuse if lava could reach me.
+            generator |= NextToWater(pos);
             if (!generator) return $"won't dig {name} at {Fmt(pos)}: lava next to it would flow out";
-            if (positioned && LavaPathToMe(pos)) return $"won't dig {name} at {Fmt(pos)} from here: released lava could reach me";
+            // A player taught this stand spot for this cell (demo): trust it over the lava-distance rule.
+            if (positioned && LavaPathToMe(pos) && !OnTrustedStand(pos)) return $"won't dig {name} at {Fmt(pos)} from here: released lava could reach me";
         }
         return null;
     }
+
+    /// <summary>
+    /// Live 10-27 (B21): a script told to mine the generator's cell dug "the nearest cobblestone" instead: the island floor
+    /// next to the gen hole, leaving the bot on the rim ("you're mining the flooor"). A block at or below the level I stand on,
+    /// with a walkable cell on top and the void within 3 of it, is a walkway's floor: never dug by a free-standing dig/mine.
+    /// A generator cell (lava could flow in, water next to it) is the exception; trees are never floors.
+    /// </summary>
+    private string? WalkwayFloorVeto(BlockPos p, string name)
+    {
+        if (p.Y >= FeetCell().Y) return null; // at/above my feet: a wall or a stack, not the floor I walk on
+        int id = World.GetBlock(p);
+        if (id is Blocks.Log or Blocks.Leaves) return null;
+        if (LavaCouldFlowInto(p) && NextToWater(p)) return null; // a cobble generator's cell
+        if (!Safety.IsStandable(World, p.X, p.Y + 1, p.Z)) return null;
+        int edge = Safety.EdgeDistance(World, p.X, p.Y + 1, p.Z, WalkwayVoidDistance);
+        if (edge > WalkwayVoidDistance) return null;
+        return $"won't dig {name} at {Fmt(p)}: it's the floor of a walkway with the void {edge} away (dig only the taught cell)";
+    }
+
+    /// <summary>Void this close to a walkway's floor block makes it undiggable for free-standing digs (<see cref="WalkwayFloorVeto"/>).</summary>
+    public const int WalkwayVoidDistance = 3;
 
     private bool LavaNearMe()
     {

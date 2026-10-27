@@ -41,6 +41,8 @@ public sealed record PathFollowerOptions
     public int MaxActivations { get; init; } = 3;
     /// <summary>Ticks to stand on an iron door's pressure plate waiting for it to open.</summary>
     public int PlateWaitTicks { get; init; } = 30;
+    /// <summary>Ticks to wait after a Trigger step's click for the mechanism's effects (plus its learned lag).</summary>
+    public int TriggerWaitTicks { get; init; } = 20;
     /// <summary>Whether sprinting is possible right now (b1.8.1: food &gt; 6). Checked before and during a sprint-jump run-up.</summary>
     public Func<bool>? CanSprint { get; init; }
     /// <summary>Max distance between the run-up and its planned trajectory before the jump is aborted.</summary>
@@ -65,6 +67,9 @@ public sealed class PathFollower
     private readonly Dictionary<BlockPos, int> _activations = new();
     private readonly List<(DoorToggle Toggle, int StepIndex)> _restore = new();
     private int _plateWait;
+    private int _triggerWait;
+    private bool _triggerClicked;
+    private readonly List<(TriggerUse Use, int AfterStep)> _leverRestore = new();
     private readonly ParkourRun _pk = new();
     private readonly List<ParkourPlan> _jumps = new();
 
@@ -107,6 +112,16 @@ public sealed class PathFollower
     /// <summary>Openables that were flipped and are still waiting to be put back (or could not be).</summary>
     public IReadOnlyList<DoorToggle> Unrestored => _restore.Select(r => r.Toggle).ToArray();
 
+    /// <summary>Levers of Trigger steps still waiting to be flipped back (or that could not be).</summary>
+    public IReadOnlyList<TriggerUse> UnrestoredLevers => _leverRestore.Select(r => r.Use).ToArray();
+
+    /// <summary>Set when a Trigger step failed: the mechanism didn't respond (veto it for the re-plan).</summary>
+    public BlockPos? FailedTrigger { get; private set; }
+
+    /// <summary>Set when a step's mechanism effect reverted before the body got through (pulse missed: re-plan, the
+    /// trigger may be used again).</summary>
+    public TriggerUse? PulseMissed { get; private set; }
+
     public FollowerOutput Tick(IBlockAccess w, PhysicsState s)
     {
         Commitment = null;
@@ -123,7 +138,11 @@ public sealed class PathFollower
                 if (_o.RestoreDoors)
                     foreach (var tg in step.Opens)
                         if (tg.CanRestore(w) && !_restore.Any(r => r.Toggle.Pos == tg.Pos)) _restore.Add((tg, StepIndex));
+                if (step.Trigger is { Restore: true, Link.Kind: TriggerKind.Lever } lever && _leverRestore.All(r => r.Use.Pos != lever.Pos))
+                    _leverRestore.Add((lever, LastRequiring(lever)));
                 _plateWait = 0;
+                _triggerWait = 0;
+                _triggerClicked = false;
                 if (step.Jump is { } done) _jumps.Add(done);
                 _pk.Reset();
                 StepIndex++;
@@ -139,9 +158,18 @@ public sealed class PathFollower
         return new FollowerOutput(FollowerStatus.Moving, MoveInput.Idle(s.Yaw, s.Pitch));
     }
 
+    /// <summary>Index of the last step that needs <paramref name="tu"/>'s effects (the trigger step itself if none).</summary>
+    private int LastRequiring(TriggerUse tu)
+    {
+        int last = StepIndex;
+        for (int i = StepIndex + 1; i < _steps.Count; i++)
+            if (_steps[i].Requires is { } r && r.Pos == tu.Pos) last = i;
+        return last;
+    }
+
     private bool NeedsPrecision(PathStep step)
     {
-        if (StepIndex == _steps.Count - 1 || step.Sneak || step.Opens.Count > 0) return true;
+        if (StepIndex == _steps.Count - 1 || step.Sneak || step.Opens.Count > 0 || step.Trigger is not null) return true;
         var next = StepIndex + 1 < _steps.Count ? _steps[StepIndex + 1] : null;
         // Doorways are 0.81 wide once the panel swings in: line up on the cell centre before and inside them.
         return next is not null && (next.Kind is MoveKind.Pillar or MoveKind.Bridge or MoveKind.ClimbUp or MoveKind.ClimbDown
@@ -152,6 +180,7 @@ public sealed class PathFollower
     /// <summary>Restores a door once the body is a full step past it, still within reach, and clear of its old box.</summary>
     private FollowerOutput? RestoreRequest(IBlockAccess w, PhysicsState s)
     {
+        if (LeverRestoreRequest(w, s) is { } lever) return lever;
         for (int i = _restore.Count - 1; i >= 0; i--)
         {
             var (tg, at) = _restore[i];
@@ -159,7 +188,10 @@ public sealed class PathFollower
             if (StepIndex <= at + 1 && StepIndex < _steps.Count) continue; // not past it yet
             var target = tg.Actuator ?? tg.Pos;
             var c = new Vec3d(target.X + 0.5, target.Y + 0.5, target.Z + 0.5);
-            if ((c - s.EyePosition).Length > _o.Reach) { if (StepIndex >= _steps.Count) _restore.RemoveAt(i); continue; }
+            // A lever behind the wall can't be clicked through it.
+            bool reachable = (c - s.EyePosition).Length <= _o.Reach
+                             && (tg.Actuator is null || Aiming.FindDigAim(w, s.EyePosition, target, _o.Reach) is not null);
+            if (!reachable) { if (StepIndex >= _steps.Count) _restore.RemoveAt(i); continue; }
             var box = s.BoundingBox;
             var after = new List<AABB>(2);
             BlockShapes.AddCollisionBoxes(w, tg.Id, tg.FromMeta, tg.Pos.X, tg.Pos.Y, tg.Pos.Z, after);
@@ -169,6 +201,29 @@ public sealed class PathFollower
             if (!Activation(target)) { _restore.RemoveAt(i); continue; }
             return new FollowerOutput(FollowerStatus.NeedsAction, MoveInput.Idle(s.Yaw, s.Pitch),
                 new FollowerAction(FollowerActionKind.Activate, target));
+        }
+        return null;
+    }
+
+    /// <summary>Flips a Trigger step's lever back once past the last step needing its effects, when it can be clicked
+    /// from here and nothing it moves would close on the body.</summary>
+    private FollowerOutput? LeverRestoreRequest(IBlockAccess w, PhysicsState s)
+    {
+        for (int i = _leverRestore.Count - 1; i >= 0; i--)
+        {
+            var (tu, after) = _leverRestore[i];
+            var p = tu.Pos;
+            if (w.GetBlock(p.X, p.Y, p.Z) != Openables.Lever || Openables.IsActuatorOn(Openables.Lever, w.GetMeta(p.X, p.Y, p.Z)) != tu.TurnOn)
+            {
+                _leverRestore.RemoveAt(i);
+                continue;
+            }
+            if (StepIndex <= after + 1 && StepIndex < _steps.Count) continue;
+            if (Aiming.FindDigAim(w, s.EyePosition, p, _o.Reach) is null) { if (StepIndex >= _steps.Count) _leverRestore.RemoveAt(i); continue; }
+            var box = s.BoundingBox;
+            if (tu.Link.Effects.Any(e => box.Intersects(AABB.Block(e.Pos.X, e.Pos.Y, e.Pos.Z)))) continue;
+            if (!Activation(p)) { _leverRestore.RemoveAt(i); continue; }
+            return new FollowerOutput(FollowerStatus.NeedsAction, MoveInput.Idle(s.Yaw, s.Pitch), new FollowerAction(FollowerActionKind.Activate, p));
         }
         return null;
     }
@@ -185,6 +240,7 @@ public sealed class PathFollower
     private bool Reached(IBlockAccess w, PhysicsState s, PathStep step)
     {
         if (step.Opens.Count > 0 && step.Opens.Any(o => !o.Done(w))) return false;
+        if (step.Trigger is { } tu && !tu.Fired(w)) return false;
         if (step.Break.Count > 0 && step.Break.Any(b => BlockPresent(w, b))) return false;
         if (step.Place is { } p && Aiming.IsReplaceable(w, w.GetBlock(p.X, p.Y, p.Z))) return false;
         var pos = s.Position;
@@ -250,9 +306,17 @@ public sealed class PathFollower
             BlockedJump = (from, step.Pos);
             return Fail(idle, $"jump to {step.Pos} refused by the edge guard (landing not verified)");
         }
+        if (step.Requires is { } rq && !rq.Fired(w) && EffectAhead(w, s, step, rq))
+        {
+            PulseMissed = rq;
+            return Fail(idle, $"the passage of the {rq} closed again before I got through");
+        }
         double progressMetric = dist + Math.Abs(pos.Y - step.Floor);
         if (progressMetric < _bestDist - 0.05) { _bestDist = progressMetric; _noProgress = 0; }
         else if (++_noProgress > _o.StuckTicks) return Fail(idle, "stuck");
+
+        // ---- action: fire a known mechanism (button/lever from here, or stand on its plate) and wait for its effects ----
+        if (step.Trigger is { } trig && !trig.Fired(w) && TriggerAction(w, s, step, trig, idle, dist) is { } fired) return fired;
 
         // ---- actions: doors/gates/trapdoors to open (state read from the world's metadata, never by bumping) ----
         foreach (var tg in step.Opens)
@@ -485,6 +549,64 @@ public sealed class PathFollower
     }
 
     private static double Speed(PhysicsState s) => s.Velocity.HorizontalLength;
+
+    /// <summary>
+    /// The Trigger step once on its cell and still: button — click (again only after it popped), lever — click until it
+    /// is in the wanted position (never back), plate — stand on it; then wait for the effects (learned lag + slack).
+    /// Null while still walking/centering onto the cell (the normal movement code runs).
+    /// </summary>
+    private FollowerOutput? TriggerAction(IBlockAccess w, PhysicsState s, PathStep step, TriggerUse tu, MoveInput idle, double dist)
+    {
+        var pos = s.Position;
+        bool onCell = (int)Math.Floor(pos.X) == step.X && (int)Math.Floor(pos.Z) == step.Z && Math.Abs(pos.Y - step.Floor) < 0.2
+                      && (s.OnGround || s.OnLadder);
+        if (!onCell || dist > 0.25 || Speed(s) > 0.06) return null;
+        _noProgress = 0;
+        int wait = _o.TriggerWaitTicks + tu.Link.LagTicks;
+        var p = tu.Pos;
+        if (tu.IsPlate)
+        {
+            if (++_triggerWait > _o.PlateWaitTicks + tu.Link.LagTicks) return TriggerFailed(idle, tu, "nothing happened on the plate");
+            return Move(idle);
+        }
+        int id = w.GetBlock(p.X, p.Y, p.Z);
+        if (id != tu.Link.TriggerId) return TriggerFailed(idle, tu, "it's gone");
+        bool on = Openables.IsActuatorOn(id, w.GetMeta(p.X, p.Y, p.Z));
+        bool click = tu.Link.Kind == TriggerKind.Lever ? on != tu.TurnOn : !on && (!_triggerClicked || _triggerWait > wait);
+        if (click)
+        {
+            if (!Activation(p)) return TriggerFailed(idle, tu, "it didn't respond");
+            _triggerClicked = true;
+            _triggerWait = 0;
+            return new FollowerOutput(FollowerStatus.NeedsAction, idle, new FollowerAction(FollowerActionKind.Activate, p));
+        }
+        if (++_triggerWait > wait * 2 + 10) return TriggerFailed(idle, tu, "its effect never showed");
+        return Move(idle);
+    }
+
+    private FollowerOutput TriggerFailed(MoveInput idle, TriggerUse tu, string why)
+    {
+        FailedTrigger = tu.Pos;
+        return Fail(idle, $"{Mechanisms.TriggerName(tu.Link.Kind)} at {tu.Link.Key}: {why}");
+    }
+
+    /// <summary>A reverted effect still between the body and the step's target (one behind us, or one we are already
+    /// inside, doesn't stop us: a closing door never blocks a body that overlaps it).</summary>
+    private static bool EffectAhead(IBlockAccess w, PhysicsState s, PathStep step, TriggerUse rq)
+    {
+        var box = s.BoundingBox;
+        var t = step.Target;
+        double body = Math.Sqrt(Math.Pow(t.X - s.Position.X, 2) + Math.Pow(t.Z - s.Position.Z, 2));
+        foreach (var e in rq.Link.Effects)
+        {
+            if (e.IsIn(w, rq.TurnOn)) continue;
+            var cell = AABB.Block(e.Pos.X, e.Pos.Y, e.Pos.Z);
+            if (cell.Intersects(box)) continue;
+            double d = Math.Sqrt(Math.Pow(t.X - (e.Pos.X + 0.5), 2) + Math.Pow(t.Z - (e.Pos.Z + 0.5), 2));
+            if (d < body - 0.1) return true;
+        }
+        return false;
+    }
 
     private static FollowerOutput Move(MoveInput input) => new(FollowerStatus.Moving, input);
 

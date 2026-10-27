@@ -140,8 +140,9 @@ public class LiveHiveFixesTests
         Assert.NotNull(dup);
         Assert.True(dup!.Ok);
         Assert.StartsWith("already running: chop_tree #1 (started 20s ago)", dup.Text);
-        // A delegate on the same tree overlaps too; another tree or a stop in the same turn doesn't.
-        Assert.StartsWith("already running", guard.Check("delegate", J(new { task = "Chop the tree whose trunk is at 11,65,0" }))!.Text);
+        // A delegate never shadows a game tool by a shared coordinate (night review B1: the house chest blocked every task);
+        // another tree or a stop in the same turn doesn't either.
+        Assert.Null(guard.Check("delegate", J(new { task = "Chop the tree whose trunk is at 11,65,0" })));
         Assert.Null(guard.Check("chop_tree", J(new { at = "20,64,3" })));
         Assert.Null(guard.Check("chop_tree", J(new { at = "11,65,0" }), stopping: true));
         gate.SetResult(ToolResult.Success("ok"));
@@ -159,10 +160,11 @@ public class LiveHiveFixesTests
         Assert.NotNull(again);
         Assert.False(again!.Ok);
         Assert.Contains("wouldn't break", again.Text);
-        Assert.Contains("not retried", guard.Check("delegate", J(new { task = "chop the oak at 11,65,0", done_when = "logs in inv" }))!.Text);
+        // Failures are keyed on (tool, target/intent): a delegate isn't refused for a chop_tree failure (night review B1).
+        Assert.Null(guard.Check("delegate", J(new { task = "chop the oak at 11,65,0", done_when = "logs in inv" })));
         Assert.Null(guard.Check("chop_tree", J(new { at = "11,65,0" }), retryRequested: true));
         Assert.Null(guard.Check("chop_tree", J(new { at = "30,64,30" })));
-        time.Advance(TimeSpan.FromMinutes(11));
+        time.Advance(TimeSpan.FromMinutes(11)); // (memory is 3 min by default now)
         Assert.Null(guard.Check("chop_tree", J(new { at = "11,65,0" })));
         Assert.True(ToolCallGuard.IsRetryRequest("ok try again pls"));
         Assert.False(ToolCallGuard.IsRetryRequest("you still aren't chopping them"));

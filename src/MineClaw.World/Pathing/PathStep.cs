@@ -31,6 +31,30 @@ public enum MoveKind
     SprintJump,
     /// <summary>Jump over a gap without sprinting (short gaps, or too hungry to sprint).</summary>
     JumpGap,
+    /// <summary>Activate a known mechanism (<see cref="PathStep.Trigger"/>): press its button / flip its lever from the
+    /// current cell, or walk onto its pressure plate (the step's cell), then wait for its effects. Later steps that need
+    /// the effects carry <see cref="PathStep.Requires"/>; button/plate pulses are planned to be crossed in time.</summary>
+    Trigger,
+}
+
+/// <summary>
+/// Use of a learned <see cref="MechanismLink"/> by a path: <see cref="TurnOn"/> is the trigger state the path needs
+/// (always true for buttons/plates; a lever may be flipped either way). <see cref="Restore"/>: flip a lever back once past
+/// its effects (the planner clears it when restoring would leave no way back out).
+/// </summary>
+public sealed record TriggerUse(MechanismLink Link, bool TurnOn, bool Restore = false)
+{
+    public BlockPos Pos => Link.Trigger;
+    public bool IsPlate => Link.IsPlate;
+
+    /// <summary>All effects are in the wanted state (door open, wall gone...).</summary>
+    public bool Fired(IBlockAccess w) => Link.EffectsIn(w, TurnOn);
+
+    /// <summary>The effects are back in the state the path found them in (lever restored, pulse over).</summary>
+    public bool Reverted(IBlockAccess w) => Link.EffectsIn(w, !TurnOn);
+
+    public override string ToString() =>
+        $"{Mechanisms.TriggerName(Link.Kind)}@{Link.Key}" + (Link.IsPulse ? $" {Link.WindowTicks}t" : TurnOn ? " on" : " off") + (Restore ? " restore" : "");
 }
 
 /// <summary>An openable the follower must flip before (and optionally restore after) a step. <see cref="Pos"/> is the
@@ -39,6 +63,10 @@ public enum MoveKind
 /// the block itself).</summary>
 public sealed record DoorToggle(BlockPos Pos, int Id, int FromMeta, BlockPos? Actuator = null)
 {
+    /// <summary>Leave it flipped (a lever-operated door whose lever can't be reached from the far side: restoring it would
+    /// shut the only way back out).</summary>
+    public bool Keep { get; init; }
+
     public bool Done(IBlockAccess w) =>
         w.GetBlock(Pos.X, Pos.Y, Pos.Z) == Id && ((w.GetMeta(Pos.X, Pos.Y, Pos.Z) ^ FromMeta) & Openables.OpenBit) != 0;
 
@@ -47,7 +75,7 @@ public sealed record DoorToggle(BlockPos Pos, int Id, int FromMeta, BlockPos? Ac
 
     /// <summary>Restoring makes sense for blocks we flipped by hand or with a lever (buttons and plates reset themselves).</summary>
     public bool CanRestore(IBlockAccess w) =>
-        Actuator is not { } a || w.GetBlock(a.X, a.Y, a.Z) == Openables.Lever;
+        !Keep && (Actuator is not { } a || w.GetBlock(a.X, a.Y, a.Z) == Openables.Lever);
 
     public override string ToString() => $"{Openables.Name(Id)}@{Pos}" + (Actuator is { } a ? $" via {a}" : "");
 }
@@ -68,7 +96,9 @@ public sealed record PathStep(
     BlockPos? Place = null,
     bool Sneak = false,
     IReadOnlyList<DoorToggle>? Open = null,
-    ParkourPlan? Jump = null)
+    ParkourPlan? Jump = null,
+    TriggerUse? Trigger = null,
+    TriggerUse? Requires = null)
 {
     public BlockPos Pos => new(X, Y, Z);
 
@@ -78,12 +108,13 @@ public sealed record PathStep(
     /// <summary>Feet position to aim for: cell center at floor height.</summary>
     public Vec3d Target => new(X + 0.5, Floor, Z + 0.5);
 
-    public bool HasActions => Break.Count > 0 || Place is not null || Opens.Count > 0;
+    public bool HasActions => Break.Count > 0 || Place is not null || Opens.Count > 0 || Trigger is not null;
 
     public override string ToString() =>
         $"{Kind} -> {Pos}" + (Break.Count > 0 ? $" break[{string.Join(",", Break)}]" : "") +
         (Place is { } p ? $" place{p}" : "") + (Opens.Count > 0 ? $" open[{string.Join(",", Opens)}]" : "") + (Sneak ? " sneak" : "") +
-        (Jump is { } j ? $" {j.Describe()}{(j.OverVoid ? " over void" : "")}" : "");
+        (Jump is { } j ? $" {j.Describe()}{(j.OverVoid ? " over void" : "")}" : "") +
+        (Trigger is { } t ? $" trigger[{t}]" : "") + (Requires is { } r ? $" needs[{r.Link.Key}]" : "");
 }
 
 public enum PathStatus

@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using BlockPos = MineClaw.World.BlockPos;
 using MineClaw.Bot.Demo;
 using MineClaw.Bot.Game;
@@ -113,13 +114,111 @@ public sealed class GestureTracker : IDisposable
         lock (_lock) return _recent.Where(g => now - g.At <= Window).TakeLast(MaxGestures).ToList();
     }
 
-    /// <summary>"[pointing] PoofimaFox punched ... 3s ago; ..." or null (turn context, uncached tail).</summary>
+    /// <summary>
+    /// "[pointing] PoofimaFox punched ... 3s ago; "that way"=PoofimaFox facing W (looking down)" or null (turn context,
+    /// uncached tail). Facing is added only for players who spoke to me or gestured within <see cref="Window"/>.
+    /// </summary>
     public string? Line()
     {
         var list = Recent();
-        if (list.Count == 0) return null;
         var now = _time.GetUtcNow();
-        return "[pointing] " + string.Join("; ", list.Select(g => g.Text(now)));
+        var parts = list.Select(g => g.Text(now)).ToList();
+        List<(string Player, string? Text)> facers;
+        lock (_lock)
+            facers = _spoke.Where(kv => now - kv.Value.At <= Window).OrderBy(kv => kv.Value.At)
+                .Select(kv => (kv.Key, (string?)kv.Value.Text)).ToList();
+        foreach (var g in list)
+            if (!facers.Any(f => f.Player.Equals(g.Player, StringComparison.OrdinalIgnoreCase))) facers.Add((g.Player, null));
+        foreach (var (player, text) in facers.TakeLast(2))
+            if (FacingHint(player, text) is { } f) parts.Add(f);
+        return parts.Count == 0 ? null : "[pointing] " + string.Join("; ", parts);
+    }
+
+    // ------------------------------------------------------------------ facing ("that way")
+
+    private readonly Dictionary<string, (DateTimeOffset At, string Text)> _spoke = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Max size of one facing hint in the turn context (TextUtil estimate: chars / 3.5).</summary>
+    public const int MaxFacingTokens = 15;
+
+    private static readonly Regex DeicticRx = new(@"\b(that way|over there|this direction|that direction|thataway)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    private static readonly string[] Compass8 = ["S", "SW", "W", "NW", "N", "NE", "E", "SE"];
+
+    /// <summary>A player's message addressed to me (chat router): their facing rides along with the next turns.</summary>
+    public void NoteSpoke(string player, string text)
+    {
+        if (player.Equals(_client.Username, StringComparison.OrdinalIgnoreCase) || _isBot(player)) return;
+        lock (_lock)
+        {
+            _spoke[player] = (_time.GetUtcNow(), text);
+            if (_spoke.Count > 8) _spoke.Remove(_spoke.MinBy(kv => kv.Value.At).Key);
+        }
+    }
+
+    /// <summary>"that way", "over there", "this direction" (lower case) in <paramref name="text"/>, else null.</summary>
+    public static string? DeicticPhrase(string? text) =>
+        text is null ? null : DeicticRx.Match(text) is { Success: true } m ? m.Value.ToLowerInvariant() : null;
+
+    /// <summary>8-way compass of a b1.8.1 yaw (0 = +Z south, 90 = −X west).</summary>
+    public static string Compass(float yaw) => Compass8[(int)Math.Round((((yaw % 360) + 360) % 360) / 45.0) % 8];
+
+    /// <summary>Unit horizontal step of a compass name ("W" → (-1, 0)).</summary>
+    public static (int Dx, int Dz) Step(string compass) =>
+        ((compass.Contains('E') ? 1 : 0) - (compass.Contains('W') ? 1 : 0), (compass.Contains('S') ? 1 : 0) - (compass.Contains('N') ? 1 : 0));
+
+    /// <summary>
+    /// Deterministic "that way" / "over there" / "this direction": the speaker's facing (compass, unit step, the phrase), or
+    /// null when <paramref name="text"/> has no such phrase or the speaker isn't in view.
+    /// </summary>
+    public (string Phrase, string Compass, int Dx, int Dz)? ResolveDirection(string player, string text)
+    {
+        if (DeicticPhrase(text) is not { } phrase || _client.World.Entities.FindPlayer(player) is not { } e) return null;
+        var c = Compass(e.Yaw);
+        var (dx, dz) = Step(c);
+        return (phrase, c, dx, dz);
+    }
+
+    /// <summary>
+    /// "PoofimaFox facing W (looking down at the edge)", prefixed with the phrase when <paramref name="said"/> has one
+    /// ("\"that way\"=PoofimaFox facing W ..."); detail is dropped until it fits <see cref="MaxFacingTokens"/>. Null when the
+    /// player isn't in view.
+    /// </summary>
+    public string? FacingHint(string player, string? said = null)
+    {
+        var w = _client.World;
+        if (w.Entities.FindPlayer(player) is not { Name: { Length: > 0 } name } e) return null;
+        string pre = DeicticPhrase(said) is { } ph ? $"\"{ph}\"=" : "";
+        string core = $"{pre}{name} facing {Compass(e.Yaw)}";
+        string? look = null, shortLook = null;
+        if (e.Pitch >= 35)
+        {
+            var t = DemonstrationRecorder.LookTarget(w, e.Position, e.Yaw, e.Pitch, solidOnly: true);
+            bool edge = t is null || AtEdge(w, t.Value.Pos);
+            look = edge ? " (looking down at the edge)" : " (looking down)";
+            shortLook = edge ? " (down at edge)" : " (down)";
+        }
+        else if (e.Pitch <= -35) look = shortLook = " (looking up)";
+        foreach (var cand in new[] { core + look, core + shortLook, core })
+            if (TextUtilEstimate(cand) <= MaxFacingTokens) return cand;
+        return null;
+    }
+
+    private static int TextUtilEstimate(string s) => (int)Math.Ceiling(s.Length / 3.5);
+
+    /// <summary>A solid block with open void beside it (or nothing in reach): the island edge.</summary>
+    private static bool AtEdge(WorldState w, BlockPos p)
+    {
+        foreach (var (dx, dz) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1) })
+        {
+            var n = p.Offset(dx, 0, dz);
+            if (w.GetBlock(n) != 0) continue;
+            bool floor = false;
+            for (int y = n.Y - 1; y >= 0 && !floor; y--) floor = w.GetBlock(n.X, y, n.Z) != 0;
+            if (!floor) return true;
+        }
+        return false;
     }
 
     /// <summary>Gestures since <paramref name="since"/> that already left the [pointing] window (for the activity digest).</summary>

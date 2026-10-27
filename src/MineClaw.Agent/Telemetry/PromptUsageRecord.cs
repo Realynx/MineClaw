@@ -69,6 +69,10 @@ public sealed record PromptUsageRecord
     /// <summary>opus / worker / memory / other (tier of the model that answered).</summary>
     public string Tier { get; init; } = "";
     public string Model { get; init; } = "";
+    /// <summary>anthropic / ollama (who served the call).</summary>
+    public string? Provider { get; init; }
+    /// <summary>Model profile the call ran on (opus / sonnet / haiku / local...; delegate or clone choice), null = none matched.</summary>
+    public string? Profile { get; init; }
     /// <summary>chat_turn / delegate_round / ask_memory / compaction / reflection / raptor_summary.</summary>
     public string Purpose { get; init; } = "";
     /// <summary>0-based model call within the turn (brain) or task (worker / ask_memory).</summary>

@@ -65,7 +65,17 @@ public sealed class PromptTelemetry : IDisposable
         rt.Context.Compacted += (_, journal) => { Interlocked.Increment(ref _compactions); Thoughts.OnCompacted(journal); };
         rt.Context.Committed += e => Thoughts.OnCommitted(e.Messages);
         if (rt.Worker != null) rt.Worker.Finished += o => Thoughts.OnWorkerFinished(o.Ok, o.Summary, o.Calls);
+        // Chat → reaction / first move / first action: p50s for the TUI, one latency-*.jsonl line per chat next to usage.
+        Latency = rt.Latency;
+        if (_writer != null)
+        {
+            var lw = new LatencyJsonlWriter(_writer.Directory);
+            rt.Latency.Recorded += lw.Write;
+        }
     }
+
+    /// <summary>The runtime's chat-latency tracker (null until <see cref="Attach"/>).</summary>
+    public LatencyTracker? Latency { get; private set; }
 
     /// <summary>Usage tracker that receives the daily rollup (set by <see cref="Attach"/>; hosts without a runtime set it directly).</summary>
     public void AttachUsage(UsageTracker usage) => _usage = usage;
@@ -131,6 +141,8 @@ public sealed class PromptTelemetry : IDisposable
             Bot = Bot,
             Tier = UsageTracker.TierLabel(_agent.Llm.TierOfModel(model) ?? request.Tier),
             Model = model,
+            Provider = response?.Provider ?? _agent.Llm.ProviderFor(request),
+            Profile = request.Profile ?? _agent.Llm.ProfileOfModel(model),
             Purpose = purpose,
             Round = round,
             InputTokens = u.InputTokens,

@@ -5,9 +5,10 @@ using MineClaw.Bot.Game;
 namespace MineClaw.Bot.GameTools;
 
 /// <summary>
-/// <c>act {move, target?, times?}</c> (brain only, instant): jump, spin, look at a player, wave, crouch, playful punch.
-/// Backed by <c>MinecraftClient.ActAsync</c>; punch consent and safety are enforced client-side. The target defaults to
-/// whoever spoke this turn.
+/// <c>act {move, target?, times?}</c> (instant): jump, spin, look at a player, wave, crouch, playful punch. Backed by
+/// <c>MinecraftClient.ActAsync</c>; punch consent and safety are enforced client-side. The target defaults to whoever spoke
+/// this turn. No definition of its own: the brain reaches it through <c>do {action:"act"}</c>, scripts and the brainstem
+/// (gesture reflexes) call it by name.
 /// </summary>
 public static class BodyLanguageTools
 {
@@ -20,10 +21,9 @@ public static class BodyLanguageTools
             ToolSchema.Create().Str("move", enumValues: Moves).Str("target", "player", required: false).Int("times", required: false).Build(),
             async (input, ct) =>
             {
-                if (client is not MinecraftGameClient mg) return ToolResult.Error("body language isn't available on this client");
                 var move = input.ReqStr("move");
                 var target = input.Str("target") is { Length: > 0 } t ? t : TurnContext.Current?.Speaker;
-                var r = await mg.Inner.ActAsync(move, target, input.Int("times"), ct).ConfigureAwait(false);
+                var r = await client.GestureAsync(move, target, input.Int("times"), ct).ConfigureAwait(false);
                 return r.Ok ? ToolResult.Success(r.Message) : ToolResult.Error(r.Message);
-            }, tiers: ToolTiers.Main);
+            }, tiers: ToolTiers.None);
 }

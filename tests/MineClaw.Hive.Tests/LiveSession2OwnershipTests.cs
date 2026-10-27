@@ -115,9 +115,11 @@ public class LiveSession2OwnershipTests
         try
         {
             Assert.StartsWith("ok", h.Supervisor.Spawn("build 2 more rows of planks on the west edge", "67"));
-            // Same request, another clone: refused, 67 owns it.
+            // 67 asks the player about it ("how far?"): it owns that conversation. Same request, another clone: refused.
+            await Wait.Until(() => h.Supervisor.Slot("maid_chan_67")!.Connected, 30, "67 up");
+            h.Arbiter.OpenThread("PoofimaFox", "maid_chan_67", TimeSpan.FromSeconds(60));
             var r = h.Supervisor.Spawn("build 2 more rows of cobble on the west edge", "69");
-            Assert.StartsWith("no: 67 already owns PoofimaFox's request", r);
+            Assert.StartsWith("no: 67 is asking PoofimaFox about this request", r);
             // Explicit handover: allowed, and the previous owner is told.
             Assert.StartsWith("ok", h.Supervisor.Spawn("build 2 more rows of cobble on the west edge", "69", handover: true));
             Assert.Contains("handed PoofimaFox's request from 67 to 69", h.NoticeText());

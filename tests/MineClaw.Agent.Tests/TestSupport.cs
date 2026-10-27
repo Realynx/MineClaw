@@ -8,12 +8,18 @@ namespace MineClaw.Agent.Tests;
 /// <summary>Scripted ILlmClient: each call pops the next handler; records every request.</summary>
 public sealed class FakeLlm : ILlmClient
 {
-    private readonly ConcurrentQueue<Func<LlmRequest, LlmResponse>> _script = new();
+    private readonly ConcurrentQueue<Func<LlmRequest, CancellationToken, Task<LlmResponse>>> _script = new();
     public List<LlmRequest> Requests { get; } = new();
     public LlmUsage UsagePerCall { get; set; } = new(100, 20, 1000, 0);
     public Func<LlmRequest, LlmResponse>? Fallback { get; set; }
 
-    public FakeLlm Then(Func<LlmRequest, LlmResponse> handler) { _script.Enqueue(handler); return this; }
+    public FakeLlm Then(Func<LlmRequest, LlmResponse> handler) { _script.Enqueue((r, _) => Task.FromResult(handler(r))); return this; }
+
+    /// <summary>Async handler with the call's token (controllable timing; cancellation = an interrupted call).</summary>
+    public FakeLlm ThenAsync(Func<LlmRequest, CancellationToken, Task<LlmResponse>> handler) { _script.Enqueue(handler); return this; }
+
+    /// <summary>Raised when a call starts (tests post chat "while the model is generating").</summary>
+    public event Action<LlmRequest>? CallStarted;
 
     public FakeLlm ThenText(string text) => Then(r => Resp(r, StopReasons.EndTurn, new LlmText(text)));
 
@@ -31,8 +37,10 @@ public sealed class FakeLlm : ILlmClient
     public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct)
     {
         lock (Requests) Requests.Add(request);
-        if (!_script.TryDequeue(out var h)) h = Fallback ?? throw new InvalidOperationException("FakeLlm: no scripted response left");
-        return Task.FromResult(h(request));
+        CallStarted?.Invoke(request);
+        if (_script.TryDequeue(out var h)) return h(request, ct);
+        var fb = Fallback ?? throw new InvalidOperationException("FakeLlm: no scripted response left");
+        return Task.FromResult(fb(request));
     }
 }
 
@@ -65,6 +73,9 @@ public static class TestRuntime
         options.Chat.LineDelayMs = 0;
         options.Events.CoalesceWindowMs = 10;
         options.Events.MaxBatchDelayMs = 50;
+        options.ChatDebounce.QuietMs = 10;
+        options.ChatDebounce.MaxMs = 50;
+        options.ChatDebounce.ReplyQuietMs = 0;
         configure?.Invoke(options);
         var llm = new FakeLlm();
         var sent = new List<string>();

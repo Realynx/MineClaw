@@ -34,8 +34,14 @@ public sealed class BotHost : IDisposable
     public Perception.GestureTracker? Gestures { get; init; }
     /// <summary>Generator dig cells (taught or regen-confirmed): never protected.</summary>
     public Perception.DigCells? DigCells { get; init; }
+    /// <summary>Learned mechanisms (buttons/levers/plates → doors, piston doors), persisted as observations.</summary>
+    public MechanismWatcher? Mechanisms { get; init; }
+    /// <summary>The brainstem: head turn, reflexes, speculative first steps, social idle (zero tokens).</summary>
+    public Brainstem.BrainstemController? Brainstem { get; init; }
     /// <summary>Hive claim board this bot honours (<see cref="NullClaimBoard"/> without a hive).</summary>
     public IClaimBoard Claims { get; init; } = NullClaimBoard.Instance;
+    /// <summary>Hive: keeps the client's learned spawn-protection region in step with the shared protected_region fact.</summary>
+    internal System.Threading.Timer? ProtectionSync { get; init; }
 
     public static BotHost Create(IGameClient client, AgentOptions agentOptions, BotOptions? botOptions = null, ILlmClient? llm = null,
         ILoggerFactory? loggers = null, TimeProvider? time = null, bool persist = true,
@@ -70,9 +76,15 @@ public sealed class BotHost : IDisposable
         foreach (var u in protection.Unknown) log?.LogWarning("Bot config: unknown {Name}", u);
         var (indexer, activityTracker) = StartWorldIndex(client, rt, memory, worldIndex, activity, time, loggers, hiveBots);
         var worldMemory = StartWorldMemory(client, rt, indexer, worldIndex, time, loggers);
+        var mechanisms = StartMechanisms(client, rt, time, loggers);
         recorder.Activity = activityTracker; // teaching sessions reuse the tracker's attribution
         // Generator dig cells (taught or regen-confirmed) are never protected, whatever box/wall protection covers them.
         var digCells = new Perception.DigCells(rt.Memory, indexer == null ? null : indexer.IsConfirmedDigCell) { Dimension = () => client.World.Dimension };
+        // A player's correction ("wrong blocks", "not that one") makes the cells they teach next REPLACE the gen's old dig keys.
+        var corrections = new Perception.DigCellCorrections(digCells, rt.Memory, time) { Dimension = () => client.World.Dimension };
+        corrections.Changed += line => log?.LogInformation("dig cells corrected: {Line}", line);
+        rt.Chat.Accepted += m => corrections.OnChat(m.Player, m.Text);
+        digCells.TaughtCell += (p, by) => corrections.OnTaught(p, by);
         Func<MineClaw.World.BlockPos, int, bool> boxed = indexer == null ? protection.IsProtected : (p, id) => protection.IsProtected(p, id) || indexer.IsProtected(p, id);
         Func<MineClaw.World.BlockPos, int, bool> isProtected = (p, id) => boxed(p, id) && !digCells.IsDigCell(p);
         // Hive: a block another bot holds a lease on is off limits too (mining/harvest skip it).
@@ -93,7 +105,10 @@ public sealed class BotHost : IDisposable
                 .Concat(indexer?.GeneratorCellsNear(p, 4) ?? [])
                 .Concat(digCells.Taught().Where(t => Math.Abs(t.X - p.X) <= 4 && Math.Abs(t.Y - p.Y) <= 2 && Math.Abs(t.Z - p.Z) <= 4))
                 .Distinct().ToList();
-        GameToolSet.RegisterAll(rt.Tools, toolClient, memory, botOptions, landmark: landmark, generatorCells: genCells);
+        GameToolSet.RegisterAll(rt.Tools, toolClient, memory, botOptions, landmark: landmark, generatorCells: genCells,
+            generator: new GameTools.GeneratorSupport(rt.Observations, (label, p) => rt.Memory.SetWaypoint(label, p.X, p.Y, p.Z, "storage chest placed by the generator loop"),
+                BadCell: (p, why) => corrections.RetractBad(p, why),
+                TaughtStand: cell => GameTools.GeneratorStand.Find(rt.Memory, cell))); // B12: stand where the demo stood
         HumanGameTools.RegisterAskStand(rt.Tools, rt.Chat, client, botOptions.AskStandTimeoutSeconds, digCells: digCells);
         HumanGameTools.RegisterWatchDemo(rt.Tools, rt.Chat, recorder, memory);
         // Gesture perception: a punch while looking at a block is pointing (outside demos too); a punched gen cell is taught.
@@ -105,7 +120,12 @@ public sealed class BotHost : IDisposable
             if (!Perception.BlockDescriber.IsGenCell(client.World, g.Pos)) return;
             if (digCells.Register(g.Pos, g.Player)) log?.LogInformation("dig cell taught by {Player}'s punch: {Pos}", g.Player, g.Pos);
         };
+        // The speaker's facing rides along for a while after they talk to me ("that way" = where they face).
+        rt.Chat.Accepted += m => { if (m.Player is { Length: > 0 } p) gestures.NoteSpoke(p, m.Text); };
         rt.Agent.TurnPerception = gestures.Line;
+        // Idle check-ins: hourly at most while no human is online (the tab list, hive bots and this bot excluded).
+        rt.Agent.HumansOnline = () => client.World.Entities.OnlinePlayers.Any(n => !n.Equals(client.Username, StringComparison.OrdinalIgnoreCase)
+            && hiveBots?.Invoke().Contains(n, StringComparer.OrdinalIgnoreCase) != true);
         if (rt.Agent.TurnDigest is { } digest)
             rt.Agent.TurnDigest = since =>
             {
@@ -116,20 +136,44 @@ public sealed class BotHost : IDisposable
         if (client is MinecraftGameClient mg) CombatTools.Register(rt.Tools, mg.Inner, rt.Events);
         if (client is MinecraftGameClient mgc) TreeTools.AttachReports(mgc.Inner, indexer, rt.Events);
         BodyLanguageTools.Register(rt.Tools, client); // act {move, target?, times?}: brain-only body language
-        if (client is MinecraftGameClient mgp) WireProtectedRegion(mgp.Inner, rt, log);
+        System.Threading.Timer? protectionSync = null;
+        if (client is MinecraftGameClient mgp)
+        {
+            WireProtectedRegion(mgp.Inner, rt, log, claims, hiveBots);
+            // Hive: the protected_region fact is shared (one db); a success in ANY process retracts it, so every process
+            // drops its in-memory copy, and a region learned elsewhere is adopted (it already needed two undone edits).
+            if (persist && (claims != null || hiveBots != null))
+                protectionSync = new System.Threading.Timer(_ => SyncProtectedRegion(mgp.Inner, rt, log), null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+        }
         Beliefs.BeliefBot.Attach(rt, toolClient, claims, time, log, indexer); // belief system: claim checks when idle (zero tokens)
         var skillHub = SkillTools.Register(rt, client, claims); // worker: skill + find_skill over the whole catalog (zero prefix growth)
+        // Inventory ledger: every toss/drop/use/consume/correction is recorded; inventory/where_is {item} answer "where did X go".
+        if (client is MinecraftGameClient mgl) Ledger.InventoryLedgerTools.Attach(rt, mgl.Inner, skillHub.Registry, log, time);
         // Brain gets the cheap single-shot tools + delegate/ask_memory; the worker gets the game macro tools.
         rt.ApplyBrainSplit();
 
-        var bridge = new GameBridge(client, rt, log, time);
+        var bridge = new GameBridge(client, rt, log, time)
+        {
+            Hunger = new HungerLatch(persist ? Path.Combine(agentOptions.DataDirectory, $"hunger-latch-{client.Username}.json") : null, time),
+        };
         bridge.Attach();
         ScriptTools.Register(rt, client, skillHub, botOptions.Scripts, time, log); // script tool (brain+worker), after split + header
+        VisionTools.Register(rt, client, memory, botOptions.Vision, gestures, hiveBots, time, log); // see (brain+worker) + look map marks
+        // do {action, args, then?, queue?}: the brain's one compact door to the single-step macros (after every macro exists).
+        Agent.Tools.DoTool.Register(rt.Tools);
+
+        // Brainstem: deterministic controller under the brain (head turn, reflexes, speculative first step, social idle,
+        // the [here] pre-observation). Attached last so its event gate sees what the script gate kept.
+        var here = new Brainstem.HereBlock(client, rt.Memory, rt.Observations, landmark);
+        rt.Agent.HereBlock = here.Build;
+        Func<string, bool> isBot = n => hiveBots?.Invoke().Contains(n, StringComparer.OrdinalIgnoreCase) == true || rt.Chat.IsHiveBot?.Invoke(n) == true;
+        var brainstem = new Brainstem.BrainstemController(rt, client, memory, isBot, time, loggers?.CreateLogger("MineClaw.Brainstem"));
+        brainstem.Attach(gestures, timer: persist); // in-memory (test) hosts drive SocialTick by hand
         return new BotHost
         {
             Runtime = rt, Client = client, Bridge = bridge, Protection = protection, Recorder = recorder, MemoryAdapter = memory,
             Indexer = indexer, Activity = activityTracker, WorldMemory = worldMemory, Claims = claims ?? NullClaimBoard.Instance,
-            Gestures = gestures, DigCells = digCells,
+            Gestures = gestures, DigCells = digCells, Mechanisms = mechanisms, Brainstem = brainstem, ProtectionSync = protectionSync,
         };
     }
 
@@ -137,9 +181,14 @@ public sealed class BotHost : IDisposable
     /// Spawn protection learned by the client (logs that won't break near spawn) → one <c>protected_region</c> observation
     /// per dimension, so memory/where_is/the worker know about it; cleared when the client clears it.
     /// </summary>
-    private static void WireProtectedRegion(MineClaw.Client.MinecraftClient c, AgentRuntime rt, ILogger? log)
+    private static void WireProtectedRegion(MineClaw.Client.MinecraftClient c, AgentRuntime rt, ILogger? log,
+        IClaimBoard? claims = null, Func<IEnumerable<string>>? hiveBots = null)
     {
         int lastDim = 0;
+        // An undone edit on a block another hive bot holds a lease on, or right next to another hive bot, is a race with it
+        // (two bots on one tree crown), never evidence of spawn protection.
+        if (claims != null || hiveBots != null)
+            c.EditContested = p => IsContested(c, p, claims, hiveBots);
         // A stale "spawn protection" belief (accounts got op, or a past session's guess) is retracted by any edit that works
         // inside it: the observation AND the brain's notes about it.
         c.EditSucceededNearSpawn += (p, dim) =>
@@ -194,12 +243,69 @@ public sealed class BotHost : IDisposable
         return wm;
     }
 
+    /// <summary>Another hive bot holds a lease on <paramref name="p"/>, or stands within 4 blocks of it.</summary>
+    internal static bool IsContested(MineClaw.Client.MinecraftClient c, MineClaw.World.BlockPos p, IClaimBoard? claims, Func<IEnumerable<string>>? hiveBots)
+    {
+        if (claims != null && !claims.IsFree(ClaimKey.Block(p, c.World.Dimension))) return true;
+        foreach (var name in hiveBots?.Invoke() ?? [])
+        {
+            if (string.IsNullOrEmpty(name) || name.Equals(c.Options.Username, StringComparison.OrdinalIgnoreCase)) continue;
+            if (c.World.Entities.FindPlayer(name) is { } e
+                && Math.Abs(e.Position.X - (p.X + 0.5)) <= 4.5 && Math.Abs(e.Position.Z - (p.Z + 0.5)) <= 4.5 && Math.Abs(e.Position.Y - p.Y) <= 6)
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// The client's learned region vs the shared protected_region fact: gone from the db (a success in another process retracted
+    /// it) → forget it here too; present but not held here (learned by another hive process) → adopt it, keeping its time.
+    /// </summary>
+    internal static void SyncProtectedRegion(MineClaw.Client.MinecraftClient c, AgentRuntime rt, ILogger? log)
+    {
+        try
+        {
+            var row = rt.Observations.Get("protected_region", "spawn", dimension: c.World.Dimension);
+            if (c.ProtectedRegion is { } mine)
+            {
+                // Grace: my own fresh region may not be written yet (the event dispatcher upserts it).
+                if (row == null && DateTime.UtcNow - mine.LearnedAt > TimeSpan.FromSeconds(30) && c.ForgetProtectedRegion("retracted in the shared memory"))
+                    log?.LogInformation("spawn protection retracted elsewhere in the hive: forgot {Region}", mine);
+                return;
+            }
+            if (row is not { Bounds: { } b }) return;
+            int radius = Math.Max(1, (int)Math.Round((b.MaxX - b.MinX) / 2.0));
+            var center = new MineClaw.World.BlockPos((int)Math.Round((b.MinX + b.MaxX) / 2.0), c.World.Spawn.Y, (int)Math.Round((b.MinZ + b.MaxZ) / 2.0));
+            var r = new MineClaw.Client.LearnedProtectedRegion(center, radius, c.World.Dimension, 2, "shared: " + row.Text, row.LastSeen.UtcDateTime);
+            if (c.AdoptProtectedRegion(r)) log?.LogInformation("adopted the hive's spawn protection fact: {Region}", r);
+        }
+        catch (Exception ex) { log?.LogDebug(ex, "protected_region sync failed"); }
+    }
+
     /// <summary>Forgets notes claiming spawn protection blocks the bots (count removed).</summary>
     internal static int RetractSpawnProtectionNotes(AgentRuntime rt)
     {
         int n = 0;
         foreach (var phrase in new[] { "spawn protection", "spawn-protection", "spawn protected" }) n += rt.Memory.Forget("note", phrase);
         return n;
+    }
+
+    /// <summary>Mechanism learning (cause → effect from block changes), persisted links loaded into the world's graph,
+    /// demonstrations and "what opens this?" answers from chat. The client's goto plans with the graph.</summary>
+    private static MechanismWatcher StartMechanisms(IGameClient client, AgentRuntime rt, TimeProvider? time, ILoggerFactory? loggers)
+    {
+        var log = loggers?.CreateLogger("MineClaw.Mechanisms");
+        var w = new MechanismWatcher(client.World, rt.Observations, time, log, client.Username);
+        try { w.Load(); }
+        catch (Exception ex) { log?.LogWarning(ex, "loading mechanisms failed"); }
+        w.Attach(client).Start();
+        rt.Chat.Accepted += m => w.NoteChat(m.Player, m.Text);
+        w.Learned += o =>
+        {
+            if (o.IsNew || o.Demonstrated)
+                rt.Events.Post(Agent.Events.GameEvent.Notice("learned mechanism: " + o.Link.Describe(), Agent.Events.EventPriority.Background));
+        };
+        return w;
     }
 
     /// <summary>World indexer + activity tracker (background passes; never on the network thread, never the LLM).</summary>
@@ -240,9 +346,12 @@ public sealed class BotHost : IDisposable
 
     public void Dispose()
     {
+        ProtectionSync?.Dispose();
         Bridge.Dispose();
+        Brainstem?.Dispose();
         Gestures?.Dispose();
         Activity?.Dispose();
+        Mechanisms?.Dispose();
         WorldMemory?.Dispose(); // final flush: the next join compares against exactly this
         Indexer?.Dispose();
     }

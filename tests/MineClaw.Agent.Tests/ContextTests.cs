@@ -80,7 +80,8 @@ public class ContextTests
         var ctx = new ContextManager(opts);
         for (int i = 1; i <= 3; i++) ctx.Commit(ToolEpisode(i));
         var eps = ctx.Episodes;
-        Assert.DoesNotContain(eps.SelectMany(e => e.Messages).SelectMany(m => m.Content), b => b is LlmThinking);
+        // Thinking blocks stay: the API cached the turn WITH them (night review B3: stripping them at commit rewrote the cache).
+        Assert.Contains(eps.SelectMany(e => e.Messages).SelectMany(m => m.Content), b => b is LlmThinking);
         Assert.All(eps, e => Assert.Equal(300, e.Messages[2].ToolResults.First().Content.Length)); // history untouched turn to turn
         Assert.Equal([0L, 1L, 2L], eps.Select(e => e.Seq));
 

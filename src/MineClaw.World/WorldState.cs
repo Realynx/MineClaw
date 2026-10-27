@@ -34,6 +34,8 @@ public sealed class WorldState : IBlockAccess
     public InventoryManager Inventory { get; } = new();
     /// <summary>Cells the bot itself just dug/placed (attribution: the bot's own edits are never a player's).</summary>
     public SelfEditLog SelfEdits { get; } = new();
+    /// <summary>Learned trigger → effect links (buttons, levers, plates → doors, pistons, hidden walls), per dimension.</summary>
+    public MechanismGraph Mechanisms { get; } = new();
 
     // ---- world-level state ----
     private long _time;

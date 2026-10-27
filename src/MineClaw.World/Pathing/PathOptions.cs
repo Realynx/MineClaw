@@ -44,8 +44,42 @@ public sealed record PathOptions
     public double OpenCost { get; init; } = 20;
     /// <summary>Extra cost when an iron door needs its button/lever pressed first.</summary>
     public double ActuatorCost { get; init; } = 30;
-    /// <summary>Veto for toggling an openable (pos, id): e.g. protected/claimed doors. Null = allowed.</summary>
+    /// <summary>Veto for toggling an openable (pos, id): e.g. a door that ignored our clicks. Null = allowed. Build protection
+    /// (never break) is NOT a reason: the doors of a protected house must still open.</summary>
     public Func<BlockPos, int, bool>? CanOpen { get; init; }
+
+    /// <summary>Learned mechanisms of this dimension (<see cref="MechanismGraph.View"/>): a passage blocked by a known
+    /// link's effect becomes passable through a <see cref="MoveKind.Trigger"/> step (press its button, flip its lever,
+    /// walk over its plate). Iron doors with a known link are only planned that way (timing-aware).</summary>
+    public MechanismView? Mechanisms { get; init; }
+    /// <summary>Planning cost (ticks) of a Trigger step (stop, face, click, wait for the server).</summary>
+    public double TriggerCost { get; init; } = 15;
+    /// <summary>Estimated ticks from starting a click to the trigger reacting (the pulse starts then).</summary>
+    public double TriggerTicks { get; init; } = 4;
+    /// <summary>Safety margin (ticks) between a pulse door's planned crossing and its closing, plus
+    /// <see cref="PulseMarginFraction"/> of the time elapsed since the activation (move-time estimates drift).</summary>
+    public double PulseMargin { get; init; } = 4;
+    public double PulseMarginFraction { get; init; } = 0.15;
+    /// <summary>Links below this confidence are not used.</summary>
+    public double MinMechanismConfidence { get; init; } = 0.3;
+    /// <summary>Use triggers linked to TNT/dispensers (only when explicitly asked).</summary>
+    public bool AllowDangerousTriggers { get; init; }
+    /// <summary>Flip levers back once past their effects (default; skipped when that would leave no way back out).</summary>
+    public bool RestoreLevers { get; init; } = true;
+    /// <summary>Allow routing through a mechanism door (iron door / triggered passage) into a space with no known way back
+    /// out. Off: such routes are rejected unless a trigger on the far side, another exit, or a lever left on gets back.</summary>
+    public bool AllowOneWay { get; init; }
+    /// <summary>Node budget of the way-back-out check.</summary>
+    public int ReturnCheckNodes { get; init; } = 6000;
+    /// <summary>Extra cost of stepping on a pressure plate whose effect is unknown (it fires whatever it's wired to).
+    /// Plates with explosives near, or linked to dangerous effects, are never stepped on.</summary>
+    public double UnknownPlatePenalty { get; init; } = 40;
+    /// <summary>Flip levers of unknown effect (iron-door heuristic) even inside players' builds (<see cref="IsBuild"/>).</summary>
+    public bool AllowUnknownLevers { get; init; }
+    /// <summary>Is this block part of a player's build (protection)? Unknown levers there are not flipped.</summary>
+    public Func<BlockPos, int, bool>? IsBuild { get; init; }
+    /// <summary>Never stand in a retracted piston's push path (unless the piston belongs to a known mechanism).</summary>
+    public bool AvoidPistonPaths { get; init; } = true;
 
     /// <summary>Cells the path must not enter.</summary>
     public IReadOnlySet<BlockPos>? Avoid { get; init; }

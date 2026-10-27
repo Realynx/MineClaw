@@ -193,7 +193,7 @@ public class AgentLoopTests
         await rt.Agent.HandleBatchAsync(new EventBatch([GameEvent.TaskDone("x")]), default);
         var last = llm.Requests[1].Messages[^1];
         Assert.IsType<LlmToolResult>(last.Content[0]);
-        Assert.Contains("[new events]", ((LlmText)last.Content[^1]).Text);
+        Assert.Contains("[new chat] Alice: clawd wait stop", ((LlmText)last.Content[^1]).Text);
         Assert.Contains("wait stop", ((LlmText)last.Content[^1]).Text);
     }
 

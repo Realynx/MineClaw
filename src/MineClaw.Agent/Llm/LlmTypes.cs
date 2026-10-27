@@ -25,7 +25,21 @@ public sealed record LlmText(string Text) : LlmBlock;
 
 public sealed record LlmToolUse(string Id, string Name, JsonElement Input) : LlmBlock;
 
-public sealed record LlmToolResult(string ToolUseId, string Content, bool IsError = false) : LlmBlock;
+public sealed record LlmToolResult(string ToolUseId, string Content, bool IsError = false) : LlmBlock
+{
+    /// <summary>Optional image sent with the text (the <c>see</c> tool). Only the newest turns carry it: compaction swaps it for
+    /// <see cref="LlmImage.Stub"/> so old images aren't re-sent forever.</summary>
+    public LlmImage? Image { get; init; }
+
+    /// <summary>The same result with its image replaced by the one-line text stub (no-op without an image).</summary>
+    public LlmToolResult WithoutImage() => Image == null ? this : this with { Image = null, Content = Content + " " + Image.Stub };
+}
+
+/// <summary>An image for the model (PNG bytes). <see cref="Tokens"/> ≈ w·h/750, the API's own estimate.</summary>
+public sealed record LlmImage(byte[] Data, int Width, int Height, string Stub, string MediaType = "image/png")
+{
+    public int Tokens => (Width * Height + 749) / 750;
+}
 
 /// <summary>Opaque thinking block; must be passed back unchanged within the turn that produced it.</summary>
 public sealed record LlmThinking(string Thinking, string Signature) : LlmBlock;
@@ -65,6 +79,34 @@ public sealed class LlmRequest
     public bool CacheHistory { get; init; } = true;
     /// <summary>Short label for logs/usage ("chat", "task", "compact").</summary>
     public string Purpose { get; init; } = "";
+    /// <summary>
+    /// The caller may cancel this call mid-generation (the brain's first call of a turn, when a player adds a line): the client
+    /// streams it so cancelling really aborts generation, and reports what was used so far via <see cref="LlmInterruptedException"/>.
+    /// </summary>
+    public bool Interruptible { get; init; }
+    /// <summary>Named profile this call runs on (delegate/hive profile): picks the provider and tags telemetry. Null = the tier's.</summary>
+    public string? Profile { get; init; }
+    /// <summary>Thinking override for this call ("off" | "adaptive" | "omit"); null = the tier's setting.</summary>
+    public string? Thinking { get; init; }
+    /// <summary>output_config.effort override for this call ("low" | "medium" | "high"); null = the tier's setting.</summary>
+    public string? Effort { get; init; }
+    /// <summary>
+    /// Streaming execution: invoked (on the client's stream thread) with each tool_use block as soon as it is complete,
+    /// before the message ends, so the caller can start a movement or a read-only lookup early. Providers that don't
+    /// stream simply never call it. Null = don't stream for this.
+    /// </summary>
+    public Action<LlmToolUse>? OnToolUse { get; init; }
+}
+
+/// <summary>
+/// A call cancelled mid-generation. <see cref="PartialUsage"/> is what the API had reported (input/cache from message_start,
+/// output so far) or a best estimate; null when nothing was known.
+/// </summary>
+public sealed class LlmInterruptedException(LlmUsage? partialUsage, string model, Exception? inner = null)
+    : OperationCanceledException("model call interrupted", inner)
+{
+    public LlmUsage? PartialUsage { get; } = partialUsage;
+    public string Model { get; } = model;
 }
 
 public sealed record LlmUsage(long InputTokens, long OutputTokens, long CacheReadTokens, long CacheWriteTokens, long CacheWrite1hTokens = 0)
@@ -89,6 +131,8 @@ public sealed record LlmResponse(IReadOnlyList<LlmBlock> Content, string StopRea
 {
     public IEnumerable<LlmToolUse> ToolUses => Content.OfType<LlmToolUse>();
     public string Text => string.Concat(Content.OfType<LlmText>().Select(t => t.Text));
+    /// <summary>"anthropic" or "ollama": who answered.</summary>
+    public string Provider { get; init; } = LlmProviders.Anthropic;
 }
 
 /// <summary>The only thing the agent needs from a model provider. Tests use a scripted fake.</summary>

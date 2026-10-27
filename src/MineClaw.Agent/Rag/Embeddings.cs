@@ -47,7 +47,15 @@ public sealed class AzureOpenAIEmbeddingProvider : IEmbeddingProvider, IDisposab
     {
         _o = options;
         _ownsHttp = http == null;
-        _http = http ?? new HttpClient();
+        // Long-lived pooled connection: idle sockets stay open between turns, so only the first call pays DNS + TLS.
+        _http = http ?? new HttpClient(new SocketsHttpHandler
+        {
+            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(10),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(30),
+            ConnectTimeout = TimeSpan.FromSeconds(Math.Clamp(options.TimeoutSeconds, 3, 15)),
+            KeepAlivePingDelay = TimeSpan.FromSeconds(60),
+            KeepAlivePingPolicy = HttpKeepAlivePingPolicy.WithActiveRequests,
+        });
         if (_ownsHttp) _http.Timeout = TimeSpan.FromSeconds(Math.Max(1, options.TimeoutSeconds));
         _uri = BuildUri(options);
     }

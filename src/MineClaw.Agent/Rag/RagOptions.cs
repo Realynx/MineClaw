@@ -44,7 +44,13 @@ public sealed class RagOptions
     public double RecencyHalfLifeHours { get; set; } = 24;
 
     public int EpisodeSummaryChars { get; set; } = 600;
-    public int QueryEmbedTimeoutMs { get; set; } = 1500;
+    /// <summary>How long a turn waits for its query embedding before going FTS-only (the request itself goes on in the
+    /// background and lands in the cache). Warm Azure round trips are ~150-400 ms from the container.</summary>
+    public int QueryEmbedTimeoutMs { get; set; } = 2500;
+    /// <summary>Extra wait while the provider connection is still cold (no successful call yet: DNS + first TLS).</summary>
+    public int ColdQueryExtraMs { get; set; } = 1500;
+    /// <summary>Startup warm-up attempts (one tiny embed, exponential backoff between attempts).</summary>
+    public int WarmUpAttempts { get; set; } = 3;
     /// <summary>Reload the newest journal into context at startup (continuity across restarts).</summary>
     public bool RestoreJournal { get; set; } = true;
     public int ChatLogMaxRows { get; set; } = 50_000;
@@ -56,11 +62,22 @@ public sealed class RagOptions
     public Raptor.RaptorMemoryOptions Raptor { get; set; } = new();
 }
 
-/// <summary>Embedding provider settings ("Agent:Embeddings"). Empty key/endpoint = FTS-only.</summary>
+/// <summary>
+/// Embedding provider settings ("Agent:Embeddings"). Empty key/endpoint = FTS-only.
+/// <para>Changing provider or model means re-embedding: stored vectors are keyed by (model, dims), so another model's vectors
+/// are simply not used, and a different dimension count is refused outright (see <see cref="EmbeddingDimensionGuard"/>) unless
+/// <see cref="Reembed"/> drops the old vectors.</para>
+/// </summary>
 public sealed class EmbeddingOptions
 {
-    /// <summary>"AzureOpenAI" or "None".</summary>
+    /// <summary>"AzureOpenAI" (default), "ollama" (<c>POST {Endpoint}/api/embed</c> with <see cref="Model"/>) or "None".</summary>
     public string Provider { get; set; } = "AzureOpenAI";
+    /// <summary>Ollama embedding model ("nomic-embed-text", "mxbai-embed-large"...). <see cref="Dimensions"/> must match its output.</summary>
+    public string Model { get; set; } = "";
+    /// <summary>Drop stored vectors of another dimension count at startup (then everything re-embeds) instead of refusing.</summary>
+    public bool Reembed { get; set; }
+
+    public bool IsOllama => Provider.Equals("ollama", StringComparison.OrdinalIgnoreCase);
     public string Endpoint { get; set; } = "";
     public string ApiKey { get; set; } = "";
     public string Deployment { get; set; } = "text-embedding-3-large";
@@ -71,8 +88,13 @@ public sealed class EmbeddingOptions
     public int TimeoutSeconds { get; set; } = 20;
     public int MaxRetries { get; set; } = 3;
     public int MaxInputChars { get; set; } = 4000;
-    /// <summary>USD per million embedding tokens (text-embedding-3-large ≈ $0.13).</summary>
-    public decimal PricePerMTok { get; set; } = 0.13m;
+    private decimal? _price;
+
+    /// <summary>USD per million embedding tokens (text-embedding-3-large ≈ $0.13; Ollama defaults to $0).</summary>
+    public decimal PricePerMTok { get => _price ?? (IsOllama ? 0m : 0.13m); set => _price = value; }
+
+    /// <summary>Ollama embeddings: a model and dimensions are set (the endpoint may come from Agent:Llm:Ollama).</summary>
+    public bool IsOllamaConfigured => IsOllama && !string.IsNullOrWhiteSpace(Model) && Dimensions > 0;
 
     public bool IsConfigured =>
         Provider.Equals("AzureOpenAI", StringComparison.OrdinalIgnoreCase) &&

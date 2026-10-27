@@ -142,6 +142,7 @@ public class ToolMappingTests
             s.Min = new MineClaw.Agent.Memory.BlockPos(0, 63, 0);
             s.KeyBlocks.Add(new MineClaw.Agent.Memory.KeyBlock { Label = "mine_here", X = 4, Y = 64, Z = -2 });
         });
+        c.Give(36, MineClaw.Data.Items.StonePickaxe, 1); // the gen loop never digs bare-handed
         var r = await h.Run("harvest_generator", new { at = "gen", count = 20 });
         Assert.True(r.Ok, r.Text);
         Assert.Contains("generator 4,64,-2 20", c.CallList);

@@ -41,14 +41,22 @@ public static class GameToolSet
         return (null, $"busy: every dig cell of that generator is taken ({Locations.Fmt(asked)}{(all.Count > 0 ? " +" + all.Count : "")})");
     }
 
+    /// <summary>Lava and water next to it (geometry), or one of the generator's taught / regen-confirmed cells.</summary>
+    internal static bool IsGeneratorCell(IGameClient c, BlockPos p, Func<BlockPos, IReadOnlyList<BlockPos>>? cells)
+    {
+        if (Perception.BlockDescriber.IsGenCell(c.World, p)) return true;
+        return cells?.Invoke(p).Contains(p) == true;
+    }
+
     /// <param name="landmark">Nearest named landmark of a point, phrased relationally ("2 E of cobble_gen"); null = no hints.</param>
     /// <param name="generatorCells">All dig cells of the generator around a block (dual generators have several); null = the
     /// world geometry only.</param>
     public static void RegisterAll(ToolRegistry tools, IGameClient c, IPlaceResolver places, BotOptions? options = null,
-        Func<double, double, double, string?>? landmark = null, Func<BlockPos, IReadOnlyList<BlockPos>>? generatorCells = null)
+        Func<double, double, double, string?>? landmark = null, Func<BlockPos, IReadOnlyList<BlockPos>>? generatorCells = null,
+        GeneratorSupport? generator = null)
     {
         options ??= new BotOptions();
-        var crafter = new Crafter(c);
+        var crafter = new Crafter(c) { Observations = generator?.Observations }; // chest ingredients count too
         var organizer = new ChestOrganizer(c);
         int max() => tools.MaxResultLength;
 
@@ -62,10 +70,11 @@ public static class GameToolSet
         tools.Register("inventory", "Your inventory, grouped.",
             ToolSchema.Create().Bool("detail", "with hotbar", required: false).Build(),
             (i, _) => Ok(c.DescribeInventory(i.Bool("detail") == true, max())), cheapTier: true);
-        tools.Register("look", "Surroundings: footing, edges, blocks, chests, ores, players, mobs, drops. detail=more.",
-            ToolSchema.Create().Int("radius", "default 12", required: false).Bool("detail", required: false).Build(),
+        tools.Register("look", "Surroundings: footing, edges, blocks, chests, ores, players, mobs, drops. detail=more. map=ASCII grid.",
+            ToolSchema.Create().Int("radius", "default 12", required: false).Bool("detail", required: false).Bool("map", required: false).Build(),
             (i, _) =>
             {
+                if (i.Bool("map") == true) return Ok(VisionTools.LookMap(c, 2 * Math.Clamp(i.Int("radius") ?? 7, 2, 12) + 1));
                 bool detail = i.Bool("detail") == true;
                 // detail may use the tool's own (bigger) cap; plain look stays at the small default.
                 int cap = detail ? tools.CapFor("look") : max();
@@ -106,8 +115,10 @@ public static class GameToolSet
             ToolSchema.Create().Str("block").Int("count", required: false).Int("radius", required: false).Build(),
             async (i, ct) => R(await c.MineAsync(i.ReqStr("block"), Math.Clamp(i.Int("count") ?? options.DefaultMineCount, 1, 256),
                 Math.Clamp(i.Int("radius") ?? options.DefaultMineRadius, 2, 48), ct)), longRunning: true);
-        tools.Register("harvest_generator", "Repeatedly mine a cobble generator's output block.",
-            ToolSchema.Create().Str("at", "output block " + At).Int("count").Build(),
+        tools.Register("harvest_generator",
+            "Repeatedly mine a cobble generator's output block. Big counts run unattended: deposits when full (store), re-tools, eats.",
+            ToolSchema.Create().Str("at", "output block " + At).Int("count", "up to 20000").Str("store", "chest " + At, required: false)
+                .Str("stand", "taught stand spot x,y,z (default: the demo's)", required: false).Build(),
             async (i, ct) =>
             {
                 var at = i.ReqStr("at");
@@ -116,7 +127,28 @@ public static class GameToolSet
                 // Hive: another bot already mines that cell -> take a free dig cell of the same generator instead.
                 var (cell, note) = PickGeneratorCell(c, g, generatorCells);
                 if (cell is not { } pick) return ToolResult.Error(note ?? $"no free dig cell at {Locations.Fmt(g)}");
-                var r = R(await c.HarvestGeneratorAsync(pick.X, pick.Y, pick.Z, Math.Clamp(i.Int("count") ?? 16, 1, 512), ct));
+                // Only a generator cell (lava + water next to it, or a taught/regen-confirmed one) is ever dug here.
+                // (A named place is a taught key; the yield guard still stops on a wrong one.)
+                if (Locations.ParseCoords(at) != null && !IsGeneratorCell(c, pick, generatorCells))
+                    return ToolResult.Error($"{Locations.Fmt(pick)} isn't a generator cell (no lava and water next to it): need the right cell");
+                BlockPos? store = i.Str("store") is { } st ? Locations.ParseCoords(st) ?? places.Resolve(st, "chest") ?? places.Resolve(st) : null;
+                if (store == null && i.Str("store") is { } bad) return ToolResult.Error($"unknown chest '{bad}'");
+                // Default: the generator's own store key (only if that really is a chest; Resolve falls back to corners).
+                BlockPos? IfChest(BlockPos? q) => q is { } x && c.World.GetBlock(x.X, x.Y, x.Z) == MineClaw.Data.Blocks.Chest ? x : null;
+                store ??= IfChest(places.Resolve(at, "store")) ?? IfChest(places.Resolve(at, "chest"));
+                // Taught stand spot (B12/B21): dig the cell only from where the player stood in the demo, staying put there.
+                BlockPos? stand = null;
+                if (i.Str("stand") is { Length: > 0 } sa)
+                {
+                    stand = Locations.ParseCoords(sa);
+                    if (stand == null) return ToolResult.Error($"stand must be x,y,z (got '{sa}')");
+                }
+                else
+                {
+                    try { stand = generator?.TaughtStand?.Invoke(pick); } catch (Exception) { /* memory busy: the client picks a spot */ }
+                }
+                var loop = new GeneratorLoop(c, generator);
+                var r = R(await loop.RunAsync(pick, Math.Clamp(i.Int("count") ?? 16, 1, 20000), store, ct, stand));
                 return note == null ? r : r with { Text = note + "; " + r.Text };
             }, longRunning: true);
         tools.Register("collect_drops", "Pick up dropped items nearby.",
@@ -147,15 +179,15 @@ public static class GameToolSet
             }, longRunning: true);
 
         // ---- containers
-        tools.Register("deposit", "Put items in a chest (nearest if omitted). Default: all but tools, armor, food.",
+        tools.Register("deposit", "Put items in a chest (nearest if omitted). Default: all but tools, armor, food. Lua: deposit{} or deposit{\"x,y,z\",{\"log\"}}.",
             ToolSchema.Create().Str("at", At, required: false).StrArray("items", "only these", required: false).Build(),
             async (i, ct) =>
             {
-                var at = OptionalAt(i, places, out var err) ?? NearestChest(c);
+                var names = i.StrList("items");
+                var at = DepositAt(i, places, names, out var err) ?? NearestChest(c);
                 if (err != null) return err;
                 if (at == null) return ToolResult.Error("no chest nearby");
                 Func<ItemStack, bool>? filter = null;
-                var names = i.StrList("items");
                 if (names.Count > 0)
                 {
                     var ids = new HashSet<int>();
@@ -264,6 +296,22 @@ public static class GameToolSet
         var p = Resolve(s, places);
         if (p == null) error = ToolResult.Error($"unknown place '{s}'");
         return p;
+    }
+
+    /// <summary>
+    /// deposit's chest. Live 10-27: Lua <c>deposit{"all"}</c> / <c>deposit{"stone_axe"}</c> put an item where the chest goes
+    /// ("unknown place 'all'"): "all" means the default, and an item name that isn't a place moves to <paramref name="items"/>.
+    /// </summary>
+    internal static BlockPos? DepositAt(JsonElement i, IPlaceResolver places, List<string> items, out ToolResult? error)
+    {
+        error = null;
+        var s = i.Str("at")?.Trim();
+        if (string.IsNullOrWhiteSpace(s)) return null;
+        if (Resolve(s, places) is { } p) return p;
+        if (s.Equals("all", StringComparison.OrdinalIgnoreCase) || s.Equals("everything", StringComparison.OrdinalIgnoreCase)) return null;
+        if (Items.ByName(s) != null) { items.Insert(0, s); return null; }
+        error = ToolResult.Error($"unknown place '{s}' (deposit{{at?, items?}}: at = chest x,y,z or saved name)");
+        return null;
     }
 
     private static BlockPos? NearestChest(IGameClient c) =>

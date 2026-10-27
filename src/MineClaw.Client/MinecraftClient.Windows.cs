@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using MineClaw.Data;
 using MineClaw.Protocol.Packets;
 using MineClaw.World;
@@ -42,21 +43,13 @@ public sealed partial class MinecraftClient
         RunActionAsync("resync", ct, async c =>
         {
             await EnsureNoWindowAsync(c).ConfigureAwait(false);
-            int version = Volatile.Read(ref _windowItemsVersion);
-            short action = World.Inventory.NextActionNumber();
-            Send(new WindowClickPacket
+            return await ProbeCoreAsync(c).ConfigureAwait(false) switch
             {
-                WindowId = 0, Slot = 0, RightClick = false, ActionNumber = action, Shift = false,
-                ClickedItem = new ItemStack(1, 64, 0x7FFF), // never the server's (empty) result: forces the rejection + resync
-            });
-            var key = (0, action);
-            if (!await WaitUntilAsync(() => _txResults.ContainsKey(key), TimeSpan.FromSeconds(3), c).ConfigureAwait(false))
-                return ActionResult.Fail("no reply to the inventory resync");
-            _txResults.TryRemove(key, out bool accepted);
-            if (accepted) return ActionResult.Success("inventory confirmed by the server");
-            if (!await WaitUntilAsync(() => Volatile.Read(ref _windowItemsVersion) > version, TimeSpan.FromSeconds(2), c).ConfigureAwait(false))
-                return ActionResult.Fail("server rejected the probe but sent no window contents");
-            return ActionResult.Success("inventory resynced from the server");
+                ProbeOutcome.Confirmed => ActionResult.Success("inventory confirmed by the server"),
+                ProbeOutcome.Resynced => ActionResult.Success("inventory resynced from the server"),
+                ProbeOutcome.NoContents => ActionResult.Fail("server rejected the probe but sent no window contents"),
+                _ => ActionResult.Fail("no reply to the inventory resync"),
+            };
         });
 
     /// <summary>Moves up to <paramref name="count"/> of an item between the open container and the inventory
@@ -158,23 +151,171 @@ public sealed partial class MinecraftClient
 
     private BlockPos? _lastContainerPos;
 
-    /// <summary>Sends one click and waits for its 0x6A. False if the server rejected it (window resynced).</summary>
+    /// <summary>The click awaiting its 0x6A (null = none). Read by the packet thread to spot slot updates that race it.</summary>
+    private volatile ClickInFlight? _clickInFlight;
+    private readonly ConcurrentDictionary<(int Window, short Action), bool> _txRaced = new();
+    /// <summary>How often the local window model was replaced by the server's (a rejected click, a raced slot update).
+    /// Multi-click macros (crafting) compare it to restart a step from the fresh state.</summary>
+    private int _windowResyncs;
+    private long _lastSlotPacketMs;
+
+    /// <summary>One click between its prediction and its 0x6A. <see cref="Changed"/> null = not predicted yet (any slot
+    /// packet then counts as a race).</summary>
+    private sealed class ClickInFlight(int window, short action, HashSet<int>? changed, bool cursorChanged)
+    {
+        public int Window { get; } = window;
+        public short Action { get; } = action;
+        public HashSet<int>? Changed { get; } = changed;
+        public bool CursorChanged { get; } = cursorChanged;
+        public volatile bool Pending = true;
+        public volatile bool Raced;
+    }
+
+    /// <summary>
+    /// Packet thread, before a 0x67/0x68 is applied. One that touches what the click in flight changed was generated before
+    /// the server applied that click (it is ahead of the click's 0x6A in TCP order: e.g. the tick that echoes the slots a
+    /// closed chest window changed, or the stale copies after a rejected click), so it overwrites our prediction with
+    /// pre-click contents. The server then accepts the click and never re-sends the slot (b1.8.1 sends no 0x67 for an
+    /// accepted click's changes): the model must be resynced or it keeps phantom/missing stacks.
+    /// </summary>
+    private void NoteSlotPacket(int windowId, int slot, bool fullWindow)
+    {
+        Interlocked.Exchange(ref _lastSlotPacketMs, Environment.TickCount64);
+        if (_clickInFlight is not { Pending: true } f) return;
+        if (f.Changed is null || fullWindow) { if (f.Changed is null || windowId == f.Window || windowId == 0) f.Raced = true; return; }
+        if (windowId == -1 && slot == -1) { if (f.CursorChanged) f.Raced = true; return; }
+        int s = slot;
+        if (windowId != f.Window)
+        {
+            // A window-0 slot while a container is open: map the player slot into the clicked window.
+            if (windowId != 0 || World.Inventory.GetWindow(f.Window) is not { } w) return;
+            s = w.FromPlayerSlot(slot);
+        }
+        if (s >= 0 && f.Changed.Contains(s)) f.Raced = true;
+    }
+
+    /// <summary>Packet thread: the 0x6A for a click arrived (recorded before its result becomes visible to the click).</summary>
+    private void NoteTransaction(int windowId, short action)
+    {
+        if (_clickInFlight is { Pending: true } f && f.Window == windowId && f.Action == action)
+        {
+            f.Pending = false;
+            _txRaced[(windowId, action)] = f.Raced;
+        }
+    }
+
+    /// <summary>
+    /// Sends one click and waits for its 0x6A. False when the local model was replaced by the server's: the server rejected
+    /// the click (we then wait for its 0x68 and for the next tick's slot echoes before going on), or a slot update raced the
+    /// click (we then force a resync). Callers doing several clicks restart from the fresh state.
+    /// </summary>
     private async Task<bool> ClickCoreAsync(int slot, bool right, bool shift, CancellationToken ct)
     {
         int version = Volatile.Read(ref _windowItemsVersion);
+        var marker = new ClickInFlight(World.Inventory.ActiveWindow.Id, -1, null, true);
+        _clickInFlight = marker; // a slot packet between here and the real marker counts as a race (conservative)
         var r = World.Inventory.ApplyClick(slot, right, shift);
+        var f = new ClickInFlight(r.WindowId, r.ActionNumber, [.. r.ChangedSlots], r.CursorChanged) { Raced = marker.Raced };
+        _clickInFlight = f;
+        if (marker.Raced) f.Raced = true;
+        var key = (r.WindowId, r.ActionNumber);
+        try
+        {
+            Send(new WindowClickPacket
+            {
+                WindowId = (sbyte)r.WindowId, Slot = (short)slot, RightClick = right, ActionNumber = r.ActionNumber, Shift = shift,
+                ClickedItem = r.ExpectedItem,
+            });
+            if (!await WaitUntilAsync(() => _txResults.ContainsKey(key), TimeSpan.FromSeconds(3), ct).ConfigureAwait(false))
+                throw new ActionAbortedException($"no reply to window click on slot {slot}");
+        }
+        finally
+        {
+            f.Pending = false;
+            if (ReferenceEquals(_clickInFlight, f)) _clickInFlight = null;
+        }
+        _txResults.TryRemove(key, out bool accepted);
+        _txRaced.TryRemove(key, out bool raced);
+        if (accepted && !raced) return true;
+        Interlocked.Increment(ref _windowResyncs);
+        if (accepted)
+        {
+            Log($"a slot update raced click {r.ActionNumber} in window {r.WindowId}; resyncing");
+            await ProbeCoreAsync(ct).ConfigureAwait(false);
+            return false;
+        }
+        // Rejected: the server applied the click its own way and sends 0x68 + the cursor. Its per-slot copies stay stale
+        // until its next tick, which echoes them as 0x67s: let those land before the next click so they can't race it.
+        await WaitUntilAsync(() => Volatile.Read(ref _windowItemsVersion) > version, TimeSpan.FromSeconds(1.5), ct).ConfigureAwait(false);
+        await SettleSlotsAsync(ct).ConfigureAwait(false);
+        return false;
+    }
+
+    private enum ProbeOutcome { NoReply, Confirmed, Resynced, NoContents }
+
+    /// <summary>
+    /// Asks the server for the active window's real contents: a shift-click on a slot that is empty here (a no-op for the
+    /// server whatever the cursor holds) carrying an "expected item" that can't match. b1.8.1 NetServerHandler answers a
+    /// mismatch with 0x6A accepted=false plus the full window (0x68) and the cursor (0x67), which replace the local model.
+    /// If the server's slot isn't empty after all, shift-clicking it only moves it into the inventory, never out of reach.
+    /// </summary>
+    private async Task<ProbeOutcome> ProbeCoreAsync(CancellationToken ct)
+    {
+        var w = World.Inventory.ActiveWindow;
+        int slot = ProbeSlot(w);
+        if (slot < 0) return ProbeOutcome.NoReply;
+        int version = Volatile.Read(ref _windowItemsVersion);
+        short action = World.Inventory.NextActionNumber();
         Send(new WindowClickPacket
         {
-            WindowId = (sbyte)r.WindowId, Slot = (short)slot, RightClick = right, ActionNumber = r.ActionNumber, Shift = shift,
-            ClickedItem = r.ExpectedItem,
+            WindowId = (sbyte)w.Id, Slot = (short)slot, RightClick = false, ActionNumber = action, Shift = true,
+            ClickedItem = new ItemStack(1, 64, 0x7FFF), // never what the server's slotClick returns: forces the resync
         });
-        var key = (r.WindowId, r.ActionNumber);
+        var key = (w.Id, action);
         if (!await WaitUntilAsync(() => _txResults.ContainsKey(key), TimeSpan.FromSeconds(3), ct).ConfigureAwait(false))
-            throw new ActionAbortedException($"no reply to window click on slot {slot}");
+            return ProbeOutcome.NoReply;
         _txResults.TryRemove(key, out bool accepted);
-        if (accepted) return true;
-        await WaitUntilAsync(() => Volatile.Read(ref _windowItemsVersion) > version, TimeSpan.FromSeconds(1.5), ct).ConfigureAwait(false);
-        return false;
+        if (accepted) return ProbeOutcome.Confirmed;
+        if (!await WaitUntilAsync(() => Volatile.Read(ref _windowItemsVersion) > version, TimeSpan.FromSeconds(2), ct).ConfigureAwait(false))
+            return ProbeOutcome.NoContents;
+        await SettleSlotsAsync(ct).ConfigureAwait(false);
+        return ProbeOutcome.Resynced;
+    }
+
+    /// <summary>A slot that is empty in the local model and harmless to shift-click on the server: the crafting output with
+    /// an empty grid, an empty grid cell / furnace output / container slot / armor slot, else an empty inventory slot.
+    /// -1 = none.</summary>
+    public static int ProbeSlot(Window w)
+    {
+        bool Empty(int i) => w.Get(i).IsEmpty;
+        switch (w.Type)
+        {
+            case WindowType.Player:
+                if (Enumerable.Range(0, 5).All(Empty)) return 0;
+                foreach (int i in Enumerable.Range(5, 4)) if (Empty(i)) return i;
+                break;
+            case WindowType.Workbench:
+                if (Enumerable.Range(0, 10).All(Empty)) return 0;
+                foreach (int i in Enumerable.Range(1, 9)) if (Empty(i)) return i;
+                break;
+            case WindowType.Furnace:
+                if (Empty(2)) return 2;
+                break;
+            default:
+                for (int i = 0; i < w.ContainerSlots; i++) if (Empty(i)) return i;
+                break;
+        }
+        for (int i = w.MainStart; i < w.SlotCount; i++) if (Empty(i)) return i;
+        return -1;
+    }
+
+    /// <summary>Waits until no slot packet arrived for ~3 server ticks (at most 600 ms).</summary>
+    private async Task SettleSlotsAsync(CancellationToken ct)
+    {
+        long start = Environment.TickCount64;
+        Interlocked.Exchange(ref _lastSlotPacketMs, start);
+        while (Environment.TickCount64 - Interlocked.Read(ref _lastSlotPacketMs) < 150 && Environment.TickCount64 - start < 600)
+            await Task.Delay(25, ct).ConfigureAwait(false);
     }
 
     /// <summary>Puts the cursor stack into the inventory part of the active window (matching stacks first, then empty).</summary>

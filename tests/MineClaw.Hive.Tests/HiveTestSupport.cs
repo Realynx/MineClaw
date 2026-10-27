@@ -92,6 +92,7 @@ public sealed class TestHive : IAsyncDisposable
         CloneUsernames = ["maid_chan_67", "maid_chan_69", "maid_chan_420", "maid_chan_1337"],
         HeartbeatSeconds = 0.5, HeartbeatTimeoutSeconds = 6, StartTimeoutSeconds = 30,
         BackoffBaseSeconds = 60, MaxCrashes = 3, SnapshotSeconds = 0.3,
+        LaunchGapSeconds = 0, // the join throttle has its own test
     };
 
     public string NoticeText() { lock (Notices) return string.Join(" || ", Notices.Select(n => n.Text)); }
