@@ -71,6 +71,7 @@ public static class Msg
     public const string Lend = "lend";            // C→M req  LendMsg → LendReplyMsg (main hands a clone an item it has spare)
     public const string LendGo = "lend_go";       // C→M req  LendGoMsg → LendDoneMsg (the clone stands next to main: toss now)
     // replies
+    public const string Occupied = "occupied";    // C→M      OccupiedMsg (someone else logged in as this clone: kicked, not retrying)
     public const string View = "view";            // M→C req  (no payload) → CloneViewMsg ("send me your view": flush world memory, pose)
     public const string Reply = "re";
 }
@@ -140,3 +141,5 @@ public sealed record LendDoneMsg(int Tossed, string? Reason);
 public sealed record CloneViewMsg(double X, double Y, double Z, float Yaw, float Pitch, int Dim, int Flushed);
 public sealed record RecallMsg(string Reason, double? DeadlineSeconds = null);
 public sealed record ByeMsg(string Reason, bool Deposited, int Stranded);
+/// <summary>The server kicked this clone because another session logged in with its name (a player's viewer).</summary>
+public sealed record OccupiedMsg(string Reason, int Items);

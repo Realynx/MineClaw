@@ -91,6 +91,8 @@ public sealed class MainHive : IAsyncDisposable
             Handoff = new Receiver(client, bot.Client),
         };
         _supervisor.Donor = (Receiver)_supervisor.Handoff; // a clone short of a tool gets main's spare (live 3, 14:16:58)
+        // Besides the tab list: a clone name spawned near main as a player (0x14) is on the server too (someone else's login).
+        _supervisor.SeenOnServer = name => client.World.Entities.FindPlayer(name) != null;
         // Hive vision: main sees anywhere (clones' snapshots + claims; "send me your view" over IPC; the shared world memory).
         if (bot.Vision?.Hub is { } hub) hub.Hive = new HiveVisionSource(() => _supervisor, Board);
         _supervisor.Notice += e => rt.Events.Post(e);

@@ -104,6 +104,14 @@ public sealed class CloneSlot(string name)
     internal TaskIntent Intent;
     /// <summary>Last hp/food written to the store (only changes are saved).</summary>
     internal (int Hp, int Food)? SavedVitals;
+    /// <summary>Someone else logged in as this clone (a player's viewer): the server kicked ours; no launch before this.</summary>
+    public DateTimeOffset ExternalUntil { get; internal set; }
+    /// <summary>Since when the tab list shows this login while it isn't ours (default = not seen).</summary>
+    public DateTimeOffset ExternalSince { get; internal set; }
+    /// <summary>This outing ended with a duplicate-login kick (the clone's occupied notice or its exit code).</summary>
+    internal bool ExternalKick;
+    /// <summary>When our last outing ended (our own logout may linger on the tab list for a moment).</summary>
+    internal DateTimeOffset GoneAt;
 }
 
 /// <summary>
@@ -319,6 +327,44 @@ public sealed class HiveSupervisor : IAsyncDisposable
 
     private (double X, double Z)? MainXZ() { try { return Handoff?.Position is { } p ? (p.X, p.Z) : null; } catch (Exception) { return null; } }
 
+    /// <summary>The login is on the server right now besides the tab list: a spawned named player (0x14). Null = tab list only.</summary>
+    public Func<string, bool>? SeenOnServer { get; set; }
+
+    private bool OnServer(string name)
+    {
+        try
+        {
+            if (SlotFacts().Online.Contains(name, StringComparer.OrdinalIgnoreCase)) return true;
+            return SeenOnServer?.Invoke(name) == true;
+        }
+        catch (Exception) { return false; }
+    }
+
+    /// <summary>
+    /// Why an offline slot can't be launched because someone else holds the account (null = free): a duplicate-login kick within
+    /// <see cref="HiveConfig.ExternalLoginCooldownMinutes"/>, or the name is on the server's player list while no process of ours
+    /// is in it (a player's viewer). Never fight the login: logging in would kick them. The first sighting tells main once.
+    /// </summary>
+    internal string? ExternalOccupant(CloneSlot s)
+    {
+        var now = Now;
+        if (now < s.ExternalUntil)
+            return $"is in use by a player's viewer (someone else logged in as {s.Name}); left alone for {Math.Max(1, (int)Math.Ceiling((s.ExternalUntil - now).TotalMinutes))} more min";
+        if (s.State is not (CloneState.Idle or CloneState.Backoff)) return null; // ours: starting, out or logging out
+        bool online = now - s.GoneAt >= TimeSpan.FromSeconds(Math.Max(0, _cfg.OwnLogoutGraceSeconds)) && OnServer(s.Name);
+        if (!online)
+        {
+            s.ExternalSince = default;
+            return null;
+        }
+        if (s.ExternalSince == default)
+        {
+            s.ExternalSince = now;
+            Post(GameEvent.Notice($"[hive] slot {s.Number} is in use by a player's viewer ({s.Name} is online but isn't one of ours); using other clones", EventPriority.Background));
+        }
+        return $"is in use by a player's viewer ({s.Name} is online but isn't one of ours)";
+    }
+
     /// <summary>A free clone (offline idle, or logged in with nothing to finish) that can take a new job.</summary>
     private static bool Free(CloneSlot s) => s.State == CloneState.Idle
         // Online and free: no task, or asleep after a script that ended with after: sleep. A clone whose result just came in is
@@ -333,6 +379,11 @@ public sealed class HiveSupervisor : IAsyncDisposable
     internal (CloneSlot? Slot, string? Why) PickFor(TaskIntent intent, CloneSlot? except = null, bool confirmVoid = false)
     {
         var free = _slots.Values.Where(s => Free(s) && !ReferenceEquals(s, except)).ToList();
+        // Someone else is logged in as it (a player's viewer): never kick them by logging ours in.
+        var taken = free.Where(s => ExternalOccupant(s) != null).ToList();
+        free = free.Except(taken).ToList();
+        if (free.Count == 0 && taken.Count > 0)
+            return (null, string.Join("; ", taken.Select(s => $"{s.Number} {ExternalOccupant(s)}")) + "; no other clone is free");
         // Never log a clone in where it was left holding over the void (it would spawn there again) unless a player confirmed.
         var stuck = confirmVoid ? [] : free.Where(s => VoidSpawnOf(s) != null && !VoidConfirmed(s)).ToList();
         free = free.Except(stuck).ToList();
@@ -403,6 +454,11 @@ public sealed class HiveSupervisor : IAsyncDisposable
             if (CloneFitness.Score(slot.Number, VitalsOf(slot), intent, slot.IsLive) is { Blocker: { } b })
                 fitNote = $" (warning: {slot.Number} {b})";
             if (opts?.ConfirmVoid != true && !VoidConfirmed(slot) && VoidSpawnOf(slot) != null) return "no: " + VoidRefusal(slot);
+            if (ExternalOccupant(slot) is { } occupied)
+            {
+                var (alt, _) = PickFor(intent, except: slot);
+                return $"no: {slot.Number} {occupied}" + (alt != null ? $"; {alt.Number} is free: give it to {alt.Number}" : "");
+            }
         }
         else
         {
@@ -797,7 +853,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
                 CloneState.Stopping => "logging out",
                 CloneState.Backoff => "restarting",
                 CloneState.Retired => $"retired ({s.Crashes.Count} crashes)",
-                _ => OfflineState(s),
+                _ => ExternalOccupant(s) is { } occupied ? occupied : OfflineState(s),
             };
             var line = $"{s.Number} {st}";
             if (s.State is not (CloneState.Idle or CloneState.Retired) && s.Task is { Script: { } script } st2)
@@ -1036,6 +1092,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
         TimeSpan backoff = default;
         TaskCompletionSource? gone;
         List<ItemMsg>? inv;
+        bool external;
         lock (slot.Lock)
         {
             if (gen != slot.Generation || slot.State is CloneState.Idle or CloneState.Retired or CloneState.Backoff) return; // already handled
@@ -1051,12 +1108,35 @@ public sealed class HiveSupervisor : IAsyncDisposable
             var link = slot.Link;
             slot.Link = null;
             if (link != null) _ = link.DisposeAsync().AsTask();
-            slot.Process?.Kill();
-            slot.Process?.Dispose();
+            external = slot.ExternalKick || exitCode == CloneExitCodes.ExternalLogin;
+            var proc = slot.Process;
             slot.Process = null;
+            if (external && proc is { HasExited: false })
+                // The kicked clone is already offline and exits by itself: give it a moment, then make sure.
+                _ = Task.Run(async () =>
+                {
+                    try { await proc.WaitForExitAsync(new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token).ConfigureAwait(false); }
+                    catch (Exception) { }
+                    proc.Kill();
+                    proc.Dispose();
+                });
+            else
+            {
+                proc?.Kill();
+                proc?.Dispose();
+            }
             slot.ResumeClaims = Claims.Leases().Where(l => l.Owner.Equals(slot.Name, StringComparison.OrdinalIgnoreCase))
                 .Select(l => l.Key.Id).ToArray();
-            if (clean || slot.Recalled)
+            slot.ExternalKick = false;
+            slot.GoneAt = Now;
+            if (external)
+            {
+                // Someone else logged in as this clone (a player's viewer): never fight the login, no crash, no restart.
+                slot.State = CloneState.Idle;
+                slot.ExternalUntil = Now + TimeSpan.FromMinutes(Math.Max(0, _cfg.ExternalLoginCooldownMinutes));
+                slot.RespawnWith = null;
+            }
+            else if (clean || slot.Recalled)
             {
                 slot.State = CloneState.Idle;
                 respawn = _shuttingDown ? null : slot.RespawnWith;
@@ -1088,7 +1168,17 @@ public sealed class HiveSupervisor : IAsyncDisposable
         Ledger.Close(slot.Name);
         Arbiter.Forget(slot.Name);
         UpdateLive();
-        if (clean && !(slot.Recalled && !slot.ByeReceived))
+        if (external)
+        {
+            int stranded = 0;
+            try { stranded = Store?.MarkStranded(slot.Name, "kicked: someone else logged in as " + slot.Name, inv) ?? 0; }
+            catch (Exception ex) { _log.LogWarning(ex, "hive: couldn't record {Clone}'s stranded inventory", slot.Name); }
+            var unfinished = slot.Task is { } ut && !slot.ResultIn ? $"; its task \"{Trunc(ut.Text, 60)}\" is unfinished: give it to another clone" : "";
+            Post(GameEvent.Notice($"[hive] slot {slot.Number} is in use by a player's viewer: someone logged in as {slot.Name} and the server kicked ours; " +
+                $"not using that slot for {_cfg.ExternalLoginCooldownMinutes:0} min ({released} claim(s) released" + (stranded > 0 ? $", {stranded} item(s) still on it" : "") + ")" + unfinished,
+                EventPriority.Normal) with { MustWake = unfinished.Length > 0 });
+        }
+        else if (clean && !(slot.Recalled && !slot.ByeReceived))
         {
             Post(GameEvent.Notice($"[hive] {slot.Number} logged out ({slot.RecallReason ?? reason})", EventPriority.Background));
         }
@@ -1117,6 +1207,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
             lock (slot.Lock)
             {
                 if (slot.State != CloneState.Idle) why = "slot busy";
+                else if (ExternalOccupant(slot) is { } occupied) why = occupied;
                 else if (Ledger.AtRecallLine(out var b)) why = "budget: " + b;
                 else
                 {
@@ -1150,6 +1241,13 @@ public sealed class HiveSupervisor : IAsyncDisposable
             {
                 slot.State = CloneState.Idle;
                 Post(GameEvent.Notice($"[hive] {slot.Number} not restarted (no slot/budget)", EventPriority.Background));
+                return;
+            }
+            if (ExternalOccupant(slot) is { } occupied)
+            {
+                slot.State = CloneState.Idle;
+                Post(GameEvent.Notice($"[hive] {slot.Number} not restarted: it {occupied}" + (slot.Task is { } ut ? $"; its task \"{Trunc(ut.Text, 60)}\" needs another clone" : ""),
+                    EventPriority.Normal));
                 return;
             }
         }
@@ -1340,6 +1438,10 @@ public sealed class HiveSupervisor : IAsyncDisposable
                 return Lend(slot, lm);
             case Msg.LendGo when m.As<LendGoMsg>() is { } lg:
                 return await LendGoAsync(slot, lg, ct).ConfigureAwait(false);
+            case Msg.Occupied when m.As<OccupiedMsg>() is { } oc:
+                lock (slot.Lock) slot.ExternalKick = true;
+                _log.LogWarning("hive: {Clone} was kicked, someone else logged in with its name ({Reason}; {N} item(s) on it)", slot.Name, oc.Reason, oc.Items);
+                return null;
             case Msg.Bye when m.As<ByeMsg>() is { } bye:
                 lock (slot.Lock) { slot.ByeReceived = true; slot.RecallReason ??= bye.Reason; }
                 _log.LogInformation("hive: {Clone} bye ({Reason}, deposited {Dep}, stranded {N})", slot.Name, bye.Reason, bye.Deposited, bye.Stranded);

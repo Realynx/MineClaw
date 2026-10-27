@@ -47,6 +47,7 @@ public static class AppHost
         var hive = config.GetSection("Hive").Get<HiveConfig>() ?? new HiveConfig();
         config.GetSection("Hive").Bind(agentOptions.Hive); // personality scope: main | clone username (Self shards)
         var telemetryOptions = config.GetSection("Telemetry").Get<TelemetryOptions>() ?? new TelemetryOptions();
+        var supervisorOptions = config.GetSection("Supervisor").Get<Supervisor.SupervisorOptions>() ?? new Supervisor.SupervisorOptions();
         if (string.IsNullOrWhiteSpace(agentOptions.Llm.ApiKey) || agentOptions.Llm.ApiKey.EndsWith("..."))
             agentOptions.Llm.ApiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
         agentOptions.DataDirectory = AppPaths.Under(root, agentOptions.DataDirectory);
@@ -127,7 +128,8 @@ public static class AppHost
                     agentOptions.Llm.ProviderFor(ModelTier.Main), agentOptions.Llm.MainModel);
             if (cli.CloneName != null)
                 return await CloneMode.RunAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, loggers, log, signals);
-            return await RunBotAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, useTui, ring, loggers, log, signals, mainLogDir);
+            return await RunBotAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, useTui, ring, loggers, log, signals, mainLogDir,
+                supervisorOptions);
         }
         finally
         {
@@ -138,7 +140,7 @@ public static class AppHost
 
     private static async Task<int> RunBotAsync(AppCli cli, MinecraftSettings mc, AgentOptions agentOptions, BotOptions botOptions, HostSettings host,
         HiveConfig hive, TelemetryOptions telemetryOptions, string telemetryDir, bool useTui, RingLoggerProvider ring, ILoggerFactory loggers,
-        ILogger log, ShutdownSignals signals, string logDir)
+        ILogger log, ShutdownSignals signals, string logDir, Supervisor.SupervisorOptions? supervisorOptions = null)
     {
         var telemetry = new PromptTelemetry(agentOptions, telemetryOptions, telemetryOptions.Enabled ? telemetryDir : null);
         int seeded = telemetry.SeedFromLogs();
@@ -183,12 +185,15 @@ public static class AppHost
         var source = new InProcessBotSource(game, rt, telemetry, agent, commands, host.Tui.Viewport, signals.Token);
         mainHive?.Attach(bot, client, commands, agentOptions);
 
+        // The TUI's per-bot sources (main in-process, clones over IPC); the supervisor viewer reads the same ones.
+        var roster = new HiveRoster([mc.Username, .. hive.Clones()]);
+        var sources = roster.Names.Select(n => string.Equals(n, mc.Username, StringComparison.OrdinalIgnoreCase)
+            ? (IBotTelemetrySource)source : mainHive?.SourceFor(n) ?? new OfflineBotSource(n)).ToList();
+        var supervisorServer = StartSupervisor(supervisorOptions, bot, client, mc.Username, sources, mainHive, loggers.CreateLogger("MineClaw.Supervisor"));
+
         Task tuiTask = Task.CompletedTask;
         if (useTui)
         {
-            var roster = new HiveRoster([mc.Username, .. hive.Clones()]);
-            var sources = roster.Names.Select(n => string.Equals(n, mc.Username, StringComparison.OrdinalIgnoreCase)
-                ? (IBotTelemetrySource)source : mainHive?.SourceFor(n) ?? new OfflineBotSource(n)).ToList();
             var tui = new TuiApp(sources, roster, ring, host.Tui, w => signals.Request("tui " + w), log, cli.Bot - 1, ParseView(cli.ViewMode));
             tuiTask = tui.RunAsync(signals.Token);
         }
@@ -235,6 +240,7 @@ public static class AppHost
         var seq = new ShutdownSequence(budget, log);
         log.LogInformation("stopping ({Why}, budget {S:0}s): {Usage}", signals.Reason ?? "requested", budget.TotalSeconds, rt.Usage.Summary());
         await seq.StepAsync("tui", TimeSpan.FromSeconds(2), _ => tuiTask);
+        if (supervisorServer != null) await seq.StepAsync("supervisor", TimeSpan.FromSeconds(3), _ => supervisorServer.DisposeAsync().AsTask());
         if (useTui) Console.Out.WriteLine("MineClaw: shutting down...");
         // Hive first: clones deposit everything and log out while main is still online (handoff receiver), then main stops.
         if (mainHive != null)
@@ -261,6 +267,45 @@ public static class AppHost
     }
 
     internal static ViewMode? ParseView(string? v) => TuiApp.ParseView(v);
+
+    /// <summary>
+    /// The read-only hive-mind supervisor viewer (Supervisor:Enabled): every bot's live view, the free camera and the TUI panels
+    /// over HTTP, for an SSH tunnel. Renders run on one capped background thread; a bind failure only logs (the bot runs on).
+    /// </summary>
+    private static Supervisor.SupervisorServer? StartSupervisor(Supervisor.SupervisorOptions? o, BotHost bot, MinecraftClient client, string main,
+        IReadOnlyList<IBotTelemetrySource> sources, MainHive? mainHive, ILogger log)
+    {
+        if (o is not { Enabled: true }) return null;
+        if (bot.Vision?.Hub is not { } hub)
+        {
+            log.LogWarning("supervisor: Bot:Vision is off, so there are no views to serve; not starting");
+            return null;
+        }
+        var feed = new Supervisor.SupervisorFeed();
+        client.Danger += d => feed.Add("danger", $"{main}: {d.Kind}: {d.Message}", "warn");
+        client.Died += () => feed.Add("death", $"{main} died", "warn");
+        client.Kicked += r => feed.Add("conn", $"{main} kicked: {r}", "warn");
+        client.Disconnected += r => feed.Add("conn", $"{main} disconnected: {r}", "warn");
+        client.Spawned += () => feed.Add("conn", $"{main} joined");
+        client.ServerMoved += (a, b) => feed.Add("move", $"{main} moved by the server {a} -> {b}");
+        client.PlayerJoined += n => feed.Add("players", $"{n} joined");
+        client.PlayerLeft += n => feed.Add("players", $"{n} left");
+        if (mainHive?.Supervisor is { } sup)
+            sup.Notice += e => feed.Add("hive", e.Format(), e.Priority >= Agent.Events.EventPriority.Normal ? "warn" : "info");
+        var data = new Supervisor.LiveSupervisorData(hub, () => client.World, main, sources, () => mainHive?.Supervisor, feed, o, log);
+        var server = new Supervisor.SupervisorServer(o, data, log);
+        try
+        {
+            server.Start();
+            return server;
+        }
+        catch (Exception ex)
+        {
+            log.LogWarning("supervisor: can't listen on {Bind}:{Port} ({Error}); running without it", o.Bind, o.Port, ex.Message);
+            _ = server.DisposeAsync();
+            return null;
+        }
+    }
 
     // ================================================================ demo
 

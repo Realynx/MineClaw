@@ -44,6 +44,8 @@ public sealed class EyeRenderer
     public int MaxDistance { get; init; } = 64;
     /// <summary>Darkest a lit face gets (the client's brightness slider; keeps night pictures readable).</summary>
     public float MinBrightness { get; init; } = 0.12f;
+    /// <summary>Most row bands rendered in parallel (CPU cap for background viewers; 1 = the calling thread only).</summary>
+    public int MaxThreads { get; init; } = 8;
 
     private uint[] _px = [];
     private float[] _depth = [];
@@ -96,7 +98,7 @@ public sealed class EyeRenderer
         var sw = System.Diagnostics.Stopwatch.StartNew();
         int W = Width, H = Height;
         if (_px.Length != W * H) { _px = new uint[W * H]; _depth = new float[W * H]; }
-        int bands = Math.Clamp(Environment.ProcessorCount, 1, 8);
+        int bands = Math.Clamp(Environment.ProcessorCount, 1, Math.Clamp(MaxThreads, 1, 8));
         if (_caches.Length != bands) _caches = Enumerable.Range(0, bands).Select(_ => new LightCache()).ToArray();
         foreach (var lc in _caches) lc.Clear();
         if (s.World is WorldVoxels wv) wv.Prepare((int)Math.Floor(s.EyeX), (int)Math.Floor(s.EyeZ), MaxDistance / 16 + 1);

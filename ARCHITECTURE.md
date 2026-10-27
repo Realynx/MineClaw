@@ -383,3 +383,21 @@ connects its pipe before opening anything and exits 75 without one (never unsupe
   main). Checkpoints (`cp`) are written into the order (`resume_from`), so a crash restart or respawn resumes there. A
   normal end sends main one result line, clears the order, then logs out (deposit first) or sleeps online (`after: sleep`).
   `hive list`: `67: script cobble_loop 42% (brain asleep, profile haiku)`; the TUI brain field shows the same state.
+
+## Hive supervisor viewer (App/Supervisor) — the TUI, graphical and read-only
+
+`Supervisor:Enabled` makes the main process serve a GET-only HTTP viewer on `Supervisor:Bind:Port` (default 8765; reach it
+with `tools/HiveSupervisor`, an SSH tunnel through alice). No game login, no commands, no chat, no memory writes. `/api/bots`
+(tiles from `VisionHub.HiveBots` + claim leases), `/view/{bot}?mode=` (the exact `see` composition, `VisionHub.SheetRequest`,
+rendered by the viewer's own renderer; clone poses over the existing `view` IPC, at most every 2.5 s per clone), `/view/hive`,
+`/camera` (a free first-person camera over `RegionWorld`: main's live columns + the shared `world_chunks`, any dimension, with
+staleness), `/api/status` (the TUI's `IBotTelemetrySource` snapshots: usage vs caps per tier, thoughts/tool calls, chat; the
+supervisor's slots and leases) and `/api/events` (dangers, kicks, deaths, hive notices). CPU cap: one below-normal render
+thread, ≥120 ms apart, a bounded queue (503 when full), single-threaded eye raycasts, ~1 s render cache. Optional shared-secret
+token (header or `?token=`), never logged.
+
+**Someone else on a clone's account** (a player's viewer). b1.8.1 kicks the older session with "You logged in from another
+location", so the hive never fights a login: (a) an offline slot whose name is on main's tab list (0xC9) or spawned as a player
+is skipped before launch ("slot 1337 is in use by a player's viewer", told once); (b) a clone kicked that way sends `occupied`,
+stops its client's auto-reconnect and exits 76; main records its items as stranded, does not restart it, leaves the slot alone
+for `Hive:ExternalLoginCooldownMinutes` (10) and tells the brain (MustWake when its task was unfinished).

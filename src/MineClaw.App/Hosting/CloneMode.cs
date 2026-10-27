@@ -146,6 +146,8 @@ public static class CloneMode
         client.Danger += d => { lastDanger = d.Message; lastDangerAt = DateTimeOffset.UtcNow; };
         client.ChatReceived += line => log.LogInformation("chat: {Line}", ChatText.StripColours(line));
         client.Kicked += r => log.LogWarning("kicked: {Reason}", r);
+        // Someone else logged in as this clone (a player's viewer): don't fight the login; main leaves the slot alone for a while.
+        client.Kicked += host0.OnServerKick;
 
         var agent = new PausableAgent(rt, log);
         var commands = new ConsoleCommands(game, rt, agent, log, signals.Source);

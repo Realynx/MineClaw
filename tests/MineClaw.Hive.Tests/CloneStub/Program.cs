@@ -45,6 +45,39 @@ var host = new CloneHost(name, pipe, cfg, store: store);
 
 switch (mode)
 {
+    case "dupkick":
+        {
+            // A real game client logged into the fake server, wired like CloneMode (client.Kicked += host.OnServerKick). A task
+            // with "viewer" makes the server kick it the way b1.8.1 does when someone else logs in with the same name.
+            var marker = Arg("--marker");
+            var srv = new MineClaw.Client.Tests.FakeServer();
+            int connects = 0;
+            var client = new MineClaw.Client.MinecraftClient(new MineClaw.Client.ClientOptions
+            {
+                Username = name, AutoReconnect = true, ReconnectInitialDelay = TimeSpan.FromMilliseconds(200),
+                DuplicateLoginBackoff = TimeSpan.FromMilliseconds(800), TickInterval = TimeSpan.FromMilliseconds(5), ChatInterval = TimeSpan.Zero,
+                HostileAlertRadius = 0,
+                ConnectionFactory = ct => { Interlocked.Increment(ref connects); return srv.CreateClientConnection(ct); },
+            });
+            var w = await host.ConnectParentAsync(TimeSpan.FromSeconds(10), default);
+            if (w == null) { Out("NOPARENT"); return CloneExitCodes.NoParent; }
+            var body = new FakeBody(name, new FakePort(stacks, 0)) { OnDisconnect = () => client.DisconnectAsync("kicked") };
+            host.Body = body;
+            client.Kicked += host.OnServerKick;
+            await client.ConnectAsync(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+            body.OnTask = t =>
+            {
+                if (t.Text.Contains("viewer")) srv.Send(new MineClaw.Protocol.Packets.KickPacket("You logged in from another location"));
+                return Task.CompletedTask;
+            };
+            Out("READY");
+            int code = await host.RunAsync(default, w);
+            await Task.Delay(1500); // an auto-reconnect (800 ms backoff) would have dialled by now
+            var line = $"EXIT {code} connects={connects} playing={client.IsPlaying}";
+            if (marker.Length > 0) File.WriteAllText(marker, line);
+            Out(line);
+            return code;
+        }
     case "crash":
         {
             // Connects, says hello, then dies like a crashed process.

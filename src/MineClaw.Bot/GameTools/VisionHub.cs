@@ -170,7 +170,15 @@ public sealed partial class VisionHub
     }
 
     /// <summary>Renders the contact sheet of <paramref name="focus"/> (main's world, or <paramref name="scene"/>; a clone's eye pose).</summary>
-    public VisionImage Sheet(BlockPos focus, int radius, IReadOnlyList<string>? views, Entity? viewer = null, Scene? scene = null, HiveEyePose? pose = null)
+    public VisionImage Sheet(BlockPos focus, int radius, IReadOnlyList<string>? views, Entity? viewer = null, Scene? scene = null, HiveEyePose? pose = null) =>
+        Sheets.Render(SheetRequest(focus, radius, views, viewer, scene, pose));
+
+    /// <summary>
+    /// The exact contact-sheet request a <c>see</c> of <paramref name="focus"/> renders (views, EYE pose, side axis, overlays,
+    /// roles). The read-only supervisor viewer renders it with its own CPU-capped <see cref="ContactSheet"/>, so what it shows
+    /// is what the bot sees.
+    /// </summary>
+    public ContactSheetRequest SheetRequest(BlockPos focus, int radius, IReadOnlyList<string>? views, Entity? viewer = null, Scene? scene = null, HiveEyePose? pose = null)
     {
         var w = _c.World;
         var me = w.Player.Position;
@@ -212,14 +220,38 @@ public sealed partial class VisionHub
         var axis = pose != null
             ? (Math.Abs(Math.Cos(pose.Yaw * Math.PI / 180)) >= Math.Abs(Math.Sin(pose.Yaw * Math.PI / 180)) ? SideAxis.LookEast : SideAxis.LookNorth)
             : mainHere ? AxisFor(focus) : SideAxis.LookNorth;
-        return Sheets.Render(new ContactSheetRequest
+        return new ContactSheetRequest
         {
             Blocks = scene.Blocks, Focus = (focus.X, focus.Y, focus.Z), Radius = radius, Views = list,
             Self = mainHere ? (feet.X, feet.Y, feet.Z) : null,
             Entities = ents, Marks = ms, Target = local && VisionTools.ActivityTarget(_rt, _places) is { } t ? (t.X, t.Y, t.Z) : null,
             Pointed = pointed is { } p2 ? (p2.Pos.X, p2.Pos.Y, p2.Pos.Z) : null, PointedBy = pointed?.Player, Nether = scene.Dim == -1,
             Atlas = atlas, Light = scene.Light, Time = w.Time, Roles = scene.Roles.Map, Axis = axis, Eye = eye,
-        });
+        };
+    }
+
+    /// <summary>Entities to draw around a spot: main's live entity list in its own dimension, else the hive bots' snapshots.</summary>
+    public IReadOnlyList<VisionEntity> EntitiesNear(int dim, BlockPos centre, int radius) =>
+        dim == _c.World.Dimension && _c.World.IsLoaded(centre.X, centre.Z) ? VisionTools.Entities(_c, centre, radius, _isHive) : HiveEntities(dim, centre, radius);
+
+    /// <summary>The deterministic text facts a <c>see</c> question gets without any model call (VisionRouter), per intent.</summary>
+    public IReadOnlyList<string> RouterFacts(BlockPos focus, int radius, Scene? scene = null)
+    {
+        scene ??= LocalScene();
+        var f = (focus.X, focus.Y, focus.Z);
+        int r = Math.Clamp(radius, 3, 12);
+        var facts = new List<string>();
+        foreach (var (intent, q) in new[]
+        {
+            (VisionIntent.FocusBlock, "what is at the focus"), (VisionIntent.GenCells, "which gen cells to mine"),
+            (VisionIntent.Faces, "which faces can a block be placed against"), (VisionIntent.Void, "how far is the void edge"),
+            (VisionIntent.Things, "trees chests doors ores crops"), (VisionIntent.Portal, "portal"),
+        })
+        {
+            try { facts.Add($"{intent}: {VisionRouter.Answer(intent, q, scene.Blocks, scene.Roles.Map, f, r)}"); }
+            catch (Exception ex) { _log?.LogDebug(ex, "router facts: {Intent} failed", intent); }
+        }
+        return facts;
     }
 
     /// <summary>Change detection without drawing: the blocks + roles around the focus (feet layer ±3).</summary>

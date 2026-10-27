@@ -33,6 +33,10 @@ public sealed class HiveConfig
     /// <summary>Restart backoff: base * 2^(crashes-1), capped.</summary>
     public double BackoffBaseSeconds { get; set; } = 2;
     public double BackoffMaxSeconds { get; set; } = 60;
+    /// <summary>A clone kicked because someone else logged in with its name (a player's viewer) isn't launched again for this long.</summary>
+    public double ExternalLoginCooldownMinutes { get; set; } = 10;
+    /// <summary>A clone of ours that just logged out may linger on the tab list this long; it isn't taken for someone else's.</summary>
+    public double OwnLogoutGraceSeconds { get; set; } = 20;
     /// <summary>Minimum spacing between clone launches (the server's login throttle rejects joins from one IP &lt; ~4 s apart).</summary>
     public double LaunchGapSeconds { get; set; } = 4.5;
 

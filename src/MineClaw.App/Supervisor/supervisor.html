@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hive Supervisor</title>
+<style>
+:root{--bg:#0b0d12;--panel:#141821;--panel2:#1b2030;--line:#2a3142;--text:#e6e9f0;--dim:#8b93a7;--acc:#5ad1ff;--ok:#52d273;--warn:#ffb347;--bad:#ff5c5c;--hp:#e04f5f;--food:#c9913d}
+:root[data-theme="light"]{--bg:#f2f4f8;--panel:#fff;--panel2:#eef1f6;--line:#d5dae4;--text:#1b2030;--dim:#5d667a;--acc:#0a7fb5}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:13px/1.35 system-ui,Segoe UI,Roboto,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{font-size:15px;margin:0 8px 0 0;font-weight:600}
+button,select,input{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font:inherit}
+button.on{border-color:var(--acc);color:var(--acc)}
+.grp{display:flex;gap:4px;align-items:center}
+.dim{color:var(--dim)}
+main{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:10px;padding:10px}
+@media (max-width:1000px){main{grid-template-columns:1fr}}
+#tiles{display:grid;gap:10px;align-content:start}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden;display:flex;flex-direction:column;min-width:0}
+.tile.sel{border-color:var(--acc)}
+.tile.drag{opacity:.4}
+.th{display:flex;gap:6px;align-items:center;padding:6px 8px;background:var(--panel2);cursor:grab;flex-wrap:wrap}
+.th b{font-size:13px}
+.th .job{flex:1;min-width:80px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar{width:44px;height:6px;background:var(--line);border-radius:3px;overflow:hidden;display:inline-block;vertical-align:middle}
+.bar i{display:block;height:100%}
+.tb{position:relative;background:#000;display:flex;align-items:center;justify-content:center;min-height:120px}
+.tb img{max-width:100%;height:auto;display:block;image-rendering:pixelated}
+.tf{padding:4px 8px;color:var(--dim);font-size:12px;min-height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stale{position:absolute;left:6px;bottom:6px;background:#000a;color:#ffd27a;padding:2px 6px;border-radius:4px;font-size:11px}
+#strip{display:flex;gap:8px;overflow-x:auto}
+#strip .tile{width:220px;flex:none}
+#tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px}
+aside{display:flex;flex-direction:column;gap:10px;min-width:0}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;min-width:0}
+.panel h2{font-size:13px;margin:0;padding:6px 10px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+.pb{padding:8px 10px;max-height:340px;overflow:auto}
+table{border-collapse:collapse;width:100%}
+td,th{padding:2px 4px;text-align:left;border-bottom:1px solid var(--line);font-size:12px;vertical-align:top}
+.mono{font-family:ui-monospace,Consolas,monospace;font-size:12px;white-space:pre-wrap;word-break:break-word}
+.ev.warn{color:var(--warn)}.ev.bad{color:var(--bad)}
+.cam .tb{cursor:crosshair;outline:none}
+.cam .tb:focus{box-shadow:inset 0 0 0 2px var(--acc)}
+.camctl{display:flex;flex-wrap:wrap;gap:4px;padding:6px 8px;align-items:center}
+.camctl input[type=text]{width:130px}
+.err{color:var(--bad)}
+.brainimg{max-width:100%;image-rendering:pixelated}
+</style>
+</head>
+<body>
+<header>
+  <h1>Hive Supervisor</h1>
+  <span class="dim">read-only</span>
+  <div class="grp" id="layoutBtns">
+    <span class="dim">layout</span>
+    <button data-l="grid1">1</button><button data-l="grid2">2</button><button data-l="grid4">4</button><button data-l="grid6">6</button>
+    <button data-l="focus">focus+strip</button><button data-l="tabs">tabs</button>
+  </div>
+  <div class="grp"><span class="dim">refresh</span>
+    <select id="refresh"><option value="2000">2 s</option><option value="3000">3 s</option><option value="5000">5 s</option></select></div>
+  <div class="grp"><span class="dim">radius</span><select id="radius"></select></div>
+  <button id="brainBtn" title="the sheet PNG, its token estimate and the VisionRouter facts the selected bot's brain would get">what the brain receives</button>
+  <button id="themeBtn">theme</button>
+  <span id="conn" class="dim"></span>
+</header>
+<main>
+  <section>
+    <div id="tabs" hidden></div>
+    <div id="focusBox" hidden></div>
+    <div id="tiles"></div>
+    <div id="strip" hidden></div>
+  </section>
+  <aside>
+    <div class="panel" id="brainPanel" hidden><h2><span>Brain input: <span id="brainWho"></span></span><span id="brainTok" class="dim"></span></h2>
+      <div class="pb"><img id="brainImg" class="brainimg" alt="sheet the brain receives"><div id="brainLegend" class="mono dim"></div><ul id="brainFacts" class="mono"></ul></div></div>
+    <div class="panel"><h2>Tokens &amp; cost <span id="hiveSpend" class="dim"></span></h2><div class="pb" id="usage"></div></div>
+    <div class="panel"><h2><span>Thought: <span id="thoughtWho"></span></span></h2><div class="pb" id="thought"></div></div>
+    <div class="panel"><h2>Hive board</h2><div class="pb" id="board"></div></div>
+    <div class="panel"><h2>Events</h2><div class="pb" id="events"></div></div>
+    <div class="panel"><h2>Chat</h2><div class="pb mono" id="chat"></div></div>
+  </aside>
+</main>
+<script>
+"use strict";
+// ---------------------------------------------------------------- token + storage
+const params = new URLSearchParams(location.search);
+let token = params.get("token") || "";
+try { if (token) sessionStorage.setItem("supToken", token); else token = sessionStorage.getItem("supToken") || ""; } catch (e) {}
+if (params.has("token")) history.replaceState(null, "", location.pathname);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("sup." + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem("sup." + k, JSON.stringify(v)); } catch (e) {} },
+};
+const state = Object.assign({ layout: "grid4", order: [], modes: {}, focus: null, tab: null, refresh: 3000, radius: 6, brain: false,
+  theme: null, cam: { x: 0.5, y: 80, z: 0.5, yaw: 0, pitch: 30, dim: 0, speed: 8 } }, store.get("state", {}));
+function save() { store.set("state", state); }
+if (state.theme) document.documentElement.dataset.theme = state.theme;
+
+async function api(path) {
+  const r = await fetch(path, { headers: token ? { "X-Supervisor-Token": token } : {} });
+  if (r.status === 401) {
+    if (!api.asking) {
+      api.asking = true;
+      const t = prompt("Supervisor token");
+      if (t) { token = t; try { sessionStorage.setItem("supToken", t); } catch (e) {} }
+      api.asking = false;
+    }
+    throw new Error("token");
+  }
+  if (!r.ok) throw new Error(r.status + "");
+  return r;
+}
+async function json(path) { return (await api(path)).json(); }
+const $ = id => document.getElementById(id);
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function bar(v, max, color) { const b = el("span", "bar"); const i = el("i"); i.style.width = Math.max(0, Math.min(100, v / max * 100)) + "%"; i.style.background = color; b.append(i); return b; }
+const MODES = ["eye", "top", "iso", "side", "layers", "sheet"];
+
+// ---------------------------------------------------------------- tiles
+let bots = [];
+const tiles = new Map(); // key -> {el, img, busy, due, url, info}
+let selected = null;
+
+function tileFor(key) {
+  if (tiles.has(key)) return tiles.get(key);
+  const t = key === "camera" ? cameraTile() : botTile(key);
+  tiles.set(key, t);
+  t.el.dataset.key = key;
+  // Reorder by the title bar only: dragging inside the camera view is mouse-look.
+  const handle = t.el.querySelector(".th");
+  handle.draggable = true;
+  handle.addEventListener("dragstart", e => { t.el.classList.add("drag"); e.dataTransfer.setData("text/plain", key); });
+  handle.addEventListener("dragend", () => t.el.classList.remove("drag"));
+  t.el.addEventListener("dragover", e => e.preventDefault());
+  t.el.addEventListener("drop", e => {
+    e.preventDefault();
+    const from = e.dataTransfer.getData("text/plain");
+    if (!from || from === key) return;
+    const o = currentOrder().filter(k => k !== from);
+    o.splice(o.indexOf(key), 0, from);
+    state.order = o; save(); layout();
+  });
+  return t;
+}
+
+function botTile(name) {
+  const root = el("div", "tile"), head = el("div", "th"), body = el("div", "tb"), foot = el("div", "tf");
+  const title = el("b"), job = el("span", "job"), hp = el("span"), food = el("span"), sel = el("select");
+  for (const m of MODES) { const o = el("option", null, m === "sheet" ? "contact sheet" : m === "top" ? "top+roles" : m); o.value = m; sel.append(o); }
+  sel.value = state.modes[name] || "eye";
+  sel.onchange = () => { state.modes[name] = sel.value; save(); t.due = 0; };
+  sel.onmousedown = e => e.stopPropagation();
+  head.append(title, hp, food, job, sel);
+  const img = el("img"); img.alt = name + " view"; const stale = el("span", "stale"); stale.hidden = true;
+  body.append(img, stale);
+  root.append(head, body, foot);
+  head.onclick = () => select(name);
+  const t = { el: root, img, stale, title, job, hp, food, foot, sel, busy: false, due: 0, url: null, kind: "bot" };
+  return t;
+}
+
+function updateBotTile(t, b) {
+  t.title.textContent = b.main ? b.name + " (main)" : b.name;
+  t.job.textContent = b.job || "idle";
+  t.job.title = b.job || "";
+  t.hp.replaceChildren(el("span", "dim", "hp "), bar(b.hp, 20, "var(--hp)"));
+  t.food.replaceChildren(el("span", "dim", " food "), bar(b.food, 20, "var(--food)"));
+  t.foot.textContent = `${b.dim === -1 ? "nether " : ""}@${Math.floor(b.x)},${Math.floor(b.y)},${Math.floor(b.z)}` +
+    (b.claims && b.claims.length ? "  claims: " + b.claims.join(", ") : "") + (b.age_seconds > 5 ? `  (snapshot ${Math.round(b.age_seconds)} s old)` : "");
+}
+
+async function refreshTile(key, t) {
+  if (t.busy || key === "camera") return;
+  t.busy = true;
+  const mode = t.sel.value;
+  try {
+    const r = await api(`/view/${encodeURIComponent(key)}?mode=${mode}&radius=${state.radius}`);
+    const blob = await r.blob();
+    if (t.url) URL.revokeObjectURL(t.url);
+    t.url = URL.createObjectURL(blob);
+    t.img.src = t.url;
+    const seen = r.headers.get("X-Seen");
+    t.stale.hidden = !seen; t.stale.textContent = seen || "";
+    t.img.title = `${r.headers.get("X-Width")}x${r.headers.get("X-Height")} ~${r.headers.get("X-Tokens")} tok`;
+  } catch (e) { t.stale.hidden = false; t.stale.textContent = "view unavailable (" + e.message + ")"; }
+  finally { t.busy = false; }
+}
+
+function currentOrder() {
+  const keys = ["camera", ...bots.map(b => b.name)];
+  const o = state.order.filter(k => keys.includes(k));
+  for (const k of keys) if (!o.includes(k)) o.push(k);
+  return o;
+}
+
+function select(name) {
+  selected = name;
+  for (const [k, t] of tiles) t.el.classList.toggle("sel", k === name);
+  $("thoughtWho").textContent = name || "";
+  pollStatus(); refreshBrain();
+}
+
+function layout() {
+  const order = currentOrder();
+  const grid = $("tiles"), strip = $("strip"), focusBox = $("focusBox"), tabs = $("tabs");
+  grid.replaceChildren(); strip.replaceChildren(); focusBox.replaceChildren(); tabs.replaceChildren();
+  strip.hidden = focusBox.hidden = tabs.hidden = true;
+  for (const b of document.querySelectorAll("#layoutBtns button")) b.classList.toggle("on", b.dataset.l === state.layout);
+  if (state.layout.startsWith("grid")) {
+    const n = +state.layout.slice(4);
+    grid.style.gridTemplateColumns = `repeat(${({ 1: 1, 2: 2, 4: 2, 6: 3 })[n] || 2}, minmax(0,1fr))`;
+    for (const k of order) grid.append(tileFor(k).el);
+  } else if (state.layout === "focus") {
+    const f = order.includes(state.focus) ? state.focus : order[0];
+    grid.style.gridTemplateColumns = "1fr";
+    grid.append(tileFor(f).el);
+    strip.hidden = false;
+    for (const k of order.filter(k => k !== f)) { const t = tileFor(k); strip.append(t.el); t.el.ondblclick = () => { state.focus = k; save(); layout(); }; }
+  } else {
+    const cur = order.includes(state.tab) ? state.tab : order[0];
+    tabs.hidden = false;
+    for (const k of order) { const b = el("button", k === cur ? "on" : null, k); b.onclick = () => { state.tab = k; save(); layout(); }; tabs.append(b); }
+    grid.style.gridTemplateColumns = "1fr";
+    grid.append(tileFor(cur).el);
+  }
+}
+
+function visible(t) { return t.el.isConnected; }
+
+async function pollBots() {
+  try {
+    const r = await json("/api/bots");
+    const names = bots.map(b => b.name).join();
+    bots = r.bots;
+    for (const b of bots) updateBotTile(tileFor(b.name), b);
+    for (const k of [...tiles.keys()]) if (k !== "camera" && !bots.some(b => b.name === k)) { tiles.get(k).el.remove(); tiles.delete(k); }
+    if (names !== bots.map(b => b.name).join()) { layout(); fillSnap(); }
+    if (!selected && bots.length) select(bots[0].name);
+    $("conn").textContent = `${bots.length} bot(s) · ${new Date().toLocaleTimeString()}`;
+  } catch (e) { $("conn").textContent = "offline (" + e.message + ")"; }
+}
+
+function tick() {
+  const now = Date.now();
+  for (const [k, t] of tiles) {
+    if (k === "camera" || !visible(t) || now < t.due) continue;
+    const thumb = t.el.parentElement && t.el.parentElement.id === "strip";
+    t.due = now + state.refresh * (thumb ? 2 : 1);
+    refreshTile(k, t);
+  }
+}
+
+// ---------------------------------------------------------------- free camera
+let cam = null;
+function cameraTile() {
+  const root = el("div", "tile cam"), head = el("div", "th"), body = el("div", "tb"), ctl = el("div", "camctl"), foot = el("div", "tf");
+  head.append(el("b", null, "Free camera"), el("span", "job", "click the view, then WASD fly, Q/E down/up, drag to look"));
+  const img = el("img"); img.alt = "free camera"; img.draggable = false;
+  const stale = el("span", "stale"); stale.hidden = true;
+  body.tabIndex = 0; body.append(img, stale);
+  const dim = el("select"); for (const [v, n] of [[0, "overworld"], [-1, "nether"]]) { const o = el("option", null, n); o.value = v; dim.append(o); }
+  const speed = el("input"); speed.type = "range"; speed.min = 1; speed.max = 40; speed.title = "speed (blocks/s)";
+  const jump = el("input"); jump.type = "text"; jump.placeholder = "x,y,z or landmark";
+  const go = el("button", null, "jump"); const snap = el("select"); snap.id = "snapSel";
+  ctl.append(dim, el("span", "dim", "speed"), speed, jump, go, snap);
+  root.append(head, body, ctl, foot);
+  const c = { el: root, img, stale, foot, body, dim, speed, kind: "camera", keys: new Map(), lastMove: 0, busy: false, lastReq: 0, url: null, full: false, drag: null };
+  cam = c;
+  dim.value = state.cam.dim; speed.value = state.cam.speed;
+  dim.onchange = () => { state.cam.dim = +dim.value; moved(); };
+  speed.oninput = () => { state.cam.speed = +speed.value; save(); };
+  const doJump = async () => {
+    try { const p = await json("/api/locate?q=" + encodeURIComponent(jump.value)); Object.assign(state.cam, { x: p.x, y: p.y, z: p.z, dim: p.dim }); dim.value = p.dim; moved(); jump.style.borderColor = ""; }
+    catch (e) { jump.style.borderColor = "var(--bad)"; }
+  };
+  go.onclick = doJump; jump.onkeydown = e => { if (e.key === "Enter") doJump(); e.stopPropagation(); };
+  snap.onchange = () => { const b = bots.find(x => x.name === snap.value); if (b) { Object.assign(state.cam, { x: b.x, y: b.y + 1.62, z: b.z, dim: b.dim }); dim.value = b.dim; moved(); } snap.value = ""; };
+  // key -> release time (Infinity while held); a quick tap still moves for 150 ms.
+  body.addEventListener("keydown", e => { const k = e.key.toLowerCase(); if (k.length === 1 && "wasdqe".includes(k)) { if (!c.keys.has(k) || c.keys.get(k) !== Infinity) c.keys.set(k, Infinity); c.pressed = c.pressed || {}; if (!e.repeat) c.pressed[k] = performance.now(); e.preventDefault(); } });
+  body.addEventListener("keyup", e => { const k = e.key.toLowerCase(); if (c.keys.has(k)) c.keys.set(k, Math.max(performance.now(), ((c.pressed || {})[k] || 0) + 150)); });
+  body.addEventListener("blur", () => c.keys.clear());
+  body.addEventListener("mousedown", e => { body.focus(); c.drag = { x: e.clientX, y: e.clientY }; e.preventDefault(); });
+  window.addEventListener("mouseup", () => { c.drag = null; });
+  window.addEventListener("mousemove", e => {
+    if (!c.drag) return;
+    state.cam.yaw = (state.cam.yaw + (e.clientX - c.drag.x) * 0.3) % 360;
+    state.cam.pitch = Math.max(-90, Math.min(90, state.cam.pitch + (e.clientY - c.drag.y) * 0.3));
+    c.drag = { x: e.clientX, y: e.clientY }; moved();
+  });
+  return c;
+}
+function fillSnap() {
+  const s = $("snapSel"); if (!s) return;
+  s.replaceChildren(el("option", null, "snap to bot…")); s.options[0].value = "";
+  for (const b of bots) { const o = el("option", null, b.short === "main" ? b.name : b.short); o.value = b.name; s.append(o); }
+}
+function moved() { if (cam) { cam.lastMove = Date.now(); cam.full = false; } save(); }
+
+let lastFrame = performance.now();
+function camLoop() {
+  const now = performance.now();
+  const dt = Math.min(0.1, (now - lastFrame) / 1000); lastFrame = now;
+  if (cam) for (const [k, until] of cam.keys) if (now > until) cam.keys.delete(k);
+  if (cam && cam.keys.size) {
+    const s = state.cam, v = s.speed * dt, r = s.yaw * Math.PI / 180;
+    const fx = -Math.sin(r), fz = Math.cos(r), rx = -Math.cos(r), rz = -Math.sin(r); // b1.8.1: yaw 0 = +z (south), 90 = -x (west)
+    if (cam.keys.has("w")) { s.x += fx * v; s.z += fz * v; }
+    if (cam.keys.has("s")) { s.x -= fx * v; s.z -= fz * v; }
+    if (cam.keys.has("d")) { s.x += rx * v; s.z += rz * v; }
+    if (cam.keys.has("a")) { s.x -= rx * v; s.z -= rz * v; }
+    if (cam.keys.has("e")) s.y = Math.min(200, s.y + v);
+    if (cam.keys.has("q")) s.y = Math.max(-16, s.y - v);
+    cam.lastMove = Date.now(); cam.full = false;
+  }
+  if (cam && cam.el.isConnected) {
+    const moving = Date.now() - cam.lastMove < 300;
+    // ≤ 4 fps of cheap low-res frames while moving, one full-res frame once it stops.
+    if (!cam.busy && ((moving && Date.now() - cam.lastReq > 250) || (!moving && !cam.full))) camFrame(moving);
+  }
+}
+async function camFrame(low) {
+  const c = cam, s = state.cam;
+  c.busy = true; c.lastReq = Date.now();
+  const [w, h] = low ? [240, 180] : [640, 480];
+  const q = `x=${s.x.toFixed(2)}&y=${s.y.toFixed(2)}&z=${s.z.toFixed(2)}&yaw=${s.yaw.toFixed(1)}&pitch=${s.pitch.toFixed(1)}&dim=${s.dim}&w=${w}&h=${h}`;
+  try {
+    const r = await api("/camera?" + q);
+    const blob = await r.blob();
+    if (c.url) URL.revokeObjectURL(c.url);
+    c.url = URL.createObjectURL(blob); c.img.src = c.url;
+    c.img.style.width = "100%";
+    const seen = r.headers.get("X-Seen"); c.stale.hidden = !seen; c.stale.textContent = seen || "";
+    if (!low) c.full = true;
+  } catch (e) { c.stale.hidden = false; c.stale.textContent = "camera: " + e.message; if (!low) c.full = true; }
+  finally { c.busy = false; }
+  c.foot.textContent = `${s.dim === -1 ? "nether" : "overworld"} ${s.x.toFixed(1)}, ${s.y.toFixed(1)}, ${s.z.toFixed(1)}  yaw ${s.yaw.toFixed(0)} pitch ${s.pitch.toFixed(0)}`;
+}
+
+// ---------------------------------------------------------------- brain input
+async function refreshBrain() {
+  $("brainPanel").hidden = !state.brain;
+  $("brainBtn").classList.toggle("on", state.brain);
+  if (!state.brain || !selected) return;
+  $("brainWho").textContent = selected;
+  try {
+    const path = `/view/${encodeURIComponent(selected)}?mode=brain&radius=${state.radius}`;
+    const [r, meta] = await Promise.all([api(path), json(path + "&meta=1")]);
+    const img = $("brainImg"); if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
+    img.dataset.url = URL.createObjectURL(await r.blob()); img.src = img.dataset.url;
+    $("brainTok").textContent = `${meta.width}x${meta.height}px · ~${meta.tokens} tok · ${(meta.bytes / 1024).toFixed(1)} KB`;
+    $("brainLegend").textContent = meta.legend + (meta.seen ? "\nseen: " + meta.seen : "") + (meta.note ? "\n" + meta.note : "");
+    $("brainFacts").replaceChildren(...(meta.facts || []).map(f => el("li", null, f)));
+  } catch (e) { $("brainLegend").textContent = "unavailable: " + e.message; }
+}
+
+// ---------------------------------------------------------------- TUI panels
+const usd = v => "$" + (+v || 0).toFixed(2);
+async function pollStatus() {
+  let s;
+  try { s = await json("/api/status" + (selected ? "?bot=" + encodeURIComponent(selected) : "")); } catch (e) { return; }
+  // tokens & cost
+  const u = $("usage"); u.replaceChildren();
+  const t = el("table"); t.innerHTML = "<tr><th>bot</th><th>today</th><th>month</th><th>cache</th><th>calls/h</th><th>mode</th></tr>";
+  for (const b of s.bots) {
+    const tr = el("tr"); const us = b.usage || {};
+    for (const v of [b.name, `${usd(us.today_usd)} / ${usd(us.daily_cap_usd)}`, `${usd(us.month_usd)} / ${usd(us.monthly_cap_usd)}`,
+      us.cache_hit != null ? Math.round(us.cache_hit * 100) + "%" : "-", us.calls_last_hour ?? "-", us.mode || b.budget_mode]) tr.append(el("td", null, v));
+    t.append(tr);
+  }
+  u.append(t);
+  const sel = s.bots.find(b => b.thought) || s.bots.find(b => b.name === selected);
+  if (sel && sel.usage && sel.usage.today && sel.usage.today.length) {
+    const tt = el("table"); tt.innerHTML = "<tr><th>tier (" + sel.name + ")</th><th>today</th><th>calls</th><th>cache</th><th>in tok</th><th>out tok</th></tr>";
+    for (const x of sel.usage.today) { const tr = el("tr"); for (const v of [x.tier, usd(x.usd), x.calls, Math.round(x.cache_hit * 100) + "%", x.prompt_tokens, x.output_tokens]) tr.append(el("td", null, v)); tt.append(tr); }
+    u.append(el("div", "dim", " "), tt);
+  }
+  $("hiveSpend").textContent = s.hive ? `clones today ${usd(s.hive.clones_today_usd)}` : "";
+  // thought
+  const th = $("thought"); th.replaceChildren();
+  if (sel && sel.thought) {
+    const x = sel.thought;
+    for (const [k, v] of [["task", x.task], ["delegate", x.delegate], ["header", x.header], ["events", x.events], ["memory", x.memory], ["thinking", x.thinking], ["output", x.output], ["journal", x.journal]])
+      if (v) { th.append(el("div", "dim", k)); th.append(el("div", "mono", v)); }
+    if (x.tools && x.tools.length) {
+      th.append(el("div", "dim", "tool calls"));
+      for (const c of x.tools) th.append(el("div", "mono" + (c.ok ? "" : " err"), `${new Date(c.at).toLocaleTimeString()} ${c.name}(${c.args})${c.result ? " → " + c.result : ""}`));
+    }
+  } else th.append(el("div", "dim", sel ? (sel.brain || sel.status) + (sel.task ? ": " + sel.task : "") : "select a bot"));
+  // hive board
+  const bd = $("board"); bd.replaceChildren();
+  if (s.hive) {
+    const tb = el("table"); tb.innerHTML = "<tr><th>clone</th><th>state</th><th>task</th></tr>";
+    for (const sl of s.hive.slots) {
+      const tr = el("tr");
+      for (const v of [sl.number, sl.state + (sl.pending ? " (pending)" : ""), (sl.task || "") + (sl.progress ? ` ${Math.round(sl.progress * 100)}%` : "") + (sl.result ? " → " + sl.result : sl.last_progress ? " · " + sl.last_progress : "")]) tr.append(el("td", null, v));
+      tb.append(tr);
+    }
+    bd.append(tb);
+  } else bd.append(el("div", "dim", "no hive"));
+  if (s.claims && s.claims.length) { bd.append(el("div", "dim", "claims")); for (const c of s.claims) bd.append(el("div", "mono", `${c.owner}: ${c.what}`)); }
+  // chat (main sees every public line)
+  const main = s.bots.find(b => b.name === s.main) || s.bots[0];
+  const ch = $("chat"); const atEnd = ch.scrollTop + ch.clientHeight >= ch.scrollHeight - 4;
+  ch.textContent = (main && main.chat || []).join("\n");
+  if (atEnd) ch.scrollTop = ch.scrollHeight;
+}
+
+let evSince = 0;
+async function pollEvents() {
+  try {
+    const r = await json("/api/events?since=" + evSince);
+    evSince = r.last;
+    const box = $("events");
+    for (const e of r.events) {
+      const d = el("div", "ev mono " + (e.level === "warn" ? "warn" : e.level === "error" ? "bad" : ""), `${new Date(e.at).toLocaleTimeString()} [${e.kind}] ${e.text}`);
+      box.prepend(d);
+    }
+    while (box.childElementCount > 200) box.lastChild.remove();
+  } catch (e) {}
+}
+
+// ---------------------------------------------------------------- wiring
+for (const b of document.querySelectorAll("#layoutBtns button")) b.onclick = () => { state.layout = b.dataset.l; save(); layout(); };
+const rf = $("refresh"); rf.value = state.refresh; rf.onchange = () => { state.refresh = +rf.value; save(); };
+const rd = $("radius"); for (let i = 3; i <= 12; i++) { const o = el("option", null, i); o.value = i; rd.append(o); }
+rd.value = state.radius; rd.onchange = () => { state.radius = +rd.value; save(); for (const t of tiles.values()) t.due = 0; };
+$("brainBtn").onclick = () => { state.brain = !state.brain; save(); refreshBrain(); };
+$("themeBtn").onclick = () => { state.theme = document.documentElement.dataset.theme === "light" ? "dark" : "light"; document.documentElement.dataset.theme = state.theme; save(); };
+
+layout();
+pollBots().then(() => { layout(); fillSnap(); });
+setInterval(pollBots, 3000);
+setInterval(tick, 250);
+setInterval(pollStatus, 3000);
+setInterval(pollEvents, 2000);
+setInterval(() => { if (state.brain) refreshBrain(); }, 4000);
+pollEvents();
+setInterval(camLoop, 50); // 20 Hz movement; frames stay ≤ 4 fps (rAF stalls in background tabs)
+</script>
+</body>
+</html>

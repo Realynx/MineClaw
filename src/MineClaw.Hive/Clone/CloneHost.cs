@@ -66,6 +66,8 @@ public static class CloneExitCodes
     public const int Ok = 0;
     /// <summary>No parent pipe to connect to: a clone never runs unsupervised.</summary>
     public const int NoParent = 75;
+    /// <summary>Kicked because someone else logged in with this clone's name (a player's viewer): main leaves the slot alone.</summary>
+    public const int ExternalLogin = 76;
 }
 
 /// <summary>
@@ -505,6 +507,42 @@ public sealed class CloneHost : IHandoffTarget
     }
 
     private static string Trunc(string s, int n) => s.Length <= n ? s : s[..(n - 1)] + "…";
+
+    // ---------------------------------------------------------------- someone else logged in as this clone
+
+    /// <summary>The server's kick text when another session logs in with the same name (vanilla/CraftBukkit b1.8.1).</summary>
+    public static bool IsDuplicateLogin(string? reason) =>
+        reason != null && reason.Contains("logged in from another location", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The game client's kick hook (<c>client.Kicked += host.OnServerKick</c>). A duplicate-login kick means a player (or their
+    /// viewer) is using this account now: never fight the login. No reconnect, tell main (it leaves the slot alone for a while),
+    /// exit <see cref="CloneExitCodes.ExternalLogin"/>. The inventory stays with the account; main records it as stranded.
+    /// </summary>
+    public void OnServerKick(string reason)
+    {
+        if (IsDuplicateLogin(reason)) _ = OnExternalLoginAsync(reason);
+    }
+
+    internal async Task OnExternalLoginAsync(string reason)
+    {
+        if (Interlocked.Exchange(ref _loggingOut, 1) != 0) return;
+        LogoutReason = "kicked: someone else logged in as " + Name;
+        _log.LogWarning("clone {Name}: kicked, someone else logged in with this name ({Reason}); not reconnecting", Name, reason);
+        int items = 0;
+        try { items = _body.Inventory.Items().Sum(i => i.Count); } catch (Exception) { items = _inventory.Sum(i => i.Count); }
+        try { await _body.StopAgentAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); } catch (Exception ex) { _log.LogDebug(ex, "stop agent failed"); }
+        try
+        {
+            if (_link is { IsOpen: true } l) await l.SendAsync(Msg.Occupied, new OccupiedMsg(reason, items)).ConfigureAwait(false);
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "occupied notice failed"); }
+        // Stops the client's own auto-reconnect too (it would kick the player back in 10 min).
+        try { await _body.DisconnectAsync("kicked").WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); } catch (Exception) { }
+        _cts.Cancel();
+        if (_link is { } link) { try { await link.DisposeAsync().ConfigureAwait(false); } catch (Exception) { } }
+        _exit.TrySetResult(CloneExitCodes.ExternalLogin);
+    }
 
     // ---------------------------------------------------------------- void spawn: hold still, ask for a /tp, resume
 

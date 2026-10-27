@@ -72,6 +72,8 @@ public sealed class TestHive : IAsyncDisposable
     public decimal MainToday { get; set; }
     public List<string> Online { get; } = ["maid_chan", "poofimafox", "kiwi"];
     public int MaxPlayers { get; set; } = 7;
+    /// <summary>The server's player list from somewhere else (a real client on the fake server) instead of <see cref="Online"/>.</summary>
+    public Func<SlotFacts>? Facts { get; set; }
 
     public TestHive(HiveConfig? cfg = null, Func<string, ProcessLauncher>? launcher = null, string mode = "normal", params string[] stubArgs)
     {
@@ -85,7 +87,7 @@ public sealed class TestHive : IAsyncDisposable
         Arbiter = new ChatArbiter("maid_chan", "maid_chan", cfg.Clones());
         var l = launcher?.Invoke(DbPath) ?? Stub.Launcher(["--db", DbPath, "--mode", mode, .. stubArgs]);
         Supervisor = new HiveSupervisor(cfg, "maid_chan", l, Board, Ledger, Arbiter, Store,
-            () => { lock (Online) return new SlotFacts(MaxPlayers, Online.ToList()); }, ["poofimafox", "kiwi"]);
+            () => { if (Facts is { } f) return f(); lock (Online) return new SlotFacts(MaxPlayers, Online.ToList()); }, ["poofimafox", "kiwi"]);
         Supervisor.Notice += e => { lock (Notices) Notices.Add(e); };
     }
 

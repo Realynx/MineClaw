@@ -57,6 +57,9 @@ public sealed class ContactSheet
 
     public VisionRenderer Panels => _renderer;
 
+    /// <summary>Thread cap of the EYE panel's raycaster (<see cref="EyeRenderer.MaxThreads"/>); background viewers use 1.</summary>
+    public int EyeThreads { get; init; } = 8;
+
     /// <summary>Panel side in pixels for <paramref name="count"/> panels within the pixel budget (≤290).</summary>
     public static (int Cols, int Rows, int Side) Layout(int count, int pixelBudget = 300_000)
     {
@@ -86,7 +89,7 @@ public sealed class ContactSheet
                 EyeRenderer eye;
                 int ew = side, eh = side * 3 / 4;
                 lock (_lock)
-                    if (!_eyes.TryGetValue((ew, eh), out eye!)) _eyes[(ew, eh)] = eye = new EyeRenderer { Width = ew, Height = eh };
+                    if (!_eyes.TryGetValue((ew, eh), out eye!)) _eyes[(ew, eh)] = eye = new EyeRenderer { Width = ew, Height = eh, MaxThreads = EyeThreads };
                 img = eye.Render(q.Eye! is var e && e.Target == null ? new EyeScene
                 {
                     World = e.World, Atlas = e.Atlas, EyeX = e.EyeX, EyeY = e.EyeY, EyeZ = e.EyeZ, Yaw = e.Yaw, Pitch = e.Pitch, Time = e.Time,

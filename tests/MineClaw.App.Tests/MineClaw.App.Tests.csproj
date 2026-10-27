@@ -23,4 +23,9 @@
     <ProjectReference Include="..\..\src\MineClaw.App\MineClaw.App.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- FakeGameClient / TestBot: the supervisor's live data is tested against a real VisionHub. -->
+    <Compile Include="..\MineClaw.Bot.Tests\TestSupport.cs" Link="Linked\BotTestSupport.cs" />
+  </ItemGroup>
+
 </Project>

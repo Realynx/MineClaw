@@ -110,12 +110,14 @@ public sealed class FakeBody : ICloneBody
     public Task SayAsync(string text) { lock (Said) Said.Add(text); return Task.CompletedTask; }
     /// <summary>The client's post-login/teleport safety hold (over the void it lasts until a /tp).</summary>
     public bool HoldingStill { get; set; }
-    public Task DisconnectAsync(string reason)
+    /// <summary>A real game client behind the fake body (the "dupkick" mode): disconnecting it stops its auto-reconnect.</summary>
+    public Func<Task>? OnDisconnect { get; set; }
+    public async Task DisconnectAsync(string reason)
     {
         ItemsAtDisconnect = Port.Items().Count;
         Call("disconnect");
+        if (OnDisconnect is { } d) await d();
         Disconnected.TrySetResult();
-        return Task.CompletedTask;
     }
 }
 
