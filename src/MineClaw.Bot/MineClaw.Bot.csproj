@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\MineClaw.Agent\MineClaw.Agent.csproj" />
     <ProjectReference Include="..\MineClaw.Client\MineClaw.Client.csproj" />
+    <ProjectReference Include="..\MineClaw.Skills\MineClaw.Skills.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
