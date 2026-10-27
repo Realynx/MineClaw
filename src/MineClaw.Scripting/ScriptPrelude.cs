@@ -8,8 +8,10 @@ namespace MineClaw.Scripting;
 /// <item><c>upto(n, fn)</c>: fn(i) for i = 1..n, stopping early when fn returns false; a short wait after each pass (yields); returns passes.</item>
 /// <item><c>expect(cond, msg)</c>: fails the script with msg when cond is falsy; returns cond.</item>
 /// <item><c>room(n)</c>: makes sure n inventory slots are free (deposit{} if not), else fails with the reason.</item>
-/// <item><c>ensure"pickaxe"</c> / <c>ensure{"pickaxe","food"}</c>: have one (any tier) in the inventory, else withdraw it from
-/// a chest, else craft it from what's at hand/in chests; else fails clearly. Returns true, "stone_pickaxe,bread".</item>
+/// <item><c>ensure"pickaxe"</c> / <c>ensure{"pickaxe","food"}</c>: have one (any tier) in the inventory, else the host's
+/// acquisition planner (<c>acquire{}</c>: chests, hive handoff, crafting, a from-scratch bootstrap tree → wood pick → gen
+/// cobble → stone pick, asking a player last); without it, withdraw from a chest, else craft from what's at hand/in chests.
+/// Fails clearly when nothing worked. Returns true, "stone_pickaxe,bread".</item>
 /// </list>
 /// </summary>
 public static class ScriptPrelude
@@ -23,7 +25,7 @@ local _cat = {
   axe = {"diamond_axe","iron_axe","stone_axe","wood_axe"},
   shovel = {"diamond_shovel","iron_shovel","stone_shovel","wood_shovel"},
   sword = {"diamond_sword","iron_sword","stone_sword","wood_sword"},
-  food = {"cooked_porkchop","bread","cooked_fish","apple","raw_porkchop","raw_fish"},
+  food = {"cooked_porkchop","cooked_beef","cooked_chicken","bread","cooked_fish","mushroom_stew","apple","golden_apple","cookie","melon","raw_porkchop","beef","raw_fish"},
 }
 local _craft = {
   pickaxe = {"stone_pickaxe","wood_pickaxe"}, axe = {"stone_axe","wood_axe"}, shovel = {"stone_shovel","wood_shovel"},
@@ -62,12 +64,18 @@ end
 local function _have(names)
   for _, x in ipairs(names) do if _inv(x) > 0 then return x end end
 end
+local _acq = acquire
 function ensure(what)
   local list = type(what) == "table" and what or {what}
   local got = {}
   for _, w in ipairs(list) do
     local names = _cat[w] or {w}
     local x = _have(names)
+    if not x and _acq then
+      local ok, m = _acq{w}
+      x = _have(names)
+      if not x then _fail("ensure: no " .. w .. " (" .. tostring(m) .. ")") end
+    end
     if not x and take then
       for _, y in ipairs(names) do local ok = take{y, 1} if ok and _inv(y) > 0 then x = y break end end
     end

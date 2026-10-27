@@ -383,4 +383,54 @@ public class BrainSleepTests
         }
         finally { b.Controller.Cancel(); cts.Cancel(); }
     }
+
+    // ------------------------------------------------------------------ live 2026-10-27 (task #5): a sleeping brain never misses a failure
+
+    [Fact]
+    public async Task A_script_failure_wakes_the_sleeping_brain_with_the_reason()
+    {
+        var (h, _, b, llm, cts) = await Awake();
+        try
+        {
+            await h.Run("script", new { op = "run", name = "boom", code = "wait(60)\nerror('no cobble left at the gen')" });
+            await Rig.Until(() => llm.Brain >= 1, 5000);
+            Assert.Contains("no cobble left at the gen", llm.LastBrainText());
+        }
+        finally { b.Controller.Cancel(); cts.Cancel(); }
+    }
+
+    [Fact]
+    public async Task A_script_limit_wakes_the_sleeping_brain_with_the_reason()
+    {
+        var (h, _, b, llm, cts) = await Awake();
+        try
+        {
+            var r = await h.Run("script", new { op = "run", name = "spin", code = "wait(60)\nlocal n = 0\nfor i = 1, 100000000 do n = n + 1 end" });
+            try { await Rig.Until(() => llm.Brain >= 1, 8000); }
+            catch (TimeoutException) { Assert.Fail(r.Text + " | " + b.Controller.Last?.Status + " " + b.Controller.Last?.Outcome + " | cur " + b.Controller.Current?.State()); }
+            Assert.Contains("spin", llm.LastBrainText());
+            Assert.Contains("[task failed] #1 script: failed: script spin", llm.LastBrainText());
+            Assert.Contains("busy loop", llm.LastBrainText());
+        }
+        finally { b.Controller.Cancel(); cts.Cancel(); }
+    }
+
+    [Fact]
+    public async Task A_must_wake_notice_reaches_the_sleeping_brain_but_a_plain_notice_does_not()
+    {
+        var (h, _, b, llm, cts) = await Awake();
+        try
+        {
+            await h.Run("script", new { op = "run", name = "loop", code = "for i = 1, 30 do wait(60) end" });
+            await Task.Delay(200);
+            h.Runtime.Events.Post(GameEvent.Notice("a chest was emptied", EventPriority.Low));
+            await Task.Delay(400);
+            Assert.Equal(0, llm.Brain);
+            h.Runtime.Events.Post(GameEvent.Notice("[hive] 67 failed: chest 14,64,-5 unreachable", EventPriority.Normal) with { MustWake = true });
+            await Rig.Until(() => llm.Brain >= 1, 5000);
+            Assert.Contains("67 failed", llm.LastBrainText());
+            Assert.NotNull(b.Controller.Current); // woke the brain, the body keeps its script
+        }
+        finally { b.Controller.Cancel(); cts.Cancel(); }
+    }
 }

@@ -66,6 +66,8 @@ public static class Msg
     public const string Death = "death";          // C→M      DeathMsg (cause + lost items)
     public const string Handoff = "handoff";      // C→M req  HandoffMsg → HandoffReplyMsg (where to toss items)
     public const string HandoffAck = "handoff_ack"; // C→M req (no payload) → HandoffAckMsg (items main collected since)
+    public const string Lend = "lend";            // C→M req  LendMsg → LendReplyMsg (main hands a clone an item it has spare)
+    public const string LendGo = "lend_go";       // C→M req  LendGoMsg → LendDoneMsg (the clone stands next to main: toss now)
     // replies
     public const string Reply = "re";
 }
@@ -114,5 +116,12 @@ public sealed record DeathMsg(string Cause, List<ItemMsg> Lost);
 public sealed record HandoffMsg(int Items);
 public sealed record HandoffReplyMsg(bool Ok, double X, double Y, double Z, string? Reason);
 public sealed record HandoffAckMsg(int Collected);
+/// <summary>A clone asks main for an item: a loadout kind ("pickaxe", "axe") or an item name ("stone_pickaxe", "torch").</summary>
+public sealed record LendMsg(string Item, int Count, int[]? Ids = null);
+/// <summary>Ok = main will toss <paramref name="Count"/> x <paramref name="Name"/> (item <paramref name="Id"/>) once the clone stands
+/// next to it at X/Y/Z (main stands still meanwhile). Not ok: <paramref name="Reason"/>, plus other hive bots carrying a spare.</summary>
+public sealed record LendReplyMsg(bool Ok, int Id, int Count, string? Name, double X, double Y, double Z, string? Reason, string[]? Holders = null);
+public sealed record LendGoMsg(double X, double Y, double Z);
+public sealed record LendDoneMsg(int Tossed, string? Reason);
 public sealed record RecallMsg(string Reason, double? DeadlineSeconds = null);
 public sealed record ByeMsg(string Reason, bool Deposited, int Stranded);

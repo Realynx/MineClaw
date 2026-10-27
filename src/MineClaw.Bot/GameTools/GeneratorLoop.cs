@@ -44,6 +44,7 @@ public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = nul
     public async Task<ActionResult> RunAsync(BlockPos cell, int count, BlockPos? store, CancellationToken ct, BlockPos? stand = null)
     {
         int mined = 0, deposited = 0, fails = 0;
+        bool upgraded = false;
         var notes = new List<string>();
         string? stop = null;
         bool ok = true;
@@ -102,7 +103,17 @@ public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = nul
                 if (res.Count == 0 && ++fails >= MaxConsecutiveFailures) { stop = msg; ok = mined > 0; break; }
                 continue;
             }
-            if (res.Count > 0) { fails = 0; continue; }
+            if (res.Count > 0)
+            {
+                fails = 0;
+                // Took a wood pick to get going: upgrade to stone as soon as the gen's cobble allows it (one craft, no walking).
+                if (!upgraded && mined < count && await Acquisition.Planner(c, _s.Observations).UpgradeIfCheapAsync("pickaxe", ct).ConfigureAwait(false) is { } up)
+                {
+                    upgraded = true;
+                    notes.Add(up);
+                }
+                continue;
+            }
             if (res.Ok) break; // the client says done without digging: nothing to loop on
             // 3) interrupted (mob, danger, can't reach): pause and resume; stop only after repeated failures.
             if (++fails >= MaxConsecutiveFailures) { stop = msg; ok = mined > 0; break; }

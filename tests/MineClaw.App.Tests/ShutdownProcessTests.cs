@@ -15,6 +15,9 @@ public class ShutdownProcessTests(Xunit.Abstractions.ITestOutputHelper output)
         var d = new DirectoryInfo(AppContext.BaseDirectory);
         var tfm = d.Name;
         var config = d.Parent!.Name;
+        // --artifacts-path layout: <artifacts>/bin/MineClaw.App.Tests/<config>/ next to <artifacts>/bin/MineClaw.App/<config>/
+        var artifacts = Path.Combine(d.Parent.Parent?.FullName ?? "", "MineClaw.App", d.Name, "MineClaw.App.dll");
+        if (File.Exists(artifacts)) return artifacts;
         for (; d != null; d = d.Parent)
         {
             var p = Path.Combine(d.FullName, "src", "MineClaw.App", "bin", config, tfm, "MineClaw.App.dll");

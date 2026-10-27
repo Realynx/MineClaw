@@ -21,6 +21,55 @@ public sealed class QuestionOptions
     /// <summary>Said on timeout of a risky question.</summary>
     public string RiskyTimeoutLine { get; set; } = "{player}, skipped that part for now, say if you want it done";
     /// <summary>
+    /// Said on timeout when the default is an instruction to the bot itself ("Stay on the tree farm standing order; skip the
+    /// cobble gen unless told."): {plan} is its first clause, jargon dropped ("stay on the tree farm"). Live 3, 14:35:08 posted
+    /// "went with Stay on the tree farm standing order; skip the cobble gen unless told. since you're busy".
+    /// </summary>
+    public string PlanTimeoutLine { get; set; } = "{player}, gonna {plan} for now since you're busy, say if you want different";
+    /// <summary>Said on timeout when the default can't be put into words for a player (long, coordinates).</summary>
+    public string VagueTimeoutLine { get; set; } = "{player}, going with my best guess for now since you're busy, say if you want different";
+
+    private static readonly Regex Jargon = new(
+        @"\s*\b(?:(?:my|the|your|this)\s+)?(?:standing\s+order|hive\s+task|default|hive|task\s+order)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex ClauseBreak = new(@"[;.!?\n(]|\s+(?:unless|until|then|but|and then)\s+|\s+[-\u2013\u2014]\s+", RegexOptions.CultureInvariant);
+    private static readonly Regex Coords = new(@"-?\d+\s*,\s*-?\d+", RegexOptions.CultureInvariant);
+    private static readonly HashSet<string> PlanVerbs = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "stay", "keep", "mine", "chop", "go", "skip", "wait", "continue", "do", "work", "farm", "finish", "craft", "build", "help",
+        "follow", "come", "bring", "use", "take", "leave", "stop", "start", "head", "put", "place", "dig", "harvest", "plant",
+        "replant", "collect", "gather", "get", "make", "fill", "check", "return", "carry", "hold", "stick", "cut", "clear", "deposit",
+    };
+
+    /// <summary>
+    /// The line said when a question timed out: never the raw default when that is an instruction or jargon. A short choice
+    /// ("left cell") keeps <see cref="TimeoutLine"/>; an instruction becomes "gonna stay on the tree farm for now ...".
+    /// </summary>
+    public string TimeoutText(string? player, string dflt, bool risky)
+    {
+        string line;
+        if (risky) line = RiskyTimeoutLine;
+        else
+        {
+            var d = (dflt ?? "").Trim();
+            var clause = ClauseBreak.Split(d)[0];
+            clause = Regex.Replace(Jargon.Replace(clause, ""), @"\s+", " ").Trim(' ', ',', ':');
+            var words = clause.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            bool plan = words.Length > 0 && PlanVerbs.Contains(words[0]);
+            bool plain = !plan && clause == d.TrimEnd('.', '!') && words.Length is > 0 and <= 5 && !Coords.IsMatch(d);
+            if (plain) line = TimeoutLine.Replace("{default}", d);
+            else if (plan && words.Length <= 10 && !Coords.IsMatch(clause))
+            {
+                var p = char.ToLowerInvariant(clause[0]) + clause[1..];
+                p = Regex.Replace(p, @"\s+for now$", "", RegexOptions.IgnoreCase);
+                line = PlanTimeoutLine.Replace("{plan}", p);
+            }
+            else line = VagueTimeoutLine;
+        }
+        return line.Replace("{player}", player ?? "").Replace("{default}", dflt ?? "").Trim(' ', ',');
+    }
+
+    /// <summary>
     /// Question/default text that marks a choice as unsafe or irreversible (breaking player builds, void-risk actions, rare
     /// items): its default is forced to <see cref="SafeDefault"/>.
     /// </summary>

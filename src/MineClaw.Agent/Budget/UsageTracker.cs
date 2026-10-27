@@ -287,7 +287,9 @@ public sealed class UsageTracker
     public decimal Record(string model, LlmUsage usage, ModelTier? tier = null)
     {
         decimal cost = _prices.Cost(model, usage);
-        var t = Classify?.Invoke(model) ?? tier;
+        // A worker-tier call is worker spend whatever model a delegate profile picked (a haiku/opus worker was booked as
+        // memory/opus, which hid worker spend in /usage).
+        var t = tier == ModelTier.Worker ? ModelTier.Worker : Classify?.Invoke(model) ?? tier;
         string label = t is { } tt ? TierLabel(tt) : "other";
         // Every provider and profile counts toward the same hard caps; Ollama calls are recorded too ($0 unless priced).
         string provider = _prices.ProviderOf(model);

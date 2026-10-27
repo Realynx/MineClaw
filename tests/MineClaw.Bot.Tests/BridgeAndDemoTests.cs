@@ -29,7 +29,10 @@ public class BridgeTests
     public void Survival_events_escalate_with_severity()
     {
         Assert.Equal(EventPriority.Normal, GameBridge.MapDanger(new DangerEvent(DangerKind.Hunger, "starving: food 5, no food in inventory") { Level = 2 }, 14, 64).Priority);
-        Assert.Equal(EventPriority.High, GameBridge.MapDanger(new DangerEvent(DangerKind.Hunger, "starving: food 0") { Level = 3 }, 12, 64).Priority);
+        // Food 0 wakes the brain but never interrupts a job (below the interrupt priority) until hp reaches the low line.
+        Assert.Equal(EventPriority.Normal, GameBridge.MapDanger(new DangerEvent(DangerKind.Hunger, "starving: food 0") { Level = 3 }, 12, 64).Priority);
+        Assert.True(GameBridge.MapDanger(new DangerEvent(DangerKind.Hunger, "starving: food 0") { Level = 3 }, 12, 64).Priority < new MineClaw.Agent.AgentOptions().InterruptPriority);
+        Assert.Equal(EventPriority.High, GameBridge.MapDanger(new DangerEvent(DangerKind.Hunger, "starving: food 0") { Level = 3 }, 5, 64).Priority);
         var crit = GameBridge.MapDanger(new DangerEvent(DangerKind.LowHealth, "critical hp 3/20 (food 9)") { Critical = true }, 3, 64);
         Assert.Equal(EventPriority.Critical, crit.Priority);
         Assert.Equal("critical hp 3/20 (food 9)", crit.Text); // no duplicated "hp x/20"

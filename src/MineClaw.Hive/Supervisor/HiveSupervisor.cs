@@ -6,6 +6,7 @@ using MineClaw.Hive.Chat;
 using MineClaw.Hive.Claims;
 using MineClaw.Hive.Clone;
 using MineClaw.Hive.Db;
+using MineClaw.Hive.Inventory;
 using MineClaw.Hive.Ipc;
 using MineClaw.Hive.Slots;
 using MineClaw.World;
@@ -82,6 +83,9 @@ public sealed class CloneSlot(string name)
     internal (TaskMsg Task, string? ForPlayer, bool Unnamed)? RespawnWith;
     /// <summary>The recall came from the brain (hive recall), not budget/slot policy or shutdown.</summary>
     internal bool BrainRecall;
+    /// <summary>Main standing still for a hand-off TO this clone (lend offer → toss), and what it offered.</summary>
+    internal IDisposable? LendHold;
+    internal HiveLending.Pick? PendingLend;
 }
 
 /// <summary>
@@ -136,6 +140,8 @@ public sealed class HiveSupervisor : IAsyncDisposable
     public Func<SlotFacts> SlotFacts { get; }
     public IReadOnlyList<string> Regulars { get; }
     public IHandoffReceiver? Handoff { get; set; }
+    /// <summary>Main's inventory for hand-offs TO clones (a loadout tool main has spare). Null = main can't give items.</summary>
+    public IHiveDonor? Donor { get; set; }
 
     /// <summary>Events for the main bot's queue (quiet ones are Background: context only, never a wake-up).</summary>
     public event Action<GameEvent>? Notice;
@@ -511,6 +517,14 @@ public sealed class HiveSupervisor : IAsyncDisposable
         @"\b(?:will|gonna|going to|is (?:mining|going|working|heading|on)|still|working on|on (?:it|its way)|when (?:it|she|they)|once (?:it|she|they)|should|soon|doing|started|starting|spawn(?:ing|ed)?|sent)\b",
         System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
+    /// <summary>An update for a live clone's running task (context for its brain; the task stays). False = not connected.</summary>
+    public bool Note(string name, string text)
+    {
+        if (Resolve(name) is not { } n || _slots[n].Link is not { IsOpen: true } link) return false;
+        _ = link.SendAsync(Msg.Note, new NoteMsg(text));
+        return true;
+    }
+
     public string Recall(string? nameOrAll, string reason = "recalled")
     {
         var targets = string.IsNullOrWhiteSpace(nameOrAll) || nameOrAll.Trim().Equals("all", StringComparison.OrdinalIgnoreCase)
@@ -794,6 +808,9 @@ public sealed class HiveSupervisor : IAsyncDisposable
             if (gen != slot.Generation || slot.State is CloneState.Idle or CloneState.Retired or CloneState.Backoff) return; // already handled
             slot.HandoffHold?.Dispose();
             slot.HandoffHold = null;
+            slot.LendHold?.Dispose();
+            slot.LendHold = null;
+            slot.PendingLend = null;
             gone = slot.Gone;
             inv = slot.Inventory;
             slot.Connected = false;
@@ -880,7 +897,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
         }
         if (why != null)
         {
-            Post(GameEvent.Notice($"[hive] {slot.Number} logged out but couldn't log back in for its new task ({why}): {Trunc(t.Text, 60)}", EventPriority.Low));
+            Post(GameEvent.Notice($"[hive] {slot.Number} logged out but couldn't log back in for its new task ({why}): {Trunc(t.Text, 60)}", EventPriority.Normal) with { MustWake = true });
             return;
         }
         _log.LogInformation("hive: {Clone} logs back in with the task it was given while logging out", slot.Name);
@@ -967,7 +984,9 @@ public sealed class HiveSupervisor : IAsyncDisposable
                 slot.ResultIn = true;
                 slot.ResultText = r.Text;
                 slot.ResultOk = r.Ok;
-                Post(GameEvent.Notice($"[hive] {slot.Number} {(r.Ok ? "done" : "failed")}: {Trunc(r.Text, 200)}", EventPriority.Low));
+                // A failure must reach main's brain even while a script sleeps it; "done" stays a low notice.
+                Post(r.Ok ? GameEvent.Notice($"[hive] {slot.Number} done: {Trunc(r.Text, 200)}", EventPriority.Low)
+                    : GameEvent.Notice($"[hive] {slot.Number} failed: {Trunc(r.Text, 200)}", EventPriority.Normal) with { MustWake = true });
                 return null;
             case Msg.Claim when m.As<ClaimMsg>() is { } c:
                 {
@@ -1022,6 +1041,10 @@ public sealed class HiveSupervisor : IAsyncDisposable
                     lock (slot.Lock) { slot.HandoffHold?.Dispose(); slot.HandoffHold = null; }
                     return new HandoffAckMsg(got);
                 }
+            case Msg.Lend when m.As<LendMsg>() is { } lm:
+                return Lend(slot, lm);
+            case Msg.LendGo when m.As<LendGoMsg>() is { } lg:
+                return await LendGoAsync(slot, lg, ct).ConfigureAwait(false);
             case Msg.Bye when m.As<ByeMsg>() is { } bye:
                 lock (slot.Lock) { slot.ByeReceived = true; slot.RecallReason ??= bye.Reason; }
                 _log.LogInformation("hive: {Clone} bye ({Reason}, deposited {Dep}, stranded {N})", slot.Name, bye.Reason, bye.Deposited, bye.Stranded);
@@ -1032,6 +1055,71 @@ public sealed class HiveSupervisor : IAsyncDisposable
                 await Task.CompletedTask.ConfigureAwait(false);
                 return null;
         }
+    }
+
+    // ================================================================ hand-offs to clones (lend)
+
+    /// <summary>
+    /// A clone lacks an item its storage doesn't have (live 3, 14:16:58: 67 "no pickaxe, no axe" while main carried 2 stone
+    /// pickaxes): main offers what it has spare (keeping the one in hand / its best one) and stands still until the clone,
+    /// next to it, says go; otherwise the reply names other live hive bots carrying a spare (hive_inventory / live snapshots).
+    /// </summary>
+    internal LendReplyMsg Lend(CloneSlot slot, LendMsg lm)
+    {
+        var ids = lm.Ids is { Length: > 0 } only ? only : HiveLending.Resolve(lm.Item);
+        if (ids == null) return new LendReplyMsg(false, 0, 0, null, 0, 0, 0, $"unknown item '{lm.Item}'");
+        var holders = SpareHolders(slot, ids);
+        if (Donor is not { } d) return new LendReplyMsg(false, 0, 0, null, 0, 0, 0, "main can't hand items over", holders);
+        var pick = HiveLending.Spare(d.Items(), lm.Item, Math.Max(1, lm.Count), d.HeldId, d.Reserved, ids);
+        if (pick == null)
+        {
+            int has = HiveLending.Have(d.Items(), ids);
+            return new LendReplyMsg(false, 0, 0, null, 0, 0, 0, has > 0 ? $"main has only {has} {lm.Item} (it keeps one)" : $"main has no {lm.Item}", holders);
+        }
+        var hold = d.HoldStill(HandoffHoldTime);
+        if (d.Position is not { } pos) { hold?.Dispose(); return new LendReplyMsg(false, 0, 0, null, 0, 0, 0, "main can't hand items over now", holders); }
+        lock (slot.Lock)
+        {
+            slot.LendHold?.Dispose();
+            slot.LendHold = hold;
+            slot.PendingLend = pick;
+        }
+        _log.LogInformation("hive: offering {Clone} {N} {Item}", slot.Name, pick.Count, pick.Name);
+        return new LendReplyMsg(true, pick.Id, pick.Count, pick.Name, pos.X, pos.Y, pos.Z, null);
+    }
+
+    private async Task<LendDoneMsg> LendGoAsync(CloneSlot slot, LendGoMsg go, CancellationToken ct)
+    {
+        HiveLending.Pick? pick;
+        IDisposable? hold;
+        lock (slot.Lock) { pick = slot.PendingLend; hold = slot.LendHold; slot.PendingLend = null; slot.LendHold = null; }
+        try
+        {
+            if (pick == null || Donor is not { } d) return new LendDoneMsg(0, "nothing offered");
+            int tossed;
+            try { tossed = await d.TossAsync(pick.Id, pick.Count, new Vec3d(go.X, go.Y, go.Z), ct).ConfigureAwait(false); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "hive: toss to {Clone} failed", slot.Name); tossed = 0; }
+            _log.LogInformation("hive: tossed {N}/{Want} {Item} to {Clone}", tossed, pick.Count, pick.Name, slot.Name);
+            if (tossed > 0) Post(GameEvent.Notice($"[hive] handed {slot.Number} {tossed} {pick.Name} (its loadout)", EventPriority.Background));
+            return new LendDoneMsg(tossed, tossed > 0 ? null : "toss failed");
+        }
+        finally { hold?.Dispose(); }
+    }
+
+    /// <summary>"69 (2 stone axe)": other live clones carrying at least two of the kind (one spare).</summary>
+    private string[] SpareHolders(CloneSlot asker, int[] ids)
+    {
+        var list = new List<string>();
+        foreach (var s in _slots.Values)
+        {
+            if (ReferenceEquals(s, asker) || !s.IsLive) continue;
+            List<ItemMsg>? inv = s.Inventory;
+            if (inv == null) try { inv = Store?.Inventory(s.Name).ToList(); } catch (Exception) { }
+            var mine = (inv ?? []).Where(i => ids.Contains(i.Id)).ToList();
+            int n = mine.Sum(i => i.Count);
+            if (n >= 2) list.Add($"{s.Number} ({n} {mine[0].Name})");
+        }
+        return list.ToArray();
     }
 
     // ================================================================ broadcasts, heartbeats, policies

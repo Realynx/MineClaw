@@ -202,7 +202,7 @@ public sealed class ChatArbiter
     private void Rebuild()
     {
         // Names the hive answers to (main's display name/aliases/login): "<name> 67" addresses clone 67.
-        var names = _mainNames.Concat([_main]).Concat(["clone", "bot", "maid chan"]).Where(n => !string.IsNullOrWhiteSpace(n))
+        var names = _mainNames.Concat([_main]).Concat(["clone", "bot", "maid chan", "maid", "sis"]).Where(n => !string.IsNullOrWhiteSpace(n))
             .Distinct(StringComparer.OrdinalIgnoreCase).OrderByDescending(n => n.Length)
             .Select(n => string.Join(@"[\s_-]*", n.Split([' ', '_', '-'], StringSplitOptions.RemoveEmptyEntries).Select(Regex.Escape)));
         string nameAlt = string.Join("|", names);
@@ -223,6 +223,7 @@ public sealed class ChatArbiter
                 _number[c] = new Regex($@"(?<![0-9A-Za-z_.,#-]){num}(?![0-9A-Za-z_]|[.,]-?[0-9]|,\s*-?[0-9]+\s*,\s*-?[0-9])", RegexOptions.CultureInvariant);
                 parts.Add($@"(?<![A-Za-z0-9_])(?:{nameAlt})[\s_#-]*{num}(?![0-9])");    // "maid chan 420", "clone 69"
                 parts.Add($@"(?<![A-Za-z0-9_])#{num}(?![0-9])");                         // "#1337"
+                parts.Add($@"(?<![0-9A-Za-z_.,#-]){num}[\s,]+(?:maid|clone|bot|sis)(?![A-Za-z0-9])"); // "69 maid, ..."
                 _bare[c] = new Regex($@"(?<![0-9]){num}(?![0-9])", RegexOptions.CultureInvariant);
             }
             _explicit[c] = new Regex(string.Join("|", parts), RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -258,11 +259,18 @@ public sealed class ChatArbiter
             if (_hiveBots.Contains(msg.Player)) return new(null, false, false);
             // Several bots at once: main owns it and splits the work (clones get their part as an IPC task).
             if (_live.Count > 0 && msg.Kind != ChatKind.Emote && GroupAddress.IsMatch(msg.Text)) return new(_main, true, true);
-            var named = AddressedBots(msg.Text, msg.Kind);
+            var named = AddressedBots(msg.Text, msg.Kind, out bool delegated);
+            // A clone that isn't online can't answer: "69 bring me a water pail" while 69 is logged out is a request to main,
+            // which spawns it or does it (live 3, 14:13:32: nobody answered until "maid 69?!").
+            named = named.Select(n => IsCloneName(n) && !_live.Contains(n) ? _main : n).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             // Two or more bots named in one line ("67 and 69, come here", "hey 67 ... and maid chan"): each named bot hears
             // it, main coordinates (it owns the line and splits the work; the named clones answer their own part).
             if (named.Count >= 2) return new(_main, true, true, named);
             if (named.Count == 1) return new(named[0], true, false);
+            // "and have clone 69 harvest and replant trees" / "have 69 come in and do the same": a clone as the OBJECT of a
+            // request to main. Main is addressed (it delegates); before, such lines rode along as "(not to you)" context and
+            // main later decided an unaddressed "go farm the trees" must have been meant for 69 (live 3, 14:24:16).
+            if (delegated) return new(_main, true, false);
             // A bot that asked this player something (or is watching their demo) owns their replies until resolved/timeout.
             if (LiveThread(msg.Player) is { } holder) return new(holder, true, false);
             if (_sticky.TryGetValue(msg.Player, out var s) && s.Until > _time.GetUtcNow()
@@ -284,37 +292,56 @@ public sealed class ChatArbiter
         "collect", "grab", "fetch", "gather", "chop", "craft", "place", "put", "drop", "toss", "deposit", "withdraw", "leave", "keep",
         "spawn", "recall", "respawn", "summon", "pick", "picked", "not", "both", "either", "between", "via", "per",
     };
-    // A number right after these is a vocative ("hello 67?", "hey 69, just deliver tools", "ok 67 go").
-    private static readonly HashSet<string> Greetings = new(StringComparer.OrdinalIgnoreCase)
+    // Address words: a bare clone number right after one is a vocative ("hello 67?", "hey 69, just deliver tools", "ok 67 go",
+    // "maid 69?!", "good job 67!"). Live 3: a bare number counts ONLY next to one of these or at the start of a line/sentence.
+    private static readonly HashSet<string> AddressWords = new(StringComparer.OrdinalIgnoreCase)
     {
         "hey", "hi", "hello", "yo", "oi", "hiya", "heya", "sup", "ok", "okay", "thanks", "thank", "thx", "ty", "please", "pls", "plz",
         "sorry", "dear", "nice", "gj", "gm", "gn", "bye", "cya", "wb", "welcome", "oy", "ayo", "yay",
+        "maid", "maids", "chan", "clone", "bot", "sis", "sister", "job", "done", "work",
     };
+    // Address words that may also FOLLOW the number ("69 maid, ..." / "67 chan").
+    private static readonly HashSet<string> TrailingAddress = new(StringComparer.OrdinalIgnoreCase) { "maid", "chan", "clone", "bot", "sis" };
     // A number after these is a vocative only when a comma/colon follows ("also 67, this block is yours", not "and 69 will").
     private static readonly HashSet<string> Discourse = new(StringComparer.OrdinalIgnoreCase)
     {
         "also", "so", "and", "but", "now", "then", "well", "alright", "oh", "um", "uh", "anyway", "btw", "wait", "right", "yes", "yeah",
         "yea", "no", "nope", "good", "great",
     };
+    // A clone right after these, in an imperative to the hive, is the object of a request to main ("have clone 69 harvest").
+    private static readonly HashSet<string> DelegationVerbs = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "have", "tell", "ask", "send", "let", "make", "spawn", "respawn", "recall", "summon", "call",
+    };
+    // What may come before that verb: fillers, "can you", main's address ("maid, have 69 ...").
+    private static readonly HashSet<string> ImperativeLead = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "and", "also", "so", "ok", "okay", "now", "then", "please", "pls", "plz", "can", "could", "would", "will", "you", "u", "ya",
+        "maid", "chan", "main", "hey", "yo", "oh", "btw", "next", "just", "go", "lets", "let's",
+    };
     private static readonly Regex LastWord = new(@"([A-Za-z']+)[^A-Za-z0-9']*$", RegexOptions.CultureInvariant);
+    private static readonly Regex FirstWord = new(@"^\s*([A-Za-z]+)(?![A-Za-z])", RegexOptions.CultureInvariant);
     private static readonly Regex Joiner = new(@"^\s*(?:,|&|\+|and|n|or)?\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex CoordBefore = new(@"-?[0-9]+\s*,\s*$", RegexOptions.CultureInvariant);
-    private static readonly Regex LineTail = new(@"^[\s!?.~:;3<>()*^_-]*$", RegexOptions.CultureInvariant);
+    private static readonly Regex WordRx = new(@"[A-Za-z']+", RegexOptions.CultureInvariant);
+
+    private bool IsCloneName(string bot) => Clones.Contains(bot, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Every hive bot addressed in the line, in order of first mention (live clones and main). A clone's login/"maid chan 67"/
-    /// "#67"/"clone 67" and main's names address it anywhere unless a mention word precedes them ("tell maid chan 67 ...").
-    /// A bare clone number is an address at the start of a line or sentence, after a greeting ("hello 67?"), after a
-    /// discourse word with a comma ("also 67, ..."), chained to an addressed bot ("67 and 69"), or as a vocative before
-    /// , ? ! : or the end of the line ("good job 67!"); but not as a quantity or mention ("get 67 cobble", "with 67?",
-    /// "and 69 will be on crafting duty") and never inside a coordinate ("6,67,8"). Caller holds <see cref="_lock"/>.
+    /// Every hive bot addressed in the line, in order of first mention (all configured clones and main; Route sends an address
+    /// to an offline clone to main). A clone's login/"maid chan 67"/"#67"/"clone 67" and main's names address it anywhere
+    /// unless a mention word precedes them ("tell maid chan 67 ..."). A bare clone number is an address ONLY at the start of
+    /// a line or sentence ("69 bring me...", "69, ...", "nice. 69 can you"), right after an address word ("hey 69", "maid 69",
+    /// "good job 67!"), right before one ("69 maid, ..."), after a discourse word with a comma ("also 67, ..."), or chained
+    /// to an addressed bot ("67 and 69"); an ordinary number in a sentence never is ("I counted 69!", "get 67 cobble",
+    /// "with 67?", "and 69 will be on crafting duty", "6,67,8"). Caller holds <see cref="_lock"/>.
     /// </summary>
-    private List<string> AddressedBots(string text, ChatKind kind)
+    private List<string> AddressedBots(string text, ChatKind kind, out bool delegated)
     {
+        delegated = false;
         var cands = new List<(string Bot, int Index, int End, bool Strong)>();
-        foreach (var c in Clones)
+        foreach (var c in Clones) // offline clones too: an address to one goes to main (Route)
         {
-            if (!_live.Contains(c)) continue;
             foreach (Match m in _explicit[c].Matches(text)) cands.Add((c, m.Index, m.Index + m.Length, true));
             if (_number.TryGetValue(c, out var n))
                 foreach (Match m in n.Matches(text)) cands.Add((c, m.Index, m.Index + m.Length, false));
@@ -336,7 +363,11 @@ public sealed class ChatArbiter
         foreach (var x in cands)
         {
             if (x.Index < prevEnd) continue; // overlaps the previous addressed hit
-            if (!IsAddress(text, x.Index, x.End, x.Strong, prevEnd)) continue;
+            if (!IsAddress(text, x.Index, x.End, x.Strong, prevEnd))
+            {
+                if (IsCloneName(x.Bot) && IsDelegation(text[..x.Index])) delegated = true;
+                continue;
+            }
             prevEnd = x.End;
             if (!named.Contains(x.Bot, StringComparer.OrdinalIgnoreCase)) named.Add(x.Bot);
         }
@@ -353,12 +384,25 @@ public sealed class ChatArbiter
         var lw = LastWord.Match(before) is { Success: true } w ? w.Groups[1].Value.Trim('\'') : "";
         if (strong) return !RefWords.Contains(lw);
         if (CoordBefore.IsMatch(before)) return false;                              // "14, 67, -5"
-        if (Greetings.Contains(lw)) return true;
+        if (AddressWords.Contains(lw)) return true;                                 // "hey 69", "maid 69?!"
         var after = text[end..];
+        if (FirstWord.Match(after) is { Success: true } fw && TrailingAddress.Contains(fw.Groups[1].Value)) return true; // "69 maid"
         char next = after.TrimStart() is { Length: > 0 } a ? a[0] : '\0';
         if (Discourse.Contains(lw)) return next is ',' or ':';
-        if (RefWords.Contains(lw)) return false;
-        return next is ',' or '?' or '!' or ':' || LineTail.IsMatch(after);
+        return false; // an ordinary number in a sentence
+    }
+
+    /// <summary>
+    /// The clone after <paramref name="before"/> is the object of a request to main: its clause ends in a delegation verb
+    /// ("have", "tell", "send", "spawn"...) and everything before the verb is filler ("and", "can you", "maid,"): an
+    /// imperative to the hive. "I have 69 logs" is not ("I" isn't filler).
+    /// </summary>
+    private static bool IsDelegation(string before)
+    {
+        int cut = before.LastIndexOfAny(['.', '!', '?', ';']);
+        var words = WordRx.Matches(before[(cut + 1)..]).Select(m => m.Value.Trim('\'')).Where(x => x.Length > 0).ToList();
+        if (words.Count == 0 || !DelegationVerbs.Contains(words[^1])) return false;
+        return words.Take(words.Count - 1).All(ImperativeLead.Contains);
     }
 
     /// <summary>

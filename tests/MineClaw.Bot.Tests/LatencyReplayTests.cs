@@ -42,6 +42,9 @@ public class LatencyReplayTests(Xunit.Abstractions.ITestOutputHelper output)
         public async Task<LlmResponse> CompleteAsync(LlmRequest r, CancellationToken ct)
         {
             await Task.Yield();
+            // Two-phase reply calls (quick ack / cheap-only triage) run beside the brain in reality: no clock time here, no
+            // ack (their latency is replayed separately; this replay measures reaction / move / action).
+            if (r.Purpose.StartsWith("quick_", StringComparison.Ordinal)) return Resp(r, StopReasons.EndTurn, new LlmText(""));
             switch (r.Tier)
             {
                 case ModelTier.Cheap:

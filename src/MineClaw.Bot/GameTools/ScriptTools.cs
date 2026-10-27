@@ -29,6 +29,7 @@ public sealed class ScriptBridge
     [
         "goto", "follow", "mine", "harvest_generator", "collect_drops", "craft", "smelt", "collect_furnace", "deposit", "withdraw",
         "organize_chest", "place", "dig", "use_block", "eat", "chop_tree", "act",
+        AcquireTool.ToolName, // hidden tool: ensure{} / acquire{"pickaxe"} through the acquisition planner
     ];
 
     /// <summary>Never cut short by a pause/cancel: click sequences and single block actions finish, then the script stops.</summary>
@@ -251,6 +252,7 @@ public sealed class ScriptBridge
         if (s.Status == ScriptStatus.Paused) return e; // a paused script means the brain is awake
         if (e.Kind == EventKind.IdleTick) return null;
         if (e.Kind is EventKind.TaskCompleted or EventKind.TaskFailed) return e;
+        if (e.MustWake) return e with { Wakes = true }; // a background failure/stall: the sleeping brain must hear it
         if (e.Wakes && e.Priority >= _rt.Options.InterruptPriority) return e;
         return e.Wakes ? e with { Wakes = false } : e;
     }

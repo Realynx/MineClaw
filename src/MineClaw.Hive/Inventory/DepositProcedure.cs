@@ -37,6 +37,8 @@ public interface IInventoryPort
     /// here may be reachable from there. False when there's nowhere better to stand. Default: unsupported.
     /// </summary>
     Task<bool> StepOutAsync(CancellationToken ct) => Task.FromResult(false);
+    /// <summary>Walk to within ~2 blocks of <paramref name="at"/> (to receive a hand-off from main). Default: already there.</summary>
+    Task<bool> GoNearAsync(Vec3d at, CancellationToken ct) => Task.FromResult(true);
 }
 
 /// <summary>Who to hand items to when storage is full (main), over IPC.</summary>

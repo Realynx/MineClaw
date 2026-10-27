@@ -41,8 +41,27 @@ public sealed class ChatOptions
     /// <summary>Words that address everyone at once ("hey everyone"), honoured in small groups.</summary>
     public string[] GroupWords { get; set; } = ["everyone", "everybody", "guys", "y'all", "yall", "anyone", "anybody", "team", "all of you", "you all", "both of you"];
 
-    /// <summary>A player the bot just talked with is considered still talking to it for this long.</summary>
-    public int ReplyWindowSeconds { get; set; } = 45;
+    /// <summary>
+    /// Conversation continuity: a player's line within this long of the bot talking to them (or them talking to it) counts as
+    /// addressed. Live 2026-10-27: Fox's "give me my bucket back" 20 s after the bot's question to him was ignored for 72 s.
+    /// </summary>
+    public int ReplyWindowSeconds { get; set; } = 90;
+
+    /// <summary>
+    /// How the bot and players call each human (login → names, case-insensitive). A line that starts by calling ANOTHER player
+    /// ("robin look", "foxy, ...") is player-to-player chat; a bot line naming one ("master, ...") is spoken to them.
+    /// </summary>
+    public Dictionary<string, string[]> PlayerNicknames { get; set; } = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["poofimafox"] = ["fox", "foxy", "master"],
+        ["kiwi"] = ["robin"],
+    };
+
+    /// <summary>Lines that are imperatives about the bot's items/tasks/hive ("give me my bucket", "stop", "you...") count as addressed.</summary>
+    public bool ImperativesAddressed { get; set; } = true;
+
+    /// <summary>The cheap "is this line for the bot?" classifier for unsure lines (one tiny Haiku call, regulars only).</summary>
+    public AddressClassifierOptions Classifier { get; set; } = new();
 
     /// <summary>"everyone"-style messages count as addressed when at most this many humans are online.</summary>
     public int SmallGroupSize { get; set; } = 3;
@@ -54,7 +73,28 @@ public sealed class ChatOptions
     public int PerPlayerMaxMessages { get; set; } = 6;
     public int PerPlayerWindowSeconds { get; set; } = 30;
 
+    /// <summary>
+    /// Startup chatter cap: until a player talks to the bot (or <see cref="StartupWindowSeconds"/> pass), all unprompted chat
+    /// together is at most this many lines.
+    /// </summary>
+    public int StartupMaxLines { get; set; } = 2;
+    public int StartupWindowSeconds { get; set; } = 180;
+
     /// <summary>Outgoing: max lines per reply, and pause between lines.</summary>
     public int MaxLinesPerReply { get; set; } = 3;
     public int LineDelayMs { get; set; } = 800;
+}
+
+/// <summary>"Agent:Chat:Classifier": the cheap tie-breaker for lines that might be for the bot.</summary>
+public sealed class AddressClassifierOptions
+{
+    public bool Enabled { get; set; } = true;
+    /// <summary>Only while the bot is this close to the speaker (blocks)...</summary>
+    public double NearBlocks { get; set; } = 16;
+    /// <summary>...or in an active thread with them (the bot talked with them within this many minutes).</summary>
+    public int ThreadMinutes { get; set; } = 5;
+    /// <summary>Hard cap on classifier calls per hour (cost guard).</summary>
+    public int MaxPerHour { get; set; } = 30;
+    /// <summary>Give up waiting for the classifier after this long (the line stays background context).</summary>
+    public int TimeoutMs { get; set; } = 4000;
 }

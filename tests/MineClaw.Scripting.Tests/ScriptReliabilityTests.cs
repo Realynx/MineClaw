@@ -276,7 +276,7 @@ public class ScriptReliabilityTests
         var (h, c, b) = BotScriptTests.Bot();
         var v1 = await h.Run("script", new { op = "save", name = "cobble_loop", code = "-- purpose: cobble\nlocal ok, m = mine{'cobblestone', 2} expect(ok, m) return 'v1'" });
         Assert.True(v1.Ok, v1.Text);
-        Assert.Equal("ok: saved cobble_loop v1", v1.Text);
+        Assert.StartsWith("ok: saved cobble_loop v1", v1.Text); // + the no-ensure lint note (mine cobble needs a pickaxe)
         Assert.Empty(c.CallList); // save doesn't run
 
         var v2 = await h.Run("script", new { op = "save", name = "cobble_loop", code = "-- purpose: cobble\nlocal ok, m = mine{'cobblestone', args.n or 3} expect(ok, m) return 'v2'" });
@@ -289,7 +289,7 @@ public class ScriptReliabilityTests
         Assert.Contains("v1", (await h.Run("script", new { op = "run", name = "cobble_loop@v1" })).Text);
         Assert.Contains("v2", (await h.Run("script", new { op = "run", name = "cobble_loop", args = new { n = 5 } })).Text);
         Assert.Contains(c.CallList, x => x.StartsWith("mine cobblestone 5"));
-        Assert.Equal("ok: cobble_loop unchanged (v2)",
+        Assert.StartsWith("ok: cobble_loop unchanged (v2)",
             (await h.Run("script", new { op = "save", name = "cobble_loop", code = "-- purpose: cobble\nlocal ok, m = mine{'cobblestone', args.n or 3} expect(ok, m) return 'v2'" })).Text);
         Assert.Contains("cobble_loop v2 (n)", (await h.Run("script", new { op = "list" })).Text);
     }

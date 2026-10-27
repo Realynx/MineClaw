@@ -46,6 +46,24 @@ public sealed class ChatRouter
         SetIdentity(options.DisplayName, options.Aliases);
     }
 
+    /// <summary>
+    /// The bot just joined the game (bot layer, on spawn): starts the startup-chatter window, during which unprompted chat is
+    /// capped at <see cref="ChatOptions.StartupMaxLines"/> lines in total until a player talks to the bot.
+    /// </summary>
+    public void BeginSession()
+    {
+        lock (_lock)
+        {
+            _startupUntil = Now + TimeSpan.FromSeconds(Math.Max(0, _options.StartupWindowSeconds));
+            _startupLinesLeft = Math.Max(0, _options.StartupMaxLines);
+        }
+    }
+
+    // Startup chatter (live 2026-10-27: five lines about new builds and notes before anyone spoke): until a player talks to the
+    // bot or the window ends, unprompted chat is capped at StartupMaxLines lines in total.
+    private DateTimeOffset _startupUntil = DateTimeOffset.MinValue;
+    private int _startupLinesLeft;
+
     public ChatOptions Options => _options;
 
     /// <summary>Login username (fixed for the session).</summary>
@@ -231,12 +249,26 @@ public sealed class ChatRouter
             while (_recentHeard.Count > 24) _recentHeard.Dequeue();
         }
 
-        bool addressed = IsAddressed(msg);
+        var reason = ReasonFor(msg);
+        bool addressed = reason.IsAddressed();
         if (Arbiter != null)
         {
             try { addressed = Arbiter(msg, addressed); }
             catch (Exception) { /* arbiter failure: fall back to the local decision */ }
         }
+        NoteAddressing(msg, reason, addressed);
+        if (!addressed && ShouldClassify(msg, reason))
+        {
+            _ = ClassifyThenDeliverAsync(msg);
+            return;
+        }
+        Deliver(msg, addressed);
+    }
+
+    private void Deliver(ChatMessage msg, bool addressed)
+    {
+        var player = msg.Player!;
+        if (addressed) lock (_lock) _startupUntil = DateTimeOffset.MinValue; // a conversation: the startup cap is over
         if (addressed) Accepted?.Invoke(msg);
         if (Commands != null)
         {
@@ -342,29 +374,172 @@ public sealed class ChatRouter
     public bool ModelSpokeThisTurn { get { lock (_lock) return _modelSpokeAt >= _turnStart && _turnStart != DateTimeOffset.MaxValue; } }
 
     /// <summary>Whether the bot should treat this message as directed at it.</summary>
-    public bool IsAddressed(ChatMessage msg)
+    public bool IsAddressed(ChatMessage msg) => ReasonFor(msg).IsAddressed();
+
+    /// <summary>Why a line is (or isn't) for the bot: name, whisper, conversation continuity, solo, group, imperative...</summary>
+    public AddressReason ReasonFor(ChatMessage msg)
     {
-        if (msg.Player == null || IsSelf(msg.Player)) return false;
-        if (msg.Kind == ChatKind.Whisper) return true;
-        if (msg.Kind == ChatKind.Emote) return _identity.NameRegex.IsMatch(msg.Text); // "* kiwi pats claudechan"
-        if (msg.Kind != ChatKind.Public) return false;
-        if (_identity.NameRegex.IsMatch(msg.Text)) return true;
+        if (msg.Player == null || IsSelf(msg.Player)) return AddressReason.No;
+        if (msg.Kind == ChatKind.Whisper) return AddressReason.Whisper;
+        if (msg.Kind == ChatKind.Emote) return _identity.NameRegex.IsMatch(msg.Text) ? AddressReason.Name : AddressReason.No; // "* kiwi pats claudechan"
+        if (msg.Kind != ChatKind.Public) return AddressReason.No;
+        if (_identity.NameRegex.IsMatch(msg.Text)) return AddressReason.Name;
 
         int humans;
+        bool inThread;
+        string[] others;
         lock (_lock)
         {
             humans = Math.Max(_online.Count, 1);
-            if (_lastTalkedWith.TryGetValue(msg.Player, out var at) && Now - at < TimeSpan.FromSeconds(_options.ReplyWindowSeconds))
+            inThread = _lastTalkedWith.TryGetValue(msg.Player, out var at) && Now - at < TimeSpan.FromSeconds(_options.ReplyWindowSeconds);
+            others = _online.Where(p => !p.Equals(msg.Player, StringComparison.OrdinalIgnoreCase)).ToArray();
+        }
+        if (humans <= _options.SmallGroupSize && _groupRegex.IsMatch(msg.Text)) return AddressReason.Group;
+        // Obvious player-to-player chat ("bob look at this", "robin, come see") never wakes the bot.
+        if (CallsAnotherPlayer(msg.Text, others)) return AddressReason.OtherPlayer;
+        if (inThread) return AddressReason.Continuity;
+        if (_options.SoloPlayerAlwaysAddressed && humans <= 1) return AddressReason.Solo;
+        // A hive clone never takes an unnamed order by itself: main (or the clone holding the thread) owns it.
+        if (_options.ImperativesAddressed && !DropBackgroundChat && humans <= _options.SmallGroupSize && AddressingText.IsBotDirected(msg.Text))
+            return AddressReason.Imperative;
+        return AddressReason.No;
+    }
+
+    /// <summary>True when the line calls another online human by login (not as a mere mention) or by a nickname (vocative).</summary>
+    private bool CallsAnotherPlayer(string text, IReadOnlyCollection<string> others)
+    {
+        foreach (var p in others)
+        {
+            if (AddressingText.CallsLogin(text, p)) return true;
+            if (_options.PlayerNicknames.TryGetValue(p, out var nicks))
+                foreach (var n in nicks)
+                    if (AddressingText.Vocative(text, n)) return true;
+        }
+        return false;
+    }
+
+    // ---------- addressing: cheap classifier + telemetry ----------
+
+    /// <summary>Regular (trusted) players: the classifier only runs for them. Null = nobody.</summary>
+    public Func<string, bool>? IsRegular { get; set; }
+
+    /// <summary>The bot is near this player (bot layer; within Classifier.NearBlocks). Null = unknown (thread only).</summary>
+    public Func<string, bool>? IsNear { get; set; }
+
+    /// <summary>
+    /// The cheap "is this line for the bot?" call (AgentRuntime: one tiny Haiku call; args: line, recent chat). Null result =
+    /// couldn't decide. Only asked for unsure lines from regulars while the bot is near them or in an active thread with them.
+    /// </summary>
+    public Func<ChatMessage, IReadOnlyList<string>, CancellationToken, Task<bool?>>? Classifier { get; set; }
+
+    /// <summary>Addressing counters (continuity, imperatives, classifier calls/yes, misses).</summary>
+    public AddressingStats Addressing { get; } = new();
+
+    /// <summary>(player, missed line, how it was finally addressed): a line we didn't take that the player then repeated by name.</summary>
+    public event Action<string, string, string>? AddressMissed;
+
+    private readonly Dictionary<string, (string Text, DateTimeOffset At)> _ignored = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Queue<DateTimeOffset> _classifierCalls = new();
+
+    private void NoteAddressing(ChatMessage msg, AddressReason reason, bool addressed)
+    {
+        if (msg.Kind != ChatKind.Public) return;
+        var player = msg.Player!;
+        string? missed = null;
+        lock (_lock)
+        {
+            if (reason == AddressReason.Continuity) Addressing.Continuity++;
+            else if (reason == AddressReason.Imperative) Addressing.Imperatives++;
+            if (!addressed)
             {
-                // In an ongoing exchange — unless they're clearly talking to another player by name.
-                if (!_online.Any(p => !p.Equals(msg.Player, StringComparison.OrdinalIgnoreCase) &&
-                                      Regex.IsMatch(msg.Text, @"(?<![A-Za-z0-9_])" + Regex.Escape(p) + @"(?![A-Za-z0-9_])", RegexOptions.IgnoreCase)))
-                    return true;
+                if (reason != AddressReason.OtherPlayer) _ignored[player] = (msg.Text, Now);
+            }
+            else if (_ignored.Remove(player, out var prev) && Now - prev.At < TimeSpan.FromSeconds(_options.ReplyWindowSeconds) &&
+                     reason is AddressReason.Name)
+            {
+                Addressing.Misses++;
+                missed = prev.Text;
             }
         }
-        if (_options.SoloPlayerAlwaysAddressed && humans <= 1) return true;
-        if (humans <= _options.SmallGroupSize && _groupRegex.IsMatch(msg.Text)) return true;
-        return false;
+        if (missed != null) try { AddressMissed?.Invoke(player, missed, reason.ToString()); } catch (Exception) { }
+    }
+
+    private bool ShouldClassify(ChatMessage msg, AddressReason reason)
+    {
+        var c = _options.Classifier;
+        if (Classifier == null || !c.Enabled || msg.Kind != ChatKind.Public || reason == AddressReason.OtherPlayer) return false;
+        var player = msg.Player!;
+        if (IsRegular?.Invoke(player) != true) return false;
+        lock (_lock)
+        {
+            if (_waiters.Any(w => w.Player != null && w.Player.Equals(player, StringComparison.OrdinalIgnoreCase))) return false; // a waiter takes it anyway
+            bool thread = _lastTalkedWith.TryGetValue(player, out var at) && Now - at < TimeSpan.FromMinutes(Math.Max(0, c.ThreadMinutes));
+            bool near = false;
+            try { near = IsNear?.Invoke(player) == true; } catch (Exception) { }
+            if (!thread && !near) return false;
+            var cutoff = Now - TimeSpan.FromHours(1);
+            while (_classifierCalls.Count > 0 && _classifierCalls.Peek() < cutoff) _classifierCalls.Dequeue();
+            if (_classifierCalls.Count >= Math.Max(0, c.MaxPerHour)) return false;
+            _classifierCalls.Enqueue(Now);
+        }
+        // In a hive only the bot that would own the line asks (one call per line, not one per process).
+        if (Arbiter != null)
+        {
+            try { if (!Arbiter(msg, true)) return false; } catch (Exception) { return false; }
+        }
+        return true;
+    }
+
+    private async Task ClassifyThenDeliverAsync(ChatMessage msg)
+    {
+        bool? yes = null;
+        lock (_lock) Addressing.ClassifierCalls++;
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(Math.Max(200, _options.Classifier.TimeoutMs)));
+            yes = await Classifier!(msg, RecentContext(8), cts.Token).ConfigureAwait(false);
+        }
+        catch (Exception) { /* timeout / API error: the line stays background context */ }
+        bool addressed = yes == true;
+        if (addressed)
+        {
+            lock (_lock) { Addressing.ClassifierYes++; _ignored.Remove(msg.Player!); }
+            if (Arbiter != null)
+            {
+                try { addressed = Arbiter(msg, true); } catch (Exception) { }
+            }
+        }
+        Deliver(msg, addressed);
+    }
+
+    /// <summary>The last few lines heard and said (oldest first, "name: text") for the classifier prompt.</summary>
+    private IReadOnlyList<string> RecentContext(int max)
+    {
+        lock (_lock)
+        {
+            var cutoff = Now - TimeSpan.FromMinutes(3);
+            var heard = _recentHeard.Where(h => h.At >= cutoff).Select(h => (h.At, Line: $"{h.Player}: {h.Text}"));
+            var said = _recentSent.Where(h => h.At >= cutoff).Select(h => (h.At, Line: $"you: {h.Line}"));
+            return heard.Concat(said).OrderBy(x => x.At).TakeLast(max).Select(x => x.Line).ToList();
+        }
+    }
+
+    /// <summary>
+    /// Who a bot line is spoken to when the caller gave no audience (a task-event turn): online players it names (login or
+    /// nickname: "master, ..."), else the player the bot was last talking with. Their next line then continues the thread.
+    /// </summary>
+    internal IReadOnlyList<string> InferAudience(string text)
+    {
+        lock (_lock)
+        {
+            var named = _online.Where(p => AddressingText.Mentions(text, p) ||
+                                           (_options.PlayerNicknames.TryGetValue(p, out var nicks) && nicks.Any(n => AddressingText.Mentions(text, n))))
+                .ToList();
+            if (named.Count > 0) return named;
+            var window = TimeSpan.FromSeconds(_options.ReplyWindowSeconds);
+            var recent = _lastTalkedWith.Where(kv => _online.Contains(kv.Key) && Now - kv.Value < window).OrderByDescending(kv => kv.Value).ToList();
+            return recent.Count > 0 ? [recent[0].Key] : [];
+        }
     }
 
     private bool AllowIncoming(string player)
@@ -506,6 +681,12 @@ public sealed class ChatRouter
     /// </summary>
     public async Task<IReadOnlyList<string>> SayAsync(string text, string? whisperTo = null, IEnumerable<string>? audience = null, CancellationToken ct = default)
     {
+        var to = audience?.ToList() ?? [];
+        if (whisperTo != null && to.Count == 0) to.Add(whisperTo);
+        if (to.Count == 0) to.AddRange(InferAudience(text ?? ""));
+        // At most one food ask per player per 10 minutes, whoever writes the line (brain, tool, script).
+        text = Food.Filter(text ?? "", to, Now, PlayerAskedAboutFood);
+        text = Greeted.Filter(text, to, Now); // one hello per player per few minutes (join turn + their first line)
         string prefix = whisperTo != null ? string.Format(_options.WhisperFormat, whisperTo, "") : "";
         int max = ChatText.MaxLineLength - prefix.Length;
         // A line of model text starting with "/me " is an emote (sent as-is, always public); any other "/..." line would be a
@@ -543,9 +724,19 @@ public sealed class ChatRouter
         }
         FlushText();
         if (lines.Count == 0) return [];
-        if (lines.Count > _options.MaxLinesPerReply)
+        int cap = _options.MaxLinesPerReply;
+        lock (_lock)
         {
-            lines = lines.Take(_options.MaxLinesPerReply).ToList();
+            if (Now < _startupUntil)
+            {
+                cap = Math.Min(cap, _startupLinesLeft);
+                _startupLinesLeft = Math.Max(0, _startupLinesLeft - lines.Count);
+            }
+        }
+        if (cap <= 0) return [];
+        if (lines.Count > cap)
+        {
+            lines = lines.Take(cap).ToList();
             var (last, emote) = lines[^1];
             int lim = emote ? ChatText.MaxLineLength : max;
             lines[^1] = (last.Length + 3 <= lim ? last + "..." : last[..(lim - 3)] + "...", emote);
@@ -572,12 +763,28 @@ public sealed class ChatRouter
             _sendLock.Release();
         }
 
+        if (!lines.Any(l => !l.Emote) && audience == null) to.Clear(); // an emote alone isn't talking to anyone
         lock (_lock)
         {
             if (whisperTo != null) _lastTalkedWith[whisperTo] = Now;
-            if (audience != null) foreach (var p in audience) _lastTalkedWith[p] = Now;
+            foreach (var p in to) _lastTalkedWith[p] = Now;
         }
         return lines.Select(l => l.Text).ToList();
+    }
+
+    /// <summary>The food-ask guard (one ask per player per 10 minutes).</summary>
+    public FoodAsks Food { get; } = new();
+
+    /// <summary>The greeting guard (one hello per player per 3 minutes).</summary>
+    public Greetings Greeted { get; } = new();
+
+    private bool PlayerAskedAboutFood(string player)
+    {
+        lock (_lock)
+        {
+            var cutoff = Now - TimeSpan.FromSeconds(90);
+            return _recentHeard.Any(h => h.At >= cutoff && h.Player.Equals(player, StringComparison.OrdinalIgnoreCase) && FoodAsks.IsFoodTopic(h.Text));
+        }
     }
 
     /// <summary>

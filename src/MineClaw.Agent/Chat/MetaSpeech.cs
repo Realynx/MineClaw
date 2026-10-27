@@ -24,6 +24,15 @@ public static partial class MetaSpeech
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex PlumbingRx();
 
+    /// <summary>
+    /// Memory housekeeping narrated to players (live 2026-10-27: "I tried to delete a duplicate note about the other new plank
+    /// build, but nothing matched."): forgetting/merging notes is the bot's own bookkeeping, never chat.
+    /// </summary>
+    [GeneratedRegex(
+        @"\b(?:tried\s+to\s+|trying\s+to\s+|went\s+to\s+)?(?:delet(?:e|ed|ing)|forg(?:et|ot|etting)|remov(?:e|ed|ing)|merg(?:e|ed|ing)|dedup(?:e|ed|ing)?|clean(?:ed|ing)?\s+up|tidy(?:ing)?\s+up|prun(?:e|ed|ing))\s+(?:a\s+|an\s+|the\s+|my\s+|that\s+|this\s+|some\s+|old\s+)*(?:duplicate\s+|old\s+|stale\s+|extra\s+|wrong\s+)*(?:notes?|memor(?:y|ies)|entr(?:y|ies)|records?|waypoints?)\b|\bnothing\s+matched\b|\b(?:duplicate|stale)\s+(?:notes?|memor(?:y|ies)|entr(?:y|ies))\b|\bmy\s+(?:notes|memory)\s+(?:had|has)\s+(?:a\s+)?(?:duplicate|stale|wrong)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex MemoryChoreRx();
+
     /// <summary>Longest sentence <see cref="PlumbingRx"/> drops whole; a longer one keeps its real content.</summary>
     private const int MaxPlumbingWords = 25;
 
@@ -50,7 +59,7 @@ public static partial class MetaSpeech
             {
                 var t = s.Trim();
                 if (t.Length == 0) continue;
-                if (IsMeta(t)) { suppressed.Add(t); continue; }
+                if (IsMeta(t) || MemoryChoreRx().IsMatch(t)) { suppressed.Add(t); continue; }
                 if (PlumbingRx().Match(t) is { Success: true } pm)
                 {
                     // "I've started the job in the background: grab a stone axe and torches, ..." keeps what the job is.

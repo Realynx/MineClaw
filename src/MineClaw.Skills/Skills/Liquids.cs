@@ -99,9 +99,28 @@ public static class FluidRules
         return null;
     }
 
-    /// <summary>Liquid source at <paramref name="p"/> (meta 0 still or flowing id).</summary>
-    public static bool IsSource(IBlockAccess w, BlockPos p, bool lava) =>
-        (lava ? BlockShapes.IsLava(w.GetBlock(p.X, p.Y, p.Z)) : BlockShapes.IsWater(w.GetBlock(p.X, p.Y, p.Z))) && w.GetMeta(p.X, p.Y, p.Z) == 0;
+    /// <summary>Liquid source at <paramref name="p"/>: ANY water (8 flowing or 9 still) / lava (10/11) id with meta 0
+    /// (ItemBucket b1.8.1 checks material + meta 0). Meta 1..7 is a flow level, meta &gt;= 8 falling liquid.</summary>
+    public static bool IsSource(IBlockAccess w, BlockPos p, bool lava) => IsSource(w.GetBlock(p.X, p.Y, p.Z), w.GetMeta(p.X, p.Y, p.Z), lava);
+
+    public static bool IsSource(int id, int meta, bool lava) => lava ? Blocks.IsLavaSource(id, meta) : Blocks.IsWaterSource(id, meta);
+
+    /// <summary>A water source that comes back after scooping (BlockFlowing b1.8.1: at least 2 horizontal source neighbours
+    /// over a solid block or a water source): part of an infinite pool. Lava never refills.</summary>
+    public static bool Refills(IBlockAccess w, BlockPos p)
+    {
+        int n = SkillWorld.Horizontal.Count(o => IsSource(w, p + o, false));
+        if (n < 2) return false;
+        var below = p.Down();
+        return BlockShapes.IsFullCube(w, below.X, below.Y, below.Z) || IsSource(w, below, false);
+    }
+
+    /// <summary>"water source" / "flowing water (level 3)" / "falling water".</summary>
+    public static string Describe(int id, int meta)
+    {
+        string what = BlockShapes.IsLava(id) ? "lava" : "water";
+        return meta == 0 ? $"{what} source" : meta >= 8 ? $"falling {what}" : $"flowing {what} (level {meta})";
+    }
 }
 
 /// <summary>Bucket primitives on public client calls: a bucket is used in the look direction (the server raytraces from
@@ -131,24 +150,103 @@ public static class BucketOps
         return null;
     }
 
+    /// <summary>A point just inside an open face of the source <paramref name="src"/> such that the server's bucket raytrace
+    /// (ItemBucket: eye → look, liquids on, so it stops at the first liquid SOURCE or solid block and passes flowing
+    /// liquid) hits exactly <paramref name="src"/> first: never through a solid block or another source. Top face first
+    /// (the open surface), then the sides; null = no clear line from <paramref name="eye"/> within <paramref name="reach"/>.</summary>
+    public static Vec3d? SourceAim(IBlockAccess w, Vec3d eye, BlockPos src, double reach)
+    {
+        const double In = 0.02; // just inside the face, so the ray enters the cell through it
+        Vec3d? best = null;
+        double bestScore = double.MaxValue;
+        foreach (var f in AimFaces)
+        {
+            var n = src.Offset(f);
+            if (BlockShapes.IsFullCube(w, n.X, n.Y, n.Z)) continue; // covered face
+            var o = f.Normal();
+            foreach (var (u, v) in FaceGrid)
+            {
+                // Face centre pushed In inside along the normal, spread over the face's two in-plane axes.
+                double x = src.X + 0.5 + (o.X != 0 ? o.X * (0.5 - In) : u);
+                double y = src.Y + 0.5 + (o.Y != 0 ? o.Y * (0.5 - In) : o.X != 0 ? u : v);
+                double z = src.Z + 0.5 + (o.Z != 0 ? o.Z * (0.5 - In) : v);
+                var p = new Vec3d(x, y, z);
+                double d = p.DistanceTo(eye);
+                if (d > reach || FirstHit(w, eye, p, liquids: true) != src) continue;
+                double score = d + (f == BlockFace.Top ? 0 : 2);
+                if (score < bestScore) { bestScore = score; best = p; }
+            }
+            if (best is not null && f == BlockFace.Top) return best;
+        }
+        return best;
+    }
+
+    private static readonly BlockFace[] AimFaces = [BlockFace.Top, BlockFace.North, BlockFace.South, BlockFace.West, BlockFace.East];
+    private static readonly (double U, double V)[] FaceGrid =
+        [(0, 0), (-0.3, 0), (0.3, 0), (0, -0.3), (0, 0.3), (-0.3, -0.3), (0.3, 0.3), (-0.3, 0.3), (0.3, -0.3)];
+
+    /// <summary>The source to scoop: <paramref name="pos"/> itself, the source above it (its floor was given), the nearest
+    /// unprotected source of the same pool (a flowing cell was given), or the nearest one around me; infinite-pool cells
+    /// (they refill) first. The error says why nothing fits (only flowing water / protected sources).</summary>
+    public static (BlockPos? Src, string? Why) PickSource(SkillContext ctx, BlockPos? pos, bool lava)
+    {
+        string what = lava ? "lava" : "water";
+        bool Usable(BlockPos p) => FluidRules.IsSource(ctx.World, p, lava) && !ctx.Protected(p);
+        double far = Math.Max(12.0, ctx.Options.SearchRadius);
+        if (pos is { } p0)
+        {
+            if (Usable(p0)) return (p0, null);
+            if (!BlockShapes.IsLiquid(ctx.Block(p0)) && Usable(p0.Up())) return (p0.Up(), null);
+            BlockPos? cell = BlockShapes.IsLiquid(ctx.Block(p0)) ? p0 : BlockShapes.IsLiquid(ctx.Block(p0.Up())) ? p0.Up() : null;
+            if (cell is not { } c) return (null, $"no {what} at {SkillJson.Fmt(p0)} ({ctx.BlockName(p0)})");
+            if (Nearest(ctx, c.Center, 6, lava) is { } s) return (s, null);
+            string state = FluidRules.IsSource(ctx.World, c, lava) ? $"a protected {what} source" : FluidRules.Describe(ctx.Block(c), ctx.Meta(c));
+            return (null, $"{SkillJson.Fmt(c)} is {state}; no unprotected {what} source within 6 of it{ProtectedHint(ctx, c.Center, far, lava, c)}");
+        }
+        foreach (double r in new[] { 12.0, far })
+            if (Nearest(ctx, ctx.Feet, r, lava) is { } s) return (s, null);
+        var flowing = ctx.World.FindBlocks(ctx.Feet, far, (i, m) => (lava ? BlockShapes.IsLava(i) : BlockShapes.IsWater(i)) && m != 0, 1);
+        string seen = flowing.Count > 0
+            ? $"; only {FluidRules.Describe(flowing[0].Id, flowing[0].Meta)} e.g. at {SkillJson.Fmt(flowing[0].Pos)} (can't be scooped)" : "";
+        return (null, $"no {what} source within {far:0}{seen}{ProtectedHint(ctx, ctx.Feet, far, lava, null)}");
+    }
+
+    private static BlockPos? Nearest(SkillContext ctx, Vec3d at, double r, bool lava)
+    {
+        var all = ctx.World.FindBlocks(at, r, (i, m) => FluidRules.IsSource(i, m, lava), 256).Where(f => !ctx.Protected(f.Pos)).ToList();
+        if (all.Count == 0) return null;
+        // An infinite-pool cell refills, so prefer it over a lone source someone placed (irrigation, a demo).
+        return all.OrderBy(f => !lava && FluidRules.Refills(ctx.World, f.Pos) ? 0 : 1).ThenBy(f => f.DistanceSquared).First().Pos;
+    }
+
+    private static string ProtectedHint(SkillContext ctx, Vec3d at, double r, bool lava, BlockPos? skip)
+    {
+        var prot = ctx.World.FindBlocks(at, r, (i, m) => FluidRules.IsSource(i, m, lava), 256)
+            .FirstOrDefault(f => f.Pos != skip && ctx.Protected(f.Pos));
+        return prot.Id != 0 ? $"; protected source at {SkillJson.Fmt(prot.Pos)} (farm/generator water, left alone)" : "";
+    }
+
     /// <summary>Fills an empty bucket from the liquid source at <paramref name="src"/>.</summary>
     public static async Task<SkillResult> FillAsync(SkillContext ctx, BlockPos src, CancellationToken ct)
     {
         int id = ctx.Block(src);
         bool lava = BlockShapes.IsLava(id);
-        if (!BlockShapes.IsLiquid(id) || ctx.Meta(src) != 0) return SkillResult.Fail($"no liquid source at {SkillJson.Fmt(src)}");
+        if (!BlockShapes.IsLiquid(id)) return SkillResult.Fail($"no liquid at {SkillJson.Fmt(src)} ({ctx.BlockName(src)})");
+        if (ctx.Meta(src) != 0) return SkillResult.Fail($"{SkillJson.Fmt(src)} is {FluidRules.Describe(id, ctx.Meta(src))}, not a source");
         if (!ctx.Has(Items.Bucket)) return SkillResult.Fail("no empty bucket");
-        if (ctx.Protected(src)) return SkillResult.Fail($"liquid at {SkillJson.Fmt(src)} is protected");
+        if (ctx.Protected(src)) return SkillResult.Fail($"{(lava ? "lava" : "water")} source at {SkillJson.Fmt(src)} is protected");
         var reach = await ctx.ReachAsync(src, ct, Math.Min(4.5, ctx.Game.Reach)).ConfigureAwait(false);
         if (!reach.Ok) return SkillResult.Fail($"can't reach {SkillJson.Fmt(src)}: {reach.Message}");
-        var aim = new Vec3d(src.X + 0.5, src.Y + 0.75, src.Z + 0.5);
-        if (FirstHit(ctx.World, ctx.World.Player.EyePosition, aim, liquids: true) != src)
+        var aim = SourceAim(ctx.World, ctx.World.Player.EyePosition, src, 4.5);
+        if (aim is null)
+        {
             await ctx.Game.GotoAsync(new GoalWithinReach(src, 2.0), null, ct).ConfigureAwait(false);
-        if (FirstHit(ctx.World, ctx.World.Player.EyePosition, aim, liquids: true) != src)
-            return SkillResult.Fail($"no clear line to the source at {SkillJson.Fmt(src)}");
+            aim = SourceAim(ctx.World, ctx.World.Player.EyePosition, src, 4.5);
+        }
+        if (aim is not { } point) return SkillResult.Fail($"no clear line to the source at {SkillJson.Fmt(src)}");
         int full = lava ? Items.LavaBucket : Items.WaterBucket;
         int before = ctx.Count(full);
-        await ctx.Game.LookAtAsync(aim, ct).ConfigureAwait(false);
+        await ctx.Game.LookAtAsync(point, ct).ConfigureAwait(false);
         var r = await ctx.Game.UseItemAsync(Items.Bucket, ct).ConfigureAwait(false);
         if (!r.Ok) return SkillResult.From(r);
         if (!await ctx.Game.WaitUntilAsync(() => ctx.Count(full) > before, ctx.Options.BlockChangeTimeout, ct).ConfigureAwait(false))
@@ -197,10 +295,11 @@ public sealed class FillBucketSkill : Skill
 
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
-        bool lava = args.Str("liquid")?.Contains("lava", StringComparison.OrdinalIgnoreCase) == true;
-        var src = args.Pos() ?? ctx.Find((id, m) => m == 0 && (lava ? BlockShapes.IsLava(id) : BlockShapes.IsWater(id)), 12, 1).FirstOrDefault().Pos;
-        if (args.Pos() is null && !FluidRules.IsSource(ctx.World, src, lava)) return Fail($"no {(lava ? "lava" : "water")} source nearby");
-        return await BucketOps.FillAsync(ctx, src, ct);
+        bool lava = args.Str("liquid")?.Contains("lava", StringComparison.OrdinalIgnoreCase) == true
+                    || (args.Str("liquid") is null && args.Pos() is { } given && BlockShapes.IsLava(ctx.Block(given)));
+        var (src, why) = BucketOps.PickSource(ctx, args.Pos(), lava);
+        if (src is not { } s) return Fail(why ?? $"no {(lava ? "lava" : "water")} source");
+        return await BucketOps.FillAsync(ctx, s, ct);
     }
 }
 

@@ -61,6 +61,52 @@ public sealed class GoalWithinReach(BlockPos target, double reach = 4.0, bool ex
     public override string ToString() => $"reach {Target} ({Reach})";
 }
 
+/// <summary>
+/// A cell from which the target block can actually be clicked: the eye is within <see cref="Reach"/> AND a ray from the eye
+/// reaches one of the target's faces (<see cref="Aiming.FindDigAim"/>). <see cref="GoalWithinReach"/> is distance only, so it
+/// is satisfied on the wrong side of a wall (live 10-27: clones stopped outside the plank house at 14,64,-3 "within reach" of
+/// chest 14,64,-5 behind the wall and reported "can't reach chest"); this goal sends the search through the door instead.
+/// Visibility is judged from the cell center with the live blocks (doors as they are now; cells inside a room see the
+/// container whatever state the door is in).
+/// </summary>
+public sealed class GoalUseBlock(IBlockAccess world, BlockPos target, double reach = 3.9) : Goal
+{
+    public BlockPos Target { get; } = target;
+    public double Reach { get; } = reach;
+
+    /// <summary>Eye position of a player standing centered in feet cell (x,y,z), on a slab/snow layer when there is one.</summary>
+    public static Vec3d EyeAt(IBlockAccess w, int x, int y, int z)
+    {
+        double top = BlockShapes.CollisionTop(w, x, y, z);
+        double feet = y + (top is > 0 and < 1 ? top : 0);
+        return new Vec3d(x + 0.5, feet + PlayerPhysics.EyeHeight, z + 0.5);
+    }
+
+    public override bool IsReached(int x, int y, int z)
+    {
+        if (x == Target.X && z == Target.Z && y >= Target.Y - 1 && y <= Target.Y + 1) return false;
+        double dx = x + 0.5 - (Target.X + 0.5), dy = y + PlayerPhysics.EyeHeight - (Target.Y + 0.5), dz = z + 0.5 - (Target.Z + 0.5);
+        if (dx * dx + dy * dy + dz * dz > (Reach + 0.6) * (Reach + 0.6)) return false;
+        // Seen from the center AND from eyes a quarter block off it: the follower stops anywhere near the center, and a
+        // spot that sees the block only along one exact line past a door panel / wall corner failed on arrival (13.4,64,-2.5).
+        var eye = EyeAt(world, x, y, z);
+        if (Aiming.FindDigAim(world, eye, Target, Reach) is null) return false;
+        foreach (var (ox, oz) in Offsets)
+            if (Aiming.FindDigAim(world, new Vec3d(eye.X + ox, eye.Y, eye.Z + oz), Target, Reach + 0.3) is null) return false;
+        return true;
+    }
+
+    private static readonly (double, double)[] Offsets = [(0.25, 0), (-0.25, 0), (0, 0.25), (0, -0.25)];
+
+    public override double Distance(int x, int y, int z)
+    {
+        double dx = x - Target.X, dy = y + 1.12 - Target.Y, dz = z - Target.Z;
+        return Math.Max(0, Math.Sqrt(dx * dx + dy * dy + dz * dz) - Reach);
+    }
+
+    public override string ToString() => $"use {Target} ({Reach})";
+}
+
 /// <summary>Within range of a (moving) point, e.g. an entity's position.</summary>
 public sealed class GoalNearPosition(Vec3d position, double range) : Goal
 {

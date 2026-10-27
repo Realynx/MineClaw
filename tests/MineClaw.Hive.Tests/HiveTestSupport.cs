@@ -22,6 +22,8 @@ public static class Stub
         var config = d.Parent!.Name;
         var project = d.Parent.Parent!.Parent!.FullName;
         var dir = Path.Combine(project, "CloneStub", "bin", config, tfm);
+        // --artifacts-path layout: <artifacts>/bin/MineClaw.Hive.Tests/<config>/ next to <artifacts>/bin/MineClaw.Hive.CloneStub/<config>/
+        if (!Directory.Exists(dir)) dir = Path.Combine(d.Parent.Parent!.FullName, "MineClaw.Hive.CloneStub", d.Name);
         if (!Directory.Exists(dir)) throw new DirectoryNotFoundException("clone stub not built: " + dir);
         return dir;
     }

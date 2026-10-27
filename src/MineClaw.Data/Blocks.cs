@@ -75,6 +75,13 @@ public static class Blocks
     public static bool IsWater(int id) => id is FlowingWater or Water;
     public static bool IsLava(int id) => id is FlowingLava or Lava;
 
+    /// <summary>A liquid SOURCE (what an empty bucket can scoop, ItemBucket b1.8.1): water 8/9 or lava 10/11 with meta 0.
+    /// The id says nothing about it: a settled flow is id 9 with its level as meta, a fresh source is id 8 meta 0.
+    /// Meta 1..7 is a flow level, meta &gt;= 8 falling liquid.</summary>
+    public static bool IsWaterSource(int id, int meta) => IsWater(id) && meta == 0;
+    public static bool IsLavaSource(int id, int meta) => IsLava(id) && meta == 0;
+    public static bool IsLiquidSource(int id, int meta) => (IsWater(id) || IsLava(id)) && meta == 0;
+
     /// <summary>A player can stand inside this block without being blocked (air, plants, torches, liquids, ...).</summary>
     public static bool IsPassable(int id) => !Get(id).Solid;
 

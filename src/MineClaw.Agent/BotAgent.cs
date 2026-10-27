@@ -267,7 +267,16 @@ public sealed partial class BotAgent
         }
         var decision = _triage.Choose(batch, mode);
         _log.LogDebug("triage → {Tier} ({Why})", decision.Tier, decision.Why);
-        var outcome = await RunEpisodeAsync(batch, decision.Tier, decision.CanEscalate, mode, null, ct).ConfigureAwait(false);
+        // Two-phase replies: safe small talk may be answered by the cheap tier alone; a correction of that escalates.
+        var quick = await TryQuickAsync(batch, decision, mode, ct).ConfigureAwait(false);
+        RunResult outcome;
+        if (quick.Final != null) outcome = quick.Final;
+        else
+        {
+            outcome = await RunEpisodeAsync(batch, decision.Tier, decision.CanEscalate, mode, quick.Prelude, ct, quick.Ack).ConfigureAwait(false);
+            if (quick.Calls > 0)
+                outcome = outcome with { Calls = outcome.Calls + quick.Calls, Usage = outcome.Usage.Add(quick.Usage ?? LlmUsage.Zero), Cost = outcome.Cost + quick.Cost };
+        }
 
         if (outcome.Escalation is { } esc)
         {
@@ -326,7 +335,8 @@ public sealed partial class BotAgent
 
     private sealed record RunResult(ModelTier Tier, int Calls, LlmUsage Usage, decimal Cost, IReadOnlyList<string> Said, Escalation? Escalation);
 
-    private async Task<RunResult> RunEpisodeAsync(EventBatch batch, ModelTier tier, bool canEscalate, BudgetMode mode, string? prelude, CancellationToken ct)
+    private async Task<RunResult> RunEpisodeAsync(EventBatch batch, ModelTier tier, bool canEscalate, BudgetMode mode, string? prelude, CancellationToken ct,
+        string? preAck = null)
     {
         var episode = new Episode(tier, _time.GetUtcNow()) { IsTest = batch.IsTest };
         episode.Events.AddRange(batch.Events);
@@ -359,6 +369,10 @@ public sealed partial class BotAgent
         Latency?.BeginTurn(chatTurn);
         if (chatTurn) Latency?.NoteEffort(effort ?? _options.Llm.EffortFor(tier));
         TurnStartedAt = _time.GetUtcNow();
+        // Two-phase replies: streamed brain lines go out as they finish; a quick ack if the brain is slow to say anything.
+        using var speech = new TurnSpeech(ct);
+        var cx = new SpeechCtx(episode.Events, said, audience, () => whisperTo, episode.IsTest);
+        StartAck(speech, batch, tier, turnHead, preAck, whisperTo, audience.ToArray(), ct);
         try
         {
 
@@ -373,6 +387,9 @@ public sealed partial class BotAgent
                 break;
             }
 
+            speech.BeginRound();
+            AddAckNote(speech, episode.Messages);
+            bool streamThis = tier == ModelTier.Main && said.Count == 0; // once the brain spoke, later rounds keep the held-line rule
             var request = new LlmRequest
             {
                 Tier = tier,
@@ -385,6 +402,7 @@ public sealed partial class BotAgent
                 Effort = effort,
                 Thinking = thinking,
                 OnToolUse = EarlyStarter(tier, retry, model ?? _options.Llm.ModelFor(tier), ct),
+                OnTextDelta = streamThis ? StreamHook(speech, cx, ct) : null,
             };
             LastRequestTokens = EstimateRequestTokens(request, maxOut);
             LlmResponse response;
@@ -397,9 +415,12 @@ public sealed partial class BotAgent
                 // (a) A player adds a line while the first response is still generating (no tool ran, nothing said yet):
                 // cancel the call, let them finish typing, and restart this round with every line in one user message.
                 // History is untouched (the cancelled call never enters it), so the prefix stays cached.
-                var call = await CompleteInterruptibleAsync(request, tier, maxOut, ct).ConfigureAwait(false);
+                var call = await CompleteInterruptibleAsync(request, tier, maxOut, ct, speech.TryCut).ConfigureAwait(false);
                 if (call.Response is null)
                 {
+                    Task pendingChain;
+                    lock (speech.Lock) { speech.Cut = true; pendingChain = speech.Chain; speech.AckNoted = false; }
+                    await DrainAsync(pendingChain).ConfigureAwait(false); // nothing of the cut call was sent: its text is dropped
                     _restartsThisTurn++;
                     DropEarlyStarts("restarted for new chat");
                     if (call.Partial is { } partial)
@@ -441,6 +462,16 @@ public sealed partial class BotAgent
             episode.Messages.Add(new LlmMessage(LlmRole.Assistant, content));
 
             var text = response.Text.Trim();
+            bool streamed, wasCut;
+            Task streamChain;
+            lock (speech.Lock) { streamed = speech.SawDelta; wasCut = speech.Cut; streamChain = speech.Chain; }
+            if (streamed && !wasCut)
+            {
+                // Streamed round: its lines already went out (or go out now, in order); nothing is sent twice.
+                await FinishStreamAsync(speech, cx, ct).ConfigureAwait(false);
+                text = "";
+            }
+            else if (wasCut) await DrainAsync(streamChain).ConfigureAwait(false); // cut too late to cancel: nothing of it was sent, speak it whole
             if (!IsSilent(text) && whisperTo == null && SpeechGate != null)
             {
                 string? gated;
@@ -468,14 +499,12 @@ public sealed partial class BotAgent
                 foreach (var d in dup) _log.LogInformation("[repeat suppressed] {Line}", d);
                 if (!IsSilent(text) && said.Count > 0 && response.ToolUses.Any()) { held = text; text = ""; }
             }
+            if (!IsSilent(text) && AckOf(speech) is { } ackLine && SameLine(text, ackLine)) text = ""; // the ack already said exactly this
             if (!IsSilent(text)) text = LastLook(text, audience);
             if (!IsSilent(text))
             {
                 held = null;
-                var lines = await _chat.SayAsync(text, whisperTo, audience, ct).ConfigureAwait(false);
-                if (lines.Count > 0) { _chat.NoteModelSpeech(); Latency?.NoteReaction(); }
-                said.AddRange(lines);
-                LogSaid(lines, whisperTo, episode.IsTest);
+                await SayBrainAsync(speech, cx, text, ct).ConfigureAwait(false);
             }
 
             if (response.StopReason == StopReasons.Refusal)
@@ -522,9 +551,7 @@ public sealed partial class BotAgent
         if (held != null && SpeechDedupe.DropRepeats(held, said, out _) is { Length: > 0 } heldText && LastLook(heldText, audience) is { Length: > 0 } last
             && !IsSilent(last))
         {
-            var lines = await _chat.SayAsync(last, whisperTo, audience, ct).ConfigureAwait(false);
-            said.AddRange(lines);
-            LogSaid(lines, whisperTo, episode.IsTest);
+            await SayBrainAsync(speech, cx, last, ct).ConfigureAwait(false);
         }
         }
         finally
@@ -543,7 +570,9 @@ public sealed partial class BotAgent
             foreach (var e in episode.Events.Where(e => e.Wakes)) _handled.Add(HandledKey(e));
         }
         _context.Commit(episode);
-        return new RunResult(tier, calls, usage, cost, said, null);
+        string? ackSaid;
+        lock (speech.Lock) ackSaid = speech.Ack;
+        return new RunResult(tier, calls, usage, cost, ackSaid != null ? [ackSaid, .. said] : said, null);
     }
 
     /// <summary>
@@ -746,12 +775,15 @@ public sealed partial class BotAgent
     /// Runs the call, cancelling it as soon as addressed chat is posted (or is already pending). Response null = cancelled
     /// for new chat; the partial usage the client reported is recorded against the budget and the restart counters.
     /// </summary>
-    private async Task<InterruptibleCall> CompleteInterruptibleAsync(LlmRequest request, ModelTier tier, int maxOut, CancellationToken ct)
+    private async Task<InterruptibleCall> CompleteInterruptibleAsync(LlmRequest request, ModelTier tier, int maxOut, CancellationToken ct,
+        Func<bool>? mayCut = null)
     {
         using var cut = CancellationTokenSource.CreateLinkedTokenSource(ct);
         void OnPosted(GameEvent e)
         {
             if (!EventQueue.IsTyped(e)) return;
+            // A line of this call already streamed out: never cut it (the new chat joins at the round boundary instead).
+            if (mayCut != null && !mayCut()) return;
             try { _ = cut.CancelAsync(); } catch (ObjectDisposedException) { }
         }
         _events.Posted += OnPosted;

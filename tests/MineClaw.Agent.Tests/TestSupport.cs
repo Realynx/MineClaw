@@ -34,8 +34,20 @@ public sealed class FakeLlm : ILlmClient
     public LlmResponse Resp(LlmRequest r, string stop, params LlmBlock[] blocks) =>
         new(blocks, stop, UsagePerCall, r.Model ?? (r.Tier == ModelTier.Cheap ? "claude-haiku-5-5" : "claude-sonnet-5-5"));
 
+    /// <summary>
+    /// Two-phase reply calls (quick ack / cheap-only triage, Purpose "quick_*") never touch the script or <see cref="Requests"/>:
+    /// they go here (default: an empty answer = no ack, the brain answers) and are recorded in <see cref="QuickRequests"/>.
+    /// </summary>
+    public Func<LlmRequest, CancellationToken, Task<LlmResponse>>? QuickHandler { get; set; }
+    public List<LlmRequest> QuickRequests { get; } = new();
+
     public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct)
     {
+        if (request.Purpose.StartsWith("quick_", StringComparison.Ordinal))
+        {
+            lock (QuickRequests) QuickRequests.Add(request);
+            return QuickHandler?.Invoke(request, ct) ?? Task.FromResult(new LlmResponse([new LlmText("")], StopReasons.EndTurn, LlmUsage.Zero, "claude-haiku-5-5"));
+        }
         lock (Requests) Requests.Add(request);
         CallStarted?.Invoke(request);
         if (_script.TryDequeue(out var h)) return h(request, ct);

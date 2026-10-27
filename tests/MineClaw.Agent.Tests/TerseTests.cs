@@ -268,6 +268,9 @@ public class TerseTests(ITestOutputHelper output)
         options.Chat.DisplayName = "Clawd";
         options.Chat.Aliases = [];
         options.Chat.LineDelayMs = 0;
+        // Per-call accounting: the two-phase reply calls (quick ack, cheap-only triage) have their own tests (QuickReplyTests).
+        options.Brainstem.Reply.QuickAck = false;
+        options.Brainstem.Reply.CheapOnly = false;
         var fake = new FakeLlm();
         var tel = new PromptTelemetry(options);
         var rt = AgentRuntime.Create(options, (_, _) => Task.CompletedTask, tel.Wrap(fake), persist: false);

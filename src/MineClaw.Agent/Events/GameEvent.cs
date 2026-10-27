@@ -66,6 +66,13 @@ public sealed record GameEvent
     /// </summary>
     public bool IsTest { get; init; }
 
+    /// <summary>
+    /// A background job failed or stalled (script failure/limit, a queued step that never ran, a walk that can't arrive, a worker
+    /// or clone failure, the stall watchdog): it wakes the brain even while a script has it asleep, at its normal priority, so it
+    /// never interrupts the body the way <see cref="AgentOptions.InterruptPriority"/> events do.
+    /// </summary>
+    public bool MustWake { get; init; }
+
     public static EventPriority DefaultPriority(EventKind kind) => kind switch
     {
         EventKind.Death or EventKind.VoidFall => EventPriority.Critical,

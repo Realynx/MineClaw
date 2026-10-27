@@ -251,20 +251,69 @@ public sealed partial class MinecraftClient
         if (id == 0 || !Blocks.Get(id).Interactable)
             return ActionResult.Fail($"{BlockName(id, World.GetMeta(pos))} at {Fmt(pos)} is not something to use");
         var aim = Aiming.FindDigAim(World, World.Player.EyePosition, pos, Options.Reach);
-        if (aim is null)
+        (float Yaw, float Pitch, BlockFace Face)? look = aim is { } a0 ? (a0.Yaw, a0.Pitch, a0.Face) : null;
+        if (look is null)
         {
             if (!allowPathing) return ActionResult.Fail($"can't see/reach {BlockName(id, 0)} at {Fmt(pos)} from here");
-            var g = await GotoCoreAsync(new GoalWithinReach(pos, Options.Reach - 0.6), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(30) }, ct)
-                .ConfigureAwait(false);
+            // A cell the block is VISIBLE from, not just one within reach distance: the distance-only goal was satisfied on
+            // the wrong side of a wall (live 10-27: outside the plank house, "within reach" of chest 14,64,-5 behind it).
+            // The search then plans through the doors like any goto.
+            var goal = new GoalUseBlock(World, pos, Options.Reach - 0.6);
+            var g = await GotoCoreAsync(goal, GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(30) }, ct).ConfigureAwait(false);
             aim = Aiming.FindDigAim(World, World.Player.EyePosition, pos, Options.Reach);
-            if (aim is null) return ActionResult.Fail($"can't reach {BlockName(id, 0)} at {Fmt(pos)}" + (g.Ok ? "" : $" ({g.Message})"));
+            look = aim is { } a1 ? (a1.Yaw, a1.Pitch, a1.Face) : null;
+            // b1.8.1 NetServerHandler doesn't raytrace 0x0F (only eye-to-center distance), so a container/door hidden behind
+            // a wall but within reach still opens: the last resort when no visible spot can be walked to.
+            if (look is null && BlindUseAim(pos) is { } blind)
+            {
+                Log($"use: {BlockName(id, 0)} at {Fmt(pos)} not visible from any spot I can walk to ({WhyUnreachable(pos, g)}); clicking it unseen");
+                look = blind;
+            }
+            if (look is null)
+                return ActionResult.Fail($"can't reach {BlockName(id, 0)} at {Fmt(pos)}: {WhyUnreachable(pos, g)}");
         }
-        var a = aim.Value;
-        await LookCoreAsync(a.Yaw, a.Pitch, ct).ConfigureAwait(false);
+        var (yaw, pitch, face) = look.Value;
+        await LookCoreAsync(yaw, pitch, ct).ConfigureAwait(false);
         _lastActivated = new Activation(pos, Environment.TickCount64);
-        Send(new PlayerBlockPlacementPacket { X = pos.X, Y = pos.Y, Z = pos.Z, Direction = (byte)a.Face, HeldItem = HeldStack() });
+        Send(new PlayerBlockPlacementPacket { X = pos.X, Y = pos.Y, Z = pos.Z, Direction = (byte)face, HeldItem = HeldStack() });
         Send(new AnimationPacket { EntityId = World.Player.EntityId, Animation = 1 });
         return ActionResult.Success("clicked");
+    }
+
+    /// <summary>Look + face for right-clicking a block that no ray reaches but whose center is within reach of the eye (the
+    /// server only checks that distance); null when it is farther.</summary>
+    private (float Yaw, float Pitch, BlockFace Face)? BlindUseAim(BlockPos pos)
+    {
+        var eye = World.Player.EyePosition;
+        var center = new Vec3d(pos.X + 0.5, pos.Y + 0.5, pos.Z + 0.5);
+        if (eye.DistanceTo(center) > Options.Reach) return null;
+        var d = eye - center;
+        BlockFace face = Math.Abs(d.Y) >= Math.Abs(d.X) && Math.Abs(d.Y) >= Math.Abs(d.Z) ? (d.Y > 0 ? BlockFace.Top : BlockFace.Bottom)
+            : Math.Abs(d.X) >= Math.Abs(d.Z) ? (d.X > 0 ? BlockFace.East : BlockFace.West)
+            : d.Z > 0 ? BlockFace.South : BlockFace.North;
+        var (yaw, pitch) = PlayerPhysics.YawPitchTo(eye, center);
+        return (yaw, pitch, face);
+    }
+
+    /// <summary>Why a block can't be clicked from here, for the failure line: the path failure, else what blocks the line of
+    /// sight (a closed door, a wall block) and how far it is.</summary>
+    private string WhyUnreachable(BlockPos pos, ActionResult path)
+    {
+        var eye = World.Player.EyePosition;
+        var center = new Vec3d(pos.X + 0.5, pos.Y + 0.5, pos.Z + 0.5);
+        double dist = eye.DistanceTo(center);
+        var parts = new List<string>();
+        if (!path.Ok) parts.Add($"no walkable spot that sees it ({path.Message})");
+        if (Raycast.Cast(World, eye, center - eye, dist) is { } h && h.Pos != pos)
+        {
+            int bid = World.GetBlock(h.Pos);
+            string what = BlockName(bid, World.GetMeta(h.Pos));
+            if (Openables.IsOpenable(bid))
+                what = (Openables.LooksOpen(World, h.Pos) ? "open " : "closed ") + Openables.Name(bid);
+            parts.Add($"{what} at {Fmt(h.Pos)} blocks the view");
+        }
+        parts.Add($"{dist:0.0} blocks from my eyes at {Fmt(World.Player.Position)} (reach {Options.Reach:0.#})");
+        return string.Join("; ", parts);
     }
 
     private async Task<ActionResult> UseCoreAsync(int? itemId, CancellationToken ct)

@@ -96,6 +96,12 @@ public sealed class LlmRequest
     /// stream simply never call it. Null = don't stream for this.
     /// </summary>
     public Action<LlmToolUse>? OnToolUse { get; init; }
+    /// <summary>
+    /// Streamed chat: invoked (on the client's stream thread) with each text delta as it arrives; the end of a text block is
+    /// reported as a single "\n" (a line boundary). Providers that don't stream never call it: the caller then speaks the
+    /// final message as before. Null = don't stream for this.
+    /// </summary>
+    public Action<string>? OnTextDelta { get; init; }
 }
 
 /// <summary>

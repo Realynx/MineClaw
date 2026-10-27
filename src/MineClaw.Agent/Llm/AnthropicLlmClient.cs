@@ -30,8 +30,8 @@ public sealed class AnthropicLlmClient : ILlmClient
     {
         string model = request.Model ?? _options.ModelFor(request.Tier);
         var parameters = BuildParams(request, model);
-        if ((request.Interruptible || request.OnToolUse != null) && _options.StreamInterruptible)
-            return await StreamAsync(parameters, model, ct, request.OnToolUse).ConfigureAwait(false);
+        if ((request.Interruptible || request.OnToolUse != null || request.OnTextDelta != null) && _options.StreamInterruptible)
+            return await StreamAsync(parameters, model, ct, request.OnToolUse, request.OnTextDelta).ConfigureAwait(false);
         try
         {
             Message response = await _client.Messages.Create(parameters, ct).ConfigureAwait(false);
@@ -48,12 +48,15 @@ public sealed class AnthropicLlmClient : ILlmClient
     /// drops the stream (the API stops generating) and throws <see cref="LlmInterruptedException"/> with the usage seen so far:
     /// input/cache tokens from message_start, output from the last message_delta or ~4 chars per token of the deltas.
     /// </summary>
-    private async Task<LlmResponse> StreamAsync(MessageCreateParams parameters, string model, CancellationToken ct, Action<LlmToolUse>? onToolUse = null)
+    private async Task<LlmResponse> StreamAsync(MessageCreateParams parameters, string model, CancellationToken ct, Action<LlmToolUse>? onToolUse = null,
+        Action<string>? onText = null)
     {
         LlmUsage? partial = null;
         long deltaChars = 0, reportedOut = 0;
         // Streaming execution: tool_use blocks by index, handed to the caller the moment each block stops.
         var open = new Dictionary<long, (string Id, string Name, System.Text.StringBuilder Json)>();
+        // Streamed chat: open text blocks by index (their end is a line boundary for the caller).
+        var openText = new HashSet<long>();
 
         async IAsyncEnumerable<RawMessageStreamEvent> Watch()
         {
@@ -63,10 +66,15 @@ public sealed class AnthropicLlmClient : ILlmClient
                 else if (ev.TryPickContentBlockStart(out var cbs))
                 {
                     if (onToolUse != null && cbs.ContentBlock.TryPickToolUse(out var tu)) open[cbs.Index] = (tu.ID, tu.Name, new System.Text.StringBuilder());
+                    else if (onText != null && cbs.ContentBlock.TryPickText(out _)) openText.Add(cbs.Index);
                 }
                 else if (ev.TryPickContentBlockDelta(out var cbd))
                 {
-                    if (cbd.Delta.TryPickText(out var t)) deltaChars += t.Text.Length;
+                    if (cbd.Delta.TryPickText(out var t))
+                    {
+                        deltaChars += t.Text.Length;
+                        if (onText != null) EmitText(onText, t.Text);
+                    }
                     else if (cbd.Delta.TryPickInputJson(out var j))
                     {
                         deltaChars += j.PartialJson.Length;
@@ -76,6 +84,7 @@ public sealed class AnthropicLlmClient : ILlmClient
                 else if (ev.TryPickContentBlockStop(out var cbe))
                 {
                     if (onToolUse != null && open.Remove(cbe.Index, out var done)) EmitToolUse(onToolUse, done.Id, done.Name, done.Json.ToString());
+                    else if (onText != null && openText.Remove(cbe.Index)) EmitText(onText, "\n");
                 }
                 else if (ev.TryPickDelta(out var md)) reportedOut = md.Usage.OutputTokens;
                 yield return ev;
@@ -105,6 +114,12 @@ public sealed class AnthropicLlmClient : ILlmClient
             onToolUse(new LlmToolUse(id, name, doc.RootElement.Clone()));
         }
         catch (JsonException) { }
+        catch (Exception) { /* the hook never breaks the stream */ }
+    }
+
+    private static void EmitText(Action<string> onText, string delta)
+    {
+        try { if (delta.Length > 0) onText(delta); }
         catch (Exception) { /* the hook never breaks the stream */ }
     }
 

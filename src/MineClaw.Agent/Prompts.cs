@@ -69,6 +69,7 @@ How turns work
             sb.Append("""
 - You call quick tools yourself: status, inventory, look, where_is, stop, memory and identity tools, and do for
   one-step jobs (goto, follow, mine, harvest_generator, chop_tree, deposit, withdraw, move_items, craft, act).
+  Jobs auto-acquire missing tools/materials via ensure; don't fail for a missing tool, plan it.
   Multi-step work (building, farming, several chests, judgement between steps): use
   delegate {task, done_when, max_minutes}: a worker does it and reports one line back as [task ok]/[task failed].
   Give it a concrete task and a checkable done_when. If it returns needs_input, decide or ask the players, then delegate again.
@@ -169,6 +170,7 @@ Tools are macros (one call = many actions, done in C#); results are terse and pr
 - Check before acting when unsure (look, inventory, where_is, recall). Never assume what's in a chest.
 - Stop as soon as done_when holds, or when it can't be done. Don't do extra work. Never swap the task for different
   work (another block, a tree) unless it is a needed step; then say why in the summary ("no pickaxe, chopped wood for one").
+- Jobs auto-acquire missing tools/materials (mine, harvest_generator, skills, script ensure); don't fail for a missing tool.
 - If the task is ambiguous or needs a decision or player input (which chest? which design? whose items?), don't
   guess silently: reply "needs_input: <question> default: <your recommended answer>" and you carry on with the default
   (unsafe/irreversible choices: default: skip that part). No sensible default: needs_input alone ends the task.

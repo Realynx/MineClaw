@@ -128,6 +128,13 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
   chains walk-then-work in one call. Long jobs answer "running in background" at once (no 20 s inline hold).
 - **Streaming execution**: the Anthropic client streams brain calls and hands each completed `tool_use` block to the loop;
   read-only lookups and a leading walk start before the message ends (anything else keeps model order).
+- **Two-phase replies** (`Brainstem:Reply`, `BotAgent.Reply.cs`): the brain's chat streams too (`LlmRequest.OnTextDelta`):
+  each completed sentence/line goes out at once through every chat filter, never again at the end; a call that already sent
+  a line is never cut for new chat. No brain line `AckAfterMs` (2 s) after addressed chat and no reflex → one Haiku call
+  writes a ≤5-word non-committal ack (linted, else silence; memory tier; not when Paused); the brain's next round gets
+  `(you already said: "…")` in its newest user message. Safe small talk (`QuickReply.Classify`: greetings, thanks, praise,
+  emotes, how-are-you/what-are-you-doing) gets that same single cheap call first: `{needs_brain:false}` = the final reply, no
+  Opus call (committed as a small episode); a correction right after ("no, I meant…") escalates and counts a miss.
 - **Body lock, not brain lock**: chat never pauses a script; it wakes the brain while the script keeps the body. Body tools
   answer `body busy: script cobble_loop 40%` (pause/replace it, or `do{...,queue:true}` to run after it); chat, memory,
   look/see/status, hive (spawn/assign/recall clones, answer their needs_input), ask_player and script ops stay free. A
@@ -137,8 +144,37 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
   header): landmark, inventory, the speaker's place and facing, nearby builds, void edges — so the brain acts in round 0.
 - **Effort**: simple chat turns (a reflex, one clear job, small talk) run at `Brainstem:SimpleTurnEffort` (low) for the
   whole turn; planning turns keep the tier's effort. Debounce: 1.2 s when the line looks complete, else 1.8 s.
-- **Telemetry** (`LatencyTracker`): per chat `reaction_ms`, `first_move_ms`, `first_action_ms`, `rounds_before_action`,
+- **Telemetry** (`LatencyTracker`): per chat `reaction_ms`, `first_chat_ms` (ack or first line), `conclusive_ms` (final chat), `first_move_ms`, `first_action_ms`, `rounds_before_action`, cheap-only share and misses,
   speculation adopted/cancelled → `latency-YYYY-MM-DD.jsonl` and the TUI tokens panel's p50 line.
+- **Addressing** (`ChatRouter.ReasonFor`, `Chat/Addressing.cs`): name/whisper > group word > obvious player-to-player (calls
+  another online human by login or `Chat:PlayerNicknames` vocative: never wakes) > conversation continuity (`ReplyWindowSeconds`
+  90 s after the bot talked to the player, its audience inferred from names/nicknames or the last partner, or they talked to it)
+  > solo > imperatives about the bot's items/tasks/hive or "you/your" (not for clones). Still unsure, from a regular, near the bot
+  or in a thread: ONE tiny Haiku yes/no (`AddressClassifier`, ≤30/h). `Addressing` counts continuity/imperative/classifier hits and
+  misses (an ignored line the player then repeats by name). Outgoing guards in `SayAsync`: one food ask per player per 10 min,
+  one greeting per player per 3 min, startup chatter ≤2 lines until someone talks to the bot.
+- **Background failures always wake** (`GameEvent.MustWake`): a failed detached job/walk/script (limit included)/delegate, a
+  failure ahead of a `do{queue}` job, a failing standing order, a clone's failed task and the **stall watchdog**
+  (`Bot/Brainstem/StallWatchdog`: a job/script claiming to work with the body unchanged for 45 s → `stalled: <job> idle 45s; last:
+  ...`) wake the brain even while a script sleeps, at normal priority (never interrupting the body). Hunger notes never
+  interrupt a job either (High only at hp ≤ 6).
+- **Standing-order backoff**: a pass that found nothing to do yet ("still growing", "0 chopped") is quiet context, not a failure;
+  C# waits 2 → 4 → 8 → 15 min and polls `WorkProbe` (a grown tree, a regenerated gen cell, a mature crop) to resume earlier.
+- **Workers stay on the worker model**: `delegate {profile}` may pick a cheaper profile, but an Opus-class profile runs the worker
+  on `WorkerModel` unless that profile names `Worker` explicitly; a worker stops after 2 identical failures (numbers ignored).
+  Worker-tier calls are booked as worker spend whatever model answered.
+
+## Acquisition planner (Bot/GameTools/AcquisitionPlanner) — jobs get their own tools
+
+Zero tokens, no model call per step. A need (tool kind ≥ tier, or N of an item) resolves cheapest-reliable first: inventory →
+known chests (WorldIndexer snapshots) → a hive spare (`AcquisitionSources.RequestHandoff` seam, filled by the hive) → craft from
+inventory + chest materials (`Crafter`) → bootstrap (chest logs / a tree the stewardship rule allows, a stored sapling makes the
+last trees choppable → planks → sticks → table → wood pick → 3 cobble at the gen → stone pick; same for axe/shovel) → ask a
+player (default: stop). Stone first whenever cobble is reachable; a gen loop holding a wood pick upgrades once its cobble allows.
+Only trees, generator cells and chest contents are used; protected blocks and the last trees never. Bounded (14 steps, 4 min);
+a non-trivial plan is logged and leads the result ("no pick, making one: logs→planks→sticks→table→wood pick→3 cobble→stone pick").
+Callers: Lua `ensure` (hidden `acquire` tool, no prompt bytes), `Loadout.FetchAsync` (clone loadouts, gen loop re-tool), `mine`
+(the block's tool first, so `do mine` too), skill preconditions (`SkillRegistry.AcquireMissing`). Lint warns on a tool job without `ensure`.
 
 ## Providers, profiles (Agent/Llm)
 
@@ -182,7 +218,11 @@ connects its pipe before opening anything and exits 75 without one (never unsupe
   event to main, restart with exponential backoff (resuming its unfinished, uncancelled task with its loadout and re-granted
   leases), retired after `MaxCrashes` in `CrashWindowMinutes`. Spawns are serialized (parallel tool calls never share a slot), launches are spaced by `LaunchGapSeconds` (4.5 s, the server's login throttle), a config-error exit (2) retires the slot at once, and a task given to a clone being recalled (same turn, either order) relaunches it with that task
   and a superseded launch never takes over a slot's link. A task's loadout (pickaxe/axe/food from its text) is fetched from
-  storage before the brain starts; what storage lacks is reported to main. Main gone → each clone
+  storage before the brain starts, then from the hive: main tosses a spare it carries (`lend`, keeping the one in hand;
+  `CloneHost.RequestHandoffAsync`, also the acquisition planner's hive seam); what's still missing is reported to main with
+  any live clone holding a spare. Main's task is the clone's standing order (`CloneTaskOrders`): a spawn with a task holds
+  stored orders until it lands and replaces them; old orders resume only on a spawn without one. Main's chat to a clone
+  ("69, ...") is relayed over IPC (`ChatRelayGuard`: reassignment → task, else note), since clones ignore hive chat. Main gone → each clone
   deposits only if quick and safe (`ParentLossDepositSeconds`), records leftovers as stranded, logs out. Next spawn of a
   stranded clone deposits first.
 - **Logout gate**: every planned logout (task done, recall, budget, making room, main SIGTERM) deposits the ENTIRE inventory
@@ -196,7 +236,7 @@ connects its pipe before opening anything and exits 75 without one (never unsupe
 - **Claim board** (main, `Claims/ClaimBoard.cs`): leases with TTLs on blocks, areas, chests, furnaces, tasks. Contract
   `MineClaw.World.Claims.IClaimBoard` (`IsFree` local/fast, `TryClaimAsync`, `ReleaseAsync`); clones use a pushed mirror.
   BotHost wires it into `IsProtected` (claimed blocks are skipped) and `ClaimAwareGameClient` (chest/furnace/dig/place leases).
-- **Chat arbiter**: one deterministic owner per player message in every process — named clone > thread lease (the bot that asked the player something or is watching their demo owns their replies until resolved/timeout; `thread` IPC) > sticky partner > main; a clone is named anywhere in a line as a vocative ("also 67, ...", "hello 67?"), never as a mention/quantity/coordinate ("get 67 cobble", "with 67?", "6,67,8"); a line naming several bots goes to each of them with main coordinating; ownership covers a player's *conversation*: an unnamed spawn of the request the clone talking with that player is on (or any spawn while it is asking them about it) is refused without `hive op=handover`, while additional clones for the same player's new or parallel request (a spar needs two) go ahead and clones already on that job get a `note` with the newcomer's task; a clone's task is *pending* in main's turn hint until its result event arrives, and main's speech guard drops claims about pending results;
+- **Chat arbiter**: one deterministic owner per player message in every process — named clone > thread lease (the bot that asked the player something or is watching their demo owns their replies until resolved/timeout; `thread` IPC) > sticky partner > main; a bare clone number addresses it only at the start of a line/sentence or next to an address word ("69 bring me…", "hey 69", "maid 69", "69 maid", "also 67, ..."), never as a mention/quantity/coordinate ("get 67 cobble", "with 67?", "6,67,8"); a clone as the object of a request ("have clone 69 harvest") addresses main, and an address to an offline clone goes to main; a line naming several bots goes to each of them with main coordinating; ownership covers a player's *conversation*: an unnamed spawn of the request the clone talking with that player is on (or any spawn while it is asking them about it) is refused without `hive op=handover`, while additional clones for the same player's new or parallel request (a spar needs two) go ahead and clones already on that job get a `note` with the newcomer's task; a clone's task is *pending* in main's turn hint until its result event arrives, and main's speech guard drops claims about pending results;
   hive bots' chat, /me, joins/leaves are internal. Main pushes live roster + sticky map.
 - **Budget**: Agent:Budget caps are shared by the hive; main's ledger adds clone spend to main's tracker, grants clones spend in
   chunks (optional per-clone sub-caps; 0/unset = inherit main's hard caps), refuses at `RecallAtFraction` (default 1.0 = the cap), and recalls clones (furthest from finishing first) when the

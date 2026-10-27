@@ -40,6 +40,9 @@ public sealed class BotHost : IDisposable
     public Brainstem.BrainstemController? Brainstem { get; init; }
     /// <summary>Hive claim board this bot honours (<see cref="NullClaimBoard"/> without a hive).</summary>
     public IClaimBoard Claims { get; init; } = NullClaimBoard.Instance;
+    /// <summary>The acquisition planner's sources for this bot. Seam for the hive: set <c>RequestHandoff</c> (ask main / a clone
+    /// holding a spare to hand it over).</summary>
+    public AcquisitionSources? Acquisition { get; init; }
     /// <summary>Hive: keeps the client's learned spawn-protection region in step with the shared protected_region fact.</summary>
     internal System.Threading.Timer? ProtectionSync { get; init; }
 
@@ -98,6 +101,9 @@ public sealed class BotHost : IDisposable
         Func<int, int, int, string?> blockLandmark = (x, y, z) => Perception.BlockDescriber.Landmark(client.World, new MineClaw.World.BlockPos(x, y, z),
             (a, b, c2) => landmark(a, b, c2));
         rt.Chat.Landmark = blockLandmark;
+        // Addressing classifier: only while the bot can actually see the speaker nearby.
+        rt.Chat.IsNear = name => client.IsPlaying && client.World.Entities.FindPlayer(name) is { } pe &&
+            pe.Position.DistanceTo(client.World.Player.Position) <= rt.Options.Chat.Classifier.NearBlocks;
         if (rt.Worker != null) rt.Worker.Landmark = blockLandmark;
         // All dig cells of the generator around a block: geometry + the indexer + taught cells (claim-aware harvest picks a free one).
         Func<MineClaw.World.BlockPos, IReadOnlyList<MineClaw.World.BlockPos>> genCells = p =>
@@ -105,6 +111,7 @@ public sealed class BotHost : IDisposable
                 .Concat(indexer?.GeneratorCellsNear(p, 4) ?? [])
                 .Concat(digCells.Taught().Where(t => Math.Abs(t.X - p.X) <= 4 && Math.Abs(t.Y - p.Y) <= 2 && Math.Abs(t.Z - p.Z) <= 4))
                 .Distinct().ToList();
+        var acquisition = AttachAcquisition(client, rt, genCells, digCells, indexer, log);
         GameToolSet.RegisterAll(rt.Tools, toolClient, memory, botOptions, landmark: landmark, generatorCells: genCells,
             generator: new GameTools.GeneratorSupport(rt.Observations, (label, p) => rt.Memory.SetWaypoint(label, p.X, p.Y, p.Z, "storage chest placed by the generator loop"),
                 BadCell: (p, why) => corrections.RetractBad(p, why),
@@ -157,7 +164,7 @@ public sealed class BotHost : IDisposable
             Hunger = new HungerLatch(persist ? Path.Combine(agentOptions.DataDirectory, $"hunger-latch-{client.Username}.json") : null, time),
         };
         bridge.Attach();
-        ScriptTools.Register(rt, client, skillHub, botOptions.Scripts, time, log); // script tool (brain+worker), after split + header
+        var scripts = ScriptTools.Register(rt, client, skillHub, botOptions.Scripts, time, log); // script tool (brain+worker), after split + header
         VisionTools.Register(rt, client, memory, botOptions.Vision, gestures, hiveBots, time, log); // see (brain+worker) + look map marks
         // do {action, args, then?, queue?}: the brain's one compact door to the single-step macros (after every macro exists).
         Agent.Tools.DoTool.Register(rt.Tools);
@@ -169,13 +176,87 @@ public sealed class BotHost : IDisposable
         Func<string, bool> isBot = n => hiveBots?.Invoke().Contains(n, StringComparer.OrdinalIgnoreCase) == true || rt.Chat.IsHiveBot?.Invoke(n) == true;
         var brainstem = new Brainstem.BrainstemController(rt, client, memory, isBot, time, loggers?.CreateLogger("MineClaw.Brainstem"));
         brainstem.Attach(gestures, timer: persist); // in-memory (test) hosts drive SocialTick by hand
+        var watchdog = AttachWatchdog(rt, client, scripts, time);
+        // A standing-order pass that found nothing to do backs off in C#; the world model says when there's work again.
+        if (rt.Agent.Orders is { } standing) standing.WorkReady = o => MineClaw.Bot.Brainstem.WorkProbe.Ready(o, client, genCells);
+        if (persist) watchdog.Start(); // in-memory (test) hosts drive Tick by hand
         return new BotHost
         {
+            Watchdog = watchdog,
             Runtime = rt, Client = client, Bridge = bridge, Protection = protection, Recorder = recorder, MemoryAdapter = memory,
             Indexer = indexer, Activity = activityTracker, WorldMemory = worldMemory, Claims = claims ?? NullClaimBoard.Instance,
             Gestures = gestures, DigCells = digCells, Mechanisms = mechanisms, Brainstem = brainstem, ProtectionSync = protectionSync,
+            Acquisition = acquisition,
         };
     }
+
+    /// <summary>Stall watchdog: a job/script/order that claims to work while the body hasn't changed for 45 s wakes the brain.</summary>
+    public Brainstem.StallWatchdog? Watchdog { get; init; }
+
+    private static readonly string[] PassiveTools = ["follow", "guard", "watch_demo", "ask_player", "ask_stand", "wait", "sit", "look", "see"];
+
+    private static Brainstem.StallWatchdog AttachWatchdog(AgentRuntime rt, IGameClient client, ScriptBridge scripts, TimeProvider? time)
+    {
+        string? last = null;
+        rt.Activities.StepFinished += (tool, _, r, _) => last = $"{tool}: {r.Text}";
+        Brainstem.ClaimedWork? Work()
+        {
+            if (!client.IsPlaying) return null;
+            if (scripts.Controller.Current is { } s && s.Status == MineClaw.Scripting.ScriptStatus.Running)
+            {
+                var state = s.State();
+                bool waiting = state.Contains("wait", StringComparison.OrdinalIgnoreCase) || state.Contains("sleep", StringComparison.OrdinalIgnoreCase);
+                return new($"script {s.Name}", waiting);
+            }
+            if (rt.Activities.Current is { } a && a.Kind is Agent.Tools.ActivityKind.Job or Agent.Tools.ActivityKind.Move)
+            {
+                bool passive = a.Steps.Count > 0 && a.Steps.All(st => PassiveTools.Contains(st.Tool, StringComparer.OrdinalIgnoreCase));
+                return new($"{a.Label} #{a.Id}", passive);
+            }
+            return null;
+        }
+        string Body()
+        {
+            var p = client.World.Player.Position;
+            var inv = client.World.Inventory.PlayerSlots();
+            int h = 17;
+            foreach (var st in inv) h = h * 31 + (st.IsEmpty ? 0 : st.Id * 1000 + st.Count);
+            return $"{Math.Round(p.X * 2)},{Math.Round(p.Y * 2)},{Math.Round(p.Z * 2)}|{h}|{client.CurrentAction}";
+        }
+        string? LastResult() => rt.Worker?.IsRunning == true && rt.Worker.Trail is { } trail ? trail : last;
+        return new Brainstem.StallWatchdog(Work, Body, LastResult, e => rt.Events.Post(e), time);
+    }
+
+    /// <summary>
+    /// Self-reliant prerequisite planning (ensure, loadouts, skill preconditions, mine/harvest): what the acquisition planner
+    /// may draw on. Asking players only while a human is online and this bot may speak; the hive fills
+    /// <see cref="AcquisitionSources.RequestHandoff"/> on <see cref="Acquisition"/>.
+    /// </summary>
+    private static AcquisitionSources AttachAcquisition(IGameClient client, AgentRuntime rt,
+        Func<MineClaw.World.BlockPos, IReadOnlyList<MineClaw.World.BlockPos>> genCells, Perception.DigCells digCells, WorldIndexer? indexer, ILogger? log) =>
+        GameTools.Acquisition.Attach(client, new AcquisitionSources
+        {
+            Observations = rt.Observations,
+            CellsNear = genCells,
+            GeneratorCells = () =>
+            {
+                var me = client.World.Player.Position.ToBlockPos();
+                return Perception.BlockDescriber.GenCellsNear(client.World, me, 16)
+                    .Concat(indexer?.GeneratorCellsNear(me, 32) ?? [])
+                    .Concat(digCells.Taught().Where(t => t.DistanceSquaredTo(me) <= 48 * 48))
+                    .Distinct().ToList();
+            },
+            MinTrees = client is MinecraftGameClient mg ? mg.Inner.MinTrees : MineClaw.Client.Trees.TreeStewardship.DefaultMinTrees,
+            Announce = plan => log?.LogInformation("acquire: {Plan}", plan),
+            AskPlayer = async (question, timeout, ct) =>
+            {
+                if (rt.Agent.HumansOnline?.Invoke() != true) return null;
+                if (rt.Agent.SpeechGate is { } gate && gate(new Agent.Events.EventBatch([]), question, false) == null) return null; // a muted clone
+                var wait = rt.Chat.WaitForReplyAsync(null, timeout, ct);
+                await rt.Chat.SayAsync(question, ct: ct).ConfigureAwait(false);
+                return await wait.ConfigureAwait(false);
+            },
+        });
 
     /// <summary>
     /// Spawn protection learned by the client (logs that won't break near spawn) → one <c>protected_region</c> observation
@@ -347,6 +428,7 @@ public sealed class BotHost : IDisposable
     public void Dispose()
     {
         ProtectionSync?.Dispose();
+        Watchdog?.Dispose();
         Bridge.Dispose();
         Brainstem?.Dispose();
         Gestures?.Dispose();

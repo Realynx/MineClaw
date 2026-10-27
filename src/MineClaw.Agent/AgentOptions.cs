@@ -156,6 +156,11 @@ public sealed class WorkerOptions
     public int MaxMinutes { get; set; } = 20;
     /// <summary>Max estimated spend (USD) per delegated task.</summary>
     public decimal MaxCostUsd { get; set; } = 0.40m;
+    /// <summary>
+    /// The task stops (failed, no wrap-up call) once the same tool fails this often with the same error (numbers ignored):
+    /// "fill_bucket: no water source" at three spots is one dead end, not three. 0 = off.
+    /// </summary>
+    public int MaxIdenticalFailures { get; set; } = 2;
     /// <summary>Worker context ceiling (estimated tokens). Older tool results are cut first; the task ends if that's not enough.</summary>
     public int MaxContextTokens { get; set; } = 24_000;
     /// <summary>The single summary the brain gets back (chars).</summary>

@@ -70,6 +70,9 @@ public class BrainTierTests
         options.ChatDebounce.QuietMs = 10;
         options.ChatDebounce.MaxMs = 50;
         options.ChatDebounce.ReplyQuietMs = 0;
+        // Per-call accounting: the two-phase reply calls (quick ack, cheap-only triage) have their own tests (QuickReplyTests).
+        options.Brainstem.Reply.QuickAck = false;
+        options.Brainstem.Reply.CheapOnly = false;
         configure?.Invoke(options);
         var llm = new TieredLlm();
         var sent = new List<string>();

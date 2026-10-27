@@ -9,7 +9,7 @@ namespace MineClaw.Data;
 /// mushroom stew/bow/fishing rod/map/shears/records stack to 1; snowballs and eggs to 16; everything else to 64.
 /// The bow has no durability yet. Gold armor has the same durability as chain armor.
 /// </remarks>
-public static class Items
+public static partial class Items
 {
     public const int
         IronShovel = 256, IronPickaxe = 257, IronAxe = 258, FlintAndSteel = 259, Apple = 260, Bow = 261, Arrow = 262,
@@ -75,7 +75,37 @@ public static class Items
             }
         if (int.TryParse(key, out var id) && Exists(id)) return (_byId[id], -1);
         if (Blocks.ByName(name) is { } b && Exists(b.Id)) return (_byId[b.Id], -1);
+        // "20 cobble slabs", "cobble slab x20", "a red wool": drop the amount and try again.
+        if (ParseAmount(name) is { Count: not null } a && a.Name != name.Trim()) return ByNameWithDamage(a.Name);
         return null;
+    }
+
+    /// <summary>Splits a leading/trailing amount off an item phrase: "20 cobble slabs" → (20, "cobble slabs"),
+    /// "torch x16" / "16x torch" → (16, "torch"), "a bucket" → (1, "bucket"); no amount → (null, name).</summary>
+    public static (int? Count, string Name) ParseAmount(string name)
+    {
+        var s = name.Trim();
+        var m = AmountRx().Match(s);
+        if (!m.Success) return (null, s);
+        string num = m.Groups["n1"].Success ? m.Groups["n1"].Value : m.Groups["n2"].Value;
+        string rest = (m.Groups["r1"].Success ? m.Groups["r1"].Value : m.Groups["r2"].Value).Trim();
+        if (rest.Length == 0) return (null, s);
+        int? n = num.ToLowerInvariant() is "a" or "an" or "one" ? 1 : int.TryParse(num, out var v) && v > 0 ? v : null;
+        return (n, rest);
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^(?:(?<n1>\d+|a|an|one)\s*x?\s+(?<r1>.+)|(?<r2>.+?)\s+x?\s*(?<n2>\d+))$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase)]
+    private static partial System.Text.RegularExpressions.Regex AmountRx();
+
+    /// <summary>Snake-case name that keeps the variant ("cobblestone_slab", "red_wool", "birch_wood"); it resolves back to
+    /// the same (id, meta) through <see cref="ByNameWithDamage"/>. Ids without variants give their plain name.</summary>
+    public static string VariantName(int id, int meta)
+    {
+        bool variant = id is Blocks.Slab or Blocks.Wool or Blocks.Log or Blocks.Leaves or Blocks.Sapling or Blocks.StoneBricks
+            or Blocks.TallGrass or Dye or Coal;
+        if (!variant) return Exists(id) ? Get(id).Name : Blocks.Get(id).Name;
+        return DisplayName(id, meta).ToLowerInvariant().Replace(' ', '_');
     }
 
     public static bool IsTool(int id) => Get(id).Tool != ToolType.None;
@@ -314,16 +344,24 @@ public static class Items
         Add("bonemeal", Dye, 15); Add("ink", Dye, 0); Add("cocoa", Dye, 3); Add("lapis", Dye, 4); Add("blue dye", Dye, 4);
         Add("red dye", Dye, 1); Add("green dye", Dye, 2); Add("yellow dye", Dye, 11); Add("black dye", Dye, 0);
         Add("white dye", Dye, 15); Add("brown dye", Dye, 3); Add("grey dye", Dye, 8); Add("light grey dye", Dye, 7);
+        // Wood types: log/leaves/sapling meta 0 oak, 1 spruce (pine), 2 birch. b1.8.1 has ONE plank type (any log → planks
+        // meta 0), so "<wood> planks" all mean plain planks. A bare "log"/"wood" stays any type.
         for (int i = 0; i < 3; i++)
         {
             var w = WoodTypes[i].ToLowerInvariant();
-            if (i == 0) continue; // oak names map to the base (meta 0 / wildcard) via block aliases
             Add($"{w} log", Blocks.Log, i); Add($"{w} wood", Blocks.Log, i);
             Add($"{w} leaves", Blocks.Leaves, i); Add($"{w} sapling", Blocks.Sapling, i);
+            Add($"{w} planks", Blocks.Planks, -1); Add($"{w} plank", Blocks.Planks, -1);
         }
-        Add("pine log", Blocks.Log, 1); Add("pine sapling", Blocks.Sapling, 1); Add("pine leaves", Blocks.Leaves, 1);
+        Add("pine log", Blocks.Log, 1); Add("pine wood", Blocks.Log, 1); Add("pine sapling", Blocks.Sapling, 1); Add("pine leaves", Blocks.Leaves, 1);
+        Add("pine planks", Blocks.Planks, -1);
+        // Slabs (44): 0 stone (smooth, from stone), 1 sandstone, 2 wooden (planks), 3 cobblestone, 4 brick, 5 stone brick.
         for (int i = 0; i < SlabTypes.Length; i++) Add($"{SlabTypes[i]} slab", Blocks.Slab, i);
-        Add("wood slab", Blocks.Slab, 2); Add("cobble slab", Blocks.Slab, 3);
+        Add("smooth stone slab", Blocks.Slab, 0); Add("smoothstone slab", Blocks.Slab, 0);
+        Add("wood slab", Blocks.Slab, 2); Add("plank slab", Blocks.Slab, 2); Add("planks slab", Blocks.Slab, 2);
+        Add("wooden plank slab", Blocks.Slab, 2); Add("wood plank slab", Blocks.Slab, 2); Add("oak slab", Blocks.Slab, 2);
+        Add("cobble slab", Blocks.Slab, 3);
+        Add("bricks slab", Blocks.Slab, 4); Add("stone bricks slab", Blocks.Slab, 5);
         Add("mossy stone bricks", Blocks.StoneBricks, 1); Add("cracked stone bricks", Blocks.StoneBricks, 2);
         Add("fern", Blocks.TallGrass, 2); Add("dead shrub", Blocks.TallGrass, 0);
         return v;

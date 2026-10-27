@@ -86,7 +86,8 @@ public static class ScriptLint
         var stack = new List<Block>();
         var parens = new Stack<string?>();   // callee name per open '(' / '{' call
         int actionSites = 0;
-        bool hasCp = false;
+        bool hasCp = false, hasEnsure = false;
+        (int Line, string Call, string Tool)? needsTool = null;
         bool LoopActive() => stack.Any(b => b.Loop || b.UptoFn);
 
         for (int i = 0; i < toks.Count; i++)
@@ -166,6 +167,8 @@ public static class ScriptLint
                 if (!isCall) continue;
 
                 bool isAction = acts.Contains(t.Text);
+                if (t.Text is "ensure" or "acquire") hasEnsure = true;
+                else if (needsTool == null && isAction && NeedsTool(t.Text, toks, i) is { } tool) needsTool = (t.Line, t.Text, tool);
                 if (!PureCalls.Contains(t.Text))
                     foreach (var b in stack) b.Acts = true;
                 if (isAction) actionSites++;
@@ -188,6 +191,9 @@ public static class ScriptLint
 
         if (!hasCp && actionSites > longScriptActions)
             findings.Add(new(LintSeverity.Warning, 1, "no-cp", $"{actionSites} actions and no cp\"label\" (add one before each long phase)"));
+        // A job that needs a tool gets it planned up front (ensure auto-acquires: chest, hive, craft, bootstrap).
+        if (needsTool is { } nt && !hasEnsure)
+            findings.Add(new(LintSeverity.Warning, nt.Line, "no-ensure", $"{nt.Call}{{}} needs a {nt.Tool}: start with ensure\"{nt.Tool}\" (auto-acquires it)"));
         // One finding per rule and line is enough.
         var unique = findings.GroupBy(f => (f.Rule, f.Line)).Select(g => g.First()).OrderBy(f => f.Severity == LintSeverity.Error ? 0 : 1).ThenBy(f => f.Line).ToList();
         return new LintReport(unique);
@@ -199,6 +205,21 @@ public static class ScriptLint
                     $"unbounded {b.Kind} loop never acts or waits (bound it: upto(n,fn) or for i=1,n; add wait())"));
             // An inner block that acts makes the outer one act too (already propagated on the call).
         }
+    }
+
+    /// <summary>Actions that dig cobble/stone: the generator always, mine/dig when the literal target needs a pickaxe.</summary>
+    private static readonly HashSet<string> GenCalls = new(StringComparer.Ordinal) { "gen", "harvest_generator" };
+
+    private static string? NeedsTool(string call, List<Tok> toks, int i)
+    {
+        if (GenCalls.Contains(call)) return "pickaxe";
+        if (call != "mine") return null;
+        // mine"cobblestone" / mine{"stone",16}: the first literal after the call (an unknown target = no finding).
+        int j = i + 1;
+        if (j < toks.Count && toks[j].Kind == T.Sym && toks[j].Text is "{" or "(") j++;
+        if (j >= toks.Count || toks[j].Kind != T.Str) return null;
+        var b = MineClaw.Data.Blocks.ByName(toks[j].Text.Trim());
+        return b != null && MineClaw.Data.Tools.RequiresTool(b.Id) && MineClaw.Data.Tools.PickaxeEffective.Contains(b.Id) ? "pickaxe" : null;
     }
 
     private static readonly HashSet<string> ExprKeywords = new(StringComparer.Ordinal)
@@ -255,7 +276,7 @@ public static class ScriptLint
             }
             if (c is '"' or '\'')
             {
-                int start = line;
+                int start = line, from = i + 1;
                 i++;
                 while (i < n && code[i] != c)
                 {
@@ -263,8 +284,9 @@ public static class ScriptLint
                     if (code[i] == '\n') line++;
                     i++;
                 }
+                // The literal's text rides along (tool-needing mine targets); every other consumer reads Str as "S".
+                list.Add(new Tok(T.Str, code[from..Math.Min(i, n)], start));
                 i++;
-                list.Add(new Tok(T.Str, "S", start));
                 continue;
             }
             if (char.IsDigit(c))

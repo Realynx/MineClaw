@@ -40,6 +40,8 @@ public sealed class GameBridge : IDisposable
         _time = time ?? TimeProvider.System;
     }
 
+    private int _sessionBegun;
+
     public void Attach()
     {
         Sub(h => _c.ChatReceived += h, h => _c.ChatReceived -= h, (Action<string>)OnChat);
@@ -49,6 +51,8 @@ public sealed class GameBridge : IDisposable
         Sub(h => _c.Kicked += h, h => _c.Kicked -= h, (Action<string>)(r => Post(MapKick(r))));
         Sub(h => _c.Disconnected += h, h => _c.Disconnected -= h, (Action<string>)(r => _log.LogInformation("disconnected: {Reason}", r)));
         Sub(h => _c.Spawned += h, h => _c.Spawned -= h, (Action)SyncOnline);
+        // Joining the game opens the startup-chatter window once (two lines at most until someone talks to the bot).
+        Sub(h => _c.Spawned += h, h => _c.Spawned -= h, (Action)(() => { if (Interlocked.Exchange(ref _sessionBegun, 1) == 0) _rt.Chat.BeginSession(); }));
         Sub(h => _c.PlayerJoined += h, h => _c.PlayerJoined -= h, (Action<string>)(n => OnPlayerList(n, joined: true)));
         Sub(h => _c.PlayerLeft += h, h => _c.PlayerLeft -= h, (Action<string>)(n => OnPlayerList(n, joined: false)));
         _rt.Events.Posted += OnPosted;
@@ -149,8 +153,10 @@ public sealed class GameBridge : IDisposable
             priority: d.Critical ? EventPriority.Critical : EventPriority.High),
         DangerKind.Lava => new GameEvent(EventKind.LowHealth, $"hp {health}/20 {d.Message}", priority: EventPriority.High),
         DangerKind.HostileNearby => GameEvent.Notice(d.Message, EventPriority.Low),
-        // Survival reflex "hungry, no food" (re-sent only when it gets worse): 1 hungry, 2 starving, 3 food 0.
-        DangerKind.Hunger => GameEvent.Notice(d.Message, d.Level >= 3 ? EventPriority.High : d.Level == 2 ? EventPriority.Normal : EventPriority.Low),
+        // Survival reflex "hungry, no food" (re-sent only when it gets worse): 1 hungry, 2 starving, 3 food 0. It wakes the brain
+        // but never interrupts a job (live 2026-10-27: "starving" cancelled 67's mining): only hp at the low line makes it urgent.
+        DangerKind.Hunger => GameEvent.Notice(d.Message, d.Level >= 3 && health <= HungerLatch.LowHealth ? EventPriority.High
+            : d.Level >= 2 ? EventPriority.Normal : EventPriority.Low),
         _ => GameEvent.Notice(d.Message, EventPriority.Background), // Damage: context only
     };
 

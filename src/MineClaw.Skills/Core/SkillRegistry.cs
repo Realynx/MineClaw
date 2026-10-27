@@ -29,6 +29,14 @@ public sealed class SkillRegistry
     /// </summary>
     public Func<string, JsonElement, IDisposable?>? RunScope { get; set; }
 
+    /// <summary>
+    /// Self-reliant preconditions: called for each item group a skill needs and the inventory lacks (any hoe, a bucket,
+    /// torches...) before the precondition check, so a missing tool/material is acquired (chests, hive, crafting, bootstrap:
+    /// the Bot layer's acquisition planner) instead of failing the skill. Returns a short note, or null when it got nothing.
+    /// Null = no acquisition (the plain "needs X" failure).
+    /// </summary>
+    public Func<SkillContext, SkillSpec, int[], CancellationToken, Task<string?>>? AcquireMissing { get; set; }
+
     /// <summary>Registers every non-abstract <see cref="ISkill"/> marked <see cref="SkillAttribute"/> in <paramref name="assembly"/>.</summary>
     public SkillRegistry Discover(Assembly assembly)
     {
@@ -78,6 +86,25 @@ public sealed class SkillRegistry
         return null;
     }
 
+    /// <summary>Acquires each missing item group (dimension/primitive problems first: nothing to fetch for those). Null = nothing done.</summary>
+    private async Task<string?> AcquireAsync(SkillContext ctx, SkillSpec spec, CancellationToken ct)
+    {
+        if (AcquireMissing is not { } acquire || spec.Pre.Items.Count == 0) return null;
+        if ((spec.Pre.Dimension & ctx.Dimension) == 0 || (spec.Pre.Primitives & ~ctx.Game.Supported) != Primitive.None) return null;
+        var notes = new List<string>();
+        foreach (var group in spec.Pre.Items)
+        {
+            if (group.Any(id => ctx.Has(id))) continue;
+            string? note;
+            try { note = await acquire(ctx, spec, group, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex) { note = null; ctx.Log?.Invoke($"acquire for {spec.Name} threw: {ex.Message}"); }
+            if (note != null) notes.Add(note);
+            if (!group.Any(id => ctx.Has(id))) break; // the precondition check reports it
+        }
+        return notes.Count == 0 ? null : string.Join("; ", notes);
+    }
+
     /// <summary>Runs a skill by name. Never throws for game failures; "cancelled" when <paramref name="ct"/> fires.</summary>
     public async Task<SkillResult> RunAsync(SkillContext ctx, string name, JsonElement args, CancellationToken ct)
     {
@@ -88,7 +115,10 @@ public sealed class SkillRegistry
         }
         var spec = skill.Spec;
         if (spec.Status == SkillStatus.Stub) return SkillResult.Fail($"{spec.Name} is not implemented yet (stub): {spec.Summary}");
-        if (CheckPreconditions(ctx, spec, args) is { } why) return SkillResult.Fail($"{spec.Name}: {why}");
+        string? acquired;
+        try { acquired = await AcquireAsync(ctx, spec, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return SkillResult.Fail($"{spec.Name} cancelled"); }
+        if (CheckPreconditions(ctx, spec, args) is { } why) return SkillResult.Fail($"{spec.Name}: {why}" + (acquired != null ? $" ({acquired})" : ""));
         SkillResult r;
         IDisposable? scope = null;
         try
@@ -110,6 +140,7 @@ public sealed class SkillRegistry
         {
             scope?.Dispose();
         }
+        if (acquired != null && r.Ok) r = r with { Text = acquired + "; " + r.Text };
         var text = r.Text.Replace('\r', ' ').Replace('\n', ' ').Trim();
         int cap = ctx.Options.MaxResultChars;
         if (text.Length > cap) text = text[..(cap - 3)].TrimEnd() + "...";

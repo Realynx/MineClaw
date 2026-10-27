@@ -25,7 +25,7 @@ public static class HiveTools
     /// policy for inline <c>code</c> (only the Opus brain writes Lua). Null = no profiles, no inline code.</param>
     public static void RegisterMain(ToolRegistry tools, HiveSupervisor hive, LlmOptions? llm = null)
     {
-        var schema = ToolSchema.Create().Str("op", enumValues: ["spawn", "recall", "list", "handover"]).Str("task", required: false).Str("name", "e.g. 67", required: false);
+        var schema = ToolSchema.Create().Str("op", enumValues: ["spawn", "recall", "list", "handover"]).Str("task", required: false).Str("name", required: false);
         // Script spawn: the clone starts it at once with its brain asleep (zero calls until a wake). Tiny: no descriptions.
         // How to use them is one cached prompt line (HiveTools.ScriptHint), not tool text.
         if (hive.ScriptPrep != null)
@@ -33,7 +33,9 @@ public static class HiveTools
                 .Str("after", required: false);
         if (llm != null && llm.UsableProfiles().Any()) schema = schema.Str("profile", required: false);
         tools.Register(MainTool,
-            hive.ScriptPrep != null ? "Clones: spawn a task/script, recall name|all, list." : "Clones: spawn a task, recall name|all, list.",
+            // Reassigning goes through spawn/handover: a clone ignores hive bots' chat (live 3, 14:34: "69, robin wants you on the
+            // cobble gen" never reached 69). Paid for by dropping the name example (budget pinned in ToolBudgets.HiveTool).
+            hive.ScriptPrep != null ? "Clones: spawn a task/script (reassigns; never chat), recall name|all, list." : "Clones: spawn a task (reassigns; never chat), recall name|all, list.",
             schema.Build(),
             (input, _) =>
             {

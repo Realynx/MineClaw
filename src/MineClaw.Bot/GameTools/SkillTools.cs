@@ -61,6 +61,12 @@ public static class SkillTools
             Directory = directory, Layouts = new MemoryLayoutStore(rt),
         };
         hub.Registry.Add(PromoteRoutineSkill(rt, hub));
+        // Self-reliant preconditions: a missing hoe/bucket/torch/sapling is acquired (chest, hive, craft, bootstrap) first.
+        hub.Registry.AcquireMissing ??= async (_, _, ids, ct) =>
+        {
+            var r = await Acquisition.Planner(client, rt.Observations).AcquireAnyAsync(ids, ct).ConfigureAwait(false);
+            return r.Ok ? r.Text : null;
+        };
         hub.SyncLearned = () => SyncLearned(rt, hub);
         hub.SyncLearned();
         IndexCatalog(rt, hub.Registry);

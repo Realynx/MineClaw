@@ -139,7 +139,7 @@ public sealed class PromptTelemetry : IDisposable
         {
             Ts = _time.GetUtcNow(),
             Bot = Bot,
-            Tier = UsageTracker.TierLabel(_agent.Llm.TierOfModel(model) ?? request.Tier),
+            Tier = UsageTracker.TierLabel(request.Tier == ModelTier.Worker ? ModelTier.Worker : _agent.Llm.TierOfModel(model) ?? request.Tier),
             Model = model,
             Provider = response?.Provider ?? _agent.Llm.ProviderFor(request),
             Profile = request.Profile ?? _agent.Llm.ProfileOfModel(model),

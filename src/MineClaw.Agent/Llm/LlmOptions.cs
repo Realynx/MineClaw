@@ -83,6 +83,9 @@ public sealed class LlmOptions
     /// <summary>The brain model the user requires for script authorship.</summary>
     public const string ScriptAuthorModel = "claude-opus-5-5";
 
+    /// <summary>An Opus-class model: never a worker unless a profile's <see cref="LlmProfile.Worker"/> says so.</summary>
+    public static bool IsBrainClass(string? model) => model != null && model.Contains("opus", StringComparison.OrdinalIgnoreCase);
+
     public static bool IsOpus55(string? model) => model != null && model.StartsWith(ScriptAuthorModel, StringComparison.OrdinalIgnoreCase);
 
     public string ProviderFor(ModelTier tier) => LlmProviders.Normalize(tier switch { ModelTier.Cheap => CheapProvider, ModelTier.Worker => WorkerProvider, _ => MainProvider });
@@ -152,6 +155,24 @@ public sealed class LlmOptions
             if (!string.IsNullOrWhiteSpace(sub) && !string.Equals(sub, name, StringComparison.OrdinalIgnoreCase) && CheckProfile(sub) is { } e)
                 return $"profile '{name}': {e}";
         return null;
+    }
+
+    /// <summary>
+    /// The profile a <c>delegate</c> worker loop really runs on. Workers use <see cref="WorkerModel"/> unless the profile
+    /// explicitly says otherwise: a profile naming <see cref="LlmProfile.Worker"/> runs the worker on that profile; a cheaper
+    /// profile (haiku, local) runs as asked; a brain-class profile (the brain model / Opus) without an explicit
+    /// <c>Worker</c> stays on the worker tier (live 2026-10-27: a water task ran 12 Opus worker calls for $0.107).
+    /// Null = the tier's model.
+    /// </summary>
+    public string? WorkerProfileFor(string? requested)
+    {
+        if (string.IsNullOrWhiteSpace(requested)) return null;
+        var name = requested.Trim();
+        if (Profile(name) is not { } p) return name; // unknown: CheckProfile refuses it
+        if (!string.IsNullOrWhiteSpace(p.Worker)) return p.Worker.Trim();
+        var model = p.Model.Trim();
+        if (IsBrainClass(model)) return null;
+        return name;
     }
 
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _disabled = new(StringComparer.OrdinalIgnoreCase);
@@ -243,7 +264,10 @@ public sealed class LlmProfile
     public string? Thinking { get; set; }
     /// <summary>"$", "$$", "free"... for the brain's choice.</summary>
     public string? CostHint { get; set; }
-    /// <summary>For a clone's brain: the profile its worker tier uses (null = the clone's config).</summary>
+    /// <summary>
+    /// For a clone's brain: the profile its worker tier uses (null = the clone's config). For <c>delegate {profile}</c>: an
+    /// Opus-class profile runs the worker on this profile only when it is set (e.g. "opus" = "opus"); otherwise on WorkerModel.
+    /// </summary>
     public string? Worker { get; set; }
     /// <summary>For a clone's brain: the profile its memory tier uses (null = the clone's config).</summary>
     public string? Memory { get; set; }

@@ -162,6 +162,11 @@ public sealed class WorkerAgent
     public async Task<WorkerOutcome> RunAsync(string task, string? doneWhen, int? maxMinutes, CancellationToken ct, string? profile = null)
     {
         if (profile != null && _llmOptions.CheckProfile(profile) is { } bad) return Done(new(false, "failed: " + bad, 0, 0, 0, "profile"));
+        // Workers run on WorkerModel unless the profile explicitly says otherwise (an Opus profile alone never makes an Opus worker).
+        var effective = _llmOptions.WorkerProfileFor(profile);
+        if (profile != null && !string.Equals(effective, profile, StringComparison.OrdinalIgnoreCase))
+            _log.LogInformation("delegate profile {Asked} → worker runs on {Effective}", profile, effective ?? _llmOptions.WorkerModel);
+        profile = effective;
         var prof = profile != null ? _llmOptions.Profile(profile) : null;
         int minutes = Math.Clamp(maxMinutes ?? _o.DefaultMinutes, 1, Math.Max(1, _o.MaxMinutes));
         var mode = _usage.CheckMode();
@@ -180,6 +185,7 @@ public sealed class WorkerAgent
         decimal cost = 0;
         string? summary = null, stop = "done";
         var log = new List<string>();
+        var failures = new Dictionary<string, int>(StringComparer.Ordinal);
         _trail = null;
 
         try
@@ -243,8 +249,19 @@ public sealed class WorkerAgent
                     log.Add($"{u.Name}{(r.Ok ? "" : "!")} {TextUtil.Truncate(TextUtil.OneLine(r.Text), 60)}");
                     _trail = TrailOf(log, null);
                     results.Add(new LlmToolResult(u.Id, r.Text.Length == 0 ? (r.Ok ? "ok" : "error") : r.Text, !r.Ok) { Image = r.Image });
+                    if (!r.Ok && _o.MaxIdenticalFailures > 0)
+                    {
+                        var key = FailureKey(u.Name, r.Text);
+                        int n = failures[key] = failures.GetValueOrDefault(key) + 1;
+                        if (n >= _o.MaxIdenticalFailures && summary == null)
+                        {
+                            stop = "repeated failure";
+                            summary = $"failed: {u.Name} failed {n}x the same way: {TextUtil.Truncate(TextUtil.OneLine(r.Text), 160)}";
+                        }
+                    }
                 }
                 messages.Add(new LlmMessage(LlmRole.User, results));
+                if (stop == "repeated failure") break;
             }
 
             // Out of rounds/cost/context: one wrap-up call (same prefix, so it's mostly cache) for an honest summary.
@@ -279,6 +296,13 @@ public sealed class WorkerAgent
         _log.LogInformation("worker task \"{Task}\": {Summary} ({Calls} calls, {Tools} tools, ${Cost:0.0000}, {Stop})",
             TextUtil.Truncate(task, 60), outcome.Summary, calls, toolCalls, cost, stop);
         return Done(outcome);
+    }
+
+    /// <summary>"fill_bucket" + "no water source at 1,64,-9" → "fill_bucket|no water source at ,,-": coordinates/counts don't make a failure new.</summary>
+    internal static string FailureKey(string tool, string error)
+    {
+        var t = System.Text.RegularExpressions.Regex.Replace(TextUtil.OneLine(error ?? "").ToLowerInvariant(), @"[\d.]+", "");
+        return tool + "|" + TextUtil.Truncate(t.Trim(), 80);
     }
 
     private static string TrailOf(List<string> log, string? running)

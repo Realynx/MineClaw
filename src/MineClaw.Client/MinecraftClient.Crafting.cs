@@ -51,7 +51,7 @@ public sealed partial class MinecraftClient
                 return ActionResult.Fail($"need smelting first: {string.Join("; ", withSmelt.Steps.Where(s => s.IsSmelt))}");
             return ActionResult.Fail($"missing {string.Join(", ", plan.Missing)} for {count} {target}");
         }
-        if (plan.Steps.Count == 0) return ActionResult.Success($"already have {World.Inventory.CountItem(itemId)} {target}");
+        if (plan.Steps.Count == 0) return ActionResult.Success($"already have {World.Inventory.CountItem(itemId, damage < 0 ? null : damage)} {target}");
 
         BlockPos? table = null;
         if (plan.Steps.Any(s => s.RequiresCraftingTable))
@@ -104,7 +104,7 @@ public sealed partial class MinecraftClient
         int have = World.Inventory.CountItem(itemId, damage < 0 ? null : damage);
         int made = have - before;
         if (made <= 0) return ActionResult.Fail($"crafting {target} produced nothing (have {have}{synced})");
-        return ActionResult.Success($"crafted {made} {target} (have {World.Inventory.CountItem(itemId)}{synced})", made);
+        return ActionResult.Success($"crafted {made} {target} (have {World.Inventory.CountItem(itemId, damage < 0 ? null : damage)}{synced})", made);
     }
 
     private List<ItemStack> PlannerStacks() => World.Inventory.PlayerSlots().Skip(9).Where(s => !s.IsEmpty).ToList();

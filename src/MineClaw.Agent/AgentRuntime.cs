@@ -121,6 +121,12 @@ public sealed class AgentRuntime : IDisposable
             ProfileOf = m => options.Llm.ProfileOfModel(m),
         };
 
+        chat.IsRegular = p => options.Self.TrustedPlayers.Concat(options.Self.RegularPlayers).Any(r => r.Equals(p, StringComparison.OrdinalIgnoreCase));
+        chat.Classifier = AddressClassifier.Create(llm, options, usage, Log("MineClaw.Chat"));
+        var chatLog = Log("MineClaw.Chat");
+        chat.AddressMissed += (player, missed, how) =>
+            chatLog.LogInformation("addressing miss: {Player} \"{Missed}\" was ignored, then addressed by {How}; {Stats}", player, missed, how, chat.Addressing);
+
         var rag = options.Rag;
         string Under(string f) => Path.IsPathRooted(f) ? f : Path.Combine(options.DataDirectory, f);
         var db = AgentDb.Open(persist ? Under(rag.DbFile) : null, Log("MineClaw.Db"),

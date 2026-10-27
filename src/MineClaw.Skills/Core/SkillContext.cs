@@ -84,8 +84,9 @@ public sealed class SkillContext(IGameActions game, SkillRegistry registry, Skil
 
     /// <summary>Nearest blocks matching (id, meta) within <paramref name="radius"/>, protected ones excluded.</summary>
     public List<FoundBlock> Find(Func<int, int, bool> match, double? radius = null, int max = 64) =>
-        World.FindBlocks(Feet, radius ?? Options.SearchRadius, match, max)
-            .Where(b => !Game.IsProtected(b.Pos, b.Id)).ToList();
+        // Filter BEFORE limiting: with max 1 a protected nearest block used to hide every unprotected one behind it.
+        World.FindBlocks(Feet, radius ?? Options.SearchRadius, match, int.MaxValue)
+            .Where(b => !Game.IsProtected(b.Pos, b.Id)).Take(max).ToList();
 
     public List<FoundBlock> Find(int id, double? radius = null, int max = 64) => Find((i, _) => i == id, radius, max);
 }

@@ -8,6 +8,8 @@ using MineClaw.Hive.Chat;
 using MineClaw.Hive.Clone;
 using MineClaw.Hive.Claims;
 using MineClaw.Hive.Db;
+using MineClaw.Hive.Inventory;
+using MineClaw.Hive.Ipc;
 using MineClaw.Hive.Slots;
 using MineClaw.Hive.Supervisor;
 using MineClaw.World;
@@ -85,12 +87,15 @@ public sealed class MainHive : IAsyncDisposable
         _supervisor = new HiveSupervisor(_cfg, _main, launcher, Board, ledger, Arbiter, store,
             () => new SlotFacts(client.World.MaxPlayers, client.World.Entities.OnlinePlayers), regulars, _log)
         {
-            Handoff = new Receiver(client),
+            Handoff = new Receiver(client, bot.Client),
         };
+        _supervisor.Donor = (Receiver)_supervisor.Handoff; // a clone short of a tool gets main's spare (live 3, 14:16:58)
         _supervisor.Notice += e => rt.Events.Post(e);
         // A clone's result is reportable only after its result event arrives: drop pending-result claims from main's chat.
         var sup = _supervisor;
-        rt.Agent.SpeechGate ??= (_, text, _) => sup.GuardSpeech(text);
+        // ...and an instruction to a clone in main's chat goes to the clone over IPC (clones ignore hive chat; live 3, 14:34).
+        var relay = new ChatRelayGuard(sup, _log);
+        rt.Agent.SpeechGate ??= (_, text, _) => relay.Filter(sup.GuardSpeech(text));
         // Uncached tail, only while clones are online: who's out and idle, plus a split reminder on a group ask.
         rt.Agent.TurnHint = batch =>
         {
@@ -131,15 +136,20 @@ public sealed class MainHive : IAsyncDisposable
         if (_supervisor != null) await _supervisor.DisposeAsync().ConfigureAwait(false);
     }
 
-    /// <summary>Item handoff: the main bot's feet + counting what it picks up (0x16 Collect Item for its own entity).</summary>
-    private sealed class Receiver : IHandoffReceiver
+    /// <summary>
+    /// Item handoff: the main bot's feet + counting what it picks up (0x16 Collect Item for its own entity); and the other
+    /// way, main tossing a clone a spare tool (its live inventory, held item and reserved set).
+    /// </summary>
+    private sealed class Receiver : IHandoffReceiver, IHiveDonor
     {
         private readonly MinecraftClient _client;
+        private readonly MineClaw.Bot.Game.IGameClient _game;
         private readonly Dictionary<string, int> _counts = new(StringComparer.OrdinalIgnoreCase);
 
-        public Receiver(MinecraftClient client)
+        public Receiver(MinecraftClient client, MineClaw.Bot.Game.IGameClient game)
         {
             _client = client;
+            _game = game;
             client.ItemCollected += (collector, _, stack) =>
             {
                 if (collector != _client.World.Player.EntityId) return;
@@ -153,5 +163,42 @@ public sealed class MainHive : IAsyncDisposable
         public int Collected(string from) { lock (_counts) return _counts.GetValueOrDefault(from); }
         /// <summary>Night review B24: main stands still (its job paused, not aborted) while a clone tosses at its feet.</summary>
         public IDisposable? HoldStill(TimeSpan max) => _client.IsPlaying ? _client.HoldStill(max) : null;
+
+        public IReadOnlyList<ItemMsg> Items() => GameInventoryPort.Snapshot(_client.World);
+        public int HeldId => _client.World.Inventory.HeldItem(_client.World.Player.HeldSlot) is { IsEmpty: false } h ? h.Id : 0;
+        public IReadOnlySet<int> Reserved => _game.ReservedItems;
+
+        /// <summary>Looks at the clone, then drops <paramref name="count"/> of the item from a slot that isn't in hand when it can.</summary>
+        public async Task<int> TossAsync(int id, int count, Vec3d toward, CancellationToken ct)
+        {
+            if (!_client.IsPlaying || count <= 0) return 0;
+            var inv = _client.World.Inventory;
+            if (inv.OpenWindow != null) await _client.CloseWindowAsync(ct).ConfigureAwait(false);
+            await _client.LookAtAsync(toward, ct).ConfigureAwait(false);
+            int held = 36 + _client.World.Player.HeldSlot;
+            int before = inv.CountItem(id);
+            var slots = inv.PlayerSlots();
+            var order = Enumerable.Range(9, Math.Max(0, slots.Length - 9)).Where(i => !slots[i].IsEmpty && slots[i].Id == id)
+                .OrderBy(i => i == held ? 1 : 0).ToList();
+            int left = count;
+            foreach (var i in order)
+            {
+                if (left <= 0) break;
+                int n = slots[i].Count;
+                if (!(await _client.ClickSlotAsync(i, ct: ct).ConfigureAwait(false)).Ok) continue;
+                if (n <= left)
+                {
+                    if ((await _client.ClickSlotAsync(InventoryManager.OutsideSlot, ct: ct).ConfigureAwait(false)).Ok) left -= n;
+                    else await _client.ClickSlotAsync(i, ct: ct).ConfigureAwait(false);
+                    continue;
+                }
+                for (int k = 0; k < left; k++) // singles out of the stack, the rest goes back
+                    await _client.ClickSlotAsync(InventoryManager.OutsideSlot, rightClick: true, ct: ct).ConfigureAwait(false);
+                await _client.ClickSlotAsync(i, ct: ct).ConfigureAwait(false);
+                left = 0;
+            }
+            await Task.Delay(300, ct).ConfigureAwait(false);
+            return Math.Max(0, before - inv.CountItem(id));
+        }
     }
 }

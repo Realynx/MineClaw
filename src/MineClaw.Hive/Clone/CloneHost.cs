@@ -48,6 +48,15 @@ public interface ICloneBody
 /// <summary>Outcome of a loadout fetch: <see cref="Missing"/> lists what neither the inventory nor storage had.</summary>
 public sealed record LoadoutReport(string Text, IReadOnlyList<string> Missing);
 
+/// <summary>
+/// Outcome of <see cref="CloneHost.RequestHandoffAsync"/>: <see cref="Received"/> items arrived in this clone's inventory
+/// (counted, not assumed). Not ok: <see cref="Text"/> says why; <see cref="Holders"/> = other hive bots carrying a spare.
+/// </summary>
+public sealed record HandoffResult(bool Ok, int Received, string Text, IReadOnlyList<string> Holders)
+{
+    public static HandoffResult Fail(string why, IReadOnlyList<string>? holders = null) => new(false, 0, why, holders ?? []);
+}
+
 public static class CloneExitCodes
 {
     public const int Ok = 0;
@@ -222,9 +231,20 @@ public sealed class CloneHost : IHandoffTarget
                 if (r != null)
                 {
                     note = "loadout: " + r.Text;
+                    // Storage lacks a tool: the hive's inventory next (main hands over a spare; live 3, 14:16:58).
+                    var missing = r.Missing.ToList();
+                    var holders = new List<string>();
+                    foreach (var kind in r.Missing.Where(k => !k.Equals(TaskLoadout.Food, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        if (LoggingOut) break;
+                        var h = await RequestHandoffAsync(kind, 1, ct).ConfigureAwait(false);
+                        if (h.Ok && h.Received > 0) { missing.Remove(kind); note += "; then " + h.Text; }
+                        else holders.AddRange(h.Holders);
+                    }
                     _log.LogInformation("clone {Name}: {Note}", Name, note);
-                    if (r.Missing.Count > 0)
-                        await ReportAsync("progress", $"loadout short: no {string.Join(", no ", r.Missing)} in my inventory or storage").ConfigureAwait(false);
+                    if (missing.Count > 0)
+                        await ReportAsync("progress", $"loadout short: no {string.Join(", no ", missing)} in my inventory or storage" +
+                            (holders.Count > 0 ? $"; spare with {string.Join(", ", holders.Distinct())}" : "")).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) { return; }
@@ -389,6 +409,52 @@ public sealed class CloneHost : IHandoffTarget
             _exit.TrySetResult(code);
         }
     }
+
+    // ---------------------------------------------------------------- handoff from main (lend)
+
+    /// <summary>
+    /// Ask the hive for an item this clone lacks: a loadout kind ("pickaxe", "axe", "shovel", "sword") or an item name
+    /// ("stone_pickaxe", "torch"). Main tosses it at this clone's feet when it has one spare (it keeps the one it is using):
+    /// main stands still, this clone walks next to it, main tosses, and the result counts what actually arrived in the
+    /// inventory. When main has none spare, <see cref="HandoffResult.Holders"/> names other live clones carrying a spare.
+    /// For the loadout and any other caller (the acquisition planner).
+    /// </summary>
+    /// <param name="ids">Acceptable item ids, best first (e.g. a minimum tool tier); null = any of the kind/item.</param>
+    public async Task<HandoffResult> RequestHandoffAsync(string item, int count, CancellationToken ct, IReadOnlyList<int>? ids = null)
+    {
+        if (_link is not { IsOpen: true } l) return HandoffResult.Fail("no link to main");
+        if (_bodyRef is not { IsPlaying: true } body) return HandoffResult.Fail("not in game");
+        LendReplyMsg? offer;
+        try { offer = await l.RequestAsync<LendReplyMsg>(Msg.Lend, new LendMsg(item, Math.Max(1, count), ids?.ToArray()), TimeSpan.FromSeconds(5), ct).ConfigureAwait(false); }
+        catch (HiveIpcException ex) { return HandoffResult.Fail("main did not answer: " + ex.Message); }
+        if (offer is not { Ok: true }) return HandoffResult.Fail(offer?.Reason ?? "main did not answer", offer?.Holders);
+        int before = Count(body, offer.Id);
+        bool near;
+        try { near = await body.Inventory.GoNearAsync(new Vec3d(offer.X, offer.Y, offer.Z), ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogDebug(ex, "walk to main failed"); near = false; }
+        var me = body.Snapshot(false).Pos ?? new BotPos(offer.X, offer.Y, offer.Z);
+        // Go even when the walk fell short: the toss request is what releases main (it stands still until then).
+        LendDoneMsg? done;
+        try { done = await l.RequestAsync<LendDoneMsg>(Msg.LendGo, new LendGoMsg(me.X, me.Y, me.Z), TimeSpan.FromSeconds(15), ct).ConfigureAwait(false); }
+        catch (HiveIpcException ex) { return HandoffResult.Fail("main did not toss: " + ex.Message); }
+        if (done is not { Tossed: > 0 }) return HandoffResult.Fail("main could not toss: " + (done?.Reason ?? "no answer"));
+        // Confirmed by this clone's own inventory (the pick-up), never by the toss alone.
+        var until = DateTimeOffset.UtcNow + HandoffPickupWait;
+        while (DateTimeOffset.UtcNow < until && !ct.IsCancellationRequested && Count(body, offer.Id) - before < done.Tossed)
+        {
+            try { await Task.Delay(100, ct).ConfigureAwait(false); } catch (OperationCanceledException) { break; }
+        }
+        int got = Math.Max(0, Count(body, offer.Id) - before);
+        _log.LogInformation("clone {Name}: main tossed {T} {Item}, picked up {Got}{Near}", Name, done.Tossed, offer.Name, got, near ? "" : " (walk to main fell short)");
+        return got > 0
+            ? new HandoffResult(true, got, $"main handed me {got} {offer.Name}", [])
+            : HandoffResult.Fail($"main tossed {done.Tossed} {offer.Name} but I did not pick it up");
+    }
+
+    /// <summary>How long a clone waits to pick up what main tossed.</summary>
+    public static TimeSpan HandoffPickupWait { get; set; } = TimeSpan.FromSeconds(4);
+
+    private static int Count(ICloneBody body, int id) => body.Inventory.Items().Where(i => i.Id == id).Sum(i => i.Count);
 
     // ---------------------------------------------------------------- handoff to main (IHandoffTarget)
 

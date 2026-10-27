@@ -133,6 +133,14 @@ public sealed class GameInventoryPort(IGameClient client, ObservationStore obser
         return tossed > 0 ? ActionResult.Success($"tossed {tossed} item(s)", tossed) : ActionResult.Fail("nothing tossed");
     }
 
+    public async Task<bool> GoNearAsync(Vec3d at, CancellationToken ct)
+    {
+        if (!client.IsPlaying) return false;
+        if (client.World.Player.Position.DistanceTo(at) <= 2.5) return true;
+        var r = await client.GotoAsync(new GoalNear(new BlockPos((int)Math.Floor(at.X), (int)Math.Floor(at.Y), (int)Math.Floor(at.Z)), 2), null, ct).ConfigureAwait(false);
+        return r.Ok;
+    }
+
     /// <summary>
     /// Out of a hole / generator cell: the nearest standable spot within 6 blocks, no lower than here, with open air on at
     /// least 3 sides and solid ground (never over the void, never in liquid), then walk there.

@@ -21,6 +21,9 @@ public class TelemetryTests(ITestOutputHelper output)
         options.ChatDebounce.QuietMs = 10;
         options.ChatDebounce.MaxMs = 50;
         options.ChatDebounce.ReplyQuietMs = 0;
+        // Per-call accounting: the two-phase reply calls (quick ack, cheap-only triage) have their own tests (QuickReplyTests).
+        options.Brainstem.Reply.QuickAck = false;
+        options.Brainstem.Reply.CheapOnly = false;
         var fake = new FakeLlm();
         var tel = new PromptTelemetry(options, new TelemetryOptions(), dir, time);
         var rt = AgentRuntime.Create(options, (_, _) => Task.CompletedTask, tel.Wrap(fake), persist: false, time: time);

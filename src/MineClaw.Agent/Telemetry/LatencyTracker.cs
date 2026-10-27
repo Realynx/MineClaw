@@ -28,16 +28,30 @@ public sealed record LatencyRecord
     /// <summary>"adopted" | "cancelled" | null (no speculative step).</summary>
     public string? Speculation { get; init; }
     public string? Effort { get; init; }
+    /// <summary>First chat line the player saw: the quick ack, a streamed brain line or a cheap-only reply.</summary>
+    public long? FirstChatMs { get; init; }
+    /// <summary>The turn's final chat line (brain or cheap-only answer; an ack alone never counts).</summary>
+    public long? ConclusiveMs { get; init; }
+    /// <summary>A quick cheap-tier ack went out before the brain spoke.</summary>
+    public bool? Ack { get; init; }
+    /// <summary>"cheap" = answered by the cheap tier alone (no brain call); "correction" = a correction of a cheap-only reply.</summary>
+    public string? Path { get; init; }
 }
 
 /// <summary>Medians over the recent window (TUI tokens panel).</summary>
 public sealed record LatencySummary(int Turns, long? ReactionP50, long? FirstActionP50, long? FirstMoveP50, double? RoundsP50,
-    int SpeculationAdopted, int SpeculationCancelled)
+    int SpeculationAdopted, int SpeculationCancelled, long? FirstChatP50 = null, long? ConclusiveP50 = null,
+    int CheapOnly = 0, int CheapMisses = 0, int Chats = 0)
 {
-    /// <summary>"react 0.1s · act 2.9s · move 0.3s · rounds 0 (n 12) · spec 5/1".</summary>
+    /// <summary>"react 0.1s · chat 1.9s/6.2s · act 2.9s · move 0.3s · rounds 0 (n 12) · spec 5/1 · cheap 3/12 (1 miss)".</summary>
     public string Line() =>
-        $"react {S(ReactionP50)} · act {S(FirstActionP50)} · move {S(FirstMoveP50)} · rounds {(RoundsP50 is { } r ? r.ToString("0.#") : "-")} (n {Turns})" +
-        (SpeculationAdopted + SpeculationCancelled > 0 ? $" · spec {SpeculationAdopted}/{SpeculationAdopted + SpeculationCancelled}" : "");
+        $"react {S(ReactionP50)}" + (FirstChatP50 != null || ConclusiveP50 != null ? $" · chat {S(FirstChatP50)}/{S(ConclusiveP50)}" : "") +
+        $" · act {S(FirstActionP50)} · move {S(FirstMoveP50)} · rounds {(RoundsP50 is { } r ? r.ToString("0.#") : "-")} (n {Turns})" +
+        (SpeculationAdopted + SpeculationCancelled > 0 ? $" · spec {SpeculationAdopted}/{SpeculationAdopted + SpeculationCancelled}" : "") +
+        (CheapOnly + CheapMisses > 0 ? $" · cheap {CheapOnly}/{Math.Max(Chats, CheapOnly)}" + (CheapMisses > 0 ? $" ({CheapMisses} miss)" : "") : "");
+
+    /// <summary>Share of cheap-only replies that weren't corrected (null = none yet).</summary>
+    public double? CheapAccuracy => CheapOnly > 0 ? Math.Max(0, CheapOnly - CheapMisses) / (double)CheapOnly : null;
 
     private static string S(long? ms) => ms is { } v ? (v / 1000.0).ToString("0.0") + "s" : "-";
 }
@@ -66,6 +80,9 @@ public sealed class LatencyTracker
         public string? Effort;
         public bool InTurn;
         public DateTimeOffset? CloseBy;
+        public DateTimeOffset? FirstChat, Conclusive;
+        public bool? Ack;
+        public string? Path;
     }
 
     /// <summary>Tools that drive the body (moving, digging, placing, containers, combat, gestures, worker/skill/script work).</summary>
@@ -81,7 +98,7 @@ public sealed class LatencyTracker
     private readonly LinkedList<LatencyRecord> _recent = new();
     private readonly int _keep;
     private Open? _open;
-    private int _specAdopted, _specCancelled;
+    private int _specAdopted, _specCancelled, _cheapOnly, _cheapMisses, _chats;
 
     public LatencyTracker(TimeProvider? time = null, int keep = 200)
     {
@@ -109,7 +126,7 @@ public sealed class LatencyTracker
             if (_open is { InTurn: false, CloseBy: not null }) flushed = CloseLocked();
             var line = TextUtil.OneLine(text);
             if (_open != null && line.Length > 0 && _open.Text.Contains(TextUtil.Truncate(line, 40), StringComparison.Ordinal)) { }
-            else if (_open == null) _open = new Open { ChatAt = at, Player = player, Text = TextUtil.Truncate(line, 80) };
+            else if (_open == null) { _open = new Open { ChatAt = at, Player = player, Text = TextUtil.Truncate(line, 80) }; _chats++; }
             else if (!_open.InTurn && _open.Text.Length < 80) _open.Text = TextUtil.Truncate(_open.Text + " / " + TextUtil.OneLine(text), 80);
         }
         Emit(flushed);
@@ -123,6 +140,45 @@ public sealed class LatencyTracker
     {
         lock (_lock) if (_open is { } o && (o.Reaction == null || at < o.Reaction)) o.Reaction = at;
     }
+
+    /// <summary>
+    /// A chat line went out at <paramref name="at"/>: the first one sets first_chat; a non-ack line also moves conclusive
+    /// (the turn's final chat). <paramref name="ack"/> = the quick cheap-tier acknowledgement.
+    /// </summary>
+    public void NoteChatLine(DateTimeOffset at, bool ack = false)
+    {
+        lock (_lock)
+        {
+            if (_open is not { } o) return;
+            if (o.FirstChat == null || at < o.FirstChat) o.FirstChat = at;
+            if (ack) o.Ack = true;
+            else if (o.Conclusive == null || at > o.Conclusive) o.Conclusive = at;
+            if (o.Reaction == null || at < o.Reaction) o.Reaction = at;
+        }
+    }
+
+    /// <summary>This chat was answered by the cheap tier alone (no brain call).</summary>
+    public void NoteCheapOnly()
+    {
+        lock (_lock)
+        {
+            _cheapOnly++;
+            if (_open is { } o) o.Path = "cheap";
+        }
+    }
+
+    /// <summary>A player corrected a cheap-only reply right after it ("no, I meant..."): a cheap-path miss.</summary>
+    public void NoteCheapMiss()
+    {
+        lock (_lock)
+        {
+            _cheapMisses++;
+            if (_open is { } o) o.Path = "correction";
+        }
+    }
+
+    /// <summary>(cheap-only replies, their misses) since start.</summary>
+    public (int CheapOnly, int Misses) CheapCounts() { lock (_lock) return (_cheapOnly, _cheapMisses); }
 
     /// <summary>A game action that isn't a body tool (a reflex stop, a look-at): counts as the first action.</summary>
     public void NoteAction()
@@ -253,6 +309,7 @@ public sealed class LatencyTracker
             ReactionMs = Ms(o.Reaction), FirstMoveMs = Ms(o.Move), FirstActionMs = Ms(o.Action),
             RoundsBeforeAction = o.Action != null ? o.RoundsAtAction : null, Rounds = o.Rounds, Tools = o.Tools.ToArray(),
             Speculation = o.Speculation, Effort = o.Effort,
+            FirstChatMs = Ms(o.FirstChat), ConclusiveMs = Ms(o.Conclusive), Ack = o.Ack, Path = o.Path,
         };
         _recent.AddLast(rec);
         while (_recent.Count > _keep) _recent.RemoveFirst();
@@ -276,7 +333,8 @@ public sealed class LatencyTracker
             var list = _recent.TakeLast(window).ToList();
             return new LatencySummary(list.Count, P50(list.Select(r => r.ReactionMs)), P50(list.Select(r => r.FirstActionMs)),
                 P50(list.Select(r => r.FirstMoveMs)), P50D(list.Where(r => r.RoundsBeforeAction != null).Select(r => (double)r.RoundsBeforeAction!.Value)),
-                _specAdopted, _specCancelled);
+                _specAdopted, _specCancelled, P50(list.Select(r => r.FirstChatMs)), P50(list.Select(r => r.ConclusiveMs)),
+                _cheapOnly, _cheapMisses, _chats);
         }
     }
 

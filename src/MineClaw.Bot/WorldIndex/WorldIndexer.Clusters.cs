@@ -260,7 +260,9 @@ public sealed partial class WorldIndexer
                 for (int dz = -4; dz <= 4; dz++)
                     if (Math.Abs(dx) + Math.Abs(dz) <= 4 && Blocks.IsWater(_world.GetBlock(p.X + dx, p.Y, p.Z + dz))) waterCells.Add(new BlockPos(p.X + dx, p.Y, p.Z + dz));
         }
-        protect.UnionWith(waterCells.Where(w => _world.GetBlock(w) == Blocks.Water)); // sources only; flowing water isn't "the" irrigation
+        // Sources only (any water id with meta 0: a settled flow is id 9 with its level, a fresh source id 8 meta 0);
+        // flowing water isn't "the" irrigation.
+        protect.UnionWith(waterCells.Where(w => Blocks.IsWaterSource(_world.GetBlock(w), _world.GetMeta(w))));
         SetProtect(e, protect);
         e.Extra.Clear();
         e.Extra["type"] = type;

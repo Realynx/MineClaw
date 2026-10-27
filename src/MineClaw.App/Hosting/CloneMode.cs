@@ -103,12 +103,21 @@ public static class CloneMode
             muted: text => _ = host0.ReportAsync("progress", text.Length > 160 ? text[..160] : text));
         rt.Chat.Accepted += m => { if (m.Player != null) host0.ChatAccepted(m.Player); };
         HiveTools.RegisterClone(rt.Tools, host0);
+        // The acquisition planner's hive seam (loadout, ensure, skill preconditions): main hands over a spare it carries.
+        if (bot.Acquisition is { } acquisition)
+            acquisition.RequestHandoff = async (ask, ct) =>
+            {
+                var r = await host0.RequestHandoffAsync(ask.Need, ask.Count, ct, ask.ItemIds);
+                return r.Ok ? host0.Main ?? "main" : null;
+            };
         // Script spawn: semi-sleep (zero calls until a wake), the script as this clone's standing order, results over IPC.
         using var runner = MineClaw.Bot.GameTools.ScriptTools.Of(rt) is { } bridge
             ? new CloneScriptRunner(rt, bridge, (text, pct) => host0.ReportAsync("progress", text, pct),
                 (ok, text, logout) => host0.ReportResultAsync(ok, text, logout), loggers.CreateLogger("MineClaw.Hive"))
             : null;
-        if (welcome.Task is { } first) runner?.Prepare(first);
+        // Main's task is this clone's standing order: nothing stored resumes before it lands, and it replaces the old one.
+        var taskOrders = rt.Agent.Orders is { } so ? new CloneTaskOrders(so, rt.Memory, rt.Activities, loggers.CreateLogger("MineClaw.Hive")) : null;
+        if (welcome.Task is { } first) { runner?.Prepare(first); taskOrders?.HoldForTask(); }
 
         var store = new HiveStore(rt.Db, clone);
         host0.Store = store;
@@ -131,7 +140,7 @@ public static class CloneMode
         var commands = new ConsoleCommands(game, rt, agent, log, signals.Source);
         var source = new InProcessBotSource(game, rt, telemetry, agent, commands, host.Tui.Viewport, signals.Token);
         var body = new GameCloneBody(client, game, rt, agent, commands, source, telemetry, new GameInventoryPort(game, rt.Observations, rt.Memory), log,
-            () => DateTimeOffset.UtcNow - lastDangerAt < TimeSpan.FromSeconds(15) ? lastDanger : "died", runner);
+            () => DateTimeOffset.UtcNow - lastDangerAt < TimeSpan.FromSeconds(15) ? lastDanger : "died", runner, taskOrders);
         host0.Body = body;
         log.LogInformation("clone {Clone} starting (pipe {Pipe}, scope {Scope})", clone, cli.ParentPipe, agentOptions.Hive.ScopeFor(clone));
 
@@ -150,7 +159,7 @@ public static class CloneMode
     /// <summary>The real clone body: client + brain + console + telemetry of this process.</summary>
     private sealed class GameCloneBody(MinecraftClient client, IGameClient game, AgentRuntime rt, PausableAgent agent, ConsoleCommands commands,
         InProcessBotSource source, PromptTelemetry telemetry, IInventoryPort inventory, ILogger log, Func<string> deathCause,
-        CloneScriptRunner? runner = null) : ICloneBody
+        CloneScriptRunner? runner = null, CloneTaskOrders? taskOrders = null) : ICloneBody
     {
         private bool _wired;
 
@@ -213,8 +222,10 @@ public static class CloneMode
             // Script task: started by C# at once, brain asleep (no notice, no turn).
             if (runner != null && CloneScriptRunner.Handles(task)) { runner.Start(task); return; }
             if (runner?.Task != null) runner.Release("new task from main");
+            taskOrders?.Apply(task); // the new task is the standing order now, replacing any older one
             var text = (task.Restarted ? "(restarted after a crash: check your inventory first) " : "") +
-                $"[hive task] {task.Text} — take what you need from storage first; when finished call hive_report done (or failed).";
+                $"[hive task] {task.Text} — this replaces any earlier job or standing order; take what you need from storage first; " +
+                "when finished call hive_report done (or failed).";
             rt.Events.Post(GameEvent.Notice(text, EventPriority.Normal));
         }
 

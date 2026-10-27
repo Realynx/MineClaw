@@ -201,6 +201,7 @@ public sealed class CloneScriptRunner : IDisposable
     internal GameEvent? Gate(GameEvent e)
     {
         if (!_asleep || _posting) return e;
+        if (e.MustWake) return e with { Wakes = true }; // a background failure/stall always reaches the brain
         switch (e.Kind)
         {
             case EventKind.IdleTick:

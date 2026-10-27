@@ -35,7 +35,11 @@ public static class Loadout
 
     public sealed record Report(string Text, IReadOnlyList<string> Missing, IReadOnlyList<string> Got);
 
-    /// <summary>Gets each wanted kind the bot doesn't carry: storage first (nearest chest that holds one), then crafting.</summary>
+    /// <summary>
+    /// Gets each wanted kind the bot doesn't carry through the <see cref="AcquisitionPlanner"/>: storage (nearest chest that
+    /// holds one), a hive spare, crafting from what's reachable; a pickaxe (the job can't run without one) also through the
+    /// from-scratch bootstrap (tree → wood pick → gen cobble → stone pick) and, last, a player.
+    /// </summary>
     public static async Task<Report> FetchAsync(IGameClient c, ObservationStore? observations, IEnumerable<string> wants, CancellationToken ct)
     {
         var w = c.World;
@@ -43,21 +47,23 @@ public static class Loadout
         var got = new List<string>();
         var have = new List<string>();
         var missing = new List<string>();
+        var planned = new List<string>(); // bootstraps: "no pick, making one: ... | steps; got stone pickaxe"
+        var planner = Acquisition.Planner(c, observations);
         foreach (var k in all)
         {
             ct.ThrowIfCancellationRequested();
             if (Have(w, k) > 0) { have.Add(k.Name); continue; }
-            var from = observations == null ? null : await WithdrawAsync(c, observations, k, ct).ConfigureAwait(false);
-            if (from != null) { got.Add(from); continue; }
-            var made = await CraftAsync(c, k, ct, observations).ConfigureAwait(false);
-            if (made != null) { got.Add(made); continue; }
+            var depth = k.Name == "pickaxe" ? AcquireDepth.Full : AcquireDepth.Cheap;
+            var r = await planner.AcquireAsync(new Need(k.Name, 1, 0, depth), ct).ConfigureAwait(false);
+            if (r.Ok && Have(w, k) > 0) { (r.Plan != null ? planned : got).Add(r.Text); continue; }
             missing.Add(k.Name);
         }
         var parts = new List<string>();
         if (got.Count > 0) parts.Add("took " + string.Join(", ", got));
+        parts.AddRange(planned);
         if (have.Count > 0) parts.Add("already had " + string.Join(", ", have));
         if (missing.Count > 0) parts.Add("no " + string.Join(", no ", missing) + " in my inventory or storage");
-        return new Report(parts.Count == 0 ? "nothing needed" : string.Join("; ", parts), missing, got);
+        return new Report(parts.Count == 0 ? "nothing needed" : string.Join("; ", parts), missing, [.. got, .. planned]);
     }
 
     /// <summary>Withdraws one of the kind from the nearest known container holding it; "stone pickaxe from 14,64,-5" or null.</summary>

@@ -101,10 +101,12 @@ public sealed partial class MinecraftClient
 
         // Block census.
         var all = World.FindBlocks(me, radius, (id, _) => id != 0, 40000);
-        var counts = all.GroupBy(f => f.Id).ToDictionary(g => g.Key, g => g.Count());
+        // Variant blocks keep their type ("cobblestone_slab", not every slab as "stone_slab": live 10-27 the brain read
+        // the generator's cobble slabs as smooth-stone ones and planned smelting).
+        var counts = all.GroupBy(f => CensusName(f.Id, f.Meta)).ToDictionary(g => g.Key, g => g.Count());
         sb.Append("; blocks: ");
         sb.Append(counts.Count == 0 ? "none" : string.Join(", ", counts.OrderByDescending(kv => kv.Value).Take(detail ? 16 : 7)
-            .Select(kv => $"{BlockName(kv.Key, 0)} {kv.Value}")));
+            .Select(kv => $"{kv.Key} {kv.Value}")));
 
         // Points of interest: nearest of each type.
         var poi = new List<string>();
@@ -133,6 +135,10 @@ public sealed partial class MinecraftClient
         if (detail && online.Count > 0) sb.Append("; online: ").Append(string.Join(", ", online));
         return Truncate(sb.ToString(), maxChars);
     }
+
+    /// <summary>Census name: slab/wool/stone-brick variants by type (they craft from different things), else the block name.</summary>
+    internal static string CensusName(int id, int meta) =>
+        id is Blocks.Slab or Blocks.Wool or Blocks.StoneBricks ? Items.VariantName(id, meta) : BlockName(id, 0);
 
     private static int Canonical(int id) => id switch
     {

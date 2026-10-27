@@ -28,6 +28,8 @@ public sealed class FakePort : IInventoryPort
     public IReadOnlyList<StorageChest> Chests() { lock (_lock) return ChestFree.Select(kv => new StorageChest(kv.Key, kv.Value, 3)).ToList(); }
 
     public void AddChest(BlockPos p, int slots) { lock (_lock) ChestFree[p] = slots; }
+    /// <summary>An item picked up (e.g. main's hand-off toss).</summary>
+    public void Add(ItemMsg item) { lock (_lock) Stacks.Add(item); }
 
     public Task<ActionResult> DepositToAsync(BlockPos chest, CancellationToken ct)
     {
@@ -97,6 +99,9 @@ public sealed class FakeBody : ICloneBody
     public void StartAgent(CancellationToken ct) => Call("start");
     public Task StopAgentAsync() { Call("stop"); return Task.CompletedTask; }
     public void AssignTask(TaskMsg task) { Call("task " + task.Text); if (OnTask is { } f) _ = Task.Run(() => f(task)); }
+    /// <summary>Loadout fetch from storage (null hook = unsupported, like the interface default).</summary>
+    public Func<IReadOnlyList<string>, LoadoutReport?>? Loadout { get; set; }
+    public Task<LoadoutReport?> PrepareLoadoutAsync(IReadOnlyList<string> loadout, CancellationToken ct) => Task.FromResult(Loadout?.Invoke(loadout));
     public Task<bool> ExecuteAsync(string line, CancellationToken ct) { Call("cmd " + line); return Task.FromResult(true); }
     public void InjectChat(string raw) { Call("inject " + raw); OnInject?.Invoke(raw); }
     public void Note(string text) => Call("note " + text);

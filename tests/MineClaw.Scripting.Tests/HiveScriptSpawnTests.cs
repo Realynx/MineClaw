@@ -114,10 +114,10 @@ public class HiveScriptSpawnTests(Xunit.Abstractions.ITestOutputHelper output)
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var loop = Task.Run(() => rt.Agent.RunAsync(cts.Token));
-        rt.Events.Post(GameEvent.Chat("poofimafox", "hi"));
+        rt.Events.Post(GameEvent.Chat("poofimafox", "can you mine some cobble for the furnace?")); // needs the brain (not cheap-only small talk)
         await Until(() => llm.Brain > 0);
-        Assert.Equal(ModelTier.Main, llm.Requests.First().Tier);
-        Assert.Equal("haiku", rt.Options.Llm.ProfileOfModel(rt.Options.Llm.ModelFor(llm.Requests.First().Tier)));
+        var brain = llm.Requests.First(r => r.Tier == ModelTier.Main);
+        Assert.Equal("haiku", rt.Options.Llm.ProfileOfModel(rt.Options.Llm.ModelFor(brain.Tier)));
 
         var write = await h.Run("script", new { op = "run", name = "x", code = "mine{'cobblestone', 1}" }); // as this brain
         Assert.False(write.Ok);

@@ -101,7 +101,11 @@ public static class GameToolSet
                 if (Locations.ParseCoords(to) == null && places is ICrossDimensionPlaces xd && xd.ResolveElsewhere(to) is { } far)
                     return await WorldIndex.PortalTravel.GotoAsync(c, xd.Portals, far.Pos, far.Dim, opts, dist ?? 1, ct);
                 Goal goal;
-                if (Resolve(to, places) is { } p) goal = Near(p, dist ?? 1);
+                // A container/door/lever named by its coordinates (no dist): stop where it can be USED, i.e. seen within
+                // reach, so a goto>withdraw chain doesn't end outside the wall next to it (live 10-27, chest 14,64,-5).
+                if (Resolve(to, places) is { } p)
+                    goal = dist is null && Blocks.Get(c.World.GetBlock(p)).Interactable
+                        ? new GoalUseBlock(c.World, p, Aiming.DefaultReach - 0.6) : Near(p, dist ?? 1);
                 else if (c.World.Entities.FindPlayer(to) is { } e) goal = new GoalNearPosition(e.Position, Math.Max(1, dist ?? 2));
                 else return ToolResult.Error($"unknown place or player '{to}'");
                 return R(await c.GotoAsync(goal, opts, ct));
@@ -113,8 +117,15 @@ public static class GameToolSet
         // ---- gathering / crafting
         tools.Register("mine", "Mine N blocks of a type nearby and pick up drops. Skips protected builds.",
             ToolSchema.Create().Str("block").Int("count", required: false).Int("radius", required: false).Build(),
-            async (i, ct) => R(await c.MineAsync(i.ReqStr("block"), Math.Clamp(i.Int("count") ?? options.DefaultMineCount, 1, 256),
-                Math.Clamp(i.Int("radius") ?? options.DefaultMineRadius, 2, 48), ct)), longRunning: true);
+            async (i, ct) =>
+            {
+                // A missing pickaxe is acquired first (chest, hive, craft, bootstrap); if that fails the client's own honest
+                // result follows, led by why no tool could be had.
+                var tool = await AcquireTool.ToolForBlockAsync(c, i.ReqStr("block"), ct);
+                var r = R(await c.MineAsync(i.ReqStr("block"), Math.Clamp(i.Int("count") ?? options.DefaultMineCount, 1, 256),
+                    Math.Clamp(i.Int("radius") ?? options.DefaultMineRadius, 2, 48), ct));
+                return tool is { } t && !t.Note.StartsWith("had ", StringComparison.Ordinal) ? r with { Text = t.Note + "; " + r.Text } : r;
+            }, longRunning: true);
         tools.Register("harvest_generator",
             "Repeatedly mine a cobble generator's output block. Big counts run unattended: deposits when full (store), re-tools, eats.",
             ToolSchema.Create().Str("at", "output block " + At).Int("count", "up to 20000").Str("store", "chest " + At, required: false)
@@ -156,7 +167,14 @@ public static class GameToolSet
             async (i, ct) => R(await c.CollectDropsAsync(Math.Clamp(i.Int("radius") ?? 8, 2, 24), ct)), longRunning: true);
         tools.Register("craft", "Craft items, resolving sub-recipes; smelts prerequisites and places a crafting table if needed.",
             ToolSchema.Create().Str("item").Int("count", required: false).Build(),
-            async (i, ct) => R(await crafter.CraftAsync(i.ReqStr("item"), Math.Clamp(i.Int("count") ?? 1, 1, 576), ct)), longRunning: true);
+            async (i, ct) =>
+            {
+                // "20 cobble slabs" in item: the amount counts when count is left out.
+                var (n, name) = Items.ParseAmount(i.ReqStr("item"));
+                if (n is not null && Items.ByNameWithDamage(name) is { } part && Items.ByNameWithDamage(i.ReqStr("item")) is { } whole
+                    && (part.Item.Id, part.Damage) != (whole.Item.Id, whole.Damage)) n = null; // "disc 13" is a name, not 13 discs
+                return R(await crafter.CraftAsync(n is null ? i.ReqStr("item") : name, Math.Clamp(i.Int("count") ?? n ?? 1, 1, 576), ct));
+            }, longRunning: true);
         tools.Register("smelt", "Load a furnace with items + fuel. wait=stay and collect.",
             ToolSchema.Create().Str("item", "input").Int("count", required: false).Str("fuel", required: false)
                 .Bool("wait", required: false).Str("at", "furnace " + At, required: false).Build(),
@@ -253,6 +271,7 @@ public static class GameToolSet
             }, longRunning: true);
         tools.Register("eat", "Eat the best spare food.", ToolSchema.Empty, async (_, ct) => R(await c.EatAsync(ct)), longRunning: true);
         TreeTools.Register(tools, c, places);
+        AcquireTool.Register(tools, c); // hidden: scripts' ensure/acquire (no definition in any prefix)
     }
 
     // ------------------------------------------------------------------ helpers

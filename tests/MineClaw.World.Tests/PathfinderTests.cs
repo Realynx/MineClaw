@@ -210,6 +210,27 @@ public class PathfinderTests
     }
 
     [Fact]
+    public void GoalUseBlock_needs_line_of_sight_not_just_distance()
+    {
+        // Chest at 5,64,5 behind a planks wall along z=4 (x 0..10, 2 high) with a gap at x=9: the cell right outside
+        // (5,64,3) is in reach but blind; the search must go round through the gap to the chest's side.
+        var w = TestWorld.Create();
+        Island(w, 0, 0, 10, 10);
+        for (int x = 0; x <= 10; x++)
+        for (int y = 64; y <= 65; y++)
+            if (x != 9) w.SetBlock(x, y, 4, TestBlocks.Planks, 0);
+        w.SetBlock(5, 64, 5, TestBlocks.Chest, 0);
+        var chest = new BlockPos(5, 64, 5);
+        Assert.True(new GoalWithinReach(chest, 3.9).IsReached(5, 64, 3)); // the old, distance-only goal
+        var goal = new GoalUseBlock(w, chest, 3.9);
+        Assert.False(goal.IsReached(5, 64, 3));
+        Assert.True(goal.IsReached(5, 64, 6));
+        var r = Pathfinder.FindPath(w, new BlockPos(5, 64, 1), goal, Strict);
+        Assert.Equal(PathStatus.Found, r.Status);
+        Assert.True(r.Steps[^1].Z >= 5, $"ended at {r.Steps[^1]}");
+    }
+
+    [Fact]
     public void InvalidStartInMidAir()
     {
         var w = TestWorld.Create();

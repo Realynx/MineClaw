@@ -14,6 +14,8 @@ markers contributes its first section as core. Editing a file re-indexes it auto
 - Cobble generator: build it away from wood. Water touching flowing lava makes cobblestone; mine that cell and it refills. Wall it in and test the water side before placing the lava; if the layout looks wrong, scoop the lava back at once.
 - Infinite water: two sources in opposite corners of a 2x2 hole, 1 deep. Never let it near the lava.
 - Health regenerates only while food is 18+; eat before long jobs.
+- Food in b1.8.1: bread (3 wheat), melon slices, mushroom stew (bowl + red + brown mushroom), cake, cookies; pork (pigs), raw beef (cows), raw chicken (chickens), rotten flesh (zombies), fish by fishing; cook meat/fish in a furnace. Leaves drop only saplings: apples, so golden apples too, come only from dungeon chests.
+- The seeded b1.8.1 knowledge and game data win over general Minecraft knowledge (later versions differ).
 - Saplings can be **planted** any time, night included, on dirt/grass/farmland that can see the sky (or has light ≥8), so night alone never blocks planting. They only **grow** at light ≥9, so at night growth pauses unless torches are nearby.
 <!-- /core -->
 

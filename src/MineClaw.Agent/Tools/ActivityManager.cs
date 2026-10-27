@@ -103,6 +103,12 @@ public sealed class ActivityManager
     /// <summary>An activity started: (id, kind, steps). Telemetry (first move / first action).</summary>
     public event Action<int, ActivityKind, IReadOnlyList<(string Tool, JsonElement Input)>>? Started;
 
+    /// <summary>
+    /// A finished activity's report text that is context only, not a reason to wake the brain (a standing-order pass that found
+    /// nothing to do yet: C# backs off instead). Null = every result wakes as usual.
+    /// </summary>
+    public Func<string, bool>? QuietOutcome { get; set; }
+
     /// <summary>A job or move is running or queued (speculative/social fillers don't count).</summary>
     public bool IsBusy { get { lock (_lock) return _current is { Finished: false, Silent: false }; } }
 
@@ -408,13 +414,17 @@ public sealed class ActivityManager
         try { act.Cts.Dispose(); } catch (Exception) { }
         if (!post) return;
         // A job is queued behind this move: it reports the outcome (a failed move = "not run: goto failed: ...").
-        if (queued != null) return;
+        // A job queued with do{queue:true} runs even when this one failed (it doesn't require success): then nobody would report
+        // this failure, so it is posted here.
+        if (queued != null && (failure == null || queued.RequireSuccess)) return;
 
         if (failure == null)
         {
             var text = act.Kind == ActivityKind.Move ? $"#{act.Id} {act.Label}: {results[^1]?.Text ?? act.LastResult?.Text}" : $"#{act.Id} {act.Label}: {results[^1]?.Text}";
             // An arrival nobody waits on is context, not a reason to wake the brain (it already said what it's doing).
-            _events.Post(act.Kind == ActivityKind.Move
+            bool quiet = false;
+            try { quiet = QuietOutcome?.Invoke(text) == true; } catch (Exception) { }
+            _events.Post(act.Kind == ActivityKind.Move || quiet
                 ? new GameEvent(EventKind.TaskCompleted, text, priority: EventPriority.Background)
                 : GameEvent.TaskDone(text));
             return;
@@ -426,7 +436,11 @@ public sealed class ActivityManager
         bool wakes = reason == null; // plain failures wake; interruptions are explained by the interrupting event
         if (modelInitiated) return;
         var tool = failedAt >= 0 && failedAt < steps.Count ? steps[failedAt].Tool.Name : act.Label;
-        _events.Post(GameEvent.TaskFail($"#{act.Id} {tool}: {failure.Text}", wakes));
+        var failText = $"#{act.Id} {tool}: {failure.Text}";
+        bool quietFail = false;
+        try { quietFail = wakes && QuietOutcome?.Invoke(failText) == true; } catch (Exception) { }
+        if (quietFail) wakes = false;
+        _events.Post(GameEvent.TaskFail(failText, wakes) with { MustWake = wakes });
     }
 }
 

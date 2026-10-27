@@ -79,6 +79,55 @@ public sealed class BrainstemOptions
 
     /// <summary>Start a streamed tool_use (movement or read-only) the moment its block completes, before the message ends.</summary>
     public bool StreamingExecution { get; set; } = true;
+
+    /// <summary>"Agent:Brainstem:Reply": two-phase replies (streamed brain chat, quick cheap-tier ack, cheap-only small talk).</summary>
+    public ReplyOptions Reply { get; set; } = new();
+}
+
+/// <summary>
+/// "Agent:Brainstem:Reply": respond quickly, then conclusively. (1) Each completed chat line the brain streams is sent the
+/// moment it finishes, through the usual filters. (2) If no brain line is out <see cref="AckAfterMs"/> after an addressed
+/// message (and no reflex handled it), one Haiku call writes a ≤5-word non-committal ack ("on it~", "which chest?"),
+/// linted (no digits, coordinates, counts, yes/no or claims; else silence). (3) Safe small talk (greetings, thanks,
+/// emotes, "how are you", "what are you doing") is triaged by the same single cheap call: a final reply without any Opus
+/// call when it needs no brain. A correction right after a cheap-only reply ("no, I meant...") escalates and counts a miss.
+/// </summary>
+public sealed class ReplyOptions
+{
+    /// <summary>Send each completed streamed chat line of the brain at once (sentence/line boundaries).</summary>
+    public bool StreamChat { get; set; } = true;
+
+    /// <summary>After the first streamed line of a round, a sentence end flushes only once this many chars are buffered
+    /// (keeps chat from splitting into tiny lines); a line/block end always flushes.</summary>
+    public int StreamMinChars { get; set; } = 60;
+
+    /// <summary>Quick cheap-tier acknowledgement when the brain is slow to say anything.</summary>
+    public bool QuickAck { get; set; } = true;
+
+    /// <summary>Ack when no brain line streamed this long after the addressed message was queued.</summary>
+    public int AckAfterMs { get; set; } = 2000;
+
+    /// <summary>The ack call starts this much earlier (Haiku latency), so the line can land at <see cref="AckAfterMs"/>.</summary>
+    public int AckCallLeadMs { get; set; } = 900;
+
+    /// <summary>Ack hard caps (words, chars).</summary>
+    public int AckMaxWords { get; set; } = 5;
+    public int AckMaxChars { get; set; } = 30;
+
+    /// <summary>No ack for plain small talk that goes to the brain anyway (a low-effort brain answers it fast).</summary>
+    public bool AckSkipSmallTalk { get; set; } = true;
+
+    /// <summary>Safe small talk is answered by the cheap tier alone (no Opus call) when its one call says no brain is needed.</summary>
+    public bool CheapOnly { get; set; } = true;
+
+    /// <summary>Cap on a cheap-only final reply (chars).</summary>
+    public int CheapMaxChars { get; set; } = 120;
+
+    /// <summary>max_tokens of the quick call.</summary>
+    public int MaxTokens { get; set; } = 60;
+
+    /// <summary>A correction from the same player this soon after a cheap-only reply escalates (and counts a miss).</summary>
+    public int CorrectionWindowSeconds { get; set; } = 120;
 }
 
 /// <summary>"Agent:Brainstem:Social": cheap, void-safe social idle behaviour.</summary>

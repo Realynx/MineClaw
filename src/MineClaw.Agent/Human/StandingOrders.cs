@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using MineClaw.Agent.Events;
 using MineClaw.Agent.Memory;
 using MineClaw.Agent.Tools;
@@ -40,6 +41,71 @@ public sealed class StandingOrders
         _time = time ?? TimeProvider.System;
         _log = log ?? NullLogger.Instance;
         _activities.StepFinished += OnStepFinished;
+        _activities.QuietOutcome = IsQuietOutcome;
+    }
+
+    // ------------------------------------------------------------------ "nothing to do yet" backoff (zero tokens)
+
+    /// <summary>
+    /// A pass of the order that found nothing to do ("no grown oak trees... 17 saplings still growing... Nothing chopped"): the
+    /// order isn't failing, the world just isn't ready.
+    /// </summary>
+    internal static readonly Regex NothingYet = new(
+        @"\bnothing\s+(?:to\s+(?:do|chop|mine|harvest|collect)|chopped|mined|harvested|collected|ready|grown|left\s+to|grew)\b" +
+        @"|\bno\s+(?:more\s+)?(?:grown|mature|ripe|ready|full-?grown)\b|\b(?:still|only)\s+(?:growing|saplings?|seeds?)\b" +
+        @"|\bnot\s+(?:grown|ready|mature|ripe|regenerated)(?:\s+yet)?\b|\b0\s+(?:chopped|mined|harvested|logs?|trees?)\b|\bnone\s+(?:ready|grown)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    /// <summary>Waits after consecutive "nothing yet" passes: 2 → 4 → 8 → 15 min.</summary>
+    public static readonly TimeSpan[] Backoff = [TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(4), TimeSpan.FromMinutes(8), TimeSpan.FromMinutes(15)];
+
+    private int _nothingStreak;
+    private DateTimeOffset _backoffUntil = DateTimeOffset.MinValue;
+    private string? _quietText;
+    private ITimer? _poll;
+
+    /// <summary>
+    /// Bot layer: is there work for this order again, read from the world model (a sapling grew into a tree, a gen cell
+    /// regenerated, a crop matured)? True ends the backoff at once; null = can't tell (the backoff runs out instead).
+    /// </summary>
+    public Func<StandingOrder, bool?>? WorkReady { get; set; }
+
+    /// <summary>When the order may next resume by itself (MinValue = not backing off).</summary>
+    public DateTimeOffset BackoffUntil { get { lock (_lock) return _backoffUntil; } }
+
+    /// <summary>Consecutive passes that found nothing to do.</summary>
+    public int NothingStreak { get { lock (_lock) return _nothingStreak; } }
+
+    /// <summary>How often the work-ready probe is polled while backing off.</summary>
+    public TimeSpan ProbeEvery { get; init; } = TimeSpan.FromSeconds(20);
+
+    private bool IsQuietOutcome(string text)
+    {
+        lock (_lock)
+        {
+            if (_quietText == null || !text.Contains(_quietText, StringComparison.Ordinal)) return false;
+            _quietText = null;
+            return true;
+        }
+    }
+
+    private void StartProbe()
+    {
+        if (WorkReady == null) return;
+        lock (_lock)
+            _poll ??= _time.CreateTimer(_ => { try { ProbeTick(); } catch (Exception) { } }, null, ProbeEvery, ProbeEvery);
+    }
+
+    /// <summary>One probe poll (the timer calls it; tests call it directly): resumes the order as soon as there's work again.</summary>
+    public bool ProbeTick()
+    {
+        if (BackoffUntil == DateTimeOffset.MinValue) { StopProbe(); return false; }
+        return ResumeIfIdle("work ready");
+    }
+
+    private void StopProbe()
+    {
+        lock (_lock) { _poll?.Dispose(); _poll = null; }
     }
 
     /// <summary>This bot's login (whose order we run).</summary>
@@ -53,6 +119,9 @@ public sealed class StandingOrders
 
     /// <summary>No resume while set (a hive clone holds its script order until its loadout is fetched).</summary>
     public bool Held { get; set; }
+
+    /// <summary>False for an order C# must not re-issue (a hive clone's brain task is its order but the brain runs it). Null = all.</summary>
+    public Func<StandingOrder, bool>? CanResume { get; set; }
 
     /// <summary>Raised after an order was re-issued (tests, logs).</summary>
     public event Action<StandingOrder, string>? Resumed;
@@ -72,7 +141,17 @@ public sealed class StandingOrders
         if (!_o.ResumeStandingOrders || Held) return false;
         var o = Current;
         if (o == null || _activities.IsBusy || _events.HasWaking) return false;
+        if (CanResume is { } can && !can(o)) return false;
         var now = _time.GetUtcNow();
+        bool backingOff;
+        lock (_lock) backingOff = now < _backoffUntil;
+        if (backingOff)
+        {
+            bool? ready = null;
+            try { ready = WorkReady?.Invoke(o); } catch (Exception) { }
+            if (ready != true) return false;
+            _log.LogInformation("standing order {Job}: work is ready again, ending the backoff", o.Job);
+        }
         lock (_lock)
         {
             if (now < _snoozedUntil) return false;
@@ -99,6 +178,29 @@ public sealed class StandingOrders
         lock (_lock) sig = _resumedSignature;
         if (sig == null || ToolCallGuard.Signature(tool, input) != sig || cancelReason != null) return;
         bool ok = result.Ok;
+        if (NothingYet.IsMatch(result.Text ?? ""))
+        {
+            // Not a failure and nothing for the brain: wait in C# (probe the world, else 2 → 4 → 8 → 15 min), no LLM call.
+            TimeSpan wait;
+            lock (_lock)
+            {
+                _nothingStreak++;
+                wait = Backoff[Math.Min(_nothingStreak, Backoff.Length) - 1];
+                _backoffUntil = _time.GetUtcNow() + wait;
+                var head = (result.Text ?? "").Trim().Split('\n')[0];
+                _quietText = head.Length > 0 ? head[..Math.Min(60, head.Length)] : null;
+            }
+            _memory.UpdateStandingOrder(Bot, o => o.LastOutcome = TextUtil.Truncate(TextUtil.OneLine(result.Text), 160));
+            _log.LogInformation("standing order: nothing to do yet ({N}x), backing off {Min} min", _nothingStreak, wait.TotalMinutes);
+            StartProbe();
+            return;
+        }
+        lock (_lock)
+        {
+            _nothingStreak = 0;
+            _backoffUntil = DateTimeOffset.MinValue;
+        }
+        StopProbe();
         int failures = 0;
         _memory.UpdateStandingOrder(Bot, o =>
         {
@@ -108,7 +210,7 @@ public sealed class StandingOrders
         });
         if (!ok && failures == Math.Max(1, _o.MaxResumeFailures))
             _events.Post(GameEvent.Notice($"standing order keeps failing ({failures}x), auto-resume paused: {TextUtil.Truncate(result.Text, 120)}",
-                EventPriority.Normal));
+                EventPriority.Normal) with { MustWake = true });
     }
 
     // ------------------------------------------------------------------ the tool

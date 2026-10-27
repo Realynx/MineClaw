@@ -94,7 +94,7 @@ public static class HumanTools
 
         if (reply == null)
         {
-            var line = (risky ? q.RiskyTimeoutLine : q.TimeoutLine).Replace("{player}", name ?? "").Replace("{default}", dflt).Trim(' ', ',');
+            var line = q.TimeoutText(name, dflt, risky); // never the raw default when it is an instruction (live 3, 14:35:08)
             if (line.Length > 0)
             {
                 try { await chat.SayAsync(line, audience: name != null ? [name] : null).ConfigureAwait(false); }
