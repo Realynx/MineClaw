@@ -109,10 +109,5 @@ public static class FaceAim
     }
 
     /// <summary>A block a wall sign/torch/ladder/button/lever/trapdoor can hang on: a full cube, not a container/door.</summary>
-    public static bool IsWallSupport(IBlockAccess w, BlockPos p)
-    {
-        int id = w.GetBlock(p.X, p.Y, p.Z);
-        if (id == 0 || BlockShapes.IsLiquid(id) || w.Info(id).Interactable) return false;
-        return BlockShapes.IsFullCube(w, p.X, p.Y, p.Z);
-    }
+    public static bool IsWallSupport(IBlockAccess w, BlockPos p) => PlaceRules.IsWallSupport(w, p);
 }

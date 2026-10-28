@@ -343,7 +343,9 @@ internal sealed class FakeServer : IDisposable
                     var (dx, dy, dz) = place.Direction switch { 0 => (0, -1, 0), 1 => (0, 1, 0), 2 => (0, 0, -1), 3 => (0, 0, 1), 4 => (-1, 0, 0), _ => (1, 0, 0) };
                     int x = place.X + dx, y = place.Y + dy, z = place.Z + dz;
                     Blocks[(x, y, z)] = place.HeldItem.Id;
-                    int meta = place.HeldItem.Id is MineClaw.Data.Blocks.Sapling or MineClaw.Data.Blocks.Log or MineClaw.Data.Blocks.Wool ? place.HeldItem.Damage : 0;
+                    int meta = place.HeldItem.Id is MineClaw.Data.Blocks.Sapling or MineClaw.Data.Blocks.Log or MineClaw.Data.Blocks.Wool ? place.HeldItem.Damage
+                        : place.HeldItem.Id == MineClaw.Data.Blocks.Torch ? MineClaw.World.PlaceRules.TorchMeta((MineClaw.World.BlockFace)place.Direction) // BlockTorch.postPlace
+                        : 0;
                     if (meta != 0) Metas[(x, y, z)] = meta;
                     Send(new BlockChangePacket { X = x, Y = y, Z = z, BlockId = (byte)place.HeldItem.Id, Metadata = (byte)meta });
                     Mirror?.Invoke(x, y, z, place.HeldItem.Id, meta);

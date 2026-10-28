@@ -416,6 +416,12 @@ public static class GameToolSet
             {
                 if (Items.ByName(i.ReqStr("block")) is not { } it) return ToolResult.Error($"unknown block '{i.Str("block")}'");
                 if (Locations.ParseCoords(i.ReqStr("at")) is not { } p) return ToolResult.Error("at must be x,y,z");
+                if (SnapAttachable(c, p, it.Id) is { } snap)
+                {
+                    if (snap.Spot is not { } s) return ToolResult.Error(snap.Problem!);
+                    var r = await c.PlaceVariantAsync(s.Pos.X, s.Pos.Y, s.Pos.Z, it.Id, null, s.Face, ct);
+                    return R(r with { Message = $"{r.Message} (snapped {s.Moved} from {p.X},{p.Y},{p.Z}: nothing to attach)" });
+                }
                 return R(await c.PlaceBlockAsync(p.X, p.Y, p.Z, it.Id, ct));
             }, longRunning: true);
         tools.Register("dig", "Break one block at x,y,z.",
@@ -438,6 +444,21 @@ public static class GameToolSet
     }
 
     // ------------------------------------------------------------------ helpers
+
+    /// <summary>
+    /// Live 10-28 (torching the island at night): the worker guessed torch cells over air ("-12,64,-3 has nothing solid on
+    /// any side ... all air", twice). An attachable (torch, ladder, sign, button, lever) whose requested cell is empty but has
+    /// nothing to hang on moves to the nearest cell within 2 with ground under it or a wall beside it (never over the void),
+    /// else one actionable line. Null = place as asked (an ordinary block, an occupied/unloaded cell, or a valid spot).
+    /// </summary>
+    internal static (PlaceRules.AttachSpot? Spot, string? Problem)? SnapAttachable(IGameClient c, BlockPos p, int itemId)
+    {
+        if (!PlaceRules.IsAttachable(itemId)) return null;
+        var w = c.World;
+        if (!w.IsLoaded(p.X, p.Z) || !Aiming.IsReplaceable(w, w.GetBlock(p.X, p.Y, p.Z))) return null;
+        if (PlaceRules.AttachFaces(w, p, itemId).Count > 0) return null;
+        return PlaceRules.SnapAttachable(w, p, itemId, w.Player.Position) is { } s ? (s, null) : (null, PlaceRules.NoAttachProblem(w, p));
+    }
 
     /// <summary>
     /// <c>mine cobblestone/stone</c> → the generator loop on the nearest known dig cell (taught first, then regen-confirmed or

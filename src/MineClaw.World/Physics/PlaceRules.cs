@@ -122,6 +122,111 @@ public static class PlaceRules
         return best;
     }
 
+    // ------------------------------------------------------------------ attachables (torch, ladder, sign, button, lever)
+
+    /// <summary>Items that hang on a neighbour instead of standing as a block: torch, redstone torch, ladder, sign, button, lever.</summary>
+    public static bool IsAttachable(int itemId) =>
+        itemId is Blocks.Torch or Blocks.RedstoneTorch or Blocks.Ladder or Items.Sign or Blocks.StoneButton or Blocks.Lever;
+
+    /// <summary>
+    /// The 0x0F faces that attach <paramref name="itemId"/> in <paramref name="target"/> (clicked block = target − normal),
+    /// floor first. b1.8.1 canPlace (mc-dev): torches need a normal cube beside them or a normal cube/fence under them (never
+    /// a ceiling); levers a normal cube beside or under; ladders and buttons a normal cube beside; signs any solid block under
+    /// (post) or beside (wall sign). Never a container/door (the click opens it). Empty = nothing to attach to.
+    /// </summary>
+    public static List<BlockFace> AttachFaces(IBlockAccess w, BlockPos target, int itemId)
+    {
+        var faces = new List<BlockFace>(5);
+        int block = BlockOf(itemId);
+        var below = target.Down();
+        bool floor = block switch
+        {
+            Blocks.Torch or Blocks.RedstoneTorch => IsWallSupport(w, below) || w.GetBlock(below.X, below.Y, below.Z) == Blocks.Fence,
+            Blocks.Lever => IsWallSupport(w, below),
+            Items.Sign => IsSupport(w, below),
+            _ => false,
+        };
+        if (floor) faces.Add(BlockFace.Top);
+        foreach (var face in WallFaces)
+        {
+            var n = face.Normal();
+            var against = new BlockPos(target.X - n.X, target.Y, target.Z - n.Z);
+            if (block == Items.Sign ? IsSupport(w, against) : IsWallSupport(w, against)) faces.Add(face);
+        }
+        return faces;
+    }
+
+    /// <summary>A block a torch/ladder/button/lever can hang on: a full cube (b1.8.1 isBlockNormalCube), not a container/door.</summary>
+    public static bool IsWallSupport(IBlockAccess w, BlockPos p)
+    {
+        int id = w.GetBlock(p.X, p.Y, p.Z);
+        if (id == 0 || BlockShapes.IsLiquid(id) || w.Info(id).Interactable) return false;
+        return BlockShapes.IsFullCube(w, p.X, p.Y, p.Z);
+    }
+
+    /// <summary>b1.8.1 torch meta for a click on <paramref name="face"/> (BlockTorch.postPlace): top → 5 (floor), north → 4,
+    /// south → 3, west → 2, east → 1 (wall metas name the side the torch leans from).</summary>
+    public static int TorchMeta(BlockFace face) => face switch
+    {
+        BlockFace.Top => 5, BlockFace.North => 4, BlockFace.South => 3, BlockFace.West => 2, BlockFace.East => 1, _ => 0,
+    };
+
+    /// <summary>A cell an attachable can go into instead of the requested one, the face to click, and how far it moved.</summary>
+    public readonly record struct AttachSpot(BlockPos Pos, BlockFace Face, int Moved);
+
+    /// <summary>How far <see cref="SnapAttachable"/> looks for ground or a wall.</summary>
+    public const int AttachSnapRadius = 2;
+
+    /// <summary>
+    /// The nearest cell within <paramref name="radius"/> (Chebyshev) of <paramref name="requested"/> where
+    /// <paramref name="itemId"/> attaches: empty, loaded, not liquid, never over the void (a wall spot needs a solid block
+    /// somewhere under it), preferring the same layer, a cell someone can stand at or beside (reachable), then closeness to
+    /// <paramref name="me"/>. The floor face wins over a wall at the chosen cell. Null = nothing within reach of the request.
+    /// </summary>
+    public static AttachSpot? SnapAttachable(IBlockAccess w, BlockPos requested, int itemId, Vec3d? me = null, int radius = AttachSnapRadius)
+    {
+        AttachSpot? best = null;
+        double bestScore = double.MaxValue;
+        for (int dy = -radius; dy <= radius; dy++)
+        for (int dx = -radius; dx <= radius; dx++)
+        for (int dz = -radius; dz <= radius; dz++)
+        {
+            if (dx == 0 && dy == 0 && dz == 0) continue;
+            var c = new BlockPos(requested.X + dx, requested.Y + dy, requested.Z + dz);
+            if (c.Y < 1 || c.Y >= WorldState.Height || !w.IsLoaded(c.X, c.Z)) continue;
+            int id = w.GetBlock(c.X, c.Y, c.Z);
+            if (!Aiming.IsReplaceable(w, id) || BlockShapes.IsLiquid(id)) continue;
+            if (Safety.IsOverVoid(w, c.X, c.Y, c.Z)) continue;
+            var faces = AttachFaces(w, c, itemId);
+            if (faces.Count == 0) continue;
+            double score = dx * dx + dz * dz + 2 * dy * dy + (StandNear(w, c) ? 0 : 50);
+            if (me is { } m) score += 0.01 * (Math.Pow(c.X + 0.5 - m.X, 2) + Math.Pow(c.Y + 0.5 - m.Y, 2) + Math.Pow(c.Z + 0.5 - m.Z, 2));
+            if (score >= bestScore) continue;
+            bestScore = score;
+            best = new AttachSpot(c, faces[0], Math.Max(Math.Abs(dx), Math.Max(Math.Abs(dy), Math.Abs(dz))));
+        }
+        return best;
+    }
+
+    /// <summary>"no ground or wall within 2 of -9,64,-18 (it's over the void): pick a spot on the island".</summary>
+    public static string NoAttachProblem(IBlockAccess w, BlockPos requested, int radius = AttachSnapRadius) =>
+        $"no ground or wall within {radius} of {F(requested)} (it's {(Safety.IsOverVoid(w, requested.X, requested.Y, requested.Z) ? "over the void" : "in the air")}): pick a spot on the island";
+
+    /// <summary>A player can stand in the cell itself or under/beside it with feet up to 2 below (eye height 1.62, reach 4.5):
+    /// a spot in reach on foot.</summary>
+    private static bool StandNear(IBlockAccess w, BlockPos c)
+    {
+        for (int dy = 0; dy <= 2; dy++)
+        {
+            if (Safety.IsStandable(w, c.X, c.Y - dy, c.Z)) return true;
+            foreach (var o in Horizontal)
+                if (Safety.IsStandable(w, c.X + o.X, c.Y - dy, c.Z + o.Z)) return true;
+        }
+        return false;
+    }
+
+    private static readonly BlockFace[] WallFaces = [BlockFace.North, BlockFace.South, BlockFace.West, BlockFace.East];
+
     private static readonly BlockPos[] Horizontal = [new(1, 0, 0), new(-1, 0, 0), new(0, 0, 1), new(0, 0, -1)];
 
     private static string PlantName(int block) => block switch
