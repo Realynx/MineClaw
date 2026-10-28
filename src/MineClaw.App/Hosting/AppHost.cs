@@ -292,7 +292,10 @@ public static class AppHost
         client.PlayerLeft += n => feed.Add("players", $"{n} left");
         if (mainHive?.Supervisor is { } sup)
             sup.Notice += e => feed.Add("hive", e.Format(), e.Priority >= Agent.Events.EventPriority.Normal ? "warn" : "info");
-        var data = new Supervisor.LiveSupervisorData(hub, () => client.World, main, sources, () => mainHive?.Supervisor, feed, o, log);
+        var data = new Supervisor.LiveSupervisorData(hub, () => client.World, main, sources, () => mainHive?.Supervisor, feed, o, log)
+        {
+            Blueprints = () => bot.Blueprints?.Service, // /view/blueprint/{id}, /api/blueprints: designs + preview + bill
+        };
         var server = new Supervisor.SupervisorServer(o, data, log);
         try
         {

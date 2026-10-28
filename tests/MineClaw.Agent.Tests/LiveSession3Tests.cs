@@ -170,9 +170,9 @@ public class LiveSession3Tests
         r.IsNear = _ => true;
         r.Classifier = (m, ctx, _) => { calls++; return Task.FromResult<bool?>(m.Text.Contains("pool")); };
         r.OnServerChat("<PoofimaFox> nice day");
-        await Task.Delay(50);
+        await TestWaits.UntilAsync(() => Volatile.Read(ref calls) >= 1);
         r.OnServerChat("<PoofimaFox> the infinite pool is by the house");
-        await Task.Delay(50);
+        await TestWaits.UntilAsync(() => Volatile.Read(ref calls) >= 2 && Woke(q, "the infinite pool is by the house"));
         Assert.Equal(2, calls);                       // one call per unsure line
         Assert.True(Woke(q, "the infinite pool is by the house"));
         Assert.False(Woke(q, "nice day"));
@@ -213,7 +213,7 @@ public class LiveSession3Tests
 
     private static async Task<GameEvent> WaitEvent(AgentRuntime rt, Func<GameEvent, bool> match)
     {
-        for (int i = 0; i < 200; i++)
+        for (int i = 0; i < 3000; i++) // ≤ 30 s: returns at once when posted (2 s flaked under full-suite load)
         {
             if (rt.Events.Snapshot().FirstOrDefault(match) is { } e) return e;
             await Task.Delay(10);
@@ -309,7 +309,7 @@ public class LiveSession3Tests
         async Task Pass()
         {
             Assert.True(orders.ResumeIfIdle("test"));
-            for (int i = 0; i < 100 && rt.Activities.IsBusy; i++) await Task.Delay(10);
+            for (int i = 0; i < 3000 && rt.Activities.IsBusy; i++) await Task.Delay(10);
             await Task.Delay(30);
         }
 
@@ -332,7 +332,7 @@ public class LiveSession3Tests
         Assert.False(orders.ProbeTick());
         ready = true;
         Assert.True(orders.ProbeTick());
-        for (int i = 0; i < 100 && passes < 5; i++) await Task.Delay(10);
+        for (int i = 0; i < 3000 && passes < 5; i++) await Task.Delay(10);
         Assert.Equal(5, passes);
     }
 

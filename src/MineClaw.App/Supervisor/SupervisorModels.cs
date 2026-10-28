@@ -35,6 +35,13 @@ public interface ISupervisorData
     object Status(string? selected);
     IReadOnlyList<FeedEvent> Events(long since, int max);
     LocateResult? Locate(string query);
+
+    /// <summary>Saved designs (build from a description), newest first: id, name, status, summary, cost.</summary>
+    IReadOnlyList<object> Designs() => [];
+    /// <summary>A design's preview PNG (the contact sheet with the planned blocks in place), or null.</summary>
+    ViewImage? DesignPicture(long id) => null;
+    /// <summary>A design's bill, evaluation, critique, DSL and build progress as data, or null.</summary>
+    object? DesignBill(long id) => null;
 }
 
 public static class SupervisorJson

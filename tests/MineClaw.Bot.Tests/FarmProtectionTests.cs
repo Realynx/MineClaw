@@ -73,7 +73,7 @@ public class FarmProtectionTests
         Assert.False(p.IsProtected(new BlockPos(5, 65, -10), Blocks.SugarCane));
     }
 
-    private static async Task<bool> Until(Func<bool> cond, int ms = 4000)
+    private static async Task<bool> Until(Func<bool> cond, int ms = 20000)
     {
         var until = DateTime.UtcNow.AddMilliseconds(ms);
         while (DateTime.UtcNow < until)

@@ -64,6 +64,9 @@ public sealed class ChatOptions
     /// </summary>
     public string[] OtherBots { get; set; } = ["robinchan"];
 
+    /// <summary>Main's templated hi when a human regular joins (no model call; never for bots).</summary>
+    public JoinGreetingOptions JoinGreeting { get; set; } = new();
+
     /// <summary>At most one reply to a given foreign bot per this many minutes (two LLM bots can ping-pong forever).</summary>
     public double BotReplyCooldownMinutes { get; set; } = 5;
 
@@ -119,4 +122,16 @@ public sealed class AddressClassifierOptions
     public int MaxPerHour { get; set; } = 30;
     /// <summary>Give up waiting for the classifier after this long (the line stays background context).</summary>
     public int TimeoutMs { get; set; } = 4000;
+}
+
+/// <summary>Templated join greetings (see BotAgent.Greet.cs).</summary>
+public sealed class JoinGreetingOptions
+{
+    public static readonly string[] DefaultTemplates = ["hii {name}~ o/", "heyy {name}! :3", "hi {name}~ welcome back"];
+
+    public bool Enabled { get; set; } = true;
+    /// <summary>Lines to pick from in turn; {name} = the player's first nickname, else their login.</summary>
+    public string[] Templates { get; set; } = DefaultTemplates;
+    /// <summary>No second hi within this long of the last one, nor after a reconnect within it.</summary>
+    public double DebounceMinutes { get; set; } = 5;
 }

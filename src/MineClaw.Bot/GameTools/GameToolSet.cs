@@ -65,6 +65,26 @@ public static class GameToolSet
         return list.OrderBy(x => x.DistanceSquaredTo(asked)).ToList();
     }
 
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<BlockPos, DateTime> EnclosedAsked = new();
+
+    /// <summary>How long an "enclosed cell, where do I stand?" question counts as asked for that cell.</summary>
+    public static TimeSpan EnclosedAskMemory { get; set; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// A cell with no reachable stand spot: the first time, a needs_input naming exactly what boxes it in and asking where to
+    /// stand; after that (until <see cref="EnclosedAskMemory"/>) a plain failure that says it was asked already.
+    /// </summary>
+    internal static ToolResult AskOnceIfEnclosed(ToolResult r, BlockPos cell)
+    {
+        if (r.Ok || !r.Text.Contains(" is enclosed (", StringComparison.Ordinal)) return r;
+        var text = r.Text.Replace("; ask a player once where to stand", "", StringComparison.Ordinal);
+        var now = DateTime.UtcNow;
+        if (EnclosedAsked.TryGetValue(cell, out var at) && now - at < EnclosedAskMemory)
+            return ToolResult.Error($"{text} (already asked where to stand {(int)(now - at).TotalMinutes} min ago; waiting for an answer)");
+        EnclosedAsked[cell] = now;
+        return ToolResult.Error($"needs_input: {text}. Where should I stand to dig {Locations.Fmt(cell)}?");
+    }
+
     private static bool IsAuto(string at) => at.Trim().ToLowerInvariant() is "auto" or "any" or "free" or "free cell" or "any cell";
 
     /// <summary>
@@ -282,6 +302,7 @@ public static class GameToolSet
                     stand = Taught(pick);
                     r = R(await loop.RunAsync(pick, Math.Clamp(i.Int("count") ?? 16, 1, 20000), store, ct, stand));
                 }
+                r = AskOnceIfEnclosed(r, pick);
                 return note == null ? r : r with { Text = note + "; " + r.Text };
             }, longRunning: true);
         tools.Register("collect_drops", "Pick up dropped items nearby.",

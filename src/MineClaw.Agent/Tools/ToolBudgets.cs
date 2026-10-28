@@ -6,12 +6,13 @@ namespace MineClaw.Agent.Tools;
 /// 500 tokens at cache-read prices); the real limit is bloat, so a new tool must earn its tokens or fold into <c>do</c>.
 /// History: 2,000 → 2,300 (act, run_command) → 2,400 (amend_task, script ops) → 2,600 (standing_order, ask_player default)
 /// → 2,700 (see, look map) → 2,800 with the <c>do</c> meta-tool, which replaced the brain's goto/follow/chop_tree/act and
-/// lets the brain run mine/harvest/deposit/withdraw/craft/move_items without a delegate round.
+/// lets the brain run mine/harvest/deposit/withdraw/craft/move_items without a delegate round. → 2,950 for <c>design</c> (≈130:
+/// build from a description; its DSL cheat-sheet lives in the designer's own cached prompt, not the brain's).
 /// </summary>
 public static class ToolBudgets
 {
     /// <summary>Brain (Opus) tool definitions, including the main process's merged hive tool.</summary>
-    public const int Brain = 2800;
+    public const int Brain = 2950;
 
     /// <summary>The main process's hive tool (pinned by MineClaw.Hive.Tests.HiveToolTests).</summary>
     public const int HiveTool = 115;

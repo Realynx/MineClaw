@@ -62,6 +62,10 @@ public interface IGameClient
     Task<ActionResult> DepositAllAsync(BlockPos? container = null, Func<ItemStack, bool>? filter = null, CancellationToken ct = default);
     Task<ActionResult> WithdrawAsync(int itemId, int count, BlockPos? container = null, int? damage = null, CancellationToken ct = default);
     Task<ActionResult> PlaceBlockAsync(int x, int y, int z, int itemId, CancellationToken ct = default);
+    /// <summary>Places an item variant (slab type, wool colour: <paramref name="damage"/>) by clicking <paramref name="face"/> of a
+    /// neighbour (doors: the top of the block below). Default: plain <see cref="PlaceBlockAsync(int,int,int,int,CancellationToken)"/>.</summary>
+    Task<ActionResult> PlaceVariantAsync(int x, int y, int z, int itemId, int? damage, BlockFace? face, CancellationToken ct = default) =>
+        PlaceBlockAsync(x, y, z, itemId, ct);
     Task<ActionResult> DigBlockAsync(int x, int y, int z, CancellationToken ct = default);
     Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default);
     Task<ActionResult> EatAsync(CancellationToken ct = default);
@@ -169,6 +173,8 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
     public Task<ActionResult> DepositAllAsync(BlockPos? container = null, Func<ItemStack, bool>? filter = null, CancellationToken ct = default) => Inner.DepositAllAsync(container, filter, ct);
     public Task<ActionResult> WithdrawAsync(int itemId, int count, BlockPos? container = null, int? damage = null, CancellationToken ct = default) => Inner.WithdrawAsync(itemId, count, container, damage, ct);
     public Task<ActionResult> PlaceBlockAsync(int x, int y, int z, int itemId, CancellationToken ct = default) => Inner.PlaceBlockAsync(x, y, z, itemId, ct);
+    public Task<ActionResult> PlaceVariantAsync(int x, int y, int z, int itemId, int? damage, BlockFace? face, CancellationToken ct = default) =>
+        Inner.PlaceVariantAsync(x, y, z, itemId, damage, face, ct);
     public Task<ActionResult> DigBlockAsync(int x, int y, int z, CancellationToken ct = default) => Inner.DigBlockAsync(x, y, z, ct);
     public Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default) => Inner.ActivateBlockAsync(x, y, z, ct);
     public Task<ActionResult> EatAsync(CancellationToken ct = default) => Inner.EatAsync(ct);

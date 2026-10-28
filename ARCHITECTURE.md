@@ -212,6 +212,39 @@ a non-trivial plan is logged and leads the result ("no pick, making one: logs→
 Callers: Lua `ensure` (hidden `acquire` tool, no prompt bytes), `Loadout.FetchAsync` (clone loadouts, gen loop re-tool), `mine`
 (the block's tool first, so `do mine` too), skill preconditions (`SkillRegistry.AcquireMissing`). Lint warns on a tool job without `ensure`.
 
+## Blueprints: build from a description (Bot/Blueprints)
+
+- **DSL** (`BlueprintParser`, written by the Opus brain tier only): `blueprint name`, `size WxHxD`, optional `origin`, `facing`
+  (drawings put the front on the south/bottom row; `facing east` turns the build and every directional meta), `light`, a palette
+  (`C=cobblestone D=door:south S=cobblestone_stairs:north W=wool:red H=slab:cobble`), `layer N` / `layer 1-3` rows (`.` air, `_` keep),
+  and primitives in order (box, hollow, walls, wall, floor, clear, pillar, door, window, stairs, `roof flat|gable|slope:dir`).
+  `BlueprintNormalizer` → `VoxelPlan` (world blocks + forced air). Blocks must be b1.8.1 building blocks (`BuildBlocks`); metas follow
+  mc-dev: door lower = placer quarter 0..3 (+4 hinge), upper = lower|8, only on a top face; stairs 0 E/1 W/2 S/3 N; 6 slab types and a
+  same-type slab on a slab merges (refused); ladder 2..5 = wall side; chest/furnace front 2..5.
+- **Design loop** (`DesignLoop`, `design` brain tool ≈130 tok, policy: only `IsBrainModel` authors): brief (wish + site + constraints:
+  materials inv+storage, ground extent to the void, protected builds nearby) → the author (`LlmBlueprintAuthor`: main model, its own
+  small cached prompt, never the brain's history) → deterministic checks (`DesignChecks`: bill vs inventory+storage with the route
+  (gen/trees/craft/ask), floating, falling sand, void columns, protected/never-break overlap, fluids, obstructions, reachable entrance,
+  headroom ≥ 2, light if asked, door halves, torch/ladder walls) → preview (`BlueprintPreview`: ISO+TOP+SIDE contact sheet of the real
+  site with the plan overlaid, role `Planned` = magenta `*`, roofs not cut away; cached by plan+site hash) → perception critique
+  (`PerceptionCritic`, passing versions only, booked as perception). The author gets ≈100 tokens of evaluation text, the image only if
+  it answers `SHOW`. `Bot:Blueprints:MaxIterations` (3) and `MaxUsdPerDesign` ($0.80); the best passing version is kept.
+  `design-YYYY-MM-DD.jsonl` = versions, tokens, $ per design.
+- **Review**: the summary goes to chat ("small cobble hut 5×5×4, door south, 2 windows: 44 cobblestone, 25 planks; say 'build it' or
+  tell me what to change"). `DesignReview` (zero tokens): a trusted player's explicit "build it"/"looks good, build" accepts and starts
+  construction; a change line from the requester or a trusted player revises; the consumed line reaches the brain as background only.
+  Designs persist (`blueprints`, `blueprint_builds` tables); `design op=build id at` = "another one like the hut" (trusted). The
+  supervisor serves `/api/blueprints`, `/api/blueprints/{id}` (bill/eval/DSL/progress) and `/view/blueprint/{id}` (PNG) + a Designs panel.
+- **Construction** (`ConstructionPlanner` + `ConstructionExecutor`, as a body job via the hidden `build` tool; Lua `build{bp, part, of,
+  layer}` and `blueprint(id)`): clear obstructions top-down, then layer by layer, solids → thin → doors → attachments, each next to
+  something standing; unsupported cells get scaffold paths, unreachable ones a floor walkway (never a stand over the void), all
+  self-placed and removed top-down at the end. Directional blocks are placed from the side whose yaw gives the planned meta; each step
+  is verified, each layer compared (deviations reported). Materials come through the acquisition planner; a shortfall stops with
+  `missing <item> (need N, have M)`. Checkpoints every 8 placements: a restart re-plans from the world and `AutoResume` restarts the job.
+  A finished build leaves the placed-block log and becomes a remembered `build` structure (soft-protected); scaffolding stays own-placed.
+- **Bodies**: the executor acts through `IBuildBody` (resolved per call, never a captured client); `IBuildCrew.Bodies` lists them
+  (today the bot's own). `VoxelPlan.Partition(n, byLayer)` = disjoint strips (built at once) or layer bands, each with its `ClaimKey.Area`.
+
 ## Protection policy (Bot/Protection + ProtectionPolicy/, Client hooks)
 
 One place decides whether the bot may break a block, why not, and how a player unlocks it: `Protection` builds the client's

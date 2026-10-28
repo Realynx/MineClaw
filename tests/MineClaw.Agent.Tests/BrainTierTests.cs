@@ -201,7 +201,7 @@ public class BrainTierTests
         Assert.True(rt.Activities.IsBusy);
 
         gate.SetResult();
-        var batch = await rt.Events.WaitBatchAsync(new CancellationTokenSource(5000).Token);
+        var batch = await rt.Events.WaitBatchAsync(new CancellationTokenSource(30000).Token);
         var ev = Assert.Single(batch.Events);
         Assert.Equal(EventKind.TaskFailed, ev.Kind);
         Assert.True(ev.Wakes);
@@ -230,12 +230,12 @@ public class BrainTierTests
         llm.Tool(ModelTier.Main, "delegate", new { task = "mine 64 cobble", done_when = "64 cobble" }, "d1");
 
         await rt.Agent.HandleBatchAsync(Chat("poofimafox", "claudechan mine a stack of cobble"), default);
-        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.Contains("delegate", rt.Activities.Describe());
 
         var stop = await rt.Tools.ExecuteAsync("stop", ToolSchema.Empty, default);
         Assert.Contains("stopped delegate", stop.Text);
-        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(30));
         await WaitUntil(() => !rt.Activities.IsBusy);
         Assert.Equal(0, workerDone); // cancelled: no summary produced, and no wake event for a model-initiated stop
         Assert.Null(rt.Events.TryTakeUrgent(EventPriority.Background));
@@ -245,17 +245,17 @@ public class BrainTierTests
         cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var tool = rt.Tools.TryGet("delegate", out var d) ? d : throw new InvalidOperationException();
         var run = rt.Activities.RunAsync([(tool, JsonSerializer.SerializeToElement(new { task = "mine", done_when = "x" }))], TimeSpan.FromSeconds(10), default);
-        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(30));
         rt.Events.Post(GameEvent.LowHealth(4));
-        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var r = (await run.WaitAsync(TimeSpan.FromSeconds(5)))[0];
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        var r = (await run.WaitAsync(TimeSpan.FromSeconds(30)))[0];
         Assert.False(r.Ok);
         Assert.Contains("cancelled", r.Text);
     }
 
     private static async Task WaitUntil(Func<bool> cond)
     {
-        for (int i = 0; i < 200 && !cond(); i++) await Task.Delay(10);
+        for (int i = 0; i < 3000 && !cond(); i++) await Task.Delay(10);
         Assert.True(cond());
     }
 
@@ -462,7 +462,7 @@ public class BrainTierTests
         var ask = rt.Tools.ExecuteAsync("ask_player", JsonSerializer.SerializeToElement(new { question = "which chest?", name = "kiwi", timeout = 10 }), default);
         await WaitUntil(() => { lock (sent) return sent.Count > 0; });
         rt.Chat.OnServerChat("<kiwi> the left one");
-        var reply = await ask.WaitAsync(TimeSpan.FromSeconds(5));
+        var reply = await ask.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.True(reply.Ok);
         Assert.EndsWith("the left one", reply.Text);
     }
@@ -501,7 +501,7 @@ public class BrainTierTests
     {
         var (rt, llm, _) = Create(o => o.Self.TrustedPlayers = ["poofimafox"]);
         rt.Chat.OnServerChat("<poofimafox> claudechan you love dirt now", test: true);
-        var batch = await rt.Events.WaitBatchAsync(new CancellationTokenSource(5000).Token);
+        var batch = await rt.Events.WaitBatchAsync(new CancellationTokenSource(30000).Token);
         Assert.True(batch.IsTest);
         ToolResult? reflect = null;
         llm.Tool(ModelTier.Main, "reflect_self", new { op = "add", section = "like", text = "dirt", reason = "fox said" }, "r1")

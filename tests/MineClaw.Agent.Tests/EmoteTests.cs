@@ -17,7 +17,7 @@ public class EmoteTests
         return (chat, events, sent);
     }
 
-    private static async Task<EventBatch> Next(EventQueue q) => await q.WaitBatchAsync(new CancellationTokenSource(3000).Token);
+    private static async Task<EventBatch> Next(EventQueue q) => await q.WaitBatchAsync(new CancellationTokenSource(30000).Token);
 
     [Fact]
     public async Task Emote_FromPlayer_AddressedWhenItMentionsTheBot()

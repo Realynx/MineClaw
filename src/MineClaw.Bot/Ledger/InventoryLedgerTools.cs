@@ -23,7 +23,7 @@ public static class InventoryLedgerTools
         return tool switch
         {
             "craft" => $"crafting {Arg("item") ?? "something"}",
-            "deposit" => $"deposited ({Arg("at") ?? Arg("chest") ?? "chest"})",
+            "deposit" => null, // the ledger names the chest the client really opened ("deposited (chest 14,64,-5)")
             "withdraw" => $"taken from a chest ({Arg("at") ?? Arg("chest") ?? "chest"})",
             "organize_chest" => "organizing a chest",
             "smelt" => "smelting",
@@ -69,7 +69,11 @@ public static class InventoryLedgerTools
 
     public static InventoryLedger Attach(AgentRuntime rt, MinecraftClient client, SkillRegistry? skills, ILogger? log, TimeProvider? time = null)
     {
-        var ledger = new InventoryLedger(time) { CurrentAction = () => client.CurrentAction };
+        var ledger = new InventoryLedger(time)
+        {
+            CurrentAction = () => client.CurrentAction,
+            CurrentContainer = () => client.LastContainerPos is { } p ? $"chest {p.X},{p.Y},{p.Z}" : null,
+        };
         var inv = client.World.Inventory;
         inv.Changed += () => { try { ledger.Observe(Counts(inv)); } catch (Exception) { /* never break the packet thread */ } };
         client.WindowItemsArriving += _ => ledger.NoteResync();

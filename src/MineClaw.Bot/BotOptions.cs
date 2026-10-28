@@ -36,6 +36,9 @@ public sealed class BotOptions
 
     /// <summary>The <c>see</c> tool: picture budget, textures (client jar path), eye-view size ("Bot:Vision").</summary>
     public GameTools.VisionOptions Vision { get; set; } = new();
+
+    /// <summary>Build from a description: design loop, review, construction ("Bot:Blueprints").</summary>
+    public Blueprints.BlueprintOptions Blueprints { get; set; } = new();
 }
 
 /// <summary>"Bot:Protection" (ARCHITECTURE.md "Protection policy").</summary>

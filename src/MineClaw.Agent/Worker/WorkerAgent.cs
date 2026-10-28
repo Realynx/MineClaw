@@ -150,6 +150,14 @@ public sealed class WorkerAgent
     /// </summary>
     public string? Trail => _trail;
 
+    /// <summary>
+    /// Called when a task starts; the function it returns, called at the end, says what the bot gained and where it stored it
+    /// meanwhile ("32 cobblestone; stored 30 cobblestone in chest 14,64,-5"), or null for nothing. A task that ran out of its
+    /// minutes with gains is a finished time slice, not a failure (live 10-27 23:13: a 5-min gen slice that mined reported
+    /// "failed: out of time (5 min); 1 actions").
+    /// </summary>
+    public Func<Func<string?>>? GainsTracker { get; set; }
+
     /// <summary>Landmark describer for coordinates in needs_input results ("4,64,6 (the west gen cell)"); null = none.</summary>
     public Func<int, int, int, string?>? Landmark { get; set; }
 
@@ -218,6 +226,8 @@ public sealed class WorkerAgent
         var log = new List<string>();
         var failures = new Dictionary<string, int>(StringComparer.Ordinal);
         _trail = null;
+        Func<string?>? gains = null;
+        try { gains = GainsTracker?.Invoke(); } catch (Exception) { /* telemetry only */ }
 
         try
         {
@@ -325,6 +335,8 @@ public sealed class WorkerAgent
             Interlocked.Decrement(ref _running);
         }
 
+        if (summary == null && stop == "time" && SafeGains(gains) is { } got)
+            summary = $"ok: time slice done ({minutes} min): {got}";
         summary ??= stop switch
         {
             "time" => $"failed: out of time ({minutes} min)",
@@ -335,6 +347,11 @@ public sealed class WorkerAgent
         _log.LogInformation("worker task \"{Task}\": {Summary} ({Calls} calls, {Tools} tools, ${Cost:0.0000}, {Stop})",
             TextUtil.Truncate(task, 60), outcome.Summary, calls, toolCalls, cost, stop);
         return Done(outcome);
+    }
+
+    private static string? SafeGains(Func<string?>? gains)
+    {
+        try { return gains?.Invoke() is { Length: > 0 } g ? g : null; } catch (Exception) { return null; }
     }
 
     /// <summary>"fill_bucket" + "no water source at 1,64,-9" → "fill_bucket|no water source at ,,-": coordinates/counts don't make a failure new.</summary>

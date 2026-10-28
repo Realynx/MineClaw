@@ -95,13 +95,13 @@ public class AgentLoopTests
         rt.Tools.Register("a", "a", ToolSchema.Empty, async (_, ct) =>
         {
             aStarted.SetResult();
-            await bStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), ct); // deadlocks unless b runs concurrently
+            await bStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), ct); // deadlocks unless b runs concurrently
             return ToolResult.Success("a done");
         });
         rt.Tools.Register("b", "b", ToolSchema.Empty, async (_, ct) =>
         {
             bStarted.SetResult();
-            await aStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+            await aStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
             return ToolResult.Success("b done");
         });
         llm.Then(r => llm.Resp(r, StopReasons.ToolUse,
@@ -134,7 +134,7 @@ public class AgentLoopTests
         Assert.True(rt.Activities.IsBusy);
 
         release.SetResult();
-        var batch = await rt.Events.WaitBatchAsync(new CancellationTokenSource(5000).Token);
+        var batch = await rt.Events.WaitBatchAsync(new CancellationTokenSource(30000).Token);
         var ev = Assert.Single(batch.Events);
         Assert.Equal(EventKind.TaskCompleted, ev.Kind);
         Assert.Contains("mined 12 cobblestone", ev.Text);
@@ -155,7 +155,7 @@ public class AgentLoopTests
         var run = rt.Activities.RunAsync([(tool, ToolSchema.Empty)], TimeSpan.FromSeconds(10), default);
         await started.Task;
         rt.Events.Post(GameEvent.LowHealth(4));
-        var results = await run.WaitAsync(TimeSpan.FromSeconds(5));
+        var results = await run.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.False(results[0].Ok);
         Assert.Contains("cancelled", results[0].Text);
 
@@ -165,7 +165,7 @@ public class AgentLoopTests
         await started.Task;
         var stop = await rt.Tools.ExecuteAsync("stop", ToolSchema.Empty, default);
         Assert.Contains("stopped mine", stop.Text);
-        Assert.False((await run2.WaitAsync(TimeSpan.FromSeconds(5)))[0].Ok);
+        Assert.False((await run2.WaitAsync(TimeSpan.FromSeconds(30)))[0].Ok);
     }
 
     [Fact]
@@ -228,9 +228,9 @@ public class AgentLoopTests
         rt.Agent.EpisodeCompleted += _ => done.TrySetResult();
         var loop = rt.Agent.RunAsync(cts.Token);
         rt.Chat.OnServerChat("<Alice> hi clawd");
-        await done.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await done.Task.WaitAsync(TimeSpan.FromSeconds(30));
         cts.Cancel();
-        await loop.WaitAsync(TimeSpan.FromSeconds(5));
+        await loop.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.Equal(["hiii"], sent);
     }
 

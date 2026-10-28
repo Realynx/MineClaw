@@ -267,6 +267,7 @@ public sealed partial class BotAgent
             _log.LogInformation("skipped turn: every waking event was handled by the previous turn");
             return Done(new EpisodeOutcome(null, 0, LlmUsage.Zero, 0, [], false, "already handled"));
         }
+        if (await TryHandleJoinsAsync(batch, ct).ConfigureAwait(false) is { } joins) return Done(joins);
         var decision = _triage.Choose(batch, mode);
         _log.LogDebug("triage → {Tier} ({Why})", decision.Tier, decision.Why);
         // Two-phase replies: safe small talk may be answered by the cheap tier alone; a correction of that escalates.
@@ -363,6 +364,10 @@ public sealed partial class BotAgent
         // plain text is a private log line, never public chat (live 10-27 23:30: "I didn't say anything in chat." + a run report
         // on every run). Only the say tool speaks there, and only while a player is engaged.
         bool quiet = IsQuietBatch(batch);
+        // Woken only by a danger (a player getting hurt, my own low hp): the warning line is public, the rest of the turn's
+        // text is internal (live 10-28 01:3x: after "foxy!! u getting poked at the cactus farm, careful uwu" the same turn
+        // narrated "I warned Fox that... I'm also back on the cobble generator now..." into public chat).
+        bool warnOnly = !quiet && IsWarningBatch(batch);
         try { if (quiet && SpeaksOn?.Invoke(batch) == true) quiet = false; } catch (Exception ex) { _log.LogDebug(ex, "speaks-on hook failed"); }
         _turnStatusAsked = MetaSpeech.AsksStatus(batch.Waking.Where(EventQueue.IsTyped).Select(e => e.Text));
         // Snapshot per episode: a rename mid-turn applies from the next turn, keeping this turn's prefix byte-stable.
@@ -399,7 +404,7 @@ public sealed partial class BotAgent
             speech.BeginRound();
             AddAckNote(speech, episode.Messages);
             // once the brain spoke, later rounds keep the held-line rule; a quiet turn never streams (its text isn't chat)
-            bool streamThis = tier == ModelTier.Main && said.Count == 0 && !quiet;
+            bool streamThis = tier == ModelTier.Main && said.Count == 0 && !quiet && !warnOnly;
             var messages = _context.BuildMessages(tier, episode.Messages);
             // A call that re-writes a big cold history is not cut for a new chat line: the cut call's cache write never lands,
             // so its restart writes it all again (live 10-27 15:55: 2 × 38K). The new line joins at the next round instead.
@@ -523,6 +528,12 @@ public sealed partial class BotAgent
                 // Never narrate plumbing ("Delegating the craft.", "running script"): drop purely meta sentences.
                 text = MetaSpeech.Strip(text, out var meta, _turnStatusAsked);
                 foreach (var m in meta) _log.LogInformation("[meta suppressed] {Line}", m);
+            }
+            if (warnOnly && !IsSilent(text))
+            {
+                var (warning, rest) = WarningLine(text, said.Count > 0);
+                if (!IsSilent(rest)) KeepInternal(rest);
+                text = warning;
             }
             if (!IsSilent(text))
             {
@@ -1032,6 +1043,7 @@ public sealed partial class BotAgent
 
     private void OnEventPosted(GameEvent e)
     {
+        NoteJoinLeave(e);
         if (EventQueue.IsTyped(e) && e.Kind is EventKind.Chat or EventKind.Whisper)
         {
             Latency?.OnChat(e.Player, e.Text, _time.GetUtcNow());

@@ -136,6 +136,26 @@ public class GenCellFallbackTests
     }
 
     [Fact]
+    public void Stored_cells_that_are_the_gens_lava_or_water_or_a_build_block_are_purged_valid_ones_stay()
+    {
+        // Startup 10-28 after a85f8cb: "(5, 65, 7) purged: off the gen's dig layer y64 (4 known cells there)": the 4th y64
+        // entry was kiwi's punch at the lava source 4,64,7.
+        var w = new FakeGameClient().World;
+        Gen(w);
+        w.SetBlock(6, 64, 8, 0, 0); // just dug: air, still a cell
+        var planks = new WPos(9, 64, 9);
+        w.SetBlock(planks.X, planks.Y, planks.Z, Blocks.Planks, 0);
+        var water = new WPos(5, 64, 6);
+        var cells = new DigCells(null);
+        foreach (var p in new[] { A, B, C, LavaSource, water, planks }) cells.Register(p, "kiwi");
+        var purged = cells.PurgeNonCells(p => (w.GetBlock(p), w.GetMeta(p)));
+        Assert.Equal(new[] { LavaSource, water, planks }.OrderBy(p => p.X), purged.Select(t => t.Cell).OrderBy(p => p.X));
+        Assert.Contains(purged, t => t.Cell == LavaSource && t.Why == "it's the gen's lava");
+        Assert.True(cells.IsDigCell(A) && cells.IsDigCell(B) && cells.IsDigCell(C));
+        Assert.False(cells.IsDigCell(LavaSource));
+    }
+
+    [Fact]
     public void Stray_cells_off_the_dig_layer_are_purged_and_new_punches_there_are_refused()
     {
         var cells = new DigCells(null);
@@ -147,5 +167,64 @@ public class GenCellFallbackTests
         Assert.True(cells.IsDigCell(B));
         Assert.NotNull(cells.OffLayer(StrayAbove));
         Assert.Null(cells.OffLayer(new WPos(7, 64, 7)));
+    }
+}
+
+/// <summary>Item 3 (live 10-27/28): an enclosed cell says exactly what boxes it in and asks once; a yield drop names the change
+/// against the gen's taught layout instead of retracting a right cell.</summary>
+public class GenHealthTests
+{
+    private static readonly WPos A = new(4, 64, 6);
+
+    private static void Gen(WorldState w)
+    {
+        for (int x = 0; x <= 10; x++) for (int z = 2; z <= 12; z++) w.SetBlock(x, 63, z, Blocks.Stone, 0);
+        w.SetBlock(5, 64, 6, Blocks.Water, 0);
+        w.SetBlock(4, 64, 7, Blocks.Lava, 0);
+        w.SetBlock(A.X, A.Y, A.Z, Blocks.Cobblestone, 0);
+    }
+
+    [Fact]
+    public void A_yield_drop_names_the_lava_that_is_gone_from_the_taught_layout()
+    {
+        var (h, c) = TestBot.Create();
+        using var _ = h;
+        Gen(c.World);
+        h.Runtime.Memory.UpsertStructure("cobble gen", s => { s.Kind = MineClaw.Agent.Memory.StructureKinds.CobbleGenerator; s.Min = new(3, 63, 5); s.Max = new(7, 64, 9); });
+        h.DigCells!.Register(A, "PoofimaFox"); // the teach records lava 4,64,7 + water 5,64,6 as the layout
+        Assert.Null(GenLayout.Diagnose(c.World, h.Runtime.Memory, 0, A)); // as taught: the cell itself would be the suspect
+        c.World.SetBlock(4, 64, 7, Blocks.Obsidian, 0);                    // the lava source got covered: obsidian
+        var why = GenLayout.Diagnose(c.World, h.Runtime.Memory, 0, A);
+        Assert.Equal("the lava at 4,64,7 is gone (now obsidian; taught layout had it)", why);
+    }
+
+    [Fact]
+    public async Task The_gen_loop_reports_the_cause_and_keeps_the_right_cell_taught()
+    {
+        var (h, c) = TestBot.Create();
+        using var _ = h;
+        c.Give(36, Items.StonePickaxe, 1);
+        c.Results["generator"] = () => MineClaw.Client.ActionResult.Fail("4,64,6 isn't regenerating cobble for me (yield 12 %: 1 cobblestone from 8 digs), need the right cell (dug 8, +1)", 8);
+        WPos? retracted = null;
+        var loop = new GeneratorLoop(c, new GeneratorSupport(BadCell: (p, _) => retracted = p, Diagnose: _ => "the water at 5,64,6 is gone (now air; taught layout had it)"))
+            { RetryPause = TimeSpan.Zero };
+        var r = await loop.RunAsync(A, 64, null, default);
+        Assert.False(r.Ok);
+        Assert.Contains("cause: the water at 5,64,6 is gone", r.Message);
+        Assert.Null(retracted);
+    }
+
+    [Fact]
+    public void An_enclosed_cell_is_asked_about_once_then_reported_as_already_asked()
+    {
+        var cell = new WPos(40, 64, 40);
+        var first = GameToolSet.AskOnceIfEnclosed(Agent.Tools.ToolResult.Error(
+            "can't get to a safe spot at the generator: 40,64,40 is enclosed (N water, S lava, E planks wall, W void, above: planks; no standable spot within 8; no path); ask a player once where to stand"), cell);
+        Assert.StartsWith("needs_input: can't get to a safe spot at the generator: 40,64,40 is enclosed (N water, S lava, E planks wall, W void", first.Text);
+        Assert.EndsWith("Where should I stand to dig 40,64,40?", first.Text);
+        var again = GameToolSet.AskOnceIfEnclosed(Agent.Tools.ToolResult.Error(
+            "can't get to a safe spot at the generator: 40,64,40 is enclosed (N water; x); ask a player once where to stand"), cell);
+        Assert.DoesNotContain("needs_input", again.Text);
+        Assert.Contains("already asked where to stand", again.Text);
     }
 }

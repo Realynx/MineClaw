@@ -601,6 +601,9 @@ public sealed partial class ChatRouter
     /// addressed message from anyone if null. The reply is consumed (not posted as an event); a burst of lines becomes one
     /// reply (see <see cref="Debounce"/>). Null on timeout.
     /// </summary>
+    /// <summary>Replies being waited for right now (ask_player, watch_demo...): tests await a listener instead of sleeping.</summary>
+    public int ReplyWaiters { get { lock (_lock) return _waiters.Count; } }
+
     public async Task<string?> WaitForReplyAsync(string? player, TimeSpan timeout, CancellationToken ct)
     {
         var w = new Waiter(player);

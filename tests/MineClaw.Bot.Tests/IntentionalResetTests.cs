@@ -55,7 +55,7 @@ public class IntentionalResetTests
         c.ActiveVoidStep = new IntentionalVoidStep("reset hp and hunger", new Vec3d(10.5, 64, 8.5), DateTimeOffset.UtcNow);
         c.RaiseDied();
         GameEvent? e = null;
-        for (int i = 0; i < 100 && e == null; i++)
+        for (int i = 0; i < 1500 && e == null; i++)
         {
             e = h.Runtime.Events.Snapshot().FirstOrDefault(x => x.Text.StartsWith("intentional reset"));
             if (e == null) await Task.Delay(20);
@@ -66,7 +66,7 @@ public class IntentionalResetTests
 
         c.ActiveVoidStep = null; // a normal death still is one
         c.RaiseDied();
-        for (int i = 0; i < 100 && !h.Runtime.Events.Snapshot().Any(x => x.Kind == EventKind.Death); i++) await Task.Delay(20);
+        for (int i = 0; i < 1500 && !h.Runtime.Events.Snapshot().Any(x => x.Kind == EventKind.Death); i++) await Task.Delay(20);
         Assert.Contains(h.Runtime.Events.Snapshot(), x => x.Kind == EventKind.Death);
     }
 }

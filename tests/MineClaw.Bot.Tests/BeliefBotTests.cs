@@ -61,9 +61,13 @@ public class BeliefBotTests
         c.World.SetBlock(2, 65, 0, Blocks.Chest, 0);
         c.OnOpen = _ =>
         {
+            // One 0x68 like the server sends (deterministic: two separate slot sets let the world indexer's own snapshot of a
+            // half-filled chest race the checker's reading under full-suite load, which once left the claim unverified).
             c.World.Inventory.Open(1, WindowType.Chest, "Chest", 27);
-            c.World.Inventory.SetSlot(1, 3, new ItemStack((short)Items.IronIngot, 5, 0));
-            c.World.Inventory.SetSlot(1, 4, new ItemStack((short)Items.IronIngot, 2, 0));
+            var items = Enumerable.Repeat(ItemStack.Empty, 27).ToArray();
+            items[3] = new ItemStack((short)Items.IronIngot, 5, 0);
+            items[4] = new ItemStack((short)Items.IronIngot, 2, 0);
+            c.World.Inventory.SetWindowItems(1, items);
         };
         var yes = store.Ingest("poofimafox", "iron in chest@2,65,0").Claim!;
         var no = store.Ingest("kiwi", "diamonds in chest@2,65,0").Claim!;

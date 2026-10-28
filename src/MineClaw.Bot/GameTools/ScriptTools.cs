@@ -30,6 +30,7 @@ public sealed class ScriptBridge
         "goto", "follow", "mine", "harvest_generator", "collect_drops", "craft", "smelt", "collect_furnace", "deposit", "withdraw",
         "organize_chest", "place", "dig", "use_block", "eat", "chop_tree", "act",
         AcquireTool.ToolName, // hidden tool: ensure{} / acquire{"pickaxe"} through the acquisition planner
+        Blueprints.BlueprintWiring.BuildTool, Blueprints.BlueprintWiring.InfoTool, // hidden: build{bp, part, of, layer} / blueprint(id)
     ];
 
     /// <summary>Never cut short by a pause/cancel: click sequences and single block actions finish, then the script stops.</summary>

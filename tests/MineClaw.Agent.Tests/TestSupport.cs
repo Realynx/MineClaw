@@ -96,3 +96,17 @@ public static class TestRuntime
         return (rt, llm, sent);
     }
 }
+
+/// <summary>Await a condition instead of sleeping a fixed time (deterministic under full-suite load).</summary>
+public static class TestWaits
+{
+    public static async Task UntilAsync(Func<bool> cond, int ms = 20000)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (!cond())
+        {
+            if (sw.ElapsedMilliseconds > ms) throw new TimeoutException("condition not met within " + ms + " ms");
+            await Task.Delay(5);
+        }
+    }
+}

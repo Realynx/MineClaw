@@ -44,6 +44,9 @@ public sealed record AppCli
     /// <summary>auto | simple | systemd | json.</summary>
     public string? LogFormat { get; init; }
     public bool Help { get; init; }
+    /// <summary>Print the db schema version this build opens (AgentDb migrations) and exit: deploy/ct-release.sh records it
+    /// per release so a rollback never starts a build older than the live db (live 10-27: crash loop on schema v6).</summary>
+    public bool PrintSchemaVersion { get; init; }
     /// <summary>Hive clone mode (started by the main process's supervisor): this process logs in as that clone, headless.</summary>
     public string? CloneName { get; init; }
     /// <summary>Hive clone mode: the supervisor's named pipe (no pipe = no clone: clones never run unsupervised).</summary>
@@ -58,6 +61,7 @@ Usage: MineClaw.App [options]
   --tui                    force the terminal UI
   --stdin-commands         headless: also read console commands from stdin
   --config <file>          extra appsettings JSON layered over the defaults (env MINECLAW_CONFIG)
+  --schema-version         print the db schema version this build opens and exit (deploy rollback guard)
   --data-dir <dir>         data directory (db, usage.json)        [Agent:DataDirectory]
   --log-dir <dir>          log + usage-*.jsonl directory          [Host:LogDirectory]
   --log-format <f>         auto | simple | systemd | json         [Host:LogFormat]
@@ -139,6 +143,7 @@ Exit codes: 0 clean, 1 crash, 2 config, 3 auth, 64 usage, 75 transient startup f
                 case "--clone": c = c with { CloneName = Value() }; break;
                 case "--parent-pipe": c = c with { ParentPipe = Value() }; break;
                 case "-h" or "--help" or "-?": c = c with { Help = true }; break;
+                case "--schema-version": c = c with { PrintSchemaVersion = true }; break;
                 default: errors.Add($"unknown option '{a}'"); break;
             }
         }

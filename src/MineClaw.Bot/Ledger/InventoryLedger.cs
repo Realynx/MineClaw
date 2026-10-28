@@ -26,7 +26,7 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly object _lock = new();
     private readonly List<LedgerEntry> _entries = new();
-    private readonly List<(DateTimeOffset At, int Id, int Damage, int Delta, string? Scope, string? Action)> _pending = new();
+    private readonly List<(DateTimeOffset At, int Id, int Damage, int Delta, string? Scope, string? Action, string? Container)> _pending = new();
     private readonly List<(DateTimeOffset At, int Id, int Count)> _pickups = new();
     private readonly List<(DateTimeOffset At, int Id, bool Auto)> _meals = new();
     private readonly List<(long Token, string Cause)> _scopes = new();
@@ -58,6 +58,7 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
     {
         var now = _time.GetUtcNow();
         string? action = SafeAction();
+        string? container = action == "deposit" ? SafeContainer() : null;
         lock (_lock)
         {
             if (_last is null) { _last = new(counts); return; }
@@ -67,7 +68,7 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
             foreach (var key in _last.Keys.Union(counts.Keys).ToList())
             {
                 int d = counts.GetValueOrDefault(key) - _last.GetValueOrDefault(key);
-                if (d != 0) _pending.Add((now, key.Id, key.Damage, d, scope, action));
+                if (d != 0) _pending.Add((now, key.Id, key.Damage, d, scope, action, container));
             }
             _last = new(counts);
         }
@@ -144,7 +145,7 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
             var p = _pending[i];
             if (!force && now - p.At < Settle) { i++; continue; }
             _pending.RemoveAt(i);
-            var e = Record(new LedgerEntry(p.At, p.Id, p.Damage, p.Delta, CauseOf(p.At, p.Id, p.Delta, p.Scope, p.Action)));
+            var e = Record(new LedgerEntry(p.At, p.Id, p.Damage, p.Delta, CauseOf(p.At, p.Id, p.Delta, p.Scope, p.Action, p.Container)));
             raised.Add(e);
         }
         _pickups.RemoveAll(x => now - x.At > TimeSpan.FromSeconds(10));
@@ -153,7 +154,7 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
             ThreadPool.QueueUserWorkItem(_ => { foreach (var e in raised) h(e); });
     }
 
-    private string CauseOf(DateTimeOffset at, int id, int delta, string? scope, string? action)
+    private string CauseOf(DateTimeOffset at, int id, int delta, string? scope, string? action, string? container = null)
     {
         if (scope == Correction)
             return delta < 0
@@ -181,6 +182,10 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
         }
         if (delta < 0 && _diedAt is { } died && (at - died).Duration() <= TimeSpan.FromSeconds(3))
             return "lost when I died" + (_diedWhere is { } w ? $" at {w}" : "") + " (dropped there, despawns after 5 min)";
+        // A deposit inside a bigger job (the gen loop storing its haul) is a deposit, not "harvest_generator" (live 10-27: "-64
+        // cobblestone: harvest_generator -62/-63/-64" while the haul went into chest 14,64,-5).
+        if (action == "deposit" && (scope is null || !scope.StartsWith("deposited", StringComparison.Ordinal)))
+            return delta < 0 ? $"deposited ({container ?? "chest"})" : $"gained during a deposit ({container ?? "chest"})";
         if (scope is not null) return scope;
         if (delta < 0 && Items.Get(id) is { MaxDamage: > 0 } && action is "dig" or "mine" or "chop" or "harvest" or "attack" or "spar" or "collect")
             return $"wore out ({action})";
@@ -221,12 +226,37 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
         return e;
     }
 
+    /// <summary>"chest x,y,z" of the container the current action opened (null = unknown).</summary>
+    public Func<string?>? CurrentContainer { get; set; }
+
+    private string? SafeContainer()
+    {
+        try { return CurrentContainer?.Invoke(); } catch (Exception) { return null; }
+    }
+
     private string? SafeAction()
     {
         try { return CurrentAction?.Invoke(); } catch (Exception) { return null; }
     }
 
     // ------------------------------------------------------------------ queries
+
+    /// <summary>
+    /// What the bot gathered since <paramref name="since"/> (pickups, crafts) and where it stored things ("deposited (chest X)"):
+    /// "32 cobblestone; stored 30 cobblestone in chest 14,64,-5". Null when nothing was gained.
+    /// </summary>
+    public string? GainsSince(DateTimeOffset since)
+    {
+        Flush();
+        var recent = Entries.Where(e => e.At >= since).ToList();
+        var got = recent.Where(e => e.Delta > 0 && (e.Cause.StartsWith("picked up", StringComparison.Ordinal) || e.Cause == "crafted"))
+            .GroupBy(e => e.ItemName).Select(g => (Name: g.Key, N: g.Sum(e => e.Delta))).Where(t => t.N > 0).OrderByDescending(t => t.N).ToList();
+        if (got.Count == 0) return null;
+        var stored = recent.Where(e => e.Delta < 0 && e.Cause.StartsWith("deposited (", StringComparison.Ordinal))
+            .GroupBy(e => (e.ItemName, Where: e.Cause["deposited (".Length..].TrimEnd(')')))
+            .Select(g => $"{-g.Sum(e => e.Delta)} {g.Key.ItemName} in {g.Key.Where}").Take(3).ToList();
+        return string.Join(", ", got.Take(4).Select(t => $"{t.N} {t.Name}")) + (stored.Count > 0 ? "; stored " + string.Join(", ", stored) : "");
+    }
 
     public IReadOnlyList<LedgerEntry> Entries
     {

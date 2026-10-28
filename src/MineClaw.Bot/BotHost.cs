@@ -93,6 +93,7 @@ public sealed class BotHost : IDisposable
         rt.Chat.Accepted += m => corrections.OnChat(m.Player, m.Text);
         AttachHandoffIntents(client, rt, hiveBots, log);
         digCells.TaughtCell += (p, by) => corrections.OnTaught(p, by);
+        digCells.FluidsAround = p => Perception.GenLayout.FluidsAround(client.World, p);
         // Stray "cells" off the gen's dig layer (the block over a cell, taught by a punch while a player mined) go, logged.
         try
         {
@@ -100,6 +101,8 @@ public sealed class BotHost : IDisposable
                 log?.LogInformation("dig cell {Cell} purged: {Why}", cell, why);
         }
         catch (Exception ex) { log?.LogDebug("dig cell purge skipped: {Err}", ex.Message); }
+        // The world check needs the gen's chunks: every minute for the first 15, once they're loaded.
+        if (persist) _ = PurgeNonCellsAsync(client, digCells, corrections, time ?? TimeProvider.System, log);
         // The protection policy (ARCHITECTURE.md "Protection policy"): every source in one place, soft vs hard, overrides.
         var placedStore = new PlacedBlockStore(rt.Db, client.World.Placed, log); // rule 1: own/hive placements, shared + persistent
         if (persist) placedStore.Start();
@@ -162,6 +165,7 @@ public sealed class BotHost : IDisposable
         GameToolSet.RegisterAll(rt.Tools, toolClient, memory, botOptions, landmark: landmark, generatorCells: genCells,
             generator: new GameTools.GeneratorSupport(rt.Observations, (label, p) => rt.Memory.SetWaypoint(label, p.X, p.Y, p.Z, "storage chest placed by the generator loop"),
                 BadCell: (p, why) => corrections.RetractBad(p, why),
+                Diagnose: cell => Perception.GenLayout.Diagnose(client.World, rt.Memory, client.World.Dimension, cell),
                 TaughtStand: cell => GameTools.GeneratorStand.Find(rt.Memory, cell))); // B12: stand where the demo stood
         HumanGameTools.RegisterAskStand(rt.Tools, rt.Chat, client, botOptions.AskStandTimeoutSeconds, digCells: digCells);
         HumanGameTools.RegisterWatchDemo(rt.Tools, rt.Chat, recorder, memory);
@@ -247,7 +251,17 @@ public sealed class BotHost : IDisposable
         Beliefs.BeliefBot.Attach(rt, toolClient, claims, time, log, indexer); // belief system: claim checks when idle (zero tokens)
         var skillHub = SkillTools.Register(rt, client, claims); // worker: skill + find_skill over the whole catalog (zero prefix growth)
         // Inventory ledger: every toss/drop/use/consume/correction is recorded; inventory/where_is {item} answer "where did X go".
-        if (client is MinecraftGameClient mgl) Ledger.InventoryLedgerTools.Attach(rt, mgl.Inner, skillHub.Registry, log, time);
+        if (client is MinecraftGameClient mgl)
+        {
+            var ledger = Ledger.InventoryLedgerTools.Attach(rt, mgl.Inner, skillHub.Registry, log, time);
+            // A worker's time slice reports what it gathered and where it went ("ok: time slice done (5 min): 32 cobblestone; ...").
+            if (rt.Worker != null)
+                rt.Worker.GainsTracker = () =>
+                {
+                    var t0 = (time ?? TimeProvider.System).GetUtcNow();
+                    return () => ledger.GainsSince(t0);
+                };
+        }
         IntentionalReset.Attach(rt, client, log); // into_void: announce once, intentional-reset outcome, the void-reset claim's evidence
         // Shared chest memory vs what an open shows: "bread x5 gone since maid_chan opened it 1m ago; Fox may have taken it".
         if (indexer != null)
@@ -263,11 +277,14 @@ public sealed class BotHost : IDisposable
             PortalPairText = (dim, pos) => PortalPairText(rt.Observations.Portals, dim, pos),
         };
         bridge.Attach();
+        // Build from a description: design (brain, Opus authoring) + hidden build/blueprint tools (Lua build{}/blueprint()), chat review.
+        var blueprints = botOptions.Blueprints.Enabled ? MineClaw.Bot.Blueprints.BlueprintWiring.Attach(rt, client, toolClient, botOptions.Blueprints, protection, acquisition, genCells, claims, time, log, persist) : null;
         var scripts = ScriptTools.Register(rt, client, skillHub, botOptions.Scripts, time, log); // script tool (brain+worker), after split + header
         // Vision v2: see = contact sheet + role layer; with a perception model (Agent:Llm:Perception) the brain gets verified text.
         var vision = Perception.Vision.VisionWiring.Attach(rt, client, memory, botOptions, protection,
             p => digCells.IsDigCell(p) || indexer?.IsConfirmedDigCell(p) == true, indexer, gestures, genCells, hiveBots, time, log, persist);
         // do {action, args, then?, queue?}: the brain's one compact door to the single-step macros (after every macro exists).
+        if (blueprints != null) blueprints.Vision = vision; // the preview's roles/atlas and the perception critic
         Agent.Tools.DoTool.Register(rt.Tools);
 
         // Brainstem: deterministic controller under the brain (head turn, reflexes, speculative first step, social idle,
@@ -295,9 +312,12 @@ public sealed class BotHost : IDisposable
             Acquisition = acquisition,
             PlacedBlocks = placedStore, ProtectionMarks = marks, ProtectionCommands = protectCmds, ProtectionTelemetry = telemetry,
             Vision = vision,
+            Blueprints = blueprints,
         };
     }
 
+    /// <summary>Build from a description: the design service, its tools and the build crew seam (null when disabled).</summary>
+    public MineClaw.Bot.Blueprints.BlueprintWiring? Blueprints { get; init; }
     /// <summary>Rule 1 persistence: own/hive placed blocks in the shared db.</summary>
     public PlacedBlockStore? PlacedBlocks { get; init; }
     /// <summary>Trusted permits and never-break marks (shared db).</summary>
@@ -420,6 +440,25 @@ public sealed class BotHost : IDisposable
     /// may draw on. Asking players only while a human is online and this bot may speak; the hive fills
     /// <see cref="AcquisitionSources.RequestHandoff"/> on <see cref="Acquisition"/>.
     /// </summary>
+    /// <summary>Purges taught dig cells the loaded world shows are lava/water/other blocks (logged), a few times after startup.</summary>
+    private static async Task PurgeNonCellsAsync(IGameClient client, Perception.DigCells cells, Perception.DigCellCorrections corrections,
+        TimeProvider time, ILogger? log)
+    {
+        for (int i = 0; i < 15; i++)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromMinutes(1), time).ConfigureAwait(false);
+                if (!client.IsPlaying) continue;
+                var w = client.World;
+                foreach (var (cell, why) in cells.PurgeNonCells(p => w.IsLoaded(p.X, p.Z) ? (w.GetBlock(p), w.GetMeta(p)) : null,
+                             (p, why) => corrections.RetractBad(p, why)))
+                    log?.LogInformation("dig cell {Cell} purged: {Why}", cell, why);
+            }
+            catch (Exception ex) { log?.LogDebug("dig cell world purge skipped: {Err}", ex.Message); }
+        }
+    }
+
     private static AcquisitionSources AttachAcquisition(IGameClient client, AgentRuntime rt,
         Func<MineClaw.World.BlockPos, IReadOnlyList<MineClaw.World.BlockPos>> genCells, Perception.DigCells digCells, WorldIndexer? indexer, ILogger? log) =>
         GameTools.Acquisition.Attach(client, new AcquisitionSources

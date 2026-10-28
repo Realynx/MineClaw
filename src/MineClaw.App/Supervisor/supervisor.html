@@ -79,6 +79,7 @@ td,th{padding:2px 4px;text-align:left;border-bottom:1px solid var(--line);font-s
     <div class="panel"><h2><span>Thought: <span id="thoughtWho"></span></span></h2><div class="pb" id="thought"></div></div>
     <div class="panel"><h2>Hive board</h2><div class="pb" id="board"></div></div>
     <div class="panel"><h2>Events</h2><div class="pb" id="events"></div></div>
+<div class="panel"><h2><span>Designs</span><span id="designCost" class="dim"></span></h2><div class="pb"><div id="designs" class="mono"></div><img id="designImg" class="brainimg" alt="design preview" hidden><div id="designBill" class="mono dim" style="white-space:pre-wrap"></div></div></div>
     <div class="panel"><h2>Chat</h2><div class="pb mono" id="chat"></div></div>
   </aside>
 </main>
@@ -421,6 +422,38 @@ async function pollEvents() {
   } catch (e) {}
 }
 
+// ---------------------------------------------------------------- designs (blueprints: build from a description)
+let designSel = null, designImgUrl = null;
+async function pollDesigns() {
+  try {
+    const r = await json("/api/blueprints");
+    const box = $("designs");
+    box.textContent = "";
+    $("designCost").textContent = r.designs.length ? `$${r.designs.reduce((s, d) => s + (d.cost_usd || 0), 0).toFixed(3)}` : "";
+    for (const d of r.designs) {
+      const row = el("div", "ev" + (d.id === designSel ? " warn" : ""), `#${d.id} ${d.name} [${d.status}] ${d.summary || ""}`);
+      row.style.cursor = "pointer";
+      row.onclick = () => { designSel = d.id; showDesign(); pollDesigns(); };
+      box.append(row);
+    }
+    if (!r.designs.length) box.textContent = "no designs yet";
+  } catch (e) {}
+}
+async function showDesign() {
+  if (designSel == null) return;
+  try {
+    const img = $("designImg");
+    const blob = await (await api(`/view/blueprint/${designSel}`)).blob();
+    if (designImgUrl) URL.revokeObjectURL(designImgUrl);
+    designImgUrl = URL.createObjectURL(blob);
+    img.src = designImgUrl; img.hidden = false;
+  } catch (e) { $("designImg").hidden = true; }
+  try {
+    const b = await json(`/api/blueprints/${designSel}`);
+    $("designBill").textContent = (b.bill || []).map(x => `${x.need} ${x.item}${x.missing ? ` (short ${x.missing}: ${x.source})` : ""}`).join(", ")
+      + (b.eval ? `\n${b.eval}` : "") + (b.critique ? `\nlook: ${b.critique}` : "");
+  } catch (e) {}
+}
 // ---------------------------------------------------------------- wiring
 for (const b of document.querySelectorAll("#layoutBtns button")) b.onclick = () => { state.layout = b.dataset.l; save(); layout(); };
 const rf = $("refresh"); rf.value = state.refresh; rf.onchange = () => { state.refresh = +rf.value; save(); };
@@ -435,6 +468,7 @@ setInterval(pollBots, 3000);
 setInterval(tick, 250);
 setInterval(pollStatus, 3000);
 setInterval(pollEvents, 2000);
+setInterval(pollDesigns, 5000); pollDesigns();
 setInterval(() => { if (state.brain) refreshBrain(); }, 4000);
 pollEvents();
 setInterval(camLoop, 50); // 20 Hz movement; frames stay ≤ 4 fps (rAF stalls in background tabs)

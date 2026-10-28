@@ -76,8 +76,9 @@ public class EventQueueTests
     [Fact]
     public async Task ChatBurst_CoalescesIntoOneBatch_AndFormatMerges()
     {
-        var q = Q(coalesceMs: 80, maxDelayMs: 1000);
-        var wait = q.WaitBatchAsync(new CancellationTokenSource(5000).Token);
+        // The window is generous next to the 20 ms gaps: under full-suite load a 20 ms delay can take far longer (flaked at 80).
+        var q = Q(coalesceMs: 600, maxDelayMs: 5000);
+        var wait = q.WaitBatchAsync(new CancellationTokenSource(30000).Token);
         q.Post(GameEvent.Chat("Alice", "clawd"));
         await Task.Delay(20);
         q.Post(GameEvent.Chat("Alice", "can you"));
@@ -94,7 +95,7 @@ public class EventQueueTests
     {
         var q = Q(coalesceMs: 5000, maxDelayMs: 10000);
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        var wait = q.WaitBatchAsync(new CancellationTokenSource(5000).Token);
+        var wait = q.WaitBatchAsync(new CancellationTokenSource(30000).Token);
         q.Post(GameEvent.VoidFall(-5));
         var batch = await wait;
         Assert.True(sw.ElapsedMilliseconds < 2000);

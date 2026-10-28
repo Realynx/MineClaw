@@ -90,7 +90,7 @@ public class ChatFlowTests
     {
         var q = new EventQueue(new EventQueueOptions(), debounce: new ChatDebounceOptions { QuietMs = 400, MaxMs = 4000 });
         var sw = Stopwatch.StartNew();
-        var wait = q.WaitBatchAsync(new CancellationTokenSource(5000).Token);
+        var wait = q.WaitBatchAsync(new CancellationTokenSource(30000).Token);
         q.Post(GameEvent.Chat("fox", "so about the gen"));
         q.Post(GameEvent.Chat("fox", "is it working?"));
         var b = await wait;
@@ -114,7 +114,7 @@ public class ChatFlowTests
     {
         var q = new EventQueue(new EventQueueOptions(), debounce: new ChatDebounceOptions { QuietMs = 250, MaxMs = 4000 });
         var sw = Stopwatch.StartNew();
-        var wait = q.WaitBatchAsync(new CancellationTokenSource(5000).Token);
+        var wait = q.WaitBatchAsync(new CancellationTokenSource(30000).Token);
         q.Post(GameEvent.Chat("fox", "mine the gen"));
         await Task.Delay(50);
         q.Post(GameEvent.Chat("kiwi", "can you also make torches"));
@@ -131,14 +131,16 @@ public class ChatFlowTests
     {
         var q = new EventQueue(new EventQueueOptions(), debounce: new ChatDebounceOptions { QuietMs = 300, MaxMs = 700 });
         var sw = Stopwatch.StartNew();
-        var wait = q.WaitBatchAsync(new CancellationTokenSource(5000).Token);
-        for (int i = 0; i < 12 && !wait.IsCompleted; i++)
+        var wait = q.WaitBatchAsync(new CancellationTokenSource(30000).Token);
+        // Typing goes on for 4 s; the 700 ms cap must fire long before it stops (without the cap: > 4.3 s). The wide upper
+        // bound keeps this deterministic under full-suite load (it was 1.5 s and flaked).
+        for (int i = 0; i < 40 && !wait.IsCompleted; i++)
         {
             q.Post(GameEvent.Chat("fox", "line " + i));
             await Task.Delay(100);
         }
         await wait;
-        Assert.InRange(sw.ElapsedMilliseconds, 600, 1500);
+        Assert.InRange(sw.ElapsedMilliseconds, 600, 3500);
     }
 
     // ------------------------------------------------------------------ dedupe

@@ -95,6 +95,24 @@ public static partial class MetaSpeech
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex RunStatusRx();
 
+    /// <summary>
+    /// A report about itself in the third person / report register (live 10-28 01:3x, after a danger warning: "I warned Fox that
+    /// the cactus farm is hurting him. I'm also back on the cobble generator now: I'm mining the 24 cobble he's still owed… The
+    /// seeds I said I'd plant are still in my bag, so I haven't planted them yet."; "I'll know when that finishes"). Never chat.
+    /// "I told you!" / "I warned u" (to the listener) stay.
+    /// </summary>
+    [GeneratedRegex(
+        @"^\W*i\s+(?:already\s+)?(?:warned|told|informed|reminded|alerted|notified|updated|let)\s+(?!you\b|u\b|ya\b|y'?all\b|yall\b|ur\b)[a-z][\w']*\b(?:\s+(?:know|that|about|to)\b|\s*[,.]|\s+(?:the|it|him|her|them)\b)" +
+        @"|^\W*i'?m\s+also\s+(?:back|still|now|going|heading|mining|working|on)\b" +
+        @"|\bi'?ll\s+(?:know|hear|find\s+out|get\s+(?:a|the)\s+(?:result|report))\s+(?:when|once|if)\b" +
+        @"|\bi\s+said\s+i'?d\b[^.!?]*\b(?:still|haven'?t|have\s+not|not\s+yet)\b" +
+        @"|\b(?:he|she|they)(?:'s|\s+is|\s+are)\s+still\s+owed\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex SelfReportRx();
+
+    /// <summary>A third-person report about its own doings ("I warned Fox that...", "I'm also back on the gen now").</summary>
+    public static bool IsSelfReport(string sentence) => SelfReportRx().IsMatch(sentence ?? "");
+
     /// <summary>A player line asking for status/progress ("how's it going", "how much cobble", "status?", "done yet?").</summary>
     [GeneratedRegex(
         @"\b(?:status|progress|update|report|how'?s\s+it\s+going|how\s+is\s+it\s+going|how\s+(?:much|many)|how\s+far|done\s+yet|finished\s+yet|what\s+are\s+(?:you|u)\s+doing|wyd|what'?s\s+up\s+with|how\s+did\s+(?:it|that)\s+go|did\s+(?:it|that)\s+work)\b",
@@ -132,7 +150,7 @@ public static partial class MetaSpeech
     /// <summary>Longest sentence <see cref="PlumbingRx"/> drops whole; a longer one keeps its real content.</summary>
     private const int MaxPlumbingWords = 25;
 
-    [GeneratedRegex(@"(?<=[.!?])\s+")]
+    [GeneratedRegex(@"(?<=[.!?…])\s+")]
     private static partial Regex SentenceRx();
 
     /// <summary>
@@ -156,7 +174,7 @@ public static partial class MetaSpeech
             {
                 var t = s.Trim();
                 if (t.Length == 0) continue;
-                if (IsMeta(t) || MemoryChoreRx().IsMatch(t) || IsSelfNarration(t) || (!statusAsked && IsRunStatus(t))) { suppressed.Add(t); continue; }
+                if (IsMeta(t) || MemoryChoreRx().IsMatch(t) || IsSelfNarration(t) || IsSelfReport(t) || (!statusAsked && IsRunStatus(t))) { suppressed.Add(t); continue; }
                 if (AskingLeadRx().Match(t) is { Success: true } lead)
                 {
                     suppressed.Add(t);

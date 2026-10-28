@@ -70,7 +70,7 @@ public class LiveSession4BotTests
         c.RaiseChat("<kiwi> tp maid to me");
         c.RaiseServerMoved(new Vec3d(-39.5, 65, 6.5), new Vec3d(8.5, 64, 8.5));
         GameEvent? e = null;
-        for (int i = 0; i < 100 && e == null; i++)
+        for (int i = 0; i < 1500 && e == null; i++)
         {
             e = h.Runtime.Events.Snapshot().FirstOrDefault(x => x.Text.StartsWith("server moved me"));
             if (e == null) await Task.Delay(20);

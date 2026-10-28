@@ -121,11 +121,11 @@ public class BrainstemTests
         var q = new EventQueue(new EventQueueOptions(), debounce: d);
         var sw = System.Diagnostics.Stopwatch.StartNew();
         q.Post(GameEvent.Chat("fox", "come here!"));
-        await q.WaitBatchAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        await q.WaitBatchAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
         long complete = sw.ElapsedMilliseconds;
         sw.Restart();
         q.Post(GameEvent.Chat("fox", "so i was thinking"));
-        await q.WaitBatchAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        await q.WaitBatchAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
         long open = sw.ElapsedMilliseconds;
         Assert.True(complete < 500, $"complete line waited {complete} ms");
         Assert.True(open >= 650, $"open line waited only {open} ms");

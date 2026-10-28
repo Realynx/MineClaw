@@ -13,6 +13,39 @@ internal static class FarmOps
         try { await ctx.Game.CollectDropsAsync(radius, ct); } catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
     }
 
+    /// <summary>
+    /// The field around <paramref name="crops"/> (their bounding box + 2, same layer ±1): every farmland cell with nothing on it
+    /// gets a seed (two passes: a placement the server rejected is retried once), then the field is counted from the world.
+    /// Text: "; field: 24/24 farmland planted" or "; field: 21/24 planted, 3 empty: out of seeds".
+    /// </summary>
+    public static async Task<(int Planted, string Text)> FillFieldAsync(SkillContext ctx, IReadOnlyList<BlockPos> crops, int radius, CancellationToken ct)
+    {
+        if (crops.Count == 0) return (0, "");
+        int minX = crops.Min(p => p.X) - 2, maxX = crops.Max(p => p.X) + 2, minZ = crops.Min(p => p.Z) - 2, maxZ = crops.Max(p => p.Z) + 2;
+        int minY = crops.Min(p => p.Y) - 2, maxY = crops.Max(p => p.Y);
+        List<BlockPos> Farmland() => ctx.Find((id, _) => id == Blocks.Farmland, radius + 2)
+            .Select(f => f.Pos).Where(p => p.X >= minX && p.X <= maxX && p.Z >= minZ && p.Z <= maxZ && p.Y >= minY && p.Y <= maxY).ToList();
+        bool Empty(BlockPos soil) => SkillWorld.Air(ctx.World, soil.Up());
+        int planted = 0;
+        for (int pass = 0; pass < 2; pass++)
+        {
+            var empty = Farmland().Where(Empty).ToList();
+            if (empty.Count == 0 || !ctx.Has(Items.Seeds)) break;
+            foreach (var soil in empty)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (!ctx.Has(Items.Seeds)) break;
+                if (await PlantAsync(ctx, soil, Items.Seeds, ct) && await ctx.WaitBlockAsync(soil.Up(), (id, _) => id == Blocks.Crops, ct)) planted++;
+            }
+        }
+        var all = Farmland();
+        int left = all.Count(Empty);
+        string text = all.Count == 0 ? ""
+            : left == 0 ? $"; field: {all.Count}/{all.Count} farmland planted"
+            : $"; field: {all.Count - left}/{all.Count} planted, {left} empty" + (!ctx.Has(Items.Seeds) ? ": out of seeds (need " + left + " more)" : ": couldn't plant them");
+        return (planted, text);
+    }
+
     /// <summary>Plants <paramref name="item"/> in the empty cell above <paramref name="soil"/>; verified by the block appearing.</summary>
     public static async Task<bool> PlantAsync(SkillContext ctx, BlockPos soil, int item, CancellationToken ct)
     {
@@ -76,9 +109,18 @@ public sealed class HarvestWheatSkill : Skill
             if (ctx.Block(soil) == Blocks.Farmland && await FarmOps.PlantAsync(ctx, soil, Items.Seeds, ct)) planted++; // 3. plant
         }
         await FarmOps.CollectAsync(ctx, radius, ct);
+        // 4. Verify the whole field (live 10-28, 420: "done, maybe 3 empty plots left"; Robin: "420 didn't finish replanting"):
+        // every farmland cell of it gets a crop, from the seeds just picked up; the count reported is the real one.
+        string field = "";
+        if (replant && cut > 0)
+        {
+            var check = await FarmOps.FillFieldAsync(ctx, ripe.Select(r => r.Pos).ToList(), radius, ct);
+            planted += check.Planted;
+            field = check.Text;
+        }
         string re = $"replanted {planted}" + (tilled > 0 ? $" (re-tilled {tilled})" : "") + (replant && hoe is null ? " (no hoe: planted only on farmland)" : "");
         return cut > 0 ? Ok($"harvested {cut} wheat, {re} (wheat {ctx.Count(Items.Wheat)}, seeds {ctx.Count(Items.Seeds)}; {growing} growing)"
-                            + (hoeNote != null ? "; " + hoeNote : ""))
+                            + field + (hoeNote != null ? "; " + hoeNote : ""))
                        : Fail("couldn't harvest any wheat");
     }
 }

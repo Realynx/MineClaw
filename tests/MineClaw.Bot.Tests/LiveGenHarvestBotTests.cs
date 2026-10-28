@@ -86,7 +86,7 @@ public class LiveGenHarvestBotTests
         var r = await new GeneratorLoop(c) { RetryPause = TimeSpan.Zero }.RunAsync(West, 64, store, default);
         Assert.False(r.Ok);
         Assert.Contains("deposit 14,64,-5 filter=True", c.CallList);
-        Assert.Contains("deposited", r.Message);
+        Assert.Contains("stored 8 cobblestone in chest 14,64,-5", r.Message); // where the haul went, not "deposited N item(s)"
         Assert.Equal(0, c.World.Inventory.CountItem(Blocks.Cobblestone));
     }
 

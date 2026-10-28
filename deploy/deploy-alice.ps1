@@ -18,7 +18,8 @@
   pwsh deploy/deploy-alice.ps1                  # test, build, deploy, restart, health check
   pwsh deploy/deploy-alice.ps1 -SkipTests -PushConfig
   pwsh deploy/deploy-alice.ps1 -Status
-  pwsh deploy/deploy-alice.ps1 -Rollback
+  pwsh deploy/deploy-alice.ps1 -Rollback        # restores the matching db backup, or refuses when the old build can't open the db
+  pwsh deploy/deploy-alice.ps1 -Rollback -DryRun  # print the rollback plan (releases, db schemas, backup) and change nothing
   pwsh deploy/deploy-alice.ps1 -NoStart         # install everything but leave the service as it is
 #>
 #Requires -Version 7.0
@@ -29,6 +30,8 @@ param(
     [switch]$Rollback,
     [switch]$Status,
     [switch]$NoStart,
+    [switch]$DryRun,
+    [switch]$Force,
     [string]$PveHost = 'alice',
     [int]$Vmid = 114,
     [int]$HealthTimeoutSec = 180
@@ -48,7 +51,14 @@ function Copy-Lf([string]$From, [string]$To) {   # bash and systemd want LF; git
 
 $release = "/usr/local/sbin/mineclaw-release"
 if ($Status) { $null = Invoke-Pve "pct exec $Vmid -- $release status"; return }
-if ($Rollback) { $null = Invoke-Pve "pct exec $Vmid -- $release rollback --timeout $HealthTimeoutSec"; return }
+if ($Rollback) {
+    # The CT side checks the live db schema against the older build's (releases/<id>/SCHEMA_VERSION) and restores the db backup
+    # taken under that release at install time, or refuses (live 10-27: the old build crash-looped on schema v6).
+    $flags = @(if ($DryRun) { '--dry-run' }; if ($Force) { '--force' }) -join ' '
+    $rc = Invoke-Pve "pct exec $Vmid -- $release rollback --timeout $HealthTimeoutSec $flags" -AllowFail
+    if ($rc -ne 0) { throw "rollback refused or failed (exit $rc); see the lines above" }
+    return
+}
 
 $cfg = Join-Path $repo 'src/MineClaw.App/appsettings.json'
 $id = Get-Date -Format 'yyyyMMdd-HHmmss'

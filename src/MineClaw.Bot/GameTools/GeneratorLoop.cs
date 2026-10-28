@@ -12,8 +12,10 @@ namespace MineClaw.Bot.GameTools;
 /// <param name="BadCell">The yield guard proved a cell wrong (memory retracts its dig keys).</param>
 /// <param name="TaughtStand">The stand spot a player taught for a dig cell (watch_demo "stood at .. punched .. at cell"), or
 /// null; see <see cref="GeneratorStand.Find"/>.</param>
+/// <param name="Diagnose">Why a cell stopped yielding, from the gen's taught layout vs the world (null = all as taught):
+/// see <see cref="Perception.GenLayout.Diagnose"/>.</param>
 public sealed record GeneratorSupport(ObservationStore? Observations = null, Action<string, BlockPos>? LabelChest = null,
-    Action<BlockPos, string>? BadCell = null, Func<BlockPos, BlockPos?>? TaughtStand = null);
+    Action<BlockPos, string>? BadCell = null, Func<BlockPos, BlockPos?>? TaughtStand = null, Func<BlockPos, string?>? Diagnose = null);
 
 /// <summary>
 /// Unattended cobble-generator mining (zero tokens per block, hours if asked): mines the cell in batches through the
@@ -83,6 +85,13 @@ public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = nul
             }
             mined += res.Count;
             var msg = res.Message;
+            // Enclosed cell: retrying can't help; the caller asks a player once where to stand.
+            if (res.Count == 0 && msg.Contains(" is enclosed (", StringComparison.Ordinal))
+            {
+                stop = msg;
+                ok = mined > 0;
+                break;
+            }
             if (res.Count == 0 && msg.StartsWith("busy:", StringComparison.Ordinal))
             {
                 stop = msg; // another bot holds this cell: the caller picks another one (never wait out retries on it)
@@ -93,7 +102,12 @@ public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = nul
             {
                 stop = msg.StartsWith("generator: ", StringComparison.Ordinal) ? msg["generator: ".Length..] : msg;
                 ok = false; // the wrong cell (or a broken gen): never keep digging there
-                if (msg.Contains("isn't regenerating", StringComparison.Ordinal))
+                // The concrete cause from the taught layout ("the lava at 4,64,7 is gone"): then the gen is broken and the cell is
+                // right, so it stays taught; only an intact layout means the cell itself is wrong.
+                string? cause = null;
+                try { cause = _s.Diagnose?.Invoke(cell); } catch (Exception) { /* memory busy */ }
+                if (cause != null) stop += "; cause: " + cause;
+                else if (msg.Contains("isn't regenerating", StringComparison.Ordinal))
                 {
                     try { _s.BadCell?.Invoke(cell, "yield guard: " + stop); } catch (Exception) { /* memory busy */ }
                 }
@@ -143,7 +157,7 @@ public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = nul
             }
             catch (OperationCanceledException) { /* cancelled: keep the partial result */ }
         }
-        var text = $"generator: dug {mined}/{count} at {cell.X},{cell.Y},{cell.Z}" + (deposited > 0 ? $", deposited {deposited} item(s)" : "")
+        var text = $"generator: dug {mined}/{count} at {cell.X},{cell.Y},{cell.Z}" + (deposited > 0 ? StoredText() : "")
                    + $" (have {c.World.Inventory.CountItem(Blocks.Cobblestone)} cobblestone)"
                    + (notes.Count > 0 ? "; " + string.Join("; ", notes.Distinct().Take(3)) : "") + (stop != null ? "; " + stop : "");
         return ok ? ActionResult.Success(text, mined) : ActionResult.Fail(text, mined);
@@ -168,7 +182,9 @@ public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = nul
             if (!tried.Add(chest)) continue;
             if (tried.Count > MaxChestsTried) break;
             int was = Loose();
+            var items = LooseItems(reserved);
             var r = await c.DepositAllAsync(chest, s => !Keep(s, reserved), ct).ConfigureAwait(false);
+            NoteStored(chest, items, LooseItems(reserved));
             int now = Loose();
             if (now == 0 || c.World.Inventory.RoomFor(new ItemStack(Blocks.Cobblestone, 1, 0)) > 0 && now < before)
                 return ActionResult.Success($"deposited at {chest.X},{chest.Y},{chest.Z}", before - now);
@@ -178,12 +194,38 @@ public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = nul
         var placed = await PlaceChestAsync(ct).ConfigureAwait(false);
         string tries = why.Count == 0 ? "no known chest" : "tried " + string.Join("; ", why.Take(6));
         if (placed is not { } p) return ActionResult.Fail($"storage full: {tries}; no chest (or planks) to place a new one");
+        var held = LooseItems(reserved);
         await c.DepositAllAsync(p, s => !Keep(s, reserved), ct).ConfigureAwait(false);
+        NoteStored(p, held, LooseItems(reserved));
         var label = $"cobble_storage_{p.X}_{p.Z}";
         try { _s.LabelChest?.Invoke(label, p); } catch (Exception) { /* label is best effort */ }
         return Loose() < before
             ? ActionResult.Success($"placed and labelled a new chest '{label}' at {p.X},{p.Y},{p.Z}", before - Loose())
             : ActionResult.Fail($"placed a chest at {p.X},{p.Y},{p.Z} but couldn't deposit into it");
+    }
+
+    private readonly Dictionary<BlockPos, Dictionary<int, int>> _stored = new();
+
+    private Dictionary<int, int> LooseItems(IReadOnlySet<int> reserved) =>
+        c.World.Inventory.PlayerSlots().Skip(9).Where(s => !Keep(s, reserved)).GroupBy(s => (int)s.Id).ToDictionary(g => g.Key, g => g.Sum(s => (int)s.Count));
+
+    private void NoteStored(BlockPos chest, Dictionary<int, int> before, Dictionary<int, int> after)
+    {
+        foreach (var (id, n) in before)
+        {
+            int moved = n - after.GetValueOrDefault(id);
+            if (moved <= 0) continue;
+            if (!_stored.TryGetValue(chest, out var m)) _stored[chest] = m = new();
+            m[id] = m.GetValueOrDefault(id) + moved;
+        }
+    }
+
+    /// <summary>", stored 64 cobblestone in chest 14,64,-5" (where the haul went; never a bare "deposited N item(s)").</summary>
+    private string StoredText()
+    {
+        if (_stored.Count == 0) return ", deposited the haul";
+        return ", stored " + string.Join(", ", _stored.Take(3).Select(kv =>
+            string.Join(" + ", kv.Value.OrderByDescending(x => x.Value).Take(2).Select(x => $"{x.Value} {Names.Item(x.Key)}")) + $" in chest {kv.Key.X},{kv.Key.Y},{kv.Key.Z}"));
     }
 
     /// <summary>Most chests one deposit opens before calling storage full.</summary>

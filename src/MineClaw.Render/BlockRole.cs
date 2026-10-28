@@ -31,6 +31,8 @@ public enum BlockRole : byte
     NeverBreak,
     /// <summary>A nether portal sheet or its obsidian frame.</summary>
     Portal,
+    /// <summary>A block of a design preview (blueprint): drawn in place, not built yet.</summary>
+    Planned,
 }
 
 /// <summary>The role of the block at (x, y, z) (air included: void, a refilling gen cell).</summary>
@@ -40,7 +42,7 @@ public static class BlockRoles
 {
     /// <summary>Roles worth an overlay (tint + letter); floor/wall/air read fine from the blocks themselves.</summary>
     public static bool Highlight(BlockRole r) => r is BlockRole.GenCell or BlockRole.Portal or BlockRole.NeverBreak or BlockRole.PlayerBuild
-        or BlockRole.OwnPlaced or BlockRole.SoftProtected or BlockRole.Station or BlockRole.Door;
+        or BlockRole.OwnPlaced or BlockRole.SoftProtected or BlockRole.Station or BlockRole.Door or BlockRole.Planned;
 
     /// <summary>One-character role glyph shared by the ASCII map and the image chips (null = no overlay letter).</summary>
     public static char? Glyph(BlockRole r) => r switch
@@ -51,6 +53,7 @@ public static class BlockRoles
         BlockRole.PlayerBuild => 'B',
         BlockRole.OwnPlaced => '+',
         BlockRole.SoftProtected => '$',
+        BlockRole.Planned => '*',
         _ => null,
     };
 
@@ -68,6 +71,7 @@ public static class BlockRoles
         BlockRole.Water => 0x3a6cff,
         BlockRole.Lava => 0xff7a1a,
         BlockRole.Void => 0x0a1020,
+        BlockRole.Planned => 0xff4fd8,
         _ => 0x808080,
     };
 
@@ -87,6 +91,7 @@ public static class BlockRoles
         BlockRole.SoftProtected => "protected",
         BlockRole.NeverBreak => "never-break",
         BlockRole.Portal => "portal",
+        BlockRole.Planned => "planned",
         _ => "none",
     };
 
@@ -96,6 +101,7 @@ public static class BlockRoles
         if (string.IsNullOrWhiteSpace(s)) return null;
         var n = s.Trim().ToLowerInvariant().Replace('_', ' ').Replace('-', ' ');
         if (n.Contains("never")) return BlockRole.NeverBreak;
+        if (n.Contains("planned") || n.Contains("blueprint")) return BlockRole.Planned;
         if (n.Contains("gen") || n.Contains("mine here") || n.Contains("dig cell")) return BlockRole.GenCell;
         if (n.Contains("portal") || n.Contains("obsidian")) return BlockRole.Portal;
         if (n.Contains("void") || n.Contains("abyss")) return BlockRole.Void;

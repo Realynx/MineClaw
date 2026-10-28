@@ -36,6 +36,9 @@ public sealed partial class DigCells
     public event Action<WPos, string?>? TaughtCell;
     [ThreadStatic] private static bool _raising;
 
+    /// <summary>The lava/water touching a cell (sides and above) in the world now: recorded as the gen's taught layout.</summary>
+    public Func<WPos, IReadOnlyList<(WPos Pos, bool Lava)>>? FluidsAround { get; set; }
+
     /// <summary>Current dimension (taught cells are per dimension).</summary>
     public Func<int>? Dimension { get; set; }
 
@@ -77,10 +80,20 @@ public sealed partial class DigCells
             var s = _memory.Read(d => d.Structures.Where(x => x.Dimension == dim && x.Min != null
                     && (x.Kind == StructureKinds.CobbleGenerator || x.Name.Contains("gen", StringComparison.OrdinalIgnoreCase)))
                 .OrderBy(x => Dist(x, p)).FirstOrDefault());
-            if (s != null && Dist(s, p) <= 6 && !s.KeyBlocks.Any(k => k.X == p.X && k.Y == p.Y && k.Z == p.Z))
+            if (s != null && Dist(s, p) <= 6)
             {
-                _memory.UpsertStructure(s.Name, st => st.KeyBlocks.Add(new KeyBlock { Label = by != null ? $"dig (taught by {by})" : "dig", X = p.X, Y = p.Y, Z = p.Z }));
-                _lastLoad = DateTimeOffset.MinValue;
+                bool newCell = !s.KeyBlocks.Any(k => k.X == p.X && k.Y == p.Y && k.Z == p.Z);
+                // The taught layout: the lava and water feeding this cell right now, so a later yield drop can name what changed.
+                var fluids = (FluidsAround?.Invoke(p) ?? []).Where(f => !s.KeyBlocks.Any(k => k.X == f.Pos.X && k.Y == f.Pos.Y && k.Z == f.Pos.Z)).ToList();
+                if (newCell || fluids.Count > 0)
+                {
+                    _memory.UpsertStructure(s.Name, st =>
+                    {
+                        if (newCell) st.KeyBlocks.Add(new KeyBlock { Label = by != null ? $"dig (taught by {by})" : "dig", X = p.X, Y = p.Y, Z = p.Z });
+                        foreach (var f in fluids) st.KeyBlocks.Add(new KeyBlock { Label = GenLayout.Label(f.Lava), X = f.Pos.X, Y = f.Pos.Y, Z = f.Pos.Z });
+                    });
+                    _lastLoad = DateTimeOffset.MinValue;
+                }
             }
         }
         catch (Exception) { /* memory busy: the in-process set still has it */ }
@@ -141,6 +154,33 @@ public sealed partial class DigCells
         var bad = new List<(WPos, string)>();
         foreach (var p in all)
             if (OffLayer(p, all) is { } why) bad.Add((p, why));
+        foreach (var (p, why) in bad)
+        {
+            if (retract != null) retract(p, "not a dig cell: " + why);
+            else Retract(p);
+        }
+        return bad;
+    }
+
+    /// <summary>
+    /// Drops every taught cell the world shows is no dig cell at all: the block there is lava or water (a punch at the gen's
+    /// own lava source "taught" 4,64,7, live 10-27 22:14) or a solid that never comes out of a gen (planks, glass...).
+    /// Cobble/stone/air with its lava or water missing stays (a gen being repaired; the yield guard deals with it).
+    /// <paramref name="blockAt"/> = (id, meta) or null while that chunk isn't loaded. Regen-confirmed cells always stay.
+    /// </summary>
+    public IReadOnlyList<(WPos Cell, string Why)> PurgeNonCells(Func<WPos, (int Id, int Meta)?> blockAt, Action<WPos, string>? retract = null)
+    {
+        var bad = new List<(WPos, string)>();
+        foreach (var p in Taught())
+        {
+            if (_confirmed?.Invoke(p) == true || blockAt(p) is not { } b) continue;
+            string? why = null;
+            if (MineClaw.Data.Blocks.IsLava(b.Id) && !(b.Id == MineClaw.Data.Blocks.FlowingLava && b.Meta != 0)) why = "it's the gen's lava";
+            else if (MineClaw.Data.Blocks.IsWater(b.Id)) why = "it's the gen's water";
+            else if (b.Id is not (0 or MineClaw.Data.Blocks.Cobblestone or MineClaw.Data.Blocks.Stone or MineClaw.Data.Blocks.FlowingLava))
+                why = $"it's {(MineClaw.Data.Blocks.Exists(b.Id) ? MineClaw.Data.Blocks.Get(b.Id).Name : "block " + b.Id)}, which no gen makes";
+            if (why != null) bad.Add((p, why));
+        }
         foreach (var (p, why) in bad)
         {
             if (retract != null) retract(p, "not a dig cell: " + why);

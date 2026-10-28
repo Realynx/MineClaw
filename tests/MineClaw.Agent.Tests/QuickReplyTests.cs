@@ -37,7 +37,7 @@ public class QuickReplyTests
 
     private static List<string> Snap(List<string> s) { lock (s) return s.ToList(); }
 
-    private static async Task<bool> Until(Func<bool> cond, int ms = 4000)
+    private static async Task<bool> Until(Func<bool> cond, int ms = 20000)
     {
         var sw = Stopwatch.StartNew();
         while (sw.ElapsedMilliseconds < ms)

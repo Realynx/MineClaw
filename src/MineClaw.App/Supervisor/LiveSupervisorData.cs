@@ -144,6 +144,26 @@ public sealed class LiveSupervisorData : ISupervisorData
 
     public IReadOnlyList<FeedEvent> Events(long since, int max) => _feed.Since(since, max);
 
+    /// <summary>The blueprint designer (build from a description); null = none (designs listed empty).</summary>
+    public Func<MineClaw.Bot.Blueprints.BlueprintService?> Blueprints { get; init; } = () => null;
+
+    public IReadOnlyList<object> Designs() =>
+        Blueprints()?.Store.List(30).Select(r => (object)new
+        {
+            id = r.Id, name = r.Name, status = r.Status, summary = r.Summary, requester = r.Requester, rev = r.Rev, cost_usd = Math.Round(r.CostUsd, 4),
+            picture = r.HasPicture, updated = r.Updated,
+        }).ToList() ?? [];
+
+    public ViewImage? DesignPicture(long id)
+    {
+        if (Blueprints() is not { } s || s.Store.Get(id) is not { } rec || s.Store.Picture(id) is not { } png) return null;
+        int w = 0, h = 0;
+        try { var d = MineClaw.Render.Png.Decode(png); (w, h) = (d.Width, d.Height); } catch (Exception) { }
+        return new ViewImage(png, w, h, (w * h + 749) / 750, rec.Summary, [rec.Eval], Note: rec.Critique.Length > 0 ? "look: " + rec.Critique : null);
+    }
+
+    public object? DesignBill(long id) => Blueprints() is { } s && s.Store.Get(id) is { } rec ? s.BillJson(rec) : null;
+
     public object Status(string? selected)
     {
         var bots = new List<object>();

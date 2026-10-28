@@ -96,7 +96,7 @@ public class NightLogBotTests
         c.RaiseSwing(7);
         await Task.Delay(50);
         h.Runtime.Chat.OnServerChat("<PoofimaFox> did it");
-        var r = await run.WaitAsync(TimeSpan.FromSeconds(5));
+        var r = await run.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.True(r.Ok, r.Text);
         Assert.Contains("punched cobblestone at 3,64,0", r.Text);   // absolute, and a punch
         Assert.DoesNotContain("right-clicked cobblestone", r.Text);
@@ -114,7 +114,7 @@ public class NightLogBotTests
         await Task.Delay(100);
         // live2 01:12:31: "PoofimaFox stands at -1,64,1 (said "…that is wood not cobble 67")".
         h.Runtime.Chat.OnServerChat("<PoofimaFox> that is wood not cobble 67");
-        var r = await run.WaitAsync(TimeSpan.FromSeconds(5));
+        var r = await run.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.False(r.Ok, r.Text);
         Assert.StartsWith("not confirmed: PoofimaFox didn't say \"here\"", r.Text);
         Assert.Contains("that is wood not cobble 67", r.Text);

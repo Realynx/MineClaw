@@ -708,7 +708,31 @@ public sealed partial class MinecraftClient
         var near = best is { } b
             ? $"nearest standable spot {Fmt(b)} is {bestD:0.#} away (reach {Options.Reach:0.#})" + (bestD <= Options.Reach ? " but no safe path/aim from it" : "")
             : "no standable spot within 8";
-        return $"can't get to a safe spot at the generator: {Fmt(cell)} is enclosed ({near}; {gotoMessage}); ask a player once where to stand";
+        return $"can't get to a safe spot at the generator: {Fmt(cell)} is enclosed ({EnclosureText(cell)}; {near}; {gotoMessage}); ask a player once where to stand";
+    }
+
+    /// <summary>
+    /// Exactly what boxes the cell in, side by side: "N water, S lava, E cobblestone wall, W void, above: planks roof" (the
+    /// cell's 4 neighbours at its level and the block over it). A side a player could stand beside is "open".
+    /// </summary>
+    public string EnclosureText(BlockPos cell)
+    {
+        string Name(int id) => id == 0 ? "air" : Blocks.Exists(id) ? Blocks.Get(id).Name : "block " + id;
+        string Side(int dx, int dz)
+        {
+            int x = cell.X + dx, z = cell.Z + dz;
+            int id = World.GetBlock(x, cell.Y, z);
+            if (Blocks.IsLava(id)) return "lava";
+            if (Blocks.IsWater(id)) return "water";
+            if (id != 0 && BlockShapes.HasCollision(World, x, cell.Y, z)) return Name(id) + " wall";
+            for (int y = cell.Y; y >= cell.Y - 3; y--)
+                if (StandFeet(x, y, z) is not null) return "open";
+            return Safety.IsDeadlyColumn(World, x, cell.Y, z, 3) ? "void" : "no floor";
+        }
+        var parts = new[] { ("N", 0, -1), ("S", 0, 1), ("E", 1, 0), ("W", -1, 0) }.Select(t => $"{t.Item1} {Side(t.Item2, t.Item3)}").ToList();
+        int up = World.GetBlock(cell.X, cell.Y + 1, cell.Z);
+        if (up != 0 && !Blocks.IsLava(up) && !Blocks.IsWater(up)) parts.Add($"above: {Name(up)}");
+        return string.Join(", ", parts);
     }
 
     /// <summary>The taught stand spot of the generator cell being harvested right now (stand, cell), or null.</summary>

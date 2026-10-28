@@ -66,6 +66,39 @@ public class FarmProcedureTests
     }
 
     [Fact]
+    public async Task Empty_farmland_in_the_field_is_planted_too_and_the_real_count_is_reported()
+    {
+        // Live 10-28, 420: "done, maybe 3 empty plots left"; main: "the field has more farmland than crops".
+        var g = LiquidTests.Island();
+        g.Set(3, 63, 4, Blocks.Water);
+        for (int x = 1; x <= 3; x++)
+        {
+            g.Set(x, 63, 2, Blocks.Farmland); g.Set(x, 64, 2, Blocks.Crops, 7); // ripe row
+            g.Set(x, 63, 3, Blocks.Farmland);                                   // the gaps nobody replanted
+        }
+        g.Give(Items.StoneHoe, 1);
+        var r = await g.Run("harvest_wheat");
+        Assert.True(r.Ok, r.Text);
+        for (int x = 1; x <= 3; x++) Assert.Equal(Blocks.Crops, g.World.GetBlock(x, 64, 3));
+        Assert.Contains("replanted 6", r.Text);
+        Assert.Contains("field: 6/6 farmland planted", r.Text);
+    }
+
+    [Fact]
+    public async Task Short_on_seeds_says_how_many_plots_stay_empty()
+    {
+        var g = LiquidTests.Island();
+        g.Set(3, 63, 4, Blocks.Water);
+        for (int x = 1; x <= 2; x++) { g.Set(x, 63, 2, Blocks.Farmland); g.Set(x, 64, 2, Blocks.Crops, 7); }
+        for (int x = 1; x <= 4; x++) g.Set(x, 63, 3, Blocks.Farmland);
+        g.Give(Items.StoneHoe, 1);
+        var r = await g.Run("harvest_wheat");
+        Assert.True(r.Ok, r.Text);
+        // 2 ripe crops drop 4 seeds: 2 replant their own cells, 2 go into the 4 gaps.
+        Assert.Contains("field: 4/6 planted, 2 empty: out of seeds (need 2 more)", r.Text);
+    }
+
+    [Fact]
     public async Task Without_any_hoe_it_still_plants_on_farmland()
     {
         var g = LiquidTests.Island();

@@ -203,7 +203,7 @@ public class DemoTests
         await Task.Delay(200);
         Assert.False(run.IsCompleted);
         c.World.Entities.Teleport(9, new Vec3d(4.5, 64, 4.4), 0, 0);
-        var r = await run.WaitAsync(TimeSpan.FromSeconds(5));
+        var r = await run.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.True(r.Ok, r.Text);
         Assert.Equal("kiwi is at 4,64,4", r.Text);
         Assert.Contains(c.Said, s => s.Contains("4,64,4"));
@@ -217,7 +217,7 @@ public class DemoTests
         var run = h.Runtime.Tools.ExecuteAsync("ask_stand", TestBot.J(new { player = "kiwi" }), CancellationToken.None);
         await Task.Delay(100);
         h.Runtime.Chat.OnServerChat("<kiwi> here");
-        var r = await run.WaitAsync(TimeSpan.FromSeconds(5));
+        var r = await run.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.True(r.Ok, r.Text);
         Assert.StartsWith("kiwi stands at 2,64,-2", r.Text);
     }

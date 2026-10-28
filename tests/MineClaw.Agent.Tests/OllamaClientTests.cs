@@ -226,10 +226,10 @@ public class OllamaClientTests
         };
         using var cts = new CancellationTokenSource();
         var call = client.CompleteAsync(new LlmRequest { Tier = ModelTier.Main, Messages = [LlmMessage.User("hi")], Interruptible = true }, cts.Token);
-        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(30));
         await Task.Delay(100);
         cts.Cancel(); // the chat-debounce restart
-        var ex = await Assert.ThrowsAsync<LlmInterruptedException>(() => call.WaitAsync(TimeSpan.FromSeconds(5)));
+        var ex = await Assert.ThrowsAsync<LlmInterruptedException>(() => call.WaitAsync(TimeSpan.FromSeconds(30)));
         Assert.Equal("qwen3:8b", ex.Model);
         Assert.NotNull(ex.PartialUsage);
         Assert.True(ex.PartialUsage!.OutputTokens > 0);

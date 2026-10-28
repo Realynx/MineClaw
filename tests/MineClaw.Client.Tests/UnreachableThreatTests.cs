@@ -179,3 +179,25 @@ public class UnreachableThreatTests
         Assert.Null(c.CreeperAvoidCells(new GoalBlock(10, 64, 1)));
     }
 }
+
+/// <summary>Item 3: an enclosed generator cell says exactly what boxes it in.</summary>
+public class EnclosedCellTextTests
+{
+    [Fact]
+    public void Enclosure_names_every_side_and_the_roof()
+    {
+        var c = new MinecraftClient(new ClientOptions { Username = "maid_chan" });
+        var w = c.World;
+        w.ApplyChunkRegion(-16, 0, -16, 32, 128, 32, new byte[32 * 128 * 32], null, null, null);
+        for (int x = -3; x <= 3; x++) for (int z = -3; z <= 3; z++) w.SetBlock(x, 63, z, Blocks.Stone, 0);
+        var cell = new BlockPos(0, 64, 0);
+        w.SetBlock(0, 64, 0, Blocks.Cobblestone, 0);
+        w.SetBlock(0, 64, -1, Blocks.Water, 0);   // N
+        w.SetBlock(0, 64, 1, Blocks.Lava, 0);     // S
+        w.SetBlock(1, 64, 0, Blocks.Planks, 0);   // E
+        w.SetBlock(1, 65, 0, Blocks.Planks, 0);
+        w.SetBlock(-1, 63, 0, Blocks.Air, 0);     // W: a hole down to the void
+        w.SetBlock(0, 65, 0, Blocks.Planks, 0);   // roof
+        Assert.Equal("N water, S lava, E planks wall, W void, above: planks", c.EnclosureText(cell));
+    }
+}

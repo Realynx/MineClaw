@@ -151,6 +151,16 @@ public sealed class SupervisorServer : IAsyncDisposable
                         return Image(img, r);
                     }
             }
+            // Designs (blueprints): the list, one design's bill/eval as JSON, its preview PNG (meta=1 = the bill).
+            if (path == "/api/blueprints") return Json(200, new { designs = _data.Designs() });
+            if (path.StartsWith("/api/blueprints/", StringComparison.Ordinal))
+                return long.TryParse(path["/api/blueprints/".Length..], out var bid) && _data.DesignBill(bid) is { } bill ? Json(200, bill) : Json(404, new { error = "no such design" });
+            if (path.StartsWith("/view/blueprint/", StringComparison.Ordinal))
+            {
+                if (!long.TryParse(path["/view/blueprint/".Length..], out var bid)) return Json(400, new { error = "design id?" });
+                if (Q(r, "meta") is "1" or "true") return _data.DesignBill(bid) is { } bill ? Json(200, bill) : Json(404, new { error = "no such design" });
+                return _data.DesignPicture(bid) is { } pic ? Image(pic, r) : Json(404, new { error = "no preview for that design" });
+            }
             if (path.StartsWith("/view/", StringComparison.Ordinal))
             {
                 var bot = Uri.UnescapeDataString(path["/view/".Length..]);

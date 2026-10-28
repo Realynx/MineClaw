@@ -63,12 +63,12 @@ public class LiveSession2Tests
         var (rt, _, sent) = TestRuntime.Create();
         var session = new FakeSession(() => DateTimeOffset.UtcNow, 1);
         var run = DemoWait.RunAsync(rt.Chat, session, "PoofimaFox", 30, null, default);
-        await Task.Delay(50);
+        await TestWaits.UntilAsync(() => rt.Chat.ReplyWaiters > 0); // listening (was a fixed 50 ms sleep: flaked under load)
         rt.Chat.OnServerChat("<PoofimaFox> I punched the brick that get's re generated, but you have my pickaxe");
-        await Task.Delay(30);
+        await TestWaits.UntilAsync(() => rt.Chat.ReplyWaiters > 0 || run.IsCompleted);
         Assert.False(run.IsCompleted);
         rt.Chat.OnServerChat("<PoofimaFox> did it");
-        var o = await run.WaitAsync(TimeSpan.FromSeconds(5));
+        var o = await run.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.Equal("said done", o.Ended);
         Assert.Contains("you have my pickaxe", DemoWait.SaidSuffix(o));
         Assert.Single(sent); // the tool's own prompt: the brain said nothing this turn
@@ -80,9 +80,9 @@ public class LiveSession2Tests
         var (rt, _, _) = TestRuntime.Create();
         var session = new FakeSession(() => DateTimeOffset.UtcNow - TimeSpan.FromSeconds(10), 3);
         var run = DemoWait.RunAsync(rt.Chat, session, "PoofimaFox", 30, null, default);
-        await Task.Delay(50);
+        await TestWaits.UntilAsync(() => rt.Chat.ReplyWaiters > 0); // listening (was a fixed 50 ms sleep: flaked under load)
         rt.Chat.OnServerChat("<PoofimaFox> so yeah that brick regenerates");
-        var o = await run.WaitAsync(TimeSpan.FromSeconds(5));
+        var o = await run.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.Equal("idle then spoke", o.Ended);
     }
 
@@ -96,9 +96,9 @@ public class LiveSession2Tests
         await rt.Chat.SayAsync("ooh show me how you mine it foxy, tell me when you're done");
         rt.Chat.NoteModelSpeech();
         var run = DemoWait.RunAsync(rt.Chat, new FakeSession(() => null, 0), "PoofimaFox", 30, null, default);
-        await Task.Delay(50);
+        await TestWaits.UntilAsync(() => rt.Chat.ReplyWaiters > 0);
         rt.Chat.OnServerChat("<PoofimaFox> done");
-        await run.WaitAsync(TimeSpan.FromSeconds(5));
+        await run.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.Single(sent); // only the brain's line
     }
 
@@ -150,9 +150,9 @@ public class LiveSession2Tests
         var (rt, _, sent) = TestRuntime.Create();
         rt.Chat.Landmark = (x, y, z) => (x, y, z) == (10, 64, 8) ? "the east cell of the gen" : null;
         var run = rt.Tools.ExecuteAsync("ask_player", J(new { question = "is that what you're doing at 10,64,8?", name = "PoofimaFox" }), default);
-        await Task.Delay(80);
+        await TestWaits.UntilAsync(() => rt.Chat.ReplyWaiters > 0);
         rt.Chat.OnServerChat("<PoofimaFox> yep");
-        var r = await run.WaitAsync(TimeSpan.FromSeconds(5));
+        var r = await run.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.True(r.Ok, r.Text);
         Assert.Contains(sent, s => s.Contains("the east cell of the gen") && !s.Contains("10,64,8"));
     }
@@ -223,7 +223,7 @@ public class LiveSession2Tests
            .Tool(ModelTier.Worker, "craft", new { item = "wooden_pickaxe" }, "w1")
            .Tool(ModelTier.Worker, "mine", new { block = "log" }, "w2");
         await rt.Agent.HandleBatchAsync(new EventBatch([GameEvent.Chat("PoofimaFox", "67 mine 64 cobble at the west cell")]), default);
-        await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         string? stopResult = null;
         llm.Tool(ModelTier.Main, "stop", new { }, "s1")

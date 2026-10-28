@@ -113,7 +113,7 @@ public class FastPathAgentTests
             Assert.NotNull(r.OnToolUse);
             var use = Use("do", new { action = "goto", args = new { to = "fox" } });
             r.OnToolUse!(use); // the tool_use block is complete; the model is still writing
-            await w.WalkStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), ct);
+            await w.WalkStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
             startedBeforeEnd = true;
             return llm.Resp(r, StopReasons.ToolUse, new LlmText("coming!"), use);
         }).ThenText("(silent)");

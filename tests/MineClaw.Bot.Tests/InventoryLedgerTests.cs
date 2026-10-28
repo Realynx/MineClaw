@@ -49,6 +49,34 @@ public class InventoryLedgerTests
     }
 
     [Fact]
+    public void A_deposit_inside_the_gen_loop_is_booked_as_deposited_into_that_chest_and_summarised_with_the_haul()
+    {
+        // Live 10-27: "-64 Cobblestone: harvest_generator -62/-63/-64" while the gen loop stored its haul in 14,64,-5.
+        var (l, c) = New((Cobble, 0, 0));
+        var t0 = c.Now;
+        string? action = "harvest";
+        l.CurrentAction = () => action;
+        l.CurrentContainer = () => "chest 14,64,-5";
+        using (l.Scope("harvest_generator"))
+        {
+            l.NotePickup(Cobble, 64);
+            l.Observe(Inv((Cobble, 0, 64)));
+            c.Advance(1);
+            l.Flush();
+            action = "deposit";
+            l.Observe(Inv((Cobble, 0, 0)));
+            action = null;
+        }
+        c.Advance(1);
+        l.Flush();
+        var e = l.History("cobble");
+        Assert.Contains(e, x => x.Delta == 64 && x.Cause == "picked up (harvest_generator)");
+        Assert.Contains(e, x => x.Delta == -64 && x.Cause == "deposited (chest 14,64,-5)");
+        Assert.DoesNotContain(e, x => x.Delta < 0 && x.Cause == "harvest_generator");
+        Assert.Equal("64 Cobblestone; stored 64 Cobblestone in chest 14,64,-5", l.GainsSince(t0));
+    }
+
+    [Fact]
     public void Ghost_stacks_removed_by_a_server_window_resync_are_a_correction_not_a_mystery()
     {
         var (l, c) = New((Slab, 3, 12), (Blocks.Log, 0, 11));

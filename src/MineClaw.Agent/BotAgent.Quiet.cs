@@ -44,6 +44,33 @@ public sealed partial class BotAgent
         return !waking.Any(IsPlayerFacing);
     }
 
+    /// <summary>
+    /// The batch's player-facing wakes are only dangers (a player's danger Activity, the bot's own low hp / void fall / death):
+    /// no chat, whisper, emote, join or notice from anyone.
+    /// </summary>
+    public static bool IsWarningBatch(EventBatch batch)
+    {
+        var facing = batch.Waking.Where(IsPlayerFacing).ToList();
+        return facing.Count > 0 && facing.All(e => e.Kind is EventKind.Activity or EventKind.LowHealth or EventKind.VoidFall or EventKind.Death);
+    }
+
+    /// <summary>
+    /// A danger turn's public part: its first line (the warning), once; everything after it is the turn's own narration.
+    /// <paramref name="alreadySaid"/> = the warning went out in an earlier round: nothing more is public.
+    /// </summary>
+    internal static (string Public, string Internal) WarningLine(string text, bool alreadySaid)
+    {
+        var lines = text.Replace("\r", "").Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+        if (alreadySaid || lines.Count == 0) return ("", text);
+        // One paragraph: the first sentence is the warning.
+        if (lines.Count == 1)
+        {
+            var parts = System.Text.RegularExpressions.Regex.Split(lines[0], @"(?<=[.!?~])\s+(?=[A-Z])");
+            return (parts[0].Trim(), string.Join(" ", parts.Skip(1)).Trim());
+        }
+        return (lines[0], string.Join("\n", lines.Skip(1)));
+    }
+
     /// <summary>An event a player is on the other end of: their chat/emote/join, a notice about them (a hand-over), their danger.</summary>
     public static bool IsPlayerFacing(GameEvent e) => e.Kind switch
     {

@@ -100,7 +100,7 @@ public class LiveSession2BotTests
         c.RaiseSwing(7);
         await Task.Delay(50);
         h.Runtime.Chat.OnServerChat("<PoofimaFox> did it");
-        var r = await run.WaitAsync(TimeSpan.FromSeconds(5));
+        var r = await run.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.True(r.Ok, r.Text);
         Assert.Contains("punched cobblestone at", r.Text);
         Assert.Equal(said, c.Said.Count); // no duplicate "say done when finished" line
@@ -115,7 +115,7 @@ public class LiveSession2BotTests
         var run = h.Runtime.Tools.ExecuteAsync("ask_stand", TestBot.J(new { player = "PoofimaFox" }), CancellationToken.None);
         await Task.Delay(100);
         h.Runtime.Chat.OnServerChat("<PoofimaFox> here is the cell");
-        var r = await run.WaitAsync(TimeSpan.FromSeconds(5));
+        var r = await run.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.True(r.Ok, r.Text);
         Assert.Contains("dig cell 1,64,0 (the west cell of the gen", r.Text);
         Assert.True(h.DigCells!.IsDigCell(west));

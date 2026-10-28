@@ -182,6 +182,9 @@ public sealed partial class MinecraftClient
 
     private BlockPos? _lastContainerPos;
 
+    /// <summary>The container last opened by an action (the inventory ledger names it: "deposited (chest 14,64,-5)").</summary>
+    public BlockPos? LastContainerPos => _lastContainerPos;
+
     /// <summary>The click awaiting its 0x6A (null = none). Read by the packet thread to spot slot updates that race it.</summary>
     private volatile ClickInFlight? _clickInFlight;
     private readonly ConcurrentDictionary<(int Window, short Action), bool> _txRaced = new();
