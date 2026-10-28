@@ -74,8 +74,8 @@ public class InProcBodiesTests
         Assert.Equal("no clone is online", (await bot.Run(InProcBodies.BodiesTool, new { op = "despawn", name = "all" })).Text);
         Assert.Equal("error: 67 isn't in game (bodies op=spawn name=67)", (await bot.Run(InProcBodies.BodiesTool, new { op = "focus", name = "67" })).Text);
         Assert.Equal("ok: focus is main", (await bot.Run(InProcBodies.BodiesTool, new { op = "focus" })).Text);
-        // Inline Lua isn't a bodies field: Lua is written with the script tool, where only the Opus brain may author.
-        var worker = await bot.RunAs(Agent.Llm.ModelTier.Worker, InProcBodies.BodiesTool, new { op = "spawn", name = "67", code = "say'hi'" });
+        // Inline code isn't a bodies field: scripts come from the script tool, where only the Opus brain may author.
+        var worker = await bot.RunAs(Agent.Llm.ModelTier.Worker, InProcBodies.BodiesTool, new { op = "spawn", name = "67", code = "say('hi')" });
         Assert.False(worker.Ok);
         Assert.DoesNotContain("\"code\"", bot.Runtime.Tools.Definitions(Agent.Llm.ModelTier.Main).Single(d => d.Name == InProcBodies.BodiesTool).InputSchema.GetRawText());
 
