@@ -120,6 +120,7 @@ public sealed partial class Pathfinder
             if (n.Closed || g > n.G) continue;
             n.Closed = true;
             explored++;
+            if (_collect is { } col && !col.ContainsKey(n.Pos)) col[n.Pos] = n.G;
 
             if (goal.IsReached(n.X, n.Y, n.Z) && !InPulseSolid(n))
                 return Build(PathStatus.Found, n, explored, sw.Elapsed, null);

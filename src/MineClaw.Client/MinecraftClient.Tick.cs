@@ -221,6 +221,8 @@ public sealed partial class MinecraftClient
 
     private MoveInput IdleInput(PhysicsState phys)
     {
+        // Riding a planned water column (blueprint building down): hold the depth while placing/digging from it.
+        if (WaterHoldInput(phys) is { } hover) return hover;
         bool sneak = _idleSneak || _crouchHold;
         if (!sneak && Options.SneakAtEdgesWhenIdle && phys.OnGround && !phys.Frozen)
         {
@@ -286,7 +288,7 @@ public sealed partial class MinecraftClient
         if (phys.OnGround || phys.InWater || phys.OnLadder) _voidAlerted = false;
         // A committed gap jump over the void whose re-simulated landing still holds is not a fall.
         else if ((_lastGuardActions & GuardActions.ParkourExempt) != 0) { }
-        else if (!_voidAlerted && !_voidEpisode && phys.Velocity.Y < -0.3 && World.IsPlayerOverVoid(phys.Position))
+        else if (!_voidAlerted && !_voidEpisode && phys.Velocity.Y < -0.3 && World.IsPlayerOverVoid(phys.Position) && !InWaterHold(phys))
         {
             _voidAlerted = true;
             var msg = $"falling into the void at {Fmt(phys.Position)}";

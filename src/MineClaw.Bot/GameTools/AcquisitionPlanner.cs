@@ -586,7 +586,7 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
         bool many = ask.Length > 0 && char.IsDigit(ask[0]) || ask == "food";
         if (!many && !ask.StartsWith("a ", StringComparison.Ordinal) && !ask.StartsWith("an ", StringComparison.Ordinal))
             ask = ("aeiou".Contains(ask[0]) ? "an " : "a ") + ask;
-        var q = $"I need {ask} and can't get {(many ? "it" : "one")}{why}. Can someone toss me {(many ? "some" : "one")}? (no answer in {L.AskTimeout.TotalSeconds:0}s: I'll stop)";
+        var q = $"I need {ask} and can't get {(ask == "food" ? "it" : many ? "them" : "one")}{why}. Can someone toss me {(many ? "some" : "one")}? (no answer in {L.AskTimeout.TotalSeconds:0}s: I'll stop)";
         string? answer;
         try { answer = await f(q, L.AskTimeout, ct).ConfigureAwait(false); }
         catch (Exception e) when (e is not OperationCanceledException) { answer = null; }

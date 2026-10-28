@@ -128,7 +128,7 @@ public class BlueprintTests
     [InlineData("size 1x1x1\npalette S=wooden_stairs:5\nlayer 0\nS", "stairs are 0..3")]
     [InlineData("size 1x2x1\npalette D=door C=cobblestone\nlayer 0\nD\nlayer 1\nC", "upper half free")]
     [InlineData("size 1x1x1\npalette W=water\nlayer 0\nW", "liquids")]
-    [InlineData("palette C=cobblestone\nlayer 0\nC", "missing 'size")]
+    [InlineData("palette C=cobblestone\nbox C 0,0,0 1,1,1", "missing 'size")] // no size and no layers to infer it from
     public void Invalid_blueprints_are_rejected_with_the_reason(string dsl, string expected)
     {
         var (_, issues) = BlueprintNormalizer.FromText(dsl, new BlockPos(0, 64, 0));

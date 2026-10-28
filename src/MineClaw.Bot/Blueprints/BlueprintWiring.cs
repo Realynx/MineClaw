@@ -45,8 +45,13 @@ public sealed class BlueprintWiring
         var store = new BlueprintStore(rt.Db, clock);
         BlueprintWiring? wiring = null;
         var body = new GameBuildBody(() => toolClient);
+        var gates = new Building.BuildGates();
+        Func<BlockPos, string?> landmark = p => Agent.Memory.Landmarks.Near(rt.Memory, rt.Observations, p.X + 0.5, p.Y, p.Z + 0.5);
+        Func<BlockPos, Building.NamedPlace?> places = p => NearestPlace(rt, p);
         var service = new BlueprintService(o, store, new BlueprintPreview(), clock, log)
         {
+            Gates = gates,
+            Places = places,
             Telemetry = new DesignTelemetry(persist ? rt.Options.DataDirectory : null, log, clock),
             Site = () => Site(client, protection, rt, acquisition, genCells),
             Roles = () => wiring?.Vision?.Roles.Map,
@@ -55,8 +60,14 @@ public sealed class BlueprintWiring
             WorldTime = () => client.World.Time,
             Dimension = () => client.World.Dimension,
             Crew = () => wiring!.Crew,
-            Executor = new ConstructionExecutor(o, store, claims is NullClaimBoard ? null : claims, clock, log),
-            ResolveSite = (at, who) => ResolveSite(client, wiring?.Vision?.Hub, protection, at, who, clock),
+            Executor = new ConstructionExecutor(o, store, claims is NullClaimBoard ? null : claims, clock, log)
+            {
+                Gates = gates,
+                Ask = line => rt.Chat.SayAsync(line),
+                GateQuestion = (bp, v) => Building.BuildGate.Question(bp, v, wiring?.Service.Store.Get(bp.BlueprintId)?.Name ?? v.Blueprint.Name,
+                    landmark, places, BlueprintService.PlanUrl(bp.BlueprintId)),
+            },
+            ResolveSite = (at, who) => ResolveSite(client, wiring?.Vision?.Hub, protection, at, who, clock, rt),
             Trusted = () => rt.Options.Self.TrustedPlayers,
             Say = line => rt.Chat.SayAsync(line),
             Notice = line => rt.Events.Post(GameEvent.Notice(line, EventPriority.Background)),
@@ -69,6 +80,7 @@ public sealed class BlueprintWiring
         service.Critic = new PerceptionCritic(() => wiring?.Vision?.Perception, rt.Usage);
         wiring = new BlueprintWiring { Service = service, Crew = new SingleBodyCrew(body) };
         service.StartBuild = (id, part) => wiring.StartBuild(rt, id, part);
+        service.StartUndo = id => wiring.StartBuild(rt, id, null, undo: true);
         wiring.RegisterTools(rt);
         wiring.AttachChat(rt, log);
         if (persist && o.AutoResume)
@@ -99,10 +111,15 @@ public sealed class BlueprintWiring
         // Hidden (no prompt bytes): the activity behind a build, and the Lua build{}/blueprint() functions.
         rt.Tools.Register(BuildTool, "Build part of an accepted blueprint: bp (id/name), part (1-based) of N, layer (0-based).",
             ToolSchema.Create().Str("bp").Int("part", required: false).Int("of", required: false).Int("layer", required: false)
-                .Bool("by_layer", required: false).Build(),
+                .Bool("by_layer", required: false).Bool("undo", required: false).Build(),
             async (input, ct) =>
             {
                 var bp = Id(input, "bp") ?? Id(input, "id") ?? "";
+                if (input.Bool("undo") == true)
+                {
+                    var (uok, utext) = await Service.UndoAsync(bp, ct).ConfigureAwait(false);
+                    return uok ? ToolResult.Success(utext) : ToolResult.Error(utext);
+                }
                 var (ok, text) = await Service.BuildAsync(bp, input.Int("part"), input.Int("of"), input.Int("layer"), ct, input.Bool("by_layer") == true).ConfigureAwait(false);
                 return ok ? ToolResult.Success(text) : ToolResult.Error(text);
             }, longRunning: true, tiers: ToolTiers.None, maxResultChars: 600);
@@ -178,10 +195,11 @@ public sealed class BlueprintWiring
     }
 
     /// <summary>Runs the build as the body's job (an activity: stop cancels it, its end wakes the brain with [task ok/failed]).</summary>
-    private string? StartBuild(AgentRuntime rt, long id, int? part)
+    private string? StartBuild(AgentRuntime rt, long id, int? part, bool undo = false)
     {
         if (!rt.Tools.TryGet(BuildTool, out var tool)) return "build tool missing";
-        var input = JsonSerializer.SerializeToElement(part is { } p ? new { bp = id.ToString(System.Globalization.CultureInfo.InvariantCulture), part = p } : (object)new { bp = id.ToString(System.Globalization.CultureInfo.InvariantCulture) });
+        var bpId = id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var input = JsonSerializer.SerializeToElement(undo ? new { bp = bpId, undo = true } : part is { } p ? new { bp = bpId, part = p } : (object)new { bp = bpId });
         // The body in scope builds (a review line has none: the main body), never a captured rt.Activities.
         var activities = rt.Agent.ActivitiesFor(Bodies.BodyScope.Current?.Name);
         _ = activities.RunAsync([(tool, input)], TimeSpan.Zero, activities.Shutdown);
@@ -250,9 +268,31 @@ public sealed class BlueprintWiring
         };
     }
 
-    private static (SitePick?, string?) ResolveSite(IGameClient client, VisionHub? hub, Protection protection, string? at, string? who, TimeProvider clock)
+    private static (SitePick?, string?) ResolveSite(IGameClient client, VisionHub? hub, Protection protection, string? at, string? who, TimeProvider clock,
+        AgentRuntime? rt = null)
     {
         var w = client.World;
+        var requester = who != null ? w.Entities.FindPlayer(who) : null;
+        // What the player referenced, never the bot's own spot or a nearby landmark by default (live 10-28: "wrong spot").
+        bool pointedNow = hub?.LastPoint is { } lp && (who == null || lp.Player.Equals(who, StringComparison.OrdinalIgnoreCase))
+                          && clock.GetUtcNow() - lp.At < TimeSpan.FromMinutes(10);
+        if (Building.SiteAnchor.IsHere(at) || string.IsNullOrWhiteSpace(at) && !pointedNow)
+        {
+            if (requester == null) return (null, $"where should it go? I can't see {who ?? "you"} (stand there and say 'here', point at a block, or name a place)");
+            var feet = requester.Position.ToBlockPos();
+            var facing = Building.SiteAnchor.Facing(requester.Yaw);
+            return (new SitePick(BlueprintService.Ground(w.PlanningView, feet.Down()), $"where {who} is standing, facing {facing.Name()}", null, Inferred: true), null);
+        }
+        var near = requester?.Position.ToBlockPos() ?? w.Player.Position.ToBlockPos();
+        if (Building.SiteAnchor.IsRecentBuild(at) && Building.SiteAnchor.RecentBuild(w.Placed.All(), w.Dimension, near, clock.GetUtcNow(), TimeSpan.FromHours(2)) is { } floor)
+            return (new SitePick(Building.SiteAnchor.Ground(floor), $"on the {floor.Name}", floor), null);
+        if (rt != null && Building.SiteAnchor.OnWhat(at) is { } what && rt.Memory.GetStructure(what) is { Min: { } mn } st)
+        {
+            var mx = st.Max ?? mn;
+            var ext = new Building.SiteExtent(new BlockPos(Math.Min(mn.X, mx.X), Math.Max(mn.Y, mx.Y), Math.Min(mn.Z, mx.Z)),
+                new BlockPos(Math.Max(mn.X, mx.X), Math.Max(mn.Y, mx.Y), Math.Max(mn.Z, mx.Z)), st.Name);
+            return (new SitePick(Building.SiteAnchor.Ground(ext), $"on the {st.Name}", ext), null);
+        }
         if (at is { Length: > 0 } a)
         {
             if (hub != null)
@@ -262,15 +302,12 @@ public sealed class BlueprintWiring
                 return (new SitePick(BlueprintService.Ground(w.PlanningView, player != null ? focus.Down() : focus), $"at {a}"), null);
             }
             if (Locations.ParseCoords(a) is { } p) return (new SitePick(BlueprintService.Ground(w.PlanningView, p), $"at {a}"), null);
-            if (a is "here" or "me") return (new SitePick(w.Player.Position.ToBlockPos().Down(), "where I stand"), null);
             return (null, $"unknown site '{a}' (x,y,z, pointed, a player or a saved place)");
         }
         // Pointed recently by the requester: build there.
         if (hub?.LastPoint is { } g && (who == null || g.Player.Equals(who, StringComparison.OrdinalIgnoreCase)) && clock.GetUtcNow() - g.At < TimeSpan.FromMinutes(10))
-            return (new SitePick(BlueprintService.Ground(w.PlanningView, g.Pos), $"where {g.Player} pointed"), null);
-        var centre = who != null && w.Entities.FindPlayer(who) is { } e ? e.Position.ToBlockPos() : w.Player.Position.ToBlockPos();
-        var auto = BlueprintService.AutoSite(w.PlanningView, centre, protection.IsProtected);
-        return auto is { } s ? (new SitePick(s, who != null ? $"a free spot near {who}" : "a free spot near me"), null) : (null, "no free flat spot nearby: say where (at=x,y,z or point at it)");
+            return (new SitePick(BlueprintService.Ground(w.PlanningView, g.Pos), $"where {g.Player} pointed", null, Inferred: true), null);
+        return (null, "where should it go? (say 'here' where you stand, point at a block, or name a place)");
     }
 
     /// <summary>
@@ -278,6 +315,21 @@ public sealed class BlueprintWiring
     /// let any bot take them back) and are remembered as "&lt;name&gt;" (protection: "part of the hut build"). Scaffolding was removed
     /// and anything left of it stays self-placed.
     /// </summary>
+    /// <summary>The nearest remembered waypoint or structure (within 24 blocks) to a cell, for relative wording.</summary>
+    private static Building.NamedPlace? NearestPlace(AgentRuntime rt, BlockPos p)
+    {
+        try
+        {
+            int dim = rt.Memory.CurrentDimension;
+            var (wps, sts) = rt.Memory.Read(d => (d.Waypoints.Where(x => x.Dimension == dim).ToList(), d.Structures.Where(x => x.Dimension == dim && x.Min != null).ToList()));
+            var all = wps.Select(x => (x.Name, At: new BlockPos(x.X, x.Y, x.Z)))
+                .Concat(sts.Select(x => (x.Name, At: new BlockPos((x.Min!.X + (x.Max ?? x.Min).X) / 2, x.Min.Y, (x.Min.Z + (x.Max ?? x.Min).Z) / 2))));
+            var best = all.Select(x => (x.Name, x.At, D: x.At.DistanceSquaredTo(p))).Where(x => x.D <= 24 * 24).OrderBy(x => x.D).FirstOrDefault();
+            return best.Name != null ? new Building.NamedPlace(best.Name, best.At) : null;
+        }
+        catch (Exception) { return null; }
+    }
+
     private static void Record(AgentRuntime rt, IGameClient client, BlueprintRecord rec, VoxelPlan plan)
     {
         var w = client.World;

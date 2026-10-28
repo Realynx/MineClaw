@@ -105,6 +105,23 @@ public sealed class LlmRequest
     /// final message as before. Null = don't stream for this.
     /// </summary>
     public Action<string>? OnTextDelta { get; init; }
+    /// <summary>
+    /// Running-cost cap of this call, USD (authoring). The client streams the call and aborts it with
+    /// <see cref="LlmCostCapException"/> once <see cref="CostOf"/>(usage so far) passes it. Null = no per-call cap.
+    /// </summary>
+    public decimal? MaxUsd { get; init; }
+    /// <summary>Prices usage for <see cref="MaxUsd"/> (the budget's price table). Null = no running-cost check.</summary>
+    public Func<LlmUsage, decimal>? CostOf { get; init; }
+}
+
+/// <summary>A streamed call aborted by its <see cref="LlmRequest.MaxUsd"/>: <see cref="PartialUsage"/> must still be booked.</summary>
+public sealed class LlmCostCapException(LlmUsage partialUsage, string model, decimal usd, decimal cap)
+    : Exception($"model call aborted at ${usd:0.00} (cap ${cap:0.00})")
+{
+    public LlmUsage PartialUsage { get; } = partialUsage;
+    public string Model { get; } = model;
+    public decimal Usd { get; } = usd;
+    public decimal Cap { get; } = cap;
 }
 
 /// <summary>

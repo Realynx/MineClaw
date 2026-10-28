@@ -8,7 +8,10 @@ using Microsoft.Extensions.Logging;
 namespace MineClaw.Bot.Blueprints;
 
 /// <summary>A resolved build site: the ground block the build stands on, and how it was found.</summary>
-public sealed record SitePick(BlockPos Ground, string How);
+/// <summary>A resolved build site: the ground block the build stands on, how the player referenced it ("on the 8×8 floor at the
+/// end of the bridge", "where Fox is standing"), the floor/structure extent it snaps to, and whether the direction was inferred
+/// (the player's facing or pointing: the confirmation gate always applies then).</summary>
+public sealed record SitePick(BlockPos Ground, string How, Building.SiteExtent? Extent = null, bool Inferred = false);
 
 /// <summary>
 /// Build from a description, end to end (ARCHITECTURE.md "Blueprints"): the design loop in the background, the candidate saved
@@ -23,6 +26,7 @@ public sealed class BlueprintService
     private readonly ILogger? _log;
     private readonly object _lock = new();
     private readonly Dictionary<long, CancellationTokenSource> _running = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<long, SitePick> _anchors = new();
 
     public BlueprintService(BlueprintOptions o, BlueprintStore store, BlueprintPreview preview, TimeProvider? time = null, ILogger? log = null)
     {
@@ -49,6 +53,15 @@ public sealed class BlueprintService
     public Func<int> Dimension { get; init; } = () => 0;
     public required Func<IBuildCrew> Crew { get; init; }
     public ConstructionExecutor Executor { get; init; } = new(new BlueprintOptions());
+    /// <summary>Builds waiting at their confirmation gate (the executor waits here; chat answers arrive here).</summary>
+    public Building.BuildGates Gates { get; init; } = new();
+    /// <summary>The nearest named place (waypoint/structure) to a cell: the gate's relative wording.</summary>
+    public Func<BlockPos, Building.NamedPlace?> Places { get; init; } = _ => null;
+    /// <summary>Runs an undo as the body's job: (blueprint id) → refusal or null.</summary>
+    public Func<long, string?> StartUndo { get; set; } = _ => "no undo runner";
+    public Building.BuildPlanStore? Plans => Executor.Plans;
+    /// <summary>The supervisor's plan view for a design.</summary>
+    public static string PlanUrl(long id) => $"/view/buildplan/{id}";
     /// <summary>(at, requester) → site; null at = pointed / auto-pick near the requester.</summary>
     public required Func<string?, string?, (SitePick? Site, string? Error)> ResolveSite { get; init; }
     public Func<IReadOnlyList<string>> Trusted { get; init; } = () => [];
@@ -80,9 +93,11 @@ public sealed class BlueprintService
         var rec = Store.Insert(new BlueprintRecord
         {
             Name = ShortName(what), Description = what.Trim(), Requester = requester, Bot = Crew().Bodies.FirstOrDefault()?.Name ?? "",
-            Status = DesignStatus.Designing, Dim = Dimension(), Site = site.Ground,
+            Status = DesignStatus.Designing, Dim = Dimension(), Site = site.Ground, Anchor = site.How,
         });
-        var req = new DesignRequest(rec.Description, site.Ground, SiteText(site), Constraints(site.Ground));
+        _anchors[rec.Id] = site;
+        Store.Update(rec);
+        var req = new DesignRequest(rec.Description, site.Ground, SiteText(site), Constraints(site.Ground)) { Extent = site.Extent };
         LastRun = Run(rec, req);
         return $"designing #{rec.Id} \"{rec.Name}\" ({site.How}): drafting, checking and previewing in the background; the summary goes to chat";
     }
@@ -97,8 +112,8 @@ public sealed class BlueprintService
         if (rec.Status is DesignStatus.Designing) return $"#{rec.Id} is still being designed: I'll apply that after";
         rec.Status = DesignStatus.Designing;
         Store.Update(rec);
-        var site = new SitePick(rec.Site, "same site");
-        var req = new DesignRequest(rec.Description, rec.Site, SiteText(site), Constraints(rec.Site)) { PriorDsl = rec.Dsl, Change = change };
+        var site = _anchors.TryGetValue(rec.Id, out var known) ? known : new SitePick(rec.Site, rec.Anchor.Length > 0 ? rec.Anchor : "same site");
+        var req = new DesignRequest(rec.Description, rec.Site, SiteText(site), Constraints(rec.Site)) { PriorDsl = rec.Dsl, Change = change, Extent = site.Extent };
         LastRun = Run(rec, req, change);
         return $"revising #{rec.Id} \"{rec.Name}\": {Trim(change, 60)}";
     }
@@ -130,7 +145,8 @@ public sealed class BlueprintService
         var loop = new DesignLoop(Author!, _o.Critique ? Critic : null, Preview, _o)
         {
             Site = Site, Roles = Roles, Light = Light, Atlas = Atlas, Time = WorldTime,
-            Evaluated = (v, _) => _log?.LogInformation("design #{Id} v{N}: {Eval}", rec.Id, v.N, v.EvalText),
+            Evaluated = (v, _) => _log?.LogInformation("design #{Id} v{N}: {Eval}{Head}", rec.Id, v.N, v.EvalText,
+                v.Plan == null ? " | reply starts: " + Trim(string.Join(" / ", v.Dsl.Replace("\r", "").Split('\n').Take(3)), 120) : ""),
         };
         var outcome = await loop.RunAsync(req, ct).ConfigureAwait(false);
         rec.CostUsd += outcome.Usd;
@@ -165,7 +181,7 @@ public sealed class BlueprintService
     /// <summary>"small cobble hut 5×5×4 east of the gen, door south, 2 windows: 86 cobblestone, 12 planks".</summary>
     public string Summary(BlueprintRecord rec, VoxelPlan plan, DesignEvaluation e)
     {
-        var parts = new List<string> { $"{rec.Name} {plan.Blueprint.SizeText}" + (Landmark(rec.Site) is { Length: > 0 } lm ? " " + lm : "") };
+        var parts = new List<string> { $"{rec.Name} {plan.Blueprint.SizeText} {AnchorText(rec)}".TrimEnd() };
         if (e.DoorSides.Count > 0) parts.Add("door " + string.Join("/", e.DoorSides.Distinct().Select(d => d.Name())));
         int windows = Windows(plan);
         if (windows > 0) parts.Add($"{windows} window{(windows > 1 ? "s" : "")}");
@@ -173,7 +189,21 @@ public sealed class BlueprintService
         var bill = string.Join(", ", e.Bill.OrderByDescending(b => b.Need).Take(3).Select(b => $"{b.Need} {b.Name}"));
         var shortfall = e.Bill.Where(b => b.Missing > 0).ToList();
         var tail = shortfall.Count == 0 ? " (all on hand)" : $" (short {string.Join(", ", shortfall.Take(2).Select(b => $"{b.Missing} {b.Name}"))}, I'll gather them)";
-        return string.Join(", ", parts) + ": " + bill + tail;
+        var text = string.Join(", ", parts) + ": " + bill + tail;
+        if (_anchors.TryGetValue(rec.Id, out var site) && site.Extent is { } ext
+            && Building.SiteAnchor.Mismatch(plan.Blueprint.Footprint.Wx, plan.Blueprint.Footprint.Dz, ext) is { } mismatch)
+            text += $"; {mismatch}: shrink it to fit, or build past the edges?";
+        return text;
+    }
+
+    /// <summary>Where it goes, as the player put it ("on the 8×8 floor at the end of the bridge"), else by landmark; never coordinates.</summary>
+    public string AnchorText(BlueprintRecord rec)
+    {
+        var a = rec.Anchor;
+        bool relational = a.StartsWith("on ", StringComparison.Ordinal) || a.StartsWith("where ", StringComparison.Ordinal)
+                          || a.StartsWith("around ", StringComparison.Ordinal) || a.StartsWith("next to ", StringComparison.Ordinal);
+        if (relational) return a;
+        return Landmark(rec.Site) is { Length: > 0 } lm ? lm : "";
     }
 
     /// <summary>Window count = connected groups of glass/pane cells.</summary>
@@ -216,8 +246,9 @@ public sealed class BlueprintService
         rec.Status = DesignStatus.Accepted;
         rec.AcceptedBy = by;
         Store.Update(rec);
+        var plan = PlanSummary(rec);
         var refusal = StartBuild(rec.Id, null);
-        return refusal == null ? $"building the {rec.Name}" : $"accepted the {rec.Name}, but can't start: {refusal}";
+        return refusal == null ? $"building the {rec.Name}" + (plan != null ? $": {plan}" : "") : $"accepted the {rec.Name}, but can't start: {refusal}";
     }
 
     /// <summary>"Build another one like the hut" (a trusted player): a copy of a saved design at a new site, accepted by them.</summary>
@@ -265,6 +296,103 @@ public sealed class BlueprintService
         return $"cancelled #{rec.Id} \"{rec.Name}\"";
     }
 
+    // ------------------------------------------------------------------ build plan, gate, undo
+
+    /// <summary>
+    /// Slices the design for the first body before building (the plan is saved; the build resumes it): "47 placements, 6
+    /// scaffold, 2 water descents, needs: 86 cobblestone, 1 water bucket; est. 6 min"; infeasible blocks are named here, before
+    /// anything is placed; the first few blocks are then checked with the player (preview: the supervisor's plan view).
+    /// </summary>
+    public string? PlanSummary(BlueprintRecord rec)
+    {
+        try
+        {
+            if (Crew().Bodies.FirstOrDefault() is not { } body || PlanOf(rec, out _) is not { } plan) return null;
+            var bp = Executor.PlanFor(rec.Id, plan, BuildPart.Whole(plan, rec.Dim), body);
+            var gate = bp.Gate.State == Building.GateState.Pending && bp.Steps.Any(s => s.Gate)
+                ? $"; I'll check the first {bp.Steps.Count(s => s.Gate)} blocks with you (plan {PlanUrl(rec.Id)})" : "";
+            return bp.Summary() + gate;
+        }
+        catch (Exception ex)
+        {
+            _log?.LogWarning(ex, "planning #{Id} failed", rec.Id);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// A chat line at a build's confirmation gate (zero tokens): only a trusted player's answer counts; yes/"keep going"
+    /// continues, "wrong way"/"turn it"/"flip it"/"move 2 east" re-plans, "undo" takes it down, "no"/"wait" keeps it paused.
+    /// Delivered to the waiting build, or (after a restart) recorded in the plan and the build started again. Null = not
+    /// a gate answer (the line goes on to the brain).
+    /// </summary>
+    public string? GateAnswer(string player, string text)
+    {
+        if (Plans is not { } plans) return null;
+        var waiting = plans.AtGate();
+        if (waiting.Count == 0 || !IsTrusted(player)) return null;
+        var bp = waiting[0];
+        var anchor = bp.Gate.Blocks.FirstOrDefault();
+        char axis = 'x';
+        if (Store.Get(bp.BlueprintId) is { } rec0 && PlanOf(rec0, out _) is { } plan0) axis = plan0.Max.X - plan0.Min.X >= plan0.Max.Z - plan0.Min.Z ? 'x' : 'z';
+        if (Building.BuildGate.Parse(text, player, anchor, axis) is not { } reply) return null;
+        if (Store.Get(bp.BlueprintId) is not { } rec) return null;
+        if (Gates.Answer(bp.BlueprintId, reply)) return $"gate #{rec.Id}: {player} → {reply.Verdict}";
+        // Nobody waits (restart): record it in the plan and start the build again (it applies it first).
+        switch (reply.Verdict)
+        {
+            case Building.GateVerdict.Approve:
+                bp.Gate.State = Building.GateState.Approved;
+                bp.Gate.ApprovedBy = player;
+                break;
+            case Building.GateVerdict.Correct:
+                bp.Gate.Correction = bp.Gate.Correction is { } c0 ? c0.Then(reply.Correction!) : reply.Correction;
+                break;
+            case Building.GateVerdict.Undo:
+                return StartUndo(rec.Id) is { } no ? $"gate #{rec.Id}: undo refused ({no})" : $"gate #{rec.Id}: {player} → undo";
+            default:
+                return $"gate #{rec.Id}: {player} → still paused";
+        }
+        plans.Save(bp);
+        var refusal = StartBuild(rec.Id, null);
+        return $"gate #{rec.Id}: {player} → {reply.Verdict}" + (refusal != null ? $" (can't start: {refusal})" : "");
+    }
+
+    /// <summary>"undo" / "undo the hut": the newest build with placed blocks, or the named one.</summary>
+    public BlueprintRecord? UndoTarget(string text)
+    {
+        var t = text.Trim().TrimEnd('.', '!');
+        var name = t.StartsWith("undo ", StringComparison.OrdinalIgnoreCase) ? t[5..].Trim() : "";
+        foreach (var lead in new[] { "the ", "that ", "it", "that", "everything" }) if (name.StartsWith(lead, StringComparison.OrdinalIgnoreCase)) name = name[lead.Length..].Trim();
+        if (name.Length > 0 && Store.Find(name) is { } named) return named;
+        if (Plans is not { } plans) return null;
+        return Store.List(10).FirstOrDefault(r => plans.ForBlueprint(r.Id).Any(p => p.Placed.Count > 0 || p.ScaffoldUp.Count > 0));
+    }
+
+    /// <summary>Takes down everything a build placed (every part's ledger, scaffolding included), top first.</summary>
+    public async Task<(bool Ok, string Text)> UndoAsync(string idOrName, CancellationToken ct)
+    {
+        if (Store.Find(idOrName) is not { } rec) return (false, $"no design '{idOrName}'");
+        if (Plans is not { } plans) return (false, "no build plans stored");
+        if (Crew().Bodies.FirstOrDefault() is not { } body) return (false, "no body to undo with");
+        int n = 0;
+        foreach (var bp in plans.ForBlueprint(rec.Id))
+        {
+            n += await ConstructionExecutor.UndoPlacedAsync(body, bp, body.World, ct).ConfigureAwait(false);
+            bp.State = "undone";
+            bp.Gate.State = Building.GateState.Pending;
+            plans.Save(bp);
+        }
+        plans.Delete(rec.Id);
+        rec.Status = DesignStatus.Accepted; // can be built again
+        Store.Update(rec);
+        return (true, $"undid the {rec.Name}: took down {n} block{(n == 1 ? "" : "s")}");
+    }
+
+    /// <summary>The design as built: the gate corrections (turn/mirror/shift) applied.</summary>
+    public VoxelPlan AsBuilt(BlueprintRecord rec, VoxelPlan design) =>
+        Plans?.Get(rec.Id, 0) is { Transform: { IsNone: false } t } ? Building.PlanTransform.Apply(design, t) : design;
+
     // ------------------------------------------------------------------ construction
 
     /// <summary>The plan of a saved design at its origin.</summary>
@@ -310,14 +438,15 @@ public sealed class BlueprintService
         }
         var reports = await Task.WhenAll(work.Select(w => Executor.RunAsync(rec.Id, plan, w.Part, w.Body, ct, layer))).ConfigureAwait(false);
         var text = string.Join(" | ", reports.Select((r, i) => r.Text(work[i].Part.Label)));
-        var all = plan.Blocks.Values.Where(b => b.Pos.Y - plan.Origin.Y == layer || layer == null).ToList();
+        var built = AsBuilt(rec, plan);
+        var all = built.Blocks.Values.Where(b => b.Pos.Y - built.Origin.Y == layer || layer == null).ToList();
         var world = bodies[0].World;
         bool complete = reports.All(r => r.Stopped == null) && all.All(b => DesignChecks.SameState(b, world.GetBlock(b.Pos), world.GetMeta(b.Pos)));
-        if (complete && layer == null && (part == null || BuildFinished(rec, plan, world)))
+        if (complete && layer == null && (part == null || BuildFinished(rec, built, world)))
         {
             rec.Status = DesignStatus.Built;
             Store.Update(rec);
-            try { Built?.Invoke(rec, plan); } catch (Exception ex) { _log?.LogWarning(ex, "recording build #{Id} failed", rec.Id); }
+            try { Built?.Invoke(rec, built); } catch (Exception ex) { _log?.LogWarning(ex, "recording build #{Id} failed", rec.Id); }
             await Say($"finished the {rec.Name}").ConfigureAwait(false);
             return (true, $"built #{rec.Id} \"{rec.Name}\": {text}");
         }
@@ -360,6 +489,9 @@ public sealed class BlueprintService
     {
         var g = site.Ground;
         var lm = Landmark(g);
+        if (site.Extent is { } e)
+            return string.Create(CultureInfo.InvariantCulture,
+                $"ON the {e.Name} ({site.How}{(lm != null ? ", " + lm : "")}): blocks x {e.Min.X}..{e.Max.X}, z {e.Min.Z}..{e.Max.Z}, top at y{e.Max.Y}; layer 0 is y{e.Max.Y + 1}; make the footprint exactly {e.W}x{e.D} (it is placed on that floor's corner)");
         return string.Create(CultureInfo.InvariantCulture, $"ground block {g.X},{g.Y},{g.Z} ({site.How}{(lm != null ? ", " + lm : "")}); layer 0 is y{g.Y + 1}, footprint centred there unless you set origin");
     }
 

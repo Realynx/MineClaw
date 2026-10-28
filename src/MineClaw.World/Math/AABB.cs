@@ -34,28 +34,33 @@ public readonly record struct AABB(double MinX, double MinY, double MinZ, double
 
     public Vec3d Center => new((MinX + MaxX) / 2, (MinY + MaxY) / 2, (MinZ + MaxZ) / 2);
 
+    /// <summary>The box is rebuilt from the feet position every tick (vanilla keeps it), so after a clamp a face can sit an ulp inside
+    /// the block it touched; without this tolerance the next move's "already past it" test fails and the body slides into the
+    /// wall (found by the water-column swim sim: climbing out at the island edge went through the floor block).</summary>
+    private const double Eps = 1e-7;
+
     /// <summary>Clips movement dx of <paramref name="moving"/> against this box (AxisAlignedBB.calculateXOffset).</summary>
     public double CalculateXOffset(AABB moving, double dx)
     {
         if (moving.MaxY <= MinY || moving.MinY >= MaxY || moving.MaxZ <= MinZ || moving.MinZ >= MaxZ) return dx;
-        if (dx > 0 && moving.MaxX <= MinX) { double d = MinX - moving.MaxX; if (d < dx) dx = d; }
-        if (dx < 0 && moving.MinX >= MaxX) { double d = MaxX - moving.MinX; if (d > dx) dx = d; }
+        if (dx > 0 && moving.MaxX <= MinX + Eps) { double d = MinX - moving.MaxX; if (d < dx) dx = d; }
+        if (dx < 0 && moving.MinX >= MaxX - Eps) { double d = MaxX - moving.MinX; if (d > dx) dx = d; }
         return dx;
     }
 
     public double CalculateYOffset(AABB moving, double dy)
     {
         if (moving.MaxX <= MinX || moving.MinX >= MaxX || moving.MaxZ <= MinZ || moving.MinZ >= MaxZ) return dy;
-        if (dy > 0 && moving.MaxY <= MinY) { double d = MinY - moving.MaxY; if (d < dy) dy = d; }
-        if (dy < 0 && moving.MinY >= MaxY) { double d = MaxY - moving.MinY; if (d > dy) dy = d; }
+        if (dy > 0 && moving.MaxY <= MinY + Eps) { double d = MinY - moving.MaxY; if (d < dy) dy = d; }
+        if (dy < 0 && moving.MinY >= MaxY - Eps) { double d = MaxY - moving.MinY; if (d > dy) dy = d; }
         return dy;
     }
 
     public double CalculateZOffset(AABB moving, double dz)
     {
         if (moving.MaxX <= MinX || moving.MinX >= MaxX || moving.MaxY <= MinY || moving.MinY >= MaxY) return dz;
-        if (dz > 0 && moving.MaxZ <= MinZ) { double d = MinZ - moving.MaxZ; if (d < dz) dz = d; }
-        if (dz < 0 && moving.MinZ >= MaxZ) { double d = MaxZ - moving.MinZ; if (d > dz) dz = d; }
+        if (dz > 0 && moving.MaxZ <= MinZ + Eps) { double d = MinZ - moving.MaxZ; if (d < dz) dz = d; }
+        if (dz < 0 && moving.MinZ >= MaxZ - Eps) { double d = MaxZ - moving.MinZ; if (d > dz) dz = d; }
         return dz;
     }
 

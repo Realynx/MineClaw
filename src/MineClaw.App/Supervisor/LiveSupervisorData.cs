@@ -164,6 +164,17 @@ public sealed class LiveSupervisorData : ISupervisorData
 
     public object? DesignBill(long id) => Blueprints() is { } s && s.Store.Get(id) is { } rec ? s.BillJson(rec) : null;
 
+    public string? BuildPlanPage(long id)
+    {
+        if (Blueprints() is not { Plans: { } plans } s || s.Store.Get(id) is not { } rec) return null;
+        var parts = plans.ForBlueprint(id);
+        if (parts.Count == 0 && s.PlanSummary(rec) != null) parts = plans.ForBlueprint(id); // not built yet: slice it now
+        return parts.Count == 0 ? null : MineClaw.Bot.Building.BuildPlanView.Html(parts, $"#{rec.Id} {rec.Name} ({rec.Status})");
+    }
+
+    public object? BuildPlanData(long id) =>
+        Blueprints() is { Plans: { } plans } ? plans.ForBlueprint(id) is { Count: > 0 } parts ? parts : null : null;
+
     public object Status(string? selected)
     {
         var bots = new List<object>();

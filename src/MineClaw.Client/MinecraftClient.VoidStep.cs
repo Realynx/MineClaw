@@ -141,7 +141,7 @@ public sealed partial class MinecraftClient
 
     /// <summary>Tick thread: the EdgeGuard pass, except during a deliberate void step (the only time it yields).</summary>
     private GuardDecision GuardOrVoidStep(PhysicsState phys, MoveInput input, bool allowDrop, ParkourCommit? parkour) =>
-        ActiveVoidStep is not null ? new GuardDecision(input, GuardActions.None, false) : SafetyFilter(phys, input, allowDrop, parkour);
+        ActiveVoidStep is not null || InWaterHold(phys) ? new GuardDecision(input, GuardActions.None, false) : SafetyFilter(phys, input, allowDrop, parkour);
 
     /// <summary>Died during a deliberate void step: wait for the respawn's vitals and report the outcome (no alarms).</summary>
     private void OnDiedDuringVoidStep(IntentionalVoidStep step, Vec3d diedAt)

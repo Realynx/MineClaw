@@ -11,7 +11,9 @@ public enum StepKind { Clear, Place, Scaffold, RemoveScaffold }
 /// their meta from the placer's yaw per mc-dev); <see cref="Face"/> = the face to click (doors: the top of the block below;
 /// ladders: the wall).
 /// </summary>
-public sealed record BuildStep(StepKind Kind, BlockPos Pos, int Id, int Meta, Dir? Look = null, BlockFace? Face = null)
+/// <para><see cref="Hidden"/>: the face may be clicked unseen (b1.8.1 checks distance only); <see cref="Yaw"/>: the look yaw to
+/// send (facing metas). Both come from the build planner (Bot/Building), which also chose where to stand.</para>
+public sealed record BuildStep(StepKind Kind, BlockPos Pos, int Id, int Meta, Dir? Look = null, BlockFace? Face = null, bool Hidden = false, float? Yaw = null)
 {
     public (int Item, int Damage) Item => BuildBlocks.ItemFor(Id, Meta);
     public override string ToString() => $"{Kind} {BuildBlocks.Name(Id, Meta)} {Pos.X},{Pos.Y},{Pos.Z}";
@@ -28,8 +30,9 @@ public sealed record BuildPart(int Index, int Count, HashSet<BlockPos> Cells, Cl
         ClaimKey.Area(plan.Min.Offset(-3, -1, -3), plan.Max.Offset(3, 1, 3), dim), int.MinValue, int.MaxValue, 'x');
 }
 
-/// <summary>The ordered steps for one part, plus cells it couldn't plan (no support reachable within the scaffold limit).</summary>
-public sealed class BuildPlan
+/// <summary>The ordered steps for one part, plus cells it couldn't plan (no support reachable within the scaffold limit). The
+/// simple layer order; the executor runs the full slicer (<see cref="Building.BuildPlanner"/>) instead.</summary>
+public sealed class ConstructionOrder
 {
     public List<BuildStep> Steps { get; } = new();
     public List<BlockPos> Unreachable { get; } = new();
@@ -48,10 +51,10 @@ public static class ConstructionPlanner
 {
     public const int Scaffold = Blocks.Cobblestone; // the executor swaps in whatever clutch block it carries
 
-    public static BuildPlan Plan(VoxelPlan plan, IBlockAccess world, BuildPart? part = null, int maxScaffold = 6, double reach = 4.5)
+    public static ConstructionOrder Plan(VoxelPlan plan, IBlockAccess world, BuildPart? part = null, int maxScaffold = 6, double reach = 4.5)
     {
         part ??= BuildPart.Whole(plan);
-        var result = new BuildPlan();
+        var result = new ConstructionOrder();
         // Simulated world: what stands once the steps so far are done.
         var sim = new Dictionary<BlockPos, int>();
         int At(BlockPos p) => sim.TryGetValue(p, out var v) ? v : world.GetBlock(p.X, p.Y, p.Z);

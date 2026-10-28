@@ -11,6 +11,8 @@ public sealed record DesignRequest(string Description, BlockPos Site, string Sit
     /// <summary>Revision: the blueprint to change and the change asked for.</summary>
     public string? PriorDsl { get; init; }
     public string? Change { get; init; }
+    /// <summary>The floor/structure the build sits on: the footprint snaps to it, a size mismatch is flagged.</summary>
+    public Building.SiteExtent? Extent { get; init; }
 }
 
 /// <summary>One evaluated version of a design.</summary>
@@ -67,6 +69,7 @@ public sealed class DesignLoop(IBlueprintAuthor author, IDesignCritic? critic, B
         var outcome = new DesignOutcome();
         var conv = new List<LlmMessage> { LlmMessage.User(BlueprintPrompts.Brief(req.Description, req.SiteText, req.Constraints, req.PriorDsl, req.Change)) };
         int max = Math.Clamp(o.MaxIterations, 1, 8);
+        string? lastFailure = null;
         for (int n = 1; n <= max; n++)
         {
             if (outcome.Usd >= o.MaxUsdPerDesign) { outcome.Stop = $"cost cap ${o.MaxUsdPerDesign:0.00}"; break; }
@@ -91,7 +94,22 @@ public sealed class DesignLoop(IBlueprintAuthor author, IDesignCritic? critic, B
             }
             var dsl = BlueprintPrompts.ExtractDsl(turn.Text);
             conv.Add(LlmMessage.Assistant("```\n" + dsl + "\n```")); // history keeps the DSL only (prose dropped)
-            var v = Evaluate(dsl, n, req);
+            DesignVersion v;
+            if (dsl.Length == 0 || turn.CutOff && BlueprintParser.Parse(dsl).Blueprint.W == 0 && !dsl.Contains("layer", StringComparison.OrdinalIgnoreCase))
+            {
+                // Nothing to parse: the reply was cut off before the blueprint (Opus 5.5 thinks even at "off"; the budget went there).
+                var why = turn.CutOff ? $"reply cut off at the output limit ({turn.Usage.OutputTokens} tokens) before any blueprint" : "empty reply (no blueprint)";
+                v = new DesignVersion { N = n, Dsl = dsl, Structural = [new BlueprintIssue(IssueLevel.Error, "cutoff", why)] };
+                outcome.Versions.Add(v);
+                Evaluated?.Invoke(v, outcome);
+                var sig = Failure(v);
+                if (sig == lastFailure) { outcome.Stop = $"stopped: the same failure twice ({sig})"; break; }
+                lastFailure = sig;
+                if (n == max) { outcome.Stop = outcome.Best is { Passing: true } ? "iterations used (best passing kept)" : $"iterations used, no passing version ({why})"; break; }
+                conv.Add(LlmMessage.User(BlueprintPrompts.CutOffHint));
+                continue;
+            }
+            v = Evaluate(dsl, n, req);
             if (v.Passing && critic != null && o.Critique && v.Plan != null)
             {
                 try
@@ -106,8 +124,19 @@ public sealed class DesignLoop(IBlueprintAuthor author, IDesignCritic? critic, B
             Evaluated?.Invoke(v, outcome);
             if (Better(v, outcome.Best)) outcome.Best = v;
             if (v.Passing && v.Critique is null or { Ok: true } or { Skipped: true }) { outcome.Stop = "passed"; break; }
+            // The same failure twice in a row: a third try won't differ (live 10-28: 3 × "missing size" per design, $0.10 each).
+            var signature = Failure(v);
+            if (signature != null && signature == lastFailure)
+            {
+                outcome.Stop = $"stopped: the same failure twice ({signature})";
+                break;
+            }
+            lastFailure = signature;
             if (n == max) { outcome.Stop = outcome.Best is { Passing: true } ? "iterations used (best passing kept)" : "iterations used, no passing version"; break; }
-            conv.Add(LlmMessage.User(v.EvalText + "\nRevise: send the whole blueprint."));
+            var ask = v.EvalText;
+            if (v.Structural.Any(i => i.Level == IssueLevel.Error && i.Code == "size")) ask += "\n" + BlueprintPrompts.SizeHint;
+            if (turn.CutOff) ask += "\n(your reply hit the output limit: keep it shorter with layer ranges and primitives)";
+            conv.Add(LlmMessage.User(ask + "\nRevise: send the whole blueprint."));
         }
         if (outcome.Stop.Length == 0) outcome.Stop = "iterations used";
         // The winner gets its picture for the players (renders are cached: usually free).
@@ -116,6 +145,10 @@ public sealed class DesignLoop(IBlueprintAuthor author, IDesignCritic? critic, B
         outcome.Ms = sw.ElapsedMilliseconds;
         return outcome;
     }
+
+    /// <summary>A parse-level failure's signature (same errors = same failure), or null for versions that parsed.</summary>
+    private static string? Failure(DesignVersion v) =>
+        v.Plan != null ? null : v.Structural.Where(i => i.Level == IssueLevel.Error).Select(i => i.Text).DefaultIfEmpty("unparsable").Aggregate((a, b) => a + "; " + b);
 
     private static bool Better(DesignVersion v, DesignVersion? best) =>
         best == null || (v.Passing && !best.Passing) || (v.Passing == best.Passing && v.Score <= best.Score);
@@ -127,6 +160,15 @@ public sealed class DesignLoop(IBlueprintAuthor author, IDesignCritic? critic, B
         if (issues.Any(i => i.Level == IssueLevel.Error && i.Code == "size")) return new DesignVersion { N = n, Dsl = dsl, Structural = issues };
         var (fx, fz) = bp.Footprint;
         var origin = new BlockPos(req.Site.X - fx / 2, req.Site.Y + 1, req.Site.Z - fz / 2);
+        if (req.Extent is { } ext)
+        {
+            // Snap onto the referenced floor: its corner when the footprint matches, else centred on it (and flagged).
+            bp.Origin = null;
+            origin = Building.SiteAnchor.Mismatch(fx, fz, ext) is { } mismatch
+                ? new BlockPos((ext.Min.X + ext.Max.X + 1) / 2 - fx / 2, ext.Max.Y + 1, (ext.Min.Z + ext.Max.Z + 1) / 2 - fz / 2)
+                : new BlockPos(ext.Min.X, ext.Max.Y + 1, ext.Min.Z);
+            if (Building.SiteAnchor.Mismatch(fx, fz, ext) is { } m2) issues.Add(new BlueprintIssue(IssueLevel.Warning, "size-mismatch", m2));
+        }
         var (plan, more) = BlueprintNormalizer.Normalize(bp, origin);
         issues.AddRange(more);
         if (plan == null) return new DesignVersion { N = n, Dsl = dsl, Structural = issues };

@@ -155,6 +155,18 @@ public sealed class SupervisorServer : IAsyncDisposable
             if (path == "/api/blueprints") return Json(200, new { designs = _data.Designs() });
             if (path.StartsWith("/api/blueprints/", StringComparison.Ordinal))
                 return long.TryParse(path["/api/blueprints/".Length..], out var bid) && _data.DesignBill(bid) is { } bill ? Json(200, bill) : Json(404, new { error = "no such design" });
+            // Build plans: the slicer's steps, techniques, scaffolding and progress (HTML page; ?meta=1 = the data).
+            if (path.StartsWith("/view/buildplan/", StringComparison.Ordinal) || path.StartsWith("/api/buildplans/", StringComparison.Ordinal))
+            {
+                var tail = path[(path.IndexOf('/', 1) + 1)..];
+                tail = tail[(tail.IndexOf('/') + 1)..];
+                if (!long.TryParse(tail, out var pid)) return Json(400, new { error = "design id?" });
+                if (path.StartsWith("/api/", StringComparison.Ordinal) || Q(r, "meta") is "1" or "true")
+                    return _data.BuildPlanData(pid) is { } data ? Json(200, data) : Json(404, new { error = "no build plan for that design" });
+                return _data.BuildPlanPage(pid) is { } html
+                    ? new SupervisorReply(200, "text/html; charset=utf-8", System.Text.Encoding.UTF8.GetBytes(html), null)
+                    : Json(404, new { error = "no build plan for that design" });
+            }
             if (path.StartsWith("/view/blueprint/", StringComparison.Ordinal))
             {
                 if (!long.TryParse(path["/view/blueprint/".Length..], out var bid)) return Json(400, new { error = "design id?" });

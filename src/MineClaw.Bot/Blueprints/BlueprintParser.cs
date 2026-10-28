@@ -27,10 +27,30 @@ namespace MineClaw.Bot.Blueprints;
 /// </summary>
 public static partial class BlueprintParser
 {
-    public const int MaxSide = 24, MaxHeight = 16;
+    public const int MaxSide = 24, MaxHeight = 32;
 
     [GeneratedRegex(@"^(\d+)\s*[x×*]\s*(\d+)\s*[x×*]\s*(\d+)$", RegexOptions.IgnoreCase)]
     private static partial Regex SizeRx();
+
+    /// <summary>A size anywhere on the line: "size 10x18x10", "size: 10 x 18 x 10", "size = 10×18×10", "size WxHxD = 10x18x10" (live
+    /// 10-28: designs #6/#7 failed 3× each on the size line), or a bare "10x18x10" line.</summary>
+    [GeneratedRegex(@"(?<![\d.])(\d{1,3})\s*[x×*]\s*(\d{1,3})\s*[x×*]\s*(\d{1,3})(?![\d.])", RegexOptions.IgnoreCase)]
+    private static partial Regex SizeAnywhereRx();
+
+    [GeneratedRegex(@"^(?:size|dimensions?|dims?)\b", RegexOptions.IgnoreCase)]
+    private static partial Regex SizeHeadRx();
+
+    /// <summary>The size on a size line (or a bare WxHxD line), else null.</summary>
+    public static (int W, int H, int D)? SizeOf(string line)
+    {
+        var t = line.Trim();
+        bool sizeLine = SizeHeadRx().IsMatch(t) || SizeRx().IsMatch(t.Replace(" ", ""));
+        if (!sizeLine) return null;
+        // "size WxHxD = 10x18x10": the placeholder letters never match digits, so the first numeric triple is the size.
+        var m = SizeAnywhereRx().Match(t);
+        return m.Success ? (int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture), int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture),
+            int.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture)) : null;
+    }
 
     [GeneratedRegex(@"^(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)$")]
     private static partial Regex Point3Rx();
@@ -51,13 +71,22 @@ public static partial class BlueprintParser
         void Err(int line, string code, string msg) => issues.Add(new BlueprintIssue(IssueLevel.Error, code, msg, line));
         var lines = (text ?? "").Replace("\r", "").Split('\n');
         int i = 0;
-        bool sized = false;
+        bool sized = false, sizeTried = false;
         while (i < lines.Length)
         {
             int ln = i + 1;
             var raw = StripComment(lines[i]).Trim();
             i++;
             if (raw.Length == 0 || raw.StartsWith("```", StringComparison.Ordinal)) continue;
+            if (!sized && (SizeHeadRx().IsMatch(raw) || SizeRx().IsMatch(raw.Replace(" ", ""))))
+            {
+                if (SizeOf(raw) is not { } sz) { Err(ln, "size", "size must be WxHxD with numbers, e.g. size 5x4x5"); sizeTried = true; continue; }
+                (bp.W, bp.H, bp.D) = sz;
+                if (bp.W is < 1 or > MaxSide || bp.D is < 1 or > MaxSide || bp.H is < 1 or > MaxHeight)
+                    Err(ln, "size", $"size {bp.W}x{bp.H}x{bp.D} out of range (1..{MaxSide} wide/deep, 1..{MaxHeight} high)");
+                sized = true;
+                continue;
+            }
             var sp = raw.IndexOf(' ');
             var head = (sp < 0 ? raw : raw[..sp]).ToLowerInvariant().TrimEnd(':');
             var rest = sp < 0 ? "" : raw[(sp + 1)..].Trim();
@@ -124,7 +153,20 @@ public static partial class BlueprintParser
                     break;
             }
         }
-        if (!sized) Err(0, "size", "missing 'size WxHxD'");
+        if (!sized && !sizeTried)
+        {
+            // No size line: infer it from the drawn layers (widest row, row count, highest layer) when there are any.
+            if (bp.Layers.Count > 0 && bp.Layers.Values.Any(l => l.Rows.Count > 0))
+            {
+                bp.W = bp.Layers.Values.SelectMany(l => l.Rows).Max(r => r.Length);
+                bp.D = bp.Layers.Values.Max(l => l.Rows.Count);
+                bp.H = bp.Layers.Keys.Max() + 1;
+                issues.Add(new BlueprintIssue(IssueLevel.Warning, "size-inferred", $"no size line: inferred {bp.W}x{bp.H}x{bp.D} from the layers"));
+                if (bp.W > MaxSide || bp.D > MaxSide || bp.H > MaxHeight)
+                    Err(0, "size", $"size {bp.W}x{bp.H}x{bp.D} out of range (1..{MaxSide} wide/deep, 1..{MaxHeight} high)");
+            }
+            else Err(0, "size", "missing 'size WxHxD'");
+        }
         return (bp, issues);
     }
 

@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using MineClaw.Agent;
+using MineClaw.Agent.Authoring;
 using MineClaw.Agent.Budget;
 using MineClaw.Agent.Events;
 using MineClaw.Agent.Routines;
@@ -330,9 +331,17 @@ public sealed class ScriptBridge
 
     internal async Task<ToolResult> ExecuteAsync(JsonElement input, CancellationToken ct)
     {
-        var op = (ToolInput.Str(input, "op") ?? (ToolInput.Str(input, "code") != null ? "run" : "status")).Trim().ToLowerInvariant();
+        var op = DefaultOp(input);
         switch (op)
         {
+            case "show":
+            {
+                var n = ToolInput.Str(input, "name");
+                if (string.IsNullOrWhiteSpace(n)) return ToolResult.Error("show needs name");
+                var v = Library.Resolve(CleanRef(n), IsScriptable, out var why);
+                if (v == null) return ToolResult.Error(why ?? $"no saved script '{n}'");
+                return ToolResult.Success($"{ScriptLibrary.ParseRef(CleanRef(n)).Name} v{v.V}: " + Clip(v.Code, ShowChars));
+            }
             case "status":
                 return ToolResult.Success(Controller.Status());
             case "pause":
@@ -365,7 +374,7 @@ public sealed class ScriptBridge
             case "run" or "replace":
                 return await RunOrReplaceAsync(op == "replace", input, ct).ConfigureAwait(false);
             case "save":
-                return SaveOp(input);
+                return await SaveOpAsync(input, ct).ConfigureAwait(false);
             case "rollback":
             {
                 var n = ToolInput.Str(input, "name");
@@ -380,6 +389,16 @@ public sealed class ScriptBridge
         }
     }
 
+    /// <summary>No op: code -> run, goal -> save (author + save, no run), else status.</summary>
+    internal static string DefaultOp(JsonElement input) =>
+        (ToolInput.Str(input, "op") ?? (ToolInput.Str(input, "code") != null ? "run" : ToolInput.Str(input, "goal") != null ? "save" : "status"))
+        .Trim().ToLowerInvariant();
+
+    private static string Clip(string s, int n) => s.Length <= n ? s : s[..(n - 3)] + "...";
+
+    /// <summary>op=show: at most this much of a saved script's code reaches the brain.</summary>
+    internal const int ShowChars = 600;
+
     private async Task<ToolResult> RunOrReplaceAsync(bool replace, JsonElement input, CancellationToken ct)
     {
         var code = ToolInput.Str(input, "code");
@@ -390,7 +409,17 @@ public sealed class ScriptBridge
         int? version = null;
         var notes = new List<string>();
         string? warnings = null;
-        if (string.IsNullOrWhiteSpace(code))
+        if (string.IsNullOrWhiteSpace(code) && ToolInput.Str(input, "goal") is { } goal && !string.IsNullOrWhiteSpace(goal))
+        {
+            // The separate Opus author writes, lints, revises and saves it; the brain gets only the summary (then it runs).
+            var w = await AuthorScriptAsync(name, goal, input, ct).ConfigureAwait(false);
+            if (!w.Ok) return ToolResult.Error(w.Summary);
+            code = w.Code!;
+            version = w.Version;
+            author = w.Author;
+            notes.Add(w.Summary);
+        }
+        else if (string.IsNullOrWhiteSpace(code))
         {
             // A saved script (or name@v2) runs as saved: its own author and version, args from the call.
             var v = Library.Resolve(reference, IsScriptable, out var why);
@@ -468,7 +497,74 @@ public sealed class ScriptBridge
     private static IEnumerable<string> Words(string? s) =>
         Regex.Matches(s ?? "", "[a-z]{3,}", RegexOptions.IgnoreCase).Select(m => m.Value.ToLowerInvariant());
 
-    /// <summary>op=save: lint, near-duplicate check, new version (no run).</summary>
+    /// <summary>Writes scripts for a goal in its own Opus context (set by <see cref="ScriptTools.Register"/>; null = goal refused).</summary>
+    public AuthorAgent? Author { get; set; }
+
+    /// <summary>One authored script: Ok + the saved code (for running) and the brain-facing summary (no code, no drafts).</summary>
+    internal sealed record AuthoredScript(bool Ok, string Summary, string? Code = null, int? Version = null, string? Author = null);
+
+    /// <summary>
+    /// goal=: the <see cref="AuthorAgent"/> writes the script in its own context (cheat-sheet + brief + the facts pulled here, up to
+    /// <see cref="Agent.Llm.LlmOptions.AuthorMaxTokens"/>), lint errors are revised inside that loop, the passing version is
+    /// saved, and only the final facts come back: name/version, purpose, args, lint status, size, cost, or the blocker.
+    /// </summary>
+    internal async Task<AuthoredScript> AuthorScriptAsync(string name, string goal, JsonElement input, CancellationToken ct)
+    {
+        if (Author == null) return new(false, "no script author configured; send code instead");
+        if (Author.Refusal() is { } no) return new(false, "can't author: " + no);
+        string? argsJson = input.ValueKind == JsonValueKind.Object && input.TryGetProperty("args", out var a) && a.ValueKind == JsonValueKind.Object ? a.GetRawText() : null;
+        var job = new AuthorJob
+        {
+            Kind = "script",
+            System = ScriptPrompts.AuthorSystem,
+            Brief = ScriptPrompts.AuthorBrief(name, goal.Trim(), null, argsJson, AuthorFacts(name), Options.MaxCodeChars),
+            Check = code =>
+            {
+                if (code.Length > Options.MaxCodeChars) return AuthorCheck.Fail($"too long: {code.Length} chars (max {Options.MaxCodeChars}); shorten it");
+                var lint = Lint(code);
+                return lint.HasErrors ? AuthorCheck.Fail("lint errors: " + lint.Format(LintSeverity.Error, 800)) : AuthorCheck.Pass;
+            },
+        };
+        var outcome = await Author.RunAsync(job, ct).ConfigureAwait(false);
+        if (!outcome.Ok || outcome.Artifact is not { } code)
+            return new(false, $"script {name} not written: {outcome.Blocker} ({outcome.Cost})");
+        var author = $"main/{outcome.Model}";
+        var (saved, note) = SaveChecked(name, code, author, ToolInput.Str(input, "force"));
+        if (saved?.Script is not { } sc) return new(false, $"script {name} written but {note ?? "not saved"} ({outcome.Cost})");
+        var warnings = Lint(code).Warnings.Count();
+        var args = sc.ArgNames.Count > 0 ? $" | args({string.Join(",", sc.ArgNames)})" : "";
+        var purpose = string.IsNullOrWhiteSpace(sc.Purpose) ? "" : " | " + Clip(sc.Purpose!, 100);
+        var lintTag = warnings > 0 ? $"lint ok, {warnings} warning(s)" : "lint ok";
+        var summary = $"wrote {name} v{sc.Version}{purpose}{args} | {lintTag} | {code.Length} chars | {outcome.Cost}";
+        return new(true, summary, code, sc.Version, author);
+    }
+
+    /// <summary>What the author may build on: action names, skills, saved scripts, the current version when improving one.</summary>
+    private string AuthorFacts(string name)
+    {
+        var skills = _skills?.Registry.Specs.Where(sp => sp.Status != SkillStatus.Stub).Select(sp => sp.Name).Take(40).ToList() ?? [];
+        string saved;
+        try { saved = Library.Catalog(); } catch (Exception) { saved = ""; }
+        return "Actions: " + string.Join(" ", _actions.Order(StringComparer.Ordinal)) +
+            (skills.Count > 0 ? "\nSkills: " + string.Join(" ", skills) : "") +
+            (saved.Length > 0 ? "\nSaved scripts (call or update, don't fork): " + Clip(saved, 500) : "") +
+            (Library.Get(name)?.Script is { } cur ? $"\nCurrent {name} v{cur.Version} (improve it):\n" + cur.Code : "");
+    }
+
+    /// <summary>op=save: lint, near-duplicate check, new version (no run). With goal: authored apart, summary only.</summary>
+    private async Task<ToolResult> SaveOpAsync(JsonElement input, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(ToolInput.Str(input, "code")) && ToolInput.Str(input, "goal") is { } goal && !string.IsNullOrWhiteSpace(goal))
+        {
+            var rn = ToolInput.Str(input, "name");
+            if (string.IsNullOrWhiteSpace(rn)) return ToolResult.Error("goal needs name");
+            var w = await AuthorScriptAsync(ScriptLibrary.ParseRef(CleanRef(rn)).Name, goal, input, ct).ConfigureAwait(false);
+            return w.Ok ? ToolResult.Success("ok: " + w.Summary) : ToolResult.Error(w.Summary);
+        }
+        return SaveOp(input);
+    }
+
+    /// <summary>op=save with code: lint, near-duplicate check, new version (no run).</summary>
     private ToolResult SaveOp(JsonElement input)
     {
         var code = ToolInput.Str(input, "code");
@@ -717,9 +813,10 @@ public static class ScriptTools
     public static bool WritesCode(JsonElement input)
     {
         var code = ToolInput.Str(input, "code");
-        var op = (ToolInput.Str(input, "op") ?? (code != null ? "run" : "status")).Trim().ToLowerInvariant();
+        var op = ScriptBridge.DefaultOp(input);
         if (op == "rollback") return true;
-        return op is "run" or "replace" or "save" && !string.IsNullOrWhiteSpace(code);
+        // goal= commissions the Opus author: authorship too.
+        return op is "run" or "replace" or "save" && (!string.IsNullOrWhiteSpace(code) || !string.IsNullOrWhiteSpace(ToolInput.Str(input, "goal")));
     }
 
     private static readonly ConditionalWeakTable<AgentRuntime, ScriptBridge> Bridges = new();
@@ -747,6 +844,8 @@ public static class ScriptTools
         // is refused in the registry, whatever path the call takes. Saved scripts by name, status and cancel stay open to all.
         rt.Tools.AddPolicy(ToolName, (input, caller) => WritesCode(input) && caller?.IsBrainModel(rt.Options.Llm) != true ? ScriptPrompts.BrainOnly : null);
         rt.Agent.ExtendSystem(ScriptPrompts.CheatSheet);
+        rt.Agent.ExtendSystem(ScriptPrompts.AuthorLine); // goal= is brain-only: documented here, not in the shared schema
+        bridge.Author = new AuthorAgent(rt.Llm, rt.Options.Llm, rt.Usage, log);
         rt.Worker?.ExtendSystem(ScriptPrompts.WorkerLine);
         bridge.MaybeHousekeep(force: true);
 

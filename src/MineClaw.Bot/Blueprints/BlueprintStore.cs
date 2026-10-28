@@ -34,6 +34,8 @@ public sealed class BlueprintRecord
     public DateTimeOffset Created { get; set; }
     public DateTimeOffset Updated { get; set; }
     public bool HasPicture { get; set; }
+    /// <summary>Where it goes, as the player referenced it ("on the 8×8 floor at the end of the bridge", "where Fox stood").</summary>
+    public string Anchor { get; set; } = "";
 }
 
 public sealed record BillRow(string Item, int Need, int Have, int Stored, int Missing, string Source);
@@ -61,6 +63,9 @@ public sealed class BlueprintStore
     private readonly AgentDb _db;
     private readonly TimeProvider _time;
 
+    /// <summary>The shared db (the build-plan store lives next to the designs).</summary>
+    public AgentDb Db => _db;
+
     public BlueprintStore(AgentDb db, TimeProvider? time = null)
     {
         _db = db;
@@ -76,9 +81,11 @@ public sealed class BlueprintStore
                     owner TEXT NOT NULL, state TEXT NOT NULL, dim INTEGER NOT NULL, ox INTEGER, oy INTEGER, oz INTEGER, placed INTEGER, total INTEGER,
                     scaffold TEXT, note TEXT, updated INTEGER NOT NULL, PRIMARY KEY(blueprint_id, part));
                 """);
+        lock (_db.Gate)
+            try { _db.Exec("ALTER TABLE blueprints ADD COLUMN anchor TEXT"); } catch (Microsoft.Data.Sqlite.SqliteException) { /* already there */ }
     }
 
-    private const string Cols = "id,name,description,requester,bot,dsl,status,dim,sx,sy,sz,ox,oy,oz,rev,summary,eval,critique,bill,cost_usd,iterations,accepted_by,created,updated,png IS NOT NULL";
+    private const string Cols = "id,name,description,requester,bot,dsl,status,dim,sx,sy,sz,ox,oy,oz,rev,summary,eval,critique,bill,cost_usd,iterations,accepted_by,created,updated,png IS NOT NULL,anchor";
 
     public BlueprintRecord Insert(BlueprintRecord r)
     {
@@ -104,8 +111,8 @@ public sealed class BlueprintStore
             _db.Exec("""
                 UPDATE blueprints SET name=$n, description=$d, requester=$r, dsl=$dsl, status=$s, dim=$dim, sx=$sx, sy=$sy, sz=$sz,
                     ox=$ox, oy=$oy, oz=$oz, rev=$rev, summary=$sum, eval=$ev, critique=$cr, bill=$bill, cost_usd=$c, iterations=$it,
-                    accepted_by=$acc, updated=$t WHERE id=$id
-                """, ("$n", r.Name), ("$d", r.Description), ("$r", r.Requester), ("$dsl", r.Dsl), ("$s", r.Status), ("$dim", r.Dim),
+                    accepted_by=$acc, updated=$t, anchor=$an WHERE id=$id
+                """, ("$an", r.Anchor), ("$n", r.Name), ("$d", r.Description), ("$r", r.Requester), ("$dsl", r.Dsl), ("$s", r.Status), ("$dim", r.Dim),
                 ("$sx", r.Site.X), ("$sy", r.Site.Y), ("$sz", r.Site.Z), ("$ox", r.Origin?.X), ("$oy", r.Origin?.Y), ("$oz", r.Origin?.Z),
                 ("$rev", r.Rev), ("$sum", r.Summary), ("$ev", r.Eval), ("$cr", r.Critique), ("$bill", JsonSerializer.Serialize(r.Bill)),
                 ("$c", (double)r.CostUsd), ("$it", r.Iterations), ("$acc", r.AcceptedBy), ("$t", AgentDb.ToUnixMs(r.Updated)), ("$id", r.Id));
@@ -152,6 +159,7 @@ public sealed class BlueprintStore
         Bill = AgentDb.StrOrNull(r, 18) is { Length: > 0 } b ? JsonSerializer.Deserialize<List<BillRow>>(b) ?? new() : new(),
         CostUsd = (decimal)r.GetDouble(19), Iterations = r.GetInt32(20), AcceptedBy = AgentDb.StrOrNull(r, 21),
         Created = AgentDb.FromUnixMs(r.GetInt64(22)), Updated = AgentDb.FromUnixMs(r.GetInt64(23)), HasPicture = r.GetInt64(24) != 0,
+        Anchor = AgentDb.StrOrNull(r, 25) ?? "",
     };
 
     // ------------------------------------------------------------------ build progress

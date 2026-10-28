@@ -6,7 +6,8 @@ namespace MineClaw.Agent.Llm;
 
 /// <summary>
 /// <see cref="ILlmClient"/> over the official Anthropic C# SDK (Messages API; non-streaming except interruptible calls — responses are
-/// tiny). Applies: tier → model, small max_tokens, thinking off/minimal per model, effort, and up to three cache
+/// tiny — and large/cost-capped authoring calls: max_tokens above <see cref="LlmOptions.StreamAboveTokens"/> streams, aggregated
+/// into the same message, usage and stop_reason). Applies: tier → model, small max_tokens, thinking off/minimal per model, effort, and up to three cache
 /// breakpoints: after the static system prefix (tools render before system, so they're covered too), after the
 /// identity/self block, and a moving 5m breakpoint on the last message so the next call reads all history from cache.
 /// </summary>
@@ -15,23 +16,37 @@ public sealed class AnthropicLlmClient : ILlmClient
     private readonly IAnthropicClient _client;
     private readonly LlmOptions _options;
 
-    public AnthropicLlmClient(LlmOptions options)
+    /// <summary>Same client with a longer whole-call timeout, for large streamed calls (authoring).</summary>
+    private readonly IAnthropicClient _longClient;
+
+    public AnthropicLlmClient(LlmOptions options) : this(options, null) { }
+
+    /// <summary><paramref name="http"/>: tests pass a fake handler's client (no network).</summary>
+    internal AnthropicLlmClient(LlmOptions options, HttpClient? http)
     {
         _options = options;
-        var baseClient = string.IsNullOrEmpty(options.ApiKey) ? new AnthropicClient() : new AnthropicClient { ApiKey = options.ApiKey };
+        IAnthropicClient baseClient = string.IsNullOrEmpty(options.ApiKey) ? new AnthropicClient() : new AnthropicClient { ApiKey = options.ApiKey };
+        if (http != null) baseClient = baseClient.WithOptions(o => o with { HttpClient = http });
         _client = baseClient.WithOptions(o => o with
         {
             MaxRetries = options.MaxRetries,
             Timeout = TimeSpan.FromSeconds(options.TimeoutSeconds),
         });
+        _longClient = _client.WithOptions(o => o with { Timeout = TimeSpan.FromMinutes(Math.Max(1, options.LongCallTimeoutMinutes)) });
     }
+
+    /// <summary>A plain call this large streams (no HTTP timeout on a long generation); a per-call USD cap needs the stream too.</summary>
+    internal bool StreamsLarge(LlmRequest request, long maxTokens) =>
+        maxTokens > _options.StreamAboveTokens || (request.MaxUsd != null && request.CostOf != null);
 
     public async Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct)
     {
         string model = request.Model ?? _options.ModelFor(request.Tier);
         var parameters = BuildParams(request, model);
         if ((request.Interruptible || request.OnToolUse != null || request.OnTextDelta != null) && _options.StreamInterruptible)
-            return await StreamAsync(parameters, model, ct, request.OnToolUse, request.OnTextDelta).ConfigureAwait(false);
+            return await StreamAsync(parameters, model, ct, request.OnToolUse, request.OnTextDelta, request).ConfigureAwait(false);
+        if (StreamsLarge(request, parameters.MaxTokens))
+            return await StreamAsync(parameters, model, ct, null, null, request, longCall: parameters.MaxTokens > _options.StreamAboveTokens).ConfigureAwait(false);
         try
         {
             Message response = await _client.Messages.Create(parameters, ct).ConfigureAwait(false);
@@ -48,11 +63,26 @@ public sealed class AnthropicLlmClient : ILlmClient
     /// drops the stream (the API stops generating) and throws <see cref="LlmInterruptedException"/> with the usage seen so far:
     /// input/cache tokens from message_start, output from the last message_delta or ~4 chars per token of the deltas.
     /// </summary>
+    /// <remarks>With <see cref="LlmRequest.MaxUsd"/> + <see cref="LlmRequest.CostOf"/> the running cost (message_start input/cache +
+    /// output so far, thinking deltas included) is checked on every delta; past the cap the stream is dropped (the API stops
+    /// generating) and <see cref="LlmCostCapException"/> carries the usage to book.</remarks>
     private async Task<LlmResponse> StreamAsync(MessageCreateParams parameters, string model, CancellationToken ct, Action<LlmToolUse>? onToolUse = null,
-        Action<string>? onText = null)
+        Action<string>? onText = null, LlmRequest? request = null, bool longCall = false)
     {
         LlmUsage? partial = null;
-        long deltaChars = 0, reportedOut = 0;
+        long deltaChars = 0, reportedOut = 0, thinkingChars = 0;
+        decimal? cap = request?.MaxUsd;
+        var costOf = request?.CostOf;
+        var client = longCall ? _longClient : _client;
+        LlmUsage SoFar() => (partial ?? LlmUsage.Zero) with { OutputTokens = Math.Max(reportedOut, (deltaChars + thinkingChars + 3) / 4) };
+        void CheckCap()
+        {
+            if (cap is not { } c || costOf == null) return;
+            var used = SoFar();
+            decimal usd;
+            try { usd = costOf(used); } catch (Exception) { return; }
+            if (usd > c) throw new LlmCostCapException(used, model, usd, c);
+        }
         // Streaming execution: tool_use blocks by index, handed to the caller the moment each block stops.
         var open = new Dictionary<long, (string Id, string Name, System.Text.StringBuilder Json)>();
         // Streamed chat: open text blocks by index (their end is a line boundary for the caller).
@@ -60,9 +90,9 @@ public sealed class AnthropicLlmClient : ILlmClient
 
         async IAsyncEnumerable<RawMessageStreamEvent> Watch()
         {
-            await foreach (RawMessageStreamEvent ev in _client.Messages.CreateStreaming(parameters, ct).WithCancellation(ct).ConfigureAwait(false))
+            await foreach (RawMessageStreamEvent ev in client.Messages.CreateStreaming(parameters, ct).WithCancellation(ct).ConfigureAwait(false))
             {
-                if (ev.TryPickStart(out var start)) partial = MapUsage(start.Message.Usage);
+                if (ev.TryPickStart(out var start)) { partial = MapUsage(start.Message.Usage); CheckCap(); }
                 else if (ev.TryPickContentBlockStart(out var cbs))
                 {
                     if (onToolUse != null && cbs.ContentBlock.TryPickToolUse(out var tu)) open[cbs.Index] = (tu.ID, tu.Name, new System.Text.StringBuilder());
@@ -80,13 +110,15 @@ public sealed class AnthropicLlmClient : ILlmClient
                         deltaChars += j.PartialJson.Length;
                         if (open.TryGetValue(cbd.Index, out var tb)) tb.Json.Append(j.PartialJson);
                     }
+                    else if (cbd.Delta.TryPickThinking(out var th)) thinkingChars += th.Thinking.Length;
+                    CheckCap();
                 }
                 else if (ev.TryPickContentBlockStop(out var cbe))
                 {
                     if (onToolUse != null && open.Remove(cbe.Index, out var done)) EmitToolUse(onToolUse, done.Id, done.Name, done.Json.ToString());
                     else if (onText != null && openText.Remove(cbe.Index)) EmitText(onText, "\n");
                 }
-                else if (ev.TryPickDelta(out var md)) reportedOut = md.Usage.OutputTokens;
+                else if (ev.TryPickDelta(out var md)) { reportedOut = md.Usage.OutputTokens; CheckCap(); }
                 yield return ev;
             }
         }

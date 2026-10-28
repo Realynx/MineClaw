@@ -42,6 +42,10 @@ public interface ISupervisorData
     ViewImage? DesignPicture(long id) => null;
     /// <summary>A design's bill, evaluation, critique, DSL and build progress as data, or null.</summary>
     object? DesignBill(long id) => null;
+    /// <summary>A design's build plan page (steps numbered, techniques coloured, scaffolding, progress), or null.</summary>
+    string? BuildPlanPage(long id) => null;
+    /// <summary>A design's build plan as data (every part), or null.</summary>
+    object? BuildPlanData(long id) => null;
 }
 
 public static class SupervisorJson

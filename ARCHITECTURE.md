@@ -87,6 +87,14 @@ The LLM must never be on the hot path. Claude is a *planner and conversationalis
    - **Memory (Haiku, cheap tier)**: compaction, self-reflection, `ask_memory {question}` (a ≤4-round recall/where_is/
      recall_detail loop that returns a ≤300-char answer with #ids), and budget-fallback chat. Episode summaries are
      mechanical (zero tokens). Free per-turn auto-retrieval (`[memory]`) is unchanged.
+   - **Author (Opus 5.5 only, `Agent/Authoring/AuthorAgent`)**: `script {name, goal}` (and the blueprint designer) hand a short
+     spec to a SEPARATE Opus context: its own cached reference (Lua cheat-sheet / DSL), the brief + facts the caller pulls,
+     up to `Agent:Llm:AuthorMaxTokens` (100K, clamped to 128K) output per call at `AuthorEffort` (medium), streamed above
+     `StreamAboveTokens` (16K; same message/usage/stop_reason, prefix caching kept), and a write → lint → revise loop
+     (`AuthorMaxVersions` 3) capped at `AuthorMaxUsd` ($3/job: a stream is aborted once its running cost passes it). The
+     passing version is saved; the brain gets ONLY the final facts (name/version, purpose, args, lint status, size, $, or
+     the blocker), never drafts, thinking or fixed errors (`script op=show` = a ≤600-char excerpt). Brain turns keep
+     `MainMaxTokens`; the brain's context limit and compaction are unchanged.
    Tool results are capped per tool (default 400 chars; look-with-detail/window 1200; `Agent:ToolResultCaps`).
 7. **Routines.** The model can save a working sequence of tool calls as a named routine (e.g. "cobble_loop")
    and later run it in pure C# with zero tokens per iteration.
@@ -237,12 +245,34 @@ Callers: Lua `ensure` (hidden `acquire` tool, no prompt bytes), `Loadout.FetchAs
   construction; a change line from the requester or a trusted player revises; the consumed line reaches the brain as background only.
   Designs persist (`blueprints`, `blueprint_builds` tables); `design op=build id at` = "another one like the hut" (trusted). The
   supervisor serves `/api/blueprints`, `/api/blueprints/{id}` (bill/eval/DSL/progress) and `/view/blueprint/{id}` (PNG) + a Designs panel.
-- **Construction** (`ConstructionPlanner` + `ConstructionExecutor`, as a body job via the hidden `build` tool; Lua `build{bp, part, of,
-  layer}` and `blueprint(id)`): clear obstructions top-down, then layer by layer, solids → thin → doors → attachments, each next to
-  something standing; unsupported cells get scaffold paths, unreachable ones a floor walkway (never a stand over the void), all
-  self-placed and removed top-down at the end. Directional blocks are placed from the side whose yaw gives the planned meta; each step
-  is verified, each layer compared (deviations reported). Materials come through the acquisition planner; a shortfall stops with
-  `missing <item> (need N, have M)`. Checkpoints every 8 placements: a restart re-plans from the world and `AutoResume` restarts the job.
+- **Construction** (`ConstructionExecutor` running the slicer's `BuildPlan`, as a body job via the hidden `build` tool; Lua `build{bp,
+  part, of, layer}`, `build{bp, undo=true}` and `blueprint(id)`). The **slicer** (`Bot/Building/BuildPlanner`, zero tokens) turns the
+  voxels into steps like a 3D printer: obstructions first, then layer by layer, support-first, nearest by real path cost. Each step has
+  a stand, a clicked face and a technique: Normal, Edge (sneaking, bridging out), Hidden (a face the bot can't see, e.g. the floor's
+  underside: mc-dev NetServerHandler checks only feet-to-clicked-block distance < 8, no raytrace; the client keeps its 4.5 eye reach)
+  or Water. Stands come from `Pathfinder.Explore` (a Dijkstra flood over the real moves: doors, ladders, void rules) from where the
+  previous step ends. A stand never intersects the cell and never walls the bot in (a flood after the placement must still reach
+  outside the footprint). Facing metas are set by the look yaw (stairs/doors/furnaces read only the yaw); the planner prefers the
+  side that faces right. A stuck block gets a scaffold chain, a floor walkway or a **water column**: a source poured beside the edge
+  floor block (ItemBucket raytrace: leaning out), which only falls over open space. `SwimSim` (World/Physics, the same per-tick
+  policies the client drives) verifies the descent, the hover at depth and the climb-out (0.3 boost) before it is planned; one bucket
+  means one column at a time; the source is taken back at the end (an empty bucket takes only a meta-0 source, and the column dries).
+  The client's `WaterHold` lets the void guard and the falling alarm stand aside only while inside a continuous column. Whatever
+  still can't be planned is named before building (`Infeasible`, in the "build it" reply: "47 placements, 6 scaffold, 1 water
+  descent, needs: …; est. 6 min").
+  The plan is persisted (`build_plans`: steps with status, columns, gate, ledger). On a resume, done steps are re-verified and the
+  rest re-planned from the current state. A deviation re-plans: someone else's block in a planned cell is kept and reported, never
+  dug. A missing item doesn't stop the build: its blocks are held out of the plan, the rest is built, and the run pauses resumably.
+  Materials come through the acquisition planner: the exact variant (cobblestone slab 44:3), every known chest in batches the
+  inventory holds, then crafting, then the gen, and only then a question. **Confirmation gate**: the first 4–5 placements show the
+  start edge and main axis, then the build pauses and asks once in landmark terms. There is no default: a timeout stays paused,
+  and a restart asks again. A trusted yes continues. "wrong way" / "turn it" / "flip it" / "move 2 east" takes the gate blocks
+  down, transforms the plan (`PlanTransform`, about the first gate block) and gates again. "undo" takes down everything the build
+  placed. **Anchoring** (`SiteAnchor`) uses what the player referenced: "here" means the requester's feet and facing; "the 8x8
+  floor" or "the end of the bridge" means the newest self-placed build near them (its floor, found by morphological opening). The
+  footprint snaps to that extent, and a size mismatch is asked in the summary, which names the anchor rather than a nearby landmark.
+  Supervisor: `/view/buildplan/{id}` (numbered steps coloured by technique, scaffold dashed, columns, progress, gate) and
+  `/api/buildplans/{id}`.
   A finished build leaves the placed-block log and becomes a remembered `build` structure (soft-protected); scaffolding stays own-placed.
 - **Bodies**: the executor acts through `IBuildBody` (resolved per call, never a captured client); `IBuildCrew.Bodies` lists them
   (today the bot's own). `VoxelPlan.Partition(n, byLayer)` = disjoint strips (built at once) or layer bands, each with its `ClaimKey.Area`.

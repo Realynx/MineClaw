@@ -16,6 +16,37 @@ public sealed class LlmOptions
     public int MainMaxTokens { get; set; } = 1200;
     public int WorkerMaxTokens { get; set; } = 800;
 
+    /// <summary>Hard output ceiling of the 5.5 models (max_tokens above this is a 400).</summary>
+    public const int ModelMaxOutputTokens = 128_000;
+
+    /// <summary>Default <see cref="AuthorMaxTokens"/> (also the blueprint author's default).</summary>
+    public const int DefaultAuthorMaxTokens = 100_000;
+
+    /// <summary>
+    /// Output budget of an authoring call (Lua scripts, blueprints, build plans): the separate Opus author context, never the
+    /// brain's turns (those keep <see cref="MainMaxTokens"/>; the brain's context limit and compaction are unchanged). Opus 5.5
+    /// can't turn thinking off, so this covers its thinking AND the artifact. Clamped to <see cref="ModelMaxOutputTokens"/>.
+    /// </summary>
+    public int AuthorMaxTokens { get; set; } = DefaultAuthorMaxTokens;
+
+    /// <summary><see cref="AuthorMaxTokens"/> as sent: 1024..128K.</summary>
+    public int AuthorMaxTokensClamped => Math.Clamp(AuthorMaxTokens <= 0 ? DefaultAuthorMaxTokens : AuthorMaxTokens, 1024, ModelMaxOutputTokens);
+
+    /// <summary>output_config.effort of authoring calls (with thinking always on for Opus 5.5, effort + budget are the levers).</summary>
+    public string AuthorEffort { get; set; } = "medium";
+
+    /// <summary>USD cap of ONE authoring job (all its versions): a streaming call is aborted once its running cost passes the rest.</summary>
+    public decimal AuthorMaxUsd { get; set; } = 3.00m;
+
+    /// <summary>Author versions per job (v1 + revisions after lint/check failures) before it gives up.</summary>
+    public int AuthorMaxVersions { get; set; } = 3;
+
+    /// <summary>Calls with max_tokens above this stream (a long non-streaming request risks HTTP timeouts).</summary>
+    public int StreamAboveTokens { get; set; } = 16_000;
+
+    /// <summary>Whole-call timeout of a large streamed call (100K output tokens take many minutes; <see cref="TimeoutSeconds"/> is for small calls).</summary>
+    public int LongCallTimeoutMinutes { get; set; } = 45;
+
     /// <summary>output_config.effort per tier ("low"|"medium"|"high"|""=omit). Low keeps replies terse.</summary>
     public string CheapEffort { get; set; } = "low";
     public string MainEffort { get; set; } = "medium";

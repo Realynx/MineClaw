@@ -5,7 +5,11 @@ using MineClaw.Agent.Llm;
 namespace MineClaw.Bot.Blueprints;
 
 /// <summary>One answer of the blueprint author: its text, what it cost.</summary>
-public sealed record AuthorTurn(string Text, LlmUsage Usage, string Model, decimal Usd);
+public sealed record AuthorTurn(string Text, LlmUsage Usage, string Model, decimal Usd, string StopReason = "end_turn")
+{
+    /// <summary>The reply hit the output limit (the blueprint may be cut off, or missing entirely after thinking).</summary>
+    public bool CutOff => StopReason == StopReasons.MaxTokens;
+}
 
 /// <summary>Writes and revises blueprints (the Opus brain tier only; a scripted fake in tests).</summary>
 public interface IBlueprintAuthor
@@ -21,16 +25,35 @@ public sealed class LlmBlueprintAuthor(ILlmClient llm, LlmOptions options, Usage
 {
     public async Task<AuthorTurn> WriteAsync(IReadOnlyList<LlmMessage> conversation, CancellationToken ct)
     {
-        var resp = await llm.CompleteAsync(new LlmRequest
+        var prices = usage?.Prices ?? new PriceTable();
+        var model = options.MainModel;
+        LlmResponse resp;
+        try
         {
-            Tier = ModelTier.Main, Model = options.MainModel, MaxTokens = o.AuthorMaxTokens, Purpose = "design",
-            System = [new LlmSystemBlock(BlueprintPrompts.System, Cache: true)], Messages = conversation, CacheHistory = true,
-            Thinking = string.IsNullOrWhiteSpace(o.AuthorThinking) ? null : o.AuthorThinking,
-        }, ct).ConfigureAwait(false);
+            resp = await llm.CompleteAsync(new LlmRequest
+            {
+                Tier = ModelTier.Main, Model = model, MaxTokens = MaxTokens(o, options), Purpose = "design",
+                System = [new LlmSystemBlock(BlueprintPrompts.System, Cache: true)], Messages = conversation, CacheHistory = true,
+                Thinking = string.IsNullOrWhiteSpace(o.AuthorThinking) ? null : o.AuthorThinking,
+                Effort = string.IsNullOrWhiteSpace(o.AuthorEffort) ? null : o.AuthorEffort,
+                MaxUsd = options.AuthorMaxUsd > 0 ? options.AuthorMaxUsd : null, CostOf = u => prices.Cost(model, u),
+            }, ct).ConfigureAwait(false);
+        }
+        catch (LlmCostCapException cc)
+        {
+            // Aborted mid-stream by Agent:Llm:AuthorMaxUsd: book what it used; the loop's per-design cap then stops it.
+            decimal spent = 0;
+            try { spent = usage?.Record(cc.Model, cc.PartialUsage, ModelTier.Main) ?? cc.Usd; } catch (Exception) { spent = cc.Usd; }
+            return new AuthorTurn("", cc.PartialUsage, cc.Model, spent, "cost_cap");
+        }
         decimal usd = 0;
         try { usd = usage?.Record(resp.Model, resp.Usage, ModelTier.Main) ?? 0; } catch (Exception) { }
-        return new AuthorTurn(resp.Text, resp.Usage, resp.Model, usd);
+        return new AuthorTurn(resp.Text, resp.Usage, resp.Model, usd, resp.StopReason);
     }
+
+    /// <summary>Bot:Blueprints:AuthorMaxTokens, capped by (and defaulting to) Agent:Llm:AuthorMaxTokens.</summary>
+    public static int MaxTokens(BlueprintOptions o, LlmOptions options) =>
+        o.AuthorMaxTokens > 0 ? Math.Min(o.AuthorMaxTokens, options.AuthorMaxTokensClamped) : options.AuthorMaxTokensClamped;
 }
 
 public static partial class BlueprintPrompts
@@ -39,7 +62,7 @@ public static partial class BlueprintPrompts
     public const string System =
         "You design Minecraft Beta 1.8.1 builds for a skyblock bot as a compact blueprint. Reply with ONLY the blueprint in a ``` block " +
         "(or the single word SHOW to get the preview image once). Format, one statement per line, # comments:\n" +
-        "blueprint <short name>\nsize WxHxD   (x width, y height, z depth; max 24x16x24)\n" +
+        "blueprint <short name>\nsize WxHxD   (numbers, e.g. size 10x18x10: x width, y height, z depth; max 24x32x24)\n" +
         "facing south   (the front; DRAW the front on the bottom (south) row: facing east turns the whole build)\n" +
         "light          (only if the interior must be lit)\n" +
         "palette C=cobblestone P=planks L=log G=glass_pane D=door:south S=cobblestone_stairs:north T=torch W=wool:red H=slab:cobble\n" +
@@ -59,6 +82,16 @@ public static partial class BlueprintPrompts
         "blocks or fluids; prefer cheap local materials (cobble from the gen, planks from logs) and the material list you are given; " +
         "keep it small unless asked. After each version you get a short evaluation (errors, warnings, bill, the perception model's look): " +
         "fix every error, answer with the WHOLE corrected blueprint, nothing else.";
+
+    /// <summary>The exact first lines and a minimal correct blueprint, for a reply whose size line didn't parse.</summary>
+    public const string SizeHint =
+        "The second line must be exactly `size WxHxD` with numbers (e.g. `size 10x18x10`). A minimal correct blueprint:\n" +
+        "```\nblueprint example\nsize 3x2x3\npalette C=cobblestone\nlayer 0-1\nCCC\nC.C\nCCC\n```";
+
+    /// <summary>A reply cut off at the output limit before any blueprint.</summary>
+    public const string CutOffHint =
+        "Your reply was cut off at the output limit before the blueprint. Answer at once with O\nY the blueprint, starting " +
+        "`blueprint <name>` then `size WxHxD`; keep it short with layer ranges (layer 1-15) and primitives (walls/box/floor/roof).";
 
     /// <summary>The design brief: wish, site, constraints (≈150-250 tokens).</summary>
     public static string Brief(string description, string site, string constraints, string? prior = null, string? change = null)
