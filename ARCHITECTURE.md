@@ -384,9 +384,17 @@ body adapter) all use it; craft always makes new ones (a worn carried pick never
   means one column at a time; the source is taken back at the end (an empty bucket takes only a meta-0 source, and the column dries).
   The client's `WaterHold` lets the void guard and the falling alarm stand aside only while inside a continuous column. Whatever
   still can't be planned is named before building (`Infeasible`, in the "build it" reply: "47 placements, 6 scaffold, 1 water
-  descent, needs: …; est. 6 min").
+  descent, needs: …; est. 6 min"). Reasons point at the root cells: a cell resting on one that can't be placed is "waiting on supports;
+  rests on x,y,z" (a final pass re-points "no support" cells whose neighbour leads to a real root), and a supported cell wholly above
+  the eyes of every stand near it is "no stand: above my reach (I can't climb: no pillar or stair technique)" (stands are searched
+  from 6 below: a y63 floor reaches the y70 layer). Every build/lane result, the `[task]` text, `design show` ("can't place N: …")
+  and the restart notice carry them grouped in one line (`BuildSkips`): "placed 4, 685 missing — 673 waiting on supports e.g.
+  -27,72,13; 12 no stand: above my reach (I can't climb) e.g. -27,71,13; 0 protected" (live 10-28: the drop tower said only
+  "placed 0, 689 missing" for hours: its 16-high walls were out of reach from the floor and everything else rested on them).
   The plan is persisted (`build_plans`: steps with status, columns, gate, ledger). On a resume, done steps are re-verified and the
-  rest re-planned from the current state. A deviation re-plans: someone else's block in a planned cell is kept and reported, never
+  rest re-planned from the current state. A stale plan (another design version, or `Format` older than `BuildPlan.CurrentFormat`,
+  e.g. one saved before crew lanes) is planned again on load (`BuildPlan.Resume`) keeping its placed-block ledger, scaffold/water
+  still up, gate (an approved build never asks again) and gate corrections. A deviation re-plans: someone else's block in a planned cell is kept and reported, never
   dug. A missing item doesn't stop the build: its blocks are held out of the plan, the rest is built, and the run pauses resumably.
   Materials come through the acquisition planner: the exact variant (cobblestone slab 44:3), every known chest in batches the
   inventory holds, then crafting, then the gen, and only then a question. **Confirmation gate**: the first 4–5 placements show the

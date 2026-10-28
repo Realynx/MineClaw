@@ -136,6 +136,34 @@ public sealed class BuildPlan
     public int Parts { get; set; } = 1;
     /// <summary>Content hash of the voxel plan it was sliced from (a changed design = a new plan).</summary>
     public ulong Version { get; set; }
+    /// <summary>The slicer's plan format (<see cref="CurrentFormat"/> when sliced by this build; 0 = before formats were recorded).</summary>
+    public int Format { get; set; }
+
+    /// <summary>Bumped when the slicer's step semantics change (2: crew lanes, step lanes/waits, grouped skip reasons): a plan
+    /// saved in an older format is re-planned on load (<see cref="Resume"/>), keeping its placed blocks and its gate.</summary>
+    public const int CurrentFormat = 2;
+
+    /// <summary>Sliced from another design version or by an older slicer: its steps can't be trusted as they are.</summary>
+    public bool IsStale(ulong version) => Version != version || Format != CurrentFormat;
+
+    /// <summary>
+    /// The plan to carry on from: <paramref name="prev"/> as it is when it is current; a stale one (design changed, older format,
+    /// live 10-28 the drop tower's pre-crew plan) becomes a fresh start that keeps what must survive a re-plan: the placed-block
+    /// ledger (undo), the scaffolding and water still up, the gate (an approved build never asks again) and the gate corrections.
+    /// Its steps, lanes and infeasible list are dropped: the slicer plans them again from the world as it is.
+    /// </summary>
+    public static BuildPlan? Resume(BuildPlan? prev, ulong version)
+    {
+        if (prev == null || !prev.IsStale(version)) return prev;
+        return new BuildPlan
+        {
+            BlueprintId = prev.BlueprintId, Part = prev.Part, Parts = prev.Parts, Version = version, Format = CurrentFormat,
+            Origin = prev.Origin, Facing = prev.Facing, Dim = prev.Dim, Transform = prev.Transform,
+            Gate = prev.Gate, Placed = prev.Placed.Distinct().ToList(), ScaffoldUp = prev.ScaffoldUp.Distinct().ToList(),
+            Columns = prev.Columns.Where(c => c.Poured && !c.Removed).ToList(), State = prev.State, Replans = prev.Replans,
+            Note = $"re-planned: the saved plan was {(prev.Version != version ? "for another version of the design" : $"in an older format ({prev.Format})")}",
+        };
+    }
     public BlockPos Origin { get; set; }
     public Dir Facing { get; set; }
     public int Dim { get; set; }
@@ -199,7 +227,7 @@ public sealed class BuildPlan
                    + string.Create(CultureInfo.InvariantCulture, $"; est. {(mins < 1 ? "<1" : Math.Round(mins).ToString(CultureInfo.InvariantCulture))} min");
         if (Lanes.Count > 1) text += "; " + CrewText();
         if (Infeasible.Count > 0)
-            text += $"; can't place {Infeasible.Count}: " + string.Join("; ", Infeasible.Take(2).Select(i => $"{BuildBlocks.Name(i.Id, 0)} at {i.Pos.X},{i.Pos.Y},{i.Pos.Z} ({i.Why})"));
+            text += $"; can't place {Infeasible.Count}: " + BuildSkips.Line(Infeasible.Select(i => (i.Pos, (string?)i.Why)));
         return text;
     }
 

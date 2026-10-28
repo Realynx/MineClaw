@@ -19,6 +19,9 @@ public sealed class BuildReport
     public string? Stopped { get; set; }
     public bool Complete => Stopped == null && Missing.Count == 0;
     public int Total { get; set; }
+    /// <summary>Why the cells left are left, grouped with counts and a sample ("13 no stand: above my reach (I can't climb) e.g.
+    /// -27,71,13; 676 waiting on supports e.g. -33,76,7; 0 protected"); null when nothing was left (<see cref="BuildSkips"/>).</summary>
+    public string? Skips { get; set; }
     /// <summary>The plan this run executed (summary, techniques, gate).</summary>
     public BuildPlan? Plan { get; set; }
     /// <summary>Paused at the confirmation gate, waiting for a trusted answer.</summary>
@@ -29,7 +32,7 @@ public sealed class BuildReport
     public string Text(string what) =>
         $"{what}: placed {Placed}" + (Already > 0 ? $", {Already} already there" : "") + (Cleared > 0 ? $", cleared {Cleared}" : "")
         + (Scaffolded > 0 ? $", scaffold {Scaffolded} ({ScaffoldRemoved} removed)" : "")
-        + (Missing.Count > 0 ? $", {Missing.Count} missing" : "") + (Deviations.Count > 0 ? $"; deviations: {string.Join("; ", Deviations.Take(3))}" : "")
+        + (Missing.Count > 0 ? $", {Missing.Count} missing" : "") + (Skips != null ? $" — {Skips}" : "") + (Deviations.Count > 0 ? $"; deviations: {string.Join("; ", Deviations.Take(3))}" : "")
         + (Stopped != null ? $"; stopped: {Stopped}" : "");
 }
 
@@ -70,7 +73,15 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
     {
         var w = body.World;
         var prev = previous ?? Plans?.Get(blueprintId, part.Index);
-        if (prev != null && prev.Version != design.Hash()) prev = null;
+        // A stale plan (another design version, an older slicer format) is planned again from the world, keeping its ledger and gate.
+        var resumed = BuildPlan.Resume(prev, design.Hash());
+        if (prev != null && !ReferenceEquals(resumed, prev))
+        {
+            log?.LogInformation("blueprint #{Id} {Part}: {Note} (format {Format}): keeping {Placed} placed, gate {Gate}", blueprintId, part.Label,
+                resumed!.Note, prev.Format, resumed.Placed.Count, resumed.Gate.State);
+            Progress?.Invoke($"{resumed.Note}: planning it again, keeping the gate ({resumed.Gate.State.ToString().ToLowerInvariant()}) and {resumed.Placed.Count} placed blocks");
+        }
+        prev = resumed;
         var (voxel, p) = Shape(design, part, prev?.Transform ?? BuildTransform.None, w.Dimension);
         var bp = BuildPlanner.Plan(voxel, w.PlanningView, StartCell(w), p, Options(body, part, prev), prev);
         bp.BlueprintId = blueprintId;
@@ -124,7 +135,12 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
         report.Plan = bp;
         Plans?.Save(bp);
         report.Unreachable.AddRange(bp.Infeasible.Select(i => i.Pos));
-        if (bp.Infeasible.Count > 0) Progress?.Invoke("can't place " + string.Join("; ", bp.Infeasible.Take(3).Select(i => $"{voxel.Local(i.Pos)} ({i.Why})")));
+        if (bp.Infeasible.Count > 0)
+        {
+            var cant = BuildSkips.Line(bp.Infeasible.Select(i => (i.Pos, (string?)i.Why)));
+            Progress?.Invoke($"can't place {bp.Infeasible.Count}: {cant}");
+            log?.LogInformation("blueprint #{Id} {Part}: can't place {N}: {Why}", blueprintId, part.Label, bp.Infeasible.Count, cant);
+        }
 
         // Claim the part's area (hive: disjoint parts, so bodies never work in each other's cells).
         var ttl = TimeSpan.FromSeconds(Math.Max(20, o.ClaimSeconds));
@@ -358,8 +374,8 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
                 return StepOutcome.Replan; // re-plan from where I am now (another stand/face/technique)
             }
             step.Status = StepStatus.Done;
-            bp.Placed.Add(step.Target);
-            if (BuildBlocks.KindOf(step.Id) == BuildKind.Door && !scaffold) bp.Placed.Add(step.Target.Up());
+            if (!bp.Placed.Contains(step.Target)) bp.Placed.Add(step.Target);
+            if (BuildBlocks.KindOf(step.Id) == BuildKind.Door && !scaffold && !bp.Placed.Contains(step.Target.Up())) bp.Placed.Add(step.Target.Up());
             if (scaffold)
             {
                 report.Scaffolded++;
@@ -583,6 +599,14 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
             rec.Placed = cells.Count(b => w.IsLoaded(b.Pos.X, b.Pos.Z) && DesignChecks.SameState(b, w.GetBlock(b.Pos), w.GetMeta(b.Pos)));
         }
 
+        // A cell with no step and no slicer reason: its item is held back (a shortfall), or the run stopped before planning it.
+        string? Unplanned(BlockPos p)
+        {
+            if (voxel.Blocks.TryGetValue(p, out var b) && shortItems.Keys.Any(k => (k.Item1, k.Item2) == BuildBlocks.ItemFor(b.Id, b.Meta)))
+                return "missing " + Name(BuildBlocks.ItemFor(b.Id, b.Meta).Item, BuildBlocks.ItemFor(b.Id, b.Meta).Damage);
+            return report.Stopped is { } st ? "not reached: " + st : null;
+        }
+
         bool Verify(PlanStep s)
         {
             if (!voxel.Blocks.TryGetValue(s.Target, out var want)) return true;
@@ -611,6 +635,8 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
         {
             foreach (var b in voxel.Blocks.Values.Where(b => vpart.Cells.Contains(b.Pos) && (layer is not { } ly || b.Pos.Y - voxel.Origin.Y == ly)))
                 if (w.IsLoaded(b.Pos.X, b.Pos.Z) && !DesignChecks.SameState(b, w.GetBlock(b.Pos), w.GetMeta(b.Pos))) report.Missing.Add(b.Pos);
+            report.Skips = report.Missing.Count == 0 && !bp.Steps.Any(s => s.Status == StepStatus.Skipped) ? null
+                : BuildSkips.Line(BuildSkips.Of(bp, report.Missing, Unplanned));
             bool partDone = report.Stopped == null && report.Missing.Count == 0 && bp.ScaffoldUp.Count == 0 && layer == null;
             if (report.GatePassed && !partDone)
             {

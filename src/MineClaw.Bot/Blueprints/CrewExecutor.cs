@@ -17,10 +17,12 @@ public sealed class LaneReport
     /// <summary>done | yielded (re-slice) | lost (body gone/dead) | stuck (failing over and over) | cancelled.</summary>
     public string State { get; set; } = "building";
     public string? Why { get; set; }
+    /// <summary>Why this lane's left steps are left, grouped (<see cref="BuildSkips.Line"/>); null when none are.</summary>
+    public string? Skips { get; set; }
     public List<string> Deviations { get; } = new();
 
     public string Text => $"{Short(Body)} {State}: placed {Placed}" + (Already > 0 ? $", {Already} already there" : "") + (Cleared > 0 ? $", cleared {Cleared}" : "")
-        + (Scaffolded > 0 ? $", scaffold {Scaffolded}" : "") + (Left > 0 ? $", {Left} left" : "") + (Why != null ? $" ({Why})" : "");
+        + (Scaffolded > 0 ? $", scaffold {Scaffolded}" : "") + (Left > 0 ? $", {Left} left" : "") + (Skips != null ? $" — {Skips}" : "") + (Why != null ? $" ({Why})" : "");
 
     internal static string Short(string body) => Bodies.Body.ShortName(body, false);
 }
@@ -48,6 +50,8 @@ public sealed class CrewReport
         if (Rebalances > 0) text += $", re-balanced {Rebalances}×";
         if (Finale is { } f && (f.ScaffoldRemoved > 0 || f.Placed > 0)) text += $"; finish: placed {f.Placed}, scaffold removed {f.ScaffoldRemoved}";
         if (Finale?.Missing.Count > 0) text += $", {Finale.Missing.Count} missing";
+        // The build's skip reasons: the finale's (every cell left), else the plan's own (it never got that far).
+        if ((Finale?.Skips ?? (Plan != null ? BuildSkips.OfPlan(Plan) : null)) is { } skips) text += " — " + skips;
         if (Stopped != null) text += "; stopped: " + Stopped;
         return text;
     }
@@ -148,8 +152,8 @@ public sealed class CrewExecutor(ConstructionExecutor single, TimeProvider? time
     /// <summary>The one gate of the build, by one body; false = not passed (paused at it, undone, or the build ended there).</summary>
     private async Task<bool> GateAsync(long id, VoxelPlan design, IBuildBody gateBody, CrewReport report, CancellationToken ct)
     {
-        var prev = single.Plans?.Get(id, 0);
-        if (prev != null && prev.Version != design.Hash()) prev = null;
+        // A stale plan keeps its gate (BuildPlan.Resume): an approved build never asks again.
+        var prev = BuildPlan.Resume(single.Plans?.Get(id, 0), design.Hash());
         if (!single.GateOn || prev?.Gate.State is GateState.Approved or GateState.Off) return true;
         var g = await single.RunAsync(id, design, BuildPart.Whole(design, gateBody.World.Dimension), gateBody, ct, untilGate: true).ConfigureAwait(false);
         report.Gate = g;
@@ -171,9 +175,9 @@ public sealed class CrewExecutor(ConstructionExecutor single, TimeProvider? time
     private (BuildPlan Plan, VoxelPlan Voxel) Prepare(long id, VoxelPlan design, IReadOnlyList<IBuildBody> crew, BuildPlan? current, bool resume)
     {
         var plans = single.Plans;
-        var prev = current ?? plans?.Get(id, 0);
-        if (prev != null && prev.Version != design.Hash()) prev = null;
-        if (prev != null && current == null) plans?.MergeLanes(prev);
+        var loaded = current ?? plans?.Get(id, 0);
+        var prev = BuildPlan.Resume(loaded, design.Hash()); // stale: no lanes to resume, re-sliced keeping the ledger and gate
+        if (prev != null && current == null && ReferenceEquals(prev, loaded)) plans?.MergeLanes(prev);
         var w = crew[0].World;
         int dim = w.Dimension;
         var (voxel, vpart) = ConstructionExecutor.Shape(design, BuildPart.Whole(design, dim), prev?.Transform ?? BuildTransform.None, dim);
@@ -327,8 +331,7 @@ public sealed class CrewExecutor(ConstructionExecutor single, TimeProvider? time
         try
         {
             if (await GateAsync(id, design, main, report, ct).ConfigureAwait(false) is false) return report;
-            var prev = plans?.Get(id, 0);
-            if (prev != null && prev.Version != design.Hash()) prev = null;
+            var prev = BuildPlan.Resume(plans?.Get(id, 0), design.Hash());
             var (voxel, vpart) = ConstructionExecutor.Shape(design, BuildPart.Whole(design, dim), prev?.Transform ?? BuildTransform.None, dim);
             var members = new List<CrewMember> { new(main.Name, ConstructionExecutor.StartCell(main.World), main.Count(Items.WaterBucket, 0) > 0) };
             members.AddRange(clones.Where(c => !c.Name.Equals(main.Name, StringComparison.OrdinalIgnoreCase)));
@@ -402,8 +405,8 @@ public sealed class CrewExecutor(ConstructionExecutor single, TimeProvider? time
     public async Task<LaneReport> RunLaneAsync(long id, VoxelPlan design, int laneIndex, IBuildBody body, CancellationToken ct)
     {
         var plans = single.Plans;
-        if (plans?.Get(id, 0) is not { } bp || bp.Version != design.Hash())
-            return new LaneReport { Lane = laneIndex, Body = body.Name, State = "failed", Why = "no crew plan for this design" };
+        if (plans?.Get(id, 0) is not { } bp || bp.IsStale(design.Hash()))
+            return new LaneReport { Lane = laneIndex, Body = body.Name, State = "failed", Why = "no crew plan for this design (or only a stale one: main re-slices it)" };
         plans.MergeLanes(bp);
         if (laneIndex < 0 || laneIndex >= bp.Lanes.Count)
             return new LaneReport { Lane = laneIndex, Body = body.Name, State = "failed", Why = $"no lane {laneIndex} (the plan has {bp.Lanes.Count})" };
@@ -571,6 +574,13 @@ internal sealed class LaneRunner(CrewExecutor x, CrewContext c, PlanLane lane, I
             catch (Exception ex) when (ex is not OutOfMemoryException) { x.Log?.LogDebug(ex, "lane {Lane} wrap-up failed", lane.Index); }
             if (body.Claims is { } b) foreach (var k in _claims) try { await b.ReleaseAsync(k, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
             _r.Left = lane.Steps.Count(i => !Bp.Steps[i].Finished);
+            try
+            {
+                var left = lane.Steps.Where(i => i >= 0 && i < Bp.Steps.Count && (!Bp.Steps[i].Finished || Bp.Steps[i].Status == StepStatus.Skipped)).ToList();
+                if (left.Count > 0)
+                    _r.Skips = BuildSkips.Line(left.Select(i => Bp.Steps[i]).Select(s => (s.Target, s.Note ?? (s.Finished ? null : "not reached: " + _r.State))));
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { x.Log?.LogDebug(ex, "lane {Lane} skip reasons failed", lane.Index); }
             lock (Bp) { lane.State = _r.State; lane.Note = _r.Why; }
             Checkpoint();
         }

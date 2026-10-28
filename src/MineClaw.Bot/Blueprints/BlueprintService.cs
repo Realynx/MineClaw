@@ -654,12 +654,27 @@ public sealed class BlueprintService
         {
             if (Store.Get(b.BlueprintId) is not { Status: DesignStatus.Building or DesignStatus.Accepted } rec) continue;
             var line = $"the {rec.Name} build (#{rec.Id}, {b.Placed}/{b.Total} placed) was paused by a restart; resume it with design " +
-                       $"build{{id={rec.Id}}} when it fits your rules" + (rec.AcceptedBy != null ? $" ({rec.AcceptedBy} approved it; no second go needed)" : "");
+                       $"build{{id={rec.Id}}} when it fits your rules" + (rec.AcceptedBy != null ? $" ({rec.AcceptedBy} approved it; no second go needed)" : "")
+                       + (LeftText(rec.Id) is { Length: > 0 } left ? $"; its last plan {left}" : "");
             line = WithRules(rec.Id, line);
             if (notice) Notice("[design] " + line);
             return line;
         }
         return null;
+    }
+
+    /// <summary>"can't place 689: 13 no stand: above my reach (I can't climb) e.g. -27,71,13; 676 waiting on supports e.g.
+    /// -33,76,7; 0 protected" from the persisted plan (what the last run couldn't do and why), or "" (live 10-28 the brain and a
+    /// worker guessed at "placed 0, 689 missing" for hours).</summary>
+    public string LeftText(long id)
+    {
+        try
+        {
+            if (Plans?.Get(id, 0) is not { } bp) return "";
+            var (n, line) = Building.BuildSkips.PlanSkips(bp);
+            return n == 0 || line == null ? "" : $"can't place {n}: {line}";
+        }
+        catch (Exception ex) { _log?.LogDebug(ex, "skip reasons for #{Id} unreadable", id); return ""; }
     }
 
     /// <summary>The line plus the standing rules that apply to building design <paramref name="id"/> ("...; rule#2 (Fox): ...").</summary>
@@ -699,6 +714,7 @@ public sealed class BlueprintService
             }
         }
         catch (Exception ex) { _log?.LogDebug(ex, "lane progress for #{Id} unreadable", rec.Id); }
+        if (rec.Status != DesignStatus.Built && LeftText(rec.Id) is { Length: > 0 } left) progress += "; " + left;
         return $"#{rec.Id} \"{rec.Name}\" {size}, {plan?.LayerCount ?? 0} layers, {plan?.Blocks.Count ?? 0} blocks, {rec.Status}"
                + BillNow(rec, plan, builds.Any(b => b.Placed > 0))
                + progress + (rec.Eval.Length > 0 ? "; eval: " + Trim(rec.Eval, 200) : "");

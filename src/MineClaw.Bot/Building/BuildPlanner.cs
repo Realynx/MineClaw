@@ -93,7 +93,7 @@ public sealed class BuildPlanner
         _s = new St { Sim = sim, Flood = new(), Land = start };
         _out = new BuildPlan
         {
-            Part = part.Index, Parts = part.Count, Version = plan.Hash(), Origin = plan.Origin, Facing = plan.Blueprint.Facing,
+            Part = part.Index, Parts = part.Count, Version = plan.Hash(), Format = BuildPlan.CurrentFormat, Origin = plan.Origin, Facing = plan.Blueprint.Facing,
             Gate = new GateInfo { After = o.GateBlocks, State = o.GateBlocks > 0 ? GateState.Pending : GateState.Off },
         };
     }
@@ -119,11 +119,12 @@ public sealed class BuildPlanner
         _s.Flood = Flood(_s.Sim, _s.Land);
         _escapeCheck = _s.Flood.Keys.Any(Outside);
         if (_s.Flood.Count == 0)
-            foreach (var b in Todo()) _out.Infeasible.Add(new Infeasible(b.Pos, b.Id, $"I'm not standing anywhere walkable ({_s.Land.X},{_s.Land.Y},{_s.Land.Z})"));
+            foreach (var b in Todo()) Fail(b.Pos, b.Id, $"I'm not standing anywhere walkable ({_s.Land.X},{_s.Land.Y},{_s.Land.Z})");
         else
         {
             ClearObstructions();
             PlaceAll();
+            BlameSupports();
         }
         RemoveScaffolding();
         PickupColumns();
@@ -139,7 +140,7 @@ public sealed class BuildPlanner
     {
         _out.BlueprintId = prev.BlueprintId;
         _out.Gate = prev.Gate;
-        _out.Placed = prev.Placed.ToList();
+        _out.Placed = prev.Placed.Distinct().ToList();
         _out.Transform = prev.Transform;
         _out.Replans = prev.Replans + 1;
         foreach (var st in prev.Steps.Where(s => s.Finished && Holds(s)))
@@ -248,7 +249,7 @@ public sealed class BuildPlanner
             _cover = group.Select(b => b.Pos).ToList();
             if (n <= 2 && Resolve(T(stuck), out _)) continue;
             Resolve(T(stuck), out var why, dryRun: true);
-            _out.Infeasible.Add(new Infeasible(stuck.Pos, stuck.Id, why ?? "no stand reaches a support face"));
+            Fail(stuck.Pos, stuck.Id, why ?? "no stand reaches a support face");
             todo.Remove(stuck);
         }
     }
@@ -385,8 +386,9 @@ public sealed class BuildPlanner
         float? yaw = look is { } l ? DirYaw(l) : null;
         double fromColumn = _s.Col >= 0 ? AscendCost(_s.Columns[_s.Col], _s.ColY) : 0;
         var block = AABB.Block(t.Pos.X, t.Pos.Y, t.Pos.Z);
-        // Walkable stands near the target.
-        for (int dy = -5; dy <= 3; dy++)
+        // Walkable stands near the target: feet up to 6 below (eyes 1.62 up, the bottom face within 4.5: a floor at y63 reaches
+        // the y70 layer; live 10-28 the drop tower's -27,70,16 was cut off by a 5-below window) and 3 above.
+        for (int dy = -(int)Math.Floor(_o.Reach + PlayerPhysics.EyeHeight); dy <= 3; dy++)
         for (int dz = -5; dz <= 5; dz++)
         for (int dx = -5; dx <= 5; dx++)
         {
@@ -446,7 +448,99 @@ public sealed class BuildPlanner
         var saved = _s.Clone();
         bool ok = ResolveCore(t, ref why);
         if (!ok || dryRun) _s = saved;
+        // Resting on a block that can't be placed (or is held back) is that block's problem, not this one's: say so, so the
+        // reasons name the few root cells instead of hundreds of "no support" (live 10-28: 615 of 689).
+        if (!ok && !Supported(t) && WaitingOn(t.Pos) is { } wait) why = wait;
         return ok && !dryRun;
+    }
+
+    private readonly HashSet<BlockPos> _failed = new();
+
+    private static BlockPos? RestsOn(string why)
+    {
+        int i = why.IndexOf("rests on ", StringComparison.Ordinal);
+        if (i < 0) return null;
+        var c = why[(i + 9)..].Split([',', ' '], 4);
+        return c.Length >= 3 && int.TryParse(c[0], out var x) && int.TryParse(c[1], out var y) && int.TryParse(c[2], out var z) ? new BlockPos(x, y, z) : null;
+    }
+
+    /// <summary>
+    /// A "no support" cell (or a wait that ends in one, or loops) next to a cell whose wait leads to a real root (out of reach,
+    /// held back) only waits on that one: it was tried before its neighbour (nearest first). Repeated until nothing changes, so
+    /// every reason points at the few root cells; a patch of cells that all hang over the void keeps its own reason.
+    /// </summary>
+    private void BlameSupports()
+    {
+        var at = new Dictionary<BlockPos, int>();
+        for (int k = 0; k < _out.Infeasible.Count; k++) at.TryAdd(_out.Infeasible[k].Pos, k);
+        static bool NoSupport(string w) => w.StartsWith("no support within", StringComparison.Ordinal);
+        static bool Waits(string w) => w.StartsWith(BuildSkips.Waiting, StringComparison.Ordinal);
+        // The root reason behind a cell: follow "rests on" links; null when the chain comes back to `self` or loops. A link to a
+        // cell that isn't infeasible is a held-back block (no item yet): a real root.
+        string? Root(BlockPos? from, BlockPos self)
+        {
+            var seen = new HashSet<BlockPos> { self };
+            for (var p = from; p is { } q && seen.Add(q);)
+            {
+                if (!at.TryGetValue(q, out var j)) return "held";
+                var w = _out.Infeasible[j].Why;
+                if (!Waits(w)) return w;
+                p = RestsOn(w);
+            }
+            return null;
+        }
+        for (bool changed = true; changed;)
+        {
+            changed = false;
+            for (int k = 0; k < _out.Infeasible.Count; k++)
+            {
+                var i = _out.Infeasible[k];
+                if (!NoSupport(i.Why) && !Waits(i.Why)) continue; // a root of its own (out of reach, protected…)
+                var mine = Waits(i.Why) ? Root(RestsOn(i.Why), i.Pos) : i.Why;
+                if (mine != null && !NoSupport(mine)) continue; // already leads to a real root
+                foreach (var f in BlockFaceExtensions.All)
+                {
+                    var n = i.Pos.Offset(f);
+                    if (!at.ContainsKey(n) || Root(n, i.Pos) is not { } root || NoSupport(root)) continue;
+                    _out.Infeasible[k] = i with { Why = $"{BuildSkips.Waiting}; rests on {n.X},{n.Y},{n.Z}, which can't be placed" };
+                    changed = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    private void Fail(BlockPos p, int id, string why)
+    {
+        _out.Infeasible.Add(new Infeasible(p, id, why));
+        _failed.Add(p);
+    }
+
+    /// <summary>"waiting on supports; rests on -27,75,16" when a neighbour it would rest on is a planned block that can't be
+    /// placed (already infeasible) or is held back for a missing item; null otherwise.</summary>
+    private string? WaitingOn(BlockPos p)
+    {
+        foreach (var f in (BlockFace[])[BlockFace.Bottom, .. BlockFaceExtensions.All.Where(f => f != BlockFace.Bottom && f != BlockFace.Top)])
+        {
+            var n = p.Offset(f);
+            if (_failed.Contains(n)) return $"{BuildSkips.Waiting}; rests on {n.X},{n.Y},{n.Z}, which can't be placed";
+            if (_plan.Blocks.TryGetValue(n, out var b) && b.Id != 0 && _o.Hold.Contains(BuildBlocks.ItemFor(b.Id, b.Meta)) && !Solid(n))
+                return $"{BuildSkips.Waiting}; rests on {n.X},{n.Y},{n.Z} (no {BuildBlocks.Name(b.Id, b.Meta)} on hand yet)";
+        }
+        return null;
+    }
+
+    /// <summary>Why no walkable stand reaches <paramref name="p"/>: none near it at all, the nearest ones too far below (I can't
+    /// climb), or just none in reach of a support face.</summary>
+    private string NoStandWhy(BlockPos p)
+    {
+        int top = int.MinValue;
+        foreach (var s in _s.Flood.Keys)
+            if (Math.Abs(s.X - p.X) <= 5 && Math.Abs(s.Z - p.Z) <= 5 && s.Y > top) top = s.Y;
+        if (top == int.MinValue) return BuildSkips.NotNear;
+        // Wholly above the eyes of every stand near it, and none reaches: only a way up (a pillar, stairs) would.
+        if (p.Y >= top + PlayerPhysics.EyeHeight) return $"{BuildSkips.AboveReach}; {p.Y - top} above the highest stand near it (feet y{top})";
+        return BuildSkips.NoStand;
     }
 
     private bool ResolveCore(Target t, ref string? why)
@@ -456,7 +550,7 @@ public sealed class BuildPlanner
         {
             if (ScaffoldPath(t.Pos, t.Kind is BuildKind.Gravity or BuildKind.Door) is not { } chain)
             {
-                why = $"no support within {_o.MaxScaffold} scaffold blocks";
+                why = $"no support within {_o.MaxScaffold} scaffold blocks (over the void)";
                 return false;
             }
             if (Chain(chain, ref why)) return true;
@@ -466,7 +560,7 @@ public sealed class BuildPlanner
         }
         if (Placements(t).Any()) { why = "every stand that reaches it would wall me in"; return true; } // the main loop retries later
         if (!below && Walkway(t.Pos) is { } walk && Chain(walk, ref why)) return true;
-        if (!_o.WaterAvailable) { why = below ? "below the floor and out of reach: needs a water bucket to descend" : "no stand within reach of a support face"; return false; }
+        if (!_o.WaterAvailable) { why = below ? "below the floor and out of reach: needs a water bucket to descend" : NoStandWhy(t.Pos); return false; }
         return Column(t.Pos, ref why) && Placements(t).Any();
     }
 
@@ -487,7 +581,7 @@ public sealed class BuildPlanner
             var st = new Target(c, ConstructionPlanner.Scaffold, 0, true);
             if (!TryPlace(st, false))
             {
-                why = $"no stand reaches scaffold cell {c.X},{c.Y},{c.Z}";
+                why = $"no stand reaches scaffold cell {c.X},{c.Y},{c.Z}; " + NoStandWhy(c);
                 return false;
             }
         }
@@ -682,7 +776,7 @@ public sealed class BuildPlanner
         var block = AABB.Block(p.X, p.Y, p.Z);
         foreach (var (s, travel) in _s.Flood)
         {
-            if (Math.Abs(s.X - p.X) > 5 || Math.Abs(s.Z - p.Z) > 5 || s.Y < p.Y - 5 || s.Y > p.Y + 4) continue;
+            if (Math.Abs(s.X - p.X) > 5 || Math.Abs(s.Z - p.Z) > 5 || s.Y < p.Y - 6 || s.Y > p.Y + 4) continue;
             var eye = GoalUseBlock.EyeAt(_s.Sim, s.X, s.Y, s.Z);
             var feet = eye with { Y = eye.Y - PlayerPhysics.EyeHeight };
             if (AABB.ForPlayer(feet).Intersects(block) || Safety.SupportBlocks(_s.Sim, feet).Contains(p)) continue;
