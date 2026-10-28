@@ -96,6 +96,13 @@ public static partial class BuildGate
     public static string Question(BuildPlan bp, VoxelPlan plan, string name, Func<BlockPos, string?> landmark, Func<BlockPos, NamedPlace?>? place,
         string? previewUrl)
     {
+        // Never describe the build relative to itself ("away from mob drop tower" for the mob drop tower).
+        bool Self(string text) => text.Contains(name, StringComparison.OrdinalIgnoreCase) || text.Contains(name.Replace(' ', '_'), StringComparison.OrdinalIgnoreCase);
+        var lm = landmark;
+        landmark = p => lm(p) is { } t && !Self(t) ? t : null;
+        var pl = place;
+        if (pl != null) place = p => pl(p) is { } np && !Self(np.Name) && !InFootprint(np.At) ? np : null;
+        bool InFootprint(BlockPos p) => p.X >= plan.Min.X && p.X <= plan.Max.X && p.Z >= plan.Min.Z && p.Z <= plan.Max.Z;
         var gate = bp.Steps.Where(s => s.Gate && s.Finished).Select(s => s.Target).ToList();
         if (gate.Count == 0) gate = bp.Steps.Where(s => s.Action == StepAction.Place && s.Finished).Take(5).Select(s => s.Target).ToList();
         var anchor = gate.Count > 0 ? gate[0] : plan.Min;

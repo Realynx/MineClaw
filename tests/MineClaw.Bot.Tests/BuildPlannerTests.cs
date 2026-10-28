@@ -297,6 +297,40 @@ public class BuildPlannerTests
         };
 
     [Fact]
+    public async Task Gate_question_never_describes_the_build_relative_to_itself()
+    {
+        // Live 03:51: "the mob drop tower starts by a hangout, runs west, away from mob drop tower".
+        var w = BlueprintTests.Island();
+        var plan = PlanOf(Bridge, new BlockPos(0, 64, 0));
+        var gates = new BuildGates();
+        var asked = new List<string>();
+        var ex = new ConstructionExecutor(new BlueprintOptions { GateMinutes = 1 })
+        {
+            Gates = gates,
+            Ask = q =>
+            {
+                asked.Add(q);
+                _ = Task.Run(async () =>
+                {
+                    for (int i = 0; i < 400 && !gates.IsWaiting(6); i++) await Task.Delay(5);
+                    gates.Answer(6, new GateReply(GateVerdict.Approve, "PoofImaFox", "keep going"));
+                });
+                return Task.CompletedTask;
+            },
+            GateQuestion = (bp, v) => BuildGate.Question(bp, v, "mob drop tower",
+                p => p.X < 3 ? "at mob_drop_tower" : "by the hangout",
+                p => p.X < 3 ? new NamedPlace("mob drop tower", new BlockPos(1, 64, 0)) : new NamedPlace("hangout", new BlockPos(20, 64, 0)), null),
+        };
+        var report = await ex.RunAsync(6, plan, BuildPart.Whole(plan), new SimBuildBody(w), CancellationToken.None);
+        Assert.True(report.Complete, report.Text("tower"));
+        Assert.Single(asked);
+        Assert.DoesNotContain("from mob drop tower", asked[0]);
+        Assert.DoesNotContain("mob_drop_tower", asked[0]);
+        Assert.Contains("the mob drop tower starts here", asked[0]);
+        Assert.Contains("toward hangout", asked[0]);
+    }
+
+    [Fact]
     public async Task Wrong_way_at_the_gate_takes_the_gate_blocks_down_turns_the_plan_and_asks_again()
     {
         var w = BlueprintTests.Island();
