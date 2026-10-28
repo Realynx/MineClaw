@@ -39,10 +39,13 @@ public sealed class MemoryBankTests : IAsyncLifetime
     public async Task Graph_layout_places_every_node()
     {
         using var bank = await MemoryBank.OpenAsync(_fx.Path, FixtureDb.Config());
-        var g = bank.ReadTree(Controls.GraphModel.Build, null!);
-        Assert.Equal(_fx.TreeNodes, g.Index.Length);
-        Assert.All(g.X, x => Assert.InRange(x, 0, 1));
-        Assert.NotEmpty(g.Edges);
+        var g = bank.ReadTree(t => Controls.GraphModel.Build(t, bank.DocOf), null!);
+        Assert.Equal(_fx.TreeNodes, g.Nodes.Length);
+        Assert.All(g.Nodes, n => Assert.InRange(g.Layout.X0[n.Slot], 0, 1));
+        Assert.All(g.Nodes, n => Assert.InRange(g.Layout.X1[n.Slot], g.Layout.X0[n.Slot], 1 + 1e-9));
+        Assert.Contains(g.Nodes, n => n.Children.Length > 0);
+        Controls.TopicLabeler.Label(g);
+        Assert.Contains(g.Nodes, n => !n.IsLeaf && n.Terms.Length >= 2);
     }
 
     [Fact]

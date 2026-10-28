@@ -20,8 +20,10 @@ public partial class App : Application
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             var vm = new MainWindowViewModel(Startup);
-            desktop.MainWindow = new MainWindow { DataContext = vm };
+            var window = new MainWindow { DataContext = vm };
+            desktop.MainWindow = window;
             desktop.ShutdownRequested += (_, _) => vm.Dispose();
+            if (Startup.FreecamProfile != null) LiveHive.FreecamProfiler.Start(window, vm, Startup);
             _ = vm.InitializeAsync();
         }
         base.OnFrameworkInitializationCompleted();
@@ -40,6 +42,18 @@ public sealed class StartupOptions
     public string? Query { get; set; }
     public int? Node { get; set; }
     public bool Graph { get; set; }
+    /// <summary><c>--graph-layout icicle|radial|nodelink</c>, <c>--color-by kind|time|cluster</c>, <c>--focus N</c> (screenshots of the RAPTOR graph).</summary>
+    public string? GraphLayout { get; set; }
+    public string? ColorBy { get; set; }
+    public int? Focus { get; set; }
+    /// <summary><c>--tip N</c>: pin the graph tooltip of node N (screenshots).</summary>
+    public int? Tip { get; set; }
+    /// <summary><c>--freecam-profile OUT.json</c>: fly the Live Hive free camera on a script and write timings (see FreecamProfiler).</summary>
+    public string? FreecamProfile { get; set; }
+    public double ProfileSeconds { get; set; } = 15;
+    /// <summary><c>--renderer cpu|gl</c>: force the free camera's renderer (default: GL, CPU when GL is unavailable).</summary>
+    public string? Renderer { get; set; }
+    public (int W, int H)? ProfileSize { get; set; }
 
     public static StartupOptions Parse(string[] args)
     {
@@ -57,6 +71,16 @@ public sealed class StartupOptions
                 case "--query": o.Query = Next(); break;
                 case "--node": o.Node = int.TryParse(Next(), out var n) ? n : null; break;
                 case "--graph": o.Graph = true; break;
+                case "--graph-layout": o.GraphLayout = Next()?.ToLowerInvariant(); o.Graph = true; break;
+                case "--color-by": o.ColorBy = Next()?.ToLowerInvariant(); break;
+                case "--focus": o.Focus = int.TryParse(Next(), out var fo) ? fo : null; o.Graph = true; break;
+                case "--tip": o.Tip = int.TryParse(Next(), out var tp) ? tp : null; break;
+                case "--freecam-profile": o.FreecamProfile = Next(); break;
+                case "--profile-seconds": o.ProfileSeconds = double.TryParse(Next(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var ps) ? ps : 15; break;
+                case "--renderer": o.Renderer = Next()?.ToLowerInvariant(); break;
+                case "--profile-size":
+                    if (Next()?.Split('x') is [var pw, var ph] && int.TryParse(pw, out var iw) && int.TryParse(ph, out var ih)) o.ProfileSize = (iw, ih);
+                    break;
             }
         }
         return o;

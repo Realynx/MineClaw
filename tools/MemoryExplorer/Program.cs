@@ -43,16 +43,24 @@ internal static class Screenshot
             Avalonia.Threading.Dispatcher.UIThread.RunJobs();
             Thread.Sleep(20);
         }
-        if (vm.Pages.FirstOrDefault(p => p.Key == "search") is { } sp && o.Query != null && o.Page == "search")
+        if (vm.Pages.FirstOrDefault(p => p.Key == "search") is { } sp && o.Query != null && o.Page is "search" or "tree")
         {
             var s = (SearchViewModel)sp.Page;
             s.Query = o.Query;
             var run = s.RunSearchAsync();
             while (!run.IsCompleted && DateTime.UtcNow < deadline) { Avalonia.Threading.Dispatcher.UIThread.RunJobs(); Thread.Sleep(20); }
         }
-        if (o.Node is { } node) vm.Tree.Reveal(node);
         if (o.Graph) vm.Tree.GraphMode = true;
+        if (o.GraphLayout != null) vm.Tree.SetLayoutCommand.Execute(o.GraphLayout);
+        if (o.ColorBy != null) vm.Tree.ColorByIndex = o.ColorBy switch { "time" => 1, "cluster" => 2, _ => 0 };
+        if (o.Node is { } node) vm.Tree.Reveal(node);
+        if (o.Focus is { } focus) vm.Tree.GraphFocus = focus;
         for (int i = 0; i < 30; i++) { Avalonia.Threading.Dispatcher.UIThread.RunJobs(); Thread.Sleep(20); }
+        if (o.Tip is { } tip && Avalonia.VisualTree.VisualExtensions.GetVisualDescendants(window).OfType<Controls.LayeredGraph>().FirstOrDefault() is { } graph)
+        {
+            graph.PinTooltip(tip);
+            for (int i = 0; i < 5; i++) { Avalonia.Threading.Dispatcher.UIThread.RunJobs(); Thread.Sleep(20); }
+        }
         var frame = window.CaptureRenderedFrame();
         if (frame == null) { Console.Error.WriteLine("no frame rendered"); return 1; }
         var path = Path.GetFullPath(o.Screenshot!);

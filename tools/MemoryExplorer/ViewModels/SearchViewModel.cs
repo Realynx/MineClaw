@@ -39,6 +39,7 @@ public sealed partial class SearchViewModel(MainWindowViewModel shell) : PageVie
         TreeHits.Clear();
         HasResults = false;
         ResultInfo = "";
+        Shell.Tree.ClearHitsCommand.Execute(null);
         if (bank == null) { EmptyText = "Open a database to search it."; ModeNote = ""; return Task.CompletedTask; }
         var svc = new SearchService(bank);
         ModeNote = svc.ModeNote;
@@ -71,6 +72,8 @@ public sealed partial class SearchViewModel(MainWindowViewModel shell) : PageVie
             ResultInfo = $"{Hits.Count} hits in {outcome.Elapsed.TotalMilliseconds:0} ms" + (outcome.QueryEmbedded ? " · query embedded" : "");
             EmptyText = Hits.Count == 0 ? $"Nothing found for \"{Query.Trim()}\"." : null;
             SelectedHit = Hits.FirstOrDefault();
+            // Light the results up in the RAPTOR graph (Ctrl+K lands here too).
+            Shell.Tree.SetSearchHits(Hits.Select(h => bank.NodeOfDoc(h.Id) ?? -1).Concat(TreeHits.Select(t => t.Index)), Query.Trim());
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { EmptyText = "Search failed: " + ex.Message; }
@@ -94,6 +97,17 @@ public sealed partial class SearchViewModel(MainWindowViewModel shell) : PageVie
         return new HitRow(s.Rank, h.Id, h.Ref, h.Kind + (h.Tag != null ? "/" + h.Tag : ""), h.Title, snippet, h.Body,
             h.Score.ToString("0.0000", CultureInfo.InvariantCulture), string.Join(" · ", signals), h.Updated.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture),
             crumbs, where);
+    }
+
+    /// <summary>"Show in graph": the hit's tree node, selected and in focus in the RAPTOR graph.</summary>
+    [RelayCommand]
+    private void ShowInGraph(HitRow? hit)
+    {
+        if (hit == null || Bank is not { } bank) return;
+        int? node = bank.NodeOfDoc(hit.Id) ?? (hit.Path.Count > 0 ? hit.Path[^1].Index : null);
+        if (node is not { } n) return;
+        Shell.Navigate("tree");
+        Shell.Tree.ShowInGraph(n);
     }
 
     [RelayCommand]

@@ -85,10 +85,19 @@
                   <Run Text=" " /><Run Text="{Binding SelectedHit.Where, FallbackValue='', Mode=OneWay}" />
                 </TextBlock>
               </StackPanel>
-              <Button Grid.Column="1" Classes="icon" VerticalAlignment="Top" ToolTip.Tip="Copy the text"
-                      Command="{Binding CopyCommand}" CommandParameter="{Binding SelectedHit.Body, FallbackValue=''}">
-                <PathIcon Data="{StaticResource IconCopy}" />
-              </Button>
+              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Top">
+                <Button Classes="ghost" ToolTip.Tip="Open the RAPTOR graph on this memory (all hits stay lit)"
+                        Command="{Binding ShowInGraphCommand}" CommandParameter="{Binding SelectedHit}" IsVisible="{Binding SelectedHit.HasPath, FallbackValue=False}">
+                  <StackPanel Orientation="Horizontal" Spacing="6">
+                    <PathIcon Data="{StaticResource IconGraph}" Width="12" Height="12" />
+                    <TextBlock Text="Show in graph" FontSize="12.5" />
+                  </StackPanel>
+                </Button>
+                <Button Classes="icon" ToolTip.Tip="Copy the text"
+                        Command="{Binding CopyCommand}" CommandParameter="{Binding SelectedHit.Body, FallbackValue=''}">
+                  <PathIcon Data="{StaticResource IconCopy}" />
+                </Button>
+              </StackPanel>
             </Grid>
             <Border Classes="card">
               <SelectableTextBlock Classes="body" Text="{Binding SelectedHit.Body, FallbackValue=''}" />

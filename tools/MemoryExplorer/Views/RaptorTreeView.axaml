@@ -5,6 +5,32 @@
              xmlns:v="using:MineClaw.MemoryExplorer.Views"
              x:Class="MineClaw.MemoryExplorer.Views.RaptorTreeView"
              x:DataType="vm:RaptorTreeViewModel">
+  <UserControl.Styles>
+    <Style Selector="Border.segmented">
+      <Setter Property="Background" Value="{DynamicResource ChipBrush}" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="2" />
+    </Style>
+    <Style Selector="Button.seg">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="6" />
+      <Setter Property="Padding" Value="10,4" />
+      <Setter Property="FontSize" Value="12.5" />
+      <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}" />
+    </Style>
+    <Style Selector="Button.seg:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource CardHoverBrush}" />
+    </Style>
+    <Style Selector="Button.seg.on">
+      <Setter Property="Background" Value="{DynamicResource CardBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    </Style>
+    <Style Selector="Button.seg.on /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource CardBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+    </Style>
+  </UserControl.Styles>
   <Grid ColumnDefinitions="5*,Auto,4*">
     <!-- Left: tree or layered graph -->
     <DockPanel Margin="24,20,12,16">
@@ -13,21 +39,62 @@
           <TextBlock Classes="h1" Text="RAPTOR tree" />
           <TextBlock Classes="muted" Text="{Binding Headline}" />
         </StackPanel>
-        <StackPanel Orientation="Horizontal" Spacing="8">
+        <WrapPanel Orientation="Horizontal" ItemSpacing="8" LineSpacing="8">
           <TextBox Width="130" Watermark="Go to #node" Text="{Binding GoTo}" Classes="search">
             <TextBox.KeyBindings>
               <KeyBinding Gesture="Enter" Command="{Binding GoToNodeCommand}" />
             </TextBox.KeyBindings>
           </TextBox>
           <ToggleButton Classes="ghost" IsChecked="{Binding GraphMode}" Padding="10,6" CornerRadius="7"
-                        ToolTip.Tip="Layered graph: roots on top, leaves at the bottom. Wheel zooms, drag pans, click selects.">
+                        ToolTip.Tip="RAPTOR graph: bands sized by leaf count, roots on top. Wheel zooms, drag pans, click selects, double-click focuses a subtree, Esc zooms out, arrows walk the tree.">
             <StackPanel Orientation="Horizontal" Spacing="6">
               <PathIcon Data="{StaticResource IconGraph}" Width="13" Height="13" />
               <TextBlock Text="Graph view" />
             </StackPanel>
           </ToggleButton>
           <Button Classes="ghost" Command="{Binding CollapseAllCommand}" IsVisible="{Binding TreeMode}">Collapse all</Button>
-        </StackPanel>
+
+          <!-- Graph tools -->
+          <Border Classes="segmented" IsVisible="{Binding GraphMode}">
+            <StackPanel Orientation="Horizontal" Spacing="2">
+              <Button Classes="seg" Classes.on="{Binding IsIcicle}" Command="{Binding SetLayoutCommand}" CommandParameter="icicle"
+                      ToolTip.Tip="Icicle: each band's width is its leaf count, nested under its parent">Icicle</Button>
+              <Button Classes="seg" Classes.on="{Binding IsRadial}" Command="{Binding SetLayoutCommand}" CommandParameter="radial"
+                      ToolTip.Tip="Sunburst: the same partition as rings, roots inside">Radial</Button>
+              <Button Classes="seg" Classes.on="{Binding IsNodeLink}" Command="{Binding SetLayoutCommand}" CommandParameter="nodelink"
+                      ToolTip.Tip="Node-link: best for a focused subtree (double-click a band first)">Node-link</Button>
+            </StackPanel>
+          </Border>
+          <ComboBox ItemsSource="{Binding ColorOptions}" SelectedIndex="{Binding ColorByIndex}" MinWidth="140" IsVisible="{Binding GraphMode}"
+                    ToolTip.Tip="Colour by memory kind, by the newest leaf's time, or by root cluster" />
+        </WrapPanel>
+        <Grid ColumnDefinitions="*,Auto,Auto" IsVisible="{Binding GraphMode}" Margin="0,-4,0,-6">
+          <ItemsControl ItemsSource="{Binding FocusCrumbs}" VerticalAlignment="Center">
+            <ItemsControl.ItemsPanel>
+              <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:Crumb">
+                <StackPanel Orientation="Horizontal">
+                  <Button Classes="link" Content="{Binding Label}" FontSize="12"
+                          Command="{Binding $parent[UserControl].((vm:RaptorTreeViewModel)DataContext).FocusOnCommand}" CommandParameter="{Binding Index}" />
+                  <PathIcon Data="{StaticResource IconChevron}" Width="10" Height="10" Margin="2,0" Foreground="{DynamicResource TextFaintBrush}" />
+                </StackPanel>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <Border Grid.Column="1" Classes="chip" Padding="9,2" Margin="0,0,8,0" VerticalAlignment="Center" IsVisible="{Binding HasGraphHits}">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <PathIcon Data="{StaticResource IconSearch}" Width="11" Height="11" Foreground="{DynamicResource AccentBrush}" />
+              <TextBlock Text="{Binding GraphHitsInfo}" FontSize="11.5" VerticalAlignment="Center" />
+              <Button Classes="link" Content="clear" FontSize="11.5" Command="{Binding ClearHitsCommand}" Padding="0" />
+            </StackPanel>
+          </Border>
+          <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="2">
+            <Button Classes="ghost" Click="OnFit" FontSize="12.5" Padding="8,4" ToolTip.Tip="Fit the focused subtree (F)">Fit</Button>
+            <Button Classes="ghost" Click="OnReset" FontSize="12.5" Padding="8,4" ToolTip.Tip="Whole tree, no focus (Home)">Reset</Button>
+          </StackPanel>
+        </Grid>
       </StackPanel>
 
       <Border Classes="card" Padding="6">
@@ -50,7 +117,9 @@
               </TreeDataTemplate>
             </TreeView.ItemTemplate>
           </TreeView>
-          <c:LayeredGraph Model="{Binding Graph}" SelectedIndex="{Binding GraphSelected, Mode=TwoWay}" IsVisible="{Binding GraphMode}" />
+          <c:LayeredGraph x:Name="Graph" Model="{Binding Graph}" SelectedIndex="{Binding GraphSelected, Mode=TwoWay}" IsVisible="{Binding GraphMode}"
+                          FocusIndex="{Binding GraphFocus, Mode=TwoWay}" LayoutKind="{Binding GraphLayout}" ColorBy="{Binding GraphColorBy}"
+                          SearchHits="{Binding GraphHits}" />
         </Grid>
       </Border>
     </DockPanel>
