@@ -45,3 +45,34 @@ public sealed class Beta181PhysicsRules : IPhysicsRules
 
     public double Slipperiness(int blockId) => BlockShapes.Slipperiness(blockId);
 }
+
+/// <summary>
+/// 1.12.2 movement, P1 basics: b1.8.1's <see cref="PlayerPhysics"/> where the decompiled 1.12.2 source does the same thing
+/// (gravity 0.08 and ×0.98 drag, ground slipperiness 0.6 × 0.91, jump 0.42, sprint ×1.3 and the 0.2 sprint-jump boost, water
+/// 0.8 / lava 0.5 drag: <c>EntityLivingBase.travel</c>, <c>jump</c>), with the 1.12.2 step height of 0.6F (<c>EntityLivingBase</c>'s constructor sets <c>stepHeight = 0.6F</c>) and the 256-high world.
+/// Sprint and sneak reach the server as Entity Action, translated by the 1.12.2 connection.
+/// <para>Pending (multi-version P3, from <c>Entity.move</c>, <c>EntityLivingBase.travel</c>, <c>EntityPlayerSP.onLivingUpdate</c>):
+/// 1.12.2's step without ySize smoothing, the 1.65-high sneaking box (<c>EntityPlayer.updateSize</c>, when it fits) and its
+/// eye height 1.54 (<c>EntityPlayer.getEyeHeight</c>), the attribute-based
+/// walk speed, ladder/vine rules, the new collision shapes (fences, panes, walls, stairs by state) and new blocks'
+/// slipperiness (slime 0.8, packed ice 0.98).</para>
+/// </summary>
+public sealed class Release1122PhysicsRules : IPhysicsRules
+{
+    public static readonly Release1122PhysicsRules Instance = new();
+
+    public const double Step = 0.6f;
+
+    public double Width => PlayerPhysics.Width;
+    public double Height => PlayerPhysics.Height;
+    public double EyeHeight => PlayerPhysics.EyeHeight;
+    public double StepHeight => Step;
+    public int WorldHeight => ChunkColumn.MaxHeight;
+
+    public void Tick(IBlockAccess world, PhysicsState state, MoveInput input) => PlayerPhysics.Tick(world, state, input, Step);
+
+    public void AddCollisionBoxes(IBlockAccess world, int x, int y, int z, List<AABB> output) =>
+        BlockShapes.AddCollisionBoxes(world, x, y, z, output);
+
+    public double Slipperiness(int blockId) => BlockShapes.Slipperiness(blockId);
+}

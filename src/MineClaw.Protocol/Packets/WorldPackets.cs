@@ -403,3 +403,35 @@ public sealed class ItemDataPacket : IPacket
         w.WriteBytes(Data);
     }
 }
+
+/// <summary>
+/// Version-neutral chunk data (multi-version P1; no b1.8.1 wire form): what a newer protocol's chunk packet decodes to, ready
+/// for <c>WorldState.ApplyChunkRegion</c>. A full (ground-up) column is one region from y 0 to <see cref="Height"/> with the
+/// sections the server left out as air (sky light 15, block light 0); a partial update is one region per sent section.
+/// 1.12.2: Chunk Data 0x20 (decompiled <c>SPacketChunkData</c> + <c>Chunk.read</c>).
+/// </summary>
+public sealed class ChunkSectionsMessage : IPacket
+{
+    /// <summary>Shares the b1.8.1 map-chunk id so logs read "0x33" for chunk data.</summary>
+    public byte Id => MapChunkPacket.PacketId;
+    public int ChunkX { get; init; }
+    public int ChunkZ { get; init; }
+    /// <summary>Ground-up continuous: the whole column (sections not in <see cref="SectionMask"/> are air) plus biomes.</summary>
+    public bool FullChunk { get; init; }
+    /// <summary>Bit n = section n (y 16n..16n+15) was sent.</summary>
+    public int SectionMask { get; init; }
+    /// <summary>Blocks per column of the sending version (256 for 1.12.2).</summary>
+    public int Height { get; init; }
+    /// <summary>Whether the packet carried sky light (overworld); false = the regions' sky light is null.</summary>
+    public bool HasSkyLight { get; init; }
+    public IReadOnlyList<ChunkRegion> Regions { get; init; } = [];
+    /// <summary>256 biome ids (index z·16 + x) of a full chunk, else null.</summary>
+    public byte[]? Biomes { get; init; }
+    /// <summary>Block entity NBT compounds (signs, chests, spawners…) as sent.</summary>
+    public IReadOnlyList<Release1122.NbtCompound> BlockEntities { get; init; } = [];
+
+    public void Read(MinecraftReader r, PacketDirection d) => throw new NotSupportedException("ChunkSectionsMessage is version-neutral: it has no b1.8.1 wire form");
+    public void Write(MinecraftWriter w, PacketDirection d) => throw new NotSupportedException("ChunkSectionsMessage is version-neutral: it has no b1.8.1 wire form");
+
+    public override string ToString() => $"ChunkSections({ChunkX},{ChunkZ} {(FullChunk ? "full" : "partial")} mask 0x{SectionMask:X4}, {BlockEntities.Count} block entities)";
+}

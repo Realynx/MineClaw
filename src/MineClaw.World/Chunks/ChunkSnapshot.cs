@@ -10,17 +10,22 @@ namespace MineClaw.World;
 /// </summary>
 public sealed class ChunkSnapshot
 {
+    /// <summary>Cells of a b1.8.1 (128-high) column. A 1.12.2 column holds twice as many (<see cref="ChunkColumn"/>'s layout:
+    /// the upper half follows the lower one, so the lower half reads the same either way).</summary>
     public const int Volume = ChunkColumn.Volume;
 
     public byte[] Ids { get; }
     public byte[] Meta { get; }
     public long Hash { get; }
+    /// <summary>Blocks per column: 128 or 256.</summary>
+    public int Height { get; }
 
     public ChunkSnapshot(byte[] ids, byte[] meta)
     {
-        if (ids.Length != Volume || meta.Length != Volume) throw new ArgumentException("snapshot arrays must hold one column");
+        if (ids.Length is not (Volume or 2 * Volume) || meta.Length != ids.Length) throw new ArgumentException("snapshot arrays must hold one column");
         Ids = ids;
         Meta = meta;
+        Height = ids.Length / (ChunkColumn.SizeX * ChunkColumn.SizeZ);
         Hash = ComputeHash(ids, meta);
     }
 
@@ -30,8 +35,8 @@ public sealed class ChunkSnapshot
 
     private static byte[] Normalize(ReadOnlySpan<byte> meta)
     {
-        var m = new byte[Volume];
-        for (int i = 0; i < Volume; i++) m[i] = (byte)(meta[i] & 0x0F);
+        var m = new byte[meta.Length];
+        for (int i = 0; i < m.Length; i++) m[i] = (byte)(meta[i] & 0x0F);
         return m;
     }
 
@@ -56,33 +61,39 @@ public sealed class ChunkSnapshot
     /// <summary>Deflated bytes (ids, then metadata nibbles).</summary>
     public byte[] Encode()
     {
-        var packed = new byte[Volume + Volume / 2];
+        int n = Ids.Length;
+        var packed = new byte[n + n / 2];
         Ids.CopyTo(packed, 0);
-        for (int i = 0; i < Volume; i += 2) packed[Volume + i / 2] = (byte)((Meta[i] & 0x0F) | ((Meta[i + 1] & 0x0F) << 4));
+        for (int i = 0; i < n; i += 2) packed[n + i / 2] = (byte)((Meta[i] & 0x0F) | ((Meta[i + 1] & 0x0F) << 4));
         using var ms = new MemoryStream();
         using (var z = new DeflateStream(ms, CompressionLevel.Fastest, leaveOpen: true)) z.Write(packed);
         return ms.ToArray();
     }
 
+    /// <summary>Decodes <see cref="Encode"/>'s bytes; the column height (128 or 256) follows from the inflated length.</summary>
     public static ChunkSnapshot Decode(byte[] data)
     {
-        var packed = new byte[Volume + Volume / 2];
+        const int small = Volume + Volume / 2, large = 2 * small;
+        var packed = new byte[large];
+        int read = 0;
         using (var z = new DeflateStream(new MemoryStream(data), CompressionMode.Decompress))
         {
-            int read = 0;
             while (read < packed.Length)
             {
                 int n = z.Read(packed, read, packed.Length - read);
-                if (n <= 0) throw new InvalidDataException("truncated chunk snapshot");
+                if (n <= 0) break;
                 read += n;
             }
+            if (read == large && z.ReadByte() >= 0) throw new InvalidDataException("chunk snapshot too long");
         }
-        var ids = new byte[Volume];
-        var meta = new byte[Volume];
-        Array.Copy(packed, ids, Volume);
-        for (int i = 0; i < Volume; i += 2)
+        if (read is not (small or large)) throw new InvalidDataException("truncated chunk snapshot");
+        int v = read == small ? Volume : 2 * Volume;
+        var ids = new byte[v];
+        var meta = new byte[v];
+        Array.Copy(packed, ids, v);
+        for (int i = 0; i < v; i += 2)
         {
-            byte b = packed[Volume + i / 2];
+            byte b = packed[v + i / 2];
             meta[i] = (byte)(b & 0x0F);
             meta[i + 1] = (byte)(b >> 4);
         }
@@ -97,13 +108,13 @@ public sealed class ChunkSnapshot
     {
         var sb = new StringBuilder();
         var counts = new int[256];
-        for (int s = 0; s < ChunkColumn.SizeY / 16; s++)
+        for (int s = 0; s < Height / 16; s++)
         {
             Array.Clear(counts);
             for (int x = 0; x < 16; x++)
             for (int z = 0; z < 16; z++)
             {
-                int b = ChunkColumn.Index(x, s * 16, z);
+                int b = ChunkColumn.Index(x, s * 16, z); // 16 y run: never crosses the 128 half boundary
                 for (int y = 0; y < 16; y++) counts[Ids[b + y]]++;
             }
             var top = Enumerable.Range(1, 255).Where(i => counts[i] > 0).OrderByDescending(i => counts[i]).Take(6).ToList();
@@ -142,6 +153,6 @@ public sealed class RememberedColumn
 
     public ChunkSnapshot Blocks => _blocks.Value;
 
-    public int GetBlock(int lx, int y, int lz) => (uint)y >= ChunkColumn.SizeY ? 0 : Blocks.Ids[ChunkColumn.Index(lx, y, lz)];
-    public int GetMeta(int lx, int y, int lz) => (uint)y >= ChunkColumn.SizeY ? 0 : Blocks.Meta[ChunkColumn.Index(lx, y, lz)];
+    public int GetBlock(int lx, int y, int lz) => (uint)y >= Blocks.Height ? 0 : Blocks.Ids[ChunkColumn.Index(lx, y, lz)];
+    public int GetMeta(int lx, int y, int lz) => (uint)y >= Blocks.Height ? 0 : Blocks.Meta[ChunkColumn.Index(lx, y, lz)];
 }

@@ -35,7 +35,11 @@ public static class PlayerPhysics
     /// Advances the state by one tick. If the chunk under the player isn't loaded the state is left untouched and
     /// <see cref="PhysicsState.Frozen"/> is set (vanilla doesn't tick entities in unloaded chunks either).
     /// </summary>
-    public static void Tick(IBlockAccess w, PhysicsState s, MoveInput input)
+    public static void Tick(IBlockAccess w, PhysicsState s, MoveInput input) => Tick(w, s, input, StepHeight);
+
+    /// <summary><see cref="Tick(IBlockAccess, PhysicsState, MoveInput)"/> with another step height (1.12.2: 0.6; the rest of
+    /// the 1.12.2 move is pending the decompiled source, multi-version P3).</summary>
+    public static void Tick(IBlockAccess w, PhysicsState s, MoveInput input, double stepHeight)
     {
         int bx = (int)Math.Floor(s.Position.X), bz = (int)Math.Floor(s.Position.Z);
         if (!w.IsLoaded(bx, bz))
@@ -91,18 +95,18 @@ public static class PlayerPhysics
         strafe *= InputDamping;
         forward *= InputDamping;
 
-        MoveWithHeading(w, s, strafe, forward, landFactor, airFactor);
+        MoveWithHeading(w, s, strafe, forward, landFactor, airFactor, stepHeight);
     }
 
     private static void MoveWithHeading(IBlockAccess w, PhysicsState s, double strafe, double forward,
-        double landFactor, double airFactor)
+        double landFactor, double airFactor, double stepHeight)
     {
         if (s.InWater || s.InLava)
         {
             double drag = s.InWater ? WaterDrag : LavaDrag;
             double y0 = s.Position.Y;
             MoveFlying(s, strafe, forward, LiquidAccel);
-            MoveEntity(w, s, s.Velocity.X, s.Velocity.Y, s.Velocity.Z);
+            MoveEntity(w, s, s.Velocity.X, s.Velocity.Y, s.Velocity.Z, stepHeight);
             var v = s.Velocity * drag;
             v = v with { Y = v.Y - LiquidGravity };
             s.Velocity = v;
@@ -132,7 +136,7 @@ public static class PlayerPhysics
             s.FallDistance = 0;
         }
 
-        MoveEntity(w, s, s.Velocity.X, s.Velocity.Y, s.Velocity.Z);
+        MoveEntity(w, s, s.Velocity.X, s.Velocity.Y, s.Velocity.Z, stepHeight);
 
         var v2 = s.Velocity;
         if (s.CollidedHorizontally && IsOnLadder(w, s)) v2 = v2 with { Y = LadderClimbSpeed };
@@ -170,7 +174,9 @@ public static class PlayerPhysics
     }
 
     /// <summary>Entity.moveEntity: swept AABB collision with step-up and sneak edge protection.</summary>
-    public static void MoveEntity(IBlockAccess w, PhysicsState s, double dx, double dy, double dz)
+    public static void MoveEntity(IBlockAccess w, PhysicsState s, double dx, double dy, double dz) => MoveEntity(w, s, dx, dy, dz, StepHeight);
+
+    public static void MoveEntity(IBlockAccess w, PhysicsState s, double dx, double dy, double dz, double stepHeight)
     {
         var boxes = _boxes ??= new List<AABB>(32);
         s.YSize *= 0.4;
@@ -215,11 +221,11 @@ public static class PlayerPhysics
         box = box.Offset(0, 0, dz);
 
         // mc-dev 1.8 Entity.move: `bI > 0 && flag1 && (flag || bH < 0.05F)`: sneaking on ground may step up whatever ySize is.
-        if (StepHeight > 0 && canStep && (sneakOnGround || s.YSize < 0.05f) && (ox != dx || oz != dz))
+        if (stepHeight > 0 && canStep && (sneakOnGround || s.YSize < 0.05f) && (ox != dx || oz != dz))
         {
             double sx = dx, sy = dy, sz = dz;
             var afterBox = box;
-            dx = ox; dy = StepHeight; dz = oz;
+            dx = ox; dy = stepHeight; dz = oz;
             box = startBox;
             BlockShapes.GetCollidingBoxes(w, box.Expand(dx, dy, dz), boxes);
             foreach (var b in boxes) dy = b.CalculateYOffset(box, dy);

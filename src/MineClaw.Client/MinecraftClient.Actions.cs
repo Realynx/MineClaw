@@ -98,7 +98,7 @@ public sealed partial class MinecraftClient
     /// <see cref="ClientOptions.ChatInterval"/> to avoid spam kicks. Returns the number of lines sent.</summary>
     public async Task<ActionResult> SendChatAsync(string text, CancellationToken ct = default)
     {
-        var lines = ChatText.Prepare(text);
+        var lines = ChatText.Prepare(text, Options.Profile.Protocol.MaxChatLength); // b1.8.1 100, 1.12.2 256
         if (lines.Count == 0) return ActionResult.Fail("nothing to say after sanitizing");
         if (lines.Count > 6) lines = lines.Take(6).ToList();
         await _chatLock.WaitAsync(ct).ConfigureAwait(false);

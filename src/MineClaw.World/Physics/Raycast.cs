@@ -25,7 +25,7 @@ public static class Raycast
         double t = 0;
         for (int guard = 0; guard < 1024 && t <= maxDistance; guard++)
         {
-            if (y >= 0 && y < WorldState.Height)
+            if (y >= 0 && y < w.WorldHeight)
             {
                 boxes.Clear();
                 BlockShapes.AddSelectionBoxes(w, x, y, z, boxes);

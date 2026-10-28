@@ -17,6 +17,11 @@ public interface IGameConnection : IDisposable
     /// <summary>Sends one canonical message (translated to the wire version; thread-safe).</summary>
     void Send(IPacket packet);
 
+    /// <summary>Whether this connection can translate <paramref name="packet"/> to its wire version. False for canonical
+    /// messages of features a newer version's translator doesn't cover yet (1.12.2 P1: digging, placing, windows, entity use);
+    /// the client then reports "not supported on this version yet" instead of sending.</summary>
+    bool CanSend(IPacket packet) => true;
+
     /// <summary>Raw traffic hook (the packet recorder chains onto it). For a translating connection the bytes are its own
     /// wire bytes, and recordings carry the version in their header.</summary>
     Action<PacketTraffic>? TrafficLog { get; set; }

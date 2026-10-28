@@ -33,7 +33,13 @@ public sealed class LightEngine
     private readonly object _sync = new();
     private long _updates, _visits, _ticks;
 
-    internal LightEngine(WorldState world) => _w = world;
+    private readonly int _height;
+
+    internal LightEngine(WorldState world)
+    {
+        _w = world;
+        _height = world.WorldHeight;
+    }
 
     // A tiny direct-mapped column cache for the BFS (used only while _sync is held; reset at every entry point, so a column
     // replaced by a reload is never read through a stale reference across updates).
@@ -60,17 +66,17 @@ public sealed class LightEngine
     private int GetC(bool sky, int x, int y, int z)
     {
         if (y < 0) y = 0;
-        if (y >= WorldState.Height) y = WorldState.Height - 1;
+        if (y >= _height) y = _height - 1;
         var c = Col(x, z);
         if (c is null) return 0;
         int i = ChunkColumn.Index(x & 15, y, z & 15);
         return sky ? c.SkyLight[i] : c.BlockLight[i];
     }
 
-    /// <summary>World.a(x0, y0, z0, x1, y1, z1) = areChunksLoaded: every column of the box has data and the box touches 0..127.</summary>
+    /// <summary>World.a(x0, y0, z0, x1, y1, z1) = areChunksLoaded: every column of the box has data and the box touches 0..height-1.</summary>
     private bool Loaded(int x0, int y0, int z0, int x1, int y1, int z1)
     {
-        if (y1 < 0 || y0 >= WorldState.Height) return false;
+        if (y1 < 0 || y0 >= _height) return false;
         for (int cx = x0 >> 4; cx <= x1 >> 4; cx++)
         for (int cz = z0 >> 4; cz <= z1 >> 4; cz++)
             if (Col(cx << 4, cz << 4) is null) return false;
@@ -93,11 +99,11 @@ public sealed class LightEngine
 
     // ------------------------------------------------------------------ reads
 
-    /// <summary>World.a(EnumSkyBlock, x, y, z): y clamped to 0..127, 0 for an unloaded column.</summary>
+    /// <summary>World.a(EnumSkyBlock, x, y, z): y clamped to 0..height-1, 0 for an unloaded column.</summary>
     public int Get(bool sky, int x, int y, int z)
     {
         if (y < 0) y = 0;
-        if (y >= WorldState.Height) y = WorldState.Height - 1;
+        if (y >= _height) y = _height - 1;
         var c = _w.ColumnAtRaw(x, z);
         if (c is null || !c.HasData) return 0;
         int i = ChunkColumn.Index(x & 15, y, z & 15);
@@ -127,7 +133,7 @@ public sealed class LightEngine
     {
         if (neighbours)
         {
-            int id = (uint)y < WorldState.Height ? _w.GetBlock(x, y, z) : 0;
+            int id = (uint)y < _height ? _w.GetBlock(x, y, z) : 0;
             if (id is 44 or 60 or 67 or 53)
             {
                 int best = LightLevel(x, y + 1, z, skylightSubtracted, false);
@@ -138,7 +144,7 @@ public sealed class LightEngine
             }
         }
         if (y < 0) return 0;
-        if (y >= WorldState.Height) y = WorldState.Height - 1;
+        if (y >= _height) y = _height - 1;
         var c = _w.ColumnAtRaw(x, z);
         if (c is null || !c.HasData) return 0;
         int i = ChunkColumn.Index(x & 15, y, z & 15);
@@ -214,11 +220,11 @@ public sealed class LightEngine
                 if (!hasSky) InitSky(c, lx, lz);
                 if (!hasBlock)
                 {
-                    int b = (lx * 16 + lz) * WorldState.Height;
-                    for (int y = 0; y < WorldState.Height; y++)
+                    for (int y = 0; y < _height; y++)
                     {
-                        c.BlockLight[b + y] = 0;
-                        if (LightTables.Emission(c.Ids[b + y]) > 0) emitters.Add(new BlockPos(x, y, z));
+                        int i = ChunkColumn.Index(lx, y, lz);
+                        c.BlockLight[i] = 0;
+                        if (LightTables.Emission(c.Ids[i]) > 0) emitters.Add(new BlockPos(x, y, z));
                     }
                 }
             }
@@ -252,22 +258,21 @@ public sealed class LightEngine
     /// <summary>The height map loop of Chunk.initLighting for one local column.</summary>
     private static void RecomputeHeight(ChunkColumn c, int lx, int lz)
     {
-        int b = (lx * 16 + lz) * WorldState.Height;
-        int l = WorldState.Height - 1;
-        while (l > 0 && LightTables.Opacity(c.Ids[b + l - 1]) == 0) l--;
-        c.HeightMap[lz << 4 | lx] = (byte)l;
+        int l = c.Height - 1;
+        while (l > 0 && LightTables.Opacity(c.Ids[ChunkColumn.Index(lx, l - 1, lz)]) == 0) l--;
+        c.HeightMap[lz << 4 | lx] = (short)l;
     }
 
     /// <summary>Chunk.initLighting's sky pass for one local column (no light array came with it).</summary>
     private static void InitSky(ChunkColumn c, int lx, int lz)
     {
-        int b = (lx * 16 + lz) * WorldState.Height;
-        Array.Clear(c.SkyLight, b, WorldState.Height);
-        int k1 = 15, l1 = WorldState.Height - 1;
+        for (int half = 0; half < c.Height >> 7; half++) Array.Clear(c.SkyLight, half << 15 | (lx * 16 + lz) * ChunkColumn.SizeY, ChunkColumn.SizeY);
+        int k1 = 15, l1 = c.Height - 1;
         do
         {
-            k1 -= LightTables.Opacity(c.Ids[b + l1]);
-            if (k1 > 0) c.SkyLight[b + l1] = (byte)k1;
+            int i = ChunkColumn.Index(lx, l1, lz);
+            k1 -= LightTables.Opacity(c.Ids[i]);
+            if (k1 > 0) c.SkyLight[i] = (byte)k1;
             --l1;
         } while (l1 > 0 && k1 > 0);
     }
@@ -288,7 +293,7 @@ public sealed class LightEngine
     {
         if (!Enabled) return;
         var c = _w.ColumnAtRaw(x, z);
-        if (c is null || !c.HasData || (uint)y >= WorldState.Height) return;
+        if (c is null || !c.HasData || (uint)y >= _height) return;
         long t0 = Stopwatch.GetTimestamp();
         lock (_sync)
         {
@@ -315,24 +320,23 @@ public sealed class LightEngine
         int l = c.HeightMap[lz << 4 | lx];
         int i1 = l;
         if (j > l) i1 = j;
-        int b = (lx * 16 + lz) * WorldState.Height;
-        while (i1 > 0 && LightTables.Opacity(c.Ids[b + i1 - 1]) == 0) --i1;
+        while (i1 > 0 && LightTables.Opacity(c.Ids[ChunkColumn.Index(lx, i1 - 1, lz)]) == 0) --i1;
         if (i1 == l) return;
         // mc-dev passes the LOCAL x/z to World.g here (this.world.g(i, k, i1, l)): it relights world column (lx, lz). Kept.
         WorldG(lx, lz, i1, l);
-        c.HeightMap[lz << 4 | lx] = (byte)i1;
+        c.HeightMap[lz << 4 | lx] = (short)i1;
         int wx = c.ChunkX * 16 + lx, wz = c.ChunkZ * 16 + lz;
-        if (i1 < l) for (int y = i1; y < l; y++) c.SkyLight[b + y] = 15;
-        else for (int y = l; y < i1; y++) c.SkyLight[b + y] = 0;
+        if (i1 < l) for (int y = i1; y < l; y++) c.SkyLight[ChunkColumn.Index(lx, y, lz)] = 15;
+        else for (int y = l; y < i1; y++) c.SkyLight[ChunkColumn.Index(lx, y, lz)] = 0;
         int j2 = 15;
         while (i1 > 0 && j2 > 0)
         {
             --i1;
-            int k2 = LightTables.Opacity(c.Ids[b + i1]);
+            int k2 = LightTables.Opacity(c.Ids[ChunkColumn.Index(lx, i1, lz)]);
             if (k2 == 0) k2 = 1;
             j2 -= k2;
             if (j2 < 0) j2 = 0;
-            c.SkyLight[b + i1] = (byte)j2;
+            c.SkyLight[ChunkColumn.Index(lx, i1, lz)] = (byte)j2;
         }
         int b0 = c.HeightMap[lz << 4 | lx];
         int l2 = l, i3 = b0;
@@ -362,7 +366,7 @@ public sealed class LightEngine
 
     private void Set(bool sky, int x, int y, int z, int v)
     {
-        if ((uint)y >= WorldState.Height) return;
+        if ((uint)y >= _height) return;
         var c = Col(x, z);
         if (c is null) return;
         int i = ChunkColumn.Index(x & 15, y, z & 15);
@@ -371,7 +375,7 @@ public sealed class LightEngine
     }
 
     private int TypeId(int x, int y, int z) =>
-        (uint)y < WorldState.Height && Col(x, z) is { } c ? c.Ids[ChunkColumn.Index(x & 15, y, z & 15)] : 0;
+        (uint)y < _height && Col(x, z) is { } c ? c.Ids[ChunkColumn.Index(x & 15, y, z & 15)] : 0;
 
     /// <summary>World.d: sky light a cell should have (15 under open sky, else the brightest neighbour minus opacity).</summary>
     private int SkyValue(int x, int y, int z, int opacity)

@@ -62,6 +62,8 @@ public sealed partial class MinecraftClient
                 Raise(() => Kicked?.Invoke(kick.Reason));
                 EndSession(s, "kicked: " + kick.Reason);
                 return;
+            case ChatPacket { Position: ChatPacket.PositionGameInfo }:
+                break; // 1.12.2 action-bar text: not chat
             case ChatPacket chat:
                 Raise(() => ChatReceived?.Invoke(chat.Message));
                 if (ChatText.TryParsePlayerChat(chat.Message, out var chatFrom, out var chatText))
@@ -128,6 +130,11 @@ public sealed partial class MinecraftClient
                 w.ApplyChunkRegion(r.X, r.Y, r.Z, r.SizeX, r.SizeY, r.SizeZ, r.BlockIds, r.Metadata, r.BlockLight, r.SkyLight);
                 break;
             }
+            case ChunkSectionsMessage cs:
+                // Newer versions' chunk data, decoded by the connection (1.12.2: paletted 16³ sections, 256 high).
+                foreach (var r in cs.Regions)
+                    w.ApplyChunkRegion(r.X, r.Y, r.Z, r.SizeX, r.SizeY, r.SizeZ, r.BlockIds, r.Metadata, r.BlockLight, cs.HasSkyLight ? r.SkyLight : null);
+                break;
             case BlockChangePacket bc:
                 w.SetBlock(bc.X, bc.Y, bc.Z, bc.BlockId, bc.Metadata);
                 break;

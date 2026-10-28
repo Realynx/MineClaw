@@ -16,4 +16,7 @@ public interface IBlockAccess
 
     /// <summary>Static properties for a block id.</summary>
     BlockInfo Info(int id);
+
+    /// <summary>Blocks per column (b1.8.1 128, 1.12.2 256). Implementations that predate multi-version are 128 high.</summary>
+    int WorldHeight => ChunkColumn.SizeY;
 }

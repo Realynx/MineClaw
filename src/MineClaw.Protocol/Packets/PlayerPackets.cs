@@ -39,6 +39,9 @@ public sealed class UpdateHealthPacket : IPacket
     public short Health { get; set; }
     public short Food { get; set; }
     public float FoodSaturation { get; set; }
+    /// <summary>The exact health a 1.12.2 server sent (a float; <see cref="Health"/> is its ceiling, so 0.5 hp isn't dead).
+    /// Null on b1.8.1.</summary>
+    public float? HealthExact { get; set; }
 
     public void Read(MinecraftReader r, PacketDirection d)
     {

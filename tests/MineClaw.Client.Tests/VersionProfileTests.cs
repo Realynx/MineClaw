@@ -26,11 +26,16 @@ public class VersionProfileTests
     }
 
     [Fact]
-    public void Release1122IsKnownButNotImplementedYet()
+    public void Release1122IsImplemented()
     {
-        Assert.False(GameVersionProfiles.IsImplemented(GameVersion.Release1122));
-        var ex = Assert.Throws<UnsupportedVersionException>(() => GameVersionProfiles.For(GameVersion.Release1122));
-        Assert.Contains("P1", ex.Message);
+        Assert.True(GameVersionProfiles.IsImplemented(GameVersion.Release1122));
+        var p = GameVersionProfiles.For(GameVersion.Release1122);
+        Assert.Same(GameVersionProfiles.Java1122, p);
+        Assert.Same(GameVersion.Release1122, p.Version);
+        Assert.Equal(256, p.Physics.WorldHeight);
+        Assert.Equal(0.6, p.Physics.StepHeight, 6);
+        Assert.Equal(256, p.Protocol.MaxChatLength);
+        Assert.Same(GameVersion.Release1122, p.Protocol.Version);
     }
 
     [Fact]

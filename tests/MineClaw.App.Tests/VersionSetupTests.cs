@@ -64,11 +64,13 @@ public class VersionSetupTests : IDisposable
     }
 
     [Fact]
-    public async Task A1122ServerIsAClearConfigErrorUntilP1()
+    public async Task A1122ServerGetsThe1122Profile()
     {
+        // Multi-version P1: the "recognised but not implemented" exit is gone for 1.12.2.
         var o = await Resolve("auto", _ => Task.FromResult(ServerPing.ParseStatusJson("""{"version":{"name":"1.12.2","protocol":340}}""")));
-        Assert.Null(o.Profile);
-        Assert.Contains("not implemented yet", o.Error);
+        Assert.Null(o.Error);
+        Assert.Same(GameVersionProfiles.Java1122, o.Profile);
+        Assert.Equal("1.12.2", File.ReadAllText(Path.Combine(_dir, VersionSetup.LastKnownFile)).Trim());
         var bad = await Resolve("1.7.10", _ => throw new InvalidOperationException());
         Assert.Contains("not a version MineClaw knows", bad.Error);
     }

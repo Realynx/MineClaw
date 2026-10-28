@@ -24,22 +24,29 @@ public sealed class GameVersionProfile(GameVersion version, IProtocolAdapter pro
     public override string ToString() => Version.ToString();
 }
 
-/// <summary>The implemented profiles. P0: b1.8.1 only.</summary>
+/// <summary>The implemented profiles: b1.8.1 and 1.12.2 (multi-version P1).</summary>
 public static class GameVersionProfiles
 {
     /// <summary>b1.8.1: the existing code behind the seams, unchanged (the default of <see cref="ClientOptions.Profile"/>).</summary>
     public static GameVersionProfile Beta181 { get; } = new(GameVersion.Beta181, Beta181ProtocolAdapter.Instance, Beta181PhysicsRules.Instance,
         Beta181CombatRules.Instance, Beta181HungerRules.Instance, Beta181GameData.Instance);
 
-    public static bool IsImplemented(GameVersion v) => v == GameVersion.Beta181;
+    /// <summary>
+    /// 1.12.2 (protocol 340), multi-version P1: the translating connection (login, keep-alive, chat, game state, movement,
+    /// chunks with a 256-high world) and step-0.6 physics. Combat, hunger and game data still use the b1.8.1 rules until
+    /// P4/P5; dig, place, windows and entity use answer "not supported on 1.12.2 yet" (P2).
+    /// </summary>
+    public static GameVersionProfile Java1122 { get; } = new(GameVersion.Release1122,
+        MineClaw.Protocol.Release1122.Release1122ProtocolAdapter.Instance, Release1122PhysicsRules.Instance,
+        Beta181CombatRules.Instance, Beta181HungerRules.Instance, Beta181GameData.Instance);
 
-    /// <summary>The profile for a version; throws <see cref="UnsupportedVersionException"/> for a known version whose
-    /// implementation hasn't shipped yet (1.12.2 until multi-version P1).</summary>
+    public static bool IsImplemented(GameVersion v) => v == GameVersion.Beta181 || v == GameVersion.Release1122;
+
+    /// <summary>The profile for a version; throws <see cref="UnsupportedVersionException"/> for a version without one.</summary>
     public static GameVersionProfile For(GameVersion v)
     {
         if (v == GameVersion.Beta181) return Beta181;
-        throw new UnsupportedVersionException(
-            $"{v} is recognised but not implemented yet (docs/design/multi-version.md: 1.12.2 login/chat/chunks arrive in P1); " +
-            "this build speaks b1.8.1 only");
+        if (v == GameVersion.Release1122) return Java1122;
+        throw new UnsupportedVersionException($"{v} is recognised but not implemented (this build speaks b1.8.1 and 1.12.2)");
     }
 }

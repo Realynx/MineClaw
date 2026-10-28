@@ -200,7 +200,7 @@ public sealed partial class MinecraftClient
         GestureAfterGuard(combat.Overrides || parkour is not null || allowDrop);
         Combat.OnGuard(guard);
 
-        PlayerPhysics.Tick(World, phys, input);
+        Options.Profile.Physics.Tick(World, phys, input); // b1.8.1: PlayerPhysics.Tick; 1.12.2: step 0.6 (multi-version P1)
         if (d is not null || combat.Overrides) { _lookYaw = phys.Yaw; _lookPitch = phys.Pitch; } // idle keeps the last look
         player.SyncFromPhysics();
 

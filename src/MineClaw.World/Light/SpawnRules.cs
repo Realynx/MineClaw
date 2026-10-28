@@ -40,7 +40,7 @@ public static class SpawnRules
     public static SpawnBlock Check(WorldState w, BlockPos p, int skylightSubtracted, bool spawnRadius = true, int maxLight = 7)
     {
         int x = p.X, y = p.Y, z = p.Z;
-        if ((uint)y >= WorldState.Height || y < 1 || !w.IsLoaded(x, z)) return SpawnBlock.NotLoaded;
+        if ((uint)y >= w.WorldHeight || y < 1 || !w.IsLoaded(x, z)) return SpawnBlock.NotLoaded;
         if (!LightTables.IsNormalCube(w.GetBlock(x, y - 1, z))) return SpawnBlock.NoFloor;
         int id = w.GetBlock(x, y, z);
         if (LightTables.IsNormalCube(id) || BlockShapes.IsLiquid(id) || LightTables.IsNormalCube(w.GetBlock(x, y + 1, z))) return SpawnBlock.Blocked;

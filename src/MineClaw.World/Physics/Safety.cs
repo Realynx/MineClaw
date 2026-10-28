@@ -13,7 +13,7 @@ public static class Safety
     public static bool IsOverVoid(IBlockAccess w, int x, int y, int z)
     {
         if (!w.IsLoaded(x, z)) return true;
-        for (int yy = Math.Min(y, WorldState.Height - 1); yy >= 0; yy--)
+        for (int yy = Math.Min(y, w.WorldHeight - 1); yy >= 0; yy--)
             if (BlockShapes.HasCollision(w, x, yy, z)) return false;
         return true;
     }
@@ -22,7 +22,7 @@ public static class Safety
     public static int SupportBelow(IBlockAccess w, int x, int fromY, int z)
     {
         if (!w.IsLoaded(x, z)) return -1;
-        for (int yy = Math.Min(fromY, WorldState.Height - 1); yy >= 0; yy--)
+        for (int yy = Math.Min(fromY, w.WorldHeight - 1); yy >= 0; yy--)
             if (BlockShapes.HasCollision(w, x, yy, z)) return yy;
         return -1;
     }
@@ -69,8 +69,8 @@ public static class Safety
     public static bool IsDeadlyColumn(IBlockAccess w, int x, int feetY, int z, double maxFall)
     {
         if (!w.IsLoaded(x, z)) return true;
-        if (feetY >= 0 && feetY < WorldState.Height && BlockShapes.HasCollision(w, x, feetY, z)) return false;
-        for (int yy = Math.Min(feetY - 1, WorldState.Height - 1); yy >= 0; yy--)
+        if (feetY >= 0 && feetY < w.WorldHeight && BlockShapes.HasCollision(w, x, feetY, z)) return false;
+        for (int yy = Math.Min(feetY - 1, w.WorldHeight - 1); yy >= 0; yy--)
         {
             int id = w.GetBlock(x, yy, z);
             if (id == 0) continue;
@@ -147,7 +147,7 @@ public static class Safety
     /// and not over the void.</summary>
     public static bool IsStandable(IBlockAccess w, int x, int y, int z)
     {
-        if (!w.IsLoaded(x, z) || y < 1 || y + 1 >= WorldState.Height) return false;
+        if (!w.IsLoaded(x, z) || y < 1 || y + 1 >= w.WorldHeight) return false;
         if (!BlockShapes.HasCollision(w, x, y - 1, z) || BlockShapes.CollisionTop(w, x, y - 1, z) < 1 - 1e-9) return false;
         if (BlockShapes.HasCollision(w, x, y, z) || BlockShapes.HasCollision(w, x, y + 1, z)) return false;
         return !IsHazard(w, w.GetBlock(x, y, z)) && !IsHazard(w, w.GetBlock(x, y + 1, z)) && !IsHazard(w, w.GetBlock(x, y - 1, z));

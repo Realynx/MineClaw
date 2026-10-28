@@ -26,8 +26,11 @@ resolved once by the App before any client exists (`Bot:Server:Version` auto | b
 `<data>/server-version.txt`, else b1.8.1; clones get main's id on their command line). It is injected as one
 `Client/Versioning/GameVersionProfile` (`ClientOptions.Profile`): `IProtocolAdapter`/`IGameConnection` (the client connects and
 logs in through it; the wire is translated to the canonical `Protocol.Packets` model), `IPhysicsRules`, `ICombatRules`,
-`IHungerRules`, `IGameData`. P0: b1.8.1 wrappers only (1.12.2 = "recognised, not implemented" → exit 2); no `if (version)` in
-game code, differences live behind the seams.
+`IHungerRules`, `IGameData`. P1: `GameVersionProfiles.Java1122` = `Protocol/Release1122` (a translating connection: VarInt
+frames + zlib, login/keep-alive/teleport confirm inside, JSON chat → legacy text via the jar's `en_us.lang`, paletted chunk
+sections → the neutral `ChunkSectionsMessage`; `CanSend` false for P2+ features, which the client reports as "not supported on
+1.12.2 yet") + `Release1122PhysicsRules` (step 0.6); its world is 256 high (`WorldState(height:)`, `ChunkColumn` stacks a second
+128 half, so b1.8.1 indices are unchanged). No `if (version)` in game code, differences live behind the seams.
 
 ## Project ownership / contracts
 

@@ -30,7 +30,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
     public MinecraftClient(ClientOptions options, WorldState? world = null)
     {
         Options = options ?? throw new ArgumentNullException(nameof(options));
-        World = world ?? new WorldState();
+        World = world ?? new WorldState(height: options.Profile.Version.WorldHeight);
         IsProtected = options.IsProtected;
         ReservedItems = options.ReservedItems ?? new HashSet<int>();
         Survival = new SurvivalReflex(options.Survival);
@@ -350,6 +350,19 @@ public sealed partial class MinecraftClient : IAsyncDisposable
     private void Send(Session s, IPacket p)
     {
         if (s.Ended) return;
+        if (!s.Conn.CanSend(p))
+        {
+            // A feature the version's translator doesn't cover yet (1.12.2 P1: dig, place, windows, entity use). An action
+            // fails with the reason; the reader/tick threads (reflexes, gestures) drop it with one log line per kind.
+            string why = $"{Describe(p)} is not supported on {Options.Profile.Version.Id} yet";
+            var t = Thread.CurrentThread;
+            if (t == s.Reader || t == s.Ticker)
+            {
+                if (_unsupportedLogged.TryAdd(p.GetType(), 0)) Log(why + " (dropped)");
+                return;
+            }
+            throw new ActionAbortedException(why);
+        }
         GestureBeforeUse(s, p); // a dig/place/use never goes out under a gesture's head overlay
         NoteSelfEdit(p);
         try
@@ -361,6 +374,18 @@ public sealed partial class MinecraftClient : IAsyncDisposable
             EndSession(s, "send failed: " + ex.Message);
         }
     }
+
+    private readonly ConcurrentDictionary<Type, byte> _unsupportedLogged = new();
+
+    private static string Describe(IPacket p) => p switch
+    {
+        PlayerDiggingPacket => "digging",
+        PlayerBlockPlacementPacket => "placing and using items",
+        WindowClickPacket or CloseWindowPacket or TransactionPacket => "inventory windows",
+        UseEntityPacket => "attacking or using entities",
+        UpdateSignPacket => "editing signs",
+        _ => p.GetType().Name.Replace("Packet", ""),
+    };
 
     /// <summary>Own digs/placements go into <see cref="WorldState.SelfEdits"/> so observers never credit them to a player.</summary>
     private void NoteSelfEdit(IPacket p)

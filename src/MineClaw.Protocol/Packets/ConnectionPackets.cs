@@ -113,6 +113,14 @@ public sealed class ChatPacket : IPacket
     public byte Id => PacketId;
     public string Message { get; set; } = string.Empty;
 
+    /// <summary>Where a 1.12.2 server shows the line (SPacketChat type): 0 chat box, 1 system message, 2 game info (above the
+    /// hotbar: not chat). b1.8.1 lines are always <see cref="PositionChat"/>.</summary>
+    public sbyte Position { get; set; }
+    public const sbyte PositionChat = 0, PositionSystem = 1, PositionGameInfo = 2;
+
+    /// <summary>The JSON component a 1.12.2 server sent (null on b1.8.1); <see cref="Message"/> is its legacy text.</summary>
+    public string? Json { get; set; }
+
     public ChatPacket() { }
     public ChatPacket(string message) => Message = message;
 

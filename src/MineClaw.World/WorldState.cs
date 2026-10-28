@@ -18,17 +18,27 @@ public readonly record struct FoundBlock(BlockPos Pos, int Id, int Meta, double 
 /// </summary>
 public sealed class WorldState : IBlockAccess
 {
+    /// <summary>The b1.8.1 world height (128). Consumers outside the world model still clip to it; on a 256-high (1.12.2) world
+    /// they see the lower half only until multi-version P3/P6 move them to <see cref="WorldHeight"/>. The world model itself
+    /// (storage, block reads/writes, chunk regions, light) uses <see cref="WorldHeight"/>.</summary>
     public const int Height = ChunkColumn.SizeY;
 
     private readonly ConcurrentDictionary<long, ChunkColumn> _columns = new();
     private readonly Func<int, BlockInfo> _lookup;
 
     /// <param name="blockLookup">Block property source; defaults to <see cref="Blocks.Get"/>. Tests inject their own table.</param>
-    public WorldState(Func<int, BlockInfo>? blockLookup = null)
+    /// <param name="height">Blocks per column: 128 (b1.8.1, the default) or 256 (1.12.2: the profile's
+    /// <c>GameVersion.WorldHeight</c>).</param>
+    public WorldState(Func<int, BlockInfo>? blockLookup = null, int height = ChunkColumn.SizeY)
     {
+        if (height is not (ChunkColumn.SizeY or ChunkColumn.MaxHeight)) throw new ArgumentOutOfRangeException(nameof(height), height, "world height is 128 or 256");
         _lookup = blockLookup ?? Blocks.Get;
+        WorldHeight = height;
         Light = new LightEngine(this);
     }
+
+    /// <summary>Blocks per column of this world (128 b1.8.1, 256 1.12.2).</summary>
+    public int WorldHeight { get; }
 
     /// <summary>The b1.8.1 light engine: the server's light arrays kept up to date on every block change (mc-dev).</summary>
     public LightEngine Light { get; }
@@ -89,7 +99,7 @@ public sealed class WorldState : IBlockAccess
     private ChunkColumn GetOrCreate(int cx, int cz, out bool created)
     {
         bool c = false;
-        var col = _columns.GetOrAdd(Key(cx, cz), _ => { c = true; return new ChunkColumn(cx, cz) { Dimension = Dimension }; });
+        var col = _columns.GetOrAdd(Key(cx, cz), _ => { c = true; return new ChunkColumn(cx, cz, WorldHeight) { Dimension = Dimension }; });
         created = c;
         return col;
     }
@@ -153,6 +163,8 @@ public sealed class WorldState : IBlockAccess
         public bool IsLoaded(int x, int z) => w.IsLoaded(x, z) || w._remembered.ContainsKey(Key(x >> 4, z >> 4));
 
         public BlockInfo Info(int id) => w.Info(id);
+
+        public int WorldHeight => w.WorldHeight;
     }
 
     // ---- column lifecycle (0x32 Pre-Chunk) ----
@@ -193,28 +205,28 @@ public sealed class WorldState : IBlockAccess
 
     public int GetBlock(int x, int y, int z)
     {
-        if ((uint)y >= Height) return 0;
+        if ((uint)y >= WorldHeight) return 0;
         var c = ColumnAt(x, z);
         return c is null ? 0 : c.Ids[ChunkColumn.Index(x & 15, y, z & 15)];
     }
 
     public int GetMeta(int x, int y, int z)
     {
-        if ((uint)y >= Height) return 0;
+        if ((uint)y >= WorldHeight) return 0;
         var c = ColumnAt(x, z);
         return c is null ? 0 : c.Meta[ChunkColumn.Index(x & 15, y, z & 15)];
     }
 
     public int GetBlockLight(int x, int y, int z)
     {
-        if ((uint)y >= Height) return 0;
+        if ((uint)y >= WorldHeight) return 0;
         var c = ColumnAt(x, z);
         return c is null ? 0 : c.BlockLight[ChunkColumn.Index(x & 15, y, z & 15)];
     }
 
     public int GetSkyLight(int x, int y, int z)
     {
-        if ((uint)y >= Height) return 15;
+        if ((uint)y >= WorldHeight) return 15;
         var c = ColumnAt(x, z);
         return c is null ? 15 : c.SkyLight[ChunkColumn.Index(x & 15, y, z & 15)];
     }
@@ -245,7 +257,7 @@ public sealed class WorldState : IBlockAccess
     /// Ignored when y is out of range or the column isn't loaded. Raises <see cref="BlockChanged"/>.</summary>
     public bool SetBlock(int x, int y, int z, int id, int meta)
     {
-        if ((uint)y >= Height) return false;
+        if ((uint)y >= WorldHeight) return false;
         var c = ColumnAt(x, z);
         if (c is null) return false;
         int oldId, oldMeta;
@@ -291,7 +303,7 @@ public sealed class WorldState : IBlockAccess
                     for (int dy = 0; dy < sizeY; dy++)
                     {
                         int y = originY + dy;
-                        if ((uint)y >= Height) continue;
+                        if ((uint)y >= WorldHeight) continue;
                         int i = ChunkColumn.Index(x & 15, y, z & 15);
                         int s = src + dy;
                         col.Ids[i] = ids[s];
@@ -322,7 +334,7 @@ public sealed class WorldState : IBlockAccess
         int r = (int)Math.Ceiling(radius);
         double r2 = radius * radius;
         int cx = (int)Math.Floor(center.X), cy = (int)Math.Floor(center.Y), cz = (int)Math.Floor(center.Z);
-        int y0 = Math.Max(0, cy - r), y1 = Math.Min(Height - 1, cy + r);
+        int y0 = Math.Max(0, cy - r), y1 = Math.Min(WorldHeight - 1, cy + r);
         for (int x = cx - r; x <= cx + r; x++)
         for (int z = cz - r; z <= cz + r; z++)
         {
@@ -362,7 +374,7 @@ public sealed class WorldState : IBlockAccess
     /// <summary>Highest y ≤ <paramref name="fromY"/> whose block has a collision box, or -1 if none (void).</summary>
     public int HighestSolidBelow(int x, int fromY, int z)
     {
-        for (int y = Math.Min(fromY, Height - 1); y >= 0; y--)
+        for (int y = Math.Min(fromY, WorldHeight - 1); y >= 0; y--)
             if (BlockShapes.HasCollision(this, x, y, z)) return y;
         return -1;
     }
@@ -380,7 +392,7 @@ public sealed class WorldState : IBlockAccess
         var list = new List<(int, int, int)>();
         var col = ColumnAt(x, z);
         if (col is null) return list;
-        for (int y = 0; y < Height; y++)
+        for (int y = 0; y < WorldHeight; y++)
         {
             int i = ChunkColumn.Index(x & 15, y, z & 15);
             if (col.Ids[i] != 0) list.Add((y, col.Ids[i], col.Meta[i]));

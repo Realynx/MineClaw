@@ -1,6 +1,8 @@
 # Multi-version: b1.8.1 and 1.12.2 behind one set of seams
 
-Status: P0 is implemented (seams + detection, b1.8.1 behind the interfaces, no behaviour change). P1 to P6 are planned.
+Status: P0 and P1 are implemented (seams + detection; 1.12.2 login, chat, game state, movement and chunks in a 256-high
+world, section 5.1). P2 to P6 are planned. Ground truth for 1.12.2: the decompiled client at `C:\Users\dev\source\mc-1.12.2-src`
+(section 4); class and method names below are its MCP stable_39 names.
 Date: 2026-10-28.
 
 **The user's decision (verbatim):** "The new version of Minecraft that we're going to be using is this, by the way. 1.12.2.
@@ -49,7 +51,7 @@ of our code stays the same."
 | `auto` (default) and the server answers | The version the ping named, saved to `<data>/server-version.txt` |
 | `auto`, server down or filtered | The last detected version from that file, else b1.8.1, with a WARN. A bot started while the server is offline still starts and retries its connect as before. |
 | A version MineClaw has no name for (config or server) | Exit 2 (config error) with the reason |
-| A known version without an implementation (1.12.2 until P1) | Exit 2: "recognised but not implemented yet" |
+| A known version without an implementation | Exit 2: "recognised but not implemented" (none since P1: b1.8.1 and 1.12.2 both have profiles) |
 
 - **Hive clones** get the resolved id on their command line (`MainHive` adds `--server-version <id>`). They never ping, so
   the whole hive speaks main's version.
@@ -121,30 +123,38 @@ implementations.
 
 ### 2.2 Physics and movement: `IPhysicsRules` (MineClaw.World)
 
-b1.8.1 is `PlayerPhysics` + `BlockShapes`, as they are. Known 1.12.2 deltas, all *pending source* (to be verified against the
-decompiled source, section 4):
-- **Step height** 0.6 (b1.8.1: 0.5).
-- **Sneak:** the hitbox stays 1.8 high (the 1.5 sneak box came in 1.14). The eye drops 0.08. Edge protection works the same
-  way. Speed ×0.3.
-- **Sprint:** a movement-speed attribute of 0.1 with a +30 % modifier. The sprint-jump boost is 0.2. No sprinting at food ≤ 6.
-- **Swim:** water drag 0.8, lava 0.5, jump in liquid +0.04, as in b1.8.1. Depth Strider and Frost Walker are new, and
-  flowing water pushes differently.
-- **Ladders and vines:** clamped at 0.15. Sneaking holds the player in place.
-- **Collision:** new block shapes. Fences, panes, walls and iron bars connect to their neighbours. Stair shapes take corners
-  (inner/outer). Slabs and stairs read their half from state. Slime blocks bounce. New blocks: concrete, terracotta,
-  shulker boxes and others.
+b1.8.1 is `PlayerPhysics` + `BlockShapes`, as they are. 1.12.2 deltas, each with the decompiled source to port it from (P3):
+- **Step height** 0.6F (b1.8.1: 0.5): the `EntityLivingBase` constructor (`stepHeight = 0.6F`); the step itself is
+  `Entity.move` (no ySize smoothing). *Verified; P1 ships it in `Release1122PhysicsRules`.*
+- **Sneak:** the box is **1.65** high while sneaking, when it fits (`EntityPlayer.updateSize`); the eye is 1.54
+  (`EntityPlayer.getEyeHeight`: 1.62 − 0.08). *Source correction: this doc said the box stays 1.8; the source disagrees.*
+  Edge protection: the sneak loops in `Entity.move` (offset by −stepHeight). Speed ×0.3: `MovementInputFromOptions`.
+- **Sprint:** the movement-speed attribute and the sprint modifier (`EntityLivingBase.setSprinting`), the 0.2 sprint-jump
+  boost (`EntityLivingBase.jump`), no sprinting at food ≤ 6 (`EntityPlayerSP.onLivingUpdate`).
+- **Jump:** `EntityLivingBase.getJumpUpwardsMotion` (0.42F) and `jump`.
+- **Swim:** `EntityLivingBase.travel` (water 0.8, lava 0.5, Depth Strider), `Entity.handleWaterMovement`.
+- **Ladders and vines:** `EntityLivingBase.isOnLadder` and the 0.15 clamp in `travel`; sneaking holds the player in place.
+- **Collision:** `Block.addCollisionBoxToList` + `Block.getActualState` per block (`BlockFence`, `BlockPane`, `BlockWall`,
+  `BlockStairs.getActualState` for the corner shapes, `BlockSlab`); slipperiness is the `Block.slipperiness` field.
 - **Elytra:** ignored.
 - **Flying:** creative only, ignored.
-- **Server checks:** "moved too quickly" and "moved wrongly" (0.0625).
-- **The server ignores moves until a teleport is confirmed.**
+- **Server checks:** "moved too quickly" and "moved wrongly" (0.0625) in `NetHandlerPlayServer.processPlayer`; the floating
+  kick after 80 ticks in `NetHandlerPlayServer.update`.
+- **The server ignores moves until a teleport is confirmed** (`NetHandlerPlayServer.processConfirmTeleport`). The 1.12.2
+  connection confirms at once, like `NetHandlerPlayClient.handlePlayerPosLook`.
+- **Position cadence** (`EntityPlayerSP.onUpdateWalkingPlayer`): the same as b1.8.1 (moved more than 0.03 or every 20 ticks /
+  rotated / neither), except that the bare on-ground packet goes out only when on-ground changed. The connection applies
+  that rule; the client's tick is unchanged.
 
 Consumers that move to the instance in P3: the client tick (`MinecraftClient.Tick`), `SwimSim`, the parkour simulators,
 `EdgeGuard`, `Pathfinder` move costs, `PlaceRules`/`Raycast` reach. Hot loops capture the instance once per search.
 
 ### 2.3 Combat: `ICombatRules` (MineClaw.Client)
 
-b1.8.1 is `CombatRules`: spam clicks, 10-tick invulnerability, sword blocking, crits while falling. 1.12.2 changes
-(numbers from memory, *pending source*):
+b1.8.1 is `CombatRules`: spam clicks, 10-tick invulnerability, sword blocking, crits while falling. 1.12.2 changes (numbers
+from memory; P4 ports them from `EntityPlayer.attackTargetEntityWithCurrentItem`, `EntityPlayer.getCooledAttackStrength` /
+`getCooldownPeriod`, `util/CombatRules.getDamageAfterAbsorb`, `ItemSword`, `ItemShield`,
+`EntityLivingBase.canBlockDamageSource` and `attackEntityFrom`):
 - **Attack cooldown (1.9+):**
   - Charge s = clamp((ticks since swing + 0.5) / (20 / attack speed)). Attack speeds: hand 4.0, sword 1.6 (12.5 ticks),
     axe 0.8–1.0, pickaxe 1.2, shovel 1.0.
@@ -160,11 +170,14 @@ b1.8.1 is `CombatRules`: spam clicks, 10-tick invulnerability, sword blocking, c
 
 ### 2.4 Hunger and regeneration: `IHungerRules` (MineClaw.Client)
 
-b1.8.1 is `HungerRules`: +1 hp every 80 ticks at food ≥ 18, at no exhaustion cost. 1.12.2 (*pending source*):
+b1.8.1 is `HungerRules`: +1 hp every 80 ticks at food ≥ 18, at no exhaustion cost. 1.12.2 (`FoodStats.onUpdate` and the
+`EntityPlayer.addExhaustion` call sites):
 - **Fast regen:** at food 20 with saturation > 0, every 10 ticks heal min(sat, 6)/6, at an exhaustion cost of min(sat, 6).
-- **Slow regen:** food ≥ 18, every 80 ticks, at 6 exhaustion per hp.
-- **Exhaustion values (the 1.11 cuts):** jump 0.05, sprint-jump 0.2, attack 0.1, damage 0.1, mining 0.005, sprint 0.1/m,
-  swim 0.01/m.
+  *Verified in `FoodStats.onUpdate`.*
+- **Slow regen:** food ≥ 18, every 80 ticks, at 6 exhaustion per hp. *Verified.* Starvation: every 80 ticks at food 0, down
+  to 10 hp (easy), 1 hp (normal), dead (hard). *Verified.*
+- **Exhaustion values (the 1.11 cuts):** jump 0.05 and sprint-jump 0.2 (`EntityPlayer.jump`, *verified*), attack 0.1, damage
+  `DamageSource.getHungerDamage`, mining 0.005, sprint 0.1/m, swim 0.01/m (`EntityPlayer.addMovementStat`).
 - **New and changed foods:** beetroot, chorus fruit, rabbit, mutton; the golden apple changed.
 
 ### 2.5 Respawn, dimension, time
@@ -198,13 +211,14 @@ Call sites: ~1,500 `Blocks.` + ~540 `Items.` static uses. P5 makes the static fa
 - **Mob type ids:** the same for old mobs (creeper 50 … enderman 58, cave spider 59, silverfish 60, pig 90 … wolf 95). New
   ones (witch 66, guardian 68, husk 23, stray 6, zombie villager 27, …) need profiles.
 - **Metadata:** the index layout changed entirely (1.9+). An example is the creeper state at a new index.
-- **AI facts to re-verify** (*pending source*):
-  - skeleton strafing and bow timing
-  - creeper fuse (30 ticks) and blast radius
-  - zombies breaking doors (hard) and reinforcements
-  - spider climbing
-  - enderman aggro by gaze
-  - mob caps and the spawn cap per chunk
+- **AI facts to re-verify** (P4, from the decompiled source):
+  - skeleton strafing and bow timing: `EntityAIAttackRangedBow.updateTask`
+  - creeper fuse (30 ticks) and blast radius: `EntityCreeper.onUpdate` / `explode`
+  - zombies breaking doors (hard) and reinforcements: `EntityAIBreakDoor.updateTask`, `EntityZombie.attackEntityFrom`
+  - spider climbing: `EntitySpider.isBesideClimbableBlock`
+  - enderman aggro by gaze: `EntityEnderman.shouldAttackPlayer`
+  - mob caps and the spawn cap per chunk: `WorldEntitySpawner.findChunksForSpawning`; light: `EntityMob.isValidLightLevel`
+- **Metadata indices:** the `EntityDataManager.createKey` registrations of each entity class.
 
 ### 2.8 Light and spawn rules (World/Light, Skills lighting: in progress on b1.8.1)
 
@@ -338,21 +352,21 @@ Each phase ships on its own and keeps every b1.8.1 suite green. Sizes are rough 
 
 | Unknown | Why it matters | Ground truth |
 |---|---|---|
-| 1.12.2 movement deltas (step, sneak edge, swim, ladder, sprint) and the server's movement checks | Rubber-banding and falls (P3) | *Pending source*: decompiled `EntityPlayerSP`, `EntityLivingBase`, `Entity.move`, `NetHandlerPlayServer` |
-| Collision shapes per state (stairs corners, fence/pane/wall connections) | Pathing, parkour, edge safety (P3) | *Pending source*: decompiled `Block*.addCollisionBoxToList` / `getActualState` |
-| meta → blockstate and the state → meta of placement (`getStateForPlacement`, cursor rules for slab/stairs/trapdoor) | Building and render (P2, P5) | *Pending source*: decompiled `Block*.getStateFromMeta` / `getMetaFromState` / `getStateForPlacement` |
-| Server-side place/dig/use-entity checks (distance only? raytrace?) | The Hidden technique and reach (P2) | *Pending source*: decompiled `NetHandlerPlayServer.processTryUseItemOnBlock` / `processPlayerDigging` / `processUseEntity`, `PlayerInteractionManager` |
-| Attack cooldown, sweep, crit, shields, damage/armor | The combat engine (P4) | *Pending source*: decompiled `EntityPlayer.attackTargetEntityWithCurrentItem`, `CombatRules`, `ItemSword`, `ItemShield` |
-| Entity metadata indices per class | Creeper fuse, wolves, items (P4) | *Pending source*: decompiled `EntityDataManager` registrations, or the protocol page's "Entity metadata" |
-| Hunger/regen numbers | The survival reflex (P4) | *Pending source*: decompiled `FoodStats`, `EntityPlayer` |
-| Smelting, drops, tool rules, hardness | Acquisition, mining (P5) | *Pending source* for smelting and drops: decompiled `FurnaceRecipes`, `Block.getItemDropped`, `ItemTool`; minecraft-data for hardness and harvest tools |
-| Wire formats (chunk sections, slot NBT, every field) | P1–P2 | The protocol page for protocol 340 (read: wikivg.booky.dev mirror, `Protocol&oldid=1334`), plus golden fixtures |
+| 1.12.2 movement deltas (step, sneak edge, swim, ladder, sprint) and the server's movement checks | Rubber-banding and falls (P3) | `EntityPlayerSP.onLivingUpdate` / `onUpdateWalkingPlayer`, `EntityLivingBase.travel` / `jump`, `Entity.move`, `EntityPlayer.updateSize`, `NetHandlerPlayServer.processPlayer` / `update` |
+| Collision shapes per state (stairs corners, fence/pane/wall connections) | Pathing, parkour, edge safety (P3) | `Block.addCollisionBoxToList` / `getActualState` per block (`BlockStairs`, `BlockFence`, `BlockPane`, `BlockWall`, `BlockSlab`) |
+| meta → blockstate and the state → meta of placement (`getStateForPlacement`, cursor rules for slab/stairs/trapdoor) | Building and render (P2, P5) | `Block.getStateFromMeta` / `getMetaFromState` / `getStateForPlacement` per block (e.g. `BlockSlab.getStateForPlacement`) |
+| Server-side place/dig/use-entity checks (distance only? raytrace?) | The Hidden technique and reach (P2) | `NetHandlerPlayServer.processTryUseItemOnBlock` / `processPlayerDigging` / `processUseEntity`, `PlayerInteractionManager.onBlockClicked` / `tryHarvestBlock` / `processRightClickBlock` |
+| Attack cooldown, sweep, crit, shields, damage/armor | The combat engine (P4) | `EntityPlayer.attackTargetEntityWithCurrentItem` / `getCooledAttackStrength`, `util/CombatRules.getDamageAfterAbsorb`, `ItemSword`, `ItemShield`, `EntityLivingBase.canBlockDamageSource` |
+| Entity metadata indices per class | Creeper fuse, wolves, items (P4) | `EntityDataManager.createKey` registrations per entity class |
+| Hunger/regen numbers | The survival reflex (P4) | `FoodStats.onUpdate` / `addExhaustion` (the regen rows are verified, section 2.4), the `EntityPlayer.addExhaustion` call sites |
+| Smelting, drops, tool rules, hardness | Acquisition, mining (P5) | `FurnaceRecipes.getSmeltingResult`, `Block.getItemDropped`, `ItemTool.getDestroySpeed`; minecraft-data for hardness and harvest tools |
+| Wire formats (chunk sections, slot NBT, every field) | P1–P2 | The decompiled `readPacketData` / `writePacketData` of each packet class and `EnumConnectionState` (ids = registration order), protocol.json, golden fixtures. P1's formats are done (5.1). |
 
 **Ground-truth options for 1.12.2** (the mc-dev equivalent):
 
 | Option | What | Status |
 |---|---|---|
-| A. Decompiled source of the user's own jar (named with MCP mappings if available) | The mc-dev equivalent for 1.12.2. The client jar has the integrated server, so `NetHandlerPlayServer`, `PlayerInteractionManager` and the rest are in it. Lives **outside the repo** at `C:\Users\dev\source\mc-1.12.2-src\`; never committed. | **The user is producing it with another tool** (2026-10-28); MineClaw's agents don't download a decompiler or decompile. The rows above marked *pending source* wait for it. When it lands, record the tool and mapping versions and hashes here. |
+| A. Decompiled source of the user's own jar (named with MCP mappings if available) | The mc-dev equivalent for 1.12.2. The client jar has the integrated server, so `NetHandlerPlayServer`, `PlayerInteractionManager` and the rest are in it. Lives **outside the repo** at `C:\Users\dev\source\mc-1.12.2-src\`; never committed. | **Available** (2026-10-28): SpecialSource 1.11.6 (notch → SRG with MCP SRG 1.12.2), then Vineflower 1.12.0, then MCP stable_39 names; 2,050 files; the tool and mapping hashes are in its `PROVENANCE.md`. Read-only ground truth: MineClaw's agents port the logic and never copy it into the repo. |
 | B. PrismarineJS minecraft-data 1.12.2 | The blocks, items, recipes, foods, entities and protocol JSON that `data/dataPaths.json` maps for pc 1.12.2, vendored at `third_party/minecraft-data/` with its LICENSE and a README naming the source commit | **Approved** (relayed by the orchestrator). Not yet downloaded: the P0 agent's attempt was blocked by the session's permission check, so the orchestrator or the user runs it. |
 | C. The protocol page (wiki.vg, protocol 340) | Packet ids and fields | Readable now (mirror above); used for this doc's ids |
 | D. Already on disk, no download | The 1.12.2 client jar's `assets/minecraft/{blockstates,models,textures,lang,recipes,loot_tables}` | In use (reading only) |
@@ -387,6 +401,65 @@ Client jar recorded for reproducibility: `minecraft-1.12.2-client.jar`, 10,180,1
     connects and logs in through a profile adapter.
   - App `VersionSetupTests`: the CLI/config key, auto + legacy → b1.8.1 and remembered, server down → last known,
     explicit = no ping, 1.12.2 → a clear config error until P1.
+
+### 5.1 What P1 shipped
+
+- **Protocol/Release1122**, all ported from the decompiled client and cross-checked with protocol.json:
+  - `Wire` (`WireReader`/`WireWriter`): VarInt/VarLong, strings, `BlockPos.toLong` positions, UUIDs, the offline UUID.
+  - `Framing`: VarInt frames and zlib compression (`NettyCompressionDecoder`/`Encoder`). dataLength 0 = raw; a compressed
+    payload below the threshold or over 2 MiB is rejected.
+  - `Nbt`: a reader/writer for the network form (12 tag types including long arrays, modified UTF-8, depth 512).
+  - `ChatComponent` + `LangTable`: JSON → legacy § text like `getFormattedText`. `translate` goes through the jar's
+    `en_us.lang` (`LangTable.LoadDefault`, read once from the PrismLauncher or vanilla jar), else a built-in table of the
+    chat, join/leave, kick and death keys (its values are verified against the jar).
+  - `ChunkData`: Chunk Data → the new neutral `ChunkSectionsMessage`. Linear/hash-map palettes up to 8 bits; the global
+    palette at 13 bits whatever the server sends; entries span longs; light nibbles low-first; sky light only in the
+    overworld; biomes; block entities. A full column is one 16×256×16 region (absent sections = air with sky 15).
+  - `Release1122Connection` (the translating `IGameConnection`) + `Release1122ProtocolAdapter`: the login state machine,
+    keep-alive and teleport confirm inside, Client Settings + MC|Brand after Join Game, the canonical mappings of 2.1 for
+    the P1 packet set. `CanSend` is false for the P2+ messages.
+- **Seams:**
+  - `IGameConnection.CanSend` (default true). The client's `Send` turns an unsupported message into a failed action
+    ("digging is not supported on 1.12.2 yet"); on the reader/tick threads (reflexes) it is dropped with one log line.
+  - `ChatPacket.Position` / `Json` (action-bar lines are not chat) and `UpdateHealthPacket.HealthExact`.
+  - `IProtocolAdapter.LoginStart` returns the canonical handshake (the username) for both versions; the 1.12.2 connection
+    turns it into Handshake + Login Start.
+  - Chat lines split at `Protocol.MaxChatLength` (100 / 256).
+- **World height:**
+  - `ChunkColumn(cx, cz, height)` is 128 or 256 high. The index is `(y >> 7) << 15 | (x·16 + z)·128 + (y & 127)`: for
+    y < 128 exactly the b1.8.1 index, so b1.8.1 columns, snapshots and every consumer of the lower half are unchanged.
+  - `WorldState(height:)` / `WorldHeight` and `IBlockAccess.WorldHeight` (default 128). WorldState's storage, reads, writes,
+    chunk regions and queries, `Safety`, `Raycast`, `SpawnRules` and the light engine (its height map is now `short`) use it.
+  - `ChunkSnapshot` holds 128 or 256 (decode infers it). The client builds its world with the profile's height.
+- **Physics:** `Release1122PhysicsRules` (step 0.6F, 256 high, the rest b1.8.1). The client tick now calls
+  `Profile.Physics.Tick` (identical for b1.8.1); `PlayerPhysics.Tick` / `MoveEntity` take an optional step height.
+- **Profile:** `GameVersionProfiles.Java1122`. VersionSetup's "not implemented" exit is gone for 1.12.2. Combat, hunger and
+  game data are the b1.8.1 ones until P4/P5.
+- **Tests:**
+  - Protocol `Release1122Tests`: golden bytes for handshake, login start, settings, brand, movement, actions and chat;
+    framing and compression; an NBT fixture; chat JSON; 5-bit entries spanning longs against a hand-computed long; 4/8/13-bit
+    sections with light and biomes; the nether; block entities; the connection against a raw fake server; ids vs protocol.json.
+  - World `WorldHeight256Tests`: index identity, blocks and queries above 128, the light engine on 256 columns, server-lit
+    columns, snapshots.
+  - Client `Release1122ClientTests`: the client end to end on the 1.12.2 profile (login → join → chunks with the ground at
+    y 143 → teleport confirm → keep-alive → chat both ways → block changes → a P2 action failing clearly → kick).
+
+**Source vs wiki.vg (the source wins):**
+- *Position:* the wikivg.booky.dev revision's data-type text gives the 1.14 layout (x, z, y). 1.12.2's `BlockPos.toLong` is
+  `x << 38 | y << 26 | z`, as protocol.json's bitfield says. P1 follows the source.
+- *Global palette bits:* the client ignores a sent bits-per-block above 8 and uses log2(state count) = 13
+  (`BlockStateContainer.setBits`); the registry palette still reads a VarInt length (`BlockStatePaletteRegistry.read`).
+- *Rain:* reason 1 starts rain and 2 stops it (`WorldServer.updateWeather`, `PlayerList.updateTimeAndWeatherForPlayer`), the
+  b1.8.1 numbering.
+
+**Still open after P1** (outside the P1 packet set, or the P3/P6 sweeps):
+- Consumers outside the world model still clip to `WorldState.Height` (128): pathing, building, skills, render and the
+  Explorer see only the lower half of a 1.12.2 world (P3/P6).
+- Columns are flat 256 KB arrays, not lazily allocated sections (2× a b1.8.1 column's memory).
+- Block ids 123–255 and the changed metas read through the b1.8.1 tables (unknown ids) until P5.
+- Player List supplies names, but entity spawns aren't translated yet (P2/P4).
+- The version-change exit 75 on an "Outdated" kick isn't wired.
+- The FakeServer 1.12.2 codec and the parametrized client tests are P2.
 
 **Behaviour change in production:** none for an explicit version. With the default `auto`, one ping pair runs at
 startup: about 10 ms on a LAN, plus one "Protocol error" log line on the b1.8.1 server. To skip it, set
