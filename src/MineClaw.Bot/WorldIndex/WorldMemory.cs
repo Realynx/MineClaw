@@ -140,6 +140,19 @@ public sealed class WorldMemory : IDisposable
         }, ct);
     }
 
+    /// <summary>
+    /// Ends this memory's own pass loop but keeps it attached (one brain, many bodies: one shared flusher pumps every body's
+    /// memory in turn, so N bodies never write the db from N timers at once).
+    /// </summary>
+    public void StopLoop()
+    {
+        _cts?.Cancel();
+        try { _loop?.Wait(TimeSpan.FromSeconds(3)); } catch { /* cancelled */ }
+        _loop = null;
+        _cts?.Dispose();
+        _cts = null;
+    }
+
     public void Dispose()
     {
         _cts?.Cancel();

@@ -48,6 +48,7 @@ public static class AppHost
         config.GetSection("Hive").Bind(agentOptions.Hive); // personality scope: main | clone username (Self shards)
         var telemetryOptions = config.GetSection("Telemetry").Get<TelemetryOptions>() ?? new TelemetryOptions();
         var supervisorOptions = config.GetSection("Supervisor").Get<Supervisor.SupervisorOptions>() ?? new Supervisor.SupervisorOptions();
+        var bodiesOptions = config.GetSection("Bodies").Get<MineClaw.Bot.Bodies.BodiesOptions>() ?? new MineClaw.Bot.Bodies.BodiesOptions();
         if (string.IsNullOrWhiteSpace(agentOptions.Llm.ApiKey) || agentOptions.Llm.ApiKey.EndsWith("..."))
             agentOptions.Llm.ApiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
         agentOptions.DataDirectory = AppPaths.Under(root, agentOptions.DataDirectory);
@@ -129,7 +130,7 @@ public static class AppHost
             if (cli.CloneName != null)
                 return await CloneMode.RunAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, loggers, log, signals);
             return await RunBotAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, useTui, ring, loggers, log, signals, mainLogDir,
-                supervisorOptions);
+                supervisorOptions, bodiesOptions);
         }
         finally
         {
@@ -140,7 +141,8 @@ public static class AppHost
 
     private static async Task<int> RunBotAsync(AppCli cli, MinecraftSettings mc, AgentOptions agentOptions, BotOptions botOptions, HostSettings host,
         HiveConfig hive, TelemetryOptions telemetryOptions, string telemetryDir, bool useTui, RingLoggerProvider ring, ILoggerFactory loggers,
-        ILogger log, ShutdownSignals signals, string logDir, Supervisor.SupervisorOptions? supervisorOptions = null)
+        ILogger log, ShutdownSignals signals, string logDir, Supervisor.SupervisorOptions? supervisorOptions = null,
+        MineClaw.Bot.Bodies.BodiesOptions? bodiesOptions = null)
     {
         var telemetry = new PromptTelemetry(agentOptions, telemetryOptions, telemetryOptions.Enabled ? telemetryDir : null);
         int seeded = telemetry.SeedFromLogs();
@@ -156,8 +158,12 @@ public static class AppHost
             Log = m => clientLog.LogDebug("{Msg}", m),
         });
         var game = new MinecraftGameClient(client);
-        var mainHive = MainHive.Create(hive, mc.Username, cli, agentOptions, logDir, loggers.CreateLogger("MineClaw.Hive"));
-        var bot = BotHost.Create(game, agentOptions, botOptions, llm: llm, loggers: loggers, claims: mainHive?.MainClaims, hiveBots: mainHive != null ? mainHive.HiveBots : null);
+        // One brain, many bodies (step 2): Bodies:Mode=inproc runs the clone accounts as bodies in this process (no MainHive);
+        // the default "hive" keeps one process per clone.
+        var inproc = InProcBodies.Create(hive, bodiesOptions ?? new MineClaw.Bot.Bodies.BodiesOptions(), mc, agentOptions, loggers);
+        var mainHive = inproc == null ? MainHive.Create(hive, mc.Username, cli, agentOptions, logDir, loggers.CreateLogger("MineClaw.Hive")) : null;
+        var bot = BotHost.Create(game, agentOptions, botOptions, llm: llm, loggers: loggers, claims: inproc?.MainClaims ?? mainHive?.MainClaims,
+            hiveBots: inproc != null ? inproc.HiveBots : mainHive != null ? mainHive.HiveBots : null);
         var rt = bot.Runtime;
         telemetry.Attach(rt);
         telemetry.CurrentBody = () => MineClaw.Bot.Bodies.BodyScope.Current?.Name; // the body a call worked for (null = brain-level)
@@ -185,11 +191,16 @@ public static class AppHost
         var commands = new ConsoleCommands(game, rt, agent, log, signals.Source);
         var source = new InProcessBotSource(game, rt, telemetry, agent, commands, host.Tui.Viewport, signals.Token);
         mainHive?.Attach(bot, client, commands, agentOptions);
+        inproc?.Attach(bot, client, signals.Token);
 
         // The TUI's per-bot sources (main in-process, clones over IPC); the supervisor viewer reads the same ones.
         var roster = new HiveRoster([mc.Username, .. hive.Clones()]);
+        if (inproc != null) roster = new HiveRoster([mc.Username, .. inproc.Accounts]);
         var sources = roster.Names.Select(n => string.Equals(n, mc.Username, StringComparison.OrdinalIgnoreCase)
-            ? (IBotTelemetrySource)source : mainHive?.SourceFor(n) ?? new OfflineBotSource(n)).ToList();
+            ? (IBotTelemetrySource)source
+            : inproc != null ? new BodyBotSource(n, () => bot.Bodies?.Find(n),
+                b => new InProcessBotSource(b.Adapter, rt, telemetry, agent, commands, host.Tui.Viewport, signals.Token) { Activities = b.Activities })
+            : mainHive?.SourceFor(n) ?? new OfflineBotSource(n)).ToList();
         var supervisorServer = StartSupervisor(supervisorOptions, bot, client, mc.Username, sources, mainHive, loggers.CreateLogger("MineClaw.Supervisor"));
 
         Task tuiTask = Task.CompletedTask;
@@ -236,7 +247,8 @@ public static class AppHost
         // ------------------------------------------------------------ graceful shutdown (time-boxed)
         var budget = TimeSpan.FromSeconds(Math.Clamp(host.ShutdownTimeoutSeconds, 3, 600));
         // Hive: clones need time to deposit; stay under systemd's TimeoutStopSec=90 (deploy/mineclaw.service).
-        if (mainHive?.Supervisor?.Slots.Any(s => s.State != MineClaw.Hive.Supervisor.CloneState.Idle && s.State != MineClaw.Hive.Supervisor.CloneState.Retired) == true)
+        if (mainHive?.Supervisor?.Slots.Any(s => s.State != MineClaw.Hive.Supervisor.CloneState.Idle && s.State != MineClaw.Hive.Supervisor.CloneState.Retired) == true
+            || bot.Bodies?.All.Any(b => !b.IsMain) == true)
             budget = TimeSpan.FromSeconds(Math.Max(budget.TotalSeconds, Math.Min(85, hive.ShutdownRecallSeconds + 25)));
         var seq = new ShutdownSequence(budget, log);
         log.LogInformation("stopping ({Why}, budget {S:0}s): {Usage}", signals.Reason ?? "requested", budget.TotalSeconds, rt.Usage.Summary());
@@ -244,6 +256,9 @@ public static class AppHost
         if (supervisorServer != null) await seq.StepAsync("supervisor", TimeSpan.FromSeconds(3), _ => supervisorServer.DisposeAsync().AsTask());
         if (useTui) Console.Out.WriteLine("MineClaw: shutting down...");
         // Hive first: clones deposit everything and log out while main is still online (handoff receiver), then main stops.
+        if (inproc != null)
+            await seq.StepAsync("bodies recall", TimeSpan.FromSeconds(bodiesOptions!.ShutdownRecallSeconds), _ =>
+                inproc.RecallAllAsync("main shutting down", TimeSpan.FromSeconds(Math.Max(5, Math.Min(bodiesOptions.ShutdownRecallSeconds, seq.Remaining.TotalSeconds) - 1))));
         if (mainHive != null)
             await seq.StepAsync("hive recall", TimeSpan.FromSeconds(hive.ShutdownRecallSeconds), _ =>
                 mainHive.RecallAllAsync("main shutting down", TimeSpan.FromSeconds(Math.Max(5, Math.Min(hive.ShutdownRecallSeconds, seq.Remaining.TotalSeconds) - 1))));
@@ -260,6 +275,7 @@ public static class AppHost
         seq.Final("bot", () => { source.Dispose(); bot.Dispose(); });
         await seq.StepAsync("client", TimeSpan.FromSeconds(3), _ => client.DisposeAsync().AsTask());
         if (mainHive != null) await seq.StepAsync("hive", TimeSpan.FromSeconds(3), _ => mainHive.DisposeAsync().AsTask());
+        if (inproc != null) await seq.StepAsync("bodies", TimeSpan.FromSeconds(5), _ => inproc.DisposeAsync().AsTask());
         seq.Final("db", rt.Dispose);
         seq.Final("telemetry", telemetry.Dispose);
         log.LogInformation("bye{Late}", seq.TimedOut.Count > 0 ? " (timed out: " + string.Join(", ", seq.TimedOut) + ")" : "");
@@ -291,6 +307,8 @@ public static class AppHost
         client.ServerMoved += (a, b) => feed.Add("move", $"{main} moved by the server {a} -> {b}");
         client.PlayerJoined += n => feed.Add("players", $"{n} joined");
         client.PlayerLeft += n => feed.Add("players", $"{n} left");
+        if (bot.Bodies is { HasLifecycle: true } bodies) // inproc: bodies spawning/leaving and their notices
+            bodies.Changed += (b, added) => feed.Add("hive", $"{b.Short} {(added ? "spawning" : "logged out")} ({b.State})");
         if (mainHive?.Supervisor is { } sup)
             sup.Notice += e => feed.Add("hive", e.Format(), e.Priority >= Agent.Events.EventPriority.Normal ? "warn" : "info");
         var data = new Supervisor.LiveSupervisorData(hub, () => client.World, main, sources, () => mainHive?.Supervisor, feed, o, log)

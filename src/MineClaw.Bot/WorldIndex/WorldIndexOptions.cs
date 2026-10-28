@@ -5,6 +5,12 @@ public sealed class WorldIndexOptions
 {
     public bool Enabled { get; set; } = true;
 
+    /// <summary>
+    /// A clone body's indexer in main's process (one brain, many bodies): container snapshots, single block changes and
+    /// generator regen only. No column scans, clusters, signs, players or labels (main's full indexer owns those).
+    /// </summary>
+    public bool Contributor { get; set; }
+
     /// <summary>Background pass interval. All indexing work happens in passes, never on the network thread.</summary>
     public int PassIntervalMs { get; set; } = 1000;
 

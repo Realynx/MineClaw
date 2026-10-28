@@ -5,6 +5,18 @@
     <ProjectReference Include="..\MineClaw.Render\MineClaw.Render.csproj" />
   </ItemGroup>
 
+  <!-- One brain, many bodies (docs/design/one-brain-many-bodies.md section 7): every body's tick shares one heap. Workstation
+       concurrent GC keeps gen2 pauses short (background GC); the hard limit (~2.5 GB of CT 114's 4 GB) makes the GC work
+       harder before the kernel's OOM killer takes every body at once. Lands in MineClaw.App.runtimeconfig.json; the
+       DOTNET_GCHeapHardLimit env var overrides it. -->
+  <PropertyGroup>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+  </PropertyGroup>
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.GC.HeapHardLimit" Value="2684354560" />
+  </ItemGroup>
+
   <ItemGroup>
     <!-- The viewport core lives in MineClaw.Render (shared with the bot's `see` tool). -->
     <Using Include="MineClaw.Render" />

@@ -18,19 +18,13 @@ namespace MineClaw.Bot.WorldIndex;
 /// </summary>
 public static class ChestChanges
 {
-    public static void Attach(AgentRuntime rt, IGameClient client, WorldIndexer indexer, Func<string, bool> isBot, TimeProvider? time, ILogger? log)
+    /// <param name="current">One brain, many bodies: the indexer of the body a withdraw runs on (a clone's contributor
+    /// indexer saw that chest open), else <paramref name="indexer"/> (main's).</param>
+    public static void Attach(AgentRuntime rt, IGameClient client, WorldIndexer indexer, Func<string, bool> isBot, TimeProvider? time, ILogger? log,
+        Func<WorldIndexer?>? current = null)
     {
         time ??= TimeProvider.System;
-        indexer.ContentsVanished += v =>
-        {
-            try
-            {
-                var text = Describe(v, client.World, rt.Db, isBot, time.GetUtcNow());
-                log?.LogInformation("chest memory: {Text}", text);
-                rt.Events.Post(GameEvent.Notice(text, EventPriority.Background));
-            }
-            catch (Exception ex) { log?.LogDebug(ex, "chest change note failed"); }
-        };
+        AttachVanished(rt, client, indexer, isBot, time, log);
         if (!rt.Tools.TryGet("withdraw", out var inner)) return;
         rt.Tools.Replace(new Ledger.InventoryLedgerTools.WrappedTool(inner, null, async (input, ct) =>
         {
@@ -38,13 +32,32 @@ public static class ChestChanges
             if (r.Ok) return r;
             try
             {
-                indexer.Pump(); // the take just closed the window: write the real contents for every hive bot now
-                if (indexer.RecentVanished(TimeSpan.FromSeconds(20)) is { } v)
+                var idx = current?.Invoke() ?? indexer;
+                idx.Pump(); // the take just closed the window: write the real contents for every hive bot now
+                if (idx.RecentVanished(TimeSpan.FromSeconds(20)) is { } v)
                     return r with { Text = r.Text + " | " + Describe(v, client.World, rt.Db, isBot, time.GetUtcNow()) };
             }
             catch (Exception ex) { log?.LogDebug(ex, "withdraw chest note failed"); }
             return r;
         }));
+    }
+
+    /// <summary>The "gone since memory" context note when an open by this indexer's body shows missing items (a clone body
+    /// passes its short name: the note carries it).</summary>
+    public static void AttachVanished(AgentRuntime rt, IGameClient client, WorldIndexer indexer, Func<string, bool> isBot, TimeProvider? time, ILogger? log,
+        string? body = null)
+    {
+        var clock = time ?? TimeProvider.System;
+        indexer.ContentsVanished += v =>
+        {
+            try
+            {
+                var text = Describe(v, client.World, rt.Db, isBot, clock.GetUtcNow());
+                log?.LogInformation("chest memory: {Text}", text);
+                rt.Events.Post(GameEvent.Notice(text, EventPriority.Background) with { Body = body });
+            }
+            catch (Exception ex) { log?.LogDebug(ex, "chest change note failed"); }
+        };
     }
 
     /// <summary>"chest at 14,64,-5: bread x5 gone since maid_chan opened it 1m ago; PoofimaFox may have taken it (holding bread)".</summary>

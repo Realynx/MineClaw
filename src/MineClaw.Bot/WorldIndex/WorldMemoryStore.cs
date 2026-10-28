@@ -96,16 +96,29 @@ public sealed class SqliteWorldMemoryStore : IWorldMemoryStore
     public void PutChunks(IReadOnlyList<ChunkRow> rows)
     {
         if (rows.Count == 0) return;
-        lock (_db.Gate)
-            _db.Tx(() =>
-            {
-                foreach (var c in rows)
-                    _db.Exec("""
-                        INSERT INTO world_chunks(dim,cx,cz,hash,summary,data,bytes,last_seen,seen_by) VALUES($d,$x,$z,$h,$s,$b,$n,$t,$by)
-                        ON CONFLICT(dim,cx,cz) DO UPDATE SET hash=$h, summary=$s, data=$b, bytes=$n, last_seen=$t, seen_by=$by
-                        """, ("$d", c.Dim), ("$x", c.X), ("$z", c.Z), ("$h", c.Hash), ("$s", c.Summary), ("$b", c.Data),
-                        ("$n", c.Data.Length + c.Summary.Length + 32), ("$t", AgentDb.ToUnixMs(c.LastSeen)), ("$by", c.SeenBy ?? _owner));
-            });
+        // Short write transactions (one brain, many bodies: N bodies share one db write gate): a chunk-load burst is written
+        // in batches, releasing the gate between them so a turn's memory write never waits behind 200 chunk rows.
+        for (int i = 0; i < rows.Count; i += PutBatch)
+        {
+            var batch = rows.Skip(i).Take(PutBatch).ToList();
+            lock (_db.Gate) PutBatchLocked(batch);
+        }
+    }
+
+    /// <summary>Chunk rows per write transaction (each ≈ 4-20 KB).</summary>
+    public const int PutBatch = 16;
+
+    private void PutBatchLocked(IReadOnlyList<ChunkRow> rows)
+    {
+        _db.Tx(() =>
+        {
+            foreach (var c in rows)
+                _db.Exec("""
+                    INSERT INTO world_chunks(dim,cx,cz,hash,summary,data,bytes,last_seen,seen_by) VALUES($d,$x,$z,$h,$s,$b,$n,$t,$by)
+                    ON CONFLICT(dim,cx,cz) DO UPDATE SET hash=$h, summary=$s, data=$b, bytes=$n, last_seen=$t, seen_by=$by
+                    """, ("$d", c.Dim), ("$x", c.X), ("$z", c.Z), ("$h", c.Hash), ("$s", c.Summary), ("$b", c.Data),
+                    ("$n", c.Data.Length + c.Summary.Length + 32), ("$t", AgentDb.ToUnixMs(c.LastSeen)), ("$by", c.SeenBy ?? _owner));
+        });
     }
 
     public void TouchChunks(int dim, IReadOnlyList<(int X, int Z)> cells, DateTimeOffset at)

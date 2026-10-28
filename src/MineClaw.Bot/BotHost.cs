@@ -329,7 +329,8 @@ public sealed class BotHost : IDisposable
         if (indexer != null)
             WorldIndex.ChestChanges.Attach(rt, client, indexer,
                 n => n.Equals(client.Username, StringComparison.OrdinalIgnoreCase) || hiveBots?.Invoke().Contains(n, StringComparer.OrdinalIgnoreCase) == true
-                     || rt.Chat.IsHiveBot?.Invoke(n) == true, time, log);
+                     || rt.Chat.IsHiveBot?.Invoke(n) == true, time, log,
+                current: () => BodyScope.Current is Body { Indexer: { } own } ? own : indexer); // a clone's withdraw: its own eyes
         // Brain gets the cheap single-shot tools + delegate/ask_memory; the worker gets the game macro tools.
         rt.ApplyBrainSplit();
 

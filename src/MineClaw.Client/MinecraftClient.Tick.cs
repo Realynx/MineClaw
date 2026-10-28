@@ -37,6 +37,17 @@ public sealed partial class MinecraftClient
     private bool _voidAlerted, _lavaAlerted;
     private readonly HashSet<int> _hostileAlerted = new();
 
+    private long _ticksBehind, _maxTickLateMs;
+
+    /// <summary>Ticks that started more than two intervals late (GC pauses, CPU starvation), since the client was created.</summary>
+    public long TicksBehind => Interlocked.Read(ref _ticksBehind);
+
+    /// <summary>The worst tick lateness seen (ms); <see cref="ResetMaxTickLate"/> starts a new window.</summary>
+    public long MaxTickLateMs => Interlocked.Read(ref _maxTickLateMs);
+
+    /// <summary>Reads and clears the worst tick lateness (a per-minute "tick behind" log line).</summary>
+    public long ResetMaxTickLate() => Interlocked.Exchange(ref _maxTickLateMs, 0);
+
     private void TickLoop(Session s)
     {
         var sw = Stopwatch.StartNew();
@@ -55,7 +66,17 @@ public sealed partial class MinecraftClient
             }
             var wait = next - sw.Elapsed;
             if (wait > TimeSpan.Zero) Thread.Sleep(wait);
-            else if (wait < -interval * 10) next = sw.Elapsed; // badly behind (debugger, GC): don't burst-catch-up
+            else
+            {
+                // One process, many bodies: a gen2 pause or a CPU burst stalls every body's tick at once; count it per body.
+                if (wait < -interval * 2)
+                {
+                    Interlocked.Increment(ref _ticksBehind);
+                    long late = (long)(-wait).TotalMilliseconds;
+                    if (late > Interlocked.Read(ref _maxTickLateMs)) Interlocked.Exchange(ref _maxTickLateMs, late);
+                }
+                if (wait < -interval * 10) next = sw.Elapsed; // badly behind (debugger, GC): don't burst-catch-up
+            }
         }
     }
 

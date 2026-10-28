@@ -198,7 +198,7 @@ public class BodyRoutingGameClientTests
     }
 
     [Fact]
-    public void Clone_bodies_are_refused_until_step_2()
+    public void The_main_attach_refuses_a_clone_body_which_CreateClone_builds_instead()
     {
         var (h, c) = TestBot.Create();
         using var _h = h;

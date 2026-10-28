@@ -95,6 +95,11 @@ public sealed class ActivityManager
     /// </summary>
     public Func<IDisposable?>? StepScope { get; set; }
 
+    /// <summary>The body this slot belongs to (a clone's short name, "67"): stamped on its task events. Null = the main body.</summary>
+    public string? Body { get; set; }
+
+    private void Post(GameEvent e) => _events.Post(Body is { Length: > 0 } b ? e with { Body = b } : e);
+
     /// <summary>Queue job chains behind a running brain move instead of superseding it (move-first, think-while-walking).</summary>
     public bool QueueBehindMoves { get; set; } = true;
 
@@ -433,7 +438,7 @@ public sealed class ActivityManager
             // An arrival nobody waits on is context, not a reason to wake the brain (it already said what it's doing).
             bool quiet = false;
             try { quiet = QuietOutcome?.Invoke(text) == true; } catch (Exception) { }
-            _events.Post(act.Kind == ActivityKind.Move || quiet
+            Post(act.Kind == ActivityKind.Move || quiet
                 ? new GameEvent(EventKind.TaskCompleted, text, priority: EventPriority.Background)
                 : GameEvent.TaskDone(text));
             return;
@@ -449,7 +454,7 @@ public sealed class ActivityManager
         bool quietFail = false;
         try { quietFail = wakes && QuietOutcome?.Invoke(failText) == true; } catch (Exception) { }
         if (quietFail) wakes = false;
-        _events.Post(GameEvent.TaskFail(failText, wakes) with { MustWake = wakes });
+        Post(GameEvent.TaskFail(failText, wakes) with { MustWake = wakes });
     }
 }
 

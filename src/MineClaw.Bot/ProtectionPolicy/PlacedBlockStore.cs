@@ -36,6 +36,19 @@ public sealed class PlacedBlockStore : IDisposable
         Sync(force: true);
     }
 
+    private readonly object _flushLock = new();
+
+    /// <summary>
+    /// One brain, many bodies: a clone body's placements go into the same shared table (rule 1: own/hive placements). Its
+    /// client's reader thread only enqueues; the one timer writes.
+    /// </summary>
+    public void Watch(PlacedBlockLog other)
+    {
+        if (ReferenceEquals(other, _log)) return;
+        other.Added += r => _pending.Enqueue((true, r, r.Dimension, r.Pos));
+        other.Removed += (d, p) => _pending.Enqueue((false, null, d, p));
+    }
+
     /// <summary>Rows in the table (tests/diagnostics).</summary>
     public long Rows { get { lock (_db.Gate) return _db.ScalarLong("SELECT COUNT(*) FROM placed_blocks"); } }
 
@@ -51,6 +64,7 @@ public sealed class PlacedBlockStore : IDisposable
     {
         if (_pending.IsEmpty) return 0;
         int n = 0;
+        lock (_flushLock)
         try
         {
             lock (_db.Gate)
@@ -81,6 +95,7 @@ public sealed class PlacedBlockStore : IDisposable
     /// <summary>Re-reads the table when another process changed it (or <paramref name="force"/>). Local queue is flushed first.</summary>
     public bool Sync(bool force = false)
     {
+        lock (_flushLock)
         try
         {
             if (!_pending.IsEmpty) Flush();

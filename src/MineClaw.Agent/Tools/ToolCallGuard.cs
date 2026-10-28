@@ -22,6 +22,8 @@ public sealed class ToolCallGuard
     {
         /// <summary>A delegate's task words (coordinates and boilerplate removed): its intent.</summary>
         public IReadOnlySet<string>? Task { get; init; }
+        /// <summary>The body it failed on (null = the main body): one body's dead end never blocks another's try.</summary>
+        public string? Body { get; init; }
     }
 
     /// <summary>Two delegated tasks are the same job at this content-word Jaccard (or more).</summary>
@@ -86,6 +88,13 @@ public sealed class ToolCallGuard
     /// <summary>How long a failure is remembered.</summary>
     public TimeSpan Memory { get; set; }
 
+    /// <summary>
+    /// One brain, many bodies: also remembers the failures of another body's activity slot, keyed by <paramref name="body"/>
+    /// (a clone's name). <see cref="Check"/> with that body sees only its own failures.
+    /// </summary>
+    public void Watch(ActivityManager other, string body) =>
+        other.StepFinished += (tool, input, r, cancel) => OnStepFinished(tool, input, r, cancel, body);
+
     /// <summary>True if a player's line explicitly asks to try again ("try again", "retry", "one more time").</summary>
     public static bool IsRetryRequest(string? text) => text != null && RetryWords.IsMatch(text);
 
@@ -95,7 +104,7 @@ public sealed class ToolCallGuard
     /// </summary>
     /// <param name="retryRequested">A player said "try again" this turn: failure memory is bypassed.</param>
     /// <param name="stopping">The same model turn also calls stop: the running activity is going away, no dedupe.</param>
-    public ToolResult? Check(string tool, JsonElement input, bool retryRequested = false, bool stopping = false)
+    public ToolResult? Check(string tool, JsonElement input, bool retryRequested = false, bool stopping = false, string? body = null)
     {
         var sig = Signature(tool, input);
         var targets = Targets(tool, input);
@@ -128,6 +137,7 @@ public sealed class ToolCallGuard
                 // Keyed on (tool, intent): the same game tool on the same target, or the same delegated job (task words,
                 // coordinates and boilerplate ignored). Never across tools.
                 if (!string.Equals(f.Tool, tool, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!string.Equals(f.Body, body, StringComparison.OrdinalIgnoreCase)) continue; // another body's dead end
                 bool sameTarget = tool == DelegateTool
                     ? f.Signature == sig || (f.Task != null && Jaccard(f.Task, TaskWords(input)) >= SameTaskThreshold)
                     : targets.Count > 0 || f.Targets.Count > 0 ? Overlap(f.Targets, targets) : f.Signature == sig;
@@ -149,7 +159,7 @@ public sealed class ToolCallGuard
     public static bool IsTransientCombat(string? reason) => reason != null && CombatBusy.IsMatch(reason);
 
     /// <summary>Records a failure (normally fed by <see cref="ActivityManager.StepFinished"/>).</summary>
-    public void RecordFailure(string tool, JsonElement input, string reason)
+    public void RecordFailure(string tool, JsonElement input, string reason, string? body = null)
     {
         // A question back to the brain is not a failure, and a walk is never remembered as impossible.
         if (reason.Contains("needs_input", StringComparison.OrdinalIgnoreCase) || ActivityManager.MovementTools.Contains(tool)) return;
@@ -157,29 +167,33 @@ public sealed class ToolCallGuard
         var f = new Failure(tool, Targets(tool, input), Signature(tool, input), TextUtil.Truncate(TextUtil.OneLine(reason), 160), _time.GetUtcNow())
         {
             Task = tool == DelegateTool ? TaskWords(input) : null,
+            Body = body,
         };
         lock (_lock)
         {
-            _failures.RemoveAll(o => o.Signature == f.Signature);
+            _failures.RemoveAll(o => o.Signature == f.Signature && string.Equals(o.Body, body, StringComparison.OrdinalIgnoreCase));
             _failures.Add(f);
             if (_failures.Count > 50) _failures.RemoveAt(0);
         }
     }
 
-    public void Forget(string tool, JsonElement input)
+    public void Forget(string tool, JsonElement input, string? body = null)
     {
         var targets = Targets(tool, input);
         var sig = Signature(tool, input);
-        lock (_lock) _failures.RemoveAll(f => f.Signature == sig || (targets.Count > 0 && Overlap(f.Targets, targets)));
+        lock (_lock) _failures.RemoveAll(f => string.Equals(f.Body, body, StringComparison.OrdinalIgnoreCase)
+            && (f.Signature == sig || (targets.Count > 0 && Overlap(f.Targets, targets))));
     }
 
-    private void OnStepFinished(string tool, JsonElement input, ToolResult r, string? cancelReason)
+    private void OnStepFinished(string tool, JsonElement input, ToolResult r, string? cancelReason) => OnStepFinished(tool, input, r, cancelReason, null);
+
+    private void OnStepFinished(string tool, JsonElement input, ToolResult r, string? cancelReason, string? body)
     {
-        if (r.Ok) { Forget(tool, input); return; }
+        if (r.Ok) { Forget(tool, input, body); return; }
         if (cancelReason != null) return; // stopped / superseded / interrupted: not the tool's fault
         var text = r.Text;
         if (text.StartsWith("cancelled", StringComparison.OrdinalIgnoreCase) || text.StartsWith("skipped", StringComparison.OrdinalIgnoreCase)) return;
-        RecordFailure(tool, input, text);
+        RecordFailure(tool, input, text, body);
     }
 
     // ---------------------------------------------------------------- keys

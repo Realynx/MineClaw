@@ -71,6 +71,9 @@ public sealed class InProcessBotSource : IBotTelemetrySource, IDisposable
 
     public string Name => _game.Username;
 
+    /// <summary>One brain, many bodies: the activity slot this body's "task" comes from (a clone's own; null = the runtime's, main's).</summary>
+    public MineClaw.Agent.Tools.ActivityManager? Activities { get; init; }
+
     public event Action<PromptUsageRecord>? UsageRecorded;
 
     public BotSnapshot Snapshot(bool full)
@@ -95,7 +98,7 @@ public sealed class InProcessBotSource : IBotTelemetrySource, IDisposable
                 Dimension = w.Dimension,
                 Hp = p.Health,
                 Food = p.Food,
-                Task = _rt.Activities.Describe() ?? _game.CurrentAction,
+                Task = (Activities ?? _rt.Activities).Describe() ?? _game.CurrentAction,
                 Header = full ? GameBridge.StateHeader(_game) : null,
                 BudgetMode = _rt.Usage.Mode.ToString(),
                 Brain = MineClaw.Bot.GameTools.ScriptTools.BrainState(_rt),

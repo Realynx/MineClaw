@@ -27,6 +27,15 @@ public sealed class GameBridge : IDisposable
     /// <summary>Out-of-food reports: once, then only when worse/unacknowledged or at low health (null = every signal wakes).</summary>
     public HungerLatch? Hunger { get; init; }
 
+    /// <summary>
+    /// One brain, many bodies: a clone body's bridge (its short name, "67"). Its events carry <see cref="GameEvent.Body"/>; the
+    /// brain's state header, the session start and the online list stay main's; its client's chat is dropped except whispers
+    /// to its account, which reach main's router as a whisper tagged with this body (only main's account speaks).
+    /// </summary>
+    public string? Body { get; init; }
+
+    private bool IsClone => Body is { Length: > 0 };
+
     private static readonly System.Text.RegularExpressions.Regex PlayerLine = new(@"^<([^>]+)>\s*(.*)$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     /// <summary>How long a join/leave from the player list waits for the matching chat line before being posted itself.</summary>
@@ -60,8 +69,9 @@ public sealed class GameBridge : IDisposable
         Volatile.Write(ref _dim, _c.World.Dimension);
         Sub(h => _c.Kicked += h, h => _c.Kicked -= h, (Action<string>)(r => Post(MapKick(r))));
         Sub(h => _c.Disconnected += h, h => _c.Disconnected -= h, (Action<string>)(r => _log.LogInformation("disconnected: {Reason}", r)));
-        Sub(h => _c.Spawned += h, h => _c.Spawned -= h, (Action)SyncOnline);
+        if (!IsClone) Sub(h => _c.Spawned += h, h => _c.Spawned -= h, (Action)SyncOnline);
         // Joining the game opens the startup-chatter window once (two lines at most until someone talks to the bot).
+        if (IsClone) return; // main's tab list, session window and state header are the brain's
         Sub(h => _c.Spawned += h, h => _c.Spawned -= h, (Action)(() => { if (Interlocked.Exchange(ref _sessionBegun, 1) == 0) _rt.Chat.BeginSession(); }));
         Sub(h => _c.PlayerJoined += h, h => _c.PlayerJoined -= h, (Action<string>)(n => OnPlayerList(n, joined: true)));
         Sub(h => _c.PlayerLeft += h, h => _c.PlayerLeft -= h, (Action<string>)(n => OnPlayerList(n, joined: false)));
@@ -240,6 +250,20 @@ public sealed class GameBridge : IDisposable
             _recentChat.Enqueue((_time.GetUtcNow(), raw));
             while (_recentChat.Count > 30) _recentChat.Dequeue();
         }
+        if (IsClone)
+        {
+            // Only main's account chats and main's router hears public chat (main sees the same lines): a clone keeps just the
+            // whispers to its own account, for the brain, tagged with this body.
+            try
+            {
+                var wm = _rt.Chat.Parse(raw);
+                if (wm.Kind == Agent.Chat.ChatKind.Whisper && wm.Player is { Length: > 0 } who && !who.Equals(_c.Username, StringComparison.OrdinalIgnoreCase)
+                    && _rt.Chat.IsHiveBot?.Invoke(who) != true && wm.Text.Length > 0)
+                    Post(GameEvent.Whisper(who, wm.Text) with { AddressConfidence = 1 });
+            }
+            catch (Exception ex) { _log.LogDebug(ex, "clone whisper routing failed for {Line}", raw); }
+            return;
+        }
         if (Hunger is { } h && PlayerLine.Match(MineClaw.Client.ChatText.StripColours(raw)) is { Success: true } m
             && !m.Groups[1].Value.Equals(_c.Username, StringComparison.OrdinalIgnoreCase) && _rt.Chat.IsHiveBot?.Invoke(m.Groups[1].Value) != true
             && h.OnChat(m.Groups[2].Value))
@@ -251,6 +275,7 @@ public sealed class GameBridge : IDisposable
     private void Post(GameEvent? e)
     {
         if (e == null) return;
+        if (IsClone && e.Body == null) e = e with { Body = Body };
         _log.LogDebug("event {Event}", e.Format());
         _rt.Events.Post(e);
     }

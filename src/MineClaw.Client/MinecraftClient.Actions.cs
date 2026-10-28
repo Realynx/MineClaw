@@ -231,7 +231,7 @@ public sealed partial class MinecraftClient
                 var popts = BuildPathOptions(o, lockedDoors);
                 if (blockedJumps.Count > 0) popts = popts with { AvoidJumps = blockedJumps.ToHashSet() };
                 if (CreeperAvoidCells(goal) is { Count: > 0 } blast) popts = popts with { Avoid = blast };
-                var path = await Task.Run(() => Pathfinder.FindPath(World, start, goal, popts, token), token).ConfigureAwait(false);
+                var path = await PathfindGate.RunAsync(() => Pathfinder.FindPath(World, start, goal, popts, token), token).ConfigureAwait(false);
                 if (path.Status is PathStatus.NoPath or PathStatus.InvalidStart || path.Steps.Count == 0)
                 {
                     if (path.Status == PathStatus.InvalidStart && airWaits < 12)
@@ -438,7 +438,7 @@ public sealed partial class MinecraftClient
             AllowPlace = true, ScaffoldBudget = Math.Min(64, have + logs * 3), AllowPartial = false, Timeout = TimeSpan.FromMilliseconds(600),
         };
         PathResult r;
-        try { r = await Task.Run(() => Pathfinder.FindPath(World, start, goal, probe, ct), ct).ConfigureAwait(false); }
+        try { r = await PathfindGate.RunAsync(() => Pathfinder.FindPath(World, start, goal, probe, ct), ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { return null; }
         if (!r.Success || r.ScaffoldUsed <= have) return null;
         int useLogs = Math.Min(logs, (r.ScaffoldUsed - have + 2) / 3);
@@ -510,7 +510,7 @@ public sealed partial class MinecraftClient
                     // player walking along the rim is followed from the inside rather than mirrored.
                     var goal = GoalFiltered.AwayFromEdge(World, new GoalNearPosition(target.Position, distance + 1));
                     var popts = BuildPathOptions(o) with { EdgeCostMultiplier = 8 };
-                    var path = await Task.Run(() => Pathfinder.FindPath(World, me, goal, popts, c), c).ConfigureAwait(false);
+                    var path = await PathfindGate.RunAsync(() => Pathfinder.FindPath(World, me, goal, popts, c), c).ConfigureAwait(false);
                     var steps = path.Steps;
                     if (path.Status != PathStatus.Found)
                     {

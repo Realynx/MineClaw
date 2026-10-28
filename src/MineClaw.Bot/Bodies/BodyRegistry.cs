@@ -4,7 +4,7 @@ namespace MineClaw.Bot.Bodies;
 /// The brain's bodies (one brain, many bodies). Step 1 holds exactly one, the main body; spawning clones in-process
 /// (<see cref="Add"/>, the runner, slot policy) is step 2. <see cref="Focus"/> is what an unscoped body tool acts on.
 /// </summary>
-public sealed class BodyRegistry
+public sealed partial class BodyRegistry
 {
     private readonly object _lock = new();
     private readonly List<IBody> _bodies = new();

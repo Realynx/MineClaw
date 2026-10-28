@@ -365,7 +365,7 @@ One place decides whether the bot may break a block, why not, and how a player u
   verification, tokens, brain tokens, $ per question, hallucinations. Offline in the tests (recorded/fake answers); live is opt-in,
   ≤20 calls and ≤$0.50.
 
-## Bodies (Bot/Bodies) — one brain, many bodies, step 1
+## Bodies (Bot/Bodies) — one brain, many bodies, steps 1-2
 
 `BotHost.Create` = `CreateBrain` (runtime, shared stores, every tool registered once against two `BodyRoutingGameClient`s:
 each body's claim-aware `Game` view and its plain `Adapter` view) → `BodyFactory.AttachJobs` (bridge + hunger latch, script
@@ -374,8 +374,26 @@ hand-overs). A router acts on `BodyScope.Current` (AsyncLocal, pushed explicitly
 worker's tool calls and the script lane's thread/actions), else `BodyRegistry.Focus`; a body tool inside an activity with no
 scope logs a WARN. Type checks unwrap it (`GameClients.Resolve/Claimed/Unclaimed`). `GameEvent.Body`, body-keyed EventQueue
 dedupe and the telemetry `body` field are in place (null = brain-level); `BotAgent.ActivitiesFor(body)` interrupts only that
-body. The registry holds exactly main; vision and the inventory ledger stay main's. Design and later steps:
-`docs/design/one-brain-many-bodies.md`.
+body. Design and later steps: `docs/design/one-brain-many-bodies.md`.
+
+**Step 2, `Bodies:Mode=inproc`** (default `hive`: the clone processes below, unchanged). `App/Hosting/InProcBodies` replaces
+MainHive: it hosts the claim board and is the registry's `IBodyHost`. `BodyRegistry.Spawn` checks the hive's SlotPolicy
+against main's tab list, spaces logins by `LaunchGapSeconds`, refuses an account someone else is on (tab list, or a "logged
+in from another location" kick → `Occupied` for `ExternalLoginCooldownMinutes`) and a saved void login spot until a trusted
+player says they'll /tp it. Each clone runs under its own `BodyRunner` (connect with backoff, any exception = a crash that
+restarts only that body, `MaxCrashes` in `CrashWindowMinutes` retire it). `YieldTick` (10 s) logs out the body furthest from
+done for an offline regular; `DespawnAsync` pauses the job (order held, lane paused), runs DepositProcedure with main as
+the in-process hand-off receiver, re-checks the inventory, logs out, strands leftovers in HiveStore; shutdown despawns all
+in parallel before main stops. `BodyFactory.CreateClone`: own ActivityManager (events tagged `Body`), StandingOrders (+ an
+idle resume timer), script lane, StallWatchdog, HandoverWatch, HungerLatch, a clone `GameBridge` (no state header, chat
+dropped except whispers to it, which post to main's router tagged with the body; its adapter never sends chat), a
+contributor `WorldIndexer` (containers, block changes, gen regen forwarded to main's indexer), a `WorldMemory` pumped by the
+one `WorldMemoryFlusher`, and the shared Protection/DigCells/marks/PlacedBlockStore. The void hold (ported from CloneHost)
+asks once on main's account, pauses the job and resumes it on landing. `BodyVisionSource` serves hive vision and
+`BodyBotSource` the TUI/supervisor panels from the registry. The `hive` tool keeps its schema: spawn = spawn the body, then
+its script on its lane or `delegate` on its slot. Thread safety: ToolCallGuard failures are keyed by body, PlacedBlockStore
+flush/sync is locked, chunk rows are written 16 per transaction, A* runs through `Client.PathfindGate` (2 at once), workstation
+concurrent GC with a 2.5 GB `GCHeapHardLimit` (runtimeconfig), and `MinecraftClient.TicksBehind` is logged per body.
 
 ## Hive (MineClaw.Hive) — clones as supervised processes
 

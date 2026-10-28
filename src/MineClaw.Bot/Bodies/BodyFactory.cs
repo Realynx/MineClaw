@@ -12,7 +12,7 @@ namespace MineClaw.Bot.Bodies;
 /// watch and standing-order work probe. Two phases because the brain's last tools (see, do) go between them for the main
 /// body: <see cref="AttachJobs"/>, then <see cref="BotHost.FinishTools"/>, then <see cref="AttachBehaviour"/>.
 /// </summary>
-public static class BodyFactory
+public static partial class BodyFactory
 {
     /// <summary>Both phases for a body attached after the brain's tools exist.</summary>
     public static Body Attach(BrainContext brain, Body body)
@@ -37,7 +37,10 @@ public static class BodyFactory
         var log = brain.Log;
         Func<IDisposable?> scope = () => BodyScope.Push(body);
         body.Activities.StepScope = scope;
-        if (rt.Worker != null) rt.Worker.StepScope = scope; // step 1: the one worker drives main (a pool per body comes in step 3)
+        body.Latency ??= rt.Latency; // main's chat latency is the runtime's tracker
+        // Step 1-2: the one worker drives main; a delegate run on a clone body's slot (that slot pushed the clone) keeps that
+        // clone (a pool per body comes in step 3).
+        if (rt.Worker != null) rt.Worker.StepScope = () => BodyScope.Current is { IsMain: false } ? null : scope();
 
         var bridge = new GameBridge(client, rt, log, time)
         {
@@ -90,12 +93,12 @@ public static class BodyFactory
     }
 
     /// <summary>
-    /// Step 1 wires the main body only: the bridge sets the brain's state header, the script lane registers the script tool
-    /// and the brainstem sets [here]. In-process clone bodies (step 2) get their own variants of these.
+    /// These phases wire the main body only: the bridge sets the brain's state header, the script lane registers the script
+    /// tool and the brainstem sets [here]. In-process clone bodies get their own variants (<see cref="CreateClone"/>).
     /// </summary>
     private static void RequireMain(Body body)
     {
-        if (!body.IsMain) throw new NotSupportedException($"body {body.Name}: in-process clone bodies arrive in step 2 (Bodies:Mode=inproc)");
+        if (!body.IsMain) throw new NotSupportedException($"body {body.Name}: a clone body is built by BodyFactory.CreateClone (Bodies:Mode=inproc)");
     }
 
     private static readonly string[] PassiveTools = ["follow", "guard", "watch_demo", "ask_player", "ask_stand", "wait", "sit", "look", "see"];
@@ -132,19 +135,21 @@ public static class BodyFactory
             foreach (var st in inv) h = h * 31 + (st.IsEmpty ? 0 : st.Id * 1000 + st.Count);
             return $"{Math.Round(p.X * 2)},{Math.Round(p.Y * 2)},{Math.Round(p.Z * 2)}|{h}|{client.CurrentAction}";
         }
-        string? LastResult() => rt.Worker?.IsRunning == true && rt.Worker.Trail is { } trail ? trail : last;
-        return new Brainstem.StallWatchdog(Work, Snapshot, LastResult, e => rt.Events.Post(e), time);
+        Func<string?> LastResult = () => rt.Worker?.IsRunning == true && rt.Worker.Trail is { } trail ? trail : last;
+        string? tag = body.IsMain ? null : body.Short;
+        if (!body.IsMain) LastResult = () => last; // the one worker's trail is main's
+        return new Brainstem.StallWatchdog(Work, Snapshot, LastResult, e => rt.Events.Post(tag != null && e.Body == null ? e with { Body = tag } : e), time);
     }
 
     /// <summary>Posts settled hand-overs / kept promises as wake events (the timer does this live; tests call it by hand).</summary>
-    internal static int PostHandovers(Brainstem.HandoverWatch h, AgentRuntime rt, IGameClient client)
+    internal static int PostHandovers(Brainstem.HandoverWatch h, AgentRuntime rt, IGameClient client, string? body = null)
     {
         int n = 0;
         foreach (var (text, player) in h.Poll(id => client.World.Inventory.CountItem(id)))
         {
             // A kept promise wakes the brain even while a script has the body (it said it would act on this).
             bool promise = text.Contains("you said you'd", StringComparison.Ordinal);
-            rt.Events.Post(new Agent.Events.GameEvent(Agent.Events.EventKind.Notice, text, player, Agent.Events.EventPriority.Normal) { MustWake = promise });
+            rt.Events.Post(new Agent.Events.GameEvent(Agent.Events.EventKind.Notice, text, player, Agent.Events.EventPriority.Normal) { MustWake = promise, Body = body });
             n++;
         }
         return n;
@@ -156,7 +161,7 @@ public static class BodyFactory
     /// the bot's pickups of them become one debounced event, and the bot's own "I'll X when Y" lines become pending promises.
     /// </summary>
     private static (Brainstem.HandoverWatch, System.Threading.Timer?) AttachHandovers(IGameClient client, AgentRuntime rt, Func<string, bool> isBot,
-        TimeProvider? time, ILogger? log, bool timer)
+        TimeProvider? time, ILogger? log, bool timer, string? body = null)
     {
         var watch = new Brainstem.HandoverWatch(time);
         var w = client.World;
@@ -183,19 +188,22 @@ public static class BodyFactory
                 if (collector != w.Player.EntityId || stack is not { IsEmpty: false } s) return;
                 watch.OnPickup(entity, s.Id, s.Count);
             };
-        rt.Chat.Accepted += m => { if (m.Player is { Length: > 0 } p && !isBot(p)) watch.OnPlayerLine(p, m.Text); };
-        rt.Chat.Said += t =>
+        if (body == null) // main's account speaks and hears: the player lines and promises are main's
         {
-            try
+            rt.Chat.Accepted += m => { if (m.Player is { Length: > 0 } p && !isBot(p)) watch.OnPlayerLine(p, m.Text); };
+            rt.Chat.Said += t =>
             {
-                if (watch.OnBotLine(t, id => w.Inventory.CountItem(id)) is { } p)
-                    log?.LogInformation("promise: \"{Intent}\" when {Cond}{Item}", p.Intent, p.Condition,
-                        p.ItemId is { } id ? $" (watching for {MineClaw.Data.Items.DisplayName(id, 0)}{(p.From is { } f ? " from " + f : "")})" : "");
-            }
-            catch (Exception ex) { log?.LogDebug(ex, "promise parse failed"); }
-        };
+                try
+                {
+                    if (watch.OnBotLine(t, id => w.Inventory.CountItem(id)) is { } p)
+                        log?.LogInformation("promise: \"{Intent}\" when {Cond}{Item}", p.Intent, p.Condition,
+                            p.ItemId is { } id ? $" (watching for {MineClaw.Data.Items.DisplayName(id, 0)}{(p.From is { } f ? " from " + f : "")})" : "");
+                }
+                catch (Exception ex) { log?.LogDebug(ex, "promise parse failed"); }
+            };
+        }
         var pump = timer
-            ? new System.Threading.Timer(_ => { try { PostHandovers(watch, rt, client); } catch (Exception) { /* next tick */ } }, null, 500, 250)
+            ? new System.Threading.Timer(_ => { try { PostHandovers(watch, rt, client, body); } catch (Exception) { /* next tick */ } }, null, 500, 250)
             : null;
         return (watch, pump);
     }

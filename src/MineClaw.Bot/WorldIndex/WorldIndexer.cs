@@ -160,10 +160,15 @@ public sealed partial class WorldIndexer : IDisposable
     private static long ColKey(int cx, int cz) => ((long)cx << 32) | (uint)cz;
     private static (int X, int Z) ColOf(long k) => ((int)(k >> 32), (int)(uint)k);
 
-    private void MarkColumn(int cx, int cz) { lock (_columnsLock) _dirtyColumns.Add(ColKey(cx, cz)); }
+    private void MarkColumn(int cx, int cz)
+    {
+        if (_o.Contributor) return; // a contributor never scans whole columns (main's indexer does)
+        lock (_columnsLock) _dirtyColumns.Add(ColKey(cx, cz));
+    }
 
     private void OnRegion(BlockPos min, BlockPos size)
     {
+        if (_o.Contributor) return;
         int x0 = min.X >> 4, x1 = (min.X + size.X - 1) >> 4, z0 = min.Z >> 4, z1 = (min.Z + size.Z - 1) >> 4;
         lock (_columnsLock)
             for (int cx = x0; cx <= x1; cx++)
@@ -341,7 +346,13 @@ public sealed partial class WorldIndexer : IDisposable
                 if (active) HandleChange(ch.Change, ch.At);
             }
             Stats.BlockChanges += n;
-            if (active)
+            ApplyAdopted();
+            if (active && _o.Contributor)
+            {
+                // A clone body's contributor indexer: chests it opens and the regen it sees; main's indexer does the rest.
+                HandleContainers(now);
+            }
+            else if (active)
             {
                 TrackPortals(now);
                 ScanDirtyColumns(now);

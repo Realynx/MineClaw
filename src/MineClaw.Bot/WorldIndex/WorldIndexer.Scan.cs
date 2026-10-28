@@ -326,10 +326,35 @@ public sealed partial class WorldIndexer
                 _protectDirty = true; // a confirmed dig cell leaves the protected set (and joins the dig-cell snapshot)
                 _gens.Add(p);
                 _gens.Touch(p);
+                try { RegenConfirmed?.Invoke(p); } catch (Exception) { /* a contributor's listener never breaks the pass */ }
             }
         }
         if (_dug.Count > 256)
             foreach (var k in _dug.Where(kv => now - kv.Value > TimeSpan.FromMinutes(1)).Select(kv => kv.Key).ToList()) _dug.Remove(k);
+    }
+
+    /// <summary>A dig cell's refill was just observed (on the indexer thread). A clone body's contributor indexer forwards it
+    /// to main's full indexer (<see cref="AdoptRegen"/>), so every body's gen work confirms cells for the brain.</summary>
+    public event Action<BlockPos>? RegenConfirmed;
+
+    private readonly System.Collections.Concurrent.ConcurrentQueue<BlockPos> _adoptedRegens = new();
+
+    /// <summary>A regen another body's indexer confirmed: counted here on the next pass (any thread).</summary>
+    public void AdoptRegen(BlockPos p)
+    {
+        _adoptedRegens.Enqueue(p);
+        Volatile.Read(ref _wake).TrySetResult();
+    }
+
+    private void ApplyAdopted()
+    {
+        while (_adoptedRegens.TryDequeue(out var p))
+        {
+            _regens[p] = _regens.GetValueOrDefault(p) + 1;
+            _protectDirty = true;
+            _gens.Add(p);
+            _gens.Touch(p);
+        }
     }
 
     /// <summary>True when a block change at <paramref name="p"/> is a generator refilling (not a player placing).</summary>
