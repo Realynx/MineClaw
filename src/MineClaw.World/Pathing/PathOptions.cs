@@ -86,6 +86,9 @@ public sealed record PathOptions
     /// <summary>Jump and gap-jump moves (from foot cell, to foot cell) not to plan again: the edge guard refused to verify their landing
     /// (see <see cref="PathFollower.BlockedJump"/>), so re-plans route around them instead of retrying forever.</summary>
     public IReadOnlySet<(BlockPos From, BlockPos To)>? AvoidJumps { get; init; }
+    /// <summary>Moves of any kind (from foot cell, to foot cell) not to plan again: the body got stuck executing them at the same
+    /// spot (a collision the planner's boxes missed), so the re-plan tries another way out.</summary>
+    public IReadOnlySet<(BlockPos From, BlockPos To)>? AvoidMoves { get; init; }
 
     /// <summary>Plan gap jumps (<see cref="MoveKind.SprintJump"/>/<see cref="MoveKind.JumpGap"/>) validated by forward physics
     /// simulation. Gaps where a miss is a fall within <see cref="MaxDrop"/> are allowed by default.</summary>

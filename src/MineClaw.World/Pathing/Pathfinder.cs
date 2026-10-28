@@ -142,6 +142,7 @@ public sealed partial class Pathfinder
                 var m = mv;
                 if (_o.Avoid is { } avoid && avoid.Contains(new BlockPos(m.X, m.Y, m.Z))) continue;
                 if (m.Kind is MoveKind.Jump or MoveKind.SprintJump or MoveKind.JumpGap && _o.AvoidJumps is { } aj && aj.Contains((new BlockPos(n.X, n.Y, n.Z), new BlockPos(m.X, m.Y, m.Z)))) continue;
+                if (_o.AvoidMoves is { } am && am.Contains((new BlockPos(n.X, n.Y, n.Z), new BlockPos(m.X, m.Y, m.Z)))) continue;
                 int scaffold = n.Scaffold + (m.Place is null ? 0 : 1);
                 if (scaffold > _o.ScaffoldBudget && m.Place is not null) continue;
                 // Mechanisms: pulse windows, plates walked onto, lever/button effects.
@@ -227,8 +228,12 @@ public sealed partial class Pathfinder
             List<DoorToggle>? opens = null;
             bool transit = !t.Ok || TransitOk(x, z, tx, tz, y, Math.Max(here.Floor, t.Floor), out opens);
 
-            // Same level (with ≤0.5 step-ups, or a <1 block step down e.g. slab → ground).
-            if (t.Ok && t.Floor - here.Floor <= 0.5 + 1e-6 && BodyClear(x, z, Math.Max(here.Floor, t.Floor)))
+            // Same level (with ≤0.5 step-ups, or a <1 block step down e.g. slab → ground). The body crosses the cell edge at
+            // the higher of the two floors, so both columns must be clear there: stepping north off the gen slab 7,64,6 (feet
+            // 64.5, head 66.3) the head hit a leaf block at 7,66,5 that the target cell's own check (floor 64) never saw
+            // (live 10-28: three bots stuck at 7.5,64.5,6.3, every re-plan chose the same step).
+            double edge = Math.Max(here.Floor, t.Floor);
+            if (t.Ok && t.Floor - here.Floor <= 0.5 + 1e-6 && BodyClear(x, z, edge) && BodyClear(tx, tz, edge))
             {
                 if (transit) AddWalk(output, here, hereEdge, tx, y, tz, t, MoveKind.Walk, 1.0, [], opens);
                 walked = true;
@@ -446,7 +451,7 @@ public sealed partial class Pathfinder
             breaks.Add(new BlockPos(tx, yy, tz));
         }
         if (breaks.Count == 0) return;
-        var c = WithBroken(breaks, () => (CellUncached(tx, y, tz), BodyClear(x, z, y)));
+        var c = WithBroken(breaks, () => (CellUncached(tx, y, tz), BodyClear(x, z, y) && BodyClear(tx, tz, Math.Max(here.Floor, y))));
         if (!c.Item1.Ok || !c.Item2 || c.Item1.Floor - here.Floor > 0.5 + 1e-6 || c.Item1.Floor < here.Floor - 0.5 - 1e-6) return;
         AddWalk(output, here, hereEdge, tx, y, tz, c.Item1, MoveKind.Walk, 1.0, breaks);
     }

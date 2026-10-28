@@ -216,6 +216,12 @@ public sealed partial class MinecraftClient
         var blockedJumps = RecentBlockedJumps();
         var lockedDoors = new HashSet<BlockPos>();
         var jumps = new List<ParkourPlan>();
+        // Moves the body got stuck on (live 10-28: every re-plan chose the same step off the gen slab into a leaf block at head
+        // height): never planned again this goto; the second stuck at the same spot also tries an escape move.
+        var avoidMoves = new HashSet<(BlockPos From, BlockPos To)>();
+        var stuck = new StuckNote();
+        Vec3d? stuckSpot = null;
+        int stuckHere = 0;
         var scaffoldBefore = o.AllowPlace ? ScaffoldSnapshot() : null;
         string crafted = "";
         string Built() => scaffoldBefore is null ? "" : crafted + ScaffoldUsed(scaffoldBefore, ScaffoldSnapshot());
@@ -230,6 +236,7 @@ public sealed partial class MinecraftClient
 
                 var popts = BuildPathOptions(o, lockedDoors);
                 if (blockedJumps.Count > 0) popts = popts with { AvoidJumps = blockedJumps.ToHashSet() };
+                if (avoidMoves.Count > 0) popts = popts with { AvoidMoves = avoidMoves.ToHashSet() };
                 if (CreeperAvoidCells(goal) is { Count: > 0 } blast) popts = popts with { Avoid = blast };
                 var path = await PathfindGate.RunAsync(() => Pathfinder.FindPath(World, start, goal, popts, token), token).ConfigureAwait(false);
                 if (path.Status is PathStatus.NoPath or PathStatus.InvalidStart || path.Steps.Count == 0)
@@ -256,15 +263,27 @@ public sealed partial class MinecraftClient
                                              + NoRouteHint(goal, o, start, token));
                 }
 
-                var r = await FollowPathAsync(path.Steps, o, token, blockedJumps, lockedDoors, jumps).ConfigureAwait(false);
+                stuck.Step = null;
+                var r = await FollowPathAsync(path.Steps, o, token, blockedJumps, lockedDoors, jumps, stuck).ConfigureAwait(false);
                 if (r is null)
                 {
                     if (path.Status == PathStatus.Found) return ActionResult.Success($"arrived at {Fmt(World.Player.Position)}{JumpSummary(jumps)}{Built()}");
                     if (++replans > o.MaxReplans) return ActionResult.Fail($"only got partway to {goal}; now at {Fmt(World.Player.Position)}");
                     continue;
                 }
-                lastFailure = r;
                 if (r.Contains("void", StringComparison.Ordinal)) return ActionResult.Fail(r);
+                if (r == "stuck" && stuck.Step is { } stuckStep)
+                {
+                    var at = World.Player.Position;
+                    if (stuckSpot is { } sp && Math.Abs(sp.X - at.X) + Math.Abs(sp.Y - at.Y) + Math.Abs(sp.Z - at.Z) < 0.4) stuckHere++;
+                    else { stuckSpot = at; stuckHere = 1; }
+                    if (Pathfinder.StartCellFor(World, at) is { } fromCell) avoidMoves.Add((fromCell, stuckStep.Pos));
+                    if (stuck.From is { } prev) avoidMoves.Add((prev, stuckStep.Pos));
+                    r = "stuck " + DescribeStuck(at, stuckStep);
+                    if (stuckHere >= 2 && await UnstickAsync(stuckStep, token).ConfigureAwait(false) is { } escaped)
+                        r += $" ({stuckHere}x here; {escaped})";
+                }
+                lastFailure = r;
                 if (++replans > o.MaxReplans) return ActionResult.Fail($"{r} (after {replans - 1} re-plans) at {Fmt(World.Player.Position)}");
                 Log($"goto: {r}, re-planning");
                 await WaitTicksAsync(2, token).ConfigureAwait(false);
@@ -283,7 +302,7 @@ public sealed partial class MinecraftClient
     /// plugin, an iron door ignoring its button), so the re-plan routes around them.</param>
     private async Task<string?> FollowPathAsync(IReadOnlyList<PathStep> steps, GotoOptions o, CancellationToken ct,
         HashSet<(BlockPos From, BlockPos To)>? blockedJumps = null, HashSet<BlockPos>? lockedDoors = null,
-        List<ParkourPlan>? jumps = null)
+        List<ParkourPlan>? jumps = null, StuckNote? stuck = null)
     {
         var follower = new PathFollower(steps, new PathFollowerOptions
         {
@@ -291,7 +310,13 @@ public sealed partial class MinecraftClient
         });
         try
         {
-            return await FollowCoreAsync(follower, ct, blockedJumps, lockedDoors).ConfigureAwait(false);
+            var r = await FollowCoreAsync(follower, ct, blockedJumps, lockedDoors).ConfigureAwait(false);
+            if (r == "stuck" && stuck is not null && follower.CurrentStep is { } st)
+            {
+                stuck.Step = st;
+                stuck.From = follower.StepIndex > 0 ? steps[follower.StepIndex - 1].Pos : null;
+            }
+            return r;
         }
         finally
         {
@@ -358,6 +383,83 @@ public sealed partial class MinecraftClient
                     return "path follower stopped";
             }
         }
+    }
+
+    /// <summary>The step a follower got "stuck" on and the cell it was planned from (null = the path's start).</summary>
+    private sealed class StuckNote
+    {
+        public PathStep? Step;
+        public BlockPos? From;
+    }
+
+    /// <summary>Where and why the body is stuck: "on cobblestone slab 7,64,6 stepping to 7,64,5: head hits leaves at 7,66,5".</summary>
+    private string DescribeStuck(Vec3d at, PathStep step)
+    {
+        var feet = new BlockPos((int)Math.Floor(at.X), (int)Math.Floor(at.Y + 1e-6), (int)Math.Floor(at.Z));
+        // Standing on: the feet cell itself (slab, farmland, soul sand) or the block under it.
+        var on = BlockShapes.HasCollision(World, feet.X, feet.Y, feet.Z) ? feet : feet with { Y = feet.Y - 1 };
+        var sb = new System.Text.StringBuilder($"on {BlockName(World.GetBlock(on), World.GetMeta(on))} {Fmt(on)} stepping to {Fmt(step.Pos)}");
+        var hits = StuckProbe.Obstructions(World, at, step.Target);
+        if (hits.Count == 0) return sb.Append(": nothing solid in the way (pushed by a player, mob or flow?)").ToString();
+        sb.Append(": ").AppendJoin(", ", hits.Take(3).Select(h =>
+            $"{(h.Head ? "head hits" : "blocked by")} {BlockName(World.GetBlock(h.Pos), World.GetMeta(h.Pos))} at {Fmt(h.Pos)}"
+            + (World.Placed.IsPlaced(h.Pos, World.Dimension, World.GetBlock(h.Pos)) ? " (placed by us)" : "")));
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Stuck twice at the same spot: get the body moving another way before the re-plan. In order: mine a block we placed
+    /// that is in the way (self-placed is always minable; never next to lava, never a container, never another player's
+    /// floor), a small hop toward the step when only the feet are blocked, else a sneak-walk off in a free direction (the edge
+    /// guard still filters every tick). Returns what it did, or null when nothing moved.
+    /// </summary>
+    private async Task<string?> UnstickAsync(PathStep step, CancellationToken ct)
+    {
+        var start = World.Player.Position;
+        var hits = StuckProbe.Obstructions(World, start, step.Target);
+        var support = Safety.OtherPlayersSupport(World);
+        foreach (var h in hits)
+        {
+            int id = World.GetBlock(h.Pos);
+            if (!World.Placed.IsPlaced(h.Pos, World.Dimension, id) || World.Info(id).Interactable || NextToLava(h.Pos)
+                || EditBlocked(h.Pos) || support.Contains(h.Pos)) continue;
+            var dug = await DigCoreAsync(h.Pos, ct, allowPathing: false).ConfigureAwait(false);
+            if (dug.Ok) return $"mined our {BlockName(id, 0)} at {Fmt(h.Pos)}";
+        }
+
+        double Moved()
+        {
+            var p = World.Player.Position;
+            return Math.Sqrt((p.X - start.X) * (p.X - start.X) + (p.Z - start.Z) * (p.Z - start.Z));
+        }
+        async Task<bool> Push(float yaw, bool jump, bool sneak, int maxTicks)
+        {
+            int ticks = 0;
+            bool left = false;
+            await DriveAsync(phys =>
+            {
+                ticks++;
+                if (!phys.OnGround) left = true;
+                bool done = Moved() >= 0.5 || ticks > maxTicks || (jump && left && phys.OnGround);
+                return new DriverStep(new MoveInput(Forward: 1, Jump: jump && !left && phys.OnGround, Sneak: sneak, Yaw: yaw, Pitch: 0), Done: done);
+            }, ct).ConfigureAwait(false);
+            await WaitTicksAsync(2, ct).ConfigureAwait(false);
+            return Moved() >= 0.3;
+        }
+
+        var toward = PlayerPhysics.YawPitchTo(start, step.Target with { Y = start.Y }).Yaw;
+        if (hits.Count > 0 && !hits.Any(h => h.Head) && await Push(toward, jump: true, sneak: false, maxTicks: 14).ConfigureAwait(false))
+            return $"hopped toward {Fmt(step.Pos)}";
+        // Step off any free way but the stuck one (nearest to the step target first: the re-plan continues from there).
+        double sdx = step.Target.X - start.X, sdz = step.Target.Z - start.Z, slen = Math.Sqrt(sdx * sdx + sdz * sdz);
+        foreach (var (dx, dz) in StuckProbe.FreeDirections(World, start, step.Target))
+        {
+            if (slen > 1e-6 && dx * sdx + dz * sdz > 0.7 * slen) continue; // that is the blocked move itself
+            var yaw = PlayerPhysics.YawPitchTo(start, new Vec3d(start.X + dx, start.Y, start.Z + dz)).Yaw;
+            if (await Push(yaw, jump: false, sneak: true, maxTicks: 30).ConfigureAwait(false))
+                return "sneaked off " + (dx, dz) switch { (1, 0) => "east", (-1, 0) => "west", (0, 1) => "south", _ => "north" };
+        }
+        return null;
     }
 
     /// <summary>
