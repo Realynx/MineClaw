@@ -116,6 +116,8 @@ public sealed class InProcBodies : IBodyHost, IAsyncDisposable
             catch (Exception ex) { _log.LogDebug(ex, "bodies: void confirm hook failed"); }
         };
         RegisterHiveTool(rt);
+        // Crew builds: the online, idle bodies build a design at once (one lane each), main leading the gate and the finale.
+        if (bot.Blueprints is { } blueprints) blueprints.Crew = new MineClaw.Bot.Blueprints.RegistryCrew(bot.Bodies!);
         _log.LogInformation("bodies: in-process mode, {N} clone account(s) ({Names}); regulars {Regulars}", Accounts.Count, string.Join(", ", Accounts),
             string.Join(", ", _regulars));
     }

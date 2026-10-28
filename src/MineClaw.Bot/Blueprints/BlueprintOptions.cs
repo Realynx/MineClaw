@@ -30,8 +30,8 @@ public sealed class BlueprintOptions
     /// resumes it (design build{id}, no second go needed) when its own learned rules allow, e.g. Fox's "only build in daytime".
     /// </summary>
     public bool AutoResume { get; set; }
-    /// <summary>Split a build across bodies only above this many blocks.</summary>
-    public int SplitAboveBlocks { get; set; } = 120;
+    /// <summary>Split a build across the idle bodies by default only above this many blocks (a named crew always splits).</summary>
+    public int SplitAboveBlocks { get; set; } = 48;
     /// <summary>Claim lease of a build part on the hive claim board (renewed while building).</summary>
     public int ClaimSeconds { get; set; } = 120;
     /// <summary>Confirmation gate: after this many real placements the build pauses and asks once (0 = off). No default

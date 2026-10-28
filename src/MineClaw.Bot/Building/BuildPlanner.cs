@@ -82,7 +82,7 @@ public sealed class BuildPlanner
     {
         Index = s.Index, Action = s.Action, Technique = s.Technique, Target = s.Target, Id = s.Id, Meta = s.Meta, Item = s.Item,
         Damage = s.Damage, Stand = s.Stand, Face = s.Face, HiddenFace = s.HiddenFace, Yaw = s.Yaw, Column = s.Column, Deps = new(s.Deps),
-        Part = s.Part, Gate = s.Gate, Status = s.Status, Note = s.Note, Cost = s.Cost,
+        Part = s.Part, Lane = s.Lane, Gate = s.Gate, Status = s.Status, Note = s.Note, Cost = s.Cost,
     };
 
     private BuildPlanner(VoxelPlan plan, BuildPart part, BuildPlannerOptions o, PlanWorld sim, BlockPos start)

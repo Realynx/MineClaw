@@ -406,7 +406,7 @@ body adapter) all use it; craft always makes new ones (a worn carried pick never
   runs the one-body executor on the persisted plan (stragglers, scaffold down, water back, done). Crew = `design build{id,
   bodies:["67","69"]|crew:N}`, default every online idle body above `SplitAboveBlocks` (48). In-process: `RegistryCrew`; hive:
   `IBuildJobs` (`App/Hosting/HiveBuildJobs`): main slices for itself + idle clones, each clone lane is a hive job running the fixed
-  lane script `build{bp, lane}`, main runs its lane, reads theirs back, and does the finale. Per-lane status in `design show`
+  JS lane script `build({bp, lane})` (`BuildJobs.LaneScript`), main runs its lane, reads theirs back, and does the finale. Per-lane status in `design show`
   ("build: lane 67 40/120, lane 69 38/118"). The `build{bp, lane?}` tool (worker tier; scripts also pass part/of/layer/undo/
   bodies/crew by name) is a thin wrapper over `BlueprintService.BuildAsync`/`BuildLaneAsync`; a delegated "continue building
   design #4" gets its `build{bp:"4"}` line, an unapproved one is refused back to the brain (`design build{id}` after a trusted go).

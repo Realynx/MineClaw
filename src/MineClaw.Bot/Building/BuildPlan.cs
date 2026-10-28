@@ -42,6 +42,9 @@ public sealed class PlanStep
     /// <summary>Steps that must be done first (the one that placed the clicked support, a column's pour).</summary>
     public List<int> Deps { get; set; } = new();
     public int Part { get; set; }
+    /// <summary>The crew lane (index into <see cref="BuildPlan.Lanes"/>) that does this step; 0 for a one-body plan, −1 for the
+    /// shared finale (scaffold taken down by whoever finishes last).</summary>
+    public int Lane { get; set; }
     /// <summary>One of the first placements that show the build's position and direction (the confirmation gate).</summary>
     public bool Gate { get; set; }
     public StepStatus Status { get; set; }
@@ -148,6 +151,16 @@ public sealed class BuildPlan
     public DateTimeOffset Updated { get; set; }
     /// <summary>Re-plans so far (resume, deviations).</summary>
     public int Replans { get; set; }
+    /// <summary>
+    /// The crew split (<see cref="CrewSlicer"/>): one lane per body, each a region of the footprint built layer by layer, with
+    /// the other lanes' steps it waits for. One lane for a one-body plan; empty for a plan sliced before crews existed.
+    /// </summary>
+    public List<PlanLane> Lanes { get; set; } = new();
+    /// <summary>Which slicing the lanes (and their persisted progress rows) belong to; a re-slice gets a new id.</summary>
+    public string SliceId { get; set; } = "";
+    /// <summary>Estimated ticks with one body (travel + actions, in plan order) and with the crew (lanes in parallel, waits honoured).</summary>
+    public double SoloTicks { get; set; }
+    public double CrewTicks { get; set; }
 
     public int Placements => Steps.Count(s => s.Action == StepAction.Place);
     public int Scaffolds => Steps.Count(s => s.Action == StepAction.Scaffold);
@@ -184,10 +197,28 @@ public sealed class BuildPlan
         var mins = EstSeconds / 60;
         var text = string.Join(", ", parts) + (needs.Count > 0 ? ", needs: " + string.Join(", ", needs.Take(4)) : "")
                    + string.Create(CultureInfo.InvariantCulture, $"; est. {(mins < 1 ? "<1" : Math.Round(mins).ToString(CultureInfo.InvariantCulture))} min");
+        if (Lanes.Count > 1) text += "; " + CrewText();
         if (Infeasible.Count > 0)
             text += $"; can't place {Infeasible.Count}: " + string.Join("; ", Infeasible.Take(2).Select(i => $"{BuildBlocks.Name(i.Id, 0)} at {i.Pos.X},{i.Pos.Y},{i.Pos.Z} ({i.Why})"));
         return text;
     }
+
+    /// <summary>"with 3 bodies (main, 67, 69) ≈2 min instead of 6 alone": the crew's benefit, from the plan's own estimates.</summary>
+    public string CrewText()
+    {
+        static string M(double ticks) { var m = ticks / 20 / 60; return m < 1 ? "<1 min" : Math.Round(m).ToString(CultureInfo.InvariantCulture) + " min"; }
+        var who = string.Join(", ", Lanes.Select(l => Bodies.Body.ShortName(l.Body, false)));
+        return $"with {Lanes.Count} bodies ({who}) ≈{M(CrewTicks)} instead of {M(SoloTicks)} alone";
+    }
+
+    /// <summary>"lane 67 40/120, lane 69 38/118": per-lane progress in design blocks (the lane's placements done / its placements;
+    /// scaffold, clears and water are not counted, so done never exceeds the total).</summary>
+    public string LaneProgress() => string.Join(", ", Lanes.Select(l =>
+    {
+        var placements = l.Steps.Where(i => i >= 0 && i < Steps.Count && Steps[i].Action == StepAction.Place).Select(i => Steps[i]).ToList();
+        return $"lane {Bodies.Body.ShortName(l.Body, false)} {placements.Count(s => s.Finished && s.Status != StepStatus.Skipped)}/{placements.Count}"
+               + (l.State is "lost" or "stuck" or "failed" ? " " + l.State : "");
+    }));
 
     /// <summary>
     /// Disjoint step sets for <paramref name="n"/> bodies (strips along the longer side, <see cref="ConstructionPlanner.Split"/>):
@@ -214,6 +245,23 @@ public sealed class BuildPlan
         }
         return result;
     }
+}
+
+/// <summary>
+/// One body's lane of a crew plan: its steps in plan order (a region of the footprint, layer by layer), the other lanes' steps
+/// each one waits for (supports, a cell another lane clears, a stand another lane must leave free first), its estimate and
+/// state (planned | building | done | yielded | lost | stuck). Progress is the steps' own status (persisted per lane).
+/// </summary>
+public sealed class PlanLane
+{
+    public int Index { get; set; }
+    /// <summary>The body's login name.</summary>
+    public string Body { get; set; } = "";
+    public List<int> Steps { get; set; } = new();
+    public Dictionary<int, List<int>> Waits { get; set; } = new();
+    public double EstTicks { get; set; }
+    public string State { get; set; } = "planned";
+    public string? Note { get; set; }
 }
 
 /// <summary>One body's share of a plan: its steps and, per step, the other parts' steps it waits for.</summary>

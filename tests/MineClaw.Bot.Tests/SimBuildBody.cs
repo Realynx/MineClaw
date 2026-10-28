@@ -3,6 +3,7 @@ using MineClaw.Bot.Building;
 using MineClaw.Client;
 using MineClaw.Data;
 using MineClaw.World;
+using MineClaw.World.Claims;
 
 namespace MineClaw.Bot.Tests;
 
@@ -15,9 +16,12 @@ namespace MineClaw.Bot.Tests;
 internal sealed class SimBuildBody : IBuildBody
 {
     private readonly WorldState _w;
-    public SimBuildBody(WorldState w, Dictionary<(int, int), int>? inv = null)
+    public SimBuildBody(WorldState w, Dictionary<(int, int), int>? inv = null, string name = "maid_chan", SimCrewLink? crew = null)
     {
         _w = w;
+        Name = name;
+        Link = crew;
+        crew?.Bodies.Add(this);
         Inv = inv ?? new() { [(Blocks.Cobblestone, 0)] = 512, [(Blocks.Planks, 0)] = 128, [(Items.WoodenDoor, 0)] = 4, [(Blocks.GlassPane, 0)] = 16 };
     }
 
@@ -31,14 +35,20 @@ internal sealed class SimBuildBody : IBuildBody
     private PhysicsState? _swim;
     private int _placed;
 
-    public string Name => "maid_chan";
+    public string Name { get; }
     public WorldState World => _w;
+    /// <summary>Several sim bodies building at once: one shared lock, the block changes mirrored into every body's world.</summary>
+    public SimCrewLink? Link { get; }
+    public bool Available { get; set; } = true;
+    public double? BackInSeconds { get; set; }
+    public IClaimBoard? Claims { get; set; }
+    public BlockPos Feet0 => Feet;
     public bool InWater => _swim != null;
 
     private BlockPos Feet => Pathfinder.StartCellFor(_w.PlanningView, _w.Player.Position) ?? _w.Player.Position.ToBlockPos();
     private Vec3d Eye => _swim is { } s ? s.EyePosition : _w.Player.EyePosition;
 
-    public Task<ActionResult> GotoAsync(BlockPos stand, CancellationToken ct)
+    private Task<ActionResult> GotoCore(BlockPos stand, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         if (_swim != null) return Task.FromResult(ActionResult.Fail("can't walk while swimming"));
@@ -55,11 +65,12 @@ internal sealed class SimBuildBody : IBuildBody
 
     private void Teleport(BlockPos stand)
     {
+        Link?.Arrive(this, stand);
         double floor = GoalUseBlock.EyeAt(_w, stand.X, stand.Y, stand.Z).Y - PlayerPhysics.EyeHeight;
         _w.Player.ServerTeleport(new Vec3d(stand.X + 0.5, floor, stand.Z + 0.5), floor + 1.62, 0, 0, true);
     }
 
-    public Task<ActionResult> PlaceAsync(BuildStep step, int itemId, int damage, CancellationToken ct)
+    private Task<ActionResult> PlaceCore(BuildStep step, int itemId, int damage, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         if (PlaceLimit-- <= 0) { Stop?.Cancel(); ct.ThrowIfCancellationRequested(); }
@@ -79,30 +90,32 @@ internal sealed class SimBuildBody : IBuildBody
         if (BuildBlocks.KindOf(step.Id) == BuildKind.Stairs && step.Yaw is { } yaw)
             meta = BuildBlocks.StairsMeta(BuildPlanner.Quarter(yaw)); // the server: BlockStairs.postPlace from the yaw
         Inv[key]--;
-        _w.SetBlock(step.Pos.X, step.Pos.Y, step.Pos.Z, step.Id, meta);
-        if (BuildBlocks.KindOf(step.Id) == BuildKind.Door) _w.SetBlock(step.Pos.X, step.Pos.Y + 1, step.Pos.Z, step.Id, meta | 8);
-        _w.Placed.Note(step.Pos, _w.Dimension, step.Id, Name, DateTimeOffset.UtcNow);
+        Set(step.Pos.X, step.Pos.Y, step.Pos.Z, step.Id, meta);
+        if (BuildBlocks.KindOf(step.Id) == BuildKind.Door) Set(step.Pos.X, step.Pos.Y + 1, step.Pos.Z, step.Id, meta | 8);
+        foreach (var world in Worlds) world.Placed.Note(step.Pos, world.Dimension, step.Id, Name, DateTimeOffset.UtcNow);
+        Link?.Event(this, $"{(step.Kind == StepKind.Scaffold ? "scaffold" : "place")} {step.Pos.X},{step.Pos.Y},{step.Pos.Z}");
         Placed.Add(step.Pos);
         Log.Add($"{(step.Kind == StepKind.Scaffold ? "scaffold" : "place")} {step.Pos.X},{step.Pos.Y},{step.Pos.Z}{(step.Hidden ? " hidden" : "")}{(_swim != null ? " swimming" : "")}");
         AfterPlace?.Invoke(++_placed);
         return Task.FromResult(ActionResult.Success("placed"));
     }
 
-    public Task<ActionResult> DigAsync(BlockPos pos, CancellationToken ct)
+    private Task<ActionResult> DigCore(BlockPos pos, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         int id = _w.GetBlock(pos);
         Log.Add($"dig {pos.X},{pos.Y},{pos.Z}{(_swim != null ? " swimming" : "")}");
-        _w.SetBlock(pos.X, pos.Y, pos.Z, 0, 0);
+        Set(pos.X, pos.Y, pos.Z, 0, 0);
+        Link?.Event(this, $"dig {pos.X},{pos.Y},{pos.Z}");
         if (id != 0) Inv[(id, 0)] = Inv.GetValueOrDefault((id, 0)) + 1;
         Placed.Remove(pos);
         return Task.FromResult(ActionResult.Success("dug"));
     }
 
-    public Task<ActionResult> DigHereAsync(BlockPos pos, CancellationToken ct)
+    private Task<ActionResult> DigHereCore(BlockPos pos, CancellationToken ct)
     {
         if (Eye.DistanceTo(pos.Center) > 5.2) return Fail($"{pos} out of reach to dig");
-        return DigAsync(pos, ct);
+        return DigCore(pos, ct);
     }
 
     public int Count(int itemId, int damage) => Inv.GetValueOrDefault((itemId, BuildBlocks.HasVariants(itemId) && damage >= 0 ? damage : 0));
@@ -115,25 +128,25 @@ internal sealed class SimBuildBody : IBuildBody
 
     // ---- water
 
-    public Task<ActionResult> PourWaterAsync(BlockPos source, BlockFace face, CancellationToken ct)
+    private Task<ActionResult> PourCore(BlockPos source, BlockFace face, CancellationToken ct)
     {
         if (Count(Items.WaterBucket, 0) == 0) return Fail("no water bucket");
         if (!BuildBlocks.Supports(_w.GetBlock(source - face.Normal()))) return Fail("nothing to pour against");
         if (_w.Player.EyePosition.DistanceTo(source.Center) > 4.5) return Fail("too far to pour");
-        foreach (var (p, m) in WaterColumn.Cells(_w, source)) _w.SetBlock(p.X, p.Y, p.Z, m == 0 ? Blocks.Water : Blocks.FlowingWater, m);
+        foreach (var (p, m) in WaterColumn.Cells(_w, source)) Set(p.X, p.Y, p.Z, m == 0 ? Blocks.Water : Blocks.FlowingWater, m);
         Inv[(Items.WaterBucket, 0)]--;
         Inv[(Items.Bucket, 0)] = Inv.GetValueOrDefault((Items.Bucket, 0)) + 1;
         Log.Add($"pour {source.X},{source.Y},{source.Z}");
         return Task.FromResult(ActionResult.Success("poured"));
     }
 
-    public Task<ActionResult> SwimToDepthAsync(SwimColumn column, BlockPos entry, double feetY, CancellationToken ct)
+    private Task<ActionResult> SwimCore(SwimColumn column, BlockPos entry, double feetY, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         SwimResult r;
         if (_swim == null)
         {
-            if (Feet != entry) { var g = GotoAsync(entry, ct).Result; if (!g.Ok) return Task.FromResult(g); }
+            if (Feet != entry) { var g = GotoCore(entry, ct).Result; if (!g.Ok) return Task.FromResult(g); }
             r = SwimSim.SimulateDescent(_w, entry, column, feetY);
         }
         else r = SwimSim.SimulateHover(_w, _swim, column, feetY);
@@ -143,7 +156,7 @@ internal sealed class SimBuildBody : IBuildBody
         return Task.FromResult(ActionResult.Success("swimming"));
     }
 
-    public Task<ActionResult> SwimOutAsync(SwimColumn column, BlockPos exit, CancellationToken ct)
+    private Task<ActionResult> SwimOutCore(SwimColumn column, BlockPos exit, CancellationToken ct)
     {
         if (_swim == null) return Task.FromResult(ActionResult.Success("not swimming"));
         var r = SwimSim.SimulateAscent(_w, _swim, column, exit);
@@ -154,7 +167,7 @@ internal sealed class SimBuildBody : IBuildBody
         return Task.FromResult(ActionResult.Success("out"));
     }
 
-    public Task<ActionResult> PickupWaterAsync(BlockPos source, CancellationToken ct)
+    private Task<ActionResult> PickupCore(BlockPos source, CancellationToken ct)
     {
         if (_swim != null) return Fail("still swimming");
         if (Count(Items.Bucket, 0) == 0) return Fail("no bucket");
@@ -175,10 +188,83 @@ internal sealed class SimBuildBody : IBuildBody
         {
             var p = q.Dequeue();
             if (!seen.Add(p) || !BlockShapes.IsWater(_w.GetBlock(p))) continue;
-            _w.SetBlock(p.X, p.Y, p.Z, 0, 0);
+            Set(p.X, p.Y, p.Z, 0, 0);
             foreach (var f in BlockFaceExtensions.All) if (f != BlockFace.Top) q.Enqueue(p.Offset(f));
         }
     }
 
     private static Task<ActionResult> Fail(string why) => Task.FromResult(ActionResult.Fail(why));
+
+    // ---- crew sims: each action under the shared lock, after a short delay so the bodies interleave
+
+    public Task<ActionResult> GotoAsync(BlockPos stand, CancellationToken ct) => Act(() => GotoCore(stand, ct), ct);
+    public Task<ActionResult> PlaceAsync(BuildStep step, int itemId, int damage, CancellationToken ct) => Act(() => PlaceCore(step, itemId, damage, ct), ct);
+    public Task<ActionResult> DigAsync(BlockPos pos, CancellationToken ct) => Act(() => DigCore(pos, ct), ct);
+    public Task<ActionResult> DigHereAsync(BlockPos pos, CancellationToken ct) => Act(() => DigHereCore(pos, ct), ct);
+    public Task<ActionResult> PourWaterAsync(BlockPos source, BlockFace face, CancellationToken ct) => Act(() => PourCore(source, face, ct), ct);
+    public Task<ActionResult> SwimToDepthAsync(SwimColumn column, BlockPos entry, double feetY, CancellationToken ct) => Act(() => SwimCore(column, entry, feetY, ct), ct);
+    public Task<ActionResult> SwimOutAsync(SwimColumn column, BlockPos exit, CancellationToken ct) => Act(() => SwimOutCore(column, exit, ct), ct);
+    public Task<ActionResult> PickupWaterAsync(BlockPos source, CancellationToken ct) => Act(() => PickupCore(source, ct), ct);
+
+    private async Task<ActionResult> Act(Func<Task<ActionResult>> f, CancellationToken ct)
+    {
+        if (Link == null) return Available ? await f() : ActionResult.Fail("dead");
+        await Task.Delay(Link.Delay, ct);
+        if (!Available) return ActionResult.Fail("dead");
+        lock (Link.Sync) return f().GetAwaiter().GetResult();
+    }
+
+    private IEnumerable<WorldState> Worlds => Link == null ? [_w] : Link.Bodies.Select(b => b._w).Distinct();
+
+    /// <summary>A block change: this body's world and, in a crew, every other body's (they all see the same blocks).</summary>
+    private void Set(int x, int y, int z, int id, int meta)
+    {
+        foreach (var world in Worlds) world.SetBlock(x, y, z, id, meta);
+    }
+}
+
+/// <summary>
+/// Sim bodies building at once: each action takes the shared lock (one world-changing action at a time, interleaved between
+/// bodies by a short delay), every placement/dig is mirrored into every body's world and logged in one global order, and each
+/// arrival is checked against where the other bodies stand (two bodies in one cell is a violation).
+/// </summary>
+internal sealed class SimCrewLink
+{
+    public readonly object Sync = new();
+    public int Delay { get; init; } = 1;
+    public List<SimBuildBody> Bodies { get; } = new();
+    public List<(int Seq, string Body, string What)> Events { get; } = new();
+    public List<string> Violations { get; } = new();
+    private readonly Dictionary<string, BlockPos> _at = new();
+    private int _seq;
+
+    public void Arrive(SimBuildBody b, BlockPos feet)
+    {
+        lock (Sync)
+        {
+            foreach (var (other, p) in _at)
+                if (other != b.Name && Bodies.Any(x => x.Name == other && x.Available) && p.X == feet.X && p.Z == feet.Z && Math.Abs(p.Y - feet.Y) <= 1)
+                    Violations.Add($"{b.Name} stepped into {feet} where {other} stands");
+            _at[b.Name] = feet;
+        }
+    }
+
+    public void Event(SimBuildBody b, string what)
+    {
+        lock (Sync) Events.Add((++_seq, b.Name, what));
+    }
+
+    /// <summary>The first time each cell got a block (global order).</summary>
+    public Dictionary<BlockPos, int> FirstPlaced()
+    {
+        var d = new Dictionary<BlockPos, int>();
+        lock (Sync)
+            foreach (var (seq, _, what) in Events)
+            {
+                if (!what.StartsWith("place ") && !what.StartsWith("scaffold ")) continue;
+                var c = what[(what.IndexOf(' ') + 1)..].Split(',').Select(int.Parse).ToArray();
+                d.TryAdd(new BlockPos(c[0], c[1], c[2]), seq);
+            }
+        return d;
+    }
 }

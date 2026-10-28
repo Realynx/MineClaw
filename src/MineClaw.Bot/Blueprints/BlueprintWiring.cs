@@ -28,7 +28,7 @@ public sealed class BlueprintWiring
 
     public const string DesignDescription =
         "Design a build from a wish: drafted, checked and previewed in the background; summary+bill go to chat. Builds only on a " +
-        "trusted player's go (resuming an approved one needs none). op new{what,at?} revise{id,what} build{id,at?} show{id,image?} list cancel{id}";
+        "trusted player's go (resuming an approved one needs none). op new{what,at?} revise{id,what} build{id,at?,bodies?|crew?} show{id,image?} list cancel{id}";
 
     public required BlueprintService Service { get; init; }
     /// <summary>Set after vision is wired (roles, atlas, perception for the critique).</summary>
@@ -82,6 +82,7 @@ public sealed class BlueprintWiring
         service.StartBuild = (id, part) => wiring.StartBuild(rt, id, part);
         service.StartUndo = id => wiring.StartBuild(rt, id, null, undo: true);
         wiring.RegisterTools(rt);
+        wiring.WrapDelegate(rt);
         wiring.AttachChat(rt, log);
         // Trusted players' standing rules ride along with resume/build results, and a pending build puts its design in play for
         // the turn header's [standing rules] (text only: the brain decides, e.g. "only build in daytime" at night).
@@ -110,6 +111,7 @@ public sealed class BlueprintWiring
     {
         rt.Tools.Register(DesignTool, DesignDescription,
             ToolSchema.Create().Str("op", enumValues: ["new", "revise", "build", "show", "list", "cancel"], required: false)
+                // bodies/crew (op build) are read by name, documented in the description only (brain budget, ToolBudgets.Brain).
                 .Str("what", required: false).Str("at", required: false).Str("id", required: false).Bool("image", required: false).Build(),
             (input, ct) => Task.FromResult(Design(input)), tiers: ToolTiers.Main, maxResultChars: 600);
         // Only the Opus brain authors designs (like Lua scripts); every other path may build or inspect saved ones.
@@ -117,9 +119,11 @@ public sealed class BlueprintWiring
             (input.Str("op") ?? "new").Trim().ToLowerInvariant() is "new" or "revise" && caller?.IsBrainModel(rt.Options.Llm) != true
                 ? "only the Opus brain designs builds; build or show a saved design instead" : null);
         // Hidden (no prompt bytes): the activity behind a build, and the Lua build{}/blueprint() functions.
-        rt.Tools.Register(BuildTool, "Build part of an accepted blueprint: bp (id/name), part (1-based) of N, layer (0-based).",
-            ToolSchema.Create().Str("bp").Int("part", required: false).Int("of", required: false).Int("layer", required: false)
-                .Bool("by_layer", required: false).Bool("undo", required: false).Build(),
+        // The worker's (and a hive clone's worker's) way to run an approved design: a thin wrapper over BlueprintService
+        // (BuildAsync / BuildLaneAsync), the same method the script bindings call. Schema = bp + lane only (worker budget);
+        // scripts also pass part/of/layer/by_layer/undo/bodies/crew by name.
+        rt.Tools.Register(BuildTool, "Build/resume an approved saved design by id (its saved plan); lane = a crew lane.",
+            ToolSchema.Create().Str("bp").Int("lane", required: false).Build(),
             async (input, ct) =>
             {
                 var bp = Id(input, "bp") ?? Id(input, "id") ?? "";
@@ -128,19 +132,103 @@ public sealed class BlueprintWiring
                     var (uok, utext) = await Service.UndoAsync(bp, ct).ConfigureAwait(false);
                     return uok ? ToolResult.Success(utext) : ToolResult.Error(utext);
                 }
+                // A hive clone's lane of a crew build (main started it as a hive job: build{bp, lane}).
+                if (input.Int("lane") is { } lane)
+                {
+                    var (lok, ltext) = await Service.BuildLaneAsync(bp, lane, ct).ConfigureAwait(false);
+                    return lok ? ToolResult.Success(ltext) : ToolResult.Error(ltext);
+                }
+                if (CrewOf(input) is { } crew && Service.Store.Find(bp) is { } brec) Service.RequestCrew(brec.Id, crew);
                 var (ok, text) = await Service.BuildAsync(bp, input.Int("part"), input.Int("of"), input.Int("layer"), ct, input.Bool("by_layer") == true).ConfigureAwait(false);
                 return ok ? ToolResult.Success(text) : ToolResult.Error(text);
-            }, longRunning: true, tiers: ToolTiers.None, maxResultChars: 600);
+            }, longRunning: true, tiers: ToolTiers.Worker, maxResultChars: 600);
         rt.Tools.Register(InfoTool, "A saved blueprint: size, layers, bill, status.",
             ToolSchema.Create().Str("bp").Build(),
             (input, _) => Task.FromResult(Service.Store.Find(Id(input, "bp") ?? Id(input, "id") ?? "") is { } r ? ToolResult.Success(Service.Describe(r)) : ToolResult.Error("no such blueprint")),
             tiers: ToolTiers.None);
     }
 
+    // ------------------------------------------------------------------ delegated design builds
+
+    private static readonly System.Text.RegularExpressions.Regex DesignRef = new(
+        @"\b(?:design|blueprint|build)\w*\s*(?:#|no\.?\s*|id\s*)?(\d+)\b|#(\d+)\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    private static readonly System.Text.RegularExpressions.Regex BuildWord = new(@"\b(?:build|built|building|construct|continue|resume|finish)\w*",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// A delegated task that is about building a saved design ("Continue building design #4 'mob drop tower'"): the design it
+    /// names, and either the line the worker gets (run <c>build{bp:N}</c>: its saved plan) or why no worker can do it (not
+    /// approved: the brain's own <c>design build{id}</c>). (null, null) = not a design build.
+    /// </summary>
+    internal (string? Hint, string? Refusal) DesignTask(string task)
+    {
+        if (string.IsNullOrWhiteSpace(task) || !BuildWord.IsMatch(task)) return (null, null);
+        BlueprintRecord? rec = null;
+        foreach (System.Text.RegularExpressions.Match m in DesignRef.Matches(task))
+            if ((m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value) is { Length: > 0 } id && Service.Store.Find(id) is { } r) { rec = r; break; }
+        rec ??= Service.Store.List(10).FirstOrDefault(r => r.Name.Length >= 4 && task.Contains(r.Name, StringComparison.OrdinalIgnoreCase)
+                                                          && task.Contains("design", StringComparison.OrdinalIgnoreCase));
+        if (rec == null) return (null, null);
+        if (rec.Status is DesignStatus.Accepted or DesignStatus.Building or DesignStatus.Built)
+            return ($"[design #{rec.Id} \"{rec.Name}\" is approved: call build{{bp:\"{rec.Id}\"}} (it resumes the saved plan; never place its blocks by hand)]", null);
+        return (null, $"design #{rec.Id} \"{rec.Name}\" is {rec.Status}, not approved: a worker can't build it. A trusted player's 'build it', then design build{{id={rec.Id}}}");
+    }
+
+    /// <summary>The delegate tool, same definition: a design-build task carries its build{bp} line, or is refused up front.</summary>
+    private void WrapDelegate(AgentRuntime rt)
+    {
+        if (!rt.Tools.TryGet(Agent.Worker.WorkerAgent.ToolName, out var inner)) return;
+        rt.Tools.Replace(new DesignTaskTool(inner, this));
+    }
+
+    private sealed class DesignTaskTool(IAgentTool inner, BlueprintWiring wiring) : IAgentTool
+    {
+        public string Name => inner.Name;
+        public string Description => inner.Description;
+        public JsonElement InputSchema => inner.InputSchema;
+        public bool IsLongRunning => inner.IsLongRunning;
+        public bool AvailableToCheapTier => inner.AvailableToCheapTier;
+        public ToolTiers Tiers => inner.Tiers;
+        public int? MaxResultChars => inner.MaxResultChars;
+
+        public Task<ToolResult> ExecuteAsync(JsonElement input, CancellationToken ct)
+        {
+            if (input.ValueKind != JsonValueKind.Object || !input.TryGetProperty("task", out var t) || t.ValueKind != JsonValueKind.String)
+                return inner.ExecuteAsync(input, ct);
+            (string? Hint, string? Refusal) d;
+            try { d = wiring.DesignTask(t.GetString() ?? ""); } catch (Exception) { return inner.ExecuteAsync(input, ct); }
+            if (d.Refusal != null) return Task.FromResult(ToolResult.Error(d.Refusal));
+            if (d.Hint == null) return inner.ExecuteAsync(input, ct);
+            var o = System.Text.Json.Nodes.JsonNode.Parse(input.GetRawText())!.AsObject();
+            o["task"] = t.GetString() + "\n" + d.Hint;
+            return inner.ExecuteAsync(JsonSerializer.SerializeToElement(o), ct);
+        }
+    }
+
     /// <summary>An id given as a string ("3", "hut") or a number (Lua <c>build{bp=3}</c>).</summary>
     private static string? Id(JsonElement input, string name) =>
         input.ValueKind == JsonValueKind.Object && input.TryGetProperty(name, out var v)
             ? v.ValueKind switch { JsonValueKind.Number => v.GetRawText(), JsonValueKind.String => v.GetString(), _ => null } : null;
+
+    /// <summary>bodies:["67","69"] (or "67,69", or numbers) and/or crew:N → who builds; null = the default crew.</summary>
+    internal static CrewRequest? CrewOf(JsonElement input)
+    {
+        if (input.ValueKind != JsonValueKind.Object) return null;
+        List<string>? names = null;
+        if (input.TryGetProperty("bodies", out var b))
+            names = b.ValueKind switch
+            {
+                JsonValueKind.Array => b.EnumerateArray().Select(e => e.ValueKind == JsonValueKind.Number ? e.GetRawText() : e.GetString() ?? "")
+                    .Where(n => n.Trim().Length > 0).ToList(),
+                JsonValueKind.String => (b.GetString() ?? "").Split([',', ' ', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList(),
+                JsonValueKind.Number => [b.GetRawText()],
+                _ => null,
+            };
+        int? count = input.TryGetProperty("crew", out var c) && c.ValueKind == JsonValueKind.Number && c.TryGetInt32(out var n) ? Math.Max(1, n) : null;
+        if (names is { Count: 0 }) names = null;
+        return names == null && count == null ? null : new CrewRequest(names, count);
+    }
 
     private ToolResult Design(JsonElement input)
     {
@@ -165,6 +253,8 @@ public sealed class BlueprintWiring
                 {
                     if (Rec() is not { } rec) return ToolResult.Error("no design to build (id?)");
                     bool moving = input.Str("at") is { Length: > 0 };
+                    var crew = CrewOf(input);
+                    if (crew != null && !moving) Service.RequestCrew(rec.Id, crew);
                     // Already accepted by a trusted player: resuming (after a material or night pause) needs no second go.
                     if (!moving && rec.Status is DesignStatus.Accepted or DesignStatus.Building && rec.AcceptedBy != null)
                         return Service.StartBuild(rec.Id, null) is { } why ? ToolResult.Error(why)
@@ -172,12 +262,12 @@ public sealed class BlueprintWiring
                     if (!Service.IsTrusted(speaker)) return ToolResult.Error($"a build needs a trusted player's go ({string.Join("/", rt_Trusted())}); {speaker ?? "nobody"} asked");
                     if (rec.Status is DesignStatus.Built || moving && rec.Status is not DesignStatus.Review)
                     {
-                        var (_, text) = Service.Reuse(rec, input.Str("at"), speaker!);
+                        var (_, text) = Service.Reuse(rec, input.Str("at"), speaker!, crew);
                         return text.StartsWith("error", StringComparison.Ordinal) ? ToolResult.Error(text[7..]) : ToolResult.Success(text);
                     }
                     if (rec.Status is DesignStatus.Accepted or DesignStatus.Building)
                         return Service.StartBuild(rec.Id, null) is { } why ? ToolResult.Error(why) : ToolResult.Success(Service.WithRules(rec.Id, $"building #{rec.Id} \"{rec.Name}\" (resuming)"));
-                    var a = Service.Accept(rec, speaker!);
+                    var a = Service.Accept(rec, speaker!, crew);
                     return a.StartsWith("building", StringComparison.Ordinal) ? ToolResult.Success(a) : ToolResult.Error(a);
                 }
             case "show":

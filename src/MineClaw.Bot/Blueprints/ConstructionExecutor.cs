@@ -23,6 +23,8 @@ public sealed class BuildReport
     public BuildPlan? Plan { get; set; }
     /// <summary>Paused at the confirmation gate, waiting for a trusted answer.</summary>
     public bool AtGate { get; set; }
+    /// <summary>A gate-only run (the crew's first phase): the gate blocks are up and a trusted player said yes (or no gate applies).</summary>
+    public bool GatePassed { get; set; }
 
     public string Text(string what) =>
         $"{what}: placed {Placed}" + (Already > 0 ? $", {Already} already there" : "") + (Cleared > 0 ? $", cleared {Cleared}" : "")
@@ -59,13 +61,15 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
     /// <summary>The gate question for a plan (landmark wording); default: <see cref="BuildGate.Question"/> without landmarks.</summary>
     public Func<BuildPlan, VoxelPlan, string>? GateQuestion { get; init; }
 
-    private bool GateOn => Gates != null && Ask != null && o.GateBlocks > 0;
+    internal bool GateOn => Gates != null && Ask != null && o.GateBlocks > 0;
+    internal BlueprintOptions Options0 => o;
 
     /// <summary>Slices (or loads) the plan for a part without building: the "build it" summary and the supervisor view.</summary>
-    public BuildPlan PlanFor(long blueprintId, VoxelPlan design, BuildPart part, IBuildBody body, bool save = true)
+    /// <param name="previous">The plan to carry on from (a crew's plan handed to its finale); default: the persisted one.</param>
+    public BuildPlan PlanFor(long blueprintId, VoxelPlan design, BuildPart part, IBuildBody body, bool save = true, BuildPlan? previous = null)
     {
         var w = body.World;
-        var prev = Plans?.Get(blueprintId, part.Index);
+        var prev = previous ?? Plans?.Get(blueprintId, part.Index);
         if (prev != null && prev.Version != design.Hash()) prev = null;
         var (voxel, p) = Shape(design, part, prev?.Transform ?? BuildTransform.None, w.Dimension);
         var bp = BuildPlanner.Plan(voxel, w.PlanningView, StartCell(w), p, Options(body, part, prev), prev);
@@ -76,7 +80,7 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
         return bp;
     }
 
-    private BuildPlannerOptions Options(IBuildBody body, BuildPart part, BuildPlan? prev, IReadOnlySet<BlockPos>? keep = null,
+    internal BuildPlannerOptions Options(IBuildBody body, BuildPart part, BuildPlan? prev, IReadOnlySet<BlockPos>? keep = null,
         IReadOnlySet<(int, int)>? hold = null) => new()
     {
         Keep = keep ?? new HashSet<BlockPos>(),
@@ -89,17 +93,20 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
         IsProtected = body.IsProtected,
     };
 
-    private static BlockPos StartCell(WorldState w) => Pathfinder.StartCellFor(w.PlanningView, w.Player.Position) ?? w.Player.Position.ToBlockPos();
+    internal static BlockPos StartCell(WorldState w) => Pathfinder.StartCellFor(w.PlanningView, w.Player.Position) ?? w.Player.Position.ToBlockPos();
 
     /// <summary>The design as built: the gate corrections applied, and the part's cells moved with it.</summary>
-    private static (VoxelPlan Voxel, BuildPart Part) Shape(VoxelPlan design, BuildPart part, BuildTransform t, int dim)
+    internal static (VoxelPlan Voxel, BuildPart Part) Shape(VoxelPlan design, BuildPart part, BuildTransform t, int dim)
     {
         if (t.IsNone) return (design, part);
         var voxel = PlanTransform.Apply(design, t);
         return (voxel, part.Count <= 1 ? BuildPart.Whole(voxel, dim) : part with { Cells = voxel.Blocks.Keys.Concat(voxel.Air).ToHashSet() });
     }
 
-    public async Task<BuildReport> RunAsync(long blueprintId, VoxelPlan plan, BuildPart part, IBuildBody body, CancellationToken ct, int? layer = null)
+    /// <param name="untilGate">The crew's first phase: one body places the gate blocks and asks; once a trusted player says yes the
+    /// run ends (<see cref="BuildReport.GatePassed"/>) and the lanes take over. No gate to pass = passed at once.</param>
+    public async Task<BuildReport> RunAsync(long blueprintId, VoxelPlan plan, BuildPart part, IBuildBody body, CancellationToken ct, int? layer = null,
+        bool untilGate = false, BuildPlan? previous = null)
     {
         var report = new BuildReport();
         var w = body.World;
@@ -111,7 +118,7 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
         rec.Dim = w.Dimension;
         var design = plan;
 
-        var bp = PlanFor(blueprintId, design, part, body, save: false);
+        var bp = PlanFor(blueprintId, design, part, body, save: false, previous: previous);
         var (voxel, vpart) = Shape(design, part, bp.Transform, w.Dimension);
         bp.State = "building";
         report.Plan = bp;
@@ -140,12 +147,26 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
         try
         {
             if (await ClaimAsync().ConfigureAwait(false) is { } held) { report.Stopped = held; return Finish(); }
+            if (untilGate && !(GateOn && part.Index == 0 && (bp.Gate.State == GateState.Waiting
+                    || bp.Gate.State == GateState.Pending && bp.Steps.Any(s => s.Gate))))
+            {
+                report.GatePassed = true; // no gate to pass (off, approved before, or nothing to show)
+                return Finish();
+            }
 
             // Stopped while asking (restart, death, stop): ask again, never carry on unasked.
             if (bp.Gate.State == GateState.Waiting && GateOn && part.Index == 0)
             {
                 var g = await GateAsync().ConfigureAwait(false);
                 if (g == GateOutcome.Stop) return Finish();
+                if (untilGate && g == GateOutcome.Continue) { report.GatePassed = true; return Finish(); }
+            }
+            // Gate blocks up but never asked (stopped right after the last one): ask before anything else.
+            if (untilGate && bp.Gate.State == GateState.Pending && bp.Steps.Where(s => s.Gate).All(s => s.Finished))
+            {
+                var g = await GateAsync().ConfigureAwait(false);
+                if (g == GateOutcome.Stop) return Finish();
+                if (g == GateOutcome.Continue) { report.GatePassed = true; return Finish(); }
             }
 
             await PrefetchAsync().ConfigureAwait(false);
@@ -160,7 +181,8 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
 
             restart:
             included = Included(bp);
-            report.Total = rec.Total = bp.Steps.Count(s => s.Action == StepAction.Place && included.Contains(s.Index));
+            report.Total = bp.Steps.Count(s => s.Action == StepAction.Place && included.Contains(s.Index));
+            Tally();
             for (int i = 0; i < bp.Steps.Count; i++)
             {
                 var step = bp.Steps[i];
@@ -198,7 +220,9 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
                     var g = await GateAsync().ConfigureAwait(false);
                     if (g == GateOutcome.Stop) break;
                     if (g == GateOutcome.Replanned) goto restart;
+                    if (untilGate) { report.GatePassed = true; break; }
                 }
+
                 if (step.Action is StepAction.PourWater or StepAction.PickupWater or StepAction.Scaffold or StepAction.RemoveScaffold
                     || ++sinceCheckpoint >= Math.Max(1, o.CheckpointEvery))
                 {
@@ -206,6 +230,7 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
                     Checkpoint();
                 }
             }
+            if (untilGate && !report.GatePassed && report.Stopped == null) report.Stopped = "couldn't place the confirmation gate blocks";
             if (report.Stopped == null && column >= 0) await LeaveColumnAsync().ConfigureAwait(false);
             if (currentLayer is { } lastLayer && report.Stopped == null) CheckLayer(lastLayer);
             if (report.Stopped == null && shortItems.Count > 0)
@@ -344,7 +369,6 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
                 return StepOutcome.Done;
             }
             report.Placed++;
-            rec.Placed++;
             if (step.Gate) bp.Gate.Blocks.Add(step.Target);
             if (Verify(step)) step.Status = StepStatus.Verified;
             return StepOutcome.Placed;
@@ -520,6 +544,8 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
 
         HashSet<int> Included(BuildPlan p)
         {
+            // Gate-only: the steps up to the last gate block (obstructions, the gate blocks and what they stand on).
+            if (untilGate && layer == null) return Enumerable.Range(0, p.Steps.Where(s => s.Gate).Select(s => s.Index + 1).DefaultIfEmpty(0).Max()).ToHashSet();
             if (layer is not { } ly) return Enumerable.Range(0, p.Steps.Count).ToHashSet();
             var set = new HashSet<int>();
             var q = new Queue<int>(p.Steps.Where(s => s.Action == StepAction.Place && s.Target.Y - voxel.Origin.Y == ly).Select(s => s.Index));
@@ -544,7 +570,17 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
         void Checkpoint()
         {
             Plans?.Save(bp);
+            Tally();
             store?.SaveBuild(rec);
+        }
+
+        // The record counts one unit on both sides: the part's design blocks, and how many of them stand right now (never
+        // scaffold, gate rounds or re-placements; live 10-28 "20/14 placed" mixed this session's steps with every placement ever).
+        void Tally()
+        {
+            var cells = voxel.Blocks.Values.Where(b => !b.UpperDoor && vpart.Cells.Contains(b.Pos)).ToList();
+            rec.Total = cells.Count;
+            rec.Placed = cells.Count(b => w.IsLoaded(b.Pos.X, b.Pos.Z) && DesignChecks.SameState(b, w.GetBlock(b.Pos), w.GetMeta(b.Pos)));
         }
 
         bool Verify(PlanStep s)
@@ -576,9 +612,23 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
             foreach (var b in voxel.Blocks.Values.Where(b => vpart.Cells.Contains(b.Pos) && (layer is not { } ly || b.Pos.Y - voxel.Origin.Y == ly)))
                 if (w.IsLoaded(b.Pos.X, b.Pos.Z) && !DesignChecks.SameState(b, w.GetBlock(b.Pos), w.GetMeta(b.Pos))) report.Missing.Add(b.Pos);
             bool partDone = report.Stopped == null && report.Missing.Count == 0 && bp.ScaffoldUp.Count == 0 && layer == null;
+            if (report.GatePassed && !partDone)
+            {
+                // The lanes carry on from here: the plan stays "building", the area isn't held for one body.
+                rec.State = "building";
+                Tally();
+                rec.Note = report.Text(part.Label + " (gate)");
+                bp.State = "building";
+                Plans?.Save(bp);
+                store?.SaveBuild(rec);
+                report.Plan = bp;
+                if (claims != null) try { claims.ReleaseAsync(part.Claim, CancellationToken.None).GetAwaiter().GetResult(); } catch (Exception) { }
+                return report;
+            }
             // A finished part is done; anything else stays "building" (resumable: unplaced cells, leftover scaffold, the gate).
             rec.State = bp.State == "undone" ? "undone" : partDone || (layer == null && report.Stopped == null && report.Missing.Count == 0) ? "done" : "building";
             rec.Scaffold = bp.ScaffoldUp.ToList();
+            Tally();
             rec.Note = report.Text(part.Label);
             if (bp.State != "undone") bp.State = rec.State == "done" ? "done" : report.AtGate ? "gate" : "paused";
             bp.Note = report.Stopped;
@@ -614,7 +664,7 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
     }
 
     /// <summary>The cheapest clutch block on hand that the plan doesn't still need all of.</summary>
-    private static int ScaffoldItem(IBuildBody body, BuildPlan bp)
+    internal static int ScaffoldItem(IBuildBody body, BuildPlan bp)
     {
         foreach (var id in GameTools.ClutchBlocks.Ids)
         {
@@ -624,7 +674,7 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
         return GameTools.ClutchBlocks.Ids.FirstOrDefault(id => body.Count(id, -1) > 0);
     }
 
-    private static string Name(int item, int damage) => GameBuildBody.ItemName(item, damage);
+    internal static string Name(int item, int damage) => GameBuildBody.ItemName(item, damage);
 
-    private static string Short(string s) => s.Length <= 90 ? s : s[..89] + "…";
+    internal static string Short(string s) => s.Length <= 90 ? s : s[..89] + "…";
 }

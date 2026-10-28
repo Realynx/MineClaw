@@ -128,6 +128,8 @@ public sealed class MainHive : IAsyncDisposable
             if (rt.Memory.GetStandingOrder(clone) is { Player: CloneScriptRunner.OrderPlayer }) rt.Memory.ClearStandingOrder(clone, "new hive task");
         };
         HiveTools.RegisterMain(rt.Tools, _supervisor, agent.Llm);
+        // Crew builds: idle clones (or the ones the brain names) build lanes of a design as hive jobs (build{bp, lane}).
+        if (bot.Blueprints?.Service is { } blueprints) blueprints.Jobs = new HiveBuildJobs(_supervisor, _cfg.Clones());
         _log.LogInformation("hive: {N} clone(s) configured ({Names}); regulars {Regulars}; {Budget}", _cfg.Clones().Count,
             string.Join(", ", _cfg.Clones()), string.Join(", ", regulars), ledger.Summary());
     }

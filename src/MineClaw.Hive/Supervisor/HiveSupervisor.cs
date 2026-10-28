@@ -365,6 +365,9 @@ public sealed class HiveSupervisor : IAsyncDisposable
         return $"is in use by a player's viewer ({s.Name} is online but isn't one of ours)";
     }
 
+    /// <summary>Logged in with nothing to finish: free for a new job right where it is (a crew build's default helpers).</summary>
+    public static bool IdleOnline(CloneSlot s) => s.IsLive && Free(s);
+
     /// <summary>A free clone (offline idle, or logged in with nothing to finish) that can take a new job.</summary>
     private static bool Free(CloneSlot s) => s.State == CloneState.Idle
         // Online and free: no task, or asleep after a script that ended with after: sleep. A clone whose result just came in is

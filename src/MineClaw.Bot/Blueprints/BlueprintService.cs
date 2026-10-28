@@ -13,6 +13,10 @@ namespace MineClaw.Bot.Blueprints;
 /// (the player's facing or pointing: the confirmation gate always applies then).</summary>
 public sealed record SitePick(BlockPos Ground, string How, Building.SiteExtent? Extent = null, bool Inferred = false);
 
+/// <summary>Who builds: <paramref name="Bodies"/> by name ("67", "maid_chan_69", "main") and/or how many (<paramref name="Count"/>,
+/// 1 = one body). Null fields = the default: every online idle body when the build is big enough to split.</summary>
+public sealed record CrewRequest(IReadOnlyList<string>? Bodies = null, int? Count = null);
+
 /// <summary>
 /// Build from a description, end to end (ARCHITECTURE.md "Blueprints"): the design loop in the background, the candidate saved
 /// with its preview and bill, the chat summary, change requests → another revision, acceptance by a trusted player → construction
@@ -53,6 +57,23 @@ public sealed class BlueprintService
     public Func<int> Dimension { get; init; } = () => 0;
     public required Func<IBuildCrew> Crew { get; init; }
     public ConstructionExecutor Executor { get; init; } = new(new BlueprintOptions());
+    private CrewExecutor? _crews;
+    /// <summary>Crew builds (lanes in parallel, the gate first, the finale last); default: over <see cref="Executor"/>.</summary>
+    public CrewExecutor Crews
+    {
+        get => _crews ??= new CrewExecutor(Executor, _time, _log) { Progress = line => _log?.LogInformation("blueprints: {Line}", line) };
+        init => _crews = value;
+    }
+    /// <summary>Hive mode: clones join a crew build as hive jobs (null = in-process bodies only).</summary>
+    public IBuildJobs? Jobs { get; set; }
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<long, CrewRequest> _crewRequests = new();
+
+    /// <summary>The next build of design <paramref name="id"/> uses this crew (the design tool's bodies/crew).</summary>
+    public void RequestCrew(long id, CrewRequest? crew)
+    {
+        if (crew == null) _crewRequests.TryRemove(id, out _);
+        else _crewRequests[id] = crew;
+    }
     /// <summary>Builds waiting at their confirmation gate (the executor waits here; chat answers arrive here).</summary>
     public Building.BuildGates Gates { get; init; } = new();
     /// <summary>The nearest named place (waypoint/structure) to a cell: the gate's relative wording.</summary>
@@ -175,6 +196,7 @@ public sealed class BlueprintService
         rec.Bill = best.Eval!.Bill.Select(b => new BillRow(b.Name, b.Need, b.Have, b.Stored, b.Missing, b.Source)).ToList();
         rec.Status = best.Passing ? DesignStatus.Review : DesignStatus.Draft;
         rec.Summary = Summary(rec, plan, best.Eval!);
+        if (CrewEstimate(rec, plan) is { } est) rec.Summary += "; " + est;
         Store.Update(rec, best.Picture?.Png);
         var line = best.Passing
             ? $"{rec.Summary}; say 'build it' or tell me what to change"
@@ -281,7 +303,7 @@ public sealed class BlueprintService
     }
 
     /// <summary>A trusted player's explicit "build it": the design is accepted and construction starts.</summary>
-    public string Accept(BlueprintRecord rec, string by)
+    public string Accept(BlueprintRecord rec, string by, CrewRequest? crew = null)
     {
         if (!IsTrusted(by)) return $"only {string.Join(" or ", Trusted().Take(2))} can approve a build";
         if (rec.Status == DesignStatus.Draft) return $"#{rec.Id} still fails its checks; tell me what to change first";
@@ -289,13 +311,14 @@ public sealed class BlueprintService
         rec.Status = DesignStatus.Accepted;
         rec.AcceptedBy = by;
         Store.Update(rec);
+        if (crew != null) RequestCrew(rec.Id, crew);
         var plan = PlanSummary(rec);
         var refusal = StartBuild(rec.Id, null);
         return WithRules(rec.Id, refusal == null ? $"building the {rec.Name}" + (plan != null ? $": {plan}" : "") : $"accepted the {rec.Name}, but can't start: {refusal}");
     }
 
     /// <summary>"Build another one like the hut" (a trusted player): a copy of a saved design at a new site, accepted by them.</summary>
-    public (BlueprintRecord? Copy, string Text) Reuse(BlueprintRecord source, string? at, string by)
+    public (BlueprintRecord? Copy, string Text) Reuse(BlueprintRecord source, string? at, string by, CrewRequest? crew = null)
     {
         if (!IsTrusted(by)) return (null, $"only {string.Join(" or ", Trusted().Take(2))} can start a build");
         var (site, err) = ResolveSite(at, by);
@@ -323,6 +346,7 @@ public sealed class BlueprintService
             return (copy, $"the {source.Name} doesn't fit there: {Trim(string.Join("; ", eval.Issues.Where(i => i.Level == IssueLevel.Error).Take(2)), 140)}");
         }
         try { Store.Update(copy, Preview.Render(plan, Site().World, Roles(), Light(), Atlas(), WorldTime()).Png); } catch (Exception) { Store.Update(copy); }
+        if (crew != null) RequestCrew(copy.Id, crew);
         var refusal = StartBuild(copy.Id, null);
         return (copy, WithRules(copy.Id, refusal == null ? $"building another {source.Name} (#{copy.Id})" : $"#{copy.Id} ready but can't start: {refusal}"));
     }
@@ -352,6 +376,15 @@ public sealed class BlueprintService
         {
             if (Crew().Bodies.FirstOrDefault() is not { } body || PlanOf(rec, out _) is not { } plan) return null;
             var bp = Executor.PlanFor(rec.Id, plan, BuildPart.Whole(plan, rec.Dim), body);
+            // The crew that will build it (and its benefit, from the plan: travel + placements, lanes in parallel).
+            _crewRequests.TryGetValue(rec.Id, out var req);
+            var (local, remote) = PickCrew(plan, req, Crew().Bodies);
+            var members = Members(local, remote);
+            if (members.Count > 1)
+            {
+                Building.CrewSlicer.Assign(bp, plan, members);
+                Plans?.Save(bp);
+            }
             var gate = bp.Gate.State == Building.GateState.Pending && bp.Steps.Any(s => s.Gate)
                 ? $"; I'll check the first {bp.Steps.Count(s => s.Gate)} blocks with you (plan {PlanUrl(rec.Id)})" : "";
             return bp.Summary() + gate;
@@ -475,26 +508,122 @@ public sealed class BlueprintService
         }
         else
         {
-            int n = plan.Blocks.Count > _o.SplitAboveBlocks ? bodies.Count : 1;
-            var parts = n > 1 ? plan.Partition(n, false, rec.Dim) : [BuildPart.Whole(plan, rec.Dim)];
-            work = parts.Select((pp, i) => (pp, bodies[i % bodies.Count])).ToList();
+            // The crew: one body, or lanes over several (in-process bodies, or hive clones as jobs).
+            _crewRequests.TryRemove(rec.Id, out var req);
+            var (local, remote) = layer == null ? PickCrew(plan, req, bodies) : ([bodies[0]], []);
+            if (local.Count > 1 || remote.Count > 0 && Jobs != null)
+            {
+                _log?.LogInformation("blueprint #{Id}: crew build with {Bodies}", rec.Id, string.Join(", ", local.Select(b => b.Name).Concat(remote.Select(m => m.Name))));
+                var keep = req ?? new CrewRequest(local.Select(b => b.Name).ToList());
+                var crew = remote.Count > 0 && Jobs != null
+                    ? await Crews.RunHiveAsync(rec.Id, plan, local[0], remote, Jobs, ct).ConfigureAwait(false)
+                    : await Crews.RunAsync(rec.Id, plan, local, ct, live: () => PickCrew(plan, keep, Crew().Bodies).Local).ConfigureAwait(false);
+                return await DoneAsync(crew.Stopped, crew.Text("whole build")).ConfigureAwait(false);
+            }
+            work = [(BuildPart.Whole(plan, rec.Dim), local[0])];
         }
         var reports = await Task.WhenAll(work.Select(w => Executor.RunAsync(rec.Id, plan, w.Part, w.Body, ct, layer))).ConfigureAwait(false);
         var text = string.Join(" | ", reports.Select((r, i) => r.Text(work[i].Part.Label)));
-        var built = AsBuilt(rec, plan);
-        var all = built.Blocks.Values.Where(b => b.Pos.Y - built.Origin.Y == layer || layer == null).ToList();
-        var world = bodies[0].World;
-        bool complete = reports.All(r => r.Stopped == null) && all.All(b => DesignChecks.SameState(b, world.GetBlock(b.Pos), world.GetMeta(b.Pos)));
-        if (complete && layer == null && (part == null || BuildFinished(rec, built, world)))
+        return await DoneAsync(reports.Select(r => r.Stopped).FirstOrDefault(s => s != null), text).ConfigureAwait(false);
+
+        async Task<(bool, string)> DoneAsync(string? stop, string text)
         {
-            rec.Status = DesignStatus.Built;
-            Store.Update(rec);
-            try { Built?.Invoke(rec, built); } catch (Exception ex) { _log?.LogWarning(ex, "recording build #{Id} failed", rec.Id); }
-            await Say($"finished the {rec.Name}").ConfigureAwait(false);
-            return (true, $"built #{rec.Id} \"{rec.Name}\": {text}");
+            var built = AsBuilt(rec, plan);
+            var all = built.Blocks.Values.Where(b => b.Pos.Y - built.Origin.Y == layer || layer == null).ToList();
+            var world = bodies[0].World;
+            bool complete = stop == null && all.All(b => DesignChecks.SameState(b, world.GetBlock(b.Pos), world.GetMeta(b.Pos)));
+            if (complete && layer == null && (part == null || BuildFinished(rec, built, world)))
+            {
+                rec.Status = DesignStatus.Built;
+                Store.Update(rec);
+                try { Built?.Invoke(rec, built); } catch (Exception ex) { _log?.LogWarning(ex, "recording build #{Id} failed", rec.Id); }
+                await Say($"finished the {rec.Name}").ConfigureAwait(false);
+                return (true, $"built #{rec.Id} \"{rec.Name}\": {text}");
+            }
+            return (stop == null, $"#{rec.Id} \"{rec.Name}\" {(stop == null ? "progress" : "paused")}: {text}");
         }
-        var stop = reports.Select(r => r.Stopped).FirstOrDefault(s => s != null);
-        return (stop == null, $"#{rec.Id} \"{rec.Name}\" {(stop == null ? "progress" : "paused")}: {text}");
+    }
+
+    /// <summary>
+    /// Who builds: the named bodies (local ones here; the rest, in hive mode, as clone jobs), else how many, else every online idle
+    /// body (and idle clone) when the design is big enough to split. The first local body places the gate and leads.
+    /// </summary>
+    internal (List<IBuildBody> Local, List<Building.CrewMember> Remote) PickCrew(VoxelPlan plan, CrewRequest? req, IReadOnlyList<IBuildBody> bodies)
+    {
+        var local = new List<IBuildBody>();
+        var remote = new List<Building.CrewMember>();
+        if (bodies.Count == 0) return (local, remote);
+        if (req?.Count == 1 && req.Bodies is not { Count: > 0 }) return ([bodies[0]], remote);
+        static bool IsMainWord(string n) => n.Trim().Equals("main", StringComparison.OrdinalIgnoreCase);
+        static bool Is(string name, string want) => name.Equals(want.Trim(), StringComparison.OrdinalIgnoreCase)
+            || Bodies.Body.ShortName(name, false).Equals(want.Trim(), StringComparison.OrdinalIgnoreCase);
+        if (req?.Bodies is { Count: > 0 } names)
+        {
+            var pool = Crew() is RegistryCrew rc ? rc.Online : bodies;
+            foreach (var n in names)
+            {
+                var b = IsMainWord(n) ? bodies[0] : pool.FirstOrDefault(x => Is(x.Name, n));
+                if (b != null && !local.Contains(b)) local.Add(b);
+            }
+            var missing = names.Where(n => !IsMainWord(n) && !local.Any(b => Is(b.Name, n))).ToList();
+            if (missing.Count > 0 && Jobs != null)
+                remote.AddRange(Jobs.Candidates(missing).Where(m => !local.Any(b => b.Name.Equals(m.Name, StringComparison.OrdinalIgnoreCase))));
+            // Hive jobs are led by this process's body (it gates, coordinates and takes the scaffold down).
+            if (remote.Count > 0 && !local.Contains(bodies[0])) local.Insert(0, bodies[0]);
+            if (local.Count == 0) local.Add(bodies[0]);
+        }
+        else
+        {
+            local.AddRange(bodies);
+            bool split = req?.Count is > 1 || plan.Blocks.Count > _o.SplitAboveBlocks;
+            if (!split) return ([bodies[0]], remote);
+            if (Jobs != null) remote.AddRange(Jobs.Candidates().Where(m => !local.Any(b => b.Name.Equals(m.Name, StringComparison.OrdinalIgnoreCase))));
+        }
+        if (req?.Count is { } max and > 0)
+        {
+            if (local.Count > max) local = local.Take(max).ToList();
+            int room = Math.Max(0, max - local.Count);
+            if (remote.Count > room) remote = remote.Take(room).ToList();
+        }
+        return (local, remote);
+    }
+
+    private static List<Building.CrewMember> Members(List<IBuildBody> local, List<Building.CrewMember> remote) =>
+        local.Select(b => new Building.CrewMember(b.Name, ConstructionExecutor.StartCell(b.World), b.Count(Items.WaterBucket, 0) > 0))
+            .Concat(remote).ToList();
+
+    /// <summary>"with 3 bodies (main, 67, 69) ≈2 min instead of 6 alone" for the default crew, or null (one body).</summary>
+    private string? CrewEstimate(BlueprintRecord rec, VoxelPlan plan)
+    {
+        try
+        {
+            var bodies = Crew().Bodies;
+            if (bodies.Count == 0) return null;
+            _crewRequests.TryGetValue(rec.Id, out var req);
+            var (local, remote) = PickCrew(plan, req, bodies);
+            var members = Members(local, remote);
+            if (members.Count <= 1) return null;
+            var o = Executor.Options(local[0], BuildPart.Whole(plan, rec.Dim), null) with { GateBlocks = 0 };
+            return Building.CrewSlicer.Slice(plan, local[0].World.PlanningView, members, BuildPart.Whole(plan, rec.Dim), o).CrewText();
+        }
+        catch (Exception ex)
+        {
+            _log?.LogDebug(ex, "crew estimate for #{Id} failed", rec.Id);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// A hive clone's lane of a crew build (its <c>build{bp, lane}</c>): this body runs lane <paramref name="lane"/> (0-based) of
+    /// the persisted crew plan; main coordinates and finishes.
+    /// </summary>
+    public async Task<(bool Ok, string Text)> BuildLaneAsync(string idOrName, int lane, CancellationToken ct)
+    {
+        if (Store.Find(idOrName) is not { } rec) return (false, $"no design '{idOrName}'");
+        if (PlanOf(rec, out var err) is not { } plan) return (false, $"#{rec.Id} doesn't parse: {err}");
+        if (Crew().Bodies.FirstOrDefault() is not { } body) return (false, "no body to build with");
+        var r = await Crews.RunLaneAsync(rec.Id, plan, lane, body, ct).ConfigureAwait(false);
+        return (r.State == "done", $"#{rec.Id} \"{rec.Name}\" lane {lane}: {r.Text}");
     }
 
     private static bool BuildFinished(BlueprintRecord rec, VoxelPlan plan, WorldState w) =>
@@ -558,6 +687,17 @@ public sealed class BlueprintService
         var size = plan?.Blueprint.SizeText ?? "?";
         var builds = Store.Builds(rec.Id);
         var progress = builds.Count == 0 ? "" : "; build: " + string.Join(", ", builds.Select(b => $"part {b.Part + 1}/{b.Parts} {b.State} {b.Placed}/{b.Total}"));
+        // A crew build: per-lane progress ("build: lane 67 40/120, lane 69 38/118"), each lane's own row folded in.
+        try
+        {
+            if (Plans?.Get(rec.Id, 0) is { Lanes.Count: > 1 } crew)
+            {
+                Plans.MergeLanes(crew);
+                if (crew.State is "building" or "paused" or "gate" or "planned") progress = "; build: " + crew.LaneProgress();
+                progress += "; " + crew.CrewText();
+            }
+        }
+        catch (Exception ex) { _log?.LogDebug(ex, "lane progress for #{Id} unreadable", rec.Id); }
         return $"#{rec.Id} \"{rec.Name}\" {size}, {plan?.LayerCount ?? 0} layers, {plan?.Blocks.Count ?? 0} blocks, {rec.Status}"
                + BillNow(rec, plan, builds.Any(b => b.Placed > 0))
                + progress + (rec.Eval.Length > 0 ? "; eval: " + Trim(rec.Eval, 200) : "");
