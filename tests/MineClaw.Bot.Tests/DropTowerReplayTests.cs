@@ -14,7 +14,8 @@ namespace MineClaw.Bot.Tests;
 /// The cause: the tower is taller than the bot can reach from the floor (feet y64, eyes 65.6, reach 4.5: the y70 layer at best)
 /// and the slicer has no way up (no pillar/stair technique), so the shaft walls from y71 are out of reach and everything above
 /// (the shaft, the 16×16 platform, its walls, the roof) rests on them. The replay runs the executor on the remembered world
-/// (tests/fixtures/drop-tower: world_chunks around the site, the design's DSL, the persisted plan) with a sim body.
+/// (tests/fixtures/drop-tower: world_chunks around the site, the design's DSL, the persisted plan) with a sim body. With
+/// climbing (pillars inside the shaft, stairs) the whole tower goes up; with climbing off the old reasons are still named.
 /// </summary>
 public class DropTowerReplayTests(Xunit.Abstractions.ITestOutputHelper log)
 {
@@ -62,7 +63,7 @@ public class DropTowerReplayTests(Xunit.Abstractions.ITestOutputHelper log)
         Regex.Match(line, $@"(\d+) {Regex.Escape(label)}") is { Success: true } m ? int.Parse(m.Groups[1].Value) : 0;
 
     [Fact]
-    public async Task Replay_design_4_names_every_skip_reason()
+    public async Task Replay_design_4_climbs_and_builds_everything_above_the_floor()
     {
         var w = Site();
         var design = Design();
@@ -74,11 +75,12 @@ public class DropTowerReplayTests(Xunit.Abstractions.ITestOutputHelper log)
         var saved = Persisted();
         Assert.Equal(0, saved.Format);
         ex.Plans!.Save(saved);
+        var body = Body(w);
 
-        var report = await ex.RunAsync(4, design, BuildPart.Whole(design), Body(w), CancellationToken.None);
+        var report = await ex.RunAsync(4, design, BuildPart.Whole(design), body, CancellationToken.None);
         var text = report.Text("whole build");
         log.WriteLine(text);
-        foreach (var p in progress) log.WriteLine("progress: " + p);
+        log.WriteLine(report.Plan!.Summary());
 
         // The stale pre-format plan was planned again, its approved gate and its ledger kept.
         Assert.Contains(progress, p => p.Contains("older format") && p.Contains("approved"));
@@ -89,10 +91,56 @@ public class DropTowerReplayTests(Xunit.Abstractions.ITestOutputHelper log)
         Assert.Superset(saved.Placed.ToHashSet(), bp.Placed.ToHashSet());
         Assert.Equal(bp.Placed.Count, bp.Placed.Distinct().Count());
 
-        // Every step it did plan is legal (the sim body checks reach and the clicked face): nothing failed.
+        // Every step was legal for the sim body (reach, the clicked face, standing in the cell it pillars): nothing failed.
         Assert.Equal(0, report.Failed);
         Assert.Empty(report.Deviations);
-        // The y70 cell a 5-below stand window cut off is now reached from the floor (feet y64, bottom face 4.49 away).
+        Assert.Equal(Blocks.Cobblestone, w.GetBlock(-27, 70, 16)); // reached from the floor (feet y64, bottom face 4.49 away)
+
+        // It climbed: the shaft walls above y70 (out of reach from the floor), the 16×16 platform bridged out over the void from
+        // the shaft, its walls and the slab roof: all 689 blocks still missing, none left (nothing hangs past the scaffold limit).
+        Assert.True(report.Complete, text);
+        Assert.Null(report.Skips);
+        Assert.Empty(bp.Infeasible);
+        Assert.Equal(689, report.Placed);
+        Assert.All(design.Blocks.Values, b => Assert.True(DesignChecks.SameState(b, w.GetBlock(b.Pos), w.GetMeta(b.Pos)), $"{b.Pos} not built"));
+        // The climb: pillars jumped up inside the 2×2 shaft (void-free on every side) and dug back down top-first; 13 scaffold
+        // blocks counted in the plan, all taken down, the body back on Fox's floor.
+        Assert.Equal(13, report.Scaffolded);
+        Assert.Equal(13, report.ScaffoldRemoved);
+        Assert.Empty(bp.ScaffoldUp);
+        Assert.True(body.Pillared >= 10, $"pillared {body.Pillared}");
+        var pillar = bp.Steps.Where(s => s.Action == StepAction.Scaffold && s.Technique == Technique.Pillar).ToList();
+        Assert.All(pillar, s => Assert.Equal(s.Target, s.Stand));
+        Assert.All(pillar, s => Assert.InRange(s.Target.X, -26, -25));
+        Assert.All(pillar, s => Assert.InRange(s.Target.Z, 14, 15));
+        Assert.All(bp.Steps.Where(s => s.Action == StepAction.Scaffold), s => Assert.Equal(0, w.GetBlock(s.Target)));
+        Assert.Contains(bp.Steps, s => s.Action == StepAction.RemoveScaffold && s.Technique == Technique.Pillar && s.Stand == s.Target.Up());
+        Assert.Empty(body.Unguarded);
+        Assert.Equal(64, body.Feet0.Y);
+        Assert.Contains("13 scaffold (13 to climb: ", bp.Summary());
+        Assert.Contains(" pillar", bp.Summary());
+
+        var rec = store.GetBuild(4, 0)!;
+        Assert.Equal("done", rec.State);
+        Assert.Equal(rec.Total, rec.Placed);
+    }
+
+    [Fact]
+    public async Task With_climbing_off_design_4_still_names_every_skip_reason()
+    {
+        var w = Site();
+        var design = Design();
+        using var db = AgentDb.Open(null);
+        var store = new BlueprintStore(db);
+        var ex = new ConstructionExecutor(new BlueprintOptions { Climb = false }, store);
+        ex.Plans!.Save(Persisted());
+
+        var report = await ex.RunAsync(4, design, BuildPart.Whole(design), Body(w), CancellationToken.None);
+        var text = report.Text("whole build");
+        log.WriteLine(text);
+        var bp = report.Plan!;
+        Assert.Equal(0, report.Failed);
+        Assert.Empty(report.Deviations);
         Assert.Equal(Blocks.Cobblestone, w.GetBlock(-27, 70, 16));
 
         // The reasons, grouped: the shaft walls above reach (the root), everything else waiting on them, nothing protected.
@@ -105,10 +153,11 @@ public class DropTowerReplayTests(Xunit.Abstractions.ITestOutputHelper log)
         Assert.Contains("0 protected", skips);
         Assert.DoesNotContain("no support: over the void", skips);
         Assert.Matches(@"above my reach \(I can't climb\) e\.g\. -2[4-7],7[01],1[3-6]", skips);
-        Assert.Contains("e.g. ", skips);
         Assert.Contains(" — " + skips, text);
         Assert.StartsWith($"whole build: placed {report.Placed}, {report.Missing.Count} missing — ", text);
         Assert.All(bp.Infeasible.Where(i => i.Why.StartsWith(BuildSkips.Waiting)), i => Assert.Contains("rests on ", i.Why));
+        Assert.Contains(bp.Infeasible, i => i.Why.StartsWith(BuildSkips.AboveReach + " (I can't climb: climbing is off)"));
+        Assert.DoesNotContain(bp.Steps, s => s.Technique is Technique.Pillar or Technique.Stair);
 
         // The same line rides in the build record (the design status) and the plan's own summary.
         var rec = store.GetBuild(4, 0)!;

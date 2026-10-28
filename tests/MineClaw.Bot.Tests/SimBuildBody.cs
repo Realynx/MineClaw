@@ -11,7 +11,9 @@ namespace MineClaw.Bot.Tests;
 /// A strict simulated body for the slicer's tests: walking goes through the real <see cref="Pathfinder"/> (doors open, void
 /// rules), a placement must click a solid neighbour's face within 4.5 of the eyes from where the body is now (hidden faces
 /// allowed, as on the b1.8.1 server), stairs take their meta from the yaw (mc-dev BlockStairs), water is poured, ridden
-/// (<see cref="SwimSim"/> on this world: the same policies the client drives) and taken back with the bucket.
+/// (<see cref="SwimSim"/> on this world: the same policies the client drives) and taken back with the bucket. A pillar step
+/// jumps and places into the feet cell (the body must stand in it, headroom for the jump); digging what the body stands on
+/// drops it onto what is below. Every place the body ends up is checked against the void guard (<see cref="Unguarded"/>).
 /// </summary>
 internal sealed class SimBuildBody : IBuildBody
 {
@@ -44,6 +46,14 @@ internal sealed class SimBuildBody : IBuildBody
     public IClaimBoard? Claims { get; set; }
     public BlockPos Feet0 => Feet;
     public bool InWater => _swim != null;
+    /// <summary>Void-guard violations: a jump beside the void, a 1×1 stand over the void (nothing to walk to or lean on at the
+    /// feet on any side, the void next to it), a drop into the void.</summary>
+    public List<string> Unguarded { get; } = new();
+    /// <summary>Every cell the body stood in, in order (arrivals, pillar tops, drops).</summary>
+    public List<BlockPos> Trail { get; } = new();
+    /// <summary>Every cell a walk went through (the path's foot cells).</summary>
+    public List<BlockPos> Walked { get; } = new();
+    public int Pillared { get; private set; }
 
     private BlockPos Feet => Pathfinder.StartCellFor(_w.PlanningView, _w.Player.Position) ?? _w.Player.Position.ToBlockPos();
     private Vec3d Eye => _swim is { } s ? s.EyePosition : _w.Player.EyePosition;
@@ -56,8 +66,11 @@ internal sealed class SimBuildBody : IBuildBody
         var r = Pathfinder.FindPath(_w, Feet, new GoalBlock(stand), PathOptions.Default with { AllowOpenDoors = true, AllowParkour = false, AllowPartial = false });
         if (!r.Success) { Log.Add($"no path {Feet} -> {stand}: {r.Reason}"); return Task.FromResult(ActionResult.Fail("no path: " + r.Reason)); }
         foreach (var st in r.Steps)
+        {
+            Walked.Add(new BlockPos(st.X, st.Y, st.Z));
             if (st.Open is { } opens)
                 foreach (var o in opens) { Log.Add($"open door {o.Pos.X},{o.Pos.Y},{o.Pos.Z}"); }
+        }
         Log.Add($"goto {stand.X},{stand.Y},{stand.Z}");
         Teleport(stand);
         return Task.FromResult(ActionResult.Success("ok"));
@@ -68,6 +81,54 @@ internal sealed class SimBuildBody : IBuildBody
         Link?.Arrive(this, stand);
         double floor = GoalUseBlock.EyeAt(_w, stand.X, stand.Y, stand.Z).Y - PlayerPhysics.EyeHeight;
         _w.Player.ServerTeleport(new Vec3d(stand.X + 0.5, floor, stand.Z + 0.5), floor + 1.62, 0, 0, true);
+        Guard(stand);
+    }
+
+    /// <summary>Standing in <paramref name="feet"/>: an isolated 1×1 (no side to step onto or lean on) with the void beside it
+    /// is unguarded.</summary>
+    private void Guard(BlockPos feet)
+    {
+        Trail.Add(feet);
+        if (Safety.IsOverVoid(_w, feet.X, feet.Y, feet.Z)) { Unguarded.Add($"over the void at {feet}"); return; }
+        bool isolated = new[] { (1, 0), (-1, 0), (0, 1), (0, -1) }.All(d =>
+            !BlockShapes.HasCollision(_w, feet.X + d.Item1, feet.Y, feet.Z + d.Item2) && !BlockShapes.HasCollision(_w, feet.X + d.Item1, feet.Y + 1, feet.Z + d.Item2)
+            && !BlockShapes.HasCollision(_w, feet.X + d.Item1, feet.Y - 1, feet.Z + d.Item2));
+        if (isolated && Safety.VoidNeighbourCount(_w, feet.X, feet.Y, feet.Z) > 0) Unguarded.Add($"on a 1x1 over the void at {feet}");
+    }
+
+    private Task<ActionResult> PillarCore(BlockPos feet, int itemId, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (_swim != null) return Fail("can't pillar while swimming");
+        if (Feet != feet) return Fail($"not standing in {feet} (at {Feet})");
+        if (_w.GetBlock(feet) != 0) return Fail("occupied");
+        if (!BuildBlocks.NormalCube(_w.GetBlock(feet.Down()))) return Fail("nothing solid under me to place on");
+        if (BlockShapes.HasCollision(_w, feet.X, feet.Y + 1, feet.Z) || BlockShapes.HasCollision(_w, feet.X, feet.Y + 2, feet.Z)) return Fail("no room to jump");
+        if (Safety.VoidNeighbourCount(_w, feet.X, feet.Y, feet.Z) > 0) Unguarded.Add($"jumped beside the void at {feet}");
+        var key = (itemId, 0);
+        if (Inv.GetValueOrDefault(key) <= 0) return Fail($"no {itemId}");
+        Inv[key]--;
+        Set(feet.X, feet.Y, feet.Z, itemId, 0);
+        foreach (var world in Worlds) world.Placed.Note(feet, world.Dimension, itemId, Name, DateTimeOffset.UtcNow);
+        Link?.Event(this, $"scaffold {feet.X},{feet.Y},{feet.Z}");
+        Placed.Add(feet);
+        Pillared++;
+        Log.Add($"pillar {feet.X},{feet.Y},{feet.Z}");
+        Teleport(feet.Up());
+        return Task.FromResult(ActionResult.Success("pillared"));
+    }
+
+    /// <summary>The block under the body went: it drops onto what is below (the void: a violation).</summary>
+    private void Fall()
+    {
+        if (_swim != null) return;
+        var p = _w.Player.Position;
+        if (Safety.SupportBlocks(_w, p).Count > 0) return;
+        int x = (int)Math.Floor(p.X), z = (int)Math.Floor(p.Z);
+        int s = Safety.SupportBelow(_w, x, (int)Math.Floor(p.Y) - 1, z);
+        if (s < 0) { Unguarded.Add($"fell into the void at {x},{(int)p.Y},{z}"); return; }
+        Log.Add($"drop to y {s + 1}");
+        Teleport(new BlockPos(x, s + 1, z));
     }
 
     private Task<ActionResult> PlaceCore(BuildStep step, int itemId, int damage, CancellationToken ct)
@@ -109,6 +170,7 @@ internal sealed class SimBuildBody : IBuildBody
         Link?.Event(this, $"dig {pos.X},{pos.Y},{pos.Z}");
         if (id != 0) Inv[(id, 0)] = Inv.GetValueOrDefault((id, 0)) + 1;
         Placed.Remove(pos);
+        Fall();
         return Task.FromResult(ActionResult.Success("dug"));
     }
 
@@ -205,6 +267,7 @@ internal sealed class SimBuildBody : IBuildBody
     public Task<ActionResult> SwimToDepthAsync(SwimColumn column, BlockPos entry, double feetY, CancellationToken ct) => Act(() => SwimCore(column, entry, feetY, ct), ct);
     public Task<ActionResult> SwimOutAsync(SwimColumn column, BlockPos exit, CancellationToken ct) => Act(() => SwimOutCore(column, exit, ct), ct);
     public Task<ActionResult> PickupWaterAsync(BlockPos source, CancellationToken ct) => Act(() => PickupCore(source, ct), ct);
+    public Task<ActionResult> PillarAsync(BlockPos feet, int itemId, CancellationToken ct) => Act(() => PillarCore(feet, itemId, ct), ct);
 
     private async Task<ActionResult> Act(Func<Task<ActionResult>> f, CancellationToken ct)
     {

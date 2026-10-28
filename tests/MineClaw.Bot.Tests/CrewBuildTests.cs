@@ -66,14 +66,14 @@ public class CrewBuildTests
     private static List<CrewMember> Members(IEnumerable<SimBuildBody> bodies) =>
         bodies.Select(b => new CrewMember(b.Name, b.Feet0)).ToList();
 
-    private static CrewExecutor Fast(ConstructionExecutor single) => new(single)
+    internal static CrewExecutor Fast(ConstructionExecutor single) => new(single)
     {
         Poll = TimeSpan.FromMilliseconds(2), ParkAfter = TimeSpan.FromMilliseconds(80), WaitLimit = TimeSpan.FromSeconds(20),
         RemotePoll = TimeSpan.FromMilliseconds(20),
     };
 
     /// <summary>A run that hangs fails the test instead of the suite.</summary>
-    private static CancellationToken Soon() => new CancellationTokenSource(TimeSpan.FromSeconds(60)).Token;
+    internal static CancellationToken Soon() => new CancellationTokenSource(TimeSpan.FromSeconds(60)).Token;
 
     /// <summary>What every lane of every round was left with (failure messages).</summary>
     internal static string Why(CrewReport r) => r.Text("build") + " | " + string.Join(" | ", r.Rounds.Select((bp, k) => $"round {k}: " + string.Join("; ",
@@ -174,6 +174,45 @@ public class CrewBuildTests
         var order = link.Events.Where(e => e.What.StartsWith("place ")).Select(e => e.Body).ToList();
         Assert.True(order.Zip(order.Skip(1)).Count(p => p.First != p.Second) >= 6, "placements interleave");
         Assert.True(round.CrewTicks < round.SoloTicks);
+    }
+
+    private const string NL = "\n";
+
+    [Fact]
+    public async Task Two_bodies_share_one_scaffold_stair_that_one_lane_builds()
+    {
+        // A 5×5 keep 10 high with a doorway: its top layers are out of reach from the island (feet y64). A crew climbs by a scaffold stair only
+        // (a pillar top holds just the body that pillared): one lane builds it, the other waits for its treads and walks it.
+        var (link, bodies) = Crew(2);
+        var plan = PlanOf("blueprint keep" + NL + "size 5x10x5" + NL + "palette C=cobblestone" + NL + "walls C 0,0,0 4,9,4" + NL + "clear 2,0,0 2,1,0", new BlockPos(-2, 64, -2));
+        using var db = AgentDb.Open(null);
+        var report = await Fast(new ConstructionExecutor(new BlueprintOptions(), new BlueprintStore(db))).RunAsync(21, plan, bodies, Soon());
+        Assert.True(report.Complete, Why(report));
+        var w = bodies[0].World;
+        foreach (var b in plan.Blocks.Values) Assert.Equal(b.Id, w.GetBlock(b.Pos));
+        var round = report.Rounds[0];
+        Assert.Equal(2, round.Lanes.Count);
+        Assert.DoesNotContain(round.Steps, s => s.Technique == Technique.Pillar);
+        var stair = round.Steps.Where(s => s.Action == StepAction.Scaffold && s.Technique == Technique.Stair).ToList();
+        Assert.NotEmpty(stair);
+        int builder = Assert.Single(stair.Select(s => s.Lane).Distinct());               // one lane builds the stair
+        var other = round.Lanes.Single(l => l.Index != builder);
+        // The other lane's steps up there wait for the treads below their stands, and that body walked the stair.
+        var up = other.Steps.Select(i => round.Steps[i]).Where(s => s.Stand.Y > plan.Min.Y + 1).ToList();
+        Assert.NotEmpty(up);
+        Assert.Contains(up, s => other.Waits.TryGetValue(s.Index, out var ws) && ws.Any(j => round.Steps[j].Technique == Technique.Stair));
+        var treads = stair.Select(s => s.Target).ToHashSet();
+        var walker = bodies.Single(b => b.Name == other.Body);
+        Assert.Contains(walker.Walked.Concat(walker.Trail), c => treads.Contains(c.Down()));
+        var first = link.FirstPlaced();
+        foreach (var s in up.Where(s => first.ContainsKey(s.Target)))
+            foreach (var j in other.Waits.GetValueOrDefault(s.Index) ?? [])
+                if (round.Steps[j].Technique == Technique.Stair && first.TryGetValue(round.Steps[j].Target, out var at))
+                    Assert.True(at < first[s.Target], $"{s} placed before the tread {round.Steps[j]} (rounds {report.Rounds.Count}, events: {string.Join(" | ", link.Events.Where(e => e.What.Contains($"{s.Target.X},{s.Target.Y},{s.Target.Z}") || e.What.Contains($"{round.Steps[j].Target.X},{round.Steps[j].Target.Y},{round.Steps[j].Target.Z}")))})");
+        // The stair came down at the end; nobody shared a cell or stood unguarded over the void.
+        foreach (var s in stair) Assert.Equal(0, w.GetBlock(s.Target));
+        Assert.Empty(link.Violations);
+        Assert.All(bodies, b => Assert.Empty(b.Unguarded));
     }
 
     [Fact]

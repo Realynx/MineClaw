@@ -775,8 +775,11 @@ internal sealed class LaneRunner(CrewExecutor x, CrewContext c, PlanLane lane, I
                     bool ours;
                     lock (Bp) ours = Bp.ScaffoldUp.Contains(s.Target);
                     if (!ours && !w.Placed.IsPlaced(s.Target, w.Dimension, id)) { Set(s, StepStatus.Skipped, "not ours"); return Outcome.Done; }
-                    if (!await MoveAsync(s, needStand: s.Column >= 0, ct).ConfigureAwait(false)) return Outcome.Failed;
-                    var r = s.Column >= 0 ? await body.DigHereAsync(s.Target, ct).ConfigureAwait(false) : await body.DigAsync(s.Target, ct).ConfigureAwait(false);
+                    // From the planned stand (a pillar from on top of it, a stair from the step below), else the client's own aim.
+                    bool planned = s.Column >= 0 || s.Stand != default && s.Note?.StartsWith("no stand sees it", StringComparison.Ordinal) != true;
+                    if (!await MoveAsync(s, needStand: planned, ct).ConfigureAwait(false)) return Outcome.Failed;
+                    bool here = s.Column >= 0 || planned && ConstructionExecutor.StartCell(W) == s.Stand;
+                    var r = here ? await body.DigHereAsync(s.Target, ct).ConfigureAwait(false) : await body.DigAsync(s.Target, ct).ConfigureAwait(false);
                     if (!r.Ok) { s.Note = ConstructionExecutor.Short(r.Message); return Outcome.Failed; }
                     lock (Bp) { Bp.ScaffoldUp.Remove(s.Target); s.Status = StepStatus.Verified; }
                     return Outcome.Done;
@@ -842,8 +845,10 @@ internal sealed class LaneRunner(CrewExecutor x, CrewContext c, PlanLane lane, I
             }
         }
         if (!await MoveAsync(s, needStand: true, ct).ConfigureAwait(false)) return Outcome.Failed;
-        var r = await body.PlaceAsync(new BuildStep(scaffold ? StepKind.Scaffold : StepKind.Place, s.Target, scaffold ? item : s.Id, scaffold ? 0 : s.Meta,
-            null, s.Face, s.HiddenFace, s.Yaw), item, dmg, ct).ConfigureAwait(false);
+        var r = scaffold && s.Technique == Technique.Pillar
+            ? await body.PillarAsync(s.Target, item, ct).ConfigureAwait(false)
+            : await body.PlaceAsync(new BuildStep(scaffold ? StepKind.Scaffold : StepKind.Place, s.Target, scaffold ? item : s.Id, scaffold ? 0 : s.Meta,
+                null, s.Face, s.HiddenFace, s.Yaw), item, dmg, ct).ConfigureAwait(false);
         if (!r.Ok)
         {
             _r.Failed++;

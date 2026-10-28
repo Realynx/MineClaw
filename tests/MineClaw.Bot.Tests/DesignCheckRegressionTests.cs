@@ -129,6 +129,32 @@ public class DesignCheckRegressionTests
         Assert.Contains(e.Issues, i => i.Code == "entrance" && i.Level == IssueLevel.Error);
     }
 
+    [Fact]
+    public async Task Mob_drop_tower_builds_fully_offline_climbing_above_reach()
+    {
+        // 12 high on the 8×8 floor: from the ground (feet y64) the top layers are out of reach; it climbs (its own stairs inside,
+        // a pillar where they don't reach) and takes every scaffold block back down.
+        var w = TowerSite();
+        w.Player.ServerTeleport(new Vec3d(-21.5, 64, 11.5), 65.62, 0, 0, true); // north of the door
+        var (plan, _) = Tower();
+        var inv = plan.Blocks.Values.Where(b => !b.UpperDoor).Select(b => BuildBlocks.ItemFor(b.Id, b.Meta))
+            .GroupBy(k => (k.Item, BuildBlocks.HasVariants(k.Item) ? k.Damage : 0)).ToDictionary(g => g.Key, g => g.Count());
+        inv[(Blocks.Cobblestone, 0)] = inv.GetValueOrDefault((Blocks.Cobblestone, 0)) + 64; // scaffold
+        var body = new SimBuildBody(w, inv);
+        var report = await new ConstructionExecutor(new BlueprintOptions()).RunAsync(8, plan, BuildPart.Whole(plan), body, CancellationToken.None);
+        var text = report.Text("tower");
+        Assert.True(report.Complete, text + " | " + report.Plan!.Summary());
+        Assert.Equal(0, report.Failed);
+        Assert.Empty(report.Deviations);
+        Assert.Equal(plan.Blocks.Values.Count(b => !b.UpperDoor), report.Placed);
+        foreach (var b in plan.Blocks.Values) Assert.True(DesignChecks.SameState(b, w.GetBlock(b.Pos), w.GetMeta(b.Pos)), $"{plan.Local(b.Pos)} not built");
+        Assert.Equal(report.Scaffolded, report.ScaffoldRemoved);
+        Assert.Empty(report.Plan!.ScaffoldUp);
+        Assert.Empty(body.Unguarded);
+        Assert.True(body.Trail.Max(c => c.Y) >= 70, "it climbed");
+        Assert.True(body.Feet0.Y <= 65, $"back down: {body.Feet0}");
+    }
+
     // ------------------------------------------------------------------ best version
 
     private static DesignVersion Version(int n, VoxelPlan plan, int blocks, int unreachable, int headroom, Critique? critique)

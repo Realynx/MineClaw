@@ -16,6 +16,7 @@ public static class BuildPlanView
     private static readonly Dictionary<Technique, string> Colours = new()
     {
         [Technique.Normal] = "#4c8bf5", [Technique.Edge] = "#f5a623", [Technique.Hidden] = "#9b59b6", [Technique.Water] = "#1abc9c",
+        [Technique.Pillar] = "#e74c3c", [Technique.Stair] = "#8e6e53",
     };
 
     public static string Html(IReadOnlyList<BuildPlan> parts, string title)

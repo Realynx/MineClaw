@@ -200,6 +200,8 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
   migrates old trusted instruction claims (idempotent).
 - **Standing-order backoff**: a pass that found nothing to do yet ("still growing", "0 chopped") is quiet context, not a failure;
   C# waits 2 → 4 → 8 → 15 min and polls `WorkProbe` (a grown tree, a regenerated gen cell, a mature crop) to resume earlier.
+  Every known chest full (`ChestStore`'s "all N known chests full (…); 141 cobblestone in bag; craft+place a chest (have 300
+  logs) or keep carrying") backs off the same way (the probe can't cut it short), counts no failure, and wakes the brain once.
   A live script on the lane holds the order (`StandingOrders.BodyBusy`; "already running" is never a failed pass); a restart
   lifts a failure pause the old process persisted; `Prepare` (`ScriptBridge.CheckOrder`) re-resolves a script order to its
   newest version by name after the Lua→JS migration, and a call that can't run wakes the brain once (Normal) with why.
@@ -266,7 +268,8 @@ the rules + the SDK reference generated from the code + three worked examples (�
   night, time, players, pos, dist) · **flow** (retry, upto, until, seq, sel, timeout, room, ensure) · **machine** (machine, after,
   every, when, signal) · **policies** (use, policy, keepFed, fleeVoidEdges, defendIfAttacked, depositWhenFull,
   replaceToolWhenBroken, pauseAtNight) · **jobs** (store, restock, mineGen, harvestFarm, chopTrees, deliver, waitForDay,
-  guardArea) · **crew** (body, bodies, spawn, parallel, crew.get/set/inc/send/recv/barrier/lock/unlock). C# where it is hot or owns
+  guardArea; `store`/`depositWhenFull`/`room` all go through the `deposit` tool's one path, `Bot/GameTools/ChestStore`: the named
+  chest, then known chests with room, never-touch/"private" skipped; all full → `{ok:false, full:true, need}`) · **crew** (body, bodies, spawn, parallel, crew.get/set/inc/send/recv/barrier/lock/unlock). C# where it is hot or owns
   semantics (signals, machine runner, timeouts, crew lanes), JS where it reads clearer (helpers, policies, jobs).
 - **Reactive core** (`Sdk/MachineRunner`, `Sdk/SignalSet`): `machine({initial, states:{s:{enter, tick, exit, on, final}}, on,
   guards, bb, policies, thresholds})` runs enter → tick… → exit per state. Events come from the bot's event stream (danger and its
@@ -385,9 +388,22 @@ body adapter) all use it; craft always makes new ones (a worn carried pick never
   The client's `WaterHold` lets the void guard and the falling alarm stand aside only while inside a continuous column. Whatever
   still can't be planned is named before building (`Infeasible`, in the "build it" reply: "47 placements, 6 scaffold, 1 water
   descent, needs: …; est. 6 min"). Reasons point at the root cells: a cell resting on one that can't be placed is "waiting on supports;
-  rests on x,y,z" (a final pass re-points "no support" cells whose neighbour leads to a real root), and a supported cell wholly above
-  the eyes of every stand near it is "no stand: above my reach (I can't climb: no pillar or stair technique)" (stands are searched
-  from 6 below: a y63 floor reaches the y70 layer). Every build/lane result, the `[task]` text, `design show` ("can't place N: …")
+  rests on x,y,z" (a final pass re-points "no support" cells whose neighbour leads to a real root). **Climbing**
+  (`BuildPlanner.Climb.cs`), when a supported cell is above every stand's reach (stands are searched from 6 below: a y63 floor
+  reaches the y70 layer), in order: the design's own placed blocks (their tops are flood stands: its stairs, step-ups); a
+  **pillar** (`Technique.Pillar`: jump-place scaffold into the feet cell, `IBuildBody.PillarAsync` → the client's
+  `PillarPlaceAsync`), the lowest that reaches it (or walks onto the design's floor from its top), every level void-free on all
+  eight sides (the jump isn't sneak-guarded: never a 1×1 over the void); a **scaffold stair** (`Technique.Stair`: rises and
+  landings, a support block where nothing holds the tread, never cutting an older flight's walk space, verified walkable both
+  ways: the pathfinder's drop overshoot guard means a turn needs footing beyond the step below), the only climb in a crew plan.
+  Stands before use: a stand on scaffold depends on the step that put it there, each tread on the one below. A body up on a
+  pillar that no longer helps digs it back first; a stand on my own pillar counts as a way out (wall-in check). Scaffold comes
+  down top-first keeping a way down: a pillar dug from on top (a 1-block drop onto the next block: the client's own-pillar rule),
+  other scaffold from a stand that can still walk back to the start level. Scaffold blocks are counted in the plan ("13 scaffold
+  (13 to climb: 11 pillar, 2 stair)") and fetched with the cobblestone. Over the void the scaffold-distance rule is unchanged.
+  Only when no climb is possible is a cell "no stand: above my reach (I can't climb: every pillar or stair spot near it is
+  beside the void | no room … | climbing is off)" (`Bot:Blueprints:Climb`). Design #4 (16×16×16 drop tower on Fox's 8×8 floor)
+  replays complete: 689 placed, pillars inside the shaft. Every build/lane result, the `[task]` text, `design show` ("can't place N: …")
   and the restart notice carry them grouped in one line (`BuildSkips`): "placed 4, 685 missing — 673 waiting on supports e.g.
   -27,72,13; 12 no stand: above my reach (I can't climb) e.g. -27,71,13; 0 protected" (live 10-28: the drop tower said only
   "placed 0, 689 missing" for hours: its 16-high walls were out of reach from the floor and everything else rested on them).
@@ -411,8 +427,10 @@ body adapter) all use it; craft always makes new ones (a worn carried pick never
   The design is sliced once in dependency order from the first body's feet (N=1 = exactly the one-body plan), then the unfinished
   steps are cut into one `PlanLane` per body: the footprint's (x,z) columns swept along the long axis and cut into contiguous
   strips balanced by step count, lanes given to the bodies that finish soonest (travel + work), every water-column step in the
-  bucket holder's lane, scaffold removal left to the finale. A lane waits only for the other lanes' steps it needs (the support it
-  clicks, a cell cleared/placed first, its stand's floor, a stand another lane must leave first). The plan carries the one-body vs
+  bucket holder's lane, the shared scaffold stair in one lane (the strip it starts in; a crew climbs only by stairs), scaffold
+  removal left to the finale. A lane waits only for the other lanes' steps it needs (the support it clicks, a cell cleared/placed
+  first, its stand's floor, a stand another lane must leave first, the stair's treads below an elevated stand; a block in the
+  stair's walk space waits for the earlier steps up there). The plan carries the one-body vs
   crew estimate ("with 3 bodies (main, 67, 69) ≈2 min instead of 6 alone": design summary, "build it" reply, `design show`).
   Run: one body places the gate blocks and asks (the build's single gate; the others wait); then the lanes run in parallel, each
   doing its first ready step, stands reserved (`StandBoard` + an `Area` lease on the claim board) so no two bodies share a cell,

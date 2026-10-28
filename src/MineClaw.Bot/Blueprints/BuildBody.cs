@@ -42,6 +42,9 @@ public interface IBuildBody
     Task<ActionResult> SwimOutAsync(SwimColumn column, BlockPos exit, CancellationToken ct) => Task.FromResult(ActionResult.Success("not in a column"));
     /// <summary>Takes the water source back with the empty bucket.</summary>
     Task<ActionResult> PickupWaterAsync(BlockPos source, CancellationToken ct) => Task.FromResult(ActionResult.Fail("this body can't take water back"));
+    /// <summary>Standing in <paramref name="feet"/>: jumps and places <paramref name="itemId"/> into that cell under itself (a
+    /// pillar step), ending on top of it.</summary>
+    Task<ActionResult> PillarAsync(BlockPos feet, int itemId, CancellationToken ct) => Task.FromResult(ActionResult.Fail("this body can't pillar"));
 
     // ---- crew builds (defaults: one always-there body without a claim board)
 
@@ -153,6 +156,9 @@ public sealed class GameBuildBody(Func<IGameClient> client, IBody? owner = null)
 
     public Task<ActionResult> PickupWaterAsync(BlockPos source, CancellationToken ct) =>
         Real is { } r ? r.PickupWaterAsync(source, ct) : Task.FromResult(ActionResult.Fail("taking water back needs the real client"));
+
+    public Task<ActionResult> PillarAsync(BlockPos feet, int itemId, CancellationToken ct) =>
+        Real is { } r ? r.PillarPlaceAsync(feet, itemId, ct) : Task.FromResult(ActionResult.Fail("pillaring needs the real client"));
 
     public int Count(int itemId, int damage) => C.World.Inventory.CountItem(itemId, BuildBlocks.HasVariants(itemId) && damage >= 0 ? damage : null);
 

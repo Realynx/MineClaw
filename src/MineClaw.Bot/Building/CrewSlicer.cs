@@ -18,6 +18,9 @@ public sealed record CrewMember(string Name, BlockPos Start, bool Water = false,
 ///   placing), the slowest lane minimised;</item>
 /// <item>water: every water-column step (pour, descents, the take-back) is one lane's, the member with the bucket, so a column is
 ///   only ever ridden by one body;</item>
+/// <item>climbing: a crew climbs by scaffold staircases only (a pillar top holds the one body that pillared there); the stair
+///   is one lane's (the strip it starts in), and every other lane's step that stands above the build's base waits for the
+///   stair's treads below its stand, so one lane builds it and the others walk it;</item>
 /// <item>finale: scaffold removal is nobody's lane: whoever finishes last takes it down (it may hold up anyone's blocks);</item>
 /// <item>waits: a lane waits only for the specific steps of other lanes it needs: the support it clicks, a cell another lane
 ///   clears or places first, the floor its stand rests on, and a stand another lane uses before this lane fills that cell.</item>
@@ -43,8 +46,9 @@ public static class CrewSlicer
         if (crew.Count > 1)
         {
             o ??= new BuildPlannerOptions();
-            // Any body may end up on any lane after a re-balance: plan for the shortest reach; water when anyone has a bucket.
-            o = o with { Reach = Math.Min(o.Reach, crew.Min(m => m.Reach)), WaterAvailable = o.WaterAvailable || crew.Any(m => m.Water) };
+            // Any body may end up on any lane after a re-balance: plan for the shortest reach; water when anyone has a bucket;
+            // climbing only by stairs every lane can walk.
+            o = o with { Reach = Math.Min(o.Reach, crew.Min(m => m.Reach)), WaterAvailable = o.WaterAvailable || crew.Any(m => m.Water), SharedClimb = true };
         }
         var bp = BuildPlanner.Plan(plan, world, crew[0].Start, part, o, previous);
         Assign(bp, plan, crew);
@@ -69,8 +73,10 @@ public static class CrewSlicer
 
         bool IsWater(PlanStep s) => s.Column >= 0 || s.Action is StepAction.PourWater or StepAction.PickupWater;
         var finale = pending.Where(s => s.Action == StepAction.RemoveScaffold && !IsWater(s)).ToList();
+        static bool IsStair(PlanStep s) => s.Action == StepAction.Scaffold && s.Technique == Technique.Stair;
         var water = pending.Where(IsWater).ToList();
-        var regular = pending.Where(s => !IsWater(s) && s.Action != StepAction.RemoveScaffold).ToList();
+        var stair = pending.Where(s => !IsWater(s) && IsStair(s)).ToList();
+        var regular = pending.Where(s => !IsWater(s) && s.Action != StepAction.RemoveScaffold && !IsStair(s)).ToList();
 
         // Regions: sweep the footprint's columns along the longer axis, cut into contiguous runs of equal step count.
         bool alongX = plan.Max.X - plan.Min.X >= plan.Max.Z - plan.Min.Z;
@@ -127,11 +133,18 @@ public static class CrewSlicer
             }
             foreach (var s in water) { lanes[w].Steps.Add(s.Index); laneOf[s.Index] = w; }
         }
+        if (stair.Count > 0)
+        {
+            // The shared stair is one lane's: the strip it starts in (nearest by the long axis).
+            int at0 = Main(stair[0].Target);
+            int sl = Enumerable.Range(0, lanes.Count).OrderBy(g => segments[g].Count == 0 ? int.MaxValue : segments[g].Min(s => Math.Abs(Main(s.Target) - at0))).First();
+            foreach (var s in stair) { lanes[sl].Steps.Add(s.Index); laneOf[s.Index] = sl; }
+        }
         foreach (var l in lanes) l.Steps.Sort();
         foreach (var s in finale) s.Lane = -1;
         foreach (var (i, g) in laneOf) bp.Steps[i].Lane = g;
 
-        Waits(bp, lanes, laneOf);
+        Waits(bp, lanes, laneOf, plan.Min.Y);
         bp.Lanes = lanes;
         var starts = lanes.Select(l => crew.First(m => m.Name == l.Body).Start).ToList();
         bp.CrewTicks = Simulate(bp, starts, laneOf, lanes, out var perLane);
@@ -139,8 +152,12 @@ public static class CrewSlicer
     }
 
     /// <summary>The lanes' cross-lane waits (only to earlier steps, so they never cycle).</summary>
-    private static void Waits(BuildPlan bp, List<PlanLane> lanes, Dictionary<int, int> laneOf)
+    private static void Waits(BuildPlan bp, List<PlanLane> lanes, Dictionary<int, int> laneOf, int baseY)
     {
+        var stairs = laneOf.Keys.Where(i => bp.Steps[i].Action == StepAction.Scaffold && bp.Steps[i].Technique == Technique.Stair).OrderBy(i => i).ToList();
+        // The stair's walk space (above each tread: feet, head, the jump): a block there cuts the way up for whoever still walks it.
+        var walkSpace = new HashSet<BlockPos>(stairs.SelectMany(j => new[] { bp.Steps[j].Target.Up(), bp.Steps[j].Target.Up(2), bp.Steps[j].Target.Up(3) }));
+        var elevated = laneOf.Keys.Where(i => bp.Steps[i].Column < 0 && bp.Steps[i].Stand != default && bp.Steps[i].Stand.Y > baseY + 1).OrderBy(i => i).ToList();
         var byTarget = new Dictionary<BlockPos, List<int>>();
         var placedAt = new Dictionary<BlockPos, List<int>>();
         var clearedAt = new Dictionary<BlockPos, List<int>>();
@@ -169,6 +186,11 @@ public static class CrewSlicer
                     From(clearedAt.GetValueOrDefault(s.Stand.Up()));
                 }
                 if (s.IsPlacement) From(standIn.GetValueOrDefault(s.Target));
+                // Up on the shared stair: its treads below this stand first (another lane builds them).
+                if (s.Column < 0 && s.Stand != default && s.Stand.Y > baseY + 1)
+                    From(stairs.Where(j => j < i && bp.Steps[j].Target.Y < s.Stand.Y));
+                // Filling the stair's walk space: only once the other lanes' earlier steps up there are done.
+                if (s.IsPlacement && walkSpace.Contains(s.Target)) From(elevated.Where(j => j < i));
                 if (set.Count > 0) lane.Waits[i] = set.ToList();
             }
     }

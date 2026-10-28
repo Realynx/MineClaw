@@ -13,7 +13,9 @@ namespace MineClaw.Bot.Building;
 public static partial class BuildSkips
 {
     /// <summary>The slicer's reasons (prefixes; details follow after "; "). Grouping uses <see cref="Category"/>.</summary>
-    public const string AboveReach = "no stand: above my reach (I can't climb: no pillar or stair technique)";
+    /// <summary>Wholly above every stand near it and no climb (pillar, stair) possible; the reason follows: "(I can't climb: every
+    /// pillar or stair spot near it is beside the void)".</summary>
+    public const string AboveReach = "no stand: above my reach";
     public const string NotNear = "no stand: I can't walk near it from here";
     public const string NoStand = "no stand within reach of a support face";
     public const string Waiting = "waiting on supports";

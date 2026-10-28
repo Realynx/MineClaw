@@ -30,6 +30,14 @@ public sealed record BuildPlannerOptions
     public IReadOnlySet<(int Item, int Damage)> Hold { get; init; } = new HashSet<(int, int)>();
     /// <summary>Water buckets on hand: how many columns may stand at once (one bucket = one column at a time).</summary>
     public int Buckets { get; init; } = 1;
+    /// <summary>Climbing when a block is above reach: the design's own blocks as stands (always), then a pillar (jump-place under
+    /// myself), then a scaffold staircase; the temporary scaffold comes down top-first at the end. Off: report "above my reach".</summary>
+    public bool Climb { get; init; } = true;
+    /// <summary>A crew plan (several bodies on one plan): climb only by scaffold staircases, which every lane can walk (a pillar
+    /// top holds one body that got there by pillaring); one lane builds the stair, the others wait for it.</summary>
+    public bool SharedClimb { get; init; }
+    /// <summary>Highest pillar per climb (blocks).</summary>
+    public int MaxPillar { get; init; } = 16;
 }
 
 /// <summary>
@@ -41,7 +49,7 @@ public sealed record BuildPlannerOptions
 /// stand, a clicked face and a technique; a step with no stand gets a scaffold chain, a floor walkway or a water column
 /// (building down); what still can't be done is reported as infeasible with the reason before anything is built.
 /// </summary>
-public sealed class BuildPlanner
+public sealed partial class BuildPlanner
 {
     private readonly VoxelPlan _plan;
     private readonly BuildPart _part;
@@ -64,6 +72,8 @@ public sealed class BuildPlanner
         public Dictionary<BlockPos, int> PlacedBy = new();
         public List<BlockPos> Scaffold = new();
         public HashSet<BlockPos> Drained = new(); // column cells cut off by a placement
+        public HashSet<BlockPos> Pillar = new();  // scaffold cells placed by pillaring (dug back down from on top)
+        public HashSet<BlockPos> Stair = new();   // scaffold stair treads and their supports
         public int Placements;
 
         public St Clone() => new()
@@ -74,7 +84,7 @@ public sealed class BuildPlanner
                 Index = c.Index, Source = c.Source, Face = c.Face, Entry = c.Entry, Depth = c.Depth, DescendTicks = c.DescendTicks,
                 AscendTicks = c.AscendTicks, Poured = c.Poured, Removed = c.Removed,
             }).ToList(),
-            PlacedBy = new(PlacedBy), Scaffold = new(Scaffold), Drained = new(Drained), Placements = Placements,
+            PlacedBy = new(PlacedBy), Scaffold = new(Scaffold), Drained = new(Drained), Pillar = new(Pillar), Stair = new(Stair), Placements = Placements,
         };
     }
 
@@ -91,6 +101,7 @@ public sealed class BuildPlanner
         _part = part;
         _o = o;
         _s = new St { Sim = sim, Flood = new(), Land = start };
+        _home = start;
         _out = new BuildPlan
         {
             Part = part.Index, Parts = part.Count, Version = plan.Hash(), Format = BuildPlan.CurrentFormat, Origin = plan.Origin, Facing = plan.Blueprint.Facing,
@@ -117,7 +128,7 @@ public sealed class BuildPlanner
     {
         if (previous != null) Carry(previous);
         _s.Flood = Flood(_s.Sim, _s.Land);
-        _escapeCheck = _s.Flood.Keys.Any(Outside);
+        _escapeCheck = CanLeave(_s.Sim, _s.Land, _outside);
         if (_s.Flood.Count == 0)
             foreach (var b in Todo()) Fail(b.Pos, b.Id, $"I'm not standing anywhere walkable ({_s.Land.X},{_s.Land.Y},{_s.Land.Z})");
         else
@@ -164,6 +175,8 @@ public sealed class BuildPlanner
         }
         // Scaffold left standing comes down at the end.
         foreach (var p in prev.ScaffoldUp.Where(p => BuildBlocks.Supports(_s.Sim.Get(p)) && !_plan.Blocks.ContainsKey(p))) _s.Scaffold.Add(p);
+        // A pillar still standing is dug back down from on top (its steps say which scaffold was pillared).
+        foreach (var st in prev.Steps.Where(s => s.Action == StepAction.Scaffold && s.Technique == Technique.Pillar && _s.Scaffold.Contains(s.Target))) _s.Pillar.Add(st.Target);
     }
 
     private bool Holds(PlanStep s) => s.Action switch
@@ -221,6 +234,7 @@ public sealed class BuildPlanner
         var todo = Todo();
         var gate = GateCells(todo);
         var tries = new Dictionary<BlockPos, int>();
+        var helps = new Dictionary<BlockPos, int>(); // techniques tried on a block for another stuck one's sake
         while (todo.Count > 0)
         {
             int layer = todo.Min(b => b.Pos.Y);
@@ -248,6 +262,17 @@ public sealed class BuildPlanner
             int n = tries[stuck.Pos] = tries.GetValueOrDefault(stuck.Pos) + 1;
             _cover = group.Select(b => b.Pos).ToList();
             if (n <= 2 && Resolve(T(stuck), out _)) continue;
+            // Before giving up on it: a ready block of the layer farther away that can be placed now goes first (it may be the
+            // floor this one is reached from: a platform bridged out from its middle).
+            if (!gating && order.Skip(_o.Candidates).FirstOrDefault(b => b.Pos != stuck.Pos && TryPlace(T(b), false)) is { } other)
+            {
+                todo.Remove(other);
+                continue;
+            }
+            // Or another ready block's technique (a climb up beside it) brings this one into reach later.
+            if (!gating && ready.Where(b => b.Pos != stuck.Pos).OrderBy(b => Near(b.Pos)).Take(3)
+                    .FirstOrDefault(b => tries.GetValueOrDefault(b.Pos) < 2 && (helps[b.Pos] = helps.GetValueOrDefault(b.Pos) + 1) <= 2 && Resolve(T(b), out _)) != null)
+                continue;
             Resolve(T(stuck), out var why, dryRun: true);
             Fail(stuck.Pos, stuck.Id, why ?? "no stand reaches a support face");
             todo.Remove(stuck);
@@ -310,7 +335,7 @@ public sealed class BuildPlanner
             {
                 var fork = _s.Sim.Fork();
                 ApplyBlock(fork, t);
-                if (!Flood(fork, pl.Stand).Keys.Any(Outside)) continue; // would wall me in: another stand (or block) first
+                if (!CanLeave(fork, pl.Stand, _outside, t.Pos, placing: true)) continue; // would wall me in: another stand (or block) first
             }
             Commit(t, pl, gateStep);
             return true;
@@ -331,6 +356,9 @@ public sealed class BuildPlanner
             Gate = gateStep && !t.Scaffold,
         };
         if (_s.PlacedBy.TryGetValue(against, out var dep)) step.Deps.Add(dep);
+        // Stands before use: a stand on scaffold of mine (a stair tread, a walkway) waits for the step that put it there.
+        if (pl.Column < 0 && _s.PlacedBy.TryGetValue(pl.Stand.Down(), out var floor) && _s.Steps[floor].Action == StepAction.Scaffold && !step.Deps.Contains(floor))
+            step.Deps.Add(floor);
         if (pl.Column >= 0) step.Deps.Add(PourStepOf(pl.Column));
         Add(step);
         _s.PlacedBy[t.Pos] = _s.Steps.Count - 1;
@@ -532,14 +560,21 @@ public sealed class BuildPlanner
 
     /// <summary>Why no walkable stand reaches <paramref name="p"/>: none near it at all, the nearest ones too far below (I can't
     /// climb), or just none in reach of a support face.</summary>
-    private string NoStandWhy(BlockPos p)
+    private int HighestStandNear(BlockPos p)
     {
         int top = int.MinValue;
         foreach (var s in _s.Flood.Keys)
             if (Math.Abs(s.X - p.X) <= 5 && Math.Abs(s.Z - p.Z) <= 5 && s.Y > top) top = s.Y;
+        return top;
+    }
+
+    private string NoStandWhy(BlockPos p)
+    {
+        int top = HighestStandNear(p);
         if (top == int.MinValue) return BuildSkips.NotNear;
         // Wholly above the eyes of every stand near it, and none reaches: only a way up (a pillar, stairs) would.
-        if (p.Y >= top + PlayerPhysics.EyeHeight) return $"{BuildSkips.AboveReach}; {p.Y - top} above the highest stand near it (feet y{top})";
+        if (p.Y >= top + PlayerPhysics.EyeHeight)
+            return $"{BuildSkips.AboveReach} (I can't climb: {_climbWhy ?? (_o.Climb ? "no room for a pillar or a stair near it" : "climbing is off")}); {p.Y - top} above the highest stand near it (feet y{top})";
         return BuildSkips.NoStand;
     }
 
@@ -559,7 +594,12 @@ public sealed class BuildPlanner
             return Chain(chain, ref why);
         }
         if (Placements(t).Any()) { why = "every stand that reaches it would wall me in"; return true; } // the main loop retries later
+        // Wholly above every stand near it: climb first (the design's own blocks are stands already; else a pillar, a stair);
+        // level with them but out of reach: a floor walkway first.
+        bool above = !below && t.Pos.Y >= HighestStandNear(t.Pos) + PlayerPhysics.EyeHeight;
+        if (above && Climb(t)) return true;
         if (!below && Walkway(t.Pos) is { } walk && Chain(walk, ref why)) return true;
+        if (!below && !above && Climb(t)) return true;
         if (!_o.WaterAvailable) { why = below ? "below the floor and out of reach: needs a water bucket to descend" : NoStandWhy(t.Pos); return false; }
         return Column(t.Pos, ref why) && Placements(t).Any();
     }
@@ -579,7 +619,7 @@ public sealed class BuildPlanner
         {
             if (Solid(c)) continue;
             var st = new Target(c, ConstructionPlanner.Scaffold, 0, true);
-            if (!TryPlace(st, false))
+            if (!TryPlace(st, false) && !(Climb(st) && TryPlace(st, false)))
             {
                 why = $"no stand reaches scaffold cell {c.X},{c.Y},{c.Z}; " + NoStandWhy(c);
                 return false;
@@ -725,25 +765,6 @@ public sealed class BuildPlanner
 
     // ------------------------------------------------------------------ scaffold down, water back
 
-    private void RemoveScaffolding()
-    {
-        foreach (var p in _s.Scaffold.Distinct().OrderByDescending(p => p.Y).ThenByDescending(p => p.DistanceSquaredTo(_plan.Min)).ToList())
-        {
-            if (_plan.Blocks.ContainsKey(p) || !BuildBlocks.Supports(_s.Sim.Get(p))) continue;
-            var dig = BestDig(p);
-            Add(new PlanStep
-            {
-                Action = StepAction.RemoveScaffold, Target = p, Id = _s.Sim.Get(p), Stand = dig?.Stand ?? _s.Land, Column = dig?.Column ?? -1,
-                Technique = dig is { Column: >= 0 } ? Technique.Water : Technique.Normal,
-                Cost = (dig?.Cost ?? 0) + DigTicks(_s.Sim.Get(p), dig is { Column: >= 0 }),
-                Note = dig == null ? "no stand sees it: may be left" : null,
-                Deps = dig is { Column: >= 0 } d1 ? [PourStepOf(d1.Column)] : [],
-            });
-            _s.Sim.Set(p, 0);
-            if (dig is { } d) MoveTo(d.Stand, d.Column);
-        }
-    }
-
     private void PickupColumns()
     {
         foreach (var c in _s.Columns.Where(c => c.Poured && !c.Removed).ToList()) PickupColumn(c);
@@ -772,6 +793,13 @@ public sealed class BuildPlanner
     private Dig? BestDig(BlockPos p)
     {
         Dig? best = null;
+        foreach (var d in Digs(p)) if (best == null || d.Cost < best.Cost) best = d;
+        return best;
+    }
+
+    /// <summary>Every stand that can dig <paramref name="p"/> (walkable stands, then hover cells of poured columns).</summary>
+    private IEnumerable<Dig> Digs(BlockPos p)
+    {
         double fromColumn = _s.Col >= 0 ? AscendCost(_s.Columns[_s.Col], _s.ColY) : 0;
         var block = AABB.Block(p.X, p.Y, p.Z);
         foreach (var (s, travel) in _s.Flood)
@@ -781,8 +809,7 @@ public sealed class BuildPlanner
             var feet = eye with { Y = eye.Y - PlayerPhysics.EyeHeight };
             if (AABB.ForPlayer(feet).Intersects(block) || Safety.SupportBlocks(_s.Sim, feet).Contains(p)) continue;
             if (Aiming.FindDigAim(_s.Sim, eye, p, _o.Reach) is null) continue;
-            double cost = travel + fromColumn;
-            if (best == null || cost < best.Cost) best = new Dig(s, -1, cost);
+            yield return new Dig(s, -1, travel + fromColumn);
         }
         foreach (var c in _s.Columns.Where(c => c.Poured && !c.Removed))
             for (int y = c.Source.Y - 1; y >= Math.Max(1, p.Y - 4); y--)
@@ -793,9 +820,8 @@ public sealed class BuildPlanner
                 var eye = new Vec3d(cell.X + 0.5, y + PlayerPhysics.EyeHeight, cell.Z + 0.5);
                 if (Aiming.FindDigAim(_s.Sim, eye, p, _o.Reach - 0.3) is null) continue;
                 double cost = (_s.Col == c.Index ? Math.Abs(_s.ColY - y) * 12 : fromColumn + 30 + (c.Source.Y - y) * 12) + 200; // digging afloat is slow
-                if (best == null || cost < best.Cost) best = new Dig(cell, c.Index, cost);
+                yield return new Dig(cell, c.Index, cost);
             }
-        return best;
     }
 
     private double DigTicks(int id, bool afloat) => id == 0 ? 0 : Math.Min(2000, Tools.DigTicks(id, _o.DigTool, onGround: !afloat, inWater: afloat));

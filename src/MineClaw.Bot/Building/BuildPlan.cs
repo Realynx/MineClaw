@@ -13,9 +13,12 @@ public enum StepAction { Clear, Place, Scaffold, RemoveScaffold, PourWater, Pick
 /// <see cref="Normal"/> a visible face from a walkable stand; <see cref="Edge"/> the same from an edge stand (sneaking,
 /// leaning out to bridge); <see cref="Hidden"/> a face the bot can't see (the underside of the floor, an edge block's outer
 /// face), clicked within reach: mc-dev NetServerHandler checks distance only; <see cref="Water"/> from inside a water
-/// column poured at the edge (descend, hover at the depth, place, climb back out, take the water back).
+/// column poured at the edge (descend, hover at the depth, place, climb back out, take the water back); <see cref="Pillar"/>
+/// climbing scaffold placed under myself at the top of a jump (the stand is the cell itself), or dug back from on top of it
+/// (the stand is the cell above: a 1-block drop onto the next block); <see cref="Stair"/> a scaffold staircase tread or its
+/// support, placed like any block (every body walks the stair; a crew's other lanes wait for it).
 /// </summary>
-public enum Technique { Normal, Edge, Hidden, Water }
+public enum Technique { Normal, Edge, Hidden, Water, Pillar, Stair }
 
 public enum StepStatus { Pending, Done, Verified, Skipped }
 
@@ -139,9 +142,10 @@ public sealed class BuildPlan
     /// <summary>The slicer's plan format (<see cref="CurrentFormat"/> when sliced by this build; 0 = before formats were recorded).</summary>
     public int Format { get; set; }
 
-    /// <summary>Bumped when the slicer's step semantics change (2: crew lanes, step lanes/waits, grouped skip reasons): a plan
+    /// <summary>Bumped when the slicer's step semantics change (2: crew lanes, step lanes/waits, grouped skip reasons; 3: climbing:
+    /// pillar and stair steps, a pillar dug back from on top): a plan
     /// saved in an older format is re-planned on load (<see cref="Resume"/>), keeping its placed blocks and its gate.</summary>
-    public const int CurrentFormat = 2;
+    public const int CurrentFormat = 3;
 
     /// <summary>Sliced from another design version or by an older slicer: its steps can't be trusted as they are.</summary>
     public bool IsStale(ulong version) => Version != version || Format != CurrentFormat;
@@ -217,7 +221,10 @@ public sealed class BuildPlan
     public string Summary()
     {
         var parts = new List<string> { $"{Placements} placements" };
-        if (Scaffolds > 0) parts.Add($"{Scaffolds} scaffold");
+        int pillar = Steps.Count(s => s.Action == StepAction.Scaffold && s.Technique == Technique.Pillar);
+        int stair = Steps.Count(s => s.Action == StepAction.Scaffold && s.Technique == Technique.Stair);
+        var climb = string.Join(", ", new[] { pillar > 0 ? $"{pillar} pillar" : null, stair > 0 ? $"{stair} stair" : null }.Where(x => x != null));
+        if (Scaffolds > 0) parts.Add($"{Scaffolds} scaffold" + (climb.Length > 0 ? $" ({pillar + stair} to climb: {climb})" : ""));
         int hidden = Steps.Count(s => s.Technique == Technique.Hidden);
         if (Columns.Count > 0) parts.Add($"{Columns.Count} water descent{(Columns.Count > 1 ? "s" : "")}");
         if (hidden > 0) parts.Add($"{hidden} underside/hidden-face");

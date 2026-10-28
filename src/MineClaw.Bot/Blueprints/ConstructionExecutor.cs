@@ -98,6 +98,7 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
         Hold = hold ?? new HashSet<(int, int)>(),
         Buckets = Math.Max(1, body.Count(Items.WaterBucket, 0)),
         AllowHidden = o.HiddenFaces,
+        Climb = o.Climb,
         MaxScaffold = Math.Max(o.MaxScaffold, 6) + (body.Count(Items.WaterBucket, 0) > 0 ? 6 : 0),
         WaterAvailable = body.Count(Items.WaterBucket, 0) > 0,
         GateBlocks = GateOn && part.Index == 0 && prev?.Gate.State is null or GateState.Pending ? o.GateBlocks : 0,
@@ -292,8 +293,12 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
                         // Only our own placement comes down (protection rule 1: self-placed is always minable).
                         if (!w.Placed.IsPlaced(step.Target, w.Dimension, id) && !bp.ScaffoldUp.Contains(step.Target) && !rec.Scaffold.Contains(step.Target))
                         { Skip(step, "not ours"); return StepOutcome.Done; }
-                        if (!await MoveAsync(step, needStand: step.Column >= 0).ConfigureAwait(false)) return StepOutcome.Done;
-                        var r = step.Column >= 0 ? await body.DigHereAsync(step.Target, ct).ConfigureAwait(false) : await body.DigAsync(step.Target, ct).ConfigureAwait(false);
+                        // From the planned stand (it keeps a way down: a pillar is dug from on top of it, a stair from the step
+                        // below); a cell no stand sees is left to the client's own aim.
+                        bool planned = step.Column >= 0 || step.Stand != default && step.Note?.StartsWith("no stand sees it", StringComparison.Ordinal) != true;
+                        if (!await MoveAsync(step, needStand: planned).ConfigureAwait(false)) return StepOutcome.Done;
+                        bool here = step.Column >= 0 || planned && StartCell(w) == step.Stand;
+                        var r = here ? await body.DigHereAsync(step.Target, ct).ConfigureAwait(false) : await body.DigAsync(step.Target, ct).ConfigureAwait(false);
                         if (r.Ok)
                         {
                             report.ScaffoldRemoved++;
@@ -362,8 +367,10 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
                 }
             }
             if (!await MoveAsync(step, needStand: true).ConfigureAwait(false)) return StepOutcome.Done;
-            var r = await body.PlaceAsync(new BuildStep(scaffold ? StepKind.Scaffold : StepKind.Place, step.Target, scaffold ? item : step.Id, scaffold ? 0 : step.Meta,
-                null, step.Face, step.HiddenFace, step.Yaw), item, dmg, ct).ConfigureAwait(false);
+            var r = scaffold && step.Technique == Technique.Pillar
+                ? await body.PillarAsync(step.Target, item, ct).ConfigureAwait(false)
+                : await body.PlaceAsync(new BuildStep(scaffold ? StepKind.Scaffold : StepKind.Place, step.Target, scaffold ? item : step.Id, scaffold ? 0 : step.Meta,
+                    null, step.Face, step.HiddenFace, step.Yaw), item, dmg, ct).ConfigureAwait(false);
             if (!r.Ok)
             {
                 report.Failed++;
@@ -431,6 +438,15 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
                 if (body.Count(item, dmg) >= count) continue;
                 var why = await body.EnsureAsync(item, dmg, Math.Min(count, 64 * 4), ct).ConfigureAwait(false);
                 if (why != null && body.Count(item, dmg) == 0) shortItems[(item, dmg)] = why;
+            }
+            // Scaffold (climbing pillars and stairs included) comes out of the same cobblestone: fetched on top of what the
+            // design's own cobblestone takes (best effort: planks or another clutch block do too).
+            int scaffold = bp.Steps.Count(s => s.Action == StepAction.Scaffold && !s.Finished && (included ??= Included(bp)).Contains(s.Index));
+            if (scaffold > 0)
+            {
+                int cobble = needs.Where(n => n.Item == Blocks.Cobblestone).Sum(n => n.Count) + scaffold;
+                if (body.Count(Blocks.Cobblestone, 0) < cobble)
+                    _ = await body.EnsureAsync(Blocks.Cobblestone, 0, Math.Min(cobble, 64 * 4), ct).ConfigureAwait(false);
             }
         }
 

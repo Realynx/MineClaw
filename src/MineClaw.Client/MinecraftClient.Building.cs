@@ -99,6 +99,24 @@ public sealed partial class MinecraftClient
     public Task<ActionResult> DigHereAsync(BlockPos pos, CancellationToken ct = default) =>
         RunActionAsync("dig", ct, c => DigCoreAsync(pos, c, allowPathing: false));
 
+    /// <summary>
+    /// The build slicer's pillar step (nerd pole): standing in <paramref name="feet"/>, jump and place <paramref name="itemId"/>
+    /// into that cell under myself at the top of the jump, landing on it. Never beside the void (the jump isn't sneak-guarded)
+    /// and never under a ceiling.
+    /// </summary>
+    public Task<ActionResult> PillarPlaceAsync(BlockPos feet, int itemId, CancellationToken ct = default) =>
+        RunActionAsync("pillar", ct, async c =>
+        {
+            var at = FeetCell();
+            if (at != feet) return ActionResult.Fail($"not standing in {Fmt(feet)} to pillar (at {Fmt(at)})");
+            if (Safety.VoidNeighbourCount(World, feet.X, feet.Y, feet.Z) > 0) return ActionResult.Fail($"won't pillar at {Fmt(feet)}: the void is beside it");
+            if (BlockShapes.HasCollision(World, feet.X, feet.Y + 2, feet.Z)) return ActionResult.Fail($"no room to jump at {Fmt(feet)}");
+            if (World.Inventory.CountItem(itemId) == 0) return ActionResult.Fail($"no {ItemName(itemId)} to pillar with");
+            return await PillarOnceAsync(feet, itemId, c).ConfigureAwait(false)
+                ? ActionResult.Success($"pillared {ItemName(itemId)} at {Fmt(feet)}")
+                : ActionResult.Fail($"pillar at {Fmt(feet)} didn't hold");
+        });
+
     // ------------------------------------------------------------------ water columns
 
     /// <summary>

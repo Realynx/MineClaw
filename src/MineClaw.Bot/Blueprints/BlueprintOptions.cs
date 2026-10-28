@@ -41,6 +41,8 @@ public sealed class BlueprintOptions
     public int GateMinutes { get; set; } = 10;
     /// <summary>Click faces the bot can't see (b1.8.1 NetServerHandler checks distance only, no raytrace).</summary>
     public bool HiddenFaces { get; set; } = true;
+    /// <summary>Climb to blocks above reach (the slicer: the design's own blocks, a pillar, a scaffold stair; taken down after).</summary>
+    public bool Climb { get; set; } = true;
     /// <summary>Re-plans per run after deviations before stopping to ask.</summary>
     public int MaxReplans { get; set; } = 4;
 }
