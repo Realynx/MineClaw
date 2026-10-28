@@ -78,9 +78,11 @@ public sealed class QuestionOptions
     internal static string? Topic(string? question)
     {
         if (string.IsNullOrWhiteSpace(question)) return null;
-        var q = question.Split('?', '.', '!')[0];
+        // The asked part is the last sentence ending in '?' ("…175 columns hang over the void. switch to plan #8 instead?").
+        var asks = Regex.Matches(question, @"[^.!?]*\?").Select(m => m.Value).Where(a => a.Trim().Length > 1).ToList();
+        var q = asks.Count > 0 ? asks[^1] : question.Split('?', '.', '!')[0];
         q = AskLead.Replace(q, "");
-        q = Coords.Replace(q, "").Trim(' ', ',', ':', '~');
+        q = Coords.Replace(q, "").Trim(' ', ',', ':', '~', '?');
         var words = q.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (words.Length == 0) return null;
         return string.Join(' ', words.Take(8)) + (words.Length > 8 ? "…" : "");

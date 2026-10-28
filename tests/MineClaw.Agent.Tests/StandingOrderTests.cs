@@ -131,6 +131,9 @@ public class StandingOrderTests
         Assert.Contains("except the risky part", res.Text);
         await WaitFor(() => SentContains(sent, "skipped \"break your wall to reach the chest\" for now")); // names the question (live 10-28)
 
+        // Live 10-28 07:3x: the topic came from the preamble, not the asked sentence.
+        Assert.Equal("switch to plan #8 that sits right on…",
+            QuestionOptions.Topic("master~ tower #4 keeps placing 0 blocks cuz like 175 columns hang over the void and need scaffolding, uwu. switch to plan #8 that sits right on your 8x8 floor instead?"));
         Assert.True(new QuestionOptions().IsRisky("bridge out over the void?"));
         Assert.True(new QuestionOptions().IsRisky("use the diamonds?"));
         Assert.False(new QuestionOptions().IsRisky("the cell next to the lava?"));
