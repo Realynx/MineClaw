@@ -206,6 +206,8 @@ public sealed class AgentRuntime : IDisposable
         rules.Nick = p => chat.NicknamesOf(p).FirstOrDefault() ?? p;
         try { rules.MigrateClaims(Log("MineClaw.Rules")); }
         catch (Exception ex) { Log("MineClaw.Rules").LogWarning(ex, "directive migration failed"); }
+        // Foreign bots' command prefixes ("c trees" is robinchan's) survive restarts; trusted players' rules declare them.
+        CommandPrefixStore.Attach(chat, db, rules, time, chatLog);
         WorldTools.Register(tools, observations, position, time, memory);
         IdentityTools.ApplyPersisted(memory, chat);
         IdentityTools.RegisterAll(tools, memory, chat);

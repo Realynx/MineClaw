@@ -79,6 +79,13 @@ public sealed class ChatOptions
     /// <summary>An unnamed line within this long of the bot asking that player a question is the answer.</summary>
     public int AnswerWindowSeconds { get; set; } = 60;
 
+    /// <summary>
+    /// The bot's last line to a player asked them something or told them to do something ("hop off it when i get there pls"):
+    /// their next unnamed line within this long is the reply, even with another bot chatting nearby (live 10-28 15:36: "I hopped
+    /// off it" came 110 s after main's request and was dropped as "unclear, another bot around").
+    /// </summary>
+    public int OpenRequestSeconds { get; set; } = 120;
+
     /// <summary>A line that is only the bot's name links the same player's ignored line from at most this long before.</summary>
     public int NameLinkSeconds { get; set; } = 30;
 

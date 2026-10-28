@@ -4,6 +4,9 @@ using System.Text.RegularExpressions;
 
 namespace MineClaw.Agent.Tools;
 
+/// <summary>Why a failure is only passing: the same call may well work once this changes.</summary>
+public enum TransientCause { Occupied, Mob, Busy, NotLoaded, TimeOfDay, WaitingForPlayer }
+
 /// <summary>
 /// Zero-token guard in front of long-running tool calls (the bot's activity):
 /// <list type="bullet">
@@ -24,6 +27,8 @@ public sealed class ToolCallGuard
         public IReadOnlySet<string>? Task { get; init; }
         /// <summary>The body it failed on (null = the main body): one body's dead end never blocks another's try.</summary>
         public string? Body { get; init; }
+        /// <summary>A passing cause ("someone is standing on it"): remembered only <see cref="TransientMemory"/>, or until cleared.</summary>
+        public TransientCause? Transient { get; init; }
     }
 
     /// <summary>Two delegated tasks are the same job at this content-word Jaccard (or more).</summary>
@@ -88,6 +93,40 @@ public sealed class ToolCallGuard
     /// <summary>How long a failure is remembered.</summary>
     public TimeSpan Memory { get; set; }
 
+    /// <summary>How long a failure with a passing cause (<see cref="TransientCauseOf"/>) is remembered.</summary>
+    public TimeSpan TransientMemory { get; set; } = TimeSpan.FromSeconds(20);
+
+    private static readonly (TransientCause Cause, Regex Rx)[] TransientRx =
+    [
+        (TransientCause.Occupied, new(@"\b(?:someone|somebody|a player|\w+) (?:is |'s )?(?:standing|stood|sitting) (?:on|in)\b|\bplayer (?:is )?in the way\b|\b(?:standing|stands) on it\b", RegexOptions.IgnoreCase | RegexOptions.Compiled)),
+        (TransientCause.Mob, new(@"\b(?:mob|creeper|zombie|skeleton|spider|enemy|monster)s? (?:is |are )?(?:in the way|nearby|too close|close by|blocking)\b|\bmob in (?:the )?way\b", RegexOptions.IgnoreCase | RegexOptions.Compiled)),
+        (TransientCause.Busy, new(@"\bchest (?:is )?(?:busy|in use|being used|open)\b|\bbusy: \S+ is using\b|\bis using (?:the )?chest\b", RegexOptions.IgnoreCase | RegexOptions.Compiled)),
+        (TransientCause.NotLoaded, new(@"\b(?:not|isn'?t|aren'?t) loaded\b|\bunloaded\b|\bchunk (?:is )?(?:missing|not (?:yet )?received)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled)),
+        (TransientCause.TimeOfDay, new(@"\b(?:it'?s|its) (?:night|dark|day(?:time)?)\b|\b(?:night|day(?:time)?)[- ]?(?:only|rule)\b|\bonly (?:in|during) (?:the )?(?:day(?:time)?|night)\b|\buntil (?:morning|dawn|day(?:time)?|night)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled)),
+        (TransientCause.WaitingForPlayer, new(@"\bwaiting (?:for|on) (?:a |the )?(?:player|\w+'?s? (?:go|answer|reply|ok))\b|\bneeds? a (?:trusted )?player'?s? go\b|\bawaiting (?:a |the |her |his |their )?(?:reply|answer|go)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled)),
+    ];
+
+    /// <summary>
+    /// The passing cause of a failure, or null = persistent (no path, nothing there, protected...). Live 10-28 15:38: "not retried:
+    /// delegate failed here 2m ago: ... won't dig the cobblestone at 4,65,3: someone is standing on it" after kiwi had hopped off.
+    /// </summary>
+    public static TransientCause? TransientCauseOf(string? reason)
+    {
+        if (string.IsNullOrEmpty(reason)) return null;
+        foreach (var (cause, rx) in TransientRx)
+            if (rx.IsMatch(reason)) return cause;
+        return null;
+    }
+
+    /// <summary>
+    /// The condition behind passing failures changed (a player moved or said so, a chunk loaded, morning came): those failures
+    /// are forgotten. Null = every passing cause. Returns how many went.
+    /// </summary>
+    public int ClearTransient(TransientCause? cause = null)
+    {
+        lock (_lock) return _failures.RemoveAll(f => f.Transient is { } t && (cause == null || t == cause));
+    }
+
     /// <summary>
     /// One brain, many bodies: also remembers the failures of another body's activity slot, keyed by <paramref name="body"/>
     /// (a clone's name). <see cref="Check"/> with that body sees only its own failures.
@@ -132,7 +171,7 @@ public sealed class ToolCallGuard
         if (ActivityManager.MovementTools.Contains(tool)) return null;
         lock (_lock)
         {
-            _failures.RemoveAll(f => now - f.At > Memory);
+            _failures.RemoveAll(f => now - f.At > (f.Transient != null ? TransientMemory : Memory));
             for (int k = _failures.Count - 1; k >= 0; k--)
             {
                 var f = _failures[k];
@@ -170,6 +209,7 @@ public sealed class ToolCallGuard
         {
             Task = tool == DelegateTool ? TaskWords(input) : null,
             Body = body,
+            Transient = TransientCauseOf(reason),
         };
         lock (_lock)
         {

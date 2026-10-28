@@ -275,7 +275,8 @@ public sealed partial class ChatRouter
             {
                 bool toUs = addressed || decision.Addressed;
                 _lastHumanLine = (player, Now, toUs, decision.To, CommandPrefix(msg.Text));
-                if (toUs) _lastToUs[player] = Now;
+                _lastLineTo[player] = (Now, toUs ? _options.Username : decision.To);
+                if (toUs) { _lastToUs[player] = Now; _requestAt.Remove(player); } // their reply closes our open request
                 if (foreign != null) _partner[player] = (foreign, Now); // the thread goes on with each follow-up
             }
         if (!addressed && ShouldClassify(msg, reason))
@@ -608,6 +609,8 @@ public sealed partial class ChatRouter
         public readonly List<string> Parts = new();
         public string? From;
         public DateTimeOffset First;
+        /// <summary>When the wait began (an open ask_player to this player counts as our request).</summary>
+        public DateTimeOffset Created;
         public ITimer? Timer;
         public string Result => From + ": " + string.Join(" / ", Parts);
     }
@@ -622,7 +625,7 @@ public sealed partial class ChatRouter
 
     public async Task<string?> WaitForReplyAsync(string? player, TimeSpan timeout, CancellationToken ct)
     {
-        var w = new Waiter(player);
+        var w = new Waiter(player) { Created = Now };
         lock (_lock) _waiters.Add(w);
         try
         {

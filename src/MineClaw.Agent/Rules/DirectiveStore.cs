@@ -95,6 +95,9 @@ public sealed class DirectiveStore
 
     public bool Trusted(string? player) => player != null && IsTrusted?.Invoke(player) == true;
 
+    /// <summary>A rule was stored or refreshed (e.g. "when I say c, I'm talking to robinchan" registers a command prefix).</summary>
+    public event Action<Directive>? Added;
+
     private void EnsureTable()
     {
         if (_table) return;
@@ -159,6 +162,7 @@ public sealed class DirectiveStore
         if (rule == null) return new(false, "rule not stored");
         foreach (var r in replaced) _index?.Delete(r.DocRef);
         IndexDoc(rule);
+        try { Added?.Invoke(rule); } catch (Exception) { /* listeners never break storing */ }
         var msg = $"{rule.Ref} saved: standing rule from {Name(rule.Player)} ({rule.Scope.Describe()}); it shows where it applies";
         if (replaced.Count > 0) msg += "; replaces " + string.Join(", ", replaced.Select(r => $"{r.Ref} \"{TextUtil.Truncate(r.Text, 50)}\""));
         return new(true, msg, rule, replaced);

@@ -1163,6 +1163,13 @@ public sealed partial class BotAgent
     private void OnEventPosted(GameEvent e)
     {
         NoteJoinLeave(e);
+        // Any line from a player (even one not for us: "I hopped off it", live 10-28 15:36) may mean they moved or answered:
+        // failures that were only "someone is standing on it" / "waiting for a player" can be tried again.
+        if (e.Player != null && e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote)
+        {
+            int cleared = Guard.ClearTransient(TransientCause.Occupied) + Guard.ClearTransient(TransientCause.WaitingForPlayer);
+            if (cleared > 0) _log.LogDebug("tool guard: cleared {Count} passing failure(s) on {Player}'s line", cleared, e.Player);
+        }
         if (EventQueue.IsTyped(e) && e.Kind is EventKind.Chat or EventKind.Whisper)
         {
             Latency?.OnChat(e.Player, e.Text, _time.GetUtcNow());
