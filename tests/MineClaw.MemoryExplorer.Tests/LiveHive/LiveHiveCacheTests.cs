@@ -143,7 +143,7 @@ public class LiveHiveCacheTests
         using var eng = new FreecamEngine(cache, cam, () => null) { Bots = () => bots, Overlays = () => ov, Threads = 2 };
         var f = eng.RenderOnce(160, 90);
         Assert.Equal((160, 90), (f.W, f.H));
-        Assert.Equal(160 * 90, f.Px.Length);
+        Assert.True(f.Px.Length >= 160 * 90); // grow-only buffer: the moving and still sizes share it
         Assert.All(f.Px.Take(100), px => Assert.Equal(0xFF, (px >> 24) & 0xFF)); // opaque BGRA
         Assert.Contains(f.Labels, l => l.Text == "main");
         Assert.Contains(f.Labels, l => l.Text.StartsWith("67:", StringComparison.Ordinal));

@@ -58,9 +58,9 @@ public sealed class FrameSwap : IFrameSource
     }
 
     /// <summary>0xRRGGBB → opaque BGRA (0xFFRRGGBB little-endian = B,G,R,A bytes).</summary>
-    public static void CopyOpaque(uint[] src, int[] dst)
+    public static void CopyOpaque(uint[] src, int[] dst, int count = int.MaxValue)
     {
-        int n = Math.Min(src.Length, dst.Length);
+        int n = Math.Min(count, Math.Min(src.Length, dst.Length));
         for (int i = 0; i < n; i++) dst[i] = unchecked((int)(src[i] | 0xFF000000));
     }
 }
@@ -150,8 +150,8 @@ public sealed class TileRenderer(HiveWorldCache cache, Func<TextureAtlas?> atlas
         var cp = new CamPose(pose.X, pose.Item2, pose.Z, pose.Item4, pose.Item5, b.Dim);
         t.Vox.Prepare(b.Dim, (int)Math.Floor(b.X), (int)Math.Floor(b.Z), eye.MaxDistance / 16 + 1, now);
         var ents = new List<VisionEntity>();
-        foreach (var o in Bots()) if (o.Dim == b.Dim && o.Name != b.Name) ents.Add(new VisionEntity("hive", o.Key, o.X, o.Y, o.Z));
-        foreach (var e in Entities()) if (e.Dim == b.Dim && e.Kind is "player" or "mob" or "item") ents.Add(new VisionEntity(e.Kind, e.Name, e.X, e.Y, e.Z));
+        foreach (var o in Bots()) if (o.Dim == b.Dim && o.Name != b.Name) ents.Add(new VisionEntity("hive", o.Key, o.X, o.Y, o.Z) { Yaw = o.Yaw });
+        foreach (var e in Entities()) if (e.Dim == b.Dim && e.Kind is "player" or "mob" or "item") ents.Add(Gpu.FrameScene.Vision(e));
         var fr = eye.Raster(new EyeScene
         {
             World = t.Vox, Atlas = atlas(), EyeX = cp.X, EyeY = cp.Y, EyeZ = cp.Z, Yaw = cp.Yaw, Pitch = cp.Pitch, Time = 6000, Nether = b.Dim == -1,

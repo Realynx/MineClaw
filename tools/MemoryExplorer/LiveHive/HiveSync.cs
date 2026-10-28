@@ -49,6 +49,10 @@ public sealed class HiveSync : IDisposable
     public DateTime EntitiesAt { get; private set; }
     public long Frames;
 
+    /// <summary>The merged entity set the delta stream keeps (thread-safe; renderers read interpolated positions from it).</summary>
+    public EntityStore Store { get; init; } = new();
+    private long _entityRev;
+
     public event Action? StateChanged;
     public event Action<EntitiesDto>? EntitiesChanged;
     public event Action<string, string, byte[]>? ViewPng;
@@ -93,7 +97,9 @@ public sealed class HiveSync : IDisposable
             var wait = TimeSpan.FromMilliseconds(200);
             try
             {
-                var e = await _api.EntitiesAsync(ct).ConfigureAwait(false);
+                var d = await _api.EntitiesSinceAsync(_entityRev, ct).ConfigureAwait(false);
+                var e = Store.Apply(d);
+                _entityRev = d.Rev;
                 Entities = e;
                 EntitiesAt = DateTime.UtcNow;
                 SetState(LinkState.Connected, "connected");
@@ -150,8 +156,14 @@ public sealed class HiveSync : IDisposable
                 var batch = want.Skip(i).Take(BatchColumns).ToList();
                 try
                 {
+                    double f0 = FreecamStats.NowMs;
                     var payload = await _api.ChunksAsync(it.Dim, batch, ct).ConfigureAwait(false);
+                    double a0 = FreecamStats.NowMs;
+                    if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess()) Interlocked.Increment(ref FreecamStats.Shared.SyncOnUiThread);
+                    Interlocked.Increment(ref FreecamStats.Shared.SyncCalls);
                     _cache.Apply(payload);
+                    FreecamStats.Shared.FetchMs.Add(a0 - f0);
+                    FreecamStats.Shared.SyncMs.Add(FreecamStats.NowMs - a0);
                 }
                 catch (HiveApiException) { lock (_lock) _indexed.Remove(key); break; } // retried on the next index
                 catch (InvalidDataException) { lock (_lock) _indexed.Remove(key); break; }

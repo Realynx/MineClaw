@@ -34,6 +34,8 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
     private volatile EyeTile[] _eyeTiles = [];
     private volatile BotDto[] _bots = [];
     private volatile EntityDto[] _entities = [];
+    private readonly EntityStore _entityStore = new();
+    private readonly List<EntityView> _dropScratch = [];
 
     public LiveHiveViewModel()
     {
@@ -42,6 +44,14 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         {
             Bots = () => _bots, Entities = () => _entities, Overlays = () => _sync?.Overlays(_camera.Pose.Dim),
         };
+        Gpu = new Gpu.GpuFreecam(_cache, _camera, () => _atlas.IsValueCreated ? _atlas.Value : null);
+        Gpu.Scene.Entities = _entityStore;
+        Gpu.Scene.Bots = () => _bots;
+        Gpu.Scene.Atlas = () => _atlas.IsValueCreated ? _atlas.Value : null;
+        Gpu.Scene.Overlays = () => _sync?.Overlays(_camera.Pose.Dim);
+        _useGpuFreecam = App.Startup.Renderer != "cpu";
+        FreecamInput = _useGpuFreecam ? Gpu : null;
+        global::MineClaw.MemoryExplorer.LiveHive.FreecamStats.Shared.Renderer = _useGpuFreecam ? "gl" : "cpu";
         Tiles = new TileRenderer(_cache, () => _atlas.IsValueCreated ? _atlas.Value : null)
         {
             Tiles = () => _eyeTiles, Bots = () => _bots, Entities = () => _entities,
@@ -58,6 +68,48 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
 
     public FreecamEngine Freecam { get; }
     public TileRenderer Tiles { get; }
+    /// <summary>The GPU free camera (default; the CPU <see cref="Freecam"/> is the fallback when GL is unavailable).</summary>
+    public Gpu.GpuFreecam Gpu { get; }
+    private static global::MineClaw.MemoryExplorer.LiveHive.FreecamStats Stats => global::MineClaw.MemoryExplorer.LiveHive.FreecamStats.Shared;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(UseCpuFreecam))]
+    private bool _useGpuFreecam = true;
+    public bool UseCpuFreecam => !UseGpuFreecam;
+    [ObservableProperty] private string _rendererNote = "";
+
+    partial void OnUseGpuFreecamChanged(bool value)
+    {
+        FreecamInput = value ? Gpu : null;
+        global::MineClaw.MemoryExplorer.LiveHive.FreecamStats.Shared.Renderer = value ? "gl" : "cpu";
+        UpdateWants();
+    }
+
+    /// <summary>The GL view could not start: fall back to the CPU raycaster.</summary>
+    public void GpuFailed(string why)
+    {
+        RendererNote = "CPU renderer (" + why + ")";
+        UseGpuFreecam = false;
+    }
+
+    // Profiling / tests hooks (FreecamProfiler).
+    internal int CachedColumns => _cache.Count;
+    internal int EntityCount => _entityStore.Count;
+    internal bool CameraPlaced => _camera.Placed;
+    internal double LookSensitivity => _camera.Sensitivity;
+    internal HiveWorldCache Cache => _cache;
+    internal FlyCamera Camera => _camera;
+    /// <summary>True once the active renderer has something to draw (the GL path: its first meshes are in).</summary>
+    internal bool RendererReady => FreecamInput?.Ready ?? true;
+    /// <summary>The free camera's input sink (the GL view registers itself; null = the CPU engine).</summary>
+    internal IFreecamInput? FreecamInput { get; set; }
+    internal void InjectLook(double dx, double dy) { _camera.Look(dx, dy); FreecamInput?.Poke(); }
+    internal void InjectKeys(bool w, bool s, bool a, bool d, bool up, bool down, bool fast)
+    {
+        _camera.StampInput();
+        if (FreecamInput is { } i) i.SetKeys(w, s, a, d, up, down, fast);
+        else Freecam.SetKeys(w, s, a, d, up, down, fast);
+    }
 
     // ------------------------------------------------------------------ connection
 
@@ -100,8 +152,10 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         _endpoint = new SupervisorEndpoint(BaseUrl.Trim());
         TokenStatus = _endpoint.TokenStatus;
         _api = new HiveApi(_endpoint);
+        _entityStore.Clear();
         _sync = new HiveSync(_api, _cache)
         {
+            Store = _entityStore,
             Interests = () => _interests, MapViews = () => _mapViews,
             OverlayDim = () => IsFreecamTab && OverlaysWanted ? _camera.Pose.Dim : null,
         };
@@ -293,7 +347,7 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         if (IsFreecamTab && _camera.Placed)
         {
             var p = _camera.Pose;
-            interests.Add(new Interest(p.Dim, (int)Math.Floor(p.X), (int)Math.Floor(p.Z), Freecam.MaxDistance + 24, 900));
+            interests.Add(new Interest(p.Dim, (int)Math.Floor(p.X), (int)Math.Floor(p.Z), (UseGpuFreecam ? Gpu.MaxDistance : Freecam.MaxDistance) + 24, 900));
         }
         foreach (var t in shown.Where(t => t.IsEye && t.Bot != null))
             interests.Add(new Interest(t.Bot!.Dim, (int)Math.Floor(t.Bot.X), (int)Math.Floor(t.Bot.Z), Tiles.MaxDistance + 16, 1500));
@@ -332,6 +386,11 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _showPlans = true;
     [ObservableProperty] private bool _showDangers = true;
     [ObservableProperty] private bool _showStaleness = true;
+    [ObservableProperty] private bool _showDrops = true;
+
+    /// <summary>Dropped items near the camera, nearest first (the Drops panel; click one to fly to it).</summary>
+    public System.Collections.ObjectModel.ObservableCollection<DropRow> Drops { get; } = [];
+    [ObservableProperty] private string _dropsSummary = "";
 
     private bool OverlaysWanted => ShowClaims || ShowPlaces || ShowChests || ShowPlans || ShowDangers;
 
@@ -344,12 +403,14 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
     partial void OnShowPlansChanged(bool value) => PushFlags();
     partial void OnShowDangersChanged(bool value) => PushFlags();
     partial void OnShowStalenessChanged(bool value) => PushFlags();
+    partial void OnShowDropsChanged(bool value) => PushFlags();
 
     private void PushFlags()
     {
         Freecam.Flags = (ShowBots ? Overlay.Bots : 0) | (ShowClaims ? Overlay.Claims : 0) | (ShowPlaces ? Overlay.Places : 0)
             | (ShowChests ? Overlay.Chests : 0) | (ShowPlans ? Overlay.Plans : 0) | (ShowDangers ? Overlay.Dangers : 0)
-            | (ShowStaleness ? Overlay.Staleness : 0);
+            | (ShowStaleness ? Overlay.Staleness : 0) | (ShowDrops ? Overlay.Drops : 0);
+        Gpu.Scene.Flags = Freecam.Flags;
         Interlocked.Increment(ref Freecam.DataVersion);
     }
 
@@ -394,6 +455,41 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         catch (HiveApiException ex) { JumpStatus = ex.Message; }
     }
 
+    /// <summary>Flies the camera to a drop: a few blocks back and up, looking at it.</summary>
+    [RelayCommand]
+    private void FlyToDrop(DropRow? d)
+    {
+        if (d == null) return;
+        var p = _camera.Pose;
+        double dx = d.X - p.X, dz = d.Z - p.Z, len = Math.Sqrt(dx * dx + dz * dz);
+        if (len < 1e-3) { dx = 0; dz = 1; len = 1; }
+        double ex = d.X - dx / len * 3.5, ez = d.Z - dz / len * 3.5, ey = d.Y + 2.2;
+        float yaw = (float)(Math.Atan2(-(d.X - ex), d.Z - ez) * 180 / Math.PI);
+        float pitch = (float)(Math.Atan2(ey - d.Y - 0.2, 3.5) * 180 / Math.PI);
+        Place(new CamPose(ex, ey, ez, yaw, pitch, d.Dim));
+        JumpStatus = $"at {d.Text}";
+    }
+
+    private void RefreshDrops()
+    {
+        var p = _camera.Pose;
+        _entityStore.Interpolated(p.Dim, _dropScratch);
+        var rows = _dropScratch.Where(e => e.Kind == "item")
+            .Select(e => (E: e, D: Math.Sqrt((e.X - p.X) * (e.X - p.X) + (e.Y - p.Y) * (e.Y - p.Y) + (e.Z - p.Z) * (e.Z - p.Z))))
+            .OrderBy(t => t.D).Take(60).ToList();
+        int total = _dropScratch.Count(e => e.Kind == "item");
+        DropsSummary = total == 0 ? "no drops known in this dimension" : $"{total} drop{(total == 1 ? "" : "s")} known · nearest {rows[0].D:0} m";
+        for (int i = 0; i < rows.Count; i++)
+        {
+            var (e, d) = rows[i];
+            var text = e.Count > 1 ? $"{e.Name ?? "item"} x{e.Count}" : e.Name ?? "item";
+            var row = new DropRow(e.Id, e.Dim, text, string.Create(CultureInfo.InvariantCulture, $"{d:0} m · {e.X:0}, {e.Y:0}, {e.Z:0}"), e.X, e.Y, e.Z);
+            if (i < Drops.Count) { if (Drops[i] != row) Drops[i] = row; }
+            else Drops.Add(row);
+        }
+        while (Drops.Count > rows.Count) Drops.RemoveAt(Drops.Count - 1);
+    }
+
     [RelayCommand]
     private void SnapTo(BotTileViewModel? t)
     {
@@ -423,14 +519,18 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
             LatencyText = ms < 0 ? "" : string.Create(CultureInfo.InvariantCulture, $"{ms:0} ms");
         }
         var p = _camera.Pose;
-        FreecamStats = string.Create(CultureInfo.InvariantCulture,
-            $"{Freecam.Fps:0} fps · raster {Freecam.RasterMs:0.0} ms · {Freecam.LastW}x{Freecam.LastH} on {Freecam.Threads} threads");
+        FreecamStats = UseGpuFreecam
+            ? string.Create(CultureInfo.InvariantCulture,
+                $"GPU · {Gpu.Fps:0} fps · {Gpu.Scene.Width}x{Gpu.Scene.Height} · {Stats.SectionsLive} sections · {Stats.PendingMeshes} queued · {Gpu.GlInfo}")
+            : string.Create(CultureInfo.InvariantCulture,
+                $"CPU · {Freecam.Fps:0} fps · raster {Freecam.RasterMs:0.0} ms · {Freecam.LastW}x{Freecam.LastH} on {Freecam.Threads} threads");
         CacheStats = string.Create(CultureInfo.InvariantCulture,
             $"{_cache.Count} columns cached ({_cache.CountIn(p.Dim)} here) · {(_api?.BytesIn ?? 0) / 1024.0 / 1024.0:0.0} MB received");
         OverlayNotes = _sync?.Overlays(p.Dim) is { } ov
             ? $"{ov.Claims.Count} claims · {ov.Places.Count} places · {ov.Points.Count} points · {ov.Plans.Sum(x => x.Blocks.Count)} plan blocks · {ov.Dangers.Count} dangers"
               + (ov.Notes.Count > 0 ? " · " + string.Join(", ", ov.Notes) : "")
             : "";
+        if (IsFreecamTab) RefreshDrops();
         SyncText = _sync?.EntitiesAt is { } at && at > DateTime.MinValue ? $"bots updated {Math.Max(0, (DateTime.UtcNow - at).TotalSeconds):0.0} s ago" : "";
         // The camera moved on: re-aim the world sync at it.
         int bx = (int)Math.Floor(p.X) >> 4, bz = (int)Math.Floor(p.Z) >> 4;
@@ -474,9 +574,13 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         _stats.Stop();
         Disconnect();
         Freecam.Dispose();
+        Gpu.Dispose();
         Tiles.Dispose();
         foreach (var t in AllTiles) t.Dispose();
         if (_tunnel is { HasExited: false })
             try { _tunnel.Kill(entireProcessTree: true); } catch (Exception) { }
     }
 }
+
+/// <summary>A row of the Drops panel.</summary>
+public sealed record DropRow(int Id, int Dim, string Text, string Where, double X, double Y, double Z);

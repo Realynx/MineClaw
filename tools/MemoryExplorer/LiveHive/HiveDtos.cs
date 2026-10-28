@@ -16,9 +16,15 @@ public sealed record BotDto(string Name, string Short, bool Main, int Dim, doubl
     public string Key => string.IsNullOrEmpty(Short) ? Name : Short;
 }
 
-public sealed record EntityDto(string Kind, string? Name, int Dim, double X, double Y, double Z);
+public sealed record EntityDto(string Kind, string? Name, int Dim, double X, double Y, double Z, int? Id = null, int? Type = null,
+    int? Item = null, int? Damage = null, int? Count = null, double? Vx = null, double? Vy = null, double? Vz = null, double? Age = null,
+    float? Yaw = null, string? By = null, int? Flags = null, int? Variant = null)
+{
+    public const int Burning = 0x01, Sneaking = 0x02, Sprinting = 0x08;
+}
 
-public sealed record EntitiesDto(long At, List<BotDto> Bots, List<EntityDto> Entities);
+/// <summary>The entities reply: full (no <c>since</c>, or <see cref="Full"/>) or a delta since the revision the client sent.</summary>
+public sealed record EntitiesDto(long At, List<BotDto> Bots, List<EntityDto> Entities, long Rev = 0, bool Full = true, List<int[]>? Removed = null);
 
 public sealed record MarkDto(string Kind, string Text, int[] Min, int[] Max, string? Owner);
 

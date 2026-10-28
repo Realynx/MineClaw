@@ -10,8 +10,12 @@ public sealed record WorldColumnInfo(int Cx, int Cz, long Hash, long Seen, strin
 public sealed record WorldBot(string Name, string Short, bool Main, int Dim, double X, double Y, double Z, float? Yaw, float? Pitch,
     double? PoseAge, int Hp, int Food, string? Job, string? Brain, string? Held, IReadOnlyList<string> Claims, bool Live, double AgeSeconds);
 
-/// <summary>Anything else to draw (players, mobs, items) around the bots.</summary>
-public sealed record WorldEntity(string Kind, string? Name, int Dim, double X, double Y, double Z);
+/// <summary>Anything else to draw (players, mobs, items) the hive knows of, merged across every body. Items carry the stack
+/// (<paramref name="Item"/> id, <paramref name="Damage"/>, <paramref name="Count"/>); velocity is blocks/tick, <paramref name="Age"/>
+/// seconds since the body first saw it, <paramref name="By"/> the body whose tracker it came from.</summary>
+public sealed record WorldEntity(string Kind, string? Name, int Dim, double X, double Y, double Z, int? Id = null, int? Type = null,
+    int? Item = null, int? Damage = null, int? Count = null, double? Vx = null, double? Vy = null, double? Vz = null, double? Age = null,
+    float? Yaw = null, string? By = null, int? Flags = null, int? Variant = null);
 
 /// <summary>A labelled box or point (claims, structures, waypoints, chests, gens, dangers). Min/Max are [x, y, z].</summary>
 public sealed record WorldMark(string Kind, string Text, int[] Min, int[] Max, string? Owner = null);
@@ -73,7 +77,9 @@ public sealed class TokenBucket(double perSecond, double burst, TimeProvider tim
 /// <list type="bullet">
 /// <item><c>/api/world/index?dim&amp;x&amp;z&amp;r</c> (block centre, radius 16..256) → JSON <c>{dim, at, columns:[{cx,cz,hash,seen,by,live}]}</c></item>
 /// <item><c>/api/world/chunks?dim&amp;cols=cx,cz;cx,cz…</c> (≤ 64) → <see cref="ColumnPayload"/> binary</item>
-/// <item><c>/api/world/entities?dim</c> → JSON <c>{at, bots:[…], entities:[…]}</c> (bots of every dimension, entities of <c>dim</c> or all)</item>
+/// <item><c>/api/world/entities?dim</c> → JSON <c>{at, rev, bots:[…], entities:[…]}</c> (bots of every dimension, entities of <c>dim</c> or all)</item>
+/// <item><c>/api/world/entities?since=REV</c> → the delta stream: <c>{at, rev, full, bots, entities:[changed since REV], removed:[[dim,id]…]}</c>
+/// (every dimension; <c>full</c> = the client was too far behind and gets everything)</item>
 /// <item><c>/api/world/overlays?dim</c> → JSON claims, places, points (chests, gens, farms…), plan ghost blocks, dangers</item>
 /// </list>
 /// </summary>
@@ -88,6 +94,7 @@ public sealed class SupervisorWorldRoutes
     private readonly Dictionary<string, TokenBucket> _buckets;
     private readonly RenderCache<SupervisorReply> _cache;
     private readonly SemaphoreSlim _work = new(2);
+    private readonly EntityDeltaLog _entityLog;
 
     public SupervisorWorldRoutes(ISupervisorWorld world, WorldRouteLimits? limits = null, TimeProvider? time = null)
     {
@@ -95,6 +102,7 @@ public sealed class SupervisorWorldRoutes
         _time = time ?? TimeProvider.System;
         var l = limits ?? WorldRouteLimits.Default;
         _cache = new RenderCache<SupervisorReply>(_time, 48);
+        _entityLog = new EntityDeltaLog(_time) { MinInterval = TimeSpan.FromMilliseconds(100) };
         _buckets = new Dictionary<string, TokenBucket>(StringComparer.Ordinal)
         {
             ["index"] = new(l.IndexPerSec, l.IndexBurst, _time),
@@ -144,6 +152,15 @@ public sealed class SupervisorWorldRoutes
                 case "entities":
                     {
                         int? edim = Q(r, "dim") is { Length: > 0 } ? dim : null;
+                        if (Q(r, "since") is { Length: > 0 } sinceText)
+                        {
+                            long since = long.TryParse(sinceText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var sv) ? sv : 0;
+                            return await Work(() =>
+                            {
+                                var d = _entityLog.Since(since, () => _world.Entities(null));
+                                return Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), rev = d.Rev, full = d.Full, bots = _world.Bots(), entities = d.Entities, removed = d.Removed });
+                            }, ct).ConfigureAwait(false);
+                        }
                         return await _cache.GetAsync($"entities:{edim}", EntitiesCache, () => Work(() =>
                             Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), bots = _world.Bots(), entities = _world.Entities(edim) }), ct))
                             .ConfigureAwait(false);

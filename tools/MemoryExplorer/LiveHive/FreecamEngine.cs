@@ -11,6 +11,8 @@ public sealed class FrameOut
     public List<OverlayLabel> Labels = [];
     public CamPose Pose;
     public double RasterMs;
+    /// <summary>Oldest input this frame includes (ms on <see cref="FreecamStats.NowMs"/>; 0 = none).</summary>
+    public double InputMs;
 }
 
 /// <summary>
@@ -106,7 +108,31 @@ public sealed class FreecamEngine : IFrameSource, IDisposable
         }
     }
 
+    [System.Runtime.InteropServices.DllImport("winmm.dll")] private static extern uint timeBeginPeriod(uint ms);
+    [System.Runtime.InteropServices.DllImport("winmm.dll")] private static extern uint timeEndPeriod(uint ms);
+
+    /// <summary>Sleeps until <paramref name="untilMs"/> on <paramref name="clock"/> with ~1 ms precision (the timer period is
+    /// raised to 1 ms while the loop runs; Windows' default 15.6 ms quantum used to cap this loop near 30 fps).</summary>
+    private static void SleepUntil(Stopwatch clock, double untilMs)
+    {
+        while (true)
+        {
+            double left = untilMs - clock.Elapsed.TotalMilliseconds;
+            if (left <= 0) return;
+            if (left > 1.5) Thread.Sleep(1);
+            else Thread.SpinWait(200);
+        }
+    }
+
     private void Loop()
+    {
+        bool hiRes = OperatingSystem.IsWindows();
+        if (hiRes) try { timeBeginPeriod(1); } catch (Exception) { hiRes = false; }
+        try { LoopCore(); }
+        finally { if (hiRes) try { timeEndPeriod(1); } catch (Exception) { } }
+    }
+
+    private void LoopCore()
     {
         var clock = Stopwatch.StartNew();
         double last = clock.Elapsed.TotalSeconds, lastDraw = -1, fpsT = last;
@@ -133,17 +159,17 @@ public sealed class FreecamEngine : IFrameSource, IDisposable
             w = Math.Max(64, w); h = Math.Max(48, h);
             bool dirty = rev != camRev || _cache.Version != cacheVer || Interlocked.Read(ref DataVersion) != dataVer || w != lastW || h != lastH
                 || (wasMoving && !moving) || now - lastDraw > 0.5;
-            if (!dirty) { Thread.Sleep(8); continue; }
+            if (!dirty) { Thread.Sleep(1); continue; } // ~1 ms: a look or key shows up on the next frame, not 15 ms later
             camRev = rev; cacheVer = _cache.Version; dataVer = Interlocked.Read(ref DataVersion); lastW = w; lastH = h; wasMoving = moving;
             double t0 = clock.Elapsed.TotalMilliseconds;
             try { Draw(w, h); }
             catch (Exception) { Thread.Sleep(50); continue; }
             lastDraw = clock.Elapsed.TotalSeconds;
             FrameMs = clock.Elapsed.TotalMilliseconds - t0;
+            FreecamStats.Shared.FrameMs.Add(FrameMs);
             frames++;
             if (now - fpsT >= 1) { Fps = frames / (now - fpsT); frames = 0; fpsT = now; }
-            double budget = 1000.0 / Math.Max(1, MaxFps) - (clock.Elapsed.TotalMilliseconds - t0);
-            if (budget > 1) Thread.Sleep((int)budget);
+            SleepUntil(clock, t0 + 1000.0 / Math.Max(1, MaxFps));
         }
     }
 
@@ -154,6 +180,8 @@ public sealed class FreecamEngine : IFrameSource, IDisposable
             if (_eyes.Count > 4) _eyes.Clear();
             _eyes[(w, h)] = eye = new EyeRenderer { Width = w, Height = h, MaxDistance = Math.Clamp(MaxDistance, 16, 128), MaxThreads = Threads };
         }
+        long alloc0 = GC.GetAllocatedBytesForCurrentThread();
+        double inputMs = Camera.TakeInputStamp();
         var pose = Camera.Pose;
         var now = DateTimeOffset.UtcNow;
         _vox.Prepare(pose.Dim, (int)Math.Floor(pose.X), (int)Math.Floor(pose.Z), eye.MaxDistance / 16 + 1, now);
@@ -163,8 +191,8 @@ public sealed class FreecamEngine : IFrameSource, IDisposable
         var visible = new List<VisionEntity>();
         if (flags.HasFlag(Overlay.Bots))
         {
-            foreach (var b in bots) if (b.Dim == pose.Dim) visible.Add(new VisionEntity("hive", b.Key, b.X, b.Y, b.Z));
-            foreach (var e in ents) if (e.Dim == pose.Dim && e.Kind is "player" or "mob" or "item") visible.Add(new VisionEntity(e.Kind, e.Name, e.X, e.Y, e.Z));
+            foreach (var b in bots) if (b.Dim == pose.Dim) visible.Add(new VisionEntity("hive", b.Key, b.X, b.Y, b.Z) { Yaw = b.Yaw });
+            foreach (var e in ents) if (e.Dim == pose.Dim && e.Kind is "player" or "mob" or "item") visible.Add(Gpu.FrameScene.Vision(e));
         }
         var scene = new EyeScene
         {
@@ -176,10 +204,14 @@ public sealed class FreecamEngine : IFrameSource, IDisposable
         var cam = new ViewProjector(pose, w, h, eye.FovDegrees);
         var labels = OverlayPainter.Paint(fr, cam, flags, Overlays(), bots, ents, _vox, now, eye.MaxDistance);
         var back = _back;
-        if (back.Px.Length != w * h) back.Px = new int[w * h];
-        FrameSwap.CopyOpaque(fr.Px, back.Px);
-        back.W = w; back.H = h; back.Labels = labels; back.Pose = pose; back.RasterMs = RasterMs;
+        if (back.Px.Length < w * h) back.Px = new int[Math.Max(w * h, _tw * _th)]; // grow-only: moving/still sizes share it
+        FrameSwap.CopyOpaque(fr.Px, back.Px, w * h);
+        back.W = w; back.H = h; back.Labels = labels; back.Pose = pose; back.RasterMs = RasterMs; back.InputMs = inputMs;
         LastW = w; LastH = h;
+        var st = FreecamStats.Shared;
+        st.RasterMs.Add(RasterMs);
+        st.AllocBytes.Add(GC.GetAllocatedBytesForCurrentThread() - alloc0);
+        st.Width = w; st.Height = h;
         bool signal;
         lock (_swap)
         {

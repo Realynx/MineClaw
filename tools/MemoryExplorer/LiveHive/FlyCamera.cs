@@ -12,6 +12,17 @@ public sealed class FlyCamera
     private readonly object _lock = new();
     private CamPose _p = new(0.5, 80, 0.5, 0, 20, 0);
     private long _rev;
+    private long _inputTicks;
+
+    /// <summary>Marks an input event (look, key change) for latency measurement: keeps the oldest one not yet shown.</summary>
+    public void StampInput() => Interlocked.CompareExchange(ref _inputTicks, System.Diagnostics.Stopwatch.GetTimestamp(), 0);
+
+    /// <summary>The oldest unshown input's time (ms, <see cref="FreecamStats.NowMs"/> clock) and clears it; 0 = none.</summary>
+    public double TakeInputStamp()
+    {
+        long t = Interlocked.Exchange(ref _inputTicks, 0);
+        return t == 0 ? 0 : t * FreecamStats.TickMs;
+    }
 
     /// <summary>Blocks per second (Shift = ×4).</summary>
     public double Speed { get; set; } = 12;
@@ -41,6 +52,7 @@ public sealed class FlyCamera
 
     public void Look(double dxPixels, double dyPixels)
     {
+        StampInput();
         lock (_lock)
         {
             _p = _p with

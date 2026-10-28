@@ -10,7 +10,9 @@ public sealed record TileMode(string Key, string Label, string? ServerMode)
     public static readonly IReadOnlyList<TileMode> All =
     [
         new("eye", "Eye", null),
-        new("iso", "Iso", "iso"),
+        new("iso", "Iso (3D)", "iso"),
+        new("shoulder", "Shoulder", "shoulder"),
+        new("orbit", "Orbit", "orbit"),
         new("top", "Top + roles", "top"),
         new("side", "Side", "side"),
     ];

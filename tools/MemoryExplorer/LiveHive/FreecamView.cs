@@ -72,9 +72,13 @@ public sealed class FreecamView : FrameView
     private static bool Movement(Key k) => k is Key.W or Key.A or Key.S or Key.D or Key.Q or Key.E or Key.Up or Key.Down or Key.Left or Key.Right
         or Key.Space or Key.LeftShift or Key.RightShift or Key.PageUp or Key.PageDown;
 
+    /// <summary>F3: the stopwatch overlay (frame/present/interval/input latency/sync/GC).</summary>
+    public bool ShowStats { get; set; }
+
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
+        if (e.Key == Key.F3) { ShowStats = !ShowStats; InvalidateVisual(); e.Handled = true; return; }
         if (!Movement(e.Key)) return;
         _held.Add(e.Key);
         PushKeys();
@@ -98,6 +102,7 @@ public sealed class FreecamView : FrameView
 
     private void PushKeys()
     {
+        Engine?.Camera.StampInput();
         bool H(params Key[] ks) => ks.Any(_held.Contains);
         Engine?.SetKeys(H(Key.W, Key.Up), H(Key.S, Key.Down), H(Key.A, Key.Left), H(Key.D, Key.Right), H(Key.E, Key.Space, Key.PageUp),
             H(Key.Q, Key.PageDown), H(Key.LeftShift, Key.RightShift));
@@ -110,12 +115,13 @@ public sealed class FreecamView : FrameView
         var p = f.Pose;
         var text = string.Create(CultureInfo.InvariantCulture,
             $"{eng.Fps,4:0} fps  raster {f.RasterMs,4:0.0} ms  {f.W}x{f.H}\n{p.X:0.0}, {p.Y:0.0}, {p.Z:0.0}  {(p.Dim == -1 ? "nether" : "overworld")}  facing {MineClaw.Render.EyeRenderer.Compass(p.Yaw)} ({p.Yaw:0}°, {p.Pitch:0}°)  speed {eng.Camera.Speed:0}");
+        if (ShowStats) text += Environment.NewLine + FreecamStats.Shared.Overlay(eng.Fps);
         var ft = new FormattedText(text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Mono, 11.5, Brushes.White);
         ctx.DrawRectangle(HudBg, null, new Rect(10, 10, ft.Width + 16, ft.Height + 10), 6, 6);
         ctx.DrawText(ft, new Point(18, 15));
         if (!IsFocused)
         {
-            var hint = new FormattedText("click to fly · WASD move · Q/E down/up · drag to look · wheel speed · Shift fast", CultureInfo.InvariantCulture,
+            var hint = new FormattedText("click to fly · WASD move · Q/E down/up · drag to look · wheel speed · Shift fast · F3 stats", CultureInfo.InvariantCulture,
                 FlowDirection.LeftToRight, Face2, 12, Brushes.White);
             var r = new Rect((bounds.Width - hint.Width) / 2 - 10, bounds.Height - hint.Height - 22, hint.Width + 20, hint.Height + 10);
             ctx.DrawRectangle(HudBg, null, r, 6, 6);

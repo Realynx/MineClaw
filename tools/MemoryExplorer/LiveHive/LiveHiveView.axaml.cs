@@ -10,6 +10,12 @@ public partial class LiveHiveView : UserControl
     {
         InitializeComponent();
         Cam.SpeedChanged += v => Vm?.SpeedFromWheel(v);
+        GlCam.SpeedChanged += v => Vm?.SpeedFromWheel(v);
+        GlCam.GlFailed += why => Vm?.GpuFailed(why);
+        GlCam.FrameRendered += () => { if (GlOverlay.NeedsRedraw()) GlOverlay.InvalidateVisual(); };
+        GlCam.StatsToggled += () => { if (Vm is { } vm) vm.Gpu.ShowStats = !vm.Gpu.ShowStats; };
+        GlCam.GotFocus += (_, _) => GlOverlay.CameraFocused = true;
+        GlCam.LostFocus += (_, _) => GlOverlay.CameraFocused = false;
     }
 
     private LiveHiveViewModel? Vm => DataContext as LiveHiveViewModel;
@@ -24,7 +30,8 @@ public partial class LiveHiveView : UserControl
         if ((sender as Control)?.DataContext is BotTileViewModel t && Vm is { } vm)
         {
             vm.SnapToCommand.Execute(t);
-            Cam.Focus(NavigationMethod.Pointer);
+            if (vm.UseGpuFreecam) GlCam.Focus(NavigationMethod.Pointer);
+            else Cam.Focus(NavigationMethod.Pointer);
         }
     }
 

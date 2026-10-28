@@ -20,7 +20,8 @@ public class FrameView : Control
     public static readonly StyledProperty<bool> CrosshairProperty = AvaloniaProperty.Register<FrameView, bool>(nameof(Crosshair));
     public static readonly StyledProperty<bool> LabelsProperty = AvaloniaProperty.Register<FrameView, bool>(nameof(Labels), true);
 
-    private WriteableBitmap? _bmp;
+    private WriteableBitmap? _bmp, _spare;
+    private readonly Dictionary<(string, uint), FormattedText> _text = new();
     private FrameOut? _frame;
     private List<OverlayLabel> _labels = [];
     private int _fw, _fh;
@@ -47,7 +48,7 @@ public class FrameView : Control
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
         base.OnPropertyChanged(change);
-        if (change.Property == SourceProperty) Rebind();
+        if (change.Property == SourceProperty || change.Property == IsVisibleProperty) Rebind();
     }
 
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
@@ -65,7 +66,7 @@ public class FrameView : Control
     private void Rebind()
     {
         Unbind();
-        if (Source is not { } s || VisualRoot == null) return;
+        if (Source is not { } s || VisualRoot == null || !IsVisible) return; // hidden: the producer idles
         _attached = s;
         s.FrameReady += OnFrameReady;
         s.Visible = true;
@@ -105,10 +106,13 @@ public class FrameView : Control
     {
         _posted = false;
         if (_attached?.TakeFrame() is not { } f || f.W <= 0 || f.H <= 0 || f.Px.Length < f.W * f.H) return;
+        double t0 = FreecamStats.NowMs;
         if (_bmp == null || _fw != f.W || _fh != f.H)
         {
-            _bmp?.Dispose();
-            _bmp = new WriteableBitmap(new PixelSize(f.W, f.H), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Opaque);
+            // Two sizes alternate (moving / still): keep both bitmaps instead of reallocating on every switch.
+            if (_bmp != null) { _spare?.Dispose(); _spare = _bmp; }
+            if (_spare is { } sp && sp.PixelSize.Width == f.W && sp.PixelSize.Height == f.H) { _bmp = sp; _spare = null; }
+            else _bmp = new WriteableBitmap(new PixelSize(f.W, f.H), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Opaque);
             (_fw, _fh) = (f.W, f.H);
         }
         using (var fb = _bmp.Lock())
@@ -120,6 +124,11 @@ public class FrameView : Control
         _frame = f;
         _labels = f.Labels;
         FramesShown++;
+        if (_attached is FreecamEngine)
+        {
+            FreecamStats.Shared.PresentMs.Add(FreecamStats.NowMs - t0);
+            FreecamStats.Shared.OnPresented(f.InputMs);
+        }
         Presented();
         InvalidateVisual();
     }
@@ -148,8 +157,12 @@ public class FrameView : Control
         if (Labels)
             foreach (var l in _labels.OrderByDescending(l => l.Dist).TakeLast(60))
             {
-                var c = Color.FromRgb((byte)(l.Colour >> 16), (byte)(l.Colour >> 8), (byte)l.Colour);
-                var ft = new FormattedText(l.Text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Face, 11.5, new SolidColorBrush(c));
+                if (!_text.TryGetValue((l.Text, l.Colour), out var ft))
+                {
+                    if (_text.Count > 512) _text.Clear();
+                    var c = Color.FromRgb((byte)(l.Colour >> 16), (byte)(l.Colour >> 8), (byte)l.Colour);
+                    _text[(l.Text, l.Colour)] = ft = new FormattedText(l.Text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Face, 11.5, new SolidColorBrush(c));
+                }
                 double x = dest.X + l.X * s - ft.Width / 2, y = dest.Y + l.Y * s - ft.Height - 4;
                 using (ctx.PushOpacity(l.Occluded ? 0.55 : 1))
                 {

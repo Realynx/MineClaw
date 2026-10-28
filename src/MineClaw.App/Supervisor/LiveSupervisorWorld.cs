@@ -273,27 +273,25 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
             me.Health, me.Food, job, hb?.Brain, HeldOf(w), claims, true, 0);
     }
 
+    /// <summary>Every entity any in-process body tracks (players, mobs, drops), merged by server entity id
+    /// (<see cref="HiveEntityMerge"/>), optionally of one dimension. Out-of-process clones only contribute their bot pose.</summary>
     public IReadOnlyList<WorldEntity> Entities(int? dim)
     {
-        var bots = Bots();
-        var list = new List<WorldEntity>();
-        var keys = new HashSet<(string, string?, int, int, int)>();
-        var botNames = new HashSet<string>(bots.Select(b => b.Name), StringComparer.OrdinalIgnoreCase);
-        foreach (var b in bots)
+        var bodies = new List<BodyEntities>();
+        foreach (var b in Bodies())
         {
-            if (dim is { } d && b.Dim != d) continue;
-            IReadOnlyList<MineClaw.Render.VisionEntity> near;
-            try { near = _hub.EntitiesNear(b.Dim, new BlockPos((int)Math.Floor(b.X), (int)Math.Floor(b.Y), (int)Math.Floor(b.Z)), 48); }
-            catch (Exception ex) { _log?.LogDebug(ex, "supervisor world: entities unavailable"); continue; }
-            foreach (var e in near)
+            try
             {
-                if (e.Kind is "self" or "hive" || (e.Name != null && botNames.Contains(e.Name))) continue;
-                if (!keys.Add((e.Kind, e.Name, b.Dim, (int)Math.Floor(e.X), (int)Math.Floor(e.Z)))) continue;
-                list.Add(new WorldEntity(e.Kind, e.Name, b.Dim, R(e.X), R(e.Y), R(e.Z)));
-                if (list.Count >= 256) return list;
+                int bd = b.World.Dimension;
+                if (dim is { } d && bd != d) continue;
+                bodies.Add(new BodyEntities(b.Name, bd, b.World.Entities.All()));
             }
+            catch (Exception ex) { _log?.LogDebug(ex, "supervisor world: entities of {Body} unavailable", b.Name); }
         }
-        return list;
+        var botNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try { foreach (var b in Bots()) botNames.Add(b.Name); } catch (Exception) { }
+        foreach (var b in Bodies()) botNames.Add(b.Name);
+        return HiveEntityMerge.Merge(bodies, botNames, _time.GetUtcNow().UtcDateTime);
     }
 
     private static int[] P(BlockPos p) => [p.X, p.Y, p.Z];

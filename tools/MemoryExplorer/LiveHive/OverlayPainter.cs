@@ -14,7 +14,9 @@ public enum Overlay
     Plans = 16,
     Dangers = 32,
     Staleness = 64,
-    Default = Bots | Claims | Places | Chests | Plans | Dangers | Staleness,
+    /// <summary>Dropped items: name and count over each (the models draw with <see cref="Bots"/> on).</summary>
+    Drops = 128,
+    Default = Bots | Claims | Places | Chests | Plans | Dangers | Staleness | Drops,
 }
 
 /// <summary>A text label for the control to draw crisply over the frame (render-pixel coords).</summary>
@@ -29,7 +31,7 @@ public static class OverlayPainter
 {
     public const uint ClaimColour = 0xffd84a, PlaceColour = 0xe8ecf4, WaypointColour = 0x6ad8ff, ChestColour = 0xffa040, GenColour = 0xc58aff,
         FarmColour = 0x8ad86a, PortalColour = 0xd070ff, PlanColour = 0x5ee6e6, PlanDoneColour = 0x5ee68a, DangerColour = 0xff5050, BotColour = 0xff9f43,
-        PlayerColour = 0x9ad0ff, StaleColour = 0x6b7a99;
+        PlayerColour = 0x9ad0ff, StaleColour = 0x6b7a99, DropColour = 0xf2e46a;
 
     public static List<OverlayLabel> Paint(EyeRenderer.Frame fr, ViewProjector cam, Overlay flags, OverlaysDto? ov, IReadOnlyList<BotDto> bots,
         IReadOnlyList<EntityDto> ents, HiveVoxels vox, DateTimeOffset now, double maxDist)
@@ -89,6 +91,10 @@ public static class OverlayPainter
             foreach (var e in ents.Where(e => e.Dim == dim && e.Kind == "player" && e.Name != null))
                 Label(e.Name!, e.X, e.Y + 2.2, e.Z, PlayerColour, true);
         }
+        if (flags.HasFlag(Overlay.Drops))
+            foreach (var e in ents)
+                if (e.Dim == dim && e.Kind == "item")
+                    Label((e.Count ?? 1) > 1 ? $"{e.Name ?? "item"} x{e.Count}" : e.Name ?? "item", e.X, e.Y + 0.65, e.Z, DropColour, true);
         return labels;
 
         void MarkBox(MarkDto m, uint colour, string text, float inset, bool label, bool xray = false)

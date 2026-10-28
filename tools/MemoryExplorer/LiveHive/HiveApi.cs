@@ -31,6 +31,13 @@ public sealed class HiveApi : IDisposable
         _http = endpoint.CreateClient(TimeSpan.FromSeconds(6));
     }
 
+    /// <summary>Over a given client (tests: a fake handler).</summary>
+    internal HiveApi(SupervisorEndpoint endpoint, HttpClient http)
+    {
+        Endpoint = endpoint;
+        _http = http;
+    }
+
     public SupervisorEndpoint Endpoint { get; }
     /// <summary>Smoothed round-trip in ms (−1 = none yet).</summary>
     public double LatencyMs { get { lock (_lock) return _latency; } }
@@ -83,6 +90,10 @@ public sealed class HiveApi : IDisposable
     private static string I(double v) => v.ToString("0.##", CultureInfo.InvariantCulture);
 
     public Task<EntitiesDto> EntitiesAsync(CancellationToken ct) => GetJsonAsync<EntitiesDto>("entities", "api/world/entities", ct, track: true);
+
+    /// <summary>The entity delta stream: what changed after revision <paramref name="since"/> (0 = everything).</summary>
+    public Task<EntitiesDto> EntitiesSinceAsync(long since, CancellationToken ct) =>
+        GetJsonAsync<EntitiesDto>("entities", $"api/world/entities?since={Math.Max(0, since).ToString(CultureInfo.InvariantCulture)}", ct, track: true);
 
     public Task<IndexDto> IndexAsync(int dim, int x, int z, int r, CancellationToken ct) =>
         GetJsonAsync<IndexDto>("index", $"api/world/index?dim={dim}&x={x}&z={z}&r={r}", ct);
