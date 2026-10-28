@@ -55,7 +55,7 @@ public class BlueprintTests
     internal static SiteContext Site(WorldState w, Func<BlockPos, int, ProtectionVerdict>? verdict = null, Dictionary<int, int>? inv = null,
         Dictionary<int, int>? stored = null, bool gen = true, int trees = 2) => new()
     {
-        World = w.PlanningView, Verdict = verdict, Inventory = (id, _) => inv?.GetValueOrDefault(id) ?? 0, Stored = id => stored?.GetValueOrDefault(id) ?? 0,
+        World = w.PlanningView, Verdict = verdict, Inventory = (id, _) => inv?.GetValueOrDefault(id) ?? 0, Stored = (id, _) => stored?.GetValueOrDefault(id) ?? 0,
         GeneratorKnown = gen, ChoppableTrees = trees,
     };
 
@@ -569,6 +569,25 @@ public class BlueprintTests
         finally { Agent.TurnContext.Current = null; }
         Assert.Contains("waits for a trusted player's 'build it'", (await h.Runtime.Tools.ExecuteAsync("build", TestBot.J(new { bp = rec.Id.ToString() }), CancellationToken.None)).Text);
         Assert.Contains("layers", (await h.Runtime.Tools.ExecuteAsync("blueprint", TestBot.J(new { bp = "hut" }), CancellationToken.None)).Text);
+    }
+
+    [Fact]
+    public async Task An_accepted_build_resumes_without_a_second_go_but_a_new_site_still_needs_one()
+    {
+        // Live 04:5x: Fox approved the tower; after the bot's own material pause it asked "say go and i'll keep building".
+        var (h, _) = TestBot.Create();
+        var s = h.Blueprints!.Service;
+        var rec = s.Store.Insert(new BlueprintRecord { Name = "hut", Description = "hut", Bot = "maid_chan", Dsl = Hut, Status = DesignStatus.Building });
+        rec.AcceptedBy = "PoofImaFox";                     // as Accept() records it
+        s.Store.Update(rec);
+        Agent.TurnContext.Current = null;                 // the bot's own turn: nobody asked
+        var r = await h.Run("design", new { op = "build", id = rec.Id.ToString() });
+        Assert.DoesNotContain("trusted player's go", r.Text);
+        Agent.TurnContext.Current = new Agent.TurnInfo("stranger", ["stranger"], false);
+        try { Assert.Contains("trusted", (await h.Run("design", new { op = "build", id = rec.Id.ToString(), at = "10,64,10" })).Text); }
+        finally { Agent.TurnContext.Current = null; }
+        var unapproved = s.Store.Insert(new BlueprintRecord { Name = "shed", Description = "shed", Bot = "maid_chan", Dsl = Hut, Status = DesignStatus.Accepted });
+        Assert.Contains("trusted", (await h.Run("design", new { op = "build", id = unapproved.Id.ToString() })).Text);
     }
 
     [Fact]

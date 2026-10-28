@@ -28,7 +28,7 @@ public sealed class BlueprintWiring
 
     public const string DesignDescription =
         "Design a build from a wish: drafted, checked and previewed in the background; summary+bill go to chat. Builds only on a " +
-        "trusted player's go. op new{what,at?} revise{id,what} build{id,at?} show{id,image?} list cancel{id}";
+        "trusted player's go (resuming an approved one needs none). op new{what,at?} revise{id,what} build{id,at?} show{id,image?} list cancel{id}";
 
     public required BlueprintService Service { get; init; }
     /// <summary>Set after vision is wired (roles, atlas, perception for the critique).</summary>
@@ -156,8 +156,12 @@ public sealed class BlueprintWiring
             case "build":
                 {
                     if (Rec() is not { } rec) return ToolResult.Error("no design to build (id?)");
+                    bool moving = input.Str("at") is { Length: > 0 };
+                    // Already accepted by a trusted player: resuming (after a material or night pause) needs no second go.
+                    if (!moving && rec.Status is DesignStatus.Accepted or DesignStatus.Building && rec.AcceptedBy != null)
+                        return Service.StartBuild(rec.Id, null) is { } why ? ToolResult.Error(why) : ToolResult.Success($"building #{rec.Id} \"{rec.Name}\" (resuming; {rec.AcceptedBy} approved it)");
                     if (!Service.IsTrusted(speaker)) return ToolResult.Error($"a build needs a trusted player's go ({string.Join("/", rt_Trusted())}); {speaker ?? "nobody"} asked");
-                    if (rec.Status is DesignStatus.Built || input.Str("at") is { Length: > 0 } && rec.Status is not DesignStatus.Review)
+                    if (rec.Status is DesignStatus.Built || moving && rec.Status is not DesignStatus.Review)
                     {
                         var (_, text) = Service.Reuse(rec, input.Str("at"), speaker!);
                         return text.StartsWith("error", StringComparison.Ordinal) ? ToolResult.Error(text[7..]) : ToolResult.Success(text);
