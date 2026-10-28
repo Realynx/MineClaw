@@ -827,7 +827,8 @@ optional `embeddings.bin` (doc material hash → float32 vector) + optional `sum
 cluster-text hash: a cache, never truth). `ShardFile.Read` refuses a newer format/schema, a bad record hash or content hash.
 - **Select** (`ShardCollector`, plain SELECTs, works on a read-only snapshot): RAPTOR subtree (leaf refs → their records), filter
   (kinds, dimension, text or semantic query), person (login + nicknames: their facts/claims/relationship entries/episodes, rules
-  only with "include rules"), knowledge pack (`gamedata` docs, optionally kb chunks, tagged with the version). Never exported:
+  only with "include rules"), knowledge pack (`gamedata` docs, optionally kb chunks or just the named doc files, tagged with the
+  version; a mode pack is its doc files' chunks only). Never exported:
   observations/containers (world + inventory ledger), chunks, build plans, chat, routines; places/structures only with
   "include world". `ShardRedactor` drops records about keys/passwords and redacts token-shaped strings.
 - **Import** (`ShardImporter`, through the stores: MemoryStore, BeliefStore, DirectiveStore (trusted players only), SelfProfile,
@@ -839,6 +840,22 @@ cluster-text hash: a cache, never truth). `ShardFile.Read` refuses a newer forma
   changed (cached summaries reused for identical clusters). One audit entry (`import`/`export`, kind `shard`).
 - **Knowledge pack** (`KnowledgePack`): no meta = the built-in b1.8.1 seed. A non-default pack adds one cached-prompt line at
   startup (the default prefix is unchanged); retrieval only ever holds the active pack's game data.
+- **Default packs** (`shards/defaults`, built by `tools/ShardPacks` via `Admin/Shards/Packs/DefaultPackBuilder`): reproducible
+  packs from PRISTINE sources (never a live db; same inputs → byte-identical `.mcshard` + `index.json`: sorted records, the seed's
+  fixed timestamp, `.gitattributes` keeps bytes exact). A db holds one **version pack** (`b1.8.1-gamedata`: an `IGameDataSource`'s
+  `gd:*` docs + the docs marked `<!-- pack version=b1.8.1 -->`, i.e. `mechanics_b181.md`) and any number of **mode packs**
+  (`skyblock`: docs marked `<!-- pack mode=skyblock … -->`). Meta `knowledge_pack` = version + name + core + files + `modes`
+  (null = legacy: every mode doc on disk counts; [] = a plain world). Import modes: `swap-pack` (version packs; also replaces the
+  outgoing/incoming version docs' chunks, keeps the modes), `add-mode` / `remove-mode` (mode packs; merge/replace refuse packs).
+  `KnowledgeIndexer.Sync` leaves out docs whose marker isn't active (no core lines, chunks dropped) and appends the stored core of
+  active packs whose files aren't on disk, so the cached prompt's core comes from the active packs only. Manifest `pack`
+  (`ShardPackInfo`): kind, name, version, mode, core, files, source, source hash, builder, `needs_embedding`; vectors come from the
+  seed's `vectors`/`embed_cache` by material hash for its model + dims (packs > 20 MB drop them). Sources: `MineClawDataSource`
+  (b1.8.1: `MineClaw.Data`, hand-transcribed from the b1.8.1 client jar and audited against mc-dev 218a2a71, rendered by
+  `SeedCorpus`) and `MinecraftDataSource` (a PrismarineJS minecraft-data checkout the user fetched: `dataPaths.json` → items/blocks/
+  recipes/foods; no smelting tables). The Explorer's Shards page lists the folder (`Explorer:DefaultPacksDir`, else `shards/defaults`
+  beside the exe or in the repo) with one-click "Preview swap / add mode / remove mode" into the diff-first import, and shows the
+  db's version pack + modes. `shards/defaults/README.md` has the build command for a new version.
 - **Targets**: a local db file (Explorer, backup first, audit next to the db) or the live bot via `POST /api/admin/shard/import/
   preview` and `POST /api/admin/shard/import` (body `{shard: base64, mode, conflict, include_rules, include_world}`, ≤ 64 MB, read
   only after `Supervisor:AllowAdminWrites` + the token header check out; the bot backs up, applies with its own stores and runs

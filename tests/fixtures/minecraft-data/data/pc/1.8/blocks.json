@@ -1,0 +1,15 @@
+[
+  { "id": 0, "displayName": "Air", "name": "air", "hardness": 0, "diggable": false, "boundingBox": "empty", "drops": [], "transparent": true, "emitLight": 0 },
+  { "id": 1, "displayName": "Stone", "name": "stone", "hardness": 1.5, "diggable": true, "boundingBox": "block", "material": "rock",
+    "harvestTools": { "270": true }, "drops": [4], "transparent": false, "emitLight": 0 },
+  { "id": 4, "displayName": "Cobblestone", "name": "cobblestone", "hardness": 2, "diggable": true, "boundingBox": "block", "material": "rock",
+    "harvestTools": { "270": true }, "drops": [4], "transparent": false, "emitLight": 0 },
+  { "id": 5, "displayName": "Wood Planks", "name": "planks", "hardness": 2, "diggable": true, "boundingBox": "block", "material": "wood",
+    "drops": [{ "drop": { "id": 5, "metadata": 0 }, "minCount": 1, "maxCount": 1 }], "transparent": false, "emitLight": 0 },
+  { "id": 17, "displayName": "Wood", "name": "log", "hardness": 2, "diggable": true, "boundingBox": "block", "material": "wood",
+    "drops": [17], "transparent": false, "emitLight": 0 },
+  { "id": 58, "displayName": "Crafting Table", "name": "crafting_table", "hardness": 2.5, "diggable": true, "boundingBox": "block", "material": "wood",
+    "drops": [58], "transparent": false, "emitLight": 0 },
+  { "id": 61, "displayName": "Furnace", "name": "furnace", "hardness": 3.5, "diggable": true, "boundingBox": "block", "material": "rock",
+    "harvestTools": { "270": true }, "drops": [61], "transparent": false, "emitLight": 0 }
+]

@@ -81,6 +81,10 @@ public sealed record ShardSelection
     public string? PackVersion { get; init; }
     /// <summary>pack: also carry the docs/knowledge chunks (default: game data only).</summary>
     public bool IncludeKnowledgeDocs { get; init; }
+    /// <summary>pack: a mode pack (e.g. "skyblock"): only the knowledge chunks of <see cref="KnowledgeFiles"/>, no game data.</summary>
+    public string? PackMode { get; init; }
+    /// <summary>pack: the knowledge doc files the pack carries (null = every chunk when <see cref="IncludeKnowledgeDocs"/>).</summary>
+    public IReadOnlyList<string>? KnowledgeFiles { get; init; }
     /// <summary>Standing rules (directives) from trusted players.</summary>
     public bool IncludeRules { get; init; }
     /// <summary>Places and structures.</summary>
@@ -175,6 +179,38 @@ public sealed record ShardManifest
     public ShardSummaryInfo? Summaries { get; init; }
     /// <summary>Records dropped or redacted because they looked like secrets.</summary>
     public int SecretsRedacted { get; init; }
+    /// <summary>Default packs (shards/defaults, built by tools/ShardPacks): version or mode, core, files, builder and source hash.</summary>
+    public ShardPackInfo? Pack { get; init; }
+}
+
+/// <summary>
+/// What a default knowledge pack is: the version pack of a Minecraft version (game data + that version's general mechanics docs) or a
+/// mode pack (world-mode advice such as skyblock), built reproducibly from pristine sources (never from a live db).
+/// </summary>
+public sealed record ShardPackInfo
+{
+    public const string VersionKind = "version", ModeKind = "mode";
+
+    /// <summary>version | mode</summary>
+    public required string Kind { get; init; }
+    /// <summary>"b1.8.1-gamedata" / "skyblock".</summary>
+    public required string Name { get; init; }
+    public required string Version { get; init; }
+    /// <summary>Mode packs: the mode ("skyblock").</summary>
+    public string? Mode { get; init; }
+    /// <summary>The pack's cached-prompt core block (the knowledge docs' core sections, in file order).</summary>
+    public string? Core { get; init; }
+    /// <summary>Knowledge doc files the pack carries (their chunks are the pack's knowledge records).</summary>
+    public IReadOnlyList<string> Files { get; init; } = [];
+    /// <summary>Where the game data came from ("MineClaw.Data b1.8.1 tables", "minecraft-data pc/1.8").</summary>
+    public string? Source { get; init; }
+    /// <summary>sha256 over every input (game-data docs + knowledge files): equal inputs, equal pack.</summary>
+    public string? SourceHash { get; init; }
+    public string? Builder { get; init; }
+    /// <summary>Embeddable records without a vector in the pack: the target embeds them on import.</summary>
+    public int NeedsEmbedding { get; init; }
+
+    [JsonIgnore] public bool IsMode => Kind == ModeKind;
 }
 
 /// <summary>A cached RAPTOR summary: reused by a rebuild that reproduces the identical cluster (no summarizer call).</summary>
@@ -193,7 +229,7 @@ public sealed class Shard
 public sealed class KebabEnumConverter<T>() : JsonStringEnumConverter<T>(JsonNamingPolicy.KebabCaseLower) where T : struct, Enum;
 
 [JsonConverter(typeof(KebabEnumConverter<ShardImportMode>))]
-public enum ShardImportMode { Merge, ReplaceSection, SwapPack }
+public enum ShardImportMode { Merge, ReplaceSection, SwapPack, AddMode, RemoveMode }
 
 /// <summary>What wins when a record exists on both sides with different content.</summary>
 [JsonConverter(typeof(KebabEnumConverter<ShardConflictPolicy>))]
@@ -215,6 +251,8 @@ public sealed record ShardImportOptions
     {
         "replace" or "replace-section" or "replacesection" or "replace_section" => ShardImportMode.ReplaceSection,
         "swap" or "swap-pack" or "swappack" or "swap_pack" => ShardImportMode.SwapPack,
+        "add-mode" or "addmode" or "add_mode" or "add" => ShardImportMode.AddMode,
+        "remove-mode" or "removemode" or "remove_mode" or "remove" => ShardImportMode.RemoveMode,
         _ => ShardImportMode.Merge,
     };
 
@@ -229,6 +267,8 @@ public sealed record ShardImportOptions
     {
         ShardImportMode.ReplaceSection => "replace-section",
         ShardImportMode.SwapPack => "swap-pack",
+        ShardImportMode.AddMode => "add-mode",
+        ShardImportMode.RemoveMode => "remove-mode",
         _ => "merge",
     };
 
@@ -273,6 +313,9 @@ public sealed record ShardDiff
     public int ToEmbed { get; init; }
     public string? PackFrom { get; init; }
     public string? PackTo { get; init; }
+    /// <summary>Mode packs: the active modes before / after this import (null = not a pack import).</summary>
+    public IReadOnlyList<string>? ModesFrom { get; init; }
+    public IReadOnlyList<string>? ModesTo { get; init; }
     public IReadOnlyList<string> Notes { get; init; } = [];
     /// <summary>Why this import can't run as asked (nothing is written); null = it can.</summary>
     public string? Refused { get; init; }

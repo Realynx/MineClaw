@@ -1,0 +1,54 @@
+{
+  "format": 1,
+  "note": "Default knowledge packs, built by tools/ShardPacks from pristine sources (never a live db). Rebuild: see README.md.",
+  "packs": [
+    {
+      "file": "b1.8.1-gamedata.mcshard",
+      "name": "b1.8.1-gamedata",
+      "kind": "version",
+      "version": "b1.8.1",
+      "description": "Minecraft b1.8.1 version pack: recipes, items, blocks, smelting and dig facts + the general mechanics doc mechanics_b181.md. Swap it in for any world on this version.",
+      "counts": {
+        "gamedata": 447,
+        "knowledge": 7
+      },
+      "records": 454,
+      "bytes": 1906660,
+      "vectors": 445,
+      "needs_embedding": 7,
+      "embedding_model": "text-embedding-3-large",
+      "dims": 1024,
+      "files": [
+        "mechanics_b181.md"
+      ],
+      "source": "MineClaw.Data b1.8.1 tables (client jar / mc-dev), rendered by SeedCorpus",
+      "source_hash": "d7bb32352430964bfe4460c214c9d39e182f1b2c48b0c7e67398f984ab13d54f",
+      "content_hash": "013ddf6ee00d0c0b112a572fafdd547b870bfac2c27def768e0b27eef45c5530",
+      "builder": "ShardPacks/1"
+    },
+    {
+      "file": "skyblock.mcshard",
+      "name": "skyblock",
+      "kind": "mode",
+      "version": "b1.8.1",
+      "mode": "skyblock",
+      "description": "skyblock mode pack for b1.8.1 (skyblock_b181.md): add it when the world is a skyblock, remove it for a plain world.",
+      "counts": {
+        "knowledge": 4
+      },
+      "records": 4,
+      "bytes": 7667,
+      "vectors": 1,
+      "needs_embedding": 3,
+      "embedding_model": "text-embedding-3-large",
+      "dims": 1024,
+      "files": [
+        "skyblock_b181.md"
+      ],
+      "source": "docs/knowledge",
+      "source_hash": "3a767c2c892a3b0cc81f3d03f3cb1f0c41246af5787c4654d35bd1d867e0f12f",
+      "content_hash": "6ca1b28213696268f7b429611336ea367e00580d8c882fd0bb5556a3d2c76d01",
+      "builder": "ShardPacks/1"
+    }
+  ]
+}

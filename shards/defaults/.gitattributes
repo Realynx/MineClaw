@@ -1,0 +1,3 @@
+# Default knowledge packs: byte-identical rebuilds (tools/ShardPacks verify) need the exact bytes on every checkout.
+*.mcshard binary
+index.json text eol=lf

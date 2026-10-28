@@ -10,8 +10,9 @@ using MineClaw.MemoryExplorer.Services;
 namespace MineClaw.MemoryExplorer.Views;
 
 /// <param name="Target">"local: data/alice-snap/…db" / "live: http://…" (where the import runs).</param>
+/// <param name="Preset">The mode to open on (the Default packs buttons: swap / add mode / remove mode); null = the usual default.</param>
 public sealed record ShardImportDialogRequest(ShardFileInfo File, string Target, bool IsLive, string ActivePack,
-    Func<ShardImportOptions, Task<ShardDiff>> Preview);
+    Func<ShardImportOptions, Task<ShardDiff>> Preview, ShardImportMode? Preset = null);
 
 /// <summary>
 /// "Import shard": the manifest, the mode (merge / replace-section / swap knowledge pack), the conflict policy, the opt-ins (rules,
@@ -26,6 +27,8 @@ public static class ShardImportDialog
         ShardImportOptions? result = null;
         var f = req.File;
         bool pack = f.Kind == "pack";
+        bool modePack = f.IsModePack;
+        var preset = req.Preset;
         var dlg = new Window
         {
             Title = "Import shard",
@@ -38,9 +41,15 @@ public static class ShardImportDialog
         dlg.Bind(Window.BackgroundProperty, dlg.GetResourceObservable("CardBrush"));
 
         var group = "imode-" + dlg.GetHashCode();
-        var merge = new RadioButton { Content = "Merge", GroupName = group, IsChecked = !pack || f.PackVersion == req.ActivePack, Margin = new Thickness(0, 0, 14, 0) };
-        var replace = new RadioButton { Content = "Replace section", GroupName = group, IsEnabled = !pack, Margin = new Thickness(0, 0, 14, 0) };
-        var swap = new RadioButton { Content = "Swap knowledge pack", GroupName = group, IsEnabled = pack, IsChecked = pack && f.PackVersion != req.ActivePack };
+        var merge = new RadioButton { Content = "Merge", GroupName = group, IsEnabled = !modePack, Margin = new Thickness(0, 0, 14, 0),
+            IsChecked = preset == null ? !pack || (!modePack && f.PackVersion == req.ActivePack) : preset == ShardImportMode.Merge };
+        var replace = new RadioButton { Content = "Replace section", GroupName = group, IsEnabled = !pack, Margin = new Thickness(0, 0, 14, 0),
+            IsChecked = preset == ShardImportMode.ReplaceSection };
+        var swap = new RadioButton { Content = "Swap version pack", GroupName = group, IsEnabled = pack && !modePack, Margin = new Thickness(0, 0, 14, 0),
+            IsChecked = preset == null ? pack && !modePack && f.PackVersion != req.ActivePack : preset == ShardImportMode.SwapPack };
+        var addMode = new RadioButton { Content = "Add mode", GroupName = group, IsEnabled = modePack, Margin = new Thickness(0, 0, 14, 0),
+            IsChecked = preset == null ? modePack : preset == ShardImportMode.AddMode };
+        var removeMode = new RadioButton { Content = "Remove mode", GroupName = group, IsEnabled = modePack, IsChecked = preset == ShardImportMode.RemoveMode };
         var modeHint = ShardExportDialog.Hint("");
         var conflict = new ComboBox
         {
@@ -77,7 +86,8 @@ public static class ShardImportDialog
 
         ShardImportOptions Options() => new()
         {
-            Mode = swap.IsChecked == true ? ShardImportMode.SwapPack : replace.IsChecked == true ? ShardImportMode.ReplaceSection : ShardImportMode.Merge,
+            Mode = swap.IsChecked == true ? ShardImportMode.SwapPack : replace.IsChecked == true ? ShardImportMode.ReplaceSection
+                : addMode.IsChecked == true ? ShardImportMode.AddMode : removeMode.IsChecked == true ? ShardImportMode.RemoveMode : ShardImportMode.Merge,
             Conflict = conflict.SelectedIndex switch { 1 => ShardConflictPolicy.PreferShard, 2 => ShardConflictPolicy.KeepMine, _ => ShardConflictPolicy.KeepNewer },
             IncludeRules = rules.IsChecked == true, IncludeWorld = world.IsChecked == true, Who = "admin:" + Environment.UserName,
         };
@@ -94,10 +104,12 @@ public static class ShardImportDialog
         {
             diff = null;
             importBtn.IsEnabled = false;
-            modeHint.Text = (swap.IsChecked, replace.IsChecked) switch
+            modeHint.Text = (swap.IsChecked, replace.IsChecked, addMode.IsChecked, removeMode.IsChecked) switch
             {
-                (true, _) => $"Unloads this db's game data ({req.ActivePack}) and loads the shard's ({f.PackVersion}); the active version follows. Nothing else is touched.",
-                (_, true) => "Removes the records here that match the shard's selection (e.g. everything about that person), then inserts the shard's.",
+                (true, _, _, _) => $"Unloads this db's game data and version docs ({req.ActivePack}) and loads the pack's ({f.PackVersion}); the active version follows. Mode packs and everything else stay.",
+                (_, true, _, _) => "Removes the records here that match the shard's selection (e.g. everything about that person), then inserts the shard's.",
+                (_, _, true, _) => $"Turns the {f.PackMode} mode on: its docs join retrieval and its core lines join the cached prompt (at the bot's next start).",
+                (_, _, _, true) => $"Turns the {f.PackMode} mode off: its chunks leave retrieval and its core lines leave the cached prompt. Nothing else is touched.",
                 _ => "Adds what's new, dedupes by stable id; records on both sides follow the conflict policy.",
             };
             ShowItems();
@@ -124,7 +136,7 @@ public static class ShardImportDialog
             finally { previewBtn.IsEnabled = true; }
         }
 
-        foreach (var r in new[] { merge, replace, swap }) r.IsCheckedChanged += (_, _) => Invalidate();
+        foreach (var r in new[] { merge, replace, swap, addMode, removeMode }) r.IsCheckedChanged += (_, _) => Invalidate();
         conflict.SelectionChanged += (_, _) => Invalidate();
         rules.IsCheckedChanged += (_, _) => Invalidate();
         world.IsCheckedChanged += (_, _) => Invalidate();
@@ -158,7 +170,7 @@ public static class ShardImportDialog
             Children =
             {
                 ShardExportDialog.Label("Mode"),
-                new WrapPanel { Children = { merge, replace, swap } },
+                new WrapPanel { Children = { merge, replace, swap, addMode, removeMode } },
                 modeHint,
                 ShardExportDialog.Row(ShardExportDialog.Label("On conflict"), conflict),
                 rules, world,
@@ -201,6 +213,8 @@ public static class ShardImportDialog
         return result;
     }
 
+    private static string Modes(IReadOnlyList<string>? m) => m == null ? "every mode doc on disk" : m.Count == 0 ? "none" : string.Join(", ", m);
+
     private static string One(string s, int n)
     {
         var t = s.ReplaceLineEndings(" ");
@@ -216,6 +230,8 @@ public static class ShardImportDialog
             $"{d.Writes:N0} writes ({ShardImportOptions.Name(d.Mode)}, {ShardImportOptions.Name(d.Conflict)}) · vectors: {d.ReusableVectors:N0} reused, {d.ToEmbed:N0} to embed",
         };
         if (d.PackTo != null) lines.Add($"knowledge pack: {d.PackFrom} → {(d.Mode == ShardImportMode.SwapPack ? d.PackTo : d.PackFrom)}");
+        if (d.Mode is ShardImportMode.AddMode or ShardImportMode.RemoveMode)
+            lines.Add($"modes: {Modes(d.ModesFrom)} → {Modes(d.ModesTo)}");
         if (d.Rebuild.Count > 0)
         {
             var e = d.Estimate;

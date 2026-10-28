@@ -36,7 +36,7 @@
             </WrapPanel>
             <Border Classes="separator" />
             <Grid ColumnDefinitions="Auto,*">
-              <TextBlock Classes="muted" Text="Knowledge pack" Margin="0,0,14,0" VerticalAlignment="Center" />
+              <TextBlock Classes="muted" Text="Knowledge packs" Margin="0,0,14,0" VerticalAlignment="Center" />
               <Border Grid.Column="1" Classes="chip" HorizontalAlignment="Left" Padding="9,2">
                 <TextBlock Text="{Binding ActivePack}" />
               </Border>
@@ -120,7 +120,59 @@
 
     <Border Grid.Column="1" Classes="pane">
       <DockPanel>
-        <StackPanel DockPanel.Dock="Top" Spacing="3" Margin="22,24,16,10">
+        <Border DockPanel.Dock="Top" Classes="card" Padding="16" Margin="16,24,16,4">
+          <StackPanel Spacing="10">
+            <Grid ColumnDefinitions="*,Auto">
+              <StackPanel Spacing="2">
+                <TextBlock Classes="h2" Text="Default packs" />
+                <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap" Text="{Binding DefaultsInfo}" />
+              </StackPanel>
+              <Button Grid.Column="1" Classes="icon" Command="{Binding OpenDefaultsFolderCommand}" ToolTip.Tip="Open the default packs folder" VerticalAlignment="Top">
+                <PathIcon Data="{StaticResource IconFolder}" />
+              </Button>
+            </Grid>
+            <Grid ColumnDefinitions="Auto,*">
+              <TextBlock Classes="muted" FontSize="12" Text="This db" Margin="0,0,10,0" VerticalAlignment="Center" />
+              <Border Grid.Column="1" Classes="chip" HorizontalAlignment="Left" Padding="9,2">
+                <TextBlock Text="{Binding ActivePack}" TextWrapping="Wrap" />
+              </Border>
+            </Grid>
+            <ScrollViewer MaxHeight="340" HorizontalScrollBarVisibility="Disabled">
+              <ItemsControl ItemsSource="{Binding DefaultPacks}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="s:DefaultPackInfo">
+                    <Border BorderBrush="{DynamicResource BorderSubtleBrush}" BorderThickness="0,1,0,0" Padding="0,8,0,6">
+                      <StackPanel Spacing="3" ToolTip.Tip="{Binding FilesText}">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                          <PathIcon Data="{StaticResource IconShard}" Width="13" Height="13" Foreground="{DynamicResource AccentBrush}" />
+                          <TextBlock FontWeight="SemiBold" Text="{Binding Name}" />
+                          <Border Classes="chip" Padding="6,0"><TextBlock Text="{Binding KindLabel}" /></Border>
+                        </StackPanel>
+                        <TextBlock FontSize="12" Text="{Binding Description}" TextWrapping="Wrap" />
+                        <TextBlock Classes="muted" FontSize="11.5" Text="{Binding CountsText}" TextWrapping="Wrap" />
+                        <TextBlock Classes="faint" Text="{Binding DetailText}" TextWrapping="Wrap" />
+                        <TextBlock FontSize="12" Text="{Binding Error}" TextWrapping="Wrap" Foreground="{DynamicResource BadBrush}"
+                                   IsVisible="{Binding Error, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                        <WrapPanel ItemSpacing="6" LineSpacing="6" Margin="0,4,0,0">
+                          <Button Classes="ghost" IsVisible="{Binding IsVersion}" IsEnabled="{Binding Ok}"
+                                  Command="{Binding $parent[UserControl].((vm:ShardsViewModel)DataContext).PreviewSwapCommand}" CommandParameter="{Binding}"
+                                  ToolTip.Tip="Diff first: this version pack replaces the db's game data and version docs">Preview swap…</Button>
+                          <Button Classes="ghost" IsVisible="{Binding IsMode}" IsEnabled="{Binding Ok}"
+                                  Command="{Binding $parent[UserControl].((vm:ShardsViewModel)DataContext).PreviewAddModeCommand}" CommandParameter="{Binding}"
+                                  ToolTip.Tip="Diff first: turn this mode on (its docs and core lines)">Preview add mode…</Button>
+                          <Button Classes="ghost" IsVisible="{Binding IsMode}" IsEnabled="{Binding Ok}"
+                                  Command="{Binding $parent[UserControl].((vm:ShardsViewModel)DataContext).PreviewRemoveModeCommand}" CommandParameter="{Binding}"
+                                  ToolTip.Tip="Diff first: turn this mode off (a plain world)">Preview remove mode…</Button>
+                        </WrapPanel>
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
+          </StackPanel>
+        </Border>
+        <StackPanel DockPanel.Dock="Top" Spacing="3" Margin="22,14,16,10">
           <TextBlock Classes="h2" Text="History" />
           <TextBlock Classes="muted" FontSize="12" Text="{Binding HistoryInfo}" TextWrapping="Wrap" />
         </StackPanel>

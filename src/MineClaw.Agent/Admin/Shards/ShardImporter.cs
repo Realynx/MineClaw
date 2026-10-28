@@ -71,8 +71,15 @@ public sealed class ShardImporter
         var active = KnowledgePack.Active(_ctx.Db);
         string? refused = null;
         bool isPack = m.Kind == "pack";
+        string? mode = isPack ? m.Pack?.Mode ?? m.Selection.PackMode : null;
+        bool isMode = mode != null;
+        IReadOnlyList<string> packFiles = PackFiles(m);
+        bool modeOp = o.Mode is ShardImportMode.AddMode or ShardImportMode.RemoveMode;
         var collector = new ShardCollector(_ctx.Db);
         if (o.Mode == ShardImportMode.SwapPack && !isPack) refused = "swap needs a knowledge-pack shard; this one is a " + m.Kind + " shard";
+        else if (o.Mode == ShardImportMode.SwapPack && isMode) refused = $"this is the {mode} mode pack: add or remove it; swap takes a version pack";
+        else if (modeOp && !isMode) refused = $"{ShardImportOptions.Name(o.Mode)} needs a mode pack (e.g. skyblock); this one is a " + (isPack ? "version pack: swap it" : m.Kind + " shard");
+        else if (isMode && !modeOp) refused = $"the {mode} mode pack is added or removed, not {ShardImportOptions.Name(o.Mode)}: choose add mode or remove mode";
         else if (isPack && o.Mode == ShardImportMode.ReplaceSection) refused = "a knowledge pack is swapped, not section-replaced: choose swap";
         else if (isPack && o.Mode == ShardImportMode.Merge && m.PackVersion is { } pv && !pv.Equals(active.Version, StringComparison.OrdinalIgnoreCase)
                  && collector.All(ShardKinds.GameData).Count > 0)
@@ -89,11 +96,12 @@ public sealed class ShardImporter
             return map;
         }
 
-        bool replace = o.Mode is ShardImportMode.ReplaceSection or ShardImportMode.SwapPack;
+        bool replace = o.Mode is ShardImportMode.ReplaceSection or ShardImportMode.SwapPack or ShardImportMode.AddMode;
         var items = new List<ShardDiffItem>();
         var writes = new List<PlanItem>();
         int added = 0, changed = 0, conflicts = 0, unchanged = 0, skipped = 0;
-        foreach (var r in ShardFile.Canonical(shard.Records))
+        // Removing a mode writes nothing: it only unloads the mode's chunks.
+        foreach (var r in o.Mode == ShardImportMode.RemoveMode ? [] : ShardFile.Canonical(shard.Records))
         {
             string? skip = r.Kind switch
             {
@@ -158,7 +166,32 @@ public sealed class ShardImporter
         else if (o.Mode == ShardImportMode.SwapPack && refused == null)
         {
             removals.AddRange(collector.All(ShardKinds.GameData).Where(r => !shardIds.Contains(r.Id)));
-            if (m.Selection.IncludeKnowledgeDocs) notes.Add("knowledge chunks in the pack are merged; docs/knowledge files re-index them when they change");
+            // The outgoing version pack's docs and the incoming one's files: chunks the new pack doesn't carry go.
+            var files = packFiles.Concat(active.Files ?? []).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (files.Count > 0) removals.AddRange(collector.All(ShardKinds.Knowledge).Where(r => ShardCollector.InFiles(r, files) && !shardIds.Contains(r.Id)));
+            else if (m.Selection.IncludeKnowledgeDocs) notes.Add("knowledge chunks in the pack are merged; docs/knowledge files re-index them when they change");
+        }
+        else if (modeOp && refused == null)
+        {
+            removals.AddRange(collector.All(ShardKinds.Knowledge)
+                .Where(r => (ShardCollector.InFiles(r, packFiles) || shardIds.Contains(r.Id)) && (o.Mode == ShardImportMode.RemoveMode || !shardIds.Contains(r.Id))));
+        }
+
+        // Active modes before / after (a legacy db has no list: every mode doc on disk counted until now).
+        var modesFrom = active.Modes?.Select(x => x.Mode).ToList();
+        List<string>? modesTo = modesFrom;
+        if (isMode && refused == null && modeOp)
+        {
+            var list = (modesFrom ?? []).Where(x => !x.Equals(mode, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (o.Mode == ShardImportMode.AddMode) list.Add(mode!);
+            modesTo = list;
+            if (modesFrom == null)
+                notes.Add($"this db had no mode list (every mode doc on disk counted); after this its modes are exactly: {Modes(modesTo)}");
+            if (o.Mode == ShardImportMode.AddMode && m.Pack?.Version is { } mv && !mv.Equals(active.Version, StringComparison.OrdinalIgnoreCase))
+                notes.Add($"the {mode} pack was written for {mv}; this db plays {active.Version}, so its docs stay out until the versions match");
+            notes.Add(o.Mode == ShardImportMode.AddMode
+                ? $"mode {mode} on: its core lines join the cached prompt and its {packFiles.Count} doc(s) join retrieval"
+                : $"mode {mode} off: its core lines leave the cached prompt and its chunks leave retrieval");
         }
         foreach (var r in removals) items.Add(new ShardDiffItem(r.Id, r.Kind, ShardChange.Removed, r.Label, true));
 
@@ -190,8 +223,10 @@ public sealed class ShardImporter
         else if (_ctx.Raptor == null && applied.Count > 0) notes.Add("no RAPTOR tree here (" + (_ctx.RaptorNote ?? "off") + "): nothing to rebuild");
 
         if (isPack) notes.Add($"knowledge pack {m.PackVersion}: the db holds {active.Version}" + (o.Mode == ShardImportMode.SwapPack ? $" → {m.PackVersion} after the swap" : ""));
-        if (isPack && _ctx.IsLive && o.Mode == ShardImportMode.SwapPack)
-            notes.Add("retrieval switches now; the bot's cached prompt names the new version after its next restart");
+        if (isPack && _ctx.IsLive && o.Mode is ShardImportMode.SwapPack or ShardImportMode.AddMode or ShardImportMode.RemoveMode)
+            notes.Add("retrieval switches now; the bot's cached prompt (core lines, version) follows after its next restart");
+        if (m.Pack is { NeedsEmbedding: > 0 } np && o.Mode != ShardImportMode.RemoveMode)
+            notes.Add($"{np.NeedsEmbedding} pack doc(s) carry no vector: they are embedded on import");
         if (m.Summaries is { Count: > 0 } && rebuild.Count > 0) notes.Add($"{m.Summaries.Count} cached summaries: identical clusters are reused without a model call");
         if (applied.Count == 0 && removals.Count == 0 && refused == null) notes.Add("identical to what's here: nothing to write, no rebuild");
 
@@ -200,7 +235,8 @@ public sealed class ShardImporter
             Shard = m.Name, Mode = o.Mode, Conflict = o.Conflict, Items = items,
             Added = added, Changed = changed, Conflicts = conflicts, Removed = removals.Count, Unchanged = unchanged, Skipped = skipped,
             Writes = applied.Count, Rebuild = rebuild, Estimate = estimate, ReusableVectors = reusable, ToEmbed = toEmbed,
-            PackFrom = isPack ? active.Version : null, PackTo = isPack ? m.PackVersion : null, Notes = notes, Refused = refused,
+            PackFrom = isPack ? active.Version : null, PackTo = isPack ? (isMode ? active.Version : m.PackVersion) : null,
+            ModesFrom = isPack ? modesFrom : null, ModesTo = isPack ? modesTo : null, Notes = notes, Refused = refused,
         };
         return new Plan(diff, applied, removals, reuse);
     }
@@ -302,12 +338,36 @@ public sealed class ShardImporter
         if (lessons) KnowledgeCorrections.Apply(_ctx.Rag, _ctx.Options.KnowledgeDirectory, _ctx.Logger("MineClaw.Rag"));
 
         string? pack = null;
+        var installed = DateTimeOffset.UtcNow;
+        var pi = m.Pack;
+        var packFiles = PackFiles(m);
         if (o.Mode == ShardImportMode.SwapPack && m.PackVersion is { } pv)
         {
-            KnowledgePack.SetActive(_ctx.Db, new KnowledgePackInfo(pv, m.Name, DateTimeOffset.UtcNow, m.ContentHash));
+            var before = KnowledgePack.Active(_ctx.Db);
+            KnowledgePack.SetActive(_ctx.Db, new KnowledgePackInfo(pv, pi?.Name ?? m.Name, installed, m.ContentHash)
+            {
+                Modes = before.Modes, Core = pi?.Core, Files = packFiles.Count > 0 ? packFiles : null,
+            });
             pack = pv;
         }
+        else if (o.Mode is ShardImportMode.AddMode or ShardImportMode.RemoveMode && (pi?.Mode ?? m.Selection.PackMode) is { } mode)
+        {
+            var before = KnowledgePack.Active(_ctx.Db);
+            var modes = (before.Modes ?? []).Where(x => !x.Mode.Equals(mode, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (o.Mode == ShardImportMode.AddMode)
+                modes.Add(new KnowledgeModeInfo(mode, pi?.Name ?? m.Name, pi?.Version ?? m.PackVersion, installed, m.ContentHash)
+                {
+                    Core = pi?.Core, Files = packFiles.Count > 0 ? packFiles : null,
+                });
+            KnowledgePack.SetActive(_ctx.Db, before with { Modes = modes });
+            pack = before.Version;
+        }
         else if (m.Kind == "pack") pack = KnowledgePack.ActiveVersion(_ctx.Db);
+        // The pack's doc files re-sync with docs/knowledge at the next start (the files on disk stay the editable truth).
+        if (pack != null && packFiles.Count > 0 && o.Mode is ShardImportMode.SwapPack or ShardImportMode.AddMode or ShardImportMode.RemoveMode)
+            foreach (var file in packFiles)
+                try { _ctx.Db.Exec("DELETE FROM knowledge_files WHERE path = $p", ("$p", file)); }
+                catch (Microsoft.Data.Sqlite.SqliteException) { /* an older db without the table */ }
 
         // 4) Embeddings: cache hits for reused vectors, the provider for the rest (offline: shard vectors go straight in).
         int reused = 0, embedded = 0;
@@ -358,6 +418,7 @@ public sealed class ShardImporter
         var msg = $"imported {m.Name} ({ShardImportOptions.Name(o.Mode)}): {written} written ({d.Added} new), {removed} removed, " +
                   $"{d.Unchanged} unchanged, {d.Skipped} skipped; vectors {reused} reused, {embedded} embedded{tree}" +
                   (pack != null && o.Mode == ShardImportMode.SwapPack ? $"; knowledge pack {d.PackFrom} → {pack}" : "") +
+                  (pack != null && o.Mode is ShardImportMode.AddMode or ShardImportMode.RemoveMode ? $"; modes {Modes(d.ModesFrom)} → {Modes(d.ModesTo)}" : "") +
                   (errors.Count > 0 ? $"; {errors.Count} failed: {string.Join("; ", errors.Take(3))}" : "");
         _log.LogInformation("admin shard {Message}", msg);
         return new ShardImportResult
@@ -366,6 +427,12 @@ public sealed class ShardImporter
             Embedded = embedded, Rebuild = d.Rebuild, ActivePack = pack,
         };
     }
+
+    private static string Modes(IReadOnlyList<string>? m) => m == null ? "(every mode doc on disk)" : m.Count == 0 ? "none" : string.Join(", ", m);
+
+    /// <summary>The knowledge doc files a pack carries (manifest pack info, else the selection's file list).</summary>
+    private static IReadOnlyList<string> PackFiles(ShardManifest m) =>
+        m.Pack?.Files is { Count: > 0 } pf ? pf : m.Selection.KnowledgeFiles ?? [];
 
     /// <summary>How many of these material hashes now have a current vector.</summary>
     private int CountCurrent(HashSet<string> hashes)

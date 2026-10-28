@@ -2,13 +2,14 @@ using System.Globalization;
 using System.Text.Json;
 using MineClaw.Agent.Admin;
 using MineClaw.Agent.Admin.Shards;
+using MineClaw.Agent.Admin.Shards.Packs;
 using MineClaw.Agent.Rag;
 
 namespace MineClaw.MemoryExplorer.Services;
 
 /// <summary>One <c>.mcshard</c> on disk as the Shards page lists it (the manifest only; a broken file shows why).</summary>
 public sealed record ShardFileInfo(string Path, string Name, string Kind, int Records, string? PackVersion, DateTimeOffset? Created, long Bytes,
-    string? Description, string? Error, string Counts, string? EmbeddingModel)
+    string? Description, string? Error, string Counts, string? EmbeddingModel, string? PackMode = null)
 {
     public string FileName => System.IO.Path.GetFileName(Path);
     public string SizeText => MemoryBank.FormatBytes(Bytes);
@@ -16,12 +17,33 @@ public sealed record ShardFileInfo(string Path, string Name, string Kind, int Re
     public string KindLabel => Kind switch
     {
         "person" => "about a person",
+        "pack" when PackMode != null => $"mode pack {PackMode} ({PackVersion})",
         "pack" => "knowledge pack " + PackVersion,
         "subtree" => "RAPTOR subtree",
         "filter" => "filter",
         _ => Kind,
     };
     public bool Ok => Error == null;
+    public bool IsModePack => Kind == "pack" && PackMode != null;
+}
+
+/// <summary>One default pack (shards/defaults): its index.json entry, whether the file is there and verifies.</summary>
+public sealed record DefaultPackInfo(PackIndexEntry Entry, string Path, string? Error)
+{
+    public string Name => Entry.Name;
+    public bool IsMode => Entry.IsMode;
+    public bool IsVersion => !Entry.IsMode;
+    public bool Ok => Error == null;
+    public string KindLabel => IsMode ? $"mode pack · {Entry.Mode} · {Entry.Version}" : $"version pack · {Entry.Version}";
+    public string Description => Entry.Description ?? "";
+    public string CountsText => string.Join(" · ", Entry.Counts.OrderByDescending(c => c.Value).Select(c => $"{c.Value:N0} {c.Key}"));
+    public string DetailText => $"{MemoryBank.FormatBytes(Entry.Bytes)} · " +
+        (Entry.Vectors > 0 ? $"{Entry.Vectors:N0} vectors {Entry.EmbeddingModel}@{Entry.Dims}" : "no vectors") +
+        (Entry.NeedsEmbedding > 0 ? $" · {Entry.NeedsEmbedding} to embed on import" : "") +
+        $" · {Entry.Builder} · source {Short(Entry.SourceHash)}";
+    public string FilesText => Entry.Files.Count > 0 ? "docs: " + string.Join(", ", Entry.Files) : "";
+
+    private static string Short(string? h) => h is { Length: > 12 } ? h[..12] : h ?? "?";
 }
 
 /// <summary>
@@ -82,12 +104,71 @@ public static class ShardService
         {
             var m = ShardFile.ReadManifest(path);
             return new ShardFileInfo(path, m.Name, m.Kind, m.Total, m.PackVersion, m.Created, bytes, m.Description, null,
-                string.Join(" · ", m.Counts.OrderByDescending(c => c.Value).Select(c => $"{c.Value} {c.Key}")), m.Embeddings?.Model);
+                string.Join(" · ", m.Counts.OrderByDescending(c => c.Value).Select(c => $"{c.Value} {c.Key}")), m.Embeddings?.Model,
+                m.Kind == "pack" ? m.Pack?.Mode ?? m.Selection.PackMode : null);
         }
         catch (Exception ex) when (ex is ShardFormatException or IOException or InvalidDataException or UnauthorizedAccessException)
         {
             return new ShardFileInfo(path, System.IO.Path.GetFileNameWithoutExtension(path), "?", 0, null, null, bytes, null, ex.Message, "", null);
         }
+    }
+
+    // ------------------------------------------------------------------ default packs
+
+    /// <summary>
+    /// The default knowledge packs folder: <c>Explorer:DefaultPacksDir</c> (settings or env <c>MINECLAW_Explorer__DefaultPacksDir</c>), else
+    /// <c>shards/defaults</c> next to the exe when it ships there, else the repo's <c>shards/defaults</c>.
+    /// </summary>
+    public static string DefaultPacksDir(ExplorerConfig? config)
+    {
+        if (config?.Raw["Explorer:DefaultPacksDir"] is { Length: > 0 } d) return System.IO.Path.GetFullPath(System.IO.Path.IsPathRooted(d) ? d : System.IO.Path.Combine(ExplorerPaths.Root, d));
+        var beside = System.IO.Path.Combine(AppContext.BaseDirectory, "shards", "defaults");
+        return Directory.Exists(beside) ? beside : System.IO.Path.Combine(ExplorerPaths.Root, "shards", "defaults");
+    }
+
+    /// <summary>
+    /// The packs of a defaults folder: index.json's entries (version packs first, then modes), each checked against its file (missing or
+    /// not verifying = an error on the row); a .mcshard there without an index entry is listed from its own manifest.
+    /// </summary>
+    public static IReadOnlyList<DefaultPackInfo> ListDefaults(string dir)
+    {
+        if (!Directory.Exists(dir)) return [];
+        var index = PackIndex.Load(dir);
+        var list = new List<DefaultPackInfo>();
+        foreach (var e in index.Packs)
+        {
+            var path = System.IO.Path.Combine(dir, e.File);
+            string? error = null;
+            if (!File.Exists(path)) error = "missing: " + e.File + " (rebuild with tools/ShardPacks)";
+            else
+                try
+                {
+                    var m = ShardFile.ReadManifest(path);
+                    if (m.ContentHash != e.ContentHash) error = "the file doesn't match index.json (rebuild with tools/ShardPacks)";
+                }
+                catch (Exception ex) when (ex is ShardFormatException or IOException or InvalidDataException) { error = ex.Message; }
+            list.Add(new DefaultPackInfo(e, path, error));
+        }
+        foreach (var path in Directory.EnumerateFiles(dir, "*" + ShardFile.Extension).Order(StringComparer.OrdinalIgnoreCase))
+        {
+            var file = System.IO.Path.GetFileName(path);
+            if (index.Packs.Any(p => p.File.Equals(file, StringComparison.OrdinalIgnoreCase))) continue;
+            try
+            {
+                var m = ShardFile.ReadManifest(path);
+                var pi = m.Pack;
+                list.Add(new DefaultPackInfo(new PackIndexEntry
+                {
+                    File = file, Name = pi?.Name ?? m.Name, Kind = pi?.Kind ?? (m.Selection.PackMode != null ? ShardPackInfo.ModeKind : ShardPackInfo.VersionKind),
+                    Version = pi?.Version ?? m.PackVersion ?? "?", Mode = pi?.Mode ?? m.Selection.PackMode, Description = m.Description,
+                    Counts = new SortedDictionary<string, int>(m.Counts, StringComparer.Ordinal), Records = m.Total, Bytes = new FileInfo(path).Length,
+                    Vectors = m.Embeddings?.Count ?? 0, EmbeddingModel = m.Embeddings?.Model, Dims = m.Embeddings?.Dims ?? 0, Files = pi?.Files ?? [],
+                    SourceHash = pi?.SourceHash, ContentHash = m.ContentHash, Builder = pi?.Builder ?? "not in index.json",
+                }, path, m.Kind == "pack" ? null : "not a knowledge pack"));
+            }
+            catch (Exception ex) when (ex is ShardFormatException or IOException or InvalidDataException) { }
+        }
+        return list.OrderBy(p => p.IsMode).ThenBy(p => p.Entry.Version, StringComparer.Ordinal).ThenBy(p => p.Name, StringComparer.Ordinal).ToList();
     }
 
     /// <summary>A file name for a new shard: data/shards/{slug}-{yyyyMMdd-HHmm}.mcshard.</summary>

@@ -230,6 +230,10 @@ public sealed class ShardCollector
         });
     }
 
+    /// <summary>A knowledge chunk (ref <c>kb:{file}:{n}</c>) of one of these doc files.</summary>
+    public static bool InFiles(ShardRecord r, IReadOnlyCollection<string> files) =>
+        r.Ref is { } rf && files.Any(f => rf.StartsWith("kb:" + f + ":", StringComparison.OrdinalIgnoreCase));
+
     // ======================= doc ref → record =======================
 
     private Dictionary<string, ShardRecord>? _byRef;
@@ -270,8 +274,14 @@ public sealed class ShardCollector
                 break;
             }
             case "pack":
-                result = All(ShardKinds.GameData).Concat(s.IncludeKnowledgeDocs ? All(ShardKinds.Knowledge) : []);
+            {
+                // A mode pack is its knowledge docs only; a version pack is the game data (+ its knowledge docs, or every chunk).
+                IEnumerable<ShardRecord> kb = s.KnowledgeFiles is { Count: > 0 } files
+                    ? All(ShardKinds.Knowledge).Where(r => InFiles(r, files))
+                    : s.IncludeKnowledgeDocs && s.PackMode == null ? All(ShardKinds.Knowledge) : [];
+                result = (s.PackMode == null ? All(ShardKinds.GameData) : []).Concat(kb);
                 break;
+            }
             default:
             {
                 var kinds = s.Kinds is { Count: > 0 } ks ? ks.Select(ShardKinds.Normalize).OfType<string>().Distinct().ToList() : ShardKinds.All.ToList();

@@ -25,11 +25,14 @@ public sealed partial class ShardsViewModel(MainWindowViewModel shell) : PageVie
 
     public ObservableCollection<ShardFileInfo> Files { get; } = [];
     public ObservableCollection<ShardHistoryRow> History { get; } = [];
+    /// <summary>The default knowledge packs (shards/defaults: version packs and mode packs, from index.json).</summary>
+    public ObservableCollection<DefaultPackInfo> DefaultPacks { get; } = [];
 
     [ObservableProperty] private ShardFileInfo? _selectedFile;
     [ObservableProperty] private string _activePack = "open a db to see it";
     [ObservableProperty] private string _filesInfo = "";
     [ObservableProperty] private string _historyInfo = "";
+    [ObservableProperty] private string _defaultsInfo = "";
     [ObservableProperty] private string _lastResult = "";
     [ObservableProperty] private bool _running;
     [ObservableProperty] private string _stage = "";
@@ -42,6 +45,7 @@ public sealed partial class ShardsViewModel(MainWindowViewModel shell) : PageVie
     public Func<string, Task<string?>>? PickSavePath { get; set; }
 
     public string Folder => ExplorerPaths.Display(ShardService.ShardsDir);
+    public string DefaultsFolder => ShardService.DefaultPacksDir(Shell.Config);
 
     public override Task LoadAsync(MemoryBank? bank, CancellationToken ct)
     {
@@ -51,7 +55,8 @@ public sealed partial class ShardsViewModel(MainWindowViewModel shell) : PageVie
 
     public override void Activate() => _ = RefreshAsync();
 
-    public static string PackLabel(KnowledgePackInfo p) => p.IsDefault ? $"{p.Version} (built-in seed)" : $"{p.Version} · {p.Name}";
+    /// <summary>"b1.8.1-gamedata (b1.8.1) + skyblock": the db's version pack and its active mode packs.</summary>
+    public static string PackLabel(KnowledgePackInfo p) => p.Label;
 
     [RelayCommand]
     public async Task RefreshAsync()
@@ -60,6 +65,13 @@ public sealed partial class ShardsViewModel(MainWindowViewModel shell) : PageVie
         Files.Clear();
         foreach (var f in files) Files.Add(f);
         FilesInfo = files.Count == 0 ? $"No shards in {Folder} yet: export one, or drop a .mcshard on the window to import it." : $"{files.Count} shard file(s) in {Folder}";
+        var dir = DefaultsFolder;
+        var defaults = await Task.Run(() => ShardService.ListDefaults(dir));
+        DefaultPacks.Clear();
+        foreach (var d in defaults) DefaultPacks.Add(d);
+        DefaultsInfo = defaults.Count == 0
+            ? $"No default packs in {ExplorerPaths.Display(dir)}: build them with `dotnet run --project tools/ShardPacks -- build`."
+            : $"{defaults.Count(d => d.IsVersion)} version pack(s), {defaults.Count(d => d.IsMode)} mode pack(s) in {ExplorerPaths.Display(dir)}";
         await RefreshHistoryAsync();
     }
 
@@ -117,11 +129,33 @@ public sealed partial class ShardsViewModel(MainWindowViewModel shell) : PageVie
     [RelayCommand]
     private Task ImportSelected() => SelectedFile is { } f ? ImportAsync(f.Path) : Task.CompletedTask;
 
+    // ------------------------------------------------------------------ default packs: one click into the diff-first import
+
+    [RelayCommand]
+    private Task PreviewSwap(DefaultPackInfo? p) => p is { Ok: true, IsVersion: true } ? ImportAsync(p.Path, ShardImportMode.SwapPack) : Task.CompletedTask;
+
+    [RelayCommand]
+    private Task PreviewAddMode(DefaultPackInfo? p) => p is { Ok: true, IsMode: true } ? ImportAsync(p.Path, ShardImportMode.AddMode) : Task.CompletedTask;
+
+    [RelayCommand]
+    private Task PreviewRemoveMode(DefaultPackInfo? p) => p is { Ok: true, IsMode: true } ? ImportAsync(p.Path, ShardImportMode.RemoveMode) : Task.CompletedTask;
+
+    [RelayCommand]
+    private void OpenDefaultsFolder()
+    {
+        try
+        {
+            Directory.CreateDirectory(DefaultsFolder);
+            Process.Start(new ProcessStartInfo { FileName = DefaultsFolder, UseShellExecute = true });
+        }
+        catch (Exception ex) { Shell.Status = "Can't open the folder: " + ex.Message; }
+    }
+
     /// <summary>
     /// Diff first, then the write: needs edit mode (it offers to turn it on), goes to the edit target (local file + backup, or the
     /// live bot), then runs the import's scoped RAPTOR rebuild (local) or follows the bot's background job (live).
     /// </summary>
-    public async Task ImportAsync(string path)
+    public async Task ImportAsync(string path, ShardImportMode? preset = null)
     {
         Shell.Navigate("shards");
         if (Running) { Shell.Status = "An import is already running"; return; }
@@ -140,7 +174,7 @@ public sealed partial class ShardsViewModel(MainWindowViewModel shell) : PageVie
             var target = Shell.Edit.OpenTarget();
             var active = Bank != null ? KnowledgePack.ActiveVersion(Bank.Db) : KnowledgePack.DefaultVersion;
             var options = await ShowImport(new ShardImportDialogRequest(info, target.Describe, Shell.Edit.IsLive, active,
-                o => target.PreviewShardAsync(path, o, CancellationToken.None)));
+                o => target.PreviewShardAsync(path, o, CancellationToken.None), preset));
             if (options == null) return;
             if (!await Shell.Edit.EnsureBackupAsync(target)) return;
             Running = true;
@@ -168,6 +202,7 @@ public sealed partial class ShardsViewModel(MainWindowViewModel shell) : PageVie
             }
             await RefreshHistoryAsync();
             if (!Shell.Edit.IsLive && result.Ok) await Shell.ReloadAsync();
+            else if (Bank != null) ActivePack = PackLabel(KnowledgePack.Active(Bank.Db));
         }
         catch (OperationCanceledException) { LastResult = Shell.Status = "Import cancelled"; }
         catch (Exception ex) { LastResult = Shell.Status = "Import failed: " + ex.Message; }

@@ -6,7 +6,11 @@ namespace MineClaw.Agent.Rag;
 
 public sealed record KnowledgeChunk(string File, int Index, string Title, string Text);
 
-public sealed record KnowledgeLoad(string Core, int Files, int Chunks, int Reindexed, bool CoreTruncated);
+public sealed record KnowledgeLoad(string Core, int Files, int Chunks, int Reindexed, bool CoreTruncated)
+{
+    /// <summary>Docs on disk left out because their pack marker isn't among the db's active packs (e.g. skyblock in a plain world).</summary>
+    public IReadOnlyList<string> Excluded { get; init; } = [];
+}
 
 /// <summary>
 /// Splits knowledge markdown into retrieval chunks and extracts the "core rules" kept in the cached prompt.
@@ -162,10 +166,22 @@ public static partial class KnowledgeChunker
     }
 }
 
-/// <summary>Keeps the knowledge chunks in <see cref="RagIndex"/> in sync with <c>docs/knowledge/*.md</c> (re-index on file hash change).</summary>
+/// <summary>
+/// Keeps the knowledge chunks in <see cref="RagIndex"/> in sync with <c>docs/knowledge/*.md</c> (re-index on file hash change).
+/// A doc with a pack marker (<see cref="KnowledgeDocPack"/>) is only in when its pack is active in the db (meta
+/// <c>knowledge_pack</c>: the version pack + mode packs): a skyblock doc in a plain world adds no core lines and no chunks (and
+/// its chunks from before are dropped). Active packs whose files aren't on disk contribute the core stored at import.
+/// </summary>
 public static class KnowledgeIndexer
 {
     public const string Kind = "knowledge";
+
+    /// <summary>The chunk docs of one knowledge file, exactly as <see cref="Sync"/> indexes them (pack builders use this too).</summary>
+    public static (string Core, List<RagDoc> Docs) Docs(string fileName, string markdown, RagOptions options, DateTimeOffset? at = null)
+    {
+        var (core, chunks) = KnowledgeChunker.Parse(fileName, markdown, options.ChunkMinTokens, options.ChunkMaxTokens);
+        return (core, chunks.Select(c => new RagDoc(Ref(c), Kind, c.Title, c.Text) { Source = fileName, Weight = 1.0, At = at }).ToList());
+    }
 
     public static KnowledgeLoad Sync(RagIndex index, string? directory, RagOptions options)
     {
@@ -173,6 +189,8 @@ public static class KnowledgeIndexer
         var core = new StringBuilder();
         int files = 0, chunks = 0, reindexed = 0;
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var excluded = new List<string>();
+        var active = Admin.Shards.KnowledgePack.Active(db);
 
         if (!string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory))
         {
@@ -180,6 +198,14 @@ public static class KnowledgeIndexer
             {
                 var name = Path.GetFileName(file);
                 var text = File.ReadAllText(file);
+                if (Admin.Shards.KnowledgeDocPack.Parse(text) is { } pack && !pack.ActiveIn(active))
+                {
+                    // Not in this world's packs: no core, no chunks; drop what an earlier start indexed.
+                    excluded.Add(name);
+                    index.DeleteByPrefix($"kb:{name}:");
+                    db.Exec("DELETE FROM knowledge_files WHERE path = $p", ("$p", name));
+                    continue;
+                }
                 seen.Add(name);
                 files++;
                 var (fileCore, fileChunks) = KnowledgeChunker.Parse(name, text, options.ChunkMinTokens, options.ChunkMaxTokens);
@@ -209,10 +235,13 @@ public static class KnowledgeIndexer
             db.Exec("DELETE FROM knowledge_files WHERE path = $p", ("$p", gone));
         }
 
+        foreach (var stored in Admin.Shards.KnowledgePack.StoredCores(active, seen))
+            core.Append(core.Length > 0 ? "\n\n" : "").Append(stored);
+
         var coreText = core.ToString();
         bool truncated = coreText.Length > options.MaxCoreChars;
         if (truncated) coreText = coreText[..options.MaxCoreChars];
-        return new KnowledgeLoad(coreText, files, chunks, reindexed, truncated);
+        return new KnowledgeLoad(coreText, files, chunks, reindexed, truncated) { Excluded = excluded };
     }
 
     private static string Ref(KnowledgeChunk c) => $"kb:{c.File}:{c.Index}";

@@ -1,0 +1,5 @@
+{
+  "pc": {
+    "1.8.9": { "items": "pc/1.8", "blocks": "pc/1.8", "recipes": "pc/1.8", "foods": "pc/1.8" }
+  }
+}

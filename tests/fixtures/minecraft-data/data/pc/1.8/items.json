@@ -1,0 +1,7 @@
+[
+  { "id": 263, "displayName": "Coal", "name": "coal", "stackSize": 64 },
+  { "id": 270, "displayName": "Wooden Pickaxe", "name": "wooden_pickaxe", "stackSize": 1, "maxDurability": 59 },
+  { "id": 280, "displayName": "Stick", "name": "stick", "stackSize": 64 },
+  { "id": 296, "displayName": "Wheat", "name": "wheat", "stackSize": 64 },
+  { "id": 297, "displayName": "Bread", "name": "bread", "stackSize": 64 }
+]

@@ -1,0 +1,8 @@
+{
+  "5": [ { "ingredients": [17], "result": { "count": 4, "id": 5, "metadata": 0 } } ],
+  "58": [ { "inShape": [[5, 5], [5, 5]], "result": { "count": 1, "id": 58, "metadata": 0 } } ],
+  "61": [ { "inShape": [[4, 4, 4], [4, null, 4], [4, 4, 4]], "result": { "count": 1, "id": 61, "metadata": 0 } } ],
+  "270": [ { "inShape": [[5, 5, 5], [null, 280, null], [null, 280, null]], "result": { "count": 1, "id": 270, "metadata": 0 } } ],
+  "280": [ { "inShape": [[5], [5]], "result": { "count": 4, "id": 280, "metadata": 0 } } ],
+  "297": [ { "inShape": [[296, 296, 296]], "result": { "count": 1, "id": 297, "metadata": 0 } } ]
+}
