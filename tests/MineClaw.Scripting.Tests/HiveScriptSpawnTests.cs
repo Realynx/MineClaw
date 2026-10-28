@@ -53,7 +53,7 @@ public class HiveScriptSpawnTests(Xunit.Abstractions.ITestOutputHelper output)
         return (h, b, sup, launcher);
     }
 
-    private const string Loop = "cp\"start\"\nmine{'cobblestone', 2}\nwait(0.3)\ncp\"half\"\nmine{'cobblestone', 2}\nreturn 'mined 4'";
+    private const string Loop = "cp('start')\nmine('cobblestone', 2)\nwait(0.3)\ncp('half')\nmine('cobblestone', 2)\nreturn 'mined 4'";
 
     [Fact]
     public async Task Inline_code_is_opus_brain_only_and_lint_failures_block_the_spawn()
@@ -69,7 +69,7 @@ public class HiveScriptSpawnTests(Xunit.Abstractions.ITestOutputHelper output)
         Assert.False(none.Ok);
         Assert.Empty(launcher.Started);
 
-        var lint = await h.Run("hive", new { op = "spawn", name = "67", code = "os.execute('rm -rf /')\nmine{'cobblestone', 4}" });
+        var lint = await h.Run("hive", new { op = "spawn", name = "67", code = "eval('rm -rf /')\nmine('cobblestone', 4)" });
         Assert.False(lint.Ok);
         Assert.StartsWith("error: lint errors", lint.Text); // the findings go back to main's brain
         output.WriteLine(lint.Text);
@@ -119,10 +119,10 @@ public class HiveScriptSpawnTests(Xunit.Abstractions.ITestOutputHelper output)
         var brain = llm.Requests.First(r => r.Tier == ModelTier.Main);
         Assert.Equal("haiku", rt.Options.Llm.ProfileOfModel(rt.Options.Llm.ModelFor(brain.Tier)));
 
-        var write = await h.Run("script", new { op = "run", name = "x", code = "mine{'cobblestone', 1}" }); // as this brain
+        var write = await h.Run("script", new { op = "run", name = "x", code = "mine('cobblestone', 1)" }); // as this brain
         Assert.False(write.Ok);
         Assert.Equal(ScriptPrompts.BrainOnly, write.Text);
-        b.Library.SaveVersion("dig1", "mine{'cobblestone', 1}\nreturn 'dug'", author: "main/claude-opus-5-5");
+        b.Library.SaveVersion("dig1", "mine('cobblestone', 1)\nreturn 'dug'", author: "main/claude-opus-5-5");
         var run = await h.Run("script", new { op = "run", name = "dig1" });
         Assert.True(run.Ok, run.Text);
         Assert.Equal("haiku", rt.Options.Llm.MainProfile);
@@ -201,7 +201,7 @@ public class HiveScriptSpawnTests(Xunit.Abstractions.ITestOutputHelper output)
     [Fact]
     public async Task A_restart_resumes_the_script_from_its_last_checkpoint()
     {
-        const string code = "cp\"a\"\nmine{'cobblestone', 1}\ncp\"b\"\nwait(30)\nreturn 'done'";
+        const string code = "cp('a')\nmine('cobblestone', 1)\ncp('b')\nwait(30)\nreturn 'done'";
         var (h, b, _, runner, _, progress) = Clone(code);
         using var __ = runner;
         var rt = h.Runtime;

@@ -55,7 +55,7 @@ The LLM must never be on the hot path. Claude is a *planner and conversationalis
    along with each event.
    Spatial work pulls pictures: `see {views[], focus, radius, question}` renders ONE contact sheet of a focused spot (vision v2,
    below) and, with a perception model configured, the brain gets ≈100 tokens of voxel-verified text instead of the image.
-   In direct mode the sheet (≈280-310 image tokens; the legacy `see {view}` = one ≤~384 px picture, ≈100-200 tokens;
+   In direct mode the sheet (≈310 image tokens, 6 panels of 3D renders; the legacy `see {view}` = one 384×288 picture, ≈150 tokens;
    MineClaw.Render: grid + coordinates + compass + labels from memory; b1.8.1 textures read at runtime from the user's own
    client jar, never committed) rides only in the newest tool_result; compaction swaps it for a one-line stub and a rolling
    hourly cap (`Bot:Vision:ImagesPerHour`, 30) bounds spend. `look {map:true}` is the cheap ASCII grid (role letters included).
@@ -88,7 +88,7 @@ The LLM must never be on the hot path. Claude is a *planner and conversationalis
      recall_detail loop that returns a ≤300-char answer with #ids), and budget-fallback chat. Episode summaries are
      mechanical (zero tokens). Free per-turn auto-retrieval (`[memory]`) is unchanged.
    - **Author (Opus 5.5 only, `Agent/Authoring/AuthorAgent`)**: `script {name, goal}` (and the blueprint designer) hand a short
-     spec to a SEPARATE Opus context: its own cached reference (Lua cheat-sheet / DSL), the brief + facts the caller pulls,
+     spec to a SEPARATE Opus context: its own cached reference (the generated JS SDK reference + examples / DSL), the brief + facts the caller pulls,
      up to `Agent:Llm:AuthorMaxTokens` (100K, clamped to 128K) output per call at `AuthorEffort` (medium), streamed above
      `StreamAboveTokens` (16K; same message/usage/stop_reason, prefix caching kept), and a write → lint → revise loop
      (`AuthorMaxVersions` 3) capped at `AuthorMaxUsd` ($3/job: a stream is aborted once its running cost passes it). The
@@ -223,6 +223,104 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
   on `WorkerModel` unless that profile names `Worker` explicitly; a worker stops after 2 identical failures (numbers ignored).
   Worker-tier calls are booked as worker spend whatever model answered.
 
+## Scripting (MineClaw.Scripting) — JavaScript jobs, the SDK, reactive machines
+
+A saved script is a job that runs while the brain sleeps (zero tokens per step). The brain never writes code: its whole view
+is `script {name|goal, params?, op}` (≈ 60 tokens of schema) and one cached line (`ScriptPrompts.AuthorLine`, ≤ 40 tokens; the
+old 420-token Lua cheat-sheet is gone from its prefix). `goal` commissions the Opus author (above), whose cached system prompt is
+the rules + the SDK reference generated from the code + three worked examples (≈ 3,100 tokens, `ScriptPrompts.AuthorSystem`).
+`name` runs a saved script; `params` tune it for this run; `op=save name params` keeps the tunables without new code.
+
+- **Engine: JavaScript on Jint 4.17** (pure managed, strict mode, ES2023; `Runtime/Js/JsRuntime`). **Execution model: host calls
+  are synchronous on the script's own thread** — `mine("cobblestone", 16)` blocks that thread only and returns `{ok, msg, n}`;
+  the call is the safe point where pauses, interrupts, handlers and machine transitions happen, exactly as in the Lua engine.
+  The body runs inside an `async` function, so `await` is accepted (harmless: promise jobs drain synchronously) and top-level
+  `return` works. *Why not await-only promises or generators:* Jint resumes promise continuations only when its event loop is
+  pumped on the engine's thread (Task interop is still experimental), so "async" host calls would still be synchronous underneath
+  while making every SDK helper and callback `async` and every call `await`ed — a forgotten `await` silently yields a pending
+  Promise (`r.ok` undefined), the commonest LLM JS bug. Generators can't yield across a callback (`forEach`, handlers, `retry(fn)`),
+  so every helper would need `function*`/`yield*`. Both cost output tokens on every call. Blocking calls keep the proven pause /
+  resume / interrupt / checkpoint semantics with zero ceremony; parallelism lives in lanes (one thread + engine per body), not in
+  one engine's event loop.
+- **Sandbox** (`JsRuntime`, `JsBudget`): no CLR access, no `require`/`import`/`eval`/`Function`, recursion (`MaxCallDepth`),
+  array size and regex-time limits, `PromiseTimeout` 2 s; the session's budget hook runs every 16 statements (stop requests,
+  statement limit, busy loop without an action, memory allocated between host calls). Host signals (stop, limits, unwinds) are CLR
+  exceptions: no `try/catch` in the script sees them. Globals are read-only (`def`), `me`/`inv`/`params()`/`args` frozen.
+- **One core, two runtimes** (`ScriptSession` + `Runtime/IScriptRuntime`): the session owns control (thread, safe points,
+  pause/resume, limits, events, checkpoints, timing, outcome) and a neutral API (JSON nodes in/out, `ScriptSession.Api.cs`);
+  `ArgMapper` maps any call to tool JSON in one place (positional in schema order, one named object or trailing options, `n` =
+  count, positions as `"x,y,z"`/`[x,y,z]`/`{x,y,z}`). Every game tool, alias (`go`, `gen`, `take`, `chop`, ...) and catalog skill is
+  a global in snake_case and camelCase (`chop_tree`/`chopTree`); the whole Lua API is there with the same names (`waitfor` →
+  `waitFor`, both work).
+- **The SDK** (`Sdk/js/NN-module.js`, embedded, parsed once per process; each `def` has a doc comment and `SdkReference.Build()`
+  turns them into the author's reference — a test pins that every global is documented): **core** (ok, expect, fail, log/console,
+  prog, wait, waitFor, say, emote, ask, wake, cp, on, skill, params, carry, args) · **world** (me, inv, block, near, hostile, where,
+  night, time, players, pos, dist) · **flow** (retry, upto, until, seq, sel, timeout, room, ensure) · **machine** (machine, after,
+  every, when, signal) · **policies** (use, policy, keepFed, fleeVoidEdges, defendIfAttacked, depositWhenFull,
+  replaceToolWhenBroken, pauseAtNight) · **jobs** (store, restock, mineGen, harvestFarm, chopTrees, deliver, waitForDay,
+  guardArea) · **crew** (body, bodies, spawn, parallel, crew.get/set/inc/send/recv/barrier/lock/unlock). C# where it is hot or owns
+  semantics (signals, machine runner, timeouts, crew lanes), JS where it reads clearer (helpers, policies, jobs).
+- **Reactive core** (`Sdk/MachineRunner`, `Sdk/SignalSet`): `machine({initial, states:{s:{enter, tick, exit, on, final}}, on,
+  guards, bb, policies, thresholds})` runs enter → tick… → exit per state. Events come from the bot's event stream (danger and its
+  topics lowhp/void/died, chat and `'chat:<text>'`, join) and from **signals**, edge-triggered conditions polled by the session's
+  watchdog and at safe points: built-ins (hungry, invFull, toolBroke[:kind], hurt, night, day), timers (`after(ms)`, `every(ticks)`)
+  and `when(() => cond)`. An event the current state listens for cuts the running interruptible action and unwinds the tick at the
+  next safe point (`ScriptUnwind`); a guard that says no leaves a danger to the default policy (pause + wake). Repeating timers
+  never cut (they'd restart the action every period) and coalesce; a cut `wait()` resumes for the time left. Transitions asked for
+  while a state exits are deferred. Deterministic: the same events in the same order give the same transitions. State, history
+  (≤ 20) and the blackboard go into checkpoint `@id` on every transition (`m.state`, `m.history`, `m.bb`, `m.go()`), and the status
+  line shows `state mine (4 moves)`. **Policies** are `signal + on` pairs attachable to any script (`use(...)`) or machine
+  (`policies:[...]`): they handle the event between actions and the cut action carries on (fight-then-resume).
+- **Params** (`params({minFood: 14})`, once at the top): defaults < saved (`RoutineScript.Params`, `op=save name params`) < this
+  run's `params`/`args`; frozen; recorded per run with the timings in `ScriptVersion.ParamRuns` (≤ 20) for later self-tuning, and in
+  the run log line / `ScriptRunRecord`. The catalog shows `tuned {...}`.
+- **Checkpoints**: `cp(label)` and machine transitions save their snapshot in memory and in the saved script's row
+  (`RoutineScript.Checkpoints`, "lane/label"), so `resume_from` after a restart or respawn (`CloneScriptRunner` writes the label
+  into the standing order) restores `carry` — and a machine's state + blackboard — instead of starting over.
+- **Crews** (`Crew/ICrewPort`, `ICrewBoard`): `parallel([[body, 'role', args], ...], {keepGoing})` / `spawn()` start *lanes*: the
+  same script reloaded on another body, calling a top-level role function; `main(args)` is the coordinator. First failure cancels
+  the siblings unless keepGoing; results come back in order. `body("67")` reads vitals and (in-process) runs one action on an
+  idle body. In-process bodies: `Bot/Bodies/BodyCrewPort` starts the lane on that body's own ScriptBridge as its activity (its
+  slot, its interrupts, "body busy" for brain tools); hive mode: `Hive/Crew/HiveCrewPort` starts it as a hive script spawn
+  (`__role`/`__crew` in the args, `after: sleep`) and reads the hive result; the board is the shared db (`DbCrewBoard`: tables
+  `crew_board`, `crew_inbox`, `crew_locks`, ≤ 4 KB per crew), which clone processes reach too (`LaneOnlyCrewPort`).
+- **Lint and dry run before anything is saved or run** (`Lint/JsLint` on the Acornima AST; `ScriptLint` dispatches by language):
+  errors = syntax, unknown global (with the closest name), forbidden construct (eval/Function/require/import/timers/host internals/
+  debugger), constant-true loop that never acts or waits, a required tool arg a literal call can't fill, assignment to an SDK
+  global, a machine target/initial that isn't a state, crew top level doing work, an unknown role, the same body twice; warnings =
+  unchecked action results in loops, long script without cp/machine, tool job without ensure, say in a loop or a lane, acting loop
+  that never ends, unknown machine event. The author's check adds `ScriptDryRun` (the bot's real action names, a fake world where
+  every action succeeds, starter kit, time ×400, ≤ 2.5 s): runtime ReferenceErrors/TypeErrors/binding misuse go back to the author,
+  never to a live run. Feedback is the same compact `lint errors (fix and resubmit): L3 …` text.
+- **Telemetry**: per run: actions, active time, items gained, effective params, per-action timing (`ActionTiming`: calls, fails,
+  total time — "gen 12x 31.2s"), language, body, machine state and transitions (log line, `ScriptRunRecord`, `ParamRuns`).
+- **Mined from the saved library** (data/alice-snap, 16 unique scripts, 133 lines): bounded repeat wrapper 16/16; deposit to a
+  chest + expect 14/16; hard-coded chest/cell coordinates 14/16 (→ params); gen mining loop 13/16 (9 near-duplicates differing
+  only in the cell → `mineGen` + params); ensure a pickaxe 12/16; room(n) 12/16; inventory-full check 12/16; cp mine/store
+  phases 8/16; retry(3, gen) 7/16; "mined nothing" guard 5/16; low-hp retreat 2/16; busy-cell fallback, fight at night, chop +
+  replant with a spot list, deliver to a player, wake when done 1/16 each. Wheat harvest, wait-for-day and fight-then-resume
+  weren't in the library yet but are the brain's common asks: `harvestFarm`, `waitForDay`, `defendIfAttacked`/`guardArea`.
+- **Speed** (hand-written equivalents of five representative jobs, before = Lua with the old prelude, after = JS + SDK;
+  `Js/SpeedComparisonTests`; tokens = chars/3.5): gen mining loop 19 → 4 lines (238 → 68 output tokens), wheat harvest 11 → 8
+  (150 → 102), deposit run 7 → 7 (81 → 61), guard the gen at night 20 → 12 (236 → 168), 2-body gen mining 25 → 11 (248 → 113):
+  82 → 42 lines (−49 %), 953 → 512 output tokens (−46 %), i.e. ≈ −46 % author generation time at the same tokens/s. Every after-
+  script passes the author loop in one call (lint + dry run 30-630 ms). The brain's prefix is ≈ 420 tokens lighter on every call,
+  and a brain that used to inline-write the Lua now emits ≈ 30 tokens (`script{name, goal}`). Engine start per run ≈ 1 ms (SDK
+  pre-parsed), the same as Lua.
+- **Lua: migration and removal.** Saved versions carry their language (`ScriptVersion.Lang`, null = legacy Lua). At startup the
+  main process runs `LuaMigration` once in the background (`Scripting:MigrateLua`, default true): every saved script whose active
+  version is Lua, most used first, goes to the Opus author with the SDK reference (`ScriptPrompts.MigrationBrief`), must pass the
+  same lint + dry run, and is saved as the next version with the Lua kept as history (rollback works; auto-revert compares their
+  reliability); caps `MigrateMaxUsdPerScript` $0.25 and `MigrateMaxUsd` $5; each script gets a verdict
+  (`RoutineScript.Migration`), so it never repeats. Until then `Scripting:LegacyLua` (default true) runs unmigrated Lua versions on
+  the legacy runtime (`Runtime/Lua/*`, LuaCSharp 0.5.7); new code is JS only (inline Lua is refused with `ScriptPrompts.JsOnly`
+  unless `AcceptLuaCode`). **Removal steps**: (1) after a week with every row's `Migration` = "ok…" (or the script archived), set
+  `Scripting:LegacyLua=false` on alice and watch for "legacy Lua and not migrated" refusals; (2) delete `Runtime/Lua/`
+  (`LuaRuntime`, `LuaPrelude`), `Lint/LuaLint.cs`, the Lua branch of `ScriptRuntimes`/`ScriptLint`, `ScriptLanguage.Lua`/
+  `ScriptLanguages.Detect` and `ScriptOptions.LegacyLua/AcceptLuaCode`; (3) drop the `LuaCSharp` package reference; (4) port or
+  delete the legacy engine tests that use `new Rig()` (EngineTests, LiveSession2Tests); (5) keep `ScriptVersion.Lang`, the old
+  Lua versions stay readable history in the rows.
+
 ## Acquisition planner (Bot/GameTools/AcquisitionPlanner) — jobs get their own tools
 
 Zero tokens, no model call per step. A need (tool kind ≥ tier, or N of an item) resolves cheapest-reliable first: inventory →
@@ -232,7 +330,7 @@ last trees choppable → planks → sticks → table → wood pick → 3 cobble 
 player (default: stop). Stone first whenever cobble is reachable; a gen loop holding a wood pick upgrades once its cobble allows.
 Only trees, generator cells and chest contents are used; protected blocks and the last trees never. Bounded (14 steps, 4 min);
 a non-trivial plan is logged and leads the result ("no pick, making one: logs→planks→sticks→table→wood pick→3 cobble→stone pick").
-Callers: Lua `ensure` (hidden `acquire` tool, no prompt bytes), `Loadout.FetchAsync` (clone loadouts, gen loop re-tool), `mine`
+Callers: the script SDK's `ensure` (hidden `acquire` tool, no prompt bytes), `Loadout.FetchAsync` (clone loadouts, gen loop re-tool), `mine`
 (the block's tool first, so `do mine` too), skill preconditions (`SkillRegistry.AcquireMissing`). Lint warns on a tool job without `ensure`.
 **One resolver** (`Obtainer` → `Crafter` over `ChestStock`): inventory → known chests nearest first (exact variant; never-touch or
 "private" chests skipped; the last sapling/dirt stays) → the whole recipe tree planned over inventory + chests (`CraftPlan.Used`),
@@ -254,7 +352,7 @@ body adapter) all use it; craft always makes new ones (a worn carried pick never
   materials inv+storage, ground extent to the void, protected builds nearby) → the author (`LlmBlueprintAuthor`: main model, its own
   small cached prompt, never the brain's history) → deterministic checks (`DesignChecks`: bill vs inventory+storage with the route
   (gen/trees/craft/ask), floating, falling sand, void columns, protected/never-break overlap, fluids, obstructions, reachable entrance,
-  headroom ≥ 2, light if asked, door halves, torch/ladder walls) → preview (`BlueprintPreview`: ISO+TOP+SIDE contact sheet of the real
+  headroom ≥ 2, light if asked, door halves, torch/ladder walls) → preview (`BlueprintPreview`: ISO (SW) + ORBIT (NE) + TOP 3D sheet of the real
   site with the plan overlaid, role `Planned` = magenta `*`, roofs not cut away; cached by plan+site hash) → perception critique
   (`PerceptionCritic`, passing versions only, booked as perception). The author gets ≈100 tokens of evaluation text, the image only if
   it answers `SHOW`. `Bot:Blueprints:MaxIterations` (3) and `MaxUsdPerDesign` ($0.80); the best passing version is kept.
@@ -264,8 +362,8 @@ body adapter) all use it; craft always makes new ones (a worn carried pick never
   construction; a change line from the requester or a trusted player revises; the consumed line reaches the brain as background only.
   Designs persist (`blueprints`, `blueprint_builds` tables); `design op=build id at` = "another one like the hut" (trusted). The
   supervisor serves `/api/blueprints`, `/api/blueprints/{id}` (bill/eval/DSL/progress) and `/view/blueprint/{id}` (PNG) + a Designs panel.
-- **Construction** (`ConstructionExecutor` running the slicer's `BuildPlan`, as a body job via the hidden `build` tool; Lua `build{bp,
-  part, of, layer}`, `build{bp, undo=true}` and `blueprint(id)`). The **slicer** (`Bot/Building/BuildPlanner`, zero tokens) turns the
+- **Construction** (`ConstructionExecutor` running the slicer's `BuildPlan`, as a body job via the hidden `build` tool; scripts call `build({bp,
+  part, of, layer})`, `build({bp, undo: true})` and `blueprint(id)`). The **slicer** (`Bot/Building/BuildPlanner`, zero tokens) turns the
   voxels into steps like a 3D printer: obstructions first, then layer by layer, support-first, nearest by real path cost. Each step has
   a stand, a clicked face and a technique: Normal, Edge (sneaking, bridging out), Hidden (a face the bot can't see, e.g. the floor's
   underside: mc-dev NetServerHandler checks only feet-to-clicked-block distance < 8, no raytrace; the client keeps its 4.5 eye reach)
@@ -293,8 +391,26 @@ body adapter) all use it; craft always makes new ones (a worn carried pick never
   Supervisor: `/view/buildplan/{id}` (numbered steps coloured by technique, scaffold dashed, columns, progress, gate) and
   `/api/buildplans/{id}`.
   A finished build leaves the placed-block log and becomes a remembered `build` structure (soft-protected); scaffolding stays own-placed.
-- **Bodies**: the executor acts through `IBuildBody` (resolved per call, never a captured client); `IBuildCrew.Bodies` lists them
-  (today the bot's own). `VoxelPlan.Partition(n, byLayer)` = disjoint strips (built at once) or layer bands, each with its `ClaimKey.Area`.
+- **Bodies / crews** (`Bot/Building/CrewSlicer`, `Bot/Blueprints/CrewExecutor`): the slicer is parametric in 1..N builder bodies.
+  The design is sliced once in dependency order from the first body's feet (N=1 = exactly the one-body plan), then the unfinished
+  steps are cut into one `PlanLane` per body: the footprint's (x,z) columns swept along the long axis and cut into contiguous
+  strips balanced by step count, lanes given to the bodies that finish soonest (travel + work), every water-column step in the
+  bucket holder's lane, scaffold removal left to the finale. A lane waits only for the other lanes' steps it needs (the support it
+  clicks, a cell cleared/placed first, its stand's floor, a stand another lane must leave first). The plan carries the one-body vs
+  crew estimate ("with 3 bodies (main, 67, 69) ≈2 min instead of 6 alone": design summary, "build it" reply, `design show`).
+  Run: one body places the gate blocks and asks (the build's single gate; the others wait); then the lanes run in parallel, each
+  doing its first ready step, stands reserved (`StandBoard` + an `Area` lease on the claim board) so no two bodies share a cell,
+  each fetching its own share of the bill (one body at the chests at a time); progress persists per lane (`build_lanes` rows +
+  the plan) and a restart with the same crew resumes each lane. A body that dies/leaves/gets stuck: wait for its respawn when
+  that finishes sooner, else re-slice the rest over the others; a body joining/leaving re-slices too. Finale: whoever finished last
+  runs the one-body executor on the persisted plan (stragglers, scaffold down, water back, done). Crew = `design build{id,
+  bodies:["67","69"]|crew:N}`, default every online idle body above `SplitAboveBlocks` (48). In-process: `RegistryCrew`; hive:
+  `IBuildJobs` (`App/Hosting/HiveBuildJobs`): main slices for itself + idle clones, each clone lane is a hive job running the fixed
+  lane script `build{bp, lane}`, main runs its lane, reads theirs back, and does the finale. Per-lane status in `design show`
+  ("build: lane 67 40/120, lane 69 38/118"). The `build{bp, lane?}` tool (worker tier; scripts also pass part/of/layer/undo/
+  bodies/crew by name) is a thin wrapper over `BlueprintService.BuildAsync`/`BuildLaneAsync`; a delegated "continue building
+  design #4" gets its `build{bp:"4"}` line, an unapproved one is refused back to the brain (`design build{id}` after a trusted go).
+  The old `VoxelPlan.Partition(n, byLayer)` strips (`build{bp, part, of}`) remain for scripts.
 
 ## Protection policy (Bot/Protection + ProtectionPolicy/, Client hooks)
 
@@ -345,7 +461,7 @@ One place decides whether the bot may break a block, why not, and how a player u
   thinking blocks are never sent/returned; usage = `prompt_eval_count`/`eval_count`. Interruptible calls stream (NDJSON).
 - **Startup**: a tier on ollama with an empty endpoint = config error (exit 2); `GET /api/tags` + `/api/show` check the
   tier models exist and support tools (tool-less models are refused for every tier). Anthropic key check covers only
-  Anthropic tiers. A brain that isn't Opus 5.5 logs a warning: Lua authorship is keyed to the brain tier.
+  Anthropic tiers. A brain that isn't Opus 5.5 logs a warning: script authorship is keyed to the brain tier.
 - **Budget**: `Agent:Prices:Ollama` (per MTok, default $0) prices Ollama models; usage and telemetry record provider and
   profile per call; hard caps apply to the sum as before.
 - **Profiles** (`Agent:Llm:Profiles`: opus/sonnet/haiku built in, `local` example = ollama with no model, ignored): the
@@ -358,13 +474,34 @@ One place decides whether the bot may break a block, why not, and how a player u
 
 ## Vision v2 (Render/ContactSheet + Bot/Perception/Vision) — several angles, a separate perception brain
 
-- **Contact sheet** (`ContactSheet`): one `see` = one image of the SAME focus: TOP (role layer), SIDE cut along the work axis
-  (bot→focus line, else the way it faces: looking N or E), ISO, LAYERS (feet layer + the one below; a green dot = air with a
-  side/top face to place against: holes, floor gaps, edges) and optionally EYE (the bot or a named player). Every panel draws the
-  focus (cyan box/ring), the compass and ruler ticks with the focus coordinates in yellow. TOP and ISO cut away blocks above the
-  feet layer that hang over air/fluid down to it (`CutAway`: a roof over a gen hid every gen cell and its water, live 10-27). ≈280-310 tokens for 4 panels (≈300
-  for 5) vs ≈500 image + ≈230 legend tokens for the same views as separate pictures (and 4 tool rounds). Focus: x,y,z, a player,
-  a saved place, `pointed`/`this`; default the current job's target, else the bot.
+- **One renderer** (`Render/EyeRenderer` over `Geometry/BlockGeometry` + `EntityGeometry`): every picture the AI or a person
+  sees (sheet panels, `see {view}`, "iso", "top"/"side"/"layers", hive overview, blueprint previews, the supervisor `/view` and
+  `/camera`, the Live Hive tiles and freecam) is the same CPU raycaster: b1.8.1 per-face tiles + metadata (log tops, furnace
+  fronts, chest halves facing away from walls, doors with mirrored faces, crops by stage, wool), fixed biome tints (grass
+  0x91BD59, foliage 0x48B518; tile 73 sugar cane is already green: untinted), alpha-cut fancy leaves/glass/plants/torches/
+  crops, every render type's shape (crossed squares, torches leaning off walls, # crops, slabs, stairs, fences, panes, ladders,
+  rails, doors, cactus, signs, beds, levers), fluids with RenderBlocks corner heights (source 8/9, sources/falling weigh 11, the
+  same fluid above = 1.0, flow-rotated procedural TextureWaterFX/LavaFX/FlamesFX textures; water blends front to back, lava
+  opaque + emissive), vanilla face shade × block/sky light at the world time, distance fog. Entities are the b1.8.1 models
+  (ModelBiped + char.png, held item, walk swing, sneak; zombie/skeleton/creeper/spider/pig/cow/sheep(+fleece)/chicken/
+  enderman/slime/wolf/pigman with mob/*.png read from the local client jar or `data/assets/mob/`, procedural stand-ins
+  otherwise), burning entities wear Render.renderEntityOnFire layers, drops spin/bob like RenderItem (0.25 cubes or items.png
+  billboards, 1-4 copies), shadows. "top"/"side"/"layers" are orthographic cameras with clip boxes (no flat palette maps any
+  more; `IsoRenderer`/`IsoPalette` only draw the TUI's character viewport and the no-texture fallback colours). The geometry
+  is renderer-agnostic quads (block-local / feet-relative, UVs, shade, light face, pass) for the Live Hive GPU mesher too.
+- **Contact sheet / composite** (`ContactSheet`, `PerspectivePanel`, `ReadingAids`): one `see` = ONE image of up to 6 panels
+  in a fixed ≈228k-pixel budget (≈310 tokens whatever the count; was 522×419 ≈ 292): default EYE (the body's first person),
+  SHOULDER, ORBIT from NW and from SE (40° down), HIGH from the south (65°, north up) + the orthographic TOP map; no body →
+  more orbits. `views` can mix spots (`VisionHub.Composite`): `eye 67` (any body's eyes, a clone's via the view IPC), `cam
+  <coord|landmark|structure|bot> <N..NW|above> [dist]` (a free camera on the merged world memory, staleness in its caption),
+  `orbit <at> [n]`, `follow <name>`, plus the named views; more than 6 panels is refused with a hint to split. Each panel has
+  a caption (viewpoint >facing; time of day, staleness) and reading aids: a 1-block floor grid with every 5th line labelled with
+  its absolute X/Z, a Y ruler at the focus, crosshair + "x,y,z" on the focus/spots, 2/4/8-block rings around the body,
+  an N/E/S/W gizmo, and ≤12 prioritised depth-aware labels (players, mobs + BURNING, drops × count, gen cells G1.., chests,
+  furnace lit/off, structures, the build site) with leader lines; one shared legend strip. The legend text lists each
+  panel's labels with coordinates (the same facts as text). `see {aids:false}` turns them off. ORBIT/HIGH/ISO/TOP cut away
+  roofs over the feet layer (`CutAway`: a roof over a gen hid every gen cell, live 10-27). Render ≈50-180 ms with 8 threads,
+  ≈180-250 ms single-threaded. Focus: x,y,z, a player, a saved place, `pointed`/`this`; default the current job's target, else the bot.
 - **Role layer** (`RoleClassifier`, `BlockRole`): floor, wall, gen cell (G = MINE HERE), water, lava, void, door, station, player
   build (B), own placed (+), protected ($, outline only: floors under a remembered build still read as floors; never crops, farm
   soil or a hive lease), ripe crop (H = HARVEST) / growing crop (:) from the block meta (wheat 7/7), never-break (X), portal (P), from the protection policy's `Check` verdicts, the world
@@ -373,7 +510,9 @@ One place decides whether the bot may break a block, why not, and how a player u
 - **Deterministic first** (`VisionRouter`, rules, zero tokens): every `see`/auto-vision question is classified before any model
   call. Gen cells vs floor/walls (+ which fluids touch each cell), gen health ("water isn't touching"), placeable faces, void
   under / distance to the edge, the focus block + role, the portal sheet + what is beside it, and trees (TreeScan: logs, leaves,
-  soil), saplings, crops, chests, doors, stations and ores are answered exactly from voxels + roles ("[vision] exact: ...").
+  soil), saplings, crops, chests, doors, stations and ores are answered exactly from voxels + roles ("[vision] exact: ..."); drops
+  and mobs from the entity tracker (0x15 pickups until 0x1D; flags from 0x18/0x28 index 0: 0x01 burning, 0x02 sneaking): "3
+  drops: 2 sapling at 4,64,9 (2 m from the focus)", "mobs: 2 zombies burning (daylight: dying soon, no need to fight)".
   Only visual/relational questions (the middle one, what a build looks like, shapes, pointing, build completeness) reach the
   perception model. A question shape whose model answer had 0 checkable claims is answered from voxels next time.
 - **Perception tier** (`Agent/Perception`, `Agent:Llm:Perception {Provider, Model, Endpoint, ApiKey, Deployment, ApiVersion, Mode}`):
@@ -462,7 +601,7 @@ non-focus minor events never wake; other non-focus wakes ≤ 1 per 20 s per body
 "[bodies] 67 ok: ...; 69 failed: ..." line; events render "[67 task ok]"); chat naming a clone is addressed to the brain; the
 `WorkerPool` (a `WorkerAgent.Sibling` per body on the shared cached prefix, `Agent:Worker:MaxConcurrent` runs at once,
 "worker queued for 69, 1 ahead"); `bodies {op: list|spawn|despawn|focus, name, task?, script?}` replaces `hive` (no inline
-code: Lua goes through the script tool's Opus-only policy); `body:"any"` = App `BodySelector` (CloneFitness + failure memory).
+code: scripts go through the script tool's Opus-only policy); `body:"any"` = App `BodySelector` (CloneFitness + failure memory).
 
 ## Hive (MineClaw.Hive) — clones as supervised processes
 

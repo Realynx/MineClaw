@@ -1,75 +1,112 @@
 namespace MineClaw.Scripting;
 
 /// <summary>
-/// Every prompt word the script feature costs. Only the Opus brain writes scripts: the cheat-sheet (≤ 420 tokens, rules +
-/// one exemplar) sits in the BRAIN's cached system prompt; the worker gets one line (≤ 20 tokens) saying it may run saved
-/// scripts by name. The <c>script</c> tool sits in both cached prefixes (≤ 160 tokens including its schema). Scripts are
-/// model output (Opus output is the expensive token), so the Lua API is globals with short names and table args.
+/// Every prompt word the script feature costs. The brain sees only the tiny <c>script</c> tool (name|goal, params, op) and one
+/// cached line; it never writes code. The separate Opus author (<c>AuthorAgent</c>) gets the whole JS SDK reference, generated
+/// from the SDK modules' doc comments, plus worked examples, in ITS OWN cached system prompt. The worker gets one line.
 /// </summary>
 public static class ScriptPrompts
 {
     public const string ToolName = "script";
 
-    /// <summary>The tool description's API pointer (both prefixes).</summary>
-    public const string BrainPointer =
-        "keep it short: go{\"x,y,z\"} mine{\"dirt\",9} chop{}, any skill by name -> ok,msg,n; inv\"log\" me.hp wait(s) wake\"why\"";
+    /// <summary>The tool description's pointer (both prefixes).</summary>
+    public const string BrainPointer = "name runs a saved job (params tune it); goal = Opus writes+saves a new one";
 
-    /// <summary>Named runs with code are saved (versioned); a name alone (or name@v2) runs the saved script with args.</summary>
-    public const string ToolDescription = "Lua job, runs while you sleep: >3 steps/loops (big: delegate). Named=saved. " + BrainPointer;
+    /// <summary>Saved jobs run by name with params; a goal commissions the author. No code in the brain's schema.</summary>
+    public const string ToolDescription = "JS job, runs while you sleep, 0 tokens: " + BrainPointer + ". Big/fuzzy: delegate.";
 
-    /// <summary>
-    /// Brain-only line (its cached system prompt; not in the shared tool schema, so the worker's prefix doesn't pay for it):
-    /// <c>goal</c> commissions the separate Opus author instead of writing code in the brain's own context.
-    /// </summary>
+    /// <summary>Brain-only cached line: authoring goes to the separate Opus author; params retune a saved job without new code.</summary>
     public const string AuthorLine =
-        "\nNew/long script: script{name,goal=\"what+args\"} - Opus writes, lints, saves it apart; you get a summary (op=show: excerpt).\n";
+        "\nscript{name,goal}: Opus writes+saves a JS job apart, you get a summary. script{name,params} runs it tuned; op=save+params keeps them.\n";
 
     public static readonly string[] Ops = ["run", "status", "pause", "resume", "cancel", "replace", "save", "rollback", "list", "show"];
-
-    /// <summary>
-    /// The separate author context's system prompt (cached there, never in the brain's prefix): role + the cheat-sheet. The
-    /// author has the full output budget (thinking + code), so it writes the whole script and nothing else.
-    /// </summary>
-    public const string AuthorSystem =
-        "You write Lua scripts for a Minecraft Beta 1.8.1 skyblock bot. Reply with ONLY the script in one ```lua block: line 1 " +
-        "\"-- purpose: <what it does>\", args from args{} (args.n, args.at...), every action's ok,msg checked, loops bounded. After a draft " +
-        "you may get lint errors: fix them all and answer with the WHOLE corrected script, nothing else.\n" + CheatSheet;
-
-    /// <summary>The author's brief: the brain's spec plus the facts the bridge pulled (API names, saved scripts, places).</summary>
-    public static string AuthorBrief(string name, string goal, string? constraints, string? args, string facts, int maxChars) =>
-        $"Script name: {name}\nGoal: {goal}\n" +
-        (string.IsNullOrWhiteSpace(constraints) ? "" : $"Constraints: {constraints}\n") +
-        (string.IsNullOrWhiteSpace(args) ? "" : $"Example args: {args}\n") +
-        facts + $"\nAt most {maxChars} chars of code.";
 
     /// <summary>Refusal for any non-brain tier that sends code.</summary>
     public const string BrainOnly = "scripts are written by the brain; return needs_input with what you need automated";
 
     /// <summary>The worker's whole script knowledge (cached worker prefix, ≤ 20 tokens).</summary>
-    public const string WorkerLine = "\nscript: run saved ones by name; new code? ask in needs_input.\n";
+    public const string WorkerLine = "\nscript: run saved ones by name+params; new code? ask in needs_input.\n";
 
-    /// <summary>Brain system-prompt block (only the brain writes scripts). Keep ≤ 420 tokens (≈ 1470 chars).</summary>
-    public const string CheatSheet = """
+    /// <summary>Lua code arriving where only JS is accepted.</summary>
+    public const string JsOnly = "scripts are JavaScript now (Lua is legacy): send a goal and the author writes it";
 
-# script tool: Lua 5.2, no model calls. For >3 steps/loops, short.
-Actions -> ok,msg,n; table args, positional/named: go{"x,y,z"|place|player} mine{"cobblestone",16} chop{} gen{"x,y,z"}
-craft{"planks",4} smelt{"iron_ore",8} deposit{at?,{"log"}} take{"coal",8} place{"torch","x,y,z"} dig{"x,y,z"} use{"x,y,z"} eat{} give{p,"log",5}
-move{{item="log",n="all",to="chest"}}, any skill by name, skill("name",{..})
-Ask: inv"log" inv.free() me.hp me.food me.pos block(x,y,z) near"chest" where"iron" night() players()
-Do: wait(s) waitfor("chat"|"item"|"block"|"night",filter,s) emote"waves" ask(p,q) wake"why" cp"label" prog(pct)
-say"hi"=players only log(x)=debug return"x"=result fail"why"=errors
-on("danger",fn) on("chat",{from="kiwi"},fn) carry{} survives replace, args{}=run args
-Helpers: retry(n,fn) upto(n,fn) expect(ok,msg) room(n) ensure"pickaxe"|{"pickaxe","food"}
-Reliable: check each ok,msg; bound loops (upto); cp before long phases; verify: inv; wear: ensure,
-full inv: room, empty chest: expect; never go on silently. 2+ bots: gen{"auto"}
-Saved: line 1 "-- purpose"; one almost fits? call it with args or op=save it, don't fork.
--- purpose: mine n cobble at the gen, store it
-ensure"pickaxe" room(2) local b=inv"cobblestone"
-cp"mine" upto(args.n or 16,function() expect(retry(3,function() return gen{args.at,1} end)) return inv.free()>0 end)
-expect(inv"cobblestone">b,"mined nothing")
-cp"store" local ok,m=deposit{} expect(ok,m) return "stored"
-""";
+    /// <summary>The worked examples the author sees (each one is lint-clean and runs in the tests).</summary>
+    public static readonly IReadOnlyList<(string Title, string Code)> Examples =
+    [
+        ("gen mining with policies", """
+            // purpose: mine n cobble at the gen and store it, staying fed and tooled
+            const P = params({ n: 64, at: 'auto', chest: null })
+            use(keepFed(), replaceToolWhenBroken('pickaxe'))
+            const got = mineGen({ at: P.at, n: P.n, chest: P.chest })
+            return `mined ${got} cobble`
+            """),
+        ("reactive state machine", """
+            // purpose: mine the gen by day, guard it at night, retreat when hurt; stop after n cobble
+            const P = params({ n: 128, at: 'auto', home: 'home' })
+            const bb = { mined: 0 }
+            return machine({
+              initial: 'mine', bb, policies: [keepFed()],
+              on: { lowhp: 'retreat', [when(() => bb.mined >= P.n)]: 'done' },
+              states: {
+                mine: { tick: () => { bb.mined += mineGen({ at: P.at, n: 16 }) }, on: { night: 'guard' } },
+                guard: { tick: () => { guardArea({ radius: 8, home: P.home }) }, on: { day: 'mine' } },
+                retreat: { enter: () => { go(P.home) }, on: { [after(30000)]: 'mine' } },
+              },
+            })
+            """),
+        ("two bodies at once", """
+            // purpose: n cobble per body at the gen (auto cells), stored; one result line
+            const P = params({ n: 64, bodies: ['67', '69'] })
+            function miner(a) {
+              const got = mineGen({ n: a.n })
+              crew.inc('cobble', got)
+              return `${me.body} ${got}`
+            }
+            function main() {
+              const r = parallel(P.bodies.map(b => [b, 'miner', { n: P.n }]))
+              return `gen crew: ${crew.get('cobble')} cobble (${r.join(', ')})`
+            }
+            """),
+    ];
 
-    /// <summary>The cheat-sheet's exemplar (lint-clean; tests run it).</summary>
-    public static string Exemplar => CheatSheet[CheatSheet.IndexOf("-- purpose: mine n cobble", StringComparison.Ordinal)..].Trim();
+    /// <summary>The first example (lint-clean; tests run it).</summary>
+    public static string Exemplar => Unindent(Examples[0].Code);
+
+    private static readonly Lazy<string> System = new(() =>
+        "You write JavaScript job scripts for a Minecraft Beta 1.8.1 skyblock bot (the Jint engine: ES2023, strict). Reply with ONLY " +
+        "the script in one ```js block.\n" +
+        "Rules: line 1 \"// purpose: <what it does>\". Tunables at the top: const P = params({n: 64, at: 'auto'}) (the brain retunes " +
+        "them later without new code). Host calls are synchronous: no await, no Promise, no timers. Every game function returns " +
+        "{ok, msg, n}: check ok (expect(r)) or call an SDK job that checks for you. Prefer the SDK: one call beats ten lines; never " +
+        "re-implement a helper it has. Loops bounded (for, upto, until) or a machine() with a way to end; reactive jobs = machine() with " +
+        "events/timers/conditions plus policies. Data goes to return/log, never fail() or say(). Several bodies: top level only " +
+        "functions and constants, work in main(), roles run with parallel()/spawn(). After a draft you may get lint errors: fix them " +
+        "all and answer with the WHOLE corrected script, nothing else.\n\n# SDK reference\n" + Sdk.SdkReference.Build() +
+        "\n# Examples\n" + string.Join("\n", Examples.Select(e => $"## {e.Title}\n```js\n{Unindent(e.Code)}\n```\n")));
+
+    /// <summary>
+    /// The separate author context's system prompt (cached there, never in the brain's prefix): the rules, the generated SDK
+    /// reference and the examples. The bot's own game functions ride in the brief.
+    /// </summary>
+    public static string AuthorSystem => System.Value;
+
+    /// <summary>The author's brief: the brain's spec plus the facts the bridge pulled (game functions, saved scripts, places).</summary>
+    public static string AuthorBrief(string name, string goal, string? constraints, string? args, string facts, int maxChars) =>
+        $"Script name: {name}\nGoal: {goal}\n" +
+        (string.IsNullOrWhiteSpace(constraints) ? "" : $"Constraints: {constraints}\n") +
+        (string.IsNullOrWhiteSpace(args) ? "" : $"Example params: {args}\n") +
+        facts + $"\nAt most {maxChars} chars of code.";
+
+    /// <summary>The migration brief: one legacy Lua script to translate to JS with the SDK.</summary>
+    public static string MigrationBrief(string name, string lua, string facts, int maxChars) =>
+        $"Translate this saved Lua script \"{name}\" to JavaScript with the SDK. Same behaviour, same args (args.x → params with the " +
+        $"same names and defaults), same result text; use SDK jobs/policies where they fit and drop what they make redundant.\n" +
+        $"```lua\n{lua}\n```\n" + facts + $"\nAt most {maxChars} chars of code.";
+
+    internal static string Unindent(string s)
+    {
+        var lines = s.Replace("\r", "").Split('\n');
+        int indent = lines.Where(l => l.Trim().Length > 0).Select(l => l.Length - l.TrimStart().Length).DefaultIfEmpty(0).Min();
+        return string.Join("\n", lines.Select(l => l.Length >= indent ? l[indent..] : l.TrimStart())).Trim();
+    }
 }

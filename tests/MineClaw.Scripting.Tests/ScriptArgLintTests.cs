@@ -7,7 +7,8 @@ namespace MineClaw.Scripting.Tests;
 /// <summary>
 /// Live 10-27 21:12: an Opus script failed at runtime "script at line 3 (bad input: missing 'at'): cp 1/2, 5 acts, 3s" — its
 /// <c>gen{}</c> (harvest_generator) needs <c>at</c>, and the cheat-sheet exemplar itself showed <c>gen{}</c>. The lint now
-/// checks every binding call against the real tool schema before anything runs.
+/// checks every binding call against the real tool schema before anything runs (JS for every new script; the legacy Lua lint
+/// keeps the same rule for saved Lua versions).
 /// </summary>
 public class ScriptArgLintTests
 {
@@ -27,8 +28,20 @@ public class ScriptArgLintTests
         ["chop_tree"] = ScriptLint.SignatureOf(ToolSchema.Create().Str("at", required: false).Build())!,
     };
 
-    /// <summary>The live script's shape: the cheat-sheet exemplar as it was (gen{} with no cell).</summary>
+    private static LintReport Js(string code) => ScriptLint.Check(code, Acts, signatures: Sigs, language: ScriptLanguage.Js);
+    private static LintReport Lua(string code) => ScriptLint.Check(code, Acts, signatures: Sigs, language: ScriptLanguage.Lua);
+
+    /// <summary>The live script's shape, in JS: gen() with no cell.</summary>
     private const string LiveScript = """
+        // purpose: mine cobble at the gen, store it
+        ensure('pickaxe'); room(2); const b = inv('cobblestone')
+        cp('mine'); upto(args.n ?? 16, () => { expect(retry(3, () => gen())); return inv.free() > 0 })
+        expect(inv('cobblestone') > b, 'mined nothing')
+        cp('store'); expect(deposit()); return 'stored'
+        """;
+
+    /// <summary>The same script as it ran live (legacy Lua).</summary>
+    private const string LiveLuaScript = """
         -- purpose: mine cobble at the gen, store it
         ensure"pickaxe" room(2) local b=inv"cobblestone"
         cp"mine" upto(args.n or 16,function() expect(retry(3,function() return gen{} end)) return inv.free()>0 end)
@@ -47,68 +60,81 @@ public class ScriptArgLintTests
     [Fact]
     public void Live_script_is_rejected_at_line_3_before_anything_runs()
     {
-        var r = ScriptLint.Check(LiveScript, Acts, signatures: Sigs);
+        var r = Js(LiveScript);
         var e = Assert.Single(r.Errors);
         Assert.Equal("missing-arg", e.Rule);
         Assert.Equal(3, e.Line);
-        Assert.StartsWith("gen needs at=", e.Message);
-        Assert.Contains("L3 gen needs at=", r.Format(LintSeverity.Error, 300));
+        Assert.StartsWith("gen() needs at=", e.Message);
+        Assert.Contains("L3 gen() needs at=", r.Format(LintSeverity.Error, 300));
+
+        var lua = Assert.Single(Lua(LiveLuaScript).Errors);
+        Assert.Equal("missing-arg", lua.Rule);
+        Assert.Equal(3, lua.Line);
+        Assert.StartsWith("gen needs at=", lua.Message);
     }
 
     [Theory]
-    [InlineData("place{'torch'}", "place needs at=")]
-    [InlineData("place{at='1,64,2'}", "place needs block=")]
-    [InlineData("dig{}", "dig needs at=")]
-    [InlineData("local ok = place('torch')", "place needs at=")]
-    [InlineData("place{'torch', nil}", "place needs at=")]
-    [InlineData("go{}", "go needs to=")]
-    [InlineData("take{n=8}", "take needs item=")]
-    [InlineData("mine{}", "mine needs block=")]
+    [InlineData("place('torch')", "place() needs at=")]
+    [InlineData("place({at: '1,64,2'})", "place() needs block=")]
+    [InlineData("dig()", "dig() needs at=")]
+    [InlineData("const r = place('torch')", "place() needs at=")]
+    [InlineData("place('torch', null)", "place() needs at=")]
+    [InlineData("go()", "go() needs to=")]
+    [InlineData("take({n: 8})", "take() needs item=")]
+    [InlineData("mine()", "mine() needs block=")]
     public void Missing_required_args_are_errors(string code, string message)
     {
-        var r = ScriptLint.Check(code, Acts, signatures: Sigs);
+        var r = Js(code);
         var e = Assert.Single(r.Errors);
         Assert.Equal("missing-arg", e.Rule);
         Assert.StartsWith(message, e.Message);
     }
 
     [Theory]
-    [InlineData("gen{'4,64,6'}")]
-    [InlineData("gen{args.at,1}")]
-    [InlineData("gen{at='4,64,6',n=8}")]
-    [InlineData("gen'4,64,6'")]
-    [InlineData("gen(4,64,6)")]
-    [InlineData("place{'torch','1,64,2'}")]
-    [InlineData("place{'torch',1,64,2}")]
+    [InlineData("gen('4,64,6')")]
+    [InlineData("gen(args.at, 1)")]
+    [InlineData("gen({at: '4,64,6', n: 8})")]
+    [InlineData("gen(4, 64, 6)")]
+    [InlineData("place('torch', '1,64,2')")]
+    [InlineData("place('torch', 1, 64, 2)")]
     [InlineData("place('torch', me.pos)")]
-    [InlineData("place{block='torch',at={x=1,y=64,z=2}}")]
-    [InlineData("dig{x=1,y=64,z=2}")]
-    [InlineData("dig{1,64,2}")]
+    [InlineData("place({block: 'torch', at: {x: 1, y: 64, z: 2}})")]
+    [InlineData("dig({x: 1, y: 64, z: 2})")]
+    [InlineData("dig(1, 64, 2)")]
     [InlineData("dig(me.pos)")]
-    [InlineData("local t={'1,64,2'} dig(t)")]
-    [InlineData("dig(unpack(spots))")]
-    [InlineData("go{'4,64,6'} go'chest' go{to=args.to}")]
-    [InlineData("chop{} deposit{} deposit{'14,64,-5',{'log'}} take{'coal',8} mine'dirt'")]
-    [InlineData("local function gen() return true end gen{}")]
-    [InlineData("upto(3,function() local ok,m=gen{'4,64,6'} return ok end)")]
-    [InlineData("eat{} log{'x'}")]
+    [InlineData("const t = '1,64,2'\ndig(t)")]
+    [InlineData("const spots = [1, 64, 2]\ndig(...spots)")]
+    [InlineData("go('4,64,6')\ngo('chest')\ngo({to: args.to})")]
+    [InlineData("chop()\ndeposit()\ndeposit('14,64,-5', ['log'])\ntake('coal', 8)\nmine('dirt')")]
+    [InlineData("upto(3, () => gen('4,64,6').ok)")]
+    [InlineData("deposit({})\nlog('x')")]
     public void Good_calls_pass(string code)
     {
-        var r = ScriptLint.Check(code, Acts, signatures: Sigs);
+        var r = Js(code);
         Assert.False(r.HasErrors, r.Format(LintSeverity.Error, 400));
     }
 
-    [Fact]
-    public void Cheat_sheet_exemplar_and_api_line_name_the_required_args()
+    [Theory]
+    [InlineData("place{'torch'}", "place needs at=")]
+    [InlineData("place{at='1,64,2'}", "place needs block=")]
+    [InlineData("dig{}", "dig needs at=")]
+    [InlineData("go{}", "go needs to=")]
+    [InlineData("take{n=8}", "take needs item=")]
+    public void Legacy_lua_lint_keeps_the_missing_arg_rule(string code, string message)
     {
-        var r = ScriptLint.Check(ScriptPrompts.Exemplar, Acts, signatures: Sigs);
-        Assert.Empty(r.Errors);
-        Assert.Contains("gen{\"x,y,z\"}", ScriptPrompts.CheatSheet);
-        Assert.DoesNotContain("gen{}", ScriptPrompts.CheatSheet);
-        // Every binding the cheat-sheet's API lines show fills its required args.
-        var api = string.Join("\n", ScriptPrompts.CheatSheet.Split('\n').Where(l => l.Contains('{') && !l.Contains("function")).Take(3));
-        var lint = ScriptLint.Check(api.Replace("|place|player", "").Replace("at?,", ""), Acts, signatures: Sigs);
-        Assert.DoesNotContain(lint.Errors, f => f.Rule == "missing-arg");
+        var e = Assert.Single(Lua(code).Errors);
+        Assert.Equal("missing-arg", e.Rule);
+        Assert.StartsWith(message, e.Message);
+        Assert.False(Lua("gen{'4,64,6'} dig{1,64,2} go{to=args.to} local function gen() return true end gen{}").HasErrors);
+    }
+
+    [Fact]
+    public void Author_examples_fill_every_required_arg()
+    {
+        Assert.Empty(Js(ScriptPrompts.Exemplar).Errors);
+        foreach (var (title, code) in ScriptPrompts.Examples)
+            Assert.DoesNotContain(Js(code).Errors, f => f.Rule == "missing-arg");
+        Assert.DoesNotContain("gen{}", ScriptPrompts.AuthorSystem);
     }
 
     [Fact]
@@ -117,11 +143,11 @@ public class ScriptArgLintTests
         var (h, c, b) = BotScriptTests.Bot();
         var bad = await h.Run("script", new { op = "run", code = LiveScript });
         Assert.False(bad.Ok);
-        Assert.Contains("lint errors (fix and resubmit): L3 gen needs at=", bad.Text);
+        Assert.Contains("lint errors (fix and resubmit): L3 gen() needs at=", bad.Text);
         Assert.Null(b.Controller.Last);
         Assert.Empty(c.CallList);
 
-        var good = await h.Run("script", new { op = "run", code = "local ok,m=dig{'1,64,1'} return m" });
+        var good = await h.Run("script", new { op = "run", code = "return dig('1,64,1').msg" });
         Assert.DoesNotContain("lint errors", good.Text);
     }
 }

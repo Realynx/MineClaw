@@ -119,7 +119,7 @@ public class LiveSession4HiveTests
             Assert.StartsWith("no: not reassigned: 67 already refused fighting", named);
             Assert.Contains("it reruns if a player says try again or brings what was missing", named);
             // 15:45:48 the script spawn of the same job (intent read from the code): refused too.
-            var script = h.Supervisor.Spawn("", null, options: new HiveSpawnOptions(Code: "deposit_all() while is_night() do attack_nearest('zombie') end"));
+            var script = h.Supervisor.Spawn("", null, options: new HiveSpawnOptions(Code: "deposit_all()\nwhile (is_night()) attack_nearest('zombie')"));
             Assert.StartsWith("no: no clone fits fighting", script);
 
             // Something relevant changed → it may go again: a player brings what was missing...

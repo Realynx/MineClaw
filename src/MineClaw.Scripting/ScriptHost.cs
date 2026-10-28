@@ -28,9 +28,48 @@ public enum ScriptEventKind
     Stop,
     /// <summary>A player joined (wait_for('join')).</summary>
     Join,
+    /// <summary>An edge-triggered condition the script listens for (hungry, invFull, toolBroke, night, day, a timer, when()).</summary>
+    Signal,
 }
 
-public sealed record ScriptEvent(ScriptEventKind Kind, string Text, string? Player = null);
+/// <summary>
+/// <paramref name="Topic"/> refines the kind for handlers and machines: danger → "lowhp" | "void" | "died" | "danger";
+/// signals → their name ("hungry", "invFull", "toolBroke:pickaxe", "night", "after:5000"...). Null = the kind's own name.
+/// </summary>
+public sealed record ScriptEvent(ScriptEventKind Kind, string Text, string? Player = null, string? Topic = null)
+{
+    /// <summary>"danger", "lowhp", "chat", "hungry", ...</summary>
+    public string Name => Topic ?? Kind.ToString().ToLowerInvariant();
+
+    /// <summary>Whether a listener for <paramref name="topic"/> takes this event: the exact topic, its family ("danger" takes every
+    /// danger, "toolBroke" every "toolBroke:x"), or "chat:&lt;text&gt;" (addressed chat containing the text).</summary>
+    public bool Matches(string topic)
+    {
+        if (string.IsNullOrWhiteSpace(topic)) return false;
+        topic = topic.Trim();
+        if (string.Equals(topic, Name, StringComparison.OrdinalIgnoreCase)) return true;
+        string kind = Kind.ToString().ToLowerInvariant();
+        if (string.Equals(topic, kind, StringComparison.OrdinalIgnoreCase) && Kind != ScriptEventKind.Signal) return true;
+        int c = topic.IndexOf(':');
+        if (c > 0)
+        {
+            var head = topic[..c];
+            var tail = topic[(c + 1)..].Trim();
+            if (Kind == ScriptEventKind.Chat && head.Equals("chat", StringComparison.OrdinalIgnoreCase))
+                return tail.Length == 0 || Text.Contains(tail, StringComparison.OrdinalIgnoreCase);
+            return false;
+        }
+        // "toolBroke" takes "toolBroke:pickaxe".
+        return Name.StartsWith(topic + ":", StringComparison.OrdinalIgnoreCase);
+    }
+}
+
+/// <summary>A lane's checkpoint snapshots survive restarts here (script name + lane body → label → snapshot JSON).</summary>
+public interface IScriptCheckpointStore
+{
+    void Save(string script, string? lane, string label, string snapshot);
+    string? Load(string script, string? lane, string label);
+}
 
 /// <summary>
 /// The port a script talks to. The engine never touches the network, the LLM or server commands directly: every capability
@@ -76,4 +115,13 @@ public sealed class ScriptHost
     /// <summary>Non-null = actions are refused right now (budget low...); the script stops with this reason.</summary>
     public Func<string?> ActionVeto { get; init; } = () => null;
     public Action<string>? Log { get; init; }
+
+    /// <summary>This lane's body ("67"; null = the main body).</summary>
+    public string? Body { get; set; }
+    /// <summary>Several bodies (in-process lanes or hive clones): <c>body()</c>, <c>parallel()</c>, <c>spawn()</c>, <c>crew.*</c>. Null = one body.</summary>
+    public Crew.ICrewPort? Crew { get; set; }
+    /// <summary>Durable checkpoint snapshots (cp carry, machine state), so a restart resumes where it was. Null = memory only.</summary>
+    public IScriptCheckpointStore? Checkpoints { get; init; }
+    /// <summary>The saved tunables of a script (merged under the run's own params by <c>params({...})</c>), or null.</summary>
+    public Func<string, string?>? StoredParams { get; init; }
 }

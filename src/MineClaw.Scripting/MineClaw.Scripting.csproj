@@ -8,8 +8,19 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Pure-managed Lua 5.2 VM (no native libs: ships in the self-contained linux-x64 single file). Pinned. -->
+    <!-- JavaScript engine for every script (pure managed; Acornima parser comes with it). Pinned: the current stable release. -->
+    <PackageReference Include="Jint" Version="4.17.0" />
+    <!-- LEGACY: pure-managed Lua 5.2 VM, only for saved Lua versions not migrated yet (removal plan: ARCHITECTURE.md). Pinned. -->
     <PackageReference Include="LuaCSharp" Version="0.5.7" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The JS SDK modules: evaluated before every script; their doc comments generate the author's SDK reference. -->
+    <EmbeddedResource Include="Sdk\js\*.js" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="MineClaw.Scripting.Tests" />
   </ItemGroup>
 
   <PropertyGroup>

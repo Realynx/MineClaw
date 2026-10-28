@@ -110,6 +110,8 @@ Each non-focus body gets one line of at most about 25 tokens, and offline bodies
 
 ## 3. Lua multi-body API
 
+**Status (2026-10-28):** built in JavaScript instead (`body()`, `parallel()`, `spawn()`, `crew.*`, `main()` + role functions, per-lane checkpoints, lint `crew-*`), for both `inproc` lanes and hive jobs: see ARCHITECTURE.md, "Scripting → Crews". The Lua below is the original design.
+
 Each body gets its own `ScriptSession` (own thread, own LuaState), coordinated by `CrewSession` in `MineClaw.Scripting/Crew/`. A LuaState can't be shared across threads, and host calls block, so parallel work means separate lanes. The `coroutine` library stays removed.
 
 ```

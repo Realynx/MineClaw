@@ -12,7 +12,7 @@ namespace MineClaw.Scripting.Tests;
 public class ScriptAuthorTests
 {
     private const string Thought = "SECRET-CHAIN-OF-THOUGHT";
-    private const string Draft = "-- purpose: first draft\nlocal m = require(\"evil\")\nreturn \"x\"";
+    private const string Draft = "// purpose: first draft\nconst m = require('evil')\nreturn 'x'";
 
     /// <summary>Brain steps (queue) on brain calls; author calls ("author-script") get a lint-failing draft, then the exemplar.</summary>
     private sealed class Llm : ILlmClient
@@ -27,7 +27,7 @@ public class ScriptAuthorTests
             var model = request.Model ?? "claude-opus-5-5";
             if (request.Purpose == "author-script")
             {
-                var text = _author++ == 0 ? "Here is my first try:\n```lua\n" + Draft + "\n```" : "```lua\n" + ScriptPrompts.Exemplar + "\n```";
+                var text = _author++ == 0 ? "Here is my first try:\n```js\n" + Draft + "\n```" : "```js\n" + ScriptPrompts.Exemplar + "\n```";
                 return Task.FromResult(new LlmResponse([new LlmThinking(Thought, "sig"), new LlmText(text)], StopReasons.EndTurn,
                     new LlmUsage(3000, 9000, 0, 2500), model));
             }
@@ -46,8 +46,10 @@ public class ScriptAuthorTests
         Assert.DoesNotContain("require", brainFacing);
         Assert.DoesNotContain("lint error", brainFacing);
         Assert.DoesNotContain("version 1", brainFacing);
-        Assert.DoesNotContain("ensure\"pickaxe\"", brainFacing); // no code
-        Assert.DoesNotContain("upto(", brainFacing);
+        Assert.DoesNotContain("mineGen(", brainFacing); // no code
+        Assert.DoesNotContain("params({", brainFacing);
+        Assert.DoesNotContain("keepFed", brainFacing);
+        Assert.DoesNotContain("# SDK reference", brainFacing);
     }
 
     [Fact]
@@ -57,7 +59,8 @@ public class ScriptAuthorTests
         var (h, _, b) = BotScriptTests.Bot(llm: llm);
         var r = await h.Run("script", new { name = "cobble_store", goal = "mine n cobble at the gen and store it" });
         Assert.True(r.Ok, r.Text);
-        Assert.StartsWith("ok: wrote cobble_store v1 | mine n cobble at the gen, store it | args(n,at) | lint ok", r.Text);
+        Assert.StartsWith($"ok: wrote cobble_store v1 | {ScriptLint.Purpose(ScriptPrompts.Exemplar)} | args(n,at,chest) | lint ok", r.Text);
+        Assert.StartsWith("mine n cobble at the gen", ScriptLint.Purpose(ScriptPrompts.Exemplar));
         Assert.Contains("$", r.Text);
         NoAuthorInternals(r.Text);
         Assert.True(r.Text.Length < 400, r.Text); // ≈100 tokens at most
@@ -67,14 +70,15 @@ public class ScriptAuthorTests
         Assert.Equal(ScriptPrompts.Exemplar, sc.Code);
         Assert.Equal("main/claude-opus-5-5", sc.Author);
 
-        // The author context: its own cheat-sheet prefix, 100K output, Opus 5.5, the lint feedback in round 2.
+        // The author context: its own JS SDK-reference prefix, 100K output, Opus 5.5, the lint feedback in round 2.
         var authors = llm.Authors;
         Assert.Equal(2, authors.Length);
         Assert.All(authors, a =>
         {
             Assert.Equal(100_000, a.MaxTokens);
             Assert.Equal("claude-opus-5-5", a.Model);
-            Assert.StartsWith("You write Lua scripts", a.System[0].Text);
+            Assert.StartsWith("You write JavaScript job scripts", a.System[0].Text);
+            Assert.Contains("# SDK reference", a.System[0].Text);
         });
         Assert.Contains("require", authors[1].Messages[^1].Text);
         // The brain never got a call for this (it only issued the tool call).
@@ -108,7 +112,7 @@ public class ScriptAuthorTests
                 LlmText t => t.Text, LlmToolResult tr => tr.Content, LlmThinking th => th.Thinking, LlmToolUse u => u.Input.GetRawText(), _ => "",
             })));
             NoAuthorInternals(whole);
-            Assert.DoesNotContain(next.System, s => s.Text.StartsWith("You write Lua scripts"));
+            Assert.DoesNotContain(next.System, s => s.Text.StartsWith("You write JavaScript job scripts") || s.Text.Contains("# SDK reference"));
             Assert.Equal(h.Runtime.Options.Llm.MainMaxTokens, next.MaxTokens ?? h.Runtime.Options.Llm.MainMaxTokens); // brain turns unchanged
         }
         finally { cts.Cancel(); }
@@ -154,7 +158,7 @@ public class ScriptAuthorTests
         public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct)
         {
             Calls++;
-            return Task.FromResult(new LlmResponse([new LlmThinking(Thought, "s"), new LlmText("```lua\n" + Draft + "\n```")], StopReasons.EndTurn,
+            return Task.FromResult(new LlmResponse([new LlmThinking(Thought, "s"), new LlmText("```js\n" + Draft + "\n```")], StopReasons.EndTurn,
                 new LlmUsage(10, 10, 0, 0), request.Model ?? "claude-opus-5-5"));
         }
     }
@@ -167,7 +171,7 @@ public class ScriptAuthorTests
         Assert.True((await h.Run("script", new { name = "cobble_store", goal = "mine and store" })).Ok);
         var show = await h.Run("script", new { op = "show", name = "cobble_store" });
         Assert.True(show.Ok, show.Text);
-        Assert.StartsWith("cobble_store v1: -- purpose:", show.Text);
+        Assert.StartsWith("cobble_store v1: // purpose:", show.Text);
         Assert.True(show.Text.Length <= 640);
     }
 }

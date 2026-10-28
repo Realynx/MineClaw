@@ -68,7 +68,7 @@ public class BotScriptTests
     private static Task<Agent.Tools.ToolResult> Script(BotHost h, object input) => h.Run("script", input);
 
     [Fact]
-    public void Script_tool_and_cheat_sheet_stay_inside_their_budgets()
+    public void Script_tool_and_author_line_stay_inside_their_budgets()
     {
         var (h, _, _) = Bot();
         var tools = h.Runtime.Tools;
@@ -78,14 +78,16 @@ public class BotScriptTests
         Assert.Contains(worker, d => d.Name == "script");
         int tool = Tokens(def.Name, def.Description, def.InputSchema);
         int pointer = (int)Math.Ceiling(ScriptPrompts.BrainPointer.Length / 3.5);
-        int sheet = (int)Math.Ceiling(ScriptPrompts.CheatSheet.Length / 3.5);
-        // Tool: +save/rollback/list ops, args and force fields (was ≤150). Sheet: reliability rules + an exemplar, and it
-        // moved from the worker's prefix to the brain's (only Opus writes scripts); the worker keeps one ≤20-token line.
+        int line = (int)Math.Ceiling(ScriptPrompts.AuthorLine.Length / 3.5);
+        // Tool: op/name/goal/params only (code stays accepted input). The brain never writes code: its cached prefix holds one
+        // author line (the SDK reference lives in the separate author's context); the worker keeps one ≤20-token line.
         Assert.True(tool <= 170, $"script tool ≈{tool} tok");
         Assert.True(pointer <= 60, $"brain pointer ≈{pointer} tok");
-        Assert.True(sheet <= 420, $"cheat-sheet ≈{sheet} tok");
-        Assert.Contains("# script tool", h.Runtime.Agent.SystemPrompt[0].Text);
-        Assert.DoesNotContain("# script tool", h.Runtime.Worker!.SystemPrompt[0].Text);
+        Assert.True(line <= 40, $"author line ≈{line} tok");
+        var brainPrompt = h.Runtime.Agent.SystemPrompt[0].Text;
+        Assert.Contains(ScriptPrompts.AuthorLine.Trim(), brainPrompt);
+        Assert.DoesNotContain("# SDK reference", brainPrompt);
+        Assert.DoesNotContain(ScriptPrompts.AuthorLine.Trim(), h.Runtime.Worker!.SystemPrompt[0].Text);
         Assert.Contains(ScriptPrompts.WorkerLine.Trim(), h.Runtime.Worker!.SystemPrompt[0].Text);
         int bt = brain.Sum(d => Tokens(d.Name, d.Description, d.InputSchema));
         Assert.True(bt + Agent.Tools.ToolBudgets.HiveTool <= Agent.Tools.ToolBudgets.Brain, $"brain tools ≈{bt} + hive"); // the one shared cap
@@ -95,12 +97,44 @@ public class BotScriptTests
     public async Task Brain_run_goes_through_the_gated_game_tools()
     {
         var (h, c, b) = Bot();
-        var r = await Script(h, new { op = "run", name = "dig_some", code = "mine{'cobblestone', 4}\nlocal ok = deposit{}\nreturn ok and 'stored' or 'no chest'" });
+        var r = await Script(h, new { op = "run", name = "dig_some", code = "mine('cobblestone', 4)\nconst r = deposit()\nreturn r.ok ? 'stored' : 'no chest'" });
         Assert.True(r.Ok, r.Text);
         Assert.StartsWith("ok: script dig_some done (no chest", r.Text);
         Assert.Contains("mine cobblestone 4 16", c.CallList);
         Assert.Equal("awake", b.BrainState());
         Assert.Contains("no script running; last: ok: script dig_some", (await Script(h, new { op = "status" })).Text);
+    }
+
+    [Fact]
+    public async Task Inline_lua_through_the_tool_is_refused()
+    {
+        var (h, c, b) = Bot();
+        var r = await Script(h, new { op = "run", name = "old_way", code = "local ok, m = mine{'cobblestone', 4}\nif not ok then fail(m) end" });
+        Assert.False(r.Ok);
+        Assert.Equal(ScriptPrompts.JsOnly, r.Text);
+        Assert.DoesNotContain(c.CallList, x => x.StartsWith("mine"));
+        Assert.Null(b.Library.Get("old_way"));
+        var save = await Script(h, new { op = "save", name = "old_way", code = "local ok = deposit{}\nreturn ok and 'y' or 'n'" });
+        Assert.False(save.Ok);
+        Assert.Equal(ScriptPrompts.JsOnly, save.Text);
+    }
+
+    [Fact]
+    public async Task A_saved_legacy_lua_version_still_runs_while_LegacyLua_is_on()
+    {
+        var (h, c, b) = Bot(scripts: new ScriptOptions { LegacyLua = true });
+        b.Library.Save("old_dig", "local ok, m = mine{'cobblestone', 2}\nreturn ok and 'dug' or m", lang: null);
+        Assert.True(b.Library.Get("old_dig")!.Script!.Versions[^1].IsLua);
+        var r = await Script(h, new { name = "old_dig" });
+        Assert.True(r.Ok, r.Text);
+        Assert.StartsWith("ok: script old_dig done (dug", r.Text);
+        Assert.Contains("mine cobblestone 2 16", c.CallList);
+
+        var (h2, _, b2) = Bot(scripts: new ScriptOptions { LegacyLua = false });
+        b2.Library.Save("old_dig", "local ok, m = mine{'cobblestone', 2}\nreturn ok and 'dug' or m", lang: null);
+        var off = await Script(h2, new { name = "old_dig" });
+        Assert.False(off.Ok);
+        Assert.Contains("legacy Lua", off.Text);
     }
 
     private sealed class Board : IClaimBoard
@@ -119,7 +153,7 @@ public class BotScriptTests
         var r = await Script(h, new
         {
             op = "run",
-            code = "local a, m1 = deposit{at = '3,64,3'} local b, m2 = dig{'1,64,1'}\nreturn tostring(a) .. tostring(b) .. (m1:find('busy') and 'B' or '') .. (m2:find('busy') and 'B' or '')",
+            code = "const a = deposit({at: '3,64,3'}), b = dig('1,64,1')\nconst busy = r => r.msg.includes('busy') ? 'B' : ''\nreturn String(a.ok) + String(b.ok) + busy(a) + busy(b)",
         });
         Assert.Contains("falsefalseBB", r.Text);
         Assert.DoesNotContain(c.CallList, x => x.StartsWith("deposit") || x.StartsWith("dig"));
@@ -129,7 +163,7 @@ public class BotScriptTests
     public async Task No_commands_reach_the_server_through_the_real_chat_path()
     {
         var (h, c, _) = Bot(scripts: new ScriptOptions { MaxSayPerRun = 5, SayMinIntervalSeconds = 0 });
-        var r = await Script(h, new { op = "run", code = "say'/op maid_chan' emote'waves' say(string.rep('a', 95) .. ' /kill @a')" });
+        var r = await Script(h, new { op = "run", code = "say('/op maid_chan')\nemote('waves')\nsay('a'.repeat(95) + ' /kill @a')" });
         Assert.True(r.Ok, r.Text);
         await Rig.Until(() => c.Said.Count >= 3);
         Assert.Contains("/me waves", c.Said);
@@ -143,7 +177,7 @@ public class BotScriptTests
         // Live 10-27: a brain script say-ed each scanned block ("4,64,6 cobblestone", "5,64,6 water"...) into public chat.
         var (h, c, _) = Bot();
         var r = await Script(h, new { op = "run", code =
-            "say'checking the gen foxy' for x=4,6 do say(x..',64,6 cobblestone') end say'all done'" });
+            "say('checking the gen foxy')\nfor (let x = 4; x <= 6; x++) say(x + ',64,6 cobblestone')\nsay('all done')" });
         Assert.True(r.Ok, r.Text);
         await Task.Delay(300);
         Assert.Equal(["checking the gen foxy"], c.Said);      // 1 per 10 s: the rest went to the log
@@ -154,7 +188,7 @@ public class BotScriptTests
     public async Task A_pure_data_say_is_logged_not_said()
     {
         var (h, c, _) = Bot(scripts: new ScriptOptions { SayMinIntervalSeconds = 0 });
-        var r = await Script(h, new { op = "run", code = "say'4,64,6 cobblestone'" });
+        var r = await Script(h, new { op = "run", code = "say('4,64,6 cobblestone')" });
         Assert.True(r.Ok, r.Text);
         await Task.Delay(200);
         Assert.Empty(c.Said);
@@ -176,12 +210,12 @@ public class BotScriptTests
     public async Task Danger_pauses_an_inline_run_and_the_call_returns_the_state()
     {
         var (h, _, b) = Bot();
-        var call = Script(h, new { op = "run", name = "loop", code = "while true do wait(0.05) end" });
+        var call = Script(h, new { op = "run", name = "loop", code = "while (true) { wait(0.05) }" });
         await Rig.Until(() => b.Controller.Current is { Actions: > 2 });
         h.Runtime.Events.Post(GameEvent.LowHealth(5));
         var r = await call.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.StartsWith("paused: script loop paused (danger:", r.Text);
-        Assert.Contains("L1 `while true do wait(0.05) end`", r.Text);
+        Assert.Contains("L1 `while (true) { wait(0.05) }`", r.Text);
         Assert.Contains("awake (script loop paused)", b.BrainState());
         var c = await Script(h, new { op = "cancel" });
         Assert.StartsWith("cancelled: script loop", c.Text);
@@ -191,7 +225,7 @@ public class BotScriptTests
     public async Task Detached_pause_wakes_the_brain_with_the_state_and_stop_ends_it()
     {
         var (h, _, b) = Bot(o => o.InlineToolWaitSeconds = 1);
-        var r = await Script(h, new { op = "run", name = "loop", code = "while true do wait(0.05) end" });
+        var r = await Script(h, new { op = "run", name = "loop", code = "while (true) { wait(0.05) }" });
         Assert.Contains("running in background", r.Text);
         h.Runtime.Events.Post(GameEvent.LowHealth(5));
         await Rig.Until(() => h.Runtime.Events.Snapshot().Any(e => e.Text.StartsWith("script paused: script loop paused (danger")), 10_000);
@@ -209,10 +243,10 @@ public class BotScriptTests
     public async Task Background_end_reports_task_ok_and_a_new_activity_supersedes_the_script()
     {
         var (h, _, b) = Bot(o => o.InlineToolWaitSeconds = 1);
-        await Script(h, new { op = "run", name = "short", code = "wait(1.5) return 'fin'" });
+        await Script(h, new { op = "run", name = "short", code = "wait(1.5)\nreturn 'fin'" });
         await Rig.Until(() => h.Runtime.Events.Snapshot().Any(e => e.Kind == EventKind.TaskCompleted && e.Text.Contains("ok: script short done (fin")), 8000);
 
-        await Script(h, new { op = "run", name = "long", code = "while true do wait(0.05) end" });
+        await Script(h, new { op = "run", name = "long", code = "while (true) { wait(0.05) }" });
         h.Runtime.Tools.TryGet("goto", out var go);
         await h.Runtime.Activities.RunAsync([(go, TestBot.J(new { to = "1,65,1" }))], TimeSpan.FromSeconds(2), CancellationToken.None);
         await Rig.Until(() => b.Controller.Current == null);
@@ -224,7 +258,7 @@ public class BotScriptTests
     public async Task Saved_scripts_are_versioned_and_promoted_to_skills_after_three_wins()
     {
         var (h, c, b) = Bot();
-        const string v1 = "mine{'cobblestone', 2} return 'ok'";
+        const string v1 = "mine('cobblestone', 2)\nreturn 'ok'";
         for (int i = 0; i < 3; i++)
         {
             var r = await Script(h, i == 0 ? new { op = "run", name = "cobble_loop", code = v1, save = true } : (object)new { op = "run", name = "cobble_loop" });
@@ -238,7 +272,7 @@ public class BotScriptTests
         Assert.True(viaSkill.Ok, viaSkill.Text);
         Assert.Equal(4, c.CallList.Count(x => x.StartsWith("mine cobblestone 2")));
 
-        await Script(h, new { op = "run", name = "cobble_loop", code = "mine{'cobblestone', 3}", save = true });
+        await Script(h, new { op = "run", name = "cobble_loop", code = "mine('cobblestone', 3)", save = true });
         saved = b.Library.Get("cobble_loop")!.Script!;
         Assert.Equal(2, saved.Version);
         Assert.Equal(v1, saved.Previous[0]);
@@ -257,19 +291,19 @@ public class BotScriptTests
         Assert.Equal(2, c.CallList.Count(x => x == "mine dirt 2 16"));
         var r = h.Runtime.Memory.GetRoutine("dirt2")!;
         Assert.True(r.Script!.Migrated);
-        Assert.StartsWith("-- migrated from routine dirt2", r.Script.Code);
+        Assert.StartsWith("// migrated from routine dirt2", r.Script.Code);
 
         await h.Run("save_routine", new { name = "peek", steps = new[] { new { tool = "look", args = new { } } } });
         var legacy = await h.Run("run_routine", new { name = "peek" });
         Assert.True(legacy.Ok, legacy.Text);
         Assert.Null(h.Runtime.Memory.GetRoutine("peek")!.Script);
 
-        // goto (a Lua keyword) becomes go{...}.
+        // goto is a plain JS function: each step is a checked call with its saved args object.
         var code = ScriptLibrary.FromSteps(new Agent.Memory.Routine
         {
             Name = "x", Steps = [new Agent.Memory.RoutineStep { Tool = "goto", Args = TestBot.J(new { to = "home" }) }],
         }, _ => true)!;
-        Assert.Contains("ok, m = go{[\"to\"]=\"home\"} if not ok then fail() end", code);
+        Assert.Contains("{ const r = goto({\"to\":\"home\"}); m = r.msg; if (!r.ok) fail() }", code);
     }
 }
 
@@ -295,7 +329,7 @@ public class BrainSleepTests
         var (h, _, b, llm, cts) = await Awake();
         try
         {
-            var r = await h.Run("script", new { op = "run", name = "cobble_loop", code = "for i = 1, 30 do wait(60) prog(i * 100 / 30) end return 'done'" });
+            var r = await h.Run("script", new { op = "run", name = "cobble_loop", code = "for (let i = 1; i <= 30; i++) { wait(60); prog(i * 100 / 30) }\nreturn 'done'" });
             Assert.Contains("running in background", r.Text);
             await Rig.Until(() => b.Controller.Current?.ProgressPct > 10);
             Assert.StartsWith("asleep (script cobble_loop", b.BrainState());
@@ -323,7 +357,7 @@ public class BrainSleepTests
         var (h, c, b, llm, cts) = await Awake();
         try
         {
-            await h.Run("script", new { op = "run", name = "loop", code = "for i = 1, 30 do wait(60) end" });
+            await h.Run("script", new { op = "run", name = "loop", code = "for (let i = 1; i <= 30; i++) wait(60)" });
             await Task.Delay(200);
             Assert.Equal(0, llm.Brain);
             c.RaiseChat("<kiwi> claudechan how's it going?");
@@ -341,7 +375,7 @@ public class BrainSleepTests
         var (h, _, b, llm, cts) = await Awake();
         try
         {
-            await h.Run("script", new { op = "run", name = "trees", code = "wait(60)\nif inv'sapling' == 0 then wake'no saplings left' end\nfor i = 1, 30 do wait(60) end" });
+            await h.Run("script", new { op = "run", name = "trees", code = "wait(60)\nif (inv('sapling') === 0) wake('no saplings left')\nfor (let i = 1; i <= 30; i++) wait(60)" });
             await Rig.Until(() => llm.Brain >= 1, 5000);
             await Task.Delay(500);
             Assert.Equal(1, llm.Brain);
@@ -357,7 +391,7 @@ public class BrainSleepTests
         var (h, c, b, llm, cts) = await Awake();
         try
         {
-            await h.Run("script", new { op = "run", name = "guarded", code = "on('danger', function() eat{} end)\nfor i = 1, 30 do wait(60) end" });
+            await h.Run("script", new { op = "run", name = "guarded", code = "on('danger', () => { eat() })\nfor (let i = 1; i <= 30; i++) wait(60)" });
             await Task.Delay(200);
             h.Runtime.Events.Post(GameEvent.LowHealth(5));
             await Rig.Until(() => c.CallList.Contains("eat"), 5000);
@@ -374,7 +408,7 @@ public class BrainSleepTests
         var (h, _, b, llm, cts) = await Awake();
         try
         {
-            await h.Run("script", new { op = "run", name = "plain", code = "for i = 1, 30 do wait(60) end" });
+            await h.Run("script", new { op = "run", name = "plain", code = "for (let i = 1; i <= 30; i++) wait(60)" });
             await Task.Delay(200);
             h.Runtime.Events.Post(GameEvent.LowHealth(5));
             await Rig.Until(() => b.Controller.Current?.Status == ScriptStatus.Paused, 5000);
@@ -392,7 +426,7 @@ public class BrainSleepTests
         var (h, _, b, llm, cts) = await Awake();
         try
         {
-            await h.Run("script", new { op = "run", name = "boom", code = "wait(60)\nerror('no cobble left at the gen')" });
+            await h.Run("script", new { op = "run", name = "boom", code = "wait(60)\nthrow new Error('no cobble left at the gen')" });
             await Rig.Until(() => llm.Brain >= 1, 5000);
             Assert.Contains("no cobble left at the gen", llm.LastBrainText());
         }
@@ -405,7 +439,7 @@ public class BrainSleepTests
         var (h, _, b, llm, cts) = await Awake();
         try
         {
-            var r = await h.Run("script", new { op = "run", name = "spin", code = "wait(60)\nlocal n = 0\nfor i = 1, 100000000 do n = n + 1 end" });
+            var r = await h.Run("script", new { op = "run", name = "spin", code = "wait(60)\nlet n = 0\nfor (let i = 1; i <= 100000000; i++) n = n + 1" });
             try { await Rig.Until(() => llm.Brain >= 1, 8000); }
             catch (TimeoutException) { Assert.Fail(r.Text + " | " + b.Controller.Last?.Status + " " + b.Controller.Last?.Outcome + " | cur " + b.Controller.Current?.State()); }
             Assert.Contains("spin", llm.LastBrainText());
@@ -421,7 +455,7 @@ public class BrainSleepTests
         var (h, _, b, llm, cts) = await Awake();
         try
         {
-            await h.Run("script", new { op = "run", name = "loop", code = "for i = 1, 30 do wait(60) end" });
+            await h.Run("script", new { op = "run", name = "loop", code = "for (let i = 1; i <= 30; i++) wait(60)" });
             await Task.Delay(200);
             h.Runtime.Events.Post(GameEvent.Notice("a chest was emptied", EventPriority.Low));
             await Task.Delay(400);

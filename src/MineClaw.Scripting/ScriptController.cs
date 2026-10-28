@@ -4,7 +4,8 @@ namespace MineClaw.Scripting;
 
 /// <summary>Telemetry row for one finished run.</summary>
 public sealed record ScriptRunRecord(string Name, ScriptStatus Status, int Actions, TimeSpan Duration, DateTimeOffset At, string Outcome,
-    string? Author = null, int? Version = null, int ItemsGained = 0);
+    string? Author = null, int? Version = null, int ItemsGained = 0, string? Params = null, string? Timings = null, string? Language = null,
+    string? Body = null);
 
 /// <summary>
 /// One per bot: at most one script runs at a time. Brain/worker ops (run, status, pause, resume, cancel, replace), the
@@ -67,7 +68,16 @@ public sealed class ScriptController : IDisposable
         {
             label = label.Trim();
             if (!ScriptSession.HasCheckpoint(req.Code, label)) return (null, $"no checkpoint('{label}') in script {req.Name}");
-            if (req.CarryJson == null) req = req with { CarryJson = CheckpointCarry(req.Name, label) };
+            // A restart: the snapshot comes back from the durable store (cp carry; a machine's state, history and blackboard).
+            var snap = CheckpointCarry(req.Name, label) ?? SafeLoad(req.Name, label);
+            if (label.StartsWith('@'))
+            {
+                req = req with { ResumeState = req.ResumeState ?? snap };
+                if (req.CarryJson == null && snap != null)
+                    try { if (System.Text.Json.Nodes.JsonNode.Parse(snap)?["carry"] is System.Text.Json.Nodes.JsonObject c) req = req with { CarryJson = c.ToJsonString() }; }
+                    catch (System.Text.Json.JsonException) { }
+            }
+            else if (req.CarryJson == null) req = req with { CarryJson = snap };
             req = req with { ResumeFrom = label };
         }
         ScriptSession s;
@@ -133,6 +143,12 @@ public sealed class ScriptController : IDisposable
     /// <summary>Routes an event to the live script (wait_for, on() handlers, interrupt policy).</summary>
     public void Deliver(ScriptEvent e) => Current?.Deliver(e);
 
+    private string? SafeLoad(string name, string label)
+    {
+        try { return Host.Checkpoints?.Load(CleanName(name), Host.Body ?? Host.Username, label); }
+        catch (Exception ex) { Host.Log?.Invoke("checkpoint load failed: " + ex.Message); return null; }
+    }
+
     /// <summary>carry snapshot taken at <c>checkpoint(label)</c> in the last run of <paramref name="name"/>.</summary>
     public string? CheckpointCarry(string name, string label)
     {
@@ -148,10 +164,17 @@ public sealed class ScriptController : IDisposable
             _last = s;
             if (s.CheckpointCarry.Count > 0) _checkpoints[s.Name] = new Dictionary<string, string>(s.CheckpointCarry, StringComparer.Ordinal);
             _runs.Add(new ScriptRunRecord(s.Name, s.Status, s.Actions, s.Elapsed, s.Finished ?? Time.GetUtcNow(), s.Outcome ?? "",
-                s.Request.Author, s.Request.Version, s.ItemsGained));
+                s.Request.Author, s.Request.Version, s.ItemsGained, s.ParamsJson, TimingText(s), ScriptLanguages.Tag(s.Language), Host.Body));
             if (_runs.Count > 50) _runs.RemoveAt(0);
         }
         Safe(() => Ended?.Invoke(s));
+    }
+
+    /// <summary>"gen 12x 31.2s, deposit 2x 4.0s" (slowest first, ≤ 6).</summary>
+    public static string? TimingText(ScriptSession s)
+    {
+        var t = s.Timings.OrderByDescending(kv => kv.Value.Total).Take(6).Select(kv => $"{kv.Key} {kv.Value}").ToList();
+        return t.Count > 0 ? string.Join(", ", t) : null;
     }
 
     internal void OnPaused(ScriptSession s) => Safe(() => Paused?.Invoke(s));

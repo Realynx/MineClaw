@@ -43,6 +43,7 @@ public static class AppHost
         config.GetSection("Agent").Bind(agentOptions);
         var botOptions = new BotOptions();
         config.GetSection("Bot").Bind(botOptions);
+        config.GetSection("Scripting").Bind(botOptions.Scripts); // JS engine limits + the Lua migration flags ("Scripting:MigrateLua")
         var host = config.GetSection("Host").Get<HostSettings>() ?? new HostSettings();
         var hive = config.GetSection("Hive").Get<HiveConfig>() ?? new HiveConfig();
         config.GetSection("Hive").Bind(agentOptions.Hive); // personality scope: main | clone username (Self shards)
@@ -192,6 +193,19 @@ public static class AppHost
         var source = new InProcessBotSource(game, rt, telemetry, agent, commands, host.Tui.Viewport, signals.Token);
         mainHive?.Attach(bot, client, commands, agentOptions);
         inproc?.Attach(bot, client, signals.Token);
+        // Scripts: several bodies get a crew port (in-process lanes, or hive jobs over the shared db board); then the one-time
+        // Lua → JS migration of saved scripts runs in the background (main only; Scripting:MigrateLua).
+        if (MineClaw.Bot.GameTools.ScriptTools.Of(rt) is { } scripts)
+        {
+            if (inproc != null && bot.Bodies is { } registry)
+                scripts.Crew = new MineClaw.Bot.Bodies.BodyCrewPort(registry, rt.Tools, new MineClaw.Scripting.Crew.InMemoryCrewBoard());
+            else if (mainHive?.Supervisor is { } supervisor)
+                scripts.Crew = new MineClaw.Hive.Crew.HiveCrewPort(supervisor, new MineClaw.Bot.Bodies.DbCrewBoard(rt.Memory.Db));
+            _ = scripts.StartLuaMigrationAsync(signals.Token).ContinueWith(t =>
+            {
+                if (t.Exception is { } ex) log.LogWarning(ex.GetBaseException(), "lua migration stopped");
+            }, TaskScheduler.Default);
+        }
 
         // The TUI's per-bot sources (main in-process, clones over IPC); the supervisor viewer reads the same ones.
         var roster = new HiveRoster([mc.Username, .. hive.Clones()]);

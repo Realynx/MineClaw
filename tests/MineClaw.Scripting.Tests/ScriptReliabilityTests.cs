@@ -18,12 +18,12 @@ public class ScriptReliabilityTests
     public async Task Worker_code_is_refused_but_a_saved_script_runs_by_name()
     {
         var (h, c, b) = BotScriptTests.Bot();
-        var saved = await h.Run("script", new { op = "run", name = "dig2", code = "local ok,m = mine{'dirt', 2} expect(ok,m) return 'dug'" });
+        var saved = await h.Run("script", new { op = "run", name = "dig2", code = "expect(mine('dirt', 2))\nreturn 'dug'" });
         Assert.True(saved.Ok, saved.Text);
 
         foreach (var tier in new ModelTier?[] { ModelTier.Worker, ModelTier.Cheap, null })
         {
-            var r = await h.RunAs(tier, "script", new { op = "run", code = "mine{'dirt', 1}" });
+            var r = await h.RunAs(tier, "script", new { op = "run", code = "mine('dirt', 1)" });
             Assert.False(r.Ok);
             Assert.Equal(ScriptPrompts.BrainOnly, r.Text);
             Assert.Equal(ScriptPrompts.BrainOnly, (await h.RunAs(tier, "script", new { op = "save", name = "x", code = "return 1" })).Text);
@@ -43,7 +43,7 @@ public class ScriptReliabilityTests
     public async Task Opus_code_is_allowed_and_authorship_is_tagged_on_runs_and_versions()
     {
         var (h, _, b) = BotScriptTests.Bot();
-        var r = await h.Run("script", new { op = "run", name = "tagged", code = "-- purpose: say hi to the log\nlog('hi') return 'done'" });
+        var r = await h.Run("script", new { op = "run", name = "tagged", code = "// purpose: say hi to the log\nlog('hi')\nreturn 'done'" });
         Assert.True(r.Ok, r.Text);
         var s = b.Library.Get("tagged")!.Script!;
         Assert.Equal(Opus, s.Author);
@@ -59,17 +59,20 @@ public class ScriptReliabilityTests
     }
 
     [Fact]
-    public void Cheat_sheet_lives_in_the_brain_prefix_and_the_worker_gets_one_line()
+    public void The_brain_gets_one_author_line_the_sdk_lives_with_the_author_and_the_worker_gets_one_line()
     {
         var (h, _, _) = BotScriptTests.Bot();
         var brain = h.Runtime.Agent.SystemPrompt[0].Text;
         var worker = h.Runtime.Worker!.SystemPrompt[0].Text;
-        Assert.Contains("# script tool", brain);
-        Assert.Contains("Helpers: retry(n,fn)", brain);
-        Assert.DoesNotContain("# script tool", worker);
+        Assert.Contains(ScriptPrompts.AuthorLine.Trim(), brain);
+        Assert.DoesNotContain("# SDK reference", brain);
+        Assert.DoesNotContain(ScriptPrompts.AuthorLine.Trim(), worker);
         Assert.Contains(ScriptPrompts.WorkerLine.Trim(), worker);
         Assert.True(Math.Ceiling(ScriptPrompts.WorkerLine.Trim().Length / 3.5) <= 20, "worker line ≤ 20 tokens");
-        Assert.True(Math.Ceiling(ScriptPrompts.CheatSheet.Length / 3.5) <= 420, $"cheat-sheet ≈{ScriptPrompts.CheatSheet.Length / 3.5:0} tok");
+        Assert.True(Math.Ceiling(ScriptPrompts.AuthorLine.Length / 3.5) <= 40, $"author line ≈{ScriptPrompts.AuthorLine.Length / 3.5:0} tok");
+        Assert.StartsWith("You write JavaScript job scripts", ScriptPrompts.AuthorSystem);
+        Assert.Contains("# SDK reference", ScriptPrompts.AuthorSystem);
+        Assert.Contains("# Examples", ScriptPrompts.AuthorSystem);
         Assert.True(ScriptPrompts.Exemplar.Split('\n').Length <= 8);
     }
 
@@ -185,7 +188,7 @@ public class ScriptReliabilityTests
     [InlineData("coroutine.yield()", "removed-global", 1)]
     public void Lint_rejects_hard_errors(string code, string rule, int line)
     {
-        var r = ScriptLint.Check(code, Acts);
+        var r = ScriptLint.Check(code, Acts, language: ScriptLanguage.Lua);
         Assert.True(r.HasErrors);
         var e = Assert.Single(r.Errors);
         Assert.Equal(rule, e.Rule);
@@ -199,7 +202,7 @@ public class ScriptReliabilityTests
     [InlineData("mine{'a',1} mine{'b',1} mine{'c',1} dig{'1,1,1'} dig{'1,1,2'} place{'torch','1,1,1'} go{'1,1,1'}", "no-cp")]
     public void Lint_warns(string code, string rule)
     {
-        var r = ScriptLint.Check(code, Acts);
+        var r = ScriptLint.Check(code, Acts, language: ScriptLanguage.Lua);
         Assert.False(r.HasErrors, r.Format(LintSeverity.Error));
         Assert.Contains(r.Warnings, w => w.Rule == rule);
     }
@@ -212,33 +215,36 @@ public class ScriptReliabilityTests
     [InlineData("for i = 1, 4 do local ok = mine{'dirt', 1} if not ok then break end end")]
     public void Lint_lets_good_code_through(string code)
     {
-        var r = ScriptLint.Check(code, Acts);
+        var r = ScriptLint.Check(code, Acts, language: ScriptLanguage.Lua);
         Assert.False(r.HasErrors, r.Format(LintSeverity.Error));
         Assert.DoesNotContain(r.Warnings, w => w.Rule == "unchecked");
     }
 
     [Fact]
-    public void Lint_passes_the_cheat_sheet_exemplar_cleanly()
+    public void Lint_passes_every_author_example_cleanly()
     {
-        var r = ScriptLint.Check(ScriptPrompts.Exemplar, Acts);
+        Assert.Equal(ScriptLanguage.Js, ScriptLanguages.Detect(ScriptPrompts.Exemplar));
+        var r = ScriptLint.Check(ScriptPrompts.Exemplar, Acts, language: ScriptLanguage.Js);
         Assert.Empty(r.Findings);
-        Assert.Equal("mine n cobble at the gen, store it", ScriptLint.Purpose(ScriptPrompts.Exemplar));
-        Assert.Equal(["n", "at"], ScriptLint.ArgNames(ScriptPrompts.Exemplar));
+        Assert.StartsWith("mine n cobble at the gen and store it", ScriptLint.Purpose(ScriptPrompts.Exemplar));
+        Assert.Equal(["n", "at", "chest"], ScriptLint.ArgNames(ScriptPrompts.Exemplar));
+        foreach (var (title, code) in ScriptPrompts.Examples)
+            Assert.False(ScriptLint.Check(code, Acts, language: ScriptLanguage.Js).HasErrors, title);
     }
 
     [Fact]
     public async Task Lint_errors_reject_the_run_and_warnings_ride_on_the_result()
     {
         var (h, c, b) = BotScriptTests.Bot();
-        var bad = await h.Run("script", new { op = "run", name = "spin", code = "while true do local x = inv'log' end" });
+        var bad = await h.Run("script", new { op = "run", name = "spin", code = "while (true) { const x = inv('log') }" });
         Assert.False(bad.Ok);
         Assert.StartsWith("lint errors (fix and resubmit): L1 unbounded while loop", bad.Text);
         Assert.Null(b.Library.Get("spin"));
         Assert.Null(b.Controller.Last);
 
-        var warned = await h.Run("script", new { op = "run", code = "for i = 1, 2 do mine{'dirt', 1} end return 'x'" });
+        var warned = await h.Run("script", new { op = "run", code = "for (let i = 1; i <= 2; i++) mine('dirt', 1)\nreturn 'x'" });
         Assert.True(warned.Ok, warned.Text);
-        Assert.Contains("lint: L1 mine{} result ignored", warned.Text);
+        Assert.Contains("lint: L1 mine() result ignored", warned.Text);
         Assert.Equal(2, c.CallList.Count(x => x.StartsWith("mine dirt 1")));
     }
 
@@ -248,7 +254,7 @@ public class ScriptReliabilityTests
     public async Task Promotion_needs_ninety_percent_over_three_runs()
     {
         var (h, _, b) = BotScriptTests.Bot();
-        const string code = "-- purpose: flaky job\nif args.boom then fail('boom at 3,64,2') end local ok, m = mine{'dirt', 1} expect(ok, m) return 'ok'";
+        const string code = "// purpose: flaky job\nif (args.boom) fail('boom at 3,64,2')\nexpect(mine('dirt', 1))\nreturn 'ok'";
         await h.Run("script", new { op = "run", name = "flaky", code });
         await h.Run("script", new { op = "run", name = "flaky", args = new { boom = true } });
         await h.Run("script", new { op = "run", name = "flaky" });
@@ -260,7 +266,7 @@ public class ScriptReliabilityTests
         Assert.Equal("boom at #,#,# x1", Assert.Single(v.TopFailures()));
         Assert.True(v.AvgYield >= 0);
 
-        await h.Run("script", new { op = "run", name = "steady", code = "local ok, m = mine{'dirt', 1} expect(ok, m) return 'ok'" });
+        await h.Run("script", new { op = "run", name = "steady", code = "expect(mine('dirt', 1))\nreturn 'ok'" });
         await h.Run("script", new { op = "run", name = "steady" });
         Assert.Null(b.Library.Get("steady")!.Script!.PromotedAs); // 2 runs: not yet
         await h.Run("script", new { op = "run", name = "steady" });
@@ -274,12 +280,12 @@ public class ScriptReliabilityTests
     public async Task Save_on_an_existing_name_creates_a_version_and_the_old_one_stays_callable()
     {
         var (h, c, b) = BotScriptTests.Bot();
-        var v1 = await h.Run("script", new { op = "save", name = "cobble_loop", code = "-- purpose: cobble\nlocal ok, m = mine{'cobblestone', 2} expect(ok, m) return 'v1'" });
+        var v1 = await h.Run("script", new { op = "save", name = "cobble_loop", code = "// purpose: cobble\nexpect(mine('cobblestone', 2))\nreturn 'v1'" });
         Assert.True(v1.Ok, v1.Text);
         Assert.StartsWith("ok: saved cobble_loop v1", v1.Text); // + the no-ensure lint note (mine cobble needs a pickaxe)
         Assert.Empty(c.CallList); // save doesn't run
 
-        var v2 = await h.Run("script", new { op = "save", name = "cobble_loop", code = "-- purpose: cobble\nlocal ok, m = mine{'cobblestone', args.n or 3} expect(ok, m) return 'v2'" });
+        var v2 = await h.Run("script", new { op = "save", name = "cobble_loop", code = "// purpose: cobble\nexpect(mine('cobblestone', args.n ?? 3))\nreturn 'v2'" });
         Assert.StartsWith("ok: saved cobble_loop v2 args(n); v1 stays callable as cobble_loop@v1", v2.Text);
         var s = b.Library.Get("cobble_loop")!.Script!;
         Assert.Equal(2, s.Version);
@@ -290,7 +296,7 @@ public class ScriptReliabilityTests
         Assert.Contains("v2", (await h.Run("script", new { op = "run", name = "cobble_loop", args = new { n = 5 } })).Text);
         Assert.Contains(c.CallList, x => x.StartsWith("mine cobblestone 5"));
         Assert.StartsWith("ok: cobble_loop unchanged (v2)",
-            (await h.Run("script", new { op = "save", name = "cobble_loop", code = "-- purpose: cobble\nlocal ok, m = mine{'cobblestone', args.n or 3} expect(ok, m) return 'v2'" })).Text);
+            (await h.Run("script", new { op = "save", name = "cobble_loop", code = "// purpose: cobble\nexpect(mine('cobblestone', args.n ?? 3))\nreturn 'v2'" })).Text);
         Assert.Contains("cobble_loop v2 (n)", (await h.Run("script", new { op = "list" })).Text);
     }
 
@@ -298,34 +304,34 @@ public class ScriptReliabilityTests
     public async Task Near_duplicate_save_warns_unless_forced()
     {
         var (h, _, b) = BotScriptTests.Bot();
-        await h.Run("script", new { op = "save", name = "cobble_loop", code = "-- purpose: mine cobble at the gen\nupto(16, function() local ok, m = mine{'cobblestone', 1} expect(ok, m) end)\nlocal ok, m = deposit{} expect(ok, m)" });
-        var dup = await h.Run("script", new { op = "save", name = "cobble_loop2", code = "-- purpose: mine cobble at the gen\nupto(32, function() local ok, m = mine{'cobblestone', 2} expect(ok, m) end)\nlocal ok, m = deposit{} expect(ok, m)" });
+        await h.Run("script", new { op = "save", name = "cobble_loop", code = "// purpose: mine cobble at the gen\nupto(16, () => { expect(mine('cobblestone', 1)) })\nexpect(deposit())" });
+        var dup = await h.Run("script", new { op = "save", name = "cobble_loop2", code = "// purpose: mine cobble at the gen\nupto(32, () => { expect(mine('cobblestone', 2)) })\nexpect(deposit())" });
         Assert.False(dup.Ok);
         Assert.Matches(@"^not saved: similar to cobble_loop \(\d\.\d\d\) - update it instead\? \(use op=save name=cobble_loop", dup.Text);
         Assert.Null(b.Library.Get("cobble_loop2"));
 
         // A named run of a near-duplicate still runs, unsaved, and says so.
-        var ran = await h.Run("script", new { op = "run", name = "cobble_loop3", code = "-- purpose: mine cobble at the gen\nupto(8, function() local ok, m = mine{'cobblestone', 1} expect(ok, m) end)\nlocal ok, m = deposit{} expect(ok, m)" });
+        var ran = await h.Run("script", new { op = "run", name = "cobble_loop3", code = "// purpose: mine cobble at the gen\nupto(8, () => { expect(mine('cobblestone', 1)) })\nexpect(deposit())" });
         Assert.Contains("not saved: similar to cobble_loop", ran.Text);
         Assert.Null(b.Library.Get("cobble_loop3"));
 
-        var forced = await h.Run("script", new { op = "save", name = "cobble_loop2", force = "deposits to the far chest", code = "-- purpose: mine cobble at the gen\nupto(32, function() local ok, m = mine{'cobblestone', 2} expect(ok, m) end)\nlocal ok, m = deposit{} expect(ok, m)" });
+        var forced = await h.Run("script", new { op = "save", name = "cobble_loop2", force = "deposits to the far chest", code = "// purpose: mine cobble at the gen\nupto(32, () => { expect(mine('cobblestone', 2)) })\nexpect(deposit())" });
         Assert.True(forced.Ok, forced.Text);
         Assert.Equal("deposits to the far chest", b.Library.Get("cobble_loop2")!.Script!.ForcedReason);
 
         // Something genuinely different saves silently.
-        Assert.True((await h.Run("script", new { op = "save", name = "torches", code = "local ok, m = craft{'torch', 4} expect(ok, m)" })).Ok);
+        Assert.True((await h.Run("script", new { op = "save", name = "torches", code = "expect(craft('torch', 4))" })).Ok);
     }
 
     [Fact]
     public async Task A_worse_new_version_auto_reverts_and_rollback_works()
     {
         var (h, _, b) = BotScriptTests.Bot();
-        const string good = "local ok, m = mine{'dirt', 1} expect(ok, m) return 'good'";
+        const string good = "expect(mine('dirt', 1))\nreturn 'good'";
         await h.Run("script", new { op = "save", name = "job", code = good });
         for (int i = 0; i < 3; i++) Assert.True((await h.Run("script", new { op = "run", name = "job" })).Ok);
 
-        await h.Run("script", new { op = "save", name = "job", code = "local ok, m = mine{'dirt', 1} expect(ok, m) fail('v2 is broken') return 'bad'" });
+        await h.Run("script", new { op = "save", name = "job", code = "expect(mine('dirt', 1))\nfail('v2 is broken')\nreturn 'bad'" });
         Assert.Equal(2, b.Library.Get("job")!.Script!.Version);
         for (int i = 0; i < 3; i++) Assert.False((await h.Run("script", new { op = "run", name = "job" })).Ok);
 
@@ -348,10 +354,10 @@ public class ScriptReliabilityTests
     public async Task Housekeeping_merges_exact_duplicates_and_flags_stale_scripts()
     {
         var (h, _, b) = BotScriptTests.Bot();
-        const string code = "local ok, m = mine{'dirt', 1} expect(ok, m) return 'same'";
+        const string code = "expect(mine('dirt', 1))\nreturn 'same'";
         await h.Run("script", new { op = "run", name = "a_job", code });
         await h.Run("script", new { op = "run", name = "a_job" });
-        await h.Run("script", new { op = "save", name = "b_job", code = code + " -- copy", force = "test copy" });
+        await h.Run("script", new { op = "save", name = "b_job", code = code + " // copy", force = "test copy" });
         await h.Run("script", new { op = "run", name = "b_job" });
 
         var note = b.Library.Housekeep(14, ScriptLint.ExactKey);

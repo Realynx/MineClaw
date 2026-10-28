@@ -20,7 +20,7 @@ public class DeathNoInterruptTests
         try
         {
             await Task.Delay(50);
-            await h.Run("script", new { op = "run", name = "gen_loop", code = "for i = 1, 30 do wait(60) end" });
+            await h.Run("script", new { op = "run", name = "gen_loop", code = "for (let i = 1; i <= 30; i++) wait(60)" });
             await Task.Delay(200);
             // What DangerMonitor posts for a human's void death now: Normal priority, MustWake.
             h.Runtime.Events.Post(GameEvent.Activity("PoofimaFox fell into the void and died off the main island", "PoofimaFox", EventPriority.Normal)

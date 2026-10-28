@@ -6,7 +6,7 @@ namespace MineClaw.Scripting;
 /// </summary>
 public sealed class ScriptOptions
 {
-    /// <summary>Max Lua VM instructions per run (all segments together).</summary>
+    /// <summary>Max VM instructions (Lua) / statements (JS) per run (all segments together).</summary>
     public long MaxInstructions { get; set; } = 20_000_000;
     /// <summary>Max active wall time per run, minutes (time spent paused is not counted; see <see cref="MaxPauseMinutes"/>).</summary>
     public double MaxMinutes { get; set; } = 30;
@@ -59,6 +59,28 @@ public sealed class ScriptOptions
     public int MinWakeIntervalSeconds { get; set; } = 30;
     public int StateChars { get; set; } = 400;
     public int ResultChars { get; set; } = 300;
+
+    // ------------------------------------------------------------------ JavaScript (Jint) and the Lua migration
+
+    /// <summary>Largest JS array a script may build (Jint constraint).</summary>
+    public int MaxArraySize { get; set; } = 100_000;
+    /// <summary>Longest a single regular expression may run, ms.</summary>
+    public int RegexTimeoutMs { get; set; } = 500;
+    /// <summary>
+    /// Legacy runtime: saved Lua versions not yet migrated still run (LuaCSharp). False = a Lua version is refused with
+    /// "not migrated yet". New code is always JS (see <see cref="AcceptLuaCode"/>).
+    /// </summary>
+    public bool LegacyLua { get; set; } = true;
+    /// <summary>Inline Lua sent as code (tests and tools only; the brain and the author write JS). Off = refused.</summary>
+    public bool AcceptLuaCode { get; set; } = false;
+    /// <summary>One-time background migration at startup: every saved Lua script → JS by the Opus author ("Scripting:MigrateLua").</summary>
+    public bool MigrateLua { get; set; } = true;
+    /// <summary>Author spend cap per migrated script, USD.</summary>
+    public decimal MigrateMaxUsdPerScript { get; set; } = 0.25m;
+    /// <summary>Author spend cap for the whole migration, USD.</summary>
+    public decimal MigrateMaxUsd { get; set; } = 5.00m;
+    /// <summary>Machine idle wait between ticks that did no action, ms (not counted as an action).</summary>
+    public int MachineIdleMs { get; set; } = 250;
 
     internal TimeSpan MaxWall => TimeSpan.FromMinutes(Math.Max(0.01, MaxMinutes));
     internal TimeSpan MaxPause => TimeSpan.FromMinutes(Math.Max(0.01, MaxPauseMinutes));

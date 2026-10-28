@@ -20,8 +20,17 @@ public sealed class Rig : IDisposable
     public string? AskReply { get; set; } = "yes";
     public string? Veto { get; set; }
     public ScriptController C { get; }
+    public ScriptHost Host { get; }
 
-    public Rig(ScriptOptions? options = null)
+    /// <summary>The language <see cref="Start"/> runs (the legacy engine tests pass Lua code; JS tests use <see cref="Js"/>).</summary>
+    public ScriptLanguage Lang { get; init; } = ScriptLanguage.Lua;
+
+    /// <summary>A rig whose scripts are JavaScript.</summary>
+    public static Rig Js(ScriptOptions? options = null, Crew.ICrewPort? crew = null, IScriptCheckpointStore? checkpoints = null,
+        Func<string, string?>? storedParams = null, string? body = null) => new(options, crew, checkpoints, storedParams, body) { Lang = ScriptLanguage.Js };
+
+    public Rig(ScriptOptions? options = null, Crew.ICrewPort? crew = null, IScriptCheckpointStore? checkpoints = null,
+        Func<string, string?>? storedParams = null, string? body = null)
     {
         World.ApplyChunkRegion(-16, 0, -16, 32, 128, 32, new byte[32 * 128 * 32], null, null, null);
         for (int x = -6; x <= 6; x++)
@@ -46,13 +55,15 @@ public sealed class Rig : IDisposable
                 new ScriptAction("place", ["block", "at"], Atomic: true),
                 new ScriptAction("use_block", ["at"], Atomic: true),
                 new ScriptAction("eat", [], Atomic: true),
+                new ScriptAction("harvest_generator", ["at", "count", "store", "stand"]),
+                new ScriptAction("attack", ["target"]),
             ],
             Act = (name, args, ct) =>
             {
                 Calls.Enqueue($"{name} {args.GetRawText()}");
                 return On.TryGetValue(name, out var f) ? f(args, ct) : Task.FromResult(ActResult.Success($"{name} ok"));
             },
-            Skills = () => ["move_items", "harvest_cane", "log", "give_items", "drop_items"],
+            Skills = () => ["move_items", "harvest_cane", "log", "give_items", "drop_items", "harvest_wheat"],
             Skill = (name, args, ct) =>
             {
                 Calls.Enqueue($"skill:{name} {args.GetRawText()}");
@@ -71,8 +82,13 @@ public sealed class Rig : IDisposable
             OnlinePlayers = () => ["kiwi", "maid_chan", "robin"],
             ActionVeto = () => Veto,
             Log = l => Logs.Enqueue(l),
+            Crew = crew,
+            Checkpoints = checkpoints,
+            StoredParams = storedParams,
+            Body = body,
         };
-        C = new ScriptController(host, options ?? Fast());
+        Host = host;
+        C = new ScriptController(Host, options ?? Fast());
     }
 
     public static ScriptOptions Fast() => new() { ChatAutoResumeSeconds = 1, MaxPauseMinutes = 1 };
@@ -97,16 +113,22 @@ public sealed class Rig : IDisposable
 
     public void Give(int slot, int id, int count, int dmg = 0) => World.Inventory.SetSlot(0, slot, new ItemStack((short)id, (byte)count, (short)dmg));
 
-    public ScriptSession Start(string code, string name = "t", string? carry = null, string? resumeFrom = null, string? args = null)
+    public ScriptSession Start(string code, string name = "t", string? carry = null, string? resumeFrom = null, string? args = null,
+        string? @params = null, string? role = null, string? resumeState = null)
     {
-        var (s, err) = C.Start(new ScriptRequest { Name = name, Code = code, CarryJson = carry, ResumeFrom = resumeFrom, ArgsJson = args });
+        var (s, err) = C.Start(new ScriptRequest
+        {
+            Name = name, Code = code, CarryJson = carry, ResumeFrom = resumeFrom, ArgsJson = args, Language = Lang, ParamsJson = @params,
+            Role = role, ResumeState = resumeState,
+        });
         Assert.True(s != null, err);
         return s!;
     }
 
-    public async Task<ScriptSession> Run(string code, string name = "t", string? carry = null, string? resumeFrom = null, string? args = null)
+    public async Task<ScriptSession> Run(string code, string name = "t", string? carry = null, string? resumeFrom = null, string? args = null,
+        string? @params = null)
     {
-        var s = Start(code, name, carry, resumeFrom, args);
+        var s = Start(code, name, carry, resumeFrom, args, @params);
         await s.Completion.WaitAsync(TimeSpan.FromSeconds(20));
         return s;
     }

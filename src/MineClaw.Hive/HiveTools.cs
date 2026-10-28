@@ -18,7 +18,7 @@ public static class HiveTools
 
     /// <summary>Main's cached prompt line for script spawns (added once, next to the hive hint).</summary>
     public const string ScriptHint =
-        "hive spawn script=<saved name> (or code=<your Lua>, args) starts a clone straight on it, brain asleep (no calls) until it " +
+        "hive spawn script=<saved name> (or code=<JS>, args) starts a clone straight on it, brain asleep (no calls) until it " +
         "ends/fails/asks; after=logout (default) or sleep.";
 
     /// <param name="llm">Main's model options: enables <c>profile</c> (only when a profile is usable) and the script-authorship

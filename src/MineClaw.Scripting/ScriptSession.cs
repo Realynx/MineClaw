@@ -1,7 +1,10 @@
 using System.Diagnostics;
+using System.Globalization;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
-using Lua;
 using MineClaw.Data;
+using MineClaw.Scripting.Runtime;
 
 namespace MineClaw.Scripting;
 
@@ -26,29 +29,40 @@ public sealed record ScriptRequest
 {
     public required string Name { get; init; }
     public required string Code { get; init; }
+    /// <summary>JS for every new script; Lua only for legacy saved versions. Null = detected from the code (direct callers, tests).</summary>
+    public ScriptLanguage? Language { get; init; }
+    /// <summary>The language this request runs in.</summary>
+    public ScriptLanguage Lang => Language ?? ScriptLanguages.Detect(Code);
     public string? CarryJson { get; init; }
     public string? ArgsJson { get; init; }
+    /// <summary>This run's tunables (<c>script{name, params:{...}}</c>), merged over the saved ones and the code's defaults by <c>params()</c>.</summary>
+    public string? ParamsJson { get; init; }
     /// <summary>Who wrote the code ("main/claude-opus-5-5"; null = C#/saved script run by name).</summary>
     public string? Author { get; init; }
     /// <summary>Saved-script version this run executes (stats are kept per version), or null for an unsaved run.</summary>
     public int? Version { get; init; }
     /// <summary>Lint warnings found before the run (attached to the result).</summary>
     public string? LintWarnings { get; init; }
-    /// <summary>Fast-forward (actions skipped, stages not run) until <c>cp"label"</c>.</summary>
+    /// <summary>Fast-forward (actions skipped, stages not run) until <c>cp"label"</c> (or a machine's "@id").</summary>
     public string? ResumeFrom { get; init; }
+    /// <summary>The machine snapshot to resume (state, history, blackboard) when <see cref="ResumeFrom"/> is a machine label.</summary>
+    public string? ResumeState { get; init; }
+    /// <summary>Crew lane: the role function this lane runs after loading the script's top level.</summary>
+    public string? Role { get; init; }
+    /// <summary>Crew lane / coordinator: the shared board's name.</summary>
+    public string? CrewId { get; init; }
 }
 
 /// <summary>
-/// One Lua script run on its own thread with its own sandboxed <see cref="LuaState"/>. Host calls are the only safe points:
-/// a pause, cancel or replace takes effect between two host calls, never inside one. Interruptible actions (walking,
+/// One script run on its own thread with its own sandboxed engine (JS via Jint; legacy Lua). Host calls are the only safe
+/// points: a pause, cancel or replace takes effect between two host calls, never inside one. Interruptible actions (walking,
 /// mining, waits) are aborted through their own cancellation on danger and re-run after resume; atomic ones (click
-/// sequences, digs) always finish. Lua code between host calls is bounded by a count hook (instructions, busy loop, call
-/// depth, memory, stop requests) — the script can't remove it (no debug library) or catch it (no pcall).
+/// sequences, digs) always finish. Code between host calls is bounded by the runtime's budget hook (statements, busy loop,
+/// call depth, memory, stop requests) — the script can't remove it or catch it (host signals are CLR exceptions that no
+/// script try/catch or pcall sees).
 /// </summary>
 public sealed partial class ScriptSession
 {
-    private const int HookEvery = 10;
-
     private readonly ScriptController _owner;
     private readonly ScriptHost _host;
     private readonly ScriptOptions _o;
@@ -70,12 +84,11 @@ public sealed partial class ScriptSession
     private readonly TaskCompletionSource<string> _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Stopwatch _active = new();
     private ITimer? _watchdog;
-    private LuaState? _lua;
+    private IScriptRuntime? _runtime;
     private long _instructions, _sinceAction, _allocBase;
     private string[] _sourceLines = [];
     private readonly Dictionary<(int Id, int Dmg), int> _invStart;
     private readonly HashSet<string> _passed = new(StringComparer.Ordinal);
-    private HashSet<string> _baseGlobals = new(StringComparer.Ordinal);
     private int _skipped;
     private string? _resumeTarget;
 
@@ -94,12 +107,14 @@ public sealed partial class ScriptSession
         Started = _time.GetUtcNow();
         CheckpointTotal = CountCheckpoints(Code);
         _invStart = InventoryCounts();
+        Signals = new Sdk.SignalSet(this);
     }
 
     public int Id { get; }
     public string Name { get; }
     public string Code { get; }
     public ScriptRequest Request { get; }
+    public ScriptLanguage Language => Request.Lang;
     public DateTimeOffset Started { get; }
     public DateTimeOffset? Finished { get; private set; }
     public ScriptStatus Status { get; private set; } = ScriptStatus.Starting;
@@ -128,6 +143,10 @@ public sealed partial class ScriptSession
     public string? Reason { get; private set; }
     /// <summary>The terse result line once ended.</summary>
     public string? Outcome { get; private set; }
+    /// <summary>What the script itself returned (its text), when it ended normally — a crew lane's result for <c>parallel()</c>.</summary>
+    public string? Result { get; private set; }
+    /// <summary>A lane's answer to its coordinator: the role's own result when done, else the outcome line.</summary>
+    public string LaneResult => Ok ? Result ?? Outcome ?? "ok" : Outcome ?? Reason ?? "failed";
     public bool Ok => Status == ScriptStatus.Done;
     public string? Vars { get; private set; }
     /// <summary>JSON of <c>carry</c> when the script ended (replace hands it to the new script).</summary>
@@ -143,6 +162,24 @@ public sealed partial class ScriptSession
     public TimeSpan Elapsed => _active.Elapsed;
     /// <summary>Set by the host adapter: non-null = this run lost the bot's body (another activity took over) → cancel.</summary>
     public Func<string?>? OwnerLost { get; set; }
+    /// <summary>The effective tunables (<c>params()</c>) as JSON, for telemetry and self-tuning; null = the script declared none.</summary>
+    public string? ParamsJson { get; internal set; }
+    /// <summary>Per action: calls, failures and total time — the run's timing telemetry.</summary>
+    public IReadOnlyDictionary<string, ActionTiming> Timings { get { lock (_lock) return new Dictionary<string, ActionTiming>(_timings); } }
+    private readonly Dictionary<string, ActionTiming> _timings = new(StringComparer.Ordinal);
+    /// <summary>The state machine running in this session ("mine", 4 transitions), or null.</summary>
+    public string? MachineState { get; internal set; }
+    public int Transitions { get; internal set; }
+    /// <summary>Edge-triggered conditions the script listens for (hungry, invFull, night...; machine timers; when()).</summary>
+    internal Sdk.SignalSet Signals { get; }
+
+    internal ScriptHost Host => _host;
+    internal ScriptOptions Options => _o;
+    internal TimeProvider Time => _time;
+    internal ScriptController Owner => _owner;
+    internal CancellationToken HardToken => _hardCt;
+    internal CancellationToken StopToken => _stopCts.Token;
+    internal string? ResumeTarget => _resumeTarget;
 
     /// <summary>Completes with <see cref="Outcome"/> when the run ends.</summary>
     public Task<string> Completion => _done.Task;
@@ -216,6 +253,16 @@ public sealed partial class ScriptSession
     {
         if (Status is ScriptStatus.Running && _active.Elapsed > _o.MaxWall)
             Stop($"time limit {ScriptText.Dur(_o.MaxWall)}", limit: true);
+        if (Status is ScriptStatus.Running) Signals.Poll(onScriptThread: false);
+    }
+
+    /// <summary>Cuts the in-flight interruptible action so the next safe point runs a handler (it re-runs afterwards unless the handler unwinds).</summary>
+    internal void CutForHandler()
+    {
+        CancellationTokenSource? cut = null;
+        lock (_lock)
+            if (!_currentAtomic && _abortCts != null) { _abortedForPause = true; cut = _abortCts; }
+        try { cut?.Cancel(); } catch (ObjectDisposedException) { }
     }
 
     // ------------------------------------------------------------------ the script thread
@@ -225,15 +272,15 @@ public sealed partial class ScriptSession
         using var scope = _owner.StepScope?.Invoke(); // this lane's body, for the whole thread
         ScriptStatus final;
         string? reason = null;
-        LuaValue[] result = [];
+        IReadOnlyList<JsonNode?> result = [];
         try
         {
             _sourceLines = Code.Split('\n');
-            _lua = BuildState();
+            _runtime = ScriptRuntimes.Create(this);
             lock (_lock) if (Status == ScriptStatus.Starting) Status = ScriptStatus.Running;
             _active.Start();
             TouchSegment();
-            result = _lua.DoStringAsync(Code, "script", _hardCt).AsTask().GetAwaiter().GetResult();
+            result = _runtime.Run(Code, _hardCt);
             ThrowIfStopping();
             if (_resumeTarget != null) throw new ScriptFailException($"checkpoint '{_resumeTarget}' not reached");
             final = ScriptStatus.Done;
@@ -243,7 +290,7 @@ public sealed partial class ScriptSession
         {
             (final, reason) = Classify(ex);
         }
-        try { CarryJson = SerializeCarry(); } catch (Exception) { }
+        try { CarryJson = _runtime?.CarryJson(); } catch (Exception) { }
         _active.Stop();
         try { _watchdog?.Dispose(); } catch (Exception) { }
         TaskCompletionSource settled;
@@ -253,7 +300,8 @@ public sealed partial class ScriptSession
             Status = final;
             Reason = reason;
             Finished = _time.GetUtcNow();
-            outcome = Outcome = ScriptText.Outcome(this, final == ScriptStatus.Done ? Completed(result) : null, InventoryDelta(), _o.ResultChars);
+            Result = final == ScriptStatus.Done ? Completed(result) : null;
+            outcome = Outcome = ScriptText.Outcome(this, Result, InventoryDelta(), _o.ResultChars);
             try
             {
                 var now = InventoryCounts();
@@ -262,23 +310,24 @@ public sealed partial class ScriptSession
             catch (Exception) { }
             settled = _settled;
         }
+        try { _runtime?.Dispose(); } catch (Exception) { }
         _owner.OnEnded(this); // stats, saves, promotion before anyone waiting sees the end
         settled.TrySetResult();
         _done.TrySetResult(outcome);
         _abortCts?.Dispose();
     }
 
-    private static readonly Regex LuaLoc = new(@"\[string ""script""\]:(\d+):\s*(.*)$", RegexOptions.Compiled | RegexOptions.Singleline);
-
     private (ScriptStatus, string) Classify(Exception ex)
     {
         string? stop, limit;
         bool stopIsLimit;
         lock (_lock) { stop = _stopReason; stopIsLimit = _stopIsLimit; limit = _limitHit; }
-        // Our own exceptions arrive wrapped by the VM (whose message carries the line); the innermost one decides.
-        if (Line == 0 && ex is LuaRuntimeException && LuaLoc.Match(ex.Message) is { Success: true } where)
+        (string? Reason, int Line)? desc = null;
+        try { desc = _runtime?.Describe(ex); } catch (Exception) { }
+        // Our own exceptions may arrive wrapped by the engine (whose message carries the line); the innermost one decides.
+        if (Line == 0 && desc is { Line: > 0 } at)
         {
-            Line = int.Parse(where.Groups[1].Value);
+            Line = at.Line;
             Snippet = SourceLine(Line);
         }
         for (var e = ex; e != null; e = e.InnerException)
@@ -287,13 +336,17 @@ public sealed partial class ScriptSession
                 case ScriptStopException s: return (ScriptStatus.Cancelled, s.Message);
                 case ScriptLimitException l: return (ScriptStatus.Failed, l.Message);
                 case ScriptFailException f: return (ScriptStatus.Failed, f.Message);
+                case Sdk.ScriptUnwind u: return (ScriptStatus.Failed, "error: " + u.Message + " outside its machine/timeout");
             }
         if (limit != null) return (ScriptStatus.Failed, limit);
         if (stop != null) return (stopIsLimit ? ScriptStatus.Failed : ScriptStatus.Cancelled, stop);
+        if (desc is { Reason: { } why } d2)
+        {
+            if (d2.Line > 0) { Line = d2.Line; Snippet = SourceLine(Line); }
+            return (ScriptStatus.Failed, why);
+        }
         switch (ex)
         {
-            case LuaCompileException ce: return (ScriptStatus.Failed, "syntax: " + LuaMessage(ce.Message));
-            case LuaRuntimeException re: return (ScriptStatus.Failed, "error: " + LuaMessage(re.Message));
             case OperationCanceledException: return (ScriptStatus.Cancelled, "shutdown");
             default:
                 _host.Log?.Invoke($"script {Name} host error: {ex}");
@@ -301,17 +354,7 @@ public sealed partial class ScriptSession
         }
     }
 
-    /// <summary>"Lua-CSharp: [string "script"]:2: attempt to..." → line 2, "attempt to...".</summary>
-    private string LuaMessage(string msg)
-    {
-        var m = LuaLoc.Match(msg);
-        if (!m.Success) return Short(OneLine(msg.Replace("Lua-CSharp: ", "")), 120);
-        Line = int.Parse(m.Groups[1].Value);
-        Snippet = SourceLine(Line);
-        return Short(OneLine(m.Groups[2].Value), 120);
-    }
-
-    private void ThrowIfStopping()
+    internal void ThrowIfStopping()
     {
         string? why, limit;
         bool isLimit;
@@ -322,33 +365,37 @@ public sealed partial class ScriptSession
         throw new ScriptStopException(why);
     }
 
-    private void Limit(string what)
+    internal void Limit(string what)
     {
         lock (_lock) _limitHit ??= what;
         throw new ScriptLimitException(what);
     }
 
-    /// <summary>Count hook (every <see cref="HookEvery"/> instructions): the only thing that runs while Lua code runs.</summary>
-    private void Hook()
+    /// <summary>
+    /// The runtime's budget hook (Lua: every 10 VM instructions; JS: every few statements): the only thing that runs while
+    /// script code runs. Stop requests, the instruction limit, the busy-loop guard and the memory guard.
+    /// </summary>
+    internal void Budget(int units)
     {
-        long total = Interlocked.Add(ref _instructions, HookEvery);
-        _sinceAction += HookEvery;
+        long total = Interlocked.Add(ref _instructions, units);
+        _sinceAction += units;
         ThrowIfStopping();
         if (total > _o.MaxInstructions) Limit($"instruction limit ({_o.MaxInstructions})");
         if (_sinceAction > _o.MaxInstructionsWithoutAction) Limit($"busy loop ({_o.MaxInstructionsWithoutAction} instructions without an action; add wait())");
-        if (_lua!.CallStackFrameCount > _o.MaxCallDepth) Limit($"call depth limit ({_o.MaxCallDepth})");
         if (GC.GetAllocatedBytesForCurrentThread() - _allocBase > _o.MaxSegmentAllocBytes)
             Limit($"memory limit ({_o.MaxSegmentAllocBytes / (1024 * 1024)} MB between actions)");
     }
 
-    private void TouchSegment()
+    internal void DepthLimit() => Limit($"call depth limit ({_o.MaxCallDepth})");
+
+    internal void TouchSegment()
     {
         _sinceAction = 0;
         _allocBase = GC.GetAllocatedBytesForCurrentThread();
     }
 
-    /// <summary>The boundary between host calls: stop, lost body, handlers, pauses — in that order.</summary>
-    private void SafePoint()
+    /// <summary>The boundary between host calls: stop, lost body, signals, handlers, pauses — in that order.</summary>
+    internal void SafePoint()
     {
         if (_inSafePoint) { ThrowIfStopping(); return; }
         _inSafePoint = true;
@@ -358,6 +405,7 @@ public sealed partial class ScriptSession
             {
                 ThrowIfStopping();
                 if (OwnerLost?.Invoke() is { } lost) { Stop(lost); ThrowIfStopping(); }
+                Signals.Poll(onScriptThread: true);
                 if (TakeHandler(out var h, out var ev)) { RunHandler(h!, ev!); continue; }
                 PauseKind kind;
                 string reason;
@@ -375,7 +423,7 @@ public sealed partial class ScriptSession
     }
 
     /// <summary>Blocks the script thread until resume/cancel/timeout. Returns the resume answer (ask"brain").</summary>
-    private string? PauseHere(PauseKind kind, string reason)
+    internal string? PauseHere(PauseKind kind, string reason)
     {
         var at = _time.GetUtcNow();
         TaskCompletionSource settled;
@@ -429,26 +477,27 @@ public sealed partial class ScriptSession
 
     // ------------------------------------------------------------------ helpers
 
-    private static readonly Regex CheckpointRx = new(@"\bcp\s*\(?\s*(['""])([^'""\n]{1,40})\1", RegexOptions.Compiled);
+    private static readonly Regex CheckpointRx = new(@"\bcp\s*\(?\s*(['""`])([^'""`\n]{1,40})\1", RegexOptions.Compiled);
 
     private static int CountCheckpoints(string code) =>
         CheckpointRx.Matches(code).Select(m => m.Groups[2].Value).Distinct(StringComparer.Ordinal).Count();
 
-    /// <summary>True if <paramref name="code"/> contains <c>cp"label"</c> / <c>cp("label", fn)</c>.</summary>
+    /// <summary>
+    /// True if <paramref name="code"/> contains <c>cp"label"</c> / <c>cp("label", fn)</c>, or <paramref name="label"/> is a machine
+    /// checkpoint ("@id", written on every transition) and the code builds a machine.
+    /// </summary>
     public static bool HasCheckpoint(string code, string label) =>
-        CheckpointRx.Matches(code).Any(m => m.Groups[2].Value == label);
+        label.StartsWith('@') ? code.Contains("machine(", StringComparison.Ordinal)
+        : CheckpointRx.Matches(code).Any(m => m.Groups[2].Value == label);
 
-    private static readonly Regex TraceLoc = new(@"\[string ""script""\]:(\d+):", RegexOptions.Compiled);
-
-    /// <summary>Current script line from the Lua traceback (the host call's call site).</summary>
-    private void Locate()
+    /// <summary>Current script line (the host call's call site).</summary>
+    internal void Locate()
     {
         try
         {
-            var tb = _lua!.GetTraceback().ToString();
-            var m = TraceLoc.Match(tb);
-            if (!m.Success) return;
-            Line = int.Parse(m.Groups[1].Value);
+            int line = _runtime?.CurrentLine() ?? 0;
+            if (line <= 0) return;
+            Line = line;
             Snippet = SourceLine(Line);
         }
         catch (Exception) { }
@@ -493,13 +542,42 @@ public sealed partial class ScriptSession
         try { return Items.DisplayName(id, dmg).ToLowerInvariant(); } catch (Exception) { return "#" + id; }
     }
 
-    private static string? Completed(LuaValue[] r)
+    private enum ValueKind { Nil, Str, Num, Bool, Other }
+
+    private static ValueKind KindOf(JsonNode? v) => v switch
     {
-        if (r.Length == 0) return null;
+        null => ValueKind.Nil,
+        JsonValue jv => jv.GetValueKind() switch
+        {
+            JsonValueKind.String => ValueKind.Str,
+            JsonValueKind.Number => ValueKind.Num,
+            JsonValueKind.True or JsonValueKind.False => ValueKind.Bool,
+            JsonValueKind.Null or JsonValueKind.Undefined => ValueKind.Nil,
+            _ => ValueKind.Other,
+        },
+        _ => ValueKind.Other,
+    };
+
+    /// <summary>A neutral scalar as text ("12", "1.5", "true", "x").</summary>
+    internal static string Str(JsonNode? v) => KindOf(v) switch
+    {
+        ValueKind.Nil => "",
+        ValueKind.Str => v!.GetValue<string>(),
+        ValueKind.Num => Fmt(AsNumber(v) ?? 0),
+        ValueKind.Bool => v!.GetValue<bool>() ? "true" : "false",
+        _ => v!.ToJsonString(),
+    };
+
+    internal static string Fmt(double d) =>
+        d == Math.Floor(d) && Math.Abs(d) < 1e15 ? ((long)d).ToString(CultureInfo.InvariantCulture) : d.ToString("0.###", CultureInfo.InvariantCulture);
+
+    private static string? Completed(IReadOnlyList<JsonNode?> r)
+    {
+        if (r.Count == 0) return null;
         // `return ok, msg` (an action's own result): the run's status says ok/failed, so a leading boolean is not text.
         var vals = r.Take(3).ToList();
-        if (vals.Count > 0 && vals[0].Type == LuaValueType.Boolean) vals.RemoveAt(0);
-        var parts = vals.Where(v => v.Type is LuaValueType.String or LuaValueType.Number or LuaValueType.Boolean).Select(Str)
+        if (vals.Count > 0 && KindOf(vals[0]) == ValueKind.Bool) vals.RemoveAt(0);
+        var parts = vals.Where(v => KindOf(v) is ValueKind.Str or ValueKind.Num or ValueKind.Bool).Select(Str)
             .Where(t => t.Length > 0).ToList();
         return parts.Count > 0 ? string.Join(" ", parts) : null;
     }
@@ -509,20 +587,20 @@ public sealed partial class ScriptSession
     /// Handled = a later action succeeded, or the script returned its own result (a string, number or true) instead of
     /// nothing / false / the failure itself.
     /// </summary>
-    private string? UnhandledFailure(LuaValue[] result)
+    private string? UnhandledFailure(IReadOnlyList<JsonNode?> result)
     {
         if (!LastActionFailed || LastFailure == null) return null;
-        if (result.Length == 0 || result[0].Type == LuaValueType.Nil) return LastFailure;
+        if (result.Count == 0 || KindOf(result[0]) == ValueKind.Nil) return LastFailure;
         var first = result[0];
-        if (first.Type == LuaValueType.Boolean) return first.Read<bool>() ? null : LastFailure;
-        if (first.Type == LuaValueType.String)
+        if (KindOf(first) == ValueKind.Bool) return first!.GetValue<bool>() ? null : LastFailure;
+        if (KindOf(first) == ValueKind.Str)
         {
             // `return ok .. msg` / `return tostring(ok) .. msg` ("falseno skill 'toss'..") or just the failure text again.
-            var text = OneLine(first.Read<string>());
+            var text = OneLine(first!.GetValue<string>());
             var fm = OneLine(_lastFailureMsg);
             if (fm.Length > 0)
             {
-                foreach (var head in new[] { "false", "nil" })
+                foreach (var head in new[] { "false", "nil", "undefined" })
                     if (text.StartsWith(head, StringComparison.OrdinalIgnoreCase) && text[head.Length..].TrimStart(' ', ':', ',', '-').StartsWith(fm, StringComparison.Ordinal))
                         return LastFailure;
                 if (string.Equals(text, fm, StringComparison.Ordinal)) return LastFailure;
@@ -533,5 +611,19 @@ public sealed partial class ScriptSession
 
     internal static string OneLine(string? s) => (s ?? "").Replace('\r', ' ').Replace('\n', ' ').Trim();
 
+    internal static string Short(string s, int max) => s.Length <= max ? s : s[..Math.Max(0, max - 3)] + "...";
+
     private static TaskCompletionSource NewTcs() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>The state line's variables (runtime snapshot).</summary>
+    internal void SnapshotVars()
+    {
+        try { Vars = _runtime?.Vars(); } catch (Exception) { }
+    }
+}
+
+/// <summary>One action's timing over a run: calls, failures, total wall time.</summary>
+public readonly record struct ActionTiming(int Calls, int Fails, TimeSpan Total)
+{
+    public override string ToString() => $"{Calls}x {Total.TotalSeconds:0.#}s" + (Fails > 0 ? $" {Fails} failed" : "");
 }

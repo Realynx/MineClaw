@@ -22,6 +22,12 @@ public sealed class ScriptVersion
     /// <summary>Failure reason (digits → #) → count.</summary>
     public Dictionary<string, int> FailReasons { get; set; } = new(StringComparer.Ordinal);
     public DateTimeOffset? LastRun { get; set; }
+    /// <summary>"js" for JavaScript; null = saved before JS existed (legacy Lua).</summary>
+    public string? Lang { get; set; }
+    /// <summary>The last runs' tunables with how each went (newest last, ≤ 20): what self-tuning reads.</summary>
+    public List<ParamRun> ParamRuns { get; set; } = new();
+
+    public bool IsLua => !string.Equals(Lang, "js", StringComparison.OrdinalIgnoreCase);
 
     public double Rate => Runs == 0 ? 0 : (double)Successes / Runs;
     public double AvgYield => Runs == 0 ? 0 : (double)TotalYield / Runs;
@@ -31,6 +37,9 @@ public sealed class ScriptVersion
 
     public IEnumerable<string> TopFailures(int n = 2) => FailReasons.OrderByDescending(kv => kv.Value).Take(n).Select(kv => $"{kv.Key} x{kv.Value}");
 }
+
+/// <summary>One run's tunables and result (for tuning params from telemetry).</summary>
+public sealed record ParamRun(string Params, bool Ok, double Seconds, int Yield, DateTimeOffset At, string? Timings = null);
 
 /// <summary>
 /// The script part of a saved routine (stored in the routine's JSON row, so it is versioned, hive-shared, listed by
@@ -72,6 +81,14 @@ public sealed class RoutineScript
     public DateTimeOffset? ArchiveFlagged { get; set; }
     /// <summary>Last auto-revert note ("v4 52% < v3 95% over 3 runs: back to v3").</summary>
     public string? RevertNote { get; set; }
+    /// <summary>Saved tunables (JSON object) merged over the code's <c>params({...})</c> defaults: the brain retunes without new code.</summary>
+    public string? Params { get; set; }
+    /// <summary>Durable checkpoint snapshots, "lane/label" → JSON (cp carry, a machine's state + blackboard): a restart resumes there.</summary>
+    public Dictionary<string, string> Checkpoints { get; set; } = new(StringComparer.Ordinal);
+    /// <summary>The one-time Lua → JS migration's verdict for this script ("ok v3", "failed: ...", "skipped: ..."); set = never retried.</summary>
+    public string? Migration { get; set; }
+    /// <summary>Language of the active version ("js"; null = legacy Lua).</summary>
+    public string? Lang { get; set; }
 
     public double AvgSeconds => Runs == 0 ? 0 : TotalSeconds / Runs;
 }
@@ -129,7 +146,7 @@ public sealed class ScriptLibrary(MemoryStore memory)
         a = new ScriptVersion
         {
             V = s.Version, Code = s.Code, Author = s.Author, Runs = s.Runs, Successes = s.Successes, Failures = s.Failures,
-            TotalSeconds = s.TotalSeconds, LastRun = s.LastRun,
+            TotalSeconds = s.TotalSeconds, LastRun = s.LastRun, Lang = s.Lang,
         };
         s.Versions.Add(a);
         s.Versions.Sort((x, y) => x.V.CompareTo(y.V));
@@ -170,18 +187,20 @@ public sealed class ScriptLibrary(MemoryStore memory)
     /// version, code equal to an older version = that version becomes active again (its stats continue).
     /// </summary>
     public Routine Save(string name, string code, string? note = null, string? author = null, string? purpose = null,
-        IReadOnlyList<string>? argNames = null, string? forcedReason = null) => SaveVersion(name, code, note, author, purpose, argNames, forcedReason).Routine!;
+        IReadOnlyList<string>? argNames = null, string? forcedReason = null, string? lang = "js") =>
+        SaveVersion(name, code, note, author, purpose, argNames, forcedReason, lang).Routine!;
 
+    /// <param name="lang">"js" (every new version) or null for legacy Lua (tests, rows saved before JS).</param>
     public ScriptSave SaveVersion(string name, string code, string? note = null, string? author = null, string? purpose = null,
-        IReadOnlyList<string>? argNames = null, string? forcedReason = null)
+        IReadOnlyList<string>? argNames = null, string? forcedReason = null, string? lang = "js")
     {
         name = ParseRef(name).Name;
         var r = Memory.GetRoutine(name) ?? new Routine { Name = name, Repeat = 1 };
         bool fresh = false;
         if (r.Script == null)
         {
-            r.Script = new RoutineScript { Code = code, Version = 1, Author = author };
-            r.Script.Versions.Add(new ScriptVersion { V = 1, Code = code, Author = author, SavedAt = Now() });
+            r.Script = new RoutineScript { Code = code, Version = 1, Author = author, Lang = lang };
+            r.Script.Versions.Add(new ScriptVersion { V = 1, Code = code, Author = author, SavedAt = Now(), Lang = lang });
             fresh = true;
         }
         else
@@ -194,7 +213,7 @@ public sealed class ScriptLibrary(MemoryStore memory)
                 else
                 {
                     int nv = s.Versions.Count == 0 ? 1 : s.Versions.Max(v => v.V) + 1;
-                    s.Versions.Add(new ScriptVersion { V = nv, Code = code, Author = author, SavedAt = Now() });
+                    s.Versions.Add(new ScriptVersion { V = nv, Code = code, Author = author, SavedAt = Now(), Lang = lang });
                     if (s.Versions.Count > KeepHistory) s.Versions.RemoveAt(0); // oldest, never the active one (it's last)
                     Activate(s, nv);
                 }
@@ -220,6 +239,7 @@ public sealed class ScriptLibrary(MemoryStore memory)
         s.Code = ver.Code;
         s.Version = v;
         s.Author = ver.Author;
+        s.Lang = ver.Lang;
         s.Previous = s.Versions.Where(x => x.V != v).OrderByDescending(x => x.V).Take(KeepVersions).Select(x => x.Code).ToList();
     }
 
@@ -252,7 +272,11 @@ public sealed class ScriptLibrary(MemoryStore memory)
     /// again and <paramref name="revertNote"/> says so.
     /// </summary>
     public RoutineScript? RecordRun(string name, int? version, bool ok, TimeSpan duration, int actions, string outcome, int yield,
-        string? failReason, out string? revertNote)
+        string? failReason, out string? revertNote) => RecordRun(name, version, ok, duration, actions, outcome, yield, failReason, null, null, out revertNote);
+
+    /// <summary>As above, plus the run's tunables and action timings (kept per version in <see cref="ScriptVersion.ParamRuns"/>).</summary>
+    public RoutineScript? RecordRun(string name, int? version, bool ok, TimeSpan duration, int actions, string outcome, int yield,
+        string? failReason, string? paramsJson, string? timings, out string? revertNote)
     {
         revertNote = null;
         var r = Get(name);
@@ -272,6 +296,12 @@ public sealed class ScriptLibrary(MemoryStore memory)
         ver.TotalSeconds += Math.Max(0, duration.TotalSeconds);
         ver.TotalYield += Math.Max(0, yield);
         ver.LastRun = now;
+        if (paramsJson != null)
+        {
+            ver.ParamRuns.Add(new ParamRun(paramsJson.Length <= 400 ? paramsJson : paramsJson[..400], ok, Math.Round(duration.TotalSeconds, 1), yield, now,
+                timings is { Length: > 160 } ? timings[..160] : timings));
+            if (ver.ParamRuns.Count > 20) ver.ParamRuns.RemoveAt(0);
+        }
         if (!ok)
         {
             var key = FailKey(failReason ?? outcome);
@@ -298,6 +328,51 @@ public sealed class ScriptLibrary(MemoryStore memory)
         var t = Regex.Replace((reason ?? "").Replace('\n', ' ').Trim(), @"-?\d+", "#");
         t = Regex.Replace(t, @"^(?:failed|cancelled): script \S+ (?:at line # )?", "");
         return t.Length <= 50 ? t : t[..50];
+    }
+
+    /// <summary>The saved tunables of a script (JSON object) or null.</summary>
+    public string? ParamsOf(string name) => Get(name)?.Script?.Params;
+
+    /// <summary>Saves tunables (merged over the existing ones; a null value removes a key). False when the script isn't saved.</summary>
+    public bool SetParams(string name, string json)
+    {
+        var r = Get(name);
+        if (r?.Script is not { } s) return false;
+        var merged = string.IsNullOrWhiteSpace(s.Params) ? new System.Text.Json.Nodes.JsonObject()
+            : System.Text.Json.Nodes.JsonNode.Parse(s.Params) as System.Text.Json.Nodes.JsonObject ?? new System.Text.Json.Nodes.JsonObject();
+        if (System.Text.Json.Nodes.JsonNode.Parse(json) is not System.Text.Json.Nodes.JsonObject add) return false;
+        foreach (var (k, v) in add)
+        {
+            if (v == null) merged.Remove(k);
+            else merged[k] = v.DeepClone();
+        }
+        s.Params = merged.Count == 0 ? null : merged.ToJsonString();
+        Memory.SaveRoutine(r);
+        return true;
+    }
+
+    /// <summary>A durable checkpoint snapshot of a saved script (lane = body, null = main). Unsaved scripts: ignored.</summary>
+    public void SaveCheckpoint(string name, string? lane, string label, string snapshot)
+    {
+        var r = Get(name);
+        if (r?.Script is not { } s) return;
+        var key = (lane ?? "main") + "/" + label;
+        if (s.Checkpoints.TryGetValue(key, out var old) && old == snapshot) return;
+        s.Checkpoints[key] = snapshot;
+        if (s.Checkpoints.Count > 24) s.Checkpoints.Remove(s.Checkpoints.Keys.First());
+        Memory.SaveRoutine(r);
+    }
+
+    public string? LoadCheckpoint(string name, string? lane, string label) =>
+        Get(name)?.Script?.Checkpoints.GetValueOrDefault((lane ?? "main") + "/" + label);
+
+    /// <summary>Records the Lua → JS migration's verdict (never retried once set).</summary>
+    public void MarkMigration(string name, string verdict)
+    {
+        var r = Get(name);
+        if (r?.Script is not { } s) return;
+        s.Migration = verdict.Length <= 160 ? verdict : verdict[..160];
+        Memory.SaveRoutine(r);
     }
 
     public void MarkPromoted(string name, string skill)
@@ -346,6 +421,8 @@ public sealed class ScriptLibrary(MemoryStore memory)
             var a = Active(s);
             sb.Append(r.Name).Append(" v").Append(s.Version);
             sb.Append(" (").Append(string.Join(",", s.ArgNames)).Append(')');
+            if (!string.IsNullOrWhiteSpace(s.Params)) sb.Append(" tuned ").Append(s.Params.Length <= 60 ? s.Params : s.Params[..57] + "...");
+            if (a.IsLua) sb.Append(" [lua]");
             sb.Append(' ').Append(a.Reliability);
             if (a.Runs > 0 && a.AvgYield >= 1) sb.Append($" +{a.AvgYield:0}/run");
             if (a.TopFailures(1).FirstOrDefault() is { } f) sb.Append(" fails: ").Append(f);
@@ -413,55 +490,38 @@ public sealed class ScriptLibrary(MemoryStore memory)
         if (r.Script is { Code.Length: > 0 }) return r;
         var code = FromSteps(r, scriptable);
         if (code == null) return null;
-        r.Script = new RoutineScript { Code = code, Migrated = true };
-        r.Script.Versions.Add(new ScriptVersion { V = 1, Code = code, SavedAt = Now() });
+        r.Script = new RoutineScript { Code = code, Migrated = true, Lang = "js" };
+        r.Script.Versions.Add(new ScriptVersion { V = 1, Code = code, SavedAt = Now(), Lang = "js" });
         return Memory.SaveRoutine(r);
     }
 
     /// <summary>
-    /// The Lua equivalent of a step routine: each step is a call with its saved args table; a failed step fails the run
+    /// The JS equivalent of a step routine: each step is a call with its saved args object; a failed step fails the run
     /// (reporting that step), stop_when ends it successfully; repeat 0 = until stopped (capped at 500 rounds).
-    /// <c>args["repeat"]</c> overrides the saved repeat (run_routine's repeat).
+    /// <c>args.repeat</c> overrides the saved repeat (run_routine's repeat).
     /// </summary>
     public static string? FromSteps(Routine r, Func<string, bool> scriptable)
     {
         if (r.Steps.Count == 0 || r.Steps.Any(s => !scriptable(s.Tool) || !IsIdent(s.Tool))) return null;
         var sb = new StringBuilder();
-        sb.Append("-- migrated from routine ").Append(OneLine(r.Name)).Append('\n');
-        sb.Append("local N, i, ok, m = args[\"repeat\"] or ").Append(r.Repeat).Append(", 0\n");
-        sb.Append("while (N <= 0 and i < 500) or (N > 0 and i < N) do\n  i = i + 1\n");
+        sb.Append("// migrated from routine ").Append(OneLine(r.Name)).Append('\n');
+        sb.Append("const N = args.repeat ?? ").Append(r.Repeat).Append("\nlet i = 0, m = ''\n");
+        sb.Append("while ((N <= 0 && i < 500) || (N > 0 && i < N)) {\n  i++\n");
+        bool stop = !string.IsNullOrEmpty(r.StopWhen);
+        if (stop) sb.Append("  let hit = false\n");
         foreach (var s in r.Steps)
         {
-            var fn = s.Tool == "goto" ? "go" : s.Tool; // goto is a Lua keyword
-            var a = s.Args.ValueKind == JsonValueKind.Object ? LuaLiteral(s.Args) : "{}";
-            sb.Append("  ok, m = ").Append(fn).Append(a).Append(" if not ok then fail() end\n");
-            if (!string.IsNullOrEmpty(r.StopWhen))
-                sb.Append("  if string.find(string.lower(m), ").Append(LuaString(r.StopWhen.ToLowerInvariant())).Append(", 1, true) then break end\n");
+            var a = s.Args.ValueKind == JsonValueKind.Object ? s.Args.GetRawText() : "{}";
+            sb.Append("  { const r = ").Append(s.Tool).Append('(').Append(a).Append("); m = r.msg; if (!r.ok) fail() }\n");
+            if (stop) sb.Append("  if (m.toLowerCase().includes(").Append(JsString(r.StopWhen!.ToLowerInvariant())).Append(")) hit = true\n");
         }
-        sb.Append("end\n");
-        sb.Append("return i .. \" round(s), last: \" .. (m or \"\")\n");
+        if (stop) sb.Append("  if (hit) break\n");
+        sb.Append("}\n");
+        sb.Append("return i + ' round(s), last: ' + m\n");
         return sb.ToString();
     }
 
-    /// <summary>JSON → Lua table constructor (strings escaped; keys as ["key"]).</summary>
-    public static string LuaLiteral(JsonElement e) => e.ValueKind switch
-    {
-        JsonValueKind.Object => "{" + string.Join(",", e.EnumerateObject().Select(p => $"[{LuaString(p.Name)}]={LuaLiteral(p.Value)}")) + "}",
-        JsonValueKind.Array => "{" + string.Join(",", e.EnumerateArray().Select(LuaLiteral)) + "}",
-        JsonValueKind.String => LuaString(e.GetString() ?? ""),
-        JsonValueKind.Number => e.GetRawText(),
-        JsonValueKind.True => "true",
-        JsonValueKind.False => "false",
-        _ => "nil",
-    };
-
-    public static string LuaString(string s)
-    {
-        var sb = new StringBuilder("\"");
-        foreach (var c in s)
-            sb.Append(c switch { '\\' => "\\\\", '"' => "\\\"", '\n' => "\\n", '\r' => "\\r", _ when c < ' ' => " ", _ => c.ToString() });
-        return sb.Append('"').ToString();
-    }
+    public static string JsString(string s) => JsonSerializer.Serialize(s);
 
     private static bool IsIdent(string s) => s.Length > 0 && (char.IsLetter(s[0]) || s[0] == '_') && s.All(c => char.IsLetterOrDigit(c) || c == '_');
 

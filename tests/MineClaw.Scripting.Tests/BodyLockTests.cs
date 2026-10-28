@@ -46,7 +46,7 @@ public class BodyLockTests
         var cts = new CancellationTokenSource();
         _ = h.Runtime.Agent.RunAsync(cts.Token);
         await Task.Delay(50);
-        var r = await h.Run("script", new { op = "run", name = "cobble_loop", code = "for i = 1, 400 do wait(0.05) prog(i / 4) end" });
+        var r = await h.Run("script", new { op = "run", name = "cobble_loop", code = "for (let i = 1; i <= 400; i++) { wait(0.05); prog(i / 4) }" });
         Assert.Contains("running in background", r.Text);
         await Rig.Until(() => b.Controller.Current?.ProgressPct > 0, 5000);
         return (h, c, b, cts);

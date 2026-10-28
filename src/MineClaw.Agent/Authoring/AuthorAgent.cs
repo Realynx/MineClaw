@@ -25,6 +25,8 @@ public sealed class AuthorJob
     public required Func<string, AuthorCheck> Check { get; init; }
     /// <summary>The artifact inside a reply (default: the first fenced block, else null).</summary>
     public Func<string, string?> Extract { get; init; } = AuthorAgent.FencedBlock;
+    /// <summary>This job's spend cap (USD); null = <see cref="LlmOptions.AuthorMaxUsd"/>. The tighter of the two applies.</summary>
+    public decimal? MaxUsd { get; init; }
 }
 
 /// <summary>
@@ -63,6 +65,7 @@ public sealed class AuthorAgent(ILlmClient llm, LlmOptions options, UsageTracker
         var model = Model;
         if (Refusal() is { } no) return new AuthorOutcome(false, null, 0, LlmUsage.Zero, 0, model, no);
         decimal cap = options.AuthorMaxUsd > 0 ? options.AuthorMaxUsd : 3.00m;
+        if (job.MaxUsd is { } jobCap && jobCap > 0) cap = Math.Min(cap, jobCap);
         var prices = usage?.Prices ?? new PriceTable();
         var conversation = new List<LlmMessage> { LlmMessage.User(job.Brief) };
         var total = LlmUsage.Zero;

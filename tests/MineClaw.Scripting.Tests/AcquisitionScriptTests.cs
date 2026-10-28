@@ -10,23 +10,23 @@ public class AcquisitionScriptTests
     private static readonly string[] Acts = ["gen", "harvest_generator", "mine", "dig", "deposit", "craft", "acquire"];
 
     [Theory]
-    [InlineData("gen{} return 1", true)]
-    [InlineData("upto(4, function() local ok, m = harvest_generator{'5,65,0', 8} return ok end)", true)]
-    [InlineData("local ok, m = mine{'cobblestone', 8} return m", true)]
-    [InlineData("local ok, m = mine{'dirt', 8} return m", false)]
-    [InlineData("ensure'pickaxe' local ok = gen{} return ok", false)]
-    [InlineData("local ok = acquire{'pickaxe'} expect(ok) gen{} return 1", false)]
+    [InlineData("gen()\nreturn 1", true)]
+    [InlineData("upto(4, () => harvest_generator('5,65,0', 8).ok)", true)]
+    [InlineData("return mine('cobblestone', 8).msg", true)]
+    [InlineData("return mine('dirt', 8).msg", false)]
+    [InlineData("ensure('pickaxe')\nreturn gen().ok", false)]
+    [InlineData("expect(acquire('pickaxe'))\ngen()\nreturn 1", false)]
     public void Lint_warns_when_a_tool_job_has_no_ensure(string code, bool warns)
     {
-        var r = ScriptLint.Check(code, Acts);
-        Assert.False(r.HasErrors);
+        var r = ScriptLint.Check(code, Acts, language: ScriptLanguage.Js);
+        Assert.False(r.HasErrors, r.Format(LintSeverity.Error));
         Assert.Equal(warns, r.Findings.Any(f => f.Rule == "no-ensure"));
-        if (warns) Assert.Contains("ensure\"pickaxe\"", r.Format(LintSeverity.Warning));
+        if (warns) Assert.Contains("ensure('pickaxe')", r.Format(LintSeverity.Warning));
     }
 
     [Fact]
-    public void The_cheat_sheet_exemplar_stays_lint_clean() =>
-        Assert.DoesNotContain(ScriptLint.Check(ScriptPrompts.Exemplar, Acts).Findings, f => f.Rule == "no-ensure");
+    public void The_author_exemplar_stays_lint_clean() =>
+        Assert.DoesNotContain(ScriptLint.Check(ScriptPrompts.Exemplar, Acts, language: ScriptLanguage.Js).Findings, f => f.Rule == "no-ensure");
 
     [Fact]
     public async Task Ensure_runs_the_acquisition_planner()
@@ -39,7 +39,7 @@ public class AcquisitionScriptTests
             Bounds = Box.Point(2, 65, 2), Contents = [new ItemCount(Items.StonePickaxe, "stone_pickaxe", 1)],
         });
         c.Effects["withdraw"] = () => c.Give(36, Items.StonePickaxe, 1);
-        var r = await h.Run("script", new { op = "run", code = "local ok, got = ensure'pickaxe' return got" });
+        var r = await h.Run("script", new { op = "run", code = "return String(ensure('pickaxe'))" });
         Assert.True(r.Ok, r.Text);
         Assert.Contains("stone_pickaxe", r.Text);
         Assert.Contains(c.CallList, x => x.StartsWith($"withdraw {Items.StonePickaxe} 1 2,65,2"));
@@ -50,7 +50,7 @@ public class AcquisitionScriptTests
     {
         var (h, _, _) = BotScriptTests.Bot();
         using var _ = h;
-        var r = await h.Run("script", new { op = "run", code = "ensure'axe' return 'x'" });
+        var r = await h.Run("script", new { op = "run", code = "ensure('axe')\nreturn 'x'" });
         Assert.Contains("ensure: no axe (", r.Text);
     }
 }

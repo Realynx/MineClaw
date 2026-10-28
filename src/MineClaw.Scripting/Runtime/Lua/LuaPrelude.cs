@@ -1,7 +1,7 @@
-namespace MineClaw.Scripting;
+namespace MineClaw.Scripting.Runtime.Lua;
 
 /// <summary>
-/// Reliability helpers, defined in Lua before every script on top of the gated API (so they go through exactly the same
+/// LEGACY (Lua runtime only). Reliability helpers, defined in Lua before every script on top of the gated API (so they go through exactly the same
 /// actions, limits and pauses as hand-written code). Run as a separate chunk ("prelude"), so user line numbers are untouched.
 /// <list type="bullet">
 /// <item><c>retry(n, fn)</c>: calls fn until it returns ok (at most n times), waiting 1, 2, 4... s (≤ 20 s) between tries; returns fn's last ok,msg,n.</item>
@@ -14,11 +14,11 @@ namespace MineClaw.Scripting;
 /// Fails clearly when nothing worked. Returns true, "stone_pickaxe,bread".</item>
 /// </list>
 /// </summary>
-public static class ScriptPrelude
+public static class LuaPrelude
 {
     public static readonly IReadOnlyList<string> Names = ["retry", "upto", "expect", "room", "ensure"];
 
-    public const string Lua = """
+    public const string Code = """
 local _wait, _fail, _inv, _floor, _max, _min = wait, fail, inv, math.floor, math.max, math.min
 local _cat = {
   pickaxe = {"diamond_pickaxe","iron_pickaxe","stone_pickaxe","wood_pickaxe"},

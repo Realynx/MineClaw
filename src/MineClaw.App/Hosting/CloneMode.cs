@@ -93,6 +93,9 @@ public static class CloneMode
             worldIndex: new MineClaw.Bot.WorldIndex.WorldIndexOptions { Remembered = new MineClaw.Bot.WorldIndex.RememberedWorldOptions { FlushSeconds = 15 } });
         var rt = bot.Runtime;
         telemetry.Attach(rt);
+        // A crew lane on this clone (main started it as a hive job) shares main's board through the db.
+        if (MineClaw.Bot.GameTools.ScriptTools.Of(rt) is { } laneScripts)
+            laneScripts.Crew = new MineClaw.Bot.Bodies.LaneOnlyCrewPort(new MineClaw.Bot.Bodies.DbCrewBoard(rt.Memory.Db));
         _ = rt.Rag.WarmUpAsync(signals.Token); // DNS + first TLS to the embedding provider now, not in the first turn
         game.ReservedItems = new HashSet<int>(); // a clone keeps nothing back: everything goes into storage before logout
 

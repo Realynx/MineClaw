@@ -29,7 +29,7 @@ public sealed class ScriptBridge
     public static readonly string[] ActionTools =
     [
         "goto", "follow", "mine", "harvest_generator", "collect_drops", "craft", "smelt", "collect_furnace", "deposit", "withdraw",
-        "organize_chest", "place", "dig", "use_block", "eat", "chop_tree", "act",
+        "organize_chest", "place", "dig", "use_block", "eat", "chop_tree", "act", "attack",
         AcquireTool.ToolName, // hidden tool: ensure{} / acquire{"pickaxe"} through the acquisition planner
         Blueprints.BlueprintWiring.BuildTool, Blueprints.BlueprintWiring.InfoTool, // hidden: build{bp, part, of, layer} / blueprint(id)
     ];
@@ -147,8 +147,21 @@ public sealed class ScriptBridge
             // Scripts cost no tokens, but without a brain to supervise them they don't play either (same as worker tasks).
             ActionVeto = () => _rt.Usage.CheckMode() is BudgetMode.Paused or BudgetMode.CheapOnly ? "budget low" : null,
             Log = line => _log?.LogInformation("{Line}", line),
+            // Saved scripts keep their checkpoints in their routine row (shared db): a restart or respawn resumes in place.
+            Checkpoints = new LibraryCheckpoints(Library),
+            StoredParams = name => Library.ParamsOf(name),
         };
     }
+
+    /// <summary>Durable checkpoints on the saved script's routine row (unsaved ad-hoc runs keep them in memory only).</summary>
+    private sealed class LibraryCheckpoints(ScriptLibrary lib) : IScriptCheckpointStore
+    {
+        public void Save(string script, string? lane, string label, string snapshot) => lib.SaveCheckpoint(script, lane, label, snapshot);
+        public string? Load(string script, string? lane, string label) => lib.LoadCheckpoint(script, lane, label);
+    }
+
+    /// <summary>Several bodies (in-process lanes or hive clones): set by the host once the bodies exist; null = one body.</summary>
+    public MineClaw.Scripting.Crew.ICrewPort? Crew { get => Controller.Host.Crew; set => Controller.Host.Crew = value; }
 
     /// <summary>A hive clone speaks only when addressed: its speech gate mutes script chat the same way.</summary>
     private string? Muted(string text) =>
@@ -198,7 +211,8 @@ public sealed class ScriptBridge
     /// The body this lane drives (short name, "67"); null = the main body (hive mode and main: as before). A clone lane's
     /// events carry it, and its interrupt policy hears only its own body's dangers and chat addressed to it.
     /// </summary>
-    public string? Body { get; init; }
+    public string? Body { get => _body; init { _body = value; Controller.Host.Body = value; } }
+    private readonly string? _body;
 
     /// <summary>
     /// The activity slot a brain-run script occupies (the body's own); default the runtime's (main's). A clone lane must set
@@ -272,9 +286,12 @@ public sealed class ScriptBridge
             var v = Library.Resolve(reference, IsScriptable, out var why);
             return v == null ? (null, why ?? $"no saved script '{clean}'", null) : (clean, null, v.Code);
         }
-        var lint = Lint(code);
+        var lang = LanguageOf(code);
+        if (lang == ScriptLanguage.Lua && !Options.AcceptLuaCode) return (null, ScriptPrompts.JsOnly, null);
+        var lint = Lint(code, lang);
         if (lint.HasErrors) return (null, lint.Format(LintSeverity.Error, 300), null); // "lint errors (fix and resubmit): ..."
-        var res = Library.SaveVersion(clean, code, author: author, purpose: ScriptLint.Purpose(code), argNames: ScriptLint.ArgNames(code));
+        var res = Library.SaveVersion(clean, code, author: author, purpose: ScriptLint.Purpose(code), argNames: ScriptLint.ArgNames(code),
+            lang: lang == ScriptLanguage.Js ? "js" : null);
         _log?.LogInformation("hive script {Name} saved v{Version} by {Author}", clean, res.Routine?.Script?.Version, author ?? "c#");
         return (clean, null, code);
     }
@@ -340,7 +357,9 @@ public sealed class ScriptBridge
         if ((Body != null || Addressed != null) && !OwnBody(e)) return null;
         bool danger = e.Kind is EventKind.LowHealth or EventKind.VoidFall or EventKind.Death
             || (e.Wakes && e.Priority >= _rt.Options.InterruptPriority);
-        return danger ? new ScriptEvent(ScriptEventKind.Danger, e.Format(), e.Player) : null;
+        // The topic lets a machine or policy react to the kind of danger (on: {lowhp: 'retreat', void: 'flee', died: 'regroup'}).
+        var topic = e.Kind switch { EventKind.LowHealth => "lowhp", EventKind.VoidFall => "void", EventKind.Death => "died", _ => null };
+        return danger ? new ScriptEvent(ScriptEventKind.Danger, e.Format(), e.Player, topic) : null;
     }
 
     private bool InterruptPending() =>
@@ -359,19 +378,22 @@ public sealed class ScriptBridge
     private void OnEnded(ScriptSession s)
     {
         var l = L(s);
-        _log?.LogInformation("script {Name}{Version} by {Author} {Status}: {Actions} actions in {Seconds:0}s — {Outcome}", s.Name,
-            s.Request.Version is { } v ? " v" + v : "", s.Request.Author ?? "c#", s.Status, s.Actions, s.Elapsed.TotalSeconds, s.Outcome);
+        _log?.LogInformation("script {Name}{Version} ({Lang}) by {Author} {Status}: {Actions} actions in {Seconds:0}s — {Outcome} | params {Params} | timings {Timings}{State}", s.Name,
+            s.Request.Version is { } v ? " v" + v : "", ScriptLanguages.Tag(s.Language), s.Request.Author ?? "c#", s.Status, s.Actions, s.Elapsed.TotalSeconds, s.Outcome,
+            s.ParamsJson ?? "-", ScriptController.TimingText(s) ?? "-", s.MachineState is { } ms ? $" | state {ms} ({s.Transitions} moves)" : "");
         try
         {
             var saved = Library.Get(s.Name);
-            if (saved?.Script is { } sc && s.Status != ScriptStatus.Cancelled)
+            // A crew lane's run is part of its coordinator's run: it doesn't count as a run of the saved script.
+            if (saved?.Script is { } sc && s.Status != ScriptStatus.Cancelled && s.Request.Role == null)
             {
                 ScriptLibrary.Active(sc);
                 // Stats go to the version that ran (by number, else by identical code); ad-hoc code under a saved name doesn't count.
                 var ran = s.Request.Version is { } rv ? sc.Versions.FirstOrDefault(x => x.V == rv) : sc.Versions.LastOrDefault(x => x.Code == s.Code);
                 if (ran != null && ran.Code == s.Code)
                 {
-                    var stats = Library.RecordRun(s.Name, ran.V, s.Ok, s.Elapsed, s.Actions, s.Outcome ?? "", s.ItemsGained, s.Reason, out var revert);
+                    var stats = Library.RecordRun(s.Name, ran.V, s.Ok, s.Elapsed, s.Actions, s.Outcome ?? "", s.ItemsGained, s.Reason,
+                        s.ParamsJson, ScriptController.TimingText(s), out var revert);
                     if (revert != null)
                     {
                         _log?.LogWarning("{Note}", revert);
@@ -450,10 +472,33 @@ public sealed class ScriptBridge
         }
     }
 
-    /// <summary>No op: code -> run, goal -> save (author + save, no run), else status.</summary>
+    /// <summary>No op: code -> run, goal -> save (author + save, no run), a name -> run it, else status.</summary>
     internal static string DefaultOp(JsonElement input) =>
-        (ToolInput.Str(input, "op") ?? (ToolInput.Str(input, "code") != null ? "run" : ToolInput.Str(input, "goal") != null ? "save" : "status"))
+        (ToolInput.Str(input, "op") ?? (ToolInput.Str(input, "code") != null ? "run" : ToolInput.Str(input, "goal") != null ? "save"
+            : ToolInput.Str(input, "name") != null ? "run" : "status"))
         .Trim().ToLowerInvariant();
+
+    /// <summary>The tool's params object (this run's tunables) as JSON, or null.</summary>
+    internal static string? ParamsOf(JsonElement input) =>
+        input.ValueKind == JsonValueKind.Object && input.TryGetProperty("params", out var p) && p.ValueKind == JsonValueKind.Object ? p.GetRawText() : null;
+
+    private static string? ArgsOf(JsonElement input) =>
+        input.ValueKind == JsonValueKind.Object && input.TryGetProperty("args", out var a) && a.ValueKind == JsonValueKind.Object ? a.GetRawText() : null;
+
+    /// <summary>A crew lane started as a hive job carries its role and board in its args (__role, __crew).</summary>
+    private static (string? Role, string? Crew) LaneOf(string? argsJson)
+    {
+        if (argsJson == null || !argsJson.Contains("__role", StringComparison.Ordinal)) return (null, null);
+        try
+        {
+            using var d = JsonDocument.Parse(argsJson);
+            return (d.RootElement.TryGetProperty("__role", out var r) ? r.GetString() : null, d.RootElement.TryGetProperty("__crew", out var c) ? c.GetString() : null);
+        }
+        catch (JsonException) { return (null, null); }
+    }
+
+    /// <summary>JS unless the code is clearly legacy Lua.</summary>
+    internal static ScriptLanguage LanguageOf(string code) => ScriptLanguages.Detect(code);
 
     private static string Clip(string s, int n) => s.Length <= n ? s : s[..(n - 3)] + "...";
 
@@ -470,6 +515,7 @@ public sealed class ScriptBridge
         int? version = null;
         var notes = new List<string>();
         string? warnings = null;
+        var lang = ScriptLanguage.Js;
         if (string.IsNullOrWhiteSpace(code) && ToolInput.Str(input, "goal") is { } goal && !string.IsNullOrWhiteSpace(goal))
         {
             // The separate Opus author writes, lints, revises and saves it; the brain gets only the summary (then it runs).
@@ -484,29 +530,36 @@ public sealed class ScriptBridge
         {
             // A saved script (or name@v2) runs as saved: its own author and version, args from the call.
             var v = Library.Resolve(reference, IsScriptable, out var why);
-            if (v == null) return ToolResult.Error(rawName == null ? "need code (or the name of a saved script)" : why ?? $"no saved script '{name}'");
+            if (v == null) return ToolResult.Error(rawName == null ? "need a goal (or the name of a saved script)" : why ?? $"no saved script '{name}'");
             code = v.Code;
             version = Library.Get(name)?.Script is { Migrated: true } ? null : v.V;
             author = v.Author;
+            lang = v.IsLua && !LooksJs(name) ? ScriptLanguage.Lua : ScriptLanguage.Js;
+            if (lang == ScriptLanguage.Lua && !Options.LegacyLua)
+                return ToolResult.Error($"{name} v{v.V} is legacy Lua and not migrated to JS yet (Scripting:LegacyLua=false); rewrite it: script{{name:{name}, goal:...}}");
         }
         else
         {
-            var lint = Lint(code);
+            lang = LanguageOf(code);
+            if (lang == ScriptLanguage.Lua && !Options.AcceptLuaCode) return ToolResult.Error(ScriptPrompts.JsOnly);
+            var lint = Lint(code, lang);
             if (lint.HasErrors) return ToolResult.Error(lint.Format(LintSeverity.Error, 300));
             warnings = lint.Format(LintSeverity.Warning);
             if (rawName != null && ToolInput.Bool(input, "save") != false)
             {
                 // A named run with code is saved (versioned; same code = same version). save:false opts out; a near-duplicate
                 // of another saved script runs unsaved and says so.
-                var (saved, note) = SaveChecked(name, code, author, ToolInput.Str(input, "force"));
+                var (saved, note) = SaveChecked(name, code, author, ToolInput.Str(input, "force"), lang);
                 if (note != null) notes.Add(note);
                 if (saved?.Script is { } sc) version = sc.Version;
             }
         }
-        string? argsJson = input.ValueKind == JsonValueKind.Object && input.TryGetProperty("args", out var a) && a.ValueKind == JsonValueKind.Object ? a.GetRawText() : null;
+        string? argsJson = ArgsOf(input);
+        var (role, crewId) = LaneOf(argsJson);
         var req = new ScriptRequest
         {
-            Name = name, Code = code, ArgsJson = argsJson, ResumeFrom = ToolInput.Str(input, "resume_from"), Author = author, Version = version,
+            Name = name, Code = code, Language = lang, ArgsJson = argsJson, ParamsJson = ParamsOf(input), Role = role, CrewId = crewId,
+            ResumeFrom = ToolInput.Str(input, "resume_from"), Author = author, Version = version,
             LintWarnings = string.IsNullOrEmpty(warnings) ? null : warnings,
         };
         if (replace && Controller.Current is { } old) L(old).PlannerEnded = true;
@@ -524,8 +577,13 @@ public sealed class ScriptBridge
         return ScriptController.CleanName(n) + (v is { } x ? "@v" + x : "");
     }
 
+    /// <summary>A step routine migrated before JS existed is Lua; one migrated now is JS (its row says so).</summary>
+    private bool LooksJs(string name) => Library.Get(name)?.Script is { Lang: "js" };
+
     /// <summary>Lint with this bot's action/skill names (so unchecked-result warnings know what an action is).</summary>
-    internal LintReport Lint(string code)
+    internal LintReport Lint(string code) => Lint(code, LanguageOf(code));
+
+    internal LintReport Lint(string code, ScriptLanguage lang)
     {
         var names = new HashSet<string>(_actions, StringComparer.Ordinal);
         foreach (var (alias, target) in ScriptSession.Aliases) if (_actions.Contains(target) || (_skills?.Registry.TryGet(target, out _) ?? false)) names.Add(alias);
@@ -534,19 +592,31 @@ public sealed class ScriptBridge
         var sigs = new Dictionary<string, BindingSignature>(StringComparer.Ordinal);
         foreach (var a in _actions)
             if (_rt.Tools.TryGet(a, out var tool) && ScriptLint.SignatureOf(tool.InputSchema) is { } sig) sigs[a] = sig;
-        return ScriptLint.Check(code, names, Options.LintLongScriptActions, sigs);
+        return ScriptLint.Check(code, names, Options.LintLongScriptActions, sigs, lang);
     }
+
+    /// <summary>The game functions a JS script can call here, with their positional params (the author's facts).</summary>
+    internal IEnumerable<(string Name, IReadOnlyList<string> Params)> GameFunctions()
+    {
+        foreach (var (alias, target) in ScriptSession.Aliases)
+            if (_actions.Contains(target) && _rt.Tools.TryGet(target, out var t)) yield return (alias, ParamNames(t.InputSchema));
+        foreach (var a in _actions.Order(StringComparer.Ordinal))
+            if (_rt.Tools.TryGet(a, out var t)) yield return (a, ParamNames(t.InputSchema));
+    }
+
+    private static IReadOnlyList<string> ParamNames(JsonElement schema) =>
+        schema.TryGetProperty("properties", out var props) && props.ValueKind == JsonValueKind.Object ? props.EnumerateObject().Select(p => p.Name).ToList() : [];
 
     /// <summary>
     /// Saves a version unless it's a near-duplicate of ANOTHER saved script (≥ DuplicateThreshold) and no force reason was
     /// given: then nothing is saved and the note says which script to update instead.
     /// </summary>
-    private (Agent.Memory.Routine? Saved, string? Note) SaveChecked(string name, string code, string? author, string? force)
+    private (Agent.Memory.Routine? Saved, string? Note) SaveChecked(string name, string code, string? author, string? force, ScriptLanguage lang = ScriptLanguage.Js)
     {
         if (string.IsNullOrWhiteSpace(force) && Library.Similar(name, code, Options.DuplicateThreshold, Similarity) is { } sim)
             return (null, $"not saved: similar to {sim.Name} ({sim.Score:0.00}) - update it instead? (use op=save name={sim.Name}; force=reason to keep both)");
         var res = Library.SaveVersion(name, code, author: author, purpose: ScriptLint.Purpose(code), argNames: ScriptLint.ArgNames(code),
-            forcedReason: string.IsNullOrWhiteSpace(force) ? null : force.Trim());
+            forcedReason: string.IsNullOrWhiteSpace(force) ? null : force.Trim(), lang: lang == ScriptLanguage.Js ? "js" : null);
         var sc = res.Routine!.Script!;
         if (res.NewVersion) _log?.LogInformation("script {Name} saved v{Version} by {Author}", name, sc.Version, author ?? "c#");
         return (res.Routine, res.NewVersion && sc.Version > 1 ? $"saved {name} v{sc.Version}" : null);
@@ -573,18 +643,13 @@ public sealed class ScriptBridge
     {
         if (Author == null) return new(false, "no script author configured; send code instead");
         if (Author.Refusal() is { } no) return new(false, "can't author: " + no);
-        string? argsJson = input.ValueKind == JsonValueKind.Object && input.TryGetProperty("args", out var a) && a.ValueKind == JsonValueKind.Object ? a.GetRawText() : null;
+        string? argsJson = ParamsOf(input) ?? ArgsOf(input);
         var job = new AuthorJob
         {
             Kind = "script",
             System = ScriptPrompts.AuthorSystem,
             Brief = ScriptPrompts.AuthorBrief(name, goal.Trim(), null, argsJson, AuthorFacts(name), Options.MaxCodeChars),
-            Check = code =>
-            {
-                if (code.Length > Options.MaxCodeChars) return AuthorCheck.Fail($"too long: {code.Length} chars (max {Options.MaxCodeChars}); shorten it");
-                var lint = Lint(code);
-                return lint.HasErrors ? AuthorCheck.Fail("lint errors: " + lint.Format(LintSeverity.Error, 800)) : AuthorCheck.Pass;
-            },
+            Check = CheckDraft,
         };
         var outcome = await Author.RunAsync(job, ct).ConfigureAwait(false);
         if (!outcome.Ok || outcome.Artifact is not { } code)
@@ -600,16 +665,30 @@ public sealed class ScriptBridge
         return new(true, summary, code, sc.Version, author);
     }
 
-    /// <summary>What the author may build on: action names, skills, saved scripts, the current version when improving one.</summary>
-    private string AuthorFacts(string name)
+    /// <summary>
+    /// A draft passes when it fits, lints clean (JS) and survives a dry run on a fake world (all actions succeed, waits fast):
+    /// a ReferenceError/TypeError or a binding misuse the lint can't see comes back to the author, never to a live run.
+    /// </summary>
+    internal AuthorCheck CheckDraft(string code)
+    {
+        if (code.Length > Options.MaxCodeChars) return AuthorCheck.Fail($"too long: {code.Length} chars (max {Options.MaxCodeChars}); shorten it");
+        if (LanguageOf(code) == ScriptLanguage.Lua) return AuthorCheck.Fail("that is Lua: write JavaScript (see the SDK reference)");
+        var lint = Lint(code, ScriptLanguage.Js);
+        if (lint.HasErrors) return AuthorCheck.Fail("lint errors: " + lint.Format(LintSeverity.Error, 800));
+        var dry = ScriptDryRun.Run(code, Controller.Host);
+        return dry == null ? AuthorCheck.Pass : AuthorCheck.Fail("dry run (fake world, every action succeeds): " + dry);
+    }
+
+    /// <summary>What the author may build on: game functions with params, skills, saved scripts, the current version when improving one.</summary>
+    internal string AuthorFacts(string name)
     {
         var skills = _skills?.Registry.Specs.Where(sp => sp.Status != SkillStatus.Stub).Select(sp => sp.Name).Take(40).ToList() ?? [];
         string saved;
         try { saved = Library.Catalog(); } catch (Exception) { saved = ""; }
-        return "Actions: " + string.Join(" ", _actions.Order(StringComparer.Ordinal)) +
-            (skills.Count > 0 ? "\nSkills: " + string.Join(" ", skills) : "") +
+        return MineClaw.Scripting.Sdk.SdkReference.GameFunctions(GameFunctions()) +
+            (skills.Count > 0 ? "\nSkills (call by name, camelCase or snake_case; or skill(name, args)): " + string.Join(" ", skills) : "") +
             (saved.Length > 0 ? "\nSaved scripts (call or update, don't fork): " + Clip(saved, 500) : "") +
-            (Library.Get(name)?.Script is { } cur ? $"\nCurrent {name} v{cur.Version} (improve it):\n" + cur.Code : "");
+            (Library.Get(name)?.Script is { } cur ? $"\nCurrent {name} v{cur.Version}{(ScriptLibrary.Active(cur).IsLua ? " (legacy Lua: rewrite it in JS)" : "")} (improve it):\n" + cur.Code : "");
     }
 
     /// <summary>op=save: lint, near-duplicate check, new version (no run). With goal: authored apart, summary only.</summary>
@@ -630,12 +709,23 @@ public sealed class ScriptBridge
     {
         var code = ToolInput.Str(input, "code");
         var rawName = ToolInput.Str(input, "name");
+        // script{op:save, name, params}: retune a saved script without new code (merged over its saved tunables).
+        if (string.IsNullOrWhiteSpace(code) && ParamsOf(input) is { } tune && !string.IsNullOrWhiteSpace(rawName))
+        {
+            var tn = ScriptLibrary.ParseRef(CleanRef(rawName)).Name;
+            if (!Library.SetParams(tn, tune)) return ToolResult.Error($"no saved script '{tn}'");
+            var declared = Library.Get(tn)?.Script is { } tsc ? ScriptLint.Params(tsc.Code).Select(p => p.Name).ToHashSet(StringComparer.Ordinal) : [];
+            var unknown = JsonDocument.Parse(tune).RootElement.EnumerateObject().Select(p => p.Name).Where(k => declared.Count > 0 && !declared.Contains(k)).ToList();
+            return ToolResult.Success($"ok: {tn} tuned {Library.ParamsOf(tn) ?? "{}"}" + (unknown.Count > 0 ? $" (not declared by its params(): {string.Join(",", unknown)})" : ""));
+        }
         if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(rawName)) return ToolResult.Error("save needs name and code");
         var name = ScriptLibrary.ParseRef(CleanRef(rawName)).Name;
-        var lint = Lint(code);
+        var lang = LanguageOf(code);
+        if (lang == ScriptLanguage.Lua && !Options.AcceptLuaCode) return ToolResult.Error(ScriptPrompts.JsOnly);
+        var lint = Lint(code, lang);
         if (lint.HasErrors) return ToolResult.Error(lint.Format(LintSeverity.Error, 300));
         int before = Library.Get(name)?.Script?.Version ?? 0;
-        var (saved, note) = SaveChecked(name, code, ToolCaller.Current?.Tag, ToolInput.Str(input, "force"));
+        var (saved, note) = SaveChecked(name, code, ToolCaller.Current?.Tag, ToolInput.Str(input, "force"), lang);
         if (saved?.Script is not { } sc) return ToolResult.Error(note ?? "not saved");
         var args = sc.ArgNames.Count > 0 ? $" args({string.Join(",", sc.ArgNames)})" : "";
         var warn = lint.Format(LintSeverity.Warning);
@@ -697,6 +787,30 @@ public sealed class ScriptBridge
         if (s.Status == ScriptStatus.Paused) return ToolResult.Success("paused: " + s.State());
         return s.Ok ? ToolResult.Success(s.Outcome ?? "ok") : ToolResult.Error(s.Outcome ?? "failed");
     }
+
+    /// <summary>
+    /// A crew lane on this lane's body (in-process crews): starts the role run and makes it the body's activity at once (its
+    /// slot, its interrupts, "body busy" for brain tools), so the coordinator only waits for its completion.
+    /// </summary>
+    public (ScriptSession? Session, string? Error) StartLane(ScriptRequest request, Bodies.IBody body)
+    {
+        var (s, err) = Controller.Start(request);
+        if (s == null) return (null, err);
+        L(s).DetachedFromWorker = true; // nobody waits inline: report the end like a detached run if no activity adopts it
+        _ = Task.Run(async () =>
+        {
+            using (Bodies.BodyScope.Push(body))
+                await FollowAsActivityAsync(s, TimeSpan.Zero, CancellationToken.None).ConfigureAwait(false);
+        });
+        return (s, null);
+    }
+
+    /// <summary>
+    /// The one-time Lua → JS migration (Scripting:MigrateLua, main process only, background): every saved script whose active
+    /// version is still Lua is translated by the Opus author, linted, dry-run, and saved as its next version (Lua kept as history).
+    /// </summary>
+    public Task<IReadOnlyList<LuaMigration.Item>> StartLuaMigrationAsync(CancellationToken ct) =>
+        Options.MigrateLua && Author != null ? Task.Run(() => new LuaMigration(this, _log).RunAsync(ct), ct) : Task.FromResult<IReadOnlyList<LuaMigration.Item>>([]);
 
     /// <summary>Worker task ended: a detached script becomes the bot's activity (or is cancelled if something else took the body).</summary>
     internal void AdoptOrphan()
@@ -822,9 +936,13 @@ public sealed class ScriptBridge
             Estimate = TimeSpan.FromSeconds(Math.Max(10, sc.AvgSeconds)), Keywords = name.Replace('_', ' ') + " script routine " + r.Note,
         }, async (_, args, ct) =>
         {
-            var code = Library.CodeOf(name);
-            if (code == null) return SkillResult.Fail($"script {name} was forgotten");
-            var (s, err) = Controller.Start(new ScriptRequest { Name = name, Code = code, ArgsJson = args.ValueKind == JsonValueKind.Object ? args.GetRawText() : null });
+            var ver = Library.Resolve(name, IsScriptable, out string? _why);
+            if (ver == null) return SkillResult.Fail($"script {name} was forgotten");
+            var (s, err) = Controller.Start(new ScriptRequest
+            {
+                Name = name, Code = ver.Code, Language = ver.IsLua && !LooksJs(name) ? ScriptLanguage.Lua : ScriptLanguage.Js,
+                ArgsJson = args.ValueKind == JsonValueKind.Object ? args.GetRawText() : null,
+            });
             if (s == null) return SkillResult.Fail(err ?? "can't start");
             var res = await FollowInlineAsync(s, null, ct).ConfigureAwait(false);
             return new SkillResult(res.Ok, res.Text);
@@ -843,11 +961,14 @@ public sealed class ScriptBridge
     /// <summary>run_routine (and promoted routine skills) on the engine: saved scripts directly, step routines migrated.</summary>
     internal async Task<ToolResult?> RunRoutineAsync(Agent.Memory.Routine routine, int? repeat, CancellationToken ct)
     {
-        var code = routine.Script is { Code.Length: > 0 } sc ? sc.Code : Library.Migrate(routine, IsScriptable)?.Script?.Code;
-        if (code == null) return null; // a step the script API can't express: legacy replay
+        var sc = routine.Script is { Code.Length: > 0 } own ? own : Library.Migrate(routine, IsScriptable)?.Script;
+        if (sc == null) return null; // a step the script API can't express: legacy replay
+        var lua = ScriptLibrary.Active(sc).IsLua && sc.Lang != "js";
+        if (lua && !Options.LegacyLua) return ToolResult.Error($"{routine.Name} is legacy Lua and not migrated yet");
         var (s, err) = Controller.Start(new ScriptRequest
         {
-            Name = routine.Name, Code = code, ArgsJson = repeat is { } n ? $"{{\"repeat\":{n}}}" : null,
+            Name = routine.Name, Code = sc.Code, Language = lua ? ScriptLanguage.Lua : ScriptLanguage.Js,
+            ArgsJson = repeat is { } n ? $"{{\"repeat\":{n}}}" : null,
         });
         if (s == null) return ToolResult.Error(err ?? "can't start");
         return await FollowInlineAsync(s, null, ct).ConfigureAwait(false);
@@ -908,9 +1029,11 @@ public static class ScriptTools
     {
         var bridge = new ScriptBridge(rt, client, skills, options ?? new ScriptOptions(), time ?? TimeProvider.System, log);
 
+        // The brain's whole view: script{name|goal, params?, op}. code/args/resume_from/force still work (tools, hive, tests)
+        // but cost no schema bytes; only the separate author writes code.
         rt.Tools.Register(ToolName, ScriptPrompts.ToolDescription,
-            ToolSchema.Create().Str("op", enumValues: ScriptPrompts.Ops).Str("code", required: false).Str("name", required: false)
-                .Raw("args", """{"type":"object"}""", required: false).Str("resume_from", required: false).Str("force", required: false).Build(),
+            ToolSchema.Create().Str("op", enumValues: ScriptPrompts.Ops).Str("name", required: false).Str("goal", required: false)
+                .Raw("params", """{"type":"object"}""", required: false).Build(),
             // One brain, many bodies: a call for a clone body (its slot, its worker, the brain's body=67) runs on that body's lane.
             (input, ct) => (Bodies.BodyScope.Current is Bodies.Body { IsMain: false, ScriptBridge: { } lane } && !ReferenceEquals(lane, bridge) ? lane : bridge)
                 .ExecuteAsync(input, ct),
@@ -918,8 +1041,7 @@ public static class ScriptTools
         // Only the Opus brain writes scripts: code (run/replace/save) and rollback from any other tier — or from no model at all —
         // is refused in the registry, whatever path the call takes. Saved scripts by name, status and cancel stay open to all.
         rt.Tools.AddPolicy(ToolName, (input, caller) => WritesCode(input) && caller?.IsBrainModel(rt.Options.Llm) != true ? ScriptPrompts.BrainOnly : null);
-        rt.Agent.ExtendSystem(ScriptPrompts.CheatSheet);
-        rt.Agent.ExtendSystem(ScriptPrompts.AuthorLine); // goal= is brain-only: documented here, not in the shared schema
+        rt.Agent.ExtendSystem(ScriptPrompts.AuthorLine); // the brain never writes code: goal= goes to the separate Opus author
         bridge.Author = new AuthorAgent(rt.Llm, rt.Options.Llm, rt.Usage, log);
         rt.Worker?.ExtendSystem(ScriptPrompts.WorkerLine);
         bridge.MaybeHousekeep(force: true);

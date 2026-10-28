@@ -247,7 +247,7 @@ public class MultiBodyBrainTests(ITestOutputHelper output)
         var rt = rig.Rt;
         var b67 = (Body)rig.Reg.Find("67")!;
         var b69 = (Body)rig.Reg.Find("69")!;
-        const string code = "for i = 1, 600 do wait(0.05) prog(i / 6) end";
+        const string code = "for (let i = 1; i <= 600; i++) { wait(0.05); prog(i / 6) }";
         foreach (var b in new[] { b67, b69 })
         {
             var body = b;

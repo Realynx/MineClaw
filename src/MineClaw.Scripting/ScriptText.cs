@@ -22,7 +22,8 @@ public static class ScriptText
         if (s.Reason != null && !s.IsLive) sb.Append(" (").Append(s.Reason).Append(')');
         if (s.Line > 0) sb.Append(" L").Append(s.Line);
         if (s.Snippet != null) sb.Append(" `").Append(s.Snippet).Append('`');
-        if (s.Checkpoint != null) sb.Append(" | cp '").Append(s.Checkpoint).Append('\'').Append(s.CheckpointTotal > 0 ? $" {s.CheckpointsPassed}/{s.CheckpointTotal}" : "");
+        if (s.MachineState != null) sb.Append(" | state ").Append(s.MachineState).Append(s.Transitions > 0 ? $" ({s.Transitions} moves)" : "");
+        else if (s.Checkpoint != null) sb.Append(" | cp '").Append(s.Checkpoint).Append('\'').Append(s.CheckpointTotal > 0 ? $" {s.CheckpointsPassed}/{s.CheckpointTotal}" : "");
         if (s.ProgressPct != null || s.ProgressNote != null)
         {
             sb.Append(" | ");

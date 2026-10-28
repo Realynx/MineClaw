@@ -15,10 +15,10 @@ public class NightLogScriptTests
         // only when addressed))" after printing its scan; 07:37:06 a chop script died on say after +4 oak wood.
         var (h, c, _) = BotScriptTests.Bot(scripts: new ScriptOptions { SayMinIntervalSeconds = 0 });
         h.Runtime.Agent.SpeechGate = (_, _, _) => null; // hive clone: speaks only when addressed
-        var r = await Script(h, new { op = "run", code = "mine{'cobblestone',2} say'got the cobble, heading back'" });
+        var r = await Script(h, new { op = "run", code = "mine('cobblestone', 2)\nsay('got the cobble, heading back')" });
         Assert.True(r.Ok, r.Text);
         Assert.Contains("report: got the cobble, heading back", r.Text);
-        var r2 = await Script(h, new { op = "run", code = "say'west cell is cobble, east is water' return 'scanned'" });
+        var r2 = await Script(h, new { op = "run", code = "say('west cell is cobble, east is water')\nreturn 'scanned'" });
         Assert.True(r2.Ok, r2.Text);
         Assert.Contains("scanned", r2.Text);
         Assert.Contains("report: west cell is cobble, east is water", r2.Text);
@@ -32,7 +32,7 @@ public class NightLogScriptTests
         // 67 at 07:41:34 / 07:41:36: "deposit: unknown place 'all'", "deposit: unknown place 'stone_axe'".
         var (h, c, _) = BotScriptTests.Bot();
         c.World.SetBlock(2, 64, 2, Blocks.Chest, 0);
-        var r = await Script(h, new { op = "run", code = "local a, m1 = deposit{'all'} local b, m2 = deposit{'stone_axe'}\nreturn tostring(a) .. tostring(b) .. ' ' .. m1 .. ' | ' .. m2" });
+        var r = await Script(h, new { op = "run", code = "const a = deposit('all'), b = deposit('stone_axe')\nreturn String(a.ok) + String(b.ok) + ' ' + a.msg + ' | ' + b.msg" });
         Assert.True(r.Ok, r.Text);
         Assert.Contains("truetrue", r.Text);
         Assert.Contains("deposit 2,64,2 filter=False", c.CallList);
