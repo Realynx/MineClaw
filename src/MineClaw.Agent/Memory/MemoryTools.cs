@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.RegularExpressions;
 using MineClaw.Agent.Rag;
 using MineClaw.Agent.Rag.Beliefs;
+using MineClaw.Agent.Rules;
 using MineClaw.Agent.Tools;
 
 namespace MineClaw.Agent.Memory;
@@ -86,19 +87,23 @@ public static class MemoryTools
             });
 
         var beliefs = BeliefStore.For(memory);
+        var rules = DirectiveStore.For(memory.Db, memory.Index);
         // Token budget: no documented "by" param. The claimant is this turn's speaker; an undocumented "by" (worker/tests) or a
         // "seen:" prefix marks the bot's own observation.
         registry.Register("remember_note", "Save a fact. What players say becomes a claim to verify.",
             ToolSchema.Create().Str("subject", "player name, base, world...").Str("text").Build(),
-            (input, _) => Task.FromResult(RememberNote(memory, beliefs, input.ReqStr("subject"), input.ReqStr("text"), input.Str("by"))),
+            (input, _) => Task.FromResult(RememberNote(memory, beliefs, input.ReqStr("subject"), input.ReqStr("text"), input.Str("by"), rules)),
             cheapTier: true);
 
         RegisterRecall(registry, memory, position);
 
-        registry.Register("forget", "Delete a memory by name (note: id like #3).",
+        registry.Register("forget", "Delete a memory by name (note: id like #3, rule: rule#2).",
             ToolSchema.Create().Str("name").Str("kind", required: false, enumValues: ["waypoint", "structure", "note", "routine"]).Build(),
             (input, _) =>
             {
+                if (RuleId(input.ReqStr("name")) is { } rid)
+                    return Task.FromResult(rules.Revoke(rid, TurnContext.Current?.Speaker) ? ToolResult.Success($"rule#{rid} ended")
+                        : ToolResult.Error($"no active rule#{rid}"));
                 int n = memory.Forget(input.Str("kind"), input.ReqStr("name"));
                 return Task.FromResult(n > 0 ? ToolResult.Success($"forgot {n}") : ToolResult.Error("nothing matched"));
             });
@@ -113,17 +118,32 @@ public static class MemoryTools
     private static readonly HashSet<string> GenericSubjects = new(StringComparer.OrdinalIgnoreCase)
         { "world", "base", "island", "server", "spawn", "me", "self", "bot", "everyone", "team", "game", "farm", "home", "general", "us" };
 
+    private static readonly Regex RuleIdRx = new(@"^\s*rule\s*#?\s*(\d+)\s*$", RegexOptions.IgnoreCase);
+
+    /// <summary>"rule#3" / "rule 3" → 3 (the forget tool ends that standing rule).</summary>
+    internal static long? RuleId(string name) =>
+        RuleIdRx.Match(name ?? "") is { Success: true } m && long.TryParse(m.Groups[1].Value, out var id) ? id : null;
+
     /// <summary>
     /// Belief routing: a fact told by a player (explicit <paramref name="by"/>, else this turn's speaker) becomes a claim with a
-    /// status, never a note; the bot's own observations stay notes. Instructions dressed as facts are never saved as either.
+    /// status, never a note; the bot's own observations stay notes. An instruction, rule or preference from a trusted player is a
+    /// directive (<see cref="DirectiveStore"/>): a standing rule, verified by authority, never a claim to verify (live 10-28: Fox's
+    /// "only build in daytime" became unverified claim#9 and the tower was resumed at night). Anyone else's instructions dressed as
+    /// facts are never saved as either.
     /// </summary>
-    internal static ToolResult RememberNote(MemoryStore memory, BeliefStore beliefs, string subject, string text, string? by)
+    internal static ToolResult RememberNote(MemoryStore memory, BeliefStore beliefs, string subject, string text, string? by, DirectiveStore? rules = null)
     {
         text = TextUtil.Truncate(TextUtil.OneLine(text), 200);
         var seen = SeenPrefix.Match(text);
         if (seen.Success) by ??= "me"; // the bot's own look, kept verbatim as a note
         var claimant = string.IsNullOrWhiteSpace(by) ? TurnContext.Current?.Speaker : by.Trim().TrimStart('@');
         bool own = claimant == null || OwnWords.Contains(claimant) || beliefs.IsBot?.Invoke(claimant) == true;
+        if (!own && rules != null && rules.Trusted(claimant) && DirectiveParser.IsInstruction(text))
+        {
+            var r = rules.Add(claimant!, text);
+            if (r.Stored || TurnContext.IsTest) return ToolResult.Success(r.Text);
+            return ToolResult.Error(r.Text);
+        }
         if (!own && beliefs.Options.Enabled)
         {
             var s = subject.Trim();
@@ -177,7 +197,7 @@ public static class MemoryTools
                 IReadOnlyCollection<string>? kinds = kind switch
                 {
                     null or "" => null,
-                    "note" => ["note", "player", BeliefStore.DocKind],
+                    "note" => ["note", "player", BeliefStore.DocKind, DirectiveStore.DocKind],
                     _ => [kind],
                 };
                 var hits = await index.SearchAsync(new RagQuery

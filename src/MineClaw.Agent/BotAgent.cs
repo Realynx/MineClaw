@@ -162,6 +162,12 @@ public sealed partial class BotAgent
     /// <summary>Chat-flow counters (debounce merges, restarts, injections, busy wakes) for tuning <see cref="AgentOptions.ChatDebounce"/>.</summary>
     public ChatFlowStats ChatFlow => _events.Stats;
 
+    /// <summary>
+    /// Trusted players' standing rules that apply to the turn's in-play text (task, standing order, events), as one
+    /// "[standing rules: ...]" header line, or null (Rules/DirectiveStore.HeaderLine).
+    /// </summary>
+    public Func<string, string?>? StandingRules { get; set; }
+
     /// <summary>This bot's standing order (resume when idle, "[standing: ...]" header). Null = none.</summary>
     public Human.StandingOrders? Orders { get; set; }
 
@@ -424,7 +430,17 @@ public sealed partial class BotAgent
         using var speech = new TurnSpeech(ct);
         var cx = new SpeechCtx(episode.Events, said, audience, () => whisperTo, episode.IsTest);
         StartAck(speech, batch, tier, turnHead, preAck, whisperTo, audience.ToArray(), ct);
-        _turnSay = (t, c) => SayToolAsync(t, quiet, warnOnly, episode.Events, speech, cx, c);
+        // A turn says at most its in-persona lines (live 10-28 05:27: a hand-over + death-notice turn said its thank-you with the
+        // say tool, then its final text, "I picked the drop tower build back up since Fox already approved it. ... I thanked him
+        // in chat and asked if he's ok.", went to public chat). After the say tool spoke, or once a turn no player typed in has
+        // said its line, the rest of the brain's plain text is its own recap: internal.
+        bool talked = batch.HasTypedChat, sayToolSpoke = false;
+        _turnSay = async (t, c) =>
+        {
+            var r = await SayToolAsync(t, quiet, warnOnly, episode.Events, speech, cx, c).ConfigureAwait(false);
+            if (r.Ok && r.Text == "said") sayToolSpoke = true;
+            return r;
+        };
         try
         {
 
@@ -507,6 +523,7 @@ public sealed partial class BotAgent
                         whisperTo = batch.WhisperOnlyFrom;
                         retry |= RetryAsked(more);
                         (quiet, warnOnly) = AfterJoined(quiet, warnOnly, more);
+                        talked |= more.HasTypedChat;
                         _turnStatusAsked |= MetaSpeech.AsksStatus(more.Waking.Where(EventQueue.IsTyped).Select(e => e.Text));
                         TurnContext.Current = new TurnInfo(speaker, audience.ToArray(), batch.IsTest);
                     }
@@ -548,6 +565,11 @@ public sealed partial class BotAgent
                 KeepInternal(text);
                 text = "";
             }
+            if (!IsSilent(text) && (sayToolSpoke || (!talked && said.Count > 0)))
+            {
+                KeepInternal(text);
+                text = "";
+            }
             if (!IsSilent(text) && whisperTo == null && SpeechGate != null)
             {
                 string? gated;
@@ -564,7 +586,7 @@ public sealed partial class BotAgent
             if (!IsSilent(text))
             {
                 // Never narrate plumbing ("Delegating the craft.", "running script"): drop purely meta sentences.
-                text = MetaSpeech.Strip(text, out var meta, _turnStatusAsked);
+                text = MetaSpeech.Strip(text, out var meta, _turnStatusAsked, AddresseeNames(audience));
                 foreach (var m in meta) _log.LogInformation("[meta suppressed] {Line}", m);
             }
             if (warnOnly && !IsSilent(text))
@@ -629,6 +651,7 @@ public sealed partial class BotAgent
                 retry |= RetryAsked(fresh);
                 // A player spoke mid-turn: from here on the turn answers them (its text is chat again).
                 (quiet, warnOnly) = AfterJoined(quiet, warnOnly, fresh);
+                talked |= fresh.HasTypedChat;
                 _turnStatusAsked |= MetaSpeech.AsksStatus(fresh.Waking.Where(EventQueue.IsTyped).Select(e => e.Text));
             }
             episode.Messages.Add(new LlmMessage(LlmRole.User, blocks));
@@ -824,6 +847,14 @@ public sealed partial class BotAgent
         string? standing = null;
         try { standing = Orders?.HeaderTag(); } catch (Exception ex) { _log.LogDebug(ex, "standing order read failed"); }
         if (standing != null) sb.Append(standing).Append('\n');
+        // Trusted players' standing rules for what is in play (the task, the standing order, these events): text only, the brain decides.
+        if (StandingRules != null)
+        {
+            string? rules = null;
+            try { rules = StandingRules(string.Join("\n", status, standing ?? "", batch.Format())); }
+            catch (Exception ex) { _log.LogDebug(ex, "standing rules read failed"); }
+            if (!string.IsNullOrWhiteSpace(rules)) sb.Append(rules.Trim()).Append('\n');
+        }
         var digest = BuildDigest(memory);
         if (digest.Length > 0) sb.Append(digest).Append('\n');
         string perception = "";
@@ -1047,6 +1078,18 @@ public sealed partial class BotAgent
     // ---------------- support ----------------
 
     private IEnumerable<string> NameWords() => [_chat.Username, _chat.DisplayName, .. _chat.Aliases];
+
+    /// <summary>The players this turn answers, by login and every nickname (MetaSpeech drops third-person reports about them).</summary>
+    private IReadOnlyCollection<string> AddresseeNames(IEnumerable<string> audience)
+    {
+        var names = new List<string>();
+        foreach (var p in audience)
+        {
+            names.Add(p);
+            try { names.AddRange(_chat.NicknamesOf(p)); } catch (Exception) { }
+        }
+        return names;
+    }
 
     private void LogChat(EventBatch batch)
     {

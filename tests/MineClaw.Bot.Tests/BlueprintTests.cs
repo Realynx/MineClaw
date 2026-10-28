@@ -625,4 +625,31 @@ public class BlueprintTests
         Assert.Contains("no second go", line);
         Assert.Empty(started);
     }
+
+    [Fact]
+    public async Task A_paused_build_carries_the_trusted_players_rule_and_puts_its_design_in_play()
+    {
+        // Live 10-28 05:26 (night, rain): "picked the drop tower build back up since Fox already approved it" — the rule
+        // "only in daytime" was an unverified claim nobody showed. Now it rides along as text; the brain decides.
+        var db = AgentDb.Open(null);
+        var (s, _, _, _) = Service(new ScriptedAuthor(Hut), db);
+        var rules = MineClaw.Agent.Rules.DirectiveStore.For(db, null);
+        rules.IsTrusted = p => p.Equals("PoofImaFox", StringComparison.OrdinalIgnoreCase);
+        rules.Nick = _ => "fox";
+        rules.TimeOfDay = () => "night";
+        s.Rules = id => rules.ForDesign(id);
+        rules.AddInPlay(() => s.InPlay("maid_chan"));
+        Assert.True(rules.Add("PoofImaFox", "Fox OK'd continuing the drop tower (design #1), but only in daytime so mobs aren't a problem.").Stored);
+        s.Design("hut", null, "PoofImaFox");
+        await s.LastRun!;
+        var rec = s.Store.Get(1)!;
+        rec.Status = DesignStatus.Building;
+        rec.AcceptedBy = "PoofImaFox";
+        s.Store.Update(rec);
+        s.Store.SaveBuild(new BuildRecord { BlueprintId = 1, Part = 0, Owner = "maid_chan", State = "building", Placed = 12, Total = 70 });
+        var line = s.NotifyPending("maid_chan")!;
+        Assert.Contains("no second go needed); rule#1 (Fox, design #1, just now): Fox OK'd continuing the drop tower", line);
+        Assert.EndsWith("; it's night now", line);
+        Assert.Contains("rule#1", rules.HeaderLine("[task ok] #3 harvest_generator: ok: mined 64 cobblestone")!);
+    }
 }

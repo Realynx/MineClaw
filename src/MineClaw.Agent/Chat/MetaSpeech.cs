@@ -126,9 +126,62 @@ public static partial class MetaSpeech
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex NoticedNarrationRx();
 
+    /// <summary>
+    /// A recap of its own speech acts and decisions (live 10-28 05:27, after the in-persona thank-you went out: "I picked the drop
+    /// tower build back up since Fox already approved it. The creeper fight ended with no damage to me. ... I thanked him in chat
+    /// and asked if he's ok."). Never chat. "I told you so" / "I asked robin earlier" (talk to the listener) stay.
+    /// </summary>
+    [GeneratedRegex(
+        // its own speech acts about someone else: "I thanked him", "and asked him if", "I told her that"
+        @"\bi\s+(?:just\s+|already\s+|also\s+)?(?:thanked|greeted|welcomed|congratulated|comforted|consoled|apologi[sz]ed\s+to)\s+(?!you\b|u\b|ya\b|y'?all\b|yall\b|everyone\b)[a-z][\w']*" +
+        @"|\b(?:i|and|then)\s+(?:just\s+|already\s+|also\s+)?(?:asked|told|warned|reminded|promised|assured)\s+(?:him|her|them)\s+(?:if|whether|that|what|how|when|where|why|to|about|i'?d|i\s+would|i'?ll)\b" +
+        // its own past speech placed "in chat": "I thanked him in chat", "I said it in the chat"
+        @"|\bi\s+(?:\w+\s+)?(?:\w{2,}ed|said|told|wrote|sent|typed|posted)\b[^.!?]*\bin\s+(?:the\s+)?(?:game\s+|public\s+)?chat\b" +
+        // the reason for its own choice: "I picked the drop tower build back up since Fox already approved it"
+        @"|\bi(?:'ve|\s+have)?\s+(?:just\s+|already\s+)?(?:picked|took|started|brought)\s+(?:[\w#'""-]+\s+){0,6}?back\s+up\s+(?:since|because|as|now\s+that|cuz|cause)\b" +
+        @"|\bi(?:'ve|\s+have)?\s+(?:just\s+|already\s+)?(?:resumed|restarted|re-started|continued|picked\s+up)\s+(?:the|my|our|that|this)\s+[^.!?]*?\b(?:since|because|now\s+that)\s+[\w']+\s+(?:already\s+)?(?:approved|okayed|ok'?d|agreed|said\s+(?:so|ok|yes)|gave\s+(?:the\s+)?go)\b" +
+        // a combat log line: "The creeper fight ended with no damage to me."
+        @"|\b(?:the|that|this|my)\s+(?:[\w-]+\s+)?(?:fight|battle|combat)\s+(?:ended|is\s+over|was\s+over|finished)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex RecapRx();
+
+    [GeneratedRegex(@"\b(?:you|u|ur|your|yours|ya|y'?all|yall)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex SecondPersonRx();
+
+    [GeneratedRegex(@"\b(?:he|him|his|she|her|hers)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ThirdPronounRx();
+
+    /// <summary>Past-tense report verbs after a name ("Fox blew up", "Fox already approved it"); not "need/feed/seed".</summary>
+    private const string ReportVerb =
+        @"(?:already\s+|just\s+|also\s+|then\s+|finally\s+)?(?:(?!(?:need|feed|seed|speed|breed|bleed|weed|proceed)\b)[a-z]{3,}ed|blew|gave|went|came|took|told|made|got|fell|died|left|threw|ran|brought|sent|wanted|said|fought|caught|built|dug|broke|ate|found)\b";
+
+    /// <summary>
+    /// The sentence talks ABOUT one of <paramref name="addressees"/> (the players this turn answers, logins and nicknames) in the
+    /// third person, report style: "Fox blew up on the main island, then gave me 1 stone pickaxe" said to Fox. Needs a past-tense
+    /// verb right after the name, no second person in the sentence, and a report's length (8+ words) or a he/she pronoun, so
+    /// "fox look!", "foxy, u ok?" and "master saved me uwu" stay.
+    /// </summary>
+    public static bool TalksAboutAddressee(string sentence, IEnumerable<string>? addressees)
+    {
+        if (addressees == null || string.IsNullOrWhiteSpace(sentence) || SecondPersonRx().IsMatch(sentence)) return false;
+        int words = sentence.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
+        if (words < 8 && !ThirdPronounRx().IsMatch(sentence)) return false;
+        foreach (var n in addressees)
+        {
+            var name = (n ?? "").Trim();
+            if (name.Length < 2) continue;
+            if (Regex.IsMatch(sentence, @"(?<![\w@])@?" + Regex.Escape(name) + @"\s+" + ReportVerb, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>A recap of its own speech acts / choices ("I thanked him in chat", "I picked the build back up since ...").</summary>
+    public static bool IsRecap(string sentence) => RecapRx().IsMatch(sentence ?? "");
+
     /// <summary>A third-person report about its own doings ("I warned Fox that...", "I'm also back on the gen now").</summary>
     public static bool IsSelfReport(string sentence) =>
-        SelfReportRx().IsMatch(sentence ?? "") || AskWaitRx().IsMatch(sentence ?? "") || NoticedNarrationRx().IsMatch(sentence ?? "");
+        SelfReportRx().IsMatch(sentence ?? "") || AskWaitRx().IsMatch(sentence ?? "") || NoticedNarrationRx().IsMatch(sentence ?? "") || IsRecap(sentence ?? "");
 
     /// <summary>
     /// Narration of its own asking and waiting (live 10-28 02:1x, clone 67 in public chat: "Asked Fox what he wants built at the
@@ -188,9 +241,10 @@ public static partial class MetaSpeech
     /// <summary>
     /// The text with purely meta sentences removed (short, at most 10 words); <paramref name="suppressed"/> lists what was dropped.
     /// Emote lines ("/me ...") are left alone. Sentences narrating the bot's own speech/silence or addressing reasoning always go;
-    /// routine run status goes unless <paramref name="statusAsked"/> (a player asked how the job is going).
+    /// routine run status goes unless <paramref name="statusAsked"/> (a player asked how the job is going). A sentence about one of
+    /// <paramref name="addressees"/> (this turn's players, logins and nicknames) in the third person is a report, never chat.
     /// </summary>
-    public static string Strip(string text, out List<string> suppressed, bool statusAsked = false)
+    public static string Strip(string text, out List<string> suppressed, bool statusAsked = false, IReadOnlyCollection<string>? addressees = null)
     {
         suppressed = new List<string>();
         if (string.IsNullOrWhiteSpace(text)) return text ?? "";
@@ -206,7 +260,8 @@ public static partial class MetaSpeech
             {
                 var t = s.Trim();
                 if (t.Length == 0) continue;
-                if (IsMeta(t) || MemoryChoreRx().IsMatch(t) || IsSelfNarration(t) || IsSelfReport(t) || (!statusAsked && IsRunStatus(t))) { suppressed.Add(t); continue; }
+                if (IsMeta(t) || MemoryChoreRx().IsMatch(t) || IsSelfNarration(t) || IsSelfReport(t) || (!statusAsked && IsRunStatus(t))
+                    || TalksAboutAddressee(t, addressees)) { suppressed.Add(t); continue; }
                 if (AskingLeadRx().Match(t) is { Success: true } lead)
                 {
                     suppressed.Add(t);

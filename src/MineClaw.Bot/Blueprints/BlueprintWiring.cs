@@ -83,6 +83,12 @@ public sealed class BlueprintWiring
         service.StartUndo = id => wiring.StartBuild(rt, id, null, undo: true);
         wiring.RegisterTools(rt);
         wiring.AttachChat(rt, log);
+        // Trusted players' standing rules ride along with resume/build results, and a pending build puts its design in play for
+        // the turn header's [standing rules] (text only: the brain decides, e.g. "only build in daytime" at night).
+        var rules = Agent.Rules.DirectiveStore.For(rt.Db, rt.Rag);
+        rules.TimeOfDay ??= () => client.IsPlaying ? (client.World.IsNight ? "night" : "day") : null;
+        rules.AddInPlay(() => service.InPlay(client.Username));
+        service.Rules = id => rules.ForDesign(id);
         if (persist)
             client.Spawned += () => _ = Task.Run(async () =>
             {
@@ -161,7 +167,8 @@ public sealed class BlueprintWiring
                     bool moving = input.Str("at") is { Length: > 0 };
                     // Already accepted by a trusted player: resuming (after a material or night pause) needs no second go.
                     if (!moving && rec.Status is DesignStatus.Accepted or DesignStatus.Building && rec.AcceptedBy != null)
-                        return Service.StartBuild(rec.Id, null) is { } why ? ToolResult.Error(why) : ToolResult.Success($"building #{rec.Id} \"{rec.Name}\" (resuming; {rec.AcceptedBy} approved it)");
+                        return Service.StartBuild(rec.Id, null) is { } why ? ToolResult.Error(why)
+                            : ToolResult.Success(Service.WithRules(rec.Id, $"building #{rec.Id} \"{rec.Name}\" (resuming; {rec.AcceptedBy} approved it)"));
                     if (!Service.IsTrusted(speaker)) return ToolResult.Error($"a build needs a trusted player's go ({string.Join("/", rt_Trusted())}); {speaker ?? "nobody"} asked");
                     if (rec.Status is DesignStatus.Built || moving && rec.Status is not DesignStatus.Review)
                     {
@@ -169,7 +176,7 @@ public sealed class BlueprintWiring
                         return text.StartsWith("error", StringComparison.Ordinal) ? ToolResult.Error(text[7..]) : ToolResult.Success(text);
                     }
                     if (rec.Status is DesignStatus.Accepted or DesignStatus.Building)
-                        return Service.StartBuild(rec.Id, null) is { } why ? ToolResult.Error(why) : ToolResult.Success($"building #{rec.Id} \"{rec.Name}\" (resuming)");
+                        return Service.StartBuild(rec.Id, null) is { } why ? ToolResult.Error(why) : ToolResult.Success(Service.WithRules(rec.Id, $"building #{rec.Id} \"{rec.Name}\" (resuming)"));
                     var a = Service.Accept(rec, speaker!);
                     return a.StartsWith("building", StringComparison.Ordinal) ? ToolResult.Success(a) : ToolResult.Error(a);
                 }

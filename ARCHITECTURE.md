@@ -189,6 +189,15 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
   keeps running); another bot's danger/death (`Chat:OtherBots`) is Background only. A quiet turn joined mid-turn by a
   'noticed' event becomes a warning turn (`BotAgent.AfterJoined`: one line public, the rest internal). Speech never folds
   another online account into a regular's nickname (`PlayerNames`: exact accounts win; "robin" for robinchan is unfolded).
+- **A turn says at most its in-persona lines**: after the `say` tool spoke, or once a turn no player typed in (a hand-over, a
+  death notice) said its line, the rest of the brain's text is internal. `MetaSpeech` also drops recaps (its own speech acts
+  "I thanked him in chat", "I picked the build back up since…", a fight log) and third-person reports about the addressee.
+- **Standing rules** (`Agent/Rules`, db `directives`): a trusted player's instruction, preference or rule saved with
+  `remember_note` is a directive (who, when, scope: design / activity / place / general), never a claim to verify. A newer
+  rule on the same main activity and time-of-day condition, or one lifting it ("you can build at night now"), replaces it;
+  `forget rule#N` ends it. Shown as text only where it applies: `[standing rules: …]` in the turn header (task, standing
+  order, events, a paused build) and the design tool's resume/build results ("…; it's night now"). No coded gate. Startup
+  migrates old trusted instruction claims (idempotent).
 - **Standing-order backoff**: a pass that found nothing to do yet ("still growing", "0 chopped") is quiet context, not a failure;
   C# waits 2 → 4 → 8 → 15 min and polls `WorkProbe` (a grown tree, a regenerated gen cell, a mature crop) to resume earlier.
 - **Hand-off holds** (`Client/Survival/HandoffReservations`, `Bot/Perception/HandoffIntent`): a chat line either side ("I'll pass

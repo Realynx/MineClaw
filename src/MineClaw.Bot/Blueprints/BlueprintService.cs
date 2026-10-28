@@ -75,6 +75,11 @@ public sealed class BlueprintService
     /// <summary>A finished build: (record, plan) → memory structure + protection bookkeeping.</summary>
     public Action<BlueprintRecord, VoxelPlan>? Built { get; init; }
     public Func<BlockPos, string?> Landmark { get; init; } = _ => null;
+    /// <summary>
+    /// Trusted players' standing rules for building this design (its own and building in general), as text for resume/build
+    /// results: "rule#2 (Fox, design #4, 40m ago): only build in daytime...; it's night now". Null = none. Never a gate.
+    /// </summary>
+    public Func<long, string?>? Rules { get; set; }
     /// <summary>Last finished design run (tests).</summary>
     public Task? LastRun { get; private set; }
 
@@ -248,7 +253,7 @@ public sealed class BlueprintService
         Store.Update(rec);
         var plan = PlanSummary(rec);
         var refusal = StartBuild(rec.Id, null);
-        return refusal == null ? $"building the {rec.Name}" + (plan != null ? $": {plan}" : "") : $"accepted the {rec.Name}, but can't start: {refusal}";
+        return WithRules(rec.Id, refusal == null ? $"building the {rec.Name}" + (plan != null ? $": {plan}" : "") : $"accepted the {rec.Name}, but can't start: {refusal}");
     }
 
     /// <summary>"Build another one like the hut" (a trusted player): a copy of a saved design at a new site, accepted by them.</summary>
@@ -281,7 +286,7 @@ public sealed class BlueprintService
         }
         try { Store.Update(copy, Preview.Render(plan, Site().World, Roles(), Light(), Atlas(), WorldTime()).Png); } catch (Exception) { Store.Update(copy); }
         var refusal = StartBuild(copy.Id, null);
-        return (copy, refusal == null ? $"building another {source.Name} (#{copy.Id})" : $"#{copy.Id} ready but can't start: {refusal}");
+        return (copy, WithRules(copy.Id, refusal == null ? $"building another {source.Name} (#{copy.Id})" : $"#{copy.Id} ready but can't start: {refusal}"));
     }
 
     private static string StripOrigin(string dsl) =>
@@ -464,7 +469,7 @@ public sealed class BlueprintService
         {
             if (Store.Get(b.BlueprintId) is not { Status: DesignStatus.Building or DesignStatus.Accepted } rec) continue;
             var refusal = StartBuild(rec.Id, b.Parts > 1 ? b.Part + 1 : null);
-            var line = $"resuming the {rec.Name} build (#{rec.Id}, {b.Placed}/{b.Total} placed before the restart)";
+            var line = WithRules(rec.Id, $"resuming the {rec.Name} build (#{rec.Id}, {b.Placed}/{b.Total} placed before the restart)");
             Notice("[design] " + line + (refusal != null ? $": can't start ({refusal})" : ""));
             return refusal == null ? line : null;
         }
@@ -482,10 +487,30 @@ public sealed class BlueprintService
             if (Store.Get(b.BlueprintId) is not { Status: DesignStatus.Building or DesignStatus.Accepted } rec) continue;
             var line = $"the {rec.Name} build (#{rec.Id}, {b.Placed}/{b.Total} placed) was paused by a restart; resume it with design " +
                        $"build{{id={rec.Id}}} when it fits your rules" + (rec.AcceptedBy != null ? $" ({rec.AcceptedBy} approved it; no second go needed)" : "");
+            line = WithRules(rec.Id, line);
             Notice("[design] " + line);
             return line;
         }
         return null;
+    }
+
+    /// <summary>The line plus the standing rules that apply to building design <paramref name="id"/> ("...; rule#2 (Fox): ...").</summary>
+    public string WithRules(long id, string line)
+    {
+        string? rules = null;
+        try { rules = Rules?.Invoke(id); } catch (Exception ex) { _log?.LogDebug(ex, "rules for #{Id} failed", id); }
+        return string.IsNullOrWhiteSpace(rules) ? line : line + "; " + rules.Trim();
+    }
+
+    /// <summary>"build design #4" for each build of <paramref name="owner"/> that is accepted, running or paused (its rules are in play).</summary>
+    public string? InPlay(string owner)
+    {
+        try
+        {
+            var ids = Store.Unfinished(owner).Select(b => b.BlueprintId).Distinct().ToList();
+            return ids.Count == 0 ? null : string.Join(" ", ids.Select(i => $"build design #{i}"));
+        }
+        catch (Exception) { return null; }
     }
 
     /// <summary>"hut #3 5×5×4, 5 layers, review; bill: ...; parts 1" (the Lua blueprint(id) answer / design show).</summary>

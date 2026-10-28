@@ -193,7 +193,7 @@ public sealed partial class BotAgent
             }
             text = gated.Trim();
         }
-        text = MetaSpeech.Strip(text, out var meta, _turnStatusAsked);
+        text = MetaSpeech.Strip(text, out var meta, _turnStatusAsked, AddresseeNames(cx.Audience.ToArray()));
         foreach (var m in meta) _log.LogInformation("[meta suppressed] {Line}", m);
         if (IsSilent(text.Trim())) return "";
         text = SpeechDedupe.DropRepeats(text, said, out var dup);
@@ -453,7 +453,7 @@ public sealed partial class BotAgent
             }
             if (!IsSilent(text))
             {
-                text = MetaSpeech.Strip(text, out _, MetaSpeech.AsksStatus(batch.Waking.Where(EventQueue.IsTyped).Select(e => e.Text)));
+                text = MetaSpeech.Strip(text, out _, MetaSpeech.AsksStatus(batch.Waking.Where(EventQueue.IsTyped).Select(e => e.Text)), AddresseeNames(players));
                 if (!IsSilent(text.Trim())) text = LastLook(text, players);
             }
             if (!IsSilent(text))

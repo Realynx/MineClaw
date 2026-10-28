@@ -9,6 +9,7 @@ using MineClaw.Agent.Rag;
 using MineClaw.Agent.Rag.Raptor;
 using MineClaw.Agent.Self;
 using MineClaw.Agent.Routines;
+using MineClaw.Agent.Rules;
 using MineClaw.Agent.Tools;
 using MineClaw.Agent.Worker;
 using Microsoft.Extensions.Logging;
@@ -197,6 +198,14 @@ public sealed class AgentRuntime : IDisposable
                 (what.Contains(WorkerAgent.ToolName, StringComparison.Ordinal) && !string.IsNullOrEmpty(trail) ? $"; worker was: {trail}" : "")));
         }, cheapTier: true);
         MemoryTools.RegisterAll(tools, memory, position);
+        // Trusted players' instructions are standing rules, not claims (live 10-28 claim#9): shared store, one-time claim migration.
+        var rules = DirectiveStore.For(db, index);
+        rules.Time = time;
+        rules.CloneId = options.Chat.Username;
+        rules.IsTrusted = p => options.Self.TrustedPlayers.Any(t => t.Equals(p, StringComparison.OrdinalIgnoreCase));
+        rules.Nick = p => chat.NicknamesOf(p).FirstOrDefault() ?? p;
+        try { rules.MigrateClaims(Log("MineClaw.Rules")); }
+        catch (Exception ex) { Log("MineClaw.Rules").LogWarning(ex, "directive migration failed"); }
         WorldTools.Register(tools, observations, position, time, memory);
         IdentityTools.ApplyPersisted(memory, chat);
         IdentityTools.RegisterAll(tools, memory, chat);
@@ -241,6 +250,7 @@ public sealed class AgentRuntime : IDisposable
         var agent = new BotAgent(options, llm, tools, events, chat, usage, context, activities, knowledge, time,
             loggers?.CreateLogger<BotAgent>(), knowledgeIsCore: rag.Enabled);
         agent.Orders = orders;
+        agent.StandingRules = rules.HeaderLine;
         // Cached line (startup only): which delegate/hive profile fits what. Absent unless ≥2 profiles are usable.
         if (worker != null && ProfilePrompts.GuidanceLine(options.Llm) is { } profiles) agent.ExtendSystem(profiles);
         if (worker != null)
