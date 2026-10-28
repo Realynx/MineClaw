@@ -80,6 +80,11 @@ public sealed class BlueprintService
     public Func<BlockPos, Building.NamedPlace?> Places { get; init; } = _ => null;
     /// <summary>Runs an undo as the body's job: (blueprint id) → refusal or null.</summary>
     public Func<long, string?> StartUndo { get; set; } = _ => "no undo runner";
+    /// <summary>Runs a delete as the body's job: (blueprint id, the trusted player who asked) → refusal or null.</summary>
+    public Func<long, string, string?> StartDelete { get; set; } = (_, _) => "no delete runner";
+    /// <summary>A block an undo/delete never digs even though the build placed it: hard never-break marks, a generator's walls and
+    /// fluids, any protection verdict (default: the body's own protection only).</summary>
+    public Func<BlockPos, int, bool>? KeepOnUndo { get; set; }
     public Building.BuildPlanStore? Plans => Executor.Plans;
     /// <summary>The supervisor's plan view for a design.</summary>
     public static string PlanUrl(long id) => $"/view/buildplan/{id}";
@@ -347,8 +352,32 @@ public sealed class BlueprintService
         }
         try { Store.Update(copy, Preview.Render(plan, Site().World, Roles(), Light(), Atlas(), WorldTime()).Png); } catch (Exception) { Store.Update(copy); }
         if (crew != null) RequestCrew(copy.Id, crew);
+        var original = CancelOriginal(source);
         var refusal = StartBuild(copy.Id, null);
-        return (copy, WithRules(copy.Id, refusal == null ? $"building another {source.Name} (#{copy.Id})" : $"#{copy.Id} ready but can't start: {refusal}"));
+        return (copy, WithRules(copy.Id, (refusal == null ? $"building another {source.Name} (#{copy.Id})" : $"#{copy.Id} ready but can't start: {refusal}") + original));
+    }
+
+    /// <summary>
+    /// A design copied to a new site: the original's unfinished build is cancelled (never resumed: live 10-28 #9 came back after
+    /// a restart and built by the gen again, though #10 was its copy elsewhere). Its plan and ledger stay for an undo; the blocks
+    /// it left standing are named: "; #9's 7 blocks still stand at …; undo with design undo{id=9}". "" when nothing was unfinished.
+    /// </summary>
+    private string CancelOriginal(BlueprintRecord source)
+    {
+        if (source.Status is not (DesignStatus.Accepted or DesignStatus.Building) || Store.Builds(source.Id).Count == 0 && Plans?.Get(source.Id, 0) == null) return "";
+        lock (_lock) if (_running.TryGetValue(source.Id, out var cts)) cts.Cancel();
+        EndBuilds(source.Id, "cancelled");
+        foreach (var bp in Plans?.ForBlueprint(source.Id) ?? [])
+        {
+            bp.State = "cancelled";
+            if (bp.Gate.State == Building.GateState.Waiting) bp.Gate.State = Building.GateState.Pending; // no gate answer goes to it now
+            Plans!.Save(bp);
+        }
+        source.Status = DesignStatus.Cancelled;
+        Store.Update(source);
+        var standing = Plans?.ForBlueprint(source.Id).SelectMany(p => p.Placed.Concat(p.Gate.Blocks)).Distinct().ToList() ?? [];
+        return standing.Count == 0 ? $"; cancelled the unfinished #{source.Id}"
+            : $"; cancelled the unfinished #{source.Id}: #{source.Id}'s {standing.Count} block{(standing.Count == 1 ? "" : "s")} still stand at {Cells(standing, 8)}; undo with design undo{{id={source.Id}}}";
     }
 
     private static string StripOrigin(string dsl) =>
@@ -413,13 +442,16 @@ public sealed class BlueprintService
         if (Store.Get(bp.BlueprintId) is { } rec0 && PlanOf(rec0, out _) is { } plan0) axis = plan0.Max.X - plan0.Min.X >= plan0.Max.Z - plan0.Min.Z ? 'x' : 'z';
         if (Building.BuildGate.Parse(text, player, anchor, axis) is not { } reply) return null;
         if (Store.Get(bp.BlueprintId) is not { } rec) return null;
-        if (Gates.Answer(bp.BlueprintId, reply)) return $"gate #{rec.Id}: {player} → {reply.Verdict}";
+        // A "no": name the exact blocks standing and the undo (a worker can't find "the 5 blocks just placed" on its own).
+        var held = reply.Verdict == Building.GateVerdict.Hold && Building.BuildGate.Placed(bp, rec.Id) is { } blocks ? "; " + blocks : "";
+        if (Gates.Answer(bp.BlueprintId, reply)) return $"gate #{rec.Id}: {player} → {reply.Verdict}{held}";
         // Nobody waits (restart): record it in the plan and start the build again (it applies it first).
         switch (reply.Verdict)
         {
             case Building.GateVerdict.Approve:
                 bp.Gate.State = Building.GateState.Approved;
                 bp.Gate.ApprovedBy = player;
+                bp.Gate.HeldBy = null;
                 break;
             case Building.GateVerdict.Correct:
                 bp.Gate.Correction = bp.Gate.Correction is { } c0 ? c0.Then(reply.Correction!) : reply.Correction;
@@ -427,7 +459,9 @@ public sealed class BlueprintService
             case Building.GateVerdict.Undo:
                 return StartUndo(rec.Id) is { } no ? $"gate #{rec.Id}: undo refused ({no})" : $"gate #{rec.Id}: {player} → undo";
             default:
-                return $"gate #{rec.Id}: {player} → still paused";
+                bp.Gate.HeldBy = player; // held for them: no resume without a fresh go
+                plans.Save(bp);
+                return $"gate #{rec.Id}: {player} → held{held}";
         }
         plans.Save(bp);
         var refusal = StartBuild(rec.Id, null);
@@ -445,25 +479,114 @@ public sealed class BlueprintService
         return Store.List(10).FirstOrDefault(r => plans.ForBlueprint(r.Id).Any(p => p.Placed.Count > 0 || p.ScaffoldUp.Count > 0));
     }
 
-    /// <summary>Takes down everything a build placed (every part's ledger, scaffolding included), top first.</summary>
+    /// <summary>Blocks the build placed and still has in its ledger (gate blocks and scaffolding included): what an undo takes down.</summary>
+    public int PlacedCount(long id) => Plans is not { } plans ? 0
+        : plans.ForBlueprint(id).SelectMany(p => p.Placed.Concat(p.Gate.Blocks).Concat(p.ScaffoldUp)).Distinct().Count();
+
+    /// <summary>A build held by a player's "no" at its gate (the player), or null.</summary>
+    public string? HeldBy(long id) => Plans?.ForBlueprint(id).Select(p => p.Gate.HeldBy).FirstOrDefault(h => h != null);
+
+    /// <summary>A trusted player's fresh go for a held build: the hold is lifted (the gate asks again on the next blocks).</summary>
+    public void ClearHold(long id)
+    {
+        if (Plans is not { } plans) return;
+        foreach (var bp in plans.ForBlueprint(id).Where(p => p.Gate.HeldBy != null))
+        {
+            bp.Gate.HeldBy = null;
+            plans.Save(bp);
+        }
+    }
+
+    private static string Cells(IReadOnlyCollection<BlockPos> cells, int max = 12) =>
+        string.Join(" ", cells.Take(max).Select(p => $"{p.X},{p.Y},{p.Z}")) + (cells.Count > max ? $" +{cells.Count - max} more" : "");
+
+    /// <summary>Takes down every block the design's plans recorded (placed, gate blocks, scaffolding), top first, its own only and
+    /// never a protected one (<see cref="KeepOnUndo"/>): the dug items go to the inventory. (removed, left).</summary>
+    private async Task<(List<BlockPos> Removed, List<(BlockPos Pos, string Why)> Left)?> TakeDownAsync(long id, CancellationToken ct)
+    {
+        if (Plans is not { } plans || Crew().Bodies.FirstOrDefault() is not { } body) return null;
+        lock (_lock) if (_running.TryGetValue(id, out var cts)) cts.Cancel(); // a running build stops first
+        var removed = new List<BlockPos>();
+        var left = new List<(BlockPos, string)>();
+        Func<BlockPos, int, bool> keep = (p, b) => body.IsProtected(p, b) || KeepOnUndo?.Invoke(p, b) == true;
+        foreach (var bp in plans.ForBlueprint(id))
+            await ConstructionExecutor.UndoPlacedAsync(body, bp, body.World, ct, keep, removed, left).ConfigureAwait(false);
+        return (removed, left);
+    }
+
+    /// <summary>The build records of a design: never resumed again (no startup wake, no NotifyPending).</summary>
+    private void EndBuilds(long id, string state)
+    {
+        foreach (var b in Store.Builds(id).Where(b => b.State != "done"))
+        {
+            b.State = state;
+            Store.SaveBuild(b);
+        }
+    }
+
+    private static string LeftLine(List<(BlockPos Pos, string Why)> left) => left.Count == 0 ? ""
+        : $"; left {left.Count} (protected or refused) at {Cells(left.Select(l => l.Pos).ToList(), 6)}";
+
+    /// <summary>Takes down everything a build placed (every part's ledger, gate blocks and scaffolding included), top first; only
+    /// its own blocks, never a protected one (the dug items go to the inventory); the plan is dropped and the design can be
+    /// built again.</summary>
     public async Task<(bool Ok, string Text)> UndoAsync(string idOrName, CancellationToken ct)
     {
         if (Store.Find(idOrName) is not { } rec) return (false, $"no design '{idOrName}'");
         if (Plans is not { } plans) return (false, "no build plans stored");
-        if (Crew().Bodies.FirstOrDefault() is not { } body) return (false, "no body to undo with");
-        int n = 0;
-        foreach (var bp in plans.ForBlueprint(rec.Id))
-        {
-            n += await ConstructionExecutor.UndoPlacedAsync(body, bp, body.World, ct).ConfigureAwait(false);
-            bp.State = "undone";
-            bp.Gate.State = Building.GateState.Pending;
-            plans.Save(bp);
-        }
+        if (await TakeDownAsync(rec.Id, ct).ConfigureAwait(false) is not { } down) return (false, "no body to undo with");
+        var (removed, left) = down;
         plans.Delete(rec.Id);
-        rec.Status = DesignStatus.Accepted; // can be built again
+        EndBuilds(rec.Id, "undone");
+        if (rec.Status is DesignStatus.Building or DesignStatus.Built) rec.Status = DesignStatus.Accepted; // can be built again
         Store.Update(rec);
-        return (true, $"undid the {rec.Name}: took down {n} block{(n == 1 ? "" : "s")}");
+        int n = removed.Count;
+        return (true, $"undid the {rec.Name} (#{rec.Id}): took down {n} block{(n == 1 ? "" : "s")}" + (n > 0 ? $" at {Cells(removed)}" : "") + LeftLine(left));
     }
+
+    /// <summary>
+    /// Deletes a design (a trusted player's word, like a build's go): every block its plans placed comes down (gate blocks
+    /// included, top first, its own only, never a protected block), every plan and lane is dropped and its build records end,
+    /// so nothing resumes it, and the record is marked deleted (gone from design list; its DSL stays in the db for audit).
+    /// </summary>
+    public async Task<(bool Ok, string Text)> DeleteAsync(string idOrName, string? by, CancellationToken ct)
+    {
+        if (Store.Find(idOrName) is not { } rec) return (false, $"no design '{idOrName}'");
+        if (rec.Status == DesignStatus.Deleted) return (false, $"design #{rec.Id} is already deleted");
+        if (!IsTrusted(by)) return (false, $"deleting a design needs a trusted player's word ({string.Join("/", Trusted().Take(2))}); {by ?? "nobody"} asked");
+        var down = await TakeDownAsync(rec.Id, ct).ConfigureAwait(false);
+        var removed = down?.Removed ?? [];
+        var left = down?.Left ?? [];
+        Plans?.Delete(rec.Id);
+        EndBuilds(rec.Id, "deleted");
+        RequestCrew(rec.Id, null);
+        rec.Status = DesignStatus.Deleted;
+        Store.Update(rec);
+        _log?.LogInformation("blueprint #{Id} deleted by {By}: removed {N}", rec.Id, by, removed.Count);
+        int n = removed.Count;
+        return (true, $"deleted design #{rec.Id}: removed {n} block{(n == 1 ? "" : "s")}" + (n > 0 ? $" at {Cells(removed)}" : "") + LeftLine(left) + "; plan cancelled");
+    }
+
+    /// <summary>"footprint x -33..-18, z 7..22, y 64..79": the design as built (gate corrections applied), in world coordinates.</summary>
+    public Building.BuildSkips.Area? FootprintOf(BlueprintRecord rec, VoxelPlan? plan = null)
+    {
+        try
+        {
+            plan ??= PlanOf(rec, out _);
+            return plan == null ? null : Building.BuildSkips.Footprint(AsBuilt(rec, plan).Blocks.Keys);
+        }
+        catch (Exception ex) { _log?.LogDebug(ex, "footprint of #{Id} unreadable", rec.Id); return null; }
+    }
+
+    /// <summary>"#4 mob drop tower building (footprint x -33..-18, z 7..22, y 64..79)": the design list line.</summary>
+    public string ListLine(BlueprintRecord rec) =>
+        $"#{rec.Id} {rec.Name} {rec.Status}" + (rec.Status is DesignStatus.Cancelled or DesignStatus.Failed || FootprintOf(rec) is not { } f ? "" : $" ({f.Text})");
+
+    /// <summary>The footprints of designs in play (in review, accepted, building), for expand_island's area check.</summary>
+    public IReadOnlyList<Skills.DesignFootprint> Footprints() =>
+        Store.List(10).Where(r => r.Status is DesignStatus.Review or DesignStatus.Accepted or DesignStatus.Building)
+            .Select(r => FootprintOf(r) is { } f ? new Skills.DesignFootprint($"design #{r.Id}", f.X0, f.Z0, f.X1, f.Z1, f.Y0, f.Y1) : null)
+            .OfType<Skills.DesignFootprint>().ToList();
 
     /// <summary>The design as built: the gate corrections (turn/mirror/shift) applied.</summary>
     public VoxelPlan AsBuilt(BlueprintRecord rec, VoxelPlan design) =>
@@ -635,6 +758,7 @@ public sealed class BlueprintService
         foreach (var b in Store.Unfinished(owner))
         {
             if (Store.Get(b.BlueprintId) is not { Status: DesignStatus.Building or DesignStatus.Accepted } rec) continue;
+            if (HeldBy(rec.Id) != null) continue; // a "no" at its gate: only a fresh go builds on
             var refusal = StartBuild(rec.Id, b.Parts > 1 ? b.Part + 1 : null);
             var line = WithRules(rec.Id, $"resuming the {rec.Name} build (#{rec.Id}, {b.Placed}/{b.Total} placed before the restart)");
             Notice("[design] " + line + (refusal != null ? $": can't start ({refusal})" : ""));
@@ -653,6 +777,14 @@ public sealed class BlueprintService
         foreach (var b in Store.Unfinished(owner))
         {
             if (Store.Get(b.BlueprintId) is not { Status: DesignStatus.Building or DesignStatus.Accepted } rec) continue;
+            // Held by a player's "no" at its gate: not resumable without a fresh go, so never offered as one (live 10-28: #9).
+            if (HeldBy(rec.Id) is { } holder)
+            {
+                var held = $"the {rec.Name} build (#{rec.Id}) is held: {holder} said no at its gate; it needs a trusted player's fresh go "
+                           + $"(design build{{id={rec.Id}}}), or design undo{{id={rec.Id}}} / delete{{id={rec.Id}}} takes its blocks down";
+                if (notice) Notice("[design] " + held);
+                return held;
+            }
             var line = $"the {rec.Name} build (#{rec.Id}, {b.Placed}/{b.Total} placed) was paused by a restart; resume it with design " +
                        $"build{{id={rec.Id}}} when it fits your rules" + (rec.AcceptedBy != null ? $" ({rec.AcceptedBy} approved it; no second go needed)" : "")
                        + (LeftText(rec.Id) is { Length: > 0 } left ? $"; its last plan {left}" : "");
@@ -701,6 +833,8 @@ public sealed class BlueprintService
     {
         var plan = PlanOf(rec, out _);
         var size = plan?.Blueprint.SizeText ?? "?";
+        // World coordinates as built, so nobody reads them off the preview (live 10-28 the brain got x -31..-16 for -33..-18).
+        if (plan != null && FootprintOf(rec, plan) is { } fp) size += ", " + fp.Text;
         var builds = Store.Builds(rec.Id);
         var progress = builds.Count == 0 ? "" : "; build: " + string.Join(", ", builds.Select(b => $"part {b.Part + 1}/{b.Parts} {b.State} {b.Placed}/{b.Total}"));
         // A crew build: per-lane progress ("build: lane 67 40/120, lane 69 38/118"), each lane's own row folded in.

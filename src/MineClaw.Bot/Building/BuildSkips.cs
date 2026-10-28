@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using MineClaw.Bot.Blueprints;
 using MineClaw.World;
 
 namespace MineClaw.Bot.Building;
@@ -20,6 +21,8 @@ public static partial class BuildSkips
     public const string NoStand = "no stand within reach of a support face";
     public const string Waiting = "waiting on supports";
     public const string Protected = "protected";
+    /// <summary>The group of "no support within N scaffold blocks (over the void)".</summary>
+    public const string OverVoid = "no support: over the void past my scaffold limit";
 
     /// <summary>The group a reason belongs to: a fixed label (coordinates, counts and details dropped).</summary>
     public static string Category(string? why)
@@ -31,7 +34,7 @@ public static partial class BuildSkips
             return Waiting;
         if (w.StartsWith(AboveReach, StringComparison.OrdinalIgnoreCase)) return "no stand: above my reach (I can't climb)";
         if (w.StartsWith(NotNear, StringComparison.OrdinalIgnoreCase)) return NotNear;
-        if (w.StartsWith("no support within", StringComparison.OrdinalIgnoreCase)) return "no support: over the void past my scaffold limit";
+        if (w.StartsWith("no support within", StringComparison.OrdinalIgnoreCase)) return OverVoid;
         if (w.StartsWith("no stand reaches scaffold cell", StringComparison.OrdinalIgnoreCase)) return "no stand for its scaffold";
         if (w.StartsWith("no stand", StringComparison.OrdinalIgnoreCase)) return "no stand in reach";
         if (w.Contains("water bucket", StringComparison.OrdinalIgnoreCase)) return "below the floor: needs a water bucket";
@@ -113,6 +116,76 @@ public static partial class BuildSkips
         return result;
     }
 
+    // ------------------------------------------------------------------ the foundation suggestion
+
+    /// <summary>A design's footprint in world coordinates: x/z of every planned cell and its y range.</summary>
+    public readonly record struct Area(int X0, int Z0, int X1, int Z1, int Y0, int Y1)
+    {
+        /// <summary>"footprint x -33..-18, z 7..22, y 64..79".</summary>
+        public string Text => $"footprint x {X0}..{X1}, z {Z0}..{Z1}, y {Y0}..{Y1}";
+    }
+
+    public static Area? Footprint(IEnumerable<BlockPos> cells)
+    {
+        int x0 = int.MaxValue, z0 = int.MaxValue, y0 = int.MaxValue, x1 = int.MinValue, z1 = int.MinValue, y1 = int.MinValue;
+        foreach (var p in cells)
+        {
+            x0 = Math.Min(x0, p.X); x1 = Math.Max(x1, p.X);
+            z0 = Math.Min(z0, p.Z); z1 = Math.Max(z1, p.Z);
+            y0 = Math.Min(y0, p.Y); y1 = Math.Max(y1, p.Y);
+        }
+        return x0 == int.MaxValue ? null : new Area(x0, z0, x1, z1, y0, y1);
+    }
+
+    /// <summary>"waiting on supports; rests on -27,75,16 ..." to -27,75,16.</summary>
+    public static BlockPos? RestsOn(string? why)
+    {
+        if (why == null) return null;
+        int i = why.IndexOf("rests on ", StringComparison.Ordinal);
+        if (i < 0) return null;
+        var c = why[(i + 9)..].Split([',', ' ', ';'], 4);
+        return c.Length >= 3 && int.TryParse(c[0], out var x) && int.TryParse(c[1], out var y) && int.TryParse(c[2], out var z) ? new BlockPos(x, y, z) : null;
+    }
+
+    /// <summary>
+    /// "lay a floor: expand_island area=-33,7,-18,22 y=63 (192 cells, 192 cobble)" when most skipped cells hang over the void (their
+    /// own reason or a "rests on" chain ending in one: past the scaffold limit, or above reach with every pillar or stair spot
+    /// beside the void, live 10-28 design #4's "I can't climb"): the exact rectangle of the design's
+    /// <paramref name="footprint"/> one below its bottom, counting the cells there still empty in <paramref name="world"/>. A
+    /// suggestion only: the brain decides to lay it (and then resumes the build). Null otherwise.
+    /// </summary>
+    public static string? FloorHint(IReadOnlyList<(BlockPos Pos, string? Why)> items, Area? footprint, IBlockAccess world)
+    {
+        if (items.Count == 0 || footprint is not { } f) return null;
+        var why = new Dictionary<BlockPos, string?>();
+        foreach (var (p, w) in items) why.TryAdd(p, w);
+        int hanging = 0;
+        foreach (var (p, _) in items)
+        {
+            var seen = new HashSet<BlockPos>();
+            for (BlockPos? q = p; q is { } c && seen.Add(c) && why.TryGetValue(c, out var w);)
+            {
+                var cat = Category(w);
+                // Hanging: past the scaffold limit over the void, or no way up because every pillar/stair spot is beside it.
+                if (cat == OverVoid || w?.Contains("the void", StringComparison.OrdinalIgnoreCase) == true) { hanging++; break; }
+                if (cat != Waiting) break;
+                q = RestsOn(w);
+            }
+        }
+        if (hanging * 2 <= items.Count) return null;
+        int y = f.Y0 - 1;
+        if (y < 1) return null;
+        int empty = 0;
+        for (int x = f.X0; x <= f.X1; x++)
+            for (int z = f.Z0; z <= f.Z1; z++)
+                if (!BuildBlocks.Supports(world.GetBlock(x, y, z))) empty++;
+        if (empty == 0) return null;
+        return $"lay a floor: expand_island area={f.X0},{f.Z0},{f.X1},{f.Z1} y={y} ({empty} cells, {empty} cobble)";
+    }
+
+    /// <summary><paramref name="line"/> with the foundation suggestion appended ("...; lay a floor: ...").</summary>
+    public static string? WithFloor(string? line, string? hint) => hint == null ? line : line == null ? hint : line + "; " + hint;
+
     /// <summary>The plan's own skips (no world at hand: the design status, the resume notice): its infeasible cells and skipped
     /// or pending-with-a-reason steps.</summary>
     public static string? OfPlan(BuildPlan bp, int max = 4) => PlanSkips(bp, max).Line;
@@ -126,6 +199,6 @@ public static partial class BuildSkips
                 .Concat(bp.Steps.Where(s => s.Action is StepAction.Place && (s.Status == StepStatus.Skipped || !s.Finished && s.Note != null))
                     .Select(s => (s.Target, s.Note)))
                 .ToList();
-        return (items.Count, Line(items, max));
+        return (items.Count, items.Count == 0 ? null : WithFloor(Line(items, max), bp.Foundation));
     }
 }

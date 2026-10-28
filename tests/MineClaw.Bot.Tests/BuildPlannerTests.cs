@@ -379,6 +379,78 @@ public class BuildPlannerTests
         Assert.Equal(2, report.Plan!.Transform.Quarters);
     }
 
+    private const string Mushroom = "size 5x7x5\npalette C=cobblestone\npillar C 2,0,2 6\nfloor C 0,6,0 4,6,4"; // a 5×5 platform on a column
+
+    [Fact(Skip = "in progress: the slicer still prefers pillars under the rim")]
+    public async Task A_platform_over_solid_ground_grows_from_sneak_edge_stands_but_over_the_void_it_cant_be_climbed()
+    {
+        // Over the island floor: the platform's rim is a 6-block drop onto solid ground. Stands at its edge are allowed (sneaking:
+        // the client's EdgeGuard), so the climb and the ring go up; nothing is left.
+        var w = BlueprintTests.Island(6);
+        var plan = PlanOf(Mushroom, new BlockPos(-2, 64, -2));
+        var body = new SimBuildBody(w);
+        var report = await new ConstructionExecutor(new BlueprintOptions()).RunAsync(1, plan, BuildPart.Whole(plan), body, CancellationToken.None);
+        Assert.True(report.Complete, report.Text("mushroom"));
+        Assert.Empty(body.Unguarded);
+        var bp = report.Plan!;
+        var edge = bp.Steps.Where(s => s.Action == StepAction.Place && s.Technique == Technique.Edge && s.Stand.Y == 71).ToList();
+        Assert.True(edge.Count > 0, string.Join(" | ", bp.Steps.Select(s => $"{s.Action} {s.Technique} {s.Target} @ {s.Stand}"))); // stood on the platform's own blocks at height, at the rim, to place the next ring
+        var sim = BlueprintTests.Island(6);
+        foreach (var b in plan.Blocks.Values) sim.SetBlock(b.Pos.X, b.Pos.Y, b.Pos.Z, b.Id, b.Meta);
+        Assert.All(edge, s => Assert.Equal(0, Safety.VoidNeighbourCount(sim, s.Stand.X, s.Stand.Y, s.Stand.Z))); // a solid drop, never the void
+
+        // Over the void (the island only under the column): every pillar or stair spot is beside the void, so it isn't climbed
+        // (the void-edge rules unchanged).
+        var v = BlueprintTests.Island(1);
+        var vplan = PlanOf(Mushroom, new BlockPos(-1, 64, -1)); // the column on the island's corner, beside me
+        var vb = BuildPlanner.Plan(vplan, v.PlanningView, Pathfinder.StartCellFor(v.PlanningView, v.Player.Position)!.Value, null, new BuildPlannerOptions { GateBlocks = 0 });
+        Assert.Contains(vb.Infeasible, i => i.Why.Contains("beside the void"));
+        Assert.DoesNotContain(vb.Steps, s => s.Technique is Technique.Pillar or Technique.Stair);
+    }
+
+    [Fact]
+    public async Task A_no_at_the_gate_names_the_exact_blocks_and_undo_takes_down_only_those()
+    {
+        // Live 10-28: Robin said "no" at design #9's gate; a worker told to "remove the 5 blocks just placed" couldn't find them.
+        var w = BlueprintTests.Island();
+        // Someone else's blocks right beside the build: never touched.
+        w.SetBlock(1, 64, 1, Blocks.Planks, 0);
+        w.SetBlock(3, 64, -1, Blocks.Dirt, 0);
+        var before = new Dictionary<BlockPos, int>();
+        for (int x = -7; x <= 7; x++) for (int y = 60; y <= 68; y++) for (int z = -7; z <= 7; z++) before[new BlockPos(x, y, z)] = w.GetBlock(x, y, z);
+        var plan = PlanOf(Bridge, new BlockPos(0, 64, 0));
+        var gates = new BuildGates();
+        var asked = new List<string>();
+        var ex = Gated(gates, asked, _ => BuildGate.Parse("no", "kiwi", new BlockPos(0, 64, 0), 'x'));
+        var body = new SimBuildBody(w);
+        int cobble0 = body.Count(Blocks.Cobblestone, 0);
+        var report = await ex.RunAsync(5, plan, BuildPart.Whole(plan), body, CancellationToken.None);
+        Assert.True(report.AtGate);
+        var bp = report.Plan!;
+        var gateBlocks = bp.Gate.Blocks.ToList();
+        Assert.InRange(gateBlocks.Count, 4, 5);
+        Assert.Equal(body.Placed.ToHashSet(), gateBlocks.ToHashSet());
+        // The "no" names the exact cells and the undo.
+        Assert.Contains("kiwi said \"no\"", report.Stopped);
+        Assert.Contains("gate blocks at " + string.Join(" ", gateBlocks.Select(p => $"{p.X},{p.Y},{p.Z}")), report.Stopped);
+        Assert.EndsWith("undo with design undo{id=5}", report.Stopped);
+
+        // A player swaps one of ours for their own block meanwhile: it is theirs now.
+        var swapped = gateBlocks[^1];
+        w.SetBlock(swapped.X, swapped.Y, swapped.Z, Blocks.Stone, 0);
+        int n = await ConstructionExecutor.UndoPlacedAsync(body, bp, w, CancellationToken.None);
+        Assert.Equal(gateBlocks.Count - 1, n);
+        foreach (var (p, id) in before)
+        {
+            if (p == swapped) Assert.Equal(Blocks.Stone, w.GetBlock(p));
+            else Assert.Equal(id, w.GetBlock(p)); // exactly the placed blocks came down, nothing else
+        }
+        Assert.Empty(bp.Placed);
+        Assert.Empty(bp.Gate.Blocks);
+        Assert.Equal(cobble0, body.Count(Blocks.Cobblestone, 0) + 1); // refunded, all but the swapped one
+        Assert.Equal(0, await ConstructionExecutor.UndoPlacedAsync(body, bp, w, CancellationToken.None)); // nothing left of ours
+    }
+
     [Fact]
     public async Task No_answer_at_the_gate_stays_paused_with_no_default()
     {

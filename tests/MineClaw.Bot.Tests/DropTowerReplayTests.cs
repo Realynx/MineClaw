@@ -26,17 +26,22 @@ public class DropTowerReplayTests(Xunit.Abstractions.ITestOutputHelper log)
             var p = Path.Combine(d.FullName, "tests", "fixtures", "drop-tower", file);
             if (File.Exists(p)) return p;
         }
+        // Built outside the repo (another artifacts path): next to this source file.
+        var src = Path.Combine(Path.GetDirectoryName(SourceFile())!, "..", "fixtures", "drop-tower", file);
+        if (File.Exists(src)) return src;
         throw new FileNotFoundException("tests/fixtures/drop-tower/" + file);
     }
+
+    private static string SourceFile([System.Runtime.CompilerServices.CallerFilePath] string path = "") => path;
 
     internal static readonly BlockPos Origin = new(-33, 64, 7);
 
     /// <summary>The remembered blocks (x -44..-6, z -4..33) in a loaded region; the bot on Fox's floor.</summary>
-    internal static WorldState Site()
+    internal static WorldState Site(string file = "site.txt")
     {
         var w = new WorldState();
         w.ApplyChunkRegion(-48, 0, -16, 48, 128, 64, new byte[48 * 128 * 64], null, null, null);
-        foreach (var line in File.ReadLines(Fixture("site.txt")))
+        foreach (var line in File.ReadLines(Fixture(file)))
         {
             if (line.Length == 0 || line[0] == '#') continue;
             var f = line.Split(' ').Select(int.Parse).ToArray();
@@ -126,6 +131,40 @@ public class DropTowerReplayTests(Xunit.Abstractions.ITestOutputHelper log)
     }
 
     [Fact]
+    public void Live_1455_plan_only()
+    {
+        var trace = Environment.GetEnvironmentVariable("MC_TRACE");
+        void T(string s) { log.WriteLine(s); if (trace != null) File.AppendAllText(trace, s + Environment.NewLine); }
+        var w = Site("site-1455.txt");
+        var design = Design();
+        using var db = AgentDb.Open(null);
+        var store = new BlueprintStore(db);
+        var ex = new ConstructionExecutor(new BlueprintOptions(), store);
+        var saved = JsonSerializer.Deserialize<BuildPlan>(File.ReadAllText(Fixture("plan-1455.json")))!;
+        ex.Plans!.Save(saved);
+        if (Environment.GetEnvironmentVariable("MC_AT") is { } at)
+        {
+            var c = at.Split(',').Select(double.Parse).ToArray();
+            w.Player.ServerTeleport(new Vec3d(c[0], c[1], c[2]), c[1] + 1.62, 0, 0, true);
+        }
+        var body = Body(w);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        T("start " + body.Feet0);
+        var first = ex.PlanFor(4, design, BuildPart.Whole(design), body, save: false);
+        T($"planned in {sw.ElapsedMilliseconds} ms: " + first.Summary());
+        T("skips: " + BuildSkips.OfPlan(first));
+        foreach (var s in first.Steps.Where(s => !s.Finished && (Environment.GetEnvironmentVariable("MC_ALL") != null || s.Target.X <= -32 || s.Action == StepAction.Clear || s.Stand.Y >= 77)).Take(120)) T($"{s.Index} {s.Action} {s.Technique} {s.Target} @ {s.Stand} {s.Note}");
+        if (Environment.GetEnvironmentVariable("MC_RUN") == null) return;
+        var progress = new List<string>();
+        var ex2 = new ConstructionExecutor(new BlueprintOptions(), store) { Progress = p => { progress.Add(p); T("progress: " + p); } };
+        var report = ex2.RunAsync(4, design, BuildPart.Whole(design), body, CancellationToken.None).GetAwaiter().GetResult();
+        T($"ran in {sw.ElapsedMilliseconds} ms: " + report.Text("whole build"));
+        T(report.Plan!.Summary());
+        foreach (var l in body.Log.TakeLast(20)) T("body: " + l);
+        foreach (var u in body.Unguarded) T("unguarded: " + u);
+    }
+
+    [Fact]
     public async Task With_climbing_off_design_4_still_names_every_skip_reason()
     {
         var w = Site();
@@ -167,6 +206,76 @@ public class DropTowerReplayTests(Xunit.Abstractions.ITestOutputHelper log)
         Assert.Contains("above my reach", planLine);
         Assert.Contains("can't place", bp.Summary());
         Assert.Contains("above my reach", bp.Summary());
+    }
+
+    [Fact]
+    public async Task Design_4_hanging_over_the_void_suggests_the_exact_floor_under_its_footprint()
+    {
+        // Live 10-28 14:40 "expand the floor so you can build it": the same tower 16 south (its north edge touching Fox's floor's
+        // south edge), nothing under it to climb from: it all hangs over the void. The build line names the floor
+        // that would carry it: the design's own footprint one below its bottom, the cells still empty there. A suggestion only.
+        var w = Site();
+        var (plan, issues) = BlueprintNormalizer.FromText(File.ReadAllText(Fixture("design.dsl")), Origin.Offset(0, 0, 16));
+        Assert.NotNull(plan);
+        Assert.DoesNotContain(issues, i => i.Level == IssueLevel.Error);
+        var report = await new ConstructionExecutor(new BlueprintOptions()).RunAsync(4, plan!, BuildPart.Whole(plan!), Body(w), CancellationToken.None);
+        var text = report.Text("whole build");
+        log.WriteLine(text);
+        const string floor = "lay a floor: expand_island area=-33,23,-18,38 y=63 (256 cells, 256 cobble)";
+        // It bridges the legs' bottoms out from the floor, then can't climb: every pillar or stair spot is beside the void, and
+        // everything else rests on those.
+        Assert.False(report.Complete);
+        Assert.Contains("beside the void", string.Join("|", report.Plan!.Infeasible.Select(i => i.Why)));
+        Assert.Contains("waiting on supports", report.Skips);
+        Assert.EndsWith("; " + floor, report.Skips);
+        Assert.Contains(floor, text);
+        var bp = report.Plan!;
+        Assert.Equal(floor, bp.Foundation);
+        Assert.Contains(floor, bp.Summary());
+        Assert.EndsWith(floor, BuildSkips.PlanSkips(bp).Line);
+        Assert.Equal(0, w.GetBlock(-33, 63, 23)); // suggested, never laid by the build itself
+    }
+
+    [Fact]
+    public void The_floor_hint_carries_design_4s_exact_footprint_and_only_when_it_mostly_hangs()
+    {
+        // The real footprint from the plan (origin -33,64,7, 16×16, as designed), not one read off the preview image.
+        var w = Site();
+        var design = Design();
+        var fp = BuildSkips.Footprint(design.Blocks.Keys)!.Value;
+        Assert.Equal("footprint x -33..-18, z 7..22, y 64..79", fp.Text);
+        int empty = 0;
+        for (int x = -33; x <= -18; x++) for (int z = 7; z <= 22; z++) if (!BuildBlocks.Supports(w.GetBlock(x, 63, z))) empty++;
+        Assert.InRange(empty, 150, 192); // Fox's 8×8 floor and the bridge are already there
+        var hanging = design.Blocks.Keys.Take(10).Select(p => (p, (string?)"no support within 6 scaffold blocks (over the void)")).ToList();
+        var waiting = design.Blocks.Keys.Skip(10).Take(30).Select(p => (p, (string?)$"waiting on supports; rests on {hanging[0].p.X},{hanging[0].p.Y},{hanging[0].p.Z}, which can't be placed")).ToList();
+        Assert.Equal($"lay a floor: expand_island area=-33,7,-18,22 y=63 ({empty} cells, {empty} cobble)",
+            BuildSkips.FloorHint([.. hanging, .. waiting], fp, w));
+        // Mostly something else (above my reach): no floor suggested.
+        var above = design.Blocks.Keys.Skip(40).Take(60).Select(p => (p, (string?)(BuildSkips.AboveReach + " (I can't climb: climbing is off)"))).ToList();
+        Assert.Null(BuildSkips.FloorHint([.. hanging, .. above], fp, w));
+    }
+
+    [Fact]
+    public void Design_show_and_list_name_the_footprint_in_world_coordinates()
+    {
+        var w = Site();
+        var store = new BlueprintStore(AgentDb.Open(null));
+        var s = new BlueprintService(new BlueprintOptions(), store, new BlueprintPreview())
+        {
+            Site = () => new SiteContext { World = w.PlanningView, GeneratorKnown = true, Inventory = (_, _) => 0, Stored = (_, _) => 0 },
+            Crew = () => new SingleBodyCrew(new SimBuildBody(w)),
+            ResolveSite = (_, _) => (new SitePick(new BlockPos(-25, 63, 15), "here"), null),
+        };
+        var rec = store.Insert(new BlueprintRecord
+        {
+            Name = "mob drop tower", Description = "drop tower", Bot = "maid_chan", Status = DesignStatus.Building,
+            Site = new BlockPos(-25, 63, 15), Origin = Origin, Dsl = File.ReadAllText(Fixture("design.dsl")),
+        });
+        Assert.Contains("16x16x16, footprint x -33..-18, z 7..22, y 64..79", s.Describe(rec).Replace('×', 'x'));
+        Assert.Equal($"#{rec.Id} mob drop tower building (footprint x -33..-18, z 7..22, y 64..79)", s.ListLine(rec));
+        var f = Assert.Single(s.Footprints());
+        Assert.Equal(new MineClaw.Skills.DesignFootprint($"design #{rec.Id}", -33, 7, -18, 22, 64, 79), f);
     }
 
     [Fact]

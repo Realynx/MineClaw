@@ -38,6 +38,7 @@ public static class SkillCatalog
         ["wheat"] = "wheat", ["crop"] = "crops", ["crops"] = "crops", ["harvest"] = "harvest", ["farm"] = "farm",
         ["light"] = "torch", ["torches"] = "torch", ["lamp"] = "torch",
         ["platform"] = "floor", ["floor"] = "floor", ["island"] = "island",
+        ["foundations"] = "foundation", ["underneath"] = "under", ["beneath"] = "under", ["below"] = "under",
         ["tower"] = "pillar", ["climb"] = "pillar",
         ["portal"] = "portal", ["nether"] = "nether", ["hell"] = "nether",
         ["obby"] = "obsidian",

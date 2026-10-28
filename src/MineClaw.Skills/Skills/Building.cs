@@ -125,21 +125,25 @@ public sealed class BuildWallSkill : Skill
 /// <summary>
 /// Grows the island floor outward one ring at a time. Only cells touching existing floor are placed (no mid-air
 /// blocks), the bot never targets a standing cell over the void (the client's pathfinder sneaks at edges and the
-/// EdgeGuard clamps input), and it stops when a hostile is near or survival gating says no.
+/// EdgeGuard clamps input), and it stops when a hostile is near or survival gating says no. With <c>area=x0,z0,x1,z1</c>
+/// (and <c>y</c>) it fills that rectangle instead (<see cref="AreaFill"/>): the foundation under a build that hangs over the void.
 /// </summary>
 [Skill]
 public sealed class ExpandIslandSkill : Skill
 {
     public override SkillSpec Spec { get; } = new()
     {
-        Name = "expand_island", Category = SkillCategory.Building, Summary = "grow island edge outward by rows, void-safe", Args = "side?,rows?,max?,block?",
-        Schema = SkillJson.Schema("side:str?,rows:int?,max:int?,block:str?"), Safety = SafetyClass.Edge, Estimate = TimeSpan.FromMinutes(2),
+        Name = "expand_island", Category = SkillCategory.Building, Summary = "fill area x0,z0,x1,z1 or grow edge; void-safe",
+        Args = "area?,y?,side?,rows?,max?,block?",
+        Schema = SkillJson.Schema("area:str?,y:int?,side:str?,rows:int?,max:int?,block:str?"), Safety = SafetyClass.Edge, Estimate = TimeSpan.FromMinutes(2),
         Pre = new() { Needs = "blocks", SurvivalGate = true },
-        Keywords = "expand island edge bigger platform grow extend widen larger land skyblock floor",
+        Keywords = "expand island edge bigger platform grow extend widen larger land skyblock floor foundation under fill area rectangle lay tower",
     };
 
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
+        if (args.Str("area") is { Length: > 0 } area)
+            return AreaFill.ParseArea(area) is { } rect ? await AreaFill.RunAsync(ctx, args, rect, ct) : Fail("area must be x0,z0,x1,z1");
         if (SkillWorld.BuildingBlock(ctx, args.Str("block")) is not { } block) return Fail("no building blocks");
         int rows = Clamp(args.Int("rows"), 1, 1, 4), max = Clamp(args.Int("max"), 32, 1, 128);
         var dir = args.Str("side")?.ToLowerInvariant() switch

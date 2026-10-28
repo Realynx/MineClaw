@@ -165,6 +165,13 @@ internal sealed class SimBuildBody : IBuildBody
     {
         ct.ThrowIfCancellationRequested();
         int id = _w.GetBlock(pos);
+        // The client's dig veto (MinecraftClient.DigSafetyVeto): the block I stand on comes down only as a 1-block step onto
+        // something solid (my own pillar), never a longer drop.
+        if (_swim == null && Safety.SupportBlocks(_w, _w.Player.Position).Contains(pos) && !Safety.RemovalIsShortSafeDrop(_w, _w.Player.Position, pos))
+        {
+            Log.Add($"won't dig {pos.X},{pos.Y},{pos.Z}: standing on it");
+            return Fail($"won't dig the block I'm standing on at {pos.X},{pos.Y},{pos.Z} (the drop below is too far)");
+        }
         Log.Add($"dig {pos.X},{pos.Y},{pos.Z}{(_swim != null ? " swimming" : "")}");
         Set(pos.X, pos.Y, pos.Z, 0, 0);
         Link?.Event(this, $"dig {pos.X},{pos.Y},{pos.Z}");

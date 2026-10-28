@@ -119,7 +119,10 @@ public sealed partial class BuildPlanner
         BuildPlan? previous = null)
     {
         var p = new BuildPlanner(plan, part ?? BuildPart.Whole(plan), options ?? new BuildPlannerOptions(), new PlanWorld(world), start);
-        return p.Run(previous);
+        var bp = p.Run(previous);
+        // Mostly hanging over the void past the scaffold limit: name the floor that would carry it (the design's own footprint).
+        bp.Foundation = BuildSkips.FloorHint(bp.Infeasible.Select(i => (i.Pos, (string?)i.Why)).ToList(), BuildSkips.Footprint(plan.Blocks.Keys), world);
+        return bp;
     }
 
     // ------------------------------------------------------------------ the run
@@ -136,6 +139,7 @@ public sealed partial class BuildPlanner
             ClearObstructions();
             PlaceAll();
             BlameSupports();
+            ClearUnderfoot();
         }
         RemoveScaffolding();
         PickupColumns();
@@ -195,6 +199,10 @@ public sealed partial class BuildPlanner
 
     // ------------------------------------------------------------------ obstructions
 
+    /// <summary>Obstructions the body stood on when they came up (no stand digs them from beside): cleared after the placements,
+    /// from wherever the body has got to by then.</summary>
+    private readonly List<BlockPos> _underfoot = new();
+
     private void ClearObstructions()
     {
         foreach (var p in _part.Cells.Where(c => _s.Sim.IsLoaded(c.X, c.Z)).OrderByDescending(c => c.Y))
@@ -204,7 +212,13 @@ public sealed partial class BuildPlanner
             if (_plan.Blocks.TryGetValue(p, out var want) && DesignChecks.SameState(want, id, _s.Sim.GetMeta(p.X, p.Y, p.Z))) continue;
             // A cell whose block is held back (shortfall) keeps what stands there until the block can be placed.
             if (_plan.Blocks.TryGetValue(p, out var held) && _o.Hold.Contains(BuildBlocks.ItemFor(held.Id, held.Meta))) continue;
+            // My own scaffold still up in one of the design's air cells (a pillar in the shaft from the last run): it is the
+            // climb, not an obstruction; it comes down top-first at the end with a way down (live 10-28: the drop tower's
+            // re-plan dug its own pillar from under the body first and stranded it in the shaft: "won't dig the cobblestone I'm
+            // standing on").
+            if (_s.Scaffold.Contains(p)) continue;
             var dig = BestDig(p);
+            if (dig == null && StandsOn(_s.Land, p)) { _underfoot.Add(p); continue; }
             Add(new PlanStep
             {
                 Action = StepAction.Clear, Target = p, Id = id, Stand = dig?.Stand ?? _s.Land, Column = dig?.Column ?? -1,
@@ -215,6 +229,35 @@ public sealed partial class BuildPlanner
             if (dig is { } d) MoveTo(d.Stand, d.Column);
         }
         _s.Flood = Flood(_s.Sim, _s.Land);
+    }
+
+    /// <summary>The body standing in <paramref name="feet"/> is held up by <paramref name="p"/>.</summary>
+    private bool StandsOn(BlockPos feet, BlockPos p)
+    {
+        if (p == feet.Down()) return true;
+        var eye = GoalUseBlock.EyeAt(_s.Sim, feet.X, feet.Y, feet.Z);
+        return Safety.SupportBlocks(_s.Sim, eye with { Y = eye.Y - PlayerPhysics.EyeHeight }).Contains(p);
+    }
+
+    /// <summary>The obstructions put off because the body stood on them: from a stand beside them now, else dug from wherever
+    /// the client can aim (never from on top of them: the client refuses that over a drop).</summary>
+    private void ClearUnderfoot()
+    {
+        foreach (var p in _underfoot.OrderByDescending(c => c.Y))
+        {
+            int id = _s.Sim.Get(p);
+            if (id == 0 || BlockShapes.IsLiquid(id)) continue;
+            var dig = BestDig(p);
+            Add(new PlanStep
+            {
+                Action = StepAction.Clear, Target = p, Id = id, Stand = dig?.Stand ?? _s.Land, Column = dig?.Column ?? -1,
+                Technique = dig is { Column: >= 0 } ? Technique.Water : Technique.Normal, Cost = (dig?.Cost ?? 0) + DigTicks(id, false),
+                Deps = dig is { Column: >= 0 } d0 ? [PourStepOf(d0.Column)] : [],
+                Note = dig == null ? "no stand beside it: the client aims from where it can" : null,
+            });
+            _s.Sim.Set(p, 0);
+            if (dig is { } d) MoveTo(d.Stand, d.Column);
+        }
     }
 
     // ------------------------------------------------------------------ placements
@@ -426,7 +469,7 @@ public sealed partial class BuildPlanner
             var feet = eye with { Y = eye.Y - PlayerPhysics.EyeHeight };
             if (AABB.ForPlayer(feet).Intersects(block)) continue;
             if (t.Pos == s.Down() || Safety.SupportBlocks(_s.Sim, feet).Contains(t.Pos)) continue;
-            bool edge = Safety.VoidNeighbourCount(_s.Sim, s.X, s.Y, s.Z) > 0;
+            bool edge = EdgeOf(s) != StandEdge.None;
             foreach (var pl in FaceOptions(t, faces, eye, _o.Reach, yaw, look))
                 yield return pl with { Stand = s, Column = -1, Cost = travel + fromColumn + pl.Cost + (edge ? 1 : 0), Edge = edge };
         }
@@ -448,6 +491,20 @@ public sealed partial class BuildPlanner
                     yield return pl with { Stand = cell, Column = c.Index, Cost = travel + pl.Cost, Edge = false };
             }
         }
+    }
+
+    /// <summary>What lies beside a stand: nothing deadly; a drop past the safe fall onto solid ground (the design's own platform at
+    /// height over the floor: allowed, the client's EdgeGuard sneaks there and cancels unverified jumps, so the body never walks
+    /// off); or the void (today's rules: bridging out sneaking, never a pillar or stair level).</summary>
+    internal enum StandEdge { None, SolidDrop, Void }
+
+    private StandEdge EdgeOf(BlockPos s)
+    {
+        if (Safety.VoidNeighbourCount(_s.Sim, s.X, s.Y, s.Z) > 0) return StandEdge.Void;
+        for (int dx = -1; dx <= 1; dx++)
+        for (int dz = -1; dz <= 1; dz++)
+            if ((dx != 0 || dz != 0) && Safety.IsDeadlyColumn(_s.Sim, s.X + dx, s.Y, s.Z + dz, _path.MaxDrop)) return StandEdge.SolidDrop;
+        return StandEdge.None;
     }
 
     private IEnumerable<Placement> FaceOptions(Target t, List<BlockFace> faces, Vec3d eye, double reach, float? yaw, Dir? look)

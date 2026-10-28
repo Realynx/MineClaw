@@ -28,7 +28,7 @@ public sealed class BlueprintWiring
 
     public const string DesignDescription =
         "Design a build from a wish: drafted, checked and previewed in the background; summary+bill go to chat. Builds only on a " +
-        "trusted player's go (resuming an approved one needs none). op new{what,at?} revise{id,what} build{id,at?,bodies?|crew?} show{id,image?} list cancel{id}";
+        "trusted player's go (resuming an approved one needs none). op new{what,at?} revise{id,what} build{id,at?,bodies?|crew?} show{id,image?} list cancel{id} undo{id} delete{id}: undo takes down only its placed blocks; delete also drops its plan";
 
     public required BlueprintService Service { get; init; }
     /// <summary>Set after vision is wired (roles, atlas, perception for the critique).</summary>
@@ -81,6 +81,11 @@ public sealed class BlueprintWiring
         wiring = new BlueprintWiring { Service = service, Crew = new SingleBodyCrew(body) };
         service.StartBuild = (id, part) => wiring.StartBuild(rt, id, part);
         service.StartUndo = id => wiring.StartBuild(rt, id, null, undo: true);
+        service.StartDelete = (id, by) => { wiring._deleteBy[id] = by; return wiring.StartBuild(rt, id, null, delete: true); };
+        // An undo/delete takes down only the build's own placements and never one a player marked never-break or a generator's
+        // walls/fluids (self-placed or not: digging one can spill lava/water).
+        service.KeepOnUndo = (p, id) => protection.Marks?.NeverAt(p, client.World.Dimension) != null
+            || protection.IsDigCell?.Invoke(p) != true && protection.IndexerKind?.Invoke(p) == WorldIndex.IndexKinds.Generator;
         wiring.RegisterTools(rt);
         wiring.WrapDelegate(rt);
         wiring.AttachChat(rt, log);
@@ -116,7 +121,7 @@ public sealed class BlueprintWiring
     private void RegisterTools(AgentRuntime rt)
     {
         rt.Tools.Register(DesignTool, DesignDescription,
-            ToolSchema.Create().Str("op", enumValues: ["new", "revise", "build", "show", "list", "cancel"], required: false)
+            ToolSchema.Create().Str("op", enumValues: ["new", "revise", "build", "show", "list", "cancel", "undo", "delete"], required: false)
                 // bodies/crew (op build) are read by name, documented in the description only (brain budget, ToolBudgets.Brain).
                 .Str("what", required: false).Str("at", required: false).Str("id", required: false).Bool("image", required: false).Build(),
             (input, ct) => Task.FromResult(Design(input)), tiers: ToolTiers.Main, maxResultChars: 600);
@@ -128,11 +133,19 @@ public sealed class BlueprintWiring
         // The worker's (and a hive clone's worker's) way to run an approved design: a thin wrapper over BlueprintService
         // (BuildAsync / BuildLaneAsync), the same method the script bindings call. Schema = bp + lane only (worker budget);
         // scripts also pass part/of/layer/by_layer/undo/bodies/crew by name.
-        rt.Tools.Register(BuildTool, "Build/resume an approved saved design by id (its saved plan); lane = a crew lane.",
+        rt.Tools.Register(BuildTool, "Build/resume an approved saved design by id (its saved plan); lane = crew lane; undo/delete:true (trusted word) remove only its placed blocks.",
             ToolSchema.Create().Str("bp").Int("lane", required: false).Build(),
             async (input, ct) =>
             {
                 var bp = Id(input, "bp") ?? Id(input, "id") ?? "";
+                if (input.Bool("delete") == true)
+                {
+                    // The brain's design delete hands its trusted speaker over; a worker's own call needs a trusted speaker this turn.
+                    long.TryParse(bp.TrimStart('#'), out var did);
+                    var by = (did != 0 && _deleteBy.TryRemove(did, out var auth) ? auth : null) ?? TurnContext.Current?.Speaker;
+                    var (dok, dtext) = await Service.DeleteAsync(bp, by, ct).ConfigureAwait(false);
+                    return dok ? ToolResult.Success(dtext) : ToolResult.Error(dtext);
+                }
                 if (input.Bool("undo") == true)
                 {
                     var (uok, utext) = await Service.UndoAsync(bp, ct).ConfigureAwait(false);
@@ -258,6 +271,13 @@ public sealed class BlueprintWiring
             case "build":
                 {
                     if (Rec() is not { } rec) return ToolResult.Error("no design to build (id?)");
+                    // Held by a "no" at its gate: only a trusted player's fresh go lifts it (never a resume on its own).
+                    if (Service.HeldBy(rec.Id) is { } holder)
+                    {
+                        if (!Service.IsTrusted(speaker))
+                            return ToolResult.Error($"#{rec.Id} is held: {holder} said no at its gate; it needs a trusted player's fresh go ({speaker ?? "nobody"} asked)");
+                        Service.ClearHold(rec.Id);
+                    }
                     bool moving = input.Str("at") is { Length: > 0 };
                     var crew = CrewOf(input);
                     if (crew != null && !moving) Service.RequestCrew(rec.Id, crew);
@@ -287,12 +307,31 @@ public sealed class BlueprintWiring
             case "list":
                 {
                     var list = Service.Store.List(6);
-                    return ToolResult.Success(list.Count == 0 ? "no designs yet" : string.Join("; ", list.Select(r => $"#{r.Id} {r.Name} {r.Status}")));
+                    return ToolResult.Success(list.Count == 0 ? "no designs yet" : string.Join("; ", list.Select(Service.ListLine)));
                 }
             case "cancel":
                 return Rec() is { } c ? ToolResult.Success(Service.Cancel(c)) : ToolResult.Error("no design (id?)");
+            case "undo":
+                {
+                    // The build's own ledger (gate blocks included), dug top-first as the body's job; nothing else is touched.
+                    if (id is not { Length: > 0 } || Service.Store.Find(id) is not { } rec) return ToolResult.Error("undo needs the design's id");
+                    int n = Service.PlacedCount(rec.Id);
+                    if (n == 0) return ToolResult.Error($"#{rec.Id} \"{rec.Name}\" has no placed blocks to take down");
+                    return Service.StartUndo(rec.Id) is { } no ? ToolResult.Error($"can't undo #{rec.Id}: {no}")
+                        : ToolResult.Success($"taking down #{rec.Id} \"{rec.Name}\": the {n} block{(n == 1 ? "" : "s")} it placed, top first; a [task] reports the end");
+                }
+            case "delete":
+                {
+                    // A trusted player's word, like a build's go: the blocks come down, then its plans and the record go.
+                    if (id is not { Length: > 0 } || Service.Store.Find(id) is not { } rec) return ToolResult.Error("delete needs the design's id");
+                    if (rec.Status == DesignStatus.Deleted) return ToolResult.Error($"#{rec.Id} is already deleted");
+                    if (!Service.IsTrusted(speaker)) return ToolResult.Error($"deleting a design needs a trusted player's word ({string.Join("/", rt_Trusted())}); {speaker ?? "nobody"} asked");
+                    int n = Service.PlacedCount(rec.Id);
+                    return Service.StartDelete(rec.Id, speaker!) is { } no ? ToolResult.Error($"can't delete #{rec.Id}: {no}")
+                        : ToolResult.Success($"deleting #{rec.Id} \"{rec.Name}\": taking down the {n} block{(n == 1 ? "" : "s")} it placed, then its plan; a [task] names what came down");
+                }
         }
-        return ToolResult.Error("op: new|revise|build|show|list|cancel");
+        return ToolResult.Error("op: new|revise|build|show|list|cancel|undo|delete");
     }
 
     private Func<IReadOnlyList<string>> _trusted = () => [];
@@ -304,11 +343,14 @@ public sealed class BlueprintWiring
     }
 
     /// <summary>Runs the build as the body's job (an activity: stop cancels it, its end wakes the brain with [task ok/failed]).</summary>
-    private string? StartBuild(AgentRuntime rt, long id, int? part, bool undo = false)
+    /// <summary>The trusted player behind a pending design delete (the brain's op → the body's build{delete} job).</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<long, string> _deleteBy = new();
+
+    private string? StartBuild(AgentRuntime rt, long id, int? part, bool undo = false, bool delete = false)
     {
         if (!rt.Tools.TryGet(BuildTool, out var tool)) return "build tool missing";
         var bpId = id.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        var input = JsonSerializer.SerializeToElement(undo ? new { bp = bpId, undo = true } : part is { } p ? new { bp = bpId, part = p } : (object)new { bp = bpId });
+        var input = JsonSerializer.SerializeToElement(delete ? new { bp = bpId, delete = true } : undo ? new { bp = bpId, undo = true } : part is { } p ? new { bp = bpId, part = p } : (object)new { bp = bpId });
         // The body in scope builds (a review line has none: the main body), never a captured rt.Activities.
         var activities = rt.Agent.ActivitiesFor(Bodies.BodyScope.Current?.Name);
         _ = activities.RunAsync([(tool, input)], TimeSpan.Zero, activities.Shutdown);

@@ -45,6 +45,19 @@ public static partial class BuildGate
 
     public static bool IsUndo(string text) => UndoRx().IsMatch(text.Trim());
 
+    /// <summary>After a gate "no": the exact blocks standing and the way to take them down, "gate blocks at 2,64,3 3,64,3 …; undo
+    /// with design undo{id=9}" (live 10-28: a worker asked to "remove the 5 blocks just placed" couldn't find them). Null when
+    /// the build placed nothing.</summary>
+    public static string? Placed(BuildPlan bp, long blueprintId)
+    {
+        var cells = bp.Gate.Blocks.Concat(bp.Placed).Distinct().ToList();
+        if (cells.Count == 0) return null;
+        var gate = bp.Gate.Blocks.Count > 0 ? bp.Gate.Blocks : cells;
+        var list = string.Join(" ", gate.Take(8).Select(p => $"{p.X},{p.Y},{p.Z}")) + (gate.Count > 8 ? $" +{gate.Count - 8}" : "");
+        var more = cells.Count > gate.Count ? $" ({cells.Count} placed in all)" : "";
+        return $"{(bp.Gate.Blocks.Count > 0 ? "gate blocks" : "placed")} at {list}{more}; undo with design undo{{id={blueprintId}}}";
+    }
+
     /// <summary>
     /// Reads an answer at the gate. Turns and mirrors pivot on <paramref name="anchor"/> (the first gate block); a mirror flips
     /// across <paramref name="axis"/> (the build's main axis). Null = not an answer to the gate.

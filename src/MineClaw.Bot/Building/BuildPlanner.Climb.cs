@@ -124,13 +124,17 @@ public sealed partial class BuildPlanner
                 if (!SafeLevel(_s.Sim, top)) { _voidSpots++; break; }
                 var eye = new Vec3d(top.X + 0.5, top.Y + PlayerPhysics.EyeHeight, top.Z + 0.5);
                 if (t.Pos.Y - eye.Y > _o.Reach) continue; // still far below it
-                // From the top itself, else (a floor of the design's beside it) from where I can walk to up there.
-                if ((ReachCost(t, faces, eye, yaw, look) ?? WalkOnCost(b, k, top, t, faces, yaw, look, ref walks)) is not { } cost)
+                // From the top itself, else (a floor of the design's beside it) from where I can walk to up there. Walking on, the
+                // whole floor up there is reach: a pillar onto the platform (out of the shaft) beats one under every rim cell.
+                int covered;
+                if (ReachCost(t, faces, eye, yaw, look) is { } here) covered = _cover.Count(p => eye.DistanceTo(p.Center) <= _o.Reach);
+                else if (WalkOnCost(b, k, top, t, faces, yaw, look, ref walks, out var reached) is { } walk) (here, covered) = (walk, reached);
+                else
                 {
                     if (eye.Y > t.Pos.Y + 2) break; // past it: higher only gets farther
                     continue;
                 }
-                int covered = _cover.Count(p => eye.DistanceTo(p.Center) <= _o.Reach);
+                double cost = here;
                 int walls = Sides.Count(f => BlockShapes.HasCollision(_s.Sim, top.X + f.Normal().X, top.Y - 1, top.Z + f.Normal().Z));
                 options.Add((b, k, travel + k * PillarTicks + cost - covered * 6 - walls * 4));
                 break;
@@ -150,8 +154,9 @@ public sealed partial class BuildPlanner
     /// The pillar's top steps onto something walkable (the design's own floor, placed already): the cheapest stand reachable on
     /// foot from up there that places <paramref name="t"/> (walk + face cost), or null. A few floods per climb at most.
     /// </summary>
-    private double? WalkOnCost(BlockPos b, int k, BlockPos top, Target t, List<BlockFace> faces, float? yaw, Dir? look, ref int walks)
+    private double? WalkOnCost(BlockPos b, int k, BlockPos top, Target t, List<BlockFace> faces, float? yaw, Dir? look, ref int walks, out int covered)
     {
+        covered = 0;
         bool Walkable(BlockFace f)
         {
             var n = top + f.Normal();
@@ -165,12 +170,19 @@ public sealed partial class BuildPlanner
         for (int i = 0; i < k; i++) fork.Set(b.Up(i), ConstructionPlanner.Scaffold);
         var block = AABB.Block(t.Pos.X, t.Pos.Y, t.Pos.Z);
         double? best = null;
-        foreach (var (s, travel) in Flood(fork, top))
+        var flood = Flood(fork, top);
+        foreach (var (s, travel) in flood)
         {
             if (Math.Abs(s.X - t.Pos.X) > 5 || Math.Abs(s.Z - t.Pos.Z) > 5 || s.Y > t.Pos.Y + 3 || s.Y < t.Pos.Y - 6) continue;
             var eye = GoalUseBlock.EyeAt(fork, s.X, s.Y, s.Z);
             if (AABB.ForPlayer(eye with { Y = eye.Y - PlayerPhysics.EyeHeight }).Intersects(block) || t.Pos == s.Down()) continue;
             if (ReachCost(t, faces, eye, yaw, look) is { } c && (best == null || c + travel < best)) best = c + travel;
+        }
+        if (best != null)
+        {
+            // The stuck layer's cells some stand up there reaches (the platform grows from its own placed cells).
+            var eyes = flood.Keys.Where(s => s.Y >= top.Y - 1).Select(s => new Vec3d(s.X + 0.5, s.Y + PlayerPhysics.EyeHeight, s.Z + 0.5)).ToList();
+            covered = _cover.Count(p => eyes.Any(e => e.DistanceTo(p.Center) <= _o.Reach));
         }
         return best;
     }

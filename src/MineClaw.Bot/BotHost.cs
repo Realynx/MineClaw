@@ -340,6 +340,7 @@ public sealed class BotHost : IDisposable
         // Build from a description: design (brain, Opus authoring) + hidden build/blueprint tools (Lua build{}/blueprint()), chat review.
         // The builder resolves its body per call through the routers (never a captured client).
         var blueprints = botOptions.Blueprints.Enabled ? MineClaw.Bot.Blueprints.BlueprintWiring.Attach(rt, adapter, toolClient, botOptions.Blueprints, protection, acquisition, genCells, claims, time, log, persist) : null;
+        if (blueprints != null) skillHub.Registry.Footprints ??= blueprints.Service.Footprints; // expand_island area: does the floor cover the design?
 
         Func<string, bool> isBot = n => hiveBots?.Invoke().Contains(n, StringComparer.OrdinalIgnoreCase) == true || rt.Chat.IsHiveBot?.Invoke(n) == true;
         return new BrainContext

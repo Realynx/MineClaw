@@ -176,7 +176,11 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
 - **Addressing** (`ChatRouter.ReasonFor`, `Chat/Addressing.cs`): name/whisper > group word > obvious player-to-player (calls
   another online human by login or `Chat:PlayerNicknames` vocative: never wakes) > conversation continuity (`ReplyWindowSeconds`
   90 s after the bot talked to the player, its audience inferred from names/nicknames or the last partner, or they talked to it)
-  > solo > imperatives about the bot's items/tasks/hive or "you/your" (not for clones). Still unsure, from a regular, near the bot
+  > solo > imperatives about the bot's items/tasks/hive or "you/your" (not for clones). **Foreign-bot threads**: a line naming a
+  `Chat:OtherBots` bot, using its learned command prefix ("c " once 2 of a player's "c ..." lines got robinchan answers within 5 s;
+  `CommandPrefixesOf`) or answered by it puts the player in that bot's thread for `ReplyWindowSeconds`; unnamed follow-ups stay
+  there (`continues with robinchan`; no waiter takes them; Background note "kiwi is instructing robinchan: ...") unless the
+  player addressed us since, looks at us, or it's a help call (`AddressingText.IsHelpCall`). Our own talk doesn't take it back. Still unsure, from a regular, near the bot
   or in a thread: ONE tiny Haiku yes/no (`AddressClassifier`, ≤30/h). `Addressing` counts continuity/imperative/classifier hits and
   misses (an ignored line the player then repeats by name). Outgoing guards in `SayAsync`: one food ask per player per 10 min,
   one greeting per player per 3 min, startup chatter ≤2 lines until someone talks to the bot.
@@ -415,6 +419,14 @@ The `eat` tool (so scripts' eat and `keepFed`), `ensure('food')`, skills' eat, t
   and the restart notice carry them grouped in one line (`BuildSkips`): "placed 4, 685 missing — 673 waiting on supports e.g.
   -27,72,13; 12 no stand: above my reach (I can't climb) e.g. -27,71,13; 0 protected" (live 10-28: the drop tower said only
   "placed 0, 689 missing" for hours: its 16-high walls were out of reach from the floor and everything else rested on them).
+  When most skips hang over the void (past the scaffold limit, or no climb because every pillar/stair spot is beside it), the
+  line ends with the exact foundation from the plan's footprint (`BuildSkips.FloorHint`, `BuildPlan.Foundation`): "lay a floor:
+  expand_island area=-33,7,-18,22 y=63 (192 cells, 192 cobble)" — a suggestion the brain may run, then resume. `design show`/`list`
+  name the footprint in world coordinates ("footprint x -33..-18, z 7..22, y 64..79": live 10-28 the brain read it off the image 2
+  off). **expand_island area=x0,z0,x1,z1 y?** (`Skills/AreaFill`) fills the rectangle in BFS order from the existing floor, each
+  block against a solid neighbour (walk via the pathfinder, sneak/lean with the EdgeGuard, hostile/survival vetoes per block),
+  stops with why when no cell is safely reachable, resumes on what is still empty, gets cobble via the registry's `Obtain` hook
+  (the Obtainer) and flags a design footprint it covers only partly ("x -33..-32 of design #4 still uncovered").
   The plan is persisted (`build_plans`: steps with status, columns, gate, ledger). On a resume, done steps are re-verified and the
   rest re-planned from the current state. A stale plan (another design version, or `Format` older than `BuildPlan.CurrentFormat`,
   e.g. one saved before crew lanes) is planned again on load (`BuildPlan.Resume`) keeping its placed-block ledger, scaffold/water

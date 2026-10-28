@@ -138,7 +138,7 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
         report.Unreachable.AddRange(bp.Infeasible.Select(i => i.Pos));
         if (bp.Infeasible.Count > 0)
         {
-            var cant = BuildSkips.Line(bp.Infeasible.Select(i => (i.Pos, (string?)i.Why)));
+            var cant = BuildSkips.WithFloor(BuildSkips.Line(bp.Infeasible.Select(i => (i.Pos, (string?)i.Why))), bp.Foundation);
             Progress?.Invoke($"can't place {bp.Infeasible.Count}: {cant}");
             log?.LogInformation("blueprint #{Id} {Part}: can't place {N}: {Why}", blueprintId, part.Label, bp.Infeasible.Count, cant);
         }
@@ -164,6 +164,14 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
         try
         {
             if (await ClaimAsync().ConfigureAwait(false) is { } held) { report.Stopped = held; return Finish(); }
+            // A "no" at the gate holds the build for that player: only a fresh go (which clears it) builds on.
+            if (bp.Gate.HeldBy is { } heldBy)
+            {
+                report.Stopped = $"held: {heldBy} said no at the confirmation gate; it needs a trusted player's fresh go (design build{{id={blueprintId}}})"
+                                 + (BuildGate.Placed(bp, blueprintId) is { } standing ? "; " + standing : "");
+                report.AtGate = true;
+                return Finish();
+            }
             if (untilGate && !(GateOn && part.Index == 0 && (bp.Gate.State == GateState.Waiting
                     || bp.Gate.State == GateState.Pending && bp.Steps.Any(s => s.Gate))))
             {
@@ -279,7 +287,7 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
                         }
                         if (!await MoveAsync(step, needStand: false).ConfigureAwait(false)) return StepOutcome.Done;
                         var r = step.Column >= 0 ? await body.DigHereAsync(step.Target, ct).ConfigureAwait(false) : await body.DigAsync(step.Target, ct).ConfigureAwait(false);
-                        if (r.Ok) { report.Cleared++; step.Status = StepStatus.Verified; }
+                        if (r.Ok) { report.Cleared++; step.Status = StepStatus.Verified; bp.ScaffoldUp.Remove(step.Target); rec.Scaffold.Remove(step.Target); }
                         else { report.Deviations.Add($"couldn't clear {voxel.Local(step.Target)}: {Short(r.Message)}"); Skip(step, Short(r.Message)); }
                         return StepOutcome.Done;
                     }
@@ -486,12 +494,16 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
                     report.AtGate = true;
                     return GateOutcome.Stop;
                 case GateVerdict.Hold:
-                    report.Stopped = $"paused at the confirmation gate: {reply.By} said \"{Short(reply.Text)}\"; tell me what to change";
+                    bp.Gate.HeldBy = reply.By;
+                    Checkpoint();
+                    report.Stopped = $"paused at the confirmation gate: {reply.By} said \"{Short(reply.Text)}\"; tell me what to change"
+                                     + (BuildGate.Placed(bp, blueprintId) is { } blocks ? "; " + blocks : "");
                     report.AtGate = true;
                     return GateOutcome.Stop;
                 case GateVerdict.Approve:
                     bp.Gate.State = GateState.Approved;
                     bp.Gate.ApprovedBy = reply.By;
+                    bp.Gate.HeldBy = null;
                     Checkpoint();
                     Progress?.Invoke($"{reply.By} confirmed the first blocks: carrying on");
                     return GateOutcome.Continue;
@@ -651,8 +663,13 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
         {
             foreach (var b in voxel.Blocks.Values.Where(b => vpart.Cells.Contains(b.Pos) && (layer is not { } ly || b.Pos.Y - voxel.Origin.Y == ly)))
                 if (w.IsLoaded(b.Pos.X, b.Pos.Z) && !DesignChecks.SameState(b, w.GetBlock(b.Pos), w.GetMeta(b.Pos))) report.Missing.Add(b.Pos);
-            report.Skips = report.Missing.Count == 0 && !bp.Steps.Any(s => s.Status == StepStatus.Skipped) ? null
-                : BuildSkips.Line(BuildSkips.Of(bp, report.Missing, Unplanned));
+            if (report.Missing.Count == 0 && !bp.Steps.Any(s => s.Status == StepStatus.Skipped)) report.Skips = null;
+            else
+            {
+                var items = BuildSkips.Of(bp, report.Missing, Unplanned);
+                // The design's whole footprint (not just this part's), the cells still empty under it as the world is now.
+                report.Skips = BuildSkips.WithFloor(BuildSkips.Line(items), BuildSkips.FloorHint(items, BuildSkips.Footprint(voxel.Blocks.Keys), w));
+            }
             bool partDone = report.Stopped == null && report.Missing.Count == 0 && bp.ScaffoldUp.Count == 0 && layer == null;
             if (report.GatePassed && !partDone)
             {
@@ -690,16 +707,32 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
     /// Takes down everything a build placed (its ledger, scaffolding included), top first; only blocks still standing.
     /// Self-placed, so the protection policy allows it. Returns how many came down.
     /// </summary>
-    public static async Task<int> UndoPlacedAsync(IBuildBody body, BuildPlan bp, WorldState w, CancellationToken ct)
+    /// <param name="keep">A block never dug even though the build placed it (default: the body's protection; the design tool passes
+    /// never-break marks and generator walls/fluids too).</param>
+    /// <param name="removed">Collects the cells taken down; <paramref name="left"/> the ledger cells left standing (protected, a dig
+    /// the client refused).</param>
+    public static async Task<int> UndoPlacedAsync(IBuildBody body, BuildPlan bp, WorldState w, CancellationToken ct,
+        Func<BlockPos, int, bool>? keep = null, List<BlockPos>? removed = null, List<(BlockPos Pos, string Why)>? left = null)
     {
+        keep ??= body.IsProtected;
         int n = 0;
-        foreach (var p in bp.Placed.Concat(bp.ScaffoldUp).Distinct().OrderByDescending(p => p.Y).ToList())
+        foreach (var p in bp.Placed.Concat(bp.Gate.Blocks).Concat(bp.ScaffoldUp).Distinct().OrderByDescending(p => p.Y).ToList())
         {
-            if (w.GetBlock(p) == 0) { bp.Placed.Remove(p); continue; }
+            int id = w.GetBlock(p);
+            if (id == 0) { bp.Placed.Remove(p); bp.Gate.Blocks.Remove(p); continue; }
+            // Only what is still ours: the placed-block log holds it, or it is what our finished step put there. A block someone
+            // put in the cell since (they dug ours) is theirs: left, and dropped from the ledger.
+            bool ours = w.Placed.IsPlaced(p, w.Dimension, id)
+                        || bp.Steps.Any(s => s.Finished && (s.Target == p && (s.Action == StepAction.Scaffold || s.Action == StepAction.Place && s.Id == id)
+                                                            || s.Target == p.Down() && s.Action == StepAction.Place && s.Id == id && BuildBlocks.KindOf(id) == BuildKind.Door));
+            if (!ours) { bp.Placed.Remove(p); bp.Gate.Blocks.Remove(p); bp.ScaffoldUp.Remove(p); continue; }
+            if (keep(p, id)) { left?.Add((p, "protected")); continue; }
             var r = await body.DigAsync(p, ct).ConfigureAwait(false);
-            if (!r.Ok) continue;
+            if (!r.Ok) { left?.Add((p, r.Message)); continue; }
+            removed?.Add(p);
             n++;
             bp.Placed.Remove(p);
+            bp.Gate.Blocks.Remove(p);
             bp.ScaffoldUp.Remove(p);
         }
         return n;

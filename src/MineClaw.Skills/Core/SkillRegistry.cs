@@ -37,6 +37,16 @@ public sealed class SkillRegistry
     /// </summary>
     public Func<SkillContext, SkillSpec, int[], CancellationToken, Task<string?>>? AcquireMissing { get; set; }
 
+    /// <summary>
+    /// Bulk materials for a skill that needs many of one block (expand_island area): (ctx, item id, total wanted in the
+    /// inventory) → the Bot layer's Obtainer line (inventory, then known chests, then crafting), or null when nothing was done.
+    /// Null = the inventory only.
+    /// </summary>
+    public Func<SkillContext, int, int, CancellationToken, Task<string?>>? Obtain { get; set; }
+
+    /// <summary>Known design footprints (the Bot's blueprint service), so a floor laid for a build is checked against it.</summary>
+    public Func<IReadOnlyList<DesignFootprint>>? Footprints { get; set; }
+
     /// <summary>Registers every non-abstract <see cref="ISkill"/> marked <see cref="SkillAttribute"/> in <paramref name="assembly"/>.</summary>
     public SkillRegistry Discover(Assembly assembly)
     {

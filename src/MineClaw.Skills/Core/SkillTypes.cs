@@ -91,6 +91,10 @@ public sealed record SkillSpec
     }
 }
 
+/// <summary>A known design's footprint in world coordinates (accepted, building or in review): expand_island's area fill checks
+/// that a floor laid for a build covers it ("x -33..-32 of design #4 still uncovered").</summary>
+public sealed record DesignFootprint(string Label, int X0, int Z0, int X1, int Z1, int Y0, int Y1);
+
 /// <summary>Terse outcome of a skill: one line, "ok: ..." / "failed: ...", safe to hand straight to the model.</summary>
 public sealed record SkillResult(bool Ok, string Text)
 {

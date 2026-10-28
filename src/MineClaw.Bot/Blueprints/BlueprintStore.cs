@@ -7,7 +7,10 @@ namespace MineClaw.Bot.Blueprints;
 public static class DesignStatus
 {
     public const string Designing = "designing", Review = "review", Draft = "draft", Accepted = "accepted", Building = "building", Built = "built",
-        Failed = "failed", Cancelled = "cancelled";
+        Failed = "failed", Cancelled = "cancelled",
+        /// <summary>Deleted by a trusted player (design delete): its blocks taken down, its plans gone, hidden from lists; the row
+        /// (DSL history) stays for audit.</summary>
+        Deleted = "deleted";
 }
 
 /// <summary>A saved design (shared db: every hive process sees it; "build another one like the hut" reuses it).</summary>
@@ -135,13 +138,13 @@ public sealed class BlueprintStore
         var s = idOrName.Trim().TrimStart('#');
         if (long.TryParse(s, out var id)) return Get(id);
         lock (_db.Gate)
-            return _db.Query($"SELECT {Cols} FROM blueprints WHERE name LIKE $q OR description LIKE $q ORDER BY (status IN ('built','accepted','building','review')) DESC, id DESC LIMIT 1",
+            return _db.Query($"SELECT {Cols} FROM blueprints WHERE (name LIKE $q OR description LIKE $q) AND status<>'deleted' ORDER BY (status IN ('built','accepted','building','review')) DESC, id DESC LIMIT 1",
                 Map, ("$q", "%" + s + "%")).FirstOrDefault();
     }
 
     public List<BlueprintRecord> List(int max = 20)
     {
-        lock (_db.Gate) return _db.Query($"SELECT {Cols} FROM blueprints ORDER BY id DESC LIMIT $n", Map, ("$n", max));
+        lock (_db.Gate) return _db.Query($"SELECT {Cols} FROM blueprints WHERE status<>'deleted' ORDER BY id DESC LIMIT $n", Map, ("$n", max));
     }
 
     public byte[]? Picture(long id)

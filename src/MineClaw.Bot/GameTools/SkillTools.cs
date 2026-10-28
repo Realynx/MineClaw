@@ -94,6 +94,9 @@ public static class SkillTools
             var r = await Acquisition.Planner(client, rt.Observations).AcquireAnyAsync(ids, ct).ConfigureAwait(false);
             return r.Ok ? r.Text : null;
         };
+        // Bulk materials (expand_island area: a whole floor of cobble) through the shared resolver: inventory, chests, crafting.
+        hub.Registry.Obtain ??= async (_, id, count, ct) =>
+            (await new Obtainer(GameClients.Resolve(client)).ObtainAsync(id, -1, count, ct).ConfigureAwait(false)).Text;
         hub.SyncLearned = () => SyncLearned(rt, hub);
         hub.SyncLearned();
         IndexCatalog(rt, hub.Registry);

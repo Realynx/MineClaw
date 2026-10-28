@@ -18,6 +18,12 @@ public class CatalogAndBudgetTests(Xunit.Abstractions.ITestOutputHelper output)
     [Theory]
     [InlineData("get me some sugar cane", "harvest_cane")]
     [InlineData("make the platform bigger", "expand_island")]
+    [InlineData("expand the floor so you can build it", "expand_island")] // live 10-28 14:40: "no matching skill"
+    [InlineData("expand the floor", "expand_island")]
+    [InlineData("lay a foundation", "expand_island")]
+    [InlineData("put a platform under the tower", "expand_island")]
+    [InlineData("fill under the tower", "expand_island")]
+    [InlineData("fill in the floor underneath the build", "expand_island")]
     [InlineData("open the door", "open_door")]
     [InlineData("close the gate behind you", "close_door")]
     [InlineData("we need an infinite water source", "infinite_water")]
@@ -39,6 +45,22 @@ public class CatalogAndBudgetTests(Xunit.Abstractions.ITestOutputHelper output)
         output.WriteLine($"{query} -> {string.Join(", ", hits.Select(h => h.Name))}");
         Assert.NotEmpty(hits);
         Assert.Equal(skill, hits[0].Name);
+    }
+
+    [Fact]
+    public void A_floor_request_offers_expand_island_with_its_area_arg()
+    {
+        foreach (var q in new[] { "floor", "foundation", "platform under", "expand the floor", "fill under the tower" })
+        {
+            var hits = SkillCatalog.Search(Full.Specs, q, 3);
+            output.WriteLine($"{q} -> {string.Join(", ", hits.Select(h => h.Name))}");
+            Assert.Contains(hits, h => h.Name == "expand_island");
+        }
+        var sig = Full.Specs.Single(s => s.Name == "expand_island").Signature;
+        output.WriteLine(sig);
+        Assert.StartsWith("expand_island(area?,y?,", sig);
+        Assert.Contains("x0,z0,x1,z1", sig);
+        Assert.Contains("expand_island(area?", SkillTools.HintedTask(Full, "Fox: expand the floor so you can build design #4"));
     }
 
     [Fact]

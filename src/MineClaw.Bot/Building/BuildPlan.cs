@@ -118,6 +118,10 @@ public sealed class GateInfo
     public string? Question { get; set; }
     public DateTimeOffset? AskedAt { get; set; }
     public string? ApprovedBy { get; set; }
+    /// <summary>A trusted player said "no" (or "wait", "wrong spot") at the gate: held by them. Never resumed without a fresh go
+    /// (design build{id} from a trusted player), and a restart never offers it as "no second go needed" (live 10-28: design #9
+    /// was resumed after Robin's "no" and put its gate blocks by the gen again).</summary>
+    public string? HeldBy { get; set; }
     /// <summary>The direction/site came from inference (facing, pointing, "this way").</summary>
     public bool Inferred { get; set; }
     public int Rounds { get; set; }
@@ -180,6 +184,9 @@ public sealed class BuildPlan
     public List<BlockPos> ScaffoldUp { get; set; } = new();
     public string State { get; set; } = "planned";
     public string? Note { get; set; }
+    /// <summary>The slicer's foundation suggestion when most of what it couldn't plan hangs over the void past the scaffold limit
+    /// ("lay a floor: expand_island area=-33,7,-18,22 y=63 (192 cells, 192 cobble)"; <see cref="BuildSkips.FloorHint"/>).</summary>
+    public string? Foundation { get; set; }
     public DateTimeOffset Updated { get; set; }
     /// <summary>Re-plans so far (resume, deviations).</summary>
     public int Replans { get; set; }
@@ -234,7 +241,7 @@ public sealed class BuildPlan
                    + string.Create(CultureInfo.InvariantCulture, $"; est. {(mins < 1 ? "<1" : Math.Round(mins).ToString(CultureInfo.InvariantCulture))} min");
         if (Lanes.Count > 1) text += "; " + CrewText();
         if (Infeasible.Count > 0)
-            text += $"; can't place {Infeasible.Count}: " + BuildSkips.Line(Infeasible.Select(i => (i.Pos, (string?)i.Why)));
+            text += $"; can't place {Infeasible.Count}: " + BuildSkips.WithFloor(BuildSkips.Line(Infeasible.Select(i => (i.Pos, (string?)i.Why))), Foundation);
         return text;
     }
 
