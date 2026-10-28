@@ -137,6 +137,9 @@ public class StandingOrderTests
         // Live 10-28 10:3x: one comma-joined sentence; the ask is the clause after the comma.
         Assert.Equal("move it so it sits on your 8x8…",
             QuestionOptions.Topic("PoofimaFox, master the drop tower keeps getting stuck after a few blocks, most of it hangs over the void with no scaffold, want me to move it so it sits on your 8x8 floor instead?"));
+        Assert.Equal("Fox, going with my best guess on \"grind cobble into my bag first and build…\" for now since you're busy, say if you want different",
+            new QuestionOptions().TimeoutText("Fox", "mine 4,64,6 first, then the cell at 5,64,7 next to the lava", risky: false,
+                "PoofimaFox, the gen chest is full, ok if i grind cobble into my bag first and build after?"));
         Assert.True(new QuestionOptions().IsRisky("bridge out over the void?"));
         Assert.True(new QuestionOptions().IsRisky("use the diamonds?"));
         Assert.False(new QuestionOptions().IsRisky("the cell next to the lava?"));

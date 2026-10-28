@@ -65,7 +65,9 @@ public sealed class QuestionOptions
                 p = Regex.Replace(p, @"\s+for now$", "", RegexOptions.IgnoreCase);
                 line = PlanTimeoutLine.Replace("{plan}", p);
             }
-            else line = VagueTimeoutLine;
+            else line = Topic(question) is { } t
+                ? VagueTimeoutLine.Replace("my best guess", $"my best guess on \"{t}\"") // which question (live 10-28 11:1x)
+                : VagueTimeoutLine;
         }
         return line.Replace("{player}", player ?? "").Replace("{default}", dflt ?? "").Trim(' ', ',');
     }
