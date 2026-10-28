@@ -517,7 +517,10 @@ public sealed class PathFollower
                     bool onTarget = (int)Math.Floor(pos.X) == step.X && (int)Math.Floor(pos.Z) == step.Z;
                     if (pos.Y < step.Floor - 0.55 || pos.Y > step.Floor + 0.05 || s.InWater || s.OnLadder
                         || !(onTarget || (fromNominal < 0.5 && off < 3.2)))
+                    {
+                        BlockedJump = (plan.From, plan.To);
                         return Fail(idle, $"gap jump missed: landed at {pos} instead of {step.Pos}");
+                    }
                     _pk.Phase = ParkourPhase.Landed;
                     _pk.Ticks = 0;
                     goto default;
@@ -531,7 +534,9 @@ public sealed class PathFollower
             }
             default:
             {
-                if (_pk.Ticks > Parkour.SettleTicks + 20) return Fail(idle, "stuck after a gap jump");
+                // Never planned again (live 10-28, 67: the same jump by the main house re-planned 4x per goto, 3 gotos, each
+                // "stuck after a gap jump" at 8.4,64.2,-8.3): the re-plan routes around it (door, ladder, stairs).
+                if (_pk.Ticks > Parkour.SettleTicks + 20) { BlockedJump = (plan.From, plan.To); return Fail(idle, "stuck after a gap jump"); }
                 if (!s.OnGround && !s.InWater && s.Velocity.Y < -0.2 && Safety.IsPlayerOverVoid(w, pos))
                     return Fail(idle, "falling into the void");
                 return Move(plan.Schedule.InputAt(plan.Schedule.JumpTick + 1, s));

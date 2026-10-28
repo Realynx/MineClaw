@@ -134,6 +134,56 @@ public sealed partial class MinecraftClient
     private string? CombatBlocks(string action) =>
         _combatInstance is { Engaged: true } c && action is not ("spar" or "attack" or "eat") ? "busy: " + c.Status.Split('|')[0].Trim() : null;
 
+    /// <summary>Waits (bounded) for a reflex fight to end so a job can run after it.</summary>
+    private async Task WaitForReflexFightAsync(CombatEngine engine, CancellationToken ct)
+    {
+        var limit = Options.Combat.ReflexWaitForJobs;
+        if (limit <= TimeSpan.Zero) return;
+        var until = DateTime.UtcNow + limit;
+        try
+        {
+            while (engine.Engaged && engine.ReflexEngaged && DateTime.UtcNow < until)
+                await Task.Delay(50, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { /* the caller's token decides */ }
+    }
+
+    /// <summary>
+    /// Foot cells walks keep out of: within <see cref="CombatOptions.CreeperAvoidRadius"/> of a creeper (its ignite range),
+    /// except around a creeper the goal or the bot itself is already next to (the combat reflex deals with that one).
+    /// </summary>
+    public IReadOnlySet<BlockPos>? CreeperAvoidCells(Goal goal)
+    {
+        double r = Options.Combat.CreeperAvoidRadius;
+        if (r <= 0) return null;
+        var me = World.Player.Position;
+        HashSet<BlockPos>? set = null;
+        foreach (var c in World.Entities.Nearby(me, 32, e => e.Kind == EntityKind.Mob && e.TypeId == MobTypes.Creeper))
+        {
+            double dme = Math.Sqrt((c.Position.X - me.X) * (c.Position.X - me.X) + (c.Position.Z - me.Z) * (c.Position.Z - me.Z));
+            if (dme <= r + 0.5) continue;
+            int cx = (int)Math.Floor(c.Position.X), cy = (int)Math.Floor(c.Position.Y + 1e-6), cz = (int)Math.Floor(c.Position.Z);
+            int ri = (int)Math.Ceiling(r);
+            var cells = new List<BlockPos>();
+            bool goalInside = false;
+            for (int x = cx - ri; x <= cx + ri && !goalInside; x++)
+            for (int z = cz - ri; z <= cz + ri && !goalInside; z++)
+            {
+                double dx = x + 0.5 - c.Position.X, dz = z + 0.5 - c.Position.Z;
+                if (dx * dx + dz * dz > r * r) continue;
+                for (int y = cy - 2; y <= cy + 2; y++)
+                {
+                    var p = new BlockPos(x, y, z);
+                    if (goal.IsReached(p)) { goalInside = true; break; }
+                    cells.Add(p);
+                }
+            }
+            if (goalInside) continue;
+            (set ??= new HashSet<BlockPos>()).UnionWith(cells);
+        }
+        return set;
+    }
+
     // ------------------------------------------------------------------ public API (tools)
 
     /// <summary>

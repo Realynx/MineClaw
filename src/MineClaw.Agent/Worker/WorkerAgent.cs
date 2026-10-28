@@ -288,7 +288,7 @@ public sealed class WorkerAgent
                         stop = "repeated failure";
                         summary = $"failed: {u.Name}: {TextUtil.Truncate(TextUtil.OneLine(r.Text), 260)}";
                     }
-                    if (!r.Ok && _o.MaxIdenticalFailures > 0)
+                    if (!r.Ok && _o.MaxIdenticalFailures > 0 && !ToolCallGuard.IsTransientCombat(r.Text))
                     {
                         var key = FailureKey(u.Name, r.Text);
                         int n = failures[key] = failures.GetValueOrDefault(key) + 1;

@@ -149,24 +149,35 @@ public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = nul
         return ok ? ActionResult.Success(text, mined) : ActionResult.Fail(text, mined);
     }
 
-    /// <summary>Everything but tools/food/reserved into storage: the store chest, else known chests with room, else a new one.</summary>
+    /// <summary>
+    /// Everything but tools/food/reserved into storage: the store chest, else every known chest (with room in memory first,
+    /// then the ones memory calls full: opened and re-checked, never trusted blind), else a new one. A failure names each chest
+    /// tried and why.
+    /// </summary>
     public async Task<ActionResult> DepositAsync(BlockPos? store, CancellationToken ct)
     {
         var reserved = c.ReservedItems;
         int Loose() => c.World.Inventory.PlayerSlots().Skip(9).Count(s => !Keep(s, reserved));
         int before = Loose();
         if (before == 0) return ActionResult.Success("nothing to deposit");
+        var storing = c.World.Inventory.PlayerSlots().Skip(9).Where(s => !Keep(s, reserved)).Select(s => (int)s.Id).ToHashSet();
         var tried = new HashSet<BlockPos>();
-        foreach (var chest in Candidates(store))
+        var why = new List<string>();
+        foreach (var chest in Candidates(c, _s.Observations, store, storing))
         {
             if (!tried.Add(chest)) continue;
-            await c.DepositAllAsync(chest, s => !Keep(s, reserved), ct).ConfigureAwait(false);
-            if (Loose() == 0 || c.World.Inventory.RoomFor(new ItemStack(Blocks.Cobblestone, 1, 0)) > 0 && Loose() < before)
-                return ActionResult.Success($"deposited at {chest.X},{chest.Y},{chest.Z}", before - Loose());
+            if (tried.Count > MaxChestsTried) break;
+            int was = Loose();
+            var r = await c.DepositAllAsync(chest, s => !Keep(s, reserved), ct).ConfigureAwait(false);
+            int now = Loose();
+            if (now == 0 || c.World.Inventory.RoomFor(new ItemStack(Blocks.Cobblestone, 1, 0)) > 0 && now < before)
+                return ActionResult.Success($"deposited at {chest.X},{chest.Y},{chest.Z}", before - now);
+            why.Add($"{chest.X},{chest.Y},{chest.Z} {(r.Ok || now < was ? "filled up" : Short(r.Message))}");
         }
-        // Every known chest is full (or none is known): a new one, labelled in shared memory.
+        // Every known chest is really full (or none is known): a new one, labelled in shared memory.
         var placed = await PlaceChestAsync(ct).ConfigureAwait(false);
-        if (placed is not { } p) return ActionResult.Fail("storage full: every known chest is full and I have no chest (or planks) to place a new one");
+        string tries = why.Count == 0 ? "no known chest" : "tried " + string.Join("; ", why.Take(6));
+        if (placed is not { } p) return ActionResult.Fail($"storage full: {tries}; no chest (or planks) to place a new one");
         await c.DepositAllAsync(p, s => !Keep(s, reserved), ct).ConfigureAwait(false);
         var label = $"cobble_storage_{p.X}_{p.Z}";
         try { _s.LabelChest?.Invoke(label, p); } catch (Exception) { /* label is best effort */ }
@@ -175,26 +186,44 @@ public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = nul
             : ActionResult.Fail($"placed a chest at {p.X},{p.Y},{p.Z} but couldn't deposit into it");
     }
 
-    private IEnumerable<BlockPos> Candidates(BlockPos? store)
+    /// <summary>Most chests one deposit opens before calling storage full.</summary>
+    public int MaxChestsTried { get; init; } = 12;
+
+    private static string Short(string s) => s.Length <= 50 ? s : s[..50];
+
+    /// <summary>
+    /// Chests to try, in order: <paramref name="first"/> (the store), then every remembered chest by <see cref="ChestRoom.Ranked"/>
+    /// (room in memory first, then the "full" ones, oldest memory first), then chests in sight that memory doesn't know yet.
+    /// </summary>
+    public static IEnumerable<BlockPos> Candidates(IGameClient c, ObservationStore? obs, BlockPos? first, IReadOnlyCollection<int>? storing = null)
     {
-        if (store is { } s) yield return s;
-        if (_s.Observations is not { } obs) yield break;
+        if (first is { } s) yield return s;
         var me = c.World.Player.Position;
-        List<(ObservationRow Row, double Distance)> rows;
-        try { rows = obs.Nearest("chest", me.X, me.Y, me.Z, limit: 8, maxDistance: 64); }
-        catch (Exception) { yield break; }
-        foreach (var (row, _) in rows)
+        var known = new HashSet<BlockPos>();
+        if (obs != null)
         {
-            if (row.Bounds is not { } b) continue;
-            bool dbl = Math.Abs(b.MaxX - b.MinX) >= 1 || Math.Abs(b.MaxZ - b.MinZ) >= 1;
-            int used = 0;
-            try
+            IReadOnlyList<(ObservationRow Row, double Distance, bool RoomInMemory)> rows;
+            try { rows = ChestRoom.Ranked(obs, me.X, me.Y, me.Z, storing); }
+            catch (Exception) { rows = []; }
+            foreach (var (row, _, _) in rows)
             {
-                foreach (var it in obs.Contents(row.Id))
-                    used += (it.Count + Math.Max(1, Items.Exists(it.ItemId) ? Items.Get(it.ItemId).MaxStack : 64) - 1) / Math.Max(1, Items.Exists(it.ItemId) ? Items.Get(it.ItemId).MaxStack : 64);
+                var b = row.Bounds!.Value;
+                var p = new BlockPos((int)Math.Floor(b.MinX), (int)Math.Floor(b.MinY), (int)Math.Floor(b.MinZ));
+                known.Add(p);
+                if (b.MaxX > b.MinX || b.MaxZ > b.MinZ) known.Add(new BlockPos((int)Math.Floor(b.MaxX), (int)Math.Floor(b.MaxY), (int)Math.Floor(b.MaxZ)));
+                yield return p;
             }
-            catch (Exception) { }
-            if (used < (dbl ? 54 : 27)) yield return new BlockPos((int)Math.Floor(b.MinX), (int)Math.Floor(b.MinY), (int)Math.Floor(b.MinZ));
+        }
+        List<BlockPos> seen;
+        try { seen = c.World.FindBlocks(me, 24, (id, _) => id == Blocks.Chest, 16).Select(h => h.Pos).ToList(); }
+        catch (Exception) { yield break; }
+        foreach (var p in seen)
+        {
+            if (known.Contains(p) || (first is { } f && f == p)) continue;
+            // The other half of a pair is the same 54-slot window.
+            known.Add(p);
+            known.Add(p.Offset(1, 0, 0)); known.Add(p.Offset(-1, 0, 0)); known.Add(p.Offset(0, 0, 1)); known.Add(p.Offset(0, 0, -1));
+            yield return p;
         }
     }
 

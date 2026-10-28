@@ -93,6 +93,13 @@ public sealed class BotHost : IDisposable
         rt.Chat.Accepted += m => corrections.OnChat(m.Player, m.Text);
         AttachHandoffIntents(client, rt, hiveBots, log);
         digCells.TaughtCell += (p, by) => corrections.OnTaught(p, by);
+        // Stray "cells" off the gen's dig layer (the block over a cell, taught by a punch while a player mined) go, logged.
+        try
+        {
+            foreach (var (cell, why) in digCells.PurgeOffLayer((p, why) => corrections.RetractBad(p, why)))
+                log?.LogInformation("dig cell {Cell} purged: {Why}", cell, why);
+        }
+        catch (Exception ex) { log?.LogDebug("dig cell purge skipped: {Err}", ex.Message); }
         // The protection policy (ARCHITECTURE.md "Protection policy"): every source in one place, soft vs hard, overrides.
         var placedStore = new PlacedBlockStore(rt.Db, client.World.Placed, log); // rule 1: own/hive placements, shared + persistent
         if (persist) placedStore.Start();
@@ -170,6 +177,12 @@ public sealed class BotHost : IDisposable
             {
                 bool nearGen = genCells(g.Pos).Any(c => Math.Abs(c.X - g.Pos.X) <= 3 && Math.Abs(c.Y - g.Pos.Y) <= 1 && Math.Abs(c.Z - g.Pos.Z) <= 3);
                 if (nearGen) log?.LogInformation("punch by {Player} at {Pos} next to the gen isn't a dig cell: {Why}", g.Player, g.Pos, why);
+                return;
+            }
+            // Players mining their own gen punch the cobble that forms over a cell too: off the known dig layer = not a cell.
+            if (digCells.OffLayer(g.Pos) is { } off)
+            {
+                log?.LogInformation("punch by {Player} at {Pos} isn't a dig cell: {Why}", g.Player, g.Pos, off);
                 return;
             }
             bool added = digCells.Register(g.Pos, g.Player);
@@ -413,6 +426,8 @@ public sealed class BotHost : IDisposable
         {
             Observations = rt.Observations,
             CellsNear = genCells,
+            KnownCell = digCells.IsDigCell,
+            ConfirmedCell = p => indexer?.IsConfirmedDigCell(p) == true,
             GeneratorCells = () =>
             {
                 var me = client.World.Player.Position.ToBlockPos();

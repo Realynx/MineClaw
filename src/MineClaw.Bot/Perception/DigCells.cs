@@ -106,6 +106,49 @@ public sealed partial class DigCells
         return removed;
     }
 
+    /// <summary>
+    /// Why <paramref name="p"/> can't be one of its generator's dig cells by the layout already known, or null: a gen digs in one
+    /// layer, so a cell off the layer most of its neighbouring known cells share (≥ 2 of them, within 6 blocks) is the block
+    /// over/under a cell (live 10-27 22:13-22:14: players mining the gen "taught" 4,65,6 and 5,65,7 by punch; 69 then dug
+    /// 5,65,7 for 0 cobble). A regen-confirmed cell is always fine.
+    /// </summary>
+    public string? OffLayer(WPos p, IEnumerable<WPos>? others = null)
+    {
+        if (_confirmed?.Invoke(p) == true) return null;
+        return OffLayerOf(p, others ?? Taught());
+    }
+
+    /// <summary><see cref="OffLayer"/> without the regen-confirmed exemption.</summary>
+    public static string? OffLayerOf(WPos p, IEnumerable<WPos> others)
+    {
+        var near = others.Where(q => q != p && Math.Abs(q.X - p.X) <= 6 && Math.Abs(q.Z - p.Z) <= 6 && Math.Abs(q.Y - p.Y) <= 2).ToList();
+        if (near.Count < 2) return null;
+        var layers = near.GroupBy(q => q.Y).Select(g => (Y: g.Key, N: g.Count())).OrderByDescending(t => t.N).ToList();
+        var top = layers[0];
+        if (top.Y == p.Y || (layers.Count > 1 && layers[1].N == top.N)) return null;
+        int mine = near.Count(q => q.Y == p.Y);
+        if (mine >= top.N) return null;
+        return $"off the gen's dig layer y{top.Y} ({top.N} known cells there)";
+    }
+
+    /// <summary>
+    /// Drops every taught cell that is off its generator's dig layer (see <see cref="OffLayer"/>), through
+    /// <paramref name="retract"/> (memory moves its key to the history). Returns what was dropped, with why.
+    /// </summary>
+    public IReadOnlyList<(WPos Cell, string Why)> PurgeOffLayer(Action<WPos, string>? retract = null)
+    {
+        var all = Taught();
+        var bad = new List<(WPos, string)>();
+        foreach (var p in all)
+            if (OffLayer(p, all) is { } why) bad.Add((p, why));
+        foreach (var (p, why) in bad)
+        {
+            if (retract != null) retract(p, "not a dig cell: " + why);
+            else Retract(p);
+        }
+        return bad;
+    }
+
     /// <summary>The gen structure nearest <paramref name="p"/> (within <paramref name="max"/> blocks), or null.</summary>
     public static Structure? GeneratorNear(MemoryStore memory, int dim, WPos p, double max = 6) =>
         memory.Read(d => d.Structures.Where(x => x.Dimension == dim && x.Min != null

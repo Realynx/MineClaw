@@ -108,10 +108,12 @@ public sealed class PacketConnection : IDisposable
         PacketRegistry.Write(new MinecraftWriter(ms), packet, Outbound);
         lock (_sendLock)
         {
+            // Logged before the bytes leave: a fast server's reply (read on another thread) can't be recorded ahead of the
+            // packet it answers (the recorder test saw the handshake reply as frame 0 under full-suite load).
+            TrafficLog?.Invoke(new PacketTraffic(Outbound, packet, ms.GetBuffer().AsMemory(0, (int)ms.Length)));
             _stream.Write(ms.GetBuffer(), 0, (int)ms.Length);
             _stream.Flush();
             PacketsSent++;
-            TrafficLog?.Invoke(new PacketTraffic(Outbound, packet, ms.GetBuffer().AsMemory(0, (int)ms.Length)));
         }
     }
 

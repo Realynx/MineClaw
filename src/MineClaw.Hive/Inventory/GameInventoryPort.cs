@@ -18,7 +18,6 @@ namespace MineClaw.Hive.Inventory;
 /// </summary>
 public sealed class GameInventoryPort(IGameClient client, ObservationStore observations, MemoryStore? memory = null) : IInventoryPort
 {
-    private const int ChestSlots = 27;
 
     public int Dimension => client.World.Dimension;
 
@@ -83,20 +82,16 @@ public sealed class GameInventoryPort(IGameClient client, ObservationStore obser
     public IReadOnlyList<StorageChest> Chests()
     {
         var me = client.World.Player.Position;
-        var rows = observations.Nearest("chest", me.X, me.Y, me.Z, limit: 16, maxDistance: 96);
+        // Every remembered chest (upstairs and behind doors too): FreeSlots is memory's estimate (free slots, or 1 when only
+        // partial stacks of what we carry have room), never a reason to skip a chest unopened.
+        var storing = client.World.Inventory.PlayerSlots().Skip(9).Where(s => !s.IsEmpty).Select(s => (int)s.Id).ToHashSet();
         var list = new List<StorageChest>();
-        foreach (var (row, dist) in rows)
+        foreach (var (row, dist, _) in MineClaw.Agent.Rag.ChestRoom.Ranked(observations, me.X, me.Y, me.Z, storing))
         {
-            if (row.Removed != null || row.Bounds is not { } b) continue;
-            bool dbl = Math.Abs(b.MaxX - b.MinX) >= 1 || Math.Abs(b.MaxZ - b.MinZ) >= 1;
-            int capacity = dbl ? ChestSlots * 2 : ChestSlots;
-            int used = 0;
-            foreach (var c in observations.Contents(row.Id))
-            {
-                int max = MineClaw.Data.Items.Exists(c.ItemId) ? Math.Max(1, MineClaw.Data.Items.Get(c.ItemId).MaxStack) : 64;
-                used += (c.Count + max - 1) / max;
-            }
-            list.Add(new StorageChest(new BlockPos((int)b.MinX, (int)b.MinY, (int)b.MinZ), Math.Max(0, capacity - used), dist));
+            var b = row.Bounds!.Value;
+            var (free, partial) = MineClaw.Agent.Rag.ChestRoom.Estimate(b, observations.Contents(row.Id), storing);
+            list.Add(new StorageChest(new BlockPos((int)Math.Floor(b.MinX), (int)Math.Floor(b.MinY), (int)Math.Floor(b.MinZ)),
+                free > 0 ? free : partial > 0 ? 1 : 0, dist));
         }
         return list.OrderBy(c => c.Distance).ToList();
     }

@@ -83,12 +83,19 @@ public sealed partial class MinecraftClient
             filter ??= DefaultDepositFilter;
             var before = InventoryCounts();
             bool full = false;
+            // A stack that didn't fit only means no room for THAT item (no empty slot, its partial stacks full): other items may
+            // still top up their own partial stacks, so go on with them (live 10-27: one leftover ended the whole deposit).
+            var noRoom = new HashSet<(int, int)>();
             for (int slot = w.MainStart; slot < w.SlotCount; slot++)
             {
                 var s = w.Get(slot);
-                if (s.IsEmpty || !filter(s) || ReservedItems.Contains(s.Id)) continue;
+                if (s.IsEmpty || !filter(s) || ReservedItems.Contains(s.Id) || noRoom.Contains((s.Id, s.Damage))) continue;
                 await ClickCoreAsync(slot, false, true, c).ConfigureAwait(false);
-                if (!w.Get(slot).IsEmpty) { full = true; break; }
+                if (!w.Get(slot).IsEmpty)
+                {
+                    full = true;
+                    noRoom.Add((s.Id, s.Damage));
+                }
             }
             var summary = DiffSummary(before, InventoryCounts(), out int moved);
             if (container is not null) await EnsureNoWindowAsync(c).ConfigureAwait(false);

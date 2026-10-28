@@ -59,6 +59,12 @@ public sealed class AcquisitionSources
     /// <summary>All dig cells of the generator around a cell (claim-aware cell choice, <see cref="GameToolSet.PickGeneratorCell"/>).</summary>
     public Func<BlockPos, IReadOnlyList<BlockPos>>? CellsNear { get; set; }
 
+    /// <summary>A taught or regen-confirmed dig cell (never geometry alone): the only cells a claimed-cell fallback may take.</summary>
+    public Func<BlockPos, bool>? KnownCell { get; set; }
+
+    /// <summary>A cell whose refill after a dig was observed (the world indexer).</summary>
+    public Func<BlockPos, bool>? ConfirmedCell { get; set; }
+
     /// <summary>The one-line plan of a non-trivial acquisition ("no pick, making one: logs→planks→..."): log/TUI.</summary>
     public Action<string>? Announce { get; set; }
 

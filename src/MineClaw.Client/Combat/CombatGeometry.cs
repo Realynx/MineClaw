@@ -99,6 +99,51 @@ public static class CombatGeometry
         return best;
     }
 
+    /// <summary>
+    /// Can the bot walk (standable cells, steps of ±1, no gap jumps, no digging/placing) to a cell within
+    /// <paramref name="reach"/> (horizontal, |dy| ≤ 2) of <paramref name="target"/>? A bounded flood fill (≤ <paramref name="maxNodes"/>
+    /// cells, ≤ <paramref name="radius"/> from the bot): a creeper across a void gap or a skeleton on a ledge is unreachable
+    /// (live 10-27/28: both held the body as a 0-hit fight).
+    /// </summary>
+    public static bool CanWalkNear(IBlockAccess w, Vec3d me, Vec3d target, double reach, int radius = 16, int maxNodes = 600)
+    {
+        int sx = (int)Math.Floor(me.X), sy = (int)Math.Floor(me.Y + 1e-6), sz = (int)Math.Floor(me.Z);
+        int ty = (int)Math.Floor(target.Y + 1e-6);
+        bool Near(int x, int y, int z)
+        {
+            double dx = x + 0.5 - target.X, dz = z + 0.5 - target.Z;
+            return dx * dx + dz * dz <= reach * reach && Math.Abs(y - ty) <= 2;
+        }
+        if (Near(sx, sy, sz)) return true;
+        var seen = new HashSet<BlockPos> { new(sx, sy, sz) };
+        var q = new Queue<BlockPos>();
+        q.Enqueue(new BlockPos(sx, sy, sz));
+        int[] dxs = [1, -1, 0, 0], dzs = [0, 0, 1, -1];
+        while (q.Count > 0 && seen.Count < maxNodes)
+        {
+            var c = q.Dequeue();
+            for (int i = 0; i < 4; i++)
+            {
+                int nx = c.X + dxs[i], nz = c.Z + dzs[i];
+                if (Math.Abs(nx - sx) > radius || Math.Abs(nz - sz) > radius) continue;
+                for (int dy = 1; dy >= -2; dy--)
+                {
+                    int ny = c.Y + dy;
+                    var n = new BlockPos(nx, ny, nz);
+                    if (seen.Contains(n) || !Safety.IsStandable(w, nx, ny, nz)) continue;
+                    // A step up needs head room above the current cell; a drop needs the column above the landing clear.
+                    if (dy == 1 && BlockShapes.HasCollision(w, c.X, c.Y + 2, c.Z)) continue;
+                    if (dy < 0 && (BlockShapes.HasCollision(w, nx, c.Y, nz) || BlockShapes.HasCollision(w, nx, c.Y + 1, nz))) continue;
+                    seen.Add(n);
+                    if (Near(nx, ny, nz)) return true;
+                    q.Enqueue(n);
+                    break;
+                }
+            }
+        }
+        return false;
+    }
+
     /// <summary>Nearest safe cell (edge distance ≥ 2) where a block hides the bot's eyes from <paramref name="shooterEye"/>.</summary>
     public static BlockPos? CoverCell(IBlockAccess w, Vec3d me, Vec3d shooterEye, int radius = 5)
     {

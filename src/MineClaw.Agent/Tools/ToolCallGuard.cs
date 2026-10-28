@@ -139,11 +139,21 @@ public sealed class ToolCallGuard
         return null;
     }
 
+    private static readonly Regex CombatBusy = new(@"(?:busy|interrupted): fighting", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// The body was briefly held by a combat reflex ("busy: fighting skeleton 11.4m ...", "interrupted: fighting ..."): says
+    /// nothing about the job itself, so it is never remembered or counted as the job failing (live 10-28: "not retried:
+    /// withdraw failed here 13s ago: busy: fighting spider" kept a deposit from running after the fight ended).
+    /// </summary>
+    public static bool IsTransientCombat(string? reason) => reason != null && CombatBusy.IsMatch(reason);
+
     /// <summary>Records a failure (normally fed by <see cref="ActivityManager.StepFinished"/>).</summary>
     public void RecordFailure(string tool, JsonElement input, string reason)
     {
         // A question back to the brain is not a failure, and a walk is never remembered as impossible.
         if (reason.Contains("needs_input", StringComparison.OrdinalIgnoreCase) || ActivityManager.MovementTools.Contains(tool)) return;
+        if (IsTransientCombat(reason)) return;
         var f = new Failure(tool, Targets(tool, input), Signature(tool, input), TextUtil.Truncate(TextUtil.OneLine(reason), 160), _time.GetUtcNow())
         {
             Task = tool == DelegateTool ? TaskWords(input) : null,

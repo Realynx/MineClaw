@@ -26,19 +26,67 @@ public static class GameToolSet
 
     /// <summary>
     /// The dig cell to harvest: the asked one when free, else the nearest unclaimed cell of the same generator ("6,64,8 is
-    /// maid_chan's; took 4,64,6"). Without a hive every cell is free.
+    /// maid_chan's; took 4,64,6"). Without a hive every cell is free. The fallback never invents a cell (live 10-28, 69:
+    /// "5,64,7 is taken by another bot; took the free cell 5,65,7" — a block over a cell, taught by a stray punch): only
+    /// <see cref="FallbackCells"/>, else "busy: every dig cell ... is taken" (the caller waits or does another job).
     /// </summary>
     internal static (BlockPos? Cell, string? Note) PickGeneratorCell(IGameClient c, BlockPos asked, Func<BlockPos, IReadOnlyList<BlockPos>>? cells)
     {
         var claims = (c as ClaimAwareGameClient)?.Claims;
         int dim = c.World.Dimension;
         if (claims == null || claims.IsFree(MineClaw.World.Claims.ClaimKey.Block(asked, dim))) return (asked, null);
-        var all = (cells?.Invoke(asked) ?? Perception.BlockDescriber.GenCellsNear(c.World, asked, 4))
-            .Where(x => x != asked).Distinct().OrderBy(x => x.DistanceSquaredTo(asked)).ToList();
+        var all = FallbackCells(c, asked, cells);
         foreach (var x in all)
             if (claims.IsFree(MineClaw.World.Claims.ClaimKey.Block(x, dim)))
                 return (x, $"{Locations.Fmt(asked)} is taken by another bot; took the free cell {Locations.Fmt(x)}");
         return (null, $"busy: every dig cell of that generator is taken ({Locations.Fmt(asked)}{(all.Count > 0 ? " +" + all.Count : "")})");
+    }
+
+    /// <summary>
+    /// The generator's other dig cells a bot may move to when <paramref name="asked"/> is claimed, nearest first: on the asked
+    /// cell's own layer (a gen digs in one layer: never the block over or under a cell), taught or regen-confirmed
+    /// (<see cref="AcquisitionSources.KnownCell"/>), and a taught one only while the world still reads it as a cell (not the
+    /// lava/water source a stray punch landed on). Only when the generator has no known cell at all do geometry cells (solid
+    /// cobble/stone with lava flowing in and water touching) count.
+    /// </summary>
+    internal static List<BlockPos> FallbackCells(IGameClient c, BlockPos asked, Func<BlockPos, IReadOnlyList<BlockPos>>? cells)
+    {
+        var src = Acquisition.Of(c);
+        var known = src?.KnownCell;
+        var confirmed = src?.ConfirmedCell;
+        var raw = (cells?.Invoke(asked) ?? Perception.BlockDescriber.GenCellsNear(c.World, asked, 4))
+            .Where(x => x != asked && x.Y == asked.Y).Distinct().ToList();
+        bool Valid(BlockPos x) => confirmed?.Invoke(x) == true || Perception.BlockDescriber.IsGenCell(c.World, x);
+        List<BlockPos> list;
+        if (known != null && (known(asked) || raw.Any(known)))
+            list = raw.Where(x => known(x) && Valid(x)).ToList();
+        else
+            list = raw.Where(x => c.World.GetBlock(x) is Blocks.Cobblestone or Blocks.Stone && Perception.BlockDescriber.IsGenCell(c.World, x)).ToList();
+        return list.OrderBy(x => x.DistanceSquaredTo(asked)).ToList();
+    }
+
+    private static bool IsAuto(string at) => at.Trim().ToLowerInvariant() is "auto" or "any" or "free" or "free cell" or "any cell";
+
+    /// <summary>
+    /// <c>harvest_generator at=auto</c>: the nearest taught/regen-confirmed dig cell no other hive bot holds (else the nearest
+    /// one, so the caller's claim-aware pick queues for it). Never a geometry guess when cells were taught.
+    /// </summary>
+    internal static (BlockPos? Cell, string? Note) AutoGeneratorCell(IGameClient c, Func<BlockPos, IReadOnlyList<BlockPos>>? cells)
+    {
+        var src = Acquisition.Of(c);
+        var me = c.World.Player.Position.ToBlockPos();
+        var known = src?.KnownCell;
+        var all = (src?.GeneratorCells?.Invoke() ?? cells?.Invoke(me) ?? Perception.BlockDescriber.GenCellsNear(c.World, me, 16)).Distinct().ToList();
+        var list = known != null && all.Any(known) ? all.Where(known).ToList() : all;
+        list = list.Where(x => src?.ConfirmedCell?.Invoke(x) == true || Perception.BlockDescriber.IsGenCell(c.World, x)).ToList();
+        var layer = list;
+        list = list.Where(x => src?.ConfirmedCell?.Invoke(x) == true || Perception.DigCells.OffLayerOf(x, layer) == null)
+            .OrderBy(x => x.DistanceSquaredTo(me)).ToList();
+        if (list.Count == 0) return (null, "needs_input: no known generator cell for at=auto; punch the gen's cells and I'll mine only those");
+        var claims = (c as ClaimAwareGameClient)?.Claims;
+        int dim = c.World.Dimension;
+        var free = claims == null ? list[0] : list.FirstOrDefault(x => claims.IsFree(MineClaw.World.Claims.ClaimKey.Block(x, dim)), list[0]);
+        return (free, $"auto: cell {Locations.Fmt(free)}");
     }
 
     /// <summary>Lava and water next to it (geometry), or one of the generator's taught / regen-confirmed cells.</summary>
@@ -146,12 +194,22 @@ public static class GameToolSet
             }, longRunning: true);
         tools.Register("harvest_generator",
             "Repeatedly mine a cobble generator's output block. Big counts run unattended: deposits when full (store), re-tools, eats.",
-            ToolSchema.Create().Str("at", "output block " + At).Int("count", "up to 20000").Str("store", "chest " + At, required: false)
+            ToolSchema.Create().Str("at", "output block " + At + ", or auto").Int("count", "up to 20000").Str("store", "chest " + At, required: false)
                 .Str("stand", "taught stand spot x,y,z (default: the demo's)", required: false).Build(),
             async (i, ct) =>
             {
                 var at = i.ReqStr("at");
-                var p = Locations.ParseCoords(at) ?? places.Resolve(at, "mine") ?? places.Resolve(at, "output") ?? places.Resolve(at);
+                string? autoNote = null;
+                BlockPos? p;
+                if (IsAuto(at))
+                {
+                    // Several bots running one script (live 10-28: hive_acff51 hardcoded 5,64,7 for all three clones): each takes
+                    // a distinct free taught/confirmed cell through the claim board.
+                    (p, autoNote) = AutoGeneratorCell(c, generatorCells);
+                    if (p is null) return ToolResult.Error(autoNote ?? "needs_input: which blocks are the cobble generator's cells? Punch them");
+                    at = Locations.Fmt(p.Value);
+                }
+                else p = Locations.ParseCoords(at) ?? places.Resolve(at, "mine") ?? places.Resolve(at, "output") ?? places.Resolve(at);
                 if (p is not { } g) return ToolResult.Error($"unknown generator '{at}'");
                 // Hive: another bot already mines that cell -> take a free dig cell of the same generator instead.
                 var (cell, note) = PickGeneratorCell(c, g, generatorCells);
@@ -169,6 +227,7 @@ public static class GameToolSet
                     note = "waited for a free cell" + (note == null ? "" : "; " + note);
                 }
                 if (cell is not { } pick) return ToolResult.Error(note ?? $"no free dig cell at {Locations.Fmt(g)}");
+                if (autoNote != null) note = note == null ? autoNote : autoNote + "; " + note;
                 // Only a generator cell (lava + water next to it, or a taught/regen-confirmed one) is ever dug here.
                 // (A named place is a taught key; the yield guard still stops on a wrong one.)
                 if (Locations.ParseCoords(at) != null && !IsGeneratorCell(c, pick, generatorCells))
@@ -209,7 +268,7 @@ public static class GameToolSet
                 else if (stand == null) stand = Taught(pick);
                 // Every cell of this generator the stand reaches is dug in rotation (never hammering one cell).
                 var rotation = (generatorCells?.Invoke(pick) ?? Perception.BlockDescriber.GenCellsNear(c.World, pick, 4))
-                    .Where(x => x != pick && Math.Abs(x.X - pick.X) <= 4 && Math.Abs(x.Y - pick.Y) <= 2 && Math.Abs(x.Z - pick.Z) <= 4)
+                    .Where(x => x != pick && Math.Abs(x.X - pick.X) <= 4 && x.Y == pick.Y && Math.Abs(x.Z - pick.Z) <= 4)
                     .Where(x => IsGeneratorCell(c, x, generatorCells)).Distinct().ToList();
                 var loop = new GeneratorLoop(c, generator);
                 var r = R(await loop.RunAsync(pick, Math.Clamp(i.Int("count") ?? 16, 1, 20000), store, ct, stand, rotation));
@@ -265,9 +324,8 @@ public static class GameToolSet
             async (i, ct) =>
             {
                 var names = i.StrList("items");
-                var at = DepositAt(i, places, names, out var err) ?? NearestChest(c);
+                var asked = DepositAt(i, places, names, out var err);
                 if (err != null) return err;
-                if (at == null) return ToolResult.Error("no chest nearby");
                 Func<ItemStack, bool>? filter = null;
                 if (names.Count > 0)
                 {
@@ -277,7 +335,8 @@ public static class GameToolSet
                         else return ToolResult.Error($"unknown item '{n}'");
                     filter = s => ids.Contains(s.Id);
                 }
-                return R(await c.DepositAllAsync(at, filter, ct));
+                if (asked is { } chosen) return R(await c.DepositAllAsync(chosen, filter, ct));
+                return await DepositAnywhereAsync(c, generator?.Observations, filter, ct);
             }, longRunning: true);
         tools.Register("withdraw", "Take items from a chest (nearest if omitted).",
             ToolSchema.Create().Str("item").Int("count", "default 64", required: false).Str("at", At, required: false).Build(),
@@ -423,6 +482,27 @@ public static class GameToolSet
         if (Items.ByName(s) != null) { items.Insert(0, s); return null; }
         error = ToolResult.Error($"unknown place '{s}' (deposit{{at?, items?}}: at = chest x,y,z or saved name)");
         return null;
+    }
+
+    /// <summary>
+    /// <c>deposit</c> with no chest named: the nearest chest, then every other known chest (shared memory's room estimate
+    /// first, "full" ones re-checked by opening them), until something goes in. "storage full" only after each was tried,
+    /// naming them (live 10-27 23:06: "all known chests full" while two chests upstairs were nearly empty).
+    /// </summary>
+    internal static async Task<ToolResult> DepositAnywhereAsync(IGameClient c, MineClaw.Agent.Rag.ObservationStore? obs, Func<ItemStack, bool>? filter, CancellationToken ct)
+    {
+        var storing = c.World.Inventory.PlayerSlots().Skip(9).Where(s => !s.IsEmpty && (filter?.Invoke(s) ?? true)).Select(s => (int)s.Id).ToHashSet();
+        var why = new List<string>();
+        int tried = 0;
+        foreach (var chest in GeneratorLoop.Candidates(c, obs, NearestChest(c), storing).Distinct())
+        {
+            if (++tried > 12) break;
+            var r = await c.DepositAllAsync(chest, filter, ct).ConfigureAwait(false);
+            if (r.Ok) return ToolResult.Success($"{r.Message} in chest {chest.X},{chest.Y},{chest.Z}");
+            if (r.Message.StartsWith("nothing to deposit", StringComparison.Ordinal)) return R(r);
+            why.Add($"{chest.X},{chest.Y},{chest.Z}: {(r.Message.Length > 50 ? r.Message[..50] : r.Message)}");
+        }
+        return tried == 0 ? ToolResult.Error("no chest nearby") : ToolResult.Error("storage full: tried " + string.Join("; ", why.Take(6)));
     }
 
     private static BlockPos? NearestChest(IGameClient c) =>

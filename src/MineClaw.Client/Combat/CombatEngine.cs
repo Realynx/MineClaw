@@ -52,8 +52,12 @@ public sealed class CombatEngine
         public required string Reason;
         public int TargetId;
         public required string TargetName;
-        public long StartTick, LastProgressTick, BackoffUntil, StanceUntil, FleeStart = -1, LastSample;
-        public int Swings, Hits, Unconfirmed, DamageTaken, HitsReceived, Knockbacks, GuardInterventions, Kills;
+        public long StartTick, LastProgressTick, BackoffUntil, StanceUntil, FleeStart = -1, LastSample, TargetSince;
+        public int Swings, Hits, Unconfirmed, DamageTaken, HitsReceived, Knockbacks, GuardInterventions, Kills, TargetHits;
+        /// <summary>Not a fight: a short move into cover from a ranged mob the bot can't reach.</summary>
+        public bool Cover;
+        /// <summary>The reflex gave up on this target (it can't be reached): remembered so it doesn't re-trigger.</summary>
+        public bool GaveUp;
         public double PrevDist = double.MaxValue, BestDist = double.MaxValue;
         public bool Explicit, FuseAlerted, LowAlerted;
         public BlockPos? Stance;
@@ -72,6 +76,17 @@ public sealed class CombatEngine
     private sealed record AttackCmd(int TargetId, TaskCompletionSource<string> Done) : Signal;
     private sealed record StopCmd(string Reason) : Signal;
 
+    /// <summary>A mob the reflex gave up on (couldn't reach it, or took cover from it): it re-triggers only when it becomes
+    /// reachable (within melee reach with line of sight), a melee mob actually hits the bot, or a creeper gets within its
+    /// ignite range / starts fusing. Ranged hits only ever send the bot into cover.</summary>
+    private sealed class Unreachable
+    {
+        public long Tick, LastCover = long.MinValue / 2;
+        public Vec3d Pos;
+        public required string Name;
+    }
+
+    private readonly Dictionary<int, Unreachable> _unreachable = new();
     private readonly WorldState _w;
     private readonly ConcurrentQueue<Signal> _signals = new();
     private readonly Dictionary<int, long> _lastAttack = new(), _lastHurt = new(), _lastSwing = new(), _provoked = new(), _dead = new();
@@ -113,6 +128,11 @@ public sealed class CombatEngine
     /// <summary>A fight (mob or spar) is running: the engine owns the bot's movement.</summary>
     public bool Engaged => _engaged;
     public bool Sparring => _engaged && _fight?.Kind == FightKind.Spar;
+    /// <summary>The fight is a reflex (defend/guard/cover), not a spar or an attack a player asked for: it ends on its own
+    /// within <see cref="CombatOptions.ZeroHitGiveUpTicks"/> when nothing is hit, so a job may wait it out.</summary>
+    public bool ReflexEngaged => _engaged && _fight is { Kind: FightKind.Mob, Explicit: false, Done: null };
+    /// <summary>Mobs the reflex gave up on (entity ids), for status and tests.</summary>
+    public IReadOnlyCollection<int> GaveUpOn { get { lock (_unreachable) return _unreachable.Keys.ToList(); } }
     /// <summary>One-line state for <c>combat_status</c>.</summary>
     public string Status => _status;
     /// <summary>Stop words heard so far (a spar countdown aborts when this changes).</summary>
@@ -208,10 +228,15 @@ public sealed class CombatEngine
         TrackHealth(phys, ctx);
         ExpirePending(ctx);
 
+        if (tick % 100 == 0) ForgetGoneMobs();
         CombatStep step;
         if (_fight is null)
         {
-            if (tick % 5 == 0 && Scan(phys) is { } found) ctx.Abort = StartFight(FightKind.Mob, found.E, found.Why, phys, explicitDone: null);
+            if (tick % 5 == 0 && Scan(phys) is { } found)
+            {
+                ctx.Abort = StartFight(FightKind.Mob, found.E, found.Why, phys, explicitDone: null);
+                if (found.Cover) _fight!.Cover = true;
+            }
         }
         if (_fight is { } f)
         {
@@ -323,6 +348,7 @@ public sealed class CombatEngine
     {
         if (_fight is not { } f) return;
         f.Hits++;
+        if (id == f.TargetId) f.TargetHits++;
         f.LastProgressTick = _tick;
         var e = _w.Entities.Get(id);
         var fields = new Dictionary<string, object?> { ["target"] = e?.DisplayName ?? id.ToString(), ["weapon"] = weapon, ["crit"] = couldCrit };
@@ -389,13 +415,13 @@ public sealed class CombatEngine
 
     // ------------------------------------------------------------------ reflex scan
 
-    private (Entity E, string Why)? Scan(PhysicsState phys)
+    private (Entity E, string Why, bool Cover)? Scan(PhysicsState phys)
     {
         var guarded = Guarded;
         if (!DefendSelf && guarded.Count == 0) return null;
         var me = phys.Position;
         var guards = guarded.Select(n => _w.Entities.FindPlayer(n)).Where(p => p is not null).ToList();
-        (Entity E, string Why)? best = null;
+        (Entity E, string Why, bool Cover)? best = null;
         double bestD = double.MaxValue;
         foreach (var e in _w.Entities.Nearby(me, Options.MaxEngageDistance, e => e.Kind == EntityKind.Mob))
         {
@@ -407,22 +433,95 @@ public sealed class CombatEngine
             if (e.TypeId == MobTypes.Enderman && !provoked) continue;
             if (e.TypeId == MobTypes.Spider && !_w.IsNight && !provoked) continue; // neutral in daylight
             double d = e.Position.DistanceTo(me);
+            bool ranged = prof.Tactic == MobTactic.Ranged;
+            bool creeper = e.TypeId == MobTypes.Creeper;
+            bool inReach = InMeleeReach(phys, e);
+            bool creeperDanger = creeper && (CombatRules.IsCreeperFusing(e) ? d <= CombatRules.CreeperCancelRange + 1 : Horizontal(me, e.Position) <= Options.CreeperAvoidRadius);
             string? why = null;
+            bool cover = false;
+
+            Unreachable? u;
+            lock (_unreachable) _unreachable.TryGetValue(e.Id, out u);
+            if (u is not null)
+            {
+                // Gave up on it: only a real change re-triggers (live 10-27 22:09-22:10: a creeper across a gap restarted a
+                // 20 s fight every 200 ms and cancelled every walk north).
+                bool hitMeSince = provoked && pt > u.Tick;
+                if (creeperDanger) why = CombatRules.IsCreeperFusing(e) ? "creeper fusing" : "creeper close";
+                else if (inReach && DefendSelf) why = "in reach";
+                else if (hitMeSince && !ranged && DefendSelf) why = "it attacked";
+                else if (hitMeSince && ranged && DefendSelf && _w.Player.Health <= Options.CoverHealth && _tick - u.LastCover > Options.CoverMaxTicks * 2
+                         && CombatGeometry.HasLineOfSight(_w, Eye(e), phys.EyePosition))
+                { why = "taking cover"; cover = true; }
+                if (why is null || d >= bestD) continue;
+                bestD = d;
+                best = (e, why, cover);
+                continue;
+            }
+
+            // Only what the bot can actually get to starts a fight: within melee reach, or a safe first step toward it.
+            bool approachable = inReach || CanWalkTo(me, e);
             if (DefendSelf)
             {
-                if (provoked && d <= 10) why = "it attacked";
-                else if (e.TypeId == MobTypes.Skeleton && d <= 12 && CombatGeometry.HasLineOfSight(_w, phys.EyePosition, Eye(e))) why = "skeleton in sight";
-                else if (e.TypeId == MobTypes.Creeper && d <= CombatRules.CreeperCancelRange) why = "creeper close";
-                else if (d <= Options.DefendRadius) why = "defending myself";
+                if (provoked && d <= 10 && !ranged) why = "it attacked";
+                else if (ranged && (provoked || CombatGeometry.HasLineOfSight(_w, phys.EyePosition, Eye(e))))
+                {
+                    // Live 10-28 night: skeletons at 4-11 m on ledges/across gaps held every bot "busy" with 0 hits.
+                    if (d <= Options.SkeletonEngageRange && approachable) why = provoked ? "it attacked" : "skeleton in sight";
+                    else if (provoked && _w.Player.Health <= Options.CoverHealth) { why = "taking cover"; cover = true; }
+                }
+                else if (creeperDanger) why = CombatRules.IsCreeperFusing(e) ? "creeper fusing" : "creeper close";
+                else if (creeper && d <= CombatRules.CreeperCancelRange && approachable) why = "creeper close";
+                else if (!creeper && d <= Options.DefendRadius && approachable) why = "defending myself";
             }
-            if (why is null)
+            if (why is null && approachable && (!ranged || d <= Options.SkeletonEngageRange))
                 foreach (var g in guards)
                     if (g!.Position.DistanceTo(e.Position) <= Options.GuardRadius) { why = "guarding " + g.Name; break; }
             if (why is null || d >= bestD) continue;
             bestD = d;
-            best = (e, why);
+            best = (e, why, cover);
         }
         return best;
+    }
+
+    private readonly Dictionary<int, (long Tick, BlockPos From, BlockPos At, bool Ok)> _walkable = new();
+
+    /// <summary>A walk (no jumps, digging or placing) gets the bot within melee reach of it; cached ~1 s per mob and spot.</summary>
+    private bool CanWalkTo(Vec3d me, Entity e)
+    {
+        var from = me.ToBlockPos();
+        var at = e.Position.ToBlockPos();
+        if (_walkable.TryGetValue(e.Id, out var c) && c.From == from && c.At == at && _tick - c.Tick < 20) return c.Ok;
+        bool ok = CombatGeometry.CanWalkNear(_w, me, e.Position, Options.Reach + 0.3);
+        if (_walkable.Count > 64) _walkable.Clear();
+        _walkable[e.Id] = (_tick, from, at, ok);
+        return ok;
+    }
+
+    /// <summary>Within melee reach of the bot's eyes with nothing in between: reachable right now.</summary>
+    private bool InMeleeReach(PhysicsState phys, Entity e) =>
+        CombatRules.ReachTo(phys.EyePosition, CombatRules.Hitbox(e)) <= Options.Reach + 0.3
+        && CombatGeometry.HasLineOfSight(_w, phys.EyePosition, CombatRules.AimPoint(e));
+
+    private void GiveUpOn(Fight f, bool cover)
+    {
+        if (f.Explicit || f.Done is not null || f.Kind != FightKind.Mob) return;
+        var e = _w.Entities.Get(f.TargetId);
+        lock (_unreachable)
+        {
+            if (!_unreachable.TryGetValue(f.TargetId, out var u))
+                _unreachable[f.TargetId] = u = new Unreachable { Name = f.TargetName, Tick = _tick };
+            u.Tick = _tick;
+            if (e is not null) u.Pos = e.Position;
+            if (cover) u.LastCover = _tick;
+        }
+    }
+
+    private void ForgetGoneMobs()
+    {
+        lock (_unreachable)
+            foreach (var id in _unreachable.Keys.ToList())
+                if (_w.Entities.Get(id) is null || _dead.ContainsKey(id)) _unreachable.Remove(id);
     }
 
     private bool StartFight(FightKind kind, Entity target, string why, PhysicsState phys, TaskCompletionSource<string>? explicitDone)
@@ -430,7 +529,7 @@ public sealed class CombatEngine
         _fight = new Fight
         {
             Kind = kind, Reason = why, TargetId = target.Id, TargetName = target.DisplayName, StartTick = _tick,
-            LastProgressTick = _tick, Done = explicitDone, LastSample = _tick,
+            LastProgressTick = _tick, Done = explicitDone, LastSample = _tick, TargetSince = _tick,
         };
         _engaged = true;
         var slots = _w.Inventory.PlayerSlots();
@@ -468,6 +567,7 @@ public sealed class CombatEngine
             ["edgeguard"] = f.GuardInterventions, ["ticks"] = _tick - f.StartTick, ["est_hp"] = f.Spar?.Model.Estimate,
         });
         Log("summary", null, null, new() { ["text"] = summary });
+        if (f.GaveUp || f.Cover) GiveUpOn(f, f.Cover);
         _fight = null;
         _engaged = false;
         _pending.Clear();
@@ -505,7 +605,8 @@ public sealed class CombatEngine
                 f.TargetId = next.E.Id;
                 f.TargetName = next.E.DisplayName;
                 f.PrevDist = f.BestDist = double.MaxValue;
-                f.LastProgressTick = _tick;
+                f.LastProgressTick = f.TargetSince = _tick;
+                f.TargetHits = 0;
                 f.Stance = null;
                 return face;
             }
@@ -517,7 +618,21 @@ public sealed class CombatEngine
         double dist = Horizontal(me, target.Position);
         if (dist > Options.MaxEngageDistance + 8) { EndFight(f, $"{f.TargetName} out of range", phys, ctx); return face; }
         if (dist < f.BestDist - 0.5) { f.BestDist = dist; f.LastProgressTick = _tick; }
-        if (_tick - f.LastProgressTick > Options.StaleFightTicks) { EndFight(f, $"couldn't reach {f.TargetName} safely", phys, ctx); return face; }
+        if (f.Cover) return CoverTick(f, phys, target, ctx);
+        if (_tick - f.LastProgressTick > Options.StaleFightTicks)
+        {
+            f.GaveUp = true;
+            EndFight(f, $"couldn't reach {f.TargetName} safely", phys, ctx);
+            return face;
+        }
+        // A reflex never holds the body for a mob it can't hit (live 10-28: "busy: fighting skeleton 11.4m: 0 hits").
+        if (!f.Explicit && f.Done is null && f.TargetHits == 0 && f.FleeStart < 0 && _tick - f.TargetSince > Options.ZeroHitGiveUpTicks
+            && !InMeleeReach(phys, target) && !AnyFusingCreeper(me, out _))
+        {
+            f.GaveUp = true;
+            EndFight(f, $"couldn't reach {f.TargetName} (0 hits in {Options.ZeroHitGiveUpTicks / 20}s), left it alone", phys, ctx);
+            return face;
+        }
         bool approaching = false;
         if ((_tick - f.StartTick) % 10 == 0) { approaching = dist < f.PrevDist - 0.3; f.PrevDist = dist; }
         else approaching = dist < f.PrevDist;
@@ -607,6 +722,28 @@ public sealed class CombatEngine
         var input = moveTo is { } m ? CombatGeometry.SteerTo(me, m, look.Yaw, look.Pitch) : look;
         if (jump) input = input with { Jump = true };
         return ctx.Block ? Slow(input) : input;
+    }
+
+    /// <summary>Into cover from a ranged mob the bot can't reach: the nearest cell its eyes can't see, else away from it;
+    /// ends once hidden or after <see cref="CombatOptions.CoverMaxTicks"/>.</summary>
+    private MoveInput CoverTick(Fight f, PhysicsState phys, Entity target, Ctx ctx)
+    {
+        var me = phys.Position;
+        var look = FaceAt(phys, target);
+        bool seen = CombatGeometry.HasLineOfSight(_w, Eye(target), phys.EyePosition);
+        if (!seen) { EndFight(f, $"took cover from {f.TargetName}", phys, ctx); return Hold(phys); }
+        if (_tick - f.StartTick > Options.CoverMaxTicks) { EndFight(f, $"no cover from {f.TargetName} nearby, kept working", phys, ctx); return Hold(phys); }
+        if (f.Stance is null || _tick > f.StanceUntil)
+        {
+            f.Stance = CombatGeometry.CoverCell(_w, me, Eye(target)) ?? CombatGeometry.RetreatCell(_w, me, [target.Position], 6, 8);
+            f.StanceUntil = _tick + 20;
+        }
+        if (f.Stance is not { } c)
+        {
+            EndFight(f, $"no cover from {f.TargetName} nearby, kept working", phys, ctx);
+            return Hold(phys);
+        }
+        return MoveOrHold(phys, c, look, sneak: false);
     }
 
     /// <summary>Ticks until the next hit may land on <paramref name="id"/> (≤ 0 = now).</summary>

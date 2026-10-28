@@ -35,6 +35,21 @@ public sealed record CombatOptions
     public double GuardRadius { get; init; } = 6;
     /// <summary>Never engage anything further than this from the bot.</summary>
     public double MaxEngageDistance { get; init; } = 16;
+    /// <summary>A reflex (or guard) fight that landed no hit on its target in this many ticks gives up ("couldn't reach"):
+    /// live 10-27/28 a skeleton on a ledge, a creeper across a gap and a spider by kiwi each held the body as "busy" for
+    /// 20 s at a time, over and over, with 0 hits.</summary>
+    public int ZeroHitGiveUpTicks { get; init; } = 160;
+    /// <summary>A skeleton is engaged on sight only this close (and only with a safe first step toward it); further away it
+    /// is left alone unless it gets close, and when it is hurting the bot the bot takes cover instead.</summary>
+    public double SkeletonEngageRange { get; init; } = 6;
+    /// <summary>Take cover from a ranged mob the bot can't reach once health is at or below this.</summary>
+    public int CoverHealth { get; init; } = 16;
+    /// <summary>Longest a "take cover" move holds the body (ticks).</summary>
+    public int CoverMaxTicks { get; init; } = 80;
+    /// <summary>Walks keep this far (horizontal) from any creeper: b1.8.1 EntityCreeper ignites within 3 blocks.</summary>
+    public double CreeperAvoidRadius { get; init; } = 3.5;
+    /// <summary>A job asked for during a reflex fight waits this long for it to end before answering "busy" (0 = never waits).</summary>
+    public TimeSpan ReflexWaitForJobs { get; init; } = TimeSpan.FromSeconds(10);
 
     // ---- mechanics
     /// <summary>Eye-to-hitbox reach for melee. Vanilla b1.8 client targets entities only within 3.0 (EntityRenderer.getMouseOver).</summary>

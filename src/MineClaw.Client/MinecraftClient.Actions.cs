@@ -20,6 +20,10 @@ public sealed partial class MinecraftClient
     /// signals can cancel. Exceptions become failure results.</summary>
     private async Task<ActionResult> RunActionAsync(string name, CancellationToken ct, Func<CancellationToken, Task<ActionResult>> body)
     {
+        // A reflex fight gives up on its own within a few seconds (CombatOptions.ZeroHitGiveUpTicks): wait it out instead of
+        // failing the job as "busy: fighting ..." (live 10-28: gen jobs, gotos and deposits all failed that way).
+        if (CombatBlocks(name) is not null && _combatInstance is { ReflexEngaged: true } reflex)
+            await WaitForReflexFightAsync(reflex, ct).ConfigureAwait(false);
         if (CombatBlocks(name) is { } busy) return ActionResult.Fail(busy);
         if (VoidHoldBlocks(name) is { } stuck) return ActionResult.Fail(stuck);
         try
@@ -183,6 +187,21 @@ public sealed partial class MinecraftClient
         };
     }
 
+    private readonly Dictionary<(BlockPos From, BlockPos To), DateTime> _recentBlockedJumps = new();
+
+    /// <summary>How long a gap jump that failed (stuck, missed, refused) stays out of new plans.</summary>
+    public static readonly TimeSpan BlockedJumpMemory = TimeSpan.FromMinutes(10);
+
+    private HashSet<(BlockPos From, BlockPos To)> RecentBlockedJumps()
+    {
+        lock (_recentBlockedJumps)
+        {
+            var now = DateTime.UtcNow;
+            foreach (var k in _recentBlockedJumps.Where(kv => now - kv.Value > BlockedJumpMemory).Select(kv => kv.Key).ToList()) _recentBlockedJumps.Remove(k);
+            return _recentBlockedJumps.Keys.ToHashSet();
+        }
+    }
+
     private async Task<ActionResult> GotoCoreAsync(Goal goal, GotoOptions o, CancellationToken ct)
     {
         // A goal with nothing under it can only be reached by bridging (AllowPlace builds the floor first).
@@ -192,7 +211,9 @@ public sealed partial class MinecraftClient
         var token = timeout.Token;
         int replans = 0, airWaits = 0;
         string? lastFailure = null;
-        var blockedJumps = new HashSet<(BlockPos From, BlockPos To)>();
+        // Jumps that failed in the last few gotos stay avoided (live 10-28, 67: three gotos in a row climbed out of the basement
+        // and took the same gap jump that dropped it back down).
+        var blockedJumps = RecentBlockedJumps();
         var lockedDoors = new HashSet<BlockPos>();
         var jumps = new List<ParkourPlan>();
         var scaffoldBefore = o.AllowPlace ? ScaffoldSnapshot() : null;
@@ -209,6 +230,7 @@ public sealed partial class MinecraftClient
 
                 var popts = BuildPathOptions(o, lockedDoors);
                 if (blockedJumps.Count > 0) popts = popts with { AvoidJumps = blockedJumps.ToHashSet() };
+                if (CreeperAvoidCells(goal) is { Count: > 0 } blast) popts = popts with { Avoid = blast };
                 var path = await Task.Run(() => Pathfinder.FindPath(World, start, goal, popts, token), token).ConfigureAwait(false);
                 if (path.Status is PathStatus.NoPath or PathStatus.InvalidStart || path.Steps.Count == 0)
                 {
@@ -301,7 +323,11 @@ public sealed partial class MinecraftClient
                 case FollowerStatus.Finished:
                     return null;
                 case FollowerStatus.Failed:
-                    if (follower.BlockedJump is { } bj) blockedJumps?.Add(bj);
+                    if (follower.BlockedJump is { } bj)
+                    {
+                        blockedJumps?.Add(bj);
+                        lock (_recentBlockedJumps) _recentBlockedJumps[bj] = DateTime.UtcNow;
+                    }
                     if (follower.FailedTrigger is { } ft) lockedDoors?.Add(ft); // a mechanism that didn't respond
                     if (follower.CurrentStep is { Opens.Count: > 0 } door)
                         foreach (var tg in door.Opens.Where(t => !t.Done(World))) lockedDoors?.Add(tg.Pos);

@@ -93,8 +93,10 @@ public sealed class DepositProcedure(IInventoryPort port, IClaimBoard claims, st
             fresh = false; // whatever happens next changes the inventory: settle again before trusting "empty"
             if (!port.CanActSafely) { await Delay(ct); continue; }
 
-            // 1. Storage chests with room (nearest first), skipping ones another bot is using.
-            var chest = port.Chests().FirstOrDefault(c => c.FreeSlots > 0 && !full.Contains(c.Pos) && claims.IsFree(ClaimKey.Chest(c.Pos, port.Dimension)));
+            // 1. Storage chests with room (nearest first), skipping ones another bot is using; then the ones memory calls full,
+            // opened and re-checked (memory may be stale: live 10-27 23:06 "all known chests full" while two were nearly empty).
+            var chest = port.Chests().Where(c => !full.Contains(c.Pos) && claims.IsFree(ClaimKey.Chest(c.Pos, port.Dimension)))
+                .OrderByDescending(c => c.FreeSlots > 0).FirstOrDefault();
             if (chest != null)
             {
                 var key = ClaimKey.Chest(chest.Pos, port.Dimension);

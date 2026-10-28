@@ -249,6 +249,9 @@ public static class BlockDescriber
         if ((uint)p.Y >= WorldState.Height) return false;
         int id = w.GetBlock(p);
         if (!(id is Blocks.Cobblestone or Blocks.Stone or 0 || id == Blocks.FlowingLava)) return false;
+        // A lava SOURCE (id 10 meta 0 once it updates) is the gen's lava, not a just-dug cell refilling (live 10-27 22:14:
+        // kiwi's punch at the lava 4,64,7 was "taught" as a dig cell and 420 later tried to dig it).
+        if (id == Blocks.FlowingLava && w.GetMeta(p.X, p.Y, p.Z) == 0) return false;
         bool lava = false, water = false;
         foreach (var o in FlowIn)
         {
@@ -267,6 +270,7 @@ public static class BlockDescriber
         int id = w.GetBlock(p);
         if (!(id is Blocks.Cobblestone or Blocks.Stone or 0 || id == Blocks.FlowingLava))
             return $"it's {(Blocks.Exists(id) ? Blocks.Get(id).Name : "block " + id)}, not cobblestone/stone";
+        if (id == Blocks.FlowingLava && w.GetMeta(p.X, p.Y, p.Z) == 0) return "it's the gen's lava source, not a cell";
         bool lava = FlowIn.Any(o => Blocks.IsLava(w.GetBlock(p + o))), water = FlowIn.Any(o => Blocks.IsWater(w.GetBlock(p + o)));
         return !lava && !water ? "no lava or water next to it" : !lava ? "no lava flowing in" : "no water touching it";
     }

@@ -266,7 +266,10 @@ public class PathfinderBudgetTests
             new PathOptions { AllowPlace = true, ScaffoldBudget = 64, AllowPartial = false, Timeout = TimeSpan.FromSeconds(10) });
         Assert.Equal(PathStatus.Found, r.Status);
         Assert.Equal(18, r.ScaffoldUsed);
-        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(3), $"{sw.Elapsed} {r}");
+        // The search effort is the deterministic measure (wall clock under a loaded full-suite run once took 3.3 s for the
+        // same 5,792 nodes); the timeout itself still bounds it.
+        Assert.True(r.NodesExplored < 12_000, $"{r.NodesExplored} nodes: {r}");
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(9), $"{sw.Elapsed} {r}");
     }
 
     [Fact]

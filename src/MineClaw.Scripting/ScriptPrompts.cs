@@ -28,8 +28,8 @@ public static class ScriptPrompts
     /// <summary>Brain system-prompt block (only the brain writes scripts). Keep ≤ 420 tokens (≈ 1470 chars).</summary>
     public const string CheatSheet = """
 
-# script tool: Lua 5.2 in C#, no model calls. For >3 steps or loops, short.
-Actions -> ok,msg,n; table args, positional or named: go{"x,y,z"|place|player} mine{"cobblestone",16} chop{} gen{"x,y,z"}
+# script tool: Lua 5.2, no model calls. For >3 steps/loops, short.
+Actions -> ok,msg,n; table args, positional/named: go{"x,y,z"|place|player} mine{"cobblestone",16} chop{} gen{"x,y,z"}
 craft{"planks",4} smelt{"iron_ore",8} deposit{at?,{"log"}} take{"coal",8} place{"torch","x,y,z"} dig{"x,y,z"} use{"x,y,z"} eat{} give{p,"log",5}
 move{{item="log",n="all",to="chest"}}, any skill by name, skill("name",{..})
 Ask: inv"log" inv.free() me.hp me.food me.pos block(x,y,z) near"chest" where"iron" night() players()
@@ -37,9 +37,9 @@ Do: wait(s) waitfor("chat"|"item"|"block"|"night",filter,s) emote"waves" ask(p,q
 say"hi"=players only log(x)=debug return"x"=result fail"why"=errors
 on("danger",fn) on("chat",{from="kiwi"},fn) carry{} survives replace, args{}=run args
 Helpers: retry(n,fn) upto(n,fn) expect(ok,msg) room(n) ensure"pickaxe"|{"pickaxe","food"}
-Reliable: check each ok,msg; bound loops (upto/for); cp before long phases; verify via inv; wear: ensure,
-full inv: room, empty chest: expect; never go on silently.
-Saved: line 1 "-- purpose"; one almost fits? call it with args or op=save that name, don't fork.
+Reliable: check each ok,msg; bound loops (upto); cp before long phases; verify: inv; wear: ensure,
+full inv: room, empty chest: expect; never go on silently. 2+ bots: gen{"auto"}
+Saved: line 1 "-- purpose"; one almost fits? call it with args or op=save it, don't fork.
 -- purpose: mine n cobble at the gen, store it
 ensure"pickaxe" room(2) local b=inv"cobblestone"
 cp"mine" upto(args.n or 16,function() expect(retry(3,function() return gen{args.at,1} end)) return inv.free()>0 end)
