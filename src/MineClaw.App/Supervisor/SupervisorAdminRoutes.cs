@@ -17,6 +17,7 @@ namespace MineClaw.App.Supervisor;
 /// <c>GET /api/admin/rebuild/{job_id}</c> → the job; <c>POST /api/admin/rebuild/{job_id}/cancel</c></item>
 /// <item><c>POST /api/admin/backup</c> → <c>{path}</c>; <c>GET /api/admin/audit?max=</c> → <c>{entries}</c>;
 /// <c>GET /api/admin/schema</c> → kinds, ops and form fields</item>
+/// <item><c>POST /api/admin/activity/compact</c> <c>{dry_run?, who?}</c> → the compaction report (a real run backs up first)</item>
 /// <item><c>POST /api/admin/shard/import/preview</c> <c>{shard (base64 .mcshard), mode, conflict, include_rules, include_world, who}</c>
 /// → the import diff; <c>POST /api/admin/shard/import</c> (same body) → applies it inside the bot with its own stores and starts
 /// the scoped RAPTOR rebuild in the background (<c>job_id</c>, polled like a rebuild). Bodies up to <see cref="ShardMaxBodyBytes"/>,
@@ -129,6 +130,14 @@ public static class SupervisorAdminRoutes
                     }
                     catch (ShardFormatException ex) { return Json(400, new { error = "shard refused: " + ex.Message }); }
                 }
+                case "/activity/compact":
+                    if (!post) return NotAllowed("POST");
+                    {
+                        var e = string.IsNullOrWhiteSpace(r.Body) ? default : Root(r.Body);
+                        bool dry = e.ValueKind == JsonValueKind.Object && e.TryGetProperty("dry_run", out var dv) && dv.ValueKind == JsonValueKind.True;
+                        var res = await admin.CompactActivityAsync(dry, Who(r.Body), ct).ConfigureAwait(false);
+                        return Json(res.Ok ? 200 : 400, res);
+                    }
                 case "/schema":
                     if (!get) return NotAllowed("GET");
                     return Json(200, new
@@ -199,7 +208,7 @@ public static class SupervisorAdminRoutes
         return new MemoryEdit(Str(e, "op") ?? "", Str(e, "kind") ?? "", Str(e, "id"), fields, Str(e, "who") ?? "admin", Str(e, "reason"));
     }
 
-    /// <summary><c>{"shard":base64,"mode":"merge|replace|swap","conflict":"newer|shard|mine","include_rules","include_world","who","max_usd"}</c>.</summary>
+    /// <summary><c>{"shard":base64,"mode":"merge|replace|swap|add-mode|remove-mode","conflict":"newer|shard|mine","include_rules","include_world","who","max_usd"}</c>.</summary>
     internal static (byte[] Shard, ShardImportOptions Options) ParseShard(string? body)
     {
         var e = Root(body);

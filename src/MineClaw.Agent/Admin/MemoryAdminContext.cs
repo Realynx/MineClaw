@@ -1,6 +1,7 @@
 using MineClaw.Agent.Budget;
 using MineClaw.Agent.Llm;
 using MineClaw.Agent.Memory;
+using MineClaw.Agent.Memory.Grooming;
 using MineClaw.Agent.Rag;
 using MineClaw.Agent.Rag.Beliefs;
 using MineClaw.Agent.Rag.Raptor;
@@ -74,6 +75,8 @@ public sealed class MemoryAdminContext : IDisposable
             };
             var rag = new RagIndex(db, options.Rag, embedder, usage, options.Embeddings, log: Log("MineClaw.Rag"), backgroundEmbedding: false);
             owned.Add(rag);
+            // Admin writes (edits, shard imports, the activity compaction) are groomed exactly like the bot's own.
+            rag.Groomer = new MemoryGroomer(options.Memory.Groom, GroomEnvironment.From(options, db), Log("MineClaw.Groom"));
             if (!readOnly) KnowledgeCorrections.Apply(rag, options.KnowledgeDirectory, Log("MineClaw.Rag"));
             var memory = new MemoryStore(db, rag);
             owned.Add(memory);

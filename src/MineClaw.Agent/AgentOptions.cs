@@ -31,6 +31,8 @@ public sealed class AgentOptions
     public RagOptions Rag { get; set; } = new();
     /// <summary>Embedding provider: "Agent:Embeddings" (empty key/endpoint = FTS-only).</summary>
     public EmbeddingOptions Embeddings { get; set; } = new();
+    /// <summary>The memory corpus: "Agent:Memory" (the grooming chain every doc write goes through: "Agent:Memory:Groom").</summary>
+    public global::MineClaw.Agent.Memory.Grooming.MemoryCorpusOptions Memory { get; set; } = new();
     /// <summary>Evolving personality layer on top of <see cref="Persona"/>: "Agent:Self".</summary>
     public SelfOptions Self { get; set; } = new();
     /// <summary>

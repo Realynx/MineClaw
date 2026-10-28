@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using MineClaw.Agent.Memory.Grooming;
 using MineClaw.Agent.Rag;
 using MineClaw.World;
 
@@ -119,13 +120,33 @@ public sealed class ActivityLog
                 ("$c", JsonSerializer.Serialize(r.Counts)), ("$t", r.Text), ("$sh", r.Short), ("$conf", r.Confidence), ("$sal", r.Salience),
                 ("$n", r.Events), ("$ref", docRef), ("$dim", r.Dimension))!;
             foreach (var e in eventIds) _db.Exec("UPDATE activity_log SET rollup_id = $r WHERE id = $id", ("$r", id), ("$id", e));
-            _rag?.Upsert(new RagDoc(docRef, "episode", $"{r.Player} activity", r.Text)
+            if (_rag != null)
             {
-                Source = "activity",
-                Bounds = Box.Of(r.Min.X, r.Min.Y, r.Min.Z, r.Max.X, r.Max.Y, r.Max.Z),
-                Dimension = r.Dimension,
-                At = r.End,
-            });
+                // The groomer coalesces: routine work extends the open episode of this actor/crew at this place, novel sessions
+                // stay their own doc. The rollup row points at whichever episode doc now holds it.
+                var meta = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    [ActivityMeta.Player] = r.Player,
+                    [ActivityMeta.Start] = AgentDb.ToUnixMs(r.Start).ToString(CultureInfo.InvariantCulture),
+                    [ActivityMeta.End] = AgentDb.ToUnixMs(r.End).ToString(CultureInfo.InvariantCulture),
+                };
+                if (r.Place != null)
+                {
+                    meta[ActivityMeta.PlaceKind] = r.Place.Kind;
+                    meta[ActivityMeta.PlaceKey] = r.Place.Key;
+                    meta[ActivityMeta.PlaceName] = r.Place.Name;
+                }
+                long docId = _rag.Upsert(new RagDoc(docRef, "episode", $"{r.Player} activity", r.Text)
+                {
+                    Source = "activity",
+                    Bounds = Box.Of(r.Min.X, r.Min.Y, r.Min.Z, r.Max.X, r.Max.Y, r.Max.Z),
+                    Dimension = r.Dimension,
+                    At = r.End,
+                    Meta = meta,
+                });
+                if (docId > 0 && _db.Scalar("SELECT ref FROM docs WHERE id = $id", ("$id", docId)) is string held && held != docRef)
+                    _db.Exec("UPDATE activity_rollups SET doc_ref = $ref WHERE id = $id", ("$ref", held), ("$id", id));
+            }
             return r with { Id = id };
         });
     }

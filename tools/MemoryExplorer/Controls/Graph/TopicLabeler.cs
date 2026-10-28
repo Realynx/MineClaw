@@ -34,6 +34,22 @@ public static partial class TopicLabeler
         "picked", "opened", "took", "went", "came", "kept", "left", "right", "number", "large", "small", "several", "others",
     };
 
+    /// <summary>
+    /// Generic action verbs and activity-log words: they say what kind of line a node holds, never its topic (a graph of gen-mining
+    /// episodes otherwise reads "broke"). Labels then name the topics: cobble gen, tree farm, Fox, carousel.
+    /// </summary>
+    public static readonly IReadOnlySet<string> ActionWords = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "broke", "broken", "break", "breaking", "mined", "mine", "mining", "chopped", "chop", "chopping", "dug", "dig", "digging", "cleared",
+        "harvested", "planted", "placed", "place", "placing", "picked", "pick", "collected", "collect", "stored", "store", "took", "take",
+        "taking", "crafted", "craft", "lit", "fought", "hit", "hits", "taken", "got", "gave", "put", "dropped", "switched", "equipped", "used",
+        "reorganized", "up", "at", "down", "unknown", "activity", "session", "sessions", "probably", "crew", "slain", "killed",
+        "arrived", "joined", "chatted", "said", "says",
+    };
+
+    /// <summary>True when the (lower-case) word never labels a topic.</summary>
+    public static bool IsStopWord(string k) => Stop.Contains(k) || ActionWords.Contains(k);
+
     /// <summary>Fills <see cref="GraphNode.Terms"/> for every node.</summary>
     public static void Label(GraphModel m, int maxTerms = 3)
     {
@@ -121,7 +137,7 @@ public static partial class TopicLabeler
             var surface = w.Value.TrimEnd('\'');
             var k = surface.ToLowerInvariant();
             if (k.EndsWith("'s", StringComparison.Ordinal)) { k = k[..^2]; surface = surface[..^2]; }
-            if (k.Length < 3 || Stop.Contains(k) || k.All(char.IsDigit)) continue;
+            if (k.Length < 3 || IsStopWord(k) || k.All(char.IsDigit)) continue;
             d[k] = d.GetValueOrDefault(k) + 1;
             if (!forms.TryGetValue(k, out var f)) forms[k] = f = new Dictionary<string, int>(StringComparer.Ordinal);
             f[surface] = f.GetValueOrDefault(surface) + 1;

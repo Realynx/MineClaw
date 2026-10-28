@@ -1,4 +1,5 @@
 using System.Globalization;
+using MineClaw.Agent.Memory.Grooming;
 using MineClaw.Data;
 using MineClaw.World;
 
@@ -157,7 +158,7 @@ public static class ActivityText
         string n = e.Count > 1 ? Qty(e.Count) + " " : "";
         return e.Kind switch
         {
-            ActivityKinds.Broke => $"{p} broke {n}{blk}{at}",
+            ActivityKinds.Broke => $"{p} {ActivityVerbs.Broken(blk)} {n}{blk}{at}",
             ActivityKinds.Placed => $"{p} placed {n}{blk}{at}",
             ActivityKinds.Harvested => $"{p} harvested {n}{blk}{at}",
             ActivityKinds.Planted => $"{p} planted {n}{blk}{at}",

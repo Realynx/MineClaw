@@ -51,6 +51,15 @@ public sealed record RagDoc(string Ref, string Kind, string Title, string Body)
     public int Level { get; init; }
     /// <summary>Timestamp for "updated" (defaults to now). Re-upserting identical content with At set just touches it.</summary>
     public DateTimeOffset? At { get; init; }
+    /// <summary>Structured hints for the memory groomer (an activity rollup's player/start/end/place); never stored.</summary>
+    public IReadOnlyDictionary<string, string>? Meta { get; init; }
+}
+
+/// <summary>The pre-processing step between a writer and the docs table (<see cref="Memory.Grooming.MemoryGroomer"/>).</summary>
+public interface IDocGroomer
+{
+    /// <summary>The docs to store for <paramref name="doc"/> (empty = dropped; refs may differ: a merge extends an existing doc).</summary>
+    IReadOnlyList<RagDoc> Groom(RagDoc doc);
 }
 
 public sealed record RagQuery
@@ -202,7 +211,44 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
 
     // ======================= writes =======================
 
+    /// <summary>
+    /// Every write goes through this groomer first (normalize, de-noise, merge, phrase, size, redact per source); null = stored as
+    /// given (tests, tools that write already-groomed docs).
+    /// </summary>
+    public IDocGroomer? Groomer { get; set; }
+
+    /// <summary>Grooms (see <see cref="Groomer"/>) and stores the doc; returns the id of the (first) stored doc, 0 when dropped.</summary>
     public long Upsert(RagDoc d)
+    {
+        if (Groomer is { } g)
+        {
+            var docs = g.Groom(d);
+            if (docs.Count == 0) return 0;
+            if (docs.Count == 1) d = docs[0];
+            else
+            {
+                long first = 0;
+                bool any = false;
+                _db.Tx(() =>
+                {
+                    foreach (var x in docs)
+                    {
+                        long i = UpsertCore(x, out bool s);
+                        if (first == 0) first = i;
+                        any |= s;
+                    }
+                });
+                if (any) SignalEmbedding();
+                return first;
+            }
+        }
+        long id = UpsertCore(d, out bool signal);
+        if (signal) SignalEmbedding();
+        return id;
+    }
+
+    /// <summary>Stores the doc exactly as given (no grooming): the groomer's own output, the compaction.</summary>
+    public long UpsertGroomed(RagDoc d)
     {
         long id = UpsertCore(d, out bool signal);
         if (signal) SignalEmbedding();
@@ -216,10 +262,13 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
         int n = _db.Tx(() =>
         {
             int c = 0;
-            foreach (var d in docs)
+            foreach (var raw in docs)
             {
-                UpsertCore(d, out bool s);
-                any |= s;
+                foreach (var d in Groomer is { } g ? g.Groom(raw) : [raw])
+                {
+                    UpsertCore(d, out bool s);
+                    any |= s;
+                }
                 c++;
             }
             return c;

@@ -74,6 +74,30 @@
             </ItemsControl>
           </StackPanel>
         </Border>
+
+        <Border Classes="card" Padding="20">
+          <StackPanel Spacing="12">
+            <TextBlock Classes="h2" Text="Compact activity" />
+            <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap" Text="{Binding CompactInfo}" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Button Classes="ghost" Command="{Binding PreviewCompactionCommand}" IsEnabled="{Binding EditMode}">Preview</Button>
+              <Button Command="{Binding RunCompactionCommand}" IsEnabled="{Binding EditMode}">Compact</Button>
+            </StackPanel>
+          </StackPanel>
+        </Border>
+
+        <Border Classes="card" Padding="20">
+          <StackPanel Spacing="12">
+            <TextBlock Classes="h2" Text="Groom preview" />
+            <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                       Text="Paste log text or a doc ref: the result is what the bot would store (normalize, de-noise, merge, phrase, size, redact). Nothing is written." />
+            <ComboBox ItemsSource="{Binding GroomSources}" SelectedItem="{Binding GroomSource}" MinWidth="160" />
+            <TextBox Text="{Binding GroomInput}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="90" MaxHeight="240" FontFamily="Consolas,Menlo,monospace" FontSize="12" />
+            <Button Classes="ghost" Command="{Binding PreviewGroomCommand}" HorizontalAlignment="Left">Preview</Button>
+            <SelectableTextBlock FontSize="12.5" Text="{Binding GroomOutput}" TextWrapping="Wrap" />
+            <SelectableTextBlock Classes="muted" FontSize="11.5" Text="{Binding GroomStages}" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
       </StackPanel>
     </ScrollViewer>
 

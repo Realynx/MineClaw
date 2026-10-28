@@ -151,6 +151,9 @@ public sealed class AgentRuntime : IDisposable
             if (note != null) Log("MineClaw.Rag").LogWarning("{Note}", note);
         }
         var index = new RagIndex(db, rag, embedder, usage, options.Embeddings, time, Log("MineClaw.Rag"));
+        // Every doc write is groomed first (normalize, de-noise, merge, phrase, size, redact; activity coalescing).
+        var groomer = new global::MineClaw.Agent.Memory.Grooming.MemoryGroomer(options.Memory.Groom, global::MineClaw.Agent.Memory.Grooming.GroomEnvironment.From(options, db, time: time), Log("MineClaw.Groom"));
+        index.Groomer = groomer;
         var terse = options.Terse ?? new TerseOptions();
         var raptorStyle = Prompts.RaptorStyle(terse.For(TersePurpose.Raptor)) is { Length: > 0 } rs ? rs : null;
         RaptorMemory? raptor = null;
@@ -301,6 +304,23 @@ public sealed class AgentRuntime : IDisposable
         // A clone's seed quirks are created once at first spawn (config, else one cheap call), then frozen.
         if (persist && growth is { IsClone: true }) _ = Task.Run(() => growth.EnsureSeedsAsync());
         if (rag.Enabled && rag.RestoreJournal) context.SetJournal(RestoredJournal(episodes, time.GetUtcNow()));
+        // The one-off compaction of per-minute activity episodes (opt-in; idempotent; backup first), before the tree loads.
+        if (persist && rag.Raptor.Maintenance && options.Memory.Groom.Activity.CompactOnStartup && db.Path != null)
+        {
+            var clog = Log("MineClaw.Admin");
+            try
+            {
+                var compaction = new global::MineClaw.Agent.Admin.ActivityCompaction(db, index, groomer, raptor, null, clog);
+                var preview = compaction.RunAsync(dryRun: true).GetAwaiter().GetResult();
+                if (preview.Processed > 0)
+                {
+                    var backup = global::MineClaw.Agent.Admin.AdminBackup.Create(db, Path.Combine(Path.GetDirectoryName(Path.GetFullPath(db.Path))!, "backups"));
+                    var done = compaction.RunAsync(dryRun: false, backup: backup).GetAwaiter().GetResult();
+                    clog.LogInformation("startup activity compaction (backup {Backup}): {Message}", backup, done.Message);
+                }
+            }
+            catch (Exception ex) { clog.LogWarning(ex, "startup activity compaction failed; memory left as it was"); }
+        }
         // Off the caller's thread: loads the stored tree, then (persistent runtimes) runs maintenance in the background.
         if (raptorJobs != null) raptorJobs.Start();
         else raptor?.StartLoading();

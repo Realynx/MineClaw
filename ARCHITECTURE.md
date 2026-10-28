@@ -855,6 +855,33 @@ cluster-text hash: a cache, never truth). `ShardFile.Read` refuses a newer forma
   `SeedCorpus`) and `MinecraftDataSource` (a PrismarineJS minecraft-data checkout the user fetched: `dataPaths.json` → items/blocks/
   recipes/foods; no smelting tables). The Explorer's Shards page lists the folder (`Explorer:DefaultPacksDir`, else `shards/defaults`
   beside the exe or in the repo) with one-click "Preview swap / add mode / remove mode" into the diff-first import, and shows the
+## Memory grooming (Agent/Memory/Grooming) — every write formatted to the memory
+
+`RagIndex.Upsert`/`UpsertMany` pass each doc through `RagIndex.Groomer` (`MemoryGroomer`, wired in `AgentRuntime` and
+`MemoryAdminContext.OpenLocal`; `UpsertGroomed` bypasses it). Deterministic, no LLM by default; the chain is per doc source
+(`Agent:Memory:Groom:Sources`, unknown sources such as seed/knowledge pass through). Stages, each one class:
+**normalize** (log prefixes stripped, journald times → "10-27 06:45: ", spans canonical "(10-28 00:31–02:10)", coords trimmed to
+one decimal, aliases → canonical names and casing, whitespace), **denoise** (debug/telemetry lines: turn/call cost lines, cache
+numbers, triage, raptor sync; inline costs/tokens stripped; an all-noise doc is dropped), **redact** (`ShardRedactor`), **phrase**
+(natural verbs: never "broke"; "chat: <Fox> hi" → `Fox said "hi"`), **merge** (same fact of the same kind+source within
+`MergeWindowMinutes` extends the existing doc: "… (10-27 06:48–06:49, 2×)"; a repeat inside the span is absorbed), **coalesce**
+(activity, below), **size** (title/coords filled, chunked to the RAG chunk target: `ref`, `ref#2`…) and **rewrite** (optional,
+off: the cheap 5.5 tier via `LlmGroomRewriter`, daily USD cap, only on the async path for log/paste sources).
+- **Activity coalescing** (`ActivityCoalesceStage`, state in `activity_episodes`): a rollup (`act:` doc with player/start/end/place
+  meta from `ActivityLog.AddRollup`, or parsed from its text) is routine when every part is counted work (mined/chopped/dug/
+  harvested/planted/collected/stored/took/crafted/opened/lit, small placements); routine work extends the open episode of that
+  actor+place within `Activity:RoutineWindowMinutes` (2 h, same day): counts summed, span extended, sessions counted, the first
+  episode at a place says "first time there". Crew bots (main + clones) at the same place with overlapping times share one crew
+  episode ("the crew (main, 67, 69) mined 900 cobblestone (main 300, 67 300, 69 300) at the cobble gen (…)"). Novel sessions
+  (deaths, fights, signs, builds ≥ `BuildMinBlocks`, unknown structures, anything unparsed) stay individual. The rollup row's
+  `doc_ref` points at the episode that holds it.
+- **Compaction** (`Admin/ActivityCompaction`, idempotent): old per-minute `act:` docs (oldest first, rollup meta joined) go through
+  the same chain; absorbed docs are deleted, the summaries above every removed/rewritten leaf get the RAPTOR dirty flag (refresh
+  within the daily budget; untouched sections keep theirs). Only `source='activity'` `act:` docs are touched. Explorer: Edits &
+  audit → Compact activity (preview, then a run with backup first; live via `POST /api/admin/activity/compact`); startup:
+  `Agent:Memory:Groom:Activity:CompactOnStartup` (backup first, main only). Groom preview (same page): raw → groomed for a doc
+  ref or pasted log text, dry run. The RAPTOR graph's topic labels drop action verbs/log words (`TopicLabeler.ActionWords`).
+
   db's version pack + modes. `shards/defaults/README.md` has the build command for a new version.
 - **Targets**: a local db file (Explorer, backup first, audit next to the db) or the live bot via `POST /api/admin/shard/import/
   preview` and `POST /api/admin/shard/import` (body `{shard: base64, mode, conflict, include_rules, include_world}`, ≤ 64 MB, read

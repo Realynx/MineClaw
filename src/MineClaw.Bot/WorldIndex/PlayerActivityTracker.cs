@@ -1,3 +1,4 @@
+using MineClaw.Agent.Memory.Grooming;
 using System.Collections.Concurrent;
 using System.Globalization;
 using MineClaw.Agent.Events;
@@ -827,10 +828,12 @@ public sealed class PlayerActivityTracker : IDisposable
             {
                 int n = g.Sum(e => e.Count);
                 var nm = g.Key is { } id ? name(id) : "blocks";
-                parts.Add((n > 1 ? $"{verbN} {ActivityText.Qty(n)} {nm}" : $"{verb1} {nm}", g.Average(e => e.Confidence), sal * (n >= 20 ? 2 : 1), cat, n));
+                // Broken blocks read naturally ("chopped log", "mined cobblestone"), never "broke".
+                string v1 = kind == ActivityKinds.Broke ? ActivityVerbs.Broken(nm) : verb1, vN = kind == ActivityKinds.Broke ? v1 : verbN;
+                parts.Add((n > 1 ? $"{vN} {ActivityText.Qty(n)} {nm}" : $"{v1} {nm}", g.Average(e => e.Confidence), sal * (n >= 20 ? 2 : 1), cat, n));
             }
         }
-        Group(ActivityKinds.Broke, "broke", "mined", e => e.BlockId, ActivityText.Block, ActivityCategory.Mined, 1);
+        Group(ActivityKinds.Broke, "mined", "mined", e => e.BlockId, ActivityText.Block, ActivityCategory.Mined, 1);
         Group(ActivityKinds.Harvested, "harvested", "harvested", e => e.BlockId, ActivityText.Block, ActivityCategory.Farmed, 1);
         Group(ActivityKinds.Planted, "planted", "planted", e => e.BlockId, ActivityText.Block, ActivityCategory.Farmed, 1);
         Group(ActivityKinds.Placed, "placed", "placed", e => e.BlockId, ActivityText.Block, ActivityCategory.Built, 1.2);

@@ -297,6 +297,67 @@ public sealed partial class EditSessionViewModel(MainWindowViewModel shell) : Pa
     [RelayCommand]
     private void CancelRebuild() => _rebuildCts?.Cancel();
 
+    // ------------------------------------------------------------------ activity compaction + groom preview
+
+    [ObservableProperty] private string _compactInfo = "Per-minute activity episodes → coalesced spans (same facts: counts summed, times spanned). Preview first.";
+    [ObservableProperty] private bool _compactRunning;
+    [ObservableProperty] private string _groomInput = "";
+    [ObservableProperty] private string _groomSource = "paste";
+    [ObservableProperty] private string _groomOutput = "";
+    [ObservableProperty] private string _groomStages = "";
+    public IReadOnlyList<string> GroomSources => GroomPreviewService.Sources;
+
+    [RelayCommand]
+    private Task PreviewCompaction() => CompactAsync(dryRun: true);
+
+    [RelayCommand]
+    private Task RunCompaction() => CompactAsync(dryRun: false);
+
+    private async Task CompactAsync(bool dryRun)
+    {
+        if (!EditMode) { CompactInfo = "Turn on edit mode first (the preview reads through the write target, too)."; return; }
+        if (CompactRunning) return;
+        try
+        {
+            CompactRunning = true;
+            var t = Open();
+            if (!dryRun)
+            {
+                if (Shell.Confirm == null || !await Shell.Confirm("Compact activity episodes?",
+                        "Rewrites per-minute activity episodes into coalesced spans and deletes the originals. Only activity episodes are touched " +
+                        "(never player notes, beliefs, rules or the self-profile). The RAPTOR summaries above them are marked dirty and refresh " +
+                        "within the daily RAPTOR budget. " + (IsLive ? "Runs inside the live bot, which backs up first." : "A backup is taken first.")))
+                    return;
+                if (!IsLive && !await EnsureBackupAsync(t)) return;
+            }
+            CompactInfo = dryRun ? "Previewing…" : "Compacting…";
+            var r = await t.CompactActivityAsync(dryRun, Who, CancellationToken.None);
+            CompactInfo = r.Message + (r.Samples.Count > 0 ? "\n\ne.g. " + string.Join("\n", r.Samples.Take(3)) : "");
+            Shell.Status = r.Message;
+            if (!dryRun)
+            {
+                await RefreshAuditAsync();
+                if (r.Ok && !IsLive) await ReloadAfterWriteAsync();
+            }
+        }
+        catch (Exception ex) { CompactInfo = Shell.Status = "Compaction failed: " + ex.Message; }
+        finally { CompactRunning = false; }
+    }
+
+    /// <summary>Raw → groomed for a doc ref of the open bank or pasted text (read-only; edit mode not needed).</summary>
+    [RelayCommand]
+    private async Task PreviewGroom()
+    {
+        if (GroomInput.Trim().Length == 0) { GroomOutput = "Paste log text or a doc ref (act:…, ep:…)."; return; }
+        try
+        {
+            var p = await Task.Run(() => GroomPreviewService.PreviewAsync(Bank, Shell.Config, GroomInput, GroomSource));
+            GroomOutput = p.Groomed;
+            GroomStages = $"{p.InputDocs} in → {p.OutputDocs} out\n{p.Stages}";
+        }
+        catch (Exception ex) { GroomOutput = "Preview failed: " + ex.Message; }
+    }
+
     // ------------------------------------------------------------------ audit
 
     [RelayCommand]

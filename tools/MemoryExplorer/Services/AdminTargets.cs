@@ -36,6 +36,8 @@ public interface IAdminTarget : IDisposable
     Task<ShardImportResult> ImportShardAsync(string shardPath, ShardImportOptions options, CancellationToken ct);
     /// <summary>The import's scoped RAPTOR rebuilds: local runs them here (cached summaries reused), live follows the bot's job.</summary>
     Task<RebuildStatus?> RunImportRebuildAsync(ShardImportResult result, IProgress<RebuildStatus> progress, CancellationToken ct);
+    /// <summary>The one-off activity compaction (dry = report only). A real run is backed up first by the caller's session.</summary>
+    Task<ActivityCompactionReport> CompactActivityAsync(bool dryRun, string who, CancellationToken ct);
 }
 
 /// <summary>
@@ -130,6 +132,15 @@ public sealed class LocalAdminTarget : IAdminTarget
         }
         var ok = last?.State == "done";
         return new RebuildStatus(last?.State ?? "done", null, new RebuildResult(ok, string.Join(" | ", messages), diffs, spent, TimeSpan.Zero), last?.Error);
+    }
+
+    public async Task<ActivityCompactionReport> CompactActivityAsync(bool dryRun, string who, CancellationToken ct)
+    {
+        var report = await Task.Run(() => ActivityCompaction.For(_ctx).RunAsync(dryRun, ct), ct);
+        if (!dryRun)
+            Audit.Write(new AuditEntry(DateTimeOffset.UtcNow, who, "local:" + DbPath, "compact", "activity", null,
+                $"{report.ActivityBefore} activity docs", $"{report.ActivityAfter} activity docs", null, report.Ok, report.Message));
+        return report;
     }
 
     public void Dispose() => _ctx.Dispose();
@@ -228,6 +239,9 @@ public sealed class LiveAdminTarget(SupervisorEndpoint endpoint) : IAdminTarget
 
     public async Task<RebuildStatus?> RunImportRebuildAsync(ShardImportResult result, IProgress<RebuildStatus> progress, CancellationToken ct) =>
         result.JobId is { Length: > 0 } job ? await FollowAsync(job, progress, ct) : null;
+
+    public Task<ActivityCompactionReport> CompactActivityAsync(bool dryRun, string who, CancellationToken ct) =>
+        SendAsync<ActivityCompactionReport>(HttpMethod.Post, "api/admin/activity/compact", new { dry_run = dryRun, who }, ct);
 
     /// <summary>Polls a job the bot runs until it is done (cancel asks the bot to stop it).</summary>
     private async Task<RebuildStatus> FollowAsync(string jobId, IProgress<RebuildStatus> progress, CancellationToken ct)

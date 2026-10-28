@@ -35,6 +35,10 @@ public interface ISupervisorAdmin
     /// <summary>Applies the shard inside the bot with its own stores, then starts the scoped RAPTOR rebuild in the background.</summary>
     Task<ShardImportResult> ImportShardAsync(byte[] shard, ShardImportOptions options, CancellationToken ct) =>
         throw new NotSupportedException("memory shards are not available in this process");
+
+    /// <summary>The one-off activity compaction inside the bot (dry = report only; a real run backs up first).</summary>
+    Task<ActivityCompactionReport> CompactActivityAsync(bool dryRun, string who, CancellationToken ct) =>
+        throw new NotSupportedException("the activity compaction is not available in this process");
 }
 
 /// <summary>
@@ -108,6 +112,19 @@ public sealed class SupervisorAdminService : ISupervisorAdmin, IDisposable
     public Task<MemoryEditResult> ApplyAsync(MemoryEdit edit, CancellationToken ct) => _admin.ApplyAsync(edit, ct);
 
     public RebuildEstimate Estimate(RebuildRequest request) => _rebuilder.Estimate(request);
+
+    public async Task<ActivityCompactionReport> CompactActivityAsync(bool dryRun, string who, CancellationToken ct)
+    {
+        var compaction = ActivityCompaction.For(_ctx);
+        if (dryRun) return await compaction.RunAsync(true, ct).ConfigureAwait(false);
+        var preview = await compaction.RunAsync(true, ct).ConfigureAwait(false);
+        if (preview.Processed == 0) return preview;
+        var backup = Backup(who);
+        var report = await compaction.RunAsync(false, ct, backup).ConfigureAwait(false);
+        _audit.Write(new AuditEntry(DateTimeOffset.UtcNow, who, Target, "compact", "activity", null, $"{report.ActivityBefore} activity docs",
+            $"{report.ActivityAfter} activity docs", null, report.Ok, report.Message));
+        return report;
+    }
 
     public string StartRebuild(RebuildRequest request) => StartJob([request], null);
 

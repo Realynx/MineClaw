@@ -204,7 +204,7 @@ public class ActivityRollupTests(ITestOutputHelper output)
         MineGen(a, kiwi, dig, 23);
         var raw = a.Recorded.Where(r => r.Kind == ActivityKinds.Broke).ToList();
         Assert.Equal(23, raw.Sum(r => r.Count));
-        Assert.Equal("kiwi broke cobblestone at the cobble gen", raw[0].Text);
+        Assert.Equal("kiwi mined cobblestone at the cobble gen", raw[0].Text);
         a.Step(200); // session gap → closed
         var rollup = Assert.Single(a.Log.Rollups("kiwi"));
         output.WriteLine(rollup.Text);
@@ -245,7 +245,7 @@ public class ActivityRollupTests(ITestOutputHelper output)
         var chest = new PlaceRef(IndexKinds.Chest, "4,64,1", "chest \"storage\"", default, default);
         var island = new PlaceRef(IndexKinds.Island, "0,0", "main island", default, default);
         var t = DateTimeOffset.UnixEpoch;
-        Assert.Equal("kiwi broke cobblestone at the cobble gen", new ActivityEvent("kiwi", ActivityKinds.Broke, t, 1) { BlockId = Blocks.Cobblestone, Place = gen }.Text);
+        Assert.Equal("kiwi mined cobblestone at the cobble gen", new ActivityEvent("kiwi", ActivityKinds.Broke, t, 1) { BlockId = Blocks.Cobblestone, Place = gen }.Text);
         Assert.Equal("poofimafox opened the chest \"storage\"", new ActivityEvent("poofimafox", ActivityKinds.Opened, t, 1) { Place = chest }.Text);
         Assert.Equal("kiwi picked up 3 sugar cane", new ActivityEvent("kiwi", ActivityKinds.PickedUp, t, 1) { ItemId = Items.SugarCane, Count = 3 }.Text);
         Assert.Equal("fox placed sign \"MOB FARM\" on main island", new ActivityEvent("fox", ActivityKinds.WroteSign, t, 1) { Detail = "MOB FARM", Place = island }.Text);
@@ -287,7 +287,7 @@ public class ActivityRollupTests(ITestOutputHelper output)
         a.Step(1);
         var open = a.Log.Ask("what did robin do today", a.F.Clock.GetUtcNow());
         output.WriteLine(open);
-        Assert.Contains("robin broke", open); // raw events before the session closes
+        Assert.Contains("robin mined", open); // raw events before the session closes
         a.Step(400);
         var answer = a.Log.Ask("what did robin do today", a.F.Clock.GetUtcNow());
         output.WriteLine(answer);
