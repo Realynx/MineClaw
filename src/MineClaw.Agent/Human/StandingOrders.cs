@@ -126,6 +126,23 @@ public sealed class StandingOrders
     /// <summary>Raised after an order was re-issued (tests, logs).</summary>
     public event Action<StandingOrder, string>? Resumed;
 
+    /// <summary>
+    /// True while something else holds the body (a live script on this body's lane, paused included): no resume then. The
+    /// script tool answers "already running" to a second run, and live 10-28 03:44-03:48 those answers counted as three failed
+    /// resumes, paused auto-resume in the db for good, and main sat idle after every later restart.
+    /// </summary>
+    public Func<bool>? BodyBusy { get; set; }
+
+    /// <summary>
+    /// Bot layer: checks an order's call before C# re-issues it (the saved script still exists and is JS after the Lua→JS
+    /// migration; a pinned old version re-resolves to the newest). <see cref="OrderCheck.Input"/> = the call rewritten (persisted);
+    /// <see cref="OrderCheck.Problem"/> = it can't run as stored (the brain is woken once with why). Null = re-issue as stored.
+    /// </summary>
+    public Func<StandingOrder, OrderCheck>? Prepare { get; set; }
+
+    private string? _problemPosted;
+    private string? _lastProblem;
+
     /// <summary>The brain stopped everything: no auto-resume for a while (danger, "stop" from a player).</summary>
     public void Snooze(TimeSpan? span = null)
     {
@@ -133,8 +150,9 @@ public sealed class StandingOrders
     }
 
     /// <summary>
-    /// Re-issues the standing order when the bot is idle (no activity, nothing waking pending, not snoozed, not resumed too
-    /// recently, not failing repeatedly). Returns true when it started it. <paramref name="why"/> is for logs.
+    /// Re-issues the standing order when the bot is idle (no activity, no script holding the body, nothing waking pending, not
+    /// snoozed, not resumed too recently, not failing repeatedly). Returns true when it started it. <paramref name="why"/> is
+    /// for logs; "start" (the restart resume) skips the min-interval check: the run it guards died with the old process.
     /// </summary>
     public bool ResumeIfIdle(string why, CancellationToken shutdown = default)
     {
@@ -142,6 +160,7 @@ public sealed class StandingOrders
         var o = Current;
         if (o == null || _activities.IsBusy || _events.HasWaking) return false;
         if (CanResume is { } can && !can(o)) return false;
+        try { if (BodyBusy?.Invoke() == true) return false; } catch (Exception) { }
         var now = _time.GetUtcNow();
         bool backingOff;
         lock (_lock) backingOff = now < _backoffUntil;
@@ -155,15 +174,38 @@ public sealed class StandingOrders
         lock (_lock)
         {
             if (now < _snoozedUntil) return false;
-            if (o.LastResumed is { } last && now - last < TimeSpan.FromSeconds(Math.Max(0, _o.MinResumeIntervalSeconds))) return false;
+            if (why != "start" && o.LastResumed is { } last && now - last < TimeSpan.FromSeconds(Math.Max(0, _o.MinResumeIntervalSeconds))) return false;
             if (o.FailuresInRow >= Math.Max(1, _o.MaxResumeFailures)) return false;
         }
         if (!_tools.TryGet(o.Tool, out var tool))
         {
             _log.LogWarning("standing order {Job}: tool {Tool} missing", o.Job, o.Tool);
+            ReportProblem(o, $"its tool {o.Tool} isn't available here");
             return false;
         }
-        lock (_lock) _resumedSignature = ToolCallGuard.Signature(o.Tool, o.Input);
+        if (Prepare is { } prepare)
+        {
+            OrderCheck check;
+            try { check = prepare(o); }
+            catch (Exception ex) { _log.LogDebug(ex, "standing order check failed"); check = default; }
+            if (check.Problem is { Length: > 0 } problem)
+            {
+                ReportProblem(o, problem);
+                return false;
+            }
+            if (check.Input is { } rewritten)
+            {
+                o.Input = rewritten;
+                _memory.UpdateStandingOrder(Bot, x => x.Input = rewritten);
+                _log.LogInformation("standing order {Job}: call updated ({Note})", o.Job, check.Note ?? "re-resolved");
+            }
+        }
+        lock (_lock)
+        {
+            _resumedSignature = ToolCallGuard.Signature(o.Tool, o.Input);
+            _problemPosted = null;
+            _lastProblem = null;
+        }
         _memory.UpdateStandingOrder(Bot, x => { x.Resumes++; x.LastResumed = now; });
         _log.LogInformation("standing order resumed ({Why}): {Job} via {Tool}", why, o.Job, o.Tool);
         // Background activity, like any long task: its end posts [task ok]/[task failed]; stop/new activities cancel it.
@@ -172,12 +214,71 @@ public sealed class StandingOrders
         return true;
     }
 
+    /// <summary>An order whose call can't run as stored: one Normal wake per problem (never silent, never a loop).</summary>
+    private void ReportProblem(StandingOrder o, string problem)
+    {
+        var key = ToolCallGuard.Signature(o.Tool, o.Input) + "|" + problem;
+        lock (_lock)
+        {
+            _lastProblem = problem;
+            if (_problemPosted == key) return;
+            _problemPosted = key;
+        }
+        _log.LogWarning("standing order {Job} can't resume: {Problem}", o.Job, problem);
+        _events.Post(GameEvent.Notice($"standing order \"{o.Job}\" can't resume: {TextUtil.Truncate(problem, 160)}; set it again " +
+            "(standing_order set) or clear it", EventPriority.Normal) with { MustWake = true });
+    }
+
+    /// <summary>
+    /// Once per process start, before the start resume: a failure pause persisted by the previous process is lifted (a restart
+    /// is a fresh chance, usually after a fix; three new failures pause it again and wake the brain). Returns a note for the
+    /// startup wake ("auto-resume had paused after 3 failures (last: ...); retrying") or null.
+    /// </summary>
+    public string? OnProcessStart()
+    {
+        var o = Current;
+        if (o == null || o.FailuresInRow < Math.Max(1, _o.MaxResumeFailures)) return null;
+        _memory.UpdateStandingOrder(Bot, x => x.FailuresInRow = 0);
+        _log.LogInformation("standing order {Job}: failure pause ({N}x) lifted by the restart", o.Job, o.FailuresInRow);
+        return $"auto-resume had paused after {o.FailuresInRow} failures" +
+               (o.LastOutcome is { Length: > 0 } l ? $" (last: {TextUtil.Truncate(l, 80)})" : "") + "; retrying";
+    }
+
+    /// <summary>Why the order isn't running by itself right now ("auto-resume paused after 3 failures"), or null.</summary>
+    public string? WhyNot()
+    {
+        var o = Current;
+        if (o == null) return null;
+        if (!_o.ResumeStandingOrders) return "auto-resume is off";
+        if (Held) return "held";
+        var now = _time.GetUtcNow();
+        lock (_lock)
+        {
+            if (_lastProblem != null) return "can't resume: " + _lastProblem;
+            if (o.FailuresInRow >= Math.Max(1, _o.MaxResumeFailures))
+                return $"auto-resume paused after {o.FailuresInRow} failures" +
+                       (o.LastOutcome is { Length: > 0 } l ? $" (last: {TextUtil.Truncate(l, 80)})" : "");
+            if (now < _snoozedUntil) return $"snoozed after a stop ({(int)Math.Ceiling((_snoozedUntil - now).TotalMinutes)}m left)";
+            if (now < _backoffUntil) return $"nothing to do on the last pass, next check in {(int)Math.Ceiling((_backoffUntil - now).TotalMinutes)}m";
+        }
+        return null;
+    }
+
+    /// <summary>"already running: ..." — the same script/job is live: the order is in effect, not a failed pass.</summary>
+    internal static bool AlreadyRunning(string? text) =>
+        (text ?? "").TrimStart().StartsWith("already running", StringComparison.OrdinalIgnoreCase);
+
     private void OnStepFinished(string tool, JsonElement input, ToolResult result, string? cancelReason)
     {
         string? sig;
         lock (_lock) sig = _resumedSignature;
         if (sig == null || ToolCallGuard.Signature(tool, input) != sig || cancelReason != null) return;
         bool ok = result.Ok;
+        if (AlreadyRunning(result.Text))
+        {
+            _memory.UpdateStandingOrder(Bot, o => o.LastOutcome = TextUtil.Truncate(TextUtil.OneLine(result.Text ?? ""), 160));
+            return;
+        }
         if (NothingYet.IsMatch(result.Text ?? ""))
         {
             // Not a failure and nothing for the brain: wait in C# (probe the world, else 2 → 4 → 8 → 15 min), no LLM call.
@@ -277,4 +378,15 @@ public sealed class StandingOrders
                 return ToolResult.Error("op is set|clear|show");
         }
     }
+}
+
+/// <summary>
+/// <see cref="StandingOrders.Prepare"/>'s verdict on an order's stored call: <see cref="Input"/> = the call to use instead
+/// (persisted), <see cref="Problem"/> = why it can't run (the brain hears it once), <see cref="Note"/> = what was rewritten.
+/// Default = run as stored.
+/// </summary>
+public readonly record struct OrderCheck(JsonElement? Input = null, string? Problem = null, string? Note = null)
+{
+    public static OrderCheck Rewrite(JsonElement input, string note) => new(input, null, note);
+    public static OrderCheck Invalid(string problem) => new(null, problem);
 }

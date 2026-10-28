@@ -124,4 +124,17 @@ public sealed class IdleOptions
     public string[] Jobs { get; set; } = ["top up cobblestone to a stack in storage", "tidy the storage chest", "replant saplings"];
     /// <summary>How often the idle checks run (seconds).</summary>
     public int CheckSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Once per process start (main only): one Normal wake "restarted: standing order X, paused build Z, rules Y" so the brain
+    /// re-plans once by its learned rules (live 10-28 07:37-08:45: five restarts, no turn for 70 min).
+    /// </summary>
+    public bool StartupWake { get; set; } = true;
+    /// <summary>
+    /// Idle watchdog (main only): idle this many minutes with nothing running or waking while a standing order is stuck or a
+    /// paused job waits → one wake. Repeats back off (×2 per "nothing to do" answer) up to <see cref="WatchdogMaxMinutes"/>.
+    /// 0 = off.
+    /// </summary>
+    public double WatchdogMinutes { get; set; } = 10;
+    public double WatchdogMaxMinutes { get; set; } = 80;
 }

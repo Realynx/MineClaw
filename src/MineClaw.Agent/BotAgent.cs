@@ -255,7 +255,7 @@ public sealed partial class BotAgent
     {
         _activities.Shutdown = ct;
         using var idleTimer = StartIdleTimer(ct);
-        if (Orders != null) _ = ResumeOnStartAsync(ct);
+        _ = ResumeOnStartAsync(ct);
         int failures = 0;
         while (!ct.IsCancellationRequested)
         {
@@ -1210,7 +1210,8 @@ public sealed partial class BotAgent
     private ITimer? StartIdleTimer(CancellationToken ct)
     {
         var idle = _options.Idle ?? new Human.IdleOptions();
-        if (_options.IdleCheckInMinutes <= 0 && !idle.IdleDefault && !(idle.ResumeStandingOrders && Orders != null)) return null;
+        if (_options.IdleCheckInMinutes <= 0 && !idle.IdleDefault && !(idle.ResumeStandingOrders && Orders != null)
+            && !(IdleWatchdog && idle.WatchdogMinutes > 0)) return null;
         var period = TimeSpan.FromSeconds(Math.Clamp(idle.CheckSeconds, 5, 60));
         return _time.CreateTimer(_ =>
         {
@@ -1224,7 +1225,15 @@ public sealed partial class BotAgent
         // Restart / reboot / clone respawn: once the join settled, go back to the standing order.
         try { await Task.Delay(TimeSpan.FromSeconds(Math.Max(0, (_options.Idle ?? new Human.IdleOptions()).ResumeOnStartSeconds)), _time, ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { return; }
-        try { Orders?.ResumeIfIdle("start", ct); } catch (Exception ex) { _log.LogWarning(ex, "standing order resume failed"); }
+        // Once per process (a pause/resume of the loop runs this again): lift a failure pause the old process persisted.
+        bool first = Interlocked.Exchange(ref _startHandled, 1) == 0;
+        string? lifted = null;
+        if (first)
+            try { lifted = Orders?.OnProcessStart(); } catch (Exception ex) { _log.LogWarning(ex, "standing order start check failed"); }
+        bool resumed = false;
+        try { resumed = Orders?.ResumeIfIdle("start", ct) == true; } catch (Exception ex) { _log.LogWarning(ex, "standing order resume failed"); }
+        if (first && WakeOnStart && (_options.Idle ?? new Human.IdleOptions()).StartupWake)
+            try { PostStartupWake(resumed, lifted); } catch (Exception ex) { _log.LogWarning(ex, "startup wake failed"); }
     }
 
     private bool _idleDefaultFired;
@@ -1236,7 +1245,7 @@ public sealed partial class BotAgent
     /// One idle check (the timer calls it; public for tests): busy → nothing; a standing order → resume it; no job, no order,
     /// nothing pending for <see cref="Human.IdleOptions.AfterMinutes"/> while players are online → one "[idle]" wake to pick a
     /// useful job from the allowlist (once per idle stretch); no players → sleep. Then the legacy idle check-in. Returns what
-    /// it did ("resumed", "idle default", "check-in") or null.
+    /// it did ("resumed", "idle default", "watchdog", "check-in") or null.
     /// </summary>
     public string? IdleTick()
     {
@@ -1246,6 +1255,7 @@ public sealed partial class BotAgent
         {
             _lastBusyAt = now;
             _idleDefaultFired = false;
+            _watchdogStreak = 0;
             return null;
         }
         if (Orders?.ResumeIfIdle("idle", _activities.Shutdown) == true) return "resumed";
@@ -1263,8 +1273,16 @@ public sealed partial class BotAgent
             return "idle default";
         }
 
+        var holder = BodyHolderNow();
+        if (holder != null)
+        {
+            _lastBusyAt = now;
+            _watchdogStreak = 0;
+        }
+        else if (WatchdogTick(now, quietSince, idle)) return "watchdog";
+
         // A standing order or a script is the bot's plan already: no check-in to ask what to do.
-        if (Orders?.Current != null || BodyHolderNow() != null) return null;
+        if (Orders?.Current != null || holder != null) return null;
         int minutes = IdleCheckInMinutesNow();
         if (minutes > 0 && now - _lastEpisode >= TimeSpan.FromMinutes(minutes))
         {

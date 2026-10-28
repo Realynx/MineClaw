@@ -90,6 +90,8 @@ public static class ClonePolicy
         agent.SpeaksOn = b => b.Events.Any(e => IsHiveTask(e) && AskSpeech.IsMatch(TaskText(e.Text))); // the task ack line
         agent.LogPublicChat = false;
         agent.TurnDigest = null; // other players' activity digest is main's context, not the clone's
+        agent.WakeOnStart = false;  // a clone's brain makes zero calls until a real wake (its task/script is its order)
+        agent.IdleWatchdog = false;
         if (muted != null) agent.Muted += muted;
     }
 }

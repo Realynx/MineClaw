@@ -645,9 +645,10 @@ public sealed class BlueprintService
 
     /// <summary>
     /// Unfinished builds of this body, told to the brain instead of started (<see cref="BlueprintOptions.AutoResume"/> off): it
-    /// resumes them with design build{id} when its rules allow. Null when nothing is pending.
+    /// resumes them with design build{id} when its rules allow. Null when nothing is pending. <paramref name="notice"/> false =
+    /// only the line (the brain's startup wake carries it: a Background notice alone never woke it, live 10-28 07:37-08:45).
     /// </summary>
-    public string? NotifyPending(string owner)
+    public string? NotifyPending(string owner, bool notice = true)
     {
         foreach (var b in Store.Unfinished(owner))
         {
@@ -655,7 +656,7 @@ public sealed class BlueprintService
             var line = $"the {rec.Name} build (#{rec.Id}, {b.Placed}/{b.Total} placed) was paused by a restart; resume it with design " +
                        $"build{{id={rec.Id}}} when it fits your rules" + (rec.AcceptedBy != null ? $" ({rec.AcceptedBy} approved it; no second go needed)" : "");
             line = WithRules(rec.Id, line);
-            Notice("[design] " + line);
+            if (notice) Notice("[design] " + line);
             return line;
         }
         return null;

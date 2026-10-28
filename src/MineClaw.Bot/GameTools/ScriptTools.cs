@@ -580,6 +580,61 @@ public sealed class ScriptBridge
     /// <summary>A step routine migrated before JS existed is Lua; one migrated now is JS (its row says so).</summary>
     private bool LooksJs(string name) => Library.Get(name)?.Script is { Lang: "js" };
 
+    /// <summary>
+    /// <see cref="Agent.Human.StandingOrders.Prepare"/> for script orders: the stored call must still run from C# after the
+    /// Lua→JS migration. A pinned version that is Lua or gone re-resolves to the saved script's newest (active) version; inline
+    /// code is dropped when a saved script of that name exists; a checkpoint label the new code lacks is dropped. Anything that
+    /// can't run (no such script, Lua that never migrated, inline code, a goal) is a problem the brain hears once.
+    /// </summary>
+    internal Agent.Human.OrderCheck CheckOrder(Agent.Memory.StandingOrder o)
+    {
+        if (!string.Equals(o.Tool, ScriptTools.ToolName, StringComparison.OrdinalIgnoreCase) || o.Input.ValueKind != JsonValueKind.Object)
+            return default;
+        if (DefaultOp(o.Input) is not ("run" or "replace")) return default;
+        if (System.Text.Json.Nodes.JsonNode.Parse(o.Input.GetRawText()) is not System.Text.Json.Nodes.JsonObject node) return default;
+        var notes = new List<string>();
+        var rawName = ToolInput.Str(o.Input, "name");
+        var code = ToolInput.Str(o.Input, "code");
+        bool named = !string.IsNullOrWhiteSpace(rawName);
+        if (!string.IsNullOrWhiteSpace(code))
+        {
+            if (named && Library.Get(ScriptLibrary.ParseRef(CleanRef(rawName!)).Name)?.Script is { Code.Length: > 0 })
+            {
+                node.Remove("code");
+                node.Remove("save");
+                notes.Add("inline code dropped, runs the saved script");
+            }
+            else
+                return Agent.Human.OrderCheck.Invalid(LanguageOf(code!) == ScriptLanguage.Lua
+                    ? "its call carries inline legacy Lua code (scripts are JS now) and no saved script by that name"
+                    : "its call carries inline code, which C# can't re-run (only the brain writes code); name a saved script");
+        }
+        if (!named)
+            return Agent.Human.OrderCheck.Invalid(ToolInput.Str(o.Input, "goal") is { Length: > 0 }
+                ? "its call commissions a new script (goal) instead of naming a saved one" : "its call names no saved script");
+        var reference = CleanRef(rawName!);
+        var (name, ver) = ScriptLibrary.ParseRef(reference);
+        if (Library.Get(name) == null) return Agent.Human.OrderCheck.Invalid($"no saved script '{name}' any more");
+        // A pinned older version is Lua by its own row (the script's "js" marks only the active one, e.g. the migrated v2).
+        if (ver != null && (Library.Resolve(reference, IsScriptable, out _) is not { } pinned
+                            || (pinned.V != Library.Get(name)?.Script?.Version ? pinned.IsLua : pinned.IsLua && !LooksJs(name))))
+        {
+            node["name"] = name;
+            notes.Add($"{reference} re-resolved to {name}'s newest version");
+        }
+        var v = Library.Resolve(CleanRef(node["name"]?.GetValue<string>() ?? reference), IsScriptable, out var why);
+        if (v == null) return Agent.Human.OrderCheck.Invalid(why ?? $"no saved script '{name}'");
+        if (v.IsLua && !LooksJs(name) && !Options.LegacyLua)
+            return Agent.Human.OrderCheck.Invalid($"{name} v{v.V} is legacy Lua and wasn't migrated to JS ({Library.Get(name)?.Script?.Migration ?? "migration pending"}); " +
+                $"rewrite it: script{{name:{name}, goal:...}}");
+        if (ToolInput.Str(o.Input, "resume_from") is { Length: > 0 } label && !ScriptSession.HasCheckpoint(v.Code, label.Trim()))
+        {
+            node.Remove("resume_from");
+            notes.Add($"checkpoint '{label}' isn't in {name} v{v.V}, starts from the top");
+        }
+        return notes.Count == 0 ? default : Agent.Human.OrderCheck.Rewrite(JsonSerializer.SerializeToElement(node), string.Join("; ", notes));
+    }
+
     /// <summary>Lint with this bot's action/skill names (so unchecked-result warnings know what an action is).</summary>
     internal LintReport Lint(string code) => Lint(code, LanguageOf(code));
 
@@ -1062,6 +1117,14 @@ public static class ScriptTools
             skills.SyncLearned = () => { prev?.Invoke(); bridge.SyncPromoted(); };
         }
         rt.Agent.BodyHolder = bridge.BodyState; // body lock: brain body tools answer "body busy" while a script runs
+        if (rt.Agent.Orders is { } orders)
+        {
+            // A live script holds the body: the order waits instead of a run that answers "already running" (live 10-28 03:48:
+            // three of those paused auto-resume in the db, and every restart after stayed idle). Stored calls are checked
+            // (Lua→JS migration: newest version by name) before C# re-issues them.
+            orders.BodyBusy = () => bridge.Controller.Current is { IsLive: true };
+            orders.Prepare = bridge.CheckOrder;
+        }
         var header = rt.Agent.StateHeader;
         rt.Agent.StateHeader = () =>
         {

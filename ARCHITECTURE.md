@@ -200,6 +200,14 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
   migrates old trusted instruction claims (idempotent).
 - **Standing-order backoff**: a pass that found nothing to do yet ("still growing", "0 chopped") is quiet context, not a failure;
   C# waits 2 → 4 → 8 → 15 min and polls `WorkProbe` (a grown tree, a regenerated gen cell, a mature crop) to resume earlier.
+  A live script on the lane holds the order (`StandingOrders.BodyBusy`; "already running" is never a failed pass); a restart
+  lifts a failure pause the old process persisted; `Prepare` (`ScriptBridge.CheckOrder`) re-resolves a script order to its
+  newest version by name after the Lua→JS migration, and a call that can't run wakes the brain once (Normal) with why.
+- **Startup wake + idle watchdog** (`BotAgent.Startup`, main only; `ClonePolicy` turns both off): once per process start, one
+  Normal wake "restarted: standing order X: resumed; <paused build line, its rules, it's night now>; rules: …" (the paused
+  build rides in it via `AddPendingWork`, not a Background notice). Idle with nothing running or waking for
+  `Agent:Idle:WatchdogMinutes` (10) while the order is stuck (not merely backing off/snoozed) or paused work waits → one
+  Normal wake; each repeat without the bot getting busy doubles the wait (cap `WatchdogMaxMinutes`, 80).
 - **Hand-off holds** (`Client/Survival/HandoffReservations`, `Bot/Perception/HandoffIntent`): a chat line either side ("I'll pass
   it to 67", "bread for 67") opens a 3-min intent; pickups during it are held for that target and auto-eat skips them unless
   hp ≤ 4; a hold ends when the item leaves the inventory (delivered) or after 10 min.

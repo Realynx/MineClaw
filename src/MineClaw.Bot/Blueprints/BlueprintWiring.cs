@@ -90,11 +90,17 @@ public sealed class BlueprintWiring
         rules.TimeOfDay ??= () => client.IsPlaying ? (client.World.IsNight ? "night" : "day") : null;
         rules.AddInPlay(() => service.InPlay(client.Username));
         service.Rules = id => rules.ForDesign(id);
+        // A build paused by the restart rides in main's one startup wake (and the idle watchdog), not a Background notice that
+        // never wakes the brain (live 10-28 07:37-08:45).
+        if (persist && !o.AutoResume) rt.Agent.AddPendingWork(() => service.NotifyPending(client.Username, notice: false));
+        int spawns = 0;
         if (persist)
             client.Spawned += () => _ = Task.Run(async () =>
             {
                 try
                 {
+                    // First spawn of a process: the startup wake already tells a paused build (AutoResume off).
+                    if (Interlocked.Increment(ref spawns) == 1 && !o.AutoResume && rt.Agent.WakeOnStart && rt.Options.Idle.StartupWake) return;
                     await Task.Delay(TimeSpan.FromSeconds(15), clock).ConfigureAwait(false);
                     if (rt.Agent.ActivitiesFor(client.Username).IsBusy) return;
                     var line = o.AutoResume ? service.ResumePending(client.Username) : service.NotifyPending(client.Username);
