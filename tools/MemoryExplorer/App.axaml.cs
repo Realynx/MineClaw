@@ -23,7 +23,6 @@ public partial class App : Application
             var window = new MainWindow { DataContext = vm };
             desktop.MainWindow = window;
             desktop.ShutdownRequested += (_, _) => vm.Dispose();
-            if (Startup.FreecamProfile != null) LiveHive.FreecamProfiler.Start(window, vm, Startup);
             _ = vm.InitializeAsync();
         }
         base.OnFrameworkInitializationCompleted();
