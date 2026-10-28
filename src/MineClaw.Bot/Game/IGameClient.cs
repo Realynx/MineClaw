@@ -17,6 +17,9 @@ public interface IGameClient
     double StationSearchRadius { get; }
     Func<BlockPos, int, bool>? IsProtected { get; set; }
     IReadOnlySet<int> ReservedItems { get; set; }
+    /// <summary>Items a meal must not use right now: <see cref="ReservedItems"/> plus food held for a hand-off (the client's
+    /// <see cref="MinecraftClient.EatReservedItems"/>). Default: the reserved items.</summary>
+    IReadOnlySet<int> EatReservedItems => ReservedItems;
 
     event Action<string>? ChatReceived;
     event Action<string>? Kicked;
@@ -124,6 +127,7 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
     public double StationSearchRadius => Inner.StationSearchRadius;
     public Func<BlockPos, int, bool>? IsProtected { get => Inner.IsProtected; set => Inner.IsProtected = value; }
     public IReadOnlySet<int> ReservedItems { get => Inner.ReservedItems; set => Inner.ReservedItems = value; }
+    public IReadOnlySet<int> EatReservedItems => Inner.EatReservedItems;
 
     public event Action<string>? ChatReceived { add => Inner.ChatReceived += value; remove => Inner.ChatReceived -= value; }
     public event Action<string>? Kicked { add => Inner.Kicked += value; remove => Inner.Kicked -= value; }

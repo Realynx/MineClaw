@@ -28,6 +28,11 @@ public sealed class FakeGameClient : IGameClient
     public double StationSearchRadius { get; set; } = 24;
     public Func<MineClaw.World.BlockPos, int, bool>? IsProtected { get; set; }
     public IReadOnlySet<int> ReservedItems { get; set; } = new HashSet<int>();
+    /// <summary>Food held for a hand-off (item → held count): blocked while the inventory holds no more than that, like
+    /// <see cref="MineClaw.Client.Survival.HandoffReservations.Blocked"/>.</summary>
+    public Dictionary<int, int> HandoffHolds { get; } = new();
+    public IReadOnlySet<int> EatReservedItems => HandoffHolds.Count == 0 ? ReservedItems
+        : ReservedItems.Concat(HandoffHolds.Where(kv => World.Inventory.CountItem(kv.Key) <= kv.Value).Select(kv => kv.Key)).ToHashSet();
 
     public ConcurrentQueue<string> Calls { get; } = new();
     public List<string> CallList => Calls.ToList();

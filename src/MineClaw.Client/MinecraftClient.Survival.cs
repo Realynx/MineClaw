@@ -45,6 +45,9 @@ public sealed partial class MinecraftClient
                || (food <= Options.Survival.StarvingFood && SurvivalReflex.HasAnyFood(slots, reserved));
     }
 
+    /// <summary>What a meal must not use right now (<see cref="EatReserved"/> at the current health): the food resolver's view.</summary>
+    public IReadOnlySet<int> EatReservedItems => EatReserved(World.Player.Health);
+
     /// <summary>
     /// Items the survival reflex must not eat: the configured <see cref="ReservedItems"/> plus food held for a hand-off
     /// (<see cref="Handoffs"/>), the latter only while health is above <see cref="HandoffReservations.CriticalHp"/>.

@@ -138,6 +138,7 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
     public double StationSearchRadius => inner.StationSearchRadius;
     public Func<BlockPos, int, bool>? IsProtected { get => inner.IsProtected; set => inner.IsProtected = value; }
     public IReadOnlySet<int> ReservedItems { get => inner.ReservedItems; set => inner.ReservedItems = value; }
+    public IReadOnlySet<int> EatReservedItems => inner.EatReservedItems;
 
     public event Action<string>? ChatReceived { add => inner.ChatReceived += value; remove => inner.ChatReceived -= value; }
     public event Action<string>? Kicked { add => inner.Kicked += value; remove => inner.Kicked -= value; }

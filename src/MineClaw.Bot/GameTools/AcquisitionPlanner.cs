@@ -174,22 +174,26 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
 
         // (b) a chest — unless that's a wood tool and stone can be crafted right here from the inventory (best tier first).
         bool stoneNow = stone != 0 && min <= 1 && PlanCompleteFromInventory(stone);
-        var stocked = ChestBest(ok);
-        if (stocked is { } best && !(stoneNow && Level(best) < 1))
+        var stocked = k.Name == "food" ? null : ChestBest(ok);
+        if (stocked is { } best && !(stoneNow && Level(best) < 1)) // food: FoodSupply below (reserved items stay)
         {
-            if (await WithdrawAsync(ok, k.Name == "food" ? k.Want : 1, ct).ConfigureAwait(false) is { } from && Has(k, min)) return from;
+            if (await WithdrawAsync(ok, 1, ct).ConfigureAwait(false) is { } from && Has(k, min)) return from;
         }
         if (stoneNow && await CraftAsync(stone, ct).ConfigureAwait(false)) return Crafted(stone);
 
-        // (c) a hive member's spare (main had 2 picks while 67 and 69 had none).
-        if (await HandoffAsync(k.Name, ok, k.Name == "food" ? k.Want : 1, () => Has(k, min), ct).ConfigureAwait(false) is { } giver) return giver;
-
         if (k.Name == "food")
         {
-            if (Recipes.ForOutput(Items.Bread, 0).Count > 0 && Inv(Items.Wheat) + ChestStock(Items.Wheat) >= 3 && await CraftAsync(Items.Bread, ct).ConfigureAwait(false))
-                return "crafted bread";
+            // The food resolver before bothering the hive: chest food, bread from chest wheat, stew, cooking (FoodSupply).
+            var food = await new FoodSupply(c, _s) { OnStep = Step }.ObtainAsync(ct).ConfigureAwait(false);
+            if (food.Ok) return food.Text;
+            _shortfall = food.Text;
+            if (await HandoffAsync(k.Name, ok, k.Want, () => Has(k, min), ct).ConfigureAwait(false) is { } feeder) return feeder;
             return need.Depth == AcquireDepth.Full ? await AskAsync(k.Name, "food", () => Has(k, min), ct).ConfigureAwait(false) : null;
         }
+
+        // (c) a hive member's spare (main had 2 picks while 67 and 69 had none).
+        if (await HandoffAsync(k.Name, ok, 1, () => Has(k, min), ct).ConfigureAwait(false) is { } giver) return giver;
+
         if (stone == 0) return need.Depth == AcquireDepth.Full ? await AskAsync(k.Name, Short(k), () => Has(k, min), ct).ConfigureAwait(false) : null;
 
         // (d) craft from inventory + chests: stone when cobble is reachable there, else (cheap mode) wood.

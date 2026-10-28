@@ -166,6 +166,12 @@ public sealed class GameBridge : IDisposable
 
     private void OnDanger(DangerEvent d)
     {
+        if (d.Kind == DangerKind.Hunger && AutoFeed && _c.IsPlaying && FeedReflex(d)) return;
+        Report(d);
+    }
+
+    private void Report(DangerEvent d)
+    {
         int health = _c.World.Player.Health;
         if (d.Kind == DangerKind.Hunger && Hunger is { } h && !h.ShouldWake(d, health))
         {
@@ -175,6 +181,67 @@ public sealed class GameBridge : IDisposable
             return;
         }
         Post(MapDanger(d, health, _c.World.Player.Position.Y));
+    }
+
+    // ------------------------------------------------------------------ hunger reflex
+
+    /// <summary>
+    /// "Hungry, no food" fetches/crafts/cooks food and eats as a brainstem reflex, zero tokens (<see cref="FoodSupply"/>; live
+    /// 10-28 13:25 main starved to food 0 asking a clone for bread with 30 wheat in the house chest). Only when nothing can be
+    /// had, or the attempt fails, does the danger reach the brain, naming what's there or the real shortfall.
+    /// </summary>
+    public bool AutoFeed { get; init; } = true;
+
+    /// <summary>How long one reflex meal (walk, withdraw, craft/cook, eat) may take.</summary>
+    public TimeSpan FeedTimeout { get; init; } = TimeSpan.FromMinutes(3);
+
+    private int _feeding;
+
+    /// <summary>Last reflex meal (tests): its task, null before the first.</summary>
+    internal Task? Feeding { get; private set; }
+
+    /// <summary>True = handled by the reflex (no wake now); false = report <paramref name="d"/> (its text may have grown).</summary>
+    private bool FeedReflex(DangerEvent d)
+    {
+        if (Volatile.Read(ref _feeding) == 1)
+        {
+            Post(GameEvent.Notice(d.Message + "; already fetching food (reflex)", EventPriority.Background));
+            return true;
+        }
+        FoodSupply.Outlook look;
+        try { look = new FoodSupply(_c).Survey(); }
+        catch (Exception ex) { _log.LogDebug(ex, "food survey failed"); return false; }
+        if (!look.CanObtain || Interlocked.CompareExchange(ref _feeding, 1, 0) != 0)
+        {
+            Report(d with { Message = d.Message + "; " + look.Text });
+            return true;
+        }
+        _log.LogInformation("hunger reflex: {Plan}", look.Text);
+        Post(GameEvent.Notice($"{d.Message}; {look.Text}: eating it now (reflex)", EventPriority.Background));
+        Feeding = Task.Run(() => FeedAsync(d));
+        return true;
+    }
+
+    private async Task FeedAsync(DangerEvent d)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(FeedTimeout);
+            var r = await FoodSupply.EatAsync(_c, cts.Token).ConfigureAwait(false);
+            if (r.Ok)
+            {
+                _log.LogInformation("hunger reflex: {Msg}", r.Message);
+                Post(GameEvent.Notice($"ate (reflex): {r.Message}", EventPriority.Background));
+                return;
+            }
+            Report(d with { Message = $"{d.Message}; the food reflex failed: {r.Message}" });
+        }
+        catch (Exception ex)
+        {
+            _log.LogDebug(ex, "hunger reflex failed");
+            Report(d with { Message = $"{d.Message}; the food reflex failed: {ex.Message}" });
+        }
+        finally { Volatile.Write(ref _feeding, 0); }
     }
 
     private void Sub<T>(Action<T> add, Action<T> remove, T handler)

@@ -34,7 +34,7 @@ public sealed partial class MinecraftClient
     public Task<ActionResult> UseItemAsync(int? itemId = null, CancellationToken ct = default) =>
         RunActionAsync("use", ct, c => UseCoreAsync(itemId, c));
 
-    /// <summary>Eats the best available food that is not in <see cref="ReservedItems"/>.</summary>
+    /// <summary>Eats the best available food that is not in <see cref="ReservedItems"/> nor held for a hand-off.</summary>
     public Task<ActionResult> EatAsync(CancellationToken ct = default) =>
         RunActionAsync("eat", ct, async c =>
         {
@@ -42,7 +42,7 @@ public sealed partial class MinecraftClient
             if (World.Player.Food >= 20) return ActionResult.Success("already full (food 20/20)");
             var food = PickFood();
             if (food is null)
-                return ActionResult.Fail(SurvivalReflex.HasAnyFood(World.Inventory.PlayerSlots(), ReservedItems)
+                return ActionResult.Fail(SurvivalReflex.HasAnyFood(World.Inventory.PlayerSlots(), EatReserved(World.Player.Health))
                     ? $"only food-poisoning risks left (rotten flesh/raw chicken), eaten automatically at food {Options.Survival.StarvingFood}; use_item to eat one anyway"
                     : "no food (or only reserved food)");
             return await UseCoreAsync(food.Value, c).ConfigureAwait(false);
@@ -464,7 +464,7 @@ public sealed partial class MinecraftClient
     private int? PickFood()
     {
         var p = World.Player;
-        return SurvivalReflex.PickFood(World.Inventory.PlayerSlots(), ReservedItems, p.Health, p.Food, Options.Survival)?.ItemId;
+        return SurvivalReflex.PickFood(World.Inventory.PlayerSlots(), EatReserved(p.Health), p.Health, p.Food, Options.Survival)?.ItemId;
     }
 
     // ------------------------------------------------------------------ safety helpers

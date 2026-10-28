@@ -71,6 +71,7 @@ public sealed class BodyRoutingGameClient(BodyRegistry registry, Func<IBody, IGa
     public double StationSearchRadius => T().StationSearchRadius;
     public Func<BlockPos, int, bool>? IsProtected { get => T().IsProtected; set => T().IsProtected = value; }
     public IReadOnlySet<int> ReservedItems { get => T().ReservedItems; set => T().ReservedItems = value; }
+    public IReadOnlySet<int> EatReservedItems => T().EatReservedItems;
     public bool VitalsKnown => T().VitalsKnown;
     public bool GroundKnown => T().GroundKnown;
     public bool SafetyEngaged => T().SafetyEngaged;

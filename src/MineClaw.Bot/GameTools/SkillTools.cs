@@ -284,7 +284,7 @@ internal sealed class GameClientActions(IGameClient c) : IGameActions
     public Task<ActionResult> ActivateAsync(BlockPos p, CancellationToken ct) => c.ActivateBlockAsync(p.X, p.Y, p.Z, ct);
     public Task<ActionResult> LookAtAsync(Vec3d point, CancellationToken ct) => No("look");
     public Task<ActionResult> UseItemAsync(int? itemId, CancellationToken ct) => No("use_item");
-    public Task<ActionResult> EatAsync(CancellationToken ct) => c.EatAsync(ct);
+    public Task<ActionResult> EatAsync(CancellationToken ct) => FoodSupply.EatAsync(c, ct);
     public Task<ActionResult> CollectDropsAsync(double radius, CancellationToken ct) => c.CollectDropsAsync(radius, ct);
     public Task<ActionResult> MineAsync(string blockName, int count, double radius, CancellationToken ct) => c.MineAsync(blockName, count, radius, ct);
     public Task<ActionResult> CraftAsync(string itemName, int count, CancellationToken ct) =>

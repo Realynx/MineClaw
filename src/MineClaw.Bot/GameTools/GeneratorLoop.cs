@@ -138,7 +138,7 @@ public sealed partial class GeneratorLoop(IGameClient c, GeneratorSupport? suppo
             {
                 var f = await Loadout.FetchAsync(c, _s.Observations, ["food"], ct).ConfigureAwait(false);
                 if (f.Missing.Count > 0) { stop = "too hungry to keep mining and no food in storage"; ok = mined > 0; break; }
-                await c.EatAsync(ct).ConfigureAwait(false);
+                await FoodSupply.EatAsync(c, ct).ConfigureAwait(false);
                 notes.Add(f.Text);
                 if (res.Count == 0 && ++fails >= MaxConsecutiveFailures) { stop = msg; ok = mined > 0; break; }
                 continue;

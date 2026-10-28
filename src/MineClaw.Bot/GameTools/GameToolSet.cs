@@ -430,7 +430,9 @@ public static class GameToolSet
                 if (Resolve(at, places) is not { } p) return ToolResult.Error($"unknown place '{at}'");
                 return R(await c.ActivateBlockAsync(p.X, p.Y, p.Z, ct));
             }, longRunning: true);
-        tools.Register("eat", "Eat the best spare food.", ToolSchema.Empty, async (_, ct) => R(await c.EatAsync(ct)), longRunning: true);
+        // None carried: fetched from a chest, crafted (bread from chest wheat) or cooked first (FoodSupply); else the shortfall.
+        tools.Register("eat", "Eat the best spare food.", ToolSchema.Empty,
+            async (_, ct) => R(await FoodSupply.EatAsync(c, ct)), longRunning: true);
         TreeTools.Register(tools, c, places);
         AcquireTool.Register(tools, c); // hidden: scripts' ensure/acquire (no definition in any prefix)
     }

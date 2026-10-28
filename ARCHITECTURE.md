@@ -210,6 +210,10 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
   build rides in it via `AddPendingWork`, not a Background notice). Idle with nothing running or waking for
   `Agent:Idle:WatchdogMinutes` (10) while the order is stuck (not merely backing off/snoozed) or paused work waits → one
   Normal wake; each repeat without the bot getting busy doubles the wait (cap `WatchdogMaxMinutes`, 80).
+- **Food reflex** (`GameBridge.FeedReflex` over `Bot/GameTools/FoodSupply`, zero tokens): a "hungry/starving, no food" danger
+  first surveys the food resolver; when food can be had it fetches/crafts/cooks and eats with no brain turn (Background notes
+  "…; 30 wheat in chest 11,68,-5 → can craft 10 bread: eating it now (reflex)", then "ate (reflex): …"). Only when nothing can be
+  had, or the attempt fails, does the danger go through the hunger latch to the brain, carrying the shortfall line.
 - **Hand-off holds** (`Client/Survival/HandoffReservations`, `Bot/Perception/HandoffIntent`): a chat line either side ("I'll pass
   it to 67", "bread for 67") opens a 3-min intent; pickups during it are held for that target and auto-eat skips them unless
   hp ≤ 4; a hold ends when the item leaves the inventory (delivered) or after 10 min.
@@ -349,6 +353,10 @@ exactly its raw ingredients withdrawn one stop per chest in batches the inventor
 for 3x3), an unnamed variant takes the recipe possible without smelting ("slab" = cobble slabs), else it asks which (stone_slab 44:0 smelts only when named) → the exact shortfall ("need 1 more log for a chest;
 none in inventory or the 3 known chests"). `craft`/`do craft`/the worker, `ensure`/`acquire`, builds and clone bodies (own sources per
 body adapter) all use it; craft always makes new ones (a worn carried pick never counts); reserved items and carried food aren't ingredients.
+**Food** (`FoodSupply`, over the same resolver): ready food carried (not reserved, not held for a hand-off) → chest food → bread from
+3 wheat / mushroom stew (bowl + both mushrooms) from inventory + chests → raw meat cooked at a furnace in reach (chest fuel too),
+else safe raw meat eaten raw → the shortfall ("no food anywhere: …; only 2 wheat in chest … (bread needs 3); 17 seeds to plant").
+The `eat` tool (so scripts' eat and `keepFed`), `ensure('food')`, skills' eat, the gen loop and the food reflex all go through it.
 
 ## Blueprints: build from a description (Bot/Blueprints)
 
