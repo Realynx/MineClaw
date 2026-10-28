@@ -134,6 +134,9 @@ public class StandingOrderTests
         // Live 10-28 07:3x: the topic came from the preamble, not the asked sentence.
         Assert.Equal("switch to plan #8 that sits right on…",
             QuestionOptions.Topic("master~ tower #4 keeps placing 0 blocks cuz like 175 columns hang over the void and need scaffolding, uwu. switch to plan #8 that sits right on your 8x8 floor instead?"));
+        // Live 10-28 10:3x: one comma-joined sentence; the ask is the clause after the comma.
+        Assert.Equal("move it so it sits on your 8x8…",
+            QuestionOptions.Topic("PoofimaFox, master the drop tower keeps getting stuck after a few blocks, most of it hangs over the void with no scaffold, want me to move it so it sits on your 8x8 floor instead?"));
         Assert.True(new QuestionOptions().IsRisky("bridge out over the void?"));
         Assert.True(new QuestionOptions().IsRisky("use the diamonds?"));
         Assert.False(new QuestionOptions().IsRisky("the cell next to the lava?"));

@@ -81,6 +81,10 @@ public sealed class QuestionOptions
         // The asked part is the last sentence ending in '?' ("…175 columns hang over the void. switch to plan #8 instead?").
         var asks = Regex.Matches(question, @"[^.!?]*\?").Select(m => m.Value).Where(a => a.Trim().Length > 1).ToList();
         var q = asks.Count > 0 ? asks[^1] : question.Split('?', '.', '!')[0];
+        // Comma-joined asks ("…hangs over the void with no scaffold, want me to move it to your floor instead?"): the clause
+        // that opens with an ask lead is the question.
+        var clauses = q.Split(',');
+        if (clauses.Length > 1 && clauses.Skip(1).LastOrDefault(c => AskLead.IsMatch(c)) is { } ask) q = ask;
         q = AskLead.Replace(q, "");
         q = Coords.Replace(q, "").Trim(' ', ',', ':', '~', '?');
         var words = q.Split(' ', StringSplitOptions.RemoveEmptyEntries);
