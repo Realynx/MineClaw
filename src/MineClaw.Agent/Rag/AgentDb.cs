@@ -299,6 +299,38 @@ public sealed class AgentDb : IDisposable
         return db;
     }
 
+    /// <summary>
+    /// Opens an existing database strictly read-only (admin tools, snapshots): <c>Mode=ReadOnly</c> plus <c>query_only</c>, no
+    /// migrations, no virtual-table creation, no checkpoint on dispose. Every write throws. FTS5/R*Tree availability is read from
+    /// the schema. A WAL database is read with its -wal file (SQLite may create the -shm index next to it).
+    /// </summary>
+    public static AgentDb OpenReadOnly(string path)
+    {
+        var full = System.IO.Path.GetFullPath(path);
+        if (!File.Exists(full)) throw new FileNotFoundException($"database not found: {full}", full);
+        var cs = new SqliteConnectionStringBuilder { DataSource = full, Pooling = false, Mode = SqliteOpenMode.ReadOnly }.ToString();
+        var conn = new SqliteConnection(cs);
+        conn.Open();
+        var db = new AgentDb(conn, path) { ReadOnly = true };
+        try
+        {
+            db.Exec("PRAGMA query_only=ON;");
+            db.Exec("PRAGMA busy_timeout=5000;");
+            db.SchemaVersion = (int)db.ScalarLong("PRAGMA user_version;");
+            db.HasFts = db.ScalarLong("SELECT count(*) FROM sqlite_master WHERE name = 'docs_fts'") > 0;
+            db.HasRtree = db.ScalarLong("SELECT count(*) FROM sqlite_master WHERE name = 'docs_rtree'") > 0;
+        }
+        catch
+        {
+            conn.Dispose();
+            throw;
+        }
+        return db;
+    }
+
+    /// <summary>True for <see cref="OpenReadOnly"/>: writes throw and nothing is migrated or checkpointed.</summary>
+    public bool ReadOnly { get; private init; }
+
     private void Init(ILogger log, bool disableFts, bool disableRtree)
     {
         if (Path != null)
@@ -432,7 +464,7 @@ public sealed class AgentDb : IDisposable
                 try { return body(); }
                 finally { _txDepth--; }
             }
-            _tx = _conn.BeginTransaction();
+            _tx = _conn.BeginTransaction(deferred: ReadOnly); // read-only: DEFERRED (IMMEDIATE needs a write lock); writes still throw
             _txDepth = 1;
             try
             {
@@ -471,7 +503,7 @@ public sealed class AgentDb : IDisposable
         lock (Gate)
         {
             if (_disposed) return;
-            if (Path != null)
+            if (Path != null && !ReadOnly)
             {
                 try { using var c = Command("PRAGMA wal_checkpoint(TRUNCATE);"); c.ExecuteNonQuery(); } catch (SqliteException) { }
             }

@@ -315,7 +315,11 @@ public static class AppHost
         {
             Blueprints = () => bot.Blueprints?.Service, // /view/blueprint/{id}, /api/blueprints: designs + preview + bill
         };
-        var server = new Supervisor.SupervisorServer(o, data, log);
+        var server = new Supervisor.SupervisorServer(o, data, log)
+        {
+            World = Supervisor.LiveSupervisorWorld.Routes(hub, bot, () => client.World, main, o, log), // Live Hive: /api/world/*
+            Admin = Supervisor.SupervisorAdminService.Create(o, bot.Runtime, main, log), // /api/admin/*: only with AllowAdminWrites + Token
+        };
         try
         {
             server.Start();

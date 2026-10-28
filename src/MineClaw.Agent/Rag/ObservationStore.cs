@@ -209,7 +209,36 @@ public sealed class ObservationStore
         });
     }
 
+    /// <summary>
+    /// Admin correction (memory admin tool): new text and/or annotation ("" clears it) for one row, its doc re-indexed, one
+    /// transaction. A text edit marks the row taught, so the world indexer only annotates it from then on instead of
+    /// overwriting the correction. Null when there is no such row.
+    /// </summary>
+    public ObservationRow? AdminEdit(long id, string? text, string? annotation)
+    {
+        return _db.Tx(() =>
+        {
+            if (GetById(id) is not { } row) return null;
+            if (text != null)
+            {
+                var t = TextUtil.Truncate(TextUtil.OneLine(text), 400);
+                if (t.Length == 0) throw new ArgumentException("observation text can't be empty");
+                _db.Exec("UPDATE observations SET text = $t, source = $s WHERE id = $id",
+                    ("$t", t), ("$s", row.Source == ObservationSource.Auto ? Source(ObservationSource.Taught) : Source(row.Source)), ("$id", id));
+            }
+            if (annotation != null)
+                _db.Exec("UPDATE observations SET annotation = $a WHERE id = $id", ("$a", annotation.Length == 0 ? null : TextUtil.OneLine(annotation)), ("$id", id));
+            var after = GetById(id)!;
+            if (after.Removed == null) _index.Upsert(ToDoc(after));
+            return after;
+        });
+    }
+
     // ---------------- reads ----------------
+
+    /// <summary>One row by id (removed ones included).</summary>
+    public ObservationRow? GetById(long id) =>
+        _db.Query($"SELECT {Cols} FROM observations WHERE id = $id", r => Map(r), ("$id", id)).FirstOrDefault();
 
     private const string Cols = "id, kind, key, min_x, min_y, min_z, max_x, max_y, max_z, fields, text, source, confidence, annotation, first_seen, last_seen, seen_count, removed, dimension, contents_at, contents_by";
     private const int NCols = 21;

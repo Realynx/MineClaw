@@ -1,0 +1,149 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:MineClaw.MemoryExplorer.ViewModels"
+             xmlns:s="using:MineClaw.MemoryExplorer.Services"
+             xmlns:c="using:MineClaw.MemoryExplorer.Controls"
+             xmlns:v="using:MineClaw.MemoryExplorer.Views"
+             x:Class="MineClaw.MemoryExplorer.Views.MemoryBrowserView"
+             x:DataType="vm:MemoryBrowserViewModel">
+  <Grid ColumnDefinitions="200,*,Auto,360">
+    <!-- Kinds -->
+    <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderSubtleBrush}" BorderThickness="0,0,1,0">
+      <DockPanel>
+        <TextBlock DockPanel.Dock="Top" Classes="h3" Text="MEMORY KINDS" Margin="18,20,0,8" />
+        <ListBox Classes="nav" ItemsSource="{Binding Kinds}" SelectedItem="{Binding SelectedKind}">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:KindItem">
+              <Grid ColumnDefinitions="*,Auto">
+                <StackPanel>
+                  <TextBlock Classes="navlabel" Text="{Binding Label}" />
+                  <TextBlock Classes="faint" FontSize="10.5" Text="{Binding Group}" />
+                </StackPanel>
+                <TextBlock Grid.Column="1" Classes="faint" Text="{Binding Count}" VerticalAlignment="Center" />
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </DockPanel>
+    </Border>
+
+    <!-- Table -->
+    <DockPanel Grid.Column="1" Margin="20,20,12,16">
+      <StackPanel DockPanel.Dock="Top" Spacing="10" Margin="0,0,0,12">
+        <StackPanel Spacing="3">
+          <TextBlock Classes="h1" Text="{Binding SelectedKind.Label, FallbackValue='Memory'}" />
+          <TextBlock Classes="muted" Text="{Binding KindDescription}" TextWrapping="Wrap" />
+        </StackPanel>
+        <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="8">
+          <TextBox Classes="search" Text="{Binding Filter}" Watermark="Filter rows (all words must match)">
+            <TextBox.InnerLeftContent>
+              <PathIcon Data="{StaticResource IconSearch}" Width="13" Height="13" Margin="10,0,0,0" Foreground="{DynamicResource TextMutedBrush}" />
+            </TextBox.InnerLeftContent>
+          </TextBox>
+          <ComboBox Grid.Column="1" ItemsSource="{Binding DimensionOptions}" SelectedItem="{Binding Dimension}" MinWidth="140" VerticalAlignment="Stretch" />
+          <ComboBox Grid.Column="2" ItemsSource="{Binding StateOptions}" SelectedItem="{Binding State}" MinWidth="130" VerticalAlignment="Stretch" />
+          <Button Grid.Column="3" Classes="ghost" Command="{Binding ClearFilterCommand}">Clear</Button>
+        </Grid>
+        <Grid ColumnDefinitions="*,Auto">
+          <TextBlock Classes="faint" Text="{Binding RowInfo}" VerticalAlignment="Center" />
+          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" IsVisible="{Binding Shell.IsEditMode}">
+            <Button Classes="ghost" Command="{Binding AddRowCommand}" IsEnabled="{Binding CanEditKind}">
+              <StackPanel Orientation="Horizontal" Spacing="5"><PathIcon Data="{StaticResource IconPlus}" Width="12" Height="12" /><TextBlock Text="Add" /></StackPanel>
+            </Button>
+            <Button Classes="ghost" Command="{Binding RebuildKindCommand}" ToolTip.Tip="Re-embed this kind, re-attach its leaves and re-summarize the affected nodes">
+              <StackPanel Orientation="Horizontal" Spacing="5"><PathIcon Data="{StaticResource IconRefresh}" Width="12" Height="12" /><TextBlock Text="Rebuild kind…" /></StackPanel>
+            </Button>
+          </StackPanel>
+        </Grid>
+      </StackPanel>
+      <Border Classes="card" Padding="0">
+        <Grid>
+          <DataGrid x:Name="Grid" ItemsSource="{Binding Rows}" SelectedItem="{Binding Selected}" IsReadOnly="True" CanUserSortColumns="True"
+                    CanUserResizeColumns="True" CanUserReorderColumns="True" SelectionMode="Single" ClipboardCopyMode="IncludeHeader"
+                    HeadersVisibility="Column" HorizontalScrollBarVisibility="Auto">
+            <DataGrid.Columns>
+              <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="180" />
+              <DataGridTextColumn Header="Text" Binding="{Binding Preview}" Width="340" />
+              <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="104" />
+              <DataGridTemplateColumn Header="State" Width="96" SortMemberPath="State">
+                <DataGridTemplateColumn.CellTemplate>
+                  <DataTemplate x:DataType="s:MemoryRow">
+                    <TextBlock Text="{Binding State}" Foreground="{Binding State, Converter={x:Static c:ResourceConverters.StateBrush}}"
+                               VerticalAlignment="Center" Margin="12,0" FontWeight="SemiBold" FontSize="12" />
+                  </DataTemplate>
+                </DataGridTemplateColumn.CellTemplate>
+              </DataGridTemplateColumn>
+              <DataGridTextColumn Header="Dim" Binding="{Binding DimensionText}" Width="82" />
+              <DataGridTextColumn Header="Conf." Binding="{Binding ConfidenceText}" Width="60" SortMemberPath="Confidence" />
+              <DataGridTextColumn Header="Updated" Binding="{Binding UpdatedText}" Width="92" SortMemberPath="UpdatedSort" />
+            </DataGrid.Columns>
+          </DataGrid>
+        </Grid>
+      </Border>
+    </DockPanel>
+
+    <GridSplitter Grid.Column="2" Width="1" Background="{DynamicResource BorderSubtleBrush}" ResizeDirection="Columns" />
+
+    <!-- Detail -->
+    <Border Grid.Column="3" Background="{DynamicResource SurfaceBrush}">
+      <Grid>
+        <ScrollViewer IsVisible="{Binding Selected, Converter={x:Static ObjectConverters.IsNotNull}}">
+          <StackPanel Margin="22,20" Spacing="14">
+            <Grid ColumnDefinitions="*,Auto">
+              <StackPanel Spacing="4">
+                <SelectableTextBlock Classes="h2" FontSize="16" Text="{Binding Selected.Name, FallbackValue=''}" TextWrapping="Wrap" />
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <Border Classes="chip"><TextBlock Text="{Binding Selected.Type, FallbackValue=''}" /></Border>
+                  <Border Classes="chip" IsVisible="{Binding Selected.State, Converter={x:Static StringConverters.IsNotNullOrEmpty}, FallbackValue=False}">
+                    <TextBlock Text="{Binding Selected.State, FallbackValue=''}" Foreground="{Binding Selected.State, Converter={x:Static c:ResourceConverters.StateBrush}, FallbackValue={x:Null}}" />
+                  </Border>
+                  <Border Classes="chip" IsVisible="{Binding Selected.DimensionText, Converter={x:Static StringConverters.IsNotNullOrEmpty}, FallbackValue=False}">
+                    <TextBlock Text="{Binding Selected.DimensionText, FallbackValue=''}" />
+                  </Border>
+                </StackPanel>
+              </StackPanel>
+              <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
+                <Button Classes="icon" Command="{Binding CopyRowCommand}" ToolTip.Tip="Copy this entry"><PathIcon Data="{StaticResource IconCopy}" /></Button>
+                <Button Classes="icon" Command="{Binding EditRowCommand}" ToolTip.Tip="Edit" IsVisible="{Binding Shell.IsEditMode}" IsEnabled="{Binding CanEditKind}">
+                  <PathIcon Data="{StaticResource IconEdit}" />
+                </Button>
+                <Button Classes="icon" Command="{Binding DeleteRowCommand}" ToolTip.Tip="Delete" IsVisible="{Binding Shell.IsEditMode}" IsEnabled="{Binding CanEditKind}">
+                  <PathIcon Data="{StaticResource IconDelete}" />
+                </Button>
+              </StackPanel>
+            </Grid>
+            <Border Classes="card" IsVisible="{Binding Selected.Text, Converter={x:Static StringConverters.IsNotNullOrEmpty}, FallbackValue=False}">
+              <SelectableTextBlock Classes="body" Text="{Binding Selected.Text, FallbackValue=''}" />
+            </Border>
+            <ItemsControl ItemsSource="{Binding Props}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:PropRow">
+                  <Grid ColumnDefinitions="110,*" Margin="0,3">
+                    <TextBlock Classes="muted" FontSize="12" Text="{Binding Key}" />
+                    <SelectableTextBlock Grid.Column="1" FontSize="12.5" Text="{Binding Value}" TextWrapping="Wrap" />
+                  </Grid>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <StackPanel Spacing="6" IsVisible="{Binding ExtraHeader, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+              <TextBlock Classes="h3" Text="{Binding ExtraHeader}" />
+              <ItemsControl ItemsSource="{Binding Extra}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="x:String">
+                    <SelectableTextBlock FontSize="12.5" Text="{Binding}" TextWrapping="Wrap" Margin="0,2" />
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+            <Button Classes="ghost" Command="{Binding ShowInTreeCommand}" IsVisible="{Binding Selected.DocRef, Converter={x:Static ObjectConverters.IsNotNull}, FallbackValue=False}">
+              <StackPanel Orientation="Horizontal" Spacing="6"><PathIcon Data="{StaticResource IconTree}" Width="13" Height="13" /><TextBlock Text="Show in the RAPTOR tree" /></StackPanel>
+            </Button>
+          </StackPanel>
+        </ScrollViewer>
+        <TextBlock Classes="muted" Text="Select a row to see its details." HorizontalAlignment="Center" VerticalAlignment="Center"
+                   IsVisible="{Binding Selected, Converter={x:Static ObjectConverters.IsNull}}" />
+      </Grid>
+    </Border>
+    <v:EmptyState Grid.Column="1" Text="{Binding EmptyText}" IsBusy="{Binding IsLoading}" />
+  </Grid>
+</UserControl>

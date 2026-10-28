@@ -1,0 +1,307 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:lh="using:MineClaw.MemoryExplorer.LiveHive"
+             x:Class="MineClaw.MemoryExplorer.LiveHive.LiveHiveView"
+             x:DataType="lh:LiveHiveViewModel">
+
+  <UserControl.Styles>
+    <Style Selector="Ellipse.dot">
+      <Setter Property="Width" Value="9" />
+      <Setter Property="Height" Value="9" />
+      <Setter Property="Fill" Value="{DynamicResource TextFaintBrush}" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Ellipse.dot.good">
+      <Setter Property="Fill" Value="{DynamicResource GoodBrush}" />
+    </Style>
+    <Style Selector="Ellipse.dot.warn">
+      <Setter Property="Fill" Value="{DynamicResource WarnBrush}" />
+    </Style>
+    <Style Selector="Ellipse.dot.bad">
+      <Setter Property="Fill" Value="{DynamicResource BadBrush}" />
+    </Style>
+    <Style Selector="ListBox.segmented">
+      <Setter Property="Background" Value="{DynamicResource ChipBrush}" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="3" />
+      <Setter Property="ItemsPanel">
+        <ItemsPanelTemplate>
+          <StackPanel Orientation="Horizontal" Spacing="2" />
+        </ItemsPanelTemplate>
+      </Setter>
+    </Style>
+    <Style Selector="ListBox.segmented ListBoxItem">
+      <Setter Property="Padding" Value="12,5" />
+      <Setter Property="CornerRadius" Value="6" />
+      <Setter Property="MinHeight" Value="0" />
+    </Style>
+    <Style Selector="ListBox.segmented ListBoxItem:selected /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource CardBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+    </Style>
+    <Style Selector="Border.tile">
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="Margin" Value="6" />
+      <Setter Property="ClipToBounds" Value="True" />
+    </Style>
+    <Style Selector="Border.tile.focused">
+      <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+    </Style>
+    <Style Selector="Border.hudchip">
+      <Setter Property="Background" Value="#A80E1016" />
+      <Setter Property="CornerRadius" Value="6" />
+      <Setter Property="Padding" Value="8,3" />
+      <Setter Property="Margin" Value="8" />
+    </Style>
+    <Style Selector="Border.hudchip > TextBlock">
+      <Setter Property="Foreground" Value="#F0F2F8" />
+      <Setter Property="FontSize" Value="11" />
+    </Style>
+    <Style Selector="TextBlock.vitals">
+      <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}" />
+    </Style>
+    <Style Selector="TextBlock.vitals.bad">
+      <Setter Property="Foreground" Value="{DynamicResource BadBrush}" />
+    </Style>
+    <Style Selector="Border.legend">
+      <Setter Property="Width" Value="10" />
+      <Setter Property="Height" Value="10" />
+      <Setter Property="CornerRadius" Value="2" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+  </UserControl.Styles>
+
+  <UserControl.Resources>
+    <!-- One feed tile: header (who + view picker), the picture, footer (job, vitals, held, claims). -->
+    <DataTemplate x:Key="TileTemplate" x:DataType="lh:BotTileViewModel">
+      <Border Classes="card tile" Classes.focused="{Binding IsFocused}" DoubleTapped="OnTileDoubleTapped">
+        <Grid RowDefinitions="Auto,*,Auto">
+          <Grid ColumnDefinitions="*,Auto,Auto" Margin="12,8,8,8">
+            <StackPanel VerticalAlignment="Center" Spacing="1">
+              <TextBlock Classes="h3" Text="{Binding Title}" TextTrimming="CharacterEllipsis" />
+              <TextBlock Classes="faint" FontSize="11" Text="{Binding Subtitle}" TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+            <Button Grid.Column="1" Classes="ghost" Margin="6,0,6,0" Padding="8,4" Content="Fly" Click="OnFlyHere"
+                    ToolTip.Tip="Open the free camera at this bot's eyes" />
+            <ComboBox Grid.Column="2" ItemsSource="{Binding Modes}" SelectedItem="{Binding Mode}" MinWidth="104"
+                      ToolTip.Tip="Eye: live first-person view rendered here with textures. Iso, Top + roles, Side: the server's pictures." />
+          </Grid>
+          <Panel Grid.Row="1" Background="#0B0D12" MinHeight="90">
+            <TextBlock Classes="faint" Text="waiting for the server's picture…" HorizontalAlignment="Center" VerticalAlignment="Center"
+                       IsVisible="{Binding IsMap}" />
+            <lh:FrameView Source="{Binding Eye.Frames}" IsVisible="{Binding IsEye}" />
+            <Image Source="{Binding MapImage}" IsVisible="{Binding IsMap}" Stretch="Uniform" RenderOptions.BitmapInterpolationMode="None" />
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Top" HorizontalAlignment="Left">
+              <Border Classes="hudchip"><TextBlock Classes="mono" Text="{Binding Where}" /></Border>
+              <Border Classes="hudchip" Margin="0,8" IsVisible="{Binding PoseNote, Converter={x:Static ObjectConverters.IsNotNull}}">
+                <TextBlock Text="{Binding PoseNote}" />
+              </Border>
+            </StackPanel>
+          </Panel>
+          <StackPanel Grid.Row="2" Margin="12,8,12,10" Spacing="3">
+            <Grid ColumnDefinitions="*,Auto">
+              <TextBlock Text="{Binding Job}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Job}" />
+              <TextBlock Grid.Column="1" Classes="mono vitals" Classes.bad="{Binding LowHp}" Margin="12,0,0,0" Text="{Binding Vitals}" />
+            </Grid>
+            <TextBlock Classes="muted" FontSize="12" Text="{Binding Held}" TextTrimming="CharacterEllipsis"
+                       IsVisible="{Binding Held, Converter={x:Static ObjectConverters.IsNotNull}}" />
+            <TextBlock Classes="muted" FontSize="12" Text="{Binding Claims}" TextTrimming="CharacterEllipsis" IsVisible="{Binding HasClaims}"
+                       ToolTip.Tip="{Binding Claims}" />
+          </StackPanel>
+        </Grid>
+      </Border>
+    </DataTemplate>
+  </UserControl.Resources>
+
+  <Grid RowDefinitions="Auto,*" Margin="20,16,20,16">
+
+    <!-- Connection bar: state, latency, URL, connect, tunnel. The token is never shown. -->
+    <Border Classes="card" Padding="16,12">
+      <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="*,Auto">
+        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+          <Ellipse Classes="dot" Classes.good="{Binding IsConnected}" Classes.warn="{Binding IsConnecting}" Classes.bad="{Binding HasProblem}" />
+          <TextBlock Classes="h2" Text="Live Hive" VerticalAlignment="Center" />
+          <TextBlock Classes="muted" Text="{Binding StateText}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="420" />
+          <Border Classes="chip" IsVisible="{Binding IsConnected}" VerticalAlignment="Center">
+            <TextBlock Classes="mono" Text="{Binding LatencyText}" />
+          </Border>
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+          <TextBox Classes="mono" Width="230" Text="{Binding BaseUrl}" Watermark="http://10.1.2.73:8765" VerticalAlignment="Center" />
+          <Button Classes="accent" Content="{Binding ConnectLabel}" Command="{Binding ToggleConnectCommand}" />
+          <Button Content="Tunnel" Command="{Binding StartTunnelCommand}"
+                  ToolTip.Tip="Start/stop: ssh -N -L 8765:10.1.2.73:8765 alice (then connects to http://localhost:8765)" />
+        </StackPanel>
+        <WrapPanel Grid.Row="1" Grid.ColumnSpan="2" Margin="19,6,0,0" Orientation="Horizontal">
+          <TextBlock Classes="faint" FontSize="12" Text="{Binding TokenStatus}" Margin="0,0,16,0" />
+          <TextBlock Classes="faint" FontSize="12" Text="{Binding TextureStatus}" Margin="0,0,16,0" />
+          <TextBlock Classes="faint" FontSize="12" Text="{Binding SyncText}" Margin="0,0,16,0" />
+          <TextBlock Classes="faint" FontSize="12" Text="{Binding TunnelStatus}" />
+        </WrapPanel>
+      </Grid>
+    </Border>
+
+    <Panel Grid.Row="1" Margin="0,12,0,0">
+      <TabControl SelectedIndex="{Binding SelectedTab}" Padding="0,8,0,0">
+
+        <!-- ============================================================ bot feeds -->
+        <TabItem Header="Bot feeds">
+          <Grid RowDefinitions="Auto,*">
+            <Grid ColumnDefinitions="Auto,Auto,*,Auto" Margin="6,0,6,6">
+              <TextBlock Classes="muted" Text="Layout" VerticalAlignment="Center" Margin="0,0,10,0" />
+              <ListBox Grid.Column="1" Classes="segmented" ItemsSource="{Binding LayoutOptions}" SelectedItem="{Binding SelectedLayout}">
+                <ListBox.ItemTemplate>
+                  <DataTemplate x:DataType="lh:LayoutOption"><TextBlock Text="{Binding Label}" /></DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+              <TextBlock Grid.Column="2" Classes="faint" FontSize="12" Margin="16,0" VerticalAlignment="Center" Text="{Binding HiddenTiles}" />
+              <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8">
+                <TextBlock Classes="muted" Text="All tiles" VerticalAlignment="Center" />
+                <ComboBox ItemsSource="{Binding ModeOptions}" SelectedItem="{Binding DefaultMode}" MinWidth="130" />
+              </StackPanel>
+            </Grid>
+
+            <Panel Grid.Row="1">
+              <ItemsControl ItemsSource="{Binding GridTiles}" ItemTemplate="{StaticResource TileTemplate}" IsVisible="{Binding IsGridLayout}">
+                <ItemsControl.ItemsPanel>
+                  <ItemsPanelTemplate>
+                    <UniformGrid x:DataType="lh:LiveHiveViewModel" Columns="{Binding GridColumns}" Rows="{Binding GridRows}" />
+                  </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+              </ItemsControl>
+
+              <Grid RowDefinitions="*,210" IsVisible="{Binding IsFocusLayout}">
+                <ContentControl Content="{Binding FocusedTile}" ContentTemplate="{StaticResource TileTemplate}" />
+                <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                  <ItemsControl ItemsSource="{Binding StripTiles}" ItemTemplate="{StaticResource TileTemplate}">
+                    <ItemsControl.Styles>
+                      <Style Selector="ItemsControl > ContentPresenter">
+                        <Setter Property="Width" Value="300" />
+                      </Style>
+                    </ItemsControl.Styles>
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                  </ItemsControl>
+                </ScrollViewer>
+              </Grid>
+
+              <Border Classes="card" HorizontalAlignment="Center" VerticalAlignment="Center" Padding="28,22" IsVisible="{Binding ShowNoBots}">
+                <StackPanel Spacing="6" HorizontalAlignment="Center">
+                  <TextBlock Classes="h2" Text="No bodies online" HorizontalAlignment="Center" />
+                  <TextBlock Classes="muted" Text="The hive is reachable, but no bot is logged in right now." HorizontalAlignment="Center" />
+                </StackPanel>
+              </Border>
+            </Panel>
+          </Grid>
+        </TabItem>
+
+        <!-- ============================================================ free camera -->
+        <TabItem Header="Free camera">
+          <Grid ColumnDefinitions="*,310">
+            <Border Classes="card" Padding="0" ClipToBounds="True">
+              <lh:FreecamView x:Name="Cam" Source="{Binding Freecam}" />
+            </Border>
+            <ScrollViewer Grid.Column="1" Margin="12,0,0,0" VerticalScrollBarVisibility="Auto">
+              <StackPanel Spacing="12">
+                <Border Classes="card" Padding="14">
+                  <StackPanel Spacing="8">
+                    <TextBlock Classes="h3" Text="Go to" />
+                    <Grid ColumnDefinitions="*,Auto">
+                      <TextBox x:Name="JumpBox" Text="{Binding JumpText}" Watermark="x,y,z · a place · a bot" KeyDown="OnJumpKey" />
+                      <Button Grid.Column="1" Classes="accent" Margin="8,0,0,0" Content="Go" Command="{Binding JumpCommand}" />
+                    </Grid>
+                    <TextBlock Classes="muted" FontSize="12" Text="{Binding JumpStatus}" TextWrapping="Wrap" />
+                    <TextBlock Classes="faint" FontSize="12" Text="Snap to a bot" Margin="0,4,0,0" />
+                    <ItemsControl ItemsSource="{Binding AllTiles}">
+                      <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                      </ItemsControl.ItemsPanel>
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="lh:BotTileViewModel">
+                          <Button Classes="ghost" Margin="0,0,6,6" Padding="10,4" Content="{Binding Key}" Click="OnFlyHere" ToolTip.Tip="{Binding Job}" />
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </StackPanel>
+                </Border>
+
+                <Border Classes="card" Padding="14">
+                  <StackPanel Spacing="8">
+                    <TextBlock Classes="h3" Text="Camera" />
+                    <Grid ColumnDefinitions="Auto,*">
+                      <TextBlock Classes="muted" Text="Dimension" VerticalAlignment="Center" Margin="0,0,10,0" />
+                      <ComboBox Grid.Column="1" HorizontalAlignment="Stretch" ItemsSource="{Binding DimOptions}" SelectedItem="{Binding SelectedDim}">
+                        <ComboBox.ItemTemplate>
+                          <DataTemplate x:DataType="lh:DimOption"><TextBlock Text="{Binding Label}" /></DataTemplate>
+                        </ComboBox.ItemTemplate>
+                      </ComboBox>
+                    </Grid>
+                    <Grid ColumnDefinitions="Auto,*,Auto">
+                      <TextBlock Classes="muted" Text="Speed" VerticalAlignment="Center" Margin="0,0,10,0" />
+                      <Slider Grid.Column="1" Minimum="1" Maximum="100" Value="{Binding Speed}" />
+                      <TextBlock Grid.Column="2" Classes="mono" Margin="8,0,0,0" VerticalAlignment="Center"
+                                 Text="{Binding Speed, StringFormat={}{0:0} b/s}" />
+                    </Grid>
+                  </StackPanel>
+                </Border>
+
+                <Border Classes="card" Padding="14">
+                  <StackPanel Spacing="6">
+                    <TextBlock Classes="h3" Text="Overlays" />
+                    <CheckBox IsChecked="{Binding ShowBots}">
+                      <StackPanel Orientation="Horizontal" Spacing="8"><Border Classes="legend" Background="#FF9F43" /><TextBlock Text="Bots and players" /></StackPanel>
+                    </CheckBox>
+                    <CheckBox IsChecked="{Binding ShowClaims}">
+                      <StackPanel Orientation="Horizontal" Spacing="8"><Border Classes="legend" Background="#FFD84A" /><TextBlock Text="Claims and gen cells" /></StackPanel>
+                    </CheckBox>
+                    <CheckBox IsChecked="{Binding ShowPlaces}">
+                      <StackPanel Orientation="Horizontal" Spacing="8"><Border Classes="legend" Background="#E8ECF4" /><TextBlock Text="Structures and places" /></StackPanel>
+                    </CheckBox>
+                    <CheckBox IsChecked="{Binding ShowChests}">
+                      <StackPanel Orientation="Horizontal" Spacing="8"><Border Classes="legend" Background="#FFA040" /><TextBlock Text="Chests, gens, farms, portals" /></StackPanel>
+                    </CheckBox>
+                    <CheckBox IsChecked="{Binding ShowPlans}">
+                      <StackPanel Orientation="Horizontal" Spacing="8"><Border Classes="legend" Background="#5EE6E6" /><TextBlock Text="Build plans (ghost blocks)" /></StackPanel>
+                    </CheckBox>
+                    <CheckBox IsChecked="{Binding ShowDangers}">
+                      <StackPanel Orientation="Horizontal" Spacing="8"><Border Classes="legend" Background="#FF5050" /><TextBlock Text="Dangers" /></StackPanel>
+                    </CheckBox>
+                    <CheckBox IsChecked="{Binding ShowStaleness}">
+                      <StackPanel Orientation="Horizontal" Spacing="8"><Border Classes="legend" Background="#6B7A99" /><TextBlock Text="Tint areas not seen recently" /></StackPanel>
+                    </CheckBox>
+                    <TextBlock Classes="faint" FontSize="12" Text="{Binding OverlayNotes}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                  </StackPanel>
+                </Border>
+
+                <Border Classes="card" Padding="14">
+                  <StackPanel Spacing="4">
+                    <TextBlock Classes="h3" Text="Render" />
+                    <TextBlock Classes="mono muted" FontSize="12" Text="{Binding FreecamStats}" TextWrapping="Wrap" />
+                    <TextBlock Classes="mono muted" FontSize="12" Text="{Binding CacheStats}" TextWrapping="Wrap" />
+                    <TextBlock Classes="faint" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,0"
+                               Text="Rendered here from the hive's shared world memory: live columns and every bot's remembered chunks. Older areas are dimmer." />
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+            </ScrollViewer>
+          </Grid>
+        </TabItem>
+      </TabControl>
+
+      <!-- Not connected: what to check. -->
+      <Border Classes="card" HorizontalAlignment="Center" VerticalAlignment="Center" Padding="28,22" MaxWidth="560" IsVisible="{Binding ShowDisconnected}">
+        <StackPanel Spacing="8">
+          <TextBlock Classes="h2" Text="Not connected to the hive" />
+          <TextBlock Classes="muted" Text="{Binding StateText}" TextWrapping="Wrap" />
+          <TextBlock Classes="faint" FontSize="12" TextWrapping="Wrap"
+                     Text="The Supervisor runs inside the main bot (Supervisor:Enabled). If 10.1.2.73 isn't reachable from this PC, press Tunnel to forward it through alice. The token is read from ~/.mineclaw-supervisor-token." />
+          <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,6,0,0">
+            <Button Classes="accent" Content="{Binding ConnectLabel}" Command="{Binding ToggleConnectCommand}" />
+            <Button Content="Tunnel" Command="{Binding StartTunnelCommand}" />
+          </StackPanel>
+        </StackPanel>
+      </Border>
+    </Panel>
+  </Grid>
+</UserControl>

@@ -104,10 +104,87 @@ public sealed class KnowledgeCorrections
     public static readonly IReadOnlyList<KnowledgeCorrection> BuiltIn = [SaplingDark];
 
     private readonly List<KnowledgeCorrection> _items;
+    private HashSet<string> _adminIds = new(StringComparer.OrdinalIgnoreCase);
 
     public KnowledgeCorrections(IEnumerable<KnowledgeCorrection> items) => _items = items.ToList();
 
     public IReadOnlyList<KnowledgeCorrection> Items => _items;
+
+    // ======================= admin lessons (memory admin tool) =======================
+
+    /// <summary>Source of lessons added or overridden by an admin: kept across restarts (startup only prunes source=system).</summary>
+    public const string AdminSource = "admin";
+
+    private const string TablesSql = """
+        CREATE TABLE IF NOT EXISTS knowledge_corrections(id TEXT PRIMARY KEY, title TEXT NOT NULL, correction TEXT NOT NULL,
+            patterns TEXT NOT NULL, source TEXT NOT NULL, updated INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS doc_corrections(doc_id INTEGER PRIMARY KEY REFERENCES docs(id) ON DELETE CASCADE,
+            ref TEXT NOT NULL, correction_id TEXT NOT NULL, at INTEGER NOT NULL);
+        """;
+
+    /// <summary>The stored patterns JSON of a correction: <c>{"clauses":[{"all":[re..],"none":[re..]}],"whole":[re..]}</c>.</summary>
+    public static string PatternsJson(KnowledgeCorrection c) => JsonSerializer.Serialize(new
+    {
+        clauses = c.Clauses.Select(r => new { all = r.AllOf.Select(x => x.ToString()), none = r.NoneOf?.Select(x => x.ToString()) }),
+        whole = c.Whole?.Select(x => x.ToString()),
+    });
+
+    /// <summary>Builds a correction from its stored row (patterns as <see cref="PatternsJson"/>). Throws on a bad pattern.</summary>
+    public static KnowledgeCorrection FromRow(string id, string title, string correction, string patternsJson)
+    {
+        using var doc = JsonDocument.Parse(patternsJson);
+        var root = doc.RootElement;
+        var clauses = new List<ClauseRule>();
+        if (root.TryGetProperty("clauses", out var cl) && cl.ValueKind == JsonValueKind.Array)
+            foreach (var c in cl.EnumerateArray())
+                clauses.Add(new ClauseRule(Regexes(c, "all"), c.TryGetProperty("none", out var n) && n.ValueKind == JsonValueKind.Array ? Regexes(c, "none") : null));
+        var whole = Regexes(root, "whole");
+        return new KnowledgeCorrection(id, title, correction, correction.Length <= 180 ? correction : correction[..177] + "...", clauses,
+            whole.Count > 0 ? whole : null);
+
+        static List<Regex> Regexes(JsonElement e, string name) =>
+            e.TryGetProperty(name, out var a) && a.ValueKind == JsonValueKind.Array ? a.EnumerateArray().Select(x => R(x.GetString()!)).ToList() : [];
+    }
+
+    /// <summary>Compiles one admin pattern (same options and timeout as the built-ins). Throws ArgumentException when invalid.</summary>
+    public static Regex Pattern(string pattern) => R(pattern);
+
+    /// <summary>Admin lessons stored in this db (bad rows are skipped with a warning).</summary>
+    public static List<KnowledgeCorrection> LoadAdmin(AgentDb db, ILogger? log = null)
+    {
+        if (!db.TableExists("knowledge_corrections")) return [];
+        var list = new List<KnowledgeCorrection>();
+        foreach (var (id, title, corr, patterns) in db.Query("SELECT id, title, correction, patterns FROM knowledge_corrections WHERE source = $s ORDER BY id",
+                     r => (r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3)), ("$s", AdminSource)))
+        {
+            try { list.Add(FromRow(id, title, corr, patterns)); }
+            catch (Exception ex) when (ex is JsonException or ArgumentException or InvalidOperationException)
+            {
+                log?.LogWarning("skipping admin lesson {Id}: {Error}", id, ex.Message);
+            }
+        }
+        return list;
+    }
+
+    /// <summary>Source of a stored lesson row (system | admin), or null when there is none.</summary>
+    public static string? SourceOf(AgentDb db, string id) =>
+        db.TableExists("knowledge_corrections") ? db.Scalar("SELECT source FROM knowledge_corrections WHERE id = $i", ("$i", id)) as string : null;
+
+    /// <summary>Writes an admin lesson row (insert or override). Call <see cref="Apply"/> afterwards to activate it.</summary>
+    public static void SaveAdmin(AgentDb db, KnowledgeCorrection c) => db.Tx(() =>
+    {
+        db.Exec(TablesSql);
+        db.Exec("""
+            INSERT INTO knowledge_corrections(id, title, correction, patterns, source, updated) VALUES ($i, $t, $c, $p, $s, $u)
+            ON CONFLICT(id) DO UPDATE SET title = excluded.title, correction = excluded.correction, patterns = excluded.patterns,
+                source = excluded.source, updated = excluded.updated
+            """, ("$i", c.Id), ("$t", c.Title), ("$c", c.Correction), ("$p", PatternsJson(c)), ("$s", AdminSource),
+            ("$u", AgentDb.ToUnixMs(DateTimeOffset.UtcNow)));
+    });
+
+    /// <summary>Deletes an admin lesson row (system lessons are rebuilt at every start and can't be deleted here).</summary>
+    public static bool DeleteAdmin(AgentDb db, string id) =>
+        db.TableExists("knowledge_corrections") && db.Exec("DELETE FROM knowledge_corrections WHERE id = $i AND source = $s", ("$i", id), ("$s", AdminSource)) > 0;
 
     /// <summary>The correction that supersedes this text, or null.</summary>
     public KnowledgeCorrection? Superseding(string text) => _items.FirstOrDefault(c => c.Matches(text));
@@ -175,8 +252,11 @@ public sealed class KnowledgeCorrections
         var items = BuiltIn.ToList();
         if (knowledgeDirectory != null) items.AddRange(LoadFile(Path.Combine(knowledgeDirectory, FileName), log));
         if (extra != null) items.AddRange(extra);
+        // Lessons written by the memory admin tool (source=admin) come last: they add lessons and override same-id ones.
+        var admin = LoadAdmin(index.Db, log);
+        items.AddRange(admin);
         items = items.GroupBy(c => c.Id, StringComparer.OrdinalIgnoreCase).Select(g => g.Last()).ToList();
-        var engine = new KnowledgeCorrections(items);
+        var engine = new KnowledgeCorrections(items) { _adminIds = admin.Select(a => a.Id).ToHashSet(StringComparer.OrdinalIgnoreCase) };
         var result = engine.Store(index);
         index.Corrections = engine;
         if (result.Superseded > 0)
@@ -212,7 +292,7 @@ public sealed class KnowledgeCorrections
                     ON CONFLICT(id) DO UPDATE SET title = excluded.title, correction = excluded.correction, patterns = excluded.patterns,
                         source = excluded.source, updated = excluded.updated
                     WHERE title <> excluded.title OR correction <> excluded.correction OR patterns <> excluded.patterns OR source <> excluded.source
-                    """, ("$i", c.Id), ("$t", c.Title), ("$c", c.Correction), ("$p", patterns), ("$s", Source), ("$u", now));
+                    """, ("$i", c.Id), ("$t", c.Title), ("$c", c.Correction), ("$p", patterns), ("$s", _adminIds.Contains(c.Id) ? AdminSource : Source), ("$u", now));
                 index.Upsert(new RagDoc(c.Ref, KnowledgeIndexer.Kind, c.Title, c.Correction) { Tag = DocTag, Source = Source, Weight = DocWeight });
             }
             foreach (var id in db.Query("SELECT id FROM knowledge_corrections WHERE source = $s", r => r.GetString(0), ("$s", Source)))

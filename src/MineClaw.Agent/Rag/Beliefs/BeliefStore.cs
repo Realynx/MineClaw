@@ -255,6 +255,61 @@ public sealed class BeliefStore
             ("$t", AgentDb.ToUnixMs(Now)), ("$i", id), ("$dim", CurrentDimension));
     }
 
+    /// <summary>Evidence refs of admin verdicts ("admin:{who}"): replaced by the next verdict, never stacked.</summary>
+    public const string AdminRefPrefix = "admin:";
+
+    /// <summary>
+    /// Admin verdict (memory admin tool). Verified / refuted / disputed are recorded as ground-truth evidence (seed rank; for
+    /// safety claims an experiment, the only kind they accept) from <c>admin:{who}</c> with the reason as its note, so every
+    /// later recompute keeps the verdict; <paramref name="confidence"/> = belief the claim is true (weight = it for verified,
+    /// 1 − it for refuted). Unverified / provisional drop earlier admin verdicts, recompute, then pin the requested status.
+    /// One transaction.
+    /// </summary>
+    public BeliefClaim? AdminSet(long id, ClaimStatus status, double? confidence, string? reason, string who)
+    {
+        if (Load(id) is not { } c || c.Directive) return null;
+        who = string.IsNullOrWhiteSpace(who) ? "admin" : who.Trim();
+        reason = reason == null ? null : TextUtil.Truncate(TextUtil.OneLine(reason), 120);
+        return _db.Tx(() =>
+        {
+            _db.Exec("DELETE FROM claim_evidence WHERE claim_id = $i AND ref LIKE 'admin:%'", ("$i", id));
+            if (status is ClaimStatus.Verified or ClaimStatus.Refuted or ClaimStatus.Disputed)
+            {
+                double conf = Math.Clamp(confidence ?? (status == ClaimStatus.Refuted ? 0.05 : status == ClaimStatus.Verified ? 0.95 : 0.5), 0, 1);
+                int polarity = status switch { ClaimStatus.Verified => 1, ClaimStatus.Refuted => -1, _ => 0 };
+                double weight = status == ClaimStatus.Refuted ? 1 - conf : conf;
+                var kind = c.Category == ClaimCategory.Safety ? EvidenceKind.Experiment : EvidenceKind.Seed;
+                _db.Exec("INSERT INTO claim_evidence(claim_id, kind, ref, polarity, weight, note, at) VALUES ($i, $k, $r, $p, $w, $n, $t)",
+                    ("$i", id), ("$k", BeliefRanks.Name(kind)), ("$r", AdminRefPrefix + who), ("$p", polarity), ("$w", weight),
+                    ("$n", reason ?? $"set by {who}"), ("$t", AgentDb.ToUnixMs(Now)));
+                _db.Exec("UPDATE claims SET checked = $t, plan = 'none' WHERE id = $i", ("$t", AgentDb.ToUnixMs(Now)), ("$i", id));
+                return Recompute(id);
+            }
+            var r = Recompute(id)!;
+            if (r.Status == status && confidence == null && reason == null) return r;
+            _db.Exec("UPDATE claims SET status = $s, confidence = $c, reason = $r, updated = $t WHERE id = $i",
+                ("$s", BeliefRanks.Name(status)), ("$c", Math.Clamp(confidence ?? r.Confidence, 0, 1)), ("$r", reason ?? r.Reason),
+                ("$t", AgentDb.ToUnixMs(Now)), ("$i", id));
+            var after = Load(id)!;
+            IndexDoc(after);
+            return after;
+        });
+    }
+
+    /// <summary>Deletes a claim (sources and evidence cascade) and its RAG doc. One transaction.</summary>
+    public bool AdminDelete(long id)
+    {
+        if (Load(id) is not { } c) return false;
+        return _db.Tx(() =>
+        {
+            _db.Exec("DELETE FROM claim_evidence WHERE claim_id = $i", ("$i", id));
+            _db.Exec("DELETE FROM claim_sources WHERE claim_id = $i", ("$i", id));
+            bool gone = _db.Exec("DELETE FROM claims WHERE id = $i", ("$i", id)) > 0;
+            _index?.Delete(c.DocRef);
+            return gone;
+        });
+    }
+
     public bool HasEvidence(long id, EvidenceKind kind) =>
         _db.ScalarLong("SELECT count(*) FROM claim_evidence WHERE claim_id = $i AND kind = $k", ("$i", id), ("$k", BeliefRanks.Name(kind))) > 0;
 

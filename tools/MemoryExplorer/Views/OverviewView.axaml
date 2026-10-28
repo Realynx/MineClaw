@@ -1,0 +1,101 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:MineClaw.MemoryExplorer.ViewModels"
+             xmlns:s="using:MineClaw.MemoryExplorer.Services"
+             xmlns:c="using:MineClaw.MemoryExplorer.Controls"
+             xmlns:v="using:MineClaw.MemoryExplorer.Views"
+             x:Class="MineClaw.MemoryExplorer.Views.OverviewView"
+             x:DataType="vm:OverviewViewModel">
+  <Grid>
+    <ScrollViewer>
+      <StackPanel Margin="28,24" Spacing="22" MaxWidth="1280">
+        <StackPanel Spacing="4">
+          <TextBlock Classes="h1" Text="Overview" />
+          <TextBlock Classes="muted" Text="What the bot remembers, by kind, and the shape of its RAPTOR tree." />
+        </StackPanel>
+
+        <ItemsControl ItemsSource="{Binding Cards}">
+          <ItemsControl.ItemsPanel>
+            <ItemsPanelTemplate><WrapPanel ItemSpacing="12" LineSpacing="12" /></ItemsPanelTemplate>
+          </ItemsControl.ItemsPanel>
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="s:CountCard">
+              <Border Classes="card" Width="232" Height="112">
+                <StackPanel Spacing="2">
+                  <TextBlock Classes="h3" Text="{Binding Group}" />
+                  <TextBlock Classes="big" Text="{Binding Count, StringFormat='{}{0:N0}'}" Margin="0,4,0,0" />
+                  <TextBlock FontWeight="SemiBold" Text="{Binding Label}" />
+                  <TextBlock Classes="faint" Text="{Binding Detail}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Detail}" />
+                </StackPanel>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+
+        <Grid ColumnDefinitions="3*,2*" ColumnSpacing="16">
+          <Border Classes="card" Padding="20">
+            <StackPanel Spacing="14">
+              <StackPanel Orientation="Horizontal" Spacing="10">
+                <TextBlock Classes="h2" Text="RAPTOR tree" />
+                <TextBlock Classes="muted" Text="{Binding TreeHeadline}" VerticalAlignment="Center" />
+              </StackPanel>
+              <TextBlock Classes="muted" Text="{Binding TreeNote}" IsVisible="{Binding !HasTree}" />
+              <Grid ColumnDefinitions="110,*,70,96,80,80" IsVisible="{Binding HasTree}">
+                <TextBlock Classes="h3" Text="LAYER" />
+                <TextBlock Grid.Column="1" Classes="h3" Text="NODES" />
+                <TextBlock Grid.Column="2" Classes="h3" Text="COUNT" HorizontalAlignment="Right" />
+                <TextBlock Grid.Column="3" Classes="h3" Text="AVG CLUSTER" HorizontalAlignment="Right" />
+                <TextBlock Grid.Column="4" Classes="h3" Text="AVG TOK" HorizontalAlignment="Right" />
+                <TextBlock Grid.Column="5" Classes="h3" Text="MAX TOK" HorizontalAlignment="Right" />
+              </Grid>
+              <ItemsControl ItemsSource="{Binding Layers}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:LayerStat">
+                    <Grid ColumnDefinitions="110,*,70,96,80,80" Margin="0,5">
+                      <TextBlock FontWeight="SemiBold" Text="{Binding Name}" />
+                      <Border Grid.Column="1" Height="8" CornerRadius="4" Background="{DynamicResource AccentBrush}" Opacity="0.75"
+                              HorizontalAlignment="Left" VerticalAlignment="Center"
+                              Width="{Binding Share, Converter={x:Static c:ResourceConverters.LayerWidth}}" />
+                      <TextBlock Grid.Column="2" Text="{Binding Nodes, StringFormat='{}{0:N0}'}" HorizontalAlignment="Right" />
+                      <TextBlock Grid.Column="3" Text="{Binding AvgChildren}" HorizontalAlignment="Right" />
+                      <TextBlock Grid.Column="4" Text="{Binding AvgTokens}" HorizontalAlignment="Right" />
+                      <TextBlock Grid.Column="5" Text="{Binding MaxTokens}" HorizontalAlignment="Right" />
+                    </Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <Border Classes="separator" IsVisible="{Binding HasTree}" />
+              <ItemsControl ItemsSource="{Binding TreeLines}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:StatLine">
+                    <Grid ColumnDefinitions="220,*" Margin="0,3">
+                      <TextBlock Classes="muted" Text="{Binding Label}" />
+                      <SelectableTextBlock Grid.Column="1" Text="{Binding Value}" />
+                    </Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </Border>
+
+          <Border Grid.Column="1" Classes="card" Padding="20" VerticalAlignment="Top">
+            <StackPanel Spacing="12">
+              <TextBlock Classes="h2" Text="Database" />
+              <ItemsControl ItemsSource="{Binding DbLines}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:StatLine">
+                    <StackPanel Margin="0,4" Spacing="1">
+                      <TextBlock Classes="h3" Text="{Binding Label}" />
+                      <SelectableTextBlock Text="{Binding Value}" TextWrapping="Wrap" />
+                    </StackPanel>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </Border>
+        </Grid>
+      </StackPanel>
+    </ScrollViewer>
+    <v:EmptyState Text="{Binding EmptyText}" IsBusy="{Binding IsLoading}" />
+  </Grid>
+</UserControl>

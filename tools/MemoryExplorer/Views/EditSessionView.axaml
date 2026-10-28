@@ -1,0 +1,112 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:MineClaw.MemoryExplorer.ViewModels"
+             xmlns:c="using:MineClaw.MemoryExplorer.Controls"
+             x:Class="MineClaw.MemoryExplorer.Views.EditSessionView"
+             x:DataType="vm:EditSessionViewModel">
+  <Grid ColumnDefinitions="5*,4*">
+    <ScrollViewer>
+      <StackPanel Margin="28,24,16,24" Spacing="16">
+        <StackPanel Spacing="3">
+          <TextBlock Classes="h1" Text="Edits &amp; audit" />
+          <TextBlock Classes="muted" TextWrapping="Wrap"
+                     Text="Browsing is read-only. Edit mode lets you change, add or delete memory and rebuild parts of the RAPTOR tree through the bot's own stores, with a backup first and an audit entry for every change." />
+        </StackPanel>
+
+        <Border Classes="card" Padding="20">
+          <StackPanel Spacing="14">
+            <Grid ColumnDefinitions="*,Auto">
+              <StackPanel Spacing="2">
+                <TextBlock Classes="h2" Text="Edit mode" />
+                <TextBlock Classes="muted" FontSize="12" Text="Off by default. Also in the header." />
+              </StackPanel>
+              <ToggleSwitch Grid.Column="1" IsChecked="{Binding EditMode}" OnContent="On" OffContent="Off" />
+            </Grid>
+            <Border Classes="separator" />
+            <Grid ColumnDefinitions="120,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="12">
+              <TextBlock Classes="muted" Text="Target" VerticalAlignment="Center" />
+              <ComboBox Grid.Column="1" ItemsSource="{Binding TargetOptions}" SelectedItem="{Binding Target}" MinWidth="200" />
+              <TextBlock Grid.Row="1" Classes="muted" Text="Where" />
+              <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding TargetInfo}" TextWrapping="Wrap" />
+              <TextBlock Grid.Row="2" Classes="muted" Text="Backup" VerticalAlignment="Top" />
+              <StackPanel Grid.Row="2" Grid.Column="1" Spacing="8">
+                <TextBlock Text="{Binding BackupInfo}" TextWrapping="Wrap" />
+                <Button Classes="ghost" Command="{Binding BackupNowCommand}" IsEnabled="{Binding EditMode}" HorizontalAlignment="Left">Back up now</Button>
+              </StackPanel>
+            </Grid>
+            <TextBlock Classes="muted" FontSize="12" Text="{Binding LastResult}" TextWrapping="Wrap"
+                       IsVisible="{Binding LastResult, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+          </StackPanel>
+        </Border>
+
+        <Border Classes="card" Padding="20">
+          <StackPanel Spacing="12">
+            <TextBlock Classes="h2" Text="Rebuild" />
+            <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                       Text="Pick a node in the RAPTOR tree (Rebuild subtree) or a kind in Memory (Rebuild kind). You get a token and dollar estimate first; summaries use the cheap-tier 5.5 model from the config." />
+            <StackPanel Spacing="8" IsVisible="{Binding RebuildRunning}">
+              <TextBlock Text="{Binding RebuildStage}" />
+              <ProgressBar Value="{Binding RebuildPercent}" Maximum="100" Height="6" MinHeight="6" CornerRadius="3" />
+              <Button Classes="ghost" Command="{Binding CancelRebuildCommand}" HorizontalAlignment="Left">Cancel</Button>
+            </StackPanel>
+            <TextBlock FontWeight="SemiBold" Text="{Binding RebuildSummary}" TextWrapping="Wrap"
+                       IsVisible="{Binding RebuildSummary, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+            <ItemsControl ItemsSource="{Binding Diffs}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:DiffRow">
+                  <Border Classes="card" Padding="12" Margin="0,0,0,8">
+                    <StackPanel Spacing="6">
+                      <TextBlock Classes="h3" Text="{Binding Node}" />
+                      <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
+                        <StackPanel Spacing="2">
+                          <TextBlock Classes="faint" Text="before" />
+                          <SelectableTextBlock FontSize="12.5" Text="{Binding Old}" TextWrapping="Wrap" Foreground="{DynamicResource TextMutedBrush}" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Spacing="2">
+                          <TextBlock Classes="faint" Text="after" />
+                          <SelectableTextBlock FontSize="12.5" Text="{Binding New}" TextWrapping="Wrap" />
+                        </StackPanel>
+                      </Grid>
+                    </StackPanel>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </Border>
+      </StackPanel>
+    </ScrollViewer>
+
+    <Border Grid.Column="1" Classes="pane">
+      <DockPanel>
+        <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="22,24,16,10">
+          <StackPanel Spacing="3">
+            <TextBlock Classes="h2" Text="Audit trail" />
+            <TextBlock Classes="muted" FontSize="12" Text="{Binding AuditInfo}" TextWrapping="Wrap" />
+          </StackPanel>
+          <Button Grid.Column="1" Classes="icon" Command="{Binding RefreshAuditCommand}" ToolTip.Tip="Refresh" VerticalAlignment="Top">
+            <PathIcon Data="{StaticResource IconRefresh}" />
+          </Button>
+        </Grid>
+        <ListBox Classes="plain" ItemsSource="{Binding Audit}" Margin="12,0,12,12">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:AuditRow">
+              <StackPanel Spacing="3" ToolTip.Tip="{Binding Change}">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <Border Classes="chip" Padding="6,0"><TextBlock Text="{Binding Op}" /></Border>
+                  <TextBlock FontWeight="SemiBold" FontSize="12.5" VerticalAlignment="Center">
+                    <Run Text="{Binding Kind, Mode=OneWay}" /><Run Text=" " /><Run Text="{Binding Id, Mode=OneWay}" />
+                  </TextBlock>
+                  <TextBlock Classes="faint" Text="{Binding When}" VerticalAlignment="Center" />
+                </StackPanel>
+                <TextBlock FontSize="12" Text="{Binding Message}" TextWrapping="Wrap"
+                           Foreground="{Binding Ok, Converter={x:Static c:AuditConverters.OkBrush}}" />
+                <TextBlock Classes="faint" Text="{Binding Who}" />
+              </StackPanel>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </DockPanel>
+    </Border>
+  </Grid>
+</UserControl>

@@ -1,0 +1,72 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <!-- Design tokens. One accent colour, calm neutrals, subtle separators. Always reference them with DynamicResource so the
+       light/dark switch (system-following, with a manual toggle) restyles everything live. -->
+  <ResourceDictionary.ThemeDictionaries>
+    <ResourceDictionary x:Key="Light">
+      <Color x:Key="AccentColor">#4F5BD5</Color>
+      <SolidColorBrush x:Key="AccentBrush" Color="#4F5BD5" />
+      <SolidColorBrush x:Key="AccentSoftBrush" Color="#1A4F5BD5" />
+      <SolidColorBrush x:Key="OnAccentBrush" Color="#FFFFFF" />
+      <SolidColorBrush x:Key="WindowBrush" Color="#F4F5F8" />
+      <SolidColorBrush x:Key="SurfaceBrush" Color="#FAFBFC" />
+      <SolidColorBrush x:Key="CardBrush" Color="#FFFFFF" />
+      <SolidColorBrush x:Key="CardHoverBrush" Color="#F6F7FB" />
+      <SolidColorBrush x:Key="BorderSubtleBrush" Color="#E3E5EB" />
+      <SolidColorBrush x:Key="TextBrush" Color="#1D2130" />
+      <SolidColorBrush x:Key="TextMutedBrush" Color="#6A7083" />
+      <SolidColorBrush x:Key="TextFaintBrush" Color="#9AA0B1" />
+      <SolidColorBrush x:Key="ChipBrush" Color="#EEF0F5" />
+      <SolidColorBrush x:Key="GoodBrush" Color="#2E8B57" />
+      <SolidColorBrush x:Key="WarnBrush" Color="#B7791F" />
+      <SolidColorBrush x:Key="BadBrush" Color="#C24141" />
+      <SolidColorBrush x:Key="GraphEdgeBrush" Color="#334F5BD5" />
+    </ResourceDictionary>
+    <ResourceDictionary x:Key="Dark">
+      <Color x:Key="AccentColor">#8A94FF</Color>
+      <SolidColorBrush x:Key="AccentBrush" Color="#8A94FF" />
+      <SolidColorBrush x:Key="AccentSoftBrush" Color="#268A94FF" />
+      <SolidColorBrush x:Key="OnAccentBrush" Color="#0E1020" />
+      <SolidColorBrush x:Key="WindowBrush" Color="#121419" />
+      <SolidColorBrush x:Key="SurfaceBrush" Color="#171A20" />
+      <SolidColorBrush x:Key="CardBrush" Color="#1C1F27" />
+      <SolidColorBrush x:Key="CardHoverBrush" Color="#232733" />
+      <SolidColorBrush x:Key="BorderSubtleBrush" Color="#2A2E39" />
+      <SolidColorBrush x:Key="TextBrush" Color="#E7E9F0" />
+      <SolidColorBrush x:Key="TextMutedBrush" Color="#9AA1B4" />
+      <SolidColorBrush x:Key="TextFaintBrush" Color="#6B7286" />
+      <SolidColorBrush x:Key="ChipBrush" Color="#262A35" />
+      <SolidColorBrush x:Key="GoodBrush" Color="#5CC08A" />
+      <SolidColorBrush x:Key="WarnBrush" Color="#E0A94A" />
+      <SolidColorBrush x:Key="BadBrush" Color="#E86A6A" />
+      <SolidColorBrush x:Key="GraphEdgeBrush" Color="#408A94FF" />
+    </ResourceDictionary>
+  </ResourceDictionary.ThemeDictionaries>
+
+  <FontFamily x:Key="MonoFont">Cascadia Mono, Consolas, Menlo, monospace</FontFamily>
+  <CornerRadius x:Key="CardRadius">10</CornerRadius>
+  <CornerRadius x:Key="ChipRadius">999</CornerRadius>
+
+  <!-- Icons (Material Design Icons path data, Apache-2.0). -->
+  <StreamGeometry x:Key="IconOverview">M13,3V9H21V3M13,21H21V11H13M3,21H11V15H3M3,13H11V3H3V13Z</StreamGeometry>
+  <StreamGeometry x:Key="IconTree">M3,3H9V7H3V3M15,10H21V14H15V10M15,17H21V21H15V17M13,13H7V18H13V20H7L5,20V9H7V11H13V13Z</StreamGeometry>
+  <StreamGeometry x:Key="IconGraph">M9,2V8H11V11H5C3.89,11 3,11.89 3,13V16H1V22H7V16H5V13H11V16H9V22H15V16H13V13H19V16H17V22H23V16H21V13C21,11.89 20.11,11 19,11H13V8H15V2H9Z</StreamGeometry>
+  <StreamGeometry x:Key="IconSearch">M9.5,3A6.5,6.5 0 0,1 16,9.5C16,11.11 15.41,12.59 14.44,13.73L14.71,14H15.5L20.5,19L19,20.5L14,15.5V14.71L13.73,14.44C12.59,15.41 11.11,16 9.5,16A6.5,6.5 0 0,1 3,9.5A6.5,6.5 0 0,1 9.5,3M9.5,5C7,5 5,7 5,9.5C5,12 7,14 9.5,14C12,14 14,12 14,9.5C14,7 12,5 9.5,5Z</StreamGeometry>
+  <StreamGeometry x:Key="IconTable">M5,4H19A2,2 0 0,1 21,6V18A2,2 0 0,1 19,20H5A2,2 0 0,1 3,18V6A2,2 0 0,1 5,4M5,8V12H11V8H5M13,8V12H19V8H13M5,14V18H11V14H5M13,14V18H19V14H13Z</StreamGeometry>
+  <StreamGeometry x:Key="IconPerson">M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,14C16.42,14 20,15.79 20,18V20H4V18C4,15.79 7.58,14 12,14Z</StreamGeometry>
+  <StreamGeometry x:Key="IconVideo">M17,10.5V7A1,1 0 0,0 16,6H4A1,1 0 0,0 3,7V17A1,1 0 0,0 4,18H16A1,1 0 0,0 17,17V13.5L21,17.5V6.5L17,10.5Z</StreamGeometry>
+  <StreamGeometry x:Key="IconCopy">M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z</StreamGeometry>
+  <StreamGeometry x:Key="IconFolder">M19,20H4C2.89,20 2,19.1 2,18V6C2,4.89 2.89,4 4,4H10L12,6H19A2,2 0 0,1 21,8H21L4,8V18L6.14,10H23.21L20.93,18.5C20.7,19.37 19.92,20 19,20Z</StreamGeometry>
+  <StreamGeometry x:Key="IconDownload">M5,20H19V18H5M19,9H15V3H9V9H5L12,16L19,9Z</StreamGeometry>
+  <StreamGeometry x:Key="IconTheme">M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20V4Z</StreamGeometry>
+  <StreamGeometry x:Key="IconEdit">M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z</StreamGeometry>
+  <StreamGeometry x:Key="IconRefresh">M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z</StreamGeometry>
+  <StreamGeometry x:Key="IconHistory">M12,20A8,8 0 0,0 20,12A8,8 0 0,0 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22C6.47,22 2,17.5 2,12A10,10 0 0,1 12,2M12.5,7V12.25L17,14.92L16.25,16.15L11,13V7H12.5Z</StreamGeometry>
+  <StreamGeometry x:Key="IconDatabase">M12,3C7.58,3 4,4.79 4,7C4,9.21 7.58,11 12,11C16.42,11 20,9.21 20,7C20,4.79 16.42,3 12,3M4,9V12C4,14.21 7.58,16 12,16C16.42,16 20,14.21 20,12V9C20,11.21 16.42,13 12,13C7.58,13 4,11.21 4,9M4,14V17C4,19.21 7.58,21 12,21C16.42,21 20,19.21 20,17V14C20,16.21 16.42,18 12,18C7.58,18 4,16.21 4,14Z</StreamGeometry>
+  <StreamGeometry x:Key="IconLock">M12,17A2,2 0 0,0 14,15C14,13.89 13.1,13 12,13A2,2 0 0,0 10,15A2,2 0 0,0 12,17M18,8A2,2 0 0,1 20,10V20A2,2 0 0,1 18,22H6A2,2 0 0,1 4,20V10C4,8.89 4.9,8 6,8H7V6A5,5 0 0,1 12,1A5,5 0 0,1 17,6V8H18M12,3A3,3 0 0,0 9,6V8H15V6A3,3 0 0,0 12,3Z</StreamGeometry>
+  <StreamGeometry x:Key="IconChevron">M8.59,16.58L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.58Z</StreamGeometry>
+  <StreamGeometry x:Key="IconLeaf">M17,8C8,10 5.9,16.17 3.82,21.34L5.71,22L6.66,19.7C7.14,19.87 7.64,20 8,20C19,20 22,3 22,3C21,5 14,5.25 9,6.25C4,7.25 2,11.5 2,13.5C2,15.5 3.75,17.25 3.75,17.25C7,8 17,8 17,8Z</StreamGeometry>
+  <StreamGeometry x:Key="IconPlus">M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z</StreamGeometry>
+  <StreamGeometry x:Key="IconDelete">M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z</StreamGeometry>
+</ResourceDictionary>

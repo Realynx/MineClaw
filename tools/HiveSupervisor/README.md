@@ -15,7 +15,7 @@ A graphical take on the TUI. The main bot serves it, so it takes no game login a
 - Panels from the TUI: tokens and cost (today/month vs caps, per tier, cache %), the selected brain's thought and tool
   calls, the hive job/claim board, the danger/event feed, and the chat log.
 
-It is GET only. It never moves a bot, chats, or writes memory.
+It is GET only. It never moves a bot or chats, and it writes memory only through the opt-in admin routes below.
 
 ## Server side (the main bot)
 
@@ -66,3 +66,43 @@ set. Textures are never committed; `data/assets/` and `*.jar` are gitignored. Wi
 | `GET /api/status?bot=` | the TUI panels (full thought for `bot`) |
 | `GET /api/events?since=<id>` | the event feed (poll) |
 | `GET /api/locate?q=` | a camera jump target |
+| `GET /api/world/index?dim&x&z&r` | Live Hive: the known columns around block (x, z), r 16..256: `{dim, at, columns: [{cx, cz, hash, seen, by, live}]}` (no blocks) |
+| `GET /api/world/chunks?dim&cols=cx,cz;cx,cz` | Live Hive: ≤ 64 columns as one binary payload (`application/octet-stream`, see below) |
+| `GET /api/world/entities?dim` | Live Hive: `{at, bots: [{name, short, main, dim, x, y, z, yaw, pitch, pose_age, hp, food, job, brain, held, claims, live, age_seconds}], entities: [{kind, name, dim, x, y, z}]}` |
+| `GET /api/world/overlays?dim` | Live Hive: `{at, dim, claims, places, points, plans, dangers, notes}`; marks are `{kind, text, min: [x,y,z], max: [x,y,z], owner}`, plans `{id, name, status, part, blocks: [[x, y, z, id, meta, done]]}` |
+
+### Live Hive world routes
+
+The MemoryExplorer's Live Hive tab renders the hive itself from these (textured eye tiles and a free camera). The columns are
+the merged world memory: the live columns of main and every in-process body, then every bot's remembered `world_chunks`.
+A client keeps a hash cache and fetches only new or changed columns. The routes are GET only and use the same token. Each one
+has a token bucket, and over the cap it answers 429 with `Retry-After`: index 8/s, chunks 25/s, entities 12/s, overlays 1/s
+(bursts are twice that). At most two reads run at once, on the thread pool, never on the game tick. A live column is hashed
+straight off its arrays and copied only when it is fetched. A remembered column ships its stored blob as it is. An
+out-of-process clone's yaw and pitch come from the existing view IPC, refreshed in the background at most every
+`PoseCacheMs`.
+
+The `chunks` payload is little-endian: `"MCWC"`, u16 version (1), u16 flags (0), i32 dim, i32 count. Then, for each column:
+i32 cx, i32 cz, i64 hash, i64 seen_unix_ms, u8 live, u8 by_len, the `by` name in UTF-8, i32 data_len, and the data. The data
+is `ChunkSnapshot.Encode()`, and an empty one means the column is not known. `MineClaw.World.ColumnPayload` encodes and
+decodes it.
+
+## Admin writes (opt-in)
+
+`"AllowAdminWrites": true` in the `Supervisor` section turns on `/api/admin/*`, the only routes that accept POST. They
+are used by the MemoryExplorer admin tool. It is off by default. Every admin route answers 403 unless the flag is on,
+a `Token` is configured, and the request sends it in the `X-Supervisor-Token` header. `?token=` is not accepted here.
+Edits go through the running bot's own stores, so FTS, vectors and the RAPTOR tree stay consistent. Rebuilds run in the
+bot under its budget caps on the cheap tier. Every write, whether it succeeds or fails, is appended to
+`<data dir>/admin-audit.jsonl` with the record before and after, and to the app log. JSON is snake_case.
+
+| Route | What |
+|---|---|
+| `POST /api/admin/memory` | body `{op: add\|update\|delete, kind: fact\|place\|structure\|claim\|trait\|lesson\|observation, id, fields: {..}, who, reason}`; returns `{ok, message, id, before, after, reembedded}` (200 ok, 400 rejected) |
+| `POST /api/admin/rebuild/estimate` | body `{scope: node\|kind, node, kind, max_usd (0.50), who}`; returns `{summaries, input_tokens, output_tokens, embedding_tokens, usd, model, note}` |
+| `POST /api/admin/rebuild` | same body; returns 202 `{job_id}`. Refused when the estimate exceeds `max_usd` or the budget is Paused. 409 while another job runs |
+| `GET /api/admin/rebuild/{job_id}` | `{job_id, state: queued\|running\|done\|failed\|cancelled, started, finished, request, progress: {stage, done, total, message}, result: {ok, message, diffs: [{index, layer, old, new}], spent_usd, elapsed}}` |
+| `POST /api/admin/rebuild/{job_id}/cancel` | cancels a running job |
+| `POST /api/admin/backup` | a consistent copy (`VACUUM INTO`) in `<data dir>/backups/`; returns `{path}` |
+| `GET /api/admin/audit?max=200` | `{target, entries: [...]}` |
+| `GET /api/admin/schema` | the edit-form fields for each kind: `{target, kinds: {fact: {ops, fields: [{name, label, type, required, options, help}]}}}` |

@@ -1,0 +1,179 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:MineClaw.MemoryExplorer.ViewModels"
+             xmlns:c="using:MineClaw.MemoryExplorer.Controls"
+             xmlns:v="using:MineClaw.MemoryExplorer.Views"
+             x:Class="MineClaw.MemoryExplorer.Views.RaptorTreeView"
+             x:DataType="vm:RaptorTreeViewModel">
+  <Grid ColumnDefinitions="5*,Auto,4*">
+    <!-- Left: tree or layered graph -->
+    <DockPanel Margin="24,20,12,16">
+      <StackPanel DockPanel.Dock="Top" Spacing="12" Margin="0,0,0,14">
+        <StackPanel Spacing="3">
+          <TextBlock Classes="h1" Text="RAPTOR tree" />
+          <TextBlock Classes="muted" Text="{Binding Headline}" />
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <TextBox Width="130" Watermark="Go to #node" Text="{Binding GoTo}" Classes="search">
+            <TextBox.KeyBindings>
+              <KeyBinding Gesture="Enter" Command="{Binding GoToNodeCommand}" />
+            </TextBox.KeyBindings>
+          </TextBox>
+          <ToggleButton Classes="ghost" IsChecked="{Binding GraphMode}" Padding="10,6" CornerRadius="7"
+                        ToolTip.Tip="Layered graph: roots on top, leaves at the bottom. Wheel zooms, drag pans, click selects.">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <PathIcon Data="{StaticResource IconGraph}" Width="13" Height="13" />
+              <TextBlock Text="Graph view" />
+            </StackPanel>
+          </ToggleButton>
+          <Button Classes="ghost" Command="{Binding CollapseAllCommand}" IsVisible="{Binding TreeMode}">Collapse all</Button>
+        </StackPanel>
+      </StackPanel>
+
+      <Border Classes="card" Padding="6">
+        <Grid>
+          <TreeView Classes="raptor" ItemsSource="{Binding Roots}" SelectedItem="{Binding Selected}" IsVisible="{Binding TreeMode}">
+            <TreeView.Styles>
+              <Style Selector="TreeViewItem" x:DataType="vm:TreeNodeViewModel">
+                <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+              </Style>
+            </TreeView.Styles>
+            <TreeView.ItemTemplate>
+              <TreeDataTemplate x:DataType="vm:TreeNodeViewModel" ItemsSource="{Binding Children}">
+                <Grid ColumnDefinitions="Auto,*,Auto" Margin="0,3" ToolTip.Tip="{Binding Preview}">
+                  <Border Classes="chip" Padding="7,1" Margin="0,0,10,0" VerticalAlignment="Center" MinWidth="38">
+                    <TextBlock Text="{Binding Kind}" HorizontalAlignment="Center" />
+                  </Border>
+                  <TextBlock Grid.Column="1" Text="{Binding Title}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" MaxWidth="440" HorizontalAlignment="Left" />
+                  <TextBlock Grid.Column="2" Classes="faint" Text="{Binding Meta}" Margin="12,0,6,0" VerticalAlignment="Center" />
+                </Grid>
+              </TreeDataTemplate>
+            </TreeView.ItemTemplate>
+          </TreeView>
+          <c:LayeredGraph Model="{Binding Graph}" SelectedIndex="{Binding GraphSelected, Mode=TwoWay}" IsVisible="{Binding GraphMode}" />
+        </Grid>
+      </Border>
+    </DockPanel>
+
+    <GridSplitter Grid.Column="1" Width="1" Background="{DynamicResource BorderSubtleBrush}" ResizeDirection="Columns" />
+
+    <!-- Right: detail pane -->
+    <Border Grid.Column="2" Background="{DynamicResource SurfaceBrush}">
+      <Grid>
+        <ScrollViewer IsVisible="{Binding HasSelection}">
+          <StackPanel Margin="22,20" Spacing="16">
+            <ItemsControl ItemsSource="{Binding Breadcrumb}">
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:Crumb">
+                  <StackPanel Orientation="Horizontal">
+                    <Button Classes="link" Content="{Binding Label}" FontSize="12"
+                            Command="{Binding $parent[UserControl].((vm:RaptorTreeViewModel)DataContext).RevealCommand}" CommandParameter="{Binding Index}" />
+                    <PathIcon Data="{StaticResource IconChevron}" Width="10" Height="10" Margin="2,0" Foreground="{DynamicResource TextFaintBrush}" />
+                  </StackPanel>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <Grid ColumnDefinitions="*,Auto">
+              <StackPanel Spacing="4">
+                <SelectableTextBlock Classes="h2" FontSize="17" FontWeight="SemiBold" Text="{Binding DetailTitle}" TextWrapping="Wrap" />
+                <TextBlock Classes="muted" FontSize="12" Text="{Binding DetailMeta}" TextWrapping="Wrap" />
+                <SelectableTextBlock Classes="mono muted" FontSize="11.5" Text="{Binding DetailDoc}" IsVisible="{Binding DetailDoc, Converter={x:Static ObjectConverters.IsNotNull}}" TextWrapping="Wrap" />
+              </StackPanel>
+              <Button Grid.Column="1" Classes="icon" Command="{Binding CopyNodeTextCommand}" ToolTip.Tip="Copy the full text" VerticalAlignment="Top">
+                <PathIcon Data="{StaticResource IconCopy}" />
+              </Button>
+            </Grid>
+
+            <Border Classes="card">
+              <SelectableTextBlock Classes="body" Text="{Binding DetailText}" />
+            </Border>
+
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Button Classes="ghost" Command="{Binding ShowLeavesUnderCommand}" IsVisible="{Binding LeavesHeader, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <PathIcon Data="{StaticResource IconLeaf}" Width="13" Height="13" />
+                  <TextBlock Text="Show the leaves under this node" />
+                </StackPanel>
+              </Button>
+              <Button Classes="ghost" Command="{Binding RebuildNodeCommand}" IsVisible="{Binding Shell.IsEditMode}"
+                      ToolTip.Tip="Re-cluster, re-summarize and re-embed this subtree (cost estimate first)">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <PathIcon Data="{StaticResource IconRefresh}" Width="13" Height="13" />
+                  <TextBlock Text="Rebuild subtree…" />
+                </StackPanel>
+              </Button>
+            </StackPanel>
+
+            <StackPanel Spacing="8" IsVisible="{Binding ShowLeaves}">
+              <Grid ColumnDefinitions="*,Auto,Auto">
+                <TextBlock Classes="h3" Text="{Binding LeavesHeader}" VerticalAlignment="Center" />
+                <Button Grid.Column="1" Classes="icon" Command="{Binding CopyLeavesCommand}" ToolTip.Tip="Copy the leaf list"><PathIcon Data="{StaticResource IconCopy}" /></Button>
+                <Button Grid.Column="2" Classes="link" Content="hide" Command="{Binding HideLeavesCommand}" />
+              </Grid>
+              <Border Classes="card" Padding="4">
+                <ListBox Classes="plain" ItemsSource="{Binding Leaves}" MaxHeight="420">
+                  <ListBox.ItemTemplate>
+                    <DataTemplate x:DataType="vm:NodeRow">
+                      <StackPanel Spacing="2">
+                        <TextBlock FontSize="12" FontWeight="SemiBold" Text="{Binding Label}" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Classes="muted" FontSize="12" Text="{Binding Preview}" TextWrapping="Wrap" MaxLines="3" />
+                      </StackPanel>
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+              </Border>
+            </StackPanel>
+
+            <StackPanel Spacing="8" IsVisible="{Binding DetailChildren.Count, Converter={x:Static c:ResourceConverters.Positive}}">
+              <TextBlock Classes="h3" Text="CHILDREN" />
+              <ItemsControl ItemsSource="{Binding DetailChildren}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:NodeRow">
+                    <Button Classes="ghost" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Margin="0,1"
+                            Command="{Binding $parent[UserControl].((vm:RaptorTreeViewModel)DataContext).RevealCommand}" CommandParameter="{Binding Index}">
+                      <Grid ColumnDefinitions="Auto,*,Auto">
+                        <Border Classes="chip" Padding="7,1" Margin="0,0,10,0" VerticalAlignment="Top">
+                          <TextBlock Text="{Binding Label}" />
+                        </Border>
+                        <TextBlock Grid.Column="1" Text="{Binding Preview}" TextWrapping="Wrap" MaxLines="2" FontSize="12.5" />
+                        <TextBlock Grid.Column="2" Classes="faint" Text="{Binding Index, StringFormat='#{0}'}" Margin="10,0,0,0" />
+                      </Grid>
+                    </Button>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+
+            <StackPanel Spacing="8" IsVisible="{Binding DetailParents.Count, Converter={x:Static c:ResourceConverters.Positive}}">
+              <TextBlock Classes="h3" Text="PARENTS (SOFT CLUSTERING)" />
+              <ItemsControl ItemsSource="{Binding DetailParents}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:NodeRow">
+                    <Button Classes="ghost" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Margin="0,1"
+                            Command="{Binding $parent[UserControl].((vm:RaptorTreeViewModel)DataContext).RevealCommand}" CommandParameter="{Binding Index}">
+                      <Grid ColumnDefinitions="Auto,*">
+                        <Border Classes="chip" Padding="7,1" Margin="0,0,10,0" VerticalAlignment="Top">
+                          <TextBlock Text="{Binding Label}" />
+                        </Border>
+                        <TextBlock Grid.Column="1" Text="{Binding Preview}" TextWrapping="Wrap" MaxLines="2" FontSize="12.5" />
+                      </Grid>
+                    </Button>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </StackPanel>
+        </ScrollViewer>
+        <StackPanel IsVisible="{Binding !HasSelection}" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8" Margin="24">
+          <PathIcon Data="{StaticResource IconTree}" Width="28" Height="28" Foreground="{DynamicResource TextFaintBrush}" />
+          <TextBlock Classes="muted" Text="Select a node to see its full text, its path and its children." TextWrapping="Wrap" TextAlignment="Center" />
+        </StackPanel>
+      </Grid>
+    </Border>
+    <v:EmptyState Grid.ColumnSpan="3" Text="{Binding EmptyText}" IsBusy="{Binding IsLoading}" />
+  </Grid>
+</UserControl>

@@ -9,7 +9,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace MineClaw.App.Supervisor;
 
 /// <summary>One HTTP request as the router sees it (the listener glue and the tests both build these).</summary>
-public sealed record SupervisorRequest(string Method, string Path, IReadOnlyDictionary<string, string> Query, string? TokenHeader = null);
+/// <param name="Body">POST body (admin routes only; capped at <see cref="SupervisorAdminRoutes.MaxBodyBytes"/>).</param>
+public sealed record SupervisorRequest(string Method, string Path, IReadOnlyDictionary<string, string> Query, string? TokenHeader = null, string? Body = null);
 
 public sealed record SupervisorReply(int Status, string ContentType, byte[] Body, IReadOnlyDictionary<string, string>? Headers = null)
 {
@@ -24,7 +25,8 @@ public sealed record SupervisorReply(int Status, string ContentType, byte[] Body
 /// <item><c>GET /view/{bot}?mode=sheet|brain|eye|top|iso|side|layers&amp;radius=</c>, <c>GET /view/hive</c>, <c>GET /camera?x&amp;y&amp;z&amp;yaw&amp;pitch&amp;dim&amp;w&amp;h</c>
 /// (PNG; <c>meta=1</c> = the legend, token estimate and VisionRouter facts of the same cached render)</item>
 /// </list>
-/// Anything but GET/HEAD is 405. With <see cref="SupervisorOptions.Token"/> set, every route except the page needs it.
+/// Anything but GET/HEAD is 405, except the admin-write routes (<see cref="SupervisorAdminRoutes"/>, off by default). With
+/// <see cref="SupervisorOptions.Token"/> set, every route except the page needs it.
 /// </summary>
 public sealed class SupervisorServer : IAsyncDisposable
 {
@@ -52,6 +54,10 @@ public sealed class SupervisorServer : IAsyncDisposable
     }
 
     public RenderGate Gate { get; }
+    /// <summary>The Live Hive's read-only <c>/api/world/*</c> routes (column index, chunk payloads, poses, overlays); null = off.</summary>
+    public SupervisorWorldRoutes? World { get; set; }
+    /// <summary>Admin writes (<c>/api/admin/*</c>, Supervisor:AllowAdminWrites + token header); null = every admin route is 403.</summary>
+    public ISupervisorAdmin? Admin { get; set; }
     public string? Prefix { get; private set; }
 
     /// <summary>Starts listening on Bind:Port. Throws when the address can't be bound (the host logs and runs without it).</summary>
@@ -94,7 +100,8 @@ public sealed class SupervisorServer : IAsyncDisposable
                     var q = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                     var nv = ctx.Request.QueryString;
                     foreach (var k in nv.AllKeys) if (k != null && nv[k] is { } v) q[k] = v;
-                    var req = new SupervisorRequest(ctx.Request.HttpMethod, ctx.Request.Url?.AbsolutePath ?? "/", q, ctx.Request.Headers["X-Supervisor-Token"]);
+                    var body = await SupervisorAdminRoutes.ReadBodyAsync(ctx.Request, ct).ConfigureAwait(false);
+                    var req = new SupervisorRequest(ctx.Request.HttpMethod, ctx.Request.Url?.AbsolutePath ?? "/", q, ctx.Request.Headers["X-Supervisor-Token"], body);
                     reply = await HandleAsync(req, ct).ConfigureAwait(false);
                 }
                 finally { _connections.Release(); }
@@ -120,12 +127,14 @@ public sealed class SupervisorServer : IAsyncDisposable
 
     public async Task<SupervisorReply> HandleAsync(SupervisorRequest r, CancellationToken ct = default)
     {
+        if (SupervisorAdminRoutes.IsAdminPath(r.Path)) return await SupervisorAdminRoutes.HandleAsync(r, _o, Admin, ct).ConfigureAwait(false);
         bool get = r.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) || r.Method.Equals("HEAD", StringComparison.OrdinalIgnoreCase);
         if (!get) return Json(405, new { error = "read-only: GET only" }, new Dictionary<string, string> { ["Allow"] = "GET, HEAD" });
         var path = r.Path.TrimEnd('/');
         if (path.Length == 0 || path == "/index.html") return new SupervisorReply(200, "text/html; charset=utf-8", Page());
         if (path == "/favicon.ico") return new SupervisorReply(204, "image/x-icon", []);
         if (!Authorized(r)) return Json(401, new { error = "token required (X-Supervisor-Token header or ?token=)" });
+        if (World != null && await World.TryHandleAsync(r, path, ct).ConfigureAwait(false) is { } worldReply) return worldReply;
         try
         {
             switch (path)
@@ -268,5 +277,6 @@ public sealed class SupervisorServer : IAsyncDisposable
         try { _listener?.Stop(); _listener?.Close(); } catch (Exception) { }
         if (_loop != null) { try { await _loop.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch (Exception) { } }
         Gate.Dispose();
+        (Admin as IDisposable)?.Dispose();
     }
 }

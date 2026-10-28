@@ -268,6 +268,77 @@ public sealed class MemoryStore : IDisposable
         }
     }
 
+    // ---- admin edits (one row + its doc, one transaction; a rename moves both). The edit runs on a copy that replaces the
+    // mirrored entry only once the transaction committed, so a failed or rejected edit leaves memory exactly as it was. ----
+
+    private static T Copy<T>(T value) => JsonSerializer.Deserialize<T>(JsonSerializer.Serialize(value, AtomicFile.Json), AtomicFile.Json)!;
+
+    /// <summary>Edits an existing waypoint (rename allowed). Null when there is none; throws when the new name is taken.</summary>
+    public Waypoint? EditWaypoint(string name, Action<Waypoint> edit)
+    {
+        lock (_lock)
+        {
+            int i = _data.Waypoints.FindIndex(p => Same(p.Name, name));
+            if (i < 0) return null;
+            var old = _data.Waypoints[i];
+            var w = Copy(old);
+            edit(w);
+            w.Name = w.Name.Trim();
+            if (_data.Waypoints.Any(p => p != old && Same(p.Name, w.Name))) throw new InvalidOperationException($"a place named '{w.Name}' already exists");
+            w.Updated = Now;
+            _db.Tx(() =>
+            {
+                if (Ref(w) != Ref(old)) { DeleteRow(Ref(old)); _index.Delete(Ref(old)); }
+                SaveWaypoint(w);
+                _index.Upsert(Doc(w));
+            });
+            _data.Waypoints[i] = w;
+            return w;
+        }
+    }
+
+    /// <summary>Edits an existing structure (rename allowed). Null when there is none; throws when the new name is taken.</summary>
+    public Structure? EditStructure(string name, Action<Structure> edit)
+    {
+        lock (_lock)
+        {
+            int i = _data.Structures.FindIndex(p => Same(p.Name, name));
+            if (i < 0) return null;
+            var old = _data.Structures[i];
+            var s = Copy(old);
+            edit(s);
+            s.Name = s.Name.Trim();
+            if (_data.Structures.Any(p => p != old && Same(p.Name, s.Name))) throw new InvalidOperationException($"a structure named '{s.Name}' already exists");
+            s.Updated = Now;
+            _db.Tx(() =>
+            {
+                if (Ref(s) != Ref(old)) { DeleteRow(Ref(old)); _index.Delete(Ref(old)); }
+                SaveStructure(s);
+                _index.Upsert(Doc(s));
+            });
+            _data.Structures[i] = s;
+            return s;
+        }
+    }
+
+    /// <summary>Edits a note/fact by id (the id never changes). Null when there is none.</summary>
+    public Note? EditNote(int id, Action<Note> edit)
+    {
+        lock (_lock)
+        {
+            int i = _data.Notes.FindIndex(x => x.Id == id);
+            if (i < 0) return null;
+            var n = Copy(_data.Notes[i]);
+            edit(n);
+            n.Id = id;
+            n.Subject = n.Subject.Trim();
+            n.Text = n.Text.Trim();
+            _db.Tx(() => { SaveNote(n); _index.Upsert(Doc(n)); });
+            _data.Notes[i] = n;
+            return n;
+        }
+    }
+
     // ---- generic ----
 
     /// <summary>Removes an entry by kind (waypoint|structure|note|routine, or null = any) and name (note: id or text match).</summary>

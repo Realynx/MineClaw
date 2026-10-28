@@ -13,6 +13,11 @@ public sealed class SupervisorOptions
     public int Port { get; set; } = 8765;
     /// <summary>Optional shared secret (X-Supervisor-Token header or ?token=). Empty = none. Never logged.</summary>
     public string? Token { get; set; }
+    /// <summary>
+    /// Admin writes over <c>/api/admin/*</c> (memory edits, RAPTOR section rebuilds, backups, audit; the only POST routes). Off by
+    /// default; needs <see cref="Token"/>, sent in the X-Supervisor-Token header (never ?token=). Audited to admin-audit.jsonl.
+    /// </summary>
+    public bool AllowAdminWrites { get; set; }
     /// <summary>A bot view is rendered at most once per this (every tile and the brain view share it).</summary>
     public int CacheMs { get; set; } = 1000;
     /// <summary>Hive overview cache.</summary>

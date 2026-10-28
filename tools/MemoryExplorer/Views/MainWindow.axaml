@@ -1,0 +1,162 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:MineClaw.MemoryExplorer.ViewModels"
+        xmlns:v="using:MineClaw.MemoryExplorer.Views"
+        xmlns:lh="using:MineClaw.MemoryExplorer.LiveHive"
+        xmlns:c="using:MineClaw.MemoryExplorer.Controls"
+        x:Class="MineClaw.MemoryExplorer.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Title="MineClaw · Memory Explorer"
+        Width="1440" Height="900" MinWidth="980" MinHeight="620"
+        Background="{DynamicResource WindowBrush}">
+
+  <Window.KeyBindings>
+    <KeyBinding Gesture="Ctrl+K" Command="{Binding FocusSearchCommand}" />
+    <KeyBinding Gesture="Ctrl+O" Command="{Binding BrowseCommand}" />
+    <KeyBinding Gesture="F5" Command="{Binding OpenCommand}" CommandParameter="{Binding Bank.Path, FallbackValue={x:Null}}" />
+  </Window.KeyBindings>
+
+  <Grid RowDefinitions="Auto,*,Auto">
+
+    <!-- Header: source, snapshot time, read-only/edit badge, embeddings, actions -->
+    <Border Grid.Row="0" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderSubtleBrush}" BorderThickness="0,0,0,1"
+            Padding="18,12">
+      <Grid ColumnDefinitions="Auto,*,Auto">
+        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+          <Border Width="30" Height="30" CornerRadius="8" Background="{DynamicResource AccentBrush}">
+            <PathIcon Data="{StaticResource IconTree}" Width="16" Height="16" Foreground="{DynamicResource OnAccentBrush}" />
+          </Border>
+          <StackPanel VerticalAlignment="Center">
+            <TextBlock Classes="h2" Text="Memory Explorer" />
+            <TextBlock Classes="faint" Text="MineClaw admin" />
+          </StackPanel>
+        </StackPanel>
+
+        <Border Grid.Column="1" Classes="card" Padding="12,6" CornerRadius="9" Margin="24,0,16,0" HorizontalAlignment="Left" ClipToBounds="True">
+          <Grid ColumnDefinitions="Auto,*">
+            <PathIcon Data="{StaticResource IconDatabase}" Width="14" Height="14" Margin="0,0,10,0" Foreground="{DynamicResource TextMutedBrush}" />
+            <StackPanel Grid.Column="1" Spacing="1">
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBlock FontWeight="SemiBold" Text="{Binding SourceTitle}" />
+                <Border Classes="badge" Classes.warn="{Binding IsEditMode}" VerticalAlignment="Center">
+                  <TextBlock Text="{Binding ModeBadge}" />
+                </Border>
+                <TextBlock Classes="muted" FontSize="12" Text="{Binding SnapshotText}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+              </StackPanel>
+              <TextBlock Classes="faint" TextTrimming="CharacterEllipsis">
+                <Run Text="{Binding SourceDetail, Mode=OneWay}" /><Run Text="  ·  " /><Run Text="{Binding EmbeddingsStatus, Mode=OneWay}" />
+              </TextBlock>
+            </StackPanel>
+          </Grid>
+        </Border>
+
+        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+          <TextBox x:Name="GlobalSearch" Classes="search" Width="240" Watermark="Search memory   Ctrl+K"
+                   Text="{Binding GlobalQuery}">
+            <TextBox.InnerLeftContent>
+              <PathIcon Data="{StaticResource IconSearch}" Width="13" Height="13" Margin="10,0,0,0" Foreground="{DynamicResource TextMutedBrush}" />
+            </TextBox.InnerLeftContent>
+            <TextBox.KeyBindings>
+              <KeyBinding Gesture="Enter" Command="{Binding GlobalSearchCommand}" />
+            </TextBox.KeyBindings>
+          </TextBox>
+          <Button Classes="ghost" ToolTip.Tip="Open a database (Ctrl+O)">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <PathIcon Data="{StaticResource IconFolder}" Width="14" Height="14" />
+              <TextBlock Text="Open" />
+            </StackPanel>
+            <Button.Flyout>
+              <MenuFlyout Placement="BottomEdgeAlignedRight">
+                <MenuItem Header="Browse for a .db file…" Command="{Binding BrowseCommand}" />
+                <MenuItem Header="Open config file…" Command="{Binding OpenConfigCommand}" />
+              </MenuFlyout>
+            </Button.Flyout>
+          </Button>
+          <Button x:Name="RecentButton" Classes="ghost" ToolTip.Tip="Known databases under data/">
+            <TextBlock Text="Recent ▾" />
+            <Button.Flyout>
+              <Flyout Placement="BottomEdgeAlignedRight">
+                <ListBox ItemsSource="{Binding Recent}" Classes="plain" Width="460" MaxHeight="420" x:Name="RecentList">
+                  <ListBox.ItemTemplate>
+                    <DataTemplate x:DataType="vm:RecentDb">
+                      <Grid ColumnDefinitions="*,Auto">
+                        <TextBlock Text="{Binding Display}" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Grid.Column="1" Classes="faint" Margin="12,0,0,0">
+                          <Run Text="{Binding Size, Mode=OneWay}" /><Run Text=" · " /><Run Text="{Binding When, Mode=OneWay}" />
+                        </TextBlock>
+                      </Grid>
+                    </DataTemplate>
+                  </ListBox.ItemTemplate>
+                </ListBox>
+              </Flyout>
+            </Button.Flyout>
+          </Button>
+          <Button Classes="accent" Command="{Binding FetchSnapshotCommand}" ToolTip.Tip="ssh alice: consistent copy of the live db into data/alice-snap/ (read-only)">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <PathIcon Data="{StaticResource IconDownload}" Width="14" Height="14" Foreground="{DynamicResource OnAccentBrush}" />
+              <TextBlock Text="Fetch from alice" IsVisible="{Binding !IsFetching}" />
+              <TextBlock Text="Cancel fetch" IsVisible="{Binding IsFetching}" />
+            </StackPanel>
+          </Button>
+          <ToggleButton Classes="ghost" IsChecked="{Binding Edit.EditMode}" ToolTip.Tip="Edit mode: allow edits and rebuilds (off = strictly read-only)"
+                        Padding="10,6" CornerRadius="7">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <PathIcon Data="{StaticResource IconEdit}" Width="13" Height="13" />
+              <TextBlock Text="Edit mode" />
+            </StackPanel>
+          </ToggleButton>
+          <Button Classes="icon" Command="{Binding ToggleThemeCommand}" ToolTip.Tip="{Binding ThemeLabel, StringFormat='Theme: {0} (click to switch)'}">
+            <PathIcon Data="{StaticResource IconTheme}" />
+          </Button>
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <!-- Body: left nav + page -->
+    <Grid Grid.Row="1" ColumnDefinitions="208,*">
+      <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderSubtleBrush}" BorderThickness="0,0,1,0">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Bottom" Margin="18,12" Spacing="4">
+            <Border Classes="separator" Margin="0,0,0,8" />
+            <TextBlock Classes="h3" Text="SHORTCUTS" />
+            <TextBlock Classes="faint" Text="Ctrl+K  search" />
+            <TextBlock Classes="faint" Text="Ctrl+O  open db" />
+            <TextBlock Classes="faint" Text="F5      reload" />
+          </StackPanel>
+          <ListBox Classes="nav" ItemsSource="{Binding Pages}" SelectedItem="{Binding SelectedPage}" Margin="0,10,0,0">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:NavItem">
+                <StackPanel Orientation="Horizontal" Spacing="11">
+                  <PathIcon Width="16" Height="16" Data="{Binding IconKey, Converter={x:Static c:ResourceConverters.Geometry}}"
+                            Foreground="{DynamicResource TextMutedBrush}" />
+                  <TextBlock Classes="navlabel" Text="{Binding Label}" VerticalAlignment="Center" />
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
+      </Border>
+
+      <ContentControl Grid.Column="1" Content="{Binding CurrentPage}">
+        <ContentControl.DataTemplates>
+          <DataTemplate DataType="vm:OverviewViewModel"><v:OverviewView /></DataTemplate>
+          <DataTemplate DataType="vm:RaptorTreeViewModel"><v:RaptorTreeView /></DataTemplate>
+          <DataTemplate DataType="vm:SearchViewModel"><v:SearchView /></DataTemplate>
+          <DataTemplate DataType="vm:MemoryBrowserViewModel"><v:MemoryBrowserView /></DataTemplate>
+          <DataTemplate DataType="vm:PersonalityViewModel"><v:PersonalityView /></DataTemplate>
+          <DataTemplate DataType="vm:EditSessionViewModel"><v:EditSessionView /></DataTemplate>
+          <DataTemplate DataType="lh:LiveHiveViewModel"><lh:LiveHiveView /></DataTemplate>
+        </ContentControl.DataTemplates>
+      </ContentControl>
+    </Grid>
+
+    <!-- Status bar -->
+    <Border Grid.Row="2" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderSubtleBrush}" BorderThickness="0,1,0,0" Padding="18,6">
+      <Grid ColumnDefinitions="Auto,*,Auto">
+        <ProgressBar IsIndeterminate="True" Width="80" Height="3" MinHeight="3" Margin="0,0,12,0" IsVisible="{Binding IsBusy}" VerticalAlignment="Center" />
+        <TextBlock Grid.Column="1" Classes="muted" FontSize="12" Text="{Binding Status}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+        <TextBlock Grid.Column="2" Classes="faint" Text="browsing is read-only · edits only in edit mode" VerticalAlignment="Center" />
+      </Grid>
+    </Border>
+  </Grid>
+</Window>

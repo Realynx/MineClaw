@@ -1,0 +1,298 @@
+using System.Collections.ObjectModel;
+using System.Globalization;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using MineClaw.MemoryExplorer.Controls;
+using MineClaw.MemoryExplorer.Services;
+using MineClaw.Raptor.Model;
+
+namespace MineClaw.MemoryExplorer.ViewModels;
+
+/// <summary>One node of the lazily expanded RAPTOR tree view.</summary>
+public sealed partial class TreeNodeViewModel : ObservableObject
+{
+    private readonly RaptorTreeViewModel? _owner;
+    private bool _loaded;
+
+    private TreeNodeViewModel() { Title = "loading…"; Preview = ""; IsPlaceholder = true; }
+
+    public TreeNodeViewModel(RaptorTreeViewModel owner, RaptorNode n, NodeDoc? doc)
+    {
+        _owner = owner;
+        Index = n.Index;
+        Layer = n.Layer;
+        ChildCount = n.Children.Count;
+        ParentCount = n.Parents.Count;
+        Tokens = n.TokenCount;
+        IsLeaf = n.IsLeaf;
+        Dirty = n.Dirty || n.SummaryPending;
+        var one = n.Text.ReplaceLineEndings(" ");
+        Preview = one.Length > 140 ? one[..140] + "…" : one;
+        Title = IsLeaf ? (doc != null ? $"{doc.Kind} · {Trim(doc.Title, 70)}" : $"leaf #{n.Index}") : Trim(one, 90);
+        Kind = IsLeaf ? doc?.Kind ?? n.Kind ?? "leaf" : $"L{n.Layer}";
+        if (ChildCount > 0) Children.Add(new TreeNodeViewModel());
+    }
+
+    private static string Trim(string s, int n) => s.Length > n ? s[..n] + "…" : s;
+
+    public bool IsPlaceholder { get; }
+    public int Index { get; }
+    public int Layer { get; }
+    public int ChildCount { get; }
+    public int ParentCount { get; }
+    public int Tokens { get; }
+    public bool IsLeaf { get; }
+    public bool Dirty { get; }
+    public string Title { get; }
+    public string Preview { get; }
+    public string Kind { get; }
+    public string Meta => IsPlaceholder ? "" : IsLeaf ? $"#{Index} · {Tokens} tok" : $"#{Index} · {ChildCount} children · {Tokens} tok";
+    public ObservableCollection<TreeNodeViewModel> Children { get; } = [];
+
+    [ObservableProperty] private bool _isExpanded;
+
+    partial void OnIsExpandedChanged(bool value)
+    {
+        if (value) EnsureChildren();
+    }
+
+    public void EnsureChildren()
+    {
+        if (_loaded || _owner == null) return;
+        _loaded = true;
+        var kids = _owner.ChildrenOf(Index);
+        Children.Clear();
+        foreach (var k in kids) Children.Add(k);
+    }
+}
+
+public sealed record Crumb(int Index, string Label);
+public sealed record NodeRow(int Index, int Layer, string Label, string Preview, int Tokens);
+
+public sealed partial class RaptorTreeViewModel(MainWindowViewModel shell) : PageViewModel(shell)
+{
+    public ObservableCollection<TreeNodeViewModel> Roots { get; } = [];
+    public ObservableCollection<Crumb> Breadcrumb { get; } = [];
+    public ObservableCollection<NodeRow> DetailChildren { get; } = [];
+    public ObservableCollection<NodeRow> DetailParents { get; } = [];
+    public ObservableCollection<NodeRow> Leaves { get; } = [];
+
+    [ObservableProperty] private TreeNodeViewModel? _selected;
+    [ObservableProperty] private string _detailTitle = "";
+    [ObservableProperty] private string _detailText = "";
+    [ObservableProperty] private string _detailMeta = "";
+    [ObservableProperty] private string? _detailDoc;
+    [ObservableProperty] private bool _hasSelection;
+    [ObservableProperty] private bool _showLeaves;
+    [ObservableProperty] private string _leavesHeader = "";
+    [ObservableProperty] private bool _graphMode;
+    [ObservableProperty] private GraphModel? _graph;
+    [ObservableProperty] private int _graphSelected = -1;
+    [ObservableProperty] private string _goTo = "";
+    [ObservableProperty] private string _headline = "";
+
+    public bool TreeMode => !GraphMode;
+    partial void OnGraphModeChanged(bool value) => OnPropertyChanged(nameof(TreeMode));
+
+    public override async Task LoadAsync(MemoryBank? bank, CancellationToken ct)
+    {
+        Roots.Clear();
+        Clear();
+        Graph = null;
+        if (bank == null || !bank.HasTree)
+        {
+            EmptyText = bank == null ? "Open a database to browse its RAPTOR tree." : $"No tree: {bank.TreeNote}.";
+            Headline = "";
+            return;
+        }
+        IsLoading = true;
+        try
+        {
+            var (roots, graph, head) = await Task.Run(() => bank.ReadTree(t =>
+            {
+                var r = t.Roots.OrderBy(n => n.Index).Select(n => new TreeNodeViewModel(this, n, bank.DocOf(n.Index))).ToList();
+                var top = t.NumLayers;
+                return (r, GraphModel.Build(t), $"{t.Count:N0} nodes in {top + 1} layers · {r.Count} roots · {t.LeafCount:N0} leaves");
+            }, (new List<TreeNodeViewModel>(), (GraphModel?)null, "")), ct);
+            foreach (var r in roots) Roots.Add(r);
+            Graph = graph;
+            Headline = head;
+            EmptyText = null;
+        }
+        finally { IsLoading = false; }
+    }
+
+    internal List<TreeNodeViewModel> ChildrenOf(int index)
+    {
+        if (Bank is not { } bank) return [];
+        return bank.ReadTree(t => t.TryGet(index, out var n)
+            ? n.Children.Select(c => t[c]).OrderByDescending(c => c.Children.Count).ThenBy(c => c.Index)
+                .Select(c => new TreeNodeViewModel(this, c, bank.DocOf(c.Index))).ToList()
+            : [], []);
+    }
+
+    private void Clear()
+    {
+        Breadcrumb.Clear(); DetailChildren.Clear(); DetailParents.Clear(); Leaves.Clear();
+        DetailTitle = DetailText = DetailMeta = "";
+        DetailDoc = null;
+        HasSelection = false;
+        ShowLeaves = false;
+    }
+
+    partial void OnSelectedChanged(TreeNodeViewModel? value)
+    {
+        if (value is { IsPlaceholder: false }) ShowNode(value.Index);
+    }
+
+    partial void OnGraphSelectedChanged(int value)
+    {
+        if (value >= 0 && Selected?.Index != value) ShowNode(value);
+    }
+
+    /// <summary>Fills the detail pane for a node.</summary>
+    public void ShowNode(int index)
+    {
+        if (Bank is not { } bank) return;
+        var data = bank.ReadTree(t =>
+        {
+            if (!t.TryGet(index, out var n)) return null;
+            NodeRow Row(RaptorNode c) => new(c.Index, c.Layer, c.IsLeaf ? bank.DocOf(c.Index)?.Kind ?? "leaf" : $"L{c.Layer}",
+                One(c.Text, 150), c.TokenCount);
+            return new
+            {
+                Node = n, Text = n.Text, Kids = n.Children.Select(c => Row(t[c])).ToList(), Parents = n.Parents.Select(p => Row(t[p])).ToList(),
+                LeafCount = n.IsLeaf ? 1 : CountLeaves(t, n),
+            };
+        }, null);
+        if (data == null) return;
+        Clear();
+        HasSelection = true;
+        GraphSelected = index;
+        var n = data.Node;
+        var doc = bank.DocOf(index);
+        DetailTitle = n.IsLeaf ? doc?.Title ?? $"Leaf #{index}" : $"Layer {n.Layer} summary #{index}";
+        DetailText = data.Text;
+        DetailMeta = n.IsLeaf
+            ? $"leaf · {n.TokenCount} tokens · {data.Parents.Count} parent(s)" + (n.Pinned ? " · pinned" : "")
+            : $"layer {n.Layer} · {n.Children.Count} children · {data.LeafCount:N0} leaves below · {n.TokenCount} tokens" +
+              (n.Dirty ? " · dirty" : "") + (n.SummaryPending ? " · placeholder summary" : "");
+        if (doc != null)
+            DetailDoc = $"{doc.Ref} · {doc.Kind}{(doc.Tag != null ? "/" + doc.Tag : "")} · {doc.Source ?? "—"} · updated {doc.Updated.ToLocalTime():yyyy-MM-dd HH:mm}";
+        foreach (var p in bank.PathToRoot(index))
+            Breadcrumb.Add(new Crumb(p, p == index ? $"#{p}" : bank.ReadTree(t => t.TryGet(p, out var pn) ? $"L{pn.Layer} #{p}" : $"#{p}", $"#{p}")));
+        foreach (var c in data.Kids.OrderByDescending(k => k.Tokens)) DetailChildren.Add(c);
+        foreach (var p in data.Parents) DetailParents.Add(p);
+        LeavesHeader = n.IsLeaf ? "" : $"{data.LeafCount:N0} leaves under this node";
+    }
+
+    private static int CountLeaves(RaptorTree t, RaptorNode n)
+    {
+        var seen = new HashSet<int>();
+        var stack = new Stack<int>();
+        stack.Push(n.Index);
+        int leaves = 0;
+        while (stack.Count > 0)
+        {
+            var i = stack.Pop();
+            if (!seen.Add(i) || !t.TryGet(i, out var x)) continue;
+            if (x.IsLeaf) leaves++;
+            else foreach (var c in x.Children) stack.Push(c);
+        }
+        return leaves;
+    }
+
+    private static string One(string s, int max)
+    {
+        var t = s.ReplaceLineEndings(" ");
+        return t.Length > max ? t[..max] + "…" : t;
+    }
+
+    /// <summary>Every leaf chunk below the selected node (deduplicated across soft-cluster parents).</summary>
+    [RelayCommand]
+    private void ShowLeavesUnder()
+    {
+        if (Bank is not { } bank || !HasSelection || GraphSelected < 0) return;
+        int index = GraphSelected;
+        var rows = bank.ReadTree(t =>
+        {
+            var list = new List<NodeRow>();
+            var seen = new HashSet<int>();
+            var stack = new Stack<int>();
+            stack.Push(index);
+            while (stack.Count > 0)
+            {
+                var i = stack.Pop();
+                if (!seen.Add(i) || !t.TryGet(i, out var x)) continue;
+                if (x.IsLeaf)
+                {
+                    var d = bank.DocOf(i);
+                    list.Add(new NodeRow(i, 0, d != null ? $"{d.Kind} · {d.Title}" : "leaf", One(x.Text, 220), x.TokenCount));
+                }
+                else foreach (var c in x.Children) stack.Push(c);
+            }
+            return list.OrderBy(r => r.Index).ToList();
+        }, []);
+        Leaves.Clear();
+        foreach (var r in rows) Leaves.Add(r);
+        LeavesHeader = $"{rows.Count:N0} leaves under #{index} · {rows.Sum(r => r.Tokens):N0} tokens";
+        ShowLeaves = true;
+    }
+
+    [RelayCommand]
+    private void HideLeaves() => ShowLeaves = false;
+
+    /// <summary>Selects a node in the tree, expanding its path (lazy children load on the way).</summary>
+    [RelayCommand]
+    public void Reveal(int index)
+    {
+        if (Bank is not { } bank) return;
+        var path = bank.PathToRoot(index);
+        if (path.Count == 0) return;
+        IEnumerable<TreeNodeViewModel> level = Roots;
+        TreeNodeViewModel? cur = null;
+        foreach (var p in path)
+        {
+            cur = level.FirstOrDefault(x => x.Index == p);
+            if (cur == null) break;
+            if (p != index)
+            {
+                cur.IsExpanded = true;
+                cur.EnsureChildren();
+                level = cur.Children;
+            }
+        }
+        if (cur != null && cur.Index == index) Selected = cur;
+        else ShowNode(index);
+    }
+
+    [RelayCommand]
+    private void GoToNode()
+    {
+        if (int.TryParse(GoTo.Trim().TrimStart('#'), NumberStyles.Integer, CultureInfo.InvariantCulture, out var i)) Reveal(i);
+    }
+
+    [RelayCommand]
+    private void ToggleGraph() => GraphMode = !GraphMode;
+
+    [RelayCommand]
+    private void CollapseAll()
+    {
+        foreach (var r in Roots) Collapse(r);
+        static void Collapse(TreeNodeViewModel n)
+        {
+            n.IsExpanded = false;
+            foreach (var c in n.Children) if (!c.IsPlaceholder) Collapse(c);
+        }
+    }
+
+    [RelayCommand]
+    private Task CopyNodeText() => Shell.CopyAsync(DetailText);
+
+    [RelayCommand]
+    private Task CopyLeaves() => Shell.CopyAsync(string.Join("\n", Leaves.Select(l => $"#{l.Index}\t{l.Label}\t{l.Preview}")));
+
+    /// <summary>Opens the rebuild flow for the selected node (edit mode).</summary>
+    [RelayCommand]
+    private Task RebuildNode() => GraphSelected >= 0 ? Shell.Edit.StartRebuildAsync(GraphSelected) : Task.CompletedTask;
+}

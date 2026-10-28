@@ -9,6 +9,9 @@ public sealed record ChunkRow(int Dim, int X, int Z, long Hash, string Summary, 
     public string? SeenBy { get; init; }
 }
 
+/// <summary>A remembered column's index entry (no blob): content hash, when and by whom it was last seen.</summary>
+public sealed record ChunkIndexRow(int X, int Z, long Hash, DateTimeOffset LastSeen, string? SeenBy);
+
 /// <summary>
 /// Notified state of one unknown/auto structure, keyed by a content-anchored key ("min corner ~ block signature"); matched
 /// fuzzily (overlapping box + similar block mix) so small edits keep the same record across restarts.
@@ -24,6 +27,16 @@ public interface IWorldMemoryStore
     (long Hash, DateTimeOffset LastSeen)? GetChunkHash(int dim, int x, int z);
     /// <summary>Every column of a dimension, nearest first, at most <paramref name="max"/>.</summary>
     IReadOnlyList<ChunkRow> Chunks(int dim, int nearX, int nearZ, int max);
+    /// <summary>Hash, last_seen and seen_by (no blob) of the columns of <paramref name="dim"/> in a chunk rectangle, at most
+    /// <paramref name="max"/> (the supervisor's world index: viewers diff hashes and fetch only changed columns).</summary>
+    IReadOnlyList<ChunkIndexRow> ChunkIndex(int dim, int minX, int minZ, int maxX, int maxZ, int max)
+    {
+        var list = new List<ChunkIndexRow>();
+        for (int x = minX; x <= maxX && list.Count < max; x++)
+            for (int z = minZ; z <= maxZ && list.Count < max; z++)
+                if (GetChunk(dim, x, z) is { } r) list.Add(new ChunkIndexRow(r.X, r.Z, r.Hash, r.LastSeen, r.SeenBy));
+        return list;
+    }
     void PutChunks(IReadOnlyList<ChunkRow> rows);
     void TouchChunks(int dim, IReadOnlyList<(int X, int Z)> cells, DateTimeOffset at);
     long TotalBytes();
@@ -91,6 +104,17 @@ public sealed class SqliteWorldMemoryStore : IWorldMemoryStore
                 SELECT {Cols} FROM world_chunks WHERE dim=$d
                 ORDER BY (cx-$x)*(cx-$x)+(cz-$z)*(cz-$z) LIMIT $n
                 """, Row, ("$d", dim), ("$x", nearX), ("$z", nearZ), ("$n", max));
+    }
+
+    public IReadOnlyList<ChunkIndexRow> ChunkIndex(int dim, int minX, int minZ, int maxX, int maxZ, int max)
+    {
+        lock (_db.Gate)
+            return _db.Query("""
+                SELECT cx,cz,hash,last_seen,seen_by FROM world_chunks
+                WHERE dim=$d AND cx BETWEEN $x0 AND $x1 AND cz BETWEEN $z0 AND $z1 LIMIT $n
+                """, r => new ChunkIndexRow(r.GetInt32(0), r.GetInt32(1), r.GetInt64(2), AgentDb.FromUnixMs(r.GetInt64(3)),
+                    r.IsDBNull(4) || r.GetString(4).Length == 0 ? null : r.GetString(4)),
+                ("$d", dim), ("$x0", minX), ("$x1", maxX), ("$z0", minZ), ("$z1", maxZ), ("$n", max));
     }
 
     public void PutChunks(IReadOnlyList<ChunkRow> rows)

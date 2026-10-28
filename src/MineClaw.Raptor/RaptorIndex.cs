@@ -12,12 +12,25 @@ public sealed record RefreshReport(int Refreshed, int Splits, int RemainingDirty
 
 public sealed record RebuildDecision(bool Rebuild, string Reason, double ChangedFraction, double SimilarityDrift, int DirtyNodes);
 
+/// <summary>One summary node a subtree rebuild replaced (old text, new null), created (old null, new text) or rewrote (both).</summary>
+public sealed record SubtreeNodeChange(int Index, int Layer, string? OldText, string? NewText);
+
+/// <param name="Replaced">Summary descendants that belonged only to the subtree and were removed.</param>
+/// <param name="Kept">Summary descendants shared with parents outside the subtree (kept, unlinked from it).</param>
+/// <param name="Created">New intermediate summaries.</param>
+public sealed record SubtreeRebuildReport(int Node, int Layer, int Leaves, int Replaced, int Kept, int Created, int Summaries, int Placeholders,
+    long EmbeddingTokens, IReadOnlyList<SubtreeNodeChange> Changes);
+
+/// <summary>Up-front size of a subtree rebuild: summaries it will write and the summarizer tokens they read/write (library estimate:
+/// output = summarization_length per summary).</summary>
+public sealed record SubtreeEstimate(int Node, int Layer, int Leaves, int Summaries, long InputTokens, long OutputTokens);
+
 /// <summary>
 /// Thread-safe RAPTOR index: the faithful static build, both retrieval modes, and MineClaw's incremental maintenance
 /// (insert / remove / refresh dirty / rebuild trigger), persisted through an optional <see cref="IRaptorStore"/>.
 /// Writers are serialized; readers run concurrently with each other and never wait on a summarizer or embedder call.
 /// </summary>
-public sealed class RaptorIndex : IDisposable
+public sealed partial class RaptorIndex : IDisposable
 {
     private readonly IEmbedder _embedder;
     private readonly RaptorTreeBuilder _builder;
@@ -216,38 +229,66 @@ public sealed class RaptorIndex : IDisposable
             var (start, seq) = Read(t => (t.NextIndex, t.InsertSeq));
             var (leaves, tokens) = await _builder.CreateLeavesAsync(documents, start, seq, ct).ConfigureAwait(false);
             if (leaves.Count == 0) return new InsertReport(0, 0, 0, tokens, 0);
-            int attached = 0;
-            double simSum = 0;
-            var dirty = new HashSet<int>();
-            Mutate(tree =>
-            {
-                if (tree.Count == 0) tree.Dimensions = leaves[0].Embedding.Length;
-                if (leaves[0].Embedding.Length != tree.Dimensions)
-                    throw new InvalidOperationException($"Embedding dims {leaves[0].Embedding.Length} differ from the tree's {tree.Dimensions}.");
-                foreach (var leaf in leaves)
-                {
-                    tree.Add(leaf);
-                    Touch(leaf.Index);
-                    tree.InsertedSinceBuild++;
-                    tree.InsertSeq = Math.Max(tree.InsertSeq, leaf.InsertedSeq);
-                    if (tree.NumLayers < 1) continue;
-                    var (parents, bestSim) = ChooseParents(tree, leaf);
-                    foreach (var p in parents)
-                    {
-                        tree.Link(p, leaf.Index);
-                        Touch(p);
-                        MarkDirtyUpward(tree, p, dirty);
-                    }
-                    attached++;
-                    simSum += bestSim;
-                    tree.InsertedSimilaritySum += bestSim;
-                    tree.InsertedSimilarityCount++;
-                }
-            });
+            var report = Attach(leaves, tokens);
             await PersistAsync(false, ct).ConfigureAwait(false);
-            return new InsertReport(leaves.Count, attached, dirty.Count, tokens, attached == 0 ? 0 : simSum / attached);
+            return report;
         }
         finally { _writer.Release(); }
+    }
+
+    /// <summary>
+    /// Atomic in-place update of documents already in the tree (admin "rebuild a kind"): every leaf whose Key is one of the
+    /// documents' keys is removed (counted as replacing) and the documents are inserted again, under one writer hold, so a
+    /// concurrent sync never sees the documents half-removed. The new leaves are created (embedded) before anything changes.
+    /// </summary>
+    public async Task<(int Removed, InsertReport Insert)> ReplaceLeavesAsync(IReadOnlyList<RaptorDocument> documents, CancellationToken ct = default)
+    {
+        var keys = new HashSet<string>(documents.Where(d => d.Key != null).Select(d => d.Key!), StringComparer.Ordinal);
+        await _writer.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var (start, seq) = Read(t => (t.NextIndex, t.InsertSeq));
+            var (leaves, tokens) = await _builder.CreateLeavesAsync(documents, start, seq, ct).ConfigureAwait(false);
+            int removed = keys.Count > 0 ? RemoveCore(keys, replacing: true) : 0;
+            var report = leaves.Count == 0 ? new InsertReport(0, 0, 0, tokens, 0) : Attach(leaves, tokens);
+            await PersistAsync(false, ct).ConfigureAwait(false);
+            return (removed, report);
+        }
+        finally { _writer.Release(); }
+    }
+
+    /// <summary>Adds created leaves and soft-attaches them (caller holds the writer).</summary>
+    private InsertReport Attach(List<RaptorNode> leaves, long tokens)
+    {
+        int attached = 0;
+        double simSum = 0;
+        var dirty = new HashSet<int>();
+        Mutate(tree =>
+        {
+            if (tree.Count == 0) tree.Dimensions = leaves[0].Embedding.Length;
+            if (leaves[0].Embedding.Length != tree.Dimensions)
+                throw new InvalidOperationException($"Embedding dims {leaves[0].Embedding.Length} differ from the tree's {tree.Dimensions}.");
+            foreach (var leaf in leaves)
+            {
+                tree.Add(leaf);
+                Touch(leaf.Index);
+                tree.InsertedSinceBuild++;
+                tree.InsertSeq = Math.Max(tree.InsertSeq, leaf.InsertedSeq);
+                if (tree.NumLayers < 1) continue;
+                var (parents, bestSim) = ChooseParents(tree, leaf);
+                foreach (var p in parents)
+                {
+                    tree.Link(p, leaf.Index);
+                    Touch(p);
+                    MarkDirtyUpward(tree, p, dirty);
+                }
+                attached++;
+                simSum += bestSim;
+                tree.InsertedSimilaritySum += bestSim;
+                tree.InsertedSimilarityCount++;
+            }
+        });
+        return new InsertReport(leaves.Count, attached, dirty.Count, tokens, attached == 0 ? 0 : simSum / attached);
     }
 
     /// <summary>
@@ -298,6 +339,17 @@ public sealed class RaptorIndex : IDisposable
         await _writer.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            int removed = RemoveCore(set, replacing);
+            await PersistAsync(false, ct).ConfigureAwait(false);
+            return removed;
+        }
+        finally { _writer.Release(); }
+    }
+
+    /// <summary>Removes leaves by key and prunes empty summaries upward (caller holds the writer).</summary>
+    private int RemoveCore(HashSet<string> set, bool replacing)
+    {
+        {
             int removed = 0;
             Mutate(tree =>
             {
@@ -324,10 +376,8 @@ public sealed class RaptorIndex : IDisposable
                 while (tree.NumLayers > 0 && tree.LayerIndices(tree.NumLayers).Count == 0) tree.NumLayers--;
                 foreach (var d in dirty) Touch(d);
             });
-            await PersistAsync(false, ct).ConfigureAwait(false);
             return removed;
         }
-        finally { _writer.Release(); }
     }
 
     /// <summary>
@@ -335,9 +385,11 @@ public sealed class RaptorIndex : IDisposable
     /// <see cref="RaptorOptions.SplitOverCapOnRefresh"/>, a dirty node whose children now exceed max_length_in_cluster
     /// is first split by running RAPTOR clustering on its children. Nodes the budget cannot cover stay dirty.
     /// </summary>
-    public async Task<RefreshReport> RefreshDirtyAsync(RaptorBudget? budget = null, CancellationToken ct = default)
+    /// <param name="summarizer">Overrides the index's summarizer for this call (an admin job with its own spend cap); null = the index's.</param>
+    public async Task<RefreshReport> RefreshDirtyAsync(RaptorBudget? budget = null, CancellationToken ct = default, ISummarizer? summarizer = null)
     {
         budget ??= RaptorBudget.Unlimited();
+        var builder = BuilderFor(summarizer);
         await _writer.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -351,9 +403,9 @@ public sealed class RaptorIndex : IDisposable
                 var work = Read(t => t.Layer(layer).Where(n => n.Dirty || n.SummaryPending).OrderBy(n => n.Index)
                     .Select(n => (n.Index, Children: (IReadOnlyList<RaptorNode>)n.Children.Select(c => t[c]).ToList())).ToList());
                 if (work.Count == 0) continue;
-                var outcomes = await _builder.SummarizeManyAsync(work.Select(w => w.Children).ToList(), budget, ct).ConfigureAwait(false);
+                var outcomes = await builder.SummarizeManyAsync(work.Select(w => w.Children).ToList(), budget, ct).ConfigureAwait(false);
                 var done = Enumerable.Range(0, work.Count).Where(i => outcomes[i].Summarized && !outcomes[i].Pending).ToList();
-                var (vecs, tokens) = await _builder.EmbedAllAsync(done.Select(i => outcomes[i].Text).ToList(), ct).ConfigureAwait(false);
+                var (vecs, tokens) = await builder.EmbedAllAsync(done.Select(i => outcomes[i].Text).ToList(), ct).ConfigureAwait(false);
                 embedTokens += tokens;
                 Mutate(tree =>
                 {
