@@ -484,6 +484,13 @@ public class CrewBuildTests
         Assert.False(del.Ok);
         Assert.Contains("design build", del.Text);
         Assert.Equal((null, null), h.Blueprints.DesignTask("mine 32 cobblestone"));
+        // Live: a torch job that only mentions a design (and an unapproved draft sharing its name) is not a design build.
+        var twin = s.Store.Insert(new BlueprintRecord { Name = "mob drop tower", Description = "v2", Bot = "maid_chan", Dsl = BlueprintTests.Hut, Status = DesignStatus.Review });
+        Assert.Equal((null, null), h.Blueprints.DesignTask($"Place torches on the dark west side near the mob drop tower (design #{twin.Id}) so nothing spawns, then finish up."));
+        Assert.Equal((null, null), h.Blueprints.DesignTask($"Light the island. Design #{twin.Id} is still waiting; don't build it."));
+        // By name, the approved one of two same-named designs wins.
+        var (byName, _) = h.Blueprints.DesignTask("finish building the mob drop tower design");
+        Assert.Contains($"build{{bp:\"{rec.Id}\"}}", byName);
     }
 
     [Fact]

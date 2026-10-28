@@ -172,8 +172,12 @@ public sealed class BlueprintWiring
     private static readonly System.Text.RegularExpressions.Regex DesignRef = new(
         @"\b(?:design|blueprint|build)\w*\s*(?:#|no\.?\s*|id\s*)?(\d+)\b|#(\d+)\b",
         System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
-    private static readonly System.Text.RegularExpressions.Regex BuildWord = new(@"\b(?:build|built|building|construct|continue|resume|finish)\w*",
+    // A build verb heading the reference in the same clause, at most 4 words before it ("continue building design #4",
+    // "finish the mob drop tower design"). "Torch the dark side by the mob drop tower (design #8)" is not a design build.
+    private static readonly System.Text.RegularExpressions.Regex BuildLead = new(@"\b(?:build|building|construct|continue|resume|finish)\w*[^\w.;!?]+(?:[\w'#-]+[^\w.;!?]+){0,4}$",
         System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private static bool BuildsAt(string task, int at) => BuildLead.IsMatch(task[..at]);
 
     /// <summary>
     /// A delegated task that is about building a saved design ("Continue building design #4 'mob drop tower'"): the design it
@@ -182,12 +186,16 @@ public sealed class BlueprintWiring
     /// </summary>
     internal (string? Hint, string? Refusal) DesignTask(string task)
     {
-        if (string.IsNullOrWhiteSpace(task) || !BuildWord.IsMatch(task)) return (null, null);
+        if (string.IsNullOrWhiteSpace(task)) return (null, null);
         BlueprintRecord? rec = null;
         foreach (System.Text.RegularExpressions.Match m in DesignRef.Matches(task))
-            if ((m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value) is { Length: > 0 } id && Service.Store.Find(id) is { } r) { rec = r; break; }
-        rec ??= Service.Store.List(10).FirstOrDefault(r => r.Name.Length >= 4 && task.Contains(r.Name, StringComparison.OrdinalIgnoreCase)
-                                                          && task.Contains("design", StringComparison.OrdinalIgnoreCase));
+            if ((m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value) is { Length: > 0 } id && BuildsAt(task, m.Index)
+                && Service.Store.Find(id) is { } r) { rec = r; break; }
+        // By name: approved designs first, since two can share one (live: #4 "mob drop tower" built, #8 a draft of it).
+        if (rec == null && task.Contains("design", StringComparison.OrdinalIgnoreCase))
+            rec = Service.Store.List(10).Where(r => r.Name.Length >= 4)
+                .OrderBy(r => r.Status is DesignStatus.Accepted or DesignStatus.Building or DesignStatus.Built ? 0 : 1)
+                .FirstOrDefault(r => task.IndexOf(r.Name, StringComparison.OrdinalIgnoreCase) is >= 0 and var at && BuildsAt(task, at));
         if (rec == null) return (null, null);
         if (rec.Status is DesignStatus.Accepted or DesignStatus.Building or DesignStatus.Built)
             return ($"[design #{rec.Id} \"{rec.Name}\" is approved: call build{{bp:\"{rec.Id}\"}} (it resumes the saved plan; never place its blocks by hand)]", null);
