@@ -48,7 +48,7 @@ internal static class AreaFill
         var w = ctx.World;
         if (r.Count > MaxCells) return SkillResult.Fail($"area {r} is {r.Count} cells; at most {MaxCells} per call");
         int y = args.Int("y") ?? FloorLevel(ctx, r) ?? ctx.Me.Y - 1;
-        if (y < 1 || y >= WorldState.Height - 2) return SkillResult.Fail($"y {y} is outside the world");
+        if (y < 1 || y >= w.WorldHeight - 2) return SkillResult.Fail($"y {y} is outside the world");
         string where = $"{r} at y{y}";
         var cells = r.Cells(y).ToList();
         if (cells.Any(c => !w.IsLoaded(c.X, c.Z))) return SkillResult.Fail($"part of {where} isn't loaded; come closer first");
@@ -163,7 +163,7 @@ internal static class AreaFill
         var w = ctx.World;
         var me = ctx.Feet;
         (int Y, double Score)? best = null;
-        for (int y = Math.Max(1, ctx.Me.Y - 10); y <= Math.Min(WorldState.Height - 2, ctx.Me.Y + 4); y++)
+        for (int y = Math.Max(1, ctx.Me.Y - 10), y1 = Math.Min(w.WorldHeight - 2, ctx.Me.Y + 4); y <= y1; y++)
             for (int x = r.X0 - 1; x <= r.X1 + 1; x++)
             for (int z = r.Z0 - 1; z <= r.Z1 + 1; z++)
             {

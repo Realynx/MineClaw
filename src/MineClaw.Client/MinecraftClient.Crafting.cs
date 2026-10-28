@@ -316,7 +316,10 @@ public sealed partial class MinecraftClient
 
     private async Task<ActionResult> SmeltCoreAsync(int inputId, int count, int? fuelId, bool wait, BlockPos? furnace, CancellationToken ct)
     {
-        if (Smelting.ResultFor(inputId) is not { } recipe) return ActionResult.Fail($"{ItemName(inputId)} can't be smelted");
+        // 1.12.2 keys some inputs by variant (wet sponge, stone bricks, cod/salmon): the carried stack's variant decides.
+        var carried = World.Inventory.PlayerSlots().Skip(9).FirstOrDefault(st => !st.IsEmpty && st.Id == inputId);
+        if (Smelting.ResultFor(inputId, carried.IsEmpty ? -1 : carried.Damage) is not { } recipe)
+            return ActionResult.Fail($"{ItemName(inputId)} can't be smelted");
         int have = World.Inventory.CountItem(inputId);
         if (have == 0) return ActionResult.Fail($"no {ItemName(inputId)} to smelt");
         count = Math.Min(count, have);

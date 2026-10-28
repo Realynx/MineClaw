@@ -10,6 +10,10 @@
     <!-- 1.12.2 block/item names, ids, hardness and harvest tools (PrismarineJS minecraft-data, vendored with its LICENSE). -->
     <EmbeddedResource Include="..\..\third_party\minecraft-data\pc\1.12.2\blocks.json" LogicalName="mcdata.1.12.2.blocks.json" />
     <EmbeddedResource Include="..\..\third_party\minecraft-data\pc\1.12.2\items.json" LogicalName="mcdata.1.12.2.items.json" />
+    <!-- P5: the 432 crafting recipes (= the client jar's assets/minecraft/recipes) and the FurnaceRecipes table the 1.12.2
+         knowledge pack also reads (written from the decompiled source), so the bot's tables and its knowledge agree. -->
+    <EmbeddedResource Include="..\..\third_party\minecraft-data\pc\1.12.2\recipes.json" LogicalName="mcdata.1.12.2.recipes.json" />
+    <EmbeddedResource Include="..\..\shards\sources\1.12.2\smelting.json" LogicalName="facts.1.12.2.smelting.json" />
   </ItemGroup>
 
 </Project>

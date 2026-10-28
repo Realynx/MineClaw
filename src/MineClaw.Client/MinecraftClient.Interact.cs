@@ -60,7 +60,7 @@ public sealed partial class MinecraftClient
     private async Task<ActionResult> UseOnBlockCoreAsync(BlockPos pos, BlockFace face, int itemId, int? damage, CancellationToken ct)
     {
         if (face == BlockFace.None) return ActionResult.Fail("a face is required");
-        if (pos.Y is < 0 or >= WorldState.Height) return ActionResult.Fail($"{Fmt(pos)} is outside the world");
+        if ((uint)pos.Y >= (uint)World.WorldHeight) return ActionResult.Fail($"{Fmt(pos)} is outside the world");
         if (!World.IsLoaded(pos.X, pos.Z)) return ActionResult.Fail($"{Fmt(pos)} is not loaded");
         if (World.Inventory.CountItem(itemId, damage) == 0) return ActionResult.Fail($"no {ItemName(itemId, damage ?? 0)} in inventory");
         int id = World.GetBlock(pos);

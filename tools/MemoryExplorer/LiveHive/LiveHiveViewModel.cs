@@ -671,7 +671,10 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         try
         {
             var dir = Path.Combine(ExplorerPaths.DataDir, "assets");
-            return TextureLocator.Load(new TextureOptions { AssetsDir = Directory.Exists(dir) ? dir : null, AllowDownload = false, SearchLauncherDirs = true });
+            // The hive's version (the bot's last detected one, <data>/server-version.txt): 1.12.2 draws from that jar's models.
+            var versionFile = Path.Combine(ExplorerPaths.DataDir, "server-version.txt");
+            string version = File.Exists(versionFile) && File.ReadAllText(versionFile).Contains("1.12.2") ? "1.12.2" : "b1.8.1";
+            return TextureLocator.Load(new TextureOptions { AssetsDir = Directory.Exists(dir) ? dir : null, AllowDownload = false, SearchLauncherDirs = true, Version = version });
         }
         catch (Exception) { return null; }
     }

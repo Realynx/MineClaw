@@ -50,6 +50,8 @@ public sealed class BlueprintService
     public IBlueprintAuthor? Author { get; set; }
     public IDesignCritic? Critic { get; set; }
     public required Func<SiteContext> Site { get; init; }
+    /// <summary>The site world's height (bounds for normalizing); 128 when no site world is available.</summary>
+    private int WorldHeight() { try { return Site().World.WorldHeight; } catch (Exception) { return ChunkColumn.SizeY; } }
     public Func<RoleMap?> Roles { get; init; } = () => null;
     public Func<IVoxelWorld?> Light { get; init; } = () => null;
     public Func<TextureAtlas?> Atlas { get; init; } = () => null;
@@ -338,7 +340,7 @@ public sealed class BlueprintService
             Status = DesignStatus.Accepted, Dim = Dimension(), Site = site.Ground,
         });
         var (fx, fz) = bp.Footprint;
-        var (plan, issues) = BlueprintNormalizer.Normalize(bp, new BlockPos(site.Ground.X - fx / 2, site.Ground.Y + 1, site.Ground.Z - fz / 2));
+        var (plan, issues) = BlueprintNormalizer.Normalize(bp, new BlockPos(site.Ground.X - fx / 2, site.Ground.Y + 1, site.Ground.Z - fz / 2), WorldHeight());
         if (plan == null) return (null, "error: the saved design doesn't parse any more");
         var eval = DesignChecks.Evaluate(plan, Site(), issues);
         copy.Origin = plan.Origin;
@@ -626,7 +628,7 @@ public sealed class BlueprintService
         var (fx, fz) = bp.Footprint;
         var origin = rec.Origin ?? new BlockPos(rec.Site.X - fx / 2, rec.Site.Y + 1, rec.Site.Z - fz / 2);
         bp.Origin ??= origin;
-        var (plan, more) = BlueprintNormalizer.Normalize(bp, origin);
+        var (plan, more) = BlueprintNormalizer.Normalize(bp, origin, WorldHeight());
         issues.AddRange(more);
         error = plan == null || issues.Any(i => i.Level == IssueLevel.Error) ? string.Join("; ", issues.Where(i => i.Level == IssueLevel.Error).Take(3)) : null;
         return plan;

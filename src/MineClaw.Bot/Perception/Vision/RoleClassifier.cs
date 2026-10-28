@@ -45,7 +45,7 @@ public sealed class RoleClassifier
 
     public BlockRole RoleOf(int x, int y, int z)
     {
-        if ((uint)y >= WorldState.Height || !Blocks.IsLoaded(x, z)) return BlockRole.None;
+        if ((uint)y >= Blocks.WorldHeight || !Blocks.IsLoaded(x, z)) return BlockRole.None;
         var p = new BlockPos(x, y, z);
         int id = Blocks.GetBlock(x, y, z);
         bool gen = Safe(() => IsGenCell?.Invoke(p) == true) || (id is MineClaw.Data.Blocks.Cobblestone or MineClaw.Data.Blocks.Stone or 0

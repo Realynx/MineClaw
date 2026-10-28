@@ -106,7 +106,7 @@ public sealed partial class MinecraftClient
         if (!World.IsLoaded(sp.X, sp.Z)) return $"respawn point unknown/unsafe: spawn {sp.X},{sp.Y},{sp.Z} isn't loaded";
         // b1.8.1 respawns at the world spawn moved up to the first free spot above solid ground (WorldProvider / ChunkCoordinates);
         // a void column there is the y≈0 spawn fresh accounts get (live 10-27: -6,0,-9).
-        return Safety.SupportBelow(World, sp.X, Math.Min(WorldState.Height - 1, sp.Y + 4), sp.Z) < 0
+        return Safety.SupportBelow(World, sp.X, Math.Min(World.WorldHeight - 1, sp.Y + 4), sp.Z) < 0
             ? $"respawn point unknown/unsafe: no ground under spawn {sp.X},{sp.Y},{sp.Z}" : "";
     }
 
@@ -117,12 +117,13 @@ public sealed partial class MinecraftClient
         double bestD = double.MaxValue;
         int cx = (int)Math.Floor(me.X), cz = (int)Math.Floor(me.Z);
         BlockPos[] sides = [new(1, 0, 0), new(-1, 0, 0), new(0, 0, 1), new(0, 0, -1)];
+        int h = World.WorldHeight;
         for (int dy = -2; dy <= 1; dy++)
         for (int dx = -10; dx <= 10; dx++)
         for (int dz = -10; dz <= 10; dz++)
         {
             int x = cx + dx, y = py + dy, z = cz + dz;
-            if (y < 1 || y >= WorldState.Height - 2 || !World.IsLoaded(x, z) || !Safety.IsStandable(World, x, y, z)) continue;
+            if (y < 1 || y >= h - 2 || !World.IsLoaded(x, z) || !Safety.IsStandable(World, x, y, z)) continue;
             double d = Math.Sqrt(dx * dx + dz * dz) + Math.Abs(dy) * 2;
             if (d >= bestD) continue;
             foreach (var s in sides)

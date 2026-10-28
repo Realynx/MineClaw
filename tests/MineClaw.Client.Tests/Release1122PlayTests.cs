@@ -161,6 +161,29 @@ public class Release1122PlayTests
         AssertSameAsServer(c, s);
     }
 
+    /// <summary>P5: the client predicts the 1.12.2 recipes (P2 predicted b1.8.1's "any log → oak planks" and was rejected once,
+    /// then resynced): birch logs give birch planks, a crafting table takes mixed planks, every click is accepted first time.</summary>
+    [Fact]
+    public async Task Birch_planks_and_a_mixed_plank_table_are_predicted_without_a_resync_on_1122()
+    {
+        var (c, s) = await Start(true, srv =>
+        {
+            srv.Inventory[12] = Harness.Stack(Blocks.Log, 1, 2);    // birch
+            srv.Inventory[13] = Harness.Stack(Blocks.Planks, 2, 4); // acacia
+        });
+        await using var _ = c;
+        using var __ = s;
+
+        var planks = await c.CraftAsync(Blocks.Planks, 2, 4);
+        Assert.True(planks.Ok, planks.Message);
+        Assert.Equal(4, c.World.Inventory.CountItem(Blocks.Planks, 2));
+        var table = await c.CraftAsync(Blocks.Workbench, -1, 1);
+        Assert.True(table.Ok, table.Message);
+        Assert.Equal(1, c.World.Inventory.CountItem(Blocks.Workbench));
+        Assert.All(s.Clicks, k => Assert.True(k.Accepted, $"click {k} rejected"));
+        AssertSameAsServer(c, s);
+    }
+
     [Fact]
     public async Task Chop_a_log_craft_planks_and_place_them_on_1122()
     {

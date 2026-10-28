@@ -18,6 +18,10 @@ public sealed partial class Pathfinder
     private readonly PathOptions _o;
     private readonly Overlay _w;
     private readonly List<AABB> _boxes = new(16);
+    /// <summary>The version's rules, captured once per search (multi-version P3): step-up height (b1.8.1 0.5, 1.12.2 0.6), body
+    /// height (1.8) and world height (128 / 256).</summary>
+    private readonly double _step, _height;
+    private readonly int _worldHeight;
     private readonly Dictionary<long, CellInfo> _cellCache = new();
     private readonly Dictionary<long, bool> _deadlyCache = new();
     private static readonly double[] FallTicks = BuildFallTicks();
@@ -27,6 +31,10 @@ public sealed partial class Pathfinder
         _world = world;
         _o = options;
         _w = new Overlay(world);
+        var rules = world.Physics;
+        _step = rules.StepHeight;
+        _height = rules.Height;
+        _worldHeight = world.WorldHeight;
         _view = options.Mechanisms is { IsEmpty: false } v ? v : null;
     }
 
@@ -234,7 +242,7 @@ public sealed partial class Pathfinder
             // 64.5, head 66.3) the head hit a leaf block at 7,66,5 that the target cell's own check (floor 64) never saw
             // (live 10-28: three bots stuck at 7.5,64.5,6.3, every re-plan chose the same step).
             double edge = Math.Max(here.Floor, t.Floor);
-            if (t.Ok && t.Floor - here.Floor <= 0.5 + 1e-6 && BodyClear(x, z, edge) && BodyClear(tx, tz, edge))
+            if (t.Ok && t.Floor - here.Floor <= _step + 1e-6 && BodyClear(x, z, edge) && BodyClear(tx, tz, edge))
             {
                 if (transit) AddWalk(output, here, hereEdge, tx, y, tz, t, MoveKind.Walk, 1.0, [], opens);
                 walked = true;
@@ -249,7 +257,7 @@ public sealed partial class Pathfinder
 
             // Jump up one block.
             var up = Cell(tx, y + 1, tz);
-            if (up.Ok && up.Floor - here.Floor > 0.5 && up.Floor - here.Floor <= 1.25 + 1e-6 && BodyClear(x, z, up.Floor)
+            if (up.Ok && up.Floor - here.Floor > _step && up.Floor - here.Floor <= 1.25 + 1e-6 && BodyClear(x, z, up.Floor)
                 && TransitOk(x, z, tx, tz, y, up.Floor, out var jumpOpens) && jumpOpens == null)
                 AddJump(output, here, hereEdge, tx, y + 1, tz, up, []);
             else if (!up.Ok && _o.AllowBreak && !here.Water)
@@ -297,7 +305,7 @@ public sealed partial class Pathfinder
             else if (_o.AllowSwim && here.Water && (above.Water || above.Climb))
                 output.Add(new Candidate(x, y + 1, z, MoveKind.Swim, above.Floor, PathOptions.SwimCost, [], null, false));
         }
-        else if (_o.AllowOpenDoors && _o.AllowClimb && here.Climb && y + 2 < WorldState.Height)
+        else if (_o.AllowOpenDoors && _o.AllowClimb && here.Climb && y + 2 < _worldHeight)
             TryClimbHatch(output, x, y, z);
         var below = Cell(x, y - 1, z);
         if (below.Ok && Math.Abs(here.Floor - y) < 1e-6)
@@ -311,7 +319,7 @@ public sealed partial class Pathfinder
         // Pillar: jump and place a block in the current foot cell.
         if (_o.AllowPlace && !here.Water && !here.Climb && Math.Abs(here.Floor - y) < 1e-6
             && (_o.CanPlace is null || _o.CanPlace(new BlockPos(x, y, z)))
-            && Aiming.IsReplaceable(_w, _w.GetBlock(x, y, z)) && BodyClear(x, z, y + 1) && y + 2 < WorldState.Height)
+            && Aiming.IsReplaceable(_w, _w.GetBlock(x, y, z)) && BodyClear(x, z, y + 1) && y + 2 < _worldHeight)
         {
             output.Add(new Candidate(x, y + 1, z, MoveKind.Pillar, y + 1, _o.PlaceCost + PathOptions.JumpExtra + 4, [],
                 new BlockPos(x, y, z), hereEdge));
@@ -400,7 +408,7 @@ public sealed partial class Pathfinder
                 // Water only cancels the fall if a tick samples the feet inside it (Safety.WaterLanding): shallow water
                 // under a long drop is a hard landing on its floor.
                 int top = ty;
-                while (top + 1 < WorldState.Height && BlockShapes.IsWater(_w.GetBlock(tx, top + 1, tz))) top++;
+                while (top + 1 < _worldHeight && BlockShapes.IsWater(_w.GetBlock(tx, top + 1, tz))) top++;
                 var landing = Safety.WaterLanding(_w, tx, tz, here.Floor, top);
                 if (!landing.BreaksFall)
                 {
@@ -453,7 +461,7 @@ public sealed partial class Pathfinder
         }
         if (breaks.Count == 0) return;
         var c = WithBroken(breaks, () => (CellUncached(tx, y, tz), BodyClear(x, z, y) && BodyClear(tx, tz, Math.Max(here.Floor, y))));
-        if (!c.Item1.Ok || !c.Item2 || c.Item1.Floor - here.Floor > 0.5 + 1e-6 || c.Item1.Floor < here.Floor - 0.5 - 1e-6) return;
+        if (!c.Item1.Ok || !c.Item2 || c.Item1.Floor - here.Floor > _step + 1e-6 || c.Item1.Floor < here.Floor - 0.5 - 1e-6) return;
         AddWalk(output, here, hereEdge, tx, y, tz, c.Item1, MoveKind.Walk, 1.0, breaks);
     }
 
@@ -542,18 +550,18 @@ public sealed partial class Pathfinder
     /// not over the void.</summary>
     private CellInfo CellUncached(int x, int y, int z)
     {
-        if (y < 0 || y + 1 >= WorldState.Height) return CellInfo.Invalid;
+        if (y < 0 || y + 1 >= _worldHeight) return CellInfo.Invalid;
         if (!_w.IsLoaded(x, z)) return CellInfo.Invalid;
         int feet = _w.GetBlock(x, y, z), head = _w.GetBlock(x, y + 1, z);
         if (Safety.IsHazard(_w, feet) || Safety.IsHazard(_w, head)) return CellInfo.Invalid;
         if (Openables.IsPlate(feet) && !PlateOk(x, y, z)) return CellInfo.Invalid;
         if (_o.AvoidPistonPaths && (InPistonPath(x, y, z) || InPistonPath(x, y + 1, z))) return CellInfo.Invalid;
         bool water = BlockShapes.IsWater(feet);
-        bool climb = BlockShapes.IsClimbable(_w, feet);
+        bool climb = BlockShapes.IsClimbableAt(_w, x, y, z);
 
         double? support = SupportHeight(x, y, z);
         // A closed trapdoor is a floor anyone can open: never stand on one over the void or a deadly drop.
-        if (support is { } sh && feet == Openables.Trapdoor && !Openables.IsOpen(_w.GetMeta(x, y, z)) && sh - y < 0.25
+        if (support is { } sh && Openables.IsTrapdoor(feet) && !Openables.IsOpen(_w.GetMeta(x, y, z)) && sh - y < 0.25
             && TrapdoorOverDrop(x, y, z)) return CellInfo.Invalid;
         bool ground = support is not null;
         if (!ground && !(water && _o.AllowSwim) && !(climb && _o.AllowClimb)) return CellInfo.Invalid;
@@ -596,7 +604,7 @@ public sealed partial class Pathfinder
     /// <summary>A centered player box at feet height <paramref name="floor"/> in column (x,z) collides with nothing.</summary>
     private bool BodyClear(int x, int z, double floor)
     {
-        var box = new AABB(x + 0.2, floor, z + 0.2, x + 0.8, floor + PlayerPhysics.Height, z + 0.8);
+        var box = new AABB(x + 0.2, floor, z + 0.2, x + 0.8, floor + _height, z + 0.8);
         BlockShapes.GetCollidingBoxes(_w, box, _boxes);
         return _boxes.Count == 0;
     }
@@ -672,12 +680,12 @@ public sealed partial class Pathfinder
 
     // ------------------------------------------------------------------ doors, gates, trapdoors
 
-    private static bool IsPanel(int id) => Openables.IsDoor(id) || id == Openables.Trapdoor;
+    private static bool IsPanel(int id) => Openables.IsDoor(id) || Openables.IsTrapdoor(id);
 
     /// <summary>Any door/trapdoor in columns (x,z) or (tx,tz) between y0 and y1.</summary>
     private bool HasPanels(int x, int z, int tx, int tz, int y0, int y1)
     {
-        for (int yy = Math.Max(0, y0); yy <= Math.Min(WorldState.Height - 1, y1); yy++)
+        for (int yy = Math.Max(0, y0); yy <= Math.Min(_worldHeight - 1, y1); yy++)
             if (IsPanel(_w.GetBlock(x, yy, z)) || IsPanel(_w.GetBlock(tx, yy, tz))) return true;
         return false;
     }
@@ -703,7 +711,7 @@ public sealed partial class Pathfinder
         var list = new List<DoorToggle>(2);
         var tmp = new List<AABB>(2);
         foreach (var (cx, cz) in new[] { (x, z), (tx, tz) })
-        for (int yy = Math.Max(0, y - 1); yy <= Math.Min(WorldState.Height - 1, y + 2); yy++)
+        for (int yy = Math.Max(0, y - 1); yy <= Math.Min(_worldHeight - 1, y + 2); yy++)
         {
             int id = _w.GetBlock(cx, yy, cz);
             if (!IsPanel(id)) continue;
@@ -796,12 +804,10 @@ public sealed partial class Pathfinder
     private double OpenCosts(IReadOnlyList<DoorToggle> open) =>
         open.Sum(o => _o.OpenCost + (o.Actuator is null ? 0 : _o.ActuatorCost));
 
-    private static MoveKind OpenKind(IReadOnlyList<DoorToggle> open) => open[0].Id switch
-    {
-        Openables.FenceGate => MoveKind.OpenGate,
-        Openables.Trapdoor => MoveKind.OpenTrapdoor,
-        _ => MoveKind.OpenDoor,
-    };
+    private static MoveKind OpenKind(IReadOnlyList<DoorToggle> open) =>
+        Openables.IsFenceGate(open[0].Id) ? MoveKind.OpenGate
+        : Openables.IsTrapdoor(open[0].Id) ? MoveKind.OpenTrapdoor
+        : MoveKind.OpenDoor;
 
     /// <summary>Closed gate in the target cell (feet or head) or closed trapdoor at head height: open, then walk.</summary>
     private void TryOpenThrough(List<Candidate> output, CellInfo here, bool hereEdge, int x, int y, int z, int tx, int tz)
@@ -812,7 +818,7 @@ public sealed partial class Pathfinder
         {
             int id = _w.GetBlock(tx, yy, tz);
             bool closed = !Openables.IsOpen(_w.GetMeta(tx, yy, tz));
-            bool gate = id == Openables.FenceGate && closed;
+            bool gate = Openables.IsFenceGate(id) && closed;
             bool headTrapdoor = id == Openables.Trapdoor && yy == y + 1 && closed;
             if (!gate && !headTrapdoor) continue;
             var tg = MakeToggle(new BlockPos(tx, yy, tz), new BlockPos(x, y, z), new BlockPos(tx, y, tz));
@@ -823,7 +829,7 @@ public sealed partial class Pathfinder
         var r = WithToggles(list, () =>
         {
             var c = CellUncached(tx, y, tz);
-            if (!c.Ok || c.Floor - here.Floor > 0.5 + 1e-6 || c.Floor < here.Floor - 0.5 - 1e-6) return (c, false);
+            if (!c.Ok || c.Floor - here.Floor > _step + 1e-6 || c.Floor < here.Floor - 0.5 - 1e-6) return (c, false);
             double f = Math.Max(here.Floor, c.Floor);
             bool ok = BodyClear(x, z, f) && TransitOk(x, z, tx, tz, y, f, out var more) && more == null;
             return (c, ok);
@@ -890,5 +896,7 @@ public sealed partial class Pathfinder
 
         public bool IsLoaded(int x, int z) => inner.IsLoaded(x, z);
         public MineClaw.Data.BlockInfo Info(int id) => inner.Info(id);
+        public int WorldHeight => inner.WorldHeight;
+        public Versioning.IPhysicsRules Physics => inner.Physics;
     }
 }

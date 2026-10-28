@@ -30,7 +30,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
     public MinecraftClient(ClientOptions options, WorldState? world = null)
     {
         Options = options ?? throw new ArgumentNullException(nameof(options));
-        World = world ?? new WorldState(height: options.Profile.Version.WorldHeight, inventory: options.Profile.Inventory);
+        World = world ?? new WorldState(height: options.Profile.Version.WorldHeight, inventory: options.Profile.Inventory, physics: options.Profile.Physics);
         if (options.Profile.ItemRules is { } itemRules) World.Inventory.Rules = itemRules;
         IsProtected = options.IsProtected;
         ReservedItems = options.ReservedItems ?? new HashSet<int>();

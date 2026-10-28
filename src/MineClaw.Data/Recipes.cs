@@ -87,10 +87,15 @@ public static class Recipes
     private static readonly Recipe[] _all = Build();
     private static readonly ILookup<int, Recipe> _byOutput = _all.ToLookup(r => r.OutputId);
 
-    public static IReadOnlyList<Recipe> All => _all;
+    /// <summary>Every recipe of this process's version (<see cref="Versioning.GameData.Current"/>).</summary>
+    public static IReadOnlyList<Recipe> All => Versioning.GameData.IsBeta(out var d) ? _all : d.AllRecipes;
+    internal static IReadOnlyList<Recipe> AllB => _all;
 
     /// <summary>Recipes producing <paramref name="itemId"/>; damage -1 = any variant.</summary>
     public static IReadOnlyList<Recipe> ForOutput(int itemId, int damage = -1) =>
+        Versioning.GameData.IsBeta(out var d) ? ForOutputB(itemId, damage) : d.RecipesFor(itemId, damage);
+
+    internal static IReadOnlyList<Recipe> ForOutputB(int itemId, int damage = -1) =>
         _byOutput[itemId].Where(r => damage < 0 || r.OutputDamage == damage).ToArray();
 
     /// <summary>
@@ -117,15 +122,22 @@ public static class Recipes
 
     /// <summary>Recipes that consume the item (any matching ingredient).</summary>
     public static IReadOnlyList<Recipe> UsingIngredient(int itemId, int damage = 0) =>
-        _all.Where(r => r.Ingredients.Any(i => i.Matches(itemId, damage))).ToArray();
+        All.Where(r => r.Ingredients.Any(i => i.Matches(itemId, damage))).ToArray();
 
     /// <summary>
     /// Finds the recipe matching a crafting grid (row-major, gridSize x gridSize, empty = <see cref="ItemStack.IsEmpty"/>),
     /// honouring position-independence and horizontal mirroring like b1.8's ShapedRecipes.
     /// </summary>
-    public static Recipe? Match(IReadOnlyList<ItemStack> grid, int gridSize)
+    public static Recipe? Match(IReadOnlyList<ItemStack> grid, int gridSize) =>
+        Versioning.GameData.IsBeta(out var d) ? MatchB(grid, gridSize) : d.MatchRecipe(grid, gridSize);
+
+    internal static Recipe? MatchB(IReadOnlyList<ItemStack> grid, int gridSize) => MatchIn(_all, grid, gridSize);
+
+    /// <summary>The first recipe of <paramref name="recipes"/> the grid matches (b1.8 and 1.12.2 match the same way:
+    /// <c>ShapedRecipes.checkMatch</c> anywhere in the grid, mirrored or not; <c>ShapelessRecipes.matches</c>).</summary>
+    internal static Recipe? MatchIn(IReadOnlyList<Recipe> recipes, IReadOnlyList<ItemStack> grid, int gridSize)
     {
-        foreach (var r in _all)
+        foreach (var r in recipes)
             if (r.Shaped ? MatchShaped(r, grid, gridSize) : MatchShapeless(r, grid)) return r;
         return null;
     }
@@ -172,7 +184,7 @@ public static class Recipes
     /// <summary>Item ingredient: metadata must be 0 unless given.</summary>
     private static Ingredient It(int id, int dmg = 0) => new(id, dmg);
 
-    private static Recipe Shaped(int outId, int count, int outDmg, string[] rows, params (char Key, Ingredient Ing)[] keys)
+    internal static Recipe Shaped(int outId, int count, int outDmg, string[] rows, params (char Key, Ingredient Ing)[] keys)
     {
         int w = rows.Max(r => r.Length), h = rows.Length;
         var map = keys.ToDictionary(k => k.Key, k => k.Ing);
@@ -189,7 +201,7 @@ public static class Recipes
         return new Recipe(outId, count, outDmg, true, w, h, pattern, list.ToArray(), rows);
     }
 
-    private static Recipe Shapeless(int outId, int count, int outDmg, params Ingredient[] inputs) =>
+    internal static Recipe Shapeless(int outId, int count, int outDmg, params Ingredient[] inputs) =>
         new(outId, count, outDmg, false, 0, 0, [], inputs, []);
 
     private static Recipe[] Build()
@@ -336,6 +348,8 @@ public static class Recipes
     }
 
     /// <summary>True for "unpack a storage block into 9" recipes (planners should prefer other routes).</summary>
-    public static bool IsUnpack(Recipe r) =>
+    public static bool IsUnpack(Recipe r) => Versioning.GameData.IsBeta(out var d) ? IsUnpackB(r) : d.IsUnpack(r);
+
+    internal static bool IsUnpackB(Recipe r) =>
         r.OutputCount == 9 && r.Ingredients.Count == 1 && r.Ingredients[0].Id is Blocks.GoldBlock or Blocks.IronBlock or Blocks.DiamondBlock or Blocks.LapisBlock;
 }

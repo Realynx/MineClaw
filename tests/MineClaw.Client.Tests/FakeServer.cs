@@ -170,7 +170,8 @@ internal sealed class FakeServer : IDisposable
         {
             _srv = new InventoryManager(MineClaw.Client.Versioning.GameVersionProfiles.Java1122.ItemRules, InventoryModel.Release1122)
             {
-                CraftResult = (grid, width) => Recipes.Match(grid, width)?.Output ?? ItemStack.Empty,
+                // The vanilla 1.12.2 server's CraftingManager (P5: the 1.12.2 recipes; birch logs make birch planks).
+                CraftResult = (grid, width) => MineClaw.Data.Versioning.Release1122GameData.Instance.MatchRecipe(grid, width)?.Output ?? ItemStack.Empty,
             };
         }
         for (int x = 6; x <= 10; x++)

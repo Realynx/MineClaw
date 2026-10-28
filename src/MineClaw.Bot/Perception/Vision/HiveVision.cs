@@ -50,7 +50,7 @@ public sealed class RegionWorld
 
     public static RegionWorld Build(WorldState live, string liveName, IWorldMemoryStore? store, int dim, int x, int z, int radius, DateTimeOffset now)
     {
-        var w = new WorldState { Dimension = dim };
+        var w = new WorldState(height: live.WorldHeight) { Dimension = dim };
         var region = new RegionWorld { World = w };
         int r = Math.Clamp(radius, 1, 64) + 4;
         for (int cx = (x - r) >> 4; cx <= (x + r) >> 4; cx++)

@@ -193,7 +193,7 @@ public static class PlaceRules
         {
             if (dx == 0 && dy == 0 && dz == 0) continue;
             var c = new BlockPos(requested.X + dx, requested.Y + dy, requested.Z + dz);
-            if (c.Y < 1 || c.Y >= WorldState.Height || !w.IsLoaded(c.X, c.Z)) continue;
+            if (c.Y < 1 || c.Y >= w.WorldHeight || !w.IsLoaded(c.X, c.Z)) continue;
             int id = w.GetBlock(c.X, c.Y, c.Z);
             if (!Aiming.IsReplaceable(w, id) || BlockShapes.IsLiquid(id)) continue;
             if (Safety.IsOverVoid(w, c.X, c.Y, c.Z)) continue;

@@ -13,15 +13,16 @@ namespace MineClaw.Skills.Tests;
 /// </summary>
 public sealed class FakeGame : IGameActions
 {
-    public FakeGame()
+    public FakeGame(int height = 128)
     {
         int size = 64;
-        World.ApplyChunkRegion(-32, 0, -32, size, 128, size, new byte[size * 128 * size], null, null, null);
+        World = new WorldState(height: height);
+        World.ApplyChunkRegion(-32, 0, -32, size, height, size, new byte[size * height * size], null, null, null);
         World.Player.SetHealth(20, 20, 5);
         World.Time = 6000;
     }
 
-    public WorldState World { get; } = new();
+    public WorldState World { get; }
     public string Username => "maid_chan";
     public Primitive Supported { get; set; } = Primitive.UseOnBlock | Primitive.UseEntity | Primitive.WriteSign | Primitive.ReleaseUse;
     public bool IsRaining { get; set; }

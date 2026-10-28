@@ -3,7 +3,16 @@ namespace MineClaw.Data;
 /// <summary>A furnace recipe. b1.8.1 smelting is keyed by input id only (any metadata smelts the same).</summary>
 public sealed record SmeltingRecipe(int InputId, int OutputId, int OutputDamage, int OutputCount = 1)
 {
-    public override string ToString() => $"{Items.Get(InputId).DisplayName} -> {Items.DisplayName(OutputId, OutputDamage)}";
+    /// <summary>The input's metadata, −1 = any (b1.8.1 always; 1.12.2 <c>FurnaceRecipes</c> keys wet sponge, stone bricks,
+    /// fish types and stained clay colours by it).</summary>
+    public int InputDamage { get; init; } = -1;
+
+    /// <summary>Experience per item smelted (1.12.2 <c>FurnaceRecipes.experienceList</c>; 0 = not tracked).</summary>
+    public float Experience { get; init; }
+
+    public bool MatchesInput(int id, int damage) => id == InputId && (InputDamage < 0 || damage < 0 || damage == InputDamage);
+
+    public override string ToString() => $"{(InputDamage < 0 ? Items.Get(InputId).DisplayName : Items.DisplayName(InputId, InputDamage))} -> {Items.DisplayName(OutputId, OutputDamage)}";
 }
 
 /// <summary>Beta 1.8.1 furnace data (FurnaceRecipes + TileEntityFurnace.getItemBurnTime from the client jar).</summary>
@@ -30,16 +39,24 @@ public static class Smelting
 
     private static readonly Dictionary<int, SmeltingRecipe> _byInput = _all.ToDictionary(r => r.InputId);
 
-    public static IReadOnlyList<SmeltingRecipe> All => _all;
+    /// <summary>Every furnace recipe of this process's version (<see cref="Versioning.GameData.Current"/>).</summary>
+    public static IReadOnlyList<SmeltingRecipe> All => Versioning.GameData.IsBeta(out var d) ? _all : d.AllSmelting;
+    internal static IReadOnlyList<SmeltingRecipe> AllB => _all;
 
     /// <summary>What smelting this input yields, or null.</summary>
-    public static SmeltingRecipe? ResultFor(int inputId) => _byInput.GetValueOrDefault(inputId);
+    public static SmeltingRecipe? ResultFor(int inputId) => Versioning.GameData.IsBeta(out var d) ? ResultForB(inputId) : d.SmeltingFor(inputId);
 
-    public static bool IsSmeltable(int inputId) => _byInput.ContainsKey(inputId);
+    /// <summary>What smelting this exact input variant yields, or null (b1.8.1 ignores the metadata).</summary>
+    public static SmeltingRecipe? ResultFor(int inputId, int damage) =>
+        Versioning.GameData.IsBeta(out var d) ? ResultForB(inputId) : d.SmeltingFor(inputId, damage);
+
+    internal static SmeltingRecipe? ResultForB(int inputId) => _byInput.GetValueOrDefault(inputId);
+
+    public static bool IsSmeltable(int inputId) => ResultFor(inputId) is not null;
 
     /// <summary>Furnace recipes producing the item (damage -1 = any).</summary>
     public static IReadOnlyList<SmeltingRecipe> ForOutput(int outputId, int damage = -1) =>
-        _all.Where(r => r.OutputId == outputId && (damage < 0 || r.OutputDamage == damage)).ToArray();
+        All.Where(r => r.OutputId == outputId && (damage < 0 || r.OutputDamage == damage)).ToArray();
 
     /// <summary>Block ids made of wood material in b1.8.1 (each burns 300 ticks).</summary>
     private static readonly HashSet<int> WoodBlocks =
@@ -53,7 +70,9 @@ public static class Smelting
     /// Burn time in ticks: wood-material blocks 300, sticks 100, saplings 100, coal/charcoal 1600, lava bucket 20000, else 0.
     /// (Wooden tools, slabs, bowls etc. are NOT fuel in b1.8.1.)
     /// </summary>
-    public static int FuelTicks(int itemId) => itemId switch
+    public static int FuelTicks(int itemId) => Versioning.GameData.IsBeta(out var d) ? FuelTicksB(itemId) : d.FuelTicks(itemId);
+
+    internal static int FuelTicksB(int itemId) => itemId switch
     {
         Items.Stick => 100,
         Items.Coal => 1600,

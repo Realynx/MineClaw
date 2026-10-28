@@ -71,7 +71,7 @@ public static class VoxelBuilder
                 for (int y = 0; y < sy; y++)
                 {
                     int wy = y0 + y;
-                    if ((uint)wy >= WorldState.Height) continue;
+                    if ((uint)wy >= col.Height) continue;
                     int id = col.GetBlock(lx, wy, lz);
                     cells[(y * sz + z) * sx + x] = (byte)Math.Clamp(id, 0, 255);
                 }

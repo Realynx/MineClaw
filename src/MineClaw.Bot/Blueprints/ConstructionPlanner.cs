@@ -55,6 +55,7 @@ public static class ConstructionPlanner
     {
         part ??= BuildPart.Whole(plan);
         var result = new ConstructionOrder();
+        int height = world.WorldHeight;
         // Simulated world: what stands once the steps so far are done.
         var sim = new Dictionary<BlockPos, int>();
         int At(BlockPos p) => sim.TryGetValue(p, out var v) ? v : world.GetBlock(p.X, p.Y, p.Z);
@@ -142,7 +143,7 @@ public static class ConstructionPlanner
                 foreach (var f in gravity ? [BlockFace.Bottom] : BlockFaceExtensions.All)
                 {
                     var n = p.Offset(f);
-                    if (prev.ContainsKey(n) || n.Y < 1 || n.Y >= WorldState.Height || !Free(n) || !part.Allows(n)) continue;
+                    if (prev.ContainsKey(n) || n.Y < 1 || n.Y >= height || !Free(n) || !part.Allows(n)) continue;
                     if (plan.Blocks.ContainsKey(n) && !Solid(n)) continue; // a planned cell is the build's, not scaffolding
                     if (!world.IsLoaded(n.X, n.Z)) continue;
                     prev[n] = p;

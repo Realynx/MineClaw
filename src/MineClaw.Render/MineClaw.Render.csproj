@@ -14,6 +14,12 @@
     <InternalsVisibleTo Include="MineClaw.Bot.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 1.12.2 biome colours (PrismarineJS minecraft-data, vendored with its LICENSE): grass/foliage/water tints per biome. -->
+    <EmbeddedResource Include="..\..\third_party\minecraft-data\pc\1.12.2\tints.json" LogicalName="mcdata.1.12.2.tints.json" />
+    <EmbeddedResource Include="..\..\third_party\minecraft-data\pc\1.12.2\biomes.json" LogicalName="mcdata.1.12.2.biomes.json" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>

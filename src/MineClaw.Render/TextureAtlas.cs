@@ -40,6 +40,9 @@ public sealed class TextureAtlas
     /// <summary>Mob textures (<c>mob/zombie.png</c> ... by name without extension) when the jar or the assets dir has them;
     /// null = none (entity models use procedural stand-ins, see <see cref="EntityTextures"/>).</summary>
     public IReadOnlyDictionary<string, (int W, int H, uint[] Px)>? Mobs { get; init; }
+    /// <summary>Data-driven block models (1.12.2: blockstates → models → textures from the client jar); null = b1.8.1, whose
+    /// blocks are <see cref="BlockGeometry"/> + <see cref="BlockTextures"/> over this atlas's terrain tiles.</summary>
+    public IBlockModels? Models { get; init; }
 
     /// <summary>The mob textures the renderer asks for (read from a jar's or the assets dir's <c>mob/</c> folder; never fetched).</summary>
     public static readonly string[] MobNames = ["zombie", "pigzombie", "skeleton", "creeper", "spider", "pig", "cow", "sheep", "sheep_fur", "chicken", "enderman", "slime", "wolf", "squid", "ghast", "silverfish"];
@@ -152,6 +155,7 @@ public static class TextureLocator
     /// <summary>Loads the atlas, or null when none is available (renderers then use the flat palette).</summary>
     public static TextureAtlas? Load(TextureOptions o, Action<string>? log = null, HttpClient? http = null)
     {
+        if (o.Version == Models.Release1122Assets.Version) return LoadModern(o, log, http);
         try
         {
             if (o.AssetsDir is { Length: > 0 } dir && File.Exists(Path.Combine(dir, TerrainFile)))
@@ -202,6 +206,39 @@ public static class TextureLocator
         {
             var jar = DownloadAsync(o, http, CancellationToken.None).GetAwaiter().GetResult();
             return jar == null ? null : FromJar(jar, o.AssetsDir);
+        }
+        catch (Exception ex)
+        {
+            log?.Invoke($"textures: download failed ({ex.Message}); using flat colours");
+            return null;
+        }
+    }
+
+    /// <summary>The cached download of the 1.12.2 client jar in the assets dir.</summary>
+    public const string ModernJarFile = "1.12.2-client.jar";
+
+    /// <summary>1.12.2: blockstates, models and textures read straight from a 1.12.2 client jar (the explicit one, the launcher
+    /// folders, a cached or downloaded official jar); nothing is extracted. A configured jar that isn't a 1.12.2 jar (e.g. the
+    /// b1.8.1 one) is skipped.</summary>
+    private static TextureAtlas? LoadModern(TextureOptions o, Action<string>? log, HttpClient? http)
+    {
+        var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var candidates = CandidateJars(o).Where(j => !j.EndsWith(JarFile, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (o.AssetsDir is { Length: > 0 } dir) candidates.Add(Path.Combine(dir, ModernJarFile));
+        foreach (var jar in candidates)
+        {
+            if (!tried.Add(jar) || !File.Exists(jar) || !Models.Release1122Assets.IsModernJar(jar)) continue;
+            try
+            {
+                if (Models.Release1122Assets.FromJar(jar, log) is { } atlas) return atlas;
+            }
+            catch (Exception ex) { log?.Invoke($"textures: {jar} unreadable ({ex.Message})"); }
+        }
+        if (!o.AllowDownload || string.IsNullOrWhiteSpace(o.AssetsDir)) return null;
+        try
+        {
+            var jar = DownloadAsync(o, http, CancellationToken.None, ModernJarFile).GetAwaiter().GetResult();
+            return jar == null ? null : Models.Release1122Assets.FromJar(jar, log);
         }
         catch (Exception ex)
         {
@@ -261,7 +298,7 @@ public static class TextureLocator
 
     /// <summary>Downloads the official client jar (manifest → version json → downloads.client) into the assets dir, verifying
     /// its SHA-1. Returns the jar path (an existing verified copy is reused).</summary>
-    public static async Task<string?> DownloadAsync(TextureOptions o, HttpClient? http, CancellationToken ct)
+    public static async Task<string?> DownloadAsync(TextureOptions o, HttpClient? http, CancellationToken ct, string jarFile = JarFile)
     {
         if (string.IsNullOrWhiteSpace(o.AssetsDir)) return null;
         bool own = http == null;
@@ -277,7 +314,7 @@ public static class TextureLocator
             var client = ver.RootElement.GetProperty("downloads").GetProperty("client");
             string url = client.GetProperty("url").GetString()!, sha1 = client.GetProperty("sha1").GetString()!;
             if (!url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return null;
-            var path = Path.Combine(o.AssetsDir!, JarFile);
+            var path = Path.Combine(o.AssetsDir!, jarFile);
             if (File.Exists(path) && Sha1(File.ReadAllBytes(path)) == sha1.ToLowerInvariant()) return path;
             var bytes = await http.GetByteArrayAsync(url, ct).ConfigureAwait(false);
             if (Sha1(bytes) != sha1.ToLowerInvariant()) throw new InvalidDataException("client jar SHA-1 mismatch");

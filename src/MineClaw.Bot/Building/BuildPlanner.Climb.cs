@@ -74,7 +74,7 @@ public sealed partial class BuildPlanner
     /// <summary>A cell temporary climbing scaffold may fill: air, not a design cell, in the part's strip and the build's claim (the
     /// footprint ±3), no water column through it, no lava next to it.</summary>
     private bool ClimbCell(IBlockAccess w, BlockPos c) =>
-        c.Y >= 1 && c.Y < WorldState.Height - 3 && w.IsLoaded(c.X, c.Z) && w.GetBlock(c.X, c.Y, c.Z) == 0
+        c.Y >= 1 && c.Y < w.WorldHeight - 3 && w.IsLoaded(c.X, c.Z) && w.GetBlock(c.X, c.Y, c.Z) == 0
         && !_plan.Blocks.ContainsKey(c) && _part.Allows(c) && !_o.Keep.Contains(c)
         && c.X >= _plan.Min.X - 3 && c.X <= _plan.Max.X + 3 && c.Z >= _plan.Min.Z - 3 && c.Z <= _plan.Max.Z + 3
         && !_s.Columns.Any(k => !k.Removed && k.Source.X == c.X && k.Source.Z == c.Z) && !Safety.LavaNear(w, c.X, c.Y, c.Z, 1);

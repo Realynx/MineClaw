@@ -200,7 +200,8 @@ public sealed partial class MinecraftClient
         GestureAfterGuard(combat.Overrides || parkour is not null || allowDrop);
         Combat.OnGuard(guard);
 
-        Options.Profile.Physics.Tick(World, phys, input); // b1.8.1: PlayerPhysics.Tick; 1.12.2: step 0.6 (multi-version P1)
+        // b1.8.1: PlayerPhysics.Tick; 1.12.2: Physics1122 (multi-version P3), which also stops sprinting at food ≤ 6 (b1.8.1 ignores Hungry).
+        Options.Profile.Physics.Tick(World, phys, input with { Hungry = !CanSprintNow() });
         if (d is not null || combat.Overrides) { _lookYaw = phys.Yaw; _lookPitch = phys.Pitch; } // idle keeps the last look
         player.SyncFromPhysics();
 

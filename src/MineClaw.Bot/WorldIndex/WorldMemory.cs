@@ -231,7 +231,7 @@ public sealed class WorldMemory : IDisposable
         {
             if (dim != _dim) return 0;
             var have = new Dictionary<string, int>(StringComparer.Ordinal);
-            int y0 = Math.Max(0, min.Y), y1 = Math.Min(ChunkColumn.SizeY - 1, max.Y);
+            int y0 = Math.Max(0, min.Y), y1 = Math.Min(_world.WorldHeight - 1, max.Y);
             for (int cx = min.X >> 4; cx <= max.X >> 4; cx++)
             for (int cz = min.Z >> 4; cz <= max.Z >> 4; cz++)
             {
@@ -255,7 +255,7 @@ public sealed class WorldMemory : IDisposable
                 for (int z = za; z <= zb; z++)
                 for (int y = y0; y <= y1; y++)
                 {
-                    int id = before != null ? before.Ids[ChunkColumn.Index(x & 15, y, z & 15)] : _world.GetBlock(x, y, z);
+                    int id = before == null ? _world.GetBlock(x, y, z) : y < before.Height ? before.Ids[ChunkColumn.Index(x & 15, y, z & 15)] : 0;
                     if (id == 0 || !Blocks.Exists(id)) continue;
                     var name = Blocks.Get(id).Name;
                     if (blocks.ContainsKey(name)) have[name] = have.GetValueOrDefault(name) + 1;
@@ -271,7 +271,7 @@ public sealed class WorldMemory : IDisposable
     {
         if (blocks.Count == 0 || _world.Placed.Count == 0) return 0;
         int n = 0, placed = 0;
-        int y0 = Math.Max(0, min.Y), y1 = Math.Min(ChunkColumn.SizeY - 1, max.Y);
+        int y0 = Math.Max(0, min.Y), y1 = Math.Min(_world.WorldHeight - 1, max.Y);
         for (int x = min.X; x <= max.X; x++)
         for (int z = min.Z; z <= max.Z; z++)
         for (int y = y0; y <= y1; y++)
@@ -469,13 +469,13 @@ public sealed class WorldMemory : IDisposable
         ChunkSnapshot before;
         try { before = ChunkSnapshot.Decode(stored.Data); }
         catch (Exception ex) { _log.LogDebug(ex, "stored column {X},{Z} unreadable", cx, cz); return; }
+        int h = Math.Min(before.Height, now.Height);
         for (int lx = 0; lx < 16; lx++)
         for (int lz = 0; lz < 16; lz++)
         {
-            int b = ChunkColumn.Index(lx, 0, lz);
-            for (int y = 0; y < ChunkColumn.SizeY; y++)
+            for (int y = 0; y < h; y++)
             {
-                int i = b + y;
+                int i = ChunkColumn.Index(lx, y, lz);
                 int was = before.Ids[i], isId = now.Ids[i];
                 if (was == isId) continue;
                 int cw = Canon(was), ci = Canon(isId);

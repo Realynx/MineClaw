@@ -85,7 +85,7 @@ public static class LightPlan
             int reach = TorchLight - level; // how far a torch still gives ≥ level
             int x0 = Math.Max(r.X0 - 1, dark.Min(d => d.X) - reach), x1 = Math.Min(r.X1 + 1, dark.Max(d => d.X) + reach);
             int z0 = Math.Max(r.Z0 - 1, dark.Min(d => d.Z) - reach), z1 = Math.Min(r.Z1 + 1, dark.Max(d => d.Z) + reach);
-            int y0 = Math.Max(1, r.Y0 - 1), y1 = Math.Min(WorldState.Height - 2, r.Y1 + 1);
+            int y0 = Math.Max(1, r.Y0 - 1), y1 = Math.Min(w.WorldHeight - 2, r.Y1 + 1);
             var field = new Field(reach);
             for (int x = x0; x <= x1; x++)
             for (int z = z0; z <= z1; z++)
@@ -245,6 +245,7 @@ public static class LightPlan
         public int[] Lit(WorldState w, BlockPos src, int level, Dictionary<BlockPos, int> dark)
         {
             _gen++;
+            int h = w.WorldHeight;
             _hits.Clear();
             foreach (var b in _buckets) b.Clear();
             Visit(src, src, TorchLight);
@@ -261,7 +262,7 @@ public static class LightPlan
                     {
                         var nb = n switch { 0 => c.Offset(1, 0, 0), 1 => c.Offset(-1, 0, 0), 2 => c.Offset(0, 1, 0), 3 => c.Offset(0, -1, 0), 4 => c.Offset(0, 0, 1), _ => c.Offset(0, 0, -1) };
                         if (Math.Abs(nb.X - src.X) > radius || Math.Abs(nb.Y - src.Y) > radius || Math.Abs(nb.Z - src.Z) > radius) continue;
-                        if ((uint)nb.Y >= WorldState.Height || !w.IsLoaded(nb.X, nb.Z)) continue;
+                        if ((uint)nb.Y >= h || !w.IsLoaded(nb.X, nb.Z)) continue;
                         int op = LightTables.Opacity(w.GetBlock(nb));
                         int v = l - Math.Max(1, op);
                         if (v < level) continue;
@@ -311,7 +312,7 @@ public static class LightPlan
             design = SafeFind(find, dsg);
             if (design is null) return (null, ex, null, $"no design '{dsg}'");
             int pad = Math.Clamp(args.Int("pad") ?? 4, 0, 16);
-            var (y0, y1) = Band(args, design.Min.Y - 2, design.Min.Y + 2);
+            var (y0, y1) = Band(args, design.Min.Y - 2, design.Min.Y + 2, ctx.World.WorldHeight);
             r = new Region(design.Min.X - pad, y0, design.Min.Z - pad, design.Max.X + pad, y1, design.Max.Z + pad, $"{design.Label} floor");
         }
         else if (args.Str("area") is { } area && !string.IsNullOrWhiteSpace(area))
@@ -319,7 +320,7 @@ public static class LightPlan
             var v = Ints(area);
             if (v is { Length: 4 })
             {
-                var (y0, y1) = Band(args, me.Y - 6, me.Y + 3);
+                var (y0, y1) = Band(args, me.Y - 6, me.Y + 3, ctx.World.WorldHeight);
                 r = new Region(Math.Min(v[0], v[2]), y0, Math.Min(v[1], v[3]), Math.Max(v[0], v[2]), y1, Math.Max(v[1], v[3]), "area");
             }
             else if (v is { Length: 6 })
@@ -337,7 +338,7 @@ public static class LightPlan
                 else return (null, ex, null, $"around '{around}': not a position or a player I can see");
             }
             int rad = Math.Clamp(args.Int("radius") ?? 12, 2, 32);
-            var (y0, y1) = Band(args, at.Y - 4, at.Y + 3);
+            var (y0, y1) = Band(args, at.Y - 4, at.Y + 3, ctx.World.WorldHeight);
             r = new Region(at.X - rad, y0, at.Z - rad, at.X + rad, y1, at.Z + rad, label);
         }
         if (r.Columns > MaxColumns) return (null, ex, design, $"{r.Box} is {r.Columns} columns; at most {MaxColumns} per call");
@@ -354,7 +355,7 @@ public static class LightPlan
         return (r, ex, design, null);
     }
 
-    private static (int, int) Band(JsonElement args, int dy0, int dy1)
+    private static (int, int) Band(JsonElement args, int dy0, int dy1, int worldHeight)
     {
         var s = args.Str("y");
         if (!string.IsNullOrWhiteSpace(s))
@@ -363,7 +364,7 @@ public static class LightPlan
             if (v is { Length: 1 }) return (v[0], v[0]);
             if (v is { Length: 2 }) return (Math.Min(v[0], v[1]), Math.Max(v[0], v[1]));
         }
-        return (Math.Max(1, dy0), Math.Min(WorldState.Height - 2, dy1));
+        return (Math.Max(1, dy0), Math.Min(worldHeight - 2, dy1));
     }
 
     private static int[]? Ints(string s)

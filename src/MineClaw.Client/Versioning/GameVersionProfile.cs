@@ -41,7 +41,8 @@ public static class GameVersionProfiles
     /// 1.12.2 (protocol 340), multi-version P1 + P2: the translating connection (login, keep-alive, chat, game state, movement,
     /// chunks with a 256-high world; P2: windows and clicks, dig, place with hand and cursor, use item/entity, signs, item
     /// entities), step-0.6 physics, the 1.12.2 inventory (off hand, click types) and the 1.12.2 block/item names, stack sizes
-    /// and dig rule from minecraft-data. Combat and hunger still use the b1.8.1 rules (P4); recipes and smelting are b1.8.1's (P5).
+    /// and dig rule from minecraft-data; P5: the 1.12.2 recipes, smelting, fuel, drops and food (<see cref="Release1122GameData"/>).
+    /// Combat and hunger still use the b1.8.1 rules (P4).
     /// </summary>
     public static GameVersionProfile Java1122 { get; } = new(GameVersion.Release1122,
         MineClaw.Protocol.Release1122.Release1122ProtocolAdapter.Instance, Release1122PhysicsRules.Instance,
@@ -50,6 +51,8 @@ public static class GameVersionProfiles
         {
             MaxStack = id => Release1122GameData.Instance.ItemExists(id) ? Release1122GameData.Instance.Item(id).MaxStack : ItemRules.DefaultMaxStack(id),
             IsDamageable = id => Release1122GameData.Instance.ItemExists(id) ? Release1122GameData.Instance.Item(id).MaxDamage > 0 : ItemRules.DefaultIsDamageable(id),
+            IsFuel = id => Release1122GameData.Instance.FuelTicks(id) > 0,
+            IsSmeltable = s => Release1122GameData.Instance.SmeltingFor(s.Id, s.Damage) is not null,
         });
 
     public static bool IsImplemented(GameVersion v) => v == GameVersion.Beta181 || v == GameVersion.Release1122;

@@ -206,11 +206,11 @@ public static partial class VisionRouter
     public static List<(int X, int Y, int Z)> GenCells(IBlockAccess w, RoleMap roles, (int X, int Y, int Z) f, int radius)
     {
         var list = new List<(int X, int Y, int Z)>();
-        int r = Math.Clamp(radius, 2, 8);
+        int r = Math.Clamp(radius, 2, 8), h = w.WorldHeight;
         for (int y = f.Y - 2; y <= f.Y + 2; y++)
             for (int z = f.Z - r; z <= f.Z + r; z++)
                 for (int x = f.X - r; x <= f.X + r; x++)
-                    if (w.IsLoaded(x, z) && (uint)y < WorldState.Height && Role(roles, x, y, z) == BlockRole.GenCell) list.Add((x, y, z));
+                    if (w.IsLoaded(x, z) && (uint)y < h && Role(roles, x, y, z) == BlockRole.GenCell) list.Add((x, y, z));
         return list.OrderBy(c => Math.Abs(c.X - f.X) + Math.Abs(c.Y - f.Y) + Math.Abs(c.Z - f.Z)).ToList();
     }
 
@@ -322,11 +322,11 @@ public static partial class VisionRouter
     private static string Portal(IBlockAccess w, RoleMap roles, (int X, int Y, int Z) f, int radius)
     {
         var sheet = new List<(int X, int Y, int Z)>();
-        int r = Math.Clamp(radius, 2, 12);
+        int r = Math.Clamp(radius, 2, 12), h = w.WorldHeight;
         for (int y = f.Y - 6; y <= f.Y + 6; y++)
             for (int z = f.Z - r; z <= f.Z + r; z++)
                 for (int x = f.X - r; x <= f.X + r; x++)
-                    if ((uint)y < WorldState.Height && w.GetBlock(x, y, z) == Blocks.Portal) sheet.Add((x, y, z));
+                    if ((uint)y < h && w.GetBlock(x, y, z) == Blocks.Portal) sheet.Add((x, y, z));
         if (sheet.Count == 0) return $"no portal sheet within {r} of {P(f)}";
         int x0 = sheet.Min(c => c.X), x1 = sheet.Max(c => c.X), y0 = sheet.Min(c => c.Y), y1 = sheet.Max(c => c.Y), z0 = sheet.Min(c => c.Z), z1 = sheet.Max(c => c.Z);
         static string R(string axis, int a, int b) => a == b ? $"{axis}={a}" : $"{axis}={a}..{b}";
@@ -379,7 +379,7 @@ public static partial class VisionRouter
         var farmland = new List<(int X, int Y, int Z)>();
         var named = new Dictionary<string, List<(int X, int Y, int Z)>>();
         void Add(string k, (int, int, int) p) { if (!named.TryGetValue(k, out var l)) named[k] = l = new(); l.Add(p); }
-        for (int y = Math.Max(0, f.Y - 8); y <= Math.Min(WorldState.Height - 1, f.Y + 12); y++)
+        for (int y = Math.Max(0, f.Y - 8), y1 = Math.Min(w.WorldHeight - 1, f.Y + 12); y <= y1; y++)
             for (int z = f.Z - r; z <= f.Z + r; z++)
                 for (int x = f.X - r; x <= f.X + r; x++)
                 {

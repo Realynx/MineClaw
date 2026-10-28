@@ -57,7 +57,7 @@ public static class ViewportBuilder
         o ??= new ViewportOptions();
         int r = Math.Clamp(o.Radius, 1, 64);
         var c = feet.ToBlockPos();
-        int n = 2 * r + 1;
+        int n = 2 * r + 1, height = world.WorldHeight;
 
         var top = new string[n];
         var row = new char[n];
@@ -69,7 +69,7 @@ public static class ViewportBuilder
                 char g = Void;
                 if (world.IsLoaded(x, z))
                 {
-                    for (int y = Math.Min(WorldState.Height - 1, c.Y + o.Up); y >= Math.Max(0, c.Y - o.Down); y--)
+                    for (int y = Math.Min(height - 1, c.Y + o.Up); y >= Math.Max(0, c.Y - o.Down); y--)
                         if (Glyph(world.GetBlock(x, y, z)) is { } ch) { g = ch; break; }
                 }
                 row[dx + r] = g;
@@ -85,7 +85,7 @@ public static class ViewportBuilder
             for (int dx = -r; dx <= r; dx++)
             {
                 int x = c.X + dx;
-                row[dx + r] = (uint)y < WorldState.Height && world.IsLoaded(x, c.Z) && Glyph(world.GetBlock(x, y, c.Z)) is { } ch ? ch : Void;
+                row[dx + r] = (uint)y < height && world.IsLoaded(x, c.Z) && Glyph(world.GetBlock(x, y, c.Z)) is { } ch ? ch : Void;
             }
             side[i] = new string(row);
         }

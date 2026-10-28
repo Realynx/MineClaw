@@ -9,7 +9,9 @@ namespace MineClaw.Data.Versioning;
 /// and the 1.12.2 dig-speed rule ported from the decompiled client (<see cref="Release1122Dig"/>). The numeric ids are a
 /// superset of b1.8.1's, so the <see cref="Blocks"/>/<see cref="Items"/> constants stay valid. Blocks b1.8.1 knows keep its
 /// physics flags (solid, collision height, liquid, climbable, interactable) with 1.12.2's name and hardness; newer blocks get
-/// flags derived from minecraft-data. Recipes and smelting stay b1.8.1's until P5 (the jar's recipe JSON, FurnaceRecipes).
+/// flags derived from minecraft-data. P5: crafting recipes (<see cref="Release1122Recipes"/>), smelting and fuel
+/// (<see cref="Release1122Smelting"/>), block drops (<see cref="Release1122Drops"/>) and food values
+/// (<see cref="Release1122Foods"/>); this table answers the static facades (<see cref="GameData.Current"/>) in a 1.12.2 process.
 /// </summary>
 public sealed class Release1122GameData : IGameData
 {
@@ -21,6 +23,14 @@ public sealed class Release1122GameData : IGameData
     internal sealed record McItem(int Id, string Name, string DisplayName, int StackSize, int MaxDurability, IReadOnlyDictionary<int, string> Variants);
 
     private readonly Lazy<Tables> _t = new(Load);
+    private readonly Lazy<Release1122Recipes> _recipes;
+    private readonly Lazy<Release1122Smelting> _smelting;
+
+    private Release1122GameData()
+    {
+        _recipes = new(() => new Release1122Recipes(this));
+        _smelting = new(() => new Release1122Smelting(this));
+    }
 
     private sealed class Tables
     {
@@ -43,6 +53,8 @@ public sealed class Release1122GameData : IGameData
     public BlockInfo Block(int id) => T.BlockInfos.TryGetValue(id, out var b) ? b : MineClaw.Data.Blocks.Get(id);
     public bool BlockExists(int id) => T.Blocks.ContainsKey(id);
 
+    public IEnumerable<int> BlockIds => T.Blocks.Keys.Order();
+
     public BlockInfo? BlockByName(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) return null;
@@ -60,7 +72,7 @@ public sealed class Release1122GameData : IGameData
 
     // ------------------------------------------------------------------ items
 
-    public ItemInfo Item(int id) => T.ItemInfos.TryGetValue(id, out var i) ? i : MineClaw.Data.Items.Get(id);
+    public ItemInfo Item(int id) => T.ItemInfos.TryGetValue(id, out var i) ? i : MineClaw.Data.Items.GetB(id);
     public bool ItemExists(int id) => T.Items.ContainsKey(id);
     public ItemInfo? ItemByName(string name) => ItemByNameWithDamage(name)?.Item;
 
@@ -72,7 +84,7 @@ public sealed class Release1122GameData : IGameData
             if (T.ItemNames.TryGetValue(k, out var hit)) return (Item(hit.Id), hit.Damage);
         if (int.TryParse(key, out int n) && T.Items.ContainsKey(n)) return (Item(n), -1);
         // b1.8.1 aliases ("cobble", "workbench", "20 cobble slabs") keep working where the id still means the same thing.
-        return MineClaw.Data.Items.ByNameWithDamage(name) is { } old && T.Items.ContainsKey(old.Item.Id) ? (Item(old.Item.Id), old.Damage) : null;
+        return MineClaw.Data.Items.ByNameWithDamageB(name) is { } old && T.Items.ContainsKey(old.Item.Id) ? (Item(old.Item.Id), old.Damage) : null;
     }
 
     public string DisplayName(int id, int damage = 0)
@@ -86,7 +98,17 @@ public sealed class Release1122GameData : IGameData
             if (it.MaxDurability > 0 && damage > 0) return $"{it.DisplayName} ({it.MaxDurability - damage}/{it.MaxDurability})";
             return it.DisplayName;
         }
-        return T.Blocks.TryGetValue(id, out var b) ? b.Variants.GetValueOrDefault(m, b.DisplayName) : MineClaw.Data.Items.DisplayName(id, damage);
+        return T.Blocks.TryGetValue(id, out var b) ? b.Variants.GetValueOrDefault(m, b.DisplayName) : MineClaw.Data.Items.DisplayNameB(id, damage);
+    }
+
+    /// <summary>The variant's display name in snake case when the id has variants ("birch_wood_planks", "charcoal"), else the
+    /// registry name; both resolve back through <see cref="ItemByNameWithDamage"/>.</summary>
+    public string VariantName(int id, int meta)
+    {
+        bool variants = T.Items.TryGetValue(id, out var it) && it.Variants.Count > 1
+            || id < 256 && T.Blocks.TryGetValue(id, out var b) && b.Variants.Count(v => v.Key < 16) > 1;
+        if (!variants) return NameOf(id) ?? MineClaw.Data.Items.VariantNameB(id, meta);
+        return DisplayName(id, Math.Max(0, meta)).ToLowerInvariant().Replace(' ', '_');
     }
 
     private static IEnumerable<string> Candidates(string key)
@@ -96,12 +118,20 @@ public sealed class Release1122GameData : IGameData
         if (key.EndsWith('s')) yield return key[..^1];
     }
 
-    // ------------------------------------------------------------------ crafting and smelting (b1.8.1 until P5)
+    // ------------------------------------------------------------------ crafting, smelting, drops, food (P5)
 
-    public Recipe? MatchRecipe(IReadOnlyList<ItemStack> grid, int gridSize) => Recipes.Match(grid, gridSize);
-    public IReadOnlyList<Recipe> RecipesFor(int itemId, int damage = -1) => Recipes.ForOutput(itemId, damage);
-    public SmeltingRecipe? SmeltingFor(int inputId) => Smelting.ResultFor(inputId);
-    public int FuelTicks(int itemId) => Smelting.FuelTicks(itemId);
+    public IReadOnlyList<Recipe> AllRecipes => _recipes.Value.All;
+    public Recipe? MatchRecipe(IReadOnlyList<ItemStack> grid, int gridSize) => Recipes.MatchIn(_recipes.Value.All, grid, gridSize);
+    public IReadOnlyList<Recipe> RecipesFor(int itemId, int damage = -1) => _recipes.Value.ForOutput(itemId, damage);
+    public bool IsUnpack(Recipe r) => _recipes.Value.IsUnpack(r);
+    public IReadOnlyList<SmeltingRecipe> AllSmelting => _smelting.Value.All;
+    public SmeltingRecipe? SmeltingFor(int inputId) => _smelting.Value.For(inputId, -1);
+    public SmeltingRecipe? SmeltingFor(int inputId, int damage) => _smelting.Value.For(inputId, damage);
+    public int CookTicks => _smelting.Value.CookTicks;
+    public int FuelTicks(int itemId) => Release1122Smelting.FuelTicks(this, itemId);
+    public IReadOnlyList<Drop> DropsFor(int blockId, int meta = 0, int heldItemId = -1) => Release1122Drops.For(this, blockId, meta, heldItemId);
+    public (int Hunger, float Saturation)? Food(int itemId, int damage = 0) => Release1122Foods.Food(NameOf(itemId), damage);
+    public float FoodPoisonChance(int itemId, int damage = 0) => Release1122Foods.PoisonChance(NameOf(itemId), damage);
 
     // ------------------------------------------------------------------ digging
 
@@ -223,7 +253,7 @@ public sealed class Release1122GameData : IGameData
         name.StartsWith("wooden_") ? 0 : name.StartsWith("stone_") ? 1 : name.StartsWith("iron_") ? 2 : name.StartsWith("diamond_") ? 3
         : name.StartsWith("golden_") ? 4 : -1;
 
-    private static Stream Resource(string name) =>
+    internal static Stream Resource(string name) =>
         typeof(Release1122GameData).Assembly.GetManifestResourceStream(name)
         ?? throw new InvalidOperationException($"embedded resource {name} missing from {typeof(Release1122GameData).Assembly.GetName().Name}");
 }

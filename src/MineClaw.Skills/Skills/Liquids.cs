@@ -51,7 +51,7 @@ public static class FluidRules
 
     private static bool Open(IBlockAccess w, BlockPos p)
     {
-        if (p.Y < 0 || p.Y >= WorldState.Height || !w.IsLoaded(p.X, p.Z)) return false;
+        if (p.Y < 0 || p.Y >= w.WorldHeight || !w.IsLoaded(p.X, p.Z)) return false;
         int id = w.GetBlock(p.X, p.Y, p.Z);
         return id == 0 || (!BlockShapes.HasCollision(w, p.X, p.Y, p.Z) && !BlockShapes.IsLiquid(id) && id != BlockShapes.Fire) || id is 8 or 10;
     }

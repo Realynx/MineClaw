@@ -75,6 +75,7 @@ public sealed partial class WorldIndexer
         Dictionary<string, HashSet<BlockPos>> farms = BlockClass.FarmTypes.ToDictionary(t => t, _ => new HashSet<BlockPos>());
         int bx = cx << 4, bz = cz << 4;
         Span<int> ids = stackalloc int[256];
+        int height = col.Height;
 
         for (int lx = 0; lx < 16; lx++)
         for (int lz = 0; lz < 16; lz++)
@@ -82,7 +83,7 @@ public sealed partial class WorldIndexer
             int x = bx + lx, z = bz + lz;
             int minY = -1, maxY = -1, distinct = 0;
             int below = 0;
-            for (int y = 0; y < WorldState.Height; y++)
+            for (int y = 0; y < height; y++)
             {
                 int id = col.GetBlock(lx, y, lz);
                 if (id == 0) { below = 0; continue; }
@@ -101,7 +102,7 @@ public sealed partial class WorldIndexer
                 if ((c & C.Farm) != 0 && !(InNether && BlockClass.NaturalNether(id))) farms[BlockClass.FarmType(id)!].Add(p);
                 if ((c & C.Tree) != 0) trees.Add(p);
                 if (IsBuildBlock(id, c)) builds.Add(p); // natural nether terrain isn't a build there
-                else if (id == Blocks.Cobblestone && (below == Blocks.Cobblestone || (y + 1 < WorldState.Height && col.GetBlock(lx, y + 1, lz) == Blocks.Cobblestone)))
+                else if (id == Blocks.Cobblestone && (below == Blocks.Cobblestone || (y + 1 < height && col.GetBlock(lx, y + 1, lz) == Blocks.Cobblestone)))
                     builds.Add(p); // walls/pillars, not one-thick floors
                 if (IsFloorCandidate(id, c)) floors.Add(p); // gen cells are dropped when protection is rebuilt
                 if ((c & C.GenOutput) != 0 && IsGenCell(p, id, false)) genCandidates.Add(p);
@@ -167,7 +168,7 @@ public sealed partial class WorldIndexer
     {
         int minY = -1, maxY = -1;
         var counts = new Dictionary<int, int>();
-        for (int y = 0; y < WorldState.Height; y++)
+        for (int y = 0, h = _world.WorldHeight; y < h; y++)
         {
             int id = _world.GetBlock(x, y, z);
             if (id == 0 || (BlockClass.Of(id) & C.Ground) == 0) continue;
@@ -294,7 +295,7 @@ public sealed partial class WorldIndexer
     /// </summary>
     private bool IsGenCell(BlockPos p, int id, bool sticky)
     {
-        if ((uint)p.Y >= WorldState.Height) return false;
+        if ((uint)p.Y >= _world.WorldHeight) return false;
         bool output = (BlockClass.Of(id) & C.GenOutput) != 0;
         if (!output && !(sticky && (id == 0 || Blocks.IsLava(id) || Blocks.IsWater(id)))) return false;
         bool lava = false, water = false;

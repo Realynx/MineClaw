@@ -408,9 +408,30 @@ public static class Parkour
     public static double AirTravel(int dy, bool sprint) =>
         dy is < -3 or > 1 ? 0 : (sprint ? ReachSprint : ReachWalk)[dy + 3];
 
-    private static double RunwayAirTravel(int dy, bool sprint)
+    /// <summary><see cref="AirTravel(int, bool)"/> under a version's movement rules (multi-version P3: 1.12.2's sprint lag, jump
+    /// ticks and float constants give slightly different reaches), measured once per rules instance.</summary>
+    public static double AirTravel(int dy, bool sprint, Versioning.IPhysicsRules rules)
     {
-        var w = new Runway();
+        if (rules is Versioning.Beta181PhysicsRules) return AirTravel(dy, sprint);
+        if (dy is < -3 or > 1) return 0;
+        var table = ReachByRules.GetOrAdd(rules, r =>
+        {
+            var t = new double[10];
+            for (int d = -3; d <= 1; d++)
+            {
+                t[d + 3] = RunwayAirTravel(d, true, r);
+                t[d + 8] = RunwayAirTravel(d, false, r);
+            }
+            return t;
+        });
+        return table[dy + (sprint ? 3 : 8)];
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Versioning.IPhysicsRules, double[]> ReachByRules = new();
+
+    private static double RunwayAirTravel(int dy, bool sprint, Versioning.IPhysicsRules? rules = null)
+    {
+        var w = new Runway(rules ?? Versioning.Beta181PhysicsRules.Instance);
         const float yaw = -90f; // +X
         var start = new Vec3d(-6.5, 64, 0.5);
         int last = LastGroundTick(w, start, yaw, sprint);
@@ -429,8 +450,9 @@ public static class Parkour
     }
 
     /// <summary>Floor at y = 63 for x &lt; 0, air elsewhere.</summary>
-    private sealed class Runway : IBlockAccess
+    private sealed class Runway(Versioning.IPhysicsRules rules) : IBlockAccess
     {
+        public Versioning.IPhysicsRules Physics => rules;
         public int GetBlock(int x, int y, int z) => y == 63 && x < 0 ? Blocks.Stone : 0;
         public int GetMeta(int x, int y, int z) => 0;
         public bool IsLoaded(int x, int z) => true;
@@ -451,7 +473,7 @@ internal sealed class RegionSnapshot : IBlockAccess
     {
         _inner = inner is RegionSnapshot r ? r._inner : inner;
         y0 = Math.Max(0, y0);
-        y1 = Math.Min(WorldState.Height - 1, y1);
+        y1 = Math.Min(_inner.WorldHeight - 1, y1);
         (_x0, _y0, _z0) = (x0, y0, z0);
         (_sx, _sy, _sz) = (x1 - x0 + 1, Math.Max(0, y1 - y0 + 1), z1 - z0 + 1);
         _ids = new int[_sx * _sy * _sz];
@@ -498,6 +520,10 @@ internal sealed class RegionSnapshot : IBlockAccess
     }
 
     public BlockInfo Info(int id) => _inner.Info(id);
+
+    public int WorldHeight => _inner.WorldHeight;
+
+    public Versioning.IPhysicsRules Physics => _inner.Physics;
 }
 
 /// <summary>
@@ -545,7 +571,7 @@ public sealed class ParkourCache
     {
         int x0 = Math.Min(a.X, b.X) - 1, x1 = Math.Max(a.X, b.X) + 1;
         int z0 = Math.Min(a.Z, b.Z) - 1, z1 = Math.Max(a.Z, b.Z) + 1;
-        int y0 = Math.Max(0, (int)Math.Floor(Math.Min(fa, fb)) - 2), y1 = Math.Min(WorldState.Height - 1, (int)Math.Floor(Math.Max(fa, fb)) + 3);
+        int y0 = Math.Max(0, (int)Math.Floor(Math.Min(fa, fb)) - 2), y1 = Math.Min(w.WorldHeight - 1, (int)Math.Floor(Math.Max(fa, fb)) + 3);
         ulong h = 1469598103934665603UL;
         for (int x = x0; x <= x1; x++)
         for (int z = z0; z <= z1; z++)

@@ -13,7 +13,7 @@
         "knowledge": 13
       },
       "records": 1030,
-      "bytes": 203096,
+      "bytes": 203140,
       "vectors": 25,
       "needs_embedding": 1005,
       "embedding_model": "text-embedding-3-large",
@@ -21,9 +21,9 @@
       "files": [
         "mechanics_1122.md"
       ],
-      "source": "minecraft-data pc/1.12.2 + smelting + mobs facts (decompiled 1.12.2 client)",
-      "source_hash": "1cd744f9e8b1ff490c8a7bd4c081fa53abbe7a6d9815ea31da7ce78de34c8088",
-      "content_hash": "d816102440c43a2065db43a160b7cc8cc2af0b5ea84c022fdbef4e5edbc5a522",
+      "source": "minecraft-data pc/1.12.2 + smelting + mobs facts (decompiled 1.12.2 client) + block drops from MineClaw.Data 1.12.2",
+      "source_hash": "4971ad8402716bcc6b9e5f0da719f209c2e7c647cd3b6980f43c40625bf7a6c0",
+      "content_hash": "1148aad637801027370b5a06537b88d8e80f17fcff201bdbe010c22aad5e3fd7",
       "builder": "ShardPacks/1"
     },
     {

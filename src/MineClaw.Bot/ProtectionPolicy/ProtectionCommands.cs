@@ -243,7 +243,7 @@ public sealed partial class ProtectionCommands
         if (id == 0) return (p, p);
         int lo = p.Y, hi = p.Y;
         while (lo > 0 && p.Y - lo < 16 && _world.GetBlock(p.X, lo - 1, p.Z) == id) lo--;
-        while (hi < WorldState.Height - 1 && hi - p.Y < 16 && _world.GetBlock(p.X, hi + 1, p.Z) == id) hi++;
+        while (hi < _world.WorldHeight - 1 && hi - p.Y < 16 && _world.GetBlock(p.X, hi + 1, p.Z) == id) hi++;
         return (new BlockPos(p.X, lo, p.Z), new BlockPos(p.X, hi, p.Z));
     }
 
@@ -257,7 +257,7 @@ public sealed partial class ProtectionCommands
             long vol = (long)(b.X - a.X + 1) * (b.Y - a.Y + 1) * (b.Z - a.Z + 1);
             if (vol > 65536) { n += vol; continue; }
             for (int x = a.X; x <= b.X; x++)
-            for (int y = Math.Max(0, a.Y); y <= Math.Min(WorldState.Height - 1, b.Y); y++)
+            for (int y = Math.Max(0, a.Y), y1 = Math.Min(_world.WorldHeight - 1, b.Y); y <= y1; y++)
             for (int z = a.Z; z <= b.Z; z++)
                 if (_world.GetBlock(x, y, z) != 0) n++;
         }

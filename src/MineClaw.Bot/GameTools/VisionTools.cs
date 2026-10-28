@@ -29,6 +29,10 @@ public sealed class VisionOptions
     public bool SmoothLighting { get; set; }
     /// <summary>Explicit b1.8.1 client jar (the "Render:ClientJar" setting).</summary>
     public string? ClientJar { get; set; }
+    /// <summary>Explicit 1.12.2 client jar (blockstates, models, textures read at runtime; never extracted or committed). Unset =
+    /// the PrismLauncher libraries / vanilla versions folders, then a cached or downloaded official jar. Bound from
+    /// "Bot:Vision:ModernClientJar", or "Render:Assets:Jar" (AppHost).</summary>
+    public string? ModernClientJar { get; set; }
     /// <summary>Extracted textures + cached jar; default "&lt;Agent:DataDirectory&gt;/assets" (gitignored).</summary>
     public string? AssetsDir { get; set; }
     /// <summary>Download Mojang's official client jar (SHA-1 verified) when nothing local is found.</summary>
@@ -182,11 +186,15 @@ public static class VisionTools
         if (!o.Enabled) return null;
 
         // Textures: found once in the background (local jar, extracted atlas, or a verified download); flat colours meanwhile.
+        // The body's version picks the assets (multi-version §2.9): b1.8.1's terrain.png atlas, or 1.12.2's blockstates + models.
+        string version = c is MinecraftGameClient mgc ? mgc.Inner.Options.Profile.Data.VersionId : "b1.8.1";
+        bool modern = version == MineClaw.Render.Models.Release1122Assets.Version;
         var texOptions = new TextureOptions
         {
-            ClientJar = o.ClientJar,
+            ClientJar = modern ? o.ModernClientJar : o.ClientJar,
             AssetsDir = o.AssetsDir ?? Path.Combine(rt.Options.DataDirectory, "assets"),
             AllowDownload = o.AllowDownload,
+            Version = modern ? version : "b1.8.1",
         };
         // Lazy: nothing is searched (or downloaded) until the first picture is asked for.
         var atlasTask = new Lazy<Task<TextureAtlas?>>(() => o.Textures

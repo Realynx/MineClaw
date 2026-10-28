@@ -22,6 +22,7 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
     private int _lineCount;
     private readonly Stack<int> _freeVbos = new();
     public bool Textured { get; private set; }
+    private int _gridRows = GpuAtlas.Rows;
     /// <summary>Set to save the next frame as a PNG (profiling / checks).</summary>
     public string? ShotPath { get; set; }
     public string Info { get; private set; } = "";
@@ -45,6 +46,7 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
         Indices(16384);
         _dynSolid = gl.GenBuffer(); _dynTrans = gl.GenBuffer(); _lines = gl.GenBuffer();
         var (w, h, px) = GpuAtlas.Build(atlas);
+        _gridRows = GpuAtlas.RowsFor(atlas);
         Textured = atlas != null;
         _tex = gl.GenTexture();
         gl.BindTexture(Gl.TEXTURE_2D, _tex);
@@ -221,7 +223,7 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
         gl.ActiveTexture(Gl.TEXTURE0);
         gl.BindTexture(Gl.TEXTURE_2D, _tex);
         gl.Uniform1i(_uTex, 0);
-        _x.Uniform3f(_uGrid, GpuAtlas.Cols, GpuAtlas.Rows, 0);
+        _x.Uniform3f(_uGrid, GpuAtlas.Cols, _gridRows, 0);
         (r, g, b) = Rgb(OverlayPainter.StaleColour); _x.Uniform3f(_uStaleColour, r, g, b);
         (r, g, b) = Rgb(horizon); _x.Uniform3f(_uFogColour, r, g, b);
         _x.Uniform3f(_uFog, sc.MaxDistance * 0.6f, sc.MaxDistance, 0);

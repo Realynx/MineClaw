@@ -19,9 +19,12 @@ public static class Drops
     /// Typical drops when a player breaks the block holding <paramref name="heldItemId"/> (-1/0 = hand).
     /// Empty when nothing drops — including when the held item cannot harvest it (e.g. stone by hand).
     /// </summary>
-    public static IReadOnlyList<Drop> For(int blockId, int meta = 0, int heldItemId = -1)
+    public static IReadOnlyList<Drop> For(int blockId, int meta = 0, int heldItemId = -1) =>
+        Versioning.GameData.IsBeta(out var d) ? ForB(blockId, meta, heldItemId) : d.DropsFor(blockId, meta, heldItemId);
+
+    internal static IReadOnlyList<Drop> ForB(int blockId, int meta = 0, int heldItemId = -1)
     {
-        if (!Tools.CanHarvest(blockId, heldItemId)) return [];
+        if (!Tools.CanHarvestB(blockId, heldItemId)) return [];
         bool shears = heldItemId == Items.Shears;
         Drop One(int id, int dmg = 0) => new(id, dmg, 1, 1);
         Drop[] Self(int dmg = 0) => [One(blockId, dmg)];
@@ -91,13 +94,16 @@ public static class Drops
     }
 
     /// <summary>Block ids whose drop is the given item (e.g. cobblestone ← stone, cobblestone). Useful for "collect X".</summary>
-    public static IReadOnlyList<int> SourcesOf(int itemId, int damage = -1) =>
-        Blocks.All.Where(b => For(b.Id, Math.Max(damage, 0), BestHarvester(b.Id))
+    public static IReadOnlyList<int> SourcesOf(int itemId, int damage = -1)
+    {
+        var data = Versioning.GameData.Current;
+        return data.BlockIds.Where(b => data.DropsFor(b, Math.Max(damage, 0), BestHarvester(data, b))
                 .Any(d => d.ItemId == itemId && (damage < 0 || d.Damage == damage)))
-            .Select(b => b.Id).ToArray();
+            .ToArray();
+    }
 
-    private static int BestHarvester(int blockId) =>
-        Tools.CanHarvest(blockId, -1) ? -1
+    private static int BestHarvester(Versioning.IGameData data, int blockId) =>
+        data.CanHarvest(blockId, -1) ? -1
         : blockId == Blocks.Web ? Items.Shears
         : blockId is Blocks.SnowLayer or Blocks.SnowBlock ? Items.DiamondShovel
         : Items.DiamondPickaxe;

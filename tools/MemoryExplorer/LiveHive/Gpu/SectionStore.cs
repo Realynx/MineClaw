@@ -39,8 +39,8 @@ public sealed class SectionStore
     {
         public ClientColumn? Src;
         public readonly ClientColumn?[] N = new ClientColumn?[4]; // W(−x) E(+x) N(−z) S(+z) at mesh time
-        public byte Pending;   // sections still to rebuild
-        public byte Meshed;   // sections that currently have a mesh uploaded (or queued)
+        public ushort Pending;   // sections still to rebuild (bit = section y; 16 for a 256-high column)
+        public ushort Meshed;   // sections that currently have a mesh uploaded (or queued)
     }
 
     private static readonly (int Dx, int Dz)[] Dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)];
@@ -64,9 +64,20 @@ public sealed class SectionStore
     public long Built;
     /// <summary>Every rebuilt key, when set (tests).</summary>
     public List<SectionKey>? Log { get; set; }
-    public const int Sections = ChunkColumn.SizeY / 16;
+    /// <summary>Most sections a column has (a 1.12.2 column: 16; a b1.8.1 one has 8, its own <c>Height / 16</c>).</summary>
+    public const int Sections = ChunkColumn.MaxHeight / 16;
 
     public bool Nether { get => _mesher.Nether; set => _mesher.Nether = value; }
+
+    /// <summary>Where the 1.12.2 block models come from (the textures' atlas); null = b1.8.1 shapes.</summary>
+    public Func<MineClaw.Render.IBlockModels?>? ModelsOf { get; set; }
+
+    /// <summary>Switches the block models (b1.8.1 shapes or 1.12.2 models); everything is rebuilt.</summary>
+    public MineClaw.Render.IBlockModels? Models
+    {
+        get => _mesher.Models;
+        set { if (ReferenceEquals(_mesher.Models, value)) return; _mesher.Models = value; foreach (var s in _cols.Values) s.Pending = AllSections(s.Src); }
+    }
 
     /// <summary>Switches textured/palette meshing; everything is rebuilt.</summary>
     public bool Textured
@@ -75,11 +86,11 @@ public sealed class SectionStore
         set { if (_textured == value) return; _textured = value; _mesher.Textured = value; foreach (var s in _cols.Values) s.Pending = AllSections(s.Src); }
     }
 
-    private static byte AllSections(ClientColumn? c)
+    private static ushort AllSections(ClientColumn? c)
     {
         if (c == null) return 0;
-        byte m = 0;
-        for (int s = 0; s < Sections; s++) if (SectionMesher.NonEmpty(c.Snap, s)) m |= (byte)(1 << s);
+        ushort m = 0;
+        for (int s = 0, n = c.Snap.Height / 16; s < n; s++) if (SectionMesher.NonEmpty(c.Snap, s)) m |= (ushort)(1 << s);
         return m;
     }
 
@@ -141,7 +152,7 @@ public sealed class SectionStore
             {
                 if (!ReferenceEquals(cur, st.Src))
                 {
-                    st.Pending |= cur == null || st.Src == null ? (byte)(AllSections(cur) | st.Meshed) : Diff(st.Src.Snap, cur.Snap, st.Src.Top, cur.Top);
+                    st.Pending |= cur == null || st.Src == null ? (ushort)(AllSections(cur) | st.Meshed) : Diff(st.Src.Snap, cur.Snap, st.Src.Top, cur.Top);
                     st.Src = cur;
                 }
                 for (int i = 0; i < 4; i++)
@@ -157,7 +168,7 @@ public sealed class SectionStore
             {
                 if ((st.Pending >> sy & 1) == 0) continue;
                 if (built >= maxSections || sw.Elapsed.TotalMilliseconds > maxMs) return built;
-                st.Pending &= (byte)~(1 << sy);
+                st.Pending &= (ushort)~(1 << sy);
                 BuildOne(dim, cx, sy, cz, st);
                 built++;
             }
@@ -188,44 +199,56 @@ public sealed class SectionStore
                 Array.Copy(_mesher.Translucent.V, up.Translucent, up.TranslucentCount);
             }
         }
-        if (up.SolidCount + up.TranslucentCount > 0) st.Meshed |= (byte)(1 << sy);
+        if (up.SolidCount + up.TranslucentCount > 0) st.Meshed |= (ushort)(1 << sy);
         else if ((st.Meshed >> sy & 1) == 0) return; // empty and nothing to replace
-        else st.Meshed &= (byte)~(1 << sy);
+        else st.Meshed &= (ushort)~(1 << sy);
         Ready.Enqueue(up);
         Interlocked.Increment(ref Built);
         Log?.Add(key);
         Interlocked.Increment(ref FreecamStats.Shared.MeshesBuilt);
     }
 
-    private static byte SpanMask(int lo, int hi)
+    private static ushort SpanMask(int lo, int hi, int height)
     {
-        lo = Math.Clamp(lo, 0, ChunkColumn.SizeY - 1); hi = Math.Clamp(hi, 0, ChunkColumn.SizeY - 1);
-        byte m = 0;
-        for (int s = lo >> 4; s <= hi >> 4; s++) m |= (byte)(1 << s);
+        lo = Math.Clamp(lo, 0, height - 1); hi = Math.Clamp(hi, 0, height - 1);
+        ushort m = 0;
+        for (int s = lo >> 4; s <= hi >> 4; s++) m |= (ushort)(1 << s);
         return m;
     }
+
+    /// <summary>Every section of a column <paramref name="height"/> high.</summary>
+    private static ushort AllBits(int height) => (ushort)((1 << (height / 16)) - 1);
+
+    /// <summary>The 128-cell run of one local column in one half of a snapshot: y 0..127 at xz·128, y 128..255 at
+    /// 2^15 + xz·128 (<see cref="ChunkColumn.Index"/>).</summary>
+    private static int Run(int half, int xz) => half << 15 | xz * ChunkColumn.SizeY;
 
     /// <summary>Sections of a column to rebuild after its blocks changed from <paramref name="a"/> to <paramref name="b"/>:
     /// each section with a changed block, plus the section across when the change touches its top/bottom layer, plus the
     /// sections whose sky light changed (between the old and new opaque top).</summary>
-    public static byte Diff(ChunkSnapshot a, ChunkSnapshot b, byte[] topA, byte[] topB)
+    public static ushort Diff(ChunkSnapshot a, ChunkSnapshot b, byte[] topA, byte[] topB)
     {
-        byte m = 0;
+        if (a.Height != b.Height) return AllBits(Math.Max(a.Height, b.Height));
+        int height = b.Height, sections = height / 16, halves = height >> 7;
+        ushort m = 0;
         for (int xz = 0; xz < 256; xz++)
         {
-            int o = xz * ChunkColumn.SizeY;
-            var ia = a.Ids.AsSpan(o, ChunkColumn.SizeY); var ib = b.Ids.AsSpan(o, ChunkColumn.SizeY);
-            var ma = a.Meta.AsSpan(o, ChunkColumn.SizeY); var mb = b.Meta.AsSpan(o, ChunkColumn.SizeY);
-            if (!ia.SequenceEqual(ib) || !ma.SequenceEqual(mb))
-                for (int s = 0; s < Sections; s++)
+            for (int half = 0; half < halves; half++)
+            {
+                int o = Run(half, xz);
+                var ia = a.Ids.AsSpan(o, ChunkColumn.SizeY); var ib = b.Ids.AsSpan(o, ChunkColumn.SizeY);
+                var ma = a.Meta.AsSpan(o, ChunkColumn.SizeY); var mb = b.Meta.AsSpan(o, ChunkColumn.SizeY);
+                if (ia.SequenceEqual(ib) && ma.SequenceEqual(mb)) continue;
+                for (int ls = 0; ls < ChunkColumn.SizeY / 16; ls++)
                 {
-                    int y0 = s * 16;
+                    int y0 = ls * 16, s = half * 8 + ls;
                     if (ia.Slice(y0, 16).SequenceEqual(ib.Slice(y0, 16)) && ma.Slice(y0, 16).SequenceEqual(mb.Slice(y0, 16))) continue;
-                    m |= (byte)(1 << s);
-                    if (s > 0 && (ia[y0] != ib[y0] || ma[y0] != mb[y0])) m |= (byte)(1 << (s - 1));
-                    if (s < Sections - 1 && (ia[y0 + 15] != ib[y0 + 15] || ma[y0 + 15] != mb[y0 + 15])) m |= (byte)(1 << (s + 1));
+                    m |= (ushort)(1 << s);
+                    if (s > 0 && (ia[y0] != ib[y0] || ma[y0] != mb[y0])) m |= (ushort)(1 << (s - 1));
+                    if (s < sections - 1 && (ia[y0 + 15] != ib[y0 + 15] || ma[y0 + 15] != mb[y0 + 15])) m |= (ushort)(1 << (s + 1));
                 }
-            if (topA[xz] != topB[xz]) m |= SpanMask(Math.Min(topA[xz], topB[xz]) - 1, Math.Max(topA[xz], topB[xz]) + 1);
+            }
+            if (topA[xz] != topB[xz]) m |= SpanMask(Math.Min(topA[xz], topB[xz]) - 1, Math.Max(topA[xz], topB[xz]) + 1, height);
         }
         return m;
     }
@@ -233,22 +256,27 @@ public sealed class SectionStore
     /// <summary>Sections of <paramref name="cur"/> to rebuild because its neighbour in direction <paramref name="dir"/> changed
     /// from <paramref name="a"/> to <paramref name="b"/>: all of them when the neighbour appeared or vanished, else only the
     /// sections facing changed cells of the neighbour's shared edge (blocks and their sky light).</summary>
-    public static byte EdgeDiff(int dir, ClientColumn? a, ClientColumn? b, ClientColumn cur)
+    public static ushort EdgeDiff(int dir, ClientColumn? a, ClientColumn? b, ClientColumn cur)
     {
-        if (a == null || b == null) return AllSections(cur);
-        byte m = 0;
+        if (a == null || b == null || a.Snap.Height != b.Snap.Height) return AllSections(cur);
+        int height = b.Snap.Height, halves = height >> 7;
+        ushort m = 0;
         for (int i = 0; i < 16; i++)
         {
             // The neighbour's plane that touches us: W neighbour → its x=15, E → x=0, N → z=15, S → z=0.
             int x = dir switch { 0 => 15, 1 => 0, _ => i }, z = dir switch { 2 => 15, 3 => 0, _ => i };
-            int xz = x * 16 + z, o = xz * ChunkColumn.SizeY;
-            var ia = a.Snap.Ids.AsSpan(o, ChunkColumn.SizeY); var ib = b.Snap.Ids.AsSpan(o, ChunkColumn.SizeY);
-            var ma = a.Snap.Meta.AsSpan(o, ChunkColumn.SizeY); var mb = b.Snap.Meta.AsSpan(o, ChunkColumn.SizeY);
-            if (!ia.SequenceEqual(ib) || !ma.SequenceEqual(mb))
-                for (int s = 0; s < Sections; s++)
-                    if (!ia.Slice(s * 16, 16).SequenceEqual(ib.Slice(s * 16, 16)) || !ma.Slice(s * 16, 16).SequenceEqual(mb.Slice(s * 16, 16)))
-                        m |= (byte)(1 << s);
-            if (a.Top[xz] != b.Top[xz]) m |= SpanMask(Math.Min(a.Top[xz], b.Top[xz]), Math.Max(a.Top[xz], b.Top[xz]) + 1);
+            int xz = x * 16 + z;
+            for (int half = 0; half < halves; half++)
+            {
+                int o = Run(half, xz);
+                var ia = a.Snap.Ids.AsSpan(o, ChunkColumn.SizeY); var ib = b.Snap.Ids.AsSpan(o, ChunkColumn.SizeY);
+                var ma = a.Snap.Meta.AsSpan(o, ChunkColumn.SizeY); var mb = b.Snap.Meta.AsSpan(o, ChunkColumn.SizeY);
+                if (ia.SequenceEqual(ib) && ma.SequenceEqual(mb)) continue;
+                for (int ls = 0; ls < ChunkColumn.SizeY / 16; ls++)
+                    if (!ia.Slice(ls * 16, 16).SequenceEqual(ib.Slice(ls * 16, 16)) || !ma.Slice(ls * 16, 16).SequenceEqual(mb.Slice(ls * 16, 16)))
+                        m |= (ushort)(1 << (half * 8 + ls));
+            }
+            if (a.Top[xz] != b.Top[xz]) m |= SpanMask(Math.Min(a.Top[xz], b.Top[xz]), Math.Max(a.Top[xz], b.Top[xz]) + 1, height);
         }
         return m;
     }
@@ -315,6 +343,7 @@ public sealed class MeshWorker : IDisposable
             try
             {
                 _store.Textured = _textured;
+                _store.Models = _textured ? _store.ModelsOf?.Invoke() : null;
                 n = _store.Update(_dim, _cx, _cz, _radius, 64, 6);
             }
             catch (Exception) { /* a racing eviction: next pass */ }

@@ -16,6 +16,9 @@ public interface IVoxelWorld
     int SkyLight(int x, int y, int z);
     int BlockLight(int x, int y, int z);
     ColumnState State(int x, int z);
+    /// <summary>Blocks per column (b1.8.1 128, 1.12.2 256): y outside 0..WorldHeight−1 is air with sky light 15.
+    /// Implementations that predate multi-version are 128 high.</summary>
+    int WorldHeight => ChunkColumn.SizeY;
 }
 
 /// <summary>
@@ -29,9 +32,12 @@ public sealed class WorldVoxels : IVoxelWorld
     private ChunkColumn?[] _live = [];
     private ChunkSnapshot?[] _rem = [];
     private byte[]?[] _remTop = [];
+    private readonly int _h;
     private int _cx0, _cz0, _n;
 
-    public WorldVoxels(WorldState world) => _w = world;
+    public WorldVoxels(WorldState world) { _w = world; _h = world.WorldHeight; }
+
+    public int WorldHeight => _h;
 
     /// <summary>Caches the chunks within <paramref name="radiusChunks"/> of block (x, z).</summary>
     public void Prepare(int x, int z, int radiusChunks)
@@ -59,25 +65,25 @@ public sealed class WorldVoxels : IVoxelWorld
 
     public int Block(int x, int y, int z)
     {
-        if ((uint)y >= WorldState.Height) return 0;
+        if ((uint)y >= _h) return 0;
         int k = Slot(x, z);
         if (k < 0) return _w.PlanningView.GetBlock(x, y, z);
         if (_live[k] is { } c) return c.GetBlock(x & 15, y, z & 15);
-        return _rem[k] is { } r ? r.Ids[ChunkColumn.Index(x & 15, y, z & 15)] : 0;
+        return _rem[k] is { } r && y < r.Height ? r.Ids[ChunkColumn.Index(x & 15, y, z & 15)] : 0;
     }
 
     public int Meta(int x, int y, int z)
     {
-        if ((uint)y >= WorldState.Height) return 0;
+        if ((uint)y >= _h) return 0;
         int k = Slot(x, z);
         if (k < 0) return _w.PlanningView.GetMeta(x, y, z);
         if (_live[k] is { } c) return c.GetMeta(x & 15, y, z & 15);
-        return _rem[k] is { } r ? r.Meta[ChunkColumn.Index(x & 15, y, z & 15)] : 0;
+        return _rem[k] is { } r && y < r.Height ? r.Meta[ChunkColumn.Index(x & 15, y, z & 15)] : 0;
     }
 
     public int SkyLight(int x, int y, int z)
     {
-        if (y >= WorldState.Height) return 15;
+        if (y >= _h) return 15;
         if (y < 0) return 0;
         int k = Slot(x, z);
         if (k >= 0 && _live[k] is { } c) return c.GetSkyLight(x & 15, y, z & 15);
@@ -87,7 +93,7 @@ public sealed class WorldVoxels : IVoxelWorld
 
     public int BlockLight(int x, int y, int z)
     {
-        if ((uint)y >= WorldState.Height) return 0;
+        if ((uint)y >= _h) return 0;
         int k = Slot(x, z);
         if (k >= 0 && _live[k] is { } c) return c.GetBlockLight(x & 15, y, z & 15);
         if (k >= 0 && _rem[k] != null) return 0;
@@ -104,7 +110,7 @@ public sealed class WorldVoxels : IVoxelWorld
             for (int ix = 0; ix < 16; ix++)
                 for (int iz = 0; iz < 16; iz++)
                 {
-                    int y = WorldState.Height - 1;
+                    int y = r.Height - 1;
                     while (y > 0 && !FaceLight.Opaque(r.Ids[ChunkColumn.Index(ix, y, iz)])) y--;
                     top[ix * 16 + iz] = (byte)y;
                 }
@@ -128,6 +134,7 @@ public sealed class SparseVoxels : IVoxelWorld
     private readonly Dictionary<(int, int, int), (byte Id, byte Meta)> _b = new();
     private readonly Dictionary<(int, int, int), (int Sky, int Block)> _l = new();
     public ColumnState Columns { get; set; } = ColumnState.Live;
+    public int WorldHeight { get; init; } = ChunkColumn.SizeY;
 
     public SparseVoxels Set(int x, int y, int z, int id, int meta = 0) { _b[(x, y, z)] = ((byte)id, (byte)meta); return this; }
     public SparseVoxels Light(int x, int y, int z, int sky, int block) { _l[(x, y, z)] = (sky, block); return this; }
@@ -149,7 +156,8 @@ public static class FaceLight
     /// <summary>Light level (0..15) of the cell (x, y, z) as seen by a face; −1 when unknown (remembered).</summary>
     public static int CellLevel(IVoxelWorld w, int x, int y, int z, int subtracted)
     {
-        if (y >= WorldState.Height) return 15 - subtracted;
+        int h = w.WorldHeight;
+        if (y >= h) return 15 - subtracted;
         int sky = w.SkyLight(x, y, z), blk = w.BlockLight(x, y, z);
         if (sky < 0 || blk < 0) return -1;
         if (sky == 0 && blk == 0 && w.Block(x, y, z) == 0)
@@ -159,7 +167,7 @@ public static class FaceLight
             {
                 var (dx, dy, dz) = Lighting.Normal((Face)f);
                 int nx = x + dx, ny = y + dy, nz = z + dz;
-                if (ny >= WorldState.Height) { sky = 15; continue; }
+                if (ny >= h) { sky = 15; continue; }
                 if (ny < 0 || Opaque(w.Block(nx, ny, nz))) continue;
                 int ns = w.SkyLight(nx, ny, nz), nb = w.BlockLight(nx, ny, nz);
                 if (ns > 0) sky = Math.Max(sky, ns - (dy == 1 && ns == 15 ? 0 : 1));

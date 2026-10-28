@@ -57,7 +57,8 @@ public static class BlockShapes
     /// <summary>Block slipperiness (Block.slipperiness): 0.6 default, 0.98 for ice.</summary>
     public static double Slipperiness(int id) => id == Ice ? 0.98 : 0.6;
 
-    /// <summary>Appends the world-space collision boxes of block (x,y,z) to <paramref name="output"/>.</summary>
+    /// <summary>Appends the world-space collision boxes of block (x,y,z) to <paramref name="output"/> (the world's version:
+    /// <see cref="IBlockAccess.Physics"/>).</summary>
     public static void AddCollisionBoxes(IBlockAccess w, int x, int y, int z, List<AABB> output)
     {
         int id = w.GetBlock(x, y, z);
@@ -66,7 +67,20 @@ public static class BlockShapes
         AddCollisionBoxes(w, id, meta, x, y, z, output);
     }
 
+    /// <summary>The collision boxes of block state (id, meta) at x,y,z under the world's version rules.</summary>
     public static void AddCollisionBoxes(IBlockAccess w, int id, int meta, int x, int y, int z, List<AABB> output)
+    {
+        var rules = w.Physics;
+        if (rules is Versioning.Beta181PhysicsRules) AddCollisionBoxesBeta(w, id, meta, x, y, z, output);
+        else rules.AddCollisionBoxes(w, id, meta, x, y, z, output);
+    }
+
+    /// <summary>Whether the cell at x,y,z is climbable under the world's version rules (b1.8.1 ladders; 1.12.2 also vines and
+    /// an open trapdoor over a ladder).</summary>
+    public static bool IsClimbableAt(IBlockAccess w, int x, int y, int z) => w.Physics.IsClimbable(w, x, y, z);
+
+    /// <summary>The b1.8.1 collision boxes (mc-dev), whatever the world's version.</summary>
+    internal static void AddCollisionBoxesBeta(IBlockAccess w, int id, int meta, int x, int y, int z, List<AABB> output)
     {
         void Add(double x0, double y0, double z0, double x1, double y1, double z1) =>
             output.Add(new AABB(x + x0, y + y0, z + z0, x + x1, y + y1, z + z1));
@@ -268,6 +282,13 @@ public static class BlockShapes
     public static List<AABB> GetCollidingBoxes(IBlockAccess w, AABB area, List<AABB>? output = null)
     {
         output ??= new List<AABB>();
+        var rules = w.Physics;
+        if (rules is not Versioning.Beta181PhysicsRules) return rules.GetCollidingBoxes(w, area, output);
+        return GetCollidingBoxesBeta(w, area, output);
+    }
+
+    internal static List<AABB> GetCollidingBoxesBeta(IBlockAccess w, AABB area, List<AABB> output)
+    {
         output.Clear();
         int x0 = (int)Math.Floor(area.MinX), x1 = (int)Math.Floor(area.MaxX + 1);
         int y0 = (int)Math.Floor(area.MinY) - 1, y1 = (int)Math.Floor(area.MaxY + 1);
@@ -281,7 +302,7 @@ public static class BlockShapes
                 int id = w.GetBlock(x, y, z);
                 if (id == 0) continue;
                 tmp.Clear();
-                AddCollisionBoxes(w, id, w.GetMeta(x, y, z), x, y, z, tmp);
+                AddCollisionBoxesBeta(w, id, w.GetMeta(x, y, z), x, y, z, tmp);
                 foreach (var b in tmp)
                     if (b.Intersects(area)) output.Add(b);
             }

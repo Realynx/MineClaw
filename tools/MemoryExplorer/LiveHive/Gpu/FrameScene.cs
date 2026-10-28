@@ -402,9 +402,10 @@ public sealed class FrameScene
         double ty = dy == 0 ? double.MaxValue : (dy > 0 ? vy + 1 - oy : oy - vy) * tdy;
         double tz = dz == 0 ? double.MaxValue : (dz > 0 ? vz + 1 - oz : oz - vz) * tdz;
         double t = 0;
+        int h = _vox.WorldHeight;
         for (int i = 0; i < 512 && t < dist - 0.75; i++)
         {
-            if (i > 0 && (uint)vy < ChunkColumn.SizeY && BlockGeometry.OpaqueCube(_vox.Block(vx, vy, vz))) return true;
+            if (i > 0 && (uint)vy < h && BlockGeometry.OpaqueCube(_vox.Block(vx, vy, vz))) return true;
             if (tx < ty && tx < tz) { vx += sx; t = tx; tx += tdx; }
             else if (ty < tz) { vy += sy; t = ty; ty += tdy; }
             else { vz += sz; t = tz; tz += tdz; }

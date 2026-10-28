@@ -24,4 +24,8 @@ public sealed class BlockOverlay(IBlockAccess inner) : IBlockAccess
     public bool IsLoaded(int x, int z) => Inner.IsLoaded(x, z);
 
     public BlockInfo Info(int id) => Inner.Info(id);
+
+    public int WorldHeight => Inner.WorldHeight;
+
+    public Versioning.IPhysicsRules Physics => Inner.Physics;
 }

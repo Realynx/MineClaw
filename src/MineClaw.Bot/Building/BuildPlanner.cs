@@ -710,6 +710,7 @@ public sealed partial class BuildPlanner
     /// <summary>BFS from the target through free cells (inside the part's strip, not planned cells) to one touching support.</summary>
     private List<BlockPos>? ScaffoldPath(BlockPos start, bool straightDown)
     {
+        int height = _s.Sim.WorldHeight;
         var prev = new Dictionary<BlockPos, BlockPos> { [start] = start };
         var q = new Queue<(BlockPos P, int D)>();
         q.Enqueue((start, 0));
@@ -720,7 +721,7 @@ public sealed partial class BuildPlanner
             foreach (var f in straightDown ? [BlockFace.Bottom] : BlockFaceExtensions.All)
             {
                 var n = p.Offset(f);
-                if (prev.ContainsKey(n) || n.Y < 1 || n.Y >= WorldState.Height || !Free(n) || !_part.Allows(n)) continue;
+                if (prev.ContainsKey(n) || n.Y < 1 || n.Y >= height || !Free(n) || !_part.Allows(n)) continue;
                 if (_plan.Blocks.ContainsKey(n) || !_s.Sim.IsLoaded(n.X, n.Z) || BlockShapes.IsLava(_s.Sim.Get(n))) continue;
                 if (_s.Columns.Any(c => !c.Removed && c.Source.X == n.X && c.Source.Z == n.Z)) continue; // keep columns open
                 prev[n] = p;

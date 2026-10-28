@@ -195,7 +195,7 @@ public static partial class PerceptionVerifier
     private static string Trunc(string s, int n) => s.Length <= n ? s : s[..(n - 1)] + "…";
 
     private static bool Plausible(IBlockAccess w, (int X, int Y, int Z) c, (int X, int Y, int Z) focus, int radius) =>
-        (uint)c.Y < WorldState.Height && w.IsLoaded(c.X, c.Z)
+        (uint)c.Y < w.WorldHeight && w.IsLoaded(c.X, c.Z)
         && Math.Abs(c.X - focus.X) <= radius + 4 && Math.Abs(c.Z - focus.Z) <= radius + 4 && Math.Abs(c.Y - focus.Y) <= 12;
 
     private static bool Matches(IBlockAccess w, RoleMap roles, (int X, int Y, int Z) c, BlockRole? role, int? block, bool air, bool solid, BlockRole? negRole)

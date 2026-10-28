@@ -32,7 +32,7 @@ public static class TreeScan
         foreach (var f in BlockFaceExtensions.All)
         {
             var n = cell.Offset(f);
-            if ((uint)n.Y >= WorldState.Height) continue;
+            if ((uint)n.Y >= world.WorldHeight) continue;
             int id = world.GetBlock(n);
             if (id != 0 && Blocks.Get(id) is { Solid: true } && id != Blocks.Leaves && id != Blocks.Glass) continue; // opaque: holds no light
             best = Math.Max(best, Light(n.X, n.Y, n.Z) - 1);
@@ -111,12 +111,13 @@ public static class TreeScan
     {
         BlockPos? best = null;
         double bestD = double.MaxValue;
+        int h = w.WorldHeight;
         for (int dx = -range; dx <= range; dx++)
         for (int dy = -range; dy <= range + 3; dy++)
         for (int dz = -range; dz <= range; dz++)
         {
             var q = p.Offset(dx, dy, dz);
-            if (q.Y is < 0 or >= WorldState.Height || w.GetBlock(q.X, q.Y, q.Z) != Blocks.Log) continue;
+            if ((uint)q.Y >= (uint)h || w.GetBlock(q.X, q.Y, q.Z) != Blocks.Log) continue;
             double d = dx * dx + dz * dz + 0.5 * dy * dy;
             if (d < bestD) { bestD = d; best = q; }
         }
@@ -135,7 +136,7 @@ public static class TreeScan
         int x = (int)Math.Floor(item.X), z = (int)Math.Floor(item.Z);
         // An item at rest sits ~0.1-0.125 above the top of the block under it; allow a little bounce either way.
         int y = (int)Math.Floor(item.Y - 0.3);
-        if (y is < 0 or >= WorldState.Height) return null;
+        if ((uint)y >= (uint)w.WorldHeight) return null;
         double above = item.Y - (y + 1);
         return above is >= -0.05 and <= 0.45 && w.GetBlock(x, y, z) == Blocks.Leaves ? new BlockPos(x, y, z) : null;
     }
@@ -150,7 +151,7 @@ public static class TreeScan
         var result = new HashSet<BlockPos>();
         if (leaves.Count == 0) return result;
         int x0 = leaves.Min(l => l.X) - LeafRange, x1 = leaves.Max(l => l.X) + LeafRange;
-        int y0 = Math.Max(0, leaves.Min(l => l.Y) - LeafRange), y1 = Math.Min(WorldState.Height - 1, leaves.Max(l => l.Y) + LeafRange);
+        int y0 = Math.Max(0, leaves.Min(l => l.Y) - LeafRange), y1 = Math.Min(w.WorldHeight - 1, leaves.Max(l => l.Y) + LeafRange);
         int z0 = leaves.Min(l => l.Z) - LeafRange, z1 = leaves.Max(l => l.Z) + LeafRange;
         var logs = new HashSet<BlockPos>();
         for (int x = x0; x <= x1; x++)
@@ -220,6 +221,7 @@ public static class TreeScan
     private static HashSet<BlockPos> LogCluster(IBlockAccess w, BlockPos seed, int wood)
     {
         var set = new HashSet<BlockPos> { seed };
+        int h = w.WorldHeight;
         var q = new Queue<BlockPos>();
         q.Enqueue(seed);
         while (q.Count > 0 && set.Count < MaxLogs)
@@ -231,7 +233,7 @@ public static class TreeScan
             {
                 if (dx == 0 && dy == 0 && dz == 0) continue;
                 var n = p.Offset(dx, dy, dz);
-                if (n.Y is < 0 or >= WorldState.Height || Math.Abs(n.X - seed.X) > MaxSpread || Math.Abs(n.Z - seed.Z) > MaxSpread) continue;
+                if ((uint)n.Y >= (uint)h || Math.Abs(n.X - seed.X) > MaxSpread || Math.Abs(n.Z - seed.Z) > MaxSpread) continue;
                 if (set.Contains(n) || w.GetBlock(n.X, n.Y, n.Z) != Blocks.Log || (w.GetMeta(n.X, n.Y, n.Z) & 3) != wood || SelfPlaced(w, n)) continue;
                 set.Add(n);
                 q.Enqueue(n);
@@ -251,8 +253,9 @@ public static class TreeScan
             x0 = Math.Min(x0, l.X); x1 = Math.Max(x1, l.X); y0 = Math.Min(y0, l.Y); y1 = Math.Max(y1, l.Y); z0 = Math.Min(z0, l.Z); z1 = Math.Max(z1, l.Z);
         }
         var others = new HashSet<BlockPos>();
+        int h = w.WorldHeight;
         for (int x = x0 - LeafRange; x <= x1 + LeafRange; x++)
-        for (int y = Math.Max(0, y0 - LeafRange); y <= Math.Min(WorldState.Height - 1, y1 + LeafRange); y++)
+        for (int y = Math.Max(0, y0 - LeafRange); y <= Math.Min(h - 1, y1 + LeafRange); y++)
         for (int z = z0 - LeafRange; z <= z1 + LeafRange; z++)
         {
             var p = new BlockPos(x, y, z);
@@ -271,6 +274,7 @@ public static class TreeScan
         var q = new Queue<(BlockPos P, int D)>();
         foreach (var s in sources) q.Enqueue((s, 0));
         var visited = new HashSet<BlockPos>(sources);
+        int h = w.WorldHeight;
         while (q.Count > 0)
         {
             var (p, d) = q.Dequeue();
@@ -278,7 +282,7 @@ public static class TreeScan
             foreach (var o in Six)
             {
                 var n = p + o;
-                if (n.Y is < 0 or >= WorldState.Height || !visited.Add(n) || w.GetBlock(n.X, n.Y, n.Z) != Blocks.Leaves) continue;
+                if ((uint)n.Y >= (uint)h || !visited.Add(n) || w.GetBlock(n.X, n.Y, n.Z) != Blocks.Leaves) continue;
                 dist[n] = d + 1;
                 q.Enqueue((n, d + 1));
             }

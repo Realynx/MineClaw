@@ -54,11 +54,14 @@ public static class Tools
     public static bool RequiresTool(int blockId) => RequiresToolBlocks.Contains(blockId);
 
     /// <summary>Whether breaking the block with this held item (-1/0 = empty hand) yields drops (EntityPlayer.canHarvestBlock).</summary>
-    public static bool CanHarvest(int blockId, int heldItemId)
+    public static bool CanHarvest(int blockId, int heldItemId) =>
+        Versioning.GameData.IsBeta(out var d) ? CanHarvestB(blockId, heldItemId) : d.CanHarvest(blockId, heldItemId);
+
+    internal static bool CanHarvestB(int blockId, int heldItemId)
     {
         if (!RequiresTool(blockId)) return true;
         if (heldItemId <= 0) return false;
-        var item = Items.Get(heldItemId);
+        var item = Items.GetB(heldItemId);
         switch (item.Tool)
         {
             case ToolType.Pickaxe:
@@ -86,7 +89,7 @@ public static class Tools
     public static float StrVsBlock(int blockId, int heldItemId)
     {
         if (heldItemId <= 0) return 1f;
-        var item = Items.Get(heldItemId);
+        var item = Items.GetB(heldItemId);
         return item.Tool switch
         {
             ToolType.Pickaxe => PickaxeEffective.Contains(blockId) ? Efficiency(item.ToolTier) : 1f,
@@ -105,7 +108,7 @@ public static class Tools
         if (b.Liquid || blockId == Blocks.Air) return 0f;
         float h = b.Hardness;
         if (h < 0f) return 0f;
-        if (!CanHarvest(blockId, heldItemId)) return 1f / h / 100f;
+        if (!CanHarvestB(blockId, heldItemId)) return 1f / h / 100f;
         float speed = StrVsBlock(blockId, heldItemId);
         if (inWater) speed /= 5f;
         if (!onGround) speed /= 5f;
@@ -116,7 +119,10 @@ public static class Tools
     /// Ticks of continuous digging needed to break the block (0 = instant on first hit,
     /// <see cref="int.MaxValue"/> = unbreakable/liquid). Emulates the client's float accumulation.
     /// </summary>
-    public static int DigTicks(int blockId, int heldItemId, bool onGround = true, bool inWater = false)
+    public static int DigTicks(int blockId, int heldItemId, bool onGround = true, bool inWater = false) =>
+        Versioning.GameData.IsBeta(out var d) ? DigTicksB(blockId, heldItemId, onGround, inWater) : d.DigTicks(blockId, heldItemId, onGround, inWater);
+
+    internal static int DigTicksB(int blockId, int heldItemId, bool onGround = true, bool inWater = false)
     {
         float s = DigProgressPerTick(blockId, heldItemId, onGround, inWater);
         if (s <= 0f) return int.MaxValue;

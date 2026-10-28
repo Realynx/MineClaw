@@ -63,7 +63,9 @@ PackBuildOptions Options(string output, string version, bool sdk, bool versionPa
         "minecraft-data" or "prismarine" => new MinecraftDataSource(
             Opt("--data") is { } d ? Abs(d) : Directory.Exists(vendored) ? vendored
                 : throw new ArgumentException($"--data <minecraft-data checkout> is required (no vendored {vendored})"),
-            version, Opt("--edition") ?? "pc", Opt("--data-key"), Directory.Exists(facts) ? facts : null),
+            version, Opt("--edition") ?? "pc", Opt("--data-key"), Directory.Exists(facts) ? facts : null,
+            // The bot's own tables, when MineClaw.Data has this version: the pack's drop facts are what its planners use.
+            version == MineClaw.Data.Versioning.Release1122GameData.Instance.VersionId ? MineClaw.Data.Versioning.Release1122GameData.Instance : null),
         _ => throw new ArgumentException($"unknown --source {sourceKind} (mineclaw | minecraft-data)"),
     };
     return new PackBuildOptions

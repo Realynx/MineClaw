@@ -310,9 +310,12 @@ public sealed class BlockAccessVoxels(IBlockAccess blocks) : IVoxelWorld
 {
     private readonly Dictionary<(int, int), int> _top = new();
     private readonly object _lock = new();
+    private readonly int _h = blocks.WorldHeight;
 
-    public int Block(int x, int y, int z) => (uint)y < WorldState.Height ? blocks.GetBlock(x, y, z) : 0;
-    public int Meta(int x, int y, int z) => (uint)y < WorldState.Height ? blocks.GetMeta(x, y, z) : 0;
+    public int WorldHeight => _h;
+
+    public int Block(int x, int y, int z) => (uint)y < _h ? blocks.GetBlock(x, y, z) : 0;
+    public int Meta(int x, int y, int z) => (uint)y < _h ? blocks.GetMeta(x, y, z) : 0;
 
     public int SkyLight(int x, int y, int z)
     {
@@ -321,7 +324,7 @@ public sealed class BlockAccessVoxels(IBlockAccess blocks) : IVoxelWorld
             if (!_top.TryGetValue((x, z), out top))
             {
                 top = -1;
-                for (int yy = WorldState.Height - 1; yy >= 0; yy--)
+                for (int yy = _h - 1; yy >= 0; yy--)
                     if (BlockGeometry.OpaqueCube(blocks.GetBlock(x, yy, z))) { top = yy; break; }
                 _top[(x, z)] = top;
             }

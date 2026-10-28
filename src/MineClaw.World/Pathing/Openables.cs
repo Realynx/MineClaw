@@ -11,6 +11,11 @@ namespace MineClaw.World;
 /// <item>Fence gate (107): bits 0-1 facing, 0x4 open. Closed collides 1.5 high, open has no collision.</item>
 /// <item>Lever (69) 0x8 = on; stone button (77) 0x8 = pressed (pops after 20 ticks); pressure plates (70/72) meta 1 = down.</item>
 /// </list>
+/// <para>1.12.2 (multi-version P3; the ids are absent from b1.8.1 worlds, so b1.8.1 is unchanged): the wood doors 193-197
+/// (spruce, birch, jungle, acacia, dark oak), the fence gates 183-187 and the iron trapdoor 167 (redstone only). The lower door
+/// half keeps facing/open (bits 0-1, 0x4); the upper keeps the hinge (0x1) and powered (0x2) instead of a copy of the open bit
+/// (<c>BlockDoor.getStateFromMeta</c>), so the state is read from the lower half as here. Trapdoors add 0x8 = top half;
+/// facing/open match b1.8.1's hinge layout box for box (<c>BlockTrapDoor.getFacing</c>).</para>
 /// </summary>
 public static class Openables
 {
@@ -19,13 +24,17 @@ public static class Openables
 
     public const int OpenBit = 0x4, UpperBit = 0x8;
 
-    public static bool IsDoor(int id) => id is WoodDoor or IronDoor;
+    public const int IronTrapdoor = 167;
+
+    public static bool IsDoor(int id) => id is WoodDoor or IronDoor or (>= 193 and <= 197);
+    public static bool IsTrapdoor(int id) => id is Trapdoor or IronTrapdoor;
+    public static bool IsFenceGate(int id) => id is FenceGate or (>= 183 and <= 187);
 
     /// <summary>Door, trapdoor or fence gate.</summary>
-    public static bool IsOpenable(int id) => id is WoodDoor or IronDoor or Trapdoor or FenceGate;
+    public static bool IsOpenable(int id) => IsDoor(id) || IsTrapdoor(id) || IsFenceGate(id);
 
-    /// <summary>Opens on a plain right-click (everything but the iron door).</summary>
-    public static bool OpensByHand(int id) => id is WoodDoor or Trapdoor or FenceGate;
+    /// <summary>Opens on a plain right-click (everything but the iron door and the iron trapdoor).</summary>
+    public static bool OpensByHand(int id) => IsOpenable(id) && id is not (IronDoor or IronTrapdoor);
 
     public static bool IsActuator(int id) => id is Lever or StoneButton or StonePlate or WoodPlate;
     public static bool IsPlate(int id) => id is StonePlate or WoodPlate;
@@ -62,8 +71,10 @@ public static class Openables
         int id = w.GetBlock(s.X, s.Y, s.Z), meta = w.GetMeta(s.X, s.Y, s.Z);
         if (!IsOpenable(id)) return false;
         if (!IsDoor(id)) return IsOpen(meta);
-        int state = (meta & OpenBit) == 0 ? (meta - 1) & 3 : meta & 3;
-        bool zFace = state is 0 or 2;
+        // The panel's plane from its collision box (b1.8.1: state 0/2 = a z-face, mc-dev BlockDoor; 1.12.2: the actual state).
+        var panel = new List<AABB>(2);
+        BlockShapes.AddCollisionBoxes(w, id, meta, s.X, s.Y, s.Z, panel);
+        bool zFace = panel.Count > 0 ? panel[0].MaxZ - panel[0].MinZ < 0.5 : ((meta & OpenBit) == 0 ? (meta - 1) & 3 : meta & 3) is 0 or 2;
         bool Side(int x, int z) => BlockShapes.HasCollision(w, x, s.Y, z) || IsDoor(w.GetBlock(x, s.Y, z));
         bool wallsX = Side(s.X - 1, s.Z) && Side(s.X + 1, s.Z), wallsZ = Side(s.X, s.Z - 1) && Side(s.X, s.Z + 1);
         if (wallsZ && !wallsX) return zFace;   // passage along x: x-face panels block it
@@ -85,10 +96,11 @@ public static class Openables
 
     public static string Name(int id) => id switch
     {
-        WoodDoor => "door",
+        WoodDoor or (>= 193 and <= 197) => "door",
         IronDoor => "iron door",
         Trapdoor => "trapdoor",
-        FenceGate => "fence gate",
+        IronTrapdoor => "iron trapdoor",
+        FenceGate or (>= 183 and <= 187) => "fence gate",
         Lever => "lever",
         StoneButton => "button",
         StonePlate or WoodPlate => "pressure plate",

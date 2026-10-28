@@ -1,7 +1,8 @@
 # Multi-version: b1.8.1 and 1.12.2 behind one set of seams
 
 Status: P0, P1 and P2 are implemented (seams + detection; 1.12.2 login, chat, game state, movement and chunks in a 256-high
-world, section 5.1; inventory, windows, dig, place, use, signs and item entities, section 5.2). P3 to P6 are planned. Ground truth for 1.12.2: the decompiled client at `C:\Users\dev\source\mc-1.12.2-src`
+world, section 5.1; inventory, windows, dig, place, use, signs and item entities, section 5.2), and P5 (game data and render,
+section 5.3), and P3 (physics, shapes and pathing, section 5.4). P4 and P6 are planned or in progress. Ground truth for 1.12.2: the decompiled client at `C:\Users\dev\source\mc-1.12.2-src`
 (section 4); class and method names below are its MCP stable_39 names.
 Date: 2026-10-28.
 
@@ -204,7 +205,9 @@ Sources for the 1.12.2 tables:
 - **Smelting** (`FurnaceRecipes`) and **block drops** (`Block.getItemDropped`): only the decompiled source. Neither is in the
   jar's data files or in minecraft-data, which has no smelting tables.
 
-Call sites: ~1,500 `Blocks.` + ~540 `Items.` static uses. P5 makes the static facades delegate to the process profile (see 3.3).
+Call sites: ~1,500 `Blocks.` + ~540 `Items.` static uses. P5 makes the static facades delegate to the process profile (see 3.3):
+done for `Items`, `Recipes`, `Smelting`, `Drops` and `Tools.CanHarvest`/`DigTicks` (5.3); `Blocks` stays b1.8.1's until P3 moves
+physics and collision onto the profile.
 
 ### 2.7 Mobs and AI facts (Client `CombatRules.Profile`, `MobTypes`, World entity rules)
 
@@ -286,7 +289,7 @@ App composition root (AppHost.RunAsync)
 | `Physics` | `IPhysicsRules` (World) | `Beta181PhysicsRules` → `PlayerPhysics`, `BlockShapes` | `Release1122PhysicsRules` (P3) |
 | `Combat` | `ICombatRules` (Client) | `Beta181CombatRules` → `CombatRules` | (P4) |
 | `Hunger` | `IHungerRules` (Client) | `Beta181HungerRules` → `HungerRules` | (P4) |
-| `Data` | `IGameData` (Data) | `Beta181GameData` → `Blocks`/`Items`/`Recipes`/`Smelting`/`Tools` | generated tables (P5) |
+| `Data` | `IGameData` (Data) | `Beta181GameData` → `Blocks`/`Items`/`Recipes`/`Smelting`/`Tools` | `Release1122GameData` (P2 names/dig, P5 recipes/smelting/drops/food) |
 | render | `IRenderAssets` (Render; registered by Bot's vision setup, since Render is not below Client) | the atlas + `BlockTextures` | blockstates + models (P5) |
 | entity rules (P4) | `IEntityRules` (World): metadata indices, mob profiles | the current tables | the 1.12.2 tables |
 
@@ -517,7 +520,132 @@ startup: about 10 ms on a LAN, plus one "Protocol error" log line on the b1.8.1 
 
 **Still open after P2:**
 - Mobs, objects other than items, velocity (knockback), effects (haste for the dig rule), the server's Held Item Change: P4.
-- Recipes and smelting are b1.8.1's (`Recipes.Match` predicts the crafting output; 1.12.2 planks keep the log's wood type, so a
-  non-oak craft is predicted wrong once and resynced): P5. The static `Blocks`/`Items` facades outside the client: P5.
+- ~~Recipes and smelting are b1.8.1's (`Recipes.Match` predicts the crafting output; 1.12.2 planks keep the log's wood type, so a
+  non-oak craft is predicted wrong once and resynced): P5. The static `Blocks`/`Items` facades outside the client: P5.~~ Done
+  (5.3), except the `Blocks` facade.
 - Placement prediction of 1.12.2 metas (log axis, slab halves) in the world model: the server's block change sets them.
 - Entity metadata other than an item's stack (creeper fuse, wolf flags): P4.
+
+### 5.3 What P5 shipped (game data)
+
+- **Static facades** (`MineClaw.Data/Versioning/GameData`): `GameData.Current` = an AsyncLocal `Override(data)` scope (tests; it
+  flows into awaits, `Task.Run` and new threads) over the process default, which `VersionSetup` sets from the resolved profile.
+  `Items` (Get, Exists, ByName(WithDamage), DisplayName, VariantName, Food, FoodPoisonChance), `Recipes` (All, ForOutput, Match,
+  UsingIngredient, VariantTag, IsUnpack), `Smelting` (All, ResultFor, ForOutput, FuelTicks and everything built on them), `Drops`
+  (For, Primary, SourcesOf) and `Tools.CanHarvest`/`DigTicks` answer from it. b1.8.1 keeps a direct path to its own tables (the
+  `…B` members `Beta181GameData` reads), so every b1.8.1 result is unchanged. `MinecraftClient` runs each action under its
+  profile's data (`RunActionAsync`), so a body's crafting, smelting and mining read its version even where the process default
+  differs. **Not behind the facade:** `Blocks` (physics, collision and placement read it: P3) and `Items.All`/`Blocks.All`.
+- **`IGameData` additions** (default members = b1.8.1): `AllRecipes`, `IsUnpack`, `AllSmelting`, `SmeltingFor(id, damage)`,
+  `CookTicks`, `DropsFor(block, meta, held)`, `BlockIds`, `Food(id, damage)`, `FoodPoisonChance(id, damage)`, `VariantName`.
+  `SmeltingRecipe` gains `InputDamage` (−1 = any) and `Experience`. `ItemRules.IsFuel`/`IsSmeltable` (the 1.12.2 shift-click
+  routing into a furnace) come from the profile's data.
+- **1.12.2 tables** (`Release1122Tables.cs`):
+  - *Recipes:* minecraft-data `recipes.json` (embedded): the jar's 432 recipe files one to one (a test lays each jar recipe out
+    with its first and its last alternative and matches it, when the jar is installed). The jar's variant lists (planks 0..5,
+    wooden slabs, coal/charcoal, wool, sandstone…) are wildcards, so mixed planks make a crafting table, like `Ingredient.apply`.
+    A bare damageable ingredient must be undamaged. Shaped (anywhere, mirrored) and shapeless matching is the shared
+    `Recipes.MatchIn`; 2x2 vs 3x3 = the pattern size / ingredient count, as `canFit`. Variants list in id order (oak planks
+    first). An unpack is the reverse of a 9-of-the-output recipe (blocks, nuggets, slime, hay, bone meal). Not included: the
+    code-only special recipes (armor dyes, banners, fireworks, maps, books, tipped arrows, shulker colours, repair).
+  - *Smelting:* `shards/sources/1.12.2/smelting.json` (the `FurnaceRecipes` constructor, the same file the knowledge pack reads),
+    keyed by input metadata where the source is (wet sponge, stone bricks, cod/salmon, stained clay); experience kept.
+    *Fuel:* `TileEntityFurnace.getItemBurnTime` ported in its order (wood-material block items 300 incl. the banner, wooden slab
+    150, carpet 67, wooden tools 200, boats 400, doors 200, blaze rod 2400, coal block 16000…).
+  - *Drops:* the `Block*.getItemDropped`/`quantityDropped`/`damageDropped`/`getDrops`/`harvestBlock` overrides by hand (stone
+    variants, podzol, ores, leaves' sapling 1/20 (jungle 1/40) + oak/dark-oak apples 1/200, shears, double plants, crops and
+    their seed tries, slabs ×2, upper door/bed halves, item forms such as reeds, signs, repeaters, the 1.12.2 stairs dropping
+    themselves). Fortune and silk touch are ignored. minecraft-data's `drops` field is not used (wrong for reeds, doors, beds,
+    huge brown mushrooms).
+  - *Food:* the `ItemFood` registrations (`ItemSoup` 0.6, fish types per damage, the poison/hunger chances incl. pufferfish);
+    minecraft-data's foods.json lists crop blocks and saturation ratios instead.
+  - *Tool tiers:* `Item.ToolMaterial` (wood 0, stone 1, iron 2, diamond 3, gold 0 harvest level) with minecraft-data's harvest
+    tools, as P2; now behind `Tools.CanHarvest`.
+- **Consumers:** the Obtainer/`Crafter`/`RecipePlanner`, `FoodSupply`, the smelting skill and the SDK's `ItemSources` (now
+  `IGameData.DropsFor`) use the 1.12.2 tables on 1.12.2; the client predicts the 1.12.2 crafting output (birch logs → birch
+  planks), so P2's non-oak resync is gone; `FakeServer(release1122)` crafts with the 1.12.2 recipes like a vanilla server.
+- **Knowledge pack:** `MinecraftDataSource` takes the bot's tables (`tables:`); `tools/ShardPacks` passes `Release1122GameData`
+  for 1.12.2, so the pack's "Drops …" lines are the ported drop rules, not minecraft-data's. The recipes, smelting and food facts
+  already came from the same sources.
+- **Tests:** Data `Release1122P5Tests` (crafting table from any/mixed planks, planks keep the wood type, stone pickaxe, bed wool
+  colours + any planks, furnace, torch, fire charge, unpacks; FurnaceRecipes by metadata; 33 burn times; fuel vs the pack's
+  facts file; a drop table sample; foods; tool tiers; the facades and their scope; the planner's iron pickaxe tree; the jar's
+  432 recipes); Bot `ObtainTests` (an iron pickaxe from three chests on 1.12.2: acacia logs → planks → sticks, iron ore
+  smelted, crafted at the table); Client `Release1122PlayTests` (birch planks and a mixed-plank table, every click accepted).
+
+### 5.3b What P5 shipped (render)
+
+- **Models** (`MineClaw.Render/Models`): blockstates, block models and block textures read from the user's installed 1.12.2 jar
+  at runtime (`Bot:Vision:ModernClientJar` or `Render:Assets:Jar`; else the PrismLauncher/vanilla folders; never committed).
+  Parents, `#texture` references, elements with rotation/rescale, face uv and uv rotation, cullface, tintindex, shade, variant
+  x/y rotation, multipart with OR; uvlock approximated. Quads are the shared `GeoQuad`s, cached per state, so the Vision sheets
+  (EyeRenderer) and the Explorer's GPU freecam draw 1.12.2 blocks. The seam is `TextureAtlas.Models` (`IBlockModels`): null = every
+  b1.8.1 path unchanged (the golden tests pass).
+- **meta → state:** `getStateFromMeta` ported per block plus the neighbour-dependent `getActualState` properties (stair corners,
+  fence/pane/wall connections, doors, double plants, snowy grass, vines, stems, redstone wire approximately); an unknown state
+  takes the blockstate's first variant.
+- **Tints:** `tints.json`, always the plains biome (the world model keeps no chunk biomes yet).
+- **Entities:** the b1.8.1 models are reused (every mob texture keeps the old layout); the 64×64 steve/zombie/pigman textures are
+  cut to their top 64×32, so the player's separate left limbs and the skin overlay layers are not drawn.
+- **Fluids, fire, signs and beds** keep the procedural b1.8.1 shapes with 1.12.2 textures; chests and shulker boxes are small
+  synthetic models cut from their entity textures.
+- **Tests** (skipped without the jar): Bot `Render1122Tests` (stairs facing/half/outer/inner corners, fence multipart, a top slab,
+  wall and standing torches, cubes and tints, doors, a fixture-chunk render); MemoryExplorer `GpuFreecam1122Tests`.
+
+**Still open after P5:** the `Blocks` facade (with P3's physics); chunk biomes for tints; 1.12.2 water/lava textures; dropped and
+held items with ids new in 1.12.2 (a flat colour); a skin model with separate left limbs; skulls, banners and the end portal;
+the code-only special recipes.
+
+### 5.4 What P3 shipped (physics, shapes, pathing)
+
+- **The seam reaches every consumer through the world:** `IBlockAccess.Physics` (default b1.8.1; `WorldState(physics:)`, set
+  from `Profile.Physics` by the client; overlays, snapshots and the plan worlds forward it and `WorldHeight`). The static
+  `BlockShapes` entry points (`AddCollisionBoxes`, `GetCollidingBoxes`, `HasCollision`, `CollisionTop`, `IsFullCube`,
+  `IsClimbableAt`) and `PlayerPhysics.Tick(w, …)` dispatch on it, so the pathfinder, `SwimSim`, parkour, `EdgeGuard`,
+  `Safety`, `StuckProbe` and the building code get the version's shapes with no new parameters. On a b1.8.1 world the old
+  code runs unchanged (`*Beta` internals); every b1.8.1 test passes as before.
+- **`IPhysicsRules`** gains `SneakHeight`, `JumpVelocity`, `SneakEdgeProbe`, `AddCollisionBoxes(id, meta)`,
+  `GetCollidingBoxes`, `IsClimbable(x, y, z)` and `FallDamage`.
+- **`World/Release1122/Physics1122`**, the tick port in the client's order: `handleWaterMovement` / `isInLava`;
+  `MovementInputFromOptions` (sneak ×0.3), item use ×0.2, the sprint rules (forward ≥ 0.8, food > 6 via `MoveInput.Hungry`,
+  a horizontal collision stops it); the 0.003 motion cut; `jump` with `jumpTicks` 10; `travel` (water 0.02/×0.8F, lava ×0.5,
+  slipperiness ice/packed/frosted 0.98 and slime 0.8, the ladder clamp, sneak hold and 0.2 climb); `Entity.move` (the three
+  sneak loops probing one step height, 0.6, down; the two-candidate 0.6 step and its step-down; `onLanded` slime/bed bounce;
+  `onFallenUpon` fall damage: hay ×0.2, bed ×0.5, slime 0 unless sneaking; slime walking slowdown; soul sand ×0.4 per block
+  in the box; web); the movement attribute (0.1, sprint ×1.3) and air speed set *after* travel, so sprinting accelerates one
+  tick late as in vanilla; `updateSize` (1.65F while sneaking when it fits, eye 1.54F). `PhysicsState` gained `Width`,
+  `Height`, `EyeHeight`, `JumpTicks`, `LandSpeed`, `AirSpeed`, `FallDamage` (b1.8.1 keeps the defaults).
+  Not modelled: `pushOutOfBlocks`, entity collision boxes (boats, shulkers), the world border, potions, Depth Strider,
+  elytra, flying, riding; the server's movement checks are only respected by porting the client exactly.
+- **`World/Release1122/Shapes1122`:** the collision box of every state from minecraft-data `blockCollisionShapes.json`
+  (generated into `Shapes1122.Data.cs`), plus the `getActualState` shapes ported from the source: fences (post + arms;
+  `canConnectTo`: SOLID faces outside the attach exceptions, fences of the same material, gates by axis), walls
+  (`CLIP_AABB_BY_INDEX`, the thin straight run), panes/bars, stairs (straight/inner/outer corners), doors (halves share
+  facing/open/hinge), double chests and chorus plants; `World.getCollisionBoxes`' scan (±1 block, edge columns skipped,
+  unloaded columns empty).
+- **Pathing:** `Pathfinder` captures step height (0.5 / 0.6), body height and world height per search (jump-up threshold,
+  same-level walks, break/open moves; all y-limits use the world's height); climbing via `IsClimbableAt` (vines and the
+  trapdoor-over-ladder rule in 1.12.2); `Openables` knows the 1.12.2 doors 193-197, gates 183-187 and the iron trapdoor 167
+  (redstone only) and reads a door's panel plane from its collision box. `Parkour.AirTravel(dy, sprint, rules)` measures
+  the reach bounds per version. The void-safety rules are unchanged; `StuckProbe`, `Mechanisms`, `PlaceRules` and parkour
+  region hashes use the world's height. Outside World (Client, Bot, Skills, Scripting, Render geometry, the Explorer) the
+  sweep moved every 128 clip to the world/column/snapshot height (`IVoxelWorld.WorldHeight` is new).
+- **Tests (World):** `Physics1122Tests` (golden trajectories computed from the source formulas and float literals, and the
+  published 1.12 speeds: walk 4.317, sprint 5.612, sneak 1.295 m/s, ladder 2.35 up / 3.0 down, swim 1.96, jump apex 1.2522
+  in 12 ticks, the 10-tick jump wait under a low ceiling, the sprint lag, the sine-table sprint-jump boost, step 0.6 (bed,
+  snow, slab yes; soul sand, stone no), fences/walls not jumpable, the sneak edge over a 0.75 drop vs off a half step, the 1.65
+  box in a 1.75 gap, vines and trapdoors, soul sand per block, ice, slime bounce, fall damage, web); `Shapes1122Tests` (all
+  ~4,000 states alone vs minecraft-data, which wrongly gives door upper halves lower-half shapes; the neighbour shapes vs the
+  source's AABBs); `Pathing1122Tests` (closed loop: bed ledge walked, fence/wall rows walked around, a vine wall climbed,
+  paths at y 200, the spruce door opened, EdgeGuard holding at the void with the 1.12.2 clamp). No 1.12.2 recordings exist,
+  so there is no recorded-jump comparison for 1.12.2 yet.
+
+**Still open after P3:**
+- Columns are still flat arrays: a 256-high column is 4 × 64 KiB = 256 KiB (+ the 512 B height map) against 128 KiB for
+  b1.8.1, about 113 MiB vs 56 MiB per body at view distance 10 (441 columns). Lazily allocated sections (or a lazily
+  allocated upper half, which the index layout already separates) touch ~35 raw-array sites in `WorldState`, `LightEngine`
+  and `ChunkSnapshot` plus the `IdData`/`MetaData` spans (snapshots, the supervisor hash); not done.
+- Selection (raycast) boxes are b1.8.1's for the old ids; new 1.12.2 blocks fall back to their collision boxes.
+- The pathfinder doesn't plan through 1.65-high gaps (it checks a 1.8 body); the client sends the sneak state the tick uses.
+- A recorded 1.12.2 comparison once the user allows a live session.
+

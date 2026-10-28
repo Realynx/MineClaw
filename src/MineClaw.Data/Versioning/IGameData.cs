@@ -6,8 +6,9 @@ namespace MineClaw.Data.Versioning;
 /// <see cref="Recipes"/>, <see cref="Smelting"/>, <see cref="Tools"/>). 1.12.2 = tables generated from a data source
 /// (P5); its block and item ids are a superset of b1.8.1's (same numbers for the old ones; block state = id &lt;&lt; 4 | meta),
 /// so id constants such as <see cref="Blocks.Stone"/> stay valid and only the lookups swap.
-/// <para>P0: defined and registered in the profile; the ~2,000 static call sites are unchanged. P5 makes the static
-/// facades delegate to the process's profile (one version per process).</para>
+/// <para>P5: the static tables (<see cref="Items"/>, <see cref="Recipes"/>, <see cref="Smelting"/>, <see cref="Drops"/>,
+/// <see cref="Tools"/>.CanHarvest/DigTicks) are facades over <see cref="GameData.Current"/> (one version per process); the
+/// b1.8.1 implementation below reads their own tables directly (the <c>…B</c> members).</para>
 /// </summary>
 public interface IGameData
 {
@@ -31,10 +32,42 @@ public interface IGameData
     int DigTicks(in DigInput input) => DigTicks(input.BlockId, input.Held.IsEmpty ? -1 : input.Held.Id, input.OnGround, input.InWater);
 
     /// <summary>Human-readable item name with its variant ("Birch Wood Planks", "Charcoal").</summary>
-    string DisplayName(int id, int damage = 0) => Items.DisplayName(id, damage);
+    string DisplayName(int id, int damage = 0) => Items.DisplayNameB(id, damage);
 
     /// <summary>Forgiving name lookup that also returns the variant's damage (−1 = the name implies none).</summary>
-    (ItemInfo Item, int Damage)? ItemByNameWithDamage(string name) => Items.ByNameWithDamage(name);
+    (ItemInfo Item, int Damage)? ItemByNameWithDamage(string name) => Items.ByNameWithDamageB(name);
+
+    /// <summary>Snake-case name that keeps the variant and resolves back through <see cref="ItemByNameWithDamage"/>.</summary>
+    string VariantName(int id, int meta) => Items.VariantNameB(id, meta);
+
+    /// <summary>Every crafting recipe, in match order.</summary>
+    IReadOnlyList<Recipe> AllRecipes => Recipes.AllB;
+
+    /// <summary>"Unpack a storage block into 9" (planners prefer other routes).</summary>
+    bool IsUnpack(Recipe r) => Recipes.IsUnpackB(r);
+
+    /// <summary>Every furnace recipe.</summary>
+    IReadOnlyList<SmeltingRecipe> AllSmelting => Smelting.AllB;
+
+    /// <summary>What smelting this exact input variant yields (1.12.2 keys some inputs by metadata: wet sponge, stone bricks,
+    /// fish types); b1.8.1 ignores the metadata.</summary>
+    SmeltingRecipe? SmeltingFor(int inputId, int damage) => SmeltingFor(inputId);
+
+    /// <summary>Ticks to smelt one item (both versions: 200).</summary>
+    int CookTicks => Smelting.CookTicks;
+
+    /// <summary>Typical drops when a player breaks the block holding <paramref name="heldItemId"/> (−1/0 = hand); empty when
+    /// nothing drops, including when the held item can't harvest it. Fortune and silk touch are ignored.</summary>
+    IReadOnlyList<Drop> DropsFor(int blockId, int meta = 0, int heldItemId = -1) => Drops.ForB(blockId, meta, heldItemId);
+
+    /// <summary>The block ids this version has (for "which blocks drop X").</summary>
+    IEnumerable<int> BlockIds => Blocks.All.Select(b => b.Id);
+
+    /// <summary>Food value of an item variant (hunger points, saturation modifier), or null if not edible.</summary>
+    (int Hunger, float Saturation)? Food(int itemId, int damage = 0) => Items.FoodB(itemId);
+
+    /// <summary>Chance that eating the item gives Hunger or Poison (raw chicken 0.3, rotten flesh 0.8...).</summary>
+    float FoodPoisonChance(int itemId, int damage = 0) => Items.FoodPoisonChanceB(itemId);
 
     /// <summary>Capability fact: slab and stair halves follow the clicked face and the cursor height (1.12.2
     /// <c>BlockSlab</c>/<c>BlockStairs.getStateForPlacement</c>: an underside click places a top half). b1.8.1 has bottom
@@ -59,14 +92,14 @@ public sealed class Beta181GameData : IGameData
     public BlockInfo Block(int id) => Blocks.Get(id);
     public bool BlockExists(int id) => Blocks.Exists(id);
     public BlockInfo? BlockByName(string name) => Blocks.ByName(name);
-    public ItemInfo Item(int id) => Items.Get(id);
-    public bool ItemExists(int id) => Items.Exists(id);
-    public ItemInfo? ItemByName(string name) => Items.ByName(name);
-    public Recipe? MatchRecipe(IReadOnlyList<ItemStack> grid, int gridSize) => Recipes.Match(grid, gridSize);
-    public IReadOnlyList<Recipe> RecipesFor(int itemId, int damage = -1) => Recipes.ForOutput(itemId, damage);
-    public SmeltingRecipe? SmeltingFor(int inputId) => Smelting.ResultFor(inputId);
-    public int FuelTicks(int itemId) => Smelting.FuelTicks(itemId);
-    public bool CanHarvest(int blockId, int heldItemId) => Tools.CanHarvest(blockId, heldItemId);
+    public ItemInfo Item(int id) => Items.GetB(id);
+    public bool ItemExists(int id) => Items.ExistsB(id);
+    public ItemInfo? ItemByName(string name) => Items.ByNameWithDamageB(name)?.Item;
+    public Recipe? MatchRecipe(IReadOnlyList<ItemStack> grid, int gridSize) => Recipes.MatchB(grid, gridSize);
+    public IReadOnlyList<Recipe> RecipesFor(int itemId, int damage = -1) => Recipes.ForOutputB(itemId, damage);
+    public SmeltingRecipe? SmeltingFor(int inputId) => Smelting.ResultForB(inputId);
+    public int FuelTicks(int itemId) => Smelting.FuelTicksB(itemId);
+    public bool CanHarvest(int blockId, int heldItemId) => Tools.CanHarvestB(blockId, heldItemId);
     public int DigTicks(int blockId, int heldItemId, bool onGround = true, bool inWater = false) =>
-        Tools.DigTicks(blockId, heldItemId, onGround, inWater);
+        Tools.DigTicksB(blockId, heldItemId, onGround, inWater);
 }

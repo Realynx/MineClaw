@@ -46,11 +46,16 @@ public static partial class Items
 
     public static IReadOnlyList<ItemInfo> All => _all;
 
-    /// <summary>Returns the item for an id; unknown ids return a placeholder (stack 64).</summary>
-    public static ItemInfo Get(int id) =>
+    /// <summary>Returns the item for an id (this process's version, <see cref="Versioning.GameData.Current"/>); unknown ids
+    /// return a placeholder (stack 64).</summary>
+    public static ItemInfo Get(int id) => Versioning.GameData.IsBeta(out var d) ? GetB(id) : d.Item(id);
+
+    /// <summary>b1.8.1's record (the table below).</summary>
+    internal static ItemInfo GetB(int id) =>
         _byId.TryGetValue(id, out var i) ? i : new ItemInfo(id, $"unknown_{id}", $"Unknown ({id})", 64, 0, ToolType.None, -1, id is > 0 and < 256);
 
-    public static bool Exists(int id) => _byId.ContainsKey(id);
+    public static bool Exists(int id) => Versioning.GameData.IsBeta(out var d) ? ExistsB(id) : d.ItemExists(id);
+    internal static bool ExistsB(int id) => _byId.ContainsKey(id);
 
     /// <summary>
     /// Forgiving lookup (case, spaces/underscores, aliases, plurals, "minecraft:" prefix, numeric ids).
@@ -60,23 +65,26 @@ public static partial class Items
     public static ItemInfo? ByName(string name) => ByNameWithDamage(name)?.Item;
 
     /// <summary>Like <see cref="ByName"/> but also returns the metadata for variant names (-1 when the name does not imply one).</summary>
-    public static (ItemInfo Item, int Damage)? ByNameWithDamage(string name)
+    public static (ItemInfo Item, int Damage)? ByNameWithDamage(string name) =>
+        Versioning.GameData.IsBeta(out var d) ? ByNameWithDamageB(name) : d.ItemByNameWithDamage(name);
+
+    internal static (ItemInfo Item, int Damage)? ByNameWithDamageB(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) return null;
         var key = Blocks.Normalize(name);
-        if (Variants.TryGetValue(key, out var v)) return (Get(v.Id), v.Damage);
+        if (Variants.TryGetValue(key, out var v)) return (GetB(v.Id), v.Damage);
         if (_byName.TryGetValue(key, out var i)) return (i, -1);
         foreach (var suffix in new[] { "s", "es" })
             if (key.EndsWith(suffix))
             {
                 var k2 = key[..^suffix.Length];
-                if (Variants.TryGetValue(k2, out v)) return (Get(v.Id), v.Damage);
+                if (Variants.TryGetValue(k2, out v)) return (GetB(v.Id), v.Damage);
                 if (_byName.TryGetValue(k2, out i)) return (i, -1);
             }
-        if (int.TryParse(key, out var id) && Exists(id)) return (_byId[id], -1);
-        if (Blocks.ByName(name) is { } b && Exists(b.Id)) return (_byId[b.Id], -1);
+        if (int.TryParse(key, out var id) && ExistsB(id)) return (_byId[id], -1);
+        if (Blocks.ByName(name) is { } b && ExistsB(b.Id)) return (_byId[b.Id], -1);
         // "20 cobble slabs", "cobble slab x20", "a red wool": drop the amount and try again.
-        if (ParseAmount(name) is { Count: not null } a && a.Name != name.Trim()) return ByNameWithDamage(a.Name);
+        if (ParseAmount(name) is { Count: not null } a && a.Name != name.Trim()) return ByNameWithDamageB(a.Name);
         return null;
     }
 
@@ -100,12 +108,15 @@ public static partial class Items
 
     /// <summary>Snake-case name that keeps the variant ("cobblestone_slab", "red_wool", "birch_wood"); it resolves back to
     /// the same (id, meta) through <see cref="ByNameWithDamage"/>. Ids without variants give their plain name.</summary>
-    public static string VariantName(int id, int meta)
+    public static string VariantName(int id, int meta) =>
+        Versioning.GameData.IsBeta(out var d) ? VariantNameB(id, meta) : d.VariantName(id, meta);
+
+    internal static string VariantNameB(int id, int meta)
     {
         bool variant = id is Blocks.Slab or Blocks.Wool or Blocks.Log or Blocks.Leaves or Blocks.Sapling or Blocks.StoneBricks
             or Blocks.TallGrass or Dye or Coal;
-        if (!variant) return Exists(id) ? Get(id).Name : Blocks.Get(id).Name;
-        return DisplayName(id, meta).ToLowerInvariant().Replace(' ', '_');
+        if (!variant) return ExistsB(id) ? GetB(id).Name : Blocks.Get(id).Name;
+        return DisplayNameB(id, meta).ToLowerInvariant().Replace(' ', '_');
     }
 
     public static bool IsTool(int id) => Get(id).Tool != ToolType.None;
@@ -123,7 +134,10 @@ public static partial class Items
     private static readonly string[] SlabTypes = ["Stone", "Sandstone", "Wooden", "Cobblestone", "Brick", "Stone Brick"];
 
     /// <summary>Human-readable name including metadata variants (wool colours, dyes, wood types, slabs, coal vs charcoal...).</summary>
-    public static string DisplayName(int id, int damage = 0)
+    public static string DisplayName(int id, int damage = 0) =>
+        Versioning.GameData.IsBeta(out var d) ? DisplayNameB(id, damage) : d.DisplayName(id, damage);
+
+    internal static string DisplayNameB(int id, int damage = 0)
     {
         if (id <= 0) return id == 0 ? "Air" : "(empty)";
         int m = damage < 0 ? 0 : damage;
@@ -142,13 +156,18 @@ public static partial class Items
             case Blocks.MonsterEgg: return (m & 3) switch { 1 => "Silverfish Cobblestone", 2 => "Silverfish Stone Bricks", _ => "Silverfish Stone" };
         }
         if (id < 256 && !_byId.ContainsKey(id)) return Blocks.Get(id).DisplayName;
-        var info = Get(id);
+        var info = GetB(id);
         if (info.MaxDamage > 0 && damage > 0) return $"{info.DisplayName} ({info.MaxDamage - damage}/{info.MaxDamage})";
         return info.DisplayName;
     }
 
     /// <summary>Food value: hunger points restored (half-shanks) and saturation modifier. Null if not edible.</summary>
-    public static (int Hunger, float Saturation)? Food(int id) => id switch
+    public static (int Hunger, float Saturation)? Food(int id) => Versioning.GameData.IsBeta(out var d) ? FoodB(id) : d.Food(id);
+
+    /// <summary>Food value of an item variant (1.12.2 fish types differ: salmon, clownfish, pufferfish).</summary>
+    public static (int Hunger, float Saturation)? Food(int id, int damage) => Versioning.GameData.IsBeta(out var d) ? FoodB(id) : d.Food(id, damage);
+
+    internal static (int Hunger, float Saturation)? FoodB(int id) => id switch
     {
         Apple => (4, 0.3f), MushroomStew => (8, 0.6f), Bread => (5, 0.6f), Porkchop => (3, 0.3f), CookedPorkchop => (8, 0.8f),
         GoldenApple => (10, 1.2f), RawFish => (2, 0.3f), CookedFish => (5, 0.6f), Cookie => (1, 0.1f), MelonSlice => (2, 0.3f),
@@ -157,7 +176,9 @@ public static partial class Items
     };
 
     /// <summary>Foods with a chance of the Hunger effect: raw chicken 30%, rotten flesh 80%.</summary>
-    public static float FoodPoisonChance(int id) => id switch { RawChicken => 0.3f, RottenFlesh => 0.8f, _ => 0f };
+    public static float FoodPoisonChance(int id) => Versioning.GameData.IsBeta(out var d) ? FoodPoisonChanceB(id) : d.FoodPoisonChance(id);
+    public static float FoodPoisonChance(int id, int damage) => Versioning.GameData.IsBeta(out var d) ? FoodPoisonChanceB(id) : d.FoodPoisonChance(id, damage);
+    internal static float FoodPoisonChanceB(int id) => id switch { RawChicken => 0.3f, RottenFlesh => 0.8f, _ => 0f };
 
     /// <summary>Block ids that are not obtainable as an item in b1.8.1 (placed-only forms). Their item form is listed alongside.</summary>
     public static int ItemFormOf(int blockId) => blockId switch

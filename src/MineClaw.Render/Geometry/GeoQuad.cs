@@ -28,6 +28,9 @@ public enum QuadTex : byte
     Flat,
     /// <summary>Procedural b1.8.1 fire (TextureFlamesFX; terrain tiles 31/47 are placeholders in the file); Tile 0 or 1.</summary>
     Fire,
+    /// <summary>A data-driven block model texture (1.12.2, <see cref="IBlockModels.Textures"/> index in <see cref="GeoQuad.Tile"/>,
+    /// the overlay too; u, v in 0..1 of that texture).</summary>
+    Block,
 }
 
 /// <summary>

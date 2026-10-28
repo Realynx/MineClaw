@@ -13,7 +13,8 @@ public static class BlueprintNormalizer
     public const int MaxBlocks = 1500;
     private const char Air = '.', Keep = '_';
 
-    public static (VoxelPlan? Plan, List<BlueprintIssue> Issues) Normalize(Blueprint bp, BlockPos? defaultOrigin = null)
+    /// <param name="worldHeight">The world's height (<see cref="IBlockAccess.WorldHeight"/>): b1.8.1 128, 1.12.2 256.</param>
+    public static (VoxelPlan? Plan, List<BlueprintIssue> Issues) Normalize(Blueprint bp, BlockPos? defaultOrigin = null, int worldHeight = ChunkColumn.SizeY)
     {
         var issues = new List<BlueprintIssue>();
         void Err(string code, string text, int line = 0) => issues.Add(new(IssueLevel.Error, code, text, line));
@@ -231,7 +232,7 @@ public static class BlueprintNormalizer
             for (int z = 0; z < D; z++)
                 for (int x = 0; x < W; x++)
                     if (grid[x, y, z] == Air && !states.ContainsKey((x, y, z))) plan.Air.Add(ToWorld(x, y, z));
-        if (origin.Y < 1 || origin.Y + H > WorldState.Height) Err("bounds", $"build y {origin.Y}..{origin.Y + H - 1} leaves the world (1..{WorldState.Height - 1})");
+        if (origin.Y < 1 || origin.Y + H > worldHeight) Err("bounds", $"build y {origin.Y}..{origin.Y + H - 1} leaves the world (1..{worldHeight - 1})");
         return (issues.Any(i => i.Level == IssueLevel.Error) && states.Count == 0 ? null : plan, issues);
     }
 
@@ -262,11 +263,11 @@ public static class BlueprintNormalizer
     private static (int X, int Y, int Z) Max((int X, int Y, int Z) a, (int X, int Y, int Z) b) => (Math.Max(a.X, b.X), Math.Max(a.Y, b.Y), Math.Max(a.Z, b.Z));
 
     /// <summary>Parse + normalize in one go (tests, the design loop).</summary>
-    public static (VoxelPlan? Plan, List<BlueprintIssue> Issues) FromText(string dsl, BlockPos? defaultOrigin = null)
+    public static (VoxelPlan? Plan, List<BlueprintIssue> Issues) FromText(string dsl, BlockPos? defaultOrigin = null, int worldHeight = ChunkColumn.SizeY)
     {
         var (bp, issues) = BlueprintParser.Parse(dsl);
         if (issues.Any(i => i.Level == IssueLevel.Error && i.Code is "size")) return (null, issues);
-        var (plan, more) = Normalize(bp, defaultOrigin);
+        var (plan, more) = Normalize(bp, defaultOrigin, worldHeight);
         issues.AddRange(more);
         return (plan, issues);
     }

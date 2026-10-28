@@ -8,8 +8,8 @@ namespace MineClaw.Scripting.Sdk;
 /// Where an item comes from in the world, for the SDK's <c>gather()</c> source routes (zero tokens, no action): the crop or plant a
 /// harvest skill takes it from (replanting), the tree to chop, the blocks that drop it when mined (natural sources first; crafted
 /// blocks such as stairs never), the mobs that drop it. Data, not strategy: which route a job prefers stays in the script or memory.
-/// Names resolve through this version's <see cref="IGameData"/>; the drop rules are the b1.8.1 tables (<see cref="Drops"/>) until a
-/// version brings its own, and a name this version doesn't know is skipped.
+/// Names and drop rules resolve through this version's <see cref="IGameData"/> (<see cref="IGameData.DropsFor"/>), and a name this
+/// version doesn't know is skipped.
 /// </summary>
 public static class ItemSources
 {
@@ -46,7 +46,7 @@ public static class ItemSources
         }
         var harvested = new HashSet<int>();
         foreach (var (block, meta, skill) in Harvests)
-            if (data.BlockExists(block) && Drops.For(block, meta).Any(d => d.ItemId == id))
+            if (data.BlockExists(block) && data.DropsFor(block, meta).Any(d => d.ItemId == id))
             {
                 harvested.Add(block);
                 Add("harvest", "block", data.Block(block).Name, skill);
@@ -54,10 +54,10 @@ public static class ItemSources
         if (id == Blocks.Log) Add("chop", "block", data.Block(Blocks.Log).Name);
         // Natural sources before the item's own block (stone before cobblestone), then by expected yield; never farmland, crafted
         // blocks (stairs, furnaces...: someone built them) or the plants above.
-        var mined = Drops.SourcesOf(id)
+        var mined = data.BlockIds.Where(b => data.DropsFor(b, 0, b == Blocks.Web && !data.CanHarvest(b, -1) ? Items.Shears : BestTool(data, b)).Any(d => d.ItemId == id))
             .Where(b => b != Blocks.Log && b != Blocks.Farmland && !harvested.Contains(b) && data.BlockExists(b)
                         && (b == id || data.RecipesFor(b).Count == 0))
-            .Select(b => (Id: b, Yield: Drops.For(b, 0, BestTool(b)).Where(d => d.ItemId == id).Sum(d => d.Expected)))
+            .Select(b => (Id: b, Yield: data.DropsFor(b, 0, BestTool(data, b)).Where(d => d.ItemId == id).Sum(d => d.Expected)))
             .Where(x => x.Yield > 0)
             .OrderBy(x => x.Id == id ? 1 : 0).ThenByDescending(x => x.Yield).ThenBy(x => x.Id);
         foreach (var (b, _) in mined) Add("mine", "block", data.Block(b).Name);
@@ -66,6 +66,6 @@ public static class ItemSources
         return list;
     }
 
-    private static int BestTool(int block) =>
-        Tools.CanHarvest(block, -1) ? -1 : block is Blocks.SnowLayer or Blocks.SnowBlock ? Items.DiamondShovel : Items.DiamondPickaxe;
+    private static int BestTool(IGameData data, int block) =>
+        data.CanHarvest(block, -1) ? -1 : block is Blocks.SnowLayer or Blocks.SnowBlock ? Items.DiamondShovel : Items.DiamondPickaxe;
 }

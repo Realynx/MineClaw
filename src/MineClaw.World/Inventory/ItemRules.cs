@@ -14,6 +14,10 @@ public sealed class ItemRules
     public Func<int, bool> IsDamageable { get; init; } = DefaultIsDamageable;
     /// <summary>Items whose damage value is a sub-type (wool colour, dye, log type...): damage must match to stack.</summary>
     public Func<int, bool> HasSubtypes { get; init; } = DefaultHasSubtypes;
+    /// <summary>Burns in a furnace (<c>TileEntityFurnace.isItemFuel</c>): the fuel slot accepts it and a shift-click routes it there.</summary>
+    public Func<int, bool> IsFuel { get; init; } = id => Smelting.FuelTicks(id) > 0;
+    /// <summary>Has a furnace result (<c>FurnaceRecipes.getSmeltingResult</c> is not empty): a shift-click routes it to the input.</summary>
+    public Func<ItemStack, bool> IsSmeltable { get; init; } = s => Smelting.ResultFor(s.Id, s.Damage) is not null;
 
     /// <summary>ItemStack.isStackable: max stack &gt; 1 and not a damaged tool.</summary>
     public bool IsStackable(ItemStack s) => MaxStack(s.Id) > 1 && (!IsDamageable(s.Id) || s.Damage == 0);

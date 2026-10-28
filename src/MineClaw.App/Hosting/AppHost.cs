@@ -43,6 +43,7 @@ public static class AppHost
         config.GetSection("Agent").Bind(agentOptions);
         var botOptions = new BotOptions();
         config.GetSection("Bot").Bind(botOptions);
+        botOptions.Vision.ModernClientJar ??= config["Render:Assets:Jar"]; // the 1.12.2 client jar for textures/models (read at runtime)
         config.GetSection("Scripting").Bind(botOptions.Scripts); // JS engine limits + the Lua migration flags ("Scripting:MigrateLua")
         var host = config.GetSection("Host").Get<HostSettings>() ?? new HostSettings();
         var hive = config.GetSection("Hive").Get<HiveConfig>() ?? new HiveConfig();

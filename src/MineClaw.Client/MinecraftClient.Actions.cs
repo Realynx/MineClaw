@@ -39,6 +39,10 @@ public sealed partial class MinecraftClient
         _abortReason = null;
         Volatile.Write(ref _actionEditsOk, 0);
         CurrentAction = name;
+        // The static tables (Recipes, Smelting, Drops, Items…) answer from this body's version for the whole action, even
+        // where the process default differs (tests; P5 facades over GameData.Current). Scoped to this async flow only.
+        using var data = ReferenceEquals(MineClaw.Data.Versioning.GameData.Current, Options.Profile.Data) ? null
+            : MineClaw.Data.Versioning.GameData.Override(Options.Profile.Data);
         try
         {
             if (!IsPlaying) return ActionResult.Fail(World.Player.IsDead ? "dead" : "not in game");

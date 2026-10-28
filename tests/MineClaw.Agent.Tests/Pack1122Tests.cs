@@ -37,7 +37,8 @@ public sealed class Pack1122Tests : IDisposable
     private PackBuildResult Build(string outName) => DefaultPackBuilder.Build(new PackBuildOptions
     {
         Source = new MinecraftDataSource(Path.Combine(Root(), "third_party", "minecraft-data", "pc", "1.12.2"), "1.12.2",
-            factsDirectory: Path.Combine(Root(), "shards", "sources", "1.12.2")),
+            factsDirectory: Path.Combine(Root(), "shards", "sources", "1.12.2"),
+            tables: MineClaw.Data.Versioning.Release1122GameData.Instance), // the CLI's drop facts come from the bot's own tables
         KnowledgeDirectory = KnowledgeDir,
         OutputDirectory = Path.Combine(_dir, outName),
         SeedPath = Path.Combine(Root(), "data", "seed", "mineclaw-seed.db"),

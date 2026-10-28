@@ -9,7 +9,7 @@ public sealed class GameBeliefWorld(IGameClient client) : IBeliefWorld
 {
     public int? BlockAt(int x, int y, int z)
     {
-        if (y is < 0 or > 127 || !client.World.IsLoaded(x, z)) return null;
+        if (y < 0 || y >= client.World.WorldHeight || !client.World.IsLoaded(x, z)) return null;
         return client.World.GetBlock(x, y, z);
     }
 

@@ -561,7 +561,7 @@ public sealed class BotHost : IDisposable
                 rt.Observations.Upsert(new Agent.Rag.Observation("protected_region", "spawn",
                     $"spawn protection: can't break blocks within {r.Radius} of {r.Center.X},{r.Center.Y},{r.Center.Z} ({r.Reason})")
                 {
-                    Bounds = Agent.Rag.Box.Of(r.Center.X - r.Radius, 0, r.Center.Z - r.Radius, r.Center.X + r.Radius, 127, r.Center.Z + r.Radius),
+                    Bounds = Agent.Rag.Box.Of(r.Center.X - r.Radius, 0, r.Center.Z - r.Radius, r.Center.X + r.Radius, c.World.WorldHeight - 1, r.Center.Z + r.Radius),
                     Dimension = r.Dimension,
                     Confidence = 0.9,
                 });

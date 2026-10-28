@@ -116,6 +116,7 @@ public sealed class VisionRenderer
         slab.Meta = new byte[n * slab.Sy * n];
         slab.Loaded = new bool[n * n];
         slab.Below = new bool[n * n];
+        int height = s.Blocks.WorldHeight;
         ulong h = 14695981039346656037UL;
         void Mix(int v) { unchecked { for (int k = 0; k < 4; k++) { h ^= (byte)(v >> (8 * k)); h *= 1099511628211UL; } } }
         Mix(slab.X0); Mix(slab.Y0); Mix(slab.Z0); Mix(n); Mix(slab.Sy);
@@ -129,7 +130,7 @@ public sealed class VisionRenderer
                 for (int iy = 0; iy < slab.Sy; iy++)
                 {
                     int wy = slab.Y0 + iy;
-                    if ((uint)wy >= WorldState.Height) continue;
+                    if ((uint)wy >= height) continue;
                     int id = s.Blocks.GetBlock(wx, wy, wz);
                     byte b = (byte)Math.Clamp(id, 0, 255);
                     slab.Cells[(iy * n + iz) * n + ix] = b;

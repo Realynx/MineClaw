@@ -137,7 +137,7 @@ public sealed partial class MinecraftClient
     private double? StandFeet(int x, int y, int z)
     {
         if (Safety.IsStandable(World, x, y, z)) return y;
-        if (!World.IsLoaded(x, z) || y < 2 || y + 2 >= WorldState.Height) return null;
+        if (!World.IsLoaded(x, z) || y < 2 || y + 2 >= World.WorldHeight) return null;
         static bool Half(double top) => top > 0 && top <= 0.5 + 1e-9;
         double feet;
         if (BlockShapes.HasCollision(World, x, y, z))

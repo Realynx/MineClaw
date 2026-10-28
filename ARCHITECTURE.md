@@ -15,7 +15,7 @@ MineClaw.Client    TCP connection + packet dispatch, 20 TPS tick, physics, playe
    │        (dig, place, use, window clicks, crafting, smelting, chest ops, pathfind/goto, chat)
    ├── MineClaw.Protocol   packets + big-endian codec for protocol 17 (no deps)
    └── MineClaw.World      world/entity/inventory state, collision, A* pathfinding
-            └── MineClaw.Data  static b1.8.1 data: blocks, items, recipes, smelting, tool rules (no deps)
+            └── MineClaw.Data  game data: b1.8.1 tables + 1.12.2 (Versioning/Release1122*), static facades over GameData.Current (no deps)
 ```
 
 `tests/MineClaw.Tests` (xUnit) covers all layers.
@@ -39,7 +39,7 @@ rule) + `InventoryModel.Release1122` (off hand at 45, 1.12.2 `slotClick` predict
 | Project | Owns | Public contract (others code against this) |
 |---|---|---|
 | Protocol | `IPacket`, every packet class (both directions), `MinecraftReader/Writer` (big-endian, UTF-16 "string16"), `PacketRegistry`, `ItemStack` wire form, entity metadata, chunk payload (still compressed) | `PacketRegistry.Read(MinecraftReader, PacketDirection)` / `packet.Write(writer)` |
-| Data | `BlockInfo`, `ItemInfo`, `Blocks`, `Items`, `Recipes`, `Smelting`, `Tools` (dig-time math) | `Blocks.Get(id)`, `Blocks.ByName(name)`, `Items.Get(id)`, `Items.ByName(name)`, `Recipes.*`, `Smelting.*`, `Tools.*` |
+| Data | `BlockInfo`, `ItemInfo`, `Blocks`, `Items`, `Recipes`, `Smelting`, `Drops`, `Tools` (dig-time math); `IGameData` per version (`Beta181GameData`, `Release1122GameData`: 1.12.2 recipes, FurnaceRecipes + burn times, drop overrides, ItemFood, tool tiers) | `Blocks.Get(id)`, `Blocks.ByName(name)`, `Items.Get(id)`, `Items.ByName(name)`, `Recipes.*`, `Smelting.*`, `Drops.*`, `Tools.*`; all but `Blocks` answer from `GameData.Current` (the process's version, set by `VersionSetup`; `GameData.Override` in tests; each client action runs under its profile's data) |
 | World | chunk columns (16x128x16: ids, metadata, block light, sky light), `WorldState`, entity tracker, inventory/window model, AABB collision, A* pathfinder | `WorldState.GetBlock(x,y,z)`, `SetBlock`, `LoadChunk(...)`, `Pathfinder.FindPath(...)` |
 | Client | `MinecraftClient`, packet → world/event wiring, physics tick, action primitives | async action API used by Agent tools |
 | Agent | Anthropic client, tool loop, tools, SQLite memory + local RAG (`AgentDb`, `RagIndex`, `ObservationStore`), self-profile, prompts | `BotAgent.RunAsync(ct)`; world ingestion via `AgentRuntime.Observations` |
@@ -497,6 +497,8 @@ body adapter) all use it; craft always makes new ones (a worn carried pick never
 3 wheat / mushroom stew (bowl + both mushrooms) from inventory + chests → raw meat cooked at a furnace in reach (chest fuel too),
 else safe raw meat eaten raw → the shortfall ("no food anywhere: …; only 2 wheat in chest … (bread needs 3); 17 seeds to plant").
 The `eat` tool (so scripts' eat and `keepFed`), `ensure('food')`, skills' eat, the gen loop and the food reflex all go through it.
+**Versions:** the resolver, the planner and food read the static tables, so on 1.12.2 they plan with its recipes (wildcard plank/coal
+keys, planks that keep the log's wood type), FurnaceRecipes, burn times, drops and food values (docs/design/multi-version.md 5.3).
 
 ## Blueprints: build from a description (Bot/Blueprints)
 

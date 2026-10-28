@@ -43,7 +43,7 @@ public static class StuckProbe
     {
         var here = AABB.ForPlayer(feet);
         var moved = here.Offset(ox, 0, oz);
-        var raised = moved.Offset(0, PlayerPhysics.StepHeight, 0);
+        var raised = moved.Offset(0, w.Physics.StepHeight, 0);
         var found = new List<Obstruction>();
         var boxes = new List<AABB>(4);
         int x0 = (int)Math.Floor(moved.MinX), x1 = (int)Math.Floor(moved.MaxX - 1e-9);
@@ -51,7 +51,7 @@ public static class StuckProbe
         int y0 = (int)Math.Floor(moved.MinY) - 1, y1 = (int)Math.Floor(raised.MaxY - 1e-9);
         for (int x = x0; x <= x1; x++)
         for (int z = z0; z <= z1; z++)
-        for (int y = Math.Max(0, y0); y <= Math.Min(WorldState.Height - 1, y1); y++)
+        for (int y = Math.Max(0, y0); y <= Math.Min(w.WorldHeight - 1, y1); y++)
         {
             int id = w.GetBlock(x, y, z);
             if (id == 0) continue;
@@ -61,7 +61,7 @@ public static class StuckProbe
             foreach (var b in boxes)
             {
                 if (b.Intersects(here)) continue; // already touching/inside it: not what stops this move
-                if (b.Intersects(moved) && b.MaxY > feet.Y + PlayerPhysics.StepHeight + 1e-6) { block = true; head |= b.MinY >= feet.Y + 1 - 1e-6; }
+                if (b.Intersects(moved) && b.MaxY > feet.Y + w.Physics.StepHeight + 1e-6) { block = true; head |= b.MinY >= feet.Y + 1 - 1e-6; }
                 else if (b.Intersects(raised) && !b.Intersects(moved)) { block = true; head = true; }
             }
             if (block) found.Add(new Obstruction(new BlockPos(x, y, z), head));

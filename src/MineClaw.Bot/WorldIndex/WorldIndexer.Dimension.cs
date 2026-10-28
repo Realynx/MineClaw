@@ -239,7 +239,7 @@ public sealed partial class WorldIndexer
             var e = GetOrCreate(IndexKinds.Hazard, string.Create(CultureInfo.InvariantCulture, $"{rx},{rz}"), out _);
             e.Anchor = new BlockPos(bx + size / 2, 64, bz + size / 2);
             e.Min = new BlockPos(bx, 0, bz);
-            e.Max = new BlockPos(bx + size - 1, WorldState.Height - 1, bz + size - 1);
+            e.Max = new BlockPos(bx + size - 1, _world.WorldHeight - 1, bz + size - 1);
             e.Extra.Clear();
             e.Extra["chunks"] = cols;
             e.Extra["lava_sea"] = lavaSea;
@@ -272,10 +272,10 @@ public sealed partial class WorldIndexer
     /// <summary>Per-column hazard counts during a nether scan (lava sea vs lava above it, fire, soul sand, glowstone).</summary>
     private static HazCol ScanHazards(ChunkColumn col)
     {
-        int sea = 0, high = 0, minY = int.MaxValue, maxY = int.MinValue, fire = 0, soul = 0, glow = 0;
+        int sea = 0, high = 0, minY = int.MaxValue, maxY = int.MinValue, fire = 0, soul = 0, glow = 0, height = col.Height;
         for (int lx = 0; lx < 16; lx++)
         for (int lz = 0; lz < 16; lz++)
-        for (int y = 0; y < WorldState.Height; y++)
+        for (int y = 0; y < height; y++)
         {
             int id = col.GetBlock(lx, y, lz);
             switch (id)

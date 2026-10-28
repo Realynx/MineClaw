@@ -246,7 +246,7 @@ public static class BlockDescriber
     /// </summary>
     public static bool IsGenCell(WorldState w, BlockPos p)
     {
-        if ((uint)p.Y >= WorldState.Height) return false;
+        if ((uint)p.Y >= w.WorldHeight) return false;
         int id = w.GetBlock(p);
         if (!(id is Blocks.Cobblestone or Blocks.Stone or 0 || id == Blocks.FlowingLava)) return false;
         // A lava SOURCE (id 10 meta 0 once it updates) is the gen's lava, not a just-dug cell refilling (live 10-27 22:14:
@@ -266,7 +266,7 @@ public static class BlockDescriber
     public static string? GenCellRejection(WorldState w, BlockPos p)
     {
         if (IsGenCell(w, p)) return null;
-        if ((uint)p.Y >= WorldState.Height) return "out of the world";
+        if ((uint)p.Y >= w.WorldHeight) return "out of the world";
         int id = w.GetBlock(p);
         if (!(id is Blocks.Cobblestone or Blocks.Stone or 0 || id == Blocks.FlowingLava))
             return $"it's {(Blocks.Exists(id) ? Blocks.Get(id).Name : "block " + id)}, not cobblestone/stone";

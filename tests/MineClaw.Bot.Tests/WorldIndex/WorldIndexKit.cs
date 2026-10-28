@@ -40,7 +40,7 @@ public sealed class IndexFixture : IDisposable
 {
     public readonly string Dir = Path.Combine(Path.GetTempPath(), "mineclaw-wi-" + Guid.NewGuid().ToString("N")[..8]);
     public ManualClock Clock { get; } = new(new DateTimeOffset(2026, 10, 26, 12, 0, 0, TimeSpan.Zero));
-    public WorldState World { get; } = new();
+    public WorldState World { get; }
     public AgentDb Db { get; }
     public RagIndex Rag { get; }
     public ObservationStore Store { get; }
@@ -49,8 +49,9 @@ public sealed class IndexFixture : IDisposable
     public WorldIndexOptions Options { get; } = new() { ClusterMinWriteSeconds = 0, ContainerMinWriteSeconds = 0, MaxColumnsPerPass = 64, ScanBudgetMs = 1000 };
     private WorldIndexer? _indexer;
 
-    public IndexFixture(int chunkRadius = 2, bool loadAir = true)
+    public IndexFixture(int chunkRadius = 2, bool loadAir = true, int height = 128)
     {
+        World = new WorldState(height: height);
         Directory.CreateDirectory(Dir);
         Db = AgentDb.Open(Path.Combine(Dir, "test.db"));
         Rag = new RagIndex(Db, time: Clock, backgroundEmbedding: false);
@@ -59,7 +60,7 @@ public sealed class IndexFixture : IDisposable
         if (loadAir)
         {
             int size = chunkRadius * 32;
-            World.ApplyChunkRegion(-chunkRadius * 16, 0, -chunkRadius * 16, size, 128, size, new byte[size * 128 * size], null, null, null);
+            World.ApplyChunkRegion(-chunkRadius * 16, 0, -chunkRadius * 16, size, height, size, new byte[size * height * size], null, null, null);
         }
         World.Player.ServerTeleport(new Vec3d(0.5, 65, 0.5), 66.62, 0, 0, true);
     }

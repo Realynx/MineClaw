@@ -26,7 +26,7 @@ public sealed class GpuFreecam : IFreecamInput, IDisposable
         Cache = cache;
         Camera = camera;
         Atlas = atlas;
-        Store = new SectionStore(cache);
+        Store = new SectionStore(cache) { ModelsOf = () => atlas()?.Models };
         Worker = new MeshWorker(Store, cache);
         Scene = new FrameScene(cache);
     }

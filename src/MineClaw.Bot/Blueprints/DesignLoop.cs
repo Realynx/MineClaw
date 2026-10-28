@@ -60,6 +60,8 @@ public sealed class DesignLoop(IBlueprintAuthor author, IDesignCritic? critic, B
 {
     /// <summary>The world, roles and light the checks and the preview see.</summary>
     public required Func<SiteContext> Site { get; init; }
+    /// <summary>The site world's height (bounds for normalizing); 128 when no site world is available.</summary>
+    private int WorldHeight() { try { return Site().World.WorldHeight; } catch (Exception) { return ChunkColumn.SizeY; } }
     public Func<RoleMap?> Roles { get; init; } = () => null;
     public Func<IVoxelWorld?> Light { get; init; } = () => null;
     public Func<TextureAtlas?> Atlas { get; init; } = () => null;
@@ -191,7 +193,7 @@ public sealed class DesignLoop(IBlueprintAuthor author, IDesignCritic? critic, B
                 : new BlockPos(ext.Min.X, ext.Max.Y + 1, ext.Min.Z);
             if (Building.SiteAnchor.Mismatch(fx, fz, ext) is { } m2) issues.Add(new BlueprintIssue(IssueLevel.Warning, "size-mismatch", m2));
         }
-        var (plan, more) = BlueprintNormalizer.Normalize(bp, origin);
+        var (plan, more) = BlueprintNormalizer.Normalize(bp, origin, WorldHeight());
         issues.AddRange(more);
         if (plan == null) return new DesignVersion { N = n, Dsl = dsl, Structural = issues };
         var s = Site();

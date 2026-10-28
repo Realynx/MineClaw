@@ -264,7 +264,7 @@ public sealed partial class InventoryManager
     {
         SlotKind.CraftOutput or SlotKind.FurnaceOutput => false,
         SlotKind.Armor => EquipmentSlot(item.Id) == slot - 5,
-        SlotKind.FurnaceFuel => Smelting.FuelTicks(item.Id) > 0 || item.Id == Items.Bucket,
+        SlotKind.FurnaceFuel => Rules.IsFuel(item.Id) || item.Id == Items.Bucket,
         _ => true,
     };
 
@@ -317,8 +317,8 @@ public sealed partial class InventoryManager
                 if (index == 2) ok = Merge1122(w, original, main, end, true, out rem);
                 else if (index is not (0 or 1))
                 {
-                    if (Smelting.ResultFor(original.Id) is not null) ok = Merge1122(w, original, 0, 1, false, out rem);
-                    else if (Smelting.FuelTicks(original.Id) > 0) ok = Merge1122(w, original, 1, 2, false, out rem);
+                    if (Rules.IsSmeltable(original)) ok = Merge1122(w, original, 0, 1, false, out rem);
+                    else if (Rules.IsFuel(original.Id)) ok = Merge1122(w, original, 1, 2, false, out rem);
                     else if (index >= main && index < hot) ok = Merge1122(w, original, hot, end, false, out rem);
                     else if (index >= hot && index < end) ok = Merge1122(w, original, main, hot, false, out rem);
                     else { ok = true; rem = original; }

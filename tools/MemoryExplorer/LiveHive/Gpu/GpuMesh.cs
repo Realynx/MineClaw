@@ -50,6 +50,13 @@ public static class GpuAtlas
 {
     public const int Cols = 16, ItemRow = 16, ExtraRow = 32, EntityRow = 33, EntitySlots = 20, Rows = EntityRow + EntitySlots / 4 * 2;
     public const int White = 0, GrassSide = 1, Shadow = 2, WaterStill = 3, WaterFlow = 4, LavaStill = 5, LavaFlow = 6, FireA = 7, FireB = 8;
+    /// <summary>1.12.2: the grass side with its tinted fringe (the only model face with an overlay).</summary>
+    public const int ModelGrassSide = 9;
+    /// <summary>1.12.2: the first row of the block-model textures (16 per row), below the fixed rows.</summary>
+    public const int BlockRow = Rows;
+
+    /// <summary>Rows of a built atlas: the fixed ones, plus the block-model textures when the atlas has models.</summary>
+    public static int RowsFor(TextureAtlas? atlas) => atlas?.Models is { } m ? BlockRow + (m.Textures.Count + Cols - 1) / Cols : Rows;
 
     /// <summary>Top-left cell of entity texture <paramref name="id"/>.</summary>
     public static (int Col, int Row) EntityCell(int id) => (id % 4 * 4, EntityRow + id / 4 * 2);
@@ -57,7 +64,7 @@ public static class GpuAtlas
     public static (int W, int H, byte[] Rgba) Build(TextureAtlas? atlas)
     {
         int t = atlas?.Tile ?? 16;
-        int w = Cols * t, h = Rows * t;
+        int w = Cols * t, h = RowsFor(atlas) * t;
         var px = new byte[w * h * 4];
         void Put(int x, int y, uint argb)
         {
@@ -112,6 +119,19 @@ public static class GpuAtlas
             var (c, r) = EntityCell(id);
             Cell(c, r, 4, 2, ew, eh, epx);
         }
+        if (atlas?.Models is { } models)
+        {
+            var mt = models.Textures;
+            for (int i = 0; i < mt.Count; i++) Cell(i % Cols, BlockRow + i / Cols, 1, 1, 16, 16, mt.Pixels(i));
+            int side = mt.IndexOf("blocks/grass_side"), fringe = mt.IndexOf("blocks/grass_side_overlay");
+            var grass = new uint[256];
+            for (int i = 0; i < 256; i++)
+            {
+                uint p = mt.Pixels(side)[i], o = mt.Pixels(fringe)[i];
+                grass[i] = o >> 24 >= 128 ? BlockTextures.Tinted(o, MineClaw.Render.Models.BiomeTints.Grass()) | 0xff000000 : p;
+            }
+            Cell(ModelGrassSide, ExtraRow, 1, 1, 16, 16, grass);
+        }
         return (w, h, px);
     }
 
@@ -146,6 +166,11 @@ public static class QuadEmit
             case QuadTex.Terrain when textured && q.Tile >= 0:
                 if (q.Overlay == BlockTextures.GrassSideOverlay && q.Tile == 3) { col = GpuAtlas.GrassSide; row = GpuAtlas.ExtraRow; tint = 0xffffff; return true; }
                 col = (byte)(q.Tile & 15); row = (byte)(q.Tile >> 4 & 15);
+                return true;
+            case QuadTex.Block when textured && q.Tile >= 0:
+                // 1.12.2 model textures; a face with an overlay is the grass side (pre-composited, tint inside).
+                if (q.Overlay >= 0) { col = GpuAtlas.ModelGrassSide; row = GpuAtlas.ExtraRow; tint = 0xffffff; return true; }
+                col = (byte)(q.Tile % GpuAtlas.Cols); row = (byte)(GpuAtlas.BlockRow + q.Tile / GpuAtlas.Cols);
                 return true;
             case QuadTex.Item when textured && q.Tile >= 0:
                 col = (byte)(q.Tile & 15); row = (byte)(GpuAtlas.ItemRow + (q.Tile >> 4 & 15));
@@ -213,7 +238,10 @@ public static class QuadEmit
 public sealed class ColumnNeighbourhood : IVoxelWorld
 {
     private readonly ClientColumn?[] _c = new ClientColumn?[9];
-    private int _cx, _cz;
+    private int _cx, _cz, _h = ChunkColumn.SizeY;
+
+    /// <summary>Blocks per column: the tallest of the nine (b1.8.1 128, 1.12.2 256).</summary>
+    public int WorldHeight => _h;
 
     public void Set(HiveWorldCache cache, int dim, int cx, int cz)
     {
@@ -221,6 +249,8 @@ public sealed class ColumnNeighbourhood : IVoxelWorld
         for (int i = 0; i < 3; i++)
             for (int j = 0; j < 3; j++)
                 _c[i * 3 + j] = cache.Get(dim, cx + i - 1, cz + j - 1);
+        _h = ChunkColumn.SizeY;
+        foreach (var c in _c) if (c != null && c.Snap.Height > _h) _h = c.Snap.Height;
     }
 
     public ClientColumn? Centre => _c[4];
@@ -231,12 +261,12 @@ public sealed class ColumnNeighbourhood : IVoxelWorld
         return (uint)i < 3 && (uint)j < 3 ? _c[i * 3 + j] : null;
     }
 
-    public int Block(int x, int y, int z) => (uint)y >= ChunkColumn.SizeY || Col(x, z) is not { } c ? 0 : c.Snap.Ids[ChunkColumn.Index(x & 15, y, z & 15)];
-    public int Meta(int x, int y, int z) => (uint)y >= ChunkColumn.SizeY || Col(x, z) is not { } c ? 0 : c.Snap.Meta[ChunkColumn.Index(x & 15, y, z & 15)];
+    public int Block(int x, int y, int z) => (uint)y >= _h || Col(x, z) is not { } c || y >= c.Snap.Height ? 0 : c.Snap.Ids[ChunkColumn.Index(x & 15, y, z & 15)];
+    public int Meta(int x, int y, int z) => (uint)y >= _h || Col(x, z) is not { } c || y >= c.Snap.Height ? 0 : c.Snap.Meta[ChunkColumn.Index(x & 15, y, z & 15)];
 
     public int SkyLight(int x, int y, int z)
     {
-        if (y >= ChunkColumn.SizeY) return 15;
+        if (y >= _h) return 15;
         if (y < 0) return 0;
         if (Col(x, z) is not { } c) return 15;
         return y > c.Top[(x & 15) * 16 + (z & 15)] ? 15 : -1;
@@ -261,13 +291,17 @@ public sealed class SectionMesher
     public int SkySubtracted { get; set; }
     /// <summary>Darkest a lit face gets (the CPU eye's MinBrightness).</summary>
     public float MinBrightness { get; set; } = 0.12f;
+    /// <summary>1.12.2 block models (null = the b1.8.1 shapes): classification, cube faces and shapes come from them.</summary>
+    public IBlockModels? Models { get; set; }
 
-    /// <summary>True when the section holds any non-air block.</summary>
+    /// <summary>True when the section holds any non-air block (false above the column's height).</summary>
     public static bool NonEmpty(ChunkSnapshot s, int sy)
     {
+        if ((uint)(sy * 16) >= (uint)s.Height) return false;
         var ids = s.Ids.AsSpan();
+        int b = ChunkColumn.Index(0, sy * 16, 0); // the section's half: (sy >> 3) << 15, then (sy & 7) · 16 into each 128-cell column
         for (int xz = 0; xz < 256; xz++)
-            if (ids.Slice(xz * ChunkColumn.SizeY + sy * 16, 16).IndexOfAnyExcept((byte)0) >= 0) return true;
+            if (ids.Slice(b + xz * ChunkColumn.SizeY, 16).IndexOfAnyExcept((byte)0) >= 0) return true;
         return false;
     }
 
@@ -284,6 +318,16 @@ public sealed class SectionMesher
                     int id = w.Block(x, y, z);
                     if (id == 0) continue;
                     var off = new Vector3(lx, ly, lz);
+                    if (Models is { } models)
+                    {
+                        if (models.Classify(id, w.Meta(x, y, z)) is BlockShape.Cube or BlockShape.CutoutCube or BlockShape.TranslucentCube) { ModelCube(models, w, x, y, z, id, off); continue; }
+                        _quads.Clear();
+                        try { models.Build(w, x, y, z, _quads); }
+                        catch (Exception) { continue; }
+                        foreach (var q in _quads)
+                            QuadEmit.Emit(q.Pass == RenderPass.Translucent ? Translucent : Solid, q, off, LightOf(w, id, x, y, z, q), Textured);
+                        continue;
+                    }
                     if (BlockGeometry.Classify(id) == BlockShape.Cube) { Cube(w, x, y, z, id, off); continue; }
                     _quads.Clear();
                     try { BlockGeometry.Build(w, x, y, z, _quads); }
@@ -305,6 +349,27 @@ public sealed class SectionMesher
             k = lvl < 0 ? 0.75f : Math.Max(0.05f, Lighting.Brightness(lvl, Nether));
         }
         return Math.Max(MinBrightness, k * q.Shade);
+    }
+
+    /// <summary>A 1.12.2 full cube: its model's six faces, each culled against an opaque neighbour (and glass against glass).</summary>
+    private void ModelCube(IBlockModels models, IVoxelWorld w, int x, int y, int z, int id, Vector3 off)
+    {
+        int meta = w.Meta(x, y, z);
+        var shape = models.Classify(id, meta);
+        for (int fi = 0; fi < 6; fi++)
+        {
+            var f = (Face)fi;
+            var (dx, dy, dz) = Lighting.Normal(f);
+            int n = y + dy < 0 ? 0 : w.Block(x + dx, y + dy, z + dz);
+            if (n != 0)
+            {
+                var ns = models.Classify(n, w.Meta(x + dx, y + dy, z + dz));
+                if (ns == BlockShape.Cube || shape != BlockShape.Cube && n == id && id is not (18 or 161)) continue;
+            }
+            var q = models.CubeFace(w, x, y, z, id, meta, f);
+            if (q.Tex != QuadTex.Block) continue;
+            QuadEmit.Emit(q.Pass == RenderPass.Translucent ? Translucent : Solid, q, off, LightOf(w, id, x, y, z, q), Textured);
+        }
     }
 
     private void Cube(IVoxelWorld w, int x, int y, int z, int id, Vector3 off)

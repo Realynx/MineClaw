@@ -35,11 +35,19 @@ public static class PlayerPhysics
     /// Advances the state by one tick. If the chunk under the player isn't loaded the state is left untouched and
     /// <see cref="PhysicsState.Frozen"/> is set (vanilla doesn't tick entities in unloaded chunks either).
     /// </summary>
-    public static void Tick(IBlockAccess w, PhysicsState s, MoveInput input) => Tick(w, s, input, StepHeight);
+    /// <remarks>Runs the world's version rules (<see cref="IBlockAccess.Physics"/>): b1.8.1 below, 1.12.2
+    /// <see cref="Release1122.Physics1122"/>. The simulators (SwimSim, parkour, EdgeGuard) call this.</remarks>
+    public static void Tick(IBlockAccess w, PhysicsState s, MoveInput input)
+    {
+        var rules = w.Physics;
+        if (rules is Versioning.Beta181PhysicsRules) TickBeta(w, s, input, StepHeight);
+        else rules.Tick(w, s, input);
+    }
 
-    /// <summary><see cref="Tick(IBlockAccess, PhysicsState, MoveInput)"/> with another step height (1.12.2: 0.6; the rest of
-    /// the 1.12.2 move is pending the decompiled source, multi-version P3).</summary>
-    public static void Tick(IBlockAccess w, PhysicsState s, MoveInput input, double stepHeight)
+    /// <summary>The b1.8.1 tick with another step height (whatever the world's version).</summary>
+    public static void Tick(IBlockAccess w, PhysicsState s, MoveInput input, double stepHeight) => TickBeta(w, s, input, stepHeight);
+
+    internal static void TickBeta(IBlockAccess w, PhysicsState s, MoveInput input, double stepHeight)
     {
         int bx = (int)Math.Floor(s.Position.X), bz = (int)Math.Floor(s.Position.Z);
         if (!w.IsLoaded(bx, bz))
@@ -154,6 +162,9 @@ public static class PlayerPhysics
     /// <summary>EntityLiving.isOnLadder: ladder or vine in the feet cell.</summary>
     public static bool IsOnLadder(IBlockAccess w, PhysicsState s)
     {
+        var rules = w.Physics;
+        if (rules is not Versioning.Beta181PhysicsRules)
+            return rules.IsClimbable(w, (int)Math.Floor(s.Position.X), (int)Math.Floor(s.BoundingBox.MinY), (int)Math.Floor(s.Position.Z));
         int id = w.GetBlock((int)Math.Floor(s.Position.X), (int)Math.Floor(s.BoundingBox.MinY), (int)Math.Floor(s.Position.Z));
         return BlockShapes.IsClimbable(w, id);
     }

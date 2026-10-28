@@ -713,7 +713,7 @@ public sealed partial class MinecraftClient
     /// <summary>Vanilla canBlockSeeTheSky: nothing with light opacity above (leaves and water count, glass/torches don't).</summary>
     private bool SeesSky(BlockPos p)
     {
-        for (int y = p.Y + 1; y < WorldState.Height; y++)
+        for (int y = p.Y + 1, h = World.WorldHeight; y < h; y++)
         {
             int id = World.GetBlock(p.X, y, p.Z);
             if (id == 0 || id == Blocks.Glass) continue;

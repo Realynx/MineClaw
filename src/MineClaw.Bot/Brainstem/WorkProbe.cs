@@ -48,7 +48,7 @@ public static class WorkProbe
     {
         for (int x = me.X - Radius; x <= me.X + Radius; x++)
         for (int z = me.Z - Radius; z <= me.Z + Radius; z++)
-        for (int y = Math.Max(0, me.Y - 8); y <= Math.Min(127, me.Y + 8); y++)
+        for (int y = Math.Max(0, me.Y - 8), y1 = Math.Min(w.WorldHeight - 1, me.Y + 8); y <= y1; y++)
         {
             int id = w.GetBlock(x, y, z);
             if (id <= 0) continue;

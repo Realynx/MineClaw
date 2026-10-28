@@ -17,6 +17,8 @@ public sealed class PlanWorld(IBlockAccess inner) : IBlockAccess
     public int GetMeta(int x, int y, int z) => _set.TryGetValue(new BlockPos(x, y, z), out var v) ? v.Meta : inner.GetMeta(x, y, z);
     public bool IsLoaded(int x, int z) => inner.IsLoaded(x, z);
     public BlockInfo Info(int id) => inner.Info(id);
+    public MineClaw.World.Versioning.IPhysicsRules Physics => inner.Physics;
+    public int WorldHeight => inner.WorldHeight;
 
     public int Get(BlockPos p) => GetBlock(p.X, p.Y, p.Z);
     public void Set(BlockPos p, int id, int meta = 0) => _set[p] = (id, meta);

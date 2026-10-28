@@ -357,21 +357,22 @@ public sealed class EyeRenderer
         int lastAxis = -1, prevId = s.World.Block(vx, vy, vz);
         var w = s.World;
         int maxDist = ctx.MaxDist;
-        int maxSteps = maxDist * 3 + 3;
+        int maxSteps = maxDist * 3 + 3, height = w.WorldHeight;
         Span<(float T, int Q)> hits = stackalloc (float, int)[24];
         for (int step = 0; step < maxSteps && t0 <= maxDist; step++)
         {
             if (eT <= t0) return (Finish(ctx, blend, eC, eT, dy), (float)eT, NoCell);
-            if (vy < 0 && dy < 0 || vy >= WorldState.Height && dy > 0) break;
-            int id = (uint)vy < WorldState.Height ? w.Block(vx, vy, vz) : 0;
+            if (vy < 0 && dy < 0 || vy >= height && dy > 0) break;
+            int id = (uint)vy < height ? w.Block(vx, vy, vz) : 0;
             double tExit = Math.Min(tmx, Math.Min(tmy, tmz));
             if (id != 0 && step > 0 && !(s.Cut is { } cut && cut.Hidden(vx, vy, vz)) && !(s.Clip is { } clip && !clip.Contains(vx, vy, vz)))
             {
-                var shape = BlockGeometry.Classify(id);
+                var models = s.Atlas?.Models;
+                var shape = models != null ? models.Classify(id, w.Meta(vx, vy, vz)) : BlockGeometry.Classify(id);
                 if (shape is BlockShape.Cube or BlockShape.CutoutCube or BlockShape.TranslucentCube)
                 {
                     // Glass beside glass and ice beside ice draw no face between them (fancy leaves do).
-                    bool culled = shape != BlockShape.Cube && id != Blocks.Leaves && prevId == id;
+                    bool culled = shape != BlockShape.Cube && id != Blocks.Leaves && prevId == id && !(models != null && id == 161);
                     if (!culled)
                     {
                         int meta = w.Meta(vx, vy, vz);
@@ -379,7 +380,9 @@ public sealed class EyeRenderer
                         double hx = ox + dx * t0, hy = oy + dy * t0, hz = oz + dz * t0;
                         var (u, v) = Uv(face, hx - vx, hy - vy, hz - vz);
                         uint texel;
-                        if (s.Atlas is { } atlas)
+                        if (models != null)
+                            texel = models.CubeTexel(w, vx, vy, vz, id, meta, face, new Vector3((float)(hx - vx), (float)(hy - vy), (float)(hz - vz)));
+                        else if (s.Atlas is { } atlas)
                         {
                             var tr = BlockGeometry.CubeTile(w, vx, vy, vz, id, meta, face);
                             texel = BlockTextures.Texel(atlas, tr, id, (float)u, (float)v) ?? (0xff000000 | BlockGeometry.FlatColour(id, face));
@@ -388,7 +391,7 @@ public sealed class EyeRenderer
                         float a = shape == BlockShape.TranslucentCube ? 0.62f : (texel >> 24) / 255f;
                         if (shape == BlockShape.Cube || a >= 0.5f)
                         {
-                            float k = CubeLight(s, w, id, vx, vy, vz, face, u, v, ctx.Sub, cache, ctx.MinB);
+                            float k = models != null && models.Emissive(id) ? 1f : CubeLight(s, w, id, vx, vy, vz, face, u, v, ctx.Sub, cache, ctx.MinB);
                             uint c = Lighting.Scale(texel, k);
                             if (face == Face.Up) c = ShadowAt(ctx, c, hx, hy, hz);
                             if (shape == BlockShape.TranslucentCube) blend.Add(c, a);
@@ -398,7 +401,7 @@ public sealed class EyeRenderer
                 }
                 else
                 {
-                    var quads = Shape(w, vx, vy, vz, cache);
+                    var quads = Shape(models, w, vx, vy, vz, cache);
                     if (quads.Length > 0)
                     {
                         var o = new Vector3((float)(ox - vx), (float)(oy - vy), (float)(oz - vz));
@@ -442,13 +445,18 @@ public sealed class EyeRenderer
 
     private static uint Finish(Ctx ctx, Blend b, uint c, double depth, double dy) => b.Over(c);
 
-    private static GeoQuad[] Shape(IVoxelWorld w, int x, int y, int z, BandCache cache)
+    private static GeoQuad[] Shape(IBlockModels? models, IVoxelWorld w, int x, int y, int z, BandCache cache)
     {
         long key = CellKey(x, y, z);
         int slot = (int)((ulong)(key * unchecked((long)0x9E3779B97F4A7C15)) >> 53);
         if (cache.ShapeKeys[slot] == key && cache.Shapes[slot] is { } hit) return hit;
         cache.Tmp.Clear();
-        try { BlockGeometry.Build(w, x, y, z, cache.Tmp); } catch (Exception) { cache.Tmp.Clear(); }
+        try
+        {
+            if (models != null) models.Build(w, x, y, z, cache.Tmp);
+            else BlockGeometry.Build(w, x, y, z, cache.Tmp);
+        }
+        catch (Exception) { cache.Tmp.Clear(); }
         var arr = cache.Tmp.ToArray();
         cache.ShapeKeys[slot] = key;
         cache.Shapes[slot] = arr;
@@ -476,6 +484,8 @@ public sealed class EyeRenderer
                 return 0xff000000 | q.Flat;
             case QuadTex.Flat:
                 return 0xff000000 | q.Flat;
+            case QuadTex.Block:
+                return s.Atlas?.Models is { } models ? models.SampleQuad(q, uv) : 0xff000000 | q.Flat;
             default:
                 if (q.Tile < 0 || s.Atlas is not { } atlas) return (q.Pass == RenderPass.Cutout && s.Atlas == null ? 0xff000000u : 0xff000000u) | q.Flat;
                 u = Math.Clamp(u, 0, 0.999f); v = Math.Clamp(v, 0, 0.999f);
@@ -779,10 +789,10 @@ public sealed class EyeRenderer
         double tmy = dy == 0 ? double.MaxValue : (dy > 0 ? vy + 1 - oy : oy - vy) * tdy;
         double tmz = dz == 0 ? double.MaxValue : (dz > 0 ? vz + 1 - oz : oz - vz) * tdz;
         double t = 0;
-        int maxDist = MaxDist(s);
+        int maxDist = MaxDist(s), height = s.World.WorldHeight;
         for (int i = 0; i < maxDist * 3 && t <= maxDist; i++)
         {
-            if (i > 0 && (uint)vy < WorldState.Height && s.World.Block(vx, vy, vz) is var id and not 0 && !Translucent(id))
+            if (i > 0 && (uint)vy < height && s.World.Block(vx, vy, vz) is var id and not 0 && !Translucent(id))
                 return (vx, vy, vz, id, t);
             if (tmx < tmy && tmx < tmz) { vx += stepX; t = tmx; tmx += tdx; }
             else if (tmy < tmz) { vy += stepY; t = tmy; tmy += tdy; }

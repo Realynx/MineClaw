@@ -30,8 +30,12 @@ public sealed class WorldState : IBlockAccess
     /// <param name="height">Blocks per column: 128 (b1.8.1, the default) or 256 (1.12.2: the profile's
     /// <c>GameVersion.WorldHeight</c>).</param>
     /// <param name="inventory">The inventory model (b1.8.1 by default; 1.12.2 adds the off hand and its click rules).</param>
-    public WorldState(Func<int, BlockInfo>? blockLookup = null, int height = ChunkColumn.SizeY, InventoryModel? inventory = null)
+    /// <param name="physics">The version's movement and collision rules (b1.8.1 by default): what <see cref="IBlockAccess.Physics"/>
+    /// answers, so shapes, simulators and the pathfinder follow the version.</param>
+    public WorldState(Func<int, BlockInfo>? blockLookup = null, int height = ChunkColumn.SizeY, InventoryModel? inventory = null,
+        Versioning.IPhysicsRules? physics = null)
     {
+        Physics = physics ?? Versioning.Beta181PhysicsRules.Instance;
         if (height is not (ChunkColumn.SizeY or ChunkColumn.MaxHeight)) throw new ArgumentOutOfRangeException(nameof(height), height, "world height is 128 or 256");
         _lookup = blockLookup ?? Blocks.Get;
         WorldHeight = height;
@@ -41,6 +45,9 @@ public sealed class WorldState : IBlockAccess
 
     /// <summary>Blocks per column of this world (128 b1.8.1, 256 1.12.2).</summary>
     public int WorldHeight { get; }
+
+    /// <summary>The version's movement and collision rules (see the constructor).</summary>
+    public Versioning.IPhysicsRules Physics { get; }
 
     /// <summary>The b1.8.1 light engine: the server's light arrays kept up to date on every block change (mc-dev).</summary>
     public LightEngine Light { get; }
@@ -167,6 +174,8 @@ public sealed class WorldState : IBlockAccess
         public BlockInfo Info(int id) => w.Info(id);
 
         public int WorldHeight => w.WorldHeight;
+
+        public Versioning.IPhysicsRules Physics => w.Physics;
     }
 
     // ---- column lifecycle (0x32 Pre-Chunk) ----

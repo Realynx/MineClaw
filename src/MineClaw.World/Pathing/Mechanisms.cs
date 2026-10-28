@@ -170,7 +170,7 @@ public static class Mechanisms
             for (int dy = -r; dy <= r; dy++)
             {
                 int y = p.Y + dy;
-                if (y < 0 || y >= WorldState.Height) continue;
+                if (y < 0 || y >= w.WorldHeight) continue;
                 if (IsExplosive(w.GetBlock(p.X + dx, y, p.Z + dz))) return true;
             }
         }
@@ -222,7 +222,7 @@ public static class Mechanisms
             for (int k = 1; k <= maxChain + 1; k++)
             {
                 int bx = x - dir.X * k, by = y - dir.Y * k, bz = z - dir.Z * k;
-                if (by < 0 || by >= WorldState.Height) break;
+                if (by < 0 || by >= w.WorldHeight) break;
                 int id = w.GetBlock(bx, by, bz);
                 if (id == 0) break;
                 int meta = w.GetMeta(bx, by, bz);

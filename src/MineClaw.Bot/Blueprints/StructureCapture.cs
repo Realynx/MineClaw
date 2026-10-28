@@ -246,8 +246,8 @@ public static class StructureCapture
     private static string? Flood(CaptureRequest req, BlockPos seed, Dictionary<BlockPos, bool> trees, HashSet<BlockPos> region, HashSet<BlockPos> unknown)
     {
         var w = req.World;
-        int max = req.MaxSide;
-        bool Building(BlockPos p) => w.IsLoaded(p.X, p.Z) && (uint)p.Y < WorldState.Height
+        int max = req.MaxSide, height = w.WorldHeight;
+        bool Building(BlockPos p) => w.IsLoaded(p.X, p.Z) && (uint)p.Y < height
                                      && Classify(w, p, req.Exclude, trees).Class is CellClass.Build or CellClass.Unsupported;
         int floorY = req.FloorY ?? FloorOf(w, seed, Building);
         var q = new Queue<BlockPos>();
@@ -518,7 +518,7 @@ public static class StructureCapture
     {
         var (bp, issues) = BlueprintParser.Parse(r.Dsl);
         if (issues.FirstOrDefault(i => i.Level == IssueLevel.Error) is { } perr) { r.Refusal = "the captured DSL doesn't parse: " + perr; return; }
-        var (plan, more) = BlueprintNormalizer.Normalize(bp, r.Min);
+        var (plan, more) = BlueprintNormalizer.Normalize(bp, r.Min, w.WorldHeight);
         if (plan == null || more.FirstOrDefault(i => i.Level == IssueLevel.Error) is { } nerr)
         {
             r.Refusal = "the captured DSL doesn't normalize: " + (more.FirstOrDefault(i => i.Level == IssueLevel.Error)?.ToString() ?? "no plan");

@@ -31,6 +31,8 @@ public static class VersionSetup
         {
             var res = await VersionResolver.ResolveAsync(configured, ping, ReadLastKnown(path), ct).ConfigureAwait(false);
             var profile = GameVersionProfiles.For(res.Version);
+            // One process speaks one version: the static tables (Items, Recipes, Smelting, Drops…) answer from its data.
+            MineClaw.Data.Versioning.GameData.SetDefault(profile.Data);
             if (res.Detected) WriteLastKnown(path, res.Version, log);
             log.LogInformation("game version {Version}: {How}", res.Version, res.How);
             if (!res.Detected && res.How.StartsWith("server didn't answer", StringComparison.Ordinal))

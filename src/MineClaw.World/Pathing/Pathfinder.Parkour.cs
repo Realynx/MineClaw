@@ -69,7 +69,7 @@ public sealed partial class Pathfinder
                 if (_o.AvoidJumps is { } aj && aj.Contains((from, to))) continue;
                 int dyb = Math.Clamp((int)Math.Floor(rise + 1e-6), -3, 1);
                 double step = dx != 0 && dz != 0 ? Math.Sqrt(2) : 1;
-                double bound = (run[di] + 0.5) * step + 0.3 + Parkour.AirTravel(dyb, _o.CanSprint) + 1.2;
+                double bound = (run[di] + 0.5) * step + 0.3 + Parkour.AirTravel(dyb, _o.CanSprint, _world.Physics) + 1.2;
                 if (dist > bound) continue;
                 if (!NearEdgeOfLanding(tx, ty, tz, c, ox, oz)) continue;
                 if (!GapOnLine(x, y, z, here, tx, ty, tz, c)) continue;
@@ -89,7 +89,7 @@ public sealed partial class Pathfinder
             int dyb = Math.Clamp((int)Math.Floor(c.Floor - here.Floor + 1e-6), -3, 1);
             ParkourPlan? plan = null;
             // A plain jump is calmer (no sprint state to keep): try it first when it can possibly reach.
-            if (dist <= (r + 0.5) * step + 0.3 + Parkour.AirTravel(dyb, false) + 1.2)
+            if (dist <= (r + 0.5) * step + 0.3 + Parkour.AirTravel(dyb, false, _world.Physics) + 1.2)
                 plan = PlanJump(from, here.Floor, to, c.Floor, sprint: false, allowVoid);
             if (plan is null && _o.CanSprint) plan = PlanJump(from, here.Floor, to, c.Floor, sprint: true, allowVoid);
             if (plan is null) continue;

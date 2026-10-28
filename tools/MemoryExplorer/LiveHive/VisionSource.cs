@@ -71,6 +71,7 @@ public sealed class HiveBlocks(HiveVoxels vox) : IBlockAccess
     public int GetMeta(int x, int y, int z) => vox.Meta(x, y, z);
     public bool IsLoaded(int x, int z) => vox.Column(x, z) != null;
     public BlockInfo Info(int id) => Blocks.Get(id);
+    public int WorldHeight => vox.WorldHeight;
 }
 
 /// <summary>

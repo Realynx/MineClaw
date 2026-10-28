@@ -46,7 +46,7 @@ public static partial class DesignCapture
         var e = new DesignEvaluation();
         DesignChecks.Bill(plan, new SiteContext
         {
-            World = EmptySite.Instance, Inventory = site?.Inventory, Stored = site?.Stored, GeneratorKnown = site?.GeneratorKnown ?? false,
+            World = new EmptySite(site?.World.WorldHeight ?? ChunkColumn.SizeY), Inventory = site?.Inventory, Stored = site?.Stored, GeneratorKnown = site?.GeneratorKnown ?? false,
             ChoppableTrees = site?.ChoppableTrees ?? 0,
         }, e);
         rec.Bill = e.Bill.Select(b => new BillRow(b.Name, b.Need, b.Have, b.Stored, b.Missing, b.Source)).ToList();
@@ -70,14 +70,14 @@ public static partial class DesignCapture
         return (rec, text);
     }
 
-    /// <summary>All air, every column loaded: the bill of a build from nothing.</summary>
-    private sealed class EmptySite : IBlockAccess
+    /// <summary>All air, every column loaded, as high as the real site: the bill of a build from nothing.</summary>
+    private sealed class EmptySite(int height) : IBlockAccess
     {
-        public static readonly EmptySite Instance = new();
         public int GetBlock(int x, int y, int z) => 0;
         public int GetMeta(int x, int y, int z) => 0;
         public bool IsLoaded(int x, int z) => true;
         public Data.BlockInfo Info(int id) => Data.Blocks.Get(id);
+        public int WorldHeight => height;
     }
 
     // ------------------------------------------------------------------ rebuild: never on top of the original

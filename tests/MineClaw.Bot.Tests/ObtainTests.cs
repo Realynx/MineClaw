@@ -147,6 +147,28 @@ public class ObtainTests
         Assert.Contains("took 1 oak wood from 3,65,2", r.Text);
     }
 
+    /// <summary>Multi-version P5: on 1.12.2 the same resolver plans with the 1.12.2 tables (acacia logs → acacia planks →
+    /// sticks, FurnaceRecipes iron ore → ingot): an iron pickaxe from three chests, smelted at the furnace, crafted at the table.</summary>
+    [Fact]
+    public async Task Iron_pickaxe_from_chests_on_1122_uses_the_1122_recipe_tree()
+    {
+        using var v = MineClaw.Data.Versioning.GameData.Override(MineClaw.Data.Versioning.Release1122GameData.Instance);
+        var (h, c, s) = Make();
+        using var _ = h;
+        Furnace(c);
+        const int log2 = 162;
+        s.Chest(3, 65, 2, I(log2, 12, 0), I(Blocks.Dirt, 5));            // acacia logs: b1.8.1 has no id 162
+        s.Chest(-3, 65, 3, I(Blocks.IronOre, 5), I(Items.Coal, 4, 1));  // charcoal
+        var r = await h.Run("craft", new { item = "iron pickaxe" });
+        Assert.True(r.Ok, r.Text + " | " + Calls(c));
+        Assert.Equal(1, Inv(c, Items.IronPickaxe));
+        Assert.Contains($"withdraw {log2} 1 3,65,2 dmg=0", c.CallList);          // 1 log → 4 acacia planks → 2 sticks
+        Assert.Contains($"withdraw {Blocks.IronOre} 3 -3,65,3 dmg=0", c.CallList);
+        Assert.Contains($"smelt {Blocks.IronOre} 3", Calls(c));
+        Assert.Equal(11, s.Chests[new BlockPos(3, 65, 2)].Single(i => i.ItemId == log2).Count);
+        Assert.Contains("acacia", r.Text.ToLowerInvariant());
+    }
+
     [Fact]
     public async Task A_worn_pickaxe_is_replaced_from_chest_materials_not_reported_as_already_had()
     {

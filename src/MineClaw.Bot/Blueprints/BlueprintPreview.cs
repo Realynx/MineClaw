@@ -12,6 +12,7 @@ public sealed class PlannedWorld(IBlockAccess inner, VoxelPlan plan) : IBlockAcc
     public int GetMeta(int x, int y, int z) => plan.FinalMeta(inner, new BlockPos(x, y, z));
     public bool IsLoaded(int x, int z) => inner.IsLoaded(x, z) || (x >= plan.Min.X && x <= plan.Max.X && z >= plan.Min.Z && z <= plan.Max.Z);
     public BlockInfo Info(int id) => inner.Info(id);
+    public MineClaw.World.Versioning.IPhysicsRules Physics => inner.Physics;
 }
 
 /// <summary>Light/texture voxels with the plan built (light of the real world; planned cells read as their blocks).</summary>
@@ -23,6 +24,7 @@ public sealed class PlannedVoxels(IVoxelWorld? inner, IBlockAccess blocks, Voxel
         plan.Blocks.ContainsKey(new BlockPos(x, y, z)) ? 0 : inner?.SkyLight(x, y, z) is { } s and >= 0 ? s : 15;
     public int BlockLight(int x, int y, int z) => inner?.BlockLight(x, y, z) is { } b and >= 0 ? b : 0;
     public ColumnState State(int x, int z) => plan.Inside(new BlockPos(x, plan.Min.Y, z)) ? ColumnState.Live : inner?.State(x, z) ?? ColumnState.Live;
+    public int WorldHeight => blocks.WorldHeight;
 }
 
 /// <summary>A rendered design preview: the PNG, its size, legend and the cache key it was made under.</summary>

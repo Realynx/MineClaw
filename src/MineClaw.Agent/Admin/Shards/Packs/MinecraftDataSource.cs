@@ -30,9 +30,17 @@ public sealed class MinecraftDataSource : IGameDataSource
 
     /// <param name="root">minecraft-data repo root, its data folder, or a version folder.</param>
     /// <param name="version">The version tag ("1.8.9"); also the dataPaths.json key unless <paramref name="dataPathsKey"/> is given.</param>
+    /// <summary>The bot's own tables for this version (multi-version P5), when given: block drops come from them (ported from
+    /// the decompiled client's drop overrides) instead of minecraft-data's <c>drops</c> field, which is wrong for several blocks
+    /// (reeds, doors, beds, huge brown mushrooms), so the pack says what the bot's planners believe.</summary>
+    public MineClaw.Data.Versioning.IGameData? Tables { get; }
+
     /// <param name="factsDirectory">Optional folder with <c>smelting.json</c> / <c>mobs.json</c> (a missing file is skipped).</param>
-    public MinecraftDataSource(string root, string version, string edition = "pc", string? dataPathsKey = null, string? factsDirectory = null)
+    /// <param name="tables">See <see cref="Tables"/>.</param>
+    public MinecraftDataSource(string root, string version, string edition = "pc", string? dataPathsKey = null, string? factsDirectory = null,
+        MineClaw.Data.Versioning.IGameData? tables = null)
     {
+        Tables = tables;
         if (!KnowledgePack.ValidVersion(version)) throw new ArgumentException($"'{version}' is not a version tag (e.g. 1.8.9)");
         Version = version;
         Edition = edition;
@@ -67,7 +75,8 @@ public sealed class MinecraftDataSource : IGameDataSource
         }
         // Fixed text only (no absolute paths): the description feeds the source hash, which mustn't depend on the checkout location.
         Description = $"minecraft-data {(used.Count > 0 ? string.Join(", ", used) : edition + "/" + version)}" +
-                      (facts.Count > 0 ? $" + {string.Join(" + ", facts)} facts (decompiled {version} client)" : "");
+                      (facts.Count > 0 ? $" + {string.Join(" + ", facts)} facts (decompiled {version} client)" : "") +
+                      (tables != null ? $" + block drops from MineClaw.Data {tables.VersionId}" : "");
     }
 
     private sealed record Variant(int Meta, string Display);
@@ -123,6 +132,7 @@ public sealed class MinecraftDataSource : IGameDataSource
             meta is { } m && _variant.TryGetValue((id, m), out var v) ? v : _plain.TryGetValue(id, out var n) ? n : $"item {id}";
 
         public string Of(Ingredient i) => Of(i.Id, i.Meta);
+        public bool HasVariants(int id) => _variant.Keys.Count(k => k.Item1 == id) > 1;
         public string? Registry(int id) => _registry.TryGetValue(id, out var r) ? r : null;
 
         public int? Id(string registry) =>
@@ -184,7 +194,7 @@ public sealed class MinecraftDataSource : IGameDataSource
                 if (kinds.Count == 1 && tools.All(t => TierRank(t) < 5)) sb.Append($" Needs at least a {tools[0]} to drop anything.");
                 else sb.Append(" Drops anything only when mined with: ").Append(string.Join(", ", tools)).Append('.');
             }
-            var drops = b.Drops.Where(d => d.Id != 0).ToList();
+            var drops = (Tables != null ? TableDrops(b, names) : b.Drops).Where(d => d.Id != 0).ToList();
             if (drops.Count > 0) sb.Append(" Drops ").Append(string.Join(", ", drops.Select(names.Of))).Append('.');
             else if (b.Diggable && b.Hardness is >= 0) sb.Append(" Drops nothing.");
             if (!b.Solid) sb.Append(" Not solid (walk through).");
@@ -197,6 +207,25 @@ public sealed class MinecraftDataSource : IGameDataSource
             docs.AddRange(MobDocs(_files.ContainsKey("entities") ? Load("entities") : default,
                 _files.ContainsKey("facts-mobs") ? Load("facts-mobs") : default, names));
         return docs;
+    }
+
+    /// <summary>The block's drops from <see cref="Tables"/> (by hand, else with the first harvest tool that can) over its variants,
+    /// as names: a drop whose variant follows the block's (planks, logs → their own; leaves → that wood's sapling) reads as "any",
+    /// a fixed variant of another item keeps it (lapis ore → Lapis Lazuli).</summary>
+    private List<Ingredient> TableDrops(Block b, Names names)
+    {
+        var t = Tables!;
+        int held = t.CanHarvest(b.Id, -1) ? -1 : b.HarvestTools.Where(h => t.CanHarvest(b.Id, h)).DefaultIfEmpty(-1).First();
+        var metas = b.Variants.Count > 0 ? b.Variants.Select(v => v.Meta).ToList() : [0];
+        var seen = new List<(int Id, HashSet<int> Damages)>();
+        foreach (int meta in metas)
+            foreach (var d in t.DropsFor(b.Id, meta, held))
+            {
+                int k = seen.FindIndex(x => x.Id == d.ItemId);
+                if (k < 0) seen.Add((d.ItemId, [d.Damage]));
+                else seen[k].Damages.Add(d.Damage);
+            }
+        return seen.Select(x => new Ingredient(x.Id, x.Damages.Count == 1 && x.Id != b.Id && names.HasVariants(x.Id) ? x.Damages.First() : null)).ToList();
     }
 
     /// <summary>"cooked_beef, " (the registry name, so a search for the internal name or another wording finds the doc).</summary>

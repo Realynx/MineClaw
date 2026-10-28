@@ -23,8 +23,9 @@ public static class ScriptDryRun
 
     public static string? Run(string code, ScriptHost real, ScriptLanguage language = ScriptLanguage.Js, string? paramsJson = null)
     {
-        var world = new WorldState();
-        world.ApplyChunkRegion(-16, 0, -16, 32, 128, 32, new byte[32 * 128 * 32], null, null, null);
+        int height = real.World.WorldHeight; // the fake world is as high as the real one (a script may work above y 127 on 1.12.2)
+        var world = new WorldState(height: height);
+        world.ApplyChunkRegion(-16, 0, -16, 32, height, 32, new byte[32 * height * 32], null, null, null);
         for (int x = -6; x <= 6; x++)
         for (int z = -6; z <= 6; z++)
             world.SetBlock(x, 64, z, Blocks.Stone, 0);

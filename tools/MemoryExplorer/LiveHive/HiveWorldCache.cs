@@ -21,7 +21,7 @@ public sealed class ClientColumn
         for (int x = 0; x < 16; x++)
             for (int z = 0; z < 16; z++)
             {
-                int y = ChunkColumn.SizeY - 1;
+                int y = snap.Height - 1;
                 while (y > 0 && !FaceLight.Opaque(snap.Ids[ChunkColumn.Index(x, y, z)])) y--;
                 Top[x * 16 + z] = (byte)y;
             }
@@ -55,11 +55,14 @@ public sealed class HiveWorldCache
 {
     private readonly ConcurrentDictionary<(int Dim, int Cx, int Cz), ClientColumn> _cols = new();
     private long _version;
+    private int _height = ChunkColumn.SizeY;
 
     public int Count => _cols.Count;
     /// <summary>Bumped on every change (renderers redraw when it moves).</summary>
     public long Version => Interlocked.Read(ref _version);
     public long BytesReceived { get; private set; }
+    /// <summary>Blocks per column: the highest snapshot seen (b1.8.1 128, 1.12.2 256).</summary>
+    public int WorldHeight => Volatile.Read(ref _height);
 
     public ClientColumn? Get(int dim, int cx, int cz) => _cols.GetValueOrDefault((dim, cx, cz));
 
@@ -105,6 +108,7 @@ public sealed class HiveWorldCache
         {
             if (s == null) { _cols.TryRemove((dim, c.Cx, c.Cz), out _); continue; }
             _cols[(dim, c.Cx, c.Cz)] = new ClientColumn(c.Cx, c.Cz, c.Hash, c.SeenMs, c.By, c.Live, s);
+            if (s.Height > _height) Volatile.Write(ref _height, s.Height);
             n++;
         }
         BytesReceived += payload.Length;
@@ -139,16 +143,19 @@ public sealed class HiveWorldCache
 public sealed class HiveVoxels(HiveWorldCache cache) : IVoxelWorld
 {
     private ClientColumn?[] _a = [];
-    private int _cx0, _cz0, _n, _dim;
+    private int _cx0, _cz0, _n, _dim, _h = ChunkColumn.SizeY;
     private long _freshAfterMs;
 
     /// <summary>Columns seen within this long count as live (not dimmed).</summary>
     public TimeSpan Fresh { get; set; } = TimeSpan.FromMinutes(2);
     public int Dim => _dim;
+    /// <summary>Blocks per column as of the last <see cref="Prepare"/>.</summary>
+    public int WorldHeight => _h;
 
     public void Prepare(int dim, int x, int z, int radiusChunks, DateTimeOffset now)
     {
         _dim = dim;
+        _h = cache.WorldHeight;
         _n = 2 * radiusChunks + 1;
         _cx0 = (x >> 4) - radiusChunks;
         _cz0 = (z >> 4) - radiusChunks;
@@ -166,14 +173,14 @@ public sealed class HiveVoxels(HiveWorldCache cache) : IVoxelWorld
     }
 
     public int Block(int x, int y, int z) =>
-        (uint)y >= ChunkColumn.SizeY || Column(x, z) is not { } c ? 0 : c.Snap.Ids[ChunkColumn.Index(x & 15, y, z & 15)];
+        (uint)y >= _h || Column(x, z) is not { } c || y >= c.Snap.Height ? 0 : c.Snap.Ids[ChunkColumn.Index(x & 15, y, z & 15)];
 
     public int Meta(int x, int y, int z) =>
-        (uint)y >= ChunkColumn.SizeY || Column(x, z) is not { } c ? 0 : c.Snap.Meta[ChunkColumn.Index(x & 15, y, z & 15)];
+        (uint)y >= _h || Column(x, z) is not { } c || y >= c.Snap.Height ? 0 : c.Snap.Meta[ChunkColumn.Index(x & 15, y, z & 15)];
 
     public int SkyLight(int x, int y, int z)
     {
-        if (y >= ChunkColumn.SizeY) return 15;
+        if (y >= _h) return 15;
         if (y < 0) return 0;
         if (Column(x, z) is not { } c) return 15; // nothing known: open void
         return y > c.Top[(x & 15) * 16 + (z & 15)] ? 15 : -1;
