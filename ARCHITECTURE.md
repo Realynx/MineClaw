@@ -228,7 +228,7 @@ Callers: Lua `ensure` (hidden `acquire` tool, no prompt bytes), `Loadout.FetchAs
 **One resolver** (`Obtainer` → `Crafter` over `ChestStock`): inventory → known chests nearest first (exact variant; never-touch or
 "private" chests skipped; the last sapling/dirt stays) → the whole recipe tree planned over inventory + chests (`CraftPlan.Used`),
 exactly its raw ingredients withdrawn one stop per chest in batches the inventory holds, intermediates crafted (2x2, a table only
-for 3x3), an unnamed variant takes the possible recipe ("slab" = cobble slabs) → the exact shortfall ("need 1 more log for a chest;
+for 3x3), an unnamed variant takes the recipe possible without smelting ("slab" = cobble slabs), else it asks which (stone_slab 44:0 smelts only when named) → the exact shortfall ("need 1 more log for a chest;
 none in inventory or the 3 known chests"). `craft`/`do craft`/the worker, `ensure`/`acquire`, builds and clone bodies (own sources per
 body adapter) all use it; craft always makes new ones (a worn carried pick never counts); reserved items and carried food aren't ingredients.
 
@@ -436,6 +436,24 @@ asks once on main's account, pauses the job and resumes it on landing. `BodyVisi
 its script on its lane or `delegate` on its slot. Thread safety: ToolCallGuard failures are keyed by body, PlacedBlockStore
 flush/sync is locked, chunk rows are written 16 per transaction, A* runs through `Client.PathfindGate` (2 at once), workstation
 concurrent GC with a 2.5 GB `GCHeapHardLimit` (runtimeconfig), and `MinecraftClient.TicksBehind` is logged per body.
+
+**Step 3, the multi-body brain (inproc only; hive mode never enables it).** A clone body has the hive clone's parity
+(3a): its client's survival/EdgeGuard/reflex defence, plus its own brainstem (chat reflexes for lines naming it, speculative
+step, social idle; its stop reflex stops its own slot), its inventory ledger (`Body.Ledger`; inventory/where_is {item} and
+the cause scopes read the ledger of the body in scope), and fight/chop/void-step reports tagged with the body. Its script lane
+holds its own activity slot and joins the event gate: only its own body's dangers and chat naming it (or a plain trusted
+"stop") interrupt it; main's lane skips lines naming only other bodies. `BodyDirectory.Enable` (Agent `IBodyDirectory`) turns
+on: `body` on brain tool calls ("67", ["67","69"], "all", "any"; documented in the cached `Prompts.BodiesHint`, never in the
+schemas, stripped before the tool runs; a list plans one call per body, jobs on each body's slot in parallel, "67: ...; 69:
+..."; `do` then[] steps may set their own body; the script tool routes by BodyScope); the turn focus (`BodyFocus`: the body
+the waking chat names via `BodyAddressing`, the arbiter's rules; else `bodies op=focus`) whose state header, task and [here]
+head the turn; `[bodies]` (`BodyStatusBlock`, ≤120 tokens, ≤25 per body, offline collapsed, uncached tail, 2+ online);
+`BodyEventDigest` at the queue intake (danger/MustWake/typed chat pass; a crew's results wait for its last busy member;
+non-focus minor events never wake; other non-focus wakes ≤ 1 per 20 s per body; a batch reads body task results as one
+"[bodies] 67 ok: ...; 69 failed: ..." line; events render "[67 task ok]"); chat naming a clone is addressed to the brain; the
+`WorkerPool` (a `WorkerAgent.Sibling` per body on the shared cached prefix, `Agent:Worker:MaxConcurrent` runs at once,
+"worker queued for 69, 1 ahead"); `bodies {op: list|spawn|despawn|focus, name, task?, script?}` replaces `hive` (no inline
+code: Lua goes through the script tool's Opus-only policy); `body:"any"` = App `BodySelector` (CloneFitness + failure memory).
 
 ## Hive (MineClaw.Hive) — clones as supervised processes
 

@@ -191,6 +191,89 @@ public class ObtainTests
         Assert.Single(c.CallList, x => x.StartsWith("withdraw", StringComparison.Ordinal));   // nothing taken for the stone slabs
     }
 
+    /// <summary>Smelting in the fake furnace: the input becomes its product in the inventory.</summary>
+    private static void Furnace(FakeGameClient c)
+    {
+        c.World.SetBlock(-2, 65, 2, Blocks.Furnace, 0);
+        c.Effects["smelt"] = () =>
+        {
+            var parts = c.CallList.Last(x => x.StartsWith("smelt ", StringComparison.Ordinal)).Split(' ');
+            int id = int.Parse(parts[1]), n = int.Parse(parts[2]);
+            var r = Smelting.ResultFor(id)!;
+            Take(c, id, -1, n);
+            Put(c, r.OutputId, r.OutputDamage, n);
+        };
+    }
+
+    [Fact]
+    public async Task A_cobblestone_slab_bill_takes_chest_cobble_slabs_then_crafts_from_cobble_without_smelting()
+    {
+        // Live 10-28: 92 cobblestone slabs sat in a chest while the bot smelted cobble into smooth stone slabs.
+        var (h, c, s) = Make();
+        using var _ = h;
+        Furnace(c);
+        s.Chest(3, 65, 2, I(Blocks.Slab, 92, 3), I(Blocks.Slab, 64, 0), I(Blocks.Stone, 9));
+        s.Chest(-3, 65, 3, I(Blocks.Cobblestone, 100));
+        var why = await new MineClaw.Bot.Blueprints.GameBuildBody(() => c).EnsureAsync(Blocks.Slab, 3, 150, CancellationToken.None);
+        Assert.Null(why);
+        Assert.True(Inv(c, Blocks.Slab, 3) >= 150, Calls(c));
+        Assert.Equal(0, Inv(c, Blocks.Slab, 0));                                          // the stone slabs stay in the chest
+        Assert.Contains($"withdraw {Blocks.Slab} 92 3,65,2 dmg=3", c.CallList);            // the stored ones first
+        Assert.DoesNotContain(c.CallList, x => x.StartsWith($"withdraw {Blocks.Slab} ", StringComparison.Ordinal) && x.EndsWith("dmg=0", StringComparison.Ordinal));
+        Assert.Contains(c.CallList, x => x.StartsWith($"withdraw {Blocks.Cobblestone} 60 -3,65,3", StringComparison.Ordinal)); // 58 more = 20 crafts
+        Assert.Equal(3, c.LastCraftDamage);
+        Assert.DoesNotContain("smelt", Calls(c));
+    }
+
+    [Fact]
+    public async Task Stone_slabs_in_a_chest_never_count_for_a_cobblestone_slab_need()
+    {
+        var (h, c, s) = Make();
+        using var _ = h;
+        s.Chest(3, 65, 2, I(Blocks.Slab, 64, 0), I(Blocks.Cobblestone, 9));
+        var r = await h.Run(AcquireTool.ToolName, new { what = "cobblestone_slab", count = 9 });
+        Assert.True(r.Ok, r.Text + " | " + Calls(c));
+        Assert.Equal(9, Inv(c, Blocks.Slab, 3));
+        Assert.Equal(0, Inv(c, Blocks.Slab, 0));
+        Assert.DoesNotContain(c.CallList, x => x.StartsWith($"withdraw {Blocks.Slab} ", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_named_stone_slab_still_smelts_cobble_into_stone()
+    {
+        var (h, c, s) = Make();
+        using var _ = h;
+        Furnace(c);
+        Put(c, Blocks.Cobblestone, 0, 3);
+        Put(c, Items.Coal, 0, 1);
+        var r = await h.Run("craft", new { item = "stone_slab", count = 3 });
+        Assert.True(r.Ok, r.Text + " | " + Calls(c));
+        Assert.Contains($"smelt {Blocks.Cobblestone} 3", Calls(c));
+        Assert.Equal(3, Inv(c, Blocks.Slab, 0));
+        Assert.Equal(0, Inv(c, Blocks.Slab, 3));
+    }
+
+    [Fact]
+    public async Task An_unnamed_slab_that_only_smelting_could_make_is_asked_about_not_smelted()
+    {
+        // Live 10-28: "slab" x60 with 51 cobble carried and 9 stone in a chest became 60 smooth stone slabs (51 cobble smelted).
+        var (h, c, s) = Make();
+        using var _ = h;
+        Furnace(c);
+        Put(c, Blocks.Cobblestone, 0, 51);
+        Put(c, Items.Coal, 0, 8);
+        s.Chest(3, 65, 2, I(Blocks.Stone, 9));
+        var r = await h.Run("craft", new { item = "slab", count = 60 });
+        Assert.False(r.Ok);
+        Assert.StartsWith("'slab' is several items", r.Text);
+        Assert.Contains("name one", r.Text);
+        Assert.Contains("cobblestone_slab (44:3, 3 cobblestone → 3)", r.Text);
+        Assert.Contains("stone_slab (44:0, 3 stone (smelted cobblestone) → 3)", r.Text);
+        Assert.DoesNotContain("smelt", Calls(c));
+        Assert.DoesNotContain("withdraw", Calls(c));
+        Assert.Equal(51, Inv(c, Blocks.Cobblestone));
+    }
+
     [Fact]
     public async Task A_chest_from_logs_converts_them_to_planks_first()
     {

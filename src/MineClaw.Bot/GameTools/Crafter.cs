@@ -11,7 +11,8 @@ namespace MineClaw.Bot.GameTools;
 /// (<see cref="ChestStock"/>), exactly the raw ingredients it uses are withdrawn (one stop per chest, nearest first, in
 /// batches the inventory holds), then the intermediates are crafted (2x2 in the inventory, a table only for 3x3: placed from
 /// the inventory or crafted from planks when none is in range), smelting first when the only way is through a furnace. An
-/// unnamed variant takes the recipe that's possible ("slab" = cobblestone slabs from cobble). What can't be made is one
+/// unnamed variant takes the recipe that's possible without smelting ("slab" = cobblestone slabs from cobble), else it asks
+/// which one (stone slabs smelt only when named: stone_slab = 44:0). What can't be made is one
 /// line: "need 1 more log for a chest; none in inventory or the 3 known chests". Reserved items and carried food are never
 /// ingredients; the carried target never counts as already made.
 /// </summary>
@@ -37,9 +38,16 @@ public sealed class Crafter(IGameClient client)
         count = Math.Max(1, count);
         if (Recipes.ForOutput(id, dmg).Count == 0) return ActionResult.Fail($"{Names.Item(id, Math.Max(dmg, 0))} has no crafting recipe");
         var chests = Chests();
-        dmg = PickVariant(id, dmg, count, chests);
-        string name = Names.Item(id, Math.Max(dmg, 0));
         var notes = new List<string>();
+        if (dmg < 0 && Variants(id).Count > 1)
+        {
+            // An unnamed variant ("slab") takes only one that's craftable now without smelting; never a guess that smelts (live
+            // 10-28: "slab" x60 with 51 cobble + 9 stone became smooth stone slabs, 51 cobble smelted, for a cobblestone-slab bill).
+            if (SmeltFreeVariant(id, count, chests) is not { } pick) return ActionResult.Fail(Ambiguous(id));
+            dmg = pick;
+            notes.Add($"{Family(id)} = {Items.VariantName(id, dmg)} ({Recipes.VariantTag(id, dmg)})");
+        }
+        string name = Names.Item(id, Math.Max(dmg, 0));
         string? last = null;
         int crafted = 0, batches = 0;
         _hold.Value = Held(); // what's reserved now stays: withdrawn copies of the same item may still be used
@@ -165,11 +173,30 @@ public sealed class Crafter(IGameClient client)
         RecipePlanner.Plan(id, count, Carried(id, dmg).Concat(chests.Stacks()).ToList(), dmg,
             new PlannerOptions { AllowSmelting = smelting, HasCraftingTable = TableAvailable() });
 
+    /// <summary>The family word of a variant item ("slab", never block 44's name "stone_slab").</summary>
+    private static string Family(int id) => Items.Get(id).DisplayName.ToLowerInvariant();
+
+    private static List<int> Variants(int id) => Recipes.ForOutput(id, -1).Select(r => r.OutputDamage).Distinct().ToList();
+
+    /// <summary>The variant of an unnamed item the inventory + chests can craft now without a furnace, or null.</summary>
+    private int? SmeltFreeVariant(int id, int count, ChestStock chests)
+    {
+        foreach (var d in Variants(id))
+            if (Plan(id, d, count, chests, false).Complete) return d;
+        return null;
+    }
+
+    /// <summary>"'slab' is several items, name one: cobblestone_slab (44:3, 3 cobblestone → 3), stone_slab (44:0, 3 stone
+    /// (smelted cobblestone) → 3), ..."</summary>
+    internal static string Ambiguous(int id) =>
+        $"'{Family(id)}' is several items and none can be crafted from what's here without smelting; name one: "
+        + string.Join(", ", Variants(id).Select(d => $"{Items.VariantName(id, d)} ({Recipes.VariantTag(id, d)})"));
+
     /// <summary>An unnamed variant ("slab"): the one the inventory + chests can make (smelt-free first), else the closest.</summary>
     private int PickVariant(int id, int dmg, int count, ChestStock chests)
     {
         if (dmg >= 0) return dmg;
-        var variants = Recipes.ForOutput(id, -1).Select(r => r.OutputDamage).Distinct().ToList();
+        var variants = Variants(id);
         if (variants.Count < 2) return dmg;
         foreach (bool smelt in new[] { false, true })
             foreach (var d in variants)

@@ -93,6 +93,24 @@ public static class Recipes
     public static IReadOnlyList<Recipe> ForOutput(int itemId, int damage = -1) =>
         _byOutput[itemId].Where(r => damage < 0 || r.OutputDamage == damage).ToArray();
 
+    /// <summary>
+    /// "44:3, 3 cobblestone → 3": the exact variant and its recipe's input and yield (from the recipe data), so a cobblestone
+    /// slab can't be read as a stone slab; a smelted input says so ("44:0, 3 stone (smelted cobblestone) → 3"). No recipe: "id:meta".
+    /// </summary>
+    public static string VariantTag(int itemId, int damage)
+    {
+        string tag = $"{itemId}:{Math.Max(0, damage)}";
+        if (ForOutput(itemId, Math.Max(0, damage)).FirstOrDefault() is not { } r) return tag;
+        var inputs = r.Totals.Select(t =>
+        {
+            var (id, d) = (t.Ingredient.Id, t.Ingredient.Damage);
+            string n = (d < 0 ? Items.Get(id).Name : Items.VariantName(id, d)).Replace('_', ' ');
+            if (ForOutput(id).Count == 0 && Smelting.ForOutput(id, Math.Max(0, d)) is [var s, ..]) n += $" (smelted {Items.Get(s.InputId).Name.Replace('_', ' ')})";
+            return $"{t.Count} {n}";
+        });
+        return $"{tag}, {string.Join(" + ", inputs)} → {r.OutputCount}";
+    }
+
     /// <summary>Recipes producing the named item (see <see cref="Items.ByNameWithDamage"/>).</summary>
     public static IReadOnlyList<Recipe> ForOutput(string name) =>
         Items.ByNameWithDamage(name) is { } r ? ForOutput(r.Item.Id, r.Damage) : [];

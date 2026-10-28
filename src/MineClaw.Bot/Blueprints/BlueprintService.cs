@@ -479,8 +479,27 @@ public sealed class BlueprintService
         var builds = Store.Builds(rec.Id);
         var progress = builds.Count == 0 ? "" : "; build: " + string.Join(", ", builds.Select(b => $"part {b.Part + 1}/{b.Parts} {b.State} {b.Placed}/{b.Total}"));
         return $"#{rec.Id} \"{rec.Name}\" {size}, {plan?.LayerCount ?? 0} layers, {plan?.Blocks.Count ?? 0} blocks, {rec.Status}"
-               + (rec.Bill.Count > 0 ? "; bill: " + string.Join(", ", rec.Bill.Take(5).Select(b => b.Missing > 0 ? $"{b.Need} {b.Item} (short {b.Missing})" : $"{b.Need} {b.Item}")) : "")
+               + BillNow(rec, plan, builds.Any(b => b.Placed > 0))
                + progress + (rec.Eval.Length > 0 ? "; eval: " + Trim(rec.Eval, 200) : "");
+    }
+
+    /// <summary>
+    /// The bill as it stands now: what's still to place, against the inventory and the chests as they are, each variant with
+    /// its id:meta and recipe ("256 cobblestone slab (44:3, 3 cobblestone → 3; short 164)"). Live 10-28 the brain read the
+    /// design-time "short 251" with 92 cobblestone slabs since stored, and made smooth stone slabs. The saved bill is the fallback.
+    /// </summary>
+    private string BillNow(BlueprintRecord rec, VoxelPlan? plan, bool started)
+    {
+        if (plan != null)
+            try
+            {
+                var e = new DesignEvaluation();
+                DesignChecks.Bill(plan, Site(), e);
+                if (e.Bill.Count == 0) return started ? "; bill: all placed" : "";
+                return (started ? "; bill left: " : "; bill: ") + string.Join(", ", e.Bill.Take(5).Select(b => b.Text(source: false)));
+            }
+            catch (Exception) { }
+        return rec.Bill.Count > 0 ? "; bill: " + string.Join(", ", rec.Bill.Take(5).Select(b => b.Missing > 0 ? $"{b.Need} {b.Item} (short {b.Missing})" : $"{b.Need} {b.Item}")) : "";
     }
 
     // ------------------------------------------------------------------ site and constraints text
@@ -507,8 +526,11 @@ public sealed class BlueprintService
     public string Constraints(BlockPos ground)
     {
         var s = Site();
-        var mats = Materials.Select(id => (Id: id, Inv: s.Inventory?.Invoke(id, -1) ?? 0, St: s.Stored?.Invoke(id) ?? 0))
-            .Where(m => m.Inv + m.St > 0).Select(m => $"{Items.Get(m.Id).Name} {m.Inv}{(m.St > 0 ? "+" + m.St + " stored" : "")}").ToList();
+        // Variants by kind: "cobblestone_slab 5+92 stored", never every slab as "stone_slab".
+        var mats = Materials.SelectMany(id => BuildBlocks.HasVariants(id) ? Enumerable.Range(0, id == Data.Blocks.Wool ? 16 : 6).Select(d => (Id: id, Dmg: d)) : [(Id: id, Dmg: -1)])
+            .Select(m => (m.Id, m.Dmg, Inv: s.Inventory?.Invoke(m.Id, m.Dmg) ?? 0, St: s.Stored?.Invoke(m.Id, m.Dmg) ?? 0))
+            .Where(m => m.Inv + m.St > 0)
+            .Select(m => $"{(m.Dmg >= 0 ? Items.VariantName(m.Id, m.Dmg) : Items.Get(m.Id).Name)} {m.Inv}{(m.St > 0 ? "+" + m.St + " stored" : "")}").ToList();
         var parts = new List<string>
         {
             "materials: " + (mats.Count > 0 ? string.Join(", ", mats.Take(10)) : "almost none"),

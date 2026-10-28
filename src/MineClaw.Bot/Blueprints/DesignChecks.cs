@@ -13,8 +13,8 @@ public sealed class SiteContext
     public Func<BlockPos, int, ProtectionVerdict>? Verdict { get; init; }
     /// <summary>Inventory count of (item, damage; −1 any).</summary>
     public Func<int, int, int>? Inventory { get; init; }
-    /// <summary>Count of an item in known chests (shared chest memory).</summary>
-    public Func<int, int>? Stored { get; init; }
+    /// <summary>Count of (item, damage; −1 any) in known chests (shared chest memory): a stone slab (44:0) isn't a cobblestone slab (44:3).</summary>
+    public Func<int, int, int>? Stored { get; init; }
     /// <summary>A cobble generator dig cell is known (missing cobble comes from it).</summary>
     public bool GeneratorKnown { get; init; }
     /// <summary>Trees the stewardship rule allows felling (missing wood comes from them).</summary>
@@ -27,6 +27,16 @@ public sealed class SiteContext
 public sealed record BillLine(int Item, int Damage, int Need, int Have, int Stored, int Missing, string Source, int Seconds)
 {
     public string Name => BuildBlocks.HasVariants(Item) ? Items.VariantName(Item, Damage).Replace('_', ' ') : Items.Get(Item).Name.Replace('_', ' ');
+
+    /// <summary>"256 cobblestone slab (44:3, 3 cobblestone → 3; short 159: craft from ...)": a variant names its id:meta and
+    /// recipe so it can't be read as another kind (live 10-28: a cobblestone-slab bill made smooth stone slabs).</summary>
+    public string Text(bool source = true)
+    {
+        var notes = new List<string>();
+        if (BuildBlocks.HasVariants(Item)) notes.Add(Recipes.VariantTag(Item, Damage));
+        if (Missing > 0) notes.Add(source && Source.Length > 0 ? $"short {Missing}: {Source}" : $"short {Missing}");
+        return notes.Count == 0 ? $"{Need} {Name}" : $"{Need} {Name} ({string.Join("; ", notes)})";
+    }
 }
 
 /// <summary>Result of the deterministic checks on one blueprint version.</summary>
@@ -65,8 +75,8 @@ public sealed class DesignEvaluation
         return s.Length <= maxChars ? s : s[..(maxChars - 1)] + "…";
     }
 
-    public string BillText(int max = 6) => string.Join(", ", Bill.OrderByDescending(b => b.Need).Take(max).Select(b =>
-        b.Missing == 0 ? $"{b.Need} {b.Name}" : $"{b.Need} {b.Name} (short {b.Missing}: {b.Source})")) + (Bill.Count > max ? $" +{Bill.Count - max} more" : "");
+    public string BillText(int max = 6) => string.Join(", ", Bill.OrderByDescending(b => b.Need).Take(max).Select(b => b.Text()))
+        + (Bill.Count > max ? $" +{Bill.Count - max} more" : "");
 }
 
 /// <summary>
@@ -287,7 +297,7 @@ public static class DesignChecks
             need[key] = need.GetValueOrDefault(key) + 1;
         }
         // Raw materials stretch across lines (planks for doors and stairs too): track what's left as lines are costed.
-        int pool(int item) => Math.Max(0, (site.Inventory?.Invoke(item, -1) ?? 0) + (site.Stored?.Invoke(item) ?? 0));
+        int pool(int item) => Math.Max(0, (site.Inventory?.Invoke(item, -1) ?? 0) + (site.Stored?.Invoke(item, -1) ?? 0));
         var used = new Dictionary<int, int>();
         int Take(int item, int n)
         {
@@ -298,8 +308,9 @@ public static class DesignChecks
         }
         foreach (var ((item, dmg), n) in need.OrderByDescending(kv => kv.Value))
         {
-            int have = site.Inventory?.Invoke(item, BuildBlocks.HasVariants(item) ? dmg : -1) ?? 0;
-            int stored = site.Stored?.Invoke(item) ?? 0;
+            int variant = BuildBlocks.HasVariants(item) ? dmg : -1;
+            int have = site.Inventory?.Invoke(item, variant) ?? 0;
+            int stored = site.Stored?.Invoke(item, variant) ?? 0;
             int got = Math.Min(n, have + Math.Max(0, stored));
             used[item] = used.GetValueOrDefault(item) + got;
             int missing = n - got;

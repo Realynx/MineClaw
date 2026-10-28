@@ -134,12 +134,25 @@ public class VariantTests
     [Theory]
     [InlineData(Blocks.Slab, 3, "cobblestone_slab")]
     [InlineData(Blocks.Slab, 0, "stone_slab")]
+    [InlineData(Blocks.Slab, 1, "sandstone_slab")]
+    [InlineData(Blocks.Slab, 2, "wooden_slab")]
     [InlineData(Blocks.Wool, 14, "red_wool")]
+    [InlineData(Blocks.Log, 2, "birch_wood")]
+    [InlineData(Blocks.Sapling, 1, "spruce_sapling")]
+    [InlineData(Items.Dye, 15, "bone_meal")]
     public void Variant_names_round_trip(int id, int meta, string name)
     {
         Assert.Equal(name, Items.VariantName(id, meta));
         Assert.Equal((id, meta), R(name));
     }
+
+    [Theory]
+    [InlineData(Blocks.Slab, 3, "44:3, 3 cobblestone → 3")]
+    [InlineData(Blocks.Slab, 0, "44:0, 3 stone (smelted cobblestone) → 3")]
+    [InlineData(Blocks.Slab, 2, "44:2, 3 planks → 3")]
+    [InlineData(Blocks.Wool, 14, "35:14, 1 rose red + 1 white wool → 1")]
+    public void Variant_tags_name_the_kind_and_its_recipe_yield(int id, int meta, string tag) =>
+        Assert.Equal(tag, Recipes.VariantTag(id, meta));
 }
 
 /// <summary>Pins the core-knowledge food line to the jar data: no block drops apples in b1.8.1 (leaves: saplings only).</summary>

@@ -258,15 +258,17 @@ public sealed class BlueprintWiring
             trees = Math.Max(0, census.Trees.Count(TreeStewardship.IsLiving) - (acquisition?.MinTrees ?? TreeStewardship.DefaultMinTrees));
         }
         catch (Exception) { }
+        var stock = new Lazy<ChestStock>(() =>
+        {
+            try { return ChestStock.Read(client, rt.Observations, acquisition?.SkipChest); } catch (Exception) { return ChestStock.Empty; }
+        });
         return new SiteContext
         {
             World = w.PlanningView,
             Verdict = protection.Check,
             Inventory = (id, dmg) => w.Inventory.CountItem(id, dmg >= 0 ? dmg : null),
-            Stored = id =>
-            {
-                try { return rt.Observations.FindItemInContainers(id, 8).Sum(f => f.Count); } catch (Exception) { return 0; }
-            },
+            // The chests the obtainer would take from, read once per site; the exact variant (44:0 never counts for 44:3).
+            Stored = (id, dmg) => stock.Value.Count(id, dmg),
             GeneratorKnown = gen,
             ChoppableTrees = trees,
         };

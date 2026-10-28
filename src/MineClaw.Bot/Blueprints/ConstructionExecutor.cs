@@ -551,7 +551,9 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
         {
             if (!voxel.Blocks.TryGetValue(s.Target, out var want)) return true;
             int id = w.GetBlock(s.Target), meta = w.GetMeta(s.Target);
-            if (id != want.Id) { report.Deviations.Add($"{voxel.Local(s.Target)} is {BuildBlocks.Name(id, meta)}, planned {BuildBlocks.Name(want.Id, want.Meta)}"); return false; }
+            // A variant is part of the block: a stone slab (44:0) in a cobblestone-slab (44:3) cell is wrong, not done.
+            if (id != want.Id || !DesignChecks.SameState(want, id, meta))
+            { report.Deviations.Add($"{voxel.Local(s.Target)} is {BuildBlocks.Name(id, meta)}, planned {BuildBlocks.Name(want.Id, want.Meta)}"); return false; }
             if (want.Kind == BuildKind.Stairs && (meta & 3) != (want.Meta & 3))
             { report.Deviations.Add($"stairs at {voxel.Local(s.Target)} go up {BuildBlocks.StairsAscend(meta).Name()}, planned {BuildBlocks.StairsAscend(want.Meta).Name()}"); return false; }
             if (want.Kind == BuildKind.Door && (meta & 1) != (want.Meta & 1))

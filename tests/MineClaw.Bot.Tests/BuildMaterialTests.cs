@@ -145,6 +145,83 @@ public class BuildMaterialTests
     }
 
     [Fact]
+    public void The_bill_counts_only_the_exact_slab_kind_in_storage_and_names_its_recipe()
+    {
+        var w = BlueprintTests.Island();
+        var (plan, _) = BlueprintNormalizer.FromText("size 3x1x1\npalette H=slab:cobble\nlayer 0\nHHH", new BlockPos(-1, 64, 0));
+        // 64 smooth stone slabs (44:0) in storage, no cobblestone slabs.
+        var site = new SiteContext
+        {
+            World = w.PlanningView, GeneratorKnown = true,
+            Inventory = (_, _) => 0,
+            Stored = (id, dmg) => id == Blocks.Slab && dmg is 0 or -1 ? 64 : 0,
+        };
+        var e = new DesignEvaluation();
+        DesignChecks.Bill(plan!, site, e);
+        var line = Assert.Single(e.Bill);
+        Assert.Equal((Blocks.Slab, 3), (line.Item, line.Damage));
+        Assert.Equal(0, line.Stored);
+        Assert.Equal(3, line.Missing);
+        Assert.StartsWith("3 cobblestone slab (44:3, 3 cobblestone → 3; short 3", line.Text());
+    }
+
+    [Fact]
+    public void The_design_status_bill_is_live_and_names_the_slab_kind()
+    {
+        // Live 10-28: the status kept the design-time "short 251" after 92 cobblestone slabs were stored.
+        var w = BlueprintTests.Island();
+        var store = new BlueprintStore(AgentDb.Open(null));
+        var s = new BlueprintService(new BlueprintOptions(), store, new BlueprintPreview())
+        {
+            Site = () => new SiteContext
+            {
+                World = w.PlanningView, GeneratorKnown = true, Inventory = (_, _) => 0,
+                Stored = (id, dmg) => id != Blocks.Slab ? 0 : dmg switch { 3 => 2, 0 => 64, _ => 66 },
+            },
+            Crew = () => new SingleBodyCrew(new SimBuildBody(w)),
+            ResolveSite = (_, _) => (new SitePick(new BlockPos(0, 63, 0), "here"), null),
+        };
+        var rec = store.Insert(new BlueprintRecord
+        {
+            Name = "step", Description = "step", Bot = "maid_chan", Status = DesignStatus.Review, Site = new BlockPos(0, 63, 0),
+            Dsl = "size 3x1x1\npalette H=slab:cobble\nlayer 0\nHHH",
+        });
+        rec.Bill = [new BillRow("cobblestone slab", 3, 0, 0, 3, "craft")]; // the saved, stale bill
+        var text = s.Describe(rec);
+        Assert.Contains("; bill: 3 cobblestone slab (44:3, 3 cobblestone → 3; short 1)", text);
+    }
+
+    [Fact]
+    public async Task The_builder_never_places_a_stone_slab_in_a_cobblestone_slab_cell()
+    {
+        var w = BlueprintTests.Island();
+        var (plan, _) = BlueprintNormalizer.FromText("size 3x1x1\npalette H=slab:cobble\nlayer 0\nHHH", new BlockPos(-1, 64, 0));
+        var body = new SimBuildBody(w, new() { [(Blocks.Slab, 0)] = 64, [(Blocks.Cobblestone, 0)] = 64 });
+        var report = await new ConstructionExecutor(new BlueprintOptions()).RunAsync(1, plan!, BuildPart.Whole(plan!), body, CancellationToken.None);
+        Assert.False(report.Complete);
+        Assert.Equal(64, body.Inv[(Blocks.Slab, 0)]);                      // not one smooth stone slab used
+        Assert.All(plan!.Blocks.Values, b => Assert.NotEqual(Blocks.Slab, w.GetBlock(b.Pos)));
+        Assert.Equal(3, report.Missing.Count);
+    }
+
+    [Fact]
+    public async Task A_stone_slab_already_in_a_cobblestone_slab_cell_is_wrong_not_done()
+    {
+        var w = BlueprintTests.Island();
+        var (plan, _) = BlueprintNormalizer.FromText("size 3x1x1\npalette H=slab:cobble\nlayer 0\nHHH", new BlockPos(-1, 64, 0));
+        var cell = plan!.Blocks.Values.First().Pos;
+        w.SetBlock(cell.X, cell.Y, cell.Z, Blocks.Slab, 0);
+        w.Placed.Note(cell, w.Dimension, Blocks.Slab, "maid_chan", DateTimeOffset.UtcNow);
+        var body = new SimBuildBody(w, new() { [(Blocks.Slab, 3)] = 64, [(Blocks.Cobblestone, 0)] = 64 });
+        var report = await new ConstructionExecutor(new BlueprintOptions()).RunAsync(1, plan, BuildPart.Whole(plan), body, CancellationToken.None);
+        // Never counted as placed: my own wrong slab comes out and the right kind goes in.
+        Assert.True(report.Complete, report.Text("slabs") + " | " + string.Join(" | ", body.Log));
+        Assert.Equal((Blocks.Slab, 3), (w.GetBlock(cell), w.GetMeta(cell)));
+        Assert.Contains($"dig {cell.X},{cell.Y},{cell.Z}", body.Log);
+        Assert.Equal(61, body.Inv[(Blocks.Slab, 3)]);
+    }
+
+    [Fact]
     public async Task A_shortfall_pauses_the_build_after_building_everything_else()
     {
         var w = BlueprintTests.Island();
