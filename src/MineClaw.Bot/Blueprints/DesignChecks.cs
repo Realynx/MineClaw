@@ -48,12 +48,38 @@ public sealed class DesignEvaluation
     public int Interior { get; set; }
     public int Doors { get; set; }
     public int Windows { get; set; }
+    /// <summary>World side each door opens to (what players see: the chat summary).</summary>
     public List<Dir> DoorSides { get; } = new();
+    /// <summary>The same doors' sides in the author's drawing (local frame, like every coordinate in <see cref="Compact"/>).</summary>
+    public List<Dir> DrawnDoorSides { get; } = new();
+    /// <summary>Interior cells no walk from outside reaches.</summary>
+    public int Unreachable { get; set; }
+    /// <summary>Standing cells with only 1 block of headroom.</summary>
+    public int LowHeadroom { get; set; }
+    /// <summary>Existing blocks the build has to clear first.</summary>
+    public int ToClear { get; set; }
     public bool Pass => !Issues.Any(i => i.Level == IssueLevel.Error);
     public int Errors => Issues.Count(i => i.Level == IssueLevel.Error);
     public int Warnings => Issues.Count(i => i.Level == IssueLevel.Warning);
-    /// <summary>Lower is better (errors dominate, then warnings, then the critique).</summary>
-    public int Score(int critiqueIssues) => Errors * 100 + Warnings * 10 + critiqueIssues * 5;
+    /// <summary>Warnings that say nothing about the design's quality (an inferred size line, unloaded columns, clearing grass).</summary>
+    private static readonly HashSet<string> MinorWarnings = ["size-inferred", "unknown", "obstruction"];
+
+    /// <summary>Warnings worth another version.</summary>
+    public int RealWarnings => Issues.Count(i => i.Level == IssueLevel.Warning && !MinorWarnings.Contains(i.Code));
+
+    /// <summary>
+    /// Quality, lower is better: errors dominate; then the per-cell problems (unreachable interior, 1-high headroom), each other
+    /// real warning, blocks to clear, closeness to the request (the footprint off the asked floor) and the reviewer's severity
+    /// (a complaint plus each concrete issue). Live #8: v1 (1 headroom cell) must beat v3 (8 unreachable, 4 headroom, stray blocks).
+    /// </summary>
+    public int Score(Critique? critique = null)
+    {
+        int s = Errors * 1000 + Unreachable * 8 + LowHeadroom * 8 + ToClear;
+        s += Issues.Count(i => i.Level == IssueLevel.Warning && !MinorWarnings.Contains(i.Code) && i.Code is not ("entrance" or "headroom")) * 10;
+        s += Issues.Count(i => i.Code == "size-mismatch") * 30;
+        if (critique is { Ok: false, Skipped: false } c) s += 15 + 10 * c.Issues.Count;
+        return s;
+    }
     public int MissingSeconds => Bill.Sum(b => b.Seconds);
     public bool MaterialsUnobtainable => Bill.Any(b => b.Missing > 0 && b.Source.StartsWith("ask", StringComparison.Ordinal));
 
@@ -62,7 +88,12 @@ public sealed class DesignEvaluation
     {
         var sb = new StringBuilder();
         sb.Append(CultureInfo.InvariantCulture, $"v{version} {(Pass ? "PASS" : "FAIL")} {Blocks} blocks");
-        if (Doors > 0) sb.Append(CultureInfo.InvariantCulture, $", {Doors} door{(Doors > 1 ? "s" : "")} {string.Join("/", DoorSides.Distinct().Select(d => d.Name()))}");
+        if (Doors > 0)
+        {
+            var drawn = string.Join("/", (DrawnDoorSides.Count > 0 ? DrawnDoorSides : DoorSides).Distinct().Select(d => d.Name()));
+            var world = string.Join("/", DoorSides.Distinct().Select(d => d.Name()));
+            sb.Append(CultureInfo.InvariantCulture, $", {Doors} door{(Doors > 1 ? "s" : "")} {drawn}{(DrawnDoorSides.Count > 0 && drawn != world ? $" (faces {world} once turned)" : "")}");
+        }
         if (Windows > 0) sb.Append(CultureInfo.InvariantCulture, $", {Windows} window blocks");
         if (Interior > 0) sb.Append(CultureInfo.InvariantCulture, $", {Interior} interior cells");
         var errs = Issues.Where(i => i.Level == IssueLevel.Error).Select(i => i.ToString()).ToList();
@@ -130,6 +161,7 @@ public static class DesignChecks
         if (never.Count > 0) Add(IssueLevel.Error, "never_break", $"overlaps {never.Count} never-break block(s) at {List(never)}: move or shrink it");
         foreach (var (why, list) in guarded) Add(IssueLevel.Error, "protected", $"overlaps {list.Count} protected block(s) ({why}) at {List(list)}: move it");
         if (wet.Count > 0) Add(IssueLevel.Error, "liquid", $"water/lava in {wet.Count} cell(s) at {List(wet)}: move it away from the gen/fluids");
+        e.ToClear = clear.Count;
         if (clear.Count > 0) Add(IssueLevel.Warning, "obstruction", $"{clear.Count} existing block(s) to clear at {List(clear)}");
 
         // ---- support: every planned block connects through solids to existing ground
@@ -174,7 +206,9 @@ public static class DesignChecks
                 Add(IssueLevel.Error, "door", $"door at {L(d.Pos)} has no upper half");
             if (!BuildBlocks.NormalCube(plan.Final(w, d.Pos.Down())))
                 Add(IssueLevel.Error, "door", $"door at {L(d.Pos)} needs a full block under it (it is {Data.Blocks.Get(plan.Final(w, d.Pos.Down())).Name})");
-            e.DoorSides.Add(DoorOutside(plan, w, d) ?? BuildBlocks.DoorPlacerFacing(d.Meta).Opposite());
+            var side = DoorOutside(plan, w, d) ?? BuildBlocks.DoorPlacerFacing(d.Meta).Opposite();
+            e.DoorSides.Add(side);
+            e.DrawnDoorSides.Add(side.Turn(-plan.Blueprint.Quarters)); // the drawing → world turn undone (facing north: south ↔ north)
         }
         foreach (var u in placed.Where(b => b.UpperDoor))
             if (!plan.Blocks.TryGetValue(u.Pos.Down(), out var lo) || lo.Id != u.Id || (lo.Meta & 8) != 0)
@@ -240,9 +274,12 @@ public static class DesignChecks
                     if (plan.Blocks.TryGetValue(p, out var pb) && pb.Kind == BuildKind.Door) continue;
                     if (!Passable(plan.Final(w, p)) || !BuildBlocks.Supports(plan.Final(w, p.Down())) || !Covered(p)) continue;
                     if (Passable(plan.Final(w, p.Up()))) interior.Add(p);
-                    else if (plan.Blocks.ContainsKey(p.Up())) low.Add(p);
+                    // A stair overhead is the underside of a flight (live #8: 1,0,4 under the step at 1,1,4): walkers climb that
+                    // step, nobody stands beneath it, so it isn't a headroom problem.
+                    else if (plan.Blocks.TryGetValue(p.Up(), out var ceiling) && ceiling.Kind != BuildKind.Stairs) low.Add(p);
                 }
         e.Interior = interior.Count;
+        e.LowHeadroom = low.Count;
         if (low.Count > 0)
             e.Issues.Add(new(interior.Count == 0 ? IssueLevel.Error : IssueLevel.Warning, "headroom", $"headroom 1 at {low.Count} interior cell(s) ({list(low)}): players need 2"));
         if (interior.Count == 0) return;
@@ -273,6 +310,7 @@ public static class DesignChecks
                 }
         }
         var cut = interior.Where(p => !reached.Contains(p)).ToList();
+        e.Unreachable = cut.Count;
         if (cut.Count == interior.Count) e.Issues.Add(new(IssueLevel.Error, "entrance", $"no entrance: the {interior.Count} interior cells can't be reached from outside (add a door or a 2-high opening)"));
         else if (cut.Count > 0) e.Issues.Add(new(IssueLevel.Warning, "entrance", $"{cut.Count} interior cell(s) can't be reached ({list(cut)})"));
 

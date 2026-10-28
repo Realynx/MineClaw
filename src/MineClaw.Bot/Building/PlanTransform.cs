@@ -25,7 +25,7 @@ public static class PlanTransform
             return new BlockPos(a.X + dx + t.Dx, p.Y + t.Dy, a.Z + dz + t.Dz);
         }
         var bp = plan.Blueprint;
-        var turned = new Blueprint { Name = bp.Name, W = bp.W, H = bp.H, D = bp.D, Facing = bp.Facing.Turn(q), Light = bp.Light, Source = bp.Source };
+        var turned = new Blueprint { Name = bp.Name, W = bp.W, H = bp.H, D = bp.D, Facing = bp.Facing.Turn(q), DrawnFront = bp.DrawnFront, Light = bp.Light, Source = bp.Source };
         var c1 = Map(plan.Min);
         var c2 = Map(plan.Max);
         var origin = new BlockPos(Math.Min(c1.X, c2.X), Math.Min(c1.Y, c2.Y), Math.Min(c1.Z, c2.Z));

@@ -63,7 +63,7 @@ public static partial class BlueprintPrompts
         "You design Minecraft Beta 1.8.1 builds for a skyblock bot as a compact blueprint. Reply with ONLY the blueprint in a ``` block " +
         "(or the single word SHOW to get the preview image once). Format, one statement per line, # comments:\n" +
         "blueprint <short name>\nsize WxHxD   (numbers, e.g. size 10x18x10: x width, y height, z depth; max 24x32x24)\n" +
-        "facing south   (the front; DRAW the front on the bottom (south) row: facing east turns the whole build)\n" +
+        "facing south   (the front; DRAW the front on the bottom (south) row: facing east turns the whole build; doors drawn on the facing side stay as drawn)\n" +
         "light          (only if the interior must be lit)\n" +
         "palette C=cobblestone P=planks L=log G=glass_pane D=door:south S=cobblestone_stairs:north T=torch W=wool:red H=slab:cobble\n" +
         "layer 0        (then D rows of W chars, north row first, west char first; layer 1-3 repeats rows)\n" +

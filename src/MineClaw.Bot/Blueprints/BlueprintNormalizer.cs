@@ -196,10 +196,18 @@ public static class BlueprintNormalizer
         foreach (var (k, (id, meta)) in states)
             if (BuildBlocks.MetaProblem(id, meta) is { } mp) Err("meta", $"{k.X},{k.Y},{k.Z}: {mp}");
 
+        // The drawn front. Canonically the front is the south row and `facing` turns the drawing (facing north = a 180° turn: local
+        // z=0 lands on the world's south side, x flips too). An author who drew every door on the very side `facing` names (live
+        // design #8: `facing north`, `door D 3,0,0 north`) drew the build as it stands: turning it would put the door on the back,
+        // so such a drawing is kept as drawn.
+        bp.DrawnFront = DrawnFront(bp, states, W, D);
+        if (bp.DrawnFront != Dir.South)
+            issues.Add(new(IssueLevel.Info, "facing", $"door(s) drawn on the {bp.Facing.Name()} side: built as drawn (facing {bp.Facing.Name()} doesn't turn it)"));
+
         if (states.Count == 0) Err("empty", "the blueprint places no blocks");
         if (states.Count > MaxBlocks) Err("size", $"{states.Count} blocks: at most {MaxBlocks} per blueprint");
 
-        // World placement: rotate to the facing, then offset by the origin.
+        // World placement: rotate from the drawn front to the facing (Blueprint.Quarters), then offset by the origin.
         var origin = bp.Origin ?? defaultOrigin ?? new BlockPos(0, 64, 0);
         var plan = new VoxelPlan { Blueprint = bp, Origin = origin };
         int q = bp.Quarters;
@@ -225,6 +233,29 @@ public static class BlueprintNormalizer
                     if (grid[x, y, z] == Air && !states.ContainsKey((x, y, z))) plan.Air.Add(ToWorld(x, y, z));
         if (origin.Y < 1 || origin.Y + H > WorldState.Height) Err("bounds", $"build y {origin.Y}..{origin.Y + H - 1} leaves the world (1..{WorldState.Height - 1})");
         return (issues.Any(i => i.Level == IssueLevel.Error) && states.Count == 0 ? null : plan, issues);
+    }
+
+    /// <summary>
+    /// Which side of the drawing is the front: <see cref="Dir.South"/> (canonical: <c>facing</c> turns it) unless every door on the
+    /// drawing's edge is drawn on the side <c>facing</c> names (and none on the south edge), then that side (no turn).
+    /// </summary>
+    internal static Dir DrawnFront(Blueprint bp, Dictionary<(int X, int Y, int Z), (int Id, int Meta)> states, int W, int D)
+    {
+        if (bp.Facing == Dir.South) return Dir.South;
+        bool any = false;
+        foreach (var ((x, _, z), (id, meta)) in states)
+        {
+            if (BuildBlocks.KindOf(id) != BuildKind.Door || (meta & 8) != 0) continue;
+            var sides = new List<Dir>(2);
+            if (z == 0) sides.Add(Dir.North);
+            if (z == D - 1) sides.Add(Dir.South);
+            if (x == 0) sides.Add(Dir.West);
+            if (x == W - 1) sides.Add(Dir.East);
+            if (sides.Count == 0) continue; // an inner door says nothing about the front
+            if (!sides.Contains(bp.Facing) || sides.Contains(Dir.South)) return Dir.South;
+            any = true;
+        }
+        return any ? bp.Facing : Dir.South;
     }
 
     private static (int X, int Y, int Z) Min((int X, int Y, int Z) a, (int X, int Y, int Z) b) => (Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Min(a.Z, b.Z));

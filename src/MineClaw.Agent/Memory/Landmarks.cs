@@ -63,11 +63,18 @@ public static class Landmarks
             try
             {
                 var hit = world.Nearest(null, x, y, z, 4, maxObject).FirstOrDefault(n => n.Row.Kind is not ("island" or "area" or "region"));
-                if (hit.Row != null) return $"by a {hit.Row.Kind.Replace('_', ' ')}";
+                if (hit.Row != null)
+                {
+                    // An unknown structure is somebody's build; "a"/"an" by the sound ("by a unknown structure", live 10-28).
+                    var kind = hit.Row.Kind == "unknown_structure" ? "player build" : hit.Row.Kind.Replace('_', ' ');
+                    return $"by {Article(kind)} {kind}";
+                }
             }
             catch (Exception) { /* index busy or not ready: no hint */ }
         }
         return null;
+
+        static string Article(string noun) => noun.Length > 0 && "aeiou".Contains(char.ToLowerInvariant(noun[0])) ? "an" : "a";
 
         void Consider(string name, double lx, double ly, double lz)
         {

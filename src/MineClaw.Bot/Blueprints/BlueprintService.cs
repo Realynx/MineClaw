@@ -163,7 +163,7 @@ public sealed class BlueprintService
             rec.Eval = outcome.Versions.LastOrDefault()?.EvalText ?? outcome.Stop;
             Store.Update(rec);
             await Say($"I couldn't get a workable design for the {rec.Name} ({outcome.Stop}).").ConfigureAwait(false);
-            Notice($"[design] #{rec.Id} failed: {Trim(rec.Eval, 200)}");
+            Notice($"[design] #{rec.Id} failed: {Trim(rec.Eval, 200)}{outcome.CheckerNote}");
             return;
         }
         rec.Dsl = best.Dsl;
@@ -180,7 +180,7 @@ public sealed class BlueprintService
             ? $"{rec.Summary}; say 'build it' or tell me what to change"
             : $"{rec.Summary}, but it still has problems ({Trim(string.Join("; ", best.Eval!.Issues.Where(i => i.Level == IssueLevel.Error).Take(2)), 90)}); tell me what to change";
         await Say(line).ConfigureAwait(false);
-        Notice($"[design] #{rec.Id} {rec.Status} v{best.N}/{outcome.Versions.Count} ${outcome.Usd:0.000}: {Trim(best.EvalText, 260)}");
+        Notice($"[design] #{rec.Id} {rec.Status} v{best.N}/{outcome.Versions.Count} ${outcome.Usd:0.000}: {Trim(best.EvalText, 260)}{outcome.CheckerNote}");
     }
 
     /// <summary>"small cobble hut 5×5×4 east of the gen, door south, 2 windows: 86 cobblestone, 12 planks".</summary>
@@ -201,14 +201,52 @@ public sealed class BlueprintService
         return text;
     }
 
-    /// <summary>Where it goes, as the player put it ("on the 8×8 floor at the end of the bridge"), else by landmark; never coordinates.</summary>
+    /// <summary>
+    /// Where it goes, as the player put it ("on the 8×8 floor at the end of the bridge"), else the nearest known landmark; on a
+    /// player build "on Fox's 8×8 floor" (live 10-28: "by a unknown structure" told nobody anything); "near x,z" only when nothing
+    /// around it has a name.
+    /// </summary>
     public string AnchorText(BlueprintRecord rec)
     {
         var a = rec.Anchor;
         bool relational = a.StartsWith("on ", StringComparison.Ordinal) || a.StartsWith("where ", StringComparison.Ordinal)
                           || a.StartsWith("around ", StringComparison.Ordinal) || a.StartsWith("next to ", StringComparison.Ordinal);
         if (relational) return a;
-        return Landmark(rec.Site) is { Length: > 0 } lm ? lm : "";
+        var lm = Landmark(rec.Site);
+        if (lm is { Length: > 0 } && !lm.Contains("player build", StringComparison.Ordinal) && !lm.Contains("unknown structure", StringComparison.Ordinal))
+            return lm;
+        if (lm is { Length: > 0 })
+        {
+            var owner = string.IsNullOrWhiteSpace(rec.Requester) ? "a player's" : rec.Requester + "'s";
+            IBlockAccess? w = null;
+            try { w = Site().World; } catch (Exception) { }
+            return w != null && FloorSize(w, rec.Site) is { } f
+                ? string.Create(CultureInfo.InvariantCulture, $"on {owner} {f.W}×{f.D} floor")
+                : $"on {owner} build";
+        }
+        return string.Create(CultureInfo.InvariantCulture, $"near {rec.Site.X},{rec.Site.Z}");
+    }
+
+    /// <summary>The connected solid layer under a site (its ground block's y), as W×D, when it is a floor (≤ 24×24), else null.</summary>
+    internal static (int W, int D)? FloorSize(IBlockAccess w, BlockPos ground, int maxSide = 24)
+    {
+        bool Solid(int x, int z) => w.IsLoaded(x, z) && BuildBlocks.Supports(w.GetBlock(x, ground.Y, z));
+        if (!Solid(ground.X, ground.Z)) return null;
+        var seen = new HashSet<(int X, int Z)> { (ground.X, ground.Z) };
+        var q = new Queue<(int X, int Z)>(seen);
+        int x0 = ground.X, x1 = ground.X, z0 = ground.Z, z1 = ground.Z;
+        while (q.Count > 0)
+        {
+            var (x, z) = q.Dequeue();
+            foreach (var (nx, nz) in new[] { (x + 1, z), (x - 1, z), (x, z + 1), (x, z - 1) })
+            {
+                if (Math.Abs(nx - ground.X) > maxSide || Math.Abs(nz - ground.Z) > maxSide || !Solid(nx, nz) || !seen.Add((nx, nz))) continue;
+                (x0, x1, z0, z1) = (Math.Min(x0, nx), Math.Max(x1, nx), Math.Min(z0, nz), Math.Max(z1, nz));
+                if (x1 - x0 >= maxSide || z1 - z0 >= maxSide) return null; // the island, not a floor
+                q.Enqueue((nx, nz));
+            }
+        }
+        return (x1 - x0 + 1, z1 - z0 + 1);
     }
 
     /// <summary>Window count = connected groups of glass/pane cells.</summary>

@@ -26,7 +26,7 @@ public sealed class DesignVersion
     public Critique? Critique { get; set; }
     public DesignPicture? Picture { get; set; }
     public bool Passing => Plan != null && Eval is { Pass: true };
-    public int Score => Plan == null || Eval == null ? 100_000 : Eval.Score(Critique is { Ok: false } c ? Math.Max(1, c.Issues.Count) : 0);
+    public int Score => Plan == null || Eval == null ? 100_000 : Eval.Score(Critique);
     public string EvalText => Eval?.Compact(N, Critique is { Skipped: false, Ok: false } c ? c.Text : null)
         ?? $"v{N} FAIL | " + string.Join("; ", Structural.Where(i => i.Level == IssueLevel.Error).Take(6));
 }
@@ -44,6 +44,10 @@ public sealed class DesignOutcome
     public long Ms { get; set; }
     public string Stop { get; set; } = "";
     public bool ImageShown { get; set; }
+    /// <summary>Every version (2+) failed the checks with the identical errors: likely a checker false positive, not the author.</summary>
+    public bool SuspectChecker { get; set; }
+    /// <summary>" (possible checker issue)" when <see cref="SuspectChecker"/>, for the notices.</summary>
+    public string CheckerNote => SuspectChecker ? " (possible checker issue)" : "";
 }
 
 /// <summary>
@@ -70,6 +74,7 @@ public sealed class DesignLoop(IBlueprintAuthor author, IDesignCritic? critic, B
         var conv = new List<LlmMessage> { LlmMessage.User(BlueprintPrompts.Brief(req.Description, req.SiteText, req.Constraints, req.PriorDsl, req.Change)) };
         int max = Math.Clamp(o.MaxIterations, 1, 8);
         string? lastFailure = null;
+        int cleanAt = 0; // first version that passed with no real warnings
         for (int n = 1; n <= max; n++)
         {
             if (outcome.Usd >= o.MaxUsdPerDesign) { outcome.Stop = $"cost cap ${o.MaxUsdPerDesign:0.00}"; break; }
@@ -124,6 +129,10 @@ public sealed class DesignLoop(IBlueprintAuthor author, IDesignCritic? critic, B
             Evaluated?.Invoke(v, outcome);
             if (Better(v, outcome.Best)) outcome.Best = v;
             if (v.Passing && v.Critique is null or { Ok: true } or { Skipped: true }) { outcome.Stop = "passed"; break; }
+            // A clean pass (no real warnings) gets one look revision for the reviewer, then the best is kept: no more versions
+            // chasing taste (live #8: v1 clean but for a false positive, v2/v3 only got worse).
+            if (cleanAt > 0) { outcome.Stop = "passed (clean version kept unless the look revision beat it)"; break; }
+            if (v.Passing && v.Eval!.RealWarnings == 0) cleanAt = n;
             // The same failure twice in a row: a third try won't differ (live 10-28: 3 × "missing size" per design, $0.10 each).
             var signature = Failure(v);
             if (signature != null && signature == lastFailure)
@@ -139,6 +148,14 @@ public sealed class DesignLoop(IBlueprintAuthor author, IDesignCritic? critic, B
             conv.Add(LlmMessage.User(ask + "\nRevise: send the whole blueprint."));
         }
         if (outcome.Stop.Length == 0) outcome.Stop = "iterations used";
+        // Every version failing with the very same check errors: the author can't fix what may be a checker false positive.
+        var failed = outcome.Versions;
+        if (failed.Count >= 2 && failed.All(x => x.Eval != null && !x.Passing)
+            && failed.Select(ErrorSet).Distinct().Count() == 1 && ErrorSet(failed[0]).Length > 0)
+        {
+            outcome.SuspectChecker = true;
+            outcome.Stop += outcome.CheckerNote;
+        }
         // The winner gets its picture for the players (renders are cached: usually free).
         if (outcome.Best is { Plan: { } bp } best && best.Picture == null)
             try { best.Picture = preview.Render(bp, Site().World, Roles(), Light(), Atlas(), Time()); } catch (Exception) { }
@@ -150,8 +167,13 @@ public sealed class DesignLoop(IBlueprintAuthor author, IDesignCritic? critic, B
     private static string? Failure(DesignVersion v) =>
         v.Plan != null ? null : v.Structural.Where(i => i.Level == IssueLevel.Error).Select(i => i.Text).DefaultIfEmpty("unparsable").Aggregate((a, b) => a + "; " + b);
 
-    private static bool Better(DesignVersion v, DesignVersion? best) =>
-        best == null || (v.Passing && !best.Passing) || (v.Passing == best.Passing && v.Score <= best.Score);
+    /// <summary>The check errors of a failed version (same set = same failure).</summary>
+    private static string ErrorSet(DesignVersion v) =>
+        string.Join("; ", (v.Eval?.Issues ?? v.Structural).Where(i => i.Level == IssueLevel.Error).Select(i => i.Code + ":" + i.Text).Order(StringComparer.Ordinal));
+
+    /// <summary>Passing beats failing; among equals the better quality score wins, and a tie keeps the earlier version.</summary>
+    public static bool Better(DesignVersion v, DesignVersion? best) =>
+        best == null || (v.Passing && !best.Passing) || (v.Passing == best.Passing && v.Score < best.Score);
 
     /// <summary>Parse, normalize at the site and check one version (no model calls).</summary>
     public DesignVersion Evaluate(string dsl, int n, DesignRequest req)

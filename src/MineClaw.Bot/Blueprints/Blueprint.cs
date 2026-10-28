@@ -43,8 +43,17 @@ public sealed class Blueprint
     public List<(string What, int Index)> Order { get; } = new();
     public string Source { get; set; } = "";
 
-    /// <summary>Clockwise quarter turns from the canonical front (south) to <see cref="Facing"/>.</summary>
-    public int Quarters => Facing switch { Dir.South => 0, Dir.West => 1, Dir.North => 2, _ => 3 };
+    /// <summary>
+    /// The side of the drawing that is the front: south (canonical) unless the doors are already drawn on the <see cref="Facing"/>
+    /// side, then that side and the drawing isn't turned (set by <see cref="BlueprintNormalizer"/>, also run at parse time).
+    /// </summary>
+    public Dir DrawnFront { get; set; } = Dir.South;
+
+    /// <summary>
+    /// Clockwise quarter turns from the drawn front to <see cref="Facing"/>: 0 for a south-front drawing facing south, 2 (a z-flip
+    /// and an x-flip: local z=0 ends up on the world's south side) for one facing north, 0 when the front is drawn where it faces.
+    /// </summary>
+    public int Quarters => (((int)Facing - (int)DrawnFront) % 4 + 4) % 4;
 
     /// <summary>World footprint after rotation (x extent, z extent).</summary>
     public (int Wx, int Dz) Footprint => Quarters % 2 == 0 ? (W, D) : (D, W);

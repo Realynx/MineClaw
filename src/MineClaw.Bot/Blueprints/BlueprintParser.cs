@@ -167,6 +167,9 @@ public static partial class BlueprintParser
             }
             else Err(0, "size", "missing 'size WxHxD'");
         }
+        // Settle the drawn front now (doors drawn on the facing side = not turned) so the footprint is right before normalizing.
+        if (bp.Facing != Dir.South && bp.W > 0 && bp.H > 0 && bp.D > 0 && bp.W <= MaxSide && bp.D <= MaxSide && bp.H <= MaxHeight)
+            BlueprintNormalizer.Normalize(bp);
         return (bp, issues);
     }
 
