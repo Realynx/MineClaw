@@ -29,6 +29,8 @@ internal interface IMachineHost
     /// </summary>
     (bool Taken, string? Target) Handle(TransitionSpec t, ScriptEvent e);
     JsonNode? Blackboard();
+    /// <summary>The blackboard for the debugger: data properties only (no getters run), safe while the script thread is parked.</summary>
+    JsonNode? BlackboardSafe() => Blackboard();
     void Restore(JsonNode? bb);
     /// <summary>The state changed (the script's <c>m.state</c> / <c>m.history</c>).</summary>
     void Changed(string state, IReadOnlyList<MachineStep> history);
@@ -71,6 +73,10 @@ internal sealed class MachineRunner
     }
 
     public string Label => "@" + _spec.Id;
+    internal string Id => _spec.Id;
+    internal int TransitionCount => _transitions;
+    /// <summary>The blackboard as JSON (script thread: the debugger's sample).</summary>
+    internal JsonNode? Blackboard() => _host.BlackboardSafe();
     public string State => _current.Name;
     public IReadOnlyList<MachineStep> History => _history;
 
@@ -88,6 +94,7 @@ internal sealed class MachineRunner
         foreach (var key in AllKeys()) if (!IsTimer(key) && !key.StartsWith("when:", StringComparison.Ordinal)) _s.Signals.Ensure(key, Threshold(key));
         _s.AddHandler(new ScriptSession.Handler($"machine '{_spec.Id}'", Match, Handle, Cuts: true, Owner: this));
         StartTimers(_spec.On, this);
+        _s.EnterMachine(this);
         try
         {
             bool entered = false;
@@ -128,6 +135,7 @@ internal sealed class MachineRunner
         }
         finally
         {
+            _s.ExitMachine(this);
             _s.RemoveHandlers(this);
             _s.Signals.RemoveOwner(this);
             _s.Signals.RemoveOwner(_stateToken);
@@ -167,13 +175,16 @@ internal sealed class MachineRunner
         _s.Transitions++;
         _s.Log($"machine {_spec.Id}: {from} -> {to} ({why})");
         Publish(to);
-        _s.Mark(Label, Snapshot(to));
+        var snap = Snapshot(to);
+        _s.Mark(Label, snap);
+        _s.TraceMachine(this, to, snap);
     }
 
     private void Publish(string state)
     {
         _s.MachineState = _spec.Id == "m" ? state : $"{_spec.Id}:{state}";
         _host.Changed(state, _history);
+        _s.TraceMachine(this, state, null);
     }
 
     private void StartTimers(IReadOnlyList<TransitionSpec> on, object owner)

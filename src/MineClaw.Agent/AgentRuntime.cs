@@ -255,6 +255,8 @@ public sealed class AgentRuntime : IDisposable
         agent.StandingRules = rules.HeaderLine;
         // Cached line (startup only): which delegate/hive profile fits what. Absent unless ≥2 profiles are usable.
         if (worker != null && ProfilePrompts.GuidanceLine(options.Llm) is { } profiles) agent.ExtendSystem(profiles);
+        // A swapped-in knowledge pack (memory shards) names its Minecraft version in the cached prefix; the default b1.8.1 adds nothing.
+        if (rag.Enabled && Admin.Shards.KnowledgePack.PromptLine(db) is { } packLine) agent.ExtendSystem(packLine);
         if (worker != null)
         {
             worker.StateHeader = () => agent.StateHeader?.Invoke() ?? "";

@@ -22,6 +22,45 @@ public partial class MainWindow : Window
             }
         };
         RecentButton.Click += (_, _) => (DataContext as MainWindowViewModel)?.RefreshRecent();
+        AddHandler(DragDrop.DragOverEvent, OnDragOver);
+        AddHandler(DragDrop.DragLeaveEvent, (_, _) => DropOverlay.IsVisible = false);
+        AddHandler(DragDrop.DropEvent, OnDrop);
+    }
+
+    private static string? ShardIn(DragEventArgs e) =>
+        e.DataTransfer.TryGetFiles()?.Select(f => f.TryGetLocalPath()).FirstOrDefault(p => p != null && p.EndsWith(Agent.Admin.Shards.ShardFile.Extension, StringComparison.OrdinalIgnoreCase));
+
+    private void OnDragOver(object? sender, DragEventArgs e)
+    {
+        bool shard = ShardIn(e) != null;
+        e.DragEffects = shard ? DragDropEffects.Copy : DragDropEffects.None;
+        DropOverlay.IsVisible = shard;
+    }
+
+    private async void OnDrop(object? sender, DragEventArgs e)
+    {
+        DropOverlay.IsVisible = false;
+        if (ShardIn(e) is not { } path || DataContext is not MainWindowViewModel vm) return;
+        e.Handled = true;
+        try { await vm.Shards.ImportAsync(path); }
+        catch (Exception ex) { vm.Status = "Import failed: " + ex.Message; }
+    }
+
+    private async Task<string?> SaveShard(string suggested)
+    {
+        var dir = Path.GetDirectoryName(suggested)!;
+        Directory.CreateDirectory(dir);
+        var start = await StorageProvider.TryGetFolderFromPathAsync(dir);
+        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = "Save the memory shard",
+            SuggestedFileName = Path.GetFileName(suggested),
+            SuggestedStartLocation = start,
+            DefaultExtension = "mcshard",
+            ShowOverwritePrompt = true,
+            FileTypeChoices = [new FilePickerFileType("Memory shard") { Patterns = ["*.mcshard"] }],
+        });
+        return file?.TryGetLocalPath();
     }
 
     protected override void OnDataContextChanged(EventArgs e)
@@ -36,6 +75,10 @@ public partial class MainWindow : Window
         vm.PickConfig = () => PickFile("Layer in a config file", ["*.json"], Path.GetDirectoryName(ExplorerPaths.BotConfig)!);
         vm.Confirm = (title, message) => ConfirmDialog.ShowAsync(this, title, message);
         vm.Edit.ShowEditor = req => EditDialog.ShowAsync(this, req);
+        vm.Shards.ShowExport = req => ShardExportDialog.ShowAsync(this, req);
+        vm.Shards.ShowImport = req => ShardImportDialog.ShowAsync(this, req);
+        vm.Shards.PickShard = () => PickFile("Import a memory shard", ["*.mcshard"], ShardService.ShardsDir);
+        vm.Shards.PickSavePath = SaveShard;
         vm.FocusSearchRequested += () =>
         {
             GlobalSearch.Focus();

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using MineClaw.Agent;
 using MineClaw.Agent.Admin;
+using MineClaw.Agent.Admin.Shards;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -26,6 +27,14 @@ public interface ISupervisorAdmin
     /// <summary>A consistent db copy (VACUUM INTO) in the bot's data dir; returns its path.</summary>
     string Backup(string who);
     IReadOnlyList<AuditEntry> Audit(int max);
+
+    /// <summary>True when the memory shard routes (<c>/api/admin/shard/import[/preview]</c>) are served.</summary>
+    bool SupportsShards => false;
+    /// <summary>The import diff of a <c>.mcshard</c> (nothing is written). Throws <see cref="ShardFormatException"/> on a bad shard.</summary>
+    ShardDiff PreviewShard(byte[] shard, ShardImportOptions options) => throw new NotSupportedException("memory shards are not available in this process");
+    /// <summary>Applies the shard inside the bot with its own stores, then starts the scoped RAPTOR rebuild in the background.</summary>
+    Task<ShardImportResult> ImportShardAsync(byte[] shard, ShardImportOptions options, CancellationToken ct) =>
+        throw new NotSupportedException("memory shards are not available in this process");
 }
 
 /// <summary>
@@ -41,6 +50,7 @@ public sealed class SupervisorAdminService : ISupervisorAdmin, IDisposable
     private readonly MemoryAdminContext _ctx;
     private readonly MemoryAdmin _admin;
     private readonly RaptorSectionRebuilder _rebuilder;
+    private readonly ShardImporter _shards;
     private readonly AdminAudit _audit;
     private readonly string _backupDir;
     private readonly ILogger _log;
@@ -70,6 +80,7 @@ public sealed class SupervisorAdminService : ISupervisorAdmin, IDisposable
         _log = log ?? NullLogger.Instance;
         _admin = new MemoryAdmin(ctx, audit, target);
         _rebuilder = new RaptorSectionRebuilder(ctx, audit, target);
+        _shards = new ShardImporter(ctx, audit, target);
     }
 
     /// <summary>
@@ -98,28 +109,42 @@ public sealed class SupervisorAdminService : ISupervisorAdmin, IDisposable
 
     public RebuildEstimate Estimate(RebuildRequest request) => _rebuilder.Estimate(request);
 
-    public string StartRebuild(RebuildRequest request)
+    public string StartRebuild(RebuildRequest request) => StartJob([request], null);
+
+    /// <summary>One background job running <paramref name="requests"/> in order (a shard import's scoped rebuilds), results merged.</summary>
+    private string StartJob(IReadOnlyList<RebuildRequest> requests, IReadOnlyDictionary<string, string>? reuse)
     {
         RebuildJob job;
         lock (_startLock)
         {
             if (_jobs.Values.FirstOrDefault(j => j.State is "queued" or "running") is { } busy)
                 throw new InvalidOperationException($"a rebuild is already running (job {busy.Id})");
-            job = new RebuildJob(Guid.NewGuid().ToString("N")[..12], request);
+            job = new RebuildJob(Guid.NewGuid().ToString("N")[..12], requests[0]);
             _jobs[job.Id] = job;
             foreach (var old in _jobs.Values.Where(j => j.Finished != null).OrderByDescending(j => j.Started).Skip(KeepJobs).ToList())
                 _jobs.TryRemove(old.Id, out _);
         }
         var linked = CancellationTokenSource.CreateLinkedTokenSource(_life.Token, job.Cts.Token);
+        var rebuilder = reuse == null ? _rebuilder : new RaptorSectionRebuilder(_ctx, _audit, Target) { ReuseSummaries = reuse };
         _ = Task.Run(async () =>
         {
             try
             {
                 job.State = "running";
                 var progress = new Progress(p => job.Progress = p);
-                var result = await _rebuilder.RunAsync(request, progress, linked.Token).ConfigureAwait(false);
+                RebuildResult? result = null;
+                foreach (var request in requests)
+                {
+                    var r = await rebuilder.RunAsync(request, progress, linked.Token).ConfigureAwait(false);
+                    result = result == null ? r : result with
+                    {
+                        Ok = result.Ok && r.Ok, Message = result.Message + " | " + r.Message, Diffs = [.. result.Diffs, .. r.Diffs],
+                        SpentUsd = result.SpentUsd + r.SpentUsd, Elapsed = result.Elapsed + r.Elapsed,
+                    };
+                    if (linked.IsCancellationRequested) break;
+                }
                 job.Result = result;
-                job.State = result.Ok ? "done" : linked.IsCancellationRequested ? "cancelled" : "failed";
+                job.State = result!.Ok ? "done" : linked.IsCancellationRequested ? "cancelled" : "failed";
             }
             catch (Exception ex)
             {
@@ -161,6 +186,28 @@ public sealed class SupervisorAdminService : ISupervisorAdmin, IDisposable
     }
 
     public IReadOnlyList<AuditEntry> Audit(int max) => _audit.Read(max);
+
+    // ------------------------------------------------------------------ memory shards
+
+    public bool SupportsShards => true;
+
+    public ShardDiff PreviewShard(byte[] shard, ShardImportOptions options) => _shards.Preview(ShardFile.Read(shard), options);
+
+    /// <summary>
+    /// Applies the shard with the bot's own stores (under the edit gate), signals RAPTOR maintenance (the new leaves go in at zero
+    /// tokens), then runs the import's scoped section rebuilds as one background job capped per section (a section over its cap
+    /// stays dirty for the regular maintenance budget). A backup is taken first.
+    /// </summary>
+    public async Task<ShardImportResult> ImportShardAsync(byte[] shard, ShardImportOptions options, CancellationToken ct)
+    {
+        var s = ShardFile.Read(shard);
+        Backup(options.Who);
+        var cap = Math.Min(options.RebuildMaxUsd, Math.Max(0.01m, _ctx.Options.Rag.Raptor.RebuildMaxUsd));
+        var result = await _shards.ApplyAsync(s, options with { RebuildMaxUsd = cap }, ct).ConfigureAwait(false);
+        if (!result.Ok || result.Rebuild.Count == 0) return result;
+        try { return result with { JobId = StartJob(result.Rebuild.Select(r => r with { MaxUsd = cap }).ToList(), ShardImporter.ReuseMap(s)) }; }
+        catch (InvalidOperationException ex) { return result with { Message = result.Message + "; rebuild not started: " + ex.Message + " (maintenance refreshes it)" }; }
+    }
 
     public void Dispose()
     {

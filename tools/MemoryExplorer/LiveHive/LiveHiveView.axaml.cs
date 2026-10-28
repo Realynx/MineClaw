@@ -33,6 +33,11 @@ public partial class LiveHiveView : UserControl
         if ((sender as Control)?.DataContext is BotTileViewModel t) Vm?.Focus(t);
     }
 
+    private void OnScriptBadge(object? sender, RoutedEventArgs e)
+    {
+        if ((sender as Control)?.DataContext is BotTileViewModel t) Vm?.OpenScript(t);
+    }
+
     private void OnFlyHere(object? sender, RoutedEventArgs e)
     {
         if ((sender as Control)?.DataContext is BotTileViewModel t && Vm is { } vm)

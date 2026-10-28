@@ -107,12 +107,14 @@ internal static class JsConvert
 internal sealed class JsBudget(ScriptSession s) : Constraint
 {
     private int _n;
+    private readonly bool _probe = s.Options.DebugProbe;
 
     public override void Check()
     {
         if (++_n < 16) return;
         _n = 0;
         s.Budget(16);
+        if (_probe) s.DebugTick(); // one volatile read unless a debugger watches (then ≈ 5 Hz samples)
     }
 
     public override void Reset() { }

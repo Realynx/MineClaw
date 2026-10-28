@@ -32,6 +32,8 @@
     <ProjectReference Include="..\..\src\MineClaw.Raptor\MineClaw.Raptor.csproj" />
     <ProjectReference Include="..\..\src\MineClaw.World\MineClaw.World.csproj" />
     <ProjectReference Include="..\..\src\MineClaw.Render\MineClaw.Render.csproj" />
+    <!-- Scripts page + live script debugger: the debugger snapshot types and the offline lint of saved scripts. -->
+    <ProjectReference Include="..\..\src\MineClaw.Scripting\MineClaw.Scripting.csproj" />
   </ItemGroup>
 
   <ItemGroup>

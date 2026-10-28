@@ -84,8 +84,11 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime
         else if (AutoMain(code))
             tail = "if (typeof main === 'function') return main(args);";
         else tail = "";
-        return "(async function(){" + code + "\n;" + tail + "\n})()";
+        return WrapPrefix + code + "\n;" + tail + "\n})()";
     }
+
+    /// <summary>What <see cref="Wrap"/> puts before the script on line 1 (the debugger corrects line-1 columns by it).</summary>
+    internal const string WrapPrefix = "(async function(){";
 
     private static readonly Regex MainCall = new(@"\bmain\s*\(", RegexOptions.Compiled);
     private static readonly Regex MainDef = new(@"\bfunction\s+main\s*\(|\bmain\s*=\s*(async\s*)?(\(|function|[A-Za-z_$])", RegexOptions.Compiled);
@@ -110,7 +113,9 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime
     {
         try
         {
-            var m = ScriptLoc.Match(_e.Advanced.StackTrace);
+            var stack = _e.Advanced.StackTrace;
+            _lastStack = stack; // the debugger's call stack at this host call (no extra work: the line came from it anyway)
+            var m = ScriptLoc.Match(stack);
             return m.Success ? int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture) : 0;
         }
         catch (Exception) { return 0; }

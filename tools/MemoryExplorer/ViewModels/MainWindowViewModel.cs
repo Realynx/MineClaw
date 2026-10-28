@@ -26,6 +26,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         Browser = new MemoryBrowserViewModel(this);
         Personality = new PersonalityViewModel(this);
         Edit = new EditSessionViewModel(this);
+        Shards = new ShardsViewModel(this);
+        Scripts = new ScriptsViewModel(this);
         LiveHive = new LiveHiveViewModel();
         Pages =
         [
@@ -34,6 +36,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             new NavItem("search", "Search", "IconSearch", Search),
             new NavItem("memory", "Memory", "IconTable", Browser),
             new NavItem("personality", "Personality", "IconPerson", Personality),
+            new NavItem("shards", "Shards", "IconShard", Shards),
+            new NavItem("scripts", "Scripts", "IconCode", Scripts),
             new NavItem("audit", "Edits & audit", "IconHistory", Edit),
             new NavItem("live", "Live Hive", "IconVideo", LiveHive),
         ];
@@ -55,6 +59,8 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public MemoryBrowserViewModel Browser { get; }
     public PersonalityViewModel Personality { get; }
     public EditSessionViewModel Edit { get; }
+    public ShardsViewModel Shards { get; }
+    public ScriptsViewModel Scripts { get; }
     public LiveHiveViewModel LiveHive { get; }
     public ObservableCollection<NavItem> Pages { get; }
     public ObservableCollection<RecentDb> Recent { get; } = [];
@@ -69,6 +75,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _themeLabel = "System";
     [ObservableProperty] private string _globalQuery = "";
     [ObservableProperty] private bool _isFetching;
+    /// <summary>"knowledge b1.8.1" chip in the header: the db's active knowledge pack (memory shards swap it).</summary>
+    [ObservableProperty] private string _knowledgePackText = "";
+    [ObservableProperty] private string? _knowledgePackTip;
 
     public string EmbeddingsStatus => Config.EmbeddingsStatus;
     public bool HasBank => Bank != null;
@@ -172,6 +181,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             _ => Path.GetFileName(b.Path),
         };
         SourceDetail = $"{ExplorerPaths.Display(b.Path)} · {MemoryBank.FormatBytes(b.SizeBytes)} · schema v{b.Db.SchemaVersion}";
+        var pack = MineClaw.Agent.Admin.Shards.KnowledgePack.Active(b.Db);
+        KnowledgePackText = "knowledge " + pack.Version;
+        KnowledgePackTip = pack.IsDefault ? "Active knowledge pack: the built-in b1.8.1 seed (recipes, items, blocks)"
+            : $"Active knowledge pack: {pack.Version} ({pack.Name}, installed {pack.Installed?.ToLocalTime():yyyy-MM-dd HH:mm}). Swap it from the Shards page.";
         var age = DateTimeOffset.UtcNow - b.SnapshotAt;
         SnapshotText = (b.Kind == SourceKind.Snapshot ? "snapshot " : "modified ") + b.SnapshotAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) +
                        $" ({Ago(age)})";

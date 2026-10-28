@@ -444,6 +444,7 @@ public sealed partial class ScriptSession
         _owner.OnPaused(this);
         settled.TrySetResult();
         bool auto = false;
+        _blocked = true; // parked: the debugger may read the engine's locals
         while (true)
         {
             _wake.Wait(TimeSpan.FromMilliseconds(100));
@@ -456,6 +457,7 @@ public sealed partial class ScriptSession
             }
             if (now - at >= _o.MaxPause) { Stop($"paused over {ScriptText.Dur(_o.MaxPause)}"); break; }
         }
+        WaitProbe();
         string? answer;
         lock (_lock)
         {

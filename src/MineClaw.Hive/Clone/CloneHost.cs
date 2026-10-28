@@ -141,6 +141,9 @@ public sealed class CloneHost : IHandoffTarget
     /// <summary>"Send me your view" (main's hive vision): flush this clone's world memory to the shared db, return its pose.</summary>
     public Func<CancellationToken, Task<CloneViewMsg?>>? View { get; set; }
 
+    /// <summary>The live script debugger's snapshot of this clone's script (main's Supervisor asks at 2-5 Hz while a panel is open).</summary>
+    public Func<bool, Scripting.ScriptDebugSnapshot?>? ScriptDebug { get; set; }
+
     /// <summary>Connects the pipe and says hello; false = no parent (exit <see cref="CloneExitCodes.NoParent"/>).</summary>
     public async Task<WelcomeMsg?> ConnectParentAsync(TimeSpan timeout, CancellationToken ct)
     {
@@ -240,6 +243,8 @@ public sealed class CloneHost : IHandoffTarget
                 return null;
             case Msg.View:
                 return View == null ? null : await View(ct).ConfigureAwait(false);
+            case Msg.ScriptDebug:
+                return ScriptDebug?.Invoke(m.As<ScriptDebugReq>()?.Code == true);
             default: return null;
         }
     }

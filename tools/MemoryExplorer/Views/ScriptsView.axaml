@@ -1,0 +1,246 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:MineClaw.MemoryExplorer.ViewModels"
+             xmlns:c="using:MineClaw.MemoryExplorer.Controls"
+             x:Class="MineClaw.MemoryExplorer.Views.ScriptsView"
+             x:DataType="vm:ScriptsViewModel">
+
+  <UserControl.Styles>
+    <Style Selector="TextBlock.code, c|CodeLineView.code">
+      <Setter Property="FontFamily" Value="{StaticResource MonoFont}" />
+      <Setter Property="FontSize" Value="12.5" />
+    </Style>
+    <Style Selector="Border.lintbad">
+      <Setter Property="Background" Value="#33D14343" />
+    </Style>
+    <Style Selector="Border.lintwarn">
+      <Setter Property="Background" Value="#33D9A21B" />
+    </Style>
+    <Style Selector="Border.added">
+      <Setter Property="Background" Value="#2E2EA043" />
+    </Style>
+    <Style Selector="Border.removed">
+      <Setter Property="Background" Value="#2ED14343" />
+    </Style>
+    <Style Selector="Border.gap">
+      <Setter Property="Background" Value="{DynamicResource ChipBrush}" />
+    </Style>
+    <Style Selector="Border.pill">
+      <Setter Property="CornerRadius" Value="5" />
+      <Setter Property="Padding" Value="6,1" />
+      <Setter Property="Background" Value="{DynamicResource ChipBrush}" />
+    </Style>
+    <Style Selector="Border.pill.bad">
+      <Setter Property="Background" Value="#40D14343" />
+    </Style>
+    <Style Selector="Border.pill.warn">
+      <Setter Property="Background" Value="#40D9A21B" />
+    </Style>
+    <Style Selector="Border.pill > TextBlock">
+      <Setter Property="FontSize" Value="11" />
+    </Style>
+  </UserControl.Styles>
+
+  <Grid ColumnDefinitions="2*,3*" Margin="24,20,20,16">
+
+    <!-- ================================================= the library -->
+    <Grid RowDefinitions="Auto,Auto,*" Margin="0,0,16,0">
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Spacing="3">
+          <TextBlock Classes="h1" Text="Scripts" />
+          <TextBlock Classes="muted" Text="{Binding Summary}" TextWrapping="Wrap" />
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
+          <ComboBox ItemsSource="{Binding SourceOptions}" SelectedItem="{Binding SelectedSource}" MinWidth="150"
+                    ToolTip.Tip="Read the library from the opened db (local or a snapshot) or live from the hive's Supervisor (GET, token header)" />
+          <Button Classes="icon" Command="{Binding RefreshCommand}" ToolTip.Tip="Reload">
+            <PathIcon Data="{StaticResource IconRefresh}" />
+          </Button>
+        </StackPanel>
+      </Grid>
+      <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="0,12,0,10">
+        <TextBox Classes="search" PlaceholderText="Filter by name, purpose, author, body" Text="{Binding Filter}" />
+        <TextBlock Grid.Column="1" Classes="faint" Margin="10,0,0,0" VerticalAlignment="Center" Text="{Binding SourceNote}" />
+      </Grid>
+      <Panel Grid.Row="2">
+        <ListBox Classes="plain" ItemsSource="{Binding Scripts}" SelectedItem="{Binding Selected}">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:ScriptRow">
+              <Border Classes="card" Padding="12,10" Margin="0,0,0,8">
+                <StackPanel Spacing="4">
+                  <Grid ColumnDefinitions="*,Auto">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <TextBlock Classes="h3 mono" Text="{Binding Name}" />
+                      <Border Classes="pill"><TextBlock Text="{Binding VersionText}" /></Border>
+                      <Border Classes="pill"><TextBlock Text="{Binding LangText}" /></Border>
+                    </StackPanel>
+                    <Border Grid.Column="1" Classes="pill" Classes.bad="{Binding LintBad}" Classes.warn="{Binding LintWarn}">
+                      <TextBlock Text="{Binding LintText}" />
+                    </Border>
+                  </Grid>
+                  <TextBlock Classes="muted" FontSize="12" TextTrimming="CharacterEllipsis">
+                    <Run Text="{Binding AuthorText, Mode=OneWay}" /><Run Text="  ·  last run " /><Run Text="{Binding LastRunText, Mode=OneWay}" />
+                    <Run Text="  ·  " /><Run Text="{Binding RateText, Mode=OneWay}" />
+                  </TextBlock>
+                  <TextBlock Classes="faint mono" FontSize="11.5" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding ParamsText}">
+                    <Run Text="params " /><Run Text="{Binding ParamsText, Mode=OneWay}" />
+                  </TextBlock>
+                  <TextBlock Classes="faint" FontSize="11.5" Text="{Binding TimeText}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding TimeText}" />
+                  <TextBlock FontSize="12" Foreground="{DynamicResource AccentBrush}" Text="{Binding UsedByText}" IsVisible="{Binding HasUsers}"
+                             TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding UsedByText}" />
+                  <TextBlock Classes="faint" FontSize="11" Text="{Binding Flags}" />
+                </StackPanel>
+              </Border>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+        <TextBlock Classes="muted" Text="{Binding EmptyText}" TextWrapping="Wrap" HorizontalAlignment="Center" VerticalAlignment="Center"
+                   IsVisible="{Binding EmptyText, Converter={x:Static ObjectConverters.IsNotNull}}" />
+        <ProgressBar IsIndeterminate="True" VerticalAlignment="Top" Height="3" MinHeight="3" IsVisible="{Binding IsLoading}" />
+      </Panel>
+    </Grid>
+
+    <!-- ================================================= the selected script -->
+    <Border Grid.Column="1" Classes="card" Padding="16,14" IsVisible="{Binding HasDetail}">
+      <Grid RowDefinitions="Auto,Auto,*">
+        <Grid ColumnDefinitions="*,Auto">
+          <StackPanel Spacing="3">
+            <TextBlock Classes="h2 mono" Text="{Binding DetailTitle}" />
+            <TextBlock Classes="muted" FontSize="12" Text="{Binding DetailMeta}" TextWrapping="Wrap" />
+            <TextBlock Classes="faint" FontSize="12" Text="{Binding MigrationNote}" IsVisible="{Binding MigrationNote, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+            <TextBlock Classes="faint" FontSize="12" Text="{Binding RevertNote}" IsVisible="{Binding RevertNote, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+          </StackPanel>
+          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
+            <TextBlock Classes="muted" Text="Version" VerticalAlignment="Center" />
+            <ComboBox ItemsSource="{Binding Versions}" SelectedItem="{Binding SelectedVersion}" MinWidth="120" />
+            <Button Classes="icon" Command="{Binding CopyCodeCommand}" ToolTip.Tip="Copy the source">
+              <PathIcon Data="{StaticResource IconCopy}" />
+            </Button>
+          </StackPanel>
+        </Grid>
+        <TextBlock Grid.Row="1" Classes="faint" Margin="0,8,0,4" Text="{Binding LintSummary}" TextWrapping="Wrap" />
+
+        <TabControl Grid.Row="2" Padding="0,6,0,0">
+          <TabItem Header="Source">
+            <ListBox Classes="plain" ItemsSource="{Binding Code}" Background="Transparent">
+              <ListBox.Styles>
+                <Style Selector="ListBoxItem">
+                  <Setter Property="Padding" Value="0" />
+                  <Setter Property="MinHeight" Value="0" />
+                </Style>
+              </ListBox.Styles>
+              <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:CodeLineRow">
+                  <Border Classes.lintbad="{Binding LintError}" Classes.lintwarn="{Binding HasLint}" ToolTip.Tip="{Binding Lint}">
+                    <Grid ColumnDefinitions="44,*">
+                      <TextBlock Classes="code faint" Text="{Binding NoText}" HorizontalAlignment="Right" Margin="0,0,12,0" />
+                      <c:CodeLineView Grid.Column="1" Classes="code" Spans="{Binding Spans}" />
+                    </Grid>
+                  </Border>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </TabItem>
+
+          <TabItem Header="Diff" IsEnabled="{Binding CanDiff}">
+            <Grid RowDefinitions="Auto,*">
+              <Grid ColumnDefinitions="Auto,Auto,*,Auto" Margin="0,0,0,8">
+                <TextBlock Classes="muted" Text="Compare with" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <ComboBox Grid.Column="1" ItemsSource="{Binding Versions}" SelectedItem="{Binding CompareVersion}" MinWidth="120" />
+                <TextBlock Grid.Column="2" Classes="muted mono" FontSize="12" Margin="12,0" VerticalAlignment="Center" Text="{Binding DiffSummary}" />
+                <Button Grid.Column="3" Classes="icon" Command="{Binding CopyDiffCommand}" ToolTip.Tip="Copy as a unified diff">
+                  <PathIcon Data="{StaticResource IconCopy}" />
+                </Button>
+              </Grid>
+              <ListBox Grid.Row="1" Classes="plain" ItemsSource="{Binding Diff}" Background="Transparent">
+                <ListBox.Styles>
+                  <Style Selector="ListBoxItem">
+                    <Setter Property="Padding" Value="0" />
+                    <Setter Property="MinHeight" Value="0" />
+                  </Style>
+                </ListBox.Styles>
+                <ListBox.ItemTemplate>
+                  <DataTemplate x:DataType="vm:ScriptDiffRow">
+                    <Border Classes.added="{Binding Line.IsAdded}" Classes.removed="{Binding Line.IsRemoved}" Classes.gap="{Binding Line.IsGap}">
+                      <Grid ColumnDefinitions="36,36,18,*">
+                        <TextBlock Classes="code faint" Text="{Binding Line.OldText}" HorizontalAlignment="Right" Margin="0,0,6,0" />
+                        <TextBlock Grid.Column="1" Classes="code faint" Text="{Binding Line.NewText}" HorizontalAlignment="Right" Margin="0,0,6,0" />
+                        <TextBlock Grid.Column="2" Classes="code muted" Text="{Binding Line.Prefix}" />
+                        <c:CodeLineView Grid.Column="3" Classes="code" Spans="{Binding Spans}" />
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+            </Grid>
+          </TabItem>
+
+          <TabItem Header="History">
+            <ListBox Classes="plain" ItemsSource="{Binding Versions}" SelectedItem="{Binding SelectedVersion}">
+              <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:ScriptVersionRow">
+                  <StackPanel Margin="0,4" Spacing="2">
+                    <TextBlock Classes="h3" Text="{Binding Label}" />
+                    <TextBlock Classes="muted" FontSize="12" Text="{Binding Stats}" TextWrapping="Wrap" />
+                  </StackPanel>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </TabItem>
+
+          <TabItem Header="Params &amp; lint">
+            <ScrollViewer>
+              <StackPanel Spacing="14">
+                <StackPanel Spacing="6">
+                  <TextBlock Classes="h3" Text="DECLARED PARAMS  (params({...}) defaults → saved tuning)" />
+                  <TextBlock Classes="faint" Text="This script declares no params." IsVisible="{Binding !Params.Count}" />
+                  <ItemsControl ItemsSource="{Binding Params}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:ScriptParamRow">
+                        <Grid ColumnDefinitions="160,*,*" Margin="0,3">
+                          <TextBlock Classes="mono" Text="{Binding Name}" />
+                          <TextBlock Grid.Column="1" Classes="mono muted" Text="{Binding Default}" />
+                          <TextBlock Grid.Column="2" Classes="mono" Foreground="{DynamicResource AccentBrush}" Text="{Binding Tuned}" IsVisible="{Binding IsTuned}" />
+                        </Grid>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+                <StackPanel Spacing="6">
+                  <TextBlock Classes="h3" Text="LINT" />
+                  <TextBlock Classes="faint" Text="No findings." IsVisible="{Binding !Lint.Count}" />
+                  <ItemsControl ItemsSource="{Binding Lint}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:ScriptLintRow">
+                        <Border Classes="pill" Classes.bad="{Binding IsError}" Classes.warn="{Binding !IsError}" Margin="0,2" HorizontalAlignment="Left">
+                          <TextBlock Classes="mono" Text="{Binding Text}" TextWrapping="Wrap" />
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </StackPanel>
+            </ScrollViewer>
+          </TabItem>
+
+          <TabItem Header="Runs">
+            <Panel>
+              <TextBlock Classes="faint" Text="No runs recorded for this version." IsVisible="{Binding !Runs.Count}" />
+              <ListBox Classes="plain" ItemsSource="{Binding Runs}">
+                <ListBox.ItemTemplate>
+                  <DataTemplate x:DataType="vm:ScriptRunRow">
+                    <Grid ColumnDefinitions="120,220,*" Margin="0,3">
+                      <TextBlock Classes="mono faint" Text="{Binding When}" />
+                      <TextBlock Grid.Column="1" Classes="mono" Text="{Binding Result}" />
+                      <TextBlock Grid.Column="2" Classes="muted" FontSize="12" Text="{Binding Detail}" TextWrapping="Wrap" />
+                    </Grid>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+            </Panel>
+          </TabItem>
+        </TabControl>
+      </Grid>
+    </Border>
+  </Grid>
+</UserControl>

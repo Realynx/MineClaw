@@ -58,6 +58,8 @@ public sealed class SupervisorServer : IAsyncDisposable
     public SupervisorWorldRoutes? World { get; set; }
     /// <summary>Admin writes (<c>/api/admin/*</c>, Supervisor:AllowAdminWrites + token header); null = every admin route is 403.</summary>
     public ISupervisorAdmin? Admin { get; set; }
+    /// <summary>The read-only script routes (<c>/api/scripts*</c>, <c>/api/bodies/{name}/script</c>; 403 without the token); null = off.</summary>
+    public SupervisorScriptRoutes? Scripts { get; set; }
     public string? Prefix { get; private set; }
 
     /// <summary>Starts listening on Bind:Port. Throws when the address can't be bound (the host logs and runs without it).</summary>
@@ -100,7 +102,7 @@ public sealed class SupervisorServer : IAsyncDisposable
                     var q = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                     var nv = ctx.Request.QueryString;
                     foreach (var k in nv.AllKeys) if (k != null && nv[k] is { } v) q[k] = v;
-                    var body = await SupervisorAdminRoutes.ReadBodyAsync(ctx.Request, ct).ConfigureAwait(false);
+                    var body = await SupervisorAdminRoutes.ReadBodyAsync(ctx.Request, ct, _o).ConfigureAwait(false);
                     var req = new SupervisorRequest(ctx.Request.HttpMethod, ctx.Request.Url?.AbsolutePath ?? "/", q, ctx.Request.Headers["X-Supervisor-Token"], body);
                     reply = await HandleAsync(req, ct).ConfigureAwait(false);
                 }
@@ -133,6 +135,7 @@ public sealed class SupervisorServer : IAsyncDisposable
         var path = r.Path.TrimEnd('/');
         if (path.Length == 0 || path == "/index.html") return new SupervisorReply(200, "text/html; charset=utf-8", Page());
         if (path == "/favicon.ico") return new SupervisorReply(204, "image/x-icon", []);
+        if (Scripts != null && await Scripts.TryHandleAsync(r, ct).ConfigureAwait(false) is { } scriptReply) return scriptReply;
         if (!Authorized(r)) return Json(401, new { error = "token required (X-Supervisor-Token header or ?token=)" });
         if (World != null && await World.TryHandleAsync(r, path, ct).ConfigureAwait(false) is { } worldReply) return worldReply;
         try

@@ -318,6 +318,18 @@ the rules + the SDK reference generated from the code + three worked examples (�
   only in the cell → `mineGen` + params); ensure a pickaxe 12/16; room(n) 12/16; inventory-full check 12/16; cp mine/store
   phases 8/16; retry(3, gen) 7/16; "mined nothing" guard 5/16; low-hp retreat 2/16; busy-cell fallback, fight at night, chop +
   replant with a spot list, deliver to a player, wake when done 1/16 each. Wheat harvest, wait-for-day and fight-then-resume
+- **Live debugger** (`ScriptSession.Debug.cs`, `Runtime/Js/JsRuntime.Debug.cs`; the Explorer's Live Hive panel, read-only):
+  `ScriptSession.DebugSnapshot(code)` (any thread, never blocks the script) → `ScriptDebugSnapshot`: current line/column (live
+  while it steps), call stack, action in flight with args and timings per action kind, params/args, checkpoint, pause state and
+  reason, machine state + history + blackboard, crew lanes, locals of the innermost script frame, logs. Jint's DebugMode stays
+  off (it allocates per statement); instead the line is the engine's last-statement pointer read off-thread (`UnsafeAccessor`,
+  no hook), the stack is the text Jint already builds at each host call (`CurrentLine`), locals come from the execution-context
+  stack through Jint's public `DebugScopes` (reflection over its internal ctor; data properties only, no getters run) — on the
+  script thread, or off-thread only while it is parked in a host call or a pause (`_blocked`, fenced by a lock on exit).
+  Cost: nobody watching = one volatile read per 16 statements (the budget hook) and one small object per action (measured
+  ≈ 0-1 % on a 4 M-statement benchmark, `ScriptDebugTests`; `Scripting:DebugProbe=false` removes even that); a snapshot request
+  takes a 3 s lease (`WatchLease`) during which the script thread samples stack/locals/blackboard at ≤ 5 Hz (≈ 5 %). Clones answer
+  over the `script_dbg` IPC request. Pause/resume from the panel is a TODO (an admin write; `ScriptDebugSnapshot.Controls`).
   weren't in the library yet but are the brain's common asks: `harvestFarm`, `waitForDay`, `defendIfAttacked`/`guardArea`.
 - **Speed** (hand-written equivalents of five representative jobs, before = Lua with the old prelude, after = JS + SDK;
   `Js/SpeedComparisonTests`; tokens = chars/3.5): gen mining loop 19 → 4 lines (238 → 68 output tokens), wheat harvest 11 → 8
@@ -734,3 +746,39 @@ location", so the hive never fights a login: (a) an offline slot whose name is o
 is skipped before launch ("slot 1337 is in use by a player's viewer", told once); (b) a clone kicked that way sends `occupied`,
 stops its client's auto-reconnect and exits 76; main records its items as stranded, does not restart it, leaves the slot alone
 for `Hive:ExternalLoginCooldownMinutes` (10) and tells the brain (MustWake when its task was unfinished).
+**Scripts** (`SupervisorScriptRoutes` + `LiveScriptData`; GET only, 403 without the token since they carry source and live
+values): `/api/scripts` (the saved library from the shared routines rows: versions, language, author kind opus/migration/legacy,
+params with defaults and saved tuning, last run, success rate, timings, lint with the bot's real game functions, the bodies whose
+standing order runs it — `Agent/Routines/ScriptLibraryReport`, also what the Explorer's Scripts page builds offline from a db),
+`/api/scripts/{name}[/{version}]` (code, lint findings, history, recent runs: live telemetry + saved param runs),
+`/api/bodies/scripts` (who runs a script now: the Live Hive tiles' badge; clones from their telemetry brain state, no IPC) and
+`/api/bodies/{name}/script?code=1` (the live debugger snapshot; main and in-process bodies directly, clones over `script_dbg`
+IPC with a 1.5 s timeout; one probe per body per 150 ms however many viewers ask). The Explorer polls it at 4 Hz while its
+debugger panel is open (HiveApi timeouts and back-off, "stale" after 2 s without a snapshot).
+
+
+## Memory shards (Agent/Admin/Shards + tools/MemoryExplorer Shards page)
+
+Portable slices of memory: a `.mcshard` zip = `manifest.json` (name, description, source db file name + schema version, embedding
+model/dims, kind + selection, counts, sha256 content hash) + `records/{kind}.jsonl` (stable ids: doc refs for episodes/knowledge/
+game data, natural keys for places/structures/lessons, a content hash for facts/claims/rules/traits; fields hashed per record) +
+optional `embeddings.bin` (doc material hash → float32 vector) + optional `summaries.jsonl` (RAPTOR summaries keyed by their
+cluster-text hash: a cache, never truth). `ShardFile.Read` refuses a newer format/schema, a bad record hash or content hash.
+- **Select** (`ShardCollector`, plain SELECTs, works on a read-only snapshot): RAPTOR subtree (leaf refs → their records), filter
+  (kinds, dimension, text or semantic query), person (login + nicknames: their facts/claims/relationship entries/episodes, rules
+  only with "include rules"), knowledge pack (`gamedata` docs, optionally kb chunks, tagged with the version). Never exported:
+  observations/containers (world + inventory ledger), chunks, build plans, chat, routines; places/structures only with
+  "include world". `ShardRedactor` drops records about keys/passwords and redacts token-shaped strings.
+- **Import** (`ShardImporter`, through the stores: MemoryStore, BeliefStore, DirectiveStore (trusted players only), SelfProfile,
+  KnowledgeCorrections, RagIndex): diff first (added / changed / conflicts / removed / unchanged / skipped, reusable vectors,
+  scoped rebuild + estimate). Modes: merge (dedupe by stable id; conflicts keep-newer | prefer-shard | keep-mine),
+  replace-section (re-applies the shard's selection to the target, removes what's not in the shard), swap-pack (replaces every
+  `gamedata` doc, sets meta `knowledge_pack`). Vectors of the same model + dims go into `embed_cache` (no API call), the rest
+  re-embed; the tree takes new leaves at zero tokens, then `RaptorSectionRebuilder` kind rebuilds run only for tree kinds that
+  changed (cached summaries reused for identical clusters). One audit entry (`import`/`export`, kind `shard`).
+- **Knowledge pack** (`KnowledgePack`): no meta = the built-in b1.8.1 seed. A non-default pack adds one cached-prompt line at
+  startup (the default prefix is unchanged); retrieval only ever holds the active pack's game data.
+- **Targets**: a local db file (Explorer, backup first, audit next to the db) or the live bot via `POST /api/admin/shard/import/
+  preview` and `POST /api/admin/shard/import` (body `{shard: base64, mode, conflict, include_rules, include_world}`, ≤ 64 MB, read
+  only after `Supervisor:AllowAdminWrites` + the token header check out; the bot backs up, applies with its own stores and runs
+  the rebuild as a background job under `Rag:Raptor:RebuildMaxUsd` per section). The Explorer never writes the live db file.

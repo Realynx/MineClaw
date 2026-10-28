@@ -8,7 +8,8 @@
         x:DataType="vm:MainWindowViewModel"
         Title="MineClaw · Memory Explorer"
         Width="1440" Height="900" MinWidth="980" MinHeight="620"
-        Background="{DynamicResource WindowBrush}">
+        Background="{DynamicResource WindowBrush}"
+        DragDrop.AllowDrop="True">
 
   <Window.KeyBindings>
     <KeyBinding Gesture="Ctrl+K" Command="{Binding FocusSearchCommand}" />
@@ -40,6 +41,10 @@
                 <TextBlock FontWeight="SemiBold" Text="{Binding SourceTitle}" />
                 <Border Classes="badge" Classes.warn="{Binding IsEditMode}" VerticalAlignment="Center">
                   <TextBlock Text="{Binding ModeBadge}" />
+                </Border>
+                <Border Classes="chip" Padding="7,0" VerticalAlignment="Center" ToolTip.Tip="{Binding KnowledgePackTip}"
+                        IsVisible="{Binding KnowledgePackText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                  <TextBlock Text="{Binding KnowledgePackText}" FontSize="11" />
                 </Border>
                 <TextBlock Classes="muted" FontSize="12" Text="{Binding SnapshotText}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
               </StackPanel>
@@ -145,10 +150,23 @@
           <DataTemplate DataType="vm:MemoryBrowserViewModel"><v:MemoryBrowserView /></DataTemplate>
           <DataTemplate DataType="vm:PersonalityViewModel"><v:PersonalityView /></DataTemplate>
           <DataTemplate DataType="vm:EditSessionViewModel"><v:EditSessionView /></DataTemplate>
+          <DataTemplate DataType="vm:ShardsViewModel"><v:ShardsView /></DataTemplate>
+          <DataTemplate DataType="vm:ScriptsViewModel"><v:ScriptsView /></DataTemplate>
           <DataTemplate DataType="lh:LiveHiveViewModel"><lh:LiveHiveView /></DataTemplate>
         </ContentControl.DataTemplates>
       </ContentControl>
     </Grid>
+
+    <!-- Drop a .mcshard anywhere: import -->
+    <Border x:Name="DropOverlay" Grid.Row="0" Grid.RowSpan="3" IsVisible="False" IsHitTestVisible="False" Background="#66000000">
+      <Border Classes="card" Padding="28,20" HorizontalAlignment="Center" VerticalAlignment="Center" CornerRadius="12">
+        <StackPanel Spacing="8" HorizontalAlignment="Center">
+          <PathIcon Data="{StaticResource IconShard}" Width="28" Height="28" Foreground="{DynamicResource AccentBrush}" />
+          <TextBlock Classes="h2" Text="Drop to import the shard" HorizontalAlignment="Center" />
+          <TextBlock Classes="muted" Text="You'll see the diff before anything is written." HorizontalAlignment="Center" />
+        </StackPanel>
+      </Border>
+    </Border>
 
     <!-- Status bar -->
     <Border Grid.Row="2" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderSubtleBrush}" BorderThickness="0,1,0,0" Padding="18,6">

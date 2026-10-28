@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using MineClaw.Agent.Admin;
+using MineClaw.Agent.Admin.Shards;
 using MineClaw.Agent.Llm;
 
 namespace MineClaw.MemoryExplorer.Services;
@@ -29,6 +30,12 @@ public interface IAdminTarget : IDisposable
     /// <summary>Runs (local) or starts and polls (live) a rebuild, reporting status until it is done.</summary>
     Task<RebuildStatus> RebuildAsync(RebuildRequest r, IProgress<RebuildStatus> progress, CancellationToken ct);
     Task<IReadOnlyList<AuditEntry>> AuditAsync(int max, CancellationToken ct);
+    /// <summary>The import diff of a .mcshard file (nothing is written).</summary>
+    Task<ShardDiff> PreviewShardAsync(string shardPath, ShardImportOptions options, CancellationToken ct);
+    /// <summary>Imports the shard (local: here through the stores; live: inside the bot, which also starts the rebuild job).</summary>
+    Task<ShardImportResult> ImportShardAsync(string shardPath, ShardImportOptions options, CancellationToken ct);
+    /// <summary>The import's scoped RAPTOR rebuilds: local runs them here (cached summaries reused), live follows the bot's job.</summary>
+    Task<RebuildStatus?> RunImportRebuildAsync(ShardImportResult result, IProgress<RebuildStatus> progress, CancellationToken ct);
 }
 
 /// <summary>
@@ -41,10 +48,12 @@ public sealed class LocalAdminTarget : IAdminTarget
     private readonly MemoryAdminContext _ctx;
     private readonly MemoryAdmin _admin;
     private readonly RaptorSectionRebuilder _rebuilder;
+    private readonly ExplorerConfig _config;
 
     public LocalAdminTarget(string dbPath, ExplorerConfig config, Agent.Rag.IEmbeddingProvider? embeddings = null, ILlmClient? llm = null)
     {
         DbPath = Path.GetFullPath(dbPath);
+        _config = config;
         var options = config.Agent;
         llm ??= config.LlmConfigured && LlmProblems(config).Count == 0 ? LlmClientFactory.Create(options.Llm) : null;
         _ctx = MemoryAdminContext.OpenLocal(DbPath, options, embeddings ?? config.CreateEmbeddings(), llm);
@@ -94,6 +103,35 @@ public sealed class LocalAdminTarget : IAdminTarget
 
     public Task<IReadOnlyList<AuditEntry>> AuditAsync(int max, CancellationToken ct) => Task.FromResult(Audit.Read(max));
 
+    public Task<ShardDiff> PreviewShardAsync(string shardPath, ShardImportOptions options, CancellationToken ct) =>
+        Task.Run(() => new ShardImporter(_ctx, Audit, "local:" + DbPath).Preview(ShardFile.Read(shardPath), options), ct);
+
+    public async Task<ShardImportResult> ImportShardAsync(string shardPath, ShardImportOptions options, CancellationToken ct)
+    {
+        var shard = await Task.Run(() => ShardFile.Read(shardPath), ct);
+        _rebuilder.ReuseSummaries = ShardImporter.ReuseMap(shard); // identical clusters reuse the shard's summaries
+        return await Task.Run(() => new ShardImporter(_ctx, Audit, "local:" + DbPath).ApplyAsync(shard, options, ct), ct);
+    }
+
+    public async Task<RebuildStatus?> RunImportRebuildAsync(ShardImportResult result, IProgress<RebuildStatus> progress, CancellationToken ct)
+    {
+        if (result.Rebuild.Count == 0) return null;
+        if (LlmProblems(_config).Count > 0 || _ctx.Llm == null)
+            return new RebuildStatus("failed", null, null, "no summary model configured: the new leaves are in the tree, their summaries stay dirty until a rebuild");
+        RebuildStatus? last = null;
+        var messages = new List<string>();
+        var diffs = new List<SummaryDiff>();
+        decimal spent = 0;
+        foreach (var r in result.Rebuild)
+        {
+            last = await RebuildAsync(r, progress, ct);
+            if (last.Result is { } res) { messages.Add(res.Message); diffs.AddRange(res.Diffs); spent += res.SpentUsd; }
+            if (last.State == "cancelled") break;
+        }
+        var ok = last?.State == "done";
+        return new RebuildStatus(last?.State ?? "done", null, new RebuildResult(ok, string.Join(" | ", messages), diffs, spent, TimeSpan.Zero), last?.Error);
+    }
+
     public void Dispose() => _ctx.Dispose();
 }
 
@@ -128,7 +166,8 @@ public sealed class LiveAdminTarget(SupervisorEndpoint endpoint) : IAdminTarget
         if (res.StatusCode == HttpStatusCode.Unauthorized)
             throw new InvalidOperationException("the Supervisor wants a token (~/.mineclaw-supervisor-token)");
         // A rejected edit answers 400 with the same result body (ok=false, message).
-        if (res.StatusCode == HttpStatusCode.BadRequest && typeof(T) == typeof(MemoryEditResult) && text.Contains("\"ok\"", StringComparison.Ordinal))
+        if (res.StatusCode == HttpStatusCode.BadRequest && (typeof(T) == typeof(MemoryEditResult) || typeof(T) == typeof(ShardImportResult))
+            && text.Contains("\"ok\"", StringComparison.Ordinal))
             return JsonSerializer.Deserialize<T>(text, Json)!;
         if (!res.IsSuccessStatusCode)
             throw new InvalidOperationException($"Supervisor {(int)res.StatusCode}: {ErrorOf(text)}");
@@ -160,25 +199,55 @@ public sealed class LiveAdminTarget(SupervisorEndpoint endpoint) : IAdminTarget
     public async Task<RebuildStatus> RebuildAsync(RebuildRequest r, IProgress<RebuildStatus> progress, CancellationToken ct)
     {
         var job = await SendAsync<JobReply>(HttpMethod.Post, "api/admin/rebuild", r, ct);
+        return await FollowAsync(job.JobId, progress, ct);
+    }
+
+    public async Task<IReadOnlyList<AuditEntry>> AuditAsync(int max, CancellationToken ct) =>
+        (await SendAsync<AuditReply>(HttpMethod.Get, $"api/admin/audit?max={max}", null, ct)).Entries ?? [];
+
+    private static object ShardBody(byte[] bytes, ShardImportOptions o) => new
+    {
+        shard = Convert.ToBase64String(bytes), mode = ShardImportOptions.Name(o.Mode), conflict = ShardImportOptions.Name(o.Conflict),
+        include_rules = o.IncludeRules, include_world = o.IncludeWorld, who = o.Who, max_usd = o.RebuildMaxUsd,
+    };
+
+    /// <summary>The shard is checked here first (a broken or too-new file never leaves this machine).</summary>
+    private static async Task<byte[]> ShardBytesAsync(string path, CancellationToken ct)
+    {
+        var bytes = await File.ReadAllBytesAsync(path, ct);
+        ShardFile.Read(bytes);
+        if (bytes.Length * 4L / 3 > 60L * 1024 * 1024) throw new InvalidOperationException("the shard is too large to send to the live bot (60 MB); split it");
+        return bytes;
+    }
+
+    public async Task<ShardDiff> PreviewShardAsync(string shardPath, ShardImportOptions options, CancellationToken ct) =>
+        await SendAsync<ShardDiff>(HttpMethod.Post, "api/admin/shard/import/preview", ShardBody(await ShardBytesAsync(shardPath, ct), options), ct);
+
+    public async Task<ShardImportResult> ImportShardAsync(string shardPath, ShardImportOptions options, CancellationToken ct) =>
+        await SendAsync<ShardImportResult>(HttpMethod.Post, "api/admin/shard/import", ShardBody(await ShardBytesAsync(shardPath, ct), options), ct);
+
+    public async Task<RebuildStatus?> RunImportRebuildAsync(ShardImportResult result, IProgress<RebuildStatus> progress, CancellationToken ct) =>
+        result.JobId is { Length: > 0 } job ? await FollowAsync(job, progress, ct) : null;
+
+    /// <summary>Polls a job the bot runs until it is done (cancel asks the bot to stop it).</summary>
+    private async Task<RebuildStatus> FollowAsync(string jobId, IProgress<RebuildStatus> progress, CancellationToken ct)
+    {
         progress.Report(new RebuildStatus("running", new RebuildProgress("started in the bot", 0, 1), null));
         using var onCancel = ct.Register(() =>
         {
             // Ask the bot to cancel the job (best effort; the job also stops at its own cost cap).
-            try { _ = _http.PostAsync("api/admin/rebuild/" + Uri.EscapeDataString(job.JobId) + "/cancel", JsonContent.Create(new { }), CancellationToken.None); }
+            try { _ = _http.PostAsync("api/admin/rebuild/" + Uri.EscapeDataString(jobId) + "/cancel", JsonContent.Create(new { }), CancellationToken.None); }
             catch (Exception) { }
         });
         while (true)
         {
             await Task.Delay(TimeSpan.FromSeconds(1.5), ct);
-            var s = await SendAsync<JobStatus>(HttpMethod.Get, "api/admin/rebuild/" + Uri.EscapeDataString(job.JobId), null, ct);
+            var s = await SendAsync<JobStatus>(HttpMethod.Get, "api/admin/rebuild/" + Uri.EscapeDataString(jobId), null, ct);
             var status = new RebuildStatus(s.State ?? "running", s.Progress, s.Result, s.Error);
             progress.Report(status);
             if (status.Done) return status;
         }
     }
-
-    public async Task<IReadOnlyList<AuditEntry>> AuditAsync(int max, CancellationToken ct) =>
-        (await SendAsync<AuditReply>(HttpMethod.Get, $"api/admin/audit?max={max}", null, ct)).Entries ?? [];
 
     public void Dispose() => _http.Dispose();
 }

@@ -1,0 +1,148 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:MineClaw.MemoryExplorer.ViewModels"
+             xmlns:s="using:MineClaw.MemoryExplorer.Services"
+             xmlns:c="using:MineClaw.MemoryExplorer.Controls"
+             x:Class="MineClaw.MemoryExplorer.Views.ShardsView"
+             x:DataType="vm:ShardsViewModel">
+  <Grid ColumnDefinitions="5*,4*">
+    <DockPanel Margin="28,24,16,16">
+      <StackPanel DockPanel.Dock="Top" Spacing="16" Margin="0,0,0,14">
+        <StackPanel Spacing="3">
+          <TextBlock Classes="h1" Text="Memory shards" />
+          <TextBlock Classes="muted" TextWrapping="Wrap"
+                     Text="Portable slices of the bot's memory: export what it knows about a person, a RAPTOR subtree, a filtered set, or the version-tagged recipe knowledge, and import them into another db or the live bot. Imports show the diff first; the tree is rebuilt from the leaves." />
+        </StackPanel>
+
+        <Border Classes="card" Padding="18">
+          <StackPanel Spacing="12">
+            <Grid ColumnDefinitions="*,Auto">
+              <StackPanel Spacing="2">
+                <TextBlock Classes="h2" Text="Export" />
+                <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                           Text="From the opened db (read-only). Also from the RAPTOR tree and the Memory browser (right-click)." />
+              </StackPanel>
+            </Grid>
+            <WrapPanel ItemSpacing="8" LineSpacing="8">
+              <Button Classes="ghost" Command="{Binding ExportPersonCommand}" ToolTip.Tip="Beliefs, claims, facts, relationship entries and episodes about one player">
+                <StackPanel Orientation="Horizontal" Spacing="6"><PathIcon Data="{StaticResource IconPerson}" Width="13" Height="13" /><TextBlock Text="About a person…" /></StackPanel>
+              </Button>
+              <Button Classes="ghost" Command="{Binding ExportPackCommand}" ToolTip.Tip="The version-tagged seed game data: recipes, items, blocks, smelting">
+                <StackPanel Orientation="Horizontal" Spacing="6"><PathIcon Data="{StaticResource IconDatabase}" Width="13" Height="13" /><TextBlock Text="Knowledge pack…" /></StackPanel>
+              </Button>
+              <Button Classes="ghost" Command="{Binding ExportFilterCommand}" ToolTip.Tip="Pick memory kinds, a dimension, a text or semantic query">
+                <StackPanel Orientation="Horizontal" Spacing="6"><PathIcon Data="{StaticResource IconSearch}" Width="13" Height="13" /><TextBlock Text="By filter…" /></StackPanel>
+              </Button>
+            </WrapPanel>
+            <Border Classes="separator" />
+            <Grid ColumnDefinitions="Auto,*">
+              <TextBlock Classes="muted" Text="Knowledge pack" Margin="0,0,14,0" VerticalAlignment="Center" />
+              <Border Grid.Column="1" Classes="chip" HorizontalAlignment="Left" Padding="9,2">
+                <TextBlock Text="{Binding ActivePack}" />
+              </Border>
+            </Grid>
+          </StackPanel>
+        </Border>
+
+        <Border Classes="card" Padding="18">
+          <StackPanel Spacing="10">
+            <Grid ColumnDefinitions="*,Auto">
+              <StackPanel Spacing="2">
+                <TextBlock Classes="h2" Text="Import" />
+                <TextBlock Classes="muted" FontSize="12" TextWrapping="Wrap"
+                           Text="Drop a .mcshard on the window, or pick one. It goes to the edit target (local file with a backup first, or the live bot through the Supervisor)." />
+              </StackPanel>
+              <Button Grid.Column="1" Classes="accent" Command="{Binding ImportFileCommand}" VerticalAlignment="Top">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <PathIcon Data="{StaticResource IconUpload}" Width="13" Height="13" Foreground="{DynamicResource OnAccentBrush}" />
+                  <TextBlock Text="Import shard…" />
+                </StackPanel>
+              </Button>
+            </Grid>
+            <StackPanel Spacing="8" IsVisible="{Binding Running}">
+              <TextBlock Text="{Binding Stage}" TextWrapping="Wrap" />
+              <ProgressBar Value="{Binding Percent}" Maximum="100" Height="6" MinHeight="6" CornerRadius="3" />
+              <Button Classes="ghost" Command="{Binding CancelCommand}" HorizontalAlignment="Left">Cancel</Button>
+            </StackPanel>
+            <SelectableTextBlock FontSize="12.5" Text="{Binding LastResult}" TextWrapping="Wrap"
+                                 IsVisible="{Binding LastResult, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+          </StackPanel>
+        </Border>
+
+        <Grid ColumnDefinitions="*,Auto,Auto">
+          <StackPanel Spacing="2">
+            <TextBlock Classes="h2" Text="Shard files" />
+            <TextBlock Classes="muted" FontSize="12" Text="{Binding FilesInfo}" TextWrapping="Wrap" />
+          </StackPanel>
+          <Button Grid.Column="1" Classes="icon" Command="{Binding OpenFolderCommand}" ToolTip.Tip="Open the shards folder" VerticalAlignment="Top">
+            <PathIcon Data="{StaticResource IconFolder}" />
+          </Button>
+          <Button Grid.Column="2" Classes="icon" Command="{Binding RefreshCommand}" ToolTip.Tip="Refresh" VerticalAlignment="Top">
+            <PathIcon Data="{StaticResource IconRefresh}" />
+          </Button>
+        </Grid>
+      </StackPanel>
+
+      <Border Classes="card" Padding="4">
+        <ListBox Classes="plain" ItemsSource="{Binding Files}" SelectedItem="{Binding SelectedFile}" DoubleTapped="OnFileDoubleTapped">
+          <ListBox.ContextMenu>
+            <ContextMenu>
+              <MenuItem Header="Import this shard…" Command="{Binding ImportSelectedCommand}" />
+              <MenuItem Header="Open the shards folder" Command="{Binding OpenFolderCommand}" />
+            </ContextMenu>
+          </ListBox.ContextMenu>
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="s:ShardFileInfo">
+              <Grid ColumnDefinitions="Auto,*,Auto" Margin="0,3" ToolTip.Tip="{Binding Description}">
+                <PathIcon Data="{StaticResource IconShard}" Width="15" Height="15" Margin="2,2,12,0" VerticalAlignment="Top" Foreground="{DynamicResource AccentBrush}" />
+                <StackPanel Grid.Column="1" Spacing="2">
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock FontWeight="SemiBold" Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                    <Border Classes="chip" Padding="6,0"><TextBlock Text="{Binding KindLabel}" /></Border>
+                  </StackPanel>
+                  <TextBlock Classes="muted" FontSize="12" Text="{Binding Counts}" TextTrimming="CharacterEllipsis" />
+                  <TextBlock Classes="faint" Text="{Binding FileName}" TextTrimming="CharacterEllipsis" />
+                  <TextBlock FontSize="12" Text="{Binding Error}" TextWrapping="Wrap" Foreground="{DynamicResource BadBrush}"
+                             IsVisible="{Binding Error, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="2" Margin="12,0,6,0" HorizontalAlignment="Right">
+                  <TextBlock Classes="faint" Text="{Binding CreatedText}" HorizontalAlignment="Right" />
+                  <TextBlock Classes="faint" HorizontalAlignment="Right">
+                    <Run Text="{Binding Records, Mode=OneWay, StringFormat='{}{0:N0} records'}" /><Run Text=" · " /><Run Text="{Binding SizeText, Mode=OneWay}" />
+                  </TextBlock>
+                </StackPanel>
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </Border>
+    </DockPanel>
+
+    <Border Grid.Column="1" Classes="pane">
+      <DockPanel>
+        <StackPanel DockPanel.Dock="Top" Spacing="3" Margin="22,24,16,10">
+          <TextBlock Classes="h2" Text="History" />
+          <TextBlock Classes="muted" FontSize="12" Text="{Binding HistoryInfo}" TextWrapping="Wrap" />
+        </StackPanel>
+        <ListBox Classes="plain" ItemsSource="{Binding History}" Margin="12,0,12,12">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:ShardHistoryRow">
+              <StackPanel Spacing="3">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <Border Classes="chip" Padding="6,0"><TextBlock Text="{Binding Op}" /></Border>
+                  <TextBlock FontWeight="SemiBold" FontSize="12.5" Text="{Binding Name}" VerticalAlignment="Center" />
+                  <TextBlock Classes="faint" Text="{Binding When}" VerticalAlignment="Center" />
+                </StackPanel>
+                <TextBlock FontSize="12" Text="{Binding Message}" TextWrapping="Wrap"
+                           Foreground="{Binding Ok, Converter={x:Static c:AuditConverters.OkBrush}}" />
+                <TextBlock Classes="faint">
+                  <Run Text="{Binding Who, Mode=OneWay}" /><Run Text=" · " /><Run Text="{Binding Target, Mode=OneWay}" />
+                </TextBlock>
+              </StackPanel>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </DockPanel>
+    </Border>
+  </Grid>
+</UserControl>

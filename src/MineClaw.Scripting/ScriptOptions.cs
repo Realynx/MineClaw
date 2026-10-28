@@ -82,6 +82,12 @@ public sealed class ScriptOptions
     /// <summary>Machine idle wait between ticks that did no action, ms (not counted as an action).</summary>
     public int MachineIdleMs { get; set; } = 250;
 
+    /// <summary>
+    /// The live debugger's probe (Explorer script panel, <c>/api/bodies/{name}/script</c>): action tracing and, only while a
+    /// debugger holds a lease, ≈ 5 Hz sampling of stack, locals and blackboard. Off = snapshots show the status line only.
+    /// </summary>
+    public bool DebugProbe { get; set; } = true;
+
     internal TimeSpan MaxWall => TimeSpan.FromMinutes(Math.Max(0.01, MaxMinutes));
     internal TimeSpan MaxPause => TimeSpan.FromMinutes(Math.Max(0.01, MaxPauseMinutes));
 }

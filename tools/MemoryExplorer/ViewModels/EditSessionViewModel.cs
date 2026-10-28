@@ -24,6 +24,15 @@ public sealed partial class EditSessionViewModel(MainWindowViewModel shell) : Pa
     private string? _sessionKey;
     private bool _backedUp;
     private CancellationTokenSource? _rebuildCts;
+    private Task? _entering;
+
+    /// <summary>Turns edit mode on and waits for its confirmation (the local dev db asks first); true when it is on.</summary>
+    internal async Task<bool> TurnOnAsync()
+    {
+        EditMode = true;
+        if (_entering is { } t) await t;
+        return EditMode;
+    }
 
     public ObservableCollection<AuditRow> Audit { get; } = [];
     public ObservableCollection<DiffRow> Diffs { get; } = [];
@@ -48,7 +57,7 @@ public sealed partial class EditSessionViewModel(MainWindowViewModel shell) : Pa
     partial void OnEditModeChanged(bool value)
     {
         Shell.NotifyEditMode();
-        if (value) _ = EnterEditModeAsync();
+        if (value) _entering = EnterEditModeAsync();
         else CloseTarget();
     }
 
@@ -91,6 +100,9 @@ public sealed partial class EditSessionViewModel(MainWindowViewModel shell) : Pa
         await RefreshAuditAsync();
     }
 
+    /// <summary>The current write target (opened on first use; the shard import goes through it too).</summary>
+    internal IAdminTarget OpenTarget() => Open();
+
     private IAdminTarget Open()
     {
         var key = IsLive ? "live:" + Shell.Supervisor.BaseUrl : "local:" + Bank?.Path;
@@ -123,9 +135,9 @@ public sealed partial class EditSessionViewModel(MainWindowViewModel shell) : Pa
         await Task.CompletedTask;
     }
 
-    private string Who => "admin:" + Environment.UserName;
+    internal string Who => "admin:" + Environment.UserName;
 
-    private async Task<bool> EnsureBackupAsync(IAdminTarget t)
+    internal async Task<bool> EnsureBackupAsync(IAdminTarget t)
     {
         if (_backedUp) return true;
         try

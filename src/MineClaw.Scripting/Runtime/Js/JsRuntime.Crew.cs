@@ -49,6 +49,7 @@ internal sealed partial class JsRuntime
             var lane = Port().Start(new LaneSpec(body, s.Name, s.Code, s.Language, role, argsJson, CrewId, s.Request.Version, s.Request.Author));
             int id = ++_nextLane;
             _lanes[id] = lane;
+            s.TraceLane(id, lane);
             s.Log($"lane {body}: {role} started");
             return new JsNumber(id);
         });

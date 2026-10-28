@@ -39,6 +39,15 @@ public sealed class RaptorSectionRebuilder
     /// <summary>The summarizer used by the last run (tests, diagnostics).</summary>
     public HaikuSummarizer? LastSummarizer { get; private set; }
 
+    /// <summary>
+    /// Summaries to reuse, keyed by <see cref="SummaryCache.Hash"/> of their exact cluster text (a shard's summaries cache): a
+    /// rebuild that reproduces an identical cluster takes the text without a model call (its vector is in embed_cache).
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? ReuseSummaries { get; set; }
+
+    /// <summary>Summaries the last run took from <see cref="ReuseSummaries"/>.</summary>
+    public int LastReused { get; private set; }
+
     private string Model => _ctx.Options.Llm.CheapModel;
 
     /// <summary>max_tokens headroom HaikuSummarizer grants (a summary may run to summarization_length × this).</summary>
@@ -177,9 +186,13 @@ public sealed class RaptorSectionRebuilder
                     decimal summaryCap = Math.Max(0, r.MaxUsd - EmbedUsd(estimate.EmbeddingTokens));
                     summarizer.MaxCostUsd = summaryCap;
                     var budget = summarizer.Budget(summaryCap);
+                    var reuse = ReuseSummaries is { Count: > 0 } map ? new ReusingSummarizer(summarizer, map) : null;
+                    ISummarizer s = reuse ?? (ISummarizer)summarizer;
                     result = scope == "node"
-                        ? await RunNodeAsync(r.Node!.Value, budget, summarizer, progress, ct).ConfigureAwait(false)
-                        : await RunKindAsync(r.Kind!, budget, summarizer, progress, ct).ConfigureAwait(false);
+                        ? await RunNodeAsync(r.Node!.Value, budget, s, progress, ct).ConfigureAwait(false)
+                        : await RunKindAsync(r.Kind!, budget, s, progress, ct).ConfigureAwait(false);
+                    LastReused = reuse?.Reused ?? 0;
+                    if (LastReused > 0) result = result with { Message = result.Message + $" ({LastReused} cached summaries reused)" };
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -215,7 +228,7 @@ public sealed class RaptorSectionRebuilder
         return null;
     }
 
-    private async Task<RebuildResult> RunNodeAsync(int node, RaptorBudget budget, HaikuSummarizer summarizer, IProgress<RebuildProgress>? progress, CancellationToken ct)
+    private async Task<RebuildResult> RunNodeAsync(int node, RaptorBudget budget, ISummarizer summarizer, IProgress<RebuildProgress>? progress, CancellationToken ct)
     {
         var raptor = _ctx.Raptor!;
         var p = progress == null ? null : new Relay(x => progress.Report(new RebuildProgress(x.Stage, x.Done, x.Total)));
@@ -227,7 +240,7 @@ public sealed class RaptorSectionRebuilder
         return new RebuildResult(true, msg, diffs, 0, TimeSpan.Zero);
     }
 
-    private async Task<RebuildResult> RunKindAsync(string kind, RaptorBudget budget, HaikuSummarizer summarizer, IProgress<RebuildProgress>? progress, CancellationToken ct)
+    private async Task<RebuildResult> RunKindAsync(string kind, RaptorBudget budget, ISummarizer summarizer, IProgress<RebuildProgress>? progress, CancellationToken ct)
     {
         var raptor = _ctx.Raptor!;
         progress?.Report(new RebuildProgress("embed", 0, 3, "bringing vectors up to date"));
@@ -259,6 +272,23 @@ public sealed class RaptorSectionRebuilder
 
     private static Dictionary<int, (int Layer, string Text)> Summaries(RaptorMemory raptor) =>
         raptor.Index.Read(t => t.AllNodes.Values.Where(n => !n.IsLeaf).ToDictionary(n => n.Index, n => (n.Layer, n.Text)));
+
+    /// <summary>Answers from the reuse map when the cluster text is identical; otherwise asks the real summarizer.</summary>
+    private sealed class ReusingSummarizer(ISummarizer inner, IReadOnlyDictionary<string, string> reuse) : ISummarizer
+    {
+        private int _reused;
+        public int Reused => _reused;
+
+        public Task<SummaryResult> SummarizeAsync(SummaryRequest request, CancellationToken ct)
+        {
+            if (reuse.TryGetValue(SummaryCache.Hash(request.Context), out var text))
+            {
+                Interlocked.Increment(ref _reused);
+                return Task.FromResult(new SummaryResult(text, 0, 0, 0));
+            }
+            return inner.SummarizeAsync(request, ct);
+        }
+    }
 
     private sealed class Relay(Action<(string Stage, int Done, int Total)> on) : IProgress<(string Stage, int Done, int Total)>
     {

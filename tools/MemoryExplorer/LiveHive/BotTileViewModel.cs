@@ -115,5 +115,22 @@ public sealed partial class BotTileViewModel : ObservableObject, IDisposable
             : age > (IsEye ? 3 : 5) ? $"stale {age:0} s" : "";
     }
 
+    // ------------------------------------------------------------------ the "script" badge (ScriptBadgePoller)
+
+    /// <summary>The script this body runs (null = none): the badge that opens the live script debugger.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasScript))]
+    private string? _scriptName;
+    [ObservableProperty] private string _scriptBadge = "";
+    [ObservableProperty] private bool _scriptPaused;
+    public bool HasScript => ScriptName != null;
+
+    public void SetScript(string? name, bool paused, int line)
+    {
+        ScriptName = name;
+        ScriptPaused = paused;
+        ScriptBadge = name == null ? "" : $"script {name}" + (paused ? " · paused" : line > 0 ? $" · L{line}" : "");
+    }
+
     public void Dispose() => MapImage?.Dispose();
 }

@@ -333,6 +333,8 @@ public static class AppHost
         {
             World = Supervisor.LiveSupervisorWorld.Routes(hub, bot, () => client.World, main, o, log), // Live Hive: /api/world/*
             Admin = Supervisor.SupervisorAdminService.Create(o, bot.Runtime, main, log), // /api/admin/*: only with AllowAdminWrites + Token
+            // /api/scripts*, /api/bodies/{name}/script: the saved library and the live script debugger (read-only, token or 403)
+            Scripts = new Supervisor.SupervisorScriptRoutes(new Supervisor.LiveScriptData(bot, main, () => mainHive?.Supervisor, log), o.Token),
         };
         try
         {

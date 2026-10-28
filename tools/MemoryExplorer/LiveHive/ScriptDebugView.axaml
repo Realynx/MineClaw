@@ -1,0 +1,225 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:lh="using:MineClaw.MemoryExplorer.LiveHive"
+             xmlns:vm="using:MineClaw.MemoryExplorer.ViewModels"
+             xmlns:c="using:MineClaw.MemoryExplorer.Controls"
+             x:Class="MineClaw.MemoryExplorer.LiveHive.ScriptDebugView"
+             x:DataType="lh:ScriptDebugViewModel">
+
+  <UserControl.Styles>
+    <Style Selector="TextBlock.code, c|CodeLineView.code">
+      <Setter Property="FontFamily" Value="{StaticResource MonoFont}" />
+      <Setter Property="FontSize" Value="12" />
+    </Style>
+    <Style Selector="Border.line.current">
+      <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+    </Style>
+    <Style Selector="Border.line">
+      <Setter Property="BorderThickness" Value="3,0,0,0" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+    </Style>
+    <Style Selector="Border.state">
+      <Setter Property="CornerRadius" Value="5" />
+      <Setter Property="Padding" Value="7,2" />
+      <Setter Property="Background" Value="{DynamicResource ChipBrush}" />
+    </Style>
+    <Style Selector="Border.state.running">
+      <Setter Property="Background" Value="#3A2EA043" />
+    </Style>
+    <Style Selector="Border.state.paused">
+      <Setter Property="Background" Value="#45D9A21B" />
+    </Style>
+    <Style Selector="Border.stale">
+      <Setter Property="CornerRadius" Value="5" />
+      <Setter Property="Padding" Value="7,2" />
+      <Setter Property="Background" Value="#C8B0302A" />
+    </Style>
+    <Style Selector="TextBlock.k">
+      <Setter Property="FontFamily" Value="{StaticResource MonoFont}" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}" />
+    </Style>
+    <Style Selector="TextBlock.v">
+      <Setter Property="FontFamily" Value="{StaticResource MonoFont}" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+  </UserControl.Styles>
+
+  <Grid RowDefinitions="Auto,Auto,Auto,3*,Auto,2*">
+    <!-- header: who, what, state, stale -->
+    <Grid ColumnDefinitions="*,Auto">
+      <StackPanel Spacing="2">
+        <TextBlock Classes="h3" Text="{Binding Title}" TextTrimming="CharacterEllipsis" />
+        <TextBlock Classes="mono" FontWeight="SemiBold" Text="{Binding ScriptName}" TextTrimming="CharacterEllipsis" />
+      </StackPanel>
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Top">
+        <Border Classes="stale" IsVisible="{Binding IsStale}" ToolTip.Tip="No fresh snapshot: the link is down, the server is slow or the clone didn't answer. It keeps retrying.">
+          <TextBlock Classes="mono" FontSize="11" Foreground="White" Text="{Binding StaleText}" />
+        </Border>
+        <Border Classes="state" Classes.running="{Binding IsRunning}" Classes.paused="{Binding IsPaused}">
+          <TextBlock Classes="mono" FontSize="11" Text="{Binding StatusText}" />
+        </Border>
+        <!-- TODO(debugger pause/resume): enable once the Supervisor offers the admin-write control (ScriptDebugSnapshot.Controls). -->
+        <Button Classes="ghost" Padding="8,2" Content="Pause" IsEnabled="{Binding CanControl}"
+                ToolTip.Tip="Read-only in this version: pausing and resuming from here will come through the Supervisor's admin writes." />
+      </StackPanel>
+    </Grid>
+
+    <Border Grid.Row="1" Margin="0,8,0,0" Padding="10,6" CornerRadius="6" Background="#45D9A21B" IsVisible="{Binding IsPaused}">
+      <TextBlock Text="{Binding PauseText}" TextWrapping="Wrap" />
+    </Border>
+
+    <StackPanel Grid.Row="2" Margin="0,8,0,6" Spacing="2">
+      <TextBlock Classes="mono" FontSize="12" Text="{Binding ActionText}" TextWrapping="Wrap" ToolTip.Tip="The SDK helper the script called → the host action in flight" />
+      <TextBlock Classes="faint" FontSize="11.5">
+        <Run Text="{Binding WhereText, Mode=OneWay}" /><Run Text="  ·  " /><Run Text="{Binding ActionsText, Mode=OneWay}" />
+        <Run Text="  ·  " /><Run Text="{Binding ElapsedText, Mode=OneWay}" /><Run Text="  ·  " /><Run Text="{Binding CheckpointText, Mode=OneWay}" />
+      </TextBlock>
+      <TextBlock Classes="faint" FontSize="11.5" Text="{Binding NoteText}" IsVisible="{Binding NoteText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+    </StackPanel>
+
+    <!-- the source, current line highlighted -->
+    <Border Grid.Row="3" Background="{DynamicResource SurfaceBrush}" CornerRadius="6" Padding="0,4">
+      <ListBox x:Name="Source" Classes="plain" ItemsSource="{Binding Lines}" Background="Transparent">
+        <ListBox.Styles>
+          <Style Selector="ListBoxItem">
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="MinHeight" Value="0" />
+          </Style>
+        </ListBox.Styles>
+        <ListBox.ItemTemplate>
+          <DataTemplate x:DataType="vm:CodeLineRow">
+            <Border Classes="line" Classes.current="{Binding IsCurrent}">
+              <Grid ColumnDefinitions="40,*">
+                <TextBlock Classes="code faint" Text="{Binding NoText}" HorizontalAlignment="Right" Margin="0,0,10,0" />
+                <c:CodeLineView Grid.Column="1" Classes="code" Spans="{Binding Spans}" />
+              </Grid>
+            </Border>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+    </Border>
+
+    <TextBlock Grid.Row="4" Classes="faint" FontSize="11.5" Margin="0,4" Text="{Binding FailureText}" TextWrapping="Wrap"
+               IsVisible="{Binding FailureText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+    <TabControl Grid.Row="5" Padding="0,4,0,0">
+      <TabItem Header="State">
+        <ScrollViewer>
+          <StackPanel Spacing="10">
+            <StackPanel Spacing="3">
+              <TextBlock Classes="h3" Text="STATE MACHINE" />
+              <TextBlock Classes="mono" FontSize="12" Text="{Binding MachineText}" />
+              <ItemsControl ItemsSource="{Binding History}" IsVisible="{Binding HasMachine}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="lh:StepRow">
+                    <Grid ColumnDefinitions="*,Auto">
+                      <TextBlock Classes="v" Text="{Binding Text}" />
+                      <TextBlock Grid.Column="1" Classes="k" Text="{Binding When}" />
+                    </Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+            <StackPanel Spacing="3" IsVisible="{Binding HasMachine}">
+              <TextBlock Classes="h3" Text="BLACKBOARD" />
+              <ItemsControl ItemsSource="{Binding Blackboard}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="lh:ValueRow">
+                    <Grid ColumnDefinitions="130,*"><TextBlock Classes="k" Text="{Binding Name}" /><TextBlock Grid.Column="1" Classes="v" Text="{Binding Value}" /></Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+            <StackPanel Spacing="3">
+              <TextBlock Classes="h3" Text="PARAMS (current values)" />
+              <TextBlock Classes="faint" FontSize="11.5" Text="{Binding ParamsNote}" IsVisible="{Binding ParamsNote, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+              <ItemsControl ItemsSource="{Binding Params}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="lh:ValueRow">
+                    <Grid ColumnDefinitions="130,*,Auto">
+                      <TextBlock Classes="k" Text="{Binding Name}" />
+                      <TextBlock Grid.Column="1" Classes="v" Text="{Binding Value}" />
+                      <TextBlock Grid.Column="2" Classes="faint" FontSize="11" Text="{Binding Note}" />
+                    </Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+            <StackPanel Spacing="3">
+              <TextBlock Classes="h3" Text="LOCALS (current script frame)" />
+              <TextBlock Classes="faint" FontSize="11.5" Text="{Binding LocalsNote}" IsVisible="{Binding LocalsNote, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+              <ItemsControl ItemsSource="{Binding Locals}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="lh:ValueRow">
+                    <Grid ColumnDefinitions="130,*,Auto">
+                      <TextBlock Classes="k" Text="{Binding Name}" />
+                      <TextBlock Grid.Column="1" Classes="v" Text="{Binding Value}" />
+                      <TextBlock Grid.Column="2" Classes="faint" FontSize="11" Text="{Binding Note}" />
+                    </Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Activity">
+        <ScrollViewer>
+          <StackPanel Spacing="10">
+            <TextBlock Classes="mono" FontSize="12" Text="{Binding ProgressText}" IsVisible="{Binding ProgressText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+            <StackPanel Spacing="3">
+              <TextBlock Classes="h3" Text="TIME PER ACTION KIND" />
+              <ItemsControl ItemsSource="{Binding Timings}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="lh:TimingRow">
+                    <Grid ColumnDefinitions="130,110,80,*">
+                      <TextBlock Classes="k" Text="{Binding Action}" />
+                      <TextBlock Grid.Column="1" Classes="v" Text="{Binding Calls}" />
+                      <TextBlock Grid.Column="2" Classes="v" Text="{Binding Total}" />
+                      <TextBlock Grid.Column="3" Classes="k" Text="{Binding Avg, StringFormat='avg {0}'}" />
+                    </Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+            <StackPanel Spacing="3">
+              <TextBlock Classes="h3" Text="LOG" />
+              <ItemsControl ItemsSource="{Binding Logs}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="x:String"><TextBlock Classes="v" Text="{Binding}" /></DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Stack">
+        <ItemsControl ItemsSource="{Binding Stack}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="lh:FrameRow">
+              <Grid ColumnDefinitions="*,Auto" Margin="0,2">
+                <TextBlock Classes="v" FontWeight="SemiBold" Text="{Binding Function}" />
+                <TextBlock Grid.Column="1" Classes="k" Text="{Binding Where}" />
+              </Grid>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </TabItem>
+
+      <TabItem Header="Crew" IsVisible="{Binding HasLanes}">
+        <ItemsControl ItemsSource="{Binding Lanes}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="lh:ValueRow">
+              <Grid ColumnDefinitions="170,*"><TextBlock Classes="k" Text="{Binding Name}" /><TextBlock Grid.Column="1" Classes="v" Text="{Binding Value}" /></Grid>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </TabItem>
+    </TabControl>
+  </Grid>
+</UserControl>

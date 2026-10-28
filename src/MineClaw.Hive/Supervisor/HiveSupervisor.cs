@@ -1543,6 +1543,21 @@ public sealed class HiveSupervisor : IAsyncDisposable
         }
     }
 
+    /// <summary>A live clone's script debugger snapshot (null when it isn't connected, runs no script or doesn't answer in time).</summary>
+    public async Task<Scripting.ScriptDebugSnapshot?> RequestScriptDebugAsync(string name, bool code, TimeSpan timeout, CancellationToken ct = default)
+    {
+        if (Resolve(name) is not { } n || !_slots.TryGetValue(n, out var slot)) return null;
+        HiveLink? link;
+        lock (slot.Lock) link = slot.Connected ? slot.Link : null;
+        if (link is not { IsOpen: true }) return null;
+        try { return await link.RequestAsync<Scripting.ScriptDebugSnapshot>(Msg.ScriptDebug, new ScriptDebugReq(code), timeout, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _log.LogDebug(ex, "script debug request to {Clone} failed", n);
+            return null;
+        }
+    }
+
     public async Task BroadcastAsync(string type, object? payload)
     {
         foreach (var s in _slots.Values)

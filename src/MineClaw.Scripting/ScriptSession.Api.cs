@@ -218,7 +218,7 @@ public sealed partial class ScriptSession
     /// danger pause or a handler is re-run after it, so interrupts are invisible to the script. <paramref name="counts"/> =
     /// false for engine-internal waits (machine idle), which don't use up the action limit.
     /// </summary>
-    internal ActResult RunAction(string label, bool atomic, Func<CancellationToken, Task<ActResult>> run, bool counts = true)
+    internal ActResult RunAction(string label, bool atomic, Func<CancellationToken, Task<ActResult>> run, bool counts = true, JsonElement? args = null)
     {
         SafePoint();
         if (_host.ActionVeto() is { } veto) { Stop("stopped: " + veto); ThrowIfStopping(); }
@@ -235,6 +235,7 @@ public sealed partial class ScriptSession
             Actions++;
         }
         ActResult r;
+        TraceActionStart(label, atomic, args);
         var sw = Stopwatch.StartNew();
         while (true)
         {
@@ -249,12 +250,14 @@ public sealed partial class ScriptSession
             }
             try
             {
+                _blocked = true; // the engine is still while the action runs (the debugger may read its locals)
                 using (_owner.StepScope?.Invoke()) // explicit around every step, not only inherited from the thread
                     r = run(ct).GetAwaiter().GetResult();
             }
             catch (OperationCanceledException) { r = ActResult.Fail("cancelled"); }
             catch (ScriptFailException) { throw; }
             catch (Exception ex) { r = ActResult.Fail($"{ex.GetType().Name}: {OneLine(ex.Message)}"); }
+            finally { WaitProbe(); }
             bool again;
             lock (_lock)
             {
@@ -267,6 +270,7 @@ public sealed partial class ScriptSession
             SafePoint();
             Locate();
         }
+        TraceActionEnd(r.Ok);
         if (counts) RecordTiming(label, sw.Elapsed, r.Ok);
         SafePoint();
         if (!r.Ok) { LastFailure = $"{label}: {Short(OneLine(r.Msg), 80)}"; _lastFailureMsg = r.Msg; }
@@ -286,10 +290,10 @@ public sealed partial class ScriptSession
     }
 
     /// <summary>A game tool by its <see cref="ScriptAction"/>.</summary>
-    internal ActResult Act(ScriptAction a, JsonElement args) => RunAction(a.Name, a.Atomic, ct => _host.Act(a.Name, args, ct));
+    internal ActResult Act(ScriptAction a, JsonElement args) => RunAction(a.Name, a.Atomic, ct => _host.Act(a.Name, args, ct), args: args);
 
     /// <summary>A catalog skill.</summary>
-    internal ActResult RunSkill(string skill, JsonElement args) => RunAction(skill, _host.SkillIsAtomic(skill), ct => _host.Skill(skill, args, ct));
+    internal ActResult RunSkill(string skill, JsonElement args) => RunAction(skill, _host.SkillIsAtomic(skill), ct => _host.Skill(skill, args, ct), args: args);
 
     /// <summary>A script-callable game function: its global name, the tool/skill it runs and its positional params.</summary>
     internal sealed record Callable(string Global, string Target, ScriptAction? Action, IReadOnlyList<(string Name, string? Type)> Params);

@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using MineClaw.Agent.Admin.Shards;
 using MineClaw.MemoryExplorer.Services;
 
 namespace MineClaw.MemoryExplorer.ViewModels;
@@ -160,4 +161,35 @@ public sealed partial class MemoryBrowserViewModel(MainWindowViewModel shell) : 
     private Task RebuildKind() => SelectedKind is { } k ? Shell.Edit.StartKindRebuildAsync(k.Info.Key) : Task.CompletedTask;
 
     public bool CanEditKind => SelectedKind?.Info.EditKind != null;
+
+    /// <summary>"Export this kind as a shard…": the selected kind with the current text filter and dimension.</summary>
+    [RelayCommand]
+    private Task ExportKind()
+    {
+        if (SelectedKind is not { } k) return Task.CompletedTask;
+        if (ShardService.KindOf(k.Info.Key) is not { } kind)
+        {
+            Shell.Status = $"{k.Label} stay out of shards (world observations, the inventory ledger, chat and activity are never exported)";
+            return Task.CompletedTask;
+        }
+        int? dim = Dimension switch { "overworld" => 0, "nether" => -1, _ => null };
+        var sel = new ShardSelection
+        {
+            Mode = "filter", Kinds = [kind], Dimension = dim, Query = string.IsNullOrWhiteSpace(Filter) ? null : Filter.Trim(),
+            IncludeWorld = ShardKinds.IsWorld(kind), IncludeRules = kind == ShardKinds.Rule,
+        };
+        return Shell.Shards.ExportAsync(sel, k.Label.ToLowerInvariant());
+    }
+
+    /// <summary>"Export everything about…": the person shard, prefilled with the selected row's player when it names one.</summary>
+    [RelayCommand]
+    private Task ExportPerson()
+    {
+        var people = ShardService.People(Shell.Config);
+        var hit = Selected is { } s
+            ? people.FirstOrDefault(p => p.Names.Any(n => n.Equals(s.Name, StringComparison.OrdinalIgnoreCase) ||
+                s.Props.Any(kv => kv.Key is "player" or "claimant" or "subject" && kv.Value.Equals(n, StringComparison.OrdinalIgnoreCase))))
+            : null;
+        return Shell.Shards.ExportAsync(new ShardSelection { Mode = "person", People = hit?.Names.ToList() }, hit != null ? "about " + hit.Login : "about");
+    }
 }

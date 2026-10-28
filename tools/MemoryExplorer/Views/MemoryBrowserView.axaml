@@ -12,6 +12,11 @@
       <DockPanel>
         <TextBlock DockPanel.Dock="Top" Classes="h3" Text="MEMORY KINDS" Margin="18,20,0,8" />
         <ListBox Classes="nav" ItemsSource="{Binding Kinds}" SelectedItem="{Binding SelectedKind}">
+          <ListBox.ContextMenu>
+            <ContextMenu>
+              <MenuItem Header="Export this kind as a shard…" Command="{Binding ExportKindCommand}" />
+            </ContextMenu>
+          </ListBox.ContextMenu>
           <ListBox.ItemTemplate>
             <DataTemplate x:DataType="vm:KindItem">
               <Grid ColumnDefinitions="*,Auto">
@@ -46,13 +51,18 @@
         </Grid>
         <Grid ColumnDefinitions="*,Auto">
           <TextBlock Classes="faint" Text="{Binding RowInfo}" VerticalAlignment="Center" />
-          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" IsVisible="{Binding Shell.IsEditMode}">
+          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+            <Button Classes="ghost" Command="{Binding ExportKindCommand}" ToolTip.Tip="Export this kind (with the current filter) as a portable .mcshard">
+              <StackPanel Orientation="Horizontal" Spacing="5"><PathIcon Data="{StaticResource IconShard}" Width="12" Height="12" /><TextBlock Text="Export shard…" /></StackPanel>
+            </Button>
+            <StackPanel Orientation="Horizontal" Spacing="6" IsVisible="{Binding Shell.IsEditMode}">
             <Button Classes="ghost" Command="{Binding AddRowCommand}" IsEnabled="{Binding CanEditKind}">
               <StackPanel Orientation="Horizontal" Spacing="5"><PathIcon Data="{StaticResource IconPlus}" Width="12" Height="12" /><TextBlock Text="Add" /></StackPanel>
             </Button>
             <Button Classes="ghost" Command="{Binding RebuildKindCommand}" ToolTip.Tip="Re-embed this kind, re-attach its leaves and re-summarize the affected nodes">
               <StackPanel Orientation="Horizontal" Spacing="5"><PathIcon Data="{StaticResource IconRefresh}" Width="12" Height="12" /><TextBlock Text="Rebuild kind…" /></StackPanel>
             </Button>
+            </StackPanel>
           </StackPanel>
         </Grid>
       </StackPanel>
@@ -61,6 +71,12 @@
           <DataGrid x:Name="Grid" ItemsSource="{Binding Rows}" SelectedItem="{Binding Selected}" IsReadOnly="True" CanUserSortColumns="True"
                     CanUserResizeColumns="True" CanUserReorderColumns="True" SelectionMode="Single" ClipboardCopyMode="IncludeHeader"
                     HeadersVisibility="Column" HorizontalScrollBarVisibility="Auto">
+            <DataGrid.ContextMenu>
+              <ContextMenu>
+                <MenuItem Header="Export this kind as a shard (current filter)…" Command="{Binding ExportKindCommand}" />
+                <MenuItem Header="Export everything about this person…" Command="{Binding ExportPersonCommand}" />
+              </ContextMenu>
+            </DataGrid.ContextMenu>
             <DataGrid.Columns>
               <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="180" />
               <DataGridTextColumn Header="Text" Binding="{Binding Preview}" Width="340" />

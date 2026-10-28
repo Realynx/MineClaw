@@ -81,6 +81,13 @@
             <StackPanel VerticalAlignment="Center" Spacing="1">
               <TextBlock Classes="h3" Text="{Binding Title}" TextTrimming="CharacterEllipsis" />
               <TextBlock Classes="faint" FontSize="11" Text="{Binding Subtitle}" TextTrimming="CharacterEllipsis" />
+              <Button Classes="ghost" Padding="6,1" Margin="0,3,0,0" HorizontalAlignment="Left" Click="OnScriptBadge" IsVisible="{Binding HasScript}"
+                      ToolTip.Tip="This body runs a script: open the live script debugger (current line, stack, state, params, locals)">
+                <StackPanel Orientation="Horizontal" Spacing="5">
+                  <PathIcon Data="{StaticResource IconCode}" Width="11" Height="11" Foreground="{DynamicResource AccentBrush}" />
+                  <TextBlock Classes="mono" FontSize="11" Foreground="{DynamicResource AccentBrush}" Text="{Binding ScriptBadge}" />
+                </StackPanel>
+              </Button>
             </StackPanel>
             <Button Grid.Column="1" Classes="ghost" Margin="6,0,6,0" Padding="8,4" Content="Fly" Click="OnFlyHere"
                     ToolTip.Tip="Open the free camera at this bot's eyes" />
@@ -196,6 +203,18 @@
                   <TextBlock Classes="h2" Text="No bodies online" HorizontalAlignment="Center" />
                   <TextBlock Classes="muted" Text="The hive is reachable, but no bot is logged in right now." HorizontalAlignment="Center" />
                 </StackPanel>
+              </Border>
+
+              <!-- The live script debugger (a tile's "script" badge opens it; read-only, polls while open). -->
+              <Border Classes="card" Width="620" HorizontalAlignment="Right" Margin="6" Padding="14,12" IsVisible="{Binding HasScriptDebug}"
+                      BoxShadow="0 6 28 0 #50000000">
+                <Grid RowDefinitions="Auto,*">
+                  <Grid ColumnDefinitions="*,Auto">
+                    <TextBlock Classes="h2" Text="Script debugger" VerticalAlignment="Center" />
+                    <Button Grid.Column="1" Classes="ghost" Padding="8,3" Content="Close" Command="{Binding CloseScriptCommand}" />
+                  </Grid>
+                  <lh:ScriptDebugView Grid.Row="1" Margin="0,8,0,0" DataContext="{Binding ScriptDebug}" />
+                </Grid>
               </Border>
             </Panel>
           </Grid>

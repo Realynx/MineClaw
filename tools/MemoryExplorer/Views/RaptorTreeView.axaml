@@ -107,7 +107,12 @@
             </TreeView.Styles>
             <TreeView.ItemTemplate>
               <TreeDataTemplate x:DataType="vm:TreeNodeViewModel" ItemsSource="{Binding Children}">
-                <Grid ColumnDefinitions="Auto,*,Auto" Margin="0,3" ToolTip.Tip="{Binding Preview}">
+                <Grid ColumnDefinitions="Auto,*,Auto" Margin="0,3" ToolTip.Tip="{Binding Preview}" Background="Transparent">
+                  <Grid.ContextMenu>
+                    <ContextMenu>
+                      <MenuItem Header="Export this subtree as a shard…" Command="{Binding ExportCommand}" />
+                    </ContextMenu>
+                  </Grid.ContextMenu>
                   <Border Classes="chip" Padding="7,1" Margin="0,0,10,0" VerticalAlignment="Center" MinWidth="38">
                     <TextBlock Text="{Binding Kind}" HorizontalAlignment="Center" />
                   </Border>
@@ -119,7 +124,13 @@
           </TreeView>
           <c:LayeredGraph x:Name="Graph" Model="{Binding Graph}" SelectedIndex="{Binding GraphSelected, Mode=TwoWay}" IsVisible="{Binding GraphMode}"
                           FocusIndex="{Binding GraphFocus, Mode=TwoWay}" LayoutKind="{Binding GraphLayout}" ColorBy="{Binding GraphColorBy}"
-                          SearchHits="{Binding GraphHits}" />
+                          SearchHits="{Binding GraphHits}">
+            <c:LayeredGraph.ContextMenu>
+              <ContextMenu>
+                <MenuItem Header="Export the selected subtree as a shard…" Command="{Binding ExportSubtreeCommand}" />
+              </ContextMenu>
+            </c:LayeredGraph.ContextMenu>
+          </c:LayeredGraph>
         </Grid>
       </Border>
     </DockPanel>
@@ -166,6 +177,13 @@
                 <StackPanel Orientation="Horizontal" Spacing="6">
                   <PathIcon Data="{StaticResource IconLeaf}" Width="13" Height="13" />
                   <TextBlock Text="Show the leaves under this node" />
+                </StackPanel>
+              </Button>
+              <Button Classes="ghost" Command="{Binding ExportSubtreeCommand}"
+                      ToolTip.Tip="Export every leaf under this node (with its vectors and cached summaries) as a portable .mcshard">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <PathIcon Data="{StaticResource IconShard}" Width="13" Height="13" />
+                  <TextBlock Text="Export shard…" />
                 </StackPanel>
               </Button>
               <Button Classes="ghost" Command="{Binding RebuildNodeCommand}" IsVisible="{Binding Shell.IsEditMode}"

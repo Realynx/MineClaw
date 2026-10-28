@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using MineClaw.Agent.Admin.Shards;
 using MineClaw.MemoryExplorer.Controls;
 using MineClaw.MemoryExplorer.Services;
 using MineClaw.Raptor.Model;
@@ -50,6 +51,10 @@ public sealed partial class TreeNodeViewModel : ObservableObject
     public ObservableCollection<TreeNodeViewModel> Children { get; } = [];
 
     [ObservableProperty] private bool _isExpanded;
+
+    /// <summary>Right-click "Export this subtree as a shard…".</summary>
+    [RelayCommand]
+    private Task Export() => _owner?.ExportSubtreeCommand.ExecuteAsync(Index) ?? Task.CompletedTask;
 
     partial void OnIsExpandedChanged(bool value)
     {
@@ -399,6 +404,25 @@ public sealed partial class RaptorTreeViewModel(MainWindowViewModel shell) : Pag
 
     [RelayCommand]
     private Task CopyLeaves() => Shell.CopyAsync(string.Join("\n", Leaves.Select(l => $"#{l.Index}\t{l.Label}\t{l.Preview}")));
+
+    /// <summary>
+    /// "Export shard…" on a node (the parameter) or the selected one: every leaf under it, mapped back to its memory record. The
+    /// summaries wholly inside travel as a cache; the import rebuilds the tree from the leaves.
+    /// </summary>
+    [RelayCommand]
+    private Task ExportSubtree(object? parameter)
+    {
+        int node = parameter is int i ? i : GraphSelected;
+        if (Bank is not { } bank || node < 0) { Shell.Status = "Select a node to export its subtree"; return Task.CompletedTask; }
+        var info = bank.ReadTree(t => t.TryGet(node, out var n)
+            ? (Refs: ShardCollector.LeafRefsUnder(t, node), Layer: n.Layer, Leaf: n.IsLeaf)
+            : (Refs: new List<string>(), Layer: -1, Leaf: false), (Refs: new List<string>(), Layer: -1, Leaf: false));
+        if (info.Layer < 0) { Shell.Status = $"No node #{node}"; return Task.CompletedTask; }
+        string[] terms = Graph is { } g && g.TryGetSlot(node, out var slot) ? g.Nodes[slot].Terms : [];
+        var topic = terms.Length > 0 ? string.Join(" ", terms.Take(3)) : info.Leaf ? bank.DocOf(node)?.Title ?? "leaf" : "subtree";
+        var label = $"#{node} · {(info.Leaf ? "leaf" : $"layer {info.Layer}")} · {topic} ({info.Refs.Count:N0} leaves)";
+        return Shell.Shards.ExportAsync(new ShardSelection { Mode = "subtree", Node = node, LeafRefs = info.Refs }, $"subtree {topic}", label);
+    }
 
     /// <summary>Opens the rebuild flow for the selected node (edit mode).</summary>
     [RelayCommand]

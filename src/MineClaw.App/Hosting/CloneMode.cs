@@ -133,6 +133,8 @@ public static class CloneMode
             var me = client.World.Player;
             return Task.FromResult<CloneViewMsg?>(new CloneViewMsg(me.Position.X, me.Position.Y, me.Position.Z, me.Yaw, me.Pitch, client.World.Dimension, flushed));
         };
+        // The live script debugger (Explorer via main's Supervisor): a cheap snapshot of the running (or last) script; read-only.
+        host0.ScriptDebug = code => MineClaw.Bot.GameTools.ScriptTools.Of(rt)?.Controller is { } sc ? (sc.Current ?? sc.Last)?.DebugSnapshot(code) : null;
         var store = new HiveStore(rt.Db, clone);
         host0.Store = store;
         host0.RecordExperience = (key, text) =>

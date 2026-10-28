@@ -27,6 +27,7 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
     private SupervisorEndpoint? _endpoint;
     private HiveApi? _api;
     private HiveSync? _sync;
+    private ScriptBadgePoller? _badges;
     private Process? _tunnel;
     private bool _active, _wantConnected, _autoTried;
     private volatile Interest[] _interests = [];
@@ -175,14 +176,18 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
                 else bmp.Dispose();
             });
         };
+        _badges = new ScriptBadgePoller(_api, rows => Dispatcher.UIThread.Post(() => ScriptBadgePoller.Apply(AllTiles, rows.Bodies)));
         ConnectLabel = "Disconnect";
         IsConnecting = true;
-        if (_active) _sync.Start();
+        if (_active) { _sync.Start(); _badges.Start(); }
         else StateText = "connects when the tab is shown";
     }
 
     private void Disconnect()
     {
+        CloseScript();
+        _badges?.Dispose();
+        _badges = null;
         _sync?.Dispose();
         _sync = null;
         _api?.Dispose();
@@ -517,6 +522,30 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         UpdateWants();
     }
 
+    // ------------------------------------------------------------------ live script debugger
+
+    /// <summary>The open debugger panel (a tile's "script" badge), or null.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasScriptDebug))]
+    private ScriptDebugViewModel? _scriptDebug;
+    public bool HasScriptDebug => ScriptDebug != null;
+
+    /// <summary>Opens the debugger on that body's script (polls ≈ 4 Hz while open and the tab is shown).</summary>
+    public void OpenScript(BotTileViewModel t)
+    {
+        if (_api is not { } api) return;
+        ScriptDebug?.Dispose();
+        ScriptDebug = new ScriptDebugViewModel(new HiveScriptDebugSource(api), t.Key, t.Title);
+        if (_active) ScriptDebug.Start();
+    }
+
+    [RelayCommand]
+    private void CloseScript()
+    {
+        ScriptDebug?.Dispose();
+        ScriptDebug = null;
+    }
+
     // ------------------------------------------------------------------ lifecycle
 
     private int _lastIndexX = int.MinValue, _lastIndexZ = int.MinValue;
@@ -545,6 +574,7 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         var utcNow = DateTime.UtcNow;
         bool linkUp = _sync is { State: LinkState.Connected };
         foreach (var t in AllTiles) t.RefreshStale(linkUp, utcNow);
+        ScriptDebug?.Tick(utcNow);
         double worldAge = _sync is { WorldOkAt: var ok } && ok > DateTime.MinValue ? (utcNow - ok).TotalSeconds : 0;
         Gpu.LinkNote = _sync == null ? null : !linkUp ? "reconnecting… (" + StateText + ")"
             : worldAge > 5 ? $"world stale {worldAge:0} s" + (_sync.LastError is { } le ? " · " + le : "") : null;
@@ -563,6 +593,8 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         PushFlags();
         if (_sync == null && !_autoTried) { _autoTried = true; _wantConnected = true; Connect(); } // first show: connect once
         _sync?.Start();
+        _badges?.Start();
+        ScriptDebug?.Start();
         UpdateWants();
     }
 
@@ -571,6 +603,8 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         _active = false;
         _stats.Stop();
         _sync?.Stop();
+        _badges?.Stop();
+        ScriptDebug?.Stop(); // a hidden panel stops polling (and so the server's sampling lease runs out)
         Freecam.Stop();
         Tiles.Stop();
         if (_sync != null) { IsConnected = false; StateText = "paused (tab hidden)"; }

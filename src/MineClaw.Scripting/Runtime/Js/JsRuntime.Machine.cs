@@ -103,6 +103,8 @@ internal sealed partial class JsRuntime
 
         public JsonNode? Blackboard() => JsConvert.ToNode(bb, 0, args: false);
 
+        public JsonNode? BlackboardSafe() => SafeNode(bb, 0);
+
         public void Restore(JsonNode? node)
         {
             if (node is not JsonObject o) return;

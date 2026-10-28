@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using MineClaw.Agent.Admin;
+using MineClaw.Agent.Admin.Shards;
 
 namespace MineClaw.App.Supervisor;
 
@@ -16,6 +17,10 @@ namespace MineClaw.App.Supervisor;
 /// <c>GET /api/admin/rebuild/{job_id}</c> → the job; <c>POST /api/admin/rebuild/{job_id}/cancel</c></item>
 /// <item><c>POST /api/admin/backup</c> → <c>{path}</c>; <c>GET /api/admin/audit?max=</c> → <c>{entries}</c>;
 /// <c>GET /api/admin/schema</c> → kinds, ops and form fields</item>
+/// <item><c>POST /api/admin/shard/import/preview</c> <c>{shard (base64 .mcshard), mode, conflict, include_rules, include_world, who}</c>
+/// → the import diff; <c>POST /api/admin/shard/import</c> (same body) → applies it inside the bot with its own stores and starts
+/// the scoped RAPTOR rebuild in the background (<c>job_id</c>, polled like a rebuild). Bodies up to <see cref="ShardMaxBodyBytes"/>,
+/// read only once the flag and the token header check out.</item>
 /// </list>
 /// Every route is 403 unless <see cref="SupervisorOptions.AllowAdminWrites"/> is on AND a token is configured AND the request
 /// carries it in the <c>X-Supervisor-Token</c> header (never <c>?token=</c>; constant-time compare).
@@ -25,6 +30,12 @@ public static class SupervisorAdminRoutes
     public const string Prefix = "/api/admin";
     /// <summary>Request bodies above this are refused (413) without being read further.</summary>
     public const int MaxBodyBytes = 256 * 1024;
+    /// <summary>Shard uploads (base64 in JSON) may be this big.</summary>
+    public const int ShardMaxBodyBytes = 64 * 1024 * 1024;
+
+    public static bool IsShardPath(string path) =>
+        path.TrimEnd('/').StartsWith(Prefix + "/shard/", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>Marks a body that was over <see cref="MaxBodyBytes"/>.</summary>
     internal const string TooLarge = "\0body-too-large";
 
@@ -35,19 +46,29 @@ public static class SupervisorAdminRoutes
     }
 
     /// <summary>The body of a POST to an admin route (null otherwise), read up to the cap.</summary>
-    public static async Task<string?> ReadBodyAsync(HttpListenerRequest req, CancellationToken ct)
+    /// <param name="o">With it, a shard upload's large body is read only when admin writes are on and the token header matches
+    /// (an anonymous client can't make the bot buffer 64 MB); without it shard bodies are refused.</param>
+    public static async Task<string?> ReadBodyAsync(HttpListenerRequest req, CancellationToken ct, SupervisorOptions? o = null)
     {
-        if (!req.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase) || !IsAdminPath(req.Url?.AbsolutePath ?? "/") || !req.HasEntityBody) return null;
-        if (req.ContentLength64 > MaxBodyBytes) return TooLarge;
-        var buf = new byte[MaxBodyBytes + 1];
-        int n = 0;
-        while (n < buf.Length)
+        var path = req.Url?.AbsolutePath ?? "/";
+        if (!req.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase) || !IsAdminPath(path) || !req.HasEntityBody) return null;
+        int cap = MaxBodyBytes;
+        if (IsShardPath(path))
         {
-            int r = await req.InputStream.ReadAsync(buf.AsMemory(n, buf.Length - n), ct).ConfigureAwait(false);
-            if (r == 0) break;
-            n += r;
+            if (o is not { AllowAdminWrites: true } || string.IsNullOrEmpty(o.Token) || !TokenOk(req.Headers["X-Supervisor-Token"], o.Token)) return null;
+            cap = ShardMaxBodyBytes;
         }
-        return n > MaxBodyBytes ? TooLarge : Encoding.UTF8.GetString(buf, 0, n);
+        if (req.ContentLength64 > cap) return TooLarge;
+        using var ms = new MemoryStream();
+        var buf = new byte[81920];
+        while (true)
+        {
+            int r = await req.InputStream.ReadAsync(buf, ct).ConfigureAwait(false);
+            if (r == 0) break;
+            ms.Write(buf, 0, r);
+            if (ms.Length > cap) return TooLarge;
+        }
+        return Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);
     }
 
     private static bool TokenOk(string? given, string token)
@@ -64,7 +85,7 @@ public static class SupervisorAdminRoutes
         if (string.IsNullOrEmpty(o.Token)) return Json(403, new { error = "admin writes need Supervisor:Token" });
         if (!TokenOk(r.TokenHeader, o.Token)) return Json(403, new { error = "X-Supervisor-Token header required" });
         if (admin == null) return Json(403, new { error = "admin writes are not available in this process" });
-        if (r.Body == TooLarge) return Json(413, new { error = $"body over {MaxBodyBytes} bytes" });
+        if (r.Body == TooLarge) return Json(413, new { error = $"body over {(IsShardPath(r.Path) ? ShardMaxBodyBytes : MaxBodyBytes)} bytes" });
 
         var tail = r.Path.TrimEnd('/')[Prefix.Length..].ToLowerInvariant();
         bool post = r.Method.Equals("POST", StringComparison.OrdinalIgnoreCase);
@@ -94,6 +115,20 @@ public static class SupervisorAdminRoutes
                         int max = r.Query.TryGetValue("max", out var m) && int.TryParse(m, NumberStyles.Integer, CultureInfo.InvariantCulture, out var mv) ? Math.Clamp(mv, 1, 5000) : 200;
                         return Json(200, new { target = admin.Target, entries = admin.Audit(max) });
                     }
+                case "/shard/import/preview":
+                case "/shard/import":
+                {
+                    if (!post) return NotAllowed("POST");
+                    if (!admin.SupportsShards) return Json(403, new { error = "memory shards are not available in this process" });
+                    var (bytes, options) = ParseShard(r.Body);
+                    try
+                    {
+                        if (tail == "/shard/import/preview") return Json(200, admin.PreviewShard(bytes, options));
+                        var res = await admin.ImportShardAsync(bytes, options, ct).ConfigureAwait(false);
+                        return Json(res.Ok ? 200 : 400, res);
+                    }
+                    catch (ShardFormatException ex) { return Json(400, new { error = "shard refused: " + ex.Message }); }
+                }
                 case "/schema":
                     if (!get) return NotAllowed("GET");
                     return Json(200, new
@@ -162,6 +197,23 @@ public static class SupervisorAdminRoutes
         if (e.TryGetProperty("fields", out var f) && f.ValueKind == JsonValueKind.Object)
             foreach (var p in f.EnumerateObject()) fields[p.Name] = Scalar(p.Value);
         return new MemoryEdit(Str(e, "op") ?? "", Str(e, "kind") ?? "", Str(e, "id"), fields, Str(e, "who") ?? "admin", Str(e, "reason"));
+    }
+
+    /// <summary><c>{"shard":base64,"mode":"merge|replace|swap","conflict":"newer|shard|mine","include_rules","include_world","who","max_usd"}</c>.</summary>
+    internal static (byte[] Shard, ShardImportOptions Options) ParseShard(string? body)
+    {
+        var e = Root(body);
+        var b64 = Str(e, "shard") ?? throw new FormatException("shard (base64 .mcshard) required");
+        byte[] bytes;
+        try { bytes = Convert.FromBase64String(b64); }
+        catch (FormatException) { throw new FormatException("shard is not valid base64"); }
+        static bool Flag(JsonElement e, string n) => e.TryGetProperty(n, out var v) && (v.ValueKind == JsonValueKind.True || (v.ValueKind == JsonValueKind.String && v.GetString() == "true"));
+        decimal max = Str(e, "max_usd") is { Length: > 0 } ms ? decimal.Parse(ms, NumberStyles.Float, CultureInfo.InvariantCulture) : 0.25m;
+        return (bytes, new ShardImportOptions
+        {
+            Mode = ShardImportOptions.ParseMode(Str(e, "mode")), Conflict = ShardImportOptions.ParseConflict(Str(e, "conflict")),
+            IncludeRules = Flag(e, "include_rules"), IncludeWorld = Flag(e, "include_world"), Who = Str(e, "who") ?? "admin", RebuildMaxUsd = max,
+        });
     }
 
     /// <summary><c>{"scope":"node|kind","node"?:int,"kind"?:string,"max_usd"?:number (default 0.50),"who"?}</c>.</summary>

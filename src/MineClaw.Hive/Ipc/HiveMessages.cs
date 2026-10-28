@@ -73,6 +73,7 @@ public static class Msg
     // replies
     public const string Occupied = "occupied";    // C→M      OccupiedMsg (someone else logged in as this clone: kicked, not retrying)
     public const string View = "view";            // M→C req  (no payload) → CloneViewMsg ("send me your view": flush world memory, pose)
+    public const string ScriptDebug = "script_dbg"; // M→C req ScriptDebugReq → ScriptDebugSnapshot (the live script debugger; null = none)
     public const string Reply = "re";
 }
 
@@ -138,6 +139,8 @@ public sealed record LendReplyMsg(bool Ok, int Id, int Count, string? Name, doub
 public sealed record LendGoMsg(double X, double Y, double Z);
 public sealed record LendDoneMsg(int Tossed, string? Reason);
 /// <summary>A clone's live eye pose; <paramref name="Flushed"/> live columns were written/stamped in the shared world memory first.</summary>
+/// <summary>"Show me your script" (the Explorer's live debugger via main's Supervisor): <see cref="Code"/> = include the source.</summary>
+public sealed record ScriptDebugReq(bool Code);
 public sealed record CloneViewMsg(double X, double Y, double Z, float Yaw, float Pitch, int Dim, int Flushed);
 public sealed record RecallMsg(string Reason, double? DeadlineSeconds = null);
 public sealed record ByeMsg(string Reason, bool Deposited, int Stranded);
