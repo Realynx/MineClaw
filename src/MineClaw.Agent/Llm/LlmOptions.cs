@@ -228,6 +228,14 @@ public sealed class LlmOptions
                 p.Add($"Agent:Llm:Profiles:{name}:Provider '{prof.Provider}' is not a provider (anthropic|ollama)");
         if (Ollama.IsConfigured && !Uri.TryCreate(Ollama.Endpoint.Trim(), UriKind.Absolute, out _))
             p.Add($"Agent:Llm:Ollama:Endpoint '{Ollama.Endpoint}' is not an absolute URL");
+        // Anthropic tiers and profiles run only on the 5.5 generation (user rule, 2026-10-28).
+        foreach (var (tier, key) in new[] { (ModelTier.Main, "MainModel"), (ModelTier.Worker, "WorkerModel"), (ModelTier.Cheap, "CheapModel") })
+            if (ProviderFor(tier) == LlmProviders.Anthropic && !ModelProfiles.IsCurrentGeneration(ModelFor(tier)))
+                p.Add($"Agent:Llm:{key} '{ModelFor(tier)}' is older than the 5.5 generation (use one of {string.Join(", ", ModelProfiles.CurrentGeneration)})");
+        foreach (var (name, prof) in Profiles)
+            if (!string.IsNullOrWhiteSpace(prof.Model) && LlmProviders.Normalize(prof.Provider) == LlmProviders.Anthropic
+                && !ModelProfiles.IsCurrentGeneration(prof.Model))
+                p.Add($"Agent:Llm:Profiles:{name}:Model '{prof.Model}' is older than the 5.5 generation");
         return p;
     }
 
@@ -306,22 +314,20 @@ public static class ModelProfiles
 {
     public enum ThinkingOffStyle { Omit, Disabled, BetweenTools }
 
+    /// <summary>Claude models this bot may run on: the 5.5 generation (and the Fable/Mythos 5.1 tier) only.</summary>
+    public static readonly string[] CurrentGeneration =
+        ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1", "claude-mythos-5-1"];
+
+    public static bool IsCurrentGeneration(string model) =>
+        CurrentGeneration.Any(g => model.Trim().StartsWith(g, StringComparison.OrdinalIgnoreCase));
+
     public static ThinkingOffStyle OffStyle(string model)
     {
         var m = model.ToLowerInvariant();
         if (m.StartsWith("claude-sonnet-5-5")) return ThinkingOffStyle.BetweenTools; // disabled → 400
-        if (m.StartsWith("claude-opus-5-5") || m.StartsWith("claude-fable-5") || m.StartsWith("claude-mythos"))
-            return ThinkingOffStyle.Omit; // thinking can't be disabled; low effort is the lever
-        if (m.StartsWith("claude-haiku-5") || m.StartsWith("claude-sonnet-5") || m.StartsWith("claude-opus-5") ||
-            m.StartsWith("claude-opus-4-") || m.StartsWith("claude-sonnet-4-6"))
-            return ThinkingOffStyle.Disabled;
-        return ThinkingOffStyle.Omit; // older models default to no thinking
+        if (m.StartsWith("claude-haiku-5-5")) return ThinkingOffStyle.Disabled;      // accepted at effort high or below
+        return ThinkingOffStyle.Omit; // Opus 5.5, Fable/Mythos 5.1: thinking can't be disabled; low effort is the lever
     }
 
-    public static bool SupportsEffort(string model)
-    {
-        var m = model.ToLowerInvariant();
-        if (m.StartsWith("claude-haiku-4") || m.StartsWith("claude-sonnet-4-5") || m.StartsWith("claude-3")) return false;
-        return m.StartsWith("claude-");
-    }
+    public static bool SupportsEffort(string model) => model.StartsWith("claude-", StringComparison.OrdinalIgnoreCase);
 }

@@ -31,8 +31,6 @@ public sealed class PriceTable
         ["claude-haiku-5-5"] = ModelPrice.Standard(0.10m, 0.50m),          // ≤100K-token prompts
         ["claude-sonnet-5-5"] = ModelPrice.Standard(2.00m, 10.00m, 0.20m),
         ["claude-opus-5-5"] = ModelPrice.Standard(4.00m, 20.00m, 0.20m),
-        ["claude-haiku-4-5"] = ModelPrice.Standard(1.00m, 5.00m),
-        ["claude-sonnet-4-6"] = ModelPrice.Standard(3.00m, 15.00m),
     };
 
     public ModelPrice Fallback { get; set; } = ModelPrice.Standard(5.00m, 25.00m);

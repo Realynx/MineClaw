@@ -25,6 +25,9 @@ public static class ConfigCheck
         if (string.IsNullOrWhiteSpace(mc.Username) || mc.Username.Length > 16) p.Add("Minecraft:Username must be 1-16 characters");
         // Provider routing (Agent:Llm:*Provider, Agent:Llm:Ollama). Nothing set to ollama = no new checks, same as before.
         p.AddRange(a.Llm.ValidateProviders());
+        if (string.Equals(a.Llm.Perception.Provider?.Trim(), MineClaw.Agent.Perception.PerceptionProviders.Anthropic, StringComparison.OrdinalIgnoreCase)
+            && !MineClaw.Agent.Llm.ModelProfiles.IsCurrentGeneration(a.Llm.Perception.Model))
+            p.Add($"Agent:Llm:Perception:Model '{a.Llm.Perception.Model}' is older than the 5.5 generation");
         // The Anthropic key is needed only when some tier runs on Anthropic.
         if (a.Llm.TiersUseAnthropic)
         {
