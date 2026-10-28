@@ -254,7 +254,7 @@ public sealed class Gestures
                      && !e.Name.Equals(_c.Username, StringComparison.OrdinalIgnoreCase)))
         {
             if (AddressingText.Mentions(text, e.Name!)) return e.Name;
-            if (_rt.Options.Chat.PlayerNicknames.TryGetValue(e.Name!, out var nicks) && nicks.Any(n => AddressingText.Mentions(text, n))) return e.Name;
+            if (_rt.Chat.NicknamesOf(e.Name!).Any(n => AddressingText.Mentions(text, n))) return e.Name;
         }
         return Partner();
     }

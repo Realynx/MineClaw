@@ -73,6 +73,12 @@ public sealed record GameEvent
     /// </summary>
     public bool MustWake { get; init; }
 
+    /// <summary>
+    /// Chat only: how sure the router was that this line is for the bot (see <c>AddressReasonExtensions.Confidence</c>);
+    /// null = not decided by the router (injected/test events count as sure).
+    /// </summary>
+    public double? AddressConfidence { get; init; }
+
     public static EventPriority DefaultPriority(EventKind kind) => kind switch
     {
         EventKind.Death or EventKind.VoidFall => EventPriority.Critical,

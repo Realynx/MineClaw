@@ -57,6 +57,28 @@ public sealed class ChatOptions
         ["kiwi"] = ["robin"],
     };
 
+    /// <summary>
+    /// Accounts known to be bots that aren't ours (live 10-27: Robin's own bot). Their lines wake us only when they name us,
+    /// never as a reply to us, and at most once per <see cref="BotReplyCooldownMinutes"/>. More are learned at runtime
+    /// ("robinchan is a bot", instant long replies, template chatter).
+    /// </summary>
+    public string[] OtherBots { get; set; } = ["robinchan"];
+
+    /// <summary>At most one reply to a given foreign bot per this many minutes (two LLM bots can ping-pong forever).</summary>
+    public double BotReplyCooldownMinutes { get; set; } = 5;
+
+    /// <summary>A player's unnamed line within this long of talking with someone else (not us) is for them.</summary>
+    public int OtherConversationSeconds { get; set; } = 45;
+
+    /// <summary>"I'm not talking to you": that player's unnamed lines are not for us for this long.</summary>
+    public int RejectWindowSeconds { get; set; } = 60;
+
+    /// <summary>An unnamed line within this long of the bot asking that player a question is the answer.</summary>
+    public int AnswerWindowSeconds { get; set; } = 60;
+
+    /// <summary>A line that is only the bot's name links the same player's ignored line from at most this long before.</summary>
+    public int NameLinkSeconds { get; set; } = 30;
+
     /// <summary>Lines that are imperatives about the bot's items/tasks/hive ("give me my bucket", "stop", "you...") count as addressed.</summary>
     public bool ImperativesAddressed { get; set; } = true;
 

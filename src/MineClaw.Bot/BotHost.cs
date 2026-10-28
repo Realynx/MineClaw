@@ -133,6 +133,17 @@ public sealed class BotHost : IDisposable
         // Addressing classifier: only while the bot can actually see the speaker nearby.
         rt.Chat.IsNear = name => client.IsPlaying && client.World.Entities.FindPlayer(name) is { } pe &&
             pe.Position.DistanceTo(client.World.Player.Position) <= rt.Options.Chat.Classifier.NearBlocks;
+        // Addressee by gaze/proximity: whom the speaker looks at or stands right next to (us = our username).
+        rt.Chat.LookingAt = name =>
+        {
+            if (!client.IsPlaying || client.World.Entities.FindPlayer(name) is not { } sp) return null;
+            var others = client.World.Entities.All()
+                .Where(e => e.Kind == MineClaw.World.EntityKind.Player && e.Name is { Length: > 0 } n && !n.Equals(name, StringComparison.OrdinalIgnoreCase)
+                            && !n.Equals(client.Username, StringComparison.OrdinalIgnoreCase))
+                .Select(e => (e.Name!, e.Position))
+                .Append((client.Username, client.World.Player.Position));
+            return MineClaw.Bot.Brainstem.GazeAddress.Target(new MineClaw.Bot.Brainstem.HandoverWatch.PlayerView(name, sp.Position, sp.Yaw, sp.Pitch), others);
+        };
         if (rt.Worker != null) rt.Worker.Landmark = blockLandmark;
         // All dig cells of the generator around a block: geometry + the indexer + taught cells (claim-aware harvest picks a free one).
         Func<MineClaw.World.BlockPos, IReadOnlyList<MineClaw.World.BlockPos>> genCells = p =>
@@ -595,6 +606,9 @@ public sealed class BotHost : IDisposable
         return (indexer, tracker);
     }
 
+    /// <summary>A toss within this many blocks of the bot counts as a hand-over to it.</summary>
+    public const double HandoverReach = 10;
+
     /// <summary>Hand-overs and spoken promises (zero tokens): "Fox gave you 21 wheat; you said you'd make bread when ...".</summary>
     public Brainstem.HandoverWatch? Handovers { get; init; }
     private System.Threading.Timer? HandoverPump { get; init; }
@@ -634,7 +648,10 @@ public sealed class BotHost : IDisposable
             try
             {
                 if (e.Kind != MineClaw.World.EntityKind.Item || e.Item.IsEmpty) return;
-                if (watch.OnItemSpawn(e.Id, e.Position, Others()) is { } who) log?.LogDebug("hand-over: {Item} x{Count} thrown by {Who}", e.Item.Id, e.Item.Count, who);
+                // A toss near the bot is a hand-over (counted at once, debounced); one far away is someone else's business.
+                bool near = e.Position.DistanceTo(w.Player.Position) <= HandoverReach;
+                if (watch.OnItemSpawn(e.Id, e.Position, Others(), near ? e.Item.Id : 0, near ? e.Item.Count : 0) is { } who)
+                    log?.LogDebug("hand-over: {Item} x{Count} thrown by {Who}{Far}", e.Item.Id, e.Item.Count, who, near ? "" : " (far: counted only on pickup)");
             }
             catch (Exception ex) { log?.LogDebug(ex, "hand-over spawn failed"); }
         };

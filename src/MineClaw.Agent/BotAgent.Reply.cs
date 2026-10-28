@@ -253,6 +253,13 @@ public sealed partial class BotAgent
         if (!ReplyOn || !o.QuickAck || tier != ModelTier.Main || !batch.HasTypedChat) return;
         var typed = batch.Waking.Where(EventQueue.IsTyped).ToList();
         if (typed.Count == 0) return;
+        // Only after the addressee decision says it's for us (live 10-27: Robin asked robinchan "you have to respond to
+        // everything currently?" and main acked "hm, lemme think~"): never on an ambiguous or someone else's line.
+        if (!SureAddressed(typed, o))
+        {
+            _log.LogInformation("quick ack skipped: not sure the line is for us ({Lines})", string.Join(" / ", typed.Select(e => $"{e.Player}: {TextUtil.Truncate(e.Text, 40)} ({e.AddressConfidence:0.0})")));
+            return;
+        }
         var lines = typed.Select(e => e.Text).ToList();
         // A reflex already answered with the body (the brain sees "[reflex] ..."): no words needed first.
         if (turnHead.Contains("[reflex]", StringComparison.Ordinal) || lines.All(l => IntentMatcher.Reflex(l, NameWords(), _ => true).IsReflex)) return;
@@ -308,6 +315,10 @@ public sealed partial class BotAgent
             catch (Exception ex) { _log.LogWarning(ex, "quick ack failed"); }
         }, CancellationToken.None);
     }
+
+    /// <summary>Every typed line is for us with at least <see cref="ReplyOptions.AckMinConfidence"/> (router-less events count as sure).</summary>
+    private static bool SureAddressed(IEnumerable<GameEvent> typed, ReplyOptions o) =>
+        typed.All(e => e.AddressConfidence is not { } c || c >= o.AckMinConfidence);
 
     /// <summary>Waits (on <see cref="_time"/>) until <paramref name="at"/>; false when the brain spoke first or the turn ended.</summary>
     private async Task<bool> WaitUntilAsync(TurnSpeech sp, DateTimeOffset at, CancellationToken ct)
@@ -375,6 +386,7 @@ public sealed partial class BotAgent
         }
 
         if (!o.CheapOnly || mode is not (BudgetMode.Normal or BudgetMode.Economy)) return new();
+        if (!SureAddressed(typed, o)) return new(); // might be someone else's line: no cheap answer, no ack; the brain decides
         if (waking.Count != typed.Count || batch.HasDanger || typed.Any(e => e.Player == null)) return new();
         bool emote = typed.All(e => e.Kind == EventKind.Emote);
         var kind = QuickReply.Classify(typed.Select(e => e.Text).ToList(), NameWords(), emote);

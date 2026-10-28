@@ -117,6 +117,13 @@ public sealed class ReplyOptions
     /// <summary>No ack for plain small talk that goes to the brain anyway (a low-effort brain answers it fast).</summary>
     public bool AckSkipSmallTalk { get; set; } = true;
 
+    /// <summary>
+    /// The quick ack runs only for lines the router is at least this sure are for the bot (named/whispered 1.0, gaze/answer
+    /// 0.9, continuity 0.8; an unnamed imperative 0.5). Live 10-27: Robin asked robinchan "you have to respond to everything
+    /// currently?" and main acked "hm, lemme think~".
+    /// </summary>
+    public double AckMinConfidence { get; set; } = 0.75;
+
     /// <summary>Safe small talk is answered by the cheap tier alone (no Opus call) when its one call says no brain is needed.</summary>
     public bool CheapOnly { get; set; } = true;
 

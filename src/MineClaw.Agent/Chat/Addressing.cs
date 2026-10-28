@@ -16,11 +16,42 @@ public enum AddressReason
     Imperative,
     /// <summary>Obvious player-to-player chat: it calls another online human ("bob look", "robin, come").</summary>
     OtherPlayer,
+    /// <summary>The speaker is looking at the bot (or standing right next to it and nobody else).</summary>
+    Gaze,
+    /// <summary>A reply to a question the bot just asked this player.</summary>
+    AnswerToUs,
+    /// <summary>"I'm not talking to you" (or a later unnamed line inside that do-not-respond window).</summary>
+    Rejected,
+    /// <summary>The player is talking with someone else right now (looking at them, or that one answered them last).</summary>
+    OtherConversation,
+    /// <summary>Unclear, and another bot is in the conversation: stay out of it.</summary>
+    Unclear,
+    /// <summary>A line from another (non-hive) bot: not naming us, a reply to us, or over the one-reply-per-5-min limit.</summary>
+    FromBot,
+    /// <summary>The cheap classifier said yes.</summary>
+    Classifier,
 }
 
 public static class AddressReasonExtensions
 {
-    public static bool IsAddressed(this AddressReason r) => r is not (AddressReason.No or AddressReason.OtherPlayer);
+    public static bool IsAddressed(this AddressReason r) =>
+        r is not (AddressReason.No or AddressReason.OtherPlayer or AddressReason.Rejected or AddressReason.OtherConversation
+            or AddressReason.Unclear or AddressReason.FromBot);
+
+    /// <summary>
+    /// How sure the router is that the line is for the bot (1 = named/whispered). The quick ack runs only at or above
+    /// <see cref="Brainstem.ReplyOptions.AckMinConfidence"/>: never on a line that might be someone else's.
+    /// </summary>
+    public static double Confidence(this AddressReason r) => r switch
+    {
+        AddressReason.Name or AddressReason.Whisper => 1.0,
+        AddressReason.Gaze or AddressReason.AnswerToUs => 0.9,
+        AddressReason.Continuity => 0.8,
+        AddressReason.Group or AddressReason.Solo => 0.7,
+        AddressReason.Classifier => 0.6,
+        AddressReason.Imperative => 0.5,
+        _ => 0,
+    };
 }
 
 /// <summary>Addressing telemetry (logged with the chat-flow line; misses are what the classifier and continuity are for).</summary>

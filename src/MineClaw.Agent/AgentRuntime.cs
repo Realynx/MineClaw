@@ -124,6 +124,13 @@ public sealed class AgentRuntime : IDisposable
         chat.IsRegular = p => options.Self.TrustedPlayers.Concat(options.Self.RegularPlayers).Any(r => r.Equals(p, StringComparison.OrdinalIgnoreCase));
         chat.Classifier = AddressClassifier.Create(llm, options, usage, Log("MineClaw.Chat"));
         var chatLog = Log("MineClaw.Chat");
+        chat.AddressDecided += (m, d) =>
+        {
+            if (m.Kind is not (ChatKind.Public or ChatKind.Whisper)) return;
+            chatLog.LogInformation("addressing: {Player} \"{Text}\" → {Verdict} ({Reason}: {Why})", m.Player, TextUtil.Truncate(m.Text, 60),
+                d.Addressed ? "us" : "not us", d.Reason, d.Why);
+        };
+        chat.BotDetected += (name, why) => chatLog.LogInformation("addressing: {Name} is a bot ({Why}): it wakes us only when it names us, once per {Min} min", name, why, options.Chat.BotReplyCooldownMinutes);
         chat.AddressMissed += (player, missed, how) =>
             chatLog.LogInformation("addressing miss: {Player} \"{Missed}\" was ignored, then addressed by {How}; {Stats}", player, missed, how, chat.Addressing);
 

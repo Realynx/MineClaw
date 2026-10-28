@@ -24,6 +24,11 @@ public sealed class Triage
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
     }
 
+    /// <summary>A hand-over notice with nothing promised on it.</summary>
+    public static bool IsPlainHandover(GameEvent e) =>
+        e.Kind == EventKind.Notice && e.Player != null && e.Text.Contains(" gave you ", StringComparison.Ordinal)
+        && !e.Text.Contains("you said you'd", StringComparison.Ordinal);
+
     public TriageDecision Choose(EventBatch batch, BudgetMode mode)
     {
         if (mode == BudgetMode.CheapOnly) return new(ModelTier.Cheap, false, "budget: cheap only");
@@ -33,6 +38,9 @@ public sealed class Triage
         if (_options.IdleCheckInsOnCheapTier && batch.Waking.Any() && batch.Waking.All(e => e.Kind == EventKind.IdleTick && e.Text == "idle check-in"))
             return new(ModelTier.Cheap, true, "idle check-in");
         if (!batch.IsConversational) return new(ModelTier.Main, false, "task event");
+        // A plain hand-over ("PoofimaFox gave you 12 fence (thank them in one short line)"): one cheap thank-you; a kept promise
+        // ("...; you said you'd make bread") needs the brain.
+        if (batch.Waking.Any() && batch.Waking.All(IsPlainHandover)) return new(ModelTier.Cheap, true, "hand-over");
         if (!_options.CheapFirstForChat) return new(ModelTier.Main, false, "config");
         if (batch.Waking.Any(e => e.Kind is EventKind.Chat or EventKind.Whisper && _action.IsMatch(e.Text)))
             return new(ModelTier.Main, false, "action words");

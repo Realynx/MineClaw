@@ -52,7 +52,7 @@ public class LiveSession5BotTests
         wheat = 21;
         Assert.Empty(watch.Poll(have)); // still debouncing: the stacks of one hand-over are one event
 
-        clock.Advance(2.1);
+        clock.Advance(3.1); // debounce 2 → 3 s (live 10-27 23:31: tosses 2 s apart are one hand-over)
         var (text, player) = Assert.Single(watch.Poll(have));
         Assert.Equal("PoofimaFox", player);
         Assert.Equal("PoofimaFox gave you 21 wheat; you said you'd make bread when PoofimaFox handed it over (now 21 wheat)", text);
@@ -100,8 +100,8 @@ public class LiveSession5BotTests
         var watch = new HandoverWatch(clock);
         watch.OnItemSpawn(7, FoxFeet + new Vec3d(0, 1.32, 0), [Fox()]);
         watch.OnPickup(7, Blocks.Torch, 5);
-        clock.Advance(2.5);
-        Assert.Equal("PoofimaFox gave you 5 torch", Assert.Single(watch.Poll(_ => 5)).Text);
+        clock.Advance(3.1);
+        Assert.Equal("PoofimaFox gave you 5 torch" + HandoverWatch.AckHint, Assert.Single(watch.Poll(_ => 5)).Text);
     }
 
     [Theory]

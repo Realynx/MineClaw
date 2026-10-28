@@ -40,7 +40,7 @@ public sealed class HandoverWatch(TimeProvider? time = null)
 {
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly object _lock = new();
-    private readonly Dictionary<int, (string Player, DateTimeOffset At)> _thrown = new();
+    private readonly Dictionary<int, (string Player, DateTimeOffset At, bool Counted)> _thrown = new();
     private readonly List<(BlockPos Pos, DateTimeOffset At)> _breaks = new();
     private readonly Dictionary<string, Bucket> _buckets = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<PendingPromise> _promises = new();
@@ -53,8 +53,11 @@ public sealed class HandoverWatch(TimeProvider? time = null)
         public DateTimeOffset Last;
     }
 
-    /// <summary>Stacks of one hand-over arriving within this window = one event.</summary>
-    public TimeSpan Debounce { get; init; } = TimeSpan.FromSeconds(2);
+    /// <summary>
+    /// Tosses/stacks of one hand-over within this window = one event (live 10-27 23:31:06-10: planks, 10 pressure plates and
+    /// 12 fences thrown over 4 s, never acknowledged).
+    /// </summary>
+    public TimeSpan Debounce { get; init; } = TimeSpan.FromSeconds(3);
     /// <summary>How long a spoken promise waits for its condition.</summary>
     public TimeSpan PromiseLifetime { get; init; } = TimeSpan.FromMinutes(5);
 
@@ -74,8 +77,13 @@ public sealed class HandoverWatch(TimeProvider? time = null)
         }
     }
 
-    /// <summary>An item entity appeared (0x15). <paramref name="players"/> = the other (non-bot) players around.</summary>
-    public string? OnItemSpawn(int entityId, Vec3d pos, IEnumerable<PlayerView> players)
+    /// <summary>
+    /// An item entity appeared (0x15). <paramref name="players"/> = the other (non-bot) players around. With the stack known
+    /// (<paramref name="itemId"/> &gt; 0) the toss itself counts as the hand-over: it wakes the brain once the tosses settle even
+    /// if the bot never picks the items up (live 10-27 23:31: fences thrown at the bot standing in the gen were never collected,
+    /// so the pickup-only watch never woke anyone).
+    /// </summary>
+    public string? OnItemSpawn(int entityId, Vec3d pos, IEnumerable<PlayerView> players, int itemId = 0, int count = 0)
     {
         var now = _time.GetUtcNow();
         lock (_lock)
@@ -83,8 +91,10 @@ public sealed class HandoverWatch(TimeProvider? time = null)
             if (_breaks.Any(b => now - b.At <= TimeSpan.FromSeconds(2) && b.Pos.Center.DistanceTo(pos) <= 1.6)) return null;
             var who = Thrower(pos, players);
             if (who is null) return null;
-            _thrown[entityId] = (who, now);
+            bool counted = itemId > 0;
+            _thrown[entityId] = (who, now, counted);
             foreach (var k in _thrown.Where(t => now - t.Value.At > TimeSpan.FromMinutes(5)).Select(t => t.Key).ToList()) _thrown.Remove(k);
+            if (counted) AddLocked(who, itemId, count, now);
             return who;
         }
     }
@@ -123,11 +133,18 @@ public sealed class HandoverWatch(TimeProvider? time = null)
         lock (_lock)
         {
             if (!_thrown.Remove(entityId, out var t)) return false;
-            if (!_buckets.TryGetValue(t.Player, out var b)) _buckets[t.Player] = b = new Bucket();
-            b.Items[itemId] = b.Items.GetValueOrDefault(itemId) + Math.Max(1, count);
-            b.Last = now;
+            if (t.Counted) { if (_buckets.TryGetValue(t.Player, out var open)) open.Last = now; return true; } // the toss already counted it
+            AddLocked(t.Player, itemId, count, now);
             return true;
         }
+    }
+
+    // caller holds _lock
+    private void AddLocked(string player, int itemId, int count, DateTimeOffset now)
+    {
+        if (!_buckets.TryGetValue(player, out var b)) _buckets[player] = b = new Bucket();
+        b.Items[itemId] = b.Items.GetValueOrDefault(itemId) + Math.Max(1, count);
+        b.Last = now;
     }
 
     // ------------------------------------------------------------------ chat inputs
@@ -214,13 +231,16 @@ public sealed class HandoverWatch(TimeProvider? time = null)
                 _buckets.Remove(player);
                 var h = new Handover(player, b.Items.Select(kv => (kv.Key, kv.Value)).ToList(), b.Last);
                 var text = $"{player} gave you {h.ItemsText}";
+                bool promised = false;
                 var kept = _promises.FirstOrDefault(p => (p.From is null || p.From.Equals(player, StringComparison.OrdinalIgnoreCase))
                                                           && (p.ItemId is null || b.Items.ContainsKey(p.ItemId.Value)));
                 if (kept is not null)
                 {
                     _promises.Remove(kept);
                     text += $"; you said you'd {kept.Intent} when {player} handed it over" + (kept.ItemId is { } id ? $" (now {have(id)} {ItemWord(id, have(id))})" : "");
+                    promised = true;
                 }
+                if (!promised) text += AckHint;
                 outp.Add((text, player));
             }
             // An open bucket may still carry the promised item: wait for it to settle so it's one wake, not two.
@@ -235,6 +255,9 @@ public sealed class HandoverWatch(TimeProvider? time = null)
         }
         return outp;
     }
+
+    /// <summary>Appended to a plain hand-over wake: one cheap thank-you ("ty Foxy, got 12 fences!"), nothing more.</summary>
+    public const string AckHint = " (thank them in one short line)";
 
     // ------------------------------------------------------------------ helpers
 

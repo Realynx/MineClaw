@@ -139,6 +139,9 @@ public sealed class EventQueue
 
     public IReadOnlyList<GameEvent> Snapshot() { lock (_lock) return _pending.ToArray(); }
 
+    /// <summary>Drops pending events that match (a background line re-posted as addressed); returns how many went.</summary>
+    public int RemovePending(Func<GameEvent, bool> match) { lock (_lock) return _pending.RemoveAll(e => match(e)); }
+
     /// <summary>
     /// Optional intake filter applied to every posted event before anything else: return the event (possibly changed) to
     /// keep it, or null to drop it. A hive clone uses it so world noticing, joins and other players' deaths never reach
