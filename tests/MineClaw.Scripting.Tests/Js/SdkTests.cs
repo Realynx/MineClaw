@@ -268,6 +268,28 @@ public class SdkJobTests
     }
 }
 
+public class SdkLightTests
+{
+    [Fact]
+    public async Task Light_and_canSpawn_read_the_light_model()
+    {
+        using var rig = Rig.Js();
+        // Light updates need every column within 17 blocks loaded (mc-dev areChunksLoaded): add a ring around the rig's 2×2.
+        for (int cx = -3; cx <= 2; cx++) for (int cz = -3; cz <= 2; cz++)
+            if (rig.World.GetColumn(cx, cz) is not { HasData: true })
+                rig.World.ApplyChunkRegion(cx * 16, 0, cz * 16, 16, 128, 16, new byte[16 * 128 * 16], null, null, null);
+        rig.World.SetBlock(0, 65, 0, Blocks.ByName("torch")!.Id, 5); // on the rig's stone floor (y64)
+        rig.World.Time = 6000;
+        var s = await rig.Run("""
+            const t = light(0, 65, 0), f = light(pos('5,65,2'))
+            return [t.block, t.sky, f.block, f.now, f.night, canSpawn(5, 65, 2), canSpawn(pos('5,65,2'), true), canSpawn(1, 65, 1), block(0, 65, 0)].join(',')
+            """);
+        Assert.True(s.Ok, s.Outcome);
+        // Manhattan 7 from the torch: block 7; open sky 15 by day (now 15), 15 - 11 = 4 after dark → max 7; spawnable only after dark.
+        Assert.Contains("14,15,7,15,7,true,false,false,torch", s.Outcome);
+    }
+}
+
 public class SdkReferenceTests
 {
     [Fact]
@@ -280,6 +302,8 @@ public class SdkReferenceTests
         Assert.True(undocumented.Count == 0, "undocumented: " + string.Join(", ", undocumented));
         foreach (var m in Sdk.SdkModules.All) Assert.Contains("## " + m.Name + ":", reference);
         Assert.Contains("machine({initial, states:", reference);
+        Assert.Contains("- light(x,y,z) or light(pos)", reference);
+        Assert.Contains("- canSpawn(x,y,z, now=false)", reference);
         Assert.True(reference.Length < 14_000, $"reference {reference.Length} chars");
     }
 }

@@ -341,6 +341,7 @@ public sealed class BotHost : IDisposable
         // The builder resolves its body per call through the routers (never a captured client).
         var blueprints = botOptions.Blueprints.Enabled ? MineClaw.Bot.Blueprints.BlueprintWiring.Attach(rt, adapter, toolClient, botOptions.Blueprints, protection, acquisition, genCells, claims, time, log, persist) : null;
         if (blueprints != null) skillHub.Registry.Footprints ??= blueprints.Service.Footprints; // expand_island area: does the floor cover the design?
+        if (blueprints != null) skillHub.Registry.Design ??= blueprints.Service.RegionOf; // light_area/spawn_map design= and its deck
 
         Func<string, bool> isBot = n => hiveBots?.Invoke().Contains(n, StringComparer.OrdinalIgnoreCase) == true || rt.Chat.IsHiveBot?.Invoke(n) == true;
         return new BrainContext

@@ -16,6 +16,9 @@ public sealed class ChunkColumn
     internal readonly byte[] Meta = new byte[Volume];
     internal readonly byte[] BlockLight = new byte[Volume];
     internal readonly byte[] SkyLight = new byte[Volume];
+    /// <summary>mc-dev Chunk.heightMap (index <c>lz &lt;&lt; 4 | lx</c>): the lowest y from which every block up to the top has light
+    /// opacity 0 ("can see the sky" = y ≥ height). Kept by <see cref="LightEngine"/>; 0..128.</summary>
+    internal readonly byte[] HeightMap = new byte[SizeX * SizeZ];
 
     /// <summary>Lock taken by writers. Readers do not need it for single-block reads.</summary>
     internal readonly object Sync = new();
@@ -45,6 +48,8 @@ public sealed class ChunkColumn
     public int GetMeta(int lx, int y, int lz) => Meta[Index(lx, y, lz)];
     public int GetBlockLight(int lx, int y, int lz) => BlockLight[Index(lx, y, lz)];
     public int GetSkyLight(int lx, int y, int lz) => SkyLight[Index(lx, y, lz)];
+    /// <summary>mc-dev Chunk.b(x, z): the height map value of a local column.</summary>
+    public int GetHeight(int lx, int lz) => HeightMap[lz << 4 | lx];
 
     internal void Set(int lx, int y, int lz, int id, int meta)
     {

@@ -687,6 +687,27 @@ public sealed partial class ScriptSession
         return Blocks.Get(_host.World.GetBlock(p.X, p.Y, p.Z)).Name;
     }
 
+    /// <summary><c>light(pos)</c>: {sky, block} raw light (0-15), <c>now</c> = the effective level now (max(sky − World.k, block)),
+    /// <c>night</c> = after dark (World.k 11). Mobs spawn at 7 or less.</summary>
+    internal JsonObject LightAt(BlockPos p)
+    {
+        SafePoint();
+        var w = _host.World;
+        var l = w.LightAt(p);
+        return new JsonObject
+        {
+            ["sky"] = l.Sky, ["block"] = l.Block, ["now"] = w.EffectiveLight(p),
+            ["night"] = w.Light.LightLevel(p.X, p.Y, p.Z, LightEngine.NightSubtracted),
+        };
+    }
+
+    /// <summary><c>canSpawn(pos, now)</c>: a hostile mob can spawn with its feet there after dark (now = right now).</summary>
+    internal bool CanSpawn(BlockPos p, bool now)
+    {
+        SafePoint();
+        return _host.World.CanHostileSpawn(p, now ? _host.World.TimeOfDay : null);
+    }
+
     /// <summary><c>near("chest", r)</c>: nearest unprotected block of that name in view, a named entity, else memory ({x,y,z,name,d}).</summary>
     internal JsonObject? Nearest(string kind, double? radius)
     {

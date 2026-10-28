@@ -315,44 +315,6 @@ public sealed class PillarDownSkill : Skill
 }
 
 [Skill]
-public sealed class LightAreaSkill : Skill
-{
-    public override SkillSpec Spec { get; } = new()
-    {
-        Name = "light_area", Category = SkillCategory.Building, Summary = "torch dark spawnable floor (light<8) nearby", Args = "radius?,max?",
-        Schema = SkillJson.Schema("radius:int?,max:int?"), Estimate = TimeSpan.FromSeconds(40),
-        Pre = new() { Items = [[Blocks.Torch]], Needs = "torches" },
-        Keywords = "torch torches light lamp dark mobs spawn spawnproof brighten night",
-    };
-
-    public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
-    {
-        int radius = Clamp(args.Int("radius"), 10, 3, 20), max = Clamp(args.Int("max"), 8, 1, 32);
-        var lit = new HashSet<BlockPos>();
-        var dark = Dark(ctx, radius).ToList();
-        if (dark.Count == 0) return Ok($"no dark spawnable spots within {radius}");
-        int n = 0;
-        foreach (var c in dark)
-        {
-            if (n >= max || !ctx.Has(Blocks.Torch)) break;
-            if (lit.Any(l => l.ManhattanTo(c) <= 6)) continue; // a torch lights ≥8 within 6 blocks
-            var r = await ctx.Game.PlaceAsync(c, Blocks.Torch, ct);
-            if (!r.Ok) continue;
-            n++;
-            lit.Add(c);
-        }
-        int left = dark.Count(c => !lit.Any(l => l.ManhattanTo(c) <= 6));
-        return n > 0 ? Ok($"placed {n} torch(es); ~{left} dark spots left; {ctx.Count(Blocks.Torch)} torches") : Fail("couldn't place torches");
-    }
-
-    /// <summary>Air cells on an opaque full floor with headroom and block light ≤ 7 (b1.8.1 hostile spawn rule).</summary>
-    public static IEnumerable<BlockPos> Dark(SkillContext ctx, int radius) =>
-        ctx.Find((id, _) => id == 0, radius, 4096).Select(f => f.Pos)
-            .Where(p => SkillWorld.Solid(ctx.World, p.Down()) && !Blocks.Get(ctx.Block(p.Down())).Transparent
-                        && SkillWorld.Air(ctx.World, p.Up()) && ctx.World.GetBlockLight(p.X, p.Y, p.Z) <= 7 && !ctx.Protected(p));
-}
-
-[Skill]
 public sealed class PlaceLadderSkill : Skill
 {
     public override SkillSpec Spec { get; } = new()

@@ -590,6 +590,29 @@ public sealed class BlueprintService
             .Select(r => FootprintOf(r) is { } f ? new Skills.DesignFootprint($"design #{r.Id}", f.X0, f.Z0, f.X1, f.Z1, f.Y0, f.Y1) : null)
             .OfType<Skills.DesignFootprint>().ToList();
 
+    /// <summary>A saved design as built (gate corrections applied), for light_area/spawn_map <c>design=</c>: its box, its blocks
+    /// and what its DSL says about roles (a <c>role</c> line, or comments naming a spawning floor). Null = no such design.</summary>
+    public Skills.DesignRegion? RegionOf(string idOrName)
+    {
+        if (Store.Find(idOrName) is not { } rec || rec.Status is DesignStatus.Cancelled or DesignStatus.Failed) return null;
+        try
+        {
+            if (PlanOf(rec, out _) is not { } plan) return null;
+            var built = AsBuilt(rec, plan);
+            if (built.Blocks.Count == 0) return null;
+            var keys = built.Blocks.Keys;
+            var min = new BlockPos(keys.Min(k => k.X), keys.Min(k => k.Y), keys.Min(k => k.Z));
+            var max = new BlockPos(keys.Max(k => k.X), keys.Max(k => k.Y), keys.Max(k => k.Z));
+            var roles = rec.Dsl.Split('\n').Select(l => l.Trim())
+                .Where(l => l.StartsWith("role", StringComparison.OrdinalIgnoreCase)
+                            || (l.StartsWith('#') && System.Text.RegularExpressions.Regex.IsMatch(l, @"(?i)\bspawn")))
+                .Select(l => l.TrimStart('#', ' ')).Take(2).ToList();
+            return new Skills.DesignRegion($"design #{rec.Id}", min, max, built.Blocks.Keys.ToHashSet(),
+                roles.Count == 0 ? null : string.Join("; ", roles));
+        }
+        catch (Exception ex) { _log?.LogDebug(ex, "region of #{Id} unreadable", rec.Id); return null; }
+    }
+
     /// <summary>The design as built: the gate corrections (turn/mirror/shift) applied.</summary>
     public VoxelPlan AsBuilt(BlueprintRecord rec, VoxelPlan design) =>
         Plans?.Get(rec.Id, 0) is { Transform: { IsNone: false } t } ? Building.PlanTransform.Apply(design, t) : design;

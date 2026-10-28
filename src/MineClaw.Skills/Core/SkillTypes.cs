@@ -1,4 +1,5 @@
 using System.Text.Json;
+using MineClaw.World;
 
 namespace MineClaw.Skills;
 
@@ -94,6 +95,14 @@ public sealed record SkillSpec
 /// <summary>A known design's footprint in world coordinates (accepted, building or in review): expand_island's area fill checks
 /// that a floor laid for a build covers it ("x -33..-32 of design #4 still uncovered").</summary>
 public sealed record DesignFootprint(string Label, int X0, int Z0, int X1, int Z1, int Y0, int Y1);
+
+/// <summary>
+/// A design as built, in world coordinates, for light_area/spawn_map: its box, every block it places (<paramref name="Solid"/>)
+/// and what its DSL says about roles (<paramref name="Roles"/>: a <c>role</c> line or a comment naming a spawning floor, e.g.
+/// "dark spawning platform with shaft hole"; null = none). A deck = a design block above its base layer that a mob could
+/// stand on (a farm's own spawning platform): never lit unless asked.
+/// </summary>
+public sealed record DesignRegion(string Label, BlockPos Min, BlockPos Max, IReadOnlySet<BlockPos> Solid, string? Roles);
 
 /// <summary>Terse outcome of a skill: one line, "ok: ..." / "failed: ...", safe to hand straight to the model.</summary>
 public sealed record SkillResult(bool Ok, string Text)

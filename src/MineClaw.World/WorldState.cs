@@ -27,7 +27,11 @@ public sealed class WorldState : IBlockAccess
     public WorldState(Func<int, BlockInfo>? blockLookup = null)
     {
         _lookup = blockLookup ?? Blocks.Get;
+        Light = new LightEngine(this);
     }
+
+    /// <summary>The b1.8.1 light engine: the server's light arrays kept up to date on every block change (mc-dev).</summary>
+    public LightEngine Light { get; }
 
     public EntityTracker Entities { get; } = new();
     public PlayerState Player { get; } = new();
@@ -49,7 +53,13 @@ public sealed class WorldState : IBlockAccess
     public long TimeOfDay => ((Time % 24000) + 24000) % 24000;
     public bool IsNight => TimeOfDay is >= 13000 and < 23000;
 
-    public BlockPos Spawn { get; set; }
+    private BlockPos _spawn;
+    /// <summary>The world spawn point (0x06). Hostile mobs never spawn within 24 blocks of it (SpawnerCreature).</summary>
+    public BlockPos Spawn { get => _spawn; set { _spawn = value; HasSpawn = true; } }
+    /// <summary>True once <see cref="Spawn"/> was set (the server sent 0x06).</summary>
+    public bool HasSpawn { get; private set; }
+    /// <summary>Rain strength 0..1 (0x46 begin/end rain); darkens the sky a little (World.k).</summary>
+    public float Rain { get; set; }
     /// <summary>0 overworld, -1 nether.</summary>
     public int Dimension { get; set; }
     public long Seed { get; set; }
@@ -73,6 +83,8 @@ public sealed class WorldState : IBlockAccess
     public int LoadedColumnCount => _columns.Count;
 
     private ChunkColumn? ColumnAt(int x, int z) => _columns.GetValueOrDefault(Key(x >> 4, z >> 4));
+
+    internal ChunkColumn? ColumnAtRaw(int x, int z) => _columns.GetValueOrDefault(Key(x >> 4, z >> 4));
 
     private ChunkColumn GetOrCreate(int cx, int cz, out bool created)
     {
@@ -207,6 +219,24 @@ public sealed class WorldState : IBlockAccess
         return c is null ? 15 : c.SkyLight[ChunkColumn.Index(x & 15, y, z & 15)];
     }
 
+    /// <summary>Raw sky and block light of a cell (live columns; unloaded = 0, 0).</summary>
+    public LightLevel LightAt(BlockPos p) => new(Light.Get(true, p.X, p.Y, p.Z), Light.Get(false, p.X, p.Y, p.Z));
+
+    /// <summary>World.k (skylightSubtracted) at <paramref name="timeOfDay"/> with the current rain: 0 by day, 11 at night.</summary>
+    public int SkylightSubtracted(long? timeOfDay = null) => LightEngine.SkylightSubtracted(timeOfDay ?? TimeOfDay, Rain);
+
+    /// <summary>getLightLevel at <paramref name="timeOfDay"/> (default now): max(sky − World.k, block), the slab/stairs/farmland
+    /// neighbour rule included. What the mob spawn check reads.</summary>
+    public int EffectiveLight(BlockPos p, long? timeOfDay = null) => Light.LightLevel(p.X, p.Y, p.Z, SkylightSubtracted(timeOfDay));
+
+    /// <summary>
+    /// True when a hostile mob may spawn with its feet in <paramref name="p"/> (mc-dev SpawnerCreature + EntityMonster +
+    /// EntityLiving, see <see cref="SpawnRules"/>). <paramref name="timeOfDay"/> null = after dark (World.k 11, the worst case
+    /// torches must beat); pass <see cref="TimeOfDay"/> for "right now".
+    /// </summary>
+    public bool CanHostileSpawn(BlockPos p, long? timeOfDay = null) =>
+        SpawnRules.Check(this, p, timeOfDay is { } t ? SkylightSubtracted(t) : LightEngine.NightSubtracted) == SpawnBlock.Spawnable;
+
     public int GetBlock(BlockPos p) => GetBlock(p.X, p.Y, p.Z);
     public int GetMeta(BlockPos p) => GetMeta(p.X, p.Y, p.Z);
     public BlockInfo GetInfo(BlockPos p) => _lookup(GetBlock(p));
@@ -227,6 +257,7 @@ public sealed class WorldState : IBlockAccess
             c.Ids[i] = (byte)id;
             c.Meta[i] = (byte)(meta & 0x0F);
         }
+        if (oldId != id) Light.OnBlockChanged(x, y, z, oldId, id);
         if (oldId != id || oldMeta != (meta & 0x0F))
             BlockChanged?.Invoke(new BlockChange(new BlockPos(x, y, z), oldId, oldMeta, id, meta & 0x0F));
         return true;
@@ -277,6 +308,7 @@ public sealed class WorldState : IBlockAccess
             for (int cx = originX >> 4; cx <= (originX + sizeX - 1) >> 4; cx++)
             for (int cz = originZ >> 4; cz <= (originZ + sizeZ - 1) >> 4; cz++)
                 _remembered.TryRemove(Key(cx, cz), out _);
+        Light.OnRegion(originX, originZ, sizeX, sizeZ, hasSky: skyLight != null, hasBlock: blockLight != null);
         foreach (var (cx, cz) in newColumns) ColumnLoaded?.Invoke(cx, cz);
         RegionUpdated?.Invoke(new BlockPos(originX, originY, originZ), new BlockPos(sizeX, sizeY, sizeZ));
     }

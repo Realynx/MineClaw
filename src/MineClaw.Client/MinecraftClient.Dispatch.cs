@@ -98,8 +98,8 @@ public sealed partial class MinecraftClient
             }
             case NewStatePacket ns:
                 if (ns.Reason == NewStatePacket.ReasonGameModeChanged) w.Player.GameMode = ns.GameMode;
-                else if (ns.Reason == NewStatePacket.ReasonBeginRain) IsRaining = true;
-                else if (ns.Reason == NewStatePacket.ReasonEndRain) IsRaining = false;
+                else if (ns.Reason == NewStatePacket.ReasonBeginRain) { IsRaining = true; w.Rain = 1f; } // light: World.k
+                else if (ns.Reason == NewStatePacket.ReasonEndRain) { IsRaining = false; w.Rain = 0f; }
                 break;
 
             // ---- own player ----

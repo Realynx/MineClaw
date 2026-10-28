@@ -539,6 +539,43 @@ The `eat` tool (so scripts' eat and `keepFed`), `ensure('food')`, skills' eat, t
   design #4" gets its `build{bp:"4"}` line, an unapproved one is refused back to the brain (`design build{id}` after a trusted go).
   The old `VoxelPlan.Partition(n, byLayer)` strips (`build{bp, part, of}`) remain for scripts.
 
+## Light model and mob spawning (World/Light + Skills/Lighting) — task #29
+
+Live 10-28 16:45: "we'll need to light up the floor of the build" (design #4's floor swarming, the main island's dark west
+side the night before). Ground truth: mc-dev 218a2a71 World.b/d/e, Chunk.initLighting/g/i, Block.q/s, SpawnerCreature,
+EntityMonster/EntityCreature/EntityLiving.
+- **`WorldState.Light` (`LightEngine`)**: the 0x33 light nibbles are used as sent; the height map (Chunk.heightMap) is derived per
+  column. Every block change runs Chunk.a's height-map update (`Chunk.g`: sky rewritten in the column, World.g with mc-dev's
+  local-coordinate quirk kept, Chunk.d over the 4 neighbours + itself) then World.p = World.b(SKY) + World.b(BLOCK): the
+  32768-entry queue BFS (darken within Manhattan 17, re-brighten), each step losing max(1, opacity). Tables (`LightTables`) are
+  Block.q/s exactly: torch 14, lit furnace 13, portal 11, glowstone/lava/fire 15; leaves 1, water/ice 3, slabs/stairs/farmland
+  255 (constructor f(255)), glass/chests/pistons 0. A region without light arrays (fixtures) is lit like initLighting + Chunk.i
+  + emitters. One deviation: `areChunksLoaded(…,17)` is "the cell's column is loaded". Cost (pinned by `LightEngineTests`):
+  ≈0.4 ms and ≈5k cell visits per torch change, ≈0.3 ms per floor block over the void; never a per-tick recompute.
+- **Queries**: `LightAt(pos)` (sky, block), `EffectiveLight(pos, time?)` = getLightLevel with World.k (`SkylightSubtracted`: the
+  MathHelper cos table, rain ×5/16; 0 by day, 11 at night; the slab/farmland/wood+cobble stairs neighbour rule), and
+  `CanHostileSpawn(pos, time?)` (`SpawnRules`, null time = after dark): a normal-cube floor (material.j() && b(): never slab,
+  glass, leaves, ice, TNT, stairs, farmland; chests and double slabs count), no normal cube in the cell or above, no liquid,
+  light ≤ 7, ≥ 24 from the world spawn (0x06), and a zombie (0.6×1.8) or spider (1.4×0.9) box clear of collision boxes and
+  liquid (World.c's negative-corner quirk kept). Thunder (World.k 10) isn't sent to the client: not modelled.
+- **`spawn_map{area|design|around, y?, exclude?}`** (skill, zero tokens) and **`light_area{area|design|around, y?, exclude?,
+  level?, max?, report?}`** (skill; the brain's `do light{area|design,report?}` = that skill, ≈+10 tokens, the short name and `eat`/`equip_armor`
+  without `{}` pay for it: 2,948/2,950 in the strictest budget test, HiveScriptSpawnTests).
+  `design=N` = its footprint ± `pad` 4 at feet levels base−2..base+2 (`Skills.DesignRegion` via `SkillRegistry.Design` ←
+  `BlueprintService.RegionOf`, gate corrections applied); a design target never lights its own **decks** (cells on its blocks
+  above the base layer: design #4's platform y77) unless `exclude=none`; `exclude` also takes "design N" (whole box), "N deck"
+  or a box. The DSL has no role lines: its comments that name a spawning floor are quoted as the roles. The planner
+  (`LightPlan`) is a set cover over each candidate torch's own light field (bucket BFS from 14, −max(1, opacity)): two greedy
+  passes (max coverage; hardest cell first), pruned, the smaller wins. Candidates: empty cells a torch attaches to (floor
+  first), never over the void, never excluded; spots the bot can stand near rank first. Torches through the Obtainer (craft
+  from coal/charcoal + sticks; logs smelted to charcoal when needed); placed in a nearest-neighbour tour, then the real light
+  is re-checked and re-planned (3 rounds). Result: "lit design #4 floor (x -37..-14, z 3..26, y 62..66): placed 11 torches; 0
+  spawnable cells left (was 415); excluded design #4 decks y… (DSL: dark spawning platform with shaft hole; …)".
+- **Overlay**: role `DarkSpawn` ('!', pink) = air a mob can spawn in even by day (the shade under a build, an unlit room): tinted
+  in `see` sheets and lettered in `look map`; night darkens every open floor, so only the persistent dark spots are drawn. The
+  Explorer freecam (hive memory: no light arrays) doesn't draw it yet.
+- **Scripts**: `light(pos)` → {sky, block, now, night} and `canSpawn(pos, now?)` in the JS SDK world module.
+
 ## Protection policy (Bot/Protection + ProtectionPolicy/, Client hooks)
 
 One place decides whether the bot may break a block, why not, and how a player unlocks it: `Protection` builds the client's

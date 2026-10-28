@@ -194,7 +194,7 @@ public class BuildingTests
         Assert.True(r.Ok, r.Text);
         var torches = g.World.FindBlocks(new Vec3d(0, 64, 0), 8, Blocks.Torch);
         Assert.InRange(torches.Count, 1, 4);
-        Assert.False((await new FakeGame().Run("light_area")).Ok, "no torches");
+        Assert.False((await LiquidTests.Island(4).Run("light_area", new { radius = 6 })).Ok, "no torches");
     }
 
     [Fact]

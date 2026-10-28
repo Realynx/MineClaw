@@ -38,6 +38,9 @@ public enum BlockRole : byte
     CropRipe,
     /// <summary>A crop still growing (wheat stage 0-6, a stem): leave it, it ripens.</summary>
     CropGrowing,
+    /// <summary>Air a hostile mob can spawn in even by day (b1.8.1 rule over the light model: a normal-cube floor, room, light
+    /// ≤ 7 with full daylight): shade under a build, a cave, an unlit room. Torch it.</summary>
+    DarkSpawn,
 }
 
 /// <summary>The role of the block at (x, y, z) (air included: void, a refilling gen cell).</summary>
@@ -48,7 +51,7 @@ public static class BlockRoles
     /// <summary>Roles worth an overlay (tint + letter); floor/wall/air read fine from the blocks themselves.</summary>
     public static bool Highlight(BlockRole r) => r is BlockRole.GenCell or BlockRole.Portal or BlockRole.NeverBreak or BlockRole.PlayerBuild
         or BlockRole.OwnPlaced or BlockRole.SoftProtected or BlockRole.Station or BlockRole.Door or BlockRole.Planned or BlockRole.CropRipe
-        or BlockRole.CropGrowing;
+        or BlockRole.CropGrowing or BlockRole.DarkSpawn;
 
     /// <summary>One-character role glyph shared by the ASCII map and the image chips (null = no overlay letter).</summary>
     public static char? Glyph(BlockRole r) => r switch
@@ -62,6 +65,7 @@ public static class BlockRoles
         BlockRole.Planned => '*',
         BlockRole.CropRipe => 'H',
         BlockRole.CropGrowing => ':',
+        BlockRole.DarkSpawn => '!',
         _ => null,
     };
 
@@ -82,6 +86,7 @@ public static class BlockRoles
         BlockRole.Planned => 0xff4fd8,
         BlockRole.CropRipe => 0xf5e04a,
         BlockRole.CropGrowing => 0x7fd35a,
+        BlockRole.DarkSpawn => 0xff3b6b,
         _ => 0x808080,
     };
 
@@ -104,6 +109,7 @@ public static class BlockRoles
         BlockRole.Planned => "planned",
         BlockRole.CropRipe => "ripe crop",
         BlockRole.CropGrowing => "growing crop",
+        BlockRole.DarkSpawn => "dark: mobs spawn",
         _ => "none",
     };
 
@@ -113,6 +119,7 @@ public static class BlockRoles
         if (string.IsNullOrWhiteSpace(s)) return null;
         var n = s.Trim().ToLowerInvariant().Replace('_', ' ').Replace('-', ' ');
         if (n.Contains("never")) return BlockRole.NeverBreak;
+        if (n.Contains("spawn") || n.Contains("dark")) return BlockRole.DarkSpawn;
         if (n.Contains("planned") || n.Contains("blueprint")) return BlockRole.Planned;
         if (n.Contains("unripe") || n.Contains("not ripe") || n.Contains("growing") || n.Contains("stem")) return BlockRole.CropGrowing;
         if (n.Contains("ripe") || n.Contains("crop") || n.Contains("wheat") || n.Contains("grown")) return BlockRole.CropRipe;

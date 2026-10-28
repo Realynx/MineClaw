@@ -11,7 +11,7 @@ namespace MineClaw.Render;
 /// subtle tints + outlines on the cells each pixel shows (gen cells, own-placed, player builds, never-break, portal, crops,
 /// planned), the focus as a depth-tested cyan box, name tags, drop labels, a compass and the panel's title chip.
 /// </summary>
-public static class PerspectivePanel
+public static partial class PerspectivePanel
 {
     public static readonly IReadOnlySet<string> Views = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         { "eye", "shoulder", "orbit", "orbit2", "orbit3", "orbit4", "high", "iso" };
@@ -290,7 +290,7 @@ public static class PerspectivePanel
 
     /// <summary>Roles worth drawing on a 3D panel (stations, doors and soft protection read fine from the blocks themselves).</summary>
     public static bool Shown(BlockRole r) => r is BlockRole.GenCell or BlockRole.Portal or BlockRole.NeverBreak or BlockRole.PlayerBuild
-        or BlockRole.OwnPlaced or BlockRole.Planned or BlockRole.CropRipe or BlockRole.CropGrowing;
+        or BlockRole.OwnPlaced or BlockRole.Planned or BlockRole.CropRipe or BlockRole.CropGrowing or BlockRole.DarkSpawn;
 
     /// <summary>Drops near a spot as text: "2 drops: 2 sapling at 4,64,9; cobblestone at 3,64,8".</summary>
     public static string? DropsText(IEnumerable<VisionEntity> ents, (int X, int Y, int Z)? near = null, int max = 6)

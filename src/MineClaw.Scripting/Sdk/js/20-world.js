@@ -13,6 +13,10 @@
   def('inv', Object.freeze(inv));
   /** block(x,y,z) or block(pos) - block name there ('air', 'cobblestone'...). */
   def('block', (...a) => H.block(...a));
+  /** light(x,y,z) or light(pos) - {sky, block, now, night}: raw sky/block light 0-15 and the level now / after dark (mobs spawn at <= 7). */
+  def('light', (...a) => H.light(...a));
+  /** canSpawn(x,y,z, now=false) or canSpawn(pos, now) - true if a hostile mob can spawn with its feet there after dark (now=true: right now). */
+  def('canSpawn', (...a) => H.canSpawn(...a));
   /** near(kind, r=24) - nearest block/entity/remembered place of that name: {x,y,z,name,d} or null. */
   def('near', (kind, r) => H.near(kind, r));
   /** hostile(r=8) - nearest hostile mob {name,x,y,z,d} or null. */

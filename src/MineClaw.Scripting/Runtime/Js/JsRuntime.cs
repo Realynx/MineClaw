@@ -303,6 +303,19 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime
                 : ScriptSession.PosOf(JsConvert.ToNode(JsConvert.Arg(a, 0), 1));
             return new JsString(s.BlockAt(p ?? throw ScriptSession.Bug("block(x,y,z) needs a position")));
         });
+        // light(x,y,z|pos) / canSpawn(x,y,z|pos, now?): the b1.8.1 light model (WorldState.Light) and hostile spawn rule.
+        (World.BlockPos Pos, int Next) PosArgs(JsValue[] a, string what)
+        {
+            if (a.Length >= 3 && a.Take(3).All(x => x.IsNumber()))
+                return (new World.BlockPos((int)Math.Floor(a[0].AsNumber()), (int)Math.Floor(a[1].AsNumber()), (int)Math.Floor(a[2].AsNumber())), 3);
+            return (ScriptSession.PosOf(JsConvert.ToNode(JsConvert.Arg(a, 0), 1)) ?? throw ScriptSession.Bug($"{what}(x,y,z) needs a position"), 1);
+        }
+        H(h, "light", a => V(s.LightAt(PosArgs(a, "light").Pos)));
+        H(h, "canSpawn", a =>
+        {
+            var (p, next) = PosArgs(a, "canSpawn");
+            return s.CanSpawn(p, TypeConverter.ToBoolean(JsConvert.Arg(a, next))) ? JsBoolean.True : JsBoolean.False;
+        });
         H(h, "near", a => V(s.Nearest(Str(a, 0) ?? throw ScriptSession.Bug("near(kind) needs a block/player/place name"), Num(a, 1))));
         H(h, "hostile", a => V(Hostile(Num(a, 0) ?? 8)));
         H(h, "where", a => S(s.Where(Str(a, 0) ?? throw ScriptSession.Bug("where(item) needs an item name"))));

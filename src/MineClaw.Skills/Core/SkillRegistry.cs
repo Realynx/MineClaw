@@ -47,6 +47,10 @@ public sealed class SkillRegistry
     /// <summary>Known design footprints (the Bot's blueprint service), so a floor laid for a build is checked against it.</summary>
     public Func<IReadOnlyList<DesignFootprint>>? Footprints { get; set; }
 
+    /// <summary>A saved design by id or name ("4", "#4", "mob drop tower") as built (the Bot's blueprint service), for
+    /// light_area/spawn_map <c>design=</c> and <c>exclude=</c>; null = unknown.</summary>
+    public Func<string, DesignRegion?>? Design { get; set; }
+
     /// <summary>Registers every non-abstract <see cref="ISkill"/> marked <see cref="SkillAttribute"/> in <paramref name="assembly"/>.</summary>
     public SkillRegistry Discover(Assembly assembly)
     {

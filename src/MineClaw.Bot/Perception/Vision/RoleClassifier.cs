@@ -25,6 +25,8 @@ public sealed class RoleClassifier
     public Func<BlockPos, int, bool>? IsOwnPlaced { get; init; }
     /// <summary>World index kind protecting a cell (unknown_structure, cobble_generator, portal, floor...).</summary>
     public Func<BlockPos, string?>? IndexerKind { get; init; }
+    /// <summary>Air a hostile can spawn in even by day (the light model's spawn rule at World.k 0); null = no dark overlay.</summary>
+    public Func<BlockPos, bool>? IsDarkSpawn { get; init; }
 
     public RoleMap Map => RoleOf;
 
@@ -37,6 +39,8 @@ public sealed class RoleClassifier
         IsGenGeometry = p => BlockDescriber.IsGenCell(world, p),
         IsOwnPlaced = (p, id) => world.Placed.IsPlaced(p, world.Dimension, id),
         IndexerKind = indexerKind,
+        // Shade a mob can spawn in by day ('!'): the persistent dark spots (night darkens every open floor, so it isn't drawn).
+        IsDarkSpawn = p => SpawnRules.Check(world, p, 0) == SpawnBlock.Spawnable,
     };
 
     public BlockRole RoleOf(int x, int y, int z)
@@ -59,6 +63,7 @@ public sealed class RoleClassifier
                     gen = false;
             }
             if (gen) return BlockRole.GenCell;
+            if (Safe(() => IsDarkSpawn?.Invoke(p) == true)) return BlockRole.DarkSpawn;
             for (int yy = y - 1; yy >= 0; yy--) if (Blocks.GetBlock(x, yy, z) != 0) return BlockRole.None;
             return BlockRole.Void;
         }
