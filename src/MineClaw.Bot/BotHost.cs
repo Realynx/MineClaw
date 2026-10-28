@@ -218,6 +218,8 @@ public sealed class BotHost : IDisposable
                 .Distinct().ToList();
         // The main body's acquisition sources (attached to its plain adapter; the router finds them for the body in scope).
         var acquisition = AttachAcquisition(client, rt, genCells, digCells, indexer, log);
+        // A never-touch mark on a chest keeps every obtain/craft withdrawal out of it (clone bodies read this through).
+        acquisition.SkipChest = p => marks.HasNever && marks.NeverAt(p, client.World.Dimension) != null ? "marked never-touch" : null;
         GameToolSet.RegisterAll(rt.Tools, toolClient, memory, botOptions, landmark: landmark, generatorCells: genCells,
             generator: new GameTools.GeneratorSupport(rt.Observations, (label, p) => rt.Memory.SetWaypoint(label, p.X, p.Y, p.Z, "storage chest placed by the generator loop"),
                 BadCell: (p, why) => corrections.RetractBad(p, why),

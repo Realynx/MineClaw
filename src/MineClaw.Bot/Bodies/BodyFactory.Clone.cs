@@ -42,6 +42,7 @@ public static partial class BodyFactory
         body.Latency = new LatencyTracker(time) { Bot = name };
 
         ProtectClone(brain, adapter, client, claims);
+        AttachCloneAcquisition(brain, body);
         AttachCloneJobs(brain, body);
         AttachCloneBehaviour(brain, body);
         AttachClonePerception(brain, body, client, flusher);
@@ -65,6 +66,26 @@ public static partial class BodyFactory
         // An undone edit next to another body (two bodies on one tree crown) is a race, never spawn protection.
         if (claims != null || brain.HiveBots != null) c.EditContested = p => BotHost.IsContested(c, p, claims, brain.HiveBots);
         adapter.ReservedItems = new HashSet<int>(); // a clone keeps nothing back: everything goes into storage before logout
+    }
+
+    /// <summary>
+    /// The body's own acquisition sources on its adapter (where <see cref="Acquisition.Of"/> looks for the body in scope), so
+    /// ensure/acquire/craft on this body see the shared chests and search the gen around it, exactly like main.
+    /// </summary>
+    internal static AcquisitionSources AttachCloneAcquisition(BrainContext brain, Body body)
+    {
+        var indexer = brain.Indexer;
+        var digCells = brain.DigCells;
+        var world = body.Adapter.World;
+        var sources = brain.Acquisition.ForBody(() =>
+        {
+            var me = world.Player.Position.ToBlockPos();
+            return Perception.BlockDescriber.GenCellsNear(world, me, 16)
+                .Concat(indexer?.GeneratorCellsNear(me, 32) ?? [])
+                .Concat(digCells.Taught().Where(t => t.DistanceSquaredTo(me) <= 48 * 48))
+                .Distinct().ToList();
+        });
+        return Acquisition.Attach(body.Adapter, sources);
     }
 
     /// <summary>Scope pushes, the clone bridge (events tagged with the body, whispers only), its hunger latch and script lane.</summary>

@@ -37,16 +37,18 @@ public sealed partial class MinecraftClient
         if (Recipes.ForOutput(itemId, damage).Count == 0) return ActionResult.Fail($"{target} has no crafting recipe");
 
         var opts = new PlannerOptions { AllowSmelting = false, HasCraftingTable = true };
-        var plan = RecipePlanner.Plan(itemId, count, PlannerStacks(), damage, opts);
+        // Crafting makes new ones: the carried target never stands in for the craft (live 10-28: "already have 1 stone
+        // pickaxe" for a pickaxe at 1/131, so no replacement was ever made).
+        var plan = RecipePlanner.Plan(itemId, count, PlannerStacks(itemId, damage), damage, opts);
         if (!plan.Complete && await ProbeCoreAsync(ct).ConfigureAwait(false) == ProbeOutcome.Resynced)
         {
             // "Missing" may be a stale local copy (the server holds stacks a desync hid): plan again on the server's contents.
             Log("craft: inventory resynced before giving up on missing materials");
-            plan = RecipePlanner.Plan(itemId, count, PlannerStacks(), damage, opts);
+            plan = RecipePlanner.Plan(itemId, count, PlannerStacks(itemId, damage), damage, opts);
         }
         if (!plan.Complete)
         {
-            var withSmelt = RecipePlanner.Plan(itemId, count, PlannerStacks(), damage, opts with { AllowSmelting = true });
+            var withSmelt = RecipePlanner.Plan(itemId, count, PlannerStacks(itemId, damage), damage, opts with { AllowSmelting = true });
             if (withSmelt.Complete)
                 return ActionResult.Fail($"need smelting first: {string.Join("; ", withSmelt.Steps.Where(s => s.IsSmelt))}");
             return ActionResult.Fail($"missing {string.Join(", ", plan.Missing)} for {count} {target}");
@@ -108,6 +110,10 @@ public sealed partial class MinecraftClient
     }
 
     private List<ItemStack> PlannerStacks() => World.Inventory.PlayerSlots().Skip(9).Where(s => !s.IsEmpty).ToList();
+
+    /// <summary>The planner's inventory without the craft's own target (exact variant; any variant for -1).</summary>
+    private List<ItemStack> PlannerStacks(int targetId, int targetDamage) =>
+        PlannerStacks().Where(s => !(s.Id == targetId && (targetDamage < 0 || s.Damage == targetDamage))).ToList();
 
     /// <summary>
     /// Crafts one recipe <paramref name="times"/> times in the given (player or workbench) window. Progress is counted from
@@ -181,7 +187,12 @@ public sealed partial class MinecraftClient
             {
                 // The output is predicted locally (b1.8.1 never sends 0x67 for a crafting-result slot): wait for our recipe
                 // evaluator to show it.
-                if (!await WaitUntilAsync(() => w.Get(0) is { IsEmpty: false } o && o.Id == recipe.OutputId, TimeSpan.FromSeconds(1.5), ct).ConfigureAwait(false))
+                bool shown = await WaitUntilAsync(() => Desynced() || w.Get(0) is { IsEmpty: false } o && o.Id == recipe.OutputId,
+                    TimeSpan.FromSeconds(1.5), ct).ConfigureAwait(false);
+                // A layout click rejected while we waited (live 10-27 23:07: "click 370 in window 14 rejected" then "grid didn't
+                // produce chest"): the grid model is the server's again, so the resync below lays it out afresh.
+                if (Desynced()) { }
+                else if (!shown)
                     fail = $"grid didn't produce {name} (recipe mismatch?)";
                 else
                 {

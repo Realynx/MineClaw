@@ -225,6 +225,12 @@ Only trees, generator cells and chest contents are used; protected blocks and th
 a non-trivial plan is logged and leads the result ("no pick, making one: logs→planks→sticks→table→wood pick→3 cobble→stone pick").
 Callers: Lua `ensure` (hidden `acquire` tool, no prompt bytes), `Loadout.FetchAsync` (clone loadouts, gen loop re-tool), `mine`
 (the block's tool first, so `do mine` too), skill preconditions (`SkillRegistry.AcquireMissing`). Lint warns on a tool job without `ensure`.
+**One resolver** (`Obtainer` → `Crafter` over `ChestStock`): inventory → known chests nearest first (exact variant; never-touch or
+"private" chests skipped; the last sapling/dirt stays) → the whole recipe tree planned over inventory + chests (`CraftPlan.Used`),
+exactly its raw ingredients withdrawn one stop per chest in batches the inventory holds, intermediates crafted (2x2, a table only
+for 3x3), an unnamed variant takes the possible recipe ("slab" = cobble slabs) → the exact shortfall ("need 1 more log for a chest;
+none in inventory or the 3 known chests"). `craft`/`do craft`/the worker, `ensure`/`acquire`, builds and clone bodies (own sources per
+body adapter) all use it; craft always makes new ones (a worn carried pick never counts); reserved items and carried food aren't ingredients.
 
 ## Blueprints: build from a description (Bot/Blueprints)
 

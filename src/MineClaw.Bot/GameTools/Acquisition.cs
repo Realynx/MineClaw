@@ -71,7 +71,29 @@ public sealed class AcquisitionSources
     /// <summary>Tree stewardship: never fell a tree that would leave fewer than this many (planted saplings count).</summary>
     public int MinTrees { get; set; } = TreeStewardship.DefaultMinTrees;
 
+    /// <summary>Why a known chest is off limits to obtain/craft withdrawals (hard-protected, ...), null = usable.</summary>
+    public Func<BlockPos, string?>? SkipChest { get; set; }
+
     public AcquisitionLimits Limits { get; set; } = new();
+
+    /// <summary>
+    /// A clone body's sources (one brain, many bodies): the same shared stores and rules, its own generator search (around the
+    /// body), and the hive seams read through to these at call time (the hive fills them after the bodies exist).
+    /// </summary>
+    public AcquisitionSources ForBody(Func<IReadOnlyList<BlockPos>>? generatorCells) => new()
+    {
+        Observations = Observations,
+        CellsNear = CellsNear,
+        KnownCell = KnownCell,
+        ConfirmedCell = ConfirmedCell,
+        GeneratorCells = generatorCells ?? GeneratorCells,
+        Announce = plan => Announce?.Invoke(plan),
+        RequestHandoff = (ask, ct) => RequestHandoff?.Invoke(ask, ct) ?? Task.FromResult<string?>(null),
+        AskPlayer = (q, timeout, ct) => AskPlayer?.Invoke(q, timeout, ct) ?? Task.FromResult<string?>(null),
+        SkipChest = p => SkipChest?.Invoke(p),
+        MinTrees = MinTrees,
+        Limits = Limits,
+    };
 }
 
 /// <summary>Per-bot acquisition sources, looked up by game client (a claim-aware wrapper finds its inner client's).</summary>

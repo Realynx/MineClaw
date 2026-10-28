@@ -34,6 +34,10 @@ public sealed record CraftPlan(
     /// <summary>True when everything can be made from the given inventory.</summary>
     public bool Complete => Missing.Count == 0;
 
+    /// <summary>What the plan takes out of the given inventory (exact id:damage keys; intermediates it crafts don't count):
+    /// the amounts a caller withdraws from storage when the inventory it planned on included chest contents.</summary>
+    public IReadOnlyList<MaterialNeed> Used { get; init; } = [];
+
     public override string ToString()
     {
         var steps = Steps.Count == 0 ? "already have it" : string.Join("; ", Steps);
@@ -81,10 +85,10 @@ public static class RecipePlanner
             // Make the table first (2x2 recipe; it gets placed so it leaves the inventory), then the target.
             Resolve(ctx, inv, new Ingredient(Blocks.CraftingTable, -1), 1, 0, []);
             Resolve(ctx, inv, target, count, 0, []);
-            return ctx.ToPlan(itemId, damage, count, needsTable: true);
+            return ctx.ToPlan(itemId, damage, count, needsTable: true) with { Used = inv.Used() };
         }
 
-        return trial.ToPlan(itemId, damage, count, needsTable: trial.Steps.Any(s => s.RequiresCraftingTable));
+        return trial.ToPlan(itemId, damage, count, needsTable: trial.Steps.Any(s => s.RequiresCraftingTable)) with { Used = trialInv.Used() };
     }
 
     /// <summary>Convenience overload taking a name ("wooden pickaxe", "torch", "charcoal"...). Returns null if unknown.</summary>
@@ -128,33 +132,65 @@ public static class RecipePlanner
         }
     }
 
+    /// <summary>Simulated inventory; the given stacks (<see cref="_orig"/>) are kept apart from what the plan crafted, so
+    /// <see cref="Used"/> can tell what came out of the inventory. Crafted leftovers are always used first.</summary>
     private sealed class SimInventory
     {
         private readonly Dictionary<(int Id, int Dmg), int> _c = [];
+        private readonly Dictionary<(int Id, int Dmg), int> _orig = [];
+        private readonly Dictionary<(int Id, int Dmg), int> _start = [];
         public SimInventory() { }
         public SimInventory(IEnumerable<ItemStack> stacks)
         {
             foreach (var s in stacks)
-                if (!s.IsEmpty) Add(s.Id, Items.Get(s.Id).MaxDamage > 0 ? 0 : s.Damage, s.Count);
+                if (!s.IsEmpty)
+                {
+                    var k = (s.Id, Items.Get(s.Id).MaxDamage > 0 ? 0 : (int)s.Damage);
+                    Add(k.Item1, k.Item2, s.Count);
+                    _orig[k] = _orig.GetValueOrDefault(k) + s.Count;
+                    _start[k] = _start.GetValueOrDefault(k) + s.Count;
+                }
         }
-        public SimInventory Clone() { var c = new SimInventory(); foreach (var kv in _c) c._c[kv.Key] = kv.Value; return c; }
+        public SimInventory Clone()
+        {
+            var c = new SimInventory();
+            foreach (var kv in _c) c._c[kv.Key] = kv.Value;
+            foreach (var kv in _orig) c._orig[kv.Key] = kv.Value;
+            foreach (var kv in _start) c._start[kv.Key] = kv.Value;
+            return c;
+        }
         public void Add(int id, int dmg, int n) => _c[(id, dmg)] = _c.GetValueOrDefault((id, dmg)) + n;
         public int Count(Ingredient ing) => _c.Where(kv => ing.Matches(kv.Key.Id, kv.Key.Dmg)).Sum(kv => kv.Value);
 
-        /// <summary>Removes up to n matching items, returns how many were taken.</summary>
+        /// <summary>Removes up to n matching items (crafted ones first, then the given stacks), returns how many were taken.</summary>
         public int Take(Ingredient ing, int n)
         {
             int taken = 0;
-            foreach (var key in _c.Keys.Where(k => ing.Matches(k.Id, k.Dmg)).OrderByDescending(k => _c[k]).ToList())
+            var keys = _c.Keys.Where(k => ing.Matches(k.Id, k.Dmg)).OrderByDescending(k => _c[k]).ToList();
+            foreach (var key in keys)                       // crafted leftovers (4 planks per log, 2 used: the other 2)
             {
-                int t = Math.Min(n - taken, _c[key]);
+                if (taken == n) break;
+                int t = Math.Min(n - taken, _c[key] - _orig.GetValueOrDefault(key));
+                if (t <= 0) continue;
                 _c[key] -= t;
                 if (_c[key] == 0) _c.Remove(key);
                 taken += t;
+            }
+            foreach (var key in keys)
+            {
                 if (taken == n) break;
+                if (!_c.TryGetValue(key, out var have)) continue;
+                int t = Math.Min(n - taken, have);
+                _c[key] -= t;
+                _orig[key] = _orig.GetValueOrDefault(key) - t;
+                if (_c[key] == 0) _c.Remove(key);
+                taken += t;
             }
             return taken;
         }
+
+        public MaterialNeed[] Used() => _start.Select(kv => new MaterialNeed(kv.Key.Id, kv.Key.Dmg, kv.Value - _orig.GetValueOrDefault(kv.Key)))
+            .Where(m => m.Count > 0).ToArray();
     }
 
     private abstract record Candidate;
@@ -173,7 +209,14 @@ public static class RecipePlanner
         if (candidates.Count == 0) { ctx.AddMissing(need, n); return; }
 
         Candidate chosen = candidates[0];
-        if (candidates.Count > 1)
+        if (candidates.All(IsUnpack))
+        {
+            // Only an unpack (iron ingot ← iron block, no smelting): the item itself is what's missing unless the block is there.
+            var tctx = ctx.Clone();
+            Apply(tctx, inv.Clone(), chosen, need, n, depth, stack);
+            if (tctx.MissingTotal > ctx.MissingTotal) { ctx.AddMissing(need, n); return; }
+        }
+        else if (candidates.Count > 1)
         {
             int bestMissing = int.MaxValue;
             foreach (var c in candidates)
@@ -182,6 +225,9 @@ public static class RecipePlanner
                 var tinv = inv.Clone();
                 Apply(tctx, tinv, c, need, n, depth, stack);
                 int m = tctx.MissingTotal;
+                // Unpacking (iron block → 9 ingots) only when the block is really there: a missing block is never the plan
+                // ("need 3 more iron ingots", not "1 more block of iron").
+                if (IsUnpack(c) && m > ctx.MissingTotal) m = int.MaxValue - 1;
                 if (m < bestMissing) { bestMissing = m; chosen = c; }
                 if (m == ctx.MissingTotal) break; // nothing new missing: good enough
             }
@@ -214,6 +260,8 @@ public static class RecipePlanner
         }
         inv.Take(need, n);
     }
+
+    private static bool IsUnpack(Candidate c) => c is CraftCandidate { Recipe: var r } && Recipes.IsUnpack(r);
 
     private static IEnumerable<Candidate> Candidates(Ingredient need, PlannerOptions o)
     {

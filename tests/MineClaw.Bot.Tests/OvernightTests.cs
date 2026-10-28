@@ -62,7 +62,7 @@ public class OvernightTests
         using var _ = h;
         var r = await new Crafter(c) { Observations = h.Runtime.Observations }.CraftAsync("stick", 4, default);
         Assert.False(r.Ok);
-        Assert.Contains("missing", r.Message);
+        Assert.Equal("need 1 more log for 4 sticks; none in inventory and no known chests", r.Message);
         Assert.DoesNotContain("withdraw", string.Join(" | ", c.CallList));
     }
 

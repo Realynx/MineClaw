@@ -322,7 +322,7 @@ public static class GameToolSet
         tools.Register("collect_drops", "Pick up dropped items nearby.",
             ToolSchema.Create().Int("radius", "default 8", required: false).Build(),
             async (i, ct) => R(await c.CollectDropsAsync(Math.Clamp(i.Int("radius") ?? 8, 2, 24), ct)), longRunning: true);
-        tools.Register("craft", "Craft items, resolving sub-recipes; smelts prerequisites and places a crafting table if needed.",
+        tools.Register("craft", "Craft items + sub-recipes, chest ingredients too; smelts, places a crafting table if needed.",
             ToolSchema.Create().Str("item").Int("count", required: false).Build(),
             async (i, ct) =>
             {

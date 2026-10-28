@@ -30,6 +30,8 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
     private readonly Stopwatch _clock = new();
     private int _steps, _depth;
     private string? _plan;
+    /// <summary>The resolver's exact shortfall of the last failed obtain/craft ("need 1 more log for a chest; none in ...").</summary>
+    private string? _shortfall;
 
     private AcquisitionLimits L => _s.Limits;
     private WorldState W => c.World;
@@ -44,7 +46,7 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
     public async Task<AcquireResult> AcquireAsync(Need need, CancellationToken ct)
     {
         bool top = _depth == 0;
-        if (top) { _done.Clear(); _steps = 0; _plan = null; _clock.Restart(); }
+        if (top) { _done.Clear(); _steps = 0; _plan = null; _shortfall = null; _clock.Restart(); }
         _depth++;
         try
         {
@@ -53,7 +55,10 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
                 : Items.ByNameWithDamage(need.What.Trim()) is { } item
                     ? await ItemAsync(item.Item.Id, Math.Max(1, need.Count), need.Depth, ct, item.Damage).ConfigureAwait(false)
                     : throw new OutOfBudget($"unknown item '{need.What}'");
-            return Result(got != null, got ?? $"no {need} (inventory, chests, hive, crafting{(need.Depth == AcquireDepth.Full ? ", bootstrap" : "")})");
+            if (got == null && _shortfall == null && kind is { Craftable.Length: > 0 })
+                _shortfall = NewCrafter().Shortfall(kind.Craftable[0], -1, 1); // what a stone one still lacks
+            return Result(got != null, got ?? (_shortfall != null ? _shortfall
+                : $"no {need} (inventory, chests, hive, crafting{(need.Depth == AcquireDepth.Full ? ", bootstrap" : "")})"));
         }
         catch (OutOfBudget e) { return Result(false, e.Message); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { return Result(false, "cancelled"); }
@@ -174,7 +179,7 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
         {
             if (await WithdrawAsync(ok, k.Name == "food" ? k.Want : 1, ct).ConfigureAwait(false) is { } from && Has(k, min)) return from;
         }
-        if (stoneNow && await CraftAsync(stone, ct).ConfigureAwait(false)) return "crafted " + Names.Item(stone);
+        if (stoneNow && await CraftAsync(stone, ct).ConfigureAwait(false)) return Crafted(stone);
 
         // (c) a hive member's spare (main had 2 picks while 67 and 69 had none).
         if (await HandoffAsync(k.Name, ok, k.Name == "food" ? k.Want : 1, () => Has(k, min), ct).ConfigureAwait(false) is { } giver) return giver;
@@ -190,10 +195,10 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
         // (d) craft from inventory + chests: stone when cobble is reachable there, else (cheap mode) wood.
         int cobbleReach = Inv(Blocks.Cobblestone) + ChestStock(Blocks.Cobblestone);
         if (min <= 1 && cobbleReach >= HeadCount(k) && WoodUnits(withChests: true) >= SticksPlanks(k)
-            && await CraftAsync(stone, ct).ConfigureAwait(false)) return "crafted " + Names.Item(stone);
+            && await CraftAsync(stone, ct).ConfigureAwait(false)) return Crafted(stone);
         if (need.Depth == AcquireDepth.Cheap)
             return min == 0 && wood != 0 && WoodUnits(withChests: true) >= HeadCount(k) + SticksPlanks(k) && await CraftAsync(wood, ct).ConfigureAwait(false)
-                ? "crafted " + Names.Item(wood) : null;
+                ? Crafted(wood) : null;
         if (min >= 2) return await AskAsync(k.Name, Names.Item(ok[0]), () => Has(k, min), ct).ConfigureAwait(false); // iron+: nothing to bootstrap
 
         // (e) bootstrap from scratch.
@@ -279,21 +284,18 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
         string name = Names.Item(id, dmg ?? 0);
         string plural = count > 1 ? $"{count} {Plural(name)}" : $"a {name}";
         if (Have() >= count) return $"had {count} {name}";
-        // (b) every known chest, nearest first, the exact variant, as much as the inventory holds (live 10-28: 500+ cobble in
-        // three chests, yet "I need a 256 cobblestone": one chest's withdraw ended the search).
-        if (ChestStock(id) > 0)
-        {
-            int took = await WithdrawUpToAsync(id, dmg, count - Have(), ct).ConfigureAwait(false);
-            if (Have() >= count) return $"took {name} from storage";
-            if (took > 0 && Room(id, dmg) == 0) return $"took {Have()} {name} from storage (inventory full)";
-        }
+        // (b)+(d) the shared resolver: every known chest nearest first, the exact variant, as much as the inventory holds (live
+        // 10-28: 500+ cobble in three chests, yet "I need a 256 cobblestone"), then the whole recipe tree planned over
+        // inventory + chests (258 cobble for 256 cobblestone slabs, logs→planks for a chest) and crafted.
+        var got = await new Obtainer(c, _s) { OnStep = Step }.ObtainAsync(id, dmg ?? -1, count, ct).ConfigureAwait(false);
+        if (got.Ok) return got.Text;
+        _shortfall = got.Text;
+        if (got.Text.Contains("inventory full", StringComparison.Ordinal)) return null;
         // (c) hive
         if (await HandoffAsync(name, [id], count - Have(), () => Have() >= count, ct).ConfigureAwait(false) is { } giver) return giver;
-        // (d) craft the exact variant in one batch (chest ingredients count: the crafter withdraws them first, e.g. 258
-        // cobble for 256 cobblestone slabs = 86 crafts); raw wood/cobble missing → (e) gather them first.
+        // (e) raw wood/cobble missing: gather them first.
         bool craftable = Recipes.ForOutput(id, dmg ?? -1).Count > 0;
         string craftName = dmg is { } d0 ? Items.VariantName(id, d0) : Items.Get(id).Name;
-        if (craftable && await CraftVariantAsync(id, dmg, craftName, count - Have(), ct).ConfigureAwait(false) && Have() >= count) return $"crafted {count} {name}";
         if (depth == AcquireDepth.Full)
         {
             if (id == Blocks.Cobblestone)
@@ -337,53 +339,8 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
         Step("craft");
         int before = W.Inventory.CountItem(id, damage);
         var r = await NewCrafter().CraftAsync(craftName, Math.Max(1, count), ct).ConfigureAwait(false);
-        if (!r.Ok) Note("craft: " + Trim(r.Message));
+        if (!r.Ok) { Note("craft: " + Trim(r.Message)); _shortfall = r.Message; }
         return r.Ok && W.Inventory.CountItem(id, damage) > before;
-    }
-
-    /// <summary>How many more of (id, damage) the inventory can take (free slots and room in partial stacks).</summary>
-    private int Room(int id, int? damage)
-    {
-        int max = Math.Max(1, (int)Items.Get(id).MaxStack), room = 0;
-        var slots = W.Inventory.PlayerSlots();
-        for (int i = 9; i < 45 && i < slots.Length; i++)
-        {
-            var st = slots[i];
-            if (st.IsEmpty) room += max;
-            else if (st.Id == id && (damage is null || st.Damage == damage)) room += Math.Max(0, max - st.Count);
-        }
-        return room;
-    }
-
-    /// <summary>
-    /// Withdraws up to <paramref name="want"/> of the exact variant from every known chest (nearest first), batch by batch as
-    /// the inventory has room; a chest that turns out empty (stale memory) is skipped. Returns how many arrived.
-    /// </summary>
-    private async Task<int> WithdrawUpToAsync(int id, int? damage, int want, CancellationToken ct)
-    {
-        if (_s.Observations is not { } obs || want <= 0) return 0;
-        List<ItemLocation> found;
-        try { found = obs.FindItemInContainers(id, limit: 16); }
-        catch (Exception) { return 0; }
-        var me = W.Player.Position;
-        int start = W.Inventory.CountItem(id, damage);
-        foreach (var f in found.Where(f => f.Container.Bounds != null && f.Count > 0)
-                     .OrderBy(f => new Vec3d(f.Container.Bounds!.Value.MinX, f.Container.Bounds!.Value.MinY, f.Container.Bounds!.Value.MinZ).DistanceTo(me)))
-        {
-            int got = W.Inventory.CountItem(id, damage) - start;
-            int n = Math.Min(Math.Min(want - got, f.Count), Room(id, damage));
-            if (n <= 0) break;
-            var b = f.Container.Bounds!.Value;
-            var p = new BlockPos((int)Math.Floor(b.MinX), (int)Math.Floor(b.MinY), (int)Math.Floor(b.MinZ));
-            Step("withdraw");
-            int before = W.Inventory.CountItem(id, damage);
-            var r = await c.WithdrawAsync(id, n, p, damage, ct).ConfigureAwait(false);
-            int took = W.Inventory.CountItem(id, damage) - before;
-            if (took > 0) Note($"took {took} {Names.Item(id, damage ?? 0)} from {p.X},{p.Y},{p.Z}");
-            else Note($"chest {p.X},{p.Y},{p.Z}: {Trim(r.Message)}");
-        }
-        if (W.Inventory.OpenWindow != null) try { await c.CloseWindowAsync(ct).ConfigureAwait(false); } catch (Exception) { }
-        return W.Inventory.CountItem(id, damage) - start;
     }
 
     private static bool IsWoodProduct(int id) => id is Blocks.Planks or Items.Stick or Blocks.Workbench or Blocks.Chest;
@@ -569,8 +526,16 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
         Step("craft");
         int before = Inv(id);
         var r = await NewCrafter().CraftAsync(Items.Get(id).Name, Math.Max(1, count), ct).ConfigureAwait(false);
+        if (!r.Ok) _shortfall = r.Message;
+        _took = r.Ok && r.Message.StartsWith("took ", StringComparison.Ordinal) ? r.Message[5..].Split("; ")[0] : null;
         return r.Ok && Inv(id) > before;
     }
+
+    /// <summary>What the last craft withdrew ("1 oak wood from 3,65,2"), null = all from the inventory.</summary>
+    private string? _took;
+
+    /// <summary>"crafted stone pickaxe (took 1 oak wood from 3,65,2)": one line, the withdrawals the craft needed.</summary>
+    private string Crafted(int id) => "crafted " + Names.Item(id) + (_took != null ? $" (took {_took})" : "");
 
     private bool PlanCompleteFromInventory(int id) =>
         RecipePlanner.Plan(id, 1, W.Inventory.PlayerSlots().Skip(9).Where(s => !s.IsEmpty).ToList(), -1,

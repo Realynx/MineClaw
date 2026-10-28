@@ -108,7 +108,13 @@ public sealed class FakeGameClient : IGameClient
     public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, MineClaw.World.BlockPos? stand, CancellationToken ct = default) =>
         stand is { } s ? Act($"generator {x},{y},{z} {count} stand {s.X},{s.Y},{s.Z}") : HarvestGeneratorAsync(x, y, z, count, ct);
     public Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default) => Act($"collect {radius}");
-    public Task<ActionResult> CraftAsync(int itemId, int damage = -1, int count = 1, CancellationToken ct = default) => Act($"craft {itemId} {count}");
+    public Task<ActionResult> CraftAsync(int itemId, int damage = -1, int count = 1, CancellationToken ct = default)
+    {
+        LastCraftDamage = damage;
+        return Act($"craft {itemId} {count}");
+    }
+    /// <summary>The variant of the last craft call (-1 = any): the call string keeps its old "craft id count" shape.</summary>
+    public int LastCraftDamage { get; private set; } = -1;
     public Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, MineClaw.World.BlockPos? furnace = null, CancellationToken ct = default) =>
         Act($"smelt {inputItemId} {count} fuel={fuelItemId} wait={wait} at={furnace?.X},{furnace?.Y},{furnace?.Z}");
     public Task<ActionResult> CollectFurnaceAsync(MineClaw.World.BlockPos? furnace = null, CancellationToken ct = default) => Act($"collect_furnace {furnace}");

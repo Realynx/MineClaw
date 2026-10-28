@@ -216,6 +216,7 @@ public class AcquisitionTests
         using var _ = i.H;
         Add(i.C, Blocks.Cobblestone, 3);
         Add(i.C, Items.Stick, 2);
+        i.C.World.SetBlock(-2, 65, 1, Blocks.Workbench, 0); // the 3x3 needs a table (no planks to make one)
         Chest(i.H, 2, 65, 2, new ItemCount(Items.WoodenPickaxe, "wooden_pickaxe", 1));
         var r = await Acquisition.Planner(i.C).AcquireAsync(new Need("pickaxe"), default);
         Assert.True(r.Ok, r.Text);

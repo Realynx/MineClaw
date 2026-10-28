@@ -216,7 +216,7 @@ public class CrafterTests
         var (h, c) = TestBot.Create();
         var r = await h.Run("craft", new { item = "iron pickaxe" });
         Assert.False(r.Ok);
-        Assert.Contains("missing", r.Text);
+        Assert.Contains("3 more iron ingots for an iron pickaxe", r.Text);   // the shortfall line: raw materials of the whole tree
         Assert.Empty(c.CallList);
     }
 }

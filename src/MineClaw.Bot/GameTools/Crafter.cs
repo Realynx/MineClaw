@@ -6,35 +6,96 @@ using MineClaw.World;
 namespace MineClaw.Bot.GameTools;
 
 /// <summary>
-/// <c>craft</c> on top of the client's planner-driven <see cref="IGameClient.CraftAsync"/>, filling its gaps:
-/// smelting prerequisites run first (placing a carried furnace if none is near), and a crafting table is placed
-/// from the inventory (crafted from planks if needed) when a 3x3 recipe needs one and none is in range.
+/// <c>craft</c> on top of the client's planner-driven <see cref="IGameClient.CraftAsync"/>, the craft stage of the shared
+/// resolver (<see cref="Obtainer"/>): the whole recipe tree is planned first over the inventory plus every known chest
+/// (<see cref="ChestStock"/>), exactly the raw ingredients it uses are withdrawn (one stop per chest, nearest first, in
+/// batches the inventory holds), then the intermediates are crafted (2x2 in the inventory, a table only for 3x3: placed from
+/// the inventory or crafted from planks when none is in range), smelting first when the only way is through a furnace. An
+/// unnamed variant takes the recipe that's possible ("slab" = cobblestone slabs from cobble). What can't be made is one
+/// line: "need 1 more log for a chest; none in inventory or the 3 known chests". Reserved items and carried food are never
+/// ingredients; the carried target never counts as already made.
 /// </summary>
 public sealed class Crafter(IGameClient client)
 {
-    /// <summary>WorldIndexer container snapshots: missing ingredients/intermediates are withdrawn from known chests first.</summary>
+    /// <summary>WorldIndexer container snapshots (null = the bot's acquisition sources' store).</summary>
     public MineClaw.Agent.Rag.ObservationStore? Observations { get; init; }
+
+    private MineClaw.Agent.Rag.ObservationStore? Obs => Observations ?? Acquisition.Of(client)?.Observations;
+
+    /// <summary>Withdraw batches per craft (each fits the inventory); a 256-slab order crafts in several.</summary>
+    private const int MaxRounds = 8;
 
     public async Task<ActionResult> CraftAsync(string itemName, int count, CancellationToken ct)
     {
         if (Items.ByNameWithDamage(itemName) is not { } r) return ActionResult.Fail($"unknown item '{itemName}'");
-        int id = r.Item.Id, dmg = r.Damage;
-        string name = Names.Item(id, Math.Max(dmg, 0));
-        if (Recipes.ForOutput(id, dmg).Count == 0) return ActionResult.Fail($"{name} has no crafting recipe");
+        return await CraftAsync(r.Item.Id, r.Damage, count, ct).ConfigureAwait(false);
+    }
 
-        var plan = Plan(id, dmg, count, smelting: false);
+    /// <summary>Crafts <paramref name="count"/> more of (id, damage; -1 = any variant).</summary>
+    public async Task<ActionResult> CraftAsync(int id, int dmg, int count, CancellationToken ct)
+    {
+        count = Math.Max(1, count);
+        if (Recipes.ForOutput(id, dmg).Count == 0) return ActionResult.Fail($"{Names.Item(id, Math.Max(dmg, 0))} has no crafting recipe");
+        var chests = Chests();
+        dmg = PickVariant(id, dmg, count, chests);
+        string name = Names.Item(id, Math.Max(dmg, 0));
         var notes = new List<string>();
-        if (!plan.Complete && Observations != null)
+        string? last = null;
+        int crafted = 0, batches = 0;
+        _hold.Value = Held(); // what's reserved now stays: withdrawn copies of the same item may still be used
+
+        for (int round = 0; round < MaxRounds && crafted < count; round++)
         {
-            // Live 10-27: "no sticks on me. The chest does have planks though": take what the tree needs from storage.
-            var took = await WithdrawIngredientsAsync(id, dmg, count, ct).ConfigureAwait(false);
-            if (took.Count > 0) notes.Add("took " + string.Join(", ", took));
-            plan = Plan(id, dmg, count, smelting: false);
+            int want = count - crafted;
+            bool smelt = false;
+            var plan = Plan(id, dmg, want, chests, smelting: false);
+            if (!plan.Complete)
+            {
+                var withSmelt = Plan(id, dmg, want, chests, smelting: true);
+                if (!withSmelt.Complete || !FurnaceAvailable()) return Fail(notes, Shortfall(id, dmg, want, plan, chests));
+                plan = withSmelt;
+                smelt = true;
+            }
+            // The batch the inventory holds (ingredients from storage + room to spare for the products).
+            int n = want;
+            var take = Withdrawals(plan, id, dmg, chests);
+            while (n > 1 && !Fits(take))
+            {
+                n = Math.Max(1, n / 2);
+                plan = Plan(id, dmg, n, chests, smelt);
+                take = Withdrawals(plan, id, dmg, chests);
+            }
+            if (!Fits(take)) return Fail(notes, $"inventory full: no room for the {name} ingredients ({string.Join(", ", take.Select(t => t.Need))})");
+            var took = await WithdrawAsync(take, chests, ct).ConfigureAwait(false);
+            if (took.Count > 0) notes.Add("took " + string.Join("; ", took));
+            // A chest that had less than remembered: plan again on what's really there.
+            if (!Plan(id, dmg, n, ChestStock.Empty, smelt).Complete) { last = "storage held less than remembered"; continue; }
+
+            int before = Have(id, dmg);
+            var made = await CraftBatchAsync(id, dmg, n, smelt, notes, ct).ConfigureAwait(false);
+            if (!made.Ok) return Fail(notes, crafted > 0 ? $"crafted {crafted}/{count} {name}, then: {made.Message}" : made.Message);
+            // The client's own count (an inventory that didn't show it yet counts the batch as made).
+            crafted += Math.Max(Have(id, dmg) - before, made.Count > 0 ? made.Count : n);
+            batches++;
+            last = made.Message;
         }
-        if (!plan.Complete)
+        if (crafted <= 0) return Fail(notes, last ?? $"crafting {name} produced nothing");
+        if (batches == 1 && crafted >= count) return ActionResult.Success(Join(notes) + last, crafted);
+        string done = crafted >= count ? $"crafted {crafted} {name} (have {Have(id, dmg)})" : $"crafted only {crafted}/{count} {name} ({last})";
+        return crafted >= count ? ActionResult.Success(Join(notes) + done, crafted) : ActionResult.Fail(Join(notes) + done, crafted);
+    }
+
+    private ChestStock Chests() => ChestStock.Read(client, Obs, Acquisition.Of(client)?.SkipChest);
+
+    private static ActionResult Fail(List<string> notes, string why) => ActionResult.Fail(Join(notes) + why);
+
+    /// <summary>One batch whose ingredients are all carried now: smelting first when needed, a table when 3x3, then the craft.</summary>
+    private async Task<ActionResult> CraftBatchAsync(int id, int dmg, int n, bool smelt, List<string> notes, CancellationToken ct)
+    {
+        string name = Names.Item(id, Math.Max(dmg, 0));
+        if (smelt)
         {
-            var withSmelt = Plan(id, dmg, count, smelting: true);
-            if (!withSmelt.Complete) return ActionResult.Fail($"missing {string.Join(", ", plan.Missing)} for {count} {name}");
+            var withSmelt = Plan(id, dmg, n, ChestStock.Empty, smelting: true);
             var furnace = await EnsureStationAsync(Blocks.Furnace, ct).ConfigureAwait(false);
             if (!furnace.Ok) return ActionResult.Fail($"need smelting ({string.Join("; ", withSmelt.Steps.Where(s => s.IsSmelt))}) but {furnace.Message}");
             if (furnace.Note != null) notes.Add(furnace.Note);
@@ -45,84 +106,197 @@ public sealed class Crafter(IGameClient client)
                 if (!res.Ok) return ActionResult.Fail($"smelting {Names.Item(s.InputId)} failed: {res.Message}");
                 notes.Add($"smelted {Names.Item(s.OutputId, s.OutputDamage)} x{step.OutputCount}");
             }
-            plan = Plan(id, dmg, count, smelting: false);
-            if (!plan.Complete) return ActionResult.Fail($"{Join(notes)}still missing {string.Join(", ", plan.Missing)}");
+            var after = Plan(id, dmg, n, ChestStock.Empty, smelting: false);
+            if (!after.Complete) return ActionResult.Fail($"still missing {string.Join(", ", after.Missing)}");
         }
-
+        var plan = Plan(id, dmg, n, ChestStock.Empty, smelting: false);
         if (plan.Steps.Any(s => s.RequiresCraftingTable))
         {
             var table = await EnsureStationAsync(Blocks.Workbench, ct).ConfigureAwait(false);
             if (!table.Ok) return ActionResult.Fail($"{name} needs a crafting table: {table.Message}");
             if (table.Note != null) notes.Add(table.Note);
         }
-
-        var result = await client.CraftAsync(id, dmg, count, ct).ConfigureAwait(false);
-        return notes.Count == 0 ? result : result with { Message = Join(notes) + result.Message };
+        return await client.CraftAsync(id, dmg, n, ct).ConfigureAwait(false);
     }
 
-    private CraftPlan Plan(int id, int dmg, int count, bool smelting) => Plan(id, dmg, count, smelting, []);
+    private int Have(int id, int dmg) => client.World.Inventory.CountItem(id, dmg < 0 ? null : dmg);
 
-    private CraftPlan Plan(int id, int dmg, int count, bool smelting, IEnumerable<ItemStack> extra) =>
-        RecipePlanner.Plan(id, count, client.World.Inventory.PlayerSlots().Skip(9).Where(s => !s.IsEmpty).Concat(extra).ToList(), dmg,
-            new PlannerOptions { AllowSmelting = smelting, HasCraftingTable = true });
-
-    private static int Shortfall(CraftPlan p) => p.Missing.Sum(m => m.Count);
-
-    private static IEnumerable<ItemStack> Stacks(int id, int damage, int count)
+    private bool TableAvailable()
     {
-        for (int left = count; left > 0; left -= 64) yield return new ItemStack((short)id, (byte)Math.Min(64, left), (short)Math.Max(0, damage));
+        var w = client.World;
+        return w.Inventory.CountItem(Blocks.Workbench) > 0 || w.FindNearestBlock(w.Player.Position, client.StationSearchRadius, Blocks.Workbench) != null;
+    }
+
+    private bool FurnaceAvailable()
+    {
+        var w = client.World;
+        return w.Inventory.CountItem(Blocks.Furnace) > 0
+               || w.FindNearestBlock(w.Player.Position, client.StationSearchRadius, Blocks.Furnace, Blocks.LitFurnace) != null;
+    }
+
+    /// <summary>Held back for this craft: the reserved items and the food carried when it started (hand-offs, meals).</summary>
+    /// <remarks>Per async flow: the craft tool's one Crafter serves every body.</remarks>
+    private readonly AsyncLocal<Dictionary<int, int>?> _hold = new();
+
+    private Dictionary<int, int> Held()
+    {
+        var reserved = client.ReservedItems;
+        return client.World.Inventory.PlayerSlots().Skip(9)
+            .Where(s => !s.IsEmpty && (reserved.Contains(s.Id) || Items.Food(s.Id) != null))
+            .GroupBy(s => (int)s.Id).ToDictionary(g => g.Key, g => g.Sum(s => s.Count));
+    }
+
+    /// <summary>The inventory the craft may use: never the target, nor the held-back reserved items and food.</summary>
+    private List<ItemStack> Carried(int id, int dmg)
+    {
+        var hold = new Dictionary<int, int>(_hold.Value ?? Held());
+        var list = new List<ItemStack>();
+        foreach (var s in client.World.Inventory.PlayerSlots().Skip(9))
+        {
+            if (s.IsEmpty || (s.Id == id && (dmg < 0 || s.Damage == dmg))) continue;
+            int keep = Math.Min(hold.GetValueOrDefault(s.Id), s.Count);
+            if (keep > 0) hold[s.Id] -= keep;
+            if (s.Count - keep > 0) list.Add(keep == 0 ? s : new ItemStack(s.Id, (byte)(s.Count - keep), s.Damage));
+        }
+        return list;
+    }
+
+    private CraftPlan Plan(int id, int dmg, int count, ChestStock chests, bool smelting) =>
+        RecipePlanner.Plan(id, count, Carried(id, dmg).Concat(chests.Stacks()).ToList(), dmg,
+            new PlannerOptions { AllowSmelting = smelting, HasCraftingTable = TableAvailable() });
+
+    /// <summary>An unnamed variant ("slab"): the one the inventory + chests can make (smelt-free first), else the closest.</summary>
+    private int PickVariant(int id, int dmg, int count, ChestStock chests)
+    {
+        if (dmg >= 0) return dmg;
+        var variants = Recipes.ForOutput(id, -1).Select(r => r.OutputDamage).Distinct().ToList();
+        if (variants.Count < 2) return dmg;
+        foreach (bool smelt in new[] { false, true })
+            foreach (var d in variants)
+                if (Plan(id, d, count, chests, smelt).Complete) return d;
+        return variants.OrderBy(d => Plan(id, d, count, chests, false).Missing.Sum(m => m.Count)).First();
+    }
+
+    private sealed record Take(ChestStock.Chest Chest, MaterialNeed Need);
+
+    /// <summary>What the plan uses beyond the carried stock, spread over the chests nearest first (one stop per chest).</summary>
+    private List<Take> Withdrawals(CraftPlan plan, int id, int dmg, ChestStock chests)
+    {
+        var carried = Carried(id, dmg);
+        var list = new List<Take>();
+        foreach (var u in plan.Used)
+        {
+            int onHand = carried.Where(s => s.Id == u.Id && (Items.Get(s.Id).MaxDamage > 0 || s.Damage == u.Damage)).Sum(s => s.Count);
+            int short_ = u.Count - onHand;
+            if (short_ <= 0) continue;
+            foreach (var (ch, k) in chests.Allocate(u.Id, u.Damage, short_)) list.Add(new Take(ch, u with { Count = k }));
+        }
+        // Fuel for the smelts when the carried fuel (minus what the recipe itself uses) won't cover them: coal, else planks/logs.
+        if (plan.ItemsToSmelt > 0)
+        {
+            var used = plan.Used.Select(u => u.Id).ToHashSet();
+            int ticks = carried.Where(st => Smelting.IsFuel(st.Id) && !used.Contains(st.Id) && st.Id != Items.LavaBucket).Sum(st => st.Count * Smelting.FuelTicks(st.Id));
+            if (ticks < plan.ItemsToSmelt * Smelting.CookTicks)
+                foreach (var f in new[] { Items.Coal, Blocks.Planks, Blocks.Log })
+                {
+                    int need = Smelting.FuelNeeded(plan.ItemsToSmelt, f);
+                    var alloc = chests.Allocate(f, -1, need);
+                    if (alloc.Sum(a => a.N) < need) continue;
+                    list.AddRange(alloc.Select(a => new Take(a.Chest, new MaterialNeed(f, -1, a.N))));
+                    break;
+                }
+        }
+        return list.OrderBy(t => t.Chest.Dist).ToList();
+    }
+
+    /// <summary>Whether the withdrawals fit: free slots and partial stacks, one slot left for the products.</summary>
+    private bool Fits(List<Take> take)
+    {
+        if (take.Count == 0) return true;
+        var slots = client.World.Inventory.PlayerSlots();
+        int empty = 0;
+        for (int i = 9; i < 45 && i < slots.Length; i++) if (slots[i].IsEmpty) empty++;
+        int need = 0;
+        foreach (var g in take.GroupBy(t => (t.Need.Id, t.Need.Damage)))
+        {
+            int max = Math.Max(1, (int)Items.Get(g.Key.Id).MaxStack);
+            int partial = 0;
+            for (int i = 9; i < 45 && i < slots.Length; i++)
+                if (!slots[i].IsEmpty && slots[i].Id == g.Key.Id && slots[i].Damage == g.Key.Damage) partial += Math.Max(0, max - slots[i].Count);
+            int n = Math.Max(0, g.Sum(t => t.Need.Count) - partial);
+            need += (n + max - 1) / max;
+        }
+        return need <= empty;
+    }
+
+    /// <summary>Takes the planned amounts, chest by chest; a short take makes that chest's memory of the item stale.</summary>
+    private async Task<List<string>> WithdrawAsync(List<Take> take, ChestStock chests, CancellationToken ct)
+    {
+        var lines = new List<string>();
+        foreach (var stop in take.GroupBy(t => t.Chest.Pos))
+        {
+            var got = new List<string>();
+            foreach (var t in stop)
+            {
+                int id = t.Need.Id;
+                int? dmg = Items.Get(id).MaxDamage > 0 || t.Need.Damage < 0 ? null : t.Need.Damage;
+                int before = client.World.Inventory.CountItem(id, dmg);
+                await client.WithdrawAsync(id, t.Need.Count, stop.Key, dmg, ct).ConfigureAwait(false);
+                int n = client.World.Inventory.CountItem(id, dmg) - before;
+                if (n > 0) got.Add($"{n} {Names.Item(id, dmg ?? 0)}");
+                if (n < t.Need.Count) chests.Forget(stop.Key, id);
+            }
+            if (got.Count > 0) lines.Add($"{string.Join(", ", got)} from {stop.Key.X},{stop.Key.Y},{stop.Key.Z}");
+        }
+        if (client.World.Inventory.OpenWindow != null) await client.CloseWindowAsync(ct).ConfigureAwait(false);
+        return lines;
     }
 
     /// <summary>
-    /// Withdraws the ingredients or intermediates (planks for sticks...) the recipe tree is missing from known chests, nearest
-    /// first, the least that helps most; returns "4 planks from 14,64,-5" lines. The craft then makes the intermediates.
+    /// "need 1 more log for a chest; none in inventory or the 3 known chests": the raw materials the whole tree still lacks
+    /// with everything the bot carries and storage holds, plus a variant hint ("cobblestone slab can be made now").
     /// </summary>
-    public async Task<List<string>> WithdrawIngredientsAsync(int id, int dmg, int count, CancellationToken ct)
+    public string Shortfall(int id, int dmg, int count)
     {
-        var took = new List<string>();
-        if (Observations is not { } obs) return took;
-        var me = client.World.Player.Position;
-        var stock = new List<(BlockPos Pos, MineClaw.Agent.Rag.ItemCount Item)>();
-        try
-        {
-            foreach (var (row, _) in obs.Nearest("chest", me.X, me.Y, me.Z, limit: 8, maxDistance: 64))
-            {
-                if (row.Bounds is not { } b) continue;
-                var pos = new BlockPos((int)Math.Floor(b.MinX), (int)Math.Floor(b.MinY), (int)Math.Floor(b.MinZ));
-                foreach (var it in obs.Contents(row.Id)) if (it.Count > 0 && Items.Exists(it.ItemId)) stock.Add((pos, it));
-            }
-        }
-        catch (Exception) { return took; } // db busy: craft from the inventory alone
-        for (int round = 0; round < 4 && stock.Count > 0; round++)
-        {
-            var now = Plan(id, dmg, count, smelting: false);
-            if (now.Complete) break;
-            int before = Shortfall(now);
-            // The candidate that cuts the shortfall most (ties: nearest chest), and the least of it that does.
-            (BlockPos Pos, MineClaw.Agent.Rag.ItemCount Item, int N, int After)? best = null;
-            foreach (var (pos, it) in stock)
-            {
-                int after = Shortfall(Plan(id, dmg, count, false, Stacks(it.ItemId, it.Damage, it.Count)));
-                if (after >= before) continue;
-                int n = it.Count;
-                for (int k = 1; k < it.Count; k *= 2)
-                    if (Shortfall(Plan(id, dmg, count, false, Stacks(it.ItemId, it.Damage, k))) <= after) { n = k; break; }
-                for (int k = Math.Max(1, n / 2); k < n; k++)
-                    if (Shortfall(Plan(id, dmg, count, false, Stacks(it.ItemId, it.Damage, k))) <= after) { n = k; break; }
-                bool better = best is not { } bb || after < bb.After || (after == bb.After && pos.Center.DistanceTo(me) < bb.Pos.Center.DistanceTo(me));
-                if (better) best = (pos, it, n, after);
-            }
-            if (best is not { } pick) break;
-            int had = client.World.Inventory.CountItem(pick.Item.ItemId);
-            int? wantDamage = Items.Get(pick.Item.ItemId).MaxDamage > 0 ? null : pick.Item.Damage;
-            var w = await client.WithdrawAsync(pick.Item.ItemId, pick.N, pick.Pos, wantDamage, ct).ConfigureAwait(false);
-            stock.RemoveAll(x => x.Pos == pick.Pos && x.Item.ItemId == pick.Item.ItemId && x.Item.Damage == pick.Item.Damage);
-            int got = client.World.Inventory.CountItem(pick.Item.ItemId) - had;
-            if (w.Ok && got > 0) took.Add(got + " " + Names.Item(pick.Item.ItemId, pick.Item.Damage) + " from " + pick.Pos.X + "," + pick.Pos.Y + "," + pick.Pos.Z);
-        }
-        if (client.World.Inventory.OpenWindow != null) await client.CloseWindowAsync(ct).ConfigureAwait(false);
-        return took;
+        var chests = Chests();
+        dmg = PickVariant(id, dmg, count, chests);
+        return Shortfall(id, dmg, count, Plan(id, dmg, count, chests, false), chests);
     }
+
+    private string Shortfall(int id, int dmg, int count, CraftPlan plan, ChestStock chests)
+    {
+        string name = Names.Item(id, Math.Max(dmg, 0));
+        string target = count > 1 ? $"{count} {Plural(name)}" : $"{("aeiou".Contains(name[0]) ? "an" : "a")} {name}";
+        if (plan.Complete) return $"{target} can be crafted";
+        var carried = Carried(id, dmg);
+        var parts = new List<string>();
+        var have = new List<string>();
+        foreach (var m in plan.Missing)
+        {
+            // A wildcard of a variant item reads as its family ("log", not "oak wood").
+            string mn = m.Damage < 0 && Items.VariantName(m.Id, 0) != Items.VariantName(m.Id, 1) ? Items.Get(m.Id).Name.Replace('_', ' ')
+                : Names.Item(m.Id, Math.Max(0, m.Damage));
+            parts.Add($"{m.Count} more {(m.Count > 1 ? Plural(mn) : mn)}");
+            int avail = carried.Where(s => s.Id == m.Id && (m.Damage < 0 || s.Damage == m.Damage)).Sum(s => s.Count) + chests.Count(m.Id, m.Damage);
+            if (avail > 0) have.Add($"{avail} {(avail > 1 ? Plural(mn) : mn)}");
+        }
+        string chestsText = $"{chests.Known} known chest{(chests.Known == 1 ? "" : "s")}";
+        string where = chests.Known == 0 ? "none in inventory and no known chests"
+            : have.Count == 0 ? $"none in inventory or the {chestsText}"
+            : $"inventory + the {chestsText} have only {string.Join(", ", have)}";
+        var hints = new List<string>();
+        if (dmg >= 0)
+            foreach (var d in Recipes.ForOutput(id, -1).Select(r => r.OutputDamage).Distinct().Where(d => d != dmg))
+                if (Plan(id, d, count, chests, false).Complete) { hints.Add($"{Names.Item(id, d)} can be made now"); break; }
+        if (!FurnaceAvailable() && Plan(id, dmg, count, chests, true).Complete) hints.Add("smelting would do it, but no furnace is in range");
+        string hint = hints.Count > 0 ? $" ({string.Join("; ", hints)})" : "";
+        return $"need {string.Join(", ", parts)} for {target}; {where}{hint}";
+    }
+
+    /// <summary>"sticks", "logs"; mass nouns stay ("cobblestone", "oak wood", "glass", "wheat").</summary>
+    internal static string Plural(string name) =>
+        name.EndsWith('s') || new[] { "stone", "glass", "wood", "wool", "dirt", "sand", "gravel", "wheat", "sugar", "coal", "leather", "redstone" }
+            .Any(m => name.EndsWith(m, StringComparison.Ordinal)) ? name : name + "s";
 
     private static string Join(List<string> notes) => notes.Count == 0 ? "" : string.Join("; ", notes) + "; ";
 
