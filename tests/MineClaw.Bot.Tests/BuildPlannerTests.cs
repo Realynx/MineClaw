@@ -379,32 +379,44 @@ public class BuildPlannerTests
         Assert.Equal(2, report.Plan!.Transform.Quarters);
     }
 
-    private const string Mushroom = "size 5x7x5\npalette C=cobblestone\npillar C 2,0,2 6\nfloor C 0,6,0 4,6,4"; // a 5×5 platform on a column
+    // A 3×3 platform 13 up on a column with a 1-wide arm out along +x: every arm cell is placed standing on the last one, both
+    // sides of that stand a 13-block drop.
+    private const string Mushroom = "size 11x13x3\npalette C=cobblestone\npillar C 1,0,1 12\nfloor C 0,12,0 2,12,2\nfloor C 3,12,1 10,12,1";
 
-    [Fact(Skip = "in progress: the slicer still prefers pillars under the rim")]
+    [Fact]
     public async Task A_platform_over_solid_ground_grows_from_sneak_edge_stands_but_over_the_void_it_cant_be_climbed()
     {
-        // Over the island floor: the platform's rim is a 6-block drop onto solid ground. Stands at its edge are allowed (sneaking:
-        // the client's EdgeGuard), so the climb and the ring go up; nothing is left.
-        var w = BlueprintTests.Island(6);
-        var plan = PlanOf(Mushroom, new BlockPos(-2, 64, -2));
+        // Live 10-28 (design #4): the body up on the platform's placed middle, 13 above the island floor. Its rim drops onto solid
+        // ground: stands there are allowed (sneak-at-edge: the client's EdgeGuard; never a jump), so the platform grows outward
+        // ring by ring from its own placed cells, each cell resting on the last.
+        var w = BlueprintTests.Island(8);
+        var plan = PlanOf(Mushroom, new BlockPos(-1, 64, -1));
+        for (int y = 64; y <= 75; y++) w.SetBlock(0, y, 0, Blocks.Cobblestone, 0);
+        for (int x = -1; x <= 1; x++) for (int z = -1; z <= 1; z++) w.SetBlock(x, 76, z, Blocks.Cobblestone, 0);
+        w.Player.ServerTeleport(new Vec3d(0.5, 77, 0.5), 78.62, 0, 0, true);
         var body = new SimBuildBody(w);
         var report = await new ConstructionExecutor(new BlueprintOptions()).RunAsync(1, plan, BuildPart.Whole(plan), body, CancellationToken.None);
-        Assert.True(report.Complete, report.Text("mushroom"));
+        Assert.True(report.Complete, report.Text("platform"));
         Assert.Empty(body.Unguarded);
         var bp = report.Plan!;
-        var edge = bp.Steps.Where(s => s.Action == StepAction.Place && s.Technique == Technique.Edge && s.Stand.Y == 71).ToList();
-        Assert.True(edge.Count > 0, string.Join(" | ", bp.Steps.Select(s => $"{s.Action} {s.Technique} {s.Target} @ {s.Stand}"))); // stood on the platform's own blocks at height, at the rim, to place the next ring
-        var sim = BlueprintTests.Island(6);
-        foreach (var b in plan.Blocks.Values) sim.SetBlock(b.Pos.X, b.Pos.Y, b.Pos.Z, b.Id, b.Meta);
-        Assert.All(edge, s => Assert.Equal(0, Safety.VoidNeighbourCount(sim, s.Stand.X, s.Stand.Y, s.Stand.Z))); // a solid drop, never the void
+        var placed = bp.Steps.Where(s => s.Action == StepAction.Place && !(s.Target.X is >= -1 and <= 1 && s.Target.Z is >= -1 and <= 1)).ToList();
+        Assert.Equal(8, placed.Count);
+        Assert.All(placed, s => Assert.Equal(77, s.Stand.Y)); // stood on the platform's own placed cells
+        var edge = placed.Where(s => s.Technique == Technique.Edge).ToList();
+        Assert.NotEmpty(edge); // at the rim, sneaking
+        Assert.DoesNotContain(bp.Steps, s => s.Technique is Technique.Pillar or Technique.Stair);
+        var done = BlueprintTests.Island(8);
+        foreach (var b in plan.Blocks.Values) done.SetBlock(b.Pos.X, b.Pos.Y, b.Pos.Z, b.Id, b.Meta);
+        Assert.All(edge, s => Assert.Equal(0, Safety.VoidNeighbourCount(done, s.Stand.X, s.Stand.Y, s.Stand.Z))); // a solid drop, never the void
 
-        // Over the void (the island only under the column): every pillar or stair spot is beside the void, so it isn't climbed
-        // (the void-edge rules unchanged).
-        var v = BlueprintTests.Island(1);
-        var vplan = PlanOf(Mushroom, new BlockPos(-1, 64, -1)); // the column on the island's corner, beside me
+        // Over the void (a 2-block island: me and the column's foot): every pillar or stair spot is beside the void, so nothing
+        // climbs to it (the void-edge rules unchanged).
+        var v = BlueprintTests.Island(0);
+        v.SetBlock(1, 63, 0, Blocks.Stone, 0);
+        v.Player.ServerTeleport(new Vec3d(0.5, 64, 0.5), 65.62, 0, 0, true);
+        var vplan = PlanOf(Mushroom, new BlockPos(0, 64, -1)); // the column on the island's second block, beside me
         var vb = BuildPlanner.Plan(vplan, v.PlanningView, Pathfinder.StartCellFor(v.PlanningView, v.Player.Position)!.Value, null, new BuildPlannerOptions { GateBlocks = 0 });
-        Assert.Contains(vb.Infeasible, i => i.Why.Contains("beside the void"));
+        Assert.True(vb.Infeasible.Any(i => i.Why.Contains("beside the void")), string.Join(" | ", vb.Steps.Select(s => $"{s.Action} {s.Technique} {s.Target} @ {s.Stand}")) + " || " + string.Join(" | ", vb.Infeasible.Select(i => i.Pos + " " + i.Why)));
         Assert.DoesNotContain(vb.Steps, s => s.Technique is Technique.Pillar or Technique.Stair);
     }
 

@@ -130,38 +130,90 @@ public class DropTowerReplayTests(Xunit.Abstractions.ITestOutputHelper log)
         Assert.Equal(rec.Total, rec.Placed);
     }
 
-    [Fact]
-    public void Live_1455_plan_only()
+    /// <summary>
+    /// Live 10-28 14:55: "placed 6, 452 still missing; 402 waiting on supports e.g. -25,76,22; 49 no stand e.g. -27,76,22; 2 won't
+    /// dig the block it's standing on". The state then (tests/fixtures/drop-tower/site-1455.txt: world memory after the run,
+    /// clone 69's y63 floor under x -31..-16, the 16×16 platform 176/252, two of the climb's stair blocks left in the shaft;
+    /// plan-1455.json: the persisted plan, its ledger and ScaffoldUp). The cause: each re-plan "cleared" the shaft's own climbing
+    /// scaffold as obstructions (they sit in the design's air cells) before anything else, digging the pillar out from under the
+    /// body: stranded in the shaft, nothing near the platform was walkable ("no stand: I can't walk near it from here"), the
+    /// rest waited on those, and the dig under itself was refused. Now the scaffold stays up as the climb and comes down last.
+    /// </summary>
+    internal static (WorldState W, VoxelPlan Design, BlueprintStore Store, ConstructionExecutor Ex, BuildPlan Saved, AgentDb Db) Live1455(Vec3d? at = null)
     {
-        var trace = Environment.GetEnvironmentVariable("MC_TRACE");
-        void T(string s) { log.WriteLine(s); if (trace != null) File.AppendAllText(trace, s + Environment.NewLine); }
         var w = Site("site-1455.txt");
-        var design = Design();
-        using var db = AgentDb.Open(null);
+        if (at is { } a) w.Player.ServerTeleport(a, a.Y + 1.62, 0, 0, true);
+        var db = AgentDb.Open(null);
         var store = new BlueprintStore(db);
         var ex = new ConstructionExecutor(new BlueprintOptions(), store);
         var saved = JsonSerializer.Deserialize<BuildPlan>(File.ReadAllText(Fixture("plan-1455.json")))!;
         ex.Plans!.Save(saved);
-        if (Environment.GetEnvironmentVariable("MC_AT") is { } at)
-        {
-            var c = at.Split(',').Select(double.Parse).ToArray();
-            w.Player.ServerTeleport(new Vec3d(c[0], c[1], c[2]), c[1] + 1.62, 0, 0, true);
-        }
+        return (w, Design(), store, ex, saved, db);
+    }
+
+    [Fact]
+    public async Task Replay_14_55_the_platform_grows_from_the_shaft_top_and_the_tower_completes()
+    {
+        var (w, design, _, ex, saved, db) = Live1455();
+        using var _db = db;
+        Assert.Equal(176, design.Blocks.Keys.Count(p => p.Y == 76 && w.GetBlock(p) == Blocks.Cobblestone));
         var body = Body(w);
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        T("start " + body.Feet0);
+        // My own scaffold up in the shaft is never an obstruction to clear first: it comes down at the end.
+        var mine = saved.ScaffoldUp.ToHashSet();
         var first = ex.PlanFor(4, design, BuildPart.Whole(design), body, save: false);
-        T($"planned in {sw.ElapsedMilliseconds} ms: " + first.Summary());
-        T("skips: " + BuildSkips.OfPlan(first));
-        foreach (var s in first.Steps.Where(s => !s.Finished && (Environment.GetEnvironmentVariable("MC_ALL") != null || s.Target.X <= -32 || s.Action == StepAction.Clear || s.Stand.Y >= 77)).Take(120)) T($"{s.Index} {s.Action} {s.Technique} {s.Target} @ {s.Stand} {s.Note}");
-        if (Environment.GetEnvironmentVariable("MC_RUN") == null) return;
-        var progress = new List<string>();
-        var ex2 = new ConstructionExecutor(new BlueprintOptions(), store) { Progress = p => { progress.Add(p); T("progress: " + p); } };
-        var report = ex2.RunAsync(4, design, BuildPart.Whole(design), body, CancellationToken.None).GetAwaiter().GetResult();
-        T($"ran in {sw.ElapsedMilliseconds} ms: " + report.Text("whole build"));
-        T(report.Plan!.Summary());
-        foreach (var l in body.Log.TakeLast(20)) T("body: " + l);
-        foreach (var u in body.Unguarded) T("unguarded: " + u);
+        Assert.DoesNotContain(first.Steps, s => !s.Finished && s.Action == StepAction.Clear && mine.Contains(s.Target));
+        var report = await ex.RunAsync(4, design, BuildPart.Whole(design), body, CancellationToken.None);
+        var text = report.Text("whole build");
+        log.WriteLine(text);
+        var bp = report.Plan!;
+        log.WriteLine(bp.Summary());
+        // Everything the stalled run left: the platform's 76 cells, its walls, the roof (the -33/-32 strip's platform cells were
+        // bridged out before; nothing hangs over the void past the scaffold limit, so no floor is suggested).
+        Assert.True(report.Complete, text);
+        Assert.Null(report.Skips);
+        Assert.Empty(bp.Infeasible);
+        Assert.Equal(452, report.Placed);
+        Assert.Equal(0, report.Failed);
+        Assert.Empty(report.Deviations);
+        Assert.All(design.Blocks.Values, b => Assert.True(DesignChecks.SameState(b, w.GetBlock(b.Pos), w.GetMeta(b.Pos)), $"{b.Pos} not built"));
+        Assert.DoesNotContain(body.Log, l => l.StartsWith("won't dig"));
+        // One climb up the shaft onto the platform (not a pillar under every rim cell: live it would be 196 jumps on 1×1 pillars
+        // 10 up), then the platform grows outward standing on its own placed cells (a rim stand is a sneak-edge stand over the
+        // floor: allowed; here the stands one cell in reach the rim already).
+        var pillars = bp.Steps.Skip(first.Steps.Count(s => s.Finished)).Where(s => s.Action == StepAction.Scaffold && s.Technique == Technique.Pillar).ToList();
+        Assert.InRange(pillars.Count, 1, 20);
+        Assert.All(pillars, s => Assert.True(s.Target.X is >= -26 and <= -25 && s.Target.Z is >= 14 and <= 15, $"pillar at {s.Target}"));
+        var platform = bp.Steps.Skip(first.Steps.Count(s => s.Finished)).Where(s => s.Action == StepAction.Place && s.Target.Y == 76).ToList();
+        Assert.Equal(76, platform.Count);
+        Assert.All(platform, s => Assert.Equal(77, s.Stand.Y));
+        // Down again: the scaffold came down, the body back on the floor, never unguarded.
+        Assert.Empty(bp.ScaffoldUp);
+        Assert.Empty(body.Unguarded);
+        Assert.Equal(64, body.Feet0.Y);
+    }
+
+    [Fact]
+    public async Task Replay_14_55_stranded_in_the_shaft_builds_everything_and_never_digs_under_itself()
+    {
+        // Where the stalled run left the body: on the stair block -25,69,14 inside the shaft, 5 above the floor.
+        var (w, design, _, ex, saved, db) = Live1455(new Vec3d(-24.5, 70, 14.5));
+        using var _db = db;
+        var body = Body(w);
+        var first = ex.PlanFor(4, design, BuildPart.Whole(design), body, save: false);
+        Assert.DoesNotContain(first.Steps, s => !s.Finished && s.Action == StepAction.Clear && saved.ScaffoldUp.Contains(s.Target));
+        var report = await ex.RunAsync(4, design, BuildPart.Whole(design), body, CancellationToken.None);
+        var text = report.Text("whole build");
+        log.WriteLine(text);
+        var bp = report.Plan!;
+        // It climbs out of the shaft on a pillar of its own and builds the whole tower.
+        Assert.Equal(452, report.Placed);
+        Assert.Equal(0, report.Failed);
+        Assert.All(design.Blocks.Values, b => Assert.True(DesignChecks.SameState(b, w.GetBlock(b.Pos), w.GetMeta(b.Pos)), $"{b.Pos} not built"));
+        Assert.Empty(body.Unguarded);
+        // The block it started on holds that pillar up, with a 5-block drop under it: never dug from on top (the client refuses,
+        // and the planner plans nothing else for it); it is the one scaffold block left, named as such.
+        Assert.Equal([new BlockPos(-25, 69, 14)], bp.ScaffoldUp);
+        Assert.Equal(Blocks.Cobblestone, w.GetBlock(-25, 69, 14));
     }
 
     [Fact]

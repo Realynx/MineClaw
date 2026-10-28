@@ -146,7 +146,9 @@ public sealed partial class BuildPlanner
         _out.Steps = _s.Steps;
         _out.Columns = _s.Columns;
         for (int i = 0; i < _out.Steps.Count; i++) _out.Steps[i].Index = i;
-        _out.ScaffoldUp = previous?.ScaffoldUp.ToList() ?? new();
+        // Only what still stands of the last run's scaffold (a cell dug since, by a clear or by hand, would keep the build from
+        // ever being done).
+        _out.ScaffoldUp = _scaffoldStanding;
         return _out;
     }
 
@@ -178,10 +180,13 @@ public sealed partial class BuildPlanner
             _s.Columns.Add(k);
         }
         // Scaffold left standing comes down at the end.
-        foreach (var p in prev.ScaffoldUp.Where(p => BuildBlocks.Supports(_s.Sim.Get(p)) && !_plan.Blocks.ContainsKey(p))) _s.Scaffold.Add(p);
+        _scaffoldStanding = prev.ScaffoldUp.Where(p => BuildBlocks.Supports(_s.Sim.Get(p))).Distinct().ToList();
+        foreach (var p in _scaffoldStanding.Where(p => !_plan.Blocks.ContainsKey(p))) _s.Scaffold.Add(p);
         // A pillar still standing is dug back down from on top (its steps say which scaffold was pillared).
         foreach (var st in prev.Steps.Where(s => s.Action == StepAction.Scaffold && s.Technique == Technique.Pillar && _s.Scaffold.Contains(s.Target))) _s.Pillar.Add(st.Target);
     }
+
+    private List<BlockPos> _scaffoldStanding = new();
 
     private bool Holds(PlanStep s) => s.Action switch
     {
