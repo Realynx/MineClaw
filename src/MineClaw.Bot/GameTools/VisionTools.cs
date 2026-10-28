@@ -48,8 +48,8 @@ public static class VisionTools
     public const string ToolName = "see";
 
     public const string Description =
-        "Look at a spot: one sheet (top+roles, side cut, iso, layers=feet+below; eye) around focus; question → checked text " +
-        "(gen cells, faces, edges). focus=hive: all bots, jobs, claims. Quick: look map.";
+        "ONE image, ≤6 3D panels + coord grid; views mix spots: 'eye 67','cam <at> NE|above','orbit <at> 3','follow <name>'. " +
+        "question → checked text. focus=hive: bots.";
 
     /// <summary>Per-world context for the look map (marks from memory, role letters), set by <see cref="Register"/>.</summary>
     private static readonly ConditionalWeakTable<WorldState, Context> Contexts = new();
@@ -85,13 +85,26 @@ public static class VisionTools
                 case EntityKind.Player:
                     if (e.Name == null || e.Name.Equals(c.Username, StringComparison.OrdinalIgnoreCase)) continue;
                     bool hive = isHive?.Invoke(e.Name) == true;
-                    list.Add(new VisionEntity(hive ? "hive" : "player", e.Name, e.Position.X, e.Position.Y, e.Position.Z, hive ? HiveGlyph(e.Name) : null));
+                    list.Add(new VisionEntity(hive ? "hive" : "player", e.Name, e.Position.X, e.Position.Y, e.Position.Z, hive ? HiveGlyph(e.Name) : null)
+                    {
+                        Yaw = e.Yaw, Pitch = e.Pitch, Vx = e.Velocity.X, Vz = e.Velocity.Z, Sneaking = e.IsCrouched, HeldItem = e.HeldItem, Seed = e.Id,
+                        Burning = (e.Flags & 1) != 0,
+                    });
                     break;
                 case EntityKind.Mob:
-                    list.Add(new VisionEntity("mob", e.DisplayName, e.Position.X, e.Position.Y, e.Position.Z));
+                    list.Add(new VisionEntity("mob", e.DisplayName, e.Position.X, e.Position.Y, e.Position.Z)
+                    {
+                        Mob = MobTypes.Name(e.TypeId), Yaw = e.Yaw, Pitch = e.Pitch, Vx = e.Velocity.X, Vz = e.Velocity.Z, Variant = e.MetaInt(16) ?? 0, Seed = e.Id,
+                        Burning = (e.Flags & 1) != 0, Sneaking = e.IsCrouched,
+                    });
                     break;
                 case EntityKind.Item:
-                    list.Add(new VisionEntity("item", null, e.Position.X, e.Position.Y, e.Position.Z));
+                    // A dropped stack (0x15): the 3D views draw it like RenderItem, the sheet legend and the router name it.
+                    list.Add(new VisionEntity("item", e.Item.IsEmpty ? null : EyeRenderer.ItemName(e.Item.Id), e.Position.X, e.Position.Y, e.Position.Z)
+                    {
+                        ItemId = e.Item.Id, ItemCount = e.Item.Count, ItemDamage = e.Item.Damage, Seed = e.Id,
+                        Age = Math.Max(0, (DateTime.UtcNow - e.SpawnedAt).TotalSeconds * 20),
+                    });
                     break;
             }
         }
@@ -199,11 +212,12 @@ public static class VisionTools
         };
 
         rt.Tools.Register(ToolName, Description,
-            ToolSchema.Create().StrArray("views", "top side iso layers eye", required: false)
+            // Compact on purpose (the brain's tool budget): `view` (one old picture) still works without being advertised.
+            ToolSchema.Create().Raw("views", """{"type":"array"}""", required: false)
                 .Str("question", required: false)
                 .Str("focus", "x,y,z, place, player, clone, hive", required: false)
                 .Int("radius", required: false)
-                .Str("view", "one old picture", required: false, enumValues: ["top", "iso", "side", "eye"]).Build(),
+                .Bool("aids", required: false).Build(),
             async (i, ct) =>
             {
                 if (!c.IsPlaying) return ToolResult.Error("not in game");

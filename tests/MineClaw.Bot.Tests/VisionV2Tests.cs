@@ -93,23 +93,24 @@ public class VisionV2Tests(ITestOutputHelper output)
         var sheet = VisionEval.Sheet(c);
         Assert.InRange(sheet.Tokens, 250, 400);
         Assert.Contains("focus 7,62,9", sheet.Legend);
-        Assert.Contains("TOP", sheet.Legend);
-        Assert.Contains("SIDE", sheet.Legend);
-        Assert.Contains("ISO", sheet.Legend);
-        Assert.Contains("LAYERS (left: blocks AT feet height y62", sheet.Legend);
-        Assert.Contains("Cyan box/ring = focus in every panel", sheet.Legend);
-        // Every panel draws the focus: cyan pixels in each quadrant.
+        // The 3D default: orbits from opposite corners, a high oblique, the shoulder view (eye/shoulder fall back to more orbits
+        // without a body pose) and the flat TOP map that carries the coordinates.
+        foreach (var name in new[] { "SHOULDER", "ORBIT from NW looking SE", "ORBIT from SE looking NW", "HIGH from S", "TOP (straight down" }) Assert.Contains(name, sheet.Legend);
+        Assert.Contains("Cyan box = focus in every panel", sheet.Legend);
+        // Every panel draws the focus: cyan pixels in each of the 3×2 cells.
         var (w, h, px) = Png.Decode(sheet.Png);
+        var (_, _, pw, ph) = ContactSheet.Layout(6);
         int cyan(int x0, int y0, int x1, int y1)
         {
             int n = 0;
             for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) if ((px[y * w + x] & 0xffffff) == 0x5fe8ff) n++;
             return n;
         }
-        Assert.True(cyan(0, 0, w / 2, h / 2) > 10, "top panel focus");
-        Assert.True(cyan(w / 2, 0, w, h / 2) > 10, "side panel focus");
-        Assert.True(cyan(0, h / 2, w / 2, h) > 4, "iso panel focus");
-        Assert.True(cyan(w / 2, h / 2, w, h) > 10, "layers panel focus");
+        for (int i = 0; i < 6; i++)
+        {
+            int ox = i % 3 * (pw + 4), oy = i / 3 * (ph + 4);
+            Assert.True(cyan(ox, oy, ox + pw, oy + ph) > 4, $"panel {i} draws the focus");
+        }
 
         // The old way: the same four views as separate default pictures (≈200 tokens each) + one image overhead each.
         var r = new VisionRenderer();
@@ -143,11 +144,12 @@ public class VisionV2Tests(ITestOutputHelper output)
         var c = VisionEval.HoleFaces();
         var r = new VisionRenderer();
         var layers = r.Render(new VisionScene { View = VisionView.Layers, Radius = 4, Cx = 7, Cy = 62, Cz = 9, Blocks = c.World.PlanningView, Focus = (7, 62, 9) });
-        Assert.Matches(@"green dot=air with a side/top face to place against \(holes, gaps, edges\) \([1-9]\d*\)", layers.Legend);
+        // A layer is the 3D renderer clipped to one y, seen from straight above (placeable faces come from the router's text).
+        Assert.Contains("only y62, from above", layers.Legend);
         var east = r.Render(new VisionScene { View = VisionView.Side, Axis = SideAxis.LookEast, Radius = 6, Cx = 7, Cy = 62, Cz = 9, Blocks = c.World.PlanningView });
-        Assert.Contains("side looking E through x7 (N left, S right", east.Legend);
+        Assert.Contains("looking E through x7, N left", east.Legend);
         var north = r.Render(new VisionScene { View = VisionView.Side, Radius = 6, Cx = 7, Cy = 62, Cz = 9, Blocks = c.World.PlanningView });
-        Assert.Contains("side looking N through z9", north.Legend);
+        Assert.Contains("looking N through z9", north.Legend);
         // Roles change the picture (and its cache key) even when the block ids don't.
         var plain = r.Render(new VisionScene { Radius = 6, Cx = 5, Cy = 63, Cz = 7, Blocks = VisionEval.FloorVsGen().World.PlanningView });
         var withRoles = r.Render(new VisionScene { Radius = 6, Cx = 5, Cy = 63, Cz = 7, Blocks = VisionEval.FloorVsGen().World.PlanningView, Roles = VisionEval.Roles(VisionEval.FloorVsGen()).Map });

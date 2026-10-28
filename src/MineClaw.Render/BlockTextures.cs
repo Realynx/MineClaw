@@ -29,7 +29,8 @@ public static class BlockTextures
         ? (meta & 3) switch { 0 => Face.South, 1 => Face.West, 2 => Face.North, _ => Face.East }
         : meta switch { 2 => Face.North, 3 => Face.South, 4 => Face.West, 5 => Face.East, _ => Face.South };
 
-    public static TileRef For(int id, int meta, Face f)
+    /// <param name="fancy">Fancy graphics: alpha-cutout leaves (tiles 52/132) instead of the opaque fast ones (53/133).</param>
+    public static TileRef For(int id, int meta, Face f, bool fancy = false)
     {
         bool top = f == Face.Up, bottom = f == Face.Down, side = !top && !bottom;
         switch (id)
@@ -47,7 +48,7 @@ public static class BlockTextures
             case Blocks.IronOre: return new(33);
             case Blocks.CoalOre: return new(34);
             case Blocks.Log: return top || bottom ? new(21) : new((meta & 3) switch { 1 => 116, 2 => 117, _ => 20 });
-            case Blocks.Leaves: return new(53, (meta & 3) switch { 1 => SpruceTint, 2 => BirchTint, _ => FoliageTint });
+            case Blocks.Leaves: return new(((meta & 3) == 1 ? 132 : 52) + (fancy ? 0 : 1), (meta & 3) switch { 1 => SpruceTint, 2 => BirchTint, _ => FoliageTint });
             case Blocks.Sponge: return new(48);
             case Blocks.Glass: return new(49);
             case Blocks.LapisOre: return new(160);
@@ -154,9 +155,12 @@ public static class BlockTextures
     }
 
     /// <summary>Texel of a block face at (u, v) with tint and overlay applied (0xAARRGGBB), or null without a tile.</summary>
-    public static uint? Texel(TextureAtlas atlas, int id, int meta, Face f, float u, float v)
+    public static uint? Texel(TextureAtlas atlas, int id, int meta, Face f, float u, float v, bool fancy = false) =>
+        Texel(atlas, For(id, meta, f, fancy), id, u, v);
+
+    /// <summary>Texel of a resolved tile reference (tint + overlay applied), or null without a tile.</summary>
+    public static uint? Texel(TextureAtlas atlas, TileRef t, int id, float u, float v)
     {
-        var t = For(id, meta, f);
         if (t.IsNone || UsePalette(id)) return null;
         uint p = Tinted(atlas.Sample(t.Tile, u, v), t.Tint);
         if (t.Overlay >= 0)

@@ -172,11 +172,11 @@ public class VisionTests
         Assert.Contains("house chest 2,64,0", img.Labels); // named: chip + caption (a plain "chest" only gets its C letter)
         Assert.Contains("N up", img.Legend);
         var (iw, _, px) = Png.Decode(img.Png);
-        int cs = VisionRenderer.CellSize(8);
-        // Void cell (x=-8, z=-8 is the top-left map cell) vs a floor cell: clearly different colours.
-        int ml = img.Width - 12 - 17 * cs;
-        uint voidPx = px[(11 + cs / 2 + 1) * iw + ml + cs / 2] & 0xffffff;
-        uint floorPx = px[(11 + 8 * cs + 3) * iw + ml + 4 * cs + 3] & 0xffffff;
+        // The 3D top camera (straight down, orthographic): a void column (x=-8, z=-8) vs a floor column: clearly different.
+        var (vx, vy) = r.Pixel(scene, -7.5, 64, -7.5)!.Value;
+        var (fx, fy) = r.Pixel(scene, -3.5, 64, 0.5)!.Value;
+        uint voidPx = px[vy * iw + vx] & 0xffffff;
+        uint floorPx = px[fy * iw + fx] & 0xffffff;
         Assert.NotEqual(voidPx, floorPx);
         Assert.True(Lum(voidPx) < 60, $"void {voidPx:x6}");
         Assert.Same(img, r.Render(scene)); // unchanged area: cached

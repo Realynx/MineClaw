@@ -207,7 +207,7 @@ public sealed class SupervisorServer : IAsyncDisposable
         }
     }
 
-    public static readonly IReadOnlyList<string> Modes = ["sheet", "brain", "eye", "top", "iso", "side", "layers"];
+    public static readonly IReadOnlyList<string> Modes = ["sheet", "brain", "eye", "iso", "shoulder", "orbit", "high", "top", "side", "layers"];
 
     private object Events(long since)
     {

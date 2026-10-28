@@ -117,7 +117,7 @@ async function json(path) { return (await api(path)).json(); }
 const $ = id => document.getElementById(id);
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 function bar(v, max, color) { const b = el("span", "bar"); const i = el("i"); i.style.width = Math.max(0, Math.min(100, v / max * 100)) + "%"; i.style.background = color; b.append(i); return b; }
-const MODES = ["eye", "top", "iso", "side", "layers", "sheet"];
+const MODES = ["eye", "iso", "shoulder", "orbit", "high", "top", "side", "layers", "sheet"];
 
 // ---------------------------------------------------------------- tiles
 let bots = [];

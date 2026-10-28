@@ -38,6 +38,8 @@ public sealed record IsoMat(int Id, uint Top, uint Side, char GTop, char GSide, 
 /// Per-block colours and the colour fallbacks of the isometric viewport. Face shading: top ×1.0, left ×0.78, right ×0.58
 /// (light from the upper left). 256 colours: nearest xterm cube/grey entry; 16 colours: nearest ANSI colour; when two faces
 /// land on the same index the darker one steps down, so the three faces of a block never merge.
+/// Deprecated for pictures: the TUI viewport's colours, plus the flat fallback when no textures exist on the host and the colour
+/// maths helpers (<see cref="Mix"/>, <see cref="Scale"/>). Images are textured by <see cref="EyeRenderer"/>.
 /// </summary>
 public static class IsoPalette
 {

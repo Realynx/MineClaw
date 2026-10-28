@@ -32,13 +32,14 @@ public sealed record DesignPicture(byte[] Png, int Width, int Height, string Leg
 }
 
 /// <summary>
-/// Renders a blueprint IN its real surroundings with the existing contact sheet: ISO + TOP + SIDE of the site, planned blocks
+/// Renders a blueprint IN its real surroundings with the existing contact sheet: two 3D views (ISO from the SW, ORBIT from the NE:
+/// the freecam renderer) + the flat TOP map of the site, planned blocks
 /// drawn with the "planned" role (magenta, '*'), roofs not cut away, the build's box outlined and named. Cached by (plan
 /// hash, surroundings hash) so revisions and the supervisor viewer re-use renders.
 /// </summary>
 public sealed class BlueprintPreview(ContactSheet? sheets = null)
 {
-    public static readonly IReadOnlyList<string> Views = ["iso", "top", "side"];
+    public static readonly IReadOnlyList<string> Views = ["iso", "orbit3", "top"];
     private readonly ContactSheet _sheets = sheets ?? new ContactSheet(new VisionRenderer { CacheCapacity = 12 }) { EyeThreads = 1 };
     private readonly LinkedList<DesignPicture> _cache = new();
     private readonly object _lock = new();

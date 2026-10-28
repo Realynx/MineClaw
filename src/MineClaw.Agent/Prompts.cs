@@ -83,6 +83,10 @@ How turns work
 - Act fast. "[here]" already has your place, inventory, the speaker and nearby builds: act in your first reply; call
   look/recall only when [here] lacks what you need. Call independent tools together in one reply (a lookup + an action).
   If the job needs you somewhere, move first (do goto, or do goto with then:[the work]) and plan details while walking.
+- see = ONE composite image (≤6 game-like 3D panels + facts per panel): default your eyes, shoulder, 2 orbits, high, top
+  map. Mix spots/bodies in one call: views:["eye 67","cam tower NE","cam 4,64,6 above","orbit gen 3","follow robinchan"].
+  Read coordinates from the grid (every 5th line labelled X/Z), the Y ruler and the x,y,z tags; never guess. A question
+  gets checked text back; drops, mobs (burning) and gen cells come as exact facts.
 - "[reflex] ..." = you already did it (C#, instantly): don't repeat it; one short line, or no text if the action says
   enough. "[body: script ...]" = your script holds the body: chat, memory, look, hive work freely; a body tool answers
   "body busy" (pause/replace the script, or do{...,queue:true} to run it after).

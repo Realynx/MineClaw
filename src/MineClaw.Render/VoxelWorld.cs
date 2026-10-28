@@ -121,7 +121,8 @@ public sealed class WorldVoxels : IVoxelWorld
     }
 }
 
-/// <summary>A sparse in-memory voxel world (tests, synthetic scenes). Unset cells are air with full sky light.</summary>
+/// <summary>A sparse in-memory voxel world (tests, synthetic scenes). Cells that aren't opaque cubes (air, water, plants,
+/// slabs) have full sky light unless set.</summary>
 public sealed class SparseVoxels : IVoxelWorld
 {
     private readonly Dictionary<(int, int, int), (byte Id, byte Meta)> _b = new();
@@ -133,7 +134,7 @@ public sealed class SparseVoxels : IVoxelWorld
 
     public int Block(int x, int y, int z) => _b.TryGetValue((x, y, z), out var v) ? v.Id : 0;
     public int Meta(int x, int y, int z) => _b.TryGetValue((x, y, z), out var v) ? v.Meta : 0;
-    public int SkyLight(int x, int y, int z) => _l.TryGetValue((x, y, z), out var v) ? v.Sky : Block(x, y, z) == 0 ? 15 : 0;
+    public int SkyLight(int x, int y, int z) => _l.TryGetValue((x, y, z), out var v) ? v.Sky : Block(x, y, z) is var id && (id == 0 || !BlockGeometry.OpaqueCube(id)) ? 15 : 0;
     public int BlockLight(int x, int y, int z) => _l.TryGetValue((x, y, z), out var v) ? v.Block : 0;
     public ColumnState State(int x, int z) => Columns;
 }

@@ -1,0 +1,42 @@
+block ids on the islands (id name: render type, metas):
+  1 stone: type 0 (Cube), 1 blocks, metas 0
+  2 grass: type 0 (Cube), 2 blocks, metas 0
+  3 dirt: type 0 (Cube), 29 blocks, metas 0
+  4 cobblestone: type 0 (Cube), 1642 blocks, metas 0
+  5 planks: type 0 (Cube), 1271 blocks, metas 0
+  6 sapling: type 1 (Custom), 2 blocks, metas 8
+  7 bedrock: type 0 (Cube), 1 blocks, metas 0
+  9 water: type 4 (Custom), 106 blocks, metas 0,1,2,3,4,5,6,7,8,9,15
+  11 lava: type 4 (Custom), 6 blocks, metas 0,2,8,10
+  12 sand: type 0 (Cube), 23 blocks, metas 0
+  17 log: type 0 (Cube), 70 blocks, metas 0,2
+  18 leaves: type 0 (CutoutCube), 524 blocks, metas 0,2,8
+  39 brown_mushroom: type 1 (Custom), 5 blocks, metas 0
+  40 red_mushroom: type 1 (Custom), 4 blocks, metas 0
+  43 double_stone_slab: type 0 (Cube), 7 blocks, metas 2,3
+  44 stone_slab: type 0 (Custom), 142 blocks, metas 2,3
+  49 obsidian: type 0 (Cube), 10 blocks, metas 0
+  50 torch: type 2 (Custom), 84 blocks, metas 1,2,3,4,5
+  53 oak_stairs: type 10 (Custom), 66 blocks, metas 0,1,2,3
+  54 chest: type 0 (Cube), 6 blocks, metas 2,4,5
+  58 crafting_table: type 0 (Cube), 4 blocks, metas 0
+  59 wheat: type 6 (Custom), 33 blocks, metas 6,7
+  60 farmland: type 0 (Custom), 43 blocks, metas 7
+  61 furnace: type 0 (Cube), 3 blocks, metas 3,5
+  64 wooden_door: type 7 (Custom), 18 blocks, metas 2,3,5,6,10,11,13,14
+  65 ladder: type 8 (Custom), 6 blocks, metas 5
+  67 stone_stairs: type 10 (Custom), 2 blocks, metas 1
+  72 wooden_pressure_plate: type 0 (Custom), 8 blocks, metas 0
+  81 cactus: type 13 (Custom), 31 blocks, metas 0
+  83 sugar_cane: type 1 (Custom), 3 blocks, metas 0
+  85 fence: type 11 (Custom), 12 blocks, metas 0
+  90 portal: type 0 (Custom), 6 blocks, metas 0
+  104 pumpkin_stem: type 19 (Custom), 1 blocks, metas 7
+  105 melon_stem: type 19 (Custom), 9 blocks, metas 7
+gen: 683x343 ~313 tok, render 52 ms (8 threads) / 163 ms (1 thread)
+island: 683x343 ~313 tok, render 62 ms (8 threads) / 221 ms (1 thread)
+tower: 683x343 ~313 tok, render 73 ms (8 threads) / 308 ms (1 thread)
+reading aids legend: reading aids sample, 560x424px ~317tok; panels L>R, top>bottom: [1] ORBIT from SW looking NE, 40 deg down: focus 5,64,7 cobblestone; spot 6,64,8; player poofimafox 1,64,7; bot maid_chan 3,64,4; drop 3 coal 1,64,4; drop 2 sapling 2,64,3; drop 12 cobblestone 3,64,2; zombie burning 8,64,2. Cyan box = focus in every panel. 3D = the game's view; caption = viewpoint >facing, time/staleness. Grid 1 block, every 5th labelled X/Z; gold Y ruler; crosshair + x,y,z on key blocks; rings 2/4/8 blocks from you; N/E/S/W gizmo. Roles (3D tint/outline, TOP letters): gen cell. Cut-away: roofs over the focus layer cut away in ORBIT/HIGH/ISO and TOP. Dark below the island = void.
+composite: 683x343 ~313 tok, 37 ms (8 threads)
+iso view: 384x288 ~148 tok
+drops text: 3 drops: 2 sapling at 2,64,3; 3 coal at 1,64,4; 12 cobblestone at 3,64,2

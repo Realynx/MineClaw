@@ -37,6 +37,23 @@ public sealed class TextureAtlas
     public (int W, int H, uint[] Px)? Skin { get; }
     /// <summary>Where it came from (for logs): a jar path or the assets dir.</summary>
     public string Source { get; init; } = "";
+    /// <summary>Mob textures (<c>mob/zombie.png</c> ... by name without extension) when the jar or the assets dir has them;
+    /// null = none (entity models use procedural stand-ins, see <see cref="EntityTextures"/>).</summary>
+    public IReadOnlyDictionary<string, (int W, int H, uint[] Px)>? Mobs { get; init; }
+
+    /// <summary>The mob textures the renderer asks for (read from a jar's or the assets dir's <c>mob/</c> folder; never fetched).</summary>
+    public static readonly string[] MobNames = ["zombie", "pigzombie", "skeleton", "creeper", "spider", "pig", "cow", "sheep", "sheep_fur", "chicken", "enderman", "slime", "wolf", "squid", "ghast", "silverfish"];
+
+    internal static IReadOnlyDictionary<string, (int, int, uint[])>? DecodeMobs(Func<string, byte[]?> read)
+    {
+        var d = new Dictionary<string, (int, int, uint[])>();
+        foreach (var n in MobNames)
+        {
+            try { if (read(n) is { } png) d[n] = Png.Decode(png); }
+            catch (Exception) { /* a bad PNG: that mob uses its stand-in */ }
+        }
+        return d.Count == 0 ? null : d;
+    }
 
     public TextureAtlas(int size, uint[] terrain, uint[]? items = null, (int, int, uint[])? skin = null)
     {
@@ -69,6 +86,19 @@ public sealed class TextureAtlas
         x = x < 0 ? 0 : x >= Tile ? Tile - 1 : x;
         y = y < 0 ? 0 : y >= Tile ? Tile - 1 : y;
         return _terrain[(tile / Tiles * Tile + y) * Size + tile % Tiles * Tile + x];
+    }
+
+    /// <summary>The raw terrain.png pixels (0xAARRGGBB, Size×Size).</summary>
+    public uint[] TerrainPixels => _terrain;
+
+    /// <summary>Texel of an items.png tile at (u, v) in [0,1); null without an items atlas.</summary>
+    public uint? SampleItem(int tile, float u, float v)
+    {
+        if (Items is not { } it) return null;
+        int x = (int)(u * Tile), y = (int)(v * Tile);
+        x = x < 0 ? 0 : x >= Tile ? Tile - 1 : x;
+        y = y < 0 ? 0 : y >= Tile ? Tile - 1 : y;
+        return it[(tile / Tiles * Tile + y) * Size + tile % Tiles * Tile + x];
     }
 
     /// <summary>Texel by integer tile coordinates (0..Tile-1).</summary>
@@ -128,8 +158,30 @@ public static class TextureLocator
             {
                 var items = Path.Combine(dir, ItemsFile);
                 var skin = Path.Combine(dir, SkinFile);
-                return TextureAtlas.FromPng(File.ReadAllBytes(Path.Combine(dir, TerrainFile)), File.Exists(items) ? File.ReadAllBytes(items) : null,
+                var mobDir = Path.Combine(dir, "mob");
+                var mobs = Directory.Exists(mobDir) ? TextureAtlas.DecodeMobs(n => File.Exists(Path.Combine(mobDir, n + ".png")) ? File.ReadAllBytes(Path.Combine(mobDir, n + ".png")) : null) : null;
+                var loaded = TextureAtlas.FromPng(File.ReadAllBytes(Path.Combine(dir, TerrainFile)), File.Exists(items) ? File.ReadAllBytes(items) : null,
                     File.Exists(skin) ? File.ReadAllBytes(skin) : null, dir);
+                if (mobs == null && CandidateJars(o).FirstOrDefault(File.Exists) is { } cachedJar)
+                {
+                    // The PNGs were extracted earlier without the mob textures: read just those from the jar (a zip; nothing runs).
+                    try
+                    {
+                        using var zip = ZipFile.OpenRead(cachedJar);
+                        var raw = new Dictionary<string, byte[]>();
+                        mobs = TextureAtlas.DecodeMobs(n => zip.GetEntry($"mob/{n}.png") is { Length: < 1 << 20 } e ? raw[n] = ReadEntry(e) : null);
+                        // Keep them next to terrain.png, so a host given only the assets dir (no jar) has them too.
+                        try
+                        {
+                            if (raw.Count > 0) Directory.CreateDirectory(mobDir);
+                            foreach (var (n, b) in raw) File.WriteAllBytes(Path.Combine(mobDir, n + ".png"), b);
+                        }
+                        catch (IOException) { }
+                        catch (UnauthorizedAccessException) { }
+                    }
+                    catch (Exception ex) { log?.Invoke($"mob textures: {cachedJar} unreadable ({ex.Message})"); }
+                }
+                return mobs == null ? loaded : new TextureAtlas(loaded.Size, loaded.TerrainPixels, loaded.Items, loaded.Skin) { Source = dir, Mobs = mobs };
             }
         }
         catch (Exception ex) { log?.Invoke($"extracted textures unreadable: {ex.Message}"); }
@@ -175,7 +227,10 @@ public static class TextureLocator
         if (terrain == null) return null;
         var items = Read("gui/items.png");
         var skin = Read("mob/char.png");
-        var atlas = TextureAtlas.FromPng(terrain, items, skin, jarPath);
+        var atlas0 = TextureAtlas.FromPng(terrain, items, skin, jarPath);
+        var mobPngs = new Dictionary<string, byte[]>();
+        var mobs = TextureAtlas.DecodeMobs(n => { var b = Read($"mob/{n}.png"); if (b != null) mobPngs[n] = b; return b; });
+        var atlas = mobs == null ? atlas0 : new TextureAtlas(atlas0.Size, atlas0.TerrainPixels, atlas0.Items, atlas0.Skin) { Source = jarPath, Mobs = mobs };
         if (!string.IsNullOrWhiteSpace(extractTo))
         {
             try
@@ -184,11 +239,24 @@ public static class TextureLocator
                 File.WriteAllBytes(Path.Combine(extractTo, TerrainFile), terrain);
                 if (items != null) File.WriteAllBytes(Path.Combine(extractTo, ItemsFile), items);
                 if (skin != null) File.WriteAllBytes(Path.Combine(extractTo, SkinFile), skin);
+                if (mobPngs.Count > 0)
+                {
+                    Directory.CreateDirectory(Path.Combine(extractTo, "mob"));
+                    foreach (var (n, b) in mobPngs) File.WriteAllBytes(Path.Combine(extractTo, "mob", n + ".png"), b);
+                }
             }
             catch (IOException) { /* read-only data dir: fine, the jar is still there next time */ }
             catch (UnauthorizedAccessException) { }
         }
         return atlas;
+    }
+
+    private static byte[] ReadEntry(ZipArchiveEntry e)
+    {
+        using var st = e.Open();
+        using var ms = new MemoryStream();
+        st.CopyTo(ms);
+        return ms.ToArray();
     }
 
     /// <summary>Downloads the official client jar (manifest → version json → downloads.client) into the assets dir, verifying

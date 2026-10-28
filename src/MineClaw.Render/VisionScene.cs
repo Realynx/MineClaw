@@ -17,8 +17,36 @@ public sealed record VisionMark(string Text, int MinX, int MinY, int MinZ, int M
     public double CentreZ => (MinZ + MaxZ) / 2.0;
 }
 
-/// <summary>An entity to draw: <c>player</c>, <c>hive</c> (a fellow bot), <c>mob</c> or <c>item</c>.</summary>
-public sealed record VisionEntity(string Kind, string? Name, double X, double Y, double Z, char? Glyph = null);
+/// <summary>An entity to draw: <c>player</c>, <c>hive</c> (a fellow bot), <c>self</c> (the bot's own body, drawn in third-person
+/// panels only), <c>mob</c> or <c>item</c>. The optional pose drives the 3D models (b1.8.1 look packets carry one yaw: the body
+/// turns toward the walk direction like renderYawOffset).</summary>
+public sealed record VisionEntity(string Kind, string? Name, double X, double Y, double Z, char? Glyph = null)
+{
+    /// <summary>Look yaw in MC degrees (0 south, 90 west, 180 north, 270 east); null = unknown (faces south).</summary>
+    public float? Yaw { get; init; }
+    public float Pitch { get; init; }
+    /// <summary>Mob type name ("zombie", "sheep"...); null = <see cref="Name"/>.</summary>
+    public string? Mob { get; init; }
+    /// <summary>Velocity (blocks/tick) for the walk swing and body turn.</summary>
+    public double Vx { get; init; }
+    public double Vz { get; init; }
+    public double Speed => Math.Sqrt(Vx * Vx + Vz * Vz);
+    public bool Sneaking { get; init; }
+    /// <summary>On fire (metadata index 0, flag 0x01): drawn with the b1.8.1 fire layers.</summary>
+    public bool Burning { get; init; }
+    /// <summary>Held item id (players), 0 = empty hand.</summary>
+    public int HeldItem { get; init; }
+    /// <summary>Dropped item stack (kind "item").</summary>
+    public int ItemId { get; init; }
+    public int ItemCount { get; init; }
+    public int ItemDamage { get; init; }
+    /// <summary>Mob variant: sheep fleece (bits 0-3 colour, bit 4 sheared), slime size.</summary>
+    public int Variant { get; init; }
+    /// <summary>Entity id: the phase of item spin/bob and idle sway.</summary>
+    public long Seed { get; init; }
+    /// <summary>Age in ticks (item bob/spin); null = derived from <see cref="Seed"/>.</summary>
+    public double? Age { get; init; }
+}
 
 /// <summary>Everything one <c>see</c> picture shows. Blocks come from an <see cref="IBlockAccess"/> (live + remembered).</summary>
 public sealed class VisionScene

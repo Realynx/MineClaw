@@ -125,7 +125,7 @@ static class LiveGen
         return w;
     }
 
-    private static (List<(int X0, int Y0, int Z0, int X1, int Y1, int Z1)>, List<VisionMark>) Regions(string db)
+    internal static (List<(int X0, int Y0, int Z0, int X1, int Y1, int Z1)>, List<VisionMark>) Regions(string db)
     {
         var tmp = Copy(db);
         var regions = new List<(int, int, int, int, int, int)>();
@@ -164,7 +164,7 @@ static class LiveGen
         return (regions, marks);
     }
 
-    private static List<(int, int, int)> DigCells(string db)
+    internal static List<(int, int, int)> DigCells(string db)
     {
         var tmp = Copy(db);
         var list = new List<(int, int, int)>();

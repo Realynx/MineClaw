@@ -20,6 +20,8 @@ public enum VisionIntent
     Void,
     Portal,
     Things,
+    /// <summary>Dropped items lying around (pickup entities): names, counts, positions from the entity tracker.</summary>
+    Drops,
 }
 
 /// <summary>
@@ -58,6 +60,9 @@ public static partial class VisionRouter
     [GeneratedRegex(@"\b(trees?|logs?|trunks?|canopy|saplings?|crops?|wheat|farm(land)?|chests?|doors?|ores?|coal|iron|diamonds?|gold|lapis|redstone|furnaces?|workbench|crafting tables?|benches?)\b", RegexOptions.IgnoreCase)]
     private static partial Regex ThingsRx();
 
+    [GeneratedRegex(@"\bdrops?\b|\bdropped\b|\bitems? (on|lying on) the (ground|floor)\b|\b(lying|floating) (on the )?(ground|floor|around)\b|\bpick(ed)?[ -]?up\b|\bloot\b", RegexOptions.IgnoreCase)]
+    private static partial Regex DropsRx();
+
     [GeneratedRegex(@"\b(ripe|unripe|grown|mature|harvest\w*|wheat|crops?|farmland|replant\w*)\b", RegexOptions.IgnoreCase)]
     private static partial Regex CropRx();
 
@@ -71,6 +76,7 @@ public static partial class VisionRouter
         // Ripeness is block metadata (wheat stage 0-7), never a picture question, even with "middle rows" in it (live 10-28:
         // "which wheat is fully grown (ripe)... middle rows" went to Sonnet, 2 of 2 claims wrong, and the job gave up).
         if (q.Length > 0 && CropRx().IsMatch(q) && !PointingRx().IsMatch(q)) return VisionIntent.Things;
+        if (q.Length > 0 && DropsRx().IsMatch(q) && !PointingRx().IsMatch(q)) return VisionIntent.Drops;
         if (q.Length == 0 || RelationalRx().IsMatch(q)) return VisionIntent.Model;
         if (FluidsRx().IsMatch(q)) return VisionIntent.GenFluids;
         if (FacesRx().IsMatch(q)) return VisionIntent.Faces;
@@ -83,13 +89,16 @@ public static partial class VisionRouter
     }
 
     /// <summary>The exact answer for a deterministic question, else null (a model question).</summary>
-    public static string? Answer(string? question, IBlockAccess w, RoleMap roles, (int X, int Y, int Z) f, int radius)
+    public static string? Answer(string? question, IBlockAccess w, RoleMap roles, (int X, int Y, int Z) f, int radius,
+        IReadOnlyList<VisionEntity>? entities = null)
     {
         var intent = Classify(question);
-        return intent == VisionIntent.Model ? null : Answer(intent, question ?? "", w, roles, f, radius);
+        return intent == VisionIntent.Model ? null : Answer(intent, question ?? "", w, roles, f, radius, entities);
     }
 
-    public static string Answer(VisionIntent intent, string question, IBlockAccess w, RoleMap roles, (int X, int Y, int Z) f, int radius)
+    /// <param name="entities">Entities around the spot (drops are listed exactly from them); null = unknown.</param>
+    public static string Answer(VisionIntent intent, string question, IBlockAccess w, RoleMap roles, (int X, int Y, int Z) f, int radius,
+        IReadOnlyList<VisionEntity>? entities = null)
     {
         var parts = new List<string>();
         switch (intent)
@@ -115,6 +124,11 @@ public static partial class VisionRouter
                 break;
             case VisionIntent.Things:
                 parts.Add(Things(w, f, Math.Max(radius, 12), question));
+                if (entities != null && Drops(entities, f, radius) is { } d) parts.Add(d);
+                break;
+            case VisionIntent.Drops:
+                parts.Add(entities == null ? "drops: not tracked here" : Drops(entities, f, radius) ?? $"no drops within {radius + 4} blocks");
+                if (entities != null && Mobs(entities, f, radius) is { } mobs) parts.Add(mobs);
                 break;
         }
         // Roles that decide what to mine / where not to walk, when the section didn't already name them.
@@ -124,6 +138,42 @@ public static partial class VisionRouter
                 if (part.StartsWith("roles: ", StringComparison.Ordinal)) parts.Add(part);
         var text = Prefix + string.Join(" | ", parts.Where(p => p.Length > 0));
         return text.Length <= PerceptionVerifier.MaxChars ? text : text[..(PerceptionVerifier.MaxChars - 1)] + "…";
+    }
+
+    /// <summary>
+    /// Dropped items near the focus, from the entity tracker (0x15 pickup spawns until 0x1D destroy): "3 drops: 2 sapling at
+    /// 4,64,9 (2 m from the focus); ...", nearest first, with the distance so the brain can walk to them without guessing.
+    /// </summary>
+    public static string? Drops(IReadOnlyList<VisionEntity> entities, (int X, int Y, int Z) f, int radius)
+    {
+        var drops = entities.Where(e => e.Kind == "item" && Math.Abs(e.X - f.X - 0.5) <= radius + 4 && Math.Abs(e.Z - f.Z - 0.5) <= radius + 4)
+            .Select(e => (E: e, D: Math.Sqrt(Math.Pow(e.X - f.X - 0.5, 2) + Math.Pow(e.Y - f.Y, 2) + Math.Pow(e.Z - f.Z - 0.5, 2))))
+            .OrderBy(t => t.D).ToList();
+        if (drops.Count == 0) return null;
+        var parts = drops.Take(6).Select(t => string.Create(CultureInfo.InvariantCulture,
+            $"{EyeRenderer.DropLabel(t.E)} at {(int)Math.Floor(t.E.X)},{(int)Math.Floor(t.E.Y)},{(int)Math.Floor(t.E.Z)} ({t.D:0} m from the focus)"));
+        return $"{drops.Count} drop{(drops.Count == 1 ? "" : "s")}: " + string.Join("; ", parts) + (drops.Count > 6 ? "; ..." : "");
+    }
+
+    /// <summary>
+    /// Mobs near the focus from the entity tracker, burning ones called out (metadata flag 0x01: in daylight undead burn and
+    /// die soon, so they need no fighting): "mobs: 2 zombie burning (daylight: dying, no need to fight); creeper 5 m".
+    /// </summary>
+    public static string? Mobs(IReadOnlyList<VisionEntity> entities, (int X, int Y, int Z) f, int radius)
+    {
+        var mobs = entities.Where(e => e.Kind == "mob" && Math.Abs(e.X - f.X - 0.5) <= radius + 8 && Math.Abs(e.Z - f.Z - 0.5) <= radius + 8).ToList();
+        if (mobs.Count == 0) return null;
+        static string Name(VisionEntity e) => (e.Mob ?? e.Name ?? "mob").Replace('_', ' ');
+        double Dist(VisionEntity e) => Math.Sqrt(Math.Pow(e.X - f.X - 0.5, 2) + Math.Pow(e.Y - f.Y, 2) + Math.Pow(e.Z - f.Z - 0.5, 2));
+        var parts = new List<string>();
+        foreach (var g in mobs.Where(m => m.Burning).GroupBy(Name))
+            parts.Add($"{g.Count()} {g.Key}{(g.Count() == 1 ? "" : "s")} burning ({(g.Key is "zombie" or "skeleton" ? "daylight: dying soon, no need to fight" : "on fire")}), nearest {Dist(g.MinBy(Dist)!):0} m");
+        foreach (var g in mobs.Where(m => !m.Burning).GroupBy(Name))
+        {
+            var n = g.MinBy(Dist)!;
+            parts.Add(string.Create(CultureInfo.InvariantCulture, $"{g.Count()} {g.Key}{(g.Count() == 1 ? "" : "s")}, nearest at {(int)Math.Floor(n.X)},{(int)Math.Floor(n.Y)},{(int)Math.Floor(n.Z)} ({Dist(n):0} m)"));
+        }
+        return "mobs: " + string.Join("; ", parts);
     }
 
     /// <summary>The deterministic fallback when a model question can't go to the model (perception paused, low value).</summary>

@@ -207,7 +207,7 @@ public static class HiveVision
     /// </summary>
     public static VisionImage Image(RegionWorld region, IReadOnlyList<HiveBotState> bots, IReadOnlyList<HiveLease> leases,
         IReadOnlyList<(string Text, int X, int Y, int Z)> dangerMarks, (int X, int Y, int Z) centre, int radius, RoleMap? roles = null,
-        VisionRenderer? renderer = null)
+        VisionRenderer? renderer = null, TextureAtlas? atlas = null)
     {
         var ents = bots.Where(b => b.Dim == region.Dim)
             .Select(b => new VisionEntity("hive", b.Short, b.X, b.Y, b.Z, b.Short[0])).ToList();
@@ -225,6 +225,7 @@ public static class HiveVision
         {
             View = VisionView.Top, Radius = r, Cx = centre.X, Cy = centre.Y, Cz = centre.Z, Blocks = region.World.PlanningView,
             Entities = ents, Marks = marks.Take(12).ToList(), Roles = roles, CellPx = Math.Clamp(440 / n, 6, 16), Up = 2, Down = 8, CutAway = true,
+            Atlas = atlas, MaxPx = 440,
         });
     }
 }

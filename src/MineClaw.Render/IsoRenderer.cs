@@ -186,6 +186,9 @@ public sealed record IsoInput(VoxelVolume Volume, IReadOnlyList<ViewMarker> Mark
 /// shades faces (top ×1, left ×0.78, right ×0.58, darker with depth below the bot), then overlays the path/target, entities
 /// (hidden ones as inverted markers), y labels and a compass. Buffers are reused, so a frame allocates almost nothing.
 /// One instance per TUI (not thread-safe).
+/// Deprecated for pictures: it only draws the TUI's character-cell viewport (where one cell must be one block). Every image
+/// the AI or a person sees (iso, top, side, layers, sheets, previews, supervisor and Live Hive views) comes from
+/// <see cref="EyeRenderer"/>.
 /// </summary>
 public sealed class IsoRenderer
 {

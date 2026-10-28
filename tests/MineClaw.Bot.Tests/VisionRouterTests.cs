@@ -36,15 +36,36 @@ public class VisionRouterTests
         Focus = (4, 64, 6), CutAway = cut, CellPx = 18, Up = 2, Down = 8, SideUp = 4, SideDown = 5, IsoUp = 4, IsoDown = 5,
     };
 
-    /// <summary>Pixels of the gen-cell role colour (outline + G letter) inside world column (x, z) of a top view.</summary>
-    private static int GenPixels(VisionImage img, VisionScene s, int x, int z)
+    /// <summary>Gen-cell-green pixels (the role tint/outline, G labels) around world column (x, z) of a top view.</summary>
+    private static int GenPixels(VisionRenderer r, VisionImage img, VisionScene s, int x, int z)
     {
-        var (px, py, cs) = VisionRenderer.TopCellPixel(s, x, z);
+        var (px, py) = r.Pixel(s, x + 0.5, 64.5, z + 0.5)!.Value;
         int n = 0;
-        for (int j = 0; j < cs; j++)
-            for (int i = 0; i < cs; i++)
-                if ((img.Pixels![(py + j) * img.Width + px + i] & 0xffffff) == BlockRoles.Colour(BlockRole.GenCell)) n++;
+        for (int j = -6; j <= 6; j++)
+            for (int i = -6; i <= 6; i++)
+            {
+                uint c = img.Pixels![(py + j) * img.Width + px + i];
+                int R = (int)(c >> 16 & 255), G = (int)(c >> 8 & 255), B = (int)(c & 255);
+                if (G > R + 60 && G > B + 30) n++;
+            }
         return n;
+    }
+
+    /// <summary>The block the top camera sees in a column's centre (through the cut-away or not).</summary>
+    private static int HitY(VisionScene s, int x, int z)
+    {
+        var rig = VisionRenderer.RigFor(s);
+        var (w, h) = VisionRenderer.SizeFor(s);
+        var eye = new EyeRenderer { Width = w, Height = h, MaxThreads = 1 };
+        var slab = VisionRenderer.Extract(s);
+        var scene = new EyeScene
+        {
+            World = new BlockAccessVoxels(s.Blocks), EyeX = rig.X, EyeY = rig.Y, EyeZ = rig.Z, Yaw = rig.Yaw, Pitch = rig.Pitch, Ortho = rig.Ortho,
+            Cut = s.CutAway ? PerspectivePanel.Cut(slab, s.Cy) : null,
+        };
+        var fr = eye.Raster(scene);
+        var p = eye.Project(scene, x + 0.5, 64.5, z + 0.5)!.Value;
+        return EyeRenderer.FromCellKey(fr.Cells![p.Y * w + p.X]).Y;
     }
 
     [Fact]
@@ -59,25 +80,28 @@ public class VisionRouterTests
         Assert.True(Blocks.IsWater(c.World.GetBlock(5, 64, 6)) && Blocks.IsLava(c.World.GetBlock(4, 64, 7)));
 
         var r = new VisionRenderer();
-        // The live bug: without the cut-away the roof hid every gen cell in TOP.
+        // The live bug: without the cut-away the roof hid every gen cell in TOP (the 3D top camera hits the roof at y66).
         var before = Top(c, cut: false);
         var b = r.Render(before);
-        foreach (var (x, _, z) in GenTruth) Assert.Equal(0, GenPixels(b, before, x, z));
-        // Fixed: each cell shows its G exactly in its own column; its neighbours (gen wall, water, lava) don't.
+        foreach (var (x, _, z) in GenTruth) Assert.True(HitY(before, x, z) >= 66, $"{x},{z} roofed");
+        // Fixed: the roof is cut away, the camera sees the cell itself, tinted gen-cell green in its own column.
         var after = Top(c, cut: true);
         var a = r.Render(after);
-        foreach (var (x, _, z) in GenTruth) Assert.True(GenPixels(a, after, x, z) > 20, $"{x},{z}: {GenPixels(a, after, x, z)}");
-        foreach (var (x, z) in new[] { (3, 6), (5, 6), (4, 7), (6, 7), (5, 8), (4, 5), (7, 8), (6, 9) })
-            Assert.Equal(0, GenPixels(a, after, x, z));
-        Assert.Contains("Roof above y64 cut away", a.Legend);
-        // The ruler: the focus x tick is centred over the focus column (same layout helper as the renderer).
-        var (fx, _, cs) = VisionRenderer.TopCellPixel(after, 4, 6);
-        var (gx, _, _) = VisionRenderer.TopCellPixel(after, 5, 7);
-        Assert.Equal(cs, gx - fx);
+        foreach (var (x, _, z) in GenTruth)
+        {
+            Assert.True(HitY(after, x, z) <= 64, $"{x},{z} seen through the cut");
+            Assert.True(GenPixels(r, a, after, x, z) > GenPixels(r, b, before, x, z) + 15, $"{x},{z}: {GenPixels(r, a, after, x, z)} vs {GenPixels(r, b, before, x, z)}");
+        }
+        Assert.Contains("roofs above it cut away", a.Legend);
+        // The ruler: one block = the same number of pixels everywhere (orthographic), x right and z down (north up).
+        var (fx, fy) = r.Pixel(after, 4.5, 64, 6.5)!.Value;
+        var (gx, gy) = r.Pixel(after, 5.5, 64, 7.5)!.Value;
+        Assert.InRange(gx - fx, 18, 30);
+        Assert.InRange(gy - fy, 18, 30);
         // The contact sheet the bot renders cuts roofs in TOP and ISO, and says so.
         var sheet = VisionEval.Sheet(c);
         Assert.Contains("roofs above it cut away", sheet.Legend);
-        Assert.Contains("ISO (corner letters = compass, roofs cut away)", sheet.Legend);
+        Assert.Contains("roofs over the focus layer cut away in ORBIT/HIGH/ISO", sheet.Legend);
     }
 
     [Fact]
