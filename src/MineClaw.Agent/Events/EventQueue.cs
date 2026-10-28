@@ -64,12 +64,22 @@ public sealed record EventBatch(IReadOnlyList<GameEvent> Events)
             parts.Add(e.Count > 1 ? $"{e.Text} (x{e.Count})" : e.Text);
         }
 
+        // One brain, many bodies: task results from two or more bodies read as one line at the first one's place
+        // ("[bodies] 67 ok: 64 cobble; 69 failed: no free cell"), so N bodies finishing is one thing to read, not N.
+        var bodyTasks = Events.Where(BodyTask).ToList();
+        bool coalesce = bodyTasks.Select(e => GameEvent.BodyTag(e.Body)).Distinct(StringComparer.OrdinalIgnoreCase).Count() >= 2;
+
         var sb = new StringBuilder();
         var done = new HashSet<string>();
         foreach (var e in Events)
         {
             string line;
-            if (ChatLine(e))
+            if (coalesce && BodyTask(e))
+            {
+                if (!done.Add("\u0001bodies")) continue;
+                line = BodiesLine(bodyTasks);
+            }
+            else if (ChatLine(e))
             {
                 var k = GroupKey(e);
                 if (!done.Add(k)) continue;
@@ -82,6 +92,21 @@ public sealed record EventBatch(IReadOnlyList<GameEvent> Events)
         }
         return sb.ToString().TrimEnd();
     }
+
+    /// <summary>A task result of a non-main body (the [bodies] coalescing unit).</summary>
+    public static bool BodyTask(GameEvent e) => e.Kind is EventKind.TaskCompleted or EventKind.TaskFailed && GameEvent.BodyTag(e.Body) != null;
+
+    /// <summary>"[bodies] 67 ok: 64 cobble; 69 failed: no free cell" (each result ≤ ~90 chars, in arrival order).</summary>
+    public static string BodiesLine(IEnumerable<GameEvent> tasks) =>
+        "[bodies] " + string.Join("; ", tasks.Select(e =>
+        {
+            // "#4 harvest_generator: dug 64 ..." → "ok: dug 64 ..."; a text that starts with its own verdict keeps it.
+            var text = System.Text.RegularExpressions.Regex.Replace(e.Text.Trim(), @"^#\d+\s+[\w ]+?:\s*", "");
+            bool hasVerdict = text.StartsWith("ok", StringComparison.OrdinalIgnoreCase) || text.StartsWith("fail", StringComparison.OrdinalIgnoreCase);
+            var verdict = hasVerdict ? "" : e.Kind == EventKind.TaskCompleted ? "ok: " : "failed: ";
+            if (text.Length > 90) text = text[..87] + "...";
+            return $"{GameEvent.BodyTag(e.Body)} {verdict}{text}" + (e.Count > 1 ? $" (x{e.Count})" : "");
+        }));
 }
 
 

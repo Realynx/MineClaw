@@ -22,7 +22,8 @@ public static class IntentionalReset
     /// <summary>The announcement, once per step.</summary>
     public const string Announcement = "/me hops into the void to respawn";
 
-    public static void Attach(AgentRuntime rt, IGameClient client, ILogger? log)
+    /// <param name="body">One brain, many bodies: a clone body's short name, stamped on its outcome (null = main's).</param>
+    public static void Attach(AgentRuntime rt, IGameClient client, ILogger? log, string? body = null)
     {
         if (client is not MinecraftGameClient mg) return;
         var beliefs = SeedClaim(rt, log);
@@ -37,7 +38,7 @@ public static class IntentionalReset
             {
                 var text = $"intentional reset ({outcome.Reason}): {outcome}";
                 log?.LogInformation("{Text}", text);
-                rt.Events.Post(GameEvent.Notice(text, EventPriority.Normal));
+                rt.Events.Post(GameEvent.Notice(text, EventPriority.Normal) with { Body = body });
                 if (beliefs is not null) RecordOutcome(beliefs, outcome, log);
             }
             catch (Exception ex) { log?.LogWarning(ex, "intentional reset outcome failed"); }

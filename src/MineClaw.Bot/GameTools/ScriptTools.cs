@@ -188,9 +188,58 @@ public sealed class ScriptBridge
     private void PostOwn(GameEvent e)
     {
         _posting = true;
-        try { _rt.Events.Post(e); }
+        try { _rt.Events.Post(Body is { Length: > 0 } b && e.Body == null ? e with { Body = b } : e); }
         finally { _posting = false; }
     }
+
+    // ------------------------------------------------------------------ one brain, many bodies
+
+    /// <summary>
+    /// The body this lane drives (short name, "67"); null = the main body (hive mode and main: as before). A clone lane's
+    /// events carry it, and its interrupt policy hears only its own body's dangers and chat addressed to it.
+    /// </summary>
+    public string? Body { get; init; }
+
+    /// <summary>
+    /// The activity slot a brain-run script occupies (the body's own); default the runtime's (main's). A clone lane must set
+    /// it: on main's slot its script would block (and be superseded by) main's jobs.
+    /// </summary>
+    public ActivityManager Activities { get => _activities ?? _rt.Activities; init => _activities = value; }
+    private readonly ActivityManager? _activities;
+
+    /// <summary>
+    /// Which bodies a player line addresses (short names; main = "main"), for the interrupt policy across bodies. Null = one
+    /// body (every line is this lane's, as before).
+    /// </summary>
+    public Func<string, IReadOnlyList<string>>? Addressed { get; set; }
+
+    /// <summary>The event concerns this lane's body (null/"main" bodies are main's).</summary>
+    private bool OwnBody(GameEvent e)
+    {
+        var b = GameEvent.BodyTag(e.Body);
+        return Body is { Length: > 0 } mine ? string.Equals(b, mine, StringComparison.OrdinalIgnoreCase) : b == null;
+    }
+
+    /// <summary>
+    /// Whose a player line is, for this lane: <c>Named</c> = it addresses this lane's body; <c>Unnamed</c> = it names no body
+    /// (main's lane takes it as before; a clone lane only takes a trusted "stop" from it: a plain stop stops every lane);
+    /// <c>Other</c> = it names other bodies only. One body (no <see cref="Addressed"/>): every line is <c>Named</c>.
+    /// </summary>
+    private ChatOwner OwnChat(GameEvent e)
+    {
+        if (Addressed == null) return ChatOwner.Named;
+        if (e.Kind == EventKind.Whisper && GameEvent.BodyTag(e.Body) is { } whisperedTo)
+            return Body != null && whisperedTo.Equals(Body, StringComparison.OrdinalIgnoreCase) ? ChatOwner.Named : ChatOwner.Other;
+        IReadOnlyList<string> named;
+        try { named = Addressed(e.Text); } catch (Exception) { return Body == null ? ChatOwner.Named : ChatOwner.Other; }
+        if (named.Count == 0) return Body == null ? ChatOwner.Named : ChatOwner.Unnamed;
+        return named.Contains(Body ?? "main", StringComparer.OrdinalIgnoreCase) ? ChatOwner.Named : ChatOwner.Other;
+    }
+
+    private enum ChatOwner { Named, Unnamed, Other }
+
+    /// <summary>What players call a clone lane's body besides its number and login ("clone 67", "maid chan 67").</summary>
+    private static string[] LaneNames(string shortName) => ["maid chan " + shortName, "maid " + shortName, "clone " + shortName, "#" + shortName];
 
     // ------------------------------------------------------------------ the brain sleeps while a script runs
 
@@ -241,6 +290,12 @@ public sealed class ScriptBridge
         var s = Controller.Current;
         if (s == null || _posting) return e;
         var se = Map(e);
+        // Several bodies: another body's event, or chat that isn't this lane's, is not this lane's to sleep on.
+        if (se == null && (Body != null || Addressed != null))
+        {
+            bool chat = e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote;
+            if (chat ? OwnChat(e) != ChatOwner.Named || Body != null : !OwnBody(e)) return e;
+        }
         if (se != null)
         {
             if (se.Kind is not ScriptEventKind.Stop and not ScriptEventKind.Join && s.Status != ScriptStatus.Paused && s.HasHandler(se))
@@ -270,13 +325,19 @@ public sealed class ScriptBridge
         {
             if (!e.Wakes || e.Priority < EventPriority.Normal || e.Player == null) return null;
             if (string.Equals(e.Player, _client.Username, StringComparison.OrdinalIgnoreCase) || _rt.Chat.IsHiveBot?.Invoke(e.Player) == true) return null;
+            // Several bodies: "67 stop" is lane 67's only; a line for 69 never pauses 67; a plain trusted "stop" stops every lane.
+            var owner = OwnChat(e);
+            if (owner == ChatOwner.Other) return null;
             bool trusted = _rt.Options.Self.TrustedPlayers.Any(p => string.Equals(p, e.Player, StringComparison.OrdinalIgnoreCase));
             // "claudechan stop" / "wait!" / "both of you stop": the bot's name and filler don't hide a trusted stop.
-            string[] names = [_rt.Chat.Username, _rt.Chat.DisplayName, .. _rt.Chat.Aliases];
+            string[] names = Body is { Length: > 0 } me ? [me, _client.Username, .. LaneNames(me)] : [_rt.Chat.Username, _rt.Chat.DisplayName, .. _rt.Chat.Aliases];
             bool stop = trusted && (StopWord.IsMatch(e.Text) || StopWord.IsMatch(Agent.Brainstem.IntentMatcher.Normalize(e.Text, names))
                 || Agent.Brainstem.IntentMatcher.Reflex(e.Text, names).Kind == Agent.Brainstem.IntentKind.Stop);
+            if (owner == ChatOwner.Unnamed && !stop) return null; // chat for the brain: a clone lane keeps working
             return new ScriptEvent(stop ? ScriptEventKind.Stop : ScriptEventKind.Chat, e.Text, e.Player);
         }
+        // Several bodies: only this lane's own body's danger interrupts it (69's danger never pauses 67's script).
+        if ((Body != null || Addressed != null) && !OwnBody(e)) return null;
         bool danger = e.Kind is EventKind.LowHealth or EventKind.VoidFall or EventKind.Death
             || (e.Wakes && e.Priority >= _rt.Options.InterruptPriority);
         return danger ? new ScriptEvent(ScriptEventKind.Danger, e.Format(), e.Player) : null;
@@ -610,7 +671,7 @@ public sealed class ScriptBridge
         Interlocked.Increment(ref l.BrainWaiters);
         try
         {
-            var r = await _rt.Activities.RunAsync([(new ScriptActivity(this, s), ToolSchema.Empty)], inlineWait, ct).ConfigureAwait(false);
+            var r = await Activities.RunAsync([(new ScriptActivity(this, s), ToolSchema.Empty)], inlineWait, ct).ConfigureAwait(false);
             return r[0];
         }
         finally { Interlocked.Decrement(ref l.BrainWaiters); }
@@ -644,7 +705,7 @@ public sealed class ScriptBridge
         if (s == null) return;
         var l = L(s);
         if (!l.DetachedFromWorker || l.Attached) return;
-        var cur = _rt.Activities.Current;
+        var cur = Activities.Current;
         if (cur != null && cur.Label != WorkerAgent.ToolName) { s.Stop("superseded by " + cur.Label); return; }
         if (s.Status == ScriptStatus.Paused) return; // stays paused for the brain
         _ = FollowAsActivityAsync(s, TimeSpan.Zero, CancellationToken.None);
@@ -662,8 +723,8 @@ public sealed class ScriptBridge
         _ = Task.Run(() =>
         {
             if (s.PausePending || InterruptPending()) return;
-            var label = _rt.Activities.Current is { } c && c.Id != myId ? c.Label : "another task";
-            s.Stop(_rt.Activities.Shutdown.IsCancellationRequested ? "shutdown" : "superseded by " + label);
+            var label = Activities.Current is { } c && c.Id != myId ? c.Label : "another task";
+            s.Stop(Activities.Shutdown.IsCancellationRequested ? "shutdown" : "superseded by " + label);
         });
     }
 
@@ -687,11 +748,11 @@ public sealed class ScriptBridge
         public async Task<ToolResult> ExecuteAsync(JsonElement input, CancellationToken ct)
         {
             var l = b.L(s);
-            int myId = b._rt.Activities.Current?.Id ?? -1;
+            int myId = b.Activities.Current?.Id ?? -1;
             l.Attached = true;
             l.ActivityId = myId;
             l.DetachedFromWorker = false;
-            s.OwnerLost = () => b._rt.Activities.Current is { } c && c.Id != myId ? "superseded by " + c.Label : null;
+            s.OwnerLost = () => b.Activities.Current is { } c && c.Id != myId ? "superseded by " + c.Label : null;
             try
             {
                 using (ct.Register(() => b.OnActivityCancelled(s, myId)))
@@ -715,7 +776,7 @@ public sealed class ScriptBridge
         /// <summary>Marks our own activity as model-stopped so the ActivityManager posts no task event for it.</summary>
         private void Silence(int myId)
         {
-            if (b._rt.Activities.Current?.Id == myId) b._rt.Activities.Cancel("stop");
+            if (b.Activities.Current?.Id == myId) b.Activities.Cancel("stop");
         }
     }
 
@@ -821,6 +882,17 @@ public static class ScriptTools
 
     private static readonly ConditionalWeakTable<AgentRuntime, ScriptBridge> Bridges = new();
 
+    /// <summary>
+    /// One brain, many bodies: a clone body's lane joins the event gate chain, so its script hears its own body's dangers and
+    /// the chat addressed to it (and the brain sleeps on that body's minor events while its script runs). Other bodies'
+    /// events pass it untouched.
+    /// </summary>
+    public static void AttachLaneGate(AgentRuntime rt, ScriptBridge lane)
+    {
+        var prevGate = rt.Events.Gate;
+        rt.Events.Gate = prevGate == null ? lane.Gate : e => prevGate(e) is { } kept ? lane.Gate(kept) : null;
+    }
+
     /// <summary>The script bridge of a runtime (hosts, telemetry, TUI), or null.</summary>
     public static ScriptBridge? Of(AgentRuntime rt) => Bridges.TryGetValue(rt, out var b) ? b : null;
 
@@ -839,7 +911,10 @@ public static class ScriptTools
         rt.Tools.Register(ToolName, ScriptPrompts.ToolDescription,
             ToolSchema.Create().Str("op", enumValues: ScriptPrompts.Ops).Str("code", required: false).Str("name", required: false)
                 .Raw("args", """{"type":"object"}""", required: false).Str("resume_from", required: false).Str("force", required: false).Build(),
-            bridge.ExecuteAsync, tiers: ToolTiers.Main | ToolTiers.Worker);
+            // One brain, many bodies: a call for a clone body (its slot, its worker, the brain's body=67) runs on that body's lane.
+            (input, ct) => (Bodies.BodyScope.Current is Bodies.Body { IsMain: false, ScriptBridge: { } lane } && !ReferenceEquals(lane, bridge) ? lane : bridge)
+                .ExecuteAsync(input, ct),
+            tiers: ToolTiers.Main | ToolTiers.Worker);
         // Only the Opus brain writes scripts: code (run/replace/save) and rollback from any other tier — or from no model at all —
         // is refused in the registry, whatever path the call takes. Saved scripts by name, status and cancel stay open to all.
         rt.Tools.AddPolicy(ToolName, (input, caller) => WritesCode(input) && caller?.IsBrainModel(rt.Options.Llm) != true ? ScriptPrompts.BrainOnly : null);

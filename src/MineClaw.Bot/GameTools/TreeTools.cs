@@ -39,13 +39,13 @@ public static class TreeTools
     }
 
     /// <summary>Feeds every chop report into the index and the event queue (no LLM call: background priority).</summary>
-    public static void AttachReports(MinecraftClient client, WorldIndexer? indexer, EventQueue events)
+    public static void AttachReports(MinecraftClient client, WorldIndexer? indexer, EventQueue events, string? body = null)
     {
         client.TreeChopped += r =>
         {
             if (r.Replanted is { } p) indexer?.NoteTree(new MineClaw.World.BlockPos(p.X, p.Y, p.Z), $"replanted {r.Wood} sapling, growing");
             else if (r.LogsFelled > 0) indexer?.NoteTree(new MineClaw.World.BlockPos(r.Base.X, r.Base.Y, r.Base.Z), "chopped, not replanted: " + (r.ReplantProblem ?? "logs left"));
-            events.Post(ReportEvent(r));
+            events.Post(body is { Length: > 0 } b ? ReportEvent(r) with { Body = b } : ReportEvent(r));
         };
     }
 

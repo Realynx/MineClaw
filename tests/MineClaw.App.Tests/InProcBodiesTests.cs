@@ -11,9 +11,9 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace MineClaw.App.Tests;
 
 /// <summary>
-/// One brain, many bodies, step 2 in the App: <c>Bodies:Mode</c> defaults to <c>hive</c> (today's clone processes, unchanged);
-/// <c>inproc</c> hosts the clone accounts as bodies in main's process, with the brain's hive tool served by the registry and
-/// stranded items / void spots in the shared HiveStore.
+/// One brain, many bodies, steps 2-3 in the App: <c>Bodies:Mode</c> defaults to <c>hive</c> (today's clone processes, unchanged);
+/// <c>inproc</c> hosts the clone accounts as bodies in main's process, with the brain's <c>bodies</c> tool (step 3: replaces
+/// <c>hive</c>) served by the registry, the multi-body brain interface on, and stranded items / void spots in the shared HiveStore.
 /// </summary>
 public class InProcBodiesTests
 {
@@ -42,7 +42,8 @@ public class InProcBodiesTests
         var a = InProcBodies.Create(Hive(), new BodiesOptions { Mode = "inproc" }, Mc(), agent, NullLoggerFactory.Instance)!;
         Assert.Equal(["maid_chan_67", "maid_chan_69"], a.Accounts);
         Assert.Equal(["maid_chan", "maid_chan_67", "maid_chan_69"], a.HiveBots());
-        Assert.Contains(HiveTools.ScriptHint, agent.PersonaExtra); // the hive tool keeps working: its cached hint stays
+        Assert.Contains(Agent.Prompts.BodiesHint, agent.PersonaExtra); // step 3: one mind in several bodies (cached, static)
+        Assert.DoesNotContain(HiveTools.ScriptHint, agent.PersonaExtra);
         var b = InProcBodies.Create(Hive(), new BodiesOptions { Mode = "InProc", Accounts = ["maid_chan_420"] }, Mc(), new AgentOptions(), NullLoggerFactory.Instance)!;
         Assert.Equal(["maid_chan_420"], b.Accounts);
         Assert.Null(InProcBodies.Create(new HiveConfig { Enabled = false, CloneUsernames = ["maid_chan_67"] }, new BodiesOptions { Mode = "inproc" }, Mc(),
@@ -50,7 +51,7 @@ public class InProcBodiesTests
     }
 
     [Fact]
-    public async Task Attached_the_hive_tool_lists_the_registry_and_stranded_items_go_to_the_hive_store()
+    public async Task Attached_the_bodies_tool_lists_the_registry_and_stranded_items_go_to_the_hive_store()
     {
         var (bot, _) = TestBot.Create();
         using var _bot = bot;
@@ -61,16 +62,22 @@ public class InProcBodiesTests
         Assert.True(bot.Bodies!.HasLifecycle);
         Assert.Equal(["maid_chan_67", "maid_chan_69"], bot.Bodies.Accounts);
 
-        var list = await bot.Run(HiveTools.MainTool, new { op = "list" });
+        Assert.False(bot.Runtime.Tools.Contains(HiveTools.MainTool)); // step 3: the bodies tool replaces hive in this mode
+        Assert.NotNull(inproc.Directory);
+        Assert.Same(inproc.Directory, bot.Runtime.Agent.Bodies);
+        var list = await bot.Run(InProcBodies.BodiesTool, new { op = "list" });
         Assert.True(list.Ok, list.Text);
         Assert.Equal("67 off | 69 off", list.Text);
-        var empty = await bot.Run(HiveTools.MainTool, new { op = "spawn", name = "67" });
+        var empty = await bot.Run(InProcBodies.BodiesTool, new { op = "spawn", name = "67" });
         Assert.False(empty.Ok);
         Assert.Contains("needs task", empty.Text);
-        Assert.Equal("no clone is online", (await bot.Run(HiveTools.MainTool, new { op = "recall", name = "all" })).Text);
-        // Only the Opus brain writes Lua, also for a clone.
-        var worker = await bot.RunAs(Agent.Llm.ModelTier.Worker, HiveTools.MainTool, new { op = "spawn", name = "67", code = "say'hi'" });
+        Assert.Equal("no clone is online", (await bot.Run(InProcBodies.BodiesTool, new { op = "despawn", name = "all" })).Text);
+        Assert.Equal("error: 67 isn't in game (bodies op=spawn name=67)", (await bot.Run(InProcBodies.BodiesTool, new { op = "focus", name = "67" })).Text);
+        Assert.Equal("ok: focus is main", (await bot.Run(InProcBodies.BodiesTool, new { op = "focus" })).Text);
+        // Inline Lua isn't a bodies field: Lua is written with the script tool, where only the Opus brain may author.
+        var worker = await bot.RunAs(Agent.Llm.ModelTier.Worker, InProcBodies.BodiesTool, new { op = "spawn", name = "67", code = "say'hi'" });
         Assert.False(worker.Ok);
+        Assert.DoesNotContain("\"code\"", bot.Runtime.Tools.Definitions(Agent.Llm.ModelTier.Main).Single(d => d.Name == InProcBodies.BodiesTool).InputSchema.GetRawText());
 
         // Stranded items and void spots: the shared hive store (what the hive's main-side status reads).
         var fake = new FakeGameClient { Username = "maid_chan_67" };
@@ -85,6 +92,38 @@ public class InProcBodiesTests
         host.MarkVoid("maid_chan_69", new MineClaw.World.Vec3d(-5.5, 0.6, -8.5));
         Assert.Equal("-6,0,-9", host.VoidSpot("maid_chan_69"));
         Assert.Contains("69 off (login spot over the void at -6,0,-9)", bot.Bodies.List());
-        Assert.StartsWith("no: 69 would log in over the void", (await bot.Run(HiveTools.MainTool, new { op = "spawn", name = "69", task = "mine" })).Text);
+        Assert.StartsWith("no: 69 would log in over the void", (await bot.Run(InProcBodies.BodiesTool, new { op = "spawn", name = "69", task = "mine" })).Text);
+    }
+
+    private static int Tok(Agent.Llm.LlmToolDefinition d) => (int)Math.Ceiling((d.Name.Length + d.Description.Length + d.InputSchema.GetRawText().Length) / 3.5) + 6;
+
+    [Fact]
+    public async Task Inproc_keeps_the_brain_and_worker_tool_budgets_and_puts_body_in_the_prompt_not_the_schemas()
+    {
+        var (bot, _) = TestBot.Create();
+        using var _bot = bot;
+        var tools = bot.Runtime.Tools;
+        var workerBefore = tools.Definitions(Agent.Llm.ModelTier.Worker).Select(d => d.Name + d.Description + d.InputSchema.GetRawText()).ToList();
+        await using var main = new MinecraftClient(new ClientOptions { Username = "maid_chan" });
+        var agent = bot.Runtime.Options;
+        await using var inproc = InProcBodies.Create(Hive(), new BodiesOptions { Mode = "inproc", YieldCheckSeconds = 0, TickReportSeconds = 0 }, Mc(),
+            agent, NullLoggerFactory.Instance)!;
+        inproc.Attach(bot, main, CancellationToken.None);
+
+        var brain = tools.Definitions(Agent.Llm.ModelTier.Main);
+        var worker = tools.Definitions(Agent.Llm.ModelTier.Worker);
+        int bodies = Tok(brain.Single(d => d.Name == InProcBodies.BodiesTool));
+        int total = brain.Sum(Tok);
+        Assert.True(bodies <= Agent.Tools.ToolBudgets.HiveTool, $"bodies tool ≈{bodies} tok");
+        Assert.True(total <= Agent.Tools.ToolBudgets.Brain, $"brain tools ≈{total} tok");
+        Assert.True(worker.Sum(Tok) <= Agent.Tools.ToolBudgets.Worker, $"worker tools ≈{worker.Sum(Tok)} tok");
+        // The worker's tool set doesn't change (a worker run is bound to one body), and no schema grows a body field.
+        Assert.Equal(workerBefore, worker.Select(d => d.Name + d.Description + d.InputSchema.GetRawText()).ToList());
+        Assert.DoesNotContain(brain.Concat(worker), d => d.InputSchema.GetRawText().Contains("\"body\"", StringComparison.Ordinal));
+        // The body parameter is one static cached hint (one cold cache write when the mode flips; never per turn).
+        int hint = (int)Math.Ceiling(Agent.Prompts.BodiesHint.Length / 3.5);
+        Assert.True(hint <= 200, $"bodies hint ≈{hint} tok");
+        Assert.Contains(Agent.Prompts.BodiesHint, agent.PersonaExtra);
+        Assert.Equal(agent.Worker.MaxConcurrent, inproc.Directory!.Workers!.MaxConcurrent);
     }
 }

@@ -60,6 +60,8 @@ public sealed class InProcBodies : IBodyHost, IAsyncDisposable
     public IClaimBoard MainClaims => Board.ViewFor(_main);
     public IEnumerable<string> HiveBots() => [_main, .. Accounts];
     public BodyRegistry? Registry => _bot?.Bodies;
+    /// <summary>The brain's multi-body view (step 3), after <see cref="Attach"/>.</summary>
+    public BodyDirectory? Directory { get; private set; }
 
     /// <summary>Null unless <c>Bodies:Mode=inproc</c> with at least one clone account (Bodies:Accounts, else Hive:CloneUsernames).</summary>
     public static InProcBodies? Create(HiveConfig hive, BodiesOptions o, MinecraftSettings mc, AgentOptions agent, ILoggerFactory loggers)
@@ -67,11 +69,10 @@ public sealed class InProcBodies : IBodyHost, IAsyncDisposable
         if (!o.IsInProc || !hive.Enabled) return null;
         var accounts = o.AccountsOr(hive.Clones()).Where(n => !n.Equals(mc.Username, StringComparison.OrdinalIgnoreCase)).ToList();
         if (accounts.Count == 0) return null;
-        // The brain's cached prefix: the hive hints stay (the hive tool keeps working; the multi-body interface is step 3).
-        if (!agent.PersonaExtra.Contains(Agent.Prompts.HiveMainHint, StringComparison.Ordinal))
-            agent.PersonaExtra = (agent.PersonaExtra + "\n" + Agent.Prompts.HiveMainHint).Trim();
-        if (!agent.PersonaExtra.Contains(HiveTools.ScriptHint, StringComparison.Ordinal))
-            agent.PersonaExtra = (agent.PersonaExtra + "\n" + HiveTools.ScriptHint).Trim();
+        // The brain's cached prefix (step 3): one mind in several bodies, the body parameter, the bodies tool. Static text, so
+        // one cold cache write when the mode flips; never per turn.
+        if (!agent.PersonaExtra.Contains(Agent.Prompts.BodiesHint, StringComparison.Ordinal))
+            agent.PersonaExtra = (agent.PersonaExtra + "\n" + Agent.Prompts.BodiesHint).Trim();
         return new InProcBodies(hive, o, mc, loggers, accounts);
     }
 
@@ -90,6 +91,13 @@ public sealed class InProcBodies : IBodyHost, IAsyncDisposable
         if (bot.WorldMemory is { } wm) Flusher.Add(wm);
         Flusher.Start();
         bot.Bodies!.Configure(this, Accounts, _o, _log);
+        // Step 3: the multi-body brain interface (body routing, focus, [bodies], wake digest, addressing, worker pool, "any").
+        var dir = BodyDirectory.Enable(bot.Brain!, _log);
+        var selector = new BodySelector(bot.Bodies);
+        dir.Picker = selector.Pick;
+        rt.Events.Posted += selector.OnEvent;
+        rt.Chat.Accepted += m => { try { selector.OnPlayerChat(m.Text); } catch (Exception) { } };
+        Directory = dir;
         if (bot.Vision?.Hub is { } hub)
             hub.Hive = new BodyVisionSource(bot.Bodies, () => Board.Leases().Select(l => new HiveLease(l.Key.Id, l.Owner)).ToList());
         // A trusted player saying they'll /tp a body lets its void login spot go ahead for 10 min ("I'll tp 420", "log 1337 in, I'll tp it").
@@ -199,39 +207,50 @@ public sealed class InProcBodies : IBodyHost, IAsyncDisposable
 
     // ================================================================ the brain's hive tool over the registry
 
+    /// <summary>The brain's tool over its bodies (step 3: replaces <c>hive</c> in this mode; pinned ≤ ToolBudgets.HiveTool).</summary>
+    public const string BodiesTool = "bodies";
+
     private void RegisterHiveTool(AgentRuntime rt)
     {
         var bridge = Bot.GameTools.ScriptTools.Of(rt);
-        var schema = ToolSchema.Create().Str("op", enumValues: ["spawn", "recall", "list", "handover"]).Str("task", required: false).Str("name", required: false);
-        if (bridge != null)
-            schema = schema.Str("script", required: false).Str("code", required: false).Raw("args", """{"type":"object"}""", required: false)
-                .Str("after", required: false);
+        // Saved scripts by name only: inline Lua is written with the script tool (body=67), where the Opus-only policy applies.
+        var schema = ToolSchema.Create().Str("op", enumValues: ["list", "spawn", "despawn", "focus"]).Str("name", required: false).Str("task", required: false);
+        if (bridge != null) schema = schema.Str("script", required: false).Raw("args", """{"type":"object"}""", required: false);
         rt.Tools.Remove(HiveTools.MainTool);
-        rt.Tools.Register(HiveTools.MainTool,
-            bridge != null ? "Clones: spawn a task/script (reassigns; never chat), recall name|all, list." : "Clones: spawn a task (reassigns; never chat), recall name|all, list.",
+        rt.Tools.Remove(BodiesTool);
+        rt.Tools.Register(BodiesTool,
+            "Your bodies: list; spawn name? (task/script starts its job); despawn name|all; focus name (your default body).",
             schema.Build(),
             (input, _) =>
             {
                 var op = input.ReqStr("op").Trim().ToLowerInvariant();
                 var r = op switch
                 {
-                    "spawn" or "handover" => Spawn(rt, input),
-                    "recall" => Recall(input.Str("name") ?? "all"),
+                    "spawn" => Spawn(rt, input),
+                    "despawn" or "recall" => Recall(input.Str("name") ?? "all"),
+                    "focus" => Focus(input.Str("name")),
                     "list" => Registry!.List(),
-                    _ => "error: op is spawn|recall|list|handover",
+                    _ => "error: op is list|spawn|despawn|focus",
                 };
                 return Task.FromResult(r.StartsWith("error", StringComparison.Ordinal) ? ToolResult.Error(r) : ToolResult.Success(r));
             }, tiers: ToolTiers.Main);
-        // Inline Lua for a clone is script authorship: only main's Opus brain (the same rule as the script tool).
-        rt.Tools.AddPolicy(HiveTools.MainTool, (input, caller) =>
-            !string.IsNullOrWhiteSpace(input.Str("code")) && caller?.IsBrainModel(rt.Options.Llm) != true ? Scripting.ScriptPrompts.BrainOnly : null);
+    }
+
+    private string Focus(string? name)
+    {
+        var reg = Registry!;
+        if (!string.IsNullOrWhiteSpace(name) && Directory?.Canonical(name) is null) return $"error: no body called {name}";
+        if (!string.IsNullOrWhiteSpace(name) && Directory?.Canonical(name) is { } want && want != "main" && reg.Find(want) is not { Adapter.IsPlaying: true })
+            return $"error: {want} isn't in game (bodies op=spawn name={want})";
+        var f = reg.SetFocus(name);
+        return f.IsMain ? "ok: focus is main" : $"ok: focus is {f.Short} (body tools default to it)";
     }
 
     private string Spawn(AgentRuntime rt, JsonElement input)
     {
         var reg = Registry!;
         var task = input.Str("task") ?? "";
-        string? script = input.Str("script"), code = input.Str("code");
+        string? script = input.Str("script"), code = null; // inline Lua goes through the script tool (Opus-only policy)
         string? args = input.ValueKind == JsonValueKind.Object && input.TryGetProperty("args", out var a) && a.ValueKind == JsonValueKind.Object ? a.GetRawText() : null;
         string? scriptName = null;
         if (!string.IsNullOrWhiteSpace(script) || !string.IsNullOrWhiteSpace(code))
@@ -266,8 +285,8 @@ public sealed class InProcBodies : IBodyHost, IAsyncDisposable
                 if (!r.Ok) Post(GameEvent.TaskFail($"script {script}: {r.Text}", true) with { Body = body.Short, MustWake = true });
                 return;
             }
-            // Step 2 has one worker (the pool is step 3): a clone's delegate waits for it.
-            for (int i = 0; i < 300 && rt.Worker?.IsRunning == true && !_shutdown.IsCancellationRequested; i++)
+            // The worker pool (step 3) gives this body a worker of its own, within the cap; without one, wait for the one worker.
+            for (int i = 0; i < 300 && rt.Worker is { Pool: null, IsRunning: true } && !_shutdown.IsCancellationRequested; i++)
                 await Task.Delay(2000, _shutdown).ConfigureAwait(false);
             if (!rt.Tools.TryGet(Agent.Worker.WorkerAgent.ToolName, out var del))
             {

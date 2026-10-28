@@ -43,6 +43,16 @@ public sealed partial class BotAgent
         catch (Exception ex) { _log.LogDebug(ex, "body holder failed"); return null; }
     }
 
+    /// <summary>Who holds <paramref name="body"/> (null/main = <see cref="BodyHolderNow"/>, as before).</summary>
+    private string? HolderOf(string? body)
+    {
+        if (IsMainBody(body) || ActiveBodies is not { } dir) return BodyHolderNow();
+        try { return dir.Holder(body!) is { Length: > 0 } h ? h : null; }
+        catch (Exception ex) { _log.LogDebug(ex, "body holder failed"); return null; }
+    }
+
+    private static bool IsMainBody(string? body) => body == null || body.Equals("main", StringComparison.OrdinalIgnoreCase);
+
     private sealed class Planned
     {
         public required LlmToolUse Use;
@@ -52,15 +62,17 @@ public sealed partial class BotAgent
         public bool Compound;
         public bool Queue;
         public string? Prefix;
+        /// <summary>One brain, many bodies: the body this call acts on (short name; null = unrouted, the main body as before).</summary>
+        public string? Body;
         public bool AllInstant => Steps.Count > 0 && Steps.All(s => !s.Tool.IsLongRunning);
     }
 
     private readonly ConcurrentDictionary<string, Task<ToolResult>> _early = new();
     private int _earlyChains;
 
-    private Planned Plan(LlmToolUse u, ModelTier tier, bool retry, bool stopping, ICollection<string> queuedSigs)
+    private Planned Plan(LlmToolUse u, ModelTier tier, bool retry, bool stopping, ICollection<string> queuedSigs, string? body = null)
     {
-        var p = new Planned { Use = u };
+        var p = new Planned { Use = u, Body = body };
         bool isDo = u.Name.Equals(DoTool.ToolName, StringComparison.OrdinalIgnoreCase);
         // A brain macro called directly (its definition lives in `do` now): run it the same way.
         bool direct = !isDo && tier == ModelTier.Main && DoTool.Actions.Contains(u.Name, StringComparer.OrdinalIgnoreCase)
@@ -99,7 +111,7 @@ public sealed partial class BotAgent
         }
 
         // Body lock: a running script owns the body; the brain decides explicitly (pause/replace it, or queue behind it).
-        if (!p.Queue && p.Steps.Any(s => IsBodyTool(s.Tool.Name)) && BodyHolderNow() is { } holder)
+        if (!p.Queue && p.Steps.Any(s => IsBodyTool(s.Tool.Name)) && HolderOf(body) is { } holder)
         {
             p.Result = ToolResult.Error($"body busy: {holder}. Use script op=pause or op=replace, or queue it: do{{...,queue:true}} runs after it");
             return p;
@@ -110,8 +122,13 @@ public sealed partial class BotAgent
         int first = p.Steps.FindIndex(s => s.Tool.IsLongRunning);
         var (ft, fi) = p.Steps[first];
         ToolResult? held = null;
-        try { held = Guard.Check(ft.Name, fi, retry, stopping); } catch (Exception ex) { _log.LogDebug(ex, "tool guard failed"); }
-        if (held == null && queuedSigs.Contains(ToolCallGuard.Signature(ft.Name, fi))) held = ToolResult.Success("already queued in this turn");
+        try
+        {
+            held = IsMainBody(body) || ActiveBodies is not { } dir ? Guard.Check(ft.Name, fi, retry, stopping)
+                : Guard.Check(ft.Name, fi, retry, stopping, dir.GuardKey(body!), dir.Activities(body!));
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "tool guard failed"); }
+        if (held == null && queuedSigs.Contains(SigOf(body, ft.Name, fi))) held = ToolResult.Success("already queued in this turn");
         if (held != null)
         {
             // The walk is already under way (a reflex, an earlier call): keep it and queue the rest behind it.
@@ -131,7 +148,8 @@ public sealed partial class BotAgent
         if (stopping) Orders?.Snooze();
         var results = new ToolResult?[uses.Count];
         var tasks = new List<Task>();
-        var chain = new List<(int Index, Planned P)>();
+        // Every planned call: one per use, or one per body when a use targets several (body:["67","69"] / "all").
+        var slots = new List<(int Use, Planned P)>();
         var sigs = new List<string>();
 
         for (int i = 0; i < uses.Count; i++)
@@ -144,27 +162,56 @@ public sealed partial class BotAgent
                 tasks.Add(Task.Run(async () => results[idx] = await early.ConfigureAwait(false), ct));
                 continue;
             }
-            var p = Plan(u, tier, retry, stopping, sigs);
-            if (p.Result != null) { results[i] = p.Result; continue; }
-            if (p.AllInstant)
+            foreach (var p in PlanAll(u, tier, retry, stopping, sigs))
             {
-                tasks.Add(Task.Run(async () => results[idx] = await RunInstantAsync(p, ct).ConfigureAwait(false), ct));
-                continue;
+                slots.Add((i, p));
+                if (p.Result == null && !p.AllInstant)
+                    sigs.AddRange(p.Steps.Where(s => s.Tool.IsLongRunning).Select(s => SigOf(p.Body, s.Tool.Name, s.Input)));
             }
-            chain.Add((i, p));
-            sigs.AddRange(p.Steps.Where(s => s.Tool.IsLongRunning).Select(s => ToolCallGuard.Signature(s.Tool.Name, s.Input)));
         }
 
-        if (chain.Count > 0)
+        var slotResults = new ToolResult?[slots.Count];
+        // One activity per body for every long-running call of the round, in order (unrouted calls: main's, as before).
+        var chains = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+        for (int k = 0; k < slots.Count; k++)
         {
+            var p = slots[k].P;
+            int kk = k;
+            if (p.Result != null) { slotResults[k] = p.Result; continue; }
+            if (p.AllInstant)
+            {
+                tasks.Add(Task.Run(async () => slotResults[kk] = await RunInstantAsync(p, ct).ConfigureAwait(false), ct));
+                continue;
+            }
+            var key = IsMainBody(p.Body) ? "main" : p.Body!;
+            if (!chains.TryGetValue(key, out var list)) chains[key] = list = new List<int>();
+            list.Add(k);
+        }
+        if (chains.Count >= 2 && ActiveBodies is { } crew)
+        {
+            try { crew.Started(chains.Keys.ToList()); } catch (Exception ex) { _log.LogDebug(ex, "bodies: crew start hook failed"); }
+        }
+        foreach (var (key, list) in chains)
+        {
+            var acts = key == "main" ? _activities : ActiveBodies?.Activities(key) ?? _activities;
+            var parts = list.Select(k => slots[k].P).ToList();
             tasks.Add(Task.Run(async () =>
             {
-                var r = await RunChainAsync(chain.Select(c => c.P).ToList(), ct).ConfigureAwait(false);
-                for (int k = 0; k < chain.Count; k++) results[chain[k].Index] = r[k];
+                var r = await RunChainAsync(parts, ct, acts).ConfigureAwait(false);
+                for (int n = 0; n < list.Count; n++) slotResults[list[n]] = r[n];
             }, ct));
         }
 
         await Task.WhenAll(tasks).ConfigureAwait(false);
+
+        for (int i = 0; i < uses.Count; i++)
+        {
+            if (results[i] != null) continue; // an early start
+            var mine = Enumerable.Range(0, slots.Count).Where(k => slots[k].Use == i).ToList();
+            if (mine.Count == 1) results[i] = slotResults[mine[0]];
+            else if (mine.Count > 1)
+                results[i] = CombineBodies(mine.Select(k => (slots[k].P.Body ?? "main", slotResults[k] ?? ToolResult.Error("no result"))).ToList());
+        }
 
         return uses.Select((u, i) =>
         {
@@ -174,8 +221,21 @@ public sealed partial class BotAgent
         }).ToList();
     }
 
+    /// <summary>The in-turn dedupe signature: per body, so 67's and 69's identical jobs are two jobs.</summary>
+    private static string SigOf(string? body, string tool, JsonElement input) =>
+        IsMainBody(body) ? ToolCallGuard.Signature(tool, input) : body + "|" + ToolCallGuard.Signature(tool, input);
+
+    /// <summary>"67: ok ...; 69: failed ..." (ok only when every body's part was).</summary>
+    private static ToolResult CombineBodies(IReadOnlyList<(string Body, ToolResult R)> parts)
+    {
+        var text = string.Join("; ", parts.Select(p => $"{p.Body}: {(p.R.Text.Length == 0 ? (p.R.Ok ? "ok" : "error") : p.R.Text)}"));
+        return parts.All(p => p.R.Ok) ? ToolResult.Success(text) : ToolResult.Error(text);
+    }
+
     private async Task<ToolResult> RunInstantAsync(Planned p, CancellationToken ct)
     {
+        // A routed call acts on its body (the Bot layer's BodyScope); unrouted = as before.
+        using var scope = p.Body != null ? ActiveBodies?.Push(p.Body) : null;
         if (!p.Compound && p.Steps.Count == 1) return await _tools.ExecuteAsync(p.Steps[0].Tool, p.Steps[0].Input, ct).ConfigureAwait(false);
         var parts = new List<ToolResult>();
         foreach (var (tool, input) in p.Steps)
@@ -190,15 +250,16 @@ public sealed partial class BotAgent
     private static readonly Regex BackgroundTask = new(@"^running in background as task #(?<id>\d+)", RegexOptions.Compiled);
 
     /// <summary>One activity for every long-running call of the round, in order; a pure walk runs non-blocking.</summary>
-    private async Task<IReadOnlyList<ToolResult>> RunChainAsync(IReadOnlyList<Planned> parts, CancellationToken ct)
+    private async Task<IReadOnlyList<ToolResult>> RunChainAsync(IReadOnlyList<Planned> parts, CancellationToken ct, ActivityManager? on = null)
     {
+        var activities = on ?? _activities;
         var steps = parts.SelectMany(p => p.Steps).ToList();
         var bs = _options.Brainstem;
         bool walk = bs is { Enabled: true, NonBlockingMoves: true } && steps.All(s => s.Tool.Name.Equals("goto", StringComparison.OrdinalIgnoreCase));
         var kind = walk ? ActivityKind.Move : ActivityKind.Job;
         bool queue = parts.Any(p => p.Queue);
         // Walking, queued behind a walk, or queued behind a busy script: answer quickly; the brain keeps planning.
-        bool behind = bs.Enabled && (queue || _activities.CurrentKind is ActivityKind.Move or ActivityKind.Speculative
+        bool behind = bs.Enabled && (queue || activities.CurrentKind is ActivityKind.Move or ActivityKind.Speculative
             || steps[0].Tool.Name.Equals("goto", StringComparison.OrdinalIgnoreCase)); // "walk there, then work" too
         // Long jobs (chop, harvest, delegate, script...) answer "running in background" at once instead of holding the turn
         // (and every chat line after them) for the old 20 s; short jobs (craft, withdraw) get a few seconds to finish inline.
@@ -206,7 +267,7 @@ public sealed partial class BotAgent
         var wait = !bs.Enabled ? TimeSpan.FromSeconds(_options.InlineToolWaitSeconds)
             : walk || behind || longJob ? TimeSpan.FromMilliseconds(Math.Max(0, bs.MoveInlineWaitMs))
             : TimeSpan.FromMilliseconds(Math.Max(0, Math.Min(bs.JobInlineWaitMs, _options.InlineToolWaitSeconds * 1000)));
-        var r = await _activities.RunAsync(steps, wait, ct, kind, queue).ConfigureAwait(false);
+        var r = await activities.RunAsync(steps, wait, ct, kind, queue).ConfigureAwait(false);
 
         var output = new List<ToolResult>(parts.Count);
         int k = 0;
@@ -248,6 +309,8 @@ public sealed partial class BotAgent
             try
             {
                 if (blocked || use.Name is EscalateToolName or "stop") { blocked = true; return; }
+                // Several bodies: a call for another body (or a turn focused on one) waits for the message (routed planning).
+                if (ActiveBodies != null && (TurnFocus != null || BodySpec(use.Input) != null)) { blocked = true; return; }
                 using (ToolCaller.Push(tier, model))
                 {
                     var p = Plan(use, tier, retry, stopping: false, Array.Empty<string>());

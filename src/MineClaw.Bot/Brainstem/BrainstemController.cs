@@ -44,10 +44,14 @@ public sealed class BrainstemController : IDisposable
     private int _fidgets;
     private (Intent Intent, BlockPos Target)? _spec;
 
+    private readonly ActivityManager _acts;
+
+    /// <param name="activities">The body's activity slot (one brain, many bodies: a clone body's own); null = the runtime's.</param>
     public BrainstemController(AgentRuntime rt, IGameClient client, IPlaceResolver places, Func<string, bool>? isBot = null,
-        TimeProvider? time = null, ILogger? log = null)
+        TimeProvider? time = null, ILogger? log = null, ActivityManager? activities = null)
     {
         _rt = rt;
+        _acts = activities ?? rt.Activities;
         _c = client;
         _places = places;
         _isBot = isBot ?? (_ => false);
@@ -55,29 +59,64 @@ public sealed class BrainstemController : IDisposable
         _log = log;
         Stack = new PriorityStack(
             safety: () => _c.SafetyEngaged,
-            job: () => _rt.Activities.IsBusy || _rt.Agent.BodyHolder?.Invoke() != null
-                || (_c.CurrentAction != null && _rt.Activities.Filler == null),
-            speculative: () => _rt.Activities.CurrentKind == ActivityKind.Speculative,
-            social: () => _rt.Activities.CurrentKind == ActivityKind.Social || _lookHold is { } h && h.Until > Now);
+            job: () => _acts.IsBusy || HolderNow() != null
+                || (_c.CurrentAction != null && _acts.Filler == null),
+            speculative: () => _acts.CurrentKind == ActivityKind.Speculative,
+            social: () => _acts.CurrentKind == ActivityKind.Social || _lookHold is { } h && h.Until > Now);
+    }
+
+    // ------------------------------------------------------------------ one brain, many bodies
+
+    /// <summary>The names this body answers to (null = main's chat identity, as before). A clone: "67", its login, "clone 67".</summary>
+    public Func<IEnumerable<string>>? NameWords { get; init; }
+
+    /// <summary>
+    /// Which player lines this brainstem acts on (null = every line, as before): a clone's acts only on lines addressed to it,
+    /// main's skips lines addressed only to other bodies. The text is the player's line.
+    /// </summary>
+    public Func<GameEvent, bool>? Hears { get; set; }
+
+    /// <summary>Who holds this body (null = the runtime's body lock, main's script).</summary>
+    public Func<string?>? Holder { get; init; }
+
+    /// <summary>This body's script lane (null = the runtime's, main's).</summary>
+    public Func<GameTools.ScriptBridge?>? Lane { get; init; }
+
+    /// <summary>This body's chat → reaction latency (null = the runtime's tracker).</summary>
+    public Agent.Telemetry.LatencyTracker? BodyLatency { get; init; }
+
+    private Agent.Telemetry.LatencyTracker Latency => BodyLatency ?? _rt.Latency;
+
+    private string? HolderNow() => Holder != null ? Holder() : _rt.Agent.BodyHolder?.Invoke();
+
+    private GameTools.ScriptBridge? LaneNow() => Lane != null ? Lane() : GameTools.ScriptTools.Of(_rt);
+
+    private bool HearsLine(GameEvent e)
+    {
+        if (Hears == null) return true;
+        try { return Hears(e); } catch (Exception) { return false; }
     }
 
     public BrainstemOptions Options => _rt.Options.Brainstem;
     public SocialOptions Social => Options.Social;
     public PriorityStack Stack { get; }
     private DateTimeOffset Now => _time.GetUtcNow();
-    private IEnumerable<string> Names => [_rt.Chat.Username, _rt.Chat.DisplayName, .. _rt.Chat.Aliases];
+    private IEnumerable<string> Names => NameWords?.Invoke() ?? [_rt.Chat.Username, _rt.Chat.DisplayName, .. _rt.Chat.Aliases];
 
     /// <summary>The speculative step's target, while one runs (tests/debug).</summary>
-    public BlockPos? SpeculativeTarget { get { lock (_lock) return _rt.Activities.CurrentKind == ActivityKind.Speculative ? _spec?.Target : null; } }
+    public BlockPos? SpeculativeTarget { get { lock (_lock) return _acts.CurrentKind == ActivityKind.Speculative ? _spec?.Target : null; } }
 
     /// <summary>Wires chat, the event gate, the speculation policy, the turn hint, gestures and the social timer.</summary>
     public void Attach(Perception.GestureTracker? gestures = null, bool timer = true)
     {
         if (!Options.Enabled) return;
-        _rt.Chat.Accepted += m => { if (m.Player is { Length: > 0 } p) OnAddressed(p); };
+        _rt.Chat.Accepted += m =>
+        {
+            if (m.Player is { Length: > 0 } p && HearsLine(GameEvent.Chat(p, m.Text))) OnAddressed(p);
+        };
         var prevGate = _rt.Events.Gate;
         _rt.Events.Gate = e => (prevGate == null ? e : prevGate(e)) is { } kept ? OnEvent(kept) : null;
-        _rt.Activities.SpeculationPolicy = Judge;
+        _acts.SpeculationPolicy = Judge;
         var hint = _rt.Agent.TurnHint;
         _rt.Agent.TurnHint = b =>
         {
@@ -116,10 +155,11 @@ public sealed class BrainstemController : IDisposable
     {
         if (!Options.Enabled || !EventQueue.IsTyped(e) || e.Kind is not (EventKind.Chat or EventKind.Whisper) || e.Player is not { } who) return e;
         if (_isBot(who) || who.Equals(_c.Username, StringComparison.OrdinalIgnoreCase)) return e;
+        if (!HearsLine(e)) return e; // another body's line (one brain, many bodies)
         DateTimeOffset? turned;
         lock (_lock) turned = _turnedAt.TryGetValue(who, out var t) && Now - t < TimeSpan.FromSeconds(2) ? t : null;
-        _rt.Latency.OnChat(who, e.Text, Now); // opens the measurement before the reflex runs (idempotent)
-        if (turned is { } at) _rt.Latency.NoteReaction(at);
+        Latency.OnChat(who, e.Text, Now); // opens the measurement before the reflex runs (idempotent)
+        if (turned is { } at) Latency.NoteReaction(at);
         var handled = TryReflex(who, e.Text);
         if (handled != null)
         {
@@ -149,7 +189,7 @@ public sealed class BrainstemController : IDisposable
             _ => null,
         };
         if (note == null) return null;
-        _rt.Latency.NoteReflex(intent.ReflexName);
+        Latency.NoteReflex(intent.ReflexName);
         _log?.LogInformation("reflex {Reflex} for {Player}: {Note}", intent.ReflexName, player, note);
         return (intent, note);
     }
@@ -157,30 +197,32 @@ public sealed class BrainstemController : IDisposable
     private string? Stop()
     {
         // A running script pauses itself on a trusted stop (its own gate); never kill it from here.
-        if (_rt.Agent.BodyHolder?.Invoke() != null || GameTools.ScriptTools.Of(_rt)?.Controller.Current is { IsLive: true }) return null;
-        if (_rt.Activities.Current is null && _c.CurrentAction == null) { _rt.Activities.Cancel("stop"); _rt.Latency.NoteAction(); return "stopped (nothing was running)"; }
-        var label = _rt.Activities.Current?.Label ?? _c.CurrentAction;
-        _ = RunTool("stop", new { });
-        _rt.Latency.NoteAction();
+        if (HolderNow() != null || LaneNow()?.Controller.Current is { IsLive: true }) return null;
+        if (_acts.Current is null && _c.CurrentAction == null) { _acts.Cancel("stop"); Latency.NoteAction(); return "stopped (nothing was running)"; }
+        var label = _acts.Current?.Label ?? _c.CurrentAction;
+        // The stop tool cancels the runtime's (main's) slot: a clone body's brainstem stops its own slot directly.
+        if (!ReferenceEquals(_acts, _rt.Activities)) _acts.Cancel("stop");
+        else _ = RunTool("stop", new { });
+        Latency.NoteAction();
         return $"stopped {label}";
     }
 
     private string? Walk(string player, bool follow)
     {
         if (_c.World.Entities.FindPlayer(player) is not { } e) return null;
-        if (_rt.Agent.BodyHolder?.Invoke() != null) return null; // script holds the body: the brain decides
+        if (HolderNow() != null) return null; // script holds the body: the brain decides
         var tool = follow ? "follow" : "goto";
         if (!_rt.Tools.TryGet(tool, out var t)) return null;
         var input = follow ? Json(new { player, dist = 3 }) : Json(new { to = player, dist = 2, allow_parkour = "off" });
         if (!follow && e.Position.DistanceTo(_c.World.Player.Position) <= 2.5) { LookAt(player); return $"already by {player}"; }
-        _ = _rt.Activities.RunAsync([(t, input)], TimeSpan.Zero, _rt.Activities.Shutdown, follow ? ActivityKind.Job : ActivityKind.Move);
+        _ = _acts.RunAsync([(t, input)], TimeSpan.Zero, _acts.Shutdown, follow ? ActivityKind.Job : ActivityKind.Move);
         return follow ? $"following {player}" : $"walking to {player}";
     }
 
     private string? Gesture(string player, string move)
     {
         // Gestures take the action lock: only on an idle body (the brain handles it otherwise).
-        if (_c.CurrentAction != null || _rt.Activities.IsBusy) return null;
+        if (_c.CurrentAction != null || _acts.IsBusy) return null;
         if (!_rt.Tools.Contains("act")) return null;
         _ = RunTool("act", new { move, target = player });
         return $"did {move}";
@@ -190,13 +232,13 @@ public sealed class BrainstemController : IDisposable
     {
         if (_c.World.Entities.FindPlayer(player) is not { } e || !_c.FaceIdle(Eye(e.Position))) return null;
         lock (_lock) _lookHold = (Eye(e.Position), Now + TimeSpan.FromSeconds(4));
-        _rt.Latency.NoteAction();
+        Latency.NoteAction();
         return $"looking at {player}";
     }
 
     private string? Give(string player, Intent intent)
     {
-        if (_rt.Agent.BodyHolder?.Invoke() != null || !_rt.Tools.TryGet("skill", out var skill)) return null;
+        if (HolderNow() != null || !_rt.Tools.TryGet("skill", out var skill)) return null;
         var item = Skills.SkillJson.Item(intent.Arg);
         if (item is not { } it) return null;
         int have = _c.World.Inventory.PlayerSlots().Where(s => !s.IsEmpty && s.Id == it.Id).Sum(s => s.Count);
@@ -204,7 +246,7 @@ public sealed class BrainstemController : IDisposable
         int maxStack = MineClaw.Data.Items.Exists(it.Id) ? Math.Max(1, MineClaw.Data.Items.Get(it.Id).MaxStack) : 64;
         int count = intent.All ? have : Math.Min(have, intent.Count ?? Math.Min(maxStack, have));
         var args = Json(new { name = "give_items", args = new { player, item = intent.Arg, count } });
-        _ = _rt.Activities.RunAsync([(skill, args)], TimeSpan.Zero, _rt.Activities.Shutdown);
+        _ = _acts.RunAsync([(skill, args)], TimeSpan.Zero, _acts.Shutdown);
         return $"giving {player} {count} {intent.Arg}";
     }
 
@@ -226,7 +268,7 @@ public sealed class BrainstemController : IDisposable
     /// </summary>
     public BlockPos? TrySpeculate(string player, string text)
     {
-        if (!Options.SpeculativeStart || !Stack.MayAct(BodyLayer.Speculative) || _rt.Activities.Filler != null) return null;
+        if (!Options.SpeculativeStart || !Stack.MayAct(BodyLayer.Speculative) || _acts.Filler != null) return null;
         var intent = IntentMatcher.Speculative(text, Names);
         if (!intent.IsSpeculative || Target(intent, player) is not { } target) return null;
         var me = _c.World.Player.Position;
@@ -235,7 +277,7 @@ public sealed class BrainstemController : IDisposable
         if (!_rt.Tools.TryGet("goto", out var go)) return null;
         // No digging, no placing, no parkour: a plain reversible walk.
         var input = Json(new { to = $"{target.X},{target.Y},{target.Z}", dist = 2, build = false, allow_parkour = "off" });
-        if (!_rt.Activities.TryStartFiller(ActivityKind.Speculative, [(go, input)], "spec:goto")) return null;
+        if (!_acts.TryStartFiller(ActivityKind.Speculative, [(go, input)], "spec:goto")) return null;
         lock (_lock) _spec = (intent, target);
         _log?.LogInformation("speculative {Kind}: walking toward {Target} while the brain plans", intent.Kind, target);
         return target;
@@ -313,8 +355,12 @@ public sealed class BrainstemController : IDisposable
 
     // ------------------------------------------------------------------ notes for the brain's turn
 
+    /// <summary>A clone body's reflex notes say whose they are ("[reflex] 67 walking to Fox"); null = main's, as before.</summary>
+    public string? BodyLabel { get; init; }
+
     private void Note(string player, string text, string note)
     {
+        if (BodyLabel is { Length: > 0 } who) note = who + " " + note;
         lock (_lock)
         {
             _notes.RemoveAll(n => Now - n.At > TimeSpan.FromMinutes(2));
@@ -375,7 +421,7 @@ public sealed class BrainstemController : IDisposable
             if (d > Social.FollowStartBlocks && d <= Social.FollowMaxBlocks && SafeToFollow(w, me, pe.Position) && _rt.Tools.TryGet("goto", out var go))
             {
                 var input = Json(new { to = pe.Name, dist = Social.FollowStopBlocks, build = false, allow_parkour = "off" });
-                if (_rt.Activities.TryStartFiller(ActivityKind.Social, [(go, input)], "social:follow")) return "follow " + pe.Name;
+                if (_acts.TryStartFiller(ActivityKind.Social, [(go, input)], "social:follow")) return "follow " + pe.Name;
             }
         }
 
@@ -419,7 +465,7 @@ public sealed class BrainstemController : IDisposable
         Task.Run(async () =>
         {
             using (Bodies.BodyScope.Push(Body)) // reflex tools act on this brainstem's body (null = the focus, as before)
-                return await _rt.Tools.ExecuteAsync(name, Json(input), _rt.Activities.Shutdown).ConfigureAwait(false);
+                return await _rt.Tools.ExecuteAsync(name, Json(input), _acts.Shutdown).ConfigureAwait(false);
         });
 
     /// <summary>The body this brainstem drives (one brain, many bodies); null = whatever body the router focuses.</summary>

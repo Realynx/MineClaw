@@ -56,6 +56,12 @@ public sealed class BrainContext
     public TimeProvider? Time { get; init; }
     public bool Persist { get; init; }
 
+    /// <summary>
+    /// One brain, many bodies, step 3: the brain's view of its bodies (body routing, focus, [bodies], addressing), set by
+    /// <see cref="BodyDirectory.Enable"/> in in-process mode; null = one body (hive mode), every body path as before.
+    /// </summary>
+    public BodyDirectory? Directory { get; internal set; }
+
     /// <summary>Vision v2 (set by <see cref="BotHost.FinishTools"/>).</summary>
     public Perception.Vision.VisionWiring.Result? Vision { get; internal set; }
     /// <summary>see + do are registered (after every body's macro and the script tool): bodies attached later skip it.</summary>

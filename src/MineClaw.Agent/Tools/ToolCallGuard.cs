@@ -104,13 +104,15 @@ public sealed class ToolCallGuard
     /// </summary>
     /// <param name="retryRequested">A player said "try again" this turn: failure memory is bypassed.</param>
     /// <param name="stopping">The same model turn also calls stop: the running activity is going away, no dedupe.</param>
-    public ToolResult? Check(string tool, JsonElement input, bool retryRequested = false, bool stopping = false, string? body = null)
+    public ToolResult? Check(string tool, JsonElement input, bool retryRequested = false, bool stopping = false, string? body = null,
+        ActivityManager? activities = null)
     {
         var sig = Signature(tool, input);
         var targets = Targets(tool, input);
         var now = _time.GetUtcNow();
 
-        if (!stopping && _activities.Current is { } run)
+        // In flight on the body asked about (another body's identical job is a second job, never "already running").
+        if (!stopping && (activities ?? _activities).Current is { } run)
         {
             foreach (var (t, i) in run.Steps)
             {

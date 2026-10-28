@@ -136,6 +136,18 @@ Safety
     /// Main bot with hive clones: one cached line (appended to the persona extra, ≤30 tokens) so a group ask is split
     /// between the bots instead of answered by one. The per-turn "[hive: ...]" line says who is online.
     /// </summary>
+    /// <summary>
+    /// One brain, many bodies (Bodies:Mode=inproc): the cached line that replaces the hive hints. The <c>body</c> parameter lives
+    /// here, not in the tool schemas (the brain/worker tool budgets stay as they are).
+    /// </summary>
+    public const string BodiesHint =
+        "- You are ONE mind in several bodies: main (the only one that chats) and clones 67, 69... A line naming one (\"67, ...\") is for " +
+        "it; [bodies] shows the others, [67 task ok] is 67's. Speak for them (\"67's on it\").\n" +
+        "- do/delegate/stop/status/inventory/see/script/amend_task take body:\"67\"|[\"67\",\"69\"]|\"all\"|\"any\" (default: the body named, " +
+        "else your focus); a list = one job per body at once: \"67 and 69 mine the gen\" = do{action:\"harvest_generator\"," +
+        "args:{at:\"auto\",count:64},body:[\"67\",\"69\"]} (each its own cell). A then[] step may set its own body.\n" +
+        "- bodies{op:list|spawn|despawn|focus,name,task?,script?}: log one in (task/script = its job) or out; focus = your default body.";
+
     public const string HiveMainHint =
         "- Asked as a group (\"both of you\", \"everyone\")? Give clones a part via hive spawn; reply once yourself.\n" +
         "- A clone's part is pending until its [hive] done/failed event: never report its result before that. Don't give a " +

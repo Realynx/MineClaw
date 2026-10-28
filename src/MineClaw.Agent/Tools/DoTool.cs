@@ -90,7 +90,46 @@ public static class DoTool
         return steps;
     }
 
-    private static readonly HashSet<string> Reserved = new(StringComparer.OrdinalIgnoreCase) { "action", "args", "then", "queue" };
+    private static readonly HashSet<string> Reserved = new(StringComparer.OrdinalIgnoreCase) { "action", "args", "then", "queue", "body" };
+
+    /// <summary>
+    /// One brain, many bodies: splits a <c>do</c> by the <c>body</c> its <c>then[]</c> steps name. The first group is the
+    /// call itself with every step that names no body (body = null: the call's own target); each other body gets its steps
+    /// as a <c>do</c> of their own (first step as the action, the rest as <c>then</c>), in order of first mention. Without
+    /// step bodies: the input as it is.
+    /// </summary>
+    public static List<(JsonElement? Body, JsonElement Input)> SplitByBody(JsonElement input)
+    {
+        if (input.ValueKind != JsonValueKind.Object || !input.TryGetProperty("then", out var then) || then.ValueKind != JsonValueKind.Array
+            || !then.EnumerateArray().Any(t => t.ValueKind == JsonValueKind.Object && t.TryGetProperty("body", out _)))
+            return [(null, input)];
+        var own = new JsonArray();
+        var others = new List<(string Key, JsonElement Body, List<JsonNode> Steps)>();
+        foreach (var t in then.EnumerateArray())
+        {
+            if (t.ValueKind == JsonValueKind.Object && t.TryGetProperty("body", out var b))
+            {
+                var key = b.GetRawText();
+                var step = JsonNode.Parse(t.GetRawText())!.AsObject();
+                step.Remove("body");
+                var g = others.FindIndex(x => x.Key == key);
+                if (g < 0) { others.Add((key, b.Clone(), new List<JsonNode>())); g = others.Count - 1; }
+                others[g].Steps.Add(step);
+            }
+            else own.Add(JsonNode.Parse(t.GetRawText()));
+        }
+        var first = JsonNode.Parse(input.GetRawText())!.AsObject();
+        if (own.Count > 0) first["then"] = own; else first.Remove("then");
+        var list = new List<(JsonElement?, JsonElement)> { (null, JsonSerializer.SerializeToElement(first)) };
+        foreach (var (_, body, steps) in others)
+        {
+            var o = steps[0].AsObject();
+            if (steps.Count > 1) o["then"] = new JsonArray(steps.Skip(1).Select(s => s.DeepClone()).ToArray());
+            if (input.TryGetProperty("queue", out var q)) o["queue"] = JsonNode.Parse(q.GetRawText());
+            list.Add((body, JsonSerializer.SerializeToElement(o)));
+        }
+        return list;
+    }
 
     private static bool AddStep(JsonElement step, List<(string, JsonElement)> steps, out string? error)
     {

@@ -170,6 +170,11 @@ public sealed class WorkerOptions
     public int SummaryChars { get; set; } = 300;
     /// <summary>Include the Skyblock core rules in the worker's cached system prompt.</summary>
     public bool IncludeCoreKnowledge { get; set; } = true;
+    /// <summary>
+    /// One brain, many bodies (<c>Bodies:Mode=inproc</c>): worker runs at once across bodies (one worker per busy body, sharing
+    /// the cached worker prefix); a delegate beyond the cap waits its turn ("worker queued for 69, 1 ahead"). Hive mode: unused.
+    /// </summary>
+    public int MaxConcurrent { get; set; } = 2;
 
     /// <summary>
     /// Tools the brain (main tier) calls directly: cheap single-shot ones. Tools in neither list go to the worker only.

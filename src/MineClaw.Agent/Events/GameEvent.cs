@@ -137,6 +137,17 @@ public sealed record GameEvent
         };
         string body = Player != null ? $"{Player}: {Text}" : Text;
         if (Kind is EventKind.PlayerJoined or EventKind.PlayerLeft or EventKind.Emote && Player != null) body = $"{Player} {Text}";
+        // One brain, many bodies: a non-main body's event says whose it is ("[67 task ok] ...", "[69 DANGER] hp 5/20").
+        // Null (hive mode, main, brain-level) renders exactly as before.
+        if (BodyTag(Body) is { } who && !Text.StartsWith("[bodies]", StringComparison.Ordinal)) tag = who + " " + tag;
         return $"[{tag}] {body}" + (Count > 1 ? $" (x{Count})" : "");
+    }
+
+    /// <summary>The body prefix for <see cref="Format"/>: the short name of a non-main body, else null.</summary>
+    public static string? BodyTag(string? body)
+    {
+        if (body is not { Length: > 0 } b || b.Equals("main", StringComparison.OrdinalIgnoreCase)) return null;
+        int i = b.LastIndexOf('_'); // a login ("maid_chan_67") reads as its number
+        return i >= 0 && i < b.Length - 1 && b[(i + 1)..].All(char.IsDigit) ? b[(i + 1)..] : b;
     }
 }

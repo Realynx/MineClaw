@@ -145,6 +145,20 @@ public sealed partial class BotAgent
     public ActivityManager ActivitiesFor(string? body) =>
         body is { Length: > 0 } && BodyActivities?.Invoke(body) is { } a ? a : _activities;
 
+    /// <summary>
+    /// One brain, many bodies (step 3): the bodies the brain drives. Null or inactive (hive mode, one body) = the loop acts on
+    /// the main body exactly as before; active = tool calls take <c>body</c>, the turn has a focus body and a [bodies] line.
+    /// </summary>
+    public global::MineClaw.Agent.Bodies.IBodyDirectory? Bodies { get; set; }
+
+    private global::MineClaw.Agent.Bodies.IBodyDirectory? ActiveBodies => Bodies is { Active: true } d ? d : null;
+
+    /// <summary>This turn's focus body (short name; null = main): the body the waking chat named, else the standing focus.</summary>
+    public string? TurnFocus { get; private set; }
+
+    /// <summary>The focus body's activity slot (main's when there is no focus).</summary>
+    private ActivityManager FocusActivities => TurnFocus is { } f && ActiveBodies?.Activities(f) is { } a ? a : _activities;
+
     /// <summary>Chat-flow counters (debounce merges, restarts, injections, busy wakes) for tuning <see cref="AgentOptions.ChatDebounce"/>.</summary>
     public ChatFlowStats ChatFlow => _events.Stats;
 
@@ -272,6 +286,8 @@ public sealed partial class BotAgent
         _restartsThisTurn = 0;
         _lastEpisode = _time.GetUtcNow();
         _turnSince = _lastTurnAt;
+        try { TurnFocus = ActiveBodies is { } dir ? global::MineClaw.Agent.Bodies.BodyFocus.For(batch, dir) : null; }
+        catch (Exception ex) { _log.LogDebug(ex, "turn focus failed"); TurnFocus = null; }
         LogChat(batch);
         if (batch.Waking.Any(e => e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.Emote)) _lastActive = _lastEpisode;
         var mode = _usage.CheckMode();
@@ -784,13 +800,27 @@ public sealed partial class BotAgent
         }
         var sb = new StringBuilder();
         string header = "";
-        try { header = StateHeader?.Invoke() ?? ""; } catch (Exception ex) { _log.LogWarning(ex, "state header failed"); }
-        var activity = _activities.Describe();
+        var dir = ActiveBodies;
+        var focus = TurnFocus;
+        try
+        {
+            // One brain, many bodies: a turn focused on another body reads that body's state ("67: pos ... | task: ...").
+            header = focus != null && dir?.StateHeader(focus) is { } fh ? focus + ": " + fh : StateHeader?.Invoke() ?? "";
+        }
+        catch (Exception ex) { _log.LogWarning(ex, "state header failed"); }
+        var activity = FocusActivities.Describe();
         var status = string.Join(" | ", new[] { header.Trim(), activity != null ? "task: " + activity : (header.Contains("task:") ? "" : "task: idle") }
             .Where(s => s.Length > 0));
         sb.Append(status.TrimStart('[')).Append('\n');
         // Body lock visibility: a running script holds the body; the brain sees it without asking.
-        if (BodyHolderNow() is { } holder) sb.Append(BodyTag).Append(' ').Append(holder).Append("]\n");
+        if (HolderOf(focus) is { } holder) sb.Append(BodyTag).Append(' ').Append(holder).Append("]\n");
+        // The other bodies, one short part each (≤120 tokens, uncached tail; only while 2+ bodies are online).
+        if (dir != null)
+        {
+            string bodies = "";
+            try { bodies = dir.StatusBlock(focus); } catch (Exception ex) { _log.LogDebug(ex, "[bodies] block failed"); }
+            if (bodies.Length > 0) sb.Append(bodies).Append('\n');
+        }
         string? standing = null;
         try { standing = Orders?.HeaderTag(); } catch (Exception ex) { _log.LogDebug(ex, "standing order read failed"); }
         if (standing != null) sb.Append(standing).Append('\n');
@@ -835,7 +865,7 @@ public sealed partial class BotAgent
     private string BusyLine(EventBatch batch)
     {
         var flow = _options.ChatDebounce;
-        if (flow is not { Enabled: true, BusyHint: true } || !batch.HasTypedChat || _activities.Current is not { } act) return "";
+        if (flow is not { Enabled: true, BusyHint: true } || !batch.HasTypedChat || FocusActivities.Current is not { } act) return "";
         string? detail = null;
         try { detail = BusyDetail?.Invoke(); } catch (Exception ex) { _log.LogDebug(ex, "busy detail failed"); }
         _events.Stats.BusyWake();

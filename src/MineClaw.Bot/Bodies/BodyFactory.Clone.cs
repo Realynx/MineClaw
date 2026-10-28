@@ -1,3 +1,4 @@
+using MineClaw.Agent.Events;
 using MineClaw.Agent.Human;
 using MineClaw.Agent.Telemetry;
 using MineClaw.Agent.Tools;
@@ -46,6 +47,7 @@ public static partial class BodyFactory
         AttachCloneJobs(brain, body);
         AttachCloneBehaviour(brain, body);
         AttachClonePerception(brain, body, client, flusher);
+        AttachCloneReflexes(brain, body, client);
         client.HoldingOverVoid += p => brain.Bodies.OnVoidHold(body, p);
         client.VoidHoldEnded += p => brain.Bodies.OnVoidHoldEnded(body, p);
         return body;
@@ -103,11 +105,57 @@ public static partial class BodyFactory
         };
         bridge.Attach();
         body.Bridge = bridge;
-        // Its own lane (step 4 adds crews): runs a saved script on this body; the script tool itself stays main's.
+        // Its own lane (step 4 adds crews): the script tool routes calls for this body here (BodyScope). A brain-run script
+        // holds THIS body's slot; its interrupts are this body's dangers and chat addressed to it (a plain trusted stop too).
         var scripts = new ScriptBridge(rt, body.Adapter, brain.Skills, brain.BotOptions.Scripts ?? new MineClaw.Scripting.ScriptOptions(),
-            time ?? TimeProvider.System, brain.Log);
+            time ?? TimeProvider.System, brain.Log)
+        {
+            Body = body.Short,
+            Activities = body.Activities,
+            Addressed = text => brain.Directory?.Addressed(text) ?? [],
+        };
         scripts.Controller.StepScope = scope;
+        ScriptTools.AttachLaneGate(rt, scripts);
         body.ScriptBridge = scripts;
+    }
+
+    /// <summary>
+    /// The clone's brainstem and reports, at parity with a hive clone process (step 3a): survival (auto-eat, low-health retreat),
+    /// EdgeGuard (void/lava) and reflex defence already run inside its MinecraftClient; here its fight/chop/void-step reports
+    /// reach the one event queue tagged with the body, its inventory ledger records where items went, and a brainstem of its
+    /// own runs chat reflexes ("67 stop", "67 come here"), the speculative first step and social idle for lines addressed to
+    /// it (main's account still does all the talking).
+    /// </summary>
+    private static void AttachCloneReflexes(BrainContext brain, Body body, MinecraftClient client)
+    {
+        var rt = brain.Runtime;
+        var time = brain.Time;
+        CombatTools.AttachEvents(client, rt.Events, body.Short);
+        TreeTools.AttachReports(client, brain.Indexer, rt.Events, body.Short);
+        IntentionalReset.Attach(rt, body.Adapter, brain.Log, body.Short);
+        var ledger = Ledger.InventoryLedgerTools.Create(client, brain.Log, time, body.Short);
+        body.Ledger = ledger;
+        if (ledger.Pump is { } pump) body.Owned.Add(pump);
+
+        body.Here = new Brainstem.HereBlock(body.Adapter, rt.Memory, rt.Observations, brain.Landmark);
+        var shortName = body.Short;
+        var brainstem = new Brainstem.BrainstemController(rt, body.Adapter, brain.Memory, brain.IsBot, time,
+            brain.Loggers?.CreateLogger("MineClaw.Brainstem"), body.Activities)
+        {
+            Body = body,
+            NameWords = () => [shortName, body.Name, "maid chan " + shortName, "maid " + shortName, "clone " + shortName, "#" + shortName],
+            Holder = () => body.ScriptBridge?.BodyState(),
+            Lane = () => body.ScriptBridge,
+            BodyLatency = body.Latency,
+            BodyLabel = shortName,
+            // Only lines for this body: a whisper to its account, or chat naming it (BodyAddressing); never main's lines.
+            Hears = e => body.Adapter.IsPlaying && (GameEvent.BodyTag(e.Body) is { } to
+                ? to.Equals(shortName, StringComparison.OrdinalIgnoreCase)
+                : brain.Directory?.Addressed(e.Text).Contains(shortName, StringComparer.OrdinalIgnoreCase) == true),
+        };
+        brainstem.Attach(gestures: null, timer: brain.Persist);
+        body.Brainstem = brainstem;
+        body.Owned.Add(brainstem);
     }
 
     /// <summary>Stall watchdog, the standing-order work probe and idle resume, and the hand-over watch (item tosses to it).</summary>

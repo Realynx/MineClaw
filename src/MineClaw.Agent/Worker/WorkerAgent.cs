@@ -167,6 +167,31 @@ public sealed class WorkerAgent
     /// </summary>
     public Func<IDisposable?>? StepScope { get; set; }
 
+    /// <summary>
+    /// One brain, many bodies: the per-body workers behind <c>delegate</c> (null = this one worker, as before). Set on the
+    /// runtime's worker only.
+    /// </summary>
+    public WorkerPool? Pool { get; set; }
+
+    /// <summary>
+    /// A worker for another body: the same options, model, tools, cached system prompt (byte-identical, so the prefix cache is
+    /// shared) and hooks; its own task state (running, trail, amendments). Its Finished/Asked/CallCompleted are raised on this
+    /// worker too, so telemetry and the brain's notices see every body's runs. The pool sets its body scope.
+    /// </summary>
+    public WorkerAgent Sibling()
+    {
+        var w = new WorkerAgent(_o, _llmOptions, _llm, _tools, _usage, "", _time, _log)
+        {
+            Questions = Questions, MaxDefaultContinues = MaxDefaultContinues, StateHeader = StateHeader, GainsTracker = GainsTracker,
+            Landmark = Landmark, RoundNote = RoundNote, StepScope = StepScope,
+        };
+        w._system = _system;
+        w.Finished += o => Finished?.Invoke(o);
+        w.Asked += (q, d) => Asked?.Invoke(q, d);
+        w.CallCompleted += () => CallCompleted?.Invoke();
+        return w;
+    }
+
     /// <summary>The worker's tool definitions (its cached prefix, stable for the run).</summary>
     public IReadOnlyList<LlmToolDefinition> ToolDefinitions => _tools.Definitions(ModelTier.Worker);
 
@@ -185,7 +210,16 @@ public sealed class WorkerAgent
             {
                 var profile = input.Str("profile") is { Length: > 0 } pr ? pr.Trim() : null;
                 if (profile != null && _llmOptions.CheckProfile(profile) is { } bad) return ToolResult.Error("failed: " + bad);
-                var o = await RunAsync(input.ReqStr("task"), input.Str("done_when"), input.Int("max_minutes"), ct, profile).ConfigureAwait(false);
+                var task = input.ReqStr("task");
+                WorkerOutcome o;
+                if (Pool is { } pool)
+                {
+                    // One brain, many bodies: the worker of the body this delegate runs on, within the pool's cap.
+                    var body = pool.CurrentBody();
+                    var w = pool.For(body);
+                    o = await pool.RunAsync(body, () => w.RunAsync(task, input.Str("done_when"), input.Int("max_minutes"), ct, profile), ct).ConfigureAwait(false);
+                }
+                else o = await RunAsync(task, input.Str("done_when"), input.Int("max_minutes"), ct, profile).ConfigureAwait(false);
                 // needs_input usually ends in a question for the players: give the brain landmarks next to the coordinates.
                 var summary = o.NeedsInput ? Human.Questions.Annotate(o.Summary, Landmark) : o.Summary;
                 return o.Ok ? ToolResult.Success(summary) : ToolResult.Error(summary);
@@ -195,7 +229,7 @@ public sealed class WorkerAgent
         _tools.Register(AmendToolName,
             "Add a correction/detail to the running delegate task (no restart); the worker sees it next step.",
             ToolSchema.Create().Str("note").Build(),
-            (input, _) => Task.FromResult(Amend(input.ReqStr("note"))
+            (input, _) => Task.FromResult((Pool?.Current() ?? this).Amend(input.ReqStr("note"))
                 ? ToolResult.Success("ok: the worker gets it at its next step")
                 : ToolResult.Error("no delegate task running (a script? use script op=replace)")),
             tiers: ToolTiers.Main);

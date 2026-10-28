@@ -45,6 +45,10 @@ public sealed class Body : IBody
     public Brainstem.HandoverWatch? Handovers { get; internal set; }
     internal System.Threading.Timer? HandoverPump { get; set; }
     public HungerLatch? Hunger => Bridge?.Hunger;
+    /// <summary>This body's [here] pre-observation (a clone's: when it is the turn's focus body; main's is the brain's hook).</summary>
+    public Brainstem.HereBlock? Here { get; internal set; }
+    /// <summary>This body's inventory ledger (where its items went); main's is the runtime-wide one (BotHost).</summary>
+    public Ledger.InventoryLedger? Ledger { get; internal set; }
 
     /// <summary>Chat → reaction/action latency for this body (main: the runtime's tracker; a clone: its own).</summary>
     public Agent.Telemetry.LatencyTracker? Latency { get; internal set; }

@@ -67,7 +67,29 @@ public static class InventoryLedgerTools
         return d;
     }
 
+    /// <summary>
+    /// The main body's ledger, and the tool wrappers every body shares: inventory/where_is {item} and the cause scopes read the
+    /// ledger of the body in scope (one brain, many bodies: a clone body's own, <see cref="Create"/>), else main's.
+    /// </summary>
     public static InventoryLedger Attach(AgentRuntime rt, MinecraftClient client, SkillRegistry? skills, ILogger? log, TimeProvider? time = null)
+    {
+        var ledger = Create(client, log, time);
+        var inv = client.World.Inventory;
+        (InventoryLedger Ledger, InventoryManager Inv) Current() =>
+            Bodies.BodyScope.Current is Bodies.Body { IsMain: false, Ledger: { } own, Client: { } c } ? (own, c.World.Inventory) : (ledger, inv);
+        if (skills is not null) skills.RunScope = (name, args) => Current().Ledger.Scope(SkillCause(name, args));
+
+        WrapGameTools(rt.Tools, () => Current().Ledger);
+        WrapInventory(rt.Tools, Current);
+        WrapWhereIs(rt.Tools, Current);
+        return ledger;
+    }
+
+    /// <summary>
+    /// A body's ledger over its own connection: inventory snapshots, pickups (own and other players'), eating, death, server
+    /// corrections, and its pump. The tools find it through the body in scope (<see cref="Attach"/>).
+    /// </summary>
+    public static InventoryLedger Create(MinecraftClient client, ILogger? log, TimeProvider? time = null, string? body = null)
     {
         var ledger = new InventoryLedger(time)
         {
@@ -89,21 +111,17 @@ public static class InventoryLedgerTools
             var p = client.World.Player.Position.ToBlockPos();
             ledger.NoteDeath($"{p.X},{p.Y},{p.Z}");
         };
+        string tag = body is { Length: > 0 } b ? b + " " : "";
         ledger.Recorded += e =>
         {
-            if (e.Delta < 0) log?.LogInformation("ledger: {Entry}", e);
-            else log?.LogDebug("ledger: {Entry}", e);
+            if (e.Delta < 0) log?.LogInformation("ledger: {Body}{Entry}", tag, e);
+            else log?.LogDebug("ledger: {Body}{Entry}", tag, e);
         };
         ledger.Pump = new Timer(_ => { try { ledger.Flush(); } catch (Exception) { } }, null, 500, 500);
-        if (skills is not null) skills.RunScope = (name, args) => ledger.Scope(SkillCause(name, args));
-
-        WrapGameTools(rt.Tools, ledger);
-        WrapInventory(rt.Tools, ledger, inv);
-        WrapWhereIs(rt.Tools, ledger, inv);
         return ledger;
     }
 
-    private static void WrapGameTools(ToolRegistry tools, InventoryLedger ledger)
+    private static void WrapGameTools(ToolRegistry tools, Func<InventoryLedger> ledger)
     {
         foreach (var name in new[] { "craft", "deposit", "withdraw", "organize_chest", "smelt", "collect_furnace", "place", "use_block", "eat",
                      "chop_tree", "mine", "harvest_generator", "dig", "collect_drops", "goto", "follow" })
@@ -111,14 +129,14 @@ public static class InventoryLedgerTools
             if (!tools.TryGet(name, out var inner)) continue;
             tools.Replace(new WrappedTool(inner, null, async (input, ct) =>
             {
-                using var _ = ToolCause(name, input) is { } cause ? ledger.Scope(cause) : null;
+                using var _ = ToolCause(name, input) is { } cause ? ledger().Scope(cause) : null;
                 return await inner.ExecuteAsync(input, ct).ConfigureAwait(false);
             }));
         }
     }
 
     /// <summary><c>inventory {item}</c>: that item's count now plus where it came from / went this session.</summary>
-    private static void WrapInventory(ToolRegistry tools, InventoryLedger ledger, InventoryManager inv)
+    private static void WrapInventory(ToolRegistry tools, Func<(InventoryLedger Ledger, InventoryManager Inv)> current)
     {
         if (!tools.TryGet("inventory", out var inner)) return;
         var schema = AddProperty(inner.InputSchema, "item"); // item = its history: where it went / came from
@@ -126,19 +144,21 @@ public static class InventoryLedgerTools
         {
             var item = input.ValueKind == JsonValueKind.Object && input.TryGetProperty("item", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
             if (string.IsNullOrWhiteSpace(item)) return await inner.ExecuteAsync(input, ct).ConfigureAwait(false);
+            var (ledger, inv) = current();
             int have = Have(inv, item);
             return ToolResult.Success(ledger.Explain(item, have) ?? $"{item}: have {have}; no gains or losses of it recorded this session");
         }, inner.Description.TrimEnd('.') + ". item=where it went."));
     }
 
     /// <summary><c>where_is {item}</c> that finds none in known chests also says what the ledger knows ("tossed to ...").</summary>
-    private static void WrapWhereIs(ToolRegistry tools, InventoryLedger ledger, InventoryManager inv)
+    private static void WrapWhereIs(ToolRegistry tools, Func<(InventoryLedger Ledger, InventoryManager Inv)> current)
     {
         if (!tools.TryGet("where_is", out var inner)) return;
         tools.Replace(new WrappedTool(inner, null, async (input, ct) =>
         {
             var r = await inner.ExecuteAsync(input, ct).ConfigureAwait(false);
             var item = input.ValueKind == JsonValueKind.Object && input.TryGetProperty("item", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+            var (ledger, inv) = current();
             if (string.IsNullOrWhiteSpace(item) || ledger.Explain(item, Have(inv, item), 260) is not { } story) return r;
             return r with { Text = r.Text + " | my ledger: " + story };
         }));

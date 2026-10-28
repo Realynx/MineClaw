@@ -318,6 +318,7 @@ public sealed class BotHost : IDisposable
         if (client is MinecraftGameClient mgl)
         {
             var ledger = Ledger.InventoryLedgerTools.Attach(rt, mgl.Inner, skillHub.Registry, log, time);
+            main.Ledger = ledger; // a clone body's own ledger: BodyFactory.CreateClone
             // A worker's time slice reports what it gathered and where it went ("ok: time slice done (5 min): 32 cobblestone; ...").
             if (rt.Worker != null)
                 rt.Worker.GainsTracker = () =>

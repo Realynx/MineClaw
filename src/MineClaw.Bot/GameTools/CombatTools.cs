@@ -42,8 +42,9 @@ public static class CombatTools
     }
 
     /// <summary>One body's fight reports as events.</summary>
-    public static void AttachEvents(MinecraftClient client, EventQueue events) =>
-        client.CombatEventRaised += e => events.Post(ToGameEvent(e));
+    /// <param name="body">One brain, many bodies: a clone body's short name, stamped on its reports (null = main's, as before).</param>
+    public static void AttachEvents(MinecraftClient client, EventQueue events, string? body = null) =>
+        client.CombatEventRaised += e => events.Post(body is { Length: > 0 } b ? ToGameEvent(e) with { Body = b } : ToGameEvent(e));
 
     /// <summary>Start: low; end: normal (background when a tool call already returns it); critical moments: high.</summary>
     public static GameEvent ToGameEvent(CombatEvent e) => e.Kind switch
