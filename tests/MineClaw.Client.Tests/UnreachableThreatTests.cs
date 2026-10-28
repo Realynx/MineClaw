@@ -41,6 +41,23 @@ public class UnreachableThreatTests
     }
 
     [Fact]
+    public void Creeper_trapped_in_a_pocket_close_by_is_given_up_once_not_every_8_seconds()
+    {
+        // 10-28 17:20: "fight started: creeper 3m away (creeper close)" → "couldn't reach creeper (0 hits in 8s), left it
+        // alone" → again 200 ms later, for minutes: main frozen west of the tower.
+        var r = new CombatRig(Opts(), half: 12);
+        for (int x = 2; x <= 4; x++)
+        for (int z = -1; z <= 1; z++)
+        for (int y = 64; y <= 66; y++)
+            if (x != 3 || z != 0 || y == 66) r.W.SetBlock(x, y, z, Blocks.Stone, 0);
+        r.Mob(9, MobTypes.Creeper, 3.5, 0.5, new Dictionary<int, object> { [16] = (sbyte)-1 });
+        int engaged = 0;
+        for (int i = 0; i < 1200; i++) { r.Step(physics: true); if (r.E.Engaged) engaged++; }
+        Assert.InRange(Starts(r), 0, 1);
+        Assert.True(engaged < 300, $"engaged {engaged}/1200 ticks");
+    }
+
+    [Fact]
     public void Creeper_within_its_ignite_range_still_gets_the_reflex()
     {
         var r = Gap(fromX: 3, toX: 3);

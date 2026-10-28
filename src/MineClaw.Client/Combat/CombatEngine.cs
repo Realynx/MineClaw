@@ -458,7 +458,10 @@ public sealed class CombatEngine
                 // Gave up on it: only a real change re-triggers (live 10-27 22:09-22:10: a creeper across a gap restarted a
                 // 20 s fight every 200 ms and cancelled every walk north).
                 bool hitMeSince = provoked && pt > u.Tick;
-                if (creeperDanger) why = CombatRules.IsCreeperFusing(e) ? "creeper fusing" : "creeper close";
+                // A given-up creeper that's merely close re-triggers only once it has moved since (out of its pocket) or
+                // fuses (live 10-28 17:20: one trapped 3 m west of the tower restarted an 8 s fight back to back, freezing main).
+                if (CombatRules.IsCreeperFusing(e) && creeperDanger) why = "creeper fusing";
+                else if (creeperDanger && Horizontal(u.Pos, e.Position) > 1.0) why = "creeper close";
                 else if (inReach && DefendSelf) why = "in reach";
                 else if (hitMeSince && !ranged && DefendSelf) why = "it attacked";
                 else if (hitMeSince && ranged && DefendSelf && _w.Player.Health <= Options.CoverHealth && _tick - u.LastCover > Options.CoverMaxTicks * 2
