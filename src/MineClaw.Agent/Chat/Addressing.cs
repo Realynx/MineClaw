@@ -118,6 +118,13 @@ public static class AddressingText
     private static readonly Regex HiveWords = new(@"\b(?:clones?|hive|maids?|bots?)\b", O);
     private static readonly Regex GiveBack = new(@"\b(?:give|giv|gimme|hand|toss)\b.*\b(?:me|back)\b|\bmy\s+\w+\s+back\b", O);
 
+    private static readonly Regex HelpCall = new(
+        @"^\W*(?:help|sos|save\s+me)\W*(?:me|pls|plz|please)?\W*$|\bsave\s+me\b|\bhelp\s+me\s*(?:[!.]|$)|\bhelp\s*!" +
+        @"|\b(?:i'?m|im|i\s+am)\s+(?:dying|falling|burning|drowning|on\s+fire|being\s+attacked|getting\s+(?:killed|attacked))\b", O);
+
+    /// <summary>A danger/help call ("help!", "save me", "I'm dying"): never left to another bot's thread.</summary>
+    public static bool IsHelpCall(string text) => HelpCall.IsMatch(text ?? "");
+
     /// <summary>
     /// A line plausibly for the bot without its name: an imperative ("give me my bucket back", "stop", "come", "finish the farm"),
     /// "you/your", or the hive ("clone 69", "the maids"). Callers first rule out lines that call another player.

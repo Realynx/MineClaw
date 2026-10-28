@@ -2,8 +2,9 @@ using System.Text.RegularExpressions;
 
 namespace MineClaw.Agent.Chat;
 
-/// <summary>The router's verdict on one line: why, plus a short human-readable detail for the log.</summary>
-public readonly record struct AddressDecision(AddressReason Reason, string Why)
+/// <summary>The router's verdict on one line: why, plus a short human-readable detail for the log, and whom the line is for
+/// when it's someone else (<paramref name="To"/>: the login it calls, looks at or continues with).</summary>
+public readonly record struct AddressDecision(AddressReason Reason, string Why, string? To = null)
 {
     public bool Addressed => Reason.IsAddressed();
 }
@@ -51,6 +52,45 @@ public sealed partial class ChatRouter
     private readonly Dictionary<string, int> _fastReplies = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _templateLines = new(StringComparer.OrdinalIgnoreCase);
     private (string Player, string Text, DateTimeOffset At)? _lastHeardLine;
+
+    // Foreign-bot threads (live 10-28 14:41: "c trees" to robinchan, then "get an axe, cut them down like real players" taken by
+    // main): a human's last line not for us, which a foreign bot answering within BotAnswerSeconds puts in that bot's thread;
+    // command prefixes ("c ") learned from prefixed lines a bot answered; when each player last addressed us.
+    private const int BotAnswerSeconds = 5, PrefixHitsToLearn = 2;
+    private (string Player, DateTimeOffset At, bool ToUs, string? To, string? Prefix)? _lastHumanLine;
+    private readonly Dictionary<string, Dictionary<string, int>> _prefixHits = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTimeOffset> _lastToUs = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Regex PrefixWord = new(@"^\s*(?<p>[A-Za-z]{1,2})\s+[A-Za-z0-9]", Rx);
+    private static readonly Regex PrefixMark = new(@"^\s*(?<p>[!#$%&.~>+=-])[A-Za-z]", Rx);
+    private static readonly HashSet<string> NotPrefixes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "i", "a", "u", "k", "y", "n", "ok", "oh", "no", "so", "go", "hi", "yo", "ya", "ye", "is", "it", "do", "to", "we", "me", "my",
+        "up", "if", "an", "at", "be", "by", "in", "of", "on", "or", "ty", "gg", "xd", "ur", "im", "hm", "uh", "um", "ah", "eh", "wb",
+        "gj", "gn", "he", "us", "as", "am", "aw", "ew", "np", "nm", "ig", "bc", "rn", "tf", "jk", "lo", "ha",
+    };
+
+    /// <summary>A line's command-prefix candidate ("c " in "c trees", "!" in "!help"), lower-case; null = none.</summary>
+    internal static string? CommandPrefix(string text)
+    {
+        if (PrefixWord.Match(text ?? "") is { Success: true } w && !NotPrefixes.Contains(w.Groups["p"].Value)) return w.Groups["p"].Value.ToLowerInvariant() + " ";
+        if (PrefixMark.Match(text ?? "") is { Success: true } m) return m.Groups["p"].Value;
+        return null;
+    }
+
+    /// <summary>Command prefixes learned for a foreign bot (players' lines starting with it that the bot answered).</summary>
+    public IReadOnlyList<string> CommandPrefixesOf(string bot)
+    {
+        lock (_lock)
+            return _prefixHits.TryGetValue(bot, out var hits) ? hits.Where(kv => kv.Value >= PrefixHitsToLearn).Select(kv => kv.Key).ToList() : [];
+    }
+
+    // caller holds _lock: the online foreign bot whose learned prefix this line uses (most answered wins)
+    private string? PrefixBotLocked(string text)
+    {
+        if (CommandPrefix(text) is not { } prefix) return null;
+        return _prefixHits.Where(kv => _online.Contains(kv.Key) && IsOtherBotLocked(kv.Key) && kv.Value.GetValueOrDefault(prefix) >= PrefixHitsToLearn)
+            .OrderByDescending(kv => kv.Value[prefix]).Select(kv => kv.Key).FirstOrDefault();
+    }
 
     /// <summary>
     /// Gaze/proximity (bot layer): whom <c>player</c> is looking at (a ray within ~10°, ~8 blocks) or standing right next to,
@@ -126,7 +166,9 @@ public sealed partial class ChatRouter
         foreach (var p in online)
             foreach (var n in NicknamesOf(p))
                 if (AddressingText.Vocative(bare, n)) return p;
-        return null;
+        // A foreign bot's learned command prefix ("c trees" is robinchan's), from a human only.
+        if (IsOtherBot(speaker)) return null;
+        lock (_lock) return PrefixBotLocked(text);
     }
 
     /// <summary>
@@ -164,6 +206,21 @@ public sealed partial class ChatRouter
             _lastHeardLine = (player, text, now);
             if (_options.OtherBots.Contains(player, StringComparer.OrdinalIgnoreCase) || _knownBots.Contains(player)) _botSpokeAt[player] = now;
 
+            // --- a foreign bot answering a human's line that wasn't ours: that line (and the player's thread) went to the bot,
+            // and its command prefix counts one hit ("c help" answered with robinchan's list).
+            if (IsOtherBotLocked(player) && !namesUs && _lastHumanLine is { ToUs: false } h && now - h.At <= TimeSpan.FromSeconds(BotAnswerSeconds)
+                && (h.To == null || h.To.Equals(player, StringComparison.OrdinalIgnoreCase)))
+            {
+                _partner[h.Player] = (player, now);
+                _partner[player] = (h.Player, now);
+                if (h.Prefix != null)
+                {
+                    var hits = _prefixHits.TryGetValue(player, out var ph) ? ph : _prefixHits[player] = new(StringComparer.OrdinalIgnoreCase);
+                    hits[h.Prefix] = hits.GetValueOrDefault(h.Prefix) + 1;
+                }
+                _lastHumanLine = null; // one answer per line
+            }
+
             // --- nicknames ("robinchan, I'm gonna call you c" → c = robinchan; "I'm robin-sama to you" → kiwi)
             if (CallYou.Match(text) is { Success: true } cy)
             {
@@ -187,9 +244,12 @@ public sealed partial class ChatRouter
             }
             else if (!namesUs)
             {
-                // This player answering someone who just talked to them (robinchan answering Robin): that thread goes on.
+                // This player answering someone who just talked to them (robinchan answering Robin): that thread goes on, unless
+                // this player has talked to us since ("c trees", "maid_chan get an axe", then "and some sticks" is ours).
+                var toUsAt = _lastToUs.TryGetValue(player, out var tus) ? tus : DateTimeOffset.MinValue;
                 foreach (var (a, pa) in _partner.Where(kv => !kv.Key.Equals(player, StringComparison.OrdinalIgnoreCase)
-                             && kv.Value.Other.Equals(player, StringComparison.OrdinalIgnoreCase) && now - kv.Value.At <= TimeSpan.FromSeconds(20)).ToList())
+                             && kv.Value.Other.Equals(player, StringComparison.OrdinalIgnoreCase) && now - kv.Value.At <= TimeSpan.FromSeconds(20)
+                             && kv.Value.At > toUsAt).ToList())
                 {
                     _partner[a] = (player, now);
                     _partner[player] = (a, now);
@@ -260,9 +320,9 @@ public sealed partial class ChatRouter
         if (named) return new(AddressReason.Name, "names us");
 
         int humans;
-        DateTimeOffset? ours, asked, rejectUntil;
+        DateTimeOffset? ours, asked, rejectUntil, toUs;
         (string Other, DateTimeOffset At)? partner;
-        bool botAround, botOnline;
+        bool botAround, botOnline, foreignPartner;
         lock (_lock)
         {
             humans = Math.Max(_online.Count(p => !IsOtherBotLocked(p)), 1);
@@ -270,11 +330,15 @@ public sealed partial class ChatRouter
             ours = _lastTalkedWith.TryGetValue(player, out var at) && Now - at < TimeSpan.FromSeconds(_options.ReplyWindowSeconds) ? at : null;
             asked = _askedAt.TryGetValue(player, out var q) && Now - q < TimeSpan.FromSeconds(_options.AnswerWindowSeconds) ? q : null;
             rejectUntil = _rejectUntil.TryGetValue(player, out var r) && r > Now ? r : null;
-            partner = _partner.TryGetValue(player, out var pt) && Now - pt.At < TimeSpan.FromSeconds(_options.OtherConversationSeconds) && _online.Contains(pt.Other) ? pt : null;
+            // A foreign bot's thread lasts the reply window (its jobs take a while); a human-to-human one the shorter window.
+            foreignPartner = _partner.TryGetValue(player, out var pt) && IsOtherBotLocked(pt.Other);
+            var partnerWindow = foreignPartner ? Math.Max(_options.OtherConversationSeconds, _options.ReplyWindowSeconds) : _options.OtherConversationSeconds;
+            partner = pt.Other != null && Now - pt.At < TimeSpan.FromSeconds(partnerWindow) && _online.Contains(pt.Other) ? pt : null;
+            toUs = _lastToUs.TryGetValue(player, out var tu) ? tu : null;
             botAround = _botSpokeAt.Any(kv => Now - kv.Value < TimeSpan.FromSeconds(90) && _online.Contains(kv.Key))
                         || (partner is { } pp && IsOtherBotLocked(pp.Other));
         }
-        if (CalledPlayer(text, player) is { } other) return new(AddressReason.OtherPlayer, $"calls {other}");
+        if (CalledPlayer(text, player) is { } other) return new(AddressReason.OtherPlayer, $"calls {other}", other);
         if (rejectUntil != null) return new(AddressReason.Rejected, $"said not talking to us ({(int)(rejectUntil.Value - Now).TotalSeconds}s left)");
         if (humans <= _options.SmallGroupSize && _groupRegex.IsMatch(text)) return new(AddressReason.Group, "group word");
 
@@ -283,8 +347,18 @@ public sealed partial class ChatRouter
         if (gaze != null && IsSelf(gaze)) return new(AddressReason.Gaze, "looking at us");
         // Content fit: our question to them is newer than their talk with anyone else.
         if (asked is { } a && (partner is not { } p0 || a >= p0.At)) return new(AddressReason.AnswerToUs, "answers our question");
-        if (gaze != null) return new(AddressReason.OtherConversation, $"looking at {gaze}");
-        if (partner is { } p1 && (ours is not { } o1 || p1.At > o1)) return new(AddressReason.OtherConversation, $"talking with {p1.Other}");
+        if (gaze != null) return new(AddressReason.OtherConversation, $"looking at {gaze}", gaze);
+        if (partner is { } pf && foreignPartner)
+        {
+            // The player's last addressed line went to a foreign bot (named it, used its prefix, or it answered): an unnamed
+            // follow-up stays with that bot. Our own talk to them doesn't take it back; their line to us does; a help call is ours.
+            if (toUs is not { } tu1 || pf.At > tu1)
+            {
+                if (!AddressingText.IsHelpCall(text)) return new(AddressReason.OtherConversation, $"continues with {pf.Other} (another bot)", pf.Other);
+                if (!DropBackgroundChat) return new(AddressReason.Imperative, $"a help call (not left to {pf.Other})");
+            }
+        }
+        else if (partner is { } p1 && (ours is not { } o1 || p1.At > o1)) return new(AddressReason.OtherConversation, $"talking with {p1.Other}", p1.Other);
         if (ours != null) return new(AddressReason.Continuity, "continues our conversation");
         if (botAround) return new(AddressReason.Unclear, "unclear and another bot is in the conversation");
         if (_options.SoloPlayerAlwaysAddressed && humans <= 1 && !botOnline) return new(AddressReason.Solo, "only player online");

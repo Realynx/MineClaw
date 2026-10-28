@@ -199,6 +199,98 @@ public class AddresseeTests
         r.Hear("<kiwi> maidchan hi");
         Assert.Equal(1.0, Assert.Single(r.Waking()).AddressConfidence);
     }
+
+    // ---- live 10-28 14:41: "c trees" to robinchan, then "get an axe, cut them down like real players" was taken by main ----
+
+    /// <summary>13:49-13:50: Robin's "c ..." lines, each answered by robinchan within a second, teach the "c " prefix.</summary>
+    private static Rig LearnedCPrefix()
+    {
+        var r = new Rig();
+        r.Hear("<kiwi> c help");
+        r.Hear("<robinchan> i can: make me a stone pickaxe, get me 20 cobble/some wood, chop trees, mine cobble, harvest wheat,", 0.3);
+        r.Hear("<kiwi> c follow", 12);
+        r.Hear("<robinchan> following u kiwi!! say stop when u want me to stay", 0.3);
+        Assert.Equal(["c "], r.Router.CommandPrefixesOf("robinchan"));
+        // 50 min later; main talked with Robin shortly before (14:38: "I'll be careful with it robin-sama").
+        r.Hear("<kiwi> maid_chan don't loose it", 50 * 60);
+        r.Say("I'll be careful with it robin-sama, I'll stay away from the edges uwu", "kiwi");
+        return r;
+    }
+
+    [Fact]
+    public void Replayed_follow_up_to_robinchan_stays_with_robinchan()
+    {
+        var r = LearnedCPrefix();
+        int before = r.Waking().Count;
+        var cTrees = r.Hear("<kiwi> c trees", 20);
+        Assert.Equal(AddressReason.OtherPlayer, cTrees.Reason);
+        Assert.Equal("robinchan", cTrees.To);
+        Assert.Equal(AddressReason.FromBot, r.Hear("<robinchan> uwu i got u robinsama!! chopping these trees with skibidi rizz!!", 0.7).Reason);
+        var axe = r.Hear("<kiwi> get an axe, cut them down like real players", 17);
+        Assert.Equal(AddressReason.OtherConversation, axe.Reason); // live: Imperative → "Yes robin-sama, getting an axe..."
+        Assert.Contains("robinchan", axe.Why);
+        Assert.Equal(before, r.Waking().Count); // main neither acts nor replies
+        Assert.Contains(r.Queue.Snapshot(), e => e.Kind == EventKind.Notice && !e.Wakes
+            && e.Text == "kiwi is instructing robinchan: get an axe, cut them down like real players");
+        Assert.Equal(AddressReason.Name, r.Hear("<kiwi> maidchan go back to what you were doing", 15).Reason);
+        Assert.Contains(r.Waking(), e => e.Text == "maidchan go back to what you were doing");
+    }
+
+    [Fact]
+    public void The_learned_prefix_alone_keeps_the_follow_up_with_robinchan_before_it_answers()
+    {
+        // Live order: robinchan's answer came after Robin's follow-up.
+        var r = LearnedCPrefix();
+        int before = r.Waking().Count;
+        r.Hear("<kiwi> c trees", 20);
+        Assert.Equal(AddressReason.OtherConversation, r.Hear("<kiwi> get an axe, cut them down like real players", 17).Reason);
+        Assert.Equal(before, r.Waking().Count);
+    }
+
+    [Fact]
+    public void Naming_us_after_a_line_to_robinchan_still_reaches_main()
+    {
+        var r = LearnedCPrefix();
+        r.Hear("<kiwi> c trees", 20);
+        r.Hear("<robinchan> uwu i got u robinsama!!", 0.7);
+        Assert.Equal(AddressReason.Name, r.Hear("<kiwi> maid_chan get an axe", 5).Reason);
+        Assert.Contains(r.Waking(), e => e.Text == "maid_chan get an axe");
+        // ...and her next unnamed line is ours again: her last addressed line went to main.
+        Assert.Equal(AddressReason.Continuity, r.Hear("<kiwi> and some sticks", 5).Reason);
+    }
+
+    [Fact]
+    public void A_player_who_last_talked_to_main_keeps_continuity_with_main()
+    {
+        var r = LearnedCPrefix();
+        Assert.Equal(AddressReason.Name, r.Hear("<kiwi> maid_chan come here", 20).Reason);
+        r.Hear("<robinchan> uwu hiii everyone!! skibidi!!", 0.5); // robinchan chiming in after a line to us doesn't take it
+        r.Say("omw robin-sama~", "kiwi");
+        Assert.Equal(AddressReason.Continuity, r.Hear("<kiwi> and bring some wood", 5).Reason);
+        Assert.Contains(r.Waking(), e => e.Text == "and bring some wood");
+    }
+
+    [Fact]
+    public void A_help_call_inside_robinchans_thread_is_ours()
+    {
+        var r = LearnedCPrefix();
+        r.Hear("<kiwi> c trees", 20);
+        r.Hear("<robinchan> uwu i got u robinsama!!", 0.7);
+        Assert.True(r.Hear("<kiwi> help im falling", 5).Addressed);
+    }
+
+    [Fact]
+    public void A_bot_answering_an_unprefixed_line_takes_the_thread_and_prefixes_need_two_answers()
+    {
+        var r = new Rig();
+        r.Hear("<kiwi> c stop");
+        r.Hear("<robinchan> ok stopping!!", 0.4); // it answered: the line (and Robin's thread) went to robinchan
+        Assert.Empty(r.Router.CommandPrefixesOf("robinchan")); // one answer is not a prefix yet
+        Assert.Equal(AddressReason.OtherConversation, r.Hear("<kiwi> now come back", 8).Reason);
+        Assert.Null(ChatRouter.CommandPrefix("ok cool"));
+        Assert.Null(ChatRouter.CommandPrefix("go there"));
+        Assert.Equal("!", ChatRouter.CommandPrefix("!help"));
+    }
 }
 
 /// <summary>The quick ack runs only after the addressee decision is sure the line is ours.</summary>

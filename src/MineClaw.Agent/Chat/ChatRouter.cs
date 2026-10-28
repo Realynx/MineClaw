@@ -268,6 +268,16 @@ public sealed partial class ChatRouter
         try { AddressDecided?.Invoke(msg, decision with { Why = addressed == decision.Addressed ? decision.Why : decision.Why + "; hive: another bot's" }); }
         catch (Exception) { }
         var missed = NoteAddressing(msg, reason, addressed);
+        // A line for a foreign bot (it calls it, uses its prefix, or continues its thread): main stays out, keeps a note.
+        string? foreign = !addressed && decision.To is { } to && IsOtherBot(to) ? to : null;
+        if (msg.Kind == ChatKind.Public && !IsOtherBot(player))
+            lock (_lock)
+            {
+                bool toUs = addressed || decision.Addressed;
+                _lastHumanLine = (player, Now, toUs, decision.To, CommandPrefix(msg.Text));
+                if (toUs) _lastToUs[player] = Now;
+                if (foreign != null) _partner[player] = (foreign, Now); // the thread goes on with each follow-up
+            }
         if (!addressed && ShouldClassify(msg, reason))
         {
             _ = ClassifyThenDeliverAsync(msg);
@@ -279,10 +289,12 @@ public sealed partial class ChatRouter
             _events.RemovePending(e => e.Kind == EventKind.Chat && !e.Wakes && player.Equals(e.Player, StringComparison.OrdinalIgnoreCase) && e.Text == prev);
             Deliver(msg with { Text = prev, Raw = prev }, true, AddressReason.Name);
         }
-        Deliver(msg, addressed, reason);
+        Deliver(msg, addressed, reason, foreign);
     }
 
-    private void Deliver(ChatMessage msg, bool addressed, AddressReason reason = AddressReason.Name)
+    /// <param name="foreignBot">The foreign bot this (unaddressed) line is for: no waiter takes it, and it rides along as a
+    /// Background note ("kiwi is instructing robinchan: ...") instead of plain chat.</param>
+    private void Deliver(ChatMessage msg, bool addressed, AddressReason reason = AddressReason.Name, string? foreignBot = null)
     {
         var player = msg.Player!;
         double? confidence = addressed ? reason.Confidence() : null;
@@ -315,13 +327,15 @@ public sealed partial class ChatRouter
         {
             try { elsewhere = OwnedElsewhere(msg); } catch (Exception) { }
         }
-        if (elsewhere) addressed = false;
+        if (elsewhere || foreignBot != null) addressed = false;
         else if (TryCompleteWaiter(player, msg.Text, addressed)) return;
 
         if (addressed && !AllowIncoming(player)) addressed = false; // spam: keep as context only
         if (!addressed && DropBackgroundChat) return;
 
-        if (msg.Kind == ChatKind.Whisper && addressed)
+        if (foreignBot != null && !addressed)
+            Post(GameEvent.Notice($"{player} is instructing {foreignBot}: {msg.Text}", EventPriority.Background));
+        else if (msg.Kind == ChatKind.Whisper && addressed)
             Post(GameEvent.Whisper(player, msg.Text) with { AddressConfidence = confidence });
         else
             Post(GameEvent.Chat(player, msg.Text, addressed) with { AddressConfidence = addressed ? confidence : null });
@@ -499,7 +513,7 @@ public sealed partial class ChatRouter
         bool addressed = yes == true;
         if (addressed)
         {
-            lock (_lock) { Addressing.ClassifierYes++; _ignored.Remove(msg.Player!); }
+            lock (_lock) { Addressing.ClassifierYes++; _ignored.Remove(msg.Player!); _lastToUs[msg.Player!] = Now; }
             if (Arbiter != null)
             {
                 try { addressed = Arbiter(msg, true); } catch (Exception) { }
@@ -639,6 +653,7 @@ public sealed partial class ChatRouter
             if (w.Parts.Count == 0) { w.From = player; w.First = Now; }
             w.Parts.Add(text);
             _lastTalkedWith[player] = Now;
+            _lastToUs[player] = Now; // an answer to us
 
             int quiet = Debounce is { Enabled: true } d ? Math.Max(0, d.ReplyQuietMs) : 0;
             int max = Debounce?.MaxMs ?? 0;
