@@ -86,6 +86,9 @@ public sealed class EntityTracker
         return e with { Metadata = merged };
     });
 
+    /// <summary>A dropped item's stack changed (1.12.2 item metadata: merged stacks, a partial pickup).</summary>
+    public bool SetItem(int id, ItemStack item) => Update(id, e => e.Kind == EntityKind.Item ? e with { Item = item } : e);
+
     /// <summary>0x05 equipment slot 0 (held item) for players.</summary>
     public bool SetHeldItem(int id, int itemId) => Update(id, e => e with { HeldItem = itemId });
 

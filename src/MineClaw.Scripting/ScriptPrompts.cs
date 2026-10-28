@@ -37,15 +37,20 @@ public static class ScriptPrompts
     /// <summary>Lua code arriving where only JS is accepted.</summary>
     public const string JsOnly = "scripts are JavaScript now (Lua is legacy): send a goal and the author writes it";
 
-    /// <summary>The worked examples the author sees (each one is lint-clean and runs in the tests).</summary>
+    /// <summary>
+    /// The worked examples the author sees (each one is lint-clean and runs in the tests). The jobs the old SDK baked in as
+    /// helpers (mineGen, harvestFarm, chopTrees, guardArea: now <c>99-compat.js</c>, deprecated) live here, composed from the
+    /// primitives, so a strategy is something a script (or memory) chooses, never SDK code.
+    /// </summary>
     public static readonly IReadOnlyList<(string Title, string Code)> Examples =
     [
         ("gen mining with policies", """
             // purpose: mine n cobble at the gen and store it, staying fed and tooled
             const P = params({ n: 64, at: 'auto', chest: null })
             use(keepFed(), replaceToolWhenBroken('pickaxe'))
-            const got = mineGen({ at: P.at, n: P.n, chest: P.chest })
-            return `mined ${got} cobble`
+            ensure('pickaxe')
+            const r = expect(gather('cobblestone', P.n, { from: 'gen', at: P.at, stash: P.chest }))
+            return `mined ${r.n} cobble`
             """),
         ("reactive state machine", """
             // purpose: mine the gen by day, guard it at night, retreat when hurt; stop after n cobble
@@ -55,8 +60,8 @@ public static class ScriptPrompts
               initial: 'mine', bb, policies: [keepFed()],
               on: { lowhp: 'retreat', [when(() => bb.mined >= P.n)]: 'done' },
               states: {
-                mine: { tick: () => { bb.mined += mineGen({ at: P.at, n: 16 }) }, on: { night: 'guard' } },
-                guard: { tick: () => { guardArea({ radius: 8, home: P.home }) }, on: { day: 'mine' } },
+                mine: { tick: () => { bb.mined += gather('cobblestone', 16, { from: 'gen', at: P.at, stash: true }).n }, on: { night: 'guard' } },
+                guard: { tick: () => { const m = hostile(8); if (!m || !ok(attack(m.name))) wait(3) }, on: { day: 'mine' } },
                 retreat: { enter: () => { go(P.home) }, on: { [after(30000)]: 'mine' } },
               },
             })
@@ -65,7 +70,7 @@ public static class ScriptPrompts
             // purpose: n cobble per body at the gen (auto cells), stored; one result line
             const P = params({ n: 64, bodies: ['67', '69'] })
             function miner(a) {
-              const got = mineGen({ n: a.n })
+              const got = gather('cobblestone', a.n, { from: 'gen', stash: true }).n
               crew.inc('cobble', got)
               return `${me.body} ${got}`
             }
@@ -74,18 +79,58 @@ public static class ScriptPrompts
               return `gen crew: ${crew.get('cobble')} cobble (${r.join(', ')})`
             }
             """),
+        ("chop trees, replant, wait for regrowth", """
+            // purpose: chop the grown trees at the spots (else the nearest), replanting, until n logs; store them
+            const P = params({ spots: null, n: 4, rounds: 20, waitS: 30, chest: null })
+            const r = quota(P.n, left => {
+              const trees = P.spots ? P.spots.filter(s => /log/.test(block(s))) : find('log', { limit: 1 })
+              const done = forEach(trees, t => {
+                const c = chop(t)
+                if (ok(c) && /not replanted/.test(c.msg) && inv('sapling')) log('replant: ' + place('sapling', t).msg)
+                return c
+              }, { budget: left })
+              if (done.n < left) wait(P.waitS)
+              return done.n
+            }, { max: P.rounds, idle: P.rounds })
+            stash(['log'], { to: P.chest })
+            return `chopped ${r.n}`
+            """),
+        ("harvest a farm in rounds", """
+            // purpose: harvest the ripe wheat around here (replanting) each round, store it, wait for regrowth
+            const P = params({ rounds: 3, r: 8, waitS: 120, chest: null })
+            let n = 0
+            for (let i = 1; i <= P.rounds; i++) {
+              n += gather('wheat', 64, { from: 'harvest', r: P.r, stash: P.chest }).n
+              if (i < P.rounds) wait(P.waitS)
+            }
+            return `harvested ${n} wheat`
+            """),
+        ("guard an area at night", """
+            // purpose: patrol an area at night fighting hostiles that come near; retreat home at low hp; stop at day
+            const P = params({ at: null, r: 8, home: 'home', low: 6, rounds: 40 })
+            use(keepFed(), defendIfAttacked({ retreatBelow: P.low, home: P.home }))
+            let fights = 0
+            const fight = () => { const m = hostile(P.r); if (m && me.hp > P.low && ok(attack(m.name))) fights++; return m }
+            on('mob.near', () => { fight() })
+            patrol(P.at ? { at: P.at, r: P.r } : [me.pos], () => {
+              if (me.hp <= P.low) { expect(go(P.home)); return 'stop' }
+              if (!fight()) wait(3)
+            }, { rounds: P.rounds, until: () => !night() })
+            return `fights ${fights}`
+            """),
     ];
 
     /// <summary>The first example (lint-clean; tests run it).</summary>
     public static string Exemplar => Unindent(Examples[0].Code);
 
     private static readonly Lazy<string> System = new(() =>
-        "You write JavaScript job scripts for a Minecraft Beta 1.8.1 skyblock bot (the Jint engine: ES2023, strict). Reply with ONLY " +
-        "the script in one ```js block.\n" +
+        "You write JavaScript job scripts for a Minecraft bot (the Jint engine: ES2023, strict); the world and game version come in " +
+        "the brief, so never assume a skyblock or one version's item names. Reply with ONLY the script in one ```js block.\n" +
         "Rules: line 1 \"// purpose: <what it does>\". Tunables at the top: const P = params({n: 64, at: 'auto'}) (the brain retunes " +
         "them later without new code). Host calls are synchronous: no await, no Promise, no timers. Every game function returns " +
-        "{ok, msg, n}: check ok (expect(r)) or call an SDK job that checks for you. Prefer the SDK: one call beats ten lines; never " +
-        "re-implement a helper it has. Loops bounded (for, upto, until) or a machine() with a way to end; reactive jobs = machine() with " +
+        "{ok, msg, n}, and so does every SDK primitive (gather, stash, handTo, makeRoom, patrol, quota, forEach): check ok (expect(r)). " +
+        "Compose the primitives (examples below show common jobs); never re-implement one, never call a deprecated helper (mineGen, " +
+        "harvestFarm, chopTrees, guardArea, store, restock, deliver, waitForDay). Loops bounded (for, upto, until) or a machine() with a way to end; reactive jobs = machine() with " +
         "events/timers/conditions plus policies. Data goes to return/log, never fail() or say(). Several bodies: top level only " +
         "functions and constants, work in main(), roles run with parallel()/spawn(). After a draft you may get lint errors: fix them " +
         "all and answer with the WHOLE corrected script, nothing else.\n\n# SDK reference\n" + Sdk.SdkReference.Build() +
@@ -107,7 +152,7 @@ public static class ScriptPrompts
     /// <summary>The migration brief: one legacy Lua script to translate to JS with the SDK.</summary>
     public static string MigrationBrief(string name, string lua, string facts, int maxChars) =>
         $"Translate this saved Lua script \"{name}\" to JavaScript with the SDK. Same behaviour, same args (args.x → params with the " +
-        $"same names and defaults), same result text; use SDK jobs/policies where they fit and drop what they make redundant.\n" +
+        $"same names and defaults), same result text; compose the SDK primitives and policies where they fit and drop what they make redundant.\n" +
         $"```lua\n{lua}\n```\n" + facts + $"\nAt most {maxChars} chars of code.";
 
     internal static string Unindent(string s)

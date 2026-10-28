@@ -25,7 +25,30 @@ public interface IGameData
     int FuelTicks(int itemId);
     bool CanHarvest(int blockId, int heldItemId);
     int DigTicks(int blockId, int heldItemId, bool onGround = true, bool inWater = false);
+
+    /// <summary>Ticks of continuous digging with everything the version's rule reads (1.12.2: the held stack's efficiency,
+    /// haste, mining fatigue, aqua affinity). b1.8.1 reads only the block, the item id, on-ground and in-water.</summary>
+    int DigTicks(in DigInput input) => DigTicks(input.BlockId, input.Held.IsEmpty ? -1 : input.Held.Id, input.OnGround, input.InWater);
+
+    /// <summary>Human-readable item name with its variant ("Birch Wood Planks", "Charcoal").</summary>
+    string DisplayName(int id, int damage = 0) => Items.DisplayName(id, damage);
+
+    /// <summary>Forgiving name lookup that also returns the variant's damage (−1 = the name implies none).</summary>
+    (ItemInfo Item, int Damage)? ItemByNameWithDamage(string name) => Items.ByNameWithDamage(name);
+
+    /// <summary>Capability fact: slab and stair halves follow the clicked face and the cursor height (1.12.2
+    /// <c>BlockSlab</c>/<c>BlockStairs.getStateForPlacement</c>: an underside click places a top half). b1.8.1 has bottom
+    /// halves only, whatever the face.</summary>
+    bool HalvesFollowCursor => false;
 }
+
+/// <summary>One dig, as the version's dig-speed rule sees it (1.12.2 <c>Block.getPlayerRelativeBlockHardness</c> +
+/// <c>EntityPlayer.getDigSpeed</c>).</summary>
+/// <param name="Haste">Haste amplifier + 1 (0 = no haste effect).</param>
+/// <param name="Fatigue">Mining fatigue amplifier + 1 (0 = none).</param>
+/// <param name="InWater">Eyes inside water.</param>
+public readonly record struct DigInput(int BlockId, int BlockMeta, ItemStack Held, bool OnGround = true, bool InWater = false,
+    int Haste = 0, int Fatigue = 0, bool AquaAffinity = false);
 
 /// <summary>b1.8.1: wraps the existing static tables, unchanged.</summary>
 public sealed class Beta181GameData : IGameData

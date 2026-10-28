@@ -249,7 +249,7 @@ public sealed partial class MinecraftClient
     public Task<ActionResult> MineAsync(string blockName, int count, double radius = 16, Func<BlockPos, int, bool>? protect = null,
         CancellationToken ct = default)
     {
-        var b = Blocks.ByName(blockName);
+        var b = Options.Profile.Data.BlockByName(blockName);
         if (b is null) return Task.FromResult(ActionResult.Fail($"unknown block '{blockName}'"));
         var ids = new HashSet<int> { b.Id };
         if (b.Id == Blocks.RedstoneOre) ids.Add(Blocks.LitRedstoneOre);
@@ -737,7 +737,7 @@ public sealed partial class MinecraftClient
         public string StoppedText(BlockPos primary, IReadOnlyList<BlockPos> work, EntityTracker entities)
         {
             var w = _c.World;
-            string now = string.Join(", ", work.Select(p => $"{Fmt(p)} {BlockName(w.GetBlock(p), 0)}"));
+            string now = string.Join(", ", work.Select(p => $"{Fmt(p)} {_c.BlockName(w.GetBlock(p), 0)}"));
             if (Shared)
                 return $"generator at {Fmt(primary)} shared: {Swinger() ?? Sharer(entities) ?? "someone"} is mining the same cells; waiting gave nothing for 8 s (now {now})";
             var causes = new List<string>();

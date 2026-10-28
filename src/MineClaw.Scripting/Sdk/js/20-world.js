@@ -19,6 +19,13 @@
   def('canSpawn', (...a) => H.canSpawn(...a));
   /** near(kind, r=24) - nearest block/entity/remembered place of that name: {x,y,z,name,d} or null. */
   def('near', (kind, r) => H.near(kind, r));
+  /** find(query, {r:24, filter, limit:16}) - matches nearest first: blocks ('log', 'wheat'), mobs ('cow', 'hostile', 'mob'), players ('player' or a name), drops ('item'), else that remembered place; filter(t) keeps some (ripe: t => t.meta >= 7). -> [{x,y,z,name,d,kind,meta?}]. */
+  def('find', (query, o = {}) => {
+    const list = H.find(String(query), o.r, o.filter ? 64 : o.limit);
+    return o.filter ? list.filter(o.filter).slice(0, Math.max(1, o.limit ?? 16)) : list;
+  });
+  /** item(name) - this version's name and facts for an item/block {name, id, block, stack, craftable, version}, or null if it has none. */
+  def('item', name => H.item(String(name)));
   /** hostile(r=8) - nearest hostile mob {name,x,y,z,d} or null. */
   def('hostile', r => H.hostile(r));
   /** where(item) - known chests/places holding it (text) or null. */

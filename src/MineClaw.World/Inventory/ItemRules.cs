@@ -20,7 +20,7 @@ public sealed class ItemRules
 
     /// <summary>Same item for merge purposes (Container.slotClick / mergeItemStack).</summary>
     public bool SameItem(ItemStack a, ItemStack b) =>
-        a.Id == b.Id && (!HasSubtypes(a.Id) || a.Damage == b.Damage) && (a.Damage == b.Damage || IsDamageable(a.Id));
+        a.Id == b.Id && (!HasSubtypes(a.Id) || a.Damage == b.Damage) && (a.Damage == b.Damage || IsDamageable(a.Id)) && Equals(a.Tag, b.Tag);
 
     // ---- defaults ----
 

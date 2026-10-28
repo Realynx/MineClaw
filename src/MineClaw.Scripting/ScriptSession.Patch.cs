@@ -525,8 +525,8 @@ public static class PatchPrompt
         # SDK (all globals)
         core: ok(r) expect(r,msg) fail(msg) log(..) wait(s) waitFor(kind,filter,s) say(t) ask(p,q,s) cp(label) params(d) carry args
         world: me.hp/food/pos/x/y/z/night inv(item) free() block(x,y,z) near(kind,r)->{"{x,y,z,d}"} hostile(r)->{"{name,d,x,y,z}"}|null where(item) night() time() players() dist(a,b)
-        flow: retry(n,fn) upto(n,fn) until(cond,fn,max) timeout(s,fn) room(n) ensure(kind|{"{item,n}"})
-        jobs: store(chest?) restock(item,n) mineGen(opts) harvestFarm() chopTrees(n) deliver(player,item,n) waitForDay()
+        flow: retry(n,fn) upto(n,fn) until(cond,fn,max) quota(n,fn) forEach(targets,fn) timeout(s,fn) room(n) ensure(kind|{"{item,n}"})
+        jobs: gather(item,n,{"{from,more,stash,chest}"}) stash(items,{"{to}"}) handTo(player,item,n) makeRoom(n) patrol(points,fn) find(q,{"{r,filter}"}) waitFor('day')
         {gameFunctions}
         """;
 

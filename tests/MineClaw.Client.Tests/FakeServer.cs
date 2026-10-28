@@ -2,6 +2,9 @@ using System.Collections.Concurrent;
 using MineClaw.Data;
 using MineClaw.Protocol;
 using MineClaw.Protocol.Packets;
+using MineClaw.Protocol.Release1122;
+using MineClaw.Protocol.Versioning;
+using MineClaw.World;
 
 namespace MineClaw.Client.Tests;
 
@@ -76,13 +79,19 @@ internal sealed class DuplexStream(BytePipe readFrom, BytePipe writeTo) : Stream
 }
 
 /// <summary>
-/// Minimal scripted b1.8.1 server for offline tests: offline-mode login, a small island chunk, spawn position,
+/// Minimal scripted server for offline tests: offline-mode login, a small island chunk, spawn position,
 /// window/transaction replies and simple dig/place/open behaviour. Records everything the client sends.
+/// <para>b1.8.1 by default (<see cref="PacketConnection"/>). With <c>release1122: true</c> the same canonical game logic runs
+/// over the 1.12.2 wire (<see cref="Release1122ServerConnection"/>) and, like the vanilla 1.12.2 server, keeps its own window
+/// model: each click is applied by the 1.12.2 <c>Container.slotClick</c> (<see cref="InventoryModel.Release1122"/>) and its
+/// expected item compared (NBT included) to accept or reject it; after a rejection clicks are ignored until the client's
+/// apology (Confirm Transaction accepted); the crafting output is sent during the click, before its confirm; placements use
+/// the server's own hotbar (1.12.2 sends no held item).</para>
 /// </summary>
 internal sealed class FakeServer : IDisposable
 {
     public const int EntityId = 42;
-    private readonly PacketConnection _conn;
+    private readonly IGameConnection _conn;
     private readonly Thread _thread;
     private readonly DuplexStream _clientEnd;
 
@@ -151,11 +160,19 @@ internal sealed class FakeServer : IDisposable
         Send(new UpdateHealthPacket { Health = (short)health, Food = (short)food, FoodSaturation = saturation });
     }
 
-    public FakeServer()
+    public FakeServer(bool release1122 = false)
     {
         var (client, server) = DuplexStream.CreatePair();
         _clientEnd = client;
-        _conn = new PacketConnection(server, PacketDirection.ServerBound);
+        Modern = release1122;
+        _conn = release1122 ? new Release1122ServerConnection(server) : new PacketConnection(server, PacketDirection.ServerBound);
+        if (release1122)
+        {
+            _srv = new InventoryManager(MineClaw.Client.Versioning.GameVersionProfiles.Java1122.ItemRules, InventoryModel.Release1122)
+            {
+                CraftResult = (grid, width) => Recipes.Match(grid, width)?.Output ?? ItemStack.Empty,
+            };
+        }
         for (int x = 6; x <= 10; x++)
         for (int z = 6; z <= 10; z++)
             Blocks[(x, 63, z)] = MineClaw.Data.Blocks.Stone;
@@ -167,6 +184,29 @@ internal sealed class FakeServer : IDisposable
         if (!_thread.IsAlive) _thread.Start();
         return new PacketConnection(_clientEnd);
     }
+
+    /// <summary>The client end for either version (1.12.2: the translating client connection).</summary>
+    public IGameConnection CreateConnection(CancellationToken ct)
+    {
+        if (!Modern) return CreateClientConnection(ct);
+        if (!_thread.IsAlive) _thread.Start();
+        return new Release1122Connection(_clientEnd) { Lang = LangTable.Builtin };
+    }
+
+    /// <summary>Speaks 1.12.2 (see the class remarks).</summary>
+    public bool Modern { get; }
+    /// <summary>1.12.2: the server's window model (window 0 mirrors <see cref="Inventory"/>, plus the off hand).</summary>
+    private readonly InventoryManager? _srv;
+    private (int, int, int)? _openChest;
+    private short? _awaitingApology;
+    /// <summary>1.12.2: crafting tables that open a workbench window when right-clicked.</summary>
+    public HashSet<(int, int, int)> Workbenches { get; } = new();
+    /// <summary>1.12.2: every click the server judged (mode, slot, accepted).</summary>
+    public ConcurrentQueue<(byte Mode, short Slot, bool Accepted)> Clicks { get; } = new();
+    /// <summary>1.12.2: the server's off-hand slot.</summary>
+    public ItemStack Offhand => _srv?.Offhand ?? ItemStack.Empty;
+    /// <summary>1.12.2: the server model's cursor.</summary>
+    public ItemStack ServerCursor => _srv?.Cursor ?? ItemStack.Empty;
 
     public void Send(IPacket p) => _conn.Send(p);
 
@@ -208,6 +248,8 @@ internal sealed class FakeServer : IDisposable
     {
         if (p is PlayerOnGroundPacket or PlayerPositionPacket or PlayerLookPacket or PlayerPositionLookPacket) Interlocked.Increment(ref _flyingPackets);
         if (Hook?.Invoke(p) == true) return;
+        if (Modern && p is PlayerBlockPlacementPacket { HeldItem.IsEmpty: true } pl) pl.HeldItem = Inventory[36 + _heldSlot]; // the server's own hotbar
+        if (Modern && HandleModern(p)) return;
         switch (p)
         {
             case UpdateSignPacket sign:
@@ -359,6 +401,105 @@ internal sealed class FakeServer : IDisposable
                 }
                 break;
         }
+    }
+
+    /// <summary>1.12.2 server logic that differs from b1.8.1's (see the class remarks). True = handled.</summary>
+    private bool HandleModern(IPacket p)
+    {
+        var srv = _srv!;
+        switch (p)
+        {
+            case TransactionPacket { Accepted: true } t when _awaitingApology == t.ActionNumber:
+                _awaitingApology = null; // processConfirmTransaction: the window unlocks
+                return true;
+            case WindowClickPacket click:
+            {
+                if (_awaitingApology is not null) return true; // getCanCraft false: ignored, no reply
+                SyncIn();
+                var w = srv.ActiveWindow;
+                if (w.Id != click.WindowId) return true;
+                var outputBefore = w.Get(0);
+                var r = srv.ApplyClick(click.Slot, (ClickMode)click.EffectiveMode, click.EffectiveButton);
+                bool ok = !RejectActions.Contains(click.ActionNumber) && r.ExpectedItem.Equals(click.ClickedItem);
+                SyncOut();
+                Clicks.Enqueue((click.EffectiveMode, click.Slot, ok));
+                if (ok)
+                {
+                    // slotChangedCraftingGrid sends the output during slotClick, ahead of the confirm.
+                    if (w.Type is WindowType.Player or WindowType.Workbench && !w.Get(0).Equals(outputBefore))
+                        Send(new SetSlotPacket { WindowId = (sbyte)w.Id, Slot = 0, Item = w.Get(0) });
+                    Send(new TransactionPacket { WindowId = click.WindowId, ActionNumber = click.ActionNumber, Accepted = true });
+                }
+                else
+                {
+                    _awaitingApology = click.ActionNumber;
+                    Send(new TransactionPacket { WindowId = click.WindowId, ActionNumber = click.ActionNumber, Accepted = false });
+                    var all = new ItemStack[w.SlotCount];
+                    for (int i = 0; i < all.Length; i++) all[i] = w.Get(i);
+                    Send(new WindowItemsPacket { WindowId = (sbyte)w.Id, Items = all });
+                    Send(new SetSlotPacket { WindowId = -1, Slot = -1, Item = srv.Cursor });
+                }
+                return true;
+            }
+            case CloseWindowPacket cw:
+                SyncIn();
+                srv.Close(cw.WindowId);
+                _openChest = null;
+                return true;
+            case PlayerDiggingPacket { Status: PlayerDiggingPacket.StatusSwapHands }:
+            {
+                SyncIn();
+                srv.SwapHands(_heldSlot);
+                SyncOut();
+                Send(new SetSlotPacket { WindowId = 0, Slot = (short)(36 + _heldSlot), Item = Inventory[36 + _heldSlot] });
+                Send(new SetSlotPacket { WindowId = 0, Slot = InventoryModel.OffhandSlot, Item = srv.Offhand });
+                return true;
+            }
+            case PlayerBlockPlacementPacket place when place.Direction != PlayerBlockPlacementPacket.NoDirection
+                                                        && Workbenches.Contains((place.X, place.Y, place.Z)):
+            {
+                SyncIn();
+                sbyte id = (sbyte)++_windowId;
+                var w = srv.Open(id, WindowType.Workbench, "Crafting", 9);
+                Send(new OpenWindowPacket { WindowId = id, InventoryType = 1, Title = "Crafting", SlotCount = 9 });
+                var items = new ItemStack[w.SlotCount];
+                for (int i = 0; i < items.Length; i++) items[i] = w.Get(i);
+                Send(new WindowItemsPacket { WindowId = id, Items = items });
+                return true;
+            }
+            case PlayerBlockPlacementPacket place when place.Direction != PlayerBlockPlacementPacket.NoDirection
+                                                        && Chests.TryGetValue((place.X, place.Y, place.Z), out var contents):
+            {
+                SyncIn();
+                sbyte id = (sbyte)++_windowId;
+                var w = srv.Open(id, WindowType.Chest, "Chest", 27);
+                srv.SetWindowItems(id, contents.Concat(Enumerable.Range(9, 36).Select(i => Inventory[i])).ToArray());
+                _openChest = (place.X, place.Y, place.Z);
+                Send(new OpenWindowPacket { WindowId = id, InventoryType = 0, Title = "Chest", SlotCount = 27 });
+                var items = new ItemStack[w.SlotCount];
+                for (int i = 0; i < items.Length; i++) items[i] = w.Get(i);
+                Send(new WindowItemsPacket { WindowId = id, Items = items });
+                return true;
+            }
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>The server model's window 0 from <see cref="Inventory"/> (pickups, eating and tests write the array).</summary>
+    private void SyncIn()
+    {
+        var cur = _srv!.PlayerSlots();
+        for (int i = 0; i < 45; i++)
+            if (!cur[i].Equals(Inventory[i])) _srv.PlayerWindow.Set(i, Inventory[i]);
+    }
+
+    private void SyncOut()
+    {
+        var cur = _srv!.PlayerSlots();
+        for (int i = 0; i < 45; i++) Inventory[i] = cur[i];
+        if (_openChest is { } at && _srv.OpenWindow is { Type: WindowType.Chest } w && Chests.TryGetValue(at, out var contents))
+            for (int i = 0; i < contents.Length && i < w.ContainerSlots; i++) contents[i] = w.Get(i);
     }
 
     /// <summary>BlockDoor/BlockTrapDoor/BlockFenceGate.blockActivated: flips the open bit (both door halves) and sends the

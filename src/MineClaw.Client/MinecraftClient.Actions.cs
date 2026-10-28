@@ -164,7 +164,7 @@ public sealed partial class MinecraftClient
             DigCost = (id, meta) =>
             {
                 int idx = MineClaw.Data.Tools.BestToolIndex(id, slots);
-                int ticks = MineClaw.Data.Tools.DigTicks(id, idx < 0 ? -1 : slots[idx].Id);
+                int ticks = Options.Profile.Data.DigTicks(id, idx < 0 ? -1 : slots[idx].Id);
                 return ticks == int.MaxValue ? double.PositiveInfinity : ticks + 5;
             },
             AllowPlace = o.AllowPlace && scaffold > 0,

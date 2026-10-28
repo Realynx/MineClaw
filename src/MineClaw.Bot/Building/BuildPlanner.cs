@@ -11,8 +11,11 @@ public sealed record BuildPlannerOptions
     public double Reach { get; init; } = 4.5;
     /// <summary>Longest temporary scaffold chain to give an unsupported cell a neighbour (building down: hanging chains).</summary>
     public int MaxScaffold { get; init; } = 10;
-    /// <summary>Click faces the bot can't see (verified: b1.8.1 checks distance only).</summary>
+    /// <summary>Click faces the bot can't see (verified: b1.8.1 checks distance only; 1.12.2's processTryUseItemOnBlock too).</summary>
     public bool AllowHidden { get; init; } = true;
+    /// <summary>The version's slab/stair halves follow the click (1.12.2; <c>IGameData.HalvesFollowCursor</c>): a bottom half is
+    /// never planned from an underside click (that places a top half), nor a top half from a top-face click.</summary>
+    public bool HalvesFollowCursor { get; init; }
     /// <summary>A water bucket is on hand (or the acquisition can get one): water-column descents are possible.</summary>
     public bool WaterAvailable { get; init; }
     /// <summary>Confirmation gate: ask after this many placements (0 = off).</summary>
@@ -383,8 +386,9 @@ public sealed partial class BuildPlanner
             if (Solid(t.Pos - f.Normal())) yield return f;
             yield break;
         }
+        bool halves = _o.HalvesFollowCursor && PlaceCursor.HasHalves(t.Id);
         foreach (var f in BlockFaceExtensions.All)
-            if (Solid(t.Pos - f.Normal())) yield return f;
+            if (Solid(t.Pos - f.Normal()) && (!halves || PlaceCursor.FaceAllows(f, PlaceCursor.HalfOf(t.Id, t.Meta)))) yield return f;
     }
 
     /// <summary>Picks the cheapest (stand, face) for <paramref name="t"/> that keeps a way out, and commits it.</summary>

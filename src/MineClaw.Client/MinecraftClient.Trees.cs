@@ -385,7 +385,7 @@ public sealed partial class MinecraftClient
         if (target is not { } t) return false;
         int id = World.GetBlock(t);
         int held = await SelectToolForAsync(id, ct).ConfigureAwait(false);
-        int ticks = Tools.DigTicks(id, held, onGround: true);
+        int ticks = DigTicksNow(id, World.GetMeta(t), onGround: true, inWater: false);
         if (ticks == int.MaxValue) return false;
 
         DigAim? aim = null;

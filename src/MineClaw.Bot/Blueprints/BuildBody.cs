@@ -21,6 +21,8 @@ public interface IBuildBody
     /// <summary>Places a step's block (its item variant; the face to click when the step names one).</summary>
     Task<ActionResult> PlaceAsync(BuildStep step, int itemId, int damage, CancellationToken ct);
     Task<ActionResult> DigAsync(BlockPos pos, CancellationToken ct);
+    /// <summary>The body's version places slab/stair halves by the click (1.12.2). Default: no (b1.8.1).</summary>
+    bool HalvesFollowCursor => false;
     int Count(int itemId, int damage);
     /// <summary>Gets <paramref name="count"/> of an item on hand (acquisition planner: chests, crafting, gen, trees); null = done, else why not.</summary>
     Task<string?> EnsureAsync(int itemId, int damage, int count, CancellationToken ct);
@@ -131,11 +133,14 @@ public sealed class GameBuildBody(Func<IGameClient> client, IBody? owner = null)
 
     private MinecraftClient? Real => GameClients.Minecraft(C)?.Inner;
 
+    public bool HalvesFollowCursor => Real?.Options.Profile.Data.HalvesFollowCursor == true;
+
     /// <summary>A planned step (face chosen by the planner, body already on its stand) clicks exactly that face from here;
     /// otherwise the client finds its own aim and paths into reach.</summary>
     public Task<ActionResult> PlaceAsync(BuildStep step, int itemId, int damage, CancellationToken ct) =>
         step.Face is { } face && Real is { } real
-            ? real.PlaceAgainstAsync(step.Pos, face, itemId, BuildBlocks.HasVariants(step.Id) ? damage : null, step.Yaw, step.Hidden, ct)
+            ? real.PlaceAgainstAsync(step.Pos, face, itemId, BuildBlocks.HasVariants(step.Id) ? damage : null, step.Yaw, step.Hidden, ct,
+                PlaceCursor.HalfOf(step.Id, step.Meta))
             : BuildBlocks.HasVariants(step.Id) || step.Face != null
             ? C.PlaceVariantAsync(step.Pos.X, step.Pos.Y, step.Pos.Z, itemId, BuildBlocks.HasVariants(step.Id) ? damage : null, step.Face, ct)
             : C.PlaceBlockAsync(step.Pos.X, step.Pos.Y, step.Pos.Z, itemId, ct);

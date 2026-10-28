@@ -39,7 +39,8 @@ public static class CodeHighlighter
         "me", "inv", "block", "near", "hostile", "where", "night", "time", "players", "retry", "upto", "until", "seq", "sel", "timeout", "room",
         "ensure", "machine", "after", "every", "when", "signal", "use", "policy", "keepFed", "fleeVoidEdges", "defendIfAttacked",
         "depositWhenFull", "replaceToolWhenBroken", "pauseAtNight", "store", "restock", "mineGen", "harvestFarm", "chopTrees", "deliver",
-        "waitForDay", "guardArea", "body", "bodies", "spawn", "parallel", "crew", "main",
+        "waitForDay", "guardArea", "body", "bodies", "spawn", "parallel", "crew", "main", "find", "item", "gather", "stash", "handTo",
+        "makeRoom", "patrol", "quota", "forEach",
     };
 
     /// <summary>Highlights every line; block comments and template strings continue across lines.</summary>

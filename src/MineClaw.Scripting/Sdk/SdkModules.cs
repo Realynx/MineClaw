@@ -5,7 +5,9 @@ using System.Text.RegularExpressions;
 namespace MineClaw.Scripting.Sdk;
 
 /// <summary>One SDK module: an embedded <c>Sdk/js/NN-name.js</c> file, evaluated before every JS script.</summary>
-public sealed record SdkModule(string Name, string Summary, string Source);
+/// <param name="Deprecated">A <c>// module: name (deprecated) | ...</c> header (<c>99-compat.js</c>): it still runs, so saved scripts that
+/// call its helpers keep working, but it is left out of the generated reference and the sdk-js pack, and lint warns on every use.</param>
+public sealed record SdkModule(string Name, string Summary, string Source, bool Deprecated = false);
 
 /// <summary>
 /// The JS standard library, one small module per concern (core, world, flow, machine, policies, jobs, crew). Each module is
@@ -19,7 +21,7 @@ public static class SdkModules
 
     public static IReadOnlyList<SdkModule> All => Loaded.Value;
 
-    private static readonly Regex Header = new(@"^//\s*module:\s*(\w+)\s*\|\s*(.+)$", RegexOptions.Multiline | RegexOptions.Compiled);
+    private static readonly Regex Header = new(@"^//\s*module:\s*(\w+)\s*(\(deprecated\))?\s*\|\s*(.+)$", RegexOptions.Multiline | RegexOptions.Compiled);
 
     private static IReadOnlyList<SdkModule> Load()
     {
@@ -39,7 +41,7 @@ public static class SdkModules
     {
         var src = source.Replace("\r\n", "\n");
         var m = Header.Match(src);
-        return new SdkModule(m.Success ? m.Groups[1].Value : file, m.Success ? m.Groups[2].Value.Trim() : "", src);
+        return new SdkModule(m.Success ? m.Groups[1].Value : file, m.Success ? m.Groups[3].Value.Trim() : "", src, m.Success && m.Groups[2].Success);
     }
 
     /// <summary>The modules of an <c>Sdk/js</c> folder on disk (same order and parsing as the embedded ones): tools that build docs
@@ -50,9 +52,22 @@ public static class SdkModules
 
     private static readonly Regex DefRx = new(@"\bdef\('([A-Za-z_$][\w$]*)'", RegexOptions.Compiled);
 
-    /// <summary>Every global the SDK defines (lint's known names; the reference must document each public one).</summary>
+    /// <summary>Every global the SDK defines, compat ones included (lint's known names; the reference documents each current one).</summary>
     public static IReadOnlySet<string> Globals { get; } = new HashSet<string>(
         Loaded.Value.SelectMany(m => DefRx.Matches(m.Source).Select(x => x.Groups[1].Value)), StringComparer.Ordinal);
+
+    /// <summary>The documented modules: every one but the deprecated (compat) ones.</summary>
+    public static IReadOnlyList<SdkModule> Current => Loaded.Value.Where(m => !m.Deprecated).ToList();
+
+    private static readonly Regex CompatDoc = new(@"/\*\*\s*(\w+)\([^)]*\)\s*-\s*DEPRECATED:\s*((?:(?!\*/).)*?)\s*\*/", RegexOptions.Singleline | RegexOptions.Compiled);
+
+    /// <summary>
+    /// The deprecated helpers (<c>99-compat.js</c>) and what replaces each ("use stash(items, {to: chest})..."), from their doc comments:
+    /// lint's <c>compat</c> warning and the author's migration note.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> Compat { get; } = Loaded.Value.Where(m => m.Deprecated)
+        .SelectMany(m => CompatDoc.Matches(m.Source).Select(x => (Name: x.Groups[1].Value, Use: Regex.Replace(x.Groups[2].Value, @"\s+", " ").Trim())))
+        .GroupBy(x => x.Name).ToDictionary(g => g.Key, g => g.First().Use, StringComparer.Ordinal);
 }
 
 /// <summary>
@@ -67,7 +82,7 @@ public static class SdkReference
     public static string Build()
     {
         var sb = new StringBuilder();
-        foreach (var m in SdkModules.All)
+        foreach (var m in SdkModules.Current)
         {
             sb.Append("## ").Append(m.Name).Append(": ").Append(m.Summary).Append('\n');
             foreach (Match d in DocRx.Matches(m.Source))
@@ -87,7 +102,7 @@ public static class SdkReference
     public static IReadOnlyList<Entry> Entries(IEnumerable<SdkModule>? modules = null)
     {
         var list = new List<Entry>();
-        foreach (var m in modules ?? SdkModules.All)
+        foreach (var m in (modules ?? SdkModules.All).Where(m => !m.Deprecated))
             foreach (Match d in DocRx.Matches(m.Source))
             {
                 var text = Regex.Replace(d.Groups[1].Value, @"^\s*\*\s?", "", RegexOptions.Multiline);
@@ -104,7 +119,7 @@ public static class SdkReference
     public static IReadOnlySet<string> Documented()
     {
         var set = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var m in SdkModules.All)
+        foreach (var m in SdkModules.Current)
             foreach (Match d in DocRx.Matches(m.Source))
                 foreach (Match id in Regex.Matches(d.Groups[1].Value, @"(?<![\w.$])([A-Za-z_$][\w$]*)(?=\(|\.|\s+-)"))
                     set.Add(id.Groups[1].Value);

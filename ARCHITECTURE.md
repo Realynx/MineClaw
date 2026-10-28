@@ -28,8 +28,10 @@ resolved once by the App before any client exists (`Bot:Server:Version` auto | b
 logs in through it; the wire is translated to the canonical `Protocol.Packets` model), `IPhysicsRules`, `ICombatRules`,
 `IHungerRules`, `IGameData`. P1: `GameVersionProfiles.Java1122` = `Protocol/Release1122` (a translating connection: VarInt
 frames + zlib, login/keep-alive/teleport confirm inside, JSON chat → legacy text via the jar's `en_us.lang`, paletted chunk
-sections → the neutral `ChunkSectionsMessage`; `CanSend` false for P2+ features, which the client reports as "not supported on
-1.12.2 yet") + `Release1122PhysicsRules` (step 0.6); its world is 256 high (`WorldState(height:)`, `ChunkColumn` stacks a second
+sections → the neutral `ChunkSectionsMessage`; P2: windows with click types and the confirm flow, dig, place with hand +
+cursor, use item/entity, signs, item entities and players; `Release1122ServerConnection` is the fake servers' side of the same
+wire) + `Release1122PhysicsRules` (step 0.6) + `Release1122GameData` (minecraft-data names, ids, stack sizes, the 1.12.2 dig
+rule) + `InventoryModel.Release1122` (off hand at 45, 1.12.2 `slotClick` prediction); its world is 256 high (`WorldState(height:)`, `ChunkColumn` stacks a second
 128 half, so b1.8.1 indices are unchanged). No `if (version)` in game code, differences live behind the seams.
 
 ## Project ownership / contracts
@@ -304,7 +306,7 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
 A saved script is a job that runs while the brain sleeps (zero tokens per step). The brain never writes code: its whole view
 is `script {name|goal, params?, op}` (≈ 60 tokens of schema) and one cached line (`ScriptPrompts.AuthorLine`, ≤ 40 tokens; the
 old 420-token Lua cheat-sheet is gone from its prefix). `goal` commissions the Opus author (above), whose cached system prompt is
-the rules + the SDK reference generated from the code + three worked examples (≈ 3,100 tokens, `ScriptPrompts.AuthorSystem`).
+the rules + the SDK reference generated from the code + six worked examples (≈ 5,200 tokens, `ScriptPrompts.AuthorSystem`).
 `name` runs a saved script; `params` tune it for this run; `op=save name params` keeps the tunables without new code.
 
 - **Engine: JavaScript on Jint 4.17** (pure managed, strict mode, ES2023; `Runtime/Js/JsRuntime`). **Execution model: host calls
@@ -330,13 +332,40 @@ the rules + the SDK reference generated from the code + three worked examples (�
   `waitFor`, both work).
 - **The SDK** (`Sdk/js/NN-module.js`, embedded, parsed once per process; each `def` has a doc comment and `SdkReference.Build()`
   turns them into the author's reference — a test pins that every global is documented): **core** (ok, expect, fail, log/console,
-  prog, wait, waitFor, say, emote, ask, wake, cp, on, skill, params, carry, args) · **world** (me, inv, block, near, hostile, where,
-  night, time, players, pos, dist) · **flow** (retry, upto, until, seq, sel, timeout, room, ensure) · **machine** (machine, after,
-  every, when, signal) · **policies** (use, policy, keepFed, fleeVoidEdges, defendIfAttacked, depositWhenFull,
-  replaceToolWhenBroken, pauseAtNight) · **jobs** (store, restock, mineGen, harvestFarm, chopTrees, deliver, waitForDay,
-  guardArea; `store`/`depositWhenFull`/`room` all go through the `deposit` tool's one path, `Bot/GameTools/ChestStore`: the named
-  chest, then known chests with room, never-touch/"private" skipped; all full → `{ok:false, full:true, need}`) · **crew** (body, bodies, spawn, parallel, crew.get/set/inc/send/recv/barrier/lock/unlock) · **character** (the persona: character.look/face/gesture/follow/line/speak/mood/relation/recall/remember/heard/intent, react(event|intent, filter, fn); docs/design/reactive-character.md). C# where it is hot or owns
+  prog, wait, waitFor (a kind, or a condition fn), say, emote, ask, wake, cp, on, skill, params, carry, args) · **world** (me, inv,
+  block, near, find, item, hostile, where, night, time, players, pos, dist) · **flow** (retry, upto, until, quota, forEach, seq, sel,
+  timeout, room, ensure) · **machine** (machine, after, every, when, signal) · **policies** (use, policy, keepFed, fleeVoidEdges,
+  defendIfAttacked, depositWhenFull, replaceToolWhenBroken, pauseAtNight) · **jobs** = the composable primitives (gather, stash,
+  handTo, makeRoom, patrol; below) · **crew** (body, bodies, spawn, parallel, crew.get/set/inc/send/recv/barrier/lock/unlock) · **character** (the persona: character.look/face/gesture/follow/line/speak/mood/relation/recall/remember/heard/intent, react(event|intent, filter, fn); docs/design/reactive-character.md). C# where it is hot or owns
   semantics (signals, machine runner, timeouts, crew lanes), JS where it reads clearer (helpers, policies, jobs).
+- **Primitives, not strategies** (user feedback 10-28: "harvest farm, chop trees... too specific"; the game moves to a default 1.12.2
+  world with an empty script library). Every primitive returns `{ok, n, msg}` like a game function and never fails the script
+  (expect(r) if it must): `find(query, {r, filter, limit})` → targets nearest first (blocks with meta, mobs, players, drops, else a
+  remembered place; host `ScriptSession.FindAll`) · `item(name)` → this version's name/id/craftable (`ScriptHost.Data`, the
+  profile's `IGameData`, read-only) · `gather(what, n, {from, more, stash, chest, near, tool, r})`: inventory → chests (the
+  named/nearest/every `where()` chest) → craft (only if the version has a recipe) → its source in this world (`Sdk/ItemSources`:
+  the harvest skill's crop, a tree, the blocks that drop it — natural first, crafted blocks and farmland never — the mobs that
+  drop it; names through `IGameData`, drop rules from `Drops` until a version brings its own) · 'gen' (a generator cell) only when
+  named, never assumed; `stash` stores as the bag fills and at the end, every chest full → `{full, need}` · `quota(n, fn)` /
+  `forEach(targets, fn, {order:'nearest', budget})` / `patrol(points | {at, r}, fn, {rounds, until})` · `stash(items |
+  'all-but-tools', {to})`, `makeRoom(n, {to, drop})` (room() = makeRoom or fail), `handTo(player, item, n)`; `stash`/
+  `depositWhenFull`/`makeRoom` all go through the `deposit` tool's one path (`Bot/GameTools/ChestStore`: the named chest, then known
+  chests with room, never-touch/"private" skipped). Void edges stay the safety policies' and reflexes' job (any world). Version
+  awareness: `ensure`'s tier lists keep only names `item()` knows; no primitive names a b1.8.1 id.
+- **The strategies moved out of the SDK** into `ScriptPrompts.Examples` (the author's worked examples, also the sdk-js pack's
+  example chunks): gen mining = ensure + `gather('cobblestone', n, {from:'gen', stash})`; chop + replant = `quota` over `forEach`
+  of grown spots / `find('log')`, planting a carried sapling where the tool reports "not replanted"; farm rounds = `gather('wheat',
+  64, {from:'harvest', stash})`; guarding = `patrol` + `keepFed`/`defendIfAttacked` + `on('mob.near')`; plus the machine and crew
+  examples (`Js/PrimitiveTests` ExampleScriptTests: the gen example makes the same 8/8/4 calls and deposit as mineGen did on its
+  fixture; the chop example skips ungrown spots and replants). **Compat** (`Sdk/js/99-compat.js`, header `module: compat
+  (deprecated)`): store, restock, mineGen, harvestFarm, chopTrees, deliver, waitForDay, guardArea with their old behaviour, so
+  saved b1.8.1 scripts keep running; left out of `SdkReference`, the author prompt and the sdk-js pack (`SdkModules.Current`);
+  each doc comment says what replaces it (`SdkModules.Compat`). **Migration**: lint warns `compat` on every call ("mineGen() is a
+  deprecated compat helper: use gather('cobblestone', ...)"; your own function of that name is exempt), the warning rides on run
+  results; the author's check (`ScriptBridge.CheckDraft`) rejects a draft with a compat call and sends the warnings back, and
+  improving a saved compat script tells the author what replaces each helper (`CompatNote` in `AuthorFacts`), so the next
+  version is compat-free while the old one stays as history. A fresh db (reset-memory) starts with an empty library and a
+  sdk-js pack that never mentions a compat helper. Once no saved active version calls one, delete `99-compat.js`.
 - **Reactive core** (`Sdk/MachineRunner`, `Sdk/SignalSet`): `machine({initial, states:{s:{enter, tick, exit, on, final}}, on,
   guards, bb, policies, thresholds})` runs enter → tick… → exit per state. Events come from the bot's event stream (danger and its
   topics lowhp/void/died, chat and `'chat:<text>'`, join) and from **signals**, edge-triggered conditions polled by the session's
@@ -423,11 +452,13 @@ the rules + the SDK reference generated from the code + three worked examples (�
   only in the cell → `mineGen` + params); ensure a pickaxe 12/16; room(n) 12/16; inventory-full check 12/16; cp mine/store
   phases 8/16; retry(3, gen) 7/16; "mined nothing" guard 5/16; low-hp retreat 2/16; busy-cell fallback, fight at night, chop +
   replant with a spot list, deliver to a player, wake when done 1/16 each. Wheat harvest, wait-for-day and fight-then-resume
-  weren't in the library yet but are the brain's common asks: `harvestFarm`, `waitForDay`, `defendIfAttacked`/`guardArea`.
+  weren't in the library yet but are the brain's common asks. (These first became SDK helpers; since 10-28 they are examples
+  composed from the primitives, above.)
 - **Speed** (hand-written equivalents of five representative jobs, before = Lua with the old prelude, after = JS + SDK;
-  `Js/SpeedComparisonTests`; tokens = chars/3.5): gen mining loop 19 → 4 lines (238 → 68 output tokens), wheat harvest 11 → 8
-  (150 → 102), deposit run 7 → 7 (81 → 61), guard the gen at night 20 → 12 (236 → 168), 2-body gen mining 25 → 11 (248 → 113):
-  82 → 42 lines (−49 %), 953 → 512 output tokens (−46 %), i.e. ≈ −46 % author generation time at the same tokens/s. Every after-
+  `Js/SpeedComparisonTests`; tokens = chars/3.5; after = the primitives since 10-28): gen mining loop 19 → 5 lines (238 → 81
+  output tokens), wheat harvest 11 → 8 (150 → 102), deposit run 7 → 7 (81 → 70), guard the gen at night 20 → 12 (236 → 185), 2-body
+  gen mining 25 → 11 (248 → 124): 82 → 43 lines (−48 %), 953 → 562 output tokens (−41 %; the strategy helpers gave −46 %, the
+  general primitives cost ≈ 50 tokens more over the five). Every after-
   script passes the author loop in one call (lint + dry run 30-630 ms). The brain's prefix is ≈ 420 tokens lighter on every call,
   and a brain that used to inline-write the Lua now emits ≈ 30 tokens (`script{name, goal}`). Engine start per run ≈ 1 ms (SDK
   pre-parsed), the same as Lua.

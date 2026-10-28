@@ -43,15 +43,19 @@ public sealed partial class MinecraftClient
     /// Places <paramref name="itemId"/> into <paramref name="target"/> by clicking <paramref name="face"/> of the block at
     /// target − normal(face), from where the body is (no pathing). A face not in view is clicked unseen when
     /// <paramref name="allowHidden"/> (server: distance only). <paramref name="yaw"/> overrides the look's yaw (facing metas).
+    /// <paramref name="half"/> is the slab/stair half wanted: on 1.12.2 it becomes the placement cursor (<see cref="PlaceCursor"/>;
+    /// a top half can't come from a top-face click, nor a bottom half from an underside click); b1.8.1 sends no cursor.
     /// </summary>
     public Task<ActionResult> PlaceAgainstAsync(BlockPos target, BlockFace face, int itemId, int? damage, float? yaw, bool allowHidden,
-        CancellationToken ct = default) =>
-        RunActionAsync("place", ct, c => PlaceAgainstCoreAsync(target, face, itemId, damage, yaw, allowHidden, c));
+        CancellationToken ct = default, PlaceHalf half = PlaceHalf.Auto) =>
+        RunActionAsync("place", ct, c => PlaceAgainstCoreAsync(target, face, itemId, damage, yaw, allowHidden, c, half));
 
     /// <summary><see cref="PlaceAgainstAsync"/> under the caller's action lock (the shelter reflex places its box with it).</summary>
     private async Task<ActionResult> PlaceAgainstCoreAsync(BlockPos target, BlockFace face, int itemId, int? damage, float? yaw, bool allowHidden,
-        CancellationToken c)
+        CancellationToken c, PlaceHalf half = PlaceHalf.Auto)
         {
+            if (Options.Profile.Data.HalvesFollowCursor && PlaceCursor.HasHalves(PlaceRules.BlockOf(itemId)) && !PlaceCursor.FaceAllows(face, half))
+                return ActionResult.Fail($"a {(half == PlaceHalf.Top ? "top" : "bottom")} {ItemName(itemId, damage ?? 0)} can't be placed by clicking the {face.ToString().ToLowerInvariant()} face of {Fmt(target - face.Normal())}");
             if (World.Inventory.CountItem(itemId, damage) == 0) return ActionResult.Fail($"no {ItemName(itemId, damage ?? 0)} in inventory");
             if (!World.IsLoaded(target.X, target.Z)) return ActionResult.Fail($"{Fmt(target)} is not loaded");
             int existing = World.GetBlock(target);
@@ -86,7 +90,11 @@ public sealed partial class MinecraftClient
                 await LookCoreAsync(yaw ?? aimYaw, aimPitch, c).ConfigureAwait(false);
                 if (AABB.ForPlayer(World.Player.Position).Intersects(AABB.Block(target.X, target.Y, target.Z)) || FallingIntoCell(target))
                     return ActionResult.Fail(InTheWay + Fmt(target));
-                Send(new PlayerBlockPlacementPacket { X = against.X, Y = against.Y, Z = against.Z, Direction = (byte)face, HeldItem = HeldStack() });
+                Send(new PlayerBlockPlacementPacket
+                {
+                    X = against.X, Y = against.Y, Z = against.Z, Direction = (byte)face, HeldItem = HeldStack(), Cursor = CursorFor(against, face, point,
+                        half == PlaceHalf.Auto && PlaceCursor.HasHalves(PlaceRules.BlockOf(itemId)) && face != BlockFace.Bottom ? PlaceHalf.Bottom : half),
+                });
                 Send(new AnimationPacket { EntityId = World.Player.EntityId, Animation = 1 });
                 if (!await WaitUntilAsync(() => !Aiming.IsReplaceable(World, World.GetBlock(target)), TimeSpan.FromMilliseconds(1500), c).ConfigureAwait(false))
                 {
@@ -98,6 +106,19 @@ public sealed partial class MinecraftClient
             }
             finally { _idleSneak = sneakBefore; }
         }
+
+    /// <summary>
+    /// The placement cursor: the wanted half's (<see cref="PlaceCursor.For"/>) when one is asked for, else where the aim ray hits
+    /// the face (the hit point − the block, like a vanilla client), clamped to the face.
+    /// </summary>
+    private static (float X, float Y, float Z) CursorFor(BlockPos against, BlockFace face, Vec3d point, PlaceHalf half)
+    {
+        if (half != PlaceHalf.Auto) return PlaceCursor.For(face, half);
+        var centre = PlaceCursor.For(face);
+        float C(double v, float fixedAxis, bool isFace) => isFace ? fixedAxis : (float)Math.Clamp(v, 0.0, 1.0);
+        var n = face.Normal();
+        return (C(point.X - against.X, centre.X, n.X != 0), C(point.Y - against.Y, centre.Y, n.Y != 0), C(point.Z - against.Z, centre.Z, n.Z != 0));
+    }
 
     /// <summary>Digs a block from where the body is (no pathing): in a column or on a planned stand.</summary>
     public Task<ActionResult> DigHereAsync(BlockPos pos, CancellationToken ct = default) =>

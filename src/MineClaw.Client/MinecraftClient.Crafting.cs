@@ -23,7 +23,7 @@ public sealed partial class MinecraftClient
     /// <summary>Name overload ("wooden pickaxe", "torch", "oak planks"...).</summary>
     public Task<ActionResult> CraftAsync(string itemName, int count = 1, CancellationToken ct = default)
     {
-        if (Items.ByNameWithDamage(itemName) is not { } r) return Task.FromResult(ActionResult.Fail($"unknown item '{itemName}'"));
+        if (Options.Profile.Data.ItemByNameWithDamage(itemName) is not { } r) return Task.FromResult(ActionResult.Fail($"unknown item '{itemName}'"));
         return CraftAsync(r.Item.Id, r.Damage, count, ct);
     }
 
@@ -419,5 +419,5 @@ public sealed partial class MinecraftClient
         return moved;
     }
 
-    private static string StackCount(ItemStack s) => s.IsEmpty ? "nothing" : $"{s.Count} {ItemName(s.Id, s.Damage)}";
+    private string StackCount(ItemStack s) => s.IsEmpty ? "nothing" : $"{s.Count} {ItemName(s.Id, s.Damage)}";
 }

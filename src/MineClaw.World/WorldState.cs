@@ -29,12 +29,14 @@ public sealed class WorldState : IBlockAccess
     /// <param name="blockLookup">Block property source; defaults to <see cref="Blocks.Get"/>. Tests inject their own table.</param>
     /// <param name="height">Blocks per column: 128 (b1.8.1, the default) or 256 (1.12.2: the profile's
     /// <c>GameVersion.WorldHeight</c>).</param>
-    public WorldState(Func<int, BlockInfo>? blockLookup = null, int height = ChunkColumn.SizeY)
+    /// <param name="inventory">The inventory model (b1.8.1 by default; 1.12.2 adds the off hand and its click rules).</param>
+    public WorldState(Func<int, BlockInfo>? blockLookup = null, int height = ChunkColumn.SizeY, InventoryModel? inventory = null)
     {
         if (height is not (ChunkColumn.SizeY or ChunkColumn.MaxHeight)) throw new ArgumentOutOfRangeException(nameof(height), height, "world height is 128 or 256");
         _lookup = blockLookup ?? Blocks.Get;
         WorldHeight = height;
         Light = new LightEngine(this);
+        Inventory = new InventoryManager(model: inventory);
     }
 
     /// <summary>Blocks per column of this world (128 b1.8.1, 256 1.12.2).</summary>
@@ -45,7 +47,7 @@ public sealed class WorldState : IBlockAccess
 
     public EntityTracker Entities { get; } = new();
     public PlayerState Player { get; } = new();
-    public InventoryManager Inventory { get; } = new();
+    public InventoryManager Inventory { get; }
     /// <summary>Cells the bot itself just dug/placed (attribution: the bot's own edits are never a player's).</summary>
     public SelfEditLog SelfEdits { get; } = new();
     /// <summary>Blocks hive bots placed themselves and that still stand (protection rule 1: always minable by the bot).</summary>

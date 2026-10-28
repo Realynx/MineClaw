@@ -30,7 +30,8 @@ public class LuaMigrationTests
             // purpose: keep mining the cobble gen patiently, deposit when full
             const P = params({ at: '6,64,8', chest: '14,64,-5', rounds: 20, per: 20 })
             use(replaceToolWhenBroken('pickaxe'))
-            return `mined ${mineGen({ at: P.at, n: P.rounds * P.per, per: P.per, chest: P.chest })} cobble`
+            ensure('pickaxe')
+            return `mined ${gather('cobblestone', P.rounds * P.per, { from: 'gen', at: P.at, per: P.per, stash: P.chest }).n} cobble`
             """),
         ("hive_e4b353", """
             -- dump inventory then fight mobs at night
@@ -46,8 +47,14 @@ public class LuaMigrationTests
             """, """
             // purpose: dump inventory then fight mobs at night
             const P = params({ chest: '14,64,-5', home: '8,64,-8' })
-            store(P.chest)
-            return 'patrol done: ' + guardArea({ home: P.home, retreatBelow: 4, rounds: 20 })
+            stash('all-but-tools', { to: P.chest })
+            let fights = 0
+            patrol([me.pos], () => {
+              if (me.hp <= 4) { expect(go(P.home)); return 'stop' }
+              const m = hostile(8)
+              if (m && ok(skill('fight', {}))) fights++; else wait(3)
+            }, { rounds: 20, until: () => !night() })
+            return 'patrol done: ' + fights
             """),
         ("west_trees", """
             -- wait for west tree farm trees to grow, chop+replant them
@@ -67,7 +74,13 @@ public class LuaMigrationTests
             """, """
             // purpose: wait for west tree farm trees to grow, chop+replant them
             const P = params({ spots: ['9,65,0', '9,65,3', '13,65,0', '13,65,3'], chest: '14,64,-5' })
-            return 'chopped ' + chopTrees({ spots: P.spots, n: 4, rounds: 20, waitS: 30, chest: P.chest })
+            const r = quota(4, left => {
+              const done = forEach(P.spots.filter(s => /log/.test(block(s))), s => chop(s), { budget: left })
+              if (done.n < left) wait(30)
+              return done.n
+            }, { max: 20, idle: 20 })
+            stash(['log'], { to: P.chest })
+            return 'chopped ' + r.n
             """),
     ];
 

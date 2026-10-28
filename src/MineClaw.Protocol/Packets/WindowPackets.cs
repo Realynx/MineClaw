@@ -62,6 +62,19 @@ public sealed class WindowClickPacket : IPacket
     public short ActionNumber { get; set; }
     public bool Shift { get; set; }
     public ItemStack ClickedItem { get; set; } = ItemStack.Empty;
+    /// <summary>1.12.2 click type (<c>ClickType</c> ordinals): 0 pickup, 1 quick move (shift), 2 swap with hotbar key
+    /// <see cref="Button"/> (0..8), 3 clone (creative middle click), 4 throw (button 0 one, 1 the stack), 5 quick craft (drag:
+    /// button = stage | mode &lt;&lt; 2), 6 pickup all (double click). 0 here with <see cref="Shift"/> set means 1. b1.8.1 knows
+    /// only 0 and 1.</summary>
+    public byte Mode { get; set; }
+    /// <summary>The mouse button / hotbar key / drag code; null = <see cref="RightClick"/> ? 1 : 0.</summary>
+    public sbyte? Button { get; set; }
+
+    public const byte ModePickup = 0, ModeQuickMove = 1, ModeSwap = 2, ModeClone = 3, ModeThrow = 4, ModeQuickCraft = 5, ModePickupAll = 6;
+
+    /// <summary>The click type actually meant (<see cref="Shift"/> folds into 1).</summary>
+    public byte EffectiveMode => Mode != 0 ? Mode : Shift ? ModeQuickMove : ModePickup;
+    public sbyte EffectiveButton => Button ?? (sbyte)(RightClick ? 1 : 0);
 
     public void Read(MinecraftReader r, PacketDirection d)
     {

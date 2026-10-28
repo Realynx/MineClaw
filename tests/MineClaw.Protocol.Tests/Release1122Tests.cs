@@ -436,9 +436,11 @@ public class Release1122Tests
         Assert.Equal((0x1A, "00 04"), Frame(server));
         client.Send(new AnimationPacket { EntityId = 7, Animation = 1 });
         Assert.Equal((0x1D, "00"), Frame(server));
-        Assert.False(client.CanSend(new PlayerDiggingPacket()));
-        Assert.False(client.CanSend(new WindowClickPacket()));
-        Assert.Throws<NotSupportedException>(() => client.Send(new PlayerDiggingPacket()));
+        // P2 covers digging and windows (Release1122P2Tests); the creative inventory action stays untranslated.
+        Assert.True(client.CanSend(new PlayerDiggingPacket()));
+        Assert.True(client.CanSend(new WindowClickPacket()));
+        Assert.False(client.CanSend(new CreativeInventoryActionPacket()));
+        Assert.Throws<NotSupportedException>(() => client.Send(new CreativeInventoryActionPacket()));
     }
 
     private static (int, string) Frame(Wire1122Peer server)

@@ -15,10 +15,11 @@ namespace MineClaw.Bot.GameTools;
 
 /// <summary>
 /// The <c>sdk-js</c> knowledge pack: the JavaScript scripting SDK as retrievable memory, so a brain that plans or writes a script finds
-/// the exact helper ("how do I wait for day in a script" → <c>waitForDay</c>). Generated from the code, so it never drifts:
+/// the exact helper ("how do I wait for day in a script" → <c>waitFor</c>). Generated from the code, so it never drifts:
 /// <list type="bullet">
-/// <item>every SDK module (core, world, flow, machine, policies, jobs, crew) and each documented <c>def</c> with its doc comment
-/// (<see cref="SdkReference.Entries"/>, the same comments the author's cheat-sheet is built from);</item>
+/// <item>every current SDK module (core, world, flow, machine, policies, jobs, crew, character; never the deprecated compat one) and
+/// each documented <c>def</c> with its doc comment (<see cref="SdkReference.Entries"/>, the same comments the author's cheat-sheet is
+/// built from);</item>
 /// <item>every game function a script calls as a global (aliases, action tools, catalog skills; snake_case + camelCase) with its
 /// signature line and the tool's own description, listed from a real (offline, never connected) bot per game version and tagged
 /// with the versions that have it;</item>
@@ -38,7 +39,8 @@ public static class ScriptSdkPack
     /// <param name="versions">Game versions to list functions for (null = <see cref="Versions"/>).</param>
     public static GeneratedPack Build(IReadOnlyList<SdkModule>? modules = null, IReadOnlyList<GameVersionProfile>? versions = null)
     {
-        modules ??= SdkModules.All;
+        // The deprecated compat module (old strategy helpers) still runs but is never taught: a fresh memory learns the primitives.
+        modules = (modules ?? SdkModules.All).Where(m => !m.Deprecated).ToList();
         var docs = new List<RagDoc>();
         var used = new HashSet<string>(StringComparer.Ordinal);
         void Add(string part, string title, string body)

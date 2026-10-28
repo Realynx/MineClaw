@@ -10,6 +10,14 @@ namespace MineClaw.Scripting;
 /// </summary>
 public static class ScriptLint
 {
+    /// <summary>The warning on a call to a deprecated compat helper (<c>99-compat.js</c>): the author's check rejects a draft with one.</summary>
+    public const string CompatRule = JsLint.CompatRule;
+
+    /// <summary>The deprecated compat helpers JS <paramref name="code"/> calls (lint's view: your own function of that name isn't one), each with what replaces it.</summary>
+    public static IReadOnlyList<(string Name, string Use)> CompatCalls(string code) =>
+        JsLint.Check(code, []).Warnings.Where(w => w.Rule == CompatRule).Select(w => w.Message[..w.Message.IndexOf('(')])
+                .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).Select(n => (n, Sdk.SdkModules.Compat[n])).ToList();
+
     /// <summary>Lua globals the sandbox removed (legacy).</summary>
     public static IReadOnlySet<string> RemovedGlobals => LuaLint.RemovedGlobals;
 

@@ -72,6 +72,20 @@ public class GameSignalsTests
     }
 
     [Fact]
+    public void R1122_block_break_animation_reaches_punch_through_the_client_event()
+    {
+        // The wiring (multi-version P2): the client's BlockBreakProgress → Attach → player.punchBlock.
+        var (s, c, _, got) = Make();
+        s.Attach();
+        c.World.Entities.SpawnPlayer(7, "PoofImaFox", new Vec3d(3.5, 65, 3.5), 0, 0, heldItem: Items.IronAxe);
+        c.RaiseBlockBreak(7, new BlockPos(2, 64, 2), 0);
+        c.RaiseBlockBreak(7, new BlockPos(2, 64, 2), -1); // stopped: not a punch
+        var p = Assert.Single(Of(got, "player.punchBlock"));
+        Assert.Equal("iron_axe", p.Data["held"]!.ToString());
+        Assert.Equal(2, (int)p.Data["pos"]!["x"]!);
+    }
+
+    [Fact]
     public void Hurt_died_pickup_equip_toss_drop_sneak()
     {
         var (s, c, t, got) = Make();

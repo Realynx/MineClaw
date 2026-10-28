@@ -144,7 +144,8 @@ public class SdkPolicyTests
     }
 }
 
-public class SdkJobTests
+/// <summary>The deprecated compat helpers (99-compat.js): saved scripts on them keep their exact behaviour.</summary>
+public class CompatJobTests
 {
     [Fact]
     public async Task MineGen_mines_n_deposits_when_nearly_full_and_at_the_end()
@@ -298,9 +299,13 @@ public class SdkReferenceTests
         var reference = Sdk.SdkReference.Build();
         var documented = Sdk.SdkReference.Documented();
         // print/console/waitfor are aliases documented with their main name; pos/dist share one line.
-        var undocumented = Sdk.SdkModules.Globals.Where(g => !documented.Contains(g) && g is not ("print" or "console" or "waitfor" or "args")).ToList();
+        // Compat helpers (99-compat.js, deprecated) run but are never taught.
+        var undocumented = Sdk.SdkModules.Globals.Where(g => !documented.Contains(g) && !Sdk.SdkModules.Compat.ContainsKey(g)
+            && g is not ("print" or "console" or "waitfor" or "args")).ToList();
         Assert.True(undocumented.Count == 0, "undocumented: " + string.Join(", ", undocumented));
-        foreach (var m in Sdk.SdkModules.All) Assert.Contains("## " + m.Name + ":", reference);
+        foreach (var m in Sdk.SdkModules.Current) Assert.Contains("## " + m.Name + ":", reference);
+        Assert.Equal(["compat"], Sdk.SdkModules.All.Where(m => m.Deprecated).Select(m => m.Name));
+        Assert.Equal(["chopTrees", "deliver", "guardArea", "harvestFarm", "mineGen", "restock", "store", "waitForDay"], Sdk.SdkModules.Compat.Keys.Order(StringComparer.Ordinal));
         Assert.Contains("machine({initial, states:", reference);
         Assert.Contains("- light(x,y,z) or light(pos)", reference);
         Assert.Contains("- canSpawn(x,y,z, now=false)", reference);

@@ -20,9 +20,19 @@
   def('prog', (pct, note) => H.prog(pct, note));
   /** wait(s=1) - pause s seconds (interruptible; max 600). */
   def('wait', s => H.wait(s == null ? 1 : s));
-  /** waitFor(kind, filter?, s=60) - chat|danger|join (filter text or {from,text}), item ('log' or {item,n}), block ({x,y,z,name}), day, night, or a signal topic -> {ok,msg}. */
-  def('waitFor', (kind, filter, s) => H.waitFor(kind, filter, s));
-  def('waitfor', (kind, filter, s) => H.waitFor(kind, filter, s));
+  // waitFor(cond, s): poll a condition once a second (uncounted waits) until it holds or s seconds pass.
+  const waitCond = (cond, s) => {
+    const max = Math.max(0, s == null ? 60 : Number(s));
+    for (let t = 0; ; t++) {
+      if (cond()) return { ok: true, msg: 'met', n: 0 };
+      if (t >= max) return { ok: false, msg: `timeout after ${max}s`, n: 0 };
+      H.idle(Math.min(1, max - t));
+    }
+  };
+  const waitFor = (kind, filter, s) => (typeof kind === 'function' ? waitCond(kind, filter) : H.waitFor(kind, filter, s));
+  /** waitFor(kind, filter?, s=60) - wait until it is day: waitFor('day', null, 900) (or night); chat|danger|join (filter text or {from,text}), item ({item,n}), block ({x,y,z,name}), a signal, or a condition fn: waitFor(() => inv('log') >= 8, 120). -> {ok,msg}. */
+  def('waitFor', waitFor);
+  def('waitfor', waitFor);
   /** say(text) - one chat line to players (2 per run, 10 s apart; data goes to log). */
   def('say', t => H.say(t));
   /** emote(text) - a /me action line. */

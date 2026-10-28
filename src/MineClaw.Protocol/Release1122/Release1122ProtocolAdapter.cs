@@ -24,8 +24,7 @@ public sealed class Release1122ProtocolAdapter : IProtocolAdapter
 
     public IGameConnection Open(Stream stream, PacketDirection inbound = PacketDirection.ClientBound, bool ownsStream = true)
     {
-        if (inbound != PacketDirection.ClientBound)
-            throw new NotSupportedException("the 1.12.2 connection is client-side only (the FakeServer codec is multi-version P2)");
+        if (inbound == PacketDirection.ServerBound) return new Release1122ServerConnection(stream, ownsStream); // fake servers
         return new Release1122Connection(stream, ownsStream) { ViewDistance = ViewDistance, Lang = Lang() };
     }
 

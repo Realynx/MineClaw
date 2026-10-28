@@ -18,7 +18,7 @@ public static class ScriptDryRun
         "error:", "syntax:", "is not defined", "unknown item", "machine '", "no role function", "isn't in states", "call depth limit",
         "takes a string", "read-only", "unknown lane", "needs a function", "needs a position", "needs an item", "needs a name",
         "needs a topic", "needs a label", "needs a question", "needs an object", "needs states", "needs seconds", "needs a body",
-        "needs a role", "waitfor kind",
+        "needs a role", "waitfor kind", "unknown route",
     ];
 
     public static string? Run(string code, ScriptHost real, ScriptLanguage language = ScriptLanguage.Js, string? paramsJson = null)
@@ -38,6 +38,7 @@ public static class ScriptDryRun
         {
             World = world,
             Username = real.Username,
+            Data = real.Data,
             Actions = real.Actions,
             Act = (name, _, _) => Task.FromResult(ActResult.Success($"{name} ok")),
             Skills = real.Skills,

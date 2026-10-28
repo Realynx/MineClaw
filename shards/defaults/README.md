@@ -13,7 +13,7 @@ They are built from pristine sources only, never from a live db, and the same in
 
 A db holds **one version pack and any number of mode packs** (meta `knowledge_pack`). In a plain world, use the version pack
 and no mode. In a skyblock, add the `skyblock` mode. `sdk-js` is a mode pack tagged version `any`: it applies in every world and
-carries no cached-prompt lines (retrieval only: "how do I wait for day in a script" finds `waitForDay`). The cached prompt's core lines come from the active packs only: a doc
+carries no cached-prompt lines (retrieval only: "how do I wait for day in a script" finds `waitFor`). The cached prompt's core lines come from the active packs only: a doc
 whose `<!-- pack ... -->` marker isn't active adds no core lines and no chunks, even when the file is on disk.
 
 ## Using them

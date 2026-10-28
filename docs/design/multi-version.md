@@ -1,7 +1,7 @@
 # Multi-version: b1.8.1 and 1.12.2 behind one set of seams
 
-Status: P0 and P1 are implemented (seams + detection; 1.12.2 login, chat, game state, movement and chunks in a 256-high
-world, section 5.1). P2 to P6 are planned. Ground truth for 1.12.2: the decompiled client at `C:\Users\dev\source\mc-1.12.2-src`
+Status: P0, P1 and P2 are implemented (seams + detection; 1.12.2 login, chat, game state, movement and chunks in a 256-high
+world, section 5.1; inventory, windows, dig, place, use, signs and item entities, section 5.2). P3 to P6 are planned. Ground truth for 1.12.2: the decompiled client at `C:\Users\dev\source\mc-1.12.2-src`
 (section 4); class and method names below are its MCP stable_39 names.
 Date: 2026-10-28.
 
@@ -345,7 +345,7 @@ Each phase ships on its own and keeps every b1.8.1 suite green. Sizes are rough 
 |---|---|---|---|
 | **P0** (done) | Seams + detection: `GameVersion`, `ServerPing` (modern + legacy), `VersionResolver`, `IGameConnection`/`IProtocolAdapter` (the client connects and logs in through it), `IPhysicsRules`, `ICombatRules`, `IHungerRules`, `IGameData` with b1.8.1 wrappers, `GameVersionProfile`, `Bot:Server:Version` + `--server-version`, clone pass-through, last-known fallback. No behaviour change. | S (1) | Low |
 | **P1** 1.12.2 login → walk and see | VarInt/compression codec. Handshake/login/play state machine. Keepalive + teleport confirm inside the connection. Join Game, Respawn, Client Status, Spawn Position, Time, Health, Change Game State, Disconnect, Player List (uuid map). Chat JSON → legacy text (+ lang from the jar). Position in and out. **Chunk Data** (paletted, spanning longs, global palette, light, block entities → NBT reader), Unload Chunk, Block Change, Multi Block Change. **World height 256 + sectioned `ChunkColumn`** (coordinated with the light work). Golden fixtures. Version-change exit 75. | L (6–8) | Medium-high: the chunk decoder and the 128 → 256 sweep across 24 files are the bulk |
-| **P2** inventory, dig, place, use | Slot + NBT. Window open/items/set slot/property/close/confirm with string types and JSON titles. Click modes. **Offhand slot 45.** Held item. Digging statuses (server dig-time check). **Placement hand + cursor** and **Use Item**. Item entities (Spawn Object 2 + metadata) and Collect. Signs via block entities. The FakeServer 1.12.2 codec and the parametrized client tests. | M-L (4–6) | Medium: the cursor decides slab/stair halves; the BuildPlanner's Hidden underside clicks place **top** slabs |
+| **P2** (done) inventory, dig, place, use | Slot + NBT. Window open/items/set slot/property/close/confirm with string types and JSON titles. Click modes. **Offhand slot 45.** Held item. Digging statuses (server dig-time check). **Placement hand + cursor** and **Use Item**. Item entities (Spawn Object 2 + metadata) and Collect. Signs via block entities. The FakeServer 1.12.2 codec and the parametrized client tests. | M-L (4–6) | Medium: the cursor decides slab/stair halves; the BuildPlanner's Hidden underside clicks place **top** slabs |
 | **P3** physics + pathing | `Release1122PhysicsRules`: the step-0.6/sneak/sprint/swim/ladder deltas, the new collision shapes (connecting fences/panes/walls, stair shapes, state-dependent slabs), slipperiness of new blocks, the vanilla server's movement checks. Route the tick, `SwimSim`, parkour, `EdgeGuard` and pathfinder costs through the seam. Replay tests vs recordings. | L (5–8) | High: fidelity needs the decompiled source; rubber-banding shows up only live |
 | **P4** entities + combat | `IEntityRules` (metadata tables, new mob profiles), entity translation finished. Attack cooldown and charge-aware CombatEngine, sweep, crit rules, shields (offhand), the new damage and armor tables. `IHungerRules` for 1.12.2 (the 1.11 exhaustion values, saturation regen). | L (5–7) | Medium-high |
 | **P5** data, recipes, knowledge pack, render | `IGameData` 1.12.2: blocks/items/foods from minecraft-data, recipes from the jar's 432 JSON files, smelting and drops from the decompiled source. Static facades over `GameData.Current`. `IRenderAssets` 1.12.2 (blockstates → models → textures, the meta → state table). `1.12.2-gamedata` pack + `mechanics_1122.md` via tools/ShardPacks. | L-XL (7–10) | Medium: wide but mechanical; the meta → blockstate mapping needs ground truth |
@@ -459,11 +459,65 @@ Client jar recorded for reproducibility: `minecraft-1.12.2-client.jar`, 10,180,1
 - Consumers outside the world model still clip to `WorldState.Height` (128): pathing, building, skills, render and the
   Explorer see only the lower half of a 1.12.2 world (P3/P6).
 - Columns are flat 256 KB arrays, not lazily allocated sections (2× a b1.8.1 column's memory).
-- Block ids 123–255 and the changed metas read through the b1.8.1 tables (unknown ids) until P5.
-- Player List supplies names, but entity spawns aren't translated yet (P2/P4).
+- Block ids 123–255 and the changed metas read through the b1.8.1 tables (unknown ids) until P5 (P2: the client's names,
+  stack sizes and dig rule come from `Release1122GameData`; physics and the static tables still don't know them).
+- Player List supplies names; P2 translates player and item spawns, mobs and other objects are P4.
 - The version-change exit 75 on an "Outdated" kick isn't wired.
-- The FakeServer 1.12.2 codec and the parametrized client tests are P2.
+- ~~The FakeServer 1.12.2 codec and the parametrized client tests are P2.~~ Done (5.2).
 
 **Behaviour change in production:** none for an explicit version. With the default `auto`, one ping pair runs at
 startup: about 10 ms on a LAN, plus one "Protocol error" log line on the b1.8.1 server. To skip it, set
 `Bot:Server:Version=b1.8.1`.
+
+### 5.2 What P2 shipped
+
+- **Protocol/Release1122** (wire formats from the decompiled `readPacketData`/`writePacketData`, cross-checked with protocol.json):
+  - `Codec1122`: slots with NBT (`PacketBuffer.read/writeItemStack`; a count ≤ 0 is empty), entity metadata (all 14
+    serializers skipped correctly; EntityItem's index 6 read), window type strings → canonical types and sizes (the crafting
+    table, enchanting table and anvil arrive with slot count 0), furnace properties renumbered (1.12.2 0 burn / 1 item burn /
+    2 cook / 3 total → b1.8.1 0 cook / 1 burn / 2 total), Set Slot window −2 (an `InventoryPlayer` index: 40 = off hand → 45),
+    sign block entities (Text1..4 JSON).
+  - `Release1122Connection.Play2.cs` (client): Open/Close Window, Window Items, Set Slot, Window Property, Confirm Transaction;
+    Click Window with its click type, Confirm Transaction out (the apology), Close Window out; Player Digging 0..6 (drop,
+    stack drop, release and swap carry `BlockPos.ORIGIN`/DOWN); Player Block Placement with hand + cursor (default the face
+    centre), Use Item (hand); Use Entity (attack / interact / interact-at, hand); Animation (hand); Update Sign; Block Break
+    Animation → the neutral `BlockBreakAnimationMessage`; Update Block Entity 9 and chunk block entities → `UpdateSignPacket`;
+    Spawn Object 2 held until its metadata arrives → `PickupSpawnPacket`, later stack changes → `ItemEntityStackMessage`;
+    Spawn Player (name from the Player List), relative moves resolved to exact absolute positions → canonical teleports (no
+    drift), look, teleport, destroy (several ids), collect, equipment (off hand dropped), animation, entity status.
+  - `Release1122ServerConnection`: the server side of the same wire for fake servers (`IProtocolAdapter.Open(inbound:
+    ServerBound)`): answers the login, re-encodes b1.8.1 map chunks as paletted columns, pads window 0 to 46, spawns items as
+    Spawn Object + metadata; reads every P2 C→S packet. Written from the server-side packet classes, so a client test over it
+    checks both translators against the source.
+  - Canonical additions: `WindowClickPacket.Mode/Button`, `PlayerBlockPlacementPacket.Hand/Cursor`, `UseEntityPacket.Hand/
+    InteractAt`, `AnimationPacket.Hand`, dig statuses 1/3/6. `PacketConnection.CanSend` refuses those forms on b1.8.1.
+- **World:** `InventoryModel` (b1.8.1 45 slots; 1.12.2 46 with the off hand at 45) and the 1.12.2 click prediction
+  (`InventoryManager.Modern.cs`, a port of `Container.slotClick`, `mergeItemStack` and the containers' `transferStackInSlot`):
+  modes 0..6, smart shift routing (armor, shield → off hand, smeltables and fuel into the furnace), the 1.12.2 expected item
+  (a full shift move returns empty), crafting output taken whole by a right click, NBT-aware stacking. `PlaceCursor` /
+  `PlaceHalf`: the slab/stair half from face + cursor (`BlockSlab`/`BlockStairs.getStateForPlacement`), log axis, torch facing.
+- **Data:** `Release1122GameData` (ids, names, variant names, stack sizes, durability, hardness, harvest tools from the embedded
+  minecraft-data pc/1.12.2) and `Release1122Dig` (`getPlayerRelativeBlockHardness`, `getDigSpeed` with efficiency, haste,
+  fatigue, water, on-ground; `getDestroySpeed` per tool). `IGameData.DigTicks(in DigInput)`, `DisplayName`,
+  `ItemByNameWithDamage` and the fact `HalvesFollowCursor`. `ItemStack.Tag` (`ItemTag`: the compound's bytes; equality by bytes).
+- **Client:** the profile carries the inventory model and item rules; names, crafting lookups and dig ticks go through
+  `Profile.Data`; `PlaceAgainstAsync(…, half)` sends the cursor for the wanted half and refuses a face that can't give it;
+  `ClickSlotAsync(slot, ClickMode, button)`, `SwapHandsAsync`, `Inventory.Offhand`; `BlockBreakProgress` → `IGameClient` →
+  `GameSignals` (player.punchBlock on 1.12.2). A slot update that agrees with the prediction is no race (1.12.2 sends the
+  crafting output before the click's confirm). The "not supported on 1.12.2 yet" results are gone for every P2 feature.
+- **Bot:** `BuildPlannerOptions.HalvesFollowCursor` (from the body's profile): a bottom slab/stair is never planned from an
+  underside (Hidden) click, a top one never from a top face; `BuildBody` passes the step's half (meta bit 8 / 4).
+- **Tests:** Protocol `Release1122P2Tests` (slot/NBT golden bytes, windows, every click type, dig/place/use/entity golden bytes,
+  entities and signs, the server codec); Data `Release1122GameDataTests` (names, ids, dig ticks for twelve tool/block cases
+  hand-computed in float from the source); World `Inventory1122Tests` (off hand, swap, shift returns, furnace routing, throw,
+  double click, drag, NBT, cursor values for slabs/stairs/logs/torches); Client `Release1122PlayTests` (dig/place/chest on both
+  versions; reject → apology → accept for every mode; the off hand; the crafting table; chop a log → craft planks → place;
+  dig progress, signs and item stacks) over `FakeServer(release1122: true)`, which judges each click with the 1.12.2
+  slotClick like a vanilla server; Bot: the punch wiring.
+
+**Still open after P2:**
+- Mobs, objects other than items, velocity (knockback), effects (haste for the dig rule), the server's Held Item Change: P4.
+- Recipes and smelting are b1.8.1's (`Recipes.Match` predicts the crafting output; 1.12.2 planks keep the log's wood type, so a
+  non-oak craft is predicted wrong once and resynced): P5. The static `Blocks`/`Items` facades outside the client: P5.
+- Placement prediction of 1.12.2 metas (log axis, slab halves) in the world model: the server's block change sets them.
+- Entity metadata other than an item's stack (creeper fuse, wolf flags): P4.

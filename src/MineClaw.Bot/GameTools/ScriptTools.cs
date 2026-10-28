@@ -118,6 +118,8 @@ public sealed partial class ScriptBridge
         {
             World = _client.World,
             Username = _client.Username,
+            // Names resolve through this version's game data (the SDK's item/find/gather), read-only.
+            Data = _client is MinecraftGameClient mgc ? mgc.Inner.Options.Profile.Data : MineClaw.Data.Versioning.Beta181GameData.Instance,
             Actions = actions,
             Act = async (name, args, ct) =>
             {
@@ -847,9 +849,17 @@ public sealed partial class ScriptBridge
         if (LanguageOf(code) == ScriptLanguage.Lua) return AuthorCheck.Fail("that is Lua: write JavaScript (see the SDK reference)");
         var lint = Lint(code, ScriptLanguage.Js);
         if (lint.HasErrors) return AuthorCheck.Fail("lint errors: " + lint.Format(LintSeverity.Error, 800));
+        // Migration off the old strategy helpers: saved versions still run on them (99-compat.js), but no new version may call one.
+        if (lint.Warnings.Where(w => w.Rule == ScriptLint.CompatRule).Select(w => w.ToString()).ToList() is { Count: > 0 } compat)
+            return AuthorCheck.Fail("deprecated helpers (compose the primitives instead, see the examples): " + string.Join("; ", compat));
         var dry = ScriptDryRun.Run(code, Controller.Host);
         return dry == null ? AuthorCheck.Pass : AuthorCheck.Fail("dry run (fake world, every action succeeds): " + dry);
     }
+
+    /// <summary>" (calls deprecated helpers: mineGen → use gather(...); ...; rewrite with the primitives)" for code on the compat module, else "".</summary>
+    internal static string CompatNote(string code) =>
+        ScriptLint.CompatCalls(code) is { Count: > 0 } calls
+            ? $" (calls deprecated helpers: {string.Join("; ", calls.Select(c => $"{c.Name} → {c.Use}"))}; rewrite with the primitives)" : "";
 
     /// <summary>What the author may build on: game functions with params, skills, saved scripts, the current version when improving one.</summary>
     internal string AuthorFacts(string name)
@@ -860,7 +870,7 @@ public sealed partial class ScriptBridge
         return MineClaw.Scripting.Sdk.SdkReference.GameFunctions(GameFunctions()) +
             (skills.Count > 0 ? "\nSkills (call by name, camelCase or snake_case; or skill(name, args)): " + string.Join(" ", skills) : "") +
             (saved.Length > 0 ? "\nSaved scripts (call or update, don't fork): " + Clip(saved, 500) : "") +
-            (Library.Get(name)?.Script is { } cur ? $"\nCurrent {name} v{cur.Version}{(ScriptLibrary.Active(cur).IsLua ? " (legacy Lua: rewrite it in JS)" : "")} (improve it):\n" + cur.Code : "");
+            (Library.Get(name)?.Script is { } cur ? $"\nCurrent {name} v{cur.Version}{(ScriptLibrary.Active(cur).IsLua ? " (legacy Lua: rewrite it in JS)" : CompatNote(cur.Code))} (improve it):\n" + cur.Code : "");
     }
 
     /// <summary>op=save: lint, near-duplicate check, new version (no run). With goal: authored apart, summary only.</summary>

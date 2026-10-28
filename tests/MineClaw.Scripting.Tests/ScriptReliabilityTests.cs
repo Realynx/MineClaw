@@ -176,7 +176,7 @@ public class ScriptReliabilityTests
 
     // ------------------------------------------------------------------ lint
 
-    private static readonly string[] Acts = ["mine", "gen", "deposit", "take", "craft", "go", "dig", "place", "chop"];
+    private static readonly string[] Acts = ["mine", "gen", "deposit", "take", "craft", "go", "dig", "place", "chop", "attack"];
 
     [Theory]
     [InlineData("while true do local x = inv'log' end", "busy-loop", 1)]

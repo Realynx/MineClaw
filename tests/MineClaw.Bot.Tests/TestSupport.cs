@@ -70,6 +70,8 @@ public sealed class FakeGameClient : IGameClient
     public void RaiseJoined(string n) => PlayerJoined?.Invoke(n);
     public void RaiseLeft(string n) => PlayerLeft?.Invoke(n);
     public void RaiseSwing(int entityId) => EntityAnimated?.Invoke(entityId, 1);
+    public event Action<int, MineClaw.World.BlockPos, int>? BlockBreakProgress;
+    public void RaiseBlockBreak(int entityId, MineClaw.World.BlockPos p, int stage) => BlockBreakProgress?.Invoke(entityId, p, stage);
     public void RaiseBlockAction(MineClaw.World.BlockPos p, int a, int b) => BlockAction?.Invoke(p, a, b);
     public void Touch() { _ = Disconnected; _ = Spawned; _ = Respawned; _ = HealthChanged; _ = PlayerLeft; }
 

@@ -94,6 +94,7 @@ public sealed class BodyRoutingGameClient(BodyRegistry registry, Func<IBody, IGa
     public event Action<int, int, ItemStack?>? ItemCollected { add => Main.ItemCollected += value; remove => Main.ItemCollected -= value; }
     public event Action<int, int, int, int>? EquipmentChanged { add => Main.EquipmentChanged += value; remove => Main.EquipmentChanged -= value; }
     public event Action<int, int>? EntityStatus { add => Main.EntityStatus += value; remove => Main.EntityStatus -= value; }
+    public event Action<int, BlockPos, int>? BlockBreakProgress { add => Main.BlockBreakProgress += value; remove => Main.BlockBreakProgress -= value; }
     public event Action<BlockPos, int, int>? BlockAction { add => Main.BlockAction += value; remove => Main.BlockAction -= value; }
 
     // ---- descriptions

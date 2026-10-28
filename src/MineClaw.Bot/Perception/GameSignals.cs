@@ -71,6 +71,7 @@ public sealed class GameSignals : IDisposable
     public void Attach()
     {
         Action<int, int> anim = (e, a) => Safe(() => OnAnimation(e, a));
+        Action<int, BlockPos, int> cracks = (e, p, stage) => Safe(() => OnBreakAnimation(e, p, stage));
         Action<int, int> status = (e, s) => Safe(() => OnStatus(e, s));
         Action<int, int, ItemStack?> collect = (c, i, st) => Safe(() => OnCollect(c, i, st));
         Action<int, int, int, int> equip = (e, slot, id, dmg) => Safe(() => OnEquip(e, slot, id));
@@ -79,6 +80,7 @@ public sealed class GameSignals : IDisposable
         Action<int, int> health = (hp, _) => Safe(() => OnHealth(hp));
         Action<string> joined = p => Safe(() => OnJoin(p)), left = p => Safe(() => OnQuit(p));
         _c.EntityAnimated += anim;
+        _c.BlockBreakProgress += cracks;
         _c.EntityStatus += status;
         _c.ItemCollected += collect;
         _c.EquipmentChanged += equip;
@@ -89,7 +91,7 @@ public sealed class GameSignals : IDisposable
         _c.PlayerLeft += left;
         _detach = () =>
         {
-            _c.EntityAnimated -= anim; _c.EntityStatus -= status; _c.ItemCollected -= collect; _c.EquipmentChanged -= equip;
+            _c.EntityAnimated -= anim; _c.BlockBreakProgress -= cracks; _c.EntityStatus -= status; _c.ItemCollected -= collect; _c.EquipmentChanged -= equip;
             W.Entities.Spawned -= spawned; W.BlockChanged -= changed; _c.HealthChanged -= health; _c.PlayerJoined -= joined; _c.PlayerLeft -= left;
         };
     }

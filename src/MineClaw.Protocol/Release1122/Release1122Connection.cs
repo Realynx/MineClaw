@@ -11,13 +11,20 @@ public static class Ids1122
     public const int Handshake = 0x00, LoginStart = 0x00;
     public const int LoginDisconnect = 0x00, EncryptionRequest = 0x01, LoginSuccess = 0x02, SetCompression = 0x03;
     // play, clientbound
-    public const int BlockChange = 0x0B, Difficulty = 0x0D, Chat = 0x0F, MultiBlockChange = 0x10, Disconnect = 0x1A, UnloadChunk = 0x1D,
-        ChangeGameState = 0x1E, KeepAlive = 0x1F, ChunkData = 0x20, JoinGame = 0x23, PlayerListItem = 0x2E, PlayerPosLook = 0x2F,
-        Respawn = 0x35, UpdateHealth = 0x41, SpawnPosition = 0x46, TimeUpdate = 0x47;
+    public const int SpawnObject = 0x00, SpawnPlayer = 0x05, EntityAnimation = 0x06, BlockBreakAnim = 0x08, UpdateBlockEntity = 0x09,
+        BlockChange = 0x0B, Difficulty = 0x0D, Chat = 0x0F, MultiBlockChange = 0x10, ConfirmTransaction = 0x11, CloseWindow = 0x12,
+        OpenWindow = 0x13, WindowItems = 0x14, WindowProperty = 0x15, SetSlot = 0x16, Disconnect = 0x1A, EntityStatus = 0x1B,
+        UnloadChunk = 0x1D, ChangeGameState = 0x1E, KeepAlive = 0x1F, ChunkData = 0x20, JoinGame = 0x23, EntityRelMove = 0x26,
+        EntityLookRelMove = 0x27, EntityLook = 0x28, OpenSignEditor = 0x2A, PlayerListItem = 0x2E, PlayerPosLook = 0x2F,
+        DestroyEntities = 0x32, Respawn = 0x35, HeldItemChangeIn = 0x3A, EntityMetadata = 0x3C, EntityEquipment = 0x3F,
+        UpdateHealth = 0x41, SpawnPosition = 0x46, TimeUpdate = 0x47, CollectItem = 0x4B, EntityTeleport = 0x4C;
     // play, serverbound
-    public const int TeleportConfirm = 0x00, ChatOut = 0x02, ClientStatus = 0x03, ClientSettings = 0x04, CustomPayload = 0x09,
-        KeepAliveOut = 0x0B, Player = 0x0C, PlayerPosition = 0x0D, PlayerPositionRotation = 0x0E, PlayerRotation = 0x0F,
-        EntityAction = 0x15, HeldItemChange = 0x1A, Animation = 0x1D;
+    public const int TeleportConfirm = 0x00, ChatOut = 0x02, ClientStatus = 0x03, ClientSettings = 0x04, ConfirmTransactionOut = 0x05,
+        ClickWindow = 0x07, CloseWindowOut = 0x08, CustomPayload = 0x09, UseEntity = 0x0A, KeepAliveOut = 0x0B, Player = 0x0C,
+        PlayerPosition = 0x0D, PlayerPositionRotation = 0x0E, PlayerRotation = 0x0F, PlayerDigging = 0x14, EntityAction = 0x15,
+        HeldItemChange = 0x1A, UpdateSign = 0x1C, Animation = 0x1D, PlaceBlock = 0x1F, UseItem = 0x20;
+    /// <summary>Spawn Object type of an item entity (<c>NetHandlerPlayClient.handleSpawnObject</c>: 2 → EntityItem).</summary>
+    public const int ObjectItem = 2;
 }
 
 /// <summary>A 1.12.2 packet the translator doesn't surface (logged to <see cref="IGameConnection.TrafficLog"/> only).</summary>
@@ -49,12 +56,14 @@ public sealed class WirePacket1122(int wireId, byte[] body) : IPacket
 /// Change (state = id &lt;&lt; 4 | meta).</item>
 /// <item>Sent: chat (≤ 256), the four movement packets (stance dropped; a bare on-ground packet only when on-ground changed,
 /// as 1.12.2's onUpdateWalkingPlayer does), entity action (renumbered), respawn (Client Status 0), held item, arm swing.
-/// Everything else (dig, place, windows, entity use, signs) is P2+: <see cref="CanSend"/> is false for it.</item>
+/// P2 (<c>Release1122Connection.Play2.cs</c>): windows, clicks with their click type and the confirm flow, digging, placing
+/// with hand and cursor, use item, use entity, signs; item entities (Spawn Object 2 + its metadata), players, their moves,
+/// equipment, animations, statuses, collects and destroys; another player's Block Break Animation.</item>
 /// </list>
 /// Threading: one reader thread calls <see cref="ReadPacket"/>; <see cref="Send"/> is thread-safe (frames are encoded and
 /// written under one lock, which the reader also takes for its automatic replies).
 /// </summary>
-public sealed class Release1122Connection : IGameConnection
+public sealed partial class Release1122Connection : IGameConnection
 {
     public const int ProtocolVersion = 340;
     public const int MaxChatLength = 256;
@@ -128,7 +137,7 @@ public sealed class Release1122Connection : IGameConnection
     {
         while (true)
         {
-            if (_extraList.TryDequeue(out var extra)) return extra;
+            if (_extra.TryDequeue(out var extra)) return extra;
             byte[]? payload;
             try
             {
@@ -218,6 +227,7 @@ public sealed class Release1122Connection : IGameConnection
             }
             case Ids1122.Respawn:
             {
+                ResetEntities();
                 _dimension = r.ReadInt();
                 int difficulty = r.ReadUByte(), mode = r.ReadUByte();
                 return new RespawnPacket { Dimension = (sbyte)_dimension, Difficulty = (sbyte)difficulty, GameMode = (sbyte)(mode & 7), WorldHeight = 256 };
@@ -282,7 +292,13 @@ public sealed class Release1122Connection : IGameConnection
             case Ids1122.PlayerListItem:
                 return TranslatePlayerList(ref r);
             case Ids1122.ChunkData:
-                return ChunkData.Decode(body, hasSky: _dimension == 0);
+            {
+                var chunk = ChunkData.Decode(body, hasSky: _dimension == 0);
+                foreach (var be in chunk.BlockEntities)
+                    if (Codec1122.SignLines(be, Lang) is { } lines && be.GetInt("x") is { } sx && be.GetInt("y") is { } sy && be.GetInt("z") is { } sz)
+                        _extra.Enqueue(new UpdateSignPacket { X = sx, Y = (short)sy, Z = sz, Lines = lines });
+                return chunk;
+            }
             case Ids1122.UnloadChunk:
                 return new PreChunkPacket { ChunkX = r.ReadInt(), ChunkZ = r.ReadInt(), Load = false };
             case Ids1122.BlockChange:
@@ -308,7 +324,7 @@ public sealed class Release1122Connection : IGameConnection
                 return new MultiBlockChangePacket { ChunkX = cx, ChunkZ = cz, Coordinates = coords, BlockIds = ids, Metadata = metas };
             }
             default:
-                return null; // P2+ (entities, windows, sounds, …): recorded, not surfaced
+                return TranslatePlay2(id, body); // P2: windows, entities seen by pickup and observers, signs
         }
     }
 
@@ -354,19 +370,27 @@ public sealed class Release1122Connection : IGameConnection
                 default: throw new ProtocolException($"player list action {action}");
             }
         }
-        for (int i = 1; i < found.Count; i++) _extraList.Enqueue(found[i]);
-        return found.Count > 0 ? found[0] : null;
+        return First(found);
     }
 
-    // One wire packet can list several players; the canonical message names one. The rest come out of the next reads.
-    private readonly Queue<PlayerListItemPacket> _extraList = new();
+    // One wire packet can carry several canonical messages (players listed, entities destroyed, signs in a chunk); the first
+    // is returned, the rest come out of the next reads.
+    private readonly Queue<IPacket> _extra = new();
+
+    private IPacket? First<T>(List<T> list) where T : IPacket
+    {
+        for (int i = 1; i < list.Count; i++) _extra.Enqueue(list[i]);
+        return list.Count > 0 ? list[0] : null;
+    }
 
     // ------------------------------------------------------------------ sending
 
     public bool CanSend(IPacket packet) => packet switch
     {
         HandshakePacket or KeepAlivePacket or KickPacket or ChatPacket or PlayerOnGroundPacket or PlayerPositionPacket
-            or PlayerPositionLookPacket or PlayerLookPacket or EntityActionPacket or RespawnPacket or HoldingChangePacket => true,
+            or PlayerPositionLookPacket or PlayerLookPacket or EntityActionPacket or RespawnPacket or HoldingChangePacket
+            or WindowClickPacket or TransactionPacket or CloseWindowPacket or PlayerDiggingPacket or PlayerBlockPlacementPacket
+            or UseEntityPacket or UpdateSignPacket => true,
         AnimationPacket a => a.Animation == 1,
         _ => false,
     };
@@ -429,11 +453,12 @@ public sealed class Release1122Connection : IGameConnection
             case HoldingChangePacket h:
                 SendWire(WireWriter.ForPacket(Ids1122.HeldItemChange).WriteShort(h.Slot), packet);
                 return;
-            case AnimationPacket { Animation: 1 }:
-                SendWire(WireWriter.ForPacket(Ids1122.Animation).WriteVarInt(0), packet); // main hand swing
+            case AnimationPacket { Animation: 1 } swing:
+                SendWire(WireWriter.ForPacket(Ids1122.Animation).WriteVarInt(swing.Hand), packet);
                 return;
             default:
-                throw new NotSupportedException($"{packet.GetType().Name} is not supported on 1.12.2 yet (multi-version P2+)");
+                if (SendPlay2(packet)) return;
+                throw new NotSupportedException($"{packet.GetType().Name} is not supported on 1.12.2 yet");
         }
     }
 

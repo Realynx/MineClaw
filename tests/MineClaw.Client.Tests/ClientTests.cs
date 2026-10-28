@@ -7,10 +7,11 @@ namespace MineClaw.Client.Tests;
 
 internal static class Harness
 {
+    /// <param name="release1122">Run the fake server and the client on 1.12.2 (the server's 1.12.2 codec, the 1.12.2 profile).</param>
     public static async Task<(MinecraftClient Client, FakeServer Server)> StartAsync(Action<FakeServer>? setup = null,
-        Func<ClientOptions, ClientOptions>? opts = null)
+        Func<ClientOptions, ClientOptions>? opts = null, bool release1122 = false)
     {
-        var server = new FakeServer();
+        var server = new FakeServer(release1122);
         setup?.Invoke(server);
         var o = new ClientOptions
         {
@@ -18,9 +19,10 @@ internal static class Harness
             TickInterval = TimeSpan.FromMilliseconds(5),
             ChatInterval = TimeSpan.Zero,
             RespawnDelay = TimeSpan.FromMilliseconds(10),
-            ConnectionFactory = server.CreateClientConnection,
+            ConnectionFactory = release1122 ? server.CreateConnection : server.CreateClientConnection,
             HostileAlertRadius = 0,
         };
+        if (release1122) o = o with { Profile = MineClaw.Client.Versioning.GameVersionProfiles.Java1122 };
         if (opts is not null) o = opts(o);
         var client = new MinecraftClient(o);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));

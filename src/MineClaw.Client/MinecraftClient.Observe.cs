@@ -188,7 +188,7 @@ public sealed partial class MinecraftClient
 
     /// <summary>Census name: slab/wool/stone-brick variants by type (they craft from different things), else the block name.</summary>
     internal static string CensusName(int id, int meta) =>
-        id is Blocks.Slab or Blocks.Wool or Blocks.StoneBricks ? Items.VariantName(id, meta) : BlockName(id, 0);
+        id is Blocks.Slab or Blocks.Wool or Blocks.StoneBricks ? Items.VariantName(id, meta) : Blocks.Get(id).Name;
 
     private static int Canonical(int id) => id switch
     {

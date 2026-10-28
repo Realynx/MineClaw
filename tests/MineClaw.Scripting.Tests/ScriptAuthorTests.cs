@@ -174,4 +174,44 @@ public class ScriptAuthorTests
         Assert.StartsWith("cobble_store v1: // purpose:", show.Text);
         Assert.True(show.Text.Length <= 640);
     }
+
+    /// <summary>The old strategy helpers (99-compat.js): a draft calling one goes back to the author with what replaces it.</summary>
+    private sealed class CompatAuthor : ILlmClient
+    {
+        public ConcurrentQueue<LlmRequest> Requests { get; } = new();
+        private int _n;
+        public const string Old = "// purpose: mine n cobble at the gen and store it\nconst P = params({ n: 64, at: 'auto', chest: null })\nreturn `mined ${mineGen({ at: P.at, n: P.n, chest: P.chest })} cobble`";
+
+        public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct)
+        {
+            Requests.Enqueue(request);
+            var code = _n++ == 0 ? Old : ScriptPrompts.Exemplar;
+            return Task.FromResult(new LlmResponse([new LlmText("```js\n" + code + "\n```")], StopReasons.EndTurn, new LlmUsage(10, 10, 0, 0), request.Model ?? "claude-opus-5-5"));
+        }
+    }
+
+    [Fact]
+    public async Task The_author_migrates_saved_scripts_off_the_compat_helpers()
+    {
+        var llm = new CompatAuthor();
+        var (h, _, b) = BotScriptTests.Bot(llm: llm);
+        // A saved b1.8.1 version on the old helpers keeps its place in the library...
+        b.Library.SaveVersion("cobble_store", CompatAuthor.Old, author: "main/claude-opus-5-5", purpose: "mine n cobble at the gen and store it", lang: "js");
+        // ...and improving it tells the author what replaces each helper; a draft that still calls one is sent back.
+        var r = await h.Run("script", new { name = "cobble_store", goal = "mine n cobble at the gen and store it" });
+        Assert.True(r.Ok, r.Text);
+        var authors = llm.Requests.Where(q => q.Purpose == "author-script").ToArray();
+        Assert.Equal(2, authors.Length);
+        Assert.Contains("calls deprecated helpers: mineGen → use gather('cobblestone'", authors[0].Messages[0].Text);
+        Assert.Contains("deprecated helpers (compose the primitives instead", authors[1].Messages[^1].Text);
+        var sc = b.Library.Get("cobble_store")!.Script!;
+        Assert.Equal(2, sc.Version);
+        Assert.Empty(ScriptLint.CompatCalls(sc.Code));
+        Assert.Equal(CompatAuthor.Old, sc.Versions.Single(v => v.V == 1).Code); // the old version stays as history (rollback works)
+
+        // Code that calls a compat helper still runs; the warning rides on the result.
+        var run = await h.Run("script", new { op = "run", code = "return 'day ' + waitForDay(1)" });
+        Assert.True(run.Ok, run.Text);
+        Assert.Contains("waitForDay() is a deprecated compat helper: use waitFor('day'", run.Text);
+    }
 }

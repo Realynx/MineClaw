@@ -13,31 +13,65 @@ public readonly record struct ClickResult(int WindowId, int Slot, bool RightClic
     public IReadOnlyList<int> ChangedSlots { get; init; } = [];
     /// <summary>The predicted cursor changed.</summary>
     public bool CursorChanged { get; init; }
+    /// <summary>The click type (b1.8.1: Pickup or QuickMove) and its button.</summary>
+    public ClickMode Mode { get; init; }
+    public int Button { get; init; }
+}
+
+/// <summary>1.12.2 <c>ClickType</c> ordinals (the window click packet's mode).</summary>
+public enum ClickMode : byte { Pickup = 0, QuickMove = 1, Swap = 2, Clone = 3, Throw = 4, QuickCraft = 5, PickupAll = 6 }
+
+/// <summary>
+/// Version facts of the inventory model: the player window's size (b1.8.1 45; 1.12.2 46 with the off hand at 45) and which
+/// <c>Container.slotClick</c> the prediction follows (b1.8.1's, or 1.12.2's: click types 0..6, smart shift-click routing into
+/// armor, off-hand and furnace slots, and its return value, the click's expected item).
+/// </summary>
+public sealed class InventoryModel
+{
+    public const int OffhandSlot = 45;
+    public static readonly InventoryModel Beta181 = new(45, modernClicks: false);
+    public static readonly InventoryModel Release1122 = new(46, modernClicks: true);
+
+    private InventoryModel(int playerSlots, bool modernClicks)
+    {
+        PlayerSlots = playerSlots;
+        ModernClicks = modernClicks;
+    }
+
+    public int PlayerSlots { get; }
+    public bool HasOffhand => PlayerSlots > OffhandSlot;
+    /// <summary>1.12.2's <c>Container.slotClick</c> (every click type) instead of b1.8.1's (click and shift only).</summary>
+    public bool ModernClicks { get; }
+    public override string ToString() => ModernClicks ? "1.12.2 inventory" : "b1.8.1 inventory";
 }
 
 /// <summary>
-/// Player inventory (window 0), the currently open window and the cursor stack, plus b1.8.1 click prediction.
+/// Player inventory (window 0), the currently open window and the cursor stack, plus click prediction (b1.8.1's
+/// <c>Container.slotClick</c>, or 1.12.2's with <see cref="InventoryModel.Release1122"/>).
 /// Thread-safe via a single lock: the packet thread applies 0x64/0x65/0x67/0x68/0x69, action threads click and query.
 /// </summary>
-public sealed class InventoryManager
+public sealed partial class InventoryManager
 {
     public const int CursorWindow = -1, CursorSlot = -1, OutsideSlot = -999;
 
     private readonly object _sync = new();
-    private readonly ItemStack[] _player = new ItemStack[45];
+    private readonly ItemStack[] _player;
     private readonly Window _playerWindow;
     private Window? _open;
     private ItemStack _cursor = ItemStack.Empty;
     private short _actionCounter;
 
-    public InventoryManager(ItemRules? rules = null)
+    public InventoryManager(ItemRules? rules = null, InventoryModel? model = null)
     {
+        Model = model ?? InventoryModel.Beta181;
+        _player = new ItemStack[Model.PlayerSlots];
         Array.Fill(_player, ItemStack.Empty);
         _playerWindow = new Window(0, WindowType.Player, "Inventory", 9, _player);
         Rules = rules ?? ItemRules.Default;
     }
 
     public ItemRules Rules { get; set; }
+    public InventoryModel Model { get; }
 
     /// <summary>Optional recipe evaluator: given a crafting grid (row-major, width 2 or 3) returns the output or Empty.
     /// When set, predicted crafting output is recomputed after grid changes; otherwise the server's 0x67 fills it in.</summary>
@@ -141,27 +175,58 @@ public sealed class InventoryManager
     /// Send the returned <see cref="ClickResult"/> as 0x66; if the server answers 0x6A accepted=false, reply with
     /// 0x6A accepted=true and wait for its resync (0x68/0x67).
     /// </summary>
-    public ClickResult ApplyClick(int slot, bool rightClick, bool shift)
+    public ClickResult ApplyClick(int slot, bool rightClick, bool shift) =>
+        ApplyClick(slot, shift ? ClickMode.QuickMove : ClickMode.Pickup, rightClick ? 1 : 0);
+
+    /// <summary>
+    /// A click of any type with its button: the mouse button for Pickup/QuickMove/PickupAll, the hotbar key 0..8 for
+    /// <see cref="ClickMode.Swap"/>, 0 one / 1 the stack for <see cref="ClickMode.Throw"/>, stage | split mode &lt;&lt; 2 for
+    /// <see cref="ClickMode.QuickCraft"/>. The b1.8.1 model knows only Pickup and QuickMove.
+    /// </summary>
+    public ClickResult ApplyClick(int slot, ClickMode mode, int button)
     {
+        if (!Model.ModernClicks && mode is not (ClickMode.Pickup or ClickMode.QuickMove))
+            throw new NotSupportedException($"{mode} clicks need the 1.12.2 inventory model");
         ClickResult r;
+        bool right = button == 1 && (mode is ClickMode.Pickup or ClickMode.QuickMove);
+        bool shift = mode == ClickMode.QuickMove;
         lock (_sync)
         {
             var w = _open ?? _playerWindow;
             var before = new ItemStack[w.SlotCount];
             for (int i = 0; i < before.Length; i++) before[i] = w.Get(i);
             var cursorBefore = _cursor;
-            var expected = SlotClick(w, slot, rightClick, shift);
+            var expected = Model.ModernClicks ? SlotClick1122(w, slot, mode, button) : SlotClick(w, slot, right, shift);
             var changed = new List<int>();
             for (int i = 0; i < before.Length; i++) if (!before[i].Equals(w.Get(i))) changed.Add(i);
-            r = new ClickResult(w.Id, slot, rightClick, shift, expected, ++_actionCounter)
+            r = new ClickResult(w.Id, slot, right, shift, expected, ++_actionCounter)
             {
                 ChangedSlots = changed,
                 CursorChanged = !cursorBefore.Equals(_cursor),
+                Mode = mode,
+                Button = button,
             };
         }
         Changed?.Invoke();
         return r;
     }
+
+    /// <summary>1.12.2 Player Digging status 6 (<c>NetHandlerPlayServer.processPlayerDigging</c>, SWAP_HELD_ITEMS): the held
+    /// hotbar stack and the off hand trade places. False without an off hand.</summary>
+    public bool SwapHands(int hotbarSlot)
+    {
+        if (!Model.HasOffhand) return false;
+        lock (_sync)
+        {
+            int main = 36 + Math.Clamp(hotbarSlot, 0, 8);
+            (_player[main], _player[InventoryModel.OffhandSlot]) = (_player[InventoryModel.OffhandSlot], _player[main]);
+        }
+        Changed?.Invoke();
+        return true;
+    }
+
+    /// <summary>The off-hand stack (Empty without one).</summary>
+    public ItemStack Offhand { get { lock (_sync) return Model.HasOffhand ? _player[InventoryModel.OffhandSlot] : ItemStack.Empty; } }
 
     private ItemStack SlotClick(Window w, int slot, bool right, bool shift)
     {
@@ -392,10 +457,10 @@ public sealed class InventoryManager
 
     // ---- queries (window-0 slot numbers) ----
 
-    /// <summary>Copy of the 45 window-0 slots.</summary>
+    /// <summary>Copy of the window-0 slots (45; 46 with the 1.12.2 off hand).</summary>
     public ItemStack[] PlayerSlots() { lock (_sync) return (ItemStack[])_player.Clone(); }
 
-    public ItemStack GetPlayerSlot(int slot) { lock (_sync) return slot is >= 0 and < 45 ? _player[slot] : ItemStack.Empty; }
+    public ItemStack GetPlayerSlot(int slot) { lock (_sync) return slot >= 0 && slot < _player.Length ? _player[slot] : ItemStack.Empty; }
 
     /// <summary>Item in the selected hotbar slot (0..8).</summary>
     public ItemStack HeldItem(int hotbarSlot) => GetPlayerSlot(36 + Math.Clamp(hotbarSlot, 0, 8));
@@ -406,7 +471,7 @@ public sealed class InventoryManager
         lock (_sync)
         {
             int n = 0;
-            for (int i = includeAll ? 0 : 9; i < 45; i++)
+            for (int i = includeAll ? 0 : 9; i < (includeAll ? _player.Length : 45); i++)
             {
                 var s = _player[i];
                 if (!s.IsEmpty && s.Id == itemId && (damage is null || s.Damage == damage)) n += s.Count;

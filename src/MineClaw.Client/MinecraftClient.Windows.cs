@@ -23,6 +23,33 @@ public sealed partial class MinecraftClient
             return ok ? ActionResult.Success($"clicked slot {slot}") : ActionResult.Fail($"click on slot {slot} rejected (resynced)");
         });
 
+    /// <summary>
+    /// One click of any 1.12.2 click type (<see cref="ClickMode"/>: swap with hotbar key <paramref name="button"/>, throw, drag
+    /// stages, double-click pickup-all), predicted by the 1.12.2 inventory model and confirmed by the server's transaction.
+    /// b1.8.1 knows only pickup and shift clicks.
+    /// </summary>
+    public Task<ActionResult> ClickSlotAsync(int slot, ClickMode mode, int button, CancellationToken ct = default) =>
+        RunActionAsync("click", ct, async c =>
+        {
+            bool ok = await ClickCoreAsync(slot, mode, button, c).ConfigureAwait(false);
+            return ok ? ActionResult.Success($"{mode.ToString().ToLowerInvariant()} click on slot {slot}")
+                : ActionResult.Fail($"{mode.ToString().ToLowerInvariant()} click on slot {slot} rejected (resynced)");
+        });
+
+    /// <summary>
+    /// Swaps the held hotbar stack with the off hand (1.12.2 Player Digging status 6, the F key; the server answers with the
+    /// two slots). Fails on versions without an off hand.
+    /// </summary>
+    public Task<ActionResult> SwapHandsAsync(CancellationToken ct = default) =>
+        RunActionAsync("swap hands", ct, async c =>
+        {
+            if (!World.Inventory.Model.HasOffhand) return ActionResult.Fail($"{Options.Profile.Version.Id} has no off hand");
+            await EnsureNoWindowAsync(c).ConfigureAwait(false);
+            Send(new PlayerDiggingPacket { Status = PlayerDiggingPacket.StatusSwapHands, Face = 0 });
+            World.Inventory.SwapHands(World.Player.HeldSlot);
+            return ActionResult.Success($"off hand now holds {Stack(World.Inventory.Offhand)}");
+        });
+
     /// <summary>Closes the open window after putting the cursor and crafting-grid items back into the inventory
     /// (beta drops them on close).</summary>
     public Task<ActionResult> CloseWindowAsync(CancellationToken ct = default) =>
@@ -212,10 +239,13 @@ public sealed partial class MinecraftClient
     /// pre-click contents. The server then accepts the click and never re-sends the slot (b1.8.1 sends no 0x67 for an
     /// accepted click's changes): the model must be resynced or it keeps phantom/missing stacks.
     /// </summary>
-    private void NoteSlotPacket(int windowId, int slot, bool fullWindow)
+    private void NoteSlotPacket(int windowId, int slot, bool fullWindow, ItemStack? item = null)
     {
         Interlocked.Exchange(ref _lastSlotPacketMs, Environment.TickCount64);
         if (_clickInFlight is not { Pending: true } f) return;
+        // A slot update that agrees with the prediction can't hurt it, whenever it was generated. 1.12.2's server sends the
+        // crafting output (slotChangedCraftingGrid → SPacketSetSlot slot 0) during the click, ahead of its confirm.
+        if (!fullWindow && item is { } got && f.Changed is not null && SlotNow(windowId, slot) is { } now && now.Equals(got)) return;
         if (f.Changed is null || fullWindow) { if (f.Changed is null || windowId == f.Window || windowId == 0) f.Raced = true; return; }
         if (windowId == -1 && slot == -1) { if (f.CursorChanged) f.Raced = true; return; }
         int s = slot;
@@ -226,6 +256,12 @@ public sealed partial class MinecraftClient
             s = w.FromPlayerSlot(slot);
         }
         if (s >= 0 && f.Changed.Contains(s)) f.Raced = true;
+    }
+
+    private ItemStack? SlotNow(int windowId, int slot)
+    {
+        if (windowId == -1 && slot == -1) return World.Inventory.Cursor;
+        return World.Inventory.GetWindow(windowId) is { } w && slot >= 0 && slot < w.SlotCount ? w.Get(slot) : null;
     }
 
     /// <summary>Packet thread: the 0x6A for a click arrived (recorded before its result becomes visible to the click).</summary>
@@ -243,12 +279,18 @@ public sealed partial class MinecraftClient
     /// the click (we then wait for its 0x68 and for the next tick's slot echoes before going on), or a slot update raced the
     /// click (we then force a resync). Callers doing several clicks restart from the fresh state.
     /// </summary>
-    private async Task<bool> ClickCoreAsync(int slot, bool right, bool shift, CancellationToken ct)
+    private Task<bool> ClickCoreAsync(int slot, bool right, bool shift, CancellationToken ct) =>
+        ClickCoreAsync(slot, shift ? ClickMode.QuickMove : ClickMode.Pickup, right ? 1 : 0, ct);
+
+    private async Task<bool> ClickCoreAsync(int slot, ClickMode mode, int button, CancellationToken ct)
     {
+        bool right = button == 1 && (mode is ClickMode.Pickup or ClickMode.QuickMove), shift = mode == ClickMode.QuickMove;
+        if (!World.Inventory.Model.ModernClicks && mode is not (ClickMode.Pickup or ClickMode.QuickMove))
+            throw new ActionAbortedException($"{mode} clicks are not supported on {Options.Profile.Version.Id}");
         int version = Volatile.Read(ref _windowItemsVersion);
         var marker = new ClickInFlight(World.Inventory.ActiveWindow.Id, -1, null, true);
         _clickInFlight = marker; // a slot packet between here and the real marker counts as a race (conservative)
-        var r = World.Inventory.ApplyClick(slot, right, shift);
+        var r = World.Inventory.ApplyClick(slot, mode, button);
         var f = new ClickInFlight(r.WindowId, r.ActionNumber, [.. r.ChangedSlots], r.CursorChanged) { Raced = marker.Raced };
         _clickInFlight = f;
         if (marker.Raced) f.Raced = true;
@@ -258,7 +300,7 @@ public sealed partial class MinecraftClient
             Send(new WindowClickPacket
             {
                 WindowId = (sbyte)r.WindowId, Slot = (short)slot, RightClick = right, ActionNumber = r.ActionNumber, Shift = shift,
-                ClickedItem = r.ExpectedItem,
+                ClickedItem = r.ExpectedItem, Mode = (byte)mode, Button = (sbyte)button,
             });
             if (!await WaitUntilAsync(() => _txResults.ContainsKey(key), TimeSpan.FromSeconds(3), ct).ConfigureAwait(false))
                 throw new ActionAbortedException($"no reply to window click on slot {slot}");
@@ -500,7 +542,7 @@ public sealed partial class MinecraftClient
         return d;
     }
 
-    private static string DiffSummary(Dictionary<(int, int), int> before, Dictionary<(int, int), int> after, out int total)
+    private string DiffSummary(Dictionary<(int, int), int> before, Dictionary<(int, int), int> after, out int total)
     {
         var parts = new List<string>();
         total = 0;
@@ -514,7 +556,7 @@ public sealed partial class MinecraftClient
         return parts.Count == 0 ? "nothing" : string.Join(", ", parts.Take(8)) + (parts.Count > 8 ? $" +{parts.Count - 8} more" : "");
     }
 
-    private static string Stack(ItemStack s) => s.IsEmpty ? "-" : $"{ItemName(s.Id, s.Damage)} x{s.Count}";
+    private string Stack(ItemStack s) => s.IsEmpty ? "-" : $"{ItemName(s.Id, s.Damage)} x{s.Count}";
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..Math.Max(0, max - 3)] + "...";
 }

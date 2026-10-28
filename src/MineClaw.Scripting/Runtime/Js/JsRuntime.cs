@@ -341,6 +341,10 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime, IPatc
             return s.CanSpawn(p, TypeConverter.ToBoolean(JsConvert.Arg(a, next))) ? JsBoolean.True : JsBoolean.False;
         });
         H(h, "near", a => V(s.Nearest(Str(a, 0) ?? throw ScriptSession.Bug("near(kind) needs a block/player/place name"), Num(a, 1))));
+        H(h, "find", a => V(s.FindAll(Str(a, 0) ?? throw ScriptSession.Bug("find(query) needs a name (block, mob, player or place)"),
+            Num(a, 1), Num(a, 2) is { } lim ? (int)lim : null)));
+        H(h, "item", a => V(s.ItemInfo(Str(a, 0) ?? throw ScriptSession.Bug("item(name) needs a name"))));
+        H(h, "sources", a => V(s.Sources(Str(a, 0) ?? throw ScriptSession.Bug("gather(what) needs an item name"))));
         H(h, "hostile", a => V(Hostile(Num(a, 0) ?? 8)));
         H(h, "where", a => S(s.Where(Str(a, 0) ?? throw ScriptSession.Bug("where(item) needs an item name"))));
         H(h, "night", _ => s.Night() ? JsBoolean.True : JsBoolean.False);

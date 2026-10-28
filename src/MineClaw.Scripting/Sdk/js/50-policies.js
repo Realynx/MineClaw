@@ -44,13 +44,12 @@
       H.on('lowhp', null, react);
     },
   }));
-  /** depositWhenFull(chest?, items?, onFull?) - when the inventory fills, store() (chest, else the next with room) and carry on; every chest full -> onFull(r), else fail with why. */
+  /** depositWhenFull(chest?, items?, onFull?) - when the inventory fills, stash() items (default all but tools) in chest, else the next with room, and carry on; every chest full -> onFull(r), else fail with why. */
   def('depositWhenFull', (chest, items, onFull) => policy('depositWhenFull', 'invFull', { free: 1 }, () => {
-    const r = store(chest, items);
-    if (r && r.full) {
-      if (typeof onFull === 'function') return onFull(r);
-      H.fail('depositWhenFull: ' + r.msg);
-    }
+    const r = stash(items || 'all-but-tools', { to: chest });
+    if (r.ok) return;
+    if (r.full && typeof onFull === 'function') return onFull(r);
+    H.fail('depositWhenFull: ' + r.msg);
   }));
   /** replaceToolWhenBroken(kind='pickaxe') - when the last tool of that kind breaks, ensure() a new one and carry on. */
   def('replaceToolWhenBroken', (kind = 'pickaxe') => policy('replaceToolWhenBroken', 'toolBroke:' + kind, null, () => { ensure(kind); }));

@@ -13,6 +13,10 @@ public sealed class UseEntityPacket : IPacket
     public int UserEntityId { get; set; }
     public int TargetEntityId { get; set; }
     public bool LeftClick { get; set; }
+    /// <summary>1.12.2: the hand of an interact (0 main, 1 off); b1.8.1 has one hand.</summary>
+    public byte Hand { get; set; }
+    /// <summary>1.12.2 interact-at: the hit point relative to the target's position (armor stands); null = plain interact.</summary>
+    public (float X, float Y, float Z)? InteractAt { get; set; }
 
     public void Read(MinecraftReader r, PacketDirection d)
     {
@@ -200,6 +204,9 @@ public sealed class PlayerDiggingPacket : IPacket
 {
     public const byte PacketId = 0x0E;
     public const byte StatusStarted = 0, StatusFinished = 2, StatusDropItem = 4, StatusReleaseUseItem = 5;
+    /// <summary>1.12.2 only (the canonical numbering follows 1.12.2's <c>CPacketPlayerDigging.Action</c>): 1 abort digging,
+    /// 3 drop the whole held stack, 6 swap the main and off hand.</summary>
+    public const byte StatusCancelled = 1, StatusDropStack = 3, StatusSwapHands = 6;
     public byte Id => PacketId;
     public byte Status { get; set; }
     public int X { get; set; }
@@ -243,10 +250,31 @@ public sealed class PlayerBlockPlacementPacket : IPacket
     public int Z { get; set; }
     public byte Direction { get; set; }
     public ItemStack HeldItem { get; set; } = ItemStack.Empty;
+    /// <summary>1.12.2: the hand used (0 main, 1 off). b1.8.1 has one hand.</summary>
+    public byte Hand { get; set; }
+    /// <summary>1.12.2: where on the clicked face the cursor is, each 0..1 relative to the block's corner (the hit vector −
+    /// the block position). It decides slab and stair halves (<c>BlockSlab.getStateForPlacement</c>: a side click above
+    /// 0.5 places a top half). Null = the face centre. b1.8.1 sends no cursor.</summary>
+    public (float X, float Y, float Z)? Cursor { get; set; }
 
     /// <summary>The "use item in hand" form (no target block).</summary>
-    public static PlayerBlockPlacementPacket UseItem(ItemStack held) =>
-        new() { X = -1, Y = 255, Z = -1, Direction = NoDirection, HeldItem = held };
+    public static PlayerBlockPlacementPacket UseItem(ItemStack held, byte hand = 0) =>
+        new() { X = -1, Y = 255, Z = -1, Direction = NoDirection, HeldItem = held, Hand = hand };
+
+    /// <summary>The cursor sent for a face click: <see cref="Cursor"/>, else the face centre (the top face at y 1, the bottom
+    /// face at y 0, like a vanilla hit vector).</summary>
+    public (float X, float Y, float Z) EffectiveCursor => Cursor ?? FaceCentre(Direction);
+
+    public static (float X, float Y, float Z) FaceCentre(int face) => face switch
+    {
+        0 => (0.5f, 0f, 0.5f),
+        1 => (0.5f, 1f, 0.5f),
+        2 => (0.5f, 0.5f, 0f),
+        3 => (0.5f, 0.5f, 1f),
+        4 => (0f, 0.5f, 0.5f),
+        5 => (1f, 0.5f, 0.5f),
+        _ => (0.5f, 0.5f, 0.5f),
+    };
 
     public void Read(MinecraftReader r, PacketDirection d)
     {
@@ -288,6 +316,8 @@ public sealed class AnimationPacket : IPacket
     public byte Id => PacketId;
     public int EntityId { get; set; }
     public sbyte Animation { get; set; }
+    /// <summary>1.12.2 swing: the arm (0 main, 1 off).</summary>
+    public byte Hand { get; set; }
 
     public void Read(MinecraftReader r, PacketDirection d)
     {

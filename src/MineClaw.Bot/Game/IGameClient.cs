@@ -41,6 +41,9 @@ public interface IGameClient
     event Action<int, int, int, int>? EquipmentChanged { add { } remove { } }
     /// <summary>0x26 entity status (entity, status: 2 hurt, 3 dead). Default: never raised.</summary>
     event Action<int, int>? EntityStatus { add { } remove { } }
+    /// <summary>Another player's dig progress (entity, block, crack stage; −1 stopped): 1.12.2's Block Break Animation. Default:
+    /// never raised (b1.8.1 has none).</summary>
+    event Action<int, BlockPos, int>? BlockBreakProgress { add { } remove { } }
 
     string DescribeStatus();
     string DescribeInventory(bool detail = false, int maxChars = 600);
@@ -151,6 +154,7 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
     public event Action<int, int, ItemStack?>? ItemCollected { add => Inner.ItemCollected += value; remove => Inner.ItemCollected -= value; }
     public event Action<int, int, int, int>? EquipmentChanged { add => Inner.EquipmentChanged += value; remove => Inner.EquipmentChanged -= value; }
     public event Action<int, int>? EntityStatus { add => Inner.EntityStatus += value; remove => Inner.EntityStatus -= value; }
+    public event Action<int, BlockPos, int>? BlockBreakProgress { add => Inner.BlockBreakProgress += value; remove => Inner.BlockBreakProgress -= value; }
 
     public string DescribeStatus() => Inner.DescribeStatus();
     public string DescribeInventory(bool detail = false, int maxChars = 600) => Inner.DescribeInventory(detail, maxChars);

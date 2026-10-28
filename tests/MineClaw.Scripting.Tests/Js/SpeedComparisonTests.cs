@@ -39,7 +39,8 @@ public class SpeedComparisonTests(ITestOutputHelper output)
             // purpose: mine n cobble at the gen, store it, re-tool, stay fed
             const P = params({ n: 64, at: 'auto', chest: null })
             use(keepFed(), replaceToolWhenBroken('pickaxe'))
-            return `mined ${mineGen({ at: P.at, n: P.n, chest: P.chest })} cobble`
+            ensure('pickaxe')
+            return `mined ${gather('cobblestone', P.n, { from: 'gen', at: P.at, stash: P.chest }).n} cobble`
             """),
         ("wheat harvest", """
             -- purpose: harvest ripe wheat, replant, store the wheat; n rounds, waiting for regrowth
@@ -58,7 +59,7 @@ public class SpeedComparisonTests(ITestOutputHelper output)
             const P = params({ rounds: 3, radius: 8, chest: null, waitS: 120 })
             ensure('hoe')
             for (let r = 1; r <= P.rounds; r++) {
-              expect(harvestFarm({ radius: P.radius, store: true, chest: P.chest }))
+              gather('wheat', 64, { from: 'harvest', r: P.radius, stash: P.chest })
               if (r < P.rounds) wait(P.waitS)
             }
             return `harvested ${P.rounds} rounds`
@@ -75,7 +76,7 @@ public class SpeedComparisonTests(ITestOutputHelper output)
             // purpose: store everything but tools and food in the chest, then come back
             const P = params({ chest: '14,64,-5' })
             const back = me.pos
-            store(P.chest)
+            expect(stash('all-but-tools', { to: P.chest }))
             ensure(['pickaxe', 'food'])
             expect(go(back))
             return 'stored'

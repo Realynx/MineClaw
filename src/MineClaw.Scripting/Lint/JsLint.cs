@@ -10,7 +10,7 @@ namespace MineClaw.Scripting.Lint;
 /// require/import/timers/the hidden host), a constant-true loop that never acts or waits, required tool args that a literal call
 /// can't fill, a machine whose targets/initial aren't states, crew scripts whose top level does work or whose roles don't exist.
 /// Warnings ride along: unchecked action results in loops, a long script without cp/machine, a tool job without ensure,
-/// say in a loop or a lane, an acting loop that never ends.
+/// say in a loop or a lane, an acting loop that never ends, a call to a deprecated compat helper (with what replaces it).
 /// </summary>
 internal static class JsLint
 {
@@ -37,7 +37,7 @@ internal static class JsLint
         "inv", "block", "near", "hostile", "where", "time", "night", "players", "pos", "dist", "ok", "expect", "log", "print", "prog", "cp",
         "fail", "on", "params", "signal", "when", "after", "every", "String", "Number", "Boolean", "parseInt", "parseFloat", "isNaN",
         "isFinite", "body", "bodies", "policy", "keepFed", "fleeVoidEdges", "defendIfAttacked", "depositWhenFull", "replaceToolWhenBroken",
-        "pauseAtNight", "use",
+        "pauseAtNight", "use", "find", "item",
     };
 
     private static readonly HashSet<string> PureObjects = new(StringComparer.Ordinal) { "Math", "JSON", "Object", "Array", "Number", "String", "console", "inv", "Date", "me" };
@@ -47,8 +47,11 @@ internal static class JsLint
     {
         "wait", "waitFor", "waitfor", "log", "print", "prog", "cp", "expect", "ensure", "room", "fail", "on", "say", "emote", "wake", "upto",
         "until", "retry", "seq", "sel", "timeout", "store", "restock", "mineGen", "harvestFarm", "chopTrees", "deliver", "waitForDay",
-        "guardArea", "machine", "use", "parallel", "spawn", "signal",
+        "guardArea", "machine", "use", "parallel", "spawn", "signal", "gather", "stash", "handTo", "makeRoom", "patrol", "quota", "forEach",
     };
+
+    /// <summary>The lint rule on a call to a deprecated compat helper (<see cref="Sdk.SdkModules.Compat"/>).</summary>
+    public const string CompatRule = "compat";
 
     private static readonly HashSet<string> GenCalls = new(StringComparer.Ordinal) { "gen", "harvest_generator", "harvestGenerator" };
 
@@ -226,8 +229,8 @@ internal static class JsLint
     private static void WalkFunction(in NodeList<Node> ps, Node body, string? name, Node? parent, Ctx c)
     {
         foreach (var p in ps) Bind(p, c);
-        // A function passed to upto/until/retry/every is a loop body.
-        bool loopFn = parent is CallExpression { Callee: Identifier { Name: "upto" or "until" or "retry" } };
+        // A function passed to upto/until/retry/quota/forEach/patrol is a loop body.
+        bool loopFn = parent is CallExpression { Callee: Identifier { Name: "upto" or "until" or "retry" or "quota" or "forEach" or "patrol" } };
         var outerFn = c.Function;
         if (name != null && c.TopFunctions.Contains(name) && outerFn == null) c.Function = name;
         if (loopFn) c.Loops.Push(new LoopInfo { Line = Line(body), Kind = "fn" });
@@ -319,6 +322,9 @@ internal static class JsLint
             acts = !PureCalls.Contains(name);
             if (name == "cp") c.HasCp = true;
             if (name is "ensure" or "acquire" or "mineGen") c.HasEnsure = true;
+            // The old strategy helpers (99-compat.js) still run; new code composes the primitives instead (the author's check rejects it).
+            if (!c.Declared.Contains(name) && !c.TopFunctions.Contains(name) && Sdk.SdkModules.Compat.TryGetValue(name, out var use))
+                c.Add(LintSeverity.Warning, line, CompatRule, $"{name}() is a deprecated compat helper: {use}");
             if (name is "parallel" or "spawn") { c.UsesCrew = true; CollectRoles(name, call, c); }
             if (name == "machine") CheckMachine(call, c);
             bool isAction = c.Actions.Contains(name);

@@ -20,6 +20,9 @@ public ref struct WireReader
 
     public int Position => _pos;
     public int Remaining => _data.Length - _pos;
+    /// <summary>The unread bytes, without consuming them.</summary>
+    public ReadOnlySpan<byte> Unread => _data[_pos..];
+    public void Skip(int n) => Take(n);
 
     private ReadOnlySpan<byte> Take(int n)
     {

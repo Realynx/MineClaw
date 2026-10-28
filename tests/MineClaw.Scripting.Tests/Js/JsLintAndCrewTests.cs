@@ -251,7 +251,7 @@ public class ExampleTests
     [Fact]
     public void Examples_are_lint_clean()
     {
-        string[] acts = ["mine", "gen", "harvest_generator", "deposit", "take", "withdraw", "go", "goto", "eat", "attack", "dig"];
+        string[] acts = ["mine", "gen", "harvest_generator", "deposit", "take", "withdraw", "go", "goto", "eat", "attack", "dig", "chop", "chop_tree", "place"];
         foreach (var (title, code) in ScriptPrompts.Examples)
         {
             var r = ScriptLint.Check(ScriptPrompts.Unindent(code), acts, 6, null, ScriptLanguage.Js);

@@ -252,6 +252,18 @@ public sealed partial class MinecraftClient
                     Raise(() => EntityAnimated?.Invoke(eid, anim));
                 }
                 break;
+            case BlockBreakAnimationMessage bb:
+                if (bb.EntityId != w.Player.EntityId)
+                {
+                    int eid = bb.EntityId, stage = bb.Stage is >= 0 and <= 9 ? bb.Stage : -1;
+                    var bp = new BlockPos(bb.X, bb.Y, bb.Z);
+                    Raise(() => BlockBreakProgress?.Invoke(eid, bp, stage));
+                }
+                break;
+            case ItemEntityStackMessage ist:
+                if (ist.Item.IsEmpty) w.Entities.Destroy(ist.EntityId);
+                else w.Entities.SetItem(ist.EntityId, ist.Item);
+                break;
             case BlockActionPacket ba:
                 {
                     var bp = new BlockPos(ba.X, ba.Y, ba.Z);
@@ -277,7 +289,7 @@ public sealed partial class MinecraftClient
                 w.Inventory.Close(cw.WindowId);
                 break;
             case SetSlotPacket ss:
-                NoteSlotPacket(ss.WindowId, ss.Slot, fullWindow: false);
+                NoteSlotPacket(ss.WindowId, ss.Slot, fullWindow: false, ss.Item);
                 w.Inventory.SetSlot(ss.WindowId, ss.Slot, ss.Item);
                 break;
             case WindowItemsPacket wi:

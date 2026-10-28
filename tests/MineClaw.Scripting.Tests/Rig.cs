@@ -27,10 +27,11 @@ public sealed class Rig : IDisposable
 
     /// <summary>A rig whose scripts are JavaScript.</summary>
     public static Rig Js(ScriptOptions? options = null, Crew.ICrewPort? crew = null, IScriptCheckpointStore? checkpoints = null,
-        Func<string, string?>? storedParams = null, string? body = null) => new(options, crew, checkpoints, storedParams, body) { Lang = ScriptLanguage.Js };
+        Func<string, string?>? storedParams = null, string? body = null, MineClaw.Data.Versioning.IGameData? data = null) =>
+        new(options, crew, checkpoints, storedParams, body, data) { Lang = ScriptLanguage.Js };
 
     public Rig(ScriptOptions? options = null, Crew.ICrewPort? crew = null, IScriptCheckpointStore? checkpoints = null,
-        Func<string, string?>? storedParams = null, string? body = null)
+        Func<string, string?>? storedParams = null, string? body = null, MineClaw.Data.Versioning.IGameData? data = null)
     {
         World.ApplyChunkRegion(-16, 0, -16, 32, 128, 32, new byte[32 * 128 * 32], null, null, null);
         for (int x = -6; x <= 6; x++)
@@ -42,6 +43,7 @@ public sealed class Rig : IDisposable
         {
             World = World,
             Username = "maid_chan",
+            Data = data ?? MineClaw.Data.Versioning.Beta181GameData.Instance,
             Actions =
             [
                 new ScriptAction("goto", ["to", "dist"]),
@@ -72,7 +74,9 @@ public sealed class Rig : IDisposable
             SkillIsAtomic = n => n == "move_items",
             SkillSchema = n => n == "move_items"
                 ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"moves":{"type":"array"}}}""").RootElement.Clone()
-                : n == "harvest_cane" ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"radius":{"type":"integer"}}}""").RootElement.Clone() : null,
+                : n == "harvest_cane" ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"radius":{"type":"integer"}}}""").RootElement.Clone()
+                : n == "harvest_wheat" ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"radius":{"type":"integer"},"replant":{"type":"boolean"},"part":{"type":"string"}}}""").RootElement.Clone()
+                : null,
             Wake = (_, reason) => Wakes.Enqueue(reason),
             Say = (t, _) => { Said.Enqueue(t); return Task.FromResult(ActResult.Success("said")); },
             Emote = (t, _) => { Emoted.Enqueue(t); return Task.FromResult(ActResult.Success("emoted")); },

@@ -9,7 +9,7 @@ namespace MineClaw.Client.Tests;
 /// <summary>
 /// Multi-version P1 end to end: <see cref="MinecraftClient"/> on the 1.12.2 profile against an in-process fake 1.12.2 server
 /// that speaks raw protocol 340 frames (compression on): login → join → chunks (a 256-high world, ground above y 128) →
-/// spawn teleport and its confirm → keep-alive → chat both ways → block change → an unsupported (P2) action → kick.
+/// spawn teleport and its confirm → keep-alive → chat both ways → block change → a dig (P2) → kick.
 /// </summary>
 public class Release1122ClientTests
 {
@@ -137,10 +137,19 @@ public class Release1122ClientTests
         await Until(() => client.World.GetBlock(10, 143, 10) == 0 && client.World.GetBlock(2, 150, 3) == Blocks.Wool);
         Assert.Equal(5, client.World.GetMeta(2, 150, 3));
 
-        // P2 features answer clearly instead of crashing or desyncing.
+        // P2: digging goes out as 1.12.2 Player Digging (VarInt status, packed position, face); the server breaks the block.
+        var digServer = Task.Run(() =>
+        {
+            var start = new WireReader(server.ReadUntil(0x14));
+            Assert.Equal(0, start.ReadVarInt());
+            Assert.Equal((8, 143, 9), start.ReadPosition());
+            byte[] finish;
+            do finish = server.ReadUntil(0x14); while (new WireReader(finish).ReadVarInt() != 2);
+            server.Send(0x0B, w => w.WritePosition(8, 143, 9).WriteVarInt(0));
+        });
         var dig = await client.DigBlockAsync(8, 143, 9);
-        Assert.False(dig.Ok);
-        Assert.Contains("not supported on 1.12.2 yet", dig.Message);
+        await digServer.WaitAsync(TimeSpan.FromSeconds(20));
+        Assert.True(dig.Ok, dig.Message);
         Assert.True(client.IsPlaying);
 
         // Disconnect with a JSON reason.

@@ -1,3 +1,4 @@
+using MineClaw.Protocol.Packets;
 using System.Net.Sockets;
 using System.Text;
 
@@ -56,6 +57,18 @@ public sealed class PacketConnection : Versioning.IGameConnection
             throw;
         }
     }
+
+    /// <summary>b1.8.1 has no off hand, no click types beyond click/shift, no dig abort/stack drop/hand swap and no
+    /// interact-at: those canonical forms (1.12.2 features) can't be sent here.</summary>
+    public bool CanSend(IPacket packet) => packet switch
+    {
+        WindowClickPacket c => c.EffectiveMode <= WindowClickPacket.ModeQuickMove,
+        PlayerDiggingPacket d => d.Status is not (PlayerDiggingPacket.StatusCancelled or PlayerDiggingPacket.StatusDropStack or PlayerDiggingPacket.StatusSwapHands),
+        PlayerBlockPlacementPacket p => p.Hand == 0,
+        AnimationPacket a => a.Hand == 0,
+        UseEntityPacket u => u.Hand == 0 && u.InteractAt is null,
+        _ => true,
+    };
 
     /// <summary>Direction of packets this connection reads.</summary>
     public PacketDirection Inbound { get; }

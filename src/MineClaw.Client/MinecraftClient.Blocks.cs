@@ -85,7 +85,7 @@ public sealed partial class MinecraftClient
         int held = await SelectToolForAsync(id, ct, noShears).ConfigureAwait(false);
         var snap = World.Player.Snapshot;
         bool inWater = BlockShapes.IsWater(World.GetBlock((int)Math.Floor(snap.Position.X), (int)Math.Floor(snap.Position.Y + PlayerPhysics.EyeHeight), (int)Math.Floor(snap.Position.Z)));
-        int ticks = Tools.DigTicks(id, held, snap.OnGround, inWater);
+        int ticks = DigTicksNow(id, World.GetMeta(pos), snap.OnGround, inWater);
         if (ticks == int.MaxValue) return ActionResult.Fail($"{name} can't be dug");
 
         var a = aim.Value;
@@ -584,7 +584,7 @@ public sealed partial class MinecraftClient
     private Dictionary<int, int> ScaffoldSnapshot() =>
         ScaffoldBlocks.ToDictionary(id => id, id => World.Inventory.CountItem(id));
 
-    private static string ScaffoldUsed(Dictionary<int, int> before, Dictionary<int, int> after)
+    private string ScaffoldUsed(Dictionary<int, int> before, Dictionary<int, int> after)
     {
         var used = before.Where(kv => kv.Value > after.GetValueOrDefault(kv.Key)).Select(kv => $"{kv.Value - after.GetValueOrDefault(kv.Key)} {BlockName(kv.Key, 0)}")
             .ToList();
@@ -606,6 +606,11 @@ public sealed partial class MinecraftClient
         return vy <= 0.05 && p.Y < pos.Y + 1.15;
     }
 
-    private static string BlockName(int id, int meta) => Blocks.Get(id).Name;
-    private static string ItemName(int id, int damage = 0) => Items.DisplayName(id, damage).ToLowerInvariant();
+    // Names per version (the profile's game data: 1.12.2 names "crafting_table", "Birch Wood Planks"; b1.8.1 the static tables).
+    private string BlockName(int id, int meta) => Options.Profile.Data.Block(id).Name;
+    private string ItemName(int id, int damage = 0) => Options.Profile.Data.DisplayName(id, damage).ToLowerInvariant();
+
+    /// <summary>Dig ticks by the version's rule with the held stack as it is (1.12.2: its Efficiency enchantment counts).</summary>
+    private int DigTicksNow(int blockId, int meta, bool onGround, bool inWater) =>
+        Options.Profile.Data.DigTicks(new MineClaw.Data.Versioning.DigInput(blockId, meta, HeldStack(), onGround, inWater));
 }

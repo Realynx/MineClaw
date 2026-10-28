@@ -744,6 +744,91 @@ public sealed partial class ScriptSession
         return null;
     }
 
+    /// <summary>
+    /// <c>find(query, r, limit)</c>: every match nearest first — unprotected blocks of that name in view, entities (a mob type or
+    /// player name, or "hostile" / "mob" / "player" / "item"), else the remembered place — as [{x,y,z,name,d,kind, meta?}].
+    /// Block names resolve through this version's game data.
+    /// </summary>
+    internal JsonArray FindAll(string query, double? radius, int? limit)
+    {
+        SafePoint();
+        double r = radius is { } rr ? Math.Clamp(rr, 1, 64) : 24;
+        int max = Math.Clamp(limit ?? 16, 1, 64);
+        var w = _host.World;
+        var feet = w.Player.Position;
+        var q = (query ?? "").Trim();
+        var key = q.ToLowerInvariant();
+        var hits = new List<(double D, JsonObject O)>();
+        Func<Entity, bool>? ent = key switch
+        {
+            "hostile" or "hostiles" or "monster" or "monsters" => e => e.IsHostileMob,
+            "mob" or "mobs" => e => e.Kind == EntityKind.Mob,
+            "player" or "players" => e => e.Kind == EntityKind.Player,
+            "item" or "items" or "drop" or "drops" => e => e.Kind == EntityKind.Item,
+            _ => MobTypes.ByName(key) is { } t ? e => e.Kind == EntityKind.Mob && e.TypeId == t
+                : e => e.Kind == EntityKind.Player && string.Equals(e.Name, q, StringComparison.OrdinalIgnoreCase),
+        };
+        bool entityWord = key is "hostile" or "hostiles" or "monster" or "monsters" or "mob" or "mobs" or "player" or "players"
+            or "item" or "items" or "drop" or "drops" || MobTypes.ByName(key) != null;
+        if (!entityWord && (_host.Data.BlockByName(q) ?? Blocks.ByName(q)) is { } b)
+            foreach (var f in w.FindBlocks(feet, r, (id, _) => id == b.Id, max * 2).Where(f => !_host.IsProtected(f.Pos, f.Id)).Take(max))
+            {
+                var o = PosNode(f.Pos.X, f.Pos.Y, f.Pos.Z, b.Name, Math.Sqrt(f.DistanceSquared));
+                o["kind"] = "block";
+                o["meta"] = f.Meta;
+                hits.Add((Math.Sqrt(f.DistanceSquared), o));
+            }
+        foreach (var e in w.Entities.Nearby(feet, r, ent, max))
+        {
+            var d = e.Position.DistanceTo(feet);
+            string name = e.Kind switch
+            {
+                EntityKind.Player => e.Name ?? "player",
+                EntityKind.Mob => MobTypes.Name(e.TypeId),
+                EntityKind.Item => _host.Data.ItemExists(e.Item.Id) ? _host.Data.Item(e.Item.Id).Name : "item",
+                _ => e.DisplayName.ToLowerInvariant(),
+            };
+            var o = PosNode((int)Math.Floor(e.Position.X), (int)Math.Floor(e.Position.Y), (int)Math.Floor(e.Position.Z), name, d);
+            o["kind"] = e.Kind == EntityKind.Mob ? "mob" : e.Kind.ToString().ToLowerInvariant();
+            if (e.Kind == EntityKind.Item) o["count"] = (int)e.Item.Count;
+            hits.Add((d, o));
+        }
+        if (hits.Count == 0 && _host.NearestKnown(q) is { } k)
+        {
+            var o = PosNode(k.X, k.Y, k.Z, q, new Vec3d(k.X + 0.5, k.Y, k.Z + 0.5).DistanceTo(feet));
+            o["kind"] = "place";
+            hits.Add((0, o));
+        }
+        var list = new JsonArray();
+        foreach (var (_, o) in hits.OrderBy(h => h.D).Take(max)) list.Add(o);
+        return list;
+    }
+
+    /// <summary><c>item(name)</c>: this version's own name for an item or block ({name, id, block, stack, craftable, version}), or null.</summary>
+    internal JsonObject? ItemInfo(string name)
+    {
+        SafePoint();
+        var d = _host.Data;
+        var n = (name ?? "").Trim();
+        if (n.Length == 0) return null;
+        if (d.ItemByName(n) is { } it)
+            return new JsonObject
+            {
+                ["name"] = it.Name, ["id"] = it.Id, ["block"] = it.Id < 256 && d.BlockExists(it.Id), ["stack"] = it.MaxStack,
+                ["craftable"] = d.RecipesFor(it.Id).Count > 0, ["version"] = d.VersionId,
+            };
+        if (d.BlockByName(n) is { } b)
+            return new JsonObject { ["name"] = b.Name, ["id"] = b.Id, ["block"] = true, ["stack"] = 0, ["craftable"] = false, ["version"] = d.VersionId };
+        return null;
+    }
+
+    /// <summary><c>gather()</c>'s world routes for an item (<see cref="Sdk.ItemSources"/>): [{via, block|mob, skill?}].</summary>
+    internal JsonArray Sources(string item)
+    {
+        SafePoint();
+        return Sdk.ItemSources.For(_host.Data, item ?? "");
+    }
+
     internal string? Where(string item)
     {
         SafePoint();

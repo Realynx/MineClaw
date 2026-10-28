@@ -28,13 +28,15 @@ public enum SlotKind
     /// <summary>Player main inventory (27 slots above the hotbar).</summary>
     Main,
     Hotbar,
+    /// <summary>1.12.2 player window slot 45: the off hand (any item, limit 64).</summary>
+    Offhand,
 }
 
 /// <summary>
 /// A window's slot layout. Player-inventory slots (main + hotbar) are shared with window 0, so an update through
 /// any window is visible in all. b1.8.1 layouts:
 /// <list type="bullet">
-/// <item>Player (0): 0 craft output, 1–4 craft grid, 5–8 armor, 9–35 main, 36–44 hotbar.</item>
+/// <item>Player (0): 0 craft output, 1–4 craft grid, 5–8 armor, 9–35 main, 36–44 hotbar; 1.12.2 adds 45, the off hand.</item>
 /// <item>Chest (type 0): 0..N-1 chest (N = 27 or 54 for a large chest), then 27 main, then 9 hotbar.</item>
 /// <item>Workbench (1): 0 output, 1–9 grid, 10–36 main, 37–45 hotbar.</item>
 /// <item>Furnace (2): 0 input, 1 fuel, 2 output, 3–29 main, 30–38 hotbar.</item>
@@ -44,7 +46,7 @@ public enum SlotKind
 public sealed class Window
 {
     internal readonly ItemStack[] Container;
-    private readonly ItemStack[] _player; // 45-slot window-0 array
+    private readonly ItemStack[] _player; // window-0 array: 45 slots (b1.8.1) or 46 (1.12.2: + off hand)
     private readonly short[] _properties = new short[8];
 
     public int Id { get; }
@@ -52,7 +54,7 @@ public sealed class Window
     public string Title { get; }
     /// <summary>Number of non-player slots (the 0x64 slot count; for window 0 this is 9: output, grid, armor).</summary>
     public int ContainerSlots { get; }
-    public int SlotCount => Type == WindowType.Player ? 45 : ContainerSlots + 36;
+    public int SlotCount => Type == WindowType.Player ? _player.Length : ContainerSlots + 36;
     /// <summary>Window slot index where the player's main inventory (27) starts; hotbar follows at +27.</summary>
     public int MainStart => Type == WindowType.Player ? 9 : ContainerSlots;
     public int HotbarStart => MainStart + 27;
@@ -128,6 +130,7 @@ public sealed class Window
 
     public SlotKind KindOf(int slot)
     {
+        if (Type == WindowType.Player && slot == InventoryModel.OffhandSlot) return SlotKind.Offhand;
         if (slot >= MainStart) return slot >= HotbarStart ? SlotKind.Hotbar : SlotKind.Main;
         return Type switch
         {

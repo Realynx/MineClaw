@@ -155,6 +155,7 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
     public event Action<int, int, ItemStack?>? ItemCollected { add => inner.ItemCollected += value; remove => inner.ItemCollected -= value; }
     public event Action<int, int, int, int>? EquipmentChanged { add => inner.EquipmentChanged += value; remove => inner.EquipmentChanged -= value; }
     public event Action<int, int>? EntityStatus { add => inner.EntityStatus += value; remove => inner.EntityStatus -= value; }
+    public event Action<int, BlockPos, int>? BlockBreakProgress { add => inner.BlockBreakProgress += value; remove => inner.BlockBreakProgress -= value; }
     public event Action<BlockPos, int, int>? BlockAction { add => inner.BlockAction += value; remove => inner.BlockAction -= value; }
 
     public string DescribeStatus() => inner.DescribeStatus();

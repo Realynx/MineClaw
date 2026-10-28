@@ -113,6 +113,7 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
         Hold = hold ?? new HashSet<(int, int)>(),
         Buckets = Math.Max(1, body.Count(Items.WaterBucket, 0)),
         AllowHidden = o.HiddenFaces,
+        HalvesFollowCursor = body.HalvesFollowCursor,
         Climb = o.Climb,
         MaxScaffold = Math.Max(o.MaxScaffold, 6) + (body.Count(Items.WaterBucket, 0) > 0 ? 6 : 0),
         WaterAvailable = body.Count(Items.WaterBucket, 0) > 0,

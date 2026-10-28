@@ -1,9 +1,15 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 1.12.2 block/item names, ids, hardness and harvest tools (PrismarineJS minecraft-data, vendored with its LICENSE). -->
+    <EmbeddedResource Include="..\..\third_party\minecraft-data\pc\1.12.2\blocks.json" LogicalName="mcdata.1.12.2.blocks.json" />
+    <EmbeddedResource Include="..\..\third_party\minecraft-data\pc\1.12.2\items.json" LogicalName="mcdata.1.12.2.items.json" />
+  </ItemGroup>
 
 </Project>

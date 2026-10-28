@@ -59,8 +59,11 @@ public sealed class ScriptSdkPackTests : IDisposable
         var bodies = string.Join("\n", gen.Docs.Select(d => d.Body));
         foreach (var name in SdkReference.Documented().Where(n => n.Length > 2 && !n.Contains('$')))
             Assert.Contains(name, bodies);
-        var wait = gen.Docs.Single(d => d.Ref == "kb:sdk-js.md:fn:jobs.waitForDay");
+        var wait = gen.Docs.Single(d => d.Ref == "kb:sdk-js.md:fn:core.waitFor");
         Assert.Contains("wait until it is day", wait.Body);
+        // The deprecated compat helpers run but are never taught (a fresh memory learns the primitives).
+        Assert.DoesNotContain(gen.Docs, d => d.Ref.Contains("compat") || d.Ref.EndsWith(".mineGen") || d.Body.Contains("mineGen("));
+        Assert.Contains(gen.Docs, d => d.Ref == "kb:sdk-js.md:fn:jobs.gather");
         // Game functions of the bot, camelCase + snake_case, with the versions that have them.
         var chop = gen.Docs.Single(d => d.Ref == "kb:sdk-js.md:game:chopTree");
         Assert.Contains("chopTree(", chop.Body);
@@ -68,7 +71,7 @@ public sealed class ScriptSdkPackTests : IDisposable
         Assert.Contains("b1.8.1", chop.Body);
         Assert.Contains("1.12.2", chop.Body);
         Assert.Contains(gen.Docs, d => d.Ref == "kb:sdk-js.md:game:go" && d.Body.Contains("alias of goto"));
-        Assert.Equal(3, gen.Docs.Count(d => d.Ref.StartsWith("kb:sdk-js.md:example:", StringComparison.Ordinal)));
+        Assert.Equal(MineClaw.Scripting.ScriptPrompts.Examples.Count, gen.Docs.Count(d => d.Ref.StartsWith("kb:sdk-js.md:example:", StringComparison.Ordinal)));
         Assert.Contains(gen.Docs, d => d.Ref == "kb:sdk-js.md:mod:world" && d.Body.Contains("canSpawn"));
     }
 
@@ -132,9 +135,9 @@ public sealed class ScriptSdkPackTests : IDisposable
         Assert.Equal("sdk-js", Assert.Single(KnowledgePack.Active(ctx.Db).Modes!).Mode);
 
         var hits = ctx.Rag.Search(new RagQuery { Text = "wait for day script", Kinds = [KnowledgeIndexer.Kind], Limit = 3 }).Select(h => h.Ref).ToList();
-        Assert.Contains("kb:sdk-js.md:fn:jobs.waitForDay", hits);
+        Assert.Contains("kb:sdk-js.md:fn:core.waitFor", hits);
         // A start without the (generated) doc on disk keeps the pack's chunks.
         KnowledgeIndexer.Sync(ctx.Rag, Path.Combine(Root(), "docs", "knowledge"), new RagOptions(), "1.12.2");
-        Assert.NotNull(ctx.Rag.GetByRef("kb:sdk-js.md:fn:jobs.waitForDay"));
+        Assert.NotNull(ctx.Rag.GetByRef("kb:sdk-js.md:fn:core.waitFor"));
     }
 }

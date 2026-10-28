@@ -30,12 +30,14 @@ public sealed partial class MinecraftClient : IAsyncDisposable
     public MinecraftClient(ClientOptions options, WorldState? world = null)
     {
         Options = options ?? throw new ArgumentNullException(nameof(options));
-        World = world ?? new WorldState(height: options.Profile.Version.WorldHeight);
+        World = world ?? new WorldState(height: options.Profile.Version.WorldHeight, inventory: options.Profile.Inventory);
+        if (options.Profile.ItemRules is { } itemRules) World.Inventory.Rules = itemRules;
         IsProtected = options.IsProtected;
         ReservedItems = options.ReservedItems ?? new HashSet<int>();
         Survival = new SurvivalReflex(options.Survival);
         Handoffs = new HandoffReservations { Log = Log };
-        World.Inventory.CraftResult = (grid, width) => Recipes.Match(grid, width)?.Output ?? ItemStack.Empty;
+        var data = options.Profile.Data;
+        World.Inventory.CraftResult = (grid, width) => data.MatchRecipe(grid, width)?.Output ?? ItemStack.Empty;
         World.Inventory.WindowOpened += _ => Interlocked.Increment(ref _windowsOpened);
         World.BlockChanged += TrackPlacedBlock;
         _eventPump = Task.Run(PumpEventsAsync);
@@ -84,6 +86,9 @@ public sealed partial class MinecraftClient : IAsyncDisposable
     public event Action<DangerEvent>? Danger;
     /// <summary>(entity id, animation) from 0x12 for other entities (1 = arm swing, 2 = hurt). Used to watch players teach.</summary>
     public event Action<int, int>? EntityAnimated;
+    /// <summary>(entity id, block, crack stage 0..9; −1 = stopped): another player digging, from 1.12.2's Block Break Animation.
+    /// b1.8.1 never raises it (its observers infer digs from swings).</summary>
+    public event Action<int, BlockPos, int>? BlockBreakProgress;
     /// <summary>(collector entity id, item entity id, stack if the item entity was tracked) from 0x16 Collect Item.</summary>
     public event Action<int, int, ItemStack?>? ItemCollected;
     /// <summary>The bot started eating (item id, true = the survival reflex's auto-eat). Raised before the item leaves the inventory.</summary>
@@ -379,6 +384,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
 
     private static string Describe(IPacket p) => p switch
     {
+        PlayerDiggingPacket { Status: PlayerDiggingPacket.StatusSwapHands } => "swapping hands",
         PlayerDiggingPacket => "digging",
         PlayerBlockPlacementPacket => "placing and using items",
         WindowClickPacket or CloseWindowPacket or TransactionPacket => "inventory windows",

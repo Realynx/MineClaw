@@ -85,6 +85,12 @@ public sealed class ScriptHost
     public required WorldState World { get; init; }
     public string Username { get; init; } = "bot";
 
+    /// <summary>
+    /// This game version's static data (item/block names, recipes, dig rules), read-only: the SDK's <c>item()</c>, <c>find()</c> and
+    /// <c>gather()</c> routes resolve names through it, so a script never hard-codes one version's ids. Default b1.8.1.
+    /// </summary>
+    public MineClaw.Data.Versioning.IGameData Data { get; init; } = MineClaw.Data.Versioning.Beta181GameData.Instance;
+
     /// <summary>Game tools available as script functions.</summary>
     public IReadOnlyList<ScriptAction> Actions { get; init; } = [];
     public Func<string, JsonElement, CancellationToken, Task<ActResult>> Act { get; init; } =
