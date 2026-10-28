@@ -62,7 +62,7 @@ public static class PortalTravel
     /// (<see cref="PortalEntry"/>: steps out first when already inside, the server's cooldown refreshes in the sheet).</summary>
     public static Task<ActionResult> EnterAsync(IGameClient c, BlockPos portal, GotoOptions? options, CancellationToken ct)
     {
-        var tick = c is MinecraftGameClient mg ? mg.Inner.Options.TickInterval : TimeSpan.FromMilliseconds(50);
+        var tick = GameClients.Minecraft(c) is { } mg ? mg.Inner.Options.TickInterval : TimeSpan.FromMilliseconds(50);
         return PortalEntry.EnterAsync(c.World, (goal, t) => c.GotoAsync(goal, options, t),
             (ticks, t) => Task.Delay(tick * Math.Max(1, ticks), t), portal, SwitchTimeout, ct);
     }

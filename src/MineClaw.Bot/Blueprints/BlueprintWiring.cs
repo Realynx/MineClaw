@@ -77,7 +77,7 @@ public sealed class BlueprintWiring
                 try
                 {
                     await Task.Delay(TimeSpan.FromSeconds(15), clock).ConfigureAwait(false);
-                    if (!rt.Activities.IsBusy && service.ResumePending(client.Username) is { } line) log?.LogInformation("blueprints: {Line}", line);
+                    if (!rt.Agent.ActivitiesFor(client.Username).IsBusy && service.ResumePending(client.Username) is { } line) log?.LogInformation("blueprints: {Line}", line);
                 }
                 catch (Exception ex) { log?.LogDebug(ex, "blueprint resume failed"); }
             });
@@ -182,7 +182,9 @@ public sealed class BlueprintWiring
     {
         if (!rt.Tools.TryGet(BuildTool, out var tool)) return "build tool missing";
         var input = JsonSerializer.SerializeToElement(part is { } p ? new { bp = id.ToString(System.Globalization.CultureInfo.InvariantCulture), part = p } : (object)new { bp = id.ToString(System.Globalization.CultureInfo.InvariantCulture) });
-        _ = rt.Activities.RunAsync([(tool, input)], TimeSpan.Zero, rt.Activities.Shutdown);
+        // The body in scope builds (a review line has none: the main body), never a captured rt.Activities.
+        var activities = rt.Agent.ActivitiesFor(Bodies.BodyScope.Current?.Name);
+        _ = activities.RunAsync([(tool, input)], TimeSpan.Zero, activities.Shutdown);
         return null;
     }
 

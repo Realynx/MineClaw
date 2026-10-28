@@ -416,7 +416,14 @@ public sealed class BrainstemController : IDisposable
     // ------------------------------------------------------------------ helpers
 
     private Task<ToolResult> RunTool(string name, object input) =>
-        Task.Run(() => _rt.Tools.ExecuteAsync(name, Json(input), _rt.Activities.Shutdown));
+        Task.Run(async () =>
+        {
+            using (Bodies.BodyScope.Push(Body)) // reflex tools act on this brainstem's body (null = the focus, as before)
+                return await _rt.Tools.ExecuteAsync(name, Json(input), _rt.Activities.Shutdown).ConfigureAwait(false);
+        });
+
+    /// <summary>The body this brainstem drives (one brain, many bodies); null = whatever body the router focuses.</summary>
+    public Bodies.IBody? Body { get; set; }
 
     private static Vec3d Eye(Vec3d feet) => feet + new Vec3d(0, PlayerPhysics.EyeHeight, 0);
 

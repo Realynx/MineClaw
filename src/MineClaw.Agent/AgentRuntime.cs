@@ -41,6 +41,8 @@ public sealed class AgentRuntime : IDisposable
     public required UsageTracker Usage { get; init; }
     public required MemoryStore Memory { get; init; }
     public required ContextManager Context { get; init; }
+    /// <summary>The main body's ActivityManager (one brain, many bodies: an alias; other bodies own theirs, reached through
+    /// <see cref="BotAgent.ActivitiesFor"/>).</summary>
     public required ActivityManager Activities { get; init; }
     public required RoutineExecutor Routines { get; init; }
     public required BotAgent Agent { get; init; }

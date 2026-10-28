@@ -32,7 +32,7 @@ public static class GameToolSet
     /// </summary>
     internal static (BlockPos? Cell, string? Note) PickGeneratorCell(IGameClient c, BlockPos asked, Func<BlockPos, IReadOnlyList<BlockPos>>? cells)
     {
-        var claims = (c as ClaimAwareGameClient)?.Claims;
+        var claims = GameClients.Claimed(c)?.Claims;
         int dim = c.World.Dimension;
         if (claims == null || claims.IsFree(MineClaw.World.Claims.ClaimKey.Block(asked, dim))) return (asked, null);
         var all = FallbackCells(c, asked, cells);
@@ -103,7 +103,7 @@ public static class GameToolSet
         list = list.Where(x => src?.ConfirmedCell?.Invoke(x) == true || Perception.DigCells.OffLayerOf(x, layer) == null)
             .OrderBy(x => x.DistanceSquaredTo(me)).ToList();
         if (list.Count == 0) return (null, "needs_input: no known generator cell for at=auto; punch the gen's cells and I'll mine only those");
-        var claims = (c as ClaimAwareGameClient)?.Claims;
+        var claims = GameClients.Claimed(c)?.Claims;
         int dim = c.World.Dimension;
         var free = claims == null ? list[0] : list.FirstOrDefault(x => claims.IsFree(MineClaw.World.Claims.ClaimKey.Block(x, dim)), list[0]);
         return (free, $"auto: cell {Locations.Fmt(free)}");
@@ -233,7 +233,7 @@ public static class GameToolSet
                 if (p is not { } g) return ToolResult.Error($"unknown generator '{at}'");
                 // Hive: another bot already mines that cell -> take a free dig cell of the same generator instead.
                 var (cell, note) = PickGeneratorCell(c, g, generatorCells);
-                if (cell is null && c is ClaimAwareGameClient && (options?.GeneratorQueueSeconds ?? 0) > 0)
+                if (cell is null && GameClients.Claimed(c) != null && (options?.GeneratorQueueSeconds ?? 0) > 0)
                 {
                     // More bots than cells (live 21:44: main, 67 and 1337 on one gen): queue for a free cell instead of failing.
                     var until = DateTime.UtcNow.AddSeconds(options!.GeneratorQueueSeconds);

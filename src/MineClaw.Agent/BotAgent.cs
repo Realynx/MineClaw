@@ -132,6 +132,19 @@ public sealed partial class BotAgent
     /// </summary>
     public Func<string?>? BusyDetail { get; set; }
 
+    /// <summary>
+    /// One brain, many bodies: a body's ActivityManager by login/short name (the host's BodyRegistry), or null when unknown.
+    /// Unset = one body, this agent's own manager.
+    /// </summary>
+    public Func<string, ActivityManager?>? BodyActivities { get; set; }
+
+    /// <summary>
+    /// The ActivityManager of <paramref name="body"/> (a <see cref="GameEvent.Body"/>); null, unknown or no body layer = the
+    /// main body's (the runtime's <see cref="AgentRuntime.Activities"/>).
+    /// </summary>
+    public ActivityManager ActivitiesFor(string? body) =>
+        body is { Length: > 0 } && BodyActivities?.Invoke(body) is { } a ? a : _activities;
+
     /// <summary>Chat-flow counters (debounce merges, restarts, injections, busy wakes) for tuning <see cref="AgentOptions.ChatDebounce"/>.</summary>
     public ChatFlowStats ChatFlow => _events.Stats;
 
@@ -173,12 +186,20 @@ public sealed partial class BotAgent
 
     /// <summary>
     /// Current system prompt, in cache order: (1) the static block — instructions + core knowledge; tools render
-    /// before it and share its breakpoint; (2) the identity + self-profile block with its own 5m breakpoint, so a rename
-    /// or personality update only rewrites that small block plus history. Per-turn data never goes here — state header,
-    /// [memory] and events ride in the newest user message.
+    /// before it and share its breakpoint; (2) the identity + self-profile block with its own breakpoint, so a rename
+    /// or personality update only rewrites that small block plus history. Both are the stable prefix
+    /// (<see cref="LlmOptions.PrefixCacheTtl"/>, 1h by default; block 2 never outlives block 1); the history breakpoint stays 5m.
+    /// Per-turn data never goes here — state header, [memory] and events ride in the newest user message.
     /// </summary>
-    public IReadOnlyList<LlmSystemBlock> SystemPrompt =>
-        [new LlmSystemBlock(_staticText, Cache: true, Ttl: StaticTtl()), new LlmSystemBlock(DynamicSystemText(), Cache: true, Ttl: "5m")];
+    public IReadOnlyList<LlmSystemBlock> SystemPrompt
+    {
+        get
+        {
+            var first = StaticTtl();
+            return [new LlmSystemBlock(_staticText, Cache: true, Ttl: first),
+                new LlmSystemBlock(DynamicSystemText(), Cache: true, Ttl: first == "5m" ? "5m" : _options.Llm.PrefixTtl)];
+        }
+    }
 
     /// <summary>
     /// Appends a static block to the brain's cached system prompt (e.g. the Lua script cheat-sheet: only the Opus brain
@@ -199,8 +220,9 @@ public sealed partial class BotAgent
         return self.Length > 0 ? identity + "\n\n" + self : identity;
     }
 
-    private string StaticTtl() => _options.Llm.StaticPrefixTtl?.ToLowerInvariant() switch
+    private string StaticTtl() => _options.Llm.StaticPrefixTtl?.Trim().ToLowerInvariant() switch
     {
+        null or "" => _options.Llm.PrefixTtl,
         "1h" => "1h",
         "auto" => _time.GetUtcNow() - _lastActive <= TimeSpan.FromMinutes(Math.Max(1, _options.Llm.ActiveSessionMinutes)) ? "1h" : "5m",
         _ => "5m",
@@ -1053,7 +1075,8 @@ public sealed partial class BotAgent
         }
         if (e.Wakes && e.Priority >= _options.InterruptPriority)
         {
-            var cancelled = _activities.Cancel("interrupted by " + e.Kind);
+            // Only the body the event concerns is interrupted (null = the brain / main body: as before).
+            var cancelled = ActivitiesFor(e.Body).Cancel("interrupted by " + e.Kind);
             if (cancelled != null) _log.LogInformation("interrupted {Activity} due to {Event}", cancelled, e.Format());
         }
     }

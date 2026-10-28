@@ -333,7 +333,7 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
             {
                 Step("chop tree");
                 int before = Inv(Blocks.Log);
-                var chopper = (c as ClaimAwareGameClient)?.Inner ?? c;
+                var chopper = GameClients.Unclaimed(c);
                 var r = await chopper.ChopTreeAsync(tree.Base, null, ct).ConfigureAwait(false);
                 int got = Inv(Blocks.Log) - before;
                 Note(got > 0 ? $"chopped a tree ({got} logs)" : "chop: " + Trim(r.Message));

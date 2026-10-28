@@ -31,6 +31,12 @@ public sealed class ScriptController : IDisposable
     public ScriptOptions Options { get; }
     public TimeProvider Time { get; }
 
+    /// <summary>
+    /// One brain, many bodies: this controller's body scope (the Bot layer's <c>BodyScope.Push(body)</c>), pushed on the script
+    /// thread for the whole run and again around every host action, so script actions act on this lane's body. Null = none.
+    /// </summary>
+    public Func<IDisposable?>? StepScope { get; set; }
+
     /// <summary>The running or paused script, or null.</summary>
     public ScriptSession? Current { get { lock (_lock) return _current is { IsLive: true } c ? c : null; } }
     public ScriptSession? Last { get { lock (_lock) return _last; } }

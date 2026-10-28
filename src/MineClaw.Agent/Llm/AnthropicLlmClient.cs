@@ -133,7 +133,7 @@ public sealed class AnthropicLlmClient : ILlmClient
     internal MessageCreateParams BuildParams(LlmRequest request, string model)
     {
         var system = new List<TextBlockParam>();
-        bool firstCached = true;
+        bool firstCached = true, short5m = false;
         foreach (var s in request.System)
         {
             if (!s.Cache)
@@ -141,8 +141,11 @@ public sealed class AnthropicLlmClient : ILlmClient
                 system.Add(new TextBlockParam { Text = s.Text });
                 continue;
             }
-            // Breakpoint 1 (static prefix) defaults to the configured TTL; later ones (identity/self) to 5m.
-            var ttl = s.Ttl ?? (firstCached ? _options.StaticPrefixTtl : "5m");
+            // An explicit block TTL wins (the brain: its prefix TTL); breakpoint 1 without one uses the legacy default, later ones 5m.
+            var ttl = LlmOptions.NormalizeTtl(s.Ttl) ?? (firstCached ? DefaultPrefixTtl() : "5m");
+            // The API wants longer TTLs first: once a 5m breakpoint went out, no later one may be 1h.
+            if (short5m) ttl = "5m";
+            short5m = ttl == "5m";
             firstCached = false;
             system.Add(new TextBlockParam { Text = s.Text, CacheControl = CacheFor(ttl) });
         }
@@ -194,6 +197,13 @@ public sealed class AnthropicLlmClient : ILlmClient
         return p;
     }
 
+    /// <summary>
+    /// Breakpoint 1 without an explicit TTL (perception, the blueprint author, evals: small prompts of their own): the legacy
+    /// static override when it is a plain TTL, else 5m. The brain sends its prefix TTL explicitly (<see cref="LlmOptions.PrefixCacheTtl"/>).
+    /// </summary>
+    private string DefaultPrefixTtl() => LlmOptions.NormalizeTtl(_options.StaticPrefixTtl) ?? "5m";
+
+    /// <summary>"1h" = <c>ttl: "1h"</c>; anything else = the default 5m ephemeral breakpoint (history always uses this).</summary>
     private static CacheControlEphemeral CacheFor(string? ttl) =>
         ttl == "1h" ? new CacheControlEphemeral { Ttl = Ttl.Ttl1h } : new CacheControlEphemeral();
 

@@ -167,7 +167,8 @@ public class CacheLayoutTests
     public void AutoTtl_UsesOneHour_OnlyDuringActiveSession()
     {
         var time = new ManualTime();
-        var (rt, llm, _) = TestRuntime.Create(o => o.Llm.StaticPrefixTtl = "auto", time);
+        // Legacy mode: a 5m prefix with the static block's "auto" override.
+        var (rt, llm, _) = TestRuntime.Create(o => { o.Llm.PrefixCacheTtl = "5m"; o.Llm.StaticPrefixTtl = "auto"; }, time);
         using var _r = rt;
         Assert.Equal("5m", rt.Agent.SystemPrompt[0].Ttl);
         llm.ThenText("hi");

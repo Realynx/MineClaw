@@ -85,9 +85,14 @@ public static class Acquisition
         return sources;
     }
 
-    public static AcquisitionSources? Of(IGameClient client) =>
-        Table.TryGetValue(client, out var s) ? s
-        : client is ClaimAwareGameClient w && Table.TryGetValue(w.Inner, out var inner) ? inner : null;
+    public static AcquisitionSources? Of(IGameClient client)
+    {
+        // The body router: the sources of the body in scope (they are attached to its plain adapter).
+        if (Table.TryGetValue(client, out var s)) return s;
+        client = GameClients.Resolve(client);
+        return Table.TryGetValue(client, out s) ? s
+            : client is ClaimAwareGameClient w && Table.TryGetValue(w.Inner, out var inner) ? inner : null;
+    }
 
     /// <summary>A planner over the client's attached sources (or bare ones with <paramref name="observations"/>).</summary>
     public static AcquisitionPlanner Planner(IGameClient client, ObservationStore? observations = null)

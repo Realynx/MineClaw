@@ -20,13 +20,14 @@ public static class TreeTools
 
     public static void Register(ToolRegistry tools, IGameClient c, IPlaceResolver places)
     {
-        // Hive: the claim wrapper doesn't know this macro; chop with the real client underneath.
-        var chopper = (c as ClaimAwareGameClient)?.Inner ?? c;
+        // Hive: the claim wrapper doesn't know this macro; chop with the real client underneath (resolved per call: the
+        // client may be the body router).
         tools.Register(ToolName, "Fell ONE whole tree + replant. For mine/chop a tree, get wood (not mine).",
             ToolSchema.Create().Str("at", "x,y,z, name, oak/birch/spruce", required: false).Build(),
             async (i, ct) =>
             {
                 var spec = i.Str("at")?.Trim();
+                var chopper = GameClients.Unclaimed(c);
                 // Work at height (pillar up to the crown): carry clutch blocks first (live 10-27: 67 fell off a crown with none).
                 var clutch = await ClutchBlocks.EnsureAsync(c, ct);
                 ToolResult With(ToolResult r) => clutch == null ? r : r with { Text = clutch + "; " + r.Text };

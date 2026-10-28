@@ -438,7 +438,11 @@ public sealed partial class ScriptSession
                 _abortedForPause = false;
                 ct = _abortCts?.Token ?? _hardCt;
             }
-            try { r = run(ct).GetAwaiter().GetResult(); }
+            try
+            {
+                using (_owner.StepScope?.Invoke()) // explicit around every step, not only inherited from the thread
+                    r = run(ct).GetAwaiter().GetResult();
+            }
             catch (OperationCanceledException) { r = ActResult.Fail("cancelled"); }
             catch (ScriptFailException) { throw; }
             catch (Exception ex) { r = ActResult.Fail($"{ex.GetType().Name}: {OneLine(ex.Message)}"); }

@@ -160,6 +160,7 @@ public static class AppHost
         var bot = BotHost.Create(game, agentOptions, botOptions, llm: llm, loggers: loggers, claims: mainHive?.MainClaims, hiveBots: mainHive != null ? mainHive.HiveBots : null);
         var rt = bot.Runtime;
         telemetry.Attach(rt);
+        telemetry.CurrentBody = () => MineClaw.Bot.Bodies.BodyScope.Current?.Name; // the body a call worked for (null = brain-level)
         _ = rt.Rag.WarmUpAsync(signals.Token); // DNS + first TLS to the embedding provider now, not in the first turn
         log.LogInformation("telemetry: {Dir} ({Seeded} records seeded)", telemetry.Directory ?? "off", seeded);
         var toolChars = rt.Tools.Definitions().Sum(d => d.Name.Length + d.Description.Length + d.InputSchema.GetRawText().Length);

@@ -47,6 +47,11 @@ public sealed class PromptTelemetry : IDisposable
     }
 
     public string Bot { get; set; }
+    /// <summary>
+    /// The body in scope on the calling flow (the host sets it to <c>BodyScope.Current?.Name</c>; the Agent layer can't see
+    /// bodies), recorded as <see cref="PromptUsageRecord.Body"/>. Null or returning null = brain-level.
+    /// </summary>
+    public Func<string?>? CurrentBody { get; set; }
     public ThoughtTracker Thoughts { get; }
     public string? Directory => _writer?.Directory;
 
@@ -139,6 +144,7 @@ public sealed class PromptTelemetry : IDisposable
         {
             Ts = _time.GetUtcNow(),
             Bot = Bot,
+            Body = BodyOf(),
             Tier = UsageTracker.TierLabel(request.Tier == ModelTier.Worker ? ModelTier.Worker : _agent.Llm.TierOfModel(model) ?? request.Tier),
             Model = model,
             Provider = response?.Provider ?? _agent.Llm.ProviderFor(request),
@@ -149,6 +155,7 @@ public sealed class PromptTelemetry : IDisposable
             OutputTokens = u.OutputTokens,
             CacheReadTokens = u.CacheReadTokens,
             CacheWriteTokens = u.CacheWriteTokens,
+            CacheWrite1hTokens = u.CacheWrite1hTokens,
             PromptTokens = prompt,
             CostUsd = Math.Round(cost, 6),
             CacheHit = Math.Round(UsageTracker.CacheHit(u), 4),
@@ -207,6 +214,12 @@ public sealed class PromptTelemetry : IDisposable
                     return turns[t];
         // Not found verbatim (the hard-cap guard shortened it): still a brain turn, so PromptSections uses its fallback split.
         return turns.Length > 0 ? turns[^1] : null;
+    }
+
+    private string? BodyOf()
+    {
+        try { return CurrentBody?.Invoke(); }
+        catch (Exception) { return null; }
     }
 
     private static long HourOf(DateTimeOffset t) => t.ToUnixTimeSeconds() / 3600;

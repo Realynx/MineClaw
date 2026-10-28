@@ -88,6 +88,13 @@ public sealed class ActivityManager
     /// <summary>Movement tools: a chain starting with one of these is a move; other jobs queue behind a running move.</summary>
     public static readonly IReadOnlySet<string> MovementTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "goto", "follow" };
 
+    /// <summary>
+    /// One brain, many bodies: each body owns one ActivityManager, and this pushes that body's scope (the host's
+    /// <c>BodyScope.Push(body)</c>) explicitly around every step, so body tools inside the chain, and any Task.Run they start,
+    /// act on this body and never on whatever the caller had in scope. Null = no scope (tests, no body layer).
+    /// </summary>
+    public Func<IDisposable?>? StepScope { get; set; }
+
     /// <summary>Queue job chains behind a running brain move instead of superseding it (move-first, think-while-walking).</summary>
     public bool QueueBehindMoves { get; set; } = true;
 
@@ -383,7 +390,9 @@ public sealed class ActivityManager
                 results[i] = ToolResult.Error(act.Cts.IsCancellationRequested ? "cancelled" : "skipped (earlier step failed)");
                 continue;
             }
-            var r = await _registry.ExecuteAsync(steps[i].Tool, steps[i].Input, act.Cts.Token).ConfigureAwait(false);
+            ToolResult r;
+            using (StepScope?.Invoke())
+                r = await _registry.ExecuteAsync(steps[i].Tool, steps[i].Input, act.Cts.Token).ConfigureAwait(false);
             if (act.Cts.IsCancellationRequested && r.Ok == false && act.CancelReason != null)
                 r = ToolResult.Error("cancelled: " + act.CancelReason);
             results[i] = r;

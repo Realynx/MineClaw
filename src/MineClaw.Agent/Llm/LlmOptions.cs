@@ -30,14 +30,33 @@ public sealed class LlmOptions
     public string WorkerThinking { get; set; } = "off";
 
     /// <summary>
-    /// Cache TTL for the static prefix (tools + system + core knowledge): "5m" (default; 1.25x write, refreshed free by
-    /// every hit), "1h" (2x write, survives idle gaps), or "auto" = 1h while a session is active (chat within
-    /// <see cref="ActiveSessionMinutes"/>), else 5m. The identity/self block and history always use 5m.
+    /// Cache TTL of the brain's stable prefix: tools + static system + core knowledge (breakpoint 1) and the identity/self
+    /// block (breakpoint 2). "1h" (default; 2x base input per write, survives idle gaps: live, 4-15 min between brain calls
+    /// re-wrote ~31-36K prefix tokens each time on a 5m cache) or "5m" (1.25x write, refreshed free by every hit). The history
+    /// breakpoint always stays 5m, after the prefix (the API wants longer TTLs first).
     /// </summary>
-    public string StaticPrefixTtl { get; set; } = "5m";
+    public string PrefixCacheTtl { get; set; } = "1h";
+
+    /// <summary>
+    /// Legacy override of breakpoint 1 only (the static block): "5m", "1h", or "auto" = 1h while a session is active (chat
+    /// within <see cref="ActiveSessionMinutes"/>), else 5m. Null/empty = <see cref="PrefixCacheTtl"/>. Breakpoint 2 never
+    /// outlives breakpoint 1.
+    /// </summary>
+    public string? StaticPrefixTtl { get; set; }
 
     /// <summary>For StaticPrefixTtl "auto": a session counts as active this long after the last chat to the bot.</summary>
     public int ActiveSessionMinutes { get; set; } = 30;
+
+    /// <summary><see cref="PrefixCacheTtl"/> as sent: "5m" when configured so, else "1h".</summary>
+    public string PrefixTtl => NormalizeTtl(PrefixCacheTtl) ?? "1h";
+
+    /// <summary>"1h" / "5m" (case-insensitive, trimmed), else null.</summary>
+    public static string? NormalizeTtl(string? ttl) => ttl?.Trim().ToLowerInvariant() switch
+    {
+        "1h" => "1h",
+        "5m" => "5m",
+        _ => null,
+    };
 
     /// <summary>API key; null means the SDK default (ANTHROPIC_API_KEY env var).</summary>
     public string? ApiKey { get; set; }

@@ -60,7 +60,9 @@ The LLM must never be on the hot path. Claude is a *planner and conversationalis
    client jar, never committed) rides only in the newest tool_result; compaction swaps it for a one-line stub and a rolling
    hourly cap (`Bot:Vision:ImagesPerHour`, 30) bounds spend. `look {map:true}` is the cheap ASCII grid (role letters included).
 4. **Prompt caching.** Order: tools + static system + *core* knowledge (breakpoint 1) → identity block
-   (breakpoint 2, 5m) → append-only history with a moving breakpoint on the last message. Per-turn data
+   (breakpoint 2); both are the stable prefix on `Agent:Llm:PrefixCacheTtl` ("1h" default, 2x write: idle gaps of 4-15 min
+   no longer re-write ~35K tokens; "5m") → append-only history with a moving 5m breakpoint on the last message (longer TTLs
+   first). 1h writes (`CacheCreation.Ephemeral1hInputTokens`) are billed at 2x base input, 5m at 1.25x. Per-turn data
    (state header, `[self]`, `[memory]`, events) lives only in the newest user message, so each request is the previous one
    plus new messages. The grown personality (`[self]`, ≤~180 tokens) is sent only when it changed or left the window.
 5. **Bounded context + local retrieval.** History compacts rarely and in one go (30k → 20k tokens main, 16k → 10k
@@ -361,6 +363,18 @@ One place decides whether the bot may break a block, why not, and how a player u
   renders the sheet as the bot did. Reported: accuracy before/after
   verification, tokens, brain tokens, $ per question, hallucinations. Offline in the tests (recorded/fake answers); live is opt-in,
   ≤20 calls and ≤$0.50.
+
+## Bodies (Bot/Bodies) — one brain, many bodies, step 1
+
+`BotHost.Create` = `CreateBrain` (runtime, shared stores, every tool registered once against two `BodyRoutingGameClient`s:
+each body's claim-aware `Game` view and its plain `Adapter` view) → `BodyFactory.AttachJobs` (bridge + hunger latch, script
+lane) → `FinishTools` (see, do) → `BodyFactory.AttachBehaviour` (here, brainstem, gestures, watchdog, standing orders,
+hand-overs). A router acts on `BodyScope.Current` (AsyncLocal, pushed explicitly by each body's ActivityManager step, the
+worker's tool calls and the script lane's thread/actions), else `BodyRegistry.Focus`; a body tool inside an activity with no
+scope logs a WARN. Type checks unwrap it (`GameClients.Resolve/Claimed/Unclaimed`). `GameEvent.Body`, body-keyed EventQueue
+dedupe and the telemetry `body` field are in place (null = brain-level); `BotAgent.ActivitiesFor(body)` interrupts only that
+body. The registry holds exactly main; vision and the inventory ledger stay main's. Design and later steps:
+`docs/design/one-brain-many-bodies.md`.
 
 ## Hive (MineClaw.Hive) — clones as supervised processes
 

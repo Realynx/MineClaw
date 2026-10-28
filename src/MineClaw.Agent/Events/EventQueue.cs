@@ -245,15 +245,16 @@ public sealed class EventQueue
 
         switch (e.Kind)
         {
+            // "Keep only the newest" is per body: 67's hp warning never replaces 69's.
             case EventKind.TaskProgress:
-                _pending.RemoveAll(p => p.Kind == EventKind.TaskProgress);
+                _pending.RemoveAll(p => p.Kind == EventKind.TaskProgress && SameBody(p, e));
                 break;
             case EventKind.LowHealth:
                 // Keep only the newest health warning; inherit wake status.
-                _pending.RemoveAll(p => p.Kind == EventKind.LowHealth);
+                _pending.RemoveAll(p => p.Kind == EventKind.LowHealth && SameBody(p, e));
                 break;
             case EventKind.VoidFall:
-                _pending.RemoveAll(p => p.Kind == EventKind.VoidFall);
+                _pending.RemoveAll(p => p.Kind == EventKind.VoidFall && SameBody(p, e));
                 break;
             case EventKind.IdleTick:
                 if (_pending.Any(p => p.Wakes)) return false;
@@ -421,12 +422,18 @@ public sealed class EventQueue
         }
     }
 
-    private static string Key(GameEvent e) => $"{(int)e.Kind}|{e.Player?.ToLowerInvariant()}|{e.Text}|{(e.Wakes ? 1 : 0)}";
+    // Every dedupe key carries the body (null = brain-level / main before stamping): the same "[task ok] 64 cobble" or hp warning
+    // from two bodies is two events, never a merge or a drop.
+    internal static string Key(GameEvent e) => $"{(int)e.Kind}|{e.Player?.ToLowerInvariant()}|{e.Text}|{(e.Wakes ? 1 : 0)}|{BodyKey(e)}";
 
-    private static string ChatKey(GameEvent e) => $"{e.Player?.ToLowerInvariant()}|{e.Text.Trim().ToLowerInvariant()}";
+    internal static string ChatKey(GameEvent e) => $"{e.Player?.ToLowerInvariant()}|{e.Text.Trim().ToLowerInvariant()}|{BodyKey(e)}";
 
-    // Health warnings repeat with changing numbers; one per window is enough (Critical events always pass).
-    private static string RepeatKey(GameEvent e) => e.Kind == EventKind.LowHealth ? "lowhealth" : Key(e);
+    // Health warnings repeat with changing numbers; one per window per body is enough (Critical events always pass).
+    internal static string RepeatKey(GameEvent e) => e.Kind == EventKind.LowHealth ? "lowhealth|" + BodyKey(e) : Key(e);
+
+    private static string BodyKey(GameEvent e) => e.Body?.ToLowerInvariant() ?? "";
+
+    private static bool SameBody(GameEvent a, GameEvent b) => string.Equals(a.Body, b.Body, StringComparison.OrdinalIgnoreCase);
 
     private static EventPriority Max(EventPriority a, EventPriority b) => a > b ? a : b;
 

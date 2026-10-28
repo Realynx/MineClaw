@@ -80,7 +80,7 @@ public class IdentityTests
         Assert.Equal(before[0], after[0]);                 // cached static block unchanged
         Assert.True(before[0].Cache);
         Assert.True(before[1].Cache);                      // breakpoint 2: identity/self block (small rewrite on change)
-        Assert.Equal("5m", before[1].Ttl);
+        Assert.Equal("1h", before[1].Ttl);                 // part of the stable prefix (Agent:Llm:PrefixCacheTtl, default 1h)
         Assert.Equal(before[1], sameTurn[1]);              // stable within the turn
         Assert.Contains("Clawd", before[1].Text);
         Assert.Contains("Your name in chat is Mochi", after[1].Text);

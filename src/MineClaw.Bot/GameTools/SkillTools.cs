@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using MineClaw.Agent;
@@ -37,7 +38,10 @@ public sealed class SkillHub
     /// <summary>Re-reads learned skills (promoted routines, taught structures) from memory.</summary>
     public Action? SyncLearned { get; set; }
 
-    public SkillContext NewContext() => new(Game, Registry, Options)
+    /// <summary>The body router: resolves the backend of the body in scope per skill run (null = always <see cref="Game"/>).</summary>
+    public Func<IGameActions>? GameFor { get; init; }
+
+    public SkillContext NewContext() => new(GameFor?.Invoke() ?? Game, Registry, Options)
     {
         Claims = Claims, Directory = Directory, Layouts = Layouts, State = State,
     };
@@ -66,12 +70,16 @@ public static class SkillTools
     /// <summary>The single registration call (BotHost): meta-tools, catalog index, task hints, learned skills.</summary>
     public static SkillHub Register(AgentRuntime rt, IGameClient client, IClaimBoard? claims = null, SkillRegistry? registry = null)
     {
-        var game = client is MinecraftGameClient mg ? (IGameActions)new ClientGameActions(mg.Inner) : new GameClientActions(client);
+        // The body router: skills drive the body in scope, so the actions backend is resolved per skill run (one per body client).
+        var backends = new ConditionalWeakTable<IGameClient, IGameActions>();
+        IGameActions ActionsFor(IGameClient c) => backends.GetValue(c, k => k is MinecraftGameClient mg ? new ClientGameActions(mg.Inner) : new GameClientActions(k));
+        var game = ActionsFor(GameClients.Resolve(client));
         var directory = new ContainerDirectory { External = name => FindLabelled(rt, client, name) };
         var hub = new SkillHub
         {
             Registry = registry ?? SkillRegistry.CreateDefault(), Game = game, Claims = claims ?? NullClaimBoard.Instance,
             Directory = directory, Layouts = new MemoryLayoutStore(rt), Client = client,
+            GameFor = client is Bodies.BodyRoutingGameClient ? () => ActionsFor(GameClients.Resolve(client)) : null,
         };
         // Portal pairs the world indexer recorded (any trip, even an accidental one) are known to return_portal too.
         hub.State.Known = () => rt.Observations.Portals.All()

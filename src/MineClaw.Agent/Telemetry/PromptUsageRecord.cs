@@ -66,6 +66,9 @@ public sealed record PromptUsageRecord
     public DateTimeOffset Ts { get; init; }
     /// <summary>Login name of the bot that made the call (main bot or hive clone).</summary>
     public string Bot { get; init; } = "";
+    /// <summary>The body the call worked for (a worker run bound to a body, a call inside a BodyScope); null = brain-level
+    /// (the brain's own turns, memory, compaction). Omitted from the JSONL line when null.</summary>
+    public string? Body { get; init; }
     /// <summary>opus / worker / memory / other (tier of the model that answered).</summary>
     public string Tier { get; init; } = "";
     public string Model { get; init; } = "";
@@ -82,6 +85,8 @@ public sealed record PromptUsageRecord
     public long OutputTokens { get; init; }
     public long CacheReadTokens { get; init; }
     public long CacheWriteTokens { get; init; }
+    /// <summary>The part of <see cref="CacheWriteTokens"/> written with a 1h TTL (billed 2x base input; the rest 1.25x).</summary>
+    public long CacheWrite1hTokens { get; init; }
     /// <summary>input + cache_read + cache_write: everything the request put in front of the model.</summary>
     public long PromptTokens { get; init; }
     public decimal CostUsd { get; init; }

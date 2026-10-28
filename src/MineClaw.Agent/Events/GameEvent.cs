@@ -79,6 +79,13 @@ public sealed record GameEvent
     /// </summary>
     public double? AddressConfidence { get; init; }
 
+    /// <summary>
+    /// The body (login name) this event concerns, or null when it concerns the brain itself (chat routing, budget, memory...)
+    /// or the main body before bodies stamp their events. One brain, many bodies: identical events from two bodies never
+    /// merge (the queue's dedupe keys include it).
+    /// </summary>
+    public string? Body { get; init; }
+
     public static EventPriority DefaultPriority(EventKind kind) => kind switch
     {
         EventKind.Death or EventKind.VoidFall => EventPriority.Critical,

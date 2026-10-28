@@ -161,6 +161,12 @@ public sealed class WorkerAgent
     /// <summary>Landmark describer for coordinates in needs_input results ("4,64,6 (the west gen cell)"); null = none.</summary>
     public Func<int, int, int, string?>? Landmark { get; set; }
 
+    /// <summary>
+    /// One brain, many bodies: pushes the body this worker drives around every tool call (the host's <c>BodyScope.Push</c>;
+    /// the Agent layer only sees the disposable). Null = no scope (tests, no body layer).
+    /// </summary>
+    public Func<IDisposable?>? StepScope { get; set; }
+
     /// <summary>The worker's tool definitions (its cached prefix, stable for the run).</summary>
     public IReadOnlyList<LlmToolDefinition> ToolDefinitions => _tools.Definitions(ModelTier.Worker);
 
@@ -284,6 +290,7 @@ public sealed class WorkerAgent
                         // Sequential: the bot has one body. Each game tool honours the task token.
                         _trail = TrailOf(log, $"{u.Name} {TextUtil.Truncate(TextUtil.OneLine(u.Input.GetRawText()), 50)} (running)");
                         using (ToolCaller.Push(ModelTier.Worker, response.Model))
+                        using (StepScope?.Invoke()) // the body this worker drives (explicit, never just inherited)
                             r = await _tools.ExecuteAsync(tool, u.Input, token).ConfigureAwait(false);
                         toolCalls++;
                     }

@@ -222,6 +222,7 @@ public sealed partial class ScriptSession
 
     private void Body()
     {
+        using var scope = _owner.StepScope?.Invoke(); // this lane's body, for the whole thread
         ScriptStatus final;
         string? reason = null;
         LuaValue[] result = [];

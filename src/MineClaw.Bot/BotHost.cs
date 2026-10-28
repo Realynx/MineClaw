@@ -1,5 +1,6 @@
 using MineClaw.Agent;
 using MineClaw.Agent.Llm;
+using MineClaw.Bot.Bodies;
 using MineClaw.Bot.Demo;
 using MineClaw.Bot.Game;
 using MineClaw.Bot.GameTools;
@@ -50,7 +51,53 @@ public sealed class BotHost : IDisposable
     /// <summary>Hive: keeps the client's learned spawn-protection region in step with the shared protected_region fact.</summary>
     internal System.Threading.Timer? ProtectionSync { get; init; }
 
+    /// <summary>
+    /// One brain, one body (step 1 of docs/design/one-brain-many-bodies.md): <see cref="CreateBrain"/> (runtime, shared stores,
+    /// tools against the body routers), then <see cref="BodyFactory"/> wires the main body. The order is the old single-body
+    /// order: the brain split before the script tool, see/do after every macro and the script tool, the brainstem gate last.
+    /// </summary>
     public static BotHost Create(IGameClient client, AgentOptions agentOptions, BotOptions? botOptions = null, ILlmClient? llm = null,
+        ILoggerFactory? loggers = null, TimeProvider? time = null, bool persist = true,
+        WorldIndexOptions? worldIndex = null, ActivityOptions? activity = null,
+        IClaimBoard? claims = null, Func<IEnumerable<string>>? hiveBots = null)
+    {
+        var brain = CreateBrain(client, agentOptions, botOptions, llm, loggers, time, persist, worldIndex, activity, claims, hiveBots);
+        var main = brain.Main;
+        BodyFactory.AttachJobs(brain, main);      // bridge (+ hunger latch, state header), the script lane (+ the script tool)
+        FinishTools(brain);                       // see, then do (its door covers every macro that exists now)
+        BodyFactory.AttachBehaviour(brain, main); // [here], brainstem (gate last), gestures, watchdog, standing orders, hand-overs
+        return new BotHost
+        {
+            Brain = brain, Body = main,
+            Watchdog = main.Watchdog,
+            Handovers = main.Handovers, HandoverPump = main.HandoverPump,
+            Runtime = brain.Runtime, Client = client, Bridge = main.Bridge!, Protection = brain.Protection, Recorder = brain.Recorder,
+            MemoryAdapter = brain.Memory,
+            Indexer = brain.Indexer, Activity = brain.Activity, WorldMemory = brain.WorldMemory, Claims = claims ?? NullClaimBoard.Instance,
+            Gestures = brain.Gestures, DigCells = brain.DigCells, Mechanisms = brain.Mechanisms, Brainstem = main.Brainstem,
+            BodyGestures = main.Gestures, ProtectionSync = brain.ProtectionSync,
+            Acquisition = brain.Acquisition,
+            PlacedBlocks = brain.PlacedBlocks, ProtectionMarks = brain.ProtectionMarks, ProtectionCommands = brain.ProtectionCommands,
+            ProtectionTelemetry = brain.ProtectionTelemetry,
+            Vision = brain.Vision,
+            Blueprints = brain.Blueprints,
+        };
+    }
+
+    /// <summary>The brain this host was built from (runtime, shared stores, body routers).</summary>
+    public BrainContext? Brain { get; init; }
+    /// <summary>The main body (step 1: the registry's only one).</summary>
+    public Body? Body { get; init; }
+    /// <summary>The bodies (step 1: exactly main).</summary>
+    public BodyRegistry? Bodies => Brain?.Bodies;
+
+    /// <summary>
+    /// The brain: the agent runtime with chat sent through the main body's account, the shared stores and protection, the main
+    /// body's perception, and every tool, registered once against the body routers (they act on <see cref="BodyScope.Current"/>,
+    /// else the focus) before the first turn so the tool list is a stable cached prefix. Ends with the brain split and the
+    /// blueprint tools; the per-body wiring follows (<see cref="BodyFactory"/>).
+    /// </summary>
+    public static BrainContext CreateBrain(IGameClient client, AgentOptions agentOptions, BotOptions? botOptions = null, ILlmClient? llm = null,
         ILoggerFactory? loggers = null, TimeProvider? time = null, bool persist = true,
         WorldIndexOptions? worldIndex = null, ActivityOptions? activity = null,
         IClaimBoard? claims = null, Func<IEnumerable<string>>? hiveBots = null)
@@ -76,6 +123,16 @@ public sealed class BotHost : IDisposable
 
         // Outgoing choke point for skills/tools/console chat: no unauthorised /command leaves through the adapter either.
         if (client is MinecraftGameClient gated) gated.OutgoingFilter = rt.Commands.AllowOutgoing;
+
+        // One brain, many bodies: the main body (the runtime's activity slot and standing orders) and the two routers every
+        // tool registers against. Hive: container/block actions of the game tools take a lease first (ClaimAwareGameClient).
+        IGameClient mainGame = claims == null ? client : new ClaimAwareGameClient(client, claims);
+        var main = new Body(client.Username, isMain: true, client, mainGame, rt.Activities, rt.Agent.Orders);
+        var bodies = new BodyRegistry(main);
+        var bodyLog = loggers?.CreateLogger("MineClaw.Bodies");
+        var toolClient = new BodyRoutingGameClient(bodies, b => b.Game, bodyLog);
+        var adapter = new BodyRoutingGameClient(bodies, b => b.Adapter, bodyLog);
+        rt.Agent.BodyActivities = name => bodies.Find(name)?.Activities;
 
         var memory = new MemoryStoreAdapter(rt.Memory, rt.Observations,
             () => (MineClaw.World.BlockPos?)client.World.Player.Position.ToBlockPos());
@@ -133,8 +190,6 @@ public sealed class BotHost : IDisposable
         if (botOptions.Protection.ServerOp) ForgetSpawnProtection(rt, log);
         client.ReservedItems = protection.ReservedItems();
 
-        // Hive: container/block actions of the game tools take a lease first (ClaimAwareGameClient).
-        IGameClient toolClient = claims == null ? client : new ClaimAwareGameClient(client, claims);
         Func<double, double, double, string?> landmark = (x, y, z) => Agent.Memory.Landmarks.Near(rt.Memory, rt.Observations, x, y, z);
         // Relational block names for questions/needs_input ("the west cell of the gen, right next to the lava").
         Func<int, int, int, string?> blockLandmark = (x, y, z) => Perception.BlockDescriber.Landmark(client.World, new MineClaw.World.BlockPos(x, y, z),
@@ -161,13 +216,14 @@ public sealed class BotHost : IDisposable
                 .Concat(indexer?.GeneratorCellsNear(p, 4) ?? [])
                 .Concat(digCells.Taught().Where(t => Math.Abs(t.X - p.X) <= 4 && Math.Abs(t.Y - p.Y) <= 2 && Math.Abs(t.Z - p.Z) <= 4))
                 .Distinct().ToList();
+        // The main body's acquisition sources (attached to its plain adapter; the router finds them for the body in scope).
         var acquisition = AttachAcquisition(client, rt, genCells, digCells, indexer, log);
         GameToolSet.RegisterAll(rt.Tools, toolClient, memory, botOptions, landmark: landmark, generatorCells: genCells,
             generator: new GameTools.GeneratorSupport(rt.Observations, (label, p) => rt.Memory.SetWaypoint(label, p.X, p.Y, p.Z, "storage chest placed by the generator loop"),
                 BadCell: (p, why) => corrections.RetractBad(p, why),
                 Diagnose: cell => Perception.GenLayout.Diagnose(client.World, rt.Memory, client.World.Dimension, cell),
                 TaughtStand: cell => GameTools.GeneratorStand.Find(rt.Memory, cell))); // B12: stand where the demo stood
-        HumanGameTools.RegisterAskStand(rt.Tools, rt.Chat, client, botOptions.AskStandTimeoutSeconds, digCells: digCells);
+        HumanGameTools.RegisterAskStand(rt.Tools, rt.Chat, adapter, botOptions.AskStandTimeoutSeconds, digCells: digCells);
         HumanGameTools.RegisterWatchDemo(rt.Tools, rt.Chat, recorder, memory);
         // Gesture perception: a punch while looking at a block is pointing (outside demos too); a punched gen cell is taught.
         var gestures = new Perception.GestureTracker(client, isBot: n => hiveBots?.Invoke().Contains(n, StringComparer.OrdinalIgnoreCase) == true
@@ -236,9 +292,14 @@ public sealed class BotHost : IDisposable
                 var older = gestures.Older(since);
                 return older.Length == 0 ? d : string.IsNullOrWhiteSpace(d) ? older : d + "; " + older;
             };
-        if (client is MinecraftGameClient mg) CombatTools.Register(rt.Tools, mg.Inner, rt.Events);
+        if (client is MinecraftGameClient mg)
+        {
+            // The fight tools act on the body in scope; the main body's fight reports are wired here (per body in step 2).
+            CombatTools.Register(rt.Tools, () => GameClients.Minecraft(adapter)?.Inner ?? mg.Inner);
+            CombatTools.AttachEvents(mg.Inner, rt.Events);
+        }
         if (client is MinecraftGameClient mgc) TreeTools.AttachReports(mgc.Inner, indexer, rt.Events);
-        BodyLanguageTools.Register(rt.Tools, client); // act {move, target?, times?}: brain-only body language
+        BodyLanguageTools.Register(rt.Tools, adapter); // act {move, target?, times?}: brain-only body language
         System.Threading.Timer? protectionSync = null;
         if (client is MinecraftGameClient mgp)
         {
@@ -249,8 +310,9 @@ public sealed class BotHost : IDisposable
                 protectionSync = new System.Threading.Timer(_ => SyncProtectedRegion(mgp.Inner, rt, log), null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
         }
         Beliefs.BeliefBot.Attach(rt, toolClient, claims, time, log, indexer); // belief system: claim checks when idle (zero tokens)
-        var skillHub = SkillTools.Register(rt, client, claims); // worker: skill + find_skill over the whole catalog (zero prefix growth)
+        var skillHub = SkillTools.Register(rt, adapter, claims); // worker: skill + find_skill over the whole catalog (zero prefix growth)
         // Inventory ledger: every toss/drop/use/consume/correction is recorded; inventory/where_is {item} answer "where did X go".
+        // The main body's ledger (a ledger per body comes with in-process clone bodies, step 2).
         if (client is MinecraftGameClient mgl)
         {
             var ledger = Ledger.InventoryLedgerTools.Attach(rt, mgl.Inner, skillHub.Registry, log, time);
@@ -271,49 +333,43 @@ public sealed class BotHost : IDisposable
         // Brain gets the cheap single-shot tools + delegate/ask_memory; the worker gets the game macro tools.
         rt.ApplyBrainSplit();
 
-        var bridge = new GameBridge(client, rt, log, time)
-        {
-            Hunger = new HungerLatch(persist ? Path.Combine(agentOptions.DataDirectory, $"hunger-latch-{client.Username}.json") : null, time),
-            PortalPairText = (dim, pos) => PortalPairText(rt.Observations.Portals, dim, pos),
-        };
-        bridge.Attach();
         // Build from a description: design (brain, Opus authoring) + hidden build/blueprint tools (Lua build{}/blueprint()), chat review.
-        var blueprints = botOptions.Blueprints.Enabled ? MineClaw.Bot.Blueprints.BlueprintWiring.Attach(rt, client, toolClient, botOptions.Blueprints, protection, acquisition, genCells, claims, time, log, persist) : null;
-        var scripts = ScriptTools.Register(rt, client, skillHub, botOptions.Scripts, time, log); // script tool (brain+worker), after split + header
-        // Vision v2: see = contact sheet + role layer; with a perception model (Agent:Llm:Perception) the brain gets verified text.
-        var vision = Perception.Vision.VisionWiring.Attach(rt, client, memory, botOptions, protection,
-            p => digCells.IsDigCell(p) || indexer?.IsConfirmedDigCell(p) == true, indexer, gestures, genCells, hiveBots, time, log, persist);
-        // do {action, args, then?, queue?}: the brain's one compact door to the single-step macros (after every macro exists).
-        if (blueprints != null) blueprints.Vision = vision; // the preview's roles/atlas and the perception critic
-        Agent.Tools.DoTool.Register(rt.Tools);
+        // The builder resolves its body per call through the routers (never a captured client).
+        var blueprints = botOptions.Blueprints.Enabled ? MineClaw.Bot.Blueprints.BlueprintWiring.Attach(rt, adapter, toolClient, botOptions.Blueprints, protection, acquisition, genCells, claims, time, log, persist) : null;
 
-        // Brainstem: deterministic controller under the brain (head turn, reflexes, speculative first step, social idle,
-        // the [here] pre-observation). Attached last so its event gate sees what the script gate kept.
-        var here = new Brainstem.HereBlock(client, rt.Memory, rt.Observations, landmark);
-        rt.Agent.HereBlock = here.Build;
         Func<string, bool> isBot = n => hiveBots?.Invoke().Contains(n, StringComparer.OrdinalIgnoreCase) == true || rt.Chat.IsHiveBot?.Invoke(n) == true;
-        var brainstem = new Brainstem.BrainstemController(rt, client, memory, isBot, time, loggers?.CreateLogger("MineClaw.Brainstem"));
-        brainstem.Attach(gestures, timer: persist); // in-memory (test) hosts drive SocialTick by hand
-        // Body language from static text matching (nod/shake/wave/bow/bob/hop/look-at; zero tokens, social priority).
-        var bodyGestures = new Brainstem.Gestures(rt, client, agentOptions.Gestures, isBot, time, loggers?.CreateLogger("MineClaw.Gestures"));
-        bodyGestures.Attach();
-        var watchdog = AttachWatchdog(rt, client, scripts, time);
-        // A standing-order pass that found nothing to do backs off in C#; the world model says when there's work again.
-        if (rt.Agent.Orders is { } standing) standing.WorkReady = o => MineClaw.Bot.Brainstem.WorkProbe.Ready(o, client, genCells);
-        if (persist) watchdog.Start(); // in-memory (test) hosts drive Tick by hand
-        var (handovers, handoverPump) = AttachHandovers(client, rt, isBot, time, log, timer: persist);
-        return new BotHost
+        return new BrainContext
         {
-            Watchdog = watchdog,
-            Handovers = handovers, HandoverPump = handoverPump,
-            Runtime = rt, Client = client, Bridge = bridge, Protection = protection, Recorder = recorder, MemoryAdapter = memory,
-            Indexer = indexer, Activity = activityTracker, WorldMemory = worldMemory, Claims = claims ?? NullClaimBoard.Instance,
-            Gestures = gestures, DigCells = digCells, Mechanisms = mechanisms, Brainstem = brainstem, BodyGestures = bodyGestures, ProtectionSync = protectionSync,
-            Acquisition = acquisition,
+            Runtime = rt, AgentOptions = agentOptions, BotOptions = botOptions,
+            Bodies = bodies, Tools = toolClient, Adapter = adapter,
+            Protection = protection, Memory = memory, Recorder = recorder, DigCells = digCells, Gestures = gestures,
+            Acquisition = acquisition, Skills = skillHub, Landmark = landmark, GenCells = genCells, IsBot = isBot,
+            Indexer = indexer, Activity = activityTracker, WorldMemory = worldMemory, Mechanisms = mechanisms, Blueprints = blueprints,
             PlacedBlocks = placedStore, ProtectionMarks = marks, ProtectionCommands = protectCmds, ProtectionTelemetry = telemetry,
-            Vision = vision,
-            Blueprints = blueprints,
+            ProtectionSync = protectionSync, Claims = claims, HiveBots = hiveBots,
+            Loggers = loggers, Log = log, Time = time, Persist = persist,
         };
+    }
+
+    /// <summary>
+    /// The brain's last tools, after every macro and the script tool exist: vision v2 (see = contact sheet + role layer; with a
+    /// perception model the brain gets verified text) and <c>do</c> (the brain's door to the single-step macros). Vision is the
+    /// brain's eyes through the main body (other bodies are seen through the shared world memory: <c>see focus=67</c>).
+    /// </summary>
+    public static void FinishTools(BrainContext brain)
+    {
+        if (brain.ToolsFinished) return;
+        var rt = brain.Runtime;
+        var client = brain.Main.Adapter;
+        var indexer = brain.Indexer;
+        var digCells = brain.DigCells;
+        var vision = Perception.Vision.VisionWiring.Attach(rt, client, brain.Memory, brain.BotOptions, brain.Protection,
+            p => digCells.IsDigCell(p) || indexer?.IsConfirmedDigCell(p) == true, indexer, brain.Gestures, brain.GenCells, brain.HiveBots,
+            brain.Time, brain.Log, brain.Persist);
+        if (brain.Blueprints != null) brain.Blueprints.Vision = vision; // the preview's roles/atlas and the perception critic
+        Agent.Tools.DoTool.Register(rt.Tools);
+        brain.Vision = vision;
+        brain.ToolsFinished = true;
     }
 
     /// <summary>Build from a description: the design service, its tools and the build crew seam (null when disabled).</summary>
@@ -392,8 +448,6 @@ public sealed class BotHost : IDisposable
     /// <summary>Stall watchdog: a job/script/order that claims to work while the body hasn't changed for 45 s wakes the brain.</summary>
     public Brainstem.StallWatchdog? Watchdog { get; init; }
 
-    private static readonly string[] PassiveTools = ["follow", "guard", "watch_demo", "ask_player", "ask_stand", "wait", "sit", "look", "see"];
-
     /// <summary>The recorded pair whose end in <paramref name="dim"/> is where the bot came out (within 4 blocks), as text.</summary>
     public static string? PortalPairText(MineClaw.Agent.Rag.PortalLinks links, int dim, MineClaw.World.Vec3d pos)
     {
@@ -401,38 +455,6 @@ public sealed class BotHost : IDisposable
             if (l.From(dim) is { } p && p.From.Distance(pos.X, pos.Y, pos.Z) <= 4)
                 return $"portal pair recorded: {MineClaw.Agent.Rag.WorldDim.Name(p.To.Dim)} {p.To.Pos} <-> {MineClaw.Agent.Rag.WorldDim.Name(p.From.Dim)} {p.From.Pos}";
         return null;
-    }
-
-    private static Brainstem.StallWatchdog AttachWatchdog(AgentRuntime rt, IGameClient client, ScriptBridge scripts, TimeProvider? time)
-    {
-        string? last = null;
-        rt.Activities.StepFinished += (tool, _, r, _) => last = $"{tool}: {r.Text}";
-        Brainstem.ClaimedWork? Work()
-        {
-            if (!client.IsPlaying) return null;
-            if (scripts.Controller.Current is { } s && s.Status == MineClaw.Scripting.ScriptStatus.Running)
-            {
-                var state = s.State();
-                bool waiting = state.Contains("wait", StringComparison.OrdinalIgnoreCase) || state.Contains("sleep", StringComparison.OrdinalIgnoreCase);
-                return new($"script {s.Name}", waiting);
-            }
-            if (rt.Activities.Current is { } a && a.Kind is Agent.Tools.ActivityKind.Job or Agent.Tools.ActivityKind.Move)
-            {
-                bool passive = a.Steps.Count > 0 && a.Steps.All(st => PassiveTools.Contains(st.Tool, StringComparer.OrdinalIgnoreCase));
-                return new($"{a.Label} #{a.Id}", passive);
-            }
-            return null;
-        }
-        string Body()
-        {
-            var p = client.World.Player.Position;
-            var inv = client.World.Inventory.PlayerSlots();
-            int h = 17;
-            foreach (var st in inv) h = h * 31 + (st.IsEmpty ? 0 : st.Id * 1000 + st.Count);
-            return $"{Math.Round(p.X * 2)},{Math.Round(p.Y * 2)},{Math.Round(p.Z * 2)}|{h}|{client.CurrentAction}";
-        }
-        string? LastResult() => rt.Worker?.IsRunning == true && rt.Worker.Trail is { } trail ? trail : last;
-        return new Brainstem.StallWatchdog(Work, Body, LastResult, e => rt.Events.Post(e), time);
     }
 
     /// <summary>
@@ -668,70 +690,7 @@ public sealed class BotHost : IDisposable
     private System.Threading.Timer? HandoverPump { get; init; }
 
     /// <summary>Posts settled hand-overs / kept promises as wake events (the timer does this live; tests call it by hand).</summary>
-    public int PollHandovers() => Handovers is { } h ? PostHandovers(h, Runtime, Client) : 0;
-
-    private static int PostHandovers(Brainstem.HandoverWatch h, AgentRuntime rt, IGameClient client)
-    {
-        int n = 0;
-        foreach (var (text, player) in h.Poll(id => client.World.Inventory.CountItem(id)))
-        {
-            // A kept promise wakes the brain even while a script has the body (it said it would act on this).
-            bool promise = text.Contains("you said you'd", StringComparison.Ordinal);
-            rt.Events.Post(new Agent.Events.GameEvent(Agent.Events.EventKind.Notice, text, player, Agent.Events.EventPriority.Normal) { MustWake = promise });
-            n++;
-        }
-        return n;
-    }
-
-    /// <summary>
-    /// Live 10-27 21:04: Fox tossed 21 wheat after "come here I'll give it to you, make bread"; the bot had said "I'll make bread
-    /// the second you hand it over" and then idled 40 s. Item spawns at a player's eye height / in front of them are attributed,
-    /// the bot's pickups of them become one debounced event, and the bot's own "I'll X when Y" lines become pending promises.
-    /// </summary>
-    private static (Brainstem.HandoverWatch?, System.Threading.Timer?) AttachHandovers(IGameClient client, AgentRuntime rt, Func<string, bool> isBot,
-        TimeProvider? time, ILogger? log, bool timer)
-    {
-        var watch = new Brainstem.HandoverWatch(time);
-        var w = client.World;
-        string self = client.Username;
-        IEnumerable<Brainstem.HandoverWatch.PlayerView> Others() => w.Entities.All()
-            .Where(e => e.Kind == MineClaw.World.EntityKind.Player && e.Name is { Length: > 0 } n && !n.Equals(self, StringComparison.OrdinalIgnoreCase) && !isBot(n))
-            .Select(e => new Brainstem.HandoverWatch.PlayerView(e.Name!, e.Position, e.Yaw, e.Pitch));
-        w.Entities.Spawned += e =>
-        {
-            try
-            {
-                if (e.Kind != MineClaw.World.EntityKind.Item || e.Item.IsEmpty) return;
-                // A toss near the bot is a hand-over (counted at once, debounced); one far away is someone else's business.
-                bool near = e.Position.DistanceTo(w.Player.Position) <= HandoverReach;
-                if (watch.OnItemSpawn(e.Id, e.Position, Others(), near ? e.Item.Id : 0, near ? e.Item.Count : 0) is { } who)
-                    log?.LogDebug("hand-over: {Item} x{Count} thrown by {Who}{Far}", e.Item.Id, e.Item.Count, who, near ? "" : " (far: counted only on pickup)");
-            }
-            catch (Exception ex) { log?.LogDebug(ex, "hand-over spawn failed"); }
-        };
-        w.BlockChanged += c => { if (c.NewId == 0 && c.OldId != 0) watch.OnBlockGone(c.Pos); };
-        if (client is MinecraftGameClient mg)
-            mg.Inner.ItemCollected += (collector, entity, stack) =>
-            {
-                if (collector != w.Player.EntityId || stack is not { IsEmpty: false } s) return;
-                watch.OnPickup(entity, s.Id, s.Count);
-            };
-        rt.Chat.Accepted += m => { if (m.Player is { Length: > 0 } p && !isBot(p)) watch.OnPlayerLine(p, m.Text); };
-        rt.Chat.Said += t =>
-        {
-            try
-            {
-                if (watch.OnBotLine(t, id => w.Inventory.CountItem(id)) is { } p)
-                    log?.LogInformation("promise: \"{Intent}\" when {Cond}{Item}", p.Intent, p.Condition,
-                        p.ItemId is { } id ? $" (watching for {MineClaw.Data.Items.DisplayName(id, 0)}{(p.From is { } f ? " from " + f : "")})" : "");
-            }
-            catch (Exception ex) { log?.LogDebug(ex, "promise parse failed"); }
-        };
-        var pump = timer
-            ? new System.Threading.Timer(_ => { try { PostHandovers(watch, rt, client); } catch (Exception) { /* next tick */ } }, null, 500, 250)
-            : null;
-        return (watch, pump);
-    }
+    public int PollHandovers() => Handovers is { } h ? BodyFactory.PostHandovers(h, Runtime, Client) : 0;
 
     public void Dispose()
     {
