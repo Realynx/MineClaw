@@ -55,7 +55,7 @@ public sealed class ChestStock
     }
 
     /// <summary>A player's label that says hands off ("private", "Fox's, don't take").</summary>
-    private static bool Private(string? annotation) => annotation is { Length: > 0 } a
+    internal static bool Private(string? annotation) => annotation is { Length: > 0 } a
         && (a.Contains("private", StringComparison.OrdinalIgnoreCase) || a.Contains("don't take", StringComparison.OrdinalIgnoreCase)
             || a.Contains("do not take", StringComparison.OrdinalIgnoreCase) || a.Contains("personal", StringComparison.OrdinalIgnoreCase));
 

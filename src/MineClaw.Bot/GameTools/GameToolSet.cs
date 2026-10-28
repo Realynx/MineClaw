@@ -372,7 +372,9 @@ public static class GameToolSet
                 }
                 // An empty inventory is a done deposit, like eating when full (live 10-28: clone 67's gen script died on line 5
                 // "nothing to deposit" after 3 min of mining 0, hiding the real cause: no free gen cell).
-                var dr = asked is { } chosen ? R(await c.DepositAllAsync(chosen, filter, ct)) : await DepositAnywhereAsync(c, generator?.Observations, filter, ct);
+                // One resolution path (ChestStore): the asked chest, then every known chest with room; "all N known chests full; ..."
+                // when nothing fits anywhere (live 10-28: gen_loop died on "chest is full" at 14,64,-5 with 5,64,4 half empty).
+                var dr = await ChestStore.StoreAsync(c, generator?.Observations, asked, filter, ct);
                 return !dr.Ok && dr.Text.StartsWith("nothing to deposit", StringComparison.Ordinal) ? ToolResult.Success(dr.Text) : dr;
             }, longRunning: true);
         tools.Register("withdraw", "Take items from a chest (nearest if omitted).",
@@ -519,27 +521,6 @@ public static class GameToolSet
         if (Items.ByName(s) != null) { items.Insert(0, s); return null; }
         error = ToolResult.Error($"unknown place '{s}' (deposit{{at?, items?}}: at = chest x,y,z or saved name)");
         return null;
-    }
-
-    /// <summary>
-    /// <c>deposit</c> with no chest named: the nearest chest, then every other known chest (shared memory's room estimate
-    /// first, "full" ones re-checked by opening them), until something goes in. "storage full" only after each was tried,
-    /// naming them (live 10-27 23:06: "all known chests full" while two chests upstairs were nearly empty).
-    /// </summary>
-    internal static async Task<ToolResult> DepositAnywhereAsync(IGameClient c, MineClaw.Agent.Rag.ObservationStore? obs, Func<ItemStack, bool>? filter, CancellationToken ct)
-    {
-        var storing = c.World.Inventory.PlayerSlots().Skip(9).Where(s => !s.IsEmpty && (filter?.Invoke(s) ?? true)).Select(s => (int)s.Id).ToHashSet();
-        var why = new List<string>();
-        int tried = 0;
-        foreach (var chest in GeneratorLoop.Candidates(c, obs, NearestChest(c), storing).Distinct())
-        {
-            if (++tried > 12) break;
-            var r = await c.DepositAllAsync(chest, filter, ct).ConfigureAwait(false);
-            if (r.Ok) return ToolResult.Success($"{r.Message} in chest {chest.X},{chest.Y},{chest.Z}");
-            if (r.Message.StartsWith("nothing to deposit", StringComparison.Ordinal)) return R(r);
-            why.Add($"{chest.X},{chest.Y},{chest.Z}: {(r.Message.Length > 50 ? r.Message[..50] : r.Message)}");
-        }
-        return tried == 0 ? ToolResult.Error("no chest nearby") : ToolResult.Error("storage full: tried " + string.Join("; ", why.Take(6)));
     }
 
     private static BlockPos? NearestChest(IGameClient c) =>

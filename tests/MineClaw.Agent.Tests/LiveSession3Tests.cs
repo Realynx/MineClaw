@@ -336,6 +336,60 @@ public class LiveSession3Tests
         Assert.Equal(5, passes);
     }
 
+    /// <summary>
+    /// Live 10-28 11:10/12:05: gen_loop failed "store: chest is full" every pass, three in a row would pause the order for good.
+    /// Every known chest full is a wait, not a failure: back off like work not ready (a regenerated gen cell can't cut it short),
+    /// no failure counted, and the brain hears the actionable line once.
+    /// </summary>
+    [Fact]
+    public async Task All_chests_full_backs_off_and_wakes_the_brain_once_instead_of_three_failures()
+    {
+        var time = new ManualTime();
+        var (rt, _, _) = TestRuntime.Create(o => o.Idle.MinResumeIntervalSeconds = 0, time: time);
+        const string line = "all 3 known chests full (14,64,-5, 5,64,4, 11,68,-5); 141 cobblestone in bag; craft+place a chest (have 300 logs) or keep carrying";
+        int passes = 0;
+        rt.Tools.Register("gen_job", "gen", ToolSchema.Create().Build(), (_, _) =>
+        {
+            passes++;
+            return Task.FromResult(ToolResult.Error($"failed: script gen_loop at line 13 (store: {line}): cp 1/1, 29 acts, +141 cobblestone, 9m33s"));
+        }, tiers: ToolTiers.All);
+        var orders = rt.Agent.Orders!;
+        orders.WorkReady = _ => true; // the gen cell has regenerated: no reason to retry while every chest is full
+        var bot = rt.Options.Chat.Username;
+        rt.Memory.SetStandingOrder(new MineClaw.Agent.Memory.StandingOrder { Bot = bot, Job = "mine the cobble gen for Fox", Tool = "gen_job", Input = NoArgs });
+
+        var seen = new List<GameEvent>();
+        async Task Pass()
+        {
+            Assert.True(orders.ResumeIfIdle("test"));
+            for (int i = 0; i < 3000 && rt.Activities.IsBusy; i++) await Task.Delay(10);
+            await Task.Delay(30);
+            seen.AddRange(rt.Events.Snapshot()); // the brain takes its events
+            rt.Events.RemovePending(_ => true);
+        }
+
+        await Pass();
+        Assert.Equal(time.Now + TimeSpan.FromMinutes(2), orders.BackoffUntil);
+        Assert.False(orders.ResumeIfIdle("idle"));  // backing off although WorkReady says yes
+        Assert.False(orders.ProbeTick());
+        Assert.StartsWith("storage full on the last pass", orders.WhyNot());
+        time.Advance(TimeSpan.FromMinutes(2));
+        await Pass();
+        Assert.Equal(time.Now + TimeSpan.FromMinutes(4), orders.BackoffUntil);
+        time.Advance(TimeSpan.FromMinutes(4));
+        await Pass();
+        Assert.Equal(time.Now + TimeSpan.FromMinutes(8), orders.BackoffUntil);
+        Assert.Equal(3, passes);
+
+        var order = rt.Memory.GetStandingOrder(bot)!;
+        Assert.Equal(0, order.FailuresInRow); // three full passes, no failure pause
+        var wake = Assert.Single(seen, e => e.MustWake || e.Wakes);
+        Assert.Contains("\"mine the cobble gen for Fox\" is waiting", wake.Text);
+        Assert.Contains(line, wake.Text);
+        Assert.Equal(3, seen.Count(e => e.Kind == EventKind.TaskFailed)); // each pass is context, never a wake
+        Assert.DoesNotContain(seen, e => e.Text.Contains("keeps failing"));
+    }
+
     // ------------------------------------------------------------------ speech guards (task #34 remainder)
 
     [Fact]

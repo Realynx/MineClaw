@@ -87,6 +87,59 @@ public class DepositFullTests
         Assert.StartsWith("storage full: tried", d.Message);
     }
 
+    /// <summary>
+    /// Live 10-28 11:10/12:05: gen_loop's store(chest:"14,64,-5") died on "chest is full" every run while 5,64,4 had room. The
+    /// named chest goes first, the rest goes on to the next known chest with room (a closer "private" one is skipped), and the
+    /// result says where it all went.
+    /// </summary>
+    [Fact]
+    public async Task Store_at_a_full_chest_falls_back_to_the_next_known_chest_and_says_where_things_went()
+    {
+        var (h, c) = TestBot.Create();
+        using var _ = h;
+        Chest(h, new WPos(14, 64, -5), dbl: true, I(Blocks.Cobblestone, 50 * 64));
+        Chest(h, new WPos(5, 64, 4), dbl: false, I(Items.Stick, 3));
+        var priv = h.Runtime.Observations.Upsert(new Observation("chest", "2,64,2", "chest") { Bounds = Box.Point(2, 64, 2), Contents = [] });
+        h.Runtime.Observations.AdminEdit(priv.Id, null, "Fox's private stash");
+        c.Give(9, Blocks.Cobblestone, 64);
+        c.Results["deposit"] = () =>
+        {
+            var last = c.CallList.Last();
+            if (last.StartsWith("deposit 14,64,-5", StringComparison.Ordinal))
+            {
+                c.Give(9, Blocks.Cobblestone, 34);
+                return MineClaw.Client.ActionResult.Success("deposited 30 cobblestone (chest full)", 30);
+            }
+            c.World.Inventory.SetSlot(0, 9, MineClaw.Data.ItemStack.Empty);
+            return MineClaw.Client.ActionResult.Success("deposited 34 cobblestone", 34);
+        };
+        var r = await h.Run("deposit", new { at = "14,64,-5", items = new[] { "cobblestone" } });
+        Assert.True(r.Ok, r.Text);
+        Assert.Equal("stored 64 cobblestone: 30 → 14,64,-5 (now full), 34 → 5,64,4", r.Text);
+        Assert.DoesNotContain(c.CallList, x => x.StartsWith("deposit 2,64,2", StringComparison.Ordinal)); // private: never a fallback
+    }
+
+    [Fact]
+    public async Task Every_known_chest_full_is_one_actionable_line_and_nothing_is_placed()
+    {
+        var (h, c) = TestBot.Create();
+        using var _ = h;
+        Chest(h, new WPos(14, 64, -5), dbl: true, I(Blocks.Cobblestone, 54 * 64));
+        Chest(h, new WPos(5, 64, 4), dbl: false, I(Blocks.Cobblestone, 27 * 64));
+        Chest(h, new WPos(11, 68, -5), dbl: false, I(Blocks.Planks, 27 * 64));
+        c.Give(9, Blocks.Cobblestone, 64);
+        c.Give(10, Blocks.Cobblestone, 64);
+        c.Give(11, Blocks.Cobblestone, 13);
+        for (int s = 12; s < 16; s++) c.Give(s, Blocks.Log, 64);
+        c.Give(16, Blocks.Log, 44);
+        c.Results["deposit"] = () => MineClaw.Client.ActionResult.Fail("chest is full");
+        var r = await h.Run("deposit", new { at = "14,64,-5", items = new[] { "cobblestone" } });
+        Assert.False(r.Ok);
+        Assert.Equal("all 3 known chests full (14,64,-5, 5,64,4, …); 141 cobblestone in bag; craft+place a chest (have 300 logs) " +
+            "or keep carrying", r.Text);
+        Assert.DoesNotContain(c.CallList, x => x.StartsWith("place", StringComparison.Ordinal)); // placing a chest is the brain's call
+    }
+
     [Fact]
     public async Task Deposit_tool_without_a_chest_moves_on_from_a_full_nearest_chest()
     {

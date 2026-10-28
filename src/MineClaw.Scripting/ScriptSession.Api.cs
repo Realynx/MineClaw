@@ -627,7 +627,9 @@ public sealed partial class ScriptSession
         // then read as failed. Say so, so the next script uses return / log.
         if (msg != null && Regex.Matches(msg, @"-?\d+(?:,-?\d+){1,2}\s*[=:]\s*[a-z_]+").Count >= 2)
             return new ScriptFailException("fail() is for errors, not data: return \"...\" for results, log() for debugging: " + Short(msg, 100));
-        return new ScriptFailException(msg == null ? LastFailure ?? "fail()" : Short(msg, 120));
+        // 200: an actionable failure keeps its advice ("mineGen: all 3 known chests full (...); 141 cobblestone in bag; craft+place
+        // a chest (have 300 logs) or keep carrying"); the outcome line is capped as a whole anyway.
+        return new ScriptFailException(msg == null ? LastFailure ?? "fail()" : Short(msg, 200));
     }
 
     internal static ScriptFailException Bug(string msg) => new(msg);

@@ -5,13 +5,33 @@
   const call = (name, ...a) => (typeof globalThis[name] === 'function' ? globalThis[name](...a) : { ok: false, msg: 'no ' + name });
   const busy = m => /no free (gen )?cell|busy|claimed|held by/i.test(m || '');
 
-  /** store(chest?, items?) - deposit (all, or only items) at chest (default: the nearest known); fails with the reason. -> result. */
+  // "all 3 known chests full (...); 141 cobblestone in bag; ..." (the deposit tool's line when nothing fits anywhere).
+  const FULL = /^(?:all \d+ known chests? full|no known chest)/;
+  const bagged = (msg, items) => {
+    const m = /;\s*([^;]*) in bag/.exec(msg || '');
+    let n = 0;
+    if (m) for (const d of m[1].matchAll(/(\d+) /g)) n += Number(d[1]);
+    if (!n && items) for (const it of items) n += H.inv(it);
+    return n;
+  };
+  /**
+   * store(chest?, items?) - deposit (all, or only items) at chest, else the next known chests with room; -> result ("stored 64
+   * cobblestone: 30 → 14,64,-5 (now full), 34 → 5,64,4"). Every chest full -> {ok:false, full:true, need, msg} (you decide: place
+   * a chest, keep carrying); other errors fail.
+   */
   const store = (chest, items) => {
     const r = call('deposit', chest ? { at: chest, items } : items ? { items } : {});
-    if (!ok(r)) H.fail('store: ' + r.msg);
-    return r;
+    if (ok(r)) return r;
+    if (FULL.test(r.msg || '')) return { ok: false, full: true, need: bagged(r.msg, items), msg: r.msg, n: 0 };
+    H.fail('store: ' + r.msg);
   };
   def('store', store);
+  // A full store inside a job: onFull(r) decides, else carry on while the bag has room, else fail with the actionable line.
+  const whenFull = (r, onFull, job, minFree) => {
+    if (!r || !r.full) return;
+    if (typeof onFull === 'function') return onFull(r);
+    if (H.free() < minFree) H.fail(job + ': ' + r.msg);
+  };
   /** restock(item, n, chest?) - top the inventory up to n of item from chests; fails when short. -> count held. */
   def('restock', (item, n, chest) => {
     const have = H.inv(item);
@@ -21,8 +41,9 @@
     return H.inv(item);
   });
   /**
-   * mineGen({at:'auto', n:64, per:8, chest, items:['cobblestone'], store:true}) - pickaxe ensured (re-tooled when it breaks),
-   * mine n cobble at the generator cell (or 'auto': a free claimed cell), deposit whenever nearly full and at the end. -> mined.
+   * mineGen({at:'auto', n:64, per:8, chest, items:['cobblestone'], store:true, onFull}) - pickaxe ensured (re-tooled when it breaks),
+   * mine n cobble at the generator cell (or 'auto': a free claimed cell), store whenever nearly full and at the end; every chest
+   * full -> onFull(r) if given, else fail once the bag is full. -> mined.
    */
   def('mineGen', (o = {}) => {
     const at = o.at ?? 'auto', n = Math.max(1, o.n ?? 64), per = Math.max(1, o.per ?? 8), items = o.items ?? ['cobblestone'];
@@ -41,9 +62,9 @@
       }
       idle = 0;
       H.prog(Math.min(100, (100 * got) / n));
-      if (H.free() < 2 && o.store !== false) store(o.chest, items);
+      if (H.free() < 2 && o.store !== false) whenFull(store(o.chest, items), o.onFull, 'mineGen', 2);
     }
-    if (o.store !== false && H.inv('cobblestone') > 0) store(o.chest, items);
+    if (o.store !== false && H.inv('cobblestone') > 0) whenFull(store(o.chest, items), o.onFull, 'mineGen', 1);
     return got;
   });
   /** harvestFarm({radius, replant:true, store:false, chest}) - harvest ripe wheat (hoe + replant); optionally store the wheat. -> result. */

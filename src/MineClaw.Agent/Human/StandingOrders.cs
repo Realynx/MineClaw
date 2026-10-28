@@ -56,10 +56,21 @@ public sealed class StandingOrders
         @"|\bnot\s+(?:grown|ready|mature|ripe|regenerated)(?:\s+yet)?\b|\b0\s+(?:chopped|mined|harvested|logs?|trees?)\b|\bnone\s+(?:ready|grown)\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
+    /// <summary>
+    /// A pass that stopped because every known chest is full (the deposit tool's line: "all 3 known chests full (…); 141 cobblestone
+    /// in bag; craft+place a chest (have 300 logs) or keep carrying"). Not the order failing: storage is the blocker, and only the
+    /// brain decides to place a chest or carry on. Live 10-28 11:10/12:05: gen_loop failed "store: chest is full" every pass.
+    /// </summary>
+    internal static readonly Regex StorageFull = new(
+        @"\b(?:all \d+ known chests? full|no known chest)\b.*?(?:or keep carrying|$)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Singleline);
+
     /// <summary>Waits after consecutive "nothing yet" passes: 2 → 4 → 8 → 15 min.</summary>
     public static readonly TimeSpan[] Backoff = [TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(4), TimeSpan.FromMinutes(8), TimeSpan.FromMinutes(15)];
 
     private int _nothingStreak;
+    private bool _storageFull;      // the current backoff waits on full chests: the work probe can't end it
+    private string? _fullWoke;      // the storage-full line the brain already heard (once per stretch of full passes)
     private DateTimeOffset _backoffUntil = DateTimeOffset.MinValue;
     private string? _quietText;
     private ITimer? _poll;
@@ -167,7 +178,10 @@ public sealed class StandingOrders
         if (backingOff)
         {
             bool? ready = null;
-            try { ready = WorkReady?.Invoke(o); } catch (Exception) { }
+            bool full;
+            lock (_lock) full = _storageFull;
+            // Full chests: a regenerated gen cell is no reason to try again (WorkReady counts as false until the wait runs out).
+            if (!full) try { ready = WorkReady?.Invoke(o); } catch (Exception) { }
             if (ready != true) return false;
             _log.LogInformation("standing order {Job}: work is ready again, ending the backoff", o.Job);
         }
@@ -259,6 +273,8 @@ public sealed class StandingOrders
                 return $"auto-resume paused after {o.FailuresInRow} failures" +
                        (o.LastOutcome is { Length: > 0 } l ? $" (last: {TextUtil.Truncate(l, 80)})" : "");
             if (now < _snoozedUntil) return $"snoozed after a stop ({(int)Math.Ceiling((_snoozedUntil - now).TotalMinutes)}m left)";
+            if (now < _backoffUntil && _storageFull)
+                return $"storage full on the last pass, next try in {(int)Math.Ceiling((_backoffUntil - now).TotalMinutes)}m";
             if (now < _backoffUntil) return $"nothing to do on the last pass, next check in {(int)Math.Ceiling((_backoffUntil - now).TotalMinutes)}m";
         }
         return null;
@@ -279,12 +295,19 @@ public sealed class StandingOrders
             _memory.UpdateStandingOrder(Bot, o => o.LastOutcome = TextUtil.Truncate(TextUtil.OneLine(result.Text ?? ""), 160));
             return;
         }
+        if (!ok && StorageFull.Match(result.Text ?? "") is { Success: true } full)
+        {
+            OnStorageFull(result.Text!, full.Value);
+            return;
+        }
         if (NothingYet.IsMatch(result.Text ?? ""))
         {
             // Not a failure and nothing for the brain: wait in C# (probe the world, else 2 → 4 → 8 → 15 min), no LLM call.
             TimeSpan wait;
             lock (_lock)
             {
+                if (_storageFull) _nothingStreak = 0;
+                _storageFull = false;
                 _nothingStreak++;
                 wait = Backoff[Math.Min(_nothingStreak, Backoff.Length) - 1];
                 _backoffUntil = _time.GetUtcNow() + wait;
@@ -300,6 +323,8 @@ public sealed class StandingOrders
         {
             _nothingStreak = 0;
             _backoffUntil = DateTimeOffset.MinValue;
+            _storageFull = false;
+            _fullWoke = null;
         }
         StopProbe();
         int failures = 0;
@@ -312,6 +337,34 @@ public sealed class StandingOrders
         if (!ok && failures == Math.Max(1, _o.MaxResumeFailures))
             _events.Post(GameEvent.Notice($"standing order keeps failing ({failures}x), auto-resume paused: {TextUtil.Truncate(result.Text, 120)}",
                 EventPriority.Normal) with { MustWake = true });
+    }
+
+    /// <summary>
+    /// Every known chest full: like work not ready — back off (2 → 4 → 8 → 15 min, the work probe can't cut it short), no failure
+    /// counted, and the brain hears the line once (Normal, MustWake) instead of three failures and a paused order.
+    /// </summary>
+    private void OnStorageFull(string text, string line)
+    {
+        TimeSpan wait;
+        bool wake;
+        lock (_lock)
+        {
+            if (!_storageFull) _nothingStreak = 0;
+            _storageFull = true;
+            _nothingStreak++;
+            wait = Backoff[Math.Min(_nothingStreak, Backoff.Length) - 1];
+            _backoffUntil = _time.GetUtcNow() + wait;
+            var head = text.Trim().Split('\n')[0];
+            _quietText = head.Length > 0 ? head[..Math.Min(60, head.Length)] : null; // the [task failed] for it stays context
+            wake = _fullWoke == null;
+            _fullWoke = line;
+        }
+        var o = Current;
+        _memory.UpdateStandingOrder(Bot, x => x.LastOutcome = TextUtil.Truncate(TextUtil.OneLine(text), 160));
+        _log.LogInformation("standing order: storage full ({N}x), backing off {Min} min", _nothingStreak, wait.TotalMinutes);
+        if (wake)
+            _events.Post(GameEvent.Notice($"standing order \"{o?.Job}\" is waiting (not failing): {TextUtil.Truncate(TextUtil.OneLine(line), 200)}; " +
+                $"next try in {(int)wait.TotalMinutes}m", EventPriority.Normal) with { MustWake = true });
     }
 
     // ------------------------------------------------------------------ the tool

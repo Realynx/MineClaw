@@ -206,6 +206,54 @@ public class SdkJobTests
         Assert.Contains(calls, c => c.StartsWith("skill:harvest_wheat"));
     }
 
+    private const string AllFull = "all 2 known chests full (14,64,-5, 5,64,4); 141 cobblestone in bag; craft+place a chest (have 300 logs) or keep carrying";
+
+    /// <summary>Live 10-28: every known chest full is the script's decision (place a chest, keep carrying), not a generic throw.</summary>
+    [Fact]
+    public async Task Store_with_every_chest_full_returns_a_typed_result_and_other_errors_still_fail()
+    {
+        using var rig = Rig.Js();
+        rig.On["deposit"] = (_, _) => Task.FromResult(ActResult.Fail(AllFull));
+        var s = await rig.Run("""
+            const r = store('14,64,-5', ['cobblestone'])
+            return [r.ok, r.full, r.need].join(',') + ' | ' + r.msg
+            """);
+        Assert.True(s.Ok, s.Outcome);
+        Assert.Contains("false,true,141 | all 2 known chests full (14,64,-5, 5,64,4); 141 cobblestone in bag", s.Outcome);
+
+        rig.On["deposit"] = (_, _) => Task.FromResult(ActResult.Fail("no path to 14,64,-5"));
+        var f = await rig.Run("store('14,64,-5')", "nopath");
+        Assert.Equal(ScriptStatus.Failed, f.Status);
+        Assert.Contains("store: no path to 14,64,-5", f.Outcome);
+    }
+
+    [Fact]
+    public async Task MineGen_with_every_chest_full_fails_with_the_actionable_line_once_the_bag_is_full_or_hands_it_to_onFull()
+    {
+        using var rig = Rig.Js();
+        int cobble = Items.ByName("cobblestone")!.Id;
+        rig.Give(9, Items.ByName("stone_pickaxe")!.Id, 1);
+        rig.On["harvest_generator"] = (_, _) =>
+        {
+            for (int i = 10; i < 45; i++) rig.Give(i, cobble, 64); // the bag fills
+            return Task.FromResult(ActResult.Success("generator: dug 8, +8 cobblestone"));
+        };
+        rig.On["deposit"] = (_, _) => Task.FromResult(ActResult.Fail(AllFull));
+        var f = await rig.Run("mineGen({ n: 64, per: 8, chest: '14,64,-5' })");
+        Assert.Equal(ScriptStatus.Failed, f.Status);
+        Assert.Contains("mineGen: all 2 known chests full", f.Outcome);
+        Assert.Contains("or keep carrying", f.Outcome);
+
+        for (int i = 10; i < 45; i++) rig.World.Inventory.SetSlot(0, i, default);
+        var s = await rig.Run("""
+            let seen = null
+            const got = mineGen({ n: 8, per: 8, chest: '14,64,-5', onFull: r => { seen = r.need } })
+            return 'got ' + got + ' need ' + seen
+            """, "onfull");
+        Assert.True(s.Ok, s.Outcome);
+        Assert.Contains("need 141", s.Outcome);
+    }
+
     [Fact]
     public async Task GuardArea_fights_at_night_and_stops_at_day()
     {
