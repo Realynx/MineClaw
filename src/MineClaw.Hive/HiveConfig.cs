@@ -8,8 +8,26 @@ public sealed class HiveConfig
 {
     /// <summary>Off = no clones, no supervisor, no hive tools (the TUI still lists the roster greyed out).</summary>
     public bool Enabled { get; set; } = true;
+    /// <summary>Ceiling on clones out at once; 0 = no ceiling beyond the server's player cap (minus slots kept for regulars).</summary>
     public int MaxClones { get; set; } = 4;
+    /// <summary>Legacy fixed roster. Production ignores it (<see cref="IgnoreLegacyRoster"/>): accounts are allocated per spawn
+    /// (<see cref="Accounts"/>). Still read, so old configs load; set directly only by tests that pre-seed slots.</summary>
     public string[] CloneUsernames { get; set; } = [];
+
+    /// <summary>Dynamic clone accounts: prefix, managed list, reconcile, DeepSeek profile, chat budget.</summary>
+    public Hierarchy.HiveAccountsConfig Accounts { get; set; } = new();
+
+    /// <summary>Names the old fixed roster listed (kept for adoption into the managed list; never used as slots).</summary>
+    public string[] LegacyCloneUsernames { get; private set; } = [];
+
+    /// <summary>Drops the fixed roster from a bound config (remembering the names for adoption). Returns what was ignored.</summary>
+    public IReadOnlyList<string> IgnoreLegacyRoster()
+    {
+        if (CloneUsernames.Length > 0)
+            LegacyCloneUsernames = [.. LegacyCloneUsernames, .. CloneUsernames.Where(n => !string.IsNullOrWhiteSpace(n)).Select(n => n.Trim())];
+        CloneUsernames = [];
+        return LegacyCloneUsernames;
+    }
 
     /// <summary>Regular players: one slot stays free for each of them while they're offline. Empty = Agent:Self:TrustedPlayers.</summary>
     public string[] RegularPlayers { get; set; } = [];
@@ -70,7 +88,7 @@ public sealed class HiveConfig
 
     public IReadOnlyList<string> Clones() =>
         CloneUsernames.Where(n => !string.IsNullOrWhiteSpace(n)).Select(n => n.Trim()).Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(Math.Max(0, MaxClones)).ToList();
+            .Take(MaxClones > 0 ? MaxClones : int.MaxValue).ToList();
 
     public TimeSpan Heartbeat => TimeSpan.FromSeconds(Math.Clamp(HeartbeatSeconds, 0.2, 30));
     public TimeSpan HeartbeatTimeout => TimeSpan.FromSeconds(Math.Max(HeartbeatTimeoutSeconds, HeartbeatSeconds * 3));

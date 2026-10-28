@@ -35,6 +35,8 @@
   def('cp', (label, fn) => H.cp(label, fn));
   /** on(topic, [filter,] fn) - handler for danger|lowhp|void|died|chat|'chat:<text>'|hungry|invFull|toolBroke|hurt|night|day|after(ms)|when(fn). fn(ev) runs between actions (the cut action re-runs after); return 'pause'|'wake'|'stop' to pass it on. */
   def('on', (topic, a, b) => (b === undefined ? H.on(topic, null, a) : H.on(topic, a, b)));
+  /** onInterrupt(kind, fn) - this script's own inline fix for danger|lowhp|void|died|stuck|failed|needs_input|chat|'*', tried before any brain call. fn(ev, m) runs in scope under the patch budget; return 'resume' (default)|'restart_step'|'stop'|'escalate'. */
+  def('onInterrupt', (kind, fn) => H.onInterrupt(kind, fn));
   /** skill(name, ...args) - any catalog skill (or action/alias) by name. */
   def('skill', (name, ...a) => H.skill(name, ...a));
   /** params(defaults) - this script's tunables: defaults < saved (script op=save params) < this run's params. Call once at the top. */

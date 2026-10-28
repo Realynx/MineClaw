@@ -67,7 +67,7 @@
       </StackPanel>
     </Grid>
 
-    <Border Grid.Row="1" Margin="0,8,0,0" Padding="10,6" CornerRadius="6" Background="#45D9A21B" IsVisible="{Binding IsPaused}">
+    <Border Grid.Row="1" Margin="0,8,0,0" Padding="10,6" CornerRadius="6" Background="#45D9A21B" IsVisible="{Binding PauseText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
       <TextBlock Text="{Binding PauseText}" TextWrapping="Wrap" />
     </Border>
 

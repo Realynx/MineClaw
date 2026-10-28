@@ -205,10 +205,16 @@ public sealed partial class BotAgent
 
     private static string? AckOf(TurnSpeech sp) { lock (sp.Lock) return sp.Ack; }
 
+    /// <summary>
+    /// The same line as the ack or an instant line (several instant lines are joined by " | "): equal letters, or most of the
+    /// same words (<see cref="Character.LineBank.Similar"/>), so "omw foxy!!" after the instant "omw foxy~" never goes out.
+    /// </summary>
     private static bool SameLine(string a, string b)
     {
         static string N(string s) => Regex.Replace(s.ToLowerInvariant(), "[^a-z]+", "");
-        return N(a).Length > 0 && N(a) == N(b);
+        foreach (var part in b.Split(" | ", StringSplitOptions.RemoveEmptyEntries))
+            if ((N(a).Length > 0 && N(a) == N(part)) || Character.LineBank.Similar(a, part)) return true;
+        return false;
     }
 
     /// <summary>Every brain chat line goes out here: after an ack still being typed, marks the turn as spoken, telemetry.</summary>
@@ -254,6 +260,7 @@ public sealed partial class BotAgent
     {
         var o = ReplyOpts;
         if (!ReplyOn || !o.QuickAck || tier != ModelTier.Main || !batch.HasTypedChat) return;
+        lock (sp.Lock) if (sp.Ack != null) return; // an instant line already answered: no second quick line (no double replies)
         var typed = batch.Waking.Where(EventQueue.IsTyped).ToList();
         if (typed.Count == 0) return;
         // Only after the addressee decision says it's for us (live 10-27: Robin asked robinchan "you have to respond to
@@ -394,6 +401,16 @@ public sealed partial class BotAgent
         bool emote = typed.All(e => e.Kind == EventKind.Emote);
         var kind = QuickReply.Classify(typed.Select(e => e.Text).ToList(), NameWords(), emote);
         if (kind == QuickKind.Brain) return new();
+        // Act first: the brainstem already answered this small talk with a prefetched in-character line. No model call at all.
+        var talkers = typed.Select(e => e.Player!).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (Voice is { Options.InstantSmallTalkIsFinal: true } voice && voice.For(talkers) is { Count: > 0 } inst
+            && talkers.All(p => inst.Any(i => i.Player.Equals(p, StringComparison.OrdinalIgnoreCase))))
+        {
+            // The line is still being "typed" (≤ the typing cap): wait for it, so the episode and the telemetry hold what was said.
+            var out1 = await Character.CharacterVoice.SentAsync(inst, TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+            if (out1.Count > 0 && talkers.All(p => out1.Any(i => i.Player.Equals(p, StringComparison.OrdinalIgnoreCase))))
+                return InstantFinal(batch, out1, kind, now);
+        }
 
         string header = "";
         try { header = StateHeader?.Invoke() ?? ""; } catch (Exception ex) { _log.LogDebug(ex, "state header failed"); }
@@ -481,5 +498,33 @@ public sealed partial class BotAgent
         _context.Commit(episode);
         if (said.Count > 0) _lastCheap = (players[0], _time.GetUtcNow(), string.Join(" ", said));
         return new(Final: new RunResult(ModelTier.Cheap, 1, response.Usage, cost, said, null));
+    }
+
+    public const string InstantReplyTag = "[instant reply: the brainstem said a prepared line, no model call]";
+
+    /// <summary>The voice is the brainstem's (Agent:Brainstem:Character): prefetched lines, phrase memory, instant lines.</summary>
+    public Character.CharacterVoice? Voice { get; set; }
+
+    /// <summary>Small talk the instant line already answered: committed as a tiny episode (the brain sees it next turn), zero calls.</summary>
+    private QuickResult InstantFinal(EventBatch batch, IReadOnlyList<Character.InstantLine> inst, QuickKind kind, DateTimeOffset now)
+    {
+        var said = inst.Select(i => i.Text).ToList();
+        Latency?.BeginTurn(true);
+        Latency?.NoteKind("instant:" + kind.ToString().ToLowerInvariant());
+        Latency?.EndTurn(workPending: false);
+        Voice?.Consume(inst);
+        _log.LogInformation("instant reply (prepared line, no model call) to {Players}: {Text}", string.Join(",", inst.Select(i => i.Player).Distinct()), string.Join(" ", said));
+        var episode = new Episode(ModelTier.Cheap, now) { IsTest = batch.IsTest };
+        episode.Events.AddRange(batch.Events);
+        episode.Messages.Add(LlmMessage.User(InstantReplyTag + "\n" + batch.Format()));
+        episode.Messages.Add(LlmMessage.Assistant(string.Join(" ", said)));
+        lock (_handled)
+        {
+            _handled.Clear();
+            foreach (var e in episode.Events.Where(e => e.Wakes)) _handled.Add(HandledKey(e));
+        }
+        _context.Commit(episode);
+        _lastCheap = (inst[0].Player, _time.GetUtcNow(), string.Join(" ", said)); // "no, I meant…" right after escalates to the brain
+        return new(Final: new RunResult(ModelTier.Cheap, 0, LlmUsage.Zero, 0, said, null));
     }
 }

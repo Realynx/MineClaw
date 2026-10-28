@@ -176,6 +176,7 @@ public sealed class CommandGate
     {
         var t = (line ?? "").TrimStart();
         if (t.Length == 0 || t[0] != '/') return true;
+        if (TakeManagedWhitelist(t.Trim())) return true;
         if (IsAlwaysAllowed(t) && !IsBlocked(t)) return true;
         lock (_lock)
         {
@@ -189,6 +190,54 @@ public sealed class CommandGate
         }
         _log.LogWarning("dropped outgoing command (not authorised): {Line}", t);
         return false;
+    }
+
+    // ---------------------------------------------------------------- the hive's scoped /whitelist exception
+
+    private static readonly Regex ManagedWhitelistLine = new(@"^/whitelist (?<op>add|remove) (?<name>[A-Za-z0-9_]{3,16})$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private readonly List<(string Line, DateTimeOffset Until)> _hiveArmed = new();
+
+    /// <summary>
+    /// Main only: the accounts the hive manages (its persisted list of clone accounts it created). Null = no exception at all
+    /// (clone processes, no hive). <c>/whitelist</c> stays blocked for the model (<see cref="Authorize"/>); this path is C# only.
+    /// </summary>
+    public Func<string, bool>? ManagedAccount { get; set; }
+
+    /// <summary>
+    /// Arms exactly one <c>/whitelist add|remove &lt;name&gt;</c> for the hive's account manager: only that exact shape, only a name
+    /// <see cref="ManagedAccount"/> accepts. Anything else (another subcommand, another name, a second command) is refused.
+    /// </summary>
+    public bool ArmManagedWhitelist(string line)
+    {
+        var t = (line ?? "").Trim();
+        var m = ManagedWhitelistLine.Match(t);
+        if (!m.Success || ManagedAccount is not { } managed || !managed(m.Groups["name"].Value))
+        {
+            _log.LogWarning("hive whitelist command refused (not a managed account): {Line}", t);
+            return false;
+        }
+        lock (_lock)
+        {
+            var now = _time.GetUtcNow();
+            _hiveArmed.RemoveAll(a => a.Until < now);
+            _hiveArmed.Add((t, now + TimeSpan.FromSeconds(15)));
+        }
+        return true;
+    }
+
+    private bool TakeManagedWhitelist(string line)
+    {
+        if (!line.StartsWith("/whitelist ", StringComparison.OrdinalIgnoreCase)) return false;
+        lock (_lock)
+        {
+            var now = _time.GetUtcNow();
+            _hiveArmed.RemoveAll(a => a.Until < now);
+            int i = _hiveArmed.FindIndex(a => string.Equals(a.Line, line, StringComparison.Ordinal));
+            if (i < 0) return false;
+            _hiveArmed.RemoveAt(i);
+        }
+        Audit(line, "hive account manager");
+        return true;
     }
 
     /// <summary>Logs an executed command to the regular log and the audit file.</summary>

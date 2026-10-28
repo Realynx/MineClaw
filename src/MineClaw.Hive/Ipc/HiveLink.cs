@@ -91,10 +91,10 @@ public static class PipeNames
     }
 
     public static NamedPipeServerStream Server(string name) =>
-        new(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        new(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly); // local, this user only (the hive bus rides it)
 
     public static NamedPipeClientStream Client(string name) =>
-        new(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
+        new(".", name, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
 }
 
 public sealed class HiveIpcException(string message) : Exception(message);

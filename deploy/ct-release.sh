@@ -10,6 +10,11 @@
 #   mineclaw-release health   [--timeout SEC] [--since EPOCH]
 #   mineclaw-release status
 #   mineclaw-release backups                       # db backups (taken at every install, tagged with the release)
+#   mineclaw-release reset-memory <version pack> [--no-sdk] [--start] [--timeout SEC]
+#                                                  # fresh-world memory reset: stops the service, backs up the WHOLE data dir to
+#                                                  # /var/lib/mineclaw-backup-<utc>, runs MineClaw.App --reset-memory as the service
+#                                                  # user (fresh db + the pack + sdk-js.mcshard beside it, no mode), and leaves the
+#                                                  # service stopped unless --start. The unit's enabled state is never changed.
 #
 # Layout: /opt/mineclaw/releases/<yyyyMMdd-HHmmss>/ and /opt/mineclaw/current -> releases/<id> (atomic rename swap).
 # The newest $KEEP releases (default 3) are kept, and the current one always stays.
@@ -33,12 +38,14 @@ KEEP_BACKUPS=${MINECLAW_KEEP_BACKUPS:-8}
 # Test seam (tests/MineClaw.App.Tests/ReleaseScriptTests.cs): no root check, and "current" may be a plain file holding the id
 # where the test machine can't make symlinks.
 TEST=${MINECLAW_RELEASE_TEST:-}
-UNIT=/etc/systemd/system/mineclaw.service
+UNIT=${MINECLAW_UNIT:-/etc/systemd/system/mineclaw.service}
+ETC=${MINECLAW_ETC:-/etc/mineclaw}
 KEEP=${MINECLAW_KEEP:-3}
 # Log lines the app writes once it is in the world (first connect, and every reconnect).
 JOIN_RE='joined .* as |in game:'
 
-TIMEOUT=180 SINCE="" UNIT_SRC="" NO_START=0 DRY=0 FORCE=0
+TIMEOUT=180 SINCE="" UNIT_SRC="" NO_START=0 DRY=0 FORCE=0 START=0 NO_SDK=0
+CONFIG=$ETC/appsettings.json
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 current_id() {
@@ -165,7 +172,7 @@ install_release() {
     [[ $id =~ ^[0-9]{8}-[0-9]{6}$ ]] || die "bad release id '$id' (want yyyyMMdd-HHmmss)"
     id -u mineclaw >/dev/null 2>&1 || die "user mineclaw missing: run deploy/provision-alice.sh first"
     [[ -e $REL/$id ]] && die "release $id already exists"
-    [[ -f /etc/mineclaw/appsettings.json ]] || die "/etc/mineclaw/appsettings.json missing (deploy with -PushConfig)"
+    [[ -f $ETC/appsettings.json ]] || die "$ETC/appsettings.json missing (deploy with -PushConfig)"
 
     install -d -m 0755 "$REL"
     rm -rf -- "$REL/$id.tmp"
@@ -192,7 +199,11 @@ install_release() {
     fi
     [[ -f $UNIT ]] || die "no systemd unit at $UNIT (pass --unit)"
     systemctl daemon-reload
-    systemctl enable --quiet mineclaw
+    if ((NO_START)); then # --no-start: install only; whether the unit starts at boot stays the operator's call
+        echo "unit: enabled state left as it is ($(systemctl is-enabled mineclaw 2>/dev/null || true))"
+    else
+        systemctl enable --quiet mineclaw
+    fi
 
     record_schema "$id"
     prev=$(current_id)
@@ -250,6 +261,46 @@ rollback() {
     restart
 }
 
+reset_memory() { # $1 = version pack (.mcshard); sdk-js.mcshard beside it is added too unless --no-sdk
+    local pack=$1 cur app ts bdir stage rc=0 sdk
+    [[ -f $pack ]] || die "no pack at $pack"
+    cur=$(current_id)
+    app=$REL/$cur/MineClaw.App
+    [[ -n $cur && -x $app ]] || die "no current release with a MineClaw.App (deploy first)"
+    id -u mineclaw >/dev/null 2>&1 || die "user mineclaw missing: run deploy/provision-alice.sh first"
+    if systemctl is-active --quiet mineclaw; then
+        echo "service: stopping mineclaw for the reset"
+        systemctl stop mineclaw
+    fi
+    if systemctl is-active --quiet mineclaw; then die "mineclaw is still running; the reset needs it stopped"; fi
+    ts=$(date -u +%Y%m%dT%H%M%SZ)
+    bdir=${DATA%/}-backup-$ts
+    [[ -e $bdir ]] && die "$bdir already exists"
+    if [[ -n $TEST ]]; then mkdir -p "$bdir"; else install -d -m 0750 -o mineclaw -g mineclaw "$bdir"; fi
+    stage=$(mktemp -d "${TMPDIR:-/tmp}/mineclaw-reset.XXXXXX")
+    chmod 0755 "$stage"
+    install -m 0644 "$pack" "$stage/$(basename "$pack")"
+    sdk=$(dirname "$pack")/sdk-js.mcshard
+    local extra=() what="pack $(basename "$pack")"
+    if ((NO_SDK)); then
+        extra+=(--no-sdk)
+    elif [[ -f $sdk ]]; then
+        install -m 0644 "$sdk" "$stage/sdk-js.mcshard"
+        what+=" + sdk-js"
+    fi
+    echo "reset: $what; backup -> $bdir; release $cur (as user mineclaw)"
+    runuser -u mineclaw -- env HOME="$DATA" DOTNET_CLI_TELEMETRY_OPTOUT=1 MINECLAW_Agent__KnowledgeDirectory="$CUR/docs/knowledge" \
+        "$app" --reset-memory --pack "$stage/$(basename "$pack")" --modes none --yes "${extra[@]}" \
+        --config "$CONFIG" --data-dir "$DATA" --backup-dir "$bdir" || rc=$?
+    rm -rf -- "$stage"
+    ((rc == 0)) || die "reset failed (exit $rc); the service stays stopped. Backup (if it was taken): $bdir"
+    if ((START)); then
+        restart
+    else
+        echo "service left stopped (enabled state unchanged: $(systemctl is-enabled mineclaw 2>/dev/null || true)); start it with: systemctl start mineclaw"
+    fi
+}
+
 list_backups() {
     local live; live=$(db_schema "$DB")
     echo "db backups in $BACKUPS (live db: $(schema_text "$live")):"
@@ -275,6 +326,8 @@ while (($#)); do
         --no-start) NO_START=1; shift ;;
         --dry-run) DRY=1; shift ;;
         --force) FORCE=1; shift ;;
+        --start) START=1; shift ;;
+        --no-sdk) NO_SDK=1; shift ;;
         *) args+=("$1"); shift ;;
     esac
 done
@@ -283,8 +336,9 @@ case $cmd in
     install) ((${#args[@]} == 2)) || die "usage: install <tarball> <release-id>"; install_release "${args[0]}" "${args[1]}" ;;
     rollback) rollback ;;
     backups) list_backups ;;
+    reset-memory) ((${#args[@]} == 1)) || die "usage: reset-memory <version pack .mcshard> [--no-sdk] [--start]"; reset_memory "${args[0]}" ;;
     restart) restart ;;
     health) health "$TIMEOUT" "${SINCE:-$(date -d '-10 min' +%s)}" ;;
     status) status ;;
-    *) sed -n '2,23p' "$0"; exit 64 ;;
+    *) sed -n '2,28p' "$0"; exit 64 ;;
 esac

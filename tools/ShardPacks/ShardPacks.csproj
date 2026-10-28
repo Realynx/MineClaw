@@ -12,6 +12,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\MineClaw.Agent\MineClaw.Agent.csproj" />
+    <!-- sdk-js pack: the SDK modules and the game functions of an offline bot -->
+    <ProjectReference Include="..\..\src\MineClaw.Bot\MineClaw.Bot.csproj" />
   </ItemGroup>
 
 </Project>

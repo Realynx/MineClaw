@@ -429,6 +429,12 @@ public sealed partial class BotAgent
         _turnEvents = episode.Events; // the honesty guard checks counts against this turn's task results
         // Two-phase replies: streamed brain lines go out as they finish; a quick ack if the brain is slow to say anything.
         using var speech = new TurnSpeech(ct);
+        if (_instantThisTurn.Count > 0)
+        {
+            // The instant line is this turn's first line: no quick ack after it, and a brain line repeating it never goes out.
+            lock (speech.Lock) { speech.Ack = string.Join(" | ", _instantThisTurn.Select(i => i.Text)); speech.AckNoted = true; }
+            Voice?.Consume(_instantThisTurn);
+        }
         var cx = new SpeechCtx(episode.Events, said, audience, () => whisperTo, episode.IsTest);
         StartAck(speech, batch, tier, turnHead, preAck, whisperTo, audience.ToArray(), ct);
         // A turn says at most its in-persona lines (live 10-28 05:27: a hand-over + death-notice turn said its thank-you with the
@@ -673,6 +679,7 @@ public sealed partial class BotAgent
             // A speculative walk the brain neither adopted nor replaced: it decided otherwise (talk, a question) — stop it.
             if (_activities.CancelSpeculative("not adopted by the brain")) _log.LogDebug("speculative step cancelled: not adopted");
             Latency?.EndTurn(workPending: _activities.IsBusy);
+            try { TurnEnded?.Invoke(); } catch (Exception) { }
         }
 
         lock (_handled)
@@ -740,6 +747,8 @@ public sealed partial class BotAgent
 
     /// <summary>When the brain's current turn started (null = idle). The brainstem's "thinking" fidget reads it.</summary>
     public DateTimeOffset? TurnStartedAt { get; private set; }
+    /// <summary>A brain turn ended (all its rounds done): interrupt telemetry closes full-turn measurements here.</summary>
+    public event Action? TurnEnded;
 
     /// <summary>Chat → reaction/first-action telemetry (null = off).</summary>
     public LatencyTracker? Latency { get; set; }
@@ -900,6 +909,13 @@ public sealed partial class BotAgent
             catch (Exception ex) { _log.LogWarning(ex, "turn hint failed"); }
             if (hint.Length > 0) sb.Append(hint).Append('\n');
         }
+        // Act first, think in parallel: what the body already said and is already doing for this chat, so the turn only amends.
+        _instantThisTurn = batch.HasTypedChat && Voice != null
+            ? Voice.For(batch.Waking.Where(e => e.Player != null).Select(e => e.Player!)) : [];
+        var instantNote = Character.CharacterVoice.TurnNote(_instantThisTurn, _time.GetUtcNow());
+        if (instantNote.Length > 0) sb.Append(instantNote).Append('\n');
+        var doing = AlreadyDoing(batch);
+        if (doing.Length > 0) sb.Append(doing).Append('\n');
         var busy = BusyLine(batch);
         if (busy.Length > 0) sb.Append(busy).Append('\n');
         var head = sb.ToString();
@@ -912,6 +928,30 @@ public sealed partial class BotAgent
     }
 
     public const string BusyTag = "[busy]";
+    public const string DoingTag = "[already doing]";
+
+    private IReadOnlyList<Character.InstantLine> _instantThisTurn = [];
+
+    /// <summary>
+    /// "[already doing] walking toward 9,65,1 (speculative, 1.2s): …" when the brainstem started something for this chat (a
+    /// speculative walk, or a reflex move/follow) in the last 20 s: the turn keeps, amends or undoes it instead of starting over.
+    /// </summary>
+    private string AlreadyDoing(EventBatch batch)
+    {
+        if (!batch.HasTypedChat || _options.Brainstem is not { Enabled: true }) return "";
+        var now = _time.GetUtcNow();
+        var acts = FocusActivities;
+        if (acts.Filler is { Kind: ActivityKind.Speculative } f && now - f.Started <= TimeSpan.FromSeconds(20))
+            return $"{DoingTag} {SpecWhat(f)} (speculative, {(now - f.Started).TotalSeconds:0.0}s): your matching move adopts it; a different plan cancels it";
+        if (acts.Current is { Kind: ActivityKind.Move or ActivityKind.Job } c && now - c.Started <= TimeSpan.FromSeconds(20)
+            && c.Steps.Count > 0 && c.Steps[0].Tool is "goto" or "follow" or "skill" or "act")
+            return $"{DoingTag} {c.Label} #{c.Id} for {(now - c.Started).TotalSeconds:0.0}s (started for this chat): keep it (no need to mention it), amend it, or stop it if it's wrong";
+        return "";
+
+        static string SpecWhat(RunningActivity a) =>
+            a.Steps.Count > 0 && a.Steps[0].Input.ValueKind == System.Text.Json.JsonValueKind.Object && a.Steps[0].Input.TryGetProperty("to", out var to)
+                ? "walking toward " + to.ToString() : a.Label;
+    }
 
     /// <summary>
     /// (c) Chat woke the brain while a delegate/script runs: one short line (uncached tail) so it amends instead of restarting.

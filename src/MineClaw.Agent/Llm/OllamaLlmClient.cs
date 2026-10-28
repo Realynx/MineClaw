@@ -271,6 +271,7 @@ public sealed class OllamaLlmClient : ILlmClient, IDisposable
     internal sealed class Accumulator
     {
         private readonly StringBuilder _text = new();
+        private readonly StringBuilder _thinking = new(); // message.thinking: kept aside for the Explorer (LlmResponse.Reasoning), never sent back
         private readonly List<LlmToolUse> _calls = new();
         private string? _doneReason;
         private long _in, _out;
@@ -290,6 +291,11 @@ public sealed class OllamaLlmClient : ILlmClient, IDisposable
                 {
                     _text.Append(s);
                     chars += s.Length;
+                }
+                if (msg.TryGetProperty("thinking", out var th) && th.ValueKind == JsonValueKind.String && th.GetString() is { Length: > 0 } ts)
+                {
+                    _thinking.Append(ts);
+                    chars += ts.Length;
                 }
                 if (msg.TryGetProperty("tool_calls", out var tc) && tc.ValueKind == JsonValueKind.Array)
                     foreach (var call in tc.EnumerateArray())
@@ -319,7 +325,7 @@ public sealed class OllamaLlmClient : ILlmClient, IDisposable
             if (text.Trim().Length > 0) blocks.Add(new LlmText(text));
             blocks.AddRange(_calls);
             string stop = _calls.Count > 0 ? StopReasons.ToolUse : _doneReason == "length" ? StopReasons.MaxTokens : StopReasons.EndTurn;
-            return new LlmResponse(blocks, stop, new LlmUsage(_in, _out, 0, 0), model) { Provider = LlmProviders.Ollama };
+            return new LlmResponse(blocks, stop, new LlmUsage(_in, _out, 0, 0), model) { Provider = LlmProviders.Ollama, Reasoning = _thinking.Length > 0 ? _thinking.ToString() : null };
         }
     }
 

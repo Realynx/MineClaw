@@ -76,19 +76,24 @@ public static class Msg
     public const string ScriptDebug = "script_dbg"; // M→C req ScriptDebugReq → ScriptDebugSnapshot (the live script debugger; null = none)
     public const string VisionList = "vision";    // M→C req VisionListReq → VisionListMsg (the sheets this clone's models got: "what the AI saw")
     public const string VisionPng = "vision_png"; // M→C req VisionPngReq → VisionPngMsg (one of them: the exact PNG bytes; null = gone)
+    public const string BrainContext = "brain_ctx"; // M→C req BrainContextQuery → BrainContextReply (the Explorer's Controller panel: this clone's brain context)
+    public const string Bus = "bus";              // both req BusEnvelope → BusReply (the off-channel hive bus; main routes)
     public const string Reply = "re";
 }
 
 public sealed record HelloMsg(string Name, int Pid);
-public sealed record WelcomeMsg(string Main, TaskMsg? Task, RosterMsg Roster, ClaimsMsg Claims, bool Stranded, int StrandedItems);
+/// <param name="BusToken">This clone's token on the hive bus (it signs every envelope with it); null = no bus.</param>
+public sealed record WelcomeMsg(string Main, TaskMsg? Task, RosterMsg Roster, ClaimsMsg Claims, bool Stranded, int StrandedItems, string? BusToken = null);
 /// <param name="Loadout">What to fetch from storage before starting ("pickaxe", "axe", "food"...): derived from the task text.</param>
 /// <param name="Claims">Lease keys the clone held when it crashed (re-granted on restart when still free).</param>
 /// <param name="Profile">Model profile for the clone's brain tier (null = the clone's config).</param>
 /// <param name="Script">Saved script the clone starts at once with its brain asleep (null = a normal brain task).</param>
 /// <param name="Args">The script's args (JSON object).</param>
 /// <param name="After">When the script ends normally: "logout" (default; deposit first) or "sleep" (stay online, brain asleep).</param>
+/// <param name="Kind">The clone kind main spawned it as (hive | subhive | script; null = legacy): a hive-kind clone gets its own
+/// bus-backed <c>hive</c> tool.</param>
 public sealed record TaskMsg(string Id, string Text, bool Restarted = false, string[]? Loadout = null, string[]? Claims = null,
-    string? Profile = null, string? Script = null, string? Args = null, string? After = null)
+    string? Profile = null, string? Script = null, string? Args = null, string? After = null, string? Kind = null)
 {
     public bool SleepsAfter => string.Equals(After, "sleep", StringComparison.OrdinalIgnoreCase);
 }
@@ -99,6 +104,10 @@ public sealed record HiveSpawnOptions(string? Profile = null, string? Script = n
     /// <summary>Log in although the saved spot is over the void (a player will /tp it). Main's chat path sets the same per clone
     /// from a trusted player's line (HiveSupervisor.NotePlayerChat); not a tool argument (zero prompt bytes).</summary>
     public bool ConfirmVoid { get; init; }
+    /// <summary>The clone kind (hive | subhive | script; null = script when a script is given, else hive). Hierarchy metadata.</summary>
+    public string? Kind { get; init; }
+    /// <summary>The hive that owns the clone ("main" or a hive's account; null = main).</summary>
+    public string? Owner { get; init; }
     public bool HasScript => !string.IsNullOrWhiteSpace(Script) || !string.IsNullOrWhiteSpace(Code);
 }
 public sealed record ProgressMsg(string TaskId, string Text, double? Pct = null);
@@ -111,8 +120,9 @@ public sealed record LeaseMsg(string Key, string Owner, long ExpiresMs);
 public sealed record ClaimsMsg(List<LeaseMsg> Leases);
 /// <param name="Delegated">Main handed the player's request to this clone: their follow-ups are its (explicit) for the window.</param>
 public sealed record StickyMsg(string Owner, long UntilMs, bool Delegated = false);
+/// <param name="Clones">Every clone account main knows (dynamic accounts: online or not), so a clone's arbiter knows the names.</param>
 public sealed record RosterMsg(string Main, string[] MainNames, string[] Live, Dictionary<string, StickyMsg> Sticky,
-    Dictionary<string, StickyMsg>? Threads = null);
+    Dictionary<string, StickyMsg>? Threads = null, string[]? Clones = null);
 /// <summary>A clone opened (or closed) a conversation-thread lease on a player (it asked them / watches their demo).</summary>
 public sealed record ThreadMsg(string Player, bool Open, double TtlSeconds);
 /// <param name="Spoke">True: the clone spoke to the player (continuation window), not took a line from them.</param>

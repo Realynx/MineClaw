@@ -129,7 +129,10 @@ public sealed class HiveSupervisor : IAsyncDisposable
     private readonly IProcessLauncher _launcher;
     private readonly ILogger _log;
     private readonly TimeProvider _time;
-    private readonly Dictionary<string, CloneSlot> _slots = new(StringComparer.OrdinalIgnoreCase);
+    // Copy-on-write: dynamic accounts add slots (AddSlot) while other threads enumerate them; a published dictionary is never
+    // mutated, and insertion order (hive list) is kept.
+    private volatile Dictionary<string, CloneSlot> _slots = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _slotsGate = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly Timer _tick;
     private readonly Timer _policy;
@@ -174,6 +177,43 @@ public sealed class HiveSupervisor : IAsyncDisposable
     /// <summary>Console /as lines etc. are forwarded to live clones so every process arbitrates the same message.</summary>
     public IReadOnlyCollection<CloneSlot> Slots => _slots.Values;
     public CloneSlot? Slot(string name) => _slots.GetValueOrDefault(name);
+
+    /// <summary>Dynamic accounts (allocate, whitelist, release). Null = only the slots given at construction (tests, old configs).</summary>
+    public IHiveAccounts? Accounts { get; set; }
+
+    /// <summary>The off-channel hive bus (main routes); null = no bus. Clones get their token in the welcome.</summary>
+    public Hierarchy.Bus.HiveBus? Bus { get; set; }
+
+    /// <summary>A slot for an account (an allocated one, or a managed one restored at startup); the arbiter learns the name.</summary>
+    public CloneSlot AddSlot(string name)
+    {
+        CloneSlot? slot;
+        lock (_slotsGate)
+        {
+            if (!_slots.TryGetValue(name.Trim(), out slot))
+            {
+                slot = new CloneSlot(name.Trim());
+                _slots = new Dictionary<string, CloneSlot>(_slots, StringComparer.OrdinalIgnoreCase) { [slot.Name] = slot };
+            }
+        }
+        Arbiter.AddClone(slot.Name);
+        return slot;
+    }
+
+    /// <summary>Completes once the clone is offline (Idle/Retired) or after <paramref name="timeout"/>.</summary>
+    public async Task WaitGoneAsync(string name, TimeSpan timeout)
+    {
+        if (Resolve(name) is not { } n || !_slots.TryGetValue(n, out var slot)) return;
+        Task? gone;
+        lock (slot.Lock) gone = slot.State is CloneState.Idle or CloneState.Retired ? null : slot.Gone?.Task;
+        if (gone == null) return;
+        try { await gone.WaitAsync(timeout, _time).ConfigureAwait(false); } catch (TimeoutException) { }
+    }
+
+    private void FinallyReleased(CloneSlot slot, string reason)
+    {
+        try { Accounts?.Released(slot.Name, reason); } catch (Exception ex) { _log.LogWarning(ex, "hive: release hook for {Clone} failed", slot.Name); }
+    }
 
     private DateTimeOffset Now => _time.GetUtcNow();
 
@@ -467,6 +507,14 @@ public sealed class HiveSupervisor : IAsyncDisposable
         {
             // Unnamed: the best fit among free clones, not the first idle slot (live 10-27 15:44: 67 at hp 7/food 0 got "fight").
             var (best, noFit) = PickFor(intent, confirmVoid: opts?.ConfirmVoid == true);
+            // No fixed roster: with no free slot at all, main allocates a new account (player cap and Hive:MaxClones permitting).
+            if (best == null && Accounts is { } accounts && !_slots.Values.Any(Free))
+            {
+                var (fresh, allocWhy) = accounts.Allocate(opts);
+                if (fresh == null) return "no: " + (noFit ?? allocWhy);
+                AddSlot(fresh);
+                (best, noFit) = PickFor(intent, confirmVoid: opts?.ConfirmVoid == true);
+            }
             if (best == null && noFit != null) return "no: " + noFit;
             slot = best;
         }
@@ -491,7 +539,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
         CloneSlot? previous = handover && owner != null && !ReferenceEquals(owner, slot) ? owner : null;
 
         var t = new TaskMsg(Guid.NewGuid().ToString("N")[..8], task, Loadout: TaskLoadout.For(code != null ? task + " " + code : task),
-            Profile: profile, Script: script, Args: script != null ? opts?.Args : null, After: script != null ? opts?.After : null);
+            Profile: profile, Script: script, Args: script != null ? opts?.Args : null, After: script != null ? opts?.After : null, Kind: opts?.Kind);
         // Hive task texts were never logged (10-27: the ownership refusals couldn't be traced).
         _log.LogInformation("hive: task {Id} for {Clone} ({Player}{Named}): {Text}", t.Id, slot.Name, forPlayer ?? "-", name == null ? ", unnamed" : "", task);
         try { ResetClone?.Invoke(slot.Name); } catch (Exception ex) { _log.LogWarning(ex, "hive: reset of {Clone}'s hive order failed", slot.Name); }
@@ -545,6 +593,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
                     break;
             }
         }
+        try { Accounts?.Assigned(slot.Name, t, opts); } catch (Exception ex) { _log.LogWarning(ex, "hive: assigned hook for {Clone} failed", slot.Name); }
         if (respawnQueued)
             return $"ok: {slot.Number} is logging out first (recalled); it logs straight back in with this task (pending until its result arrives)";
         if (launch)
@@ -816,7 +865,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
             s.Recalled = true;
             s.RecallReason = reason;
             if (s.State is CloneState.Idle or CloneState.Retired) return;
-            if (s.State == CloneState.Backoff) { s.State = CloneState.Idle; s.RespawnWith = null; return; }
+            if (s.State == CloneState.Backoff) { s.State = CloneState.Idle; s.RespawnWith = null; FinallyReleased(s, reason); return; }
             s.State = CloneState.Stopping;
             link = s.Link;
         }
@@ -994,6 +1043,8 @@ public sealed class HiveSupervisor : IAsyncDisposable
 
     private void Launch(CloneSlot slot)
     {
+        // Main whitelists the account right before its login (it's off the whitelist whenever it isn't out).
+        try { Accounts?.BeforeLaunch(slot.Name); } catch (Exception ex) { _log.LogWarning(ex, "hive: whitelist hook for {Clone} failed", slot.Name); }
         var pipe = PipeNames.For(slot.Name, _cfg.PipeDirectory);
         System.IO.Pipes.NamedPipeServerStream server;
         int gen;
@@ -1196,6 +1247,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
                 (stranded > 0 ? $", {stranded} item(s) stranded" : "") + what,
                 slot.State == CloneState.Retired ? EventPriority.Low : EventPriority.Background));
         }
+        if (!restart && respawn == null && slot.State is CloneState.Idle or CloneState.Retired) FinallyReleased(slot, reason);
         gone?.TrySetResult();
         if (restart) _ = RestartAfterAsync(slot, backoff);
         if (respawn is { } rw) Relaunch(slot, rw.Task, rw.ForPlayer, rw.Unnamed);
@@ -1236,19 +1288,21 @@ public sealed class HiveSupervisor : IAsyncDisposable
         try { await Task.Delay(backoff, _time, _cts.Token).ConfigureAwait(false); } catch (OperationCanceledException) { return; }
         lock (slot.Lock)
         {
-            if (slot.State != CloneState.Backoff || slot.Recalled || _shuttingDown) { if (slot.State == CloneState.Backoff) slot.State = CloneState.Idle; return; }
+            if (slot.State != CloneState.Backoff || slot.Recalled || _shuttingDown) { if (slot.State == CloneState.Backoff) { slot.State = CloneState.Idle; FinallyReleased(slot, "not restarted"); } return; }
             // Resume: the same unfinished task, its loadout and the leases it held.
             if (slot.Task != null)
                 slot.Task = slot.Task with { Restarted = true, Loadout = slot.Task.Loadout ?? TaskLoadout.For(slot.Task.Text), Claims = slot.ResumeClaims };
             if (!SlotPolicy.CanSpawn(SlotFacts(), Regulars, 0, _cfg.MaxPlayersFallback).Ok || Ledger.AtRecallLine(out _))
             {
                 slot.State = CloneState.Idle;
+                FinallyReleased(slot, "not restarted (no slot/budget)");
                 Post(GameEvent.Notice($"[hive] {slot.Number} not restarted (no slot/budget)", EventPriority.Background));
                 return;
             }
             if (ExternalOccupant(slot) is { } occupied)
             {
                 slot.State = CloneState.Idle;
+                FinallyReleased(slot, "not restarted: " + occupied);
                 Post(GameEvent.Notice($"[hive] {slot.Number} not restarted: it {occupied}" + (slot.Task is { } ut ? $"; its task \"{Trunc(ut.Text, 60)}\" needs another clone" : ""),
                     EventPriority.Normal));
                 return;
@@ -1301,7 +1355,13 @@ public sealed class HiveSupervisor : IAsyncDisposable
                     }
                     UpdateLive();
                     _log.LogInformation("hive: {Clone} connected", slot.Name);
-                    return new WelcomeMsg(_main, slot.Task, Arbiter.ToRoster(), Claims.Mirror(), stranded != null, stranded?.Count ?? 0);
+                    // The off-channel bus: this clone's endpoint delivers over its own link; its token comes with the welcome.
+                    string? busToken = null;
+                    if (Bus is { } bus && slot.Link is { } blink)
+                        busToken = bus.Register(slot.Name, async (env, c) =>
+                            await blink.RequestAsync<Hierarchy.Bus.BusReply>(Msg.Bus, env, TimeSpan.FromSeconds(5), c).ConfigureAwait(false)
+                            ?? Hierarchy.Bus.BusReply.Fail("no reply"));
+                    return new WelcomeMsg(_main, slot.Task, Arbiter.ToRoster(), Claims.Mirror(), stranded != null, stranded?.Count ?? 0, busToken);
                 }
             case Msg.Heartbeat:
                 return null;
@@ -1445,6 +1505,8 @@ public sealed class HiveSupervisor : IAsyncDisposable
                 lock (slot.Lock) slot.ExternalKick = true;
                 _log.LogWarning("hive: {Clone} was kicked, someone else logged in with its name ({Reason}; {N} item(s) on it)", slot.Name, oc.Reason, oc.Items);
                 return null;
+            case Msg.Bus when m.As<Hierarchy.Bus.BusEnvelope>() is { } env:
+                return Bus is { } hb ? await hb.RouteAsync(env, slot.Name, ct).ConfigureAwait(false) : Hierarchy.Bus.BusReply.Fail("no bus");
             case Msg.Bye when m.As<ByeMsg>() is { } bye:
                 lock (slot.Lock) { slot.ByeReceived = true; slot.RecallReason ??= bye.Reason; }
                 _log.LogInformation("hive: {Clone} bye ({Reason}, deposited {Dep}, stranded {N})", slot.Name, bye.Reason, bye.Deposited, bye.Stranded);
@@ -1550,6 +1612,11 @@ public sealed class HiveSupervisor : IAsyncDisposable
     /// <summary>One sheet of a clone's vision history: the exact PNG its model got (null = gone, offline or no answer).</summary>
     public Task<VisionPngMsg?> RequestVisionPngAsync(string name, long id, TimeSpan timeout, CancellationToken ct = default) =>
         RequestCloneAsync<VisionPngMsg>(name, Msg.VisionPng, new VisionPngReq(id), timeout, ct);
+
+    /// <summary>A live clone's brain context (a page since a version, or one turn); null = offline, no capture or no answer in time.</summary>
+    public Task<MineClaw.Agent.Telemetry.BrainContextReply?> RequestBrainContextAsync(string name, MineClaw.Agent.Telemetry.BrainContextQuery query, TimeSpan timeout,
+        CancellationToken ct = default) =>
+        RequestCloneAsync<MineClaw.Agent.Telemetry.BrainContextReply>(name, Msg.BrainContext, query, timeout, ct);
 
     private async Task<T?> RequestCloneAsync<T>(string name, string type, object payload, TimeSpan timeout, CancellationToken ct) where T : class
     {

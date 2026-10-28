@@ -41,6 +41,9 @@ public sealed record ScriptEvent(ScriptEventKind Kind, string Text, string? Play
     /// <summary>"danger", "lowhp", "chat", "hungry", ...</summary>
     public string Name => Topic ?? Kind.ToString().ToLowerInvariant();
 
+    /// <summary>A typed game event's payload (<see cref="Events.GameEventCatalog"/>: player, pos, block, held, ...); null otherwise.</summary>
+    public System.Text.Json.Nodes.JsonObject? Data { get; init; }
+
     /// <summary>Whether a listener for <paramref name="topic"/> takes this event: the exact topic, its family ("danger" takes every
     /// danger, "toolBroke" every "toolBroke:x"), or "chat:&lt;text&gt;" (addressed chat containing the text).</summary>
     public bool Matches(string topic)
@@ -59,8 +62,9 @@ public sealed record ScriptEvent(ScriptEventKind Kind, string Text, string? Play
                 return tail.Length == 0 || Text.Contains(tail, StringComparison.OrdinalIgnoreCase);
             return false;
         }
-        // "toolBroke" takes "toolBroke:pickaxe".
-        return Name.StartsWith(topic + ":", StringComparison.OrdinalIgnoreCase);
+        // "toolBroke" takes "toolBroke:pickaxe"; a game-event family ("player") takes its events ("player.punchBlock").
+        return Name.StartsWith(topic + ":", StringComparison.OrdinalIgnoreCase)
+            || (Data != null && Name.StartsWith(topic + ".", StringComparison.OrdinalIgnoreCase));
     }
 }
 
@@ -124,4 +128,13 @@ public sealed class ScriptHost
     public IScriptCheckpointStore? Checkpoints { get; init; }
     /// <summary>The saved tunables of a script (merged under the run's own params by <c>params({...})</c>), or null.</summary>
     public Func<string, string?>? StoredParams { get; init; }
+    /// <summary>The persona's body language, voice, memory and social reads (the <c>character</c> SDK module). Null = no-ops.</summary>
+    public Character.ICharacterPort? Character { get; set; }
+    /// <summary>
+    /// Inline interrupt fixing: learned handlers and the patch turn (null = interrupts pause and wake the brain as before; a
+    /// script's own onInterrupt handlers still run). Settable: the Bot layer attaches it once the author exists.
+    /// </summary>
+    public IInterruptPatcher? Patcher { get; set; }
+    /// <summary>True while a safety reflex (shelter, retreat, eat, combat defence) holds the body: patches wait for it.</summary>
+    public Func<bool>? SafetyBusy { get; set; }
 }

@@ -38,6 +38,38 @@ public sealed class ScriptVersion
     public IEnumerable<string> TopFailures(int n = 2) => FailReasons.OrderByDescending(kv => kv.Value).Take(n).Select(kv => $"{kv.Key} x{kv.Value}");
 }
 
+/// <summary>
+/// A learned interrupt handler of a saved script: a patch that worked, saved under (interrupt kind, normalized situation signature)
+/// with its own success/failure counts. The next matching interrupt runs it with no LLM call (any tier may run it; only the Opus
+/// patch turn writes one). Two failures in a row demote it: the patch turn runs again (and a new patch that works replaces it).
+/// </summary>
+public sealed class ScriptHandler
+{
+    /// <summary>danger | lowhp | void | died | stuck | failed | needs_input | chat.</summary>
+    public string Kind { get; set; } = "";
+    /// <summary>"failed|deposit: all # known chests full|expect(store('chest'))" (kind | normalized text | normalized source line).</summary>
+    public string Signature { get; set; } = "";
+    public string Js { get; set; } = "";
+    /// <summary>resume | restart_step | stop.</summary>
+    public string Then { get; set; } = "resume";
+    public string? Note { get; set; }
+    /// <summary>Who wrote it ("patch/claude-opus-5-5").</summary>
+    public string? Author { get; set; }
+    /// <summary>The script version it was learned on.</summary>
+    public int? Version { get; set; }
+    public DateTimeOffset? LearnedAt { get; set; }
+    public DateTimeOffset? LastUsed { get; set; }
+    /// <summary>Verified successes / failures (the patch turn's own first success counts as 1).</summary>
+    public int Successes { get; set; }
+    public int Failures { get; set; }
+    /// <summary>Failures since the last success (demotion counter).</summary>
+    public int FailStreak { get; set; }
+    public bool Demoted { get; set; }
+    public DateTimeOffset? DemotedAt { get; set; }
+
+    public string Key => Kind + "|" + Signature;
+}
+
 /// <summary>One run's tunables and result (for tuning params from telemetry).</summary>
 public sealed record ParamRun(string Params, bool Ok, double Seconds, int Yield, DateTimeOffset At, string? Timings = null);
 
@@ -89,6 +121,10 @@ public sealed class RoutineScript
     public string? Migration { get; set; }
     /// <summary>Language of the active version ("js"; null = legacy Lua).</summary>
     public string? Lang { get; set; }
+    /// <summary>Learned interrupt handlers (≤ 16, least useful dropped first): see <see cref="ScriptHandler"/>.</summary>
+    public List<ScriptHandler> Handlers { get; set; } = new();
+    /// <summary>A standing trigger: this script runs instantly whenever its game event fires (<see cref="ScriptBinding"/>); null = none.</summary>
+    public ScriptBinding? Binding { get; set; }
 
     public double AvgSeconds => Runs == 0 ? 0 : TotalSeconds / Runs;
 }
@@ -365,6 +401,66 @@ public sealed class ScriptLibrary(MemoryStore memory)
 
     public string? LoadCheckpoint(string name, string? lane, string label) =>
         Get(name)?.Script?.Checkpoints.GetValueOrDefault((lane ?? "main") + "/" + label);
+
+    // ------------------------------------------------------------------ learned interrupt handlers
+
+    public const int MaxHandlers = 16;
+
+    /// <summary>The live (not demoted) handler of <paramref name="name"/> for this interrupt kind + signature, or null.</summary>
+    public ScriptHandler? FindHandler(string name, string kind, string signature) =>
+        Get(name)?.Script?.Handlers.FirstOrDefault(h => !h.Demoted && h.Kind == kind && h.Signature == signature);
+
+    /// <summary>A patch that worked becomes (or replaces) the handler for its situation. Unsaved scripts: ignored (null).</summary>
+    public ScriptHandler? LearnHandler(string name, string kind, string signature, string js, string then, string? note, string? author, int? version)
+    {
+        var r = Get(name);
+        if (r?.Script is not { } s) return null;
+        var now = Now();
+        var h = s.Handlers.FirstOrDefault(x => x.Kind == kind && x.Signature == signature);
+        if (h == null)
+        {
+            h = new ScriptHandler { Kind = kind, Signature = signature };
+            s.Handlers.Add(h);
+        }
+        h.Js = js;
+        h.Then = then;
+        h.Note = note is { Length: > 120 } ? note[..120] : note;
+        h.Author = author;
+        h.Version = version;
+        h.LearnedAt = now;
+        h.LastUsed = now;
+        h.Successes = Math.Max(1, h.Demoted ? 1 : h.Successes + 1);
+        h.FailStreak = 0;
+        if (h.Demoted) h.Failures = 0;
+        h.Demoted = false;
+        h.DemotedAt = null;
+        while (s.Handlers.Count > MaxHandlers)
+            s.Handlers.Remove(s.Handlers.OrderBy(x => x.Demoted ? 0 : 1).ThenBy(x => x.Successes - x.Failures).ThenBy(x => x.LastUsed ?? DateTimeOffset.MinValue).First());
+        Memory.SaveRoutine(r);
+        return h;
+    }
+
+    /// <summary>
+    /// A learned handler ran and was verified: success resets its streak; a failure counts, and <paramref name="demoteAfter"/>
+    /// failures in a row demote it. Returns the handler (null when gone).
+    /// </summary>
+    public ScriptHandler? RecordHandler(string name, string kind, string signature, bool ok, int demoteAfter = 2)
+    {
+        var r = Get(name);
+        if (r?.Script is not { } s) return null;
+        var h = s.Handlers.FirstOrDefault(x => x.Kind == kind && x.Signature == signature);
+        if (h == null) return null;
+        h.LastUsed = Now();
+        if (ok) { h.Successes++; h.FailStreak = 0; }
+        else
+        {
+            h.Failures++;
+            h.FailStreak++;
+            if (h.FailStreak >= Math.Max(1, demoteAfter)) { h.Demoted = true; h.DemotedAt = Now(); }
+        }
+        Memory.SaveRoutine(r);
+        return h;
+    }
 
     /// <summary>Records the Lua → JS migration's verdict (never retried once set).</summary>
     public void MarkMigration(string name, string verdict)

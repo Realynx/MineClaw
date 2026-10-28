@@ -37,7 +37,9 @@ internal sealed partial class JsRuntime
         var host = new JsMachineHost(this, states, guards, bb, ctx);
         var runner = new MachineRunner(s, ms, host);
         ctx.Set("go", new ClrFunction(_e, "go", (_, a) => throw new ScriptUnwind(runner, JsConvert.Str(JsConvert.Arg(a, 0)) ?? "", "m.go")));
-        return runner.Run();
+        _machineCtx.Add(ctx); // patches see the running machine as m
+        try { return runner.Run(); }
+        finally { _machineCtx.Remove(ctx); }
     }
 
     /// <summary>An <c>on</c> table: event key → 'target' | fn(ev,bb,m) → target | {to, guard|if, do}.</summary>

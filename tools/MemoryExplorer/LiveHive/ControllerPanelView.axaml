@@ -1,0 +1,187 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:lh="using:MineClaw.MemoryExplorer.LiveHive"
+             x:Class="MineClaw.MemoryExplorer.LiveHive.ControllerPanelView"
+             x:DataType="lh:ControllerPanelViewModel">
+
+  <UserControl.Styles>
+    <Style Selector="Border.stale">
+      <Setter Property="CornerRadius" Value="5" />
+      <Setter Property="Padding" Value="7,2" />
+      <Setter Property="Background" Value="#C8B0302A" />
+    </Style>
+    <Style Selector="Border.chip">
+      <Setter Property="CornerRadius" Value="5" />
+      <Setter Property="Padding" Value="7,2" />
+      <Setter Property="Background" Value="{DynamicResource ChipBrush}" />
+    </Style>
+    <Style Selector="Border.block">
+      <Setter Property="BorderThickness" Value="3,0,0,0" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="Padding" Value="8,4" />
+      <Setter Property="Margin" Value="0,1" />
+      <Setter Property="CornerRadius" Value="3" />
+    </Style>
+    <Style Selector="Border.block.user">
+      <Setter Property="Background" Value="{DynamicResource ChipBrush}" />
+    </Style>
+    <Style Selector="Border.block.tool">
+      <Setter Property="BorderBrush" Value="{DynamicResource TextMutedBrush}" />
+    </Style>
+    <Style Selector="Border.block.thinking">
+      <Setter Property="BorderBrush" Value="#9B7BD8" />
+      <Setter Property="Background" Value="#209B7BD8" />
+    </Style>
+    <Style Selector="Border.block.memory">
+      <Setter Property="BorderBrush" Value="{DynamicResource GoodBrush}" />
+    </Style>
+    <Style Selector="Border.block.journal">
+      <Setter Property="BorderBrush" Value="{DynamicResource WarnBrush}" />
+    </Style>
+    <Style Selector="Border.block.call">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Margin" Value="0,6,0,1" />
+    </Style>
+    <Style Selector="Border.block.target">
+      <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+      <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+    </Style>
+    <Style Selector="Border.turn">
+      <Setter Property="Padding" Value="6,4" />
+      <Setter Property="Margin" Value="0,2" />
+      <Setter Property="CornerRadius" Value="5" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="BorderBrush" Value="{DynamicResource BorderSubtleBrush}" />
+    </Style>
+    <Style Selector="Border.turn.target">
+      <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+      <Setter Property="Background" Value="{DynamicResource AccentSoftBrush}" />
+    </Style>
+    <Style Selector="Border.turn.inflight">
+      <Setter Property="BorderBrush" Value="#9B7BD8" />
+    </Style>
+    <Style Selector="TextBlock.bh">
+      <Setter Property="FontFamily" Value="{StaticResource MonoFont}" />
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+    <Style Selector="SelectableTextBlock.bt">
+      <Setter Property="FontFamily" Value="{StaticResource MonoFont}" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+  </UserControl.Styles>
+
+  <UserControl.Resources>
+    <DataTemplate x:Key="BlockTemplate" x:DataType="lh:ControllerBlockRow">
+      <Border Classes="block" Classes.user="{Binding IsUser}" Classes.tool="{Binding IsTool}" Classes.thinking="{Binding IsThinking}"
+              Classes.memory="{Binding IsMemory}" Classes.journal="{Binding IsJournal}" Classes.call="{Binding IsCall}" Classes.target="{Binding IsTarget}">
+        <StackPanel Spacing="2">
+          <TextBlock Classes="bh" Text="{Binding Header}" />
+          <SelectableTextBlock Classes="bt" Text="{Binding Text}" IsVisible="{Binding HasText}" MaxHeight="600" />
+        </StackPanel>
+      </Border>
+    </DataTemplate>
+  </UserControl.Resources>
+
+  <Grid RowDefinitions="Auto,Auto,*">
+    <!-- header: what drives this body, stale -->
+    <Grid ColumnDefinitions="*,Auto">
+      <StackPanel Spacing="2">
+        <TextBlock Classes="h3" Text="{Binding Title}" TextTrimming="CharacterEllipsis" />
+        <TextBlock Classes="mono" FontWeight="SemiBold" Text="{Binding KindText}" TextTrimming="CharacterEllipsis" />
+        <TextBlock Classes="faint" FontSize="11.5" Text="{Binding BrainText}" TextTrimming="CharacterEllipsis" />
+        <TextBlock Classes="faint" FontSize="11.5" Text="{Binding NoteText}" TextWrapping="Wrap"
+                   IsVisible="{Binding NoteText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+      </StackPanel>
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Top">
+        <Border Classes="stale" IsVisible="{Binding IsStale}" ToolTip.Tip="Nothing fresh arrived: the link is down, the server is slow or the clone didn't answer. It keeps retrying.">
+          <TextBlock Classes="mono" FontSize="11" Foreground="White" Text="{Binding StaleText}" />
+        </Border>
+        <Button Classes="ghost" Padding="8,2" Content="Full hive view" IsVisible="{Binding HasOwner}" Command="{Binding OpenOwnerCommand}"
+                ToolTip.Tip="Open the owning hive's brain with every turn (not only this body's)" />
+      </StackPanel>
+    </Grid>
+
+    <!-- Brain | Script (a hive running a script shows both) -->
+    <ListBox Grid.Row="1" Classes="segmented" Margin="0,8,0,0" IsVisible="{Binding ShowTabs}" SelectedIndex="{Binding SelectedTab}" HorizontalAlignment="Left">
+      <ListBoxItem Content="Brain" />
+      <ListBoxItem Content="Script" />
+    </ListBox>
+
+    <Panel Grid.Row="2" Margin="0,8,0,0">
+      <!-- ================= brain ================= -->
+      <Grid RowDefinitions="Auto,Auto,Auto,Auto,*" IsVisible="{Binding ShowBrain}" x:Name="BrainPane">
+        <Border Classes="chip" Background="#309B7BD8" IsVisible="{Binding IsThinking}" HorizontalAlignment="Left" Margin="0,0,0,6">
+          <TextBlock Classes="mono" FontSize="11.5" Text="{Binding ThinkingText}" />
+        </Border>
+        <StackPanel Grid.Row="1" Spacing="2" Margin="0,0,0,6" ToolTip.Tip="How full the brain's context window is: the last call's real prompt size against Agent:Context:MaxTokens (the thin bar: the cached prefix)">
+          <ProgressBar Minimum="0" Maximum="1" Value="{Binding Fill}" Height="8" Classes.bad="{Binding NearLimit}" />
+          <ProgressBar Minimum="0" Maximum="1" Value="{Binding CachedFill}" Height="3" Opacity="0.7" />
+          <TextBlock Classes="faint mono" FontSize="11" Text="{Binding TokenText}" TextWrapping="Wrap" />
+        </StackPanel>
+        <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="0,0,0,6" IsVisible="{Binding HasFilter}">
+          <TextBlock Classes="muted" FontSize="12" Text="{Binding FilterText}" VerticalAlignment="Center" TextWrapping="Wrap" />
+          <CheckBox Grid.Column="1" Content="only these turns" IsChecked="{Binding OnlyTargets}" />
+        </Grid>
+        <Grid Grid.Row="3" ColumnDefinitions="*,Auto" Margin="0,0,0,6">
+          <TextBox PlaceholderText="search the context (text, tool calls, thinking, memory)…" Text="{Binding SearchText}" />
+          <TextBlock Grid.Column="1" Classes="faint" FontSize="11.5" Margin="8,0,0,0" VerticalAlignment="Center" Text="{Binding SearchNote}" />
+        </Grid>
+        <TabControl Grid.Row="4" Padding="0,4,0,0">
+          <TabItem Header="Turns">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <ItemsControl ItemsSource="{Binding Turns}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="lh:ControllerTurnRow">
+                    <Border Classes="turn" Classes.target="{Binding Targets}" Classes.inflight="{Binding InFlight}" Margin="{Binding Indent}" IsVisible="{Binding IsVisible}">
+                      <StackPanel Spacing="2">
+                        <Grid ColumnDefinitions="Auto,*,Auto">
+                          <ToggleButton Classes="ghost" Padding="6,0" VerticalAlignment="Top" IsChecked="{Binding IsExpanded, Mode=OneWay}" Click="OnToggleTurn" Content="⋯"
+                                        ToolTip.Tip="Expand: every call of this turn (its input, the thinking, tool calls with inputs and results, usage)" />
+                          <StackPanel Grid.Column="1" Margin="6,0" Spacing="1">
+                            <TextBlock FontWeight="SemiBold" FontSize="12.5" Text="{Binding Title}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Title}" />
+                            <TextBlock Classes="faint mono" FontSize="11" Text="{Binding Meta}" TextWrapping="Wrap" />
+                          </StackPanel>
+                          <Button Grid.Column="2" Classes="ghost" Padding="6,1" VerticalAlignment="Top" Content="Copy JSON" Click="OnCopyTurn"
+                                  ToolTip.Tip="Copy this turn in full (every call, redacted) as JSON" />
+                        </Grid>
+                        <TextBlock Classes="faint" FontSize="11" Text="{Binding DetailState}" IsVisible="{Binding DetailState, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                        <ItemsControl ItemsSource="{Binding Rows}" IsVisible="{Binding IsExpanded}" ItemTemplate="{StaticResource BlockTemplate}" />
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
+          </TabItem>
+          <TabItem Header="Context window">
+            <Grid RowDefinitions="Auto,Auto,*">
+              <Expander Header="{Binding SystemHeader}" IsExpanded="{Binding SystemExpanded}" HorizontalAlignment="Stretch">
+                <ScrollViewer MaxHeight="320" VerticalScrollBarVisibility="Auto">
+                  <ItemsControl ItemsSource="{Binding System}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="lh:ControllerSystemRow">
+                        <Expander Header="{Binding Header}" HorizontalAlignment="Stretch" Margin="0,1">
+                          <SelectableTextBlock Classes="bt" Text="{Binding Text}" />
+                        </Expander>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </ScrollViewer>
+              </Expander>
+              <TextBlock Grid.Row="1" Classes="faint mono" FontSize="11" Margin="0,6,0,4" Text="{Binding WindowHeader}" />
+              <ListBox Grid.Row="2" ItemsSource="{Binding Messages}" ItemTemplate="{StaticResource BlockTemplate}" Background="Transparent" />
+            </Grid>
+          </TabItem>
+        </TabControl>
+      </Grid>
+
+      <!-- ================= script (the existing debugger, reused) ================= -->
+      <Panel IsVisible="{Binding ShowScriptPane}">
+        <lh:ScriptDebugView DataContext="{Binding Script}" x:Name="ScriptPane" />
+      </Panel>
+    </Panel>
+  </Grid>
+</UserControl>

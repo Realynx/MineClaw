@@ -41,6 +41,10 @@ public sealed class Body : IBody
     public GameBridge? Bridge { get; internal set; }
     public Brainstem.BrainstemController? Brainstem { get; internal set; }
     public Brainstem.Gestures? Gestures { get; internal set; }
+    /// <summary>Typed game events this body observes (punches, pickups, hurt, ...): scripts and bindings bind to them.</summary>
+    public Perception.GameSignals? Signals { get; internal set; }
+    /// <summary>Standing bindings / learned reactions run on this body (main only).</summary>
+    public Brainstem.BindingRunner? Bindings { get; internal set; }
     public Brainstem.StallWatchdog? Watchdog { get; internal set; }
     public Brainstem.HandoverWatch? Handovers { get; internal set; }
     internal System.Threading.Timer? HandoverPump { get; set; }

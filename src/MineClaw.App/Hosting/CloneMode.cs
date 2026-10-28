@@ -39,6 +39,7 @@ public static class CloneMode
         agent.Chat.DisplayName = string.Format(hive.CloneDisplayFormat, mainDisplay, num);
         agent.Chat.Aliases = [$"{mainDisplay} {num}"];
         agent.Hive.MainUsername = mainLogin;                  // personality: main's lines are a bot's, not a player's
+        agent.Hive.Register(clone);                           // a dynamic account: known as a hive bot (one shared self profile)
         agent.Budget.UsageFile = $"usage-{clone}.json";        // own totals (main's ledger enforces the shared caps)
         // Sub-caps are optional: 0/unset = inherit main's hard caps (main's ledger still enforces the shared hive total).
         agent.Budget.DailyCapUsd = hive.Budget.CloneDailyCap(agent.Budget.DailyCapUsd);
@@ -89,7 +90,7 @@ public static class CloneMode
         });
         var game = new MinecraftGameClient(client);
         var bot = BotHost.Create(game, agentOptions, botOptions, llm: gated, loggers: loggers, claims: host0.Claims,
-            hiveBots: () => [host0.Main ?? "", .. hive.Clones()],
+            hiveBots: () => [host0.Main ?? "", .. host0.Arbiter.Clones], // dynamic accounts: main's roster names them
             // A clone's eyes feed main's hive vision through the shared world memory: changed columns go to the db every 15 s.
             worldIndex: new MineClaw.Bot.WorldIndex.WorldIndexOptions { Remembered = new MineClaw.Bot.WorldIndex.RememberedWorldOptions { FlushSeconds = 15 } });
         var rt = bot.Runtime;
@@ -136,6 +137,8 @@ public static class CloneMode
         };
         // The live script debugger (Explorer via main's Supervisor): a cheap snapshot of the running (or last) script; read-only.
         host0.ScriptDebug = code => MineClaw.Bot.GameTools.ScriptTools.Of(rt)?.Controller is { } sc ? (sc.Current ?? sc.Last)?.DebugSnapshot(code) : null;
+        // The Controller panel (Explorer via main's Supervisor): this clone's brain context, rendered only when asked.
+        host0.BrainContext = q => telemetry.Capture.Query(q);
         // "What the AI saw" (Explorer via main's Supervisor): the sheets this clone's models got, and one of them as its exact PNG.
         host0.VisionList = since => bot.Vision?.Hub is { } vh ? new MineClaw.Hive.Ipc.VisionListMsg(vh.History.Capacity, vh.History.List(null, since).ToList()) : null;
         host0.VisionPng = id => bot.Vision?.Hub?.History.Png(id) is { } png ? new MineClaw.Hive.Ipc.VisionPngMsg(id, png) : null;
@@ -147,6 +150,8 @@ public static class CloneMode
             rt.Rag.Upsert(new RagDoc("hive:" + key, "hive", $"{clone} died", text) { Source = "hive" });
             return true;
         };
+        // One memory for every hive: writes go through main (its groomer, provenance), main's mem_changed reloads at once.
+        CloneHierarchyWiring.Attach(host0, welcome, rt, hive, clone, log);
         using var watcher = new DataVersionWatcher(rt.Db, () => { rt.Memory.Reload(); rt.Rag.ReloadVectors(); },
             slowRefresh: rt.Raptor is { } rap ? () => _ = rap.LoadAsync() : null);
 

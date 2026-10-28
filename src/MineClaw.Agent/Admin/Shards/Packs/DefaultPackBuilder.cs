@@ -23,6 +23,22 @@ public sealed record PackBuildOptions
     public RagOptions Rag { get; init; } = new();
     /// <summary>Only build these packs (names); null = the version pack and every mode pack of the version.</summary>
     public IReadOnlyCollection<string>? Only { get; init; }
+    /// <summary>Mode packs generated from code rather than docs/knowledge (e.g. <c>sdk-js</c>: the scripting SDK reference).</summary>
+    public IReadOnlyList<GeneratedPack> Generated { get; init; } = [];
+    /// <summary>False = only the <see cref="Generated"/> packs (no version pack, no doc mode packs).</summary>
+    public bool IncludeVersionPacks { get; init; } = true;
+}
+
+/// <summary>
+/// A mode pack whose knowledge records are produced by code (the scripting SDK reference, generated from the SDK's own doc comments so
+/// it never drifts). <see cref="Docs"/> are knowledge chunks with refs <c>kb:{FileName}:{n}</c>; <see cref="Version"/> is
+/// <see cref="KnowledgePack.AnyVersion"/> when the pack holds in every world.
+/// </summary>
+public sealed record GeneratedPack(string Name, string Mode, string FileName, string Description, string Source, IReadOnlyList<RagDoc> Docs)
+{
+    public string Version { get; init; } = KnowledgePack.AnyVersion;
+    /// <summary>Optional cached-prompt lines (null = retrieval only).</summary>
+    public string? Core { get; init; }
 }
 
 public sealed record PackBuildResult(IReadOnlyList<PackIndexEntry> Packs, IReadOnlyList<string> Notes, string IndexPath);
@@ -42,12 +58,18 @@ public static class DefaultPackBuilder
 
     private sealed record DocFile(string Name, string Text, KnowledgeDocPack Pack);
 
-    private sealed record PackPlan(string Name, string Kind, string? Mode, List<DocFile> Files, bool GameData);
+    private sealed record PackPlan(string Name, string Kind, string? Mode, List<DocFile> Files, bool GameData)
+    {
+        public GeneratedPack? Generated { get; init; }
+    }
 
     public static PackBuildResult Build(PackBuildOptions o)
     {
         var version = o.Source.Version;
         if (!KnowledgePack.ValidVersion(version)) throw new ArgumentException($"'{version}' is not a version tag");
+        foreach (var g in o.Generated)
+            if (g.Docs.Any(d => d.Kind != KnowledgeIndexer.Kind || !d.Ref.StartsWith($"kb:{g.FileName}:", StringComparison.Ordinal)))
+                throw new ArgumentException($"generated pack {g.Name}: every doc must be a knowledge chunk kb:{g.FileName}:n");
         var notes = new List<string>();
         var outDir = Path.GetFullPath(o.OutputDirectory);
         Directory.CreateDirectory(outDir);
@@ -67,6 +89,9 @@ public static class DefaultPackBuilder
         var plans = new List<PackPlan> { new($"{version}-gamedata", ShardPackInfo.VersionKind, null, files.Where(f => !f.Pack.IsMode).ToList(), true) };
         foreach (var g in files.Where(f => f.Pack.IsMode).GroupBy(f => f.Pack.PackName(version), StringComparer.OrdinalIgnoreCase).OrderBy(g => g.Key, StringComparer.Ordinal))
             plans.Add(new PackPlan(g.Key, ShardPackInfo.ModeKind, g.First().Pack.Mode, g.ToList(), false));
+        if (!o.IncludeVersionPacks) plans.Clear();
+        foreach (var g in o.Generated)
+            plans.Add(new PackPlan(g.Name, ShardPackInfo.ModeKind, g.Mode, [], false) { Generated = g });
         if (o.Only is { Count: > 0 } only) plans = plans.Where(p => only.Contains(p.Name, StringComparer.OrdinalIgnoreCase)).ToList();
 
         // 2) Vectors from the pristine seed (material hash → vector, one model + dims).
@@ -95,13 +120,13 @@ public static class DefaultPackBuilder
         var entries = new List<PackIndexEntry>();
         foreach (var plan in plans)
         {
-            var (shard, entry) = BuildOne(o, plan, version, gameDocs, vectors, model, dims, notes);
+            var (shard, entry) = BuildOne(o, plan, plan.Generated?.Version ?? version, gameDocs, vectors, model, dims, notes);
             var path = Path.Combine(outDir, entry.File);
             var bytes = ShardFile.ToBytes(shard);
             if (bytes.LongLength > o.MaxPackBytes && shard.Embeddings.Count > 0)
             {
                 notes.Add($"{entry.File}: {bytes.LongLength / 1024.0 / 1024.0:F1} MB with vectors is over {o.MaxPackBytes / 1024 / 1024} MB: stored without vectors");
-                (shard, entry) = BuildOne(o, plan, version, gameDocs, new Dictionary<string, byte[]>(), null, 0, notes);
+                (shard, entry) = BuildOne(o, plan, plan.Generated?.Version ?? version, gameDocs, new Dictionary<string, byte[]>(), null, 0, notes);
                 bytes = ShardFile.ToBytes(shard);
             }
             WriteIfChanged(path, bytes);
@@ -133,6 +158,11 @@ public static class DefaultPackBuilder
         var docs = new List<RagDoc>();
         if (plan.GameData) docs.AddRange(gameDocs);
         var cores = new List<string>();
+        if (plan.Generated is { } gen)
+        {
+            docs.AddRange(gen.Docs.Select(d => d with { At = SeedCorpus.At }));
+            if (gen.Core is { Length: > 0 } gc) cores.Add(gc);
+        }
         foreach (var f in plan.Files)
         {
             var (fileCore, chunks) = KnowledgeIndexer.Docs(f.Name, f.Text, o.Rag, SeedCorpus.At);
@@ -151,14 +181,16 @@ public static class DefaultPackBuilder
                             ("$i", id), ("$m", model), ("$d", dims), ("$h", hash), ("$v", v));
             });
 
-        var fileNames = plan.Files.Select(f => f.Name).ToList();
+        var fileNames = plan.Generated is { } g0 ? [g0.FileName] : plan.Files.Select(f => f.Name).ToList();
         var selection = new ShardSelection
         {
             Mode = "pack", PackVersion = version, PackMode = plan.Mode,
             IncludeKnowledgeDocs = fileNames.Count > 0, KnowledgeFiles = fileNames.Count > 0 ? fileNames : null,
         };
-        var desc = plan.GameData
-            ? $"Minecraft {version} version pack: recipes, items, blocks, smelting and dig facts" +
+        bool mobs = plan.GameData && gameDocs.Any(d => d.Ref.StartsWith("gd:mob:", StringComparison.Ordinal));
+        var desc = plan.Generated is { } g1 ? g1.Description
+            : plan.GameData
+            ? $"Minecraft {version} version pack: recipes, items, blocks, smelting{(mobs ? ", mob" : "")} and dig facts" +
               (fileNames.Count > 0 ? $" + the general mechanics doc{(fileNames.Count > 1 ? "s" : "")} {string.Join(", ", fileNames)}" : "") +
               ". Swap it in for any world on this version."
             : $"{plan.Mode} mode pack for {version} ({string.Join(", ", fileNames)}): add it when the world is a {plan.Mode}, remove it for a plain world.";
@@ -168,11 +200,14 @@ public static class DefaultPackBuilder
         int withVector = built.Records.Count(r => r.Get("embed") != "0" && r.DocHash != null && built.Embeddings.ContainsKey(r.DocHash));
         var core = ShardRedactor.Redact(string.Join("\n\n", cores), out int coreSecrets);
         if (coreSecrets > 0) notes.Add($"{plan.Name}: {coreSecrets} token-shaped string(s) redacted from the core block");
-        var sourceHash = SourceHash(plan.GameData ? o.Source.Description : null, plan.GameData ? gameDocs : [], plan.Files);
+        var sourceHash = plan.Generated is { } g2
+            ? SourceHash("generated " + g2.Source, g2.Docs, [])
+            : SourceHash(plan.GameData ? o.Source.Description : null, plan.GameData ? gameDocs : [], plan.Files);
+        var sourceLabel = plan.Generated?.Source ?? (plan.GameData ? o.Source.Description : "docs/knowledge");
         var info = new ShardPackInfo
         {
             Kind = plan.Kind, Name = plan.Name, Version = version, Mode = plan.Mode, Core = core.Length > 0 ? core : null, Files = fileNames,
-            Source = plan.GameData ? o.Source.Description : "docs/knowledge", SourceHash = sourceHash, Builder = BuilderVersion,
+            Source = sourceLabel, SourceHash = sourceHash, Builder = BuilderVersion,
             NeedsEmbedding = embeddable - withVector,
         };
         var shard = new Shard

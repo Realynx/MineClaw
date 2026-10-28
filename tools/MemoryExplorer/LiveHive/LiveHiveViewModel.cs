@@ -600,6 +600,7 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
 
     private void RefreshStats()
     {
+        MaybePollTree();
         if (_api is { } api)
         {
             double ms = api.LatencyMs;
@@ -623,6 +624,7 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         bool linkUp = _sync is { State: LinkState.Connected };
         foreach (var t in AllTiles) t.RefreshStale(linkUp, utcNow);
         ScriptDebug?.Tick(utcNow);
+        Controller?.Tick(utcNow);
         double worldAge = _sync is { WorldOkAt: var ok } && ok > DateTime.MinValue ? (utcNow - ok).TotalSeconds : 0;
         Gpu.LinkNote = _sync == null ? null : !linkUp ? "reconnecting… (" + StateText + ")"
             : worldAge > 5 ? $"world stale {worldAge:0} s" + (_sync.LastError is { } le ? " · " + le : "") : null;
@@ -644,6 +646,7 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         _badges?.Start();
         _visionTiles?.Start();
         ScriptDebug?.Start();
+        Controller?.Start();
         Vision?.Start();
         UpdateWants();
     }
@@ -657,6 +660,7 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         _visionTiles?.Stop();
         Vision?.Stop();
         ScriptDebug?.Stop(); // a hidden panel stops polling (and so the server's sampling lease runs out)
+        Controller?.Stop();
         Freecam.Stop();
         Tiles.Stop();
         if (_sync != null) { IsConnected = false; StateText = "paused (tab hidden)"; }

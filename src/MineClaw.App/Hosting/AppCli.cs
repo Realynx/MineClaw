@@ -55,6 +55,18 @@ public sealed record AppCli
     public string? Record { get; init; }
     /// <summary>auto | b1.8.1 | 1.12.2: overrides Bot:Server:Version (main passes the resolved id to its hive clones).</summary>
     public string? ServerVersion { get; init; }
+    /// <summary>The one-shot fresh-world memory reset (<see cref="MemoryReset"/>): back up the data dir, fresh db, import the packs, exit.</summary>
+    public bool ResetMemory { get; init; }
+    /// <summary>--pack: the version pack the reset imports (e.g. shards/defaults/1.12.2-gamedata.mcshard).</summary>
+    public string? ResetPack { get; init; }
+    /// <summary>--modes: mode packs to add after the reset ("none" = a plain world, the default).</summary>
+    public IReadOnlyList<string> ResetModes { get; init; } = [];
+    /// <summary>--no-sdk: don't add the sdk-js pack found beside the version pack.</summary>
+    public bool ResetNoSdk { get; init; }
+    /// <summary>--backup-dir: where the reset backs up the data dir (default: a timestamped sibling of it).</summary>
+    public string? ResetBackupDir { get; init; }
+    /// <summary>--yes: confirms a destructive one-shot command (the reset refuses without it).</summary>
+    public bool Yes { get; init; }
     public IReadOnlyList<string> Errors { get; init; } = [];
 
     public const string Usage = """
@@ -78,6 +90,10 @@ Usage: MineClaw.App [options]
   --frame <WxH>            print one ANSI TUI frame and exit (use with --demo; NO_COLOR=1 for plain text)
   --bot <n>                initially selected bot (1-5)   --view top|side|iso (default iso on 24-bit terminals)
   --clone <name> --parent-pipe <pipe>   hive clone mode (started by the main process; headless)
+  --reset-memory --pack <file> [--modes none|a.mcshard,b.mcshard] [--no-sdk] [--backup-dir <dir>] --yes
+                           fresh-world reset (service stopped!): back up the whole data dir to <data>-backup-<utc>, fresh db with
+                           only the version pack (+ modes, + sdk-js.mcshard beside it), server-version.txt := the pack's version;
+                           usage.json and config are kept. Without --yes it prints the plan and changes nothing.
 Env: MINECLAW_<Section>__<Key> overrides config, e.g. MINECLAW_Agent__Llm__ApiKey.
 Exit codes: 0 clean, 1 crash, 2 config, 3 auth, 64 usage, 75 transient startup failure.
 """;
@@ -155,11 +171,31 @@ Exit codes: 0 clean, 1 crash, 2 config, 3 auth, 64 usage, 75 transient startup f
                     }
                 case "-h" or "--help" or "-?": c = c with { Help = true }; break;
                 case "--schema-version": c = c with { PrintSchemaVersion = true }; break;
+                case "--reset-memory": c = c with { ResetMemory = true }; break;
+                case "--pack": c = c with { ResetPack = Value() }; break;
+                case "--modes":
+                    {
+                        var v = Value();
+                        if (v != null)
+                            c = c with
+                            {
+                                ResetModes = v.Trim().Equals("none", StringComparison.OrdinalIgnoreCase) ? []
+                                    : v.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+                            };
+                        break;
+                    }
+                case "--no-sdk": c = c with { ResetNoSdk = true }; break;
+                case "--backup-dir": c = c with { ResetBackupDir = Value() }; break;
+                case "--yes" or "-y": c = c with { Yes = true }; break;
                 default: errors.Add($"unknown option '{a}'"); break;
             }
         }
         if (c.Frame != null && !c.Demo) errors.Add("--frame needs --demo");
         if ((c.CloneName == null) != (c.ParentPipe == null)) errors.Add("--clone and --parent-pipe go together (clones never run unsupervised)");
+        if (c.ResetMemory && string.IsNullOrWhiteSpace(c.ResetPack)) errors.Add("--reset-memory needs --pack <version pack .mcshard>");
+        if (!c.ResetMemory && (c.ResetPack != null || c.ResetModes.Count > 0 || c.ResetNoSdk || c.ResetBackupDir != null))
+            errors.Add("--pack/--modes/--no-sdk/--backup-dir go with --reset-memory");
+        if (c.ResetMemory && c.CloneName != null) errors.Add("--reset-memory runs alone, never as a hive clone");
         return c with { Errors = errors };
     }
 }

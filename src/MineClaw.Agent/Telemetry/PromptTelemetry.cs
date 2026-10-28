@@ -15,6 +15,8 @@ public sealed class TelemetryOptions
     /// <summary>Records kept in memory for the TUI.</summary>
     public int RecentRecords { get; set; } = 200;
     public ThoughtCaps Thought { get; set; } = new();
+    /// <summary>The brain context capture (the Explorer's Controller panel): <see cref="BrainContextCapture"/>.</summary>
+    public BrainCaptureOptions Capture { get; set; } = new();
 }
 
 /// <summary>
@@ -43,6 +45,12 @@ public sealed class PromptTelemetry : IDisposable
         _time = time ?? TimeProvider.System;
         Bot = agent.Chat.Username;
         Thoughts = new ThoughtTracker(_o.Thought, _time);
+        Capture = new BrainContextCapture(_o.Capture, _time)
+        {
+            Brain = Bot, ModelOf = r => r.Model ?? _agent.Llm.ModelFor(r.Tier), ContextLimit = agent.Context.MaxTokens, CompactAt = agent.Context.CompactAtTokens,
+        };
+        Capture.AddSecrets([agent.Llm.ApiKey, agent.Llm.Ollama.ApiKey, agent.Embeddings.ApiKey, agent.Llm.Perception.ApiKey,
+            Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY")]);
         if (directory != null && _o.Enabled) _writer = new UsageJsonlWriter(directory, _o.KeepDays, _time);
     }
 
@@ -53,6 +61,8 @@ public sealed class PromptTelemetry : IDisposable
     /// </summary>
     public Func<string?>? CurrentBody { get; set; }
     public ThoughtTracker Thoughts { get; }
+    /// <summary>Recent calls by reference (request as built, response as parsed) for the Explorer's context view; renders only when asked.</summary>
+    public BrainContextCapture Capture { get; }
     public string? Directory => _writer?.Directory;
 
     /// <summary>Every finished call (on the calling thread; handlers must be quick and must not throw into the agent).</summary>
@@ -76,6 +86,8 @@ public sealed class PromptTelemetry : IDisposable
         {
             var lw = new LatencyJsonlWriter(_writer.Directory);
             rt.Latency.Recorded += lw.Write;
+            var iw = new InterruptJsonlWriter(_writer.Directory);
+            rt.Interrupts.Recorded += iw.Write;
         }
     }
 
@@ -216,7 +228,7 @@ public sealed class PromptTelemetry : IDisposable
         return turns.Length > 0 ? turns[^1] : null;
     }
 
-    private string? BodyOf()
+    internal string? BodyOf()
     {
         try { return CurrentBody?.Invoke(); }
         catch (Exception) { return null; }
@@ -235,15 +247,25 @@ public sealed class TelemetryLlmClient(ILlmClient inner, PromptTelemetry telemet
     public async Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct)
     {
         try { telemetry.OnBefore(request); } catch (Exception) { }
+        var captured = telemetry.Capture.Begin(request, telemetry.BodyOf()); // references only; never throws
         var sw = Stopwatch.StartNew();
         LlmResponse response;
         try { response = await inner.CompleteAsync(request, ct).ConfigureAwait(false); }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            try { telemetry.OnAfter(request, null, ex, sw.ElapsedMilliseconds); } catch (Exception) { }
+            PromptUsageRecord? failed = null;
+            try { failed = telemetry.OnAfter(request, null, ex, sw.ElapsedMilliseconds); } catch (Exception) { }
+            telemetry.Capture.End(captured, null, ex, failed);
             throw;
         }
-        try { telemetry.OnAfter(request, response, null, sw.ElapsedMilliseconds); } catch (Exception) { }
+        catch (OperationCanceledException ex)
+        {
+            telemetry.Capture.End(captured, null, ex, null);
+            throw;
+        }
+        PromptUsageRecord? record = null;
+        try { record = telemetry.OnAfter(request, response, null, sw.ElapsedMilliseconds); } catch (Exception) { }
+        telemetry.Capture.End(captured, response, null, record);
         return response;
     }
 }

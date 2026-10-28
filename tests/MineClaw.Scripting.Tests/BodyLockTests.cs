@@ -15,7 +15,7 @@ public sealed class StepLlm : ILlmClient
 {
     private readonly ConcurrentQueue<Func<LlmRequest, LlmResponse>> _steps = new();
     public ConcurrentQueue<LlmRequest> Requests { get; } = new();
-    public int Brain => Requests.Count(r => r.Tier == ModelTier.Main);
+    public int Brain => Requests.Count(r => r.Tier == ModelTier.Main && r.Purpose != "patch");
 
     public StepLlm Tool(string name, object input, string id = "tu_1") { _steps.Enqueue(r => Resp(r, StopReasons.ToolUse, new LlmToolUse(id, name, JsonSerializer.SerializeToElement(input)))); return this; }
     public StepLlm Text(string text) { _steps.Enqueue(r => Resp(r, StopReasons.EndTurn, new LlmText(text))); return this; }
@@ -25,6 +25,8 @@ public sealed class StepLlm : ILlmClient
     public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct)
     {
         Requests.Enqueue(request);
+        // The interrupt patch call (Opus, not a brain turn) never takes a scripted brain step: no tool call = escalate.
+        if (request.Purpose == "patch") return Task.FromResult(Resp(request, StopReasons.EndTurn, new LlmText("")));
         if (request.Tier == ModelTier.Main && _steps.TryDequeue(out var s)) return Task.FromResult(s(request));
         return Task.FromResult(Resp(request, StopReasons.EndTurn, new LlmText("")));
     }

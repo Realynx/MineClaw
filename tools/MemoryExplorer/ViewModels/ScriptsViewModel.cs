@@ -32,7 +32,36 @@ public sealed record ScriptRow(ScriptLibraryEntry E)
     public bool LintWarn => E.Lint.Status == "warnings";
     public string Flags => string.Join(" · ", new[] { E.Archived ? "archived" : null, E.PromotedAs is { } p ? "skill " + p : null, E.DuplicateOf is { } d ? "duplicate of " + d : null }
         .Where(x => x != null));
-    public string Search => $"{E.Name} {E.Purpose} {E.Author} {string.Join(" ", E.UsedBy)}".ToLowerInvariant();
+    public string Search => $"{E.Name} {E.Purpose} {E.Author} {string.Join(" ", E.UsedBy)} {string.Join(" ", (E.Handlers ?? []).Select(h => h.Kind))}".ToLowerInvariant();
+    /// <summary>The script's learned interrupt handlers, shown as its children in the list.</summary>
+    public IReadOnlyList<ScriptHandlerRow> Handlers { get; } = (E.Handlers ?? []).Select(h => new ScriptHandlerRow(h)).ToList();
+    public bool HasHandlers => Handlers.Count > 0;
+}
+
+/// <summary>A learned interrupt handler (a child of its script): kind, situation, stats, the JS it runs and what happens after.</summary>
+public sealed record ScriptHandlerRow(ScriptHandlerInfo H)
+{
+    public string Kind => H.Kind;
+    /// <summary>"↳ lowhp · hp #/# zombie · 5 ok / 1 failed · resume".</summary>
+    public string Label => $"↳ {H.Kind} · {Situation} · {Stats} · {H.Then}" + (H.Demoted ? " · demoted" : "");
+    public string Situation
+    {
+        get
+        {
+            var parts = H.Signature.Split('|');
+            var text = parts.Length > 1 ? parts[1] : H.Signature;
+            return text.Length <= 48 ? text : text[..45] + "...";
+        }
+    }
+    public string Stats => H.Failures == 0 ? $"{H.Successes} ok" : $"{H.Successes} ok / {H.Failures} failed";
+    public bool Demoted => H.Demoted;
+    /// <summary>Demoted handlers are shown faded (the patch turn runs again for their situation).</summary>
+    public double Fade => H.Demoted ? 0.5 : 1.0;
+    public string Detail => (H.Note is { Length: > 0 } n ? n + " · " : "") + (H.Author ?? "patch") + (H.Version is { } v ? $" · learned on v{v}" : "")
+        + (H.LearnedAt is { } t ? " · " + t.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture) : "")
+        + (H.LastUsed is { } u ? " · last used " + u.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture) : "");
+    public string Where => H.Signature.Split('|') is { Length: > 2 } p && p[2].Length > 0 ? "at `" + p[2] + "`" : "";
+    public string Js => H.Js;
 }
 
 public sealed record ScriptVersionRow(ScriptVersionInfo V)
@@ -132,6 +161,8 @@ public sealed partial class ScriptsViewModel(MainWindowViewModel shell) : PageVi
     public ObservableCollection<ScriptParamRow> Params { get; } = [];
     public ObservableCollection<ScriptLintRow> Lint { get; } = [];
     public ObservableCollection<ScriptRunRow> Runs { get; } = [];
+    /// <summary>The selected script's learned interrupt handlers (the Handlers tab).</summary>
+    public ObservableCollection<ScriptHandlerRow> Handlers { get; } = [];
 
     [ObservableProperty] private string _selectedSource = SourceDb;
     [ObservableProperty] private string _filter = "";
@@ -219,7 +250,7 @@ public sealed partial class ScriptsViewModel(MainWindowViewModel shell) : PageVi
 
     private void ClearDetail()
     {
-        Versions.Clear(); Code.Clear(); Diff.Clear(); Params.Clear(); Lint.Clear(); Runs.Clear();
+        Versions.Clear(); Code.Clear(); Diff.Clear(); Params.Clear(); Lint.Clear(); Runs.Clear(); Handlers.Clear();
         DetailTitle = DetailMeta = LintSummary = DiffSummary = UnifiedDiff = CodeText = RevertNote = MigrationNote = "";
         HasDetail = false;
         OnPropertyChanged(nameof(CanDiff));
@@ -306,6 +337,8 @@ public sealed partial class ScriptsViewModel(MainWindowViewModel shell) : PageVi
                 (r.Ok ? "ok" : r.Status ?? "failed") + $" · {r.Seconds:0.#} s" + (r.Actions is { } a ? $" · {a} actions" : "") + (r.FailLine is { } fl ? $" · line {fl}" : ""),
                 r.Outcome ?? string.Join(" · ", new[] { r.Params, r.Timings, r.Yield is > 0 ? $"+{r.Yield} items" : null, r.Body }.Where(x => !string.IsNullOrEmpty(x))),
                 r.Ok));
+        Handlers.Clear();
+        foreach (var h in d.Script.Handlers ?? []) Handlers.Add(new ScriptHandlerRow(h));
         RevertNote = d.RevertNote ?? "";
         MigrationNote = d.Script.Migration is { } m ? "Lua migration: " + m : "";
     }

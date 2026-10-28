@@ -275,7 +275,8 @@ Tools are macros (one call = many actions, done in C#); results are terse and pr
         $" {what}: {TerseStyle(level)}. Keep exact: {extraKeep}{TerseKeep}.";
 
     /// <summary>Loads every *.md file in <paramref name="directory"/> (sorted), capped at <paramref name="maxChars"/>.</summary>
-    public static string LoadKnowledge(string? directory, int maxChars, out bool truncated)
+    /// <param name="active">The db's knowledge packs: a doc whose pack marker isn't active is left out (null = every doc).</param>
+    public static string LoadKnowledge(string? directory, int maxChars, out bool truncated, Admin.Shards.KnowledgePackInfo? active = null)
     {
         truncated = false;
         if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory)) return "";
@@ -284,6 +285,7 @@ Tools are macros (one call = many actions, done in C#); results are terse and pr
         {
             var text = File.ReadAllText(file).Replace("\r\n", "\n").Trim();
             if (text.Length == 0) continue;
+            if (active != null && Admin.Shards.KnowledgeDocPack.Parse(text) is { } pack && !pack.ActiveIn(active)) continue;
             if (sb.Length > 0) sb.Append("\n\n");
             sb.Append(text);
         }

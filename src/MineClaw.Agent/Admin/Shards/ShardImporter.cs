@@ -187,7 +187,7 @@ public sealed class ShardImporter
             modesTo = list;
             if (modesFrom == null)
                 notes.Add($"this db had no mode list (every mode doc on disk counted); after this its modes are exactly: {Modes(modesTo)}");
-            if (o.Mode == ShardImportMode.AddMode && m.Pack?.Version is { } mv && !mv.Equals(active.Version, StringComparison.OrdinalIgnoreCase))
+            if (o.Mode == ShardImportMode.AddMode && m.Pack?.Version is { } mv && !KnowledgePack.Matches(mv, active.Version))
                 notes.Add($"the {mode} pack was written for {mv}; this db plays {active.Version}, so its docs stay out until the versions match");
             notes.Add(o.Mode == ShardImportMode.AddMode
                 ? $"mode {mode} on: its core lines join the cached prompt and its {packFiles.Count} doc(s) join retrieval"

@@ -89,6 +89,16 @@
                   <TextBlock FontSize="12" Foreground="{DynamicResource AccentBrush}" Text="{Binding UsedByText}" IsVisible="{Binding HasUsers}"
                              TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding UsedByText}" />
                   <TextBlock Classes="faint" FontSize="11" Text="{Binding Flags}" />
+                  <ItemsControl ItemsSource="{Binding Handlers}" IsVisible="{Binding HasHandlers}" Margin="8,2,0,0"
+                                ToolTip.Tip="Learned interrupt handlers: patches that worked, run again with no LLM call">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:ScriptHandlerRow">
+                        <TextBlock Classes="mono" FontSize="11.5" Text="{Binding Label}" TextTrimming="CharacterEllipsis"
+                                   Foreground="{DynamicResource AccentBrush}" Opacity="{Binding Fade}"
+                                   ToolTip.Tip="{Binding Js}" />
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
                 </StackPanel>
               </Border>
             </DataTemplate>
@@ -221,6 +231,27 @@
                 </StackPanel>
               </StackPanel>
             </ScrollViewer>
+          </TabItem>
+
+          <TabItem Header="Handlers">
+            <Panel>
+              <TextBlock Classes="faint" TextWrapping="Wrap" IsVisible="{Binding !Handlers.Count}"
+                         Text="No learned interrupt handlers yet. A patch that fixed an interrupt (and the script then progressed) is saved here and runs again with no LLM call." />
+              <ListBox Classes="plain" ItemsSource="{Binding Handlers}">
+                <ListBox.ItemTemplate>
+                  <DataTemplate x:DataType="vm:ScriptHandlerRow">
+                    <StackPanel Margin="0,4" Spacing="3">
+                      <TextBlock Classes="h3 mono" Text="{Binding Label}" TextWrapping="Wrap" />
+                      <TextBlock Classes="muted" FontSize="12" Text="{Binding Detail}" TextWrapping="Wrap" />
+                      <TextBlock Classes="faint mono" FontSize="11.5" Text="{Binding Where}" TextWrapping="Wrap" />
+                      <Border Classes="pill" HorizontalAlignment="Stretch">
+                        <TextBlock Classes="code" Text="{Binding Js}" TextWrapping="Wrap" />
+                      </Border>
+                    </StackPanel>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+            </Panel>
           </TabItem>
 
           <TabItem Header="Runs">

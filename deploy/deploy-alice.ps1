@@ -20,7 +20,18 @@
   pwsh deploy/deploy-alice.ps1 -Status
   pwsh deploy/deploy-alice.ps1 -Rollback        # restores the matching db backup, or refuses when the old build can't open the db
   pwsh deploy/deploy-alice.ps1 -Rollback -DryRun  # print the rollback plan (releases, db schemas, backup) and change nothing
-  pwsh deploy/deploy-alice.ps1 -NoStart         # install everything but leave the service as it is
+  pwsh deploy/deploy-alice.ps1 -NoStart         # install everything but leave the service (and whether it is enabled) as it is
+  pwsh deploy/deploy-alice.ps1 -ResetMemory -Pack shards/defaults/1.12.2-gamedata.mcshard
+                                                # first deploy into a NEW world: stop, install, back up /var/lib/mineclaw to
+                                                # /var/lib/mineclaw-backup-<utc>, fresh db with only the pack (+ sdk-js.mcshard
+                                                # beside it, no mode), server-version.txt; the service stays stopped
+  pwsh deploy/deploy-alice.ps1 -ResetMemory -Pack shards/defaults/1.12.2-gamedata.mcshard -Start   # ... and start it after
+  pwsh deploy/deploy-alice.ps1 -ResetMemory -Pack shards/defaults/1.12.2-gamedata.mcshard -DryRun  # print the CT script, touch nothing
+
+.NOTES
+  -ResetMemory runs MineClaw.App --reset-memory inside the CT as the service user while the service is stopped (see
+  src/MineClaw.App/Hosting/MemoryReset.cs and ct-release.sh reset-memory). It never touches /etc/mineclaw or usage.json.
+  -DryRun without -Rollback prints the plan and the script that would run on the PVE host, then stops: no tests, no publish, no ssh.
 #>
 #Requires -Version 7.0
 [CmdletBinding()]
@@ -32,6 +43,9 @@ param(
     [switch]$NoStart,
     [switch]$DryRun,
     [switch]$Force,
+    [switch]$ResetMemory,
+    [string]$Pack,
+    [switch]$Start,
     [string]$PveHost = 'alice',
     [int]$Vmid = 114,
     [int]$HealthTimeoutSec = 180
@@ -64,6 +78,54 @@ $cfg = Join-Path $repo 'src/MineClaw.App/appsettings.json'
 $id = Get-Date -Format 'yyyyMMdd-HHmmss'
 $stage = Join-Path ([IO.Path]::GetTempPath()) "mineclaw-deploy-$id"
 $remote = '/tmp/mineclaw-deploy'
+
+# The fresh-world reset: the version pack (+ sdk-js.mcshard beside it) rides along and is applied after the install.
+$packFiles = @()
+if ($Start -and -not $ResetMemory) { throw "-Start goes with -ResetMemory (a plain deploy starts the service unless -NoStart)" }
+if ($Pack -and -not $ResetMemory) { throw "-Pack goes with -ResetMemory" }
+if ($ResetMemory) {
+    if (-not $Pack) { throw "-ResetMemory needs -Pack <version pack .mcshard> (e.g. shards/defaults/1.12.2-gamedata.mcshard)" }
+    $packPath = if ([IO.Path]::IsPathRooted($Pack)) { $Pack } else { Join-Path $repo $Pack }
+    if (-not (Test-Path $packPath)) { throw "no pack at $packPath (build it: dotnet run --project tools/ShardPacks -- build --version 1.12.2)" }
+    $packFiles = @($packPath)
+    $sdkPack = Join-Path (Split-Path -Parent $packPath) 'sdk-js.mcshard'
+    if ((Test-Path $sdkPack) -and ((Split-Path -Leaf $packPath) -ne 'sdk-js.mcshard')) { $packFiles += $sdkPack }
+}
+
+# The script that runs on the PVE host (pushes into the CT, installs, optional reset). Built before anything connects so -DryRun can show it.
+function New-RunScript([string]$CfgPush, [string]$AssetPush) {
+    $noStart = $NoStart -or $ResetMemory   # a reset needs the service stopped: never start the new build before it
+    $startFlag = if ($noStart) { ' --no-start' } else { '' }
+    $stop = if ($ResetMemory) { "pct exec `$v -- systemctl stop mineclaw || true; echo 'service: stopped for the memory reset'" } else { '' }
+    $packPush = ($packFiles | ForEach-Object { "pct push `$v `$d/$(Split-Path -Leaf $_) /root/mineclaw-deploy/$(Split-Path -Leaf $_)" }) -join "`n"
+    $reset = if ($ResetMemory) {
+        "pct exec `$v -- $release reset-memory /root/mineclaw-deploy/$(Split-Path -Leaf $packFiles[0]) --timeout $HealthTimeoutSec$(if ($Start) { ' --start' })"
+    } else { '' }
+    return @"
+set -euo pipefail
+v=$Vmid; d=$remote
+trap 'rm -rf `$d; pct exec `$v -- rm -rf /root/mineclaw-deploy || true' EXIT
+pct exec `$v -- install -d -m 0700 /root/mineclaw-deploy
+pct push `$v `$d/mineclaw.tgz /root/mineclaw-deploy/mineclaw.tgz
+pct push `$v `$d/mineclaw.service /root/mineclaw-deploy/mineclaw.service
+pct push `$v `$d/ct-release.sh $release --perms 0755
+$CfgPush
+$AssetPush
+$packPush
+$stop
+pct exec `$v -- $release install /root/mineclaw-deploy/mineclaw.tgz $id --unit /root/mineclaw-deploy/mineclaw.service --timeout $HealthTimeoutSec$startFlag
+$reset
+"@ -replace "`r`n", "`n"
+}
+
+if ($DryRun) {
+    Write-Host "== dry run: nothing is tested, published, uploaded or run" -ForegroundColor Cyan
+    Write-Host "release $id -> CT $Vmid on $PveHost$(if ($ResetMemory) { "; memory reset with $($packFiles | ForEach-Object { Split-Path -Leaf $_ })" })"
+    Write-Host "service after: $(if ($ResetMemory -and $Start) { 'started (after the reset)' } elseif ($ResetMemory -or $NoStart) { 'stopped / as it was (enabled state unchanged)' } else { 'enabled + restarted' })"
+    Write-Host "--- run.sh"
+    Write-Host (New-RunScript ($(if ($PushConfig) { '<config push>' } else { '' })) '')
+    return
+}
 
 # 0. Is the CT there, and does it already have a config?
 if ((Invoke-Pve "pct status $Vmid" -AllowFail -Quiet) -ne 0) { throw "CT $Vmid not found on $PveHost (run deploy/provision-alice.sh)" }
@@ -117,23 +179,13 @@ try {
             (($assetFiles | ForEach-Object { "pct push `$v `$d/$_ /var/lib/mineclaw/assets/$_ --user mineclaw --group mineclaw --perms 0644" }) -join '; ') +
             "; echo 'assets: pushed $($assetFiles -join ', ')'"
     }
-    $startFlag = if ($NoStart) { ' --no-start' } else { '' }
-    $script = @"
-set -euo pipefail
-v=$Vmid; d=$remote
-trap 'rm -rf `$d; pct exec `$v -- rm -rf /root/mineclaw-deploy || true' EXIT
-pct exec `$v -- install -d -m 0700 /root/mineclaw-deploy
-pct push `$v `$d/mineclaw.tgz /root/mineclaw-deploy/mineclaw.tgz
-pct push `$v `$d/mineclaw.service /root/mineclaw-deploy/mineclaw.service
-pct push `$v `$d/ct-release.sh $release --perms 0755
-$cfgPush
-$assetPush
-pct exec `$v -- $release install /root/mineclaw-deploy/mineclaw.tgz $id --unit /root/mineclaw-deploy/mineclaw.service --timeout $HealthTimeoutSec$startFlag
-"@
-    [IO.File]::WriteAllText((Join-Path $stage 'run.sh'), ($script -replace "`r`n", "`n"))
+    foreach ($p in $packFiles) { Copy-Item $p (Join-Path $stage (Split-Path -Leaf $p)) }
+    $script = New-RunScript $cfgPush $assetPush
+    [IO.File]::WriteAllText((Join-Path $stage 'run.sh'), $script)
 
     $null = Invoke-Pve "rm -rf $remote && install -d -m 0700 $remote"
-    $files = @(@('mineclaw.tgz', 'mineclaw.service', 'ct-release.sh', 'run.sh') + @($assetFiles | Where-Object { $assetPush }) | ForEach-Object { Join-Path $stage $_ })
+    $files = @(@('mineclaw.tgz', 'mineclaw.service', 'ct-release.sh', 'run.sh') + @($assetFiles | Where-Object { $assetPush }) +
+        @($packFiles | ForEach-Object { Split-Path -Leaf $_ }) | ForEach-Object { Join-Path $stage $_ })
     & scp @ssh -q @files "${PveHost}:$remote/"
     if ($LASTEXITCODE -ne 0) { throw "scp failed ($LASTEXITCODE)" }
     if ($sendCfg) {

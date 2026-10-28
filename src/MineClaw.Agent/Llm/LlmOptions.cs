@@ -41,6 +41,13 @@ public sealed class LlmOptions
     /// <summary>Author versions per job (v1 + revisions after lint/check failures) before it gives up.</summary>
     public int AuthorMaxVersions { get; set; } = 3;
 
+    /// <summary>
+    /// The interrupt patch turn (<c>Authoring/PatchAgent</c>): one small Opus 5.5 call that returns a few lines of JS for a paused
+    /// script. Output budget (thinking + the tool call) and effort; a tiny cached system prompt keeps it fast.
+    /// </summary>
+    public int PatchMaxTokens { get; set; } = 600;
+    public string PatchEffort { get; set; } = "low";
+
     /// <summary>Calls with max_tokens above this stream (a long non-streaming request risks HTTP timeouts).</summary>
     public int StreamAboveTokens { get; set; } = 16_000;
 

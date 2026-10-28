@@ -88,6 +88,31 @@ public sealed class ScriptOptions
     /// </summary>
     public bool DebugProbe { get; set; } = true;
 
+    // ------------------------------------------------------------------ inline interrupt patches ("Bot:Scripts")
+
+    /// <summary>
+    /// Interrupts a few lines of JS can fix (a mob in the way, chest full, a player on the target, a broken tool...) go through the
+    /// script's onInterrupt → a learned handler → one small Opus patch call before any full brain turn. Off = every interrupt
+    /// wakes the brain as before (declared onInterrupt handlers still run).
+    /// </summary>
+    public bool Patches { get; set; } = true;
+    /// <summary>Host actions one patch (or declared/learned handler) may run.</summary>
+    public int PatchMaxActions { get; set; } = 8;
+    /// <summary>Wall time one patch may run, seconds (its actions are cut at the deadline).</summary>
+    public double PatchMaxSeconds { get; set; } = 45;
+    /// <summary>Statements one patch may run (a busy loop in a patch aborts the patch, never the script).</summary>
+    public int PatchMaxStatements { get; set; } = 50_000;
+    /// <summary>How long a patch turn may take to answer before the interrupt escalates, seconds.</summary>
+    public double PatchPlanTimeoutSeconds { get; set; } = 20;
+    /// <summary>Patches (all sources) per run; beyond that every interrupt goes to the brain.</summary>
+    public int PatchMaxPerRun { get; set; } = 8;
+    /// <summary>A patch "worked" when the script progressed and the same interrupt didn't come back within this, seconds.</summary>
+    public double PatchVerifySeconds { get; set; } = 90;
+    /// <summary>A saved handler that failed this many times in a row is demoted (the patch turn runs again).</summary>
+    public int HandlerDemoteAfter { get; set; } = 2;
+    /// <summary>restart_step restarts per run (a patch that keeps restarting escalates).</summary>
+    public int PatchMaxRestarts { get; set; } = 3;
+
     internal TimeSpan MaxWall => TimeSpan.FromMinutes(Math.Max(0.01, MaxMinutes));
     internal TimeSpan MaxPause => TimeSpan.FromMinutes(Math.Max(0.01, MaxPauseMinutes));
 }

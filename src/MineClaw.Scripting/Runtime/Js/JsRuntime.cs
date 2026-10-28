@@ -23,7 +23,7 @@ namespace MineClaw.Scripting.Runtime.Js;
 /// (stop, limits, unwinds) are CLR exceptions that no try/catch in the script can see. The SDK (<see cref="Sdk.SdkModules"/>) is
 /// loaded before the script in its own sources ("sdk/…"), so script line numbers are untouched.
 /// </summary>
-internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime
+internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime, IPatchRuntime
 {
     private Engine _e = null!;
     private ObjectInstance _carry = null!;
@@ -128,7 +128,7 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime
             case JavaScriptException je:
             {
                 var name = je.Error is ObjectInstance eo ? JsConvert.Text(eo.Get("name")) : "";
-                int line = je.Location.SourceFile == "script" ? je.Location.Start.Line : LineIn(je.JavaScriptStackTrace);
+                int line = PatchLine(je.JavaScriptStackTrace) ?? (je.Location.SourceFile == "script" ? je.Location.Start.Line : je.Location.SourceFile == "patch" ? Math.Max(1, je.Location.Start.Line - 1) : LineIn(je.JavaScriptStackTrace));
                 var msg = Clean(je.Message);
                 return ((name == "SyntaxError" || msg.StartsWith("Unexpected", StringComparison.Ordinal) ? "syntax: " : "error: ") + msg, line);
             }
@@ -141,7 +141,7 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime
                 {
                     var msg = JsConvert.Text(o.Get("message"));
                     var stack = o.Get("stack");
-                    int line = stack.IsString() ? LineIn(stack.AsString()) : 0;
+                    int line = stack.IsString() ? PatchLine(stack.AsString()) ?? LineIn(stack.AsString()) : 0;
                     return ("error: " + Clean(msg.Length > 0 ? msg : JsConvert.Text(v)), line);
                 }
                 return ("error: thrown " + ScriptSession.Short(JsConvert.Text(v), 100), 0);
@@ -154,11 +154,23 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime
         }
     }
 
+    private static readonly Regex PatchLoc = new(@"(?<![\w/])patch:(\d+):\d+", RegexOptions.Compiled);
+
+    /// <summary>Inside a patch: the patch's own line (its wrapper adds one), else null.</summary>
+    private static int? PatchLine(string? stack)
+    {
+        var p = PatchLoc.Match(stack ?? "");
+        return p.Success ? Math.Max(1, int.Parse(p.Groups[1].Value, CultureInfo.InvariantCulture) - 1) : null;
+    }
+
+    /// <summary>The script line in a stack text; inside a patch (no script frame) the patch's own line (its wrapper adds one).</summary>
     private static int LineIn(string? stack)
     {
         if (string.IsNullOrEmpty(stack)) return 0;
         var m = ScriptLoc.Match(stack);
-        return m.Success ? int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture) : 0;
+        if (m.Success) return int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+        var p = PatchLoc.Match(stack);
+        return p.Success ? Math.Max(1, int.Parse(p.Groups[1].Value, CultureInfo.InvariantCulture) - 1) : 0;
     }
 
     private static string Clean(string msg) => ScriptSession.Short(ScriptSession.OneLine(Regex.Replace(msg ?? "", @"\s*\(script:\d+:\d+\)$", "")), 120);
@@ -265,7 +277,19 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime
     private void InstallHost(ObjectInstance h)
     {
         // ---- results, control
-        H(h, "fail", a => throw s.Fail(Str(a, 0)));
+        // fail(): a patch may fix the cause first (resume = it returns); otherwise the script fails as before.
+        H(h, "fail", a => { s.FailPoint(Str(a, 0)); return JsValue.Undefined; });
+        H(h, "onInterrupt", a =>
+        {
+            var kind = Str(a, 0) ?? throw ScriptSession.Bug("onInterrupt(kind, fn) needs a kind");
+            var fn = JsConvert.Arg(a, 1) as Function ?? throw ScriptSession.Bug("onInterrupt(kind, fn) needs a function");
+            s.OnInterrupt(kind, i =>
+            {
+                var r = _e.Invoke(fn, PatchEvent(i), CurrentMachine() ?? JsValue.Null).UnwrapIfPromise();
+                return r.IsString() ? r.AsString() : r.IsUndefined() || r.IsNull() ? null : JsConvert.Text(r);
+            });
+            return JsValue.Undefined;
+        });
         H(h, "log", a => { s.Log(string.Join(" ", a.Select(JsConvert.Text))); return JsValue.Undefined; });
         H(h, "prog", a => { s.Progress(Num(a, 0), JsConvert.Arg(a, 1).IsUndefined() ? null : JsConvert.Text(a[1])); return JsValue.Undefined; });
         H(h, "wait", a => R(s.Wait(Num(a, 0) ?? 1)));
@@ -340,6 +364,7 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime
         H(h, "machine", a => new JsString(RunMachine(Str(a, 0) ?? "m", Str(a, 1) ?? "", JsConvert.Arg(a, 2), JsConvert.Arg(a, 3))));
 
         InstallCrew(h);
+        InstallCharacter(h); // JsRuntime.Character.cs: the character module's host calls
     }
 
     private sealed class StrongBox(JsValue v) { public JsValue Value { get; } = v; }
@@ -378,7 +403,77 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime
             try { if (JsonNode.Parse(stored) is JsonObject so) foreach (var (k, v) in so) merged[k] = v?.DeepClone(); } catch (JsonException) { }
         foreach (var (k, v) in RunValues()) merged[k] = v?.DeepClone();
         s.ParamsJson = merged.ToJsonString();
-        return Freeze(V(merged));
+        return _params = ParamsObject(merged);
+    }
+
+    private ObjectInstance? _params;
+    private readonly Dictionary<string, JsValue> _paramValues = new(StringComparer.Ordinal);
+    private bool _patching;
+
+    /// <summary>
+    /// The params object: read-only to the script (an assignment throws a TypeError, as on a frozen object), writable inside a
+    /// patch (<c>P.n = 32</c> retunes the rest of this run; the effective params telemetry follows).
+    /// </summary>
+    private ObjectInstance ParamsObject(JsonObject merged)
+    {
+        var o = new JsObject(_e);
+        _paramValues.Clear();
+        foreach (var (k, v) in merged)
+        {
+            var key = k;
+            _paramValues[key] = Freeze2(V(v));
+            var get = new ClrFunction(_e, "get " + key, (_, _) => _paramValues.TryGetValue(key, out var cur) ? cur : JsValue.Undefined);
+            var set = new ClrFunction(_e, "set " + key, (_, a) =>
+            {
+                if (!_patching) throw new JavaScriptException(_e.Intrinsics.TypeError, $"Cannot assign to read only property '{key}' of params (tune it with script op=save params)");
+                _paramValues[key] = JsConvert.Arg(a, 0);
+                SyncParams();
+                return JsValue.Undefined;
+            });
+            o.DefineOwnProperty(key, new GetSetPropertyDescriptor(get, set, enumerable: true, configurable: false));
+        }
+        o.PreventExtensions();
+        return o;
+    }
+
+    private JsValue Freeze2(JsValue v) => v is ObjectInstance ? Freeze(v) : v;
+
+    private void SyncParams()
+    {
+        var o = new JsonObject();
+        foreach (var (k, v) in _paramValues) o[k] = JsConvert.ToNode(v, 0, args: false);
+        s.ParamsJson = o.ToJsonString();
+    }
+
+    // ------------------------------------------------------------------ patches
+
+    private readonly List<ObjectInstance> _machineCtx = new();
+
+    private JsValue? CurrentMachine() => _machineCtx.Count > 0 ? _machineCtx[^1] : null;
+
+    private JsValue PatchEvent(ScriptInterrupt i)
+    {
+        var ev = new JsObject(_e);
+        ev.Set("kind", new JsString(i.Kind));
+        ev.Set("text", new JsString(i.Text));
+        if (i.Player is { } p) ev.Set("from", new JsString(p));
+        ev.Set("line", new JsNumber(s.Line));
+        return ev;
+    }
+
+    /// <summary>A patch: <c>async (ev, P, m, bb) =&gt; { js }</c> evaluated in this engine (the script's globals, carry, SDK), on the script thread.</summary>
+    public string? RunPatch(string js, ScriptInterrupt i)
+    {
+        var fn = _e.Evaluate("(async function (ev, P, m, bb) {" + '\n' + js + '\n' + "})", "patch");
+        var m = CurrentMachine();
+        var bb = m is ObjectInstance mo ? mo.Get("bb") : JsValue.Null;
+        _patching = true;
+        try
+        {
+            var r = _e.Invoke(fn, PatchEvent(i), _params ?? (JsValue)JsValue.Null, m ?? JsValue.Null, bb).UnwrapIfPromise();
+            return r.IsString() ? r.AsString() : null;
+        }
+        finally { _patching = false; }
     }
 
     private JsonObject? Hostile(double radius)
@@ -399,6 +494,11 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime
         if (fnV is not Function fn) throw ScriptSession.Bug("on(topic, [filter,] fn) needs a function");
         topic = topic.Trim();
         var node = JsConvert.ToNode(filter, 1);
+        if (Events.GameEventCatalog.IsEvent(topic)) // typed game events: C# filters (player, held, block, pos, region, cooldown...)
+        {
+            s.OnGameEvent(topic, node, e => { var r = _e.Invoke(fn, Event(e)); return r.IsString() ? r.AsString() : null; }, owner);
+            return;
+        }
         string? from = ScriptSession.Field(node, "from") ?? ScriptSession.Field(node, "player"), text = ScriptSession.Field(node, "text");
         if (ScriptSession.AsString(node) is { } fs) text = fs;
         if (topic.StartsWith("after:", StringComparison.Ordinal) || topic.StartsWith("every:", StringComparison.Ordinal)) s.Signals.AddTimer(topic, owner);
@@ -418,6 +518,7 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime
         ev.Set("topic", new JsString(e.Name));
         ev.Set("text", new JsString(e.Text));
         if (e.Player is { } p) ev.Set("from", new JsString(p));
+        AddData(ev, e);
         return ev;
     }
 }

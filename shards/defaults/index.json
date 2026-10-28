@@ -3,6 +3,30 @@
   "note": "Default knowledge packs, built by tools/ShardPacks from pristine sources (never a live db). Rebuild: see README.md.",
   "packs": [
     {
+      "file": "1.12.2-gamedata.mcshard",
+      "name": "1.12.2-gamedata",
+      "kind": "version",
+      "version": "1.12.2",
+      "description": "Minecraft 1.12.2 version pack: recipes, items, blocks, smelting, mob and dig facts + the general mechanics doc mechanics_1122.md. Swap it in for any world on this version.",
+      "counts": {
+        "gamedata": 1017,
+        "knowledge": 13
+      },
+      "records": 1030,
+      "bytes": 203096,
+      "vectors": 25,
+      "needs_embedding": 1005,
+      "embedding_model": "text-embedding-3-large",
+      "dims": 1024,
+      "files": [
+        "mechanics_1122.md"
+      ],
+      "source": "minecraft-data pc/1.12.2 + smelting + mobs facts (decompiled 1.12.2 client)",
+      "source_hash": "1cd744f9e8b1ff490c8a7bd4c081fa53abbe7a6d9815ea31da7ce78de34c8088",
+      "content_hash": "d816102440c43a2065db43a160b7cc8cc2af0b5ea84c022fdbef4e5edbc5a522",
+      "builder": "ShardPacks/1"
+    },
+    {
       "file": "b1.8.1-gamedata.mcshard",
       "name": "b1.8.1-gamedata",
       "kind": "version",
@@ -24,6 +48,29 @@
       "source": "MineClaw.Data b1.8.1 tables (client jar / mc-dev), rendered by SeedCorpus",
       "source_hash": "d7bb32352430964bfe4460c214c9d39e182f1b2c48b0c7e67398f984ab13d54f",
       "content_hash": "013ddf6ee00d0c0b112a572fafdd547b870bfac2c27def768e0b27eef45c5530",
+      "builder": "ShardPacks/1"
+    },
+    {
+      "file": "sdk-js.mcshard",
+      "name": "sdk-js",
+      "kind": "mode",
+      "version": "any",
+      "mode": "sdk-js",
+      "description": "sdk-js mode pack (every version): the JavaScript scripting SDK as memory: each module and helper with its doc comment, the game functions a script calls (per game version) and worked examples. Generated from MineClaw.Scripting/Sdk/js and the bot's tools.",
+      "counts": {
+        "knowledge": 193
+      },
+      "records": 193,
+      "bytes": 27414,
+      "vectors": 0,
+      "needs_embedding": 193,
+      "dims": 0,
+      "files": [
+        "sdk-js.md"
+      ],
+      "source": "MineClaw.Scripting SDK modules (core,world,flow,machine,policies,jobs,crew,character) + game functions (b1.8.1, 1.12.2) + ScriptPrompts examples",
+      "source_hash": "8bb5d1e511a6a9aeca56a46fae53c9f8e8ce0a7aa4479cffc0b09ddc6193a304",
+      "content_hash": "b3cccc535425c4653c5ed36d7c3897bbe45f6a416e01d3c12406d9568276e07c",
       "builder": "ShardPacks/1"
     },
     {

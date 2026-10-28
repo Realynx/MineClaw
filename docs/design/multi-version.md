@@ -247,8 +247,11 @@ Call sites: ~1,500 `Blocks.` + ~540 `Items.` static uses. P5 makes the static fa
 - A `1.12.2-gamedata` version pack is built by `tools/ShardPacks` from the vendored minecraft-data, plus a new
   `mechanics_1122.md` written from the decompiled source. It is swapped in with the existing `swap-pack` import; retrieval
   only ever holds the active pack.
-- The world is moving to a default (non-skyblock) world, so the `skyblock` mode pack is removed from that db
-  (`remove-mode`).
+- The world is moving to a default (non-skyblock) world: the first 1.12.2 deploy resets memory instead
+  (`deploy-alice.ps1 -ResetMemory -Pack shards/defaults/1.12.2-gamedata.mcshard`: backup, fresh db with only the 1.12.2 pack +
+  sdk-js, no mode).
+- **Done (P5 knowledge part):** `1.12.2-gamedata.mcshard` (vendored minecraft-data + `shards/sources/1.12.2` smelting/fuel/mob facts
+  + `mechanics_1122.md`), version-aware knowledge indexing (`AgentOptions.GameVersion`), `sdk-js.mcshard`, `--reset-memory`.
 
 ### 2.11 Skills, scripts and prompts (P6 audit)
 

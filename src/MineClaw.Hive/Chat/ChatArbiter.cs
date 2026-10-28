@@ -59,7 +59,24 @@ public sealed class ChatArbiter
 
     public string Self => _self;
     public string Main => _main;
-    public IReadOnlyList<string> Clones { get; }
+    /// <summary>Every clone account the hive knows. Dynamic: main adds an account when it allocates it (<see cref="AddClone"/>),
+    /// a clone learns them from main's roster.</summary>
+    public IReadOnlyList<string> Clones { get; private set; }
+
+    /// <summary>A newly allocated clone account (no-op when known). Rebuilds the address patterns and pushes the roster.</summary>
+    public bool AddClone(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        lock (_lock)
+        {
+            if (name.Equals(_main, StringComparison.OrdinalIgnoreCase) || Clones.Contains(name, StringComparer.OrdinalIgnoreCase)) return false;
+            Clones = [.. Clones, name.Trim()];
+            _hiveBots.Add(name.Trim());
+            Rebuild();
+        }
+        Changed?.Invoke();
+        return true;
+    }
     public TimeSpan StickyWindow { get; }
     /// <summary>
     /// How long a clone keeps a player's unnamed follow-ups after it last took a line from them or spoke to them (user
@@ -212,7 +229,8 @@ public sealed class ChatArbiter
             return new RosterMsg(_main, _mainNames, _live.ToArray(),
                 _sticky.Where(kv => kv.Value.Until > now).ToDictionary(kv => kv.Key, kv => new StickyMsg(kv.Value.Owner, kv.Value.Until.ToUnixTimeMilliseconds(),
                     _delegated.TryGetValue(kv.Key, out var d) && d.Until > now && string.Equals(d.Owner, kv.Value.Owner, StringComparison.OrdinalIgnoreCase))),
-                _threads.Where(kv => kv.Value.Until > now).ToDictionary(kv => kv.Key, kv => new StickyMsg(kv.Value.Owner, kv.Value.Until.ToUnixTimeMilliseconds())));
+                _threads.Where(kv => kv.Value.Until > now).ToDictionary(kv => kv.Key, kv => new StickyMsg(kv.Value.Owner, kv.Value.Until.ToUnixTimeMilliseconds())),
+                Clones.ToArray());
         }
     }
 
@@ -223,6 +241,14 @@ public sealed class ChatArbiter
         {
             _main = r.Main;
             _hiveBots.Add(r.Main);
+            // Dynamic accounts: main's roster names every clone (and the live ones at least).
+            var known = (r.Clones ?? []).Concat(r.Live).Where(n => !string.IsNullOrWhiteSpace(n) && !n.Equals(r.Main, StringComparison.OrdinalIgnoreCase)
+                && !Clones.Contains(n, StringComparer.OrdinalIgnoreCase)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            if (known.Length > 0)
+            {
+                Clones = [.. Clones, .. known];
+                foreach (var n in known) _hiveBots.Add(n);
+            }
             _live = new HashSet<string>(r.Live, StringComparer.OrdinalIgnoreCase);
             _mainNames = r.MainNames;
             _sticky.Clear();

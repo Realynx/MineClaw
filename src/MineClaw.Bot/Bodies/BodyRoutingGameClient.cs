@@ -91,6 +91,9 @@ public sealed class BodyRoutingGameClient(BodyRegistry registry, Func<IBody, IGa
     public event Action<string>? PlayerLeft { add => Main.PlayerLeft += value; remove => Main.PlayerLeft -= value; }
     public event Action<DangerEvent>? Danger { add => Main.Danger += value; remove => Main.Danger -= value; }
     public event Action<int, int>? EntityAnimated { add => Main.EntityAnimated += value; remove => Main.EntityAnimated -= value; }
+    public event Action<int, int, ItemStack?>? ItemCollected { add => Main.ItemCollected += value; remove => Main.ItemCollected -= value; }
+    public event Action<int, int, int, int>? EquipmentChanged { add => Main.EquipmentChanged += value; remove => Main.EquipmentChanged -= value; }
+    public event Action<int, int>? EntityStatus { add => Main.EntityStatus += value; remove => Main.EntityStatus -= value; }
     public event Action<BlockPos, int, int>? BlockAction { add => Main.BlockAction += value; remove => Main.BlockAction -= value; }
 
     // ---- descriptions

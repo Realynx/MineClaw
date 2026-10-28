@@ -451,6 +451,9 @@ public sealed class AgentDb : IDisposable
         }
     }
 
+    /// <summary>True on a thread that is inside <see cref="Tx{T}"/> right now (it holds the gate and a SQLite write lock).</summary>
+    public bool InTransaction => Monitor.IsEntered(Gate) && _txDepth > 0;
+
     /// <summary>Runs <paramref name="body"/> in a transaction (nested calls join the outer one).</summary>
     public void Tx(Action body) => Tx(() => { body(); return 0; });
 

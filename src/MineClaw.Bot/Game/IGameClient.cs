@@ -35,6 +35,12 @@ public interface IGameClient
     event Action<DangerEvent>? Danger;
     event Action<int, int>? EntityAnimated;
     event Action<BlockPos, int, int>? BlockAction;
+    /// <summary>0x16 collect item (collector entity, item entity, stack or null). Default: never raised.</summary>
+    event Action<int, int, ItemStack?>? ItemCollected { add { } remove { } }
+    /// <summary>0x05 entity equipment (entity, slot, item id, damage). Default: never raised.</summary>
+    event Action<int, int, int, int>? EquipmentChanged { add { } remove { } }
+    /// <summary>0x26 entity status (entity, status: 2 hurt, 3 dead). Default: never raised.</summary>
+    event Action<int, int>? EntityStatus { add { } remove { } }
 
     string DescribeStatus();
     string DescribeInventory(bool detail = false, int maxChars = 600);
@@ -142,6 +148,9 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
     public event Action<DangerEvent>? Danger { add => Inner.Danger += value; remove => Inner.Danger -= value; }
     public event Action<int, int>? EntityAnimated { add => Inner.EntityAnimated += value; remove => Inner.EntityAnimated -= value; }
     public event Action<BlockPos, int, int>? BlockAction { add => Inner.BlockAction += value; remove => Inner.BlockAction -= value; }
+    public event Action<int, int, ItemStack?>? ItemCollected { add => Inner.ItemCollected += value; remove => Inner.ItemCollected -= value; }
+    public event Action<int, int, int, int>? EquipmentChanged { add => Inner.EquipmentChanged += value; remove => Inner.EquipmentChanged -= value; }
+    public event Action<int, int>? EntityStatus { add => Inner.EntityStatus += value; remove => Inner.EntityStatus -= value; }
 
     public string DescribeStatus() => Inner.DescribeStatus();
     public string DescribeInventory(bool detail = false, int maxChars = 600) => Inner.DescribeInventory(detail, maxChars);

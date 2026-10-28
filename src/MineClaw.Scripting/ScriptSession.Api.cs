@@ -126,7 +126,7 @@ public sealed partial class ScriptSession
         }
         switch (e.Kind)
         {
-            case ScriptEventKind.Danger: RequestPause(PauseKind.Danger, "danger: " + Short(e.Text, 40), abort: true); break;
+            case ScriptEventKind.Danger: RequestPause(PauseKind.Danger, "danger: " + Short(e.Text, 40), abort: true, e); break;
             case ScriptEventKind.Stop: RequestPause(PauseKind.Stop, $"{e.Player ?? "player"} said stop", abort: true); break;
             case ScriptEventKind.Chat when _o.PauseOnChat: RequestPause(PauseKind.Chat, $"chat from {e.Player ?? "someone"}", abort: false); break;
         }
@@ -180,7 +180,7 @@ public sealed partial class ScriptSession
         TouchSegment();
         switch (ret?.Trim().ToLowerInvariant())
         {
-            case "pause": RequestPause(e.Kind == ScriptEventKind.Danger ? PauseKind.Danger : PauseKind.Script, $"{h.Label} passed on: {Short(e.Text, 40)}", abort: false); break;
+            case "pause": RequestPause(e.Kind == ScriptEventKind.Danger ? PauseKind.Danger : PauseKind.Script, $"{h.Label} passed on: {Short(e.Text, 40)}", abort: false, e); break;
             case "wake": WakeBrain($"{h.Label} passed on: {Short(e.Text, 60)}", force: true); break;
             case "stop": Stop($"stopped by {h.Label}"); break;
         }
@@ -229,6 +229,7 @@ public sealed partial class ScriptSession
             TouchSegment();
             return ActResult.Success("skipped (resume)");
         }
+        if (_patchRun is { } patchRun) PatchBeforeAction(patchRun);
         if (counts)
         {
             if (Actions >= _o.MaxActions) Limit($"action limit ({_o.MaxActions})");
@@ -244,6 +245,9 @@ public sealed partial class ScriptSession
             {
                 _abortCts?.Dispose();
                 _abortCts = atomic ? null : CancellationTokenSource.CreateLinkedTokenSource(_stopCts.Token, _hardCt);
+                // A patch's actions end at its deadline (the patch then aborts; the script itself is untouched).
+                if (_abortCts != null && _patchRun is { } pr && pr.Deadline - _time.GetUtcNow() is var left)
+                    _abortCts.CancelAfter(left > TimeSpan.Zero ? left : TimeSpan.FromMilliseconds(1));
                 _currentAtomic = atomic;
                 _abortedForPause = false;
                 ct = _abortCts?.Token ?? _hardCt;
@@ -268,12 +272,21 @@ public sealed partial class ScriptSession
             TouchSegment();
             if (!again) break;
             SafePoint();
+            if (_patchRun is { } cutPatch)
+            {
+                ThrowIfStopping();
+                if (OtherDangerPending(cutPatch.Interrupt) is { } why) throw new PatchAbortException(why);
+                if (_time.GetUtcNow() >= cutPatch.Deadline) throw new PatchAbortException("patch budget: deadline");
+                WaitForSafety(cutPatch);
+            }
             Locate();
         }
         TraceActionEnd(r.Ok);
         if (counts) RecordTiming(label, sw.Elapsed, r.Ok);
         SafePoint();
         if (!r.Ok) { LastFailure = $"{label}: {Short(OneLine(r.Msg), 80)}"; _lastFailureMsg = r.Msg; }
+        else if (counts && _patchRun == null) NoteActionOk();
+        if (!r.Ok && _patchRun is { } pdl && _time.GetUtcNow() >= pdl.Deadline) throw new PatchAbortException("patch budget: deadline");
         LastActionFailed = !r.Ok;
         SnapshotVars();
         TouchSegment();
@@ -438,6 +451,8 @@ public sealed partial class ScriptSession
         {
             SafePoint();
             Locate();
+            // A patch may answer (learned handler / patch turn) before the brain is woken for it.
+            if (PatchAsk(q, out var patched)) return patched;
             return PauseHere(PauseKind.Script, "needs_input: " + q);
         }
         double s = Math.Clamp(seconds ?? 60, 5, Math.Min(180, _o.MaxWaitSeconds));

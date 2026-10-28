@@ -52,10 +52,11 @@ internal static class JsLint
 
     private static readonly HashSet<string> GenCalls = new(StringComparer.Ordinal) { "gen", "harvest_generator", "harvestGenerator" };
 
-    private static readonly HashSet<string> MachineTopics = new(StringComparer.Ordinal)
+    private static readonly HashSet<string> MachineTopics = new(new[]
     {
         "danger", "lowhp", "void", "died", "chat", "join", "hungry", "invFull", "toolBroke", "hurt", "night", "day",
-    };
+        "player", "block", "item", "mob", "me", "time",
+    }.Concat(Events.GameEventCatalog.Names), StringComparer.Ordinal);
 
     private sealed class Ctx
     {

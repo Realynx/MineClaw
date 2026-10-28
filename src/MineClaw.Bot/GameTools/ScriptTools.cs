@@ -23,7 +23,7 @@ namespace MineClaw.Bot.GameTools;
 /// (one body: a new activity supersedes the script, <c>stop</c> cancels it, background end → <c>[task ok/failed]</c>),
 /// saved/versioned scripts on routines with run stats, promotion to catalog skills, and run_routine on the engine.
 /// </summary>
-public sealed class ScriptBridge
+public sealed partial class ScriptBridge
 {
     /// <summary>Game tools exposed as script functions (positional params = the tool's schema order).</summary>
     public static readonly string[] ActionTools =
@@ -50,6 +50,8 @@ public sealed class ScriptBridge
         public bool DetachedFromWorker;
         public bool PlannerEnded;
         public int BrainWaiters;
+        /// <summary>Wakes held back while a stall/chat interrupt is fixed inline (re-posted if it escalates).</summary>
+        public readonly List<(string Kind, GameEvent E)> Held = new();
     }
 
     private readonly ConditionalWeakTable<ScriptSession, Link> _links = new();
@@ -80,7 +82,22 @@ public sealed class ScriptBridge
         Controller = new ScriptController(BuildHost(), options, time);
         Controller.Paused += OnPaused;
         Controller.Ended += OnEnded;
+        Controller.Resumed += OnResumed;
+        Controller.Started += OnStarted;
+        // Inline interrupt fixing: the script's onInterrupt → a learned handler → one small Opus patch call → the full turn.
+        Patcher = new ScriptPatcher(Library, options, rt.Interrupts,
+            () => PatchPrompt.System(MineClaw.Scripting.Sdk.SdkReference.GameFunctions(GameFunctions(), 900), options.PatchMaxActions, options.PatchMaxSeconds), log)
+        {
+            Agent = new PatchAgent(rt.Llm, rt.Options.Llm, rt.Usage, log),
+            OnEscalated = ReleaseHeld,
+        };
+        Controller.Host.Patcher = Patcher;
+        Controller.Host.SafetyBusy = () => _client.SafetyEngaged;
+        rt.Agent.TurnEnded += OnTurnEnded;
     }
+
+    /// <summary>Learned handlers and the patch turn for this lane's scripts.</summary>
+    public ScriptPatcher Patcher { get; }
 
     private Link L(ScriptSession s) => _links.GetValue(s, _ => new Link());
 
@@ -211,7 +228,7 @@ public sealed class ScriptBridge
     /// The body this lane drives (short name, "67"); null = the main body (hive mode and main: as before). A clone lane's
     /// events carry it, and its interrupt policy hears only its own body's dangers and chat addressed to it.
     /// </summary>
-    public string? Body { get => _body; init { _body = value; Controller.Host.Body = value; } }
+    public string? Body { get => _body; init { _body = value; Controller.Host.Body = value; Patcher.Body = value; } }
     private readonly string? _body;
 
     /// <summary>
@@ -320,9 +337,28 @@ public sealed class ScriptBridge
                 s.Deliver(se);
                 return e with { Wakes = false }; // the script handles it; brain stays asleep (it's context next time)
             }
+            // A danger the script will try to fix inline (onInterrupt / learned handler / patch turn): the brain's wake waits for
+            // the outcome; an escalation pauses as before and its "script paused" notice wakes the brain with this event as context.
+            if (se.Kind == ScriptEventKind.Danger && s.Status != ScriptStatus.Paused
+                && (s.PatchingKind is { } fixing ? string.Equals(fixing, se.Topic ?? "danger", StringComparison.OrdinalIgnoreCase) && se.Player == null
+                    : s.WouldPatch(new ScriptInterrupt(se.Topic ?? "danger", se.Text, se.Player))))
+            {
+                s.Deliver(se);
+                return e with { Wakes = false };
+            }
+            // A trusted player's line that tweaks the running job ("make it 32", "use the other chest"): a patch retunes it.
+            if (se.Kind == ScriptEventKind.Chat && s.Status != ScriptStatus.Paused && Trusted(se.Player)
+                && ScriptPatcher.LooksLikeTweak(se.Text, ParamNames(s)) && s.WouldPatch(new ScriptInterrupt("chat", se.Text, se.Player))
+                && Hold(s, "chat", e) && s.RequestInterrupt(new ScriptInterrupt("chat", se.Text, se.Player), cut: false))
+                return e with { Wakes = false };
             s.Deliver(se);
             if (se.Kind != ScriptEventKind.Join) return e;
         }
+        // The stall watchdog on a running script: a patch may unstick it (restart the step, step aside) before the brain hears it.
+        if (e.Kind == EventKind.Notice && e.Text.StartsWith("stalled: ", StringComparison.Ordinal) && s.Status != ScriptStatus.Paused
+            && s.Patching == null && s.WouldPatch(new ScriptInterrupt("stuck", e.Text))
+            && Hold(s, "stuck", e with { Wakes = true }) && s.RequestInterrupt(new ScriptInterrupt("stuck", e.Text), cut: true))
+            return e with { Wakes = false };
         if (s.Status == ScriptStatus.Paused) return e; // a paused script means the brain is awake
         if (e.Kind == EventKind.IdleTick) return null;
         if (e.Kind is EventKind.TaskCompleted or EventKind.TaskFailed) return e;
@@ -362,6 +398,30 @@ public sealed class ScriptBridge
         return danger ? new ScriptEvent(ScriptEventKind.Danger, e.Format(), e.Player, topic) : null;
     }
 
+    private bool Trusted(string? player) =>
+        player != null && _rt.Options.Self.TrustedPlayers.Any(p => string.Equals(p, player, StringComparison.OrdinalIgnoreCase));
+
+    private static IEnumerable<string> ParamNames(ScriptSession s)
+    {
+        try { return ScriptLint.Params(s.Code).Select(p => p.Name).ToList(); } catch (Exception) { return []; }
+    }
+
+    private bool Hold(ScriptSession s, string kind, GameEvent e)
+    {
+        var l = L(s);
+        lock (l.Held) { l.Held.RemoveAll(h => h.Kind == kind); l.Held.Add((kind, e)); }
+        return true;
+    }
+
+    /// <summary>A stall/chat interrupt escalated: the brain hears the event it was spared (the script keeps running).</summary>
+    private void ReleaseHeld(ScriptSession s, ScriptInterrupt i)
+    {
+        var l = L(s);
+        List<GameEvent> due;
+        lock (l.Held) { due = l.Held.Where(h => h.Kind == i.Kind).Select(h => h.E).ToList(); l.Held.RemoveAll(h => h.Kind == i.Kind); }
+        foreach (var e in due) PostOwn(e with { Wakes = true });
+    }
+
     private bool InterruptPending() =>
         _rt.Events.Snapshot().Any(e => e.Wakes && e.Priority >= _rt.Options.InterruptPriority && Map(e)?.Kind is ScriptEventKind.Danger);
 
@@ -370,13 +430,68 @@ public sealed class ScriptBridge
         var l = L(s);
         if (Volatile.Read(ref l.BrainWaiters) > 0 || s.PausedFor == PauseKind.Brain) return; // the brain's own call reports it
         bool wakes = s.PausedFor is PauseKind.Danger or PauseKind.Stop or PauseKind.Script;
+        // The full turn's interrupt → resume latency (a patch that escalated keeps its open measurement, now "escalated").
+        if (wakes)
+        {
+            var key = ScriptPatcher.Key(s);
+            if (!_rt.Interrupts.IsOpen(key)) _rt.Interrupts.Open(key, s.Name, PauseKindTag(s), "full", Body);
+        }
         var text = "script paused: " + s.State() + (s.PausedFor == PauseKind.Chat ? $" (auto-resume {Options.ChatAutoResumeSeconds}s)"
             : s.PauseReason?.StartsWith("needs_input", StringComparison.Ordinal) == true ? " (answer: script{op:resume,code:<answer>})" : "");
         PostOwn(GameEvent.Notice(text, wakes ? EventPriority.Normal : EventPriority.Background));
     }
 
+    private static string PauseKindTag(ScriptSession s) =>
+        s.PauseReason?.StartsWith("needs_input", StringComparison.Ordinal) == true ? "needs_input"
+        : s.PausedFor switch { PauseKind.Danger => "danger", PauseKind.Stop => "stop", _ => "pause" };
+
+    /// <summary>
+    /// A resume ends the interrupt; one the brain's turn made ends with that turn (its last rounds count: the full path's cost is the
+    /// whole turn, as the baseline measured it).
+    /// </summary>
+    private void OnResumed(ScriptSession s, bool auto)
+    {
+        var key = ScriptPatcher.Key(s);
+        if (!auto && _rt.Agent.TurnStartedAt != null && _rt.Interrupts.IsOpen(key))
+        {
+            lock (_closeAtTurnEnd) _closeAtTurnEnd.Add(key);
+            return;
+        }
+        _rt.Interrupts.Close(key, auto ? "auto_resume" : "resume", true);
+    }
+
+    private readonly List<string> _closeAtTurnEnd = new();
+
+    private void OnTurnEnded()
+    {
+        List<string> keys;
+        lock (_closeAtTurnEnd) { keys = _closeAtTurnEnd.ToList(); _closeAtTurnEnd.Clear(); }
+        foreach (var k in keys) _rt.Interrupts.Close(k, "resume", true);
+    }
+
+    /// <summary>A failure that went to the brain is measured until the brain starts the next script on this lane.</summary>
+    private string? _failedKey;
+
+    private void OnStarted(ScriptSession s)
+    {
+        if (Interlocked.Exchange(ref _failedKey, null) is { } k) _rt.Interrupts.Close(k, "restarted", true, "next script " + s.Name);
+    }
+
     private void OnEnded(ScriptSession s)
     {
+        // An open interrupt ends with the run: replaced/cancelled by the brain, or failed (then measured until the next start).
+        var ikey = ScriptPatcher.Key(s);
+        if (_rt.Interrupts.IsOpen(ikey))
+        {
+            if (s.Status == ScriptStatus.Failed) Interlocked.Exchange(ref _failedKey, ikey);
+            else _rt.Interrupts.Close(ikey, s.Reason == "replaced" ? "replaced" : s.Status.ToString().ToLowerInvariant(), s.Ok);
+        }
+        else if (s.Status == ScriptStatus.Failed && s.Request.Role == null)
+        {
+            // A plain failure that wakes the brain (no patch tried): the full path, until the brain starts something again.
+            _rt.Interrupts.Open(ikey, s.Name, "failed", "full", Body);
+            Interlocked.Exchange(ref _failedKey, ikey);
+        }
         var l = L(s);
         _log?.LogInformation("script {Name}{Version} ({Lang}) by {Author} {Status}: {Actions} actions in {Seconds:0}s — {Outcome} | params {Params} | timings {Timings}{State}", s.Name,
             s.Request.Version is { } v ? " v" + v : "", ScriptLanguages.Tag(s.Language), s.Request.Author ?? "c#", s.Status, s.Actions, s.Elapsed.TotalSeconds, s.Outcome,
@@ -467,8 +582,10 @@ public sealed class ScriptBridge
             }
             case "list":
                 return ToolResult.Success(Library.Catalog());
+            case "bind" or "unbind" or "bindings":
+                return await BindingOpAsync(op, input, ct).ConfigureAwait(false); // ScriptTools.Bindings.cs
             default:
-                return ToolResult.Error("op is " + string.Join("|", ScriptPrompts.Ops));
+                return ToolResult.Error("op is " + string.Join("|", ScriptPrompts.Ops.Concat(ScriptPrompts.BindOps)));
         }
     }
 
@@ -1097,6 +1214,7 @@ public static class ScriptTools
         // is refused in the registry, whatever path the call takes. Saved scripts by name, status and cancel stay open to all.
         rt.Tools.AddPolicy(ToolName, (input, caller) => WritesCode(input) && caller?.IsBrainModel(rt.Options.Llm) != true ? ScriptPrompts.BrainOnly : null);
         rt.Agent.ExtendSystem(ScriptPrompts.AuthorLine); // the brain never writes code: goal= goes to the separate Opus author
+        rt.Agent.ExtendSystem(ScriptPrompts.BindLine); // instant triggers (standing bindings, learned reactions): one cached line
         bridge.Author = new AuthorAgent(rt.Llm, rt.Options.Llm, rt.Usage, log);
         rt.Worker?.ExtendSystem(ScriptPrompts.WorkerLine);
         bridge.MaybeHousekeep(force: true);

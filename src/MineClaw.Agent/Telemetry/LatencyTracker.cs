@@ -36,12 +36,20 @@ public sealed record LatencyRecord
     public bool? Ack { get; init; }
     /// <summary>"cheap" = answered by the cheap tier alone (no brain call); "correction" = a correction of a cheap-only reply.</summary>
     public string? Path { get; init; }
+    /// <summary>What kind of line it was: command | question | banter | greeting | help (<see cref="Brainstem.ChatIntent"/>).</summary>
+    public string? Category { get; init; }
+    /// <summary>What the first visible reaction was: gaze (head turn), gesture, line (chat), move, action.</summary>
+    public string? ReactionBy { get; init; }
+    /// <summary>The full answer: the later of the conclusive chat line and the first game action (whichever the turn produced).</summary>
+    public long? FullMs { get; init; }
+    /// <summary>An instant (brainstem/reaction) line went out before any model spoke.</summary>
+    public bool? Instant { get; init; }
 }
 
 /// <summary>Medians over the recent window (TUI tokens panel).</summary>
 public sealed record LatencySummary(int Turns, long? ReactionP50, long? FirstActionP50, long? FirstMoveP50, double? RoundsP50,
     int SpeculationAdopted, int SpeculationCancelled, long? FirstChatP50 = null, long? ConclusiveP50 = null,
-    int CheapOnly = 0, int CheapMisses = 0, int Chats = 0)
+    int CheapOnly = 0, int CheapMisses = 0, int Chats = 0, string? ByKind = null)
 {
     /// <summary>"react 0.1s · chat 1.9s/6.2s · act 2.9s · move 0.3s · rounds 0 (n 12) · spec 5/1 · cheap 3/12 (1 miss)".</summary>
     public string Line() =>
@@ -83,6 +91,9 @@ public sealed class LatencyTracker
         public DateTimeOffset? FirstChat, Conclusive;
         public bool? Ack;
         public string? Path;
+        public string? Category;
+        public string? ReactionBy;
+        public bool? Instant;
     }
 
     /// <summary>Tools that drive the body (moving, digging, placing, containers, combat, gestures, worker/skill/script work).</summary>
@@ -112,6 +123,9 @@ public sealed class LatencyTracker
     /// <summary>How long after the brain's turn a queued action may still count as this chat's first action.</summary>
     public TimeSpan AwaitActionAfterTurn { get; set; } = TimeSpan.FromSeconds(90);
 
+    /// <summary>The bot's own names (stripped before the line is classified); null = none.</summary>
+    public Func<IEnumerable<string>>? Names { get; set; }
+
     /// <summary>Raised with each finished measurement (the jsonl writer, tests).</summary>
     public event Action<LatencyRecord>? Recorded;
 
@@ -126,19 +140,49 @@ public sealed class LatencyTracker
             if (_open is { InTurn: false, CloseBy: not null }) flushed = CloseLocked();
             var line = TextUtil.OneLine(text);
             if (_open != null && line.Length > 0 && _open.Text.Contains(TextUtil.Truncate(line, 40), StringComparison.Ordinal)) { }
-            else if (_open == null) { _open = new Open { ChatAt = at, Player = player, Text = TextUtil.Truncate(line, 80) }; _chats++; }
-            else if (!_open.InTurn && _open.Text.Length < 80) _open.Text = TextUtil.Truncate(_open.Text + " / " + TextUtil.OneLine(text), 80);
+            else if (_open == null) { _open = new Open { ChatAt = at, Player = player, Text = TextUtil.Truncate(line, 80), Category = CategoryOf(line) }; _chats++; }
+            else if (!_open.InTurn && _open.Text.Length < 80)
+            {
+                _open.Text = TextUtil.Truncate(_open.Text + " / " + TextUtil.OneLine(text), 80);
+                _open.Category = Urgent(_open.Category, CategoryOf(line));
+            }
         }
         Emit(flushed);
     }
 
     /// <summary>A visible reaction that isn't an action (head turn, nod, a chat line).</summary>
-    public void NoteReaction() => NoteReaction(Now);
+    public void NoteReaction(string? by = null) => NoteReaction(Now, by);
 
     /// <summary>A visible reaction at <paramref name="at"/> (the head turn happens as the line arrives, before it is queued).</summary>
-    public void NoteReaction(DateTimeOffset at)
+    public void NoteReaction(DateTimeOffset at, string? by = null)
     {
-        lock (_lock) if (_open is { } o && (o.Reaction == null || at < o.Reaction)) o.Reaction = at;
+        lock (_lock) if (_open is { } o && (o.Reaction == null || at < o.Reaction)) { o.Reaction = at; o.ReactionBy = by ?? o.ReactionBy; }
+    }
+
+    /// <summary>An instant line (brainstem reaction, prefetched wording) went out at <paramref name="at"/>, before any model spoke.</summary>
+    public void NoteInstantLine(DateTimeOffset at)
+    {
+        lock (_lock)
+        {
+            if (_open is not { } o) return;
+            o.Instant = true;
+            if (o.FirstChat == null || at < o.FirstChat) o.FirstChat = at;
+            if (o.Reaction == null || at < o.Reaction) { o.Reaction = at; o.ReactionBy = "line"; }
+        }
+    }
+
+    private string CategoryOf(string line)
+    {
+        IEnumerable<string>? names = null;
+        try { names = Names?.Invoke(); } catch (Exception) { }
+        return Brainstem.ChatIntent.Classify(line, names).Category;
+    }
+
+    private static string? Urgent(string? a, string? b)
+    {
+        foreach (var c in new[] { Brainstem.ChatIntent.Help, Brainstem.ChatIntent.Command, Brainstem.ChatIntent.Question, Brainstem.ChatIntent.Greeting })
+            if (a == c || b == c) return c;
+        return a ?? b;
     }
 
     /// <summary>
@@ -153,7 +197,7 @@ public sealed class LatencyTracker
             if (o.FirstChat == null || at < o.FirstChat) o.FirstChat = at;
             if (ack) o.Ack = true;
             else if (o.Conclusive == null || at > o.Conclusive) o.Conclusive = at;
-            if (o.Reaction == null || at < o.Reaction) o.Reaction = at;
+            if (o.Reaction == null || at < o.Reaction) { o.Reaction = at; o.ReactionBy = "line"; }
         }
     }
 
@@ -206,7 +250,7 @@ public sealed class LatencyTracker
             if (_open is not { } o) return;
             var now = Now;
             o.Move ??= now;
-            o.Reaction ??= now;
+            if (o.Reaction == null) { o.Reaction = now; o.ReactionBy = "move"; }
             if (speculative && o.SpecStarted == null) { o.SpecStarted = now; o.SpecRounds = o.Rounds; }
             else done = MarkActionLocked(o, now);
         }
@@ -223,7 +267,7 @@ public sealed class LatencyTracker
             if (o.Tools.Count < 16) o.Tools.Add(filler ? "~" + tool : tool);
             if (filler || !(BodyTools.Contains(tool) || tool == "stop")) return; // a stop is the action a "stop" asks for
             var now = Now;
-            o.Reaction ??= now;
+            if (o.Reaction == null) { o.Reaction = now; o.ReactionBy = ActivityManagerMovement(tool) ? "move" : tool == "act" ? "gesture" : "action"; }
             if (ActivityManagerMovement(tool)) o.Move ??= now;
             done = MarkActionLocked(o, now);
         }
@@ -293,10 +337,14 @@ public sealed class LatencyTracker
         if (o.Action != null && o.Action <= at) return null;
         o.Action = at;
         o.RoundsAtAction = rounds ?? (o.RoundsAtAction is { } ra && ra < o.Rounds ? ra : o.Rounds);
-        o.Reaction = o.Reaction is { } r && r < at ? r : at;
+        if (o.Reaction is not { } r || r > at) { o.Reaction = at; o.ReactionBy ??= "action"; }
         // The turn already ended and only waited for this: close now.
         return !o.InTurn && o.CloseBy != null ? CloseLocked() : null;
     }
+
+    /// <summary>The full answer: the later of the final line and the first action; only a first line (an ack) when neither came.</summary>
+    internal static long? Full(long? conclusive, long? action, long? firstChat) =>
+        conclusive is { } c && action is { } a ? Math.Max(c, a) : conclusive ?? action ?? firstChat;
 
     private LatencyRecord? CloseLocked()
     {
@@ -310,6 +358,8 @@ public sealed class LatencyTracker
             RoundsBeforeAction = o.Action != null ? o.RoundsAtAction : null, Rounds = o.Rounds, Tools = o.Tools.ToArray(),
             Speculation = o.Speculation, Effort = o.Effort,
             FirstChatMs = Ms(o.FirstChat), ConclusiveMs = Ms(o.Conclusive), Ack = o.Ack, Path = o.Path,
+            Category = o.Category, ReactionBy = o.Reaction != null ? o.ReactionBy : null, Instant = o.Instant,
+            FullMs = Full(Ms(o.Conclusive), Ms(o.Action), Ms(o.FirstChat)),
         };
         _recent.AddLast(rec);
         while (_recent.Count > _keep) _recent.RemoveFirst();
@@ -324,6 +374,9 @@ public sealed class LatencyTracker
 
     public IReadOnlyList<LatencyRecord> Recent() { lock (_lock) return _recent.ToArray(); }
 
+    /// <summary>p50/p95 of first reaction and full answer by kind of message over the recent records (<see cref="LatencyReport"/>).</summary>
+    public string ReportLine() => LatencyReport.Line(Recent());
+
     /// <summary>Medians over the last <paramref name="window"/> records.</summary>
     public LatencySummary Summary(int window = 50)
     {
@@ -334,7 +387,7 @@ public sealed class LatencyTracker
             return new LatencySummary(list.Count, P50(list.Select(r => r.ReactionMs)), P50(list.Select(r => r.FirstActionMs)),
                 P50(list.Select(r => r.FirstMoveMs)), P50D(list.Where(r => r.RoundsBeforeAction != null).Select(r => (double)r.RoundsBeforeAction!.Value)),
                 _specAdopted, _specCancelled, P50(list.Select(r => r.FirstChatMs)), P50(list.Select(r => r.ConclusiveMs)),
-                _cheapOnly, _cheapMisses, _chats);
+                _cheapOnly, _cheapMisses, _chats, LatencyReport.Line(list));
         }
     }
 

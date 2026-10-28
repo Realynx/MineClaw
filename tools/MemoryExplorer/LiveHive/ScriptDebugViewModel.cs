@@ -210,7 +210,9 @@ public sealed partial class ScriptDebugViewModel : ObservableObject, IDisposable
         StatusKind = s.Paused ? "paused" : s.Live ? "running" : s.Status;
         StatusText = (s.Live ? (s.Paused ? "paused" : s.PausePending ? "pausing at the next safe point" : "running") : s.Status)
             + (s.Line > 0 ? $" · line {s.Line}" : "");
-        PauseText = s.Paused ? $"paused ({s.PauseKind}): {s.PauseReason}" + (s.PausedSeconds is { } ps ? $" · {Dur(ps)}" : "") : "";
+        PauseText = s.Patching is { } patching ? $"patching: {patching}"
+            : s.Paused ? $"paused ({s.PauseKind}): {s.PauseReason}" + (s.PausedSeconds is { } ps ? $" · {Dur(ps)}" : "") + (s.PatchNote is { } patchNote ? $" · patch {patchNote}" : "") : "";
+        if (s.Patching != null) StatusText = "patching · " + StatusText;
         LineLive = s.LineLive;
         SetCurrent(s.Line);
         WhereText = s.LineLive ? $"line {s.Line}:{s.Column}" + (s.Snippet is { } sn ? $"  `{sn}`" : "")

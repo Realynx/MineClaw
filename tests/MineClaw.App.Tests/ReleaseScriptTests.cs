@@ -24,10 +24,32 @@ public class ReleaseScriptTests : IDisposable
         File.WriteAllText(Path.Combine(App, "current"), New + "\n");
         File.WriteAllText(Path.Combine(App, "releases", Old, "SCHEMA_VERSION"), "5\n");
         File.WriteAllText(Path.Combine(App, "releases", New, "SCHEMA_VERSION"), "6\n");
-        File.WriteAllText(Path.Combine(_root, "stubs.sh"),
-            "systemctl() { echo \"systemctl $*\" >> \"$MINECLAW_DATA/../calls.log\"; return 0; }\n" +
-            "journalctl() { echo '2026-10-27T20:00:00 mineclaw: joined 10.1.2.69 as maid_chan'; }\n" +
-            "sleep() { :; }\n");
+        // A stateful systemctl (<root>/active = running; start/restart create it, stop removes it), id, and a runuser that logs the
+        // command plus the staged pack folder and exits with <root>/runuser-exit (default 0).
+        File.WriteAllText(Path.Combine(_root, "stubs.sh"), """
+            systemctl() {
+              echo "systemctl $*" >> "$MINECLAW_DATA/../calls.log"
+              case $1 in
+                is-active) [[ -f "$MINECLAW_DATA/../active" ]]; return ;;
+                stop) rm -f "$MINECLAW_DATA/../active" ;;
+                start|restart) touch "$MINECLAW_DATA/../active" ;;
+                is-enabled) cat "$MINECLAW_DATA/../enabled" 2>/dev/null || echo disabled ;;
+              esac
+              return 0
+            }
+            journalctl() { echo '2026-10-27T20:00:00 mineclaw: joined 10.1.2.69 as maid_chan'; }
+            sleep() { :; }
+            id() { echo 1000; }
+            runuser() {
+              echo "runuser $*" >> "$MINECLAW_DATA/../calls.log"
+              local a
+              for a in "$@"; do
+                if [[ $a == *.mcshard ]]; then echo "staged: $(ls "$(dirname "$a")" | tr '\n' ' ')" >> "$MINECLAW_DATA/../calls.log"; fi
+              done
+              return "$(cat "$MINECLAW_DATA/../runuser-exit" 2>/dev/null || echo 0)"
+            }
+
+            """.Replace("\r\n", "\n"));
     }
 
     public void Dispose() { try { Directory.Delete(_root, true); } catch { } }
@@ -62,6 +84,9 @@ public class ReleaseScriptTests : IDisposable
         psi.Environment["MINECLAW_APP"] = App.Replace('\\', '/');
         psi.Environment["MINECLAW_DATA"] = Data.Replace('\\', '/');
         psi.Environment["BASH_ENV"] = Path.Combine(_root, "stubs.sh").Replace('\\', '/');
+        psi.Environment["MINECLAW_ETC"] = Path.Combine(_root, "etc").Replace('\\', '/');
+        psi.Environment["MINECLAW_UNIT"] = Path.Combine(_root, "unit", "mineclaw.service").Replace('\\', '/');
+        psi.Environment["TMPDIR"] = Path.Combine(_root, "tmp").Replace('\\', '/');
         using var p = Process.Start(psi)!;
         var stdout = p.StandardOutput.ReadToEndAsync();
         var stderr = p.StandardError.ReadToEndAsync();
@@ -143,6 +168,119 @@ public class ReleaseScriptTests : IDisposable
         var (exit, output) = Run("rollback", "--dry-run");
         Assert.NotEqual(0, exit);
         Assert.Contains("live db is schema v6", output);
+    }
+
+    private string Calls() => File.Exists(Path.Combine(_root, "calls.log")) ? File.ReadAllText(Path.Combine(_root, "calls.log")) : "";
+
+    /// <summary>A release tarball (mineclaw/MineClaw.App: a script answering --schema-version) and a unit file.</summary>
+    private (string Tarball, string Unit) ReleaseFiles()
+    {
+        var tgz = Path.Combine(_root, "mineclaw.tgz");
+        using (var fs = File.Create(tgz))
+        using (var gz = new System.IO.Compression.GZipStream(fs, System.IO.Compression.CompressionLevel.Fastest))
+        using (var tar = new System.Formats.Tar.TarWriter(gz))
+        {
+            tar.WriteEntry(new System.Formats.Tar.PaxTarEntry(System.Formats.Tar.TarEntryType.Directory, "mineclaw/") { Mode = (UnixFileMode)0b111_101_101 });
+            tar.WriteEntry(new System.Formats.Tar.PaxTarEntry(System.Formats.Tar.TarEntryType.RegularFile, "mineclaw/MineClaw.App")
+            {
+                Mode = (UnixFileMode)0b111_101_101,
+                DataStream = new MemoryStream("#!/bin/bash\necho 7\n"u8.ToArray()),
+            });
+        }
+        var unit = Path.Combine(_root, "mineclaw.service");
+        File.WriteAllText(unit, "[Unit]\nDescription=test\n");
+        Directory.CreateDirectory(Path.Combine(_root, "etc"));
+        Directory.CreateDirectory(Path.Combine(_root, "unit"));
+        File.WriteAllText(Path.Combine(_root, "etc", "appsettings.json"), "{}");
+        // GNU tar reads "C:/..." as a remote host: hand Git Bash its own /c/... form.
+        var t = tgz.Replace('\\', '/');
+        if (t.Length > 2 && t[1] == ':') t = "/" + char.ToLowerInvariant(t[0]) + t[2..];
+        return (t, unit.Replace('\\', '/'));
+    }
+
+    [Fact]
+    public void Install_with_no_start_leaves_the_enabled_state_and_the_service_alone()
+    {
+        if (Bash() is null) return;
+        var (tgz, unit) = ReleaseFiles();
+        const string id = "20261028-120000";
+        var (exit, output) = Run("install", tgz, id, "--unit", unit, "--no-start");
+        Assert.True(exit == 0, output);
+        Assert.Equal(id, Current());
+        Assert.Contains("enabled state left as it is", output);
+        Assert.Contains("not (re)started (--no-start)", output);
+        var calls = Calls();
+        Assert.Contains("systemctl daemon-reload", calls);
+        Assert.DoesNotContain("systemctl enable", calls);
+        Assert.DoesNotContain("systemctl disable", calls);
+        Assert.DoesNotContain("systemctl restart", calls);
+        Assert.DoesNotContain("systemctl start", calls);
+
+        // Without --no-start an install enables and restarts as before.
+        var (exit2, output2) = Run("install", tgz, "20261028-130000", "--unit", unit, "--timeout", "4");
+        Assert.True(exit2 == 0, output2);
+        Assert.Contains("systemctl enable --quiet mineclaw", Calls());
+        Assert.Contains("HEALTHY", output2);
+    }
+
+    /// <summary>The deploy's staging folder in the CT: the version pack + sdk-js beside it; the current release's MineClaw.App.</summary>
+    private string WritePacks()
+    {
+        var dir = Path.Combine(_root, "deploy-in");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "1.12.2-gamedata.mcshard"), "pack");
+        File.WriteAllText(Path.Combine(dir, "sdk-js.mcshard"), "sdk");
+        File.WriteAllText(Path.Combine(App, "releases", New, "MineClaw.App"), "#!/bin/bash\necho app\n");
+        Directory.CreateDirectory(Path.Combine(_root, "tmp"));
+        return Path.Combine(dir, "1.12.2-gamedata.mcshard").Replace('\\', '/');
+    }
+
+    [Fact]
+    public void Reset_memory_stops_the_service_runs_as_the_service_user_and_leaves_it_stopped()
+    {
+        if (Bash() is null) return;
+        var pack = WritePacks();
+        File.WriteAllText(Path.Combine(_root, "active"), "");
+        File.WriteAllText(Path.Combine(_root, "enabled"), "enabled\n");
+        var (exit, output) = Run("reset-memory", pack);
+        Assert.True(exit == 0, output);
+        var calls = Calls();
+        int stop = calls.IndexOf("systemctl stop mineclaw", StringComparison.Ordinal);
+        int run = calls.IndexOf("runuser -u mineclaw -- env", StringComparison.Ordinal);
+        Assert.True(stop >= 0 && run > stop, calls);
+        Assert.Contains("/1.12.2-gamedata.mcshard --modes none --yes --config", calls);
+        Assert.Contains("--reset-memory --pack ", calls);
+        Assert.Contains("--data-dir " + Data.Replace('\\', '/') + " --backup-dir " + Data.Replace('\\', '/') + "-backup-", calls);
+        Assert.Contains("staged: 1.12.2-gamedata.mcshard sdk-js.mcshard", calls);
+        Assert.False(File.Exists(Path.Combine(_root, "active"))); // left stopped
+        Assert.DoesNotContain("systemctl start", calls);
+        Assert.DoesNotContain("systemctl restart", calls);
+        Assert.DoesNotContain("systemctl enable", calls);
+        Assert.DoesNotContain("systemctl disable", calls);
+        Assert.Contains("service left stopped (enabled state unchanged: enabled)", output);
+        Assert.Single(Directory.GetDirectories(_root, "data-backup-*"));
+        Assert.Empty(Directory.GetDirectories(Path.Combine(_root, "tmp"))); // the stage is cleaned up
+    }
+
+    [Fact]
+    public void Reset_memory_with_start_restarts_after_and_a_failed_reset_stays_stopped()
+    {
+        if (Bash() is null) return;
+        var pack = WritePacks();
+        var (exit, output) = Run("reset-memory", pack, "--start", "--no-sdk", "--timeout", "4");
+        Assert.True(exit == 0, output);
+        Assert.Contains(" --no-sdk ", Calls());
+        Assert.Contains("staged: 1.12.2-gamedata.mcshard \n", Calls());
+        Assert.Contains("HEALTHY", output);
+
+        File.Delete(Path.Combine(_root, "calls.log"));
+        File.Delete(Path.Combine(_root, "active"));
+        foreach (var d in Directory.GetDirectories(_root, "data-backup-*")) Directory.Delete(d, true);
+        File.WriteAllText(Path.Combine(_root, "runuser-exit"), "3");
+        var (bad, why) = Run("reset-memory", pack, "--start");
+        Assert.NotEqual(0, bad);
+        Assert.Contains("reset failed (exit 3); the service stays stopped", why);
+        Assert.DoesNotContain("systemctl restart", Calls());
     }
 
     [Fact]

@@ -1,17 +1,25 @@
 // ShardPacks — builds the default knowledge packs (shards/defaults/*.mcshard + index.json) from PRISTINE sources, never a live db.
 //
 //   dotnet run --project tools/ShardPacks -- build                         b1.8.1: MineClaw.Data tables + docs/knowledge, vectors from the seed
+//   dotnet run --project tools/ShardPacks -- build --version 1.12.2        the vendored minecraft-data (third_party/minecraft-data/pc/1.12.2)
+//                                                                          + shards/sources/1.12.2 facts + docs/knowledge marked 1.12.2
 //   dotnet run --project tools/ShardPacks -- build --version 1.8.9 --source minecraft-data --data <minecraft-data checkout> [--data-key 1.8]
-//   dotnet run --project tools/ShardPacks -- verify                        rebuild into a temp folder and compare byte for byte
+//   dotnet run --project tools/ShardPacks -- verify                        rebuild every version in index.json (+ sdk-js) into a temp
+//                                                                          folder and compare byte for byte (exit 4 when anything is stale)
 //   dotnet run --project tools/ShardPacks -- list                          the index
 //
+// Every build also writes sdk-js.mcshard (the JS scripting SDK, generated from src/MineClaw.Scripting/Sdk/js and the bot's tools);
+// --no-sdk skips it, --sdk <dir> reads the SDK modules from another folder.
 // Options: --out <dir> (shards/defaults) · --knowledge <dir> (docs/knowledge) · --seed <db> (data/seed/mineclaw-seed.db) · --no-vectors ·
-//          --model <name> --dims <n> (which seed vectors) · --only <pack,...> · --max-mb <n> (20: bigger packs drop their vectors).
+//          --data <dir> · --facts <dir> (shards/sources/<version>) · --model <name> --dims <n> (which seed vectors) · --only <pack,...> ·
+//          --max-mb <n> (20: bigger packs drop their vectors).
 // No network, no API calls, no keys: it reads files and the seed db read-only. It never downloads minecraft-data.
 
 using System.Globalization;
 using MineClaw.Agent.Admin.Shards;
 using MineClaw.Agent.Admin.Shards.Packs;
+using MineClaw.Bot.GameTools;
+using MineClaw.Scripting.Sdk;
 
 var root = FindRoot();
 string? Opt(string name) { int i = Array.IndexOf(args, name); return i >= 0 && i + 1 < args.Length ? args[i + 1] : null; }
@@ -24,13 +32,14 @@ try
 {
     return cmd.ToLowerInvariant() switch
     {
-        "build" => Build(outDir, print: true),
+        "build" => Build(outDir, Opt("--version") ?? KnowledgePack.DefaultVersion, print: true, sdk: !Flag("--no-sdk")),
         "verify" => Verify(),
         "list" => List(),
         _ => Usage(),
     };
 }
-catch (Exception ex) when (ex is ArgumentException or FileNotFoundException or DirectoryNotFoundException or ShardFormatException or InvalidOperationException)
+catch (Exception ex) when (ex is ArgumentException or FileNotFoundException or DirectoryNotFoundException or ShardFormatException
+                               or InvalidOperationException or InvalidDataException)
 {
     Console.Error.WriteLine("error: " + ex.Message);
     return 2;
@@ -38,20 +47,23 @@ catch (Exception ex) when (ex is ArgumentException or FileNotFoundException or D
 
 int Usage()
 {
-    Console.Error.WriteLine("usage: ShardPacks build|verify|list [--version v] [--source mineclaw|minecraft-data --data dir] [--out dir] [--no-vectors]");
+    Console.Error.WriteLine("usage: ShardPacks build|verify|list [--version v] [--source mineclaw|minecraft-data --data dir] [--facts dir] [--out dir] [--no-vectors] [--no-sdk]");
     return 1;
 }
 
-PackBuildOptions Options(string output)
+PackBuildOptions Options(string output, string version, bool sdk, bool versionPacks = true)
 {
-    var version = Opt("--version") ?? KnowledgePack.DefaultVersion;
     var sourceKind = Opt("--source") ?? (version == KnowledgePack.DefaultVersion ? "mineclaw" : "minecraft-data");
+    var vendored = Path.Combine(root, "third_party", "minecraft-data", "pc", version);
+    var facts = Opt("--facts") is { } fo ? Abs(fo) : Path.Combine(root, "shards", "sources", version);
     IGameDataSource source = sourceKind.ToLowerInvariant() switch
     {
         "mineclaw" when version == KnowledgePack.DefaultVersion => new MineClawDataSource(),
-        "mineclaw" => throw new ArgumentException($"MineClaw.Data holds b1.8.1 only; {version} needs --source minecraft-data --data <dir>"),
-        "minecraft-data" or "prismarine" => new MinecraftDataSource(Abs(Opt("--data") ?? throw new ArgumentException("--data <minecraft-data checkout> is required")),
-            version, Opt("--edition") ?? "pc", Opt("--data-key")),
+        "mineclaw" => throw new ArgumentException($"MineClaw.Data holds b1.8.1 only; {version} needs --source minecraft-data [--data <dir>]"),
+        "minecraft-data" or "prismarine" => new MinecraftDataSource(
+            Opt("--data") is { } d ? Abs(d) : Directory.Exists(vendored) ? vendored
+                : throw new ArgumentException($"--data <minecraft-data checkout> is required (no vendored {vendored})"),
+            version, Opt("--edition") ?? "pc", Opt("--data-key"), Directory.Exists(facts) ? facts : null),
         _ => throw new ArgumentException($"unknown --source {sourceKind} (mineclaw | minecraft-data)"),
     };
     return new PackBuildOptions
@@ -62,15 +74,17 @@ PackBuildOptions Options(string output)
         SeedPath = Flag("--no-vectors") ? null : Abs(Opt("--seed") ?? Path.Combine("data", "seed", "mineclaw-seed.db")),
         IncludeVectors = !Flag("--no-vectors"),
         EmbeddingModel = Opt("--model"),
-        Dims = Opt("--dims") is { } d ? int.Parse(d, CultureInfo.InvariantCulture) : null,
+        Dims = Opt("--dims") is { } dm ? int.Parse(dm, CultureInfo.InvariantCulture) : null,
         MaxPackBytes = (long)(double.Parse(Opt("--max-mb") ?? "20", CultureInfo.InvariantCulture) * 1024 * 1024),
         Only = Opt("--only")?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+        Generated = sdk ? [ScriptSdkPack.Build(SdkModules.FromDirectory(Abs(Opt("--sdk") ?? Path.Combine("src", "MineClaw.Scripting", "Sdk", "js"))))] : [],
+        IncludeVersionPacks = versionPacks,
     };
 }
 
-int Build(string output, bool print)
+int Build(string output, string version, bool print, bool sdk, bool versionPacks = true)
 {
-    var o = Options(output);
+    var o = Options(output, version, sdk, versionPacks);
     var result = DefaultPackBuilder.Build(o);
     if (!print) return 0;
     Console.WriteLine($"source: {o.Source.Description}");
@@ -87,16 +101,18 @@ int Verify()
     var temp = Path.Combine(Path.GetTempPath(), "mineclaw-shardpacks-" + Guid.NewGuid().ToString("N")[..8]);
     try
     {
-        Build(temp, print: false);
-        int bad = 0;
-        foreach (var f in Directory.GetFiles(temp).Select(Path.GetFileName).OfType<string>().Order(StringComparer.Ordinal))
-        {
-            var mine = Path.Combine(outDir, f);
-            bool same = File.Exists(mine) && File.ReadAllBytes(mine).AsSpan().SequenceEqual(File.ReadAllBytes(Path.Combine(temp, f)));
-            if (f != PackIndex.FileName && same) ShardFile.Read(mine);
-            Console.WriteLine($"  {(same ? "same" : "DIFFERS"),-8} {f}");
-            if (!same) bad++;
-        }
+        // Every version the committed index lists (b1.8.1 first), the version-independent packs (sdk-js) once.
+        var versions = PackIndex.Load(outDir).Packs.Select(p => p.Version).Where(KnowledgePack.ValidVersion)
+            .Where(v => !v.Equals(KnowledgePack.AnyVersion, StringComparison.OrdinalIgnoreCase))
+            .Append(KnowledgePack.DefaultVersion).Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(v => v == KnowledgePack.DefaultVersion ? 0 : 1).ThenBy(v => v, StringComparer.Ordinal).ToList();
+        if (Opt("--version") is { } only) versions = [only];
+        bool first = true;
+        foreach (var v in versions) { Build(temp, v, print: false, sdk: first && !Flag("--no-sdk")); first = false; }
+        var checks = PackVerifier.Compare(outDir, temp);
+        if (Opt("--version") != null) checks = checks.Where(c => File.Exists(Path.Combine(temp, c.File))).ToList();
+        foreach (var c in checks) Console.WriteLine($"  {c.Status.ToUpperInvariant(),-8} {c.File}{(c.Note != null ? "  (" + c.Note + ")" : "")}");
+        int bad = checks.Count(c => !c.Ok);
         Console.WriteLine(bad == 0 ? "the committed packs are exactly what the sources build" : $"{bad} file(s) differ: run `build` and commit");
         return bad == 0 ? 0 : 4;
     }

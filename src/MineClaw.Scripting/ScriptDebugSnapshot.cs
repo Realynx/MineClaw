@@ -80,6 +80,12 @@ public sealed record ScriptDebugSnapshot
     public string? PauseReason { get; init; }
     public double? PausedSeconds { get; init; }
 
+    /// <summary>"planning: lowhp" / "running learned handler for failed" while an interrupt is fixed inline (the panel shows "patching: …").</summary>
+    public string? Patching { get; init; }
+    /// <summary>The last patch of this run ("learned: resume (moved off the cell)", "escalated: needs a new chest").</summary>
+    public string? PatchNote { get; init; }
+    public int Patches { get; init; }
+
     public ScriptMachineView? Machine { get; init; }
 
     /// <summary>Locals at the innermost script frame (null = not available; <see cref="LocalsNote"/> says why).</summary>

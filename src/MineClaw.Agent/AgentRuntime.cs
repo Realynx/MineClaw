@@ -73,6 +73,8 @@ public sealed class AgentRuntime : IDisposable
     public MemoryAgent? MemoryAgent { get; init; }
     /// <summary>Chat → reaction / first move / first action latency (zero tokens; TUI p50s, latency-*.jsonl).</summary>
     public required Telemetry.LatencyTracker Latency { get; init; }
+    /// <summary>Script interrupt → resume latency and cost per path (declared/learned/patch/full; interrupts-*.jsonl).</summary>
+    public Telemetry.InterruptTracker Interrupts { get; init; } = new();
 
     /// <summary>
     /// Splits the registered tools between brain and worker (<see cref="WorkerOptions.BrainTools"/> / <see cref="WorkerOptions.WorkerTools"/>).
@@ -231,12 +233,19 @@ public sealed class AgentRuntime : IDisposable
         int chunks = 0;
         if (rag.Enabled)
         {
-            var k = KnowledgeIndexer.Sync(index, options.KnowledgeDirectory, rag);
+            var k = KnowledgeIndexer.Sync(index, options.KnowledgeDirectory, rag, options.GameVersion);
+            if (k.VersionMismatch != null) Log("MineClaw.Rag").LogWarning("knowledge: {Mismatch}", k.VersionMismatch);
             knowledge = k.Core;
             truncated = k.CoreTruncated;
             chunks = k.Chunks;
         }
-        else knowledge = Prompts.LoadKnowledge(options.KnowledgeDirectory, options.MaxKnowledgeChars, out truncated);
+        else
+        {
+            var packs = Admin.Shards.KnowledgePack.Active(db);
+            if (options.GameVersion is { Length: > 0 } gv && !gv.Equals(packs.Version, StringComparison.OrdinalIgnoreCase))
+                packs = new Admin.Shards.KnowledgePackInfo(gv) { Modes = [] };
+            knowledge = Prompts.LoadKnowledge(options.KnowledgeDirectory, options.MaxKnowledgeChars, out truncated, packs);
+        }
 
         // Brain-only delegation tools (registered after the built-ins so the cached tool order stays stable).
         if (options.Worker.Enabled)
@@ -286,8 +295,22 @@ public sealed class AgentRuntime : IDisposable
         var reflection = self != null ? new ReflectionPass(self, index, llm, usage, time, Log("MineClaw.Self")) { Growth = growth, Terse = terse.For(TersePurpose.Reflection) } : null;
         agent.Position = position;
         // Latency telemetry: chat → first visible reaction / movement / game action, and the model rounds before it.
-        var latency = new Telemetry.LatencyTracker(time) { Bot = options.Chat.Username };
+        var latency = new Telemetry.LatencyTracker(time) { Bot = options.Chat.Username, Names = () => [chat.Username, chat.DisplayName, .. chat.Aliases] };
         agent.Latency = latency;
+        // The character's voice under the brain: prefetched in-character lines said instantly (docs/design/reactive-character.md).
+        if (options.Brainstem is { Enabled: true, Character: { } co } && (co.InstantLines || co.Prefetch) && selfScope == SelfSchema.MainScope) // main speaks; clones stay addressed-only
+        {
+            var bank = new Character.LineBank(co, time);
+            var prefetch = new Character.LinePrefetcher(bank, llm, usage, co,
+                () => string.IsNullOrWhiteSpace(options.Persona) ? Prompts.DefaultPersona : options.Persona, () => chat.DisplayName, time, Log("MineClaw.Character"))
+            {
+                Self = ps => growth?.RenderBlock(ps.ToList()),
+            };
+            agent.Voice = new Character.CharacterVoice(co, chat, bank, prefetch, time, Log("MineClaw.Character")) { Latency = latency };
+        }
+        // Script interrupt → resume: every LLM call while an interrupt is open counts toward it (patch turn vs full turn).
+        var interrupts = new Telemetry.InterruptTracker(time) { Bot = options.Chat.Username };
+        usage.Recorded += interrupts.NoteCall;
         tools.Executing += (name, _) => latency.NoteTool(name, ActivityManager.RunningKind is ActivityKind.Speculative or ActivityKind.Social);
         activities.Started += (_, kind, steps) =>
         {
@@ -332,6 +355,7 @@ public sealed class AgentRuntime : IDisposable
             Db = db, Rag = index, Observations = observations, Episodes = episodes, Retriever = retriever, Self = self,
             Reflection = reflection, Growth = growth, Embeddings = embedder, Worker = worker, MemoryAgent = memAgent, Raptor = raptor, RaptorMaintenance = raptorJobs,
             Latency = latency,
+            Interrupts = interrupts,
             KnowledgeTruncated = truncated, KnowledgeChars = knowledge.Length, KnowledgeChunks = chunks,
         };
     }

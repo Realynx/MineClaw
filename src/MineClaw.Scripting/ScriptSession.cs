@@ -113,14 +113,14 @@ public sealed partial class ScriptSession
     public int Id { get; }
     public string Name { get; }
     public string Code { get; }
-    public ScriptRequest Request { get; }
+    public ScriptRequest Request { get; private set; }
     public ScriptLanguage Language => Request.Lang;
     public DateTimeOffset Started { get; }
     public DateTimeOffset? Finished { get; private set; }
     public ScriptStatus Status { get; private set; } = ScriptStatus.Starting;
     public bool IsLive => Status is ScriptStatus.Starting or ScriptStatus.Running or ScriptStatus.Paused;
     /// <summary>Paused, or a pause was requested and takes effect at the next safe point.</summary>
-    public bool PausePending { get { lock (_lock) return _pauseReq != null || Status == ScriptStatus.Paused; } }
+    public bool PausePending { get { lock (_lock) return _pauseReq != null || Status == ScriptStatus.Paused || _pauseInFlight; } }
     public int Actions { get; private set; }
     public long Instructions => Interlocked.Read(ref _instructions);
     public int Line { get; private set; }
@@ -171,7 +171,7 @@ public sealed partial class ScriptSession
     public string? MachineState { get; internal set; }
     public int Transitions { get; internal set; }
     /// <summary>Edge-triggered conditions the script listens for (hungry, invFull, night...; machine timers; when()).</summary>
-    internal Sdk.SignalSet Signals { get; }
+    internal Sdk.SignalSet Signals { get; private set; }
 
     internal ScriptHost Host => _host;
     internal ScriptOptions Options => _o;
@@ -231,11 +231,21 @@ public sealed partial class ScriptSession
                 if (PausedFor is { } k && kind > k) { PausedFor = kind; PauseReason = reason; }
                 return true;
             }
-            if (_pauseReq is not { } cur || kind >= cur) { _pauseReq = kind; _pauseReqReason = reason; }
+            if (_pauseReq is not { } cur || kind >= cur) { _pauseReq = kind; _pauseReqReason = reason; _pauseReqEvent = _nextPauseEvent; }
             if (abort && !_currentAtomic && _abortCts != null) { _abortedForPause = true; cut = _abortCts; }
         }
         try { cut?.Cancel(); } catch (ObjectDisposedException) { }
         return true;
+    }
+
+    [ThreadStatic] private static ScriptEvent? _nextPauseEvent;
+
+    /// <summary>A danger pause that remembers its event (the patch path reads its topic and text).</summary>
+    internal bool RequestPause(PauseKind kind, string reason, bool abort, ScriptEvent cause)
+    {
+        _nextPauseEvent = cause;
+        try { return RequestPause(kind, reason, abort); }
+        finally { _nextPauseEvent = null; }
     }
 
     /// <summary>Resumes a paused script (or withdraws a pending pause). <paramref name="answer"/> is what a pending ask("brain", q) returns.</summary>
@@ -280,7 +290,14 @@ public sealed partial class ScriptSession
             lock (_lock) if (Status == ScriptStatus.Starting) Status = ScriptStatus.Running;
             _active.Start();
             TouchSegment();
-            result = _runtime.Run(Code, _hardCt);
+            while (true)
+            {
+                try { result = _runtime.Run(Code, _hardCt); break; }
+                catch (Exception ex) when (FindRestart(ex) is { } restart && _stopReason == null)
+                {
+                    Restart(restart.Label);
+                }
+            }
             ThrowIfStopping();
             if (_resumeTarget != null) throw new ScriptFailException($"checkpoint '{_resumeTarget}' not reached");
             final = ScriptStatus.Done;
@@ -291,6 +308,7 @@ public sealed partial class ScriptSession
             (final, reason) = Classify(ex);
         }
         try { CarryJson = _runtime?.CarryJson(); } catch (Exception) { }
+        try { VerifyAtEnd(final); } catch (Exception) { }
         _active.Stop();
         try { _watchdog?.Dispose(); } catch (Exception) { }
         TaskCompletionSource settled;
@@ -365,6 +383,37 @@ public sealed partial class ScriptSession
         throw new ScriptStopException(why);
     }
 
+    private static ScriptRestartException? FindRestart(Exception ex)
+    {
+        for (var e = ex; e != null; e = e.InnerException) if (e is ScriptRestartException r) return r;
+        return null;
+    }
+
+    /// <summary>restart_step without a machine: a fresh engine fast-forwards to the last checkpoint, carry and patched params kept.</summary>
+    private void Restart(string? label)
+    {
+        string? carry = null;
+        try { carry = _runtime?.CarryJson(); } catch (Exception) { }
+        try { _runtime?.Dispose(); } catch (Exception) { }
+        lock (_lock)
+        {
+            _handlers.Clear();
+            _pendingHandlers.Clear();
+            _declared.Clear();
+        }
+        Signals = new Sdk.SignalSet(this);
+        Request = Request with
+        {
+            CarryJson = carry ?? Request.CarryJson, ResumeFrom = label, ResumeState = label != null && CheckpointCarry.TryGetValue(label, out var snap) && label.StartsWith('@') ? snap : null,
+            ParamsJson = ParamsJson ?? Request.ParamsJson,
+        };
+        _resumeTarget = label;
+        _skipped = 0;
+        Log("restarting " + (label != null ? $"at checkpoint '{label}'" : "from the top") + " (patch)");
+        _runtime = ScriptRuntimes.Create(this);
+        TouchSegment();
+    }
+
     internal void Limit(string what)
     {
         lock (_lock) _limitHit ??= what;
@@ -380,6 +429,7 @@ public sealed partial class ScriptSession
         long total = Interlocked.Add(ref _instructions, units);
         _sinceAction += units;
         ThrowIfStopping();
+        if (_patchRun is { } pr) PatchBudget(pr, units);
         if (total > _o.MaxInstructions) Limit($"instruction limit ({_o.MaxInstructions})");
         if (_sinceAction > _o.MaxInstructionsWithoutAction) Limit($"busy loop ({_o.MaxInstructionsWithoutAction} instructions without an action; add wait())");
         if (GC.GetAllocatedBytesForCurrentThread() - _allocBase > _o.MaxSegmentAllocBytes)
@@ -397,7 +447,7 @@ public sealed partial class ScriptSession
     /// <summary>The boundary between host calls: stop, lost body, signals, handlers, pauses — in that order.</summary>
     internal void SafePoint()
     {
-        if (_inSafePoint) { ThrowIfStopping(); return; }
+        if (_inSafePoint || _inPatch) { ThrowIfStopping(); return; }
         _inSafePoint = true;
         try
         {
@@ -409,13 +459,28 @@ public sealed partial class ScriptSession
                 if (TakeHandler(out var h, out var ev)) { RunHandler(h!, ev!); continue; }
                 PauseKind kind;
                 string reason;
+                ScriptEvent? cause;
                 lock (_lock)
                 {
-                    if (_pauseReq is not { } k) return;
-                    kind = k;
-                    reason = _pauseReqReason ?? kind.ToString().ToLowerInvariant();
-                    _pauseReq = null;
+                    if (_pauseReq is not { } k)
+                    {
+                        if (_interruptReqs.Count == 0) return;
+                        kind = default;
+                        reason = "";
+                        cause = null;
+                    }
+                    else
+                    {
+                        kind = k;
+                        reason = _pauseReqReason ?? kind.ToString().ToLowerInvariant();
+                        cause = _pauseReqEvent;
+                        _pauseReq = null;
+                        _pauseReqEvent = null;
+                    }
                 }
+                if (reason.Length == 0) { TakeInterruptRequest(); continue; }
+                // Inline fix first (onInterrupt → learned handler → patch turn); escalation pauses and wakes the brain as before.
+                if (PatchPause(kind, cause)) continue;
                 PauseHere(kind, reason);
             }
         }
@@ -430,6 +495,7 @@ public sealed partial class ScriptSession
         lock (_lock)
         {
             Status = ScriptStatus.Paused;
+            _pauseInFlight = false;
             PausedFor = kind;
             PauseReason = reason;
             PausedAt = at;

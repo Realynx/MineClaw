@@ -82,6 +82,46 @@ public sealed class BrainstemOptions
 
     /// <summary>"Agent:Brainstem:Reply": two-phase replies (streamed brain chat, quick cheap-tier ack, cheap-only small talk).</summary>
     public ReplyOptions Reply { get; set; } = new();
+
+    /// <summary>"Agent:Brainstem:Character": act first, think in parallel: prefetched in-character lines said instantly, typing timing.</summary>
+    public CharacterOptions Character { get; set; } = new();
+}
+
+/// <summary>
+/// "Agent:Brainstem:Character" (docs/design/reactive-character.md). The body reacts at once (gaze, gesture, reflex walk) and,
+/// when a fitting prefetched line is ready, says it after a human typing delay; the brain's turn sees "[already said]" and
+/// "[already doing]" and only amends. Lines are written in the background by one cheap batched call (memory tier: wording, not
+/// scripts) for the moments likely in the current context, tagged with that context and dropped when it changes.
+/// </summary>
+public sealed class CharacterOptions
+{
+    /// <summary>Say a prefetched line instantly for reflexes, speculative starts and small talk.</summary>
+    public bool InstantLines { get; set; } = true;
+
+    /// <summary>Small talk (greeting, thanks, praise, status) answered by an instant line needs no model call at all.</summary>
+    public bool InstantSmallTalkIsFinal { get; set; } = true;
+
+    /// <summary>Background line prefetch (one cheap call per context, at most <see cref="MaxPrefetchPerHour"/>).</summary>
+    public bool Prefetch { get; set; } = true;
+    public int MaxPrefetchPerHour { get; set; } = 12;
+    /// <summary>Lines per moment a prefetch asks for.</summary>
+    public int LinesPerMoment { get; set; } = 3;
+    /// <summary>Check the bank this often (idle or during long jobs); a call only when the context changed or moments ran low.</summary>
+    public int RefreshSeconds { get; set; } = 30;
+    /// <summary>A prepared line older than this is dropped even if the context didn't change.</summary>
+    public int LineMaxAgeMinutes { get; set; } = 20;
+    /// <summary>No line (prefetched or the brain's own) repeats within this many minutes (phrase memory).</summary>
+    public int RepeatMinutes { get; set; } = 30;
+    public int MaxLineChars { get; set; } = 90;
+    public int MaxTokens { get; set; } = 700;
+
+    /// <summary>Typing delay before an instant line: think + per char, jittered ±20 %, capped (ms).</summary>
+    public int ThinkMs { get; set; } = 160;
+    public int PerCharMs { get; set; } = 22;
+    public int MaxTypingMs { get; set; } = 900;
+
+    /// <summary>The moments a prefetch prepares (greet/bye are per online player; the rest generic).</summary>
+    public string[] Moments { get; set; } = ["greet", "bye", "thanks", "praise", "tease", "status", "hurt", "come", "follow", "stop", "onit", "sorry"];
 }
 
 /// <summary>

@@ -25,6 +25,7 @@ if (cli.Errors.Count > 0)
 
 try
 {
+    if (cli.ResetMemory) return await MemoryReset.RunAsync(cli, Console.Out);
     return cli.Demo ? await AppHost.RunDemoAsync(cli) : await AppHost.RunAsync(cli);
 }
 catch (Exception ex)

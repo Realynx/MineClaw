@@ -17,7 +17,7 @@ public static class GrowthKit
 
     public static HiveOptions Hive(params (string User, string? Seed)[] seeds)
     {
-        var h = new HiveOptions { MainUsername = "maid_chan" };
+        var h = new HiveOptions { MainUsername = "maid_chan", SharedSelf = false }; // the legacy per-clone shard path these tests pin
         foreach (var c in Clones) h.Clones.Add(new HiveClone { Username = c, Seed = seeds.FirstOrDefault(s => s.User == c).Seed });
         return h;
     }

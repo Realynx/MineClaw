@@ -23,7 +23,8 @@ public sealed class HiveBuildJobs(HiveSupervisor hive, IReadOnlyList<string> clo
     public IReadOnlyList<CrewMember> Candidates(IReadOnlyList<string>? names = null)
     {
         var list = new List<CrewMember>();
-        foreach (var n in names ?? clones)
+        // No fixed roster: without configured names, the supervisor's current slots (dynamic accounts) are the candidates.
+        foreach (var n in names ?? (clones.Count > 0 ? clones : hive.Slots.Select(s => s.Name).ToList()))
         {
             if (hive.Resolve(n) is not { } name || hive.Slot(name) is not { } slot) continue;
             if (slot.State == CloneState.Retired) continue;

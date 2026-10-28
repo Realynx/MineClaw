@@ -184,7 +184,29 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
   for a restart. Any call writing > 30K cache tokens logs a WARN with its likely cause (`Telemetry/CacheWriteGuard`).
   Compaction thresholds use estimate × `ContextManager.TokenScale`, calibrated from real prompt tokens (≈1.5× the estimate).
 - **Telemetry** (`LatencyTracker`): per chat `reaction_ms`, `first_chat_ms` (ack or first line), `conclusive_ms` (final chat), `first_move_ms`, `first_action_ms`, `rounds_before_action`, cheap-only share and misses,
-  speculation adopted/cancelled → `latency-YYYY-MM-DD.jsonl` and the TUI tokens panel's p50 line.
+  speculation adopted/cancelled → `latency-YYYY-MM-DD.jsonl` and the TUI tokens panel's p50 line. Each record also has
+  `category` (command|question|banter|greeting|help, `Brainstem/ChatIntent`), `reaction_by` (gaze|gesture|line|move|action),
+  `full_ms`, `instant`; `LatencyReport` = p50/p95 per kind (also rebuilt from old text logs: `LatencyReport.FromLog`).
+- **Reactive character** (docs/design/reactive-character.md; act first, think in parallel, correct if needed): (1) **instant
+  lines**: `Agent/Character/LineBank` holds in-character lines a cheap batched call (`LinePrefetcher`, memory tier = wording,
+  ≤12/h, idle/long jobs) wrote for the likely moments of the current context (greet/bye per player, thanks, praise, tease,
+  status, hurt, come, follow, stop, onit, sorry), tagged with the context signature (activity, players, time of day, mood, hp)
+  and expired when it changes; phrase memory (every line the bot says) blocks repeats for 30 min. The brainstem says one after
+  a typing delay (`HumanTiming`, ≤0.9 s) on a reflex, a speculative start or small talk (`CharacterVoice.SayInstant`);
+  small talk it answered is final with no model call (`BotAgent.InstantFinal`), otherwise the brain's turn gets `[already
+  said] …` + `[already doing] … for 1.2s` and amends; the instant line counts as the ack (no quick-ack call) and a brain line
+  repeating it is suppressed. (2) **Typed game signals** (`Bot/Perception/GameSignals`, `Scripting/Events/GameEventCatalog`):
+  player.punchBlock (b1.8.1: swing + look raycast, debounced; 1.12.2: break animation) / swing / hurt / died / pickup / toss /
+  equip / sneak / near / leave / join / quit / say{intent} / lookAt, block.changed{by}, item.dropped, mob.near, me.hurt,
+  me.lowHp, time.dusk/dawn, weather; `EventFilter` (player, block, held class, item, pos/near/region, cooldown, once...);
+  scripts bind with `on(event, filter, fn)` / `react(...)` / machine `on`. (3) **Standing bindings and learned reactions**
+  (`script{op:bind,name,goal,params:{on,...filter,for,minutes,kind}}`, `op=bindings`, `op=unbind`; ops documented only in the
+  cached `ScriptPrompts.BindLine`, no schema bytes): the trigger lives on the script's row (`RoutineScript.Binding`), the
+  `Bot/Brainstem/BindingRunner` starts the script the instant the event fires (1-2 ms packet → first action) with the
+  payload as args; never during a safety reflex or over a script/commanded job; world-acting bindings (dig/place/items) only
+  from trusted players, reactions harmless only; reconcile verdicts (kept/amended/corrected) demote a reaction corrected
+  more than kept. (4) The **`character` SDK module** (look, face, gesture, follow/stopFollow, line, typing, speak, mood,
+  relation, recall, remember, heard, intent; `react`), via `Scripting/Character/ICharacterPort` (`Bot/GameTools/CharacterPort`).
 - **Addressing** (`ChatRouter.ReasonFor`, `Chat/Addressing.cs`): name/whisper > group word > obvious player-to-player (calls
   another online human by login or `Chat:PlayerNicknames` vocative: never wakes) > conversation continuity (`ReplyWindowSeconds`
   90 s after the bot talked to the player, its audience inferred from names/nicknames or the last partner, or they talked to it)
@@ -313,7 +335,7 @@ the rules + the SDK reference generated from the code + three worked examples (�
   every, when, signal) · **policies** (use, policy, keepFed, fleeVoidEdges, defendIfAttacked, depositWhenFull,
   replaceToolWhenBroken, pauseAtNight) · **jobs** (store, restock, mineGen, harvestFarm, chopTrees, deliver, waitForDay,
   guardArea; `store`/`depositWhenFull`/`room` all go through the `deposit` tool's one path, `Bot/GameTools/ChestStore`: the named
-  chest, then known chests with room, never-touch/"private" skipped; all full → `{ok:false, full:true, need}`) · **crew** (body, bodies, spawn, parallel, crew.get/set/inc/send/recv/barrier/lock/unlock). C# where it is hot or owns
+  chest, then known chests with room, never-touch/"private" skipped; all full → `{ok:false, full:true, need}`) · **crew** (body, bodies, spawn, parallel, crew.get/set/inc/send/recv/barrier/lock/unlock) · **character** (the persona: character.look/face/gesture/follow/line/speak/mood/relation/recall/remember/heard/intent, react(event|intent, filter, fn); docs/design/reactive-character.md). C# where it is hot or owns
   semantics (signals, machine runner, timeouts, crew lanes), JS where it reads clearer (helpers, policies, jobs).
 - **Reactive core** (`Sdk/MachineRunner`, `Sdk/SignalSet`): `machine({initial, states:{s:{enter, tick, exit, on, final}}, on,
   guards, bb, policies, thresholds})` runs enter → tick… → exit per state. Events come from the bot's event stream (danger and its
@@ -361,6 +383,41 @@ the rules + the SDK reference generated from the code + three worked examples (�
   ≈ 0-1 % on a 4 M-statement benchmark, `ScriptDebugTests`; `Scripting:DebugProbe=false` removes even that); a snapshot request
   takes a 3 s lease (`WatchLease`) during which the script thread samples stack/locals/blackboard at ≤ 5 Hz (≈ 5 %). Clones answer
   over the `script_dbg` IPC request. Pause/resume from the panel is a TODO (an admin write; `ScriptDebugSnapshot.Controls`).
+- **Inline interrupt patches** (`ScriptPatching.cs`, `ScriptSession.Patch.cs`, `Agent/Authoring/PatchAgent`, `Bot/GameTools/ScriptPatcher`,
+  `Scripting:Patches`, default on): an interrupt a few lines of JS can fix no longer costs a full brain turn. Baseline (10-27 logs, 36
+  interrupts that woke the brain): first call back p50 4.9 s / p95 11.2 s, turn over p50 11.0 s / p95 46.8 s, job back p50 22.9 s / p95
+  148 s, 2.6 calls and $0.029 per interrupt (mean in 7.6 / cache read 52K / write 2.2K / out 399 tokens). **Order**, on the script thread
+  at the safe point the interrupt reaches: (1) safety reflexes stay first and deterministic (client tick; a patch's actions wait while
+  `IGameClient.SafetyEngaged` and a different danger aborts the patch); (2) the script's own `onInterrupt(kind, fn)` (SDK core); (3) a
+  **learned handler** (no LLM call; any tier may run one); (4) the **patch turn**: ONE Opus 5.5 call (`purpose=patch`, effort low,
+  `Agent:Llm:PatchMaxTokens` 600, a ≈ 900-token cached system part = rules + one-screen SDK sheet + this bot's game functions, the one
+  `patch{js, then, note?}` tool that exists only in this request; refused off-Opus like the author, so other tiers only run saved
+  handlers); (5) escalate = the full brain turn, exactly the old path. **Interrupts**: a danger pause of the own body (lowhp/void/died/
+  danger; someone else's danger never), `fail()` whose cause looks fixable (full, missing, no tool, broke, blocked/unreachable, occupied,
+  a mob, food: `ScriptPatcher.FixableFailure`), `ask('brain', q)` (the patch's returned string is the answer), the stall watchdog on a
+  running script (`stuck`), a trusted player's chat that tweaks the job (`LooksLikeTweak`: names a param, or a tweak word + a number).
+  The bridge's gate holds the brain's wake while a patch may fix it (danger: `Wakes=false`, the escalation's "script paused" notice
+  wakes it with the danger as context; stall/chat: the held event is re-posted on escalation). **The patch prompt** (≤ 6.5K chars,
+  ≈ 1.9K tokens uncached): interrupt, script name/version, current line ±5 (marked), machine state + blackboard, params, checkpoint,
+  carry, last failure, body (hp/food/pos/inventory/free/hostiles/night/safety), last logs, the previous patch. **Execution**
+  (`RunGuarded`): the js is `async (ev, P, m, bb) => { js }` evaluated in the paused session's own Jint engine (globals, carry, SDK);
+  `P` is the live params object (read-only to the script: an assignment is a TypeError as before; writable in a patch, `ParamsJson`
+  follows), `m`/`bb` the running machine. Budget `PatchMaxActions` 8, `PatchMaxSeconds` 45 (actions cut at the deadline),
+  `PatchMaxStatements` 50K, `PatchMaxPerRun` 8, linted first (syntax/forbidden/unknown names); a budget hit, a lint/runtime error (with
+  its patch line) or `fail()` in the patch escalates with that line (`PatchNote`, shown in the state: "patch escalated: …"). `then`:
+  resume (the cut action re-runs; after `fail()` the script goes on at the next line), restart_step (a machine re-enters its state via
+  `ScriptUnwind`; else a fresh engine fast-forwards to the last `cp`, carry and patched params kept; ≤ 3 per run), stop. The debugger
+  snapshot carries `Patching` ("planning: lowhp" / "running learned handler for failed"), `PatchNote`, `Patches`; the Live Hive panel
+  shows "patching: …". **Learning** (learned, not coded): a resume/restart is verified — the same signature again within
+  `PatchVerifySeconds` (90) = failed; progress past the window or the run finishing = worked. A fresh patch that worked is saved on its
+  script (`RoutineScript.Handlers`, ≤ 16: kind, signature = kind | normalized text (numbers/positions/players stripped) | normalized
+  source line, js, then, note, author, version, successes/failures); a learned handler counts successes, and `HandlerDemoteAfter` (2)
+  failures in a row demote it, so the patch turn runs again and a working fix replaces it. The Explorer's Scripts page lists handlers
+  under their script (↳ kind · situation · stats · then; demoted faded) and in a Handlers tab with the js. **Telemetry**
+  (`Agent/Telemetry/InterruptTracker`, `interrupts-YYYY-MM-DD.jsonl`): per interrupt path declared|learned|patch|escalated|full,
+  then, ms (interrupt → the script goes on; a full turn's resume closes at its turn's end), calls, tokens and $ of every LLM call while
+  it was open (`UsageTracker.Recorded`); `Summary().Line()` gives p50/p95 per path. Benchmark (`PatchTurnTests`, fake Opus at 250 ms a
+  call): full turn ≥ 2 calls vs the patch path 1 call and a shorter interrupt → resume; a learned handler 0 calls.
 - **Mined from the saved library** (data/alice-snap, 16 unique scripts, 133 lines): bounded repeat wrapper 16/16; deposit to a
   chest + expect 14/16; hard-coded chest/cell coordinates 14/16 (→ params); gen mining loop 13/16 (9 near-duplicates differing
   only in the cell → `mineGen` + params); ensure a pickaxe 12/16; room(n) 12/16; inventory-full check 12/16; cp mine/store
@@ -794,7 +851,16 @@ code: scripts go through the script tool's Opus-only policy); `body:"any"` = App
 
 ## Hive (MineClaw.Hive) — clones as supervised processes
 
-`App → Hive → Bot`. Up to `Hive:MaxClones` clones (`maid_chan_67/69/420/1337`), each a **separate OS process**: the same App
+**Hierarchy** (`docs/design/hive-hierarchy.md`, `Hive/Hierarchy`): no fixed roster. Main (`maid_chan`) is the default hive and the
+admin root; a clone is a **hive** (own brain: Opus 5.5 or DeepSeek via Ollama), a **subhive** (a body its owner's brain drives) or
+**script-only**; whoever spawns it owns it (`HiveTree`). Main allocates every account (`AccountAllocator`: `maid_chan_<id>`,
+released managed accounts first, never a player's name, within the player cap) and does every `/whitelist add|remove` through the
+command gate's scoped exception, for managed names only (`hive-accounts.json`; startup reconcile removes stale ones; the old
+`Hive:CloneUsernames` are adopted once and otherwise ignored). Hives talk over the off-channel bus (`bus` IPC frames, main routes,
+per-endpoint tokens, current-user pipes), never chat; chat has a per-hive line budget. All hives share one memory: other hives'
+doc writes go through main's groomer (`mem_write`, provenance in `clone_id`), `mem_changed` reloads at once, one self profile.
+
+`App → Hive → Bot`. Clones are allocated per spawn (`Hive:MaxClones` > 0 = an optional ceiling), each a **separate OS process**: the same App
 binary as `--clone <name> --parent-pipe <pipe>` (headless, own login, same three-tier brain, own personality shard via
 `AgentOptions.Hive` scope, own `usage-<clone>.json` and `logs/hive/<clone>/`). The main process is the **supervisor**; a clone
 connects its pipe before opening anything and exits 75 without one (never unsupervised).
@@ -886,6 +952,21 @@ bot, a block or a build plan's footprint, radius, aids; a live preview from `Loc
 synced world, debounced 90 ms, one panel well above 10 fps; without the role layer, memory labels and world time, which "Render
 exact" / "server render" fetch; "Copy as see{...}" gives the call that renders it).
 
+**Controller** (`SupervisorControllerRoutes` + `SupervisorControllerData`, `Agent/Telemetry/BrainContextCapture`; GET only, 403 without the
+token): what drives a body. `TelemetryLlmClient` hands every call to the brain's `BrainContextCapture` (`Telemetry:Capture`: `Turns` 30,
+`BackgroundTurns` 10, `CallsPerTurn` 48): the request object as built, a pointer copy of its message list and the parsed response, by
+reference (measured ≈1 µs and ≈2.7 KB per call on a 301-message request; nothing is rendered, redacted or serialized until a viewer asks).
+Calls group into turns by lane (brain / reply / compaction / worker / author / memory / perception / background) and the turn input's
+first text block; sub-entries link to the brain turn whose `TurnContext` they inherited. `/api/bodies/{name}/controller` (kind main | hive |
+subhive | script, owner from the `HiveTree`, brain id, tabs), `/api/brains/{id}/context?since=&body=` (turns changed after a version, the live
+window = the newest brain call's system blocks with the cached prefix marked, messages with `[tag]` sections labelled, tool calls with inputs
+and results, the response; evicted ids; `body` marks the turns/tool calls that targeted a subhive body) and `/api/brains/{id}/turn/{n}` (every
+call: what it added, the response with Claude thinking / redacted thinking / Ollama reasoning (`LlmResponse.Reasoning`, never sent back)
+labelled, usage, cost, latency, children). Everything passes `ShardRedactor` + the configured key values and the supervisor token. Clones
+answer over the `brain_ctx` IPC request (1.5 s). Explorer: a tile's "Controller" button opens `ControllerPanelView` (≈1.4 Hz polls with
+`since`, back-off, "stale"; a token bar against `Context:MaxTokens`, "now thinking…", search, collapsible turns, Copy JSON; a subhive shows its
+owner's brain filtered to it with "Full hive view"; a script-only body the script debugger; a hive running a script both, Brain | Script).
+
 **Someone else on a clone's account** (a player's viewer). b1.8.1 kicks the older session with "You logged in from another
 location", so the hive never fights a login: (a) an offline slot whose name is on main's tab list (0xC9) or spawned as a player
 is skipped before launch ("slot 1337 is in use by a player's viewer", told once); (b) a clone kicked that way sends `occupied`,
@@ -957,6 +1038,20 @@ cluster-text hash: a cache, never truth). `ShardFile.Read` refuses a newer forma
   recipes/foods; no smelting tables). The Explorer's Shards page lists the folder (`Explorer:DefaultPacksDir`, else `shards/defaults`
   beside the exe or in the repo) with one-click "Preview swap / add mode / remove mode" into the diff-first import, and shows the
   db's version pack + modes. `shards/defaults/README.md` has the build command for a new version.
+  **1.12.2**: `MinecraftDataSource` names variants (planks:1 = Spruce Wood Planks) and carries registry names; `shards/sources/1.12.2`
+  holds the facts minecraft-data lacks (smelting + fuels from `FurnaceRecipes`/`TileEntityFurnace`, mobs with health/xp/loot from the
+  entity classes and loot tables, written as facts from the decompiled client), and `mechanics_1122.md` the mechanics.
+  **sdk-js** (`Bot/GameTools/ScriptSdkPack`, a `GeneratedPack`): the JS SDK as memory, generated at build time from the modules' doc
+  comments (`SdkReference.Entries`), an offline bot's script globals per game version (`ScriptGlobals.List`) and
+  `ScriptPrompts.Examples`; a mode pack of version `any` (`KnowledgePack.AnyVersion`), one chunk per module/helper/function/example.
+  `ShardPacks verify` rebuilds every version in index.json + sdk-js (`PackVerifier`). A bot's game version (`AgentOptions.GameVersion`,
+  set by the host) that isn't the db's pack version reads only its own version's docs and logs the mismatch.
+- **Fresh-world reset** (`App/Hosting/MemoryReset`, `--reset-memory --pack <version pack> [--modes none] --yes`, service stopped):
+  verified backup of the whole data dir to `<data>-backup-<utc>` (refuses on any failure), db files + world-state files
+  (memory.json, hunger latches, a staged seed of another version) removed, fresh db (current schema, no lived-in rows) with the
+  version pack + sdk-js from the same folder, no mode, `server-version.txt` := the pack's version; usage.json, hive-ledger.json and
+  /etc untouched. `deploy-alice.ps1 -ResetMemory -Pack <file> [-Start]` stops the unit, installs `--no-start`, runs
+  `mineclaw-release reset-memory` (as the service user) and leaves it stopped unless `-Start`; `-NoStart` never changes the enabled state.
 - **Targets**: a local db file (Explorer, backup first, audit next to the db) or the live bot via `POST /api/admin/shard/import/
   preview` and `POST /api/admin/shard/import` (body `{shard: base64, mode, conflict, include_rules, include_world}`, ≤ 64 MB, read
   only after `Supervisor:AllowAdminWrites` + the token header check out; the bot backs up, applies with its own stores and runs

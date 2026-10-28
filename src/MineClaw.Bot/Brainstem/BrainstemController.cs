@@ -159,15 +159,30 @@ public sealed class BrainstemController : IDisposable
         DateTimeOffset? turned;
         lock (_lock) turned = _turnedAt.TryGetValue(who, out var t) && Now - t < TimeSpan.FromSeconds(2) ? t : null;
         Latency.OnChat(who, e.Text, Now); // opens the measurement before the reflex runs (idempotent)
-        if (turned is { } at) Latency.NoteReaction(at);
+        if (turned is { } at) Latency.NoteReaction(at, "gaze");
         var handled = TryReflex(who, e.Text);
         if (handled != null)
         {
             Note(who, e.Text, handled.Value.Note);
+            Instant(who, handled.Value.Intent.Kind switch { IntentKind.Come => "come", IntentKind.Follow => "follow", IntentKind.Stop => "stop", _ => null }, "reflex");
             return Options.ReflexWakesBrain ? e : e with { Wakes = false };
         }
-        TrySpeculate(who, e.Text);
+        if (TrySpeculate(who, e.Text) is not null)
+            Instant(who, _spec?.Intent.Kind == IntentKind.SpecToSpeaker ? "come" : "onit", "speculative start");
+        else if (e.Wakes && e.AddressConfidence is not (< 0.75) && QuickReply.Classify([e.Text], Names, e.Kind == EventKind.Emote) != QuickKind.Brain)
+            Instant(who, Agent.Character.CharacterVoice.MomentFor(e.Text, Names), "small talk");
         return e;
+    }
+
+    /// <summary>
+    /// Act first: a prefetched in-character line for this moment, said after a human typing delay (main's voice only; never
+    /// during a safety reflex). The brain's turn sees it as "[already said]" and only adds what it didn't cover.
+    /// </summary>
+    private string? Instant(string player, string? moment, string source)
+    {
+        if (moment == null || BodyLabel != null || _c.SafetyEngaged || _rt.Agent.Voice is not { } voice) return null;
+        try { return voice.SayInstant(player, moment, source, _acts.Shutdown); }
+        catch (Exception ex) { _log?.LogDebug(ex, "instant line failed"); return null; }
     }
 
     /// <summary>Runs the reflex this line is (or returns null). Public for tests.</summary>

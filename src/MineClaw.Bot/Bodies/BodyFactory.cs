@@ -82,6 +82,7 @@ public static partial class BodyFactory
         var bodyGestures = new Brainstem.Gestures(rt, client, brain.AgentOptions.Gestures, brain.IsBot, time, loggers?.CreateLogger("MineClaw.Gestures"));
         bodyGestures.Attach();
         body.Gestures = bodyGestures;
+        AttachCharacter(brain, body);
         var watchdog = AttachWatchdog(rt, body, time);
         // A standing-order pass that found nothing to do backs off in C#; the world model says when there's work again.
         if (body.Orders is { } standing) standing.WorkReady = o => MineClaw.Bot.Brainstem.WorkProbe.Ready(o, client, brain.GenCells);

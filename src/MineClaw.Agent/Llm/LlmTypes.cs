@@ -159,6 +159,9 @@ public sealed record LlmResponse(IReadOnlyList<LlmBlock> Content, string StopRea
     public string Text => string.Concat(Content.OfType<LlmText>().Select(t => t.Text));
     /// <summary>"anthropic" or "ollama": who answered.</summary>
     public string Provider { get; init; } = LlmProviders.Anthropic;
+    /// <summary>A non-Claude model's reasoning text (Ollama's <c>message.thinking</c>, e.g. DeepSeek): for the Explorer's context view
+    /// only. Never sent back to a model, never part of <see cref="Content"/> (Claude thinking stays as <see cref="LlmThinking"/> blocks).</summary>
+    public string? Reasoning { get; init; }
 }
 
 /// <summary>The only thing the agent needs from a model provider. Tests use a scripted fake.</summary>

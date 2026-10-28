@@ -35,11 +35,15 @@ public sealed record ScriptRunInfo(DateTimeOffset At, bool Ok, double Seconds, s
 public sealed record ScriptVersionInfo(int V, string Lang, string? Author, string AuthorKind, DateTimeOffset? SavedAt, bool Active, int Runs,
     int Successes, int Failures, double AvgSeconds, DateTimeOffset? LastRun, IReadOnlyList<string> TopFailures, int Lines);
 
+/// <summary>A learned interrupt handler of a script (a child of its script in the viewers).</summary>
+public sealed record ScriptHandlerInfo(string Kind, string Signature, string Js, string Then, string? Note, string? Author, int? Version,
+    DateTimeOffset? LearnedAt, DateTimeOffset? LastUsed, int Successes, int Failures, bool Demoted);
+
 /// <summary>A row of the library list.</summary>
 public sealed record ScriptLibraryEntry(string Name, int Version, int Versions, string Lang, string? Author, string AuthorKind, string? Purpose,
     IReadOnlyList<ScriptParamInfo> Params, DateTimeOffset? LastRun, int Runs, double SuccessRate, double AvgSeconds, string? Timings,
     IReadOnlyList<string> UsedBy, ScriptLintInfo Lint, string? Migration, bool Archived, string? PromotedAs, string? LastOutcome,
-    string? DuplicateOf, DateTimeOffset Updated, bool HasLuaHistory);
+    string? DuplicateOf, DateTimeOffset Updated, bool HasLuaHistory, IReadOnlyList<ScriptHandlerInfo>? Handlers = null);
 
 /// <summary>One version in full: code, lint, params, the whole history, recent runs.</summary>
 public sealed record ScriptVersionDetail(ScriptLibraryEntry Script, ScriptVersionInfo Version, string Code, ScriptLintInfo Lint,
@@ -90,8 +94,14 @@ public static class ScriptLibraryReport
         return new ScriptLibraryEntry(r.Name, s.Version, history.Count, lang, active.Author ?? s.Author, AuthorKind(active.Author ?? s.Author, lang == "lua"),
             s.Purpose, WithTuned(a.Params, s.Params), lastRun, s.Runs, s.Runs == 0 ? 0 : Math.Round((double)s.Successes / s.Runs, 3),
             Math.Round(s.AvgSeconds, 1), lastTimings, UsedBy(r.Name, s, orders), a.Lint, s.Migration, s.ArchiveFlagged != null, s.PromotedAs,
-            s.LastOutcome, s.DuplicateOf, r.Updated, history.Any(v => v.IsLua) && lang == "js");
+            s.LastOutcome, s.DuplicateOf, r.Updated, history.Any(v => v.IsLua) && lang == "js", Handlers(s));
     }
+
+    /// <summary>The script's learned interrupt handlers, live ones first (most successes first), demoted last.</summary>
+    public static IReadOnlyList<ScriptHandlerInfo> Handlers(RoutineScript s) =>
+        (s.Handlers ?? []).OrderBy(h => h.Demoted ? 1 : 0).ThenByDescending(h => h.Successes).ThenBy(h => h.Kind, StringComparer.Ordinal)
+            .Select(h => new ScriptHandlerInfo(h.Kind, h.Signature, h.Js, h.Then, h.Note, h.Author, h.Version, h.LearnedAt, h.LastUsed,
+                h.Successes, h.Failures, h.Demoted)).ToList();
 
     private static DateTimeOffset? Max(params DateTimeOffset?[] xs) => xs.Where(x => x != null).DefaultIfEmpty(null).Max();
 

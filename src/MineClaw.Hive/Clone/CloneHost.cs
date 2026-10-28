@@ -144,11 +144,33 @@ public sealed class CloneHost : IHandoffTarget
     /// <summary>The live script debugger's snapshot of this clone's script (main's Supervisor asks at 2-5 Hz while a panel is open).</summary>
     public Func<bool, Scripting.ScriptDebugSnapshot?>? ScriptDebug { get; set; }
 
+    /// <summary>This clone's brain context capture (the Explorer's Controller panel via main's Supervisor): a page or one turn.</summary>
+    public Func<MineClaw.Agent.Telemetry.BrainContextQuery, MineClaw.Agent.Telemetry.BrainContextReply?>? BrainContext { get; set; }
+
     /// <summary>The sheets this clone's models received (its vision history), newest first; main's Supervisor asks for the vision panel.</summary>
     public Func<long, VisionListMsg?>? VisionList { get; set; }
 
     /// <summary>One captured sheet's exact PNG bytes (null = no longer kept).</summary>
     public Func<long, VisionPngMsg?>? VisionPng { get; set; }
+
+    /// <summary>This clone's token on the off-channel hive bus (from main's welcome); null = main runs no bus.</summary>
+    public string? BusToken { get; private set; }
+
+    /// <summary>Bus envelopes main routes to this clone (mem_changed, a peer's observation, a request to one of its children).</summary>
+    public Func<Hierarchy.Bus.BusEnvelope, CancellationToken, Task<Hierarchy.Bus.BusReply>>? BusInbox { get; set; }
+
+    /// <summary>Sends one envelope over the parent pipe (signed with <see cref="BusToken"/>); null = no answer in time / no link.</summary>
+    public async Task<Hierarchy.Bus.BusReply?> SendBusAsync(Hierarchy.Bus.BusEnvelope env, TimeSpan timeout, CancellationToken ct = default)
+    {
+        if (_link is not { IsOpen: true } link || BusToken == null) return null;
+        try { return await link.RequestAsync<Hierarchy.Bus.BusReply>(Msg.Bus, env with { From = Name, Token = BusToken }, timeout, ct).ConfigureAwait(false); }
+        catch (HiveIpcException) { return null; }
+        catch (TimeoutException) { return null; }
+    }
+
+    /// <summary>A typed bus message from this clone (to "main" by default).</summary>
+    public Task<Hierarchy.Bus.BusReply?> BusAsync(string type, object? body, string to = Hierarchy.HiveTree.Root, TimeSpan? timeout = null) =>
+        SendBusAsync(Hierarchy.Bus.BusEnvelope.Make(type, Name, to, body, BusToken), timeout ?? TimeSpan.FromSeconds(5));
 
     /// <summary>Connects the pipe and says hello; false = no parent (exit <see cref="CloneExitCodes.NoParent"/>).</summary>
     public async Task<WelcomeMsg?> ConnectParentAsync(TimeSpan timeout, CancellationToken ct)
@@ -171,6 +193,7 @@ public sealed class CloneHost : IHandoffTarget
             var w = await link.RequestAsync<WelcomeMsg>(Msg.Hello, new HelloMsg(Name, Environment.ProcessId), TimeSpan.FromSeconds(10), ct).ConfigureAwait(false);
             if (w == null) return null;
             Main = w.Main;
+            BusToken = w.BusToken;
             Arbiter.Apply(w.Roster);
             Claims.SetMirror(w.Claims);
             _task = w.Task;
@@ -251,10 +274,14 @@ public sealed class CloneHost : IHandoffTarget
                 return View == null ? null : await View(ct).ConfigureAwait(false);
             case Msg.ScriptDebug:
                 return ScriptDebug?.Invoke(m.As<ScriptDebugReq>()?.Code == true);
+            case Msg.BrainContext:
+                return BrainContext?.Invoke(m.As<MineClaw.Agent.Telemetry.BrainContextQuery>() ?? new MineClaw.Agent.Telemetry.BrainContextQuery());
             case Msg.VisionList:
                 return VisionList?.Invoke(m.As<VisionListReq>()?.Since ?? 0);
             case Msg.VisionPng when m.As<VisionPngReq>() is { } vp:
                 return VisionPng?.Invoke(vp.Id);
+            case Msg.Bus when m.As<Hierarchy.Bus.BusEnvelope>() is { } env:
+                return BusInbox is { } inbox ? await inbox(env, ct).ConfigureAwait(false) : Hierarchy.Bus.BusReply.Fail("no bus inbox");
             default: return null;
         }
     }

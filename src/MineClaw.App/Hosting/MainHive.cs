@@ -46,13 +46,15 @@ public sealed class MainHive : IAsyncDisposable
     public ClaimBoard Board { get; }
     public ChatArbiter Arbiter { get; }
     public IClaimBoard MainClaims => Board.ViewFor(_main);
-    public IEnumerable<string> HiveBots() => [_main, .. _cfg.Clones()];
+    public IEnumerable<string> HiveBots() => [_main, .. Arbiter.Clones];
     public HiveSupervisor? Supervisor => _supervisor;
+    /// <summary>Kinds, ownership, dynamic accounts and the bus (null until <see cref="Attach"/>).</summary>
+    public Hive.Hierarchy.HiveHierarchy? Hierarchy { get; private set; }
 
-    /// <summary>Null when the hive is off or has no clones configured.</summary>
+    /// <summary>Null when the hive is off. No fixed roster: accounts are allocated per spawn (an empty state is main alone).</summary>
     public static MainHive? Create(HiveConfig cfg, string main, AppCli cli, AgentOptions agent, string logDir, ILogger log)
     {
-        if (!cfg.Enabled || cfg.Clones().Count == 0) return null;
+        if (!cfg.Enabled) return null;
         var args = new List<string> { "--no-tui", "--no-key-check", "--data-dir", agent.DataDirectory, "--log-dir", logDir };
         if (cli.ConfigPath != null) args.AddRange(["--config", Path.GetFullPath(cli.ConfigPath)]);
         if (cli.LogFormat != null) args.AddRange(["--log-format", cli.LogFormat]);
@@ -63,6 +65,8 @@ public sealed class MainHive : IAsyncDisposable
             agent.PersonaExtra = (agent.PersonaExtra + "\n" + Agent.Prompts.HiveMainHint).Trim();
         if (!agent.PersonaExtra.Contains(HiveTools.ScriptHint, StringComparison.Ordinal))
             agent.PersonaExtra = (agent.PersonaExtra + "\n" + HiveTools.ScriptHint).Trim();
+        if (!agent.PersonaExtra.Contains(HiveTools.KindHint, StringComparison.Ordinal))
+            agent.PersonaExtra = (agent.PersonaExtra + "\n" + HiveTools.KindHint).Trim();
         return new MainHive(cfg, main, args, log);
     }
 
@@ -129,11 +133,13 @@ public sealed class MainHive : IAsyncDisposable
         {
             if (rt.Memory.GetStandingOrder(clone) is { Player: CloneScriptRunner.OrderPlayer }) rt.Memory.ClearStandingOrder(clone, "new hive task");
         };
-        HiveTools.RegisterMain(rt.Tools, _supervisor, agent.Llm);
+        // Dynamic accounts, the ownership tree, the off-channel bus, shared-memory writes and the chat budget (new file).
+        Hierarchy = HiveHierarchyWiring.Attach(_cfg, _main, _supervisor, bot, client, agent, regulars, _log);
+        HiveTools.RegisterMain(rt.Tools, _supervisor, agent.Llm, Hierarchy);
         // Crew builds: idle clones (or the ones the brain names) build lanes of a design as hive jobs (build{bp, lane}).
         if (bot.Blueprints?.Service is { } blueprints) blueprints.Jobs = new HiveBuildJobs(_supervisor, _cfg.Clones());
-        _log.LogInformation("hive: {N} clone(s) configured ({Names}); regulars {Regulars}; {Budget}", _cfg.Clones().Count,
-            string.Join(", ", _cfg.Clones()), string.Join(", ", regulars), ledger.Summary());
+        _log.LogInformation("hive: dynamic accounts ({Prefix}*, {Known} managed); regulars {Regulars}; {Budget}", _cfg.Accounts.Prefix,
+            Hierarchy.Managed.All().Count, string.Join(", ", regulars), ledger.Summary());
     }
 
     public IBotTelemetrySource? SourceFor(string name) =>

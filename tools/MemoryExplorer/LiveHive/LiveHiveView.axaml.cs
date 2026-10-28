@@ -38,6 +38,11 @@ public partial class LiveHiveView : UserControl
         if ((sender as Control)?.DataContext is BotTileViewModel t) Vm?.OpenScript(t);
     }
 
+    private void OnControllerButton(object? sender, RoutedEventArgs e)
+    {
+        if ((sender as Control)?.DataContext is BotTileViewModel t) Vm?.OpenController(t);
+    }
+
     private void OnVisionButton(object? sender, RoutedEventArgs e)
     {
         if ((sender as Control)?.DataContext is BotTileViewModel t) Vm?.OpenVision(t);

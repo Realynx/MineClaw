@@ -208,6 +208,8 @@ public sealed class UsageTracker
 
     /// <summary>Raised when the mode changes (new mode, human-readable reason) — used for the in-game notice.</summary>
     public event Action<BudgetMode, string>? ModeChanged;
+    /// <summary>Every recorded API call (usage, USD), after booking: interrupt telemetry counts calls and tokens per open interrupt.</summary>
+    public event Action<LlmUsage, decimal>? Recorded;
 
     public PriceTable Prices => _prices;
 
@@ -311,6 +313,7 @@ public sealed class UsageTracker
             }
         }
         CheckMode();
+        try { Recorded?.Invoke(usage, cost); } catch (Exception) { }
         return cost;
     }
 

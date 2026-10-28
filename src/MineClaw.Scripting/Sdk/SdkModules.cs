@@ -29,13 +29,24 @@ public static class SdkModules
         {
             using var stream = asm.GetManifestResourceStream(res)!;
             using var reader = new StreamReader(stream, Encoding.UTF8);
-            var src = reader.ReadToEnd();
-            var m = Header.Match(src);
-            var file = res[(res.IndexOf(".Sdk.js.", StringComparison.Ordinal) + 8)..^3];
-            list.Add(new SdkModule(m.Success ? m.Groups[1].Value : file, m.Success ? m.Groups[2].Value.Trim() : "", src));
+            list.Add(Parse(res[(res.IndexOf(".Sdk.js.", StringComparison.Ordinal) + 8)..^3], reader.ReadToEnd()));
         }
         return list;
     }
+
+    /// <summary>One module from its file name (no extension, e.g. "20-world") and source (the <c>// module: name | summary</c> header).</summary>
+    public static SdkModule Parse(string file, string source)
+    {
+        var src = source.Replace("\r\n", "\n");
+        var m = Header.Match(src);
+        return new SdkModule(m.Success ? m.Groups[1].Value : file, m.Success ? m.Groups[2].Value.Trim() : "", src);
+    }
+
+    /// <summary>The modules of an <c>Sdk/js</c> folder on disk (same order and parsing as the embedded ones): tools that build docs
+    /// from the source tree read the files directly, so an edited module shows up without recompiling.</summary>
+    public static IReadOnlyList<SdkModule> FromDirectory(string dir) =>
+        Directory.GetFiles(dir, "*.js").OrderBy(f => Path.GetFileName(f), StringComparer.Ordinal)
+            .Select(f => Parse(Path.GetFileNameWithoutExtension(f), File.ReadAllText(f))).ToList();
 
     private static readonly Regex DefRx = new(@"\bdef\('([A-Za-z_$][\w$]*)'", RegexOptions.Compiled);
 
@@ -67,6 +78,26 @@ public static class SdkReference
             }
         }
         return sb.ToString();
+    }
+
+    /// <summary>One documented SDK function (or group, e.g. "night() ...; time() ..."): its module, the names it documents and its text.</summary>
+    public sealed record Entry(string Module, string ModuleSummary, IReadOnlyList<string> Names, string Text);
+
+    /// <summary>Every doc comment of the modules, in source order (the per-function reference a knowledge pack carries).</summary>
+    public static IReadOnlyList<Entry> Entries(IEnumerable<SdkModule>? modules = null)
+    {
+        var list = new List<Entry>();
+        foreach (var m in modules ?? SdkModules.All)
+            foreach (Match d in DocRx.Matches(m.Source))
+            {
+                var text = Regex.Replace(d.Groups[1].Value, @"^\s*\*\s?", "", RegexOptions.Multiline);
+                text = Regex.Replace(text, @"\s+", " ").Trim();
+                if (text.Length == 0) continue;
+                var names = Regex.Matches(d.Groups[1].Value, @"(?<![\w.$])([A-Za-z_$][\w$]*)(?=\(|\.|\s+-)").Select(x => x.Groups[1].Value)
+                    .Where(n => n is not ("null" or "true" or "false" or "undefined" or "this")).Distinct(StringComparer.Ordinal).ToList();
+                list.Add(new Entry(m.Name, m.Summary, names, text));
+            }
+        return list;
     }
 
     /// <summary>The documented SDK names (each doc comment's first identifier).</summary>

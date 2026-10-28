@@ -10,6 +10,10 @@ public sealed record KnowledgeLoad(string Core, int Files, int Chunks, int Reind
 {
     /// <summary>Docs on disk left out because their pack marker isn't among the db's active packs (e.g. skyblock in a plain world).</summary>
     public IReadOnlyList<string> Excluded { get; init; } = [];
+
+    /// <summary>Set when the bot's game version isn't the db's knowledge pack version (e.g. a 1.12.2 bot on a b1.8.1 db): only docs of
+    /// the game version were read, and the db's pack needs a swap (or a fresh-world reset).</summary>
+    public string? VersionMismatch { get; init; }
 }
 
 /// <summary>
@@ -183,7 +187,9 @@ public static class KnowledgeIndexer
         return (core, chunks.Select(c => new RagDoc(Ref(c), Kind, c.Title, c.Text) { Source = fileName, Weight = 1.0, At = at }).ToList());
     }
 
-    public static KnowledgeLoad Sync(RagIndex index, string? directory, RagOptions options)
+    /// <param name="gameVersion">The version the bot plays (null = trust the db's pack). When it differs from the db's knowledge pack, the
+    /// docs of the game version are read (no mode docs) and nothing of the db's pack: a 1.12.2 bot never reads b1.8.1/skyblock docs.</param>
+    public static KnowledgeLoad Sync(RagIndex index, string? directory, RagOptions options, string? gameVersion = null)
     {
         var db = index.Db;
         var core = new StringBuilder();
@@ -191,6 +197,13 @@ public static class KnowledgeIndexer
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var excluded = new List<string>();
         var active = Admin.Shards.KnowledgePack.Active(db);
+        string? mismatch = null;
+        if (gameVersion is { Length: > 0 } gv && !gv.Equals(active.Version, StringComparison.OrdinalIgnoreCase))
+        {
+            mismatch = $"the db's knowledge pack is {active.Label} but this bot plays {gv}: only {gv} docs are read; " +
+                       $"swap in the {gv} pack (or reset memory for a fresh world)";
+            active = new Admin.Shards.KnowledgePackInfo(gv) { Modes = [] };
+        }
 
         if (!string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory))
         {
@@ -241,7 +254,7 @@ public static class KnowledgeIndexer
         var coreText = core.ToString();
         bool truncated = coreText.Length > options.MaxCoreChars;
         if (truncated) coreText = coreText[..options.MaxCoreChars];
-        return new KnowledgeLoad(coreText, files, chunks, reindexed, truncated) { Excluded = excluded };
+        return new KnowledgeLoad(coreText, files, chunks, reindexed, truncated) { Excluded = excluded, VersionMismatch = mismatch };
     }
 
     private static string Ref(KnowledgeChunk c) => $"kb:{c.File}:{c.Index}";

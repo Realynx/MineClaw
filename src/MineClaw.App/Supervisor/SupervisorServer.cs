@@ -62,6 +62,11 @@ public sealed class SupervisorServer : IAsyncDisposable
     public SupervisorScriptRoutes? Scripts { get; set; }
     /// <summary>The read-only vision routes (<c>/api/bodies/{name}/vision*</c>: what the AI saw, on-demand renders; 403 without the token); null = off.</summary>
     public SupervisorVisionRoutes? Vision { get; set; }
+    /// <summary>The read-only controller routes (<c>/api/bodies/{name}/controller</c>, <c>/api/brains/{id}/context|turn/{n}</c>: what drives a
+    /// body, its brain's live context and thinking; 403 without the token); null = off.</summary>
+    public SupervisorControllerRoutes? Controller { get; set; }
+    /// <summary><c>/api/hive/tree</c>: the hive's ownership tree (main → children: kind, brain, state, task); null = main alone.</summary>
+    public Func<object?>? HiveTree { get; set; }
     public string? Prefix { get; private set; }
 
     /// <summary>Starts listening on Bind:Port. Throws when the address can't be bound (the host logs and runs without it).</summary>
@@ -139,6 +144,7 @@ public sealed class SupervisorServer : IAsyncDisposable
         if (path == "/favicon.ico") return new SupervisorReply(204, "image/x-icon", []);
         if (Scripts != null && await Scripts.TryHandleAsync(r, ct).ConfigureAwait(false) is { } scriptReply) return scriptReply;
         if (Vision != null && await Vision.TryHandleAsync(r, ct).ConfigureAwait(false) is { } visionReply) return visionReply;
+        if (Controller != null && await Controller.TryHandleAsync(r, ct).ConfigureAwait(false) is { } controllerReply) return controllerReply;
         if (!Authorized(r)) return Json(401, new { error = "token required (X-Supervisor-Token header or ?token=)" });
         if (World != null && await World.TryHandleAsync(r, path, ct).ConfigureAwait(false) is { } worldReply) return worldReply;
         try
@@ -147,6 +153,8 @@ public sealed class SupervisorServer : IAsyncDisposable
             {
                 case "/api/bots":
                     return Json(200, new { at = _time.GetUtcNow(), bots = _data.Bots() });
+                case "/api/hive/tree":
+                    return Json(200, HiveTree?.Invoke() ?? new { id = "main", name = "main", kind = "main", state = "running", children = Array.Empty<object>() });
                 case "/api/status":
                     return Json(200, _data.Status(Q(r, "bot")));
                 case "/api/events":

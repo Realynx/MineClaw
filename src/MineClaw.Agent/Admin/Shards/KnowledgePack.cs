@@ -82,7 +82,7 @@ public sealed partial record KnowledgeDocPack(string? Version, string? Mode, str
     /// <summary>Whether a doc with this marker is part of the db's active packs.</summary>
     public bool ActiveIn(KnowledgePackInfo active)
     {
-        bool versionOk = Version == null || Version.Equals(active.Version, StringComparison.OrdinalIgnoreCase);
+        bool versionOk = KnowledgePack.Matches(Version, active.Version);
         return Mode != null ? versionOk && active.HasMode(Mode) : versionOk;
     }
 }
@@ -97,6 +97,12 @@ public static partial class KnowledgePack
     public const string MetaKey = "knowledge_pack";
     /// <summary>The version the bot plays and the seed corpus describes.</summary>
     public const string DefaultVersion = "b1.8.1";
+    /// <summary>The version tag of a pack that holds in every world (the scripting SDK reference, <c>sdk-js</c>).</summary>
+    public const string AnyVersion = "any";
+
+    /// <summary>Whether a pack/doc written for <paramref name="packVersion"/> (null or <see cref="AnyVersion"/> = every version) applies to a db on <paramref name="dbVersion"/>.</summary>
+    public static bool Matches(string? packVersion, string dbVersion) =>
+        packVersion == null || packVersion.Equals(AnyVersion, StringComparison.OrdinalIgnoreCase) || packVersion.Equals(dbVersion, StringComparison.OrdinalIgnoreCase);
 
     [GeneratedRegex(@"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$")]
     private static partial Regex VersionRx();
@@ -127,7 +133,7 @@ public static partial class KnowledgePack
         if (active.Core is { Length: > 0 } vc && Missing(active.Files)) yield return vc;
         foreach (var m in active.Modes ?? [])
             if (m.Core is { Length: > 0 } mc && Missing(m.Files)
-                && (m.Version == null || m.Version.Equals(active.Version, StringComparison.OrdinalIgnoreCase)))
+                && Matches(m.Version, active.Version))
                 yield return mc;
     }
 

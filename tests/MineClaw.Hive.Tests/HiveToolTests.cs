@@ -20,7 +20,7 @@ public class HiveToolTests(Xunit.Abstractions.ITestOutputHelper output)
         Assert.Empty(tools.Definitions(ModelTier.Worker));
         int t = Tokens(brain);
         output.WriteLine($"hive tool ≈{t} tokens");
-        Assert.True(t <= 75, $"hive tool ≈{t} tok");
+        Assert.True(t <= 80, $"hive tool ≈{t} tok"); // 75 → 80: the clone kind field (hive|subhive|script), paid by a shorter description
 
         var list = await tools.ExecuteAsync("hive", System.Text.Json.JsonSerializer.SerializeToElement(new { op = "list" }), default);
         // Item 10: a clone that has never been in game is "never joined" (its first login lands at the fresh-player spawn), not "idle".
@@ -54,9 +54,9 @@ public class HiveToolTests(Xunit.Abstractions.ITestOutputHelper output)
         HiveTools.RegisterMain(tools, h.Supervisor, llm);
         var def = tools.Definitions(ModelTier.Main).Single();
         int t = Tokens([def]);
-        output.WriteLine($"hive tool with script/code/args/after/profile ≈{t} tokens");
+        output.WriteLine($"hive tool with script/code/args/after/kind/brain ≈{t} tokens");
         Assert.True(t <= 115, $"hive tool ≈{t} tok"); // +≈40 over the plain tool; the usage line is cached prompt text instead
-        foreach (var p in new[] { "script", "code", "args", "after", "profile" })
+        foreach (var p in new[] { "script", "code", "args", "after", "kind", "brain" }) // brain replaced profile (still read)
             Assert.True(def.InputSchema.GetProperty("properties").TryGetProperty(p, out _), p);
 
         var bad = await tools.ExecuteAsync("hive", System.Text.Json.JsonSerializer.SerializeToElement(new { op = "spawn", task = "mine", profile = "gpt9" }), default);

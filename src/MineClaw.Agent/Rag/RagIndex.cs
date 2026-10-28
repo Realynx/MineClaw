@@ -217,9 +217,17 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
     /// </summary>
     public IDocGroomer? Groomer { get; set; }
 
+    /// <summary>
+    /// One shared memory for every hive: in a hive process that isn't main, raw docs go to main (which grooms and stores them, with
+    /// provenance) instead of being groomed and written here. Returns the stored ids, or null = not forwarded (main unreachable, or
+    /// this thread is inside a db transaction): the doc is then groomed and written locally as before.
+    /// </summary>
+    public Func<IReadOnlyList<RagDoc>, long[]?>? WriteThrough { get; set; }
+
     /// <summary>Grooms (see <see cref="Groomer"/>) and stores the doc; returns the id of the (first) stored doc, 0 when dropped.</summary>
     public long Upsert(RagDoc d)
     {
+        if (WriteThrough is { } w && w([d]) is { } forwarded) return forwarded.Length > 0 ? forwarded[0] : 0;
         if (Groomer is { } g)
         {
             var docs = g.Groom(d);
@@ -258,6 +266,13 @@ public sealed class RagIndex : IRetrievalIndex, IDisposable
     /// <summary>Batched upsert in one transaction (one embedding wake-up for the whole batch).</summary>
     public int UpsertMany(IEnumerable<RagDoc> docs)
     {
+        if (WriteThrough is { } w)
+        {
+            var list = docs as IReadOnlyList<RagDoc> ?? docs.ToList();
+            if (list.Count == 0) return 0;
+            if (w(list) != null) return list.Count;
+            docs = list;
+        }
         bool any = false;
         int n = _db.Tx(() =>
         {

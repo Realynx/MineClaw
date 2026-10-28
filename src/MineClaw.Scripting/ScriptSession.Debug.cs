@@ -223,7 +223,7 @@ public sealed partial class ScriptSession
             Checkpoint = Checkpoint, CheckpointsPassed = CheckpointsPassed, CheckpointTotal = CheckpointTotal,
             Paused = paused, PausePending = PausePending && !paused, PauseKind = PausedFor?.ToString().ToLowerInvariant(), PauseReason = PauseReason,
             PausedSeconds = PausedAt is { } pa ? Math.Round((_time.GetUtcNow() - pa).TotalSeconds, 1) : null,
-            Machine = machine,
+            Machine = machine, Patching = Patching, PatchNote = PatchNote, Patches = Patches,
             Locals = sample?.Locals,
             LocalsNote = probe == null ? (live ? "locals are shown for JavaScript only" : "the script ended") : sample?.LocalsNote ?? (sample == null ? "sampling starts with the next statement or action" : null),
             LocalsAgeSeconds = sample?.Locals != null ? Math.Round((now - sample.Tick) / 1000.0, 1) : null,

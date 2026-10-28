@@ -49,6 +49,8 @@ public sealed class ScriptController : IDisposable
     public event Action<ScriptSession>? Paused;
     /// <summary>(session, automatic) — automatic = chat pause timed out.</summary>
     public event Action<ScriptSession, bool>? Resumed;
+    /// <summary>Raised when a run starts (before its thread runs).</summary>
+    public event Action<ScriptSession>? Started;
 
     public static string CleanName(string? raw)
     {
@@ -87,6 +89,7 @@ public sealed class ScriptController : IDisposable
             s = new ScriptSession(this, ++_nextId, req, _shutdown.Token);
             _current = s;
         }
+        Safe(() => Started?.Invoke(s));
         s.Start();
         return (s, null);
     }

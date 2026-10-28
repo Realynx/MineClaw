@@ -68,6 +68,10 @@ public sealed class AgentOptions
     /// </summary>
     public string? KnowledgeDirectory { get; set; } = "docs/knowledge";
 
+    /// <summary>The game version this process plays ("b1.8.1", "1.12.2"), set by the host after version detection (null = unknown:
+    /// the db's knowledge pack decides). A db whose pack is another version reads only this version's knowledge docs.</summary>
+    public string? GameVersion { get; set; }
+
     /// <summary>Cap on in-prompt knowledge text (chars, RAG off) so a big doc can't silently inflate every request.</summary>
     public int MaxKnowledgeChars { get; set; } = 40_000;
 

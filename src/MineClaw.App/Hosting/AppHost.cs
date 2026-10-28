@@ -46,7 +46,10 @@ public static class AppHost
         config.GetSection("Scripting").Bind(botOptions.Scripts); // JS engine limits + the Lua migration flags ("Scripting:MigrateLua")
         var host = config.GetSection("Host").Get<HostSettings>() ?? new HostSettings();
         var hive = config.GetSection("Hive").Get<HiveConfig>() ?? new HiveConfig();
-        config.GetSection("Hive").Bind(agentOptions.Hive); // personality scope: main | clone username (Self shards)
+        config.GetSection("Hive").Bind(agentOptions.Hive); // one shared memory/self profile for every hive (HiveOptions.SharedSelf)
+        // No fixed roster (docs/design/hive-hierarchy.md): old Hive:CloneUsernames are only adopted into the managed account list.
+        hive.IgnoreLegacyRoster();
+        agentOptions.Hive.IgnoreLegacyRoster();
         var telemetryOptions = config.GetSection("Telemetry").Get<TelemetryOptions>() ?? new TelemetryOptions();
         var supervisorOptions = config.GetSection("Supervisor").Get<Supervisor.SupervisorOptions>() ?? new Supervisor.SupervisorOptions();
         var bodiesOptions = config.GetSection("Bodies").Get<MineClaw.Bot.Bodies.BodiesOptions>() ?? new MineClaw.Bot.Bodies.BodiesOptions();
@@ -138,6 +141,7 @@ public static class AppHost
                 return ExitCodes.Config;
             }
             cli = cli with { ServerVersion = profile.Version.Id }; // hive clones inherit the resolved version (MainHive pass-through)
+            agentOptions.GameVersion = profile.Version.Id; // knowledge docs of another version (b1.8.1/skyblock on 1.12.2) stay out
             if (cli.CloneName != null)
                 return await CloneMode.RunAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, loggers, log, signals, profile);
             return await RunBotAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, useTui, ring, loggers, log, signals, mainLogDir,
@@ -226,7 +230,8 @@ public static class AppHost
             : inproc != null ? new BodyBotSource(n, () => bot.Bodies?.Find(n),
                 b => new InProcessBotSource(b.Adapter, rt, telemetry, agent, commands, host.Tui.Viewport, signals.Token) { Activities = b.Activities })
             : mainHive?.SourceFor(n) ?? new OfflineBotSource(n)).ToList();
-        var supervisorServer = StartSupervisor(supervisorOptions, bot, client, mc.Username, sources, mainHive, loggers.CreateLogger("MineClaw.Supervisor"));
+        var supervisorServer = StartSupervisor(supervisorOptions, bot, client, mc.Username, sources, mainHive, loggers.CreateLogger("MineClaw.Supervisor"),
+            telemetryOptions.Enabled ? telemetry.Capture : null);
 
         Task tuiTask = Task.CompletedTask;
         if (useTui)
@@ -315,7 +320,7 @@ public static class AppHost
     /// over HTTP, for an SSH tunnel. Renders run on one capped background thread; a bind failure only logs (the bot runs on).
     /// </summary>
     private static Supervisor.SupervisorServer? StartSupervisor(Supervisor.SupervisorOptions? o, BotHost bot, MinecraftClient client, string main,
-        IReadOnlyList<IBotTelemetrySource> sources, MainHive? mainHive, ILogger log)
+        IReadOnlyList<IBotTelemetrySource> sources, MainHive? mainHive, ILogger log, BrainContextCapture? capture = null)
     {
         if (o is not { Enabled: true }) return null;
         if (bot.Vision?.Hub is not { } hub)
@@ -348,7 +353,12 @@ public static class AppHost
             Scripts = new Supervisor.SupervisorScriptRoutes(new Supervisor.LiveScriptData(bot, main, () => mainHive?.Supervisor, log), o.Token),
         };
         // /api/bodies/{name}/vision*: the sheets each body's models got (clones over IPC) and on-demand renders (token or 403)
+        server.HiveTree = () => mainHive?.Hierarchy?.Snapshot(); // the Explorer's Live Hive tree (owner → children, kind, brain)
         server.Vision = new Supervisor.SupervisorVisionRoutes(new Supervisor.LiveVisionData(hub, bot, main, () => mainHive?.Supervisor, log), o.Token, server.Gate);
+        // /api/bodies/{name}/controller, /api/brains/{id}/context|turn/{n}: what drives a body and its brain's live context (token or 403)
+        capture?.AddSecrets([o.Token]);
+        server.Controller = new Supervisor.SupervisorControllerRoutes(new Supervisor.SupervisorControllerData(bot, main, capture, () => mainHive?.Supervisor,
+            () => mainHive?.Hierarchy?.Tree, log), o.Token);
         try
         {
             server.Start();

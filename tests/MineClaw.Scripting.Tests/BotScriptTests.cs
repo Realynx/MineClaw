@@ -18,7 +18,9 @@ namespace MineClaw.Scripting.Tests;
 public sealed class CountingLlm : ILlmClient
 {
     public ConcurrentQueue<LlmRequest> Requests { get; } = new();
-    public int Brain => Requests.Count(r => r.Tier == ModelTier.Main);
+    /// <summary>Brain turns (the interrupt patch call is Opus too, but not a brain turn).</summary>
+    public int Brain => Requests.Count(r => r.Tier == ModelTier.Main && r.Purpose != "patch");
+    public int Patches => Requests.Count(r => r.Purpose == "patch");
 
     public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct)
     {
@@ -26,7 +28,7 @@ public sealed class CountingLlm : ILlmClient
         return Task.FromResult(new LlmResponse([new LlmText("")], StopReasons.EndTurn, LlmUsage.Zero, request.Model ?? "claude-opus-5-5"));
     }
 
-    public string LastBrainText() => Requests.LastOrDefault(r => r.Tier == ModelTier.Main) is { } r
+    public string LastBrainText() => Requests.LastOrDefault(r => r.Tier == ModelTier.Main && r.Purpose != "patch") is { } r
         ? string.Join("\n", r.Messages.Last().Content.OfType<LlmText>().Select(t => t.Text)) : "";
 }
 

@@ -19,6 +19,8 @@ public static class ScriptText
     {
         var sb = new StringBuilder("script ").Append(s.Name).Append(' ').Append(s.Status.ToString().ToLowerInvariant());
         if (s.Status == ScriptStatus.Paused && s.PauseReason != null) sb.Append(" (").Append(s.PauseReason).Append(')');
+        if (s.Patching is { } patching) sb.Append(" (patching: ").Append(patching).Append(')');
+        else if (s.Status == ScriptStatus.Paused && s.PatchNote is { } pn) sb.Append(" (patch ").Append(ScriptSession.Short(pn, 80)).Append(')');
         if (s.Reason != null && !s.IsLive) sb.Append(" (").Append(s.Reason).Append(')');
         if (s.Line > 0) sb.Append(" L").Append(s.Line);
         if (s.Snippet != null) sb.Append(" `").Append(s.Snippet).Append('`');
