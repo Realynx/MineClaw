@@ -19,7 +19,7 @@ public sealed class QuestionOptions
     /// <summary>Said on timeout ({player}, {default}); empty = say nothing.</summary>
     public string TimeoutLine { get; set; } = "{player}, went with {default} since you're busy, say if you want different";
     /// <summary>Said on timeout of a risky question.</summary>
-    public string RiskyTimeoutLine { get; set; } = "{player}, skipped that part for now, say if you want it done";
+    public string RiskyTimeoutLine { get; set; } = "{player}, skipped {topic} for now, say if you want it done";
     /// <summary>
     /// Said on timeout when the default is an instruction to the bot itself ("Stay on the tree farm standing order; skip the
     /// cobble gen unless told."): {plan} is its first clause, jargon dropped ("stay on the tree farm"). Live 3, 14:35:08 posted
@@ -45,10 +45,11 @@ public sealed class QuestionOptions
     /// The line said when a question timed out: never the raw default when that is an instruction or jargon. A short choice
     /// ("left cell") keeps <see cref="TimeoutLine"/>; an instruction becomes "gonna stay on the tree farm for now ...".
     /// </summary>
-    public string TimeoutText(string? player, string dflt, bool risky)
+    public string TimeoutText(string? player, string dflt, bool risky, string? question = null)
     {
         string line;
-        if (risky) line = RiskyTimeoutLine;
+        // Live 10-28: "skipped that part for now" posted 4× with no hint which question it meant.
+        if (risky) line = RiskyTimeoutLine.Replace("{topic}", Topic(question) is { } t ? $"\"{t}\"" : "that part");
         else
         {
             var d = (dflt ?? "").Trim();
@@ -67,6 +68,22 @@ public sealed class QuestionOptions
             else line = VagueTimeoutLine;
         }
         return line.Replace("{player}", player ?? "").Replace("{default}", dflt ?? "").Trim(' ', ',');
+    }
+
+    private static readonly Regex AskLead = new(
+        @"^\s*(?:\w+[,:]\s*)?(?:master~?\s*)?(?:(?:can|could|may|should|shall)\s+i|do you want me to|want me to|(?:is it\s+)?ok(?:ay)?\s+(?:if i|to)|mind if i)\s+",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>"can I redesign the tower to fit your floor?" → "redesign the tower to fit your floor" (≤8 words); null when empty.</summary>
+    internal static string? Topic(string? question)
+    {
+        if (string.IsNullOrWhiteSpace(question)) return null;
+        var q = question.Split('?', '.', '!')[0];
+        q = AskLead.Replace(q, "");
+        q = Coords.Replace(q, "").Trim(' ', ',', ':', '~');
+        var words = q.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length == 0) return null;
+        return string.Join(' ', words.Take(8)) + (words.Length > 8 ? "…" : "");
     }
 
     /// <summary>

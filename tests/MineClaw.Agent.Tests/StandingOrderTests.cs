@@ -129,7 +129,7 @@ public class StandingOrderTests
         Assert.True(res.Ok, res.Text);
         Assert.Contains("go ahead with \"skip that part\"", res.Text);
         Assert.Contains("except the risky part", res.Text);
-        await WaitFor(() => SentContains(sent, "skipped that part for now"));
+        await WaitFor(() => SentContains(sent, "skipped \"break your wall to reach the chest\" for now")); // names the question (live 10-28)
 
         Assert.True(new QuestionOptions().IsRisky("bridge out over the void?"));
         Assert.True(new QuestionOptions().IsRisky("use the diamonds?"));
