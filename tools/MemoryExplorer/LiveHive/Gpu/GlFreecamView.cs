@@ -39,8 +39,8 @@ public sealed class GpuFreecam : IFreecamInput, IDisposable
     public FrameScene Scene { get; }
     public int MaxDistance { get => Scene.MaxDistance; set => Scene.MaxDistance = Math.Clamp(value, 32, 192); }
     /// <summary>Per-frame GPU upload budget.</summary>
-    public double UploadBudgetMs { get; set; } = 3;
-    public int MaxUploadsPerFrame { get; set; } = 48;
+    public double UploadBudgetMs { get; set; } = 2;
+    public int MaxUploadsPerFrame { get; set; } = 16; // a big ingest spreads over frames instead of one long hitch
     public double Fps { get; internal set; }
     public bool ShowStats { get; set; }
     public string GlInfo { get; internal set; } = "";
@@ -48,6 +48,14 @@ public sealed class GpuFreecam : IFreecamInput, IDisposable
     public string? ShotPath { get; set; }
 
     public bool Ready => Scene.Sections.Count > 0 && Worker.Idle && Store.Ready.IsEmpty;
+
+    /// <summary>The camera has the keyboard and mouse (a click engages it, Esc or losing focus releases it).</summary>
+    public bool Engaged { get; internal set; }
+    /// <summary>"reconnecting…" / "world stale 12 s" while the hive link is unhealthy (the HUD shows it); null when fine.</summary>
+    public string? LinkNote { get; set; }
+    /// <summary>Why the last frame failed, if one did (shown in the HUD; the loop keeps running).</summary>
+    public string? LastError { get; internal set; }
+    public long FramesFailed;
 
     public void SetKeys(bool w, bool s, bool a, bool d, bool up, bool down, bool fast) =>
         _keys = (w ? 1 : 0) | (s ? 2 : 0) | (a ? 4 : 0) | (d ? 8 : 0) | (up ? 16 : 0) | (down ? 32 : 0) | (fast ? 64 : 0);
@@ -94,8 +102,11 @@ public sealed class GpuFreecam : IFreecamInput, IDisposable
 /// <see cref="GlFailed"/> when GL is unavailable (no context within a few seconds, too old, a shader error): the host then shows
 /// the CPU raycaster instead.
 /// </summary>
-public sealed class GlFreecamView : OpenGlControlBase
+public sealed class GlFreecamView : OpenGlControlBase, Avalonia.Rendering.ICustomHitTest
 {
+    /// <summary>The GL surface draws nothing Avalonia can hit-test, so without this clicks fell through: no focus, no keys.</summary>
+    public bool HitTest(Point point) => new Rect(Bounds.Size).Contains(point);
+
     public static readonly StyledProperty<GpuFreecam?> ModelProperty = AvaloniaProperty.Register<GlFreecamView, GpuFreecam?>(nameof(Model));
 
     private GlFreecamRenderer? _r;
@@ -158,9 +169,11 @@ public sealed class GlFreecamView : OpenGlControlBase
         Dispatcher.UIThread.Post(() => GlFailed?.Invoke(why));
     }
 
-    protected override void OnOpenGlInit(GlInterface gl)
+    protected override void OnOpenGlInit(GlInterface gl) => TryInit(gl);
+
+    private bool TryInit(GlInterface gl)
     {
-        if (Model is not { } m) return;
+        if (Model is not { } m) return false;
         try
         {
             _r = new GlFreecamRenderer();
@@ -169,32 +182,53 @@ public sealed class GlFreecamView : OpenGlControlBase
             m.Scene.Textured = _r.Textured;
             m.Store.RequestResend();
             _inited = true;
+            _initFailures = 0;
+            return true;
         }
         catch (Exception ex)
         {
             _r = null;
-            Fail("OpenGL init failed: " + ex.Message);
+            // A bad shader or a too-old context won't fix itself: fall back to the CPU raycaster after a few tries.
+            if (++_initFailures >= 3) Fail("OpenGL init failed: " + ex.Message);
+            return false;
         }
     }
+
+    private int _initFailures, _consecutiveFailures;
 
     protected override void OnOpenGlDeinit(GlInterface gl)
     {
         if (_r != null && Model is { } m) _r.Release(m.Scene);
         _r?.Dispose();
         _r = null;
-        // The store must re-send every section to a new context.
-        if (Model is { } mm) mm.Store.RequestResend();
+        // The store must re-send every section to the next context.
+        Model?.Store.RequestResend();
     }
 
     protected override void OnOpenGlLost()
     {
+        // Device reset / context loss: every GL object is gone. Forget them (no GL calls) and rebuild on the next frame.
         _r = null;
+        if (Model is { } m) { m.Scene.Sections.Clear(); m.Store.RequestResend(); m.LastError = "GL context lost: rebuilding"; }
         base.OnOpenGlLost();
+        Dispatcher.UIThread.Post(RequestNextFrameRendering);
     }
 
     protected override void OnOpenGlRender(GlInterface gl, int fb)
     {
-        if (_r == null || Model is not { } m) return;
+        try { RenderFrame(gl, fb); }
+        finally
+        {
+            // The loop must never stop: an early return or an exception still asks for the next frame.
+            if (!_failed && IsEffectivelyVisible) RequestNextFrameRendering();
+        }
+    }
+
+    private void RenderFrame(GlInterface gl, int fb)
+    {
+        if (Model is not { } m) return;
+        if (_r == null && !TryInit(gl)) return;
+        var r = _r!;
         double t0 = FreecamStats.NowMs;
         var st = FreecamStats.Shared;
         try
@@ -204,24 +238,24 @@ public sealed class GlFreecamView : OpenGlControlBase
             m.Step(dt);
             double input = m.Camera.TakeInputStamp();
             var pose = m.Camera.Pose;
-            if (!_r.Textured && m.Atlas() is { } atlas)
+            if (!r.Textured && m.Atlas() is { } atlas)
             {
                 // Textures arrived after the context: rebuild the atlas and every mesh.
                 var nr = new GlFreecamRenderer();
                 nr.Init(gl, GlVersion, atlas);
-                _r.Release(m.Scene);
-                _r.Dispose();
-                _r = nr;
+                r.Release(m.Scene);
+                r.Dispose();
+                _r = r = nr;
                 m.Scene.Textured = true; // the worker re-meshes textured on its next Aim
             }
-            m.Worker.Aim(pose.Dim, (int)Math.Floor(pose.X) >> 4, (int)Math.Floor(pose.Z) >> 4, m.MaxDistance / 16 + 1, _r.Textured);
-            _r.Ingest(m.Store, m.Scene, m.UploadBudgetMs, m.MaxUploadsPerFrame);
+            m.Worker.Aim(pose.Dim, (int)Math.Floor(pose.X) >> 4, (int)Math.Floor(pose.Z) >> 4, m.MaxDistance / 16 + 1, r.Textured);
+            r.Ingest(m.Store, m.Scene, m.UploadBudgetMs, m.MaxUploadsPerFrame);
             double scale = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1;
             int w = Math.Max(16, (int)(Bounds.Width * scale)), h = Math.Max(16, (int)(Bounds.Height * scale));
             long alloc0 = GC.GetAllocatedBytesForCurrentThread();
             m.Scene.Prepare(pose, w, h, DateTimeOffset.UtcNow);
-            if (m.ShotPath is { } shot) { m.ShotPath = null; _r.ShotPath = shot; }
-            st.DrawCalls = _r.Draw(m.Scene, fb, w, h);
+            if (m.ShotPath is { } shot) { m.ShotPath = null; r.ShotPath = shot; }
+            st.DrawCalls = r.Draw(m.Scene, fb, w, h);
             st.Renderer = "gl";
             st.Width = w; st.Height = h;
             m.PublishLabels(m.Scene.Labels);
@@ -233,22 +267,49 @@ public sealed class GlFreecamView : OpenGlControlBase
             Interlocked.Increment(ref st.Frames);
             _fpsN++;
             if (t0 - _fpsT >= 1000) { m.Fps = _fpsN * 1000.0 / (t0 - _fpsT); _fpsN = 0; _fpsT = t0; }
+            _consecutiveFailures = 0;
         }
         catch (Exception ex)
         {
-            Fail("OpenGL render failed: " + ex.Message);
+            // One bad frame (a racing eviction, a driver hiccup) must not end the GPU camera: log it once, keep going; only a
+            // persistent failure (two seconds of nothing but errors) falls back to the CPU raycaster.
+            Interlocked.Increment(ref m.FramesFailed);
+            if (m.LastError == null || !m.LastError.EndsWith(ex.Message, StringComparison.Ordinal))
+            {
+                m.LastError = $"frame failed: {ex.GetType().Name}: {ex.Message}";
+                System.Diagnostics.Trace.WriteLine("livehive gl: " + ex);
+            }
+            if (++_consecutiveFailures > 240) Fail("OpenGL keeps failing: " + ex.Message);
             return;
         }
         FrameRendered?.Invoke();
-        if (IsEffectivelyVisible) RequestNextFrameRendering();
     }
 
     // ------------------------------------------------------------------ input
 
+    /// <summary>Takes the keyboard and mouse (click). Raises <see cref="EngagedChanged"/>.</summary>
+    public void Engage()
+    {
+        if (Model is { } m && !m.Engaged) { m.Engaged = true; EngagedChanged?.Invoke(true); }
+        Focus(NavigationMethod.Pointer);
+        RequestNextFrameRendering();
+    }
+
+    /// <summary>Lets go (Esc, focus lost): held keys are released so nothing drifts.</summary>
+    public void Release()
+    {
+        _held.Clear();
+        _drag = null;
+        PushKeys();
+        if (Model is { } m && m.Engaged) { m.Engaged = false; EngagedChanged?.Invoke(false); }
+    }
+
+    public event Action<bool>? EngagedChanged;
+
     protected override void OnPointerPressed(PointerPressedEventArgs e)
     {
         base.OnPointerPressed(e);
-        Focus(NavigationMethod.Pointer);
+        Engage();
         _drag = e.GetPosition(this);
         e.Pointer.Capture(this);
         e.Handled = true;
@@ -293,26 +354,31 @@ public sealed class GlFreecamView : OpenGlControlBase
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
-        if (e.Key == Key.F3) { StatsToggled?.Invoke(); e.Handled = true; return; }
-        if (!Movement(e.Key)) return;
-        _held.Add(e.Key);
-        PushKeys();
-        e.Handled = true;
+        if (!e.Handled) HandleKey(e, down: true);
     }
 
     protected override void OnKeyUp(KeyEventArgs e)
     {
         base.OnKeyUp(e);
-        if (!_held.Remove(e.Key)) return;
-        PushKeys();
+        if (!e.Handled) HandleKey(e, down: false);
+    }
+
+    /// <summary>A key for the camera (from its own handlers, or the page's tunnel handler while engaged). Handled = consumed.</summary>
+    public void HandleKey(KeyEventArgs e, bool down)
+    {
+        if (down && e.Key == Avalonia.Input.Key.F3) { StatsToggled?.Invoke(); e.Handled = true; return; }
+        if (down && e.Key == Avalonia.Input.Key.Escape) { Release(); TopLevel.GetTopLevel(this)?.Focus(); e.Handled = true; return; }
+        if (Model is not { Engaged: true }) return;
+        if (!Movement(e.Key)) return;
+        bool changed = down ? _held.Add(e.Key) : _held.Remove(e.Key);
+        if (changed) PushKeys();
         e.Handled = true;
     }
 
     protected override void OnLostFocus(FocusChangedEventArgs e)
     {
         base.OnLostFocus(e);
-        _held.Clear();
-        PushKeys();
+        Release();
     }
 
     private void PushKeys()
@@ -341,12 +407,14 @@ public sealed class FreecamOverlay : Control
     private static readonly IBrush HudBg = new SolidColorBrush(Color.FromArgb(0xA8, 0x0E, 0x10, 0x16));
     private static readonly IPen Cross = new Pen(new SolidColorBrush(Color.FromArgb(0xD0, 0xFF, 0xFF, 0xFF)), 1.5);
     private static readonly Comparison<LabelItem> FarFirst = (a, b) => b.Dist.CompareTo(a.Dist);
+    private static readonly IPen EngagedPen = new Pen(new SolidColorBrush(Color.FromArgb(0xE0, 0x5E, 0xB8, 0xFF)), 3);
     private FormattedText? _hud;
     private double _hudAt;
 
     public FreecamOverlay() => IsHitTestVisible = false;
 
     private int _lastLabelCount = -1;
+    private bool _wasEngaged;
 
     /// <summary>Whether the overlay must redraw after this GL frame: labels move with the camera (or just vanished), else only
     /// the HUD's 4 Hz refresh. Avoids re-recording an unchanged overlay at the display rate.</summary>
@@ -354,14 +422,13 @@ public sealed class FreecamOverlay : Control
     {
         if (Model is not { } m) return false;
         int n = m.Scene.Labels.Count;
-        bool redraw = n > 0 || _lastLabelCount != 0 || FreecamStats.NowMs - _hudAt > 250;
+        bool redraw = n > 0 || _lastLabelCount != 0 || FreecamStats.NowMs - _hudAt > 250 || m.Engaged != _wasEngaged;
+        _wasEngaged = m.Engaged;
         _lastLabelCount = n;
         return redraw;
     }
 
     public GpuFreecam? Model { get => GetValue(ModelProperty); set => SetValue(ModelProperty, value); }
-    /// <summary>Whether the camera has focus (shows the controls hint otherwise).</summary>
-    public bool CameraFocused { get; set; }
 
     private FormattedText Text(string s, uint colour)
     {
@@ -400,14 +467,18 @@ public sealed class FreecamOverlay : Control
             var p = m.Camera.Pose;
             string text = string.Create(CultureInfo.InvariantCulture,
                 $"{m.Fps,4:0} fps  gpu  {m.Scene.Width}x{m.Scene.Height}\n{p.X:0.0}, {p.Y:0.0}, {p.Z:0.0}  {(p.Dim == -1 ? "nether" : "overworld")}  facing {EyeRenderer.Compass(p.Yaw)} ({p.Yaw:0}°, {p.Pitch:0}°)  speed {m.Camera.Speed:0}");
+            if (m.LinkNote is { } ln) text += "\n" + ln;
+            if (m.LastError is { } err) text += $"\n{err} ({Interlocked.Read(ref m.FramesFailed)} frames)";
             if (m.ShowStats) text += "\n" + FreecamStats.Shared.Overlay(m.Fps) + $"\n{m.GlInfo}  entities {m.Scene.EntitiesDrawn}";
             _hud = new FormattedText(text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Mono, 11.5, Brushes.White);
         }
         ctx.DrawRectangle(HudBg, null, new Rect(10, 10, _hud.Width + 16, _hud.Height + 10), 6, 6);
         ctx.DrawText(_hud, new Point(18, 15));
-        if (!CameraFocused)
+        if (m.Engaged)
+            ctx.DrawRectangle(null, EngagedPen, new Rect(b.Size).Deflate(1.5), 4, 4); // visible focus: the camera has the keys
+        else
         {
-            var hint = Text("click to fly · WASD move · Q/E down/up · drag to look · wheel speed · Shift fast · F3 stats", 0xffffff);
+            var hint = Text("click to control · WASD move · Q/E down/up · drag to look · wheel speed · Shift fast · Esc releases · F3 stats", 0xffffff);
             var r = new Rect((b.Width - hint.Width) / 2 - 10, b.Height - hint.Height - 22, hint.Width + 20, hint.Height + 10);
             ctx.DrawRectangle(HudBg, null, r, 6, 6);
             ctx.DrawText(hint, new Point(r.X + 10, r.Y + 5));

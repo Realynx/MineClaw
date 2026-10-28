@@ -39,6 +39,7 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
 
     public LiveHiveViewModel()
     {
+        Stats.UiThreadId = Environment.CurrentManagedThreadId; // constructed on the UI thread
         _atlas = new Lazy<TextureAtlas?>(LoadAtlas, LazyThreadSafetyMode.ExecutionAndPublication);
         Freecam = new FreecamEngine(_cache, _camera, () => _atlas.IsValueCreated ? _atlas.Value : null)
         {
@@ -161,10 +162,19 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         };
         _sync.StateChanged += () => Dispatcher.UIThread.Post(SyncStateChanged);
         _sync.EntitiesChanged += e => Dispatcher.UIThread.Post(() => ApplyEntities(e));
-        _sync.ViewPng += (bot, mode, png) => Dispatcher.UIThread.Post(() =>
+        _sync.ViewPng += (bot, mode, png) =>
         {
-            foreach (var t in AllTiles) if (t.Key == bot && t.Mode.ServerMode == mode) t.SetMap(png);
-        });
+            // Decoded here, on the sync worker: a large PNG decode on the UI thread stalled every tile and the camera.
+            Avalonia.Media.Imaging.Bitmap bmp;
+            try { using var ms = new MemoryStream(png); bmp = new Avalonia.Media.Imaging.Bitmap(ms); }
+            catch (Exception) { return; } // a bad frame: keep the last one
+            Dispatcher.UIThread.Post(() =>
+            {
+                var tile = AllTiles.FirstOrDefault(t => t.Key == bot && t.Mode.ServerMode == mode);
+                if (tile != null) tile.SetMap(bmp);
+                else bmp.Dispose();
+            });
+        };
         ConnectLabel = "Disconnect";
         IsConnecting = true;
         if (_active) _sync.Start();
@@ -531,6 +541,13 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
               + (ov.Notes.Count > 0 ? " · " + string.Join(", ", ov.Notes) : "")
             : "";
         if (IsFreecamTab) RefreshDrops();
+        // Per-tile "stale Ns" / "reconnecting…" badges, and the same for the free camera's HUD.
+        var utcNow = DateTime.UtcNow;
+        bool linkUp = _sync is { State: LinkState.Connected };
+        foreach (var t in AllTiles) t.RefreshStale(linkUp, utcNow);
+        double worldAge = _sync is { WorldOkAt: var ok } && ok > DateTime.MinValue ? (utcNow - ok).TotalSeconds : 0;
+        Gpu.LinkNote = _sync == null ? null : !linkUp ? "reconnecting… (" + StateText + ")"
+            : worldAge > 5 ? $"world stale {worldAge:0} s" + (_sync.LastError is { } le ? " · " + le : "") : null;
         SyncText = _sync?.EntitiesAt is { } at && at > DateTime.MinValue ? $"bots updated {Math.Max(0, (DateTime.UtcNow - at).TotalSeconds):0.0} s ago" : "";
         // The camera moved on: re-aim the world sync at it.
         int bx = (int)Math.Floor(p.X) >> 4, bz = (int)Math.Floor(p.Z) >> 4;

@@ -11,6 +11,7 @@ using static MineClaw.MemoryExplorer.Tests.LiveHive.LiveHiveDecoderTests;
 
 namespace MineClaw.MemoryExplorer.Tests.LiveHive;
 
+[Collection("avalonia")]
 public class GpuFreecamTests
 {
     // ------------------------------------------------------------------ mesher
@@ -204,10 +205,9 @@ public class GpuFreecamTests
         var http = new HttpClient(fake) { BaseAddress = new Uri("http://hive.test/") };
         using var api = new HiveApi(new SupervisorEndpoint("http://hive.test/"), http);
         long uiBefore = Interlocked.Read(ref FreecamStats.Shared.SyncOnUiThread);
-        int ui = Environment.CurrentManagedThreadId; // the thread that starts the sync stands in for the UI thread
-        _ = Avalonia.Threading.Dispatcher.UIThread.CheckAccess(); // bind Avalonia's UI dispatcher here first, as the app does
         using var sync = new HiveSync(api, cache) { Interests = () => [new Interest(0, 8, 8, 32, 50)] };
-        sync.Start();
+        // Started from Avalonia's UI thread (the headless session's dispatcher), as the app does.
+        int ui = await HeadlessUi.Run(() => { FreecamStats.Shared.UiThreadId = Environment.CurrentManagedThreadId; sync.Start(); return Environment.CurrentManagedThreadId; });
         var deadline = DateTime.UtcNow.AddSeconds(10);
         while ((cache.Count == 0 || sync.Entities == null) && DateTime.UtcNow < deadline) await Task.Delay(20).ConfigureAwait(false);
         sync.Stop();

@@ -68,6 +68,7 @@ public sealed partial class BotTileViewModel : ObservableObject, IDisposable
     {
         MapImage = null;
         MapLoading = true;
+        MapAt = DateTime.UtcNow;
     }
 
     public void Update(BotDto b)
@@ -88,17 +89,30 @@ public sealed partial class BotTileViewModel : ObservableObject, IDisposable
         PoseNote = b.Yaw == null ? "no pose yet (eye faces south)" : b.PoseAge is > 3 ? $"pose {b.PoseAge:0} s old" : null;
     }
 
-    public void SetMap(byte[] png)
+    /// <summary>A new server picture (decoded off the UI thread).</summary>
+    public void SetMap(Bitmap bmp)
     {
-        try
-        {
-            using var ms = new MemoryStream(png);
-            var old = MapImage;
-            MapImage = new Bitmap(ms);
-            old?.Dispose();
-            MapLoading = false;
-        }
-        catch (Exception) { /* a bad frame: keep the last one */ }
+        var old = MapImage;
+        MapImage = bmp;
+        old?.Dispose();
+        MapLoading = false;
+        MapAt = DateTime.UtcNow;
+    }
+
+    /// <summary>When the server picture last changed (UI thread).</summary>
+    public DateTime MapAt { get; private set; } = DateTime.UtcNow;
+
+    /// <summary>"stale 7 s" / "reconnecting…" over the picture; empty while it is fresh.</summary>
+    [ObservableProperty] private string _staleText = "";
+    public bool IsStale => StaleText.Length > 0;
+    partial void OnStaleTextChanged(string value) => OnPropertyChanged(nameof(IsStale));
+
+    /// <summary>Recomputes the badge (UI thread, twice a second): link down → reconnecting; a picture older than a few seconds → stale.</summary>
+    public void RefreshStale(bool linkUp, DateTime now)
+    {
+        double age = IsEye ? (Eye.LastFrameAt == default ? 0 : (now - Eye.LastFrameAt).TotalSeconds) : (now - MapAt).TotalSeconds;
+        StaleText = !linkUp ? (age > 2 ? $"reconnecting… · {age:0} s old" : "reconnecting…")
+            : age > (IsEye ? 3 : 5) ? $"stale {age:0} s" : "";
     }
 
     public void Dispose() => MapImage?.Dispose();

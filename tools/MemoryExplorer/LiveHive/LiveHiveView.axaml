@@ -98,6 +98,10 @@
                 <TextBlock Text="{Binding PoseNote}" />
               </Border>
             </StackPanel>
+            <Border Classes="hudchip" VerticalAlignment="Top" HorizontalAlignment="Right" Background="#C8B0302A" IsVisible="{Binding IsStale}"
+                    ToolTip.Tip="The picture hasn't changed for a while: the link is down or the server is slow. It keeps retrying.">
+              <TextBlock Classes="mono" Foreground="White" Text="{Binding StaleText}" />
+            </Border>
           </Panel>
           <StackPanel Grid.Row="2" Margin="12,8,12,10" Spacing="3">
             <Grid ColumnDefinitions="*,Auto">

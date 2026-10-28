@@ -14,11 +14,19 @@ public partial class LiveHiveView : UserControl
         GlCam.GlFailed += why => Vm?.GpuFailed(why);
         GlCam.FrameRendered += () => { if (GlOverlay.NeedsRedraw()) GlOverlay.InvalidateVisual(); };
         GlCam.StatsToggled += () => { if (Vm is { } vm) vm.Gpu.ShowStats = !vm.Gpu.ShowStats; };
-        GlCam.GotFocus += (_, _) => GlOverlay.CameraFocused = true;
-        GlCam.LostFocus += (_, _) => GlOverlay.CameraFocused = false;
+        GlCam.EngagedChanged += _ => GlOverlay.InvalidateVisual();
+        // While the GPU camera is engaged its keys come first (tunnel), wherever focus ended up on this page; text boxes keep theirs.
+        AddHandler(KeyDownEvent, (_, e) => CameraKey(e, true), Avalonia.Interactivity.RoutingStrategies.Tunnel);
+        AddHandler(KeyUpEvent, (_, e) => CameraKey(e, false), Avalonia.Interactivity.RoutingStrategies.Tunnel);
     }
 
     private LiveHiveViewModel? Vm => DataContext as LiveHiveViewModel;
+
+    private void CameraKey(KeyEventArgs e, bool down)
+    {
+        if (Vm is not { UseGpuFreecam: true, IsFreecamTab: true } vm || !vm.Gpu.Engaged || e.Source is TextBox) return;
+        GlCam.HandleKey(e, down);
+    }
 
     private void OnTileDoubleTapped(object? sender, TappedEventArgs e)
     {
@@ -30,7 +38,7 @@ public partial class LiveHiveView : UserControl
         if ((sender as Control)?.DataContext is BotTileViewModel t && Vm is { } vm)
         {
             vm.SnapToCommand.Execute(t);
-            if (vm.UseGpuFreecam) GlCam.Focus(NavigationMethod.Pointer);
+            if (vm.UseGpuFreecam) GlCam.Engage();
             else Cam.Focus(NavigationMethod.Pointer);
         }
     }

@@ -36,6 +36,7 @@ public sealed class FreecamEngine : IFrameSource, IDisposable
     private int _tw = 960, _th = 540;
     private volatile int _keys; // bit 0 W, 1 S, 2 A, 3 D, 4 E(up), 5 Q(down), 6 fast
     private long _lastLookRev, _lookAt;
+    private string? _lastError;
 
     public FreecamEngine(HiveWorldCache cache, FlyCamera camera, Func<TextureAtlas?> atlas)
     {
@@ -58,7 +59,8 @@ public sealed class FreecamEngine : IFrameSource, IDisposable
     public int MaxFps { get; set; } = 60;
     /// <summary>Largest frame rendered (pixels); a bigger view is upscaled.</summary>
     public int MaxPixels { get; set; } = 1280 * 720;
-    public int Threads { get; set; } = Math.Clamp(Environment.ProcessorCount, 1, 64);
+    // Leave two cores for the UI thread and the compositor: a raster on every core starved them (input and pictures stalled).
+    public int Threads { get; set; } = Math.Clamp(Environment.ProcessorCount - 2, 1, 64);
 
     // stats (render thread writes, UI reads)
     public double Fps { get; private set; }
@@ -85,7 +87,7 @@ public sealed class FreecamEngine : IFrameSource, IDisposable
     {
         if (_thread != null) return;
         _run = true;
-        _thread = new Thread(Loop) { IsBackground = true, Name = "livehive-freecam", Priority = ThreadPriority.Normal };
+        _thread = new Thread(Loop) { IsBackground = true, Name = "livehive-freecam", Priority = ThreadPriority.BelowNormal };
         _thread.Start();
     }
 
@@ -142,9 +144,20 @@ public sealed class FreecamEngine : IFrameSource, IDisposable
         bool wasMoving = false;
         while (_run)
         {
+            try { Iteration(); }
+            catch (Exception ex)
+            {
+                // Never let the render thread die (a frozen camera): log once, breathe, continue.
+                if (ex.Message != _lastError) { _lastError = ex.Message; System.Diagnostics.Trace.WriteLine("livehive freecam: " + ex); }
+                Thread.Sleep(20);
+            }
+        }
+
+        void Iteration()
+        {
             double now = clock.Elapsed.TotalSeconds, dt = Math.Min(0.1, now - last);
             last = now;
-            if (!_visible) { Thread.Sleep(50); continue; }
+            if (!_visible) { Thread.Sleep(50); return; }
             int k = _keys;
             double fwd = ((k & 1) != 0 ? 1 : 0) - ((k & 2) != 0 ? 1 : 0), strafe = ((k & 8) != 0 ? 1 : 0) - ((k & 4) != 0 ? 1 : 0);
             double up = ((k & 16) != 0 ? 1 : 0) - ((k & 32) != 0 ? 1 : 0);
@@ -159,11 +172,11 @@ public sealed class FreecamEngine : IFrameSource, IDisposable
             w = Math.Max(64, w); h = Math.Max(48, h);
             bool dirty = rev != camRev || _cache.Version != cacheVer || Interlocked.Read(ref DataVersion) != dataVer || w != lastW || h != lastH
                 || (wasMoving && !moving) || now - lastDraw > 0.5;
-            if (!dirty) { Thread.Sleep(1); continue; } // ~1 ms: a look or key shows up on the next frame, not 15 ms later
+            if (!dirty) { Thread.Sleep(1); return; } // ~1 ms: a look or key shows up on the next frame, not 15 ms later
             camRev = rev; cacheVer = _cache.Version; dataVer = Interlocked.Read(ref DataVersion); lastW = w; lastH = h; wasMoving = moving;
             double t0 = clock.Elapsed.TotalMilliseconds;
             try { Draw(w, h); }
-            catch (Exception) { Thread.Sleep(50); continue; }
+            catch (Exception) { Thread.Sleep(50); return; }
             lastDraw = clock.Elapsed.TotalSeconds;
             FrameMs = clock.Elapsed.TotalMilliseconds - t0;
             FreecamStats.Shared.FrameMs.Add(FrameMs);

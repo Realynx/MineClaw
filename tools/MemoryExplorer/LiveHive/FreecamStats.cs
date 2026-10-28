@@ -77,6 +77,10 @@ public sealed class FreecamStats
     public readonly StatRing AllocBytes = new();
 
     public long MeshAllocBytes;
+    /// <summary>The UI thread's managed id (set at startup); compared directly because a headless dispatcher answers
+    /// CheckAccess() true from any thread.</summary>
+    public volatile int UiThreadId = -1;
+    public bool OnUiThread => Environment.CurrentManagedThreadId == UiThreadId;
     public long Frames, Presented, SyncOnUiThread, SyncCalls, MeshesBuilt, SectionsLive, Hitches;
     public volatile string Renderer = "cpu";
     public volatile int Width, Height;

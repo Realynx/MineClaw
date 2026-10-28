@@ -24,6 +24,7 @@ public partial class App : Application
             desktop.MainWindow = window;
             desktop.ShutdownRequested += (_, _) => vm.Dispose();
             if (Startup.FreecamProfile != null) LiveHive.FreecamProfiler.Start(window, vm, Startup);
+            if (Startup.LiveHiveWatch != null) LiveHive.LiveHiveWatch.Start(window, vm, Startup);
             _ = vm.InitializeAsync();
         }
         base.OnFrameworkInitializationCompleted();
@@ -50,6 +51,9 @@ public sealed class StartupOptions
     public int? Tip { get; set; }
     /// <summary><c>--freecam-profile OUT.json</c>: fly the Live Hive free camera on a script and write timings (see FreecamProfiler).</summary>
     public string? FreecamProfile { get; set; }
+    /// <summary><c>--livehive-watch OUT.json</c>: watch the Live Hive for stalls (see LiveHiveWatch).</summary>
+    public string? LiveHiveWatch { get; set; }
+    public string? ProfileTab { get; set; }
     public double ProfileSeconds { get; set; } = 15;
     /// <summary><c>--renderer cpu|gl</c>: force the free camera's renderer (default: GL, CPU when GL is unavailable).</summary>
     public string? Renderer { get; set; }
@@ -76,6 +80,8 @@ public sealed class StartupOptions
                 case "--focus": o.Focus = int.TryParse(Next(), out var fo) ? fo : null; o.Graph = true; break;
                 case "--tip": o.Tip = int.TryParse(Next(), out var tp) ? tp : null; break;
                 case "--freecam-profile": o.FreecamProfile = Next(); break;
+                case "--livehive-watch": o.LiveHiveWatch = Next(); break;
+                case "--profile-tab": o.ProfileTab = Next()?.ToLowerInvariant(); break;
                 case "--profile-seconds": o.ProfileSeconds = double.TryParse(Next(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var ps) ? ps : 15; break;
                 case "--renderer": o.Renderer = Next()?.ToLowerInvariant(); break;
                 case "--profile-size":

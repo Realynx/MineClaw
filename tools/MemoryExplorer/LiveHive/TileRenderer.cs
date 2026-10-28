@@ -76,6 +76,8 @@ public sealed class EyeTile(string bot, HiveWorldCache cache)
     internal long LastVersion = -1, LastData = -1;
     internal long LastDrawMs;
     public double RasterMs { get; internal set; }
+    /// <summary>When the tile last got a new frame (any thread).</summary>
+    public DateTime LastFrameAt { get; internal set; }
 }
 
 /// <summary>
@@ -117,17 +119,21 @@ public sealed class TileRenderer(HiveWorldCache cache, Func<TextureAtlas?> atlas
         while (_run)
         {
             long t0 = clock.ElapsedMilliseconds;
-            IReadOnlyList<EyeTile> tiles;
-            try { tiles = Tiles(); } catch (Exception) { tiles = []; }
-            var bots = Bots();
-            foreach (var t in tiles)
+            try
             {
-                if (!_run) return;
-                if (!t.Frames.Visible) continue;
-                var b = bots.FirstOrDefault(x => x.Key.Equals(t.Bot, StringComparison.OrdinalIgnoreCase) || x.Name.Equals(t.Bot, StringComparison.OrdinalIgnoreCase));
-                if (b == null) continue;
-                try { Draw(t, b, clock.ElapsedMilliseconds); } catch (Exception) { }
+                var tiles = Tiles();
+                var bots = Bots();
+                foreach (var t in tiles)
+                {
+                    if (!_run) return;
+                    if (!t.Frames.Visible) continue;
+                    var b = bots.FirstOrDefault(x => x.Key.Equals(t.Bot, StringComparison.OrdinalIgnoreCase) || x.Name.Equals(t.Bot, StringComparison.OrdinalIgnoreCase));
+                    if (b == null) continue;
+                    try { Draw(t, b, clock.ElapsedMilliseconds); }
+                    catch (Exception ex) { Problem(ex); }
+                }
             }
+            catch (Exception ex) { Problem(ex); } // the thread never dies: a dead renderer is a frozen tile
             long spent = clock.ElapsedMilliseconds - t0, period = 1000 / Math.Max(1, TileFps);
             Thread.Sleep((int)Math.Max(5, period - spent));
         }
@@ -165,6 +171,17 @@ public sealed class TileRenderer(HiveWorldCache cache, Func<TextureAtlas?> atlas
         FrameSwap.CopyOpaque(fr.Px, back.Px);
         back.W = w; back.H = h; back.Labels = labels; back.Pose = cp; back.RasterMs = eye.LastMs;
         t.Frames.Publish();
+        t.LastFrameAt = DateTime.UtcNow;
+    }
+
+    public string? LastError { get; private set; }
+
+    private void Problem(Exception ex)
+    {
+        var msg = $"{ex.GetType().Name}: {ex.Message}";
+        if (msg == LastError) return;
+        LastError = msg;
+        System.Diagnostics.Trace.WriteLine("livehive tiles: " + ex);
     }
 
     public void Dispose() => Stop();
