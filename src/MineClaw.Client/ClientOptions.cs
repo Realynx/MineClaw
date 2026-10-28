@@ -91,6 +91,11 @@ public sealed record ClientOptions
     /// <summary>Gzip the recording body (chunks are already zlib'd; the rest shrinks ~5x).</summary>
     public bool RecordGzip { get; init; } = true;
 
-    /// <summary>Opens the connection. Default: TCP to <see cref="Host"/>:<see cref="Port"/>. Tests inject in-memory streams.</summary>
-    public Func<CancellationToken, PacketConnection>? ConnectionFactory { get; init; }
+    /// <summary>Opens the connection. Default: <see cref="Profile"/>'s protocol adapter, TCP to <see cref="Host"/>:<see cref="Port"/>.
+    /// Tests inject in-memory streams.</summary>
+    public Func<CancellationToken, MineClaw.Protocol.Versioning.IGameConnection>? ConnectionFactory { get; init; }
+
+    /// <summary>The game version this client speaks (docs/design/multi-version.md): resolved once per process by the App's
+    /// composition root (config or server ping) and shared by every client in it. Default b1.8.1.</summary>
+    public Versioning.GameVersionProfile Profile { get; init; } = Versioning.GameVersionProfiles.Beta181;
 }

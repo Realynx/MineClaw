@@ -28,6 +28,8 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
     private HiveApi? _api;
     private HiveSync? _sync;
     private ScriptBadgePoller? _badges;
+    private VisionTilePoller? _visionTiles;
+    private volatile (string Key, long Since)[] _visionWanted = [];
     private Process? _tunnel;
     private bool _active, _wantConnected, _autoTried;
     private volatile Interest[] _interests = [];
@@ -58,6 +60,7 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         {
             Tiles = () => _eyeTiles, Bots = () => _bots, Entities = () => _entities,
         };
+        Composer = new LocalSheetComposer(_cache, () => _atlas.IsValueCreated ? _atlas.Value : null, () => _bots, () => _entities);
         _baseUrl = SupervisorEndpoint.DefaultUrl;
         _selectedLayout = Layouts[2];
         _selectedDim = Dims[0];
@@ -70,6 +73,8 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
 
     public FreecamEngine Freecam { get; }
     public TileRenderer Tiles { get; }
+    /// <summary>Compose mode's local sheet renderer (the bot's ContactSheet over the synced world).</summary>
+    public LocalSheetComposer Composer { get; }
     /// <summary>The GPU free camera (default; the CPU <see cref="Freecam"/> is the fallback when GL is unavailable).</summary>
     public Gpu.GpuFreecam Gpu { get; }
     private static global::MineClaw.MemoryExplorer.LiveHive.FreecamStats Stats => global::MineClaw.MemoryExplorer.LiveHive.FreecamStats.Shared;
@@ -159,7 +164,9 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         {
             Store = _entityStore,
             Interests = () => _interests, MapViews = () => _mapViews,
-            OverlayDim = () => IsFreecamTab && OverlaysWanted ? _camera.Pose.Dim : null,
+            // The free camera's overlays; else the vision panel's compose mode (its build-plan footprints).
+            OverlayDim = () => IsFreecamTab && OverlaysWanted ? _camera.Pose.Dim
+                : Vision is { IsCompose: true } v && _bots.FirstOrDefault(b => b.Key == v.Body) is { } vb ? vb.Dim : null,
         };
         _sync.StateChanged += () => Dispatcher.UIThread.Post(SyncStateChanged);
         _sync.EntitiesChanged += e => Dispatcher.UIThread.Post(() => ApplyEntities(e));
@@ -177,15 +184,24 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
             });
         };
         _badges = new ScriptBadgePoller(_api, rows => Dispatcher.UIThread.Post(() => ScriptBadgePoller.Apply(AllTiles, rows.Bodies)));
+        _visionTiles = new VisionTilePoller(new HiveVisionSource(_api), () => _visionWanted, (key, info, bmp) => Dispatcher.UIThread.Post(() =>
+        {
+            if (AllTiles.FirstOrDefault(t => t.Key == key) is { IsVision: true } tile && info.Id > (tile.VisionInfo?.Id ?? 0)) tile.SetVision(info, bmp);
+            else bmp?.Dispose();
+            UpdateWants();
+        }));
         ConnectLabel = "Disconnect";
         IsConnecting = true;
-        if (_active) { _sync.Start(); _badges.Start(); }
+        if (_active) { _sync.Start(); _badges.Start(); _visionTiles.Start(); }
         else StateText = "connects when the tab is shown";
     }
 
     private void Disconnect()
     {
         CloseScript();
+        CloseVision();
+        _visionTiles?.Dispose();
+        _visionTiles = null;
         _badges?.Dispose();
         _badges = null;
         _sync?.Dispose();
@@ -366,6 +382,9 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         }
         foreach (var t in shown.Where(t => t.IsEye && t.Bot != null))
             interests.Add(new Interest(t.Bot!.Dim, (int)Math.Floor(t.Bot.X), (int)Math.Floor(t.Bot.Z), Tiles.MaxDistance + 16, 1500));
+        // The vision panel's compose mode renders locally: keep its centre's columns synced.
+        if (Vision?.ComposeInterest() is { } ci) interests.Add(ci);
+        _visionWanted = shown.Where(t => t.IsVision).Select(t => (t.Key, t.VisionInfo?.Id ?? 0L)).ToArray();
         _interests = interests.ToArray();
         _mapViews = shown.Where(t => t.IsMap).Select(t => (t.Key, t.Mode.ServerMode!)).ToArray();
         _eyeTiles = shown.Where(t => t.IsEye).Select(t => t.Eye).ToArray();
@@ -546,6 +565,35 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         ScriptDebug = null;
     }
 
+    // ------------------------------------------------------------------ the AI's vision (what it saw; compose)
+
+    /// <summary>The open vision panel (a tile's "AI vision" button), or null.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasVision))]
+    private VisionPanelViewModel? _vision;
+    public bool HasVision => Vision != null;
+
+    /// <summary>Opens the vision panel on that body: its last sheets (polled while open) and the compose mode.</summary>
+    public void OpenVision(BotTileViewModel t, bool compose = false)
+    {
+        if (_api is not { } api) return;
+        Vision?.Dispose();
+        var key = t.Key;
+        Vision = new VisionPanelViewModel(new HiveVisionSource(api), key, t.Title,
+            () => _bots.FirstOrDefault(b => b.Key == key || b.Name == key), Composer, () => _sync?.Overlays(t.Bot?.Dim ?? 0)?.Plans ?? []);
+        Vision.PropertyChanged += (_, a) => { if (a.PropertyName is nameof(VisionPanelViewModel.ComposeMode) or nameof(VisionPanelViewModel.TargetText)) UpdateWants(); };
+        if (compose) Vision.ComposeMode = true;
+        if (_active) Vision.Start();
+        UpdateWants();
+    }
+
+    [RelayCommand]
+    private void CloseVision()
+    {
+        Vision?.Dispose();
+        Vision = null;
+    }
+
     // ------------------------------------------------------------------ lifecycle
 
     private int _lastIndexX = int.MinValue, _lastIndexZ = int.MinValue;
@@ -594,7 +642,9 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         if (_sync == null && !_autoTried) { _autoTried = true; _wantConnected = true; Connect(); } // first show: connect once
         _sync?.Start();
         _badges?.Start();
+        _visionTiles?.Start();
         ScriptDebug?.Start();
+        Vision?.Start();
         UpdateWants();
     }
 
@@ -604,6 +654,8 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         _stats.Stop();
         _sync?.Stop();
         _badges?.Stop();
+        _visionTiles?.Stop();
+        Vision?.Stop();
         ScriptDebug?.Stop(); // a hidden panel stops polling (and so the server's sampling lease runs out)
         Freecam.Stop();
         Tiles.Stop();

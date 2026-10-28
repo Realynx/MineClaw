@@ -64,7 +64,11 @@ public sealed class InProcBodies : IBodyHost, IAsyncDisposable
     public BodyDirectory? Directory { get; private set; }
 
     /// <summary>Null unless <c>Bodies:Mode=inproc</c> with at least one clone account (Bodies:Accounts, else Hive:CloneUsernames).</summary>
-    public static InProcBodies? Create(HiveConfig hive, BodiesOptions o, MinecraftSettings mc, AgentOptions agent, ILoggerFactory loggers)
+    /// <summary>The process's game version (docs/design/multi-version.md): every body speaks main's.</summary>
+    public MineClaw.Client.Versioning.GameVersionProfile Profile { get; private set; } = MineClaw.Client.Versioning.GameVersionProfiles.Beta181;
+
+    public static InProcBodies? Create(HiveConfig hive, BodiesOptions o, MinecraftSettings mc, AgentOptions agent, ILoggerFactory loggers,
+        MineClaw.Client.Versioning.GameVersionProfile? profile = null)
     {
         if (!o.IsInProc || !hive.Enabled) return null;
         var accounts = o.AccountsOr(hive.Clones()).Where(n => !n.Equals(mc.Username, StringComparison.OrdinalIgnoreCase)).ToList();
@@ -73,7 +77,7 @@ public sealed class InProcBodies : IBodyHost, IAsyncDisposable
         // one cold cache write when the mode flips; never per turn.
         if (!agent.PersonaExtra.Contains(Agent.Prompts.BodiesHint, StringComparison.Ordinal))
             agent.PersonaExtra = (agent.PersonaExtra + "\n" + Agent.Prompts.BodiesHint).Trim();
-        return new InProcBodies(hive, o, mc, loggers, accounts);
+        return new InProcBodies(hive, o, mc, loggers, accounts) { Profile = profile ?? MineClaw.Client.Versioning.GameVersionProfiles.Beta181 };
     }
 
     /// <summary>After the bot exists: the registry's lifecycle, the shared flusher, vision, the hive tool and the chat hooks.</summary>
@@ -132,7 +136,7 @@ public sealed class InProcBodies : IBodyHost, IAsyncDisposable
         var clientLog = _loggers.CreateLogger("MineClaw.Client." + Body.ShortName(name, false));
         var client = new MinecraftClient(new ClientOptions
         {
-            Host = _mc.Host, Port = _mc.Port, Username = name,
+            Host = _mc.Host, Port = _mc.Port, Username = name, Profile = Profile,
             AutoReconnect = false, // the body's runner owns reconnects (backoff, launch gap, someone else's login)
             AutoRespawn = !_hive.OnCloneDeath.Equals("logout", StringComparison.OrdinalIgnoreCase),
             Log = m => clientLog.LogDebug("{Msg}", m),

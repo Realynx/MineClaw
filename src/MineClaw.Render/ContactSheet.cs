@@ -42,6 +42,8 @@ public sealed class ContactSheetRequest
     public IReadOnlyList<(int X, int Y, int Z)> Spots { get; init; } = [];
     /// <summary>Caption line 2 of every 3D panel (staleness of a remote spot); null = time of day only.</summary>
     public string? Stamp { get; init; }
+    /// <summary>Camera adjustments per view name ("iso" → yaw/pitch/zoom, "top" → zoom/pan…); views not listed keep their defaults.</summary>
+    public IReadOnlyDictionary<string, CamParams>? ViewParams { get; init; }
 }
 
 /// <summary>
@@ -99,6 +101,8 @@ public sealed class PanelJob
     /// <summary>"top", "side" or "layers" for a flat map panel.</summary>
     public string? Flat { get; init; }
     public SideAxis Axis { get; init; } = SideAxis.LookNorth;
+    /// <summary>Camera adjustments of a flat panel (TOP/SIDE zoom, pan, axis); empty = the default framing.</summary>
+    public CamParams Params { get; init; }
     /// <summary>The world the camera sees when it differs from the context's (a clone's eye in its own region).</summary>
     public IVoxelWorld? WorldOverride { get; init; }
 }
@@ -188,12 +192,13 @@ public sealed class ContactSheet
         var jobs = new List<PanelJob>();
         foreach (var v in views.Take(MaxPanels))
         {
+            var cam = q.ViewParams != null && q.ViewParams.TryGetValue(v, out var vp) ? vp : default;
             if (PerspectivePanel.Views.Contains(v))
             {
-                if (PerspectivePanel.For(v, q.Focus, feet, r, body, q.Eye) is not { } rig) continue;
+                if (PerspectivePanel.For(v, q.Focus, feet, r, body, q.Eye, cam) is not { } rig) continue;
                 jobs.Add(new PanelJob { Ctx = ctx, Rig = rig, WorldOverride = v == "eye" && q.Eye is { } e && !ReferenceEquals(e.World, ctx.World) ? e.World : null });
             }
-            else jobs.Add(new PanelJob { Ctx = ctx, Flat = v, Axis = q.Axis });
+            else jobs.Add(new PanelJob { Ctx = ctx, Flat = v, Axis = q.Axis, Params = cam });
         }
         var head = string.Create(CultureInfo.InvariantCulture, $"see sheet focus {q.Focus.X},{q.Focus.Y},{q.Focus.Z} r{r}");
         var extra = new List<string>();
@@ -249,7 +254,7 @@ public sealed class ContactSheet
                     fa.Concat(fb).Distinct().ToList(), "LAYERS"));
                 continue;
             }
-            var rig = job.Rig ?? (job.Flat == "side" ? PerspectivePanel.Side(ctx.Focus, ctx.FeetY, ctx.Radius, job.Axis) : PerspectivePanel.Top(ctx.Focus, ctx.FeetY, ctx.Radius));
+            var rig = job.Rig ?? (job.Flat == "side" ? PerspectivePanel.Side(ctx.Focus, ctx.FeetY, ctx.Radius, job.Axis, job.Params) : PerspectivePanel.Top(ctx.Focus, ctx.FeetY, ctx.Radius, job.Params));
             var img = PerspectivePanel.Render(Eye(pw, ph), rig, InputFor(job, rig), out _, out var facts);
             string legendText = job.Flat == "top" && ctx.CutAway ? rig.Legend[..^1] + ", roofs above it cut away)" : rig.Legend;
             panels.Add((job, img.Width, img.Height, img.Pixels!, legendText, facts, rig.Title));

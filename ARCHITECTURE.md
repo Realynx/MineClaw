@@ -20,6 +20,15 @@ MineClaw.Client    TCP connection + packet dispatch, 20 TPS tick, physics, playe
 
 `tests/MineClaw.Tests` (xUnit) covers all layers.
 
+**Multi-version** (`docs/design/multi-version.md`; target 1.12.2 / protocol 340 next to b1.8.1): one process speaks one version,
+resolved once by the App before any client exists (`Bot:Server:Version` auto | b1.8.1 | 1.12.2, `--server-version`; auto =
+`Protocol/Versioning/ServerPing`: 1.7+ status JSON, else the legacy 0xFE `motd§online§max`; server down → last detected in
+`<data>/server-version.txt`, else b1.8.1; clones get main's id on their command line). It is injected as one
+`Client/Versioning/GameVersionProfile` (`ClientOptions.Profile`): `IProtocolAdapter`/`IGameConnection` (the client connects and
+logs in through it; the wire is translated to the canonical `Protocol.Packets` model), `IPhysicsRules`, `ICombatRules`,
+`IHungerRules`, `IGameData`. P0: b1.8.1 wrappers only (1.12.2 = "recognised, not implemented" → exit 2); no `if (version)` in
+game code, differences live behind the seams.
+
 ## Project ownership / contracts
 
 | Project | Owns | Public contract (others code against this) |
@@ -666,6 +675,19 @@ One place decides whether the bot may break a block, why not, and how a player u
   panel's labels with coordinates (the same facts as text). `see {aids:false}` turns them off. ORBIT/HIGH/ISO/TOP cut away
   roofs over the feet layer (`CutAway`: a roof over a gen hid every gen cell, live 10-27). Render ≈50-180 ms with 8 threads,
   ≈180-250 ms single-threaded. Focus: x,y,z, a player, a saved place, `pointed`/`this`; default the current job's target, else the bot.
+- **Camera adjustments** (`CamParams`, `PerspectivePanel.Params.cs`): every non-eye view takes optional `key=value` words or an
+  object — `"iso yaw=200 pitch=50 zoom=1.3"`, `"orbit yaw=10 dist=20"`, `"high yaw=90"`, `"top zoom=2 dx=3 dz=-1"`, `"side axis=E
+  zoom=2 dy=1"`, `"shoulder dist=6"`, `"cam tower NE pitch=60"`, `{"iso":{"yaw":200}}`. Yaw is the way the camera FACES (game/F3
+  convention: 0 S, 90 W, 180 N, 270 E; the default iso faces NE = 225), pitch degrees down, zoom > 1 closer / a narrower ortho
+  window, dx/dy/dz pan (TOP/SIDE move their clip box with it). No params = the old code path, byte-identical sheets; the same view
+  twice at two angles goes the composite way. `SeeCall` formats a sheet back into its exact `see {...}` input. Not advertised in
+  the tool description: the brain is at 2941/2950 tokens and the worker at its 2250 cap with `see` in both.
+- **What the AI saw** (`VisionHistory`, `VisionHub.Capture`): every picture a model gets (direct sheet/composite/hive/legacy
+  picture to the brain or worker, the sheet sent to the perception tier, auto-vision's looks) is kept per body in a ring
+  (`Bot:Vision:HistorySize` 20; optional disk ring `HistoryDir` + `HistoryDiskKeep` 200, a folder per body): the request's own PNG
+  array (no copy, no re-render; sha256 = the bytes the LLM request serializes), when, kind, source, mode, views, focus, radius,
+  question, the tool input JSON, size/tokens, the legend, and the perception answer (model, tokens; "cached: the model was not
+  called"). `VisionHub.RenderSeeAsync` renders any see input without a model, budget or record (the supervisor's compose route).
 - **Role layer** (`RoleClassifier`, `BlockRole`): floor, wall, gen cell (G = MINE HERE), water, lava, void, door, station, player
   build (B), own placed (+), protected ($, outline only: floors under a remembered build still read as floors; never crops, farm
   soil or a hive lease), ripe crop (H = HARVEST) / growing crop (:) from the block meta (wheat 7/7), never-break (X), portal (P), from the protection policy's `Check` verdicts, the world
@@ -849,11 +871,50 @@ standing order runs it — `Agent/Routines/ScriptLibraryReport`, also what the E
 IPC with a 1.5 s timeout; one probe per body per 150 ms however many viewers ask). The Explorer polls it at 4 Hz while its
 debugger panel is open (HiveApi timeouts and back-off, "stale" after 2 s without a snapshot).
 
+**Vision** (`SupervisorVisionRoutes` + `LiveVisionData`; GET only, 403 without the token): `/api/bodies/{name}/vision[?since=id]`
+(the body's captured sheets, newest first, no bytes), `/api/bodies/{name}/vision/{id}` (one), `/api/bodies/{name}/vision/{id}.png`
+(the exact PNG; `X-Sha256`, `X-Tokens`) and `/api/bodies/{name}/vision/render?see={json}[&meta=1]` (a fresh render of a see input
+through the render gate: roles, marks and the world time included; a clone's spot rendered by main from its live pose and the
+shared memory). Main and in-process bodies read the hub's history directly, clones answer over the `vision`/`vision_png` IPC
+requests (1.5 s timeout). The Explorer's Live Hive: a tile mode "AI's last sheet" (polled every 2.5 s with `?since=`) and an "AI
+vision" panel per tile — *What the AI saw* (the sheet, its request, cost and perception answer, a history strip, zoom/pan, Save
+PNG with the exact bytes, Copy as see, Compose from this) and *Compose* (pick panels, every non-eye camera's sliders, centre = the
+bot, a block or a build plan's footprint, radius, aids; a live preview from `LocalSheetComposer`: the bot's `ContactSheet` over the
+synced world, debounced 90 ms, one panel well above 10 fps; without the role layer, memory labels and world time, which "Render
+exact" / "server render" fetch; "Copy as see{...}" gives the call that renders it).
+
 **Someone else on a clone's account** (a player's viewer). b1.8.1 kicks the older session with "You logged in from another
 location", so the hive never fights a login: (a) an offline slot whose name is on main's tab list (0xC9) or spawned as a player
 is skipped before launch ("slot 1337 is in use by a player's viewer", told once); (b) a clone kicked that way sends `occupied`,
 stops its client's auto-reconnect and exits 76; main records its items as stranded, does not restart it, leaves the slot alone
 for `Hive:ExternalLoginCooldownMinutes` (10) and tells the brain (MustWake when its task was unfinished).
+
+## Memory grooming (Agent/Memory/Grooming) — every write formatted to the memory
+
+`RagIndex.Upsert`/`UpsertMany` pass each doc through `RagIndex.Groomer` (`MemoryGroomer`, wired in `AgentRuntime` and
+`MemoryAdminContext.OpenLocal`; `UpsertGroomed` bypasses it). Deterministic, no LLM by default; the chain is per doc source
+(`Agent:Memory:Groom:Sources`, unknown sources such as seed/knowledge pass through). Stages, each one class:
+**normalize** (log prefixes stripped, journald times → "10-27 06:45: ", spans canonical "(10-28 00:31–02:10)", coords trimmed to
+one decimal, aliases → canonical names and casing, whitespace), **denoise** (debug/telemetry lines: turn/call cost lines, cache
+numbers, triage, raptor sync; inline costs/tokens stripped; an all-noise doc is dropped), **redact** (`ShardRedactor`), **phrase**
+(natural verbs: never "broke"; "chat: <Fox> hi" → `Fox said "hi"`), **merge** (same fact of the same kind+source within
+`MergeWindowMinutes` extends the existing doc: "… (10-27 06:48–06:49, 2×)"; a repeat inside the span is absorbed), **coalesce**
+(activity, below), **size** (title/coords filled, chunked to the RAG chunk target: `ref`, `ref#2`…) and **rewrite** (optional,
+off: the cheap 5.5 tier via `LlmGroomRewriter`, daily USD cap, only on the async path for log/paste sources).
+- **Activity coalescing** (`ActivityCoalesceStage`, state in `activity_episodes`): a rollup (`act:` doc with player/start/end/place
+  meta from `ActivityLog.AddRollup`, or parsed from its text) is routine when every part is counted work (mined/chopped/dug/
+  harvested/planted/collected/stored/took/crafted/opened/lit, small placements); routine work extends the open episode of that
+  actor+place within `Activity:RoutineWindowMinutes` (2 h, same day): counts summed, span extended, sessions counted, the first
+  episode at a place says "first time there". Crew bots (main + clones) at the same place with overlapping times share one crew
+  episode ("the crew (main, 67, 69) mined 900 cobblestone (main 300, 67 300, 69 300) at the cobble gen (…)"). Novel sessions
+  (deaths, fights, signs, builds ≥ `BuildMinBlocks`, unknown structures, anything unparsed) stay individual. The rollup row's
+  `doc_ref` points at the episode that holds it.
+- **Compaction** (`Admin/ActivityCompaction`, idempotent): old per-minute `act:` docs (oldest first, rollup meta joined) go through
+  the same chain; absorbed docs are deleted, the summaries above every removed/rewritten leaf get the RAPTOR dirty flag (refresh
+  within the daily budget; untouched sections keep theirs). Only `source='activity'` `act:` docs are touched. Explorer: Edits &
+  audit → Compact activity (preview, then a run with backup first; live via `POST /api/admin/activity/compact`); startup:
+  `Agent:Memory:Groom:Activity:CompactOnStartup` (backup first, main only). Groom preview (same page): raw → groomed for a doc
+  ref or pasted log text, dry run. The RAPTOR graph's topic labels drop action verbs/log words (`TopicLabeler.ActionWords`).
 
 ## Memory shards (Agent/Admin/Shards + tools/MemoryExplorer Shards page)
 
@@ -892,33 +953,6 @@ cluster-text hash: a cache, never truth). `ShardFile.Read` refuses a newer forma
   `SeedCorpus`) and `MinecraftDataSource` (a PrismarineJS minecraft-data checkout the user fetched: `dataPaths.json` → items/blocks/
   recipes/foods; no smelting tables). The Explorer's Shards page lists the folder (`Explorer:DefaultPacksDir`, else `shards/defaults`
   beside the exe or in the repo) with one-click "Preview swap / add mode / remove mode" into the diff-first import, and shows the
-## Memory grooming (Agent/Memory/Grooming) — every write formatted to the memory
-
-`RagIndex.Upsert`/`UpsertMany` pass each doc through `RagIndex.Groomer` (`MemoryGroomer`, wired in `AgentRuntime` and
-`MemoryAdminContext.OpenLocal`; `UpsertGroomed` bypasses it). Deterministic, no LLM by default; the chain is per doc source
-(`Agent:Memory:Groom:Sources`, unknown sources such as seed/knowledge pass through). Stages, each one class:
-**normalize** (log prefixes stripped, journald times → "10-27 06:45: ", spans canonical "(10-28 00:31–02:10)", coords trimmed to
-one decimal, aliases → canonical names and casing, whitespace), **denoise** (debug/telemetry lines: turn/call cost lines, cache
-numbers, triage, raptor sync; inline costs/tokens stripped; an all-noise doc is dropped), **redact** (`ShardRedactor`), **phrase**
-(natural verbs: never "broke"; "chat: <Fox> hi" → `Fox said "hi"`), **merge** (same fact of the same kind+source within
-`MergeWindowMinutes` extends the existing doc: "… (10-27 06:48–06:49, 2×)"; a repeat inside the span is absorbed), **coalesce**
-(activity, below), **size** (title/coords filled, chunked to the RAG chunk target: `ref`, `ref#2`…) and **rewrite** (optional,
-off: the cheap 5.5 tier via `LlmGroomRewriter`, daily USD cap, only on the async path for log/paste sources).
-- **Activity coalescing** (`ActivityCoalesceStage`, state in `activity_episodes`): a rollup (`act:` doc with player/start/end/place
-  meta from `ActivityLog.AddRollup`, or parsed from its text) is routine when every part is counted work (mined/chopped/dug/
-  harvested/planted/collected/stored/took/crafted/opened/lit, small placements); routine work extends the open episode of that
-  actor+place within `Activity:RoutineWindowMinutes` (2 h, same day): counts summed, span extended, sessions counted, the first
-  episode at a place says "first time there". Crew bots (main + clones) at the same place with overlapping times share one crew
-  episode ("the crew (main, 67, 69) mined 900 cobblestone (main 300, 67 300, 69 300) at the cobble gen (…)"). Novel sessions
-  (deaths, fights, signs, builds ≥ `BuildMinBlocks`, unknown structures, anything unparsed) stay individual. The rollup row's
-  `doc_ref` points at the episode that holds it.
-- **Compaction** (`Admin/ActivityCompaction`, idempotent): old per-minute `act:` docs (oldest first, rollup meta joined) go through
-  the same chain; absorbed docs are deleted, the summaries above every removed/rewritten leaf get the RAPTOR dirty flag (refresh
-  within the daily budget; untouched sections keep theirs). Only `source='activity'` `act:` docs are touched. Explorer: Edits &
-  audit → Compact activity (preview, then a run with backup first; live via `POST /api/admin/activity/compact`); startup:
-  `Agent:Memory:Groom:Activity:CompactOnStartup` (backup first, main only). Groom preview (same page): raw → groomed for a doc
-  ref or pasted log text, dry run. The RAPTOR graph's topic labels drop action verbs/log words (`TopicLabeler.ActionWords`).
-
   db's version pack + modes. `shards/defaults/README.md` has the build command for a new version.
 - **Targets**: a local db file (Explorer, backup first, audit next to the db) or the live bot via `POST /api/admin/shard/import/
   preview` and `POST /api/admin/shard/import` (body `{shard: base64, mode, conflict, include_rules, include_world}`, ≤ 64 MB, read

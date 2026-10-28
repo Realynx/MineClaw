@@ -56,6 +56,8 @@ public sealed class MainHive : IAsyncDisposable
         var args = new List<string> { "--no-tui", "--no-key-check", "--data-dir", agent.DataDirectory, "--log-dir", logDir };
         if (cli.ConfigPath != null) args.AddRange(["--config", Path.GetFullPath(cli.ConfigPath)]);
         if (cli.LogFormat != null) args.AddRange(["--log-format", cli.LogFormat]);
+        // One version per hive: clones speak main's resolved version and never ping (docs/design/multi-version.md).
+        if (cli.ServerVersion != null) args.AddRange(["--server-version", cli.ServerVersion]);
         // Cached prefix (built with the bot): group asks get split between the bots.
         if (!agent.PersonaExtra.Contains(Agent.Prompts.HiveMainHint, StringComparison.Ordinal))
             agent.PersonaExtra = (agent.PersonaExtra + "\n" + Agent.Prompts.HiveMainHint).Trim();

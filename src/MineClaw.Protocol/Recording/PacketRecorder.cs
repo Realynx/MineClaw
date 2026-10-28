@@ -120,7 +120,7 @@ public sealed class PacketRecorder : IDisposable
     public Func<long>? Clock { get; init; }
 
     /// <summary>Chains the recorder onto the connection's traffic hook (keeps any existing hook).</summary>
-    public void Attach(PacketConnection conn)
+    public void Attach(Versioning.IGameConnection conn)
     {
         var prev = conn.TrafficLog;
         conn.TrafficLog = prev is null ? Record : t => { prev(t); Record(t); };

@@ -50,6 +50,7 @@ public static class AppConfig
         if (cli.DataDir != null) overrides["Agent:DataDirectory"] = cli.DataDir;
         if (cli.LogDir != null) overrides["Host:LogDirectory"] = cli.LogDir;
         if (cli.LogFormat != null) overrides["Host:LogFormat"] = cli.LogFormat;
+        if (cli.ServerVersion != null) overrides[VersionSetup.ConfigKey] = cli.ServerVersion;
         if (cli.ShutdownTimeoutSeconds is { } s) overrides["Host:ShutdownTimeoutSeconds"] = s.ToString(System.Globalization.CultureInfo.InvariantCulture);
         b.AddInMemoryCollection(overrides);
         return b.Build();

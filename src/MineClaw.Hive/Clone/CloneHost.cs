@@ -144,6 +144,12 @@ public sealed class CloneHost : IHandoffTarget
     /// <summary>The live script debugger's snapshot of this clone's script (main's Supervisor asks at 2-5 Hz while a panel is open).</summary>
     public Func<bool, Scripting.ScriptDebugSnapshot?>? ScriptDebug { get; set; }
 
+    /// <summary>The sheets this clone's models received (its vision history), newest first; main's Supervisor asks for the vision panel.</summary>
+    public Func<long, VisionListMsg?>? VisionList { get; set; }
+
+    /// <summary>One captured sheet's exact PNG bytes (null = no longer kept).</summary>
+    public Func<long, VisionPngMsg?>? VisionPng { get; set; }
+
     /// <summary>Connects the pipe and says hello; false = no parent (exit <see cref="CloneExitCodes.NoParent"/>).</summary>
     public async Task<WelcomeMsg?> ConnectParentAsync(TimeSpan timeout, CancellationToken ct)
     {
@@ -245,6 +251,10 @@ public sealed class CloneHost : IHandoffTarget
                 return View == null ? null : await View(ct).ConfigureAwait(false);
             case Msg.ScriptDebug:
                 return ScriptDebug?.Invoke(m.As<ScriptDebugReq>()?.Code == true);
+            case Msg.VisionList:
+                return VisionList?.Invoke(m.As<VisionListReq>()?.Since ?? 0);
+            case Msg.VisionPng when m.As<VisionPngReq>() is { } vp:
+                return VisionPng?.Invoke(vp.Id);
             default: return null;
         }
     }

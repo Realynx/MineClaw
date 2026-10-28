@@ -1543,6 +1543,28 @@ public sealed class HiveSupervisor : IAsyncDisposable
         }
     }
 
+    /// <summary>A live clone's vision history (the sheets its models got; null when it isn't connected or doesn't answer in time).</summary>
+    public Task<VisionListMsg?> RequestVisionListAsync(string name, long since, TimeSpan timeout, CancellationToken ct = default) =>
+        RequestCloneAsync<VisionListMsg>(name, Msg.VisionList, new VisionListReq(since), timeout, ct);
+
+    /// <summary>One sheet of a clone's vision history: the exact PNG its model got (null = gone, offline or no answer).</summary>
+    public Task<VisionPngMsg?> RequestVisionPngAsync(string name, long id, TimeSpan timeout, CancellationToken ct = default) =>
+        RequestCloneAsync<VisionPngMsg>(name, Msg.VisionPng, new VisionPngReq(id), timeout, ct);
+
+    private async Task<T?> RequestCloneAsync<T>(string name, string type, object payload, TimeSpan timeout, CancellationToken ct) where T : class
+    {
+        if (Resolve(name) is not { } n || !_slots.TryGetValue(n, out var slot)) return null;
+        HiveLink? link;
+        lock (slot.Lock) link = slot.Connected ? slot.Link : null;
+        if (link is not { IsOpen: true }) return null;
+        try { return await link.RequestAsync<T>(type, payload, timeout, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _log.LogDebug(ex, "{Type} request to {Clone} failed", type, n);
+            return null;
+        }
+    }
+
     /// <summary>A live clone's script debugger snapshot (null when it isn't connected, runs no script or doesn't answer in time).</summary>
     public async Task<Scripting.ScriptDebugSnapshot?> RequestScriptDebugAsync(string name, bool code, TimeSpan timeout, CancellationToken ct = default)
     {

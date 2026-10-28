@@ -128,10 +128,20 @@ public static class AppHost
             if (cli.CloneName == null && !(LlmOptions.IsOpus55(agentOptions.Llm.MainModel) && agentOptions.Llm.ProviderFor(ModelTier.Main) == LlmProviders.Anthropic))
                 log.LogWarning("brain tier runs {Provider}/{Model}, not Opus 5.5: it still writes Lua scripts (authorship belongs to the brain tier)",
                     agentOptions.Llm.ProviderFor(ModelTier.Main), agentOptions.Llm.MainModel);
+            // The game version, once, before any client graph exists (docs/design/multi-version.md): config, else a server ping.
+            var version = await VersionSetup.ResolveAsync(config, mc, agentOptions.DataDirectory, log, signals.Token);
+            if (version.Profile is not { } profile)
+            {
+                if (signals.Token.IsCancellationRequested) return ExitCodes.Ok;
+                log.LogCritical("can't pick a game version: {Error}", version.Error);
+                if (useTui) Console.Error.WriteLine("MineClaw: can't pick a game version: " + version.Error);
+                return ExitCodes.Config;
+            }
+            cli = cli with { ServerVersion = profile.Version.Id }; // hive clones inherit the resolved version (MainHive pass-through)
             if (cli.CloneName != null)
-                return await CloneMode.RunAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, loggers, log, signals);
+                return await CloneMode.RunAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, loggers, log, signals, profile);
             return await RunBotAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, useTui, ring, loggers, log, signals, mainLogDir,
-                supervisorOptions, bodiesOptions);
+                supervisorOptions, bodiesOptions, profile);
         }
         finally
         {
@@ -143,8 +153,9 @@ public static class AppHost
     private static async Task<int> RunBotAsync(AppCli cli, MinecraftSettings mc, AgentOptions agentOptions, BotOptions botOptions, HostSettings host,
         HiveConfig hive, TelemetryOptions telemetryOptions, string telemetryDir, bool useTui, RingLoggerProvider ring, ILoggerFactory loggers,
         ILogger log, ShutdownSignals signals, string logDir, Supervisor.SupervisorOptions? supervisorOptions = null,
-        MineClaw.Bot.Bodies.BodiesOptions? bodiesOptions = null)
+        MineClaw.Bot.Bodies.BodiesOptions? bodiesOptions = null, MineClaw.Client.Versioning.GameVersionProfile? profile = null)
     {
+        profile ??= MineClaw.Client.Versioning.GameVersionProfiles.Beta181;
         var telemetry = new PromptTelemetry(agentOptions, telemetryOptions, telemetryOptions.Enabled ? telemetryDir : null);
         int seeded = telemetry.SeedFromLogs();
         ILlmClient llm = LlmClientFactory.Create(agentOptions.Llm); // nothing on Ollama = the AnthropicLlmClient, as before
@@ -153,7 +164,7 @@ public static class AppHost
         var clientLog = loggers.CreateLogger("MineClaw.Client");
         var client = new MinecraftClient(new ClientOptions
         {
-            Host = mc.Host, Port = mc.Port, Username = mc.Username,
+            Host = mc.Host, Port = mc.Port, Username = mc.Username, Profile = profile,
             AutoReconnect = true, AutoRespawn = true, RecordDirectory = cli.Record,
             DuplicateLoginBackoff = TimeSpan.FromSeconds(Math.Max(0, mc.DuplicateLoginBackoffSeconds)),
             Log = m => clientLog.LogDebug("{Msg}", m),
@@ -161,7 +172,7 @@ public static class AppHost
         var game = new MinecraftGameClient(client);
         // One brain, many bodies (step 2): Bodies:Mode=inproc runs the clone accounts as bodies in this process (no MainHive);
         // the default "hive" keeps one process per clone.
-        var inproc = InProcBodies.Create(hive, bodiesOptions ?? new MineClaw.Bot.Bodies.BodiesOptions(), mc, agentOptions, loggers);
+        var inproc = InProcBodies.Create(hive, bodiesOptions ?? new MineClaw.Bot.Bodies.BodiesOptions(), mc, agentOptions, loggers, profile);
         var mainHive = inproc == null ? MainHive.Create(hive, mc.Username, cli, agentOptions, logDir, loggers.CreateLogger("MineClaw.Hive")) : null;
         var bot = BotHost.Create(game, agentOptions, botOptions, llm: llm, loggers: loggers, claims: inproc?.MainClaims ?? mainHive?.MainClaims,
             hiveBots: inproc != null ? inproc.HiveBots : mainHive != null ? mainHive.HiveBots : null);
@@ -336,6 +347,8 @@ public static class AppHost
             // /api/scripts*, /api/bodies/{name}/script: the saved library and the live script debugger (read-only, token or 403)
             Scripts = new Supervisor.SupervisorScriptRoutes(new Supervisor.LiveScriptData(bot, main, () => mainHive?.Supervisor, log), o.Token),
         };
+        // /api/bodies/{name}/vision*: the sheets each body's models got (clones over IPC) and on-demand renders (token or 403)
+        server.Vision = new Supervisor.SupervisorVisionRoutes(new Supervisor.LiveVisionData(hub, bot, main, () => mainHive?.Supervisor, log), o.Token, server.Gate);
         try
         {
             server.Start();

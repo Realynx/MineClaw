@@ -1,0 +1,175 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:lh="using:MineClaw.MemoryExplorer.LiveHive"
+             x:Class="MineClaw.MemoryExplorer.LiveHive.VisionPanelView"
+             x:DataType="lh:VisionPanelViewModel">
+
+  <UserControl.Styles>
+    <Style Selector="TextBlock.lbl">
+      <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="Width" Value="62" />
+    </Style>
+    <Style Selector="TextBlock.val">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="Width" Value="44" />
+      <Setter Property="TextAlignment" Value="Right" />
+    </Style>
+    <Style Selector="Slider">
+      <Setter Property="Margin" Value="6,-6" />
+    </Style>
+    <Style Selector="TextBlock.sec">
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Margin" Value="0,8,0,0" />
+    </Style>
+  </UserControl.Styles>
+
+  <Grid RowDefinitions="Auto,*">
+    <!-- Mode: what the AI saw | compose -->
+    <StackPanel Orientation="Horizontal" Spacing="6" Margin="0,0,0,8">
+      <ToggleButton Content="What the AI saw" IsChecked="{Binding IsSaw, Mode=OneWay}" Command="{Binding ShowSawCommand}"
+                    ToolTip.Tip="The exact sheets this body's models received: the same bytes, panels, labels and rulers" />
+      <ToggleButton Content="Compose" IsChecked="{Binding IsCompose, Mode=OneWay}" Command="{Binding ShowComposeCommand}"
+                    ToolTip.Tip="Render a sheet with your own panels and camera angles (the same renderer and reading aids as the AI's)" />
+      <TextBlock Classes="faint" FontSize="12" VerticalAlignment="Center" Margin="10,0,0,0" Text="{Binding Status}" TextTrimming="CharacterEllipsis" />
+    </StackPanel>
+
+    <Grid Grid.Row="1" ColumnDefinitions="Auto,*">
+      <!-- Compose controls (left) -->
+      <ScrollViewer Width="300" Margin="0,0,12,0" IsVisible="{Binding IsCompose}" VerticalScrollBarVisibility="Auto">
+        <StackPanel Spacing="4">
+          <TextBlock Classes="sec" Text="Panels" Margin="0" />
+          <WrapPanel>
+            <CheckBox Content="eye" IsChecked="{Binding UseEye}" Margin="0,0,8,0" />
+            <CheckBox Content="shoulder" IsChecked="{Binding UseShoulder}" Margin="0,0,8,0" />
+            <CheckBox Content="iso" IsChecked="{Binding UseIso}" Margin="0,0,8,0" />
+            <CheckBox Content="orbit" IsChecked="{Binding UseOrbit}" Margin="0,0,8,0" />
+            <CheckBox Content="high" IsChecked="{Binding UseHigh}" Margin="0,0,8,0" />
+            <CheckBox Content="top" IsChecked="{Binding UseTop}" Margin="0,0,8,0" />
+            <CheckBox Content="side" IsChecked="{Binding UseSide}" Margin="0,0,8,0" />
+            <CheckBox Content="layers" IsChecked="{Binding UseLayers}" />
+          </WrapPanel>
+
+          <TextBlock Classes="sec" Text="Centre" />
+          <ComboBox HorizontalAlignment="Stretch" ItemsSource="{Binding Targets}" SelectedItem="{Binding Target}" />
+          <TextBox Classes="mono" PlaceholderText="x,y,z" Text="{Binding TargetText}" />
+          <ComboBox HorizontalAlignment="Stretch" ItemsSource="{Binding PlanNames}" SelectedItem="{Binding Plan}" PlaceholderText="build plan" />
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Classes="lbl" Text="radius" />
+            <Slider Width="150" Minimum="3" Maximum="12" TickFrequency="1" IsSnapToTickEnabled="True" Value="{Binding Radius}" />
+            <TextBlock Classes="val mono" Text="{Binding Radius}" />
+          </StackPanel>
+          <CheckBox Content="reading aids (grid, rulers, labels)" IsChecked="{Binding Aids}" />
+
+          <TextBlock Classes="sec" Text="Iso" />
+          <StackPanel Orientation="Horizontal"><TextBlock Classes="lbl" Text="yaw" /><Slider Width="150" Minimum="0" Maximum="359" Value="{Binding IsoYaw}" /><TextBlock Classes="val mono" Text="{Binding IsoYaw, StringFormat={}{0:0}°}" /></StackPanel>
+          <StackPanel Orientation="Horizontal"><TextBlock Classes="lbl" Text="pitch" /><Slider Width="150" Minimum="5" Maximum="89" Value="{Binding IsoPitch}" /><TextBlock Classes="val mono" Text="{Binding IsoPitch, StringFormat={}{0:0}°}" /></StackPanel>
+          <StackPanel Orientation="Horizontal"><TextBlock Classes="lbl" Text="zoom" /><Slider Width="150" Minimum="0.25" Maximum="4" Value="{Binding IsoZoom}" /><TextBlock Classes="val mono" Text="{Binding IsoZoom, StringFormat={}{0:0.00}}" /></StackPanel>
+
+          <TextBlock Classes="sec" Text="Orbit" />
+          <StackPanel Orientation="Horizontal"><TextBlock Classes="lbl" Text="angle" /><Slider Width="150" Minimum="0" Maximum="359" Value="{Binding OrbitYaw}" /><TextBlock Classes="val mono" Text="{Binding OrbitYaw, StringFormat={}{0:0}°}" /></StackPanel>
+          <StackPanel Orientation="Horizontal"><TextBlock Classes="lbl" Text="pitch" /><Slider Width="150" Minimum="5" Maximum="89" Value="{Binding OrbitPitch}" /><TextBlock Classes="val mono" Text="{Binding OrbitPitch, StringFormat={}{0:0}°}" /></StackPanel>
+          <StackPanel Orientation="Horizontal"><TextBlock Classes="lbl" Text="distance" /><Slider Width="150" Minimum="0" Maximum="48" Value="{Binding OrbitDist}" ToolTip.Tip="0 = auto (frames the radius)" /><TextBlock Classes="val mono" Text="{Binding OrbitDist, StringFormat={}{0:0}m}" /></StackPanel>
+
+          <TextBlock Classes="sec" Text="High" />
+          <StackPanel Orientation="Horizontal"><TextBlock Classes="lbl" Text="angle" /><Slider Width="150" Minimum="0" Maximum="359" Value="{Binding HighYaw}" /><TextBlock Classes="val mono" Text="{Binding HighYaw, StringFormat={}{0:0}°}" /></StackPanel>
+          <StackPanel Orientation="Horizontal"><TextBlock Classes="lbl" Text="pitch" /><Slider Width="150" Minimum="5" Maximum="89" Value="{Binding HighPitch}" /><TextBlock Classes="val mono" Text="{Binding HighPitch, StringFormat={}{0:0}°}" /></StackPanel>
+
+          <TextBlock Classes="sec" Text="Top" />
+          <StackPanel Orientation="Horizontal"><TextBlock Classes="lbl" Text="zoom" /><Slider Width="150" Minimum="0.25" Maximum="4" Value="{Binding TopZoom}" /><TextBlock Classes="val mono" Text="{Binding TopZoom, StringFormat={}{0:0.00}}" /></StackPanel>
+          <StackPanel Orientation="Horizontal"><TextBlock Classes="lbl" Text="pan x" /><Slider Width="150" Minimum="-16" Maximum="16" Value="{Binding TopDx}" /><TextBlock Classes="val mono" Text="{Binding TopDx, StringFormat={}{0:0.0}}" /></StackPanel>
+          <StackPanel Orientation="Horizontal"><TextBlock Classes="lbl" Text="pan z" /><Slider Width="150" Minimum="-16" Maximum="16" Value="{Binding TopDz}" /><TextBlock Classes="val mono" Text="{Binding TopDz, StringFormat={}{0:0.0}}" /></StackPanel>
+
+          <TextBlock Classes="sec" Text="Side" />
+          <StackPanel Orientation="Horizontal"><TextBlock Classes="lbl" Text="axis" /><ComboBox Width="90" Margin="6,0" ItemsSource="{Binding SideAxes}" SelectedItem="{Binding SideAxis}" /></StackPanel>
+          <StackPanel Orientation="Horizontal"><TextBlock Classes="lbl" Text="zoom" /><Slider Width="150" Minimum="0.25" Maximum="4" Value="{Binding SideZoom}" /><TextBlock Classes="val mono" Text="{Binding SideZoom, StringFormat={}{0:0.00}}" /></StackPanel>
+          <StackPanel Orientation="Horizontal"><TextBlock Classes="lbl" Text="pan" /><Slider Width="150" Minimum="-16" Maximum="16" Value="{Binding SideDx}" /><TextBlock Classes="val mono" Text="{Binding SideDx, StringFormat={}{0:0.0}}" /></StackPanel>
+          <StackPanel Orientation="Horizontal"><TextBlock Classes="lbl" Text="pan y" /><Slider Width="150" Minimum="-16" Maximum="16" Value="{Binding SideDy}" /><TextBlock Classes="val mono" Text="{Binding SideDy, StringFormat={}{0:0.0}}" /></StackPanel>
+
+          <TextBlock Classes="sec" Text="Shoulder" />
+          <StackPanel Orientation="Horizontal"><TextBlock Classes="lbl" Text="behind" /><Slider Width="150" Minimum="1" Maximum="12" Value="{Binding ShoulderDist}" /><TextBlock Classes="val mono" Text="{Binding ShoulderDist, StringFormat={}{0:0.0}m}" /></StackPanel>
+
+          <StackPanel Orientation="Horizontal" Spacing="6" Margin="0,10,0,0">
+            <Button Classes="ghost" Content="Reset cameras" Command="{Binding ResetCamerasCommand}" />
+            <CheckBox Content="server render" IsChecked="{Binding ServerRender}"
+                      ToolTip.Tip="Render every change on the server (slower; roles, memory labels and the world time included)" />
+          </StackPanel>
+        </StackPanel>
+      </ScrollViewer>
+
+      <!-- The picture + its text -->
+      <Grid Grid.Column="1" RowDefinitions="Auto,*,Auto,Auto">
+        <!-- Header lines: the AI's sheet meta, or the compose stats + call -->
+        <StackPanel Spacing="2" IsVisible="{Binding IsSaw}">
+          <TextBlock Classes="h3" Text="{Binding SheetTitle}" TextTrimming="CharacterEllipsis" />
+          <SelectableTextBlock Classes="mono" FontSize="11" Text="{Binding RequestText}" TextWrapping="Wrap" />
+          <TextBlock Classes="faint mono" FontSize="11" Text="{Binding CostText}" TextWrapping="Wrap" />
+        </StackPanel>
+        <StackPanel Spacing="2" IsVisible="{Binding IsCompose}">
+          <SelectableTextBlock Classes="mono" FontSize="11" Text="{Binding SeeCallText}" TextWrapping="Wrap" />
+          <TextBlock Classes="faint mono" FontSize="11" Text="{Binding ComposeStats}" TextWrapping="Wrap" />
+        </StackPanel>
+
+        <Border Grid.Row="1" Margin="0,6" Background="#0B0D12" CornerRadius="6" ClipToBounds="True">
+          <Panel>
+            <ScrollViewer x:Name="PicScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+              <Image x:Name="Pic" Source="{Binding Image}" Width="{Binding ShownWidth}" Height="{Binding ShownHeight}" Stretch="Fill"
+                     RenderOptions.BitmapInterpolationMode="None" HorizontalAlignment="Center" VerticalAlignment="Center" Cursor="SizeAll" />
+            </ScrollViewer>
+            <TextBlock Classes="faint" Text="{Binding HistoryNote}" HorizontalAlignment="Center" VerticalAlignment="Center"
+                       IsVisible="{Binding Image, Converter={x:Static ObjectConverters.IsNull}}" />
+          </Panel>
+        </Border>
+
+        <!-- Tools: zoom, save, copy -->
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="6">
+          <Button Classes="ghost" Content="−" Command="{Binding ZoomOutCommand}" ToolTip.Tip="Zoom out (Ctrl + wheel)" />
+          <Button Classes="ghost" Content="{Binding Zoom, StringFormat={}{0:0.##}x}" Command="{Binding ZoomResetCommand}" ToolTip.Tip="1:1 (the pixels the AI got)" />
+          <Button Classes="ghost" Content="+" Command="{Binding ZoomInCommand}" ToolTip.Tip="Zoom in (Ctrl + wheel); drag to pan" />
+          <Button Classes="ghost" Click="OnSavePng" ToolTip.Tip="Save exactly these PNG bytes">
+            <StackPanel Orientation="Horizontal" Spacing="5"><PathIcon Data="{StaticResource IconDownload}" Width="12" Height="12" /><TextBlock Text="Save PNG" /></StackPanel>
+          </Button>
+          <Button Classes="ghost" Click="OnCopySee" ToolTip.Tip="Copy the see{...} tool call that renders this sheet">
+            <StackPanel Orientation="Horizontal" Spacing="5"><PathIcon Data="{StaticResource IconCopy}" Width="12" Height="12" /><TextBlock Text="Copy as see{…}" /></StackPanel>
+          </Button>
+          <Button Classes="ghost" Content="Compose from this" Command="{Binding ComposeFromSheetCommand}" IsVisible="{Binding IsSaw}"
+                  ToolTip.Tip="Open compose with this sheet's centre, radius, panels and angles" />
+          <Button Classes="accent" Content="Render exact" Command="{Binding RenderExactCommand}" IsVisible="{Binding IsCompose}"
+                  ToolTip.Tip="The server renders this call: roles (gen cells, protection), memory labels and the world time, exactly as the AI would get it" />
+        </StackPanel>
+
+        <!-- The perception answer + legend (saw) / legend (compose), then the history strip -->
+        <StackPanel Grid.Row="3" Spacing="6" Margin="0,8,0,0">
+          <Border Classes="chip" Padding="8,6" IsVisible="{Binding IsSaw}">
+            <SelectableTextBlock FontSize="12" Text="{Binding AnswerText}" TextWrapping="Wrap" MaxHeight="90" />
+          </Border>
+          <Expander Header="Legend (the text that rides with the picture)">
+            <ScrollViewer MaxHeight="120">
+              <Panel>
+                <SelectableTextBlock Classes="mono" FontSize="11" Text="{Binding LegendText}" TextWrapping="Wrap" IsVisible="{Binding IsSaw}" />
+                <SelectableTextBlock Classes="mono" FontSize="11" Text="{Binding ComposeLegend}" TextWrapping="Wrap" IsVisible="{Binding IsCompose}" />
+              </Panel>
+            </ScrollViewer>
+          </Expander>
+          <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" IsVisible="{Binding IsSaw}">
+            <ListBox ItemsSource="{Binding History}" SelectedItem="{Binding Selected}" Background="Transparent">
+              <ListBox.ItemsPanel>
+                <ItemsPanelTemplate><StackPanel Orientation="Horizontal" Spacing="4" /></ItemsPanelTemplate>
+              </ListBox.ItemsPanel>
+              <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="lh:VisionSheetRow">
+                  <StackPanel Width="112" Spacing="2" ToolTip.Tip="{Binding Detail}">
+                    <Image Source="{Binding Thumb}" Height="68" Stretch="Uniform" />
+                    <TextBlock Classes="mono" FontSize="11" Text="{Binding Label}" HorizontalAlignment="Center" />
+                  </StackPanel>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </ScrollViewer>
+        </StackPanel>
+      </Grid>
+    </Grid>
+  </Grid>
+</UserControl>

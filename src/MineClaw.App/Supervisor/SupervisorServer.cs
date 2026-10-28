@@ -60,6 +60,8 @@ public sealed class SupervisorServer : IAsyncDisposable
     public ISupervisorAdmin? Admin { get; set; }
     /// <summary>The read-only script routes (<c>/api/scripts*</c>, <c>/api/bodies/{name}/script</c>; 403 without the token); null = off.</summary>
     public SupervisorScriptRoutes? Scripts { get; set; }
+    /// <summary>The read-only vision routes (<c>/api/bodies/{name}/vision*</c>: what the AI saw, on-demand renders; 403 without the token); null = off.</summary>
+    public SupervisorVisionRoutes? Vision { get; set; }
     public string? Prefix { get; private set; }
 
     /// <summary>Starts listening on Bind:Port. Throws when the address can't be bound (the host logs and runs without it).</summary>
@@ -136,6 +138,7 @@ public sealed class SupervisorServer : IAsyncDisposable
         if (path.Length == 0 || path == "/index.html") return new SupervisorReply(200, "text/html; charset=utf-8", Page());
         if (path == "/favicon.ico") return new SupervisorReply(204, "image/x-icon", []);
         if (Scripts != null && await Scripts.TryHandleAsync(r, ct).ConfigureAwait(false) is { } scriptReply) return scriptReply;
+        if (Vision != null && await Vision.TryHandleAsync(r, ct).ConfigureAwait(false) is { } visionReply) return visionReply;
         if (!Authorized(r)) return Json(401, new { error = "token required (X-Supervisor-Token header or ?token=)" });
         if (World != null && await World.TryHandleAsync(r, path, ct).ConfigureAwait(false) is { } worldReply) return worldReply;
         try

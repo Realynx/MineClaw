@@ -21,8 +21,17 @@ namespace MineClaw.Bot.GameTools;
 public sealed partial class VisionHub
 {
     /// <summary>One requested panel (or n orbit panels).</summary>
-    public sealed record PanelRequest(string Kind, string? At = null, string? From = null, double? Dist = null, int N = 1)
+    /// <param name="Cam">Camera adjustments ("iso yaw=200 pitch=50 zoom=1.3", "top zoom=2 dx=3"): empty = the view's default camera.</param>
+    public sealed record PanelRequest(string Kind, string? At = null, string? From = null, double? Dist = null, int N = 1, CamParams Cam = default)
     {
+        /// <summary>The panel in the see tool's string form (what the history and "copy as see" show).</summary>
+        public string Format() => new SeeView(Kind, Cam, Kind switch
+        {
+            "cam" => string.Join(' ', new[] { At, From, Dist?.ToString("0.#", CultureInfo.InvariantCulture) }.Where(x => !string.IsNullOrEmpty(x))),
+            "orbit" when N > 1 => string.Join(' ', new[] { At, N.ToString(CultureInfo.InvariantCulture) }.Where(x => !string.IsNullOrEmpty(x))),
+            _ => string.IsNullOrEmpty(At) ? null : At,
+        }).Format();
+
         public int Count => Kind == "orbit" && At != null ? Math.Clamp(N, 1, ContactSheet.MaxPanels) : 1;
         /// <summary>A panel that needs the composite path (its own spot or body), not just a named view around the focus.</summary>
         public bool Composite => At != null || Kind is "cam" or "follow";
@@ -70,6 +79,9 @@ public sealed partial class VisionHub
         string kind = (sp < 0 ? t : t[..sp]).Trim().ToLowerInvariant(), rest = sp < 0 ? "" : t[(sp + 1)..].Trim();
         if (kind is "camera" or "freecam") kind = "cam";
         var words = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+        // Camera adjustments ride as key=value words anywhere after the kind: "iso yaw=200 pitch=50", "cam tower NE pitch=60".
+        var cam = CamParams.Extract(words);
+        rest = string.Join(' ', words);
         switch (kind)
         {
             case "eye": return new PanelRequest("eye", rest.Length > 0 ? rest : null);
@@ -80,19 +92,19 @@ public sealed partial class VisionHub
                 string? from = null;
                 if (words.Count > 1 && double.TryParse(words[^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var d)) { dist = d; words.RemoveAt(words.Count - 1); }
                 if (words.Count > 1 && Compass.Contains(words[^1])) { from = words[^1]; words.RemoveAt(words.Count - 1); }
-                return words.Count == 0 ? null : new PanelRequest("cam", string.Join(' ', words), from, dist);
+                return words.Count == 0 ? null : new PanelRequest("cam", string.Join(' ', words), from, dist, Cam: cam);
             }
             case "orbit":
             {
                 int n = 1;
                 if (words.Count > 1 && int.TryParse(words[^1], out var k)) { n = k; words.RemoveAt(words.Count - 1); }
                 else if (words.Count == 1 && int.TryParse(words[0], out var k1)) { n = k1; words.Clear(); }
-                if (words.Count == 0) return n > 1 ? new PanelRequest("orbit", "", N: n) : new PanelRequest("orbit");
-                return new PanelRequest("orbit", string.Join(' ', words), N: n);
+                if (words.Count == 0) return n > 1 ? new PanelRequest("orbit", "", N: n, Cam: cam) : new PanelRequest("orbit", Cam: cam);
+                return new PanelRequest("orbit", string.Join(' ', words), N: n, Cam: cam);
             }
             default:
                 if (!ContactSheet.Known.Contains(kind)) return null;
-                return new PanelRequest(kind, rest.Length > 0 ? rest : null);
+                return new PanelRequest(kind, rest.Length > 0 ? rest : null, Cam: cam);
         }
     }
 
@@ -108,13 +120,18 @@ public sealed partial class VisionHub
                 string? at = val.Str("at"), from = val.Str("from");
                 double? dist = val.TryGetProperty("dist", out var dv) && dv.ValueKind == JsonValueKind.Number ? dv.GetDouble() : null;
                 int n = val.Int("n") ?? 1;
+                // {"iso":{"yaw":200,"pitch":50,"zoom":1.3}}, {"top":{"zoom":2,"dx":3}}: the same keys as the string form.
+                var cam = new CamParams();
+                foreach (var k in val.EnumerateObject())
+                    if (CamParams.Keys.Contains(k.Name) && !(kind is "cam" or "camera" && k.Name == "dist"))
+                        CamParams.TryToken(k.Name + "=" + (k.Value.ValueKind == JsonValueKind.String ? k.Value.GetString() : k.Value.GetRawText()), ref cam);
                 return kind switch
                 {
-                    "cam" or "camera" => at == null ? null : new PanelRequest("cam", at, from, dist),
-                    "orbit" => new PanelRequest("orbit", at ?? "", N: n),
+                    "cam" or "camera" => at == null ? null : new PanelRequest("cam", at, from, dist, Cam: cam),
+                    "orbit" => new PanelRequest("orbit", at ?? "", N: n, Cam: cam),
                     "eye" => new PanelRequest("eye", at ?? val.Str("body")),
                     "follow" => at == null ? null : new PanelRequest("follow", at),
-                    _ => ContactSheet.Known.Contains(kind) ? new PanelRequest(kind, at) : null,
+                    _ => ContactSheet.Known.Contains(kind) ? new PanelRequest(kind, at, Cam: cam) : null,
                 };
             }
             if (val.ValueKind == JsonValueKind.True && ContactSheet.Known.Contains(kind)) return new PanelRequest(kind);
@@ -200,10 +217,10 @@ public sealed partial class VisionHub
                     var spot = t.Bot is { } bot ? new BlockPos((int)Math.Floor(bot.X), (int)Math.Floor(bot.Y), (int)Math.Floor(bot.Z)) : t.Focus;
                     var ctx = ContextFor(spot, t.Bot?.Dim ?? t.Dim, radius, null, t.Landmark, aids);
                     string label = "@" + Short(t.Landmark ?? t.Bot?.Short ?? r.At!);
-                    if (r.Kind == "cam") jobs.Add(new PanelJob { Ctx = ctx, Rig = PerspectivePanel.Cam(ctx.Focus, ctx.FeetY, r.From, r.Dist, "CAM " + label, radius) });
-                    else if (r.Kind == "orbit") jobs.AddRange(PerspectivePanel.Orbits(ctx.Focus, ctx.FeetY, radius, r.N, "ORBIT " + label).Select(g => new PanelJob { Ctx = ctx, Rig = g }));
-                    else if (PerspectivePanel.Views.Contains(r.Kind) && PerspectivePanel.For(r.Kind, ctx.Focus, ctx.FeetY, radius, null, null) is { } g2) jobs.Add(new PanelJob { Ctx = ctx, Rig = g2 with { Title = g2.Title + " " + label } });
-                    else jobs.Add(new PanelJob { Ctx = ctx, Flat = r.Kind });
+                    if (r.Kind == "cam") jobs.Add(new PanelJob { Ctx = ctx, Rig = PerspectivePanel.Cam(ctx.Focus, ctx.FeetY, r.From, r.Dist, "CAM " + label, radius, r.Cam) });
+                    else if (r.Kind == "orbit" && (r.N > 1 || r.Cam.IsEmpty)) jobs.AddRange(PerspectivePanel.Orbits(ctx.Focus, ctx.FeetY, radius, r.N, "ORBIT " + label).Select(g => new PanelJob { Ctx = ctx, Rig = g }));
+                    else if (PerspectivePanel.Views.Contains(r.Kind) && PerspectivePanel.For(r.Kind, ctx.Focus, ctx.FeetY, radius, null, null, r.Cam) is { } g2) jobs.Add(new PanelJob { Ctx = ctx, Rig = g2 with { Title = g2.Title + " " + label } });
+                    else jobs.Add(new PanelJob { Ctx = ctx, Flat = r.Kind, Params = r.Cam });
                     break;
                 }
                 case "orbit" when r.N > 1:
@@ -214,11 +231,11 @@ public sealed partial class VisionHub
                     var ctx = Home();
                     if (PerspectivePanel.Views.Contains(r.Kind))
                     {
-                        var rig = PerspectivePanel.For(r.Kind, ctx.Focus, ctx.FeetY, radius, ctx.Body, r.Kind == "eye" ? homeEye : null)
+                        var rig = PerspectivePanel.For(r.Kind, ctx.Focus, ctx.FeetY, radius, ctx.Body, r.Kind == "eye" ? homeEye : null, r.Cam)
                             ?? PerspectivePanel.For("orbit3", ctx.Focus, ctx.FeetY, radius, null, null);
                         jobs.Add(new PanelJob { Ctx = ctx, Rig = rig });
                     }
-                    else jobs.Add(new PanelJob { Ctx = ctx, Flat = r.Kind, Axis = AxisFor(focus) });
+                    else jobs.Add(new PanelJob { Ctx = ctx, Flat = r.Kind, Axis = AxisFor(focus), Params = r.Cam });
                     break;
                 }
             }
@@ -229,10 +246,10 @@ public sealed partial class VisionHub
     private static string Short(string s) => s.Length <= 12 ? s.ToUpperInvariant() : s[..12].ToUpperInvariant();
 
     /// <summary>The composite image of resolved panels (the same renderer, budget and aids as the default sheet).</summary>
-    public VisionImage Composite(IReadOnlyList<PanelJob> jobs, BlockPos focus, IReadOnlyList<string> notes)
+    public VisionImage Composite(IReadOnlyList<PanelJob> jobs, BlockPos focus, IReadOnlyList<string> notes, ContactSheet? sheets = null)
     {
         var head = string.Create(CultureInfo.InvariantCulture, $"see composite ({jobs.Count} panels) default focus {focus.X},{focus.Y},{focus.Z}");
-        return Sheets.Compose(jobs, ContactSheet.DefaultPixelBudget, head, notes, null);
+        return (sheets ?? Sheets).Compose(jobs, ContactSheet.DefaultPixelBudget, head, notes, null);
     }
 
     /// <summary>The composite <c>see</c> (views naming spots, bodies or cameras): resolves, renders one image, then perception or
@@ -251,8 +268,10 @@ public sealed partial class VisionHub
             var exact = VisionRouter.Answer(question, scene.Blocks, scene.Roles.Map, (focus.X, focus.Y, focus.Z), radius, EntitiesNear(scene.Dim, focus, radius));
             if (exact != null) return ToolResult.Success(string.Join(" | ", notes.Append(p.Exact(question ?? "", exact, "see").Text)));
             var img = Composite(jobs, focus, notes);
-            var a = await p.AskAsync(new PerceptionLook(img, string.IsNullOrWhiteSpace(question) ? DefaultQuestion : question!, scene.Blocks, scene.Roles.Map,
-                (focus.X, focus.Y, focus.Z), radius, "see"), ct).ConfigureAwait(false);
+            var q = string.IsNullOrWhiteSpace(question) ? DefaultQuestion : question!;
+            var rec = Capture(img.Png, img.Width, img.Height, "composite", "see", "perception", reqs.Select(r => r.Format()), focus, radius, q, i.GetRawText(), img.Legend);
+            var a = await p.AskAsync(new PerceptionLook(img, q, scene.Blocks, scene.Roles.Map, (focus.X, focus.Y, focus.Z), radius, "see"), ct).ConfigureAwait(false);
+            Answered(rec, a);
             return ToolResult.Success(string.Join(" | ", notes.Append(a.Text)));
         }
         if (!takeShot(_time.GetUtcNow()))
@@ -261,6 +280,8 @@ public sealed partial class VisionHub
         var text = sheet.Legend + (string.IsNullOrWhiteSpace(question) ? "" : " Q: " + question);
         var stub = string.Create(CultureInfo.InvariantCulture, $"[picture omitted: see composite of {jobs.Count} panels]");
         _log?.LogDebug("see composite: {Panels} panels, {W}x{H}, {Ms:0} ms", jobs.Count, sheet.Width, sheet.Height, Sheets.LastMs);
-        return ToolResult.Success(text) with { Image = new LlmImage(sheet.Png, sheet.Width, sheet.Height, stub) };
+        var image = new LlmImage(sheet.Png, sheet.Width, sheet.Height, stub);
+        Capture(image.Data, image.Width, image.Height, "composite", "see", "direct", reqs.Select(r => r.Format()), focus, radius, question, i.GetRawText(), text);
+        return ToolResult.Success(text) with { Image = image };
     }
 }

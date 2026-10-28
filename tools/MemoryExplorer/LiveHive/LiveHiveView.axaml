@@ -77,7 +77,7 @@
     <DataTemplate x:Key="TileTemplate" x:DataType="lh:BotTileViewModel">
       <Border Classes="card tile" Classes.focused="{Binding IsFocused}" DoubleTapped="OnTileDoubleTapped">
         <Grid RowDefinitions="Auto,*,Auto">
-          <Grid ColumnDefinitions="*,Auto,Auto" Margin="12,8,8,8">
+          <Grid ColumnDefinitions="*,Auto,Auto,Auto" Margin="12,8,8,8">
             <StackPanel VerticalAlignment="Center" Spacing="1">
               <TextBlock Classes="h3" Text="{Binding Title}" TextTrimming="CharacterEllipsis" />
               <TextBlock Classes="faint" FontSize="11" Text="{Binding Subtitle}" TextTrimming="CharacterEllipsis" />
@@ -89,16 +89,26 @@
                 </StackPanel>
               </Button>
             </StackPanel>
-            <Button Grid.Column="1" Classes="ghost" Margin="6,0,6,0" Padding="8,4" Content="Fly" Click="OnFlyHere"
+            <Button Grid.Column="1" Classes="ghost" Margin="6,0,0,0" Padding="8,4" Content="AI vision" Click="OnVisionButton"
+                    ToolTip.Tip="What the AI saw: the exact sheets its models got (history, zoom, save), and compose your own angles" />
+            <Button Grid.Column="2" Classes="ghost" Margin="6,0,6,0" Padding="8,4" Content="Fly" Click="OnFlyHere"
                     ToolTip.Tip="Open the free camera at this bot's eyes" />
-            <ComboBox Grid.Column="2" ItemsSource="{Binding Modes}" SelectedItem="{Binding Mode}" MinWidth="104"
-                      ToolTip.Tip="Eye: live first-person view rendered here with textures. Iso, Top + roles, Side: the server's pictures." />
+            <ComboBox Grid.Column="3" ItemsSource="{Binding Modes}" SelectedItem="{Binding Mode}" MinWidth="104"
+                      ToolTip.Tip="Eye: live first-person view rendered here with textures. Iso, Top + roles, Side: the server's pictures. AI's last sheet: the picture the AI last got." />
           </Grid>
           <Panel Grid.Row="1" Background="#0B0D12" MinHeight="90">
             <TextBlock Classes="faint" Text="waiting for the server's picture…" HorizontalAlignment="Center" VerticalAlignment="Center"
                        IsVisible="{Binding IsMap}" />
             <lh:FrameView Source="{Binding Eye.Frames}" IsVisible="{Binding IsEye}" />
             <Image Source="{Binding MapImage}" IsVisible="{Binding IsMap}" Stretch="Uniform" RenderOptions.BitmapInterpolationMode="None" />
+            <TextBlock Classes="faint" Text="no sheet yet: the AI hasn't looked since this bot started" HorizontalAlignment="Center" VerticalAlignment="Center"
+                       TextWrapping="Wrap" Margin="12" IsVisible="{Binding IsVision}" />
+            <Image Source="{Binding VisionImage}" IsVisible="{Binding IsVision}" Stretch="Uniform" RenderOptions.BitmapInterpolationMode="None" />
+            <Border Classes="hudchip" VerticalAlignment="Bottom" HorizontalAlignment="Left" IsVisible="{Binding IsVision}">
+              <TextBlock Classes="mono" TextTrimming="CharacterEllipsis">
+                <Run Text="{Binding VisionAge}" /><Run Text=" · " /><Run Text="{Binding VisionCaption}" />
+              </TextBlock>
+            </Border>
             <StackPanel Orientation="Horizontal" VerticalAlignment="Top" HorizontalAlignment="Left">
               <Border Classes="hudchip"><TextBlock Classes="mono" Text="{Binding Where}" /></Border>
               <Border Classes="hudchip" Margin="0,8" IsVisible="{Binding PoseNote, Converter={x:Static ObjectConverters.IsNotNull}}">
@@ -203,6 +213,20 @@
                   <TextBlock Classes="h2" Text="No bodies online" HorizontalAlignment="Center" />
                   <TextBlock Classes="muted" Text="The hive is reachable, but no bot is logged in right now." HorizontalAlignment="Center" />
                 </StackPanel>
+              </Border>
+
+              <!-- The vision panel (a tile's "AI vision" button): what the AI saw + compose. Read-only. -->
+              <Border Classes="card" MaxWidth="1180" HorizontalAlignment="Stretch" Margin="6" Padding="14,12" IsVisible="{Binding HasVision}"
+                      BoxShadow="0 6 28 0 #50000000">
+                <Grid RowDefinitions="Auto,*">
+                  <Grid ColumnDefinitions="*,Auto">
+                    <TextBlock Classes="h2" VerticalAlignment="Center" TextTrimming="CharacterEllipsis">
+                      <Run Text="AI vision · " /><Run Text="{Binding Vision.Title, FallbackValue=''}" />
+                    </TextBlock>
+                    <Button Grid.Column="1" Classes="ghost" Padding="8,3" Content="Close" Command="{Binding CloseVisionCommand}" />
+                  </Grid>
+                  <lh:VisionPanelView Grid.Row="1" Margin="0,8,0,0" DataContext="{Binding Vision}" />
+                </Grid>
               </Border>
 
               <!-- The live script debugger (a tile's "script" badge opens it; read-only, polls while open). -->

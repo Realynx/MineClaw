@@ -53,6 +53,8 @@ public sealed record AppCli
     public string? ParentPipe { get; init; }
     /// <summary>Record every packet into this directory (<c>--record [dir]</c>; default logs/recordings).</summary>
     public string? Record { get; init; }
+    /// <summary>auto | b1.8.1 | 1.12.2: overrides Bot:Server:Version (main passes the resolved id to its hive clones).</summary>
+    public string? ServerVersion { get; init; }
     public IReadOnlyList<string> Errors { get; init; } = [];
 
     public const string Usage = """
@@ -70,6 +72,7 @@ Usage: MineClaw.App [options]
   --minutes <n>            quit after n minutes
   --void-abort             quit if the bot is ever over the void (test runs)
   --record [dir]           record all packets (default logs/recordings; env MINECLAW_RECORD=1)
+  --server-version <v>     auto | b1.8.1 | 1.12.2 (auto pings the server)   [Bot:Server:Version]
   --no-key-check           skip the Anthropic models check at startup
   --demo [--demo-bots n]   offline TUI demo with fake bots (no server, no API key)
   --frame <WxH>            print one ANSI TUI frame and exit (use with --demo; NO_COLOR=1 for plain text)
@@ -142,6 +145,14 @@ Exit codes: 0 clean, 1 crash, 2 config, 3 auth, 64 usage, 75 transient startup f
                     }
                 case "--clone": c = c with { CloneName = Value() }; break;
                 case "--parent-pipe": c = c with { ParentPipe = Value() }; break;
+                case "--server-version":
+                    {
+                        var v = Value();
+                        if (v != null && !MineClaw.Protocol.Versioning.GameVersion.TryParse(v, out _))
+                            errors.Add($"--server-version: '{v}' (auto|{string.Join("|", MineClaw.Protocol.Versioning.GameVersion.Known.Select(k => k.Id))})");
+                        else if (v != null) c = c with { ServerVersion = v };
+                        break;
+                    }
                 case "-h" or "--help" or "-?": c = c with { Help = true }; break;
                 case "--schema-version": c = c with { PrintSchemaVersion = true }; break;
                 default: errors.Add($"unknown option '{a}'"); break;

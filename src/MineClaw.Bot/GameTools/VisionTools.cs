@@ -33,6 +33,12 @@ public sealed class VisionOptions
     public string? AssetsDir { get; set; }
     /// <summary>Download Mojang's official client jar (SHA-1 verified) when nothing local is found.</summary>
     public bool AllowDownload { get; set; } = true;
+    /// <summary>Sheets a model received, kept per body for the Live Hive's "what the AI saw" (memory ring; 0 = off).</summary>
+    public int HistorySize { get; set; } = 20;
+    /// <summary>Optional on-disk ring of those sheets (relative = under Agent:DataDirectory; a folder per body); null = memory only.</summary>
+    public string? HistoryDir { get; set; }
+    /// <summary>Sheets the disk ring keeps per body.</summary>
+    public int HistoryDiskKeep { get; set; } = 200;
 }
 
 /// <summary>
@@ -227,7 +233,10 @@ public static class VisionTools
                 {
                     if (!TakeShot(now)) return ToolResult.Success($"image budget used ({o.ImagesPerHour}/h); text map instead:\n" + LookMap(c, 15));
                     var atlas = hub.Atlas();
-                    return Render(i, c, places, rt, o, renderer, eye, voxels, atlas, Marks, IsHive, hub.LastPoint, now, roles?.Map);
+                    var pic = Render(i, c, places, rt, o, renderer, eye, voxels, atlas, Marks, IsHive, hub.LastPoint, now, roles?.Map);
+                    if (pic.Image is { } im) hub.Capture(im.Data, im.Width, im.Height, "picture", "see", "direct", [i.Str("view") ?? "top"], null, i.Int("radius") ?? o.DefaultRadius,
+                        null, i.GetRawText(), pic.Text);
+                    return pic;
                 }
                 return await hub.SeeAsync(i, TakeShot, ct).ConfigureAwait(false);
             }, tiers: ToolTiers.Main | ToolTiers.Worker, maxResultChars: 700);

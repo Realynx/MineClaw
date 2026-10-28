@@ -120,9 +120,9 @@ public sealed partial class MinecraftClient : IAsyncDisposable
     // ------------------------------------------------------------------ session
 
     /// <summary>Per-connection state; replaced on reconnect.</summary>
-    private sealed class Session(PacketConnection conn)
+    private sealed class Session(MineClaw.Protocol.Versioning.IGameConnection conn)
     {
-        public PacketConnection Conn { get; } = conn;
+        public MineClaw.Protocol.Versioning.IGameConnection Conn { get; } = conn;
         public CancellationTokenSource Cts { get; } = new();
         public TaskCompletionSource SpawnedTcs { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public Thread? Reader;
@@ -157,7 +157,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
         try
         {
             s.Recorder = MineClaw.Protocol.Recording.PacketRecorder.CreateFile(dir, Options.RecordGzip,
-                $"user={Options.Username};host={Options.Host}:{Options.Port};protocol={ProtocolInfo.ProtocolVersion}");
+                $"user={Options.Username};host={Options.Host}:{Options.Port};protocol={Options.Profile.Version.ProtocolVersion}");
             s.Recorder.Attach(s.Conn);
             Log($"recording packets to {s.Recorder.Path}");
         }
@@ -183,12 +183,13 @@ public sealed partial class MinecraftClient : IAsyncDisposable
             if (_session is { Ended: false }) throw new InvalidOperationException("already connected");
             _state = ClientState.Connecting;
         }
-        PacketConnection conn;
+        MineClaw.Protocol.Versioning.IGameConnection conn;
+        var protocol = Options.Profile.Protocol;
         try
         {
             conn = Options.ConnectionFactory is { } f
                 ? f(ct)
-                : await Task.Run(() => PacketConnection.Connect(Options.Host, Options.Port), ct).ConfigureAwait(false);
+                : await Task.Run(() => protocol.Connect(Options.Host, Options.Port), ct).ConfigureAwait(false);
         }
         catch
         {
@@ -204,7 +205,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
         s.Ticker = new Thread(() => TickLoop(s)) { IsBackground = true, Name = "mc-tick" };
         s.Reader.Start();
         s.Ticker.Start();
-        Send(s, new HandshakePacket(Options.Username));
+        foreach (var p in protocol.LoginStart(Options.Username)) Send(s, p); // b1.8.1: the 0x02 handshake
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(Options.LoginTimeout);

@@ -48,6 +48,60 @@ public sealed partial class VisionHub
         _log = log;
         Perception = perception;
         Roles = roles ?? RoleClassifier.For(c.World, null, null, null);
+        string? dir = null;
+        if (o.HistoryDir is { Length: > 0 } hd)
+        {
+            var root = Path.IsPathRooted(hd) ? hd : Path.Combine(rt.Options.DataDirectory, hd);
+            var who = string.Concat((c.Username ?? "bot").Select(ch => char.IsLetterOrDigit(ch) || ch is '_' or '-' ? ch : '_'));
+            dir = Path.Combine(root, who);
+        }
+        History = new VisionHistory(Math.Max(1, o.HistorySize), dir, o.HistoryDiskKeep, log);
+    }
+
+    /// <summary>The last sheets a model received from this hub (the Live Hive's "what the AI saw"; the supervisor's vision routes).</summary>
+    public VisionHistory History { get; }
+
+    /// <summary>
+    /// Stores a picture a model gets: the very PNG array of the request (no copy, no re-render) with what was asked. Never
+    /// throws (vision must not fail because of its own debugging aid). Off when <see cref="VisionOptions.HistorySize"/> is 0.
+    /// </summary>
+    public VisionSheetInfo? Capture(byte[] png, int width, int height, string kind, string source, string mode, IEnumerable<string> views, BlockPos? focus,
+        int radius, string? question, string? call, string legend, string? note = null)
+    {
+        if (_o.HistorySize <= 0) return null;
+        try
+        {
+            return History.Add(png, width, height, new VisionSheetInfo(0, _time.GetUtcNow(), _c.Username ?? "bot", kind, source, mode, views.ToList(),
+                focus is { } f ? [f.X, f.Y, f.Z] : null, radius, string.IsNullOrWhiteSpace(question) ? null : question, call, 0, 0, 0, 0, "", legend, Note: note));
+        }
+        catch (Exception ex) { _log?.LogDebug(ex, "vision history: capture failed"); return null; }
+    }
+
+    /// <summary>The perception tier's answer on a captured sheet (model, tokens; "cached: no image sent" when the cache answered).</summary>
+    private void Answered(VisionSheetInfo? rec, VerifiedAnswer a)
+    {
+        if (rec == null) return;
+        try
+        {
+            History.Update(rec.Id, i => i with
+            {
+                Answer = a.Text,
+                Note = a.Cached ? "cached: the model was not called (same view + question)" : a.Error is { } e ? "not answered: " + e : i.Note,
+                Model = a.Raw?.Model, ModelInputTokens = a.Raw?.Usage.InputTokens, ModelOutputTokens = a.Raw?.Usage.OutputTokens,
+            });
+        }
+        catch (Exception ex) { _log?.LogDebug(ex, "vision history: answer not stored"); }
+    }
+
+    /// <summary>Views as the see tool takes them back ("iso yaw=200 pitch=50"), for the history.</summary>
+    private static IEnumerable<string> ViewNames(IReadOnlyList<string>? views, IReadOnlyDictionary<string, CamParams>? ps)
+    {
+        var list = views is { Count: > 0 } ? views : ContactSheet.DefaultViews;
+        foreach (var v in list)
+        {
+            var k = v.Trim().ToLowerInvariant();
+            yield return ps != null && ps.TryGetValue(k, out var p) && !p.IsEmpty ? k + " " + p.Format() : k;
+        }
     }
 
     public RoleClassifier Roles { get; }
@@ -171,8 +225,8 @@ public sealed partial class VisionHub
 
     /// <summary>Renders the contact sheet of <paramref name="focus"/> (main's world, or <paramref name="scene"/>; a clone's eye pose).</summary>
     public VisionImage Sheet(BlockPos focus, int radius, IReadOnlyList<string>? views, Entity? viewer = null, Scene? scene = null, HiveEyePose? pose = null,
-        bool aids = true) =>
-        Sheets.Render(SheetRequest(focus, radius, views, viewer, scene, pose, aids));
+        bool aids = true, IReadOnlyDictionary<string, CamParams>? viewParams = null) =>
+        Sheets.Render(SheetRequest(focus, radius, views, viewer, scene, pose, aids, viewParams));
 
     /// <summary>
     /// The exact contact-sheet request a <c>see</c> of <paramref name="focus"/> renders (views, EYE pose, side axis, overlays,
@@ -180,7 +234,7 @@ public sealed partial class VisionHub
     /// is what the bot sees.
     /// </summary>
     public ContactSheetRequest SheetRequest(BlockPos focus, int radius, IReadOnlyList<string>? views, Entity? viewer = null, Scene? scene = null, HiveEyePose? pose = null,
-        bool aids = true)
+        bool aids = true, IReadOnlyDictionary<string, CamParams>? viewParams = null)
     {
         var w = _c.World;
         var me = w.Player.Position;
@@ -233,6 +287,7 @@ public sealed partial class VisionHub
             SelfPose = pose != null ? new PerspectivePanel.Body(pose.X, pose.Y, pose.Z, pose.Yaw, pose.Pitch, HiveVision.ShortName(pose.Name))
                 : mainHere ? new PerspectivePanel.Body(me.X, me.Y, me.Z, w.Player.Yaw, w.Player.Pitch, _c.Username) : null,
             Aids = aids,
+            ViewParams = viewParams is { Count: > 0 } ? new Dictionary<string, CamParams>(viewParams, StringComparer.OrdinalIgnoreCase) : null,
             Stamp = scene.Region?.Staleness((focus.X, focus.Y, focus.Z), radius, _time.GetUtcNow()) is { } st ? "seen " + (st.Length > 40 ? st[..39] + "…" : st) : null,
         };
     }
@@ -284,7 +339,8 @@ public sealed partial class VisionHub
 
     /// <summary>One perception look at <paramref name="focus"/> (auto-vision and the tool). Null when perception is off.</summary>
     public async Task<VerifiedAnswer?> LookAsync(BlockPos focus, string question, int radius, IReadOnlyList<string>? views, string source,
-        CancellationToken ct, Entity? viewer = null, Scene? scene = null, HiveEyePose? pose = null, bool aids = true)
+        CancellationToken ct, Entity? viewer = null, Scene? scene = null, HiveEyePose? pose = null, bool aids = true,
+        IReadOnlyDictionary<string, CamParams>? viewParams = null, string? call = null)
     {
         if (Perception is not { Available: true } p) return null;
         scene ??= LocalScene();
@@ -301,8 +357,11 @@ public sealed partial class VisionHub
         if (source.StartsWith("auto", StringComparison.Ordinal) && p.Telemetry.DeterministicOnly)
             return p.Exact(question, VisionRouter.Fallback(w, map, f, r, $"perception paused: halluc {p.Telemetry.RollingRate:P0}"), source);
         // A cached answer for an unchanged spot needs no render either.
-        var sheet = Sheet(focus, radius, views, viewer, scene, pose, aids);
-        return await p.AskAsync(new PerceptionLook(sheet, question, w, map, f, r, source), ct).ConfigureAwait(false);
+        var sheet = Sheet(focus, radius, views, viewer, scene, pose, aids, viewParams);
+        var rec = Capture(sheet.Png, sheet.Width, sheet.Height, "sheet", source, "perception", ViewNames(views, viewParams), focus, r, question, call, sheet.Legend);
+        var answer = await p.AskAsync(new PerceptionLook(sheet, question, w, map, f, r, source), ct).ConfigureAwait(false);
+        Answered(rec, answer);
+        return answer;
     }
 
     // ------------------------------------------------------------------ remote foci: landmarks, clones, the hive
@@ -466,7 +525,12 @@ public sealed partial class VisionHub
         if (target.Error != null) return ToolResult.Error(target.Error);
         bool direct = Perception is not { Available: true };
         // The overview is text (data); views (any) or direct mode add the top-down picture.
-        if (target.HiveView) return HiveOverview(image: i.StrList("views").Count > 0 || (direct && takeShot(_time.GetUtcNow())));
+        if (target.HiveView)
+        {
+            var hive = HiveOverview(image: i.StrList("views").Count > 0 || (direct && takeShot(_time.GetUtcNow())));
+            if (hive.Image is { } hi) Capture(hi.Data, hi.Width, hi.Height, "hive", "see", "direct", ["hive"], null, 0, i.Str("question"), i.GetRawText(), hive.Text);
+            return hive;
+        }
         var focus = target.Focus;
         int dim = target.Dim;
         var player = target.Player;
@@ -475,9 +539,15 @@ public sealed partial class VisionHub
         // Panels naming their own spot, body or camera: one composite image of them all.
         var reqs = ParseViews(i, out var viewError);
         if (viewError != null) return ToolResult.Error(viewError);
-        if (reqs != null && reqs.Any(r => r.Composite || r.Kind == "eye" && r.At != null || r.Kind == "orbit" && r.N > 1))
+        if (reqs != null && (reqs.Any(r => r.Composite || r.Kind == "eye" && r.At != null || r.Kind == "orbit" && r.N > 1)
+            // The same view twice at different angles ("iso yaw=0", "iso yaw=90"): one panel each, like the composite.
+            || reqs.Any(r => !r.Cam.IsEmpty) && reqs.GroupBy(r => r.Kind).Any(g => g.Count() > 1)))
             return await SeeCompositeAsync(i, reqs, target, radius, aids, direct, takeShot, ct).ConfigureAwait(false);
-        var views = i.StrList("views");
+        var views = reqs != null ? reqs.Select(r => r.Kind).ToList() : i.StrList("views");
+        // Camera adjustments per named view ("iso yaw=200 pitch=50 zoom=1.3", {"top":{"zoom":2}}); none = the fixed defaults.
+        IReadOnlyDictionary<string, CamParams>? viewParams = reqs?.Where(r => !r.Cam.IsEmpty).GroupBy(r => r.Kind)
+            .ToDictionary(g => g.Key, g => g.First().Cam, StringComparer.OrdinalIgnoreCase);
+        if (viewParams is { Count: 0 }) viewParams = null;
         if (views.Count == 0 && i.Str("view") is { Length: > 0 } v) views.Add(v);
         var bad = views.Where(x => !ContactSheet.Known.Contains(x.Trim())).ToList();
         if (bad.Count > 0) return ToolResult.Error($"unknown view '{bad[0]}' (eye, shoulder, orbit, high, iso, top, side, layers; cam/follow/eye <body>)");
@@ -505,7 +575,7 @@ public sealed partial class VisionHub
         if (!direct)
         {
             var q = string.IsNullOrWhiteSpace(question) ? DefaultQuestion : question;
-            var a = await LookAsync(focus, q, radius, views, "see", ct, player, scene, pose, aids).ConfigureAwait(false);
+            var a = await LookAsync(focus, q, radius, views, "see", ct, player, scene, pose, aids, viewParams, i.GetRawText()).ConfigureAwait(false);
             if (a == null) return ToolResult.Error("perception unavailable");
             if (a.Error != null)
                 return ToolResult.Success(Tail(a.Text) + "\n" + AsciiMap.Render(scene.Blocks, focus.X, focus.Y, focus.Z, 11,
@@ -515,10 +585,12 @@ public sealed partial class VisionHub
         // Direct mode (or no perception model): the sheet itself goes to the caller's model, under the hourly image cap.
         if (!takeShot(_time.GetUtcNow()))
             return ToolResult.Success($"image budget used ({_o.ImagesPerHour}/h); text map instead:\n" + VisionTools.LookMap(_c, 15));
-        var sheet = Sheet(focus, radius, views, player, scene, pose, aids);
+        var sheet = Sheet(focus, radius, views, player, scene, pose, aids, viewParams);
         var text = sheet.Legend + (sheet.Labels.Count > 0 ? " Labels: " + string.Join("; ", sheet.Labels.Take(6)) : "")
             + (string.IsNullOrWhiteSpace(question) ? "" : " Q: " + question);
         var stub = string.Create(CultureInfo.InvariantCulture, $"[picture omitted: see sheet r{radius} at {focus.X},{focus.Y},{focus.Z}]");
-        return ToolResult.Success(Tail(text)) with { Image = new LlmImage(sheet.Png, sheet.Width, sheet.Height, stub) };
+        var image = new LlmImage(sheet.Png, sheet.Width, sheet.Height, stub);
+        Capture(image.Data, image.Width, image.Height, "sheet", "see", "direct", ViewNames(views, viewParams), focus, radius, question, i.GetRawText(), Tail(text));
+        return ToolResult.Success(Tail(text)) with { Image = image };
     }
 }

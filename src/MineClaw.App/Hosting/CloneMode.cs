@@ -56,7 +56,8 @@ public static class CloneMode
     }
 
     public static async Task<int> RunAsync(AppCli cli, MinecraftSettings mc, AgentOptions agentOptions, BotOptions botOptions, HostSettings host,
-        HiveConfig hive, TelemetryOptions telemetryOptions, string telemetryDir, ILoggerFactory loggers, ILogger log, ShutdownSignals signals)
+        HiveConfig hive, TelemetryOptions telemetryOptions, string telemetryDir, ILoggerFactory loggers, ILogger log, ShutdownSignals signals,
+        MineClaw.Client.Versioning.GameVersionProfile? gameVersion = null)
     {
         var clone = cli.CloneName!;
         var host0 = new CloneHost(clone, cli.ParentPipe!, hive, log: loggers.CreateLogger("MineClaw.Hive"));
@@ -81,7 +82,7 @@ public static class CloneMode
         var clientLog = loggers.CreateLogger("MineClaw.Client");
         var client = new MinecraftClient(new ClientOptions
         {
-            Host = mc.Host, Port = mc.Port, Username = clone,
+            Host = mc.Host, Port = mc.Port, Username = clone, Profile = gameVersion ?? MineClaw.Client.Versioning.GameVersionProfiles.Beta181,
             AutoReconnect = true,
             AutoRespawn = !hive.OnCloneDeath.Equals("logout", StringComparison.OrdinalIgnoreCase),
             Log = m => clientLog.LogDebug("{Msg}", m),
@@ -135,6 +136,9 @@ public static class CloneMode
         };
         // The live script debugger (Explorer via main's Supervisor): a cheap snapshot of the running (or last) script; read-only.
         host0.ScriptDebug = code => MineClaw.Bot.GameTools.ScriptTools.Of(rt)?.Controller is { } sc ? (sc.Current ?? sc.Last)?.DebugSnapshot(code) : null;
+        // "What the AI saw" (Explorer via main's Supervisor): the sheets this clone's models got, and one of them as its exact PNG.
+        host0.VisionList = since => bot.Vision?.Hub is { } vh ? new MineClaw.Hive.Ipc.VisionListMsg(vh.History.Capacity, vh.History.List(null, since).ToList()) : null;
+        host0.VisionPng = id => bot.Vision?.Hub?.History.Png(id) is { } png ? new MineClaw.Hive.Ipc.VisionPngMsg(id, png) : null;
         var store = new HiveStore(rt.Db, clone);
         host0.Store = store;
         host0.RecordExperience = (key, text) =>

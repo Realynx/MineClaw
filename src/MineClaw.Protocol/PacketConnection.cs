@@ -17,7 +17,7 @@ public readonly record struct PacketTraffic(PacketDirection Direction, IPacket P
 /// <para>By default this is the client side: it reads <see cref="PacketDirection.ClientBound"/> packets and writes
 /// <see cref="PacketDirection.ServerBound"/> ones. Pass <c>inbound: ServerBound</c> to act as a server (tests).</para>
 /// </summary>
-public sealed class PacketConnection : IDisposable
+public sealed class PacketConnection : Versioning.IGameConnection
 {
     private readonly Stream _stream;
     private readonly TcpClient? _tcp;

@@ -55,6 +55,9 @@ public sealed class HiveApi : IDisposable
         "chunks" => TimeSpan.FromSeconds(10),
         "view" => TimeSpan.FromSeconds(6),
         "script" or "scripts" => TimeSpan.FromSeconds(2.5), // the live script debugger polls at 4 Hz: a slow answer is skipped, not awaited
+        "vision" => TimeSpan.FromSeconds(4),                // a clone's list goes over IPC (1.5 s there)
+        "vision_png" => TimeSpan.FromSeconds(6),
+        "vision_render" => TimeSpan.FromSeconds(12),        // one capped render thread on the server, behind a queue
         _ => TimeSpan.FromSeconds(5),
     };
 

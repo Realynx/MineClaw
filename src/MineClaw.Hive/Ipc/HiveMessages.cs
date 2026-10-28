@@ -74,6 +74,8 @@ public static class Msg
     public const string Occupied = "occupied";    // C→M      OccupiedMsg (someone else logged in as this clone: kicked, not retrying)
     public const string View = "view";            // M→C req  (no payload) → CloneViewMsg ("send me your view": flush world memory, pose)
     public const string ScriptDebug = "script_dbg"; // M→C req ScriptDebugReq → ScriptDebugSnapshot (the live script debugger; null = none)
+    public const string VisionList = "vision";    // M→C req VisionListReq → VisionListMsg (the sheets this clone's models got: "what the AI saw")
+    public const string VisionPng = "vision_png"; // M→C req VisionPngReq → VisionPngMsg (one of them: the exact PNG bytes; null = gone)
     public const string Reply = "re";
 }
 
@@ -141,6 +143,11 @@ public sealed record LendDoneMsg(int Tossed, string? Reason);
 /// <summary>A clone's live eye pose; <paramref name="Flushed"/> live columns were written/stamped in the shared world memory first.</summary>
 /// <summary>"Show me your script" (the Explorer's live debugger via main's Supervisor): <see cref="Code"/> = include the source.</summary>
 public sealed record ScriptDebugReq(bool Code);
+/// <summary>"Which pictures did your models get?" (the Explorer's vision panel via main's Supervisor): ids above <see cref="Since"/>.</summary>
+public sealed record VisionListReq(long Since = 0);
+public sealed record VisionListMsg(int Capacity, List<MineClaw.Bot.Perception.Vision.VisionSheetInfo> Sheets);
+public sealed record VisionPngReq(long Id);
+public sealed record VisionPngMsg(long Id, byte[] Png);
 public sealed record CloneViewMsg(double X, double Y, double Z, float Yaw, float Pitch, int Dim, int Flushed);
 public sealed record RecallMsg(string Reason, double? DeadlineSeconds = null);
 public sealed record ByeMsg(string Reason, bool Deposited, int Stranded);

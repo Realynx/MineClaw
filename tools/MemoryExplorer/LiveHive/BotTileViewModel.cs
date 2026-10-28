@@ -4,7 +4,8 @@ using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace MineClaw.MemoryExplorer.LiveHive;
 
-/// <summary>A view a tile can show: "eye" is rendered locally from the cached world; the rest come from the server as PNGs.</summary>
+/// <summary>A view a tile can show: "eye" is rendered locally from the cached world; "vision" is the last sheet the body's AI
+/// received (the exact bytes); the rest come from the server as PNGs.</summary>
 public sealed record TileMode(string Key, string Label, string? ServerMode)
 {
     public static readonly IReadOnlyList<TileMode> All =
@@ -15,6 +16,7 @@ public sealed record TileMode(string Key, string Label, string? ServerMode)
         new("orbit", "Orbit", "orbit"),
         new("top", "Top + roles", "top"),
         new("side", "Side", "side"),
+        new("vision", "AI's last sheet", null),
     ];
 
     public override string ToString() => Label;
@@ -55,11 +57,13 @@ public sealed partial class BotTileViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _isFocused;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsEye), nameof(IsMap))]
+    [NotifyPropertyChangedFor(nameof(IsEye), nameof(IsMap), nameof(IsVision))]
     private TileMode _mode;
 
-    public bool IsEye => Mode.ServerMode == null;
-    public bool IsMap => !IsEye;
+    public bool IsEye => Mode.Key == "eye";
+    public bool IsMap => Mode.ServerMode != null;
+    /// <summary>The tile shows what the AI saw (the body's last vision sheet) instead of a live feed.</summary>
+    public bool IsVision => Mode.Key == "vision";
 
     /// <summary>The last data (UI thread).</summary>
     public BotDto? Bot { get; private set; }
@@ -110,6 +114,13 @@ public sealed partial class BotTileViewModel : ObservableObject, IDisposable
     /// <summary>Recomputes the badge (UI thread, twice a second): link down → reconnecting; a picture older than a few seconds → stale.</summary>
     public void RefreshStale(bool linkUp, DateTime now)
     {
+        if (IsVision)
+        {
+            // A sheet is history, not a feed: say how old it is, never "stale".
+            StaleText = !linkUp ? "reconnecting…" : "";
+            VisionAge = VisionInfo is { } vi ? Ago(DateTimeOffset.UtcNow - vi.At) : "";
+            return;
+        }
         double age = IsEye ? (Eye.LastFrameAt == default ? 0 : (now - Eye.LastFrameAt).TotalSeconds) : (now - MapAt).TotalSeconds;
         StaleText = !linkUp ? (age > 2 ? $"reconnecting… · {age:0} s old" : "reconnecting…")
             : age > (IsEye ? 3 : 5) ? $"stale {age:0} s" : "";
@@ -132,5 +143,32 @@ public sealed partial class BotTileViewModel : ObservableObject, IDisposable
         ScriptBadge = name == null ? "" : $"script {name}" + (paused ? " · paused" : line > 0 ? $" · L{line}" : "");
     }
 
-    public void Dispose() => MapImage?.Dispose();
+    // ------------------------------------------------------------------ "AI's last sheet" (VisionTilePoller)
+
+    [ObservableProperty] private Bitmap? _visionImage;
+    [ObservableProperty] private string _visionCaption = "";
+    [ObservableProperty] private string _visionAge = "";
+    [ObservableProperty] private bool _visionEmpty = true;
+    /// <summary>The sheet on the tile (null = none yet).</summary>
+    public VisionSheetDto? VisionInfo { get; private set; }
+
+    /// <summary>The body's newest sheet (decoded off the UI thread; UI thread here).</summary>
+    public void SetVision(VisionSheetDto info, Bitmap? bmp)
+    {
+        var old = VisionImage;
+        VisionImage = bmp;
+        old?.Dispose();
+        VisionInfo = info;
+        VisionEmpty = false;
+        VisionCaption = $"{info.Kind} → {(info.Mode == "perception" ? "perception" : "brain")} · {string.Join(", ", (info.Views ?? []).Take(6))} · ~{info.Tokens} tok";
+        VisionAge = Ago(DateTimeOffset.UtcNow - info.At);
+    }
+
+    private static string Ago(TimeSpan t) => t.TotalSeconds < 60 ? $"{Math.Max(0, t.TotalSeconds):0} s ago" : t.TotalMinutes < 60 ? $"{t.TotalMinutes:0} min ago" : $"{t.TotalHours:0.#} h ago";
+
+    public void Dispose()
+    {
+        MapImage?.Dispose();
+        VisionImage?.Dispose();
+    }
 }
