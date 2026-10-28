@@ -175,6 +175,12 @@ public static class BuildBlocks
             return FrontMeta(((Dir[])[Dir.North, Dir.South, Dir.West, Dir.East])[meta - 2].Turn(quarters));
         if (id == Blocks.FenceGate)
             return GateMeta(((Dir[])[Dir.South, Dir.West, Dir.North, Dir.East])[meta & 3].Turn(quarters)) | (meta & 4);
+        // BlockTorch: 1..4 = the wall on the west/east/north/south (5 = floor); BlockTrapdoor: 0..3 = the wall south/north/east/
+        // west (+4 open); BlockPumpkin: the placer's yaw quarter (+1 per clockwise turn).
+        Dir[] torchWalls = [Dir.West, Dir.East, Dir.North, Dir.South], trapWalls = [Dir.South, Dir.North, Dir.East, Dir.West];
+        if (id == Blocks.Torch && meta is >= 1 and <= 4) return Array.IndexOf(torchWalls, torchWalls[meta - 1].Turn(quarters)) + 1;
+        if (id == Blocks.Trapdoor) return Array.IndexOf(trapWalls, trapWalls[meta & 3].Turn(quarters)) | (meta & 4);
+        if (id is Blocks.Pumpkin or Blocks.JackOLantern) return ((meta + quarters) % 4 + 4) % 4;
         return meta;
     }
 

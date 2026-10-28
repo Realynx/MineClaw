@@ -28,13 +28,18 @@ public sealed class BlueprintWiring
 
     public const string DesignDescription =
         "Design a build from a wish: drafted, checked and previewed in the background; summary+bill go to chat. Builds only on a " +
-        "trusted player's go (resuming an approved one needs none). op new{what,at?} revise{id,what} build{id,at?,bodies?|crew?} show{id,image?} list cancel{id} undo{id} delete{id}: undo takes down only its placed blocks; delete also drops its plan";
+        "trusted player's go (resuming an approved one needs none). op new{what,at?} revise{id,what} build{id,at?,bodies?|crew?} show{id,image?} list cancel{id} undo{id} delete{id} capture{name,at?|corners?}: undo takes down only its placed blocks; delete also drops its plan; " +
+        "capture saves a standing build as a design (read-only; corners \"x,y,z x,y,z\", default the speaker's spot)";
 
     public required BlueprintService Service { get; init; }
     /// <summary>Set after vision is wired (roles, atlas, perception for the critique).</summary>
     public VisionWiring.Result? Vision { get; set; }
     /// <summary>The bodies a build is split across. Default: this bot's own body (the multi-body host replaces it).</summary>
     public IBuildCrew Crew { get; set; } = null!;
+    /// <summary>design capture (<see cref="DesignCapture.Op"/>): (input, speaker) → the one-line result.</summary>
+    internal Func<JsonElement, string?, ToolResult>? CaptureOp { get; set; }
+    /// <summary>"my house" (speaker) → the captured design it names, or null (<see cref="DesignCapture.Resolve"/>).</summary>
+    internal Func<string, string?, BlueprintRecord?>? Owned { get; set; }
 
     private readonly List<(string Player, string Text, DateTimeOffset At)> _consumed = new();
 
@@ -86,6 +91,9 @@ public sealed class BlueprintWiring
         // walls/fluids (self-placed or not: digging one can spill lava/water).
         service.KeepOnUndo = (p, id) => protection.Marks?.NeverAt(p, client.World.Dimension) != null
             || protection.IsDigCell?.Invoke(p) != true && protection.IndexerKind?.Invoke(p) == WorldIndex.IndexKinds.Generator;
+        wiring.CaptureOp = (input, who) => DesignCapture.Op(input, who, service, client, rt.Memory, () => wiring.Vision?.Hub,
+            exclude: p => protection.IndexerKind?.Invoke(p) == WorldIndex.IndexKinds.Generator, protectionChanged: protection.Invalidate, time: clock);
+        wiring.Owned = (text, who) => DesignCapture.Resolve(store, rt.Memory, text, who);
         wiring.RegisterTools(rt);
         wiring.WrapDelegate(rt);
         wiring.AttachChat(rt, log);
@@ -121,7 +129,7 @@ public sealed class BlueprintWiring
     private void RegisterTools(AgentRuntime rt)
     {
         rt.Tools.Register(DesignTool, DesignDescription,
-            ToolSchema.Create().Str("op", enumValues: ["new", "revise", "build", "show", "list", "cancel", "undo", "delete"], required: false)
+            ToolSchema.Create().Str("op", enumValues: ["new", "revise", "build", "show", "list", "cancel", "undo", "delete", "capture"], required: false)
                 // bodies/crew (op build) are read by name, documented in the description only (brain budget, ToolBudgets.Brain).
                 .Str("what", required: false).Str("at", required: false).Str("id", required: false).Bool("image", required: false).Build(),
             (input, ct) => Task.FromResult(Design(input)), tiers: ToolTiers.Main, maxResultChars: 600);
@@ -262,7 +270,8 @@ public sealed class BlueprintWiring
         var op = (input.Str("op") ?? (input.Str("id") != null && input.Str("what") != null ? "revise" : "new")).Trim().ToLowerInvariant();
         var speaker = TurnContext.Current?.Speaker;
         var id = Id(input, "id");
-        BlueprintRecord? Rec() => id is { Length: > 0 } ? Service.Store.Find(id) : Service.Pending(speaker) ?? Service.Store.List(1).FirstOrDefault();
+        // "my house" → the captured design it names (its remembered structure's link), before the store's name search.
+        BlueprintRecord? Rec() => id is { Length: > 0 } ? Owned?.Invoke(id, speaker) ?? Service.Store.Find(id) : Service.Pending(speaker) ?? Service.Store.List(1).FirstOrDefault();
         switch (op)
         {
             case "new":
@@ -294,7 +303,7 @@ public sealed class BlueprintWiring
                         return Service.StartBuild(rec.Id, null) is { } why ? ToolResult.Error(why)
                             : ToolResult.Success(Service.WithRules(rec.Id, $"building #{rec.Id} \"{rec.Name}\" (resuming; {rec.AcceptedBy} approved it)"));
                     if (!Service.IsTrusted(speaker)) return ToolResult.Error($"a build needs a trusted player's go ({string.Join("/", rt_Trusted())}); {speaker ?? "nobody"} asked");
-                    if (rec.Status is DesignStatus.Built || moving && rec.Status is not DesignStatus.Review)
+                    if (rec.Status is DesignStatus.Built or DesignStatus.Captured || moving && rec.Status is not DesignStatus.Review)
                     {
                         var (_, text) = Service.Reuse(rec, input.Str("at"), speaker!, crew);
                         return text.StartsWith("error", StringComparison.Ordinal) ? ToolResult.Error(text[7..]) : ToolResult.Success(text);
@@ -312,6 +321,9 @@ public sealed class BlueprintWiring
                         res = res with { Image = new LlmImage(png, img.W, img.H, $"[design #{rec.Id} preview]") };
                     return res;
                 }
+            case "capture":
+                // Read-only: memorize a standing build as a design (any speaker; rebuilding it still needs a trusted go).
+                return CaptureOp?.Invoke(input, speaker) ?? ToolResult.Error("capture isn't wired");
             case "list":
                 {
                     var list = Service.Store.List(6);
@@ -339,7 +351,7 @@ public sealed class BlueprintWiring
                         : ToolResult.Success($"deleting #{rec.Id} \"{rec.Name}\": taking down the {n} block{(n == 1 ? "" : "s")} it placed, then its plan; a [task] names what came down");
                 }
         }
-        return ToolResult.Error("op: new|revise|build|show|list|cancel|undo|delete");
+        return ToolResult.Error("op: new|revise|build|show|list|cancel|undo|delete|capture");
     }
 
     private Func<IReadOnlyList<string>> _trusted = () => [];

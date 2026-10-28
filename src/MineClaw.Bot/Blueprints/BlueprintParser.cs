@@ -27,7 +27,7 @@ namespace MineClaw.Bot.Blueprints;
 /// </summary>
 public static partial class BlueprintParser
 {
-    public const int MaxSide = 24, MaxHeight = 32;
+    public const int MaxSide = 32, MaxHeight = 32; // 32: a captured build (StructureCapture); the author is asked for ≤ 24
 
     [GeneratedRegex(@"^(\d+)\s*[x×*]\s*(\d+)\s*[x×*]\s*(\d+)$", RegexOptions.IgnoreCase)]
     private static partial Regex SizeRx();

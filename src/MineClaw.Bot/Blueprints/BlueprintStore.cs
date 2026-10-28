@@ -10,7 +10,10 @@ public static class DesignStatus
         Failed = "failed", Cancelled = "cancelled",
         /// <summary>Deleted by a trusted player (design delete): its blocks taken down, its plans gone, hidden from lists; the row
         /// (DSL history) stays for audit.</summary>
-        Deleted = "deleted";
+        Deleted = "deleted",
+        /// <summary>Memorized from an existing build (design capture): approved for reuse by whoever captured it; built only as a
+        /// copy elsewhere (design build{id, at}), never on top of the original unless asked.</summary>
+        Captured = "captured";
 }
 
 /// <summary>A saved design (shared db: every hive process sees it; "build another one like the hut" reuses it).</summary>
@@ -138,7 +141,7 @@ public sealed class BlueprintStore
         var s = idOrName.Trim().TrimStart('#');
         if (long.TryParse(s, out var id)) return Get(id);
         lock (_db.Gate)
-            return _db.Query($"SELECT {Cols} FROM blueprints WHERE (name LIKE $q OR description LIKE $q) AND status<>'deleted' ORDER BY (status IN ('built','accepted','building','review')) DESC, id DESC LIMIT 1",
+            return _db.Query($"SELECT {Cols} FROM blueprints WHERE (name LIKE $q OR description LIKE $q) AND status<>'deleted' ORDER BY (status IN ('built','accepted','building','review','captured')) DESC, id DESC LIMIT 1",
                 Map, ("$q", "%" + s + "%")).FirstOrDefault();
     }
 

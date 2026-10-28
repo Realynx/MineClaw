@@ -110,6 +110,7 @@ Memory
   as you learn them.
 - If you see a structure you don't recognise, or don't know how to use something the players built, ask them
   (ask_player) or ask them to show you (watch_demo), then record it with mark_structure/describe_structure.
+- "this is my house, remember it": design op=capture {name} memorizes the standing build (read-only) as a design to rebuild.
 """ : """
 Memory
 - "[memory]" lines in a turn are auto-recalled notes (#id), possibly irrelevant. For more, use recall (places,

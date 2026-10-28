@@ -180,7 +180,12 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
   `Chat:OtherBots` bot, using its learned command prefix ("c " once 2 of a player's "c ..." lines got robinchan answers within 5 s;
   `CommandPrefixesOf`) or answered by it puts the player in that bot's thread for `ReplyWindowSeconds`; unnamed follow-ups stay
   there (`continues with robinchan`; no waiter takes them; Background note "kiwi is instructing robinchan: ...") unless the
-  player addressed us since, looks at us, or it's a help call (`AddressingText.IsHelpCall`). Our own talk doesn't take it back. Still unsure, from a regular, near the bot
+  player addressed us since, looks at us, or it's a help call (`AddressingText.IsHelpCall`). Our plain talk doesn't take it back;
+  an **open request** does (recency): our last line to them asked/told them something (`IsRequestLine`, `OpenRequestSeconds`
+  120 s, closed by their reply) or an ask_player waiter is pending, newer than the bot's thread, and their last line wasn't to
+  the bot → `AnswerToUs` (also beats "unclear, another bot around"). Known prefixes (learned, a trusted player's "when I say c,
+  I'm talking to robinchan" in chat/rules/claims, or the bot's own "say c help") persist in db `command_prefixes`
+  (`CommandPrefixStore`) and route even while that bot is offline. Still unsure, from a regular, near the bot
   or in a thread: ONE tiny Haiku yes/no (`AddressClassifier`, ≤30/h). `Addressing` counts continuity/imperative/classifier hits and
   misses (an ignored line the player then repeats by name). Outgoing guards in `SayAsync`: one food ask per player per 10 min,
   one greeting per player per 3 min, startup chatter ≤2 lines until someone talks to the bot.
@@ -313,11 +318,6 @@ the rules + the SDK reference generated from the code + three worked examples (�
   never to a live run. Feedback is the same compact `lint errors (fix and resubmit): L3 …` text.
 - **Telemetry**: per run: actions, active time, items gained, effective params, per-action timing (`ActionTiming`: calls, fails,
   total time — "gen 12x 31.2s"), language, body, machine state and transitions (log line, `ScriptRunRecord`, `ParamRuns`).
-- **Mined from the saved library** (data/alice-snap, 16 unique scripts, 133 lines): bounded repeat wrapper 16/16; deposit to a
-  chest + expect 14/16; hard-coded chest/cell coordinates 14/16 (→ params); gen mining loop 13/16 (9 near-duplicates differing
-  only in the cell → `mineGen` + params); ensure a pickaxe 12/16; room(n) 12/16; inventory-full check 12/16; cp mine/store
-  phases 8/16; retry(3, gen) 7/16; "mined nothing" guard 5/16; low-hp retreat 2/16; busy-cell fallback, fight at night, chop +
-  replant with a spot list, deliver to a player, wake when done 1/16 each. Wheat harvest, wait-for-day and fight-then-resume
 - **Live debugger** (`ScriptSession.Debug.cs`, `Runtime/Js/JsRuntime.Debug.cs`; the Explorer's Live Hive panel, read-only):
   `ScriptSession.DebugSnapshot(code)` (any thread, never blocks the script) → `ScriptDebugSnapshot`: current line/column (live
   while it steps), call stack, action in flight with args and timings per action kind, params/args, checkpoint, pause state and
@@ -330,6 +330,11 @@ the rules + the SDK reference generated from the code + three worked examples (�
   ≈ 0-1 % on a 4 M-statement benchmark, `ScriptDebugTests`; `Scripting:DebugProbe=false` removes even that); a snapshot request
   takes a 3 s lease (`WatchLease`) during which the script thread samples stack/locals/blackboard at ≤ 5 Hz (≈ 5 %). Clones answer
   over the `script_dbg` IPC request. Pause/resume from the panel is a TODO (an admin write; `ScriptDebugSnapshot.Controls`).
+- **Mined from the saved library** (data/alice-snap, 16 unique scripts, 133 lines): bounded repeat wrapper 16/16; deposit to a
+  chest + expect 14/16; hard-coded chest/cell coordinates 14/16 (→ params); gen mining loop 13/16 (9 near-duplicates differing
+  only in the cell → `mineGen` + params); ensure a pickaxe 12/16; room(n) 12/16; inventory-full check 12/16; cp mine/store
+  phases 8/16; retry(3, gen) 7/16; "mined nothing" guard 5/16; low-hp retreat 2/16; busy-cell fallback, fight at night, chop +
+  replant with a spot list, deliver to a player, wake when done 1/16 each. Wheat harvest, wait-for-day and fight-then-resume
   weren't in the library yet but are the brain's common asks: `harvestFarm`, `waitForDay`, `defendIfAttacked`/`guardArea`.
 - **Speed** (hand-written equivalents of five representative jobs, before = Lua with the old prelude, after = JS + SDK;
   `Js/SpeedComparisonTests`; tokens = chars/3.5): gen mining loop 19 → 4 lines (238 → 68 output tokens), wheat harvest 11 → 8
@@ -397,6 +402,24 @@ The `eat` tool (so scripts' eat and `keepFed`), `ensure('food')`, skills' eat, t
   construction; a change line from the requester or a trusted player revises; the consumed line reaches the brain as background only.
   Designs persist (`blueprints`, `blueprint_builds` tables); `design op=build id at` = "another one like the hut" (trusted). The
   supervisor serves `/api/blueprints`, `/api/blueprints/{id}` (bill/eval/DSL/progress) and `/view/blueprint/{id}` (PNG) + a Designs panel.
+- **Capture** ("this is my house, memorize it": `design capture{name, at?|corners?}`, any speaker, read-only; `StructureCapture` +
+  `DesignCapture`). Region: two corners ("x,y,z x,y,z"), a remembered structure's box (`at` = its name), or a flood fill from the
+  speaker's feet / a pointed block: 26-connected over building blocks above the floor they stand on (the block under their feet;
+  else the cell under the seed's run of building blocks), never terrain (grass, dirt, ores, fluids, plants, leaves, a living
+  tree's logs, a generator's walls), then the floor layer under that footprint (a thick island's stone isn't a floor); capped
+  at 32×32×32 per axis (the parser's `MaxSide` is 32; the author is still asked for ≤ 24) and `MaxBlocks`. Unknown (unloaded)
+  cells over 5% of the box refuse; stale (remembered) ones are reported. The DSL is drawn as it stands (`facing south`, `origin`
+  = the min corner, raw metas `wooden_door:3`, `oak_stairs:1`, `torch:2`; upper door halves derived; '.' = interior air between
+  a column's lowest and highest captured block, '_' elsewhere; no 'L' symbol, so no row reads as `light`), stand-ins named (lit
+  furnace → furnace, double slab → its full block, redstone torch → torch), unbuildables skipped and named (beds, signs, rails),
+  chest contents never; a door on the captured floor gets its doorstep (the ground in front, as dirt) since a copy stands one
+  above its site. Verified by parsing it back: every captured cell's id and meta, or the capture is refused. Saved with status
+  `captured` (accepted by its capturer; the worker's `build{bp}` refuses it), the preview and the bill from nothing; one line:
+  "captured 'Fox's house' as design #11: 7×6×5, 138 blocks (palette: …); bill to rebuild: …". The remembered structure (kind
+  build, owner, "captured as design #11" in its note) soft-protects it as the owner's build; blocks a bot placed there leave
+  the placed log. "my house"/"Fox's house" resolves to the design (`design show/build{id:"my house"}`). Rebuild = `Reuse` (a
+  trusted go, the gate, crew lanes, climbing, the Obtainer as for any design), never overlapping the original's box unless
+  `at:"in place"`. `BuildBlocks.Rotate` turns torches (1..4), trapdoors and pumpkins too, so "turn it" keeps them on their walls.
 - **Construction** (`ConstructionExecutor` running the slicer's `BuildPlan`, as a body job via the hidden `build` tool; scripts call `build({bp,
   part, of, layer})`, `build({bp, undo: true})` and `blueprint(id)`). The **slicer** (`Bot/Building/BuildPlanner`, zero tokens) turns the
   voxels into steps like a 3D printer: obstructions first, then layer by layer, support-first, nearest by real path cost. Each step has
@@ -427,7 +450,12 @@ The `eat` tool (so scripts' eat and `keepFed`), `ensure('food')`, skills' eat, t
   (13 to climb: 11 pillar, 2 stair)") and fetched with the cobblestone. Over the void the scaffold-distance rule is unchanged.
   Only when no climb is possible is a cell "no stand: above my reach (I can't climb: every pillar or stair spot near it is
   beside the void | no room … | climbing is off)" (`Bot:Blueprints:Climb`). Design #4 (16×16×16 drop tower on Fox's 8×8 floor)
-  replays complete: 689 placed, pillars inside the shaft. Every build/lane result, the `[task]` text, `design show` ("can't place N: …")
+  replays complete: 689 placed, pillars inside the shaft. My own scaffold still up in a design air cell (the shaft's pillar) is
+  the climb, never an obstruction to clear first (live 10-28 14:55 each re-plan dug it out from under the body: stranded in the
+  shaft, "49 no stand", "won't dig the block I'm standing on"); an obstruction the body stands on is cleared after the placements.
+  A pillar that walks onto the design's floor is scored by everything reachable up there (one climb up the shaft, then the
+  platform grows ring by ring from its own cells), and a stand beside a drop onto solid ground is a sneak-edge stand
+  (`Technique.Edge`: the client's EdgeGuard sneaks and cancels unverified jumps); beside the void the rules are unchanged. Every build/lane result, the `[task]` text, `design show` ("can't place N: …")
   and the restart notice carry them grouped in one line (`BuildSkips`): "placed 4, 685 missing — 673 waiting on supports e.g.
   -27,72,13; 12 no stand: above my reach (I can't climb) e.g. -27,71,13; 0 protected" (live 10-28: the drop tower said only
   "placed 0, 689 missing" for hours: its 16-high walls were out of reach from the floor and everything else rested on them).
@@ -449,7 +477,12 @@ The `eat` tool (so scripts' eat and `keepFed`), `ensure('food')`, skills' eat, t
   start edge and main axis, then the build pauses and asks once in landmark terms. There is no default: a timeout stays paused,
   and a restart asks again. A trusted yes continues. "wrong way" / "turn it" / "flip it" / "move 2 east" takes the gate blocks
   down, transforms the plan (`PlanTransform`, about the first gate block) and gates again. "undo" takes down everything the build
-  placed. **Anchoring** (`SiteAnchor`) uses what the player referenced: "here" means the requester's feet and facing; "the 8x8
+  placed (its own recorded placements only, never a protected block or a generator's walls/fluids, refunded). The brain's
+  `design undo{id}` does the same (the plan reset), `design delete{id}` (a trusted player's word) also drops every plan and
+  lane and marks the design deleted (hidden from lists, DSL kept); the worker's `build{bp, undo|delete:true}`. A gate "no"
+  names the blocks standing ("gate blocks at …; undo with design undo{id=9}") and holds the build for that player
+  (`Gate.HeldBy`): never resumed or offered as "no second go needed" until a trusted go; a copy at a new site cancels the
+  original's unfinished build and names its blocks still standing. **Anchoring** (`SiteAnchor`) uses what the player referenced: "here" means the requester's feet and facing; "the 8x8
   floor" or "the end of the bridge" means the newest self-placed build near them (its floor, found by morphological opening). The
   footprint snaps to that extent, and a size mismatch is asked in the summary, which names the anchor rather than a nearby landmark.
   Supervisor: `/view/buildplan/{id}` (numbered steps coloured by technique, scaffold dashed, columns, progress, gate) and
@@ -741,11 +774,6 @@ supervisor's slots and leases) and `/api/events` (dangers, kicks, deaths, hive n
 thread, ≥120 ms apart, a bounded queue (503 when full), single-threaded eye raycasts, ~1 s render cache. Optional shared-secret
 token (header or `?token=`), never logged.
 
-**Someone else on a clone's account** (a player's viewer). b1.8.1 kicks the older session with "You logged in from another
-location", so the hive never fights a login: (a) an offline slot whose name is on main's tab list (0xC9) or spawned as a player
-is skipped before launch ("slot 1337 is in use by a player's viewer", told once); (b) a clone kicked that way sends `occupied`,
-stops its client's auto-reconnect and exits 76; main records its items as stranded, does not restart it, leaves the slot alone
-for `Hive:ExternalLoginCooldownMinutes` (10) and tells the brain (MustWake when its task was unfinished).
 **Scripts** (`SupervisorScriptRoutes` + `LiveScriptData`; GET only, 403 without the token since they carry source and live
 values): `/api/scripts` (the saved library from the shared routines rows: versions, language, author kind opus/migration/legacy,
 params with defaults and saved tuning, last run, success rate, timings, lint with the bot's real game functions, the bodies whose
@@ -756,6 +784,11 @@ standing order runs it — `Agent/Routines/ScriptLibraryReport`, also what the E
 IPC with a 1.5 s timeout; one probe per body per 150 ms however many viewers ask). The Explorer polls it at 4 Hz while its
 debugger panel is open (HiveApi timeouts and back-off, "stale" after 2 s without a snapshot).
 
+**Someone else on a clone's account** (a player's viewer). b1.8.1 kicks the older session with "You logged in from another
+location", so the hive never fights a login: (a) an offline slot whose name is on main's tab list (0xC9) or spawned as a player
+is skipped before launch ("slot 1337 is in use by a player's viewer", told once); (b) a clone kicked that way sends `occupied`,
+stops its client's auto-reconnect and exits 76; main records its items as stranded, does not restart it, leaves the slot alone
+for `Hive:ExternalLoginCooldownMinutes` (10) and tells the brain (MustWake when its task was unfinished).
 
 ## Memory shards (Agent/Admin/Shards + tools/MemoryExplorer Shards page)
 

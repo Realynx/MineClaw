@@ -326,8 +326,10 @@ public sealed class BlueprintService
     public (BlueprintRecord? Copy, string Text) Reuse(BlueprintRecord source, string? at, string by, CrewRequest? crew = null)
     {
         if (!IsTrusted(by)) return (null, $"only {string.Join(" or ", Trusted().Take(2))} can start a build");
-        var (site, err) = ResolveSite(at, by);
+        // A captured build is copied elsewhere; over its original only when asked ("in place": a repair).
+        var (site, err) = DesignCapture.InPlace(source, at) is { } inPlace ? (inPlace, null) : ResolveSite(at, by);
         if (site == null) return (null, "error: " + (err ?? "no site"));
+        if (DesignCapture.OnTopOfOriginal(source, at, site.Ground) is { } onTop) return (null, "error: " + onTop);
         var (bp, _) = BlueprintParser.Parse(source.Dsl);
         bp.Origin = null; // the new site decides
         var copy = Store.Insert(new BlueprintRecord
