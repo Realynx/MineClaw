@@ -21,10 +21,22 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
     public IGameClient Inner => inner;
     public IClaimBoard Claims => claims;
 
+    /// <summary>A refusal without a holder is an unanswered request (IPC timeout): main may still grant it late, which would
+    /// leave a lease nobody releases (live 10-28: one clone ended up holding two gen cells). Undo it; a release is idempotent.</summary>
+    private async Task<ActionResult> Refused(ClaimKey key, ClaimResult r)
+    {
+        if (r.Holder == null)
+        {
+            try { await claims.ReleaseAsync(key, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { /* expires anyway */ }
+            return ActionResult.Fail($"busy: the claim board didn't answer for {key.Kind.ToString().ToLowerInvariant()} {key.Min.X},{key.Min.Y},{key.Min.Z} ({r.Message ?? "no answer"}); try again");
+        }
+        return ActionResult.Fail($"busy: {r.Holder} is using {key.Kind.ToString().ToLowerInvariant()} {key.Min.X},{key.Min.Y},{key.Min.Z}");
+    }
+
     private async Task<ActionResult> Held(ClaimKey key, Func<Task<ActionResult>> action, CancellationToken ct)
     {
         var r = await claims.TryClaimAsync(key, Ttl, null, ct).ConfigureAwait(false);
-        if (!r.Ok) return ActionResult.Fail($"busy: {r.Holder ?? "another bot"} is using {key.Kind.ToString().ToLowerInvariant()} {key.Min.X},{key.Min.Y},{key.Min.Z}");
+        if (!r.Ok) return await Refused(key, r).ConfigureAwait(false);
         try { return await action().ConfigureAwait(false); }
         finally
         {
@@ -36,7 +48,7 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
     private async Task<ActionResult> HeldRenewing(ClaimKey key, Func<Task<ActionResult>> action, CancellationToken ct)
     {
         var r = await claims.TryClaimAsync(key, Ttl, null, ct).ConfigureAwait(false);
-        if (!r.Ok) return ActionResult.Fail($"busy: {r.Holder ?? "another bot"} is using {key.Kind.ToString().ToLowerInvariant()} {key.Min.X},{key.Min.Y},{key.Min.Z}");
+        if (!r.Ok) return await Refused(key, r).ConfigureAwait(false);
         using var stop = new CancellationTokenSource();
         var renew = Task.Run(async () =>
         {
@@ -83,17 +95,37 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
     public Task<ActionResult> PlaceVariantAsync(int x, int y, int z, int itemId, int? damage, BlockFace? face, CancellationToken ct = default) =>
         Held(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.PlaceVariantAsync(x, y, z, itemId, damage, face, ct), ct);
     public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, CancellationToken ct = default) =>
-        HeldRenewing(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.HarvestGeneratorAsync(x, y, z, count, ct), ct);
+        GenHeld(new BlockPos(x, y, z), p => inner.HarvestGeneratorAsync(p.X, p.Y, p.Z, count, ct), ct);
     public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, BlockPos? stand, CancellationToken ct = default) =>
-        HeldRenewing(ClaimKey.Block(x, y, z, inner.World.Dimension), () => inner.HarvestGeneratorAsync(x, y, z, count, stand, ct), ct);
+        GenHeld(new BlockPos(x, y, z), p => inner.HarvestGeneratorAsync(p.X, p.Y, p.Z, count, p == new BlockPos(x, y, z) ? stand : null, ct), ct);
     /// <summary>Hive: one cell per bot (the leased one). Rotating through unleased cells would put two bots on one cell
     /// (live 21:44 "my clone partner was using the cell at 4,64,6 at the same time"); the other cells are for the other bots.</summary>
     public Task<ActionResult> HarvestGeneratorAsync(IReadOnlyList<BlockPos> cells, int count, BlockPos? stand, CancellationToken ct = default)
     {
         if (cells.Count == 0) return Task.FromResult(ActionResult.Fail("no generator cell given"));
         var first = cells[0];
-        return HeldRenewing(ClaimKey.Block(first.X, first.Y, first.Z, inner.World.Dimension),
-            () => inner.HarvestGeneratorAsync([first], count, stand, ct), ct);
+        return GenHeld(first, p => inner.HarvestGeneratorAsync([p], count, p == first ? stand : null, ct), ct);
+    }
+
+    private readonly object _genLock = new();
+    private BlockPos? _genCell;
+
+    /// <summary>The generator cell this bot holds right now (its one cell), or null.</summary>
+    public BlockPos? GenCell { get { lock (_genLock) return _genCell; } }
+
+    /// <summary>
+    /// At most ONE gen cell per bot (live 10-28 02:07: 1337 held 4,64,6 and 5,64,7, main's job found no free cell and 67 mined
+    /// 0 in 3 min). A gen run nested inside another one (re-tooling mines cobble for a new pickaxe) digs the cell already held
+    /// instead of leasing a second; a new run on another cell starts only after the previous lease is released.
+    /// </summary>
+    private async Task<ActionResult> GenHeld(BlockPos cell, Func<BlockPos, Task<ActionResult>> run, CancellationToken ct)
+    {
+        BlockPos? held;
+        lock (_genLock) held = _genCell;
+        if (held is { } h) return await run(h).ConfigureAwait(false); // nested: same bot, same cell, lease already renewing
+        lock (_genLock) _genCell = cell;
+        try { return await HeldRenewing(ClaimKey.Block(cell.X, cell.Y, cell.Z, inner.World.Dimension), () => run(cell), ct).ConfigureAwait(false); }
+        finally { lock (_genLock) if (_genCell == cell) _genCell = null; }
     }
 
     // ---- forwarded ----

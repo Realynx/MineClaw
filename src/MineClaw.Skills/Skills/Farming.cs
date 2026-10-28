@@ -1,8 +1,103 @@
 using System.Text.Json;
 using MineClaw.Data;
 using MineClaw.World;
+using MineClaw.World.Claims;
 
 namespace MineClaw.Skills;
+
+/// <summary>
+/// One farm field: the crops and farmland connected to the nearest one (gaps of one block, e.g. a water row, still join), so
+/// every bot finds the same field wherever it stands. Cut into strips across its long axis: the unit a crew splits by.
+/// </summary>
+internal sealed class FarmField
+{
+    public required List<BlockPos> Crops { get; init; }
+    public required List<BlockPos> Soil { get; init; }
+    public int MinX, MaxX, MinY, MaxY, MinZ, MaxZ;
+    private bool AlongX => MaxX - MinX >= MaxZ - MinZ;
+
+    /// <summary>A strip of the field with its lease key (the full field height ±1).</summary>
+    public sealed record Strip(int Index, ClaimKey Key)
+    {
+        public Vec3d Centre => new((Key.Min.X + Key.Max.X) / 2.0 + 0.5, Key.Min.Y + 1, (Key.Min.Z + Key.Max.Z) / 2.0 + 0.5);
+    }
+
+    public const int StripWidth = 3;
+    private const int MaxCells = 2048;
+
+    public static FarmField Find(WorldState w, Vec3d feet, double radius)
+    {
+        static bool Farm(int id) => id is Blocks.Crops or Blocks.Farmland;
+        var seed = w.FindBlocks(feet, radius, (id, _) => Farm(id), 1);
+        var seen = new HashSet<BlockPos>();
+        if (seed.Count > 0)
+        {
+            var queue = new Queue<BlockPos>();
+            queue.Enqueue(seed[0].Pos);
+            seen.Add(seed[0].Pos);
+            while (queue.Count > 0 && seen.Count < MaxCells)
+            {
+                var p = queue.Dequeue();
+                for (int dx = -2; dx <= 2; dx++)
+                for (int dz = -2; dz <= 2; dz++)
+                for (int dy = -1; dy <= 1; dy++)
+                {
+                    var n = p.Offset(dx, dy, dz);
+                    if ((dx | dy | dz) == 0 || seen.Contains(n) || !Farm(w.GetBlock(n.X, n.Y, n.Z))) continue;
+                    seen.Add(n);
+                    queue.Enqueue(n);
+                }
+            }
+        }
+        var crops = seen.Where(p => w.GetBlock(p.X, p.Y, p.Z) == Blocks.Crops).ToList();
+        var soil = seen.Where(p => w.GetBlock(p.X, p.Y, p.Z) == Blocks.Farmland).ToList();
+        var f = new FarmField { Crops = crops, Soil = soil };
+        if (seen.Count > 0)
+        {
+            f.MinX = seen.Min(p => p.X); f.MaxX = seen.Max(p => p.X);
+            f.MinY = seen.Min(p => p.Y); f.MaxY = seen.Max(p => p.Y);
+            f.MinZ = seen.Min(p => p.Z); f.MaxZ = seen.Max(p => p.Z);
+        }
+        return f;
+    }
+
+    /// <summary>Strips <see cref="StripWidth"/> rows wide across the long axis (claim-based crew split).</summary>
+    public List<Strip> Strips()
+    {
+        int lo = AlongX ? MinX : MinZ, hi = AlongX ? MaxX : MaxZ;
+        var list = new List<Strip>();
+        for (int a = lo, i = 0; a <= hi; a += StripWidth, i++) list.Add(Band(i, a, Math.Min(hi, a + StripWidth - 1)));
+        return list;
+    }
+
+    /// <summary><paramref name="n"/> near-equal bands along the long axis (a fixed i/n share each; some empty if n &gt; length).</summary>
+    public List<Strip> Bands(int n)
+    {
+        int lo = AlongX ? MinX : MinZ, len = (AlongX ? MaxX : MaxZ) - lo + 1;
+        var list = new List<Strip>();
+        for (int i = 0; i < n; i++)
+        {
+            int a = lo + i * len / n, b = lo + (i + 1) * len / n - 1;
+            if (b >= a) list.Add(Band(i, a, b));
+            else list.Add(new Strip(i, ClaimKey.Area(new BlockPos(int.MaxValue, 0, int.MaxValue), new BlockPos(int.MaxValue, 0, int.MaxValue))));
+        }
+        return list;
+    }
+
+    private Strip Band(int i, int a, int b) => new(i, AlongX
+        ? ClaimKey.Area(new BlockPos(a, MinY - 1, MinZ), new BlockPos(b, MaxY + 1, MaxZ))
+        : ClaimKey.Area(new BlockPos(MinX, MinY - 1, a), new BlockPos(MaxX, MaxY + 1, b)));
+
+    /// <summary>"2/3" (or "2 of 3") → (2, 3); null when absent or malformed.</summary>
+    public static (int I, int N)? ParsePart(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return null;
+        var m = System.Text.RegularExpressions.Regex.Match(s, @"^\s*(\d+)\s*(?:/|of)\s*(\d+)\s*$");
+        if (!m.Success) return null;
+        int i = int.Parse(m.Groups[1].Value), n = int.Parse(m.Groups[2].Value);
+        return n is >= 1 and <= 16 && i >= 1 && i <= n ? (i, n) : null;
+    }
+}
 
 internal static class FarmOps
 {
@@ -18,13 +113,17 @@ internal static class FarmOps
     /// gets a seed (two passes: a placement the server rejected is retried once), then the field is counted from the world.
     /// Text: "; field: 24/24 farmland planted" or "; field: 21/24 planted, 3 empty: out of seeds".
     /// </summary>
-    public static async Task<(int Planted, string Text)> FillFieldAsync(SkillContext ctx, IReadOnlyList<BlockPos> crops, int radius, CancellationToken ct)
+    public static async Task<(int Planted, string Text)> FillFieldAsync(SkillContext ctx, IReadOnlyList<BlockPos> crops, int radius, CancellationToken ct,
+        Func<BlockPos, bool>? within = null)
     {
         if (crops.Count == 0) return (0, "");
         int minX = crops.Min(p => p.X) - 2, maxX = crops.Max(p => p.X) + 2, minZ = crops.Min(p => p.Z) - 2, maxZ = crops.Max(p => p.Z) + 2;
         int minY = crops.Min(p => p.Y) - 2, maxY = crops.Max(p => p.Y);
-        List<BlockPos> Farmland() => ctx.Find((id, _) => id == Blocks.Farmland, radius + 2)
-            .Select(f => f.Pos).Where(p => p.X >= minX && p.X <= maxX && p.Z >= minZ && p.Z <= maxZ && p.Y >= minY && p.Y <= maxY).ToList();
+        // Farmland is planted INTO, never dug: the protection filter of ctx.Find (config "farmland" is soft-protected as a block)
+        // must not hide it (live: the field check found no farmland at all, "3 plots may still be empty").
+        List<BlockPos> Farmland() => ctx.World.FindBlocks(ctx.Feet, radius + 2, (id, _) => id == Blocks.Farmland, int.MaxValue)
+            .Select(f => f.Pos).Where(p => p.X >= minX && p.X <= maxX && p.Z >= minZ && p.Z <= maxZ && p.Y >= minY && p.Y <= maxY
+                                           && within?.Invoke(p) != false).ToList();
         bool Empty(BlockPos soil) => SkillWorld.Air(ctx.World, soil.Up());
         int planted = 0;
         for (int pass = 0; pass < 2; pass++)
@@ -61,10 +160,15 @@ public sealed class HarvestWheatSkill : Skill
 {
     public override SkillSpec Spec { get; } = new()
     {
-        Name = "harvest_wheat", Category = SkillCategory.Farming, Summary = "harvest ripe wheat (meta 7), hoe, replant seeds", Args = "radius?,replant?",
-        Schema = SkillJson.Schema("radius:int?,replant:bool?"), Estimate = TimeSpan.FromSeconds(40), Pre = new() { Dimension = Dim.Overworld },
+        Name = "harvest_wheat", Category = SkillCategory.Farming,
+        Summary = "harvest ripe wheat, hoe, replant; crews split it (claims)",
+        Args = "radius?,replant?,part?",
+        Schema = SkillJson.Schema("radius:int?,replant:bool?,part:str?"), Estimate = TimeSpan.FromSeconds(40), Pre = new() { Dimension = Dim.Overworld },
         Keywords = "wheat crops farm harvest ripe bread seeds replant reap hoe till",
     };
+
+    /// <summary>Lease on one strip of the field while this bot works it (renewed per strip; released when the skill ends).</summary>
+    internal static readonly TimeSpan StripTtl = TimeSpan.FromMinutes(3);
 
     /// <summary>
     /// Fox's farming procedure (live 10-27): per cell, always harvest → hoe → plant. The hoe goes on every time, even on what
@@ -73,30 +177,93 @@ public sealed class HarvestWheatSkill : Skill
     /// tills grass/dirt with air above). No hoe: one is acquired (chest, hive, craft 2 sticks + 2 planks/cobble); still none =
     /// plant on whatever is farmland already.
     /// </summary>
+    /// <remarks>
+    /// One field, several bots (live 10-28, "the 3 of you harvest the grown wheat": main's worker refused the whole field as
+    /// "protected, owned by others", the clones each ran the whole field anyway). The field (<see cref="FarmField"/>: its
+    /// connected crops + farmland, the same for every bot whatever its position) is cut into strips across its long axis; this
+    /// bot works only the strips it holds a hive lease on (<c>ClaimKey.Area</c>, taken nearest first, the way gen cells
+    /// at=auto are), so the crew's parts are disjoint and nobody waits for anyone's permission: another bot's strip is just
+    /// "their part". <c>part=i/n</c> takes a fixed share instead (n equal bands, the i-th: a planner-made split, like
+    /// <c>VoxelPlan.Partition</c>). Ripeness is the crop's metadata (7 = ripe); growing crops are never cut.
+    /// </remarks>
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
         int radius = Clamp(args.Int("radius"), 12, 2, 24);
         bool replant = args.Flag("replant", true);
-        var ripe = ctx.Find((id, m) => id == Blocks.Crops && m >= 7, radius);
-        int growing = ctx.Find((id, m) => id == Blocks.Crops && m < 7, radius).Count;
-        if (ripe.Count == 0) return Fail($"no ripe wheat within {radius} ({growing} still growing)");
-        bool canHoe = replant && (ctx.Game.Supported & Primitive.UseOnBlock) != 0;
-        string? hoeNote = null;
-        if (canHoe && ctx.FirstOwned(FarmOps.Hoes) is null && ctx.Registry.AcquireMissing is { } acquire)
+        var field = FarmField.Find(ctx.World, ctx.Feet, radius);
+        int growing = field.Crops.Count(c => ctx.Meta(c) < 7);
+        // Ripe = stage 7 and not held back by the policy (a player's never-break mark; a crop another bot holds is its part).
+        var ripeAll = field.Crops.Where(c => ctx.Meta(c) >= 7).ToList();
+        if (ripeAll.Count == 0) return Fail($"no ripe wheat within {radius} ({growing} still growing)");
+        var part = FarmField.ParsePart(args.Str("part"));
+        var strips = part is { } pt ? field.Bands(pt.N).Skip(pt.I - 1).Take(1).ToList() : field.Strips();
+        var refused = new List<ClaimKey>();
+        int theirs = part != null ? ripeAll.Count(c => !strips.Any(s => s.Key.Contains(c))) : 0;
+        var st = new Tally();
+        bool any = false;
+        // One strip at a time, nearest first: lease it, harvest + replant it, release it (its crops are growing again, so the
+        // next bot passes it by), then the next. The crew interleaves strip by strip; no bot sits on the whole field.
+        foreach (var strip in strips.OrderBy(s => s.Centre.DistanceSquaredTo(ctx.Feet)).ThenBy(s => s.Index))
         {
-            try { hoeNote = await acquire(ctx, Spec, FarmOps.Hoes, ct); }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-            catch (Exception ex) { ctx.Log?.Invoke($"harvest_wheat: hoe acquisition threw: {ex.Message}"); }
+            ct.ThrowIfCancellationRequested();
+            var inStrip = field.Crops.Where(c => strip.Key.Contains(c) && ctx.Block(c) == Blocks.Crops && ctx.Meta(c) >= 7).ToList();
+            if (inStrip.Count == 0) continue;
+            var lease = await ctx.Claims.TryClaimAsync(strip.Key, StripTtl, "harvest_wheat", ct);
+            if (!lease.Ok) { theirs += inStrip.Count; refused.Add(strip.Key); continue; } // another bot's part: theirs, not "protected"
+            // Another bot may have harvested it while the lease was on its way: what is still ripe now.
+            inStrip = inStrip.Where(c => ctx.Block(c) == Blocks.Crops && ctx.Meta(c) >= 7).ToList();
+            if (inStrip.Count > 0) any = true;
+            try { if (inStrip.Count > 0) await HarvestCellsAsync(ctx, inStrip, replant, st, ct); }
+            finally
+            {
+                try { await ctx.Claims.ReleaseAsync(strip.Key, CancellationToken.None); } catch (Exception) { /* the lease times out */ }
+            }
         }
-        int? hoe = canHoe ? ctx.FirstOwned(FarmOps.Hoes) : null;
-        int cut = 0, planted = 0, tilled = 0;
+        // Replanting covers my share: my band (part=i/n), else the field minus the strips other bots held.
+        Func<BlockPos, bool> fillable = part != null
+            ? p => strips.Any(s => s.Key.Contains(p.Up()) || s.Key.Contains(p))
+            : p => !refused.Any(k => k.Contains(p.Up()) || k.Contains(p));
+        string crew = theirs > 0 ? $"; {theirs} ripe in parts other hive bots are working (theirs)" : "";
+        // Every ripe strip went to other bots (or they harvested it first): a done share, not a failure.
+        if (!any) return Ok("nothing left in my part" + (crew.Length > 0 ? crew : ": the crew harvested it"));
+        var result = await FinishAsync(ctx, st, growing, replant, radius, fillable, ct);
+        return result.Ok ? Ok(result.Text + crew) : Fail(result.Text + crew);
+    }
+
+    private sealed class Tally
+    {
+        public int Cut, Planted, Tilled;
+        public int? Hoe;
+        public bool HoeChecked;
+        public string? HoeNote;
+        public readonly List<BlockPos> Harvested = new();
+    }
+
+    /// <summary>harvest → hoe → plant on each ripe cell (nearest first).</summary>
+    private async Task HarvestCellsAsync(SkillContext ctx, List<BlockPos> cells, bool replant, Tally st, CancellationToken ct)
+    {
+        var ripe = cells.Select(p => new FoundBlock(p, Blocks.Crops, 7, p.Center.DistanceSquaredTo(ctx.Feet))).OrderBy(f => f.DistanceSquared).ToList();
+        bool canHoe = replant && (ctx.Game.Supported & Primitive.UseOnBlock) != 0;
+        if (!st.HoeChecked)
+        {
+            st.HoeChecked = true;
+            if (canHoe && ctx.FirstOwned(FarmOps.Hoes) is null && ctx.Registry.AcquireMissing is { } acquire)
+            {
+                try { st.HoeNote = await acquire(ctx, Spec, FarmOps.Hoes, ct); }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch (Exception ex) { ctx.Log?.Invoke($"harvest_wheat: hoe acquisition threw: {ex.Message}"); }
+            }
+            st.Hoe = canHoe ? ctx.FirstOwned(FarmOps.Hoes) : null;
+        }
+        int? hoe = st.Hoe;
         foreach (var c in ripe)
         {
             ct.ThrowIfCancellationRequested();
-            if (ctx.Block(c.Pos) != Blocks.Crops || ctx.Meta(c.Pos) < 7) continue;
+            if (ctx.Block(c.Pos) != Blocks.Crops || ctx.Meta(c.Pos) < 7 || ctx.Protected(c.Pos)) continue;
             var d = await ctx.Game.DigAsync(c.Pos, ct);                                        // 1. harvest
             if (!d.Ok) continue;
-            cut++;
+            st.Cut++;
+            st.Harvested.Add(c.Pos);
             if (!replant) continue;
             var soil = c.Pos.Down();
             await FarmOps.CollectAsync(ctx, 3, ct);
@@ -104,24 +271,30 @@ public sealed class HarvestWheatSkill : Skill
             {
                 bool wasSoil = ctx.Block(soil) != Blocks.Farmland;
                 var u = await ctx.Game.UseOnBlockAsync(soil, BlockFace.Top, h, ct);           // 2. hoe (always)
-                if (u.Ok && wasSoil && await ctx.WaitBlockAsync(soil, (id, _) => id == Blocks.Farmland, ct)) tilled++;
+                if (u.Ok && wasSoil && await ctx.WaitBlockAsync(soil, (id, _) => id == Blocks.Farmland, ct)) st.Tilled++;
             }
-            if (ctx.Block(soil) == Blocks.Farmland && await FarmOps.PlantAsync(ctx, soil, Items.Seeds, ct)) planted++; // 3. plant
+            if (ctx.Block(soil) == Blocks.Farmland && await FarmOps.PlantAsync(ctx, soil, Items.Seeds, ct)) st.Planted++; // 3. plant
         }
+    }
+
+    private async Task<SkillResult> FinishAsync(SkillContext ctx, Tally st, int growing, bool replant, int radius, Func<BlockPos, bool> fillable,
+        CancellationToken ct)
+    {
         await FarmOps.CollectAsync(ctx, radius, ct);
         // 4. Verify the whole field (live 10-28, 420: "done, maybe 3 empty plots left"; Robin: "420 didn't finish replanting"):
         // every farmland cell of it gets a crop, from the seeds just picked up; the count reported is the real one.
         string field = "";
-        if (replant && cut > 0)
+        if (replant && st.Cut > 0)
         {
-            var check = await FarmOps.FillFieldAsync(ctx, ripe.Select(r => r.Pos).ToList(), radius, ct);
-            planted += check.Planted;
+            var check = await FarmOps.FillFieldAsync(ctx, st.Harvested, radius, ct, fillable);
+            st.Planted += check.Planted;
             field = check.Text;
         }
-        string re = $"replanted {planted}" + (tilled > 0 ? $" (re-tilled {tilled})" : "") + (replant && hoe is null ? " (no hoe: planted only on farmland)" : "");
-        return cut > 0 ? Ok($"harvested {cut} wheat, {re} (wheat {ctx.Count(Items.Wheat)}, seeds {ctx.Count(Items.Seeds)}; {growing} growing)"
-                            + field + (hoeNote != null ? "; " + hoeNote : ""))
-                       : Fail("couldn't harvest any wheat");
+        string re = $"replanted {st.Planted}" + (st.Tilled > 0 ? $" (re-tilled {st.Tilled})" : "")
+                    + (replant && st.HoeChecked && st.Hoe is null ? " (no hoe: planted only on farmland)" : "");
+        return st.Cut > 0 ? Ok($"harvested {st.Cut} wheat, {re} (wheat {ctx.Count(Items.Wheat)}, seeds {ctx.Count(Items.Seeds)}; {growing} growing)"
+                               + field + (st.HoeNote != null ? "; " + st.HoeNote : ""))
+                          : Fail("couldn't harvest any wheat");
     }
 }
 
@@ -139,8 +312,9 @@ public sealed class PlantSeedsSkill : Skill
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
         int item = SkillJson.Item(args.Str("item")) is { } i ? i.Id : ctx.FirstOwned(Items.Seeds, Items.MelonSeeds, Items.PumpkinSeeds) ?? Items.Seeds;
-        var soil = ctx.Find((id, _) => id == Blocks.Farmland, Clamp(args.Int("radius"), 10, 2, 24))
-            .Where(f => SkillWorld.Air(ctx.World, f.Pos.Up())).ToList();
+        // Farmland is planted into, not dug: not filtered by the dig protection (config "farmland" is soft-protected as a block).
+        var soil = ctx.World.FindBlocks(ctx.Feet, Clamp(args.Int("radius"), 10, 2, 24), (id, _) => id == Blocks.Farmland, int.MaxValue)
+            .Where(f => SkillWorld.Air(ctx.World, f.Pos.Up())).Take(64).ToList();
         if (soil.Count == 0) return Fail("no empty farmland nearby (till_soil makes some)");
         int n = 0;
         foreach (var f in soil)

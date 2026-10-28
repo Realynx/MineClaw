@@ -214,6 +214,8 @@ public sealed partial class Protection
                 ? S("container", $"a {name}: it may hold items", containerUnlock)
                 : S(id is Blocks.Sapling ? "sapling" : id is Blocks.Farmland ? "farm" : "station", $"a {name}");
         if (IsFarmPlant(id) && UnripeReason(p, id) is { } unripe) return S("farm", unripe);
+        // A ripe crop is only ever held back by a hive lease (AnySoft): say that, not the box/index entry it grows in.
+        if (IsFarmPlant(id)) return S("claimed", ClaimedWhy);
         if (id == Blocks.Farmland && (InMemoryRegion(p, id) != null || IndexerKind?.Invoke(p) is IndexKinds.Farm or IndexKinds.UnknownStructure))
             return S("farm", "farmland: breaking or trampling it undoes the farm (tilling and planting are fine)");
         if (!IsFarmPlant(id) && InMemoryRegion(p, id) is { } mr)
@@ -232,9 +234,13 @@ public sealed partial class Protection
                 _ when IsContainer(id) => S("container", $"a {name}: it may hold items", containerUnlock),
                 _ => S("station", $"a {kind.Replace('_', ' ')}"),
             };
-        if (Claims != null && !Claims.IsFree(ClaimKey.Block(p, dim))) return S("claimed", "another hive bot is working on it right now");
+        if (Claims != null && !Claims.IsFree(ClaimKey.Block(p, dim))) return S("claimed", ClaimedWhy);
         return S("unknown", "a protected block");
     }
+
+    /// <summary>A hive lease is coordination, not ownership (players own things, bots don't): its verdict reads as "busy, take
+    /// another part", never as "protected, needs the owner's permission" (<see cref="ProtectionText.Refusal"/>).</summary>
+    public const string ClaimedWhy = "another hive bot is working on that part right now";
 
     /// <summary>Config + memory reserved items (call after memory changes; cheap).</summary>
     public IReadOnlySet<int> ReservedItems()

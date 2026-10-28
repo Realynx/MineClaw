@@ -109,6 +109,17 @@ public sealed class ClaimBoard(TimeSpan? defaultTtl = null, TimeProvider? time =
         public Task<ClaimResult> TryClaimAsync(ClaimKey key, TimeSpan? ttl = null, string? note = null, CancellationToken ct = default) =>
             Task.FromResult(board.TryClaim(owner, key, ttl, note));
         public Task ReleaseAsync(ClaimKey key, CancellationToken ct = default) { board.Release(owner, key); return Task.CompletedTask; }
+        public string? HolderOf(ClaimKey key) => board.IsFree(owner, key) ? null : board.HolderOtherThan(owner, key);
+    }
+
+    /// <summary>The first live holder of a lease conflicting with <paramref name="key"/> that isn't <paramref name="owner"/>.</summary>
+    public string? HolderOtherThan(string owner, ClaimKey key)
+    {
+        lock (_lock)
+        {
+            var now = Now;
+            return _leases.FirstOrDefault(l => l.Expires > now && !Same(l.Owner, owner) && l.Key.ConflictsWith(key))?.Owner;
+        }
     }
 }
 
@@ -139,6 +150,13 @@ public sealed class RemoteClaimBoard(string owner, Func<HiveLink?> link, TimePro
         var now = _time.GetUtcNow();
         lock (_lock)
             return !_mirror.Any(l => l.Expires > now && !string.Equals(l.Owner, owner, StringComparison.OrdinalIgnoreCase) && l.Key.ConflictsWith(key));
+    }
+
+    public string? HolderOf(ClaimKey key)
+    {
+        var now = _time.GetUtcNow();
+        lock (_lock)
+            return _mirror.FirstOrDefault(l => l.Expires > now && !string.Equals(l.Owner, owner, StringComparison.OrdinalIgnoreCase) && l.Key.ConflictsWith(key))?.Owner;
     }
 
     public async Task<ClaimResult> TryClaimAsync(ClaimKey key, TimeSpan? ttl = null, string? note = null, CancellationToken ct = default)

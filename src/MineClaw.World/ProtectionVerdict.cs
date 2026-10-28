@@ -29,11 +29,17 @@ public static class ProtectionText
     /// <summary>Every refusal contains this; the worker stops at the first one and reports it.</summary>
     public const string Marker = " is protected";
     public const string DefaultUnlock = "you can break it";
+    /// <summary>Reason key of a hive lease verdict (another bot works there now).</summary>
+    public const string ClaimedReason = "claimed";
 
     /// <summary>"log at 6,69,-6 is protected (part of the main house build); say 'you can break it' if you want it gone".</summary>
     public static string Refusal(string what, ProtectionVerdict v)
     {
         string why = string.IsNullOrWhiteSpace(v.Why) ? "a protected block" : v.Why;
+        // A hive lease: another bot of the crew holds that part. Coordination, not protection: no unlock phrase, no
+        // permission to ask for, and no " is protected" marker (the worker would end the job on it; live 10-28: "owned by
+        // others... needs owner permission to harvest" for a field two clones were sent to share).
+        if (v.Reason == ClaimedReason) return $"{what} is busy: {why} (a hive claim, not protection); leave it to them and take another part";
         string unlock = v.Unlock ?? DefaultUnlock;
         if (v.Repeat) return $"{what}{Marker} ({why}); already asked: waiting for a trusted player to say '{unlock}', don't ask again";
         return v.Level == ProtectionLevel.Hard

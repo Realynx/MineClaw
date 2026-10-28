@@ -41,12 +41,12 @@ public static partial class PerceptionPrompt
         "a legend and a question. Axes: +x east, -x west, -z north, +z south, +y up; 1 grid cell = 1 block. The focus is the cyan " +
         "box/ring in every panel; yellow ruler numbers are the focus coordinates, grey ones every 5 blocks: count cells from a " +
         "labelled tick, never guess. Role letters: G gen cell (MINE HERE: the only cobble to mine), P portal, X never-break, " +
-        "B player build, + placed by the bot, $ protected. Plain floor/walls are NOT gen cells. Navy hatch = void (a fall kills). " +
+        "B player build, + placed by the bot, $ protected, H ripe crop, : growing crop (crops are never protected). Plain floor/walls are NOT gen cells. Navy hatch = void (a fall kills). " +
         "LAYERS panel: left grid = blocks AT feet height (a solid cell there is a wall beside the bot at body height, NOT floor), right grid = the layer below (what it stands on); a green dot = air with a solid side/top face (a block can be placed there). " +
         "TOP and ISO cut away roofs above feet height. Count cells from a labelled tick, never guess. " +
         "Reply with ONLY this JSON, starting with { (do any counting inside \"look\", never before the JSON): " +
         "{\"look\":\"<=30 words: the ticks/panels you counted from\",\"answer\":\"<=15 words\",\"facts\":[{\"claim\":\"<=10 words\",\"coords\":[[x,y,z]]," +
-        "\"role\":\"floor|wall|gen cell|water|lava|void|door|station|player build|own placed|protected|never-break|portal|null\"," +
+        "\"role\":\"floor|wall|gen cell|water|lava|void|door|station|player build|own placed|protected|never-break|portal|ripe crop|growing crop|null\"," +
         "\"confidence\":0.0-1.0}]}. 1-4 facts, most useful first, each about specific blocks with their exact coords. " +
         "Say only what you see; omit a fact rather than guess (absence claims like 'no water' need coords too).";
 

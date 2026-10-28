@@ -494,13 +494,14 @@ public sealed partial class MinecraftClient
     {
         var reach = new GoalWithinReach(pos, Options.Reach - 0.6);
         var o = GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(30) };
+        // Never a spot another body stands on (two bots pushing each other off one spot: "goto: stuck, re-planning").
         Goal strict = new GoalFiltered(reach, (x, y, z) =>
-                Safety.EdgeDistance(World, x, y, z, 2) >= 2 && !Safety.LavaNear(World, x, y, z)
+                Safety.EdgeDistance(World, x, y, z, 2) >= 2 && !Safety.LavaNear(World, x, y, z) && OccupantOf(new BlockPos(x, y, z)) == null
                 && (!generator || Math.Max(Math.Abs(x - pos.X), Math.Abs(z - pos.Z)) >= 2 || y > pos.Y + 1),
             generator ? "safe generator spot" : "inward side, no lava");
         var g = await GotoCoreAsync(strict, o with { MaxReplans = 2, AllowPartial = false }, ct).ConfigureAwait(false);
         if (g.Ok) return g;
-        Goal relaxed = new GoalFiltered(reach, (x, y, z) => !Safety.LavaNear(World, x, y, z)
+        Goal relaxed = new GoalFiltered(reach, (x, y, z) => !Safety.LavaNear(World, x, y, z) && OccupantOf(new BlockPos(x, y, z)) == null
                 && (!generator || Math.Max(Math.Abs(x - pos.X), Math.Abs(z - pos.Z)) >= 2 || y > pos.Y + 1),
             "no lava");
         return await GotoCoreAsync(relaxed, o, ct).ConfigureAwait(false);

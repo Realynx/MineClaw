@@ -9,7 +9,8 @@ namespace MineClaw.Bot.Perception.Vision;
 /// (<see cref="Protection.Check"/>: hard never-break, soft reasons), the world index (unknown builds, floors, portals,
 /// generator walls), generator dig cells (taught, regen-confirmed or by geometry) and the placed-block log. Every source is
 /// an optional delegate, so tests and the eval build one from a bare world. Precedence, highest first: never-break > gen cell
-/// > portal > door > station > water/lava > own placed > player build > protected > floor/wall > void.
+/// > portal > door > station > water/lava > crop (ripe/growing, never protected) > own placed > player build > protected
+/// (never farm soil) > floor/wall > void.
 /// </summary>
 public sealed class RoleClassifier
 {
@@ -73,10 +74,17 @@ public sealed class RoleClassifier
         if (WorldIndex.IndexKinds.StationKind(id) != null) return BlockRole.Station;
         if (MineClaw.Data.Blocks.IsWater(id)) return BlockRole.Water;
         if (MineClaw.Data.Blocks.IsLava(id)) return BlockRole.Lava;
+        // Crops are work, not property (live 10-28: a field drawn '$' read as "protected, owned by others, needs permission"):
+        // ripe/growing from the block's own metadata, whatever box, index entry, claim or planter covers them.
+        if (CropRole(id, Blocks.GetMeta(x, y, z)) is { } crop) return crop;
         if (Safe(() => IsOwnPlaced?.Invoke(p, id) == true)) return BlockRole.OwnPlaced;
         if (kind == WorldIndex.IndexKinds.UnknownStructure) return BlockRole.PlayerBuild;
         bool solid = Blocks.Info(id).Solid;
-        if (v is { Protected: true, Reason: not "floor" } && kind != WorldIndex.WorldIndexer.FloorKind) return BlockRole.SoftProtected;
+        // Farm soil is floor to walk on and plant into: its "don't break the farmland" rule lives in the policy, not the overlay.
+        // A hive lease is coordination (another bot works there), not protection: no '$' for it either.
+        if (v is { Protected: true, Reason: not ("floor" or ProtectionText.ClaimedReason) } && kind != WorldIndex.WorldIndexer.FloorKind
+            && id != MineClaw.Data.Blocks.Farmland)
+            return BlockRole.SoftProtected;
         if (!solid) return BlockRole.None;
         int above = Blocks.GetBlock(x, y + 1, z);
         if (above == 0 || !Blocks.Info(above).Solid) return BlockRole.Floor;
@@ -86,6 +94,25 @@ public sealed class RoleClassifier
             return BlockRole.Floor;
         return BlockRole.Wall;
     }
+
+    /// <summary>The crop role of a block (wheat by its growth stage, meta 7 = ripe; stems grow, fruit/cane/cactus are ripe), else null.
+    /// Saplings are not crops (tree stewardship keeps them).</summary>
+    public static BlockRole? CropRole(int id, int meta) => id switch
+    {
+        MineClaw.Data.Blocks.Crops => meta >= 7 ? BlockRole.CropRipe : BlockRole.CropGrowing,
+        MineClaw.Data.Blocks.PumpkinStem or MineClaw.Data.Blocks.MelonStem => BlockRole.CropGrowing,
+        MineClaw.Data.Blocks.Pumpkin or MineClaw.Data.Blocks.Melon or MineClaw.Data.Blocks.SugarCane or MineClaw.Data.Blocks.Cactus => BlockRole.CropRipe,
+        _ => null,
+    };
+
+    /// <summary>"crop (ripe 7/7)", "crop (growing 3/7)": the words for a crop in facts and answers (null = not a crop).</summary>
+    public static string? CropText(int id, int meta) => id switch
+    {
+        MineClaw.Data.Blocks.Crops => meta >= 7 ? "crop (ripe 7/7)" : $"crop (growing {Math.Clamp(meta, 0, 6)}/7)",
+        MineClaw.Data.Blocks.PumpkinStem or MineClaw.Data.Blocks.MelonStem => "crop stem (leave it; harvest the fruit next to it)",
+        _ when CropRole(id, meta) == BlockRole.CropRipe => "crop (ripe)",
+        _ => null,
+    };
 
     private bool NextToPortal(int x, int y, int z)
     {

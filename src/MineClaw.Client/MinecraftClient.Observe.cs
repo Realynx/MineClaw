@@ -139,6 +139,7 @@ public sealed partial class MinecraftClient
         sb.Append("; blocks: ");
         sb.Append(counts.Count == 0 ? "none" : string.Join(", ", counts.OrderByDescending(kv => kv.Value).Take(detail ? 16 : 7)
             .Select(kv => $"{kv.Key} {kv.Value}")));
+        if (CropSummary(all) is { } crops) sb.Append("; ").Append(crops);
 
         // Points of interest: nearest of each type.
         var poi = new List<string>();
@@ -166,6 +167,23 @@ public sealed partial class MinecraftClient
         var online = World.Entities.OnlinePlayers.Where(n => !string.Equals(n, Options.Username, StringComparison.OrdinalIgnoreCase)).ToList();
         if (detail && online.Count > 0) sb.Append("; online: ").Append(string.Join(", ", online));
         return Truncate(sb.ToString(), maxChars);
+    }
+
+    /// <summary>
+    /// Ripeness from the block metadata (wheat stage 0-7, 7 = ripe), so it is always verifiable without vision (live 10-28: a
+    /// worker gave up "ripeness not verifiable"): "crops: wheat 32 (20 ripe 7/7, 12 growing), empty farmland 3". Null = no field.
+    /// </summary>
+    internal string? CropSummary(IReadOnlyList<FoundBlock> all)
+    {
+        int ripe = 0, growing = 0, empty = 0;
+        foreach (var f in all)
+        {
+            if (f.Id == Blocks.Crops) { if (f.Meta >= 7) ripe++; else growing++; }
+            else if (f.Id == Blocks.Farmland && World.GetBlock(f.Pos.X, f.Pos.Y + 1, f.Pos.Z) == 0) empty++;
+        }
+        if (ripe + growing + empty == 0) return null;
+        var s = $"crops: wheat {ripe + growing} ({ripe} ripe 7/7, {growing} growing)";
+        return empty > 0 ? s + $", empty farmland {empty}" : s;
     }
 
     /// <summary>Census name: slab/wool/stone-brick variants by type (they craft from different things), else the block name.</summary>

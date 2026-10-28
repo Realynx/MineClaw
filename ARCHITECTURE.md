@@ -315,7 +315,8 @@ One place decides whether the bot may break a block, why not, and how a player u
   for 5) vs ≈500 image + ≈230 legend tokens for the same views as separate pictures (and 4 tool rounds). Focus: x,y,z, a player,
   a saved place, `pointed`/`this`; default the current job's target, else the bot.
 - **Role layer** (`RoleClassifier`, `BlockRole`): floor, wall, gen cell (G = MINE HERE), water, lava, void, door, station, player
-  build (B), own placed (+), protected ($, outline only: floors under a remembered build still read as floors), never-break (X), portal (P), from the protection policy's `Check` verdicts, the world
+  build (B), own placed (+), protected ($, outline only: floors under a remembered build still read as floors; never crops, farm
+  soil or a hive lease), ripe crop (H = HARVEST) / growing crop (:) from the block meta (wheat 7/7), never-break (X), portal (P), from the protection policy's `Check` verdicts, the world
   index, dig cells (taught/confirmed/geometry; air over a gen cell is never one) and the placed-block log. Tinted cells + letters in
   every panel (every role glyph is drawable), letters in `look map`.
 - **Deterministic first** (`VisionRouter`, rules, zero tokens): every `see`/auto-vision question is classified before any model
@@ -417,6 +418,11 @@ connects its pipe before opening anything and exits 75 without one (never unsupe
 - **Claim board** (main, `Claims/ClaimBoard.cs`): leases with TTLs on blocks, areas, chests, furnaces, tasks. Contract
   `MineClaw.World.Claims.IClaimBoard` (`IsFree` local/fast, `TryClaimAsync`, `ReleaseAsync`); clones use a pushed mirror.
   BotHost wires it into `IsProtected` (claimed blocks are skipped) and `ClaimAwareGameClient` (chest/furnace/dig/place leases).
+  Leases coordinate the hive, they are not ownership: a "claimed" verdict reads "X is busy: another hive bot is working on that
+  part (a hive claim, not protection); take another part" (no " is protected", no unlock phrase). One gen cell per bot
+  (`ClaimAwareGameClient.GenCell`: a nested gen run digs the held cell; an unanswered claim is released, never orphaned); "no
+  free gen cell: held by 1337 ×2" names the holders (`IClaimBoard.HolderOf`). Shared fields: `harvest_wheat` cuts the field
+  (`FarmField`, connected crops+farmland) into 3-row strips and leases one at a time nearest first (or `part=i/n` bands).
 - **Chat arbiter**: one deterministic owner per player message in every process — named clone > thread lease (the bot that asked the player something or is watching their demo owns their replies until resolved/timeout; `thread` IPC) > sticky partner > main; a bare clone number addresses it only at the start of a line/sentence or next to an address word ("69 bring me…", "hey 69", "maid 69", "69 maid", "also 67, ..."), never as a mention/quantity/coordinate ("get 67 cobble", "with 67?", "6,67,8"); a clone as the object of a request ("have clone 69 harvest") addresses main, and an address to an offline clone goes to main; a line naming several bots goes to each of them with main coordinating; ownership covers a player's *conversation*: an unnamed spawn of the request the clone talking with that player is on (or any spawn while it is asking them about it) is refused without `hive op=handover`, while additional clones for the same player's new or parallel request (a spar needs two) go ahead and clones already on that job get a `note` with the newcomer's task; a clone's task is *pending* in main's turn hint until its result event arrives, and main's speech guard drops claims about pending results;
   hive bots' chat, /me, joins/leaves are internal. Main pushes live roster + sticky map.
 - **Budget**: Agent:Budget caps are shared by the hive; main's ledger adds clone spend to main's tracker, grants clones spend in

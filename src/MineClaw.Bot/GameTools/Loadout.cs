@@ -31,6 +31,11 @@ public static class Loadout
 
     public static int Have(WorldState w, Kind k) => k.Ids.Sum(id => w.Inventory.CountItem(id));
 
+    /// <summary>Like <see cref="Have"/>, without tools about to break (<see cref="AcquisitionPlanner.WornUses"/> uses or fewer left).</summary>
+    public static int HaveUsable(WorldState w, Kind k) => w.Inventory.PlayerSlots().Where(s => !s.IsEmpty && k.Ids.Contains(s.Id))
+        .Where(s => !Items.Exists(s.Id) || Items.Get(s.Id).MaxDamage <= 0 || Items.Get(s.Id).MaxDamage - s.Damage > AcquisitionPlanner.WornUses)
+        .Sum(s => (int)s.Count);
+
     /// <summary>Kinds from <paramref name="wants"/> the inventory lacks right now.</summary>
     public static List<Kind> Lacking(WorldState w, IEnumerable<string> wants) =>
         wants.Select(n => Kinds.GetValueOrDefault(n.Trim())).OfType<Kind>().DistinctBy(k => k.Name).Where(k => Have(w, k) == 0).ToList();
@@ -54,7 +59,7 @@ public static class Loadout
         foreach (var k in all)
         {
             ct.ThrowIfCancellationRequested();
-            if (Have(w, k) > 0) { have.Add(k.Name); continue; }
+            if (HaveUsable(w, k) > 0) { have.Add(k.Name); continue; } // a worn one is replaced (the planner keeps it as the fallback)
             var depth = k.Name == "pickaxe" ? AcquireDepth.Full : AcquireDepth.Cheap;
             var r = await planner.AcquireAsync(new Need(k.Name, 1, 0, depth), ct).ConfigureAwait(false);
             if (r.Ok && Have(w, k) > 0) { (r.Plan != null ? planned : got).Add(r.Text); continue; }

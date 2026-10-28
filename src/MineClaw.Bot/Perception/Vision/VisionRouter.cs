@@ -58,10 +58,19 @@ public static partial class VisionRouter
     [GeneratedRegex(@"\b(trees?|logs?|trunks?|canopy|saplings?|crops?|wheat|farm(land)?|chests?|doors?|ores?|coal|iron|diamonds?|gold|lapis|redstone|furnaces?|workbench|crafting tables?|benches?)\b", RegexOptions.IgnoreCase)]
     private static partial Regex ThingsRx();
 
+    [GeneratedRegex(@"\b(ripe|unripe|grown|mature|harvest\w*|wheat|crops?|farmland|replant\w*)\b", RegexOptions.IgnoreCase)]
+    private static partial Regex CropRx();
+
+    [GeneratedRegex(@"\b(pointed|pointing|punched|this one|that one|looks? like|holding|wearing)\b", RegexOptions.IgnoreCase)]
+    private static partial Regex PointingRx();
+
     /// <summary>Rules first: what the question needs. <see cref="VisionIntent.Model"/> = only a picture can answer it.</summary>
     public static VisionIntent Classify(string? question)
     {
         var q = question ?? "";
+        // Ripeness is block metadata (wheat stage 0-7), never a picture question, even with "middle rows" in it (live 10-28:
+        // "which wheat is fully grown (ripe)... middle rows" went to Sonnet, 2 of 2 claims wrong, and the job gave up).
+        if (q.Length > 0 && CropRx().IsMatch(q) && !PointingRx().IsMatch(q)) return VisionIntent.Things;
         if (q.Length == 0 || RelationalRx().IsMatch(q)) return VisionIntent.Model;
         if (FluidsRx().IsMatch(q)) return VisionIntent.GenFluids;
         if (FacesRx().IsMatch(q)) return VisionIntent.Faces;
@@ -204,6 +213,7 @@ public static partial class VisionRouter
         string roleText = role switch
         {
             BlockRole.GenCell => "gen cell (MINE HERE)",
+            BlockRole.CropRipe or BlockRole.CropGrowing => RoleClassifier.CropText(id, w.GetMeta(f.X, f.Y, f.Z)) ?? BlockRoles.Name(role),
             BlockRole.None => id == 0 ? "free" : "",
             _ => BlockRoles.Name(role),
         };
@@ -287,6 +297,26 @@ public static partial class VisionRouter
         return sb.ToString();
     }
 
+    /// <summary>
+    /// The field from metadata: "wheat 6: 4 ripe (7/7) 1,64,2 2,64,2 +2; 2 growing (stage 3-5/7, leave them); empty farmland 1
+    /// (plant seeds): 1,63,3". Ripeness is always known (the crop's block meta), never guessed from a picture.
+    /// </summary>
+    private static string Crops(List<(int X, int Y, int Z, int Meta)> crops, List<(int X, int Y, int Z)> emptySoil,
+        Func<IEnumerable<(int X, int Y, int Z)>, int, string> list)
+    {
+        if (crops.Count == 0 && emptySoil.Count == 0) return "no crops";
+        var sb = new StringBuilder();
+        var ripe = crops.Where(c => c.Meta >= 7).ToList();
+        var growing = crops.Where(c => c.Meta < 7).ToList();
+        sb.Append(CultureInfo.InvariantCulture, $"wheat {crops.Count}: {ripe.Count} ripe (7/7)");
+        if (ripe.Count > 0) sb.Append(' ').Append(list(ripe.Select(c => (c.X, c.Y, c.Z)), 4));
+        if (growing.Count > 0)
+            sb.Append(CultureInfo.InvariantCulture, $"; {growing.Count} growing (stage {growing.Min(c => c.Meta)}-{growing.Max(c => c.Meta)}/7, leave them)");
+        if (emptySoil.Count > 0) sb.Append(CultureInfo.InvariantCulture, $"; empty farmland {emptySoil.Count} (plant seeds): ").Append(list(emptySoil, 3));
+        sb.Append("; crops are always harvestable when ripe (skill harvest_wheat)");
+        return sb.ToString();
+    }
+
     /// <summary>Trees (TreeScan: logs, leaves, soil), saplings, crops, chests, doors, stations and ores near the focus.</summary>
     private static string Things(IBlockAccess w, (int X, int Y, int Z) f, int r, string question)
     {
@@ -296,6 +326,7 @@ public static partial class VisionRouter
         var logs = new List<BlockPos>();
         var saplings = new List<(int X, int Y, int Z)>();
         var crops = new List<(int X, int Y, int Z, int Meta)>();
+        var farmland = new List<(int X, int Y, int Z)>();
         var named = new Dictionary<string, List<(int X, int Y, int Z)>>();
         void Add(string k, (int, int, int) p) { if (!named.TryGetValue(k, out var l)) named[k] = l = new(); l.Add(p); }
         for (int y = Math.Max(0, f.Y - 8); y <= Math.Min(WorldState.Height - 1, f.Y + 12); y++)
@@ -309,6 +340,7 @@ public static partial class VisionRouter
                         case Blocks.Log: logs.Add(new BlockPos(x, y, z)); break;
                         case Blocks.Sapling: saplings.Add((x, y, z)); break;
                         case Blocks.Crops: crops.Add((x, y, z, w.GetMeta(x, y, z))); break;
+                        case Blocks.Farmland: if (w.GetBlock(x, y + 1, z) == 0) farmland.Add((x, y, z)); break;
                         case Blocks.Chest: Add("chest", (x, y, z)); break;
                         case Blocks.WoodenDoor or Blocks.IronDoor: if ((w.GetMeta(x, y, z) & 8) == 0) Add("door", (x, y, z)); break;
                         case Blocks.Furnace or Blocks.LitFurnace: Add("furnace", (x, y, z)); break;
@@ -351,8 +383,8 @@ public static partial class VisionRouter
             var planted = saplings.Where(s => w.GetBlock(s.X, s.Y - 1, s.Z) is Blocks.Dirt or Blocks.Grass).ToList();
             parts.Add(planted.Count == 0 ? "no planted sapling" : $"{planted.Count} sapling{(planted.Count == 1 ? "" : "s")}: " + List(planted));
         }
-        if (Asked("crop", "wheat", "farm"))
-            parts.Add(crops.Count == 0 ? "no crops" : $"{crops.Count} wheat ({crops.Count(c => c.Meta >= 7)} ripe): " + List(crops.Select(c => (c.X, c.Y, c.Z))));
+        if (Asked("crop", "wheat", "farm", "ripe", "unripe", "grown", "mature", "harvest", "replant"))
+            parts.Add(Crops(crops, farmland, List));
         foreach (var (key, words) in new[]
         {
             ("chest", new[] { "chest" }), ("door", new[] { "door" }), ("furnace", new[] { "furnace" }), ("bench", new[] { "bench", "workbench", "crafting" }),

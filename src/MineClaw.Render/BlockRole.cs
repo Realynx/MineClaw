@@ -33,6 +33,11 @@ public enum BlockRole : byte
     Portal,
     /// <summary>A block of a design preview (blueprint): drawn in place, not built yet.</summary>
     Planned,
+    /// <summary>A grown crop (wheat stage 7/7, a melon/pumpkin, cane, cactus): always harvestable, whoever planted it. A crop is
+    /// never "protected" in the role layer (live 10-28: the field drawn '$' read as "owned by others, needs permission").</summary>
+    CropRipe,
+    /// <summary>A crop still growing (wheat stage 0-6, a stem): leave it, it ripens.</summary>
+    CropGrowing,
 }
 
 /// <summary>The role of the block at (x, y, z) (air included: void, a refilling gen cell).</summary>
@@ -42,7 +47,8 @@ public static class BlockRoles
 {
     /// <summary>Roles worth an overlay (tint + letter); floor/wall/air read fine from the blocks themselves.</summary>
     public static bool Highlight(BlockRole r) => r is BlockRole.GenCell or BlockRole.Portal or BlockRole.NeverBreak or BlockRole.PlayerBuild
-        or BlockRole.OwnPlaced or BlockRole.SoftProtected or BlockRole.Station or BlockRole.Door or BlockRole.Planned;
+        or BlockRole.OwnPlaced or BlockRole.SoftProtected or BlockRole.Station or BlockRole.Door or BlockRole.Planned or BlockRole.CropRipe
+        or BlockRole.CropGrowing;
 
     /// <summary>One-character role glyph shared by the ASCII map and the image chips (null = no overlay letter).</summary>
     public static char? Glyph(BlockRole r) => r switch
@@ -54,6 +60,8 @@ public static class BlockRoles
         BlockRole.OwnPlaced => '+',
         BlockRole.SoftProtected => '$',
         BlockRole.Planned => '*',
+        BlockRole.CropRipe => 'H',
+        BlockRole.CropGrowing => ':',
         _ => null,
     };
 
@@ -72,6 +80,8 @@ public static class BlockRoles
         BlockRole.Lava => 0xff7a1a,
         BlockRole.Void => 0x0a1020,
         BlockRole.Planned => 0xff4fd8,
+        BlockRole.CropRipe => 0xf5e04a,
+        BlockRole.CropGrowing => 0x7fd35a,
         _ => 0x808080,
     };
 
@@ -92,6 +102,8 @@ public static class BlockRoles
         BlockRole.NeverBreak => "never-break",
         BlockRole.Portal => "portal",
         BlockRole.Planned => "planned",
+        BlockRole.CropRipe => "ripe crop",
+        BlockRole.CropGrowing => "growing crop",
         _ => "none",
     };
 
@@ -102,6 +114,8 @@ public static class BlockRoles
         var n = s.Trim().ToLowerInvariant().Replace('_', ' ').Replace('-', ' ');
         if (n.Contains("never")) return BlockRole.NeverBreak;
         if (n.Contains("planned") || n.Contains("blueprint")) return BlockRole.Planned;
+        if (n.Contains("unripe") || n.Contains("not ripe") || n.Contains("growing") || n.Contains("stem")) return BlockRole.CropGrowing;
+        if (n.Contains("ripe") || n.Contains("crop") || n.Contains("wheat") || n.Contains("grown")) return BlockRole.CropRipe;
         if (n.Contains("gen") || n.Contains("mine here") || n.Contains("dig cell")) return BlockRole.GenCell;
         if (n.Contains("portal") || n.Contains("obsidian")) return BlockRole.Portal;
         if (n.Contains("void") || n.Contains("abyss")) return BlockRole.Void;
@@ -123,7 +137,12 @@ public static class BlockRoles
     {
         var parts = new List<string>();
         foreach (var r in present.Distinct().OrderBy(r => r))
-            if (Glyph(r) is { } g) parts.Add(r == BlockRole.GenCell ? $"{g} gen cell=MINE HERE" : $"{g} {Name(r)}");
+            if (Glyph(r) is { } g) parts.Add(r switch
+            {
+                BlockRole.GenCell => $"{g} gen cell=MINE HERE",
+                BlockRole.CropRipe => $"{g} ripe crop=HARVEST",
+                _ => $"{g} {Name(r)}",
+            });
         return string.Join(", ", parts);
     }
 }

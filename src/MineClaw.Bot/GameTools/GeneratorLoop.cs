@@ -50,7 +50,7 @@ public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = nul
     {
         IReadOnlyList<BlockPos> cells = [cell, .. (rotation ?? []).Where(p => p != cell).Distinct()];
         int mined = 0, deposited = 0, fails = 0;
-        bool upgraded = false;
+        bool upgraded = false, replacedWorn = false;
         var notes = new List<string>();
         string? stop = null;
         bool ok = true;
@@ -58,6 +58,14 @@ public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = nul
         {
             ct.ThrowIfCancellationRequested();
             // 1) tool: the loop never digs bare-handed (cobble drops nothing without a pickaxe).
+            // A worn pick (1/131 left) is replaced once before it breaks mid-batch, from storage / chest cobble + sticks.
+            bool worn = !replacedWorn && Loadout.Have(c.World, Loadout.Kinds["pickaxe"]) > 0 && Loadout.HaveUsable(c.World, Loadout.Kinds["pickaxe"]) == 0;
+            if (worn)
+            {
+                replacedWorn = true;
+                var w = await Loadout.FetchAsync(c, _s.Observations, ["pickaxe"], ct).ConfigureAwait(false);
+                if (w.Got.Count > 0) notes.Add(w.Text);
+            }
             if (Loadout.Have(c.World, Loadout.Kinds["pickaxe"]) == 0)
             {
                 var r = await Loadout.FetchAsync(c, _s.Observations, ["pickaxe"], ct).ConfigureAwait(false);

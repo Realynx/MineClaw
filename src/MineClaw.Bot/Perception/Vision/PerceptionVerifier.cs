@@ -69,6 +69,7 @@ public static partial class PerceptionVerifier
         ["chest"] = Blocks.Chest, ["furnace"] = Blocks.Furnace, ["glass"] = Blocks.Glass, ["leaves"] = Blocks.Leaves, ["slab"] = Blocks.Slab,
         ["torch"] = Blocks.Torch, ["workbench"] = Blocks.Workbench, ["bench"] = Blocks.Workbench, ["soul sand"] = Blocks.SoulSand,
         ["water"] = Blocks.Water, ["lava"] = Blocks.Lava, ["door"] = Blocks.WoodenDoor,
+        ["wheat"] = Blocks.Crops, ["crop"] = Blocks.Crops, ["crops"] = Blocks.Crops, ["farmland"] = Blocks.Farmland,
     };
 
     /// <summary>Verifies <paramref name="r"/> against the world. <paramref name="focus"/>/<paramref name="radius"/> bound plausible coordinates.</summary>
@@ -270,6 +271,9 @@ public static partial class PerceptionVerifier
     /// <summary>What the voxels say is at <paramref name="c"/>, in the claim's terms ("gen cell", "water", "cobblestone").</summary>
     private static string Canonical(IBlockAccess w, BlockRole? role, bool air, bool solid, (int X, int Y, int Z) c)
     {
+        // Crops in the voxels' words, stage from the block's metadata: "crop (ripe 7/7)", never a '$'/"protected" reading.
+        if (role is BlockRole.CropRipe or BlockRole.CropGrowing)
+            return RoleClassifier.CropText(w.GetBlock(c.X, c.Y, c.Z), w.GetMeta(c.X, c.Y, c.Z)) ?? BlockRoles.Name(role.Value);
         if (role is { } r && r is not (BlockRole.None or BlockRole.Floor or BlockRole.Wall)) return BlockRoles.Name(r);
         if (air) return "air";
         int id = w.GetBlock(c.X, c.Y, c.Z);
@@ -285,6 +289,8 @@ public static partial class PerceptionVerifier
         if (c.Contains("portal")) return BlockRole.Portal;
         if (c.Contains("void")) return BlockRole.Void;
         if (c.Contains("never-break") || c.Contains("never break")) return BlockRole.NeverBreak;
+        if (Regex.IsMatch(c, @"\b(unripe|not ripe|not fully grown|growing|immature|young)\b")) return BlockRole.CropGrowing;
+        if (Regex.IsMatch(c, @"\b(ripe|fully grown|mature)\b")) return BlockRole.CropRipe;
         if (Regex.IsMatch(c, @"\bfloor\b")) return BlockRole.Floor;
         return null;
     }

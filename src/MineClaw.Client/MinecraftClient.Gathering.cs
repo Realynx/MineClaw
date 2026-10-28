@@ -362,6 +362,14 @@ public sealed partial class MinecraftClient
         var stuckNotes = new List<string>();
         var lastDug = new Dictionary<BlockPos, long>();
         long seq = 0;
+        // A taught stand another bot's (or player's) body is on: walking into it only pushes both of us around (live 10-28:
+        // main "stuck at 7.5,64.5,6.3, can't reach the stand spot 6,64,4" with 1337 standing there). Dig from a free spot.
+        string? standNote = null;
+        if (stand is { } taken && OccupantOf(taken) is { } who)
+        {
+            standNote = $"stand {Fmt(taken)} is taken by {who}: dug from a free spot";
+            stand = null;
+        }
         try
         {
             if (stand is { } st)
@@ -494,12 +502,27 @@ public sealed partial class MinecraftClient
         if (badYield) return ActionResult.Fail(stop + $" (dug {mined}, +{gained})", mined);
         string cellsText = perCell.Count > 1 ? " across " + string.Join(", ", perCell.Select(kv => $"{Fmt(kv.Key)} x{kv.Value}")) : "";
         int lost = Math.Max(0, Math.Min(mined, watch.Drops) - gained - watch.TakenByOthers);
-        string extras = (lost > 0 ? $"; {lost} drop(s) washed into the gen's water/lava (not collected)" : "")
+        string extras = (standNote != null ? "; " + standNote : "")
+                        + (lost > 0 ? $"; {lost} drop(s) washed into the gen's water/lava (not collected)" : "")
                         + (stuckNotes.Count > 0 ? "; " + string.Join("; ", stuckNotes) + " (left it out)" : "")
                         + (watch.SharedText(World.Entities) is { } shared ? "; " + shared : "");
         string msg = $"generator: dug {mined}{cellsText}, +{gained} cobblestone (have {World.Inventory.CountItem(Blocks.Cobblestone)})" + extras
                      + (stop.Length > 0 ? "; " + stop : "");
         return mined > 0 ? ActionResult.Success(msg, mined) : ActionResult.Fail(msg);
+    }
+
+    /// <summary>The other player (hive bot or human) whose body is in the foot cell <paramref name="cell"/> (or its head cell),
+    /// or null: a spot taken by someone else's body is no place to walk to.</summary>
+    internal string? OccupantOf(BlockPos cell)
+    {
+        foreach (var e in World.Entities.All())
+        {
+            if (e.Kind != EntityKind.Player || e.Id == World.Entities.SelfId || e.Id == World.Player.EntityId) continue;
+            var box = AABB.ForPlayer(e.Position);
+            if (box.MaxX > cell.X && box.MinX < cell.X + 1 && box.MaxZ > cell.Z && box.MinZ < cell.Z + 1
+                && box.MaxY > cell.Y && box.MinY < cell.Y + 2) return e.Name ?? "someone";
+        }
+        return null;
     }
 
     /// <summary>How long harvest_generator waits for a dug cell's regen block update before looking closer.</summary>

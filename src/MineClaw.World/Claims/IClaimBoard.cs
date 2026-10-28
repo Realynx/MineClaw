@@ -131,6 +131,10 @@ public interface IClaimBoard
 
     /// <summary>Releases our lease (no-op when we don't hold it).</summary>
     Task ReleaseAsync(ClaimKey key, CancellationToken ct = default);
+
+    /// <summary>Who ELSE holds a live lease conflicting with <paramref name="key"/> (for "held by 1337 ×2" notes); null = free or
+    /// unknown. Fast, local, never throws.</summary>
+    string? HolderOf(ClaimKey key) => null;
 }
 
 /// <summary>No hive: nothing is ever claimed by anyone else.</summary>

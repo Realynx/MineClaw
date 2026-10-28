@@ -56,8 +56,15 @@ public sealed class FakeGame : IGameActions
             World.SetBlock(x, y, z, id, meta);
     }
 
-    public void Set(int x, int y, int z, int id, int meta = 0) => World.SetBlock(x, y, z, id, meta);
-    public void Set(BlockPos p, int id, int meta = 0) => World.SetBlock(p.X, p.Y, p.Z, id, meta);
+    public void Set(int x, int y, int z, int id, int meta = 0)
+    {
+        World.SetBlock(x, y, z, id, meta);
+        Changed?.Invoke(new BlockPos(x, y, z), id, meta);
+    }
+    public void Set(BlockPos p, int id, int meta = 0) => Set(p.X, p.Y, p.Z, id, meta);
+
+    /// <summary>Every block change this fake makes (tests mirror it into other bots' worlds: one shared server world).</summary>
+    public Action<BlockPos, int, int>? Changed { get; set; }
 
     public void Stand(double x, double y, double z) => World.Player.ServerTeleport(new Vec3d(x, y, z), y + 1.62, 0, 0, true);
 

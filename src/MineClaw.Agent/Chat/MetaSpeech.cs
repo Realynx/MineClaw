@@ -111,7 +111,22 @@ public static partial class MetaSpeech
     private static partial Regex SelfReportRx();
 
     /// <summary>A third-person report about its own doings ("I warned Fox that...", "I'm also back on the gen now").</summary>
-    public static bool IsSelfReport(string sentence) => SelfReportRx().IsMatch(sentence ?? "");
+    public static bool IsSelfReport(string sentence) => SelfReportRx().IsMatch(sentence ?? "") || AskWaitRx().IsMatch(sentence ?? "");
+
+    /// <summary>
+    /// Narration of its own asking and waiting (live 10-28 02:1x, clone 67 in public chat: "Asked Fox what he wants built at the
+    /// bridge edge, and I'm waiting for his answer.", "Fox is offering 64 cobble, so I'll wait for him to hand it over and ask
+    /// what the plan is for.", "Asked Fox for the size and type of the build, and waiting on his reply."; "Sent the worker the
+    /// fix"). The question itself ("what's the plan tho? a wall, a platform…?") is real speech and stays.
+    /// </summary>
+    [GeneratedRegex(
+        @"^\W*(?:i\s+(?:just\s+)?|i'?ve\s+|just\s+)?asked\s+(?!you\b|u\b|ya\b|y'?all\b)[\w']+\s+(?:what|for|about|if|whether|which|how|where|when|who|to)\b" +
+        @"|\b(?:i'?m|i\s+am|and|while|still|now|so)?\s*(?:still\s+)?waiting\s+(?:on|for)\s+(?:his|her|their|its|the|an?|[\w']+'s?)\s+(?:\w+\s+)?(?:answer|reply|response|go-?ahead|word|input|decision|call)\b" +
+        @"|^\W*waiting\s+(?:on|for)\s+(?!you\b|u\b|ya\b|y'?all\b)" +
+        @"|\b(?:i'?ll|i\s+will|so\s+i'?ll|gonna)\s+(?:just\s+)?wait\s+for\s+(?:him|her|them|[\w']+)\s+to\b" +
+        @"|\b(?:sent|told|amend(?:ed)?|stopp?(?:ed)?|gave)\s+(?:the|my)\s+worker\b|\b(?:amend|stop|ask)\s+the\s+worker\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex AskWaitRx();
 
     /// <summary>A player line asking for status/progress ("how's it going", "how much cobble", "status?", "done yet?").</summary>
     [GeneratedRegex(

@@ -39,7 +39,18 @@ public static class GameToolSet
         foreach (var x in all)
             if (claims.IsFree(MineClaw.World.Claims.ClaimKey.Block(x, dim)))
                 return (x, $"{Locations.Fmt(asked)} is taken by another bot; took the free cell {Locations.Fmt(x)}");
-        return (null, $"busy: every dig cell of that generator is taken ({Locations.Fmt(asked)}{(all.Count > 0 ? " +" + all.Count : "")})");
+        return (null, $"busy: every dig cell of that generator is taken ({Locations.Fmt(asked)}{(all.Count > 0 ? " +" + all.Count : "")})"
+                      + HeldBy(claims, [asked, .. all], dim));
+    }
+
+    /// <summary>"; no free gen cell: held by 1337 ×2, 69": who holds the cells (live 10-28: one clone held two, the third bot
+    /// mined nothing for 3 min and its script died on an empty deposit instead of naming the cause). "" when unknown.</summary>
+    internal static string HeldBy(MineClaw.World.Claims.IClaimBoard claims, IEnumerable<BlockPos> cells, int dim)
+    {
+        var holders = cells.Distinct().Select(x => claims.HolderOf(MineClaw.World.Claims.ClaimKey.Block(x, dim))).OfType<string>()
+            .GroupBy(Short).Select(g => g.Count() > 1 ? $"{g.Key} ×{g.Count()}" : g.Key).ToList();
+        return holders.Count == 0 ? "" : "; no free gen cell: held by " + string.Join(", ", holders);
+        static string Short(string n) => n.LastIndexOf('_') is var i and >= 0 && n[(i + 1)..].All(char.IsDigit) && i + 1 < n.Length ? n[(i + 1)..] : n;
     }
 
     /// <summary>
@@ -105,8 +116,11 @@ public static class GameToolSet
         if (list.Count == 0) return (null, "needs_input: no known generator cell for at=auto; punch the gen's cells and I'll mine only those");
         var claims = GameClients.Claimed(c)?.Claims;
         int dim = c.World.Dimension;
+        // One cell per bot: the cell this bot already works stays its cell (never a second lease on top of it).
+        if (GameClients.Claimed(c) is { GenCell: { } mineNow } && list.Contains(mineNow)) return (mineNow, $"auto: cell {Locations.Fmt(mineNow)} (mine already)");
         var free = claims == null ? list[0] : list.FirstOrDefault(x => claims.IsFree(MineClaw.World.Claims.ClaimKey.Block(x, dim)), list[0]);
-        return (free, $"auto: cell {Locations.Fmt(free)}");
+        bool none = claims != null && !claims.IsFree(MineClaw.World.Claims.ClaimKey.Block(free, dim));
+        return (free, $"auto: cell {Locations.Fmt(free)}" + (none ? HeldBy(claims!, list, dim) : ""));
     }
 
     /// <summary>Lava and water next to it (geometry), or one of the generator's taught / regen-confirmed cells.</summary>
@@ -356,8 +370,10 @@ public static class GameToolSet
                         else return ToolResult.Error($"unknown item '{n}'");
                     filter = s => ids.Contains(s.Id);
                 }
-                if (asked is { } chosen) return R(await c.DepositAllAsync(chosen, filter, ct));
-                return await DepositAnywhereAsync(c, generator?.Observations, filter, ct);
+                // An empty inventory is a done deposit, like eating when full (live 10-28: clone 67's gen script died on line 5
+                // "nothing to deposit" after 3 min of mining 0, hiding the real cause: no free gen cell).
+                var dr = asked is { } chosen ? R(await c.DepositAllAsync(chosen, filter, ct)) : await DepositAnywhereAsync(c, generator?.Observations, filter, ct);
+                return !dr.Ok && dr.Text.StartsWith("nothing to deposit", StringComparison.Ordinal) ? ToolResult.Success(dr.Text) : dr;
             }, longRunning: true);
         tools.Register("withdraw", "Take items from a chest (nearest if omitted).",
             ToolSchema.Create().Str("item").Int("count", "default 64", required: false).Str("at", At, required: false).Build(),
