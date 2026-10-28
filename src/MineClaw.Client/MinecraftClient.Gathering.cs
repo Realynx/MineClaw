@@ -45,16 +45,61 @@ public sealed partial class MinecraftClient
         }
     }
 
-    /// <summary>Standing cells from which a drop at <paramref name="item"/> is picked up without going near an edge.</summary>
+    /// <summary>
+    /// Standing cells from which a drop at <paramref name="item"/> is picked up without going near an edge or lava. Reach is
+    /// mc-dev's (EntityHuman.java:308, <see cref="ItemEntityRules.InPickupRange"/>): the player box grown by (1, 0, 1) from
+    /// the spot's real feet height (a slab stand is half a block higher: an item on the floor beside it is out of range), with
+    /// the body anywhere inside its foot cell. Live 10-28: 630 gen drops "not chased" from 880 digs; they lay in the gen's
+    /// water corners (6.2,64.1,7.9 / 5.3,64.1,6.8) 1.375 from the pit 7,63,8 and the nook 4,64,5, i.e. in reach (1.425), but
+    /// the old ±1.3-from-the-cell-centre test wrote them off. Flowing water is no hazard to stand in (b1.8.1 water doesn't hurt);
+    /// lava within a block still is.
+    /// </summary>
     private Goal SafePickupGoal(Vec3d item)
     {
         var cell = new BlockPos((int)Math.Floor(item.X), (int)Math.Floor(item.Y + 0.1), (int)Math.Floor(item.Z));
         return new GoalFiltered(new GoalNear(cell, 2), (x, y, z) =>
-                Math.Abs(x + 0.5 - item.X) <= 1.3 && Math.Abs(z + 0.5 - item.Z) <= 1.3 && Math.Abs(y - item.Y) <= 1.2
+                PickupPoint(x, y, z, item) is not null
                 && Safety.EdgeDistance(World, x, y, z, 2) >= 2 && !Safety.LavaNear(World, x, y, z)
-                && !BlockShapes.IsWater(World.GetBlock(x, y, z)) // never wade into a generator's water channel for a drop
                 && World.GetBlock(x, y - 1, z) != Blocks.Leaves, // never walk out onto a crown for a drop
             "safe pickup spot");
+    }
+
+    /// <summary>
+    /// Where in foot cell (x,y,z) the body touches the drop at <paramref name="item"/> (mc-dev pickup box), the cell centre
+    /// first, else the point of the cell nearest the item (the box stays inside the cell); null = not from this cell.
+    /// </summary>
+    private Vec3d? PickupPoint(int x, int y, int z, Vec3d item)
+    {
+        if (StandFeet(x, y, z) is not { } feet) return null;
+        // Wading is fine, but never with the head under the gen's falling water (it pushes the body about next to the cells).
+        if (BlockShapes.IsWater(World.GetBlock(x, (int)Math.Floor(feet + PlayerPhysics.EyeHeight), z))) return null;
+        var centre = new Vec3d(x + 0.5, feet, z + 0.5);
+        if (ItemEntityRules.InPickupRange(centre, item)) return centre;
+        const double Inset = PlayerPhysics.Width / 2 + 0.02;
+        var edge = new Vec3d(Math.Clamp(item.X, x + Inset, x + 1 - Inset), feet, Math.Clamp(item.Z, z + Inset, z + 1 - Inset));
+        return ItemEntityRules.InPickupRange(edge, item) ? edge : null;
+    }
+
+    /// <summary>
+    /// Arrived on a pickup spot but the drop is still a little out of the pickup box (it lies off the cell centre): sneak toward
+    /// it inside the foot cell (sneaking never steps off an edge) until it is in range, at most ~12 ticks.
+    /// </summary>
+    private async Task LeanToDropAsync(int id, CancellationToken ct)
+    {
+        var start = FeetCell();
+        int ticks = 0;
+        await DriveAsync(phys =>
+        {
+            ticks++;
+            var e = World.Entities.Get(id);
+            var p = phys.Position;
+            var at = new BlockPos((int)Math.Floor(p.X), (int)Math.Floor(p.Y + 1e-6), (int)Math.Floor(p.Z));
+            float yaw = e is null ? phys.Yaw : PlayerPhysics.YawPitchTo(p, new Vec3d(e.Position.X, p.Y, e.Position.Z)).Yaw;
+            bool done = e is null || ticks > 12 || ItemEntityRules.InPickupRange(p, e.Position) || at.X != start.X || at.Z != start.Z;
+            return done
+                ? new DriverStep(new MoveInput(Sneak: true, Yaw: yaw, Pitch: 40), Done: true)
+                : new DriverStep(new MoveInput(Forward: 1, Sneak: true, Yaw: yaw, Pitch: 40));
+        }, ct).ConfigureAwait(false);
     }
 
     /// <summary>Whether some standable cell can pick up the drop at <paramref name="item"/> safely.</summary>
@@ -73,8 +118,12 @@ public sealed partial class MinecraftClient
         for (int y = cy - 1; y <= cy + 1; y++)
         for (int z = cz - 2; z <= cz + 2; z++)
             if (PickupStandable(x, y, z) && goal.IsReached(x, y, z)) return null;
-        return HazardAround(cx, cy, cz) ? "in lava/water (hazard)" : "next to the void";
+        if (Safety.LavaNear(World, cx, cy, cz)) return "in lava/water (hazard)";
+        return HazardAround(cx, cy, cz) ? "in the gen's water, no safe spot in pickup reach (hazard)" : "next to the void";
     }
+
+    /// <summary>How long a fresh drop with no pickup spot yet may still move (regen push-out, water flow) before it is written off.</summary>
+    public TimeSpan DropSettleTime { get; set; } = TimeSpan.FromSeconds(2);
 
     /// <summary>
     /// A foot cell a drop can be fetched from: plain ground (<see cref="Safety.IsStandable"/>), or ON a bottom slab in that
@@ -125,6 +174,7 @@ public sealed partial class MinecraftClient
         ISet<int>? lostIds = null, ISet<int>? stuckIds = null)
     {
         var skip = new HashSet<int>();
+        var settled = new HashSet<int>();
         int picked = 0, lost = 0, lostItems = 0, stuck = 0, hazard = 0;
         int startCount = TotalItems();
         var origin = around ?? World.Player.Position;
@@ -150,6 +200,14 @@ public sealed partial class MinecraftClient
                         Log($"collect: {drop.DisplayName} at {Fmt(drop.Position)} is lying on the leaves at {Fmt(leaf)} (out of reach, not lost)");
                     continue;
                 }
+                if (LostDropReason(drop.Position) is not null && DateTime.UtcNow - drop.SpawnedAt < DropSettleTime && settled.Add(id))
+                {
+                    // A fresh gen drop is still moving: it lies in the just-dug cell until the regen pushes it out (mc-dev
+                    // Entity.g pushOutOfBlocks) and the water carries it to a corner. Give it a moment to settle, then look again.
+                    var left = DropSettleTime - (DateTime.UtcNow - drop.SpawnedAt);
+                    await WaitUntilAsync(() => World.Entities.Get(id) is not { } e || LostDropReason(e.Position) is null, left, ct).ConfigureAwait(false);
+                    continue;
+                }
                 if (LostDropReason(drop.Position) is { } why)
                 {
                     skip.Add(id);
@@ -164,6 +222,9 @@ public sealed partial class MinecraftClient
                 var g = await GotoCoreAsync(SafePickupGoal(drop.Position), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(15), MaxReplans = 1 }, ct)
                     .ConfigureAwait(false);
                 if (!g.Ok && World.Entities.Get(id) is not null) { skip.Add(id); continue; }
+                // The spot touches the drop only off its centre (a corner of the gen's water): lean into range.
+                if (World.Entities.Get(id) is { } d2 && !ItemEntityRules.InPickupRange(World.Player.Position, d2.Position))
+                    await LeanToDropAsync(id, ct).ConfigureAwait(false);
             }
             // A freshly thrown item (player hand-off) has a 40-tick pickup delay: wait it out on top of the usual 1.5 s.
             var wait = TimeSpan.FromSeconds(1.5) + ItemEntityRules.RemainingPickupDelay(DateTime.UtcNow - drop.SpawnedAt);

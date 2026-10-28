@@ -127,12 +127,41 @@ public static class InventoryLedgerTools
                      "chop_tree", "mine", "harvest_generator", "dig", "collect_drops", "goto", "follow" })
         {
             if (!tools.TryGet(name, out var inner)) continue;
+            bool gen = name == "harvest_generator";
             tools.Replace(new WrappedTool(inner, null, async (input, ct) =>
             {
-                using var _ = ToolCause(name, input) is { } cause ? ledger().Scope(cause) : null;
-                return await inner.ExecuteAsync(input, ct).ConfigureAwait(false);
+                var l = ledger();
+                var since = DateTimeOffset.UtcNow;
+                int before = gen ? HarvestedCobble(l, since) : 0;
+                ToolResult r;
+                using (ToolCause(name, input) is { } cause ? l.Scope(cause) : null)
+                    r = await inner.ExecuteAsync(input, ct).ConfigureAwait(false);
+                return gen ? r with { Text = LedgerCount(r.Text, HarvestedCobble(l, since) - before) } : r;
             }));
         }
+    }
+
+    /// <summary>Cobblestone the ledger booked as gained by a harvest (picked up, or unattributed gains in its scope) in entries
+    /// that can still merge with changes after <paramref name="since"/> (entries grow in place within the merge window).</summary>
+    private static int HarvestedCobble(InventoryLedger ledger, DateTimeOffset since)
+    {
+        var from = since - ledger.MergeWindow - TimeSpan.FromSeconds(1);
+        return ledger.Entries.Where(e => e.ItemId == Blocks.Cobblestone && e.Delta > 0 && e.At >= from
+                                         && (e.Cause.StartsWith("picked up", StringComparison.Ordinal) || e.Cause == "harvest_generator"))
+            .Sum(e => e.Delta);
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex GenCountRx = new(@"\bgenerator: (\d+)/(\d+) cobblestone\b");
+
+    /// <summary>
+    /// The task result states the cobble the ledger saw arrive (live 10-28: "dug 64/64, stored 4" became "I mined all 64"):
+    /// "generator: 7/64 cobblestone ..." keeps the smaller of the loop's own count and the ledger's.
+    /// </summary>
+    internal static string LedgerCount(string text, int ledgerGained)
+    {
+        var m = GenCountRx.Match(text);
+        if (!m.Success || ledgerGained < 0 || ledgerGained >= int.Parse(m.Groups[1].Value)) return text;
+        return text[..m.Groups[1].Index] + ledgerGained + text[(m.Groups[1].Index + m.Groups[1].Length)..];
     }
 
     /// <summary><c>inventory {item}</c>: that item's count now plus where it came from / went this session.</summary>

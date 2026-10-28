@@ -30,7 +30,7 @@ public sealed record GeneratorSupport(ObservationStore? Observations = null, Act
 /// <item>the cell doesn't yield cobble (wrong block) → stop at once, never dig on.</item>
 /// </list>
 /// </summary>
-public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = null)
+public sealed partial class GeneratorLoop(IGameClient c, GeneratorSupport? support = null)
 {
     private readonly GeneratorSupport _s = support ?? new GeneratorSupport();
 
@@ -49,12 +49,15 @@ public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = nul
         IReadOnlyList<BlockPos>? rotation = null)
     {
         IReadOnlyList<BlockPos> cells = [cell, .. (rotation ?? []).Where(p => p != cell).Distinct()];
-        int mined = 0, deposited = 0, fails = 0;
+        // Live 10-28: "dug 64/64, stored 4 cobblestone" read as "I mined all 64". The target is cobble, not digs: count what
+        // each batch really gained (the client's "+N cobblestone", its inventory delta) and dig until that reaches the target.
+        int mined = 0, gained = 0, lostDrops = 0, deposited = 0, fails = 0;
+        var started = DateTime.UtcNow;
         bool upgraded = false, replacedWorn = false;
         var notes = new List<string>();
         string? stop = null;
         bool ok = true;
-        while (mined < count && stop == null)
+        while (gained < count && stop == null)
         {
             ct.ThrowIfCancellationRequested();
             // 1) tool: the loop never digs bare-handed (cobble drops nothing without a pickaxe).
@@ -80,11 +83,14 @@ public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = nul
                 deposited += d.Count;
                 if (d.Message.Contains("placed", StringComparison.Ordinal)) notes.Add(d.Message);
             }
+            int want = Math.Min(Batch, count - gained), invBefore = c.World.Inventory.CountItem(Blocks.Cobblestone);
             var res = cells.Count > 1
-                ? await c.HarvestGeneratorAsync(cells, Math.Min(Batch, count - mined), stand, ct).ConfigureAwait(false)
+                ? await c.HarvestGeneratorAsync(cells, want, stand, ct).ConfigureAwait(false)
                 : stand is { } st
-                    ? await c.HarvestGeneratorAsync(cell.X, cell.Y, cell.Z, Math.Min(Batch, count - mined), st, ct).ConfigureAwait(false)
-                    : await c.HarvestGeneratorAsync(cell.X, cell.Y, cell.Z, Math.Min(Batch, count - mined), ct).ConfigureAwait(false);
+                    ? await c.HarvestGeneratorAsync(cell.X, cell.Y, cell.Z, want, st, ct).ConfigureAwait(false)
+                    : await c.HarvestGeneratorAsync(cell.X, cell.Y, cell.Z, want, ct).ConfigureAwait(false);
+            gained += BatchGain(res.Message) ?? Math.Max(0, c.World.Inventory.CountItem(Blocks.Cobblestone) - invBefore);
+            lostDrops += LostRx().Match(res.Message) is { Success: true } lm ? int.Parse(lm.Groups[1].Value) : 0;
             if (stand != null && res.Count == 0 && res.Message.Contains("taught stand spot", StringComparison.Ordinal))
             {
                 stop = res.Message; // never dig the cell from anywhere but where the player showed
@@ -140,8 +146,16 @@ public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = nul
             if (res.Count > 0)
             {
                 fails = 0;
+                // Digging on while the drops are lost only wears the pickaxe out: stop and say what happened to them.
+                if ((mined >= StallDigs && gained * 2 < mined) || (gained < count && mined >= count * 2 + StallDigs))
+                {
+                    stop = $"stalled: {mined} digs gave {gained} cobble ("
+                           + (lostDrops > 0 ? $"{lostDrops} drop(s) washed into the gen's water/lava, not collected)" : "the drops never reached my inventory)");
+                    ok = false;
+                    break;
+                }
                 // Took a wood pick to get going: upgrade to stone as soon as the gen's cobble allows it (one craft, no walking).
-                if (!upgraded && mined < count && await Acquisition.Planner(c, _s.Observations).UpgradeIfCheapAsync("pickaxe", ct).ConfigureAwait(false) is { } up)
+                if (!upgraded && gained < count && await Acquisition.Planner(c, _s.Observations).UpgradeIfCheapAsync("pickaxe", ct).ConfigureAwait(false) is { } up)
                 {
                     upgraded = true;
                     notes.Add(up);
@@ -165,11 +179,30 @@ public sealed class GeneratorLoop(IGameClient c, GeneratorSupport? support = nul
             }
             catch (OperationCanceledException) { /* cancelled: keep the partial result */ }
         }
-        var text = $"generator: dug {mined}/{count} at {cell.X},{cell.Y},{cell.Z}" + (deposited > 0 ? StoredText() : "")
+        // "generator: 7/64 cobblestone in 2m10s (dug 9 at 5,64,7), stored ...": the count is cobble gained, never digs.
+        var text = $"generator: {gained}/{count} cobblestone in {Duration(DateTime.UtcNow - started)} (dug {mined} at {cell.X},{cell.Y},{cell.Z})"
+                   + (deposited > 0 ? StoredText() : "")
                    + $" (have {c.World.Inventory.CountItem(Blocks.Cobblestone)} cobblestone)"
+                   + (lostDrops > 0 && stop?.StartsWith("stalled", StringComparison.Ordinal) != true ? $"; {lostDrops} drop(s) washed into the gen's water/lava (not collected)" : "")
                    + (notes.Count > 0 ? "; " + string.Join("; ", notes.Distinct().Take(3)) : "") + (stop != null ? "; " + stop : "");
         return ok ? ActionResult.Success(text, mined) : ActionResult.Fail(text, mined);
     }
+
+    /// <summary>Digs before the stall check may stop a run whose drops don't arrive (fewer than half).</summary>
+    public int StallDigs { get; init; } = 16;
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"\+(\d+) cobblestone\b")]
+    private static partial System.Text.RegularExpressions.Regex GainRx();
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"\b(\d+) drop\(s\) washed into")]
+    private static partial System.Text.RegularExpressions.Regex LostRx();
+
+    /// <summary>The client batch's own "+N cobblestone" (its inventory delta), or null when the text doesn't say.</summary>
+    internal static int? BatchGain(string message) => GainRx().Match(message) is { Success: true } m ? int.Parse(m.Groups[1].Value) : null;
+
+    /// <summary>"45s", "2m10s", "1h05m".</summary>
+    internal static string Duration(TimeSpan t) =>
+        t.TotalHours >= 1 ? $"{(int)t.TotalHours}h{t.Minutes:00}m" : t.TotalMinutes >= 1 ? $"{(int)t.TotalMinutes}m{t.Seconds:00}s" : $"{Math.Max(0, (int)t.TotalSeconds)}s";
 
     /// <summary>
     /// Everything but tools/food/reserved into storage: the store chest, else every known chest (with room in memory first,

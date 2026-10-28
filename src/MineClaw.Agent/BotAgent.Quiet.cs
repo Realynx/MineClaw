@@ -107,6 +107,7 @@ public sealed partial class BotAgent
 
     private void KeepInternal(string text)
     {
+        text = CorrectCounts(text);
         _log.LogInformation("[internal] {Text}", text);
         try { Muted?.Invoke(text); } catch (Exception) { }
         try { InternalSpeech?.Invoke(text); } catch (Exception) { }

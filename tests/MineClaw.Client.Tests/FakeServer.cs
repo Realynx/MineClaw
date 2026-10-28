@@ -104,6 +104,8 @@ internal sealed class FakeServer : IDisposable
     public ConcurrentDictionary<int, (double X, double Y, double Z, ItemStack Item)> Drops { get; } = new();
     /// <summary>Drop an item entity here whenever a block is dug.</summary>
     public bool DropOnDig { get; set; }
+    /// <summary>Pickups use mc-dev's vertical box overlap too (EntityHuman.java:308), not just a loose 1.5 height window.</summary>
+    public bool StrictPickup { get; set; }
     /// <summary>Block metadata (wood type of logs/leaves...); sent in chunks and block changes.</summary>
     public Dictionary<(int, int, int), int> Metas { get; } = new();
     /// <summary>With <see cref="DropOnDig"/>: what a dug block drops (null = nothing); default = the block itself (stone → cobble).
@@ -131,6 +133,10 @@ internal sealed class FakeServer : IDisposable
     public HashSet<(int, int, int)> Locked { get; } = new();
     /// <summary>Signs the server refuses to update (not editable).</summary>
     public bool SignsLocked { get; set; }
+    /// <summary>Two fake servers standing in for one world (two bodies on one server): they share this lock, and every block a
+    /// client places or digs is handed to <see cref="Mirror"/> (the other server's <see cref="SetBlock"/>).</summary>
+    public object BlockLock { get; set; } = new();
+    public Action<int, int, int, int, int>? Mirror { get; set; }
     /// <summary>Server tick count at which the bow draw started (0x0F use with a bow), or -1.</summary>
     private int _drawStartTicks = -1;
     private int _flyingPackets;
@@ -186,8 +192,11 @@ internal sealed class FakeServer : IDisposable
             while (_conn.ReadPacket() is { } p)
             {
                 Received.Enqueue(p);
-                MaybeConfirm(p);
-                Handle(p);
+                lock (BlockLock)
+                {
+                    MaybeConfirm(p);
+                    Handle(p);
+                }
             }
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException or ProtocolException or TimeoutException)
@@ -261,6 +270,7 @@ internal sealed class FakeServer : IDisposable
                     Blocks.Remove((dig.X, dig.Y, dig.Z));
                     if (was != 0) Dug.Enqueue((dig.X, dig.Y, dig.Z, was));
                     Send(new BlockChangePacket { X = dig.X, Y = dig.Y, Z = dig.Z, BlockId = 0, Metadata = 0 });
+                    Mirror?.Invoke(dig.X, dig.Y, dig.Z, 0, 0);
                     if (DigDrop is not null) SettleDrops(dig.X, dig.Y, dig.Z);
                     if (DropOnDig && was != 0)
                     {
@@ -336,6 +346,7 @@ internal sealed class FakeServer : IDisposable
                     int meta = place.HeldItem.Id is MineClaw.Data.Blocks.Sapling or MineClaw.Data.Blocks.Log or MineClaw.Data.Blocks.Wool ? place.HeldItem.Damage : 0;
                     if (meta != 0) Metas[(x, y, z)] = meta;
                     Send(new BlockChangePacket { X = x, Y = y, Z = z, BlockId = (byte)place.HeldItem.Id, Metadata = (byte)meta });
+                    Mirror?.Invoke(x, y, z, place.HeldItem.Id, meta);
                     if (ConsumeOnPlace)
                     {
                         var h = place.HeldItem;
@@ -417,6 +428,8 @@ internal sealed class FakeServer : IDisposable
             // (0.3 + 1 + item half-width 0.125 per axis).
             double dx = d.X - x, dz = d.Z - z;
             if (Math.Abs(dx) > 1.425 || Math.Abs(dz) > 1.425 || Math.Abs(d.Y - y) > 1.5) continue;
+            // mc-dev box overlap on y too (the item box ±0.125 against feet..feet+1.8): a slab stand misses floor drops.
+            if (StrictPickup && (d.Y + 0.125 <= y || d.Y - 0.125 >= y + 1.8)) continue;
             if (!Drops.TryRemove(id, out _)) continue;
             int slot = Array.FindIndex(Inventory, 36, 9, s => s.IsEmpty || s.Id == d.Item.Id);
             if (slot < 0) slot = Array.FindIndex(Inventory, 9, 27, s => s.IsEmpty || s.Id == d.Item.Id);

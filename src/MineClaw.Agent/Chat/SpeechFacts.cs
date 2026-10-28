@@ -94,6 +94,57 @@ public static partial class SpeechFacts
         });
     }
 
+    /// <summary>What a task result says it really got: "generator: 4/64 cobblestone in 4m15s (dug 64 at 5,64,7)".</summary>
+    public readonly record struct TaskCount(string Item, int Actual, int Target, int? Dug);
+
+    [GeneratedRegex(@"\b(\d+)/(\d+) (cobblestone|cobble)\b(?:[^;]*?\(dug (\d+)\b)?", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex TaskCountRx();
+
+    /// <summary>The counts the turn's task results state (ledger-checked by the tool layer), newest last.</summary>
+    public static IReadOnlyList<TaskCount> TaskCounts(IEnumerable<Events.GameEvent> events)
+    {
+        var list = new List<TaskCount>();
+        foreach (var e in events)
+        {
+            if (e.Kind is not (Events.EventKind.TaskCompleted or Events.EventKind.TaskFailed)) continue;
+            foreach (Match m in TaskCountRx().Matches(e.Text ?? ""))
+                list.Add(new TaskCount("cobble", int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value),
+                    m.Groups[4].Success ? int.Parse(m.Groups[4].Value) : null));
+        }
+        return list;
+    }
+
+    [GeneratedRegex(@"\b(?<verb>mined|dug|got|gathered|collected|harvested|grabbed|made|finished|completed|stored|deposited|brought|delivered)\s+(?<q>(?:all\s+(?:the\s+|of\s+the\s+)?|another\s+|the\s+|a\s+full\s+)?)(?<n>\d+)\b(?<rest>\s+[A-Za-z]+)?",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex CountClaimRx();
+
+    private static readonly HashSet<string> CountWords = new(StringComparer.OrdinalIgnoreCase)
+        { "cobble", "cobblestone", "cobbles", "more", "of", "for", "blocks", "and", "but", "at", "from", "in", "this", "that", "so", "now", "today" };
+
+    /// <summary>
+    /// Honesty guard for public and internal text (live 10-28 06:49: "I mined all 64, but again only 4 cobble ended up in the
+    /// chest" after "[task ok] harvest_generator: dug 64/64, stored 4"): a claim that the bot got more of a task's item than
+    /// its result states ("mined all 64", "finished the 24") becomes the real count ("mined only 4 of the 64"). "Dug 64" stays
+    /// when it really dug 64; other items' numbers are untouched.
+    /// </summary>
+    public static string CorrectCounts(string text, IReadOnlyList<TaskCount> facts, List<string>? corrected = null)
+    {
+        if (string.IsNullOrWhiteSpace(text) || facts.Count == 0) return text;
+        return CountClaimRx().Replace(text, m =>
+        {
+            int n = int.Parse(m.Groups["n"].Value);
+            string next = m.Groups["rest"].Success ? m.Groups["rest"].Value.Trim() : "";
+            var fact = facts.LastOrDefault(f => f.Target == n);
+            bool countWord = next.Length == 0 || CountWords.Contains(next) || next.StartsWith("cobble", StringComparison.OrdinalIgnoreCase);
+            if (fact == default && countWord) fact = facts[^1];
+            if (fact == default || n <= fact.Actual) return m.Value;
+            if (m.Groups["verb"].Value.Equals("dug", StringComparison.OrdinalIgnoreCase) && fact.Dug is { } dug && n <= dug) return m.Value;
+            string fixedText = $"{m.Groups["verb"].Value} only {fact.Actual} of the {n}{m.Groups["rest"].Value}";
+            corrected?.Add($"{m.Value} -> {fixedText}");
+            return fixedText;
+        });
+    }
+
     private static string MapSentences(string text, Func<string, string> map)
     {
         var lines = new List<string>();

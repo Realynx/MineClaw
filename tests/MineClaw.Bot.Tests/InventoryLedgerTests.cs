@@ -138,4 +138,31 @@ public class InventoryLedgerTests
     [InlineData("Oak Wood", "slabs", false)]
     public void Item_names_match_loosely(string name, string query, bool match) =>
         Assert.Equal(match, InventoryLedger.Matches(name, query));
+
+    [Fact]
+    public void A_partial_take_that_puts_the_rest_of_the_stack_back_is_one_net_take_not_used_during_withdraw()
+    {
+        // Live 10-28 06:49:46: "+64 Cobblestone: taken from a chest" then "-58 Cobblestone: used during withdraw" for a take of 6
+        // (the whole stack on the cursor, the rest put back; no slab was crafted).
+        var (l, c) = New((Cobble, 0, 0));
+        string? action = "withdraw";
+        l.CurrentAction = () => action;
+        l.Observe(Inv((Cobble, 0, 64)));
+        c.Advance(0.5);
+        l.Flush();
+        l.Observe(Inv((Cobble, 0, 6)));
+        c.Advance(0.5);
+        action = null;
+        var e = Assert.Single(l.History("cobble"));
+        Assert.Equal(6, e.Delta);
+        Assert.Equal("taken from a chest", e.Cause);
+        Assert.DoesNotContain(l.Entries, x => x.Cause.Contains("used during withdraw", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("generator: 64/64 cobblestone in 4m15s (dug 64 at 5,64,7)", 4, "generator: 4/64 cobblestone in 4m15s (dug 64 at 5,64,7)")]
+    [InlineData("generator: 7/64 cobblestone in 2m10s (dug 9 at 5,64,7)", 9, "generator: 7/64 cobblestone in 2m10s (dug 9 at 5,64,7)")]
+    [InlineData("standing by: no free gen cell", 0, "standing by: no free gen cell")]
+    public void The_gen_task_result_states_the_ledgers_cobble_count(string text, int ledger, string expected) =>
+        Assert.Equal(expected, InventoryLedgerTools.LedgerCount(text, ledger));
 }

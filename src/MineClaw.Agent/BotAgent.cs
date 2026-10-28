@@ -426,6 +426,7 @@ public sealed partial class BotAgent
         Latency?.BeginTurn(chatTurn);
         if (chatTurn) Latency?.NoteEffort(effort ?? _options.Llm.EffortFor(tier));
         TurnStartedAt = _time.GetUtcNow();
+        _turnEvents = episode.Events; // the honesty guard checks counts against this turn's task results
         // Two-phase replies: streamed brain lines go out as they finish; a quick ack if the brain is slow to say anything.
         using var speech = new TurnSpeech(ct);
         var cx = new SpeechCtx(episode.Events, said, audience, () => whisperTo, episode.IsTest);
@@ -668,6 +669,7 @@ public sealed partial class BotAgent
             _early.Clear();
             Interlocked.Exchange(ref _earlyChains, 0);
             TurnStartedAt = null;
+            _turnEvents = null;
             // A speculative walk the brain neither adopted nor replaced: it decided otherwise (talk, a question) — stop it.
             if (_activities.CancelSpeculative("not adopted by the brain")) _log.LogDebug("speculative step cancelled: not adopted");
             Latency?.EndTurn(workPending: _activities.IsBusy);
@@ -696,6 +698,7 @@ public sealed partial class BotAgent
         try
         {
             text = SpeechFacts.DropStalePresence(text, _chat.OnlinePlayers, _chat.JoinedSince(since), dropped);
+            text = CorrectCounts(text);
             if (_activities.Current is { } cur && cur.Started >= since)
             {
                 bool moving = cur.Kind == ActivityKind.Move || (cur.Steps.Count > 0 && cur.Steps.All(st => ActivityManager.MovementTools.Contains(st.Tool)));
@@ -712,6 +715,27 @@ public sealed partial class BotAgent
         catch (Exception ex) { _log.LogWarning(ex, "speech fact check failed"); }
         foreach (var d in dropped) _log.LogInformation("[stale claim suppressed] {Line}", d);
         return text.Trim();
+    }
+
+    /// <summary>The running turn's events (task results included), null when idle.</summary>
+    private List<GameEvent>? _turnEvents;
+
+    /// <summary>
+    /// Honesty guard (live 10-28 06:49 "I mined all 64" after a task that got 4): a count claim larger than the turn's task
+    /// result states is corrected to the real one, in public and internal text alike.
+    /// </summary>
+    private string CorrectCounts(string text)
+    {
+        var events = _turnEvents;
+        if (events is null || string.IsNullOrWhiteSpace(text)) return text;
+        List<GameEvent> snap;
+        lock (events) snap = events.ToList();
+        var facts = SpeechFacts.TaskCounts(snap);
+        if (facts.Count == 0) return text;
+        var fixes = new List<string>();
+        var r = SpeechFacts.CorrectCounts(text, facts, fixes);
+        foreach (var f in fixes) _log.LogInformation("[count corrected] {Fix}", f);
+        return r;
     }
 
     /// <summary>When the brain's current turn started (null = idle). The brainstem's "thinking" fidget reads it.</summary>

@@ -106,7 +106,7 @@ public class AcquisitionTests
         int cobble = calls.IndexOf("generator 5,65,0 3"), stonePick = calls.IndexOf($"craft {Items.StonePickaxe} 1");
         Assert.True(chop >= 0 && chop < woodPick && woodPick < cobble && cobble < stonePick, i.Calls);
         Assert.Contains("generator 5,65,0 8", calls);   // and then it mines
-        Assert.Contains("dug 8/8", r.Text);
+        Assert.Contains("generator: 8/8 cobblestone", r.Text);
         // The plan line, once, and in the result.
         var plan = Assert.Single(i.Plans);
         Assert.Equal("no pick, making one: logs→planks→sticks→table→wood pick→3 cobble→stone pick", plan);

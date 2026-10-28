@@ -94,7 +94,8 @@ public class OvernightTests
         var r = await loop.RunAsync(new WPos(6, 64, 8), 198, store, default);
         var calls = string.Join(" | ", c.CallList);
         Assert.True(r.Ok, r.Message);
-        Assert.StartsWith("generator: dug 198/198 at 6,64,8", r.Message);
+        Assert.StartsWith("generator: 198/198 cobblestone in ", r.Message);
+        Assert.Contains("(dug 198 at 6,64,8)", r.Message);
         Assert.Contains("deposit 14,64,-5 filter=True", calls);            // full → the store chest, then on
         Assert.Contains($"withdraw {Items.IronPickaxe} 1 2,64,0", calls);  // broke → a spare from storage, then on
         Assert.Contains("iron pickaxe from 2,64,0", r.Message);

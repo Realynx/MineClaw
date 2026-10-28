@@ -64,11 +64,12 @@ public class LiveGenHarvestTests
     public async Task Drops_washed_into_the_water_never_blame_the_cell()
     {
         // Every drop lands deep in the water channel (live 21:41:21 "6,64.1,6.9"), out of reach: the old guard saw 0 cobble from
-        // 8 digs and "proved" the real cell wrong. The drops did appear, so the cell is regenerating.
+        // 8 digs and "proved" the real cell wrong. The drops did appear, so the cell is regenerating. (6.0,64.1,6.9 itself is in
+        // mc-dev pickup reach from 7,64,5 since 10-28; this one lies on top of the middle cell under the roof, live "5.5,65.1,7.1".)
         var (c, s) = await Harness.StartAsync(srv =>
         {
             LiveGen(srv);
-            srv.DigDrop = (_, _, _) => { srv.SpawnDrop(6.0, 64.1, 6.9, Harness.Stack(Blocks.Cobblestone, 1)); return null; };
+            srv.DigDrop = (_, _, _) => { srv.SpawnDrop(5.5, 65.1, 7.5, Harness.Stack(Blocks.Cobblestone, 1)); return null; };
         });
         await using var _ = c;
         using var __ = s;

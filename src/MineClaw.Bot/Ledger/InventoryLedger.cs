@@ -145,6 +145,11 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
             var p = _pending[i];
             if (!force && now - p.At < Settle) { i++; continue; }
             _pending.RemoveAt(i);
+            if (p.Scope != Correction && CounterMove(p.At, p.Id, p.Damage, p.Delta, p.Action) is { } net)
+            {
+                if (net.Delta != 0) raised.Add(net);
+                continue;
+            }
             var e = Record(new LedgerEntry(p.At, p.Id, p.Damage, p.Delta, CauseOf(p.At, p.Id, p.Delta, p.Scope, p.Action, p.Container)));
             raised.Add(e);
         }
@@ -201,6 +206,7 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
         ("craft", false) => "crafted",
         ("deposit", true) => "deposited into a chest",
         ("withdraw", false) => "taken from a chest",
+        ("withdraw", true) => "put back into the chest (the rest of a stack I picked up)",
         ("place", true) or ("build", true) => "placed as a block",
         ("goto", true) or ("follow", true) => "placed while moving (bridge/pillar block)",
         ("eat", true) => "eaten",
@@ -209,6 +215,29 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
         ("chop", true) => "placed by chop_tree (pillar/replant)",
         _ => $"{(delta < 0 ? "used" : "gained")} during {action}",
     };
+
+    /// <summary>
+    /// A withdraw that picks a whole stack onto the cursor and puts the rest back (or a deposit that returns part of one) moves
+    /// the counted items twice: live 10-28 06:49 "+64 cobblestone: taken from a chest" then "-58 cobblestone: used during
+    /// withdraw" for a take of 6 (no slab was crafted: no slab gain was booked). The return nets into the take it belongs to
+    /// ("+6 taken from a chest"); null = not such a move (or nothing to net against).
+    /// </summary>
+    private LedgerEntry? CounterMove(DateTimeOffset at, int id, int damage, int delta, string? action)
+    {
+        bool withdrawBack = action == "withdraw" && delta < 0, depositBack = action == "deposit" && delta > 0;
+        if (!withdrawBack && !depositBack) return null;
+        for (int i = _entries.Count - 1; i >= 0 && at - _entries[i].At <= MergeWindow; i--)
+        {
+            var x = _entries[i];
+            if (x.ItemId != id || x.Damage != damage || Math.Sign(x.Delta) == Math.Sign(delta)) continue;
+            if (depositBack && !x.Cause.StartsWith("deposited", StringComparison.Ordinal)) continue;
+            int left = x.Delta + delta;
+            if (Math.Sign(left) != Math.Sign(x.Delta)) return null; // more came back than went: not a partial return
+            if (left == 0) { _entries.RemoveAt(i); return x with { Delta = 0 }; }
+            return _entries[i] = x with { Delta = left };
+        }
+        return null;
+    }
 
     private LedgerEntry Record(LedgerEntry e)
     {
