@@ -1237,10 +1237,17 @@ public sealed partial class BotAgent
         string? lifted = null;
         if (first)
             try { lifted = Orders?.OnProcessStart(); } catch (Exception ex) { _log.LogWarning(ex, "standing order start check failed"); }
+        // Safe first (deterministic, before any job or brain turn): an exposed body walks home or boxes itself in.
+        string? safety = null;
+        if (SafetyFirst is { } secure)
+            try { safety = await secure(ct).WaitAsync(SafetyFirstWait, _time, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+            catch (Exception ex) { _log.LogWarning(ex, "startup safety check failed"); }
         bool resumed = false;
         try { resumed = Orders?.ResumeIfIdle("start", ct) == true; } catch (Exception ex) { _log.LogWarning(ex, "standing order resume failed"); }
         if (first && WakeOnStart && (_options.Idle ?? new Human.IdleOptions()).StartupWake)
-            try { PostStartupWake(resumed, lifted); } catch (Exception ex) { _log.LogWarning(ex, "startup wake failed"); }
+            try { PostStartupWake(resumed, lifted, safety); } catch (Exception ex) { _log.LogWarning(ex, "startup wake failed"); }
+        else if (safety != null) _events.Post(GameEvent.Notice(safety, EventPriority.Normal));
     }
 
     private bool _idleDefaultFired;

@@ -372,7 +372,7 @@ public sealed class CrewExecutor(ConstructionExecutor single, TimeProvider? time
         return report;
     }
 
-    private static bool Terminal(string state) => state is "done" or "lost" or "stuck" or "cancelled" or "failed" or "yielded";
+    private static bool Terminal(string state) => state is "done" or "lost" or "stuck" or "cancelled" or "failed" or "yielded" or "held";
 
     /// <summary>Until every clone lane is terminal (its own row says so) or has made no progress for <see cref="RemoteStall"/>.</summary>
     private async Task WaitRemoteAsync(CrewContext ctx, string main, CancellationToken ct)
@@ -512,6 +512,7 @@ internal sealed class LaneRunner(CrewExecutor x, CrewContext c, PlanLane lane, I
                 ct.ThrowIfCancellationRequested();
                 if (c.Yield) { _r.State = "yielded"; return _r; }
                 if (!body.Available) { _r.State = "lost"; _r.Why = "body not in the game"; return _r; }
+                if (x.Single.HoldNow(c.Id) is { } rule) { _r.State = "held"; _r.Why = rule; break; }
                 PlanStep? pick = null;
                 string? whyNot = null;
                 var earlier = new HashSet<BlockPos>();
@@ -569,7 +570,13 @@ internal sealed class LaneRunner(CrewExecutor x, CrewContext c, PlanLane lane, I
             try
             {
                 if (_column >= 0 && body.Available) await LeaveColumnAsync(CancellationToken.None).ConfigureAwait(false);
-                if (_r.State == "done") await ParkAsync(ct).ConfigureAwait(false);
+                if (_r.State is "done" or "held")
+                {
+                    await ParkAsync(ct).ConfigureAwait(false);
+                    // Never strand the body up on the build (its lane done, the way down gone): its pillar or a stair down.
+                    if (body.Available && await ConstructionExecutor.LeaveSafelyAsync(body, Bp, c.Voxel, null, ct, null, x.Log).ConfigureAwait(false) is { } exit)
+                        _r.Why ??= exit;
+                }
             }
             catch (Exception ex) when (ex is not OutOfMemoryException) { x.Log?.LogDebug(ex, "lane {Lane} wrap-up failed", lane.Index); }
             if (body.Claims is { } b) foreach (var k in _claims) try { await b.ReleaseAsync(k, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }

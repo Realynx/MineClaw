@@ -46,7 +46,11 @@ public sealed partial class MinecraftClient
     /// </summary>
     public Task<ActionResult> PlaceAgainstAsync(BlockPos target, BlockFace face, int itemId, int? damage, float? yaw, bool allowHidden,
         CancellationToken ct = default) =>
-        RunActionAsync("place", ct, async c =>
+        RunActionAsync("place", ct, c => PlaceAgainstCoreAsync(target, face, itemId, damage, yaw, allowHidden, c));
+
+    /// <summary><see cref="PlaceAgainstAsync"/> under the caller's action lock (the shelter reflex places its box with it).</summary>
+    private async Task<ActionResult> PlaceAgainstCoreAsync(BlockPos target, BlockFace face, int itemId, int? damage, float? yaw, bool allowHidden,
+        CancellationToken c)
         {
             if (World.Inventory.CountItem(itemId, damage) == 0) return ActionResult.Fail($"no {ItemName(itemId, damage ?? 0)} in inventory");
             if (!World.IsLoaded(target.X, target.Z)) return ActionResult.Fail($"{Fmt(target)} is not loaded");
@@ -93,7 +97,7 @@ public sealed partial class MinecraftClient
                 return ActionResult.Success($"placed {ItemName(itemId)} at {Fmt(target)}");
             }
             finally { _idleSneak = sneakBefore; }
-        });
+        }
 
     /// <summary>Digs a block from where the body is (no pathing): in a column or on a planned stand.</summary>
     public Task<ActionResult> DigHereAsync(BlockPos pos, CancellationToken ct = default) =>

@@ -399,6 +399,10 @@ public class BuildPlannerTests
         Assert.True(report.Complete, report.Text("platform"));
         Assert.Empty(body.Unguarded);
         var bp = report.Plan!;
+        // Never stranded up there (live 10-28 16:20): no pillar of its own to dig, so it placed a stair down to the island.
+        Assert.StartsWith("came down off the build: placed ", report.Exit);
+        Assert.True(WayHome.AtHome(body.Feet0, bp.Home!.Value), $"left at {body.Feet0}");
+        Assert.All(plan.Blocks.Values, b => Assert.Equal(b.Id, w.GetBlock(b.Pos))); // never digs the design to get down
         var placed = bp.Steps.Where(s => s.Action == StepAction.Place && !(s.Target.X is >= -1 and <= 1 && s.Target.Z is >= -1 and <= 1)).ToList();
         Assert.Equal(8, placed.Count);
         Assert.All(placed, s => Assert.Equal(77, s.Stand.Y)); // stood on the platform's own placed cells

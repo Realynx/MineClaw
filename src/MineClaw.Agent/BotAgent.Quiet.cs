@@ -130,7 +130,8 @@ public sealed partial class BotAgent
     {
         List<GameEvent> snapshot;
         lock (events) snapshot = events.ToList();
-        if (quiet && !Engaged(snapshot))
+        // A safety warning ("Robin, a zombie is attacking you") goes out even when nobody is engaged or a quiet rule stands.
+        if (quiet && !Engaged(snapshot) && !_chat.Warnings.Overrides(text, cx.Audience.ToArray()))
         {
             KeepInternal(text);
             return ToolResult.Success("not said: nobody is waiting on this (kept in your log)");

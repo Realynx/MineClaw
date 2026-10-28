@@ -37,6 +37,14 @@ public sealed partial class BotAgent
     /// </summary>
     public Func<string?>? BodyHolder { get; set; }
 
+    /// <summary>
+    /// The body reflex's OK for a new brain body job (zero tokens): given the call's tools and inputs, a one-line refusal or
+    /// null. Live 10-28 16:21: respawned at night with no food, main walked west to the tower floor and died again; the bot
+    /// layer refuses jobs that leave home ground at night (or with hostiles near) while there is no food on hand, and starts
+    /// the food reflex ("night + no food: getting food/staying in first …").
+    /// </summary>
+    public Func<IReadOnlyList<(string Tool, JsonElement Input)>, string?>? BodySafety { get; set; }
+
     private string? BodyHolderNow()
     {
         try { return BodyHolder?.Invoke() is { Length: > 0 } h ? h : null; }
@@ -115,6 +123,12 @@ public sealed partial class BotAgent
         {
             p.Result = ToolResult.Error($"body busy: {holder}. Use script op=pause or op=replace, or queue it: do{{...,queue:true}} runs after it");
             return p;
+        }
+        if (IsMainBody(body) && BodySafety is { } safety && p.Steps.Any(s => IsBodyTool(s.Tool.Name)))
+        {
+            string? no = null;
+            try { no = safety(p.Steps.Select(s => (s.Tool.Name, s.Input)).ToList()); } catch (Exception ex) { _log.LogDebug(ex, "body safety check failed"); }
+            if (no != null) { p.Result = ToolResult.Error(no); return p; }
         }
         if (p.AllInstant) return p;
 

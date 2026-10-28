@@ -372,6 +372,39 @@ public sealed class DirectiveStore
         return line;
     }
 
+    /// <summary>
+    /// The generic directive check a running build consults between steps (zero tokens): the first rule for design
+    /// <paramref name="designId"/> (its own, or building in general: <see cref="ForDesign"/>'s set) that limits it to a time of
+    /// day which isn't now. Dusk counts as night already (<paramref name="timeOfDay"/> from 11500: the build stops and the body
+    /// gets home before dark finishes falling). Null = carry on. E.g. "rule#6 (Fox): the drop tower only in daytime; it's
+    /// getting dark: stopped".
+    /// </summary>
+    public string? TimeHold(long designId, long timeOfDay)
+    {
+        IReadOnlyList<Directive> rules;
+        try
+        {
+            var id = designId.ToString(CultureInfo.InvariantCulture);
+            rules = Active().Where(d => d.Scope.Kind == DirectiveScopeKind.Design ? d.Scope.Value == id
+                : d.Scope.Kind != DirectiveScopeKind.Place && d.Topics.Contains("build")).ToList();
+        }
+        catch (Exception) { return null; }
+        long t = ((timeOfDay % 24000) + 24000) % 24000;
+        bool dark = t is >= DuskTicks and < 23000;
+        foreach (var r in rules)
+        {
+            var only = DirectiveParser.OnlyWhen(r.Text);
+            if (only == "day" && dark)
+                return $"{r.Ref} ({Name(r.Player)}): {TextUtil.Truncate(TextUtil.OneLine(r.Text).TrimEnd('.', ' '), 100)}; it's {(t >= 13000 ? "night" : "getting dark")}: stopped until day";
+            if (only == "night" && !dark)
+                return $"{r.Ref} ({Name(r.Player)}): {TextUtil.Truncate(TextUtil.OneLine(r.Text).TrimEnd('.', ' '), 100)}; it's day: stopped until night";
+        }
+        return null;
+    }
+
+    /// <summary>World time from which a day-only rule stops a build (sunset is 12000, hostile spawning from ≈13000).</summary>
+    public const long DuskTicks = 11500;
+
     private string? Clock()
     {
         try { return TimeOfDay?.Invoke() is { Length: > 0 } t ? t : null; } catch (Exception) { return null; }

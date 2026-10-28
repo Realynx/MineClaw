@@ -19,7 +19,7 @@ public sealed record CombatEvent(CombatEventKind Kind, string Message)
 /// the movement packet; <see cref="Block"/> = desired sword-block state.
 /// </summary>
 public readonly record struct CombatStep(MoveInput Input, bool Overrides, int AttackId = -1, bool Block = false,
-    WeaponPick? Equip = null, string? Chat = null, bool AbortAction = false, bool Eat = false);
+    WeaponPick? Equip = null, string? Chat = null, bool AbortAction = false, bool Eat = false, bool Shelter = false);
 
 /// <summary>
 /// Tick-thread combat brain (no LLM): reflex defense of the bot and guarded players, explicit mob attacks and
@@ -59,7 +59,7 @@ public sealed class CombatEngine
         /// <summary>The reflex gave up on this target (it can't be reached): remembered so it doesn't re-trigger.</summary>
         public bool GaveUp;
         public double PrevDist = double.MaxValue, BestDist = double.MaxValue;
-        public bool Explicit, FuseAlerted, LowAlerted;
+        public bool Explicit, FuseAlerted, LowAlerted, ShelterAsked;
         public BlockPos? Stance;
         public int StrafeSign = 1;
         public string? StopRequest;
@@ -122,6 +122,16 @@ public sealed class CombatEngine
     public event Action<CombatEvent>? EventRaised;
 
     public volatile bool DefendSelf;
+
+    /// <summary>
+    /// The no-path danger reflex (the client decides: blocks on hand, no walk home, low hp or outnumbered): called with the threat
+    /// count and whether a retreat cell exists when a fight turns into a retreat. True = the fight ends ("boxing in") and the
+    /// step asks the client to box the body in (<see cref="CombatStep.Shelter"/>).
+    /// </summary>
+    public Func<int, bool, bool>? ShouldShelter { get; set; }
+
+    /// <summary>The body is boxing itself in / waiting it out: no reflex fights start (the box is the defence).</summary>
+    public volatile bool Sheltering;
     /// <summary>Players being guarded (replace the whole list to change it).</summary>
     public volatile IReadOnlyList<string> Guarded;
 
@@ -230,7 +240,8 @@ public sealed class CombatEngine
 
         if (tick % 100 == 0) ForgetGoneMobs();
         CombatStep step;
-        if (_fight is null)
+        if (Sheltering && _fight is { Explicit: false, Done: null, Kind: FightKind.Mob } sf) EndFight(sf, "boxed in", phys, ctx);
+        if (_fight is null && !Sheltering)
         {
             if (tick % 5 == 0 && Scan(phys) is { } found)
             {
@@ -241,9 +252,9 @@ public sealed class CombatEngine
         if (_fight is { } f)
         {
             var input = f.Kind == FightKind.Spar ? SparTick(f, phys, ctx) : MobTick(f, phys, ctx);
-            step = new CombatStep(input, true, ctx.Attack, ctx.Block, ctx.Equip, ctx.Chat, ctx.Abort, ctx.Eat);
+            step = new CombatStep(input, true, ctx.Attack, ctx.Block, ctx.Equip, ctx.Chat, ctx.Abort, ctx.Eat, ctx.Shelter);
         }
-        else step = new CombatStep(proposed, false, Chat: ctx.Chat, Eat: ctx.Eat, Equip: ctx.Equip, AbortAction: ctx.Abort);
+        else step = new CombatStep(proposed, false, Chat: ctx.Chat, Eat: ctx.Eat, Equip: ctx.Equip, AbortAction: ctx.Abort, Shelter: ctx.Shelter);
 
         // Never meet an enderman's gaze (unless it is the one being fought).
         var ender = _w.Entities.Nearby(phys.Position, 64, e => e.Kind == EntityKind.Mob && e.TypeId == MobTypes.Enderman
@@ -264,7 +275,7 @@ public sealed class CombatEngine
     private sealed class Ctx
     {
         public int Attack = -1;
-        public bool Block, Abort, Eat;
+        public bool Block, Abort, Eat, Shelter;
         public WeaponPick? Equip;
         public string? Chat;
     }
@@ -648,7 +659,22 @@ public sealed class CombatEngine
         {
             var threats = _w.Entities.Nearby(me, 12, CombatRules.IsThreat).Select(e => e.Position).ToList();
             if (threats.Count == 0 || dist > 10 || _tick - f.FleeStart > 200) { EndFight(f, $"disengaged at hp {_w.Player.Health}", phys, ctx); return face; }
-            return MoveOrHold(phys, CombatGeometry.RetreatCell(_w, me, threats, 7, 8), FaceAt(phys, target), sneak: false);
+            var retreat = CombatGeometry.RetreatCell(_w, me, threats, 7, 8);
+            // Retreat inward has nowhere to go (no cell, or no walk home from up here): box in instead of dying in the open.
+            if (!f.ShelterAsked && ShouldShelter is { } shelter)
+            {
+                f.ShelterAsked = true;
+                bool go;
+                try { go = shelter(threats.Count, retreat != null); } catch { go = false; }
+                if (go)
+                {
+                    Sheltering = true;
+                    ctx.Shelter = true;
+                    EndFight(f, $"boxing in at hp {_w.Player.Health} ({threats.Count} near, no way out)", phys, ctx);
+                    return face;
+                }
+            }
+            return MoveOrHold(phys, retreat, FaceAt(phys, target), sneak: false);
         }
 
         var look = FaceAt(phys, target);

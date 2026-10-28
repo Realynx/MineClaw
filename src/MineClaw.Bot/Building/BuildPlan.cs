@@ -169,6 +169,7 @@ public sealed class BuildPlan
             Origin = prev.Origin, Facing = prev.Facing, Dim = prev.Dim, Transform = prev.Transform,
             Gate = prev.Gate, Placed = prev.Placed.Distinct().ToList(), ScaffoldUp = prev.ScaffoldUp.Distinct().ToList(),
             Columns = prev.Columns.Where(c => c.Poured && !c.Removed).ToList(), State = prev.State, Replans = prev.Replans,
+            Home = prev.Home, Exit = prev.Exit.ToList(),
             Note = $"re-planned: the saved plan was {(prev.Version != version ? "for another version of the design" : $"in an older format ({prev.Format})")}",
         };
     }
@@ -182,6 +183,16 @@ public sealed class BuildPlan
     public GateInfo Gate { get; set; } = new();
     public List<BlockPos> Placed { get; set; } = new();
     public List<BlockPos> ScaffoldUp { get; set; } = new();
+    /// <summary>
+    /// The ground the build started from (the feet cell of its first slicing, kept across every resume and re-plan): "a way down"
+    /// always means back to this level. Live 10-28 16:15: a resume/the finale sliced from up on the drop tower's platform made the
+    /// platform the start level, so the climb's scaffold "kept a way down" to where the body already stood and came down from
+    /// above, leaving it on the tower top with no path home (killed there by zombies at night).
+    /// </summary>
+    public BlockPos? Home { get; set; }
+    /// <summary>Blocks placed (or scaffold kept) as the way down from where a run ended (<see cref="ExitRoute"/>): a recorded exit,
+    /// never taken down by the slicer; self-placed, so always minable.</summary>
+    public List<BlockPos> Exit { get; set; } = new();
     public string State { get; set; } = "planned";
     public string? Note { get; set; }
     /// <summary>The slicer's foundation suggestion when most of what it couldn't plan hangs over the void past the scaffold limit

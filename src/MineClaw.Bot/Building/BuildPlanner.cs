@@ -95,18 +95,30 @@ public sealed partial class BuildPlanner
         Part = s.Part, Lane = s.Lane, Gate = s.Gate, Status = s.Status, Note = s.Note, Cost = s.Cost,
     };
 
-    private BuildPlanner(VoxelPlan plan, BuildPart part, BuildPlannerOptions o, PlanWorld sim, BlockPos start)
+    private BuildPlanner(VoxelPlan plan, BuildPart part, BuildPlannerOptions o, PlanWorld sim, BlockPos start, BuildPlan? previous = null)
     {
         _plan = plan;
         _part = part;
         _o = o;
         _s = new St { Sim = sim, Flood = new(), Land = start };
-        _home = start;
+        _home = HomeFor(plan, start, previous);
         _out = new BuildPlan
         {
             Part = part.Index, Parts = part.Count, Version = plan.Hash(), Format = BuildPlan.CurrentFormat, Origin = plan.Origin, Facing = plan.Blueprint.Facing,
             Gate = new GateInfo { After = o.GateBlocks, State = o.GateBlocks > 0 ? GateState.Pending : GateState.Off },
+            Home = _home,
         };
+    }
+
+    /// <summary>
+    /// The level "a way down" leads back to: the first slicing's start (<see cref="BuildPlan.Home"/>, carried); without one, the
+    /// start, unless the body is up above the design's bottom layer (a resume or a crew finale sliced from the platform): then
+    /// the design's bottom layer under it, so the climb's scaffold is never "safe" to take down from above.
+    /// </summary>
+    internal static BlockPos HomeFor(VoxelPlan plan, BlockPos start, BuildPlan? previous)
+    {
+        if (previous?.Home is { } h) return h;
+        return start.Y > plan.Min.Y + 1 ? new BlockPos(start.X, plan.Min.Y, start.Z) : start;
     }
 
     /// <summary>
@@ -118,7 +130,7 @@ public sealed partial class BuildPlanner
     public static BuildPlan Plan(VoxelPlan plan, IBlockAccess world, BlockPos start, BuildPart? part = null, BuildPlannerOptions? options = null,
         BuildPlan? previous = null)
     {
-        var p = new BuildPlanner(plan, part ?? BuildPart.Whole(plan), options ?? new BuildPlannerOptions(), new PlanWorld(world), start);
+        var p = new BuildPlanner(plan, part ?? BuildPart.Whole(plan), options ?? new BuildPlannerOptions(), new PlanWorld(world), start, previous);
         var bp = p.Run(previous);
         // Mostly hanging over the void past the scaffold limit: name the floor that would carry it (the design's own footprint).
         bp.Foundation = BuildSkips.FloorHint(bp.Infeasible.Select(i => (i.Pos, (string?)i.Why)).ToList(), BuildSkips.Footprint(plan.Blocks.Keys), world);
@@ -180,7 +192,8 @@ public sealed partial class BuildPlanner
             _s.Columns.Add(k);
         }
         // Scaffold left standing comes down at the end.
-        _scaffoldStanding = prev.ScaffoldUp.Where(p => BuildBlocks.Supports(_s.Sim.Get(p))).Distinct().ToList();
+        // A way down a run left (ExitRoute's stair treads) is scaffold again for this run: the climb, taken down last keeping a way down.
+        _scaffoldStanding = prev.ScaffoldUp.Concat(prev.Exit).Where(p => BuildBlocks.Supports(_s.Sim.Get(p))).Distinct().ToList();
         foreach (var p in _scaffoldStanding.Where(p => !_plan.Blocks.ContainsKey(p))) _s.Scaffold.Add(p);
         // A pillar still standing is dug back down from on top (its steps say which scaffold was pillared).
         foreach (var st in prev.Steps.Where(s => s.Action == StepAction.Scaffold && s.Technique == Technique.Pillar && _s.Scaffold.Contains(s.Target))) _s.Pillar.Add(st.Target);

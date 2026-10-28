@@ -28,12 +28,15 @@ public sealed class BuildReport
     public bool AtGate { get; set; }
     /// <summary>A gate-only run (the crew's first phase): the gate blocks are up and a trusted player said yes (or no gate applies).</summary>
     public bool GatePassed { get; set; }
+    /// <summary>How the body got down off the build when the run ended up there ("came down off the build: dug 3 of my scaffold,
+    /// placed 4 as a stair"), or why it couldn't ("stranded: …"); null when it could walk home (<see cref="ExitRoute"/>).</summary>
+    public string? Exit { get; set; }
 
     public string Text(string what) =>
         $"{what}: placed {Placed}" + (Already > 0 ? $", {Already} already there" : "") + (Cleared > 0 ? $", cleared {Cleared}" : "")
         + (Scaffolded > 0 ? $", scaffold {Scaffolded} ({ScaffoldRemoved} removed)" : "")
         + (Missing.Count > 0 ? $", {Missing.Count} missing" : "") + (Skips != null ? $" — {Skips}" : "") + (Deviations.Count > 0 ? $"; deviations: {string.Join("; ", Deviations.Take(3))}" : "")
-        + (Stopped != null ? $"; stopped: {Stopped}" : "");
+        + (Stopped != null ? $"; stopped: {Stopped}" : "") + (Exit != null ? $"; {Exit}" : "");
 }
 
 /// <summary>
@@ -63,6 +66,18 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
     public Func<string, Task>? Ask { get; init; }
     /// <summary>The gate question for a plan (landmark wording); default: <see cref="BuildGate.Question"/> without landmarks.</summary>
     public Func<BuildPlan, VoxelPlan, string>? GateQuestion { get; init; }
+
+    /// <summary>
+    /// The generic standing-rule check between steps (zero tokens; <c>DirectiveStore.TimeHold</c>): a reason to stop now, e.g. a
+    /// trusted player's "the drop tower only in daytime" at dusk. The run then stops resumably and the body comes down off the
+    /// build and walks back to where the build started before dark finishes falling. Null = carry on.
+    /// </summary>
+    public Func<long, string?>? Hold { get; set; }
+
+    internal string? HoldNow(long id)
+    {
+        try { return Hold?.Invoke(id); } catch (Exception ex) { log?.LogDebug(ex, "build hold check failed"); return null; }
+    }
 
     internal bool GateOn => Gates != null && Ask != null && o.GateBlocks > 0;
     internal BlueprintOptions Options0 => o;
@@ -159,6 +174,7 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
         var shortItems = new Dictionary<(int, int), string>();
         var foreign = new HashSet<BlockPos>();
         int column = -1, replans = 0, sinceCheckpoint = 0;
+        bool ruleHold = false;
         int? currentLayer = null;
         HashSet<int>? included = null;
         try
@@ -170,6 +186,7 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
                 report.Stopped = $"held: {heldBy} said no at the confirmation gate; it needs a trusted player's fresh go (design build{{id={blueprintId}}})"
                                  + (BuildGate.Placed(bp, blueprintId) is { } standing ? "; " + standing : "");
                 report.AtGate = true;
+                await ExitAsync().ConfigureAwait(false);
                 return Finish();
             }
             if (untilGate && !(GateOn && part.Index == 0 && (bp.Gate.State == GateState.Waiting
@@ -183,7 +200,7 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
             if (bp.Gate.State == GateState.Waiting && GateOn && part.Index == 0)
             {
                 var g = await GateAsync().ConfigureAwait(false);
-                if (g == GateOutcome.Stop) return Finish();
+                if (g == GateOutcome.Stop) { await ExitAsync().ConfigureAwait(false); return Finish(); }
                 if (untilGate && g == GateOutcome.Continue) { report.GatePassed = true; return Finish(); }
             }
             // Gate blocks up but never asked (stopped right after the last one): ask before anything else.
@@ -214,6 +231,7 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
                 if (step.Finished || !included.Contains(i)) continue;
                 ct.ThrowIfCancellationRequested();
                 if (await ClaimAsync().ConfigureAwait(false) is { } lost) { report.Stopped = lost; break; }
+                if (HoldNow(blueprintId) is { } rule) { report.Stopped = rule; ruleHold = true; break; }
                 if (step.Deps.Any(d => d >= 0 && d < bp.Steps.Count && d != i && (!bp.Steps[d].Finished || bp.Steps[d].Status == StepStatus.Skipped)))
                 {
                     step.Note = "waits for an earlier step";
@@ -266,7 +284,31 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
         {
             report.Stopped = "cancelled";
         }
+        await ExitAsync().ConfigureAwait(false);
         return Finish();
+
+        // Never strand the body: a run that ends (done, gate, materials, a rule's time limit) with it up on the build and no walk
+        // home comes down first: its own pillar, else a stair. A cancel (a stop, the danger reflex) is not ours to move after.
+        async Task ExitAsync()
+        {
+            if (ct.IsCancellationRequested || report.GatePassed || !body.Available) return;
+            if (report.Stopped is { } st && (st.Contains("void", StringComparison.OrdinalIgnoreCase) || st.Contains("danger", StringComparison.OrdinalIgnoreCase))) return;
+            try
+            {
+                if (column >= 0 && !await LeaveColumnAsync().ConfigureAwait(false)) return;
+                report.Exit = await LeaveSafelyAsync(body, bp, voxel, rec.Scaffold, ct, Progress, log).ConfigureAwait(false);
+                // A rule's time limit (dusk for a day-only build): home before dark, where the build started.
+                if (ruleHold && bp.Home is { } start && StartCell(w) != start && w.Player.Position.ToBlockPos().DistanceSquaredTo(start) > 4)
+                {
+                    var g = await body.GotoAsync(start, ct).ConfigureAwait(false);
+                    var line = g.Ok ? $"walked back to {start.X},{start.Y},{start.Z} (where the build started)" : $"couldn't walk back to where the build started: {Short(g.Message)}";
+                    Progress?.Invoke(line);
+                    report.Exit = report.Exit == null ? line : report.Exit + "; " + line;
+                }
+                if (report.Exit != null) Checkpoint();
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        }
 
         // ---------------------------------------------------------------- one step
 
@@ -736,6 +778,75 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
             bp.ScaffoldUp.Remove(p);
         }
         return n;
+    }
+
+    /// <summary>
+    /// The body's way home at the end of a run (a lane, the finale, a paused or finished build): already home: nothing; able to
+    /// walk down (a body up on the build while its way down still stands): it walks down now; else its own pillar is dug from on
+    /// top or a 1-wide stair placed down (<see cref="ExitRoute"/>), the stair recorded as the plan's exit. Null = nothing to say;
+    /// otherwise the line for the build result ("came down off the build: …" / "stranded: …").
+    /// </summary>
+    internal static async Task<string?> LeaveSafelyAsync(IBuildBody body, BuildPlan bp, VoxelPlan voxel, List<BlockPos>? recScaffold, CancellationToken ct,
+        Action<string>? progress = null, ILogger? log = null)
+    {
+        var w = body.World;
+        var home = bp.Home ?? new BlockPos(voxel.Min.X, voxel.Min.Y, voxel.Min.Z);
+        var feet = StartCell(w);
+        if (WayHome.AtHome(feet, home)) return null;
+        if (WayHome.WalkDown(w.PlanningView, feet, home) is { } down)
+        {
+            var g = await body.GotoAsync(down, ct).ConfigureAwait(false);
+            return g.Ok ? null : $"couldn't walk down off the build: {Short(g.Message)}";
+        }
+        int blocks = GameTools.ClutchBlocks.Ids.Sum(id => body.Count(id, -1));
+        var plan = ExitRoute.Plan(w.PlanningView, feet, home,
+            mine: p => !voxel.Blocks.ContainsKey(p) && (bp.ScaffoldUp.Contains(p) || bp.Exit.Contains(p) || recScaffold?.Contains(p) == true),
+            mayPlace: p => !voxel.Blocks.ContainsKey(p) && !body.IsProtected(p, w.GetBlock(p)), blocks);
+        if (plan == null)
+        {
+            var why = $"stranded: no way down from {feet.X},{feet.Y},{feet.Z} (no pillar of mine to dig, no room for a stair{(blocks == 0 ? ", no blocks" : "")})";
+            log?.LogWarning("blueprint #{Id}: {Why}", bp.BlueprintId, why);
+            progress?.Invoke(why);
+            return why;
+        }
+        int dug = 0, placed = 0;
+        foreach (var m in plan.Moves)
+        {
+            ct.ThrowIfCancellationRequested();
+            ActionResult r;
+            switch (m.Kind)
+            {
+                case ExitKind.Walk:
+                    r = StartCell(w) == m.Stand ? ActionResult.Success("here") : await body.GotoAsync(m.Stand, ct).ConfigureAwait(false);
+                    break;
+                case ExitKind.DigDown:
+                    r = await body.DigHereAsync(m.Target, ct).ConfigureAwait(false);
+                    if (r.Ok) { dug++; bp.ScaffoldUp.Remove(m.Target); bp.Exit.Remove(m.Target); recScaffold?.Remove(m.Target); }
+                    break;
+                default:
+                    int item = ScaffoldItem(body, bp);
+                    if (item == 0) { r = ActionResult.Fail("no blocks for a stair"); break; }
+                    r = await body.PlaceAsync(new BuildStep(StepKind.Scaffold, m.Target, item, 0, null, m.Face, m.Hidden), item, 0, ct).ConfigureAwait(false);
+                    if (r.Ok) { placed++; if (!bp.Exit.Contains(m.Target)) bp.Exit.Add(m.Target); }
+                    break;
+            }
+            if (!r.Ok)
+            {
+                var at = StartCell(w);
+                var why = $"stranded at {at.X},{at.Y},{at.Z}: the way down failed ({m.Kind.ToString().ToLowerInvariant()} {m.Target.X},{m.Target.Y},{m.Target.Z}: {Short(r.Message)})";
+                log?.LogWarning("blueprint #{Id}: {Why}", bp.BlueprintId, why);
+                progress?.Invoke(why);
+                return why;
+            }
+        }
+        var line = "came down off the build: " + string.Join(", ", new[]
+        {
+            dug > 0 ? $"dug {dug} of my scaffold" : null,
+            placed > 0 ? $"placed {placed} as a stair (left as the way down)" : null,
+        }.Where(x => x != null).DefaultIfEmpty("walked down"));
+        progress?.Invoke(line);
+        log?.LogInformation("blueprint #{Id}: {Line}", bp.BlueprintId, line);
+        return line;
     }
 
     /// <summary>The cheapest clutch block on hand that the plan doesn't still need all of.</summary>

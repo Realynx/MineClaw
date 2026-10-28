@@ -77,6 +77,9 @@ public sealed class GameBridge : IDisposable
         Sub(h => _c.PlayerLeft += h, h => _c.PlayerLeft -= h, (Action<string>)(n => OnPlayerList(n, joined: false)));
         _rt.Events.Posted += OnPosted;
         _unsubscribe.Add(() => _rt.Events.Posted -= OnPosted);
+        // The body reflex's OK for brain jobs (night + no food) and its spawn safety before the startup wake.
+        _rt.Agent.BodySafety ??= BodySafety;
+        if ((_c as MinecraftGameClient)?.Inner is { } mc) _rt.Agent.SafetyFirst ??= ct => SpawnSafetyAsync(mc, ct);
         _rt.Agent.StateHeader = () =>
         {
             if (Hunger is { } h && _c.IsPlaying)
@@ -181,6 +184,83 @@ public sealed class GameBridge : IDisposable
             return;
         }
         Post(MapDanger(d, health, _c.World.Player.Position.Y));
+    }
+
+    // ------------------------------------------------------------------ night + no food
+
+    /// <summary>Jobs fine at night with no food: getting food, the chests, the furnace, the gen by spawn, defending.</summary>
+    private static readonly HashSet<string> NightOk = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "eat", "withdraw", "deposit", "craft", "smelt", "collect_furnace", "organize_chest", "use_block", "collect_drops", "window",
+        "harvest_generator", "defend", "guard", "attack", "stop", "look", "status", "inventory",
+    };
+
+    /// <summary>A walk within this of spawn stays on home ground (lit, near the chests).</summary>
+    public int HomeRadius { get; init; } = 12;
+
+    /// <summary>
+    /// The reflex's OK for a new brain body job (<see cref="BotAgent.BodySafety"/>): at night (or with a hostile within 16) and with
+    /// no safe food on hand, a job that leaves home ground is refused with one actionable line and the food reflex starts (live
+    /// 10-28 16:21: respawned at night with no food, a walk west to the tower floor, low hp, dead again). Null = go ahead.
+    /// </summary>
+    public string? BodySafety(IReadOnlyList<(string Tool, System.Text.Json.JsonElement Input)> steps)
+    {
+        if (!_c.IsPlaying) return null;
+        var w = _c.World;
+        if (w.Dimension != 0) return null;
+        bool night = w.IsNight, mobs = w.Entities.NearestHostile(w.Player.Position, 16) is not null;
+        if (!night && !mobs) return null;
+        if (FoodSupply.HasReady(_c)) return null;
+        if (steps.All(s => NightOk.Contains(s.Tool) || s.Tool == "goto" && GoesHome(s.Input, w))) return null;
+        string what;
+        if (Volatile.Read(ref _feeding) == 1) what = "already getting food (reflex)";
+        else
+        {
+            FoodSupply.Outlook look;
+            try { look = new FoodSupply(_c).Survey(); }
+            catch (Exception ex) { _log.LogDebug(ex, "food survey failed"); look = new FoodSupply.Outlook([], "no food known"); }
+            if (look.CanObtain && Interlocked.CompareExchange(ref _feeding, 1, 0) == 0)
+            {
+                Feeding = Task.Run(FetchFoodAsync);
+                what = $"getting food first ({look.Text})";
+            }
+            else what = $"none to get ({look.Text}): staying in until it's day or someone brings food";
+        }
+        return $"{(night ? "night" : "mobs near")} + no food: {what}; not starting {steps[0].Tool} now (home ground only: eat, chests, gen)";
+    }
+
+    /// <summary>A goto whose target is within <see cref="HomeRadius"/> of spawn (x,y,z), or home/spawn/bed by name.</summary>
+    private bool GoesHome(System.Text.Json.JsonElement input, WorldState w)
+    {
+        if (input.ValueKind != System.Text.Json.JsonValueKind.Object || !input.TryGetProperty("to", out var to) || to.ValueKind != System.Text.Json.JsonValueKind.String)
+            return false;
+        var t = (to.GetString() ?? "").Trim().ToLowerInvariant();
+        if (t is "home" or "spawn" or "bed" or "house" or "the house" or "the chest" or "chest") return true;
+        var parts = t.Split(',', StringSplitOptions.TrimEntries);
+        if (parts.Length != 3 || !int.TryParse(parts[0], out var x) || !int.TryParse(parts[2], out var z)) return false;
+        var sp = w.Spawn;
+        return (x - sp.X) * (x - sp.X) + (z - sp.Z) * (z - sp.Z) <= HomeRadius * HomeRadius;
+    }
+
+    /// <summary>Food into the inventory (chests, crafting, cooking), no eating at a full bar: the night gate's reflex.</summary>
+    private async Task FetchFoodAsync()
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(FeedTimeout);
+            var r = await new FoodSupply(_c).ObtainAsync(cts.Token).ConfigureAwait(false);
+            Post(GameEvent.Notice(r.Ok ? $"got food (reflex, night): {r.Text}" : $"couldn't get food (reflex, night): {r.Text}", r.Ok ? EventPriority.Background : EventPriority.Normal));
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "night food fetch failed"); }
+        finally { Volatile.Write(ref _feeding, 0); }
+    }
+
+    /// <summary>The client's spawn safety (walk home / box in when exposed), once it has spawned: the startup wake waits for it.</summary>
+    private static async Task<string?> SpawnSafetyAsync(MinecraftClient mc, CancellationToken ct)
+    {
+        var until = DateTime.UtcNow + TimeSpan.FromSeconds(20);
+        while (!mc.IsPlaying && DateTime.UtcNow < until) await Task.Delay(200, ct).ConfigureAwait(false);
+        return await mc.SpawnSafety.WaitAsync(ct).ConfigureAwait(false);
     }
 
     // ------------------------------------------------------------------ hunger reflex

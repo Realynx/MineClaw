@@ -745,9 +745,11 @@ public sealed partial class ChatRouter
         FlushText();
         if (lines.Count == 0) return [];
         int cap = _options.MaxLinesPerReply;
+        // A safety warning (a mob on someone, a creeper, a death) is never capped as startup chatter (one per threat per 30 s).
+        bool warning = Warnings.Take(text, to);
         lock (_lock)
         {
-            if (Now < _startupUntil)
+            if (Now < _startupUntil && !warning)
             {
                 cap = Math.Min(cap, _startupLinesLeft);
                 _startupLinesLeft = Math.Max(0, _startupLinesLeft - lines.Count);
@@ -803,6 +805,10 @@ public sealed partial class ChatRouter
 
     /// <summary>The greeting guard (one hello per player per 3 minutes).</summary>
     public Greetings Greeted { get; } = new();
+
+    /// <summary>Safety warnings that override the quiet gates (<see cref="SafetyWarnings"/>), rate-limited per threat.</summary>
+    public SafetyWarnings Warnings => _warnings ??= new SafetyWarnings(() => Now);
+    private SafetyWarnings? _warnings;
 
     private bool PlayerAskedAboutFood(string player)
     {

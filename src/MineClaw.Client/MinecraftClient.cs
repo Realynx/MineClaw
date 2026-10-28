@@ -218,6 +218,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
             if (ct.IsCancellationRequested) throw;
             throw new TimeoutException("login timed out (no spawn position within " + Options.LoginTimeout + ")");
         }
+        StartSpawnSafety(); // exposed at login (night, mobs, up on a build with no way down): safe first, then the brain
         _state = ClientState.Playing;
         Log($"spawned at {World.Player.Position}");
         Raise(() => Spawned?.Invoke());

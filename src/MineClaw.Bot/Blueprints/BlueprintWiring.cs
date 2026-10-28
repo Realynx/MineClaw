@@ -103,6 +103,8 @@ public sealed class BlueprintWiring
         rules.TimeOfDay ??= () => client.IsPlaying ? (client.World.IsNight ? "night" : "day") : null;
         rules.AddInPlay(() => service.InPlay(client.Username));
         service.Rules = id => rules.ForDesign(id);
+        // The one coded check: a rule that limits the build to a time of day stops it at dusk and walks the body home.
+        service.Executor.Hold = id => client.IsPlaying ? rules.TimeHold(id, client.World.TimeOfDay) : null;
         // A build paused by the restart rides in main's one startup wake (and the idle watchdog), not a Background notice that
         // never wakes the brain (live 10-28 07:37-08:45).
         if (persist && !o.AutoResume) rt.Agent.AddPendingWork(() => service.NotifyPending(client.Username, notice: false));

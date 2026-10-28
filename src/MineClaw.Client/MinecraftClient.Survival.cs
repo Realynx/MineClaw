@@ -72,7 +72,7 @@ public sealed partial class MinecraftClient
         if (!Options.Survival.Enabled || !Options.AbortActionsOnDanger) return;
         if (alert.Critical)
         {
-            if (CurrentAction is { } a && a != "eat") AbortCurrentAction($"critical hp {health}/20: stopped {a}");
+            if (CurrentAction is { } a && a is not ("eat" or "shelter")) AbortCurrentAction($"critical hp {health}/20: stopped {a}");
         }
         else if (RiskyNow() is { } what) AbortCurrentAction($"low health {health}/20: stopped {what}");
     }
@@ -131,6 +131,18 @@ public sealed partial class MinecraftClient
                 _healRetreat = t;
                 _healRetreatUntil = TickCount + 100;
                 Log($"survival: hp {hp}/20 at the edge; stepping inward to {Fmt(t)}");
+            }
+        }
+
+        // No way home and low hp or outnumbered (not in a fight: the combat engine asks itself): box in.
+        if (o.ShelterEnabled && !engaged && CurrentAction is null && phys.OnGround && Volatile.Read(ref _sheltering) == 0 && TickCount % 20 == 0)
+        {
+            var near = World.Entities.Nearby(me, 8, CombatRules.IsThreat);
+            if (near.Count > 0 && (Survival.IsLow(hp) || near.Count >= o.ShelterThreats)
+                && ShouldShelter(near.Count, CombatGeometry.RetreatCell(World, me, near.Select(e => e.Position).ToList(), 7) != null))
+            {
+                Log($"survival: hp {hp}/20, {near.Count} hostile(s) near and no way home: boxing in");
+                StartShelter($"hp {hp}, {near.Count} near, no way home");
             }
         }
 

@@ -28,6 +28,7 @@ public sealed partial class MinecraftClient
                 if (_combatInstance is not null) return _combatInstance;
                 _telemetry = new CombatTelemetry(Options.Combat.TelemetryDirectory);
                 var e = new CombatEngine(World, Options.Combat, _telemetry) { Username = Options.Username, Reserved = () => ReservedItems };
+                e.ShouldShelter = ShouldShelter;
                 e.EventRaised += ev =>
                 {
                     Log("combat: " + ev.Message);
@@ -51,7 +52,7 @@ public sealed partial class MinecraftClient
     private CombatStep CombatBeforePhysics(PhysicsState phys, MoveInput input)
     {
         var step = Combat.Tick(phys, TickCount, input);
-        if (step.AbortAction && CurrentAction is not null and not ("spar" or "attack"))
+        if (step.AbortAction && CurrentAction is not null and not ("spar" or "attack" or "shelter"))
             AbortCurrentAction($"interrupted: {Combat.Status.Split('|')[0].Trim()}");
         return step;
     }
@@ -73,6 +74,7 @@ public sealed partial class MinecraftClient
         }
         if (step.Chat is { } line) _ = SendChatAsync(line);
         if (step.Eat) _ = EatAfterFightAsync();
+        if (step.Shelter) StartShelter("a fight with no way out");
     }
 
     /// <summary>Hard gate + vanilla order: swing animation, then 0x07 UseEntity (left click).</summary>
@@ -132,7 +134,7 @@ public sealed partial class MinecraftClient
 
     /// <summary>Actions other than the combat ones are refused while a fight owns the body.</summary>
     private string? CombatBlocks(string action) =>
-        _combatInstance is { Engaged: true } c && action is not ("spar" or "attack" or "eat") ? "busy: " + c.Status.Split('|')[0].Trim() : null;
+        _combatInstance is { Engaged: true } c && action is not ("spar" or "attack" or "eat" or "shelter") ? "busy: " + c.Status.Split('|')[0].Trim() : null;
 
     /// <summary>Waits (bounded) for a reflex fight to end so a job can run after it.</summary>
     private async Task WaitForReflexFightAsync(CombatEngine engine, CancellationToken ct)

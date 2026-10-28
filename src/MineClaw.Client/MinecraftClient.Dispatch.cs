@@ -91,6 +91,7 @@ public sealed partial class MinecraftClient
                 s.AwaitingTeleport = true;
                 _wasDead = false;
                 _vehicleId = -1;
+                StartSpawnSafety();
                 Raise(() => Respawned?.Invoke());
                 if (rp.Dimension != fromDim) OnDimensionChanged(fromDim, rp.Dimension);
                 break;

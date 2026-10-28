@@ -87,9 +87,20 @@ public sealed partial class BotAgent
     /// One Normal wake after the start resume: what was running before the restart and what the rules say, so the brain re-plans
     /// once (a single turn). Nothing to tell (no order, nothing paused) = no wake.
     /// </summary>
-    private void PostStartupWake(bool resumed, string? lifted)
+    /// <summary>
+    /// The body's own safety check after a login (the client's spawn safety: an exposed body walks home or boxes itself in first;
+    /// live 10-28 16:20 a restart woke main on the drop tower at night and zombies killed it before anything moved). Awaited
+    /// (at most <see cref="SafetyFirstWait"/>) before the standing order resumes and before the startup wake; its line ("woke up
+    /// stranded at …: boxed myself in …") leads that wake. Null = no check.
+    /// </summary>
+    public Func<CancellationToken, Task<string?>>? SafetyFirst { get; set; }
+
+    public TimeSpan SafetyFirstWait { get; set; } = TimeSpan.FromSeconds(45);
+
+    private void PostStartupWake(bool resumed, string? lifted, string? safety = null)
     {
         var parts = new List<string>();
+        if (safety != null) parts.Add(safety);
         if (OrderLine(resumed, lifted) is { } order) parts.Add(order);
         foreach (var w in PendingWorkNow()) parts.Add(w);
         if (parts.Count == 0) return;

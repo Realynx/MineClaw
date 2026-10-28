@@ -109,6 +109,29 @@ public static partial class DirectiveParser
 
     public static bool MentionsTimeOfDay(string text) => TimeOfDayRx().IsMatch(text ?? "");
 
+    /// <summary>
+    /// The time window a rule limits its subject to: "day" ("the drop tower only in daytime, at night mine cobble", "no building
+    /// at night", "build by day only"), "night" ("only mine at night"), or null when it names no limit. Only the clause that says
+    /// only/never decides: "at night mine cobble" after it is what to do instead, not another limit.
+    /// </summary>
+    public static string? OnlyWhen(string text)
+    {
+        var t = text ?? "";
+        if (OnlyRx().Match(t) is { Success: true } m) return Fold(m.Groups[1].Value);
+        if (WhenOnlyRx().Match(t) is { Success: true } m2) return Fold(m2.Groups[1].Value);
+        if (NotAtRx().Match(t) is { Success: true } m3) return Fold(m3.Groups[1].Value) == "night" ? "day" : "night";
+        return null;
+        static string Fold(string w) => w.StartsWith("day", StringComparison.OrdinalIgnoreCase) || w.Equals("daylight", StringComparison.OrdinalIgnoreCase)
+                                        || w.Equals("morning", StringComparison.OrdinalIgnoreCase) ? "day" : "night";
+    }
+
+    [GeneratedRegex(@"\bonly\b[^.;,!?]{0,24}?\b(?:in|during|by|at|when it'?s)?\s*(?:the\s+)?(day\w*|daylight|morning|night\w*|dark)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex OnlyRx();
+    [GeneratedRegex(@"\b(?:by|in|during)\s+(?:the\s+)?(day\w*|daylight|night\w*|dark)\s+only\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex WhenOnlyRx();
+    [GeneratedRegex(@"\b(?:no|not|never|don'?t|do not|stop)\b[^.;,!?]{0,40}?\b(?:at|during|in|by)\s+(?:the\s+)?(night\w*|dark|day\w*|daylight)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex NotAtRx();
+
     /// <summary>Time-of-day words in the text (lowercased, day/daytime/daylight folded to "day", night/dark to "night").</summary>
     public static IReadOnlySet<string> TimeWords(string text)
     {

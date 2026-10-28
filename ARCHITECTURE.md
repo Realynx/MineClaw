@@ -205,8 +205,11 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
   `remember_note` is a directive (who, when, scope: design / activity / place / general), never a claim to verify. A newer
   rule on the same main activity and time-of-day condition, or one lifting it ("you can build at night now"), replaces it;
   `forget rule#N` ends it. Shown as text only where it applies: `[standing rules: …]` in the turn header (task, standing
-  order, events, a paused build) and the design tool's resume/build results ("…; it's night now"). No coded gate. Startup
-  migrates old trusted instruction claims (idempotent).
+  order, events, a paused build) and the design tool's resume/build results ("…; it's night now"). One coded check, generic:
+  a rule that limits a build to a time of day (`DirectiveParser.OnlyWhen`: "the drop tower only in daytime, at night mine
+  cobble" = day) is consulted between build steps (`DirectiveStore.TimeHold` → `ConstructionExecutor.Hold`, lanes too): from
+  dusk (11500) the build stops resumably ("rule#6 (Fox): …; it's getting dark: stopped until day"), comes down off the build
+  and walks back to where it started. Startup migrates old trusted instruction claims (idempotent).
 - **Standing-order backoff**: a pass that found nothing to do yet ("still growing", "0 chopped") is quiet context, not a failure;
   C# waits 2 → 4 → 8 → 15 min and polls `WorkProbe` (a grown tree, a regenerated gen cell, a mature crop) to resume earlier.
   Every known chest full (`ChestStore`'s "all N known chests full (…); 141 cobblestone in bag; craft+place a chest (have 300
@@ -214,6 +217,22 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
   A live script on the lane holds the order (`StandingOrders.BodyBusy`; "already running" is never a failed pass); a restart
   lifts a failure pause the old process persisted; `Prepare` (`ScriptBridge.CheckOrder`) re-resolves a script order to its
   newest version by name after the Lua→JS migration, and a call that can't run wakes the brain once (Normal) with why.
+- **Safety first** (live 10-28 16:15–16:22: a restart woke main on the drop tower's platform at night, zombies, "retreating
+  inward" had nowhere to go, dead; respawned with no food it walked west and died again; "Robin, a zombie is attacking you" was
+  "not said"). (1) The **no-path danger reflex** (`Client/Survival/Shelter`, `MinecraftClient.Shelter`): when a retreat has no
+  way home (no retreat cell, or no walk down to the spawn's level: `World/Pathing/WayHome`) and hp is low or ≥ 2 hostiles are
+  near, the body boxes its own 1×2 column in from where it stands (4 sides at feet and head, the roof via a cap; a support beside
+  its floor block over an edge; cobble, planks, dirt last, never saplings; never digs, never moves), eats, waits until hp ≥ 16 and
+  the mobs are gone or it's day (10 min cap), then opens the side toward home. The combat engine asks it when a fight turns into
+  a retreat (`CombatEngine.ShouldShelter`; no reflex fights while `Sheltering`), the survival tick when idle. One Critical line:
+  "boxed myself in at …: 7 zombies, hp 4; waiting it out". No blocks: fights on as before. (2) **Spawn safety**: at login and
+  respawn an exposed body (night or a hostile within 16, and above home level) walks down, else boxes in; `BotAgent.SafetyFirst`
+  awaits it (≤ 45 s) before the standing order resumes and the startup wake, whose line it leads. (3) **Night + no food**
+  (`BotAgent.BodySafety` → `GameBridge.BodySafety`): a new brain body job that leaves home ground (a goto beyond 12 of spawn,
+  mining, chopping, following…) at night or with hostiles near and no safe food on hand is refused with one line ("night + no
+  food: getting food first (…); not starting goto now") and the food reflex fetches food; eating, chests, the gen and walks home
+  pass. (4) **Safety warnings** (`Chat/SafetyWarnings`): a warning about a threat to someone (a mob on them, a creeper, lava, the
+  void, a death) overrides the startup-chatter cap and a quiet turn's "nobody is waiting", once per threat per 30 s.
 - **Startup wake + idle watchdog** (`BotAgent.Startup`, main only; `ClonePolicy` turns both off): once per process start, one
   Normal wake "restarted: standing order X: resumed; <paused build line, its rules, it's night now>; rules: …" (the paused
   build rides in it via `AddPendingWork`, not a Background notice). Idle with nothing running or waking for
@@ -447,7 +466,16 @@ The `eat` tool (so scripts' eat and `keepFed`), `ensure('food')`, skills' eat, t
   pillar that no longer helps digs it back first; a stand on my own pillar counts as a way out (wall-in check). Scaffold comes
   down top-first keeping a way down: a pillar dug from on top (a 1-block drop onto the next block: the client's own-pillar rule),
   other scaffold from a stand that can still walk back to the start level. Scaffold blocks are counted in the plan ("13 scaffold
-  (13 to climb: 11 pillar, 2 stair)") and fetched with the cobblestone. Over the void the scaffold-distance rule is unchanged.
+  (13 to climb: 11 pillar, 2 stair)") and fetched with the cobblestone. "A way down" always means back to the plan's
+  **Home** (`BuildPlan.Home`: the first slicing's start, carried by every resume/re-plan; a plan without one sliced from up on the
+  build uses the design's bottom layer): live 10-28 16:15 a resume / crew finale sliced on the drop tower's platform made the
+  platform the start level, so the climb's stair came down from above and left the body up there. **Never strand a body**
+  (`ExitRoute`, `ConstructionExecutor.LeaveSafelyAsync`): every run that ends (done, gate, materials, a rule's hold; not a cancel)
+  and every finished lane with the body above Home and no walk down comes down first: its own pillar dug from on top, else a
+  1-wide stair placed down (the next tread one down and one out against any solid face, a support under my own floor when none,
+  two long where the follower's overshoot guard needs footing past it; never over or beside the void, never in a design block's
+  cell, every step a verified walk); the stair is the plan's recorded `Exit` (scaffold again for a later resume). "came down off
+  the build: placed 12 as a stair" or "stranded: no way down from …" rides in the build result. Over the void the scaffold-distance rule is unchanged.
   Only when no climb is possible is a cell "no stand: above my reach (I can't climb: every pillar or stair spot near it is
   beside the void | no room … | climbing is off)" (`Bot:Blueprints:Climb`). Design #4 (16×16×16 drop tower on Fox's 8×8 floor)
   replays complete: 689 placed, pillars inside the shaft. My own scaffold still up in a design air cell (the shaft's pillar) is

@@ -42,6 +42,19 @@ public sealed record SurvivalOptions
     /// <summary>A mine/generator task of at least this many blocks counts as a long mining trip.</summary>
     public int LongMiningCount { get; init; } = 16;
 
+    // ---- the no-path danger reflex (box in) and spawn safety
+    /// <summary>Box the body in (<see cref="Shelter"/>) when retreat has no way home and health is low or mobs outnumber it.</summary>
+    public bool ShelterEnabled { get; init; } = true;
+    /// <summary>Hostiles within 8 that count as outnumbered (box in even at good health when there's no way home).</summary>
+    public int ShelterThreats { get; init; } = 2;
+    /// <summary>Wait in the box until hp is at least this and the mobs are gone (or it's day).</summary>
+    public int ShelterUntilHealth { get; init; } = 16;
+    /// <summary>Longest wait in the box (minutes) before opening it anyway.</summary>
+    public double ShelterMaxMinutes { get; init; } = 10;
+    /// <summary>At login/respawn, an exposed body (night or mobs near, and not at home level or no walk home) makes itself safe
+    /// first: walks home, else boxes in.</summary>
+    public bool SecureOnSpawn { get; init; } = true;
+
     /// <summary>Ticks between reflex evaluations (cheap, but no need to do it every tick).</summary>
     public int CheckIntervalTicks { get; init; } = 10;
 }
