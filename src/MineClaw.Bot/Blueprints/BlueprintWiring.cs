@@ -83,13 +83,15 @@ public sealed class BlueprintWiring
         service.StartUndo = id => wiring.StartBuild(rt, id, null, undo: true);
         wiring.RegisterTools(rt);
         wiring.AttachChat(rt, log);
-        if (persist && o.AutoResume)
+        if (persist)
             client.Spawned += () => _ = Task.Run(async () =>
             {
                 try
                 {
                     await Task.Delay(TimeSpan.FromSeconds(15), clock).ConfigureAwait(false);
-                    if (!rt.Agent.ActivitiesFor(client.Username).IsBusy && service.ResumePending(client.Username) is { } line) log?.LogInformation("blueprints: {Line}", line);
+                    if (rt.Agent.ActivitiesFor(client.Username).IsBusy) return;
+                    var line = o.AutoResume ? service.ResumePending(client.Username) : service.NotifyPending(client.Username);
+                    if (line != null) log?.LogInformation("blueprints: {Line}", line);
                 }
                 catch (Exception ex) { log?.LogDebug(ex, "blueprint resume failed"); }
             });

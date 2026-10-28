@@ -25,7 +25,11 @@ public sealed class BlueprintOptions
     /// <summary>Progress checkpoint every N placements (resume after a restart).</summary>
     public int CheckpointEvery { get; set; } = 8;
     /// <summary>Resume an interrupted build on the next login.</summary>
-    public bool AutoResume { get; set; } = true;
+    /// <summary>
+    /// True: a build that was running before a restart starts again by itself. False (default): the brain gets one notice and
+    /// resumes it (design build{id}, no second go needed) when its own learned rules allow, e.g. Fox's "only build in daytime".
+    /// </summary>
+    public bool AutoResume { get; set; }
     /// <summary>Split a build across bodies only above this many blocks.</summary>
     public int SplitAboveBlocks { get; set; } = 120;
     /// <summary>Claim lease of a build part on the hive claim board (renewed while building).</summary>

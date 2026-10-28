@@ -471,6 +471,23 @@ public sealed class BlueprintService
         return null;
     }
 
+    /// <summary>
+    /// Unfinished builds of this body, told to the brain instead of started (<see cref="BlueprintOptions.AutoResume"/> off): it
+    /// resumes them with design build{id} when its rules allow. Null when nothing is pending.
+    /// </summary>
+    public string? NotifyPending(string owner)
+    {
+        foreach (var b in Store.Unfinished(owner))
+        {
+            if (Store.Get(b.BlueprintId) is not { Status: DesignStatus.Building or DesignStatus.Accepted } rec) continue;
+            var line = $"the {rec.Name} build (#{rec.Id}, {b.Placed}/{b.Total} placed) was paused by a restart; resume it with design " +
+                       $"build{{id={rec.Id}}} when it fits your rules" + (rec.AcceptedBy != null ? $" ({rec.AcceptedBy} approved it; no second go needed)" : "");
+            Notice("[design] " + line);
+            return line;
+        }
+        return null;
+    }
+
     /// <summary>"hut #3 5×5×4, 5 layers, review; bill: ...; parts 1" (the Lua blueprint(id) answer / design show).</summary>
     public string Describe(BlueprintRecord rec)
     {

@@ -604,4 +604,25 @@ public class BlueprintTests
         Assert.Contains("12/70", s.ResumePending("maid_chan"));
         Assert.Equal(1, started.Single().Id);
     }
+
+    [Fact]
+    public async Task By_default_a_restart_only_tells_the_brain_so_its_rules_decide()
+    {
+        // Live 05:05: a restart at night resumed the tower although Fox said "only build in daytime" (a rule in the brain's memory).
+        Assert.False(new BlueprintOptions().AutoResume);
+        var db = AgentDb.Open(null);
+        var (s, _, started, _) = Service(new ScriptedAuthor(Hut), db);
+        s.Design("hut", null, "PoofImaFox");
+        await s.LastRun!;
+        var rec = s.Store.Get(1)!;
+        rec.Status = DesignStatus.Building;
+        rec.AcceptedBy = "PoofImaFox";
+        s.Store.Update(rec);
+        s.Store.SaveBuild(new BuildRecord { BlueprintId = 1, Part = 0, Owner = "maid_chan", State = "building", Placed = 12, Total = 70 });
+        var line = s.NotifyPending("maid_chan");
+        Assert.Contains("12/70", line);
+        Assert.Contains("design build{id=1}", line);
+        Assert.Contains("no second go", line);
+        Assert.Empty(started);
+    }
 }
