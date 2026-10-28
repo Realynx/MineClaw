@@ -103,7 +103,8 @@ public static partial class BuildGate
         var pl = place;
         if (pl != null) place = p => pl(p) is { } np && !Self(np.Name) && !InFootprint(np.At) ? np : null;
         bool InFootprint(BlockPos p) => p.X >= plan.Min.X && p.X <= plan.Max.X && p.Z >= plan.Min.Z && p.Z <= plan.Max.Z;
-        var gate = bp.Steps.Where(s => s.Gate && s.Finished).Select(s => s.Target).ToList();
+        // The recorded gate blocks (placement order) keep the wording stable across restarts; step states can re-verify differently.
+        var gate = bp.Gate.Blocks.Count > 0 ? bp.Gate.Blocks.Distinct().ToList() : bp.Steps.Where(s => s.Gate && s.Finished).Select(s => s.Target).ToList();
         if (gate.Count == 0) gate = bp.Steps.Where(s => s.Action == StepAction.Place && s.Finished).Take(5).Select(s => s.Target).ToList();
         var anchor = gate.Count > 0 ? gate[0] : plan.Min;
         bool alongX = plan.Max.X - plan.Min.X >= plan.Max.Z - plan.Min.Z;

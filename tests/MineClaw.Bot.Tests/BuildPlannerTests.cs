@@ -297,6 +297,33 @@ public class BuildPlannerTests
         };
 
     [Fact]
+    public async Task Gate_question_is_stable_across_a_restart_when_a_step_reverifies_differently()
+    {
+        // Live 04:07: after a restart the same paused gate said "First 3 blocks ... runs east" instead of "4 ... runs west".
+        var w = BlueprintTests.Island();
+        var plan = PlanOf(Bridge, new BlockPos(0, 64, 0));
+        var gates = new BuildGates();
+        var asked = new List<string>();
+        BuildPlan? held = null;
+        var ex = new ConstructionExecutor(new BlueprintOptions { GateMinutes = 1 })
+        {
+            Gates = gates,
+            Ask = q => { asked.Add(q); return Task.CompletedTask; },
+            GateQuestion = (bp, v) => { held = bp; return BuildGate.Question(bp, v, "bridge", _ => null, null, null); },
+        };
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var run = ex.RunAsync(7, plan, BuildPart.Whole(plan), new SimBuildBody(w), cts.Token);
+        for (int i = 0; i < 400 && !gates.IsWaiting(7); i++) await Task.Delay(5);
+        Assert.NotNull(held);
+        var first = BuildGate.Question(held!, plan, "bridge", _ => null, null, null);
+        // A restart re-verifies one gate step as unfinished (e.g. its chunk wasn't loaded yet).
+        held!.Steps.First(s => s.Gate && s.Finished).Status = StepStatus.Pending;
+        Assert.Equal(first, BuildGate.Question(held, plan, "bridge", _ => null, null, null));
+        cts.Cancel();
+        try { await run; } catch (OperationCanceledException) { }
+    }
+
+    [Fact]
     public async Task Gate_question_never_describes_the_build_relative_to_itself()
     {
         // Live 03:51: "the mob drop tower starts by a hangout, runs west, away from mob drop tower".
