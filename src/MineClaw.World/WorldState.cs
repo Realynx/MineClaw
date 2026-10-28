@@ -36,6 +36,9 @@ public sealed class WorldState : IBlockAccess
     public SelfEditLog SelfEdits { get; } = new();
     /// <summary>Blocks hive bots placed themselves and that still stand (protection rule 1: always minable by the bot).</summary>
     public PlacedBlockLog Placed { get; } = new();
+    /// <summary>Recent chop_tree runs (felled/left logs): a remnant they left is the bot's own unfinished tree. In-process
+    /// bodies share main's.</summary>
+    public ChopLog Chops { get; set; } = new();
     /// <summary>Learned trigger → effect links (buttons, levers, plates → doors, pistons, hidden walls), per dimension.</summary>
     public MechanismGraph Mechanisms { get; } = new();
 

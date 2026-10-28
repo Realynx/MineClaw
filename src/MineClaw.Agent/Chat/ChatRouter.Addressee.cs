@@ -72,6 +72,18 @@ public sealed partial class ChatRouter
         lock (_lock) return _knownBots.Contains(name);
     }
 
+    /// <summary>
+    /// A bot line about another online account, called by a regular's nickname hidden in its name ("robin" for robinchan) while
+    /// the turn's waking events concern that account and not the regular: the line names the account (<see cref="PlayerNames.Unfold"/>).
+    /// </summary>
+    public string UnfoldNames(string text, IEnumerable<Events.GameEvent> turn)
+    {
+        string[] online;
+        lock (_lock) online = _online.ToArray();
+        var waking = turn.Where(e => e.Wakes).Select(e => (e.Player, e.Text)).ToList();
+        return PlayerNames.Unfold(text, waking, online, NicknamesOf);
+    }
+
     /// <summary>All names a player goes by: configured nicknames plus ones learned in chat ("I'm gonna call you c").</summary>
     public IReadOnlyList<string> NicknamesOf(string player)
     {
@@ -103,14 +115,17 @@ public sealed partial class ChatRouter
     /// <summary>The online player (or us = our username) a line calls by login or nickname, else null.</summary>
     private string? CalledPlayer(string text, string speaker)
     {
-        string[] online;
-        lock (_lock) online = _online.Where(p => !p.Equals(speaker, StringComparison.OrdinalIgnoreCase)).ToArray();
+        string[] all;
+        lock (_lock) all = _online.ToArray();
+        var online = all.Where(p => !p.Equals(speaker, StringComparison.OrdinalIgnoreCase)).ToArray();
+        // Exact accounts first ("robin-chan look" is robinchan), then nicknames in what is left (never "robin" inside it).
+        var canon = PlayerNames.Canonical(text, all);
         foreach (var p in online)
-        {
-            if (AddressingText.CallsLogin(text, p)) return p;
+            if (AddressingText.CallsLogin(canon, p)) return p;
+        var bare = PlayerNames.WithoutLogins(canon, all);
+        foreach (var p in online)
             foreach (var n in NicknamesOf(p))
-                if (AddressingText.Vocative(text, n)) return p;
-        }
+                if (AddressingText.Vocative(bare, n)) return p;
         return null;
     }
 
@@ -206,7 +221,8 @@ public sealed partial class ChatRouter
     {
         if (IsSelf(name)) return _options.Username;
         if (_identity.NameRegex.IsMatch(name)) return _options.Username;
-        var login = _online.FirstOrDefault(p => p.Equals(name, StringComparison.OrdinalIgnoreCase));
+        var login = _online.FirstOrDefault(p => p.Equals(name, StringComparison.OrdinalIgnoreCase))
+                    ?? _online.FirstOrDefault(p => PlayerNames.Key(p) == PlayerNames.Key(name)); // exact accounts win over nicknames
         if (login != null) return login;
         foreach (var p in _online)
         {

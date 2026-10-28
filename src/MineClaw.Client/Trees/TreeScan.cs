@@ -202,6 +202,18 @@ public static class TreeScan
         }
     }
 
+    /// <summary>
+    /// A log column with no dirt under it that a recent hive chop felled next to (or left standing when it stopped): the bot's
+    /// own unfinished tree, finishable without leaves or soil (<see cref="ChopLog"/>). Null = not ours (a build or a stranger's).
+    /// </summary>
+    public static ChopRecord? Unfinished(IBlockAccess w, TreeInfo t)
+    {
+        if (t.OnSoil || w is not WorldState ws) return null;
+        foreach (var l in t.Logs)
+            if (ws.Chops.Owner(l, ws.Dimension) is { } r) return r;
+        return null;
+    }
+
     /// <summary>A log a hive bot placed itself (its pillar/bridge): never part of a tree.</summary>
     private static bool SelfPlaced(IBlockAccess w, BlockPos p) => w is WorldState ws && ws.Placed.IsPlaced(p, ws.Dimension, Blocks.Log);
 

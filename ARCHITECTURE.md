@@ -185,6 +185,10 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
   (`Bot/Brainstem/StallWatchdog`: a job/script claiming to work with the body unchanged for 45 s → `stalled: <job> idle 45s; last:
   ...`) wake the brain even while a script sleeps, at normal priority (never interrupting the body). Hunger notes never
   interrupt a job either (High only at hp ≤ 6).
+- **Other people's losses never interrupt**: a human's void fall or death is Normal + MustWake (one short condolence, the job
+  keeps running); another bot's danger/death (`Chat:OtherBots`) is Background only. A quiet turn joined mid-turn by a
+  'noticed' event becomes a warning turn (`BotAgent.AfterJoined`: one line public, the rest internal). Speech never folds
+  another online account into a regular's nickname (`PlayerNames`: exact accounts win; "robin" for robinchan is unfolded).
 - **Standing-order backoff**: a pass that found nothing to do yet ("still growing", "0 chopped") is quiet context, not a failure;
   C# waits 2 → 4 → 8 → 15 min and polls `WorkProbe` (a grown tree, a regenerated gen cell, a mature crop) to resume earlier.
 - **Hand-off holds** (`Client/Survival/HandoffReservations`, `Bot/Perception/HandoffIntent`): a chat line either side ("I'll pass
@@ -298,7 +302,9 @@ One place decides whether the bot may break a block, why not, and how a player u
   lava release, and the block another player stands on (leaves included). Mining down the bot's own pillar is allowed one
   1-block step at a time onto solid, non-leaf footing.
 - **Trees** (rule 2): a tree is logs with leaves on dirt/grass. Bare log pillars and the bot's own placed logs are never part of
-  a tree (`TreeScan`), so stewardship never applies to them.
+  a tree (`TreeScan`), so stewardship never applies to them. Exception: a remnant next to cells a recent hive chop felled (or
+  left standing when it stopped) is our own unfinished tree (`World.ChopLog`, shared by in-process bodies): chop_tree finishes it.
+  Replanting uses the tree's own species only ("no birch sapling; plant oak?").
 - **Autonomous `mine`** takes resource sources only: generator dig cells, natural tree logs, ores, sand, gravel, clay, leaves,
   natural nether blocks, and own/permitted blocks; never floors, walls, paths. `mine cobblestone/stone` runs the generator loop
   on the nearest known dig cell, else answers `needs_input` (which cells?). Protection filters dig candidates only: doors,

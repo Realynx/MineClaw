@@ -218,6 +218,9 @@ public sealed partial class BotAgent
         lock (sp.Lock) { sp.BrainSpoke = true; ack = sp.AckSend; }
         if (ack != null) { try { await ack.ConfigureAwait(false); } catch (Exception) { } }
         var whisperTo = cx.WhisperTo();
+        List<GameEvent> turn;
+        lock (cx.Events) turn = cx.Events.ToList();
+        text = _chat.UnfoldNames(text, turn); // "robin" for robinchan in a turn about robinchan, not Robin
         var lines = await _chat.SayAsync(text, whisperTo, cx.Audience.ToArray(), ct).ConfigureAwait(false);
         if (lines.Count > 0)
         {

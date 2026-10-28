@@ -71,6 +71,20 @@ public sealed partial class BotAgent
         return (lines[0], string.Join("\n", lines.Skip(1)));
     }
 
+    /// <summary>
+    /// The turn's (quiet, warnOnly) after events joined it mid-turn. A quiet turn joined only by a 'noticed'/danger event (a
+    /// player's death or fall) becomes a warning turn: one short line is public, the rest stays internal (live 10-28 03:16: a
+    /// task-event turn joined by "Fox fell into the void and died" posted "...so I told him I'd keep the cobble coming... I
+    /// rewrote the mining script..." in chat). A player's chat/whisper/emote/join makes it a chat turn again.
+    /// </summary>
+    internal static (bool Quiet, bool WarnOnly) AfterJoined(bool quiet, bool warnOnly, EventBatch joined)
+    {
+        var facing = joined.Waking.Where(IsPlayerFacing).ToList();
+        if (facing.Count == 0) return (quiet, warnOnly);
+        bool warning = facing.All(e => e.Kind is EventKind.Activity or EventKind.LowHealth or EventKind.VoidFall or EventKind.Death);
+        return warning ? (false, quiet || warnOnly) : (false, false);
+    }
+
     /// <summary>An event a player is on the other end of: their chat/emote/join, a notice about them (a hand-over), their danger.</summary>
     public static bool IsPlayerFacing(GameEvent e) => e.Kind switch
     {
@@ -111,7 +125,7 @@ public sealed partial class BotAgent
         }, tiers: ToolTiers.Main);
     }
 
-    private async Task<ToolResult> SayToolAsync(string text, bool quiet, List<GameEvent> events, TurnSpeech speech, SpeechCtx cx, CancellationToken ct)
+    private async Task<ToolResult> SayToolAsync(string text, bool quiet, bool warnOnly, List<GameEvent> events, TurnSpeech speech, SpeechCtx cx, CancellationToken ct)
     {
         List<GameEvent> snapshot;
         lock (events) snapshot = events.ToList();
@@ -119,6 +133,16 @@ public sealed partial class BotAgent
         {
             KeepInternal(text);
             return ToolResult.Success("not said: nobody is waiting on this (kept in your log)");
+        }
+        if (warnOnly)
+        {
+            // A danger/'noticed' turn: one short in-persona line, once; the rest is the turn's own narration.
+            bool saidAny;
+            lock (cx.Said) saidAny = cx.Said.Count > 0;
+            var (line, rest) = WarningLine(text, saidAny);
+            if (!IsSilent(rest)) KeepInternal(rest);
+            if (IsSilent(line)) return ToolResult.Success("not said: you already said your one line (kept in your log)");
+            text = line;
         }
         var clean = FilterStreamed(text, cx, AckOf(speech));
         if (IsSilent(clean.Trim())) return ToolResult.Success("not said (filtered: not chat)");

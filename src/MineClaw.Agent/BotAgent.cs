@@ -408,7 +408,7 @@ public sealed partial class BotAgent
         using var speech = new TurnSpeech(ct);
         var cx = new SpeechCtx(episode.Events, said, audience, () => whisperTo, episode.IsTest);
         StartAck(speech, batch, tier, turnHead, preAck, whisperTo, audience.ToArray(), ct);
-        _turnSay = (t, c) => SayToolAsync(t, quiet, episode.Events, speech, cx, c);
+        _turnSay = (t, c) => SayToolAsync(t, quiet, warnOnly, episode.Events, speech, cx, c);
         try
         {
 
@@ -490,7 +490,7 @@ public sealed partial class BotAgent
                             if (!audience.Contains(p, StringComparer.OrdinalIgnoreCase)) audience.Add(p);
                         whisperTo = batch.WhisperOnlyFrom;
                         retry |= RetryAsked(more);
-                        if (quiet && more.Waking.Any(IsPlayerFacing)) quiet = false;
+                        (quiet, warnOnly) = AfterJoined(quiet, warnOnly, more);
                         _turnStatusAsked |= MetaSpeech.AsksStatus(more.Waking.Where(EventQueue.IsTyped).Select(e => e.Text));
                         TurnContext.Current = new TurnInfo(speaker, audience.ToArray(), batch.IsTest);
                     }
@@ -612,7 +612,7 @@ public sealed partial class BotAgent
                 if (fresh.WhisperOnlyFrom == null && fresh.Waking.Any()) whisperTo = null;
                 retry |= RetryAsked(fresh);
                 // A player spoke mid-turn: from here on the turn answers them (its text is chat again).
-                if (quiet && fresh.Waking.Any(IsPlayerFacing)) quiet = false;
+                (quiet, warnOnly) = AfterJoined(quiet, warnOnly, fresh);
                 _turnStatusAsked |= MetaSpeech.AsksStatus(fresh.Waking.Where(EventQueue.IsTyped).Select(e => e.Text));
             }
             episode.Messages.Add(new LlmMessage(LlmRole.User, blocks));

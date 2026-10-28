@@ -72,7 +72,8 @@ public class DangerReplayTests(ITestOutputHelper output)
         Dump(output, a);
         var w = Assert.Single(a.Posted, e => e.Wakes);
         Assert.Equal("kiwi fell into the void and died (east edge)", w.Text);
-        Assert.Equal(EventPriority.High, w.Priority);
+        Assert.Equal(EventPriority.Normal, w.Priority); // never interrupts our job (live 10-28 03:16); still wakes a sleeping brain
+        Assert.True(w.MustWake);
         var death = Assert.Single(a.Recorded, r => r.Kind == ActivityKinds.Died);
         Assert.True(death.Confidence >= 0.9);
         Assert.Equal("kiwi fell into the void (east edge)", death.Text);
@@ -224,7 +225,8 @@ public class DeathAndChatLineTests(ITestOutputHelper output)
         foreach (var e in a.Posted) output.WriteLine($"{e.Wakes} {e.Priority} {e.Text}");
         Assert.Equal(1, a.Wakes);
         var w = a.Posted.Single(e => e.Wakes);
-        Assert.Equal(EventPriority.High, w.Priority);
+        Assert.Equal(EventPriority.Normal, w.Priority);
+        Assert.True(w.MustWake);
         Assert.Equal("kiwi fell into the void off the main island", w.Text);
         var death = Assert.Single(a.Recorded, r => r.Kind == ActivityKinds.Died);
         Assert.True(death.Confidence >= 0.9);

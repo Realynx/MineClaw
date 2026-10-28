@@ -163,11 +163,37 @@ public sealed class DangerMonitor
         return _world.IsLoaded(c.X, c.Z) && Safety.IsPlayerOverVoid(_world, feet);
     }
 
+    /// <summary>
+    /// Another (non-hive) bot account (<c>Chat:OtherBots</c>, learned bots): its dangers and deaths are Background notes only
+    /// (live 10-28 02:23: robinchan's spider fight and death interrupted main's delegate and gen script, and the brain mourned
+    /// "robin"). Null = no bots known.
+    /// </summary>
+    public Func<string, bool>? IsOtherBot { get; set; }
+
+    private bool OtherBot(string player)
+    {
+        try { return IsOtherBot?.Invoke(player) == true; }
+        catch (Exception) { return false; }
+    }
+
+    /// <summary>
+    /// A human's void fall or death: nothing the bot can do about it, so it never interrupts our own job or script (live 10-28
+    /// 03:16: Fox's void death paused main's gen script until the brain restarted it by hand). It still wakes the brain once,
+    /// even under a sleeping script (MustWake, Normal priority), for one short condolence line.
+    /// </summary>
+    private GameEvent Loss(string text, string player, DateTimeOffset at) =>
+        GameEvent.Activity(text, player, EventPriority.Normal) with { At = at, MustWake = true };
+
     private void Post(string player, string rule, DangerLevel level, string text, EventPriority priority)
     {
         if (!_w.PlayerDanger && rule != "death") return;
+        if (OtherBot(player))
+        {
+            Wake?.Invoke(GameEvent.Activity(text, player, EventPriority.Background) with { At = _time.GetUtcNow() });
+            return;
+        }
         if (!_gate.TryWake(player, rule, level, TimeSpan.FromSeconds(_o.CooldownSeconds), _w.MaxWakesPer5Min)) return;
-        Wake?.Invoke(GameEvent.Activity(text, player, priority) with { At = _time.GetUtcNow() });
+        Wake?.Invoke(rule == "fall" ? Loss(text, player, _time.GetUtcNow()) : GameEvent.Activity(text, player, priority) with { At = _time.GetUtcNow() });
     }
 
     private string Where(Vec3d p)
@@ -412,21 +438,23 @@ public sealed class DangerMonitor
             else if (track?.LastEdge is { Length: > 0 } le && cause.Contains("void")) where = $" ({le})";
             Activity?.Invoke(new ActivityEvent(d.Player, ActivityKinds.Died, now, conf) { Detail = cause + where, Pos = d.Pos });
             var text = $"{(conf < 0.7 ? "probably: " : "")}{d.Player} {cause}{where}";
+            bool bot = OtherBot(d.Player);
             if (track?.PendingFall is { } held)
             {
                 // The fall alarm was still held: one wake carrying both facts.
                 track.PendingFall = null;
                 track.FallWokeAt = now;
                 text = $"{(conf < 0.7 ? "probably: " : "")}{d.Player} fell into the void and died{where}";
-                if (_gate.TryWake(d.Player, "death", DangerLevel.Critical, TimeSpan.FromSeconds(_o.CooldownSeconds), _w.MaxWakesPer5Min))
-                    Wake?.Invoke(GameEvent.Activity(text, d.Player, EventPriority.High) with { At = now });
+                if (bot) Wake?.Invoke(GameEvent.Activity(text, d.Player, EventPriority.Background) with { At = now });
+                else if (_gate.TryWake(d.Player, "death", DangerLevel.Critical, TimeSpan.FromSeconds(_o.CooldownSeconds), _w.MaxWakesPer5Min))
+                    Wake?.Invoke(Loss(text, d.Player, now));
             }
-            else if (!_w.PlayerDeath)
+            else if (!_w.PlayerDeath || bot)
                 Wake?.Invoke(GameEvent.Activity(text, d.Player, EventPriority.Background) with { At = now });
             else if (track != null && track.FallWokeAt != default && now - track.FallWokeAt <= TimeSpan.FromSeconds(_o.FollowUpSeconds))
                 Wake?.Invoke(GameEvent.Activity(text, d.Player, EventPriority.Normal) with { At = now }); // follow-up to the fall alarm
             else if (_gate.TryWake(d.Player, "death", DangerLevel.Critical, TimeSpan.FromSeconds(_o.CooldownSeconds), _w.MaxWakesPer5Min))
-                Wake?.Invoke(GameEvent.Activity(text, d.Player, EventPriority.High) with { At = now });
+                Wake?.Invoke(Loss(text, d.Player, now));
             if (_tracks.TryGetValue(d.Player, out var t)) { t.Fall.Reset(); t.Fight = null; }
         }
     }

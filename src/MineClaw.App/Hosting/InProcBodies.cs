@@ -127,6 +127,7 @@ public sealed class InProcBodies : IBodyHost, IAsyncDisposable
             AutoRespawn = !_hive.OnCloneDeath.Equals("logout", StringComparison.OrdinalIgnoreCase),
             Log = m => clientLog.LogDebug("{Msg}", m),
         });
+        if (_mainClient is { } main) client.World.Chops = main.World.Chops; // a remnant any body left is the hive's unfinished tree
         client.Kicked += r => _log.LogWarning("{Body} kicked: {Reason}", name, r);
         client.Spawned += () => _log.LogInformation("{Body} joined {Host}:{Port}", name, _mc.Host, _mc.Port);
         client.Danger += d => _log.LogWarning("{Body} danger {Kind}: {Msg}", name, d.Kind, d.Message);

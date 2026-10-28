@@ -528,9 +528,11 @@ public sealed partial class ChatRouter
     {
         lock (_lock)
         {
-            var named = _online.Where(p => AddressingText.Mentions(text, p) ||
-                                           (_options.PlayerNicknames.TryGetValue(p, out var nicks) && nicks.Any(n => AddressingText.Mentions(text, n))) ||
-                                           (_learnedNicks.TryGetValue(p, out var learned) && learned.Any(n => n.Length >= 2 && AddressingText.Mentions(text, n))))
+            // Exact accounts win: a regular's nickname is never read inside another account's name ("robin" in "robin-chan").
+            var bare = PlayerNames.WithoutLogins(text, _online);
+            var named = _online.Where(p => PlayerNames.MentionsLogin(text, p) ||
+                                           (_options.PlayerNicknames.TryGetValue(p, out var nicks) && nicks.Any(n => AddressingText.Mentions(bare, n))) ||
+                                           (_learnedNicks.TryGetValue(p, out var learned) && learned.Any(n => n.Length >= 2 && AddressingText.Mentions(bare, n))))
                 .ToList();
             if (named.Count > 0) return named;
             var window = TimeSpan.FromSeconds(_options.ReplyWindowSeconds);

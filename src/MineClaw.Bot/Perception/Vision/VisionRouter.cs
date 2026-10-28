@@ -373,6 +373,12 @@ public static partial class VisionRouter
             }
             var grown = trees.Values.Where(TreeStewardship.IsLiving).OrderBy(t => D(T(t.Base))).ToList();
             var bare = trees.Values.Where(t => !TreeStewardship.IsLiving(t)).OrderBy(t => D(T(t.Base))).ToList();
+            // A remnant of our own chop (it stopped part-way): ours to finish with chop_tree, not "someone's build".
+            var ours = bare.Where(t => TreeScan.Unfinished(w, t) is not null).ToList();
+            bare = bare.Except(ours).ToList();
+            if (ours.Count > 0)
+                parts.Add("our unfinished tree" + (ours.Count == 1 ? "" : "s") + " (chop_tree at= finishes it): "
+                          + string.Join("; ", ours.Take(3).Select(t => $"{t.WoodName} {P(T(t.Base))} {t.Logs.Count} logs left")));
             parts.Add(grown.Count == 0 ? $"no grown tree within {r}"
                 : $"{grown.Count} grown tree{(grown.Count == 1 ? "" : "s")}: " + string.Join("; ", grown.Take(4).Select(t => $"{t.WoodName} {P(T(t.Base))} {t.Logs.Count} logs {t.Leaves.Count} leaves"))
                   + (grown.Count > 4 ? $" +{grown.Count - 4}" : ""));

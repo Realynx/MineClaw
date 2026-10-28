@@ -167,10 +167,11 @@ public sealed partial class MinecraftClient
     private TreeInfo? ResolveTree(BlockPos? at, int? wood, TreeChopOptions o, out string? why)
     {
         int minTrees = o.MinTrees ?? MinTrees;
-        int saplings = World.Inventory.CountItem(Blocks.Sapling);
         TreeCensus? census = null;
         TreeCensus Census(TreeInfo t) => census ??= TreeStewardship.Census(World, t.Base.Center);
-        string? Refusal(TreeInfo t) => minTrees <= 0 ? null : TreeStewardship.Refusal(Census(t), t, saplings, ReplantPrecheck(t), minTrees);
+        // Only the tree's own species replants it (a birch spot gets a birch sapling, never a silent oak).
+        string? Refusal(TreeInfo t) => minTrees <= 0 ? null
+            : TreeStewardship.Refusal(Census(t), t, World.Inventory.CountItem(Blocks.Sapling, t.Wood), ReplantPrecheck(t), minTrees);
         var tree = PickTree(at, wood, o, Refusal, out why);
         if (tree is not null && Refusal(tree) is { } no)
         {
@@ -203,7 +204,7 @@ public sealed partial class MinecraftClient
         else
         {
             var all = TreeScan.FindTrees(World, World.Player.Position, o.SearchRadius, wood)
-                .Where(t => t.Logs.Any(l => !UserProtected(l, Blocks.Log)) && (t.OnSoil || t.Leaves.Count >= 3)).ToList();
+                .Where(t => t.Logs.Any(l => !UserProtected(l, Blocks.Log)) && (t.OnSoil || t.Leaves.Count >= 3 || TreeScan.Unfinished(World, t) is not null)).ToList();
             var trees = all.Where(t => !t.Logs.All(EditBlocked)).ToList();
             if (trees.Count == 0 && all.Count > 0)
             {
@@ -212,7 +213,9 @@ public sealed partial class MinecraftClient
             }
             // Stewardship first (allowed trees), then the tree whose replant is most certain: on dirt, outside any protected
             // area, not on the rim (drops there fall into the void), then the nearest.
+            // Our own unfinished tree (a chop that stopped part-way) goes before any new one.
             tree = trees.OrderBy(t => refusal(t) is null ? 0 : 1)
+                .ThenBy(t => TreeScan.Unfinished(World, t) is not null ? 0 : 1)
                 .ThenBy(t => t.OnSoil ? 0 : 1)
                 .ThenBy(t => ReplantPrecheck(t) is null ? 0 : 1)
                 .ThenBy(t => Safety.EdgeDistance(World, t.Base.X, t.Base.Y, t.Base.Z, 2) >= 2 ? 0 : 1)
@@ -223,7 +226,7 @@ public sealed partial class MinecraftClient
                 return null;
             }
         }
-        if (!tree.OnSoil && tree.Leaves.Count < 3)
+        if (!tree.OnSoil && tree.Leaves.Count < 3 && TreeScan.Unfinished(World, tree) is null)
         {
             why = $"logs at {Fmt(tree.Base)} sit on {BlockName(tree.SoilId, 0)} with no leaves: a build, not a tree";
             return null;
@@ -746,16 +749,30 @@ public sealed partial class MinecraftClient
         }
         if (World.GetBlock(cell) == Blocks.Sapling) { st.AlreadyPlanted = cell != tree.Base; return (cell, null); }
         if (ReplantProblem(cell, soilPos) is { } p) return (null, p);
-        int? damage = World.Inventory.CountItem(Blocks.Sapling, tree.Wood) > 0 ? tree.Wood
-            : World.Inventory.FindSlots(Blocks.Sapling) is { Count: > 0 } any ? World.Inventory.GetPlayerSlot(any[0]).Damage : null;
-        if (damage is null) return (null, "no sapling");
-        var r = await PlaceCoreAsync(cell, Blocks.Sapling, ct, allowPathing: true, damage: damage).ConfigureAwait(false);
+        // The tree's own species only (live 10-28, task #55: a birch stump would have become an oak); another kind is the
+        // player's call: "no birch sapling; plant oak?".
+        if (World.Inventory.CountItem(Blocks.Sapling, tree.Wood) <= 0)
+            return (null, World.Inventory.FindSlots(Blocks.Sapling) is { Count: > 0 } any
+                ? $"no {tree.WoodName} sapling; plant {TreeScan.WoodName(World.Inventory.GetPlayerSlot(any[0]).Damage)}?"
+                : "no sapling");
+        var r = await PlaceCoreAsync(cell, Blocks.Sapling, ct, allowPathing: true, damage: tree.Wood).ConfigureAwait(false);
         if (!r.Ok) return (null, "placing the sapling failed: " + r.Message);
         st.PlacedSapling = true;
         return World.GetBlock(cell) == Blocks.Sapling ? (cell, null) : (null, "the sapling popped off");
     }
 
     // ------------------------------------------------------------------ result
+
+    /// <summary>Remembers what this chop felled and left standing: a remnant it leaves is our own unfinished tree.</summary>
+    private void NoteChop(ChopState st)
+    {
+        var t = st.Tree;
+        var felled = t.Logs.Where(l => World.GetBlock(l) != Blocks.Log).ToHashSet();
+        if (felled.Count == 0) return;
+        var left = t.Logs.Where(l => World.GetBlock(l) == Blocks.Log).ToHashSet();
+        var soil = t.OnSoil ? t.Soil : TreeScan.ColumnUnder(World, t.Soil).Dirt ?? t.Soil;
+        World.Chops.Note(new ChopRecord(t.Base, soil, World.Dimension, t.Wood, felled, left, Options.Username, DateTimeOffset.UtcNow));
+    }
 
     private ActionResult Finish(ChopState st, string? stop, BlockPos? planted, string? problem)
     {
@@ -800,6 +817,7 @@ public sealed partial class MinecraftClient
             _lastUnreplanted = DateTime.UtcNow;
             _lastReplantProblem = stop ?? problem;
         }
+        NoteChop(st);
         var report = new TreeChopReport(t.WoodName, t.Base, t.Soil, t.Logs.Count, st.Felled, logs, saplings, apples, st.Lost, planted, problem, ok, msg)
         {
             LeavesBroken = st.LeavesBroken, LeavesDecayed = st.LeavesDecayed, StuckDrops = stuck,

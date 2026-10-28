@@ -110,8 +110,25 @@ public static partial class MetaSpeech
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex SelfReportRx();
 
+    /// <summary>
+    /// Narration after a 'noticed' event (live 10-28 03:16, Fox's void death: "...so I told him I'd keep the cobble coming while
+    /// he respawns. I rewrote the mining script to store cobble in the chest next to the gen... That script is still paused from
+    /// the danger alert..."; internal 03:07 "I've already restarted the cobble mining after that pause"). Never chat. "so I told
+    /// you!" (to the listener) stays.
+    /// </summary>
+    [GeneratedRegex(
+        @"\bso\s+i\s+(?:already\s+)?(?:told|warned|promised|assured|reminded|let)\s+(?!you\b|u\b|ya\b|y'?all\b|yall\b)[a-z][\w']*\b" +
+        @"|\bi\s+(?:already\s+)?(?:told|promised|assured)\s+(?:him|her|them)\s+(?:i'?d|i\s+would|i'?ll|i\s+will|that)\b" +
+        @"|\b(?:i|i'?ve|i\s+have)\s+(?:just\s+|already\s+)?(?:re-?wrote|re-?written|rewritten|edited|fixed|changed|updated|patched|tweaked|restarted|replaced|swapped|paused|resumed)\s+(?:the|my|a|our|that|this)\s+(?:[\w-]+\s+){0,3}(?:script|loop|routine)s?\b" +
+        @"|\b(?:that|the|this)\s+pause\s+(?:was|is|came)\s+(?:from|because|due|caused)\b" +
+        @"|\b(?:is|was|got|still)\s+(?:still\s+)?paused\s+(?:from|by|because|due|after)\b" +
+        @"|\bafter\s+(?:that|the)\s+(?:danger\s+)?(?:pause|alert|interrupt(?:ion)?)\b|\bdanger\s+alert\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex NoticedNarrationRx();
+
     /// <summary>A third-person report about its own doings ("I warned Fox that...", "I'm also back on the gen now").</summary>
-    public static bool IsSelfReport(string sentence) => SelfReportRx().IsMatch(sentence ?? "") || AskWaitRx().IsMatch(sentence ?? "");
+    public static bool IsSelfReport(string sentence) =>
+        SelfReportRx().IsMatch(sentence ?? "") || AskWaitRx().IsMatch(sentence ?? "") || NoticedNarrationRx().IsMatch(sentence ?? "");
 
     /// <summary>
     /// Narration of its own asking and waiting (live 10-28 02:1x, clone 67 in public chat: "Asked Fox what he wants built at the

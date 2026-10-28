@@ -250,12 +250,12 @@ public sealed class Gestures
     private string? TargetOf(string text)
     {
         var me = _c.World.Player.Position;
-        foreach (var e in _c.World.Entities.Nearby(me, 16, e => e.Kind == EntityKind.Player && e.Name != null
-                     && !e.Name.Equals(_c.Username, StringComparison.OrdinalIgnoreCase)))
-        {
-            if (AddressingText.Mentions(text, e.Name!)) return e.Name;
-            if (_rt.Chat.NicknamesOf(e.Name!).Any(n => AddressingText.Mentions(text, n))) return e.Name;
-        }
+        var near = _c.World.Entities.Nearby(me, 16, e => e.Kind == EntityKind.Player && e.Name != null
+                     && !e.Name.Equals(_c.Username, StringComparison.OrdinalIgnoreCase)).Select(e => e.Name!).ToList();
+        // Exact accounts win over nicknames: "robinchan" / "robin-chan" is never Robin.
+        if (near.FirstOrDefault(n => PlayerNames.MentionsLogin(text, n)) is { } login) return login;
+        var bare = PlayerNames.WithoutLogins(text, near);
+        if (near.FirstOrDefault(n => _rt.Chat.NicknamesOf(n).Any(nick => AddressingText.Mentions(bare, nick))) is { } nicked) return nicked;
         return Partner();
     }
 

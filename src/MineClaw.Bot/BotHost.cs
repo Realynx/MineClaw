@@ -665,6 +665,7 @@ public sealed class BotHost : IDisposable
             botNames: () => new[] { client.Username, rt.Chat.DisplayName }.Concat(rt.Chat.Aliases).Concat(hiveBots?.Invoke() ?? []),
             botBusy: () => client.CurrentAction != null, time: time, logger: loggers?.CreateLogger("MineClaw.Activity"), dimensions: dims)
         { TaughtStructureAt = memory.TaughtStructureAt };
+        tracker.Danger.IsOtherBot = rt.Chat.IsOtherBot;
         tracker.Wake += e => rt.Events.Post(e);
         var lastEvidence = new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase);
         tracker.StructureEvidence += (name, r) =>
