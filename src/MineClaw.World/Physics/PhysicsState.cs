@@ -40,6 +40,12 @@ public sealed class PhysicsState
     public float LandSpeed { get; set; } = float.NaN;
     /// <summary><c>jumpMovementFactor</c> as the previous tick left it; NaN = not yet ticked (0.02F).</summary>
     public float AirSpeed { get; set; } = float.NaN;
+    /// <summary>Potion amplifiers the 1.12.2 tick reads (−1 = none; the client sets them from the player's effects each tick):
+    /// speed/slowness scale the movement attribute (<c>Potion.registerPotionAttributeModifier</c>: +0.2 / −0.15 per level,
+    /// operation 2), jump boost adds 0.1 per level to the jump (<c>EntityLivingBase.jump</c>).</summary>
+    public int SpeedAmplifier { get; set; } = -1;
+    public int SlownessAmplifier { get; set; } = -1;
+    public int JumpBoostAmplifier { get; set; } = -1;
     /// <summary>Fall damage (half-hearts) the landing of the last tick dealt (<c>EntityLivingBase.fall</c>); 0 when none.</summary>
     public int FallDamage { get; set; }
 

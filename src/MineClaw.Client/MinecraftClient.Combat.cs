@@ -27,7 +27,11 @@ public sealed partial class MinecraftClient
             {
                 if (_combatInstance is not null) return _combatInstance;
                 _telemetry = new CombatTelemetry(Options.Combat.TelemetryDirectory);
-                var e = new CombatEngine(World, Options.Combat, _telemetry) { Username = Options.Username, Reserved = () => ReservedItems };
+                var e = new CombatEngine(World, Options.Combat, _telemetry)
+                {
+                    Username = Options.Username, Reserved = () => ReservedItems, Rules = Options.Profile.Combat,
+                    ShieldDisabled = () => ItemCooldownTicks(MineClaw.Client.Combat.Release1122CombatRules.ShieldId) > 0,
+                };
                 e.ShouldShelter = ShouldShelter;
                 e.EventRaised += ev =>
                 {
@@ -67,9 +71,12 @@ public sealed partial class MinecraftClient
             _combatBlocking = false;
         }
         if (step.AttackId >= 0) SendAttack(s, step.AttackId);
-        else if (step.Block && !_combatBlocking && CombatRules.IsSword(HeldStack().Id))
+        else if (step.Block && !_combatBlocking && Options.Profile.Combat.CanBlock(HeldStack(), World.Inventory.Offhand))
         {
-            Send(s, PlayerBlockPlacementPacket.UseItem(HeldStack()));
+            // b1.8.1: right-click with the sword; 1.12.2: Use Item with the shield's hand (processRightClick: the sword in the main
+            // hand has no use, so the off hand's shield goes up).
+            int hand = Options.Profile.Combat.BlockHand(HeldStack(), World.Inventory.Offhand);
+            Send(s, PlayerBlockPlacementPacket.UseItem(hand == 0 ? HeldStack() : World.Inventory.Offhand, (byte)hand));
             _combatBlocking = true;
         }
         if (step.Chat is { } line) _ = SendChatAsync(line);
@@ -88,9 +95,18 @@ public sealed partial class MinecraftClient
             Log($"combat: refused to attack {target.DisplayName}");
             return;
         }
+        SendMeleeHit(s, targetId);
+    }
+
+    /// <summary>One melee hit in the version's vanilla order: b1.8.1 swing then attack; 1.12.2 attack then swing
+    /// (<c>Minecraft.clickMouse</c>: <c>attackEntity</c> first, <c>swingArm</c> after; the server's <c>swingArm</c> resets the charge).</summary>
+    private void SendMeleeHit(Session s, int targetId)
+    {
         int self = World.Player.EntityId;
-        Send(s, new AnimationPacket { EntityId = self, Animation = 1 });
-        Send(s, new UseEntityPacket { UserEntityId = self, TargetEntityId = targetId, LeftClick = true });
+        var swing = new AnimationPacket { EntityId = self, Animation = 1 };
+        var attack = new UseEntityPacket { UserEntityId = self, TargetEntityId = targetId, LeftClick = true };
+        if (Options.Profile.Combat.SwingBeforeAttack) { Send(s, swing); Send(s, attack); }
+        else { Send(s, attack); Send(s, swing); }
     }
 
     private void EquipNow(Session s, WeaponPick pick)

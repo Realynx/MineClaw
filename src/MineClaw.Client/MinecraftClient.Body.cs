@@ -211,9 +211,8 @@ public sealed partial class MinecraftClient
                 return ActionResult.Fail($"{player}'s request expired");
             _punchRequests[player] = req with { Used = req.Used + 1 };
             _punchHp[player] = (hp, _punchHp.TryGetValue(player, out var e) ? e.At : DateTime.UtcNow, DateTime.UtcNow);
-            int self = World.Player.EntityId;
-            Send(new AnimationPacket { EntityId = self, Animation = 1 });
-            Send(new UseEntityPacket { UserEntityId = self, TargetEntityId = target.Id, LeftClick = true });
+            if (_session is not { Ended: false } hitSession) throw new ActionAbortedException("not connected");
+            SendMeleeHit(hitSession, target.Id);
             await WaitTicksAsync(2, c).ConfigureAwait(false);
             int left = PunchesPerRequest - req.Used - 1;
             return ActionResult.Success($"bonk! punched {player} ({left} left for that request)");

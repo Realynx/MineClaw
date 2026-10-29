@@ -3,23 +3,6 @@ using MineClaw.World;
 
 namespace MineClaw.Client.Combat;
 
-/// <summary>How the engine fights a mob type.</summary>
-public enum MobTactic
-{
-    Melee,
-    /// <summary>Ranged (skeleton): close in along safe ground or break line of sight; never chase over edges.</summary>
-    Ranged,
-    /// <summary>Creeper: watch the fuse.</summary>
-    Creeper,
-    /// <summary>Enderman: never look at it; fight only when provoked.</summary>
-    Enderman,
-    /// <summary>Not fought (ghast, giant, squid...).</summary>
-    Ignore,
-}
-
-/// <summary>Static facts about a mob type in b1.8.1 (EntityXxx constructors / attackEntity).</summary>
-public sealed record MobProfile(int Type, double Width, double Height, int MaxHealth, int MeleeDamage, MobTactic Tactic, bool Hostile);
-
 /// <summary>
 /// b1.8.1 combat numbers, from the MCP-decompiled b1.8.1 classes (EntityPlayer, EntityLiving, InventoryPlayer,
 /// ItemSword, ItemTool, EnumToolMaterial, ItemArmor, EntityCreeper, EntityEnderman, EntityWolf, EntitySlime) and the
@@ -93,7 +76,13 @@ public static class CombatRules
     /// <summary>Raw melee damage of a mob entity (before difficulty): slimes deal their size (only size &gt; 1,
     /// EntitySlime.java:124), everything else the profile value.</summary>
     public static int MeleeDamageOf(Entity e) =>
-        e.Kind != EntityKind.Mob ? 0 : e.TypeId == MobTypes.Slime ? (SlimeSize(e) > 1 ? SlimeSize(e) : 0) : Profile(e.TypeId).MeleeDamage;
+        e.Kind != EntityKind.Mob ? 0
+        : e.TypeId == MobTypes.Slime ? (SlimeSize(e) > 1 ? SlimeSize(e) : 0)
+        : e.TypeId == MobTypes.MagmaCube && e.Profile is not null ? SlimeSize(e) + 2 // EntityMagmaCube.getAttackStrength: size + 2
+        : ProfileOf(e).MeleeDamage;
+
+    /// <summary>The entity's profile in its version (stamped by the tracker; b1.8.1 entities carry none: <see cref="Profile"/>).</summary>
+    public static MobProfile ProfileOf(Entity e) => e.Profile ?? Profile(e.TypeId);
 
     /// <summary>Velocity of a victim right after a hit (EntityLiving.java:449-462 + EntityHuman.java:631-636).
     /// <paramref name="current"/> is the victim's server-side motion (≈ 0 for players: the server does not simulate
@@ -212,12 +201,14 @@ public static class CombatRules
     public static bool IsTamedWolf(Entity e) => e.Kind == EntityKind.Mob && e.TypeId == MobTypes.Wolf && ((e.MetaInt(16) ?? 0) & 4) != 0;
     public static bool IsAngryWolf(Entity e) => e.Kind == EntityKind.Mob && e.TypeId == MobTypes.Wolf && ((e.MetaInt(16) ?? 0) & 2) != 0 && !IsTamedWolf(e);
 
-    /// <summary>Hitbox of an entity at its feet position (players 0.6×1.8).</summary>
+    /// <summary>Hitbox of an entity at its feet position (players 0.6×1.8). Slimes and magma cubes scale with their size; 1.12.2
+    /// babies are half size (<c>EntityZombie.setChildSize</c>, <c>EntityAgeable.setScale</c>).</summary>
     public static AABB Hitbox(Entity e)
     {
         if (e.Kind != EntityKind.Mob) return AABB.ForPlayer(e.Position);
-        var p = Profile(e.TypeId);
-        double s = e.TypeId == MobTypes.Slime ? SlimeSize(e) : 1;
+        var p = ProfileOf(e);
+        double s = e.TypeId is MobTypes.Slime or MobTypes.MagmaCube ? SlimeSize(e) : 1;
+        if (e.Profile is not null && e.IsBaby) s *= 0.5;
         return AABB.ForEntity(e.Position, p.Width * s, p.Height * s);
     }
 
@@ -227,7 +218,9 @@ public static class CombatRules
         if (e.Kind != EntityKind.Mob) return false;
         if (e.TypeId == MobTypes.Wolf) return IsAngryWolf(e);
         if (e.TypeId == MobTypes.Slime) return SlimeSize(e) > 1;
-        var p = Profile(e.TypeId);
+        var p = ProfileOf(e);
+        // A 1.12.2 enderman screaming is attacking (EntityEnderman.SCREAMING); a neutral mob otherwise needs a provocation.
+        if (e.TypeId == MobTypes.Enderman && e.MetaFlag(EntityMeta.Screaming)) return true;
         return p.Hostile && p.Tactic != MobTactic.Ignore;
     }
 

@@ -16,6 +16,9 @@ public sealed class EntityTracker
     public event Action<Entity>? Spawned;
     public event Action<Entity>? Removed;
 
+    /// <summary>The version's entity facts, stamped on every mob and object spawn (b1.8.1: none).</summary>
+    public Versioning.IEntityRules Rules { get; set; } = Versioning.Beta181EntityRules.Instance;
+
     /// <summary>Entity id of the local player, excluded from queries.</summary>
     public int SelfId { get; set; } = int.MinValue;
 
@@ -34,7 +37,10 @@ public sealed class EntityTracker
 
     /// <summary>0x18 Mob Spawn.</summary>
     public Entity SpawnMob(int id, int type, Vec3d pos, float yaw, float pitch, IReadOnlyDictionary<int, object>? metadata = null) =>
-        Spawn(new Entity(id, EntityKind.Mob, pos, Yaw: yaw, Pitch: pitch, TypeId: type, Metadata: metadata));
+        Spawn(new Entity(id, EntityKind.Mob, pos, Yaw: yaw, Pitch: pitch, TypeId: type, Metadata: metadata)
+        {
+            Profile = Rules.Mob(type), TypeName = Rules.Mob(type)?.Name,
+        });
 
     /// <summary>0x15 Pickup Spawn (dropped item).</summary>
     public Entity SpawnItem(int id, ItemStack item, Vec3d pos, Vec3d velocity = default) =>
@@ -42,7 +48,7 @@ public sealed class EntityTracker
 
     /// <summary>0x17 Add Object/Vehicle.</summary>
     public Entity SpawnObject(int id, int type, Vec3d pos, Vec3d velocity = default) =>
-        Spawn(new Entity(id, EntityKind.Object, pos, velocity, TypeId: type));
+        Spawn(new Entity(id, EntityKind.Object, pos, velocity, TypeId: type) { TypeName = Rules.ObjectName(type) });
 
     /// <summary>0x1A Experience Orb.</summary>
     public Entity SpawnXpOrb(int id, Vec3d pos, int count) =>
@@ -66,14 +72,22 @@ public sealed class EntityTracker
 
     /// <summary>0x1F/0x21 relative move (deltas in blocks).</summary>
     public bool MoveRelative(int id, double dx, double dy, double dz) =>
-        Update(id, e => e with { Position = e.Position + new Vec3d(dx, dy, dz) });
+        Update(id, e => Landed(e, e.Position + new Vec3d(dx, dy, dz)));
+
+    /// <summary>An arrow whose server position stopped changing is in the ground (its motion is zero from then on).</summary>
+    private static Entity Landed(Entity e, Vec3d to)
+    {
+        if (!e.IsArrow) return e with { Position = to };
+        bool still = to.DistanceSquaredTo(e.Position) < 1e-8;
+        return e with { Position = to, InGround = still || (e.InGround && to.DistanceSquaredTo(e.Position) < 1e-4), Velocity = still ? default : e.Velocity };
+    }
 
     /// <summary>0x20/0x21 look.</summary>
     public bool Look(int id, float yaw, float pitch) => Update(id, e => e with { Yaw = yaw, Pitch = pitch });
 
     /// <summary>0x22 teleport (absolute position).</summary>
     public bool Teleport(int id, Vec3d pos, float yaw, float pitch) =>
-        Update(id, e => e with { Position = pos, Yaw = yaw, Pitch = pitch });
+        Update(id, e => Landed(e, pos) with { Yaw = yaw, Pitch = pitch });
 
     /// <summary>0x1C velocity (blocks/tick).</summary>
     public bool SetVelocity(int id, Vec3d velocity) => Update(id, e => e with { Velocity = velocity });
@@ -83,7 +97,10 @@ public sealed class EntityTracker
     {
         var merged = e.Metadata is null ? new Dictionary<int, object>() : new Dictionary<int, object>(e.Metadata);
         foreach (var (k, v) in values) merged[k] = v;
-        return e with { Metadata = merged };
+        // 1.12.2 EntityArrow.onHit (a block): setIsCritical(false) — a critical arrow losing the flag has landed.
+        bool landed = e.IsArrow && e.MetaFlag(EntityMeta.ArrowCritical) && values.TryGetValue(EntityMeta.ArrowCritical, out var c)
+                      && Convert.ToInt32(c) == 0;
+        return landed ? e with { Metadata = merged, InGround = true, Velocity = default } : e with { Metadata = merged };
     });
 
     /// <summary>A dropped item's stack changed (1.12.2 item metadata: merged stacks, a partial pickup).</summary>
@@ -92,18 +109,47 @@ public sealed class EntityTracker
     /// <summary>0x05 equipment slot 0 (held item) for players.</summary>
     public bool SetHeldItem(int id, int itemId) => Update(id, e => e with { HeldItem = itemId });
 
-    /// <summary>0x05 equipment: stores any slot 0..4 (0 = held, 1-4 = armor boots..helmet); slot 0 also sets <see cref="Entity.HeldItem"/>.</summary>
+    /// <summary>0x05 equipment: stores any slot 0..5 (0 = held, 1-4 = armor boots..helmet, 5 = the 1.12.2 off hand); slot 0 also
+    /// sets <see cref="Entity.HeldItem"/>.</summary>
     public bool SetEquipment(int id, int slot, ItemStack item)
     {
-        if (slot < 0 || slot > 4) return false;
+        if (slot < 0 || slot > 5) return false;
         return Update(id, e =>
         {
-            var eq = new ItemStack[5];
-            for (int i = 0; i < 5; i++) eq[i] = e.EquipmentAt(i);
+            var eq = new ItemStack[Math.Max(slot + 1, e.Equipment?.Count ?? 5)];
+            for (int i = 0; i < eq.Length; i++) eq[i] = e.EquipmentAt(i);
             eq[slot] = item;
             return e with { Equipment = eq, HeldItem = slot == 0 ? (item.IsEmpty ? 0 : item.Id) : e.HeldItem };
         });
     }
+
+    /// <summary>1.12.2 Entity Head Look (angle in degrees).</summary>
+    public bool SetHeadYaw(int id, float yaw) => Update(id, e => e with { HeadYaw = yaw });
+
+    /// <summary>Entity Effect: adds or replaces the effect.</summary>
+    public bool SetEffect(int id, StatusEffect fx) => Update(id, e =>
+    {
+        var d = e.Effects is null ? new Dictionary<int, StatusEffect>() : new Dictionary<int, StatusEffect>(e.Effects);
+        d[fx.Id] = fx;
+        return e with { Effects = d };
+    });
+
+    /// <summary>Remove Entity Effect.</summary>
+    public bool RemoveEffect(int id, int effectId) => Update(id, e =>
+    {
+        if (e.Effects is null || !e.Effects.ContainsKey(effectId)) return e;
+        var d = new Dictionary<int, StatusEffect>(e.Effects);
+        d.Remove(effectId);
+        return e with { Effects = d };
+    });
+
+    /// <summary>Entity Properties: merges the attribute values by key.</summary>
+    public bool SetAttributes(int id, IEnumerable<KeyValuePair<string, double>> values) => Update(id, e =>
+    {
+        var d = e.Attributes is null ? new Dictionary<string, double>() : new Dictionary<string, double>(e.Attributes);
+        foreach (var (k, v) in values) d[k] = v;
+        return e with { Attributes = d };
+    });
 
     /// <summary>0x27 attach entity (vehicleId -1 = dismount).</summary>
     public bool Attach(int id, int vehicleId) => Update(id, e => e with { VehicleId = vehicleId });

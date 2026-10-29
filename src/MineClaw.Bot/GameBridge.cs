@@ -487,7 +487,7 @@ public sealed class GameBridge : IDisposable
         if (!c.IsPlaying) return p.IsDead ? "DEAD (respawning)" : "offline (reconnecting)";
         var held = w.Inventory.HeldItem(p.HeldSlot);
         string heldText = held.IsEmpty ? "nothing" : Names.Item(held.Id, held.Damage) + (held.Count > 1 ? " x" + held.Count : "");
-        var vitals = c.VitalsKnown ? SurvivalReflex.HeaderText(p.Health, p.Food, w.Inventory.PlayerSlots(), c.ReservedItems) : "hp/food loading…";
+        var vitals = c.VitalsKnown ? SurvivalReflex.HeaderText(p.Health, p.Food, w.Inventory.PlayerSlots(), c.ReservedItems, null, w.Player.Effects) : "hp/food loading…";
         var s = $"pos {Locations.Fmt(p.Position)} {vitals} held {heldText} {(w.IsNight ? "night" : "day")}";
         if (w.Dimension != 0) s = $"IN THE {DimName(w.Dimension).ToUpperInvariant()} " + s; // never mistaken for the island
         if (!c.GroundKnown) s += " ground loading…";

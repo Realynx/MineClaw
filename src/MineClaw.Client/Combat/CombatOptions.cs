@@ -57,6 +57,12 @@ public sealed record CombatOptions
     /// <summary>Ticks between attacks on the same target. Vanilla invulnerability: heartsLife 20, full damage only once
     /// heartsLife ≤ 10 (EntityLiving.attackEntityFrom) → 10 ticks; +1 for server/client tick phase.</summary>
     public int AttackIntervalTicks { get; init; } = 11;
+    /// <summary>1.9+ (a version with an attack cooldown): the charge a swing waits for (<c>getCooledAttackStrength</c>); above 0.9 the
+    /// hit can crit, sweep and sprint-knock back. Ignored on b1.8.1.</summary>
+    public float MinCharge { get; init; } = 0.9f;
+    /// <summary>1.9+: at or below this health (and above <see cref="DisengageHealth"/>, where the fight turns into a retreat) a mob
+    /// within <see cref="Reach"/> is hit at any charge: an uncharged hit still knocks it back.</summary>
+    public int EmergencySwingHealth { get; init; } = 8;
     /// <summary>Jump-and-fall critical hits (b1.8 EntityPlayer.attackTargetEntityWithCurrentItem) against mobs.</summary>
     public bool Crits { get; init; } = true;
     /// <summary>Right-click block with a sword between swings (b1.8: damage → (1 + dmg) / 2).</summary>

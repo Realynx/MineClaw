@@ -32,6 +32,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
         Options = options ?? throw new ArgumentNullException(nameof(options));
         World = world ?? new WorldState(height: options.Profile.Version.WorldHeight, inventory: options.Profile.Inventory, physics: options.Profile.Physics);
         if (options.Profile.ItemRules is { } itemRules) World.Inventory.Rules = itemRules;
+        World.Entities.Rules = options.Profile.Entities; // P4: the version's mob profiles, stamped on every spawn
         IsProtected = options.IsProtected;
         ReservedItems = options.ReservedItems ?? new HashSet<int>();
         Survival = new SurvivalReflex(options.Survival);
@@ -370,6 +371,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
         }
         GestureBeforeUse(s, p); // a dig/place/use never goes out under a gesture's head overlay
         NoteSelfEdit(p);
+        if (p is AnimationPacket { Animation: 1 }) _combatInstance?.NoteOwnSwing(TickCount); // 1.12.2: the server's swingArm resets the charge
         try
         {
             s.Conn.Send(p);

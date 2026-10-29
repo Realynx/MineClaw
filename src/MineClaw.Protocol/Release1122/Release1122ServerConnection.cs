@@ -36,6 +36,9 @@ public sealed class Release1122ServerConnection : IGameConnection
     private volatile State _state = State.Handshake;
     private volatile bool _disposed;
     private int _teleportId;
+    // Entity classes of what was spawned (the metadata layout) and riders per vehicle (Set Passengers lists them all).
+    private readonly Dictionary<int, (EntityWireKind Kind, int Type)> _kinds = new();
+    private readonly Dictionary<int, List<int>> _riders = new();
     private int _dimension;
 
     public Release1122ServerConnection(Stream stream, bool ownsStream = true)
@@ -322,9 +325,11 @@ public sealed class Release1122ServerConnection : IGameConnection
                 break;
             case PickupSpawnPacket ps:
             {
+                _kinds[ps.EntityId] = (EntityWireKind.Object, Ids1122.ObjectItem);
+                var (px, py, pz) = ps.Exact ?? (FixedPoint.FromAbsolute(ps.X), FixedPoint.FromAbsolute(ps.Y), FixedPoint.FromAbsolute(ps.Z));
                 // EntityTrackerEntry.createSpawnPacket: SPacketSpawnObject(item, 2, 1), then the tracked data (the stack).
                 yield return WireWriter.ForPacket(Ids1122.SpawnObject).WriteVarInt(ps.EntityId).WriteUuid(Guid.NewGuid()).WriteSByte(Ids1122.ObjectItem)
-                    .WriteDouble(FixedPoint.FromAbsolute(ps.X)).WriteDouble(FixedPoint.FromAbsolute(ps.Y)).WriteDouble(FixedPoint.FromAbsolute(ps.Z))
+                    .WriteDouble(px).WriteDouble(py).WriteDouble(pz)
                     .WriteUByte(0).WriteUByte(0).WriteInt(1)
                     .WriteShort(Velocity(ps.MotionX)).WriteShort(Velocity(ps.MotionY)).WriteShort(Velocity(ps.MotionZ));
                 yield return WireWriter.ForPacket(Ids1122.EntityMetadata).WriteVarInt(ps.EntityId)
@@ -334,16 +339,26 @@ public sealed class Release1122ServerConnection : IGameConnection
             case NamedEntitySpawnPacket ne:
             {
                 var uuid = Wire.OfflineUuid(ne.PlayerName);
+                _kinds[ne.EntityId] = (EntityWireKind.Player, 0);
+                var (nx, ny, nz) = ne.Exact ?? (FixedPoint.FromAbsolute(ne.X), FixedPoint.FromAbsolute(ne.Y), FixedPoint.FromAbsolute(ne.Z));
                 yield return WireWriter.ForPacket(Ids1122.PlayerListItem).WriteVarInt(0).WriteVarInt(1).WriteUuid(uuid).WriteString(ne.PlayerName, 16)
                     .WriteVarInt(0).WriteVarInt(0).WriteVarInt(1).WriteBool(false);
                 yield return WireWriter.ForPacket(Ids1122.SpawnPlayer).WriteVarInt(ne.EntityId).WriteUuid(uuid)
-                    .WriteDouble(FixedPoint.FromAbsolute(ne.X)).WriteDouble(FixedPoint.FromAbsolute(ne.Y)).WriteDouble(FixedPoint.FromAbsolute(ne.Z))
+                    .WriteDouble(nx).WriteDouble(ny).WriteDouble(nz)
                     .WriteUByte(ne.Yaw).WriteUByte(ne.Pitch).WriteUByte(0xFF);
                 break;
             }
             case EntityTeleportPacket et:
-                yield return WireWriter.ForPacket(Ids1122.EntityTeleport).WriteVarInt(et.EntityId).WriteDouble(FixedPoint.FromAbsolute(et.X))
-                    .WriteDouble(FixedPoint.FromAbsolute(et.Y)).WriteDouble(FixedPoint.FromAbsolute(et.Z)).WriteUByte(et.Yaw).WriteUByte(et.Pitch).WriteBool(true);
+            {
+                var (tx, ty, tz) = et.Exact ?? (FixedPoint.FromAbsolute(et.X), FixedPoint.FromAbsolute(et.Y), FixedPoint.FromAbsolute(et.Z));
+                yield return WireWriter.ForPacket(Ids1122.EntityTeleport).WriteVarInt(et.EntityId).WriteDouble(tx).WriteDouble(ty).WriteDouble(tz)
+                    .WriteUByte(et.Yaw).WriteUByte(et.Pitch).WriteBool(true);
+                break;
+            }
+            case EntityLookRelativeMovePacket lrm:
+                yield return WireWriter.ForPacket(Ids1122.EntityLookRelMove).WriteVarInt(lrm.EntityId)
+                    .WriteShort((short)(lrm.DX * 128)).WriteShort((short)(lrm.DY * 128)).WriteShort((short)(lrm.DZ * 128))
+                    .WriteUByte(lrm.Yaw).WriteUByte(lrm.Pitch).WriteBool(true);
                 break;
             case EntityRelativeMovePacket rm:
                 yield return WireWriter.ForPacket(Ids1122.EntityRelMove).WriteVarInt(rm.EntityId)
@@ -353,6 +368,7 @@ public sealed class Release1122ServerConnection : IGameConnection
                 yield return WireWriter.ForPacket(Ids1122.EntityLook).WriteVarInt(el.EntityId).WriteUByte(el.Yaw).WriteUByte(el.Pitch).WriteBool(true);
                 break;
             case DestroyEntityPacket de:
+                _kinds.Remove(de.EntityId);
                 yield return WireWriter.ForPacket(Ids1122.DestroyEntities).WriteVarInt(1).WriteVarInt(de.EntityId);
                 break;
             case CollectItemPacket ci:
@@ -369,12 +385,120 @@ public sealed class Release1122ServerConnection : IGameConnection
             }
             case EntityEquipmentPacket eq:
             {
-                int slot = eq.Slot switch { 0 => 0, 1 => 2, 2 => 3, 3 => 4, 4 => 5, _ => -1 };
+                int slot = eq.Slot switch { 0 => 0, 1 => 2, 2 => 3, 3 => 4, 4 => 5, 5 => 1, _ => -1 };
                 if (slot >= 0)
                     yield return WireWriter.ForPacket(Ids1122.EntityEquipment).WriteVarInt(eq.EntityId).WriteVarInt(slot)
                         .WriteSlot(eq.ItemId < 0 ? ItemStack.Empty : new ItemStack(eq.ItemId, 1, eq.Damage));
                 break;
             }
+            default:
+                foreach (var w in EncodeEntities(packet)) yield return w;
+                break;
+        }
+    }
+
+    /// <summary>P4: mobs, objects, orbs, lightning, typed metadata per class, velocity, head look, effects, attributes, passengers,
+    /// the held-item change, experience, the death message and item cooldowns (<c>SPacket*.writePacketData</c>).</summary>
+    private IEnumerable<WireWriter> EncodeEntities(IPacket packet)
+    {
+        switch (packet)
+        {
+            case MobSpawnPacket ms:
+            {
+                _kinds[ms.EntityId] = (EntityWireKind.Mob, ms.Type);
+                var (x, y, z) = ms.Exact ?? (FixedPoint.FromAbsolute(ms.X), FixedPoint.FromAbsolute(ms.Y), FixedPoint.FromAbsolute(ms.Z));
+                yield return WireWriter.ForPacket(EntityIds1122.SpawnMob).WriteVarInt(ms.EntityId).WriteUuid(Guid.NewGuid()).WriteVarInt(ms.Type)
+                    .WriteDouble(x).WriteDouble(y).WriteDouble(z).WriteUByte(ms.Yaw).WriteUByte(ms.Pitch).WriteUByte(ms.Yaw)
+                    .WriteShort(0).WriteShort(0).WriteShort(0)
+                    .WriteMetadata(EntityMeta1122.FromCanonical(EntityWireKind.Mob, ms.Type, ms.Metadata));
+                break;
+            }
+            case AddObjectVehiclePacket ao:
+            {
+                _kinds[ao.EntityId] = (EntityWireKind.Object, ao.Type);
+                var (x, y, z) = ao.Exact ?? (FixedPoint.FromAbsolute(ao.X), FixedPoint.FromAbsolute(ao.Y), FixedPoint.FromAbsolute(ao.Z));
+                yield return WireWriter.ForPacket(Ids1122.SpawnObject).WriteVarInt(ao.EntityId).WriteUuid(Guid.NewGuid()).WriteUByte(ao.Type)
+                    .WriteDouble(x).WriteDouble(y).WriteDouble(z).WriteUByte(0).WriteUByte(0).WriteInt(ao.ThrowerEntityId)
+                    .WriteShort(ao.SpeedX).WriteShort(ao.SpeedY).WriteShort(ao.SpeedZ);
+                break;
+            }
+            case ExperienceOrbPacket orb:
+            {
+                _kinds[orb.EntityId] = (EntityWireKind.Orb, 0);
+                var (x, y, z) = orb.Exact ?? (FixedPoint.FromAbsolute(orb.X), FixedPoint.FromAbsolute(orb.Y), FixedPoint.FromAbsolute(orb.Z));
+                yield return WireWriter.ForPacket(EntityIds1122.SpawnXpOrb).WriteVarInt(orb.EntityId).WriteDouble(x).WriteDouble(y).WriteDouble(z).WriteShort(orb.Count);
+                break;
+            }
+            case ThunderboltPacket tb:
+                yield return WireWriter.ForPacket(EntityIds1122.SpawnGlobal).WriteVarInt(tb.EntityId).WriteUByte(EntityIds1122.GlobalLightning)
+                    .WriteDouble(FixedPoint.FromAbsolute(tb.X)).WriteDouble(FixedPoint.FromAbsolute(tb.Y)).WriteDouble(FixedPoint.FromAbsolute(tb.Z));
+                break;
+            case EntityMetadataPacket md:
+            {
+                var (kind, type) = _kinds.TryGetValue(md.EntityId, out var k) ? k : (EntityWireKind.Player, 0);
+                var entries = EntityMeta1122.FromCanonical(kind, type, md.Metadata);
+                if (entries.Count > 0) yield return WireWriter.ForPacket(Ids1122.EntityMetadata).WriteVarInt(md.EntityId).WriteMetadata(entries);
+                break;
+            }
+            case EntityVelocityPacket v:
+                yield return WireWriter.ForPacket(EntityIds1122.Velocity).WriteVarInt(v.EntityId).WriteShort(v.VelocityX).WriteShort(v.VelocityY).WriteShort(v.VelocityZ);
+                break;
+            case EntityHeadLookMessage hl:
+                yield return WireWriter.ForPacket(EntityIds1122.HeadLook).WriteVarInt(hl.EntityId).WriteUByte(hl.Yaw);
+                break;
+            case EntityEffectPacket ef:
+                yield return WireWriter.ForPacket(EntityIds1122.EntityEffect).WriteVarInt(ef.EntityId).WriteSByte(ef.EffectId).WriteSByte(ef.Amplifier)
+                    .WriteVarInt(ef.Duration).WriteUByte(0);
+                break;
+            case RemoveEntityEffectPacket re:
+                yield return WireWriter.ForPacket(EntityIds1122.RemoveEffect).WriteVarInt(re.EntityId).WriteUByte((byte)re.EffectId);
+                break;
+            case EntityPropertiesMessage pm:
+            {
+                var w = WireWriter.ForPacket(EntityIds1122.EntityProperties).WriteVarInt(pm.EntityId).WriteInt(pm.Attributes.Count);
+                foreach (var a in pm.Attributes)
+                {
+                    w.WriteString(a.Key, 64).WriteDouble(a.Base).WriteVarInt(a.Modifiers.Count);
+                    foreach (var m in a.Modifiers) w.WriteUuid(m.Uuid).WriteDouble(m.Amount).WriteUByte((byte)m.Operation);
+                }
+                yield return w;
+                break;
+            }
+            case AttachEntityPacket at:
+            {
+                // Set Passengers names the vehicle and all its riders: a dismount re-sends the old vehicle's list without the rider.
+                int vehicle = at.VehicleId;
+                if (vehicle < 0)
+                {
+                    foreach (var (veh, riders) in _riders)
+                        if (riders.Remove(at.EntityId)) { vehicle = veh; break; }
+                    if (vehicle < 0) break;
+                }
+                else
+                {
+                    foreach (var riders in _riders.Values) riders.Remove(at.EntityId);
+                    if (!_riders.TryGetValue(vehicle, out var list)) _riders[vehicle] = list = new List<int>();
+                    list.Add(at.EntityId);
+                }
+                var now = _riders.TryGetValue(vehicle, out var cur) ? cur : [];
+                var pw = WireWriter.ForPacket(EntityIds1122.SetPassengers).WriteVarInt(vehicle).WriteVarInt(now.Count);
+                foreach (int p in now) pw.WriteVarInt(p);
+                yield return pw;
+                break;
+            }
+            case HoldingChangePacket hc:
+                yield return WireWriter.ForPacket(Ids1122.HeldItemChangeIn).WriteSByte((sbyte)hc.Slot);
+                break;
+            case ExperienceMessage xm:
+                yield return WireWriter.ForPacket(EntityIds1122.SetExperience).WriteFloat(xm.Bar).WriteVarInt(xm.Level).WriteVarInt(xm.Total);
+                break;
+            case DeathMessage dm:
+                yield return WireWriter.ForPacket(EntityIds1122.CombatEvent).WriteVarInt(2).WriteVarInt(dm.PlayerId).WriteInt(dm.KillerId)
+                    .WriteString(ChatComponent.Text(dm.Message));
+                break;
+            case ItemCooldownMessage cd:
+                yield return WireWriter.ForPacket(EntityIds1122.SetCooldown).WriteVarInt(cd.ItemId).WriteVarInt(cd.Ticks);
+                break;
             default:
                 yield break; // no 1.12.2 counterpart in the fake servers' vocabulary
         }

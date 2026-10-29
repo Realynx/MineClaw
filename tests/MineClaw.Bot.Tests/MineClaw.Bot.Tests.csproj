@@ -20,6 +20,7 @@
   <ItemGroup>
     <!-- The client tests' in-process fake server: protection tests drive a real MinecraftClient through a real BotHost. -->
     <Compile Include="..\MineClaw.Client.Tests\FakeServer.cs" Link="Shared\FakeServer.cs" />
+    <Compile Include="..\MineClaw.Client.Tests\FakeServer.Mobs.cs" Link="Shared\FakeServer.Mobs.cs" />
   </ItemGroup>
 
   <ItemGroup>

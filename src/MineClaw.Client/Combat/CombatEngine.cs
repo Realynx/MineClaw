@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using MineClaw.Client.Versioning;
 using MineClaw.Data;
 using MineClaw.World;
 
@@ -115,6 +116,24 @@ public sealed class CombatEngine
 
     public CombatOptions Options { get; set; }
     public CombatTelemetry Telemetry { get; }
+    /// <summary>The version's melee rules (the client sets its profile's): b1.8.1 spam clicks and sword blocks; 1.12.2 waits for the
+    /// attack charge, crits and sweeps by its rules, blocks with a shield.</summary>
+    public ICombatRules Rules { get; set; } = Beta181CombatRules.Instance;
+    /// <summary>The shield is on its cooldown (an axe disabled it); null = never.</summary>
+    public Func<bool>? ShieldDisabled { get; set; }
+
+    // The 1.9 attack cooldown: ticksSinceLastSwing is reset by our own swings (any the server sees) and held-item changes.
+    private long _ownSwing = long.MinValue / 4, _heldChanged = long.MinValue / 4;
+    private int _heldId = int.MinValue;
+    private Vec3d _prevPos;
+    private double _walked;
+    private bool _emergency, _tick0 = true;
+
+    /// <summary>An arm swing the client sent (digging, gestures, attacks): on 1.12.2 it resets the attack charge server-side.</summary>
+    public void NoteOwnSwing(long tick) => Interlocked.Exchange(ref _ownSwing, Math.Max(Interlocked.Read(ref _ownSwing), tick));
+
+    /// <summary>The attack charge right now (1 on b1.8.1).</summary>
+    public float Charge => Rules.AttackStrength((int)Math.Clamp(_tick - Math.Max(Interlocked.Read(ref _ownSwing), _heldChanged), 0, 10000), Math.Max(0, _heldId));
     /// <summary>Bot username (its own chat lines are ignored for stop words).</summary>
     public string Username { get; set; } = "";
     /// <summary>Items never wielded (the client's reserved items).</summary>
@@ -234,6 +253,12 @@ public sealed class CombatEngine
     {
         Interlocked.Exchange(ref _tick, tick);
         var ctx = new Ctx();
+        int heldNow = _w.Inventory.HeldItem(_w.Player.HeldSlot).Id;
+        if (heldNow != _heldId) { if (_heldId != int.MinValue) _heldChanged = tick; _heldId = heldNow; } // EntityPlayer.onUpdate resetCooldown
+        double mdx = phys.Position.X - _prevPos.X, mdz = phys.Position.Z - _prevPos.Z;
+        _walked = _tick0 ? 0 : Math.Sqrt(mdx * mdx + mdz * mdz) * 0.6; // distanceWalkedModified − prev (Entity.move)
+        _prevPos = phys.Position;
+        _tick0 = false;
         while (_signals.TryDequeue(out var sig)) Handle(sig, phys, ctx);
         TrackHealth(phys, ctx);
         ExpirePending(ctx);
@@ -437,7 +462,7 @@ public sealed class CombatEngine
         foreach (var e in _w.Entities.Nearby(me, Options.MaxEngageDistance, e => e.Kind == EntityKind.Mob))
         {
             if (CombatRules.IsTamedWolf(e)) continue;
-            var prof = CombatRules.Profile(e.TypeId);
+            var prof = CombatRules.ProfileOf(e);
             if (prof.Tactic == MobTactic.Ignore) continue;
             bool provoked = _provoked.TryGetValue(e.Id, out var pt) && _tick - pt < 200;
             if (!CombatRules.IsThreat(e) && !provoked) continue;
@@ -628,7 +653,7 @@ public sealed class CombatEngine
             return face;
         }
 
-        var prof = CombatRules.Profile(target.TypeId);
+        var prof = CombatRules.ProfileOf(target);
         double dist = Horizontal(me, target.Position);
         if (dist > Options.MaxEngageDistance + 8) { EndFight(f, $"{f.TargetName} out of range", phys, ctx); return face; }
         if (dist < f.BestDist - 0.5) { f.BestDist = dist; f.LastProgressTick = _tick; }
@@ -682,6 +707,8 @@ public sealed class CombatEngine
 
         var look = FaceAt(phys, target);
         double reach = CombatRules.ReachTo(phys.EyePosition, CombatRules.Hitbox(target));
+        // 1.9+: wait for the charge, unless hurt badly with the mob in reach (an uncharged hit still knocks it back).
+        _emergency = Rules.AttackCooldownTicks(Math.Max(0, _heldId)) > 0 && _w.Player.Health <= Options.EmergencySwingHealth && reach <= Options.Reach;
         int cooldown = Cooldown(target.Id);
 
         // ---- creepers: the fuse decides
@@ -696,7 +723,7 @@ public sealed class CombatEngine
                     Raise(CombatEventKind.Critical, $"creeper fusing {Horizontal(me, fusing.Position):0.#}m away: backing off");
                 }
                 var away = CombatGeometry.RetreatCell(_w, me, [fusing!.Position], 7, CombatRules.CreeperCancelRange + 0.5);
-                if (away is null) { ctx.Block = HoldingSword(); return Slow(look); }
+                if (away is null) { ctx.Block = CanBlockNow(fusing); return Slow(look); }
                 return MoveOrHold(phys, away, look, sneak: false);
             }
             f.FuseAlerted = false;
@@ -739,12 +766,23 @@ public sealed class CombatEngine
         bool rising = !phys.OnGround && phys.Velocity.Y > 0 && cooldown > -6;
         if (inReach && cooldown <= 0 && !rising)
         {
-            Swing(f, target, phys, ctx);
-            return moveTo is { } m0 ? CombatGeometry.SteerTo(me, m0, look.Yaw, look.Pitch) : look;
+            // 1.9+: a charged sword hit on the ground sweeps everything around the target: never into a player, a pet or a
+            // neutral mob. Hold it and jump for a crit instead (a crit never sweeps).
+            // Conservative: the server judges the step length itself, so a slow-step sweep is assumed whatever this tick's step was.
+            if (Rules.IsSweep(Context(phys, target) with { WalkedThisTick = 0 }) && SweepVictim(phys, target) is { } bystander)
+            {
+                if (f.Swings == 0 || _tick % 20 == 0) Log("hold_fire", phys, target.Position, new() { ["why"] = $"a sweep would hit {bystander.DisplayName}" });
+                jump = phys.OnGround && safeForJump && moveTo is null;
+            }
+            else
+            {
+                Swing(f, target, phys, ctx);
+                return moveTo is { } m0 ? CombatGeometry.SteerTo(me, m0, look.Yaw, look.Pitch) : look;
+            }
         }
 
-        // ---- block between swings (melee threats close, sword in hand)
-        if (Options.Block && HoldingSword() && dist <= 4 && cooldown >= 2 && !jump && phys.OnGround
+        // ---- block between swings (melee threats close; b1.8.1 a sword, 1.9+ a shield that an axe isn't about to disable)
+        if (Options.Block && CanBlockNow(target) && dist <= 4 && cooldown >= Math.Max(2, Rules.BlockRaiseTicks) && !jump && phys.OnGround
             && prof.Tactic is not MobTactic.Creeper)
             ctx.Block = true;
 
@@ -775,13 +813,63 @@ public sealed class CombatEngine
         return MoveOrHold(phys, c, look, sneak: false);
     }
 
-    /// <summary>Ticks until the next hit may land on <paramref name="id"/> (≤ 0 = now).</summary>
+    /// <summary>Ticks until the next hit may land on <paramref name="id"/> (≤ 0 = now). 1.9+ also waits for the attack charge to
+    /// reach <see cref="CombatOptions.MinCharge"/> (except in an emergency).</summary>
     private int Cooldown(int id)
     {
         long ready = 0;
         if (_lastAttack.TryGetValue(id, out var a)) ready = Math.Max(ready, a + Options.AttackIntervalTicks);
-        if (_lastHurt.TryGetValue(id, out var h)) ready = Math.Max(ready, h + CombatRules.InvulnerabilityTicks);
+        if (_lastHurt.TryGetValue(id, out var h)) ready = Math.Max(ready, h + Rules.InvulnerabilityTicks);
+        int held = Math.Max(0, _heldId);
+        if (!_emergency && Rules.AttackCooldownTicks(held) > 0)
+            ready = Math.Max(ready, Math.Max(Interlocked.Read(ref _ownSwing), _heldChanged) + ChargeTicks(held));
         return (int)Math.Max(-1000, ready - _tick);
+    }
+
+    private int _chargeItem = int.MinValue, _chargeTicks;
+
+    /// <summary>The first tick after a swing at which the charge reaches <see cref="CombatOptions.MinCharge"/>.</summary>
+    private int ChargeTicks(int held)
+    {
+        if (held == _chargeItem) return _chargeTicks;
+        int t = 0;
+        while (t < 200 && Rules.AttackStrength(t, held) < Options.MinCharge) t++;
+        (_chargeItem, _chargeTicks) = (held, t);
+        return t;
+    }
+
+    /// <summary>The bot's state for the version's crit and sweep rules.</summary>
+    private AttackContext Context(PhysicsState phys, Entity? target)
+    {
+        int held = Math.Max(0, _heldId);
+        int since = (int)Math.Clamp(_tick - Math.Max(Interlocked.Read(ref _ownSwing), _heldChanged), 0, 10000);
+        return new AttackContext(Rules.AttackStrength(since, held), phys.Velocity.Y, phys.FallDistance, phys.OnGround, phys.OnLadder, phys.InWater,
+            phys.Sprinting, held, Blind: _w.Player.HasEffect(PotionEffects.Blindness), Riding: false,
+            TargetLiving: target is null || target.Kind is EntityKind.Mob or EntityKind.Player, WalkedThisTick: _walked,
+            AiMoveSpeed: float.IsNaN(phys.LandSpeed) ? 0.1 : phys.LandSpeed);
+    }
+
+    /// <summary>A living entity other than the target that a sweep would hit and must not: a player, a pet, a neutral or passive mob.</summary>
+    private Entity? SweepVictim(PhysicsState phys, Entity target)
+    {
+        var box = Rules.SweepBox(CombatRules.Hitbox(target));
+        foreach (var e in _w.Entities.Nearby(phys.Position, 3))
+        {
+            if (e.Id == target.Id || e.Kind is not (EntityKind.Player or EntityKind.Mob)) continue;
+            if (e.Kind == EntityKind.Mob && CombatRules.IsThreat(e) && !CombatRules.IsTamedWolf(e)) continue;
+            if (box.Intersects(CombatRules.Hitbox(e))) return e;
+        }
+        return null;
+    }
+
+    /// <summary>A block can go up now: b1.8.1 a sword in hand; 1.9+ a shield (not on its cooldown, and not against an axe, which
+    /// would disable it).</summary>
+    private bool CanBlockNow(Entity? attacker = null)
+    {
+        var main = _w.Inventory.HeldItem(_w.Player.HeldSlot);
+        if (!Rules.CanBlock(main, _w.Inventory.Offhand)) return false;
+        if (Rules.ShieldDisableTicks > 0 && (ShieldDisabled?.Invoke() ?? false)) return false;
+        return attacker is null || !Rules.DisablesShield(attacker.HeldItem);
     }
 
     private void Swing(Fight f, Entity target, PhysicsState phys, Ctx ctx)
@@ -792,12 +880,17 @@ public sealed class CombatEngine
         _lastAttack[target.Id] = _tick;
         f.Swings++;
         int weapon = _w.Inventory.HeldItem(_w.Player.HeldSlot).Id;
-        bool couldCrit = !phys.OnGround && !phys.InWater && !phys.OnLadder; // fallDistance > 0 && !onGround (vanilla)
+        var ac = Context(phys, target);
+        // b1.8.1: fallDistance > 0 && !onGround (vanilla); 1.9+ also a charge > 0.9 and no sprint (Rules.IsCriticalHit).
+        bool couldCrit = Rules.AttackCooldownTicks(weapon) > 0 ? Rules.IsCriticalHit(ac) : !phys.OnGround && !phys.InWater && !phys.OnLadder;
         _pending.Add((target.Id, _tick, weapon, couldCrit));
+        NoteOwnSwing(_tick);
         Log("swing", phys, target.Position, new()
         {
             ["target"] = target.DisplayName, ["reach"] = Math.Round(CombatRules.ReachTo(phys.EyePosition, CombatRules.Hitbox(target)), 2),
             ["weapon"] = weapon, ["crit"] = couldCrit, ["hp"] = _w.Player.Health,
+            ["charge"] = Rules.AttackCooldownTicks(weapon) > 0 ? Math.Round(ac.Strength, 2) : null,
+            ["sweep"] = Rules.IsSweep(ac) ? true : null,
         });
     }
 
@@ -927,8 +1020,8 @@ public sealed class CombatEngine
         if (hp <= Options.SparSelfStopHealth) return $"my hp {hp} at threshold";
         if (opp is not null)
         {
-            int incoming = CombatRules.DamageAfterArmor(CombatRules.MaxCritDamage(CombatRules.WeaponDamage(opp.HeldItem)),
-                CombatRules.ArmorValue(Enumerable.Range(5, 4).Select(i => _w.Inventory.GetPlayerSlot(i))));
+            int incoming = (int)Math.Ceiling(Rules.DamageAfterArmor(Rules.CritDamage(Rules.AttackDamage(opp.HeldItem)),
+                Enumerable.Range(5, 4).Select(i => _w.Inventory.GetPlayerSlot(i))) - 1e-9);
             if (hp - incoming <= 1) return $"my hp {hp}: their next hit could take {incoming}";
         }
         if (s.Model.StopReason() is { } r) return r;
@@ -972,7 +1065,6 @@ public sealed class CombatEngine
     private static MoveInput Slow(MoveInput i) =>
         i with { Forward = i.Forward * CombatRules.UseItemSlowdown, Strafe = i.Strafe * CombatRules.UseItemSlowdown, Sprint = false, Jump = false };
 
-    private bool HoldingSword() => CombatRules.IsSword(_w.Inventory.HeldItem(_w.Player.HeldSlot).Id);
 
     private static double Horizontal(Vec3d a, Vec3d b) => Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Z - b.Z) * (a.Z - b.Z));
 

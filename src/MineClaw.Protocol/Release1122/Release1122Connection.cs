@@ -80,6 +80,7 @@ public sealed partial class Release1122Connection : IGameConnection
     private volatile State _state = State.Handshake;
     private volatile bool _disposed;
     private int _dimension;
+    private int _selfId = int.MinValue;
     // The player's position and look as the server last knew it (teleports in, movement out): what relative flags add to.
     private double _x, _y, _z;
     private float _yaw, _pitch;
@@ -208,6 +209,7 @@ public sealed partial class Release1122Connection : IGameConnection
             case Ids1122.JoinGame:
             {
                 int eid = r.ReadInt();
+                _selfId = eid;
                 int mode = r.ReadUByte();
                 _dimension = r.ReadInt();
                 int difficulty = r.ReadUByte();

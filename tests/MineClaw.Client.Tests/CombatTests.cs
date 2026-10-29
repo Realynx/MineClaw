@@ -11,7 +11,7 @@ namespace MineClaw.Client.Tests;
 /// <summary>Engine-level rig: a flat stone platform (|x|,|z| ≤ half at y=63) over the void, the bot at (0.5, 64, 0.5).</summary>
 internal sealed class CombatRig
 {
-    public readonly WorldState W = new();
+    public readonly WorldState W;
     public readonly CombatEngine E;
     public readonly List<string> Lines = new();
     public readonly List<CombatEvent> Events = new();
@@ -19,8 +19,9 @@ internal sealed class CombatRig
     public long Tick;
     public PhysicsState P => W.Player.Physics;
 
-    public CombatRig(CombatOptions? o = null, int half = 10, double x = 0.5, double z = 0.5, int minX = int.MinValue)
+    public CombatRig(CombatOptions? o = null, int half = 10, double x = 0.5, double z = 0.5, int minX = int.MinValue, WorldState? world = null)
     {
+        W = world ?? new WorldState();
         W.ApplyChunkRegion(-32, 0, -32, 64, 128, 64, new byte[64 * 128 * 64], null, null, null);
         for (int bx = Math.Max(-half, minX); bx <= half; bx++)
         for (int bz = -half; bz <= half; bz++)

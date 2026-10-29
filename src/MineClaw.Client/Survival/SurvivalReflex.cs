@@ -1,4 +1,6 @@
+using MineClaw.Client.Versioning;
 using MineClaw.Data;
+using MineClaw.World;
 
 namespace MineClaw.Client.Survival;
 
@@ -79,10 +81,14 @@ public sealed class SurvivalReflex
     }
 
     /// <summary>Food to eat right now, or null: <see cref="WantsEat"/> plus the waste rule for regeneration-only meals
-    /// (eat a big meal at food 15..17 only when it wastes ≤ <see cref="SurvivalOptions.MaxWaste"/> or health ≤ 14).</summary>
-    public static FoodPick? EatNow(IReadOnlyList<ItemStack> slots, IReadOnlySet<int> reserved, int health, int food, SurvivalOptions o)
+    /// (eat a big meal at food 15..17 only when it wastes ≤ <see cref="SurvivalOptions.MaxWaste"/> or health ≤ 14). With the
+    /// version's hunger rules and the saturation: a 1.12.2 top-up (hurt at food 18..19 with no saturation: food 20 + saturation
+    /// switches on the fast regeneration) counts as a regeneration meal.</summary>
+    public static FoodPick? EatNow(IReadOnlyList<ItemStack> slots, IReadOnlySet<int> reserved, int health, int food, SurvivalOptions o,
+        IHungerRules? rules = null, float saturation = 0)
     {
         var why = WantsEat(health, food, o);
+        if (why == EatReason.None && o.EatToRegenerate && rules is not null && rules.WantsTopUp(health, food, saturation)) why = EatReason.Regenerate;
         if (why == EatReason.None) return null;
         var pick = PickFood(slots, reserved, health, food, o);
         if (pick is { } p && why == EatReason.Regenerate && p.Waste > o.MaxWaste && health > 14) return null;
@@ -182,11 +188,17 @@ public sealed class SurvivalReflex
     /// void-edge work (bridging, island expansion) only at critical hp; mining, digging, chopping, placing never (live 10-27:
     /// clone 67 at 7/20 with no food, "tools refuse mining below HP 10").
     /// </summary>
-    public static string? GateReason(string what, int health, int food, bool hasFood, SurvivalOptions o, bool edge = false)
+    public static string? GateReason(string what, int health, int food, bool hasFood, SurvivalOptions o, bool edge = false,
+        IReadOnlyDictionary<int, StatusEffect>? effects = null)
     {
         if (!o.Enabled) return null;
         if (NeedsFood(what))
         {
+            // Wither can kill and poison drains to 1 hp: no fight while either is on and health is short of the gate plus a margin.
+            if (effects is not null && health < o.GateMinHealth + 6 && Active(effects, PotionEffects.Wither) is { } wi)
+                return $"hp {health}/20 and withering ({wi / 20}s left): no {what} now";
+            if (effects is not null && health < o.GateMinHealth + 4 && Active(effects, PotionEffects.Poison) is { } po)
+                return $"hp {health}/20 and poisoned ({po / 20}s left): no {what} now";
             if (health < o.GateMinHealth)
                 return $"hp {health}/20 too low to {what} (need {o.GateMinHealth})"
                        + (food >= HungerRules.RegenFood ? "; regenerating" : hasFood ? "; eating to regenerate" : $" (food {food}, no food)");
@@ -214,6 +226,40 @@ public sealed class SurvivalReflex
         what.StartsWith("fight", StringComparison.OrdinalIgnoreCase) || what.StartsWith("spar", StringComparison.OrdinalIgnoreCase);
 
     // ------------------------------------------------------------------ status
+
+    /// <summary>Ticks left of an active effect, or null.</summary>
+    private static int? Active(IReadOnlyDictionary<int, StatusEffect> effects, int id) =>
+        effects.TryGetValue(id, out var fx) && fx.RemainingTicks(DateTime.UtcNow) is var left and > 0 ? left : null;
+
+    /// <summary>The effects that change survival decisions, as facts: "poisoned 12s (stops at 1 hp)", "withering 8s (can kill)",
+    /// "regenerating", "fire resistant", "water breathing", "night vision", "hunger effect"; empty when none.</summary>
+    public static string EffectFacts(IReadOnlyDictionary<int, StatusEffect>? effects)
+    {
+        if (effects is null || effects.Count == 0) return "";
+        var parts = new List<string>(4);
+        string T(int ticks) => ticks >= short.MaxValue ? "" : $" {ticks / 20}s";
+        if (Active(effects, PotionEffects.Poison) is { } p) parts.Add($"poisoned{T(p)} (stops at 1 hp)");
+        if (Active(effects, PotionEffects.Wither) is { } w) parts.Add($"withering{T(w)} (can kill)");
+        if (Active(effects, PotionEffects.Regeneration) is { } r) parts.Add($"regenerating{T(r)}");
+        if (Active(effects, PotionEffects.Hunger) is { } h) parts.Add($"hunger effect{T(h)}");
+        if (Active(effects, PotionEffects.FireResistance) is { } f) parts.Add($"fire resistant{T(f)}");
+        if (Active(effects, PotionEffects.WaterBreathing) is { } wb) parts.Add($"water breathing{T(wb)}");
+        if (Active(effects, PotionEffects.NightVision) is not null) parts.Add("night vision");
+        if (Active(effects, PotionEffects.Blindness) is not null) parts.Add("blind");
+        if (Active(effects, PotionEffects.Slowness) is not null) parts.Add("slowed");
+        if (Active(effects, PotionEffects.MiningFatigue) is not null) parts.Add("mining fatigue");
+        return string.Join(", ", parts);
+    }
+
+    /// <summary>The compact one-line health part of the state header: "hp 14/20 food 9 (no food!)", plus the effect facts
+    /// ("hp 9/20 food 18 poisoned 6s (stops at 1 hp)") when the version sends effects.</summary>
+    public static string HeaderText(int health, int food, IReadOnlyList<ItemStack> slots, IReadOnlySet<int> reserved, SurvivalOptions? o,
+        IReadOnlyDictionary<int, StatusEffect>? effects)
+    {
+        var s = HeaderText(health, food, slots, reserved, o);
+        var fx = EffectFacts(effects);
+        return fx.Length == 0 ? s : s + " " + fx;
+    }
 
     /// <summary>The compact one-line health part of the state header: "hp 14/20 food 9 (no food!)".</summary>
     public static string HeaderText(int health, int food, IReadOnlyList<ItemStack> slots, IReadOnlySet<int> reserved, SurvivalOptions? o = null)

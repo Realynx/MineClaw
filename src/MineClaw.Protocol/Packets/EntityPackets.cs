@@ -74,6 +74,8 @@ public sealed class NamedEntitySpawnPacket : IPacket
 {
     public const byte PacketId = 0x14;
     public byte Id => PacketId;
+    /// <summary>The exact position in blocks when the version sends doubles (1.12.2); null = the fixed-point fields (b1.8.1).</summary>
+    public (double X, double Y, double Z)? Exact { get; set; }
     public int EntityId { get; set; }
     public string PlayerName { get; set; } = string.Empty;
     public int X { get; set; }
@@ -117,6 +119,8 @@ public sealed class PickupSpawnPacket : IPacket
 {
     public const byte PacketId = 0x15;
     public byte Id => PacketId;
+    /// <summary>The exact position in blocks when the version sends doubles (1.12.2); null = the fixed-point fields (b1.8.1).</summary>
+    public (double X, double Y, double Z)? Exact { get; set; }
     public int EntityId { get; set; }
     public short ItemId { get; set; }
     public byte Count { get; set; }
@@ -188,6 +192,8 @@ public sealed class AddObjectVehiclePacket : IPacket
 {
     public const byte PacketId = 0x17;
     public byte Id => PacketId;
+    /// <summary>The exact position in blocks when the version sends doubles (1.12.2); null = the fixed-point fields (b1.8.1).</summary>
+    public (double X, double Y, double Z)? Exact { get; set; }
     public int EntityId { get; set; }
     public byte Type { get; set; }
     public int X { get; set; }
@@ -248,6 +254,8 @@ public sealed class MobSpawnPacket : IPacket
 {
     public const byte PacketId = 0x18;
     public byte Id => PacketId;
+    /// <summary>The exact position in blocks when the version sends doubles (1.12.2); null = the fixed-point fields (b1.8.1).</summary>
+    public (double X, double Y, double Z)? Exact { get; set; }
     public int EntityId { get; set; }
     public byte Type { get; set; }
     public int X { get; set; }
@@ -323,6 +331,8 @@ public sealed class ExperienceOrbPacket : IPacket
 {
     public const byte PacketId = 0x1A;
     public byte Id => PacketId;
+    /// <summary>The exact position in blocks when the version sends doubles (1.12.2); null = the fixed-point fields (b1.8.1).</summary>
+    public (double X, double Y, double Z)? Exact { get; set; }
     public int EntityId { get; set; }
     public int X { get; set; }
     public int Y { get; set; }
@@ -488,6 +498,8 @@ public sealed class EntityTeleportPacket : IPacket
 {
     public const byte PacketId = 0x22;
     public byte Id => PacketId;
+    /// <summary>The exact position in blocks when the version sends doubles (1.12.2); null = the fixed-point fields (b1.8.1).</summary>
+    public (double X, double Y, double Z)? Exact { get; set; }
     public int EntityId { get; set; }
     public int X { get; set; }
     public int Y { get; set; }

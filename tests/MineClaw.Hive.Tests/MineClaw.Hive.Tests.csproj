@@ -22,6 +22,7 @@
     <Compile Remove="CloneStub/**" />
     <Compile Include="CloneStub/Fakes.cs" Link="Fakes.cs" />
     <Compile Include="../MineClaw.Client.Tests/FakeServer.cs" Link="Linked/FakeServer.cs" />
+    <Compile Include="../MineClaw.Client.Tests/FakeServer.Mobs.cs" Link="Linked/FakeServer.Mobs.cs" />
     <None Remove="CloneStub/**" />
   </ItemGroup>
 

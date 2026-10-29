@@ -40,11 +40,51 @@ public sealed record Entity(
     IReadOnlyDictionary<int, object>? Metadata = null,
     IReadOnlyList<ItemStack>? Equipment = null)
 {
+    /// <summary>The version's facts for a mob (stamped by the tracker from its <see cref="Versioning.IEntityRules"/>); null =
+    /// the b1.8.1 tables.</summary>
+    public MobProfile? Profile { get; init; }
+    /// <summary>The version's name of a mob or object type; null = <see cref="MobTypes.Name"/> / <see cref="ObjectTypes.Name"/>.</summary>
+    public string? TypeName { get; init; }
+    /// <summary>Head yaw (1.12.2 Entity Head Look); NaN = never sent (the body yaw).</summary>
+    public float HeadYaw { get; init; } = float.NaN;
+    /// <summary>Potion effects by id (1.12.2 Entity Effect); null = none seen.</summary>
+    public IReadOnlyDictionary<int, StatusEffect>? Effects { get; init; }
+    /// <summary>Synced attribute values by key ("generic.movementSpeed"…; 1.12.2 Entity Properties); null = none seen.</summary>
+    public IReadOnlyDictionary<string, double>? Attributes { get; init; }
+
+    /// <summary>An arrow (object 60; 1.12.2 also the spectral arrow 91).</summary>
+    public bool IsArrow => Kind == EntityKind.Object && (TypeId == 60 || (TypeId == 91 && TypeName == "spectral_arrow"));
+    /// <summary>An arrow that stopped in a block (the tracker: its critical flag cleared, as 1.12.2 <c>EntityArrow.onHit</c> does
+    /// on a block, or a move/teleport that left it where it was): no longer a projectile, motion zero.</summary>
+    public bool InGround { get; init; }
+
+    /// <summary>Metadata value at <paramref name="index"/> as a float (1.12.2 health, absorption), or null.</summary>
+    public float? MetaFloat(int index) =>
+        Metadata is not null && Metadata.TryGetValue(index, out var v) && v is float f ? f : null;
+
+    /// <summary>Metadata flag (sbyte 0/1 and friends) at <paramref name="index"/>.</summary>
+    public bool MetaFlag(int index) => (MetaInt(index) ?? 0) != 0;
+
+    /// <summary>Health from 1.12.2 metadata (<see cref="EntityMeta.Health"/>); null when the version doesn't send it.</summary>
+    public float? Health => MetaFloat(EntityMeta.Health);
+    /// <summary>A baby (zombie, husk, animals): half-size hitbox.</summary>
+    public bool IsBaby => MetaFlag(EntityMeta.Baby);
+    /// <summary>Using an item: eating, drawing a bow, raising a shield (canonical flags 0x10, from 1.12.2's hand states).</summary>
+    public bool IsUsingItem => (Flags & EntityMeta.FlagUsingItem) != 0;
+    /// <summary>The off-hand item (1.12.2 equipment slot 5); empty when never sent.</summary>
+    public ItemStack Offhand => EquipmentAt(5);
+    /// <summary>The item an item frame shows (1.12.2 metadata).</summary>
+    public ItemStack FramedItem => Metadata is not null && Metadata.TryGetValue(EntityMeta.Item, out var v) && v is ItemStack s ? s : ItemStack.Empty;
+
+    /// <summary>The effect's amplifier if active at <paramref name="now"/> (default: now), else −1.</summary>
+    public int EffectAmplifier(int effectId, DateTime? now = null) =>
+        Effects is not null && Effects.TryGetValue(effectId, out var fx) && fx.Active(now ?? DateTime.UtcNow) ? fx.Amplifier : -1;
+
     /// <summary>Metadata value at <paramref name="index"/> widened to int (byte/short/int), or null.</summary>
     public int? MetaInt(int index) =>
         Metadata is not null && Metadata.TryGetValue(index, out var v) && v is sbyte or byte or short or int ? Convert.ToInt32(v) : null;
 
-    /// <summary>0x05 equipment slot (0 held, 1 boots, 2 leggings, 3 chestplate, 4 helmet); empty when never sent.</summary>
+    /// <summary>0x05 equipment slot (0 held, 1 boots, 2 leggings, 3 chestplate, 4 helmet; 1.12.2: 5 off hand); empty when never sent.</summary>
     public ItemStack EquipmentAt(int slot) =>
         Equipment is not null && slot >= 0 && slot < Equipment.Count ? Equipment[slot] : ItemStack.Empty;
 
@@ -59,14 +99,14 @@ public sealed record Entity(
     /// <summary>Sprint flag (Entity.at() = data bit 3, Entity.java:1001-1007). A sprinting player's hit adds 1.0 b/t knockback.</summary>
     public bool IsSprinting => (Flags & 8) != 0;
 
-    public bool IsHostileMob => Kind == EntityKind.Mob && MobTypes.IsHostile(TypeId);
+    public bool IsHostileMob => Kind == EntityKind.Mob && (Profile?.Hostile ?? MobTypes.IsHostile(TypeId));
 
     public string DisplayName => Kind switch
     {
         EntityKind.Player => Name ?? "player",
-        EntityKind.Mob => MobTypes.Name(TypeId),
+        EntityKind.Mob => TypeName ?? MobTypes.Name(TypeId),
         EntityKind.Item => $"item {Item}",
-        EntityKind.Object => ObjectTypes.Name(TypeId),
+        EntityKind.Object => TypeName ?? ObjectTypes.Name(TypeId),
         EntityKind.XpOrb => $"xp orb ({Count})",
         EntityKind.Painting => $"painting {Name}",
         _ => Kind.ToString(),
@@ -80,6 +120,12 @@ public static class MobTypes
         PigZombie = 57, Enderman = 58, CaveSpider = 59, Silverfish = 60,
         Pig = 90, Sheep = 91, Cow = 92, Chicken = 93, Squid = 94, Wolf = 95;
 
+    /// <summary>1.12.2 types (Spawn Mob; entities.json). b1.8.1 never sends them; their facts come from the 1.12.2 entity rules.</summary>
+    public const int ElderGuardian = 4, WitherSkeleton = 5, Stray = 6, Husk = 23, ZombieVillager = 27, SkeletonHorse = 28, ZombieHorse = 29,
+        Donkey = 31, Mule = 32, Evoker = 34, Vex = 35, Vindicator = 36, Illusioner = 37, Blaze = 61, MagmaCube = 62, EnderDragon = 63,
+        Wither = 64, Bat = 65, Witch = 66, Endermite = 67, Guardian = 68, Shulker = 69, Mooshroom = 96, SnowGolem = 97, Ocelot = 98,
+        IronGolem = 99, Horse = 100, Rabbit = 101, PolarBear = 102, Llama = 103, Parrot = 105, Villager = 120;
+
     public static bool IsHostile(int t) => t is Creeper or Skeleton or Spider or Giant or Zombie or Slime or Ghast
         or Enderman or CaveSpider or Silverfish;
 
@@ -88,13 +134,22 @@ public static class MobTypes
         Creeper => "creeper", Skeleton => "skeleton", Spider => "spider", Giant => "giant", Zombie => "zombie",
         Slime => "slime", Ghast => "ghast", PigZombie => "zombie_pigman", Enderman => "enderman",
         CaveSpider => "cave_spider", Silverfish => "silverfish", Pig => "pig", Sheep => "sheep", Cow => "cow",
-        Chicken => "chicken", Squid => "squid", Wolf => "wolf", _ => $"mob_{t}",
+        Chicken => "chicken", Squid => "squid", Wolf => "wolf",
+        _ => Versioning.Release1122EntityRules.Known(t) is { Name: { } mobName } ? mobName : $"mob_{t}", // 1.12.2 types (b1.8.1 never sends them)
     };
 
     public static int? ByName(string name)
     {
         foreach (var t in new[] { 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 90, 91, 92, 93, 94, 95 })
             if (string.Equals(Name(t), name, StringComparison.OrdinalIgnoreCase)) return t;
+        // 1.12.2 names, and the everyday ones of its registry names ("vindicator" for vindication_illager).
+        string n = name.ToLowerInvariant() switch
+        {
+            "vindicator" => "vindication_illager", "evoker" => "evocation_illager", "illusioner" => "illusion_illager",
+            "iron_golem" or "golem" => "villager_golem", "snow_golem" => "snowman", "magma" => "magma_cube", var x => x,
+        };
+        foreach (var p in Versioning.Release1122EntityRules.All)
+            if (string.Equals(p.Name, n, StringComparison.OrdinalIgnoreCase)) return p.Type;
         return null;
     }
 }

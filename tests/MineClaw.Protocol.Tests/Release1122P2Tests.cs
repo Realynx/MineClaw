@@ -248,9 +248,12 @@ public class Release1122P2Tests
             .WriteUByte(0).WriteVarInt(0).WriteUByte(0).WriteUByte(0xFF));
         var ne = Assert.IsType<NamedEntitySpawnPacket>(client.ReadPacket());
         Assert.Equal(("PoofImaFox", 77, 64), (ne.PlayerName, ne.EntityId, (int)ne.Yaw));
-        // Equipment: main hand (0) → canonical held slot 0; the off hand (1) has no canonical slot.
+        Assert.IsType<EntityMetadataPacket>(client.ReadPacket()); // P4: the spawn's own metadata (flags) follows it
+        // Equipment: main hand (0) → canonical held slot 0; the off hand (1) → canonical slot 5 (P4).
         server.Send(0x3F, w => w.WriteVarInt(77).WriteVarInt(1).WriteSlot(new ItemStack(442, 1, 0)));
         server.Send(0x3F, w => w.WriteVarInt(77).WriteVarInt(0).WriteSlot(new ItemStack(Items.IronPickaxe, 1, 0)));
+        var off = Assert.IsType<EntityEquipmentPacket>(client.ReadPacket());
+        Assert.Equal((5, (short)442), (off.Slot, off.ItemId));
         var eq = Assert.IsType<EntityEquipmentPacket>(client.ReadPacket());
         Assert.Equal((0, (short)Items.IronPickaxe), (eq.Slot, eq.ItemId));
         // Animation: 0 swing main arm → b1.8.1's 1; Block Break Animation; Entity Status.

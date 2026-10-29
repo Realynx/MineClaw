@@ -62,8 +62,47 @@ public sealed class PlayerState
     public void SetExperience(float bar, int level, int total) =>
         Set(s => s with { XpBar = bar, XpLevel = level, XpTotal = total });
 
-    /// <summary>After 0x09 Respawn.</summary>
-    public void Respawned(int dimension) => Set(s => s with { IsDead = false, Dimension = dimension });
+    /// <summary>After 0x09 Respawn (a new player entity: no effects).</summary>
+    public void Respawned(int dimension)
+    {
+        Set(s => s with { IsDead = false, Dimension = dimension });
+        lock (_sync) _effects = NoEffects;
+    }
+
+    // ---- potion effects (1.12.2 Entity Effect for our own id) ----
+
+    private static readonly IReadOnlyDictionary<int, StatusEffect> NoEffects = new Dictionary<int, StatusEffect>();
+    private IReadOnlyDictionary<int, StatusEffect> _effects = NoEffects;
+
+    /// <summary>The local player's potion effects by id (snapshot).</summary>
+    public IReadOnlyDictionary<int, StatusEffect> Effects { get { lock (_sync) return _effects; } }
+
+    public void SetEffect(StatusEffect fx)
+    {
+        lock (_sync) _effects = new Dictionary<int, StatusEffect>(_effects) { [fx.Id] = fx };
+    }
+
+    public void RemoveEffect(int effectId)
+    {
+        lock (_sync)
+        {
+            if (!_effects.ContainsKey(effectId)) return;
+            var d = new Dictionary<int, StatusEffect>(_effects);
+            d.Remove(effectId);
+            _effects = d;
+        }
+    }
+
+    /// <summary>The effect's amplifier while active (0 = level I), else −1.</summary>
+    public int EffectAmplifier(int effectId, DateTime? now = null) =>
+        Effects.TryGetValue(effectId, out var fx) && fx.Active(now ?? DateTime.UtcNow) ? fx.Amplifier : -1;
+
+    public bool HasEffect(int effectId) => EffectAmplifier(effectId) >= 0;
+
+    /// <summary>Exact health (1.12.2 sends a float; 0.5 hp is not "dead"); NaN = the integer <see cref="Health"/> is all there is.</summary>
+    public float HealthExact { get; set; } = float.NaN;
+    /// <summary>Absorption hearts (1.12.2 player metadata).</summary>
+    public float Absorption { get; set; }
 
     /// <summary>Server-authoritative position (0x0D from server). Resets the simulated body — call from the tick thread
     /// or while the tick loop is paused.</summary>

@@ -113,6 +113,7 @@ public sealed partial class MinecraftClient
             case PlayerOnGroundPacket:
                 break; // not sent by the b1.8 server
             case UpdateHealthPacket h:
+                w.Player.HealthExact = h.HealthExact ?? float.NaN;
                 OnHealth(s, h.Health, h.Food, h.FoodSaturation);
                 break;
             case ExperiencePacket xp:
@@ -151,26 +152,26 @@ public sealed partial class MinecraftClient
 
             // ---- entities ----
             case NamedEntitySpawnPacket ne:
-                w.Entities.SpawnPlayer(ne.EntityId, ne.PlayerName, Abs(ne.X, ne.Y, ne.Z),
+                w.Entities.SpawnPlayer(ne.EntityId, ne.PlayerName, Pos(ne.Exact, ne.X, ne.Y, ne.Z),
                     FixedPoint.FromAngle(ne.Yaw), FixedPoint.FromAngle(ne.Pitch), ne.CurrentItem);
                 break;
             case PickupSpawnPacket ps:
-                w.Entities.SpawnItem(ps.EntityId, new ItemStack(ps.ItemId, ps.Count, ps.Damage), Abs(ps.X, ps.Y, ps.Z),
+                w.Entities.SpawnItem(ps.EntityId, new ItemStack(ps.ItemId, ps.Count, ps.Damage), Pos(ps.Exact, ps.X, ps.Y, ps.Z),
                     new Vec3d(FixedPoint.FromPickupMotion(ps.MotionX), FixedPoint.FromPickupMotion(ps.MotionY), FixedPoint.FromPickupMotion(ps.MotionZ)));
                 break;
             case AddObjectVehiclePacket ao:
-                w.Entities.SpawnObject(ao.EntityId, ao.Type, Abs(ao.X, ao.Y, ao.Z),
+                w.Entities.SpawnObject(ao.EntityId, ao.Type, Pos(ao.Exact, ao.X, ao.Y, ao.Z),
                     ao.HasSpeed ? new Vec3d(FixedPoint.FromVelocity(ao.SpeedX), FixedPoint.FromVelocity(ao.SpeedY), FixedPoint.FromVelocity(ao.SpeedZ)) : default);
                 break;
             case MobSpawnPacket ms:
-                w.Entities.SpawnMob(ms.EntityId, ms.Type, Abs(ms.X, ms.Y, ms.Z), FixedPoint.FromAngle(ms.Yaw),
+                w.Entities.SpawnMob(ms.EntityId, ms.Type, Pos(ms.Exact, ms.X, ms.Y, ms.Z), FixedPoint.FromAngle(ms.Yaw),
                     FixedPoint.FromAngle(ms.Pitch), ToDictionary(ms.Metadata));
                 break;
             case EntityPaintingPacket pt:
                 w.Entities.SpawnPainting(pt.EntityId, pt.Title, new Vec3d(pt.X + 0.5, pt.Y + 0.5, pt.Z + 0.5));
                 break;
             case ExperienceOrbPacket orb:
-                w.Entities.SpawnXpOrb(orb.EntityId, Abs(orb.X, orb.Y, orb.Z), orb.Count);
+                w.Entities.SpawnXpOrb(orb.EntityId, Pos(orb.Exact, orb.X, orb.Y, orb.Z), orb.Count);
                 break;
             case ThunderboltPacket tb:
                 w.Entities.Spawn(new Entity(tb.EntityId, EntityKind.Weather, Abs(tb.X, tb.Y, tb.Z)));
@@ -198,10 +199,11 @@ public sealed partial class MinecraftClient
                 w.Entities.Look(lrm.EntityId, FixedPoint.FromAngle(lrm.Yaw), FixedPoint.FromAngle(lrm.Pitch));
                 break;
             case EntityTeleportPacket et:
-                w.Entities.Teleport(et.EntityId, Abs(et.X, et.Y, et.Z), FixedPoint.FromAngle(et.Yaw), FixedPoint.FromAngle(et.Pitch));
+                w.Entities.Teleport(et.EntityId, Pos(et.Exact, et.X, et.Y, et.Z), FixedPoint.FromAngle(et.Yaw), FixedPoint.FromAngle(et.Pitch));
                 break;
             case EntityMetadataPacket md:
-                w.Entities.SetMetadata(md.EntityId, ToDictionary(md.Metadata));
+                if (md.EntityId == w.Player.EntityId) OnSelfMetadata(md.Metadata);
+                else w.Entities.SetMetadata(md.EntityId, ToDictionary(md.Metadata));
                 break;
             case EntityEquipmentPacket eq:
             {
@@ -221,6 +223,7 @@ public sealed partial class MinecraftClient
             case CollectItemPacket ci:
             {
                 if (ci.CollectorEntityId == w.Player.EntityId) Interlocked.Increment(ref _collectedCount);
+                NoteOrbCollected(ci.CollectorEntityId, ci.CollectedEntityId);
                 int collector = ci.CollectorEntityId, itemEntity = ci.CollectedEntityId;
                 ItemStack? stack = w.Entities.Get(itemEntity) is { Kind: EntityKind.Item } ie ? ie.Item : null;
                 // Before the next survival tick can eat it: a pickup during a hand-off intent is held for its target.
@@ -231,6 +234,7 @@ public sealed partial class MinecraftClient
             case EntityStatusPacket st:
             {
                 if (st.EntityId == w.Player.EntityId && st.Status == 9) Interlocked.Increment(ref _eatAcceptedCount);
+                if (st.EntityId == w.Player.EntityId) OnSelfStatus(st.Status);
                 if (st.EntityId != w.Player.EntityId) Combat.OnEntityStatus(st.EntityId, st.Status);
                 OnEntityStatusSeen(st.EntityId);
                 if (st.Status == 2 && st.EntityId != w.Player.EntityId) OnPlayerHurtForPunch(st.EntityId);
@@ -311,10 +315,17 @@ public sealed partial class MinecraftClient
                 NoteTransaction(tx.WindowId, tx.ActionNumber); // before the result is visible to the waiting click
                 _txResults[(tx.WindowId, tx.ActionNumber)] = tx.Accepted;
                 break;
+            default:
+                DispatchEntities(s, packet); // P4: effects, attributes, head look, held item, experience, death message, cooldowns
+                break;
         }
     }
 
     public bool IsRaining { get; private set; }
+
+    /// <summary>The exact position a newer version sent (1.12.2 doubles), else the canonical fixed point.</summary>
+    private static Vec3d Pos((double X, double Y, double Z)? exact, int x, int y, int z) =>
+        exact is { } e ? new Vec3d(e.X, e.Y, e.Z) : Abs(x, y, z);
 
     private static Vec3d Abs(int x, int y, int z) =>
         new(FixedPoint.FromAbsolute(x), FixedPoint.FromAbsolute(y), FixedPoint.FromAbsolute(z));

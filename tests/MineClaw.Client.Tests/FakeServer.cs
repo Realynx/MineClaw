@@ -88,7 +88,7 @@ internal sealed class DuplexStream(BytePipe readFrom, BytePipe writeTo) : Stream
 /// apology (Confirm Transaction accepted); the crafting output is sent during the click, before its confirm; placements use
 /// the server's own hotbar (1.12.2 sends no held item).</para>
 /// </summary>
-internal sealed class FakeServer : IDisposable
+internal sealed partial class FakeServer : IDisposable
 {
     public const int EntityId = 42;
     private readonly IGameConnection _conn;
@@ -249,6 +249,7 @@ internal sealed class FakeServer : IDisposable
     {
         if (p is PlayerOnGroundPacket or PlayerPositionPacket or PlayerLookPacket or PlayerPositionLookPacket) Interlocked.Increment(ref _flyingPackets);
         if (Hook?.Invoke(p) == true) return;
+        HandleMobs(p); // P4: the bot's melee on mobs (server-side charge and crit), orb pickups
         if (Modern && p is PlayerBlockPlacementPacket { HeldItem.IsEmpty: true } pl) pl.HeldItem = Inventory[36 + _heldSlot]; // the server's own hotbar
         if (Modern && HandleModern(p)) return;
         switch (p)
@@ -639,6 +640,7 @@ internal sealed class FakeServer : IDisposable
 
     public void Dispose()
     {
+        _ai?.Cancel();
         try { _conn.Dispose(); } catch { }
         try { _clientEnd.Dispose(); } catch { }
     }

@@ -10,18 +10,6 @@ namespace MineClaw.Protocol.Release1122;
 /// </summary>
 public sealed partial class Release1122Connection
 {
-    /// <summary>An entity the connection surfaced (players, item entities): its exact position, so 1.12.2's 1/4096 relative
-    /// moves become absolute canonical teleports without drift.</summary>
-    private sealed class Tracked
-    {
-        public double X, Y, Z;
-        public byte Yaw, Pitch;
-        public bool IsItem;
-        /// <summary>An item entity waits for its metadata (the stack) before it is surfaced as a pickup spawn.</summary>
-        public bool Surfaced;
-        public short VX, VY, VZ;
-    }
-
     private readonly Dictionary<int, Tracked> _entities = new();
     // Open container windows' canonical types (furnace properties are renumbered).
     private readonly Dictionary<int, byte> _windowTypes = new();
@@ -29,6 +17,7 @@ public sealed partial class Release1122Connection
     private void ResetEntities()
     {
         _entities.Clear();
+        _passengers.Clear();
         _windowTypes.Clear();
     }
 
@@ -109,126 +98,10 @@ public sealed partial class Release1122Connection
                 return new UpdateSignPacket { X = x, Y = (short)y, Z = z, Lines = lines };
             }
 
-            // ---- entities ----
-            case Ids1122.SpawnObject:
-            {
-                int eid = r.ReadVarInt();
-                r.ReadUuid();
-                int type = r.ReadSByte();
-                if (type != Ids1122.ObjectItem) return null; // other objects (arrows, boats, falling blocks): P4
-                var e = new Tracked { X = r.ReadDouble(), Y = r.ReadDouble(), Z = r.ReadDouble(), IsItem = true };
-                e.Pitch = r.ReadUByte();
-                e.Yaw = r.ReadUByte();
-                r.ReadInt(); // object data
-                (e.VX, e.VY, e.VZ) = (r.ReadShort(), r.ReadShort(), r.ReadShort());
-                _entities[eid] = e;
-                return null; // surfaced when its stack arrives (the Entity Metadata right after)
-            }
-            case Ids1122.SpawnPlayer:
-            {
-                int eid = r.ReadVarInt();
-                var uuid = r.ReadUuid();
-                var e = new Tracked { X = r.ReadDouble(), Y = r.ReadDouble(), Z = r.ReadDouble(), Surfaced = true };
-                e.Yaw = r.ReadUByte();
-                e.Pitch = r.ReadUByte();
-                _entities[eid] = e;
-                string name = _names.TryGetValue(uuid, out var n) ? n : uuid.ToString("N")[..16];
-                return new NamedEntitySpawnPacket
-                {
-                    EntityId = eid, PlayerName = name, X = FixedPoint.ToAbsolute(e.X), Y = FixedPoint.ToAbsolute(e.Y), Z = FixedPoint.ToAbsolute(e.Z),
-                    Yaw = e.Yaw, Pitch = e.Pitch,
-                };
-            }
-            case Ids1122.EntityMetadata:
-            {
-                int eid = r.ReadVarInt();
-                if (!_entities.TryGetValue(eid, out var e) || !e.IsItem) return null;
-                int pos = r.Position;
-                if (Codec1122.ReadMetadataSlot(body, ref pos) is not { } stack) return null;
-                if (!e.Surfaced)
-                {
-                    if (stack.IsEmpty) return null;
-                    e.Surfaced = true;
-                    return new PickupSpawnPacket
-                    {
-                        EntityId = eid, ItemId = stack.Id, Count = stack.Count, Damage = stack.Damage,
-                        X = FixedPoint.ToAbsolute(e.X), Y = FixedPoint.ToAbsolute(e.Y), Z = FixedPoint.ToAbsolute(e.Z),
-                        MotionX = Motion(e.VX), MotionY = Motion(e.VY), MotionZ = Motion(e.VZ),
-                    };
-                }
-                return new ItemEntityStackMessage { EntityId = eid, Item = stack };
-            }
-            case Ids1122.EntityRelMove:
-            case Ids1122.EntityLookRelMove:
-            {
-                int eid = r.ReadVarInt();
-                short dx = r.ReadShort(), dy = r.ReadShort(), dz = r.ReadShort();
-                if (!_entities.TryGetValue(eid, out var e)) return null;
-                // handleEntityMovement: serverPos += delta; position = serverPos / 4096.
-                e.X += dx / 4096.0; e.Y += dy / 4096.0; e.Z += dz / 4096.0;
-                if (id == Ids1122.EntityLookRelMove) { e.Yaw = r.ReadUByte(); e.Pitch = r.ReadUByte(); }
-                return e.Surfaced ? Teleport(eid, e) : null;
-            }
-            case Ids1122.EntityLook:
-            {
-                int eid = r.ReadVarInt();
-                if (!_entities.TryGetValue(eid, out var e)) return null;
-                e.Yaw = r.ReadUByte(); e.Pitch = r.ReadUByte();
-                return e.Surfaced ? new EntityLookPacket { EntityId = eid, Yaw = e.Yaw, Pitch = e.Pitch } : null;
-            }
-            case Ids1122.EntityTeleport:
-            {
-                int eid = r.ReadVarInt();
-                if (!_entities.TryGetValue(eid, out var e)) return null;
-                (e.X, e.Y, e.Z) = (r.ReadDouble(), r.ReadDouble(), r.ReadDouble());
-                e.Yaw = r.ReadUByte(); e.Pitch = r.ReadUByte();
-                return e.Surfaced ? Teleport(eid, e) : null;
-            }
-            case Ids1122.DestroyEntities:
-            {
-                int n = r.ReadVarInt();
-                if (n < 0 || n > r.Remaining) throw new ProtocolException($"destroy entities count {n} out of range");
-                var gone = new List<DestroyEntityPacket>(n);
-                for (int i = 0; i < n; i++)
-                {
-                    int eid = r.ReadVarInt();
-                    if (_entities.Remove(eid, out var e) && e.Surfaced) gone.Add(new DestroyEntityPacket { EntityId = eid });
-                }
-                return First(gone);
-            }
-            case Ids1122.CollectItem:
-                return new CollectItemPacket { CollectedEntityId = r.ReadVarInt(), CollectorEntityId = r.ReadVarInt() }; // + pickup count
-            case Ids1122.EntityStatus:
-                return new EntityStatusPacket { EntityId = r.ReadInt(), Status = r.ReadSByte() };
-            case Ids1122.EntityAnimation:
-            {
-                int eid = r.ReadVarInt();
-                // SPacketAnimation: 0 swing main arm, 1 hurt, 2 wake up, 3 swing off hand, 4 crit, 5 magic crit → b1.8.1's 1/2/3.
-                sbyte anim = (sbyte)(r.ReadUByte() switch { 0 or 3 => 1, 1 => 2, 2 => 3, _ => 0 });
-                return anim == 0 ? null : new AnimationPacket { EntityId = eid, Animation = anim };
-            }
-            case Ids1122.EntityEquipment:
-            {
-                int eid = r.ReadVarInt();
-                int slot = r.ReadVarInt();
-                var item = Codec1122.ReadSlot(ref r);
-                // EntityEquipmentSlot: 0 main hand, 1 off hand, 2 feet, 3 legs, 4 chest, 5 head → b1.8.1 0 held, 1..4 boots..helmet.
-                short cslot = slot switch { 0 => 0, 2 => 1, 3 => 2, 4 => 3, 5 => 4, _ => -1 };
-                if (cslot < 0) return null;
-                return new EntityEquipmentPacket { EntityId = eid, Slot = cslot, ItemId = item.IsEmpty ? (short)-1 : item.Id, Damage = item.Damage };
-            }
             default:
-                return null; // sounds, particles, mobs, effects, advancements, recipe book…: recorded, not surfaced
+                return TranslateEntities(id, body); // P4: every entity kind, metadata, effects, attributes, passengers, experience
         }
     }
-
-    private static EntityTeleportPacket Teleport(int eid, Tracked e) => new()
-    {
-        EntityId = eid, X = FixedPoint.ToAbsolute(e.X), Y = FixedPoint.ToAbsolute(e.Y), Z = FixedPoint.ToAbsolute(e.Z), Yaw = e.Yaw, Pitch = e.Pitch,
-    };
-
-    /// <summary>Velocity (blocks/tick × 8000) → b1.8.1's pickup motion byte (× 128).</summary>
-    private static sbyte Motion(short v) => (sbyte)Math.Clamp((int)Math.Round(v / 8000.0 * 128), sbyte.MinValue, sbyte.MaxValue);
 
     // ------------------------------------------------------------------ sending (P2)
 

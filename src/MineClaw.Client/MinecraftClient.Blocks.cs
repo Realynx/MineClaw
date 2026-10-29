@@ -610,7 +610,12 @@ public sealed partial class MinecraftClient
     private string BlockName(int id, int meta) => Options.Profile.Data.Block(id).Name;
     private string ItemName(int id, int damage = 0) => Options.Profile.Data.DisplayName(id, damage).ToLowerInvariant();
 
+    /// <summary>Dig ticks of a block right now: the version's rule with the held stack (1.12.2: Efficiency) and the bot's haste /
+    /// mining fatigue effects, standing on the ground.</summary>
+    public int DigTicksFor(int blockId, int meta = 0) => DigTicksNow(blockId, meta, onGround: true, inWater: false);
+
     /// <summary>Dig ticks by the version's rule with the held stack as it is (1.12.2: its Efficiency enchantment counts).</summary>
     private int DigTicksNow(int blockId, int meta, bool onGround, bool inWater) =>
-        Options.Profile.Data.DigTicks(new MineClaw.Data.Versioning.DigInput(blockId, meta, HeldStack(), onGround, inWater));
+        Options.Profile.Data.DigTicks(new MineClaw.Data.Versioning.DigInput(blockId, meta, HeldStack(), onGround, inWater,
+            Haste: World.Player.EffectAmplifier(PotionEffects.Haste) + 1, Fatigue: World.Player.EffectAmplifier(PotionEffects.MiningFatigue) + 1));
 }

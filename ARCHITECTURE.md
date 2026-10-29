@@ -32,7 +32,12 @@ sections → the neutral `ChunkSectionsMessage`; P2: windows with click types an
 cursor, use item/entity, signs, item entities and players; `Release1122ServerConnection` is the fake servers' side of the same
 wire) + `Release1122PhysicsRules` (step 0.6) + `Release1122GameData` (minecraft-data names, ids, stack sizes, the 1.12.2 dig
 rule) + `InventoryModel.Release1122` (off hand at 45, 1.12.2 `slotClick` prediction); its world is 256 high (`WorldState(height:)`, `ChunkColumn` stacks a second
-128 half, so b1.8.1 indices are unchanged). No `if (version)` in game code, differences live behind the seams.
+128 half, so b1.8.1 indices are unchanged). P4: every entity kind and its typed metadata translated per class onto the canonical
+indices (`Data/EntityMeta`: b1.8.1's 0/16/17 plus 32+ facts such as health, baby, hand states), exact positions, effects,
+attributes, passengers; `Profile.Entities` (`World/Versioning/IEntityRules`: 1.12.2 mob profiles, stamped on each spawn as
+`Entity.Profile`), `Release1122CombatRules` (the attack charge the `CombatEngine` waits for, crits, sweeps it never aims into a
+bystander, the off-hand shield and the axe, attack-before-swing) and `Release1122HungerRules` + `FoodStats1122`. No `if (version)`
+in game code, differences live behind the seams.
 
 ## Project ownership / contracts
 

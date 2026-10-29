@@ -40,6 +40,20 @@ public static class Physics1122
     /// <summary>The land speed of a walking / sprinting player (<c>(float)</c> of the attribute value).</summary>
     public static float LandSpeed(bool sprinting) => (float)(sprinting ? WalkSpeedBase * (1.0 + SprintModifier) : WalkSpeedBase);
 
+    /// <summary>Potion speed / slowness modifiers (operation 2, × (1 + amount · (amplifier + 1))).</summary>
+    public const double SpeedPotionModifier = 0.20000000298023224, SlownessPotionModifier = -0.15000000596046448;
+
+    /// <summary>The movement attribute with the sprint and potion modifiers (<c>ModifiableAttributeInstance.computeValue</c>:
+    /// every operation-2 modifier multiplies the total).</summary>
+    public static float LandSpeed(bool sprinting, int speedAmp, int slownessAmp)
+    {
+        double v = WalkSpeedBase;
+        if (sprinting) v *= 1.0 + SprintModifier;
+        if (speedAmp >= 0) v *= 1.0 + SpeedPotionModifier * (speedAmp + 1);
+        if (slownessAmp >= 0) v *= 1.0 + SlownessPotionModifier * (slownessAmp + 1);
+        return (float)Math.Max(0, v);
+    }
+
     /// <summary><c>jumpMovementFactor</c>: speedInAir, +30 % while sprinting (<c>EntityPlayer.onLivingUpdate</c>).</summary>
     public static float AirSpeed(bool sprinting) => sprinting ? (float)(SpeedInAir + SpeedInAir * 0.3) : SpeedInAir;
 
@@ -91,6 +105,7 @@ public static class Physics1122
             else if (s.OnGround && s.JumpTicks == 0)
             {
                 vy = JumpVelocity;                                         // jump(): getJumpUpwardsMotion
+                if (s.JumpBoostAmplifier >= 0) vy += (s.JumpBoostAmplifier + 1) * 0.1f; // + jump boost
                 if (s.Sprinting)
                 {
                     float f = s.Yaw * 0.017453292f;
@@ -109,7 +124,7 @@ public static class Physics1122
 
         // EntityPlayer.onLivingUpdate after super: next tick's speeds.
         s.AirSpeed = AirSpeed(s.Sprinting);
-        s.LandSpeed = LandSpeed(s.Sprinting);
+        s.LandSpeed = LandSpeed(s.Sprinting, s.SpeedAmplifier, s.SlownessAmplifier);
 
         // EntityPlayer.onUpdate: updateSize
         float h = s.Sneaking ? SneakHeight : Height;
@@ -142,7 +157,7 @@ public static class Physics1122
         float o = 0.91f;
         if (s.OnGround) o = Shapes1122.Slipperiness(GroundBlock(w, s)) * 0.91f;
         float r = 0.16277136f / (o * o * o);
-        float land = float.IsNaN(s.LandSpeed) ? LandSpeed(false) : s.LandSpeed;
+        float land = float.IsNaN(s.LandSpeed) ? LandSpeed(false, s.SpeedAmplifier, s.SlownessAmplifier) : s.LandSpeed;
         float air = float.IsNaN(s.AirSpeed) ? AirSpeed(false) : s.AirSpeed;
         float t = s.OnGround ? land * r : air;
         MoveRelative(s, strafe, forward, t);

@@ -60,9 +60,16 @@ public static class EntityGeometry
         "item" => "item",
         _ => (e.Mob ?? e.Name ?? "zombie").ToLowerInvariant() switch
         {
-            "zombie" or "giant" => "zombie",
+            // 1.12.2's newer mobs draw as their nearest b1.8.1 model (multi-version P4) until they get their own.
+            "zombie" or "giant" or "husk" or "zombie_villager" or "vindication_illager" or "evocation_illager" or "illusion_illager" or "witch"
+                or "villager" => "zombie",
             "zombie_pigman" or "pigzombie" or "pig_zombie" => "pigzombie",
-            "skeleton" => "skeleton",
+            "skeleton" or "stray" or "wither_skeleton" => "skeleton",
+            "magma_cube" => "slime",
+            "endermite" => "silverfish",
+            "mooshroom" => "cow",
+            "ocelot" or "polar_bear" => "wolf",
+            "guardian" or "elder_guardian" => "squid",
             "creeper" => "creeper",
             "spider" => "spider",
             "cave_spider" or "cavespider" => "cavespider",

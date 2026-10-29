@@ -25,6 +25,7 @@
     <Compile Include="..\MineClaw.Bot.Tests\TestSupport.cs" Link="Linked\BotTestSupport.cs" />
     <!-- In-memory b1.8.1 server for the dimension-change audit. -->
     <Compile Include="..\MineClaw.Client.Tests\FakeServer.cs" Link="Linked\FakeServer.cs" />
+    <Compile Include="..\MineClaw.Client.Tests\FakeServer.Mobs.cs" Link="Linked\FakeServer.Mobs.cs" />
     <!-- b1.8.1 portal timer/cooldown + 0x09 dimension switch on that server (portal round trips). -->
     <Compile Include="..\MineClaw.Client.Tests\PortalSim.cs" Link="Linked\PortalSim.cs" />
   </ItemGroup>

@@ -2,7 +2,7 @@
 
 Status: P0, P1 and P2 are implemented (seams + detection; 1.12.2 login, chat, game state, movement and chunks in a 256-high
 world, section 5.1; inventory, windows, dig, place, use, signs and item entities, section 5.2), and P5 (game data and render,
-section 5.3), and P3 (physics, shapes and pathing, section 5.4). P4 and P6 are planned or in progress. Ground truth for 1.12.2: the decompiled client at `C:\Users\dev\source\mc-1.12.2-src`
+section 5.3), P3 (physics, shapes and pathing, section 5.4) and P4 (entities, combat, effects, hunger, section 5.5). P6 is planned. Ground truth for 1.12.2: the decompiled client at `C:\Users\dev\source\mc-1.12.2-src`
 (section 4); class and method names below are its MCP stable_39 names.
 Date: 2026-10-28.
 
@@ -287,11 +287,11 @@ App composition root (AppHost.RunAsync)
 | `Version` | `GameVersion` (Protocol) | `GameVersion.Beta181` | `Release1122` |
 | `Protocol` | `IProtocolAdapter` + `IGameConnection` (Protocol) | `Beta181ProtocolAdapter` → `PacketConnection` | `Release1122ProtocolAdapter` → translating `NettyConnection` (P1–P2) |
 | `Physics` | `IPhysicsRules` (World) | `Beta181PhysicsRules` → `PlayerPhysics`, `BlockShapes` | `Release1122PhysicsRules` (P3) |
-| `Combat` | `ICombatRules` (Client) | `Beta181CombatRules` → `CombatRules` | (P4) |
-| `Hunger` | `IHungerRules` (Client) | `Beta181HungerRules` → `HungerRules` | (P4) |
+| `Combat` | `ICombatRules` (Client) | `Beta181CombatRules` → `CombatRules` | `Release1122CombatRules` (P4) |
+| `Hunger` | `IHungerRules` (Client) | `Beta181HungerRules` → `HungerRules` | `Release1122HungerRules` (P4) |
 | `Data` | `IGameData` (Data) | `Beta181GameData` → `Blocks`/`Items`/`Recipes`/`Smelting`/`Tools` | `Release1122GameData` (P2 names/dig, P5 recipes/smelting/drops/food) |
 | render | `IRenderAssets` (Render; registered by Bot's vision setup, since Render is not below Client) | the atlas + `BlockTextures` | blockstates + models (P5) |
-| entity rules (P4) | `IEntityRules` (World): metadata indices, mob profiles | the current tables | the 1.12.2 tables |
+| `Entities` | `IEntityRules` (World): mob profiles, type names (metadata layouts live in the translator, `EntityMeta1122`) | `Beta181EntityRules` (no stamps: the static tables) | `Release1122EntityRules` (P4) |
 
 The DI is plain constructor injection of one profile object, without a container.
 - There is exactly one decision point: the version, resolved before the graph. The graph is already composed by hand
@@ -440,7 +440,7 @@ Client jar recorded for reproducibility: `minecraft-1.12.2-client.jar`, 10,180,1
 - **Physics:** `Release1122PhysicsRules` (step 0.6F, 256 high, the rest b1.8.1). The client tick now calls
   `Profile.Physics.Tick` (identical for b1.8.1); `PlayerPhysics.Tick` / `MoveEntity` take an optional step height.
 - **Profile:** `GameVersionProfiles.Java1122`. VersionSetup's "not implemented" exit is gone for 1.12.2. Combat, hunger and
-  game data are the b1.8.1 ones until P4/P5.
+  game data were the b1.8.1 ones until P4/P5 (now the 1.12.2 ones, 5.3 and 5.5).
 - **Tests:**
   - Protocol `Release1122Tests`: golden bytes for handshake, login start, settings, brand, movement, actions and chat;
     framing and compression; an NBT fixture; chat JSON; 5-bit entries spanning longs against a hand-computed long; 4/8/13-bit
@@ -464,7 +464,7 @@ Client jar recorded for reproducibility: `minecraft-1.12.2-client.jar`, 10,180,1
 - Columns are flat 256 KB arrays, not lazily allocated sections (2× a b1.8.1 column's memory).
 - Block ids 123–255 and the changed metas read through the b1.8.1 tables (unknown ids) until P5 (P2: the client's names,
   stack sizes and dig rule come from `Release1122GameData`; physics and the static tables still don't know them).
-- Player List supplies names; P2 translates player and item spawns, mobs and other objects are P4.
+- Player List supplies names; P2 translates player and item spawns; mobs and other objects: done in P4 (5.5).
 - The version-change exit 75 on an "Outdated" kick isn't wired.
 - ~~The FakeServer 1.12.2 codec and the parametrized client tests are P2.~~ Done (5.2).
 
@@ -519,12 +519,12 @@ startup: about 10 ms on a LAN, plus one "Protocol error" log line on the b1.8.1 
   slotClick like a vanilla server; Bot: the punch wiring.
 
 **Still open after P2:**
-- Mobs, objects other than items, velocity (knockback), effects (haste for the dig rule), the server's Held Item Change: P4.
+- ~~Mobs, objects other than items, velocity (knockback), effects (haste for the dig rule), the server's Held Item Change: P4.~~ Done (5.5).
 - ~~Recipes and smelting are b1.8.1's (`Recipes.Match` predicts the crafting output; 1.12.2 planks keep the log's wood type, so a
   non-oak craft is predicted wrong once and resynced): P5. The static `Blocks`/`Items` facades outside the client: P5.~~ Done
   (5.3), except the `Blocks` facade.
 - Placement prediction of 1.12.2 metas (log axis, slab halves) in the world model: the server's block change sets them.
-- Entity metadata other than an item's stack (creeper fuse, wolf flags): P4.
+- ~~Entity metadata other than an item's stack (creeper fuse, wolf flags): P4.~~ Done (5.5).
 
 ### 5.3 What P5 shipped (game data)
 
@@ -648,4 +648,69 @@ the code-only special recipes.
 - Selection (raycast) boxes are b1.8.1's for the old ids; new 1.12.2 blocks fall back to their collision boxes.
 - The pathfinder doesn't plan through 1.65-high gaps (it checks a 1.8 body); the client sends the sneak state the tick uses.
 - A recorded 1.12.2 comparison once the user allows a live session.
+
+### 5.5 What P4 shipped (entities, combat, effects, hunger)
+
+- **Protocol/Release1122** (wire formats from the decompiled `SPacket*.readPacketData`, ids from protocol.json):
+  - `Release1122Connection.Entities.cs`: Spawn Object (every type; data = shooter + 1 / facing / block state, velocity as a canonical
+    velocity), Spawn Mob (+ its metadata, velocity and head look), Spawn Player (+ its metadata), Spawn Experience Orb, Spawn Global
+    Entity (lightning), Spawn Painting (facing renumbered); relative moves, look-and-move and teleports as canonical teleports that
+    also carry the exact doubles (`Exact`, also on every spawn), so 1/4096 deltas never drift or round to the 1/32 grid; Head Look,
+    Velocity (our own id = knockback), Destroy; Entity Status (33/36/37 thorns/drowning/burning hurt → 2; 29/30 shield, 35 totem
+    pass through); Equipment with the off hand as canonical slot 5; Entity Effect / Remove Entity Effect; Entity Properties
+    (attributes + modifiers, `EntityAttribute.Value` = `computeValue`); Set Passengers → canonical attach/dismount (Attach Entity
+    0x3D is a leash in 1.12.2); Use Bed; the server's Held Item Change; Set Experience; Combat Event ENTITY_DIED (the death screen's
+    message); Set Cooldown.
+  - `EntityMeta1122`: the typed metadata reader/writer (all 14 serializers) and the per-class layouts (`EntityDataManager.createKey`
+    in hierarchy order) onto the canonical indices of `Data/EntityMeta`: flags (1.12.2's hand states compose 0x10 "using an item"),
+    health, arrows, absorption/main hand (players), baby (ageables, zombies), the creeper's state/powered/ignited (b1.8.1's 16/17 +
+    ignited), slime/magma size, wolf/ocelot/parrot tame flags, spider climbing, ghast/blaze, pig saddle, sheep wool, zombie arms /
+    skeleton draw / illager aggression, zombie villager curing, enderman screaming, witch drinking, guardian target, shulker peek,
+    evoker spell; objects: critical arrows, item frame / potion / firework items, the TNT fuse.
+  - `Release1122ServerConnection`: the inverse for the fake servers (it remembers each spawn's class to write its layout).
+  - New neutral messages: `EntityHeadLookMessage`, `EntityPropertiesMessage`, `ExperienceMessage`, `DeathMessage`, `ItemCooldownMessage`.
+- **World:** `MobProfile`/`MobTactic` moved here; `IEntityRules` (`Beta181EntityRules` = no stamps; `Release1122EntityRules`: every
+  1.12.2 mob's hitbox, max health, normal-difficulty melee damage with its held weapon, tactic, hostility; an unknown type gets a
+  safe default: not hostile, not fought). The tracker stamps `Entity.Profile`/`TypeName` on spawn and keeps head yaw, effects
+  (`StatusEffect` with expiry), attributes, the off hand; `Entity.Health/IsBaby/IsUsingItem/FramedItem/InGround` (an arrow that
+  lost its critical flag or stopped moving). `PlayerState.Effects` (cleared on respawn), `HealthExact`, `Absorption`.
+  `Physics1122`: speed/slowness as operation-2 modifiers of the movement attribute, jump boost +0.1 per level.
+- **Combat (`ICombatRules` grew; defaults are b1.8.1's):** `Release1122CombatRules`: weapon attributes (`ItemSword`, `ItemTool`,
+  `ItemAxe`'s tables, `ItemHoe`), `getCooldownPeriod`/`getCooledAttackStrength(0.5F)`, charged damage, crits (charge > 0.9, falling,
+  no sprint/ladder/water/blindness/riding; ×1.5), the sweep (sword, charged, on the ground, a slow step, no crit or sprint knock;
+  the target's box grown by 1, 0.25, 1), shields (either hand, 5-tick raise, axes disable for 100 ticks), the totem, the 1.9
+  knockback (vertical only on the ground), `getDamageAfterAbsorb` with toughness, the easy/hard scaling, attack-before-swing.
+  `CombatEngine.Rules` (the profile's): it waits for `CombatOptions.MinCharge` (0.9) counted from its own last swing — any arm swing
+  the client sends resets it, as `EntityPlayerMP.swingArm` does — and from a held-item change; at or below
+  `EmergencySwingHealth` (8, above the disengage line) it hits at any charge; it holds a sweeping hit when a player, pet or
+  non-hostile mob is in the sweep box and jumps for a crit instead; it raises the off-hand shield between swings (Use Item, hand
+  1), never against an attacker holding an axe or while the shield is on its cooldown (status 30 / Set Cooldown); profiles come
+  from `CombatRules.ProfileOf(e)`. Status 35 (totem) raises a critical danger. b1.8.1 spam clicks and sword blocks as before.
+- **Hunger:** `Release1122HungerRules` (fast regen at 20 with saturation, 6 exhaustion per slow-regen hp, the 1.11 exhaustion
+  values, the same starvation floors, `RegenPerMinute`, `WantsTopUp`) and `FoodStats1122` (a tick-exact `FoodStats.onUpdate`). The
+  survival reflex eats a 1.12.2 top-up meal (hurt at food 18..19 without saturation), gates fights on poison/wither, and the state
+  header and health alerts carry the effect facts ("poisoned 7s (stops at 1 hp)", "withering (can kill)", "fire resistant"…).
+- **Client:** `Profile.Entities` → the tracker; haste/fatigue feed the dig rule (`DigTicksFor`); speed/slowness/jump boost feed the
+  tick; the server's Held Item Change, Set Experience, the death message (`LastDeathMessage`), item cooldowns, our own metadata
+  (absorption), orbs collected (`XpOrbsCollected`); the respawn is Client Status 0 as before. Render: the newer mobs draw as their
+  nearest b1.8.1 model (husk → zombie, stray → skeleton, magma cube → slime…). `MobTypes.Name/ByName` know the 1.12.2 names.
+- **Tests:** Protocol `Release1122P4Tests` (metadata per class incl. every serializer skipped, hand states → flags, objects/orbs/
+  lightning/paintings/item frames, 100 relative moves exact to 1e-12, effects/attributes/passengers/experience/death/cooldown/held
+  item, the server codec round trip, Entity Effect golden bytes); Client `Release1122CombatRulesTests` (the cooldown curve for the
+  hand, swords, axes, pickaxes, shovels and hoes in Java float: the sword's charge is 0.99999994 at 12 ticks, the wooden axe needs
+  23 for 0.9; damage per item; crit and sweep conditions; shields and the axe; knockback, armor, difficulty; mob profiles),
+  `Release1122HungerTests` (fast/slow regen and exhaustion tick by tick, starvation floors, the top-up, effect facts and gates),
+  `Release1122CombatEngineTests` (the charge per weapon vs b1.8.1's clicking, the emergency, a dig swing resetting the charge, no
+  sweep into a player, the shield), `Release1122FightTests` over `FakeServer(release1122)`, which now has mobs (`SpawnMob`, a chase AI,
+  `ApplyEffect`) and judges hits like a vanilla server (its own charge clock, fall-tracking crits, hurt resistance, death → drop +
+  orb): a zombie walks up, the bot waits for the charge, hits, crits, kills, collects the rotten flesh and the 5 xp; the off-hand
+  shield and its disable; effects into dig and physics; held item; the death message and respawn. World `Entities1122Tests`.
+
+**Still open after P4:**
+- The spar model (`SparModel`) and `WeaponChoice` still rank and estimate with b1.8.1 damage (a sword still wins on 1.12.2 DPS, but
+  spar estimates against a 1.12.2 opponent are off); totem handling is reactive only (no off-hand totem management).
+- Mob AI facts of 2.7 (skeleton strafing, creeper fuse, door breaking, spider climbing, enderman gaze) are the b1.8.1 ones the engine
+  already had; not re-verified against the 1.12.2 source.
+- Self attributes are recorded but the tick computes movement speed from the effects (not from the server's attribute snapshot).
+- Vision has no models of its own for the newer mobs (nearest b1.8.1 model).
 

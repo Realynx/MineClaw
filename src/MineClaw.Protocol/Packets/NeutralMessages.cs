@@ -36,3 +36,94 @@ public sealed class ItemEntityStackMessage : IPacket
     public void Write(MinecraftWriter w, PacketDirection d) => throw new NotSupportedException("ItemEntityStackMessage has no b1.8.1 wire form");
     public override string ToString() => $"ItemEntityStack(entity {EntityId}: {Item})";
 }
+
+/// <summary>An entity's head yaw (1.12.2 Entity Head Look 0x36, <c>SPacketEntityHeadLook</c>; b1.8.1 sends none): where a mob
+/// or player is looking, which can differ from its body yaw.</summary>
+public sealed class EntityHeadLookMessage : IPacket
+{
+    public byte Id => EntityLookPacket.PacketId;
+    public int EntityId { get; init; }
+    /// <summary>Angle byte (256 = 360°), like the canonical look packets.</summary>
+    public byte Yaw { get; init; }
+
+    public void Read(MinecraftReader r, PacketDirection d) => throw new NotSupportedException("EntityHeadLookMessage has no b1.8.1 wire form");
+    public void Write(MinecraftWriter w, PacketDirection d) => throw new NotSupportedException("EntityHeadLookMessage has no b1.8.1 wire form");
+    public override string ToString() => $"EntityHeadLook(entity {EntityId} yaw {Yaw})";
+}
+
+/// <summary>One attribute modifier (<c>AttributeModifier</c>): operation 0 adds to the base, 1 adds base × amount, 2 multiplies
+/// the total by (1 + amount).</summary>
+public readonly record struct AttributeModifierValue(Guid Uuid, double Amount, int Operation);
+
+/// <summary>One synced attribute of an entity (<c>SPacketEntityProperties.Snapshot</c>): key ("generic.movementSpeed",
+/// "generic.attackSpeed"…), base value and modifiers.</summary>
+public sealed record EntityAttribute(string Key, double Base, IReadOnlyList<AttributeModifierValue> Modifiers)
+{
+    /// <summary><c>ModifiableAttributeInstance.computeValue</c>: base + Σop0, then + base' × Σop1, then × Π(1 + op2).</summary>
+    public double Value
+    {
+        get
+        {
+            double d = Base;
+            foreach (var m in Modifiers) if (m.Operation == 0) d += m.Amount;
+            double e = d;
+            foreach (var m in Modifiers) if (m.Operation == 1) e += d * m.Amount;
+            foreach (var m in Modifiers) if (m.Operation == 2) e *= 1 + m.Amount;
+            return e;
+        }
+    }
+}
+
+/// <summary>An entity's synced attributes (1.12.2 Entity Properties 0x4E): movement speed (players and mobs), attack speed
+/// (players), max health, armor… b1.8.1 has no attributes.</summary>
+public sealed class EntityPropertiesMessage : IPacket
+{
+    public byte Id => EntityMetadataPacket.PacketId;
+    public int EntityId { get; init; }
+    public IReadOnlyList<EntityAttribute> Attributes { get; init; } = [];
+
+    public void Read(MinecraftReader r, PacketDirection d) => throw new NotSupportedException("EntityPropertiesMessage has no b1.8.1 wire form");
+    public void Write(MinecraftWriter w, PacketDirection d) => throw new NotSupportedException("EntityPropertiesMessage has no b1.8.1 wire form");
+    public override string ToString() => $"EntityProperties(entity {EntityId}: {string.Join(", ", Attributes.Select(a => $"{a.Key}={a.Value:0.###}"))})";
+}
+
+/// <summary>The local player's experience (1.12.2 Set Experience 0x40: float bar 0..1, VarInt level, VarInt total). b1.8.1's
+/// <see cref="ExperiencePacket"/> carries bytes and a short.</summary>
+public sealed class ExperienceMessage : IPacket
+{
+    public byte Id => ExperiencePacket.PacketId;
+    public float Bar { get; init; }
+    public int Level { get; init; }
+    public int Total { get; init; }
+
+    public void Read(MinecraftReader r, PacketDirection d) => throw new NotSupportedException("ExperienceMessage has no b1.8.1 wire form");
+    public void Write(MinecraftWriter w, PacketDirection d) => throw new NotSupportedException("ExperienceMessage has no b1.8.1 wire form");
+    public override string ToString() => $"Experience(level {Level}, bar {Bar:0.##}, total {Total})";
+}
+
+/// <summary>The local player died (1.12.2 Combat Event 0x2D ENTITY_DIED, <c>SPacketCombatEvent</c>): the death screen's message
+/// (already flattened to plain text) and the killer's entity id (−1 = none).</summary>
+public sealed class DeathMessage : IPacket
+{
+    public byte Id => UpdateHealthPacket.PacketId;
+    public int PlayerId { get; init; }
+    public int KillerId { get; init; } = -1;
+    public string Message { get; init; } = "";
+
+    public void Read(MinecraftReader r, PacketDirection d) => throw new NotSupportedException("DeathMessage has no b1.8.1 wire form");
+    public void Write(MinecraftWriter w, PacketDirection d) => throw new NotSupportedException("DeathMessage has no b1.8.1 wire form");
+    public override string ToString() => $"Death(player {PlayerId}, killer {KillerId}: {Message})";
+}
+
+/// <summary>An item's use cooldown (1.12.2 Set Cooldown 0x17, <c>SPacketCooldown</c>): a shield disabled by an axe (100 ticks),
+/// ender pearls, chorus fruit. 0 ticks = cleared.</summary>
+public sealed class ItemCooldownMessage : IPacket
+{
+    public byte Id => SetSlotPacket.PacketId;
+    public int ItemId { get; init; }
+    public int Ticks { get; init; }
+
+    public void Read(MinecraftReader r, PacketDirection d) => throw new NotSupportedException("ItemCooldownMessage has no b1.8.1 wire form");
+    public void Write(MinecraftWriter w, PacketDirection d) => throw new NotSupportedException("ItemCooldownMessage has no b1.8.1 wire form");
+    public override string ToString() => $"ItemCooldown(item {ItemId}: {Ticks} ticks)";
+}
