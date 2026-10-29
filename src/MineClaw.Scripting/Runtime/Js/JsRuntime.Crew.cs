@@ -102,6 +102,36 @@ internal sealed partial class JsRuntime
         });
         H(h, "crewLock", a => Board().TryLock(CrewId, Str(a, 0) ?? "", Me, TimeSpan.FromSeconds(Num(a, 1) ?? 120)) ? JsBoolean.True : JsBoolean.False);
         H(h, "crewUnlock", a => { Board().Unlock(CrewId, Str(a, 0) ?? "", Me); return JsValue.Undefined; });
+        // Work-target leases on the hive's claim board (forEach): shared by every body of every crew and hive, not one crew's board.
+        H(h, "claimTarget", a => ClaimTarget(Str(a, 0) ?? "", Num(a, 1) ?? 300) ? JsBoolean.True : JsBoolean.False);
+        H(h, "releaseTarget", a => { ReleaseTarget(Str(a, 0) ?? ""); return JsValue.Undefined; });
+    }
+
+    private static MineClaw.World.Claims.ClaimKey TargetKey(string key) => MineClaw.World.Claims.ClaimKey.Task("target:" + key);
+
+    /// <summary>Leases a work target for this body; false = another body holds it. No board (one bot) or no answer = free.</summary>
+    private bool ClaimTarget(string key, double ttlSeconds)
+    {
+        if (key.Length == 0 || s.Host.Claims?.Invoke() is not { } board) return true;
+        var k = TargetKey(key);
+        if (!board.IsFree(k)) return false;
+        try
+        {
+            var r = board.TryClaimAsync(k, TimeSpan.FromSeconds(Math.Clamp(ttlSeconds, 10, 1800)), "forEach")
+                .WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult();
+            if (r.Ok) return true;
+            if (r.Holder != null) return false;
+            board.ReleaseAsync(k).GetAwaiter().GetResult(); // unanswered: undo a late grant, work it unleased
+            return true;
+        }
+        catch (Exception) { return true; }
+    }
+
+    private void ReleaseTarget(string key)
+    {
+        if (key.Length == 0 || s.Host.Claims?.Invoke() is not { } board) return;
+        try { board.ReleaseAsync(TargetKey(key)).WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult(); }
+        catch (Exception) { /* the lease expires */ }
     }
 
     private ICrewBoard Board() => s.Host.Crew?.Board ?? (_localBoard ??= new InMemoryCrewBoard(s.Time));

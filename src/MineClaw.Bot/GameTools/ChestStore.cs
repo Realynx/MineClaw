@@ -40,6 +40,7 @@ public static class ChestStore
         var tried = new HashSet<BlockPos>();
         var went = new List<(BlockPos Chest, int N, bool NowFull, string Text)>();
         var full = new List<BlockPos>();
+        var busyChests = new List<BlockPos>();
         var other = new List<string>();
         string? firstFail = null;
         int stored = 0, opened = 0;
@@ -77,7 +78,11 @@ public static class ChestStore
             }
             firstFail ??= r.Message;
             if (r.Message.Contains("full", StringComparison.OrdinalIgnoreCase)) full.Add(chest);
-            else other.Add($"{P(chest)}: {(r.Message.Length > 40 ? r.Message[..40] : r.Message)}");
+            else
+            {
+                if (r.Message.StartsWith("busy", StringComparison.Ordinal)) busyChests.Add(chest);
+                other.Add($"{P(chest)}: {(r.Message.Length > 40 ? r.Message[..40] : r.Message)}");
+            }
         }
 
         if (done)
@@ -91,8 +96,34 @@ public static class ChestStore
 
         // Nothing more fits anywhere (or nowhere is known): one actionable line; the caller decides what to do.
         var left = Loose();
+        // Full, or still crowded after the queue (busy): put another chest down right beside the drop-off from what the bag
+        // holds and spread onto it, saying so (live 10-29: "deposits to log_chest keep failing on occupied", 20 bodies waited
+        // holding logs). A chest the caller named that is out of reach for another reason stays the caller's problem.
+        var busy = busyChests.Count > 0;
+        string? overflow = null;
+        if (Total(left) > 0 && (full.Count > 0 || busy) && CanMakeChest(c)
+            && (asked is { } an && (full.Contains(an) || busyChests.Contains(an)) ? an : full.Count > 0 ? full[0] : busyChests.FirstOrDefault()) is var near
+            && (full.Contains(near) || busyChests.Contains(near)))
+        {
+            if (await PlaceBesideAsync(c, obs, near, ct).ConfigureAwait(false) is { } placed)
+            {
+                overflow = $"chest {P(near)} {(full.Contains(near) ? "full" : "busy")}: placed a new chest at {P(placed)}";
+                var before = Loose();
+                var r = await c.DepositAllAsync(placed, filter, ct).ConfigureAwait(false);
+                var after = Loose();
+                int moved = Math.Max(0, Total(before) - Total(after));
+                foreach (var (id, n) in before) if (n - after.GetValueOrDefault(id) is > 0 and var m) storedItems[id] = storedItems.GetValueOrDefault(id) + m;
+                if (moved > 0)
+                {
+                    went.Add((placed, moved, !r.Ok || r.Message.Contains("chest full", StringComparison.Ordinal), r.Message));
+                    stored += moved;
+                }
+                left = after;
+                if (Total(left) == 0) return ToolResult.Success(overflow + "; " + StoredLine(stored, storedItems, went));
+            }
+        }
         // The only chest there is refused for another reason (claimed, no path): the client's own words, as before.
-        if (opened == 1 && went.Count == 0 && full.Count == 0 && firstFail != null) return ToolResult.Error(firstFail);
+        if (overflow == null && opened == 1 && went.Count == 0 && full.Count == 0 && firstFail != null) return ToolResult.Error(firstFail);
         if (Total(left) == 0)
             return went.Count > 0 ? ToolResult.Success(StoredLine(stored, storedItems, went))
                 : tried.Count == 0 ? ToolResult.Error("no chest nearby") : ToolResult.Success("nothing to deposit");
@@ -100,6 +131,7 @@ public static class ChestStore
             : other.Count == 0 ? $"all {full.Count} known chest{(full.Count == 1 ? "" : "s")} full ({Coords(full)})"
             : $"no known chest has room ({(full.Count > 0 ? Coords(full) + " full; " : "")}{string.Join("; ", other.Take(3))})";
         var parts = new List<string> { head };
+        if (overflow != null) parts.Add(overflow);
         if (went.Count > 0) parts.Add(StoredLine(stored, storedItems, went));
         parts.Add(Bag(left) + " in bag");
         parts.Add(Advice(c) + " or keep carrying");
@@ -126,6 +158,49 @@ public static class ChestStore
         if (planks >= 8) return $"craft+place a chest (have {planks} planks)";
         if (logs >= 2) return $"craft+place a chest (have {logs} logs)";
         return "get 2 logs to craft+place a chest";
+    }
+
+    /// <summary>A chest in the bag, or what makes one (8 planks, or 2 logs of any wood).</summary>
+    private static bool CanMakeChest(IGameClient c)
+    {
+        var inv = c.World.Inventory;
+        return inv.CountItem(Blocks.Chest) > 0 || inv.CountItem(Blocks.Planks) >= 8 || inv.CountItem(Blocks.Log) + inv.CountItem(Ids1122.Log2) >= 2;
+    }
+
+    /// <summary>
+    /// Crafts a chest if none is carried and places it two blocks from <paramref name="near"/> (a gap, so it is its own chest and
+    /// its own standing room, never a pair with a neighbour), on solid ground, not in fluid, not protected, nearest to the bot.
+    /// </summary>
+    internal static async Task<BlockPos?> PlaceBesideAsync(IGameClient c, ObservationStore? obs, BlockPos near, CancellationToken ct)
+    {
+        var w = c.World;
+        var spots = new List<BlockPos>();
+        for (int dy = 0; dy >= -1; dy--)
+            foreach (var (dx, dz) in new[] { (2, 0), (-2, 0), (0, 2), (0, -2), (2, 2), (-2, -2), (2, -2), (-2, 2), (3, 0), (-3, 0), (0, 3), (0, -3) })
+            {
+                var p = new BlockPos(near.X + dx, near.Y + dy, near.Z + dz);
+                if (w.GetBlock(p.X, p.Y, p.Z) != 0 || w.GetBlock(p.X, p.Y + 1, p.Z) != 0) continue;
+                if (!BlockShapes.HasCollision(w, p.X, p.Y - 1, p.Z)) continue;
+                var sides = new[] { p.Offset(1, 0, 0), p.Offset(-1, 0, 0), p.Offset(0, 0, 1), p.Offset(0, 0, -1) };
+                if (sides.Any(n => Ids1122.IsChest(w.GetBlock(n)))) continue;
+                if (sides.Append(p.Down()).Any(n => Blocks.IsLava(w.GetBlock(n)) || Blocks.IsWater(w.GetBlock(n)))) continue;
+                if (c.IsProtected?.Invoke(p, Blocks.Chest) == true) continue;
+                spots.Add(p);
+            }
+        if (spots.Count == 0) return null;
+        if (w.Inventory.CountItem(Blocks.Chest) <= 0)
+        {
+            var made = await new Crafter(c) { Observations = obs }.CraftAsync("chest", 1, ct).ConfigureAwait(false);
+            if (!made.Ok || w.Inventory.CountItem(Blocks.Chest) <= 0) return null;
+        }
+        var me = w.Player.Position;
+        foreach (var p in spots.OrderBy(s => s.Center.DistanceSquaredTo(me)).Take(4))
+        {
+            if (w.Player.Position.DistanceTo(p.Center) > 4) await c.GotoAsync(new GoalNear(p.X, p.Y, p.Z, 2), null, ct).ConfigureAwait(false);
+            var r = await c.PlaceBlockAsync(p.X, p.Y, p.Z, Blocks.Chest, ct).ConfigureAwait(false);
+            if (r.Ok && Ids1122.IsChest(w.GetBlock(p))) return p;
+        }
+        return null;
     }
 
     private static string Coords(List<BlockPos> list) => string.Join(", ", list.Take(2).Select(P)) + (list.Count > 2 ? ", …" : "");

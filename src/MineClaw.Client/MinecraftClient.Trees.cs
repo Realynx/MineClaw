@@ -4,6 +4,7 @@ using MineClaw.Data;
 using MineClaw.Data.Versioning;
 using MineClaw.Protocol.Packets;
 using MineClaw.World;
+using MineClaw.World.Claims;
 
 namespace MineClaw.Client;
 
@@ -52,6 +53,32 @@ public sealed partial class MinecraftClient
     /// saplings. chop_tree refuses below it unless it can replant; plain digs/mines of those trees' logs are protected.
     /// 0 = off.</summary>
     public int MinTrees { get; set; } = TreeStewardship.DefaultMinTrees;
+
+    /// <summary>
+    /// The hive's shared lease board for work targets (one body per tree): chop_tree skips trees another body holds, leases the
+    /// one it picks for the whole chop and gives it back when done, stopped, dead or timed out (the TTL covers a crash). Live
+    /// 10-29: 20 bodies of one hive each picked "the nearest tree" and all walked to the same oak. Null = a single bot.
+    /// </summary>
+    public IClaimBoard? TargetClaims { get; set; }
+
+    /// <summary>A tree lease outlives the longest chop (<see cref="TreeChopOptions.Timeout"/> 5 min) so it never needs renewing.</summary>
+    public static readonly TimeSpan TreeLeaseTtl = TimeSpan.FromMinutes(6);
+
+    /// <summary>The lease key of one tree (its trunk base; dimension-qualified, a task key so it never blocks digs nearby).</summary>
+    public static ClaimKey TreeKey(TreeInfo t, int dim) => ClaimKey.Task($"tree:{t.Base.X},{t.Base.Y},{t.Base.Z}@{dim}");
+
+    /// <summary>Who else is chopping <paramref name="t"/> (a lease on it, or this call's own skip list), else null.</summary>
+    private string? TreeTaken(TreeInfo t, IReadOnlySet<BlockPos>? skip)
+    {
+        if (skip?.Contains(t.Base) == true) return "another body";
+        if (TargetClaims is not { } b) return null;
+        var key = TreeKey(t, World.Dimension);
+        return b.IsFree(key) ? null : b.HolderOf(key) ?? "another body";
+    }
+
+    /// <summary>Another player (a sibling body) within 3 blocks of the trunk: prefer a tree with room to work (no body-blocking).</summary>
+    private bool TreeCrowded(TreeInfo t) =>
+        World.Entities.Nearby(t.Base.Center, 3, e => e.Kind == EntityKind.Player && !string.Equals(e.Name, Options.Username, StringComparison.OrdinalIgnoreCase), 1).Any();
 
     /// <summary>The tree chop_tree is felling right now (its logs are exempt from the stewardship guard).</summary>
     private volatile TreeInfo? _chopping;
@@ -124,8 +151,42 @@ public sealed partial class MinecraftClient
             if (o.MaxUnreplantedChops > 0 && WorldMode.Current.ScarceTerrain && _unreplantedChops >= o.MaxUnreplantedChops)
                 return ActionResult.Fail($"stopping: the last {_unreplantedChops} trees I chopped weren't replanted (last: {_lastReplantProblem ?? "not replanted"}); " +
                                          "fix the replanting first (a sapling, free lit dirt) before felling more");
-            var tree = ResolveTree(at, wood, o, out var why);
+            var skip = new HashSet<BlockPos>();
+            var tree = ResolveTree(at, wood, o, out var why, skip);
             if (tree is null) return ActionResult.Fail(why!);
+            ClaimKey? lease = null;
+            if (TargetClaims is { } board)
+            {
+                // Lease it before walking there; a sibling that won the race keeps it and this body takes the next one.
+                for (int tries = 0; ; tries++)
+                {
+                    var key = TreeKey(tree, World.Dimension);
+                    var r = await board.TryClaimAsync(key, TreeLeaseTtl, "chop", c).ConfigureAwait(false);
+                    if (r.Ok) { lease = key; break; }
+                    if (r.Holder == null)
+                    {
+                        // The board didn't answer: undo a late grant and chop unleased (leases coordinate, they aren't safety).
+                        try { await board.ReleaseAsync(key, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { }
+                        break;
+                    }
+                    Log($"chop: {tree} taken by {r.Holder}; picking the next free tree");
+                    skip.Add(tree.Base);
+                    if (tries >= 8 || ResolveTree(at, wood, o, out why, skip) is not { } next)
+                        return ActionResult.Fail(why ?? "exhausted: every tree near here is taken by other bodies");
+                    tree = next;
+                }
+            }
+            try { return await ChopResolvedAsync(tree, o, c).ConfigureAwait(false); }
+            finally
+            {
+                if (lease is { } k)
+                    try { await TargetClaims!.ReleaseAsync(k, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { /* TTL */ }
+            }
+        });
+
+    private async Task<ActionResult> ChopResolvedAsync(TreeInfo tree, TreeChopOptions o, CancellationToken c)
+    {
+        {
             _chopping = tree;
             using var limit = CancellationTokenSource.CreateLinkedTokenSource(c);
             limit.CancelAfter(o.Timeout);
@@ -161,11 +222,12 @@ public sealed partial class MinecraftClient
                 InvalidateTreeGuard();
             }
             return Finish(st, stop, planted, problem);
-        });
+        }
+    }
 
     // ------------------------------------------------------------------ target
 
-    private TreeInfo? ResolveTree(BlockPos? at, int? wood, TreeChopOptions o, out string? why)
+    private TreeInfo? ResolveTree(BlockPos? at, int? wood, TreeChopOptions o, out string? why, IReadOnlySet<BlockPos>? skip = null)
     {
         int minTrees = o.MinTrees ?? MinTrees;
         TreeCensus? census = null;
@@ -173,7 +235,7 @@ public sealed partial class MinecraftClient
         // Only the tree's own species replants it (a birch spot gets a birch sapling, never a silent oak).
         string? Refusal(TreeInfo t) => minTrees <= 0 ? null
             : TreeStewardship.Refusal(Census(t), t, World.Inventory.CountItem(Blocks.Sapling, t.Wood), ReplantPrecheck(t), minTrees);
-        var tree = PickTree(at, wood, o, Refusal, out why);
+        var tree = PickTree(at, wood, o, Refusal, out why, skip);
         if (tree is not null && Refusal(tree) is { } no)
         {
             Log($"chop: refused {tree}: {no} (island: {Census(tree)})");
@@ -196,21 +258,44 @@ public sealed partial class MinecraftClient
     /// plants one sapling, so it reports this instead of planting a dud (and never counts it as a failed replant).</summary>
     private const string DarkOakReplant = "a dark oak only grows from 4 dark oak saplings planted as a 2x2; plant them together";
 
-    private TreeInfo? PickTree(BlockPos? at, int? wood, TreeChopOptions o, Func<TreeInfo, string?> refusal, out string? why)
+    private TreeInfo? PickTree(BlockPos? at, int? wood, TreeChopOptions o, Func<TreeInfo, string?> refusal, out string? why,
+        IReadOnlySet<BlockPos>? skip = null)
     {
         why = null;
-        TreeInfo? tree;
+        TreeInfo? tree = null;
+        // A named spot whose tree another body holds: the next free tree near that spot, never following it there.
+        Vec3d? around = null;
         if (at is { } p)
         {
             var log = TreeScan.LogNear(World, p);
             tree = log is { } l ? TreeScan.Analyze(World, l) : null;
-            if (tree is null) { why = $"no tree at {Fmt(p)}"; return null; }
+            if (tree is null)
+            {
+                why = $"no tree at {Fmt(p)}" + (Frontier(p.Center, 0, wood, skip) is { Length: > 0 } f ? $"; nearest trees: {f}" : "");
+                return null;
+            }
             if (tree.Logs.All(EditBlocked)) { why = $"tree at {Fmt(p)} is inside spawn protection (the server undid my digs there; needs op)"; return null; }
+            if (TreeTaken(tree, skip) is { } holder)
+            {
+                Log($"chop: {tree} is {holder}'s; taking the next free tree near {Fmt(p)}");
+                around = p.Center;
+                tree = null;
+            }
         }
-        else
+        if (tree is null)
         {
-            var all = TreeScan.FindTrees(World, World.Player.Position, o.SearchRadius, wood)
+            var center = around ?? World.Player.Position;
+            var all = TreeScan.FindTrees(World, center, o.SearchRadius, wood)
                 .Where(t => t.Logs.Any(l => !UserProtected(l, Wood.LogId(t.Wood))) && (t.OnSoil || t.Leaves.Count >= 3 || TreeScan.Unfinished(World, t) is not null)).ToList();
+            var open = all.Where(t => TreeTaken(t, skip) == null).ToList();
+            if (open.Count == 0 && all.Count > 0)
+            {
+                var holders = all.Select(t => TreeTaken(t, skip)).Where(h => h != null).Distinct().Take(3);
+                why = $"exhausted: the {all.Count} tree(s) within {o.SearchRadius:0} are all taken by other bodies ({string.Join(", ", holders)})"
+                      + (Frontier(center, o.SearchRadius, wood, skip) is { Length: > 0 } f ? $"; free trees beyond: {f}" : "; no free tree beyond in view");
+                return null;
+            }
+            all = open;
             var trees = all.Where(t => !t.Logs.All(EditBlocked)).ToList();
             if (trees.Count == 0 && all.Count > 0)
             {
@@ -222,13 +307,16 @@ public sealed partial class MinecraftClient
             // Our own unfinished tree (a chop that stopped part-way) goes before any new one.
             tree = trees.OrderBy(t => refusal(t) is null ? 0 : 1)
                 .ThenBy(t => TreeScan.Unfinished(World, t) is not null ? 0 : 1)
+                .ThenBy(t => TreeCrowded(t) ? 1 : 0)
                 .ThenBy(t => t.OnSoil ? 0 : 1)
                 .ThenBy(t => ReplantPrecheck(t) is null ? 0 : 1)
                 .ThenBy(t => Safety.EdgeDistance(World, t.Base.X, t.Base.Y, t.Base.Z, 2) >= 2 ? 0 : 1)
                 .ThenBy(t => t.Base.Center.DistanceSquaredTo(World.Player.Position)).FirstOrDefault();
             if (tree is null)
             {
-                why = $"no {(wood is { } w ? TreeScan.WoodName(w) + " " : "")}tree within {o.SearchRadius:0}";
+                // Typed: the area is used up here, and where the work goes on (the brain widens it with one chop_tree at=).
+                why = $"exhausted: no {(wood is { } w ? TreeScan.WoodName(w) + " " : "")}tree within {o.SearchRadius:0}"
+                      + (Frontier(center, o.SearchRadius, wood, skip) is { Length: > 0 } f ? $"; nearest beyond: {f}" : "; none beyond in view either");
                 return null;
             }
         }
@@ -243,6 +331,34 @@ public sealed partial class MinecraftClient
             return null;
         }
         return tree;
+    }
+
+    /// <summary>Widest look for trees past the chop radius: this body's own loaded view (view distance 4 = 64 blocks).</summary>
+    public const double FrontierRadius = 64;
+
+    /// <summary>
+    /// The nearest free living trees beyond <paramref name="inner"/> blocks of <paramref name="center"/> (within
+    /// <see cref="FrontierRadius"/>): "oak 200,64,300 (40 m E), spruce ... (+5 more)", or "" when none is in view.
+    /// </summary>
+    internal string Frontier(Vec3d center, double inner, int? wood = null, IReadOnlySet<BlockPos>? skip = null)
+    {
+        List<TreeInfo> beyond;
+        try
+        {
+            beyond = TreeScan.FindTrees(World, center, FrontierRadius, wood)
+                .Where(t => TreeStewardship.IsLiving(t) && t.Base.Center.DistanceTo(center) > inner && TreeTaken(t, skip) == null
+                            && !t.Logs.All(l => UserProtected(l, Wood.LogId(t.Wood)))).ToList();
+        }
+        catch (Exception) { return ""; }
+        if (beyond.Count == 0) return "";
+        var me = World.Player.Position;
+        string Dir(BlockPos b)
+        {
+            double dx = b.X + 0.5 - me.X, dz = b.Z + 0.5 - me.Z;
+            return Math.Abs(dx) >= Math.Abs(dz) ? (dx >= 0 ? "E" : "W") : (dz < 0 ? "N" : "S");
+        }
+        return string.Join(", ", beyond.Take(3).Select(t => $"{t.WoodName} {Fmt(t.Base)} ({t.Base.Center.DistanceTo(me):0} m {Dir(t.Base)})"))
+               + (beyond.Count > 3 ? $" (+{beyond.Count - 3} more)" : "");
     }
 
     /// <summary>Protection set by the owner (config, memory, claims) without the stewardship guard: chop_tree applies

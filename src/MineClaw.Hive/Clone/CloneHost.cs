@@ -113,6 +113,8 @@ public sealed class CloneHost : IHandoffTarget
             cloneWindow: TimeSpan.FromSeconds(cfg.CloneThreadSeconds));
         // This clone asked a player something / watches their demo: main (the arbiter authority) and the other clones must know.
         Arbiter.LocalThreadChanged += (player, open, ttl) => _ = Send(Msg.Thread, new ThreadMsg(player, open, ttl.TotalSeconds));
+        // A player's direct order ("420 come here") beats a logout this clone started after its own task ended.
+        Arbiter.AddressedHere += m => PreemptLogout($"{m.Player} addressed me");
     }
 
     public string Name { get; }
@@ -262,6 +264,7 @@ public sealed class CloneHost : IHandoffTarget
             case Msg.Task when m.As<TaskMsg>() is { } t:
                 _task = t;
                 if (!LoggingOut) _ = StartTaskAsync(t, _cts.Token); // the loadout walk never blocks the message queue
+                else PreemptLogout("new task from main"); // a logout after our own finished task yields to the new order
                 return null;
             case Msg.Recall when m.As<RecallMsg>() is { } r:
                 _ = LogoutAsync(r.Reason, planned: true, r.DeadlineSeconds is { } d ? TimeSpan.FromSeconds(d) : null);
@@ -501,6 +504,21 @@ public sealed class CloneHost : IHandoffTarget
     private static bool EndsTask(string reason) =>
         reason.StartsWith("task ", StringComparison.Ordinal) || reason.StartsWith("script ", StringComparison.Ordinal);
 
+    private CancellationTokenSource? _logoutAbort;
+
+    /// <summary>
+    /// A new order (main's task, a player addressing this clone) arrived while it is putting things away to log out after its
+    /// own task ended: stop that deposit, stay online, take the order. A recall/budget/shutdown logout is never pre-empted.
+    /// True when a logout was pre-empted.
+    /// </summary>
+    public bool PreemptLogout(string why)
+    {
+        if (Volatile.Read(ref _logoutAbort) is not { } a) return false;
+        _log.LogInformation("clone {Name}: {Why}: pre-empting the logout deposit", Name, why);
+        try { a.Cancel(); } catch (ObjectDisposedException) { return false; }
+        return true;
+    }
+
     public async Task LogoutAsync(string reason, bool planned, TimeSpan? timeout = null)
     {
         if (Interlocked.Exchange(ref _loggingOut, 1) != 0) return;
@@ -518,8 +536,32 @@ public sealed class CloneHost : IHandoffTarget
             else
             {
                 using var dcts = new CancellationTokenSource(limit + TimeSpan.FromSeconds(5));
-                report = await new DepositProcedure(_body.Inventory, Claims, "hive_storage_" + Name, planned && _link is { IsOpen: true } ? this : null, _log)
-                    .RunAsync(limit, dcts.Token).ConfigureAwait(false);
+                // Only a logout that follows this clone's own finished task can be pre-empted by a new order (recall, budget and
+                // shutdown can't). Live 10-29: "420 is still stuck on its deposit job and won't take orders from me rn".
+                var abort = EndsTask(reason) ? new CancellationTokenSource() : null;
+                Volatile.Write(ref _logoutAbort, abort);
+                using var linked = abort == null ? null : CancellationTokenSource.CreateLinkedTokenSource(dcts.Token, abort.Token);
+                try
+                {
+                    report = await new DepositProcedure(_body.Inventory, Claims, "hive_storage_" + Name, planned && _link is { IsOpen: true } ? this : null, _log)
+                        .RunAsync(limit, (linked ?? dcts).Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (abort is { IsCancellationRequested: true })
+                {
+                    report = new DepositReport(false, DepositProcedure.CountOf(_body.Inventory.Items()), 0, "pre-empted by a new order");
+                }
+                finally { Volatile.Write(ref _logoutAbort, null); }
+                if (abort is { IsCancellationRequested: true })
+                {
+                    _log.LogInformation("clone {Name}: logout ({Reason}) pre-empted by a new order; staying online", Name, reason);
+                    LogoutReason = null;
+                    stayOnline = true;
+                    Volatile.Write(ref _loggingOut, 0); // online again before the order starts (StartTaskAsync skips while logging out)
+                    try { _body.StartAgent(_cts.Token); } catch (Exception ex) { _log.LogDebug(ex, "restart agent failed"); }
+                    if (_task is { } next) _ = StartTaskAsync(next, _cts.Token);
+                    return;
+                }
+                abort?.Dispose();
             }
             LastDeposit = report;
             _log.LogInformation("clone {Name}: deposit before logout: {Text}", Name, report.Text);

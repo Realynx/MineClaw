@@ -539,6 +539,8 @@ public sealed class BotHost : IDisposable
         IClaimBoard? claims = null, Func<IEnumerable<string>>? hiveBots = null)
     {
         var account = c.Options.Username;
+        // One body per work target (chop_tree's tree leases) on the same board as the chest/block leases.
+        if (claims != null) c.TargetClaims = claims;
         // An undone edit on a block another hive bot holds a lease on, or right next to another hive bot, is a race with it
         // (two bots on one tree crown), never evidence of spawn protection.
         if (claims != null || hiveBots != null)

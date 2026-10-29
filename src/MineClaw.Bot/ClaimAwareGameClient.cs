@@ -71,17 +71,99 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
         }
     }
 
-    private Task<ActionResult> Chest(BlockPos? p, Func<Task<ActionResult>> action, CancellationToken ct) =>
-        p is { } pos ? Held(ClaimKey.Chest(pos, inner.World.Dimension), action, ct) : action();
+    private async Task<ActionResult> Chest(BlockPos? p, Func<Task<ActionResult>> action, CancellationToken ct)
+    {
+        if (p is not { } pos) return await action().ConfigureAwait(false);
+        await ApproachAsync(pos, ct).ConfigureAwait(false);
+        return await Held(ClaimKey.Chest(pos, inner.World.Dimension), action, ct).ConfigureAwait(false);
+    }
 
-    private Task<ActionResult> Furnace(BlockPos? p, Func<Task<ActionResult>> action, CancellationToken ct) =>
-        p is { } pos ? Held(ClaimKey.Furnace(pos, inner.World.Dimension), action, ct) : action();
+    private async Task<ActionResult> Furnace(BlockPos? p, Func<Task<ActionResult>> action, CancellationToken ct)
+    {
+        if (p is not { } pos) return await action().ConfigureAwait(false);
+        await ApproachAsync(pos, ct).ConfigureAwait(false);
+        return await Held(ClaimKey.Furnace(pos, inner.World.Dimension), action, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The walk to a container happens BEFORE its lease: the lease covers only the open and the clicks (a few seconds), not a
+    /// minute of walking. Live 10-29: 20 bodies serialised on one log chest ("busy: maid_chan_111 is using chest") because each
+    /// held it from wherever it stood. A failed walk is the action's own business (it paths again and says why).
+    /// </summary>
+    private async Task ApproachAsync(BlockPos pos, CancellationToken ct)
+    {
+        var me = inner.World.Player.Position;
+        if (me.DistanceTo(pos.Center) <= 4.5) return;
+        try { await inner.GotoAsync(new GoalNear(pos.X, pos.Y, pos.Z, 3), null, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception) { /* the action reports it */ }
+    }
+
+    /// <summary>How many of our bodies may deposit into one chest at once (vanilla lets several players use one chest; the
+    /// server arbitrates the slots, each click is verified). More would only crowd the chest's standing spots.</summary>
+    public int DepositSlots { get; init; } = 4;
+
+    /// <summary>How long a deposit queues for a free slot (or for an exclusive user such as an organiser) before it reports busy.</summary>
+    public TimeSpan DepositWait { get; init; } = TimeSpan.FromSeconds(20);
+
+    /// <summary>How long a deposit waits for an exclusive holder of the chest (not another depositor).</summary>
+    public TimeSpan ExclusiveWait { get; init; } = TimeSpan.FromSeconds(3);
+
+    private static ClaimKey DepositSlot(BlockPos p, int dim, int i) => ClaimKey.Task($"deposit:{p.X},{p.Y},{p.Z}@{dim}#{i}");
+
+    /// <summary>
+    /// A deposit takes one of <see cref="DepositSlots"/> shared slot leases instead of the chest's exclusive one, so bodies
+    /// put things away side by side; it still waits for an exclusive user (withdraw/organise holds the chest key). Fair enough
+    /// for a crew: first free slot wins, a short poll, then one typed "busy" line so the store can try another chest or place one.
+    /// </summary>
+    private async Task<ActionResult> DepositHeld(BlockPos pos, Func<Task<ActionResult>> action, CancellationToken ct)
+    {
+        await ApproachAsync(pos, ct).ConfigureAwait(false);
+        int dim = inner.World.Dimension;
+        var chestKey = ClaimKey.Chest(pos, dim);
+        var start = DateTime.UtcNow;
+        var deadline = start + DepositWait;
+        string? lastHolder = null;
+        int seen = 0;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            // An exclusive user (an organiser, a withdraw) gets a short wait only: those leases are seconds now, and the store
+            // tries the next chest (or places one) rather than queueing behind something that isn't a deposit.
+            if (!claims.IsFree(chestKey) && DateTime.UtcNow - start >= ExclusiveWait) deadline = DateTime.UtcNow;
+            if (claims.IsFree(chestKey))
+                for (int i = 0; i < Math.Max(1, DepositSlots); i++)
+                {
+                    var key = DepositSlot(pos, dim, i);
+                    if (!claims.IsFree(key)) { lastHolder = claims.HolderOf(key) ?? lastHolder; continue; }
+                    var r = await claims.TryClaimAsync(key, Ttl, "deposit", ct).ConfigureAwait(false);
+                    if (!r.Ok)
+                    {
+                        if (r.Holder == null) { try { await claims.ReleaseAsync(key, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { } }
+                        else lastHolder = r.Holder;
+                        continue;
+                    }
+                    try { return await action().ConfigureAwait(false); }
+                    finally
+                    {
+                        try { await claims.ReleaseAsync(key, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { /* expires */ }
+                    }
+                }
+            else lastHolder = claims.HolderOf(chestKey) ?? lastHolder;
+            seen++;
+            if (DateTime.UtcNow >= deadline)
+                return ActionResult.Fail(claims.IsFree(chestKey)
+                    ? $"busy: chest {pos.X},{pos.Y},{pos.Z} has {DepositSlots} bodies depositing (last {lastHolder ?? "?"}); waited {(DateTime.UtcNow - start).TotalSeconds:0}s"
+                    : $"busy: {lastHolder ?? "another bot"} is using chest {pos.X},{pos.Y},{pos.Z}; waited {(DateTime.UtcNow - start).TotalSeconds:0}s");
+            await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(1000, 150 + 50 * seen)), ct).ConfigureAwait(false);
+        }
+    }
 
     // ---- claimed actions ----
     public Task<ActionResult> OpenContainerAsync(int x, int y, int z, CancellationToken ct = default) =>
         Chest(new BlockPos(x, y, z), () => inner.OpenContainerAsync(x, y, z, ct), ct);
     public Task<ActionResult> DepositAllAsync(BlockPos? container = null, Func<ItemStack, bool>? filter = null, CancellationToken ct = default) =>
-        Chest(container, () => inner.DepositAllAsync(container, filter, ct), ct);
+        container is { } pos ? DepositHeld(pos, () => inner.DepositAllAsync(container, filter, ct), ct) : inner.DepositAllAsync(container, filter, ct);
     public Task<ActionResult> WithdrawAsync(int itemId, int count, BlockPos? container = null, int? damage = null, CancellationToken ct = default) =>
         Chest(container, () => inner.WithdrawAsync(itemId, count, container, damage, ct), ct);
     public Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, BlockPos? furnace = null, CancellationToken ct = default) =>

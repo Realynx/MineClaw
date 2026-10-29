@@ -19,10 +19,20 @@
   def('canSpawn', (...a) => H.canSpawn(...a));
   /** near(kind, r=24) - nearest block/entity/remembered place of that name: {x,y,z,name,d} or null. */
   def('near', (kind, r) => H.near(kind, r));
-  /** find(query, {r:24, filter, limit:16}) - matches nearest first: blocks ('log', 'wheat'), mobs ('cow', 'hostile', 'mob'), players ('player' or a name), drops ('item'), else that remembered place; filter(t) keeps some (ripe: t => t.meta >= 7). -> [{x,y,z,name,d,kind,meta?}]. */
+  /** find(query, {r:24, filter, limit:16}) - matches nearest first: blocks ('log', 'wheat'), mobs ('cow', 'hostile', 'mob'), players ('player' or a name), drops ('item'), else that remembered place; filter(t) keeps some (ripe: t => t.meta >= 7). -> [{x,y,z,name,d,kind,meta?}]; none within r -> the empty list has .exhausted and .beyond (the nearest up to 64 away: widen with find(q, {r: larger})). */
   def('find', (query, o = {}) => {
-    const list = H.find(String(query), o.r, o.filter ? 64 : o.limit);
-    return o.filter ? list.filter(o.filter).slice(0, Math.max(1, o.limit ?? 16)) : list;
+    const q = String(query), r = o.r ?? 24;
+    let list = H.find(q, o.r, o.filter ? 64 : o.limit);
+    if (o.filter) list = list.filter(o.filter).slice(0, Math.max(1, o.limit ?? 16));
+    if (list.length === 0) {
+      // The work frontier: nothing left here, and where the nearest ones are, so expanding the area is one call.
+      let more = r < 64 ? H.find(q, 64, o.filter ? 64 : 8).filter(t => t.d > r) : [];
+      if (o.filter) more = more.filter(o.filter);
+      list.exhausted = true;
+      list.r = r;
+      list.beyond = more.slice(0, 3);
+    }
+    return list;
   });
   /** item(name) - this version's name and facts for an item/block {name, id, block, stack, craftable, version}, or null if it has none. */
   def('item', name => H.item(String(name)));

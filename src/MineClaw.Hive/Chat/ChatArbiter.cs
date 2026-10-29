@@ -63,6 +63,59 @@ public sealed class ChatArbiter
     /// a clone learns them from main's roster.</summary>
     public IReadOnlyList<string> Clones { get; private set; }
 
+    /// <summary>Subhive body → the hive whose process drives it (its brain hears the body's name). Main and hives keep their own.</summary>
+    private readonly Dictionary<string, string> _hosts = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// <paramref name="body"/> is a subhive body driven by <paramref name="host"/>'s brain (null = no longer): a line naming it
+    /// ("113 stop") belongs to that hive, never "another bot's" to nobody (live 10-29: 420's bodies weren't in any arbiter).
+    /// Learns the name as a clone account too.
+    /// </summary>
+    public void SetHost(string body, string? host)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return;
+        body = body.Trim();
+        lock (_lock)
+        {
+            if (host == null) _hosts.Remove(body);
+            else _hosts[body] = host.Trim();
+            if (!body.Equals(_main, StringComparison.OrdinalIgnoreCase) && !Clones.Contains(body, StringComparer.OrdinalIgnoreCase))
+            {
+                Clones = [.. Clones, body];
+                _hiveBots.Add(body);
+                Rebuild();
+            }
+        }
+        Changed?.Invoke();
+    }
+
+    /// <summary>Main: keeps the hosts in step with the ownership tree (every subhive body → its owner; main's own → main).</summary>
+    public void Follow(Hierarchy.HiveTree tree)
+    {
+        void Put(Hierarchy.HiveNode n)
+        {
+            if (n.Kind != Hierarchy.CloneKind.Subhive) return;
+            SetHost(n.Account, n.Owner.Equals(Hierarchy.HiveTree.Root, StringComparison.OrdinalIgnoreCase) ? _main : n.Owner);
+        }
+        foreach (var n in tree.All()) Put(n);
+        tree.NodePut += Put;
+        tree.NodeRemoved += a => { if (HostOf(a) != null) SetHost(a, null); };
+    }
+
+    /// <summary>The hive driving <paramref name="body"/>, or null when it isn't a hosted subhive body.</summary>
+    public string? HostOf(string body) { lock (_lock) return _hosts.GetValueOrDefault(body); }
+
+    // caller holds _lock: who answers a line naming bot n. A hosted body → its host (main relays when the host is unreachable);
+    // this bot itself → this bot (it is plainly online, whatever a stale roster says: live 10-29 420 ignored "420 come here");
+    // an offline clone → main.
+    private string Answerer(string n)
+    {
+        if (_hosts.TryGetValue(n, out var h))
+            return h.Equals(_self, StringComparison.OrdinalIgnoreCase) || h.Equals(_main, StringComparison.OrdinalIgnoreCase) || _live.Contains(h) ? h : _main;
+        if (n.Equals(_self, StringComparison.OrdinalIgnoreCase)) return n;
+        return IsCloneName(n) && !_live.Contains(n) ? _main : n;
+    }
+
     /// <summary>A newly allocated clone account (no-op when known). Rebuilds the address patterns and pushes the roster.</summary>
     public bool AddClone(string name)
     {
@@ -330,7 +383,7 @@ public sealed class ChatArbiter
             var named = AddressedBots(msg.Text, msg.Kind, out bool delegated);
             // A clone that isn't online can't answer: "69 bring me a water pail" while 69 is logged out is a request to main,
             // which spawns it or does it (live 3, 14:13:32: nobody answered until "maid 69?!").
-            named = named.Select(n => IsCloneName(n) && !_live.Contains(n) ? _main : n).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            named = named.Select(Answerer).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             // Two or more bots named in one line ("67 and 69, come here", "hey 67 ... and maid chan"): each named bot hears
             // it, main coordinates (it owns the line and splits the work; the named clones answer their own part).
             if (named.Count >= 2) return new(_main, true, true, named);
@@ -496,10 +549,14 @@ public sealed class ChatArbiter
         bool mine = string.Equals(owner, _self, StringComparison.OrdinalIgnoreCase);
         bool handle = mine && (isExplicit || locallyAddressed);
         if (handle) Accept(msg.Player, _self);
+        if (handle && isExplicit) { try { AddressedHere?.Invoke(msg); } catch (Exception) { } }
         else if (IsMain && isExplicit) Accept(msg.Player, owner); // main is the sticky authority (pushed to clones)
         if (IsMain && r.Group) lock (_lock) _groupHold[msg.Player] = _time.GetUtcNow() + GroupHold;
         return handle;
     }
+
+    /// <summary>A player named THIS bot (or a body it drives) and this bot takes the line: a direct order (pre-empts a logout).</summary>
+    public event Action<ChatMessage>? AddressedHere;
 
     /// <summary>How long after a group/multi-named line main ignores clones' chat_ok for that player (they all answered it).</summary>
     public static readonly TimeSpan GroupHold = TimeSpan.FromSeconds(5);

@@ -743,9 +743,50 @@ public sealed class HiveSupervisor : IAsyncDisposable
     /// Main's speech guard: a sentence reporting a clone's result while that clone's task is still pending is replaced by
     /// "still working" (the result is reportable only after its result event arrives). Null-safe; returns the text to say.
     /// </summary>
+    /// <summary>
+    /// Where main sees a clone right now: the player within a few blocks of it in main's own world ("PoofimaFox"), "" when it is
+    /// in view but near nobody, null when main can't see it. Wired by the host; null = nobody's whereabouts are confirmable.
+    /// </summary>
+    public Func<string, string?>? NearPlayer { get; set; }
+
+    private static readonly System.Text.RegularExpressions.Regex Whereabouts = new(
+        @"\b(?:is|'s|are|now|right)\b[^.!?]{0,24}?\b(?:next to|beside|by|near|with|behind)\s+(?:u|you|ya|ur|your|him|her|them|fox\w*|robin\w*|kiwi|poof\w*)\b|\b(?:is|'s)\s+(?:right\s+)?here\b|\b(?:arrived|got here|made it|is there|'s there|reached (?:u|you|him|her))\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Live 10-29: after "maid tell 420 to come here" main said "420 is right next to u now foxy~" with no order sent and no
+    /// result back (420 was in a pool). A sentence placing a live clone next to someone, here or arrived passes only when main
+    /// sees that clone beside a player; otherwise the claim becomes what is true: told it (an order went out this turn) or not
+    /// with them yet.
+    /// </summary>
+    internal string GuardWhereabouts(string text)
+    {
+        if (text.Length == 0 || !Whereabouts.IsMatch(text)) return text;
+        var live = _slots.Values.Where(s => s.IsLive || s.State is CloneState.Starting).ToList();
+        if (live.Count == 0) return text;
+        var turn = MineClaw.Agent.TurnContext.Current;
+        var parts = System.Text.RegularExpressions.Regex.Split(text, @"(?<=[.!?~])\s+").Select(s =>
+        {
+            if (!Whereabouts.IsMatch(s)) return s;
+            foreach (var slot in live)
+            {
+                var who = new System.Text.RegularExpressions.Regex(@"(?<![A-Za-z0-9_])(?:" + System.Text.RegularExpressions.Regex.Escape(slot.Number) + "|" +
+                    System.Text.RegularExpressions.Regex.Escape(slot.Name) + @")(?![A-Za-z0-9_])", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (!who.IsMatch(s)) continue;
+                if (NearPlayer?.Invoke(slot.Name) is { Length: > 0 }) return s; // main sees it beside a player: true
+                bool toldNow = turn != null && ReferenceEquals(slot.AssignedTurn, turn);
+                _log.LogInformation("hive: dropped an unconfirmed whereabouts claim about {Clone}: {Text}", slot.Number, s.Trim());
+                return toldNow ? $"told {slot.Number} to come, I'll say when it's there." : $"{slot.Number} isn't with you yet.";
+            }
+            return s;
+        });
+        return string.Join(" ", parts.Where(p => p.Length > 0)).Trim();
+    }
+
     public string GuardSpeech(string text)
     {
         text = GuardArrivals(text ?? "");
+        text = GuardWhereabouts(text);
         var pending = _slots.Values.Where(s => s.Pending).ToList();
         if (pending.Count == 0 || string.IsNullOrWhiteSpace(text)) return text;
         var refs = pending.SelectMany(s => new[] { s.Number, s.Name }).Concat(["clone", "clones", "the other maid", "my sister", "lil me"]);

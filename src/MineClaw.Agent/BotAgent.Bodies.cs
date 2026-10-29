@@ -42,7 +42,14 @@ public sealed partial class BotAgent
     private List<Planned> PlanAll(LlmToolUse u, ModelTier tier, bool retry, bool stopping, ICollection<string> sigs)
     {
         var dir = ActiveBodies;
-        if (dir == null || tier != ModelTier.Main) return [Plan(u, tier, retry, stopping, sigs)];
+        if (dir == null || tier != ModelTier.Main)
+        {
+            // A body this brain doesn't drive (another hive's, a clone process): never run the call on our own body instead.
+            // Live 10-29: main's goto{body:"420"} walked main, and main then told Fox "420 is right next to u now".
+            if (tier == ModelTier.Main && BodySpec(u.Input) is { } lone && NotMine(lone) is { } who)
+                return [new Planned { Use = u, Result = ToolResult.Error(ForeignBodyError(who)) }];
+            return [Plan(u, tier, retry, stopping, sigs)];
+        }
         var spec = BodySpec(u.Input);
         var input = WithoutBody(u.Input);
         if (spec == null && !RoutesToBody(u.Name)) return [Plan(u with { Input = input }, tier, retry, stopping, sigs)];
@@ -73,6 +80,30 @@ public sealed partial class BotAgent
         }
         if (plans.Count > 1 && groups.Count == 1) _log.LogInformation("bodies: {Tool} on {Bodies}", u.Name, string.Join(", ", plans.Select(p => p.Body)));
         return plans;
+    }
+
+    /// <summary>The error for a call naming a body this brain doesn't drive: how to reach it, and to report only confirmed results.</summary>
+    internal static string ForeignBodyError(string who) =>
+        $"not done: {who} isn't a body I drive (nothing moved). Give it the order with hive op=handover name={who} task=\"...\"; " +
+        $"tell the player only that you told {who}, then what its result confirms";
+
+    /// <summary>The first name in a <c>body</c> value that isn't this bot (main, me, all/any, its login or number), else null.</summary>
+    private string? NotMine(JsonElement spec)
+    {
+        var names = spec.ValueKind == JsonValueKind.Array
+            ? spec.EnumerateArray().Select(x => x.ValueKind == JsonValueKind.String ? x.GetString() : x.GetRawText())
+            : [spec.ValueKind == JsonValueKind.String ? spec.GetString() : spec.GetRawText()];
+        var me = _chat.Username ?? "";
+        var myNumber = System.Text.RegularExpressions.Regex.Match(me, @"(\d+)$") is { Success: true } m ? m.Groups[1].Value : null;
+        foreach (var raw in names)
+        {
+            var n = raw?.Trim().Trim('"') ?? "";
+            if (n.Length == 0 || n is "main" or "me" or "self" or "all" or "any" or "focus") continue;
+            if (n.Equals(me, StringComparison.OrdinalIgnoreCase) || n == myNumber
+                || NameWords().Any(w => !string.IsNullOrWhiteSpace(w) && n.Equals(w, StringComparison.OrdinalIgnoreCase))) continue;
+            return n;
+        }
+        return null;
     }
 
     /// <summary><c>see</c> on another body looks through its eyes (its <c>focus</c>), unless the call names a focus itself.</summary>

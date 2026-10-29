@@ -99,6 +99,14 @@ public sealed class MainHive : IAsyncDisposable
         _supervisor.Donor = (Receiver)_supervisor.Handoff; // a clone short of a tool gets main's spare (live 3, 14:16:58)
         // Besides the tab list: a clone name spawned near main as a player (0x14) is on the server too (someone else's login).
         _supervisor.SeenOnServer = name => client.World.Entities.FindPlayer(name) != null;
+        // Whereabouts main may state: the clone in main's own view within 6 blocks of a player (never a guess).
+        _supervisor.NearPlayer = name =>
+        {
+            if (client.World.Entities.FindPlayer(name) is not { } e) return null;
+            var near = client.World.Entities.Nearby(e.Position, 6, x => x.Kind == MineClaw.World.EntityKind.Player && x.Name != null
+                && !x.Name.Equals(name, StringComparison.OrdinalIgnoreCase) && !Arbiter.IsHiveBot(x.Name), 1).FirstOrDefault();
+            return near?.Name ?? "";
+        };
         // Hive vision: main sees anywhere (clones' snapshots + claims; "send me your view" over IPC; the shared world memory).
         if (bot.Vision?.Hub is { } hub) hub.Hive = new HiveVisionSource(() => _supervisor, Board);
         _supervisor.Notice += e => rt.Events.Post(e);
@@ -136,6 +144,8 @@ public sealed class MainHive : IAsyncDisposable
         // Dynamic accounts, the ownership tree, the off-channel bus, shared-memory writes and the chat budget (new file).
         Hierarchy = HiveHierarchyWiring.Attach(_cfg, _main, _supervisor, bot, client, agent, regulars, _log);
         SubhiveWiring.AttachMain(Hierarchy, subhives, _cfg, _log); // main's own subhive bodies, hive-hosted ones, the resource ceiling
+        // "113 stop" names a body 420's brain drives: the line is 420's (main stays out unless 420 is unreachable).
+        Arbiter.Follow(Hierarchy.Tree);
         HiveTools.RegisterMain(rt.Tools, _supervisor, agent.Llm, Hierarchy);
         // Crew builds: idle clones (or the ones the brain names) build lanes of a design as hive jobs (build{bp, lane}).
         if (bot.Blueprints?.Service is { } blueprints) blueprints.Jobs = new HiveBuildJobs(_supervisor, _cfg.Clones());

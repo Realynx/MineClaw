@@ -57,6 +57,10 @@ public sealed class CombatEngine
         public int Swings, Hits, Unconfirmed, DamageTaken, HitsReceived, Knockbacks, GuardInterventions, Kills, TargetHits;
         /// <summary>Not a fight: a short move into cover from a ranged mob the bot can't reach.</summary>
         public bool Cover;
+        /// <summary>Cover from an archer it can't beat: held until hidden for a while or out of its range, not just one tick unseen.</summary>
+        public bool Outmatched;
+        /// <summary>Tick since which the archer hasn't seen the bot (cover holding), or -1.</summary>
+        public long HiddenSince = -1;
         /// <summary>The reflex gave up on this target (it can't be reached): remembered so it doesn't re-trigger.</summary>
         public bool GaveUp;
         public double PrevDist = double.MaxValue, BestDist = double.MaxValue;
@@ -284,12 +288,22 @@ public sealed class CombatEngine
             {
                 // 1.9+: a melee fight it would lose (bare hands vs a zombie: 2 dps against 20 hp while taking 3/s) is not started:
                 // box in with the blocks on hand instead (live 10-29 02:07, clone 69: "fight started: zombie", slain 3 s later).
-                if (!found.Cover && MayBoxInstead(found.Why) && Outmatched(phys, found.E) is { } why && CanBoxIn is { } can && SafeAsk(can, MeleeThreats(phys.Position).Count))
+                string? lost = !found.Cover && MayBoxInstead(found.Why) ? Outmatched(phys, found.E) : null;
+                bool archer = CombatRules.ProfileOf(found.E).Tactic == MobTactic.Ranged;
+                if (lost is { } why && archer && CombatGeometry.HasLineOfSight(_w, Eye(found.E), phys.EyePosition))
+                {
+                    // 1.12.2, live 10-29: bodies with bare hands traded blows with skeletons in tree shade and were shot dead (102,
+                    // 117). An archer it can't beat: out of its sight (cover, else away), held until it has lost us.
+                    ctx.Abort = StartFight(FightKind.Mob, found.E, $"taking cover: can't win ({why})", phys, explicitDone: null);
+                    _fight!.Cover = true;
+                    _fight.Outmatched = true;
+                }
+                else if (lost is { } why2 && CanBoxIn is { } can && SafeAsk(can, MeleeThreats(phys.Position).Count))
                 {
                     Sheltering = true;
                     ctx.Shelter = true;
                     ctx.Abort = true;
-                    Raise(CombatEventKind.Critical, $"{found.E.DisplayName} {found.E.Position.DistanceTo(phys.Position):0}m away and I can't win ({why}): boxing in");
+                    Raise(CombatEventKind.Critical, $"{found.E.DisplayName} {found.E.Position.DistanceTo(phys.Position):0}m away and I can't win ({why2}): boxing in");
                 }
                 else
                 {
@@ -493,20 +507,51 @@ public sealed class CombatEngine
     private (double Kill, double Die, string Text)? Estimate(PhysicsState phys, Entity target)
     {
         if (Rules.AttackCooldownTicks(0) <= 0) return null;
-        if (CombatRules.ProfileOf(target).Tactic != MobTactic.Melee || !CombatRules.IsThreat(target)) return null;
+        var tactic = CombatRules.ProfileOf(target).Tactic;
+        bool ranged = tactic == MobTactic.Ranged;
+        if (tactic != MobTactic.Melee && !ranged || !CombatRules.IsThreat(target)) return null;
         var pick = WeaponChoice.Best(_w.Inventory.PlayerSlots(), Reserved(), Options.NeverWield, Rules);
         if (WeaponChoice.Dps(pick.ItemId, Rules) is not { } dps || dps <= 0) return null;
+        // An archer strafes and backs off (1.12.2 EntityAIAttackRangedBow): at best about one landed swing a second, after the walk in.
+        if (ranged) dps = Math.Min(dps, Rules.ChargedDamage(Math.Max(0, pick.ItemId), 1f) * RangedHitsPerSecond);
         var mobs = MeleeThreats(phys.Position);
         if (!mobs.Any(m => m.Id == target.Id)) mobs.Add(target);
         int diff = Difficulty?.Invoke() ?? 2;
         // The target is knocked back by every charged hit and must walk in again: it lands about 0.6 of its hits.
-        double incoming = mobs.Sum(m => CombatRules.MonsterDamageToPlayer(CombatRules.MeleeDamageOf(m), diff) * (m.Id == target.Id ? KnockedBackHitShare : 1.0));
+        double incoming = mobs.Where(m => CombatRules.ProfileOf(m).Tactic != MobTactic.Ranged)
+            .Sum(m => CombatRules.MonsterDamageToPlayer(CombatRules.MeleeDamageOf(m), diff) * (m.Id == target.Id ? KnockedBackHitShare : 1.0));
+        // Archers in sight within their 15-block range: a shield in the off hand takes most arrows.
+        var archers = _w.Entities.Nearby(phys.Position, 16, e => CombatRules.IsThreat(e) && CombatRules.ProfileOf(e).Tactic == MobTactic.Ranged
+            && (e.Id == target.Id || CombatGeometry.HasLineOfSight(_w, Eye(e), phys.EyePosition))).ToList();
+        if (ranged && !archers.Any(a => a.Id == target.Id)) archers.Add(target);
+        incoming += archers.Count * ArrowDps(diff) * (CanBlockNow() ? ShieldArrowShare : 1.0);
         if (incoming <= 0) return null;
         double health = mobs.Sum(m => m.Health is float h and > 0 ? h : CombatRules.ProfileOf(m).MaxHealth);
-        double kill = health / dps, die = Math.Max(0, _w.Player.Health - 1) / incoming;
+        double walk = ranged ? Math.Max(0, Horizontal(phys.Position, target.Position) - Options.Reach) / RangedApproachSpeed : 0;
+        double kill = health / dps + walk, die = Math.Max(0, _w.Player.Health - 1) / incoming;
         string weapon = pick.ItemId > 0 ? Items.Get(pick.ItemId).Name.Replace('_', ' ') : "bare hands";
         return (kill, die, $"{weapon} {dps:0.#} dmg/s vs {mobs.Count} mob{(mobs.Count > 1 ? "s" : "")} with {health:0} hp, taking {incoming:0.#}/s at hp {_w.Player.Health}");
     }
+
+    /// <summary>Beyond this an archer stops shooting (its 15-block attack range, plus a margin).</summary>
+    public const double OutOfArcherRange = 18;
+    /// <summary>Unseen this long, the archer has lost the bot (cover holds).</summary>
+    public const int HiddenHoldTicks = 40;
+    /// <summary>Longest an outmatched cover lasts before the job resumes.</summary>
+    public const int OutmatchedCoverMaxTicks = 400;
+
+    /// <summary>Landed swings per second on a strafing archer, at most.</summary>
+    public const double RangedHitsPerSecond = 1.0;
+    /// <summary>Closing speed on an archer (sprinting zig-zag, m/s).</summary>
+    public const double RangedApproachSpeed = 4.5;
+    /// <summary>Arrows that still hurt with a shield raised toward the archer.</summary>
+    public const double ShieldArrowShare = 0.35;
+
+    /// <summary>
+    /// One skeleton's arrow damage per second: 1.12.2 AbstractSkeleton.setCombatTask attacks every 40 ticks (20 on hard), an arrow at
+    /// velocity 1.6 does about 3-4 (EntityArrow: ceil(velocity × 2)), and about 3 in 4 hit a target that isn't hiding.
+    /// </summary>
+    public static double ArrowDps(int difficulty) => difficulty >= 3 ? 3.5 * 0.75 : 3.5 * 0.75 / 2;
 
     /// <summary>Share of its attacks a melee target lands while our charged hits knock it back (it walks in again each time).</summary>
     public const double KnockedBackHitShare = 0.6;
@@ -576,7 +621,8 @@ public sealed class CombatEngine
                 else if (ranged && (provoked || CombatGeometry.HasLineOfSight(_w, phys.EyePosition, Eye(e))))
                 {
                     // Live 10-28 night: skeletons at 4-11 m on ledges/across gaps held every bot "busy" with 0 hits.
-                    if (d <= Options.SkeletonEngageRange && approachable) why = provoked ? "it attacked" : "skeleton in sight";
+                    // Shot from within its range by one it can walk to: close in (an unwinnable one turns into cover in Tick).
+                    if ((d <= Options.SkeletonEngageRange || provoked && d <= OutOfArcherRange - 2) && approachable) why = provoked ? "it attacked" : "skeleton in sight";
                     else if (provoked && _w.Player.Health <= Options.CoverHealth) { why = "taking cover"; cover = true; }
                 }
                 else if (creeperDanger) why = CombatRules.IsCreeperFusing(e) ? "creeper fusing" : "creeper close";
@@ -758,6 +804,19 @@ public sealed class CombatEngine
         Sample(f, phys, target);
 
         // ---- 1.9+ fight-or-flight: a reflex melee fight that turned out unwinnable (more mobs, hp lost) boxes in while it still can
+        // An archer fight that turned out unwinnable (hp lost, a second archer): break off into cover, never trade arrows for nothing.
+        if (!f.Explicit && f.FleeStart < 0 && prof.Tactic == MobTactic.Ranged && _tick - f.OutmatchCheck >= 10 && MayBoxInstead(f.Reason))
+        {
+            f.OutmatchCheck = _tick;
+            if (Outmatched(phys, target) is { } why && CombatGeometry.HasLineOfSight(_w, Eye(target), phys.EyePosition))
+            {
+                f.Cover = true;
+                f.Outmatched = true;
+                f.Stance = null;
+                Raise(CombatEventKind.Critical, $"can't win against {f.TargetName} at hp {_w.Player.Health} ({why}): taking cover");
+                return CoverTick(f, phys, target, ctx);
+            }
+        }
         if (!f.Explicit && f.FleeStart < 0 && prof.Tactic == MobTactic.Melee && _tick - f.OutmatchCheck >= 10 && MayBoxInstead(f.Reason))
         {
             f.OutmatchCheck = _tick;
@@ -881,6 +940,9 @@ public sealed class CombatEngine
 
         var input = moveTo is { } m ? CombatGeometry.SteerTo(me, m, look.Yaw, look.Pitch) : look;
         if (jump) input = input with { Jump = true };
+        // Closing on an archer: sprint the zig-zag (fewer arrows on the way in); never with the void behind or while blocking.
+        if (prof.Tactic == MobTactic.Ranged && moveTo is not null && !edgeBehind && !ctx.Block && _w.Player.Food > 6 && dist > Options.Reach + 1)
+            input = input with { Sprint = true };
         return ctx.Block ? Slow(input) : input;
     }
 
@@ -891,6 +953,28 @@ public sealed class CombatEngine
         var me = phys.Position;
         var look = FaceAt(phys, target);
         bool seen = CombatGeometry.HasLineOfSight(_w, Eye(target), phys.EyePosition);
+        if (f.Outmatched)
+        {
+            // An archer it can't beat: stay hidden until it has lost us (2 s unseen) or we are out of its range; a shield faces it
+            // while exposed; keep moving away from it when there's no cover.
+            double far = Horizontal(me, target.Position);
+            if (!seen) { if (f.HiddenSince < 0) f.HiddenSince = _tick; } else f.HiddenSince = -1;
+            if (far > OutOfArcherRange || f.HiddenSince >= 0 && _tick - f.HiddenSince >= HiddenHoldTicks)
+            {
+                EndFight(f, $"took cover from {f.TargetName} ({(far > OutOfArcherRange ? "out of its range" : "out of its sight")})", phys, ctx);
+                return Hold(phys);
+            }
+            if (_tick - f.StartTick > OutmatchedCoverMaxTicks) { EndFight(f, $"kept away from {f.TargetName}", phys, ctx); return Hold(phys); }
+            if (!seen) return Hold(phys) with { Yaw = look.Yaw, Pitch = look.Pitch };
+            if (f.Stance is null || _tick > f.StanceUntil)
+            {
+                f.Stance = CombatGeometry.CoverCell(_w, me, Eye(target)) ?? CombatGeometry.RetreatCell(_w, me, [target.Position], 8, 10);
+                f.StanceUntil = _tick + 20;
+            }
+            var go = f.Stance is { } st ? MoveOrHold(phys, st, look, sneak: false) : look;
+            if (Options.Block && CanBlockNow(target)) { ctx.Block = true; return Slow(go); }
+            return go with { Sprint = f.Stance is not null && _w.Player.Food > 6 };
+        }
         if (!seen) { EndFight(f, $"took cover from {f.TargetName}", phys, ctx); return Hold(phys); }
         if (_tick - f.StartTick > Options.CoverMaxTicks) { EndFight(f, $"no cover from {f.TargetName} nearby, kept working", phys, ctx); return Hold(phys); }
         if (f.Stance is null || _tick > f.StanceUntil)
@@ -903,6 +987,7 @@ public sealed class CombatEngine
             EndFight(f, $"no cover from {f.TargetName} nearby, kept working", phys, ctx);
             return Hold(phys);
         }
+        if (Options.Block && CanBlockNow(target)) { ctx.Block = true; return Slow(MoveOrHold(phys, c, look, sneak: false)); }
         return MoveOrHold(phys, c, look, sneak: false);
     }
 

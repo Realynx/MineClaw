@@ -31,7 +31,16 @@ public sealed class FakePort : IInventoryPort
     /// <summary>An item picked up (e.g. main's hand-off toss).</summary>
     public void Add(ItemMsg item) { lock (_lock) Stacks.Add(item); }
 
-    public Task<ActionResult> DepositToAsync(BlockPos chest, CancellationToken ct)
+    /// <summary>Each deposit first waits this long (a contended chest, a long walk); cancellable like the real one.</summary>
+    public TimeSpan DepositDelay { get; set; }
+
+    public async Task<ActionResult> DepositToAsync(BlockPos chest, CancellationToken ct)
+    {
+        if (DepositDelay > TimeSpan.Zero) await Task.Delay(DepositDelay, ct).ConfigureAwait(false);
+        return await DepositNow(chest).ConfigureAwait(false);
+    }
+
+    private Task<ActionResult> DepositNow(BlockPos chest)
     {
         lock (_lock)
         {

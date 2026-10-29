@@ -88,11 +88,15 @@
     }
     return { ok: total >= n, n: total, msg: total >= n ? `${total}/${n}` : `${total}/${n}: ${why}` };
   });
-  /** forEach(targets, fn, {order:'nearest', budget}) - fn(t, i) per target (find() results, positions, places), nearest to you next (order:'given' keeps it); at most budget calls; 'stop' ends. -> {ok, n: done, failed, msg}. */
+  /** forEach(targets, fn, {order:'nearest', budget, claim:true}) - fn(t, i) per target (find() results, positions, places), nearest to you next (order:'given' keeps it); each target is leased while fn runs, one leased by another body is skipped; at most budget calls; 'stop' ends. -> {ok, n: done, failed, taken, msg}; nothing left -> exhausted:true, beyond (from find). */
   def('forEach', (targets, f, o = {}) => {
     const list = Array.isArray(targets) ? targets.slice() : targets == null ? [] : [targets];
     const budget = Math.max(0, Math.floor(o.budget ?? list.length));
-    let n = 0, bad = 0, tried = 0, last = '';
+    let n = 0, bad = 0, tried = 0, taken = 0, last = '';
+    const lease = t => {
+      const p = o.claim === false ? null : at(t);
+      return p ? `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}` : null;
+    };
     while (list.length > 0 && tried < budget) {
       let k = 0;
       if (o.order !== 'given') {
@@ -105,11 +109,29 @@
         });
       }
       const t = list.splice(k, 1)[0];
-      const r = f(t, ++tried);
+      // One body per target: a sibling running the same job already works this one, so take the next (never follow it).
+      const key = lease(t);
+      if (key && !H.claimTarget(key, o.lease ?? 300)) { taken++; continue; }
+      let r, kept = false;
+      try {
+        r = f(t, ++tried);
+        // Done: it stays marked for a while so a sibling with an older list skips it too; failed: free for another body at once.
+        if (key && !failed(r) && r !== 'stop') kept = H.claimTarget(key, o.doneLease ?? 600);
+      } finally { if (key && !kept) H.releaseTarget(key); }
       if (r === 'stop') break;
       if (failed(r)) { bad++; if (isObj(r) && r.msg) last = r.msg; } else n++;
     }
-    return { ok: n > 0 || tried === 0, n, failed: bad, msg: `${n}/${tried} done` + (bad ? `, ${bad} failed (last: ${last || 'false'})` : '') };
+    const res = { ok: n > 0 || (tried === 0 && taken === 0), n, failed: bad, taken,
+      msg: `${n}/${tried} done` + (bad ? `, ${bad} failed (last: ${last || 'false'})` : '') + (taken ? `, ${taken} taken by other bodies` : '') };
+    if (tried === 0) {
+      // The work frontier, typed: nothing here was left for this body; where the nearest remaining ones are (find's beyond).
+      const beyond = Array.isArray(targets) && Array.isArray(targets.beyond) ? targets.beyond : [];
+      res.exhausted = true;
+      res.beyond = beyond;
+      res.msg = 'exhausted: ' + (taken ? `all ${taken} targets taken by other bodies` : 'no targets')
+        + (beyond.length ? '; nearest beyond: ' + beyond.map(b => `${b.name || ''} ${b.x},${b.y},${b.z}${b.d != null ? ` (${b.d} m)` : ''}`.trim()).join(', ') : '');
+    }
+    return res;
   });
   /** ensure(what) - ensure('pickaxe') / ensure(['pickaxe','food']): have one (any tier), else acquire it (chests, hive, craft, bootstrap) or fail; -> names held. */
   def('ensure', what => {

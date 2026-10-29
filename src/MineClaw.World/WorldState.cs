@@ -214,21 +214,27 @@ public sealed class WorldState : IBlockAccess, IDisposable
     /// </summary>
     public IBlockAccess PlanningView => _planning ??= new RememberedView(this);
 
+    /// <summary>Live here, else live in another body's view of the same <see cref="ChunkStore"/> (the crew's combined sight:
+    /// live 10-29 a hive brain's own body saw 1 tree where its 20 bodies stood among dozens), else remembered.</summary>
     private sealed class RememberedView(WorldState w) : IBlockAccess
     {
+        private ChunkColumn? Crew(int x, int z) => w._store?.Peek(w.Dimension, x >> 4, z >> 4);
+
         public int GetBlock(int x, int y, int z)
         {
             if (w.IsLoaded(x, z)) return w.GetBlock(x, y, z);
+            if ((uint)y < w.WorldHeight && Crew(x, z) is { } c) return c.GetBlock(x & 15, y, z & 15);
             return w._remembered.TryGetValue(Key(x >> 4, z >> 4), out var r) ? r.GetBlock(x & 15, y, z & 15) : 0;
         }
 
         public int GetMeta(int x, int y, int z)
         {
             if (w.IsLoaded(x, z)) return w.GetMeta(x, y, z);
+            if ((uint)y < w.WorldHeight && Crew(x, z) is { } c) return c.GetMeta(x & 15, y, z & 15);
             return w._remembered.TryGetValue(Key(x >> 4, z >> 4), out var r) ? r.GetMeta(x & 15, y, z & 15) : 0;
         }
 
-        public bool IsLoaded(int x, int z) => w.IsLoaded(x, z) || w._remembered.ContainsKey(Key(x >> 4, z >> 4));
+        public bool IsLoaded(int x, int z) => w.IsLoaded(x, z) || Crew(x, z) != null || w._remembered.ContainsKey(Key(x >> 4, z >> 4));
 
         public BlockInfo Info(int id) => w.Info(id);
 

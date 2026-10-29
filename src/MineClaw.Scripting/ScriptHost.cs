@@ -130,6 +130,11 @@ public sealed class ScriptHost
     public string? Body { get; set; }
     /// <summary>Several bodies (in-process lanes or hive clones): <c>body()</c>, <c>parallel()</c>, <c>spawn()</c>, <c>crew.*</c>. Null = one body.</summary>
     public Crew.ICrewPort? Crew { get; set; }
+    /// <summary>
+    /// The hive's shared lease board as this body sees it (null = a single bot: every target is free). <c>forEach</c> leases each
+    /// target it works on (one body per tree, ore, crop...) so siblings running the same job pick different ones.
+    /// </summary>
+    public Func<MineClaw.World.Claims.IClaimBoard?>? Claims { get; set; }
     /// <summary>Durable checkpoint snapshots (cp carry, machine state), so a restart resumes where it was. Null = memory only.</summary>
     public IScriptCheckpointStore? Checkpoints { get; init; }
     /// <summary>The saved tunables of a script (merged under the run's own params by <c>params({...})</c>), or null.</summary>

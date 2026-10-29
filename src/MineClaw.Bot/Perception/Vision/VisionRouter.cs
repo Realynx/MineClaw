@@ -123,9 +123,15 @@ public static partial class VisionRouter
                 parts.Add(Portal(w, roles, f, radius));
                 break;
             case VisionIntent.Things:
-                parts.Add(Things(w, f, Math.Max(radius, 12), question));
-                if (entities != null && Drops(entities, f, radius) is { } d) parts.Add(d);
-                break;
+                {
+                    // The area the question names ("within 64 of 152,63,288"), else around the focus. Live 10-29: "trees within 64
+                    // of log_chest" was answered "1 grown tree" from a 12-block scan around the asking body; the hive brain told
+                    // its 20 bodies the forest was gone while dozens of trees stood.
+                    var (c, ar) = AskedArea(question, f, Math.Max(radius, 12));
+                    parts.Add(Things(w, c, ar, question));
+                    if (entities != null && Drops(entities, f, radius) is { } d) parts.Add(d);
+                    break;
+                }
             case VisionIntent.Drops:
                 parts.Add(entities == null ? "drops: not tracked here" : Drops(entities, f, radius) ?? $"no drops within {radius + 4} blocks");
                 if (entities != null && Mobs(entities, f, radius) is { } mobs) parts.Add(mobs);
@@ -186,6 +192,19 @@ public static partial class VisionRouter
     }
 
     // ------------------------------------------------------------------ sections
+
+    /// <summary>"N 5, E 8, S 6, W 4": how many of <paramref name="cs"/> lie on each side of <paramref name="f"/> (north = -z).</summary>
+    internal static string Sides(IEnumerable<(int X, int Y, int Z)> cs, (int X, int Y, int Z) f)
+    {
+        int n = 0, e = 0, s = 0, wst = 0;
+        foreach (var c in cs)
+        {
+            int dx = c.X - f.X, dz = c.Z - f.Z;
+            if (Math.Abs(dx) >= Math.Abs(dz)) { if (dx >= 0) e++; else wst++; }
+            else if (dz < 0) n++; else s++;
+        }
+        return string.Join(", ", new[] { ("N", n), ("E", e), ("S", s), ("W", wst) }.Where(t => t.Item2 > 0).Select(t => $"{t.Item1} {t.Item2}"));
+    }
 
     private static string P((int X, int Y, int Z) c) => string.Create(CultureInfo.InvariantCulture, $"{c.X},{c.Y},{c.Z}");
 
@@ -367,6 +386,35 @@ public static partial class VisionRouter
         return sb.ToString();
     }
 
+    /// <summary>Widest area a Things question scans (a body's own view distance 4 = 64 blocks; the crew's view is wider).</summary>
+    public const int MaxThingsRadius = 64;
+
+    [GeneratedRegex(@"\b(?:within|in|inside|radius(?: of)?|up to)\s+(\d{1,3})\b|\b(\d{1,3})\s*(?:blocks?|m)\b", RegexOptions.IgnoreCase)]
+    private static partial Regex RadiusRx();
+
+    [GeneratedRegex(@"(-?\d{1,7})\s*,\s*(-?\d{1,3})\s*,\s*(-?\d{1,7})")]
+    private static partial Regex CoordRx();
+
+    /// <summary>The centre and radius a question names ("within 64 of 152,63,288", "trees in 40 blocks"), else the focus and
+    /// <paramref name="radius"/>. The radius is capped at <see cref="MaxThingsRadius"/>.</summary>
+    public static ((int X, int Y, int Z) Center, int Radius) AskedArea(string? question, (int X, int Y, int Z) focus, int radius)
+    {
+        var q = question ?? "";
+        var c = focus;
+        if (CoordRx().Match(q) is { Success: true } cm
+            && int.TryParse(cm.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var x)
+            && int.TryParse(cm.Groups[2].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var y)
+            && int.TryParse(cm.Groups[3].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var z))
+            c = (x, y, z);
+        int r = radius;
+        // Coordinates removed first so "152,63,288" never reads as a radius.
+        if (RadiusRx().Match(CoordRx().Replace(q, " ")) is { Success: true } rm
+            && int.TryParse(rm.Groups[1].Success ? rm.Groups[1].Value : rm.Groups[2].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var asked)
+            && asked > 0)
+            r = Math.Max(radius, asked);
+        return (c, Math.Clamp(r, 1, MaxThingsRadius));
+    }
+
     /// <summary>Trees (TreeScan: logs, leaves, soil), saplings, crops, chests, doors, stations and ores near the focus.</summary>
     private static string Things(IBlockAccess w, (int X, int Y, int Z) f, int r, string question)
     {
@@ -379,7 +427,9 @@ public static partial class VisionRouter
         var farmland = new List<(int X, int Y, int Z)>();
         var named = new Dictionary<string, List<(int X, int Y, int Z)>>();
         void Add(string k, (int, int, int) p) { if (!named.TryGetValue(k, out var l)) named[k] = l = new(); l.Add(p); }
-        for (int y = Math.Max(0, f.Y - 8), y1 = Math.Min(w.WorldHeight - 1, f.Y + 12); y <= y1; y++)
+        // A wide area spans hills and valleys (1.12.2 terrain): a taller band than a 12-block look.
+        int below = r > 12 ? 20 : 8, above = r > 12 ? 28 : 12;
+        for (int y = Math.Max(0, f.Y - below), y1 = Math.Min(w.WorldHeight - 1, f.Y + above); y <= y1; y++)
             for (int z = f.Z - r; z <= f.Z + r; z++)
                 for (int x = f.X - r; x <= f.X + r; x++)
                 {
@@ -387,7 +437,7 @@ public static partial class VisionRouter
                     switch (id)
                     {
                         case 0: continue;
-                        case Blocks.Log: logs.Add(new BlockPos(x, y, z)); break;
+                        case Blocks.Log or Wood.Log2: logs.Add(new BlockPos(x, y, z)); break;
                         case Blocks.Sapling: saplings.Add((x, y, z)); break;
                         case Blocks.Crops: crops.Add((x, y, z, w.GetMeta(x, y, z))); break;
                         case Blocks.Farmland: if (w.GetBlock(x, y + 1, z) == 0) farmland.Add((x, y, z)); break;
@@ -431,7 +481,7 @@ public static partial class VisionRouter
                           + string.Join("; ", ours.Take(3).Select(t => $"{t.WoodName} {P(T(t.Base))} {t.Logs.Count} logs left")));
             parts.Add(grown.Count == 0 ? $"no grown tree within {r}"
                 : $"{grown.Count} grown tree{(grown.Count == 1 ? "" : "s")}: " + string.Join("; ", grown.Take(4).Select(t => $"{t.WoodName} {P(T(t.Base))} {t.Logs.Count} logs {t.Leaves.Count} leaves"))
-                  + (grown.Count > 4 ? $" +{grown.Count - 4}" : ""));
+                  + (grown.Count > 4 ? $" +{grown.Count - 4} ({Sides(grown.Select(t => T(t.Base)), f)})" : ""));
             if (bare.Count > 0) parts.Add("log columns without a crown/soil: " + List(bare.Select(t => T(t.Base)), 3));
         }
         if (Asked("sapling", "tree"))

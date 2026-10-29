@@ -368,7 +368,7 @@ public class ChopTreeTests(Xunit.Abstractions.ITestOutputHelper log)
         using var __ = s;
         var r = await c.ChopTreeAsync();
         Assert.False(r.Ok);
-        Assert.Equal("no tree within 24", r.Message);
+        Assert.Equal("exhausted: no tree within 24; none beyond in view either", r.Message); // typed: the area is used up
     }
 
     private void output(ActionResult r) => log.WriteLine("chop_tree: " + r);

@@ -104,6 +104,32 @@ Main never /tps on its own (op policy: only exact commands a trusted player name
   instead of 256 KB on normal terrain). Measured (`Client.Tests/BodyMemoryBenchmarkTests`, managed MB per extra body): r8 eager 72.9,
   r4 eager 20.6, r8 lazy 16.6, r4 lazy 4.8, r4 lazy + shared 0.25, r3 lazy + shared 0.24 (the shared store itself ≈ 4.6 MiB at r4).
 
+## Crews of many bodies (live 10-29: a DeepSeek hive with 20 bodies deforesting)
+
+- **Seeing the work**: the exact `see` scan answers the area a question names ("trees within 64 of 152,63,288", ≤ 64, a taller
+  band, log2 woods; `VisionRouter.AskedArea`), over the crew's combined view: `WorldState.PlanningView` reads columns any body of
+  the process holds in the shared chunk store (`SharedChunkStore.Peek`) before remembered ones. Before, a 12-block scan round the
+  brain's own body said "1 grown tree" and the hive reported the forest gone.
+- **One body per target**: `MinecraftClient.TargetClaims` (the body's claim view) leases the tree chop_tree picks (`tree:x,y,z@dim`,
+  task key, 6 min TTL, released when the chop ends), skips trees siblings hold (a named `at=` tree held by another → the next free
+  one near it) and prefers trees with nobody standing at the trunk. The SDK's `forEach` leases each positioned target the same way
+  on the hive board (`claimTarget`/`releaseTarget`; a done target stays marked 10 min so stale lists skip it), for any job.
+- **The frontier, typed**: chop_tree with nothing free in its radius fails `exhausted: …; nearest beyond: oak 200,64,300 (40 m E)`;
+  `find()` with nothing in range returns an empty list with `.exhausted` and `.beyond`; `forEach` over nothing returns
+  `{exhausted, beyond}`. Widening the area is one call (`chop_tree at=`, `find(q, {r})`).
+- **Idle bodies** (`Bot/Bodies/BodyIdleWatch`): a body with no job, lane or reflex for 30 s is idle; `[bodies]` collapses them
+  ("idle 7 (101,105,…): chop_tree: exhausted: …") and the brain gets ONE wake per idle stretch (≥ 2 min apart) with the count and why.
+- **Chests**: the walk to a container happens before its lease; deposits take one of 4 shared slot leases per chest (vanilla
+  lets several players use one chest; the server arbitrates the slots), queue ≤ 20 s (≤ 3 s behind an exclusive user), and when the
+  drop-off chest is full or still crowded `ChestStore` places a chest two blocks beside it (carried, else crafted) and spreads onto
+  it: "chest 152,63,288 busy: placed a new chest at 154,63,288; stored …".
+- **Addressing**: a line naming a hive is that hive's (a bot is always live to itself), a line naming a subhive body is its host
+  hive's (`ChatArbiter.SetHost`, main follows the ownership tree, a hive registers its own bodies); main takes it only when the host
+  is unreachable. A brain call with a `body` it doesn't drive is refused ("not done: 420 isn't a body I drive …; hive op=handover"),
+  and main's speech states a clone's whereabouts only when main sees it beside a player (`HiveSupervisor.GuardWhereabouts`).
+- **Pre-emption**: a logout that follows a clone's own finished task yields to a new order (main's task, or a player naming it):
+  the deposit stops, the clone stays online and takes the order. Recall, budget and shutdown logouts are never pre-empted.
+
 ## Whitelisting: the only path
 
 - `/whitelist` stays in `Agent:Commands:Blocked`: the model can never send it, even with a trusted player's exact line.

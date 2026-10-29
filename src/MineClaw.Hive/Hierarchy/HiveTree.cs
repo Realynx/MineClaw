@@ -42,23 +42,36 @@ public sealed class HiveTree(string main)
     /// <summary>Adds or updates a node. An owner that isn't in the tree (gone meanwhile) means main owns it.</summary>
     public HiveNode Put(HiveNode node)
     {
+        HiveNode n;
         lock (_lock)
         {
             var owner = Norm(node.Owner);
             if (owner != Root && (!_nodes.ContainsKey(owner) || owner.Equals(node.Account, StringComparison.OrdinalIgnoreCase) || IsUnder(owner, node.Account)))
                 owner = Root; // never a cycle, never an orphan
-            var n = node with { Owner = owner };
+            n = node with { Owner = owner };
             _nodes[node.Account] = n;
-            return n;
         }
+        try { NodePut?.Invoke(n); } catch (Exception) { /* observers never break the tree */ }
+        return n;
     }
+
+    /// <summary>A node was added or updated (owner normalised: <see cref="Root"/> = main).</summary>
+    public event Action<HiveNode>? NodePut;
+    /// <summary>A node left the tree.</summary>
+    public event Action<string>? NodeRemoved;
 
     public void SetState(string account, string state)
     {
         lock (_lock) if (_nodes.TryGetValue(account, out var n)) _nodes[account] = n with { State = state };
     }
 
-    public bool Remove(string account) { lock (_lock) return _nodes.Remove(account); }
+    public bool Remove(string account)
+    {
+        bool gone;
+        lock (_lock) gone = _nodes.Remove(account);
+        if (gone) try { NodeRemoved?.Invoke(account); } catch (Exception) { }
+        return gone;
+    }
 
     public IReadOnlyList<HiveNode> Children(string owner)
     {

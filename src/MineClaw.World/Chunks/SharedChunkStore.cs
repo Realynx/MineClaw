@@ -83,6 +83,13 @@ public sealed class SharedChunkStore
     }
 
     /// <summary>The column at (dim, cx, cz) for <paramref name="view"/>, created when no view holds it.</summary>
+    /// <summary>A column some body in this process holds with data, or null (read-only peek: the crew's combined view, e.g. a
+    /// hive brain asking "trees within 64" while its own body only loaded part of the area its bodies stand in).</summary>
+    public ChunkColumn? Peek(int dim, int cx, int cz)
+    {
+        lock (_sync) return _columns.TryGetValue((dim, cx, cz), out var col) && col.HasData ? col : null;
+    }
+
     internal ChunkColumn Acquire(WorldState view, int dim, int cx, int cz)
     {
         lock (_sync)

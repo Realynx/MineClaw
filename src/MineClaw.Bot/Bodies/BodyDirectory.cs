@@ -40,6 +40,9 @@ public sealed class BodyDirectory : IBodyDirectory
     /// <summary>The wake digest for clone events (the queue's intake stage).</summary>
     public BodyEventDigest Digest { get; }
 
+    /// <summary>Idle bodies: one wake per idle stretch with why, and the collapsed "idle N" part of [bodies].</summary>
+    public BodyIdleWatch? IdleWatch { get; private set; }
+
     /// <summary>The per-body workers (null without a worker tier).</summary>
     public WorkerPool? Workers { get; private set; }
 
@@ -57,6 +60,8 @@ public sealed class BodyDirectory : IBodyDirectory
         var dir = new BodyDirectory(brain, log);
         brain.Directory = dir;
         rt.Agent.Bodies = dir;
+        dir.IdleWatch = new BodyIdleWatch(brain.Bodies, rt.Events, brain.Time ?? TimeProvider.System);
+        if (brain.Persist) dir.IdleWatch.Start(TimeSpan.FromSeconds(5));
 
         // Clone events: N bodies never wake the brain N times (the intake runs before the script gates).
         var intake = rt.Events.Intake;
@@ -215,13 +220,19 @@ public sealed class BodyDirectory : IBodyDirectory
         var parts = new List<BodyStatusBlock.Part>();
         var live = _reg.All;
         parts.Add(new BodyStatusBlock.Part("main", true, Line(_reg.Main)));
+        // Idle bodies collapse into one part with why ("idle 7 (101,105,…): chop_tree: exhausted: …"): 20 bodies fit the line.
+        var idle = IdleWatch?.Idle().ToHashSet(StringComparer.OrdinalIgnoreCase) ?? [];
+        int idleOnline = 0;
         foreach (var acc in _reg.Accounts)
         {
             var shortName = Body.ShortName(acc, false);
             var b = live.FirstOrDefault(x => x.Name.Equals(acc, StringComparison.OrdinalIgnoreCase));
             bool online = b != null && b.Adapter.IsPlaying && b.State is BodyState.Online;
+            if (online && idle.Contains(shortName) && !string.Equals(shortName, focus, StringComparison.OrdinalIgnoreCase)) { idleOnline++; continue; }
             parts.Add(new BodyStatusBlock.Part(shortName, online, online ? Line(b!) : ""));
         }
+        if (idleOnline > 0 && IdleWatch?.Summary() is { } summary && summary.StartsWith("idle ", StringComparison.Ordinal))
+            parts.Add(new BodyStatusBlock.Part("idle", true, summary["idle ".Length..]));
         return BodyStatusBlock.Render(parts, focus);
     }
 

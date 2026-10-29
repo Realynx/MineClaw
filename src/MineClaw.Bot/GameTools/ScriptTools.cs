@@ -162,6 +162,8 @@ public sealed partial class ScriptBridge
                 return null;
             },
             IsProtected = (p, id) => _client.IsProtected?.Invoke(p, id) ?? false,
+            // The body in scope's lease view (resolved per call: the client may be the body router).
+            Claims = () => MineClaw.Bot.Game.GameClients.Claimed(_client)?.Claims,
             OnlinePlayers = () => _client.World.Entities.OnlinePlayers,
             // Scripts cost no tokens, but without a brain to supervise them they don't play either (same as worker tasks).
             ActionVeto = () => _rt.Usage.CheckMode() is BudgetMode.Paused or BudgetMode.CheapOnly ? "budget low" : null,

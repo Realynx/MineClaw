@@ -171,6 +171,9 @@ public static class CloneMode
         if (subhives != null)
         {
             subhives.Attach(bot, client, signals.Token);
+            // A line naming one of this hive's bodies ("113 stop") is this hive's own: its arbiter must say "mine".
+            if (subhives.Registry is { } hostedBodies)
+                hostedBodies.Changed += (b, added) => host0.Arbiter.SetHost(b.Name, added ? clone : null);
             var bodyInbox = SubhiveWiring.AttachClone(clone, (type, msg, timeout) => host0.BusAsync(type, msg, timeout: timeout), subhives, rt, hive,
                 wantedBodies, () => client.IsPlaying, signals.Token, log);
             var inner = host0.BusInbox;

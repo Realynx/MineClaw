@@ -280,7 +280,13 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
   mining, chopping, following…) at night or with hostiles near and no safe food on hand is refused with one line ("night + no
   food: getting food first (…); not starting goto now") and the food reflex fetches food; eating, chests, the gen and walks home
   pass. (4) **Safety warnings** (`Chat/SafetyWarnings`): a warning about a threat to someone (a mob on them, a creeper, lava, the
-  void, a death) overrides the startup-chatter cap and a quiet turn's "nobody is waiting", once per threat per 30 s.
+  void, a death) overrides the startup-chatter cap and a quiet turn's "nobody is waiting", once per threat per 30 s. (5) **Archers
+  on 1.9+** (`CombatEngine`, live 10-29: two subhive bodies shot by skeletons in tree shade): the Outmatched estimate covers ranged
+  mobs (an arrow ≈ 3.5 every 40 ticks, 20 on hard, ¾ landing, a shield takes most; at best one landed swing a second on a strafing
+  skeleton, after the walk in). A winnable one, once it shot from within range, is closed on with a sprinting zig-zag; an
+  unwinnable one (bare hands) sends the body out of its sight, shield up while exposed, and the cover holds until it has lost the
+  body (2 s unseen) or is out of range, instead of peeking out after one tick. Every body (main, clone process, subhive) runs the
+  client's own reflexes: combat, Shelter, breath.
 - **Startup wake + idle watchdog** (`BotAgent.Startup`, main only; `ClonePolicy` turns both off): once per process start, one
   Normal wake "restarted: standing order X: resumed; <paused build line, its rules, it's night now>; rules: …" (the paused
   build rides in it via `AddPendingWork`, not a Background notice). Idle with nothing running or waking for

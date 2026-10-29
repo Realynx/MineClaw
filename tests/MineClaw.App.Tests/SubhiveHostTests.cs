@@ -190,6 +190,10 @@ public sealed class SubhiveHostTests(ITestOutputHelper output)
         var (dropped, tokens) = CompactBrainTools.Apply(rt.Tools);
         output.WriteLine($"compact brain tools: {dropped} dropped, ≈{tokens} tokens per call saved");
         Assert.True(dropped >= 5 && tokens >= 500);
+        // What it needs to re-plan a used-up area stays on its tier (live 10-29): see answers "trees within 64 of X" exactly,
+        // do runs chop_tree at=<a tree beyond> (exhausted results name them), the hive tool and the crew script.
+        var brainTools = rt.Tools.Definitions(Agent.Llm.ModelTier.Main).Select(d => d.Name).ToHashSet();
+        foreach (var need in new[] { "see", "do", "look", "script", "stop" }) Assert.Contains(need, brainTools);
 
         string token = "";
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();

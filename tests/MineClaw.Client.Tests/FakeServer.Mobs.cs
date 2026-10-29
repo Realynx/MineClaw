@@ -23,6 +23,8 @@ internal sealed partial class FakeServer
         public double X, Y, Z;
         public float Health;
         public bool Chase;
+        /// <summary>A skeleton: stands (backs off when the player is within 4), shoots every 40 ticks within 15 blocks in sight.</summary>
+        public bool Archer;
         public int AttackDamage;
         public DateTime LastHurt = DateTime.MinValue, LastAttack = DateTime.MinValue;
         public float LastDamage;
@@ -83,6 +85,7 @@ internal sealed partial class FakeServer
                 lock (BlockLock)
                     foreach (var m in Mobs.Values)
                     {
+                        if (!m.Dead && m.Archer) { ArcherTick(m); continue; }
                         if (m.Dead || !m.Chase) continue;
                         double dx = _px - m.X, dz = _pz - m.Z, d = Math.Sqrt(dx * dx + dz * dz);
                         if (d > 1.2)
@@ -107,6 +110,53 @@ internal sealed partial class FakeServer
                     }
             }
         }, CancellationToken.None);
+    }
+
+    /// <summary>Arrows that hit the player (the skeleton AI).</summary>
+    public int ArrowHits { get; private set; }
+
+    /// <summary>
+    /// 1.12.2 EntityAIAttackRangedBow, simplified: within 15 blocks and in sight (no solid block on the eye line) it shoots every
+    /// 40 ticks (normal) for <see cref="FakeMob.AttackDamage"/>; it backs away 0.05 b/t while the player is within 4.
+    /// Caller holds <see cref="BlockLock"/>.
+    /// </summary>
+    private void ArcherTick(FakeMob m)
+    {
+        double dx = _px - m.X, dz = _pz - m.Z, d = Math.Sqrt(dx * dx + dz * dz);
+        if (d < 4 && d > 1e-3)
+        {
+            double nx = m.X - dx / d * 0.05, nz = m.Z - dz / d * 0.05;
+            if (Blocks.GetValueOrDefault(((int)Math.Floor(nx), (int)Math.Floor(m.Y) - 1, (int)Math.Floor(nz))) != 0)
+            {
+                m.X = nx; m.Z = nz;
+                Send(new EntityTeleportPacket
+                {
+                    EntityId = m.Id, X = FixedPoint.ToAbsolute(m.X), Y = FixedPoint.ToAbsolute(m.Y), Z = FixedPoint.ToAbsolute(m.Z), Exact = (m.X, m.Y, m.Z),
+                });
+            }
+        }
+        if (d > 15 || DateTime.UtcNow - m.LastAttack < TimeSpan.FromMilliseconds(TickMs * 40) || Health <= 0 || !InSight(m)) return;
+        m.LastAttack = DateTime.UtcNow;
+        ArrowHits++;
+        Health = Math.Max(1, Health - m.AttackDamage);
+        LowestHealth = Math.Min(LowestHealth, Health);
+        Send(new UpdateHealthPacket { Health = (short)Health, Food = (short)Food, FoodSaturation = 2, HealthExact = Health });
+        Send(new EntityStatusPacket { EntityId = EntityId, Status = 2 });
+    }
+
+    /// <summary>No solid block between the archer's eyes and the player's (sampled every 0.2 blocks).</summary>
+    private bool InSight(FakeMob m)
+    {
+        double ax = m.X, ay = m.Y + 1.6, az = m.Z, bx = _px, by = _py + 1.62, bz = _pz;
+        double len = Math.Sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay) + (bz - az) * (bz - az));
+        int n = Math.Max(1, (int)(len / 0.2));
+        for (int i = 1; i < n; i++)
+        {
+            double t = (double)i / n;
+            var cell = ((int)Math.Floor(ax + (bx - ax) * t), (int)Math.Floor(ay + (by - ay) * t), (int)Math.Floor(az + (bz - az) * t));
+            if (Blocks.GetValueOrDefault(cell) is var id && id != 0 && id != MineClaw.Data.Blocks.Leaves && id != MineClaw.Data.Blocks.TallGrass) return false;
+        }
+        return true;
     }
 
     /// <summary>The player's air supply as the server tracks it (<c>EntityLivingBase.onEntityUpdate</c>).</summary>

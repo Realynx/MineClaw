@@ -280,14 +280,19 @@ public class MultiBodyBrainTests
     }
 
     [Fact]
-    public async Task Without_a_directory_the_body_parameter_changes_nothing()
+    public async Task Without_a_directory_a_body_naming_another_bot_is_refused_and_one_naming_itself_runs_unchanged()
     {
+        // Live 10-29: without a directory a call naming 420 ran on main's own body and main reported 420's arrival. Now it is
+        // refused (nothing runs) with how to reach that bot; a body naming this bot itself still runs exactly as sent.
         var (rt, llm, _) = TestRuntime.Create();
         rt.Tools.Register("status", "status", ToolSchema.Empty, (input, _) => Task.FromResult(ToolResult.Success("status " + input.GetRawText())));
-        llm.ThenTool("status", new { body = "67" }).ThenText("ok");
+        llm.ThenTool("status", new { body = "67" }).ThenTool("status", new { body = "main" }, id: "tu_2").ThenText("ok");
         await rt.Agent.HandleBatchAsync(new EventBatch([GameEvent.Chat("Fox", "67, status")]), CancellationToken.None);
         var r = llm.Requests[1].Messages[^1].Content.OfType<LlmToolResult>().Single();
-        Assert.Equal("status {\"body\":\"67\"}", r.Content); // hive mode: the tool sees the input exactly as sent
+        Assert.True(r.IsError);
+        Assert.StartsWith("not done: 67 isn't a body I drive", r.Content);
+        var own = llm.Requests[2].Messages[^1].Content.OfType<LlmToolResult>().Single();
+        Assert.Equal("status {\"body\":\"main\"}", own.Content); // its own body: the tool sees the input exactly as sent
         Assert.Null(rt.Agent.TurnFocus);
     }
 }
