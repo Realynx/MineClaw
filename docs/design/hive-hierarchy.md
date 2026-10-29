@@ -127,6 +127,13 @@ Main never /tps on its own (op policy: only exact commands a trusted player name
   hive's (`ChatArbiter.SetHost`, main follows the ownership tree, a hive registers its own bodies); main takes it only when the host
   is unreachable. A brain call with a `body` it doesn't drive is refused ("not done: 420 isn't a body I drive …; hive op=handover"),
   and main's speech states a clone's whereabouts only when main sees it beside a player (`HiveSupervisor.GuardWhereabouts`).
+- **Hive scripts** (Fox 10-29: "one script to control all the bodies in the Hive"): `hive spawn kind=script bodies=N script=X`
+  (or `script=X bodies=N`) = N subhive bodies in main's process, allocated/whitelisted/capped exactly as `bodies=N`, tagged with the
+  script's id (`HiveNode.Crew`), and ONE bodiless coordinator over them with no brain (`IHiveScriptHost`, `Hive/Crew/HiveScriptHost`):
+  `everyBody('role')` gives each body its lane as it logs in. Its end — or `hive release X` / `release all` — deposits and logs out its
+  bodies once each, then main's brain hears one `[hive] hive script X done|failed: …` line. A hive-kind clone runs one over its own
+  bodies with `script{name}` (DeepSeek: saved ones only). `hive list` shows "hive script X: 3 bodies 102-105". Cached hint:
+  `script=X bodies=N: X alone drives N` (KindHint, 219 chars).
 - **Pre-emption**: a logout that follows a clone's own finished task yields to a new order (main's task, or a player naming it):
   the deposit stops, the clone stays online and takes the order. Recall, budget and shutdown logouts are never pre-empted.
 

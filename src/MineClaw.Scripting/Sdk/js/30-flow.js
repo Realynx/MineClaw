@@ -115,8 +115,9 @@
       let r, kept = false;
       try {
         r = f(t, ++tried);
-        // Done: it stays marked for a while so a sibling with an older list skips it too; failed: free for another body at once.
-        if (key && !failed(r) && r !== 'stop') kept = H.claimTarget(key, o.doneLease ?? 600);
+        // Done: it stays marked for a while so a sibling with an older list skips it too (outliving this run); failed: free for
+      // another body at once. A run that ends mid-target (stopped, logged out) gives its lease back at its end.
+        if (key && !failed(r) && r !== 'stop') kept = H.claimTarget(key, o.doneLease ?? 600, true);
       } finally { if (key && !kept) H.releaseTarget(key); }
       if (r === 'stop') break;
       if (failed(r)) { bad++; if (isObj(r) && r.msg) last = r.msg; } else n++;

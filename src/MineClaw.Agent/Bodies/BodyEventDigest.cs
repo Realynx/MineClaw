@@ -46,6 +46,15 @@ public sealed class BodyEventDigest
     /// <summary>How long a crew group waits for its slowest member before its results wake the brain one by one again.</summary>
     public TimeSpan GroupTtl { get; set; } = TimeSpan.FromMinutes(30);
 
+    /// <summary>
+    /// Bodies a running crew owns (a lane of a coordinator that is still going: <c>everyBody</c>, a hive script): their minor and
+    /// normal events never wake the brain (MustWake and typed chat still do), a lane's own end included (the coordinator re-runs it;
+    /// the crew's one result wakes). Their danger passes here untouched and the lane's gate keeps it from waking the brain (the reflexes
+    /// acted; the lane pauses and carries on once safe). Null = none. Live 10-29: a 20-body hive woke on every lane's zombie and every
+    /// lane's end, then micro-managed them one by one.
+    /// </summary>
+    public Func<string, bool>? Unattended { get; set; }
+
     /// <summary>Events held back from waking (tests, telemetry).</summary>
     public int Held { get; private set; }
 
@@ -69,7 +78,10 @@ public sealed class BodyEventDigest
         var body = Norm(e.Body);
         if (body == null) return e;
         // A person typing to a body (a whisper to its account) always wakes the brain, like any addressed chat.
+        // Danger passes as it is: the body's lane gate must still read it as danger (it pauses the lane and, for a crew lane,
+        // keeps the brain asleep itself).
         if (IsDanger(e) || e.MustWake || EventQueue.IsTyped(e)) return e;
+        if (e.Wakes && Unattended is { } crewed && SafeCrewed(crewed, body)) { Held++; return e with { Wakes = false }; }
         var now = _time.GetUtcNow();
         lock (_lock)
         {
@@ -93,6 +105,11 @@ public sealed class BodyEventDigest
             _lastWake[body] = now;
         }
         return e;
+    }
+
+    private static bool SafeCrewed(Func<string, bool> crewed, string body)
+    {
+        try { return crewed(body); } catch (Exception) { return false; }
     }
 
     private bool SafeBusy(string body)

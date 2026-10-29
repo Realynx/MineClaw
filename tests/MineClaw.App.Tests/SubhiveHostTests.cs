@@ -131,8 +131,46 @@ public sealed class SubhiveHostTests(ITestOutputHelper output)
         }
         """;
 
+    /// <summary>
+    /// The hive script (live 10-29: the brain dispatching per-body jobs turn after turn left bodies idle and doubled up on trees):
+    /// every body takes a free log under the hive's leases, the brain passes no body list, and nothing a lane does wakes it.
+    /// </summary>
+    private const string HiveChop = """
+        // purpose: every body chops a free log near it (one body per log); one result line
+        function chopper() {
+          const r = forEach(find('log', { r: 8 }), t => dig(t), { budget: 1 })
+          crew.inc('logs', r.n)
+          return `${me.body} ${r.n}`
+        }
+        function main() {
+          const r = everyBody('chopper')
+          return `hive chop: ${crew.get('logs')} logs, ${r.msg}`
+        }
+        """;
+
     [Fact]
-    public async Task A_deepseek_hive_hosts_three_bodies_that_chop_in_parallel_lanes_and_leave_on_release()
+    public Task A_deepseek_hive_hosts_three_bodies_that_chop_in_parallel_lanes_and_leave_on_release() =>
+        DeepSeekHive("chop_crew", ChopCrew, run: at => new { op = "run", name = "chop_crew", @params = new { bodies = at.Keys.ToArray(), at } },
+            "chop crew: 3 logs", (servers, _) =>
+            {
+                foreach (var n in BodyNames)
+                    Assert.Equal([Log[n]], servers[n].Dug.Select(d => (d.X, d.Y, d.Z)).Distinct().ToList()); // only its own log, on its own connection
+            });
+
+    [Fact]
+    public Task A_deepseek_hive_runs_a_saved_hive_script_over_all_its_bodies_in_one_call_and_sleeps_until_it_ends() =>
+        DeepSeekHive("hive_chop", HiveChop, run: _ => new { op = "run", name = "hive_chop" }, "hive chop: 3 logs, 3/3 bodies done", (servers, rt) =>
+        {
+            // Each body dug exactly one log and no log was dug twice: the leases split them (every server has all three).
+            Assert.All(BodyNames, n => Assert.Single(servers[n].Dug));
+            Assert.Equal(3, BodyNames.Select(n => servers[n].Dug.Single()).Select(d => (d.X, d.Y, d.Z)).Distinct().Count());
+            // The brain slept: nothing a lane did (its end, a pause) woke it; the crew's one result did.
+            var events = rt.Events.Snapshot();
+            Assert.DoesNotContain(events, e => e.Body != null && e.Wakes && !e.MustWake);
+        });
+
+    private async Task DeepSeekHive(string scriptName, string code, Func<Dictionary<string, string>, object> run, string expect,
+        Action<Dictionary<string, FakeServer>, AgentRuntime> check)
     {
         var log = new List<string>();
         using var loggers = LoggerFactory.Create(b => b.AddProvider(new ListLogger(log)));
@@ -183,7 +221,7 @@ public sealed class SubhiveHostTests(ITestOutputHelper output)
         var scripts = MineClaw.Bot.GameTools.ScriptTools.Of(rt)!;
         scripts.Crew = new BodyCrewPort(bot.Bodies!, rt.Tools, new DbCrewBoard(rt.Memory.Db)); // CloneMode: its bodies are its lanes
         // The crew script was saved earlier by the Opus brain (a DeepSeek brain runs saved scripts, never writes them).
-        var saved = await bot.Run("script", new { op = "save", name = "chop_crew", code = ChopCrew });
+        var saved = await bot.Run("script", new { op = "save", name = scriptName, code });
         Assert.True(saved.Ok, saved.Text);
         Assert.Null(agent.Llm.ApplyBrainProfile("deepseek"));
         Assert.False(agent.Llm.BrainAuthorsScripts);
@@ -227,7 +265,7 @@ public sealed class SubhiveHostTests(ITestOutputHelper output)
 
         // ---- the DeepSeek brain runs the saved crew: one lane per body, at once, each on its own connection
         var at = BodyNames.ToDictionary(n => n[(n.LastIndexOf('_') + 1)..], n => $"{Log[n].X},{Log[n].Y},{Log[n].Z}");
-        llm.Turns.Enqueue(r => llm.Use(r, "script", new { op = "run", name = "chop_crew", @params = new { bodies = at.Keys.ToArray(), at } }));
+        llm.Turns.Enqueue(r => llm.Use(r, "script", run(at)));
         llm.Turns.Enqueue(r => FakeDeepSeek.Say(r, "Deforesting with all three!"));
         await rt.Agent.HandleBatchAsync(new EventBatch([GameEvent.Notice("[hive task] deforest this area", EventPriority.Normal)]), CancellationToken.None);
         var first = Assert.Single(llm.Seen.Take(1));
@@ -236,12 +274,11 @@ public sealed class SubhiveHostTests(ITestOutputHelper output)
         // The crew's one result line reaches the brain (its tool result, or the [task] event when it outlives the turn).
         string Seen() => string.Join(" | ", llm.Seen.SelectMany(q => q.Messages).SelectMany(m => m.Content).OfType<LlmToolResult>().Select(t => t.Content)
             .Concat(rt.Events.Snapshot().Select(e => e.Text)));
-        Assert.True(await Until(() => Seen().Contains("chop crew:"), 10000), "crew result: " + Seen());
+        Assert.True(await Until(() => Seen().Contains(expect.Split(':')[0] + ":"), 15000), "crew result: " + Seen());
         var result = Seen();
         output.WriteLine(result);
-        Assert.Contains("chop crew: 3 logs", result);
-        foreach (var n in BodyNames)
-            Assert.Equal([Log[n]], servers[n].Dug.Select(d => (d.X, d.Y, d.Z)).Distinct().ToList()); // only its own log, on its own connection
+        Assert.Contains(expect, result);
+        check(servers, rt);
         Assert.Empty(servers[Me].Dug); // the hive's own body stood by
 
         // ---- release the hive: its bodies deposit and log out first, main takes each off the whitelist, then the hive goes

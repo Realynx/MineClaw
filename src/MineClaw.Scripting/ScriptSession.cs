@@ -51,6 +51,12 @@ public sealed record ScriptRequest
     public string? Role { get; init; }
     /// <summary>Crew lane / coordinator: the shared board's name.</summary>
     public string? CrewId { get; init; }
+    /// <summary>
+    /// No brain watches this run (a hive script's coordinator; every crew lane is unattended too): a danger pause resumes by itself
+    /// once the body's reflexes let go (<see cref="ScriptOptions.LaneSafeSeconds"/>), and gives up after
+    /// <see cref="ScriptOptions.LaneDangerMaxSeconds"/> (the run fails, so its coordinator re-runs the role and its leases go back).
+    /// </summary>
+    public bool Unattended { get; init; }
 }
 
 /// <summary>
@@ -139,6 +145,11 @@ public sealed partial class ScriptSession
     /// returning its own result is reported as failed, never "ok".</summary>
     public bool LastActionFailed { get; private set; }
     private string? _lastFailureMsg;
+    /// <summary>A crew lane or a hive script's coordinator: nobody resumes its danger pauses but itself (see <see cref="ScriptRequest.Unattended"/>).</summary>
+    public bool Unattended => Request.Role != null || Request.Unattended;
+    /// <summary>Paused for a danger it will resume from by itself (the host doesn't wake the brain for it).</summary>
+    public bool AutoResumes { get { lock (_lock) return Status == ScriptStatus.Paused && PausedFor == PauseKind.Danger && Unattended; } }
+    private DateTimeOffset _lastDanger;
     /// <summary>Why it failed/was cancelled (null while running or when done).</summary>
     public string? Reason { get; private set; }
     /// <summary>The terse result line once ended.</summary>
@@ -510,16 +521,36 @@ public sealed partial class ScriptSession
         _owner.OnPaused(this);
         settled.TrySetResult();
         bool auto = false;
+        DateTimeOffset? safeSince = null;
         _blocked = true; // parked: the debugger may read the engine's locals
         while (true)
         {
             _wake.Wait(TimeSpan.FromMilliseconds(100));
             var now = _time.GetUtcNow();
+            bool dangerPause;
             lock (_lock)
             {
                 if (_stopReason != null || _hardCt.IsCancellationRequested) break;
                 if (_resumeReq) break;
                 if (PausedFor == PauseKind.Chat && now - at >= TimeSpan.FromSeconds(_o.ChatAutoResumeSeconds)) { auto = true; break; }
+                dangerPause = PausedFor == PauseKind.Danger && Unattended;
+            }
+            if (dangerPause)
+            {
+                // Unattended (live 10-29: 20 hive bodies' lanes sat paused on a zombie each until the brain resumed them one by one):
+                // the body's reflexes fight/shelter/eat; once they let go and no new danger came for a moment, carry on (the cut
+                // action re-runs). Too long in danger: fail, so the coordinator re-runs the role and the leases go back.
+                bool busy = _host.SafetyBusy is { } sb && SafeBusyNow(sb);
+                var calm = TimeSpan.FromSeconds(Math.Max(0.2, _o.LaneSafeSeconds));
+                if (busy) safeSince = null; else safeSince ??= now;
+                DateTimeOffset last;
+                lock (_lock) last = _lastDanger;
+                if (safeSince is { } since && now - since >= calm && now - last >= calm) { auto = true; break; }
+                if (now - at >= TimeSpan.FromSeconds(Math.Max(1, _o.LaneDangerMaxSeconds)))
+                {
+                    Stop($"interrupted: {reason} for over {ScriptText.Dur(TimeSpan.FromSeconds(_o.LaneDangerMaxSeconds))}", limit: true);
+                    break;
+                }
             }
             if (now - at >= _o.MaxPause) { Stop($"paused over {ScriptText.Dur(_o.MaxPause)}"); break; }
         }
@@ -541,6 +572,11 @@ public sealed partial class ScriptSession
         TouchSegment();
         _owner.OnResumed(this, auto);
         return answer;
+    }
+
+    private static bool SafeBusyNow(Func<bool> busy)
+    {
+        try { return busy(); } catch (Exception) { return false; }
     }
 
     // ------------------------------------------------------------------ helpers

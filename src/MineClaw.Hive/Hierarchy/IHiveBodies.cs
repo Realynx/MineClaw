@@ -32,6 +32,24 @@ public interface ISubhiveHost
     string Release(string account);
 }
 
+/// <summary>
+/// Hive scripts (<c>hive spawn kind=script bodies=N script=X</c>): ONE coordinator script and no brain, owning N subhive bodies of
+/// this process (live 10-29: a brain issuing per-body jobs turn after turn left bodies idle, sent several to one tree and dropped
+/// jobs at the first interruption). The coordinator runs bodiless in the hosting process; its <c>bodies()</c> are exactly the accounts
+/// <see cref="Start"/>'s member list names that are online now, so late logins join and leavers drop out.
+/// </summary>
+public interface IHiveScriptHost
+{
+    /// <summary>A saved name (or inline code the hive tool already authorised as the Opus brain's: linted, saved) → (name, error).</summary>
+    (string? Name, string? Error) Prepare(string? script, string? code);
+    /// <summary>Starts the coordinator; <paramref name="ended"/>(ok, line) once it ends however it ends. "ok: …" or why not.</summary>
+    string Start(string id, string script, string? args, Func<IReadOnlyCollection<string>> members, Action<bool, string> ended);
+    /// <summary>Stops it at its next safe point (its lanes are cancelled with it); <c>ended</c> still reports.</summary>
+    bool Stop(string id, string reason);
+    /// <summary>The running coordinator's state line, or null.</summary>
+    string? Status(string id);
+}
+
 /// <summary><see cref="IHiveBodies"/> over the process supervisor.</summary>
 public sealed class SupervisorBodies(HiveSupervisor sup) : IHiveBodies
 {

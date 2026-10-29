@@ -408,6 +408,22 @@ the rules + the SDK reference generated from the code + six worked examples (≈
   slot, its interrupts, "body busy" for brain tools); hive mode: `Hive/Crew/HiveCrewPort` starts it as a hive script spawn
   (`__role`/`__crew` in the args, `after: sleep`) and reads the hive result; the board is the shared db (`DbCrewBoard`: tables
   `crew_board`, `crew_inbox`, `crew_locks`, ≤ 4 KB per crew), which clone processes reach too (`LaneOnlyCrewPort`).
+- **Hive scripts** (live 10-29: a 4–20 body hive driven by per-body brain jobs stood idle, doubled up on trees, dropped jobs at the
+  first interruption): ONE script owns every body. `everyBody(role, args, {retries, until, wait})` runs the role on every body of
+  the crew and on each that joins later (`bodies()` is live; `ICrewPort.Pending` = still logging in, so early finishers don't end
+  it), re-runs a failed lane on its body after a pause (limits don't count), drops a body that left; no args = this run's params.
+  Work is shared through `forEach`'s hive-wide leases, never a fixed split; a run gives back every lease it still holds when it ends
+  however it ends (logout, stop, failure), done marks excepted. Crew lanes (and hive coordinators) are **unattended**: a danger
+  pauses the lane while the body's reflexes act and it resumes by itself once `SafetyBusy` let go (`Scripting:LaneSafeSeconds`),
+  failing after `LaneDangerMaxSeconds` so its coordinator re-runs it; no "script paused" wake, the auto-resumed lane is its body's
+  activity again, a lane's end posts no task event, and `BodyEventDigest.Unattended` (`Crew/Crews`: lanes of a live coordinator)
+  keeps every event of a crewed body from waking the brain (MustWake and typed chat excepted). Two shapes: a hive brain runs a
+  saved hive script over its own bodies with `script{name}` (the coordinator on its own body, the brain asleep until the result);
+  `hive spawn kind=script bodies=N script=X` (main) allocates N subhive bodies like `bodies=N` and runs a **bodiless** coordinator
+  in main's process (`ScriptBridge.Coordinator`, `Hive/Crew/HiveScriptHost`, `SubsetCrewPort` = exactly its accounts online,
+  `Scripting:HiveScriptMinutes`), no brain; its end (or `hive release X`) deposits and logs the bodies out once each and tells
+  main's brain one line; main's own crews skip them (`BodyCrewPort.Excluded`). Fixed with it: in-process body lanes were built on
+  the raw adapter, so their `claimTarget` saw no board and every lane leased nothing (`BodyFactory.Clone` gives them `body.Game`'s view).
 - **Lint and dry run before anything is saved or run** (`Lint/JsLint` on the Acornima AST; `ScriptLint` dispatches by language):
   errors = syntax, unknown global (with the closest name), forbidden construct (eval/Function/require/import/timers/host internals/
   debugger), constant-true loop that never acts or waits, a required tool arg a literal call can't fill, assignment to an SDK

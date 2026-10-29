@@ -101,6 +101,7 @@ public sealed partial class ScriptSession
         lock (_lock)
         {
             if (!IsLive) return;
+            if (e.Kind == ScriptEventKind.Danger) _lastDanger = _time.GetUtcNow();
             _events.Add((++_eventSeq, e));
             if (_events.Count > 32) _events.RemoveAt(0);
             if (e.Kind == ScriptEventKind.Join) return;

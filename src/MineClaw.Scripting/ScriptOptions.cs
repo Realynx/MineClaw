@@ -29,6 +29,16 @@ public sealed class ScriptOptions
     /// </summary>
     public bool PauseOnChat { get; set; } = false;
     public int ChatAutoResumeSeconds { get; set; } = 30;
+    /// <summary>
+    /// Unattended runs (crew lanes, hive scripts): a danger pause resumes by itself once the body's safety reflexes have let go and
+    /// no new danger came for this long, seconds.
+    /// </summary>
+    public double LaneSafeSeconds { get; set; } = 3;
+    /// <summary>Unattended runs: still in danger after this long, seconds, the run fails (its coordinator re-runs the role elsewhere or later).</summary>
+    public double LaneDangerMaxSeconds { get; set; } = 120;
+    /// <summary>A hive script's coordinator (<c>hive spawn kind=script bodies=N</c>) may run this long, minutes (its lanes keep <see cref="MaxMinutes"/>
+    /// each and are re-run by <c>everyBody</c> when one hits it).</summary>
+    public double HiveScriptMinutes { get; set; } = 240;
     /// <summary>say/emote rate limit.</summary>
     public int MaxSayPerMinute { get; set; } = 6;
     /// <summary>say/emote lines one script run may send to chat; the rest go to <c>log</c> (say is for players, not data).</summary>
@@ -112,6 +122,9 @@ public sealed class ScriptOptions
     public int HandlerDemoteAfter { get; set; } = 2;
     /// <summary>restart_step restarts per run (a patch that keeps restarting escalates).</summary>
     public int PatchMaxRestarts { get; set; } = 3;
+
+    /// <summary>A copy to tweak (a hive script's coordinator gets its own time limit).</summary>
+    public ScriptOptions Copy() => (ScriptOptions)MemberwiseClone();
 
     internal TimeSpan MaxWall => TimeSpan.FromMinutes(Math.Max(0.01, MaxMinutes));
     internal TimeSpan MaxPause => TimeSpan.FromMinutes(Math.Max(0.01, MaxPauseMinutes));

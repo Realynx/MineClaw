@@ -47,7 +47,7 @@ internal static class JsLint
     {
         "wait", "waitFor", "waitfor", "log", "print", "prog", "cp", "expect", "ensure", "room", "fail", "on", "say", "emote", "wake", "upto",
         "until", "retry", "seq", "sel", "timeout", "store", "restock", "mineGen", "harvestFarm", "chopTrees", "deliver", "waitForDay",
-        "guardArea", "machine", "use", "parallel", "spawn", "signal", "gather", "stash", "handTo", "makeRoom", "patrol", "quota", "forEach",
+        "guardArea", "machine", "use", "parallel", "spawn", "everyBody", "signal", "gather", "stash", "handTo", "makeRoom", "patrol", "quota", "forEach",
     };
 
     /// <summary>The lint rule on a call to a deprecated compat helper (<see cref="Sdk.SdkModules.Compat"/>).</summary>
@@ -325,7 +325,7 @@ internal static class JsLint
             // The old strategy helpers (99-compat.js) still run; new code composes the primitives instead (the author's check rejects it).
             if (!c.Declared.Contains(name) && !c.TopFunctions.Contains(name) && Sdk.SdkModules.Compat.TryGetValue(name, out var use))
                 c.Add(LintSeverity.Warning, line, CompatRule, $"{name}() is a deprecated compat helper: {use}");
-            if (name is "parallel" or "spawn") { c.UsesCrew = true; CollectRoles(name, call, c); }
+            if (name is "parallel" or "spawn" or "everyBody") { c.UsesCrew = true; CollectRoles(name, call, c); }
             if (name == "machine") CheckMachine(call, c);
             bool isAction = c.Actions.Contains(name);
             if (isAction)
@@ -465,6 +465,7 @@ internal static class JsLint
     private static void CollectRoles(string name, CallExpression call, Ctx c)
     {
         if (name == "spawn" && call.Arguments.Count > 1 && call.Arguments[1] is StringLiteral r) c.Roles.Add((Line(r), r.Value));
+        if (name == "everyBody" && call.Arguments.Count > 0 && call.Arguments[0] is StringLiteral er) c.Roles.Add((Line(er), er.Value));
         if (name != "parallel" || call.Arguments.Count == 0 || call.Arguments[0] is not ArrayExpression jobs) return;
         var bodies = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var j in jobs.Elements)

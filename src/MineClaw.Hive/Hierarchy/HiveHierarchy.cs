@@ -54,6 +54,9 @@ public sealed class HiveHierarchy : IHiveAccounts
     public IHiveBodies? Bodies { get; set; }
     /// <summary>Main's own subhive bodies (in this process). Null = <c>hive spawn kind=subhive</c> for main says not available.</summary>
     public ISubhiveHost? Subhives { get; set; }
+    /// <summary>Hive scripts over main's subhive bodies (<c>hive spawn kind=script bodies=N</c>); null = not available.</summary>
+    public IHiveScriptHost? ScriptHives { get; set; }
+    private readonly Dictionary<string, string> _scripts = new(StringComparer.OrdinalIgnoreCase); // running hive script id → script name
     /// <summary>Hive-kind clones may host subhive bodies in their own process (accounts from main, over the bus).</summary>
     public bool RemoteSubhives { get; set; }
     /// <summary>Is a model profile usable (null = yes, else why not)? Decides whether a DeepSeek brain is available.</summary>
@@ -118,7 +121,7 @@ public sealed class HiveHierarchy : IHiveAccounts
     /// One subhive account for <paramref name="owner"/>: memory, the hard cap and the player cap permitting; recorded in the tree
     /// and the managed list at once (under the lock, so parallel spawns never get the same name).
     /// </summary>
-    private (string? Name, string? Why) AllocateBody(string owner, string? task, string? script)
+    private (string? Name, string? Why) AllocateBody(string owner, string? task, string? script, string? crew = null)
     {
         if (Bodies is not { } b) return (null, "no bodies host");
         if (Resources?.CanAdd(0, 1) is { Ok: false } full) return (null, full.Why);
@@ -128,7 +131,7 @@ public sealed class HiveHierarchy : IHiveAccounts
             a = _allocator.Allocate(Facts(b));
             if (!a.Ok) return (null, a.Error);
             Managed.Upsert(a.Name!, x => x);
-            var node = Tree.Put(new HiveNode(a.Name!, CloneKind.Subhive, null, owner) { Task = task, Script = script, Since = DateTimeOffset.UtcNow });
+            var node = Tree.Put(new HiveNode(a.Name!, CloneKind.Subhive, null, owner) { Task = task, Script = script, Since = DateTimeOffset.UtcNow, Crew = crew });
             Managed.MarkActive(a.Name!, HiveKinds.Name(CloneKind.Subhive), null, node.Owner);
         }
         _log.LogInformation("hive: allocated subhive account {Name} for {Owner}{Reused}", a.Name, owner, a.Reused ? " (reused)" : "");
@@ -229,6 +232,8 @@ public sealed class HiveHierarchy : IHiveAccounts
 
         switch (k)
         {
+            case CloneKind.Script when hasScript && r.Bodies is > 0 && string.IsNullOrWhiteSpace(r.Name):
+                return SpawnScriptHive(owner, r);
             case CloneKind.Script when !hasScript:
                 return "error: kind script needs script=<saved name> (or code)";
             case CloneKind.Subhive:
@@ -349,6 +354,100 @@ public sealed class HiveHierarchy : IHiveAccounts
             (got.Count < asked ? $"; only {got.Count} of {asked}: {why}" : "");
     }
 
+    /// <summary>
+    /// A hive script: <paramref name="r"/>.Bodies subhive bodies in main's process (allocated, whitelisted before login, logging in a
+    /// launch gap apart, as <see cref="SpawnSubhives"/>) and ONE coordinator script over them with no brain
+    /// (<see cref="ScriptHives"/>). Its <c>bodies()</c> are its accounts online now; when it ends (or <c>release &lt;id&gt;</c>) they
+    /// deposit and log out, and main's brain hears its one result line. A hive-kind clone runs a hive script over its own bodies with
+    /// <c>script{name}</c> instead (its process hosts them).
+    /// </summary>
+    private string SpawnScriptHive(string owner, SpawnRequest r)
+    {
+        if (owner != HiveTree.Root)
+            return "no: run the hive script over your own bodies: script{name} (bodies() are yours); spawned nothing";
+        if (Subhives is null || ScriptHives is not { } host)
+            return "no: hive scripts need subhive bodies here (Hive:Subhives:Enabled is off); spawned nothing";
+        var (name, err) = host.Prepare(r.Script, r.Code);
+        if (name == null) return "error: " + (err ?? "script not saved");
+        string id;
+        lock (_lock)
+        {
+            id = name;
+            for (int i = 2; _scripts.ContainsKey(id); i++) id = $"{name}#{i}";
+            _scripts[id] = name;
+        }
+        int asked = Math.Max(1, r.Bodies ?? 1);
+        int want = Math.Min(asked, Math.Max(1, MaxBodiesPerSpawn));
+        string? why = asked > want ? $"max {want} per spawn" : null;
+        var got = new List<string>();
+        var task = "hive script " + id;
+        while (got.Count < want)
+        {
+            var (acc, w) = AllocateBody(owner, task, name, crew: id);
+            if (acc == null) { why = w; break; }
+            got.Add(acc);
+        }
+        string? first = null;
+        foreach (var acc in got.ToList())
+        {
+            var t = Subhives.Spawn(owner, acc, null, null); // no job of its own: the coordinator gives each its lane once it is in
+            if (t.StartsWith("ok", StringComparison.Ordinal)) continue;
+            first ??= t;
+            got.Remove(acc);
+            Released(acc, "not spawned: " + t);
+        }
+        if (got.Count == 0)
+        {
+            lock (_lock) _scripts.Remove(id);
+            return "no: " + (first ?? why) + "; spawned nothing";
+        }
+        var started = host.Start(id, name, r.Args, () => Members(id), (ok, line) => ScriptEnded(id, ok, line));
+        if (!started.StartsWith("ok", StringComparison.Ordinal))
+        {
+            lock (_lock) _scripts.Remove(id);
+            ReleaseMembers(id, "hive script didn't start");
+            return started.StartsWith("error", StringComparison.Ordinal) ? started : "error: " + started;
+        }
+        _log.LogInformation("hive: hive script {Id} ({Script}) over {N} bodies: {Names}", id, name, got.Count, string.Join(", ", got));
+        var names = HiveTree.Ranges(got.Select(HiveNode.ShortOf));
+        return $"ok: hive script {id}: ONE script drives {got.Count} bod{(got.Count == 1 ? "y" : "ies")} ({names}), no brain; " +
+            $"none in game yet{(got.Count > 1 ? $", logging in {LaunchGapSeconds:0.#}s apart" : "")}; when it ends they deposit and log out " +
+            $"(release {id} stops it)" + (got.Count < asked ? $"; only {got.Count} of {asked}: {why}" : "");
+    }
+
+    /// <summary>The accounts a hive script owns (any state).</summary>
+    private List<string> Members(string id) =>
+        Tree.All().Where(n => string.Equals(n.Crew, id, StringComparison.OrdinalIgnoreCase)).Select(n => n.Account).ToList();
+
+    /// <summary>The hive script a name means ("chop_crew", "chop_crew#2"), if one runs.</summary>
+    private string? ScriptId(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        var n = name.Trim();
+        lock (_lock) return _scripts.Keys.FirstOrDefault(k => k.Equals(n, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Running hive scripts (id → script name), for status and tests.</summary>
+    public IReadOnlyDictionary<string, string> HiveScripts { get { lock (_lock) return new Dictionary<string, string>(_scripts, StringComparer.OrdinalIgnoreCase); } }
+
+    /// <summary>Its bodies deposit and log out (each once: a body already releasing is left to that release).</summary>
+    private int ReleaseMembers(string id, string reason)
+    {
+        var order = Members(id).Where(a => Tree.Get(a)?.State != "releasing").ToList();
+        foreach (var a in order) Tree.SetState(a, "releasing");
+        if (order.Count > 0) _ = Task.Run(() => CascadeAsync(order, reason));
+        return order.Count;
+    }
+
+    private void ScriptEnded(string id, bool ok, string line)
+    {
+        lock (_lock) _scripts.Remove(id);
+        int n = ReleaseMembers(id, $"hive script {id} ended");
+        _log.LogInformation("hive: hive script {Id} {State}: {Line}; releasing {N} bodies", id, ok ? "done" : "failed", line, n);
+        Quiet($"[hive] hive script {id} {(ok ? "done" : "failed")}: {Trunc(line, 200)}" + (n > 0 ? $"; its {n} bod{(n == 1 ? "y" : "ies")} deposit and log out" : ""),
+            EventPriority.Normal, wake: true);
+    }
+
     /// <summary>Whitelists each account (confirmed, one at a time) and asks the owning hive to log it in. A refusal releases it.</summary>
     private async Task HostRemoteAsync(string owner, IReadOnlyList<string> accounts, string? task, string? script, bool whitelist)
     {
@@ -412,8 +511,16 @@ public sealed class HiveHierarchy : IHiveAccounts
     {
         if (Bodies is not { } bodies) return "error: hive is off";
         requester = Tree.Norm(requester);
+        // A hive script by its id: the coordinator stops and its bodies deposit and log out (its end reports to the brain).
+        if (requester == HiveTree.Root && ScriptId(id) is { } sid)
+        {
+            int n = ReleaseMembers(sid, reason);
+            ScriptHives?.Stop(sid, reason);
+            return $"ok: stopping hive script {sid}; its {n} bod{(n == 1 ? "y" : "ies")} deposit and log out";
+        }
         List<string> roots;
-        if (string.IsNullOrWhiteSpace(id) || id.Trim().Equals("all", StringComparison.OrdinalIgnoreCase))
+        bool all = string.IsNullOrWhiteSpace(id) || id.Trim().Equals("all", StringComparison.OrdinalIgnoreCase);
+        if (all)
             roots = Tree.Children(requester).Select(c => c.Account).ToList();
         else if (Resolve(id) is { } acc)
         {
@@ -427,6 +534,11 @@ public sealed class HiveHierarchy : IHiveAccounts
 
         var order = roots.SelectMany(Tree.ReleaseOrder).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         foreach (var a in order) Tree.SetState(a, "releasing");
+        // Every hive script whose bodies all go stops too (after they are marked: its end doesn't release them a second time).
+        List<string> scripts;
+        lock (_lock) scripts = _scripts.Keys.ToList();
+        foreach (var sid2 in scripts)
+            if (Members(sid2) is { Count: > 0 } ms && ms.All(m => order.Contains(m, StringComparer.OrdinalIgnoreCase))) ScriptHives?.Stop(sid2, reason);
         _ = Task.Run(() => CascadeAsync(order, reason));
         var kids = order.Except(roots).ToList();
         return $"ok: releasing {HiveTree.Ranges(roots.Select(Short))}" +

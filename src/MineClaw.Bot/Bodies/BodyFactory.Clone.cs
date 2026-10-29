@@ -121,6 +121,10 @@ public static partial class BodyFactory
             Addressed = text => brain.Directory?.Addressed(text) ?? [],
         };
         scripts.Controller.StepScope = scope;
+        // forEach's target leases (claimTarget) go through this body's claim view. The lane is built on the raw adapter (its world,
+        // its name), whose claim view is none: live 10-29 every lane's lease said "free" and the bodies of a crew all took the same
+        // tree. body.Game is the claim-aware client.
+        scripts.Controller.Host.Claims = () => GameClients.Claimed(body.Game)?.Claims;
         ScriptTools.AttachLaneGate(rt, scripts);
         body.ScriptBridge = scripts;
     }

@@ -116,7 +116,11 @@ public sealed class BodyCrewPort(BodyRegistry registry, ToolRegistry tools, ICre
 {
     public ICrewBoard Board { get; } = board;
 
-    public IReadOnlyList<string> Bodies() => registry.All.Where(b => !b.IsMain && b.State == BodyState.Online).Select(b => b.Short).ToList();
+    /// <summary>Bodies this port never hands out (main's own crews skip the bodies a hive script owns). Null = none.</summary>
+    public Func<string, bool>? Excluded { get; set; }
+
+    public IReadOnlyList<string> Bodies() => registry.All.Where(b => !b.IsMain && b.State == BodyState.Online && Excluded?.Invoke(b.Name) != true)
+        .Select(b => b.Short).ToList();
 
     private Body? Find(string name) => registry.Find(name) as Body;
 
@@ -163,6 +167,32 @@ public sealed class BodyCrewPort(BodyRegistry registry, ToolRegistry tools, ICre
             return new ActResult(r.Ok, r.Text);
         }
     }
+}
+
+/// <summary>
+/// One hive script's view of its process's bodies (<c>hive spawn kind=script bodies=N</c>): exactly the accounts allocated to it that
+/// are online now, so <c>bodies()</c> grows as late logins arrive and shrinks as bodies leave. Lanes start only on its own bodies.
+/// </summary>
+public sealed class SubsetCrewPort(ICrewPort inner, Func<IReadOnlyCollection<string>> members) : ICrewPort
+{
+    public ICrewBoard Board => inner.Board;
+
+    private bool Mine(string body) => members().Any(m => string.Equals(m, body, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(Body.ShortName(m, false), body, StringComparison.OrdinalIgnoreCase));
+
+    public IReadOnlyList<string> Bodies() => inner.Bodies().Where(Mine).ToList();
+
+    /// <summary>Its accounts not online yet (allocated, still logging in).</summary>
+    public int Pending()
+    {
+        var on = inner.Bodies();
+        return members().Count(m => !on.Contains(Body.ShortName(m, false), StringComparer.OrdinalIgnoreCase) && !on.Contains(m, StringComparer.OrdinalIgnoreCase));
+    }
+    public BodyInfo? Info(string body) => Mine(body) ? inner.Info(body) : null;
+    public int Count(string body, string item) => Mine(body) ? inner.Count(body, item) : -1;
+    public ILane Start(LaneSpec spec) => Mine(spec.Body) ? inner.Start(spec) : Lanes.Failed(spec.Body, $"{spec.Body} isn't one of this hive script's bodies");
+    public Task<ActResult> ActAsync(string body, string action, JsonElement args, CancellationToken ct) =>
+        Mine(body) ? inner.ActAsync(body, action, args, ct) : Task.FromResult(ActResult.Fail($"{body} isn't one of this hive script's bodies"));
 }
 
 /// <summary>The lane handles the ports hand out.</summary>

@@ -318,6 +318,35 @@ public sealed partial class ScriptBridge
     }
 
     /// <summary>
+    /// A hive script's coordinator (<c>hive spawn kind=script bodies=N</c>): its own controller with no body of its own — the game
+    /// functions answer that it works through its roles (<c>everyBody</c>/<c>parallel</c>/<c>spawn</c>), chat goes to the log — over
+    /// exactly <paramref name="crew"/>'s bodies, with this bot's library, data, leases and checkpoints. Its runs are unattended (no
+    /// brain) and get <see cref="ScriptOptions.HiveScriptMinutes"/>.
+    /// </summary>
+    public ScriptController Coordinator(MineClaw.Scripting.Crew.ICrewPort crew, string label)
+    {
+        var h = Controller.Host;
+        const string NoBody = "a hive script's coordinator has no body: act in a role (everyBody/parallel/spawn)";
+        var host = new ScriptHost
+        {
+            World = h.World, Username = h.Username, Data = h.Data, Actions = h.Actions,
+            Act = (_, _, _) => Task.FromResult(ActResult.Fail(NoBody)),
+            Skills = h.Skills, Skill = (_, _, _) => Task.FromResult(ActResult.Fail(NoBody)), SkillSchema = h.SkillSchema, SkillIsAtomic = h.SkillIsAtomic,
+            Say = (t, _) => { _log?.LogInformation("hive script {Label} (not said): {Text}", label, t); return Task.FromResult(ActResult.Success("logged (no body to speak)")); },
+            Muted = _ => true,
+            Emote = (_, _) => Task.FromResult(ActResult.Success("logged (no body)")),
+            WhereIs = h.WhereIs, NearestKnown = h.NearestKnown, IsProtected = h.IsProtected, OnlinePlayers = h.OnlinePlayers,
+            Wake = (s, reason) => _log?.LogInformation("hive script {Label} wake (no brain): {Reason}", label, reason),
+            ActionVeto = h.ActionVeto,
+            Log = line => _log?.LogInformation("hive script {Label}: {Line}", label, line),
+            Body = "hive", Crew = crew, Claims = h.Claims, Checkpoints = h.Checkpoints, StoredParams = h.StoredParams,
+        };
+        var o = Options.Copy();
+        o.MaxMinutes = Math.Max(o.MaxMinutes, o.HiveScriptMinutes);
+        return new ScriptController(host, o, _time);
+    }
+
+    /// <summary>
     /// <see cref="EventQueue.Gate"/>: while a script runs, only real wakes wake the brain — task ends, danger and other
     /// interrupt-priority events, chat addressed to this bot (a trusted "stop" too), script wake/needs_input/pause notices.
     /// Events the script's own on()/waitfor/ask takes don't wake it either. Everything else stays queued as non-waking
@@ -356,6 +385,9 @@ public sealed partial class ScriptBridge
                 && Hold(s, "chat", e) && s.RequestInterrupt(new ScriptInterrupt("chat", se.Text, se.Player), cut: false))
                 return e with { Wakes = false };
             s.Deliver(se);
+            // An unattended run (a crew lane) pauses on its body's danger and carries on by itself once the reflexes let go: the
+            // coordinator's business, not a brain wake (20 bodies fighting zombies were 20 wakes).
+            if (se.Kind == ScriptEventKind.Danger && s.Unattended) return e with { Wakes = false };
             if (se.Kind != ScriptEventKind.Join) return e;
         }
         // The stall watchdog on a running script: a patch may unstick it (restart the step, step aside) before the brain hears it.
@@ -433,6 +465,12 @@ public sealed partial class ScriptBridge
     {
         var l = L(s);
         if (Volatile.Read(ref l.BrainWaiters) > 0 || s.PausedFor == PauseKind.Brain) return; // the brain's own call reports it
+        // An unattended run (crew lane, hive script) resumes by itself once its body is safe: nobody to wake, nothing to report.
+        if (s.AutoResumes)
+        {
+            _log?.LogInformation("script {Name}{Body}: paused for {Why}; resumes once safe", s.Name, Body is { } bn ? " on " + bn : "", s.PauseReason);
+            return;
+        }
         bool wakes = s.PausedFor is PauseKind.Danger or PauseKind.Stop or PauseKind.Script;
         // The full turn's interrupt → resume latency (a patch that escalated keeps its open measurement, now "escalated").
         if (wakes)
@@ -455,6 +493,16 @@ public sealed partial class ScriptBridge
     /// </summary>
     private void OnResumed(ScriptSession s, bool auto)
     {
+        // A lane that carried on by itself after a danger (or a chat pause) is its body's activity again: its slot, "body busy" for
+        // brain tools, its interrupts (the pause ended the activity that followed it).
+        if (auto && s.Request.Role != null && !L(s).Attached)
+        {
+            var scope = Controller.StepScope;
+            _ = Task.Run(async () =>
+            {
+                using (scope?.Invoke()) await FollowAsActivityAsync(s, TimeSpan.Zero, CancellationToken.None).ConfigureAwait(false);
+            });
+        }
         var key = ScriptPatcher.Key(s);
         if (!auto && _rt.Agent.TurnStartedAt != null && _rt.Interrupts.IsOpen(key))
         {
@@ -1067,7 +1115,8 @@ public sealed partial class ScriptBridge
                 Silence(myId); // the pause notice (or the brain's own pause call) reports it
                 return ToolResult.Error("paused");
             }
-            if (l.PlannerEnded) Silence(myId);
+            // A crew lane reports to its coordinator (parallel/everyBody), never to the brain: N lanes ending must not be N wakes.
+            if (l.PlannerEnded || s.Request.Role != null) Silence(myId);
             return s.Ok ? ToolResult.Success(s.Outcome ?? "ok") : ToolResult.Error(s.Outcome ?? "failed");
         }
 

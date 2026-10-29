@@ -112,6 +112,27 @@ public static class ScriptPrompts
             }
             return `harvested ${n} wheat`
             """),
+        ("a hive script: every body works the free targets, late joiners too", """
+            // purpose: every body chops the trees around it (one body per tree), storing as the bag fills, until none are left
+            const P = params({ at: null, r: 48, rounds: 60, chest: null })
+            function chopper() {
+              use(keepFed(), depositWhenFull(P.chest))
+              if (P.at) expect(go(P.at))
+              let n = 0
+              for (let i = 0; i < P.rounds; i++) {
+                const r = forEach(find('log', { r: P.r, limit: 8 }), t => chop(t), { budget: 2 })
+                n += r.n
+                if (r.exhausted && !r.taken) break
+                if (r.n === 0) wait(5)
+              }
+              stash('all-but-tools', { to: P.chest })
+              return `${me.body} ${n}`
+            }
+            function main() {
+              const r = everyBody('chopper')
+              return `deforest: ${r.msg}`
+            }
+            """),
         ("guard an area at night", """
             // purpose: patrol an area at night fighting hostiles that come near; retreat home at low hp; stop at day
             const P = params({ at: null, r: 8, home: 'home', low: 6, rounds: 40 })
@@ -139,7 +160,8 @@ public static class ScriptPrompts
         "Compose the primitives (examples below show common jobs); never re-implement one, never call a deprecated helper (mineGen, " +
         "harvestFarm, chopTrees, guardArea, store, restock, deliver, waitForDay). Loops bounded (for, upto, until) or a machine() with a way to end; reactive jobs = machine() with " +
         "events/timers/conditions plus policies. Data goes to return/log, never fail() or say(). Several bodies: top level only " +
-        "functions and constants, work in main(), roles run with parallel()/spawn(). After a draft you may get lint errors: fix them " +
+        "functions and constants, work in main(), roles run with everyBody() (a hive script: every body, late ones too) or " +
+        "parallel()/spawn(); share work through forEach's leases, never a fixed split. After a draft you may get lint errors: fix them " +
         "all and answer with the WHOLE corrected script, nothing else.\n\n# SDK reference\n" + Sdk.SdkReference.Build() +
         "\n# Examples\n" + string.Join("\n", Examples.Select(e => $"## {e.Title}\n```js\n{Unindent(e.Code)}\n```\n")));
 

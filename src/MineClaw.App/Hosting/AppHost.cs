@@ -229,9 +229,14 @@ public static class AppHost
                 var board = new MineClaw.Bot.Bodies.DbCrewBoard(rt.Memory.Db);
                 MineClaw.Scripting.Crew.ICrewPort hivePort = new MineClaw.Hive.Crew.HiveCrewPort(supervisor, board);
                 // Main's subhive bodies are crew lanes in this process; clone processes stay lanes over the db board.
-                scripts.Crew = subhives != null && bot.Bodies is { } reg
-                    ? new CompositeCrewPort(board, new MineClaw.Bot.Bodies.BodyCrewPort(reg, rt.Tools, board), hivePort)
-                    : hivePort;
+                if (subhives != null && bot.Bodies is { } reg)
+                {
+                    var own = new MineClaw.Bot.Bodies.BodyCrewPort(reg, rt.Tools, board);
+                    scripts.Crew = new CompositeCrewPort(board, own, hivePort);
+                    // Hive scripts (hive spawn kind=script bodies=N): one bodiless coordinator over its own bodies, no brain.
+                    if (mainHive.Hierarchy is { } hierarchy) SubhiveWiring.AttachScriptHives(hierarchy, scripts, own, reg, rt.Tools, board, log);
+                }
+                else scripts.Crew = hivePort;
             }
             _ = scripts.StartLuaMigrationAsync(signals.Token).ContinueWith(t =>
             {

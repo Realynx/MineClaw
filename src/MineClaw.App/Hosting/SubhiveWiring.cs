@@ -75,11 +75,26 @@ internal static class SubhiveWiring
             var text = r == null ? "main didn't answer on the hive bus: no bodies" : r.Ok ? r.As<string>() ?? "ok" : r.Error ?? "refused";
             log.LogInformation("hive: asked main for {N} subhive bodies: {Text}", wanted, text);
             rt.Events.Post(GameEvent.Notice($"[hive] your bodies: {text}. Drive them with body=\"<n>\"|[...]|\"all\" on do/stop/status; " +
-                "a saved crew script run with params {bodies:[...]} works them in parallel lanes; [bodies] shows them once they are in game.",
+                "for a job for all of them run a saved hive script (script{name}: one script works every body, late ones too; you sleep " +
+                "until it ends); [bodies] shows them once they are in game.",
                 EventPriority.Normal));
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { log.LogWarning(ex, "hive: asking main for subhive bodies failed"); }
+    }
+
+    /// <summary>
+    /// Main's hive scripts (<c>hive spawn kind=script bodies=N script=X</c>): ONE bodiless coordinator per script over exactly its
+    /// subhive bodies in this process, no brain (<see cref="MineClaw.Hive.Crew.HiveScriptHost"/>). Main's own crews (its brain's
+    /// <c>script</c> runs) no longer see the bodies a hive script owns.
+    /// </summary>
+    public static MineClaw.Hive.Crew.HiveScriptHost AttachScriptHives(HiveHierarchy h, MineClaw.Bot.GameTools.ScriptBridge scripts, BodyCrewPort mainCrew,
+        BodyRegistry bodies, MineClaw.Agent.Tools.ToolRegistry tools, ICrewBoard board, ILogger log)
+    {
+        mainCrew.Excluded = account => h.Tree.Get(account)?.Crew != null;
+        var host = new MineClaw.Hive.Crew.HiveScriptHost(scripts, new BodyCrewPort(bodies, tools, board), log);
+        h.ScriptHives = host;
+        return host;
     }
 
     /// <summary>A body's claim view in a hive clone: its siblings coordinate on this process's board, the rest of the hive on main's.</summary>
@@ -130,6 +145,7 @@ internal sealed class CompositeCrewPort(ICrewBoard board, params ICrewPort[] por
     public int Count(string body, string item) => For(body).Count(body, item);
     public ILane Start(LaneSpec spec) => For(spec.Body).Start(spec);
     public Task<ActResult> ActAsync(string body, string action, System.Text.Json.JsonElement args, CancellationToken ct) => For(body).ActAsync(body, action, args, ct);
+    public int Pending() => ports.Sum(p => p.Pending());
 }
 
 /// <summary>Subhive body client options: the small view distance, and one chunk store per hive process (overlapping views held once).</summary>

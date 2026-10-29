@@ -34,7 +34,11 @@ public sealed class BodyDirectory : IBodyDirectory
         _brain = brain;
         _reg = brain.Bodies;
         _log = log;
-        Digest = new BodyEventDigest(() => brain.Runtime.Agent.TurnFocus ?? StandingFocus, b => Activities(b)?.IsBusy == true, brain.Time);
+        Digest = new BodyEventDigest(() => brain.Runtime.Agent.TurnFocus ?? StandingFocus, b => Activities(b)?.IsBusy == true, brain.Time)
+        {
+            // A body working a lane of a crew that is still running is the crew's (its reflexes and the coordinator handle it).
+            Unattended = b => Find(b) is Body { ScriptBridge: { } lane } && MineClaw.Scripting.Crew.Crews.Owns(lane.Controller),
+        };
     }
 
     /// <summary>The wake digest for clone events (the queue's intake stage).</summary>

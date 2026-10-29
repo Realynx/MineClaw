@@ -92,6 +92,23 @@ public class MultiBodyBrainTests
     }
 
     [Fact]
+    public void A_body_a_running_crew_owns_never_wakes_the_brain_but_its_danger_reaches_its_lane_and_typed_chat_still_wakes()
+    {
+        // Live 10-29: a 20-body hive woke on every lane's zombie and every lane's end. A crewed body's events are its crew's.
+        var crewed = new HashSet<string> { "67" };
+        var digest = new BodyEventDigest(() => null, _ => true) { Unattended = b => crewed.Contains(b) };
+        Assert.False(digest.Apply(GameEvent.TaskDone("#3 script: chopper done") with { Body = "67" })!.Wakes);
+        Assert.False(digest.Apply(GameEvent.Notice("stood up after the fight", EventPriority.Normal) with { Body = "67" })!.Wakes);
+        // Danger passes untouched (the lane's own gate pauses it and keeps the brain asleep); MustWake and typed chat always wake.
+        Assert.True(digest.Apply(GameEvent.LowHealth(5) with { Body = "67" })!.Wakes);
+        Assert.True(digest.Apply(GameEvent.TaskFail("stalled: no progress 60s") with { Body = "67", MustWake = true })!.Wakes);
+        Assert.True(digest.Apply(GameEvent.Whisper("Fox", "67, stop") with { Body = "67" })!.Wakes);
+        // Once the crew lets the body go, it is the brain's again.
+        crewed.Clear();
+        Assert.True(digest.Apply(GameEvent.TaskDone("#4 dig: ok") with { Body = "67" })!.Wakes);
+    }
+
+    [Fact]
     public void Body_events_render_with_their_body_and_main_or_hive_events_as_before()
     {
         Assert.Equal("[67 task ok] #3 mine: ok", (GameEvent.TaskDone("#3 mine: ok") with { Body = "67" }).Format());

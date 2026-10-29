@@ -69,6 +69,7 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime, IPatc
     public void Dispose()
     {
         foreach (var l in _lanes.Values) try { if (!l.Completion.IsCompleted) l.Cancel("coordinator ended"); } catch (Exception) { }
+        try { EndCrew(); } catch (Exception) { }
         try { _e?.Dispose(); } catch (Exception) { }
     }
 

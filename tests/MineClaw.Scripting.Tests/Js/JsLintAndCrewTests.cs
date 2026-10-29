@@ -113,12 +113,22 @@ public sealed class FakeCrew : ICrewPort, IDisposable
     public Dictionary<string, Rig> Rigs { get; } = new(StringComparer.OrdinalIgnoreCase);
     public ICrewBoard Board { get; } = new InMemoryCrewBoard();
 
-    public FakeCrew(params string[] bodies)
+    public FakeCrew(params string[] bodies) : this(null, bodies) { }
+
+    public FakeCrew(ScriptOptions? options, params string[] bodies)
     {
-        foreach (var b in bodies) Rigs[b] = Rig.Js(crew: this, body: b);
+        foreach (var b in bodies) Rigs[b] = Rig.Js(options, crew: this, body: b);
     }
 
-    public IReadOnlyList<string> Bodies() => Rigs.Keys.ToList();
+    /// <summary>Bodies in game now (null = every rig): tests log bodies in late and out mid-job.</summary>
+    public HashSet<string>? Online { get; set; }
+
+    public IReadOnlyList<string> Bodies() { lock (this) return Rigs.Keys.Where(b => Online?.Contains(b) != false).ToList(); }
+
+    /// <summary>Bodies allocated to this crew and still logging in (a hive script's late logins): those of them not online yet.</summary>
+    public HashSet<string>? Coming { get; set; }
+
+    public int Pending() { lock (this) return Coming?.Count(b => Online?.Contains(b) != true) ?? 0; }
 
     public BodyInfo? Info(string body) => Rigs.TryGetValue(body, out var r)
         ? new BodyInfo(body, r.World.Player.Health, r.World.Player.Food, new BlockPos(0, 65, 0), r.C.Current != null, r.C.Current?.Name, r.World.Inventory.EmptySlotCount())

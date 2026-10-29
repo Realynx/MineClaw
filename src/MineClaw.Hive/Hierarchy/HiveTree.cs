@@ -8,6 +8,8 @@ public sealed record HiveNode(string Account, CloneKind Kind, BrainKind? Brain, 
     public DateTimeOffset Since { get; init; }
     /// <summary>"spawning" | "running" | "releasing".</summary>
     public string State { get; init; } = "spawning";
+    /// <summary>A subhive body a hive script owns (<see cref="IHiveScriptHost"/>): that script's id; null = its owner's brain drives it.</summary>
+    public string? Crew { get; init; }
     public string Short => ShortOf(Account);
 
     public static string ShortOf(string account) =>
@@ -120,6 +122,14 @@ public sealed class HiveTree(string main)
             if (depth > 16) return;
             var kids = Children(owner);
             // Many bodies of one hive read as one part ("15 subhive bodies of 101: 102-117 (3 spawning)"), not 15.
+            // A hive script's bodies read as one part: "hive script chop_crew: 3 bodies 102-105".
+            foreach (var crew in kids.Where(c => c.Kind == CloneKind.Subhive && c.Crew != null).GroupBy(c => c.Crew!, StringComparer.OrdinalIgnoreCase))
+            {
+                var bs = crew.ToList();
+                parts.Add($"hive script {crew.Key}: {bs.Count} bod{(bs.Count == 1 ? "y" : "ies")} {Ranges(bs.Select(c => c.Short))}" +
+                    (bs.Any(c => c.State != "running") ? $" ({bs.Count(c => c.State != "running")} {(bs.All(c => c.State == "releasing") ? "releasing" : "not in game yet")})" : ""));
+            }
+            kids = kids.Where(c => c.Crew == null).ToList();
             var subs = kids.Where(c => c.Kind == CloneKind.Subhive).ToList();
             if (subs.Count >= 3)
             {

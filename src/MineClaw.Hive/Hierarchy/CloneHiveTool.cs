@@ -11,7 +11,8 @@ namespace MineClaw.Hive.Hierarchy;
 /// </summary>
 public static class CloneHiveTool
 {
-    public const string Description = "Your bodies/clones (via main, never chat): spawn bodies=N, release name|all, list.";
+    /// <summary>The tool text; the last clause points one job for every body at a saved hive script (live 10-29: per-body jobs, turn after turn).</summary>
+    public const string Description = "Your bodies/clones (via main, never chat): spawn bodies=N, release name|all, list. One job for all bodies: script{name}.";
 
     public static void Register(ToolRegistry tools, CloneHost host) =>
         tools.Register(HiveTools.MainTool, Description,

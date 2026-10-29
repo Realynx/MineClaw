@@ -47,6 +47,7 @@ internal sealed partial class JsRuntime
             var role = Str(a, 1) ?? throw ScriptSession.Bug("spawn(body, role, args) needs a role function name");
             var argsJson = JsConvert.ToNode(JsConvert.Arg(a, 2), 0, args: false)?.ToJsonString();
             var lane = Port().Start(new LaneSpec(body, s.Name, s.Code, s.Language, role, argsJson, CrewId, s.Request.Version, s.Request.Author));
+            if (_liveCrew == null) Crews.Open(_liveCrew = CrewId); // its lanes' bodies are this crew's until it ends (wake digest)
             int id = ++_nextLane;
             _lanes[id] = lane;
             s.TraceLane(id, lane);
@@ -67,6 +68,38 @@ internal sealed partial class JsRuntime
                 catch (TimeoutException) { return ActResult.Fail($"lane {lane.Body} still running: {lane.Status}"); }
             }));
         });
+        // everyBody's dispatch loop (70-crew.js): wait (interruptible, not an action) until one of the lanes ends or the crew's bodies
+        // change, at most s seconds; -> the id of an ended lane, or 0.
+        H(h, "laneAny", a =>
+        {
+            var ids = JsConvert.Arg(a, 0) is JsArray arr ? arr.Select(x => (int)x.AsNumber()).Where(_lanes.ContainsKey).ToList() : [];
+            double sec = Math.Clamp(Num(a, 1) ?? 2, 0.1, s.Options.MaxWaitSeconds);
+            int got = 0;
+            var before = string.Join(",", s.Host.Crew?.Bodies() ?? []);
+            s.RunAction("everyBody", false, async ct =>
+            {
+                var end = s.Time.GetUtcNow() + TimeSpan.FromSeconds(sec);
+                while (true)
+                {
+                    if (ids.FirstOrDefault(i => _lanes[i].Completion.IsCompleted) is var done and > 0) { got = done; return ActResult.Success("lane ended"); }
+                    if (s.Time.GetUtcNow() >= end || string.Join(",", s.Host.Crew?.Bodies() ?? []) != before) return ActResult.Success("tick");
+                    await Task.Delay(TimeSpan.FromMilliseconds(100), s.Time, ct).ConfigureAwait(false);
+                }
+            }, counts: false);
+            return new JsNumber(got);
+        });
+        // A lane's end without waiting: {ok, msg} once it ended, else null.
+        H(h, "laneEnd", a =>
+        {
+            var lane = Lane(a);
+            if (!lane.Completion.IsCompletedSuccessfully) return lane.Completion.IsCompleted ? V(new JsonObject { ["ok"] = false, ["msg"] = "lane crashed" }) : JsValue.Null;
+            var r = lane.Completion.Result;
+            return V(new JsonObject { ["ok"] = r.Ok, ["msg"] = r.Msg });
+        });
+        H(h, "clock", _ => new JsNumber((s.Time.GetUtcNow() - s.Started).TotalSeconds));
+        H(h, "runArgs", _ => RunArgs());
+        H(h, "pendingBodies", _ => new JsNumber(s.Host.Crew?.Pending() ?? 0));
+        H(h, "hasCrew", _ => s.Host.Crew != null ? JsBoolean.True : JsBoolean.False);
         H(h, "laneJoin", a => Join(JsConvert.Arg(a, 0) is JsArray ids ? ids.Select(x => (int)x.AsNumber()).ToList() : [], JsConvert.Arg(a, 1).IsBoolean() && a[1].AsBoolean()));
         H(h, "laneCancel", a => { Lane(a).Cancel(Str(a, 1) ?? "cancelled by coordinator"); return JsValue.Undefined; });
         H(h, "laneStatus", a => new JsString(Lane(a).Status));
@@ -103,14 +136,19 @@ internal sealed partial class JsRuntime
         H(h, "crewLock", a => Board().TryLock(CrewId, Str(a, 0) ?? "", Me, TimeSpan.FromSeconds(Num(a, 1) ?? 120)) ? JsBoolean.True : JsBoolean.False);
         H(h, "crewUnlock", a => { Board().Unlock(CrewId, Str(a, 0) ?? "", Me); return JsValue.Undefined; });
         // Work-target leases on the hive's claim board (forEach): shared by every body of every crew and hive, not one crew's board.
-        H(h, "claimTarget", a => ClaimTarget(Str(a, 0) ?? "", Num(a, 1) ?? 300) ? JsBoolean.True : JsBoolean.False);
+        // keep (3rd arg) = a done mark: it outlives this run; every other lease this run still holds goes back when it ends.
+        H(h, "claimTarget", a => ClaimTarget(Str(a, 0) ?? "", Num(a, 1) ?? 300, JsConvert.Arg(a, 2).IsBoolean() && a[2].AsBoolean()) ? JsBoolean.True : JsBoolean.False);
         H(h, "releaseTarget", a => { ReleaseTarget(Str(a, 0) ?? ""); return JsValue.Undefined; });
     }
 
     private static MineClaw.World.Claims.ClaimKey TargetKey(string key) => MineClaw.World.Claims.ClaimKey.Task("target:" + key);
 
-    /// <summary>Leases a work target for this body; false = another body holds it. No board (one bot) or no answer = free.</summary>
-    private bool ClaimTarget(string key, double ttlSeconds)
+    /// <summary>
+    /// Leases a work target for this body; false = another body holds it. No board (one bot) or no answer = free. A lease this run
+    /// holds (not a <paramref name="keep"/> done mark) is given back when the run ends however it ends: a lane that was stopped, cut
+    /// off by a logout or failed mid-target never leaves its tree leased for the TTL (forEach's own release can't run then).
+    /// </summary>
+    private bool ClaimTarget(string key, double ttlSeconds, bool keep = false)
     {
         if (key.Length == 0 || s.Host.Claims?.Invoke() is not { } board) return true;
         var k = TargetKey(key);
@@ -119,7 +157,11 @@ internal sealed partial class JsRuntime
         {
             var r = board.TryClaimAsync(k, TimeSpan.FromSeconds(Math.Clamp(ttlSeconds, 10, 1800)), "forEach")
                 .WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult();
-            if (r.Ok) return true;
+            if (r.Ok)
+            {
+                lock (_held) { if (keep) _held.Remove(key); else _held.Add(key); }
+                return true;
+            }
             if (r.Holder != null) return false;
             board.ReleaseAsync(k).GetAwaiter().GetResult(); // unanswered: undo a late grant, work it unleased
             return true;
@@ -129,9 +171,24 @@ internal sealed partial class JsRuntime
 
     private void ReleaseTarget(string key)
     {
+        lock (_held) _held.Remove(key);
         if (key.Length == 0 || s.Host.Claims?.Invoke() is not { } board) return;
         try { board.ReleaseAsync(TargetKey(key)).WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult(); }
         catch (Exception) { /* the lease expires */ }
+    }
+
+    private readonly HashSet<string> _held = new(StringComparer.Ordinal);
+    private string? _liveCrew;
+
+    /// <summary>The run ended: leases it still holds go back at once (≤ 3 s in all), and its crew is no longer live.</summary>
+    private void EndCrew()
+    {
+        if (_liveCrew is { } crew) { _liveCrew = null; Crews.Close(crew); }
+        string[] keys;
+        lock (_held) { keys = _held.ToArray(); _held.Clear(); }
+        if (keys.Length == 0 || s.Host.Claims?.Invoke() is not { } board) return;
+        try { Task.WhenAll(keys.Select(k => board.ReleaseAsync(TargetKey(k)))).WaitAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult(); }
+        catch (Exception) { /* the leases expire */ }
     }
 
     private ICrewBoard Board() => s.Host.Crew?.Board ?? (_localBoard ??= new InMemoryCrewBoard(s.Time));

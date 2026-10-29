@@ -44,6 +44,11 @@ public interface ICrewPort
     Task<ActResult> ActAsync(string body, string action, JsonElement args, CancellationToken ct);
     /// <summary>The shared crew board.</summary>
     ICrewBoard Board { get; }
+    /// <summary>
+    /// Bodies this crew has but that aren't in game yet (a hive script's accounts log in a launch gap apart): <c>everyBody</c> keeps
+    /// waiting for them instead of ending once the early ones are done. 0 = none known.
+    /// </summary>
+    int Pending() => 0;
 }
 
 /// <summary>
