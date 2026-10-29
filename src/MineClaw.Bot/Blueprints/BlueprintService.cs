@@ -932,7 +932,9 @@ public sealed class BlueprintService
         var parts = new List<string>
         {
             "materials: " + (mats.Count > 0 ? string.Join(", ", mats.Take(10)) : "almost none"),
-            (s.GeneratorKnown ? "cobble gen known (cobble is cheap)" : "no cobble gen known") + (s.ChoppableTrees > 0 ? $", {s.ChoppableTrees} tree(s) to fell" : ", no trees to spare"),
+            // The gen only matters where stone comes from one (skyblock); a normal world's cobble is everywhere.
+            (s.GeneratorKnown ? "cobble gen known (cobble is cheap)" : MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone ? "no cobble gen known" : "cobble is cheap (mine stone)")
+                + (s.ChoppableTrees > 0 ? $", {s.ChoppableTrees} tree(s) to fell" : ", no trees to spare"),
             "ground from the site: " + GroundExtent(s.World, ground),
         };
         if (Nearby(s, ground) is { Length: > 0 } near) parts.Add("keep clear of: " + near);

@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -8,7 +10,7 @@ namespace MineClaw.Hive.Hierarchy;
 /// armed one line at a time in the command gate's scoped exception (<c>CommandGate.ArmManagedWhitelist</c>) and sent on main's
 /// own connection. Clones and other hives never whitelist: they ask main over the bus.
 /// </summary>
-public sealed class WhitelistManager
+public sealed partial class WhitelistManager
 {
     private readonly ManagedAccounts _managed;
     private readonly HiveAccountsConfig _cfg;
@@ -34,6 +36,30 @@ public sealed class WhitelistManager
     public bool Accepts(string name) => _managed.IsManaged(name) && AccountNames.IsManagedShape(name, _cfg, _main);
 
     public Task<bool> AddAsync(string name, CancellationToken ct = default) => RunAsync("add", name, ct);
+
+    /// <summary>How long an add waits for the server's confirmation line once replies are fed (<see cref="NoteServerLine"/>).</summary>
+    public TimeSpan ConfirmTimeout { get; set; } = TimeSpan.FromSeconds(8);
+
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<bool>> _pending = new(StringComparer.OrdinalIgnoreCase);
+    private volatile bool _repliesFed;
+
+    /// <summary>
+    /// Every server chat/console line main sees (wire it to main's chat feed). Once lines are fed, an add counts only after the
+    /// server's confirmation: "Added X to the whitelist" (1.12.2 <c>commands.whitelist.add.success</c>; b1.8.1 "Added X to
+    /// white-list"), or fails on "Could not add X". Without a feed, an add counts once it is sent (the old behaviour).
+    /// </summary>
+    public void NoteServerLine(string? text)
+    {
+        _repliesFed = true;
+        if (string.IsNullOrEmpty(text) || _pending.IsEmpty) return;
+        if (Added().Match(text) is { Success: true } a && _pending.TryGetValue(a.Groups[1].Value, out var ok)) ok.TrySetResult(true);
+        else if (NotAdded().Match(text) is { Success: true } f && _pending.TryGetValue(f.Groups[1].Value, out var no)) no.TrySetResult(false);
+    }
+
+    [GeneratedRegex(@"Added (\S+?) to (?:the )?white-?list", RegexOptions.IgnoreCase)]
+    private static partial Regex Added();
+    [GeneratedRegex(@"Could not add (\S+?) to (?:the )?white-?list", RegexOptions.IgnoreCase)]
+    private static partial Regex NotAdded();
     public Task<bool> RemoveAsync(string name, CancellationToken ct = default) => RunAsync("remove", name, ct);
 
     private async Task<bool> RunAsync(string op, string name, CancellationToken ct)
@@ -42,9 +68,27 @@ public sealed class WhitelistManager
         if (!Accepts(name)) { _log.LogWarning("hive: /whitelist {Op} {Name} refused: not a managed account", op, name); return false; }
         var line = $"/whitelist {op} {name}";
         if (!_arm(line)) return false;
+        // An add counts once the server confirms it (when replies are fed): a gate that ate the line, a non-op main or a
+        // typo'd name must not leave the account marked whitelisted (the clone would be kicked at login, forever).
+        TaskCompletionSource<bool>? confirm = op == "add" && _repliesFed ? new(TaskCreationOptions.RunContinuationsAsynchronously) : null;
+        if (confirm != null) _pending[name] = confirm;
         bool sent;
-        try { sent = await _send(line, ct).ConfigureAwait(false); }
-        catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "hive: {Line} failed", line); return false; }
+        try
+        {
+            try { sent = await _send(line, ct).ConfigureAwait(false); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "hive: {Line} failed", line); return false; }
+            if (sent && confirm != null)
+            {
+                bool confirmed;
+                try { confirmed = await confirm.Task.WaitAsync(ConfirmTimeout, ct).ConfigureAwait(false); }
+                catch (TimeoutException) { confirmed = false; _log.LogWarning("hive: {Line}: no confirmation from the server within {S:0}s", line, ConfirmTimeout.TotalSeconds); }
+                if (!confirmed) return false;
+            }
+        }
+        finally
+        {
+            if (confirm != null) _pending.TryRemove(new KeyValuePair<string, TaskCompletionSource<bool>>(name, confirm));
+        }
         if (sent)
         {
             _managed.SetWhitelisted(name, op == "add");

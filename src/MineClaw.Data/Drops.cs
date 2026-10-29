@@ -82,7 +82,7 @@ public static class Drops
             case Blocks.PumpkinStem: return [new(Items.PumpkinSeeds, 0, 0, 3)];
             case Blocks.MelonStem: return [new(Items.MelonSeeds, 0, 0, 3)];
             default:
-                return Blocks.Exists(blockId) ? Self() : [];
+                return Blocks.ExistsB(blockId) ? Self() : [];
         }
     }
 

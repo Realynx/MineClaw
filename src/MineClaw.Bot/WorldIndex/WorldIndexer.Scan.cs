@@ -71,6 +71,8 @@ public sealed partial class WorldIndexer
         var portals = new HashSet<BlockPos>();
         var footCells = new HashSet<BlockPos>();
         bool islands = IslandsOn;
+        bool terrain = ScanTrustsTerrain; // skyblock: scanned stone/builds/lava-by-water are placed things (normal world: terrain)
+        var table = BlockClass.Table;
         var genCandidates = new List<BlockPos>();
         Dictionary<string, HashSet<BlockPos>> farms = BlockClass.FarmTypes.ToDictionary(t => t, _ => new HashSet<BlockPos>());
         int bx = cx << 4, bz = cz << 4;
@@ -87,7 +89,7 @@ public sealed partial class WorldIndexer
             {
                 int id = col.GetBlock(lx, y, lz);
                 if (id == 0) { below = 0; continue; }
-                var c = BlockClass.Of(id);
+                var c = BlockClass.Of(table, id);
                 if ((c & C.Ground) != 0)
                 {
                     if (minY < 0) minY = y;
@@ -99,8 +101,9 @@ public sealed partial class WorldIndexer
                 if ((c & C.Station) != 0) stations.Add(p);
                 if ((c & C.Sign) != 0) signs.Add(p);
                 if ((c & C.Portal) != 0) portals.Add(p);
-                if ((c & C.Farm) != 0 && !(InNether && BlockClass.NaturalNether(id))) farms[BlockClass.FarmType(id)!].Add(p);
+                if ((c & C.Farm) != 0 && IsFarmMember(id)) farms[BlockClass.FarmType(id)!].Add(p);
                 if ((c & C.Tree) != 0) trees.Add(p);
+                if (!terrain) { below = id; continue; } // a normal world generates the rest: placements come from block changes
                 if (IsBuildBlock(id, c)) builds.Add(p); // natural nether terrain isn't a build there
                 else if (id == Blocks.Cobblestone && (below == Blocks.Cobblestone || (y + 1 < height && col.GetBlock(lx, y + 1, lz) == Blocks.Cobblestone)))
                     builds.Add(p); // walls/pillars, not one-thick floors
@@ -130,6 +133,18 @@ public sealed partial class WorldIndexer
             else _foot.Remove(XZ(x, z));
         }
 
+        if (!terrain)
+        {
+            // Normal world: builds and floors are what was SEEN placed (block changes); a re-scan keeps those still standing.
+            foreach (var q in _builds.CellsInChunk(cx, cz))
+                if (IsBuildCell(q, _world.GetBlock(q))) builds.Add(q);
+            if (_floorByChunk.TryGetValue(ColKey(cx, cz), out var seenFloors))
+                foreach (var q in seenFloors)
+                {
+                    int fid = _world.GetBlock(q);
+                    if (IsFloorCandidate(fid, BlockClass.Of(table, fid))) floors.Add(q);
+                }
+        }
         if (islands) _islands.ReplaceChunk(cx, cz, footCells);
         else if (InNether) NoteHazardColumn(cx, cz, ScanHazards(col));
         _trees.ReplaceChunk(cx, cz, trees);
@@ -203,29 +218,31 @@ public sealed partial class WorldIndexer
         if (((BlockClass.Of(ch.OldId) | BlockClass.Of(ch.NewId)) & C.Station) != 0)
         {
             EvaluateStation(p, seen: true);
-            if (ch.OldId == Blocks.Chest || ch.NewId == Blocks.Chest)
+            if (Ids1122.IsChest(ch.OldId) || Ids1122.IsChest(ch.NewId))
                 foreach (var o in Six)
-                    if (o.Y == 0 && _world.GetBlock(p + o) == Blocks.Chest) EvaluateStation(p + o);
+                    if (o.Y == 0 && Ids1122.IsChest(_world.GetBlock(p + o))) EvaluateStation(p + o);
             if (ch.OldId == Blocks.Bed || ch.NewId == Blocks.Bed)
                 foreach (var o in Six)
                     if (o.Y == 0 && _world.GetBlock(p + o) == Blocks.Bed) EvaluateStation(p + o);
         }
         if (((BlockClass.Of(ch.OldId) | BlockClass.Of(ch.NewId)) & C.Sign) != 0) EvaluateSign(p);
 
-        // Generators: this cell and the cells it can affect.
-        _gens.Set(p, IsGenCell(p, ch.NewId, _gens.Contains(p)));
+        // Generators: this cell and the cells it can affect. A normal world's lava meets water everywhere (caves, lakes):
+        // only cells whose refill was seen (TrackRegen) become generator cells there; known cells are kept up to date.
+        bool terrain = ScanTrustsTerrain;
+        if (terrain || _gens.Contains(p)) _gens.Set(p, IsGenCell(p, ch.NewId, _gens.Contains(p)));
         foreach (var o in Six)
         {
             var q = p + o;
             int id = _world.GetBlock(q);
-            if (_gens.Contains(q) || (BlockClass.Of(id) & C.GenOutput) != 0) _gens.Set(q, IsGenCell(q, id, _gens.Contains(q)));
+            if (_gens.Contains(q) || terrain && (BlockClass.Of(id) & C.GenOutput) != 0) _gens.Set(q, IsGenCell(q, id, _gens.Contains(q)));
         }
         if (_gens.Contains(p)) _gens.Touch(p);
 
         foreach (var t in BlockClass.FarmTypes)
         {
             var layer = _farms[t];
-            bool member = BlockClass.FarmType(ch.NewId) == t && !(InNether && BlockClass.NaturalNether(ch.NewId));
+            bool member = BlockClass.FarmType(ch.NewId) == t && IsFarmMember(ch.NewId);
             layer.Set(p, member);
             if (member) layer.Touch(p); // crops growing: re-render (throttled)
             else if (BlockClass.FarmType(ch.OldId) == t) layer.Touch(p);
@@ -234,14 +251,25 @@ public sealed partial class WorldIndexer
         if (Blocks.IsWater(ch.OldId) || Blocks.IsWater(ch.NewId))
             foreach (var o in Six) foreach (var layer in _farms.Values) layer.Touch(p + o);
         _trees.Set(p, (BlockClass.Of(ch.NewId) & C.Tree) != 0);
-        _builds.Set(p, IsBuildCell(p, ch.NewId));
-        SetFloor(p, !_gens.Contains(p) && IsFloorCandidate(ch.NewId, BlockClass.Of(ch.NewId)));
+        // Fluids hardening (lava meeting water: cobble, stone, obsidian) is the world, not a placement (a normal world's caves
+        // do it on their own; on skyblock the gen cells are kept out of floors anyway).
+        bool hardened = !terrain && (Blocks.IsLava(ch.OldId) || Blocks.IsWater(ch.OldId));
+        _builds.Set(p, !hardened && IsBuildCell(p, ch.NewId));
+        SetFloor(p, !hardened && !_gens.Contains(p) && IsFloorCandidate(ch.NewId, BlockClass.Of(ch.NewId)));
         foreach (var q in new[] { p.Up(), p.Down() })
         {
             int id = _world.GetBlock(q);
-            if (id == Blocks.Cobblestone || _builds.Contains(q)) _builds.Set(q, IsBuildCell(q, id));
+            // Normal world: natural cobble (dungeon walls) next to a placement stays terrain; only a seen placement can pillar.
+            if (_builds.Contains(q) || id == Blocks.Cobblestone && (terrain || IsSeenFloor(q))) _builds.Set(q, IsBuildCell(q, id));
         }
     }
+
+    /// <summary>A farm block that counts towards a farm here: natural nether terrain doesn't, nor (normal world) wild cave
+    /// mushrooms.</summary>
+    private bool IsFarmMember(int id) =>
+        !(InNether && BlockClass.NaturalNether(id)) && !(!ScarceSoil && id is Blocks.BrownMushroom or Blocks.RedMushroom);
+
+    private bool IsSeenFloor(BlockPos p) => _floorByChunk.TryGetValue(ColKey(p.X >> 4, p.Z >> 4), out var s) && s.Contains(p);
 
     // ------------------------------------------------------------------ placed floors (live 10-27 15:55)
 
@@ -249,7 +277,8 @@ public sealed partial class WorldIndexer
 
     /// <summary>
     /// A placed solid block that may be someone's floor, wall or path: cobblestone/stone (on Skyblock only generators make
-    /// them) and every build block. One-thick floors included: "mine cobble" once dug the island floor next to the dual gen
+    /// them, so a column scan seeds floors from them; a normal world's scan never does: there only placements seen as block
+    /// changes are floors) and every build block. One-thick floors included: "mine cobble" once dug the island floor next to the dual gen
     /// because cobble only counted as a build in walls 2+ high. Floors are protected (kind "floor": soft, never announced as an
     /// unknown structure); a generator's dig cells never are.
     /// </summary>

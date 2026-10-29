@@ -105,6 +105,22 @@ public sealed class HiveHierarchy : IHiveAccounts
         if (Whitelist.Accepts(account)) _ = Whitelist.AddAsync(account);
     }
 
+    /// <summary>Longest a launch waits for the whitelist add (send + the server's confirmation) before logging in anyway.</summary>
+    public TimeSpan WhitelistWait { get; set; } = TimeSpan.FromSeconds(10);
+
+    public async Task BeforeLaunchAsync(string account, CancellationToken ct = default)
+    {
+        Tree.SetState(account, "running");
+        if (!Whitelist.Accepts(account)) return;
+        var add = Whitelist.AddAsync(account, ct);
+        try
+        {
+            if (!await add.WaitAsync(WhitelistWait, ct).ConfigureAwait(false))
+                _log.LogWarning("hive: whitelisting {Account} wasn't confirmed; launching anyway (a refused login yields the slot)", account);
+        }
+        catch (TimeoutException) { _log.LogWarning("hive: whitelisting {Account} took over {S:0}s; launching anyway", account, WhitelistWait.TotalSeconds); }
+    }
+
     public void Released(string account, string reason)
     {
         // An owner that went offline takes its subtree with it: each child deposits first (the recall's logout gate).

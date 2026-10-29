@@ -10,7 +10,7 @@ public sealed partial class MinecraftClient
     private static readonly int[] InterestingBlocks =
     [
         Blocks.Chest, Blocks.Furnace, Blocks.LitFurnace, Blocks.Workbench, Blocks.Water, Blocks.FlowingWater, Blocks.Lava,
-        Blocks.FlowingLava, Blocks.Sapling, Blocks.Log, Blocks.CoalOre, Blocks.IronOre, Blocks.GoldOre, Blocks.DiamondOre,
+        Blocks.FlowingLava, Blocks.Sapling, Blocks.Log, Trees.Wood.Log2, Blocks.CoalOre, Blocks.IronOre, Blocks.GoldOre, Blocks.DiamondOre,
         Blocks.LapisOre, Blocks.RedstoneOre, Blocks.Crops, Blocks.SugarCane, Blocks.Cactus, Blocks.Pumpkin, Blocks.Melon,
         Blocks.Bed, Blocks.WoodenDoor, Blocks.Dispenser, Blocks.SignPost, Blocks.WallSign, Blocks.RedMushroom,
         Blocks.BrownMushroom, Blocks.Ice, Blocks.Sand, Blocks.Obsidian, Blocks.PumpkinStem, Blocks.MelonStem, Blocks.Farmland,

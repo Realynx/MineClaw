@@ -17,10 +17,13 @@ public enum SpawnBlock : byte
     Lit,
     /// <summary>Within 24 blocks of the world spawn point (SpawnerCreature: distance² ≥ 576).</summary>
     NearSpawn,
+    /// <summary>The biome lists no monsters (1.12.2 mushroom island/shore, the void biome).</summary>
+    Biome,
 }
 
 /// <summary>
-/// The b1.8.1 hostile spawn rule for one cell (mc-dev 218a2a71), the mob's feet at (x + 0.5, y, z + 0.5):
+/// The hostile spawn rule for one cell; the block and biome tests come from the version (<see cref="Versioning.IPhysicsRules"/>:
+/// b1.8.1 below; 1.12.2 <c>Light1122</c>, the same light and distance rules). The b1.8.1 rule (mc-dev 218a2a71), the mob's feet at (x + 0.5, y, z + 0.5):
 /// <list type="number">
 /// <item>SpawnerCreature.a(MONSTER): <c>World.e(x, y−1, z) &amp;&amp; !World.e(x, y, z) &amp;&amp; !liquid(x, y, z) &amp;&amp;
 /// !World.e(x, y+1, z)</c> (<see cref="LightTables.IsNormalCube"/>: never on slabs, glass, leaves, ice, TNT, stairs, farmland).</item>
@@ -41,9 +44,12 @@ public static class SpawnRules
     {
         int x = p.X, y = p.Y, z = p.Z;
         if ((uint)y >= w.WorldHeight || y < 1 || !w.IsLoaded(x, z)) return SpawnBlock.NotLoaded;
-        if (!LightTables.IsNormalCube(w.GetBlock(x, y - 1, z))) return SpawnBlock.NoFloor;
-        int id = w.GetBlock(x, y, z);
-        if (LightTables.IsNormalCube(id) || BlockShapes.IsLiquid(id) || LightTables.IsNormalCube(w.GetBlock(x, y + 1, z))) return SpawnBlock.Blocked;
+        // The version's block rules (IPhysicsRules: b1.8.1 normal cubes; 1.12.2 isTopSolid / isValidEmptySpawnBlock, biomes).
+        var rules = w.Physics;
+        if (!rules.IsSpawnFloor(w.GetBlock(x, y - 1, z), w.GetMeta(x, y - 1, z))) return SpawnBlock.NoFloor;
+        if (!rules.IsSpawnCellClear(w.GetBlock(x, y, z), w.GetMeta(x, y, z))
+            || !rules.IsSpawnHeadClear(w.GetBlock(x, y + 1, z), w.GetMeta(x, y + 1, z))) return SpawnBlock.Blocked;
+        if (!rules.BiomeSpawnsMonsters(w.GetBiome(x, z))) return SpawnBlock.Biome;
         if (w.Light.LightLevel(x, y, z, skylightSubtracted) > maxLight) return SpawnBlock.Lit;
         if (spawnRadius && w.HasSpawn)
         {
@@ -84,6 +90,7 @@ public static class SpawnRules
         SpawnBlock.NoRoom => "no room",
         SpawnBlock.Lit => "lit",
         SpawnBlock.NearSpawn => "within 24 of spawn",
+        SpawnBlock.Biome => "no monsters in this biome",
         _ => b.ToString(),
     };
 }

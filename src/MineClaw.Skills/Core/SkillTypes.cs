@@ -24,7 +24,9 @@ public enum Dim
 {
     Overworld = 1,
     Nether = 2,
-    Any = Overworld | Nether,
+    /// <summary>The End (dimension 1): no beds, no farmland worth having.</summary>
+    End = 4,
+    Any = Overworld | Nether | End,
 }
 
 public enum SkillStatus
@@ -52,6 +54,21 @@ public sealed record Preconditions
     public bool SurvivalGate { get; init; }
     /// <summary>Refuse at night (mob spawns) unless args say otherwise.</summary>
     public bool DaylightOnly { get; init; }
+    /// <summary>A world/version fact the skill needs (e.g. skyblock's generator stone, the void below): checked by the
+    /// registry before anything runs, so the skill reports "not available in this world" cleanly. Null = none.</summary>
+    public Requirement? Requires { get; init; }
+}
+
+/// <summary>A world/version fact a skill depends on: <paramref name="Holds"/> + the refusal when it doesn't, and a short
+/// <paramref name="Tag"/> for the signature flags ("skyblock").</summary>
+public sealed record Requirement(Func<SkillContext, bool> Holds, string Reason, string Tag)
+{
+    /// <summary>Stone comes from a cobble generator (skyblock).</summary>
+    public static readonly Requirement GeneratorStone = new(_ => MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone,
+        "skyblock only: this world has natural stone (mine stone with a pickaxe instead)", "skyblock");
+    /// <summary>The void is below the land (skyblock).</summary>
+    public static readonly Requirement VoidBelow = new(_ => MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow,
+        "skyblock only: this world has no void below", "skyblock");
 }
 
 /// <summary>The static description of a skill: everything the catalog, search and prompt hints need.</summary>
@@ -72,6 +89,8 @@ public sealed record SkillSpec
     public SkillStatus Status { get; init; } = SkillStatus.Ready;
     /// <summary>Extra search words (synonyms, items, natural phrasings) — never shown in prompts.</summary>
     public string Keywords { get; init; } = "";
+    /// <summary>Other names the registry resolves to this skill ("extend_floor" → expand_island); never shown in prompts.</summary>
+    public IReadOnlyList<string> Aliases { get; init; } = [];
     /// <summary>"builtin", "routine", "structure".</summary>
     public string Source { get; init; } = "builtin";
 
@@ -85,6 +104,7 @@ public sealed record SkillSpec
         {
             var flags = Safety.ToString().ToLowerInvariant();
             if (Pre.Dimension == Dim.Nether) flags += ",nether";
+            if (Pre.Requires is { } req) flags += "," + req.Tag;
             if (Status == SkillStatus.Stub) flags += ",stub";
             var s = $"{Name}({Args}) {Summary} | needs: {Pre.Needs} | {flags}";
             return s.Length <= SkillCatalog.MaxSignatureChars ? s : s[..(SkillCatalog.MaxSignatureChars - 3)] + "...";

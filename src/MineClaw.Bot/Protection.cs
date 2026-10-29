@@ -49,6 +49,7 @@ public sealed partial class Protection
             else Unknown.Add("block " + n);
         }
         if (_blockIds.Contains(Blocks.Furnace)) _blockIds.Add(Blocks.LitFurnace);
+        if (_blockIds.Contains(Blocks.Chest) && Blocks.Exists(Ids1122.TrappedChest)) _blockIds.Add(Ids1122.TrappedChest);
         _configRegions = options.ProtectedRegions.Select(ParseRegion).Where(r => r != null).Select(r => r!.Value).ToList();
         _configReserved = ResolveItems(options.ReservedItems);
         RepeatWindow = TimeSpan.FromMinutes(Math.Max(1, options.Protection.RepeatRefusalMinutes));
@@ -82,7 +83,7 @@ public sealed partial class Protection
     /// or indexed build they fall in; an unripe crop is left alone ("not ripe"). Saplings keep their config protection.
     /// </summary>
     public static bool IsFarmPlant(int id) => id is Blocks.Crops or Blocks.SugarCane or Blocks.Cactus or Blocks.PumpkinStem or Blocks.MelonStem
-        or Blocks.Pumpkin or Blocks.Melon or Blocks.Sapling;
+        or Blocks.Pumpkin or Blocks.Melon or Blocks.Sapling or Ids1122.Carrots or Ids1122.Potatoes or Ids1122.Beetroots or Ids1122.NetherWart;
 
     /// <summary>
     /// Ground, fluids and plants: never "part of a build" by volume alone. A remembered/guessed structure box protects only the
@@ -91,6 +92,8 @@ public sealed partial class Protection
     public static bool IsNaturalFill(int id) => id is Blocks.Air or Blocks.Grass or Blocks.Dirt or Blocks.Sand or Blocks.Gravel
         or Blocks.FlowingWater or Blocks.Water or Blocks.FlowingLava or Blocks.Lava or Blocks.Leaves or Blocks.TallGrass or Blocks.DeadBush
         or 37 or 38 or Blocks.BrownMushroom or Blocks.RedMushroom or Blocks.SnowLayer or Blocks.Clay or Blocks.Vine
+        // 1.12.2: mycelium, lily pad, leaves2, packed ice, tall flowers/double grass (podzol and coarse dirt are dirt variants)
+        or 110 or 111 or Ids1122.Leaves2 or 174 or Ids1122.DoublePlant
         || IsFarmPlant(id) || id == Blocks.Farmland;
 
     /// <summary>"wheat is a farm crop (ripe? no: stage 5/7)" for an unripe crop; null = ripe/harvestable (or no stage known).</summary>
@@ -102,6 +105,8 @@ public sealed partial class Protection
         return id switch
         {
             Blocks.Crops when m < 7 => $"wheat is a farm crop (ripe? no: stage {m}/7): not ripe ({m}/7)",
+            Ids1122.Carrots or Ids1122.Potatoes or Ids1122.Beetroots or Ids1122.NetherWart when Ids1122.RipeStage(id) is { } ripe && m < ripe =>
+                $"{(id switch { Ids1122.Carrots => "carrot", Ids1122.Potatoes => "potato", Ids1122.Beetroots => "beetroot", _ => "nether wart" })} is a farm crop (ripe? no: stage {m}/{ripe}): not ripe ({m}/{ripe})",
             Blocks.PumpkinStem or Blocks.MelonStem => $"a {(id == Blocks.MelonStem ? "melon" : "pumpkin")} stem (stage {Math.Min(m, 7)}/7): it grows the fruit, harvest the {(id == Blocks.MelonStem ? "melon" : "pumpkin")} next to it",
             _ => null,
         };
@@ -112,7 +117,8 @@ public sealed partial class Protection
     private int Dim => Dimension?.Invoke() ?? 0;
 
     /// <summary>Containers: soft as blocks, but they may hold items, so only an exact permit (pointed/coords) opens them.</summary>
-    public static bool IsContainer(int id) => id is Blocks.Chest or Blocks.Furnace or Blocks.LitFurnace or Blocks.Dispenser;
+    public static bool IsContainer(int id) => id is Blocks.Chest or Blocks.Furnace or Blocks.LitFurnace or Blocks.Dispenser
+        or Ids1122.TrappedChest or Ids1122.Hopper or Ids1122.Dropper || Ids1122.IsShulkerBox(id);
 
     /// <summary>The fast predicate: may the bot's own choices break this block? (Hard marks, then soft sources minus overrides.)</summary>
     public bool IsProtected(BlockPos p, int blockId)
@@ -231,6 +237,7 @@ public sealed partial class Protection
                 IndexKinds.Tree => S("tree_soil", "the dirt under a tree or sapling (unrenewable)"),
                 IndexKinds.Portal => S("portal", "a nether portal frame"),
                 IndexKinds.Sign => S("sign", "a sign"),
+                WorldIndexer.FloorKind => S("floor", $"a placed {name} (someone's floor, wall or path)"),
                 _ when IsContainer(id) => S("container", $"a {name}: it may hold items", containerUnlock),
                 _ => S("station", $"a {kind.Replace('_', ' ')}"),
             };

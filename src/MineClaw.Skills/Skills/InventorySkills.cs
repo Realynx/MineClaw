@@ -191,7 +191,7 @@ public sealed class ArrangeChestSkill : Skill
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
         var name = args.Str("chest") ?? "";
-        var chest = ctx.Directory.Resolve(ctx, name) ?? (name.Length == 0 ? ctx.Find(Blocks.Chest, 6, 1).Select(f => (BlockPos?)f.Pos).FirstOrDefault() : null);
+        var chest = ctx.Directory.Resolve(ctx, name) ?? (name.Length == 0 ? ctx.Find((id, _) => StorageOps.IsChest(id), 6, 1).Select(f => (BlockPos?)f.Pos).FirstOrDefault() : null);
         if (chest is not { } pos) return Fail($"no chest '{name}'");
         var layoutText = args.Str("layout") ?? ctx.Layouts.Get(pos) ?? "by_category";
         if (layoutText.Equals("saved", StringComparison.OrdinalIgnoreCase))
@@ -316,7 +316,7 @@ public sealed class OrganizeStorageSkill : Skill
 
     private static List<BlockPos> Pick(SkillContext ctx, string scope)
     {
-        var all = ctx.Find(Blocks.Chest, ctx.Options.SearchRadius, 64).Select(f => f.Pos)
+        var all = ctx.Find((id, _) => StorageOps.IsChest(id), ctx.Options.SearchRadius, 64).Select(f => f.Pos)
             .Where(p => ctx.Claims.IsFree(MineClaw.World.Claims.ClaimKey.Chest(p, ctx.World.Dimension))).ToList();
         // Large chests are two blocks: keep one per pair.
         all = all.Where(p => !all.Any(q => q != p && q.ManhattanTo(p) == 1 && q.Y == p.Y && (q.X < p.X || q.Z < p.Z))).ToList();

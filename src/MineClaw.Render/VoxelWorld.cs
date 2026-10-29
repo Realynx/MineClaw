@@ -19,6 +19,8 @@ public interface IVoxelWorld
     /// <summary>Blocks per column (b1.8.1 128, 1.12.2 256): y outside 0..WorldHeight−1 is air with sky light 15.
     /// Implementations that predate multi-version are 128 high.</summary>
     int WorldHeight => ChunkColumn.SizeY;
+    /// <summary>The biome id at (x, z) for tints (1.12.2 chunk data), or −1 = unknown (b1.8.1, remembered columns): plains colours.</summary>
+    int Biome(int x, int z) => -1;
 }
 
 /// <summary>
@@ -117,6 +119,12 @@ public sealed class WorldVoxels : IVoxelWorld
             _remTop[k] = top;
         }
         return top[lx * 16 + lz];
+    }
+
+    public int Biome(int x, int z)
+    {
+        int k = Slot(x, z);
+        return k >= 0 ? _live[k]?.GetBiome(x & 15, z & 15) ?? -1 : _w.GetBiome(x, z);
     }
 
     public ColumnState State(int x, int z)

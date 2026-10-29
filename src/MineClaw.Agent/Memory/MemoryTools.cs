@@ -167,7 +167,7 @@ public static class MemoryTools
         var index = memory.Index;
         var o = index.Options;
         registry.Register("recall",
-            "Search memory: places, structures, players, notes, routines, past episodes, chat log, Skyblock knowledge, world objects. " +
+            "Search memory: places, structures, players, notes, routines, past episodes, chat log, game knowledge, world objects. " +
             "near=\"here\" or x,y,z lists what's known around a spot.",
             ToolSchema.Create().Str("query", required: false).Str("kind", required: false, enumValues: RecallKinds)
                 .Str("near", "\"here\" or x,y,z", required: false).Int("radius", "blocks, default 16", required: false)

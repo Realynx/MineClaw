@@ -68,9 +68,9 @@ public sealed class SurvivalReflex
         for (int i = 9; i < Math.Min(45, slots.Count); i++)
         {
             var s = slots[i];
-            if (s.IsEmpty || reserved.Contains(s.Id) || Items.Food(s.Id) is not { } f) continue;
+            if (s.IsEmpty || reserved.Contains(s.Id) || Items.Food(s.Id, s.Damage) is not { } f) continue;
             if (s.Id == Items.GoldenApple && o.SaveGoldenApples && health > o.CriticalHealth) continue;
-            bool risky = HungerRules.IsRisky(s.Id);
+            bool risky = HungerRules.IsRisky(s.Id, s.Damage);
             int gain = Math.Min(f.Hunger, deficit), waste = f.Hunger - gain;
             double sat = Math.Min(HungerRules.SaturationGain(f.Hunger, f.Saturation), food + gain);
             double score = gain * 2 + sat - waste * (urgent ? 0.5 : 3) - (risky ? 100 : 0) + (i >= 36 ? 0.1 : 0); // hotbar: no swap
@@ -99,7 +99,7 @@ public sealed class SurvivalReflex
     public static bool HasAnyFood(IReadOnlyList<ItemStack> slots, IReadOnlySet<int> reserved)
     {
         for (int i = 9; i < Math.Min(45, slots.Count); i++)
-            if (!slots[i].IsEmpty && !reserved.Contains(slots[i].Id) && Items.Food(slots[i].Id) is not null) return true;
+            if (!slots[i].IsEmpty && !reserved.Contains(slots[i].Id) && Items.Food(slots[i].Id, slots[i].Damage) is not null) return true;
         return false;
     }
 
@@ -109,7 +109,7 @@ public sealed class SurvivalReflex
         for (int i = 9; i < Math.Min(45, slots.Count); i++)
         {
             var s = slots[i];
-            if (!s.IsEmpty && !reserved.Contains(s.Id) && Items.Food(s.Id) is not null && !HungerRules.IsRisky(s.Id)) return true;
+            if (!s.IsEmpty && !reserved.Contains(s.Id) && Items.Food(s.Id, s.Damage) is not null && !HungerRules.IsRisky(s.Id, s.Damage)) return true;
         }
         return false;
     }

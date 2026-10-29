@@ -4,8 +4,8 @@ namespace MineClaw.Render.Models;
 
 /// <summary>
 /// 1.12.2 biome colours from minecraft-data's <c>tints.json</c> (grass, foliage and water per biome name; the fixed spruce,
-/// birch and lily-pad colours) with <c>biomes.json</c>'s id → name. The world model keeps no chunk biomes yet, so the
-/// renderer uses <see cref="DefaultBiome"/> (plains: grass 0x91BD59, foliage 0x77AB2F) everywhere.
+/// birch and lily-pad colours) with <c>biomes.json</c>'s id → name. Models bake with <see cref="DefaultBiome"/> (plains:
+/// grass 0x91BD59, foliage 0x77AB2F) and are recoloured per column from the chunk's biome array (unknown = plains).
 /// </summary>
 public static class BiomeTints
 {

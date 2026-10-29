@@ -664,7 +664,8 @@ public sealed partial class BuildPlanner
         {
             if (ScaffoldPath(t.Pos, t.Kind is BuildKind.Gravity or BuildKind.Door) is not { } chain)
             {
-                why = $"no support within {_o.MaxScaffold} scaffold blocks (over the void)";
+                why = $"no support within {_o.MaxScaffold} scaffold blocks"
+                      + (MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow ? " (over the void)" : " (nothing to build up from)");
                 return false;
             }
             if (Chain(chain, ref why)) return true;

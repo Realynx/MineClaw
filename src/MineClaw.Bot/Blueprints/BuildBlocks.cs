@@ -81,14 +81,14 @@ public static class BuildBlocks
     /// <summary>Why a b1.8.1 block can't go in a blueprint (null = it can).</summary>
     public static string? Refusal(int id)
     {
-        if (!Blocks.Exists(id)) return $"block id {id} doesn't exist in b1.8.1";
+        if (!Blocks.Exists(id)) return $"block id {id} doesn't exist in {MineClaw.Data.Versioning.GameData.Current.VersionId}";
         if (Kinds.ContainsKey(id)) return null;
         return id switch
         {
             Blocks.Air => "air is '.' in a layer, not a palette block",
             Blocks.Grass => "grass can't be placed (place dirt: grass spreads onto it)",
             Blocks.DoubleSlab => "double slabs aren't an item: use two slab cells' worth of stone or a full block",
-            Blocks.Leaves => "placed leaves decay in b1.8.1",
+            Blocks.Leaves => MineClaw.Data.Versioning.GameData.Current.VersionId == "b1.8.1" ? "placed leaves decay in b1.8.1" : "leaves aren't buildable in blueprints",
             Blocks.Ice => "ice melts next to light and leaves water",
             _ when Blocks.IsWater(id) || Blocks.IsLava(id) => "liquids aren't buildable",
             _ => $"{Blocks.Get(id).Name} isn't supported in blueprints (only building blocks, stairs, slabs, doors, torches, ladders, fences, panes, stations)",
@@ -190,7 +190,7 @@ public static class BuildBlocks
         string n = Blocks.Get(id).Name;
         return KindOf(id) switch
         {
-            BuildKind.Stairs when meta is < 0 or > 3 => $"{n} meta {meta}: stairs are 0..3 (no upside-down stairs in b1.8.1)",
+            BuildKind.Stairs when meta is < 0 or > 3 => $"{n} meta {meta}: stairs are 0..3 (no upside-down stairs in blueprints)",
             BuildKind.Slab when meta is < 0 or > 5 => $"slab meta {meta}: 0 stone, 1 sandstone, 2 wood, 3 cobble, 4 brick, 5 stone brick",
             BuildKind.Door when meta is < 0 or > 15 => $"door meta {meta} out of range",
             _ when id == Blocks.Wool && meta is < 0 or > 15 => $"wool meta {meta}: colours are 0..15",

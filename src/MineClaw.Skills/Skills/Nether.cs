@@ -58,6 +58,8 @@ public sealed class SkillState
 /// </summary>
 public static class NetherHazards
 {
+    private const int MagmaBlock = 213;
+
     public static string Scan(SkillContext ctx)
     {
         var me = ctx.Feet;
@@ -69,6 +71,8 @@ public static class NetherHazards
         var pigmen = ctx.World.Entities.Nearby(me, 16, e => e.Kind == EntityKind.Mob && e.TypeId == MobTypes.PigZombie);
         if (pigmen.Count > 0) parts.Add($"{pigmen.Count} pigmen (neutral: never hit)");
         if (ctx.Find(Blocks.Fire, 4, 8).Count > 0) parts.Add("fire nearby");
+        // Magma block (1.12.2, id 213; absent from b1.8.1 worlds): burns whoever stands on it without sneaking.
+        if (ctx.Find(MagmaBlock, 4, 64) is { Count: > 0 } magma) parts.Add($"magma x{magma.Count} within 4 (burns to stand on; sneak)");
         if (ctx.Block(ctx.Me.Down()) == Blocks.SoulSand) parts.Add("on soul sand (slow)");
         if (ctx.Find(Blocks.Gravel, 3, 8).Any(f => f.Pos.Y > ctx.Me.Y + 1)) parts.Add("gravel overhead");
         if (Safety.EdgeDistance(ctx.World, ctx.Me.X, ctx.Me.Y, ctx.Me.Z) is var d and <= 2) parts.Add($"edge {d} away");

@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using MineClaw.Client.Versioning;
 using MineClaw.Data;
 using MineClaw.World;
 
@@ -13,10 +14,13 @@ namespace MineClaw.Client.Combat;
 public sealed class OpponentHpModel
 {
     private readonly CombatOptions _o;
+    private readonly ICombatRules? _rules;
 
-    public OpponentHpModel(CombatOptions options, double startHealth = 20)
+    /// <param name="rules">The version's melee rules; null or a no-cooldown version (b1.8.1) = the b1.8.1 <see cref="CombatRules"/>.</param>
+    public OpponentHpModel(CombatOptions options, double startHealth = 20, ICombatRules? rules = null)
     {
         _o = options;
+        _rules = rules;
         Estimate = Math.Clamp(startHealth, 0, 20);
         Start = Estimate;
     }
@@ -32,6 +36,17 @@ public sealed class OpponentHpModel
     /// <summary>Worst case damage of one hit with the held item: crit maximum when falling, after credited armor, plus margin.</summary>
     public double WorstHit(int weaponItemId, bool couldCrit, IEnumerable<ItemStack> armor)
     {
+        // 1.9+ (a cooldown): the worst case is a fully charged hit, a crit on top, through that version's armor formula; only
+        // the trusted share of the armor's reduction is credited.
+        if (_rules is { } r && r.AttackCooldownTicks(Math.Max(0, weaponItemId)) > 0)
+        {
+            double full = r.ChargedDamage(Math.Max(0, weaponItemId), 1f);
+            if (couldCrit) full = r.CritDamage(full);
+            var worn = armor as IReadOnlyCollection<ItemStack> ?? armor.ToList();
+            double reduced = full - r.DamageAfterArmor(full, worn);
+            double through = full - reduced * Math.Clamp(_o.SparArmorTrust, 0, 1);
+            return Math.Ceiling(Math.Max(1, through) * (1 + Math.Max(0, _o.SparDamageMargin)));
+        }
         int dmg = CombatRules.WeaponDamage(weaponItemId);
         if (couldCrit) dmg = CombatRules.MaxCritDamage(dmg);
         int after = CombatRules.DamageAfterArmor(dmg, CreditedArmor(armor));

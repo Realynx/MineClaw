@@ -121,7 +121,7 @@ public static class ChestStore
     private static string Advice(IGameClient c)
     {
         var inv = c.World.Inventory;
-        int chests = inv.CountItem(Blocks.Chest), planks = inv.CountItem(Blocks.Planks), logs = inv.CountItem(Blocks.Log);
+        int chests = inv.CountItem(Blocks.Chest), planks = inv.CountItem(Blocks.Planks), logs = inv.CountItem(Blocks.Log) + inv.CountItem(Ids1122.Log2);
         if (chests > 0) return $"place a chest (have {chests})";
         if (planks >= 8) return $"craft+place a chest (have {planks} planks)";
         if (logs >= 2) return $"craft+place a chest (have {logs} logs)";
@@ -152,5 +152,5 @@ public static class ChestStore
     }
 
     private static BlockPos? NearestChest(IGameClient c) =>
-        c.World.FindNearestBlock(c.World.Player.Position, c.StationSearchRadius, Blocks.Chest)?.Pos;
+        c.World.FindNearestBlock(c.World.Player.Position, c.StationSearchRadius, Blocks.Chest, Ids1122.TrappedChest)?.Pos;
 }

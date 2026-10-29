@@ -16,7 +16,9 @@ public static class FluidRules
     public const int WaterReach = 7, LavaReach = 3, NetherLavaReach = 7, MaxFall = 12;
 
     private static readonly int[] Flammable = [Blocks.Planks, Blocks.Log, Blocks.Leaves, Blocks.Wool, Blocks.Bookshelf, Blocks.Tnt,
-        Blocks.WoodenStairs, Blocks.Fence, Blocks.TallGrass, Blocks.Vine, Blocks.Chest, Blocks.Workbench];
+        Blocks.WoodenStairs, Blocks.Fence, Blocks.TallGrass, Blocks.Vine, Blocks.Chest, Blocks.Workbench,
+        // 1.12.2 (absent from b1.8.1 worlds): leaves2/log2, wood slabs, the other wood stairs, fences and gates, hay, carpet.
+        161, 162, 125, 126, 134, 135, 136, 163, 164, 170, 171, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192];
 
     /// <summary>Cells a liquid released at <paramref name="p"/> could reach (horizontal spread + falls).</summary>
     public static HashSet<BlockPos> FlowArea(IBlockAccess w, BlockPos p, int reach)

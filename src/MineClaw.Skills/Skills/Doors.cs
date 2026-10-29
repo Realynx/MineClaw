@@ -19,12 +19,14 @@ public static class DoorOps
     /// <summary>Nearest openable (optionally of one kind) within <paramref name="radius"/>.</summary>
     public static BlockPos? Nearest(SkillContext ctx, string? kind, double radius = 8)
     {
-        int? only = kind?.ToLowerInvariant() switch
+        // Kinds by family (every wood's door and gate, both trapdoors), not by one b1.8.1 id.
+        Func<int, bool>? only = kind?.ToLowerInvariant() switch
         {
-            "door" => Openables.WoodDoor, "iron_door" or "iron door" => Openables.IronDoor,
-            "gate" or "fence_gate" => Openables.FenceGate, "trapdoor" or "hatch" => Openables.Trapdoor, _ => null,
+            "door" => id => Openables.IsDoor(id) && id != Openables.IronDoor, "iron_door" or "iron door" => id => id == Openables.IronDoor,
+            "gate" or "fence_gate" => Openables.IsFenceGate, "trapdoor" or "hatch" => Openables.IsTrapdoor,
+            "iron_trapdoor" or "iron trapdoor" => id => id == Openables.IronTrapdoor, _ => null,
         };
-        var hit = ctx.Find((id, meta) => Openables.IsOpenable(id) && (only is null || id == only) && !Openables.IsUpperHalf(id, meta), radius, 1);
+        var hit = ctx.Find((id, meta) => Openables.IsOpenable(id) && (only is null || only(id)) && !Openables.IsUpperHalf(id, meta), radius, 1);
         return hit.Count > 0 ? hit[0].Pos : null;
     }
 
@@ -74,7 +76,7 @@ public static class DoorOps
         if (id == Openables.Trapdoor && want && StandingOn(ctx, s))
             return SkillResult.Fail($"won't open the {what}: I'm standing on it");
 
-        if (id == Openables.IronDoor) return await IronAsync(ctx, s, want, what, ct).ConfigureAwait(false);
+        if (!Openables.OpensByHand(id)) return await IronAsync(ctx, s, want, what, ct).ConfigureAwait(false); // iron door / iron trapdoor
 
         var reach = await ctx.ReachAsync(s, ct).ConfigureAwait(false);
         if (!reach.Ok) return SkillResult.Fail($"can't reach {what}: {reach.Message}");
@@ -100,7 +102,7 @@ public static class DoorOps
         }
         else
         {
-            if (aid == Openables.StoneButton && !want) return SkillResult.Success($"{what} closes by itself (button)");
+            if (Openables.IsButton(aid) && !want) return SkillResult.Success($"{what} closes by itself (button)");
             var reach = await ctx.ReachAsync(act, ct).ConfigureAwait(false);
             if (!reach.Ok) return SkillResult.Fail($"can't reach the {Openables.Name(aid)} for {what}: {reach.Message}");
             var r = await ctx.Game.ActivateAsync(act, ct).ConfigureAwait(false);
@@ -108,7 +110,7 @@ public static class DoorOps
         }
         if (!await ctx.WaitBlockAsync(s, (_, meta) => ((meta ^ before) & Openables.OpenBit) != 0, ct).ConfigureAwait(false))
             return SkillResult.Fail($"{what} didn't react to the {Openables.Name(aid)} at {SkillJson.Fmt(act)} (not wired to it?)");
-        return SkillResult.Success($"{what} {(want ? "opened" : "closed")} via {Openables.Name(aid)}" + (aid == Openables.StoneButton ? " (shuts in ~1s)" : ""));
+        return SkillResult.Success($"{what} {(want ? "opened" : "closed")} via {Openables.Name(aid)}" + (Openables.IsButton(aid) ? " (shuts in ~1s)" : ""));
     }
 
     private static bool StandingOn(SkillContext ctx, BlockPos p)
@@ -203,22 +205,23 @@ public sealed class PressButtonSkill : Skill
 {
     public override SkillSpec Spec { get; } = new()
     {
-        Name = "press_button", Category = SkillCategory.Redstone, Summary = "press a stone button, verified", Args = "pos?,confirm?",
+        Name = "press_button", Category = SkillCategory.Redstone, Summary = "press a button, verified", Args = "pos?,confirm?",
         Schema = SkillJson.Schema("pos:pos?,confirm:bool?"), Estimate = TimeSpan.FromSeconds(3),
         Keywords = "button press push redstone iron door",
     };
 
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
-        var p = args.Pos() ?? (ctx.Find(Openables.StoneButton, 8, 1) is [var f, ..] ? f.Pos : null);
-        if (p is not { } pos || ctx.Block(pos) != Openables.StoneButton) return Fail("no button there");
+        var p = args.Pos() ?? (ctx.Find((id, _) => Openables.IsButton(id), 8, 1) is [var f, ..] ? f.Pos : null);
+        if (p is not { } pos || !Openables.IsButton(ctx.Block(pos))) return Fail("no button there");
         if (MechanismOps.TriggerVeto(ctx, pos, args.Flag("confirm")) is { } veto) return Fail(veto);
         var reach = await ctx.ReachAsync(pos, ct);
         if (!reach.Ok) return Fail($"can't reach button: {reach.Message}");
-        if (Openables.IsActuatorOn(Openables.StoneButton, ctx.Meta(pos))) return Ok($"button at {P(pos)} already pressed");
+        int bid = ctx.Block(pos);
+        if (Openables.IsActuatorOn(bid, ctx.Meta(pos))) return Ok($"button at {P(pos)} already pressed");
         var r = await ctx.Game.ActivateAsync(pos, ct);
         if (!r.Ok) return SkillResult.From(r);
-        return await ctx.WaitBlockAsync(pos, (_, m) => Openables.IsActuatorOn(Openables.StoneButton, m), ct)
+        return await ctx.WaitBlockAsync(pos, (_, m) => Openables.IsActuatorOn(bid, m), ct)
             ? Ok($"pressed button at {P(pos)}")
             : Fail($"button at {P(pos)} didn't go down (protected?)");
     }

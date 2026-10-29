@@ -21,7 +21,7 @@ public sealed record TurnInput(DateTimeOffset At, ModelTier Tier, string Header,
 public static class PromptSections
 {
     /// <summary>Markers <see cref="Prompts.System"/> puts in front of the knowledge part of the static block.</summary>
-    private static readonly string[] KnowledgeMarkers = ["\n# Skyblock core rules\n", "\n# Skyblock knowledge\n"];
+    private static readonly string[] KnowledgeMarkers = ["\n# World core rules\n", "\n# World knowledge\n"];
 
     /// <summary>Raw estimate (≈3.5 chars/token, same estimator as the context guard) per section. Also returns the round.</summary>
     /// <param name="turn">The current brain turn, if any: its message is split into memory / digest / events; earlier messages

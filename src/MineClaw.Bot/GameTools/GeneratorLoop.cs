@@ -298,7 +298,7 @@ public sealed partial class GeneratorLoop(IGameClient c, GeneratorSupport? suppo
             }
         }
         List<BlockPos> seen;
-        try { seen = c.World.FindBlocks(me, 24, (id, _) => id == Blocks.Chest, 16).Select(h => h.Pos).ToList(); }
+        try { seen = c.World.FindBlocks(me, 24, (id, _) => Ids1122.IsChest(id), 16).Select(h => h.Pos).ToList(); }
         catch (Exception) { yield break; }
         foreach (var p in seen)
         {

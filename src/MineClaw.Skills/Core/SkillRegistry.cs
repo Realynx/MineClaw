@@ -71,6 +71,9 @@ public sealed class SkillRegistry
             if (_byName.TryGetValue(skill.Spec.Name, out var old)) _order.Remove(old);
             _byName[skill.Spec.Name] = skill;
             _order.Add(skill);
+            foreach (var alias in skill.Spec.Aliases)
+                if (!_byName.TryGetValue(alias, out var taken) || taken.Spec.Name != alias) _byName[alias] = skill; // a real name wins
+
         }
         Added?.Invoke(skill);
         return this;
@@ -87,8 +90,9 @@ public sealed class SkillRegistry
     public static string? CheckPreconditions(SkillContext ctx, SkillSpec spec, JsonElement args)
     {
         var pre = spec.Pre;
+        if (pre.Requires is { } req && !req.Holds(ctx)) return $"not available in this world: {req.Reason}";
         if ((pre.Dimension & ctx.Dimension) == 0)
-            return $"only works in the {(pre.Dimension == Dim.Nether ? "nether" : "overworld")}";
+            return $"only works in the {(pre.Dimension == Dim.Nether ? "nether" : pre.Dimension == Dim.End ? "end" : "overworld")}";
         var missing = pre.Primitives & ~ctx.Game.Supported;
         if (missing != Primitive.None) return $"needs client primitive {missing}";
         foreach (var group in pre.Items)
@@ -104,6 +108,7 @@ public sealed class SkillRegistry
     private async Task<string?> AcquireAsync(SkillContext ctx, SkillSpec spec, CancellationToken ct)
     {
         if (AcquireMissing is not { } acquire || spec.Pre.Items.Count == 0) return null;
+        if (spec.Pre.Requires is { } req && !req.Holds(ctx)) return null;
         if ((spec.Pre.Dimension & ctx.Dimension) == 0 || (spec.Pre.Primitives & ~ctx.Game.Supported) != Primitive.None) return null;
         var notes = new List<string>();
         foreach (var group in spec.Pre.Items)

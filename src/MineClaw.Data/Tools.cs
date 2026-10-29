@@ -104,7 +104,7 @@ public static class Tools
     /// <summary>Dig progress added per tick (Block.blockStrength). 0 for unbreakable blocks and liquids; +∞ for hardness 0.</summary>
     public static float DigProgressPerTick(int blockId, int heldItemId, bool onGround = true, bool inWater = false)
     {
-        var b = Blocks.Get(blockId);
+        var b = Blocks.GetB(blockId);
         if (b.Liquid || blockId == Blocks.Air) return 0f;
         float h = b.Hardness;
         if (h < 0f) return 0f;

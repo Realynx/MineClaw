@@ -51,7 +51,7 @@ public class TelemetryTests(ITestOutputHelper output)
     {
         var req = new LlmRequest
         {
-            System = [new LlmSystemBlock(new string('a', 700) + "\n# Skyblock core rules\n" + new string('k', 350)), new LlmSystemBlock(new string('i', 70))],
+            System = [new LlmSystemBlock(new string('a', 700) + "\n# World core rules\n" + new string('k', 350)), new LlmSystemBlock(new string('i', 70))],
             Messages = [LlmMessage.User("task: mine 3 cobble")],
         };
         var (s, round) = PromptSections.Estimate(req);

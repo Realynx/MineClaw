@@ -133,11 +133,11 @@ public sealed class ExpandIslandSkill : Skill
 {
     public override SkillSpec Spec { get; } = new()
     {
-        Name = "expand_island", Category = SkillCategory.Building, Summary = "fill area x0,z0,x1,z1 or grow edge; void-safe",
+        Name = "expand_island", Category = SkillCategory.Building, Summary = "fill area x0,z0,x1,z1 or grow edge; edge-safe", Aliases = ["extend_floor", "extend_platform", "grow_platform"],
         Args = "area?,y?,side?,rows?,max?,block?",
         Schema = SkillJson.Schema("area:str?,y:int?,side:str?,rows:int?,max:int?,block:str?"), Safety = SafetyClass.Edge, Estimate = TimeSpan.FromMinutes(2),
         Pre = new() { Needs = "blocks", SurvivalGate = true },
-        Keywords = "expand island edge bigger platform grow extend widen larger land skyblock floor foundation under fill area rectangle lay tower",
+        Keywords = "expand island edge bigger platform grow extend extend_floor widen larger land floor foundation under fill area rectangle lay tower ledge cliff",
     };
 
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
@@ -170,7 +170,7 @@ public sealed class ExpandIslandSkill : Skill
             stop = r.Error;
         }
         missed.RemoveWhere(c => !SkillWorld.Air(ctx.World, c));
-        string text = $"expanded island by {placed} block(s) at y {y}" + (missed.Count > 0 ? $", skipped {missed.Count}" : "") + (stop is null ? "" : $" ({stop})")
+        string text = (MineClaw.Data.Versioning.WorldMode.Current.Islands ? $"expanded island by {placed} block(s)" : $"extended the floor by {placed} block(s)") + $" at y {y}" + (missed.Count > 0 ? $", skipped {missed.Count}" : "") + (stop is null ? "" : $" ({stop})")
                       + $"; {ctx.Count(block)} {SkillWorld.Name(block)} left";
         return new SkillResult(placed > 0, text);
     }
@@ -233,12 +233,17 @@ public sealed class ExpandIslandSkill : Skill
             foreach (var o in dir is { } d ? [d] : SkillWorld.Horizontal)
             {
                 var c = f.Pos + o;
-                if (!w.IsLoaded(c.X, c.Z) || !SkillWorld.Air(w, c) || !SkillWorld.OverVoid(w, c) || !SkillWorld.Air(w, c.Up())) continue;
+                if (!w.IsLoaded(c.X, c.Z) || !SkillWorld.Air(w, c) || !OpenEdge(w, c) || !SkillWorld.Air(w, c.Up())) continue;
                 seen.Add(c);
             }
         }
         return seen.OrderBy(c => Math.Pow(c.X + 0.5 - me.X, 2) + Math.Pow(c.Z + 0.5 - me.Z, 2));
     }
+
+    /// <summary>An edge to grow into: over the void on skyblock; elsewhere (ground under everything) a cell with no support
+    /// below it, i.e. a drop of 2+ for someone stepping off the floor (a cliff, a ledge, a pit).</summary>
+    private static bool OpenEdge(IBlockAccess w, BlockPos c) =>
+        MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow ? SkillWorld.OverVoid(w, c) : !SkillWorld.Solid(w, c.Down()) && !BlockShapes.HasCollision(w, c.X, c.Y - 1, c.Z);
 
     private static BlockPos Inward(IBlockAccess w, BlockPos c) =>
         SkillWorld.Horizontal.FirstOrDefault(o => SkillWorld.Solid(w, c - o), new BlockPos(1, 0, 0));
@@ -273,7 +278,7 @@ public sealed class PillarDownSkill : Skill
 {
     public override SkillSpec Spec { get; } = new()
     {
-        Name = "pillar_down", Category = SkillCategory.Building, Summary = "go down N via dug staircase, void-checked", Args = "depth,side?",
+        Name = "pillar_down", Category = SkillCategory.Building, Summary = "go down N via dug staircase, drop-checked", Args = "depth,side?",
         Schema = SkillJson.Schema("depth:int,side:str?"), Safety = SafetyClass.Edge, Estimate = TimeSpan.FromSeconds(30),
         Pre = new() { SurvivalGate = true }, Keywords = "down descend dig staircase lower go down pillar",
     };
@@ -293,7 +298,8 @@ public sealed class PillarDownSkill : Skill
                 ok = SkillWorld.Solid(ctx.World, floor) && !SkillWorld.OverVoid(ctx.World, floor.Down())
                      && !BlockShapes.IsLiquid(ctx.Block(c)) && !BlockShapes.IsLiquid(ctx.Block(c.Up()))
                      && !ctx.Protected(c) && !ctx.Protected(c.Up()) && !ctx.Protected(c.Up(2))
-                     && FluidRules.LavaContact(ctx.World, c, false) is null;
+                     && FluidRules.LavaContact(ctx.World, c, false) is null
+                     && !FallsIn(ctx, c.Up(3));
             }
             if (!ok) continue;
             for (int i = 1; i <= depth; i++)
@@ -310,8 +316,11 @@ public sealed class PillarDownSkill : Skill
             }
             return Ok($"down {depth} to y {ctx.Me.Y}");
         }
-        return Fail($"no safe staircase {depth} down from here (void, liquid or protected)");
+        return Fail($"no safe staircase {depth} down from here (void, liquid, sand/gravel above or protected)");
     }
+
+    /// <summary>Sand/gravel (anything that falls) right above a stair's headroom: digging under it buries the stair.</summary>
+    private static bool FallsIn(SkillContext ctx, BlockPos above) => ctx.Block(above) is Blocks.Sand or Blocks.Gravel or 252; // 252 concrete powder (1.12.2)
 }
 
 [Skill]

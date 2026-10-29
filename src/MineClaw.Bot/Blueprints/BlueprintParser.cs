@@ -240,7 +240,7 @@ public static partial class BlueprintParser
             meta = Math.Max(0, it.Damage);
         }
         else if (Blocks.ByName(name) is { } b) id = b.Id;
-        else return (null, $"unknown b1.8.1 block '{name}'");
+        else return (null, $"unknown {MineClaw.Data.Versioning.GameData.Current.VersionId} block '{name}'");
         // "cobblestone_slab"-style names resolve through Items with their damage; plain "stairs" means wooden stairs.
         if (BuildBlocks.Refusal(id) is { } refusal) return (null, refusal);
         Dir? facing = null;

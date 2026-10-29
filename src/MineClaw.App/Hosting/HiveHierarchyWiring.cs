@@ -26,6 +26,8 @@ internal static class HiveHierarchyWiring
         var managed = new ManagedAccounts(Path.Combine(agent.DataDirectory, acfg.File));
         var whitelist = new WhitelistManager(managed, acfg, main, rt.Commands.ArmManagedWhitelist, (line, ct) => rt.Chat.SendCommandAsync(line, ct), log);
         rt.Commands.ManagedAccount = whitelist.Accepts; // the gate's exception: managed names only, never main, C# only
+        // The server's replies ("Added X to the whitelist" / "Could not add X"): an add counts only once confirmed.
+        client.ChatReceived += line => { try { whitelist.NoteServerLine(line); } catch (Exception) { /* chat never breaks */ } };
         if (acfg.AdoptLegacy && whitelist.Adopt(cfg.LegacyCloneUsernames) is > 0 and var adopted)
             log.LogInformation("hive: adopted {N} old fixed clone name(s) into the managed list; Hive:CloneUsernames is ignored", adopted);
 

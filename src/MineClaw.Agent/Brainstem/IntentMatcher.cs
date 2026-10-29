@@ -63,6 +63,7 @@ public static class IntentMatcher
     private static readonly Regex Negation = new(@"\b(?:don'?t|do not|dont|never|no need|not now|nvm|never ?mind|stop|cancel|forget it)\b", O);
     private static readonly Regex QuestionStart = new(@"^(?:how|why|what|where|when|who|which|is|are|was|were|do|does|did|should|shall|would|could (?:i|we)|can (?:i|we)|may i|have you|has)\b", O);
     private static readonly Regex GenRx = new(@"\b(?:mine|get|grab|gather|farm|harvest|collect|fetch|work|run|dig)\b.{0,30}\b(?:cobble ?stone|cobble|stone|(?:cobble )?gen(?:erator)?)\b", O);
+    private static readonly Regex GenWordRx = new(@"\bgen(?:erator)?\b", O);
     private static readonly Regex TreeRx = new(@"\b(?:chop|cut|get|grab|gather|harvest|collect|fetch|punch)\b.{0,25}\b(?:wood|logs?|trees?|planks?)\b", O);
     private static readonly Regex ComeAnyRx = new(@"\b(?:come (?:here|to me|over(?: here)?|back(?: here)?)|get over here|follow me|come with me)\b", O);
     private static readonly Regex BringRx = new(@"\b(?:bring|fetch|get|grab|give) me (?:(?:\d{1,3}|a|an|some|the|your|a stack of|a few|more) )?(?<item>[a-z][a-z_]{2,20}(?: [a-z_]{3,15})?)", O);
@@ -136,7 +137,9 @@ public static class IntentMatcher
         if (s.Length == 0 || Negation.IsMatch(s) || QuestionStart.IsMatch(s)) return Intent.None;
         if (ComeAnyRx.IsMatch(s)) return new Intent(IntentKind.SpecToSpeaker); // "grab cobble and come here": the player first
         if (BringRx.Match(s) is { Success: true } b) return new Intent(IntentKind.SpecBring, b.Groups["item"].Value.Trim());
-        if (GenRx.IsMatch(s)) return new Intent(IntentKind.SpecGenerator);
+        // "mine cobble/stone" means the gen only where stone comes from one (skyblock); a normal world needs the word "gen".
+        if (GenRx.IsMatch(s) && (MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone || GenWordRx.IsMatch(s)))
+            return new Intent(IntentKind.SpecGenerator);
         if (TreeRx.IsMatch(s)) return new Intent(IntentKind.SpecTree);
         if (PlaceRx.Match(s) is { Success: true } p) return new Intent(IntentKind.SpecPlace, p.Groups["place"].Value.Trim());
         return Intent.None;

@@ -370,7 +370,7 @@ public sealed class StandingOrders
     // ------------------------------------------------------------------ the tool
 
     public const string Description =
-        "Ongoing job a player gave (\"mine the gen all night\"), resumed whenever idle. set: job + script(+args) or task(+done_when); " +
+        "Ongoing job a player gave (\"mine coal all night\"), resumed whenever idle. set: job + script(+args) or task(+done_when); " +
         "clear on \"that's enough\"; for=clone.";
 
     public void Register()

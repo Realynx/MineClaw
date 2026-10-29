@@ -23,7 +23,7 @@ public sealed class BuildCobbleGenSkill : StubSkill
     {
         Name = "build_cobble_gen", Category = SkillCategory.Building, Summary = "build a lava+water cobblestone generator", Args = "pos?",
         Status = SkillStatus.Stub, Safety = SafetyClass.Destructive,
-        Pre = new() { Items = [[Items.LavaBucket], [Items.WaterBucket]], Needs = "lava+water bucket", Dimension = Dim.Overworld },
+        Pre = new() { Items = [[Items.LavaBucket], [Items.WaterBucket]], Needs = "lava+water bucket", Dimension = Dim.Overworld, Requires = Requirement.GeneratorStone },
         Keywords = "cobblestone generator cobble gen build make infinite stone",
     };
 }

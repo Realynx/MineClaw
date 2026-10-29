@@ -156,7 +156,7 @@ public static class QuickReply
     }
 
     private static string PersonaLine(string name, string persona) =>
-        $"You are {name}, a maid bot playing Minecraft Beta skyblock with your humans. Persona: {Trunc(persona, 420)}";
+        $"You are {name}, a maid bot playing Minecraft with your humans. Persona: {Trunc(persona, 420)}";
 
     /// <summary>System prompt for the triage+reply call (small-talk candidates): one JSON object, either a final reply or an ack.</summary>
     public static string TriageSystem(string name, string persona, string? self, int maxWords) =>

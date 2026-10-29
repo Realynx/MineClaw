@@ -471,7 +471,7 @@ public sealed partial class MinecraftClient
 
     /// <summary>Owner protection plus tree stewardship (<see cref="TreeGuarded"/>: the island's last trees' logs).</summary>
     private bool IsBlockProtected(BlockPos pos, int id) =>
-        (IsProtected?.Invoke(pos, id) ?? false) || (id == Blocks.Log && !OverridesSoft(pos, id) && TreeGuarded(pos));
+        (IsProtected?.Invoke(pos, id) ?? false) || (Trees.Wood.IsLog(id) && !OverridesSoft(pos, id) && TreeGuarded(pos));
 
     private bool NextToWater(BlockPos p)
     {
@@ -508,18 +508,19 @@ public sealed partial class MinecraftClient
             // Mining down my own pillar (a block a hive bot placed) is a 1-block step onto the next solid block: fine.
             // Leaves, a longer drop or the void below never are (hard safety), and ground I didn't build stays a floor.
             int under = World.GetBlock(pos);
-            bool shortStep = under != Blocks.Leaves && OverridesSoft(pos, under) && !NextToLava(pos)
+            bool shortStep = !Trees.Wood.IsLeaves(under) && OverridesSoft(pos, under) && !NextToLava(pos)
                              && Safety.RemovalIsShortSafeDrop(World, World.Player.Position, pos);
             if (!shortStep)
                 return $"won't dig the {name} I'm standing on at {Fmt(pos)}" + (WouldDropIntoVoid(pos) ? " (it's all that holds me over the void)"
-                    : World.GetBlock(pos) == Blocks.Leaves ? " (leaves up high: I'd fall)" : " (the drop below is too far)");
+                    : Trees.Wood.IsLeaves(World.GetBlock(pos)) ? " (leaves up high: I'd fall)" : " (the drop below is too far)");
         }
         if (WouldDropIntoVoid(pos)) return $"won't dig {name} at {Fmt(pos)}: it's the last block between me and the void";
         if (LavaCouldFlowInto(pos))
         {
             // Lava that flows into a cell touching water hardens straight back into cobble/stone: that is how every
             // cobble generator works, so treat such a cell like a generator cell and only refuse if lava could reach me.
-            generator |= NextToWater(pos);
+            // Only where stone comes from a generator (skyblock): in a normal world that's a cave pool, not a gen.
+            generator |= MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone && NextToWater(pos);
             if (!generator) return $"won't dig {name} at {Fmt(pos)}: lava next to it would flow out";
             // A player taught this stand spot for this cell (demo): trust it over the lava-distance rule.
             if (positioned && LavaPathToMe(pos) && !OnTrustedStand(pos)) return $"won't dig {name} at {Fmt(pos)} from here: released lava could reach me";
@@ -537,8 +538,8 @@ public sealed partial class MinecraftClient
     {
         if (p.Y >= FeetCell().Y) return null; // at/above my feet: a wall or a stack, not the floor I walk on
         int id = World.GetBlock(p);
-        if (id is Blocks.Log or Blocks.Leaves) return null;
-        if (LavaCouldFlowInto(p) && NextToWater(p)) return null; // a cobble generator's cell
+        if (Trees.Wood.IsLog(id) || Trees.Wood.IsLeaves(id)) return null;
+        if (MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone && LavaCouldFlowInto(p) && NextToWater(p)) return null; // a cobble generator's cell
         if (!Safety.IsStandable(World, p.X, p.Y + 1, p.Z)) return null;
         int edge = Safety.EdgeDistance(World, p.X, p.Y + 1, p.Z, WalkwayVoidDistance);
         if (edge > WalkwayVoidDistance) return null;

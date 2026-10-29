@@ -13,6 +13,8 @@ public sealed record TreeInfo(BlockPos Base, BlockPos Soil, int SoilId, int Wood
     /// <summary>Grows from dirt/grass (a log column on cobble or planks is someone's build).</summary>
     public bool OnSoil => SoilId is Blocks.Dirt or Blocks.Grass;
     public int Top => Logs.Count == 0 ? Base.Y : Logs.Max(l => l.Y);
+    /// <summary>The trunk's base cells: one, or the four of a 2x2 trunk (dark oak, giant spruce/jungle).</summary>
+    public IReadOnlyList<BlockPos> Trunk { get; init; } = [Base];
     public override string ToString() => $"{WoodName} tree at {Base.X},{Base.Y},{Base.Z} ({Logs.Count} logs, {Leaves.Count} leaves)";
 }
 
@@ -34,7 +36,7 @@ public static class TreeScan
             var n = cell.Offset(f);
             if ((uint)n.Y >= world.WorldHeight) continue;
             int id = world.GetBlock(n);
-            if (id != 0 && Blocks.Get(id) is { Solid: true } && id != Blocks.Leaves && id != Blocks.Glass) continue; // opaque: holds no light
+            if (id != 0 && Blocks.Get(id) is { Solid: true } && !Wood.IsLeaves(id) && id != Blocks.Glass) continue; // opaque: holds no light
             best = Math.Max(best, Light(n.X, n.Y, n.Z) - 1);
         }
         return best;
@@ -45,14 +47,20 @@ public static class TreeScan
     public const int LeafRange = 4;
     private const int MaxSpread = 8;
 
-    public static string WoodName(int meta) => (meta & 3) switch { 1 => "spruce", 2 => "birch", _ => "oak" };
+    public static string WoodName(int wood) => wood switch
+    {
+        Wood.Spruce => "spruce", Wood.Birch => "birch", Wood.Jungle => "jungle", Wood.Acacia => "acacia", Wood.DarkOak => "dark oak", _ => "oak",
+    };
 
-    /// <summary>"oak" / "birch" / "spruce" (also "pine", "fir") → wood metadata, else null.</summary>
+    /// <summary>"oak" / "birch" / "spruce" (also "pine", "fir") / "jungle" / "acacia" / "dark oak" → species (= sapling damage), else null.</summary>
     public static int? ParseWood(string? s) => s?.Trim().ToLowerInvariant() switch
     {
         "oak" or "oak tree" => 0,
         "spruce" or "pine" or "fir" or "spruce tree" or "pine tree" => 1,
         "birch" or "birch tree" => 2,
+        "jungle" or "jungle tree" => 3,
+        "acacia" or "acacia tree" => 4,
+        "dark oak" or "darkoak" or "dark_oak" or "roofed oak" or "dark oak tree" => 5,
         _ => null,
     };
 
@@ -62,35 +70,38 @@ public static class TreeScan
     /// <summary>The tree that <paramref name="log"/> belongs to, or null when it isn't a log.</summary>
     public static TreeInfo? Analyze(IBlockAccess w, BlockPos log)
     {
-        if (w.GetBlock(log.X, log.Y, log.Z) != Blocks.Log || SelfPlaced(w, log)) return null;
-        int wood = w.GetMeta(log.X, log.Y, log.Z) & 3;
+        int seedId = w.GetBlock(log.X, log.Y, log.Z);
+        if (!Wood.IsLog(seedId) || SelfPlaced(w, log)) return null;
+        int wood = Wood.Type(seedId, w.GetMeta(log.X, log.Y, log.Z));
         var cluster = LogCluster(w, log, wood);
 
         // Several trunks can touch (crowns merged): keep the logs closest to the seed's trunk.
-        var bases = cluster.Where(p => w.GetBlock(p.X, p.Y - 1, p.Z) != Blocks.Log).ToList();
+        var bases = cluster.Where(p => !Wood.IsLog(w.GetBlock(p.X, p.Y - 1, p.Z))).ToList();
         var natural = bases.Where(b => w.GetBlock(b.X, b.Y - 1, b.Z) is Blocks.Dirt or Blocks.Grass).ToList();
         var candidates = natural.Count > 0 ? natural : bases;
         BlockPos mine = candidates.OrderBy(b => b.X == log.X && b.Z == log.Z && b.Y <= log.Y ? 0 : 1)
             .ThenBy(b => H2(b, log)).ThenBy(b => b.Y).First();
+        // A 2x2 trunk (dark oak, giant spruce/jungle): four bases in a square are ONE tree, not four.
+        var trunk = Square(candidates, mine);
         var logs = new HashSet<BlockPos>();
-        if (candidates.Count == 1) logs.UnionWith(cluster);
+        if (candidates.Count == 1 || trunk.Count == candidates.Count) logs.UnionWith(cluster);
         else
             foreach (var p in cluster)
             {
                 var owner = candidates.OrderBy(b => H2(b, p)).ThenBy(b => Math.Abs(b.Y - p.Y)).First();
-                if (owner == mine) logs.Add(p);
+                if (trunk.Contains(owner)) logs.Add(p);
             }
 
-        DropBarePillars(w, logs, mine);
+        DropBarePillars(w, logs, trunk);
         var leaves = OwnLeaves(w, logs);
         var soil = mine.Down();
-        return new TreeInfo(mine, soil, w.GetBlock(soil.X, soil.Y, soil.Z), wood, logs, leaves);
+        return new TreeInfo(mine, soil, w.GetBlock(soil.X, soil.Y, soil.Z), wood, logs, leaves) { Trunk = trunk.OrderBy(t => t.X).ThenBy(t => t.Z).ToList() };
     }
 
     /// <summary>Trees with a log within <paramref name="radius"/> of <paramref name="center"/>, nearest base first.</summary>
     public static List<TreeInfo> FindTrees(WorldState w, Vec3d center, double radius, int? wood = null)
     {
-        var found = w.FindBlocks(center, radius, (id, meta) => id == Blocks.Log && (wood is null || (meta & 3) == wood), 1024);
+        var found = w.FindBlocks(center, radius, (id, meta) => Wood.IsLog(id) && (wood is null || Wood.Type(id, meta) == wood), 1024);
         var seen = new HashSet<BlockPos>();
         var trees = new List<TreeInfo>();
         foreach (var f in found.OrderBy(f => f.DistanceSquared))
@@ -117,11 +128,24 @@ public static class TreeScan
         for (int dz = -range; dz <= range; dz++)
         {
             var q = p.Offset(dx, dy, dz);
-            if ((uint)q.Y >= (uint)h || w.GetBlock(q.X, q.Y, q.Z) != Blocks.Log) continue;
+            if ((uint)q.Y >= (uint)h || !Wood.IsLog(w.GetBlock(q.X, q.Y, q.Z))) continue;
             double d = dx * dx + dz * dz + 0.5 * dy * dy;
             if (d < bestD) { bestD = d; best = q; }
         }
         return best;
+    }
+
+    /// <summary>The 2x2 square of trunk bases (same y) that holds <paramref name="mine"/>, or just <paramref name="mine"/>.</summary>
+    private static HashSet<BlockPos> Square(List<BlockPos> bases, BlockPos mine)
+    {
+        var set = bases.Where(b => b.Y == mine.Y).ToHashSet();
+        foreach (int sx in new[] { -1, 1 })
+        foreach (int sz in new[] { -1, 1 })
+        {
+            BlockPos a = mine.Offset(sx, 0, 0), c = mine.Offset(0, 0, sz), d = mine.Offset(sx, 0, sz);
+            if (set.Contains(a) && set.Contains(c) && set.Contains(d)) return [mine, a, c, d];
+        }
+        return [mine];
     }
 
     private static int H2(BlockPos a, BlockPos b) => (a.X - b.X) * (a.X - b.X) + (a.Z - b.Z) * (a.Z - b.Z);
@@ -138,7 +162,7 @@ public static class TreeScan
         int y = (int)Math.Floor(item.Y - 0.3);
         if ((uint)y >= (uint)w.WorldHeight) return null;
         double above = item.Y - (y + 1);
-        return above is >= -0.05 and <= 0.45 && w.GetBlock(x, y, z) == Blocks.Leaves ? new BlockPos(x, y, z) : null;
+        return above is >= -0.05 and <= 0.45 && Wood.IsLeaves(w.GetBlock(x, y, z)) ? new BlockPos(x, y, z) : null;
     }
 
     /// <summary>
@@ -157,7 +181,7 @@ public static class TreeScan
         for (int x = x0; x <= x1; x++)
         for (int y = y0; y <= y1; y++)
         for (int z = z0; z <= z1; z++)
-            if (w.GetBlock(x, y, z) == Blocks.Log) logs.Add(new BlockPos(x, y, z));
+            if (Wood.IsLog(w.GetBlock(x, y, z))) logs.Add(new BlockPos(x, y, z));
         if (logs.Count == 0) return result;
         var reach = LeafDistances(w, logs);
         foreach (var l in leaves) if (reach.ContainsKey(l)) result.Add(l);
@@ -174,7 +198,7 @@ public static class TreeScan
         for (int y = below.Y; y >= Math.Max(0, below.Y - maxDepth); y--)
         {
             int id = w.GetBlock(below.X, y, below.Z);
-            if (id == 0 || id == Blocks.Leaves) continue;
+            if (id == 0 || Wood.IsLeaves(id)) continue;
             var p = new BlockPos(below.X, y, below.Z);
             if (id == Blocks.Sapling && w.GetBlock(p.X, p.Y - 1, p.Z) is Blocks.Dirt or Blocks.Grass) return (p, p.Down(), null);
             if (id is Blocks.Dirt or Blocks.Grass) return (null, p, null);
@@ -189,16 +213,16 @@ public static class TreeScan
     /// merely touches the tree: it is not this tree's (never stewarded, never felled as part of it). Branches hang in the crown
     /// (on air/leaves, or touching leaves) and stay.
     /// </summary>
-    private static void DropBarePillars(IBlockAccess w, HashSet<BlockPos> logs, BlockPos trunkBase)
+    private static void DropBarePillars(IBlockAccess w, HashSet<BlockPos> logs, HashSet<BlockPos> trunk)
     {
-        foreach (var col in logs.Where(l => l.X != trunkBase.X || l.Z != trunkBase.Z).GroupBy(l => (l.X, l.Z)).ToList())
+        foreach (var col in logs.Where(l => !trunk.Any(t => t.X == l.X && t.Z == l.Z)).GroupBy(l => (l.X, l.Z)).ToList())
         {
             var cells = col.ToList();
             var bottom = cells.MinBy(c => c.Y);
             int under = w.GetBlock(bottom.X, bottom.Y - 1, bottom.Z);
-            bool grounded = under != 0 && under != Blocks.Log && under != Blocks.Leaves && BlockShapes.HasCollision(w, bottom.X, bottom.Y - 1, bottom.Z);
+            bool grounded = under != 0 && !Wood.IsLog(under) && !Wood.IsLeaves(under) && BlockShapes.HasCollision(w, bottom.X, bottom.Y - 1, bottom.Z);
             if (!grounded) continue;
-            bool leafy = cells.Any(c => Six.Any(o => w.GetBlock(c.X + o.X, c.Y + o.Y, c.Z + o.Z) == Blocks.Leaves));
+            bool leafy = cells.Any(c => Six.Any(o => Wood.IsLeaves(w.GetBlock(c.X + o.X, c.Y + o.Y, c.Z + o.Z))));
             if (!leafy) logs.ExceptWith(cells);
         }
     }
@@ -216,7 +240,7 @@ public static class TreeScan
     }
 
     /// <summary>A log a hive bot placed itself (its pillar/bridge): never part of a tree.</summary>
-    private static bool SelfPlaced(IBlockAccess w, BlockPos p) => w is WorldState ws && ws.Placed.IsPlaced(p, ws.Dimension, Blocks.Log);
+    private static bool SelfPlaced(IBlockAccess w, BlockPos p) => w is WorldState ws && ws.Placed.IsPlaced(p, ws.Dimension, w.GetBlock(p.X, p.Y, p.Z));
 
     private static HashSet<BlockPos> LogCluster(IBlockAccess w, BlockPos seed, int wood)
     {
@@ -234,7 +258,8 @@ public static class TreeScan
                 if (dx == 0 && dy == 0 && dz == 0) continue;
                 var n = p.Offset(dx, dy, dz);
                 if ((uint)n.Y >= (uint)h || Math.Abs(n.X - seed.X) > MaxSpread || Math.Abs(n.Z - seed.Z) > MaxSpread) continue;
-                if (set.Contains(n) || w.GetBlock(n.X, n.Y, n.Z) != Blocks.Log || (w.GetMeta(n.X, n.Y, n.Z) & 3) != wood || SelfPlaced(w, n)) continue;
+                int nid = w.GetBlock(n.X, n.Y, n.Z);
+                if (set.Contains(n) || !Wood.IsLog(nid) || Wood.Type(nid, w.GetMeta(n.X, n.Y, n.Z)) != wood || SelfPlaced(w, n)) continue;
                 set.Add(n);
                 q.Enqueue(n);
             }
@@ -259,7 +284,7 @@ public static class TreeScan
         for (int z = z0 - LeafRange; z <= z1 + LeafRange; z++)
         {
             var p = new BlockPos(x, y, z);
-            if (!logs.Contains(p) && w.GetBlock(x, y, z) == Blocks.Log) others.Add(p);
+            if (!logs.Contains(p) && Wood.IsLog(w.GetBlock(x, y, z))) others.Add(p);
         }
         var theirs = others.Count == 0 ? new Dictionary<BlockPos, int>() : LeafDistances(w, others);
         var result = new HashSet<BlockPos>();
@@ -282,7 +307,7 @@ public static class TreeScan
             foreach (var o in Six)
             {
                 var n = p + o;
-                if ((uint)n.Y >= (uint)h || !visited.Add(n) || w.GetBlock(n.X, n.Y, n.Z) != Blocks.Leaves) continue;
+                if ((uint)n.Y >= (uint)h || !visited.Add(n) || !Wood.IsLeaves(w.GetBlock(n.X, n.Y, n.Z))) continue;
                 dist[n] = d + 1;
                 q.Enqueue((n, d + 1));
             }

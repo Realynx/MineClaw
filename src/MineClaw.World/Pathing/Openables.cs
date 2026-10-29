@@ -22,6 +22,9 @@ public static class Openables
     public const int WoodDoor = BlockShapes.WoodDoor, IronDoor = BlockShapes.IronDoor, Trapdoor = BlockShapes.Trapdoor,
         FenceGate = BlockShapes.FenceGate, Lever = 69, StoneButton = 77, StonePlate = 70, WoodPlate = 72;
 
+    /// <summary>1.12.2 actuators: the wooden button and the weighted (gold/iron) pressure plates (meta = power).</summary>
+    public const int WoodButton = 143, LightWeightedPlate = 147, HeavyWeightedPlate = 148;
+
     public const int OpenBit = 0x4, UpperBit = 0x8;
 
     public const int IronTrapdoor = 167;
@@ -36,8 +39,9 @@ public static class Openables
     /// <summary>Opens on a plain right-click (everything but the iron door and the iron trapdoor).</summary>
     public static bool OpensByHand(int id) => IsOpenable(id) && id is not (IronDoor or IronTrapdoor);
 
-    public static bool IsActuator(int id) => id is Lever or StoneButton or StonePlate or WoodPlate;
-    public static bool IsPlate(int id) => id is StonePlate or WoodPlate;
+    public static bool IsActuator(int id) => id is Lever || IsButton(id) || IsPlate(id);
+    public static bool IsPlate(int id) => id is StonePlate or WoodPlate or LightWeightedPlate or HeavyWeightedPlate;
+    public static bool IsButton(int id) => id is StoneButton or WoodButton;
 
     public static bool IsOpen(int meta) => (meta & OpenBit) != 0;
     public static bool IsUpperHalf(int id, int meta) => IsDoor(id) && (meta & UpperBit) != 0;
@@ -89,8 +93,8 @@ public static class Openables
     /// <summary>Lever/button/plate state (lever on, button pressed, plate down).</summary>
     public static bool IsActuatorOn(int id, int meta) => id switch
     {
-        Lever or StoneButton => (meta & 0x8) != 0,
-        StonePlate or WoodPlate => meta != 0,
+        Lever or StoneButton or WoodButton => (meta & 0x8) != 0,
+        StonePlate or WoodPlate or LightWeightedPlate or HeavyWeightedPlate => meta != 0,
         _ => false,
     };
 
@@ -102,8 +106,8 @@ public static class Openables
         IronTrapdoor => "iron trapdoor",
         FenceGate or (>= 183 and <= 187) => "fence gate",
         Lever => "lever",
-        StoneButton => "button",
-        StonePlate or WoodPlate => "pressure plate",
+        StoneButton or WoodButton => "button",
+        StonePlate or WoodPlate or LightWeightedPlate or HeavyWeightedPlate => "pressure plate",
         _ => "block",
     };
 }

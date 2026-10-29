@@ -151,8 +151,10 @@ public sealed partial class WorldIndexer
                 if (_gens.Contains(q) || IsGenCell(q, id, false)) continue; // another dig cell (dual generator), not a wall
                 if (id != 0 && !Blocks.IsLava(id) && !Blocks.IsWater(id)) protect.Add(q); // the walls holding the fluids
             }
-        SetProtect(e, protect);
         int regens = dig.Sum(d => _regens.GetValueOrDefault(d));
+        // A normal world's lava pools touch water everywhere: only a generator whose refill was seen guards its walls.
+        if (regens == 0 && !ScanTrustsTerrain) protect.Clear();
+        SetProtect(e, protect);
         int stone = dig.Count(d => _world.GetBlock(d) == Blocks.Stone);
         e.Extra["dig"] = dig.Select(Arr).ToList();
         e.Extra["stand"] = FindStand(dig[0], lava) is { } s ? Arr(s) : null;
@@ -215,7 +217,9 @@ public sealed partial class WorldIndexer
 
     private void ApplyFarm(string type, ClusterChange c)
     {
-        int min = type is "wheat" or "mushroom" ? 2 : 1;
+        int min = type is "wheat" or "mushroom" or "carrot" or "potato" or "beetroot" or "nether_wart" ? 2 : 1;
+        // Wild plants of a normal world (river cane, desert cactus): a resource to know, their sand and water aren't guarded.
+        bool wildOk = ScarceSoil || !BlockClass.WildFarmType(type);
         if (c.Cells.Count < min)
         {
             if (Find(IndexKinds.Farm, c.Key) is { } gone) RemoveEntry(gone);
@@ -233,7 +237,8 @@ public sealed partial class WorldIndexer
             switch (id)
             {
                 case Blocks.Farmland: farmland++; protect.Add(p); break;
-                case Blocks.Crops: crops++; if (_world.GetMeta(p) >= 7) ripe++; break;
+                case Blocks.Crops or Ids1122.Carrots or Ids1122.Potatoes or Ids1122.Beetroots or Ids1122.NetherWart:
+                    crops++; if (_world.GetMeta(p) >= Ids1122.RipeStage(id)) ripe++; break;
                 case Blocks.MelonStem or Blocks.PumpkinStem:
                     stems++; protect.Add(p);
                     if (_world.GetBlock(p.Down()) == Blocks.Farmland) protect.Add(p.Down());
@@ -247,10 +252,10 @@ public sealed partial class WorldIndexer
                         while (h < 8 && _world.GetBlock(p.Up(h)) == id) h++;
                         tallest = Math.Max(tallest, h);
                         var soil = p.Down();
-                        protect.Add(soil);
+                        if (wildOk) protect.Add(soil);
                         int sid = _world.GetBlock(soil);
                         soilIds[sid] = soilIds.GetValueOrDefault(sid) + 1;
-                        foreach (var o in Six) if (o.Y == 0 && Blocks.IsWater(_world.GetBlock(soil + o))) waterCells.Add(soil + o);
+                        if (wildOk) foreach (var o in Six) if (o.Y == 0 && Blocks.IsWater(_world.GetBlock(soil + o))) waterCells.Add(soil + o);
                     }
                     break;
                 default: plants++; break;
@@ -283,7 +288,7 @@ public sealed partial class WorldIndexer
         {
             int id = _world.GetBlock(p);
             if (id == Blocks.Sapling) saplings++;
-            else if (id == Blocks.Log) { logs++; if (_world.GetBlock(p.Down()) != Blocks.Log) trunks++; }
+            else if (IsLog(id)) { logs++; if (!IsLog(_world.GetBlock(p.Down()))) trunks++; }
         }
         if (saplings == 0 && logs < 3)
         {
@@ -295,12 +300,14 @@ public sealed partial class WorldIndexer
         e.Extra["trees"] = trunks;
         e.Extra["logs"] = logs;
         e.Extra["saplings"] = saplings;
-        // Dirt is unrenewable and the tree is the only wood: never mine the soil under a trunk or a sapling.
+        // Dirt is unrenewable and the tree is the only wood: never mine the soil under a trunk or a sapling (skyblock; a normal
+        // world has dirt and trees everywhere, so nothing of a tree is guarded there).
         var protect = new HashSet<BlockPos>();
         foreach (var p in c.Cells)
         {
+            if (!ScarceSoil) break;
             int id = _world.GetBlock(p);
-            if ((id == Blocks.Sapling || (id == Blocks.Log && _world.GetBlock(p.Down()) != Blocks.Log))
+            if ((id == Blocks.Sapling || (IsLog(id) && !IsLog(_world.GetBlock(p.Down()))))
                 && _world.GetBlock(p.Down()) is Blocks.Dirt or Blocks.Grass) protect.Add(p.Down());
             if (id == Blocks.Sapling) protect.Add(p);
         }
@@ -309,6 +316,8 @@ public sealed partial class WorldIndexer
         foreach (var p in c.Cells)
             if (_treeNotes.TryGetValue(p, out var note)) { e.Extra["note"] = note.Text; e.Extra["noted"] = note.At.ToString("u"); break; }
     }
+
+    private static bool IsLog(int id) => MineClaw.Client.Trees.Wood.IsLog(id);
 
     // ------------------------------------------------------------------ tree notes (from chop_tree)
 
@@ -333,9 +342,12 @@ public sealed partial class WorldIndexer
 
     private void ApplyStructure(ClusterChange c)
     {
-        var explainers = _entries.Values.Where(x => x.Kind is IndexKinds.Generator or IndexKinds.Farm or IndexKinds.Portal).ToList();
-        var unexplained = c.Cells.Where(p => !explainers.Any(x => x.Contains(p, x.Kind == IndexKinds.Farm ? 2 : 1))).ToList();
         var (min, max) = (MinOf(c.Cells), MaxOf(c.Cells));
+        // Only things whose box (plus their margin) overlaps this cluster can explain its cells: cells x nearby entries, not x all.
+        var explainers = _entries.Values.Where(x => x.Kind is IndexKinds.Generator or IndexKinds.Farm or IndexKinds.Portal
+                                                    && Overlaps(x, min, max, x.Kind == IndexKinds.Farm ? 2 : 1)).ToList();
+        var unexplained = explainers.Count == 0 ? c.Cells.ToList()
+            : c.Cells.Where(p => !explainers.Any(x => x.Contains(p, x.Kind == IndexKinds.Farm ? 2 : 1))).ToList();
         bool qualifies = unexplained.Count >= _o.StructureMinBlocks && !(IsKnownArea?.Invoke(min, max) ?? false);
         if (!qualifies)
         {
@@ -353,6 +365,10 @@ public sealed partial class WorldIndexer
         if (created && (ShouldAnnounce != null || !_adopted.Contains(e.Id))) e.Extra["new"] = true;
         SetProtect(e, new HashSet<BlockPos>(c.Cells));
     }
+
+    private static bool Overlaps(IndexEntry e, BlockPos min, BlockPos max, int margin) =>
+        e.Min.X - margin <= max.X && e.Max.X + margin >= min.X && e.Min.Y - margin <= max.Y && e.Max.Y + margin >= min.Y
+        && e.Min.Z - margin <= max.Z && e.Max.Z + margin >= min.Z;
 
     // ------------------------------------------------------------------ islands
 

@@ -34,18 +34,23 @@ public static class AcquireTool
     /// </summary>
     public static async Task<(bool Ok, string Note)?> ToolForBlockAsync(IGameClient c, string blockName, CancellationToken ct)
     {
-        if (Blocks.ByName(blockName) is not { } b || !Tools.RequiresTool(b.Id)) return null;
+        // The version's harvest rule (CanHarvest is a GameData facade): bare hands get nothing from it = it needs a tool.
+        if (Blocks.ByName(blockName) is not { } b || Tools.CanHarvest(b.Id, -1)) return null;
         var inv = c.World.Inventory;
         foreach (var s in inv.PlayerSlots())
             if (!s.IsEmpty && Items.Exists(s.Id) && Items.Get(s.Id).Tool != ToolType.None && Tools.CanHarvest(b.Id, s.Id)) return null;
         string? kind = Tools.PickaxeEffective.Contains(b.Id) || b.Id is Blocks.Obsidian or Blocks.RedstoneOre or Blocks.LitRedstoneOre ? "pickaxe"
-            : b.Id is Blocks.SnowLayer or Blocks.SnowBlock ? "shovel" : null;
+            : b.Id is Blocks.SnowLayer or Blocks.SnowBlock ? "shovel"
+            // Blocks past b1.8.1's ids (1.12.2): the version's own best tool.
+            : b.Id > Blocks.MaxId ? b.BestTool switch { ToolType.Pickaxe => "pickaxe", ToolType.Shovel => "shovel", ToolType.Axe => "axe", _ => null }
+            : null;
         if (kind == null) return null;
         int tier = b.Id switch
         {
             Blocks.Obsidian => 3,
             Blocks.DiamondOre or Blocks.DiamondBlock or Blocks.GoldOre or Blocks.GoldBlock or Blocks.RedstoneOre or Blocks.LitRedstoneOre => 2,
             Blocks.IronOre or Blocks.IronBlock or Blocks.LapisOre or Blocks.LapisBlock => 1,
+            _ when b.Id > Blocks.MaxId => Math.Max(0, b.MinHarvestLevel),
             _ => 0,
         };
         var r = await Acquisition.Planner(c).AcquireAsync(new Need(kind, 1, tier), ct).ConfigureAwait(false);

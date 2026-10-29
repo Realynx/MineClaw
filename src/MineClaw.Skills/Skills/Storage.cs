@@ -23,7 +23,7 @@ public sealed class DepositEverythingSkill : Skill
         var items = ctx.World.Inventory.PlayerSlots().Skip(9).Where(s => !Keep(s)).GroupBy(s => (s.Id, s.Damage)).ToList();
         if (items.Count == 0) return Ok("nothing to deposit");
         var chests = args.Str("chest") is { } name && ctx.Directory.Resolve(ctx, name) is { } one ? [one]
-            : ctx.Find(Blocks.Chest, ctx.Options.SearchRadius, 16).Select(f => f.Pos).Where(p => ctx.Claims.IsFree(MineClaw.World.Claims.ClaimKey.Chest(p, ctx.World.Dimension))).ToList();
+            : ctx.Find((id, _) => StorageOps.IsChest(id), ctx.Options.SearchRadius, 16).Select(f => f.Pos).Where(p => ctx.Claims.IsFree(MineClaw.World.Claims.ClaimKey.Chest(p, ctx.World.Dimension))).ToList();
         if (chests.Count == 0) return Fail("no free chest nearby");
         var moves = new List<MoveSpec>();
         foreach (var g in items)
@@ -74,20 +74,25 @@ public sealed class RestockLoadoutSkill : Skill
 
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
-        var needs = Default.Where(n => n.Ids.Sum(id => ctx.Count(id)) < n.Want).ToList();
+        var needs = Default.Where(n => Have(ctx, n) < n.Want).ToList();
         if (args.Str("items") is { } only) needs = needs.Where(n => only.Contains(n.Name, StringComparison.OrdinalIgnoreCase)).ToList();
         if (needs.Count == 0) return Ok("loadout already full");
         var run = new InventoryRun(ctx);
         var got = new List<string>();
-        foreach (var c in ctx.Find(Blocks.Chest, ctx.Options.SearchRadius, 16).Select(f => f.Pos))
+        foreach (var c in ctx.Find((id, _) => StorageOps.IsChest(id), ctx.Options.SearchRadius, 16).Select(f => f.Pos))
         {
             if (needs.Count == 0) break;
             if (await run.OpenAsync(c, ct) is { } err) { run.Notes.Add(err); continue; }
             var stock = run.ContainerContents();
             foreach (var n in needs.ToList())
             {
-                int have = n.Ids.Sum(id => ctx.Count(id));
-                foreach (var id in n.Ids)
+                int have = Have(ctx, n);
+                // Food: any safe food the version's data knows (1.12.2 baked potatoes, carrots, mutton...), the cooked
+                // staples first.
+                var ids = n.Name == "food"
+                    ? n.Ids.Concat(stock.Where(s => !s.IsEmpty && IsSafeFood(s)).Select(s => (int)s.Id)).Distinct().ToArray()
+                    : n.Ids;
+                foreach (var id in ids)
                 {
                     if (have >= n.Want) break;
                     int there = stock.Where(s => !s.IsEmpty && s.Id == id).Sum(s => s.Count);
@@ -104,6 +109,14 @@ public sealed class RestockLoadoutSkill : Skill
         string missing = needs.Count > 0 ? "; still short: " + string.Join(", ", needs.Select(n => n.Name)) : "";
         return got.Count > 0 ? Ok($"took {string.Join(", ", got)}{missing}; {run.Summary()}") : Fail($"nothing useful in nearby chests{missing}");
     }
+
+    private static bool IsSafeFood(ItemStack s) =>
+        s.Id != Items.GoldenApple && Items.Food(s.Id, s.Damage) is not null && !MineClaw.Client.Survival.HungerRules.IsRisky(s.Id, s.Damage);
+
+    private static int Have(SkillContext ctx, (string Name, int[] Ids, int Want) n) =>
+        n.Name == "food"
+            ? ctx.World.Inventory.PlayerSlots().Where(s => !s.IsEmpty && !ctx.Game.ReservedItems.Contains(s.Id) && IsSafeFood(s)).Sum(s => s.Count)
+            : n.Ids.Sum(id => ctx.Count(id));
 }
 
 [Skill]
@@ -138,7 +151,7 @@ public sealed class LabelChestSkill : Skill
     /// <summary>A free cell above/beside <paramref name="chest"/> and the 0x0F face that hangs (or stands) a sign there.</summary>
     internal static (BlockPos Cell, BlockFace Face)? SignSpot(SkillContext ctx, BlockPos chest)
     {
-        bool IsChest(BlockPos b) => b == chest || ctx.Block(b) == Blocks.Chest;
+        bool IsChest(BlockPos b) => b == chest || StorageOps.IsChest(ctx.Block(b));
         foreach (var c in new[] { chest.Up() }.Concat(SkillWorld.Horizontal.Select(o => chest + o)))
         {
             if (!SkillWorld.Air(ctx.World, c) || ctx.Protected(c)) continue;
@@ -162,4 +175,14 @@ public sealed class LabelChestSkill : Skill
         while (lines.Count < 4) lines.Add("");
         return lines.ToArray();
     }
+}
+
+/// <summary>Container facts shared by the storage skills.</summary>
+public static class StorageOps
+{
+    /// <summary>Trapped chest (1.12.2): a chest that also powers redstone while open.</summary>
+    public const int TrappedChest = 146;
+
+    /// <summary>A chest or a trapped chest (absent from b1.8.1 worlds).</summary>
+    public static bool IsChest(int id) => id is Blocks.Chest or TrappedChest;
 }

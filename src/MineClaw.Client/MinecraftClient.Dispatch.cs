@@ -135,6 +135,8 @@ public sealed partial class MinecraftClient
                 // Newer versions' chunk data, decoded by the connection (1.12.2: paletted 16³ sections, 256 high).
                 foreach (var r in cs.Regions)
                     w.ApplyChunkRegion(r.X, r.Y, r.Z, r.SizeX, r.SizeY, r.SizeZ, r.BlockIds, r.Metadata, r.BlockLight, cs.HasSkyLight ? r.SkyLight : null);
+                // The full chunk's biome array (tints, spawn rules: mushroom islands spawn no monsters).
+                if (cs.Biomes != null) w.SetBiomes(cs.ChunkX, cs.ChunkZ, cs.Biomes);
                 break;
             case BlockChangePacket bc:
                 w.SetBlock(bc.X, bc.Y, bc.Z, bc.BlockId, bc.Metadata);

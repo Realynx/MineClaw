@@ -38,13 +38,13 @@ public sealed partial class WorldIndexer
         int id = _world.GetBlock(p);
         var kind = IndexKinds.StationKind(id);
         if (kind == null) return null;
-        if (id == Blocks.Chest)
+        if (Ids1122.IsChest(id))
         {
             foreach (var o in Six)
             {
                 if (o.Y != 0) continue;
                 var q = p + o;
-                if (_world.GetBlock(q) != Blocks.Chest) continue;
+                if (_world.GetBlock(q) != id) continue; // a trapped chest pairs only with a trapped one
                 var min = Less(p, q) ? p : q;
                 return (kind, min, [p, q]);
             }
@@ -278,7 +278,7 @@ public sealed partial class WorldIndexer
     {
         var want = ev.Window.Type switch
         {
-            WindowType.Chest => new[] { Blocks.Chest },
+            WindowType.Chest => new[] { Blocks.Chest, Ids1122.TrappedChest },
             WindowType.Furnace => new[] { Blocks.Furnace, Blocks.LitFurnace },
             WindowType.Dispenser => new[] { Blocks.Dispenser },
             _ => [],

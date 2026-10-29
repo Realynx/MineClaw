@@ -102,7 +102,20 @@ public class SpeedComparisonTests(ITestOutputHelper output)
               return got < n
             end)
             return "mined " .. got .. ", guarded the nights"
-            """, ScriptPrompts.Examples[1].Code),
+            """, """
+            // purpose: mine the gen by day, guard it at night, retreat when hurt; stop after n cobble
+            const P = params({ n: 128, at: 'auto', home: 'home' })
+            const bb = { mined: 0 }
+            return machine({
+              initial: 'mine', bb, policies: [keepFed()],
+              on: { lowhp: 'retreat', [when(() => bb.mined >= P.n)]: 'done' },
+              states: {
+                mine: { tick: () => { bb.mined += gather('cobblestone', 16, { from: 'gen', at: P.at, stash: true }).n }, on: { night: 'guard' } },
+                guard: { tick: () => { const m = hostile(8); if (!m || !ok(attack(m.name))) wait(3) }, on: { day: 'mine' } },
+                retreat: { enter: () => { go(P.home) }, on: { [after(30000)]: 'mine' } },
+              },
+            })
+            """),
         ("2-body gen mining", """
             -- purpose: n cobble per body at the gen, auto cells, stored
             function miner(a)
@@ -129,7 +142,19 @@ public class SpeedComparisonTests(ITestOutputHelper output)
               local r = parallel(jobs)
               return "gen crew: " .. crew.get("cobble") .. " cobble (" .. table.concat(r, ", ") .. ")"
             end
-            """, ScriptPrompts.Examples[2].Code),
+            """, """
+            // purpose: n cobble per body at the gen (auto cells), stored; one result line
+            const P = params({ n: 64, bodies: ['67', '69'] })
+            function miner(a) {
+              const got = gather('cobblestone', a.n, { from: 'gen', stash: true }).n
+              crew.inc('cobble', got)
+              return `${me.body} ${got}`
+            }
+            function main() {
+              const r = parallel(P.bodies.map(b => [b, 'miner', { n: P.n }]))
+              return `gen crew: ${crew.get('cobble')} cobble (${r.join(', ')})`
+            }
+            """),
     ];
 
     private static readonly string[] Acts = ["mine", "gen", "harvest_generator", "deposit", "take", "withdraw", "go", "goto", "eat", "attack", "dig", "harvest_wheat"];

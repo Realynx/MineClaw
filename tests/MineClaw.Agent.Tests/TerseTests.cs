@@ -241,7 +241,7 @@ public class TerseTests(ITestOutputHelper output)
         var identity = "Your name in chat is Clawd. Your login username is Clawd_bot.";
         var req = new LlmRequest
         {
-            System = [new LlmSystemBlock(new string('a', 700) + "\n# Skyblock core rules\n" + new string('k', 350)), new LlmSystemBlock(identity)],
+            System = [new LlmSystemBlock(new string('a', 700) + "\n# World core rules\n" + new string('k', 350)), new LlmSystemBlock(identity)],
             Messages = [LlmMessage.User(text)],
         };
         var (s, _) = PromptSections.Estimate(req, turn);

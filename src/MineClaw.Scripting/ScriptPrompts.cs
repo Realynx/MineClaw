@@ -44,7 +44,7 @@ public static class ScriptPrompts
     /// </summary>
     public static readonly IReadOnlyList<(string Title, string Code)> Examples =
     [
-        ("gen mining with policies", """
+        ("gen mining with policies (skyblock only: a cobble generator)", """
             // purpose: mine n cobble at the gen and store it, staying fed and tooled
             const P = params({ n: 64, at: 'auto', chest: null })
             use(keepFed(), replaceToolWhenBroken('pickaxe'))
@@ -53,30 +53,37 @@ public static class ScriptPrompts
             return `mined ${r.n} cobble`
             """),
         ("reactive state machine", """
-            // purpose: mine the gen by day, guard it at night, retreat when hurt; stop after n cobble
-            const P = params({ n: 128, at: 'auto', home: 'home' })
+            // purpose: mine stone and ores with a pickaxe by day, guard at night, retreat when hurt; stop after n blocks
+            const P = params({ n: 128, ores: ['coal_ore', 'iron_ore'], home: 'home' })
             const bb = { mined: 0 }
+            use(replaceToolWhenBroken('pickaxe'))
+            ensure('pickaxe')
             return machine({
               initial: 'mine', bb, policies: [keepFed()],
               on: { lowhp: 'retreat', [when(() => bb.mined >= P.n)]: 'done' },
               states: {
-                mine: { tick: () => { bb.mined += gather('cobblestone', 16, { from: 'gen', at: P.at, stash: true }).n }, on: { night: 'guard' } },
+                mine: { tick: () => {
+                  const ore = P.ores.find(o => find(o, { limit: 1 }).length > 0)
+                  const r = mine(ore || 'stone', 8)
+                  bb.mined += r.n
+                  if (!ok(r)) wait(3)
+                }, on: { night: 'guard' } },
                 guard: { tick: () => { const m = hostile(8); if (!m || !ok(attack(m.name))) wait(3) }, on: { day: 'mine' } },
                 retreat: { enter: () => { go(P.home) }, on: { [after(30000)]: 'mine' } },
               },
             })
             """),
         ("two bodies at once", """
-            // purpose: n cobble per body at the gen (auto cells), stored; one result line
-            const P = params({ n: 64, bodies: ['67', '69'] })
-            function miner(a) {
-              const got = gather('cobblestone', a.n, { from: 'gen', stash: true }).n
-              crew.inc('cobble', got)
+            // purpose: n logs per body from the trees around here, stored; one result line
+            const P = params({ n: 16, bodies: ['67', '69'] })
+            function chopper(a) {
+              const got = gather('log', a.n, { from: 'chop', stash: true }).n
+              crew.inc('logs', got)
               return `${me.body} ${got}`
             }
             function main() {
-              const r = parallel(P.bodies.map(b => [b, 'miner', { n: P.n }]))
-              return `gen crew: ${crew.get('cobble')} cobble (${r.join(', ')})`
+              const r = parallel(P.bodies.map(b => [b, 'chopper', { n: P.n }]))
+              return `wood crew: ${crew.get('logs')} logs (${r.join(', ')})`
             }
             """),
         ("chop trees, replant, wait for regrowth", """

@@ -50,6 +50,8 @@ public sealed class AgentRuntime : IDisposable
     public required ILlmClient Llm { get; init; }
     /// <summary>The single SQLite database (memory, RAG index, chat log, observations, self-profile).</summary>
     public required AgentDb Db { get; init; }
+    /// <summary>The world this db plays (skyblock or normal), from its active knowledge packs (multi-version P6).</summary>
+    public MineClaw.Data.Versioning.WorldMode World { get; init; } = MineClaw.Data.Versioning.WorldMode.SkyblockWorld;
     /// <summary>Hybrid local retrieval (FTS5 + vectors + R*Tree).</summary>
     public required RagIndex Rag { get; init; }
     /// <summary>
@@ -228,6 +230,13 @@ public sealed class AgentRuntime : IDisposable
         // Stale lessons in memory (e.g. "saplings can't be planted in the dark"): zero-token, idempotent, every start.
         KnowledgeCorrections.Apply(index, options.KnowledgeDirectory, Log("MineClaw.Rag"));
 
+        // The world mode (skyblock vs a normal world) from the active packs: a pack of another version counts as a plain world.
+        var worldPacks = Admin.Shards.KnowledgePack.Active(db);
+        if (options.GameVersion is { Length: > 0 } wv && !wv.Equals(worldPacks.Version, StringComparison.OrdinalIgnoreCase))
+            worldPacks = new Admin.Shards.KnowledgePackInfo(wv) { Modes = [] };
+        var world = MineClaw.Data.Versioning.WorldMode.FromModes(worldPacks.Modes?.Select(m => m.Mode));
+        if (options.ApplyWorldMode) MineClaw.Data.Versioning.WorldMode.SetDefault(world);
+
         string knowledge;
         bool truncated;
         int chunks = 0;
@@ -268,7 +277,12 @@ public sealed class AgentRuntime : IDisposable
         // Cached line (startup only): which delegate/hive profile fits what. Absent unless ≥2 profiles are usable.
         if (worker != null && ProfilePrompts.GuidanceLine(options.Llm) is { } profiles) agent.ExtendSystem(profiles);
         // A swapped-in knowledge pack (memory shards) names its Minecraft version in the cached prefix; the default b1.8.1 adds nothing.
-        if (rag.Enabled && Admin.Shards.KnowledgePack.PromptLine(db) is { } packLine) agent.ExtendSystem(packLine);
+        // The worker's cached prompt gets it too (it reads the same version's recipes and block facts).
+        if (rag.Enabled && Admin.Shards.KnowledgePack.PromptLine(db) is { } packLine)
+        {
+            agent.ExtendSystem(packLine);
+            worker?.ExtendSystem(packLine);
+        }
         if (worker != null)
         {
             worker.StateHeader = () => agent.StateHeader?.Invoke() ?? "";
@@ -350,7 +364,7 @@ public sealed class AgentRuntime : IDisposable
 
         return new AgentRuntime
         {
-            Options = options, Tools = tools, Events = events, Chat = chat, Commands = commands, Usage = usage, Memory = memory,
+            Options = options, World = world, Tools = tools, Events = events, Chat = chat, Commands = commands, Usage = usage, Memory = memory,
             Context = context, Activities = activities, Routines = routines, Agent = agent, Llm = llm,
             Db = db, Rag = index, Observations = observations, Episodes = episodes, Retriever = retriever, Self = self,
             Reflection = reflection, Growth = growth, Embeddings = embedder, Worker = worker, MemoryAgent = memAgent, Raptor = raptor, RaptorMaintenance = raptorJobs,

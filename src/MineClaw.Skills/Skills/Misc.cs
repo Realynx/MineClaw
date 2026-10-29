@@ -107,7 +107,7 @@ public sealed class EatCakeSkill : Skill
         var r = await ctx.Game.ActivateAsync(c, ct);
         if (!r.Ok) return SkillResult.From(r);
         return await ctx.WaitBlockAsync(c, (id, m) => id != Blocks.Cake || m != bites, ct)
-            ? Ok($"ate cake ({(ctx.Block(c) == Blocks.Cake ? 5 - ctx.Meta(c) : 0)} slices left)") : Fail("cake didn't change");
+            ? Ok(ctx.Block(c) == Blocks.Cake ? $"ate a slice of cake ({ctx.Meta(c)} eaten so far)" : "ate the last slice of cake") : Fail("cake didn't change");
     }
 }
 

@@ -39,7 +39,7 @@ public sealed record VisionEvalRow(string Case, string Arm, bool Ok, string Answ
 public static partial class VisionEval
 {
     public const string DirectSystem =
-        "You are the brain of a Minecraft Beta 1.8.1 skyblock bot. Axes: +x east, -x west, -z north, +z south, +y up; 1 grid cell = 1 block. " +
+        "You are the brain of a Minecraft bot. Axes: +x east, -x west, -z north, +z south, +y up; 1 grid cell = 1 block. " +
         "Answer the spatial question from the contact-sheet picture (several panels of one spot; the cyan box/ring is the focus, yellow ruler " +
         "numbers are its coordinates; G = gen cell (MINE HERE), P portal, navy hatch = void; LAYERS: left = blocks AT feet height (solid = a wall beside you, not floor), right = the layer you stand on, green dot = " +
         "air with a face to place against). Think briefly, then end with one line 'ANSWER: <answer>' (coords as x,y,z).";
@@ -223,7 +223,7 @@ public static partial class VisionEval
     }
 
     /// <summary>The auto-vision gen question (AutoVision.Classify "gen").</summary>
-    public const string GenQuestion = "Which blocks here are generator cells (G, MINE HERE) and which are island floor or gen walls? Coords of the gen cells.";
+    public const string GenQuestion = "Which blocks here are generator cells (G, MINE HERE) and which are plain floor or gen walls? Coords of the gen cells.";
 
     /// <summary>
     /// Live 10-27 21:12: the roofed dual gen on the main island (tests/fixtures/vision-eval/dual-gen.txt from the db snapshot):

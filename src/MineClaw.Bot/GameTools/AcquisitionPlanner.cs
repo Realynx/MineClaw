@@ -3,6 +3,7 @@ using MineClaw.Agent.Rag;
 using MineClaw.Bot.Game;
 using MineClaw.Client.Trees;
 using MineClaw.Data;
+using MineClaw.Data.Versioning;
 using MineClaw.World;
 
 namespace MineClaw.Bot.GameTools;
@@ -36,6 +37,10 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
     private AcquisitionLimits L => _s.Limits;
     private WorldState W => c.World;
     private int Inv(int id) => W.Inventory.CountItem(id);
+    /// <summary>Logs of every wood (1.12.2's acacia/dark oak are log2).</summary>
+    private int Logs() => Inv(Blocks.Log) + Inv(Ids1122.Log2);
+    /// <summary>A normal world: stone is terrain (it drops cobblestone), so cobble is mined, not dug at a generator.</summary>
+    private static bool NaturalStone => !WorldMode.Current.GeneratorStone;
     private Crafter NewCrafter() => new(c) { Observations = _s.Observations };
 
     private sealed class OutOfBudget(string why) : Exception(why);
@@ -222,8 +227,9 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
         int head = HeadCount(k);
         int cobbleReach = Inv(Blocks.Cobblestone) + ChestStock(Blocks.Cobblestone);
         bool haveWoodPick = Loadout.Kinds["pickaxe"].Ids.Any(id => Inv(id) > 0);
-        // Stone whenever cobble is reachable: on hand / in a chest, or at the gen (with a pick, or the wood pick made first).
-        bool viaStone = min <= 1 && (cobbleReach >= head || gen != null);
+        // Stone whenever cobble is reachable: on hand / in a chest, at the gen or (normal world) natural stone (with a pick, or
+        // the wood pick made first).
+        bool viaStone = min <= 1 && (cobbleReach >= head || gen != null || NaturalStone);
         if (min == 1 && !viaStone) return null;
         bool tableNear = W.FindNearestBlock(W.Player.Position, c.StationSearchRadius, Blocks.Workbench) != null || Inv(Blocks.Workbench) > 0;
         bool needWoodPick = viaStone && cobbleReach < head && !haveWoodPick;   // to dig the gen's cobble
@@ -304,7 +310,8 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
         {
             if (id == Blocks.Cobblestone)
             {
-                if (await GenCobbleAsync(count, FindGeneratorCell(), ct, fetchPick: true).ConfigureAwait(false)) return $"dug {count} cobblestone at the gen";
+                if (await GenCobbleAsync(count, FindGeneratorCell(), ct, fetchPick: true).ConfigureAwait(false))
+                    return NaturalStone ? $"mined stone for {count} cobblestone" : $"dug {count} cobblestone at the gen";
             }
             else if (id == Blocks.Log)
             {
@@ -324,9 +331,38 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
                 if (await GenCobbleAsync(cobble, FindGeneratorCell(), ct, fetchPick: true).ConfigureAwait(false)
                     && await CraftVariantAsync(id, dmg, craftName, count - Have(), ct).ConfigureAwait(false) && Have() >= count) return $"crafted {count} {name}";
             }
+            else if (craftable && NaturalStone && await GatherThenCraftAsync(id, dmg, name, craftName, count - Have(), ct).ConfigureAwait(false)
+                     && Have() >= count) return $"crafted {count} {name}";
             return await AskAsync(name, plural, () => Have() >= count, ct).ConfigureAwait(false);
         }
         return null;
+    }
+
+    /// <summary>
+    /// A normal world: the raw cobble and wood a craft lacks (furnace = 8 cobble, stone tools, smooth stone via the furnace)
+    /// are gathered (stone mined, a tree felled), then it is crafted. False when it lacks anything else (iron, string...).
+    /// </summary>
+    private async Task<bool> GatherThenCraftAsync(int id, int? dmg, string name, string craftName, int need, CancellationToken ct)
+    {
+        var inv = W.Inventory.PlayerSlots().Skip(9).Where(s => !s.IsEmpty).ToList();
+        var plan = RecipePlanner.Plan(id, Math.Max(1, need), inv, dmg ?? -1, new PlannerOptions { AllowSmelting = true, HasCraftingTable = true });
+        int cobble = 0, wood = 0;
+        foreach (var m in plan.Missing)
+        {
+            if (m.Id == Blocks.Cobblestone) cobble += m.Count;
+            else if (m.Id is Blocks.Log or Ids1122.Log2) wood += 4 * m.Count;
+            else if (m.Id == Blocks.Planks) wood += m.Count;
+            else if (m.Id == Items.Stick) wood += (m.Count + 1) / 2;
+            else return false;
+        }
+        var steps = new List<string>();
+        if (wood > 0) steps.Add("logs");
+        if (cobble > 0) steps.Add($"{cobble} cobble (mine stone)");
+        if (steps.Count > 0) Announce($"no {name}, making it: {string.Join("→", steps)}→{name}");
+        if (wood > 0 && !await WoodAsync(WoodUnits(false) + wood, ct).ConfigureAwait(false)) return false;
+        if (cobble > 0 && !await GenCobbleAsync(Inv(Blocks.Cobblestone) + cobble, FindGeneratorCell(), ct, fetchPick: true).ConfigureAwait(false))
+            return false;
+        return await CraftVariantAsync(id, dmg, craftName, need, ct).ConfigureAwait(false);
     }
 
     /// <summary>Cobble-only recipes: (cobble in, items out) per craft.</summary>
@@ -362,8 +398,8 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
     /// <summary>Planks equivalent on hand (and in known chests): planks + 4/log + 1/2 stick.</summary>
     private int WoodUnits(bool withChests)
     {
-        int u = Inv(Blocks.Planks) + 4 * Inv(Blocks.Log) + Inv(Items.Stick) / 2;
-        if (withChests) u += ChestStock(Blocks.Planks) + 4 * ChestStock(Blocks.Log) + ChestStock(Items.Stick) / 2;
+        int u = Inv(Blocks.Planks) + 4 * Logs() + Inv(Items.Stick) / 2;
+        if (withChests) u += ChestStock(Blocks.Planks) + 4 * (ChestStock(Blocks.Log) + ChestStock(Ids1122.Log2)) + ChestStock(Items.Stick) / 2;
         return u;
     }
 
@@ -371,18 +407,18 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
     private async Task<bool> WoodAsync(int planks, CancellationToken ct)
     {
         if (WoodUnits(false) >= planks) return true;
-        foreach (var id in new[] { Blocks.Log, Blocks.Planks })
+        foreach (var id in new[] { Blocks.Log, Ids1122.Log2, Blocks.Planks })
         {
             if (WoodUnits(false) >= planks) break;
             int stock = ChestStock(id);
             if (stock <= 0) continue;
             int short_ = planks - WoodUnits(false);
-            int n = id == Blocks.Log ? (short_ + 3) / 4 : short_;
+            int n = id != Blocks.Planks ? (short_ + 3) / 4 : short_;
             await WithdrawAsync([id], Math.Min(stock, n), ct).ConfigureAwait(false);
         }
         if (WoodUnits(false) >= planks) return true;
         int logs = (planks - WoodUnits(false) + 3) / 4;
-        return await LogsAsync(Inv(Blocks.Log) + logs, ct).ConfigureAwait(false) || WoodUnits(false) >= planks;
+        return await LogsAsync(Logs() + logs, ct).ConfigureAwait(false) || WoodUnits(false) >= planks;
     }
 
     /// <summary>
@@ -391,7 +427,7 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
     /// </summary>
     private async Task<bool> LogsAsync(int want, CancellationToken ct)
     {
-        if (Inv(Blocks.Log) >= want) return true;
+        if (Logs() >= want) return true;
         var me = W.Player.Position;
         TreeCensus census;
         try { census = TreeStewardship.Census(W, me); }
@@ -410,20 +446,20 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
             if (refusal == null)
             {
                 Step("chop tree");
-                int before = Inv(Blocks.Log);
+                int before = Logs();
                 var chopper = GameClients.Unclaimed(c);
                 var r = await chopper.ChopTreeAsync(tree.Base, null, ct).ConfigureAwait(false);
-                int got = Inv(Blocks.Log) - before;
+                int got = Logs() - before;
                 Note(got > 0 ? $"chopped a tree ({got} logs)" : "chop: " + Trim(r.Message));
-                if (Inv(Blocks.Log) >= want) return true;
+                if (Logs() >= want) return true;
             }
             else Note("won't chop: " + refusal);
         }
         else Note("no tree to chop");
-        int need = want - Inv(Blocks.Log);
-        if (await HandoffAsync("logs", [Blocks.Log, Blocks.Planks], need, () => Inv(Blocks.Log) >= want || WoodUnits(false) >= 4 * want, ct).ConfigureAwait(false) != null)
+        int need = want - Logs();
+        if (await HandoffAsync("logs", [Blocks.Log, Ids1122.Log2, Blocks.Planks], need, () => Logs() >= want || WoodUnits(false) >= 4 * want, ct).ConfigureAwait(false) != null)
             return true;
-        return Inv(Blocks.Log) >= want;
+        return Logs() >= want;
     }
 
     // ------------------------------------------------------------------ cobble at the gen
@@ -433,8 +469,9 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
         IEnumerable<BlockPos> cells;
         try
         {
+            // Geometry (lava + water beside it) names a gen only on skyblock: a normal world's caves are full of it.
             cells = _s.GeneratorCells?.Invoke()
-                    ?? Perception.BlockDescriber.GenCellsNear(W, W.Player.Position.ToBlockPos(), 16);
+                    ?? (NaturalStone ? [] : Perception.BlockDescriber.GenCellsNear(W, W.Player.Position.ToBlockPos(), 16));
         }
         catch (Exception) { return null; }
         var me = W.Player.Position;
@@ -443,11 +480,12 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
             .OrderBy(p => p.Center.DistanceTo(me)).Cast<BlockPos?>().FirstOrDefault();
     }
 
-    /// <summary>Digs cobble at the generator until <paramref name="want"/> are on hand (needs a pickaxe: fetched when asked).</summary>
+    /// <summary>Digs cobble at the generator (a normal world: mines natural stone first) until <paramref name="want"/> are on
+    /// hand (needs a pickaxe: fetched when asked).</summary>
     private async Task<bool> GenCobbleAsync(int want, BlockPos? gen, CancellationToken ct, bool fetchPick = false)
     {
         if (Inv(Blocks.Cobblestone) >= want) return true;
-        if (gen is not { } cell) { Note("no generator known"); return false; }
+        if (gen is null && !NaturalStone) { Note("no generator known"); return false; }
         if (!Loadout.Kinds["pickaxe"].Ids.Any(id => Inv(id) > 0))
         {
             if (!fetchPick) return false;
@@ -455,7 +493,17 @@ public sealed class AcquisitionPlanner(IGameClient c, AcquisitionSources sources
             if (!pick.Ok) return false;
             if (Inv(Blocks.Cobblestone) >= want) return true;
         }
-        var (free, note) = GameToolSet.PickGeneratorCell(c, cell, _s.CellsNear);
+        if (NaturalStone)
+        {
+            Step("mine stone");
+            int had = Inv(Blocks.Cobblestone);
+            var mined = await c.MineAsync("stone", Math.Min(256, want - had), 32, ct).ConfigureAwait(false);
+            int dug = Inv(Blocks.Cobblestone) - had;
+            Note(dug > 0 ? $"mined {dug} stone" : "mine stone: " + Trim(mined.Message));
+            if (Inv(Blocks.Cobblestone) >= want) return true;
+            if (gen is null) return false;
+        }
+        var (free, note) = GameToolSet.PickGeneratorCell(c, gen!.Value, _s.CellsNear);
         if (free is not { } at) { Note(note ?? "gen busy"); return false; }
         Step("gen cobble");
         int before = Inv(Blocks.Cobblestone);

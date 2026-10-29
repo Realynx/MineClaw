@@ -23,6 +23,8 @@ public static partial class BuildSkips
     public const string Protected = "protected";
     /// <summary>The group of "no support within N scaffold blocks (over the void)".</summary>
     public const string OverVoid = "no support: over the void past my scaffold limit";
+    /// <summary>The same group in a world with ground under everything (no void): too far from any support to scaffold.</summary>
+    public const string NoSupport = "no support: past my scaffold limit";
 
     /// <summary>The group a reason belongs to: a fixed label (coordinates, counts and details dropped).</summary>
     public static string Category(string? why)
@@ -34,7 +36,8 @@ public static partial class BuildSkips
             return Waiting;
         if (w.StartsWith(AboveReach, StringComparison.OrdinalIgnoreCase)) return "no stand: above my reach (I can't climb)";
         if (w.StartsWith(NotNear, StringComparison.OrdinalIgnoreCase)) return NotNear;
-        if (w.StartsWith("no support within", StringComparison.OrdinalIgnoreCase)) return OverVoid;
+        if (w.StartsWith("no support within", StringComparison.OrdinalIgnoreCase))
+            return MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow ? OverVoid : NoSupport;
         if (w.StartsWith("no stand reaches scaffold cell", StringComparison.OrdinalIgnoreCase)) return "no stand for its scaffold";
         if (w.StartsWith("no stand", StringComparison.OrdinalIgnoreCase)) return "no stand in reach";
         if (w.Contains("water bucket", StringComparison.OrdinalIgnoreCase)) return "below the floor: needs a water bucket";
@@ -167,7 +170,7 @@ public static partial class BuildSkips
             {
                 var cat = Category(w);
                 // Hanging: past the scaffold limit over the void, or no way up because every pillar/stair spot is beside it.
-                if (cat == OverVoid || w?.Contains("the void", StringComparison.OrdinalIgnoreCase) == true) { hanging++; break; }
+                if (cat is OverVoid or NoSupport || w?.Contains("the void", StringComparison.OrdinalIgnoreCase) == true) { hanging++; break; }
                 if (cat != Waiting) break;
                 q = RestsOn(w);
             }
@@ -180,7 +183,10 @@ public static partial class BuildSkips
             for (int z = f.Z0; z <= f.Z1; z++)
                 if (!BuildBlocks.Supports(world.GetBlock(x, y, z))) empty++;
         if (empty == 0) return null;
-        return $"lay a floor: expand_island area={f.X0},{f.Z0},{f.X1},{f.Z1} y={y} ({empty} cells, {empty} cobble)";
+        // Skyblock grows the island (cobble from the gen); a normal world lays a foundation of any solid block on the ground.
+        return MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow
+            ? $"lay a floor: expand_island area={f.X0},{f.Z0},{f.X1},{f.Z1} y={y} ({empty} cells, {empty} cobble)"
+            : $"lay a foundation: fill_floor from={f.X0},{y},{f.Z0} to={f.X1},{y},{f.Z1} ({empty} cells of any solid block, or scaffold up to it)";
     }
 
     /// <summary><paramref name="line"/> with the foundation suggestion appended ("...; lay a floor: ...").</summary>

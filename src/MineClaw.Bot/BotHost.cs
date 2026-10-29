@@ -498,7 +498,8 @@ public sealed class BotHost : IDisposable
             GeneratorCells = () =>
             {
                 var me = client.World.Player.Position.ToBlockPos();
-                return Perception.BlockDescriber.GenCellsNear(client.World, me, 16)
+                return // Geometry (lava + water beside it) is a generator only on skyblock; a normal world knows its gens by regen/teaching.
+                    (MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone ? Perception.BlockDescriber.GenCellsNear(client.World, me, 16) : [])
                     .Concat(indexer?.GeneratorCellsNear(me, 32) ?? [])
                     .Concat(digCells.Taught().Where(t => t.DistanceSquaredTo(me) <= 48 * 48))
                     .Distinct().ToList();

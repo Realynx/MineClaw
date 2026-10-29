@@ -48,7 +48,10 @@ public sealed class RoleClassifier
         if ((uint)y >= Blocks.WorldHeight || !Blocks.IsLoaded(x, z)) return BlockRole.None;
         var p = new BlockPos(x, y, z);
         int id = Blocks.GetBlock(x, y, z);
-        bool gen = Safe(() => IsGenCell?.Invoke(p) == true) || (id is MineClaw.Data.Blocks.Cobblestone or MineClaw.Data.Blocks.Stone or 0
+        // Geometry names gen cells only where stone comes from generators (skyblock); a normal world's caves have lava by water
+        // everywhere, so there only taught/indexed (regen-confirmed) cells are gen cells.
+        bool geometry = MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone;
+        bool gen = Safe(() => IsGenCell?.Invoke(p) == true) || (geometry && id is MineClaw.Data.Blocks.Cobblestone or MineClaw.Data.Blocks.Stone or 0
             && Safe(() => IsGenGeometry?.Invoke(p) == true));
         if (id == 0)
         {
@@ -59,13 +62,13 @@ public sealed class RoleClassifier
                 var down = new BlockPos(x, y - 1, z);
                 int below = Blocks.GetBlock(x, y - 1, z);
                 if (Safe(() => IsGenCell?.Invoke(down) == true)
-                    || (below is MineClaw.Data.Blocks.Cobblestone or MineClaw.Data.Blocks.Stone && Safe(() => IsGenGeometry?.Invoke(down) == true)))
+                    || (geometry && below is MineClaw.Data.Blocks.Cobblestone or MineClaw.Data.Blocks.Stone && Safe(() => IsGenGeometry?.Invoke(down) == true)))
                     gen = false;
             }
             if (gen) return BlockRole.GenCell;
             if (Safe(() => IsDarkSpawn?.Invoke(p) == true)) return BlockRole.DarkSpawn;
             for (int yy = y - 1; yy >= 0; yy--) if (Blocks.GetBlock(x, yy, z) != 0) return BlockRole.None;
-            return BlockRole.Void;
+            return MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow ? BlockRole.Void : BlockRole.None;
         }
         ProtectionVerdict? v = null;
         try { v = Verdict?.Invoke(p, id); } catch (Exception) { }
@@ -75,7 +78,7 @@ public sealed class RoleClassifier
         try { kind = IndexerKind?.Invoke(p); } catch (Exception) { }
         if (id == MineClaw.Data.Blocks.Portal || (id == MineClaw.Data.Blocks.Obsidian && (kind == WorldIndex.IndexKinds.Portal || NextToPortal(x, y, z))))
             return BlockRole.Portal;
-        if (id is MineClaw.Data.Blocks.WoodenDoor or MineClaw.Data.Blocks.IronDoor or MineClaw.Data.Blocks.Trapdoor) return BlockRole.Door;
+        if (Openables.IsDoor(id) || Openables.IsTrapdoor(id)) return BlockRole.Door;
         if (WorldIndex.IndexKinds.StationKind(id) != null) return BlockRole.Station;
         if (MineClaw.Data.Blocks.IsWater(id)) return BlockRole.Water;
         if (MineClaw.Data.Blocks.IsLava(id)) return BlockRole.Lava;
@@ -95,7 +98,8 @@ public sealed class RoleClassifier
         if (above == 0 || !Blocks.Info(above).Solid) return BlockRole.Floor;
         // The island floor under a gen cell is still floor (the cell on top is the thing to mine, not this).
         var up = new BlockPos(x, y + 1, z);
-        if (Safe(() => IsGenCell?.Invoke(up) == true) || (above is MineClaw.Data.Blocks.Cobblestone or MineClaw.Data.Blocks.Stone && Safe(() => IsGenGeometry?.Invoke(up) == true)))
+        if (Safe(() => IsGenCell?.Invoke(up) == true)
+            || (geometry && above is MineClaw.Data.Blocks.Cobblestone or MineClaw.Data.Blocks.Stone && Safe(() => IsGenGeometry?.Invoke(up) == true)))
             return BlockRole.Floor;
         return BlockRole.Wall;
     }
@@ -104,7 +108,8 @@ public sealed class RoleClassifier
     /// Saplings are not crops (tree stewardship keeps them).</summary>
     public static BlockRole? CropRole(int id, int meta) => id switch
     {
-        MineClaw.Data.Blocks.Crops => meta >= 7 ? BlockRole.CropRipe : BlockRole.CropGrowing,
+        MineClaw.Data.Blocks.Crops or Ids1122.Carrots or Ids1122.Potatoes or Ids1122.Beetroots or Ids1122.NetherWart =>
+            meta >= Ids1122.RipeStage(id) ? BlockRole.CropRipe : BlockRole.CropGrowing,
         MineClaw.Data.Blocks.PumpkinStem or MineClaw.Data.Blocks.MelonStem => BlockRole.CropGrowing,
         MineClaw.Data.Blocks.Pumpkin or MineClaw.Data.Blocks.Melon or MineClaw.Data.Blocks.SugarCane or MineClaw.Data.Blocks.Cactus => BlockRole.CropRipe,
         _ => null,
@@ -113,7 +118,9 @@ public sealed class RoleClassifier
     /// <summary>"crop (ripe 7/7)", "crop (growing 3/7)": the words for a crop in facts and answers (null = not a crop).</summary>
     public static string? CropText(int id, int meta) => id switch
     {
-        MineClaw.Data.Blocks.Crops => meta >= 7 ? "crop (ripe 7/7)" : $"crop (growing {Math.Clamp(meta, 0, 6)}/7)",
+        MineClaw.Data.Blocks.Crops or Ids1122.Carrots or Ids1122.Potatoes or Ids1122.Beetroots or Ids1122.NetherWart
+            when Ids1122.RipeStage(id) is { } ripe =>
+            meta >= ripe ? $"crop (ripe {ripe}/{ripe})" : $"crop (growing {Math.Clamp(meta, 0, ripe - 1)}/{ripe})",
         MineClaw.Data.Blocks.PumpkinStem or MineClaw.Data.Blocks.MelonStem => "crop stem (leave it; harvest the fruit next to it)",
         _ when CropRole(id, meta) == BlockRole.CropRipe => "crop (ripe)",
         _ => null,

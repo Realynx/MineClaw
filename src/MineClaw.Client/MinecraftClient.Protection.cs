@@ -1,4 +1,5 @@
 using MineClaw.Data;
+using MineClaw.Data.Versioning;
 using MineClaw.World;
 
 namespace MineClaw.Client;
@@ -50,24 +51,38 @@ public sealed partial class MinecraftClient
     /// <see cref="MineSource"/>), natural tree logs (with leaves), ores, sand, gravel, clay, leaves, natural nether blocks,
     /// and blocks a hive bot placed itself or a trusted player permitted. Never floors, walls, paths or any other placed block.
     /// </summary>
+    /// <remarks>A normal world (<see cref="WorldMode.GeneratorStone"/> false) has natural terrain: stone, cobble, dirt, grass
+    /// and sandstone are resources too, and stone beside lava + water is just stone (only a taught/regen-confirmed generator,
+    /// via <see cref="MineSource"/>, is a gen cell).</remarks>
     internal bool IsMineSource(BlockPos p, int id)
     {
         if (NeverBreak?.Invoke(p) == true) return false;
         if (MineSource?.Invoke(p, id) == true || OverridesSoft(p, id)) return true;
         if (NaturalResource(id, World.Dimension)) return true;
-        if (id is Blocks.Cobblestone or Blocks.Stone) return LavaCouldFlowInto(p) && NextToWater(p);
-        if (id == Blocks.Log) return Trees.TreeScan.Analyze(World, p) is { } t && t.Leaves.Count >= 3;
+        bool skyblock = WorldMode.Current.GeneratorStone;
+        if (!skyblock && NaturalTerrain(id)) return true;
+        if (skyblock && id is Blocks.Cobblestone or Blocks.Stone) return LavaCouldFlowInto(p) && NextToWater(p);
+        if (Trees.Wood.IsLog(id)) return Trees.TreeScan.Analyze(World, p) is { } t && t.Leaves.Count >= 3;
         return false;
     }
+
+    /// <summary>Emerald ore (1.12.2).</summary>
+    private const int EmeraldOre = 129;
+    /// <summary>Nether quartz ore (1.12.2).</summary>
+    private const int QuartzOre = 153;
 
     /// <summary>Blocks that are a resource wherever they are (nobody builds floors from ore or gravel).</summary>
     public static bool NaturalResource(int id, int dimension) => id switch
     {
         Blocks.CoalOre or Blocks.IronOre or Blocks.GoldOre or Blocks.DiamondOre or Blocks.LapisOre or Blocks.RedstoneOre or Blocks.LitRedstoneOre
-            or Blocks.Gravel or Blocks.Sand or Blocks.Clay or Blocks.Leaves => true,
-        Blocks.Netherrack or Blocks.SoulSand or Blocks.Glowstone => dimension == -1,
+            or EmeraldOre or Blocks.Gravel or Blocks.Sand or Blocks.Clay or Blocks.Leaves or Trees.Wood.Leaves2 => true,
+        QuartzOre or Blocks.Netherrack or Blocks.SoulSand or Blocks.Glowstone => dimension == -1,
         _ => false,
     };
+
+    /// <summary>Generated terrain of a normal world (not a resource on skyblock, where all of it was placed by someone).</summary>
+    public static bool NaturalTerrain(int id) =>
+        id is Blocks.Stone or Blocks.Cobblestone or Blocks.Dirt or Blocks.Grass or Blocks.Sandstone;
 
     internal bool OverridesSoft(BlockPos p, int id) =>
         SoftOverride?.Invoke(p, id) ?? World.Placed.IsPlaced(p, World.Dimension, id);
@@ -76,7 +91,7 @@ public sealed partial class MinecraftClient
     internal string ProtectedRefusal(BlockPos pos, int id, string? what = null)
     {
         what ??= $"{BlockName(id, World.GetMeta(pos))} at {Fmt(pos)}";
-        if (!UserProtected(pos, id) && id == Blocks.Log && TreeGuarded(pos))
+        if (!UserProtected(pos, id) && Trees.Wood.IsLog(id) && TreeGuarded(pos))
         {
             CountRefusal?.Invoke("last_trees");
             return ProtectionText.Refusal(what, new ProtectionVerdict(ProtectionLevel.Soft, "last_trees",
@@ -176,7 +191,7 @@ public sealed partial class MinecraftClient
                 + $"{(Environment.TickCount64 - proof.At) / 1000}s ago: not spawn protection");
             nearSpawn = false;
         }
-        else if (nearSpawn && World.GetBlock(p) == Blocks.Leaves)
+        else if (nearSpawn && Trees.Wood.IsLeaves(World.GetBlock(p)))
         {
             // Leaves race with decay and with another bot chopping the same crown: never evidence of protection.
             Log($"server didn't take my {what} at {Fmt(p)} (leaves): not counted as spawn protection");

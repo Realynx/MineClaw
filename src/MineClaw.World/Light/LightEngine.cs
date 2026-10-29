@@ -34,12 +34,18 @@ public sealed class LightEngine
     private long _updates, _visits, _ticks;
 
     private readonly int _height;
+    private readonly byte[] _opacity = new byte[256], _emission = new byte[256];
 
     internal LightEngine(WorldState world)
     {
         _w = world;
         _height = world.WorldHeight;
+        // The version's light tables (b1.8.1 mc-dev; 1.12.2 Light1122), captured once.
+        for (int id = 0; id < 256; id++) { _opacity[id] = (byte)world.Physics.LightOpacity(id); _emission[id] = (byte)world.Physics.LightEmission(id); }
     }
+
+    private int Opacity(int id) => (uint)id < 256 ? _opacity[id] : 255;
+    private int Emission(int id) => (uint)id < 256 ? _emission[id] : 0;
 
     // A tiny direct-mapped column cache for the BFS (used only while _sync is held; reset at every entry point, so a column
     // replaced by a reload is never read through a stale reference across updates).
@@ -224,7 +230,7 @@ public sealed class LightEngine
                     {
                         int i = ChunkColumn.Index(lx, y, lz);
                         c.BlockLight[i] = 0;
-                        if (LightTables.Emission(c.Ids[i]) > 0) emitters.Add(new BlockPos(x, y, z));
+                        if (Emission(c.Ids[i]) > 0) emitters.Add(new BlockPos(x, y, z));
                     }
                 }
             }
@@ -256,22 +262,22 @@ public sealed class LightEngine
     }
 
     /// <summary>The height map loop of Chunk.initLighting for one local column.</summary>
-    private static void RecomputeHeight(ChunkColumn c, int lx, int lz)
+    private void RecomputeHeight(ChunkColumn c, int lx, int lz)
     {
         int l = c.Height - 1;
-        while (l > 0 && LightTables.Opacity(c.Ids[ChunkColumn.Index(lx, l - 1, lz)]) == 0) l--;
+        while (l > 0 && Opacity(c.Ids[ChunkColumn.Index(lx, l - 1, lz)]) == 0) l--;
         c.HeightMap[lz << 4 | lx] = (short)l;
     }
 
     /// <summary>Chunk.initLighting's sky pass for one local column (no light array came with it).</summary>
-    private static void InitSky(ChunkColumn c, int lx, int lz)
+    private void InitSky(ChunkColumn c, int lx, int lz)
     {
         for (int half = 0; half < c.Height >> 7; half++) Array.Clear(c.SkyLight, half << 15 | (lx * 16 + lz) * ChunkColumn.SizeY, ChunkColumn.SizeY);
         int k1 = 15, l1 = c.Height - 1;
         do
         {
             int i = ChunkColumn.Index(lx, l1, lz);
-            k1 -= LightTables.Opacity(c.Ids[i]);
+            k1 -= Opacity(c.Ids[i]);
             if (k1 > 0) c.SkyLight[i] = (byte)k1;
             --l1;
         } while (l1 > 0 && k1 > 0);
@@ -302,7 +308,7 @@ public sealed class LightEngine
             if (_w.Dimension != -1) // !worldProvider.e (the nether has no sky)
             {
                 int k1 = c.HeightMap[lz << 4 | lx];
-                if (LightTables.Opacity(newId) != 0)
+                if (Opacity(newId) != 0)
                 {
                     if (y >= k1) HeightUpdate(c, lx, y + 1, lz);
                 }
@@ -320,7 +326,7 @@ public sealed class LightEngine
         int l = c.HeightMap[lz << 4 | lx];
         int i1 = l;
         if (j > l) i1 = j;
-        while (i1 > 0 && LightTables.Opacity(c.Ids[ChunkColumn.Index(lx, i1 - 1, lz)]) == 0) --i1;
+        while (i1 > 0 && Opacity(c.Ids[ChunkColumn.Index(lx, i1 - 1, lz)]) == 0) --i1;
         if (i1 == l) return;
         // mc-dev passes the LOCAL x/z to World.g here (this.world.g(i, k, i1, l)): it relights world column (lx, lz). Kept.
         WorldG(lx, lz, i1, l);
@@ -332,7 +338,7 @@ public sealed class LightEngine
         while (i1 > 0 && j2 > 0)
         {
             --i1;
-            int k2 = LightTables.Opacity(c.Ids[ChunkColumn.Index(lx, i1, lz)]);
+            int k2 = Opacity(c.Ids[ChunkColumn.Index(lx, i1, lz)]);
             if (k2 == 0) k2 = 1;
             j2 -= k2;
             if (j2 < 0) j2 = 0;
@@ -395,7 +401,7 @@ public sealed class LightEngine
     /// <summary>World.e: block light a cell should have (its emission, or the brightest neighbour minus opacity).</summary>
     private int BlockValue(int x, int y, int z, int id, int opacity)
     {
-        int best = LightTables.Emission(id);
+        int best = Emission(id);
         int v;
         if ((v = GetC(false, x - 1, y, z) - opacity) > best) best = v;
         if ((v = GetC(false, x + 1, y, z) - opacity) > best) best = v;
@@ -420,7 +426,7 @@ public sealed class LightEngine
         int l = 0, i1 = 0;
         int j1 = GetC(sky, i, j, k);
         int k1 = TypeId(i, j, k);
-        int l1 = LightTables.Opacity(k1);
+        int l1 = Opacity(k1);
         if (l1 == 0) l1 = 1;
         int i2 = Value(sky, i, j, k, k1, l1);
         int visits = 0;
@@ -459,7 +465,7 @@ public sealed class LightEngine
             visits++;
             int cur = GetC(sky, x, y, z);
             int id = TypeId(x, y, z);
-            int op = LightTables.Opacity(id);
+            int op = Opacity(id);
             if (op == 0) op = 1;
             int want = Value(sky, x, y, z, id, op);
             if (want == cur) continue;

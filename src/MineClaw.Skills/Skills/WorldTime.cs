@@ -21,7 +21,7 @@ public sealed class SleepSkill : Skill
 
     public override async Task<SkillResult> ExecuteAsync(SkillContext ctx, JsonElement args, CancellationToken ct)
     {
-        if (ctx.InNether) return Fail("beds explode in the nether");
+        if (ctx.World.Dimension != 0) return Fail(ctx.InNether ? "beds explode in the nether" : "beds explode outside the overworld");
         long t = ctx.World.TimeOfDay;
         if (t is < 12541 or > 23458) return Fail($"it's day ({TimeText(t)}); can only sleep at night");
         var bed = args.Pos() ?? ctx.Find(Blocks.Bed, 16, 1).Select(f => (BlockPos?)f.Pos).FirstOrDefault();

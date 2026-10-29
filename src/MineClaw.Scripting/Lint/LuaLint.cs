@@ -203,8 +203,15 @@ internal static class LuaLint
         int j = i + 1;
         if (j < toks.Count && toks[j].Kind == T.Sym && toks[j].Text is "{" or "(") j++;
         if (j >= toks.Count || toks[j].Kind != T.Str) return null;
-        var b = MineClaw.Data.Blocks.ByName(toks[j].Text.Trim());
-        return b != null && MineClaw.Data.Tools.RequiresTool(b.Id) && MineClaw.Data.Tools.PickaxeEffective.Contains(b.Id) ? "pickaxe" : null;
+        return NeedsPickaxe(toks[j].Text) ? "pickaxe" : null;
+    }
+
+    /// <summary>The block named needs a pickaxe to drop anything, in the process's version (the facades follow
+    /// <c>GameData.Current</c>): bare hands harvest nothing, a pickaxe does.</summary>
+    internal static bool NeedsPickaxe(string name)
+    {
+        var b = MineClaw.Data.Blocks.ByName(name.Trim());
+        return b != null && !MineClaw.Data.Tools.CanHarvest(b.Id, -1) && MineClaw.Data.Tools.CanHarvest(b.Id, MineClaw.Data.Items.DiamondPickaxe);
     }
 
     // ------------------------------------------------------------------ required binding args

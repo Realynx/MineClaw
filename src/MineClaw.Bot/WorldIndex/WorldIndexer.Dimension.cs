@@ -1,6 +1,7 @@
 using System.Globalization;
 using MineClaw.Agent.Rag;
 using MineClaw.Data;
+using MineClaw.Data.Versioning;
 using MineClaw.World;
 using Microsoft.Extensions.Logging;
 using C = MineClaw.Bot.WorldIndex.BlockClass.C;
@@ -30,7 +31,15 @@ public sealed partial class WorldIndexer
 
     private bool InNether => _dim == WorldDim.Nether;
     /// <summary>Void islands only make sense over the overworld's void.</summary>
-    private bool IslandsOn => _dim == WorldDim.Overworld;
+    private bool IslandsOn => _dim == WorldDim.Overworld && WorldMode.Current.Islands;
+
+    /// <summary>Skyblock: stone/cobble come only from generators, so a scanned stone block outside a gen cell was placed (a
+    /// floor), natural-looking lava beside water is a gen candidate and unusual blocks are player builds. A normal world
+    /// generates all of that: only observed placements and regen-confirmed generators count there.</summary>
+    private static bool ScanTrustsTerrain => WorldMode.Current.GeneratorStone;
+
+    /// <summary>Dirt and saplings are unrenewable (skyblock): the soil under trees and wild plants is protected.</summary>
+    private static bool ScarceSoil => WorldMode.Current.ScarceTerrain;
 
     private void OnDimensionEvent(int from, int to)
     {

@@ -10,7 +10,7 @@ public static class PromptSection
     public const string Tools = "tools";
     /// <summary>Static instructions (system block 1 minus the knowledge part).</summary>
     public const string System = "system";
-    /// <summary>Core Skyblock knowledge inside the static block.</summary>
+    /// <summary>Core world knowledge inside the static block.</summary>
     public const string Knowledge = "knowledge";
     /// <summary>Identity block: system block 2's first paragraph (name, aliases, login; breakpoint 2).</summary>
     public const string Identity = "identity";

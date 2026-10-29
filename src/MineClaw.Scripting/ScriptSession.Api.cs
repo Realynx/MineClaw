@@ -514,8 +514,8 @@ public sealed partial class ScriptSession
                 check = _ =>
                 {
                     int id = _host.World.GetBlock(p.X, p.Y, p.Z);
-                    var name = Blocks.Get(id).Name;
-                    return (want != null ? string.Equals(name, Blocks.ByName(want)?.Name ?? want, StringComparison.OrdinalIgnoreCase) : id != start, name);
+                    var name = _host.Data.Block(id).Name;
+                    return (want != null ? string.Equals(name, BlockNamed(want)?.Name ?? want, StringComparison.OrdinalIgnoreCase) : id != start, name);
                 };
                 break;
             }
@@ -667,8 +667,8 @@ public sealed partial class ScriptSession
     internal (int Id, int? Dmg) ResolveItem(string? name)
     {
         if (name == null) { Locate(); throw Bug("item name must be a string"); }
-        if (Items.ByNameWithDamage(name) is { } i) return (i.Item.Id, i.Damage >= 0 ? i.Damage : null);
-        if (Blocks.ByName(name) is { } b) return (Items.ItemFormOf(b.Id), null);
+        if (_host.Data.ItemByNameWithDamage(name) is { } i) return (i.Item.Id, i.Damage >= 0 ? i.Damage : null);
+        if (BlockNamed(name) is { } b) return (Items.ItemFormOf(b.Id), null);
         Locate();
         throw Bug($"unknown item '{Short(name, 30)}'");
     }
@@ -699,8 +699,11 @@ public sealed partial class ScriptSession
     internal string BlockAt(BlockPos p)
     {
         SafePoint();
-        return Blocks.Get(_host.World.GetBlock(p.X, p.Y, p.Z)).Name;
+        return _host.Data.Block(_host.World.GetBlock(p.X, p.Y, p.Z)).Name;
     }
+
+    /// <summary>A block name in this session's version (1.12.2 names on a 1.12.2 server), else the process facade.</summary>
+    private BlockInfo? BlockNamed(string name) => _host.Data.BlockByName(name) ?? Blocks.ByName(name);
 
     /// <summary><c>light(pos)</c>: {sky, block} raw light (0-15), <c>now</c> = the effective level now (max(sky − World.k, block)),
     /// <c>night</c> = after dark (World.k 11). Mobs spawn at 7 or less.</summary>
@@ -730,7 +733,7 @@ public sealed partial class ScriptSession
         double r = radius is { } rr ? Math.Clamp(rr, 1, 64) : 24;
         var w = _host.World;
         var feet = w.Player.Position;
-        if (Blocks.ByName(kind) is { } b && !string.Equals(kind, "player", StringComparison.OrdinalIgnoreCase))
+        if (BlockNamed(kind) is { } b && !string.Equals(kind, "player", StringComparison.OrdinalIgnoreCase))
         {
             var hit = w.FindBlocks(feet, r, (id, _) => id == b.Id, 64).Where(f => !_host.IsProtected(f.Pos, f.Id))
                 .OrderBy(f => f.DistanceSquared).Cast<FoundBlock?>().FirstOrDefault();

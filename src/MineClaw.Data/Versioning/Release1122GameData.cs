@@ -50,7 +50,7 @@ public sealed class Release1122GameData : IGameData
 
     // ------------------------------------------------------------------ blocks
 
-    public BlockInfo Block(int id) => T.BlockInfos.TryGetValue(id, out var b) ? b : MineClaw.Data.Blocks.Get(id);
+    public BlockInfo Block(int id) => T.BlockInfos.TryGetValue(id, out var b) ? b : MineClaw.Data.Blocks.GetB(id);
     public bool BlockExists(int id) => T.Blocks.ContainsKey(id);
 
     public IEnumerable<int> BlockIds => T.Blocks.Keys.Order();
@@ -61,7 +61,7 @@ public sealed class Release1122GameData : IGameData
         var key = MineClaw.Data.Blocks.Normalize(name);
         foreach (var k in Candidates(key))
             if (T.BlockNames.TryGetValue(k, out int id)) return Block(id);
-        return MineClaw.Data.Blocks.ByName(name) is { } old && T.Blocks.ContainsKey(old.Id) ? Block(old.Id) : null;
+        return MineClaw.Data.Blocks.ByNameB(name) is { } old && T.Blocks.ContainsKey(old.Id) ? Block(old.Id) : null;
     }
 
     /// <summary>The minecraft-data snake-case name of a block or item id ("crafting_table", "wooden_pickaxe").</summary>
@@ -218,9 +218,9 @@ public sealed class Release1122GameData : IGameData
     private static BlockInfo ToBlockInfo(McBlock b, Tables t)
     {
         var (tool, level) = BestTool(b, t);
-        if (MineClaw.Data.Blocks.Exists(b.Id) && b.Id <= 109 && b.Id != 95) // 95: b1.8.1 locked chest, 1.12.2 stained glass
+        if (MineClaw.Data.Blocks.ExistsB(b.Id) && b.Id <= 109 && b.Id != 95) // 95: b1.8.1 locked chest, 1.12.2 stained glass
         {
-            var old = MineClaw.Data.Blocks.Get(b.Id);
+            var old = MineClaw.Data.Blocks.GetB(b.Id);
             return old with { Name = b.Name, DisplayName = b.DisplayName, Hardness = b.Hardness, MinHarvestLevel = b.HarvestTools.Count == 0 ? -1 : level };
         }
         bool liquid = b.Name.Contains("water") || b.Name.Contains("lava");

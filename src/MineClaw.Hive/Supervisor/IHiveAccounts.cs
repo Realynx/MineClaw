@@ -15,6 +15,9 @@ public interface IHiveAccounts
     void Assigned(string account, TaskMsg task, HiveSpawnOptions? options);
     /// <summary>Right before the clone logs in (main whitelists the account).</summary>
     void BeforeLaunch(string account);
+    /// <summary>Right before the clone logs in, awaited (bounded by the implementation): main whitelists the account and the
+    /// launch waits for the server's confirmation, so the login isn't refused "not white-listed". Default: <see cref="BeforeLaunch"/>.</summary>
+    Task BeforeLaunchAsync(string account, CancellationToken ct = default) { BeforeLaunch(account); return Task.CompletedTask; }
     /// <summary>The slot is offline for good (logged out, kicked or retired; not restarting, not relaunching).</summary>
     void Released(string account, string reason);
 }

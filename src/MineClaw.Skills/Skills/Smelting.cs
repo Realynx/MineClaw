@@ -49,14 +49,22 @@ public sealed class SmeltBatchSkill : Skill
                   (output is null ? "" : $" -> {Item(output.OutputId, output.OutputDamage)}") + (wait ? "" : "; collect_furnace later"));
     }
 
-    /// <summary>Best fuel that isn't the thing being smelted: charcoal/coal first, then wood.</summary>
+    /// <summary>Best fuel that isn't the thing being smelted: charcoal/coal first, then the rest by burn time from the version's
+    /// data (<see cref="Smelting.FuelTicks"/>: planks/logs incl. 1.12.2's log2, sticks); a coal block (1.12.2) only when there is
+    /// no coal (it burns 80 items' worth).</summary>
     public static int? Fuel(SkillContext ctx, int smelting)
     {
         if (ctx.Has(Items.Coal)) return Items.Coal;
-        foreach (int id in new[] { Blocks.Planks, Blocks.Log, Items.Stick })
-            if (id != smelting && ctx.Has(id) && !ctx.Game.ReservedItems.Contains(id)) return id;
-        return null;
+        int? best = null;
+        foreach (int id in new[] { Blocks.Planks, Blocks.Log, MineClaw.Client.Trees.Wood.Log2, Items.Stick, CoalBlock })
+            if (id != smelting && Smelting.IsFuel(id) && ctx.Has(id) && !ctx.Game.ReservedItems.Contains(id)
+                && (best is null || id != CoalBlock && Smelting.FuelTicks(id) > Smelting.FuelTicks(best.Value)))
+                best = id;
+        return best;
     }
+
+    /// <summary>Block of coal (1.12.2).</summary>
+    private const int CoalBlock = 173;
 }
 
 [Skill]

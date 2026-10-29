@@ -82,7 +82,7 @@ public static partial class BodyFactory
         var sources = brain.Acquisition.ForBody(() =>
         {
             var me = world.Player.Position.ToBlockPos();
-            return Perception.BlockDescriber.GenCellsNear(world, me, 16)
+            return (MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone ? Perception.BlockDescriber.GenCellsNear(world, me, 16) : [])
                 .Concat(indexer?.GeneratorCellsNear(me, 32) ?? [])
                 .Concat(digCells.Taught().Where(t => t.DistanceSquaredTo(me) <= 48 * 48))
                 .Distinct().ToList();

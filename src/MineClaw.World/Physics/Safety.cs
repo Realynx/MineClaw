@@ -251,7 +251,7 @@ public static class Safety
             if (top > landing) { landing = top; landingId = overlay.GetBlock(x, s, z); }
         }
         if (landing == double.MinValue) return false;
-        if (landingId == Blocks.Leaves) return false;
+        if (landingId is Blocks.Leaves or 161) return false; // leaves / leaves2 (1.12.2)
         return feet.Y - landing <= maxDrop + 1e-6;
     }
 }

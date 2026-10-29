@@ -260,6 +260,18 @@ public sealed class WorldState : IBlockAccess
     public bool CanHostileSpawn(BlockPos p, long? timeOfDay = null) =>
         SpawnRules.Check(this, p, timeOfDay is { } t ? SkylightSubtracted(t) : LightEngine.NightSubtracted) == SpawnBlock.Spawnable;
 
+    /// <summary>The biome id at block column (x, z) (1.12.2 chunk data), or −1: not loaded, or a version whose chunks carry no
+    /// biomes (b1.8.1).</summary>
+    public int GetBiome(int x, int z) => ColumnAt(x, z) is { HasData: true } c ? c.GetBiome(x & 15, z & 15) : -1;
+
+    /// <summary>Stores a full chunk's 256 biome ids (index <c>z · 16 + x</c>); a column that doesn't exist yet is created.</summary>
+    public void SetBiomes(int chunkX, int chunkZ, byte[] biomes)
+    {
+        if (biomes.Length < 256) return;
+        var col = GetOrCreate(chunkX, chunkZ, out _);
+        col.Biomes = biomes.AsSpan(0, 256).ToArray();
+    }
+
     public int GetBlock(BlockPos p) => GetBlock(p.X, p.Y, p.Z);
     public int GetMeta(BlockPos p) => GetMeta(p.X, p.Y, p.Z);
     public BlockInfo GetInfo(BlockPos p) => _lookup(GetBlock(p));
@@ -339,7 +351,13 @@ public sealed class WorldState : IBlockAccess
     // ---- queries ----
 
     /// <summary>Finds blocks matching <paramref name="match"/> within a sphere, nearest first.</summary>
-    public List<FoundBlock> FindBlocks(Vec3d center, double radius, Func<int, int, bool> match, int maxResults = 64)
+    public List<FoundBlock> FindBlocks(Vec3d center, double radius, Func<int, int, bool> match, int maxResults = 64) =>
+        FindBlocks(center, radius, match, null, maxResults);
+
+    /// <summary>Like <see cref="FindBlocks(Vec3d, double, Func{int, int, bool}, int)"/>, but only cells that also pass
+    /// <paramref name="where"/> (e.g. exposed to air) count toward <paramref name="maxResults"/>: in solid ground the nearest
+    /// matches are all buried.</summary>
+    public List<FoundBlock> FindBlocks(Vec3d center, double radius, Func<int, int, bool> match, Func<BlockPos, bool>? where, int maxResults = 64)
     {
         var results = new List<FoundBlock>();
         int r = (int)Math.Ceiling(radius);
@@ -364,7 +382,7 @@ public sealed class WorldState : IBlockAccess
                 double d2 = h2 + hy * hy;
                 if (d2 > r2) continue;
                 int m = col.Meta[i];
-                if (match(id, m)) results.Add(new FoundBlock(new BlockPos(x, y, z), id, m, d2));
+                if (match(id, m) && (where is null || where(new BlockPos(x, y, z)))) results.Add(new FoundBlock(new BlockPos(x, y, z), id, m, d2));
             }
         }
         results.Sort((a, b) => a.DistanceSquared.CompareTo(b.DistanceSquared));

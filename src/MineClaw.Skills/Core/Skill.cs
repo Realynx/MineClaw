@@ -45,13 +45,19 @@ public static class SkillWorld
 
     public static string Name(int id) => Blocks.Get(id).Name;
 
-    /// <summary>Best scaffold/building block in the inventory (never reserved items; never dirt or falling sand unless
-    /// asked for by name): the client's <see cref="MineClaw.Client.MinecraftClient.ScaffoldBlocks"/> order.</summary>
+    /// <summary>Best scaffold/building block in the inventory (never reserved items; never falling sand unless asked for by
+    /// name; dirt only in a normal world, where it isn't scarce): the client's <see cref="MineClaw.Client.MinecraftClient.ScaffoldBlocks"/> order.</summary>
     public static int? BuildingBlock(SkillContext ctx, string? preferred = null)
     {
         if (SkillJson.Item(preferred) is { } want && want.Id < 256 && ctx.Has(want.Id)) return want.Id;
         foreach (int id in MineClaw.Client.MinecraftClient.ScaffoldBlocks)
+        {
+            // Dirt is everywhere in a normal world: a fine building block, before the logs (skyblock never spends it).
+            if (id == Blocks.Log && !MineClaw.Data.Versioning.WorldMode.Current.ScarceTerrain
+                && !ctx.Game.ReservedItems.Contains(Blocks.Dirt) && ctx.Has(Blocks.Dirt)) return Blocks.Dirt;
             if (!ctx.Game.ReservedItems.Contains(id) && ctx.Has(id)) return id;
+        }
+        if (!MineClaw.Data.Versioning.WorldMode.Current.ScarceTerrain && !ctx.Game.ReservedItems.Contains(Blocks.Dirt) && ctx.Has(Blocks.Dirt)) return Blocks.Dirt;
         return null;
     }
 

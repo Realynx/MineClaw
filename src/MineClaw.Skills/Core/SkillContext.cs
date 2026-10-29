@@ -43,7 +43,7 @@ public sealed class SkillContext(IGameActions game, SkillRegistry registry, Skil
     public Vec3d Feet => World.Player.Position;
     public BlockPos Me => new((int)Math.Floor(Feet.X), (int)Math.Floor(Feet.Y + 1e-6), (int)Math.Floor(Feet.Z));
     public bool InNether => World.Dimension == -1;
-    public Dim Dimension => InNether ? Dim.Nether : Dim.Overworld;
+    public Dim Dimension => World.Dimension switch { -1 => Dim.Nether, 1 => Dim.End, _ => Dim.Overworld };
 
     public int Count(int itemId, int? damage = null) => World.Inventory.CountItem(itemId, damage);
     public bool Has(int itemId, int? damage = null) => Count(itemId, damage) > 0;

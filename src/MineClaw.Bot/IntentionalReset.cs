@@ -26,7 +26,8 @@ public static class IntentionalReset
     public static void Attach(AgentRuntime rt, IGameClient client, ILogger? log, string? body = null)
     {
         if (client is not MinecraftGameClient mg) return;
-        var beliefs = SeedClaim(rt, log);
+        // The void-reset claim belongs to a world with a void under it (skyblock); a normal world never hears of it.
+        var beliefs = rt.World.HasVoidBelow ? SeedClaim(rt, log) : null;
         mg.Inner.VoidStepStarted += step =>
         {
             log?.LogInformation("into_void: {Reason}", step.Reason);

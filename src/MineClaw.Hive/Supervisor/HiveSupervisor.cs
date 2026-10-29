@@ -110,6 +110,8 @@ public sealed class CloneSlot(string name)
     public DateTimeOffset ExternalSince { get; internal set; }
     /// <summary>This outing ended with a duplicate-login kick (the clone's occupied notice or its exit code).</summary>
     internal bool ExternalKick;
+    /// <summary>This outing ended with the server refusing the login (the clone's bye or its exit code): not whitelisted / full.</summary>
+    internal int? RefusedCode;
     /// <summary>When our last outing ended (our own logout may linger on the tab list for a moment).</summary>
     internal DateTimeOffset GoneAt;
 }
@@ -270,7 +272,8 @@ public sealed class HiveSupervisor : IAsyncDisposable
             if (!h.Joined)
                 return st.FreshVoidSpawn() is { } f
                     ? $"never joined; first login lands at void spawn {Block(f)} and needs a /tp"
-                    : "never joined; first login lands at the world spawn (maybe over the void: have a /tp ready)";
+                    : MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow ? "never joined; first login lands at the world spawn (maybe over the void: have a /tp ready)"
+                    : "never joined; first login lands at the world spawn";
             if (h.Void is { } v) return $"logged out over the void at {Block(v)}; next login lands there and needs a /tp";
             if (h.Good is { } g) return $"idle (logged out safe at {Block((g.X, g.Y, g.Z))}{(g.Dimension == -1 ? " nether" : "")})";
             return "idle (logged out, position unknown)";
@@ -1043,8 +1046,11 @@ public sealed class HiveSupervisor : IAsyncDisposable
 
     private void Launch(CloneSlot slot)
     {
-        // Main whitelists the account right before its login (it's off the whitelist whenever it isn't out).
-        try { Accounts?.BeforeLaunch(slot.Name); } catch (Exception ex) { _log.LogWarning(ex, "hive: whitelist hook for {Clone} failed", slot.Name); }
+        // Main whitelists the account right before its login (it's off the whitelist whenever it isn't out); the login waits
+        // for the server's confirmation (bounded by the accounts seam), else it would be refused "not white-listed".
+        Task whitelisted;
+        try { whitelisted = Accounts?.BeforeLaunchAsync(slot.Name, _cts.Token) ?? Task.CompletedTask; }
+        catch (Exception ex) { _log.LogWarning(ex, "hive: whitelist hook for {Clone} failed", slot.Name); whitelisted = Task.CompletedTask; }
         var pipe = PipeNames.For(slot.Name, _cfg.PipeDirectory);
         System.IO.Pipes.NamedPipeServerStream server;
         int gen;
@@ -1059,11 +1065,16 @@ public sealed class HiveSupervisor : IAsyncDisposable
             server = PipeNames.Server(pipe);
         }
         var wait = JoinDelay();
-        if (wait <= TimeSpan.Zero) { StartProcess(slot, gen, pipe, server); return; }
-        _log.LogInformation("hive: {Clone} waits {S:0.0}s for its login turn (server join throttle)", slot.Name, wait.TotalSeconds);
+        if (wait <= TimeSpan.Zero && whitelisted.IsCompleted) { StartProcess(slot, gen, pipe, server); return; }
+        if (wait > TimeSpan.Zero) _log.LogInformation("hive: {Clone} waits {S:0.0}s for its login turn (server join throttle)", slot.Name, wait.TotalSeconds);
         _ = Task.Run(async () =>
         {
-            try { await Task.Delay(wait, _time, _cts.Token).ConfigureAwait(false); }
+            try
+            {
+                if (wait > TimeSpan.Zero) await Task.Delay(wait, _time, _cts.Token).ConfigureAwait(false);
+                try { await whitelisted.ConfigureAwait(false); }
+                catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogWarning(ex, "hive: whitelisting {Clone} failed", slot.Name); }
+            }
             catch (OperationCanceledException) { server.Dispose(); return; }
             bool go;
             lock (slot.Lock) go = gen == slot.Generation && slot.State == CloneState.Starting;
@@ -1147,9 +1158,13 @@ public sealed class HiveSupervisor : IAsyncDisposable
         TaskCompletionSource? gone;
         List<ItemMsg>? inv;
         bool external;
+        bool refused;
         lock (slot.Lock)
         {
             if (gen != slot.Generation || slot.State is CloneState.Idle or CloneState.Retired or CloneState.Backoff) return; // already handled
+            exitCode = slot.RefusedCode ?? exitCode;
+            refused = exitCode is CloneExitCodes.NotWhitelisted or CloneExitCodes.ServerFull;
+            slot.RefusedCode = null;
             slot.HandoffHold?.Dispose();
             slot.HandoffHold = null;
             slot.LendHold?.Dispose();
@@ -1189,6 +1204,14 @@ public sealed class HiveSupervisor : IAsyncDisposable
                 slot.State = CloneState.Idle;
                 slot.ExternalUntil = Now + TimeSpan.FromMinutes(Math.Max(0, _cfg.ExternalLoginCooldownMinutes));
                 slot.RespawnWith = null;
+            }
+            else if (refused)
+            {
+                // The server refused the login (not whitelisted / full): reconnecting can't fix it. Yield the slot: no crash,
+                // no restart, no queued relaunch; a later spawn tries again.
+                slot.State = CloneState.Idle;
+                slot.RespawnWith = null;
+                reason = exitCode == CloneExitCodes.NotWhitelisted ? "the server refused the login: not whitelisted" : "the server refused the login: server full";
             }
             else if (clean || slot.Recalled)
             {
@@ -1230,6 +1253,12 @@ public sealed class HiveSupervisor : IAsyncDisposable
             var unfinished = slot.Task is { } ut && !slot.ResultIn ? $"; its task \"{Trunc(ut.Text, 60)}\" is unfinished: give it to another clone" : "";
             Post(GameEvent.Notice($"[hive] slot {slot.Number} is in use by a player's viewer: someone logged in as {slot.Name} and the server kicked ours; " +
                 $"not using that slot for {_cfg.ExternalLoginCooldownMinutes:0} min ({released} claim(s) released" + (stranded > 0 ? $", {stranded} item(s) still on it" : "") + ")" + unfinished,
+                EventPriority.Normal) with { MustWake = unfinished.Length > 0 });
+        }
+        else if (refused)
+        {
+            var unfinished = slot.Task is { } ut && !slot.ResultIn ? $"; its task \"{Trunc(ut.Text, 60)}\" is unfinished" : "";
+            Post(GameEvent.Notice($"[hive] {slot.Number} couldn't log in: {reason} (not retrying by itself; {released} claim(s) released){unfinished}",
                 EventPriority.Normal) with { MustWake = unfinished.Length > 0 });
         }
         else if (clean && !(slot.Recalled && !slot.ByeReceived))
@@ -1508,7 +1537,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
             case Msg.Bus when m.As<Hierarchy.Bus.BusEnvelope>() is { } env:
                 return Bus is { } hb ? await hb.RouteAsync(env, slot.Name, ct).ConfigureAwait(false) : Hierarchy.Bus.BusReply.Fail("no bus");
             case Msg.Bye when m.As<ByeMsg>() is { } bye:
-                lock (slot.Lock) { slot.ByeReceived = true; slot.RecallReason ??= bye.Reason; }
+                lock (slot.Lock) { slot.ByeReceived = true; slot.RecallReason ??= bye.Reason; slot.RefusedCode ??= CloneHost.RefusalCode(bye.Reason); }
                 _log.LogInformation("hive: {Clone} bye ({Reason}, deposited {Dep}, stranded {N})", slot.Name, bye.Reason, bye.Deposited, bye.Stranded);
                 if (!bye.Deposited && bye.Stranded > 0)
                     Post(GameEvent.Notice($"[hive] {slot.Number} logged out holding {bye.Stranded} item(s): no storage space", EventPriority.Low));

@@ -131,8 +131,13 @@ public sealed class MemoryResetTests : IDisposable
             var system = string.Join("\n", rt.Agent.SystemPrompt.Select(b => b.Text));
             Assert.Contains("Core rules (1.12.2)", system);
             Assert.Contains("Minecraft 1.12.2", system); // the pack's prompt line
-            Assert.DoesNotContain("The void is below", system);
             Assert.DoesNotContain("Core rules (b1.8.1)", system);
+            // Neither cached prompt carries skyblock or b1.8.1 text: the world and version come from the active packs' cores.
+            var worker = string.Join("\n", rt.Worker!.SystemPrompt.Select(b => b.Text));
+            Assert.Contains("Minecraft 1.12.2", worker); // the pack's prompt line reaches the worker too
+            foreach (var prompt in new[] { system, worker })
+                foreach (var banned in new[] { "skyblock", "Beta 1.8.1", "the void is below", "island", "no bridges" })
+                    Assert.DoesNotContain(banned, prompt, StringComparison.OrdinalIgnoreCase);
             Assert.Contains(o.Chat.Username, system); // persona from config
             Assert.NotNull(rt.Self);
             Assert.Equal(0, rt.Self!.Version);       // the self-profile at its defaults: no growth

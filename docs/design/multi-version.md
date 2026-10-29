@@ -2,7 +2,7 @@
 
 Status: P0, P1 and P2 are implemented (seams + detection; 1.12.2 login, chat, game state, movement and chunks in a 256-high
 world, section 5.1; inventory, windows, dig, place, use, signs and item entities, section 5.2), and P5 (game data and render,
-section 5.3), P3 (physics, shapes and pathing, section 5.4) and P4 (entities, combat, effects, hunger, section 5.5). P6 is planned. Ground truth for 1.12.2: the decompiled client at `C:\Users\dev\source\mc-1.12.2-src`
+section 5.3), P3 (physics, shapes and pathing, section 5.4) and P4 (entities, combat, effects, hunger, section 5.5) and P6 (the audit: world mode, light/spawn rules, biomes, the end-to-end normal-world scenario, section 5.6). Ground truth for 1.12.2: the decompiled client at `C:\Users\dev\source\mc-1.12.2-src`
 (section 4); class and method names below are its MCP stable_39 names.
 Date: 2026-10-28.
 
@@ -352,7 +352,7 @@ Each phase ships on its own and keeps every b1.8.1 suite green. Sizes are rough 
 | **P3** physics + pathing | `Release1122PhysicsRules`: the step-0.6/sneak/sprint/swim/ladder deltas, the new collision shapes (connecting fences/panes/walls, stair shapes, state-dependent slabs), slipperiness of new blocks, the vanilla server's movement checks. Route the tick, `SwimSim`, parkour, `EdgeGuard` and pathfinder costs through the seam. Replay tests vs recordings. | L (5–8) | High: fidelity needs the decompiled source; rubber-banding shows up only live |
 | **P4** entities + combat | `IEntityRules` (metadata tables, new mob profiles), entity translation finished. Attack cooldown and charge-aware CombatEngine, sweep, crit rules, shields (offhand), the new damage and armor tables. `IHungerRules` for 1.12.2 (the 1.11 exhaustion values, saturation regen). | L (5–7) | Medium-high |
 | **P5** data, recipes, knowledge pack, render | `IGameData` 1.12.2: blocks/items/foods from minecraft-data, recipes from the jar's 432 JSON files, smelting and drops from the decompiled source. Static facades over `GameData.Current`. `IRenderAssets` 1.12.2 (blockstates → models → textures, the meta → state table). `1.12.2-gamedata` pack + `mechanics_1122.md` via tools/ShardPacks. | L-XL (7–10) | Medium: wide but mechanical; the meta → blockstate mapping needs ground truth |
-| **P6** skills audit | Every skill, SDK helper, prompt and knowledge line checked for b1.8.1/skyblock assumptions: void edges, the gen, 128 height, item names, terrain worlds (caves, lava, cliffs, villages). Live soak on the 1.12.2 server (with the user's go-ahead). | M-L (4–6) | Medium |
+| **P6** (done) skills audit | Every skill, SDK helper, prompt and knowledge line checked for b1.8.1/skyblock assumptions: void edges, the gen, 128 height, item names, terrain worlds (caves, lava, cliffs, villages). Live soak on the 1.12.2 server (with the user's go-ahead). | M-L (4–6) | Medium |
 
 ### Risky unknowns and the ground truth each needs
 
@@ -714,3 +714,87 @@ the code-only special recipes.
 - Self attributes are recorded but the tick computes movement speed from the effects (not from the server's attribute snapshot).
 - Vision has no models of its own for the newer mobs (nearest b1.8.1 model).
 
+
+### 5.6 What P6 shipped (the audit: b1.8.1 and skyblock assumptions in a normal 1.12.2 world)
+
+**The world mode.** Skyblock is a fact about the world, not the version, so it is not on the profile.
+- `Data/Versioning/WorldMode` works like `GameData`: a process default plus an AsyncLocal `Override` for tests. It is either `skyblock` or `normal`.
+- Game code reads its facts, never the name: `HasVoidBelow`, `GeneratorStone`, `ScarceTerrain`, `Islands`.
+- The db's active knowledge packs decide the mode (`AgentRuntime.World`):
+  - the `skyblock` mode pack → skyblock;
+  - a legacy db without pack metadata → skyblock;
+  - a pack of another version → normal.
+- The App makes it the process default (`AgentOptions.ApplyWorldMode`).
+- The default is skyblock, so every b1.8.1 install and test behaves as before.
+- A `--reset-memory` 1.12.2 db (1.12.2-gamedata + sdk-js, no mode) is a normal world.
+
+**`Blocks` joined the facades.** `Get`, `Exists` and `ByName` answer from `GameData.Current`; b1.8.1 keeps its `…B` path. Names such as `log2`, `hopper` and `stained_hardened_clay` now resolve on 1.12.2 everywhere, and `unknown_162` no longer appears in model-facing text.
+
+**Light and spawning.**
+- `IPhysicsRules` gained `LightOpacity`, `LightEmission`, `IsSpawnFloor`, `IsSpawnCellClear` / `IsSpawnHeadClear` and `BiomeSpawnsMonsters`.
+  - The b1.8.1 defaults are mc-dev's.
+  - The 1.12.2 implementation is `World/Release1122/Light1122`, ported from `WorldEntitySpawner`, `Block.isTopSolid` and its overrides, `isValidEmptySpawnBlock`, `Material` translucency and the block registrations' light values.
+- Spawn floors on 1.12.2:
+  - Floors: top slabs, upside-down stairs, full snow layers, hoppers and retracted pistons.
+  - Not floors: the translucent materials (glass, glowstone, sea lanterns, beacons, ice, leaves, TNT), plus bedrock, barriers and magma.
+  - Rails and power sources (plates, buttons, levers, redstone, trapped chests, observers…) block the spawn cell.
+  - The light ≤ 7 and 24-block rules are unchanged.
+- The light engine captures the version's tables:
+  - sea lanterns, end rods, lit lamps and magma emit light;
+  - terracotta, concrete, log2 and the new slabs and stairs are opaque;
+  - stained glass no longer counts as b1.8.1's glowing locked chest.
+- **Chunk biomes** are stored (`ChunkColumn.Biomes`, `WorldState.GetBiome` / `SetBiomes`), read from the Chunk Data biome array.
+  - The mushroom island, its shore and the void biome spawn no monsters.
+  - The 1.12.2 models are recoloured per column (`IVoxelWorld.Biome`, grass and foliage tints from `tints.json`). An unknown biome renders as plains.
+
+**Checklist** (fixed / OK / deferred):
+
+| # | Item | Status |
+|---|---|---|
+| 1 | Skills: void-edge assumptions | **Fixed.** In a normal world, `expand_island`'s edge mode finds edges over a drop of 2 or more; it has the alias `extend_floor` and neutral wording. `pillar_down` refuses under sand or gravel. Dirt is a building block when it isn't scarce. |
+| 1 | `expand_island` | **Fixed** (see above). The void checks stay as safety rules. |
+| 1 | Cobble generator assumptions | **Fixed.** `build_cobble_gen` requires skyblock (`Preconditions.Requires` answers "not available in this world"). In a normal world, `harvest_generator at=auto` uses only taught or confirmed cells. |
+| 1 | Sapling scarcity, unrenewable dirt | **Fixed.** These only apply with `ScarceTerrain`: tree stewardship, the "last trees" refusal, the replant streak, leaf clearing and the protection of the dirt under trunks. In a normal world `chop_tree` fells the logs only. |
+| 1 | 24-block mob-farm rules | **OK.** `build_mob_farm` is a stub, and the 24-block spawn rule is the same in 1.12.2. |
+| 1 | Version-only mechanics in skills | **Fixed:** log2/leaves2 (all six species; 2×2 trunks; dark oak needs four saplings), carrots/potatoes/beetroot, the iron trapdoor, the wooden button, weighted plates, trapped chests, fuels ranked by burn time, magma in `hazard_scan`, beds only in the overworld (a new End dimension). **Deferred:** a nether wart harvest skill; `eat_cake` reporting slices left (the data has no per-version bite count). |
+| 2 | Prompts, brainstem, chat lines, ScriptPrompts, AuthorAgent, blueprint author, perception | **Fixed:** the cached C# text is world- and version-neutral ("a Minecraft world", "# World core rules", a neutral safety line); the skyblock rules come only from the skyblock pack's core; the worker also gets the pack line; blueprint messages name `GameData.Current.VersionId`; vision and blueprints ask gen questions only with `GeneratorStone`; ScriptPrompts' examples are mining and chopping (one gen example remains, labelled skyblock only). The brain's prefix is about 95 characters shorter. |
+| 3 | WorldIndexer kinds | **Fixed.** In a normal world, chunk scans seed no floors, builds or generators: only observed placements count, and a gen only from an observed refill. Islands only with `Islands`. Adds the 1.12.2 stations, crops and log2. |
+| 3 | ProtectionPolicy (gen walls) | **Fixed.** A real `floor` reason; gen walls only for confirmed gens; the 1.12.2 crops, fill blocks and containers. |
+| 3 | FoodSupply | **Fixed.** The food and fuel lists come from `GameData.Current` (1.12.2 foods). Food checks use the item's damage value, so pufferfish is risky. |
+| 3 | ChestStore | **Fixed.** Trapped chests are storage, paired only with other trapped chests. |
+| 3 | Gen yield/honesty guards | **OK.** They are version-neutral. In a normal world, natural lava beside water is not a gen, and `mine stone` mines natural stone when no gen is near. |
+| 3 | BuildSkips "floor over the void" | **Fixed.** "(over the void)" appears only over a real void; a normal world gets a foundation (`fill_floor`) hint. |
+| 3 | Vision role classifier | **Fixed.** In a normal world, gen cells only for confirmed gens; doors via `Openables`; the 1.12.2 crops; void only with a void below. |
+| 3 | Light/spawn rules | **Fixed** (see above). |
+| 3 | Nether portal travel | **OK.** Travel flood-fills the portal sheet, so frame size doesn't matter; the 1:8 scaling and the 80-tick wait are the same; `build_portal` makes the 4×5 minimum, which is valid in both versions. **Deferred:** `light_portal` on a larger hand-built frame (1.12.2 allows insides up to 21×21). |
+| 3 | Doors/mechanisms | **OK.** `Openables` already had the 1.12.2 states from P2/P3. **Fixed:** the wooden button and weighted plates are actuators; the iron trapdoor goes through redstone. |
+| 4 | SDK primitives, compat, examples | **Fixed:** `block()`, `waitfor('block')`, `near()` and item lookups go through the session's `IGameData`; `ItemSources` chops log2 and harvests the new crops; lint is version-aware; the sdk-js pack is rebuilt. **OK:** one pack serves every version, and each callable is tagged with its versions. **Deferred:** skyblock tags on the gen callables in the pack. |
+| 5 | Chunk biomes | **Fixed** (see above). |
+| 5 | Spar model / weapon choice | **Fixed.** Both take the profile's `ICombatRules`. With a cooldown, weapons rank by damage per second over max(cooldown, the 10-tick hurt resistance): a wooden pickaxe beats the bare hand, and a sword beats an axe. b1.8.1 is unchanged. |
+| 5 | `Blocks` facade leftovers | **Fixed** (see above). |
+| 6 | Hive: clone accounts, whitelisting, player cap | **Fixed:** a whitelist add counts only once the server confirms it ("Added X to the whitelist", fed from main's chat), and launches wait for it (≤ 10 s); a not-whitelisted or server-full kick ends the clone with exit 77/78 and frees the slot (the built-in lang has both keys); the void-spawn refusal applies only with a void. **OK:** the cap comes from Join Game's max players in both versions; the `whitelist add` syntax is the same. |
+| 7 | End-to-end scenario | **Passes:** `App.Tests/Release1122WorldScenarioTests`. |
+
+**The scenario** (`tests/MineClaw.App.Tests/Release1122WorldScenarioTests.cs`, about 16 s):
+- **Setup:**
+  - `MemoryReset` builds a fresh db from the 1.12.2 pack.
+  - The bot logs into `FakeServer(release1122)`, in a normal-world fixture: bedrock, stone, dirt and grass; a stone outcrop; oak, birch and acacia trees; a cave with lava beside water; a planks house with a door, panes and a chest.
+  - Its prompt carries the 1.12.2 core and no skyblock words.
+- **Scripted brain and worker rounds, in order:**
+  1. Greet.
+  2. Chop two trees.
+  3. Craft a table (and place it) and a wooden pickaxe.
+  4. Mine 34 natural stone, never touching the house or the cave.
+  5. Craft and place a furnace, and smelt two porkchops.
+  6. Before dusk, build a 3×3 hut with a doorway and a roof through the `build_wall` / `fill_floor` skills.
+  7. Kill a zombie with charged hits (≥ 0.85).
+  8. Eat a cooked porkchop when hungry.
+- **Fake-server additions:** 1.12.2 furnace windows, sped-up furnace time, and registration of placed tables and furnaces.
+
+**Still open after P6:**
+- `light_portal` on frames larger than 4×5; nether wart harvesting; pigmen's 1.12.2 drops; `eat_cake` slices left.
+- In a normal world, builds that stood before the bot first saw them are not flagged as player builds. Placements the bot observes are not persisted; its own placements are, in `PlacedBlockLog`.
+- The user's `appsettings.json` persona still says "help foxy and robin play skyblock" / "your third island buddy". That is config, not code.
+- `QuestionOptions.Jobs` ("top up cobblestone…") and the `harvest_generator` / `into_void` names stay in the cached tool text.
+- Remembered (offline) columns carry no biomes, so they render with plains tints.
+- A live soak on the 1.12.2 server, with the user's go-ahead.

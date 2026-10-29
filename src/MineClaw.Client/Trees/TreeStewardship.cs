@@ -1,4 +1,5 @@
 using MineClaw.Data;
+using MineClaw.Data.Versioning;
 using MineClaw.World;
 
 namespace MineClaw.Client.Trees;
@@ -17,6 +18,7 @@ public sealed record TreeCensus(IReadOnlyList<TreeInfo> Trees, IReadOnlyList<Blo
 /// <c>MinTrees</c> trees (planted saplings count as future trees), unless the bot holds a sapling and can replant that
 /// very spot. Applies to chop_tree (and so to every script/worker path that calls it); plain digs/mines of a living
 /// tree's logs never replant, so for them the rule holds even with a sapling in hand.
+/// Only where trees are scarce (<see cref="WorldMode.ScarceTerrain"/>: skyblock); a normal world's forests need no guard.
 /// </summary>
 public static class TreeStewardship
 {
@@ -48,7 +50,7 @@ public static class TreeStewardship
     /// </summary>
     public static string? Refusal(TreeCensus census, TreeInfo target, int saplingsHeld, string? replantProblem, int minTrees)
     {
-        if (minTrees <= 0 || !IsLiving(target)) return null;   // a remnant/build isn't one of the island's trees
+        if (minTrees <= 0 || !WorldMode.Current.ScarceTerrain || !IsLiving(target)) return null;   // a remnant/build isn't one of the island's trees
         if (saplingsHeld > 0 && replantProblem is null) return null; // the replant is certain: the tree count holds
         if (LeftAfter(census, target) >= minTrees) return null;
         return saplingsHeld <= 0
@@ -63,7 +65,7 @@ public static class TreeStewardship
     public static HashSet<BlockPos> GuardedLogs(TreeCensus census, int minTrees)
     {
         var set = new HashSet<BlockPos>();
-        if (minTrees <= 0 || census.Trees.Count == 0 || census.Future - 1 >= minTrees) return set;
+        if (minTrees <= 0 || !WorldMode.Current.ScarceTerrain || census.Trees.Count == 0 || census.Future - 1 >= minTrees) return set;
         foreach (var t in census.Trees) set.UnionWith(t.Logs);
         return set;
     }

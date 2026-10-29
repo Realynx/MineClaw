@@ -2,6 +2,7 @@ using MineClaw.Bot.Game;
 using MineClaw.Client;
 using MineClaw.Client.Survival;
 using MineClaw.Data;
+using MineClaw.Data.Versioning;
 using MineClaw.World;
 
 namespace MineClaw.Bot.GameTools;
@@ -23,14 +24,50 @@ public sealed class FoodSupply(IGameClient c, AcquisitionSources? sources = null
     /// <summary>Budget hook (the acquisition planner counts each withdraw/craft/smelt as a step).</summary>
     public Action<string>? OnStep { get; init; }
 
-    /// <summary>Prepared food fetched as it is, best first (golden apples stay: they're saved for critical hp).</summary>
-    public static readonly int[] Ready =
+    private static readonly int[] BaseReady =
         [Items.CookedPorkchop, Items.Steak, Items.CookedChicken, Items.Bread, Items.CookedFish, Items.MushroomStew, Items.Apple, Items.Cookie, Items.MelonSlice];
+    private static readonly int[] BaseRaw = [Items.Porkchop, Items.RawBeef, Items.RawFish, Items.RawChicken];
+    private static readonly int[] BaseFuels = [Items.Coal, Blocks.Planks, Blocks.Log];
+
+    /// <summary>Never fetched as everyday food: golden apples (saved for critical hp), chorus fruit (teleports).</summary>
+    private static readonly HashSet<int> Kept = [Items.GoldenApple, 432];
+
+    private sealed record Lists(int[] Ready, int[] Raw, int[] Fuels);
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IGameData, Lists> ByVersion = new();
+
+    /// <summary>The version's food and fuel (<see cref="GameData.Current"/>): b1.8.1's lists first, then whatever else the
+    /// version's tables call food (1.12.2: baked potato, carrot, cooked mutton/rabbit, beetroot, pumpkin pie...) and fuel (log2,
+    /// coal block).</summary>
+    private static Lists Current => ByVersion.GetValue(GameData.Current, BuildLists);
+
+    private static Lists BuildLists(IGameData d)
+    {
+        var ready = BaseReady.Where(d.ItemExists).ToList();
+        var raw = BaseRaw.Where(d.ItemExists).ToList();
+        var fuels = BaseFuels.Where(d.ItemExists).ToList();
+        var extraReady = new List<(int Id, int Hunger)>();
+        var extraRaw = new List<(int Id, int Hunger)>();
+        for (int id = 256; id < 512; id++)
+        {
+            if (!d.ItemExists(id) || ready.Contains(id) || raw.Contains(id) || Kept.Contains(id) || d.Food(id) is not { } f) continue;
+            var cooked = d.SmeltingFor(id);
+            if (cooked != null && d.Food(cooked.OutputId) != null) extraRaw.Add((id, f.Hunger));
+            else if (d.FoodPoisonChance(id) <= 0) extraReady.Add((id, f.Hunger));
+        }
+        ready.AddRange(extraReady.OrderByDescending(x => x.Hunger).Select(x => x.Id));
+        raw.AddRange(extraRaw.OrderByDescending(x => x.Hunger).Select(x => x.Id));
+        foreach (var id in new[] { Ids1122.Log2, Ids1122.CoalBlock })
+            if (!fuels.Contains(id) && d.ItemExists(id) && d.FuelTicks(id) > 0) fuels.Add(id);
+        return new Lists(ready.ToArray(), raw.ToArray(), fuels.ToArray());
+    }
+
+    /// <summary>Prepared food fetched as it is, best first (golden apples stay: they're saved for critical hp).</summary>
+    public static int[] Ready => Current.Ready;
 
     /// <summary>Raw food: cooked when a furnace is in reach; the safe ones are eaten raw otherwise.</summary>
-    public static readonly int[] Raw = [Items.Porkchop, Items.RawBeef, Items.RawFish, Items.RawChicken];
+    public static int[] Raw => Current.Raw;
 
-    private static readonly int[] Fuels = [Items.Coal, Blocks.Planks, Blocks.Log];
+    private static int[] Fuels => Current.Fuels;
 
     public enum Way { Carried, Chest, Craft, Cook, EatRaw }
 
@@ -113,7 +150,7 @@ public sealed class FoodSupply(IGameClient c, AcquisitionSources? sources = null
             : $"no food anywhere: none in inventory or the {chests.Known} known chest{(chests.Known == 1 ? "" : "s")}";
         var notes = new List<string>();
         var slots = W.Inventory.PlayerSlots();
-        var held = slots.Skip(9).Where(s => !s.IsEmpty && Items.Food(s.Id) != null && c.EatReservedItems.Contains(s.Id))
+        var held = slots.Skip(9).Where(s => !s.IsEmpty && Items.Food(s.Id, s.Damage) != null && c.EatReservedItems.Contains(s.Id))
             .GroupBy(s => (int)s.Id).Select(g => $"{Name(g.Key)} x{g.Sum(s => s.Count)}").ToList();
         if (held.Count > 0) notes.Add($"carried {string.Join(", ", held)} is reserved");
         if (SurvivalReflex.HasAnyFood(slots, c.EatReservedItems)) notes.Add("only rotten flesh/raw chicken carried (use_item to eat one anyway)");

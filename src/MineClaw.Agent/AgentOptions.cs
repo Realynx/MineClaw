@@ -72,6 +72,10 @@ public sealed class AgentOptions
     /// the db's knowledge pack decides). A db whose pack is another version reads only this version's knowledge docs.</summary>
     public string? GameVersion { get; set; }
 
+    /// <summary>Make the db's world mode (skyblock or a normal world, from its active knowledge packs) the process default
+    /// (<c>WorldMode.SetDefault</c>): the composition root sets it; tests leave it off so one runtime never flips another's.</summary>
+    public bool ApplyWorldMode { get; set; }
+
     /// <summary>Cap on in-prompt knowledge text (chars, RAG off) so a big doc can't silently inflate every request.</summary>
     public int MaxKnowledgeChars { get; set; } = 40_000;
 
@@ -174,7 +178,7 @@ public sealed class WorkerOptions
     public int MaxContextTokens { get; set; } = 24_000;
     /// <summary>The single summary the brain gets back (chars).</summary>
     public int SummaryChars { get; set; } = 300;
-    /// <summary>Include the Skyblock core rules in the worker's cached system prompt.</summary>
+    /// <summary>Include the world core rules in the worker's cached system prompt.</summary>
     public bool IncludeCoreKnowledge { get; set; } = true;
     /// <summary>
     /// One brain, many bodies (<c>Bodies:Mode=inproc</c>): worker runs at once across bodies (one worker per busy body, sharing

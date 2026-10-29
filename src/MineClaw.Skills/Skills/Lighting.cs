@@ -263,7 +263,7 @@ public static class LightPlan
                         var nb = n switch { 0 => c.Offset(1, 0, 0), 1 => c.Offset(-1, 0, 0), 2 => c.Offset(0, 1, 0), 3 => c.Offset(0, -1, 0), 4 => c.Offset(0, 0, 1), _ => c.Offset(0, 0, -1) };
                         if (Math.Abs(nb.X - src.X) > radius || Math.Abs(nb.Y - src.Y) > radius || Math.Abs(nb.Z - src.Z) > radius) continue;
                         if ((uint)nb.Y >= h || !w.IsLoaded(nb.X, nb.Z)) continue;
-                        int op = LightTables.Opacity(w.GetBlock(nb));
+                        int op = w.Physics.LightOpacity(w.GetBlock(nb));
                         int v = l - Math.Max(1, op);
                         if (v < level) continue;
                         if (Visit(src, nb, v)) _buckets[v].Add(nb);

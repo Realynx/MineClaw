@@ -141,7 +141,7 @@ public sealed partial class WorldIndexer
                 var edges = (Dictionary<string, int>)e.Extra["edges"]!;
                 sb.Append($"{IslandName(e)} {e.Max.X - e.Min.X + 1}x{e.Max.Z - e.Min.Z + 1} ({e.Extra["columns"]} cols) y{e.Min.Y}-{e.Max.Y} at {P(e.Min)}..{P(e.Max)}: ");
                 sb.Append(string.Join(" ", top.Select(kv => $"{kv.Key} {kv.Value}")));
-                sb.Append($"; void edges N{edges["N"]} E{edges["E"]} S{edges["S"]} W{edges["W"]}");
+                sb.Append(MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow ? "; void edges" : "; edges").Append($" N{edges["N"]} E{edges["E"]} S{edges["S"]} W{edges["W"]}");
                 var has = _entries.Values.Where(x => x.Kind is not (IndexKinds.Island or IndexKinds.Hangout or IndexKinds.Activity or IndexKinds.Sign)
                                                      && _islands.OwnerOf(new BlockPos(x.Anchor.X, 0, x.Anchor.Z)) == e.Key)
                     .GroupBy(x => DisplayName(x.Kind, x.SubType, null)).OrderByDescending(g => g.Count()).Take(6)

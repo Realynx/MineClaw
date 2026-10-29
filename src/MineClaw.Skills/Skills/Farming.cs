@@ -27,7 +27,7 @@ internal sealed class FarmField
 
     public static FarmField Find(WorldState w, Vec3d feet, double radius)
     {
-        static bool Farm(int id) => id is Blocks.Crops or Blocks.Farmland;
+        static bool Farm(int id) => CropKinds.IsCrop(id) || id == Blocks.Farmland;
         var seed = w.FindBlocks(feet, radius, (id, _) => Farm(id), 1);
         var seen = new HashSet<BlockPos>();
         if (seed.Count > 0)
@@ -49,7 +49,7 @@ internal sealed class FarmField
                 }
             }
         }
-        var crops = seen.Where(p => w.GetBlock(p.X, p.Y, p.Z) == Blocks.Crops).ToList();
+        var crops = seen.Where(p => CropKinds.IsCrop(w.GetBlock(p.X, p.Y, p.Z))).ToList();
         var soil = seen.Where(p => w.GetBlock(p.X, p.Y, p.Z) == Blocks.Farmland).ToList();
         var f = new FarmField { Crops = crops, Soil = soil };
         if (seen.Count > 0)
@@ -164,7 +164,7 @@ public sealed class HarvestWheatSkill : Skill
         Summary = "harvest ripe wheat, hoe, replant; crews split it (claims)",
         Args = "radius?,replant?,part?",
         Schema = SkillJson.Schema("radius:int?,replant:bool?,part:str?"), Estimate = TimeSpan.FromSeconds(40), Pre = new() { Dimension = Dim.Overworld },
-        Keywords = "wheat crops farm harvest ripe bread seeds replant reap hoe till",
+        Keywords = "wheat crops farm harvest ripe bread seeds replant reap hoe till carrots potatoes beetroot",
     };
 
     /// <summary>Lease on one strip of the field while this bot works it (renewed per strip; released when the skill ends).</summary>
@@ -191,9 +191,9 @@ public sealed class HarvestWheatSkill : Skill
         int radius = Clamp(args.Int("radius"), 12, 2, 24);
         bool replant = args.Flag("replant", true);
         var field = FarmField.Find(ctx.World, ctx.Feet, radius);
-        int growing = field.Crops.Count(c => ctx.Meta(c) < 7);
+        int growing = field.Crops.Count(c => !CropKinds.Ripe(ctx.Block(c), ctx.Meta(c)));
         // Ripe = stage 7 and not held back by the policy (a player's never-break mark; a crop another bot holds is its part).
-        var ripeAll = field.Crops.Where(c => ctx.Meta(c) >= 7).ToList();
+        var ripeAll = field.Crops.Where(c => CropKinds.Ripe(ctx.Block(c), ctx.Meta(c))).ToList();
         if (ripeAll.Count == 0) return Fail($"no ripe wheat within {radius} ({growing} still growing)");
         var part = FarmField.ParsePart(args.Str("part"));
         var strips = part is { } pt ? field.Bands(pt.N).Skip(pt.I - 1).Take(1).ToList() : field.Strips();
@@ -206,12 +206,12 @@ public sealed class HarvestWheatSkill : Skill
         foreach (var strip in strips.OrderBy(s => s.Centre.DistanceSquaredTo(ctx.Feet)).ThenBy(s => s.Index))
         {
             ct.ThrowIfCancellationRequested();
-            var inStrip = field.Crops.Where(c => strip.Key.Contains(c) && ctx.Block(c) == Blocks.Crops && ctx.Meta(c) >= 7).ToList();
+            var inStrip = field.Crops.Where(c => strip.Key.Contains(c) && CropKinds.Ripe(ctx.Block(c), ctx.Meta(c))).ToList();
             if (inStrip.Count == 0) continue;
             var lease = await ctx.Claims.TryClaimAsync(strip.Key, StripTtl, "harvest_wheat", ct);
             if (!lease.Ok) { theirs += inStrip.Count; refused.Add(strip.Key); continue; } // another bot's part: theirs, not "protected"
             // Another bot may have harvested it while the lease was on its way: what is still ripe now.
-            inStrip = inStrip.Where(c => ctx.Block(c) == Blocks.Crops && ctx.Meta(c) >= 7).ToList();
+            inStrip = inStrip.Where(c => CropKinds.Ripe(ctx.Block(c), ctx.Meta(c))).ToList();
             if (inStrip.Count > 0) any = true;
             try { if (inStrip.Count > 0) await HarvestCellsAsync(ctx, inStrip, replant, st, ct); }
             finally
@@ -233,6 +233,7 @@ public sealed class HarvestWheatSkill : Skill
     private sealed class Tally
     {
         public int Cut, Planted, Tilled;
+        public bool OtherCrops;
         public int? Hoe;
         public bool HoeChecked;
         public string? HoeNote;
@@ -259,10 +260,12 @@ public sealed class HarvestWheatSkill : Skill
         foreach (var c in ripe)
         {
             ct.ThrowIfCancellationRequested();
-            if (ctx.Block(c.Pos) != Blocks.Crops || ctx.Meta(c.Pos) < 7 || ctx.Protected(c.Pos)) continue;
+            int crop = ctx.Block(c.Pos);
+            if (!CropKinds.Ripe(crop, ctx.Meta(c.Pos)) || ctx.Protected(c.Pos)) continue;
             var d = await ctx.Game.DigAsync(c.Pos, ct);                                        // 1. harvest
             if (!d.Ok) continue;
             st.Cut++;
+            if (crop != Blocks.Crops) st.OtherCrops = true;
             st.Harvested.Add(c.Pos);
             if (!replant) continue;
             var soil = c.Pos.Down();
@@ -273,7 +276,9 @@ public sealed class HarvestWheatSkill : Skill
                 var u = await ctx.Game.UseOnBlockAsync(soil, BlockFace.Top, h, ct);           // 2. hoe (always)
                 if (u.Ok && wasSoil && await ctx.WaitBlockAsync(soil, (id, _) => id == Blocks.Farmland, ct)) st.Tilled++;
             }
-            if (ctx.Block(soil) == Blocks.Farmland && await FarmOps.PlantAsync(ctx, soil, Items.Seeds, ct)) st.Planted++; // 3. plant
+            int seed = CropKinds.Seed(crop);
+            if (!ctx.Has(seed)) seed = Items.Seeds;
+            if (ctx.Block(soil) == Blocks.Farmland && await FarmOps.PlantAsync(ctx, soil, seed, ct)) st.Planted++; // 3. plant (the same crop)
         }
     }
 
@@ -292,7 +297,7 @@ public sealed class HarvestWheatSkill : Skill
         }
         string re = $"replanted {st.Planted}" + (st.Tilled > 0 ? $" (re-tilled {st.Tilled})" : "")
                     + (replant && st.HoeChecked && st.Hoe is null ? " (no hoe: planted only on farmland)" : "");
-        return st.Cut > 0 ? Ok($"harvested {st.Cut} wheat, {re} (wheat {ctx.Count(Items.Wheat)}, seeds {ctx.Count(Items.Seeds)}; {growing} growing)"
+        return st.Cut > 0 ? Ok($"harvested {st.Cut} {(st.OtherCrops ? "crops" : "wheat")}, {re} (wheat {ctx.Count(Items.Wheat)}, seeds {ctx.Count(Items.Seeds)}; {growing} growing)"
                                + field + (st.HoeNote != null ? "; " + st.HoeNote : ""))
                           : Fail("couldn't harvest any wheat");
     }
@@ -465,7 +470,7 @@ public sealed class BonemealSkill : Skill
         if (!ctx.Has(Items.Dye, Items.BoneMeal)) return Fail("no bone meal");
         int want = Clamp(args.Int("count"), 3, 1, 16);
         var targets = args.Pos() is { } p ? [p]
-            : ctx.Find((id, m) => (id == Blocks.Crops && m < 7) || id == Blocks.Sapling, 8).Select(f => f.Pos).Take(want).ToList();
+            : ctx.Find((id, m) => (CropKinds.IsCrop(id) && !CropKinds.Ripe(id, m)) || id == Blocks.Sapling, 8).Select(f => f.Pos).Take(want).ToList();
         if (targets.Count == 0) return Fail("no growing crops or saplings nearby");
         int n = 0;
         foreach (var t in targets)
@@ -501,7 +506,7 @@ public sealed class PlantSaplingSkill : Skill
         // a sapling or a standing tree there already = done.
         int there = ctx.Block(s.Up());
         if (there == Blocks.Sapling) return Ok($"already planted at {P(s.Up())}");
-        if (there == Blocks.Log) return Ok($"already a tree at {P(s.Up())}");
+        if (MineClaw.Client.Trees.Wood.IsLog(there)) return Ok($"already a tree at {P(s.Up())}");
         if (ctx.Block(s) is not (Blocks.Dirt or Blocks.Grass)) return Fail($"{P(s)} is {ctx.BlockName(s)}, needs dirt/grass");
         if (!SkillWorld.Air(ctx.World, s.Up())) return Fail($"{P(s.Up())} is occupied by {Blocks.Get(there).Name}");
         // Someone standing on the spot: wait a moment, then skip it (ok, so a replant loop carries on with the other spots).
@@ -534,7 +539,7 @@ public sealed class PlantSaplingSkill : Skill
     private static BlockPos? Spot(SkillContext ctx) =>
         ctx.Find((id, _) => id is Blocks.Dirt or Blocks.Grass, 8, 128).Select(f => f.Pos)
             .Where(p => p != ctx.Me.Down() && Enumerable.Range(1, 5).All(dy => SkillWorld.Air(ctx.World, p.Up(dy)))
-                        && !Near(ctx.World, p, Blocks.Sapling, 2) && !Near(ctx.World, p, Blocks.Log, 2))
+                        && !Near(ctx.World, p, Blocks.Sapling, 2) && !Near(ctx.World, p, Blocks.Log, 2) && !Near(ctx.World, p, MineClaw.Client.Trees.Wood.Log2, 2))
             .Cast<BlockPos?>().FirstOrDefault();
 
     private static bool Near(IBlockAccess w, BlockPos p, int id, int r)
@@ -545,4 +550,18 @@ public sealed class PlantSaplingSkill : Skill
             if (w.GetBlock(p.X + dx, p.Y + dy, p.Z + dz) == id) return true;
         return false;
     }
+}
+
+/// <summary>Crops on farmland, from data: wheat 59 (ripe at meta 7), and on 1.12.2 carrots 141 / potatoes 142 (7) and
+/// beetroots 207 (3). Ids that don't exist in a version never occur in its world.</summary>
+public static class CropKinds
+{
+    public const int Carrots = 141, Potatoes = 142, Beetroots = 207;
+    public const int CarrotItem = 391, PotatoItem = 392, BeetrootSeeds = 435;
+
+    public static bool IsCrop(int id) => id is Blocks.Crops or Carrots or Potatoes or Beetroots;
+    public static int RipeMeta(int id) => id == Beetroots ? 3 : 7;
+    public static bool Ripe(int id, int meta) => IsCrop(id) && meta >= RipeMeta(id);
+    /// <summary>What replants the crop: seeds, a carrot, a potato, beetroot seeds.</summary>
+    public static int Seed(int id) => id switch { Carrots => CarrotItem, Potatoes => PotatoItem, Beetroots => BeetrootSeeds, _ => Items.Seeds };
 }

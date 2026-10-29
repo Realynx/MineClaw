@@ -92,7 +92,7 @@ public sealed class LlmGroomRewriter(ILlmClient llm, GroomRewriteOptions options
     public decimal SpentToday { get { lock (_lock) return _spent; } }
 
     private const string System = "You groom raw bot logs into memory notes for a Minecraft bot. Rewrite the text as one to three short " +
-        "third-person sentences in plain past tense (\"maid_chan mined 20 cobblestone at the cobble gen\"). Keep every name, number, " +
+        "third-person sentences in plain past tense (\"maid_chan mined 20 cobblestone by the furnaces\"). Keep every name, number, " +
         "place and time exactly; drop telemetry, costs and debug details; invent nothing. Answer with the sentences only.";
 
     public async Task<string?> RewriteAsync(string source, string text, CancellationToken ct)

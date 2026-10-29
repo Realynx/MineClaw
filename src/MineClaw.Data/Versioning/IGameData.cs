@@ -89,9 +89,9 @@ public sealed class Beta181GameData : IGameData
     public static readonly Beta181GameData Instance = new();
 
     public string VersionId => "b1.8.1";
-    public BlockInfo Block(int id) => Blocks.Get(id);
-    public bool BlockExists(int id) => Blocks.Exists(id);
-    public BlockInfo? BlockByName(string name) => Blocks.ByName(name);
+    public BlockInfo Block(int id) => Blocks.GetB(id);
+    public bool BlockExists(int id) => Blocks.ExistsB(id);
+    public BlockInfo? BlockByName(string name) => Blocks.ByNameB(name);
     public ItemInfo Item(int id) => Items.GetB(id);
     public bool ItemExists(int id) => Items.ExistsB(id);
     public ItemInfo? ItemByName(string name) => Items.ByNameWithDamageB(name)?.Item;

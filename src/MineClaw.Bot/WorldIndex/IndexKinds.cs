@@ -1,4 +1,6 @@
+using System.Runtime.CompilerServices;
 using MineClaw.Data;
+using MineClaw.Data.Versioning;
 
 namespace MineClaw.Bot.WorldIndex;
 
@@ -12,11 +14,15 @@ public static class IndexKinds
         /// <summary>Nether portal: frame box + the exact spot to stand in (fields "stand"); pairs live in PortalLinks.</summary>
         Portal = "portal", // == MineClaw.Agent.Rag.PortalLinks.Kind
         /// <summary>Nether stand-in for islands: per 64x64 area, lava/fire/soul sand summary.</summary>
-        Hazard = "nether_hazard";
+        Hazard = "nether_hazard",
+        // 1.12.2 stations (ids absent from b1.8.1 worlds).
+        Hopper = "hopper", Dropper = "dropper", EnderChest = "ender_chest", BrewingStand = "brewing_stand",
+        EnchantingTable = "enchanting_table", Anvil = "anvil", ShulkerBox = "shulker_box";
 
     /// <summary>Kinds anchored on a single block (key = "x,y,z"); gone when that block is gone.</summary>
     public static readonly IReadOnlySet<string> PointKinds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        { Chest, Furnace, CraftingTable, Dispenser, Bed, Jukebox, NoteBlock, Spawner, Sign };
+        { Chest, Furnace, CraftingTable, Dispenser, Bed, Jukebox, NoteBlock, Spawner, Sign,
+          Hopper, Dropper, EnderChest, BrewingStand, EnchantingTable, Anvil, ShulkerBox };
 
     /// <summary>Kinds recomputed from clusters of cells.</summary>
     public static readonly IReadOnlySet<string> ClusterKinds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -34,7 +40,14 @@ public static class IndexKinds
 
     public static string? StationKind(int blockId) => blockId switch
     {
-        Blocks.Chest => Chest,
+        Blocks.Chest or Ids1122.TrappedChest => Chest,
+        Ids1122.Hopper => Hopper,
+        Ids1122.Dropper => Dropper,
+        Ids1122.EnderChest => EnderChest,
+        Ids1122.BrewingStand => BrewingStand,
+        Ids1122.EnchantingTable => EnchantingTable,
+        Ids1122.Anvil => Anvil,
+        >= Ids1122.ShulkerFirst and <= Ids1122.ShulkerLast => ShulkerBox,
         Blocks.Furnace or Blocks.LitFurnace => Furnace,
         Blocks.Workbench => CraftingTable,
         Blocks.Dispenser => Dispenser,
@@ -91,17 +104,37 @@ internal static class BlockClass
     /// <summary>Blocks that are natural terrain in the nether (no "unknown build" from them there; mushrooms aren't farms).</summary>
     public static bool NaturalNether(int id) =>
         id is Blocks.Netherrack or Blocks.SoulSand or Blocks.Glowstone or Blocks.Gravel or Blocks.Obsidian or Blocks.BrownMushroom
-            or Blocks.RedMushroom or Blocks.Fire;
+            or Blocks.RedMushroom or Blocks.Fire or Ids1122.NetherBrick or Ids1122.NetherBrickFence or Ids1122.NetherBrickStairs
+            or Ids1122.NetherWart or Ids1122.QuartzOre or Ids1122.Magma or Ids1122.NetherWartBlock;
 
-    public static readonly C[] Table = Build();
+    private sealed record Cache(IGameData Data, C[] Table);
+    private static volatile Cache? _last;
+    private static readonly ConditionalWeakTable<IGameData, C[]> Tables = new();
 
-    public static C Of(int id) => (uint)id < (uint)Table.Length ? Table[id] : C.None;
+    /// <summary>The classification of the process's version (<see cref="GameData.Current"/>): 1.12.2's own blocks (log2, the
+    /// new crops and stations...) join the b1.8.1 ids. Hot paths fetch it once per scan.</summary>
+    public static C[] Table
+    {
+        get
+        {
+            var d = GameData.Current;
+            var l = _last;
+            if (l != null && ReferenceEquals(l.Data, d)) return l.Table;
+            var t = Tables.GetValue(d, Build);
+            _last = new Cache(d, t);
+            return t;
+        }
+    }
 
-    private static C[] Build()
+    public static C Of(int id) => Of(Table, id);
+
+    public static C Of(C[] table, int id) => (uint)id < (uint)table.Length ? table[id] : C.None;
+
+    private static C[] Build(IGameData d)
     {
         var t = new C[256];
         for (int id = 1; id < 256; id++)
-            if (Blocks.Exists(id)) t[id] = C.Ground;
+            if (d.BlockExists(id)) t[id] = C.Ground;
         foreach (var id in new[] { Blocks.Water, Blocks.FlowingWater, Blocks.Lava, Blocks.FlowingLava, Blocks.Fire, Blocks.Portal })
             t[id] = C.None;
         t[Blocks.Water] = t[Blocks.FlowingWater] = C.Water;
@@ -131,6 +164,24 @@ internal static class BlockClass
                      Blocks.Netherrack, Blocks.SoulSand, Blocks.Sponge, Blocks.Web, Blocks.SnowBlock, Blocks.Clay, Blocks.Cake,
                  })
             t[id] |= C.Build;
+        // 1.12.2's own ids (absent from b1.8.1, so its table is unchanged).
+        void Add(C c, params int[] ids)
+        {
+            foreach (var id in ids)
+                if (id > Blocks.MaxId && id < t.Length && d.BlockExists(id)) t[id] |= c;
+        }
+        Add(C.Station, Ids1122.TrappedChest, Ids1122.Hopper, Ids1122.Dropper, Ids1122.EnderChest, Ids1122.BrewingStand,
+            Ids1122.EnchantingTable, Ids1122.Anvil);
+        for (int id = Ids1122.ShulkerFirst; id <= Ids1122.ShulkerLast; id++) Add(C.Station, id);
+        Add(C.Farm, Ids1122.Carrots, Ids1122.Potatoes, Ids1122.Beetroots, Ids1122.NetherWart);
+        Add(C.Tree, Ids1122.Log2);
+        // Crafted-only (or structure) blocks: the new woods' slabs/stairs/fences/gates/doors, stained glass/clay, concrete,
+        // carpets, quartz, purpur, nether/end bricks, redstone parts, banners, hay, sea lanterns, glazed terracotta...
+        Add(C.Build, 112, 113, 114, 123, 124, 125, 126, 128, 131, 132, 134, 135, 136, 138, 139, 140, 143, 144, 147, 148, 149, 150, 151,
+            152, 155, 156, 157, 160, 163, 164, 165, 167, 169, 170, 171, 176, 177, 178, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189,
+            190, 191, 192, 193, 194, 195, 196, 197, 198, 201, 202, 203, 204, 205, 206, 216, 218, 251, 252);
+        for (int id = 235; id <= 250; id++) Add(C.Build, id);
+        if (d.BlockByName("stained_glass") is { Id: var sg } && sg <= Blocks.MaxId) t[sg] |= C.Build; // 95 (b1.8.1: locked chest)
         return t;
     }
 
@@ -143,8 +194,16 @@ internal static class BlockClass
         Blocks.MelonStem or Blocks.Melon => "melon",
         Blocks.PumpkinStem or Blocks.Pumpkin => "pumpkin",
         Blocks.BrownMushroom or Blocks.RedMushroom => "mushroom",
+        Ids1122.Carrots => "carrot",
+        Ids1122.Potatoes => "potato",
+        Ids1122.Beetroots => "beetroot",
+        Ids1122.NetherWart => "nether_wart",
         _ => null,
     };
 
-    public static readonly string[] FarmTypes = ["wheat", "sugar_cane", "cactus", "melon", "pumpkin", "mushroom"];
+    public static readonly string[] FarmTypes = ["wheat", "sugar_cane", "cactus", "melon", "pumpkin", "mushroom", "carrot", "potato", "beetroot", "nether_wart"];
+
+    /// <summary>Farm types that grow wild in a normal world (cane by rivers, desert cactus, cave mushrooms, pumpkin patches):
+    /// indexed there as resources, but their soil and water are not protected unless terrain is scarce.</summary>
+    public static bool WildFarmType(string type) => type is "sugar_cane" or "cactus" or "mushroom" or "pumpkin" or "melon";
 }

@@ -42,24 +42,35 @@ public static class Blocks
 
     public static IReadOnlyList<BlockInfo> All => _all;
 
-    /// <summary>Returns the block for an id; unknown ids return a generic solid placeholder.</summary>
-    public static BlockInfo Get(int id) =>
+    /// <summary>The block for an id in the process's version (<see cref="Versioning.GameData.Current"/>; multi-version P6: the
+    /// last static facade); unknown ids return a generic solid placeholder.</summary>
+    public static BlockInfo Get(int id) => Versioning.GameData.IsBeta(out var d) ? GetB(id) : d.Block(id);
+
+    /// <summary>b1.8.1's own record (the hand-transcribed table).</summary>
+    internal static BlockInfo GetB(int id) =>
         id >= 0 && id < _byId.Length && _byId[id] is { } b
             ? b
             : new BlockInfo(id, $"unknown_{id}", $"Unknown ({id})", 1f, true, 1.0, false, false, false, false, ToolType.None, -1, false);
 
-    /// <summary>True if the id is a real b1.8.1 block.</summary>
-    public static bool Exists(int id) => id >= 0 && id < _byId.Length && _byId[id] is not null;
+    /// <summary>True if the id is a real block of the process's version.</summary>
+    public static bool Exists(int id) => Versioning.GameData.IsBeta(out var d) ? ExistsB(id) : d.BlockExists(id);
 
-    /// <summary>Forgiving lookup: case-insensitive, spaces/dashes/underscores ignored, common aliases and "minecraft:" prefix accepted.</summary>
-    public static BlockInfo? ByName(string name)
+    /// <summary>True if the id is a real b1.8.1 block.</summary>
+    internal static bool ExistsB(int id) => id >= 0 && id < _byId.Length && _byId[id] is not null;
+
+    /// <summary>Forgiving lookup in the process's version: case-insensitive, spaces/dashes/underscores ignored, common aliases and
+    /// "minecraft:" prefix accepted.</summary>
+    public static BlockInfo? ByName(string name) => Versioning.GameData.IsBeta(out var d) ? ByNameB(name) : d.BlockByName(name);
+
+    /// <summary>The b1.8.1 table's forgiving name lookup.</summary>
+    internal static BlockInfo? ByNameB(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) return null;
         var key = Normalize(name);
         if (_byName.TryGetValue(key, out var b)) return b;
         if (key.EndsWith("s") && _byName.TryGetValue(key[..^1], out b)) return b;       // plural
         if (key.EndsWith("es") && _byName.TryGetValue(key[..^2], out b)) return b;
-        if (int.TryParse(key, out var id) && Exists(id)) return _byId[id];
+        if (int.TryParse(key, out var id) && ExistsB(id)) return _byId[id];
         return null;
     }
 

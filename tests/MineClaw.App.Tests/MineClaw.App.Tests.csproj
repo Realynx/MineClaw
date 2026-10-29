@@ -26,6 +26,9 @@
   <ItemGroup>
     <!-- FakeGameClient / TestBot: the supervisor's live data is tested against a real VisionHub. -->
     <Compile Include="..\MineClaw.Bot.Tests\TestSupport.cs" Link="Linked\BotTestSupport.cs" />
+    <!-- The fake (1.12.2) server for the P6 end-to-end scenario. -->
+    <Compile Include="..\MineClaw.Client.Tests\FakeServer.cs" Link="Linked\FakeServer.cs" />
+    <Compile Include="..\MineClaw.Client.Tests\FakeServer.Mobs.cs" Link="Linked\FakeServer.Mobs.cs" />
   </ItemGroup>
 
 </Project>

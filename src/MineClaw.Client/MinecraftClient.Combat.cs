@@ -124,7 +124,7 @@ public sealed partial class MinecraftClient
         }
         var slots = inv.PlayerSlots().ToArray();
         for (int i = 9; i < 36; i++) slots[i] = ItemStack.Empty;
-        var hot = WeaponChoice.Best(slots, ReservedItems, Options.Combat.NeverWield);
+        var hot = WeaponChoice.Best(slots, ReservedItems, Options.Combat.NeverWield, Options.Profile.Combat);
         if (hot.InHotbar) SelectHotbarFromTick(s, hot.HotbarIndex);
     }
 
@@ -243,9 +243,9 @@ public sealed partial class MinecraftClient
                 if (!zone.Contains(World.Player.Position)) return ActionResult.Fail($"couldn't get into the spar zone at {Fmt(center)}");
             }
 
-            var pick = WeaponChoice.ForSpar(o.SparWeapon, World.Inventory.PlayerSlots(), ReservedItems, o.NeverWield);
+            var pick = WeaponChoice.ForSpar(o.SparWeapon, World.Inventory.PlayerSlots(), ReservedItems, o.NeverWield, Options.Profile.Combat);
             if (pick.InHotbar) SelectHotbar(pick.HotbarIndex);
-            else if (await SelectItemAsync(pick.ItemId, null, c).ConfigureAwait(false) < 0) SelectHotbar(WeaponChoice.Hand(World.Inventory.PlayerSlots(), ReservedItems, o.NeverWield).HotbarIndex);
+            else if (await SelectItemAsync(pick.ItemId, null, c).ConfigureAwait(false) < 0) SelectHotbar(WeaponChoice.Hand(World.Inventory.PlayerSlots(), ReservedItems, o.NeverWield, Options.Profile.Combat).HotbarIndex);
 
             long stops = engine.StopWordCount;
             string? Abort()

@@ -34,7 +34,7 @@ public sealed partial class PerceptionCritic(Func<PerceptionService?> service, U
         "DESIGN REVIEW (nothing is built yet). Magenta '*' cells are the PLANNED build drawn in its real site; all else exists. " +
         $"The player asked for: \"{Trim(description, 200)}\". answer: \"ok\" if it fits that wish and looks like a sensible Minecraft build, " +
         "else the main problem in <=12 words. facts: up to 3 concrete visual problems (shape, proportions, roof, door/windows, odd blocks, " +
-        "blocking a path or the gen), each with the coords of the blocks concerned. No praise, no style essays.";
+        "blocking a path, a farm or a station), each with the coords of the blocks concerned. No praise, no style essays.";
 
     private static string Trim(string s, int n) => s.Length <= n ? s : s[..n];
 

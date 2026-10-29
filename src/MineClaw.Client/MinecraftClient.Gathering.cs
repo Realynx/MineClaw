@@ -60,7 +60,7 @@ public sealed partial class MinecraftClient
         return new GoalFiltered(new GoalNear(cell, 2), (x, y, z) =>
                 PickupPoint(x, y, z, item) is not null
                 && Safety.EdgeDistance(World, x, y, z, 2) >= 2 && !Safety.LavaNear(World, x, y, z)
-                && World.GetBlock(x, y - 1, z) != Blocks.Leaves, // never walk out onto a crown for a drop
+                && !Trees.Wood.IsLeaves(World.GetBlock(x, y - 1, z)), // never walk out onto a crown for a drop
             "safe pickup spot");
     }
 
@@ -286,9 +286,10 @@ public sealed partial class MinecraftClient
                         else if (_lastMineSkip is { } skip)
                             stop += $"; skipped {_lastMineSkipCount} protected: " + ProtectedRefusal(skip, World.GetBlock(skip));
                         if (_lastMineNonSource > 0)
-                            stop += $"; left {_lastMineNonSource} placed {name} alone (floors/walls/builds): mine only takes generator cells, "
+                            stop += $"; left {_lastMineNonSource} placed {name} alone (floors/walls/builds): mine only takes "
+                                    + (MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone ? "generator cells, " : "natural stone/dirt, ")
                                     + "ores, sand/gravel, tree logs and my own blocks"
-                                    + (firstId is Blocks.Cobblestone or Blocks.Stone ? " (for cobble use harvest_generator)" : "")
+                                    + (firstId is Blocks.Cobblestone or Blocks.Stone && MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone ? " (for cobble use harvest_generator)" : "")
                                     + (firstId is Blocks.Crops ? " (for wheat use the harvest_wheat skill: ripe only, replants)" : "")
                                     + "; a trusted player can point at one and say 'you can break it'";
                         break;
@@ -338,7 +339,8 @@ public sealed partial class MinecraftClient
         _lastMineSkip = null;
         _lastMineSkipCount = 0;
         _lastMineNonSource = 0;
-        var found = World.FindBlocks(World.Player.Position, radius, (id, _) => ids.Contains(id), 512);
+        // Exposed cells only count toward the cap: in natural ground the 512 nearest stone are all buried under my feet.
+        var found = World.FindBlocks(World.Player.Position, radius, (id, _) => ids.Contains(id), IsExposed, 512);
         BlockPos? best = null;
         double bestScore = double.MaxValue;
         foreach (var f in found)

@@ -16,7 +16,7 @@ public static class StorageCategory
         Blocks.CoalOre, Blocks.IronOre, Blocks.GoldOre, Blocks.DiamondOre, Blocks.LapisOre, Blocks.RedstoneOre,
         Blocks.IronBlock, Blocks.GoldBlock, Blocks.DiamondBlock, Blocks.LapisBlock, Blocks.Obsidian, Blocks.Glowstone,
     ];
-    private static readonly HashSet<int> Wood = [Blocks.Log, Blocks.Planks, Blocks.Sapling, Blocks.Leaves, Items.Stick, Items.Bowl, Blocks.WoodenStairs, Blocks.Fence];
+    private static readonly HashSet<int> Wood = [Blocks.Log, MineClaw.Client.Trees.Wood.Log2, Blocks.Planks, Blocks.Sapling, Blocks.Leaves, MineClaw.Client.Trees.Wood.Leaves2, Items.Stick, Items.Bowl, Blocks.WoodenStairs, Blocks.Fence];
     private static readonly HashSet<int> Stone =
     [
         Blocks.Stone, Blocks.Cobblestone, Blocks.Dirt, Blocks.Grass, Blocks.Sand, Blocks.Gravel, Blocks.Sandstone, Blocks.Glass, Blocks.StoneBricks,
@@ -162,7 +162,7 @@ public class ContainerDirectory : IContainerDirectory
     public Func<string, BlockPos?>? External { get; init; }
     public Action<BlockPos, IReadOnlyList<ItemStack>>? OnSnapshot { get; init; }
 
-    public static bool IsContainer(int id) => id is Blocks.Chest or Blocks.Furnace or Blocks.LitFurnace or Blocks.Dispenser;
+    public static bool IsContainer(int id) => id is Blocks.Chest or StorageOps.TrappedChest or Blocks.Furnace or Blocks.LitFurnace or Blocks.Dispenser;
 
     public virtual BlockPos? Resolve(SkillContext ctx, string name)
     {
@@ -175,7 +175,7 @@ public class ContainerDirectory : IContainerDirectory
         {
             var cat = StorageCategory.Parse(n);
             if (cat is null) return null;
-            return ctx.Find((id, _) => id == Blocks.Chest, ctx.Options.SearchRadius, 64).Select(f => f.Pos)
+            return ctx.Find((id, _) => StorageOps.IsChest(id), ctx.Options.SearchRadius, 64).Select(f => f.Pos)
                 .Where(c => CategoryOf(ctx, c) == cat).Cast<BlockPos?>().FirstOrDefault();
         }
         return LabelMatch(ctx, n).Cast<BlockPos?>().FirstOrDefault();
@@ -188,7 +188,7 @@ public class ContainerDirectory : IContainerDirectory
         {
             var text = string.Join(" ", lines);
             if (!text.Contains(label, StringComparison.OrdinalIgnoreCase)) continue;
-            foreach (var c in Around(pos)) if (ctx.Block(c) == Blocks.Chest) { yield return c; break; }
+            foreach (var c in Around(pos)) if (StorageOps.IsChest(ctx.Block(c))) { yield return c; break; }
         }
     }
 

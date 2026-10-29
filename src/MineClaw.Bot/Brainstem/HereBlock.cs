@@ -43,7 +43,7 @@ public sealed class HereBlock(IGameClient client, MemoryStore? memory, Observati
             if (w.Entities.FindPlayer(who) is not { } e) { parts.Add($"{who} not in sight"); continue; }
             var off = Landmarks.Offset(me.X, me.Z, e.Position.X, e.Position.Z);
             var at = off == "here" ? $"{who} right by you" : $"{who} {off} of you";
-            parts.Add($"{at}, facing {Compass(e.Yaw)}" + (w.IsPlayerOverVoid(e.Position) ? " (over void)" : ""));
+            parts.Add($"{at}, facing {Compass(e.Yaw)}" + (OverVoid(w, e.Position) ? " (over void)" : ""));
         }
 
         var near = Near(me);
@@ -116,15 +116,22 @@ public sealed class HereBlock(IGameClient client, MemoryStore? memory, Observati
         }
     }
 
-    /// <summary>"void N3 W6": the nearest void edge within 8 blocks per direction.</summary>
+    /// <summary>Over the void: only a world with a void below (skyblock), and only over loaded ground (an unloaded column
+    /// counts as void for safety, but saying so would be a guess).</summary>
+    private static bool OverVoid(WorldState w, Vec3d p) =>
+        MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow && w.IsLoaded((int)Math.Floor(p.X), (int)Math.Floor(p.Z)) && w.IsPlayerOverVoid(p);
+
+    /// <summary>"void N3 W6": the nearest void edge within 8 blocks per direction (skyblock only: a normal world has ground).</summary>
     internal static string VoidEdges(WorldState w, Vec3d me)
     {
+        if (!MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow) return "";
         var dirs = new (string N, int Dx, int Dz)[] { ("N", 0, -1), ("E", 1, 0), ("S", 0, 1), ("W", -1, 0) };
         var parts = new List<string>();
         foreach (var (n, dx, dz) in dirs)
             for (int d = 1; d <= 8; d++)
             {
                 var p = new Vec3d(Math.Floor(me.X) + 0.5 + dx * d, me.Y, Math.Floor(me.Z) + 0.5 + dz * d);
+                if (!w.IsLoaded((int)Math.Floor(p.X), (int)Math.Floor(p.Z))) break; // unknown, not void
                 if (!w.IsPlayerOverVoid(p)) continue;
                 parts.Add(n + d);
                 break;

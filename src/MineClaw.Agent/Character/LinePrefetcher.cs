@@ -134,7 +134,7 @@ public sealed class LinePrefetcher
     }
 
     public static string SystemPrompt(string name, string persona, string? self, CharacterOptions o) =>
-        $"You are {name}, a maid bot playing Minecraft Beta skyblock with your humans. Persona: {Trunc(persona, 420)}" +
+        $"You are {name}, a maid bot playing Minecraft with your humans. Persona: {Trunc(persona, 420)}" +
         (string.IsNullOrWhiteSpace(self) ? "" : "\n" + Trunc(self, 600)) + $$"""
 
         Write short in-game chat lines you could say INSTANTLY in the situation given, in your own voice: casual, ASCII, one line

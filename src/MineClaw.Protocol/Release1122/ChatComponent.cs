@@ -222,6 +222,10 @@ public sealed class LangTable
         ["multiplayer.disconnect.outdated_client"] = "Outdated client! Please use %s",
         ["multiplayer.disconnect.outdated_server"] = "Outdated server! I'm still on %s",
         ["multiplayer.disconnect.banned"] = "You are banned from this server.",
+        // 1.12.2 PlayerList.allowUserToConnect kicks with these as plain strings (the keys are the 1.13+ lang names; a server
+        // that sends them translated renders the same text).
+        ["multiplayer.disconnect.not_whitelisted"] = "You are not white-listed on this server!",
+        ["multiplayer.disconnect.server_full"] = "The server is full!",
         ["multiplayer.disconnect.illegal_characters"] = "Illegal characters in chat",
         ["multiplayer.disconnect.invalid_player_movement"] = "Invalid move player packet received",
         ["multiplayer.disconnect.invalid_vehicle_movement"] = "Invalid move vehicle packet received",
@@ -231,6 +235,8 @@ public sealed class LangTable
         ["disconnect.genericReason"] = "%s",
         ["disconnect.lost"] = "Connection Lost",
         ["commands.kick.success"] = "Kicked %s from the game",
+        ["commands.whitelist.add.success"] = "Added %s to the whitelist",
+        ["commands.whitelist.add.failed"] = "Could not add %s to the whitelist",
         ["death.attack.generic"] = "%1$s died",
         ["death.attack.player"] = "%1$s was slain by %2$s",
         ["death.attack.mob"] = "%1$s was slain by %2$s",

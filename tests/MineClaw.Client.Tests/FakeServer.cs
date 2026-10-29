@@ -206,6 +206,8 @@ internal sealed partial class FakeServer : IDisposable
     public ConcurrentQueue<(byte Mode, short Slot, bool Accepted)> Clicks { get; } = new();
     /// <summary>1.12.2: the server's off-hand slot.</summary>
     public ItemStack Offhand => _srv?.Offhand ?? ItemStack.Empty;
+    /// <summary>The server's view of the held hotbar stack (what a dig is judged with).</summary>
+    public ItemStack Held => Inventory[36 + _heldSlot];
     /// <summary>1.12.2: the server model's cursor.</summary>
     public ItemStack ServerCursor => _srv?.Cursor ?? ItemStack.Empty;
 
@@ -391,6 +393,7 @@ internal sealed partial class FakeServer : IDisposable
                         : place.HeldItem.Id == MineClaw.Data.Blocks.Torch ? MineClaw.World.PlaceRules.TorchMeta((MineClaw.World.BlockFace)place.Direction) // BlockTorch.postPlace
                         : 0;
                     if (meta != 0) Metas[(x, y, z)] = meta;
+                    RegisterStation(x, y, z, place.HeldItem.Id);
                     Send(new BlockChangePacket { X = x, Y = y, Z = z, BlockId = (byte)place.HeldItem.Id, Metadata = (byte)meta });
                     Mirror?.Invoke(x, y, z, place.HeldItem.Id, meta);
                     if (ConsumeOnPlace)
@@ -447,6 +450,7 @@ internal sealed partial class FakeServer : IDisposable
                 SyncIn();
                 srv.Close(cw.WindowId);
                 _openChest = null;
+                _openFurnace = null;
                 return true;
             case PlayerDiggingPacket { Status: PlayerDiggingPacket.StatusSwapHands }:
             {
@@ -464,6 +468,21 @@ internal sealed partial class FakeServer : IDisposable
                 sbyte id = (sbyte)++_windowId;
                 var w = srv.Open(id, WindowType.Workbench, "Crafting", 9);
                 Send(new OpenWindowPacket { WindowId = id, InventoryType = 1, Title = "Crafting", SlotCount = 9 });
+                var items = new ItemStack[w.SlotCount];
+                for (int i = 0; i < items.Length; i++) items[i] = w.Get(i);
+                Send(new WindowItemsPacket { WindowId = id, Items = items });
+                return true;
+            }
+            case PlayerBlockPlacementPacket place when place.Direction != PlayerBlockPlacementPacket.NoDirection
+                                                        && Furnaces.TryGetValue((place.X, place.Y, place.Z), out var fslots):
+            {
+                // ContainerFurnace: input 0, fuel 1, output 2, then the player's main inventory and hotbar.
+                SyncIn();
+                sbyte id = (sbyte)++_windowId;
+                var w = srv.Open(id, WindowType.Furnace, "Furnace", 3);
+                srv.SetWindowItems(id, fslots.Concat(Enumerable.Range(9, 36).Select(i => Inventory[i])).ToArray());
+                _openFurnace = (place.X, place.Y, place.Z);
+                Send(new OpenWindowPacket { WindowId = id, InventoryType = 2, Title = "Furnace", SlotCount = 3 });
                 var items = new ItemStack[w.SlotCount];
                 for (int i = 0; i < items.Length; i++) items[i] = w.Get(i);
                 Send(new WindowItemsPacket { WindowId = id, Items = items });
@@ -502,6 +521,82 @@ internal sealed partial class FakeServer : IDisposable
         for (int i = 0; i < 45; i++) Inventory[i] = cur[i];
         if (_openChest is { } at && _srv.OpenWindow is { Type: WindowType.Chest } w && Chests.TryGetValue(at, out var contents))
             for (int i = 0; i < contents.Length && i < w.ContainerSlots; i++) contents[i] = w.Get(i);
+        if (_openFurnace is { } fat && _srv.OpenWindow is { Type: WindowType.Furnace } fw && Furnaces.TryGetValue(fat, out var fs))
+            for (int i = 0; i < 3; i++) fs[i] = fw.Get(i);
+    }
+
+    private (int, int, int)? _openFurnace;
+
+    /// <summary>1.12.2: placing a crafting table or a furnace makes it usable (a workbench window / a furnace with empty slots).</summary>
+    private void RegisterStation(int x, int y, int z, int id)
+    {
+        if (!Modern) return;
+        if (id == MineClaw.Data.Blocks.CraftingTable) Workbenches.Add((x, y, z));
+        else if (id == MineClaw.Data.Blocks.Furnace && !Furnaces.ContainsKey((x, y, z))) Furnaces[(x, y, z)] = Enumerable.Repeat(ItemStack.Empty, 3).ToArray();
+    }
+
+    private CancellationTokenSource? _smelter;
+    private readonly Dictionary<(int, int, int), (int Burn, int Cook)> _furnaceState = new();
+
+    /// <summary>Furnace time, sped up (<paramref name="ticksPerStep"/> furnace ticks every 10 ms; otherwise TileEntityFurnace.update):
+    /// fuel burns one item at a time (FuelTicks), an item cooks in CookTicks, the output stacks in slot 2. An open furnace window
+    /// gets the slot updates.</summary>
+    public void StartSmelting(int ticksPerStep = 40)
+    {
+        if (_smelter != null) return;
+        _smelter = new CancellationTokenSource();
+        var ct = _smelter.Token;
+        MineClaw.Data.Versioning.IGameData data = Modern ? MineClaw.Data.Versioning.Release1122GameData.Instance : MineClaw.Data.Versioning.Beta181GameData.Instance;
+        _ = Task.Run(async () =>
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                try { await Task.Delay(10, ct).ConfigureAwait(false); } catch (OperationCanceledException) { return; }
+                lock (BlockLock) SmeltStep(data, ticksPerStep);
+            }
+        }, ct);
+    }
+
+    private void SmeltStep(MineClaw.Data.Versioning.IGameData data, int ticksPerStep)
+    {
+        foreach (var (pos, slots) in Furnaces)
+        {
+            var st = _furnaceState.GetValueOrDefault(pos);
+            var fw = _openFurnace == pos && _srv?.OpenWindow is { Type: WindowType.Furnace } ow ? ow : null;
+            if (fw != null) for (int i = 0; i < 3; i++) slots[i] = fw.Get(i);
+            var input = slots[0];
+            var recipe = input.IsEmpty ? null : data.SmeltingFor(input.Id, input.Damage);
+            bool fits = recipe != null && (slots[2].IsEmpty || slots[2].Id == recipe.OutputId && slots[2].Damage == recipe.OutputDamage && slots[2].Count < 64);
+            bool changed = false;
+            if (fits && st.Burn <= 0 && !slots[1].IsEmpty && data.FuelTicks(slots[1].Id) is > 0 and var burn)
+            {
+                st.Burn = burn;
+                slots[1] = slots[1].Count <= 1 ? ItemStack.Empty : new ItemStack(slots[1].Id, (byte)(slots[1].Count - 1), slots[1].Damage);
+                changed = true;
+            }
+            if (fits && st.Burn > 0)
+            {
+                st.Burn -= ticksPerStep;
+                st.Cook += ticksPerStep;
+                if (st.Cook >= data.CookTicks)
+                {
+                    st.Cook = 0;
+                    slots[0] = input.Count <= 1 ? ItemStack.Empty : new ItemStack(input.Id, (byte)(input.Count - 1), input.Damage);
+                    slots[2] = slots[2].IsEmpty ? new ItemStack((short)recipe!.OutputId, 1, (short)recipe.OutputDamage)
+                        : new ItemStack(slots[2].Id, (byte)(slots[2].Count + 1), slots[2].Damage);
+                    changed = true;
+                }
+            }
+            else { st.Cook = 0; if (st.Burn > 0) st.Burn -= ticksPerStep; }
+            if (st.Burn < 0) st.Burn = 0;
+            _furnaceState[pos] = st;
+            if (changed && fw != null)
+                for (int i = 0; i < 3; i++)
+                {
+                    fw.Set(i, slots[i]);
+                    Send(new SetSlotPacket { WindowId = (sbyte)fw.Id, Slot = (short)i, Item = slots[i] });
+                }
+        }
     }
 
     /// <summary>BlockDoor/BlockTrapDoor/BlockFenceGate.blockActivated: flips the open bit (both door halves) and sends the
@@ -641,6 +736,7 @@ internal sealed partial class FakeServer : IDisposable
     public void Dispose()
     {
         _ai?.Cancel();
+        _smelter?.Cancel();
         try { _conn.Dispose(); } catch { }
         try { _clientEnd.Dispose(); } catch { }
     }

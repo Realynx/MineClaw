@@ -61,7 +61,7 @@
         "knowledge": 197
       },
       "records": 197,
-      "bytes": 28985,
+      "bytes": 29103,
       "vectors": 0,
       "needs_embedding": 197,
       "dims": 0,
@@ -69,8 +69,8 @@
         "sdk-js.md"
       ],
       "source": "MineClaw.Scripting SDK modules (core,world,flow,machine,policies,jobs,crew,character) + game functions (b1.8.1, 1.12.2) + ScriptPrompts examples",
-      "source_hash": "d8e9da4585b59eeaaac98d0fcc428ae1ab6eefe9102d80db14f72150c07300c3",
-      "content_hash": "6050f7c06f241331a91b9f32820d6fb1da3914d59723203a56fc1290dd18a454",
+      "source_hash": "9b510b6e1a3491f8edc677fd40b6a7056825c4c5aacc53818c12a0467f96331f",
+      "content_hash": "6f7aed549facfb66d39978ad29c22c544fabf9198d0218c3557ed61d4e15363e",
       "builder": "ShardPacks/1"
     },
     {

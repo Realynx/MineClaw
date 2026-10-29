@@ -41,6 +41,13 @@ public sealed class ChunkColumn
     /// <summary>Dimension the column belongs to (stamped by <see cref="WorldState"/> when it is created).</summary>
     public int Dimension { get; internal set; }
 
+    /// <summary>The 256 biome ids of a full chunk (index <c>lz · 16 + lx</c>, 1.12.2 <c>Chunk.blockBiomeArray</c>), or null: b1.8.1's
+    /// map chunk carries none (its biomes come from the seed) and a partial update leaves them as they were.</summary>
+    public byte[]? Biomes { get; internal set; }
+
+    /// <summary>The biome id of a local column, or −1 when the column has no biome data (b1.8.1).</summary>
+    public int GetBiome(int lx, int lz) => Biomes is { } b ? b[(lz & 15) << 4 | (lx & 15)] : -1;
+
     /// <summary>Raw block ids (read-only view, <see cref="Index"/> layout); used for snapshots.</summary>
     public ReadOnlySpan<byte> IdData => Ids;
 

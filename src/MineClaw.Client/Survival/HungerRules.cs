@@ -38,4 +38,8 @@ public static class HungerRules
 
     /// <summary>Food poisoning risk (rotten flesh, raw chicken).</summary>
     public static bool IsRisky(int itemId) => Items.FoodPoisonChance(itemId) > 0;
+
+    /// <summary>Food poisoning risk of a stack: the damage value picks the food on 1.12.2 (fish 349:3 is a pufferfish:
+    /// poison and nausea, while 349:0 is plain raw cod).</summary>
+    public static bool IsRisky(int itemId, int damage) => Items.FoodPoisonChance(itemId, damage) > 0;
 }

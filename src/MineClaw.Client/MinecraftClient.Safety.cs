@@ -329,7 +329,7 @@ public sealed partial class MinecraftClient
                       + $"; placed {BlockName(blockId, 0)} at {Fmt(p.Target)} to catch myself"
                       + (p.Saves ? " (should land safely)" : " (not sure it is enough)");
             RaiseDanger(voidBelow ? DangerKind.FallingIntoVoid : DangerKind.HighFall, msg, abort: false, critical: true);
-            AbortCurrentAction("falling into the void");
+            AbortCurrentAction(voidBelow ? "falling into the void" : "falling (a deadly drop)");
         }
     }
 
@@ -344,14 +344,17 @@ public sealed partial class MinecraftClient
                   + $": {why}" + (_clutchPlaced > 0 ? $" (placed {_clutchPlaced} block(s) already)" : "");
         Log("safety: " + msg);
         RaiseDanger(voidBelow ? DangerKind.FallingIntoVoid : DangerKind.HighFall, msg, abort: false, critical: true);
-        AbortCurrentAction("falling into the void");
+        AbortCurrentAction(voidBelow ? "falling into the void" : "falling (a deadly drop)");
     }
 
     /// <summary>The void is under me or where I'm drifting (knockback carries me past an edge): ground right under a
-    /// sideways fall isn't where it lands. A purely vertical drop over ground is a high fall.</summary>
+    /// sideways fall isn't where it lands. A purely vertical drop over ground is a high fall.
+    /// Only a world with a void under it (skyblock, or the End) has one to fall into: elsewhere an empty column is unloaded
+    /// chunks over bedrock, a deadly drop at worst.</summary>
     private bool VoidAhead(PhysicsState phys)
     {
         var v = phys.Velocity;
+        if (!MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow && World.Dimension != 1) return false;
         return World.IsPlayerOverVoid(phys.Position)
                || World.IsPlayerOverVoid(phys.Position + new Vec3d(v.X * 10, 0, v.Z * 10))
                || World.IsPlayerOverVoid(phys.Position + new Vec3d(v.X * 4, 0, v.Z * 4));
@@ -365,7 +368,7 @@ public sealed partial class MinecraftClient
         for (int x = (int)Math.Floor(box.MinX); x <= (int)Math.Ceiling(box.MaxX) - 1; x++)
         for (int z = (int)Math.Floor(box.MinZ); z <= (int)Math.Ceiling(box.MaxZ) - 1; z++)
             ground = Math.Max(ground, Safety.SupportBelow(World, x, fy, z));
-        return ground < 0 ? "a long way" : $"~{Math.Max(1, phys.Position.Y - (ground + 1)):0} blocks onto ground at y {ground + 1} (not the void)";
+        return ground < 0 ? "a long way" : $"~{Math.Max(1, phys.Position.Y - (ground + 1)):0} blocks onto ground at y {ground + 1}{(MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow ? " (not the void)" : "")}";
     }
 
     private static readonly int[] PreferredClutchBlocks =

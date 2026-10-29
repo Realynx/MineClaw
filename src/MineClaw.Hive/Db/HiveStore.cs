@@ -203,9 +203,11 @@ public sealed class HiveStore
     }
 
     /// <summary>Where a fresh account's first login landed over the void (any clone's first-login void hold, else any saved
-    /// overworld position below y 1), or null when the hive has never seen one.</summary>
+    /// overworld position below y 1), or null when the hive has never seen one.
+    /// Only in a world with a void below (skyblock): elsewhere a first login always lands on ground.</summary>
     public (double X, double Y, double Z)? FreshVoidSpawn()
     {
+        if (!MineClaw.Data.Versioning.WorldMode.Current.HasVoidBelow) return null;
         var t = Db.Query("SELECT text FROM hive_events WHERE kind = 'fresh_void_spawn' ORDER BY at DESC LIMIT 1", r => r.GetString(0)).FirstOrDefault();
         if (t != null && t.Split(',') is { Length: 3 } parts && parts.All(x => double.TryParse(x, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out _)))
         {

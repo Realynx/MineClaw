@@ -132,7 +132,7 @@ public sealed partial class VisionHub
     }
 
     public const string DefaultQuestion =
-        "What is at the focus (cyan box)? Its block and role, its neighbours' roles (gen cells vs floor, void edges, portal), and which faces a block can be placed against.";
+        "What is at the focus (cyan box)? Its block and role, its neighbours' roles (floor, walls, edges, gen cells, portal), and which faces a block can be placed against.";
 
     /// <summary>The focus of a look: coords, a player, a saved place, "pointed"/"this"; default the current job's target, else the bot.</summary>
     public (BlockPos Focus, Entity? Player, string? Error) ResolveFocus(string? focus)
@@ -306,10 +306,12 @@ public sealed partial class VisionHub
         foreach (var (intent, q) in new[]
         {
             (VisionIntent.FocusBlock, "what is at the focus"), (VisionIntent.GenCells, "which gen cells to mine"),
-            (VisionIntent.Faces, "which faces can a block be placed against"), (VisionIntent.Void, "how far is the void edge"),
+            (VisionIntent.Faces, "which faces can a block be placed against"), (VisionIntent.Void, "how far is the edge"),
             (VisionIntent.Things, "trees chests doors ores crops"), (VisionIntent.Portal, "portal"), (VisionIntent.Drops, "drops on the ground"),
         })
         {
+            // Gen cells only where stone comes from a generator (skyblock); a normal world's stone is just terrain.
+            if (intent == VisionIntent.GenCells && !MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone) continue;
             try { facts.Add($"{intent}: {VisionRouter.Answer(intent, q, scene.Blocks, scene.Roles.Map, f, r, EntitiesNear(scene.Dim, focus, r + 8))}"); }
             catch (Exception ex) { _log?.LogDebug(ex, "router facts: {Intent} failed", intent); }
         }

@@ -358,8 +358,7 @@ internal static class JsLint
     {
         if (GenCalls.Contains(call)) return true;
         if (call != "mine" || e.Arguments.Count == 0 || e.Arguments[0] is not StringLiteral s) return false;
-        var b = MineClaw.Data.Blocks.ByName(s.Value.Trim());
-        return b != null && MineClaw.Data.Tools.RequiresTool(b.Id) && MineClaw.Data.Tools.PickaxeEffective.Contains(b.Id);
+        return LuaLint.NeedsPickaxe(s.Value);
     }
 
     private static BindingSignature? Signature(string call, IReadOnlyDictionary<string, BindingSignature>? sigs)

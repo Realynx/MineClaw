@@ -109,7 +109,10 @@ public static class GameToolSet
         var known = src?.KnownCell;
         var all = (src?.GeneratorCells?.Invoke() ?? cells?.Invoke(me) ?? Perception.BlockDescriber.GenCellsNear(c.World, me, 16)).Distinct().ToList();
         var list = known != null && all.Any(known) ? all.Where(known).ToList() : all;
-        list = list.Where(x => src?.ConfirmedCell?.Invoke(x) == true || Perception.BlockDescriber.IsGenCell(c.World, x)).ToList();
+        // A normal world's lava touches water in every cave: geometry alone never names a generator cell there.
+        bool geometry = MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone;
+        list = list.Where(x => src?.ConfirmedCell?.Invoke(x) == true || known?.Invoke(x) == true && !geometry
+                               || geometry && Perception.BlockDescriber.IsGenCell(c.World, x)).ToList();
         var layer = list;
         list = list.Where(x => src?.ConfirmedCell?.Invoke(x) == true || Perception.DigCells.OffLayerOf(x, layer) == null)
             .OrderBy(x => x.DistanceSquaredTo(me)).ToList();
@@ -215,14 +218,16 @@ public static class GameToolSet
                 // A missing pickaxe is acquired first (chest, hive, craft, bootstrap); if that fails the client's own honest
                 // result follows, led by why no tool could be had.
                 var tool = await AcquireTool.ToolForBlockAsync(c, i.ReqStr("block"), ct);
-                if (Blocks.ByName(i.ReqStr("block")) is { Id: Blocks.Cobblestone or Blocks.Stone } gb)
+                if (Blocks.ByName(i.ReqStr("block")) is { Id: Blocks.Cobblestone or Blocks.Stone } gb && !NaturalStone(c, generatorCells))
                 {
                     int n = Math.Clamp(i.Int("count") ?? options.DefaultMineCount, 1, 20000);
                     var gr = await MineFromGeneratorAsync(c, gb.Id, n, generatorCells, generator, ct,
                         () => c.MineAsync(gb.Name, Math.Min(n, 256), Math.Clamp(i.Int("radius") ?? options.DefaultMineRadius, 2, 48), ct));
                     return tool is { } gt && !gt.Note.StartsWith("had ", StringComparison.Ordinal) ? gr with { Text = gt.Note + "; " + gr.Text } : gr;
                 }
-                var r = R(await c.MineAsync(i.ReqStr("block"), Math.Clamp(i.Int("count") ?? options.DefaultMineCount, 1, 256),
+                // A normal world: stone is terrain (it drops cobblestone), mined like any resource with a pickaxe.
+                var mineName = NaturalStone(c, generatorCells) && Blocks.ByName(i.ReqStr("block")) is { Id: Blocks.Cobblestone } ? "stone" : i.ReqStr("block");
+                var r = R(await c.MineAsync(mineName, Math.Clamp(i.Int("count") ?? options.DefaultMineCount, 1, 256),
                     Math.Clamp(i.Int("radius") ?? options.DefaultMineRadius, 2, 48), ct));
                 return tool is { } t && !t.Note.StartsWith("had ", StringComparison.Ordinal) ? r with { Text = t.Note + "; " + r.Text } : r;
             }, longRunning: true);
@@ -458,6 +463,20 @@ public static class GameToolSet
         if (!w.IsLoaded(p.X, p.Z) || !Aiming.IsReplaceable(w, w.GetBlock(p.X, p.Y, p.Z))) return null;
         if (PlaceRules.AttachFaces(w, p, itemId).Count > 0) return null;
         return PlaceRules.SnapAttachable(w, p, itemId, w.Player.Position) is { } s ? (s, null) : (null, PlaceRules.NoAttachProblem(w, p));
+    }
+
+    /// <summary>
+    /// A normal world (stone is terrain, not generator output) with no known generator cell near: <c>mine stone|cobblestone</c>
+    /// digs natural stone with a pickaxe instead of asking for the gen's cells. Skyblock always routes to the generator.
+    /// </summary>
+    internal static bool NaturalStone(IGameClient c, Func<BlockPos, IReadOnlyList<BlockPos>>? generatorCells)
+    {
+        if (MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone) return false;
+        var me = c.World.Player.Position.ToBlockPos();
+        IEnumerable<BlockPos> known;
+        try { known = Acquisition.Of(c)?.GeneratorCells?.Invoke() ?? generatorCells?.Invoke(me) ?? []; }
+        catch (Exception) { known = []; }
+        return !known.Any(p => p.DistanceSquaredTo(me) <= 16 * 16);
     }
 
     /// <summary>

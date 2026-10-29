@@ -7,8 +7,8 @@ namespace MineClaw.Data.Versioning;
 /// profile) before anything reads a table; b1.8.1 is the default and keeps the hand-transcribed tables on a direct path.
 /// Tests scope another version with <see cref="Override"/> (an AsyncLocal: it flows into awaits, <c>Task.Run</c> and new
 /// threads; the process default lies underneath).
-/// <para>Not behind the facade (yet): <see cref="Blocks"/> (physics and collision read it: P3 moves those to the profile) and
-/// <see cref="Items.All"/>/<see cref="Blocks.All"/>, which list b1.8.1's records.</para>
+/// <see cref="Blocks"/>.Get/Exists/ByName joined in P6 (physics and collision read the profile's shapes since P3). Not behind
+/// the facade: <see cref="Items.All"/>/<see cref="Blocks.All"/>, which list b1.8.1's records.
 /// </summary>
 public static class GameData
 {

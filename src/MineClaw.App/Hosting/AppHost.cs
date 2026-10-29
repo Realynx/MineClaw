@@ -143,6 +143,7 @@ public static class AppHost
             }
             cli = cli with { ServerVersion = profile.Version.Id }; // hive clones inherit the resolved version (MainHive pass-through)
             agentOptions.GameVersion = profile.Version.Id; // knowledge docs of another version (b1.8.1/skyblock on 1.12.2) stay out
+            agentOptions.ApplyWorldMode = true; // the db's packs decide skyblock vs a normal world for the whole process (WorldMode)
             if (cli.CloneName != null)
                 return await CloneMode.RunAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, loggers, log, signals, profile);
             return await RunBotAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, useTui, ring, loggers, log, signals, mainLogDir,

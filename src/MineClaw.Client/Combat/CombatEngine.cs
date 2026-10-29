@@ -339,7 +339,7 @@ public sealed class CombatEngine
                 _fight!.Spar = new SparState
                 {
                     Opponent = sc.Opponent, OpponentId = sc.OpponentId, Center = zone.Center, Zone = zone, Rounds = sc.Rounds,
-                    Model = new OpponentHpModel(Options, SparStartHealth(sc.Opponent)),
+                    Model = new OpponentHpModel(Options, SparStartHealth(sc.Opponent), Rules),
                     WeaponId = _w.Inventory.HeldItem(_w.Player.HeldSlot).Id,
                 };
                 Log("spar_start", phys, opp.Position, new() { ["opponent"] = sc.Opponent, ["est_hp"] = _fight.Spar.Model.Estimate, ["center"] = sc.Center.ToString(), ["rounds"] = sc.Rounds });
@@ -580,7 +580,7 @@ public sealed class CombatEngine
             Raise(CombatEventKind.FightStarted, $"spar started vs {target.DisplayName}", true);
         if (kind == FightKind.Mob)
         {
-            var pick = WeaponChoice.Best(slots, Reserved(), Options.NeverWield);
+            var pick = WeaponChoice.Best(slots, Reserved(), Options.NeverWield, Rules);
             if (pick.Slot != 36 + _w.Player.HeldSlot) _pendingEquip = pick;
         }
         return explicitDone is null; // reflex fights interrupt whatever action is running

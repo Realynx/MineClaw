@@ -166,18 +166,49 @@ public class CrewTests
         rig.On["harvest_generator"] = (args, _) => { int n = args.GetProperty("count").GetInt32(); rig.Give(slot++, cobble, n); return Task.FromResult(ActResult.Success($"+{n} cobblestone")); };
     }
 
+    private static void Chopper(Rig rig)
+    {
+        int log = Items.ByName("log")!.Id;
+        int slot = 10;
+        rig.On["chop_tree"] = (_, _) => { rig.Give(slot++, log, 4); return Task.FromResult(ActResult.Success("chopped oak tree (4 logs, 1 sapling), replanted")); };
+    }
+
     [Fact]
     public async Task Parallel_runs_roles_on_each_body_and_shares_the_board()
     {
         using var crew = new FakeCrew("67", "69");
+        foreach (var r in crew.Rigs.Values) Chopper(r);
+        using var main = Rig.Js(crew: crew);
+        var s = await main.Run(ScriptPrompts.Unindent(ScriptPrompts.Examples[2].Code), "wood_crew", @params: """{"n":16}""");
+        Assert.True(s.Ok, s.Outcome + " | " + string.Join(";", main.Logs));
+        Assert.Contains("wood crew: 32 logs (67 16, 69 16)", s.Outcome);
+        foreach (var b in new[] { "67", "69" })
+            Assert.Contains(crew.Rigs[b].Norm(), c => c.StartsWith("chop"));
+        Assert.DoesNotContain(main.CallList, c => c.StartsWith("chop")); // the coordinator itself never chopped
+    }
+
+    [Fact]
+    public async Task The_gen_crew_runs_roles_on_each_body()
+    {
+        using var crew = new FakeCrew("67", "69");
         foreach (var r in crew.Rigs.Values) Miner(r);
         using var main = Rig.Js(crew: crew);
-        var s = await main.Run(ScriptPrompts.Unindent(ScriptPrompts.Examples[2].Code), "gen_crew", @params: """{"n":16}""");
+        const string code = """
+            const P = params({ n: 64, bodies: ['67', '69'] })
+            function miner(a) {
+              const got = gather('cobblestone', a.n, { from: 'gen', stash: true }).n
+              crew.inc('cobble', got)
+              return `${me.body} ${got}`
+            }
+            function main() {
+              const r = parallel(P.bodies.map(b => [b, 'miner', { n: P.n }]))
+              return `gen crew: ${crew.get('cobble')} cobble (${r.join(', ')})`
+            }
+            """;
+        var s = await main.Run(code, "gen_crew", @params: """{"n":16}""");
         Assert.True(s.Ok, s.Outcome + " | " + string.Join(";", main.Logs));
         Assert.Contains("gen crew: 32 cobble (67 16, 69 16)", s.Outcome);
-        foreach (var b in new[] { "67", "69" })
-            Assert.Contains(crew.Rigs[b].Norm(), c => c.StartsWith("harvest_generator"));
-        Assert.DoesNotContain(main.CallList, c => c.StartsWith("harvest_generator")); // the coordinator itself never mined
+        Assert.DoesNotContain(main.CallList, c => c.StartsWith("harvest_generator"));
     }
 
     [Fact]
@@ -272,8 +303,11 @@ public class ExampleTests
         var a = await rig.Run(ScriptPrompts.Exemplar, "gen", @params: """{"n":24}""");
         Assert.True(a.Ok, a.Outcome);
         Assert.Contains("mined 24 cobble", a.Outcome);
-        var b = await rig.Run(ScriptPrompts.Unindent(ScriptPrompts.Examples[1].Code), "guard_gen", @params: """{"n":32}""");
+        // The world-neutral machine: mine stone (no ore in view) by day until n blocks.
+        rig.On["mine"] = (args, _) => { rig.Give(slot++, cobble, 8); return Task.FromResult(ActResult.Success("mined 8 stone")); };
+        var b = await rig.Run(ScriptPrompts.Unindent(ScriptPrompts.Examples[1].Code), "mine_machine", @params: """{"n":32}""");
         Assert.True(b.Ok, b.Outcome + " | " + string.Join(";", rig.Logs.TakeLast(5)));
         Assert.Contains("done", b.Outcome);
+        Assert.True(rig.CallList.Any(c => c.StartsWith("mine ") && c.Contains("\"stone\"")), string.Join(";", rig.CallList.Take(8)));
     }
 }

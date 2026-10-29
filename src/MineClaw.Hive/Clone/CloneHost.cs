@@ -68,6 +68,10 @@ public static class CloneExitCodes
     public const int NoParent = 75;
     /// <summary>Kicked because someone else logged in with this clone's name (a player's viewer): main leaves the slot alone.</summary>
     public const int ExternalLogin = 76;
+    /// <summary>The server refused the login: the account isn't on the whitelist (main's add didn't take). Not a crash, never retried by itself.</summary>
+    public const int NotWhitelisted = 77;
+    /// <summary>The server refused the login: it is full. The slot is yielded, not retried by itself.</summary>
+    public const int ServerFull = 78;
 }
 
 /// <summary>
@@ -221,6 +225,12 @@ public sealed class CloneHost : IHandoffTarget
 
         try { await _body.ConnectAsync(ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { return await _exit.Task.ConfigureAwait(false); }
+        catch (Exception ex) when (RefusalCode(ex.Message) is { } refused)
+        {
+            // Refused at login (the kick can race the connect's own failure): exit with the refusal, never a crash loop.
+            await OnLoginRefusedAsync(ex.Message, refused).ConfigureAwait(false);
+            return await _exit.Task.ConfigureAwait(false);
+        }
         _connectedAt = DateTimeOffset.UtcNow;
         _ = Task.Run(() => ClearVoidMarkOnGroundAsync(ct));
 
@@ -564,6 +574,34 @@ public sealed class CloneHost : IHandoffTarget
     public void OnServerKick(string reason)
     {
         if (IsDuplicateLogin(reason)) _ = OnExternalLoginAsync(reason);
+        else if (RefusalCode(reason) is { } code) _ = OnLoginRefusedAsync(reason, code);
+    }
+
+    /// <summary>The server's login refusal (1.12.2 <c>PlayerList.allowUserToConnect</c>; b1.8.1 the same texts): not whitelisted /
+    /// server full → the exit code, else null. Reconnecting can't fix either, so the clone exits instead of retrying forever.</summary>
+    public static int? RefusalCode(string? reason) =>
+        reason is null ? null
+        : reason.Contains("not white-listed", StringComparison.OrdinalIgnoreCase) || reason.Contains("not whitelisted", StringComparison.OrdinalIgnoreCase)
+            ? CloneExitCodes.NotWhitelisted
+        : reason.Contains("server is full", StringComparison.OrdinalIgnoreCase) ? CloneExitCodes.ServerFull
+        : null;
+
+    internal async Task OnLoginRefusedAsync(string reason, int code)
+    {
+        if (Interlocked.Exchange(ref _loggingOut, 1) != 0) return;
+        LogoutReason = "refused by the server: " + reason;
+        _log.LogWarning("clone {Name}: the server refused the login ({Reason}); exiting {Code}, not reconnecting", Name, reason, code);
+        try { await _body.StopAgentAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); } catch (Exception ex) { _log.LogDebug(ex, "stop agent failed"); }
+        // The bye names the refusal (main yields the slot; the exit code says it too, whichever arrives first).
+        try
+        {
+            if (_link is { IsOpen: true } l) await l.SendAsync(Msg.Bye, new ByeMsg(LogoutReason, true, 0)).ConfigureAwait(false);
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "refusal notice failed"); }
+        try { await _body.DisconnectAsync("refused").WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); } catch (Exception) { }
+        _cts.Cancel();
+        if (_link is { } link) { try { await link.DisposeAsync().ConfigureAwait(false); } catch (Exception) { } }
+        _exit.TrySetResult(code);
     }
 
     internal async Task OnExternalLoginAsync(string reason)

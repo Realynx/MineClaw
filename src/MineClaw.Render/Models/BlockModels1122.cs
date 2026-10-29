@@ -7,8 +7,8 @@ namespace MineClaw.Render.Models;
 /// 1.12.2 block geometry for the shared renderers (<see cref="IBlockModels"/>): (id, meta) → <see cref="BlockStates1122"/>
 /// state (neighbours resolved from the world) → blockstate file → baked <see cref="ModelBaker"/> quads, cached per state.
 /// Tints follow <c>BlockColors</c> (grass/tall grass/double grass/reeds: biome grass; leaves: spruce and birch fixed, others
-/// biome foliage; vines: foliage; lily pads; stems by age; redstone wire by power) with the plains biome (the world model has
-/// no chunk biomes yet). Full cubes take the raycaster's DDA fast path; everything else is intersected quad by quad. Fluids,
+/// biome foliage; vines: foliage; lily pads; stems by age; redstone wire by power), baked with the plains biome and recoloured
+/// per column from the chunk's biome (<see cref="IVoxelWorld.Biome"/>; unknown = plains). Full cubes take the raycaster's DDA fast path; everything else is intersected quad by quad. Fluids,
 /// fire, signs and beds keep the procedural b1.8.1 geometry (its terrain tiles come from the 1.12.2 textures, see
 /// <see cref="Release1122Assets"/>); chests and shulker boxes are small synthetic models over textures cut from their entity
 /// textures. Thread-safe (the renderer's bands share one instance).
@@ -100,11 +100,12 @@ public sealed class BlockModels1122 : IBlockModels
         return faces;
     }
 
-    public GeoQuad CubeFace(IVoxelWorld w, int x, int y, int z, int id, int meta, Face face) => Cube(w, x, y, z, id, meta)[(int)face];
+    public GeoQuad CubeFace(IVoxelWorld w, int x, int y, int z, int id, int meta, Face face) =>
+        InBiome(Cube(w, x, y, z, id, meta)[(int)face], id, w.Biome(x, z));
 
     public uint CubeTexel(IVoxelWorld w, int x, int y, int z, int id, int meta, Face face, Vector3 local)
     {
-        ref readonly var q = ref Cube(w, x, y, z, id, meta)[(int)face];
+        var q = InBiome(Cube(w, x, y, z, id, meta)[(int)face], id, w.Biome(x, z));
         if (q.Tex != QuadTex.Block) return 0xffff00ff;
         // An axis-aligned rectangle: the uv is affine in the two edge parameters.
         var e1 = q.P1 - q.P0;
@@ -139,7 +140,25 @@ public sealed class BlockModels1122 : IBlockModels
             if (id is 8 or 9 or 10 or 11 or 51 or 63 or 68 or 26) BlockGeometry.Build(w, x, y, z, dst);
             return;
         }
-        dst.AddRange(Bake(id, s));
+        var quads = Bake(id, s);
+        int biome = w.Biome(x, z);
+        if (!BiomeTinted(id) || biome < 0 || biome == BiomeTints.DefaultBiome) { dst.AddRange(quads); return; }
+        foreach (var q in quads) dst.Add(InBiome(q, id, biome));
+    }
+
+    /// <summary>Grass, ferns, reeds, double grass, leaves and vines take the biome's colour (BlockColors); the rest don't.</summary>
+    private static bool BiomeTinted(int id) => id is 2 or 31 or 83 or 175 or 18 or 161 or 106;
+
+    /// <summary>A baked (plains-tinted) quad recoloured for <paramref name="biome"/> (chunk data; −1 = unknown, plains). Fixed
+    /// colours (spruce, birch, lily pads) are left alone: only the plains grass/foliage tint is swapped.</summary>
+    private static GeoQuad InBiome(GeoQuad q, int id, int biome)
+    {
+        if (biome < 0 || biome == BiomeTints.DefaultBiome || !BiomeTinted(id)) return q;
+        uint grass = BiomeTints.Grass(), foliage = BiomeTints.Foliage();
+        uint Swap(uint t) => t == 0 ? 0 : t == grass ? BiomeTints.Grass(biome) : t == foliage ? BiomeTints.Foliage(biome) : t;
+        q.Tint = Swap(q.Tint);
+        q.OverlayTint = Swap(q.OverlayTint);
+        return q;
     }
 
     /// <summary>The baked quads of a resolved state (cached).</summary>

@@ -37,7 +37,9 @@ indices (`Data/EntityMeta`: b1.8.1's 0/16/17 plus 32+ facts such as health, baby
 attributes, passengers; `Profile.Entities` (`World/Versioning/IEntityRules`: 1.12.2 mob profiles, stamped on each spawn as
 `Entity.Profile`), `Release1122CombatRules` (the attack charge the `CombatEngine` waits for, crits, sweeps it never aims into a
 bystander, the off-hand shield and the axe, attack-before-swing) and `Release1122HungerRules` + `FoodStats1122`. No `if (version)`
-in game code, differences live behind the seams.
+in game code, differences live behind the seams. P6: the world kind (skyblock vs a normal world) is `Data/Versioning/WorldMode`
+(facts `HasVoidBelow`, `GeneratorStone`, `ScarceTerrain`, `Islands`; decided by the db's active knowledge packs, default skyblock),
+`Blocks` is a facade over `GameData.Current` too, light/spawn block rules and chunk biomes come through `IPhysicsRules`/`WorldState`.
 
 ## Project ownership / contracts
 

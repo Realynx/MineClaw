@@ -82,7 +82,7 @@ public static partial class Items
                 if (_byName.TryGetValue(k2, out i)) return (i, -1);
             }
         if (int.TryParse(key, out var id) && ExistsB(id)) return (_byId[id], -1);
-        if (Blocks.ByName(name) is { } b && ExistsB(b.Id)) return (_byId[b.Id], -1);
+        if (Blocks.ByNameB(name) is { } b && ExistsB(b.Id)) return (_byId[b.Id], -1);
         // "20 cobble slabs", "cobble slab x20", "a red wool": drop the amount and try again.
         if (ParseAmount(name) is { Count: not null } a && a.Name != name.Trim()) return ByNameWithDamageB(a.Name);
         return null;
@@ -115,7 +115,7 @@ public static partial class Items
     {
         bool variant = id is Blocks.Slab or Blocks.Wool or Blocks.Log or Blocks.Leaves or Blocks.Sapling or Blocks.StoneBricks
             or Blocks.TallGrass or Dye or Coal;
-        if (!variant) return ExistsB(id) ? GetB(id).Name : Blocks.Get(id).Name;
+        if (!variant) return ExistsB(id) ? GetB(id).Name : Blocks.GetB(id).Name;
         return DisplayNameB(id, meta).ToLowerInvariant().Replace(' ', '_');
     }
 
@@ -155,7 +155,7 @@ public static partial class Items
             case Blocks.StoneBricks: return (m & 3) switch { 1 => "Mossy Stone Bricks", 2 => "Cracked Stone Bricks", _ => "Stone Bricks" };
             case Blocks.MonsterEgg: return (m & 3) switch { 1 => "Silverfish Cobblestone", 2 => "Silverfish Stone Bricks", _ => "Silverfish Stone" };
         }
-        if (id < 256 && !_byId.ContainsKey(id)) return Blocks.Get(id).DisplayName;
+        if (id < 256 && !_byId.ContainsKey(id)) return Blocks.GetB(id).DisplayName;
         var info = GetB(id);
         if (info.MaxDamage > 0 && damage > 0) return $"{info.DisplayName} ({info.MaxDamage - damage}/{info.MaxDamage})";
         return info.DisplayName;
@@ -202,7 +202,7 @@ public static partial class Items
     ];
 
     /// <summary>True if the block id can exist as an inventory item in survival-ish play (e.g. not water, bed block, door block).</summary>
-    public static bool IsObtainableBlockItem(int blockId) => Blocks.Exists(blockId) && !NonItemBlocks.Contains(blockId);
+    public static bool IsObtainableBlockItem(int blockId) => Blocks.ExistsB(blockId) && !NonItemBlocks.Contains(blockId);
 
     private static Dictionary<int, ItemInfo> Build()
     {

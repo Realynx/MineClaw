@@ -103,28 +103,30 @@ public sealed partial class AutoVision
         }
         switch (tool)
         {
-            case "mine" when input.Str("block") is { } b && MineClaw.Data.Blocks.ByName(b) is { Id: MineClaw.Data.Blocks.Cobblestone or MineClaw.Data.Blocks.Stone }:
+            // Stone means the gen only where stone comes from one (skyblock); a normal world mines natural stone.
+            case "mine" when MineClaw.Data.Versioning.WorldMode.Current.GeneratorStone && input.Str("block") is { } b
+                && MineClaw.Data.Blocks.ByName(b) is { Id: MineClaw.Data.Blocks.Cobblestone or MineClaw.Data.Blocks.Stone }:
             case "harvest_generator":
             {
                 var f = At("at") ?? GenFocus(feet);
-                return ("gen", f, "Which blocks here are generator cells (G, MINE HERE) and which are island floor or gen walls? Coords of the gen cells.", false);
+                return ("gen", f, MineClaw.Bot.Perception.Vision.Eval.VisionEval.GenQuestion, false);
             }
             case "place":
             {
                 var f = At("at") ?? feet;
-                return ("place", f, $"Is {f.X},{f.Y},{f.Z} free, which solid blocks next to it can a block be placed against, and is there void under it?", false);
+                return ("place", f, $"Is {f.X},{f.Y},{f.Z} free, which solid blocks next to it can a block be placed against, and is there a fall under it?", false);
             }
             case "dig":
             {
                 var f = At("at") ?? feet;
-                return ("dig", f, "What is the block at the focus: its role (gen cell, floor, wall, protected) and what is under it (void?)", false);
+                return ("dig", f, "What is the block at the focus: its role (gen cell, floor, wall, protected) and what is under it (air, a fall?)", false);
             }
             case "skill":
             {
                 var name = input.Str("name") ?? input.Str("skill") ?? "";
                 if (!BuildSkillRx().IsMatch(name)) return null;
                 var f = At("at", "to", "pos", "from", "start", "corner", "origin") ?? feet;
-                return ("build", f, $"Check the {name.Replace('_', ' ')} at the focus: is it complete? List gaps or missing blocks with coords, and any void edge.", true);
+                return ("build", f, $"Check the {name.Replace('_', ' ')} at the focus: is it complete? List gaps or missing blocks with coords, and any open edge.", true);
             }
             default:
                 return null;

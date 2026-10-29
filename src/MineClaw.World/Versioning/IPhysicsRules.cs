@@ -49,6 +49,30 @@ public interface IPhysicsRules
     /// <summary>Damage (half-hearts) of landing on <paramref name="landingBlockId"/> after falling <paramref name="fallDistance"/>
     /// blocks: ceil(distance − 3) in both, 1.12.2's hay bale ×0.2, bed ×0.5 distance and slime none unless sneaking.</summary>
     int FallDamage(double fallDistance, int landingBlockId, bool sneaking);
+
+    // ---- light and hostile spawning (block facts; multi-version P6). Defaults = b1.8.1 (mc-dev).
+
+    /// <summary>Light opacity of a block id (<c>Block.lightOpacity</c>), 0..255.</summary>
+    int LightOpacity(int blockId) => LightTables.Opacity(blockId);
+
+    /// <summary>Light a block id emits (0..15).</summary>
+    int LightEmission(int blockId) => LightTables.Emission(blockId);
+
+    /// <summary>Whether a hostile mob may stand on this block (b1.8.1 <c>World.e</c>: a normal cube; 1.12.2 <c>isTopSolid</c> minus
+    /// bedrock/barrier/magma: top slabs and upside-down stairs count).</summary>
+    bool IsSpawnFloor(int blockId, int meta) => LightTables.IsNormalCube(blockId);
+
+    /// <summary>Whether a mob's feet or head may be in this cell (b1.8.1: not a normal cube, not a liquid; 1.12.2
+    /// <c>isValidEmptySpawnBlock</c>: also no rails and no power sources such as plates, buttons and redstone).</summary>
+    bool IsSpawnCellClear(int blockId, int meta) => !LightTables.IsNormalCube(blockId) && !BlockShapes.IsLiquid(blockId);
+
+    /// <summary>The same test for the cell above the feet (b1.8.1 checks only "not a normal cube" there; the mob's box test
+    /// catches a liquid).</summary>
+    bool IsSpawnHeadClear(int blockId, int meta) => !LightTables.IsNormalCube(blockId);
+
+    /// <summary>Whether the biome (chunk data; −1 = unknown) spawns monsters at all (1.12.2: not the mushroom island/shore or the
+    /// void biome). b1.8.1 chunks carry no biome: always true.</summary>
+    bool BiomeSpawnsMonsters(int biome) => true;
 }
 
 /// <summary>b1.8.1: wraps the existing static physics, unchanged.</summary>
@@ -128,4 +152,11 @@ public sealed class Release1122PhysicsRules : IPhysicsRules
     public double Slipperiness(int blockId) => Shapes1122.Slipperiness(blockId);
 
     public int FallDamage(double fallDistance, int landingBlockId, bool sneaking) => Physics1122.FallDamage((float)fallDistance, landingBlockId, sneaking);
+
+    public int LightOpacity(int blockId) => Light1122.Opacity(blockId);
+    public int LightEmission(int blockId) => Light1122.Emission(blockId);
+    public bool IsSpawnFloor(int blockId, int meta) => Light1122.IsSpawnFloor(blockId, meta);
+    public bool IsSpawnCellClear(int blockId, int meta) => Light1122.IsSpawnCellClear(blockId, meta);
+    public bool IsSpawnHeadClear(int blockId, int meta) => Light1122.IsSpawnCellClear(blockId, meta);
+    public bool BiomeSpawnsMonsters(int biome) => Light1122.BiomeHasMonsters(biome);
 }
