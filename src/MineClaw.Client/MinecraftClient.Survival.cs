@@ -144,7 +144,7 @@ public sealed partial class MinecraftClient
         // No way home and low hp or outnumbered (not in a fight: the combat engine asks itself): box in.
         if (o.ShelterEnabled && !engaged && CurrentAction is null && phys.OnGround && Volatile.Read(ref _sheltering) == 0 && TickCount % 20 == 0)
         {
-            var near = World.Entities.Nearby(me, 8, CombatRules.IsThreat);
+            var near = World.Entities.Nearby(me, 8, e => CombatRules.IsThreat(e) && CombatGeometry.CanGetAt(World, e, me));
             if (near.Count > 0 && (Survival.IsLow(hp) || near.Count >= o.ShelterThreats)
                 && ShouldShelter(near.Count, CombatGeometry.RetreatCell(World, me, near.Select(e => e.Position).ToList(), 7) != null))
             {
@@ -161,6 +161,7 @@ public sealed partial class MinecraftClient
             // A mob on a guarded player is theirs to defend (the guard reflex goes), not a reason to hide while hp holds.
             var guards = Survival.IsLow(hp) ? [] : Combat.Guarded.Select(n => World.Entities.FindPlayer(n)).OfType<Entity>().ToList();
             var mobs = World.Entities.Nearby(me, o.NightShelterRadius, e => CombatRules.IsThreat(e) && CombatRules.ProfileOf(e).Tactic == MobTactic.Melee
+                && CombatGeometry.CanGetAt(World, e, me)
                 && !guards.Any(g => g.Position.DistanceTo(e.Position) <= Options.Combat.GuardRadius + 2));
             if (mobs.Count > 0 && CanBoxIn(mobs.Count) && !Shelter.Enclosed(World, cell)
                 && (mobs.Count >= o.ShelterThreats || Combat.Outmatched(phys, mobs.OrderBy(e => e.Position.DistanceTo(me)).First()) is not null))
@@ -171,7 +172,7 @@ public sealed partial class MinecraftClient
         }
 
         if (o.AutoEat && idle && _healRetreat is null && TickCount >= _eatRetryTick
-            && World.Entities.NearestHostile(me, 4) is null
+            && NearestThreat(me, 4) is null
             && SurvivalReflex.EatNow(slots, reserved, hp, food, o, Options.Profile.Hunger, p.Saturation) is { } pick
             && Interlocked.CompareExchange(ref _autoEating, 1, 0) == 0)
             _ = Task.Run(() => AutoEatAsync(pick));
@@ -223,7 +224,7 @@ public sealed partial class MinecraftClient
         var o = Options.Survival;
         if (!o.Enabled || !o.AutoEat || TickCount < _eatRetryTick || (_combatInstance?.Engaged ?? false)) return;
         var p = World.Player;
-        if (!p.OnGround || World.Entities.NearestHostile(p.Position, 4) is not null) return;
+        if (!p.OnGround || NearestThreat(p.Position, 4) is not null) return;
         if (SurvivalReflex.EatNow(World.Inventory.PlayerSlots(), EatReserved(p.Health), p.Health, p.Food, o, Options.Profile.Hunger, p.Saturation) is not { } pick) return;
         var r = await UseCoreAsync(pick.ItemId, ct).ConfigureAwait(false);
         Log($"survival: ate during {CurrentAction}: {r}");

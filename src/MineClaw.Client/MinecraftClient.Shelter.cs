@@ -150,7 +150,7 @@ public sealed partial class MinecraftClient
                         var eat = await UseCoreAsync(meal.ItemId, c).ConfigureAwait(false);
                         if (eat.Ok) Interlocked.Increment(ref _autoMeals);
                     }
-                    bool quiet = World.Entities.NearestHostile(p.Position, 16) is null || !World.IsNight;
+                    bool quiet = NearestThreat(p.Position, 16) is null || !World.IsNight;
                     if (p.Health >= o.ShelterUntilHealth && quiet) break;
                     await Task.Delay(500, c).ConfigureAwait(false);
                 }
@@ -217,7 +217,7 @@ public sealed partial class MinecraftClient
             await Task.Delay(100, ct).ConfigureAwait(false);
         if (!IsPlaying || World.Dimension != 0 || HomeLevel is not { } home) return null;
         var feet = FeetCell();
-        bool exposed = World.IsNight || World.Entities.NearestHostile(World.Player.Position, 16) is not null;
+        bool exposed = World.IsNight || NearestThreat(16) is not null;
         if (!exposed || WayHome.AtHome(feet, home)) return null;
         if (WayHome.WalkDown(World, feet, home) is { } down)
         {

@@ -587,7 +587,9 @@ public sealed class CombatEngine
             bool ranged = prof.Tactic == MobTactic.Ranged;
             bool creeper = e.TypeId == MobTypes.Creeper;
             bool inReach = InMeleeReach(phys, e);
-            bool creeperDanger = creeper && (CombatRules.IsCreeperFusing(e) ? d <= CombatRules.CreeperCancelRange + 1 : Horizontal(me, e.Position) <= Options.CreeperAvoidRadius);
+            // Out of its sight and off our level (a cave under the floor, a ledge): no danger until it shows up or hits us.
+            bool sensed = provoked || Senses(e, me);
+            bool creeperDanger = sensed && creeper && (CombatRules.IsCreeperFusing(e) ? d <= CombatRules.CreeperCancelRange + 1 : Horizontal(me, e.Position) <= Options.CreeperAvoidRadius);
             string? why = null;
             bool cover = false;
 
@@ -601,7 +603,7 @@ public sealed class CombatEngine
                 // A given-up creeper that's merely close re-triggers only once it has moved since (out of its pocket) or
                 // fuses (live 10-28 17:20: one trapped 3 m west of the tower restarted an 8 s fight back to back, freezing main).
                 if (CombatRules.IsCreeperFusing(e) && creeperDanger) why = "creeper fusing";
-                else if (creeperDanger && Horizontal(u.Pos, e.Position) > 1.0) why = "creeper close";
+                else if (creeperDanger && Horizontal(u.Pos, e.Position) > 1.0 && (inReach || CanWalkTo(me, e))) why = "creeper close";
                 else if (inReach && DefendSelf) why = "in reach";
                 else if (hitMeSince && !ranged && DefendSelf) why = "it attacked";
                 else if (hitMeSince && ranged && DefendSelf && _w.Player.Health <= Options.CoverHealth && _tick - u.LastCover > Options.CoverMaxTicks * 2
@@ -615,7 +617,7 @@ public sealed class CombatEngine
 
             // Only what the bot can actually get to starts a fight: within melee reach, or a safe first step toward it.
             bool approachable = inReach || CanWalkTo(me, e);
-            if (DefendSelf)
+            if (DefendSelf && sensed)
             {
                 if (provoked && d <= 10 && !ranged) why = "it attacked";
                 else if (ranged && (provoked || CombatGeometry.HasLineOfSight(_w, phys.EyePosition, Eye(e))))
@@ -640,6 +642,21 @@ public sealed class CombatEngine
     }
 
     private readonly Dictionary<int, (long Tick, BlockPos From, BlockPos At, bool Ok)> _walkable = new();
+    private readonly Dictionary<int, (long Tick, bool Ok)> _sensed = new();
+
+    /// <summary><see cref="CombatGeometry.CanGetAt"/>, cached half a second per mob.</summary>
+    private bool Senses(Entity e, Vec3d me)
+    {
+        if (_sensed.TryGetValue(e.Id, out var c) && _tick - c.Tick < 10) return c.Ok;
+        bool ok = CombatGeometry.CanGetAt(_w, e, me);
+        if (_sensed.Count > 64) _sensed.Clear();
+        _sensed[e.Id] = (_tick, ok);
+        return ok;
+    }
+
+    /// <summary>Nearest hostile within <paramref name="radius"/> that can get at the bot (<see cref="CombatGeometry.CanGetAt"/>).</summary>
+    public Entity? NearestThreat(Vec3d me, double radius) =>
+        _w.Entities.Nearby(me, radius, e => e.IsHostileMob && CombatGeometry.CanGetAt(_w, e, me), 1).FirstOrDefault();
 
     /// <summary>A walk (no jumps, digging or placing) gets the bot within melee reach of it; cached ~1 s per mob and spot.</summary>
     private bool CanWalkTo(Vec3d me, Entity e)
@@ -728,7 +745,7 @@ public sealed class CombatEngine
         _pending.Clear();
         ctx.Block = false;
         int food = _w.Player.Food;
-        ctx.Eat = food <= Options.EatBelowFood && _w.Entities.NearestHostile(phys.Position, 10) is null;
+        ctx.Eat = food <= Options.EatBelowFood && NearestThreat(phys.Position, 10) is null;
         Raise(CombatEventKind.FightEnded, "fight ended: " + summary, f.Done is not null);
         f.Done?.TrySetResult(summary);
     }

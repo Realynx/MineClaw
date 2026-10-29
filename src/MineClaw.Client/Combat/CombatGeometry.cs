@@ -165,6 +165,21 @@ public static class CombatGeometry
         return best;
     }
 
+    /// <summary>
+    /// The mob can get at a body standing at <paramref name="me"/> (feet): touching it, in sight of its eyes or feet (vanilla mobs
+    /// only target what they see: EntityAINearestAttackableTarget's sight check, an archer's clear shot, a creeper's swell), or on
+    /// about the same level within 8 (behind a tree or a corner, it walks round). A mob in a cave under the floor or on a ledge
+    /// out of sight is no danger yet (live 10-29: a creeper below the edge west of the tunnel broke every job of four bodies).
+    /// </summary>
+    public static bool CanGetAt(IBlockAccess w, Entity mob, Vec3d me)
+    {
+        double dx = mob.Position.X - me.X, dy = mob.Position.Y - me.Y, dz = mob.Position.Z - me.Z, h2 = dx * dx + dz * dz;
+        if (Math.Abs(dy) < 2 && h2 <= 8 * 8) return true;
+        var box = CombatRules.Hitbox(mob);
+        var eye = new Vec3d(mob.Position.X, box.MinY + (box.MaxY - box.MinY) * 0.85, mob.Position.Z);
+        return HasLineOfSight(w, eye, me + new Vec3d(0, PlayerPhysics.EyeHeight, 0)) || HasLineOfSight(w, eye, me + new Vec3d(0, 0.3, 0));
+    }
+
     /// <summary>No block selection box between the two points (EntityLiving.canEntityBeSeen uses a block ray trace).</summary>
     public static bool HasLineOfSight(IBlockAccess w, Vec3d from, Vec3d to)
     {

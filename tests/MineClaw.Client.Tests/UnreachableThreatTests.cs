@@ -171,6 +171,67 @@ public class UnreachableThreatTests
         Assert.False(r.W.IsPlayerOverVoid(r.P.Position));
     }
 
+    /// <summary>A cave 4 under the rig's floor (y 59 ground, 60-62 air): the 63 stone layer is its roof and the bot's floor.</summary>
+    private static Entity CaveMob(CombatRig r, int id, int type, double x, double z, Dictionary<int, object>? meta = null)
+    {
+        for (int cx = -12; cx <= 12; cx++)
+        for (int cz = -12; cz <= 12; cz++)
+            r.W.SetBlock(cx, 59, cz, Blocks.Stone, 0);
+        return r.W.Entities.SpawnMob(id, type, new Vec3d(x, 60, z), 0, 0, meta);
+    }
+
+    [Fact]
+    public void Creeper_in_a_cave_under_the_floor_is_no_danger_until_it_comes_up()
+    {
+        // 10-29 21:53-21:59: "unreachable creeper W of night_tunnel keeps interrupting all bodies", "i think it's down below the edge".
+        var r = new CombatRig(Opts(), half: 12);
+        var c = CaveMob(r, 9, MobTypes.Creeper, 2.5, 0.5, new Dictionary<int, object> { [16] = (sbyte)-1 });
+        bool aborted = false;
+        for (int i = 0; i < 600; i++)
+        {
+            // It wanders about down there, right under the bot.
+            r.W.Entities.Teleport(c.Id, new Vec3d(0.5 + (i / 40 % 4) * 0.8, 60, 0.5 + (i / 60 % 3) * 0.8), 0, 0);
+            aborted |= r.Step(physics: true).AbortAction;
+        }
+        Assert.Equal(0, Starts(r));
+        Assert.False(aborted);
+
+        // It finds a way up and stands next to the bot: the reflex is back.
+        r.W.Entities.Teleport(c.Id, new Vec3d(r.P.Position.X + 2.5, 64, r.P.Position.Z), 0, 0);
+        for (int i = 0; i < 20; i++) r.Step();
+        Assert.True(r.E.Engaged);
+    }
+
+    [Fact]
+    public void Zombie_in_a_cave_under_the_floor_starts_no_defence()
+    {
+        var r = new CombatRig(Opts(), half: 12);
+        r.W.Time = 18000;
+        CaveMob(r, 9, MobTypes.Zombie, 1.5, 0.5);
+        bool aborted = false;
+        for (int i = 0; i < 200; i++) aborted |= r.Step().AbortAction;
+        Assert.Equal(0, Starts(r));
+        Assert.False(aborted);
+        Assert.Null(r.E.NearestThreat(r.P.Position, 16));
+    }
+
+    [Fact]
+    public void Can_get_at_sees_through_open_air_and_its_own_level_but_not_through_the_floor()
+    {
+        var r = new CombatRig(Opts(), half: 12);
+        var me = r.P.Position;
+        var cave = CaveMob(r, 9, MobTypes.Zombie, 3.5, 0.5);
+        Assert.False(CombatGeometry.CanGetAt(r.W, cave, me));
+        // A hole in the floor over it: now it sees the bot.
+        for (int x = 1; x <= 4; x++) r.W.SetBlock(x, 63, 0, Blocks.Air, 0);
+        Assert.True(CombatGeometry.CanGetAt(r.W, cave, me));
+        // On the bot's level behind a wall it still counts (it walks round).
+        r.W.SetBlock(2, 64, 4, Blocks.Stone, 0);
+        r.W.SetBlock(2, 65, 4, Blocks.Stone, 0);
+        var behind = r.Mob(10, MobTypes.Zombie, 3.5, 5.5);
+        Assert.True(CombatGeometry.CanGetAt(r.W, behind, me));
+    }
+
     [Fact]
     public void Zombie_next_to_the_bot_is_still_fought_at_once()
     {

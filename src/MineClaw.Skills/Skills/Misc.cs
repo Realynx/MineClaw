@@ -211,7 +211,7 @@ public sealed class ThrowProjectileSkill : Skill
         if (t is not null && SkillJson.Parse($"{{\"p\":\"{t}\"}}").Pos("p") is { } pos) { aimAt = pos.Center; what = P(pos); }
         else
         {
-            var mob = ctx.World.Entities.NearestHostile(ctx.Feet, 24);
+            var mob = ctx.World.Entities.Nearby(ctx.Feet, 24, e => e.IsHostileMob && MineClaw.Client.Combat.CombatGeometry.CanGetAt(ctx.World, e, ctx.Feet), 1).FirstOrDefault();
             if (mob is null || NetherHazards.NeverAttack(mob)) return Fail("no hostile mob in range");
             aimAt = mob.Position + new Vec3d(0, 1, 0);
             what = mob.DisplayName;
@@ -260,7 +260,7 @@ public sealed class ShootBowSkill : Skill
         if (t is not null && SkillJson.Parse($"{{\"p\":\"{t}\"}}").Pos("p") is { } pos) spot = pos.Center;
         else
         {
-            mob = ctx.World.Entities.NearestHostile(ctx.Feet, 32);
+            mob = ctx.World.Entities.Nearby(ctx.Feet, 32, e => e.IsHostileMob && MineClaw.Client.Combat.CombatGeometry.CanGetAt(ctx.World, e, ctx.Feet), 1).FirstOrDefault();
             if (mob is null || NetherHazards.NeverAttack(mob)) return Fail("no hostile mob in range");
         }
         int shots = Clamp(args.Int("shots"), 1, 1, 8), fired = 0;

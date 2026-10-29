@@ -50,7 +50,7 @@ internal static class BuildOps
 
     /// <summary>Hostile mob close enough to knock me off an edge.</summary>
     public static string? HostileVeto(SkillContext ctx, double r = 6) =>
-        ctx.World.Entities.NearestHostile(ctx.Feet, r) is { } m ? $"{m.DisplayName} within {r:0}: not working at the edge" : null;
+        ctx.World.Entities.Nearby(ctx.Feet, r, e => e.IsHostileMob && MineClaw.Client.Combat.CombatGeometry.CanGetAt(ctx.World, e, ctx.Feet), 1).FirstOrDefault() is { } m ? $"{m.DisplayName} within {r:0}: not working at the edge" : null;
 }
 
 [Skill]

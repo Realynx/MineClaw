@@ -484,7 +484,9 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime, IPatc
     {
         var w = s.Host.World;
         var feet = w.Player.Position;
-        if (w.Entities.NearestHostile(feet, Math.Clamp(radius, 1, 32)) is not { } m) return null;
+        // Only one that can get at the body: a cave mob under the floor isn't a reason for a script to react.
+        if (w.Entities.Nearby(feet, Math.Clamp(radius, 1, 32), e => e.IsHostileMob && MineClaw.Client.Combat.CombatGeometry.CanGetAt(w, e, feet), 1)
+                .FirstOrDefault() is not { } m) return null;
         return ScriptSession.PosNode((int)Math.Floor(m.Position.X), (int)Math.Floor(m.Position.Y), (int)Math.Floor(m.Position.Z),
             m.DisplayName.ToLowerInvariant(), m.Position.DistanceTo(feet));
     }

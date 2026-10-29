@@ -169,6 +169,15 @@ public sealed partial class MinecraftClient
     }
 
     /// <summary>
+    /// Nearest hostile within <paramref name="radius"/> that can get at the body: in sight, touching or on its level
+    /// (<see cref="CombatGeometry.CanGetAt"/>). A cave mob under the floor doesn't count.
+    /// </summary>
+    public Entity? NearestThreat(double radius = 16) => NearestThreat(World.Player.Position, radius);
+
+    public Entity? NearestThreat(Vec3d me, double radius) =>
+        World.Entities.Nearby(me, radius, e => e.IsHostileMob && CombatGeometry.CanGetAt(World, e, me), 1).FirstOrDefault();
+
+    /// <summary>
     /// Foot cells walks keep out of: within <see cref="CombatOptions.CreeperAvoidRadius"/> of a creeper (its ignite range),
     /// except around a creeper the goal or the bot itself is already next to (the combat reflex deals with that one).
     /// </summary>
@@ -181,7 +190,7 @@ public sealed partial class MinecraftClient
         foreach (var c in World.Entities.Nearby(me, 32, e => e.Kind == EntityKind.Mob && e.TypeId == MobTypes.Creeper))
         {
             double dme = Math.Sqrt((c.Position.X - me.X) * (c.Position.X - me.X) + (c.Position.Z - me.Z) * (c.Position.Z - me.Z));
-            if (dme <= r + 0.5) continue;
+            if (dme <= r + 0.5 || !CombatGeometry.CanGetAt(World, c, me) && Math.Abs(c.Position.Y - me.Y) >= 2) continue;
             int cx = (int)Math.Floor(c.Position.X), cy = (int)Math.Floor(c.Position.Y + 1e-6), cz = (int)Math.Floor(c.Position.Z);
             int ri = (int)Math.Ceiling(r);
             var cells = new List<BlockPos>();

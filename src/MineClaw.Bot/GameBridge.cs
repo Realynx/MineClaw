@@ -208,7 +208,7 @@ public sealed class GameBridge : IDisposable
         if (!_c.IsPlaying) return null;
         var w = _c.World;
         if (w.Dimension != 0) return null;
-        bool night = w.IsNight, mobs = w.Entities.NearestHostile(w.Player.Position, 16) is not null;
+        bool night = w.IsNight, mobs = w.Entities.Nearby(w.Player.Position, 16, e => e.IsHostileMob && MineClaw.Client.Combat.CombatGeometry.CanGetAt(w, e, w.Player.Position), 1).Count > 0;
         // A clone spawn walks out at the spawn, not at main: only the night counts for it, not the mobs around main.
         bool spawns = steps.Count > 0 && steps.All(s => BotAgent.IsCloneSpawn(s.Tool, s.Input));
         if (spawns) mobs = false;
