@@ -30,8 +30,9 @@ public sealed class MeshUpload
 /// worker) walks the columns around the camera nearest first, diffs each against the column (and its four neighbours) it was
 /// last meshed from, and rebuilds only the sections that changed — a block edit inside a section rebuilds that section; one on
 /// a section face also its neighbour across that face; a changed height map (sky light) the sections its light reaches; a
-/// neighbour column that appears, vanishes or changes along the shared edge the sections it borders. Results queue for the
-/// render thread, which uploads them within a per-frame budget.
+/// section whose synced light changed, and the ones above and below it (smooth corners read across); a neighbour column that
+/// appears, vanishes or changes along the shared edge the sections it borders; a new time-of-day light step (World.k) or light
+/// mode everything, nearest first. Results queue for the render thread, which uploads them within a per-frame budget.
 /// </summary>
 public sealed class SectionStore
 {
@@ -78,6 +79,22 @@ public sealed class SectionStore
         get => _mesher.Models;
         set { if (ReferenceEquals(_mesher.Models, value)) return; _mesher.Models = value; foreach (var s in _cols.Values) s.Pending = AllSections(s.Src); }
     }
+
+    /// <summary>World.k (the time of day's sky light step, 0..11): a new value rebuilds everything, nearest first.</summary>
+    public int SkySubtracted
+    {
+        get => _mesher.SkySubtracted;
+        set { if (_mesher.SkySubtracted == value) return; _mesher.SkySubtracted = value; RebuildAll(); }
+    }
+
+    /// <summary>Smooth (per-corner) or flat cube light; a change rebuilds everything.</summary>
+    public bool Smooth
+    {
+        get => _mesher.Smooth;
+        set { if (_mesher.Smooth == value) return; _mesher.Smooth = value; RebuildAll(); }
+    }
+
+    private void RebuildAll() { foreach (var s in _cols.Values) s.Pending = (ushort)(AllSections(s.Src) | s.Meshed); }
 
     /// <summary>Switches textured/palette meshing; everything is rebuilt.</summary>
     public bool Textured
@@ -152,7 +169,8 @@ public sealed class SectionStore
             {
                 if (!ReferenceEquals(cur, st.Src))
                 {
-                    st.Pending |= cur == null || st.Src == null ? (ushort)(AllSections(cur) | st.Meshed) : Diff(st.Src.Snap, cur.Snap, st.Src.Top, cur.Top);
+                    st.Pending |= cur == null || st.Src == null ? (ushort)(AllSections(cur) | st.Meshed)
+                        : (ushort)(Diff(st.Src.Snap, cur.Snap, st.Src.Top, cur.Top) | LightDiff(st.Src, cur));
                     st.Src = cur;
                 }
                 for (int i = 0; i < 4; i++)
@@ -253,6 +271,23 @@ public sealed class SectionStore
         return m;
     }
 
+    /// <summary>Sections whose synced light (or the biomes: tints) changed from <paramref name="a"/> to <paramref name="b"/>, each with
+    /// the sections above and below it (their boundary faces and smooth corners read its cells).</summary>
+    public static ushort LightDiff(ClientColumn a, ClientColumn b)
+    {
+        var la = a.Light; var lb = b.Light;
+        if (la == null && lb == null) return 0;
+        int height = Math.Max(a.Snap.Height, b.Snap.Height);
+        if (la == null || lb == null || la.Sections != lb.Sections || !SameBiomes(la, lb)) return AllBits(height);
+        ushort m = 0;
+        for (int s = 0; s < la.Sections; s++)
+            if (!la.SameSection(lb, s)) m |= (ushort)(7 << s >> 1);
+        return (ushort)(m & AllBits(height));
+    }
+
+    private static bool SameBiomes(LightSnapshot a, LightSnapshot b) =>
+        a.Biomes == null ? b.Biomes == null : b.Biomes != null && a.Biomes.AsSpan().SequenceEqual(b.Biomes);
+
     /// <summary>Sections of <paramref name="cur"/> to rebuild because its neighbour in direction <paramref name="dir"/> changed
     /// from <paramref name="a"/> to <paramref name="b"/>: all of them when the neighbour appeared or vanished, else only the
     /// sections facing changed cells of the neighbour's shared edge (blocks and their sky light).</summary>
@@ -278,7 +313,14 @@ public sealed class SectionStore
             }
             if (a.Top[xz] != b.Top[xz]) m |= SpanMask(Math.Min(a.Top[xz], b.Top[xz]), Math.Max(a.Top[xz], b.Top[xz]) + 1, height);
         }
-        return m;
+        // The neighbour's light (its edge cells light our boundary faces); biomes don't cross columns.
+        if (a.Light is { } la && b.Light is { } lb && la.Sections == lb.Sections)
+        {
+            for (int s = 0; s < la.Sections; s++)
+                if (!la.SameSection(lb, s)) m |= (ushort)(7 << s >> 1);
+        }
+        else if (a.Light != null || b.Light != null) m |= AllSections(cur);
+        return (ushort)(m & AllBits(height));
     }
 }
 
@@ -294,7 +336,7 @@ public sealed class MeshWorker : IDisposable
     private readonly AutoResetEvent _wake = new(false);
     private Thread? _thread;
     private volatile bool _run;
-    private volatile int _dim, _cx, _cz, _radius = 5;
+    private volatile int _dim, _cx, _cz, _radius = 5, _sub;
     private volatile bool _textured;
 
     public MeshWorker(SectionStore store, HiveWorldCache cache)
@@ -308,10 +350,10 @@ public sealed class MeshWorker : IDisposable
     /// <summary>True when the last pass found nothing to rebuild.</summary>
     public bool Idle { get; private set; }
 
-    public void Aim(int dim, int cx, int cz, int radiusChunks, bool textured)
+    public void Aim(int dim, int cx, int cz, int radiusChunks, bool textured, int skySubtracted = 0)
     {
-        bool moved = dim != _dim || cx != _cx || cz != _cz || radiusChunks != _radius || textured != _textured;
-        (_dim, _cx, _cz, _radius, _textured) = (dim, cx, cz, radiusChunks, textured);
+        bool moved = dim != _dim || cx != _cx || cz != _cz || radiusChunks != _radius || textured != _textured || skySubtracted != _sub;
+        (_dim, _cx, _cz, _radius, _textured, _sub) = (dim, cx, cz, radiusChunks, textured, skySubtracted);
         if (moved) _wake.Set();
     }
 
@@ -344,6 +386,7 @@ public sealed class MeshWorker : IDisposable
             {
                 _store.Textured = _textured;
                 _store.Models = _textured ? _store.ModelsOf?.Invoke() : null;
+                _store.SkySubtracted = _sub;
                 n = _store.Update(_dim, _cx, _cz, _radius, 64, 6);
             }
             catch (Exception) { /* a racing eviction: next pass */ }

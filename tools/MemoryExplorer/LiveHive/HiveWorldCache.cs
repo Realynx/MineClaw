@@ -4,11 +4,12 @@ using MineClaw.World;
 
 namespace MineClaw.MemoryExplorer.LiveHive;
 
-/// <summary>One cached column: blocks as last fetched, its hash (the delta key), who saw it when, and an opaque-top height map
-/// (remembered columns carry no light: sky light is estimated from it). Immutable; replaced on update.</summary>
+/// <summary>One cached column: blocks as last fetched, its hash (the delta key), who saw it when, its light and biomes when the
+/// hive sent them (live columns), and an opaque-top height map (remembered columns carry no light: sky light is estimated from
+/// it). Immutable; replaced on update.</summary>
 public sealed class ClientColumn
 {
-    public ClientColumn(int cx, int cz, long hash, long seenMs, string? by, bool live, ChunkSnapshot snap)
+    public ClientColumn(int cx, int cz, long hash, long seenMs, string? by, bool live, ChunkSnapshot snap, LightSnapshot? light = null)
     {
         Cx = cx;
         Cz = cz;
@@ -17,6 +18,7 @@ public sealed class ClientColumn
         By = by;
         Live = live;
         Snap = snap;
+        Light = light;
         Top = new byte[256];
         for (int x = 0; x < 16; x++)
             for (int z = 0; z < 16; z++)
@@ -29,7 +31,7 @@ public sealed class ClientColumn
 
     private ClientColumn(ClientColumn c, long seenMs, string? by, bool live)
     {
-        (Cx, Cz, Hash, Snap, Top) = (c.Cx, c.Cz, c.Hash, c.Snap, c.Top);
+        (Cx, Cz, Hash, Snap, Top, Light) = (c.Cx, c.Cz, c.Hash, c.Snap, c.Top, c.Light);
         (SeenMs, By, Live) = (seenMs, by, live);
     }
 
@@ -41,6 +43,23 @@ public sealed class ClientColumn
     public bool Live { get; }
     public ChunkSnapshot Snap { get; }
     public byte[] Top { get; }
+    /// <summary>Sky/block light and biomes as the hive had them (null: remembered, or an older hive).</summary>
+    public LightSnapshot? Light { get; }
+
+    /// <summary>Sky light of a cell: the synced light when there is some (y ≥ the column's height: open sky), else open sky
+    /// above the opaque top and unknown (−1) below.</summary>
+    public int SkyAt(int x, int y, int z)
+    {
+        if (Light is { } l) return y >= Snap.Height ? 15 : l.Sky(x & 15, y, z & 15);
+        return y > Top[(x & 15) * 16 + (z & 15)] ? 15 : -1;
+    }
+
+    /// <summary>Block light of a cell (synced), else 0 where the sky estimate is known and −1 where it isn't.</summary>
+    public int BlockAt(int x, int y, int z)
+    {
+        if (Light is { } l) return y >= Snap.Height ? 0 : l.Block(x & 15, y, z & 15);
+        return y > Top[(x & 15) * 16 + (z & 15)] ? 0 : -1;
+    }
 
     public ClientColumn Touched(long seenMs, string? by, bool live) => new(this, seenMs, by, live);
 }
@@ -58,6 +77,38 @@ public sealed class HiveWorldCache
     private int _height = ChunkColumn.SizeY;
 
     public int Count => _cols.Count;
+
+    private volatile string? _gameVersion;
+    private long _time = long.MinValue, _timeAtMs;
+    private int _timeDim;
+
+    /// <summary>The hive's game version from its index replies ("b1.8.1", "1.12.2"); null until a newer supervisor says.</summary>
+    public string? GameVersion => _gameVersion;
+
+    /// <summary>The version the cached world looks like: the hive's word, else 1.12.2 for 256-high columns (b1.8.1's are 128),
+    /// else null (unknown).</summary>
+    public string? DetectedVersion => _gameVersion ?? (WorldHeight > ChunkColumn.SizeY ? "1.12.2" : null);
+
+    /// <summary>The world time (ticks) in <paramref name="dim"/> now: the last index's, advanced at 20 ticks a second; null = unknown.</summary>
+    public long? TimeNow(int dim, long? nowMs = null)
+    {
+        long t = Interlocked.Read(ref _time);
+        if (t == long.MinValue || dim != _timeDim) return null;
+        long ms = (nowMs ?? Environment.TickCount64) - Interlocked.Read(ref _timeAtMs);
+        return t + Math.Clamp(ms, 0, 60_000) / 50;
+    }
+
+    /// <summary>Records what an index reply said about the world (the version, the time in its dimension).</summary>
+    public void SetWorldInfo(int dim, string? version, long? time, long? nowMs = null)
+    {
+        if (!string.IsNullOrEmpty(version) && version != _gameVersion) _gameVersion = version;
+        if (time is { } t)
+        {
+            _timeDim = dim;
+            Interlocked.Exchange(ref _timeAtMs, nowMs ?? Environment.TickCount64);
+            Interlocked.Exchange(ref _time, t);
+        }
+    }
     /// <summary>Bumped on every change (renderers redraw when it moves).</summary>
     public long Version => Interlocked.Read(ref _version);
     public long BytesReceived { get; private set; }
@@ -102,12 +153,20 @@ public sealed class HiveWorldCache
     {
         var (dim, cols) = ColumnPayload.Decode(payload);
         var decoded = new List<(ColumnPayloadEntry E, ChunkSnapshot? S)>(cols.Count);
-        foreach (var c in cols) decoded.Add((c, c.Missing ? null : ChunkSnapshot.Decode(c.Data)));
-        int n = 0;
-        foreach (var (c, s) in decoded)
+        var lights = new List<LightSnapshot?>(cols.Count);
+        foreach (var c in cols)
         {
+            var snap = c.Missing ? null : ChunkSnapshot.Decode(c.Data);
+            decoded.Add((c, snap));
+            var light = c.Light is { Length: > 0 } lb && snap != null ? LightSnapshot.Decode(lb) : null;
+            lights.Add(light != null && light.Height == snap!.Height ? light : null);
+        }
+        int n = 0;
+        for (int i = 0; i < decoded.Count; i++)
+        {
+            var (c, s) = decoded[i];
             if (s == null) { _cols.TryRemove((dim, c.Cx, c.Cz), out _); continue; }
-            _cols[(dim, c.Cx, c.Cz)] = new ClientColumn(c.Cx, c.Cz, c.Hash, c.SeenMs, c.By, c.Live, s);
+            _cols[(dim, c.Cx, c.Cz)] = new ClientColumn(c.Cx, c.Cz, c.Hash, c.SeenMs, c.By, c.Live, s, lights[i]);
             if (s.Height > _height) Volatile.Write(ref _height, s.Height);
             n++;
         }
@@ -138,7 +197,8 @@ public sealed class HiveWorldCache
 /// <summary>
 /// <see cref="IVoxelWorld"/> over the cache for one renderer: <see cref="Prepare"/> snapshots the column references around the
 /// eye once per frame (array lookups after that). Recently seen columns render as live; older ones as remembered (the
-/// raycaster dims them). Light: open sky above the opaque top, unknown (an even 0.75 shade) below. Not thread-safe; one per renderer.
+/// raycaster dims them). Light: the hive's sky/block light where it sent some (live columns), else open sky above the opaque top
+/// and unknown (an even 0.75 shade) below. Not thread-safe; one per renderer.
 /// </summary>
 public sealed class HiveVoxels(HiveWorldCache cache) : IVoxelWorld
 {
@@ -183,10 +243,16 @@ public sealed class HiveVoxels(HiveWorldCache cache) : IVoxelWorld
         if (y >= _h) return 15;
         if (y < 0) return 0;
         if (Column(x, z) is not { } c) return 15; // nothing known: open void
-        return y > c.Top[(x & 15) * 16 + (z & 15)] ? 15 : -1;
+        return c.SkyAt(x, y, z);
     }
 
-    public int BlockLight(int x, int y, int z) => SkyLight(x, y, z) < 0 ? -1 : 0;
+    public int BlockLight(int x, int y, int z)
+    {
+        if ((uint)y >= _h) return 0;
+        return Column(x, z) is { } c ? c.BlockAt(x, y, z) : 0;
+    }
+
+    public int Biome(int x, int z) => Column(x, z)?.Light?.Biome(x, z) ?? -1;
 
     public ColumnState State(int x, int z) => Column(x, z) is not { } c ? ColumnState.Unknown
         : c.SeenMs >= _freshAfterMs ? ColumnState.Live : ColumnState.Remembered; // seen is refreshed by every index of the area

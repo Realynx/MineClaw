@@ -67,6 +67,8 @@ public sealed class PlayerState
     {
         Set(s => s with { IsDead = false, Dimension = dimension });
         lock (_sync) _effects = NoEffects;
+        Air = Breath.MaxAir;
+        HeadUnderWater = false;
     }
 
     // ---- potion effects (1.12.2 Entity Effect for our own id) ----
@@ -103,6 +105,13 @@ public sealed class PlayerState
     public float HealthExact { get; set; } = float.NaN;
     /// <summary>Absorption hearts (1.12.2 player metadata).</summary>
     public float Absorption { get; set; }
+
+    /// <summary>Air supply in ticks (<see cref="Breath.MaxAir"/> full): the client's per-tick estimate from the eye's cell, set to
+    /// the server's value whenever our own metadata index 1 arrives (both versions send it).</summary>
+    public int Air { get; set; } = Breath.MaxAir;
+
+    /// <summary>The eye was in water on the last tick.</summary>
+    public bool HeadUnderWater { get; set; }
 
     /// <summary>Server-authoritative position (0x0D from server). Resets the simulated body — call from the tick thread
     /// or while the tick loop is paused.</summary>

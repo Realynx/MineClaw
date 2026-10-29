@@ -99,6 +99,8 @@ internal sealed partial class FakeServer : IDisposable
     /// <summary>Island blocks (x, y, z) → id. Default: a 5×5 stone platform at y=63 around (8, 63, 8), plus grass on top.</summary>
     public Dictionary<(int, int, int), int> Blocks { get; } = new();
     public (double X, double Y, double Z) SpawnAt { get; set; } = (8.5, 64, 8.5);
+    /// <summary>The difficulty Join Game announces (default 1, easy).</summary>
+    public int Difficulty { get; set; } = 1;
     /// <summary>Player inventory sent in the login 0x68 (45 slots).</summary>
     public ItemStack[] Inventory { get; } = Enumerable.Repeat(ItemStack.Empty, 45).ToArray();
     /// <summary>Action numbers to reject with 0x6A accepted=false.</summary>
@@ -285,7 +287,7 @@ internal sealed partial class FakeServer : IDisposable
                 Send(new HandshakePacket("-"));
                 break;
             case LoginRequestPacket:
-                Send(new LoginRequestPacket { EntityId = EntityId, MapSeed = 1234, ServerMode = 0, Dimension = 0, Difficulty = 1, WorldHeight = 128, MaxPlayers = 8 });
+                Send(new LoginRequestPacket { EntityId = EntityId, MapSeed = 1234, ServerMode = 0, Dimension = 0, Difficulty = (sbyte)Difficulty, WorldHeight = 128, MaxPlayers = 8 });
                 Send(new SpawnPositionPacket { X = 8, Y = 64, Z = 8 });
                 Send(new TimeUpdatePacket { Time = 6000 });
                 Send(new PlayerListItemPacket { PlayerName = "tester", Online = true, Ping = 1 });
@@ -401,7 +403,11 @@ internal sealed partial class FakeServer : IDisposable
                         var h = place.HeldItem;
                         var left = h.Count <= 1 ? ItemStack.Empty : new ItemStack(h.Id, (byte)(h.Count - 1), h.Damage);
                         Inventory[36 + _heldSlot] = left;
-                        Send(new SetSlotPacket { WindowId = 0, Slot = (short)(36 + _heldSlot), Item = left });
+                        var slotUpdate = new SetSlotPacket { WindowId = 0, Slot = (short)(36 + _heldSlot), Item = left };
+                        // 1.12.2: processTryUseItemOnBlock sends only the Block Changes; the Set Slot comes from the player's next
+                        // detectAndSendChanges, a tick later (b1.8.1's NetServerHandler sends it in the same handler).
+                        if (Modern) _ = Task.Delay(60).ContinueWith(_ => { try { Send(slotUpdate); } catch (Exception) { } }, TaskScheduler.Default);
+                        else Send(slotUpdate);
                     }
                 }
                 break;

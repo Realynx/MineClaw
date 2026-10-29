@@ -13,6 +13,14 @@ public sealed class Release1122ProtocolAdapter : IProtocolAdapter
     /// <summary>Client Settings view distance (chunks).</summary>
     public int ViewDistance { get; init; } = 8;
 
+    /// <summary>A copy asking for <paramref name="chunks"/> (clamped to the vanilla client's 2..32); <see cref="Instance"/> is left
+    /// as it is.</summary>
+    public IProtocolAdapter WithViewDistance(int chunks)
+    {
+        int vd = Math.Clamp(chunks, 2, 32);
+        return vd == ViewDistance ? this : new Release1122ProtocolAdapter { ViewDistance = vd, Lang = Lang };
+    }
+
     /// <summary>Chat translations: the whole en_us.lang of the user's 1.12.2 client jar when one is found (read once), else
     /// the built-in keys.</summary>
     public Func<LangTable> Lang { get; init; } = () => LangTable.LoadDefault();

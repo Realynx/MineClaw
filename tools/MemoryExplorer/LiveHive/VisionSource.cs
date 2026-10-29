@@ -115,7 +115,7 @@ public sealed class LocalSheetComposer(HiveWorldCache cache, Func<TextureAtlas?>
                 float epitch = self ? 60 : (float)(-Math.Atan2(dy, Math.Sqrt(dx * dx + dz * dz)) * 180 / Math.PI);
                 eye = new EyeScene
                 {
-                    World = _vox, Atlas = atlas(), EyeX = ex, EyeY = ey, EyeZ = ez, Yaw = eyaw, Pitch = epitch, Time = 6000, Nether = b.Dim == -1,
+                    World = _vox, Atlas = atlas(), EyeX = ex, EyeY = ey, EyeZ = ez, Yaw = eyaw, Pitch = epitch, Time = cache.TimeNow(b.Dim) ?? 6000, Nether = b.Dim == -1,
                     Entities = ents, Target = f, Viewer = b.Key,
                 };
             }
@@ -123,7 +123,7 @@ public sealed class LocalSheetComposer(HiveWorldCache cache, Func<TextureAtlas?>
             var img = _sheet.Render(new ContactSheetRequest
             {
                 Blocks = blocks, Light = _vox, Focus = f, Radius = radius, Views = names, Self = feet, Entities = ents, Nether = b.Dim == -1, Atlas = atlas(),
-                Time = 6000, Axis = AxisFor(feet, f, yaw), Eye = eye, Aids = spec.Aids,
+                Time = cache.TimeNow(b.Dim) ?? 6000, Axis = AxisFor(feet, f, yaw), Eye = eye, Aids = spec.Aids,
                 SelfPose = new PerspectivePanel.Body(b.X, b.Y, b.Z, yaw, pitch, b.Name),
                 ViewParams = ps.Count > 0 ? ps : null,
             });

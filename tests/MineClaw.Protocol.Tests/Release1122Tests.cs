@@ -202,7 +202,8 @@ public class Release1122Tests
         Assert.Equal("xyz", ChatComponent.ToLegacy("""["x",{"text":"y"},"z"]"""));
         Assert.Equal("§a5§r", ChatComponent.ToLegacy("""{"score":{"name":"Fox","objective":"kills","value":"5"},"color":"green"}"""));
         Assert.Equal("100% done", ChatComponent.ToLegacy("""{"translate":"x.pct","with":["100"]}""", new LangTable(new() { ["x.pct"] = "%s%% done" })));
-        Assert.Equal("some.unknown.key Fox", ChatComponent.ToLegacy("""{"translate":"some.unknown.key","with":["Fox"]}"""));
+        // An unknown key reads as words, not a raw key (live 10-29: "commands.generic.permission" in chat).
+        Assert.Equal("some unknown key Fox", ChatComponent.ToLegacy("""{"translate":"some.unknown.key","with":["Fox"]}"""));
         Assert.Equal("not json {", ChatComponent.ToLegacy("not json {"));
         Assert.Equal("", ChatComponent.ToLegacy(null));
         Assert.Equal("bold", ChatComponent.ToPlain("""{"text":"bold","bold":true}"""));

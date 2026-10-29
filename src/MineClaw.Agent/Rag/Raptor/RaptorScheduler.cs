@@ -80,17 +80,21 @@ public sealed class RaptorScheduler : IDisposable
             try
             {
                 await StepAsync(ct).ConfigureAwait(false);
+                Errors.Recovered(_log);
                 await _signal.WaitAsync(TimeSpan.FromSeconds(Math.Max(1, _o.PollSeconds)), ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
             catch (Exception ex)
             {
-                _log.LogWarning(ex, "raptor maintenance error");
+                Errors.Failed(_log, ex);
                 try { await Task.Delay(TimeSpan.FromSeconds(Math.Max(5, _o.PollSeconds)), ct).ConfigureAwait(false); }
                 catch (OperationCanceledException) { break; }
             }
         }
     }
+
+    /// <summary>The maintenance loop's error log (one warning per distinct failure, then a count when it recovers).</summary>
+    internal RepeatedErrorLog Errors { get; } = new("raptor maintenance");
 
     // ======================= budget =======================
 
@@ -207,5 +211,51 @@ public sealed class RaptorScheduler : IDisposable
         _cts.Cancel();
         try { _loop?.Wait(TimeSpan.FromSeconds(3)); } catch (AggregateException) { }
         _cts.Dispose();
+    }
+}
+
+/// <summary>
+/// Logs a background loop's failures once each: the first occurrence of a failure (same root exception type, message and
+/// throwing frame) is a warning with the full stack and its root cause; repeats are counted at debug level only, and the
+/// next success logs one "recovered after N failures" line. Live 10-29: the same FOREIGN KEY stack every 30 s for hours.
+/// </summary>
+internal sealed class RepeatedErrorLog(string what)
+{
+    private string? _last;
+    private int _repeats;
+
+    public int Repeats => _repeats;
+    public string? Last => _last;
+
+    /// <summary>A failure's identity: the innermost exception's type, message and the frame that threw it.</summary>
+    public static string Signature(Exception ex)
+    {
+        var root = ex.GetBaseException();
+        var frame = root.StackTrace?.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault(l => l.Contains("MineClaw.", StringComparison.Ordinal)) ?? "";
+        return $"{root.GetType().Name}: {root.Message} {frame}";
+    }
+
+    public void Failed(ILogger log, Exception ex)
+    {
+        var sig = Signature(ex);
+        if (sig == _last)
+        {
+            _repeats++;
+            log.LogDebug("{What} error again ({Count}x): {Root}", what, _repeats + 1, ex.GetBaseException().Message);
+            return;
+        }
+        _last = sig;
+        _repeats = 0;
+        var root = ex.GetBaseException();
+        log.LogWarning(ex, "{What} error (root cause {Type}: {Message}; repeats are logged once, at recovery)", what, root.GetType().Name, root.Message);
+    }
+
+    public void Recovered(ILogger log)
+    {
+        if (_last == null) return;
+        log.LogInformation("{What} recovered after {Count} failure(s): {Last}", what, _repeats + 1, _last);
+        _last = null;
+        _repeats = 0;
     }
 }

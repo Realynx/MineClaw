@@ -26,6 +26,9 @@ public sealed partial class MinecraftClient
             await WaitForReflexFightAsync(reflex, ct).ConfigureAwait(false);
         if (CombatBlocks(name) is { } busy) return ActionResult.Fail(busy);
         if (VoidHoldBlocks(name) is { } stuck) return ActionResult.Fail(stuck);
+        // Surfacing from under water: jobs resume only with the air full again (the reflex owns the body until then).
+        if (_surfacing is not null && name is not ("eat" or "shelter" or "look"))
+            await WaitForAirAsync(TimeSpan.FromSeconds(20), ct).ConfigureAwait(false);
         try
         {
             await _actionLock.WaitAsync(ct).ConfigureAwait(false);
@@ -188,6 +191,8 @@ public sealed partial class MinecraftClient
             AllowVoidParkour = VoidParkourAuthorized(o),
             HasClutchBlock = HotbarHasClutchBlock(),
             ParkourCache = _parkourCache,
+            MaxHeadUnderSteps = o.MaxHeadUnderSteps,
+            HeadUnderStepCost = o.HeadUnderStepCost,
         };
     }
 

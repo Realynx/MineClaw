@@ -32,7 +32,12 @@ sections → the neutral `ChunkSectionsMessage`; P2: windows with click types an
 cursor, use item/entity, signs, item entities and players; `Release1122ServerConnection` is the fake servers' side of the same
 wire) + `Release1122PhysicsRules` (step 0.6) + `Release1122GameData` (minecraft-data names, ids, stack sizes, the 1.12.2 dig
 rule) + `InventoryModel.Release1122` (off hand at 45, 1.12.2 `slotClick` prediction); its world is 256 high (`WorldState(height:)`, `ChunkColumn` stacks a second
-128 half, so b1.8.1 indices are unchanged). P4: every entity kind and its typed metadata translated per class onto the canonical
+128 half, so b1.8.1 indices are unchanged). Memory per in-process body: columns are lazily allocated 16³ sections (a 1.12.2 terrain column ≈ 58 KiB instead of 256 KiB);
+`ClientOptions.ChunkStore` (a `SharedChunkStore`, null = private) lets bodies near each other share one copy of each column (each
+`WorldState` keeps its own loaded keys and events; `BlockChanged` reports the old block as that body last saw it); `ClientOptions.ViewDistance`
+(null = 8) goes out in 1.12.2 Client Settings through `IProtocolAdapter.WithViewDistance` (a per-client copy; b1.8.1 ignores it).
+`BodyMemoryBenchmarkTests`: per extra body 72.9 MB eager at r 8 → 16.6 MB lazy, 4.8 MB at r 4, 0.25 MB at r 4 shared.
+P4: every entity kind and its typed metadata translated per class onto the canonical
 indices (`Data/EntityMeta`: b1.8.1's 0/16/17 plus 32+ facts such as health, baby, hand states), exact positions, effects,
 attributes, passengers; `Profile.Entities` (`World/Versioning/IEntityRules`: 1.12.2 mob profiles, stamped on each spawn as
 `Entity.Profile`), `Release1122CombatRules` (the attack charge the `CombatEngine` waits for, crits, sweeps it never aims into a
@@ -47,7 +52,7 @@ in game code, differences live behind the seams. P6: the world kind (skyblock vs
 |---|---|---|
 | Protocol | `IPacket`, every packet class (both directions), `MinecraftReader/Writer` (big-endian, UTF-16 "string16"), `PacketRegistry`, `ItemStack` wire form, entity metadata, chunk payload (still compressed) | `PacketRegistry.Read(MinecraftReader, PacketDirection)` / `packet.Write(writer)` |
 | Data | `BlockInfo`, `ItemInfo`, `Blocks`, `Items`, `Recipes`, `Smelting`, `Drops`, `Tools` (dig-time math); `IGameData` per version (`Beta181GameData`, `Release1122GameData`: 1.12.2 recipes, FurnaceRecipes + burn times, drop overrides, ItemFood, tool tiers) | `Blocks.Get(id)`, `Blocks.ByName(name)`, `Items.Get(id)`, `Items.ByName(name)`, `Recipes.*`, `Smelting.*`, `Drops.*`, `Tools.*`; all but `Blocks` answer from `GameData.Current` (the process's version, set by `VersionSetup`; `GameData.Override` in tests; each client action runs under its profile's data) |
-| World | chunk columns (16x128x16: ids, metadata, block light, sky light), `WorldState`, entity tracker, inventory/window model, AABB collision, A* pathfinder | `WorldState.GetBlock(x,y,z)`, `SetBlock`, `LoadChunk(...)`, `Pathfinder.FindPath(...)` |
+| World | chunk columns (16x128x16 or 16x256x16: ids, metadata, block light, sky light in lazily allocated 16³ sections, unallocated = air / light 0 / sky 15), `Chunks/SharedChunkStore` (one ref-counted column store per process, per-body views), `WorldState`, entity tracker, inventory/window model, AABB collision, A* pathfinder | `WorldState.GetBlock(x,y,z)`, `SetBlock`, `LoadChunk(...)`, `new WorldState(..., chunkStore:)`, `Pathfinder.FindPath(...)` |
 | Client | `MinecraftClient`, packet → world/event wiring, physics tick, action primitives | async action API used by Agent tools |
 | Agent | Anthropic client, tool loop, tools, SQLite memory + local RAG (`AgentDb`, `RagIndex`, `ObservationStore`), self-profile, prompts | `BotAgent.RunAsync(ct)`; world ingestion via `AgentRuntime.Observations` |
 | App | `Program.cs`, `appsettings.json` | — |
@@ -682,10 +687,17 @@ EntityMonster/EntityCreature/EntityLiving.
   spawnable cells left (was 415); excluded design #4 decks y… (DSL: dark spawning platform with shaft hole; …)".
 - **Overlay**: role `DarkSpawn` ('!', pink) = air a mob can spawn in even by day (the shade under a build, an unlit room): tinted
   in `see` sheets and lettered in `look map`; night darkens every open floor, so only the persistent dark spots are drawn. The
-  Explorer freecam (hive memory: no light arrays) doesn't draw it yet.
+  Explorer freecam doesn't draw the overlay yet (it does draw the light itself: below).
 - **Scripts**: `light(pos)` → {sky, block, now, night} and `canSpawn(pos, now?)` in the JS SDK world module.
 
 ## Protection policy (Bot/Protection + ProtectionPolicy/, Client hooks)
+
+**Spawn protection is a learned world fact** (`ProtectionPolicy/SpawnProtectionFact`, one shared `protected_region`/`spawn`
+observation per dimension): a client that had two independent edits undone near the world spawn learns the radius; the fact records
+the accounts it binds (`affects`) and the ones whose edits inside worked (`exempt`, i.e. op). An exempt account's success never
+retracts it (live 10-28: op main's chopping erased what 420 learned); an affected account's success frees that account, and the fact
+goes when it binds nobody. Every process and in-process body adopts it unless exempt; `Bot:Protection:ServerOp` marks main exempt
+(clone processes force it off: only main is op).
 
 One place decides whether the bot may break a block, why not, and how a player unlocks it: `Protection` builds the client's
 `IsProtected` (fast; the pathfinder asks), `ExplainProtection` (refusal text + telemetry) and `SoftOverride`.
@@ -762,6 +774,21 @@ One place decides whether the bot may break a block, why not, and how a player u
   billboards, 1-4 copies), shadows. "top"/"side"/"layers" are orthographic cameras with clip boxes (no flat palette maps any
   more; `IsoRenderer`/`IsoPalette` only draw the TUI's character viewport and the no-texture fallback colours). The geometry
   is renderer-agnostic quads (block-local / feet-relative, UVs, shade, light face, pass) for the Live Hive GPU mesher too.
+- **GPU freecam parity** (live 10-29: "doesn't render the lighting or some of the models like the doors in the free cam, but it does
+  in the orbit and ISO"). One code path decides what a block draws (`Geometry/BlockMesh`: treatment, quads, b1.8.1 cube faces)
+  and how bright it is (`FaceLight`: `CubeCorners` flat/smooth, `SmoothCorners`, `QuadLevel`/`Quad`); `EyeRenderer` and the
+  Explorer's `SectionMesher` both call it, per sample vs per vertex (cube faces: smooth corners; shapes: the light cell × shade;
+  remembered dimming per sample vs per section in the shader). Light reaches the Explorer: `/api/world/index|chunks?light=1` ship
+  each live column's `LightSnapshot` (sky/block nibbles per 16³ section, uniform sections one byte, + biomes; payload v2, old
+  viewers keep v1) and join its hash into the delta key, so a light-only change is resent; the index also says the game
+  `version` and world `time`. The mesher bakes light at World.k of the hive's time (a new step re-meshes nearest first; the
+  sky colours follow, `EyeRenderer.SkyColours`); per-section memo of cell levels (`SectionLevels`). Models follow the hive's
+  version (`VersionedAtlas`: the index's word, else 256-high columns = 1.12.2, else `server-version.txt`): the Explorer used to
+  read only the local file, so a 1.12.2 hive was meshed with the b1.8.1 shapes (new doors/fences/gates/walls/stairs/slabs/
+  plants/carpets/pots/anvils… as cubes, 1.12.2 metadata for door tops, top slabs/trapdoors, upside-down stairs, buttons and
+  levers read the b1.8.1 way, stained glass opaque). Model faces with an overlay (grass side fringe, redstone dust) are two GPU
+  quads with their own tints (was: every such face drawn as the plains grass side). `FreecamParityTests`: one of each special
+  block on both versions, GL vertices = the raycaster's quads/texels/light; mesh ≈1.0 ms/section flat, ≈1.3-1.5 smooth.
 - **Contact sheet / composite** (`ContactSheet`, `PerspectivePanel`, `ReadingAids`): one `see` = ONE image of up to 6 panels
   in a fixed ≈228k-pixel budget (≈310 tokens whatever the count; was 522×419 ≈ 292): default EYE (the body's first person),
   SHOULDER, ORBIT from NW and from SE (40° down), HIGH from the south (65°, north up) + the orthographic TOP map; no body →
@@ -899,6 +926,12 @@ command gate's scoped exception, for managed names only (`hive-accounts.json`; s
 `Hive:CloneUsernames` are adopted once and otherwise ignored). Hives talk over the off-channel bus (`bus` IPC frames, main routes,
 per-endpoint tokens, current-user pipes), never chat; chat has a per-hive line budget. All hives share one memory: other hives'
 doc writes go through main's groomer (`mem_write`, provenance in `clone_id`), `mem_changed` reloads at once, one self profile.
+**Subhive bodies** (`App/Hosting/InProcBodies` subhive mode + `SubhiveWiring`): a hive hosts bodies its own brain drives in its own
+process (main next to MainHive; a hive-kind clone too: `hive spawn kind=hive brain=deepseek bodies=15` = ONE DeepSeek process driving
+15 bodies), accounts allocated/whitelisted/released by main (`host` / `subhive_gone` bus types), default kind for a helper without a
+brain; release cascades bodies first, each depositing. Per body: view distance `Hive:Subhives:ViewDistance` (4), one chunk store per
+process, lazy 16³ sections. The ceiling is memory-aware (`Hive:Resources`, cgroup limit) plus the player cap; `Hive:MaxClones` is
+only an optional hard cap (0 = none).
 
 `App → Hive → Bot`. Clones are allocated per spawn (`Hive:MaxClones` > 0 = an optional ceiling), each a **separate OS process**: the same App
 binary as `--clone <name> --parent-pipe <pipe>` (headless, own login, same three-tier brain, own personality shard via
@@ -935,7 +968,11 @@ connects its pipe before opening anything and exits 75 without one (never unsupe
 - **Shared memory**: one SQLite file (WAL, busy_timeout, the per-process AgentDb gate = single writer, IMMEDIATE txs). Hive
   tables (`hive_inventory`, `hive_events`) and a `clone_id` column on docs/chat_log/notes/observations/waypoints/structures/
   routines filled by per-connection TEMP triggers. `PRAGMA data_version` polling reloads memory + vector cache (RAPTOR tree
-  debounced); RAPTOR maintenance runs only in main.
+  debounced); RAPTOR maintenance runs only in main. Docs another writer deletes (a clone, the groomer's merge) raise no
+  `Deleted` event in main: each sync step also drops leaves whose doc row no longer carries their node
+  (`AgentDbRaptorStore.VanishedNodes`), and edges are only written to docs that exist (live 10-29: "FOREIGN KEY constraint
+  failed" every cycle on the fresh 1.12.2 db, the failed change set re-queued forever). Maintenance errors log once per distinct
+  root cause, then one "recovered after N failures" line (`RepeatedErrorLog`).
 - **Claim board** (main, `Claims/ClaimBoard.cs`): leases with TTLs on blocks, areas, chests, furnaces, tasks. Contract
   `MineClaw.World.Claims.IClaimBoard` (`IsFree` local/fast, `TryClaimAsync`, `ReleaseAsync`); clones use a pushed mirror.
   BotHost wires it into `IsProtected` (claimed blocks are skipped) and `ClaimAwareGameClient` (chest/furnace/dig/place leases).

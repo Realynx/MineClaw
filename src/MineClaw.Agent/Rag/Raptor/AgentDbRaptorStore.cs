@@ -223,9 +223,11 @@ public sealed class AgentDbRaptorStore : IRaptorStore
             foreach (var (parent, kids) in summaryEdges)
             {
                 _db.Exec("DELETE FROM doc_edges WHERE parent = $p", ("$p", parent));
+                // Only to a child doc that still exists: another writer of the shared db (a clone, the groomer's merge) may have
+                // deleted it since it was mapped, and INSERT OR IGNORE does not ignore a foreign key (live 10-29, task #103).
                 foreach (var c in kids)
                     if (map.TryGetValue(c, out var child))
-                        _db.Exec("INSERT OR IGNORE INTO doc_edges(parent, child, weight) VALUES ($p, $c, 1.0)", ("$p", parent), ("$c", child));
+                        _db.Exec("INSERT OR IGNORE INTO doc_edges(parent, child, weight) SELECT $p, id, 1.0 FROM docs WHERE id = $c", ("$p", parent), ("$c", child));
             }
             if (changes.ReplaceAll)
                 _db.Exec("DELETE FROM docs WHERE kind = $k AND raptor_idx IS NULL", ("$k", RagIndex.SummaryKind));
@@ -234,6 +236,23 @@ public sealed class AgentDbRaptorStore : IRaptorStore
         Orphans = orphans;
         Publish(map);
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Tree nodes mapped to a doc that no longer carries that node: deleted or replaced (delete + insert under the same ref) by
+    /// another writer of the shared db, which raises no <see cref="RagIndex.Deleted"/> event in this process. The sync removes
+    /// these leaves before anything re-upserts their parents.
+    /// </summary>
+    public IReadOnlyList<int> VanishedNodes()
+    {
+        var map = _idxToDoc;
+        if (map.Count == 0) return [];
+        var live = new HashSet<(long, int)>(_db.Query("SELECT id, raptor_idx FROM docs WHERE raptor_idx IS NOT NULL",
+            r => (r.GetInt64(0), (int)r.GetInt64(1))));
+        var gone = new List<int>();
+        foreach (var (idx, id) in map)
+            if (!live.Contains((id, idx))) gone.Add(idx);
+        return gone;
     }
 
     /// <summary>Forgets the stored tree (summary docs, node mapping, metadata); leaf docs stay.</summary>

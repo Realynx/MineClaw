@@ -798,3 +798,70 @@ the code-only special recipes.
 - `QuestionOptions.Jobs` ("top up cobblestone…") and the `harvest_generator` / `into_void` names stay in the cached tool text.
 - Remembered (offline) columns carry no biomes, so they render with plains tints.
 - A live soak on the 1.12.2 server, with the user's go-ahead.
+
+### 5.7 The first live 1.12.2 session (2026-10-29): what broke and the fixes
+
+**Drowning (main, 01:58-01:59).** The delegate's chop job worked a ravine lake's rim. After a stalled creeper fight, the body
+stood on the lake's gravel bed (125,52,294), head under, and took 2 damage a second until "maid_chan drowned". The danger line
+said "low health 8/20 …: work goes on".
+- **Root cause, both versions:**
+  - The pathfinder treated water cells as ordinary swim nodes. A walk along a lake bed cost the same as the surface, with no
+    limit on head-under steps.
+  - Nothing kept the head above water when no path step asked for it. An idle, finished or interrupted body sank (1.12.2
+    `travel`: −0.02/tick, no jump) and stayed down.
+  - Nothing tracked air, and damage carried no cause.
+- **Fixes:**
+  - `World/Physics/Breath`: the vanilla air rule (300, −1 a tick while `isInsideOfMaterial(WATER)` at the eye per
+    `getLiquidHeightPercent`, 2 damage at −20, 300 at once out of water), bubbles, `NearestBreathable` (a BFS to the open surface
+    or a 2-high air pocket, with its route).
+  - Air comes from our own metadata index 1 (`EntityMeta.Air`: b1.8.1 short, 1.12.2 `Entity.AIR` VarInt), with a per-tick client
+    estimate in between. It is shown in `status` and the state header ("air 4/10 bubbles (6.2s left) HEAD UNDER WATER").
+  - `MinecraftClient.Breath`:
+    - A head under water holds jump (a player holding space), and so does a body floating idle.
+    - The drowning reflex fires once the air left only just covers the swim to the nearest air (`Breath.AirNeeded`), at
+      `SurvivalOptions.SurfaceAtAir` (100), or after a drowning hit. It stops the job (`DangerKind.Drowning`, critical), follows
+      the searched route with jump held, never deeper, and holds new jobs until the air is full. Then it raises "surfaced at
+      x,y,z: air was N/10 bubbles".
+  - `DamageCause`: every damage event names drowning, lava, fire, burning, suffocation, cactus, a fall, a mob (knockback or a
+    hostile in reach), starvation, wither or poison.
+  - `Pathfinder`: the k-th consecutive head-under step costs `k × HeadUnderStepCost` (4), and no non-rising move goes past
+    `MaxHeadUnderSteps` (7). Both pass through `GotoOptions`.
+- **Tests:** `Client.Tests/Release1122DrowningReplayTests` (a lake beside a spruce trunk, the fake server running the breath
+  rule).
+
+**Night defence (clones 69 and 1337).**
+- **What happened:** a bare-handed clone started "defending myself" against a zombie and lost 22 hp in 3 s. The other started
+  boxing in only at critical hp 4 and died building it. "Retreating inward" means nothing in a normal world.
+- **Fixes:**
+  - `CombatEngine.Outmatched` (1.9+ only): our best charged DPS against the melee threats' hp, and their damage per second
+    against ours. When the fight is lost, the engine boxes in (`CanBoxIn`; logs and planks are walls) instead of starting it,
+    and re-checks every 10 ticks during a fight.
+  - A guarded player's fight is kept unless our own hp is low.
+  - "Approaching" now means the mob moving toward us. It used to mean the gap shrinking, which also stopped the bot 5 m short of
+    a zombie busy with Fox, until the 8 s give-up.
+  - An idle body at night boxes in before a mob it can't beat comes within 12 blocks (`NightShelterRadius`).
+  - Alerts name the mob instead of "work goes on" / "inward" (that wording stays for skyblock).
+- **Tests:** `Client.Tests/Release1122NightDefenceTests`.
+
+**Other fixes:**
+- **Chat translations:**
+  - The release ships `assets/1.12.2/…/en_us.lang`, extracted at build and publish from the installed jar (the App's
+    `CopyLang1122`).
+  - `LangTable.LoadDefault` also reads the renderer's cached `assets/1.12.2-client.jar` and keeps looking until it finds a table.
+  - The op, permission and whitelist answers are built in, and an unknown key reads as words (`CleanKey`).
+- **Whitelist reconcile:** a removal counts only once the server confirms it. A permission error fails every line in flight.
+  Unconfirmed removals stay flagged and are retried (`RetryDelay`).
+- **1.12.2 placements in the ledger:** the server's Set Slot follows the Block Change by a tick (`detectAndSendChanges`), so a
+  placement waits ≤ 6 ticks for it before ending. The fake server models the delay.
+- **Recipe variants:** when every variant recipe of a wildcard ties on a shortfall, the shortfall is the wildcard ("1 more log",
+  never "oak wood").
+- **Night + no food:**
+  - Walks or follows to a player within 24 blocks are always allowed (not at low hp).
+  - A clone spawn (`hive op=spawn|handover`) is checked like a job: at night with no food it is refused with one line.
+- **Chat:**
+  - `MetaSpeech` drops idle and third-person status narration unless a player asked for status.
+  - `RecentDeaths` drops advice queued for a player who just died.
+- **Clone start:** every process logs the game data it really uses.
+
+**Still open after 5.7:** placing a block to stand on while surfacing (the reflex swims to the surface or a pocket and floats);
+Respiration/Depth Strider are not modelled.

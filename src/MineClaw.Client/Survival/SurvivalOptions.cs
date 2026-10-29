@@ -47,6 +47,10 @@ public sealed record SurvivalOptions
     public bool ShelterEnabled { get; init; } = true;
     /// <summary>Hostiles within 8 that count as outnumbered (box in even at good health when there's no way home).</summary>
     public int ShelterThreats { get; init; } = 2;
+    /// <summary>Air (ticks, 300 full) at or below which the drowning reflex stops the job and surfaces (100 = 5 s, 3/10 bubbles).</summary>
+    public int SurfaceAtAir { get; init; } = 100;
+    /// <summary>Normal world, night, idle: box in when a melee mob it can't beat (or <see cref="ShelterThreats"/> of them) comes this close.</summary>
+    public double NightShelterRadius { get; init; } = 12;
     /// <summary>Wait in the box until hp is at least this and the mobs are gone (or it's day).</summary>
     public int ShelterUntilHealth { get; init; } = 16;
     /// <summary>Longest wait in the box (minutes) before opening it anyway.</summary>

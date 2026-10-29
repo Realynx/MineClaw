@@ -33,6 +33,8 @@ public sealed partial class MinecraftClient
                     ShieldDisabled = () => ItemCooldownTicks(MineClaw.Client.Combat.Release1122CombatRules.ShieldId) > 0,
                 };
                 e.ShouldShelter = ShouldShelter;
+                e.CanBoxIn = CanBoxIn;
+                e.Difficulty = () => Difficulty;
                 e.EventRaised += ev =>
                 {
                     Log("combat: " + ev.Message);

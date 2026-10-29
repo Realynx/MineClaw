@@ -22,7 +22,7 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
 {
     private readonly HiveWorldCache _cache = new();
     private readonly FlyCamera _camera = new();
-    private readonly Lazy<TextureAtlas?> _atlas;
+    private readonly VersionedAtlas _atlas;
     private readonly DispatcherTimer _stats;
     private SupervisorEndpoint? _endpoint;
     private HiveApi? _api;
@@ -43,32 +43,32 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
     public LiveHiveViewModel()
     {
         Stats.UiThreadId = Environment.CurrentManagedThreadId; // constructed on the UI thread
-        _atlas = new Lazy<TextureAtlas?>(LoadAtlas, LazyThreadSafetyMode.ExecutionAndPublication);
-        Freecam = new FreecamEngine(_cache, _camera, () => _atlas.IsValueCreated ? _atlas.Value : null)
+        _atlas = new VersionedAtlas(() => _cache.DetectedVersion, LoadAtlas, LocalVersion());
+        Freecam = new FreecamEngine(_cache, _camera, () => _atlas.Current)
         {
             Bots = () => _bots, Entities = () => _entities, Overlays = () => _sync?.Overlays(_camera.Pose.Dim),
         };
-        Gpu = new Gpu.GpuFreecam(_cache, _camera, () => _atlas.IsValueCreated ? _atlas.Value : null);
+        Gpu = new Gpu.GpuFreecam(_cache, _camera, () => _atlas.Current);
         Gpu.Scene.Entities = _entityStore;
         Gpu.Scene.Bots = () => _bots;
-        Gpu.Scene.Atlas = () => _atlas.IsValueCreated ? _atlas.Value : null;
+        Gpu.Scene.Atlas = () => _atlas.Current;
         Gpu.Scene.Overlays = () => _sync?.Overlays(_camera.Pose.Dim);
         _useGpuFreecam = App.Startup.Renderer != "cpu";
         FreecamInput = _useGpuFreecam ? Gpu : null;
         global::MineClaw.MemoryExplorer.LiveHive.FreecamStats.Shared.Renderer = _useGpuFreecam ? "gl" : "cpu";
-        Tiles = new TileRenderer(_cache, () => _atlas.IsValueCreated ? _atlas.Value : null)
+        Tiles = new TileRenderer(_cache, () => _atlas.Current)
         {
             Tiles = () => _eyeTiles, Bots = () => _bots, Entities = () => _entities,
         };
-        Composer = new LocalSheetComposer(_cache, () => _atlas.IsValueCreated ? _atlas.Value : null, () => _bots, () => _entities);
+        Composer = new LocalSheetComposer(_cache, () => _atlas.Current, () => _bots, () => _entities);
         _baseUrl = SupervisorEndpoint.DefaultUrl;
         _selectedLayout = Layouts[2];
         _selectedDim = Dims[0];
         _defaultMode = TileMode.All[0];
         _stats = new DispatcherTimer(TimeSpan.FromMilliseconds(500), DispatcherPriority.Background, (_, _) => RefreshStats());
         TokenStatus = new SupervisorEndpoint(_baseUrl).TokenStatus;
-        _ = Task.Run(() => _atlas.Value).ContinueWith(t => Dispatcher.UIThread.Post(() =>
-            TextureStatus = t.Result != null ? "textures: local b1.8.1 atlas" : "textures: none found locally (flat colours)"), TaskScheduler.Default);
+        _atlas.Loaded += (v, a) => Dispatcher.UIThread.Post(() => TextureStatus = VersionedAtlas.Describe(v, a));
+        _ = _atlas.Start(_atlas.Version);
     }
 
     public FreecamEngine Freecam { get; }
@@ -666,14 +666,23 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         if (_sync != null) { IsConnected = false; StateText = "paused (tab hidden)"; }
     }
 
-    private static TextureAtlas? LoadAtlas()
+    /// <summary>The local guess of the hive's version before it says (the bot's last detected one, <c>&lt;data&gt;/server-version.txt</c>).</summary>
+    private static string LocalVersion()
+    {
+        try
+        {
+            var versionFile = Path.Combine(ExplorerPaths.DataDir, "server-version.txt");
+            return File.Exists(versionFile) && File.ReadAllText(versionFile).Contains("1.12.2") ? "1.12.2" : "b1.8.1";
+        }
+        catch (Exception) { return "b1.8.1"; }
+    }
+
+    /// <summary>The textures for a version: 1.12.2 draws from that client jar's block models, b1.8.1 from terrain.png.</summary>
+    private static TextureAtlas? LoadAtlas(string version)
     {
         try
         {
             var dir = Path.Combine(ExplorerPaths.DataDir, "assets");
-            // The hive's version (the bot's last detected one, <data>/server-version.txt): 1.12.2 draws from that jar's models.
-            var versionFile = Path.Combine(ExplorerPaths.DataDir, "server-version.txt");
-            string version = File.Exists(versionFile) && File.ReadAllText(versionFile).Contains("1.12.2") ? "1.12.2" : "b1.8.1";
             return TextureLocator.Load(new TextureOptions { AssetsDir = Directory.Exists(dir) ? dir : null, AllowDownload = false, SearchLauncherDirs = true, Version = version });
         }
         catch (Exception) { return null; }

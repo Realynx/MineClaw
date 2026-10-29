@@ -44,17 +44,25 @@ public static class BusTypes
     // shared memory (one store, main writes)
     public const string MemWrite = "mem_write";      // MemWriteMsg → MemWriteReply (main grooms + stores)
     public const string MemChanged = "mem_changed";  // MemChangedMsg (main → every hive: reload now)
+    // subhive bodies a hive hosts in its own process (main allocates + whitelists the account, the hive logs it in)
+    public const string Host = "host";               // HostReq (main → the owning hive: log this body in; main also sends release here)
+    public const string SubhiveGone = "subhive_gone"; // SubhiveGoneMsg (hive → main: that body logged out for good: whitelist remove)
 
     public static readonly IReadOnlySet<string> All = new HashSet<string>(
-        [Whitelist, Spawn, Assign, Handover, Release, List, Status, Result, Observation, NeedHelp, MemWrite, MemChanged], StringComparer.Ordinal);
+        [Whitelist, Spawn, Assign, Handover, Release, List, Status, Result, Observation, NeedHelp, MemWrite, MemChanged, Host, SubhiveGone],
+        StringComparer.Ordinal);
 
     /// <summary>Types only main may send.</summary>
-    public static readonly IReadOnlySet<string> MainOnly = new HashSet<string>([MemChanged], StringComparer.Ordinal);
+    public static readonly IReadOnlySet<string> MainOnly = new HashSet<string>([MemChanged, Host], StringComparer.Ordinal);
 }
 
 public sealed record WhitelistReq(string Op, string Name);
+/// <param name="Bodies">How many (subhive bodies; or bodies a new hive-kind clone hosts).</param>
+/// <param name="Reset">A hive (re)starting asks for its bodies: its old subhive accounts (gone with its old process) are reused first.</param>
 public sealed record SpawnReq(string? Kind = null, string? Brain = null, string? Task = null, string? Script = null, string? Args = null,
-    string? After = null, string? Name = null);
+    string? After = null, string? Name = null, int? Bodies = null, bool Reset = false);
+public sealed record HostReq(string Account, string? Task = null, string? Script = null);
+public sealed record SubhiveGoneMsg(string Account, string Reason);
 public sealed record AssignReq(string To, string Task);
 public sealed record ReleaseReq(string Id);
 public sealed record StatusMsg(string Text, double? Pct = null);

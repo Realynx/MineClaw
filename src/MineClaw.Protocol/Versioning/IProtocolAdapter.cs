@@ -25,6 +25,11 @@ public interface IProtocolAdapter
 
     /// <summary>Longest chat line the server accepts from a client (b1.8.1: 100; 1.12.2: 256).</summary>
     int MaxChatLength { get; }
+
+    /// <summary>This adapter for one client whose connections ask the server for a view distance of <paramref name="chunks"/>
+    /// (1.12.2 Client Settings). The adapter of a profile is process-wide, so this never changes it: it answers a per-client
+    /// copy, or itself when the version has no such setting (b1.8.1: the server decides alone).</summary>
+    IProtocolAdapter WithViewDistance(int chunks) => this;
 }
 
 /// <summary>The b1.8.1 (protocol 17) adapter: the existing <see cref="PacketConnection"/>, unchanged.</summary>

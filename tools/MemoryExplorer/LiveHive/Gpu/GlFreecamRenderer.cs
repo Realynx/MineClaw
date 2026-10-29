@@ -22,6 +22,8 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
     private int _lineCount;
     private readonly Stack<int> _freeVbos = new();
     public bool Textured { get; private set; }
+    /// <summary>The atlas the texture was built from (a different one means a rebuild).</summary>
+    public TextureAtlas? Atlas { get; private set; }
     private int _gridRows = GpuAtlas.Rows;
     /// <summary>Set to save the next frame as a PNG (profiling / checks).</summary>
     public string? ShotPath { get; set; }
@@ -48,6 +50,7 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
         var (w, h, px) = GpuAtlas.Build(atlas);
         _gridRows = GpuAtlas.RowsFor(atlas);
         Textured = atlas != null;
+        Atlas = atlas;
         _tex = gl.GenTexture();
         gl.BindTexture(Gl.TEXTURE_2D, _tex);
         fixed (byte* p = px) gl.TexImage2D(Gl.TEXTURE_2D, 0, Gl.RGBA8, w, h, 0, Gl.RGBA, Gl.UNSIGNED_BYTE, (nint)p);
@@ -197,8 +200,7 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
         gl.Clear(Gl.COLOR_BUFFER_BIT | Gl.DEPTH_BUFFER_BIT);
         gl.BindVertexArray(_vao);
         int draws = 0;
-        bool nether = sc.Pose.Dim == -1;
-        uint top = nether ? 0x3a0e0au : 0x78a7ffu, horizon = nether ? 0x5a1a10u : 0xc3d9ffu, voidC = nether ? 0x120404u : 0x05070cu;
+        var (top, horizon, voidC) = sc.Sky; // day/night: the CPU eye's sky at the world time
 
         // Sky.
         gl.Disable(Gl.DEPTH_TEST);

@@ -1,9 +1,11 @@
 using System.Collections.Concurrent;
 using MineClaw.Data;
+using MineClaw.World.Chunks;
 
 namespace MineClaw.World;
 
-/// <summary>A single block change (for <see cref="WorldState.BlockChanged"/>).</summary>
+/// <summary>A single block change (for <see cref="WorldState.BlockChanged"/>). Old values are as this world last saw them
+/// (see <see cref="WorldState.BlockChanged"/> for a column shared through a <see cref="SharedChunkStore"/>).</summary>
 public readonly record struct BlockChange(BlockPos Pos, int OldId, int OldMeta, int NewId, int NewMeta);
 
 /// <summary>A block found by a world query.</summary>
@@ -15,8 +17,15 @@ public readonly record struct FoundBlock(BlockPos Pos, int Id, int Meta, double 
 /// <para>Threading: the network thread mutates (ApplyChunkRegion/SetBlock/LoadColumn...), tick and agent threads read.
 /// Single-block reads are lock-free; writers lock per column. Events fire synchronously on the mutating thread,
 /// after the change is visible — handlers must be quick and must not block.</para>
+/// <para>Shared columns: built with a <see cref="SharedChunkStore"/>, the world keeps only its own set of loaded keys (its view:
+/// <see cref="GetColumn"/>, <see cref="IsLoaded"/>, <see cref="Columns"/>, <see cref="LoadedColumnCount"/> and the column events
+/// answer for what THIS connection loaded) and takes the column objects from the store, so in-process bodies near each other
+/// hold one copy of each column. Every body's connection sends the same server data; applying it twice is idempotent. Light
+/// updates of all worlds on one store serialize on one lock (a change is relit once, by the world that wrote it first). A body
+/// whose connection lags may briefly write older data (a chunk, a block change) over what another body already applied; its
+/// own later packets put it right again.</para>
 /// </summary>
-public sealed class WorldState : IBlockAccess
+public sealed class WorldState : IBlockAccess, IDisposable
 {
     /// <summary>The b1.8.1 world height (128). Consumers outside the world model still clip to it; on a 256-high (1.12.2) world
     /// they see the lower half only until multi-version P3/P6 move them to <see cref="WorldHeight"/>. The world model itself
@@ -25,6 +34,13 @@ public sealed class WorldState : IBlockAccess
 
     private readonly ConcurrentDictionary<long, ChunkColumn> _columns = new();
     private readonly Func<int, BlockInfo> _lookup;
+    private readonly SharedChunkStore? _store;
+    /// <summary>Store mode: serializes this view's acquire/release against its own load/unload.</summary>
+    private readonly object _viewLock = new();
+    /// <summary>Store mode: cells of shared columns another world changed since this one last saw them → what this world last
+    /// saw there (<c>id &lt;&lt; 4 | meta</c>), so its own copy of the change still reports the right old block. Written under
+    /// the column's <see cref="ChunkColumn.Sync"/>.</summary>
+    internal readonly ConcurrentDictionary<BlockPos, int> Told = new();
 
     /// <param name="blockLookup">Block property source; defaults to <see cref="Blocks.Get"/>. Tests inject their own table.</param>
     /// <param name="height">Blocks per column: 128 (b1.8.1, the default) or 256 (1.12.2: the profile's
@@ -32,19 +48,26 @@ public sealed class WorldState : IBlockAccess
     /// <param name="inventory">The inventory model (b1.8.1 by default; 1.12.2 adds the off hand and its click rules).</param>
     /// <param name="physics">The version's movement and collision rules (b1.8.1 by default): what <see cref="IBlockAccess.Physics"/>
     /// answers, so shapes, simulators and the pathfinder follow the version.</param>
+    /// <param name="chunkStore">The process's shared column store (in-process bodies), or null (the default): columns private to
+    /// this world, as before. The store's height must match <paramref name="height"/>.</param>
     public WorldState(Func<int, BlockInfo>? blockLookup = null, int height = ChunkColumn.SizeY, InventoryModel? inventory = null,
-        Versioning.IPhysicsRules? physics = null)
+        Versioning.IPhysicsRules? physics = null, SharedChunkStore? chunkStore = null)
     {
         Physics = physics ?? Versioning.Beta181PhysicsRules.Instance;
         if (height is not (ChunkColumn.SizeY or ChunkColumn.MaxHeight)) throw new ArgumentOutOfRangeException(nameof(height), height, "world height is 128 or 256");
         _lookup = blockLookup ?? Blocks.Get;
         WorldHeight = height;
+        chunkStore?.Bind(height);
+        _store = chunkStore;
         Light = new LightEngine(this);
         Inventory = new InventoryManager(model: inventory);
     }
 
     /// <summary>Blocks per column of this world (128 b1.8.1, 256 1.12.2).</summary>
     public int WorldHeight { get; }
+
+    /// <summary>The shared column store this world takes its columns from, or null (private columns).</summary>
+    public SharedChunkStore? ChunkStore => _store;
 
     /// <summary>The version's movement and collision rules (see the constructor).</summary>
     public Versioning.IPhysicsRules Physics { get; }
@@ -85,6 +108,16 @@ public sealed class WorldState : IBlockAccess
     public int MaxPlayers { get; set; }
 
     // ---- events ----
+    /// <summary>
+    /// A block of a loaded column changed (<see cref="SetBlock"/>: a block change packet or local prediction). Never raised
+    /// when nothing changed from this world's point of view (old = new).
+    /// <para>Shared columns (<see cref="SharedChunkStore"/>): raised on each world when ITS connection applies the change, with
+    /// the old block as that world last saw it. When another body already wrote the same change into the shared column, this
+    /// world's copy finds the new block in place but still raises old → new (the world remembers what it last saw at cells
+    /// other worlds changed), so indexers and the placement ledger miss nothing; a later identical copy raises nothing. A body
+    /// never gets another body's change raised on its own handlers: <see cref="GetBlock(int,int,int)"/> shows it at once, the
+    /// event waits for its own server's packet (another body's local prediction its server never confirms raises nothing).</para>
+    /// </summary>
     public event Action<BlockChange>? BlockChanged;
     /// <summary>Raised after a bulk region update, with the region's min corner and size.</summary>
     public event Action<BlockPos, BlockPos>? RegionUpdated;
@@ -107,10 +140,36 @@ public sealed class WorldState : IBlockAccess
 
     private ChunkColumn GetOrCreate(int cx, int cz, out bool created)
     {
-        bool c = false;
-        var col = _columns.GetOrAdd(Key(cx, cz), _ => { c = true; return new ChunkColumn(cx, cz, WorldHeight) { Dimension = Dimension }; });
-        created = c;
-        return col;
+        long key = Key(cx, cz);
+        if (_store is null)
+        {
+            bool c = false;
+            var col = _columns.GetOrAdd(key, _ => { c = true; return new ChunkColumn(cx, cz, WorldHeight) { Dimension = Dimension }; });
+            created = c;
+            return col;
+        }
+        created = false;
+        if (_columns.TryGetValue(key, out var have)) return have;
+        lock (_viewLock)
+        {
+            if (_columns.TryGetValue(key, out have)) return have;
+            var col = _store.Acquire(this, Dimension, cx, cz);
+            _columns[key] = col;
+            created = true;
+            return col;
+        }
+    }
+
+    /// <summary>Removes a column from this view (and, in store mode, gives it back to the store).</summary>
+    private bool TryRemoveColumn(long key, out ChunkColumn gone)
+    {
+        if (_store is null) return _columns.TryRemove(key, out gone!);
+        lock (_viewLock)
+        {
+            if (!_columns.TryRemove(key, out gone!)) return false;
+            _store.Release(this, gone);
+            return true;
+        }
     }
 
     // ---- remembered world (stale, from an earlier visit; never live) ----
@@ -190,7 +249,7 @@ public sealed class WorldState : IBlockAccess
     /// <summary>0x32 with mode=false: forget a column.</summary>
     public void UnloadColumn(int chunkX, int chunkZ)
     {
-        if (_columns.TryRemove(Key(chunkX, chunkZ), out var gone))
+        if (TryRemoveColumn(Key(chunkX, chunkZ), out var gone))
         {
             ColumnUnloaded?.Invoke(chunkX, chunkZ);
             if (gone.HasData) ColumnDropped?.Invoke(gone);
@@ -201,12 +260,20 @@ public sealed class WorldState : IBlockAccess
     public void Clear()
     {
         foreach (var k in _columns.Keys.ToArray())
-            if (_columns.TryRemove(k, out var c))
+            if (TryRemoveColumn(k, out var c))
             {
                 ColumnUnloaded?.Invoke(c.ChunkX, c.ChunkZ);
                 if (c.HasData) ColumnDropped?.Invoke(c);
             }
         _remembered.Clear();
+    }
+
+    /// <summary>With a <see cref="ChunkStore"/>: gives every column of this view back to the store, silently (no unload events);
+    /// the view is empty afterwards. Without one there is nothing to release (the columns stay readable).</summary>
+    public void Dispose()
+    {
+        if (_store is null) return;
+        foreach (var k in _columns.Keys.ToArray()) TryRemoveColumn(k, out _);
     }
 
     /// <summary>True when the column containing block (x, z) exists and has received block data.</summary>
@@ -218,28 +285,28 @@ public sealed class WorldState : IBlockAccess
     {
         if ((uint)y >= WorldHeight) return 0;
         var c = ColumnAt(x, z);
-        return c is null ? 0 : c.Ids[ChunkColumn.Index(x & 15, y, z & 15)];
+        return c is null ? 0 : c.GetBlock(x & 15, y, z & 15);
     }
 
     public int GetMeta(int x, int y, int z)
     {
         if ((uint)y >= WorldHeight) return 0;
         var c = ColumnAt(x, z);
-        return c is null ? 0 : c.Meta[ChunkColumn.Index(x & 15, y, z & 15)];
+        return c is null ? 0 : c.GetMeta(x & 15, y, z & 15);
     }
 
     public int GetBlockLight(int x, int y, int z)
     {
         if ((uint)y >= WorldHeight) return 0;
         var c = ColumnAt(x, z);
-        return c is null ? 0 : c.BlockLight[ChunkColumn.Index(x & 15, y, z & 15)];
+        return c is null ? 0 : c.GetBlockLight(x & 15, y, z & 15);
     }
 
     public int GetSkyLight(int x, int y, int z)
     {
         if ((uint)y >= WorldHeight) return 15;
         var c = ColumnAt(x, z);
-        return c is null ? 15 : c.SkyLight[ChunkColumn.Index(x & 15, y, z & 15)];
+        return c is null ? 15 : c.GetSkyLight(x & 15, y, z & 15);
     }
 
     /// <summary>Raw sky and block light of a cell (live columns; unloaded = 0, 0).</summary>
@@ -277,25 +344,58 @@ public sealed class WorldState : IBlockAccess
     public BlockInfo GetInfo(BlockPos p) => _lookup(GetBlock(p));
 
     /// <summary>Sets one block (0x35 Block Change / 0x34 Multi Block Change entries, or local prediction).
-    /// Ignored when y is out of range or the column isn't loaded. Raises <see cref="BlockChanged"/>.</summary>
+    /// Ignored when y is out of range or the column isn't loaded. Raises <see cref="BlockChanged"/> (shared columns: see there).</summary>
     public bool SetBlock(int x, int y, int z, int id, int meta)
     {
         if ((uint)y >= WorldHeight) return false;
         var c = ColumnAt(x, z);
         if (c is null) return false;
-        int oldId, oldMeta;
+        meta &= 0x0F;
+        int oldId, oldMeta, seenId, seenMeta;
         lock (c.Sync)
         {
-            int i = ChunkColumn.Index(x & 15, y, z & 15);
-            oldId = c.Ids[i];
-            oldMeta = c.Meta[i];
-            c.Ids[i] = (byte)id;
-            c.Meta[i] = (byte)(meta & 0x0F);
+            int lx = x & 15, lz = z & 15;
+            oldId = c.GetBlock(lx, y, lz);
+            oldMeta = c.GetMeta(lx, y, lz);
+            c.Set(lx, y, lz, id, meta);
+            seenId = oldId;
+            seenMeta = oldMeta;
+            if (c.SharedHolders is { } holders)
+            {
+                var p = new BlockPos(x, y, z);
+                if (!Told.IsEmpty && Told.TryRemove(p, out int t)) { seenId = t >> 4; seenMeta = t & 15; }
+                int now = (byte)id << 4 | meta;
+                if (now != (oldId << 4 | oldMeta))
+                    foreach (var h in holders)
+                    {
+                        if (ReferenceEquals(h, this)) continue;
+                        // Keep what the other world saw first; forget it once the cell is back to that (a reverted prediction).
+                        if (h.Told.TryGetValue(p, out int theirs)) { if (theirs == now) h.Told.TryRemove(p, out _); }
+                        else h.Told[p] = oldId << 4 | oldMeta;
+                    }
+            }
         }
-        if (oldId != id) Light.OnBlockChanged(x, y, z, oldId, id);
-        if (oldId != id || oldMeta != (meta & 0x0F))
-            BlockChanged?.Invoke(new BlockChange(new BlockPos(x, y, z), oldId, oldMeta, id, meta & 0x0F));
+        if (oldId != (byte)id) Light.OnBlockChanged(x, y, z, oldId, id);
+        if (seenId != (byte)id || seenMeta != meta)
+            BlockChanged?.Invoke(new BlockChange(new BlockPos(x, y, z), seenId, seenMeta, id, meta));
         return true;
+    }
+
+    /// <summary>Store mode: forgets what this world was told about other worlds' changes in one x/z column of cells (it just got
+    /// their data). Callers hold the chunk column's <see cref="ChunkColumn.Sync"/>.</summary>
+    private void ForgetTold(int x, int z, int y0, int y1)
+    {
+        foreach (var p in Told.Keys)
+            if (p.X == x && p.Z == z && p.Y >= y0 && p.Y <= y1) Told.TryRemove(p, out _);
+    }
+
+    /// <summary>Store mode: forgets the <see cref="Told"/> entries of one chunk column (it left this view). Callers hold its
+    /// <see cref="ChunkColumn.Sync"/>.</summary>
+    internal void ForgetTold(int chunkX, int chunkZ)
+    {
+        if (Told.IsEmpty) return;
+        foreach (var p in Told.Keys)
+            if (p.X >> 4 == chunkX && p.Z >> 4 == chunkZ) Told.TryRemove(p, out _);
     }
 
     /// <summary>
@@ -321,18 +421,15 @@ public sealed class WorldState : IBlockAccess
                 var col = GetOrCreate(x >> 4, z >> 4, out bool created);
                 if (created) newColumns.Add((x >> 4, z >> 4));
                 int src = (dx * sizeZ + dz) * sizeY;
+                // The part of the y run inside the world.
+                int d0 = Math.Max(0, -originY), d1 = Math.Min(sizeY, WorldHeight - originY);
                 lock (col.Sync)
                 {
-                    for (int dy = 0; dy < sizeY; dy++)
+                    if (d1 > d0)
                     {
-                        int y = originY + dy;
-                        if ((uint)y >= WorldHeight) continue;
-                        int i = ChunkColumn.Index(x & 15, y, z & 15);
-                        int s = src + dy;
-                        col.Ids[i] = ids[s];
-                        col.Meta[i] = meta is null || s >= meta.Length ? (byte)0 : (byte)(meta[s] & 0x0F);
-                        col.BlockLight[i] = blockLight is null || s >= blockLight.Length ? (byte)0 : (byte)(blockLight[s] & 0x0F);
-                        col.SkyLight[i] = skyLight is null || s >= skyLight.Length ? (byte)15 : (byte)(skyLight[s] & 0x0F);
+                        int s0 = src + d0, n = d1 - d0;
+                        col.WriteRun(x & 15, z & 15, originY + d0, ids.AsSpan(s0, n), Run(meta, s0, n), Run(blockLight, s0, n), Run(skyLight, s0, n));
+                        if (!Told.IsEmpty) ForgetTold(x, z, originY + d0, originY + d1 - 1);
                     }
                     col.HasData = true;
                 }
@@ -347,6 +444,11 @@ public sealed class WorldState : IBlockAccess
         foreach (var (cx, cz) in newColumns) ColumnLoaded?.Invoke(cx, cz);
         RegionUpdated?.Invoke(new BlockPos(originX, originY, originZ), new BlockPos(sizeX, sizeY, sizeZ));
     }
+
+    /// <summary>The part of <paramref name="a"/> from <paramref name="start"/>, at most <paramref name="n"/> long (shorter or empty
+    /// when the array is: the cells past its end take the layer's default).</summary>
+    private static ReadOnlySpan<byte> Run(byte[]? a, int start, int n) =>
+        a is null || start >= a.Length ? default : a.AsSpan(start, Math.Min(n, a.Length - start));
 
     // ---- queries ----
 
@@ -375,13 +477,12 @@ public sealed class WorldState : IBlockAccess
             int lx = x & 15, lz = z & 15;
             for (int y = y0; y <= y1; y++)
             {
-                int i = ChunkColumn.Index(lx, y, lz);
-                int id = col.Ids[i];
+                int id = col.GetBlock(lx, y, lz);
                 if (id == 0 && !match(0, 0)) continue;
                 double hy = y + 0.5 - center.Y;
                 double d2 = h2 + hy * hy;
                 if (d2 > r2) continue;
-                int m = col.Meta[i];
+                int m = col.GetMeta(lx, y, lz);
                 if (match(id, m) && (where is null || where(new BlockPos(x, y, z)))) results.Add(new FoundBlock(new BlockPos(x, y, z), id, m, d2));
             }
         }
@@ -423,8 +524,8 @@ public sealed class WorldState : IBlockAccess
         if (col is null) return list;
         for (int y = 0; y < WorldHeight; y++)
         {
-            int i = ChunkColumn.Index(x & 15, y, z & 15);
-            if (col.Ids[i] != 0) list.Add((y, col.Ids[i], col.Meta[i]));
+            int id = col.GetBlock(x & 15, y, z & 15);
+            if (id != 0) list.Add((y, id, col.GetMeta(x & 15, y, z & 15)));
         }
         return list;
     }

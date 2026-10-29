@@ -112,6 +112,12 @@ public sealed record PathOptions
     /// <summary>Candidate gap jumps simulated per expanded node (closest first).</summary>
     public int MaxParkourCandidates { get; init; } = 16;
 
+    /// <summary>Most consecutive steps a path may take with the head under water (air lasts 300 ticks; a swum or bed-walked
+    /// step is 5..20 ticks, so 7 leaves the margin for a re-plan and the surfacing).</summary>
+    public int MaxHeadUnderSteps { get; init; } = 7;
+    /// <summary>Extra cost of the k-th consecutive head-under step (k × this): short dips are fine, long ones lose to the surface.</summary>
+    public double HeadUnderStepCost { get; init; } = 4;
+
     public int MaxNodes { get; init; } = 30_000;
     public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(2);
     /// <summary>Return a path to the closest explored node when the goal isn't reachable within budget.</summary>

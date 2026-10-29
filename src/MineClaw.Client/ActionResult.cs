@@ -35,6 +35,8 @@ public enum DangerKind
     /// <summary>Falling farther than a safe drop onto ground that IS there (not the void): fall damage, not item loss.
     /// Live 10-27: clone 67 fell 6 blocks off a tree crown and was told "falling into the void".</summary>
     HighFall,
+    /// <summary>Head under water with the air running out (or a drowning hit): the reflex stopped the job and is surfacing.</summary>
+    Drowning,
 }
 
 /// <summary>A danger signal for the Agent (fires at most once per episode, not every tick).
@@ -88,6 +90,11 @@ public sealed record GotoOptions
     /// <see cref="ClientOptions.AllowVoidParkour"/> or a trusted player's chat in the last few minutes, and a clutch block
     /// in the hotbar.</summary>
     public ParkourMode Parkour { get; init; } = ParkourMode.Ground;
+
+    /// <summary>Most consecutive steps with the head under water a plan may take (<see cref="PathOptions.MaxHeadUnderSteps"/>).</summary>
+    public int MaxHeadUnderSteps { get; init; } = MineClaw.World.PathOptions.Default.MaxHeadUnderSteps;
+    /// <summary>Extra cost per consecutive head-under step (<see cref="MineClaw.World.PathOptions.HeadUnderStepCost"/>).</summary>
+    public double HeadUnderStepCost { get; init; } = MineClaw.World.PathOptions.Default.HeadUnderStepCost;
 
     public static GotoOptions Default { get; } = new();
 }

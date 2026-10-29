@@ -1,5 +1,6 @@
 using MineClaw.Client.Combat;
 using MineClaw.Client.Survival;
+using MineClaw.Data.Versioning;
 using MineClaw.World;
 
 namespace MineClaw.Client;
@@ -66,7 +67,11 @@ public sealed partial class MinecraftClient
     /// <summary>Low / critical health: one danger per episode; cancel risky actions (low) or any action (critical).</summary>
     private void SurvivalOnHealth(int health, int food)
     {
-        if (Survival.OnHealth(health, food, HasUsableFood(food)) is not { } alert) return;
+        var me0 = World.Player.Position;
+        string? threat = World.Entities.Nearby(me0, 6, CombatRules.IsThreat).OrderBy(e => e.Position.DistanceTo(me0)).FirstOrDefault() is { } t0
+            ? $"{t0.DisplayName} {t0.Position.DistanceTo(me0):0}m away" : null;
+        bool underWater = World.Player.HeadUnderWater || Surfacing;
+        if (Survival.OnHealth(health, food, HasUsableFood(food), threat, underWater) is not { } alert) return;
         var fx = SurvivalReflex.EffectFacts(World.Player.Effects);
         if (fx.Length > 0) alert = alert with { Message = alert.Message + "; " + fx };
         Log("survival: " + alert.Message);
@@ -145,6 +150,23 @@ public sealed partial class MinecraftClient
             {
                 Log($"survival: hp {hp}/20, {near.Count} hostile(s) near and no way home: boxing in");
                 StartShelter($"hp {hp}, {near.Count} near, no way home");
+            }
+        }
+
+        // Night in a normal world: an idle or waiting body boxes in (logs and planks are fine walls) before a mob it can't beat
+        // reaches it, not at critical hp (live 10-29 02:09: clone 1337 waited out the night "at the hangout" in the open with 30
+        // spruce logs; the box started at hp 4 and it died building it).
+        if (o.ShelterEnabled && !WorldMode.Current.HasVoidBelow && World.IsNight && idle && Volatile.Read(ref _sheltering) == 0 && TickCount % 20 == 0)
+        {
+            // A mob on a guarded player is theirs to defend (the guard reflex goes), not a reason to hide while hp holds.
+            var guards = Survival.IsLow(hp) ? [] : Combat.Guarded.Select(n => World.Entities.FindPlayer(n)).OfType<Entity>().ToList();
+            var mobs = World.Entities.Nearby(me, o.NightShelterRadius, e => CombatRules.IsThreat(e) && CombatRules.ProfileOf(e).Tactic == MobTactic.Melee
+                && !guards.Any(g => g.Position.DistanceTo(e.Position) <= Options.Combat.GuardRadius + 2));
+            if (mobs.Count > 0 && CanBoxIn(mobs.Count) && !Shelter.Enclosed(World, cell)
+                && (mobs.Count >= o.ShelterThreats || Combat.Outmatched(phys, mobs.OrderBy(e => e.Position.DistanceTo(me)).First()) is not null))
+            {
+                Log($"survival: night, {mobs.Count} hostile(s) within {o.NightShelterRadius:0} and I can't take them: boxing in");
+                StartShelter($"night, {mobs.Count} near, hp {hp}");
             }
         }
 

@@ -16,6 +16,10 @@ public static class EntityMeta
     public const int FlagBurning = 0x01, FlagSneaking = 0x02, FlagRiding = 0x04, FlagSprinting = 0x08, FlagUsingItem = 0x10,
         FlagInvisible = 0x20, FlagGlowing = 0x40;
 
+    /// <summary>Air supply (b1.8.1 short / 1.12.2 VarInt <c>Entity.AIR</c>): 300 full, counting down while the eye is in water, 0 and
+    /// below = drowning (2 damage at −20, then 0 again).</summary>
+    public const int Air = 1;
+
     /// <summary>b1.8.1 index 16, per mob type: creeper state (int, −1 idle / 1 fusing), slime/magma cube size (int 1, 2, 4), wolf
     /// flags (sbyte 1 sitting, 2 angry, 4 tamed), spider climbing (sbyte 1), ghast attacking (sbyte 1), pig saddled (sbyte 1),
     /// sheep wool (sbyte: colour in bits 0..3, 0x10 sheared), blaze on fire (sbyte 1).</summary>

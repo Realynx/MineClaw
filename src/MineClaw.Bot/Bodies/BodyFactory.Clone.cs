@@ -43,6 +43,12 @@ public static partial class BodyFactory
         body.Latency = new LatencyTracker(time) { Bot = name };
 
         ProtectClone(brain, adapter, client, claims);
+        // Spawn protection is learned per account into the one shared fact, and adopted by every body it binds (not op).
+        BotHost.WireProtectedRegion(client, rt, brain.Log, claims, brain.HiveBots);
+        if (brain.Persist)
+            body.Owned.Add(new System.Threading.Timer(_ => BotHost.SyncProtectedRegion(client, rt, brain.Log), null,
+                TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10)));
+        else BotHost.SyncProtectedRegion(client, rt, brain.Log);
         AttachCloneAcquisition(brain, body);
         AttachCloneJobs(brain, body);
         AttachCloneBehaviour(brain, body);

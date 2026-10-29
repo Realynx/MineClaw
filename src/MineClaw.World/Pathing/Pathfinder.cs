@@ -100,6 +100,8 @@ public sealed partial class Pathfinder
         public PulseState? Pulse;
         /// <summary>Levers flipped so far on this path (their effects are in <see cref="Mods"/>).</summary>
         public LeverUse? Levers;
+        /// <summary>Consecutive steps on this path with the head under water (0 = breathing here).</summary>
+        public int Under;
         public BlockPos Pos => new(X, Y, Z);
     }
 
@@ -114,7 +116,11 @@ public sealed partial class Pathfinder
 
         var nodes = new Dictionary<(long, int), Node>();
         var open = new PriorityQueue<(Node N, double G), double>();
-        var s = new Node(start.X, start.Y, start.Z) { G = 0, H = goal.Distance(start.X, start.Y, start.Z), Mods = _baseMods };
+        var s = new Node(start.X, start.Y, start.Z)
+        {
+            G = 0, H = goal.Distance(start.X, start.Y, start.Z), Mods = _baseMods,
+            Under = Breath.HeadUnderAt(_w, start.X, startCell.Floor, start.Z) ? 1 : 0,
+        };
         nodes[(Key(start.X, start.Y, start.Z), 0)] = s;
         open.Enqueue((s, 0), s.H * PathOptions.WalkCost);
         Node best = s;
@@ -164,9 +170,15 @@ public sealed partial class Pathfinder
                     nodes[key] = t;
                 }
                 if (t.Closed) continue;
-                double ng = n.G + m.Cost;
+                // Breath: each consecutive step with the head under water costs more than the last, and a plan never holds the
+                // breath longer than MaxHeadUnderSteps (air lasts 15 s): the surface route wins (live 10-29, main drowned on a
+                // ravine lake's bed at 126,52,295).
+                int under = Breath.HeadUnderAt(_w, m.X, m.Floor, m.Z) ? n.Under + 1 : 0;
+                if (under > _o.MaxHeadUnderSteps && m.Y <= n.Y) continue; // rising toward the air is always allowed
+                double ng = n.G + m.Cost + under * _o.HeadUnderStepCost;
                 if (ng >= t.G) continue;
                 t.G = ng;
+                t.Under = under;
                 t.T = n.T + time;
                 t.Parent = n;
                 t.Scaffold = scaffold;

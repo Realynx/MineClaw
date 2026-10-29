@@ -50,8 +50,6 @@ public static class GpuAtlas
 {
     public const int Cols = 16, ItemRow = 16, ExtraRow = 32, EntityRow = 33, EntitySlots = 20, Rows = EntityRow + EntitySlots / 4 * 2;
     public const int White = 0, GrassSide = 1, Shadow = 2, WaterStill = 3, WaterFlow = 4, LavaStill = 5, LavaFlow = 6, FireA = 7, FireB = 8;
-    /// <summary>1.12.2: the grass side with its tinted fringe (the only model face with an overlay).</summary>
-    public const int ModelGrassSide = 9;
     /// <summary>1.12.2: the first row of the block-model textures (16 per row), below the fixed rows.</summary>
     public const int BlockRow = Rows;
 
@@ -123,14 +121,6 @@ public static class GpuAtlas
         {
             var mt = models.Textures;
             for (int i = 0; i < mt.Count; i++) Cell(i % Cols, BlockRow + i / Cols, 1, 1, 16, 16, mt.Pixels(i));
-            int side = mt.IndexOf("blocks/grass_side"), fringe = mt.IndexOf("blocks/grass_side_overlay");
-            var grass = new uint[256];
-            for (int i = 0; i < 256; i++)
-            {
-                uint p = mt.Pixels(side)[i], o = mt.Pixels(fringe)[i];
-                grass[i] = o >> 24 >= 128 ? BlockTextures.Tinted(o, MineClaw.Render.Models.BiomeTints.Grass()) | 0xff000000 : p;
-            }
-            Cell(ModelGrassSide, ExtraRow, 1, 1, 16, 16, grass);
         }
         return (w, h, px);
     }
@@ -168,8 +158,7 @@ public static class QuadEmit
                 col = (byte)(q.Tile & 15); row = (byte)(q.Tile >> 4 & 15);
                 return true;
             case QuadTex.Block when textured && q.Tile >= 0:
-                // 1.12.2 model textures; a face with an overlay is the grass side (pre-composited, tint inside).
-                if (q.Overlay >= 0) { col = GpuAtlas.ModelGrassSide; row = GpuAtlas.ExtraRow; tint = 0xffffff; return true; }
+                // 1.12.2 model textures (a face's overlay is a second quad: see Emit).
                 col = (byte)(q.Tile % GpuAtlas.Cols); row = (byte)(GpuAtlas.BlockRow + q.Tile / GpuAtlas.Cols);
                 return true;
             case QuadTex.Item when textured && q.Tile >= 0:
@@ -197,20 +186,40 @@ public static class QuadEmit
         }
     }
 
-    public static void Emit(VertexList dst, in GeoQuad q, Vector3 offset, float light, bool textured)
+    public static void Emit(VertexList dst, in GeoQuad q, Vector3 offset, float light, bool textured) =>
+        Emit(dst, q, offset, light, light, light, light, textured);
+
+    /// <summary>A quad with a light per corner (P0..P3; smooth lighting). A 1.12.2 model face with an overlay (the grass side's
+    /// tinted fringe, redstone dust's overlay) is the base quad plus the overlay as a second, alpha-tested quad on the same
+    /// corners (drawn after it with LEQUAL: where the overlay is opaque it wins, as in the raycaster's per-texel compositing),
+    /// each with its own tint, so a biome's grass colour and a wire's power colour reach the GPU as they reach the CPU.</summary>
+    public static void Emit(VertexList dst, in GeoQuad q, Vector3 offset, float l0, float l1, float l2, float l3, bool textured)
+    {
+        EmitOne(dst, q, offset, l0, l1, l2, l3, textured);
+        if (q.Tex == QuadTex.Block && q.Overlay >= 0 && textured)
+        {
+            var o = q;
+            o.Tile = o.Overlay; o.Tint = o.OverlayTint; o.Overlay = -1; o.OverlayTint = 0;
+            EmitOne(dst, o, offset, l0, l1, l2, l3, textured);
+        }
+    }
+
+    private static void EmitOne(VertexList dst, in GeoQuad q, Vector3 offset, float l0, float l1, float l2, float l3, bool textured)
     {
         bool tex = Cell(q, textured, out byte col, out byte row, out uint tint, out var k, out byte flags);
         uint rgb = tex ? tint : q.Flat == 0 ? 0x808080 : q.Flat;
         float alpha = q.Alpha > 0 ? q.Alpha : q.Pass == RenderPass.Translucent && !tex ? 0.62f : 1f;
         uint rgba = Pack(rgb, alpha);
-        byte l = (byte)Math.Clamp((int)(light * 255 + 0.5f), 0, 255);
         ref var v0 = ref dst.Add4();
         var span = MemoryMarshal.CreateSpan(ref v0, 4);
-        Set(ref span[0], q.P0 + offset, q.T0 * k, col, row, l, flags, rgba);
-        Set(ref span[1], q.P1 + offset, q.T1 * k, col, row, l, flags, rgba);
-        Set(ref span[2], q.P2 + offset, q.T2 * k, col, row, l, flags, rgba);
-        Set(ref span[3], q.P3 + offset, q.T3 * k, col, row, l, flags, rgba);
+        Set(ref span[0], q.P0 + offset, q.T0 * k, col, row, LightByte(l0), flags, rgba);
+        Set(ref span[1], q.P1 + offset, q.T1 * k, col, row, LightByte(l1), flags, rgba);
+        Set(ref span[2], q.P2 + offset, q.T2 * k, col, row, LightByte(l2), flags, rgba);
+        Set(ref span[3], q.P3 + offset, q.T3 * k, col, row, LightByte(l3), flags, rgba);
     }
+
+    /// <summary>A brightness 0..1 as the vertex byte (the shader reads it back as /255).</summary>
+    public static byte LightByte(float light) => (byte)Math.Clamp((int)(light * 255 + 0.5f), 0, 255);
 
     /// <summary>A quad on one of the extras cells (the shadow), coloured <paramref name="rgb"/>.</summary>
     public static void EmitExtra(VertexList dst, in GeoQuad q, Vector3 offset, float light, int extraCol, uint rgb)
@@ -233,7 +242,8 @@ public static class QuadEmit
 
 /// <summary>
 /// <see cref="IVoxelWorld"/> over a 3×3 block of cached columns around one column (fixed references for one mesh build, so
-/// a build sees one consistent world). Sky light like <see cref="HiveVoxels"/>: open sky above the opaque top, unknown below.
+/// a build sees one consistent world). Light like <see cref="HiveVoxels"/>: the synced light where the hive sent it, else open
+/// sky above the opaque top and unknown below.
 /// </summary>
 public sealed class ColumnNeighbourhood : IVoxelWorld
 {
@@ -269,30 +279,49 @@ public sealed class ColumnNeighbourhood : IVoxelWorld
         if (y >= _h) return 15;
         if (y < 0) return 0;
         if (Col(x, z) is not { } c) return 15;
-        return y > c.Top[(x & 15) * 16 + (z & 15)] ? 15 : -1;
+        return c.SkyAt(x, y, z);
     }
 
-    public int BlockLight(int x, int y, int z) => SkyLight(x, y, z) < 0 ? -1 : 0;
+    public int BlockLight(int x, int y, int z)
+    {
+        if ((uint)y >= _h) return 0;
+        return Col(x, z) is { } c ? c.BlockAt(x, y, z) : 0;
+    }
+
+    public int Biome(int x, int z) => Col(x, z)?.Light?.Biome(x, z) ?? -1;
     public ColumnState State(int x, int z) => Col(x, z) == null ? ColumnState.Unknown : ColumnState.Live;
 }
 
 /// <summary>
-/// Meshes one 16×16×16 section into a solid (opaque + alpha-tested) and a translucent vertex list. Full opaque cubes take a
-/// fast path (six faces, culled against opaque neighbours); every other block goes through <see cref="BlockGeometry.Build"/>,
-/// so stairs, fences, doors, torches, plants, panes and fluid corner heights match the shared b1.8.1 geometry exactly.
-/// Positions are relative to the section origin. Not thread-safe; one per worker.
+/// Meshes one 16×16×16 section into a solid (opaque + alpha-tested) and a translucent vertex list from exactly the geometry and
+/// light the CPU raycaster (<see cref="EyeRenderer"/>) draws: <see cref="BlockMesh"/> decides a block's treatment and builds
+/// its quads (the 1.12.2 models of <see cref="Models"/>, else the b1.8.1 <see cref="BlockGeometry"/>: stairs, fences, doors,
+/// torches, plants, panes, fluid corner heights, neighbour-dependent states and metadata orientation), full cubes take a fast
+/// path (six faces, culled the raycaster's way), and every vertex carries <see cref="FaceLight"/>'s brightness: smooth corners
+/// (or vanilla flat light) on cube faces, the light cell × shade on shape quads, at <see cref="SkySubtracted"/> (the time of
+/// day). Remembered-column dimming is the shader's (per section). Positions are relative to the section origin. Not
+/// thread-safe; one per worker.
 /// </summary>
 public sealed class SectionMesher
 {
     private readonly List<GeoQuad> _quads = new(64);
+    private readonly float[] _corners = new float[4];
     public readonly VertexList Solid = new(), Translucent = new();
     public bool Textured { get; set; }
     public bool Nether { get; set; }
+    /// <summary>World.k at the world time (0 by day, 11 at midnight): sky light minus this.</summary>
     public int SkySubtracted { get; set; }
+    /// <summary>Smooth lighting on cube faces (per-corner averages, like the CPU eye's <c>Smooth</c>); false = vanilla flat light.</summary>
+    public bool Smooth { get; set; } = true;
     /// <summary>Darkest a lit face gets (the CPU eye's MinBrightness).</summary>
     public float MinBrightness { get; set; } = 0.12f;
     /// <summary>1.12.2 block models (null = the b1.8.1 shapes): classification, cube faces and shapes come from them.</summary>
     public IBlockModels? Models { get; set; }
+    /// <summary>When set, each block's vertex ranges are recorded (the parity tests attribute vertices to blocks).</summary>
+    public List<BlockSpan>? Spans { get; set; }
+
+    /// <summary>The vertices one block produced: [Solid0, Solid1) of <see cref="Solid"/>, [Trans0, Trans1) of <see cref="Translucent"/>.</summary>
+    public readonly record struct BlockSpan(int X, int Y, int Z, int Solid0, int Solid1, int Trans0, int Trans1);
 
     /// <summary>True when the section holds any non-air block (false above the column's height).</summary>
     public static bool NonEmpty(ChunkSnapshot s, int sy)
@@ -305,11 +334,16 @@ public sealed class SectionMesher
         return false;
     }
 
-    public void Build(IVoxelWorld w, int cx, int sy, int cz)
+    private readonly SectionLevels _levels = new();
+
+    public void Build(IVoxelWorld world, int cx, int sy, int cz)
     {
         Solid.Clear();
         Translucent.Clear();
         int bx = cx * 16, by = sy * 16, bz = cz * 16;
+        _levels.Reset(world, bx, by, bz, SkySubtracted);
+        IVoxelWorld w = _levels;
+        var models = Models;
         for (int ly = 0; ly < 16; ly++)
             for (int lz = 0; lz < 16; lz++)
                 for (int lx = 0; lx < 16; lx++)
@@ -318,44 +352,43 @@ public sealed class SectionMesher
                     int id = w.Block(x, y, z);
                     if (id == 0) continue;
                     var off = new Vector3(lx, ly, lz);
-                    if (Models is { } models)
-                    {
-                        if (models.Classify(id, w.Meta(x, y, z)) is BlockShape.Cube or BlockShape.CutoutCube or BlockShape.TranslucentCube) { ModelCube(models, w, x, y, z, id, off); continue; }
-                        _quads.Clear();
-                        try { models.Build(w, x, y, z, _quads); }
-                        catch (Exception) { continue; }
-                        foreach (var q in _quads)
-                            QuadEmit.Emit(q.Pass == RenderPass.Translucent ? Translucent : Solid, q, off, LightOf(w, id, x, y, z, q), Textured);
-                        continue;
-                    }
-                    if (BlockGeometry.Classify(id) == BlockShape.Cube) { Cube(w, x, y, z, id, off); continue; }
-                    _quads.Clear();
-                    try { BlockGeometry.Build(w, x, y, z, _quads); }
-                    catch (Exception) { continue; } // a shape that can't be built here: leave the cell empty
-                    foreach (var q in _quads)
-                        QuadEmit.Emit(q.Pass == RenderPass.Translucent ? Translucent : Solid, q, off, LightOf(w, id, x, y, z, q), Textured);
+                    int s0 = Solid.Count, t0 = Translucent.Count;
+                    BuildBlock(w, models, x, y, z, id, off);
+                    Spans?.Add(new BlockSpan(x, y, z, s0, Solid.Count, t0, Translucent.Count));
                 }
     }
 
-    private float LightOf(IVoxelWorld w, int id, int x, int y, int z, in GeoQuad q)
+    private void BuildBlock(IVoxelWorld w, IBlockModels? models, int x, int y, int z, int id, Vector3 off)
     {
-        float k;
-        if (q.Emissive || BlockTextures.Emissive(id)) k = 1f;
-        else
+        var shape = BlockMesh.Shape(models, id, w.Meta(x, y, z));
+        if (models != null && BlockMesh.IsCube(shape)) { ModelCube(models, w, x, y, z, id, shape, off); return; }
+        if (shape == BlockShape.Cube) { Cube(w, x, y, z, id, off); return; }
+        _quads.Clear();
+        BlockMesh.Quads(models, w, x, y, z, _quads);
+        bool cube = BlockMesh.IsCube(shape); // b1.8.1 glass, leaves, spawners, ice: cube faces, cube light
+        foreach (var q in _quads)
         {
-            int lx = x, ly = y, lz = z;
-            if (q.LightFace >= 0) { var (dx, dy, dz) = Lighting.Normal((Face)q.LightFace); lx += dx; ly += dy; lz += dz; }
-            int lvl = FaceLight.CellLevel(w, lx, ly, lz, SkySubtracted);
-            k = lvl < 0 ? 0.75f : Math.Max(0.05f, Lighting.Brightness(lvl, Nether));
+            var dst = q.Pass == RenderPass.Translucent ? Translucent : Solid;
+            if (cube && q.LightFace >= 0) EmitCubeFace(dst, w, q, id, x, y, z, (Face)q.LightFace, off, false);
+            else QuadEmit.Emit(dst, q, off, FaceLight.Quad(w, q, x, y, z, SkySubtracted, Nether, MinBrightness), Textured);
         }
-        return Math.Max(MinBrightness, k * q.Shade);
     }
 
-    /// <summary>A 1.12.2 full cube: its model's six faces, each culled against an opaque neighbour (and glass against glass).</summary>
-    private void ModelCube(IBlockModels models, IVoxelWorld w, int x, int y, int z, int id, Vector3 off)
+    /// <summary>A full-cube face with the raycaster's cube light (<see cref="FaceLight.CubeCorners"/>) at each corner.</summary>
+    private void EmitCubeFace(VertexList dst, IVoxelWorld w, in GeoQuad q, int id, int x, int y, int z, Face f, Vector3 off, bool emissive)
+    {
+        var c = _corners.AsSpan();
+        if (emissive) c.Fill(1f);
+        else FaceLight.CubeCorners(w, id, x, y, z, f, SkySubtracted, Nether, Smooth, MinBrightness, c);
+        QuadEmit.Emit(dst, q, off, c[FaceLight.Corner(f, q.P0)], c[FaceLight.Corner(f, q.P1)], c[FaceLight.Corner(f, q.P2)], c[FaceLight.Corner(f, q.P3)], Textured);
+    }
+
+    /// <summary>A 1.12.2 full cube: its model's six faces, culled the raycaster's way (an opaque neighbour hides a face; glass
+    /// beside the same glass shows none).</summary>
+    private void ModelCube(IBlockModels models, IVoxelWorld w, int x, int y, int z, int id, BlockShape shape, Vector3 off)
     {
         int meta = w.Meta(x, y, z);
-        var shape = models.Classify(id, meta);
+        bool emissive = models.Emissive(id);
         for (int fi = 0; fi < 6; fi++)
         {
             var f = (Face)fi;
@@ -368,7 +401,7 @@ public sealed class SectionMesher
             }
             var q = models.CubeFace(w, x, y, z, id, meta, f);
             if (q.Tex != QuadTex.Block) continue;
-            QuadEmit.Emit(q.Pass == RenderPass.Translucent ? Translucent : Solid, q, off, LightOf(w, id, x, y, z, q), Textured);
+            EmitCubeFace(q.Pass == RenderPass.Translucent ? Translucent : Solid, w, q, id, x, y, z, f, off, emissive);
         }
     }
 
@@ -382,23 +415,62 @@ public sealed class SectionMesher
             int n = y + dy < 0 ? 0 : w.Block(x + dx, y + dy, z + dz);
             if (n != 0 && BlockGeometry.OpaqueCube(n)) continue;
             if (meta < 0) meta = w.Meta(x, y, z);
-            Vector3 a, b, c, d;
-            switch (f)
-            {
-                case Face.Up: a = new(0, 1, 0); b = new(0, 1, 1); c = new(1, 1, 1); d = new(1, 1, 0); break;
-                case Face.Down: a = new(0, 0, 1); b = new(0, 0, 0); c = new(1, 0, 0); d = new(1, 0, 1); break;
-                case Face.North: a = new(1, 1, 0); b = new(1, 0, 0); c = new(0, 0, 0); d = new(0, 1, 0); break;
-                case Face.South: a = new(0, 1, 1); b = new(0, 0, 1); c = new(1, 0, 1); d = new(1, 1, 1); break;
-                case Face.West: a = new(0, 1, 0); b = new(0, 0, 0); c = new(0, 0, 1); d = new(0, 1, 1); break;
-                default: a = new(1, 1, 1); b = new(1, 0, 1); c = new(1, 0, 0); d = new(1, 1, 0); break;
-            }
-            var t = BlockGeometry.CubeTile(w, x, y, z, id, meta, f);
-            var q = GeoQuad.Make(a, b, c, d, BlockGeometry.FaceUv(f, a), BlockGeometry.FaceUv(f, b), BlockGeometry.FaceUv(f, c), BlockGeometry.FaceUv(f, d));
-            q.Tile = (short)t.Tile; q.Tint = t.Tint; q.Overlay = (short)t.Overlay; q.OverlayTint = t.OverlayTint;
-            q.Flat = BlockGeometry.FlatColour(id, f); q.Shade = Lighting.FaceShade(f); q.LightFace = (sbyte)f;
-            q.Emissive = BlockTextures.Emissive(id);
-            if (t.IsNone || BlockTextures.UsePalette(id)) q.Tile = -1;
-            QuadEmit.Emit(Solid, q, off, LightOf(w, id, x, y, z, q), Textured);
+            var q = BlockMesh.CubeFace(w, x, y, z, id, meta, f);
+            EmitCubeFace(Solid, w, q, id, x, y, z, f, off, false);
         }
     }
+}
+
+/// <summary>
+/// The mesher's per-section memo of <see cref="FaceLight.CellLevel"/> and cell opacity over the section and a two-cell border
+/// (smooth corners ask for each cell in front of a face from up to nine faces). Exactly the inner world's answers
+/// (<see cref="FaceLight.CellLevelNow"/>), computed at most once per cell per build; everything else is passed through.
+/// </summary>
+internal sealed class SectionLevels : IVoxelWorld, FaceLight.ICellLevels
+{
+    private const int N = 20, B = 2;
+    private readonly sbyte[] _lvl = new sbyte[N * N * N];
+    private readonly byte[] _opq = new byte[N * N * N];
+    private IVoxelWorld _w = null!;
+    private int _x0, _y0, _z0, _sub;
+
+    public void Reset(IVoxelWorld w, int bx, int by, int bz, int sub)
+    {
+        _w = w;
+        (_x0, _y0, _z0, _sub) = (bx - B, by - B, bz - B, sub);
+        Array.Fill(_lvl, sbyte.MinValue);
+        Array.Clear(_opq);
+    }
+
+    private int Slot(int x, int y, int z)
+    {
+        int i = x - _x0, j = y - _y0, k = z - _z0;
+        return (uint)i < N && (uint)j < N && (uint)k < N ? (j * N + k) * N + i : -1;
+    }
+
+    public int Level(int x, int y, int z, int subtracted)
+    {
+        int s = subtracted == _sub ? Slot(x, y, z) : -1;
+        if (s < 0) return FaceLight.CellLevelNow(_w, x, y, z, subtracted);
+        int v = _lvl[s];
+        if (v == sbyte.MinValue) _lvl[s] = (sbyte)(v = FaceLight.CellLevelNow(_w, x, y, z, subtracted));
+        return v;
+    }
+
+    public bool OpaqueAt(int x, int y, int z)
+    {
+        int s = Slot(x, y, z);
+        if (s < 0) return FaceLight.Opaque(_w.Block(x, y, z));
+        int v = _opq[s];
+        if (v == 0) _opq[s] = (byte)(v = FaceLight.Opaque(_w.Block(x, y, z)) ? 2 : 1);
+        return v == 2;
+    }
+
+    public int Block(int x, int y, int z) => _w.Block(x, y, z);
+    public int Meta(int x, int y, int z) => _w.Meta(x, y, z);
+    public int SkyLight(int x, int y, int z) => _w.SkyLight(x, y, z);
+    public int BlockLight(int x, int y, int z) => _w.BlockLight(x, y, z);
+    public ColumnState State(int x, int z) => _w.State(x, z);
+    public int WorldHeight => _w.WorldHeight;
+    public int Biome(int x, int z) => _w.Biome(x, z);
 }

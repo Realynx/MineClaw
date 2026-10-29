@@ -31,14 +31,7 @@ public sealed class ChunkSnapshot
 
     /// <summary>Copies a live column (no lock needed: single bytes never tear, and a racing change only means a slightly
     /// newer copy).</summary>
-    public static ChunkSnapshot Capture(ChunkColumn c) => new(c.IdData.ToArray(), Normalize(c.MetaData));
-
-    private static byte[] Normalize(ReadOnlySpan<byte> meta)
-    {
-        var m = new byte[meta.Length];
-        for (int i = 0; i < m.Length; i++) m[i] = (byte)(meta[i] & 0x0F);
-        return m;
-    }
+    public static ChunkSnapshot Capture(ChunkColumn c) => new(c.CopyIds(), c.CopyMeta()); // the column stores metadata as nibbles already
 
     public static long ComputeHash(ReadOnlySpan<byte> ids, ReadOnlySpan<byte> meta)
     {

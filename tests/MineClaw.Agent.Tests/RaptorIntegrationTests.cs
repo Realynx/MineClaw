@@ -166,6 +166,64 @@ public class RaptorIntegrationTests
         Assert.True(f.Raptor.Index.DirtyCount > 0);
     }
 
+    // Live 10-29 (task #103): "raptor maintenance error ... FOREIGN KEY constraint failed" every cycle on a fresh 1.12.2 db. A doc
+    // deleted by another writer of the shared db (a clone's RagIndex, the groomer's merge absorbing it) raises no Deleted event in
+    // main, so main's tree kept the leaf mapped to the dead doc id; the next change set re-upserting its parent wrote the
+    // doc_edges row to that id (INSERT OR IGNORE does not ignore foreign keys), the transaction rolled back, the pending change set
+    // stayed queued and failed again on every cycle.
+    [Fact]
+    public async Task Sync_survives_docs_deleted_or_replaced_by_another_writer()
+    {
+        using var f = await BuiltAsync();
+        // Another process deletes one leaf doc and replaces another (merge: delete + insert under the same ref → a new id).
+        f.Db.Exec("DELETE FROM docs WHERE ref = 'kb:t.md:3'");
+        f.Db.Exec("DELETE FROM docs WHERE ref = 'kb:t.md:5'");
+        f.Rag.Upsert(new RagDoc("kb:t.md:5", "knowledge", "note 5", "merged furnace cobblestone smelting fuel coal detail 5 item5") { Source = "t.md" });
+        // New activity lands in the same clusters (their parents get re-upserted with the dead leaves among their children).
+        AddKnowledge(f.Rag, 12, offset: 40);
+        await f.Rag.FlushEmbeddingsAsync();
+
+        var sync = await f.Raptor.SyncAsync();           // threw SqliteException 19 (FOREIGN KEY constraint failed)
+        Assert.True(sync.Removed >= 1, $"removed {sync.Removed}");
+        var keys = f.Raptor.Index.Read(t => t.Leaves.Select(l => l.Key).ToList());
+        Assert.DoesNotContain("kb:t.md:3", keys);
+        Assert.Single(keys, k => k == "kb:t.md:5");
+        Assert.Contains("kb:t.md:51", keys);
+        Assert.Empty(f.Raptor.Index.Read(t => t.Validate()));
+        // Every edge points at a live doc, and the stored tree reloads to the same leaves.
+        Assert.Equal(0, f.Db.ScalarLong("SELECT count(*) FROM doc_edges e WHERE NOT EXISTS (SELECT 1 FROM docs d WHERE d.id = e.child)"));
+        int leaves = f.Raptor.Index.LeafCount;
+        var again = await f.Raptor.SyncAsync();
+        Assert.Equal(0, again.Removed + again.Inserted + again.Reinserted);
+        var reopened = f.Reopen();
+        Assert.True(await reopened.LoadAsync());
+        Assert.Equal(leaves, reopened.Index.LeafCount);
+    }
+
+    [Fact]
+    public void Maintenance_errors_log_once_with_the_root_cause_until_they_change_or_recover()
+    {
+        var logs = new LiveSession4CacheTests.ListLoggers();
+        var log = logs.CreateLogger("raptor");
+        var errors = new RepeatedErrorLog("raptor maintenance");
+        static Exception Fk()
+        {
+            try { throw new InvalidOperationException("apply failed", new InvalidDataException("SQLite Error 19: 'FOREIGN KEY constraint failed'.")); }
+            catch (Exception ex) { return ex; }
+        }
+        for (int i = 0; i < 5; i++) errors.Failed(log, Fk());
+        var warnings = logs.Lines.Where(l => l.Level == Microsoft.Extensions.Logging.LogLevel.Warning).ToList();
+        Assert.Single(warnings);
+        Assert.Contains("FOREIGN KEY constraint failed", warnings[0].Text);
+        Assert.Contains("InvalidDataException", warnings[0].Text);
+        errors.Failed(log, new TimeoutException("other"));        // a different failure is logged again
+        Assert.Equal(2, logs.Lines.Count(l => l.Level == Microsoft.Extensions.Logging.LogLevel.Warning));
+        errors.Recovered(log);
+        Assert.Contains(logs.Lines, l => l.Level == Microsoft.Extensions.Logging.LogLevel.Information && l.Text.Contains("recovered after 1 failure"));
+        errors.Recovered(log);                                    // nothing to report twice
+        Assert.Single(logs.Lines, l => l.Level == Microsoft.Extensions.Logging.LogLevel.Information);
+    }
+
     // Night review 10-27 B23: "raptor rebuild (changed fraction 26 % > 25 %)" right after a restart. An edited doc counted twice
     // (remove + insert), a leaf dropped at load for a changed text counted as removed and again when the sync re-inserted it, and
     // every clone reload unmapped such leaves in the shared db so main re-inserted them once more.

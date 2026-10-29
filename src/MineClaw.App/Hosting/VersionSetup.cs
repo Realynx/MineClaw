@@ -35,6 +35,11 @@ public static class VersionSetup
             MineClaw.Data.Versioning.GameData.SetDefault(profile.Data);
             if (res.Detected) WriteLastKnown(path, res.Version, log);
             log.LogInformation("game version {Version}: {How}", res.Version, res.How);
+            // Every process (main and each clone) says which tables it really plays with (live 10-29: clone 69's axe recipe
+            // asked for oak wood; the check that the clone ran on the 1.12.2 data, not b1.8.1's).
+            var data = MineClaw.Data.Versioning.GameData.Current;
+            log.LogInformation("game data: {Data} ({Recipes} recipes, planks variants {Planks})", data.VersionId,
+                MineClaw.Data.Recipes.All.Count, MineClaw.Data.Recipes.ForOutput(MineClaw.Data.Blocks.Planks, -1).Count);
             if (!res.Detected && res.How.StartsWith("server didn't answer", StringComparison.Ordinal))
                 log.LogWarning("{Server}:{Port} didn't answer the version ping; speaking {Version} (set {Key} to pin it)", mc.Host, mc.Port, res.Version.Id, ConfigKey);
             return new Outcome(profile, res, null);

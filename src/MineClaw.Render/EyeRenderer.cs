@@ -368,8 +368,8 @@ public sealed class EyeRenderer
             if (id != 0 && step > 0 && !(s.Cut is { } cut && cut.Hidden(vx, vy, vz)) && !(s.Clip is { } clip && !clip.Contains(vx, vy, vz)))
             {
                 var models = s.Atlas?.Models;
-                var shape = models != null ? models.Classify(id, w.Meta(vx, vy, vz)) : BlockGeometry.Classify(id);
-                if (shape is BlockShape.Cube or BlockShape.CutoutCube or BlockShape.TranslucentCube)
+                var shape = BlockMesh.Shape(models, id, w.Meta(vx, vy, vz));
+                if (BlockMesh.IsCube(shape))
                 {
                     // Glass beside glass and ice beside ice draw no face between them (fancy leaves do).
                     bool culled = shape != BlockShape.Cube && id != Blocks.Leaves && prevId == id && !(models != null && id == 161);
@@ -451,12 +451,7 @@ public sealed class EyeRenderer
         int slot = (int)((ulong)(key * unchecked((long)0x9E3779B97F4A7C15)) >> 53);
         if (cache.ShapeKeys[slot] == key && cache.Shapes[slot] is { } hit) return hit;
         cache.Tmp.Clear();
-        try
-        {
-            if (models != null) models.Build(w, x, y, z, cache.Tmp);
-            else BlockGeometry.Build(w, x, y, z, cache.Tmp);
-        }
-        catch (Exception) { cache.Tmp.Clear(); }
+        BlockMesh.Quads(models, w, x, y, z, cache.Tmp);
         var arr = cache.Tmp.ToArray();
         cache.ShapeKeys[slot] = key;
         cache.Shapes[slot] = arr;
@@ -464,7 +459,10 @@ public sealed class EyeRenderer
     }
 
     /// <summary>Texel (0xAARRGGBB) of a quad at its UV: terrain (tint + overlay), procedural liquids, entity skins, items.</summary>
-    internal static uint Sample(EyeScene s, in GeoQuad q, Vector2 uv)
+    internal static uint Sample(EyeScene s, in GeoQuad q, Vector2 uv) => SampleQuad(s.Atlas, q, uv);
+
+    /// <summary>Texel (0xAARRGGBB) of a quad at its UV with the given textures (the raycaster's sampling; parity tests).</summary>
+    public static uint SampleQuad(TextureAtlas? atlas0, in GeoQuad q, Vector2 uv)
     {
         float u = uv.X, v = uv.Y;
         switch (q.Tex)
@@ -476,18 +474,18 @@ public sealed class EyeRenderer
             case QuadTex.Fire: return FluidTextures.Sample(q.Tile == 1 ? FluidTextures.FireB : FluidTextures.FireA, Math.Clamp(u, 0, 0.999f), Math.Clamp(v, 0, 0.999f));
             case QuadTex.Entity:
             {
-                uint t = EntityTextures.Sample(s.Atlas, q.Tile, u, v);
+                uint t = EntityTextures.Sample(atlas0, q.Tile, u, v);
                 return q.Tint != 0 ? BlockTextures.Tinted(t, q.Tint) : t;
             }
             case QuadTex.Item:
-                if (s.Atlas?.SampleItem(q.Tile, Math.Clamp(u, 0, 0.999f), Math.Clamp(v, 0, 0.999f)) is { } it) return it;
+                if (atlas0?.SampleItem(q.Tile, Math.Clamp(u, 0, 0.999f), Math.Clamp(v, 0, 0.999f)) is { } it) return it;
                 return 0xff000000 | q.Flat;
             case QuadTex.Flat:
                 return 0xff000000 | q.Flat;
             case QuadTex.Block:
-                return s.Atlas?.Models is { } models ? models.SampleQuad(q, uv) : 0xff000000 | q.Flat;
+                return atlas0?.Models is { } models ? models.SampleQuad(q, uv) : 0xff000000 | q.Flat;
             default:
-                if (q.Tile < 0 || s.Atlas is not { } atlas) return (q.Pass == RenderPass.Cutout && s.Atlas == null ? 0xff000000u : 0xff000000u) | q.Flat;
+                if (q.Tile < 0 || atlas0 is not { } atlas) return (q.Pass == RenderPass.Cutout && atlas0 == null ? 0xff000000u : 0xff000000u) | q.Flat;
                 u = Math.Clamp(u, 0, 0.999f); v = Math.Clamp(v, 0, 0.999f);
                 uint p = BlockTextures.Tinted(atlas.Sample(q.Tile, u, v), q.Tint);
                 if (q.Overlay >= 0)
@@ -499,14 +497,7 @@ public sealed class EyeRenderer
         }
     }
 
-    private static (double U, double V) Uv(Face f, double fx, double fy, double fz) => f switch
-    {
-        Face.Up or Face.Down => (fx, fz),
-        Face.North => (1 - fx, 1 - fy),
-        Face.South => (fx, 1 - fy),
-        Face.West => (fz, 1 - fy),
-        _ => (1 - fz, 1 - fy),
-    };
+    private static (double U, double V) Uv(Face f, double fx, double fy, double fz) => FaceLight.CubeFaceUv(f, fx, fy, fz);
 
     /// <summary>Darkens a ground point inside an entity's shadow (Render.renderShadow: a soft disc, fainter with height).</summary>
     private static uint ShadowAt(Ctx ctx, uint c, double hx, double hy, double hz)
@@ -532,12 +523,7 @@ public sealed class EyeRenderer
         if (cache.Keys[slot] != key)
         {
             cache.Keys[slot] = key;
-            if (!s.Smooth)
-            {
-                float k = FaceLight.Of(w, id, x, y, z, f, sub, s.Nether);
-                cache.Vals[4 * slot] = cache.Vals[4 * slot + 1] = cache.Vals[4 * slot + 2] = cache.Vals[4 * slot + 3] = Math.Max(minB, k);
-            }
-            else SmoothCorners(s, w, x, y, z, f, sub, cache.Vals.AsSpan(4 * slot, 4), minB);
+            FaceLight.CubeCorners(w, id, x, y, z, f, sub, s.Nether, s.Smooth, minB, cache.Vals.AsSpan(4 * slot, 4));
         }
         var c = cache.Vals.AsSpan(4 * slot, 4);
         if (!s.Smooth) return remembered < 1 ? Math.Max(c[0], 0.45f) * remembered : c[0];
@@ -557,15 +543,7 @@ public sealed class EyeRenderer
         if (cache.Keys[slot] == key) lvlK = cache.Vals[4 * slot];
         else
         {
-            int lvl;
-            if (f >= 0)
-            {
-                var (dx, dy, dz) = Lighting.Normal((Face)f);
-                lvl = FaceLight.CellLevel(w, x + dx, y + dy, z + dz, sub);
-                if (lvl == 0 && BlockGeometry.OpaqueCube(w.Block(x + dx, y + dy, z + dz))) lvl = FaceLight.CellLevel(w, x, y + 1, z, sub);
-            }
-            else lvl = Math.Max(FaceLight.CellLevel(w, x, y, z, sub), FaceLight.CellLevel(w, x, y + 1, z, sub));
-            lvlK = lvl < 0 ? 0.75f : Lighting.Brightness(lvl, s.Nether);
+            lvlK = FaceLight.QuadLevel(w, f, x, y, z, sub, s.Nether);
             if (w.State(x, z) == ColumnState.Remembered) lvlK = Math.Max(lvlK, 0.45f) * 0.8f;
             cache.Keys[slot] = key;
             cache.Vals[4 * slot] = lvlK;
@@ -573,42 +551,14 @@ public sealed class EyeRenderer
         return Math.Max(minB, lvlK * q.Shade);
     }
 
-    /// <summary>Smooth lighting: each face corner averages the light of the 4 cells around it in the layer in front of the
-    /// face (opaque cells count as the face cell's own light), times the face shade. Corners in (u,v) order 00, 10, 01, 11.</summary>
-    private static void SmoothCorners(EyeScene s, IVoxelWorld w, int x, int y, int z, Face f, int sub, Span<float> outC, float minB)
-    {
-        var (nx, ny, nz) = Lighting.Normal(f);
-        int ax = x + nx, ay = y + ny, az = z + nz;
-        int centre = FaceLight.CellLevel(w, ax, ay, az, sub);
-        float shade = Lighting.FaceShade(f);
-        (int, int, int) uA, vA;
-        switch (f)
-        {
-            case Face.Up or Face.Down: uA = (1, 0, 0); vA = (0, 0, 1); break;
-            case Face.North: uA = (-1, 0, 0); vA = (0, -1, 0); break;
-            case Face.South: uA = (1, 0, 0); vA = (0, -1, 0); break;
-            case Face.West: uA = (0, 0, 1); vA = (0, -1, 0); break;
-            default: uA = (0, 0, -1); vA = (0, -1, 0); break;
-        }
-        for (int corner = 0; corner < 4; corner++)
-        {
-            int su = (corner & 1) == 0 ? -1 : 1, sv = (corner & 2) == 0 ? -1 : 1;
-            int sum = 0, n = 0;
-            for (int a = 0; a <= 1; a++)
-                for (int b = 0; b <= 1; b++)
-                {
-                    int cx = ax + uA.Item1 * su * a + vA.Item1 * sv * b, cy = ay + uA.Item2 * su * a + vA.Item2 * sv * b, cz = az + uA.Item3 * su * a + vA.Item3 * sv * b;
-                    int lvl = a == 0 && b == 0 ? centre : FaceLight.Opaque(w.Block(cx, cy, cz)) ? centre : FaceLight.CellLevel(w, cx, cy, cz, sub);
-                    if (lvl < 0) continue;
-                    sum += lvl; n++;
-                }
-            float k = n == 0 ? 0.75f : Lighting.Brightness((int)Math.Round(sum / (double)n), s.Nether);
-            outC[corner] = Math.Max(minB, k * shade);
-        }
-    }
+    private static uint SkyTop(EyeScene s, int sub) => SkyColours(sub, s.Nether).Top;
+    private static uint SkyHorizon(EyeScene s, int sub) => SkyColours(sub, s.Nether).Horizon;
 
-    private static uint SkyTop(EyeScene s, int sub) => s.Nether ? 0x3a0e0a : IsoPalette.Scale(0x78a7ff, 1f - sub / 13f);
-    private static uint SkyHorizon(EyeScene s, int sub) => s.Nether ? 0x5a1a10 : IsoPalette.Scale(0xc3d9ff, 1f - sub / 12.5f);
+    /// <summary>The sky's zenith, horizon (also the fog) and void colours at a sky-light subtraction (World.k; 0 noon, 11
+    /// midnight): every renderer's day/night sky (the GPU freecam's too).</summary>
+    public static (uint Top, uint Horizon, uint Void) SkyColours(int sub, bool nether) => nether
+        ? (0x3a0e0au, 0x5a1a10u, 0x120404u)
+        : (IsoPalette.Scale(0x78a7ff, 1f - sub / 13f), IsoPalette.Scale(0xc3d9ff, 1f - sub / 12.5f), 0x05070cu);
 
     private static uint Sky(EyeScene s, double dy, int sub)
     {

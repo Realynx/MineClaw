@@ -31,6 +31,9 @@ internal sealed class FakeSupervisorWorld : ISupervisorWorld
             : new ColumnPayloadEntry(c.Cx, c.Cz, 0, 0, null, false, [])).ToList();
     }
 
+    public string? Version => "b1.8.1";
+    public long? WorldTime(int dim) => dim == 0 ? 6000 : null;
+
     public IReadOnlyList<WorldBot> Bots() =>
         [new("maid_chan", "main", true, 0, 1.5, 65, 1.5, 90, 20, 0, 20, 18, "idle", null, "cobblestone x12", ["block 4,64,6"], true, 0)];
 
@@ -173,6 +176,49 @@ public class SupervisorWorldTests
         ids[(0 * 16 + 0) * 128 + 64] = (byte)id; // ApplyChunkRegion order: x, z, y
         w.ApplyChunkRegion(cx * 16, 0, cz * 16, 16, 128, 16, ids, null, null, null);
         return w;
+    }
+
+    // The Explorer freecam drew no light ("no light in hive memory"): live columns now ship their light nibbles (and biomes) when
+    // the viewer asks, and the light joins the delta key, so a light-only change is resent while an unchanged column is not.
+    [Fact]
+    public void Column_source_ships_light_on_request_and_keys_light_changes()
+    {
+        var live = LiveWorld(0, 0, 4);
+        var src = new WorldColumnSource(() => [new LiveBody("maid_chan", "main", true, live)], () => null) { LiveHashTtl = TimeSpan.Zero };
+        var plain = src.Columns(0, [(0, 0)])[0];
+        Assert.Null(plain.Light);                                            // an old viewer gets exactly what it got before
+        Assert.Equal(1, BitConverter.ToUInt16(ColumnPayload.Encode(0, [plain]), 4));
+
+        var lit = src.Columns(0, [(0, 0)], light: true)[0];
+        Assert.NotNull(lit.Light);
+        var payload = ColumnPayload.Encode(0, [lit]);
+        Assert.Equal(ColumnPayload.VersionLight, BitConverter.ToUInt16(payload, 4));
+        var back = ColumnPayload.Decode(payload).Columns[0];
+        var light = LightSnapshot.Decode(back.Light!);
+        Assert.Equal(live.GetSkyLight(5, 100, 5), light.Sky(5, 100, 5));
+        Assert.Equal(src.Index(0, 0, 0, 0, 0, 10, light: true)[0].Hash, lit.Hash); // the index and the payload agree on the key
+        Assert.NotEqual(plain.Hash, lit.Hash);
+
+        long before = src.Index(0, 0, 0, 0, 0, 10, light: true)[0].Hash;
+        Assert.True(live.SetBlock(3, 80, 3, MineClaw.Data.Blocks.Glowstone, 0));
+        Assert.NotEqual(LightSnapshot.Decode(lit.Light!).Hash, LightSnapshot.Capture(live.GetColumn(0, 0)!).Hash); // the glowstone relit the column
+        long after = src.Index(0, 0, 0, 0, 0, 10, light: true)[0].Hash;
+        Assert.NotEqual(before, after);
+        var relit = LightSnapshot.Decode(src.Columns(0, [(0, 0)], light: true)[0].Light!);
+        Assert.Equal(live.GetBlockLight(3, 81, 3), relit.Block(3, 81, 3));
+        Assert.Equal(live.GetBlockLight(5, 80, 3), relit.Block(5, 80, 3));
+    }
+
+    [Fact]
+    public async Task Index_says_the_game_version_and_the_world_time()
+    {
+        var (s, _) = Server();
+        await using var __ = s;
+        var r = await s.HandleAsync(Get("/api/world/index", "dim=0&x=0&z=0&r=32&light=1"));
+        Assert.Equal(200, r.Status);
+        var json = r.Text;
+        Assert.Contains("\"version\":\"b1.8.1\"", json);
+        Assert.Contains("\"time\":6000", json);
     }
 
     [Fact]

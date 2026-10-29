@@ -52,14 +52,29 @@ public sealed partial class WhitelistManager
     {
         _repliesFed = true;
         if (string.IsNullOrEmpty(text) || _pending.IsEmpty) return;
-        if (Added().Match(text) is { Success: true } a && _pending.TryGetValue(a.Groups[1].Value, out var ok)) ok.TrySetResult(true);
-        else if (NotAdded().Match(text) is { Success: true } f && _pending.TryGetValue(f.Groups[1].Value, out var no)) no.TrySetResult(false);
+        if (Added().Match(text) is { Success: true } a && _pending.TryGetValue(Key("add", a.Groups[1].Value), out var ok)) ok.TrySetResult(true);
+        else if (NotAdded().Match(text) is { Success: true } f && _pending.TryGetValue(Key("add", f.Groups[1].Value), out var no)) no.TrySetResult(false);
+        else if (Removed().Match(text) is { Success: true } r && _pending.TryGetValue(Key("remove", r.Groups[1].Value), out var rok)) rok.TrySetResult(true);
+        // "Could not remove X": X isn't on the server's list (CommandWhitelist: no profile in it), so it is off it already.
+        else if (NotRemoved().Match(text) is { Success: true } nr && _pending.TryGetValue(Key("remove", nr.Groups[1].Value), out var rno)) rno.TrySetResult(true);
+        // The permission error names no account: every whitelist line in flight failed (live 10-29: main not op yet, four
+        // "/whitelist remove" each answered "commands.generic.permission", and the reconcile still said "removed 4").
+        else if (Denied().IsMatch(text))
+            foreach (var p in _pending.Values) p.TrySetResult(false);
     }
+
+    private static string Key(string op, string name) => op + " " + name;
 
     [GeneratedRegex(@"Added (\S+?) to (?:the )?white-?list", RegexOptions.IgnoreCase)]
     private static partial Regex Added();
     [GeneratedRegex(@"Could not add (\S+?) to (?:the )?white-?list", RegexOptions.IgnoreCase)]
     private static partial Regex NotAdded();
+    [GeneratedRegex(@"Removed (\S+?) from (?:the )?white-?list", RegexOptions.IgnoreCase)]
+    private static partial Regex Removed();
+    [GeneratedRegex(@"Could not remove (\S+?) from (?:the )?white-?list", RegexOptions.IgnoreCase)]
+    private static partial Regex NotRemoved();
+    [GeneratedRegex(@"do not have permission|commands\.generic\.permission|^generic permission\b|unknown command", RegexOptions.IgnoreCase)]
+    private static partial Regex Denied();
     public Task<bool> RemoveAsync(string name, CancellationToken ct = default) => RunAsync("remove", name, ct);
 
     private async Task<bool> RunAsync(string op, string name, CancellationToken ct)
@@ -70,8 +85,9 @@ public sealed partial class WhitelistManager
         if (!_arm(line)) return false;
         // An add counts once the server confirms it (when replies are fed): a gate that ate the line, a non-op main or a
         // typo'd name must not leave the account marked whitelisted (the clone would be kicked at login, forever).
-        TaskCompletionSource<bool>? confirm = op == "add" && _repliesFed ? new(TaskCreationOptions.RunContinuationsAsynchronously) : null;
-        if (confirm != null) _pending[name] = confirm;
+        // A removal too: the reconcile counts only what the server took off its list.
+        TaskCompletionSource<bool>? confirm = _repliesFed ? new(TaskCreationOptions.RunContinuationsAsynchronously) : null;
+        if (confirm != null) _pending[Key(op, name)] = confirm;
         bool sent;
         try
         {
@@ -87,7 +103,7 @@ public sealed partial class WhitelistManager
         }
         finally
         {
-            if (confirm != null) _pending.TryRemove(new KeyValuePair<string, TaskCompletionSource<bool>>(name, confirm));
+            if (confirm != null) _pending.TryRemove(new KeyValuePair<string, TaskCompletionSource<bool>>(Key(op, name), confirm));
         }
         if (sent)
         {
@@ -103,16 +119,44 @@ public sealed partial class WhitelistManager
     /// </summary>
     public async Task<int> ReconcileAsync(Func<string, bool> isRunning, CancellationToken ct = default)
     {
-        int n = 0;
+        int n = 0, failed = 0;
         foreach (var a in _managed.All())
         {
             if (isRunning(a.Name)) continue;
             if (a.Active) _managed.MarkReleased(a.Name);
-            if (a.Whitelisted && await RemoveAsync(a.Name, ct).ConfigureAwait(false)) n++;
+            if (!a.Whitelisted) continue;
+            if (await RemoveAsync(a.Name, ct).ConfigureAwait(false)) n++;
+            else failed++; // still marked whitelisted: the retry (and the next start) tries it again
         }
         if (n > 0) _log.LogInformation("hive: reconcile removed {N} stale clone account(s) from the whitelist", n);
+        if (failed > 0)
+        {
+            int attempt = Interlocked.Increment(ref _reconcileRetries);
+            _log.LogWarning("hive: reconcile: {N} whitelist removal(s) not confirmed by the server{Retry}", failed,
+                attempt <= MaxReconcileRetries ? $"; retrying in {RetryDelay.TotalSeconds:0}s" : "; giving up until the next start");
+            if (attempt <= MaxReconcileRetries)
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(RetryDelay, ct).ConfigureAwait(false);
+                        await ReconcileAsync(isRunning, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) { }
+                    catch (Exception ex) { _log.LogDebug(ex, "hive: reconcile retry failed"); }
+                }, CancellationToken.None);
+        }
+        else Interlocked.Exchange(ref _reconcileRetries, 0);
         return n;
     }
+
+    private int _reconcileRetries;
+
+    /// <summary>Wait before a reconcile retries the removals the server didn't confirm (main may be opped by then).</summary>
+    public TimeSpan RetryDelay { get; set; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>Retries of unconfirmed removals before waiting for the next start.</summary>
+    public int MaxReconcileRetries { get; set; } = 5;
 
     /// <summary>Old fixed-roster names (they were whitelisted by hand): adopted once so the reconcile can clear them and the
     /// allocator can reuse them. Names that don't fit the managed shape are left alone.</summary>

@@ -22,7 +22,7 @@ public sealed record LiveBody(string Name, string Short, bool IsMain, WorldState
 public sealed class WorldColumnSource(Func<IReadOnlyList<LiveBody>> bodies, Func<IWorldMemoryStore?> store, TimeProvider? time = null)
 {
     private readonly TimeProvider _time = time ?? TimeProvider.System;
-    private readonly Dictionary<(int, int, int), (DateTimeOffset At, long Hash, string By)> _liveHash = new();
+    private readonly Dictionary<(int, int, int, bool), (DateTimeOffset At, long Hash, string By)> _liveHash = new();
     private readonly Dictionary<(int, int, int, long), byte[]> _encoded = new();
     private readonly object _lock = new();
 
@@ -39,12 +39,15 @@ public sealed class WorldColumnSource(Func<IReadOnlyList<LiveBody>> bodies, Func
         return null;
     }
 
-    private long LiveHash(int dim, ChunkColumn c, string by, DateTimeOffset now)
+    /// <summary>The viewer's delta key of a live column: the block hash, joined with the light hash when the viewer syncs light
+    /// (<see cref="LightSnapshot.Combine"/>; the same key <see cref="Columns(int, IReadOnlyList{ValueTuple{int, int}}, bool)"/> ships).</summary>
+    private long LiveHash(int dim, ChunkColumn c, string by, DateTimeOffset now, bool light)
     {
-        var k = (dim, c.ChunkX, c.ChunkZ);
+        var k = (dim, c.ChunkX, c.ChunkZ, light);
         lock (_lock)
             if (_liveHash.TryGetValue(k, out var e) && now - e.At < LiveHashTtl && e.By == by) return e.Hash;
-        long h = ChunkSnapshot.ComputeHash(c.IdData, c.MetaData);
+        long h = c.ContentHash(); // = ChunkSnapshot.ComputeHash(c.IdData, c.MetaData), without the two flat copies
+        if (light) h = LightSnapshot.Combine(h, LightSnapshot.HashOf(c));
         lock (_lock)
         {
             if (_liveHash.Count > 8192) _liveHash.Clear();
@@ -58,7 +61,10 @@ public sealed class WorldColumnSource(Func<IReadOnlyList<LiveBody>> bodies, Func
         try { return bodies(); } catch (Exception) { return []; }
     }
 
-    public IReadOnlyList<WorldColumnInfo> Index(int dim, int cx0, int cz0, int cx1, int cz1, int max)
+    public IReadOnlyList<WorldColumnInfo> Index(int dim, int cx0, int cz0, int cx1, int cz1, int max) => Index(dim, cx0, cz0, cx1, cz1, max, false);
+
+    /// <summary><paramref name="light"/>: live columns' hashes include their light (the viewer fetches them with light).</summary>
+    public IReadOnlyList<WorldColumnInfo> Index(int dim, int cx0, int cz0, int cx1, int cz1, int max, bool light)
     {
         var now = _time.GetUtcNow();
         var map = new Dictionary<(int, int), WorldColumnInfo>();
@@ -74,11 +80,14 @@ public sealed class WorldColumnSource(Func<IReadOnlyList<LiveBody>> bodies, Func
             for (int cx = cx0; cx <= cx1; cx++)
                 for (int cz = cz0; cz <= cz1; cz++)
                     if (Live(bs, dim, cx, cz) is { } l)
-                        map[(cx, cz)] = new WorldColumnInfo(cx, cz, LiveHash(dim, l.Col, l.By, now), now.ToUnixTimeMilliseconds(), l.By, true);
+                        map[(cx, cz)] = new WorldColumnInfo(cx, cz, LiveHash(dim, l.Col, l.By, now, light), now.ToUnixTimeMilliseconds(), l.By, true);
         return map.Values.Take(Math.Max(0, max)).ToList();
     }
 
-    public IReadOnlyList<ColumnPayloadEntry> Columns(int dim, IReadOnlyList<(int Cx, int Cz)> cols)
+    public IReadOnlyList<ColumnPayloadEntry> Columns(int dim, IReadOnlyList<(int Cx, int Cz)> cols) => Columns(dim, cols, false);
+
+    /// <summary><paramref name="light"/>: live columns carry their <see cref="LightSnapshot"/> (and the joined hash).</summary>
+    public IReadOnlyList<ColumnPayloadEntry> Columns(int dim, IReadOnlyList<(int Cx, int Cz)> cols, bool light)
     {
         var now = _time.GetUtcNow();
         var bs = Bodies();
@@ -101,7 +110,12 @@ public sealed class WorldColumnSource(Func<IReadOnlyList<LiveBody>> bodies, Func
                         _encoded[key] = data;
                     }
                 }
-                list.Add(new ColumnPayloadEntry(cx, cz, snap.Hash, now.ToUnixTimeMilliseconds(), l.By, true, data));
+                if (light)
+                {
+                    var ls = LightSnapshot.Capture(l.Col);
+                    list.Add(new ColumnPayloadEntry(cx, cz, LightSnapshot.Combine(snap.Hash, ls.Hash), now.ToUnixTimeMilliseconds(), l.By, true, data, ls.Encode()));
+                }
+                else list.Add(new ColumnPayloadEntry(cx, cz, snap.Hash, now.ToUnixTimeMilliseconds(), l.By, true, data));
                 continue;
             }
             ChunkRow? row = null;
@@ -180,6 +194,21 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
     public IReadOnlyList<WorldColumnInfo> Index(int dim, int cx0, int cz0, int cx1, int cz1, int max) => _columns.Index(dim, cx0, cz0, cx1, cz1, max);
 
     public IReadOnlyList<ColumnPayloadEntry> Columns(int dim, IReadOnlyList<(int Cx, int Cz)> cols) => _columns.Columns(dim, cols);
+
+    public IReadOnlyList<WorldColumnInfo> Index(int dim, int cx0, int cz0, int cx1, int cz1, int max, bool light) => _columns.Index(dim, cx0, cz0, cx1, cz1, max, light);
+
+    public IReadOnlyList<ColumnPayloadEntry> Columns(int dim, IReadOnlyList<(int Cx, int Cz)> cols, bool light) => _columns.Columns(dim, cols, light);
+
+    /// <summary>The process's game version (one per process): the viewer picks its block models by it.</summary>
+    public string? Version => MineClaw.Data.Versioning.GameData.Current.VersionId;
+
+    /// <summary>The world time (ticks) of the first in-process body (main first) in <paramref name="dim"/>.</summary>
+    public long? WorldTime(int dim)
+    {
+        foreach (var b in Bodies())
+            if (b.World.Dimension == dim) return b.World.Time;
+        return null;
+    }
 
     private IReadOnlyList<HiveLease> Leases()
     {

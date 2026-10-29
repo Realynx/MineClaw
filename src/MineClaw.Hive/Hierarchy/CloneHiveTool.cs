@@ -11,19 +11,19 @@ namespace MineClaw.Hive.Hierarchy;
 /// </summary>
 public static class CloneHiveTool
 {
-    public const string Description = "Your clones (via main, never chat): spawn a job, release name|all, list.";
+    public const string Description = "Your bodies/clones (via main, never chat): spawn bodies=N, release name|all, list.";
 
     public static void Register(ToolRegistry tools, CloneHost host) =>
         tools.Register(HiveTools.MainTool, Description,
             ToolSchema.Create().Str("op", enumValues: ["spawn", "release", "list"]).Str("task", required: false).Str("name", required: false)
-                .Str("script", required: false).Str("kind", required: false).Str("brain", required: false).Build(),
+                .Str("script", required: false).Str("kind", required: false).Int("bodies", required: false).Build(),
             async (input, _) =>
             {
                 var op = input.ReqStr("op").Trim().ToLowerInvariant();
                 BusReply? r = op switch
                 {
                     "spawn" => await host.BusAsync(BusTypes.Spawn, new SpawnReq(input.Str("kind"), input.Str("brain"), input.Str("task"), input.Str("script"),
-                        Name: input.Str("name"))).ConfigureAwait(false),
+                        Name: input.Str("name"), Bodies: input.Int("bodies"))).ConfigureAwait(false),
                     "release" or "recall" => await host.BusAsync(BusTypes.Release, new ReleaseReq(input.Str("name") ?? "all")).ConfigureAwait(false),
                     "list" => await host.BusAsync(BusTypes.List, null).ConfigureAwait(false),
                     _ => BusReply.Fail("op is spawn|release|list"),

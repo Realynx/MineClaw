@@ -58,9 +58,12 @@ public static class CloneMode
 
     public static async Task<int> RunAsync(AppCli cli, MinecraftSettings mc, AgentOptions agentOptions, BotOptions botOptions, HostSettings host,
         HiveConfig hive, TelemetryOptions telemetryOptions, string telemetryDir, ILoggerFactory loggers, ILogger log, ShutdownSignals signals,
-        MineClaw.Client.Versioning.GameVersionProfile? gameVersion = null)
+        MineClaw.Client.Versioning.GameVersionProfile? gameVersion = null, MineClaw.Bot.Bodies.BodiesOptions? bodiesOptions = null)
     {
         var clone = cli.CloneName!;
+        // Bot:Protection:ServerOp describes main's account: a clone's login isn't op, so spawn protection applies to it (and the
+        // remembered fact must not be dropped on its behalf).
+        botOptions.Protection.ServerOp = false;
         var host0 = new CloneHost(clone, cli.ParentPipe!, hive, log: loggers.CreateLogger("MineClaw.Hive"));
         // Never unsupervised: the parent pipe comes first, before the shared db is opened or anything logs in.
         var welcome = await host0.ConnectParentAsync(TimeSpan.FromSeconds(10), signals.Token);
@@ -77,6 +80,15 @@ public static class CloneMode
         var telemetry = new PromptTelemetry(agentOptions, telemetryOptions, telemetryOptions.Enabled ? telemetryDir : null);
         ILlmClient llm = LlmClientFactory.Create(agentOptions.Llm);
         if (telemetryOptions.Enabled) llm = telemetry.Wrap(llm);
+        // A hive-kind clone hosts subhive bodies in this process (one brain, many bodies): accounts from main over the bus, each
+        // with its own login and world view (a small view distance, this process's one chunk store), driven by this brain.
+        int wantedBodies = welcome.Task?.Bodies ?? 0;
+        var bodyBoard = hive.Subhives.Enabled && welcome.Task is { Kind: "hive", Script: null } && host0.BusToken != null
+            ? new MineClaw.Hive.Claims.ClaimBoard(TimeSpan.FromSeconds(hive.ClaimTtlSeconds)) : null;
+        var subhives = bodyBoard != null
+            ? InProcBodies.CreateSubhives(hive, bodiesOptions ?? new MineClaw.Bot.Bodies.BodiesOptions(), mc, agentOptions, loggers, gameVersion, bodyBoard,
+                SubhiveWiring.Layered(bodyBoard, host0.Claims))
+            : null;
         var gated = new GatedLlmClient(llm, agentOptions.Prices, hive.Budget, () => host0.Link);
         gated.Denied += why => { log.LogWarning("hive budget refused a call: {Why}; logging out", why); _ = host0.LogoutAsync("budget", planned: true); };
 
@@ -90,14 +102,18 @@ public static class CloneMode
         });
         var game = new MinecraftGameClient(client);
         var bot = BotHost.Create(game, agentOptions, botOptions, llm: gated, loggers: loggers, claims: host0.Claims,
-            hiveBots: () => [host0.Main ?? "", .. host0.Arbiter.Clones], // dynamic accounts: main's roster names them
+            hiveBots: () => [host0.Main ?? "", .. host0.Arbiter.Clones, .. subhives?.Registry?.Accounts ?? []], // dynamic accounts: main's roster names them
             // A clone's eyes feed main's hive vision through the shared world memory: changed columns go to the db every 15 s.
             worldIndex: new MineClaw.Bot.WorldIndex.WorldIndexOptions { Remembered = new MineClaw.Bot.WorldIndex.RememberedWorldOptions { FlushSeconds = 15 } });
         var rt = bot.Runtime;
         telemetry.Attach(rt);
         // A crew lane on this clone (main started it as a hive job) shares main's board through the db.
         if (MineClaw.Bot.GameTools.ScriptTools.Of(rt) is { } laneScripts)
-            laneScripts.Crew = new MineClaw.Bot.Bodies.LaneOnlyCrewPort(new MineClaw.Bot.Bodies.DbCrewBoard(rt.Memory.Db));
+            laneScripts.Crew = subhives != null && bot.Bodies is { } bodyRegistry
+                ? new MineClaw.Bot.Bodies.BodyCrewPort(bodyRegistry, rt.Tools, new MineClaw.Bot.Bodies.DbCrewBoard(rt.Memory.Db)) // its bodies are its lanes
+                : new MineClaw.Bot.Bodies.LaneOnlyCrewPort(new MineClaw.Bot.Bodies.DbCrewBoard(rt.Memory.Db));
+        // A brain that isn't Anthropic's has no prompt cache: every call resends the tools, so it gets the compact set.
+        if (!agentOptions.Llm.BrainAuthorsScripts) CompactBrainTools.Apply(rt.Tools, log);
         _ = rt.Rag.WarmUpAsync(signals.Token); // DNS + first TLS to the embedding provider now, not in the first turn
         game.ReservedItems = new HashSet<int>(); // a clone keeps nothing back: everything goes into storage before logout
 
@@ -152,6 +168,14 @@ public static class CloneMode
         };
         // One memory for every hive: writes go through main (its groomer, provenance), main's mem_changed reloads at once.
         CloneHierarchyWiring.Attach(host0, welcome, rt, hive, clone, log);
+        if (subhives != null)
+        {
+            subhives.Attach(bot, client, signals.Token);
+            var bodyInbox = SubhiveWiring.AttachClone(clone, (type, msg, timeout) => host0.BusAsync(type, msg, timeout: timeout), subhives, rt, hive,
+                wantedBodies, () => client.IsPlaying, signals.Token, log);
+            var inner = host0.BusInbox;
+            host0.BusInbox = (env, ct) => bodyInbox(env, ct) ?? inner?.Invoke(env, ct) ?? Task.FromResult(new MineClaw.Hive.Hierarchy.Bus.BusReply(true));
+        }
         using var watcher = new DataVersionWatcher(rt.Db, () => { rt.Memory.Reload(); rt.Rag.ReloadVectors(); },
             slowRefresh: rt.Raptor is { } rap ? () => _ = rap.LoadAsync() : null);
 
@@ -168,7 +192,8 @@ public static class CloneMode
         var source = new InProcessBotSource(game, rt, telemetry, agent, commands, host.Tui.Viewport, signals.Token);
         var body = new GameCloneBody(client, game, rt, agent, commands, source, telemetry, new GameInventoryPort(game, rt.Observations, rt.Memory), log,
             () => client.ActiveVoidStep is { } vs ? MineClaw.Hive.Clone.CloneHost.IntentionalResetCause + " (" + vs.Reason + ")"
-                : DateTimeOffset.UtcNow - lastDangerAt < TimeSpan.FromSeconds(15) ? lastDanger : "died", runner, taskOrders);
+                : DateTimeOffset.UtcNow - lastDangerAt < TimeSpan.FromSeconds(15) ? lastDanger : "died", runner, taskOrders, subhives,
+            TimeSpan.FromSeconds((bodiesOptions ?? new MineClaw.Bot.Bodies.BodiesOptions()).ShutdownRecallSeconds));
         host0.Body = body;
         // Spawned/teleported over the void: the client holds still (never falls, never confirms the teleport, so no floating kick);
         // the host asks the trusted players for a /tp once, tells main, pauses the task, and resumes it on landing.
@@ -181,6 +206,7 @@ public static class CloneMode
 
         log.LogInformation("clone {Clone} exiting ({Code}): {Reason}; {Usage}", clone, code, host0.LogoutReason ?? "-", rt.Usage.Summary());
         try { await agent.StopAsync(); } catch (Exception) { }
+        if (subhives != null) try { await subhives.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10)); } catch (Exception) { }
         source.Dispose();
         bot.Dispose();
         try { await client.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3)); } catch (Exception) { }
@@ -192,7 +218,7 @@ public static class CloneMode
     /// <summary>The real clone body: client + brain + console + telemetry of this process.</summary>
     private sealed class GameCloneBody(MinecraftClient client, IGameClient game, AgentRuntime rt, PausableAgent agent, ConsoleCommands commands,
         InProcessBotSource source, PromptTelemetry telemetry, IInventoryPort inventory, ILogger log, Func<string> deathCause,
-        CloneScriptRunner? runner = null, CloneTaskOrders? taskOrders = null) : ICloneBody
+        CloneScriptRunner? runner = null, CloneTaskOrders? taskOrders = null, InProcBodies? subhives = null, TimeSpan bodyRecall = default) : ICloneBody
     {
         private bool _wired;
 
@@ -244,6 +270,10 @@ public static class CloneMode
         {
             rt.Activities.Cancel("logout");
             await agent.StopAsync();
+            // The logout gate: this hive's subhive bodies put everything away and log out first (in parallel), then the hive itself.
+            if (subhives != null)
+                try { await subhives.RecallAllAsync("its hive is logging out", bodyRecall > TimeSpan.Zero ? bodyRecall : TimeSpan.FromSeconds(45)); }
+                catch (Exception ex) { log.LogWarning(ex, "subhive bodies' logout failed"); }
             try { await client.StopAsync().WaitAsync(TimeSpan.FromSeconds(5)); } catch (Exception) { }
         }
 

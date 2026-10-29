@@ -542,7 +542,8 @@ public sealed class HiveSupervisor : IAsyncDisposable
         CloneSlot? previous = handover && owner != null && !ReferenceEquals(owner, slot) ? owner : null;
 
         var t = new TaskMsg(Guid.NewGuid().ToString("N")[..8], task, Loadout: TaskLoadout.For(code != null ? task + " " + code : task),
-            Profile: profile, Script: script, Args: script != null ? opts?.Args : null, After: script != null ? opts?.After : null, Kind: opts?.Kind);
+            Profile: profile, Script: script, Args: script != null ? opts?.Args : null, After: script != null ? opts?.After : null, Kind: opts?.Kind,
+            Bodies: opts?.Bodies is > 0 ? opts.Bodies : null);
         // Hive task texts were never logged (10-27: the ownership refusals couldn't be traced).
         _log.LogInformation("hive: task {Id} for {Clone} ({Player}{Named}): {Text}", t.Id, slot.Name, forPlayer ?? "-", name == null ? ", unnamed" : "", task);
         try { ResetClone?.Invoke(slot.Name); } catch (Exception ex) { _log.LogWarning(ex, "hive: reset of {Clone}'s hive order failed", slot.Name); }

@@ -56,6 +56,7 @@ public sealed partial class MinecraftClient
         // health and the chunks under the feet arrived (a second later: food 10, ground verified). Unknown = "loading…".
         sb.Append(p.IsDead ? " | DEAD" : VitalsKnown ? $" | hp {p.Health}/20 food {p.Food}/20" : " | hp/food loading…");
         sb.Append($" | held {(held.IsEmpty ? "nothing" : ItemName(held.Id, held.Damage) + (held.Count > 1 ? " x" + held.Count : ""))}");
+        if (AirStatus is { } air) sb.Append($" | {air}{(World.Player.HeadUnderWater ? ", head under water" : "")}{(Surfacing ? ", surfacing" : "")}");
         sb.Append($" | {dim} {hours:00}:{minutes:00} {(World.IsNight ? "night" : "day")}{(IsRaining ? " rain" : "")}");
         if (!GroundKnown) sb.Append(" | ground loading…");
         else

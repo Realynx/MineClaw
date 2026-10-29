@@ -95,6 +95,17 @@ public sealed record ClientOptions
     /// Tests inject in-memory streams.</summary>
     public Func<CancellationToken, MineClaw.Protocol.Versioning.IGameConnection>? ConnectionFactory { get; init; }
 
+    /// <summary>View distance (chunks) this client asks the server for: 1.12.2 sends it in Client Settings (clamped to 2..32), so
+    /// the server streams a (2r+1)² square; b1.8.1 has no such packet and ignores it. Null = the profile's default (8). Lower
+    /// it for in-process bodies: memory per body grows with the square. Applied through the profile's adapter
+    /// (<c>IProtocolAdapter.WithViewDistance</c>, a per-client copy); a <see cref="ConnectionFactory"/> builds its own connection.</summary>
+    public int? ViewDistance { get; init; }
+
+    /// <summary>The process's shared column store (<see cref="MineClaw.World.Chunks.SharedChunkStore"/>): the client's world takes
+    /// its columns from it, so in-process bodies near each other hold one copy. Null = private columns. Ignored when the client
+    /// is given its own <see cref="WorldState"/>.</summary>
+    public MineClaw.World.Chunks.SharedChunkStore? ChunkStore { get; init; }
+
     /// <summary>The game version this client speaks (docs/design/multi-version.md): resolved once per process by the App's
     /// composition root (config or server ping) and shared by every client in it. Default b1.8.1.</summary>
     public Versioning.GameVersionProfile Profile { get; init; } = Versioning.GameVersionProfiles.Beta181;

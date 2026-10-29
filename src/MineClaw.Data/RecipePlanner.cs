@@ -219,6 +219,7 @@ public static class RecipePlanner
         else if (candidates.Count > 1)
         {
             int bestMissing = int.MaxValue;
+            var tried = new List<(Candidate C, int Missing, Dictionary<(int, int), int> Added)>();
             foreach (var c in candidates)
             {
                 var tctx = ctx.Clone();
@@ -228,11 +229,47 @@ public static class RecipePlanner
                 // Unpacking (iron block → 9 ingots) only when the block is really there: a missing block is never the plan
                 // ("need 3 more iron ingots", not "1 more block of iron").
                 if (IsUnpack(c) && m > ctx.MissingTotal) m = int.MaxValue - 1;
+                tried.Add((c, m, AddedMissing(ctx, tctx)));
                 if (m < bestMissing) { bestMissing = m; chosen = c; }
                 if (m == ctx.MissingTotal) break; // nothing new missing: good enough
             }
+            if (need.Damage < 0 && bestMissing > ctx.MissingTotal && bestMissing < int.MaxValue - 1)
+            {
+                var before = ctx.Clone();
+                Apply(ctx, inv, chosen, need, n, depth, stack);
+                Generalize(ctx, before, tried.Where(t => t.Missing == bestMissing && t.C != chosen).Select(t => t.Added).ToList());
+                return;
+            }
         }
         Apply(ctx, inv, chosen, need, n, depth, stack);
+    }
+
+    /// <summary>The missing amounts <paramref name="after"/> added over <paramref name="before"/>.</summary>
+    private static Dictionary<(int, int), int> AddedMissing(Ctx before, Ctx after)
+    {
+        var d = new Dictionary<(int, int), int>();
+        foreach (var (k, v) in after.Missing)
+            if (v - before.Missing.GetValueOrDefault(k) is > 0 and var add) d[k] = add;
+        return d;
+    }
+
+    /// <summary>
+    /// "Any planks" short of material: every variant recipe tied (oak planks ← oak log, spruce planks ← spruce log, …), so what's
+    /// missing is "a log", not the first variant's "oak wood" (live 10-29, clone 69 on 1.12.2: "the axe recipe asked for oak wood,
+    /// and there wasn't any", holding 4 spruce planks). A missing item that a tied alternative lacks with another metadata
+    /// becomes the wildcard (id, -1): any log of that id gathered or stored then satisfies the re-plan.
+    /// </summary>
+    private static void Generalize(Ctx ctx, Ctx before, List<Dictionary<(int, int), int>> ties)
+    {
+        if (ties.Count == 0) return;
+        foreach (var (k, add) in AddedMissing(before, ctx))
+        {
+            var (id, dmg) = k;
+            if (dmg < 0 || !ties.Any(t => t.Keys.Any(o => o.Item1 == id && o.Item2 != dmg))) continue;
+            ctx.Missing[k] -= add;
+            if (ctx.Missing[k] <= 0) ctx.Missing.Remove(k);
+            ctx.Missing[(id, -1)] = ctx.Missing.GetValueOrDefault((id, -1)) + add;
+        }
     }
 
     private static void Apply(Ctx ctx, SimInventory inv, Candidate c, Ingredient need, int n, int depth, HashSet<Ingredient> stack)

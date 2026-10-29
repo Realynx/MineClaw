@@ -87,7 +87,11 @@ public sealed class FreecamEngine : IFrameSource, IDisposable
     {
         if (_thread != null) return;
         _run = true;
-        _thread = new Thread(Loop) { IsBackground = true, Name = "livehive-freecam", Priority = ThreadPriority.BelowNormal };
+        // Normal priority, like the UI thread it feeds (the raster's pool helpers run at Normal anyway): a below-normal frame
+        // thread is starved outright whenever normal-priority work fills every core (a build, a test run, the hive itself), and
+        // Windows only boosts a starved thread after seconds, so the camera froze 0.3–10 s under load while the raster's own
+        // cost hadn't changed. The core budget (Threads) is what leaves the UI and compositor their share.
+        _thread = new Thread(Loop) { IsBackground = true, Name = "livehive-freecam", Priority = ThreadPriority.Normal };
         _thread.Start();
     }
 
@@ -209,7 +213,7 @@ public sealed class FreecamEngine : IFrameSource, IDisposable
         }
         var scene = new EyeScene
         {
-            World = _vox, Atlas = _atlas(), EyeX = pose.X, EyeY = pose.Y, EyeZ = pose.Z, Yaw = pose.Yaw, Pitch = pose.Pitch, Time = 6000,
+            World = _vox, Atlas = _atlas(), EyeX = pose.X, EyeY = pose.Y, EyeZ = pose.Z, Yaw = pose.Yaw, Pitch = pose.Pitch, Time = _cache.TimeNow(pose.Dim) ?? 6000,
             Nether = pose.Dim == -1, Entities = visible, Viewer = "freecam",
         };
         var fr = eye.Raster(scene);

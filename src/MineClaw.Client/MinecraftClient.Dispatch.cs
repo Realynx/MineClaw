@@ -364,7 +364,11 @@ public sealed partial class MinecraftClient
         _wasDead = false;
 
         if (oldHealth > 0 && health < oldHealth)
-            RaiseDanger(DangerKind.Damage, $"took {oldHealth - health} damage (hp {health}/20)", abort: false);
+        {
+            int dmg = oldHealth - health;
+            string? cause = DamageCause(dmg);
+            RaiseDanger(DangerKind.Damage, $"took {dmg} damage (hp {health}/20)" + (cause is null ? "" : $": {cause}"), abort: false);
+        }
         SurvivalOnHealth(health, food);
     }
 

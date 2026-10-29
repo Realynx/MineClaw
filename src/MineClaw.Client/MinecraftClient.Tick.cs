@@ -195,6 +195,7 @@ public sealed partial class MinecraftClient
 
         // ---- safety: below every action, every tick, before the position goes out ----
         if (!combat.Overrides) input = RetreatOverride(phys, HealRetreatOverride(phys, input, idle: d is null));
+        input = BreathOverride(phys, input, driven: d is not null, fighting: combat.Overrides);
         var guard = GuardOrVoidStep(phys, input, allowDrop && !combat.Overrides, combat.Overrides ? null : parkour); // yields only to into_void
         input = guard.Input;
         GestureAfterGuard(combat.Overrides || parkour is not null || allowDrop);
@@ -204,10 +205,12 @@ public sealed partial class MinecraftClient
         phys.SpeedAmplifier = player.EffectAmplifier(PotionEffects.Speed);         // 1.12.2 reads them (b1.8.1's tick doesn't)
         phys.SlownessAmplifier = player.EffectAmplifier(PotionEffects.Slowness);
         phys.JumpBoostAmplifier = player.EffectAmplifier(PotionEffects.JumpBoost);
+        double fallBefore = phys.FallDistance;
         Options.Profile.Physics.Tick(World, phys, input with { Hungry = !CanSprintNow() });
         if (d is not null || combat.Overrides) { _lookYaw = phys.Yaw; _lookPitch = phys.Pitch; } // idle keeps the last look
         player.SyncFromPhysics();
 
+        BreathTick(phys, fallBefore);
         CheckDangers(phys);
         SurvivalTick(phys);
         if (!teleported) SendMovement(s, phys);

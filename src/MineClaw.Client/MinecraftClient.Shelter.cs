@@ -81,6 +81,13 @@ public sealed partial class MinecraftClient
         return !retreatFound || StrandedNow();
     }
 
+    /// <summary>The combat engine's question when a 1.9+ melee fight can't be won: could the body box in now (blocks on hand)?</summary>
+    private bool CanBoxIn(int threats)
+    {
+        var o = Options.Survival;
+        return o.Enabled && o.ShelterEnabled && Volatile.Read(ref _sheltering) == 0 && ActiveVoidStep is null && ShelterBlocksTotal() > 0;
+    }
+
     /// <summary>From the tick thread: start the box (once at a time).</summary>
     private void StartShelter(string why)
     {

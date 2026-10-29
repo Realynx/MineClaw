@@ -92,8 +92,9 @@ public sealed record WelcomeMsg(string Main, TaskMsg? Task, RosterMsg Roster, Cl
 /// <param name="After">When the script ends normally: "logout" (default; deposit first) or "sleep" (stay online, brain asleep).</param>
 /// <param name="Kind">The clone kind main spawned it as (hive | subhive | script; null = legacy): a hive-kind clone gets its own
 /// bus-backed <c>hive</c> tool.</param>
+/// <param name="Bodies">A hive-kind clone hosts this many subhive bodies in its own process, driven by its brain (accounts from main).</param>
 public sealed record TaskMsg(string Id, string Text, bool Restarted = false, string[]? Loadout = null, string[]? Claims = null,
-    string? Profile = null, string? Script = null, string? Args = null, string? After = null, string? Kind = null)
+    string? Profile = null, string? Script = null, string? Args = null, string? After = null, string? Kind = null, int? Bodies = null)
 {
     public bool SleepsAfter => string.Equals(After, "sleep", StringComparison.OrdinalIgnoreCase);
 }
@@ -108,6 +109,8 @@ public sealed record HiveSpawnOptions(string? Profile = null, string? Script = n
     public string? Kind { get; init; }
     /// <summary>The hive that owns the clone ("main" or a hive's account; null = main).</summary>
     public string? Owner { get; init; }
+    /// <summary>A hive-kind clone: subhive bodies it hosts in its own process (one brain, many bodies). Null/0 = none.</summary>
+    public int? Bodies { get; init; }
     public bool HasScript => !string.IsNullOrWhiteSpace(Script) || !string.IsNullOrWhiteSpace(Code);
 }
 public sealed record ProgressMsg(string TaskId, string Text, double? Pct = null);

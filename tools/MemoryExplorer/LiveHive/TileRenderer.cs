@@ -160,7 +160,7 @@ public sealed class TileRenderer(HiveWorldCache cache, Func<TextureAtlas?> atlas
         foreach (var e in Entities()) if (e.Dim == b.Dim && e.Kind is "player" or "mob" or "item") ents.Add(Gpu.FrameScene.Vision(e));
         var fr = eye.Raster(new EyeScene
         {
-            World = t.Vox, Atlas = atlas(), EyeX = cp.X, EyeY = cp.Y, EyeZ = cp.Z, Yaw = cp.Yaw, Pitch = cp.Pitch, Time = 6000, Nether = b.Dim == -1,
+            World = t.Vox, Atlas = atlas(), EyeX = cp.X, EyeY = cp.Y, EyeZ = cp.Z, Yaw = cp.Yaw, Pitch = cp.Pitch, Time = cache.TimeNow(b.Dim) ?? 6000, Nether = b.Dim == -1,
             Entities = ents, Viewer = b.Key,
         });
         t.RasterMs = eye.LastMs;

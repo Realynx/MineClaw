@@ -142,10 +142,10 @@ public sealed class HiveApi : IDisposable
         GetJsonAsync<EntitiesDto>("entities", $"api/world/entities?since={Math.Max(0, since).ToString(CultureInfo.InvariantCulture)}", ct, track: true);
 
     public Task<IndexDto> IndexAsync(int dim, int x, int z, int r, CancellationToken ct) =>
-        GetJsonAsync<IndexDto>("index", $"api/world/index?dim={dim}&x={x}&z={z}&r={r}", ct);
+        GetJsonAsync<IndexDto>("index", $"api/world/index?dim={dim}&x={x}&z={z}&r={r}&light=1", ct);
 
     public Task<byte[]> ChunksAsync(int dim, IEnumerable<(int Cx, int Cz)> cols, CancellationToken ct) =>
-        GetBytesAsync("chunks", $"api/world/chunks?dim={dim}&cols={string.Join(';', cols.Select(c => $"{c.Cx},{c.Cz}"))}", ct);
+        GetBytesAsync("chunks", $"api/world/chunks?dim={dim}&cols={string.Join(';', cols.Select(c => $"{c.Cx},{c.Cz}"))}&light=1", ct);
 
     public Task<OverlaysDto> OverlaysAsync(int dim, CancellationToken ct) => GetJsonAsync<OverlaysDto>("overlays", $"api/world/overlays?dim={dim}", ct);
 

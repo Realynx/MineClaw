@@ -155,6 +155,16 @@ Safety
         "body:[\"67\",\"69\"]}. A then[] step may set its own body.\n" +
         "- bodies{op:list|spawn|despawn|focus,name,task?,script?}: log one in (task/script = its job) or out; focus = your default body.";
 
+    /// <summary>
+    /// A hive (main in hive mode, or a hive-kind clone) whose brain drives subhive bodies in its own process: the body parameter
+    /// without the inproc-only <c>bodies</c> tool (bodies come and go through <c>hive spawn bodies=N</c> / <c>release</c>).
+    /// </summary>
+    public const string SubhivesHint =
+        "- You may drive subhive bodies (101, 102...) besides your own: [bodies] shows them, [102 task ok] is 102's; only your own " +
+        "body chats, so speak for them.\n" +
+        "- do/delegate/stop/status/inventory/see/script/amend_task take body:\"102\"|[\"102\",\"103\"]|\"all\"|\"any\" (default: the " +
+        "body named, else yours); a list or \"all\" = one job per body at once: \"all of you chop trees\" = do{action:\"chop_tree\",body:\"all\"}.";
+
     public const string HiveMainHint =
         "- Asked as a group (\"both of you\", \"everyone\")? Give clones a part via hive spawn; reply once yourself.\n" +
         "- A clone's part is pending until its [hive] done/failed event: never report its result before that. Don't give a " +

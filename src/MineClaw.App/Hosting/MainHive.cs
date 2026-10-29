@@ -70,7 +70,7 @@ public sealed class MainHive : IAsyncDisposable
         return new MainHive(cfg, main, args, log);
     }
 
-    public void Attach(BotHost bot, MinecraftClient client, ConsoleCommands commands, AgentOptions agent)
+    public void Attach(BotHost bot, MinecraftClient client, ConsoleCommands commands, AgentOptions agent, InProcBodies? subhives = null)
     {
         var rt = bot.Runtime;
         var chat = rt.Chat;
@@ -135,6 +135,7 @@ public sealed class MainHive : IAsyncDisposable
         };
         // Dynamic accounts, the ownership tree, the off-channel bus, shared-memory writes and the chat budget (new file).
         Hierarchy = HiveHierarchyWiring.Attach(_cfg, _main, _supervisor, bot, client, agent, regulars, _log);
+        SubhiveWiring.AttachMain(Hierarchy, subhives, _cfg, _log); // main's own subhive bodies, hive-hosted ones, the resource ceiling
         HiveTools.RegisterMain(rt.Tools, _supervisor, agent.Llm, Hierarchy);
         // Crew builds: idle clones (or the ones the brain names) build lanes of a design as hive jobs (build{bp, lane}).
         if (bot.Blueprints?.Service is { } blueprints) blueprints.Jobs = new HiveBuildJobs(_supervisor, _cfg.Clones());

@@ -185,6 +185,7 @@ public sealed class HiveSync : IDisposable
             IndexDto index;
             try { index = await _api.IndexAsync(it.Dim, it.X, it.Z, r, ct).ConfigureAwait(false); }
             catch (HiveApiException ex) { Problem(ex); lock (_lock) _indexed.Remove(key); continue; } // retried after the route's back-off
+            _cache.SetWorldInfo(it.Dim, index.Version, index.Time);
             int cx0 = (it.X - r) >> 4, cx1 = (it.X + r) >> 4, cz0 = (it.Z - r) >> 4, cz1 = (it.Z + r) >> 4;
             var want = _cache.Reconcile(it.Dim, cx0, cz0, cx1, cz1, index.Columns);
             if (want.Count == 0) continue;

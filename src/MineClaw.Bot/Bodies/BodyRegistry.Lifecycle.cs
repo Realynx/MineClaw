@@ -92,6 +92,30 @@ public sealed partial class BodyRegistry
         }
     }
 
+    /// <summary>
+    /// A dynamic account (a subhive body main just allocated): spawnable from now on. False when it is main, already known, or the
+    /// lifecycle is off.
+    /// </summary>
+    public bool AddAccount(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name) || name.Trim().Equals(Main.Name, StringComparison.OrdinalIgnoreCase)) return false;
+        lock (_life) return _host != null && _accounts.TryAdd(name.Trim(), new Account(name.Trim()));
+    }
+
+    /// <summary>Forgets an account that is offline (released for good: main reuses or retires it). False while it is live.</summary>
+    public bool RemoveAccount(string name)
+    {
+        lock (_life)
+        {
+            var n = Resolve(name);
+            if (n == null || _accounts[n].Live) return false;
+            return _accounts.Remove(n);
+        }
+    }
+
+    /// <summary>The body built for an account (online or not), or null before its first spawn.</summary>
+    public Body? BodyOf(string name) => Acc(name)?.Body;
+
     private DateTimeOffset Now => _time.GetUtcNow();
 
     private IBodyHost Host => _host ?? throw new InvalidOperationException("in-process bodies are off (Bodies:Mode=hive)");

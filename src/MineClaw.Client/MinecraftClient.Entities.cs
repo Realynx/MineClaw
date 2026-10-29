@@ -85,6 +85,8 @@ public sealed partial class MinecraftClient
     private void OnSelfMetadata(EntityMetadata md)
     {
         if (md.Get(EntityMeta.Absorption) is { Value: float a }) World.Player.Absorption = a;
+        if (md.Get(EntityMeta.Air)?.AsInt() is { } air) OnSelfAir(air);
+        if (md.Get(EntityMeta.Flags)?.AsInt() is { } flags) OnSelfFlags(flags);
     }
 
     /// <summary>Statuses for our own entity: 30 the shield was disabled (an axe; <c>EntityPlayer.disableShield</c>), 35 a totem of

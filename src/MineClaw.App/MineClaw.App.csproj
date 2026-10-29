@@ -54,6 +54,19 @@
          the binary instead of being extracted to a temp dir at startup, which keeps systemd hardening (no writable $HOME/tmp) happy. -->
   </PropertyGroup>
 
+  <!-- 1.12.2 chat translations: en_us.lang from the installed 1.12.2 client jar (PrismLauncher), shipped next to the binary as
+       assets/1.12.2/assets/minecraft/lang/en_us.lang so a server without the jar (alice) renders translate components
+       (LangTable.CandidateFiles). Skipped silently when the jar isn't installed (the built-in keys + a cleaned fallback remain). -->
+  <PropertyGroup>
+    <Lang1122Jar>$(APPDATA)\PrismLauncher\libraries\com\mojang\minecraft\1.12.2\minecraft-1.12.2-client.jar</Lang1122Jar>
+  </PropertyGroup>
+  <Target Name="CopyLang1122" AfterTargets="Build" Condition="Exists('$(Lang1122Jar)')">
+    <Unzip SourceFiles="$(Lang1122Jar)" DestinationFolder="$(OutDir)assets\1.12.2" Include="assets/minecraft/lang/en_us.lang" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="PublishLang1122" AfterTargets="Publish" Condition="Exists('$(Lang1122Jar)')">
+    <Unzip SourceFiles="$(Lang1122Jar)" DestinationFolder="$(PublishDir)assets\1.12.2" Include="assets/minecraft/lang/en_us.lang" SkipUnchangedFiles="true" />
+  </Target>
+
   <PropertyGroup Condition="'$(PublishSingleFile)' == 'true'">
     <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>

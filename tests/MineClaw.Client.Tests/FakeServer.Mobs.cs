@@ -97,7 +97,7 @@ internal sealed partial class FakeServer
                                 Exact = (m.X, m.Y, m.Z), Yaw = yaw,
                             });
                         }
-                        else if (DateTime.UtcNow - m.LastAttack > TimeSpan.FromMilliseconds(TickMs * 20) && Health > 0)
+                        else if (DateTime.UtcNow - m.LastAttack > TimeSpan.FromMilliseconds(TickMs * 20) && Health > 0 && !PlayerBoxedIn())
                         {
                             m.LastAttack = DateTime.UtcNow;
                             Health = Math.Max(1, Health - m.AttackDamage);
@@ -107,6 +107,70 @@ internal sealed partial class FakeServer
                     }
             }
         }, CancellationToken.None);
+    }
+
+    /// <summary>The player's air supply as the server tracks it (<c>EntityLivingBase.onEntityUpdate</c>).</summary>
+    public int Air { get; private set; } = 300;
+    /// <summary>Drowning hits dealt.</summary>
+    public int DrownHits { get; private set; }
+    /// <summary>Lowest health the breath simulation saw.</summary>
+    public int LowestHealth { get; private set; } = 20;
+    private CancellationTokenSource? _breath;
+
+    /// <summary>
+    /// Runs the server's breath rule every tick: the eye (feet + 1.62) in a water cell (still or flowing; surface per
+    /// <c>getLiquidHeightPercent</c>) costs one air, −20 is a 2-damage hit and air 0; out of water the air is 300 at once. Our own
+    /// metadata index 1 goes out when it changes (b1.8.1 short, 1.12.2 VarInt), every 5 ticks while under.
+    /// </summary>
+    public void StartBreathSim()
+    {
+        _breath = new CancellationTokenSource();
+        var ct = _breath.Token;
+        _ = Task.Run(async () =>
+        {
+            int sent = 300, tick = 0;
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(TickMs, CancellationToken.None).ConfigureAwait(false);
+                if (double.IsNaN(_px) || Health <= 0) continue;
+                bool under;
+                lock (BlockLock)
+                {
+                    double ey = _py + 1.62;
+                    var cell = ((int)Math.Floor(_px), (int)Math.Floor(ey), (int)Math.Floor(_pz));
+                    int id = Blocks.GetValueOrDefault(cell);
+                    int meta = Metas.GetValueOrDefault(cell);
+                    float pct = (meta >= 8 ? 1 : meta + 1) / 9f - 0.11111111f;
+                    under = id is 8 or 9 && ey < cell.Item2 + 1 - pct;
+                }
+                tick++;
+                if (!under) Air = 300;
+                else if (--Air <= -20)
+                {
+                    Air = 0;
+                    DrownHits++;
+                    Health = Math.Max(0, Health - 2);
+                    Send(new UpdateHealthPacket { Health = (short)Health, Food = (short)Food, FoodSaturation = 2, HealthExact = Health });
+                }
+                LowestHealth = Math.Min(LowestHealth, Health);
+                if (Air != sent && (!under || tick % 5 == 0))
+                {
+                    sent = Air;
+                    var entry = Modern ? MetadataEntry.FromInt(EntityMeta.Air, Air) : MetadataEntry.FromShort(EntityMeta.Air, (short)Air);
+                    Send(new EntityMetadataPacket { EntityId = EntityId, Metadata = new EntityMetadata([entry]) });
+                }
+            }
+        }, CancellationToken.None);
+    }
+
+    /// <summary>The player's 1×2 column is walled on all four sides at feet and head (a melee mob can't reach it).</summary>
+    private bool PlayerBoxedIn()
+    {
+        int x = (int)Math.Floor(_px), y = (int)Math.Floor(_py + 1e-6), z = (int)Math.Floor(_pz);
+        foreach (var (dx, dz) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1) })
+            for (int dy = 0; dy <= 1; dy++)
+                if (Blocks.GetValueOrDefault((x + dx, y + dy, z + dz)) == 0) return false;
+        return true;
     }
 
     private int Ticks(DateTime since) => (int)((DateTime.UtcNow - since).TotalMilliseconds / TickMs);

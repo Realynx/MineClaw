@@ -148,14 +148,21 @@ public sealed class RaptorMemory : ISearchAugmenter, IDisposable
     public async Task<RaptorSyncReport> SyncAsync(CancellationToken ct = default)
     {
         if (!_ready) return new RaptorSyncReport(0, 0, 0, 0);
-        var inTree = Index.Read(t => t.Leaves.Where(l => l.Key != null).Select(l => l.Key!).ToHashSet(StringComparer.Ordinal));
+        var leafKeys = Index.Read(t => t.Leaves.Where(l => l.Key != null).ToDictionary(l => l.Index, l => l.Key!));
+        var inTree = leafKeys.Values.ToHashSet(StringComparer.Ordinal);
+        var batch = EligibleDocs(onlyPending: true, limit: Math.Max(1, _o.InsertBatch));
+        var pending = batch.Select(d => d.Ref).ToHashSet(StringComparer.Ordinal);
 
         var gone = new HashSet<string>(StringComparer.Ordinal);
         while (_removed.TryDequeue(out var r)) if (inTree.Contains(r)) gone.Add(r);
+        // Docs another writer of the shared db deleted (a clone, the groomer's merge) raise no Deleted event here: find the leaves
+        // whose doc is gone from the db itself. A doc re-created under the same ref (a merge's replace) takes the re-insert path
+        // below instead, so it counts once.
+        foreach (var idx in Store.VanishedNodes())
+            if (leafKeys.TryGetValue(idx, out var key) && !pending.Contains(key)) gone.Add(key);
         int removed = gone.Count > 0 ? await Index.RemoveAsync(gone, ct).ConfigureAwait(false) : 0;
 
-        var batch = EligibleDocs(onlyPending: true, limit: Math.Max(1, _o.InsertBatch));
-        var changed = batch.Where(d => inTree.Contains(d.Ref)).Select(d => d.Ref).ToList();
+        var changed = batch.Where(d => inTree.Contains(d.Ref) && !gone.Contains(d.Ref)).Select(d => d.Ref).ToList();
         if (changed.Count > 0) await Index.RemoveAsync(changed, replacing: true, ct).ConfigureAwait(false);
         long tokens = 0;
         if (batch.Count > 0)

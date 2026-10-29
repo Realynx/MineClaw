@@ -238,17 +238,22 @@ public sealed class GlFreecamView : OpenGlControlBase, Avalonia.Rendering.ICusto
             m.Step(dt);
             double input = m.Camera.TakeInputStamp();
             var pose = m.Camera.Pose;
-            if (!r.Textured && m.Atlas() is { } atlas)
+            if (m.Atlas() is { } atlas && !ReferenceEquals(atlas, r.Atlas))
             {
-                // Textures arrived after the context: rebuild the atlas and every mesh.
+                // Textures arrived after the context, or the hive's version changed (b1.8.1 ↔ 1.12.2 models): rebuild the atlas
+                // texture and every mesh (the worker re-meshes with the new models on its next pass).
                 var nr = new GlFreecamRenderer();
                 nr.Init(gl, GlVersion, atlas);
                 r.Release(m.Scene);
                 r.Dispose();
                 _r = r = nr;
-                m.Scene.Textured = true; // the worker re-meshes textured on its next Aim
+                m.Scene.Textured = true;
+                m.Store.RequestResend();
             }
-            m.Worker.Aim(pose.Dim, (int)Math.Floor(pose.X) >> 4, (int)Math.Floor(pose.Z) >> 4, m.MaxDistance / 16 + 1, r.Textured);
+            long? time = m.Cache.TimeNow(pose.Dim);
+            int sub = pose.Dim == -1 || time is not { } t ? 0 : Lighting.SkylightSubtracted(t);
+            m.Scene.SkySubtracted = sub;
+            m.Worker.Aim(pose.Dim, (int)Math.Floor(pose.X) >> 4, (int)Math.Floor(pose.Z) >> 4, m.MaxDistance / 16 + 1, r.Textured, sub);
             r.Ingest(m.Store, m.Scene, m.UploadBudgetMs, m.MaxUploadsPerFrame);
             double scale = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1;
             int w = Math.Max(16, (int)(Bounds.Width * scale)), h = Math.Max(16, (int)(Bounds.Height * scale));

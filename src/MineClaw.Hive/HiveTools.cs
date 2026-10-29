@@ -23,8 +23,8 @@ public static class HiveTools
 
     /// <summary>Main's cached prompt line for the clone kinds (added once, next to the script hint).</summary>
     public const string KindHint =
-        "hive kind=hive (own brain; brain=opus|deepseek) | subhive (a body your brain drives) | script (runs script=, then leaves); " +
-        "release name|all frees it and its clones (they deposit first). Clones coordinate off chat.";
+        "hive spawn bodies=N: N bodies YOUR brain drives (\"use 2 agents\"). kind=hive brain=deepseek bodies=15: ONE DeepSeek " +
+        "hive driving 15 bodies. script=: runs it, leaves. release name|all. Report only what spawned.";
 
     /// <param name="llm">Main's model options: the script-authorship policy for inline <c>code</c> (only the Opus brain writes Lua).
     /// Null = no inline code.</param>
@@ -39,12 +39,12 @@ public static class HiveTools
                 .Str("after", required: false);
         // kind always; brain (which replaces the old profile field: a profile name still works as brain=<profile>, and "profile"
         // is still read) only when there is a brain to choose, as profile was. Paid for by the shorter description below.
-        schema = schema.Str("kind", required: false);
+        schema = schema.Str("kind", required: false).Int("bodies", required: false);
         if (llm != null && llm.UsableProfiles().Any()) schema = schema.Str("brain", required: false);
         tools.Register(MainTool,
             // Reassigning goes through spawn/handover: a clone ignores hive bots' chat (live 3, 14:34: "69, robin wants you on the
             // cobble gen" never reached 69). Budget pinned in ToolBudgets.HiveTool.
-            "Clones: spawn/reassign (not chat), release, list.",
+            "Spawn/reassign (not chat).",
             schema.Build(),
             (input, _) =>
             {
@@ -56,7 +56,7 @@ public static class HiveTools
                 if (hierarchy != null)
                 {
                     var req = new Hierarchy.SpawnRequest(input.Str("kind"), brain, input.Str("task"), input.Str("script"), input.Str("code"), args,
-                        input.Str("after"), input.Str("name"), Handover: op == "handover");
+                        input.Str("after"), input.Str("name"), Handover: op == "handover", Bodies: input.Int("bodies"));
                     r = op switch
                     {
                         "spawn" or "handover" => hierarchy.Spawn(req),

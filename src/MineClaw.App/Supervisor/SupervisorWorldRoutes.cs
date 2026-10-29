@@ -37,6 +37,14 @@ public interface ISupervisorWorld
     IReadOnlyList<WorldColumnInfo> Index(int dim, int cx0, int cz0, int cx1, int cz1, int max);
     /// <summary>The columns' blocks (<see cref="ChunkSnapshot.Encode"/>); an unknown column comes back with empty data.</summary>
     IReadOnlyList<ColumnPayloadEntry> Columns(int dim, IReadOnlyList<(int Cx, int Cz)> cols);
+    /// <summary>The index for a viewer that syncs light: live hashes include the light.</summary>
+    IReadOnlyList<WorldColumnInfo> Index(int dim, int cx0, int cz0, int cx1, int cz1, int max, bool light) => Index(dim, cx0, cz0, cx1, cz1, max);
+    /// <summary>The columns with each live column's light (<see cref="LightSnapshot"/>, payload version 2).</summary>
+    IReadOnlyList<ColumnPayloadEntry> Columns(int dim, IReadOnlyList<(int Cx, int Cz)> cols, bool light) => Columns(dim, cols);
+    /// <summary>The game version the hive plays ("b1.8.1", "1.12.2"), null = unknown: the viewer's block models follow it.</summary>
+    string? Version => null;
+    /// <summary>The world time (ticks) in <paramref name="dim"/>, null = unknown: the viewer's day/night light follows it.</summary>
+    long? WorldTime(int dim) => null;
     IReadOnlyList<WorldBot> Bots();
     IReadOnlyList<WorldEntity> Entities(int? dim);
     WorldOverlays Overlays(int dim);
@@ -75,8 +83,10 @@ public sealed class TokenBucket(double perSecond, double burst, TimeProvider tim
 /// The Live Hive's read-only world routes (GET, token-gated by the server like everything else, rate-capped per route with
 /// 429 + Retry-After, cached briefly, at most two in flight):
 /// <list type="bullet">
-/// <item><c>/api/world/index?dim&amp;x&amp;z&amp;r</c> (block centre, radius 16..256) → JSON <c>{dim, at, columns:[{cx,cz,hash,seen,by,live}]}</c></item>
-/// <item><c>/api/world/chunks?dim&amp;cols=cx,cz;cx,cz…</c> (≤ 64) → <see cref="ColumnPayload"/> binary</item>
+/// <item><c>/api/world/index?dim&amp;x&amp;z&amp;r[&amp;light=1]</c> (block centre, radius 16..256) → JSON <c>{dim, at, columns:[{cx,cz,hash,seen,by,live}],
+/// version, time}</c> (the game version and the world time; <c>light=1</c>: live hashes include the light)</item>
+/// <item><c>/api/world/chunks?dim&amp;cols=cx,cz;cx,cz…[&amp;light=1]</c> (≤ 64) → <see cref="ColumnPayload"/> binary (<c>light=1</c>: version 2,
+/// live columns with their <see cref="LightSnapshot"/>)</item>
 /// <item><c>/api/world/entities?dim</c> → JSON <c>{at, rev, bots:[…], entities:[…]}</c> (bots of every dimension, entities of <c>dim</c> or all)</item>
 /// <item><c>/api/world/entities?since=REV</c> → the delta stream: <c>{at, rev, full, bots, entities:[changed since REV], removed:[[dim,id]…]}</c>
 /// (every dimension; <c>full</c> = the client was too far behind and gets everything)</item>
@@ -136,17 +146,19 @@ public sealed class SupervisorWorldRoutes
                         if (I(Q(r, "x")) is not { } x || I(Q(r, "z")) is not { } z) return Json(400, new { error = "index needs x, z (block coords) and r" });
                         int rad = Math.Clamp(I(Q(r, "r")) ?? 96, 16, MaxIndexRadius);
                         int cx0 = (x - rad) >> 4, cx1 = (x + rad) >> 4, cz0 = (z - rad) >> 4, cz1 = (z + rad) >> 4;
-                        var key = $"index:{dim}:{cx0}:{cz0}:{cx1}:{cz1}";
+                        bool light = Q(r, "light") is "1" or "true";
+                        var key = $"index:{dim}:{cx0}:{cz0}:{cx1}:{cz1}:{light}";
                         return await _cache.GetAsync(key, IndexCache, () => Work(() =>
                         {
-                            var cols = _world.Index(dim, cx0, cz0, cx1, cz1, (cx1 - cx0 + 1) * (cz1 - cz0 + 1));
-                            return Json(200, new { dim, at = _time.GetUtcNow().ToUnixTimeMilliseconds(), columns = cols });
+                            var cols = _world.Index(dim, cx0, cz0, cx1, cz1, (cx1 - cx0 + 1) * (cz1 - cz0 + 1), light);
+                            return Json(200, new { dim, at = _time.GetUtcNow().ToUnixTimeMilliseconds(), columns = cols, version = _world.Version, time = _world.WorldTime(dim) });
                         }, ct)).ConfigureAwait(false);
                     }
                 case "chunks":
                     {
                         if (ParseCols(Q(r, "cols")) is not { } cols) return Json(400, new { error = $"chunks needs cols=cx,cz;cx,cz (1..{MaxColumnsPerRequest})" });
-                        return await Work(() => new SupervisorReply(200, ColumnPayload.ContentType, ColumnPayload.Encode(dim, _world.Columns(dim, cols))), ct)
+                        bool light = Q(r, "light") is "1" or "true";
+                        return await Work(() => new SupervisorReply(200, ColumnPayload.ContentType, ColumnPayload.Encode(dim, _world.Columns(dim, cols, light))), ct)
                             .ConfigureAwait(false);
                     }
                 case "entities":

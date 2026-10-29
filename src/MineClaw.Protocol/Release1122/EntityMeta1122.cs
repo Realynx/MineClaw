@@ -109,7 +109,7 @@ public static class EntityMeta1122
     /// <summary>Wire index of <c>EntityLivingBase.HAND_STATES</c> (composed into the canonical flags' 0x10).</summary>
     public const int HandStatesIndex = 6;
 
-    private static readonly Rule[] Living = [new(7, EntityMeta.Health, Conv.Float), new(10, EntityMeta.ArrowsInEntity, Conv.VarInt)];
+    private static readonly Rule[] Living = [new(1, EntityMeta.Air, Conv.VarInt), new(7, EntityMeta.Health, Conv.Float), new(10, EntityMeta.ArrowsInEntity, Conv.VarInt)];
     private static readonly Rule[] PlayerRules = [.. Living, new(11, EntityMeta.Absorption, Conv.Float), new(14, EntityMeta.MainHand, Conv.Byte)];
     private static readonly Rule[] Ageable = [.. Living, new(12, EntityMeta.Baby, Conv.Bool)];
     private static readonly Rule[] Zombie = [.. Living, new(12, EntityMeta.Baby, Conv.Bool), new(14, EntityMeta.Aggressive, Conv.Bool)];

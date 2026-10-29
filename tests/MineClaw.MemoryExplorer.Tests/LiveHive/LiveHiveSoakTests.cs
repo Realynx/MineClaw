@@ -65,7 +65,7 @@ public class LiveHiveSoakTests
             }
             if (path.EndsWith("/chunks"))
             {
-                var want = r.RequestUri.Query.Split("cols=")[1].Split(';').Select(c => c.Split(',')).Select(c => (int.Parse(c[0]), int.Parse(Uri.UnescapeDataString(c[1]))));
+                var want = r.RequestUri.Query.Split("cols=")[1].Split('&')[0].Split(';').Select(c => c.Split(',')).Select(c => (int.Parse(c[0]), int.Parse(Uri.UnescapeDataString(c[1]))));
                 return Reply(ColumnPayload.Encode(0, want.Select(w => Entry(w.Item1, w.Item2, Column(w.Item1, w.Item2))).ToList()), "application/octet-stream");
             }
             if (path.Contains("/view/")) return Reply(Png.Encode(Enumerable.Repeat(0x336699u, 32 * 24).ToArray(), 32, 24), "image/png");

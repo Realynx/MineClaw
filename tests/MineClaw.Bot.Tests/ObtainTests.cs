@@ -169,6 +169,42 @@ public class ObtainTests
         Assert.Contains("acacia", r.Text.ToLowerInvariant());
     }
 
+    /// <summary>Live 10-29, clone 69 on 1.12.2: "the axe recipe asked for oak wood, and there wasn't any in my bag or the 6 chests
+    /// I know about. I only have 4 spruce planks." A wooden axe is 3 planks of any wood + 2 sticks (from any planks), and planks
+    /// come from any log: the planner tied every planks variant and named the first one's log (oak, 17:0) as the shortfall.</summary>
+    [Fact]
+    public async Task On_1122_spruce_logs_make_a_wooden_axe_through_spruce_planks_and_sticks()
+    {
+        using var v = MineClaw.Data.Versioning.GameData.Override(MineClaw.Data.Versioning.Release1122GameData.Instance);
+        var (h, c, _) = Make();
+        using var _h = h;
+        Put(c, Blocks.Log, 1, 3); // spruce logs only
+        var r = await h.Run("craft", new { item = "wooden axe" });
+        Assert.True(r.Ok, r.Text + " | " + Calls(c));
+        Assert.Equal(1, Inv(c, Items.WoodenAxe));
+        Assert.Equal(0, Inv(c, Blocks.Log, 0)); // no oak was ever needed
+        var plan = RecipePlanner.Plan(Items.WoodenAxe, 1, [new ItemStack((short)Blocks.Log, 3, 1)]);
+        Assert.True(plan.Complete, plan.ToString());
+        Assert.All(plan.Steps.Where(st => st.OutputId == Blocks.Planks), st => Assert.Equal(1, st.OutputDamage)); // spruce planks
+    }
+
+    [Fact]
+    public async Task On_1122_four_spruce_planks_and_no_logs_name_a_log_not_oak_wood_as_the_shortfall()
+    {
+        using var v = MineClaw.Data.Versioning.GameData.Override(MineClaw.Data.Versioning.Release1122GameData.Instance);
+        var plan = RecipePlanner.Plan(Items.WoodenAxe, 1, [new ItemStack((short)Blocks.Planks, 4, 1)]);
+        var miss = Assert.Single(plan.Missing);
+        Assert.Equal(Blocks.Log, miss.Id);
+        Assert.Equal(-1, miss.Damage); // any log
+        var (h, c, _) = Make();
+        using var _h = h;
+        Put(c, Blocks.Planks, 1, 4);
+        var r = await h.Run("craft", new { item = "wooden axe" });
+        Assert.False(r.Ok);
+        Assert.Contains("1 more log", r.Text);
+        Assert.DoesNotContain("oak", r.Text.ToLowerInvariant());
+    }
+
     [Fact]
     public async Task A_worn_pickaxe_is_replaced_from_chest_materials_not_reported_as_already_had()
     {

@@ -187,7 +187,7 @@ public sealed class BotHost : IDisposable
             // Autonomous mine: taught / regen-confirmed generator cells are resource sources too.
             mgx.Inner.MineSource = (p, _) => digCells.IsDigCell(p) || indexer?.IsConfirmedDigCell(p) == true;
         }
-        if (botOptions.Protection.ServerOp) ForgetSpawnProtection(rt, log);
+        if (botOptions.Protection.ServerOp) ForgetSpawnProtection(rt, log, client.Username);
         client.ReservedItems = protection.ReservedItems();
 
         Func<double, double, double, string?> landmark = (x, y, z) => Agent.Memory.Landmarks.Near(rt.Memory, rt.Observations, x, y, z);
@@ -431,22 +431,30 @@ public sealed class BotHost : IDisposable
     }
 
     /// <summary>
-    /// The bot is op (Bot:Protection:ServerOp): spawn protection doesn't apply, so a remembered spawn-protection region (and the
-    /// notes about it) from earlier sessions is dropped. Only real server reverts this session re-learn it.
+    /// This account is op (Bot:Protection:ServerOp, main's account): spawn protection doesn't bind IT, so it is exempt from the
+    /// remembered fact. The fact itself stays in the shared memory for every other hive account (clones and bodies aren't op);
+    /// a fact that never named the accounts it binds is dropped, as before (nothing says anyone else is bound).
     /// </summary>
-    public static void ForgetSpawnProtection(AgentRuntime rt, ILogger? log)
+    public static void ForgetSpawnProtection(AgentRuntime rt, ILogger? log, string? account = null)
     {
         try
         {
-            int n = 0;
+            int dropped = 0, exempt = 0;
             foreach (int dim in new[] { 0, -1 })
-                if (rt.Observations.Get("protected_region", "spawn", dimension: dim) != null)
+            {
+                if (SpawnProtectionFact.Read(rt.Observations, dim) is not { } fact) continue;
+                if (account != null && fact.Affects.Any(a => !a.Equals(account, StringComparison.OrdinalIgnoreCase)))
                 {
-                    rt.Observations.Remove("protected_region", "spawn", tombstone: false, dimension: dim);
-                    n++;
+                    fact.WithExempt(account).Write(rt.Observations, MineClaw.World.ChunkColumn.MaxHeight);
+                    exempt++;
+                    continue;
                 }
-            int notes = RetractSpawnProtectionNotes(rt);
-            if (n + notes > 0) log?.LogInformation("op: forgot the remembered spawn protection ({Rows} region(s), {Notes} note(s))", n, notes);
+                SpawnProtectionFact.Retract(rt.Observations, dim);
+                dropped++;
+            }
+            int notes = dropped > 0 ? RetractSpawnProtectionNotes(rt) : 0;
+            if (dropped + notes > 0) log?.LogInformation("op: forgot the remembered spawn protection ({Rows} region(s), {Notes} note(s))", dropped, notes);
+            if (exempt > 0) log?.LogInformation("op: {Account} is exempt from the remembered spawn protection; it still binds the other hive accounts", account);
         }
         catch (Exception ex) { log?.LogWarning(ex, "forgetting spawn protection failed"); }
     }
@@ -526,49 +534,52 @@ public sealed class BotHost : IDisposable
     /// Spawn protection learned by the client (logs that won't break near spawn) → one <c>protected_region</c> observation
     /// per dimension, so memory/where_is/the worker know about it; cleared when the client clears it.
     /// </summary>
-    private static void WireProtectedRegion(MineClaw.Client.MinecraftClient c, AgentRuntime rt, ILogger? log,
+    /// <remarks>Public for in-process bodies (each body's client feeds the same shared fact under its own account).</remarks>
+    public static void WireProtectedRegion(MineClaw.Client.MinecraftClient c, AgentRuntime rt, ILogger? log,
         IClaimBoard? claims = null, Func<IEnumerable<string>>? hiveBots = null)
     {
-        int lastDim = 0;
+        var account = c.Options.Username;
         // An undone edit on a block another hive bot holds a lease on, or right next to another hive bot, is a race with it
         // (two bots on one tree crown), never evidence of spawn protection.
         if (claims != null || hiveBots != null)
             c.EditContested = p => IsContested(c, p, claims, hiveBots);
-        // A stale "spawn protection" belief (accounts got op, or a past session's guess) is retracted by any edit that works
-        // inside it: the observation AND the brain's notes about it.
+        // An edit that worked inside the remembered region: evidence for THIS account only. An account the fact binds is free of
+        // it now (the fact goes once it binds nobody: then the brain's notes about it go too); any other account is exempt (op).
         c.EditSucceededNearSpawn += (p, dim) =>
         {
-            try
-            {
-                if (rt.Observations.Get("protected_region", "spawn", dimension: dim) is not { Bounds: { } b }) return;
-                if (p.X < b.MinX || p.X > b.MaxX || p.Z < b.MinZ || p.Z > b.MaxZ) return;
-                rt.Observations.Remove("protected_region", "spawn", tombstone: false, dimension: dim);
-                int n = RetractSpawnProtectionNotes(rt);
-                log?.LogInformation("edit at {Pos} worked inside the remembered spawn protection: retracted it ({Notes} note(s))", p, n);
-            }
-            catch (Exception ex) { log?.LogWarning(ex, "protected_region retraction failed"); }
+            try { NoteEditWorked(rt, account, p, dim, c.World.WorldHeight, log); }
+            catch (Exception ex) { log?.LogWarning(ex, "protected_region update failed"); }
         };
         c.ProtectedRegionChanged += r =>
         {
             try
             {
-                if (r == null)
-                {
-                    rt.Observations.Remove("protected_region", "spawn", tombstone: false, dimension: lastDim);
-                    RetractSpawnProtectionNotes(rt);
-                    return;
-                }
-                lastDim = r.Dimension;
-                rt.Observations.Upsert(new Agent.Rag.Observation("protected_region", "spawn",
-                    $"spawn protection: can't break blocks within {r.Radius} of {r.Center.X},{r.Center.Y},{r.Center.Z} ({r.Reason})")
-                {
-                    Bounds = Agent.Rag.Box.Of(r.Center.X - r.Radius, 0, r.Center.Z - r.Radius, r.Center.X + r.Radius, c.World.WorldHeight - 1, r.Center.Z + r.Radius),
-                    Dimension = r.Dimension,
-                    Confidence = 0.9,
-                });
+                if (r == null) return; // a success inside the client's region: EditSucceededNearSpawn above already updated the fact
+                var fact = SpawnProtectionFact.Learned(SpawnProtectionFact.Read(rt.Observations, r.Dimension), r, account);
+                fact.Write(rt.Observations, c.World.WorldHeight);
+                log?.LogInformation("spawn protection fact: {Text}", fact.Text());
             }
             catch (Exception ex) { log?.LogWarning(ex, "protected_region observation failed"); }
         };
+    }
+
+    /// <summary><paramref name="account"/>'s edit at <paramref name="p"/> worked: the shared fact learns from it (see <see cref="SpawnProtectionFact.AfterSuccess"/>).</summary>
+    internal static void NoteEditWorked(AgentRuntime rt, string account, MineClaw.World.BlockPos p, int dim, int worldHeight, ILogger? log)
+    {
+        if (SpawnProtectionFact.Read(rt.Observations, dim) is not { } fact) return;
+        var (next, changed) = fact.AfterSuccess(account, p, dim);
+        if (!changed) return;
+        if (next == null)
+        {
+            SpawnProtectionFact.Retract(rt.Observations, dim);
+            int n = RetractSpawnProtectionNotes(rt);
+            log?.LogInformation("edit by {Account} at {Pos} worked inside the remembered spawn protection, which bound only it: retracted ({Notes} note(s))",
+                account, p, n);
+            return;
+        }
+        next.Write(rt.Observations, worldHeight);
+        log?.LogInformation("edit by {Account} at {Pos} worked inside the spawn protection: {Account} is exempt (op); it still binds {Others}",
+            account, p, account, string.Join(", ", next.Affects));
     }
 
     /// <summary>
@@ -606,22 +617,25 @@ public sealed class BotHost : IDisposable
     /// The client's learned region vs the shared protected_region fact: gone from the db (a success in another process retracted
     /// it) → forget it here too; present but not held here (learned by another hive process) → adopt it, keeping its time.
     /// </summary>
-    internal static void SyncProtectedRegion(MineClaw.Client.MinecraftClient c, AgentRuntime rt, ILogger? log)
+    public static void SyncProtectedRegion(MineClaw.Client.MinecraftClient c, AgentRuntime rt, ILogger? log)
     {
         try
         {
-            var row = rt.Observations.Get("protected_region", "spawn", dimension: c.World.Dimension);
+            var account = c.Options.Username;
+            var fact = SpawnProtectionFact.Read(rt.Observations, c.World.Dimension);
             if (c.ProtectedRegion is { } mine)
             {
                 // Grace: my own fresh region may not be written yet (the event dispatcher upserts it).
-                if (row == null && DateTime.UtcNow - mine.LearnedAt > TimeSpan.FromSeconds(30) && c.ForgetProtectedRegion("retracted in the shared memory"))
+                if (fact == null && DateTime.UtcNow - mine.LearnedAt > TimeSpan.FromSeconds(30) && c.ForgetProtectedRegion("retracted in the shared memory"))
                     log?.LogInformation("spawn protection retracted elsewhere in the hive: forgot {Region}", mine);
+                else if (fact != null && !fact.AppliesTo(account) && c.ForgetProtectedRegion("this account is exempt (op)"))
+                    log?.LogInformation("spawn protection doesn't bind {Account} (exempt): forgot {Region}", account, mine);
                 return;
             }
-            if (row is not { Bounds: { } b }) return;
-            int radius = Math.Max(1, (int)Math.Round((b.MaxX - b.MinX) / 2.0));
-            var center = new MineClaw.World.BlockPos((int)Math.Round((b.MinX + b.MaxX) / 2.0), c.World.Spawn.Y, (int)Math.Round((b.MinZ + b.MaxZ) / 2.0));
-            var r = new MineClaw.Client.LearnedProtectedRegion(center, radius, c.World.Dimension, 2, "shared: " + row.Text, row.LastSeen.UtcDateTime);
+            if (fact == null || !fact.AppliesTo(account)) return;
+            var row = rt.Observations.Get(SpawnProtectionFact.Kind, SpawnProtectionFact.Key, dimension: c.World.Dimension);
+            var center = fact.Center with { Y = fact.Center.Y != 0 ? fact.Center.Y : c.World.Spawn.Y };
+            var r = (fact with { Center = center }).ToRegion(2, row?.LastSeen.UtcDateTime ?? DateTime.UtcNow);
             if (c.AdoptProtectedRegion(r)) log?.LogInformation("adopted the hive's spawn protection fact: {Region}", r);
         }
         catch (Exception ex) { log?.LogDebug(ex, "protected_region sync failed"); }

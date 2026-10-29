@@ -63,6 +63,10 @@ public sealed class FrameScene
     public Func<OverlaysDto?> Overlays { get; set; } = () => null;
     public Overlay Flags { get; set; } = Overlay.Default;
     public bool Textured { get; set; }
+    /// <summary>World.k at the world time (0 noon, 11 midnight): the sky colours and the entities' light follow it.</summary>
+    public int SkySubtracted { get; set; }
+    /// <summary>The sky's zenith, horizon (= fog) and void colours this frame (the CPU eye's, <see cref="EyeRenderer.SkyColours"/>).</summary>
+    public (uint Top, uint Horizon, uint Void) Sky => EyeRenderer.SkyColours(SkySubtracted, Pose.Dim == -1);
     public float FovDegrees { get; set; } = 70;
     public int MaxDistance { get; set; } = 96;
     /// <summary>Columns seen within this long draw as live; older ones dimmer (the CPU eye's rule).</summary>
@@ -152,7 +156,7 @@ public sealed class FrameScene
 
     private float LightAt(double x, double y, double z)
     {
-        int lvl = FaceLight.CellLevel(_vox, (int)Math.Floor(x), (int)Math.Floor(y), (int)Math.Floor(z), 0);
+        int lvl = FaceLight.CellLevel(_vox, (int)Math.Floor(x), (int)Math.Floor(y), (int)Math.Floor(z), Pose.Dim == -1 ? 0 : SkySubtracted);
         return lvl < 0 ? 0.75f : Math.Max(0.2f, Lighting.Brightness(lvl, Pose.Dim == -1));
     }
 

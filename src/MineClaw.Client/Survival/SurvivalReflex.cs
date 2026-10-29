@@ -1,5 +1,6 @@
 using MineClaw.Client.Versioning;
 using MineClaw.Data;
+using MineClaw.Data.Versioning;
 using MineClaw.World;
 
 namespace MineClaw.Client.Survival;
@@ -118,7 +119,10 @@ public sealed class SurvivalReflex
 
     /// <summary>Call on every health update. Returns an alert the first time health crosses the low / critical line;
     /// re-arms only after health rises <see cref="SurvivalOptions.Hysteresis"/> above it.</summary>
-    public HealthAlert? OnHealth(int health, int food, bool hasFood)
+    /// <param name="threat">A hostile on the body right now ("zombie 2m away"), or null: then the low alert says what the reflexes do
+    /// about it instead of "work goes on" (live 10-29: clone 69 kept chopping at 8/20 with a zombie hitting it).</param>
+    /// <param name="underWater">The head is under water (or the drowning reflex is surfacing): that is what happens next.</param>
+    public HealthAlert? OnHealth(int health, int food, bool hasFood, string? threat = null, bool underWater = false)
     {
         var o = Options;
         lock (_sync)
@@ -130,12 +134,17 @@ public sealed class SurvivalReflex
             if (health <= o.CriticalHealth && !_critical)
             {
                 _critical = _low = true;
-                return new HealthAlert(true, $"critical hp {health}/20 ({foodText}): stopped, retreating inward" + (hasFood ? " to eat" : ""));
+                // A normal world has no island interior: the reflexes get away from the mobs or box in.
+                string retreat = underWater ? "head under water: surfacing"
+                    : WorldMode.Current.HasVoidBelow ? "retreating inward" : threat is null ? "getting to safety" : $"{threat}: boxing in or getting away";
+                return new HealthAlert(true, $"critical hp {health}/20 ({foodText}): stopped, {retreat}" + (hasFood ? " to eat" : ""));
             }
             if (health <= o.LowHealth && !_low)
             {
                 _low = true;
-                return new HealthAlert(false, $"low health {health}/20 ({foodText}): no fights/spars until it recovers, work goes on" + (hasFood ? ", eating" : ""));
+                string rest = underWater ? "head under water: surfacing first"
+                    : threat is null ? "work goes on" : $"{threat}: fighting back only if I can win, else boxing in";
+                return new HealthAlert(false, $"low health {health}/20 ({foodText}): no fights/spars until it recovers, {rest}" + (hasFood ? ", eating" : ""));
             }
             return null;
         }

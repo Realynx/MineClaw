@@ -1,6 +1,6 @@
 # Hive hierarchy: kinds, ownership, dynamic accounts, the off-channel bus, one memory
 
-Status: steps (a)–(f) below are implemented (see "What exists now"); "Remaining" lists what isn't.
+Status: steps (a)–(h) below are implemented; "Remaining" lists what isn't.
 Related: `ARCHITECTURE.md` (Hive, One brain many bodies), `docs/design/one-brain-many-bodies.md`.
 
 ## The model (Fox's words, condensed)
@@ -24,7 +24,7 @@ Related: `ARCHITECTURE.md` (Hive, One brain many bodies), `docs/design/one-brain
 |---|---|
 | main | the root hive, `maid_chan`; the default owner; the only process that whitelists, allocates accounts, owns the db's writes for other hives, and routes the bus |
 | hive (kind) | a clone with its own brain loop (`BrainKind.Opus` or `BrainKind.DeepSeek`), today a clone process (`--clone`) |
-| subhive (kind) | a body driven by its owner's brain (`Bodies:Mode=inproc`, `BodyRegistry`) |
+| subhive (kind) | a body driven by its owner's brain, hosted in the owner's process (`InProcBodies` in subhive mode, `BodyRegistry`) |
 | script (kind) | a body running one saved script with the brain asleep (the existing script spawn), released when the script ends |
 | owner | the hive that spawned a clone: `main` or a hive-kind clone's account |
 | admin root | main, always; ownership never grants whitelist rights |
@@ -41,7 +41,9 @@ main (admin root, default hive, brain Opus 5.5)
 │   ├── 102 script wheat_loop  owner 101
 │   └── 103 hive (deepseek)    owner 101
 │       └── 105 script cobble  owner 103
-└── 106 subhive                owner main  (inproc only)
+├── 106 subhive                owner main  (in main's process)
+└── 107 hive (deepseek)        owner main
+    └── 108, 109, 111 subhive    owner 107 (in 107's process)
 ```
 
 - **Ownership** (`HiveTree`) decides who may assign, hand over, list and release a clone, and what a release cascades to. A hive
@@ -59,7 +61,9 @@ main (admin root, default hive, brain Opus 5.5)
    ≤ 16 chars, starts with `Hive:Accounts:Prefix`, never main, never a name online, seen in chat, a regular or trusted player.
    The number is how players address the clone ("101, come here"), so the chat arbiter's number rules keep working.
 3. **Cap check**: the server's max players (login packet; `MaxPlayersFallback`) minus online players minus launches not on the tab
-   list yet must leave one slot per offline regular (`SlotPolicy.CanSpawn`); `Hive:MaxClones` > 0 is an extra ceiling (0 = only
+   list yet must leave one slot per offline regular (`SlotPolicy.CanSpawn`; subhive bodies count as running, and as pending until
+   they are on the tab list); the **resource ceiling** (`Hive:Resources`, `Slots/ResourceCeiling`: memory headroom from the cgroup
+   limit, used = max(estimate, kernel's measurement)) must fit the new hive process or body; `Hive:MaxClones` > 0 is an extra ceiling (0 = only
    the player cap). Refusals say which ("player cap: only 1 slot free and 1 kept for offline regulars").
 4. **Whitelist add**: right before the login (`IHiveAccounts.BeforeLaunch`), through the command gate's scoped exception.
 5. **Spawn/connect**: the existing supervisor launch (login throttle spacing, current-user-only pipe, hello → welcome with the
@@ -80,6 +84,25 @@ its clones with it the same way.
 A never-joined account lands at the server's fresh-player spawn, which is over the void on this skyblock. The supervisor already
 refuses that login without a trusted player's /tp consent ("never joined: … needs a /tp"), and that applies to fresh accounts.
 Main never /tps on its own (op policy: only exact commands a trusted player names). Reuse-first keeps fresh accounts rare.
+
+## Subhive bodies (one brain, many bodies inside a hive)
+
+- **Where they live**: in their owner's process. Main hosts its own next to the clone processes (`InProcBodies.CreateSubhives` with
+  MainHive's claim board); a hive-kind clone hosts its own (CloneMode: a local claim board layered over main's mirror, `BodyCrewPort`
+  for its crews). Each body has its own connection, world view and wiring (`BodyFactory.CreateClone`), no brain of its own: the owning
+  brain drives it through the body parameter (`Prompts.SubhivesHint`, one cached line), `do{body:"all"}` and crews.
+- **Accounts**: always main's allocator. Main's own: allocate → tree + managed list → the host spawns → `BeforeConnect` waits for the
+  whitelist add → login. A hive's: the hive asks main (`spawn{kind:subhive, bodies:N, reset:true}` once in game), main allocates each,
+  whitelists it (confirmed, one at a time) and sends `host{account, task?}` to the owning hive, which logs it in (refusal = released).
+- **Gone**: a body that logged out for good (despawn, retire, someone else's login) is `InProcBodies.Gone`: main releases it directly,
+  a hive sends `subhive_gone` (accepted only from the hosting hive), then main removes it from the whitelist. A hive process that ends
+  takes its bodies with it (its logout gate despawns them first, deposit included); a crash restart reuses them (`reset`).
+- **Release**: `hive release 107` cascades bodies first: main asks 107 over the bus (`release{id}`), each body deposits, logs out,
+  is reported gone and de-whitelisted; only then is 107 itself recalled.
+- **Memory per body**: a small view distance (`Hive:Subhives:ViewDistance`, default 4, 1.12.2 Client Settings), one chunk store per
+  process (`World/Chunks/SharedChunkStore`, overlapping views held once), lazily allocated 16³ sections (256-high columns ≈ 59 KB
+  instead of 256 KB on normal terrain). Measured (`Client.Tests/BodyMemoryBenchmarkTests`, managed MB per extra body): r8 eager 72.9,
+  r4 eager 20.6, r8 lazy 16.6, r4 lazy 4.8, r4 lazy + shared 0.25, r3 lazy + shared 0.24 (the shared store itself ≈ 4.6 MiB at r4).
 
 ## Whitelisting: the only path
 
@@ -156,16 +179,24 @@ players, world index, structures, script library, blueprints and self profile. N
 
 ## The brain's interface (token budget)
 
-`hive {op: spawn|release|list|handover, task, name, script, code, args, after, kind, brain}`:
+`hive {op: spawn|release|list|handover, task, name, script, code, args, after, kind, bodies, brain}`:
 
-- `kind`: `hive` (default; `script` when a script is given) | `subhive` | `script`.
+- `kind`: default `script` when a script is given, `hive` when a brain is named, a named clone keeps its kind, else **`subhive`**
+  wherever subhive bodies exist (the old one-process-per-helper path, "picked maid_chan_67 for Chop", is only taken when asked for).
+- `bodies`: kind=subhive: N bodies the asking hive's own brain drives ("use 2 agents" = `bodies=2`); kind=hive: ONE hive process
+  whose brain drives N subhive bodies ("spawn a deepseek hive with 15 agents to do X" = `kind=hive brain=deepseek bodies=15 task=X`).
+  Main caps N by memory (`BodiesThatFit`) and the player cap up front and says so ("only 7 of 15 bodies fit (memory: room for 7)");
+  every answer says what exists ("none in game yet"), and the cached hint says "Report only what spawned".
 - `brain`: `opus` (default) | `deepseek` | a model profile name (the old `profile`, still read). Shown only when a profile is usable.
 - `release name|all` replaces `recall` (still accepted).
-- One cached prompt line (`HiveTools.KindHint`). Measured: the hive tool ≈114 tokens (≤ `ToolBudgets.HiveTool` 115), the plain one
+- One cached prompt line (`HiveTools.KindHint`, 208 chars). Measured: the hive tool with `bodies` ≈115 tokens (≤ `ToolBudgets.HiveTool`
+  115; the description shrank to "Spawn/reassign (not chat)."), brain tools + hive ≈2,940 (≤ 2,950); before: ≈114, the plain one
   ≈77; the description got shorter to pay for `kind`. A hive clone's own tool ≈95, below main's, so a hive clone's brain set stays
   under main's: one cap (`ToolBudgets.Brain` 2,950).
 - DeepSeek: available only when the `Hive:Accounts:DeepSeekProfile` model profile (default `deepseek`, Ollama) is usable; otherwise
-  `no: brain deepseek not available (…); use brain opus`.
+  `no: brain deepseek not available (…); use brain opus; spawned nothing`. Its brain has no prompt cache, so its tool set is compact
+  (`App/Hosting/CompactBrainTools`: design, reflect_self, identity, mark/describe_structure, watch_demo, ask_stand leave the brain
+  tier, ≈990 tokens per call); it runs saved scripts (crews included), never writes them.
 
 ## How today's code maps
 
@@ -177,7 +208,8 @@ players, world index, structures, script library, blueprints and self profile. N
 | `ChatArbiter` clone names fixed | `AddClone`; the roster message carries every known clone so clone processes learn new names |
 | `CloneMode` (one process per clone) | the **hive** kind (Opus or DeepSeek profile); gets the bus token, memory write-through, inbox, its own `hive` tool when kind=hive, the chat budget |
 | script spawns (`CloneScriptRunner`, `after: logout`) | the **script** kind, owned by the spawner, released (and de-whitelisted) when it logs out |
-| `InProcBodies` / `BodyRegistry` (one brain, many bodies) | the **subhive** kind host (`ISubhiveHost`); not wired yet, so `kind=subhive` answers "not available here" |
+| `InProcBodies` / `BodyRegistry` (one brain, many bodies) | the **subhive** kind host (`ISubhiveHost`, subhive mode) in main and in every hive-kind clone; dynamic accounts (`BodyRegistry.AddAccount`) |
+| `Hive:MaxClones` 4 | `Hive:Resources` (memory ceiling) + `Hive:MaxClones` as an optional hard cap (default 0 = none) |
 | the sub-hive plan (DeepSeek v4 flash on `maid_*` accounts) | a hive-kind clone with `brain=deepseek` on a managed `maid_chan_<id>` account |
 | per-clone personality shards | one shared self profile (`SharedSelf`) |
 | Explorer Live Hive: tiles from live bots | plus a **Hive tree** tab (`/api/hive/tree`: owner → children, kind, brain, state, task) |
@@ -191,6 +223,8 @@ players, world index, structures, script library, blueprints and self profile. N
 - (e) Script-only bodies: the script kind, owned by the spawner, released at the end.
 - (f) Explorer Live Hive tree.
 - (g) One memory: write-through to main's groomer with provenance, instant invalidation, shared self profile.
+- (h) Subhive bodies wired (main's and a hive's, `host`/`subhive_gone`), `bodies=N`, default kind subhive, the resource ceiling,
+  small view distance + shared chunk store + lazy sections, spawn protection as an account-aware world fact.
 
 ## Tests
 
@@ -200,13 +234,16 @@ reconcile after a crash + legacy adoption; the empty state; spawn of each kind (
 release cascade order (deposit → logout → whitelist remove, children before owners); owner logout takes its clones; bus routing,
 authentication, never chat; speech scrub; chat budget; the hive tool budgets; the supervisor allocating, whitelisting before login
 and removing after release.
+`tests/MineClaw.Hive.Tests/SubhiveHierarchyTests.cs`: main's bodies whitelisted before login and released after a deposit; a DeepSeek
+hive with 15 bodies is one process (or an honest no); the memory ceiling and the player cap; cgroup v2/v1 parsing; a hive's bodies over
+the bus (host, reuse on restart, only the host reports gone) and its release cascade bodies first. `tests/MineClaw.App.Tests/SubhiveHostTests.cs`:
+a DeepSeek hive (fake model) hosting 3 bodies on fake servers, accounts through main, a saved crew chopping in parallel lanes, the
+release cascade with deposits; main in hive mode keeps its hive tool within the brain budget. `tests/MineClaw.Bot.Tests/SpawnProtectionFactTests.cs`.
 `tests/MineClaw.Hive.Tests/SharedMemoryTests.cs`: two hives read each other's writes instantly; a DeepSeek hive's write goes through
 main's groomer with provenance (and the in-transaction fallback); placed blocks shared across hives in protection; one budget.
 
 ## Remaining
 
-- **Subhive host**: wire `ISubhiveHost` to `InProcBodies`/`BodyRegistry` so main (and later a hive process) can add bodies its brain
-  drives with an allocated account (InProcBodies still takes its accounts from `Bodies:Accounts`).
 - **TUI and supervisor status panels** are built from a roster at startup (main alone now); dynamic clones show in `/api/bots`, the
   Live Hive tiles and the tree, but the TUI tabs and `/api/status?bot=` for clones need a dynamic source list.
 - **Structured stores behind main's writer** (beliefs, directives, notes over `mem_write`-style messages) if the shared-WAL

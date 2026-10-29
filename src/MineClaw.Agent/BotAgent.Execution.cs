@@ -32,6 +32,15 @@ public sealed partial class BotAgent
         LatencyTracker.BodyTools.Contains(name) || name is "delegate" or "smelt" or "collect_drops" or "stop_spar";
 
     /// <summary>
+    /// A clone spawned for work (<c>hive op=spawn|handover</c>) walks out like a job: it goes through the same body-safety check
+    /// (live 10-29 night: three clones died with no food, main re-spawned 67, 420 and 1337 into the same night, all pinned at
+    /// once by "night + no food").
+    /// </summary>
+    public static bool IsCloneSpawn(string tool, JsonElement input) =>
+        tool == "hive" && input.ValueKind == JsonValueKind.Object && input.TryGetProperty("op", out var op)
+        && op.ValueKind == JsonValueKind.String && op.GetString() is "spawn" or "handover";
+
+    /// <summary>
     /// Who holds the body when it isn't free for brain body tools, e.g. "script cobble_loop 40%" (null = free). A running
     /// (not paused) script; the brain sees it as "[body: ...]" in each turn header.
     /// </summary>
@@ -124,7 +133,7 @@ public sealed partial class BotAgent
             p.Result = ToolResult.Error($"body busy: {holder}. Use script op=pause or op=replace, or queue it: do{{...,queue:true}} runs after it");
             return p;
         }
-        if (IsMainBody(body) && BodySafety is { } safety && p.Steps.Any(s => IsBodyTool(s.Tool.Name)))
+        if (IsMainBody(body) && BodySafety is { } safety && p.Steps.Any(s => IsBodyTool(s.Tool.Name) || IsCloneSpawn(s.Tool.Name, s.Input)))
         {
             string? no = null;
             try { no = safety(p.Steps.Select(s => (s.Tool.Name, s.Input)).ToList()); } catch (Exception ex) { _log.LogDebug(ex, "body safety check failed"); }

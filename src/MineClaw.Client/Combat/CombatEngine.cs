@@ -60,7 +60,10 @@ public sealed class CombatEngine
         /// <summary>The reflex gave up on this target (it can't be reached): remembered so it doesn't re-trigger.</summary>
         public bool GaveUp;
         public double PrevDist = double.MaxValue, BestDist = double.MaxValue;
+        public Vec3d? PrevTargetPos;
+        public bool MobApproaching;
         public bool Explicit, FuseAlerted, LowAlerted, ShelterAsked;
+        public long OutmatchCheck;
         public BlockPos? Stance;
         public int StrafeSign = 1;
         public string? StopRequest;
@@ -148,6 +151,15 @@ public sealed class CombatEngine
     /// step asks the client to box the body in (<see cref="CombatStep.Shelter"/>).
     /// </summary>
     public Func<int, bool, bool>? ShouldShelter { get; set; }
+
+    /// <summary>
+    /// Whether the body could box itself in right now (blocks on hand, not already boxing in): asked when a 1.9+ melee fight can't be
+    /// won (<see cref="Outmatched"/>), so it boxes in instead of trading hits it loses. Null = never.
+    /// </summary>
+    public Func<int, bool>? CanBoxIn { get; set; }
+
+    /// <summary>The server's difficulty (0..3) for the mobs' damage; default normal.</summary>
+    public Func<int>? Difficulty { get; set; }
 
     /// <summary>The body is boxing itself in / waiting it out: no reflex fights start (the box is the defence).</summary>
     public volatile bool Sheltering;
@@ -270,8 +282,20 @@ public sealed class CombatEngine
         {
             if (tick % 5 == 0 && Scan(phys) is { } found)
             {
-                ctx.Abort = StartFight(FightKind.Mob, found.E, found.Why, phys, explicitDone: null);
-                if (found.Cover) _fight!.Cover = true;
+                // 1.9+: a melee fight it would lose (bare hands vs a zombie: 2 dps against 20 hp while taking 3/s) is not started:
+                // box in with the blocks on hand instead (live 10-29 02:07, clone 69: "fight started: zombie", slain 3 s later).
+                if (!found.Cover && MayBoxInstead(found.Why) && Outmatched(phys, found.E) is { } why && CanBoxIn is { } can && SafeAsk(can, MeleeThreats(phys.Position).Count))
+                {
+                    Sheltering = true;
+                    ctx.Shelter = true;
+                    ctx.Abort = true;
+                    Raise(CombatEventKind.Critical, $"{found.E.DisplayName} {found.E.Position.DistanceTo(phys.Position):0}m away and I can't win ({why}): boxing in");
+                }
+                else
+                {
+                    ctx.Abort = StartFight(FightKind.Mob, found.E, found.Why, phys, explicitDone: null);
+                    if (found.Cover) _fight!.Cover = true;
+                }
             }
         }
         if (_fight is { } f)
@@ -450,6 +474,52 @@ public sealed class CombatEngine
     private bool IsGuarded(string? name) => name is not null && Guarded.Any(g => string.Equals(g, name, StringComparison.OrdinalIgnoreCase));
 
     // ------------------------------------------------------------------ reflex scan
+
+    /// <summary>Defending a guarded player is never abandoned for a box while the body's own hp holds (the low-hp reflexes still
+    /// come first): live 10-29, Fox and Robin were killed by a zombie at a door while main stayed put.</summary>
+    private bool MayBoxInstead(string why) =>
+        !why.StartsWith("guarding", StringComparison.Ordinal) || _w.Player.Health <= Options.DisengageHealth + 2;
+
+    private static bool SafeAsk(Func<int, bool> f, int n)
+    {
+        try { return f(n); } catch { return false; }
+    }
+
+    /// <summary>Melee threats within 8 blocks (what can hit the body in the next seconds).</summary>
+    private List<Entity> MeleeThreats(Vec3d me) =>
+        _w.Entities.Nearby(me, 8, e => CombatRules.IsThreat(e) && CombatRules.ProfileOf(e).Tactic == MobTactic.Melee).ToList();
+
+    /// <summary>The fight's kill and die times (s) and its description; null without a 1.9+ cooldown or a melee target.</summary>
+    private (double Kill, double Die, string Text)? Estimate(PhysicsState phys, Entity target)
+    {
+        if (Rules.AttackCooldownTicks(0) <= 0) return null;
+        if (CombatRules.ProfileOf(target).Tactic != MobTactic.Melee || !CombatRules.IsThreat(target)) return null;
+        var pick = WeaponChoice.Best(_w.Inventory.PlayerSlots(), Reserved(), Options.NeverWield, Rules);
+        if (WeaponChoice.Dps(pick.ItemId, Rules) is not { } dps || dps <= 0) return null;
+        var mobs = MeleeThreats(phys.Position);
+        if (!mobs.Any(m => m.Id == target.Id)) mobs.Add(target);
+        int diff = Difficulty?.Invoke() ?? 2;
+        // The target is knocked back by every charged hit and must walk in again: it lands about 0.6 of its hits.
+        double incoming = mobs.Sum(m => CombatRules.MonsterDamageToPlayer(CombatRules.MeleeDamageOf(m), diff) * (m.Id == target.Id ? KnockedBackHitShare : 1.0));
+        if (incoming <= 0) return null;
+        double health = mobs.Sum(m => m.Health is float h and > 0 ? h : CombatRules.ProfileOf(m).MaxHealth);
+        double kill = health / dps, die = Math.Max(0, _w.Player.Health - 1) / incoming;
+        string weapon = pick.ItemId > 0 ? Items.Get(pick.ItemId).Name.Replace('_', ' ') : "bare hands";
+        return (kill, die, $"{weapon} {dps:0.#} dmg/s vs {mobs.Count} mob{(mobs.Count > 1 ? "s" : "")} with {health:0} hp, taking {incoming:0.#}/s at hp {_w.Player.Health}");
+    }
+
+    /// <summary>Share of its attacks a melee target lands while our charged hits knock it back (it walks in again each time).</summary>
+    public const double KnockedBackHitShare = 0.6;
+
+    /// <summary>
+    /// 1.9+ only (b1.8.1 spam-clicks, no estimate): why a melee fight against <paramref name="target"/> (and the other melee mobs
+    /// within 8) can't be won, or null. Our damage per second is the best weapon's charged hits (<see cref="WeaponChoice.Dps"/>);
+    /// theirs is each mob's melee damage at the difficulty once a second (<c>EntityAIAttackMelee</c>'s 20-tick attack wait; the target,
+    /// knocked back by each hit, lands <see cref="KnockedBackHitShare"/> of them). Lost
+    /// when killing them all takes longer than ¾ of the time to drop to 1 hp.
+    /// </summary>
+    public string? Outmatched(PhysicsState phys, Entity target) =>
+        Estimate(phys, target) is { } e && e.Kill > e.Die * 0.75 ? e.Text : null;
 
     private (Entity E, string Why, bool Cover)? Scan(PhysicsState phys)
     {
@@ -644,6 +714,7 @@ public sealed class CombatEngine
                 f.TargetId = next.E.Id;
                 f.TargetName = next.E.DisplayName;
                 f.PrevDist = f.BestDist = double.MaxValue;
+                f.PrevTargetPos = null;
                 f.LastProgressTick = f.TargetSince = _tick;
                 f.TargetHits = 0;
                 f.Stance = null;
@@ -672,10 +743,32 @@ public sealed class CombatEngine
             EndFight(f, $"couldn't reach {f.TargetName} (0 hits in {Options.ZeroHitGiveUpTicks / 20}s), left it alone", phys, ctx);
             return face;
         }
+        // "Approaching" is the MOB closing in (its own move toward where I stand now), not the gap shrinking: while the bot walks up
+        // to a mob busy with someone else the gap shrinks too, and "let it come to us" then held the bot 5 m short until the 8 s
+        // give-up (live 10-29: Fox and Robin killed by a zombie at a door; this guard fight never reached it).
         bool approaching = false;
-        if ((_tick - f.StartTick) % 10 == 0) { approaching = dist < f.PrevDist - 0.3; f.PrevDist = dist; }
-        else approaching = dist < f.PrevDist;
+        if ((_tick - f.StartTick) % 10 == 0)
+        {
+            approaching = f.PrevTargetPos is { } pt && Horizontal(me, pt) - dist > 0.3;
+            f.PrevTargetPos = target.Position;
+            f.MobApproaching = approaching;
+            f.PrevDist = dist;
+        }
+        else approaching = f.MobApproaching;
         Sample(f, phys, target);
+
+        // ---- 1.9+ fight-or-flight: a reflex melee fight that turned out unwinnable (more mobs, hp lost) boxes in while it still can
+        if (!f.Explicit && f.FleeStart < 0 && prof.Tactic == MobTactic.Melee && _tick - f.OutmatchCheck >= 10 && MayBoxInstead(f.Reason))
+        {
+            f.OutmatchCheck = _tick;
+            if (Outmatched(phys, target) is { } why && CanBoxIn is { } can && SafeAsk(can, MeleeThreats(me).Count))
+            {
+                Sheltering = true;
+                ctx.Shelter = true;
+                EndFight(f, $"boxing in at hp {_w.Player.Health}: can't win ({why})", phys, ctx);
+                return face;
+            }
+        }
 
         // ---- low health: disengage inward, then eat
         if (_w.Player.Health <= Options.DisengageHealth && f.FleeStart < 0)

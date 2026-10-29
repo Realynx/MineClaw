@@ -8,8 +8,14 @@ public sealed class HiveConfig
 {
     /// <summary>Off = no clones, no supervisor, no hive tools (the TUI still lists the roster greyed out).</summary>
     public bool Enabled { get; set; } = true;
-    /// <summary>Ceiling on clones out at once; 0 = no ceiling beyond the server's player cap (minus slots kept for regulars).</summary>
-    public int MaxClones { get; set; } = 4;
+    /// <summary>Optional hard cap on clone accounts out at once (hive processes, script bodies and subhive bodies); 0 = none: the
+    /// resource-aware ceiling (<see cref="Resources"/>: memory headroom from the cgroup limit) and the server's player cap (minus
+    /// slots kept for regulars) decide.</summary>
+    public int MaxClones { get; set; }
+    /// <summary>The memory model of the resource-aware ceiling (per-body and per-hive-process cost, reserve, limit override).</summary>
+    public Slots.HiveResourceConfig Resources { get; set; } = new();
+    /// <summary>Subhive bodies (a hive's brain driving extra characters in its own process): view distance etc.</summary>
+    public SubhiveConfig Subhives { get; set; } = new();
     /// <summary>Legacy fixed roster. Production ignores it (<see cref="IgnoreLegacyRoster"/>): accounts are allocated per spawn
     /// (<see cref="Accounts"/>). Still read, so old configs load; set directly only by tests that pre-seed slots.</summary>
     public string[] CloneUsernames { get; set; } = [];
@@ -121,4 +127,17 @@ public sealed class HiveBudgetConfig
     public decimal EstimateMainUsd { get; set; } = 0.04m;
     public decimal EstimateWorkerUsd { get; set; } = 0.015m;
     public decimal EstimateCheapUsd { get; set; } = 0.003m;
+}
+
+/// <summary>"Hive:Subhives": bodies a hive hosts in its own process (one brain, many bodies), each with its own login.</summary>
+public sealed class SubhiveConfig
+{
+    /// <summary>Off = <c>hive spawn kind=subhive</c> answers "not available here" and a hive clone hosts no bodies.</summary>
+    public bool Enabled { get; set; } = true;
+    /// <summary>Client Settings view distance a subhive body asks for (chunks; 1.12.2): fewer columns per body. Main keeps its own.</summary>
+    public int ViewDistance { get; set; } = 4;
+    /// <summary>Bodies of one hive process share one chunk store (a column two bodies both see is held once).</summary>
+    public bool ShareChunks { get; set; } = true;
+    /// <summary>Most bodies one spawn may ask for.</summary>
+    public int MaxPerSpawn { get; set; } = 24;
 }

@@ -30,7 +30,9 @@ public sealed partial class MinecraftClient : IAsyncDisposable
     public MinecraftClient(ClientOptions options, WorldState? world = null)
     {
         Options = options ?? throw new ArgumentNullException(nameof(options));
-        World = world ?? new WorldState(height: options.Profile.Version.WorldHeight, inventory: options.Profile.Inventory, physics: options.Profile.Physics);
+        _ownsWorld = world is null;
+        World = world ?? new WorldState(height: options.Profile.Version.WorldHeight, inventory: options.Profile.Inventory, physics: options.Profile.Physics,
+            chunkStore: options.ChunkStore);
         if (options.Profile.ItemRules is { } itemRules) World.Inventory.Rules = itemRules;
         World.Entities.Rules = options.Profile.Entities; // P4: the version's mob profiles, stamped on every spawn
         IsProtected = options.IsProtected;
@@ -46,6 +48,8 @@ public sealed partial class MinecraftClient : IAsyncDisposable
 
     public ClientOptions Options { get; }
     public WorldState World { get; }
+    /// <summary>The client built <see cref="World"/> (and gives its shared columns back on dispose).</summary>
+    private readonly bool _ownsWorld;
     public ClientState State => _state;
 
     /// <summary>Connected, spawned (position known) and alive — actions are possible.</summary>
@@ -191,6 +195,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
         }
         MineClaw.Protocol.Versioning.IGameConnection conn;
         var protocol = Options.Profile.Protocol;
+        if (Options.ViewDistance is int viewDistance) protocol = protocol.WithViewDistance(viewDistance); // per client, the profile untouched
         try
         {
             conn = Options.ConnectionFactory is { } f
@@ -275,6 +280,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
         _eventQueue.Writer.TryComplete();
         if (_telemetry is not null) await _telemetry.DisposeAsync().ConfigureAwait(false);
         try { await _eventPump.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch { /* ignore */ }
+        if (_ownsWorld) World.Dispose(); // a shared store's columns go back to it (no-op for private columns)
     }
 
     private void EndSession(Session s, string reason, bool sendQuit = false, string quitReason = "Quitting")

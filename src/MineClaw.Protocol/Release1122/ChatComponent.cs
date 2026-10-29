@@ -160,7 +160,7 @@ public static partial class ChatComponent
     {
         if (!lang.TryGet(key, out var format))
         {
-            Piece(sb, style, key);
+            Piece(sb, style, LangTable.CleanKey(key));
             foreach (var a in args) sb.Append(' ').Append(a);
             return;
         }
@@ -235,6 +235,14 @@ public sealed class LangTable
         ["disconnect.genericReason"] = "%s",
         ["disconnect.lost"] = "Connection Lost",
         ["commands.kick.success"] = "Kicked %s from the game",
+        // Live 10-29 on alice (no jar there): the op/permission/whitelist answers the hive's account manager reads.
+        ["commands.generic.permission"] = "You do not have permission to use this command",
+        ["commands.generic.notFound"] = "Unknown command. Try /help for a list of commands",
+        ["commands.generic.player.notFound"] = "Player '%s' cannot be found",
+        ["commands.op.success"] = "Opped %s",
+        ["commands.deop.success"] = "De-opped %s",
+        ["commands.whitelist.remove.success"] = "Removed %s from the whitelist",
+        ["commands.whitelist.remove.failed"] = "Could not remove %s from the whitelist",
         ["commands.whitelist.add.success"] = "Added %s to the whitelist",
         ["commands.whitelist.add.failed"] = "Could not add %s to the whitelist",
         ["death.attack.generic"] = "%1$s died",
@@ -297,13 +305,57 @@ public sealed class LangTable
         }
     }
 
+    /// <summary>A plain en_us.lang file shipped with the release (the build copies it from the installed client jar; see the
+    /// App's CopyLang1122 target): next to the binary, then the working directory. Live 10-29 on alice (no jar installed):
+    /// "commands.generic.permission", "commands.op.success maid_chan" and advancement titles reached chat as raw keys.</summary>
+    public static IEnumerable<string> CandidateFiles()
+    {
+        foreach (var root in new[] { AppContext.BaseDirectory, Environment.CurrentDirectory }.Where(r => !string.IsNullOrEmpty(r)).Distinct())
+        {
+            yield return Path.Combine(root, "assets", "1.12.2", "assets", "minecraft", "lang", "en_us.lang");
+            yield return Path.Combine(root, "assets", "1.12.2", "en_us.lang");
+        }
+    }
+
+    /// <summary>Reads a plain .lang file over the built-in keys.</summary>
+    public static LangTable FromFile(string path)
+    {
+        using var r = new StreamReader(path, Encoding.UTF8);
+        var t = Parse(r);
+        foreach (var (k, v) in Builtin._map) t._map.TryAdd(k, v);
+        return t;
+    }
+
+    /// <summary>Jars a running bot may have cached itself (the renderer downloads the official 1.12.2 jar into its assets dir:
+    /// /var/lib/mineclaw/assets/1.12.2-client.jar on alice).</summary>
+    private static IEnumerable<string> CachedJars()
+    {
+        foreach (var root in new[] { Environment.CurrentDirectory, AppContext.BaseDirectory }.Where(r => !string.IsNullOrEmpty(r)).Distinct())
+            yield return Path.Combine(root, "assets", "1.12.2-client.jar");
+    }
+
     private static LangTable? _default;
 
-    /// <summary>The full table from the first client jar found (read once per process), else <see cref="Builtin"/>.</summary>
+    /// <summary>The full table from the shipped en_us.lang or the first client jar found (read once per process once found), else
+    /// <see cref="Builtin"/> (looked for again next time: the renderer may download the jar later in the session).</summary>
     public static LangTable LoadDefault(Action<string>? log = null)
     {
         if (_default is { } d) return d;
-        foreach (var jar in CandidateJars())
+        foreach (var file in CandidateFiles())
+        {
+            try
+            {
+                if (!File.Exists(file)) continue;
+                var t = FromFile(file);
+                log?.Invoke($"1.12.2 chat translations: {t.Count} keys from {file}");
+                return _default = t;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                log?.Invoke($"can't read {file}: {ex.Message}");
+            }
+        }
+        foreach (var jar in CandidateJars().Concat(CachedJars()))
         {
             try
             {
@@ -317,6 +369,21 @@ public sealed class LangTable
                 log?.Invoke($"can't read en_us.lang from {jar}: {ex.Message}");
             }
         }
-        return _default = Builtin;
+        return Builtin;
+    }
+
+    /// <summary>
+    /// A key no table has, made readable instead of shown raw: "commands.generic.permission" -> "generic permission",
+    /// "advancements.adventure.kill_a_mob.title" -> "kill a mob". Its arguments follow it.
+    /// </summary>
+    public static string CleanKey(string key)
+    {
+        var parts = key.Split('.', StringSplitOptions.RemoveEmptyEntries).ToList();
+        if (parts.Count == 0) return key;
+        string[] noise = ["commands", "advancements", "title", "description", "success", "message", "display", "type", "chat", "multiplayer"];
+        var keep = parts.Where(p => !noise.Contains(p, StringComparer.Ordinal)).ToList();
+        if (parts[0] == "advancements" && keep.Count > 1) keep = [keep[^1]]; // the advancement's own name
+        if (keep.Count == 0) keep = [parts[^1]];
+        return string.Join(' ', keep).Replace('_', ' ');
     }
 }

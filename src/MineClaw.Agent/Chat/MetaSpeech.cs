@@ -145,6 +145,23 @@ public static partial class MetaSpeech
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex RecapRx();
 
+    /// <summary>
+    /// Status narration said aloud (live 10-29 1.12.2, main in public chat: "Nothing for me to do right now."; after clone 69's
+    /// death: "Clone 69 was killed by a zombie at its tree, the same one that was attacking it."): its own idleness, a report
+    /// about a clone, a third-person death report. Kept only when a player asked for status (the user wants very low verbosity).
+    /// "you were killed by…" (to the listener) and real warnings stay.
+    /// </summary>
+    [GeneratedRegex(
+        @"^\W*(?:there'?s\s+|i\s+have\s+|i'?ve\s+got\s+|i\s+got\s+)?nothing\s+(?:else\s+|more\s+)?(?:for\s+me\s+)?(?:left\s+)?to\s+do\b" +
+        @"|^\W*(?:i'?m\s+|i\s+am\s+)?(?:idle|free|done)\s+(?:for\s+now|right\s+now|now|at\s+the\s+moment)\W*$" +
+        @"|\b(?:clone|maid_chan_)\s*#?\d+\b[^.!?]*?\b(?:was|were|got|is|has|had|died|finished|stopped|failed|drowned|respawned|logged|joined|reported|still)\b" +
+        @"|^\W*(?!you\b|u\b|ya\b|y'?all\b|yall\b)[\w']+(?:\s+\d+)?\s+(?:was|got|has\s+been)\s+(?:killed|slain|shot|blown\s+up|drowned)\s+by\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex StatusNarrationRx();
+
+    /// <summary>Its own idleness or a third-person report about a clone/death (dropped unless a player asked for status).</summary>
+    public static bool IsStatusNarration(string sentence) => StatusNarrationRx().IsMatch(sentence ?? "");
+
     [GeneratedRegex(@"\b(?:you|u|ur|your|yours|ya|y'?all|yall)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex SecondPersonRx();
 
@@ -260,7 +277,7 @@ public static partial class MetaSpeech
             {
                 var t = s.Trim();
                 if (t.Length == 0) continue;
-                if (IsMeta(t) || MemoryChoreRx().IsMatch(t) || IsSelfNarration(t) || IsSelfReport(t) || (!statusAsked && IsRunStatus(t))
+                if (IsMeta(t) || MemoryChoreRx().IsMatch(t) || IsSelfNarration(t) || IsSelfReport(t) || (!statusAsked && (IsRunStatus(t) || IsStatusNarration(t)))
                     || TalksAboutAddressee(t, addressees)) { suppressed.Add(t); continue; }
                 if (AskingLeadRx().Match(t) is { Success: true } lead)
                 {

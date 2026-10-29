@@ -90,6 +90,7 @@ public sealed partial class MinecraftClient
                 await LookCoreAsync(yaw ?? aimYaw, aimPitch, c).ConfigureAwait(false);
                 if (AABB.ForPlayer(World.Player.Position).Intersects(AABB.Block(target.X, target.Y, target.Z)) || FallingIntoCell(target))
                     return ActionResult.Fail(InTheWay + Fmt(target));
+                int heldBefore = World.Inventory.CountItem(itemId);
                 Send(new PlayerBlockPlacementPacket
                 {
                     X = against.X, Y = against.Y, Z = against.Z, Direction = (byte)face, HeldItem = HeldStack(), Cursor = CursorFor(against, face, point,
@@ -101,6 +102,7 @@ public sealed partial class MinecraftClient
                     NoteEditReverted(target, "placement");
                     return ActionResult.Fail($"{ItemName(itemId)} didn't appear at {Fmt(target)}" + SpawnProtectionHint(target));
                 }
+                await AwaitPlacementConsumedAsync(itemId, heldBefore, c).ConfigureAwait(false);
                 NoteEditOk(target);
                 return ActionResult.Success($"placed {ItemName(itemId)} at {Fmt(target)}");
             }

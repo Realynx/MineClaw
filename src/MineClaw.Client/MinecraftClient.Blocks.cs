@@ -204,6 +204,7 @@ public sealed partial class MinecraftClient
         // switch/look ticked would otherwise be sent (and on a lenient server embed us in it).
         if (AABB.ForPlayer(World.Player.Position).Intersects(AABB.Block(pos.X, pos.Y, pos.Z)) || FallingIntoCell(pos))
             return ActionResult.Fail(InTheWay + Fmt(pos));
+        int heldBefore = World.Inventory.CountItem(itemId);
         Send(new PlayerBlockPlacementPacket
         {
             X = a.Against.X, Y = a.Against.Y, Z = a.Against.Z, Direction = (byte)a.Face, HeldItem = HeldStack(),
@@ -214,9 +215,29 @@ public sealed partial class MinecraftClient
             NoteEditReverted(pos, "placement");
             return ActionResult.Fail($"{ItemName(itemId)} didn't appear at {Fmt(pos)}" + SpawnProtectionHint(pos));
         }
+        await AwaitPlacementConsumedAsync(itemId, heldBefore, ct).ConfigureAwait(false);
         NoteEditOk(pos);
         if (itemId == Blocks.Sapling) NoteSaplingPlanted();
         return ActionResult.Success($"placed {ItemName(itemId)} at {Fmt(pos)}");
+    }
+
+
+    /// <summary>
+    /// After a placement's block change, waits (≤ 6 ticks) for the server's slot update that takes the block from the held stack,
+    /// so it lands while the action still runs and the ledger books it as "placed as a block". b1.8.1's NetServerHandler sends
+    /// the Set Slot right after the Block Change in the same handler; 1.12.2's processTryUseItemOnBlock sends only the two
+    /// Block Changes, and the Set Slot comes from the player's next Container.detectAndSendChanges (a tick later), after the
+    /// action had already ended: live 10-29 02:01:48, "-1 Chest: vanished without an action" for the log chest.
+    /// </summary>
+    private async Task AwaitPlacementConsumedAsync(int itemId, int countBefore, CancellationToken ct)
+    {
+        if (countBefore <= 0 || World.Player.GameMode == 1) return; // creative: nothing is taken
+        if (World.Inventory.CountItem(itemId) < countBefore) return;
+        try
+        {
+            await WaitUntilAsync(() => World.Inventory.CountItem(itemId) < countBefore, TimeSpan.FromMilliseconds(300), ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
     }
 
     /// <summary>

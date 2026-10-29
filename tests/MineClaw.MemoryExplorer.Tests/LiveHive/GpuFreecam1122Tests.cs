@@ -40,7 +40,9 @@ public class GpuFreecam1122Tests
         Assert.True(m.Solid.Quads >= 26, $"{m.Solid.Quads} quads");
         var rows = Enumerable.Range(0, m.Solid.Count).Select(i => m.Solid.V[i]).ToList();
         Assert.Contains(rows, v => v.Row >= GpuAtlas.BlockRow);                                // model textures
-        Assert.Contains(rows, v => v.Row == GpuAtlas.ExtraRow && v.Col == GpuAtlas.ModelGrassSide); // the grass side, pre-composited
+        // The grass side's fringe: a second quad on the overlay texture (its own biome tint), drawn over the side.
+        int fringe = models.Textures.IndexOf("blocks/grass_side_overlay");
+        Assert.Contains(rows, v => v.Row == GpuAtlas.BlockRow + fringe / GpuAtlas.Cols && v.Col == fringe % GpuAtlas.Cols);
 
         var (aw, ah, rgba) = GpuAtlas.Build(atlas);
         Assert.Equal(GpuAtlas.RowsFor(atlas) * 16, ah);

@@ -241,6 +241,9 @@ public sealed partial class ChatRouter
             case ChatKind.Public or ChatKind.Whisper or ChatKind.Emote when msg.Player != null:
                 HandleMessage(msg);
                 break;
+            case ChatKind.System:
+                Deaths.Observe(msg.Text);
+                break;
         }
         return msg;
     }
@@ -707,6 +710,8 @@ public sealed partial class ChatRouter
         // At most one food ask per player per 10 minutes, whoever writes the line (brain, tool, script).
         text = Food.Filter(text ?? "", to, Now, PlayerAskedAboutFood);
         text = Greeted.Filter(text, to, Now); // one hello per player per few minutes (join turn + their first line)
+        text = Deaths.Filter(text, to, out var stale); // "robin run to the chest" after "kiwi was slain by Zombie": stale
+        if (stale.Count > 0) try { StaleDropped?.Invoke(string.Join(" ", stale)); } catch (Exception) { }
         string prefix = whisperTo != null ? string.Format(_options.WhisperFormat, whisperTo, "") : "";
         int max = ChatText.MaxLineLength - prefix.Length;
         // A line of model text starting with "/me " is an emote (sent as-is, always public); any other "/..." line would be a
@@ -805,6 +810,13 @@ public sealed partial class ChatRouter
 
     /// <summary>The greeting guard (one hello per player per 3 minutes).</summary>
     public Greetings Greeted { get; } = new();
+
+    /// <summary>Players who just died: advice queued for them is dropped (<see cref="RecentDeaths"/>).</summary>
+    public RecentDeaths Deaths => _deaths ??= new RecentDeaths(() => Now);
+    private RecentDeaths? _deaths;
+
+    /// <summary>Raised with the advice dropped because its player just died.</summary>
+    public event Action<string>? StaleDropped;
 
     /// <summary>Safety warnings that override the quiet gates (<see cref="SafetyWarnings"/>), rate-limited per threat.</summary>
     public SafetyWarnings Warnings => _warnings ??= new SafetyWarnings(() => Now);

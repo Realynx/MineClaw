@@ -105,7 +105,17 @@ public sealed class HiveTree(string main)
         void Walk(string owner, int depth)
         {
             if (depth > 16) return;
-            foreach (var c in Children(owner))
+            var kids = Children(owner);
+            // Many bodies of one hive read as one part ("15 subhive bodies of 101: 102-117 (3 spawning)"), not 15.
+            var subs = kids.Where(c => c.Kind == CloneKind.Subhive).ToList();
+            if (subs.Count >= 3)
+            {
+                int notRunning = subs.Count(c => c.State != "running");
+                parts.Add($"{subs.Count} subhive bodies{(owner != Root ? $" of {HiveNode.ShortOf(owner)}" : "")}: {Ranges(subs.Select(c => c.Short))}" +
+                    (notRunning > 0 ? $" ({notRunning} {(subs.All(c => c.State == "releasing") ? "releasing" : "not in game yet")})" : ""));
+                kids = kids.Where(c => c.Kind != CloneKind.Subhive).ToList();
+            }
+            foreach (var c in kids)
             {
                 var what = c.Kind switch
                 {
@@ -119,6 +129,34 @@ public sealed class HiveTree(string main)
         }
         Walk(Root, 0);
         return parts.Count == 0 ? "main alone" : string.Join("; ", parts);
+    }
+
+    /// <summary>"102, 103, 105, 109" → "102-105, 109" (numeric shorts; ids the allocator never hands out, quantity-like ones such as
+    /// 104, don't break a run; anything else as it is).</summary>
+    public static string Ranges(IEnumerable<string> shorts)
+    {
+        var nums = new List<int>();
+        var other = new List<string>();
+        foreach (var s in shorts)
+            if (int.TryParse(s, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n)) nums.Add(n); else other.Add(s);
+        nums.Sort();
+        var parts = new List<string>();
+        for (int i = 0; i < nums.Count;)
+        {
+            int j = i;
+            while (j + 1 < nums.Count && nums[j + 1] == NextId(nums[j])) j++;
+            parts.Add(j > i + 1 ? $"{nums[i]}-{nums[j]}" : j == i + 1 ? $"{nums[i]}, {nums[j]}" : $"{nums[i]}");
+            i = j + 1;
+        }
+        parts.AddRange(other);
+        return string.Join(", ", parts);
+
+        static int NextId(int n)
+        {
+            int m = n + 1;
+            while (AccountNames.QuantityLike(m) && m < n + 64) m++;
+            return m;
+        }
     }
 
     public HiveTreeDto Snapshot(string mainBrain = "opus")

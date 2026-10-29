@@ -145,7 +145,8 @@ public static class AppHost
             agentOptions.GameVersion = profile.Version.Id; // knowledge docs of another version (b1.8.1/skyblock on 1.12.2) stay out
             agentOptions.ApplyWorldMode = true; // the db's packs decide skyblock vs a normal world for the whole process (WorldMode)
             if (cli.CloneName != null)
-                return await CloneMode.RunAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, loggers, log, signals, profile);
+                return await CloneMode.RunAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, loggers, log, signals, profile,
+                    bodiesOptions);
             return await RunBotAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, useTui, ring, loggers, log, signals, mainLogDir,
                 supervisorOptions, bodiesOptions, profile);
         }
@@ -180,8 +181,14 @@ public static class AppHost
         // the default "hive" keeps one process per clone.
         var inproc = InProcBodies.Create(hive, bodiesOptions ?? new MineClaw.Bot.Bodies.BodiesOptions(), mc, agentOptions, loggers, profile);
         var mainHive = inproc == null ? MainHive.Create(hive, mc.Username, cli, agentOptions, logDir, loggers.CreateLogger("MineClaw.Hive")) : null;
+        // Hive mode: main's own subhive bodies (one brain, many bodies next to the clone processes; accounts from the allocator).
+        var subhives = mainHive != null
+            ? InProcBodies.CreateSubhives(hive, bodiesOptions ?? new MineClaw.Bot.Bodies.BodiesOptions(), mc, agentOptions, loggers, profile, mainHive.Board)
+            : null;
+        Func<IEnumerable<string>>? hiveBots = inproc != null ? inproc.HiveBots
+            : mainHive != null ? () => [.. mainHive.HiveBots(), .. subhives?.Registry?.Accounts ?? []] : null;
         var bot = BotHost.Create(game, agentOptions, botOptions, llm: llm, loggers: loggers, claims: inproc?.MainClaims ?? mainHive?.MainClaims,
-            hiveBots: inproc != null ? inproc.HiveBots : mainHive != null ? mainHive.HiveBots : null);
+            hiveBots: hiveBots);
         var rt = bot.Runtime;
         telemetry.Attach(rt);
         telemetry.CurrentBody = () => MineClaw.Bot.Bodies.BodyScope.Current?.Name; // the body a call worked for (null = brain-level)
@@ -208,8 +215,9 @@ public static class AppHost
         var agent = new PausableAgent(rt, log);
         var commands = new ConsoleCommands(game, rt, agent, log, signals.Source);
         var source = new InProcessBotSource(game, rt, telemetry, agent, commands, host.Tui.Viewport, signals.Token);
-        mainHive?.Attach(bot, client, commands, agentOptions);
+        mainHive?.Attach(bot, client, commands, agentOptions, subhives);
         inproc?.Attach(bot, client, signals.Token);
+        subhives?.Attach(bot, client, signals.Token);
         // Scripts: several bodies get a crew port (in-process lanes, or hive jobs over the shared db board); then the one-time
         // Lua → JS migration of saved scripts runs in the background (main only; Scripting:MigrateLua).
         if (MineClaw.Bot.GameTools.ScriptTools.Of(rt) is { } scripts)
@@ -217,7 +225,14 @@ public static class AppHost
             if (inproc != null && bot.Bodies is { } registry)
                 scripts.Crew = new MineClaw.Bot.Bodies.BodyCrewPort(registry, rt.Tools, new MineClaw.Scripting.Crew.InMemoryCrewBoard());
             else if (mainHive?.Supervisor is { } supervisor)
-                scripts.Crew = new MineClaw.Hive.Crew.HiveCrewPort(supervisor, new MineClaw.Bot.Bodies.DbCrewBoard(rt.Memory.Db));
+            {
+                var board = new MineClaw.Bot.Bodies.DbCrewBoard(rt.Memory.Db);
+                MineClaw.Scripting.Crew.ICrewPort hivePort = new MineClaw.Hive.Crew.HiveCrewPort(supervisor, board);
+                // Main's subhive bodies are crew lanes in this process; clone processes stay lanes over the db board.
+                scripts.Crew = subhives != null && bot.Bodies is { } reg
+                    ? new CompositeCrewPort(board, new MineClaw.Bot.Bodies.BodyCrewPort(reg, rt.Tools, board), hivePort)
+                    : hivePort;
+            }
             _ = scripts.StartLuaMigrationAsync(signals.Token).ContinueWith(t =>
             {
                 if (t.Exception is { } ex) log.LogWarning(ex.GetBaseException(), "lua migration stopped");
@@ -293,7 +308,11 @@ public static class AppHost
                 inproc.RecallAllAsync("main shutting down", TimeSpan.FromSeconds(Math.Max(5, Math.Min(bodiesOptions.ShutdownRecallSeconds, seq.Remaining.TotalSeconds) - 1))));
         if (mainHive != null)
             await seq.StepAsync("hive recall", TimeSpan.FromSeconds(hive.ShutdownRecallSeconds), _ =>
-                mainHive.RecallAllAsync("main shutting down", TimeSpan.FromSeconds(Math.Max(5, Math.Min(hive.ShutdownRecallSeconds, seq.Remaining.TotalSeconds) - 1))));
+            {
+                var each = TimeSpan.FromSeconds(Math.Max(5, Math.Min(hive.ShutdownRecallSeconds, seq.Remaining.TotalSeconds) - 1));
+                // Clone processes and main's own subhive bodies put everything away in parallel while main is still online.
+                return Task.WhenAll(mainHive.RecallAllAsync("main shutting down", each), subhives?.RecallAllAsync("main shutting down", each) ?? Task.CompletedTask);
+            });
         await seq.StepAsync("stop actions", TimeSpan.FromSeconds(5), ct =>
         {
             rt.Activities.Cancel("shutdown");
@@ -308,6 +327,7 @@ public static class AppHost
         await seq.StepAsync("client", TimeSpan.FromSeconds(3), _ => client.DisposeAsync().AsTask());
         if (mainHive != null) await seq.StepAsync("hive", TimeSpan.FromSeconds(3), _ => mainHive.DisposeAsync().AsTask());
         if (inproc != null) await seq.StepAsync("bodies", TimeSpan.FromSeconds(5), _ => inproc.DisposeAsync().AsTask());
+        if (subhives != null) await seq.StepAsync("subhive bodies", TimeSpan.FromSeconds(5), _ => subhives.DisposeAsync().AsTask());
         seq.Final("db", rt.Dispose);
         seq.Final("telemetry", telemetry.Dispose);
         log.LogInformation("bye{Late}", seq.TimedOut.Count > 0 ? " (timed out: " + string.Join(", ", seq.TimedOut) + ")" : "");
@@ -392,7 +412,7 @@ public static class AppHost
         }
         catch (Exception) { /* demo works without config */ }
 
-        var roster = new HiveRoster([main, .. hive.CloneUsernames.Take(Math.Max(0, hive.MaxClones))]);
+        var roster = new HiveRoster([main, .. hive.CloneUsernames.Take(hive.MaxClones > 0 ? hive.MaxClones : 4)]);
         using var demo = new DemoHive(roster.Names, Math.Min(cli.DemoBots, roster.Names.Count), host.Tui.Viewport);
         var ring = new RingLoggerProvider();
         ring.Add(new LogLine(DateTimeOffset.Now, LogLevel.Information, "MineClaw.App", "demo mode: fake bots, no server, no API calls"));

@@ -52,7 +52,7 @@ public class LiveHiveDecoderTests
         Assert.Throws<InvalidDataException>(() => ColumnPayload.Decode(magic));
 
         var version = (byte[])good.Clone();
-        BinaryPrimitives.WriteUInt16LittleEndian(version.AsSpan(4), 2);
+        BinaryPrimitives.WriteUInt16LittleEndian(version.AsSpan(4), 3); // 2 is the light version now
         var ex = Assert.Throws<InvalidDataException>(() => ColumnPayload.Decode(version));
         Assert.Contains("version", ex.Message);
 

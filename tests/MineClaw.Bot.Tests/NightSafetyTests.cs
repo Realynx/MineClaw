@@ -44,6 +44,48 @@ public class NightSafetyTests
         Assert.Null(b.BodySafety([Step("goto", new { to = "home" })]));
     }
 
+    /// <summary>Live 10-29: Fox, then Robin, were killed by a zombie at a door while main warned them; its walk to help was
+    /// refused by this gate ("sorry besties, maid-chan's legs got locked again"). Defending, escorting or rescuing a player
+    /// nearby is always allowed; hunger only blocks leaving for work far from players. Low hp keeps the reflex's own priority.</summary>
+    [Fact]
+    public void At_night_with_no_food_a_walk_to_a_player_nearby_is_allowed_but_far_work_is_not()
+    {
+        var (b, c) = Bridge();
+        c.World.Time = 18000;
+        c.World.Entities.SpawnPlayer(7, "PoofimaFox", new Vec3d(-25.5, 64, 0.5), 0, 0);
+        c.World.Player.ServerTeleport(new Vec3d(-15.5, 64, 0.5), 65.62, 0, 0, true); // 10 blocks from Fox, 15 from spawn
+        Assert.Null(b.BodySafety([Step("goto", new { to = "PoofimaFox" })]));
+        Assert.Null(b.BodySafety([Step("follow", new { player = "poofimafox" })]));
+        Assert.Null(b.BodySafety([Step("goto", new { to = "-24,64,1" })]));            // the spot right by him
+        Assert.Null(b.BodySafety([Step("collect_drops", new { })]));                   // a dead player's drops nearby
+        Assert.NotNull(b.BodySafety([Step("goto", new { to = "-60,64,0" })]));         // work far from players
+        Assert.NotNull(b.BodySafety([Step("mine", new { block = "stone" })]));
+        // Fox far away (40+ blocks): that's leaving, not defending.
+        c.World.Entities.Teleport(7, new Vec3d(-70.5, 64, 0.5), 0, 0);
+        Assert.NotNull(b.BodySafety([Step("goto", new { to = "PoofimaFox" })]));
+        // At low hp the reflex's own retreat/shelter comes first.
+        c.World.Entities.Teleport(7, new Vec3d(-25.5, 64, 0.5), 0, 0);
+        c.World.Player.SetHealth(6, 20, 0);
+        Assert.NotNull(b.BodySafety([Step("goto", new { to = "PoofimaFox" })]));
+    }
+
+    /// <summary>Live 10-29: after three clones died at night with no food, main re-spawned 67, 420 and 1337 into the same night;
+    /// all were pinned at once. A clone spawned for work goes through the same check.</summary>
+    [Fact]
+    public void Spawning_clones_into_the_night_with_no_food_is_refused_with_one_line()
+    {
+        var (b, c) = Bridge();
+        c.World.Time = 18000;
+        var no = b.BodySafety([Step("hive", new { op = "spawn", task = "chop trees" })]);
+        Assert.NotNull(no);
+        Assert.StartsWith("night + no food: ", no);
+        Assert.Contains("not spawning clones", no);
+        Assert.True(MineClaw.Agent.BotAgent.IsCloneSpawn("hive", JsonSerializer.SerializeToElement(new { op = "handover" })));
+        Assert.False(MineClaw.Agent.BotAgent.IsCloneSpawn("hive", JsonSerializer.SerializeToElement(new { op = "list" })));
+        c.World.Time = 6000;
+        Assert.Null(b.BodySafety([Step("hive", new { op = "spawn", task = "chop trees" })]));
+    }
+
     [Fact]
     public void By_day_or_with_food_the_reflex_says_go()
     {

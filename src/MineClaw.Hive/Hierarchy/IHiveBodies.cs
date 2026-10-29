@@ -19,12 +19,16 @@ public interface IHiveBodies
 }
 
 /// <summary>
-/// Subhive bodies: characters the owning hive's own brain drives (one brain, many bodies; <c>Bodies:Mode=inproc</c>). Null on
-/// the hierarchy = not available in this mode, and <c>hive spawn kind=subhive</c> says so.
+/// Subhive bodies in this process: characters the hive's own brain drives (one brain, many bodies), each with its own login and
+/// world view. Main's host is <see cref="HiveHierarchy.Subhives"/> (null = <c>hive spawn kind=subhive</c> says not available); a
+/// hive-kind clone hosts its own the same way and hears about each account over the bus. The host whitelists nothing: the account
+/// is allocated (and whitelisted before its login) by main.
 /// </summary>
 public interface ISubhiveHost
 {
+    /// <summary>Logs the (allocated) account in as a body and starts its job (task/script), or gives an online body a new job.</summary>
     string Spawn(string owner, string account, string? task, string? script);
+    /// <summary>Planned logout: deposit first, then disconnect; the host reports it gone (main: <see cref="HiveHierarchy.Released"/>).</summary>
     string Release(string account);
 }
 

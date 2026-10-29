@@ -25,8 +25,13 @@ namespace MineClaw.App.Hosting;
 /// stranded items and void spots in the shared HiveStore, the claim board (hosted here), one world-memory flusher for every
 /// body, hive vision from the registry, and the brain's <c>hive</c> tool over the registry (spawn = spawn the body, then
 /// delegate{body} or run its script). MainHive isn't created in this mode.
+/// <para><b>Subhive mode</b> (<see cref="CreateSubhives"/>, the default <c>Bodies:Mode=hive</c>): the same host inside a hive (main
+/// next to MainHive, or a hive-kind clone process) for <i>subhive</i> bodies: accounts arrive one by one from main's allocator
+/// (<see cref="ISubhiveHost.Spawn"/>), each logs in (whitelisted by main first: <see cref="BeforeConnect"/>), asks for a small view
+/// distance and shares this process's chunk store, is driven by this process's brain (the body parameter, crews), and is reported
+/// <see cref="Gone"/> once it logged out for good (main takes it off the whitelist). The brain keeps its <c>hive</c> tool.</para>
 /// </summary>
-public sealed class InProcBodies : IBodyHost, IAsyncDisposable
+public sealed class InProcBodies : IBodyHost, MineClaw.Hive.Hierarchy.ISubhiveHost, IAsyncDisposable
 {
     private readonly HiveConfig _hive;
     private readonly BodiesOptions _o;
@@ -41,7 +46,8 @@ public sealed class InProcBodies : IBodyHost, IAsyncDisposable
     private IReadOnlyList<string> _regulars = [];
     private CancellationToken _shutdown;
 
-    private InProcBodies(HiveConfig hive, BodiesOptions o, MinecraftSettings mc, ILoggerFactory loggers, IReadOnlyList<string> accounts)
+    private InProcBodies(HiveConfig hive, BodiesOptions o, MinecraftSettings mc, ILoggerFactory loggers, IReadOnlyList<string> accounts,
+        bool subhive = false, ClaimBoard? board = null, Func<string, IClaimBoard>? claimsFor = null)
     {
         _hive = hive;
         _o = o;
@@ -50,23 +56,58 @@ public sealed class InProcBodies : IBodyHost, IAsyncDisposable
         _log = loggers.CreateLogger("MineClaw.Bodies");
         _main = mc.Username;
         Accounts = accounts;
-        Board = new ClaimBoard(TimeSpan.FromSeconds(hive.ClaimTtlSeconds));
+        IsSubhive = subhive;
+        Board = board ?? new ClaimBoard(TimeSpan.FromSeconds(hive.ClaimTtlSeconds));
+        _claimsFor = claimsFor ?? (n => Board.ViewFor(n));
         Flusher = new WorldMemoryFlusher(log: _log);
     }
 
+    private readonly Func<string, IClaimBoard> _claimsFor;
+
+    /// <summary>The configured clone accounts (inproc mode); subhive mode starts empty and adds accounts as main allocates them.</summary>
     public IReadOnlyList<string> Accounts { get; }
+    /// <summary>Subhive mode: dynamic accounts from main, the brain keeps its <c>hive</c> tool (see the class remarks).</summary>
+    public bool IsSubhive { get; }
     public ClaimBoard Board { get; }
     public WorldMemoryFlusher Flusher { get; }
     public IClaimBoard MainClaims => Board.ViewFor(_main);
-    public IEnumerable<string> HiveBots() => [_main, .. Accounts];
+    public IEnumerable<string> HiveBots() => IsSubhive ? [_main, .. Registry?.Accounts ?? []] : [_main, .. Accounts];
+
+    /// <summary>Subhive mode: awaited before an account's first login (main whitelists it). Null = nothing to wait for.</summary>
+    public Func<string, CancellationToken, Task>? BeforeConnect { get; set; }
+    /// <summary>Subhive mode: a body logged out for good (despawned, retired, someone else's login): (account, reason).</summary>
+    public event Action<string, string>? Gone;
+    /// <summary>Per-body client settings for subhive bodies: the view distance they ask for (null = the version's default).</summary>
+    public int? ViewDistance { get; set; }
+    /// <summary>Called on every new body client's options before it is built (the shared chunk store goes in here).</summary>
+    public Func<ClientOptions, ClientOptions>? ClientSetup { get; set; }
     public BodyRegistry? Registry => _bot?.Bodies;
     /// <summary>The brain's multi-body view (step 3), after <see cref="Attach"/>.</summary>
     public BodyDirectory? Directory { get; private set; }
 
-    /// <summary>Null unless <c>Bodies:Mode=inproc</c> with at least one clone account (Bodies:Accounts, else Hive:CloneUsernames).</summary>
     /// <summary>The process's game version (docs/design/multi-version.md): every body speaks main's.</summary>
     public MineClaw.Client.Versioning.GameVersionProfile Profile { get; private set; } = MineClaw.Client.Versioning.GameVersionProfiles.Beta181;
 
+    /// <summary>
+    /// Subhive mode (hive mode's bodies, see the class remarks): null when <c>Hive:Subhives:Enabled</c> or the hive is off. Call before
+    /// the bot is built: the brain's cached prefix gets the static body-parameter line (<see cref="Agent.Prompts.SubhivesHint"/>).
+    /// </summary>
+    /// <param name="board">The claim board this process hosts (main: MainHive's); null = a board of its own.</param>
+    /// <param name="claimsFor">A body's claim view (a hive clone: its own board layered over main's mirror); null = <paramref name="board"/>.</param>
+    public static InProcBodies? CreateSubhives(HiveConfig hive, BodiesOptions o, MinecraftSettings mc, AgentOptions agent, ILoggerFactory loggers,
+        MineClaw.Client.Versioning.GameVersionProfile? profile = null, ClaimBoard? board = null, Func<string, IClaimBoard>? claimsFor = null)
+    {
+        if (!hive.Enabled || !hive.Subhives.Enabled) return null;
+        if (!agent.PersonaExtra.Contains(Agent.Prompts.SubhivesHint, StringComparison.Ordinal))
+            agent.PersonaExtra = (agent.PersonaExtra + "\n" + Agent.Prompts.SubhivesHint).Trim();
+        return new InProcBodies(hive, o, mc, loggers, [], subhive: true, board, claimsFor)
+        {
+            Profile = profile ?? MineClaw.Client.Versioning.GameVersionProfiles.Beta181,
+            ViewDistance = hive.Subhives.ViewDistance > 0 ? hive.Subhives.ViewDistance : null,
+        };
+    }
+
+    /// <summary>Null unless <c>Bodies:Mode=inproc</c> with at least one clone account (Bodies:Accounts, else Hive:CloneUsernames).</summary>
     public static InProcBodies? Create(HiveConfig hive, BodiesOptions o, MinecraftSettings mc, AgentOptions agent, ILoggerFactory loggers,
         MineClaw.Client.Versioning.GameVersionProfile? profile = null)
     {
@@ -95,6 +136,7 @@ public sealed class InProcBodies : IBodyHost, IAsyncDisposable
         if (bot.WorldMemory is { } wm) Flusher.Add(wm);
         Flusher.Start();
         bot.Bodies!.Configure(this, Accounts, _o, _log);
+        if (IsSubhive) bot.Bodies.Changed += OnBodyChanged;
         // Step 3: the multi-body brain interface (body routing, focus, [bodies], wake digest, addressing, worker pool, "any").
         var dir = BodyDirectory.Enable(bot.Brain!, _log);
         var selector = new BodySelector(bot.Bodies);
@@ -102,7 +144,7 @@ public sealed class InProcBodies : IBodyHost, IAsyncDisposable
         rt.Events.Posted += selector.OnEvent;
         rt.Chat.Accepted += m => { try { selector.OnPlayerChat(m.Text); } catch (Exception) { } };
         Directory = dir;
-        if (bot.Vision?.Hub is { } hub)
+        if (!IsSubhive && bot.Vision?.Hub is { } hub) // subhive mode: the hive's own vision source stays (MainHive / the clone's)
             hub.Hive = new BodyVisionSource(bot.Bodies, () => Board.Leases().Select(l => new HiveLease(l.Key.Id, l.Owner)).ToList());
         // A trusted player saying they'll /tp a body lets its void login spot go ahead for 10 min ("I'll tp 420", "log 1337 in, I'll tp it").
         rt.Chat.Accepted += m =>
@@ -110,7 +152,7 @@ public sealed class InProcBodies : IBodyHost, IAsyncDisposable
             try
             {
                 if (m.Player is not { } p || !rt.Options.Self.TrustedPlayers.Contains(p, StringComparer.OrdinalIgnoreCase) || !TpWords.IsMatch(m.Text)) return;
-                foreach (var a in Accounts)
+                foreach (var a in bot.Bodies.Accounts)
                 {
                     var shortName = Body.ShortName(a, false);
                     if (Regex.IsMatch(m.Text, $@"\b(?:{Regex.Escape(shortName)}|{Regex.Escape(a)})\b", RegexOptions.IgnoreCase) && bot.Bodies.ConfirmVoid(a))
@@ -119,11 +161,74 @@ public sealed class InProcBodies : IBodyHost, IAsyncDisposable
             }
             catch (Exception ex) { _log.LogDebug(ex, "bodies: void confirm hook failed"); }
         };
+        if (IsSubhive)
+        {
+            // The hive keeps its hive tool (bodies come from main's allocator); crew builds stay with the hive's own jobs.
+            _log.LogInformation("bodies: subhive host in {Me}'s process (view distance {View}); regulars {Regulars}", _main,
+                ViewDistance?.ToString() ?? "default", string.Join(", ", _regulars));
+            return;
+        }
         RegisterHiveTool(rt);
         // Crew builds: the online, idle bodies build a design at once (one lane each), main leading the gate and the finale.
         if (bot.Blueprints is { } blueprints) blueprints.Crew = new MineClaw.Bot.Blueprints.RegistryCrew(bot.Bodies!);
         _log.LogInformation("bodies: in-process mode, {N} clone account(s) ({Names}); regulars {Regulars}", Accounts.Count, string.Join(", ", Accounts),
             string.Join(", ", _regulars));
+    }
+
+    // ================================================================ ISubhiveHost (subhive mode)
+
+    /// <summary>Logs an allocated account in as a body of this hive and starts its job; an online body just gets the new job.</summary>
+    public string Spawn(string owner, string account, string? task, string? script)
+    {
+        if (_bot is not { } bot || Registry is not { } reg) return "error: the subhive host isn't attached yet";
+        reg.AddAccount(account);
+        var s = reg.Spawn(account);
+        if (!s.Ok || s.Body is not Body body) return s.Text;
+        if (!string.IsNullOrWhiteSpace(task) || !string.IsNullOrWhiteSpace(script))
+        {
+            string? scriptName = null;
+            if (!string.IsNullOrWhiteSpace(script))
+            {
+                if (Bot.GameTools.ScriptTools.Of(bot.Runtime) is not { } bridge) return "error: scripts are off";
+                var prep = bridge.PrepareForHive(script, null, ToolCaller.Current?.Tag);
+                if (prep.Error != null) return "error: " + prep.Error;
+                scriptName = prep.Name;
+            }
+            _ = RunJobAsync(bot.Runtime, body, task ?? "", scriptName, null);
+        }
+        return s.Text;
+    }
+
+    /// <summary>Planned logout of a body (deposit first). <see cref="Gone"/> follows once it is offline.</summary>
+    public string Release(string account)
+    {
+        if (Registry is not { } reg || reg.Resolve(account) is not { } n) return $"{account} isn't one of my bodies";
+        if (reg.StateOf(n) is BodyState.Offline or BodyState.Retired or BodyState.Occupied) return $"{Body.ShortName(n, false)} isn't online";
+        _ = reg.DespawnAsync(n, "released");
+        return $"ok: {Body.ShortName(n, false)} logging out (deposits first)";
+    }
+
+    private void OnBodyChanged(IBody b, bool added)
+    {
+        if (added || b.IsMain || b is not Body body) return;
+        // A body that logged out for good: the account goes back to main (whitelist remove) and its wiring is freed.
+        _ = Task.Run(async () =>
+        {
+            for (int i = 0; i < 100 && body.State is BodyState.Yielding or BodyState.Online or BodyState.Connecting; i++)
+                await Task.Delay(50).ConfigureAwait(false);
+            var reason = body.State switch
+            {
+                BodyState.Retired => "retired (crashed too often)",
+                BodyState.Occupied => "someone else logged in as it",
+                _ => "logged out",
+            };
+            Registry?.RemoveAccount(body.Name);
+            lock (_built) _built.Remove(body);
+            lock (_cleared) _cleared.Remove(body.Name);
+            try { Gone?.Invoke(body.Name, reason); } catch (Exception ex) { _log.LogWarning(ex, "bodies: gone hook for {Body} failed", body.Name); }
+            BodyFactory.DisposeClone(body, Flusher);
+            if (body.Client is { } c) try { await c.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false); } catch (Exception) { }
+        });
     }
 
     private static readonly Regex TpWords = new(@"\b(?:tp|teleport|tphere)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -134,26 +239,37 @@ public sealed class InProcBodies : IBodyHost, IAsyncDisposable
     {
         var bot = _bot ?? throw new InvalidOperationException("not attached");
         var clientLog = _loggers.CreateLogger("MineClaw.Client." + Body.ShortName(name, false));
-        var client = new MinecraftClient(new ClientOptions
+        var options = new ClientOptions
         {
             Host = _mc.Host, Port = _mc.Port, Username = name, Profile = Profile,
             AutoReconnect = false, // the body's runner owns reconnects (backoff, launch gap, someone else's login)
             AutoRespawn = !_hive.OnCloneDeath.Equals("logout", StringComparison.OrdinalIgnoreCase),
             Log = m => clientLog.LogDebug("{Msg}", m),
-        });
+        };
+        if (ClientSetup is { } setup) options = setup(options);
+        var client = new MinecraftClient(options);
         if (_mainClient is { } main) client.World.Chops = main.World.Chops; // a remnant any body left is the hive's unfinished tree
         client.Kicked += r => _log.LogWarning("{Body} kicked: {Reason}", name, r);
         client.Spawned += () => _log.LogInformation("{Body} joined {Host}:{Port}", name, _mc.Host, _mc.Port);
         client.Danger += d => _log.LogWarning("{Body} danger {Kind}: {Msg}", name, d.Kind, d.Message);
-        var body = BodyFactory.CreateClone(bot.Brain!, client, Board.ViewFor(name), Flusher);
+        var body = BodyFactory.CreateClone(bot.Brain!, client, _claimsFor(name), Flusher);
         lock (_built) _built.Add(body);
         return body;
     }
 
-    public Task ConnectAsync(IBody body, CancellationToken ct)
+    private readonly HashSet<string> _cleared = new(StringComparer.OrdinalIgnoreCase);
+
+    public async Task ConnectAsync(IBody body, CancellationToken ct)
     {
+        // Subhive mode: the account must be on the whitelist before its first login (main adds it and waits for the server's word).
+        bool first;
+        lock (_cleared) first = _cleared.Add(body.Name);
+        if (first && BeforeConnect is { } before)
+            try { await before(body.Name, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { lock (_cleared) _cleared.Remove(body.Name); throw; }
+            catch (Exception ex) { _log.LogWarning(ex, "bodies: whitelisting {Body} before login failed; logging in anyway", body.Name); }
         _log.LogInformation("bodies: connecting {Body} to {Host}:{Port}", body.Name, _mc.Host, _mc.Port);
-        return ClientBodySessions.ConnectAsync(body.Client!, ct);
+        await ClientBodySessions.ConnectAsync(body.Client!, ct).ConfigureAwait(false);
     }
 
     public Task<BodyExit> RunAsync(IBody body, CancellationToken ct) => ClientBodySessions.RunAsync(body.Client!, ct);
@@ -321,8 +437,11 @@ public sealed class InProcBodies : IBodyHost, IAsyncDisposable
     /// <summary>Main shutting down: the clones deposit and log out in parallel while main is still online to take items.</summary>
     public Task RecallAllAsync(string reason, TimeSpan timeout) => Registry?.DespawnAllAsync(reason, timeout) ?? Task.CompletedTask;
 
+    private int _disposed;
+
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         if (Registry is { } reg) await reg.StopAllAsync().ConfigureAwait(false);
         Body[] built;
         lock (_built) built = _built.ToArray();

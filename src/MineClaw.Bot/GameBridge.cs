@@ -209,9 +209,12 @@ public sealed class GameBridge : IDisposable
         var w = _c.World;
         if (w.Dimension != 0) return null;
         bool night = w.IsNight, mobs = w.Entities.NearestHostile(w.Player.Position, 16) is not null;
+        // A clone spawn walks out at the spawn, not at main: only the night counts for it, not the mobs around main.
+        bool spawns = steps.Count > 0 && steps.All(s => BotAgent.IsCloneSpawn(s.Tool, s.Input));
+        if (spawns) mobs = false;
         if (!night && !mobs) return null;
         if (FoodSupply.HasReady(_c)) return null;
-        if (steps.All(s => NightOk.Contains(s.Tool) || s.Tool == "goto" && GoesHome(s.Input, w))) return null;
+        if (steps.All(s => NightOk.Contains(s.Tool) || s.Tool == "goto" && GoesHome(s.Input, w) || ToNearPlayer(s.Tool, s.Input, w))) return null;
         string what;
         if (Volatile.Read(ref _feeding) == 1) what = "already getting food (reflex)";
         else
@@ -226,8 +229,40 @@ public sealed class GameBridge : IDisposable
             }
             else what = $"none to get ({look.Text}): staying in until it's day or someone brings food";
         }
+        if (spawns) return $"night + no food: {what}; not spawning clones into the night now (they'd be pinned at once); at day, or once there is food";
         return $"{(night ? "night" : "mobs near")} + no food: {what}; not starting {steps[0].Tool} now (home ground only: eat, chests, gen)";
     }
+
+    /// <summary>A walk to a player within this is defending, escorting or rescuing them (or picking up their drops): never refused.</summary>
+    public int PlayerHelpRadius { get; init; } = 24;
+
+    /// <summary>
+    /// A goto/follow to a player (by name, or a point next to one) within <see cref="PlayerHelpRadius"/>: hunger only blocks leaving
+    /// for work far from players. Live 10-29: Fox, then Robin, were killed by a zombie at a door while main said "sorry besties,
+    /// maid-chan's legs got locked again" (its walk to help refused by this gate). At low hp the reflexes' own retreat/shelter
+    /// comes first, so the exemption doesn't apply then.
+    /// </summary>
+    private bool ToNearPlayer(string tool, System.Text.Json.JsonElement input, WorldState w)
+    {
+        if (tool is not ("goto" or "follow") || input.ValueKind != System.Text.Json.JsonValueKind.Object) return false;
+        if (w.Player.Health <= LowHealthLine) return false;
+        var me = w.Player.Position;
+        string? Prop(string n) => input.TryGetProperty(n, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String ? v.GetString() : null;
+        var to = (tool == "follow" ? Prop("player") : Prop("to"))?.Trim();
+        if (string.IsNullOrEmpty(to)) return false;
+        if (w.Entities.FindPlayer(to) is { } pe) return pe.Position.DistanceTo(me) <= PlayerHelpRadius;
+        if (tool != "goto") return false;
+        var parts = to.Split(',', StringSplitOptions.TrimEntries);
+        if (parts.Length != 3 || !double.TryParse(parts[0], System.Globalization.CultureInfo.InvariantCulture, out var x)
+            || !double.TryParse(parts[1], System.Globalization.CultureInfo.InvariantCulture, out var y)
+            || !double.TryParse(parts[2], System.Globalization.CultureInfo.InvariantCulture, out var z)) return false;
+        var target = new Vec3d(x + 0.5, y, z + 0.5);
+        if (target.DistanceTo(me) > PlayerHelpRadius) return false;
+        return w.Entities.Nearby(target, 6, e => e.Kind == EntityKind.Player && e.Id != w.Player.EntityId).Count > 0;
+    }
+
+    /// <summary>The survival reflex's low line (its retreat/shelter take over at or below it).</summary>
+    private const int LowHealthLine = 8;
 
     /// <summary>A goto whose target is within <see cref="HomeRadius"/> of spawn (x,y,z), or home/spawn/bed by name.</summary>
     private bool GoesHome(System.Text.Json.JsonElement input, WorldState w)
@@ -468,6 +503,8 @@ public sealed class GameBridge : IDisposable
         DangerKind.LowHealth => new GameEvent(EventKind.LowHealth, d.Message.Contains("/20") ? d.Message : $"hp {health}/20 {d.Message}",
             priority: d.Critical ? EventPriority.Critical : EventPriority.High),
         DangerKind.Lava => new GameEvent(EventKind.LowHealth, $"hp {health}/20 {d.Message}", priority: EventPriority.High),
+        // The reflex is already surfacing: the brain hears why its job stopped (the cause is in the text).
+        DangerKind.Drowning => new GameEvent(EventKind.LowHealth, $"hp {health}/20 {d.Message}", priority: EventPriority.High),
         DangerKind.HostileNearby => GameEvent.Notice(d.Message, EventPriority.Low),
         // Survival reflex "hungry, no food" (re-sent only when it gets worse): 1 hungry, 2 starving, 3 food 0. It wakes the brain
         // but never interrupts a job (live 2026-10-27: "starving" cancelled 67's mining): only hp at the low line makes it urgent.
@@ -490,6 +527,8 @@ public sealed class GameBridge : IDisposable
         var vitals = c.VitalsKnown ? SurvivalReflex.HeaderText(p.Health, p.Food, w.Inventory.PlayerSlots(), c.ReservedItems, null, w.Player.Effects) : "hp/food loading…";
         var s = $"pos {Locations.Fmt(p.Position)} {vitals} held {heldText} {(w.IsNight ? "night" : "day")}";
         if (w.Dimension != 0) s = $"IN THE {DimName(w.Dimension).ToUpperInvariant()} " + s; // never mistaken for the island
+        // Breath (both versions): only while the head is under water or the air is short (live 10-29: drowned, never shown).
+        if (w.Player.HeadUnderWater || w.Player.Air < Breath.MaxAir) s += " " + Breath.Text(w.Player.Air) + (w.Player.HeadUnderWater ? " HEAD UNDER WATER" : "");
         if (!c.GroundKnown) s += " ground loading…";
         else if (w.IsPlayerOverVoid(p.Position)) s += " OVER VOID";
         if (c.CurrentAction is { } a) s += " | doing " + a;
