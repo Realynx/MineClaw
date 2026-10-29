@@ -233,6 +233,29 @@ public class UnreachableThreatTests
     }
 
     [Fact]
+    public void Zombie_swimming_in_deep_water_is_not_chased_in_but_fought_once_it_reaches_the_shore()
+    {
+        // 10-29 23:35: main chased a zombie under water, down to 7 s of air and 15 hp; each re-engage cut its swim to shore.
+        var r = new CombatRig(Opts(), half: 12);
+        for (int x = 3; x <= 9; x++)
+        for (int z = -4; z <= 4; z++)
+        {
+            r.W.SetBlock(x, 64, z, Blocks.Water, 0);
+            r.W.SetBlock(x, 65, z, Blocks.Water, 0);
+        }
+        var zb = r.Mob(9, MobTypes.Zombie, 7.5, 0.5); // 5 m past the shore: no swing reaches it from dry ground
+        bool aborted = false;
+        for (int i = 0; i < 200; i++) aborted |= r.Step(physics: true).AbortAction;
+        Assert.Equal(0, Starts(r));
+        Assert.False(aborted);
+        Assert.True(r.P.Position.X < 3, $"walked into the pool: {r.P.Position}");
+
+        r.W.Entities.Teleport(zb.Id, new Vec3d(r.P.Position.X + 1.6, 64, r.P.Position.Z), 0, 0);
+        for (int i = 0; i < 10; i++) r.Step();
+        Assert.True(r.E.Engaged);
+    }
+
+    [Fact]
     public void Zombie_next_to_the_bot_is_still_fought_at_once()
     {
         var r = new CombatRig(Opts());

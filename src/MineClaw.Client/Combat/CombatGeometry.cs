@@ -44,6 +44,7 @@ public static class CombatGeometry
             int x = (int)Math.Floor(from.X + dx * i / steps), z = (int)Math.Floor(from.Z + dz * i / steps);
             if (Safety.IsDeadlyColumn(w, x, y, z, 3)) return false;
             if (BlockShapes.HasCollision(w, x, y, z) || BlockShapes.HasCollision(w, x, y + 1, z)) return false;
+            if (DeepWater(w, x, y, z)) return false;
             if (minEdge > 1 && Safety.EdgeDistance(w, x, y, z, minEdge - 1) < minEdge) return false;
         }
         return true;
@@ -103,7 +104,7 @@ public static class CombatGeometry
     /// Can the bot walk (standable cells, steps of ±1, no gap jumps, no digging/placing) to a cell within
     /// <paramref name="reach"/> (horizontal, |dy| ≤ 2) of <paramref name="target"/>? A bounded flood fill (≤ <paramref name="maxNodes"/>
     /// cells, ≤ <paramref name="radius"/> from the bot): a creeper across a void gap or a skeleton on a ledge is unreachable
-    /// (live 10-27/28: both held the body as a 0-hit fight).
+    /// (live 10-27/28: both held the body as a 0-hit fight). Water over the head isn't walking (live 10-29: a zombie chased under).
     /// </summary>
     public static bool CanWalkNear(IBlockAccess w, Vec3d me, Vec3d target, double reach, int radius = 16, int maxNodes = 600)
     {
@@ -130,7 +131,7 @@ public static class CombatGeometry
                 {
                     int ny = c.Y + dy;
                     var n = new BlockPos(nx, ny, nz);
-                    if (seen.Contains(n) || !Safety.IsStandable(w, nx, ny, nz)) continue;
+                    if (seen.Contains(n) || !Safety.IsStandable(w, nx, ny, nz) || DeepWater(w, nx, ny, nz)) continue;
                     // A step up needs head room above the current cell; a drop needs the column above the landing clear.
                     if (dy == 1 && BlockShapes.HasCollision(w, c.X, c.Y + 2, c.Z)) continue;
                     if (dy < 0 && (BlockShapes.HasCollision(w, nx, c.Y, nz) || BlockShapes.HasCollision(w, nx, c.Y + 1, nz))) continue;
@@ -179,6 +180,14 @@ public static class CombatGeometry
         var eye = new Vec3d(mob.Position.X, box.MinY + (box.MaxY - box.MinY) * 0.85, mob.Position.Z);
         return HasLineOfSight(w, eye, me + new Vec3d(0, PlayerPhysics.EyeHeight, 0)) || HasLineOfSight(w, eye, me + new Vec3d(0, 0.3, 0));
     }
+
+    /// <summary>Water at the feet and the head: standing there puts the head under (no fight footing, the air runs out).</summary>
+    public static bool DeepWater(IBlockAccess w, int x, int y, int z) =>
+        MineClaw.Data.Blocks.IsWater(w.GetBlock(x, y, z)) && MineClaw.Data.Blocks.IsWater(w.GetBlock(x, y + 1, z));
+
+    /// <summary><see cref="DeepWater(IBlockAccess,int,int,int)"/> at an entity's feet.</summary>
+    public static bool DeepWater(IBlockAccess w, Vec3d feet) =>
+        DeepWater(w, (int)Math.Floor(feet.X), (int)Math.Floor(feet.Y + 1e-6), (int)Math.Floor(feet.Z));
 
     /// <summary>No block selection box between the two points (EntityLiving.canEntityBeSeen uses a block ray trace).</summary>
     public static bool HasLineOfSight(IBlockAccess w, Vec3d from, Vec3d to)

@@ -53,7 +53,7 @@ public sealed class CombatEngine
         public required string Reason;
         public int TargetId;
         public required string TargetName;
-        public long StartTick, LastProgressTick, BackoffUntil, StanceUntil, FleeStart = -1, LastSample, TargetSince;
+        public long StartTick, LastProgressTick, BackoffUntil, StanceUntil, FleeStart = -1, LastSample, TargetSince, WetSince = -1;
         public int Swings, Hits, Unconfirmed, DamageTaken, HitsReceived, Knockbacks, GuardInterventions, Kills, TargetHits;
         /// <summary>Not a fight: a short move into cover from a ranged mob the bot can't reach.</summary>
         public bool Cover;
@@ -619,7 +619,8 @@ public sealed class CombatEngine
             bool approachable = inReach || CanWalkTo(me, e);
             if (DefendSelf && sensed)
             {
-                if (provoked && d <= 10 && !ranged) why = "it attacked";
+                // One that hit us from water over its head is fought only once it's in reach (no chasing it in).
+                if (provoked && d <= 10 && !ranged && (inReach || !CombatGeometry.DeepWater(_w, e.Position))) why = "it attacked";
                 else if (ranged && (provoked || CombatGeometry.HasLineOfSight(_w, phys.EyePosition, Eye(e))))
                 {
                     // Live 10-28 night: skeletons at 4-11 m on ledges/across gaps held every bot "busy" with 0 hits.
@@ -806,6 +807,21 @@ public sealed class CombatEngine
             EndFight(f, $"couldn't reach {f.TargetName} (0 hits in {Options.ZeroHitGiveUpTicks / 20}s), left it alone", phys, ctx);
             return face;
         }
+        // A reflex never follows a mob into water over its head: no footing, no crits, the air runs out, and the breath reflex's
+        // swim to shore got cut by the next re-engage (live 10-29 23:35: main chased a zombie under water, down to 7 s of air and
+        // 15 hp with bare hands). One that comes back into reach (or hits us) is fought again.
+        if (!f.Explicit && f.Done is null && f.FleeStart < 0 && !InMeleeReach(phys, target)
+            && (CombatGeometry.DeepWater(_w, target.Position) || _w.Player.HeadUnderWater))
+        {
+            if (f.WetSince < 0) f.WetSince = _tick;
+            else if (_tick - f.WetSince > 30)
+            {
+                f.GaveUp = true;
+                EndFight(f, $"won't chase {f.TargetName} into the water, left it alone", phys, ctx);
+                return face;
+            }
+        }
+        else f.WetSince = -1;
         // "Approaching" is the MOB closing in (its own move toward where I stand now), not the gap shrinking: while the bot walks up
         // to a mob busy with someone else the gap shrinks too, and "let it come to us" then held the bot 5 m short until the 8 s
         // give-up (live 10-29: Fox and Robin killed by a zombie at a door; this guard fight never reached it).
