@@ -71,6 +71,10 @@ public sealed class HiveHierarchy : IHiveAccounts
     public int MaxBodiesPerSpawn { get; set; } = 24;
     /// <summary>Spacing between logins (only for the spawn answer: "logging in 4.5s apart").</summary>
     public double LaunchGapSeconds { get; set; } = 4.5;
+    public int LaunchBatch { get; set; } = 10;
+
+    /// <summary>"logging in 10 at a time" / "logging in 4.5s apart" (the spawn reply).</summary>
+    private string Pacing(int n) => n <= 1 ? "" : LaunchBatch > 1 ? $", logging in {Math.Min(n, LaunchBatch)} at a time" : $", logging in {LaunchGapSeconds:0.#}s apart";
     /// <summary>A new account was allocated (the arbiter/personality learn the name).</summary>
     public event Action<string>? Allocated;
 
@@ -270,7 +274,7 @@ public sealed class HiveHierarchy : IHiveAccounts
         var text = bodies.Spawn(r.Task ?? "", r.Name, r.Handover, opts);
         if (hostBodies is { } hb && text.StartsWith("ok", StringComparison.Ordinal))
             text += $"; ONE {(brain == BrainKind.DeepSeek ? "DeepSeek" : "Opus")} hive whose brain will drive {hb} subhive bod{(hb == 1 ? "y" : "ies")} " +
-                $"(none in game yet: they log in {LaunchGapSeconds:0.#}s apart once it is in)" + note;
+                $"(none in game yet: they log in once it is in{Pacing(hb)})" + note;
         return text;
     }
 
@@ -350,7 +354,7 @@ public sealed class HiveHierarchy : IHiveAccounts
         var names = HiveTree.Ranges(got.Select(HiveNode.ShortOf));
         return $"ok: {got.Count} subhive bod{(got.Count == 1 ? "y" : "ies")} ({names}) " +
             (local ? "your brain drives (body=\"<n>\")" : $"for {Short(owner)}'s brain") +
-            $"; none in game yet{(got.Count > 1 ? $", logging in {LaunchGapSeconds:0.#}s apart" : "")}" +
+            $"; none in game yet{Pacing(got.Count)}" +
             (got.Count < asked ? $"; only {got.Count} of {asked}: {why}" : "");
     }
 
@@ -411,7 +415,7 @@ public sealed class HiveHierarchy : IHiveAccounts
         _log.LogInformation("hive: hive script {Id} ({Script}) over {N} bodies: {Names}", id, name, got.Count, string.Join(", ", got));
         var names = HiveTree.Ranges(got.Select(HiveNode.ShortOf));
         return $"ok: hive script {id}: ONE script drives {got.Count} bod{(got.Count == 1 ? "y" : "ies")} ({names}), no brain; " +
-            $"none in game yet{(got.Count > 1 ? $", logging in {LaunchGapSeconds:0.#}s apart" : "")}; when it ends they deposit and log out " +
+            $"none in game yet{Pacing(got.Count)}; when it ends they deposit and log out " +
             $"(release {id} stops it)" + (got.Count < asked ? $"; only {got.Count} of {asked}: {why}" : "");
     }
 

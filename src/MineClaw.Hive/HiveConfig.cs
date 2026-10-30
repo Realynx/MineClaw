@@ -61,8 +61,10 @@ public sealed class HiveConfig
     public double ExternalLoginCooldownMinutes { get; set; } = 10;
     /// <summary>A clone of ours that just logged out may linger on the tab list this long; it isn't taken for someone else's.</summary>
     public double OwnLogoutGraceSeconds { get; set; } = 20;
-    /// <summary>Minimum spacing between clone launches (the server's login throttle rejects joins from one IP &lt; ~4 s apart).</summary>
+    /// <summary>Spacing between clone launch batches (b1.8.1's login throttle rejects joins from one IP &lt; ~4 s apart).</summary>
     public double LaunchGapSeconds { get; set; } = 4.5;
+    /// <summary>Clone launches at once (<see cref="MineClaw.Bot.Bodies.JoinPacer"/>): 10 on 1.12.2; the b1.8.1 profile forces 1.</summary>
+    public int LaunchBatch { get; set; } = 10;
 
     // ---- logout / inventory ----
     /// <summary>Planned logout: how long the clone keeps trying to empty its inventory before it gives up (items recorded as stranded).</summary>

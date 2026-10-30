@@ -142,6 +142,8 @@ public static class AppHost
                 return ExitCodes.Config;
             }
             cli = cli with { ServerVersion = profile.Version.Id }; // hive clones inherit the resolved version (MainHive pass-through)
+            // b1.8.1's server throttles joins from one IP < ~4 s apart: one login at a time there; 1.12.2 logs bodies in in batches.
+            if (profile.Version == MineClaw.Protocol.Versioning.GameVersion.Beta181) hive.LaunchBatch = bodiesOptions.LaunchBatch = 1;
             agentOptions.GameVersion = profile.Version.Id; // knowledge docs of another version (b1.8.1/skyblock on 1.12.2) stay out
             agentOptions.ApplyWorldMode = true; // the db's packs decide skyblock vs a normal world for the whole process (WorldMode)
             if (cli.CloneName != null)
@@ -174,6 +176,8 @@ public static class AppHost
             Host = mc.Host, Port = mc.Port, Username = mc.Username, Profile = profile,
             AutoReconnect = true, AutoRespawn = true, RecordDirectory = cli.Record,
             DuplicateLoginBackoff = TimeSpan.FromSeconds(Math.Max(0, mc.DuplicateLoginBackoffSeconds)),
+            // Main is op (the empty state: main whitelisted + opped): on 1.12.2 its commands skip the spam spacing.
+            CommandInterval = profile.Version == MineClaw.Protocol.Versioning.GameVersion.Release1122 ? TimeSpan.FromMilliseconds(150) : null,
             Log = m => clientLog.LogDebug("{Msg}", m),
         });
         var game = new MinecraftGameClient(client);

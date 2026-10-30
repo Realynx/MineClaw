@@ -178,6 +178,7 @@ public class BodyRegistryTests : IAsyncLifetime
     {
         var o = Options();
         o.LaunchGapSeconds = 0.3;
+        o.LaunchBatch = 1; // b1.8.1's throttle: one at a time (JoinPacerTests has the 1.12.2 batches)
         await _reg.StopAllAsync();
         var mc = new FakeGameClient { Username = "maid_chan" };
         var reg = new BodyRegistry(new Body("maid_chan", true, mc, mc, new ActivityManager(_host.Tools, _host.Events)));

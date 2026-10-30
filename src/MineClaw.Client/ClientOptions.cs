@@ -34,6 +34,12 @@ public sealed record ClientOptions
     /// <summary>Minimum gap between chat lines sent (server spam protection).</summary>
     public TimeSpan ChatInterval { get; init; } = TimeSpan.FromMilliseconds(1200);
 
+    /// <summary>
+    /// Gap before a slash command; null = <see cref="ChatInterval"/>. Only for an op on 1.12.2: its spam kick spares whoever can send
+    /// commands (NetHandlerPlayServer.processChatMessage, canSendCommands), so main's whitelist adds for 25 bodies needn't take 30 s.
+    /// </summary>
+    public TimeSpan? CommandInterval { get; init; }
+
     /// <summary>Reach used for digging/placing/using (vanilla survival ≈ 4.5).</summary>
     public double Reach { get; init; } = 4.25;
 

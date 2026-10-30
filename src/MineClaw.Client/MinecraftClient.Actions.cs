@@ -114,7 +114,8 @@ public sealed partial class MinecraftClient
             int sent = 0;
             foreach (var line in lines)
             {
-                var wait = _lastChat + Options.ChatInterval - DateTime.UtcNow;
+                var gap = line.StartsWith('/') && Options.CommandInterval is { } ci ? ci : Options.ChatInterval;
+                var wait = _lastChat + gap - DateTime.UtcNow;
                 if (wait > TimeSpan.Zero) await Task.Delay(wait, ct).ConfigureAwait(false);
                 var s = _session;
                 if (s is null || s.Ended || !s.PositionKnown) return ActionResult.Fail("not connected", sent);

@@ -137,7 +137,7 @@ public sealed class HiveScriptHostTests(ITestOutputHelper output)
         agent.Llm.ApiKey = "sk-ant-test";
         var mc = new MinecraftSettings { Host = "127.0.0.1", Port = 1, Username = "maid_chan" };
         var board = new MineClaw.Hive.Claims.ClaimBoard(TimeSpan.FromSeconds(60));
-        await using var host = InProcBodies.CreateSubhives(cfg, new BodiesOptions { LaunchGapSeconds = 1.5, YieldCheckSeconds = 0, TickReportSeconds = 0 },
+        await using var host = InProcBodies.CreateSubhives(cfg, new BodiesOptions { LaunchGapSeconds = 1.5, LaunchBatch = 1, YieldCheckSeconds = 0, TickReportSeconds = 0 },
             mc, agent, loggers, null, board)!;
         var mainClient = new MinecraftClient(Fast(new ClientOptions { Username = "maid_chan" }, mainServer));
         try

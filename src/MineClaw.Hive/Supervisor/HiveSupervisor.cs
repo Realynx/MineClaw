@@ -1066,24 +1066,17 @@ public sealed class HiveSupervisor : IAsyncDisposable
 
     // ================================================================ process lifecycle
 
-    private readonly object _joinGate = new();
-    private DateTimeOffset _nextJoin;
+    private MineClaw.Bot.Bodies.JoinPacer? _pacer;
 
     /// <summary>
     /// The b1.8.1 server's connection throttle rejects logins from one IP less than ~4 s apart (10-27: two clones launched
     /// in the same millisecond, one got "server closed the connection" and lost 6-10 s). Launches are spaced by
-    /// <see cref="HiveConfig.LaunchGapSeconds"/>: returns how long this launch waits for its turn.
+    /// <see cref="HiveConfig.LaunchGapSeconds"/> (1.12.2: <see cref="HiveConfig.LaunchBatch"/> at a time): returns how long this launch waits.
     /// </summary>
     internal TimeSpan JoinDelay()
     {
-        var gap = TimeSpan.FromSeconds(Math.Max(0, _cfg.LaunchGapSeconds));
-        lock (_joinGate)
-        {
-            var now = Now;
-            var at = _nextJoin > now ? _nextJoin : now;
-            _nextJoin = at + gap;
-            return at - now;
-        }
+        var pacer = _pacer ??= new MineClaw.Bot.Bodies.JoinPacer(() => Now);
+        return pacer.Next(TimeSpan.FromSeconds(Math.Max(0, _cfg.LaunchGapSeconds)), _cfg.LaunchBatch);
     }
 
     private void Launch(CloneSlot slot)

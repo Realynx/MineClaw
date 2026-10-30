@@ -147,6 +147,7 @@ public class NightReviewSupervisorTests(Xunit.Abstractions.ITestOutputHelper out
         public Hive(double launchGap = 0)
         {
             Cfg.LaunchGapSeconds = launchGap;
+            Cfg.LaunchBatch = 1; // the b1.8.1 throttle (JoinPacerTests has the 1.12.2 batches)
             Cfg.DepositTimeoutSeconds = 5;
             Launcher = new InProcLauncher(Cfg);
             Arbiter = new ChatArbiter("maid_chan", "maid_chan", Cfg.Clones());

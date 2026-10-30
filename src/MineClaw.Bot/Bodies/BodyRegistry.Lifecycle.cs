@@ -44,8 +44,7 @@ public sealed partial class BodyRegistry
     private TimeProvider _time = TimeProvider.System;
     private CancellationTokenSource _stop = new();
     private System.Threading.Timer? _yieldTimer, _tickTimer;
-    private readonly object _joinGate = new();
-    private DateTimeOffset _nextJoin;
+    private JoinPacer? _pacer;
     private volatile bool _shuttingDown;
     private DateTimeOffset _lastTickReport;
 
@@ -277,19 +276,13 @@ public sealed partial class BodyRegistry
     }
 
     /// <summary>
-    /// The server's login throttle rejects joins from one IP less than ~4 s apart: logins (and reconnects) are spaced by
-    /// <see cref="BodiesOptions.LaunchGapSeconds"/>. Returns how long this login waits for its turn.
+    /// Logins (and reconnects) go <see cref="BodiesOptions.LaunchBatch"/> at a time, batches <see cref="BodiesOptions.LaunchGapSeconds"/>
+    /// apart (<see cref="JoinPacer"/>). Returns how long this login waits for its turn.
     /// </summary>
     public TimeSpan JoinDelay()
     {
-        var gap = TimeSpan.FromSeconds(Math.Max(0, _o.LaunchGapSeconds));
-        lock (_joinGate)
-        {
-            var now = Now;
-            var at = _nextJoin > now ? _nextJoin : now;
-            _nextJoin = at + gap;
-            return at - now;
-        }
+        var pacer = _pacer ??= new JoinPacer(() => Now);
+        return pacer.Next(TimeSpan.FromSeconds(Math.Max(0, _o.LaunchGapSeconds)), _o.LaunchBatch);
     }
 
     private async Task WaitTurnAsync(CancellationToken ct)

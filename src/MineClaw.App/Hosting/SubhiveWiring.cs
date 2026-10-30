@@ -32,6 +32,7 @@ internal static class SubhiveWiring
     {
         h.MaxBodiesPerSpawn = Math.Max(1, cfg.Subhives.MaxPerSpawn);
         h.LaunchGapSeconds = cfg.LaunchGapSeconds;
+        h.LaunchBatch = cfg.LaunchBatch;
         h.RemoteSubhives = cfg.Subhives.Enabled;
         h.Resources = cfg.Resources.Enabled ? new ResourceCeiling(cfg.Resources, h.Use) : null;
         if (h.Resources is { } res) log.LogInformation("hive: resource ceiling: {State}; hard cap {Cap}", res.Describe(), cfg.MaxClones > 0 ? cfg.MaxClones : "none");

@@ -33,8 +33,10 @@ public sealed class BodiesOptions
     public double ReconnectSeconds { get; set; } = 5;
 
     // ---- the registry
-    /// <summary>Spacing between logins (the server's throttle rejects joins from one IP less than ~4 s apart).</summary>
+    /// <summary>Spacing between login batches (b1.8.1's server throttles joins from one IP less than ~4 s apart).</summary>
     public double LaunchGapSeconds { get; set; } = 4.5;
+    /// <summary>Logins at once (<see cref="JoinPacer"/>): 10 on 1.12.2 (no throttle); the b1.8.1 profile forces 1.</summary>
+    public int LaunchBatch { get; set; } = 10;
     /// <summary>A body whose account someone else logged in to (a player's viewer) isn't spawned again for this long.</summary>
     public double ExternalLoginCooldownMinutes { get; set; } = 10;
     /// <summary>A body of ours that just logged out may linger on the tab list this long; it isn't taken for someone else's.</summary>
