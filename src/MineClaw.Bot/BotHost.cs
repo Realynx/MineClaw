@@ -339,6 +339,11 @@ public sealed class BotHost : IDisposable
         }
         Beliefs.BeliefBot.Attach(rt, toolClient, claims, time, log, indexer); // belief system: claim checks when idle (zero tokens)
         var skillHub = SkillTools.Register(rt, adapter, claims); // worker: skill + find_skill over the whole catalog (zero prefix growth)
+        // Remembered digs (stair patterns, mine rooms, strip mines): shared db, their air kept clear (never bridged, boxed or sealed).
+        var digSites = new Excavation.DigSiteStore(rt.Db, log);
+        skillHub.Registry.Sites = digSites;
+        try { MineClaw.Skills.DigSites.Apply(digSites, client.World.KeepAir); }
+        catch (Exception ex) { log?.LogDebug("dig sites not loaded: {Err}", ex.Message); }
         // Inventory ledger: every toss/drop/use/consume/correction is recorded; inventory/where_is {item} answer "where did X go".
         // The main body's ledger (a ledger per body comes with in-process clone bodies, step 2).
         if (client is MinecraftGameClient mgl)

@@ -249,6 +249,7 @@ public sealed class InProcBodies : IBodyHost, MineClaw.Hive.Hierarchy.ISubhiveHo
         if (ClientSetup is { } setup) options = setup(options);
         var client = new MinecraftClient(options);
         if (_mainClient is { } main) client.World.Chops = main.World.Chops; // a remnant any body left is the hive's unfinished tree
+        if (_mainClient is { } m2) client.World.KeepAir = m2.World.KeepAir; // one hive: a stair main dug is air for every body
         client.Kicked += r => _log.LogWarning("{Body} kicked: {Reason}", name, r);
         client.Spawned += () => _log.LogInformation("{Body} joined {Host}:{Port}", name, _mc.Host, _mc.Port);
         client.Danger += d => _log.LogWarning("{Body} danger {Kind}: {Msg}", name, d.Kind, d.Message);
