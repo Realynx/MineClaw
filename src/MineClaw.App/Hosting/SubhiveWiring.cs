@@ -150,18 +150,24 @@ internal sealed class CompositeCrewPort(ICrewBoard board, params ICrewPort[] por
     public int Pending() => ports.Sum(p => p.Pending());
 }
 
-/// <summary>Subhive body client options: the small view distance, and one chunk store per hive process (overlapping views held once).</summary>
+/// <summary>
+/// Subhive body client options: the small view distance, and one chunk store per process (overlapping views held once). Process-wide
+/// by design: main's bodies and every in-process hive's bodies all see the one server, so a column two of them see is the same column
+/// (keyed by dimension and position, ref-counted per view; each world keeps its own loaded keys and events). Keyed by the version
+/// profile: a store binds one column height (128 b1.8.1, 256 1.12.2), and one process plays one version (tests run both).
+/// </summary>
 internal static class SubhiveClientSetup
 {
-    private static MineClaw.World.Chunks.SharedChunkStore? _store;
-    private static readonly object Gate = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<MineClaw.Client.Versioning.GameVersionProfile, MineClaw.World.Chunks.SharedChunkStore> Stores =
+        new(ReferenceEqualityComparer.Instance);
 
-    /// <summary>The process's one shared store (lazily made; one version, one height per process).</summary>
-    public static MineClaw.World.Chunks.SharedChunkStore Store
-    {
-        get { lock (Gate) return _store ??= new MineClaw.World.Chunks.SharedChunkStore(); }
-    }
+    /// <summary>The process's shared store for <paramref name="profile"/>'s version (lazily made).</summary>
+    public static MineClaw.World.Chunks.SharedChunkStore StoreFor(MineClaw.Client.Versioning.GameVersionProfile profile) =>
+        Stores.GetOrAdd(profile, _ => new MineClaw.World.Chunks.SharedChunkStore());
+
+    /// <summary>The b1.8.1 store (the default profile); <see cref="StoreFor"/> for the version a client speaks.</summary>
+    public static MineClaw.World.Chunks.SharedChunkStore Store => StoreFor(MineClaw.Client.Versioning.GameVersionProfiles.Beta181);
 
     public static MineClaw.Client.ClientOptions Apply(MineClaw.Client.ClientOptions o, int? viewDistance, bool share) =>
-        o with { ViewDistance = viewDistance ?? o.ViewDistance, ChunkStore = share ? Store : o.ChunkStore };
+        o with { ViewDistance = viewDistance ?? o.ViewDistance, ChunkStore = share ? StoreFor(o.Profile) : o.ChunkStore };
 }

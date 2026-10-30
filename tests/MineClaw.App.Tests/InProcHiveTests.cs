@@ -59,8 +59,8 @@ public sealed class InProcHiveTests(ITestOutputHelper output) : IDisposable
         public async Task<LlmResponse> CompleteAsync(LlmRequest r, CancellationToken ct)
         {
             var text = string.Join("\n", r.Messages.SelectMany(m => m.Content).OfType<LlmText>().Select(t => t.Text));
-            if (r.Tier == ModelTier.Main && !r.Purpose.StartsWith("quick_", StringComparison.Ordinal) && text.Contains("[hive task]", StringComparison.Ordinal)
-                && Interlocked.Exchange(ref _reported, 1) == 0)
+            if (mode != "idle" && r.Tier == ModelTier.Main && !r.Purpose.StartsWith("quick_", StringComparison.Ordinal)
+                && text.Contains("[hive task]", StringComparison.Ordinal) && Interlocked.Exchange(ref _reported, 1) == 0)
             {
                 Tasks.Enqueue(text);
                 switch (mode)
@@ -183,9 +183,118 @@ public sealed class InProcHiveTests(ITestOutputHelper output) : IDisposable
         Assert.Equal(0, main.Launcher.Transport.Listening);
     }
 
-    private string HiveLog()
+    [Theory]
+    [MemberData(nameof(Versions))]
+    public async Task An_inproc_hive_hosts_its_own_bodies_over_the_memory_bus_and_a_release_logs_them_out_first(string version)
     {
-        var dir = Path.Combine(_dir, "logs", "hive", Clone);
+        var profile = Profile(version);
+        using var _ = Version(profile);
+        Directory.CreateDirectory(_dir);
+        var log = new List<string>();
+        void Log(string l) { lock (log) log.Add(l); }
+        var servers = new ConcurrentDictionary<string, FakeServer>(StringComparer.OrdinalIgnoreCase);
+        FakeServer ServerFor(string name) => servers.GetOrAdd(name, _ => new FakeServer(release1122: version == "1.12.2"));
+        var cfg = new HiveConfig
+        {
+            HeartbeatSeconds = 0.5, HeartbeatTimeoutSeconds = 6, StartTimeoutSeconds = 30, BackoffBaseSeconds = 60, MaxCrashes = 1,
+            SnapshotSeconds = 0.3, LaunchGapSeconds = 0, DepositTimeoutSeconds = 3, FailureGraceSeconds = 0, Subhives = { ViewDistance = 3 },
+        };
+        AppSettings Bind()
+        {
+            var agent = MineClaw.Bot.Tests.TestBot.Options();
+            agent.DataDirectory = _dir;
+            agent.Rag.SeedFile = "";
+            agent.Llm.ApiKey = "sk-ant-test";
+            agent.Self.TrustedPlayers = ["poofimafox"];
+            var hive = new HiveConfig { HeartbeatSeconds = 0.5, SnapshotSeconds = 0.3, DepositTimeoutSeconds = 3, FailureGraceSeconds = 0, LaunchGapSeconds = 0,
+                Subhives = { ViewDistance = 3 } };
+            return new AppSettings(new MinecraftSettings { Host = "127.0.0.1", Port = 1, Username = "maid_chan" }, agent, new BotOptions { GeneratorQueueSeconds = 0 },
+                new HostSettings(), hive, new TelemetryOptions { Enabled = false }, new Supervisor.SupervisorOptions(),
+                new MineClaw.Bot.Bodies.BodiesOptions { LaunchGapSeconds = 0, YieldCheckSeconds = 0, TickReportSeconds = 0, ShutdownRecallSeconds = 10 },
+                Path.Combine(_dir, "logs"), Path.Combine(_dir, "logs"));
+        }
+        var settings = new InProcHiveSettings(AppCli.Parse([]), Bind, profile, Path.Combine(_dir, "logs"));
+        await using var launcher = new InProcHiveLauncher(cfg, settings.For, profile, NullLoggerFactory.Instance)
+        {
+            ClientSetup = o => o with
+            {
+                TickInterval = TimeSpan.FromMilliseconds(5), ChatInterval = TimeSpan.Zero, RespawnDelay = TimeSpan.FromMilliseconds(10),
+                ConnectionFactory = ServerFor(o.Username).CreateConnection, HostileAlertRadius = 0, AutoReconnect = false,
+            },
+            Llm = (_, _) => new FakeBrain("idle"),
+        };
+        using var db = AgentDb.Open(Path.Combine(_dir, "mineclaw.db"));
+        var sup = new HiveSupervisor(cfg, "maid_chan", launcher, new ClaimBoard(TimeSpan.FromSeconds(60)),
+            new BudgetLedger(new BudgetOptions { DailyCapUsd = 10, MonthlyCapUsd = 190 }, cfg.Budget, () => (0m, 0m)),
+            new ChatArbiter("maid_chan", "maid_chan", cfg.Clones()), new HiveStore(db, "maid_chan"),
+            () => new SlotFacts(20, ["maid_chan", "poofimafox", .. servers.Where(s => s.Value.LoggedIn).Select(s => s.Key)]), ["poofimafox"]);
+        try
+        {
+            // ---- main's hierarchy: the allocator, the whitelist through the command gate's scoped exception, the bus
+            var gate = new MineClaw.Agent.Chat.CommandGate(new MineClaw.Agent.Chat.CommandOptions(), () => ["poofimafox"]);
+            var managed = new MineClaw.Hive.Hierarchy.ManagedAccounts(null);
+            var whitelist = new MineClaw.Hive.Hierarchy.WhitelistManager(managed, cfg.Accounts, "maid_chan", gate.ArmManagedWhitelist, (line, _) =>
+            {
+                bool ok = gate.AllowOutgoing(line);
+                if (ok) Log("sent " + line);
+                return Task.FromResult(ok);
+            }, NullLogger.Instance);
+            gate.ManagedAccount = whitelist.Accepts;
+            var notices = new List<string>();
+            var h = new MineClaw.Hive.Hierarchy.HiveHierarchy(cfg.Accounts, "maid_chan", managed, whitelist, regulars: () => ["poofimafox"])
+            {
+                Bodies = new MineClaw.Hive.Hierarchy.SupervisorBodies(sup), ProfileCheck = _ => null,
+                Notice = e => { lock (notices) notices.Add(e.Text); },
+                RunsInProcess = (i, p) => cfg.RunsInProcess(i, p), InProcRunning = sup.RunningInProcess,
+            };
+            sup.Accounts = h;
+            var bus = new MineClaw.Hive.Hierarchy.Bus.HiveBus("maid_chan") { MainHandler = h.HandleBusAsync };
+            h.Bus = bus;
+            sup.Bus = bus;
+            SubhiveWiring.AttachMain(h, null, cfg, NullLogger.Instance);
+            h.Resources = null; // the test machine's memory isn't the CT's
+
+            // ---- "spawn a hive with 2 agents": ONE hive in this process whose brain drives 2 bodies of its own
+            var spawned = h.Spawn(new MineClaw.Hive.Hierarchy.SpawnRequest(Kind: "hive", Brain: "opus", Task: "stand by", Bodies: 2));
+            output.WriteLine(spawned);
+            Assert.StartsWith("ok", spawned);
+            var hiveNode = h.Tree.All().Single(n => n.Kind == MineClaw.Hive.Hierarchy.CloneKind.Hive);
+            Assert.True(await Until(() => sup.Slot(hiveNode.Account)?.Connected == true), "the hive up");
+            var started = launcher.Find(hiveNode.Account);
+            if (started == null || started.HasExited) output.WriteLine(HiveLog(hiveNode.Account));
+            Assert.True(started is { InProcess: true, HasExited: false }, "running in this process");
+            List<string> Bodies() => h.Tree.All().Where(n => n.Kind == MineClaw.Hive.Hierarchy.CloneKind.Subhive).Select(n => n.Account).ToList();
+            bool online = await Until(() => Bodies().Count == 2 && Bodies().All(b => servers.TryGetValue(b, out var s) && s.LoggedIn), 30000);
+            if (!online) output.WriteLine(string.Join(" / ", log) + " || " + string.Join(" || ", notices) + Environment.NewLine + HiveLog(hiveNode.Account));
+            Assert.True(online, "2 bodies in game: " + h.Tree.Render());
+            Assert.All(Bodies(), b => Assert.Equal(hiveNode.Account, h.Tree.Get(b)!.Owner));
+            lock (log) Assert.All(Bodies(), b => Assert.Contains($"sent /whitelist add {b}", log)); // main whitelisted each, over the memory bus
+            Assert.Equal(1, sup.RunningInProcess()); // the bodies live in the hive, not as hives of their own
+
+            // ---- release the hive: its bodies deposit and log out first, main takes each off the whitelist, then the hive goes
+            var bodies = Bodies();
+            var rel = h.Release(HiveNodeShort(hiveNode.Account));
+            output.WriteLine(rel);
+            Assert.True(await Until(() => h.Tree.Count == 0, 40000), "released: " + h.Tree.Render());
+            Assert.True(await Until(() => bodies.All(b => { lock (log) return log.Contains($"sent /whitelist remove {b}"); })), "bodies off the whitelist");
+            Assert.True(await Until(() => sup.Slot(hiveNode.Account)!.State == CloneState.Idle && launcher.Find(hiveNode.Account)!.HasExited), "the hive logged out");
+            Assert.True(sup.Slot(hiveNode.Account)!.ByeReceived);
+            var hiveLog = HiveLog(hiveNode.Account);
+            Assert.All(bodies, b => Assert.Contains($"bodies: {b}: deposit before logout", hiveLog));
+        }
+        finally
+        {
+            try { await sup.RecallAllAsync("test over", TimeSpan.FromSeconds(10)); } catch (Exception) { }
+            await sup.DisposeAsync();
+            foreach (var s in servers.Values) s.Dispose();
+        }
+    }
+
+    private static string HiveNodeShort(string account) => account[(account.LastIndexOf('_') + 1)..];
+
+    private string HiveLog(string clone = Clone)
+    {
+        var dir = Path.Combine(_dir, "logs", "hive", clone);
         return Directory.Exists(dir) ? string.Join("\n", Directory.GetFiles(dir, "mineclaw-*.log").Select(f =>
         {
             using var s = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -239,8 +348,10 @@ public sealed class InProcHiveTests(ITestOutputHelper output) : IDisposable
         await using var main = await StartMain(profile, "done", llm: (_, _) => throw new InvalidOperationException("model profile blew up"));
         Assert.StartsWith("ok", main.Sup.Spawn("chop the three logs by the chest", "101", forPlayer: "poofimafox"));
         Assert.True(await Until(() => main.Text().Contains("[hive] 101 lost"), 20000), "lost: " + main.Text());
-        var hive = main.Launcher.Find(Clone);
-        Assert.True(hive == null || hive.ExitCode == 1);
+        var hive = main.Launcher.Find(Clone)!;
+        Assert.True(await Until(() => hive.HasExited), "exited");
+        Assert.Equal(1, hive.ExitCode);
+        Assert.Contains("model profile blew up", HiveLog()); // the crash is in its own log; this process goes on
         Assert.True(await Until(() => main.Sup.Slot(Clone)!.State is CloneState.Idle or CloneState.Retired));
     }
 

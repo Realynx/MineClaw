@@ -297,6 +297,7 @@ public sealed class InProcHiveLauncher : IProcessLauncher, IAsyncDisposable
     private readonly ILogger _log;
     private readonly SemaphoreSlim _builds;
     private readonly ConcurrentDictionary<int, InProcHive> _hives = new();
+    private readonly ConcurrentDictionary<string, InProcHive> _last = new(StringComparer.OrdinalIgnoreCase);
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _watch;
     private int _ids = 1000;
@@ -325,7 +326,8 @@ public sealed class InProcHiveLauncher : IProcessLauncher, IAsyncDisposable
 
     /// <summary>Hives started by this launcher that haven't exited.</summary>
     public IReadOnlyList<InProcHive> Live => _hives.Values.Where(h => !h.HasExited).OrderBy(h => h.Id).ToList();
-    public InProcHive? Find(string clone) => _hives.Values.Where(h => h.Name.Equals(clone, StringComparison.OrdinalIgnoreCase)).MaxBy(h => h.Id);
+    /// <summary>The latest start of <paramref name="clone"/> (kept after it exits: its exit code, stop and kill reasons).</summary>
+    public InProcHive? Find(string clone) => _last.GetValueOrDefault(clone);
 
     public ICloneProcess Start(string clone, string pipeName)
     {
@@ -336,6 +338,7 @@ public sealed class InProcHiveLauncher : IProcessLauncher, IAsyncDisposable
         var world = WorldMode.Current;
         var hive = new InProcHive(Interlocked.Increment(ref _ids), clone, _cfg.InProc, _log);
         _hives[hive.Id] = hive;
+        _last[clone] = hive;
         Task<int> run;
         // A clean execution context: the spawning brain turn's ambient state (TurnContext, ToolCaller, BodyScope…) stays with main.
         using (ExecutionContext.SuppressFlow())
@@ -352,6 +355,7 @@ public sealed class InProcHiveLauncher : IProcessLauncher, IAsyncDisposable
         var clone = hive.Name;
         ILoggerFactory? loggers = null;
         FileLoggerProvider? file = null;
+        ILogger? log = null;
         int built = 1; // 0 = this hive holds a build slot
         void Release() { if (Interlocked.Exchange(ref built, 1) == 0) _builds.Release(); }
         try
@@ -365,7 +369,7 @@ public sealed class InProcHiveLauncher : IProcessLauncher, IAsyncDisposable
                 b.AddProvider(hive.Health.Errors);                                     // the watchdog's error storm count
                 b.AddProvider(new ForwardLoggerProvider(_mainLoggers, clone, LogLevel.Error)); // like a clone process's stderr
             });
-            var log = loggers.CreateLogger("MineClaw.App");
+            log = loggers.CreateLogger("MineClaw.App");
             Directory.CreateDirectory(s.TelemetryDir);
             log.LogInformation("hive {Clone} starting in main's process (hive #{Id}, {Version}, log {Log})", clone, hive.Id, data.VersionId, s.LogDir);
             // The runtime build (db, knowledge sync, RAG load) is CPU-heavy: a few at a time; released once the host runs.
@@ -384,8 +388,9 @@ public sealed class InProcHiveLauncher : IProcessLauncher, IAsyncDisposable
         catch (OperationCanceledException) when (hive.KillToken.IsCancellationRequested) { return CloneExitCodes.Watchdog; }
         catch (Exception ex)
         {
-            // Contained: one hive's unhandled exception is that hive's crash (the supervisor's restart policy), never main's.
-            _log.LogError(ex, "hive {Clone}: crashed (contained in main's process)", clone);
+            // Contained: one hive's unhandled exception is that hive's crash (the supervisor's restart policy), never main's. Its own
+            // log gets it (and main's, through the Error+ forward); before its loggers exist, main's.
+            (log ?? _log).LogError(ex, "hive {Clone}: crashed (contained in main's process)", clone);
             return 1;
         }
         finally
