@@ -578,7 +578,8 @@ keys, planks that keep the log's wood type), FurnaceRecipes, burn times, drops a
   above its site. Verified by parsing it back: every captured cell's id and meta, or the capture is refused. Saved with status
   `captured` (accepted by its capturer; the worker's `build{bp}` refuses it), the preview and the bill from nothing; one line:
   "captured 'Fox's house' as design #11: 7×6×5, 138 blocks (palette: …); bill to rebuild: …". The remembered structure (kind
-  build, owner, "captured as design #11" in its note) soft-protects it as the owner's build; blocks a bot placed there leave
+  build, owner, "captured as design #11" in its note) soft-protects it as the owner's build from the bot's own choices (a record,
+  not a lock: requested edits go through, see Protection policy, editing context; the capture is r1); blocks a bot placed there leave
   the placed log. "my house"/"Fox's house" resolves to the design (`design show/build{id:"my house"}`). Rebuild = `Reuse` (a
   trusted go, the gate, crew lanes, climbing, the Obtainer as for any design), never overlapping the original's box unless
   `at:"in place"`. `BuildBlocks.Rotate` turns torches (1..4), trapdoors and pumpkins too, so "turn it" keeps them on their walls.
@@ -681,6 +682,32 @@ keys, planks that keep the log's wood type), FurnaceRecipes, burn times, drops a
   bodies/crew by name) is a thin wrapper over `BlueprintService.BuildAsync`/`BuildLaneAsync`; a delegated "continue building
   design #4" gets its `build{bp:"4"}` line, an unapproved one is refused back to the brain (`design build{id}` after a trusted go).
   The old `VoxelPlan.Partition(n, byLayer)` strips (`build{bp, part, of}`) remain for scripts.
+- **Design revisions** (`Bot/Blueprints/DesignRevisions` + `DesignHistory` + `DesignDrift`, `World/Designs/DesignSnapshot`; Fox
+  10-30: "similar to Git style, so that we can detect changes and do revisions and regressions"). Linear history per design in
+  the shared db (`blueprint_revisions`: rev, author, author kind player|bot|body, message, optional tag, time, DSL, origin and the
+  **full block set**: every cell's exact id/meta in the version's own numbers plus the cells it expects to be air, x-runs per row,
+  a few KB). HEAD = the newest; nothing is rewritten. A revision is made by every save: the designer's version ("designed: …",
+  "revised: …"), a capture ("captured by Fox", with the air around it as the world showed it), a copy ("copy of #9 r2"), a
+  finished build only when its block set moved (a gate correction), `commit`, `revert`; an unchanged save adds none. Designs
+  saved before revisions become r1 on first look (and all of them at startup). `DesignDiff` (World layer, shared with the
+  Explorer): rA→rB and rev→world (the body's `PlanningView`), "+12 stone, −3 planks, ~2 oak stairs facing", use-state bits ignored
+  (a door opened, a button pressed, a furnace lit, dirt grown to grass), fluids/fire/plants drifting in aren't edits, unloaded
+  cells are "not loaded". Brain ops (same `design` tool, ≈215 tok, one less than before: the op enum moved into the text):
+  `log{id}` ("r2 Fox 5m ago 'a landing' [good] · r1 …"; `what:"r2 good"` tags), `status{id}` (HEAD + the world diff + who),
+  `diff{id, what?}` (none = HEAD vs world, "r2" vs world, "r1 r3"), `commit{id, what?}` (HEAD plus what the world shows changed,
+  drawn as it stands; a trusted word, or the bot's own requested edit; "#good …" tags), `revert{id, what?}` (default the one
+  before HEAD; "put it back" with no older revision restores HEAD): the target's block set becomes the next revision and is built
+  in place by the construction executor as the design's own job, its gate approved by the trusted asker: missing blocks placed,
+  blocks the target lacks drawn as forced air and dug, turned ones (facing) taken down first (`BlueprintService.Refit`: the
+  executor's `SameState` never re-faces a block). A finished build or revert moves the design's linked structure instead of
+  adding a "name #id" twin. **Drift** (`DesignDrift`, on the main body's world): every block change inside a standing (captured
+  or built) design's box (+1) is classified when it arrives: me (the self-edit log) or a hive body (the placed ledger), an
+  explosion (`WorldState.Blasts`, b1.8.1 0x3C and 1.12.2 0x1C, which used to be dropped), fire, an enderman beside it, a player
+  within 6, else unknown (found on chunk load: changed while nobody watched). Once a burst settles (4 s) the brain gets one
+  Background line, aggregated, at most every 2 min per design and never while the design's own job runs: "[design] #12
+  spiral_staircase drifted from r2: −3 stone (Fox 2, me 1); commit{id=12} keeps it, revert{id=12} restores" (damage offers the
+  revert first). Nothing is committed or restored on its own. The last world view goes to `blueprint_world` for the Explorer's
+  Designs page (revision list, preview, rA→rB and rev→world diffs with every cell).
 
 ## Light model and mob spawning (World/Light + Skills/Lighting) — task #29
 
@@ -746,6 +773,22 @@ One place decides whether the bot may break a block, why not, and how a player u
   command; a trusted "you can break X" unmarks it. Hard safety lives in the client's dig vetoes and never yields: void support,
   lava release, and the block another player stands on (leaves included). Mining down the bot's own pillar is allowed one
   1-block step at a time onto solid, non-leaf footing.
+- **Editing context** (`ProtectionPolicy/EditContext` + `Protection.EditYields`; Fox 10-30: "Just because a build is saved
+  doesn't mean it should be protected": main captured his spiral staircase at his request, then refused each next column; its
+  own `stair_shaft_seal_y16` mark blocked the room's doorway). Saving is a record, not a lock. Soft protection on a saved design
+  (a structure whose note links it: "captured as design #11", "built from design #4") or on one of the **bot's own marks** (a
+  structure with no taught_by, or a hive bot's name) yields to an **explicit** dig (`MinecraftClient.EditYields`, asked only by
+  `DigBlockAsync`/`DigHereAsync`: the dig tool, a script's dig, a build step; `GameBuildBody.IsProtected` applies it to the
+  executor) that was **requested**: the design's own build/revert/undo job runs in this async flow (`EditContext.JobFor`), the
+  turn's speaker is trusted, or a trusted player spoke in the last 10 min (a [task] wake after their ask has no speaker). A
+  design must also be **open**: a trusted touch in the last 30 min (captured/committed/reverted it, a design op on it in their
+  turn, a chat line naming it, a 5-letter stem counts: "the stairs" for spiral_staircase, or talking to the bot standing within
+  3 of it), its own job, or a design the hive authored for itself. Unchanged: never-break marks (hard), containers (exact permits
+  only), stations/config blocks, farms, hive leases, generator walls and every other indexed thing (an indexer floor/unknown-build
+  tag yields only inside such a box), overlapping builds of other players nobody asked about, and every autonomous pick (mine,
+  materials, path digs, chop: they never ask). Leases live in memory per process. Refusals say how to proceed: "part of the
+  spiral_staircase build (design #12; editing it needs a trusted player's ask)", "part of the stair_shaft_seal_y16 build (my own
+  mark; a trusted player's ask digs through it)".
 - **Trees** (rule 2): a tree is logs with leaves on dirt/grass. Bare log pillars and the bot's own placed logs are never part of
   a tree (`TreeScan`), so stewardship never applies to them. Exception: a remnant next to cells a recent hive chop felled (or
   left standing when it stopped) is our own unfinished tree (`World.ChopLog`, shared by in-process bodies): chop_tree finishes it.
