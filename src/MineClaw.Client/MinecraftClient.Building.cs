@@ -58,6 +58,8 @@ public sealed partial class MinecraftClient
                 return ActionResult.Fail($"a {(half == PlaceHalf.Top ? "top" : "bottom")} {ItemName(itemId, damage ?? 0)} can't be placed by clicking the {face.ToString().ToLowerInvariant()} face of {Fmt(target - face.Normal())}");
             if (World.Inventory.CountItem(itemId, damage) == 0) return ActionResult.Fail($"no {ItemName(itemId, damage ?? 0)} in inventory");
             if (!World.IsLoaded(target.X, target.Z)) return ActionResult.Fail($"{Fmt(target)} is not loaded");
+            // The box-in reflex and builds never wall a stair step or a mine room shut (live 10-30 01:44 "stop filling it in").
+            if (World.KeepAir.Refusal(target, World.Dimension, itemId) is { } keep) return ActionResult.Fail(keep);
             int existing = World.GetBlock(target);
             if (!Aiming.IsReplaceable(World, existing)) return ActionResult.Fail($"{Fmt(target)} is occupied by {BlockName(existing, World.GetMeta(target))}");
             if (EditBlocked(target)) return ActionResult.Fail(BlockedReason(target));
@@ -139,6 +141,7 @@ public sealed partial class MinecraftClient
             if (Safety.VoidNeighbourCount(World, feet.X, feet.Y, feet.Z) > 0) return ActionResult.Fail($"won't pillar at {Fmt(feet)}: the void is beside it");
             if (BlockShapes.HasCollision(World, feet.X, feet.Y + 2, feet.Z)) return ActionResult.Fail($"no room to jump at {Fmt(feet)}");
             if (World.Inventory.CountItem(itemId) == 0) return ActionResult.Fail($"no {ItemName(itemId)} to pillar with");
+            if (World.KeepAir.Refusal(feet, World.Dimension, itemId) is { } keep) return ActionResult.Fail(keep);
             return await PillarOnceAsync(feet, itemId, c).ConfigureAwait(false)
                 ? ActionResult.Success($"pillared {ItemName(itemId)} at {Fmt(feet)}")
                 : ActionResult.Fail($"pillar at {Fmt(feet)} didn't hold");

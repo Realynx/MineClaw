@@ -90,6 +90,10 @@ public sealed record GotoOptions
     /// <see cref="ClientOptions.AllowVoidParkour"/> or a trusted player's chat in the last few minutes, and a clutch block
     /// in the hotbar.</summary>
     public ParkourMode Parkour { get; init; } = ParkourMode.Ground;
+    /// <summary>Largest voluntary drop (<see cref="MineClaw.World.PathOptions.MaxDrop"/>); null = 3. An excavation walks its own dug
+    /// space with 1: a stair step, never a jump down into a cave it just opened (live 10-30 02:18 "see how we're in a dungeon
+    /// here? be careful about falling").</summary>
+    public int? MaxDrop { get; init; }
 
     /// <summary>Most consecutive steps with the head under water a plan may take (<see cref="PathOptions.MaxHeadUnderSteps"/>).</summary>
     public int MaxHeadUnderSteps { get; init; } = MineClaw.World.PathOptions.Default.MaxHeadUnderSteps;

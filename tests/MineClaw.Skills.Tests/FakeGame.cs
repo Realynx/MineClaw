@@ -13,11 +13,19 @@ namespace MineClaw.Skills.Tests;
 /// </summary>
 public sealed class FakeGame : IGameActions
 {
-    public FakeGame(int height = 128)
+    /// <param name="terrain">Block id at (x, y, z) for the initial 64×64 region (written in one go, lit like a fresh chunk: a
+    /// solid rock mass costs nothing per cell); null = all air.</param>
+    public FakeGame(int height = 128, Func<int, int, int, int>? terrain = null, MineClaw.World.Versioning.IPhysicsRules? physics = null)
     {
         int size = 64;
-        World = new WorldState(height: height);
-        World.ApplyChunkRegion(-32, 0, -32, size, height, size, new byte[size * height * size], null, null, null);
+        World = new WorldState(height: height, physics: physics);
+        var ids = new byte[size * height * size];
+        if (terrain != null)
+            for (int dx = 0; dx < size; dx++)
+            for (int dz = 0; dz < size; dz++)
+            for (int y = 0; y < height; y++)
+                ids[(dx * size + dz) * height + y] = (byte)terrain(dx - 32, y, dz - 32);
+        World.ApplyChunkRegion(-32, 0, -32, size, height, size, ids, null, null, null);
         World.Player.SetHealth(20, 20, 5);
         World.Time = 6000;
     }
@@ -112,11 +120,15 @@ public sealed class FakeGame : IGameActions
     {
         var o = options ?? GotoOptions.Default;
         Log.Add($"goto {goal}");
+        // A walk to a feet cell inside rock is the live failure ("goto … no path to within 1 of (151,12,275)"): never planned.
+        if (goal is GoalBlock gb && BlockShapes.HasCollision(World, gb.Target.X, gb.Target.Y, gb.Target.Z)) Violations.Add($"goto into rock at {gb.Target}");
         if (goal.IsReached(Pathfinder.StartCellFor(World, World.Player.Position) ?? World.Player.Position.ToBlockPos())) return Ok("arrived");
         int scaffold = o.AllowPlace ? Math.Min(o.ScaffoldBudget, World.Inventory.CountItem(Blocks.Cobblestone)) : 0;
         var path = Pathfinder.FindPath(World, World.Player.Position, goal, PathOptions.Default with
         {
             AllowPlace = scaffold > 0, ScaffoldBudget = scaffold, AllowBreak = o.AllowBreak, AllowPartial = false,
+            MaxDrop = o.MaxDrop ?? PathOptions.Default.MaxDrop,
+            CanPlace = c => !World.KeepAir.Contains(c, World.Dimension), // the client's rule (MinecraftClient.BuildPathOptions)
         }, ct);
         if (!path.Success) return No($"no path to {goal} ({path.Reason ?? path.Status.ToString()})");
         foreach (var step in path.Steps)
@@ -135,6 +147,13 @@ public sealed class FakeGame : IGameActions
     /// <summary>Called right after a dig changes the world (simulates what the server does next, e.g. trampled farmland).</summary>
     public Action<BlockPos>? AfterDig { get; set; }
 
+    /// <summary>Digs and places only what the real client could from where the body stands: a visible face within reach (dig),
+    /// a support face in reach (place, blind clicks as the b1.8.1 server allows); no walking to the block.</summary>
+    public bool StrictReach { get; set; }
+    /// <summary>Gravel and sand above a dug cell fall into it (the server's falling-block entity, landed at once).</summary>
+    public bool Gravity { get; set; }
+    public int Digs { get; private set; }
+
     // ---- blocks ----
     public Task<ActionResult> DigAsync(BlockPos p, CancellationToken ct)
     {
@@ -143,6 +162,9 @@ public sealed class FakeGame : IGameActions
         if (id == 0) return Ok("already clear");
         if (ProtectedBlocks.Contains(p)) return No("protected");
         if (Safety.SupportBlocks(World, World.Player.Position).Contains(p)) return No("won't dig the block I'm standing on");
+        if (StrictReach && Aiming.FindDigAim(World, World.Player.EyePosition, p, Reach) is null) return No($"can't reach {Blocks.Get(id).Name} at {p.X},{p.Y},{p.Z}");
+        if (BlockFaceExtensions.All.Any(f => BlockShapes.IsLava(World.GetBlock(p.Offset(f))))) return No($"won't dig {Blocks.Get(id).Name}: lava next to it would flow out");
+        Digs++;
         if (id is Blocks.SugarCane or Blocks.Cactus)
         {
             int n = 0;
@@ -151,6 +173,12 @@ public sealed class FakeGame : IGameActions
             return Ok($"dug {n}");
         }
         Set(p, 0);
+        if (Gravity)
+            for (var q = p; World.GetBlock(q.Up()) is Blocks.Gravel or Blocks.Sand; q = q.Up())
+            {
+                Set(q, World.GetBlock(q.Up()));
+                Set(q.Up(), 0);
+            }
         AfterDig?.Invoke(p);
         if (id == Blocks.Crops) { if (meta >= 7) Give(Items.Wheat, 1); Give(Items.Seeds, meta >= 7 ? 2 : 1); }
         else if (id == Blocks.Melon) Give(Items.MelonSlice, 4);
@@ -163,6 +191,9 @@ public sealed class FakeGame : IGameActions
         Log.Add($"place {p} {itemId}");
         if (World.Inventory.CountItem(itemId) == 0) return No($"no item {itemId}");
         if (!Aiming.IsReplaceable(World, World.GetBlock(p))) return No("occupied");
+        if (World.KeepAir.Refusal(p, World.Dimension, itemId) is { } keep) { Violations.Add($"tried to fill must-be-air {p}"); return No(keep); }
+        if (StrictReach && Aiming.FindPlaceAim(World, World.Player.EyePosition, p, Reach, AABB.ForPlayer(World.Player.Position)) is null
+            && PlaceRules.BlindAim(World, World.Player.EyePosition, p, Reach) is null) return No($"can't reach {p.X},{p.Y},{p.Z} to place");
         if (!BlockFaceExtensions.All.Any(f => BlockShapes.HasCollision(World, p.Offset(f).X, p.Offset(f).Y, p.Offset(f).Z))) return No("no support face");
         if (Safety.IsPlayerOverVoid(World, World.Player.Position)) Violations.Add($"placing while over void at {World.Player.Position}");
         if (itemId == Items.FlintAndSteel)
@@ -417,6 +448,7 @@ public sealed class FakeGame : IGameActions
         Log.Add($"place {p} {itemId} face {face}");
         FacePlacements.Add((p, itemId, face));
         if (World.Inventory.CountItem(itemId) == 0) return No($"no item {itemId}");
+        if (StrictReach && World.Player.EyePosition.DistanceTo(p.Center) > Reach + 0.5) return No($"can't reach {p.X},{p.Y},{p.Z} to place");
         if (!Aiming.IsReplaceable(World, World.GetBlock(p))) return No("occupied");
         int aid = World.GetBlock(against);
         if (aid == 0 || Blocks.Get(aid).Interactable) return No($"can't place against {Blocks.Get(aid).Name}");

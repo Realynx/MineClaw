@@ -51,6 +51,10 @@ public sealed class SkillRegistry
     /// light_area/spawn_map <c>design=</c> and <c>exclude=</c>; null = unknown.</summary>
     public Func<string, DesignRegion?>? Design { get; set; }
 
+    /// <summary>Remembered excavations (stair patterns, mine rooms, strip mines) for <c>excavate</c>: the Bot layer's db-backed
+    /// store; in memory by default.</summary>
+    public IDigSites Sites { get; set; } = new InMemoryDigSites();
+
     /// <summary>Registers every non-abstract <see cref="ISkill"/> marked <see cref="SkillAttribute"/> in <paramref name="assembly"/>.</summary>
     public SkillRegistry Discover(Assembly assembly)
     {

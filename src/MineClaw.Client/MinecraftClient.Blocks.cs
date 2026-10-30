@@ -132,6 +132,7 @@ public sealed partial class MinecraftClient
         if (!Aiming.IsReplaceable(World, existing)) return ActionResult.Fail($"{Fmt(pos)} is occupied by {BlockName(existing, World.GetMeta(pos))}");
         if (!World.IsLoaded(pos.X, pos.Z)) return ActionResult.Fail($"{Fmt(pos)} is not loaded");
         if (EditBlocked(pos)) return ActionResult.Fail(BlockedReason(pos));
+        if (World.KeepAir.Refusal(pos, World.Dimension, itemId) is { } keep) return ActionResult.Fail(keep);
 
         await EnsureNoWindowAsync(ct).ConfigureAwait(false);
         // Placing (and bridging) always sneaks: vanilla edge clamping while the arm is busy.

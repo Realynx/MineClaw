@@ -168,7 +168,9 @@ public sealed partial class MinecraftClient
         {
             AllowBreak = o.AllowBreak,
             CanBreak = (id, meta, pos) => !IsBlockProtected(pos, id) && !NextToLava(pos) && !EditBlocked(pos) && !othersStandOn.Contains(pos),
-            CanPlace = pos => !EditBlocked(pos),
+            // Never a bridge or pillar block in a cell a dug design keeps air (live 10-30 02:20: goto bridging put cobble on stair step 154,15,276).
+            CanPlace = pos => !EditBlocked(pos) && !World.KeepAir.Contains(pos, World.Dimension),
+            MaxDrop = o.MaxDrop ?? PathOptions.Default.MaxDrop,
             DigCost = (id, meta) =>
             {
                 int idx = MineClaw.Data.Tools.BestToolIndex(id, slots);

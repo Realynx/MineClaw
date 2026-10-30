@@ -87,6 +87,9 @@ public sealed class WorldState : IBlockAccess, IDisposable
     /// <summary>Recent chop_tree runs (felled/left logs): a remnant they left is the bot's own unfinished tree. In-process
     /// bodies share main's.</summary>
     public ChopLog Chops { get; set; } = new();
+    /// <summary>Cells dug designs say must stay air (stair shafts, mine rooms, corridors): never bridged, pillared, boxed or sealed
+    /// into. In-process bodies share main's.</summary>
+    public KeepAirLog KeepAir { get; set; } = new();
     /// <summary>Learned trigger → effect links (buttons, levers, plates → doors, pistons, hidden walls), per dimension.</summary>
     public MechanismGraph Mechanisms { get; } = new();
 
