@@ -93,6 +93,11 @@ public sealed partial class MinecraftClient
                 if (AABB.ForPlayer(World.Player.Position).Intersects(AABB.Block(target.X, target.Y, target.Z)) || FallingIntoCell(target))
                     return ActionResult.Fail(InTheWay + Fmt(target));
                 int heldBefore = World.Inventory.CountItem(itemId);
+                // A facing block (stairs, doors, furnaces, chests) takes the yaw the server last heard. The look above only rides
+                // the next tick's movement packet, and a reflex or overlay owning the look that tick won (live 10-30: two oak stairs
+                // of the arch bridge faced east and north instead of north and south). Say this yaw right before the click; the
+                // server handles them in order.
+                if (yaw is { } want) SendLookNow(want, aimPitch);
                 Send(new PlayerBlockPlacementPacket
                 {
                     X = against.X, Y = against.Y, Z = against.Z, Direction = (byte)face, HeldItem = HeldStack(), Cursor = CursorFor(against, face, point,

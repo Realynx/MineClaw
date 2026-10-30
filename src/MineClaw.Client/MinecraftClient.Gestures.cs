@@ -105,6 +105,17 @@ public sealed partial class MinecraftClient
         return (phys.Yaw + d, Math.Clamp(f.Pitch, -90f, 90f));
     }
 
+    /// <summary>Sends this look to the server now (ahead of a click that depends on it) and keeps it as the last one sent.</summary>
+    private void SendLookNow(float yaw, float pitch)
+    {
+        if (_session is not { } s) return;
+        var phys = World.Player.Physics;
+        try { s.Conn.Send(new PlayerLookPacket { Yaw = yaw, Pitch = pitch, OnGround = phys.OnGround }); }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException) { return; }
+        _lastYaw = yaw;
+        _lastPitch = pitch;
+    }
+
     /// <summary>
     /// A dig/place/use is about to go out while the server holds a gesture look: cancel the gesture and send the real look
     /// first (b1.8.1 orients furnaces/stairs/pistons by the player's yaw/pitch at placement).

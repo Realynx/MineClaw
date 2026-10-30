@@ -445,6 +445,7 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
             report.Placed++;
             if (step.Gate) bp.Gate.Blocks.Add(step.Target);
             if (Verify(step)) step.Status = StepStatus.Verified;
+            else if (Turned(step) && await RefaceAsync(step, item, dmg).ConfigureAwait(false)) step.Status = StepStatus.Verified;
             return StepOutcome.Placed;
         }
 
@@ -676,6 +677,27 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
             if (voxel.Blocks.TryGetValue(p, out var b) && shortItems.Keys.Any(k => (k.Item1, k.Item2) == BuildBlocks.ItemFor(b.Id, b.Meta)))
                 return "missing " + Name(BuildBlocks.ItemFor(b.Id, b.Meta).Item, BuildBlocks.ItemFor(b.Id, b.Meta).Damage);
             return report.Stopped is { } st ? "not reached: " + st : null;
+        }
+
+        // The right block facing the wrong way (a stair or door turned): it's ours, so take it back and place it again once.
+        bool Turned(PlanStep s)
+        {
+            if (!voxel.Blocks.TryGetValue(s.Target, out var want) || w.GetBlock(s.Target) != want.Id) return false;
+            int meta = w.GetMeta(s.Target);
+            return want.Kind == BuildKind.Stairs && (meta & 3) != (want.Meta & 3) || want.Kind == BuildKind.Door && (meta & 1) != (want.Meta & 1);
+        }
+
+        // Live 10-30: two oak stairs of the arch bridge faced east and north instead of north and south, and the rerun counted
+        // them as done ("rerun placed 0, nothing missing"). One retry: dig it (our own block) and place it again with the plan's yaw.
+        async Task<bool> RefaceAsync(PlanStep s, int item, int dmg)
+        {
+            var dug = await body.DigHereAsync(s.Target, ct).ConfigureAwait(false);
+            if (!dug.Ok) return false;
+            var again = await body.PlaceAsync(new BuildStep(StepKind.Place, s.Target, s.Id, s.Meta, null, s.Face, s.HiddenFace, s.Yaw), item, dmg, ct).ConfigureAwait(false);
+            if (!again.Ok) { report.Deviations.Add($"{BuildBlocks.Name(s.Id, s.Meta)} at {voxel.Local(s.Target)}: re-placing it facing right failed: {Short(again.Message)}"); return false; }
+            bool ok = Verify(s);
+            if (ok) report.Deviations.RemoveAll(d => d.Contains($"at {voxel.Local(s.Target)} go up") || d.Contains($"door at {voxel.Local(s.Target)} turned"));
+            return ok;
         }
 
         bool Verify(PlanStep s)

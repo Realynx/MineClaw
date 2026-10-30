@@ -135,3 +135,34 @@ public class ChopTargetLeaseTests
         return null;
     }
 }
+
+/// <summary>
+/// Live 10-30: two oak stairs of the arch bridge faced east and north instead of north and south: the plan's yaw rode the next
+/// tick's movement packet and a reflex owned the look that tick. A facing placement says its yaw right before the click.
+/// </summary>
+public class FacingPlacementTests
+{
+    [Theory]
+    [InlineData(180f)]
+    [InlineData(270f)]
+    public async Task The_last_look_the_server_hears_before_a_facing_placement_is_the_plans_yaw(float yaw)
+    {
+        var (c, s) = await Harness.StartAsync(srv =>
+        {
+            for (int x = 0; x <= 10; x++) for (int z = 0; z <= 10; z++) srv.Blocks[(x, 63, z)] = Blocks.Stone;
+            srv.Inventory[36] = Harness.Stack(Blocks.WoodenStairs, 8);
+            srv.SpawnAt = (3.5, 64, 3.5);
+        });
+        await using var _ = c;
+        using var __ = s;
+        await c.LookAtAsync(new Vec3d(3.5, 65.6, 9.5)); // looking south, the way a walk left it
+        var r = await c.PlaceAgainstAsync(new BlockPos(5, 64, 3), BlockFace.Top, Blocks.WoodenStairs, null, yaw, allowHidden: true);
+        Assert.True(r.Ok, r.Message);
+        var got = s.Snapshot();
+        int place = got.FindIndex(p => p is MineClaw.Protocol.Packets.PlayerBlockPlacementPacket);
+        Assert.True(place > 0);
+        var look = got.Take(place).Last(p => p is MineClaw.Protocol.Packets.PlayerLookPacket or MineClaw.Protocol.Packets.PlayerPositionLookPacket);
+        float sent = look is MineClaw.Protocol.Packets.PlayerLookPacket l ? l.Yaw : ((MineClaw.Protocol.Packets.PlayerPositionLookPacket)look).Yaw;
+        Assert.Equal(yaw, sent, 0.01);
+    }
+}
