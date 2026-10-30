@@ -22,7 +22,7 @@ namespace MineClaw.Bot.Tests;
 /// script; chat naming a body reaches that body (reflex, focus) and never main; and an in-process clone body has the hive
 /// clone's survival parity (step 3a): it eats when hungry, keeps off the void, and reports a fight tagged with its body.
 /// </summary>
-public class MultiBodyBrainTests(ITestOutputHelper output)
+public partial class MultiBodyBrainTests(ITestOutputHelper output)
 {
     private const string Main = "maid_chan";
     private static readonly BlockPos West = new(5, 64, 7), East = new(7, 64, 7);

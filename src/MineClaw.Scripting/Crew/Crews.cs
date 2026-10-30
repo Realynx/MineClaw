@@ -24,6 +24,12 @@ public static class Crews
 
     public static bool IsLive(string? crew) => crew != null && Live.ContainsKey(crew);
 
+    private static readonly System.Text.RegularExpressions.Regex CrewCall =
+        new(@"\b(?:everyBody|parallel|spawn)\s*\(", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>The code works its bodies through roles (<c>everyBody</c>/<c>parallel</c>/<c>spawn</c>): a coordinator, not a one-body job.</summary>
+    public static bool IsCrewScript(string? code) => code != null && CrewCall.IsMatch(code);
+
     /// <summary>A body's run belongs to a live crew: a lane now, or its last run was a lane of a crew still going.</summary>
     public static bool Owns(ScriptController c) =>
         c.Current is { Request.Role: not null } || c.Last is { Request: { Role: not null, CrewId: var id } } && IsLive(id);

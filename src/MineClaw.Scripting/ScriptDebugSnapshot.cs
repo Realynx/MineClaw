@@ -42,6 +42,8 @@ public sealed record ScriptDebugSnapshot
     /// <summary>Crew lane: the role function this lane runs; null for the coordinator / a plain script.</summary>
     public string? Role { get; init; }
     public string? Crew { get; init; }
+    /// <summary>Crew lane: who coordinates its crew ("maid_chan_101"); null for a coordinator or a plain script.</summary>
+    public string? Coordinator { get; init; }
     public DateTimeOffset At { get; init; }
     public DateTimeOffset Started { get; init; }
     /// <summary>Bumps every time the script thread publishes a new sample (a client can tell a frozen feed from a quiet one).</summary>

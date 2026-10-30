@@ -11,8 +11,9 @@ public sealed record BodyInfo(string Name, double Hp, double Food, BlockPos Pos,
 /// function definitions and constants there). <paramref name="CrewId"/> names the shared board; the lane's checkpoints are
 /// keyed by (script, body).
 /// </summary>
+/// <paramref name="Coordinator"/> names who runs the crew ("maid_chan_101"): the lane's debugger view shows it next to the crew.
 public sealed record LaneSpec(string Body, string Script, string Code, ScriptLanguage Language, string Role, string? ArgsJson, string CrewId,
-    int? Version = null, string? Author = null);
+    int? Version = null, string? Author = null, string? Coordinator = null);
 
 /// <summary>A running lane (another body running a role of the same script).</summary>
 public interface ILane
@@ -49,6 +50,13 @@ public interface ICrewPort
     /// waiting for them instead of ending once the early ones are done. 0 = none known.
     /// </summary>
     int Pending() => 0;
+    /// <summary>
+    /// One body, one crew: the live crew (its coordinator still runs) that holds this body, or null. A crew over some bodies never
+    /// takes one another live crew holds (Fox 10-30: "assign scripts to all or some or just one of its bodies"); it reports it.
+    /// </summary>
+    string? HeldBy(string body) => null;
+    /// <summary>Holds the body for <paramref name="crew"/> until that crew ends; false = another live crew has it.</summary>
+    bool Hold(string body, string crew) => true;
 }
 
 /// <summary>

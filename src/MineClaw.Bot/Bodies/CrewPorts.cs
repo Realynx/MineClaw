@@ -141,10 +141,25 @@ public sealed class BodyCrewPort(BodyRegistry registry, ToolRegistry tools, ICre
         return it is { } i ? b.Adapter.World.Inventory.CountItem(i.Item.Id, i.Damage >= 0 ? i.Damage : null) : -1;
     }
 
+    public string? HeldBy(string body) => Find(body)?.LiveCrew;
+
+    public bool Hold(string body, string crew)
+    {
+        if (Find(body) is not { } b) return false;
+        lock (b)
+        {
+            if (b.LiveCrew is { } other && !string.Equals(other, crew, StringComparison.Ordinal)) return false;
+            b.Crew = crew;
+            return true;
+        }
+    }
+
     public ILane Start(LaneSpec spec)
     {
         if (Find(spec.Body) is not { ScriptBridge: { } lane } b) return Lanes.Failed(spec.Body, $"no body {spec.Body} online");
         if (b.State != BodyState.Online) return Lanes.Failed(spec.Body, $"body {spec.Body} is {b.State.ToString().ToLowerInvariant()}");
+        // One body, one crew: another live crew's body (held between its lanes too, e.g. in an everyBody retry pause) isn't taken.
+        if (!Hold(b.Short, spec.CrewId)) return Lanes.Failed(spec.Body, $"body {spec.Body} is in crew {b.LiveCrew}");
         // A crew takes over a body busy with something that isn't a lane of a live crew (its own leftover script run, an old
         // standing order's job): the crew is the newer order from the same brain (live 10-30: 1337 and 126 kept running
         // last crew's "deforest" at "felled 0" and refused the new crew's lane every 30 s, so they stood still for good).
@@ -158,7 +173,7 @@ public sealed class BodyCrewPort(BodyRegistry registry, ToolRegistry tools, ICre
         var (s, err) = lane.StartLane(new ScriptRequest
         {
             Name = spec.Script, Code = spec.Code, Language = spec.Language, Role = spec.Role, ArgsJson = spec.ArgsJson, CrewId = spec.CrewId,
-            Version = spec.Version, Author = spec.Author,
+            Version = spec.Version, Author = spec.Author, Coordinator = spec.Coordinator,
         }, b);
         return s == null ? Lanes.Failed(spec.Body, err ?? "can't start") : Lanes.Of(spec.Body, s);
     }
@@ -180,29 +195,37 @@ public sealed class BodyCrewPort(BodyRegistry registry, ToolRegistry tools, ICre
 }
 
 /// <summary>
-/// One hive script's view of its process's bodies (<c>hive spawn kind=script bodies=N</c>): exactly the accounts allocated to it that
-/// are online now, so <c>bodies()</c> grows as late logins arrive and shrinks as bodies leave. Lanes start only on its own bodies.
+/// One crew's view of its process's bodies: a hive script's (<c>hive spawn kind=script bodies=N</c>: exactly the accounts allocated to
+/// it), a brain's crew over a body list or "all" (<c>script{name, body:[…]}</c>), or the bodies a hive spawned straight onto a script.
+/// Only the members online now, so <c>bodies()</c> grows as late logins arrive and shrinks as bodies leave; with <paramref name="crew"/>
+/// a body another live crew holds is left out (one body, one crew). Lanes start only on its own bodies.
 /// </summary>
-public sealed class SubsetCrewPort(ICrewPort inner, Func<IReadOnlyCollection<string>> members) : ICrewPort
+/// <param name="pending">Bodies still to come (null = its members not online yet).</param>
+public sealed class SubsetCrewPort(ICrewPort inner, Func<IReadOnlyCollection<string>> members, string? crew = null, Func<int>? pending = null) : ICrewPort
 {
     public ICrewBoard Board => inner.Board;
 
-    private bool Mine(string body) => members().Any(m => string.Equals(m, body, StringComparison.OrdinalIgnoreCase)
+    private bool Member(string body) => members().Any(m => string.Equals(m, body, StringComparison.OrdinalIgnoreCase)
         || string.Equals(Body.ShortName(m, false), body, StringComparison.OrdinalIgnoreCase));
+
+    private bool Mine(string body) => Member(body) && (crew == null || inner.HeldBy(body) is not { } h || string.Equals(h, crew, StringComparison.Ordinal));
 
     public IReadOnlyList<string> Bodies() => inner.Bodies().Where(Mine).ToList();
 
     /// <summary>Its accounts not online yet (allocated, still logging in).</summary>
     public int Pending()
     {
+        if (pending != null) return pending();
         var on = inner.Bodies();
         return members().Count(m => !on.Contains(Body.ShortName(m, false), StringComparer.OrdinalIgnoreCase) && !on.Contains(m, StringComparer.OrdinalIgnoreCase));
     }
     public BodyInfo? Info(string body) => Mine(body) ? inner.Info(body) : null;
     public int Count(string body, string item) => Mine(body) ? inner.Count(body, item) : -1;
-    public ILane Start(LaneSpec spec) => Mine(spec.Body) ? inner.Start(spec) : Lanes.Failed(spec.Body, $"{spec.Body} isn't one of this hive script's bodies");
+    public ILane Start(LaneSpec spec) => Mine(spec.Body) ? inner.Start(spec) : Lanes.Failed(spec.Body, $"{spec.Body} isn't one of this crew's bodies");
     public Task<ActResult> ActAsync(string body, string action, JsonElement args, CancellationToken ct) =>
-        Mine(body) ? inner.ActAsync(body, action, args, ct) : Task.FromResult(ActResult.Fail($"{body} isn't one of this hive script's bodies"));
+        Mine(body) ? inner.ActAsync(body, action, args, ct) : Task.FromResult(ActResult.Fail($"{body} isn't one of this crew's bodies"));
+    public string? HeldBy(string body) => inner.HeldBy(body);
+    public bool Hold(string body, string crewId) => Member(body) && inner.Hold(body, crewId);
 }
 
 /// <summary>The lane handles the ports hand out.</summary>

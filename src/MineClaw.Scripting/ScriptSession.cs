@@ -51,6 +51,8 @@ public sealed record ScriptRequest
     public string? Role { get; init; }
     /// <summary>Crew lane / coordinator: the shared board's name.</summary>
     public string? CrewId { get; init; }
+    /// <summary>Crew lane: who runs its crew ("maid_chan_101", the hive whose bodiless coordinator handed out the lane); debugger only.</summary>
+    public string? Coordinator { get; init; }
     /// <summary>
     /// No brain watches this run (a hive script's coordinator; every crew lane is unattended too): a danger pause resumes by itself
     /// once the body's reflexes let go (<see cref="ScriptOptions.LaneSafeSeconds"/>), and gives up after

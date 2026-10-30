@@ -18,6 +18,16 @@ public sealed partial class BotAgent
 {
     public const string BodyParam = "body";
 
+    /// <summary>The script tool's hidden field for a crew's bodies (Bot's <c>ScriptBridge.CrewBodiesKey</c>).</summary>
+    public const string CrewBodiesParam = "__bodies";
+
+    /// <summary>
+    /// Set by the script layer: is this <c>script</c> call a run of code that works through roles (everyBody/parallel/spawn)? Then its
+    /// <c>body</c> list, "all" or one body is ONE crew over exactly those bodies (Fox 10-30: "assign scripts to all or some or just one
+    /// of its bodies"), not one copy of the coordinator per body. Null = every body list splits as before.
+    /// </summary>
+    public Func<JsonElement, bool>? CrewRun { get; set; }
+
     /// <summary>Tools that act on a body (and so default to the turn's focus body): jobs, macros, body lookups, scripts.</summary>
     internal static bool RoutesToBody(string name) =>
         IsBodyTool(name) || ReadOnlyTools.Contains(name)
@@ -54,6 +64,8 @@ public sealed partial class BotAgent
         var input = WithoutBody(u.Input);
         if (spec == null && !RoutesToBody(u.Name)) return [Plan(u with { Input = input }, tier, retry, stopping, sigs)];
 
+        if (spec is { } crewSpec && u.Name == "script" && IsCrew(input)) return [CrewPlan(u, dir, crewSpec, input, tier, retry, stopping, sigs)];
+
         var plans = new List<Planned>();
         // do: steps in then[] with their own body run on that body's slot (a chain per body).
         var groups = u.Name.Equals(DoTool.ToolName, StringComparison.OrdinalIgnoreCase)
@@ -80,6 +92,38 @@ public sealed partial class BotAgent
         }
         if (plans.Count > 1 && groups.Count == 1) _log.LogInformation("bodies: {Tool} on {Bodies}", u.Name, string.Join(", ", plans.Select(p => p.Body)));
         return plans;
+    }
+
+    private bool IsCrew(JsonElement input)
+    {
+        try { return CrewRun?.Invoke(input) == true; }
+        catch (Exception ex) { _log.LogDebug(ex, "bodies: crew check failed"); return false; }
+    }
+
+    /// <summary>
+    /// A crew script with a <c>body</c>: one call on the brain's own scope carrying the crew's bodies ("all" stays "all", so bodies that
+    /// log in later join; names resolve and must be online; main never runs a lane).
+    /// </summary>
+    private Planned CrewPlan(LlmToolUse u, global::MineClaw.Agent.Bodies.IBodyDirectory dir, JsonElement spec, JsonElement input, ModelTier tier, bool retry,
+        bool stopping, ICollection<string> sigs)
+    {
+        var names = spec.ValueKind == JsonValueKind.Array
+            ? spec.EnumerateArray().Select(x => x.ValueKind == JsonValueKind.String ? x.GetString() : x.GetRawText()).ToList()
+            : [spec.ValueKind == JsonValueKind.String ? spec.GetString() : spec.GetRawText()];
+        JsonNode bodies;
+        if (names.Any(n => string.Equals(n?.Trim(), "all", StringComparison.OrdinalIgnoreCase))) bodies = JsonValue.Create("all")!;
+        else
+        {
+            var targets = Targets(dir, spec, u.Name, input, out var error);
+            if (error != null) return new Planned { Use = u, Result = ToolResult.Error(error) };
+            var lanes = targets.Where(b => !IsMainBody(b)).ToList();
+            if (lanes.Count == 0) return new Planned { Use = u, Result = ToolResult.Error("a crew runs on your other bodies (yours coordinates): name them or \"all\"") };
+            bodies = new JsonArray(lanes.Select(b => (JsonNode?)JsonValue.Create(b)).ToArray());
+        }
+        var o = JsonNode.Parse(input.GetRawText())!.AsObject();
+        o[CrewBodiesParam] = bodies;
+        _log.LogInformation("bodies: script crew on {Bodies}", bodies.ToJsonString());
+        return Plan(u with { Input = JsonSerializer.SerializeToElement(o) }, tier, retry, stopping, sigs);
     }
 
     /// <summary>The error for a call naming a body this brain doesn't drive: how to reach it, and to report only confirmed results.</summary>

@@ -46,7 +46,8 @@ internal sealed partial class JsRuntime
             var body = Str(a, 0) ?? throw ScriptSession.Bug("spawn(body, role, args) needs a body");
             var role = Str(a, 1) ?? throw ScriptSession.Bug("spawn(body, role, args) needs a role function name");
             var argsJson = JsConvert.ToNode(JsConvert.Arg(a, 2), 0, args: false)?.ToJsonString();
-            var lane = Port().Start(new LaneSpec(body, s.Name, s.Code, s.Language, role, argsJson, CrewId, s.Request.Version, s.Request.Author));
+            var lane = Port().Start(new LaneSpec(body, s.Name, s.Code, s.Language, role, argsJson, CrewId, s.Request.Version, s.Request.Author,
+                s.Request.Coordinator ?? s.Host.Username));
             if (_liveCrew == null) Crews.Open(_liveCrew = CrewId); // its lanes' bodies are this crew's until it ends (wake digest)
             int id = ++_nextLane;
             _lanes[id] = lane;

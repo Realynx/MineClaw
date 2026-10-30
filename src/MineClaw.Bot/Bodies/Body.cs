@@ -62,6 +62,16 @@ public sealed class Body : IBody
     public WorldIndex.WorldMemory? WorldMemory { get; internal set; }
     /// <summary>When this body last logged in (the slot yield: among equals, the most recently started goes first).</summary>
     public DateTimeOffset Started { get; internal set; }
+    /// <summary>
+    /// The crew holding this body (its board id), set when a crew takes it (a coordinator over a body list, or the first lane it
+    /// gets) and meaningful only while that crew is live (<see cref="Scripting.Crew.Crews.IsLive"/>): one body, one crew, so a second
+    /// crew over "all" or a list naming it skips it and says so (Fox 10-30: "assign scripts to all or some or just one of its bodies").
+    /// </summary>
+    public string? Crew { get; internal set; }
+
+    /// <summary>The live crew holding this body, or null.</summary>
+    public string? LiveCrew => Crew is { } c && Scripting.Crew.Crews.IsLive(c) ? c : null;
+
     /// <summary>Per-body wiring torn down with the body (timers, subscriptions).</summary>
     internal List<IDisposable> Owned { get; } = new();
 

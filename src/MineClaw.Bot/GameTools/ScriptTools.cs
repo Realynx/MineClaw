@@ -355,6 +355,9 @@ public sealed partial class ScriptBridge
     internal GameEvent? Gate(GameEvent e)
     {
         var s = Controller.Current;
+        // A crew this brain coordinates bodiless (script{name, body:"all"}, a hive spawned onto a script): its idle check-ins are
+        // dropped as for its own running script; everything else wakes as usual (it isn't asleep: it may talk and work meanwhile).
+        if (s == null && !_posting && Body == null && e.Kind == EventKind.IdleTick && !_crewRuns.IsEmpty) return null;
         if (s == null || _posting) return e;
         var se = Map(e);
         // Several bodies: another body's event, or chat that isn't this lane's, is not this lane's to sleep on.
@@ -593,7 +596,7 @@ public sealed partial class ScriptBridge
                 return ToolResult.Success($"{ScriptLibrary.ParseRef(CleanRef(n)).Name} v{v.V}: " + Clip(v.Code, ShowChars));
             }
             case "status":
-                return ToolResult.Success(Controller.Status());
+                return ToolResult.Success(StatusWithCrews());
             case "pause":
             {
                 var s = Controller.Current;
@@ -613,6 +616,7 @@ public sealed partial class ScriptBridge
             }
             case "cancel":
             {
+                if (await CancelCrewAsync(input, ct).ConfigureAwait(false) is { } crewCancelled) return crewCancelled;
                 var s = Controller.Current;
                 if (s == null) return ToolResult.Error("no script running");
                 L(s).PlannerEnded = true;
@@ -731,6 +735,13 @@ public sealed partial class ScriptBridge
             ResumeFrom = ToolInput.Str(input, "resume_from"), Author = author, Version = version,
             LintWarnings = string.IsNullOrEmpty(warnings) ? null : warnings,
         };
+        // A crew script over a body list or "all" (the planner resolved them): ONE bodiless coordinator, this body stays free.
+        if (CrewBodiesOf(input) is { } crewBodies)
+        {
+            var crew = await RunCrewAsync(req, crewBodies, replace, ct).ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(warnings)) notes.Add(warnings);
+            return notes.Count == 0 || !crew.Ok ? crew : crew with { Text = crew.Text + " | " + string.Join(" | ", notes) };
+        }
         if (replace && Controller.Current is { } old) L(old).PlannerEnded = true;
         var (s, err) = replace ? await Controller.ReplaceAsync(req, ct).ConfigureAwait(false) : Controller.Start(req);
         if (s == null) return ToolResult.Error(err ?? "can't start");
@@ -1296,6 +1307,7 @@ public static class ScriptTools
             skills.SyncLearned = () => { prev?.Invoke(); bridge.SyncPromoted(); };
         }
         rt.Agent.BodyHolder = bridge.BodyState; // body lock: brain body tools answer "body busy" while a script runs
+        rt.Agent.CrewRun = bridge.IsCrewCall; // a crew script with a body list or "all" = ONE crew over those bodies
         if (rt.Agent.Orders is { } orders)
         {
             // A live script holds the body: the order waits instead of a run that answers "already running" (live 10-28 03:48:

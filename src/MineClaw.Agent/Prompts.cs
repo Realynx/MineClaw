@@ -152,7 +152,7 @@ Safety
         "it; [bodies] shows the others, [67 task ok] is 67's. Speak for them (\"67's on it\").\n" +
         "- do/delegate/stop/status/inventory/see/script/amend_task take body:\"67\"|[\"67\",\"69\"]|\"all\"|\"any\" (default: the body named, " +
         "else your focus); a list = one job per body at once: \"67 and 69 chop trees\" = do{action:\"chop_tree\"," +
-        "body:[\"67\",\"69\"]}. A then[] step may set its own body.\n" +
+        "body:[\"67\",\"69\"]}. A then[] step may set its own body. A crew script (everyBody) with a body list/\"all\" runs ONCE over just those.\n" +
         "- bodies{op:list|spawn|despawn|focus,name,task?,script?}: log one in (task/script = its job) or out; focus = your default body.";
 
     /// <summary>
@@ -163,7 +163,8 @@ Safety
         "- You may drive subhive bodies (101, 102...) besides your own: [bodies] shows them, [102 task ok] is 102's; only your own " +
         "body chats, so speak for them.\n" +
         "- do/delegate/stop/status/inventory/see/script/amend_task take body:\"102\"|[\"102\",\"103\"]|\"all\"|\"any\" (default: the " +
-        "body named, else yours); a list or \"all\" = one job per body at once: \"all of you chop trees\" = do{action:\"chop_tree\",body:\"all\"}.";
+        "body named, else yours); a list or \"all\" = one job per body at once: \"all of you chop trees\" = do{action:\"chop_tree\",body:\"all\"}. " +
+        "A crew script (everyBody) with a body list/\"all\"/one runs ONCE over just those; the others keep their jobs.";
 
     public const string HiveMainHint =
         "- Asked as a group (\"both of you\", \"everyone\")? Give clones a part via hive spawn; reply once yourself.\n" +

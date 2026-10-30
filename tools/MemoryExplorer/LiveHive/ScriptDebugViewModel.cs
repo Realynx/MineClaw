@@ -204,7 +204,8 @@ public sealed partial class ScriptDebugViewModel : ObservableObject, IDisposable
         }
         else if (s.Code == null && key != _codeKey) Volatile.Write(ref _codeSession, -1); // ask for the new run's code next time
 
-        ScriptName = s.Name + (s.Version is { } v ? $" v{v}" : "") + (s.Role is { } role ? $" · lane {role}" : "");
+        // A crew lane says whose crew it works for (Fox 10-30: a hive assigns scripts to some of its bodies; which crew is this body in?).
+        ScriptName = s.Name + (s.Version is { } v ? $" v{v}" : "") + (s.Role is { } role ? $" · lane {role}" + (s.Coordinator is { } co ? $" · crew of {co}" : "") : "");
         IsRunning = s.Live;
         IsPaused = s.Paused;
         StatusKind = s.Paused ? "paused" : s.Live ? "running" : s.Status;
@@ -248,7 +249,10 @@ public sealed partial class ScriptDebugViewModel : ObservableObject, IDisposable
             foreach (var row in Rows(args).Where(r => Params.All(p => p.Name != r.Name))) Params.Add(row with { Note = "arg" });
         Replace(Locals, s.Locals?.Select(l => new ValueRow(l.Name, l.Value, l.Scope)).ToList() ?? []);
         LocalsNote = s.LocalsNote ?? (s.LocalsAgeSeconds is > 1 ? $"sampled {s.LocalsAgeSeconds:0} s ago" : "");
-        Replace(Lanes, s.Lanes.Select(l => new ValueRow($"lane {l.Id} · {l.Body}", l.Status)).ToList());
+        var lanes = s.Lanes.Select(l => new ValueRow($"lane {l.Id} · {l.Body}", l.Status)).ToList();
+        if (s.Role != null && s.Crew != null)
+            lanes.InsertRange(0, [new ValueRow("crew", s.Crew), .. s.Coordinator is { } c ? new[] { new ValueRow("coordinator", c) } : []]);
+        Replace(Lanes, lanes);
         HasLanes = Lanes.Count > 0 || s.Crew != null;
         ProgressText = s.ProgressPct is { } pct ? $"{pct:0}%" + (s.ProgressNote is { } pn ? " " + pn : "") : s.ProgressNote ?? "";
         FailureText = s.Live ? (s.LastFailure is { } lf ? "last failure: " + lf : "") : s.Outcome ?? "";

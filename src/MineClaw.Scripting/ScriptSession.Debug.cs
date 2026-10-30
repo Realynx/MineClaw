@@ -210,7 +210,7 @@ public sealed partial class ScriptSession
         {
             SessionId = Id, Name = Name, Version = Request.Version, Lang = ScriptLanguages.Tag(Language),
             Status = Status.ToString().ToLowerInvariant(), Live = live, Body = _host.Body ?? "main", Author = Request.Author,
-            Role = Request.Role, Crew = Request.CrewId, At = _time.GetUtcNow(), Started = Started, Seq = Interlocked.Read(ref _seq),
+            Role = Request.Role, Crew = Request.CrewId, Coordinator = Request.Role != null ? Request.Coordinator : null, At = _time.GetUtcNow(), Started = Started, Seq = Interlocked.Read(ref _seq),
             Line = line, Column = col, LineLive = lineLive && live, InSdk = inSdk, Snippet = SourceLine(line),
             Stack = frames, StackAgeSeconds = sample != null ? Math.Round((now - sample.Tick) / 1000.0, 1) : null,
             Action = act == null ? null : new ScriptActionView(act.Label, ArgsText(act.Args),
