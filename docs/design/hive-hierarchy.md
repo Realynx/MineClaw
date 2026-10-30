@@ -1,6 +1,6 @@
 # Hive hierarchy: kinds, ownership, dynamic accounts, the off-channel bus, one memory
 
-Status: steps (a)–(h) below are implemented; "Remaining" lists what isn't.
+Status: steps (a)–(i) below are implemented ((i): in-process hives, "In-process hives"); "Remaining" lists what isn't.
 Related: `ARCHITECTURE.md` (Hive, One brain many bodies), `docs/design/one-brain-many-bodies.md`.
 
 ## The model (Fox's words, condensed)
@@ -23,8 +23,9 @@ Related: `ARCHITECTURE.md` (Hive, One brain many bodies), `docs/design/one-brain
 | term | meaning |
 |---|---|
 | main | the root hive, `maid_chan`; the default owner; the only process that whitelists, allocates accounts, owns the db's writes for other hives, and routes the bus |
-| hive (kind) | a clone with its own brain loop (`BrainKind.Opus` or `BrainKind.DeepSeek`), today a clone process (`--clone`) |
-| subhive (kind) | a body driven by its owner's brain, hosted in the owner's process (`InProcBodies` in subhive mode, `BodyRegistry`) |
+| hive (kind) | a clone with its own brain loop (`BrainKind.Opus` or `BrainKind.DeepSeek`): by default another agent inside main's process (`Hive:Isolation=inproc`), else a clone process (`--clone`) |
+| subhive (kind) | a body driven by its owner's brain, hosted where its owner runs (`InProcBodies` in subhive mode, `BodyRegistry`): main's process for main and for every in-process hive |
+| isolation | where a hive or script clone runs: `inproc` (default: main's process, a watchdog instead of the process kill) or `process` (`Hive:Isolation`, `Hive:ProcessProfiles`, a spawn's `HiveSpawnOptions.Isolation`) |
 | script (kind) | a body running one saved script with the brain asleep (the existing script spawn), released when the script ends |
 | owner | the hive that spawned a clone: `main` or a hive-kind clone's account |
 | admin root | main, always; ownership never grants whitelist rights |
@@ -43,7 +44,7 @@ main (admin root, default hive, brain Opus 5.5)
 │       └── 105 script cobble  owner 103
 ├── 106 subhive                owner main  (in main's process)
 └── 107 hive (deepseek)        owner main
-    └── 108, 109, 111 subhive    owner 107 (in 107's process)
+    └── 108, 109, 111 subhive    owner 107 (driven by 107's brain; in main's process with 107, or in 107's own with isolation=process)
 ```
 
 - **Ownership** (`HiveTree`) decides who may assign, hand over, list and release a clone, and what a release cascades to. A hive
@@ -66,8 +67,9 @@ main (admin root, default hive, brain Opus 5.5)
    limit, used = max(estimate, kernel's measurement)) must fit the new hive process or body; `Hive:MaxClones` > 0 is an extra ceiling (0 = only
    the player cap). Refusals say which ("player cap: only 1 slot free and 1 kept for offline regulars").
 4. **Whitelist add**: right before the login (`IHiveAccounts.BeforeLaunch`), through the command gate's scoped exception.
-5. **Spawn/connect**: the existing supervisor launch (login throttle spacing, current-user-only pipe, hello → welcome with the
-   bus token).
+5. **Spawn/connect**: the existing supervisor launch (login throttle spacing: `JoinPacer`, one at a time on b1.8.1, `LaunchBatch` 10
+   on 1.12.2; hello → welcome with the bus token) over the launcher's transport: an in-memory link to a hive in main's process
+   (default), or a current-user-only pipe to a clone process.
 6. **Work**: its task/script; hive-kind clones may spawn their own clones (bus).
 7. **Deposit** its whole inventory before logout (the existing logout gate: chests → hand-off to main → placed chest; stranded
    on timeout).
@@ -85,9 +87,57 @@ A never-joined account lands at the server's fresh-player spawn, which is over t
 refuses that login without a trusted player's /tp consent ("never joined: … needs a /tp"), and that applies to fresh accounts.
 Main never /tps on its own (op policy: only exact commands a trusted player names). Reuse-first keeps fresh accounts rare.
 
+## In-process hives (`Hive:Isolation=inproc`, the default)
+
+Live 10-30: 25 clone processes (~200 MB and a CPU-heavy JIT start each) thrashed the 4 GB CT. Fox: "consolidate everything into the same
+process and use threads instead … so that we can still go back to the beta version and work the same."
+
+- **What runs**: `InProcHiveLauncher` (App/Hosting/InProcHives.cs) is the supervisor's `IProcessLauncher`; each start runs the exact
+  `CloneMode.RunAsync(CloneRun)` a clone process runs, as one task on the thread pool: its own brain loop (`BotAgent`, its model profile:
+  Opus 5.5, or the DeepSeek profile running saved scripts only), its own client and account, its own subhive bodies for `bodies:N`, the
+  `CloneHost` logout gate, the same shared memory (db, RAG/RAPTOR reads, writes through main's groomer over the bus, script library,
+  beliefs, world index). Its client keeps its own reader and tick threads, like an in-process body.
+- **The link**: `MemoryTransport` (Hive/Ipc/HiveTransport.cs): main listens on a fresh `mem:<account>:<guid>` address before the start,
+  the hive connects, and the two `HiveLink`s talk over a pair of `MemoryDuplexStream`s with the same frames as a pipe. The supervisor is
+  unchanged, so every message type keeps working: hello/welcome, task/progress/result, recall/bye, snap (vitals, position), usage (the
+  ledger's per-clone accounting), spend grants, claims and leases, roster/chat/inject, view/vision/script_dbg/brain_ctx (the Supervisor
+  viewer and the Explorer's hive tree, Controller and debugger panels), and the `bus` frames (tokens checked, an envelope only from the
+  link its endpoint owns). That is the in-memory bus: the same `HiveBus`, its endpoints reached over memory links instead of pipes.
+- **Its own everything else**: option objects bound afresh from the config (`AppSettings.Bind` + `CloneMode.Prepare`: a brain profile or
+  the clone's names never touch main's), logs under `logs/hive/<account>/` (Error+ also in main's log as `[account] …`), telemetry and
+  `usage-<account>.json`, a cancellation scope (`Stop` = its planned logout, `/quit` over IPC ends only that hive; `Kill` = the hard stop),
+  a clean execution context (main's turn, tool caller and body scope never flow in) with the process's version and world mode scoped.
+- **One version per process**: every hive talks to main's server with main's resolved `GameVersionProfile`; the start throws when the
+  hive's profile isn't `GameData.Current` ("one version per process: …"). b1.8.1's join throttle (`LaunchBatch` 1, 4.5 s apart), its
+  skyblock world mode, its 128-high world, its chat/command rules (the op `CommandInterval` is main's and 1.12.2-only) and its combat
+  rules come with the profile exactly as in a process.
+- **Watchdog** instead of the process kill: every `Hive:InProc:CheckSeconds` (5) each hive's `HiveHealth`: a brain turn running
+  `HangSeconds` (900) without a model call finishing (`ProgressLlmClient` stamps each), its snapshot loop silent `StallSeconds` (180), its
+  own loggers writing `MaxErrors` (40) errors in `ErrorWindowMinutes` (5), or a flag raised inside it (the budget gate refused a call).
+  A sick hive is stopped the way a release stops it (`CloneHost.LogoutAsync("watchdog: …")`: its bodies deposit and log out first, then
+  its own deposit, bye, logout) and main's brain gets `[hive] watchdog stopped 101: hung: …`; still running `StopGraceSeconds` (240)
+  later it is killed (teardown without the gate); a task that won't unwind in `AbandonSeconds` (10) is reported exited and abandoned.
+  The supervisor sees a process-like exit: bye = logged out (no restart), else a crash (exit 79: backoff restart of an unfinished task,
+  `MaxCrashes` retire).
+- **Containment**: one hive's exception is that hive's crash: its task boundary catches (exit 1), `CloneMode` closes its link at once on a
+  throw after the hello, and the process-killers were removed (dedicated threads incl. each client's reader, timer callbacks and work items now catch; no `async
+  void`). A tight script loop stays stoppable: the Jint constraint and the Lua hook (every 10 instructions) run `ScriptSession.Budget`
+  (stop requests, instruction, busy-loop and memory limits) and a 200 ms timer enforces the wall time.
+- **Cost**: `Hive:Resources:InProcHiveMb` (140) per in-process hive (a brain + one client) instead of `HiveProcessMb` (380); the kernel's
+  measurement still wins when higher; the managed heap is checked too (`ResourceCeiling.Heap`: main's `GCHeapHardLimit`, now 10 GiB,
+  minus `HeapReserveMb` 512); the player cap is unchanged.
+- **Process isolation stays**: `Hive:Isolation=process`, a brain profile listed in `Hive:ProcessProfiles`, or a spawn's
+  `HiveSpawnOptions.Isolation` (C# callers; not a tool argument) → `ProcessLauncher` + `PipeTransport`, exactly as before
+  (`IsolationLauncher` decides per clone; the transport and the start agree).
+- **Restart and migration**: nothing changes on disk. `hive-accounts.json` and the reconcile restore managed accounts as idle slots and
+  release every stale whitelisting; nothing relaunches by itself. A main restart can't restart a storm of work: `HiveCrewPort` uses only
+  clones in game, and a build that C# resumes (a standing order at startup, no model caller) never logs clones in (`HiveBuildJobs`).
+  In-process hives end with main (its shutdown recall deposits and logs them out, then `InProcHiveLauncher.DisposeAsync` kills what's
+  left and waits for the teardown), so there are no orphans either.
+
 ## Subhive bodies (one brain, many bodies inside a hive)
 
-- **Where they live**: in their owner's process. Main hosts its own next to the clone processes (`InProcBodies.CreateSubhives` with
+- **Where they live**: where their owner runs (main's process for main and every in-process hive). Main hosts its own next to the hives (`InProcBodies.CreateSubhives` with
   MainHive's claim board); a hive-kind clone hosts its own (CloneMode: a local claim board layered over main's mirror, `BodyCrewPort`
   for its crews). Each body has its own connection, world view and wiring (`BodyFactory.CreateClone`), no brain of its own: the owning
   brain drives it through the body parameter (`Prompts.SubhivesHint`, one cached line), `do{body:"all"}` and crews.
@@ -158,8 +208,9 @@ otherwise ignored.
 
 Inter-hive messages never go through game chat.
 
-- **Transport**: the existing IPC (one named pipe per clone process, length-prefixed snake_case JSON) gets one more frame type,
-  `t = "bus"`, carrying a `BusEnvelope {type, from, to, body, token, seq}`. In-process endpoints call `HiveBus.RouteAsync`.
+- **Transport**: the existing IPC (one link per clone: an in-memory link for a hive in main's process, a named pipe for a clone process;
+  length-prefixed snake_case JSON) gets one more frame type, `t = "bus"`, carrying a `BusEnvelope {type, from, to, body, token, seq}`.
+  In-process endpoints call `HiveBus.RouteAsync`.
 - **Local and authenticated**: pipes are created `PipeOptions.CurrentUserOnly`; main registers each endpoint and hands it a random
   128-bit token in the welcome; an envelope is accepted only with its sender's token (constant-time compare) **and**, over IPC,
   only from the link that endpoint owns (no hive can speak as another or as main). Tokens never travel onward. Main-only types
@@ -169,7 +220,8 @@ Inter-hive messages never go through game chat.
 - **Types** (`BusTypes`): requests `whitelist`, `spawn`, `assign`, `handover`, `release`, `list`; notifications `status`,
   `result`, `observation` (shared), `need_help`; memory `mem_write`, `mem_changed`. Status/results/help reach main's brain as quiet
   `[hive bus]` notices (`need_help` wakes it), never chat.
-- **DeepSeek hives** are clone processes with a DeepSeek brain profile, so they get the same bus through the same pipe.
+- **DeepSeek hives** are hives with a DeepSeek brain profile (in main's process unless `Hive:ProcessProfiles` lists it), so they get the
+  same bus over the same kind of link.
 - A hive-kind clone gets its own small `hive` tool (`CloneHiveTool`: spawn/release/list, all bus requests).
 
 ## Chat: low verbosity
@@ -258,6 +310,9 @@ players, world index, structures, script library, blueprints and self profile. N
 - (g) One memory: write-through to main's groomer with provenance, instant invalidation, shared self profile.
 - (h) Subhive bodies wired (main's and a hive's, `host`/`subhive_gone`), `bodies=N`, default kind subhive, the resource ceiling,
   small view distance + shared chunk store + lazy sections, spawn protection as an account-aware world fact.
+- (i) In-process hives (`Hive:Isolation=inproc` default): the launcher's transport (memory / pipe), `CloneMode.RunAsync(CloneRun)` as a
+  task in main's process, per-hive settings/logs/scope, the watchdog, containment, the in-process price + heap bound, the
+  process-wide state audit (ARCHITECTURE.md, "Hive"), the resumed-build storm guard; process isolation kept behind the switch.
 
 ## Tests
 
@@ -272,10 +327,21 @@ hive with 15 bodies is one process (or an honest no); the memory ceiling and the
 the bus (host, reuse on restart, only the host reports gone) and its release cascade bodies first. `tests/MineClaw.App.Tests/SubhiveHostTests.cs`:
 a DeepSeek hive (fake model) hosting 3 bodies on fake servers, accounts through main, a saved crew chopping in parallel lanes, the
 release cascade with deposits; main in hive mode keeps its hive tool within the brain budget. `tests/MineClaw.Bot.Tests/SpawnProtectionFactTests.cs`.
+`tests/MineClaw.Hive.Tests/InProcTransportTests.cs`: the memory duplex and links (end of stream, heartbeats, close), the transport's
+rendezvous and a failed launch, the supervisor's whole lifecycle over a memory link (hello, snapshots, task, result, deposit, bye),
+isolation decisions, the ceiling's in-process price and the managed-heap bound. `tests/MineClaw.App.Tests/InProcHiveTests.cs`: the real
+`CloneMode` as a hive inside the test process on a fake server, on b1.8.1 and 1.12.2 (login, task, `hive_report done`, the logout gate,
+its own log directory, its version), a hive hosting 2 bodies of its own over the memory bus on both versions (main whitelists each;
+a release logs them out first), the watchdog stopping a hung hive gracefully on both versions, a hive that won't stop killed then
+abandoned, a hive's exception contained as its own crash, the one-version assert, and a C#-resumed build never logging clones in.
 `tests/MineClaw.Hive.Tests/SharedMemoryTests.cs`: two hives read each other's writes instantly; a DeepSeek hive's write goes through
 main's groomer with provenance (and the in-transaction fallback); placed blocks shared across hives in protection; one budget.
 
 ## Remaining
+
+- **In-process hives**: each still builds its own `AgentRuntime` (its own db connection, vector cache, knowledge sync); sharing those read
+  caches between hives would cut `InProcHiveMb` further. The link still serializes frames to JSON (cheap at 1 snap/s, but a typed
+  in-memory channel would skip it). `InProcHiveMb` 140 is an estimate (the kernel's measurement wins when higher): measure it on alice.
 
 - **TUI and supervisor status panels** are built from a roster at startup (main alone now); dynamic clones show in `/api/bots`, the
   Live Hive tiles and the tree, but the TUI tabs and `/api/status?bot=` for clones need a dynamic source list.

@@ -23,7 +23,8 @@ MineClaw.Client    TCP connection + packet dispatch, 20 TPS tick, physics, playe
 **Multi-version** (`docs/design/multi-version.md`; target 1.12.2 / protocol 340 next to b1.8.1): one process speaks one version,
 resolved once by the App before any client exists (`Bot:Server:Version` auto | b1.8.1 | 1.12.2, `--server-version`; auto =
 `Protocol/Versioning/ServerPing`: 1.7+ status JSON, else the legacy 0xFE `motd§online§max`; server down → last detected in
-`<data>/server-version.txt`, else b1.8.1; clones get main's id on their command line). It is injected as one
+`<data>/server-version.txt`, else b1.8.1; clone processes get main's id on their command line, in-process hives share the process's and
+`InProcHiveLauncher.Start` refuses any other). It is injected as one
 `Client/Versioning/GameVersionProfile` (`ClientOptions.Profile`): `IProtocolAdapter`/`IGameConnection` (the client connects and
 logs in through it; the wire is translated to the canonical `Protocol.Packets` model), `IPhysicsRules`, `ICombatRules`,
 `IHungerRules`, `IGameData`. P1: `GameVersionProfiles.Java1122` = `Protocol/Release1122` (a translating connection: VarInt
@@ -939,7 +940,8 @@ asks once on main's account, pauses the job and resumes it on landing. `BodyVisi
 `BodyBotSource` the TUI/supervisor panels from the registry. The `hive` tool keeps its schema: spawn = spawn the body, then
 its script on its lane or `delegate` on its slot. Thread safety: ToolCallGuard failures are keyed by body, PlacedBlockStore
 flush/sync is locked, chunk rows are written 16 per transaction, A* runs through `Client.PathfindGate` (2 at once), workstation
-concurrent GC with a 2.5 GB `GCHeapHardLimit` (runtimeconfig), and `MinecraftClient.TicksBehind` is logged per body.
+concurrent GC with a `GCHeapHardLimit` (runtimeconfig: 10 GiB of CT 114's 16 GB since in-process hives share the heap, was 2.5 GB of
+4 GB; `DOTNET_GCHeapHardLimit` overrides it), and `MinecraftClient.TicksBehind` is logged per body.
 
 **Step 3, the multi-body brain (inproc only; hive mode never enables it).** A clone body has the hive clone's parity
 (3a): its client's survival/EdgeGuard/reflex defence, plus its own brainstem (chat reflexes for lines naming it, speculative
@@ -959,7 +961,51 @@ non-focus minor events never wake; other non-focus wakes ≤ 1 per 20 s per body
 "worker queued for 69, 1 ahead"); `bodies {op: list|spawn|despawn|focus, name, task?, script?}` replaces `hive` (no inline
 code: scripts go through the script tool's Opus-only policy); `body:"any"` = App `BodySelector` (CloneFitness + failure memory).
 
-## Hive (MineClaw.Hive) — clones as supervised processes
+## Hive (MineClaw.Hive) — clones as supervised hives (in main's process by default)
+
+**In-process hives** (`Hive:Isolation`, default `inproc`; Fox 10-30: "consolidate everything into the same process and use threads
+instead", after 25 clone processes of ~200 MB and a JIT start each thrashed the 4 GB CT). A hive-kind or script clone is another agent
+inside main's process: `App/Hosting/InProcHives.cs` (`InProcHiveLauncher` is an `IProcessLauncher`, `InProcHive` its `ICloneProcess`)
+runs the very `CloneMode.RunAsync(CloneRun)` a clone process runs (its own brain loop and model profile, its own client and account,
+its own subhive bodies, the `CloneHost` logout gate, the same shared db and groomer write-through) on the thread pool, linked to the
+unchanged `HiveSupervisor` over `Ipc/MemoryTransport` (a pair of in-memory streams carrying the same frames to the same `HiveLink`s:
+hello/welcome, task/result, recall/bye, snap, usage, claims, `bus` envelopes with their tokens and the link-owner rule). So spawn,
+task, result, recall, release, vitals, the bus, the arbiter, budget grants, claims and leases, hive scripts and crews, the Supervisor
+viewer and the Explorer's hive tree and Controller/debugger panels all work as before. Per hive: its own option objects
+(`AppSettings.Bind` afresh + `CloneMode.Prepare`, `InProcHiveSettings`), its own logs (`logs/hive/<account>/`, Error+ also in main's log
+as `[account] …`), telemetry and usage file, its own cancellation scope (`CloneRun.Stop` = the planned logout a SIGTERM was, `CloneRun.Kill`
+= the process kill), a clean execution context (no `TurnContext`/`ToolCaller`/`BodyScope` of the spawning brain turn flows in) with the
+process's version and world mode scoped explicitly. Brains are async tasks; each client keeps its own reader and tick threads, as
+in-process bodies do. Runtime builds are throttled (`Hive:InProc:MaxConcurrentStarts` 2). **Watchdog** (no process to kill):
+`InProcHiveLauncher.WatchAsync` checks each hive's `HiveHealth` every `CheckSeconds`: a brain turn `HangSeconds` (900) without a model
+call finishing, its snapshot loop silent `StallSeconds` (180), `MaxErrors` (40) Error lines in `ErrorWindowMinutes` (5) from its own
+loggers, or a flag (the budget gate refused) → the release path (`CloneHost.LogoutAsync("watchdog: …")`: bodies recalled with their
+deposits, its own deposit, bye) and `[hive] watchdog stopped 101: …` to main's brain; still running `StopGraceSeconds` (240) later →
+the kill (teardown without the gate); a task that won't unwind within `AbandonSeconds` is reported exited and abandoned. The supervisor
+sees each like a process exit (bye = logged out, else a crash: backoff restart, `MaxCrashes` retire; exit code 79 = watchdog).
+**Containment**: every hive boundary catches (`RunHiveAsync`, `CloneMode` disposes its link on a throw, so main sees it at once); the
+process-killers were audited: timer callbacks, dedicated threads and work items that could throw (`HiveLink` reader/heartbeat threads,
+each client's reader thread (any unexpected exception now ends that session, not the process), `HiveSupervisor.Tick`, the inventory
+ledger's work item, the script thread's end and its wall-time timer, the character refresh timer) now catch; there is no
+`async void`; scripts stay stoppable in a tight loop (Jint constraint / Lua hook every 10 instructions → `ScriptSession.Budget`: stop
+requests, instruction and busy-loop limits; the 200 ms wall-time timer). **Process isolation** stays: `Hive:Isolation=process` (or a
+profile in `Hive:ProcessProfiles`, or a spawn's `HiveSpawnOptions.Isolation`) uses `ProcessLauncher` + `PipeTransport` exactly as
+below (`IsolationLauncher` picks per clone). The resource ceiling prices an in-process hive at `Hive:Resources:InProcHiveMb` (140: a
+brain + one client) instead of `HiveProcessMb` (380), keeps the player cap, and refuses what wouldn't fit main's managed heap
+(`ResourceCeiling.Heap`, `HeapReserveMb` 512). A C#-resumed build (a standing order after main's restart) never logs clones in
+(`HiveBuildJobs`: only a model call does; `HiveCrewPort` already uses only clones in game).
+
+**Process-wide state** (one bot per process was assumed; now N hives share one): `GameData.Current` and `WorldMode.Current` stay
+process-wide by design (one server, one version, one db's packs) — set once by `VersionSetup` / main's runtime (`ApplyWorldMode` is false
+for an in-process hive), asserted at hive start and scoped into each hive's flow; `SubhiveClientSetup.StoreFor(profile)` (the
+`SharedChunkStore`) is shared by every hive's bodies by design (keyed by dimension and column, ref-counted per view; same server = same
+columns), one per version profile since a store binds one column height; the AsyncLocals (`TurnContext`, `ToolCaller`, `BodyScope`, `ActivityManager`'s running kind, `ScriptTools.InWorker`,
+`GameData`/`WorldMode` overrides) are per flow and a hive starts from a suppressed execution context; `PathfindGate` is process-wide by
+design (CPU) and now idempotent (each hive's `InProcBodies.Attach` set it, swapping the semaphore); `ShutdownSignals` (POSIX handlers),
+stdin commands, the TUI and `AppHost.BeforeLogout` are main's only (a hive gets a plain CTS: `/quit` over IPC ends that hive);
+loggers, telemetry, usage, `AgentDb` connections and their gates, `MemoryTransport` are per instance; the `[ThreadStatic]` re-entrancy
+flags and physics scratch lists are per thread; the remaining statics are read-only caches keyed by the version data (`IndexKinds`,
+`Blocks`/`Items` name maps, `LangTable`, `VoxelWorld` opacity, the supervisor page) or a Jint build fact (`JsRuntime._lastNodeBroken`).
 
 **Hierarchy** (`docs/design/hive-hierarchy.md`, `Hive/Hierarchy`): no fixed roster. Main (`maid_chan`) is the default hive and the
 admin root; a clone is a **hive** (own brain: Opus 5.5 or DeepSeek via Ollama), a **subhive** (a body its owner's brain drives) or
@@ -976,7 +1022,7 @@ brain; release cascades bodies first, each depositing. Per body: view distance `
 process, lazy 16³ sections. The ceiling is memory-aware (`Hive:Resources`, cgroup limit) plus the player cap; `Hive:MaxClones` is
 only an optional hard cap (0 = none).
 
-`App → Hive → Bot`. Clones are allocated per spawn (`Hive:MaxClones` > 0 = an optional ceiling), each a **separate OS process**: the same App
+`App → Hive → Bot`. Clones are allocated per spawn (`Hive:MaxClones` > 0 = an optional ceiling); with `Hive:Isolation=process` each is a **separate OS process**: the same App
 binary as `--clone <name> --parent-pipe <pipe>` (headless, own login, same three-tier brain, own personality shard via
 `AgentOptions.Hive` scope, own `usage-<clone>.json` and `logs/hive/<clone>/`). The main process is the **supervisor**; a clone
 connects its pipe before opening anything and exits 75 without one (never unsupervised).
