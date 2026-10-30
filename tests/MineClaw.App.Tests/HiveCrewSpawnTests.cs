@@ -191,7 +191,7 @@ public sealed class HiveCrewSpawnTests(ITestOutputHelper output) : IDisposable
             Assert.Contains("[crew crew_job done] crew: 2/2 bodies done", first); // no brain turn before the crew's end, the late body counted
             Assert.Contains("[hive task] crew crew_job", first);                 // the task rode along as context
             foreach (var b in bodies.Take(2)) Assert.Equal("1", Board("by_" + b[(b.LastIndexOf('_') + 1)..]));
-            lock (log) Assert.All(bodies, b => Assert.Contains($"sent /whitelist add {b}", log));
+            lock (log) Assert.All(bodies.Take(2), b => Assert.Contains($"sent /whitelist add {b}", log)); // a third (the hive tool's own, below) may be mid-allocation
             var hiveLog = HiveLog(hiveNode.Account);
             Assert.Contains("started over the bodies spawned for it (no brain turn)", hiveLog);
 
