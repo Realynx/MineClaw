@@ -13,7 +13,7 @@ public static class CommandTools
 
     public static void Register(ToolRegistry tools, CommandGate gate, ChatRouter chat) =>
         tools.Register(ToolName,
-            "Run a /command a trusted player just gave you, exactly as they typed it.",
+            "Run a /command a trusted player asked for.",
             ToolSchema.Create().Str("command").Build(),
             async (input, ct) =>
             {

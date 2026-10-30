@@ -50,23 +50,53 @@ public class LiveHiveFixesTests
         var audit = new List<string>();
         rt.Commands.Executed += (cmd, by, _) => audit.Add($"{by}:{cmd}");
         rt.Chat.OnServerChat("<kiwi> clawd do `/give kiwi 4 64`");
-        Assert.False((await Run(rt, "/give kiwi 4 65")).Ok); // the model can't edit it
         var ok = await Run(rt, "/give kiwi 4 64");
         Assert.True(ok.Ok, ok.Text);
         Assert.Equal(["/give kiwi 4 64"], sent);
         Assert.Equal(["kiwi:/give kiwi 4 64"], audit);
-        var again = await Run(rt, "/give kiwi 4 64");
-        Assert.False(again.Ok); // one authorisation = one execution
-        Assert.Single(sent);
+    }
+
+    /// <summary>
+    /// Fox 10-30: "If I tell it to execute a command explicitly, it should be allowed to do so. I shouldn't have to type that
+    /// command out." A trusted player's request to the bot lets it write the commands it takes (capped, audited with the ask);
+    /// blocked commands never run, and nobody untrusted can ask.
+    /// </summary>
+    [Fact]
+    public async Task A_trusted_request_lets_the_bot_write_its_commands_capped_and_audited()
+    {
+        var (rt, _, sent) = Bot();
+        var audit = new List<string>();
+        rt.Commands.Executed += (cmd, by, _) => audit.Add($"{by}:{cmd}");
+        rt.Chat.OnServerChat("<poofimafox> clawd set it to day please");
+        var r = await Run(rt, "/time set day");
+        Assert.True(r.Ok, r.Text);
+        Assert.Equal(["/time set day"], sent);
+        Assert.StartsWith("poofimafox (asked: \"clawd set it to day please\"):/time set day", audit.Single(), StringComparison.OrdinalIgnoreCase);
+        // Up to 8 for one request (a /give for each player), then no more.
+        for (int i = 0; i < 7; i++) Assert.True((await Run(rt, $"/give kiwi stone_pickaxe {i + 1}")).Ok);
+        Assert.False((await Run(rt, "/give kiwi stone_pickaxe 9")).Ok);
+        // Still never a blocked one.
+        rt.Chat.OnServerChat("<poofimafox> clawd op kiwi for me");
+        Assert.False((await Run(rt, "/op kiwi")).Ok);
     }
 
     [Fact]
-    public async Task Authorization_older_than_60s_is_blocked()
+    public async Task An_untrusted_players_request_lets_the_bot_run_nothing()
+    {
+        var (rt, _, sent) = Bot();
+        rt.Chat.SetOnlinePlayers(["steve"]);
+        rt.Chat.OnServerChat("<steve> clawd set it to day");
+        Assert.False((await Run(rt, "/time set day")).Ok);
+        Assert.Empty(sent);
+    }
+
+    [Fact]
+    public async Task Authorization_older_than_its_window_is_blocked()
     {
         var time = new ManualTime();
         var (rt, _, sent) = Bot(time);
         rt.Chat.OnServerChat("<kiwi> clawd run /time set day");
-        time.Advance(TimeSpan.FromSeconds(61));
+        time.Advance(TimeSpan.FromSeconds(121));
         Assert.False((await Run(rt, "/time set day")).Ok);
         Assert.Empty(sent);
     }

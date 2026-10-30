@@ -18,6 +18,17 @@ public sealed class CommandOptions
     /// <summary>How long a trusted player's "run /x" line authorises exactly one <c>run_command</c> of /x.</summary>
     public int AuthorizationSeconds { get; set; } = 60;
 
+    /// <summary>
+    /// How long a trusted player's request addressed to the bot ("set it to day", "give everyone a stone pickaxe") lets the bot
+    /// write and run the commands it needs itself, up to <see cref="RequestCommands"/> of them (blocked ones never). 0 = off:
+    /// only exact commands. Fox 10-30: "If I tell it to execute a command explicitly, it should be allowed to do so. I
+    /// shouldn't have to type that command out."
+    /// </summary>
+    public int RequestSeconds { get; set; } = 120;
+
+    /// <summary>Commands one trusted request may run.</summary>
+    public int RequestCommands { get; set; } = 8;
+
     /// <summary>Audit log of executed commands (JSON lines), under the data directory. Empty = log only.</summary>
     public string AuditFile { get; set; } = "command-audit.log";
 }
@@ -35,6 +46,13 @@ public sealed record CommandDecision(bool Ok, string Text, string? AuthorizedBy 
 public sealed class CommandGate
 {
     private sealed record Grant(string Command, string Player, DateTimeOffset At);
+    private sealed class Request(string player, string text, DateTimeOffset at)
+    {
+        public string Player { get; } = player;
+        public string Text { get; } = text;
+        public DateTimeOffset At { get; } = at;
+        public int Used;
+    }
 
     private static readonly Regex CommandInText = new(@"(?:^|[\s`'""(])(?<cmd>/[A-Za-z][^`'""\r\n]*)", RegexOptions.Compiled);
 
@@ -45,6 +63,7 @@ public sealed class CommandGate
     private readonly string? _auditPath;
     private readonly object _lock = new();
     private readonly List<Grant> _grants = new();
+    private readonly List<Request> _requests = new();
     private readonly List<(string Line, DateTimeOffset Until)> _armed = new();
 
     public CommandGate(CommandOptions options, Func<IReadOnlyCollection<string>> trustedPlayers, TimeProvider? time = null,
@@ -92,7 +111,14 @@ public sealed class CommandGate
     /// </summary>
     public int Observe(ChatMessage msg, bool mine, bool explicitAddress)
     {
-        if (!mine || msg.Player == null || !IsTrusted(msg.Player)) return 0;
+        if (msg.Player == null || !IsTrusted(msg.Player)) return 0;
+        if (!mine)
+        {
+            // They've moved on (talking to another bot now): their open request with this one is over, so the next exact
+            // command addressed elsewhere can't ride it (one body, one request at a time).
+            lock (_lock) _requests.RemoveAll(r => string.Equals(r.Player, msg.Player, StringComparison.OrdinalIgnoreCase));
+            return 0;
+        }
         if (msg.Kind == ChatKind.Whisper) { /* the whisper format itself is the proof */ }
         else if (msg.Kind != ChatKind.Public || !explicitAddress || !IsOwnLine(msg)) return 0;
         var now = _time.GetUtcNow();
@@ -100,6 +126,10 @@ public sealed class CommandGate
         lock (_lock)
         {
             Prune(now);
+            // A request of theirs to this bot that names no command: the commands it takes may be written by the bot (Authorize,
+            // RequestSeconds). A line that gives the exact command authorises just that one, as before.
+            if (_o.RequestSeconds > 0 && msg.Text.Trim().Length > 0 && !CommandInText.IsMatch(msg.Text))
+                _requests.Add(new Request(msg.Player, msg.Text.Trim(), now));
             foreach (Match m in CommandInText.Matches(msg.Text))
             {
                 var cmd = m.Groups["cmd"].Value.Trim();
@@ -148,8 +178,17 @@ public sealed class CommandGate
             int i = _grants.FindIndex(g => string.Equals(g.Command, cmd, StringComparison.Ordinal));
             if (i < 0)
             {
-                _log.LogWarning("run_command refused (no exact authorisation): {Command}", cmd);
-                return new(false, $"refused: no trusted player gave this exact command in the last {(int)Window.TotalSeconds}s");
+                // A trusted player asked this bot for something just now: the bot may write the commands it takes.
+                var req = _requests.LastOrDefault(r => r.Used < Math.Max(1, _o.RequestCommands));
+                if (req != null)
+                {
+                    req.Used++;
+                    Arm(cmd, now);
+                    _log.LogInformation("run_command {Command} for {Player}'s request: {Text}", cmd, req.Player, req.Text);
+                    return new(true, "ok", $"{req.Player} (asked: \"{(req.Text.Length > 80 ? req.Text[..80] + "…" : req.Text)}\")");
+                }
+                _log.LogWarning("run_command refused (no trusted request): {Command}", cmd);
+                return new(false, $"refused: no trusted player asked you for this in the last {Math.Max(_o.RequestSeconds, (int)Window.TotalSeconds)}s");
             }
             var g = _grants[i];
             _grants.RemoveAt(i); // one authorisation = one execution
@@ -163,6 +202,7 @@ public sealed class CommandGate
     private void Prune(DateTimeOffset now)
     {
         _grants.RemoveAll(g => now - g.At > Window);
+        _requests.RemoveAll(r => now - r.At > TimeSpan.FromSeconds(Math.Max(1, _o.RequestSeconds)));
         _armed.RemoveAll(a => a.Until < now);
     }
 

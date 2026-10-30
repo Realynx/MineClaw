@@ -1515,10 +1515,10 @@ public sealed class HiveSupervisor : IAsyncDisposable
                         }
                         catch (Exception ex) { _log.LogDebug(ex, "void spawn record failed"); }
                         _log.LogWarning("hive: {Clone} is holding still over the void at {At}; it asked for {Tp}", slot.Name, at, vh.Asked);
-                        // Main relays the ask; it runs the /tp itself only when a trusted player names that exact command (op policy).
+                        // Main relays the ask; it runs the /tp itself only when a trusted player asks for it (op policy).
                         Post(GameEvent.Notice($"[hive] {slot.Number} spawned over the void at {at} and is holding still (safe, can't move); it asked " +
                             $"the trusted players in chat for {vh.Asked}. Relay that ask once if nobody answered; run the /tp only when a trusted " +
-                            "player names that exact command", EventPriority.Normal) with { MustWake = true });
+                            "player asks you to", EventPriority.Normal) with { MustWake = true });
                     }
                     else
                     {
