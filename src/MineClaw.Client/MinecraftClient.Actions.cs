@@ -167,7 +167,9 @@ public sealed partial class MinecraftClient
         return PathOptions.Default with
         {
             AllowBreak = o.AllowBreak,
-            CanBreak = (id, meta, pos) => !IsBlockProtected(pos, id) && !NextToLava(pos) && !EditBlocked(pos) && !othersStandOn.Contains(pos),
+            // A tunnelling goto never digs a dug design's floor (a stair's tread) out from under its air.
+            CanBreak = (id, meta, pos) => !IsBlockProtected(pos, id) && !NextToLava(pos) && !EditBlocked(pos) && !othersStandOn.Contains(pos)
+                                          && !(World.KeepAir.Contains(pos.Up(), World.Dimension) && !World.KeepAir.Contains(pos, World.Dimension)),
             // Never a bridge or pillar block in a cell a dug design keeps air (live 10-30 02:20: goto bridging put cobble on stair step 154,15,276).
             CanPlace = pos => !EditBlocked(pos) && !World.KeepAir.Contains(pos, World.Dimension),
             MaxDrop = o.MaxDrop ?? PathOptions.Default.MaxDrop,

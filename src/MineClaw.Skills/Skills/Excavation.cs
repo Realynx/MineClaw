@@ -318,10 +318,14 @@ public static class ExcavationOps
     /// or above it are the way in).</summary>
     private static (DigVolume? Vol, string Label, int? Entrance, string? Why) Existing(SkillContext ctx, JsonElement a)
     {
-        if (SiteArg(a) is { Length: > 0 } n)
+        // No site and no box: the dig I'm standing in ("seal the holes in the stair walls" said from the stairs).
+        var here = SiteArg(a) is { Length: > 0 } || Box(a) is not null ? null : Parent(ctx, a, out _);
+        if (SiteArg(a) is { Length: > 0 } || here != null)
         {
-            var site = Resolve(ctx, n, out var why);
-            if (site is null) return (null, n, null, why);
+            var n = SiteArg(a) ?? here!.Name;
+            string? why0 = null;
+            var site = here ?? Resolve(ctx, n, out why0);
+            if (site is null) return (null, n, null, why0);
             var vol = new DigVolume(site.Name);
             foreach (var c in site.Air()) vol.Add(c);
             foreach (var c in ctx.World.KeepAir.Cells(DigSites.Owner(site))) vol.Add(c);
