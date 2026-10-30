@@ -35,8 +35,10 @@ internal sealed partial class JsRuntime
     private void AddData(JsObject ev, ScriptEvent e)
     {
         if (e.Data is not { } d) return;
+        // A typed event's own "kind" (player.gesture: nod|shake|...) wins over the generic event kind ("signal"): e.topic still
+        // names the event, and on('player.gesture', {kind:'nod'}) reads the same field as e.kind === 'nod'.
         foreach (var (k, v) in d)
-            if (k is not ("kind" or "topic")) ev.Set(k, V(v?.DeepClone()));
+            if (k != "topic") ev.Set(k, V(v?.DeepClone()));
         if (e.Player is { } p && !d.ContainsKey("player")) ev.Set("player", new JsString(p));
     }
 }

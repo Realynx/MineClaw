@@ -21,8 +21,10 @@ public sealed record GameSignal(string Name, JsonObject Data, string? Player, Da
 /// dig packet for other players, so an arm swing + a raycast along their look, debounced; 1.12.2's Block Break Animation feeds
 /// <see cref="OnBreakAnimation"/>), swings, hurt/died (entity status), pickups (collect item), tosses and drops (item spawns),
 /// equipment, sneaking, proximity, chat with its intent, being looked at, block changes with who did it, hostile mobs coming
-/// near, my own hurt/low hp, dusk/dawn and weather. Raised synchronously on the observing thread: listeners (scripts, the
-/// binding runner) must be quick. Inputs are public so tests can feed fake packets.
+/// near, my own hurt/low hp, dusk/dawn and weather, and body language (<c>player.gesture</c>: nod, shake, crouch-bob, wave, jump,
+/// spin, stare, point; <see cref="GestureDetector"/>, fed at packet rate by <see cref="EntityTracker.Updated"/>). Raised
+/// synchronously on the observing thread: listeners (scripts, the binding runner) must be quick. Inputs are public so tests can
+/// feed fake packets.
 /// </summary>
 public sealed class GameSignals : IDisposable
 {
@@ -42,6 +44,12 @@ public sealed class GameSignals : IDisposable
     private long _lastTime = -1;
     private bool? _rain;
     private Action? _detach;
+    private readonly GestureDetector _gestures = new();
+
+    /// <summary>The body-language recogniser (its thresholds are init properties; tests replay traces into it).</summary>
+    public GestureDetector Detector => _gestures;
+    /// <summary>Players further than this are not sampled for gestures (a nod at 30 blocks is a few pixels).</summary>
+    public double GestureBlocks { get; init; } = 24;
 
     /// <summary>A punch at the same block by the same player within this is one event (digging swings repeat).</summary>
     public TimeSpan PunchDebounce { get; init; } = TimeSpan.FromSeconds(1.5);
@@ -79,6 +87,7 @@ public sealed class GameSignals : IDisposable
         Action<BlockChange> changed = bc => Safe(() => OnBlockChanged(bc.Pos, bc.OldId, bc.NewId));
         Action<int, int> health = (hp, _) => Safe(() => OnHealth(hp));
         Action<string> joined = p => Safe(() => OnJoin(p)), left = p => Safe(() => OnQuit(p));
+        Action<Entity> updated = e => Safe(() => OnEntityUpdated(e));
         _c.EntityAnimated += anim;
         _c.BlockBreakProgress += cracks;
         _c.EntityStatus += status;
@@ -89,10 +98,12 @@ public sealed class GameSignals : IDisposable
         _c.HealthChanged += health;
         _c.PlayerJoined += joined;
         _c.PlayerLeft += left;
+        W.Entities.Updated += updated;
         _detach = () =>
         {
             _c.EntityAnimated -= anim; _c.BlockBreakProgress -= cracks; _c.EntityStatus -= status; _c.ItemCollected -= collect; _c.EquipmentChanged -= equip;
             W.Entities.Spawned -= spawned; W.BlockChanged -= changed; _c.HealthChanged -= health; _c.PlayerJoined -= joined; _c.PlayerLeft -= left;
+            W.Entities.Updated -= updated;
         };
     }
 
@@ -151,9 +162,11 @@ public sealed class GameSignals : IDisposable
         lock (_lock) _swung[e.Name!] = now;
         var held = ItemName(e.HeldItem);
         Raise("player.swing", e.Name, new JsonObject { ["held"] = held });
-        if (Gestures.IsUseItem(e.HeldItem)) return;
-        if (DemonstrationRecorder.LookTarget(W, e.Position, e.Yaw, e.Pitch, reach: 4.5, solidOnly: true) is not { } t) return;
-        Punch(e.Name!, t.Pos, t.Id, held, now);
+        bool use = Gestures.IsUseItem(e.HeldItem);
+        var t = use ? null : DemonstrationRecorder.LookTarget(W, e.Position, e.Yaw, e.Pitch, reach: 4.5, solidOnly: true);
+        // Into empty air with nothing to use: maybe a wave, or a point's "that one" (digging, placing and using never are).
+        foreach (var g in _gestures.Swing(e.Name!, now, clean: !use && t == null)) RaiseGesture(g);
+        if (t is { } hit) Punch(e.Name!, hit.Pos, hit.Id, held, now);
     }
 
     /// <summary>1.12.2's Block Break Animation (0x08): who is breaking which block (stage 0-9; -1 = stopped).</summary>
@@ -182,6 +195,10 @@ public sealed class GameSignals : IDisposable
     /// <summary>0x26 entity status: 2 hurt (by = the nearest attacker facing them), 3 dead.</summary>
     public void OnStatus(int entityId, int status)
     {
+        // Anything hurt right next to a swinging player: that swing was a hit, not a wave.
+        if (status == 2 && W.Entities.Get(entityId) is { } struck)
+            foreach (var p in W.Entities.Nearby(struck.Position, 4.5, x => x.Kind == EntityKind.Player && x.Id != entityId && x.Name is { Length: > 0 }))
+                _gestures.Struck(p.Name!, Now);
         if (OtherPlayer(entityId) is not { } e) return;
         if (status == 3) { Raise("player.died", e.Name, new JsonObject { ["cause"] = "unknown" }); return; }
         if (status != 2) return;
@@ -266,6 +283,9 @@ public sealed class GameSignals : IDisposable
         lock (_lock) { last = _lastHp; _lastHp = hp; }
         if (last >= 0 && hp < last && hp > 0)
         {
+            // A player punching me swings at my face: hits, never a wave at me.
+            foreach (var p in W.Entities.Nearby(W.Player.Position, 4.5, x => x.Kind == EntityKind.Player && x.Name is { Length: > 0 }))
+                _gestures.Struck(p.Name!, Now);
             var (by, _) = Attacker(W.Player.Position, null);
             var data = new JsonObject { ["hp"] = hp };
             if (by != null) data["by"] = by;
@@ -289,6 +309,95 @@ public sealed class GameSignals : IDisposable
             _sneak[e.Name!] = on;
         }
         Raise(on ? "player.sneak" : "player.unsneak", e.Name, new JsonObject());
+        foreach (var g in _gestures.SneakSeen(e.Name!, Now, on)) RaiseGesture(g);
+    }
+
+    // ------------------------------------------------------------------ body language
+
+    /// <summary>
+    /// An entity update (look, move, head look, metadata): a motion sample for the gesture detector when it's another player
+    /// within <see cref="GestureBlocks"/>. The yaw is the head's where the version sends it (1.12.2 Entity Head Look), else the
+    /// look yaw (b1.8.1 has no head packet; a player's look yaw is their head).
+    /// </summary>
+    public void OnEntityUpdated(Entity e)
+    {
+        if (e.Kind != EntityKind.Player || e.Name is not { Length: > 0 } name || IsMe(name) || _isBot(name)) return;
+        if (e.Position.DistanceTo(W.Player.Position) > GestureBlocks) return;
+        float yaw = float.IsNaN(e.HeadYaw) ? e.Yaw : e.HeadYaw;
+        var eye = e.Position + new Vec3d(0, PlayerPhysics.EyeHeight, 0);
+        var aim = AimAt(eye, yaw, e.Pitch, e.Id);
+        foreach (var g in _gestures.Observe(name, Now, e.Position, yaw, e.Pitch, e.IsCrouched, Grounded(e.Position), aim is { } a ? (a.Kind == "me" ? "me" : a.Name) : null))
+            RaiseGesture(g);
+    }
+
+    /// <summary>On a floor (a non-liquid block under the feet), clearly in the air (air below, off the block grid), else unknown.</summary>
+    private bool? Grounded(Vec3d feet)
+    {
+        int x = (int)Math.Floor(feet.X), z = (int)Math.Floor(feet.Z);
+        if (!W.IsLoaded(x, z)) return null;
+        int below = W.GetBlock(x, (int)Math.Floor(feet.Y - 0.05), z);
+        if (below != 0 && !BlockShapes.IsLiquid(below)) return true;
+        return feet.Y - Math.Floor(feet.Y) >= 0.1 ? false : null;
+    }
+
+    /// <summary>The body a look ray hits: me or another bot (its login), within 16 blocks; the miss allowed grows with distance.</summary>
+    private LookHit? AimAt(Vec3d eye, float yaw, float pitch, int selfId)
+    {
+        LookHit? best = null;
+        double bestD = double.MaxValue;
+        void Try(string kind, string name, Vec3d feet)
+        {
+            var head = feet + new Vec3d(0, PlayerPhysics.EyeHeight - 0.2, 0);
+            double d = eye.DistanceTo(head);
+            if (d > 16 || d >= bestD) return;
+            if (RayMiss(eye, yaw, pitch, head) < Math.Max(0.7, d * 0.15)) { best = new LookHit(kind, name, null, d); bestD = d; }
+        }
+        Try("me", _c.Username, W.Player.Position);
+        foreach (var b in W.Entities.Nearby(eye, 16, x => x.Kind == EntityKind.Player && x.Id != selfId && x.Name is { Length: > 0 } n && _isBot(n)))
+            Try("body", b.Name!, b.Position);
+        return best;
+    }
+
+    /// <summary>What a player's look ray rests on now (the detector's poll): a body, else the nearer of an entity and a block within 24.</summary>
+    private LookHit? LookOf(string player, GestureDetector.Sample s)
+    {
+        if (s.Pos.DistanceTo(W.Player.Position) > 16) return null;
+        var eye = s.Pos + new Vec3d(0, PlayerPhysics.EyeHeight, 0);
+        float yaw = (float)s.Yaw, pitch = (float)s.Pitch;
+        var self = W.Entities.FindPlayer(player);
+        if (AimAt(eye, yaw, pitch, self?.Id ?? int.MinValue) is { } body) return body;
+        LookHit? hit = null;
+        if (DemonstrationRecorder.LookTarget(W, s.Pos, yaw, pitch, reach: 24, solidOnly: true) is { } t)
+            hit = new LookHit("block", ItemName(t.Id), t.Pos, eye.DistanceTo(new Vec3d(t.Pos.X + 0.5, t.Pos.Y + 0.5, t.Pos.Z + 0.5)));
+        foreach (var x in W.Entities.Nearby(eye, 24, x => x.Kind is EntityKind.Mob or EntityKind.Item or EntityKind.Object or EntityKind.Player && x.Id != self?.Id))
+        {
+            var c = x.Position + new Vec3d(0, 0.5, 0);
+            double d = eye.DistanceTo(c);
+            if (hit is { } h0 && d >= h0.Dist) break;
+            if (RayMiss(eye, yaw, pitch, c) < 0.7)
+            {
+                var p = new BlockPos((int)Math.Floor(x.Position.X), (int)Math.Floor(x.Position.Y), (int)Math.Floor(x.Position.Z));
+                hit = new LookHit("entity", x.Kind == EntityKind.Item ? ItemName(x.Item.Id) : x.DisplayName.ToLowerInvariant(), p, d);
+                break;
+            }
+        }
+        return hit;
+    }
+
+    /// <summary>player.gesture {kind, strength, at?, answer? (nod yes / shake no), target? + block|entity (point), pos}.</summary>
+    private void RaiseGesture(SeenGesture g)
+    {
+        var data = new JsonObject { ["kind"] = g.Kind, ["strength"] = g.Strength };
+        if (g.At != null) data["at"] = g.At.Equals(_c.Username, StringComparison.OrdinalIgnoreCase) ? "me" : g.At;
+        if (g.Kind == "nod") data["answer"] = "yes";
+        else if (g.Kind == "shake") data["answer"] = "no";
+        if (g.Target is { } t)
+        {
+            data["target"] = Pos(t);
+            if (g.TargetName != null) data[g.TargetKind == "entity" ? "entity" : "block"] = g.TargetName;
+        }
+        data["pos"] = Pos(g.Pos);
+        Raise("player.gesture", g.Player, data);
     }
 
     // ------------------------------------------------------------------ polled (the social tick)
@@ -310,6 +419,7 @@ public sealed class GameSignals : IDisposable
             else if (isNear && d > NearBlocks + 1) { lock (_lock) _near.Remove(p.Name!); Raise("player.leave", p.Name, new JsonObject { ["d"] = Math.Round(d, 1) }); }
             Gaze(p, me, now);
         }
+        foreach (var g in _gestures.Poll(now, LookOf)) RaiseGesture(g);
         List<string> gone;
         lock (_lock) gone = _near.Where(n => players.All(p => !p.Name!.Equals(n, StringComparison.OrdinalIgnoreCase))).ToList();
         foreach (var n in gone) { lock (_lock) _near.Remove(n); Raise("player.leave", n, new JsonObject { ["d"] = -1 }); }

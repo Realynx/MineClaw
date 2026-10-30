@@ -50,8 +50,11 @@ public sealed partial class ScriptBridge
         var ev = GameEventCatalog.Canonical(on) ?? (Intents.Contains(on) ? on.ToLowerInvariant() : null);
         if (ev == null) return ToolResult.Error($"unknown trigger '{on}': events {string.Join(" ", GameEventCatalog.Names)}; or a chat intent ({string.Join(",", Intents)})");
         var filter = new JsonObject();
-        foreach (var (k, v) in spec!) if (!BindKeys.Contains(k)) filter[k] = v?.DeepClone();
-        var kind = spec["kind"]?.ToString() is "reaction" || speaker == null ? "reaction" : "binding";
+        // kind: reaction|binding is the binding's own kind; any other value filters the event (a gesture's kind:'nod', a mob kind).
+        var kindArg = spec!["kind"]?.ToString();
+        bool bindKind = kindArg is null or "reaction" or "binding";
+        foreach (var (k, v) in spec!) if (!BindKeys.Contains(k) || (k.Equals("kind", StringComparison.OrdinalIgnoreCase) && !bindKind)) filter[k] = v?.DeepClone();
+        var kind = (bindKind && kindArg is "reaction") || speaker == null ? "reaction" : "binding";
         var forPlayer = spec["for"]?.ToString();
         double? minutes = spec["minutes"] is JsonValue mv && mv.TryGetValue<double>(out var m) ? m : null;
 
@@ -122,7 +125,11 @@ public sealed partial class ScriptBridge
                 "d" => 3,
                 "mob" => "zombie",
                 "hp" => 12,
-                "target" => "me",
+                "target" => ev == "player.gesture" ? new JsonObject { ["x"] = 5, ["y"] = 64, ["z"] = -6 } : "me",
+                "kind" => "nod",
+                "strength" => 0.8,
+                "at" => "me",
+                "answer" => "yes",
                 "slot" => "held",
                 "time" => 12500,
                 "rain" => true,

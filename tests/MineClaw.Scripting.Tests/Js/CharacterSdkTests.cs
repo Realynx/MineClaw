@@ -114,6 +114,44 @@ public class CharacterSdkTests
         Assert.Single(rig.CallList, c => c.StartsWith("dig "));
     }
 
+    private static JsonObject Gesture(string kind, string? at = "me", string player = "PoofImaFox")
+    {
+        var d = new JsonObject { ["player"] = player, ["kind"] = kind, ["strength"] = 0.8, ["pos"] = new JsonObject { ["x"] = 4, ["y"] = 65, ["z"] = 0 } };
+        if (at != null) d["at"] = at;
+        if (kind is "nod" or "shake") d["answer"] = kind == "nod" ? "yes" : "no";
+        return d;
+    }
+
+    [Fact]
+    public async Task Gesture_handlers_filter_by_kind_at_and_answer_and_a_machine_transitions_on_one()
+    {
+        using var rig = Rig.Js();
+        var s = rig.Start("""
+            const got = []
+            on('player.gesture', { kind: 'nod', at: 'me', player: 'PoofImaFox' }, e => { got.push('yes:' + e.answer) })
+            react('player.gesture', { answer: 'no' }, e => { got.push('no:' + e.player) })
+            const end = machine({
+              initial: 'idle',
+              states: {
+                idle: { tick: () => { wait(0.1) }, on: { 'player.gesture': e => e.kind === 'bob' ? 'come' : null } },
+                come: { enter: () => { got.push('come') }, tick: () => 'done' },
+              },
+            })
+            return got.join(',') + '|' + end
+            """);
+        await Rig.Until(() => s.MachineState == "idle");
+        rig.C.Deliver(Ev("player.gesture", Gesture("nod", at: null)));     // a nod at nobody: not the filter's
+        rig.C.Deliver(Ev("player.gesture", Gesture("nod")));
+        rig.C.Deliver(Ev("player.gesture", Gesture("shake", player: "kiwi")));
+        rig.C.Deliver(Ev("player.gesture", Gesture("wave")));               // the machine ignores it
+        await Task.Delay(300);
+        Assert.Equal("idle", s.MachineState);
+        rig.C.Deliver(Ev("player.gesture", Gesture("bob")));
+        await s.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(s.Ok, s.Outcome);
+        Assert.Equal("yes:yes,no:kiwi,come|done", s.Result);
+    }
+
     [Fact]
     public void Event_filters_match_classes_regions_and_cooldowns()
     {

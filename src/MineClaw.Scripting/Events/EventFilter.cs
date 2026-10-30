@@ -7,7 +7,8 @@ namespace MineClaw.Scripting.Events;
 /// handler is queued. Keys (all optional, all must hold):
 /// <list type="bullet">
 /// <item><c>player</c> / <c>from</c>: a name or a list of names (case-insensitive).</item>
-/// <item><c>block</c>, <c>item</c>, <c>mob</c> (or <c>kind</c>), <c>cause</c>, <c>intent</c>, <c>target</c> ('me'|'block'), <c>by</c>, <c>to</c>,
+/// <item><c>block</c>, <c>item</c>, <c>mob</c>, <c>kind</c> (a gesture's kind, else the mob), <c>cause</c>, <c>intent</c>, <c>target</c>
+/// ('me'|'block'), <c>at</c> ('me': a gesture aimed at me), <c>answer</c> (yes|no), <c>entity</c>, <c>by</c>, <c>to</c>,
 /// <c>from_block</c>: a name or list; '_' and ' ' are the same, and a word matches a name ending in it ('log' takes 'log',
 /// 'pickaxe' takes 'stone_pickaxe').</item>
 /// <item><c>held</c>: a held-item class (pickaxe|axe|shovel|sword|hoe|tool|empty|any) or an item name.</item>
@@ -40,9 +41,9 @@ public sealed class EventFilter
         double cd = Num(o["cooldown"]) ?? 0;
         var f = new EventFilter { Cooldown = TimeSpan.FromSeconds(Math.Clamp(cd, 0, 3600)), Once = o["once"] is JsonValue ov && ov.TryGetValue<bool>(out var once) && once };
         if (Names(o["player"] ?? o["from"]) is { } players) f._checks.Add(d => players.Any(p => Eq(p, Str(d, "player"))));
-        foreach (var key in new[] { "block", "item", "mob", "cause", "intent", "target", "by", "to", "slot" })
+        foreach (var key in new[] { "block", "item", "mob", "cause", "intent", "target", "by", "to", "slot", "at", "answer", "entity" })
             if (Names(o[key]) is { } want) { var k = key; f._checks.Add(d => want.Any(w => NameMatch(w, Str(d, k)))); }
-        if (Names(o["kind"]) is { } kinds) f._checks.Add(d => kinds.Any(w => NameMatch(w, Str(d, "mob"))));
+        if (Names(o["kind"]) is { } kinds) f._checks.Add(d => kinds.Any(w => NameMatch(w, Str(d, "kind") ?? Str(d, "mob"))));
         if (Names(o["from_block"]) is { } fb) f._checks.Add(d => fb.Any(w => NameMatch(w, Str(d, "from"))));
         if (Names(o["held"]) is { } held) f._checks.Add(d => held.Any(h => HeldMatch(h, Str(d, "held") ?? Str(d, "item"))));
         if (Str(o, "text") is { Length: > 0 } text) f._checks.Add(d => Str(d, "text")?.Contains(text, StringComparison.OrdinalIgnoreCase) == true);

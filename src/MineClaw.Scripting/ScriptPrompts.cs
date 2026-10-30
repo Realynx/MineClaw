@@ -21,7 +21,7 @@ public static class ScriptPrompts
 
     /// <summary>Brain-only cached line: instant triggers (standing bindings) exist and when to offer them (docs/design/reactive-character.md).</summary>
     public const string BindLine =
-        "\nInstant triggers: script{op:bind,name,goal,params:{on:player.punchBlock|player.hurt|player.pickup|player.equip|player.say|me.hurt|..., player,held,block,for,minutes}} runs a short job the instant it happens, no thinking (\"punch the log you want chopped\"). Offer one when a player repeats a request. Social moments you handled (thanks, come...): bind kind:reaction so next time it plays at once. op=bindings lists, op=unbind removes.\n";
+        "\nInstant triggers: script{op:bind,name,goal,params:{on:player.punchBlock|player.hurt|player.pickup|player.say|player.gesture|me.hurt|..., player,held,block,kind,for,minutes}} runs a short job the instant it happens, no thinking (\"punch the log you want chopped\"; \"crouch twice = come\": player.gesture kind:bob; kinds nod shake bob wave jump spin stare point). Offer one when a player repeats a request. Social moments you handled (thanks, come...): bind kind:reaction so next time it plays at once. op=bindings lists, op=unbind removes.\n";
 
     public static readonly string[] Ops = ["run", "status", "pause", "resume", "cancel", "replace", "save", "rollback", "list", "show"];
 
