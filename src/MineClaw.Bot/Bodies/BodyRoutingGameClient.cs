@@ -75,6 +75,7 @@ public sealed class BodyRoutingGameClient(BodyRegistry registry, Func<IBody, IGa
     public bool VitalsKnown => T().VitalsKnown;
     public bool GroundKnown => T().GroundKnown;
     public bool SafetyEngaged => T().SafetyEngaged;
+    public bool Brave => T().Brave;
     public string? CurrentGesture => T().CurrentGesture;
     public IntentionalVoidStep? ActiveVoidStep => T().ActiveVoidStep;
 

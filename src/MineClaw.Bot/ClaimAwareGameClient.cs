@@ -262,6 +262,7 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
     public bool FaceIdle(Vec3d point) => inner.FaceIdle(point);
     public bool SwingIdle() => inner.SwingIdle();
     public bool SafetyEngaged => inner.SafetyEngaged;
+    public bool Brave => inner.Brave;
     public bool PlayGesture(GesturePlan plan) => inner.PlayGesture(plan);
     public void CancelGesture() => inner.CancelGesture();
     public string? CurrentGesture => inner.CurrentGesture;

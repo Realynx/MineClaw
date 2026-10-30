@@ -202,6 +202,10 @@ public sealed class GameBridge : IDisposable
     /// The reflex's OK for a new brain body job (<see cref="BotAgent.BodySafety"/>): at night (or with a hostile within 16) and with
     /// no safe food on hand, a job that leaves home ground is refused with one actionable line and the food reflex starts (live
     /// 10-28 16:21: respawned at night with no food, a walk west to the tower floor, low hp, dead again). Null = go ahead.
+    /// Only a body that is actually in trouble is held: hp at or under <see cref="LowHealthLine"/>, or the hunger bar at
+    /// <see cref="HungryLine"/> or under (no sprint, no regen). A fit, fed body works with an empty bag as in vanilla, and "brave"
+    /// (the brain's override) lifts it (live 10-30: main at hp 20, food 20 refused Fox's dig, "it's night, I've got zero food",
+    /// even after "it's not a big job, go ahead"). Clone spawns into the night are still held (fresh bodies have nothing).
     /// </summary>
     public string? BodySafety(IReadOnlyList<(string Tool, System.Text.Json.JsonElement Input)> steps)
     {
@@ -210,9 +214,14 @@ public sealed class GameBridge : IDisposable
         if (w.Dimension != 0) return null;
         bool night = w.IsNight, mobs = w.Entities.Nearby(w.Player.Position, 16, e => e.IsHostileMob && MineClaw.Client.Combat.CombatGeometry.CanGetAt(w, e, w.Player.Position), 1).Count > 0;
         // A clone spawn walks out at the spawn, not at main: only the night counts for it, not the mobs around main.
+        // A spawn that names a clone is a new job for a body already out (live 10-29: "the order to 101 was refused because it's
+        // night and there's no food"): only spawns that bring fresh bodies into the night are held.
         bool spawns = steps.Count > 0 && steps.All(s => BotAgent.IsCloneSpawn(s.Tool, s.Input));
+        if (spawns && steps.All(s => s.Input.TryGetProperty("name", out var n) && n.ValueKind == System.Text.Json.JsonValueKind.String && n.GetString() is { Length: > 0 }))
+            return null;
         if (spawns) mobs = false;
         if (!night && !mobs) return null;
+        if (!spawns && (_c.Brave || w.Player.Health > LowHealthLine && w.Player.Food > HungryLine)) return null;
         if (FoodSupply.HasReady(_c)) return null;
         if (steps.All(s => NightOk.Contains(s.Tool) || s.Tool == "goto" && GoesHome(s.Input, w) || ToNearPlayer(s.Tool, s.Input, w))) return null;
         string what;
@@ -263,6 +272,8 @@ public sealed class GameBridge : IDisposable
 
     /// <summary>The survival reflex's low line (its retreat/shelter take over at or below it).</summary>
     private const int LowHealthLine = 8;
+    /// <summary>Vanilla stops sprinting at 6 food and regen needs 18: at 6 or under the body is running on empty.</summary>
+    private const int HungryLine = 6;
 
     /// <summary>A goto whose target is within <see cref="HomeRadius"/> of spawn (x,y,z), or home/spawn/bed by name.</summary>
     private bool GoesHome(System.Text.Json.JsonElement input, WorldState w)

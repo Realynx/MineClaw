@@ -169,6 +169,7 @@ public sealed class FakeGameClient : IGameClient
     }
     public bool SwingIdle() { if (CurrentAction != null || Safety) return false; Interlocked.Increment(ref Swings); return true; }
     public bool SafetyEngaged => Safety;
+    public bool Brave { get; set; }
     /// <summary>Gestures played (brainstem body language), in order; <see cref="PlayingGesture"/> simulates one running.</summary>
     public ConcurrentQueue<GesturePlan> GesturePlans { get; } = new();
     public string? PlayingGesture { get; set; }

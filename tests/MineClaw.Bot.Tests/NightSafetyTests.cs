@@ -31,6 +31,7 @@ public class NightSafetyTests
     {
         var (b, c) = Bridge();
         c.World.Time = 18000; // midnight
+        c.World.Player.SetHealth(20, 5, 0); // running on empty: no sprint, no regen
         var no = b.BodySafety([Step("goto", new { to = "-30,64,0" })]);
         Assert.NotNull(no);
         Assert.StartsWith("night + no food: ", no);
@@ -52,6 +53,7 @@ public class NightSafetyTests
     {
         var (b, c) = Bridge();
         c.World.Time = 18000;
+        c.World.Player.SetHealth(20, 5, 0);
         c.World.Entities.SpawnPlayer(7, "PoofimaFox", new Vec3d(-25.5, 64, 0.5), 0, 0);
         c.World.Player.ServerTeleport(new Vec3d(-15.5, 64, 0.5), 65.62, 0, 0, true); // 10 blocks from Fox, 15 from spawn
         Assert.Null(b.BodySafety([Step("goto", new { to = "PoofimaFox" })]));
@@ -67,6 +69,33 @@ public class NightSafetyTests
         c.World.Entities.Teleport(7, new Vec3d(-25.5, 64, 0.5), 0, 0);
         c.World.Player.SetHealth(6, 20, 0);
         Assert.NotNull(b.BodySafety([Step("goto", new { to = "PoofimaFox" })]));
+    }
+
+    /// <summary>
+    /// Live 10-30: main at hp 20, food 20 in Fox's stair shaft refused his dig, "it's night, I've got zero food", even after "it's not
+    /// a big job, go ahead". In vanilla a fit, fed body works fine with an empty bag: only one actually in trouble is held, and the
+    /// brain's brave override lifts it.
+    /// </summary>
+    [Fact]
+    public void A_fit_fed_body_works_at_night_with_an_empty_bag_and_brave_lifts_the_hold()
+    {
+        var (b, c) = Bridge();
+        c.World.Time = 18000;
+        c.World.Player.SetHealth(20, 20, 0);
+        Assert.Null(b.BodySafety([Step("mine", new { block = "stone" })]));
+        Assert.Null(b.BodySafety([Step("goto", new { to = "-30,64,0" })]));
+        c.World.Player.SetHealth(20, 7, 0);
+        Assert.Null(b.BodySafety([Step("mine", new { block = "stone" })]));
+        // Running on empty, or hurt: held, unless the brain said brave.
+        c.World.Player.SetHealth(20, 6, 0);
+        Assert.NotNull(b.BodySafety([Step("mine", new { block = "stone" })]));
+        c.World.Player.SetHealth(7, 20, 0);
+        Assert.NotNull(b.BodySafety([Step("mine", new { block = "stone" })]));
+        c.Brave = true;
+        Assert.Null(b.BodySafety([Step("mine", new { block = "stone" })]));
+        // Clone spawns into the night are still held: fresh bodies arrive with nothing. A new job for a named clone isn't one.
+        Assert.NotNull(b.BodySafety([Step("hive", new { op = "spawn", task = "chop trees" })]));
+        Assert.Null(b.BodySafety([Step("hive", new { op = "spawn", name = "101", task = "stay in the tunnel till sunrise" })]));
     }
 
     /// <summary>Live 10-29: after three clones died at night with no food, main re-spawned 67, 420 and 1337 into the same night;

@@ -98,6 +98,9 @@ public interface IGameClient
     /// <summary>A client safety reflex owns the body (fight/defence, safety hold, heal retreat): the top of the priority stack.</summary>
     bool SafetyEngaged => false;
 
+    /// <summary>The brain's "brave" override is on (<see cref="MinecraftClient.SetBrave"/>): fear gates don't hold the body.</summary>
+    bool Brave => false;
+
     /// <summary>Plays a brainstem gesture tick by tick, no action lock (<see cref="MinecraftClient.PlayGesture"/>).
     /// False = refused (busy body for sneak/jump, safety) or unsupported.</summary>
     bool PlayGesture(GesturePlan plan) => false;
@@ -199,6 +202,7 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
     public bool FaceIdle(Vec3d point) => Inner.FaceIdle(point);
     public bool SwingIdle() => Inner.SwingIdle();
     public bool SafetyEngaged => Inner.SafetyEngaged;
+    public bool Brave => Inner.Brave;
     public bool PlayGesture(GesturePlan plan) => Inner.PlayGesture(plan);
     public void CancelGesture() => Inner.CancelGesture();
     public string? CurrentGesture => Inner.CurrentGesture;
