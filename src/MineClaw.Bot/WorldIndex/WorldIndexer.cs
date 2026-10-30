@@ -438,7 +438,7 @@ public sealed partial class WorldIndexer : IDisposable
                 Confidence = Confidence(e),
                 Contents = e.ContentsDirty ? e.Contents : null,
                 ContentsAt = e.ContentsDirty ? e.ContentsAt : null,
-                ContentsBy = e.ContentsDirty && _selfName.Length > 0 ? _selfName : null,
+                ContentsBy = !e.ContentsDirty ? null : e.ContentsBy ?? (_selfName.Length > 0 ? _selfName : null),
                 Dimension = _dim,
             });
             written.Add((e, text, fields));

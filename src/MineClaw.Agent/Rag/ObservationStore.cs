@@ -202,7 +202,10 @@ public sealed class ObservationStore
                 return true;
             }
             _db.Exec("DELETE FROM container_items WHERE obs_id = $id", ("$id", row.Id));
-            if (tombstone) _db.Exec("UPDATE observations SET removed = $t WHERE id = $id", ("$t", AgentDb.ToUnixMs(Now)), ("$id", row.Id));
+            // Its contents' date goes with its items: a row revived at the same key (the surviving west half of a broken double
+            // chest, a chest re-placed) must read "contents unknown", never "opened 3m ago: empty".
+            if (tombstone) _db.Exec("UPDATE observations SET removed = $t, contents_at = NULL, contents_by = NULL WHERE id = $id",
+                ("$t", AgentDb.ToUnixMs(Now)), ("$id", row.Id));
             else _db.Exec("DELETE FROM observations WHERE id = $id", ("$id", row.Id));
             _index.Delete(row.DocRef);
             return true;

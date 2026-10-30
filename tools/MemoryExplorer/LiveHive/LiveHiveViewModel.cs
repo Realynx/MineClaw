@@ -163,7 +163,7 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
         _sync = new HiveSync(_api, _cache)
         {
             Store = _entityStore,
-            Interests = () => _interests, MapViews = () => _mapViews,
+            Interests = () => _interests, MapViews = () => _mapViews, XRay = XRayMode,
             // The free camera's overlays; else the vision panel's compose mode (its build-plan footprints).
             OverlayDim = () => IsFreecamTab && OverlaysWanted ? _camera.Pose.Dim
                 : Vision is { IsCompose: true } v && _bots.FirstOrDefault(b => b.Key == v.Body) is { } vb ? vb.Dim : null,
@@ -438,6 +438,21 @@ public sealed partial class LiveHiveViewModel : ObservableObject, IDisposable
     partial void OnShowDangersChanged(bool value) => PushFlags();
     partial void OnShowStalenessChanged(bool value) => PushFlags();
     partial void OnShowDropsChanged(bool value) => PushFlags();
+
+    /// <summary>The x-ray box: "auto" (the server's iso/orbit/high pictures cut away what hides the body when it is in a tunnel,
+    /// a cave or under a roof, like the AI's own sheets; the freecam stays exact), "on" (those pictures always cut, and the freecam
+    /// cuts a cone toward the bodies in front of it), "off" (exact everywhere).</summary>
+    public IReadOnlyList<string> XRayOptions => FreecamXRay.Modes;
+    [ObservableProperty] private string _xRayMode = "auto";
+
+    partial void OnXRayModeChanged(string value)
+    {
+        bool on = value == "on";
+        Freecam.XRay = on;
+        Gpu.Scene.XRay = on;
+        if (_sync != null) _sync.XRay = value;
+        Interlocked.Increment(ref Freecam.DataVersion);
+    }
 
     private void PushFlags()
     {

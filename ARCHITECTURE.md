@@ -824,6 +824,21 @@ One place decides whether the bot may break a block, why not, and how a player u
   panel's labels with coordinates (the same facts as text). `see {aids:false}` turns them off. ORBIT/HIGH/ISO/TOP cut away
   roofs over the feet layer (`CutAway`: a roof over a gen hid every gen cell, live 10-27). Render ≈50-180 ms with 8 threads,
   ≈180-250 ms single-threaded. Focus: x,y,z, a player, a saved place, `pointed`/`this`; default the current job's target, else the bot.
+- **X-ray, weather, double chests** (live 10-29, Fox: "in the tunnel… you just see blocks in your face", "chests don't combine
+  into one big chest", "I didn't see the weather"). `ViewCut`: the outside cameras (orbit, iso, high, cam; never eye/shoulder/
+  maps) get a cone cut, apex at the camera, a 3-block disk at the body (and the focus), never below the feet layer, only when two
+  of the body's feet/waist/head points (or the focus top) are hidden from the camera (`XRay.Auto`; nothing hidden = byte-identical
+  pictures); cut faces are hatched (`EyeRenderer.CutTint` + diagonal stripes), the panel title says X-RAY and the legend says what
+  the hatching means. A camera cone instead of a section cut (rock outside the radius still hid a bot 20 blocks down) or a cylinder
+  (a huge hole by the camera). The Explorer's "X-ray" box (Bot feeds header and the freecam panel): auto | on | off → `/view?xray=`;
+  "on" also cuts the freecam toward the bodies in front of it (CPU: `FreecamXRay.Cut`; GPU: the same cone discarded per fragment
+  for world geometry only). Weather (`Render/Weather`): b1.8.1 0x46 rain on/off (+ a lightning bolt while it rains = a storm),
+  1.12.2 Change Game State 7/8 fading strengths → `WorldState.Rain/Thunder` → the sky/fog greyed like getSkyColorBody/updateFogColor,
+  World.k with rain/thunder, streaks (snow in cold biomes, none in dry ones) depth-tested in perspective views and freecam (GPU:
+  blended lines over the column tops), a wash in iso/maps; the index route ships `rain`/`thunder`, captions say "day, rain", the
+  legend "Weather: thunderstorm". Double chests: `World/ChestPairs` is the one pairing rule (same kind, horizontal, exactly one
+  neighbour; west/north half = slots 0-26 and the memory key); `Render/LargeChest` reads it for the 1.12.2 large-chest model (each
+  cell its half of the 30-wide box, no seam face, lid and latch across) and b1.8.1 keeps BlockChest's half tiles 41/42/57/58.
 - **Camera adjustments** (`CamParams`, `PerspectivePanel.Params.cs`): every non-eye view takes optional `key=value` words or an
   object — `"iso yaw=200 pitch=50 zoom=1.3"`, `"orbit yaw=10 dist=20"`, `"high yaw=90"`, `"top zoom=2 dx=3 dz=-1"`, `"side axis=E
   zoom=2 dy=1"`, `"shoulder dist=6"`, `"cam tower NE pitch=60"`, `{"iso":{"yaw":200}}`. Yaw is the way the camera FACES (game/F3

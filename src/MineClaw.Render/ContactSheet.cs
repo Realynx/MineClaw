@@ -44,6 +44,10 @@ public sealed class ContactSheetRequest
     public string? Stamp { get; init; }
     /// <summary>Camera adjustments per view name ("iso" → yaw/pitch/zoom, "top" → zoom/pan…); views not listed keep their defaults.</summary>
     public IReadOnlyDictionary<string, CamParams>? ViewParams { get; init; }
+    /// <summary>The x-ray cut of the outside cameras (<see cref="ViewCut"/>): Auto = only when the body/focus is hidden.</summary>
+    public XRay XRay { get; init; } = XRay.Auto;
+    /// <summary>Rain/thunder at the spot (darker sky and light, streaks, the caption says it).</summary>
+    public Weather Weather { get; init; }
 }
 
 /// <summary>
@@ -71,6 +75,8 @@ public sealed class PanelContext
     /// <summary>"seen 3 min ago" (remote memory) or null (live).</summary>
     public string? Staleness { get; init; }
     public bool Smooth { get; init; }
+    public XRay XRay { get; init; } = XRay.Auto;
+    public Weather Weather { get; init; }
 
     private VisionRenderer.Slab? _slab;
     private IVoxelWorld? _world;
@@ -90,6 +96,13 @@ public sealed class PanelContext
     }
 
     public string TimeOfDay => Nether ? "nether" : Lighting.SkylightSubtracted(Time) >= 8 ? "night" : Lighting.SkylightSubtracted(Time) >= 3 ? "dusk" : "day";
+
+    /// <summary>"rain" / "thunderstorm" / "snow" at the focus (its biome and height), null = clear, the Nether, a dry biome.</summary>
+    public string? WeatherText => Nether ? null : Weather.Text(MineClaw.Render.Weather.At(World.Biome(Focus.X, Focus.Z), FeetY));
+
+    /// <summary>The body the x-ray keeps in sight: only when it stands near the spot (a remote cam doesn't cut toward it).</summary>
+    public (double X, double Y, double Z)? Subject => Body is { } b && Math.Abs(b.X - Focus.X - 0.5) <= Radius + 1 && Math.Abs(b.Z - Focus.Z - 0.5) <= Radius + 1
+        && Math.Abs(b.Y - FeetY) <= 6 ? (b.X, b.Y, b.Z) : null;
 }
 
 /// <summary>One panel of a composite: a 3D camera on a context, or a flat map of it.</summary>
@@ -178,7 +191,7 @@ public sealed class ContactSheet
         {
             Blocks = q.Blocks, Light = q.Light, Focus = q.Focus, FeetY = feet, Radius = r, Roles = q.Roles, Entities = q.Entities, Marks = q.Marks,
             Atlas = q.Atlas, Time = q.Time, Nether = q.Nether, Body = body, Pointed = q.Pointed, Target = q.Target, Spots = q.Spots, CutAway = q.CutAway,
-            Aids = q.Aids, Staleness = q.Stamp, Smooth = q.Eye?.Smooth ?? false,
+            Aids = q.Aids, Staleness = q.Stamp, Smooth = q.Eye?.Smooth ?? false, XRay = q.XRay, Weather = q.Weather,
         };
         var views = new List<string>();
         foreach (var v0 in q.Views.Select(v => v.Trim().ToLowerInvariant()).Where(Known.Contains))
@@ -218,6 +231,7 @@ public sealed class ContactSheet
         jobs = jobs.Take(MaxPanels).ToList();
         var (cols, rows, pw, ph) = Layout(Math.Max(1, jobs.Count), pixelBudget);
         var panels = new List<(PanelJob Job, int W, int H, uint[] Px, string Legend, List<string> Facts, string Caption)>();
+        bool xray = false;
         ulong hash = 14695981039346656037UL;
         PerspectivePanel.Input InputFor(PanelJob job, PerspectivePanel.Rig rig)
         {
@@ -228,7 +242,8 @@ public sealed class ContactSheet
                 Focus = ctx.Focus, Pointed = ctx.Pointed, Target = ctx.Target, Slab = ctx.Slab, Smooth = ctx.Smooth,
                 Cut = ctx.CutAway && rig.Cut && job.WorldOverride == null ? PerspectivePanel.Cut(ctx.Slab, ctx.FeetY) : null,
                 Aids = ctx.Aids ? new ReadingAids.Input { Focus = ctx.Focus, FeetY = ctx.FeetY, Radius = ctx.Radius, Spots = ctx.Spots, Body = ctx.Body, Slab = ctx.Slab, Rings = rig.Ortho == 0 } : null,
-                Stamp = ctx.TimeOfDay + (ctx.Staleness != null ? ", " + ctx.Staleness : ""),
+                Stamp = ctx.TimeOfDay + (ctx.WeatherText is { } wt ? ", " + wt : "") + (ctx.Staleness != null ? ", " + ctx.Staleness : ""),
+                XRay = job.WorldOverride == null && ctx.CutAway ? ctx.XRay : XRay.Off, Subject = ctx.Subject, FeetY = ctx.FeetY, Weather = ctx.Nether ? default : ctx.Weather, // design previews (no cut-away) stay exact
             };
         }
         foreach (var job in jobs)
@@ -256,7 +271,8 @@ public sealed class ContactSheet
             }
             var rig = job.Rig ?? (job.Flat == "side" ? PerspectivePanel.Side(ctx.Focus, ctx.FeetY, ctx.Radius, job.Axis, job.Params) : PerspectivePanel.Top(ctx.Focus, ctx.FeetY, ctx.Radius, job.Params));
             var img = PerspectivePanel.Render(Eye(pw, ph), rig, InputFor(job, rig), out _, out var facts);
-            string legendText = job.Flat == "top" && ctx.CutAway ? rig.Legend[..^1] + ", roofs above it cut away)" : rig.Legend;
+            string legendText = job.Flat == "top" && ctx.CutAway ? rig.Legend[..^1] + ", roofs above it cut away)" : img.Legend;
+            xray |= img.XRay;
             panels.Add((job, img.Width, img.Height, img.Pixels!, legendText, facts, rig.Title));
             unchecked { hash = (hash ^ (ulong)HashCode.Combine(Math.Round(rig.X, 1), Math.Round(rig.Y, 1), Math.Round(rig.Z, 1), rig.Yaw, rig.Pitch)) * 1099511628211UL; }
         }
@@ -299,6 +315,9 @@ public sealed class ContactSheet
         }
         if (roles.Count > 0) legend.Append(" Roles (3D tint/outline, TOP letters): ").Append(string.Join(", ", roles)).Append('.');
         if (panels.Any(p => p.Job.Ctx.CutAway && p.Job.Rig is { Cut: true })) legend.Append(" Cut-away: roofs over the focus layer cut away in ORBIT/HIGH/ISO and TOP.");
+        if (xray) legend.Append(" X-ray: rock/walls between the camera and you or the focus are removed in the panels that say x-ray; hatched slate faces are cut edges, not real walls.");
+        var weather = panels.Select(p => p.Job.Ctx.WeatherText).FirstOrDefault(t => t != null);
+        if (weather != null) legend.Append(" Weather: ").Append(weather).Append(" (darker sky and light; streaks are rain/snow, not blocks).");
         if (extra != null) foreach (var e in extra) legend.Append(' ').Append(e);
         legend.Append(" Dark below the island = void.");
         var labels = panels.SelectMany(p => p.Facts).Distinct().Take(12).ToList();
@@ -310,7 +329,7 @@ public sealed class ContactSheet
                 foreach (var e in p.Job.Ctx.Entities) key = (key ^ (ulong)HashCode.Combine(e.Kind, e.Name, Math.Round(e.X, 1), Math.Round(e.Y, 1), Math.Round(e.Z, 1), e.Yaw, e.Burning)) * 1099511628211UL;
             foreach (char ch in head) key = (key ^ ch) * 1099511628211UL;
         }
-        return new VisionImage(Png.Encode(c.Px, W, H), W, H, key, legend.ToString(), labels) { Pixels = c.Px, BlocksHash = hash };
+        return new VisionImage(Png.Encode(c.Px, W, H), W, H, key, legend.ToString(), labels) { Pixels = c.Px, BlocksHash = hash, XRay = xray, Weather = weather };
     }
 
     /// <summary>The one legend strip of a sheet: what the colours and outlines mean.</summary>

@@ -109,6 +109,20 @@ public sealed class HiveWorldCache
             Interlocked.Exchange(ref _time, t);
         }
     }
+    private volatile System.Runtime.CompilerServices.StrongBox<(int Dim, MineClaw.Render.Weather W)>? _weather;
+
+    /// <summary>The rain/thunder the last index reply said for <paramref name="dim"/> (clear when unknown or another dimension).</summary>
+    public MineClaw.Render.Weather WeatherIn(int dim) => _weather is { } w && w.Value.Dim == dim && dim != -1 ? w.Value.W : default;
+
+    /// <summary>Records the hive's weather in <paramref name="dim"/> (index replies; older supervisors never send it).</summary>
+    public void SetWeather(int dim, float rain, float thunder)
+    {
+        var w = new MineClaw.Render.Weather(Math.Clamp(rain, 0, 1), Math.Clamp(thunder, 0, 1));
+        if (_weather is { } old && old.Value == (dim, w)) return;
+        _weather = new System.Runtime.CompilerServices.StrongBox<(int, MineClaw.Render.Weather)>((dim, w));
+        Interlocked.Increment(ref _version);
+    }
+
     /// <summary>Bumped on every change (renderers redraw when it moves).</summary>
     public long Version => Interlocked.Read(ref _version);
     public long BytesReceived { get; private set; }

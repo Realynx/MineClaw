@@ -105,6 +105,35 @@ public class ObservationTests
         Assert.StartsWith("furnace@2,64,0 2m", r.Text);
         Assert.Equal("within 32: furnace x1", (await rt.Tools.ExecuteAsync("where_is", JsonSerializer.SerializeToElement(new { }), default)).Text);
     }
+
+    /// <summary>
+    /// A double chest is ONE container (user report 10-29): its 54 slots, ranked once even when a second row (taught, or an
+    /// older one) sits on one half; a taught box over a whole room never swallows the chests in it; a tombstoned chest's
+    /// contents date goes with its items, so a row revived at that key reads "contents unknown", not "opened just now: empty".
+    /// </summary>
+    [Fact]
+    public void Chest_room_ranks_a_double_chest_once_with_54_slots()
+    {
+        var (db, _, world, _, _) = Open();
+        using var _d = db;
+        world.Upsert(new Observation("chest", "2,64,0", "chest at 2,64,0 (double)")
+        {
+            Bounds = Box.Of(2, 64, 0, 3, 64, 0), Contents = [new ItemCount(4, "cobblestone", 27 * 64)],
+        });
+        world.Upsert(new Observation("chest", "3,64,0", "the cobble chest") { Bounds = Box.Point(3, 64, 0), Source = ObservationSource.Taught });
+        world.Upsert(new Observation("chest", "room", "storage room") { Bounds = Box.Of(-5, 60, -5, 10, 70, 10), Source = ObservationSource.Taught });
+        world.Upsert(Chest(6, 64, 0));
+        var ranked = ChestRoom.Ranked(world, 0, 64, 0);
+        Assert.Equal(["2,64,0", "6,64,0", "room"], ranked.Select(r => r.Row.Key).OrderBy(k => k, StringComparer.Ordinal));
+        var pair = ranked.Single(r => r.Row.Key == "2,64,0");
+        Assert.True(pair.RoomInMemory); // 27 of its 54 slots used
+        Assert.Equal(27, ChestRoom.Estimate(pair.Row.Bounds!.Value, world.Contents(pair.Row.Id)).FreeSlots);
+
+        Assert.True(world.Remove("chest", "2,64,0"));
+        var revived = world.Upsert(new Observation("chest", "2,64,0", "chest at 2,64,0") { Bounds = Box.Point(2, 64, 0) });
+        Assert.Null(revived.ContentsAt);
+        Assert.Empty(world.Contents(revived.Id));
+    }
 }
 
 public class CacheLayoutTests

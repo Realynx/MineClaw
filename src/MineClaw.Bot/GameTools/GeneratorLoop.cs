@@ -221,6 +221,7 @@ public sealed partial class GeneratorLoop(IGameClient c, GeneratorSupport? suppo
         foreach (var chest in Candidates(c, _s.Observations, store, storing))
         {
             if (!tried.Add(chest)) continue;
+            foreach (var cell in ChestPairs.Cells(c.World, chest)) tried.Add(cell); // the other half is this window
             if (tried.Count > MaxChestsTried) break;
             int was = Loose();
             var items = LooseItems(reserved);
@@ -280,9 +281,13 @@ public sealed partial class GeneratorLoop(IGameClient c, GeneratorSupport? suppo
     /// </summary>
     public static IEnumerable<BlockPos> Candidates(IGameClient c, ObservationStore? obs, BlockPos? first, IReadOnlyCollection<int>? storing = null)
     {
-        if (first is { } s) yield return s;
         var me = c.World.Player.Position;
         var known = new HashSet<BlockPos>();
+        if (first is { } s)
+        {
+            known.UnionWith(ChestPairs.Cells(c.World, s)); // the store's other half is the store (was: offered again from memory)
+            yield return s;
+        }
         if (obs != null)
         {
             IReadOnlyList<(ObservationRow Row, double Distance, bool RoomInMemory)> rows;
@@ -292,8 +297,11 @@ public sealed partial class GeneratorLoop(IGameClient c, GeneratorSupport? suppo
             {
                 var b = row.Bounds!.Value;
                 var p = new BlockPos((int)Math.Floor(b.MinX), (int)Math.Floor(b.MinY), (int)Math.Floor(b.MinZ));
+                var far = new BlockPos((int)Math.Floor(b.MaxX), (int)Math.Floor(b.MaxY), (int)Math.Floor(b.MaxZ));
+                if (known.Contains(p) || known.Contains(far)) continue;
                 known.Add(p);
-                if (b.MaxX > b.MinX || b.MaxZ > b.MinZ) known.Add(new BlockPos((int)Math.Floor(b.MaxX), (int)Math.Floor(b.MaxY), (int)Math.Floor(b.MaxZ)));
+                known.Add(far);
+                known.UnionWith(ChestPairs.Cells(c.World, p));
                 yield return p;
             }
         }
@@ -302,11 +310,11 @@ public sealed partial class GeneratorLoop(IGameClient c, GeneratorSupport? suppo
         catch (Exception) { yield break; }
         foreach (var p in seen)
         {
-            if (known.Contains(p) || (first is { } f && f == p)) continue;
-            // The other half of a pair is the same 54-slot window.
-            known.Add(p);
-            known.Add(p.Offset(1, 0, 0)); known.Add(p.Offset(-1, 0, 0)); known.Add(p.Offset(0, 0, 1)); known.Add(p.Offset(0, 0, -1));
-            yield return p;
+            if (known.Contains(p)) continue;
+            // The other half of a pair is the same 54-slot window (only the real half: a trapped chest beside is its own chest).
+            var cells = ChestPairs.Cells(c.World, p);
+            known.UnionWith(cells);
+            yield return cells[0];
         }
     }
 

@@ -161,16 +161,7 @@ public sealed class ChestOrganizer(IGameClient client)
 
     private static int MaxStack(int id) => Items.Exists(id) ? Math.Max(1, Items.Get(id).MaxStack) : 64;
 
-    /// <summary>Drops the second half of a double chest (both halves open the same window).</summary>
-    private List<BlockPos> DedupeDoubleChests(IReadOnlyList<BlockPos> chests)
-    {
-        var result = new List<BlockPos>();
-        foreach (var c in chests.Distinct())
-        {
-            if (result.Any(r => r.Y == c.Y && Math.Abs(r.X - c.X) + Math.Abs(r.Z - c.Z) == 1 &&
-                                client.World.GetBlock(r) == Blocks.Chest && client.World.GetBlock(c) == Blocks.Chest)) continue;
-            result.Add(c);
-        }
-        return result;
-    }
+    /// <summary>One position per window: both halves of a double chest open the same 54 slots (ChestPairs; a trapped pair too,
+    /// was: only normal chests were paired, so a trapped double was sorted twice and counted as two chests).</summary>
+    private List<BlockPos> DedupeDoubleChests(IReadOnlyList<BlockPos> chests) => ChestPairs.Distinct(client.World, chests);
 }

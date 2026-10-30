@@ -427,6 +427,7 @@ public static partial class VisionRouter
         var farmland = new List<(int X, int Y, int Z)>();
         var named = new Dictionary<string, List<(int X, int Y, int Z)>>();
         void Add(string k, (int, int, int) p) { if (!named.TryGetValue(k, out var l)) named[k] = l = new(); l.Add(p); }
+        var chests = new List<BlockPos>();
         // A wide area spans hills and valleys (1.12.2 terrain): a taller band than a 12-block look.
         int below = r > 12 ? 20 : 8, above = r > 12 ? 28 : 12;
         for (int y = Math.Max(0, f.Y - below), y1 = Math.Min(w.WorldHeight - 1, f.Y + above); y <= y1; y++)
@@ -441,7 +442,7 @@ public static partial class VisionRouter
                         case Blocks.Sapling: saplings.Add((x, y, z)); break;
                         case Blocks.Crops: crops.Add((x, y, z, w.GetMeta(x, y, z))); break;
                         case Blocks.Farmland: if (w.GetBlock(x, y + 1, z) == 0) farmland.Add((x, y, z)); break;
-                        case Blocks.Chest: Add("chest", (x, y, z)); break;
+                        case ChestPairs.Chest or ChestPairs.TrappedChest: chests.Add(new BlockPos(x, y, z)); break;
                         case Blocks.WoodenDoor or Blocks.IronDoor: if ((w.GetMeta(x, y, z) & 8) == 0) Add("door", (x, y, z)); break;
                         case Blocks.Furnace or Blocks.LitFurnace: Add("furnace", (x, y, z)); break;
                         case Blocks.Workbench: Add("bench", (x, y, z)); break;
@@ -491,9 +492,11 @@ public static partial class VisionRouter
         }
         if (Asked("crop", "wheat", "farm", "ripe", "unripe", "grown", "mature", "harvest", "replant"))
             parts.Add(Crops(crops, farmland, List));
+        if (Asked("chest") && Chests(w, chests, D) is { } ch) parts.Add(ch);
+        else if (Asked("chest") && !all) parts.Add("no chest");
         foreach (var (key, words) in new[]
         {
-            ("chest", new[] { "chest" }), ("door", new[] { "door" }), ("furnace", new[] { "furnace" }), ("bench", new[] { "bench", "workbench", "crafting" }),
+            ("door", new[] { "door" }), ("furnace", new[] { "furnace" }), ("bench", new[] { "bench", "workbench", "crafting" }),
             ("coal ore", new[] { "ore", "coal" }), ("iron ore", new[] { "ore", "iron" }), ("gold ore", new[] { "ore", "gold" }),
             ("diamond ore", new[] { "ore", "diamond" }), ("lapis ore", new[] { "ore", "lapis" }), ("redstone ore", new[] { "ore", "redstone" }),
         })
@@ -506,5 +509,27 @@ public static partial class VisionRouter
         if (q.Contains("chest") && (q.Contains("item") || q.Contains("in it") || q.Contains("contain")))
             parts.Add("contents aren't visible from outside: open it or check the chest memory");
         return parts.Count == 0 ? $"nothing of that within {r} of {P(f)}" : string.Join(" | ", parts) + $" (within {r} of {P(f)})";
+    }
+
+    /// <summary>
+    /// "double chest 1,64,1-2,64,1" (ChestPairs: two touching chests of one kind are ONE 54-slot chest, reported once from
+    /// either block), "chest 8,64,2", "trapped chest ..."; several: "3 chests: ..., ..." nearest first. Null when none.
+    /// Was: every chest block listed, so a double chest read as two chests side by side.
+    /// </summary>
+    private static string? Chests(IBlockAccess w, List<BlockPos> cells, Func<(int X, int Y, int Z), int> dist)
+    {
+        if (cells.Count == 0) return null;
+        var seen = new HashSet<BlockPos>();
+        var items = new List<(int D, string Text)>();
+        foreach (var c in cells)
+        {
+            var (a, b) = ChestPairs.Halves(w, c);
+            if (!seen.Add(a)) continue;
+            string kind = w.GetBlock(a.X, a.Y, a.Z) == ChestPairs.TrappedChest ? "trapped chest" : "chest";
+            string at = b is { } o ? $"double {kind} {P((a.X, a.Y, a.Z))}-{P((o.X, o.Y, o.Z))}" : $"{kind} {P((a.X, a.Y, a.Z))}";
+            items.Add((dist((a.X, a.Y, a.Z)), at));
+        }
+        var l = items.OrderBy(i => i.D).Select(i => i.Text).ToList();
+        return l.Count == 1 ? l[0] : $"{l.Count} chests: " + string.Join(", ", l.Take(3)) + (l.Count > 3 ? $" +{l.Count - 3}" : "");
     }
 }

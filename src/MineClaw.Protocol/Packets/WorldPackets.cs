@@ -317,14 +317,18 @@ public sealed class SoundEffectPacket : IPacket
 /// <summary>
 /// 0x46 New / Invalid State (S→C). Fields: byte Reason, byte GameMode.
 /// Reason: 0 invalid bed ("tile.bed.notValid"), 1 begin raining, 2 end raining, 3 game mode changed (GameMode = new mode).
+/// The 1.12.2 Change Game State adds 7 (rain strength) and 8 (thunder strength), each fading 0..1 in <see cref="Value"/>
+/// (WorldServer.updateWeather sends them every tick they change); they never go on the b1.8.1 wire.
 /// </summary>
 public sealed class NewStatePacket : IPacket
 {
     public const byte PacketId = 0x46;
-    public const sbyte ReasonInvalidBed = 0, ReasonBeginRain = 1, ReasonEndRain = 2, ReasonGameModeChanged = 3;
+    public const sbyte ReasonInvalidBed = 0, ReasonBeginRain = 1, ReasonEndRain = 2, ReasonGameModeChanged = 3, ReasonRainLevel = 7, ReasonThunderLevel = 8;
     public byte Id => PacketId;
     public sbyte Reason { get; set; }
     public sbyte GameMode { get; set; }
+    /// <summary>The 1.12.2 float value of reasons 7/8 (rain / thunder strength 0..1); not part of the b1.8.1 packet.</summary>
+    public float Value { get; set; }
 
     public void Read(MinecraftReader r, PacketDirection d)
     {

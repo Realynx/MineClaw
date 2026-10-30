@@ -45,6 +45,8 @@ public interface ISupervisorWorld
     string? Version => null;
     /// <summary>The world time (ticks) in <paramref name="dim"/>, null = unknown: the viewer's day/night light follows it.</summary>
     long? WorldTime(int dim) => null;
+    /// <summary>Rain and thunder strengths (0..1) in <paramref name="dim"/>, null = unknown: the viewer's sky, light and rain follow them.</summary>
+    (float Rain, float Thunder)? WorldWeather(int dim) => null;
     IReadOnlyList<WorldBot> Bots();
     IReadOnlyList<WorldEntity> Entities(int? dim);
     WorldOverlays Overlays(int dim);
@@ -151,7 +153,9 @@ public sealed class SupervisorWorldRoutes
                         return await _cache.GetAsync(key, IndexCache, () => Work(() =>
                         {
                             var cols = _world.Index(dim, cx0, cz0, cx1, cz1, (cx1 - cx0 + 1) * (cz1 - cz0 + 1), light);
-                            return Json(200, new { dim, at = _time.GetUtcNow().ToUnixTimeMilliseconds(), columns = cols, version = _world.Version, time = _world.WorldTime(dim) });
+                            var wx = _world.WorldWeather(dim);
+                            return Json(200, new { dim, at = _time.GetUtcNow().ToUnixTimeMilliseconds(), columns = cols, version = _world.Version, time = _world.WorldTime(dim),
+                                rain = wx?.Rain, thunder = wx?.Thunder });
                         }, ct)).ConfigureAwait(false);
                     }
                 case "chunks":

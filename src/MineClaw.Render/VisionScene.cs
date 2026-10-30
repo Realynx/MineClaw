@@ -85,6 +85,8 @@ public sealed class VisionScene
     public IVoxelWorld? Light { get; init; }
     /// <summary>World time (ticks) for sky-light subtraction.</summary>
     public long Time { get; init; } = 6000;
+    /// <summary>Rain/thunder (darker sky and light; the iso view's wash).</summary>
+    public Weather Weather { get; init; }
     /// <summary>Darkest a face gets in the top/iso/side pictures (they are maps: keep them readable at night).</summary>
     public float MinBrightness { get; init; } = 0.35f;
     /// <summary>Iso volume: Cy−IsoDown .. Cy+IsoUp.</summary>
@@ -118,4 +120,12 @@ public sealed record VisionImage(byte[] Png, int Width, int Height, ulong Key, s
     internal uint[]? Pixels { get; init; }
     /// <summary>Hash of the blocks in view (no overlays): "nothing changed here" for auto-vision and the perception cache.</summary>
     public ulong BlocksHash { get; init; }
+    /// <summary>A panel drew with the x-ray cut (<see cref="ViewCut"/>); a sheet: any of its panels did.</summary>
+    public bool XRay { get; init; }
+    /// <summary>The weather the picture shows ("rain", "thunderstorm", "snow"), null = clear.</summary>
+    public string? Weather { get; init; }
 }
+
+/// <summary>The x-ray cut of the outside cameras: automatic when the subject is hidden (the AI's sheets, the Explorer's
+/// default), always on, or off (exact geometry).</summary>
+public enum XRay : byte { Auto, On, Off }

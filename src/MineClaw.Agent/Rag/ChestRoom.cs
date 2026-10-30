@@ -17,6 +17,29 @@ public static class ChestRoom
 
     public static int Capacity(Box b) => IsDouble(b) ? DoubleSlots : SingleSlots;
 
+    /// <summary>
+    /// One row per container: chest rows whose boxes share a block are the same chest (a taught or older row on one half of the
+    /// double the indexer keys on its west/north half), the double's own row kept. "all 3 known chests" counts a pair once.
+    /// </summary>
+    public static List<(ObservationRow Row, double Distance)> Distinct(IEnumerable<(ObservationRow Row, double Distance)> rows)
+    {
+        var list = new List<(ObservationRow Row, double Distance)>();
+        foreach (var t in rows)
+        {
+            // Chest-sized boxes only: a taught row boxing a whole storage room never swallows the chests in it.
+            if (t.Row.Bounds is not { } b || Cells(b) > 2) { list.Add(t); continue; }
+            int i = list.FindIndex(o => o.Row.Bounds is { } ob && Cells(ob) <= 2 && Touches(ob, b));
+            if (i < 0) list.Add(t);
+            else if (Cells(b) > Cells(list[i].Row.Bounds!.Value)) list[i] = t;
+        }
+        return list;
+    }
+
+    private static bool Touches(Box a, Box b) =>
+        a.MinX <= b.MaxX && b.MinX <= a.MaxX && a.MinY <= b.MaxY && b.MinY <= a.MaxY && a.MinZ <= b.MaxZ && b.MinZ <= a.MaxZ;
+
+    private static double Cells(Box b) => (b.MaxX - b.MinX + 1) * (b.MaxY - b.MinY + 1) * (b.MaxZ - b.MinZ + 1);
+
     private static int MaxStack(int id) => Items.Exists(id) ? Math.Max(1, Items.Get(id).MaxStack) : 64;
 
     /// <summary>
@@ -50,7 +73,7 @@ public static class ChestRoom
     public static IReadOnlyList<(ObservationRow Row, double Distance, bool RoomInMemory)> Ranked(ObservationStore obs, double x, double y, double z,
         IReadOnlyCollection<int>? storing = null, int limit = 32, double maxDistance = 96)
     {
-        var rows = obs.Nearest("chest", x, y, z, limit, maxDistance);
+        var rows = Distinct(obs.Nearest("chest", x, y, z, limit, maxDistance));
         var list = new List<(ObservationRow Row, double Distance, bool RoomInMemory)>();
         foreach (var (row, d) in rows)
         {

@@ -170,6 +170,71 @@ public class GpuFreecamTests
         Assert.True(perFrame < 256, $"{perFrame} bytes allocated per frame");
     }
 
+    // ------------------------------------------------------------------ weather and x-ray (live 10-29)
+
+    private static FrameScene Scene(HiveWorldCache cache, params BotDto[] bots)
+    {
+        var scene = new FrameScene(cache) { Textured = false, Flags = Overlay.Default };
+        scene.Bots = () => bots;
+        return scene;
+    }
+
+    private static BotDto Bot(double x, double y, double z) => new("maid_chan", "main", true, 0, x, y, z, 10, 0, null, 20, 20, null, null, null, [], true, 0);
+
+    [Fact]
+    public void Rain_streaks_fall_above_the_ground_around_the_camera_and_cost_no_allocations()
+    {
+        var (cache, _) = World();
+        cache.SetWeather(0, 1f, 0f);
+        Assert.Equal(new Weather(1, 0), cache.WeatherIn(0));
+        Assert.Equal(Weather.Clear, cache.WeatherIn(-1)); // another dimension: clear
+        var scene = Scene(cache);
+        scene.Weather = cache.WeatherIn(0);
+        var pose = new CamPose(8, 24, 8, 0, 30, 0);
+        scene.Prepare(pose, 640, 360, DateTimeOffset.UtcNow);
+        Assert.True(scene.Precipitation.Count >= 40, $"{scene.Precipitation.Count / 2} streaks");
+        Assert.Equal(0, scene.Precipitation.Count % 2);
+        for (int i = 0; i < scene.Precipitation.Count; i++)
+        {
+            var v = scene.Precipitation.V[i];
+            Assert.True(v.Y + pose.Y > 20.0, $"a streak under the stone floor at y {v.Y + pose.Y:0.0}");
+            Assert.InRange(Math.Abs(v.X), 0, 12);
+        }
+        // The sky greys with the weather; clear weather draws nothing.
+        Assert.NotEqual(EyeRenderer.SkyColours(0, false).Top, scene.Sky.Top);
+        scene.Weather = Weather.Clear;
+        scene.Prepare(pose, 640, 360, DateTimeOffset.UtcNow);
+        Assert.Equal(0, scene.Precipitation.Count);
+        // Per-frame cost while it rains stays allocation-free (the column tops are cached per camera cell).
+        scene.Weather = new Weather(1, 1);
+        for (int i = 0; i < 5; i++) scene.Prepare(pose, 640, 360, DateTimeOffset.UtcNow);
+        long a0 = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 50; i++) scene.Prepare(pose, 640, 360, DateTimeOffset.UtcNow);
+        Assert.True((GC.GetAllocatedBytesForCurrentThread() - a0) / 50 < 256);
+    }
+
+    [Fact]
+    public void The_freecam_x_ray_is_off_unless_toggled_and_cuts_only_toward_bodies_in_front()
+    {
+        var (cache, _) = World();
+        var scene = Scene(cache, Bot(8.5, 21, 18.5));
+        var looking = new CamPose(8.5, 30, 2, 0, 30, 0);  // yaw 0 = facing south, toward the bot
+        scene.Prepare(looking, 320, 240, DateTimeOffset.UtcNow);
+        Assert.Empty(scene.XRaySubjects); // exact by default
+        scene.XRay = true;
+        scene.Prepare(looking, 320, 240, DateTimeOffset.UtcNow);
+        var s = Assert.Single(scene.XRaySubjects);
+        Assert.Equal(new System.Numerics.Vector3(0, 21.9f - 30, 16.5f), s);
+        Assert.Equal(21 - 30, scene.XRayFloor, 3);
+        scene.Prepare(looking with { Yaw = 180 }, 320, 240, DateTimeOffset.UtcNow); // facing north: the bot is behind
+        Assert.Empty(scene.XRaySubjects);
+        // The CPU freecam's cut is the same cone.
+        var cut = FreecamXRay.Cut(looking, [Bot(8.5, 21, 18.5)])!;
+        Assert.True(cut.Hides(8, 26, 10));   // on the line from the camera to the bot
+        Assert.False(cut.Hides(8, 20, 18));  // the floor under the bot
+        Assert.Null(FreecamXRay.Cut(looking with { Yaw = 180 }, [Bot(8.5, 21, 18.5)]));
+    }
+
     // ------------------------------------------------------------------ the sync worker
 
     private sealed class FakeSupervisor(HiveWorldCache cache) : HttpMessageHandler

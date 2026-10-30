@@ -40,14 +40,16 @@ public sealed partial class WorldIndexer
         if (kind == null) return null;
         if (Ids1122.IsChest(id))
         {
-            foreach (var o in Six)
-            {
-                if (o.Y != 0) continue;
-                var q = p + o;
-                if (_world.GetBlock(q) != id) continue; // a trapped chest pairs only with a trapped one
-                var min = Less(p, q) ? p : q;
-                return (kind, min, [p, q]);
-            }
+            // One 54-slot chest, keyed on its west/north half whichever block is asked (ChestPairs: same kind only, a trapped
+            // chest with a trapped one; never stacked or diagonal; a third chest touching a pair pairs with nothing). Was: the
+            // first same-id side won, so with three in a row the middle block re-keyed the pair and orphaned the end chest.
+            if (ChestPairs.Partner(_world, p) is { } q)
+                return ChestPairs.IsFirst(p, q) ? (kind, p, [p, q]) : (kind, q, [q, p]);
+            // The other half's column is away (it reads as air): a pair memory knows stays one chest until that column is back,
+            // instead of splitting into a single holding all 54 slots' memory (a re-scan beside an unloaded column).
+            if (_stationCells.GetValueOrDefault(p) is { Kind: IndexKinds.Chest, Cells.Count: 2 } known
+                && known.Cells.First(c => c != p) is var other && !_world.IsLoaded(other.X, other.Z))
+                return ChestPairs.IsFirst(p, other) ? (kind, p, [p, other]) : (kind, other, [other, p]);
             return (kind, p, [p]);
         }
         if (id == Blocks.Bed)
@@ -76,12 +78,15 @@ public sealed partial class WorldIndexer
         }
         var key = ObservationStore.KeyFor(s.KeyPos.X, s.KeyPos.Y, s.KeyPos.Z);
         var e = GetOrCreate(s.Kind, key, out bool created);
+        if (s.Kind == IndexKinds.Chest && s.Cells.Length == 2 && e.Cells.Count == 1 && e.Contents is { } own && s.Cells.Contains(e.Cells.First()))
+            (e.HalfContents ??= new())[e.Cells.First()] = own.ToList(); // a single gaining a half: what it held is its half
         foreach (var c in s.Cells)
         {
             if (_stationCells.TryGetValue(c, out var other) && other != e)
             {
                 // Re-keyed (a second chest placed beside, bed rebuilt): carry over what we knew.
-                e.Contents ??= other.Contents;
+                if (s.Kind == IndexKinds.Chest && other.Kind == IndexKinds.Chest) JoinHalf(e, c, other);
+                else e.Contents ??= other.Contents;
                 e.Label ??= other.Label;
                 e.LabelSign ??= other.LabelSign;
                 RemoveEntry(other);
@@ -118,9 +123,49 @@ public sealed partial class WorldIndexer
         RemoveEntry(e);
         if (e.LabelSign is { } sp) _dirtySigns.Add(sp);
         foreach (var c in rest)
-            if (EvaluateStation(c) is { } ne && e.Contents != null && ne.Contents == null && ne.Kind == e.Kind)
-                ne.Label ??= e.Label;
+        {
+            if (EvaluateStation(c) is not { } ne || ne.Kind != e.Kind) continue;
+            if (e.Contents != null && ne.Contents == null) ne.Label ??= e.Label;
+            // A double chest lost a half: the survivor is a 27-slot chest with its own half's items (the broken half's spilled
+            // on the ground). Its half unknown (no 54-slot look this session): contents unknown, never the pair's 54 slots' worth.
+            if (ne.Contents == null && e.HalfContents?.GetValueOrDefault(c) is { } half)
+            {
+                ne.Contents = half.ToList();
+                ne.ContentsAt = e.ContentsAt;
+                ne.ContentsBy = e.ContentsBy;
+                ne.ContentsDirty = true;
+            }
+        }
     }
+
+    /// <summary>
+    /// Chest <paramref name="other"/> became the <paramref name="cell"/> half of <paramref name="e"/>'s pair (a chest placed beside a
+    /// remembered one): its memory, this session's look else the shared db's (any hive bot's last open; the re-keyed row is
+    /// tombstoned), is that half's, and the pair holds both halves' items. Was: only this session's look carried over, so a
+    /// chest another body had filled read as unknown once a second chest went down west/north of it.
+    /// </summary>
+    private void JoinHalf(IndexEntry e, BlockPos cell, IndexEntry other)
+    {
+        var mem = other.Contents is { } oc ? new ContainerMemory(oc, other.ContentsAt, other.ContentsBy) : Remembered(other);
+        if (mem is null) return;
+        if (other.Cells.Count != 1) { e.Contents ??= mem.Items.ToList(); return; }
+        var halves = e.HalfContents ??= new();
+        halves[cell] = mem.Items.ToList();
+        e.Contents = Sum(halves.Values.SelectMany(h => h));
+        e.ContentsAt = e.ContentsAt is { } a && mem.At is { } b ? (a < b ? a : b) : e.ContentsAt ?? mem.At; // the older look
+        e.ContentsBy ??= mem.By;
+    }
+
+    private ContainerMemory? Remembered(IndexEntry e)
+    {
+        try { return _sink.PreviousContents(e.Kind, e.Key, _dim) is { Items.Count: > 0 } m ? m : null; }
+        catch (Exception ex) { _log.LogDebug(ex, "previous contents of {Key} unavailable", e.Key); return null; }
+    }
+
+    private static List<ItemCount> Sum(IEnumerable<ItemCount> items) => items
+        .GroupBy(c => (c.ItemId, c.Damage))
+        .Select(g => new ItemCount(g.Key.ItemId, g.First().Name, g.Sum(c => c.Count), g.Key.Damage))
+        .OrderByDescending(c => c.Count).ToList();
 
     // ------------------------------------------------------------------ signs
 
@@ -284,7 +329,13 @@ public sealed partial class WorldIndexer
             _ => [],
         };
         if (ev.FeedPos is { } fp && want.Contains(_world.GetBlock(fp))) return fp;
-        if (Raycast.Cast(_world, ev.Eye, ev.Yaw, ev.Pitch, 6) is { } hit && want.Contains(hit.BlockId)) return hit.Pos;
+        if (Raycast.Cast(_world, ev.Eye, ev.Yaw, ev.Pitch, 6) is { } hit)
+        {
+            if (want.Contains(hit.BlockId)) return hit.Pos;
+            // Looking at another chest-like container (an ender chest's own 27 slots, a shulker box, a hopper): its window is
+            // never the nearest chest's contents (was: written over the chest beside it).
+            if (hit.BlockId is Ids1122.EnderChest or Ids1122.Hopper or Ids1122.Dropper || Ids1122.IsShulkerBox(hit.BlockId)) return null;
+        }
         var near = _world.FindBlocks(ev.Eye, 6, (id, _) => want.Contains(id), 1);
         return near.Count > 0 ? near[0].Pos : null;
     }
@@ -314,12 +365,24 @@ public sealed partial class WorldIndexer
         catch (Exception ex) { _log.LogDebug(ex, "ContentsVanished handler failed"); }
     }
 
+    private static List<ItemCount> Group(IEnumerable<MineClaw.Data.ItemStack> slots) => slots.Where(s => !s.IsEmpty)
+        .GroupBy(s => (s.Id, Items.Get(s.Id).MaxDamage > 0 ? 0 : (int)s.Damage))
+        .Select(g => new ItemCount(g.Key.Id, ItemName(g.Key.Id), g.Sum(s => s.Count), g.Key.Item2))
+        .OrderByDescending(c => c.Count).ToList();
+
     private void ApplySnapshot(IndexEntry e, WindowType type, MineClaw.Data.ItemStack[] slots, bool burning, bool force, bool first, DateTimeOffset now)
     {
-        var list = slots.Where(s => !s.IsEmpty)
-            .GroupBy(s => (s.Id, Items.Get(s.Id).MaxDamage > 0 ? 0 : (int)s.Damage))
-            .Select(g => new ItemCount(g.Key.Id, ItemName(g.Key.Id), g.Sum(s => s.Count), g.Key.Item2))
-            .OrderByDescending(c => c.Count).ToList();
+        var list = Group(slots);
+        // Either half's click opens the same 54 slots (slots 0-26 = the key cell, the west/north half): one row holds them all,
+        // and each half's share is kept for the day one half is broken.
+        e.HalfContents = e.Kind == IndexKinds.Chest && e.Cells.Count == 2 && slots.Length >= ChestPairs.DoubleSlots
+            ? new Dictionary<BlockPos, List<ItemCount>>
+            {
+                [e.Anchor] = Group(slots.Take(ChestPairs.HalfSlots)),
+                [e.Cells.First(c => c != e.Anchor)] = Group(slots.Skip(ChestPairs.HalfSlots).Take(ChestPairs.HalfSlots)),
+            }
+            : null;
+        e.ContentsBy = null;
         if (type == WindowType.Furnace)
         {
             ItemCount? At(int i) => i < slots.Length && !slots[i].IsEmpty ? new ItemCount(slots[i].Id, ItemName(slots[i].Id), slots[i].Count, slots[i].Damage) : null;
@@ -364,18 +427,51 @@ public sealed partial class WorldIndexer
             if (r.Bounds is not { } b) continue;
             int ax = (int)Math.Floor(b.MinX), az = (int)Math.Floor(b.MinZ);
             if (ax >> 4 != cx || az >> 4 != cz) continue;
-            if (IndexKinds.PointKinds.Contains(r.Kind) && b.IsPoint)
+            // Chest rows of either size (a double's box spans two blocks; its key is the west/north half = the box's min).
+            if (IndexKinds.PointKinds.Contains(r.Kind) && (b.IsPoint || r.Kind == IndexKinds.Chest))
             {
-                if (Find(r.Kind, r.Key) != null) continue;
                 var p = new BlockPos(ax, (int)Math.Floor(b.MinY), az);
+                if (Find(r.Kind, r.Key) is { } live)
+                {
+                    if (r.Kind == IndexKinds.Chest) ReconcileChestSize(r, b, live);
+                    continue;
+                }
+                // A row on the non-key half of a pair is a phantom second chest (a chest went down west/north of a remembered
+                // single while the bot was away): gone, its memory carried into the pair. Was: kept, and the double counted twice.
                 bool present = r.Kind == IndexKinds.Sign
                     ? _world.GetBlock(p) is Blocks.SignPost or Blocks.WallSign
-                    : StationAt(p) is { } s && s.Kind == r.Kind;
-                if (!present) _removals.Add((r.Kind, r.Key));
+                    : StationAt(p) is { } s && s.Kind == r.Kind && (r.Kind != IndexKinds.Chest || s.KeyPos == p);
+                if (present) continue;
+                if (r.Kind == IndexKinds.Chest && _stationCells.GetValueOrDefault(p) is { Kind: IndexKinds.Chest, Contents: null } pair
+                    && Remembered(pair) is null && _sink.PreviousContents(r.Kind, r.Key, _dim) is { Items.Count: > 0 } half)
+                {
+                    pair.Contents = half.Items.ToList();
+                    pair.ContentsAt = half.At;
+                    pair.ContentsBy = half.By;
+                    if (pair.Cells.Count == 2) (pair.HalfContents ??= new())[p] = pair.Contents.ToList();
+                    pair.ContentsDirty = pair.Dirty = true;
+                }
+                _removals.Add((r.Kind, r.Key));
             }
             else if (IndexKinds.ClusterKinds.Contains(r.Kind) && r.Source == ObservationSource.Auto)
                 _pendingClusterRows.Add(r);
         }
+    }
+
+    /// <summary>
+    /// A remembered double chest found single on rejoin (one half broken while the bot was away): its row's contents were both
+    /// halves', so they go (tombstone + rewrite: contents unknown) instead of a 27-slot chest claiming 54 slots' items. Only once
+    /// both blocks' columns are loaded (an unloaded half reads as air). A single that gained a half keeps its memory: the
+    /// new half went down empty.
+    /// </summary>
+    private void ReconcileChestSize(ObservationRow r, Box b, IndexEntry live)
+    {
+        if (b.IsPoint || live.Cells.Count != 1 || live.Contents != null) return;
+        var far = new BlockPos((int)Math.Floor(b.MaxX), (int)Math.Floor(b.MaxY), (int)Math.Floor(b.MaxZ));
+        if (!_world.IsLoaded(far.X, far.Z) || live.Cells.Contains(far)) return;
+        _removals.Add((r.Kind, r.Key));
+        live.WrittenText = null; // re-upserted after the tombstone, in this pass's write
+        live.Dirty = true;
     }
 
     /// <summary>Persisted auto cluster rows nobody re-claimed once their whole box has been scanned → tombstone.</summary>

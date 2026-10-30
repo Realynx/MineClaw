@@ -34,6 +34,17 @@ public sealed class EyeScene
     public int? MaxDistance { get; init; }
     /// <summary>Cells not drawn (roofs cut away over the work layer in the orbit panels).</summary>
     public CutAway? Cut { get; init; }
+    /// <summary>The x-ray cut of a camera outside its subject (<see cref="ViewCut"/>: the cells between the camera and a body in
+    /// a tunnel, cave or under a roof); faces it exposes are hatched. Null = exact (the freecam, the eye).</summary>
+    public ViewCut? XRay { get; init; }
+    /// <summary>Rain/thunder strengths: a darker, greyer sky and fog, less sky light, and precipitation (<see cref="MineClaw.Render.Weather"/>).</summary>
+    public Weather Weather { get; init; }
+    /// <summary>How precipitation shows: Auto = streaks/flakes in perspective views, a tint in orthographic ones.</summary>
+    public PrecipStyle Precip { get; init; }
+    /// <summary>Precipitation density scale (1 = the freecam's; sheets draw sparser streaks so they never hide a block).</summary>
+    public float PrecipDensity { get; init; } = 1f;
+    /// <summary>Animation phase of the falling streaks (ticks; the freecam advances it, still pictures leave it).</summary>
+    public long PrecipTick { get; init; }
     /// <summary>Darkest a lit face gets (null = the renderer's <see cref="EyeRenderer.MinBrightness"/>; maps use a higher floor).</summary>
     public float? MinBrightness { get; init; }
     /// <summary>Orthographic projection: half the view height in blocks (0 = perspective). TOP/SIDE/LAYERS maps use it.</summary>
@@ -74,6 +85,123 @@ public sealed class CutAway(int x0, int y0, int z0, int sx, int sy, int sz)
     {
         int ix = x - x0, iy = y - y0, iz = z - z0;
         return (uint)ix < (uint)sx && (uint)iy < (uint)sy && (uint)iz < (uint)sz && _mask[(iy * sz + iz) * sx + ix];
+    }
+}
+
+/// <summary>
+/// The x-ray cut for a camera outside its subject (live 10-29, Fox: "when the bot's in the tunnel… there's no x-ray on the blocks
+/// in front of the camera for things like orbit and ISO, so you just see blocks in your face"). One cone per subject, its apex at
+/// the camera and its base a disk of <see cref="Radius"/> blocks around the subject point, perpendicular to the view line: every
+/// cell whose centre lies inside a cone (with the cell's half-diagonal of slack) and in front of the subject's plane is not
+/// drawn, so the picture keeps everything around the hole and the subject shows at the bottom of a clean window, tunnel floor
+/// and far walls included. Never cut: anything below <see cref="FloorY"/> (the floor the subject stands on), anything behind
+/// the subject. Why a camera cone and not a section cut (everything above head height within a radius) or a fixed cylinder:
+/// a section cut never opens a line of sight through rock outside its radius (a bot 20 blocks underground stays hidden by the
+/// hillside the 40° ray crosses first), and a cylinder blows a hole as wide as itself next to the camera, wiping the whole
+/// foreground; the cone removes exactly the cells that hide the window and nothing else, at any depth. Analytic (no mask box),
+/// so it reaches the camera however far away it is. Faces the cut exposes are hatched by the renderer (cool tint + diagonal
+/// stripes), so a cut edge never reads as a real wall.
+/// </summary>
+public sealed class ViewCut
+{
+    private readonly (double Px, double Py, double Pz, double Ux, double Uy, double Uz, double D)[] _cones;
+    private readonly double _cx, _cy, _cz;
+
+    /// <summary>Window radius at the subject (blocks).</summary>
+    public double Radius { get; }
+    /// <summary>Lowest y the cut may remove (the subject's feet layer; the floor below always stays).</summary>
+    public int FloorY { get; }
+    public int Subjects => _cones.Length;
+
+    public ViewCut(double camX, double camY, double camZ, IEnumerable<(double X, double Y, double Z)> subjects, double radius, int floorY)
+    {
+        (_cx, _cy, _cz) = (camX, camY, camZ);
+        Radius = radius;
+        FloorY = floorY;
+        var list = new List<(double, double, double, double, double, double, double)>();
+        foreach (var (x, y, z) in subjects)
+        {
+            double ax = x - camX, ay = y - camY, az = z - camZ, d = Math.Sqrt(ax * ax + ay * ay + az * az);
+            if (d < 1.5) continue;
+            list.Add((x, y, z, ax / d, ay / d, az / d, d));
+        }
+        _cones = list.ToArray();
+    }
+
+    /// <summary>The cell (x, y, z) is cut away.</summary>
+    public bool Hides(int x, int y, int z)
+    {
+        if (y < FloorY) return false;
+        double qx = x + 0.5 - _cx, qy = y + 0.5 - _cy, qz = z + 0.5 - _cz;
+        double q2 = qx * qx + qy * qy + qz * qz;
+        foreach (var c in _cones)
+        {
+            double t = qx * c.Ux + qy * c.Uy + qz * c.Uz;
+            if (t <= 0 || t >= c.D) continue;
+            double r = Radius * t / c.D + 0.87, perp2 = q2 - t * t;
+            if (perp2 <= r * r) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Does the world hide the point (x, y, z) from the camera? Walks the segment (DDA) toward the camera and stops at the first
+    /// opaque cube or leaf block that is not already cut (<paramref name="mask"/>, the roof cut). The start cell never counts.
+    /// </summary>
+    public static bool Blocked(IVoxelWorld w, double x, double y, double z, double camX, double camY, double camZ, CutAway? mask = null)
+    {
+        double dx = camX - x, dy = camY - y, dz = camZ - z, len = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        if (len < 1e-6) return false;
+        dx /= len; dy /= len; dz /= len;
+        int vx = (int)Math.Floor(x), vy = (int)Math.Floor(y), vz = (int)Math.Floor(z);
+        int sx = dx > 0 ? 1 : -1, sy = dy > 0 ? 1 : -1, sz = dz > 0 ? 1 : -1;
+        double tdx = dx == 0 ? double.MaxValue : Math.Abs(1 / dx), tdy = dy == 0 ? double.MaxValue : Math.Abs(1 / dy), tdz = dz == 0 ? double.MaxValue : Math.Abs(1 / dz);
+        double tmx = dx == 0 ? double.MaxValue : (dx > 0 ? vx + 1 - x : x - vx) * tdx;
+        double tmy = dy == 0 ? double.MaxValue : (dy > 0 ? vy + 1 - y : y - vy) * tdy;
+        double tmz = dz == 0 ? double.MaxValue : (dz > 0 ? vz + 1 - z : z - vz) * tdz;
+        int h = w.WorldHeight;
+        for (int i = 0; i < 512; i++)
+        {
+            double t;
+            if (tmx < tmy && tmx < tmz) { t = tmx; vx += sx; tmx += tdx; }
+            else if (tmy < tmz) { t = tmy; vy += sy; tmy += tdy; }
+            else { t = tmz; vz += sz; tmz += tdz; }
+            if (t >= len - 0.3) return false;
+            if ((uint)vy >= (uint)h) { if (vy >= h && dy > 0) return false; continue; }
+            int id = w.Block(vx, vy, vz);
+            if (id == 0 || !(BlockGeometry.OpaqueCube(id) || id is Blocks.Leaves or 161)) continue;
+            if (mask != null && mask.Hidden(vx, vy, vz)) continue;
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// The cut a camera needs for its subjects, or null when nothing hides them (an open island: the picture stays exactly as
+    /// it was). A body counts as hidden when two of its feet / waist / head points are; a focus block when its top centre is.
+    /// <paramref name="force"/> = cut even when nothing is hidden yet (the Explorer's "x-ray on").
+    /// </summary>
+    public static ViewCut? For(IVoxelWorld w, double camX, double camY, double camZ, (double X, double Y, double Z)? body,
+        (int X, int Y, int Z)? focus, double radius, int floorY, CutAway? mask = null, bool force = false)
+    {
+        var subjects = new List<(double, double, double)>();
+        bool hidden = false;
+        if (body is { } b)
+        {
+            int n = 0;
+            foreach (double h in new[] { 0.3, 1.0, 1.55 })
+                if (Blocked(w, b.X, b.Y + h, b.Z, camX, camY, camZ, mask)) n++;
+            hidden |= n >= 2;
+            subjects.Add((b.X, b.Y + 0.9, b.Z));
+        }
+        if (focus is { } f && (body is not { } bb || Math.Abs(bb.X - (f.X + 0.5)) + Math.Abs(bb.Z - (f.Z + 0.5)) + Math.Abs(bb.Y - f.Y) > 1.5))
+        {
+            hidden |= Blocked(w, f.X + 0.5, f.Y + 1.02, f.Z + 0.5, camX, camY, camZ, mask);
+            subjects.Add((f.X + 0.5, f.Y + 1.0, f.Z + 0.5));
+        }
+        if (!hidden && !force) return null;
+        var cut = new ViewCut(camX, camY, camZ, subjects, radius, floorY);
+        return cut.Subjects == 0 ? null : cut;
     }
 }
 
@@ -263,10 +391,11 @@ public sealed class EyeRenderer
         int maxDist = MaxDist(s);
         if (s.World is WorldVoxels wv) wv.Prepare((int)Math.Floor(s.EyeX), (int)Math.Floor(s.EyeZ), maxDist / 16 + 1);
         var cam = Camera(s);
-        int sub = s.Nether ? 0 : Lighting.SkylightSubtracted(s.Time);
+        var wx = s.Nether ? Weather.Clear : s.Weather;
+        int sub = s.Nether ? 0 : Lighting.SkylightSubtracted(s.Time, wx.Rain, wx.Thunder);
         var ents = PrepareEntities(s, sub);
         var shadows = Shadows(s, ents);
-        var ctx = new Ctx(s, sub, ents, shadows, maxDist, MinB(s));
+        var ctx = new Ctx(s, sub, ents, shadows, maxDist, MinB(s)) { Sky = SkyColours(sub, s.Nether, wx) };
         void Row(int b)
         {
             var cache = _caches[b];
@@ -294,11 +423,98 @@ public sealed class EyeRenderer
         }
         if (bands == 1) Row(0);
         else Parallel.For(0, bands, Row);
+        if (wx.Wet && s.Precip != PrecipStyle.None) Precipitation(s, ctx, cam);
         LastMs = sw.Elapsed.TotalMilliseconds;
         return new Frame(_px, _depth, W, H, _cells);
     }
 
-    private sealed record Ctx(EyeScene S, int Sub, EMesh[] Ents, Shadow[] Shadows, int MaxDist, float MinB);
+    private sealed record Ctx(EyeScene S, int Sub, EMesh[] Ents, Shadow[] Shadows, int MaxDist, float MinB)
+    {
+        /// <summary>The frame's sky colours (time of day and weather).</summary>
+        public (uint Top, uint Horizon, uint Void) Sky { get; init; }
+    }
+
+    // ------------------------------------------------------------------ weather
+
+    /// <summary>
+    /// Precipitation over the finished frame (EntityRenderer.renderRainSnow, simplified for still pictures): perspective views
+    /// get streaks (rain: thin slanted lines, snow: soft flakes) at random points of the view volume that see the sky (sky
+    /// light 15, or no block above in a column without light), depth-tested against the frame, so a roof or a tunnel keeps them
+    /// out; orthographic views (TOP, layers) and <see cref="PrecipStyle.Tint"/> get a light wash of the weather's fog colour
+    /// instead. Deterministic per (camera cell, <see cref="EyeScene.PrecipTick"/>): the same still picture twice is identical.
+    /// </summary>
+    private void Precipitation(EyeScene s, Ctx ctx, Cam cam)
+    {
+        int W = Width, H = Height;
+        var wx = s.Weather;
+        var style = s.Precip == PrecipStyle.Auto ? (cam.Ortho ? PrecipStyle.Tint : PrecipStyle.Streaks) : s.Precip;
+        if (style == PrecipStyle.Tint)
+        {
+            uint fog = ctx.Sky.Horizon;
+            float a = 0.06f + 0.10f * wx.R + 0.06f * wx.T;
+            for (int i = 0; i < W * H; i++) _px[i] = IsoPalette.Mix(_px[i], fog, a);
+            return;
+        }
+        var w = s.World;
+        int h = w.WorldHeight;
+        int n = (int)(W * H / 300.0 * wx.R * Math.Clamp(s.PrecipDensity, 0f, 4f));
+        uint seed = (uint)HashCode.Combine((int)Math.Floor(s.EyeX), (int)Math.Floor(s.EyeY), (int)Math.Floor(s.EyeZ), s.PrecipTick / 2);
+        uint Next() { seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5; return seed; }
+        double R01() => (Next() & 0xffffff) / (double)0x1000000;
+        bool Open(int bx, int by, int bz)
+        {
+            if (by >= h) return true;
+            if (by < 0) return false;
+            int sky = w.SkyLight(bx, by, bz);
+            if (sky >= 15) return w.Block(bx, by, bz) == 0 || !BlockGeometry.OpaqueCube(w.Block(bx, by, bz));
+            if (sky >= 0) return false;
+            for (int y = by; y < Math.Min(h, by + 48); y++) if (w.Block(bx, y, bz) != 0) return false;
+            return true;
+        }
+        double fall = s.PrecipTick % 20 / 20.0;
+        for (int i = 0; i < n; i++)
+        {
+            int px = (int)(R01() * W), py = (int)(R01() * H);
+            double far = Math.Min(_depth[py * W + px], 36.0);
+            if (far < 1.5) continue;
+            double d = 1.2 + R01() * (far - 1.2);
+            var (x, y, z) = Unproject(s, px + 0.5, py + 0.5, d);
+            if (cam.Ortho) continue;
+            int bx = (int)Math.Floor(x), by = (int)Math.Floor(y), bz = (int)Math.Floor(z);
+            if (!Open(bx, by, bz)) continue;
+            int biome = w.Biome(bx, bz);
+            var kind = Weather.At(biome, y);
+            if (kind == MineClaw.Render.Precip.None) continue;
+            if (kind == MineClaw.Render.Precip.Snow)
+            {
+                if (ProjectF(s, x, y - fall * 0.4, z) is not { } p) continue;
+                int fx = (int)p.X, fy = (int)p.Y;
+                float k = (float)Math.Clamp(1.0 - p.Dist / 40.0, 0.25, 0.9);
+                for (int oy = 0; oy < 2; oy++)
+                    for (int ox = 0; ox < 2; ox++)
+                    {
+                        int qx = fx + ox, qy = fy + oy;
+                        if ((uint)qx >= (uint)W || (uint)qy >= (uint)H || _depth[qy * W + qx] < p.Dist) continue;
+                        _px[qy * W + qx] = IsoPalette.Mix(_px[qy * W + qx], 0xf4f8ff, k * (ox + oy == 2 ? 0.5f : 1f));
+                    }
+                continue;
+            }
+            // Rain: a streak ~0.9 blocks long, slanting a little, fainter with distance.
+            double y0 = y + (0.45 - fall) * 0.9;
+            if (ProjectF(s, x, y0, z) is not { } a || ProjectF(s, x + 0.08, y0 - 0.9, z + 0.05) is not { } b) continue;
+            float alpha = (float)Math.Clamp(0.55 - a.Dist / 70.0, 0.18, 0.5) * (0.7f + 0.3f * wx.R);
+            int steps = (int)Math.Clamp(Math.Max(Math.Abs(b.X - a.X), Math.Abs(b.Y - a.Y)), 1, 40);
+            for (int k = 0; k <= steps; k++)
+            {
+                double f = k / (double)steps;
+                int qx = (int)(a.X + (b.X - a.X) * f), qy = (int)(a.Y + (b.Y - a.Y) * f);
+                if ((uint)qx >= (uint)W || (uint)qy >= (uint)H) continue;
+                double dist = a.Dist + (b.Dist - a.Dist) * f;
+                if (_depth[qy * W + qx] < dist) continue;
+                _px[qy * W + qx] = IsoPalette.Mix(_px[qy * W + qx], 0xb4c4e0, alpha);
+            }
+        }
+    }
 
     /// <summary>Front-to-back compositing of blended layers (water, ice, portal, slime) over what's behind them.</summary>
     private struct Blend
@@ -359,12 +575,17 @@ public sealed class EyeRenderer
         int maxDist = ctx.MaxDist;
         int maxSteps = maxDist * 3 + 3, height = w.WorldHeight;
         Span<(float T, int Q)> hits = stackalloc (float, int)[24];
+        var xray = s.XRay;
+        bool cutBefore = false; // the previous cell was solid and x-rayed away: the face it exposes is a cut face
         for (int step = 0; step < maxSteps && t0 <= maxDist; step++)
         {
             if (eT <= t0) return (Finish(ctx, blend, eC, eT, dy), (float)eT, NoCell);
             if (vy < 0 && dy < 0 || vy >= height && dy > 0) break;
             int id = (uint)vy < height ? w.Block(vx, vy, vz) : 0;
             double tExit = Math.Min(tmx, Math.Min(tmy, tmz));
+            bool cutEdge = cutBefore;
+            cutBefore = false;
+            if (id != 0 && xray != null && step > 0 && xray.Hides(vx, vy, vz)) { cutBefore = BlockGeometry.OpaqueCube(id) || id is Blocks.Leaves or 161; id = 0; }
             if (id != 0 && step > 0 && !(s.Cut is { } cut && cut.Hidden(vx, vy, vz)) && !(s.Clip is { } clip && !clip.Contains(vx, vy, vz)))
             {
                 var models = s.Atlas?.Models;
@@ -394,6 +615,7 @@ public sealed class EyeRenderer
                             float k = models != null && models.Emissive(id) ? 1f : CubeLight(s, w, id, vx, vy, vz, face, u, v, ctx.Sub, cache, ctx.MinB);
                             uint c = Lighting.Scale(texel, k);
                             if (face == Face.Up) c = ShadowAt(ctx, c, hx, hy, hz);
+                            if (cutEdge) c = Hatch(c, hx, hy, hz);
                             if (shape == BlockShape.TranslucentCube) blend.Add(c, a);
                             else if (eT > t0) return (Finish(ctx, blend, Fog(ctx, c, t0), t0, dy), (float)t0, CellKey(vx, vy, vz));
                         }
@@ -426,6 +648,7 @@ public sealed class EyeRenderer
                             uint c = Lighting.Scale(tex, k);
                             double hx = ox + dx * t, hy = oy + dy * t, hz = oz + dz * t;
                             if (q.Normal.Y > 0.7f) c = ShadowAt(ctx, c, hx, hy, hz);
+                            if (cutEdge) c = Hatch(c, hx, hy, hz);
                             if (q.Pass == RenderPass.Translucent) { blend.Add(Fog(ctx, c, t), Math.Clamp(a, 0.3f, 0.95f)); if (blend.T < 0.04f) return (blend.Over(0), t, CellKey(vx, vy, vz)); continue; }
                             return (Finish(ctx, blend, Fog(ctx, c, t), t, dy), t, CellKey(vx, vy, vz));
                         }
@@ -440,10 +663,22 @@ public sealed class EyeRenderer
             else { vz += stepZ; tmz += tdz; lastAxis = 2; }
         }
         if (eT < double.MaxValue) return (Finish(ctx, blend, eC, eT, dy), (float)eT, NoCell);
-        return (blend.Over(Sky(s, dy, ctx.Sub)), float.PositiveInfinity, NoCell);
+        return (blend.Over(Sky(ctx, dy)), float.PositiveInfinity, NoCell);
     }
 
     private static uint Finish(Ctx ctx, Blend b, uint c, double depth, double dy) => b.Over(c);
+
+    /// <summary>Colour of the x-ray cut's section faces (a cool slate tint; the stripes are darker).</summary>
+    public const uint CutTint = 0x7f8fb8;
+
+    /// <summary>A face exposed by the x-ray cut: tinted toward <see cref="CutTint"/> with diagonal world-space stripes (an
+    /// architect's section hatch), so the cut edge reads as "removed here", never as a wall that is really there.</summary>
+    private static uint Hatch(uint c, double x, double y, double z)
+    {
+        double f = (x + y + z) * 2.5;
+        bool stripe = f - Math.Floor(f) < 0.18;
+        return stripe ? IsoPalette.Mix(c, 0x262c3c, 0.4f) : IsoPalette.Mix(c, CutTint, 0.22f);
+    }
 
     private static GeoQuad[] Shape(IBlockModels? models, IVoxelWorld w, int x, int y, int z, BandCache cache)
     {
@@ -551,20 +786,27 @@ public sealed class EyeRenderer
         return Math.Max(minB, lvlK * q.Shade);
     }
 
-    private static uint SkyTop(EyeScene s, int sub) => SkyColours(sub, s.Nether).Top;
-    private static uint SkyHorizon(EyeScene s, int sub) => SkyColours(sub, s.Nether).Horizon;
-
     /// <summary>The sky's zenith, horizon (also the fog) and void colours at a sky-light subtraction (World.k; 0 noon, 11
     /// midnight): every renderer's day/night sky (the GPU freecam's too).</summary>
     public static (uint Top, uint Horizon, uint Void) SkyColours(int sub, bool nether) => nether
         ? (0x3a0e0au, 0x5a1a10u, 0x120404u)
         : (IsoPalette.Scale(0x78a7ff, 1f - sub / 13f), IsoPalette.Scale(0xc3d9ff, 1f - sub / 12.5f), 0x05070cu);
 
-    private static uint Sky(EyeScene s, double dy, int sub)
+    /// <summary><see cref="SkyColours(int, bool)"/> under weather (pass the weather's <see cref="Lighting.SkylightSubtracted(long, float, float)"/>):
+    /// the zenith greyed like getSkyColorBody, the horizon/fog like updateFogColor. Clear weather = the plain colours.</summary>
+    public static (uint Top, uint Horizon, uint Void) SkyColours(int sub, bool nether, Weather weather)
     {
-        if (dy >= 0) return IsoPalette.Mix(SkyHorizon(s, sub), SkyTop(s, sub), (float)Math.Min(1, dy * 1.6));
+        var c = SkyColours(sub, nether);
+        if (nether || !weather.Wet) return c;
+        return (weather.Sky(c.Top), weather.Fog(weather.Sky(c.Horizon)), c.Void);
+    }
+
+    private static uint Sky(Ctx ctx, double dy)
+    {
+        var (top, horizon, _) = ctx.Sky;
+        if (dy >= 0) return IsoPalette.Mix(horizon, top, (float)Math.Min(1, dy * 1.6));
         // Below the horizon: the void, darkening downward.
-        return IsoPalette.Mix(IsoPalette.Scale(SkyHorizon(s, sub), 0.55f), s.Nether ? 0x120404u : 0x05070cu, (float)Math.Min(1, -dy * 2.2));
+        return IsoPalette.Mix(IsoPalette.Scale(horizon, 0.55f), ctx.S.Nether ? 0x120404u : 0x05070cu, (float)Math.Min(1, -dy * 2.2));
     }
 
     /// <summary>Linear distance fog toward the horizon colour (from 60 % of the view distance to 85 % opacity at the end).</summary>
@@ -573,7 +815,7 @@ public sealed class EyeRenderer
         double start = ctx.MaxDist * 0.6;
         if (dist <= start) return c;
         float a = (float)Math.Min(0.85, (dist - start) / (ctx.MaxDist - start));
-        return IsoPalette.Mix(c, SkyHorizon(ctx.S, ctx.Sub), a);
+        return IsoPalette.Mix(c, ctx.Sky.Horizon, a);
     }
 
     /// <summary>Slab-method ray/AABB intersection; t = entry distance (0 when inside), axis = entry axis (0 x, 1 y, 2 z).</summary>

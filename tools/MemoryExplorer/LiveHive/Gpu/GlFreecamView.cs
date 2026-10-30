@@ -251,8 +251,10 @@ public sealed class GlFreecamView : OpenGlControlBase, Avalonia.Rendering.ICusto
                 m.Store.RequestResend();
             }
             long? time = m.Cache.TimeNow(pose.Dim);
-            int sub = pose.Dim == -1 || time is not { } t ? 0 : Lighting.SkylightSubtracted(t);
+            var wx = m.Cache.WeatherIn(pose.Dim);
+            int sub = pose.Dim == -1 || time is not { } t ? 0 : Lighting.SkylightSubtracted(t, wx.Rain, wx.Thunder);
             m.Scene.SkySubtracted = sub;
+            m.Scene.Weather = wx;
             m.Worker.Aim(pose.Dim, (int)Math.Floor(pose.X) >> 4, (int)Math.Floor(pose.Z) >> 4, m.MaxDistance / 16 + 1, r.Textured, sub);
             r.Ingest(m.Store, m.Scene, m.UploadBudgetMs, m.MaxUploadsPerFrame);
             double scale = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1;

@@ -91,7 +91,8 @@ public static class Release1122Assets
         ("ghast", "ghast/ghast"), ("silverfish", "silverfish"),
     ];
 
-    private static bool WantedEntity(string p) => p is "steve" or "chest/normal" or "chest/trapped" or "chest/ender" or "bed/red" || MobPaths.Any(m => m.Path == p);
+    private static bool WantedEntity(string p) => p is "steve" or "chest/normal" or "chest/trapped" or "chest/ender" or "chest/normal_double" or "chest/trapped_double" or "bed/red"
+        || MobPaths.Any(m => m.Path == p);
 
     private static byte[] Bytes(ZipArchiveEntry e)
     {
@@ -158,7 +159,68 @@ public static class Release1122Assets
                 { "variants": { "facing=north": { "model": "mineclaw_chest_{{kind}}" }, "facing=south": { "model": "mineclaw_chest_{{kind}}", "y": 180 },
                   "facing=west": { "model": "mineclaw_chest_{{kind}}", "y": 270 }, "facing=east": { "model": "mineclaw_chest_{{kind}}", "y": 90 } } }
                 """);
+            if (kind != "ender") AddLargeChest(tex, baker, states, kind, entity.TryGetValue($"chest/{kind}_double", out var big) ? big : null, img);
         }
+    }
+
+    /// <summary>
+    /// ModelLargeChest (128×64): lid (0,0) 30×5×14, base (0,19) 30×10×14, the latch (0,0) 2×4×1 on the seam. Each cell of a pair
+    /// (<see cref="LargeChest"/>) draws its half of one 30×14×14 box: the north-facing model's west half spans x 1..16, the east
+    /// half 0..15, no face on the seam, and the front, back, top and bottom textures split at u 15 so the pair reads as one
+    /// wide chest with one latch across the middle. Without the double texture (an old pack) the halves reuse the single one.
+    /// </summary>
+    private static void AddLargeChest(ModelTextures tex, ModelBaker baker, Dictionary<string, BlockStateFile> states, string kind,
+        (int W, int H, uint[] Px)? big, (int W, int H, uint[] Px) single)
+    {
+        string T(string part) => $"mineclaw/chest_{kind}_double_{part}";
+        if (big is { } b)
+        {
+            // North face: u 0 at the element's east edge, so the viewer's left (east) half shows u 0..15 of the wide front.
+            var frontE = Cut(b, (14, 14, 15, 5), (14, 33, 15, 10));
+            var frontW = Cut(b, (29, 14, 15, 5), (29, 33, 15, 10));
+            for (int y = 0; y < 4; y++)
+            {
+                // The latch straddles the seam: its left column ends the east half's tile, its right column starts the west half's.
+                if ((uint)(1 + y) >= (uint)b.H) continue;
+                frontE[(3 + y) * 16 + 15] = b.Px[(1 + y) * b.W + 1] | 0xff000000;
+                frontW[(3 + y) * 16] = b.Px[(1 + y) * b.W + 2] | 0xff000000;
+            }
+            tex.Add(T("front_e"), 16, 16, frontE);
+            tex.Add(T("front_w"), 16, 16, frontW);
+            tex.Add(T("back_w"), 16, 16, Cut(b, (58, 14, 15, 5), (58, 33, 15, 10)));
+            tex.Add(T("back_e"), 16, 16, Cut(b, (73, 14, 15, 5), (73, 33, 15, 10)));
+            tex.Add(T("end_w"), 16, 16, Cut(b, (0, 14, 14, 5), (0, 33, 14, 10)));
+            tex.Add(T("end_e"), 16, 16, Cut(b, (44, 14, 14, 5), (44, 33, 14, 10)));
+            tex.Add(T("top_w"), 16, 16, Cut(b, (14, 0, 15, 14)));
+            tex.Add(T("top_e"), 16, 16, Cut(b, (29, 0, 15, 14)));
+            tex.Add(T("bottom_w"), 16, 16, Cut(b, (44, 19, 15, 14)));
+            tex.Add(T("bottom_e"), 16, 16, Cut(b, (59, 19, 15, 14)));
+        }
+        else
+        {
+            var s = single;
+            foreach (var h in new[] { "w", "e" })
+            {
+                tex.Add(T("front_" + h), 16, 16, Cut(s, (14, 14, 14, 5), (14, 33, 14, 10)));
+                tex.Add(T("back_" + h), 16, 16, Cut(s, (0, 14, 14, 5), (0, 33, 14, 10)));
+                tex.Add(T("end_" + h), 16, 16, Cut(s, (0, 14, 14, 5), (0, 33, 14, 10)));
+                tex.Add(T("top_" + h), 16, 16, Cut(s, (14, 0, 14, 14)));
+                tex.Add(T("bottom_" + h), 16, 16, Cut(s, (28, 19, 14, 14)));
+            }
+        }
+        foreach (var (h, from, to, end) in new[] { ("w", "[1, 0, 1]", "[16, 14, 15]", "west"), ("e", "[0, 0, 1]", "[15, 14, 15]", "east") })
+            baker.Add($"block/mineclaw_chest_{kind}_double_{h}", $$"""
+                { "textures": { "f": "{{T("front_" + h)}}", "k": "{{T("back_" + h)}}", "s": "{{T("end_" + h)}}", "t": "{{T("top_" + h)}}", "b": "{{T("bottom_" + h)}}" },
+                  "elements": [ { "from": {{from}}, "to": {{to}}, "faces": {
+                    "north": { "uv": [0, 0, 16, 16], "texture": "#f" }, "south": { "uv": [0, 0, 16, 16], "texture": "#k" },
+                    "{{end}}": { "uv": [0, 0, 16, 16], "texture": "#s" },
+                    "up": { "uv": [0, 0, 16, 16], "texture": "#t" }, "down": { "uv": [0, 0, 16, 16], "texture": "#b" } } } ] }
+                """);
+        var variants = new List<string>();
+        foreach (var (facing, rot) in new[] { ("north", 0), ("south", 180), ("west", 270), ("east", 90) })
+            foreach (var h in new[] { "west", "east" })
+                variants.Add($"\"facing={facing},half={h}\": {{ \"model\": \"mineclaw_chest_{kind}_double_{h[0]}\"{(rot == 0 ? "" : $", \"y\": {rot}")} }}");
+        states[$"mineclaw_chest_{kind}_double"] = BlockStateFile.Parse("{ \"variants\": { " + string.Join(", ", variants) + " } }");
     }
 
     /// <summary>Shulker boxes: a cube of their <c>shulker_top_&lt;colour&gt;</c> texture.</summary>
@@ -190,6 +252,14 @@ public static class Release1122Assets
             Put(25, tex.Pixels(tex.IndexOf("mineclaw/chest_normal_top")));
             foreach (int t in new[] { 26, 57, 58 }) Put(t, tex.Pixels(tex.IndexOf("mineclaw/chest_normal_side")));
             foreach (int t in new[] { 27, 41, 42 }) Put(t, tex.Pixels(tex.IndexOf("mineclaw/chest_normal_front")));
+            // The b1.8.1 double-chest tiles (front halves 41/42, back halves 57/58) from the wide 1.12.2 texture.
+            if (tex.Has("mineclaw/chest_normal_double_front_e"))
+            {
+                Put(41, tex.Pixels(tex.IndexOf("mineclaw/chest_normal_double_front_e")));
+                Put(42, tex.Pixels(tex.IndexOf("mineclaw/chest_normal_double_front_w")));
+                Put(57, tex.Pixels(tex.IndexOf("mineclaw/chest_normal_double_back_w")));
+                Put(58, tex.Pixels(tex.IndexOf("mineclaw/chest_normal_double_back_e")));
+            }
         }
         if (entity.TryGetValue("bed/red", out var bed))
         {

@@ -204,9 +204,11 @@ public sealed class SupervisorServer : IAsyncDisposable
                 int radius = Math.Clamp(int.TryParse(Q(r, "radius"), out var rr) ? rr : _o.Radius, 3, 12);
                 if (!_data.Bots().Any(b => b.Name.Equals(bot, StringComparison.OrdinalIgnoreCase) || b.Short.Equals(bot, StringComparison.OrdinalIgnoreCase)))
                     return Json(404, new { error = $"no bot '{bot}' online" });
-                var key = $"view:{bot.ToLowerInvariant()}:{(mode == "brain" ? "sheet" : mode)}:{radius}";
+                // xray=on|off: the Explorer's x-ray toggle for the outside cameras (iso, orbit, high); default auto, the AI's rule.
+                var xray = (Q(r, "xray") ?? "").Trim().ToLowerInvariant() switch { "on" or "1" or "true" => MineClaw.Render.XRay.On, "off" or "0" or "false" => MineClaw.Render.XRay.Off, _ => MineClaw.Render.XRay.Auto };
+                var key = $"view:{bot.ToLowerInvariant()}:{(mode == "brain" ? "sheet" : mode)}:{radius}{(xray == MineClaw.Render.XRay.Auto ? "" : ":" + xray)}";
                 var img = await _cache.GetAsync(key, TimeSpan.FromMilliseconds(_o.CacheMs), async () =>
-                    await _data.ViewAsync(bot, mode, radius, Gate, ct).ConfigureAwait(false) ?? throw new KeyNotFoundException(bot)).ConfigureAwait(false);
+                    await _data.ViewAsync(bot, mode, radius, xray, Gate, ct).ConfigureAwait(false) ?? throw new KeyNotFoundException(bot)).ConfigureAwait(false);
                 return Image(img, r);
             }
             return Json(404, new { error = "not found" });

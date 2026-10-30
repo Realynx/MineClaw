@@ -65,8 +65,18 @@ public sealed class FrameScene
     public bool Textured { get; set; }
     /// <summary>World.k at the world time (0 noon, 11 midnight): the sky colours and the entities' light follow it.</summary>
     public int SkySubtracted { get; set; }
-    /// <summary>The sky's zenith, horizon (= fog) and void colours this frame (the CPU eye's, <see cref="EyeRenderer.SkyColours"/>).</summary>
-    public (uint Top, uint Horizon, uint Void) Sky => EyeRenderer.SkyColours(SkySubtracted, Pose.Dim == -1);
+    /// <summary>The hive's rain/thunder in the camera's dimension (greyer sky and fog; <see cref="Precipitation"/> streaks).</summary>
+    public Weather Weather { get; set; }
+    /// <summary>The sky's zenith, horizon (= fog) and void colours this frame (the CPU eye's, <see cref="EyeRenderer.SkyColours(int, bool, Weather)"/>).</summary>
+    public (uint Top, uint Horizon, uint Void) Sky => EyeRenderer.SkyColours(SkySubtracted, Pose.Dim == -1, Weather);
+    /// <summary>The user's x-ray toggle: <see cref="XRaySubjects"/> are the bodies the shader's cone keeps in sight.</summary>
+    public bool XRay { get; set; }
+    /// <summary>Camera-relative subject points (waist height) of the x-ray cones this frame, at most two; empty = exact.</summary>
+    public readonly List<Vector3> XRaySubjects = new(2);
+    /// <summary>Camera-relative lowest y the x-ray may cut (the subjects' feet layer).</summary>
+    public float XRayFloor;
+    /// <summary>Rain/snow streaks this frame: camera-relative line vertices (pairs), blended over the world.</summary>
+    public readonly VertexList Precipitation = new();
     public float FovDegrees { get; set; } = 70;
     public int MaxDistance { get; set; } = 96;
     /// <summary>Columns seen within this long draw as live; older ones dimmer (the CPU eye's rule).</summary>
@@ -98,6 +108,75 @@ public sealed class FrameScene
         BuildDynamic(now);
         BuildLines();
         BuildLabels();
+        BuildXRay();
+        BuildPrecipitation();
+    }
+
+    private void BuildXRay()
+    {
+        XRaySubjects.Clear();
+        if (!XRay) return;
+        var s = FreecamXRay.Subjects(Pose, Bots());
+        if (s.Count == 0) return;
+        foreach (var p in s) XRaySubjects.Add(new Vector3((float)(p.X - Pose.X), (float)(p.Y + 0.9 - Pose.Y), (float)(p.Z - Pose.Z)));
+        XRayFloor = (float)(Math.Floor(s.Min(p => p.Y) + 0.01) - Pose.Y);
+    }
+
+    private readonly short[] _rainTop = new short[(2 * RainR + 1) * (2 * RainR + 1)];
+    private (int X, int Y, int Z, long V, int Dim) _rainFor = (int.MinValue, 0, 0, -1, 0);
+    private const int RainR = 10;
+
+    /// <summary>
+    /// Falling rain or snow around the camera (EntityRenderer.renderRainSnow, simplified): one streak per column within
+    /// <see cref="RainR"/> blocks (about half the columns at full strength), each above the column's highest block, falling at its
+    /// own phase; snow where the biome is cold. The columns' tops are scanned only when the camera's cell or the world changes.
+    /// </summary>
+    private void BuildPrecipitation()
+    {
+        Precipitation.Clear();
+        var wx = Weather;
+        if (!wx.Wet || Pose.Dim == -1) return;
+        int cx = (int)Math.Floor(Pose.X), cy = (int)Math.Floor(Pose.Y), cz = (int)Math.Floor(Pose.Z), n = 2 * RainR + 1;
+        long ver = _cache.Version;
+        if (_rainFor != (cx, cy, cz, ver, Pose.Dim))
+        {
+            _rainFor = (cx, cy, cz, ver, Pose.Dim);
+            for (int i = 0; i < n; i++)
+                for (int j = 0; j < n; j++)
+                {
+                    int x = cx - RainR + i, z = cz - RainR + j, top = short.MinValue;
+                    // A column the hive never saw: no rain drawn there (its ground is unknown). Open void (skyblock) rains through.
+                    if (_vox.State(x, z) == ColumnState.Unknown) { _rainTop[i * n + j] = short.MaxValue; continue; }
+                    for (int y = Math.Min(_vox.WorldHeight - 1, cy + 24); y >= cy - 24; y--)
+                        if (_vox.Block(x, y, z) != 0) { top = y; break; }
+                    _rainTop[i * n + j] = (short)top;
+                }
+        }
+        double t = FreecamStats.NowMs / 1000.0;
+        for (int i = 0; i < n; i++)
+            for (int j = 0; j < n; j++)
+            {
+                int x = cx - RainR + i, z = cz - RainR + j;
+                uint h = (uint)HashCode.Combine(x, z);
+                if ((h & 0xff) / 255f > wx.R * 0.55f) continue;
+                var kind = Weather.At(_vox.Biome(x, z), cy);
+                if (kind == Precip.None) continue;
+                bool snow = kind == Precip.Snow;
+                double len = snow ? 0.12 : 0.9;
+                int top = _rainTop[i * n + j];
+                if (top == short.MaxValue) continue;
+                double floor = Math.Max(top + 1 + len, cy - 12), ceil = cy + 14;
+                if (ceil <= floor + 1) continue;
+                double speed = snow ? 1.5 : 9 + (h >> 8 & 7), span = ceil - floor;
+                double y = ceil - ((t * speed + (h >> 12 & 1023) / 64.0) % span);
+                double px = x + ((h >> 20) & 15) / 16.0 - Pose.X, pz = z + ((h >> 24) & 15) / 16.0 - Pose.Z, py = y - Pose.Y;
+                uint rgba = QuadEmit.Pack(snow ? 0xf4f8ffu : 0xb4c4e0u, snow ? 0.85f : 0.45f);
+                ref var v = ref Precipitation.Add4();
+                Precipitation.Count -= 2;
+                var span2 = System.Runtime.InteropServices.MemoryMarshal.CreateSpan(ref v, 2);
+                span2[0] = new GpuVertex { X = (float)px, Y = (float)py, Z = (float)pz, Light = 255, Rgba = rgba };
+                span2[1] = new GpuVertex { X = (float)(px + (snow ? 0.03 : 0.08)), Y = (float)(py - len), Z = (float)(pz + 0.05), Light = 255, Rgba = rgba };
+            }
     }
 
     /// <summary>OpenGL-style perspective (clip z in −w..w) for row vectors (v · M).</summary>

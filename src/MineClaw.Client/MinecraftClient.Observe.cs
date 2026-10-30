@@ -57,7 +57,7 @@ public sealed partial class MinecraftClient
         sb.Append(p.IsDead ? " | DEAD" : VitalsKnown ? $" | hp {p.Health}/20 food {p.Food}/20" : " | hp/food loading…");
         sb.Append($" | held {(held.IsEmpty ? "nothing" : ItemName(held.Id, held.Damage) + (held.Count > 1 ? " x" + held.Count : ""))}");
         if (AirStatus is { } air) sb.Append($" | {air}{(World.Player.HeadUnderWater ? ", head under water" : "")}{(Surfacing ? ", surfacing" : "")}");
-        sb.Append($" | {dim} {hours:00}:{minutes:00} {(World.IsNight ? "night" : "day")}{(IsRaining ? " rain" : "")}");
+        sb.Append($" | {dim} {hours:00}:{minutes:00} {(World.IsNight ? "night" : "day")}{(IsRaining ? World.Thunder * World.Rain > 0.2f ? " thunderstorm" : " rain" : "")}");
         if (!GroundKnown) sb.Append(" | ground loading…");
         else
         {

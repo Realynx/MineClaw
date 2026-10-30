@@ -328,6 +328,7 @@ public static class VisionTools
             img = eye.Render(new EyeScene
             {
                 World = voxels, Atlas = atlas, EyeX = ex, EyeY = ey, EyeZ = ez, Yaw = yaw, Pitch = pitch, Time = w.Time, Nether = nether,
+                Weather = new Weather(w.Rain, w.Thunder),
                 Smooth = o.SmoothLighting, Entities = ents, Marks = ms, Target = target is { } tt ? (tt.X, tt.Y, tt.Z) : null,
                 Pointed = pointed is { } pp ? (pp.Pos.X, pp.Pos.Y, pp.Pos.Z) : null, Viewer = viewer,
             });
@@ -342,7 +343,7 @@ public static class VisionTools
                 View = v, Radius = radius, Cx = centre.X, Cy = centre.Y, Cz = centre.Z, Blocks = w.PlanningView,
                 Self = (feet.X, feet.Y, feet.Z), Entities = ents, Marks = ms, Target = target is { } tt ? (tt.X, tt.Y, tt.Z) : null,
                 Pointed = pointed is { } pp ? (pp.Pos.X, pp.Pos.Y, pp.Pos.Z) : null, PointedBy = pointed?.Player, Nether = nether,
-                Atlas = atlas, Light = voxels, Time = w.Time, Roles = roles,
+                Atlas = atlas, Light = voxels, Time = w.Time, Weather = new Weather(w.Rain, w.Thunder), Roles = roles,
             });
             kind = v.ToString().ToLowerInvariant();
         }

@@ -469,6 +469,13 @@ public class Release1122Tests
         server.Send(0x1E, w => w.WriteUByte(3).WriteFloat(1));
         var gm = Assert.IsType<NewStatePacket>(client.ReadPacket());
         Assert.Equal((NewStatePacket.ReasonGameModeChanged, (sbyte)1), (gm.Reason, gm.GameMode));
+        // Reasons 7/8: the rain and thunder strengths (were dropped: the viewer never saw the weather).
+        server.Send(0x1E, w => w.WriteUByte(7).WriteFloat(0.25f));
+        var rain = Assert.IsType<NewStatePacket>(client.ReadPacket());
+        Assert.Equal((NewStatePacket.ReasonRainLevel, 0.25f), (rain.Reason, rain.Value));
+        server.Send(0x1E, w => w.WriteUByte(8).WriteFloat(0.75f));
+        var thunder = Assert.IsType<NewStatePacket>(client.ReadPacket());
+        Assert.Equal((NewStatePacket.ReasonThunderLevel, 0.75f), (thunder.Reason, thunder.Value));
         server.Send(0x0B, w => w.WritePosition(5, 130, -9).WriteVarInt(35 << 4 | 14));
         var bc = Assert.IsType<BlockChangePacket>(client.ReadPacket());
         Assert.Equal((5, 130, -9, (byte)35, (byte)14), (bc.X, bc.Y, bc.Z, bc.BlockId, bc.Metadata));

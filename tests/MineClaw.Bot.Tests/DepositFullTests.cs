@@ -156,4 +156,49 @@ public class DepositFullTests
         Assert.True(r.Ok, r.Text);
         Assert.Equal("deposited 32 cobblestone in chest 11,68,-5", r.Text);
     }
+
+    /// <summary>
+    /// A double chest is ONE known chest (user report 10-29): a taught row on its east half next to the indexer's pair row is
+    /// counted once ("none in the 1 known chest"), and the pair is opened once.
+    /// </summary>
+    [Fact]
+    public async Task A_double_chest_with_a_second_row_on_one_half_counts_and_opens_once()
+    {
+        var (h, c) = TestBot.Create();
+        using var _ = h;
+        c.World.SetBlock(14, 64, -5, Blocks.Chest, 0);
+        c.World.SetBlock(15, 64, -5, Blocks.Chest, 0);
+        Chest(h, new WPos(14, 64, -5), dbl: true, I(Blocks.Cobblestone, 54 * 64));
+        h.Runtime.Observations.Upsert(new Observation("chest", "15,64,-5", "the cobble chest") { Bounds = Box.Point(15, 64, -5), Source = ObservationSource.Taught });
+        Assert.Equal(1, ChestStock.Read(c, h.Runtime.Observations, null).Known);
+        c.Give(9, Blocks.Cobblestone, 64);
+        c.Results["deposit"] = () => MineClaw.Client.ActionResult.Fail("chest is full");
+        var r = await h.Run("deposit", new { at = "15,64,-5", items = new[] { "cobblestone" } });
+        Assert.False(r.Ok);
+        Assert.StartsWith("all 1 known chest full (15,64,-5)", r.Text);
+        Assert.Single(c.CallList, x => x.StartsWith("deposit", StringComparison.Ordinal));
+    }
+
+    /// <summary>1.12.2: a trapped chest beside a normal one is a chest of its own (only the same kind pairs): a full normal chest
+    /// moves on to it. Was: every block beside a tried chest was marked tried as its "other half".</summary>
+    [Fact]
+    public async Task A_trapped_chest_beside_a_normal_one_is_its_own_chest_for_a_deposit()
+    {
+        var (h, c) = TestBot.Create();
+        using var _ = h;
+        c.World.SetBlock(14, 64, -5, Blocks.Chest, 0);
+        c.World.SetBlock(15, 64, -5, MineClaw.World.ChestPairs.TrappedChest, 0);
+        Chest(h, new WPos(14, 64, -5), dbl: false, I(Blocks.Cobblestone, 27 * 64));
+        Chest(h, new WPos(15, 64, -5), dbl: false, I(Items.Stick, 3));
+        c.Give(9, Blocks.Cobblestone, 64);
+        c.Results["deposit"] = () =>
+        {
+            if (c.CallList.Last().StartsWith("deposit 14,64,-5", StringComparison.Ordinal)) return MineClaw.Client.ActionResult.Fail("chest is full");
+            c.World.Inventory.SetSlot(0, 9, MineClaw.Data.ItemStack.Empty);
+            return MineClaw.Client.ActionResult.Success("deposited 64 cobblestone", 64);
+        };
+        var r = await h.Run("deposit", new { at = "14,64,-5", items = new[] { "cobblestone" } });
+        Assert.True(r.Ok, r.Text);
+        Assert.Equal("deposited 64 cobblestone in chest 15,64,-5 (14,64,-5 is full)", r.Text);
+    }
 }

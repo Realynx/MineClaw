@@ -35,7 +35,7 @@ public sealed class BlockModels1122 : IBlockModels
 
     /// <summary>Blocks whose state needs the neighbours (never on the cube fast path).</summary>
     private static bool WorldDependent(int id) => BlockStates1122.IsStairs(id) || BlockStates1122.IsFence(id) || BlockStates1122.IsFenceGate(id)
-        || BlockStates1122.IsPane(id) || BlockStates1122.IsDoor(id) || id is 139 or 106 or 175 or 104 or 105 or 55;
+        || BlockStates1122.IsPane(id) || BlockStates1122.IsDoor(id) || id is 139 or 106 or 175 or 104 or 105 or 55 or 54 or 146;
 
     /// <summary>Block.getBlockLayer() == TRANSLUCENT: ice, stained glass (+ panes), slime, frosted ice, portals.</summary>
     private static bool TranslucentLayer(int id) => id is 79 or 95 or 160 or 165 or 212 or 90;

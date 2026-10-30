@@ -180,7 +180,7 @@ public sealed class VisionRenderer
           .Append(s.Atlas != null).Append(s.Light != null ? Lighting.SkylightSubtracted(s.Time) : -1).Append('|')
           .Append(s.Self).Append('|').Append(s.Target).Append('|').Append(s.Pointed).Append(s.PointedBy).Append('|')
           .Append(s.Roles != null).Append(s.Focus).Append('|').Append(s.CellPx).Append('|').Append(s.Axis).Append('|').Append(s.MaxPx).Append('|')
-          .Append(s.Up).Append(s.Down).Append(s.SideUp).Append(s.SideDown).Append(s.SideDepth).Append(s.IsoUp).Append(s.IsoDown).Append(s.CutAway).Append('|');
+          .Append(s.Up).Append(s.Down).Append(s.SideUp).Append(s.SideDown).Append(s.SideDepth).Append(s.IsoUp).Append(s.IsoDown).Append(s.CutAway).Append(s.Weather.R).Append(s.Weather.T).Append('|');
         foreach (var e in s.Entities) sb.Append(e.Kind).Append(e.Name).Append((int)Math.Floor(e.X)).Append(',').Append((int)Math.Floor(e.Y)).Append(',').Append((int)Math.Floor(e.Z)).Append(';');
         foreach (var m in s.Marks) sb.Append(m).Append(';');
         foreach (var p in s.Path) sb.Append(p).Append(';');
@@ -373,12 +373,13 @@ public sealed class VisionRenderer
             World = s.Light ?? new BlockAccessVoxels(s.Blocks), Atlas = s.Atlas, Time = s.Time, Nether = s.Nether, Entities = ents, Marks = s.Marks,
             Focus = focus, Pointed = s.Pointed, Target = s.Target, Slab = slab, Cut = s.CutAway ? PerspectivePanel.Cut(slab, s.Cy) : null,
             Aids = new ReadingAids.Input { Focus = focus, FeetY = s.Cy, Radius = Math.Min(r, 10), Slab = slab, Rings = false },
+            FeetY = s.Cy, Subject = s.Self is { } sb ? (sb.X + 0.5, sb.Y, sb.Z + 0.5) : null, Weather = s.Nether ? default : s.Weather,
         };
         var img = PerspectivePanel.Render(eye, rig, input, out var labels);
         var c = new Canvas(w, h, img.Pixels!);
         string view = s.View.ToString().ToLowerInvariant();
         var legend = new StringBuilder();
-        legend.Append(CultureInfo.InvariantCulture, $"{view} r{r} centre {Fmt(s.Cx, s.Cy, s.Cz)}: {rig.Legend}{(s.View == VisionView.Top && s.CutAway ? ", roofs above it cut away" : "")}, rendered like the game; N arrow bottom-right, {w}x{h}px ~{(w * h + 749) / 750}tok.");
+        legend.Append(CultureInfo.InvariantCulture, $"{view} r{r} centre {Fmt(s.Cx, s.Cy, s.Cz)}: {img.Legend}{(s.View == VisionView.Top && s.CutAway ? ", roofs above it cut away" : "")}, rendered like the game; N arrow bottom-right, {w}x{h}px ~{(w * h + 749) / 750}tok.");
         legend.Append(" Grid = 1 block (every 5th labelled with its X/Z), gold Y ruler at the centre.");
         if (s.Self is { } self) legend.Append(CultureInfo.InvariantCulture, $" @=you {Fmt(self.X, self.Y, self.Z)} (orange tag).");
         if (s.Focus is { } fl) legend.Append(CultureInfo.InvariantCulture, $" Cyan box=focus {Fmt(fl.X, fl.Y, fl.Z)}.");

@@ -161,7 +161,7 @@ public sealed class TileRenderer(HiveWorldCache cache, Func<TextureAtlas?> atlas
         var fr = eye.Raster(new EyeScene
         {
             World = t.Vox, Atlas = atlas(), EyeX = cp.X, EyeY = cp.Y, EyeZ = cp.Z, Yaw = cp.Yaw, Pitch = cp.Pitch, Time = cache.TimeNow(b.Dim) ?? 6000, Nether = b.Dim == -1,
-            Entities = ents, Viewer = b.Key,
+            Entities = ents, Viewer = b.Key, Weather = cache.WeatherIn(b.Dim), PrecipTick = Environment.TickCount64 / 50,
         });
         t.RasterMs = eye.LastMs;
         var cam = new ViewProjector(cp, w, h, eye.FovDegrees);

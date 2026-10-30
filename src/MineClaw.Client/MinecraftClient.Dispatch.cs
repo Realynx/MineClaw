@@ -101,7 +101,10 @@ public sealed partial class MinecraftClient
             case NewStatePacket ns:
                 if (ns.Reason == NewStatePacket.ReasonGameModeChanged) w.Player.GameMode = ns.GameMode;
                 else if (ns.Reason == NewStatePacket.ReasonBeginRain) { IsRaining = true; w.Rain = 1f; } // light: World.k
-                else if (ns.Reason == NewStatePacket.ReasonEndRain) { IsRaining = false; w.Rain = 0f; }
+                else if (ns.Reason == NewStatePacket.ReasonEndRain) { IsRaining = false; w.Rain = 0f; w.Thunder = 0f; }
+                // 1.12.2 fades: the strengths the sky, the light and the viewer's rain follow (the flag above stays the server's word).
+                else if (ns.Reason == NewStatePacket.ReasonRainLevel) w.Rain = Math.Clamp(ns.Value, 0f, 1f);
+                else if (ns.Reason == NewStatePacket.ReasonThunderLevel) w.Thunder = Math.Clamp(ns.Value, 0f, 1f);
                 break;
 
             // ---- own player ----
@@ -177,6 +180,8 @@ public sealed partial class MinecraftClient
                 break;
             case ThunderboltPacket tb:
                 w.Entities.Spawn(new Entity(tb.EntityId, EntityKind.Weather, Abs(tb.X, tb.Y, tb.Z)));
+                // b1.8.1 never says "thunder": a bolt while it rains is the storm (1.12.2's reason 8 keeps it exact afterwards).
+                if (IsRaining && w.Thunder < 0.5f) w.Thunder = 1f;
                 break;
             case EntityVelocityPacket ev:
             {

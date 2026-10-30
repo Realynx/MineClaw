@@ -27,6 +27,11 @@ internal sealed class IndexEntry(string kind, string key)
     public bool ContentsDirty;
     /// <summary>When <see cref="Contents"/> were read from an open window.</summary>
     public DateTimeOffset? ContentsAt;
+    /// <summary>Who read <see cref="Contents"/> when they came from another row (a merged half's db memory); null = this bot.</summary>
+    public string? ContentsBy;
+    /// <summary>A double chest's contents per half (window slots 0-26 = the west/north cell, 27-53 the other), from this
+    /// session's last 54-slot look: when one half is broken the survivor keeps its own items, the broken half's spill.</summary>
+    public Dictionary<BlockPos, List<ItemCount>>? HalfContents;
     public bool FurnaceLit;
     public (ItemCount? In, ItemCount? Fuel, ItemCount? Out) FurnaceSlots;
 

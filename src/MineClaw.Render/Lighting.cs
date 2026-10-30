@@ -6,7 +6,7 @@ namespace MineClaw.Render;
 /// <item><c>WorldProvider.c()</c>: brightness table <c>f[i] = (1 − f1)/(f1·3 + 1)·(1 − base) + base</c>, <c>f1 = 1 − i/15</c>; base 0
 /// overworld, 0.1 in the Nether (<c>WorldProviderHell.c()</c>).</item>
 /// <item><c>WorldProvider.a(time, partial)</c>: celestial angle; <c>World.a(float)</c> → <c>World.k</c> (skylightSubtracted)
-/// = <c>(int)((1 − clamp(1 − (cos(angle·2π)·2 + 0.5)))·11)</c> without rain/thunder (those scale it further; ignored here).</item>
+/// = <c>(int)((1 − clamp(1 − (cos(angle·2π)·2 + 0.5)))·11)</c> with rain/thunder scaling the brightness first (<see cref="Weather"/>).</item>
 /// <item>A face's light level is <c>max(blockLight, skyLight − k)</c> of the air cell in front of it.</item>
 /// </list>
 /// Client-only (not in mc-dev, from the b1.8 client's RenderBlocks): the per-face shade factors top 1.0, N/S 0.8, E/W 0.6,
@@ -31,7 +31,11 @@ public static class Lighting
     public static float Brightness(int level, bool nether = false) => (nether ? Nether : Overworld)[Math.Clamp(level, 0, 15)];
 
     /// <summary>World.k: how much sky light is taken off at this time of day (0 at noon, 11 at midnight).</summary>
-    public static int SkylightSubtracted(long time)
+    public static int SkylightSubtracted(long time) => SkylightSubtracted(time, 0f, 0f);
+
+    /// <summary>World.k under weather: the day brightness × (1 − rain·5/16) × (1 − thunder·rain·5/16) first (rain at noon
+    /// takes 3 off the sky light, a thunderstorm 5, a clear noon 0).</summary>
+    public static int SkylightSubtracted(long time, float rain, float thunder)
     {
         int j = (int)(((time % 24000) + 24000) % 24000);
         float f1 = j / 24000f - 0.25f;
@@ -43,7 +47,10 @@ public static class Lighting
         float k = 1f - (MathF.Cos(angle * MathF.PI * 2f) * 2f + 0.5f);
         k = Math.Clamp(k, 0f, 1f);
         k = 1f - k;
-        k = 1f - k; // no rain/thunder: f2 * (1 - 0) twice
+        rain = Math.Clamp(rain, 0f, 1f);
+        k *= 1f - rain * 5f / 16f;
+        k *= 1f - Math.Clamp(thunder, 0f, 1f) * rain * 5f / 16f;
+        k = 1f - k;
         return (int)(k * 11f);
     }
 

@@ -400,7 +400,7 @@ public static class GameToolSet
                 var spec = i.Str("at");
                 if (string.IsNullOrWhiteSpace(spec)) { if (NearestChest(c) is { } n) list.Add(n); }
                 else if (spec.Trim().Equals("all", StringComparison.OrdinalIgnoreCase))
-                    list.AddRange(c.World.FindBlocks(c.World.Player.Position, 8, Blocks.Chest).Select(f => f.Pos));
+                    list.AddRange(c.World.FindBlocks(c.World.Player.Position, 8, (id, _) => Ids1122.IsChest(id)).Select(f => f.Pos));
                 else
                     foreach (var part in spec.Split(';', '|'))
                     {

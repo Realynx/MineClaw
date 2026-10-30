@@ -75,7 +75,7 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
     {
         if (p is not { } pos) return await action().ConfigureAwait(false);
         await ApproachAsync(pos, ct).ConfigureAwait(false);
-        return await Held(ClaimKey.Chest(pos, inner.World.Dimension), action, ct).ConfigureAwait(false);
+        return await Held(ClaimKey.Chest(ChestPairs.Canonical(inner.World, pos), inner.World.Dimension), action, ct).ConfigureAwait(false);
     }
 
     private async Task<ActionResult> Furnace(BlockPos? p, Func<Task<ActionResult>> action, CancellationToken ct)
@@ -120,7 +120,10 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
     {
         await ApproachAsync(pos, ct).ConfigureAwait(false);
         int dim = inner.World.Dimension;
-        var chestKey = ClaimKey.Chest(pos, dim);
+        // A double chest is one window whichever half was named: its leases and deposit slots are its west/north half's, so
+        // bodies sent to the east half share the same DepositSlots (was: 4 per half, 8 crowding one window).
+        var at = ChestPairs.Canonical(inner.World, pos);
+        var chestKey = ClaimKey.Chest(at, dim);
         var start = DateTime.UtcNow;
         var deadline = start + DepositWait;
         string? lastHolder = null;
@@ -134,7 +137,7 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
             if (claims.IsFree(chestKey))
                 for (int i = 0; i < Math.Max(1, DepositSlots); i++)
                 {
-                    var key = DepositSlot(pos, dim, i);
+                    var key = DepositSlot(at, dim, i);
                     if (!claims.IsFree(key)) { lastHolder = claims.HolderOf(key) ?? lastHolder; continue; }
                     var r = await claims.TryClaimAsync(key, Ttl, "deposit", ct).ConfigureAwait(false);
                     if (!r.Ok)

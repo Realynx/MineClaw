@@ -16,8 +16,8 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
 {
     private GlInterface _gl = null!;
     private GlExtra _x = null!;
-    private int _world, _sky, _vao, _ebo, _eboQuads, _tex, _fbo, _color, _depth, _fbw, _fbh, _dynSolid, _dynTrans, _lines;
-    private int _uVP, _uOrigin, _uTex, _uGrid, _uRem, _uStale, _uStaleColour, _uFogColour, _uFog, _uAlphaTest, _uOpaque;
+    private int _world, _sky, _vao, _ebo, _eboQuads, _tex, _fbo, _color, _depth, _fbw, _fbh, _dynSolid, _dynTrans, _lines, _rain;
+    private int _uVP, _uOrigin, _uTex, _uGrid, _uRem, _uStale, _uStaleColour, _uFogColour, _uFog, _uAlphaTest, _uOpaque, _uXA, _uXB, _uXP;
     private int _sF, _sR, _sU, _sTan, _sTop, _sHorizon, _sVoid;
     private int _lineCount;
     private readonly Stack<int> _freeVbos = new();
@@ -41,12 +41,13 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
         _uVP = U(_world, "uVP"); _uOrigin = U(_world, "uOrigin"); _uTex = U(_world, "uTex"); _uGrid = U(_world, "uGrid"); _uRem = U(_world, "uRem");
         _uStale = U(_world, "uStale"); _uStaleColour = U(_world, "uStaleColour"); _uFogColour = U(_world, "uFogColour"); _uFog = U(_world, "uFog");
         _uAlphaTest = U(_world, "uAlphaTest"); _uOpaque = U(_world, "uOpaque");
+        _uXA = U(_world, "uXA"); _uXB = U(_world, "uXB"); _uXP = U(_world, "uXP");
         _sF = U(_sky, "uF"); _sR = U(_sky, "uR"); _sU = U(_sky, "uU"); _sTan = U(_sky, "uTan"); _sTop = U(_sky, "uTop"); _sHorizon = U(_sky, "uHorizon"); _sVoid = U(_sky, "uVoid");
         _vao = gl.GenVertexArray();
         gl.BindVertexArray(_vao);
         _ebo = gl.GenBuffer();
         Indices(16384);
-        _dynSolid = gl.GenBuffer(); _dynTrans = gl.GenBuffer(); _lines = gl.GenBuffer();
+        _dynSolid = gl.GenBuffer(); _dynTrans = gl.GenBuffer(); _lines = gl.GenBuffer(); _rain = gl.GenBuffer();
         var (w, h, px) = GpuAtlas.Build(atlas);
         _gridRows = GpuAtlas.RowsFor(atlas);
         Textured = atlas != null;
@@ -233,6 +234,7 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
         gl.DepthFunc(Gl.LEQUAL);
         gl.Uniform1f(_uAlphaTest, 0.5f);
         gl.Uniform1f(_uOpaque, 1);
+        XRay(sc, true);
         gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, _ebo);
         foreach (var s in sc.SolidDraw)
         {
@@ -241,7 +243,8 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
             gl.DrawElements(Gl.TRIANGLES, s.SolidCount / 4 * 6, Gl.UNSIGNED_INT, 0);
             draws++;
         }
-        // Entities (camera-relative already).
+        // Entities (camera-relative already): never x-rayed (the bodies are what the cut is for).
+        XRay(sc, false);
         gl.Uniform1f(_uRem, 0); gl.Uniform1f(_uStale, 0); _x.Uniform3f(_uOrigin, 0, 0, 0);
         if (sc.DynSolid.Count > 0)
         {
@@ -285,6 +288,7 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
         gl.Uniform1f(_uOpaque, 0);
         gl.Uniform1f(_uAlphaTest, 0.004f);
         gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, _ebo);
+        XRay(sc, true);
         foreach (var s in sc.TransDraw)
         {
             Section(sc, s);
@@ -292,6 +296,7 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
             gl.DrawElements(Gl.TRIANGLES, s.TransCount / 4 * 6, Gl.UNSIGNED_INT, 0);
             draws++;
         }
+        XRay(sc, false);
         if (sc.DynTrans.Count > 0)
         {
             gl.Uniform1f(_uRem, 0); gl.Uniform1f(_uStale, 0); _x.Uniform3f(_uOrigin, 0, 0, 0);
@@ -299,6 +304,17 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
             gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, _ebo);
             Attribs(_dynTrans);
             gl.DrawElements(Gl.TRIANGLES, sc.DynTrans.Count / 4 * 6, Gl.UNSIGNED_INT, 0);
+            draws++;
+        }
+        // Rain/snow streaks: depth-tested lines, blended, no depth writes (a roof or a tunnel keeps them out).
+        if (sc.Precipitation.Count > 0)
+        {
+            gl.Uniform1f(_uRem, 0); gl.Uniform1f(_uStale, 0); _x.Uniform3f(_uOrigin, 0, 0, 0);
+            gl.BindBuffer(Gl.ARRAY_BUFFER, _rain);
+            fixed (GpuVertex* p = sc.Precipitation.V) gl.BufferData(Gl.ARRAY_BUFFER, sc.Precipitation.Count * GpuVertex.Size, (nint)p, Gl.STREAM_DRAW);
+            Attribs(_rain);
+            gl.Uniform1f(_uAlphaTest, 0.01f);
+            gl.DrawArrays(Gl.LINES, 0, sc.Precipitation.Count);
             draws++;
         }
         gl.DepthMask(1);
@@ -333,6 +349,17 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
         return draws;
     }
 
+    /// <summary>The x-ray cones (<see cref="FrameScene.XRaySubjects"/>) on for world geometry, off for bodies, drops and lines.</summary>
+    private void XRay(FrameScene sc, bool on)
+    {
+        int n = on ? Math.Min(2, sc.XRaySubjects.Count) : 0;
+        var a = n > 0 ? sc.XRaySubjects[0] : default;
+        var b = n > 1 ? sc.XRaySubjects[1] : a;
+        _x.Uniform3f(_uXA, a.X, a.Y, a.Z);
+        _x.Uniform3f(_uXB, b.X, b.Y, b.Z);
+        _x.Uniform3f(_uXP, (float)PerspectivePanel.XRayRadius, sc.XRayFloor, n);
+    }
+
     private void Section(FrameScene sc, GpuSection s)
     {
         var k = s.Key;
@@ -355,7 +382,7 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
     {
         if (_gl == null) return;
         while (_freeVbos.Count > 0) _gl.DeleteBuffer(_freeVbos.Pop());
-        foreach (var b in new[] { _ebo, _dynSolid, _dynTrans, _lines }) if (b != 0) _gl.DeleteBuffer(b);
+        foreach (var b in new[] { _ebo, _dynSolid, _dynTrans, _lines, _rain }) if (b != 0) _gl.DeleteBuffer(b);
         if (_tex != 0) _gl.DeleteTexture(_tex);
         if (_fbo != 0) { _gl.DeleteFramebuffer(_fbo); _gl.DeleteRenderbuffer(_color); _gl.DeleteRenderbuffer(_depth); }
         if (_vao != 0) _gl.DeleteVertexArray(_vao);
@@ -385,8 +412,21 @@ internal sealed unsafe class GlFreecamRenderer : IDisposable
         in vec2 vUv; flat in vec2 vCell; flat in int vFlags; in float vLight; in vec4 vColor; in vec3 vRel;
         uniform sampler2D uTex; uniform vec3 uGrid; uniform float uRem; uniform float uStale; uniform vec3 uStaleColour;
         uniform vec3 uFogColour; uniform vec3 uFog; uniform float uAlphaTest; uniform float uOpaque;
+        uniform vec3 uXA; uniform vec3 uXB; uniform vec3 uXP;
         out vec4 oColor;
+        // The x-ray cone (ViewCut): apex at the camera (the origin here), a disk of uXP.x blocks at the subject, never below uXP.y.
+        bool cutBy(vec3 s) {
+            float d = length(s);
+            if (d < 1.5) return false;
+            vec3 u = s / d;
+            float t = dot(vRel, u);
+            if (t <= 0.0 || t >= d) return false;
+            float r = uXP.x * t / d + 0.3;
+            vec3 q = vRel - u * t;
+            return dot(q, q) <= r * r;
+        }
         void main() {
+            if (uXP.z > 0.5 && vRel.y >= uXP.y - 0.001 && (cutBy(uXA) || (uXP.z > 1.5 && cutBy(uXB)))) discard;
             vec4 c = vColor;
             if ((vFlags & 1) != 0) {
                 vec2 uv = (vFlags & 2) != 0 ? fract(vUv) : vUv;

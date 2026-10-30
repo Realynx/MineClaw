@@ -83,7 +83,10 @@ public sealed class LiveSupervisorData : ISupervisorData
         catch (Exception ex) { _log?.LogDebug(ex, "supervisor: view request failed"); return null; }
     }
 
-    public async Task<ViewImage?> ViewAsync(string bot, string mode, int radius, RenderGate gate, CancellationToken ct)
+    public Task<ViewImage?> ViewAsync(string bot, string mode, int radius, RenderGate gate, CancellationToken ct) =>
+        ViewAsync(bot, mode, radius, MineClaw.Render.XRay.Auto, gate, ct);
+
+    public async Task<ViewImage?> ViewAsync(string bot, string mode, int radius, MineClaw.Render.XRay xray, RenderGate gate, CancellationToken ct)
     {
         if (Find(bot) is not { } b) return null;
         var w = _world();
@@ -109,7 +112,7 @@ public sealed class LiveSupervisorData : ISupervisorData
         {
             var scene = _hub.SceneFor(focus, dim, radius);
             IReadOnlyList<string>? views = mode switch { "sheet" or "brain" => null, _ => [mode] };
-            var req = _hub.SheetRequest(focus, radius, views, null, scene, pose);
+            var req = _hub.SheetRequest(focus, radius, views, null, scene, pose, xray: xray);
             VisionImage img = mode == "eye" && req.Eye is { } e ? _eye.Render(e) : _sheet.Render(req);
             var facts = mode is "sheet" or "brain" ? _hub.RouterFacts(focus, radius, scene) : [];
             var seen = scene.Region?.Staleness((focus.X, focus.Y, focus.Z), radius, _time.GetUtcNow());

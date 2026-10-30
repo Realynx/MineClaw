@@ -14,6 +14,14 @@ namespace MineClaw.App.Tests;
 internal sealed class FakeSupervisorData : ISupervisorData
 {
     public int ViewCalls, HiveCalls, CameraCalls, StatusCalls, LocateCalls;
+    /// <summary>The x-ray each view asked for (the Explorer's toggle).</summary>
+    public readonly System.Collections.Concurrent.ConcurrentQueue<MineClaw.Render.XRay> XRays = new();
+
+    public Task<ViewImage?> ViewAsync(string bot, string mode, int radius, MineClaw.Render.XRay xray, RenderGate gate, CancellationToken ct)
+    {
+        XRays.Enqueue(xray);
+        return ViewAsync(bot, mode, radius, gate, ct);
+    }
     public readonly SupervisorFeed Feed = new();
 
     public IReadOnlyList<BotTile> Bots() =>
@@ -127,6 +135,11 @@ public class SupervisorTests
             }
         Assert.Equal(404, (await s.HandleAsync(Get("/view/maid_chan_420"))).Status); // configured but not online
         Assert.Equal(400, (await s.HandleAsync(Get("/view/maid_chan_67", "mode=xray"))).Status);
+        // The Explorer's x-ray toggle reaches the renderer (and is its own cache entry); no parameter = the automatic rule.
+        Assert.All(data.XRays, x => Assert.Equal(MineClaw.Render.XRay.Auto, x));
+        Assert.Equal(200, (await s.HandleAsync(Get("/view/maid_chan", "mode=iso&xray=on"))).Status);
+        Assert.Equal(200, (await s.HandleAsync(Get("/view/maid_chan", "mode=iso&xray=off"))).Status);
+        Assert.Equal([MineClaw.Render.XRay.On, MineClaw.Render.XRay.Off], data.XRays.Skip(data.XRays.Count - 2));
         var hive = await s.HandleAsync(Get("/view/hive"));
         Assert.Equal(200, hive.Status);
         Assert.True(IsPng(hive.Body));

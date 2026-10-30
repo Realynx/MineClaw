@@ -9,7 +9,7 @@ public sealed record ColumnInfoDto(int Cx, int Cz, long Hash, long Seen, string?
 
 /// <summary>The index reply; <see cref="Version"/> (the hive's game version) and <see cref="Time"/> (world ticks) come from newer
 /// supervisors only.</summary>
-public sealed record IndexDto(int Dim, long At, List<ColumnInfoDto> Columns, string? Version = null, long? Time = null);
+public sealed record IndexDto(int Dim, long At, List<ColumnInfoDto> Columns, string? Version = null, long? Time = null, float? Rain = null, float? Thunder = null);
 
 public sealed record BotDto(string Name, string Short, bool Main, int Dim, double X, double Y, double Z, float? Yaw, float? Pitch, double? PoseAge,
     int Hp, int Food, string? Job, string? Brain, string? Held, List<string>? Claims, bool Live, double AgeSeconds)

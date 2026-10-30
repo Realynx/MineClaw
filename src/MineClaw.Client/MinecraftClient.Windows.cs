@@ -191,7 +191,8 @@ public sealed partial class MinecraftClient
     private async Task<ActionResult> OpenCoreAsync(BlockPos pos, CancellationToken ct)
     {
         int id = World.GetBlock(pos);
-        if (id is not (Blocks.Chest or Blocks.Furnace or Blocks.LitFurnace or Blocks.Workbench or Blocks.Dispenser))
+        // 1.12.2's trapped chest is a chest window too (was: "trapped chest ... is not a container", so no deposit ever reached one).
+        if (id is not (Blocks.Chest or ChestPairs.TrappedChest or Blocks.Furnace or Blocks.LitFurnace or Blocks.Workbench or Blocks.Dispenser))
             return ActionResult.Fail($"{BlockName(id, 0)} at {Fmt(pos)} is not a container");
         var open = World.Inventory.OpenWindow;
         if (open is not null) await EnsureNoWindowAsync(ct).ConfigureAwait(false);

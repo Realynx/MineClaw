@@ -32,7 +32,7 @@ public sealed class ChestStock
         var me = c.World.Player.Position;
         try
         {
-            foreach (var (row, dist) in obs.Nearest("chest", me.X, me.Y, me.Z, limit: 24, maxDistance: 160))
+            foreach (var (row, dist) in ChestRoom.Distinct(obs.Nearest("chest", me.X, me.Y, me.Z, limit: 24, maxDistance: 160)))
             {
                 if (row.Bounds is not { } b) continue;
                 var pos = new BlockPos((int)Math.Floor(b.MinX), (int)Math.Floor(b.MinY), (int)Math.Floor(b.MinZ));

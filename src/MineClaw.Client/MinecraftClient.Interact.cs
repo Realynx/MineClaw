@@ -408,6 +408,8 @@ public sealed partial class MinecraftClient
         AbortCurrentAction("dimension changed");
         _signs.Clear();
         IsRaining = false;
+        World.Rain = 0f; // the new dimension's weather comes with its packets (was: the overworld's rain darkened the Nether's light maths)
+        World.Thunder = 0f;
         _vehicleId = -1;
         _entityStatusSeq.Clear();
         _combatInstance?.RequestStop("dimension changed");

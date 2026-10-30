@@ -40,6 +40,8 @@ public sealed class HiveSync : IDisposable
     public Func<IReadOnlyList<Interest>> Interests { get; set; } = () => [];
     /// <summary>Server-rendered tiles wanted: (bot key, mode).</summary>
     public Func<IReadOnlyList<(string Bot, string Mode)>> MapViews { get; set; } = () => [];
+    /// <summary>The x-ray toggle sent with the server pictures ("auto", "on", "off").</summary>
+    public string XRay { get; set; } = "auto";
     /// <summary>The dimension whose overlays are wanted (null = none).</summary>
     public Func<int?> OverlayDim { get; set; } = () => null;
 
@@ -186,6 +188,7 @@ public sealed class HiveSync : IDisposable
             try { index = await _api.IndexAsync(it.Dim, it.X, it.Z, r, ct).ConfigureAwait(false); }
             catch (HiveApiException ex) { Problem(ex); lock (_lock) _indexed.Remove(key); continue; } // retried after the route's back-off
             _cache.SetWorldInfo(it.Dim, index.Version, index.Time);
+            if (index.Rain is { } rain) _cache.SetWeather(it.Dim, rain, index.Thunder ?? 0f);
             int cx0 = (it.X - r) >> 4, cx1 = (it.X + r) >> 4, cz0 = (it.Z - r) >> 4, cz1 = (it.Z + r) >> 4;
             var want = _cache.Reconcile(it.Dim, cx0, cz0, cx1, cz1, index.Columns);
             if (want.Count == 0) continue;
@@ -235,7 +238,7 @@ public sealed class HiveSync : IDisposable
             }
             if (_api.BackingOff("view")) break;
             byte[] png;
-            try { png = await _api.ViewPngAsync(bot, mode, ct).ConfigureAwait(false); }
+            try { png = await _api.ViewPngAsync(bot, mode, XRay, ct).ConfigureAwait(false); }
             catch (HiveApiException ex) { Problem(ex); continue; }
             try { ViewPng?.Invoke(bot, mode, png); } // the handler decodes here, on the sync worker, not on the UI thread
             catch (Exception ex) { Problem(ex); }

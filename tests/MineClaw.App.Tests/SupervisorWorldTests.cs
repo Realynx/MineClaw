@@ -33,6 +33,7 @@ internal sealed class FakeSupervisorWorld : ISupervisorWorld
 
     public string? Version => "b1.8.1";
     public long? WorldTime(int dim) => dim == 0 ? 6000 : null;
+    public (float Rain, float Thunder)? WorldWeather(int dim) => dim == 0 ? (1f, 0.5f) : null;
 
     public IReadOnlyList<WorldBot> Bots() =>
         [new("maid_chan", "main", true, 0, 1.5, 65, 1.5, 90, 20, 0, 20, 18, "idle", null, "cobblestone x12", ["block 4,64,6"], true, 0)];
@@ -219,6 +220,8 @@ public class SupervisorWorldTests
         var json = r.Text;
         Assert.Contains("\"version\":\"b1.8.1\"", json);
         Assert.Contains("\"time\":6000", json);
+        Assert.Contains("\"rain\":1", json); // the viewer's sky, light and streaks follow the hive's weather (live 10-29)
+        Assert.Contains("\"thunder\":0.5", json);
     }
 
     [Fact]

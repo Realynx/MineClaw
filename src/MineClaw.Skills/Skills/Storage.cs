@@ -23,7 +23,8 @@ public sealed class DepositEverythingSkill : Skill
         var items = ctx.World.Inventory.PlayerSlots().Skip(9).Where(s => !Keep(s)).GroupBy(s => (s.Id, s.Damage)).ToList();
         if (items.Count == 0) return Ok("nothing to deposit");
         var chests = args.Str("chest") is { } name && ctx.Directory.Resolve(ctx, name) is { } one ? [one]
-            : ctx.Find((id, _) => StorageOps.IsChest(id), ctx.Options.SearchRadius, 16).Select(f => f.Pos).Where(p => ctx.Claims.IsFree(MineClaw.World.Claims.ClaimKey.Chest(p, ctx.World.Dimension))).ToList();
+            : MineClaw.World.ChestPairs.Distinct(ctx.World, ctx.Find((id, _) => StorageOps.IsChest(id), ctx.Options.SearchRadius, 16).Select(f => f.Pos)) // a double chest is one
+                .Where(p => ctx.Claims.IsFree(MineClaw.World.Claims.ClaimKey.Chest(p, ctx.World.Dimension))).ToList();
         if (chests.Count == 0) return Fail("no free chest nearby");
         var moves = new List<MoveSpec>();
         foreach (var g in items)
@@ -79,7 +80,7 @@ public sealed class RestockLoadoutSkill : Skill
         if (needs.Count == 0) return Ok("loadout already full");
         var run = new InventoryRun(ctx);
         var got = new List<string>();
-        foreach (var c in ctx.Find((id, _) => StorageOps.IsChest(id), ctx.Options.SearchRadius, 16).Select(f => f.Pos))
+        foreach (var c in MineClaw.World.ChestPairs.Distinct(ctx.World, ctx.Find((id, _) => StorageOps.IsChest(id), ctx.Options.SearchRadius, 16).Select(f => f.Pos)))
         {
             if (needs.Count == 0) break;
             if (await run.OpenAsync(c, ct) is { } err) { run.Notes.Add(err); continue; }

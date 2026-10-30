@@ -134,8 +134,19 @@ public static class BlockStates1122
                 p["facing"] = meta switch { 1 => "east", 2 => "west", 3 => "south", 4 => "north", _ => "up" };
                 return S(name);
             case 54 or 130 or 146:
+            {
+                // A pair is one large chest (LargeChest): each cell draws its half of the 30-wide model, lid and latch across.
+                string kind = id == 130 ? "ender" : id == 146 ? "trapped" : "normal";
+                if (w != null && id != 130 && LargeChest.Partner(w, x, y, z) is { } mate)
+                {
+                    int f = LargeChest.PairFacing(w, x, y, z, mate);
+                    p["facing"] = Facing(f);
+                    p["half"] = LargeChest.ModelHalf(f, mate);
+                    return S("mineclaw_chest_" + kind + "_double");
+                }
                 p["facing"] = Horizontal(meta);
-                return S("mineclaw_chest_" + (id == 130 ? "ender" : id == 146 ? "trapped" : "normal"));
+                return S("mineclaw_chest_" + kind);
+            }
             case >= 219 and <= 234: return S("mineclaw_shulker_" + Colors[id - 219]);
             case 26 or 63 or 68 or 144 or 176 or 177 or 119 or 209 or 166 or 36 or 217:
                 return Builtin();

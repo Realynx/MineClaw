@@ -180,6 +180,9 @@
               </ListBox>
               <TextBlock Grid.Column="2" Classes="faint" FontSize="12" Margin="16,0" VerticalAlignment="Center" Text="{Binding HiddenTiles}" />
               <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8">
+                <TextBlock Classes="muted" Text="X-ray" VerticalAlignment="Center"
+                           ToolTip.Tip="Iso, orbit and high pictures: auto cuts away the blocks hiding a bot in a tunnel, cave or under a roof (what the AI sees); on always cuts; off is exact." />
+                <ComboBox ItemsSource="{Binding XRayOptions}" SelectedItem="{Binding XRayMode}" MinWidth="80" />
                 <TextBlock Classes="muted" Text="All tiles" VerticalAlignment="Center" />
                 <ComboBox ItemsSource="{Binding ModeOptions}" SelectedItem="{Binding DefaultMode}" MinWidth="130" />
               </StackPanel>
@@ -339,6 +342,11 @@
                     <CheckBox IsChecked="{Binding ShowStaleness}">
                       <StackPanel Orientation="Horizontal" Spacing="8"><Border Classes="legend" Background="#6B7A99" /><TextBlock Text="Tint areas not seen recently" /></StackPanel>
                     </CheckBox>
+                    <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0"
+                                ToolTip.Tip="on: cut a cone through walls and rock toward the bots in front of the camera (hatched edges on the AI's pictures). auto/off: the freecam stays exact.">
+                      <TextBlock Text="X-ray toward bots" VerticalAlignment="Center" />
+                      <ComboBox ItemsSource="{Binding XRayOptions}" SelectedItem="{Binding XRayMode}" MinWidth="80" />
+                    </StackPanel>
                     <TextBlock Classes="faint" FontSize="12" Text="{Binding OverlayNotes}" TextWrapping="Wrap" Margin="0,4,0,0" />
                   </StackPanel>
                 </Border>

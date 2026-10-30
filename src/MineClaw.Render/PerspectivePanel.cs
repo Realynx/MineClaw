@@ -195,7 +195,27 @@ public static partial class PerspectivePanel
         public ReadingAids.Input? Aids { get; init; }
         /// <summary>Second caption line (bottom-left): time of day and staleness ("day, seen 3 min ago").</summary>
         public string? Stamp { get; init; }
+        /// <summary>The x-ray cut of the outside cameras (orbit, iso, high, cam): automatic when the subject is hidden.</summary>
+        public XRay XRay { get; init; } = XRay.Auto;
+        /// <summary>The body the x-ray keeps in sight (feet position); null = only the focus.</summary>
+        public (double X, double Y, double Z)? Subject { get; init; }
+        /// <summary>Feet layer of the spot: the x-ray never cuts below it.</summary>
+        public int? FeetY { get; init; }
+        public Weather Weather { get; init; }
     }
+
+    /// <summary>The x-ray cut a rig needs (<see cref="ViewCut"/>): only outside perspective cameras that cut (orbit, iso,
+    /// high, cam; never the eye, the shoulder or the orthographic maps), only when the body or the focus is hidden from it
+    /// (<see cref="XRay.Auto"/>) or always (<see cref="XRay.On"/>).</summary>
+    public static ViewCut? XRayFor(Rig rig, Input inp)
+    {
+        if (!rig.Cut || rig.Ortho > 0 || inp.XRay == XRay.Off) return null;
+        int feet = inp.FeetY ?? inp.Focus.Y;
+        return ViewCut.For(inp.World, rig.X, rig.Y, rig.Z, inp.Subject, inp.Focus, XRayRadius, feet, inp.Cut, inp.XRay == XRay.On);
+    }
+
+    /// <summary>Window radius of the x-ray at the subject: 3 blocks shows the tunnel or room around the body, not the hillside.</summary>
+    public const double XRayRadius = 3.0;
 
     /// <summary>Renders one panel (raster + role overlay + focus box + tags + compass + title).</summary>
     public static VisionImage Render(EyeRenderer r, Rig rig, Input inp, out List<string> labels) => Render(r, rig, inp, out labels, out _);
@@ -203,11 +223,15 @@ public static partial class PerspectivePanel
     /// <summary>Renders one panel; <paramref name="facts"/> = the reading aids' labels as text ("chest 14,64,-5").</summary>
     public static VisionImage Render(EyeRenderer r, Rig rig, Input inp, out List<string> labels, out List<string> facts)
     {
+        var xray = XRayFor(rig, inp);
         var scene = new EyeScene
         {
             World = inp.World, Atlas = inp.Atlas, EyeX = rig.X, EyeY = rig.Y, EyeZ = rig.Z, Yaw = rig.Yaw, Pitch = rig.Pitch, Time = inp.Time,
             Nether = inp.Nether, Entities = inp.Entities, Marks = inp.Marks, Fov = rig.Fov, MaxDistance = rig.MaxDistance,
             Cut = rig.Cut ? inp.Cut : null, MinBrightness = rig.Ortho > 0 ? 0.6f : 0.3f, Smooth = inp.Smooth, Ortho = rig.Ortho, Clip = rig.Clip,
+            XRay = xray, Weather = inp.Weather,
+            // Iso and the maps get the weather's wash; the other panels sparse streaks (never enough to hide a block).
+            Precip = rig.Ortho > 0 || rig.Title.StartsWith("ISO", StringComparison.Ordinal) ? PrecipStyle.Tint : PrecipStyle.Streaks, PrecipDensity = 0.3f,
         };
         var fr = r.Raster(scene);
         var c = new Canvas(fr.Width, fr.Height, (uint[])fr.Px.Clone());
@@ -215,7 +239,8 @@ public static partial class PerspectivePanel
         if (inp.Pointed is { } pt) r.BlockBox(c, fr, scene, pt, 0xff4fd8);
         r.BlockBox(c, fr, scene, inp.Focus, FocusC, -0.03f);
         var placer = new VisionRenderer.Placer(0, 0, fr.Width, fr.Height);
-        int tw = PixelFont.Width(rig.Title) + 4;
+        string title = xray != null ? rig.Title + " X-RAY" : rig.Title;
+        int tw = PixelFont.Width(title) + 4;
         placer.Reserve(0, 0, tw, 11);
         placer.Reserve(fr.Width - 30, fr.Height - 30, 30, 30);
         if (inp.Stamp != null) placer.Reserve(0, fr.Height - 11, PixelFont.Width(inp.Stamp) + 4, 11);
@@ -230,9 +255,10 @@ public static partial class PerspectivePanel
             labels = r.Tags(c, fr, scene, placer, marks: true, drops: true);
             r.Compass(c, scene, fr.Width - 12, fr.Height - 12);
         }
-        c.Chip(0, 0, rig.Title, Light, ChipBg, 1f);
+        c.Chip(0, 0, title, Light, ChipBg, 1f);
         if (inp.Stamp != null) c.Chip(0, fr.Height - 11, inp.Stamp, 0xb8c0d0, ChipBg, 0.9f);
-        return new VisionImage([], fr.Width, fr.Height, 0, rig.Legend, labels) { Pixels = c.Px };
+        string legend = xray == null ? rig.Legend : rig.Legend + ", x-ray: blocks between the camera and you/the focus cut away, cut faces hatched";
+        return new VisionImage([], fr.Width, fr.Height, 0, legend, labels) { Pixels = c.Px, XRay = xray != null };
     }
 
     /// <summary>Roles drawn on what each pixel shows: a light tint over the cell's pixels and its silhouette in the role colour;

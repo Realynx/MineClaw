@@ -286,9 +286,10 @@ public sealed partial class Release1122Connection : IGameConnection
             {
                 int reason = r.ReadUByte();
                 float value = r.ReadFloat();
-                // WorldServer.updateWeather: 1 = rain starts, 2 = rain stops (the b1.8.1 numbering); 3 = game mode.
-                return reason is 0 or 1 or 2 or 3
-                    ? new NewStatePacket { Reason = (sbyte)reason, GameMode = (sbyte)Math.Floor(value + 0.5f) }
+                // WorldServer.updateWeather: 1 = rain starts, 2 = rain stops (the b1.8.1 numbering); 3 = game mode; 7/8 = the
+                // rain/thunder strength fading 0..1 (the viewer's sky, light and streaks follow them; live 10-29 the viewer showed no weather).
+                return reason is 0 or 1 or 2 or 3 or 7 or 8
+                    ? new NewStatePacket { Reason = (sbyte)reason, GameMode = (sbyte)Math.Floor(value + 0.5f), Value = value }
                     : null;
             }
             case Ids1122.PlayerListItem:

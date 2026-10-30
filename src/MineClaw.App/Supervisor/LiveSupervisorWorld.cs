@@ -210,6 +210,15 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
         return null;
     }
 
+    /// <summary>The rain and thunder of the first in-process body in <paramref name="dim"/> (the server's weather; live 10-29 the
+    /// viewer never showed it).</summary>
+    public (float Rain, float Thunder)? WorldWeather(int dim)
+    {
+        foreach (var b in Bodies())
+            if (b.World.Dimension == dim) return (b.World.Rain, b.World.Thunder);
+        return null;
+    }
+
     private IReadOnlyList<HiveLease> Leases()
     {
         try { return _hub.Hive?.Leases() ?? []; }

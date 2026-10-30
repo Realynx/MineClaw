@@ -43,7 +43,9 @@ public readonly record struct ClaimKey(ClaimKind Kind, BlockPos Min, BlockPos Ma
 
     /// <summary>
     /// Whether two leases can't be held by different owners at once: same thing, or (blocks/areas only) one box overlapping
-    /// the other. Chests, furnaces and tasks only conflict with themselves.
+    /// the other. Furnaces and tasks only conflict with themselves; a chest also with a chest key on a block beside it at the
+    /// same height (<see cref="ChestPairs"/>: both halves of a double chest are one window, so a lease taken through one half
+    /// must block the other; a trapped chest beside a normal one is over-locked, harmless).
     /// </summary>
     public bool ConflictsWith(ClaimKey o)
     {
@@ -52,6 +54,7 @@ public readonly record struct ClaimKey(ClaimKind Kind, BlockPos Min, BlockPos Ma
         {
             ClaimKind.Task => string.Equals(Name, o.Name, StringComparison.Ordinal),
             ClaimKind.Area => Overlaps(o),
+            ClaimKind.Chest => Min == o.Min || (Min.Y == o.Min.Y && Math.Abs(Min.X - o.Min.X) + Math.Abs(Min.Z - o.Min.Z) == 1),
             _ => Min == o.Min,
         };
         bool spatial = Kind is ClaimKind.Block or ClaimKind.Area && o.Kind is ClaimKind.Block or ClaimKind.Area;

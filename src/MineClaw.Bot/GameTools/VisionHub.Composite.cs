@@ -173,7 +173,7 @@ public sealed partial class VisionHub
         {
             Blocks = scene.Blocks, Light = scene.Light, Focus = (focus.X, focus.Y, focus.Z), FeetY = focus.Y, Radius = radius, Roles = scene.Roles.Map,
             Entities = EntitiesNear(scene.Dim, focus, radius + 4), Marks = mainHere ? _marks(focus.X, focus.Y, focus.Z, radius) : [], Atlas = Atlas(),
-            Time = _c.World.Time, Nether = scene.Dim == -1, Body = body, Aids = aids, Spots = spots ?? [],
+            Time = _c.World.Time, Weather = WeatherIn(scene.Dim), Nether = scene.Dim == -1, Body = body, Aids = aids, Spots = spots ?? [],
             Staleness = stale == null ? null : "seen " + stale.Replace(" seen by ", " by ", StringComparison.Ordinal),
         };
     }

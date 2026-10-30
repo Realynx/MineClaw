@@ -176,6 +176,28 @@ public class VisionRouterTests
         Assert.Contains("contents aren't visible", chest);
     }
 
+    /// <summary>User report 10-29 ("chests placed next to each other don't combine into a double chest so the bot can't tell"):
+    /// two touching chests are one double chest, said once; a trapped chest beside a normal one and a stacked chest are not.</summary>
+    [Fact]
+    public void Router_reports_a_double_chest_once()
+    {
+        var w = new WorldState();
+        w.ApplyChunkRegion(-32, 0, -32, 64, 128, 64, new byte[64 * 128 * 64], null, null, null);
+        w.SetBlock(3, 64, 2, Blocks.Chest, 0);
+        w.SetBlock(2, 64, 2, Blocks.Chest, 0);
+        RoleMap roles = (_, _, _) => BlockRole.None;
+        var one = VisionRouter.Answer("What items are in the chest at this spot? List them.", w.PlanningView, roles, (2, 64, 2), 6)!;
+        Assert.Contains("double chest 2,64,2-3,64,2", one);
+        Assert.DoesNotContain("chests", one);
+
+        w.SetBlock(4, 64, 2, MineClaw.World.ChestPairs.TrappedChest, 0); // its own chest: a different kind
+        w.SetBlock(2, 65, 2, Blocks.Chest, 0);                           // stacked: its own chest
+        var three = VisionRouter.Answer("What items are in the chest at this spot? List them.", w.PlanningView, roles, (2, 64, 2), 6)!;
+        Assert.Contains("3 chests: double chest 2,64,2-3,64,2", three);
+        Assert.Contains("chest 2,65,2", three);
+        Assert.Contains("trapped chest 4,64,2", three);
+    }
+
     [Fact]
     public void Refuted_claims_never_reach_the_brain_and_unsure_ones_are_marked()
     {

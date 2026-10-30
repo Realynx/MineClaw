@@ -283,6 +283,10 @@ public class InteractTests
         s.Send(new NewStatePacket { Reason = NewStatePacket.ReasonBeginRain });
         s.Send(new UpdateSignPacket { X = 9, Y = 64, Z = 8, Lines = ["a", "b", "", ""] });
         Assert.True(await Harness.WaitAsync(() => c.IsRaining && c.Signs.Count == 1));
+        // b1.8.1 has no thunder packet: a lightning bolt while it rains is the storm.
+        s.Send(new ThunderboltPacket { EntityId = 4242, Type = 1, X = 9 * 32, Y = 64 * 32, Z = 8 * 32 });
+        Assert.True(await Harness.WaitAsync(() => c.World.Thunder == 1f));
+        Assert.Equal(1f, c.World.Rain);
         var pending = c.WriteSignAsync(new BlockPos(9, 64, 8), ["never echoed"]); // a 2 s wait the change must cut short
         await Harness.WaitAsync(() => c.CurrentAction == "write_sign");
         s.Send(new RespawnPacket { Dimension = -1, Difficulty = 1, GameMode = 0, WorldHeight = 128, MapSeed = 1234 });
@@ -292,6 +296,7 @@ public class InteractTests
         Assert.True(await Harness.WaitAsync(() => changed is not null));
         Assert.Equal((0, -1), changed!.Value);
         Assert.False(c.IsRaining);
+        Assert.Equal((0f, 0f), (c.World.Rain, c.World.Thunder)); // the overworld's storm doesn't darken the Nether's light maths
         Assert.Empty(c.Signs);
         Assert.Equal(-1, c.World.Dimension);
         // Same-dimension respawn (death) raises nothing.

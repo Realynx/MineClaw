@@ -29,6 +29,9 @@ public interface ISupervisorData
     IReadOnlyList<BotTile> Bots();
     /// <summary>A bot's live view (mode sheet|brain|eye|top|iso|side|layers). Null = no such bot online.</summary>
     Task<ViewImage?> ViewAsync(string bot, string mode, int radius, RenderGate gate, CancellationToken ct);
+    /// <summary>The view with the outside cameras' x-ray forced on or off (the Explorer's toggle); Auto = the AI's rule.</summary>
+    Task<ViewImage?> ViewAsync(string bot, string mode, int radius, MineClaw.Render.XRay xray, RenderGate gate, CancellationToken ct) =>
+        ViewAsync(bot, mode, radius, gate, ct);
     Task<ViewImage> HiveAsync(RenderGate gate, CancellationToken ct);
     Task<ViewImage> CameraAsync(CameraQuery q, RenderGate gate, CancellationToken ct);
     /// <summary>The TUI's panels as data: usage vs caps per tier, thoughts and tool calls, chat, the hive job/claim board.</summary>

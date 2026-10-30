@@ -150,8 +150,11 @@ public sealed class HiveApi : IDisposable
     public Task<OverlaysDto> OverlaysAsync(int dim, CancellationToken ct) => GetJsonAsync<OverlaysDto>("overlays", $"api/world/overlays?dim={dim}", ct);
 
     /// <summary>A bot's server-rendered view PNG (iso/top/side/...; the server caches each ~1 s).</summary>
-    public Task<byte[]> ViewPngAsync(string bot, string mode, CancellationToken ct) =>
-        GetBytesAsync("view", $"view/{Uri.EscapeDataString(bot)}?mode={Uri.EscapeDataString(mode)}", ct);
+    public Task<byte[]> ViewPngAsync(string bot, string mode, CancellationToken ct) => ViewPngAsync(bot, mode, null, ct);
+
+    /// <summary>The view with the x-ray toggle ("on"/"off"; null or "auto" = the server's automatic rule).</summary>
+    public Task<byte[]> ViewPngAsync(string bot, string mode, string? xray, CancellationToken ct) =>
+        GetBytesAsync("view", $"view/{Uri.EscapeDataString(bot)}?mode={Uri.EscapeDataString(mode)}{(xray is "on" or "off" ? "&xray=" + xray : "")}", ct);
 
     public async Task<LocateDto?> LocateAsync(string q, CancellationToken ct)
     {

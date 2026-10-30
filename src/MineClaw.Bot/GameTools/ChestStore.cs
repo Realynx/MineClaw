@@ -52,9 +52,9 @@ public static class ChestStore
             // Only a chest the caller named is opened whatever its marks; fallbacks honour never-touch and "private".
             if (chest != asked && (off.Contains(chest) || skip?.Invoke(chest) != null)) continue;
             if (++opened > MaxChests) break;
-            // b1.8.1: touching chest blocks are always one window (a pair); never open the same window twice.
-            tried.Add(chest);
-            tried.Add(chest.Offset(1, 0, 0)); tried.Add(chest.Offset(-1, 0, 0)); tried.Add(chest.Offset(0, 0, 1)); tried.Add(chest.Offset(0, 0, -1));
+            // Both halves of a double chest are one window (ChestPairs): never open it twice. Only the real other half: a trapped
+            // chest beside a normal one (1.12.2) is a chest of its own (was: every side was marked tried).
+            foreach (var cell in ChestPairs.Cells(c.World, chest)) tried.Add(cell);
             var before = Loose();
             var r = await c.DepositAllAsync(chest, filter, ct).ConfigureAwait(false);
             var after = Loose();

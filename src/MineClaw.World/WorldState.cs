@@ -100,8 +100,11 @@ public sealed class WorldState : IBlockAccess, IDisposable
     public BlockPos Spawn { get => _spawn; set { _spawn = value; HasSpawn = true; } }
     /// <summary>True once <see cref="Spawn"/> was set (the server sent 0x06).</summary>
     public bool HasSpawn { get; private set; }
-    /// <summary>Rain strength 0..1 (0x46 begin/end rain); darkens the sky a little (World.k).</summary>
+    /// <summary>Rain strength 0..1 (0x46 begin/end rain; 1.12.2 fades it with Change Game State 7); darkens the sky a little (World.k).</summary>
     public float Rain { get; set; }
+    /// <summary>Thunder strength 0..1 (1.12.2 Change Game State 8; b1.8.1 has no packet: a lightning bolt while it rains sets 1).
+    /// Counts only while it rains (World.getThunderStrength × rain): a storm takes 3 more off the noon sky light.</summary>
+    public float Thunder { get; set; }
     /// <summary>0 overworld, -1 nether.</summary>
     public int Dimension { get; set; }
     public long Seed { get; set; }
@@ -319,7 +322,7 @@ public sealed class WorldState : IBlockAccess, IDisposable
     public LightLevel LightAt(BlockPos p) => new(Light.Get(true, p.X, p.Y, p.Z), Light.Get(false, p.X, p.Y, p.Z));
 
     /// <summary>World.k (skylightSubtracted) at <paramref name="timeOfDay"/> with the current rain: 0 by day, 11 at night.</summary>
-    public int SkylightSubtracted(long? timeOfDay = null) => LightEngine.SkylightSubtracted(timeOfDay ?? TimeOfDay, Rain);
+    public int SkylightSubtracted(long? timeOfDay = null) => LightEngine.SkylightSubtracted(timeOfDay ?? TimeOfDay, Rain, Thunder);
 
     /// <summary>getLightLevel at <paramref name="timeOfDay"/> (default now): max(sky − World.k, block), the slab/stairs/farmland
     /// neighbour rule included. What the mob spawn check reads.</summary>

@@ -58,6 +58,11 @@ public sealed partial class VisionHub
         History = new VisionHistory(Math.Max(1, o.HistorySize), dir, o.HistoryDiskKeep, log);
     }
 
+    /// <summary>The weather a picture of <paramref name="dim"/> is drawn under: this body's (the server's) rain and thunder in its own
+    /// dimension, clear elsewhere (a remote spot in another dimension; the Nether never rains).</summary>
+    internal MineClaw.Render.Weather WeatherIn(int dim) =>
+        dim == _c.World.Dimension && dim != -1 ? new MineClaw.Render.Weather(_c.World.Rain, _c.World.Thunder) : default;
+
     /// <summary>The last sheets a model received from this hub (the Live Hive's "what the AI saw"; the supervisor's vision routes).</summary>
     public VisionHistory History { get; }
 
@@ -234,7 +239,7 @@ public sealed partial class VisionHub
     /// is what the bot sees.
     /// </summary>
     public ContactSheetRequest SheetRequest(BlockPos focus, int radius, IReadOnlyList<string>? views, Entity? viewer = null, Scene? scene = null, HiveEyePose? pose = null,
-        bool aids = true, IReadOnlyDictionary<string, CamParams>? viewParams = null)
+        bool aids = true, IReadOnlyDictionary<string, CamParams>? viewParams = null, XRay xray = XRay.Auto)
     {
         var w = _c.World;
         var me = w.Player.Position;
@@ -269,7 +274,7 @@ public sealed partial class VisionHub
             eye = new EyeScene
             {
                 World = scene.Light, Atlas = atlas, EyeX = ex, EyeY = ey, EyeZ = ez, Yaw = yaw, Pitch = pitch, Time = w.Time, Nether = scene.Dim == -1,
-                Smooth = _o.SmoothLighting, Entities = ents, Marks = ms, Target = (focus.X, focus.Y, focus.Z),
+                Weather = WeatherIn(scene.Dim), Smooth = _o.SmoothLighting, Entities = ents, Marks = ms, Target = (focus.X, focus.Y, focus.Z),
                 Pointed = pointed is { } pp ? (pp.Pos.X, pp.Pos.Y, pp.Pos.Z) : null, Viewer = who,
             };
         }
@@ -282,12 +287,13 @@ public sealed partial class VisionHub
             Self = mainHere ? (feet.X, feet.Y, feet.Z) : null,
             Entities = ents, Marks = ms, Target = local && VisionTools.ActivityTarget(_rt, _places) is { } t ? (t.X, t.Y, t.Z) : null,
             Pointed = pointed is { } p2 ? (p2.Pos.X, p2.Pos.Y, p2.Pos.Z) : null, PointedBy = pointed?.Player, Nether = scene.Dim == -1,
-            Atlas = atlas, Light = scene.Light, Time = w.Time, Roles = scene.Roles.Map, Axis = axis, Eye = eye,
+            Atlas = atlas, Light = scene.Light, Time = w.Time, Weather = WeatherIn(scene.Dim), Roles = scene.Roles.Map, Axis = axis, Eye = eye,
             // The body in the third-person panels: a clone's pose for its view, else main where it stands.
             SelfPose = pose != null ? new PerspectivePanel.Body(pose.X, pose.Y, pose.Z, pose.Yaw, pose.Pitch, HiveVision.ShortName(pose.Name))
                 : mainHere ? new PerspectivePanel.Body(me.X, me.Y, me.Z, w.Player.Yaw, w.Player.Pitch, _c.Username) : null,
             Aids = aids,
             ViewParams = viewParams is { Count: > 0 } ? new Dictionary<string, CamParams>(viewParams, StringComparer.OrdinalIgnoreCase) : null,
+            XRay = xray,
             Stamp = scene.Region?.Staleness((focus.X, focus.Y, focus.Z), radius, _time.GetUtcNow()) is { } st ? "seen " + (st.Length > 40 ? st[..39] + "…" : st) : null,
         };
     }

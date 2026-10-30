@@ -316,10 +316,10 @@ public sealed class OrganizeStorageSkill : Skill
 
     private static List<BlockPos> Pick(SkillContext ctx, string scope)
     {
-        var all = ctx.Find((id, _) => StorageOps.IsChest(id), ctx.Options.SearchRadius, 64).Select(f => f.Pos)
+        // Large chests are two blocks: one per pair, its west/north half (was: any touching chest dropped, a trapped chest
+        // beside a normal one included).
+        var all = MineClaw.World.ChestPairs.Distinct(ctx.World, ctx.Find((id, _) => StorageOps.IsChest(id), ctx.Options.SearchRadius, 64).Select(f => f.Pos))
             .Where(p => ctx.Claims.IsFree(MineClaw.World.Claims.ClaimKey.Chest(p, ctx.World.Dimension))).ToList();
-        // Large chests are two blocks: keep one per pair.
-        all = all.Where(p => !all.Any(q => q != p && q.ManhattanTo(p) == 1 && q.Y == p.Y && (q.X < p.X || q.Z < p.Z))).ToList();
         if (scope is "all" or "") return all;
         if (scope.Contains("..")) // area "x,y,z..x,y,z"
         {

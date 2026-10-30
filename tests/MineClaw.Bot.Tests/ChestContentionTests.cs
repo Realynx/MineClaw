@@ -112,6 +112,44 @@ public class ChestContentionTests
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(3), $"waited {sw.Elapsed}");
         Assert.DoesNotContain(c.CallList, x => x.StartsWith("deposit"));
     }
+
+    /// <summary>
+    /// A double chest is one window (user report 10-29): an exclusive user who came in through one half blocks a deposit through
+    /// the other, and the four deposit slots are the pair's, not four per half.
+    /// </summary>
+    [Fact]
+    public async Task Both_halves_of_a_double_chest_share_one_lease_and_one_set_of_deposit_slots()
+    {
+        var board = new TestLeases();
+        var east = new WPos(LogChest.X + 1, LogChest.Y, LogChest.Z);
+        Assert.True((await board.ViewFor("maid_chan_67").TryClaimAsync(ClaimKey.Chest(east))).Ok);
+        var lone = Body("maid_chan_100");
+        lone.World.SetBlock(east.X, east.Y, east.Z, Blocks.Chest, 0);
+        var blocked = await new ClaimAwareGameClient(lone, board.ViewFor(lone.Username)) { ExclusiveWait = TimeSpan.FromMilliseconds(200) }
+            .DepositAllAsync(LogChest);
+        Assert.Contains("busy: maid_chan_67 is using chest", blocked.Message);
+        await board.ViewFor("maid_chan_67").ReleaseAsync(ClaimKey.Chest(east));
+
+        int active = 0, peak = 0;
+        var bodies = Enumerable.Range(0, 8).Select(i =>
+        {
+            var c = Body($"maid_chan_{101 + i}");
+            c.World.SetBlock(east.X, east.Y, east.Z, Blocks.Chest, 0);
+            c.Effects["deposit"] = () =>
+            {
+                int now = Interlocked.Increment(ref active);
+                int seen;
+                while ((seen = Volatile.Read(ref peak)) < now && Interlocked.CompareExchange(ref peak, now, seen) != seen) { }
+                Thread.Sleep(80);
+                Empty(c);
+                Interlocked.Decrement(ref active);
+            };
+            return (Fake: c, Game: new ClaimAwareGameClient(c, board.ViewFor(c.Username)), At: i % 2 == 0 ? LogChest : east);
+        }).ToList();
+        var results = await Task.WhenAll(bodies.Select(b => Task.Run(() => b.Game.DepositAllAsync(b.At))));
+        Assert.All(results, r => Assert.True(r.Ok, r.Message));
+        Assert.InRange(peak, 1, 4); // was: four per half, eight bodies crowding one window
+    }
 }
 
 /// <summary>A minimal shared lease board (owner views over one table), as the hive's ClaimBoard behaves for these tests.</summary>

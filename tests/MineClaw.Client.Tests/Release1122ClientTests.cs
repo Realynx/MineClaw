@@ -152,6 +152,17 @@ public class Release1122ClientTests
         Assert.True(dig.Ok, dig.Message);
         Assert.True(client.IsPlaying);
 
+        // Weather (live 10-29: the viewer showed none): reason 1 starts the rain, 7 and 8 fade the rain and thunder strengths
+        // (the sky, the light maths and the viewer's streaks follow them), 2 ends it.
+        server.Send(0x1E, w => w.WriteUByte(1).WriteFloat(0));
+        server.Send(0x1E, w => w.WriteUByte(7).WriteFloat(0.4f));
+        server.Send(0x1E, w => w.WriteUByte(8).WriteFloat(0.9f));
+        await Until(() => client.IsRaining && Math.Abs(client.World.Thunder - 0.9f) < 1e-4);
+        Assert.Equal(0.4f, client.World.Rain, 4);
+        Assert.Equal(MineClaw.World.LightEngine.SkylightSubtracted(client.World.TimeOfDay, 0.4f, 0.9f), client.World.SkylightSubtracted());
+        server.Send(0x1E, w => w.WriteUByte(2).WriteFloat(0));
+        await Until(() => !client.IsRaining && client.World.Rain == 0 && client.World.Thunder == 0);
+
         // Disconnect with a JSON reason.
         server.Send(0x1A, w => w.WriteString(ChatComponent.Translate("multiplayer.disconnect.kicked")));
         Assert.Equal("Kicked by an operator.", await kicked.Task.WaitAsync(TimeSpan.FromSeconds(10)));

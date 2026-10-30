@@ -57,6 +57,8 @@ public sealed class FreecamEngine : IFrameSource, IDisposable
     public int MaxDistance { get; set; } = 64;
     public double MovingScale { get; set; } = 0.6;
     public int MaxFps { get; set; } = 60;
+    /// <summary>The user's x-ray toggle (<see cref="FreecamXRay"/>): off = exact geometry.</summary>
+    public bool XRay { get; set; }
     /// <summary>Largest frame rendered (pixels); a bigger view is upscaled.</summary>
     public int MaxPixels { get; set; } = 1280 * 720;
     // Leave two cores for the UI thread and the compositor: a raster on every core starved them (input and pictures stalled).
@@ -175,7 +177,7 @@ public sealed class FreecamEngine : IFrameSource, IDisposable
             if (px > MaxPixels) { double f = Math.Sqrt(MaxPixels / px); w = (int)(w * f); h = (int)(h * f); }
             w = Math.Max(64, w); h = Math.Max(48, h);
             bool dirty = rev != camRev || _cache.Version != cacheVer || Interlocked.Read(ref DataVersion) != dataVer || w != lastW || h != lastH
-                || (wasMoving && !moving) || now - lastDraw > 0.5;
+                || (wasMoving && !moving) || now - lastDraw > (_cache.WeatherIn(Camera.Pose.Dim).Wet ? 0.1 : 0.5); // falling rain animates
             if (!dirty) { Thread.Sleep(1); return; } // ~1 ms: a look or key shows up on the next frame, not 15 ms later
             camRev = rev; cacheVer = _cache.Version; dataVer = Interlocked.Read(ref DataVersion); lastW = w; lastH = h; wasMoving = moving;
             double t0 = clock.Elapsed.TotalMilliseconds;
@@ -215,6 +217,7 @@ public sealed class FreecamEngine : IFrameSource, IDisposable
         {
             World = _vox, Atlas = _atlas(), EyeX = pose.X, EyeY = pose.Y, EyeZ = pose.Z, Yaw = pose.Yaw, Pitch = pose.Pitch, Time = _cache.TimeNow(pose.Dim) ?? 6000,
             Nether = pose.Dim == -1, Entities = visible, Viewer = "freecam",
+            Weather = _cache.WeatherIn(pose.Dim), PrecipTick = Environment.TickCount64 / 50, XRay = XRay ? FreecamXRay.Cut(pose, bots) : null,
         };
         var fr = eye.Raster(scene);
         RasterMs = eye.LastMs;

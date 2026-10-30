@@ -255,7 +255,8 @@ public sealed class Release1122ServerConnection : IGameConnection
                     .WriteString("default", 16);
                 break;
             case NewStatePacket ns:
-                yield return WireWriter.ForPacket(Ids1122.ChangeGameState).WriteUByte((byte)ns.Reason).WriteFloat(ns.GameMode);
+                yield return WireWriter.ForPacket(Ids1122.ChangeGameState).WriteUByte((byte)ns.Reason)
+                    .WriteFloat(ns.Reason is NewStatePacket.ReasonRainLevel or NewStatePacket.ReasonThunderLevel ? ns.Value : ns.GameMode);
                 break;
             case PlayerListItemPacket pl:
             {
