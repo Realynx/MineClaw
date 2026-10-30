@@ -272,9 +272,13 @@ public sealed partial class ScriptSession
 
     private void Watch()
     {
-        if (Status is ScriptStatus.Running && _active.Elapsed > _o.MaxWall)
-            Stop($"time limit {ScriptText.Dur(_o.MaxWall)}", limit: true);
-        if (Status is ScriptStatus.Running) Signals.Poll(onScriptThread: false);
+        try
+        {
+            if (Status is ScriptStatus.Running && _active.Elapsed > _o.MaxWall)
+                Stop($"time limit {ScriptText.Dur(_o.MaxWall)}", limit: true);
+            if (Status is ScriptStatus.Running) Signals.Poll(onScriptThread: false);
+        }
+        catch (Exception) { /* a timer callback: throwing would end the process (every in-process hive with it); next tick retries */ }
     }
 
     /// <summary>Cuts the in-flight interruptible action so the next safe point runs a handler (it re-runs afterwards unless the handler unwinds).</summary>

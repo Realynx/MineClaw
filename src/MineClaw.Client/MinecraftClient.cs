@@ -479,6 +479,13 @@ public sealed partial class MinecraftClient : IAsyncDisposable
         {
             reason = "connection lost: " + ex.Message;
         }
+        catch (Exception ex)
+        {
+            // A dedicated thread: anything else escaping it (a decode bug in a translated packet, a read timeout) would end the
+            // whole process, and with in-process hives main and every hive in it. It ends this session instead (reconnect policy).
+            reason = "reader error: " + ex.GetType().Name + ": " + ex.Message;
+            Log(reason);
+        }
         EndSession(s, s.EndReason ?? reason);
     }
 }
