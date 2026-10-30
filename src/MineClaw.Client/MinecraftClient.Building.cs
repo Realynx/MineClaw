@@ -124,7 +124,7 @@ public sealed partial class MinecraftClient
 
     /// <summary>Digs a block from where the body is (no pathing): in a column or on a planned stand.</summary>
     public Task<ActionResult> DigHereAsync(BlockPos pos, CancellationToken ct = default) =>
-        RunActionAsync("dig", ct, c => DigCoreAsync(pos, c, allowPathing: false));
+        RunActionAsync("dig", ct, c => DigCoreAsync(pos, c, allowPathing: false, requested: true));
 
     /// <summary>
     /// The build slicer's pillar step (nerd pole): standing in <paramref name="feet"/>, jump and place <paramref name="itemId"/>

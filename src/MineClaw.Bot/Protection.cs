@@ -32,7 +32,7 @@ public sealed partial class Protection
     private readonly IReservedItemSource _reserved;
     private readonly TimeSpan _refresh;
     private readonly TimeProvider _time;
-    private volatile (BlockPos Min, BlockPos Max, string? Label)[] _memoryRegions = [];
+    private volatile ProtectedBox[] _memoryRegions = [];
     private DateTimeOffset _lastRefresh = DateTimeOffset.MinValue;
     private readonly object _lock = new();
 
@@ -165,15 +165,17 @@ public sealed partial class Protection
 
     /// <summary>The remembered structure box holding <paramref name="p"/> as one of its parts (farmland: as its farm), or null.
     /// Natural fill (dirt, grass, water, leaves, plants) inside a box is not a part: boxes are guesses, the blocks are facts.</summary>
-    private (BlockPos Min, BlockPos Max, string? Label)? InMemoryRegion(BlockPos p, int id)
+    private ProtectedBox? InMemoryRegion(BlockPos p, int id) => MemoryRegions(p, id).FirstOrDefault();
+
+    /// <summary>Every remembered box holding <paramref name="p"/> as a part (overlapping builds: each must yield for an edit).</summary>
+    private IEnumerable<ProtectedBox> MemoryRegions(BlockPos p, int id)
     {
         MaybeRefresh();
         bool natural = IsNaturalFill(id) && id != Blocks.Farmland;
         // A remembered FARM is made of its soil and irrigation: dirt/grass/water there are parts (tilling stays allowed).
         bool soil = id is Blocks.Dirt or Blocks.Grass or Blocks.Water or Blocks.FlowingWater;
         foreach (var r in _memoryRegions)
-            if (Inside(p, r.Min, r.Max) && (!natural || soil && IsFarmLabel(r.Label))) return r;
-        return null;
+            if (Inside(p, r.Min, r.Max) && (!natural || soil && IsFarmLabel(r.Label))) yield return r;
     }
 
     private static bool IsFarmLabel(string? label) =>
@@ -233,7 +235,7 @@ public sealed partial class Protection
         if (id == Blocks.Farmland && (InMemoryRegion(p, id) != null || IndexerKind?.Invoke(p) is IndexKinds.Farm or IndexKinds.UnknownStructure))
             return S("farm", "farmland: breaking or trampling it undoes the farm (tilling and planting are fine)");
         if (!IsFarmPlant(id) && InMemoryRegion(p, id) is { } mr)
-            return S("structure", string.IsNullOrWhiteSpace(mr.Label) ? "part of a remembered build" : $"part of the {mr.Label} build");
+            return S("structure", StructureWhy(mr));
         foreach (var r in _configRegions)
             if (Inside(p, r.Min, r.Max)) return S("config_region", "inside a protected region from my config");
         if (IndexerKind?.Invoke(p) is { } kind)
@@ -278,8 +280,8 @@ public sealed partial class Protection
         }
         try
         {
-            _memoryRegions = _regions.LabeledRegions()
-                .Select(r => (Min(r.Min, r.Max), Max(r.Min, r.Max), r.Label)).ToArray();
+            _memoryRegions = _regions.Boxes().Select(r => r with { Min = Min(r.Min, r.Max), Max = Max(r.Min, r.Max) }).ToArray();
+
         }
         catch { /* keep the last snapshot */ }
     }

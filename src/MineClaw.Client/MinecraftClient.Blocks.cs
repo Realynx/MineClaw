@@ -12,7 +12,7 @@ public sealed partial class MinecraftClient
     /// <summary>Digs one block: paths into reach if needed, picks the best tool, aims at a visible face, digs for the
     /// computed time and verifies the server broke it.</summary>
     public Task<ActionResult> DigBlockAsync(int x, int y, int z, CancellationToken ct = default) =>
-        RunActionAsync("dig", ct, c => DigCoreAsync(new BlockPos(x, y, z), c, floorGuard: true));
+        RunActionAsync("dig", ct, c => DigCoreAsync(new BlockPos(x, y, z), c, floorGuard: true, requested: true));
 
     /// <summary>Places a block of <paramref name="itemId"/> at (x,y,z) against a solid neighbour; verifies it appeared.</summary>
     public Task<ActionResult> PlaceBlockAsync(int x, int y, int z, int itemId, CancellationToken ct = default) =>
@@ -55,14 +55,17 @@ public sealed partial class MinecraftClient
     /// <param name="noShears">Leaves for saplings: shears would drop the leaf block instead of the sapling chance.</param>
     /// <param name="floorGuard">A free-standing dig/mine (the model or a script picked the block): never the floor of a walkway
     /// near the void (see <see cref="WalkwayFloorVeto"/>). Macros that dig their own blocks (pillars, trees, paths) skip it.</param>
+    /// <param name="requested">An explicit dig at a named cell (<see cref="DigBlockAsync"/>, <see cref="DigHereAsync"/>): the
+    /// editing context may yield soft protection there (<see cref="EditYields"/>). Picks (mine, chop, path digs) never pass it.</param>
     private async Task<ActionResult> DigCoreAsync(BlockPos pos, CancellationToken ct, bool allowPathing = true, bool ignoreProtection = false,
-        bool generator = false, bool noShears = false, bool floorGuard = false)
+        bool generator = false, bool noShears = false, bool floorGuard = false, bool requested = false)
     {
         int id = World.GetBlock(pos);
         string name = BlockName(id, World.GetMeta(pos));
         if (!World.IsLoaded(pos.X, pos.Z)) return ActionResult.Fail($"{Fmt(pos)} is not loaded");
         if (id == 0 || BlockShapes.IsLiquid(id)) return ActionResult.Success($"{Fmt(pos)} already clear");
-        if (!ignoreProtection && IsBlockProtected(pos, id)) return ActionResult.Fail(ProtectedRefusal(pos, id));
+        if (!ignoreProtection && IsBlockProtected(pos, id) && !(requested && EditYields?.Invoke(pos, id) == true))
+            return ActionResult.Fail(ProtectedRefusal(pos, id));
         if (Blocks.Get(id).Hardness < 0) return ActionResult.Fail($"{name} is unbreakable");
         if (EditBlocked(pos)) return ActionResult.Fail(BlockedReason(pos));
         if (DigSafetyVeto(pos, name, generator, positioned: !allowPathing) is { } veto) return ActionResult.Fail(veto);

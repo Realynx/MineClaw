@@ -177,11 +177,22 @@ public sealed class BotHost : IDisposable
         protection.Marks = marks;
         protection.Dimension = () => client.World.Dimension;
         protection.Telemetry = telemetry;
+        // The editing context: a saved design (or the bot's own mark) yields to explicitly targeted work a trusted player asked
+        // for (live 10-30: Fox's captured spiral staircase refused every next column he asked main to dig).
+        protection.Edits = new EditContext(time)
+        {
+            LeaseMinutes = botOptions.Protection.PermitMinutes,
+            Trusted = () => rt.Options.Self.TrustedPlayers,
+            IsBot = n => n.Equals(client.Username, StringComparison.OrdinalIgnoreCase) || n.Equals(rt.Chat.Username, StringComparison.OrdinalIgnoreCase)
+                         || hiveBots?.Invoke().Contains(n, StringComparer.OrdinalIgnoreCase) == true || rt.Chat.IsHiveBot?.Invoke(n) == true,
+        };
+        rt.Chat.Accepted += m => protection.Edits.NoteAsk(m.Player);
         client.IsProtected = protection.IsProtected;
         if (client is MinecraftGameClient mgx)
         {
             mgx.Inner.ExplainProtection = protection.Explain;
             mgx.Inner.SoftOverride = protection.OverridesSoft;
+            mgx.Inner.EditYields = protection.EditYields;
             mgx.Inner.CountRefusal = r => telemetry.Count(r);
             mgx.Inner.NeverBreak = p => marks.HasNever && marks.NeverAt(p, client.World.Dimension) != null;
             // Autonomous mine: taught / regen-confirmed generator cells are resource sources too.

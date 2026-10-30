@@ -43,6 +43,25 @@ public interface IProtectedRegionSource
     /// <summary>The same boxes with what they are ("main house"), for refusal texts. Default: unlabelled.</summary>
     IReadOnlyList<(WPos Min, WPos Max, string? Label)> LabeledRegions() =>
         ProtectedRegions().Select(r => (r.Min, r.Max, (string?)null)).ToList();
+
+    /// <summary>The same boxes with who made them and the design they record (the editing context: a saved design yields to
+    /// requested work on it, the bot's own marks to requested work). Default: labelled boxes of unknown origin (never yield).</summary>
+    IReadOnlyList<ProtectedBox> Boxes() => LabeledRegions().Select(r => new ProtectedBox(r.Min, r.Max, r.Label)).ToList();
+}
+
+/// <summary>A protected box: a remembered structure (<paramref name="Structure"/>: its <paramref name="Owner"/> is who taught or
+/// marked it, null = the bot itself) or a taught world fact, and the design it records ("captured as design #11", "built from
+/// design #4"), if any.</summary>
+public sealed record ProtectedBox(WPos Min, WPos Max, string? Label, string? Owner = null, long? Design = null, bool Structure = false);
+
+/// <summary>The structure note that links a design: "Fox's build, captured as design #11" / "built from design #4 for Fox: …".</summary>
+public static partial class DesignLinks
+{
+    [GeneratedRegex(@"(?:captured as|built from) design #(\d+)", RegexOptions.IgnoreCase)]
+    private static partial Regex LinkRx();
+
+    public static long? Of(string? note) =>
+        note is { } n && LinkRx().Match(n) is { Success: true } m && long.TryParse(m.Groups[1].Value, out var id) ? id : null;
 }
 
 /// <summary>Items memory says to keep (e.g. "don't use the diamonds"). Config covers the static part.</summary>
@@ -151,12 +170,15 @@ public sealed partial class MemoryStoreAdapter(MemoryStore memory, ObservationSt
     public IReadOnlyList<(WPos Min, WPos Max)> ProtectedRegions() => LabeledRegions().Select(r => (r.Min, r.Max)).ToList();
 
     /// <summary>Taught/marked structures (by name) and taught/llm facts with a box (by their key), for refusal texts.</summary>
-    public IReadOnlyList<(WPos Min, WPos Max, string? Label)> LabeledRegions()
+    public IReadOnlyList<(WPos Min, WPos Max, string? Label)> LabeledRegions() => Boxes().Select(b => (b.Min, b.Max, b.Label)).ToList();
+
+    /// <summary>The boxes with their maker (a structure's taught_by; null = the bot's own mark) and the design they link.</summary>
+    public IReadOnlyList<ProtectedBox> Boxes()
     {
         int dim = Dim;
         var list = memory.Read(d => d.Structures
             .Where(s => s.Min != null && !Unprotected.Contains(s.Kind) && s.Dimension == dim)
-            .Select(s => (ToW(s.Min!), ToW(s.Max ?? s.Min!), (string?)s.Name))
+            .Select(s => new ProtectedBox(ToW(s.Min!), ToW(s.Max ?? s.Min!), s.Name, s.TaughtBy, DesignLinks.Of(s.Note), Structure: true))
             .ToList());
         if (observations == null) return list;
         var here = position?.Invoke() ?? new WPos(0, 64, 0);
@@ -165,8 +187,8 @@ public sealed partial class MemoryStoreAdapter(MemoryStore memory, ObservationSt
             if (row.Bounds is not { } b || row.Source == ObservationSource.Auto) continue;
             bool flagged = row.FieldsJson?.Contains("\"protected\":true", StringComparison.OrdinalIgnoreCase) == true;
             if (!flagged && IndexKinds.NeverBoxProtected.Contains(row.Kind)) continue;
-            list.Add((new WPos((int)Math.Floor(b.MinX), (int)Math.Floor(b.MinY), (int)Math.Floor(b.MinZ)),
-                new WPos((int)Math.Floor(b.MaxX), (int)Math.Floor(b.MaxY), (int)Math.Floor(b.MaxZ)), (string?)row.Key));
+            list.Add(new ProtectedBox(new WPos((int)Math.Floor(b.MinX), (int)Math.Floor(b.MinY), (int)Math.Floor(b.MinZ)),
+                new WPos((int)Math.Floor(b.MaxX), (int)Math.Floor(b.MaxY), (int)Math.Floor(b.MaxZ)), row.Key));
         }
         return list;
     }

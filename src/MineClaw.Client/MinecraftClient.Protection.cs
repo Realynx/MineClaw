@@ -33,6 +33,14 @@ public sealed partial class MinecraftClient
     /// </summary>
     public Func<BlockPos, int, bool>? SoftOverride { get; set; }
 
+    /// <summary>
+    /// The editing context (Bot policy, <c>Protection.EditYields</c>): soft protection yields for a block an <b>explicit</b> dig
+    /// names (the dig tool, a script's dig, a build step's dig: <see cref="DigBlockAsync"/>, <see cref="DigHereAsync"/>) when it
+    /// is part of a saved design open for editing, or of the bot's own mark, and the work was asked for. Never consulted for a
+    /// pick (mine, path digs, chop, materials): those are the bot's own choices and keep every protection. Null = no yield.
+    /// </summary>
+    public Func<BlockPos, int, bool>? EditYields { get; set; }
+
     /// <summary>Counts a refusal the client decided on its own (tree stewardship), by reason. Set by the Bot's telemetry.</summary>
     public Action<string>? CountRefusal { get; set; }
 

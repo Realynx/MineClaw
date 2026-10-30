@@ -182,7 +182,9 @@ public sealed class GameBuildBody(Func<IGameClient> client, IBody? owner = null)
 
     public Task<string?> ClutchAsync(CancellationToken ct) => ClutchBlocks.EnsureAsync(C, ct);
 
-    public bool IsProtected(BlockPos p, int id) => C.IsProtected?.Invoke(p, id) == true;
+    /// <summary>Protected for this build: the host's predicate, except where the editing context yields (the build's own job
+    /// edits its design: a revert's or a next revision's obstructions are its cells; <see cref="MinecraftClient.EditYields"/>).</summary>
+    public bool IsProtected(BlockPos p, int id) => C.IsProtected?.Invoke(p, id) == true && Real?.EditYields?.Invoke(p, id) != true;
 
     /// <summary>How many more of an item the inventory holds (free slots, room in partial stacks).</summary>
     internal static int Room(WorldState w, int id, int? damage)

@@ -66,6 +66,7 @@ public static partial class BodyFactory
         adapter.IsProtected = protection.IsProtected;
         c.ExplainProtection = protection.Explain;
         c.SoftOverride = protection.OverridesSoft;
+        c.EditYields = protection.EditYields; // the editing context: requested digs on an open design (one EditContext per process)
         if (brain.ProtectionTelemetry is { } telemetry) c.CountRefusal = r => telemetry.Count(r);
         if (brain.ProtectionMarks is { } marks) c.NeverBreak = p => marks.HasNever && marks.NeverAt(p, c.World.Dimension) != null;
         var digCells = brain.DigCells;
