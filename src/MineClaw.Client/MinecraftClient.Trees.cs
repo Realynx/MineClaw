@@ -61,6 +61,11 @@ public sealed partial class MinecraftClient
     /// </summary>
     public IClaimBoard? TargetClaims { get; set; }
 
+    private readonly Dictionary<BlockPos, DateTime> _failedTrees = new();
+
+    /// <summary>How long a tree a body failed on stays leased to it and skipped by its own next picks.</summary>
+    public static readonly TimeSpan FailedTreeHold = TimeSpan.FromMinutes(3);
+
     /// <summary>A tree lease outlives the longest chop (<see cref="TreeChopOptions.Timeout"/> 5 min) so it never needs renewing.</summary>
     public static readonly TimeSpan TreeLeaseTtl = TimeSpan.FromMinutes(6);
 
@@ -152,6 +157,10 @@ public sealed partial class MinecraftClient
                 return ActionResult.Fail($"stopping: the last {_unreplantedChops} trees I chopped weren't replanted (last: {_lastReplantProblem ?? "not replanted"}); " +
                                          "fix the replanting first (a sapling, free lit dirt) before felling more");
             var skip = new HashSet<BlockPos>();
+            // Trees this body failed on lately aren't picked again first (an explicit "chop that one" still is).
+            if (at is null) lock (_failedTrees)
+                foreach (var (b, until) in _failedTrees.ToList())
+                    if (DateTime.UtcNow < until) skip.Add(b); else _failedTrees.Remove(b);
             var tree = ResolveTree(at, wood, o, out var why, skip);
             if (tree is null) return ActionResult.Fail(why!);
             ClaimKey? lease = null;
@@ -176,11 +185,21 @@ public sealed partial class MinecraftClient
                     tree = next;
                 }
             }
-            try { return await ChopResolvedAsync(tree, o, c).ConfigureAwait(false); }
+            ActionResult? result = null;
+            try { return result = await ChopResolvedAsync(tree, o, c).ConfigureAwait(false); }
             finally
             {
+                // A tree it couldn't fell (logs out of reach, no stand) stays leased a while, so the next body doesn't walk over and
+                // fail the same way, and this body tries others first (live 10-30: 119 and 1337 took turns failing on one spruce).
+                bool failedTree = result is { Ok: false } && !c.IsCancellationRequested;
+                if (failedTree) lock (_failedTrees) _failedTrees[tree.Base] = DateTime.UtcNow + FailedTreeHold;
                 if (lease is { } k)
-                    try { await TargetClaims!.ReleaseAsync(k, CancellationToken.None).ConfigureAwait(false); } catch (Exception) { /* TTL */ }
+                    try
+                    {
+                        if (failedTree) await TargetClaims!.TryClaimAsync(k, FailedTreeHold, "chop failed", CancellationToken.None).ConfigureAwait(false);
+                        else await TargetClaims!.ReleaseAsync(k, CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch (Exception) { /* TTL */ }
             }
         });
 

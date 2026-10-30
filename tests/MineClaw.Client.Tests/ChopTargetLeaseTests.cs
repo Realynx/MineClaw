@@ -87,15 +87,43 @@ public class ChopTargetLeaseTests
         Assert.StartsWith("exhausted: no tree within 1; nearest beyond: oak 6,64,6", none.Message);
     }
 
+    [Fact]
+    public async Task A_tree_it_failed_on_stays_leased_and_its_next_pick_is_another_tree()
+    {
+        // Live 10-30: the spruce at 144,66,267 had logs out of reach. 1337 failed, released it, 119 took it and failed, 1337 again.
+        using var mode = WorldMode.Override(WorldMode.Normal);
+        var (c, s) = await Harness.StartAsync(srv =>
+        {
+            for (int x = 0; x <= 28; x++) for (int z = 0; z <= 12; z++) srv.Blocks[(x, 63, z)] = Blocks.Grass;
+            // A trunk hanging in the air (its base burnt out): out of reach without pillaring.
+            for (int y = 70; y <= 72; y++) srv.Blocks[(6, y, 6)] = Blocks.Log;
+            for (int dx = -1; dx <= 1; dx++) for (int dz = -1; dz <= 1; dz++) if ((dx, dz) != (0, 0)) srv.Blocks[(6 + dx, 72, 6 + dz)] = Blocks.Leaves;
+            Oak(srv, 16, 6);
+            srv.SpawnAt = (3.5, 64, 6.5);
+        });
+        await using var _ = c;
+        using var __ = s;
+        var leases = new Leases();
+        c.TargetClaims = leases;
+        var o = TreeChopOptions.Default with { MaxPillar = 0, Timeout = TimeSpan.FromSeconds(20) };
+        var r = await c.ChopTreeAsync(new BlockPos(6, 70, 6), null, o); // "chop that one": the hanging trunk, out of reach
+        Assert.False(r.Ok, r.Message);
+        string? held;
+        lock (leases.Held) held = leases.Held.SingleOrDefault(kv => kv.Value == "maid_chan").Key.Name;
+        Assert.StartsWith("tree:6,", held); // held a while, not freed for the next body to walk over and fail on
+    }
+
     /// <summary>The tree a chop would take (and lease) right now: the lease it holds after it starts, read once.</summary>
     private static BlockPos? PickOnly(MinecraftClient c, Leases leases)
     {
+        HashSet<ClaimKey> had;
+        lock (leases.Held) had = leases.Held.Keys.ToHashSet(); // leases already held (a failed tree's) aren't this pick
         var run = c.ChopTreeAsync();
         var until = DateTime.UtcNow.AddSeconds(5);
         while (DateTime.UtcNow < until)
         {
             lock (leases.Held)
-                if (leases.Held.FirstOrDefault(kv => kv.Value == "maid_chan").Key is { Name: { } n } && n.StartsWith("tree:"))
+                if (leases.Held.FirstOrDefault(kv => kv.Value == "maid_chan" && !had.Contains(kv.Key)).Key is { Name: { } n } && n.StartsWith("tree:"))
                 {
                     var p = n["tree:".Length..].Split('@')[0].Split(',').Select(int.Parse).ToArray();
                     _ = c.StopAsync();

@@ -88,6 +88,8 @@
     }
     return { ok: total >= n, n: total, msg: total >= n ? `${total}/${n}` : `${total}/${n}: ${why}` };
   });
+  // This body's own failed targets (key -> clock s until): its next forEach rounds skip them too.
+  const failedUntil = new Map();
   /** forEach(targets, fn, {order:'nearest', budget, claim:true}) - fn(t, i) per target (find() results, positions, places), nearest to you next (order:'given' keeps it); each target is leased while fn runs, one leased by another body is skipped; at most budget calls; 'stop' ends. -> {ok, n: done, failed, taken, msg}; nothing left -> exhausted:true, beyond (from find). */
   def('forEach', (targets, f, o = {}) => {
     const list = Array.isArray(targets) ? targets.slice() : targets == null ? [] : [targets];
@@ -111,13 +113,17 @@
       const t = list.splice(k, 1)[0];
       // One body per target: a sibling running the same job already works this one, so take the next (never follow it).
       const key = lease(t);
+      if (key && (failedUntil.get(key) ?? 0) > H.clock()) { taken++; continue; }
       if (key && !H.claimTarget(key, o.lease ?? 300)) { taken++; continue; }
       let r, kept = false;
       try {
         r = f(t, ++tried);
-        // Done: it stays marked for a while so a sibling with an older list skips it too (outliving this run); failed: free for
-      // another body at once. A run that ends mid-target (stopped, logged out) gives its lease back at its end.
+        // Done: it stays marked for a while so a sibling with an older list skips it too (outliving this run). Failed: marked
+        // for a short while too, for every body: a target this body couldn't work (logs out of reach) was otherwise taken at once
+        // by the next body, which failed the same way, then by this one again (live 10-30: 119 and 1337 took turns on one
+        // spruce at 144,66,267). A run that ends mid-target (stopped, logged out) gives its lease back at its end.
         if (key && !failed(r) && r !== 'stop') kept = H.claimTarget(key, o.doneLease ?? 600, true);
+        else if (key && failed(r)) { const s = o.failLease ?? 180; failedUntil.set(key, H.clock() + s); kept = H.claimTarget(key, s, true); }
       } finally { if (key && !kept) H.releaseTarget(key); }
       if (r === 'stop') break;
       if (failed(r)) { bad++; if (isObj(r) && r.msg) last = r.msg; } else n++;

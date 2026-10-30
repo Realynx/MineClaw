@@ -65,6 +65,34 @@ public class CrewTargetClaimTests
     }
 
     [Fact]
+    public async Task A_target_one_body_failed_on_is_skipped_for_a_while_by_every_body_including_itself()
+    {
+        // Live 10-30: the spruce at 144,66,267 had logs out of reach; 1337 failed it, released it, 119 took it and failed, then 1337
+        // took it again 5 s later. A failed target is held briefly for everyone (and this body skips it), so they spread out.
+        var board = new ClaimBoard(TimeSpan.FromMinutes(5));
+        int bad = 0;
+        Rig Body(string n)
+        {
+            var rig = Rig.Js(body: n);
+            rig.Host.Claims = () => board.ViewFor("maid_chan_" + n);
+            rig.On["chop_tree"] = (args, ct) =>
+            {
+                if (args.GetProperty("at").GetString() == "1,65,1") { Interlocked.Increment(ref bad); return Task.FromResult(ActResult.Fail("2 log(s) out of reach")); }
+                return Task.FromResult(ActResult.Success("chopped"));
+            };
+            return rig;
+        }
+        using var a = Body("1337");
+        using var b = Body("119");
+        var first = await a.Run("return forEach(['1,65,1'], t => chopTree(t)).msg + ' | ' + forEach(['1,65,1', '4,65,4'], t => chopTree(t)).msg");
+        Assert.True(first.Ok, first.Outcome);
+        Assert.Contains("1 taken by other bodies", first.Outcome); // its own failure, skipped in the next round
+        var other = await b.Run("return forEach(['1,65,1'], t => chopTree(t)).msg");
+        Assert.Contains("taken by other bodies", other.Outcome);
+        Assert.Equal(1, bad);
+    }
+
+    [Fact]
     public async Task A_single_bot_without_a_board_works_every_target_as_before()
     {
         using var rig = Rig.Js();
