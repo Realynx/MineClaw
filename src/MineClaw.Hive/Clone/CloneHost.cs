@@ -72,6 +72,8 @@ public static class CloneExitCodes
     public const int NotWhitelisted = 77;
     /// <summary>The server refused the login: it is full. The slot is yielded, not retried by itself.</summary>
     public const int ServerFull = 78;
+    /// <summary>An in-process hive the watchdog stopped (hung, an error storm, over budget): a crash for the restart policy.</summary>
+    public const int Watchdog = 79;
 }
 
 /// <summary>
@@ -99,11 +101,17 @@ public sealed class CloneHost : IHandoffTarget
     private string _lastInv = "";
     private List<ItemMsg> _inventory = [];
 
+    private readonly IHiveTransport _transport;
+
     /// <summary>The body and store can be attached after construction (the bot is built with this host's claim board and arbiter).</summary>
-    public CloneHost(string name, string pipe, HiveConfig cfg, ICloneBody? body = null, HiveStore? store = null, ILogger? log = null)
+    /// <param name="transport">How to reach main at <paramref name="pipe"/>: a named pipe (clone process, the default) or main's
+    /// in-memory transport (a hive running inside main's process).</param>
+    public CloneHost(string name, string pipe, HiveConfig cfg, ICloneBody? body = null, HiveStore? store = null, ILogger? log = null,
+        IHiveTransport? transport = null)
     {
         Name = name;
         _pipe = pipe;
+        _transport = transport ?? PipeTransport.Instance;
         _bodyRef = body;
         _cfg = cfg;
         Store = store;
@@ -129,6 +137,10 @@ public sealed class CloneHost : IHandoffTarget
     public TaskMsg? CurrentTask => _task;
     public bool LoggingOut => Volatile.Read(ref _loggingOut) != 0;
     public string? LogoutReason { get; private set; }
+    private long _streamedTicks;
+    /// <summary>When the snapshot loop last ran (a thread-pool loop: an in-process hive's watchdog reads it as "this hive's async
+    /// work still moves"; the link's heartbeats come from dedicated threads and say nothing about that). Default = not yet.</summary>
+    public DateTimeOffset LastStreamed => new(Interlocked.Read(ref _streamedTicks), TimeSpan.Zero);
     public DepositReport? LastDeposit { get; private set; }
 
     /// <summary>Trusted players the void-spawn help request is addressed to (the clone's Self.TrustedPlayers).</summary>
@@ -181,12 +193,10 @@ public sealed class CloneHost : IHandoffTarget
     /// <summary>Connects the pipe and says hello; false = no parent (exit <see cref="CloneExitCodes.NoParent"/>).</summary>
     public async Task<WelcomeMsg?> ConnectParentAsync(TimeSpan timeout, CancellationToken ct)
     {
-        var client = PipeNames.Client(_pipe);
-        try { await client.ConnectAsync((int)timeout.TotalMilliseconds, ct).ConfigureAwait(false); }
-        catch (Exception ex) when (ex is TimeoutException or IOException or OperationCanceledException)
+        var client = await _transport.ConnectAsync(_pipe, timeout, ct).ConfigureAwait(false);
+        if (client == null)
         {
-            _log.LogError("clone {Name}: no parent pipe {Pipe} ({Error}); a clone never runs unsupervised", Name, _pipe, ex.Message);
-            client.Dispose();
+            _log.LogError("clone {Name}: no parent {Kind} {Pipe}; a clone never runs unsupervised", Name, _transport.Kind, _pipe);
             return null;
         }
         var link = new HiveLink(client, "main", _log) { Handler = HandleAsync };
@@ -432,6 +442,7 @@ public sealed class CloneHost : IHandoffTarget
             {
                 await Send(Msg.Snapshot, voxelGate.Thin(_body.Snapshot(full: true)).ToJson()).ConfigureAwait(false); // unchanged voxels: Seq only
                 var now = DateTimeOffset.UtcNow; // heartbeats: the link's own thread (HiveLink.StartHeartbeat)
+                Interlocked.Exchange(ref _streamedTicks, now.UtcTicks);
                 if (now - lastInvCheck >= TimeSpan.FromSeconds(2)) { lastInvCheck = now; await SyncInventoryAsync().ConfigureAwait(false); }
             }
             catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogDebug(ex, "stream tick failed"); }

@@ -92,6 +92,27 @@ public sealed class HiveConfig
     /// <summary>Unix only: directory for the pipe sockets (default: .NET's temp dir). Windows ignores it.</summary>
     public string? PipeDirectory { get; set; }
 
+    // ---- isolation ----
+    /// <summary>
+    /// Where a hive-kind or script clone runs. <c>inproc</c> (default): inside main's process, its own brain loop, model profile,
+    /// client and subhive bodies on the thread pool, its own cancellation scope, an in-memory link instead of a pipe, a watchdog
+    /// instead of the process kill (live 10-30: 25 clone processes of ~200 MB and a JIT start each thrashed the 4 GB CT).
+    /// <c>process</c>: one OS process per clone (<c>--clone</c>, named pipes), as before; kept working and tested.
+    /// </summary>
+    public string Isolation { get; set; } = "inproc";
+    /// <summary>Brain profiles (e.g. <c>deepseek</c>) whose hives always get their own process, whatever <see cref="Isolation"/> says.</summary>
+    public string[] ProcessProfiles { get; set; } = [];
+    /// <summary>In-process hives: the watchdog's limits and the start throttle.</summary>
+    public InProcHiveConfig InProc { get; set; } = new();
+
+    /// <summary>Does a clone with this per-spawn override (<c>inproc|process</c>, null = none) and brain profile run in main's process?</summary>
+    public bool RunsInProcess(string? isolation = null, string? profile = null)
+    {
+        if (isolation is { Length: > 0 }) return !isolation.Equals("process", StringComparison.OrdinalIgnoreCase);
+        if (profile is { Length: > 0 } && ProcessProfiles.Contains(profile, StringComparer.OrdinalIgnoreCase)) return false;
+        return !Isolation.Equals("process", StringComparison.OrdinalIgnoreCase);
+    }
+
     public HiveBudgetConfig Budget { get; set; } = new();
 
     public IReadOnlyList<string> Clones() =>
@@ -129,6 +150,30 @@ public sealed class HiveBudgetConfig
     public decimal EstimateMainUsd { get; set; } = 0.04m;
     public decimal EstimateWorkerUsd { get; set; } = 0.015m;
     public decimal EstimateCheapUsd { get; set; } = 0.003m;
+}
+
+/// <summary>
+/// "Hive:InProc": a hive inside main's process has no process to kill, so a watchdog stands in: a hang (a brain turn with no model
+/// call or tool progress, or its own async loops stalled), an error storm or a budget overrun stops it the way a release does
+/// (deposit, bodies first, log out), then hard (cancel + disconnect) if that doesn't finish; main's brain hears why.
+/// </summary>
+public sealed class InProcHiveConfig
+{
+    /// <summary>A brain turn running this long without one model call finishing = hung (an LLM call has its own timeouts).</summary>
+    public double HangSeconds { get; set; } = 900;
+    /// <summary>The hive's snapshot loop (thread pool) silent this long after it started = its async work is stuck.</summary>
+    public double StallSeconds { get; set; } = 180;
+    /// <summary>Errors logged by the hive (its own loggers) within <see cref="ErrorWindowMinutes"/> that count as "throws repeatedly".</summary>
+    public int MaxErrors { get; set; } = 40;
+    public double ErrorWindowMinutes { get; set; } = 5;
+    /// <summary>How long a watchdog stop waits for the graceful logout (its bodies' recall ≤ 45 s, its deposit, bye) before the hard stop.</summary>
+    public double StopGraceSeconds { get; set; } = 240;
+    /// <summary>After a hard stop, how long the hive's task may take to unwind before it is abandoned (reported, never awaited again).</summary>
+    public double AbandonSeconds { get; set; } = 10;
+    /// <summary>How often the watchdog looks.</summary>
+    public double CheckSeconds { get; set; } = 5;
+    /// <summary>In-process hives building their runtime at once (db, knowledge sync, RAG load: CPU-heavy); the rest queue.</summary>
+    public int MaxConcurrentStarts { get; set; } = 2;
 }
 
 /// <summary>"Hive:Subhives": bodies a hive hosts in its own process (one brain, many bodies), each with its own login.</summary>

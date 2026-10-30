@@ -81,7 +81,15 @@ public sealed class HiveHierarchy : IHiveAccounts
     private string Short(string account) => account.Equals(HiveTree.Root, StringComparison.OrdinalIgnoreCase) ? "main" : HiveNode.ShortOf(account);
 
     /// <summary>What the hive runs now (the resource ceiling's input): clone processes and subhive bodies anywhere.</summary>
-    public ResourceUse Use() => new(Bodies?.Running().Count ?? 0, Tree.All().Count(n => n.Kind == CloneKind.Subhive));
+    public ResourceUse Use() => new(Bodies?.Running().Count ?? 0, Tree.All().Count(n => n.Kind == CloneKind.Subhive), InProcRunning?.Invoke() ?? 0);
+
+    /// <summary>Does a new hive with this per-spawn override and brain profile run inside main's process (<c>Hive:Isolation</c>)?
+    /// Null = every hive is a process of its own (the resource ceiling prices it as one).</summary>
+    public Func<string?, string?, bool>? RunsInProcess { get; set; }
+    /// <summary>How many clones out now run inside main's process (the ceiling prices them as a brain + one client).</summary>
+    public Func<int>? InProcRunning { get; set; }
+
+    private bool InProc(string? isolation, string? profile) => RunsInProcess?.Invoke(isolation, profile) ?? false;
 
     // ================================================================ startup
 
@@ -99,7 +107,8 @@ public sealed class HiveHierarchy : IHiveAccounts
     {
         if (Bodies is not { } b) return (null, "no bodies host");
         bool body = HiveKinds.ParseKind(options?.Kind).Kind == CloneKind.Subhive;
-        if (Resources?.CanAdd(body ? 0 : 1, body ? 1 : 0) is { Ok: false } full) return (null, full.Why);
+        if (Resources?.CanAdd(body ? 0 : 1, body ? 1 : 0, inProcess: !body && InProc(options?.Isolation, options?.Profile)) is { Ok: false } full)
+            return (null, full.Why);
         Allocation a;
         lock (_lock)
         {
@@ -259,13 +268,14 @@ public sealed class HiveHierarchy : IHiveAccounts
         {
             // One hive process whose brain drives N bodies in its own process: as many as memory and the player cap allow.
             int want = Math.Min(asked, Math.Max(1, MaxBodiesPerSpawn));
-            int fit = Resources?.BodiesThatFit(withHives: 1) ?? int.MaxValue;
+            bool inproc = InProc(null, profile);
+            int fit = Resources?.BodiesThatFit(withHives: 1, inProcess: inproc) ?? int.MaxValue;
             var facts = Facts(bodies);
             var slot = SlotPolicy.CanSpawn(facts.Slots, facts.Regulars, facts.Pending);
             int room = Math.Max(0, slot.Free - slot.Reserved - 1); // after the hive's own login
             int n = Math.Min(want, Math.Min(fit, room));
             if (n <= 0)
-                return $"no: no room for {asked} bodies ({(fit <= 0 ? Resources?.CanAdd(1, 1).Why ?? "memory" : $"player cap: {slot.Reason}")}); spawned nothing";
+                return $"no: no room for {asked} bodies ({(fit <= 0 ? Resources?.CanAdd(1, 1, inproc).Why ?? "memory" : $"player cap: {slot.Reason}")}); spawned nothing";
             hostBodies = n;
             if (n < asked)
                 note = $"; only {n} of {asked} bodies fit (" + (n == want && asked > want ? $"max {want} per spawn" : fit < want ? $"memory: room for {fit}" : $"player cap: {room} slot(s) after the hive") + ")";

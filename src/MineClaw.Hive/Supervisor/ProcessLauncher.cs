@@ -1,23 +1,30 @@
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using MineClaw.Hive.Ipc;
 
 namespace MineClaw.Hive.Supervisor;
 
-/// <summary>A launched clone process.</summary>
+/// <summary>A launched clone: an OS process (<see cref="ProcessLauncher"/>), or a hive running inside main's process (the App's
+/// in-process launcher, <c>Hive:Isolation=inproc</c>), where <see cref="Kill"/> cancels the hive's scope and drops its connection.</summary>
 public interface ICloneProcess : IDisposable
 {
     int Id { get; }
     bool HasExited { get; }
     int? ExitCode { get; }
     Task WaitForExitAsync(CancellationToken ct = default);
-    /// <summary>Hard kill (process tree). Never throws.</summary>
+    /// <summary>Hard kill (process tree; in process: cancel + disconnect, the hive's task abandoned if it won't end). Never throws.</summary>
     void Kill();
+    /// <summary>Runs inside main's process (counted as a brain + one client by the resource ceiling, not a whole process).</summary>
+    bool InProcess => false;
 }
 
 public interface IProcessLauncher
 {
+    /// <summary>Starts <paramref name="clone"/>, which connects back to <paramref name="pipeName"/> over <see cref="TransportFor"/>.</summary>
     ICloneProcess Start(string clone, string pipeName);
+    /// <summary>The transport this launcher's next start of <paramref name="clone"/> connects over (main listens on it first).</summary>
+    IHiveTransport TransportFor(string clone) => PipeTransport.Instance;
 }
 
 /// <summary>

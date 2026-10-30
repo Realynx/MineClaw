@@ -117,7 +117,8 @@ public sealed class CloneSlot(string name)
 }
 
 /// <summary>
-/// The hive supervisor (main process only). Spawns clones as separate OS processes (<c>--clone name --parent-pipe pipe</c>),
+/// The hive supervisor (main process only). Starts clones through its launcher: by default as hives inside this process (the App's
+/// in-process launcher, an in-memory link), else as separate OS processes (<c>--clone name --parent-pipe pipe</c>),
 /// one named pipe each; watches heartbeats (both ways) and process exit; restarts crashed clones with exponential backoff
 /// and retires one after <see cref="HiveConfig.MaxCrashes"/> crashes in the window. Hosts the claim board, chat arbiter
 /// state and budget ledger for the clones. When a pipe closes the clone is treated as gone: its claims and grants are
@@ -543,7 +544,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
 
         var t = new TaskMsg(Guid.NewGuid().ToString("N")[..8], task, Loadout: TaskLoadout.For(code != null ? task + " " + code : task),
             Profile: profile, Script: script, Args: script != null ? opts?.Args : null, After: script != null ? opts?.After : null, Kind: opts?.Kind,
-            Bodies: opts?.Bodies is > 0 ? opts.Bodies : null);
+            Bodies: opts?.Bodies is > 0 ? opts.Bodies : null, Isolation: opts?.Isolation);
         // Hive task texts were never logged (10-27: the ownership refusals couldn't be traced).
         _log.LogInformation("hive: task {Id} for {Clone} ({Player}{Named}): {Text}", t.Id, slot.Name, forPlayer ?? "-", name == null ? ", unnamed" : "", task);
         try { ResetClone?.Invoke(slot.Name); } catch (Exception ex) { _log.LogWarning(ex, "hive: reset of {Clone}'s hive order failed", slot.Name); }
@@ -1086,8 +1087,10 @@ public sealed class HiveSupervisor : IAsyncDisposable
         Task whitelisted;
         try { whitelisted = Accounts?.BeforeLaunchAsync(slot.Name, _cts.Token) ?? Task.CompletedTask; }
         catch (Exception ex) { _log.LogWarning(ex, "hive: whitelist hook for {Clone} failed", slot.Name); whitelisted = Task.CompletedTask; }
-        var pipe = PipeNames.For(slot.Name, _cfg.PipeDirectory);
-        System.IO.Pipes.NamedPipeServerStream server;
+        // The launcher picks the transport: a named pipe for a clone process, an in-memory link for a hive in this process.
+        var transport = _launcher.TransportFor(slot.Name);
+        var pipe = transport.NewAddress(slot.Name, _cfg.PipeDirectory);
+        IHiveEndpoint server;
         int gen;
         lock (slot.Lock)
         {
@@ -1097,7 +1100,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
             slot.ByeReceived = false;
             slot.LaunchedAt = Now;
             slot.Gone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            server = PipeNames.Server(pipe);
+            server = transport.Listen(pipe);
         }
         var wait = JoinDelay();
         if (wait <= TimeSpan.Zero && whitelisted.IsCompleted) { StartProcess(slot, gen, pipe, server); return; }
@@ -1119,7 +1122,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
         });
     }
 
-    private void StartProcess(CloneSlot slot, int gen, string pipe, System.IO.Pipes.NamedPipeServerStream server)
+    private void StartProcess(CloneSlot slot, int gen, string pipe, IHiveEndpoint server)
     {
         ICloneProcess proc;
         try { proc = _launcher.Start(slot.Name, pipe); }
@@ -1131,23 +1134,26 @@ public sealed class HiveSupervisor : IAsyncDisposable
             return;
         }
         lock (slot.Lock) slot.Process = proc;
-        _log.LogInformation("hive: launched {Clone} (pid {Pid}, pipe {Pipe})", slot.Name, proc.Id, pipe);
+        if (proc.InProcess) _log.LogInformation("hive: launched {Clone} in this process (hive #{Id}, {Link})", slot.Name, proc.Id, pipe);
+        else _log.LogInformation("hive: launched {Clone} (pid {Pid}, pipe {Pipe})", slot.Name, proc.Id, pipe);
 
         _ = Task.Run(async () =>
         {
             using var startCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
             startCts.CancelAfter(TimeSpan.FromSeconds(_cfg.StartTimeoutSeconds));
             var exited = proc.WaitForExitAsync(_cts.Token);
+            Stream stream;
             try
             {
-                var connect = server.WaitForConnectionAsync(startCts.Token);
-                if (await Task.WhenAny(connect, exited).ConfigureAwait(false) == exited || !server.IsConnected)
+                var connect = server.AcceptAsync(startCts.Token);
+                if (await Task.WhenAny(connect, exited).ConfigureAwait(false) == exited || connect.IsFaulted)
                 {
                     server.Dispose();
+                    if (connect.IsCompletedSuccessfully) connect.Result.Dispose();
                     OnGone(slot, gen, clean: false, $"exited before connecting (code {proc.ExitCode})", proc.ExitCode);
                     return;
                 }
-                await connect.ConfigureAwait(false);
+                stream = await connect.ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -1156,7 +1162,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
                 OnGone(slot, gen, clean: false, "didn't connect in time");
                 return;
             }
-            var link = new HiveLink(server, slot.Name, _log);
+            var link = new HiveLink(stream, slot.Name, _log);
             link.Handler = (m, ct) => HandleAsync(slot, gen, m, ct);
             bool current;
             lock (slot.Lock)
@@ -1736,6 +1742,13 @@ public sealed class HiveSupervisor : IAsyncDisposable
 
     private void Tick()
     {
+        // A timer callback: an exception here would end the whole process (and, with in-process hives, every hive in it).
+        try { TickSlots(); }
+        catch (Exception ex) { _log.LogWarning(ex, "hive: heartbeat tick failed"); }
+    }
+
+    private void TickSlots()
+    {
         var now = Now;
         foreach (var s in _slots.Values)
         {
@@ -1800,6 +1813,10 @@ public sealed class HiveSupervisor : IAsyncDisposable
     }
 
     /// <summary>Order in which clones are recalled when the budget drops (exposed for tests and list output).</summary>
+    /// <summary>Clones out now that run inside this process (in-process hives: a brain + one client each, not a whole process).</summary>
+    public int RunningInProcess() =>
+        _slots.Values.Count(s => s.State is not (CloneState.Idle or CloneState.Retired) && s.Process is { InProcess: true });
+
     public IReadOnlyList<string> BudgetRecallOrder() =>
         SlotPolicy.YieldOrder(_slots.Values.Where(s => s.State is CloneState.Running or CloneState.Starting)
             .Select(s => new CloneProgress(s.Name, s.Progress, s.Started))).Select(c => c.Name).ToList();

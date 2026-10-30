@@ -94,7 +94,8 @@ public sealed record WelcomeMsg(string Main, TaskMsg? Task, RosterMsg Roster, Cl
 /// bus-backed <c>hive</c> tool.</param>
 /// <param name="Bodies">A hive-kind clone hosts this many subhive bodies in its own process, driven by its brain (accounts from main).</param>
 public sealed record TaskMsg(string Id, string Text, bool Restarted = false, string[]? Loadout = null, string[]? Claims = null,
-    string? Profile = null, string? Script = null, string? Args = null, string? After = null, string? Kind = null, int? Bodies = null)
+    string? Profile = null, string? Script = null, string? Args = null, string? After = null, string? Kind = null, int? Bodies = null,
+    string? Isolation = null)
 {
     public bool SleepsAfter => string.Equals(After, "sleep", StringComparison.OrdinalIgnoreCase);
 }
@@ -111,6 +112,9 @@ public sealed record HiveSpawnOptions(string? Profile = null, string? Script = n
     public string? Owner { get; init; }
     /// <summary>A hive-kind clone: subhive bodies it hosts in its own process (one brain, many bodies). Null/0 = none.</summary>
     public int? Bodies { get; init; }
+    /// <summary>Per-spawn override of <c>Hive:Isolation</c> (<c>inproc|process</c>; null = the config). Not a tool argument (zero
+    /// prompt bytes): set by C# callers (the bus, tests).</summary>
+    public string? Isolation { get; init; }
     public bool HasScript => !string.IsNullOrWhiteSpace(Script) || !string.IsNullOrWhiteSpace(Code);
 }
 public sealed record ProgressMsg(string TaskId, string Text, double? Pct = null);

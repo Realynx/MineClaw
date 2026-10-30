@@ -13,18 +13,26 @@ public sealed class HiveResourceConfig
     public double BodyMb { get; set; } = 40;
     /// <summary>What one more hive process costs before its bodies (runtime, brain, db connection, its own body).</summary>
     public double HiveProcessMb { get; set; } = 380;
+    /// <summary>What one more hive inside main's process costs (<c>Hive:Isolation=inproc</c>): its brain (runtime, caches, its own db
+    /// connection, tools) and one client at the default view distance, without a second CLR, JIT and GC heap. The kernel's
+    /// measurement still wins when it is higher (used = max(estimate, measured)).</summary>
+    public double InProcHiveMb { get; set; } = 140;
     /// <summary>Main's own process with no clones (used as the floor of the estimate).</summary>
     public double MainProcessMb { get; set; } = 650;
     /// <summary>Kept free for GC spikes, the OS and everything else in the container.</summary>
     public double ReserveMb { get; set; } = 400;
+    /// <summary>Kept free in main's managed heap (its <c>GCHeapHardLimit</c>) when in-process hives or bodies are added.</summary>
+    public double HeapReserveMb { get; set; } = 512;
     /// <summary>The memory limit; 0 = detect it (cgroup v2 <c>memory.max</c>, v1 <c>memory.limit_in_bytes</c>, else the machine).</summary>
     public double LimitMb { get; set; }
     /// <summary>Off = no resource ceiling (only the player cap and the optional hard cap).</summary>
     public bool Enabled { get; set; } = true;
 }
 
-/// <summary>What the hive runs now: extra hive processes (clone processes) and subhive bodies (in main's or a hive's process).</summary>
-public readonly record struct ResourceUse(int HiveProcesses, int Bodies);
+/// <summary>What the hive runs now: extra hives (<paramref name="HiveProcesses"/>: every clone out, whatever runs it), subhive bodies
+/// (in main's or a hive's process), and how many of those hives run inside main's process (<paramref name="InProcHives"/>), which
+/// <see cref="ResourceCeiling"/> prices at <see cref="HiveResourceConfig.InProcHiveMb"/> instead of a whole process.</summary>
+public readonly record struct ResourceUse(int HiveProcesses, int Bodies, int InProcHives = 0);
 
 /// <summary>The container's memory as the kernel reports it. <paramref name="UsedMb"/> excludes reclaimable page cache.</summary>
 public readonly record struct MemoryProbe(double LimitMb, double UsedMb, string Source);
@@ -49,36 +57,75 @@ public sealed class ResourceCeiling
 
     public HiveResourceConfig Config => _cfg;
 
+    /// <summary>
+    /// This process's managed heap: its hard limit (<c>System.GC.HeapHardLimit</c>, else what the GC may use) and its size now.
+    /// In-process hives and their bodies all live in main's one heap, so a spawn that would fit the container but not the heap is
+    /// refused too (an OutOfMemoryException there would take every hive at once). Null = not checked (tests, process isolation).
+    /// </summary>
+    public Func<MemoryProbe>? Heap { get; init; }
+
+    /// <summary>The GC's own numbers for <see cref="Heap"/>.</summary>
+    public static MemoryProbe GcHeap()
+    {
+        const double Mb = 1024 * 1024;
+        var gc = GC.GetGCMemoryInfo();
+        return new MemoryProbe(gc.TotalAvailableMemoryBytes / Mb, GC.GetTotalMemory(false) / Mb, "managed heap");
+    }
+
+    /// <summary>Free MB in the managed heap after <see cref="HiveResourceConfig.HeapReserveMb"/> (double.MaxValue = unbounded).</summary>
+    private double HeapFree()
+    {
+        if (Heap == null) return double.MaxValue;
+        try
+        {
+            var h = Heap();
+            return h.LimitMb <= 0 ? double.MaxValue : h.LimitMb - _cfg.HeapReserveMb - h.UsedMb;
+        }
+        catch (Exception) { return double.MaxValue; }
+    }
+
     /// <summary>Limit, used (max of estimate and measurement) and free MB after the reserve.</summary>
     public (double Limit, double Used, double Free, string Source) Snapshot()
     {
         var p = SafeProbe();
         var u = _use();
         double limit = _cfg.LimitMb > 0 ? _cfg.LimitMb : p.LimitMb;
-        double est = _cfg.MainProcessMb + Math.Max(0, u.HiveProcesses) * _cfg.HiveProcessMb + Math.Max(0, u.Bodies) * _cfg.BodyMb;
+        int inproc = Math.Clamp(u.InProcHives, 0, Math.Max(0, u.HiveProcesses));
+        double est = _cfg.MainProcessMb + (Math.Max(0, u.HiveProcesses) - inproc) * _cfg.HiveProcessMb + inproc * _cfg.InProcHiveMb
+            + Math.Max(0, u.Bodies) * _cfg.BodyMb;
         double used = Math.Max(est, p.UsedMb);
         return (limit, used, limit - _cfg.ReserveMb - used, _cfg.LimitMb > 0 ? "Hive:Resources:LimitMb" : p.Source);
     }
 
-    /// <summary>May <paramref name="hives"/> more hive processes and <paramref name="bodies"/> more bodies start now?</summary>
-    public (bool Ok, string? Why) CanAdd(int hives, int bodies)
+    /// <summary>One more hive's price: inside main's process (a brain + one client) or a process of its own.</summary>
+    public double HiveMb(bool inProcess) => inProcess ? _cfg.InProcHiveMb : _cfg.HiveProcessMb;
+
+    /// <summary>May <paramref name="hives"/> more hives (inside main's process when <paramref name="inProcess"/>, else processes of
+    /// their own) and <paramref name="bodies"/> more bodies start now?</summary>
+    public (bool Ok, string? Why) CanAdd(int hives, int bodies, bool inProcess = false)
     {
         if (!_cfg.Enabled) return (true, null);
         var s = Snapshot();
         if (s.Limit <= 0) return (true, null);
-        double need = Math.Max(0, hives) * _cfg.HiveProcessMb + Math.Max(0, bodies) * _cfg.BodyMb;
+        double need = Math.Max(0, hives) * HiveMb(inProcess) + Math.Max(0, bodies) * _cfg.BodyMb;
+        // Main's own bodies and in-process hives share this heap; a process of its own has its own.
+        double heap = inProcess || hives <= 0 ? HeapFree() : double.MaxValue;
+        var hive = hives <= 0 ? "" : inProcess ? "a hive + " : "a hive process + ";
+        if (need > heap && heap < s.Free)
+            return (false, string.Create(CultureInfo.InvariantCulture,
+                $"memory: {Math.Max(0, heap):0} MB free in the managed heap ({_cfg.HeapReserveMb:0} kept), {hive}{bodies} bod{(bodies == 1 ? "y" : "ies")} need {need:0} MB"));
         if (need <= s.Free) return (true, null);
         return (false, string.Create(CultureInfo.InvariantCulture,
-            $"memory: {Math.Max(0, s.Free):0} MB free of {s.Limit:0} MB ({s.Used:0} used, {_cfg.ReserveMb:0} kept), {(hives > 0 ? "a hive process + " : "")}{bodies} bod{(bodies == 1 ? "y" : "ies")} need {need:0} MB"));
+            $"memory: {Math.Max(0, s.Free):0} MB free of {s.Limit:0} MB ({s.Used:0} used, {_cfg.ReserveMb:0} kept), {hive}{bodies} bod{(bodies == 1 ? "y" : "ies")} need {need:0} MB"));
     }
 
-    /// <summary>How many bodies fit after <paramref name="withHives"/> more hive processes (int.MaxValue when unlimited).</summary>
-    public int BodiesThatFit(int withHives = 0)
+    /// <summary>How many bodies fit after <paramref name="withHives"/> more hives (int.MaxValue when unlimited).</summary>
+    public int BodiesThatFit(int withHives = 0, bool inProcess = false)
     {
         if (!_cfg.Enabled) return int.MaxValue;
         var s = Snapshot();
         if (s.Limit <= 0) return int.MaxValue;
-        double free = s.Free - Math.Max(0, withHives) * _cfg.HiveProcessMb;
+        double free = Math.Min(s.Free, withHives <= 0 || inProcess ? HeapFree() : double.MaxValue) - Math.Max(0, withHives) * HiveMb(inProcess);
         return free <= 0 || _cfg.BodyMb <= 0 ? (free > 0 ? int.MaxValue : 0) : (int)Math.Floor(free / _cfg.BodyMb);
     }
 
