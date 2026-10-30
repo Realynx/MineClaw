@@ -156,7 +156,8 @@ public sealed class InventoryLedger(TimeProvider? time = null, int capacity = 60
         _pickups.RemoveAll(x => now - x.At > TimeSpan.FromSeconds(10));
         _meals.RemoveAll(x => now - x.At > TimeSpan.FromSeconds(15));
         if (raised.Count > 0 && Recorded is { } h)
-            ThreadPool.QueueUserWorkItem(_ => { foreach (var e in raised) h(e); });
+            // A work item's exception ends the process (every in-process hive with it): a subscriber's failure stays its own.
+            ThreadPool.QueueUserWorkItem(_ => { foreach (var e in raised) { try { h(e); } catch (Exception) { /* next entry */ } } });
     }
 
     private string CauseOf(DateTimeOffset at, int id, int delta, string? scope, string? action, string? container = null)

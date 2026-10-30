@@ -18,6 +18,9 @@ public static class PathfindGate
         set
         {
             int n = Math.Clamp(value, 1, 64);
+            // Every in-process hive with bodies attaches its own InProcBodies, which sets this again: the same value keeps the gate
+            // (and the searches waiting on it); only a real change swaps it.
+            if (Volatile.Read(ref _max) == n) return;
             Volatile.Write(ref _max, n);
             Interlocked.Exchange(ref _gate, new SemaphoreSlim(n, n));
         }

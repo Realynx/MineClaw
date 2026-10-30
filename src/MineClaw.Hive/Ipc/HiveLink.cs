@@ -170,14 +170,23 @@ public sealed class HiveLink : IAsyncDisposable
 
     private void BeatLoop(TimeSpan period)
     {
-        var hb = FrameCodec.Encode(new HiveMessage { T = Msg.Heartbeat });
-        while (IsOpen)
+        try
         {
-            try { _beatWake.WaitOne(period); } catch (ObjectDisposedException) { return; }
-            if (!IsOpen) return;
-            while (_pongs.TryDequeue(out var id))
-                if (!WriteSync(FrameCodec.Encode(new HiveMessage { T = Msg.Reply, Re = id }), TimeSpan.FromSeconds(5))) break;
-            if (DateTimeOffset.UtcNow - LastSent >= period * 0.9 && WriteSync(hb, period)) Interlocked.Increment(ref _beats);
+            var hb = FrameCodec.Encode(new HiveMessage { T = Msg.Heartbeat });
+            while (IsOpen)
+            {
+                try { _beatWake.WaitOne(period); } catch (ObjectDisposedException) { return; }
+                if (!IsOpen) return;
+                while (_pongs.TryDequeue(out var id))
+                    if (!WriteSync(FrameCodec.Encode(new HiveMessage { T = Msg.Reply, Re = id }), TimeSpan.FromSeconds(5))) break;
+                if (DateTimeOffset.UtcNow - LastSent >= period * 0.9 && WriteSync(hb, period)) Interlocked.Increment(ref _beats);
+            }
+        }
+        catch (Exception ex)
+        {
+            // A dedicated thread: an escape would end the process; a link that can't beat is a closed link.
+            _log.LogWarning(ex, "hive {Link}: heartbeat thread failed", Name);
+            Close("heartbeat error: " + ex.Message);
         }
     }
 
@@ -244,6 +253,12 @@ public sealed class HiveLink : IAsyncDisposable
                                        or OperationCanceledException)
         {
             reason = "pipe error: " + ex.Message;
+        }
+        catch (Exception ex)
+        {
+            // A dedicated thread: anything escaping it ends the process (with in-process hives, main and every hive in it).
+            reason = "link error: " + ex.GetType().Name + ": " + ex.Message;
+            _log.LogWarning(ex, "hive {Link}: reader failed", Name);
         }
         // Notifications already read (a "bye" right before the pipe closes) are handled BEFORE Closed fires, as with inline
         // dispatch: the other side's last words decide whether its exit was planned.

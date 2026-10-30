@@ -330,7 +330,10 @@ public sealed partial class ScriptSession
             Reason = reason;
             Finished = _time.GetUtcNow();
             Result = final == ScriptStatus.Done ? Completed(result) : null;
-            outcome = Outcome = ScriptText.Outcome(this, Result, InventoryDelta(), _o.ResultChars);
+            // The script thread's last words: nothing here may throw out of the thread (an exception escaping a thread ends the
+            // process, and with in-process hives every hive in it).
+            try { outcome = Outcome = ScriptText.Outcome(this, Result, InventoryDelta(), _o.ResultChars); }
+            catch (Exception ex) { outcome = Outcome = $"{final}: {reason ?? "-"} (outcome unavailable: {ex.Message})"; }
             try
             {
                 var now = InventoryCounts();
@@ -340,7 +343,8 @@ public sealed partial class ScriptSession
             settled = _settled;
         }
         try { _runtime?.Dispose(); } catch (Exception) { }
-        _owner.OnEnded(this); // stats, saves, promotion before anyone waiting sees the end
+        try { _owner.OnEnded(this); } // stats, saves, promotion before anyone waiting sees the end
+        catch (Exception) { /* the end still settles below; the owner's own failure is not the script's */ }
         settled.TrySetResult();
         _done.TrySetResult(outcome);
         _abortCts?.Dispose();

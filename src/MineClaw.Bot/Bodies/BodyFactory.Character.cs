@@ -72,7 +72,8 @@ public static partial class BodyFactory
             var period = TimeSpan.FromSeconds(Math.Clamp(o.RefreshSeconds, 5, 600));
             var refresh = new System.Threading.Timer(_ =>
             {
-                if (rt.Agent.Voice?.Prefetcher is { } p) _ = p.RefreshAsync(rt.Activities.Shutdown);
+                try { if (rt.Agent.Voice?.Prefetcher is { } p) _ = p.RefreshAsync(rt.Activities.Shutdown); }
+                catch (Exception) { /* a timer callback must never throw: the process (and every hive in it) would end */ }
             }, null, TimeSpan.FromSeconds(10), period);
             body.Owned.Add(tick);
             body.Owned.Add(refresh);
