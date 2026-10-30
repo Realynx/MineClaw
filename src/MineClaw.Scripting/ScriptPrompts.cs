@@ -113,10 +113,11 @@ public static class ScriptPrompts
             return `harvested ${n} wheat`
             """),
         ("a hive script: every body works the free targets, late joiners too", """
-            // purpose: every body chops the trees around it (one body per tree), storing as the bag fills, until none are left
-            const P = params({ at: null, r: 48, rounds: 60, chest: null })
+            // purpose: every body gets an axe, then chops the trees around it (one body per tree), storing as the bag fills, until none are left
+            const P = params({ at: null, r: 48, rounds: 60, chest: null, kit: ['axe'] })
             function chopper() {
-              use(keepFed(), depositWhenFull(P.chest))
+              ensure(P.kit) // its own tools first: inventory, chests, the hive, else crafted from chest materials
+              use(keepFed(), replaceToolWhenBroken('axe'), depositWhenFull(P.chest))
               if (P.at) expect(go(P.at))
               let n = 0
               for (let i = 0; i < P.rounds; i++) {
@@ -126,11 +127,26 @@ public static class ScriptPrompts
                 if (r.n === 0) wait(5)
               }
               stash('all-but-tools', { to: P.chest })
-              return `${me.body} ${n}`
+              return `${n} trees` // everyBody names the body
             }
             function main() {
               const r = everyBody('chopper')
               return `deforest: ${r.msg}`
+            }
+            """),
+        ("a crew whose bodies equip themselves, then work", """
+            // purpose: every body gets its kit (tools, torches, food), then mines stone around it in rounds, storing it, until n each
+            const P = params({ n: 64, r: 16, torches: 8, chest: null, kit: ['pickaxe', 'sword'] })
+            function miner() {
+              ensure(P.kit) // tools: inventory, chests, the hive, else crafted from chest materials
+              if (P.torches) log(gather('torch', P.torches).msg) // materials it lacks: chests, then crafted, then their source
+              use(keepFed(), replaceToolWhenBroken('pickaxe'), depositWhenFull(P.chest))
+              const r = quota(P.n, left => mine('stone', Math.min(8, left), P.r), { max: 40 })
+              stash('all-but-tools', { to: P.chest })
+              return `${r.n} stone`
+            }
+            function main() {
+              return `mining crew: ${everyBody('miner').msg}`
             }
             """),
         ("guard an area at night", """
@@ -161,7 +177,9 @@ public static class ScriptPrompts
         "harvestFarm, chopTrees, guardArea, store, restock, deliver, waitForDay). Loops bounded (for, upto, until) or a machine() with a way to end; reactive jobs = machine() with " +
         "events/timers/conditions plus policies. Data goes to return/log, never fail() or say(). Several bodies: top level only " +
         "functions and constants, work in main(), roles run with everyBody() (a hive script: every body, late ones too) or " +
-        "parallel()/spawn(); share work through forEach's leases, never a fixed split. After a draft you may get lint errors: fix them " +
+        "parallel()/spawn(); share work through forEach's leases, never a fixed split. A role prepares itself first: ensure() its tools, " +
+        "gather() the materials it lacks (chests, craft, source), use(keepFed(), replaceToolWhenBroken(), depositWhenFull()); then it works, " +
+        "stores and repeats. After a draft you may get lint errors: fix them " +
         "all and answer with the WHOLE corrected script, nothing else.\n\n# SDK reference\n" + Sdk.SdkReference.Build() +
         "\n# Examples\n" + string.Join("\n", Examples.Select(e => $"## {e.Title}\n```js\n{Unindent(e.Code)}\n```\n")));
 

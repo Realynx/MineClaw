@@ -19,7 +19,8 @@ public sealed class HiveScriptTests(ITestOutputHelper output)
     private static string Example() => ScriptPrompts.Unindent(ScriptPrompts.Examples.Single(e => e.Title.StartsWith("a hive script")).Code);
 
     /// <summary>Three bodies over one world: a chop removes the log from every body's view (the server's one world).</summary>
-    private static (FakeCrew Crew, MineClaw.Hive.Claims.ClaimBoard Board, ConcurrentDictionary<string, string> Chopped) World(ScriptOptions? o = null)
+    /// <param name="axes">Each body already carries an axe (the example's role ensures one first).</param>
+    private static (FakeCrew Crew, MineClaw.Hive.Claims.ClaimBoard Board, ConcurrentDictionary<string, string> Chopped) World(ScriptOptions? o = null, bool axes = true)
     {
         var crew = new FakeCrew(o, "67", "69", "105");
         var board = new MineClaw.Hive.Claims.ClaimBoard(TimeSpan.FromSeconds(60));
@@ -27,6 +28,7 @@ public sealed class HiveScriptTests(ITestOutputHelper output)
         var dup = new ConcurrentQueue<string>();
         foreach (var (name, rig) in crew.Rigs)
         {
+            if (axes) rig.Give(9, Items.ByName("stone_axe")!.Id, 1);
             var view = board.ViewFor(name);
             rig.Host.Claims = () => view;
             foreach (var (x, z) in Trees) rig.World.SetBlock(x, 65, z, Blocks.Log, 0);
@@ -65,6 +67,98 @@ public sealed class HiveScriptTests(ITestOutputHelper output)
         foreach (var b in new[] { "67", "69", "105" })
             Assert.Equal(chopped.Count(kv => kv.Value == b), crew.Rigs[b].CallList.Count(c => c.StartsWith("chop_tree")));
         Assert.DoesNotContain(board.Leases(), l => l.Key.Id.StartsWith("target:", StringComparison.Ordinal) && !chopped.ContainsKey(l.Key.Id["target:".Length..]));
+    }
+
+    /// <summary>
+    /// Fox 10-30: "the script could even include gathering resources or crafting materials needed or getting the tools necessary". The
+    /// example's role prepares itself before it works: 67 takes an axe from a chest, 69 crafts one (chest materials), 105 already has
+    /// one; nobody chops before it holds an axe, and the trees are still split one body per tree.
+    /// </summary>
+    [Fact]
+    public async Task Every_body_equips_itself_with_an_axe_first_then_works_the_free_trees()
+    {
+        var (crew, _, chopped) = World(axes: false);
+        using var _ = crew;
+        int axe = Items.ByName("stone_axe")!.Id;
+        crew.Rigs["105"].Give(9, axe, 1);
+        crew.Rigs["67"].On["withdraw"] = (args, _) =>
+        {
+            if (args.GetProperty("item").GetString() == "stone_axe") crew.Rigs["67"].Give(9, axe, 1);
+            return Task.FromResult(ActResult.Success("took"));
+        };
+        crew.Rigs["69"].On["craft"] = (args, _) =>
+        {
+            if (args.GetProperty("item").GetString() == "stone_axe") crew.Rigs["69"].Give(9, axe, 1);
+            return Task.FromResult(ActResult.Success("crafted"));
+        };
+        foreach (var (name, rig) in crew.Rigs)
+        {
+            var chop = rig.On["chop_tree"];
+            rig.On["chop_tree"] = (args, ct) => rig.World.Inventory.CountItem(axe, null) > 0 ? chop(args, ct)
+                : Task.FromResult(ActResult.Fail($"{name} has no axe")); // a body that skipped its prep would show here
+        }
+        using var coordinator = Rig.Js(crew: crew, body: "hive");
+        var s = coordinator.Start(Example(), "deforest", @params: """{"rounds":20}""");
+        await s.Completion.WaitAsync(TimeSpan.FromSeconds(30));
+        output.WriteLine(s.Outcome);
+        Assert.True(s.Ok, s.Outcome + " | " + string.Join(";", coordinator.Logs));
+        Assert.Equal(Trees.Length, chopped.Count);
+        Assert.Contains("3/3 bodies done", s.Outcome);
+        Assert.Contains(crew.Rigs["67"].CallList, c => c.StartsWith("withdraw") && c.Contains("stone_axe"));
+        Assert.Contains(crew.Rigs["69"].CallList, c => c.StartsWith("craft") && c.Contains("stone_axe"));
+        Assert.DoesNotContain(crew.Rigs["105"].CallList, c => c.StartsWith("withdraw") || c.StartsWith("craft"));
+        foreach (var rig in crew.Rigs.Values)
+        {
+            var calls = rig.CallList;
+            int firstChop = calls.FindIndex(c => c.StartsWith("chop_tree"));
+            if (firstChop >= 0) Assert.DoesNotContain(calls.Skip(firstChop), c => c.StartsWith("withdraw") && c.Contains("_axe") || c.StartsWith("craft"));
+        }
+    }
+
+    /// <summary>The mining-crew example: each body gets its pickaxe and sword (chests, else crafted) and its torches, then mines its quota.</summary>
+    [Fact]
+    public async Task The_mining_crew_example_equips_each_body_then_mines()
+    {
+        var code = ScriptPrompts.Unindent(ScriptPrompts.Examples.Single(e => e.Title.StartsWith("a crew whose bodies equip")).Code);
+        using var crew = new FakeCrew("67", "69");
+        int pick = Items.ByName("stone_pickaxe")!.Id, sword = Items.ByName("stone_sword")!.Id, torch = Items.ByName("torch")!.Id, cobble = Items.ByName("cobblestone")!.Id;
+        foreach (var (name, rig) in crew.Rigs)
+        {
+            int slot = 12;
+            rig.On["withdraw"] = (args, _) =>
+            {
+                var item = args.GetProperty("item").GetString();
+                if (item == "stone_pickaxe") rig.Give(9, pick, 1);
+                else if (item == "torch") rig.Give(11, torch, 8);
+                return Task.FromResult(ActResult.Success("took"));
+            };
+            rig.On["craft"] = (args, _) =>
+            {
+                if (args.GetProperty("item").GetString() == "stone_sword") rig.Give(10, sword, 1);
+                return Task.FromResult(ActResult.Success("crafted"));
+            };
+            rig.On["mine"] = (args, _) =>
+            {
+                if (rig.World.Inventory.CountItem(pick, null) == 0) return Task.FromResult(ActResult.Fail("no pickaxe"));
+                int n = args.GetProperty("count").GetInt32();
+                rig.Give(slot++, cobble, n);
+                return Task.FromResult(ActResult.Success($"mined {n} stone"));
+            };
+        }
+        using var coordinator = Rig.Js(crew: crew, body: "hive");
+        var s = await coordinator.Run(code, "mining_crew", @params: """{"n":16}""");
+        output.WriteLine(s.Outcome);
+        Assert.True(s.Ok, s.Outcome + " | " + string.Join(";", coordinator.Logs));
+        Assert.Contains("2/2 bodies done (67 16 stone, 69 16 stone)", s.Outcome);
+        foreach (var rig in crew.Rigs.Values)
+        {
+            var calls = rig.CallList;
+            int firstMine = calls.FindIndex(c => c.StartsWith("mine"));
+            Assert.True(firstMine > calls.FindIndex(c => c.StartsWith("withdraw") && c.Contains("stone_pickaxe")), string.Join(";", calls));
+            Assert.True(firstMine > calls.FindIndex(c => c.StartsWith("craft") && c.Contains("stone_sword")), string.Join(";", calls));
+            Assert.True(firstMine > calls.FindIndex(c => c.StartsWith("withdraw") && c.Contains("torch")), string.Join(";", calls));
+            Assert.Equal(8, rig.World.Inventory.CountItem(torch, null));
+        }
     }
 
     [Fact]
