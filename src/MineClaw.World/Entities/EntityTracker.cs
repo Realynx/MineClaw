@@ -15,6 +15,12 @@ public sealed class EntityTracker
 
     public event Action<Entity>? Spawned;
     public event Action<Entity>? Removed;
+    /// <summary>
+    /// Every update (move, look, head look, metadata, equipment...) with the new snapshot, raised on the updating (network) thread
+    /// after the lock: the gesture detector samples other players' motion at packet rate (a 4 Hz poll misses a nod's strokes and a
+    /// crouch-bob's toggles). Listeners must be quick; nobody subscribed = one null check.
+    /// </summary>
+    public event Action<Entity>? Updated;
 
     /// <summary>The version's entity facts, stamped on every mob and object spawn (b1.8.1: none).</summary>
     public Versioning.IEntityRules Rules { get; set; } = Versioning.Beta181EntityRules.Instance;
@@ -62,12 +68,17 @@ public sealed class EntityTracker
 
     private bool Update(int id, Func<Entity, Entity> f)
     {
+        Entity next;
         lock (_sync)
         {
             if (!_entities.TryGetValue(id, out var e)) return false;
-            _entities[id] = f(e) with { UpdatedAt = DateTime.UtcNow };
-            return true;
+            _entities[id] = next = f(e) with { UpdatedAt = DateTime.UtcNow };
         }
+        if (Updated is { } u)
+        {
+            try { u(next); } catch (Exception) { /* a listener never breaks the tracker */ }
+        }
+        return true;
     }
 
     /// <summary>0x1F/0x21 relative move (deltas in blocks).</summary>
