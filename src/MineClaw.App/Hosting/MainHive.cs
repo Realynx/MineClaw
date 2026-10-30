@@ -31,13 +31,17 @@ public sealed class MainHive : IAsyncDisposable
     private readonly IReadOnlyList<string> _passThrough;
     private HiveSupervisor? _supervisor;
     private DataVersionWatcher? _watcher;
+    private readonly InProcHiveSettings? _inProcSettings;
+    private readonly ILoggerFactory? _loggers;
 
-    private MainHive(HiveConfig cfg, string main, IReadOnlyList<string> passThrough, ILogger log)
+    private MainHive(HiveConfig cfg, string main, IReadOnlyList<string> passThrough, ILogger log, InProcHiveSettings? inProc, ILoggerFactory? loggers)
     {
         _cfg = cfg;
         _main = main;
         _log = log;
         _passThrough = passThrough;
+        _inProcSettings = inProc;
+        _loggers = loggers;
         Board = new ClaimBoard(TimeSpan.FromSeconds(cfg.ClaimTtlSeconds));
         Arbiter = new ChatArbiter(main, main, cfg.Clones(), sticky: TimeSpan.FromSeconds(cfg.StickySeconds),
             cloneWindow: TimeSpan.FromSeconds(cfg.CloneThreadSeconds));
@@ -50,9 +54,15 @@ public sealed class MainHive : IAsyncDisposable
     public HiveSupervisor? Supervisor => _supervisor;
     /// <summary>Kinds, ownership, dynamic accounts and the bus (null until <see cref="Attach"/>).</summary>
     public Hive.Hierarchy.HiveHierarchy? Hierarchy { get; private set; }
+    /// <summary>The in-process hive host (<c>Hive:Isolation=inproc</c>, also when only some profiles get a process); null = every
+    /// clone is a process of its own (no in-process settings were given: <c>Hive:Isolation=process</c>).</summary>
+    public InProcHiveLauncher? InProc { get; private set; }
 
     /// <summary>Null when the hive is off. No fixed roster: accounts are allocated per spawn (an empty state is main alone).</summary>
-    public static MainHive? Create(HiveConfig cfg, string main, AppCli cli, AgentOptions agent, string logDir, ILogger log)
+    /// <param name="inProc">How a hive in this process binds its settings (null = clone processes only).</param>
+    /// <param name="loggers">Main's loggers (an in-process hive's Error+ lines are forwarded there).</param>
+    public static MainHive? Create(HiveConfig cfg, string main, AppCli cli, AgentOptions agent, string logDir, ILogger log,
+        InProcHiveSettings? inProc = null, ILoggerFactory? loggers = null)
     {
         if (!cfg.Enabled) return null;
         var args = new List<string> { "--no-tui", "--no-key-check", "--data-dir", agent.DataDirectory, "--log-dir", logDir };
@@ -67,7 +77,9 @@ public sealed class MainHive : IAsyncDisposable
             agent.PersonaExtra = (agent.PersonaExtra + "\n" + HiveTools.ScriptHint).Trim();
         if (!agent.PersonaExtra.Contains(HiveTools.KindHint, StringComparison.Ordinal))
             agent.PersonaExtra = (agent.PersonaExtra + "\n" + HiveTools.KindHint).Trim();
-        return new MainHive(cfg, main, args, log);
+        // Hive:Isolation=process and no profile kept in process: no in-process host at all (exactly the old clone processes).
+        bool anyInProc = cfg.RunsInProcess() || cfg.ProcessProfiles.Length > 0;
+        return new MainHive(cfg, main, args, log, anyInProc ? inProc : null, loggers);
     }
 
     public void Attach(BotHost bot, MinecraftClient client, ConsoleCommands commands, AgentOptions agent, InProcBodies? subhives = null)
@@ -90,7 +102,23 @@ public sealed class MainHive : IAsyncDisposable
         rt.Usage.ExternalSpend = ledger.ClonesSpend; // caps are shared by the whole hive
 
         var regulars = _cfg.RegularPlayers.Length > 0 ? _cfg.RegularPlayers : agent.Self.TrustedPlayers;
-        var launcher = new ProcessLauncher(extraArgs: _passThrough, log: _log);
+        IProcessLauncher launcher = new ProcessLauncher(extraArgs: _passThrough, log: _log);
+        if (_inProcSettings is { } ips)
+        {
+            // In-process hives (default): another agent in this process per hive; a watchdog stands in for the process kill.
+            InProc = new InProcHiveLauncher(_cfg, ips.For, ips.Profile, _loggers ?? Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance, _log)
+            {
+                Notice = (clone, why) => rt.Events.Post(Agent.Events.GameEvent.Notice(
+                    $"[hive] watchdog stopped {ChatArbiter.NumberOf(clone) ?? clone}: {why}; logging it out (its bodies and items first)",
+                    Agent.Events.EventPriority.Normal)),
+            };
+            var processes = launcher;
+            launcher = new IsolationLauncher(name => _cfg.RunsInProcess(_supervisor?.Slot(name)?.Task?.Isolation, _supervisor?.Slot(name)?.Task?.Profile),
+                InProc, processes);
+            _log.LogInformation("hive: clones run in this process (Hive:Isolation={Isolation}{Processes}); watchdog: hang {Hang:0}s, stall {Stall:0}s, {Errors} errors/{Window:0.#} min",
+                _cfg.Isolation, _cfg.ProcessProfiles.Length > 0 ? "; own process for " + string.Join(", ", _cfg.ProcessProfiles) : "",
+                _cfg.InProc.HangSeconds, _cfg.InProc.StallSeconds, _cfg.InProc.MaxErrors, _cfg.InProc.ErrorWindowMinutes);
+        }
         _supervisor = new HiveSupervisor(_cfg, _main, launcher, Board, ledger, Arbiter, store,
             () => new SlotFacts(client.World.MaxPlayers, client.World.Entities.OnlinePlayers), regulars, _log)
         {
@@ -143,6 +171,12 @@ public sealed class MainHive : IAsyncDisposable
         };
         // Dynamic accounts, the ownership tree, the off-channel bus, shared-memory writes and the chat budget (new file).
         Hierarchy = HiveHierarchyWiring.Attach(_cfg, _main, _supervisor, bot, client, agent, regulars, _log);
+        // The resource ceiling prices a hive in this process as a brain + one client, not a whole process.
+        if (InProc != null)
+        {
+            Hierarchy.RunsInProcess = (isolation, profile) => _cfg.RunsInProcess(isolation, profile);
+            Hierarchy.InProcRunning = _supervisor.RunningInProcess;
+        }
         SubhiveWiring.AttachMain(Hierarchy, subhives, _cfg, _log); // main's own subhive bodies, hive-hosted ones, the resource ceiling
         // "113 stop" names a body 420's brain drives: the line is 420's (main stays out unless 420 is unreachable).
         Arbiter.Follow(Hierarchy.Tree);
@@ -163,6 +197,7 @@ public sealed class MainHive : IAsyncDisposable
     {
         _watcher?.Dispose();
         if (_supervisor != null) await _supervisor.DisposeAsync().ConfigureAwait(false);
+        if (InProc != null) await InProc.DisposeAsync().ConfigureAwait(false); // their teardown (db connections) before main's db closes
     }
 
     /// <summary>

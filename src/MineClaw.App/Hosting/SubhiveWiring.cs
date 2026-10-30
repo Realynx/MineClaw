@@ -34,7 +34,8 @@ internal static class SubhiveWiring
         h.LaunchGapSeconds = cfg.LaunchGapSeconds;
         h.LaunchBatch = cfg.LaunchBatch;
         h.RemoteSubhives = cfg.Subhives.Enabled;
-        h.Resources = cfg.Resources.Enabled ? new ResourceCeiling(cfg.Resources, h.Use) : null;
+        // Main's managed heap too: its own bodies and every in-process hive share it (GCHeapHardLimit).
+        h.Resources = cfg.Resources.Enabled ? new ResourceCeiling(cfg.Resources, h.Use) { Heap = ResourceCeiling.GcHeap } : null;
         if (h.Resources is { } res) log.LogInformation("hive: resource ceiling: {State}; hard cap {Cap}", res.Describe(), cfg.MaxClones > 0 ? cfg.MaxClones : "none");
         if (host == null) return;
         h.Subhives = host;

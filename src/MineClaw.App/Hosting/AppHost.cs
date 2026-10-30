@@ -38,28 +38,10 @@ public static class AppHost
             Console.Error.WriteLine($"MineClaw: can't read the configuration: {ex.Message}");
             return ExitCodes.Config;
         }
-        var mc = config.GetSection("Minecraft").Get<MinecraftSettings>() ?? new MinecraftSettings();
-        var agentOptions = new AgentOptions();
-        config.GetSection("Agent").Bind(agentOptions);
-        var botOptions = new BotOptions();
-        config.GetSection("Bot").Bind(botOptions);
-        botOptions.Vision.ModernClientJar ??= config["Render:Assets:Jar"]; // the 1.12.2 client jar for textures/models (read at runtime)
-        config.GetSection("Scripting").Bind(botOptions.Scripts); // JS engine limits + the Lua migration flags ("Scripting:MigrateLua")
-        var host = config.GetSection("Host").Get<HostSettings>() ?? new HostSettings();
-        var hive = config.GetSection("Hive").Get<HiveConfig>() ?? new HiveConfig();
-        config.GetSection("Hive").Bind(agentOptions.Hive); // one shared memory/self profile for every hive (HiveOptions.SharedSelf)
-        // No fixed roster (docs/design/hive-hierarchy.md): old Hive:CloneUsernames are only adopted into the managed account list.
-        hive.IgnoreLegacyRoster();
-        agentOptions.Hive.IgnoreLegacyRoster();
-        var telemetryOptions = config.GetSection("Telemetry").Get<TelemetryOptions>() ?? new TelemetryOptions();
-        var supervisorOptions = config.GetSection("Supervisor").Get<Supervisor.SupervisorOptions>() ?? new Supervisor.SupervisorOptions();
-        var bodiesOptions = config.GetSection("Bodies").Get<MineClaw.Bot.Bodies.BodiesOptions>() ?? new MineClaw.Bot.Bodies.BodiesOptions();
-        if (string.IsNullOrWhiteSpace(agentOptions.Llm.ApiKey) || agentOptions.Llm.ApiKey.EndsWith("..."))
-            agentOptions.Llm.ApiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
-        agentOptions.DataDirectory = AppPaths.Under(root, agentOptions.DataDirectory);
-        if (agentOptions.KnowledgeDirectory != null) agentOptions.KnowledgeDirectory = AppPaths.UnderOrBeside(root, agentOptions.KnowledgeDirectory);
-        var logDir = AppPaths.Under(root, host.LogDirectory);
-        var telemetryDir = string.IsNullOrWhiteSpace(telemetryOptions.Directory) ? logDir : AppPaths.Under(root, telemetryOptions.Directory);
+        var settings = AppSettings.Bind(config, root);
+        var (mc, agentOptions, botOptions, host, hive) = (settings.Mc, settings.Agent, settings.Bot, settings.Host, settings.Hive);
+        var (telemetryOptions, supervisorOptions, bodiesOptions) = (settings.Telemetry, settings.Supervisor, settings.Bodies);
+        var (logDir, telemetryDir) = (settings.LogDir, settings.TelemetryDir);
         var mainLogDir = logDir;
         if (cli.CloneName != null) (logDir, telemetryDir) = CloneMode.Prepare(cli.CloneName, mc, agentOptions, hive, logDir, telemetryDir);
 
@@ -143,14 +125,15 @@ public static class AppHost
             }
             cli = cli with { ServerVersion = profile.Version.Id }; // hive clones inherit the resolved version (MainHive pass-through)
             // b1.8.1's server throttles joins from one IP < ~4 s apart: one login at a time there; 1.12.2 logs bodies in in batches.
-            if (profile.Version == MineClaw.Protocol.Versioning.GameVersion.Beta181) hive.LaunchBatch = bodiesOptions.LaunchBatch = 1;
-            agentOptions.GameVersion = profile.Version.Id; // knowledge docs of another version (b1.8.1/skyblock on 1.12.2) stay out
-            agentOptions.ApplyWorldMode = true; // the db's packs decide skyblock vs a normal world for the whole process (WorldMode)
+            // The db's packs decide skyblock vs a normal world for the whole process (WorldMode): this process's own runtime sets it.
+            settings.ApplyVersion(profile, appliesWorldMode: true);
             if (cli.CloneName != null)
                 return await CloneMode.RunAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, loggers, log, signals, profile,
                     bodiesOptions);
+            // Hives in this process (Hive:Isolation=inproc) bind their own copy of every option, as a clone process would.
+            var hives = new InProcHiveSettings(cli, () => AppSettings.Bind(AppConfig.Build(cli, root), root), profile, mainLogDir);
             return await RunBotAsync(cli, mc, agentOptions, botOptions, host, hive, telemetryOptions, telemetryDir, useTui, ring, loggers, log, signals, mainLogDir,
-                supervisorOptions, bodiesOptions, profile);
+                supervisorOptions, bodiesOptions, profile, hives);
         }
         finally
         {
@@ -162,7 +145,8 @@ public static class AppHost
     private static async Task<int> RunBotAsync(AppCli cli, MinecraftSettings mc, AgentOptions agentOptions, BotOptions botOptions, HostSettings host,
         HiveConfig hive, TelemetryOptions telemetryOptions, string telemetryDir, bool useTui, RingLoggerProvider ring, ILoggerFactory loggers,
         ILogger log, ShutdownSignals signals, string logDir, Supervisor.SupervisorOptions? supervisorOptions = null,
-        MineClaw.Bot.Bodies.BodiesOptions? bodiesOptions = null, MineClaw.Client.Versioning.GameVersionProfile? profile = null)
+        MineClaw.Bot.Bodies.BodiesOptions? bodiesOptions = null, MineClaw.Client.Versioning.GameVersionProfile? profile = null,
+        InProcHiveSettings? inProcHives = null)
     {
         profile ??= MineClaw.Client.Versioning.GameVersionProfiles.Beta181;
         var telemetry = new PromptTelemetry(agentOptions, telemetryOptions, telemetryOptions.Enabled ? telemetryDir : null);
@@ -184,7 +168,7 @@ public static class AppHost
         // One brain, many bodies (step 2): Bodies:Mode=inproc runs the clone accounts as bodies in this process (no MainHive);
         // the default "hive" keeps one process per clone.
         var inproc = InProcBodies.Create(hive, bodiesOptions ?? new MineClaw.Bot.Bodies.BodiesOptions(), mc, agentOptions, loggers, profile);
-        var mainHive = inproc == null ? MainHive.Create(hive, mc.Username, cli, agentOptions, logDir, loggers.CreateLogger("MineClaw.Hive")) : null;
+        var mainHive = inproc == null ? MainHive.Create(hive, mc.Username, cli, agentOptions, logDir, loggers.CreateLogger("MineClaw.Hive"), inProcHives, loggers) : null;
         // Hive mode: main's own subhive bodies (one brain, many bodies next to the clone processes; accounts from the allocator).
         var subhives = mainHive != null
             ? InProcBodies.CreateSubhives(hive, bodiesOptions ?? new MineClaw.Bot.Bodies.BodiesOptions(), mc, agentOptions, loggers, profile, mainHive.Board)
@@ -334,7 +318,8 @@ public static class AppHost
         await seq.StepAsync("background tasks", TimeSpan.FromSeconds(3), _ => Task.WhenAll(tasks));
         seq.Final("bot", () => { source.Dispose(); bot.Dispose(); });
         await seq.StepAsync("client", TimeSpan.FromSeconds(3), _ => client.DisposeAsync().AsTask());
-        if (mainHive != null) await seq.StepAsync("hive", TimeSpan.FromSeconds(3), _ => mainHive.DisposeAsync().AsTask());
+        // In-process hives the recall left running are killed here and their teardown (db connections) awaited, bounded.
+        if (mainHive != null) await seq.StepAsync("hive", TimeSpan.FromSeconds(mainHive.InProc != null ? 12 : 3), _ => mainHive.DisposeAsync().AsTask());
         if (inproc != null) await seq.StepAsync("bodies", TimeSpan.FromSeconds(5), _ => inproc.DisposeAsync().AsTask());
         if (subhives != null) await seq.StepAsync("subhive bodies", TimeSpan.FromSeconds(5), _ => subhives.DisposeAsync().AsTask());
         seq.Final("db", rt.Dispose);

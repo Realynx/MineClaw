@@ -6,15 +6,18 @@
   </ItemGroup>
 
   <!-- One brain, many bodies (docs/design/one-brain-many-bodies.md section 7): every body's tick shares one heap. Workstation
-       concurrent GC keeps gen2 pauses short (background GC); the hard limit (~2.5 GB of CT 114's 4 GB) makes the GC work
-       harder before the kernel's OOM killer takes every body at once. Lands in MineClaw.App.runtimeconfig.json; the
-       DOTNET_GCHeapHardLimit env var overrides it. -->
+       concurrent GC keeps gen2 pauses short (background GC); the hard limit makes the GC work harder before the kernel's OOM
+       killer takes every body at once. Was ~2.5 GB of CT 114's old 4 GB; with in-process hives (Hive:Isolation=inproc) every
+       hive's brain and bodies live in this one heap too, so it is 10 GiB of the CT's 16 GB now (Hive:Resources:LimitMb 14336
+       leaves the rest for native memory: SQLite, thread stacks, sockets). The resource ceiling refuses a spawn that wouldn't fit
+       this heap (ResourceCeiling.Heap). Lands in MineClaw.App.runtimeconfig.json; DOTNET_GCHeapHardLimit (hex bytes) overrides
+       it, e.g. 0xA0000000 (2.5 GiB) on a 4 GB host. -->
   <PropertyGroup>
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
   </PropertyGroup>
   <ItemGroup>
-    <RuntimeHostConfigurationOption Include="System.GC.HeapHardLimit" Value="2684354560" />
+    <RuntimeHostConfigurationOption Include="System.GC.HeapHardLimit" Value="10737418240" />
   </ItemGroup>
 
   <ItemGroup>

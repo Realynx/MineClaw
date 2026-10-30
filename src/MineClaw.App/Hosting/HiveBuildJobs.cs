@@ -23,13 +23,16 @@ public sealed class HiveBuildJobs(HiveSupervisor hive, IReadOnlyList<string> clo
     public IReadOnlyList<CrewMember> Candidates(IReadOnlyList<string>? names = null)
     {
         var list = new List<CrewMember>();
+        bool model = MineClaw.Agent.Tools.ToolCaller.Current != null;
         // No fixed roster: without configured names, the supervisor's current slots (dynamic accounts) are the candidates.
         foreach (var n in names ?? (clones.Count > 0 ? clones : hive.Slots.Select(s => s.Name).ToList()))
         {
             if (hive.Resolve(n) is not { } name || hive.Slot(name) is not { } slot) continue;
             if (slot.State == CloneState.Retired) continue;
-            // Default helpers: online and idle. Named ones are asked even when offline (the job logs them in).
-            if (names == null && !HiveSupervisor.IdleOnline(slot)) continue;
+            // Default helpers: online and idle. Named ones are asked even when offline (the job logs them in), but only when a model
+            // asked now: a build C# resumes (a standing order after main's restart) never logs clones in (live 10-30: a re-run crew
+            // after the reboot launched 16 processes).
+            if ((names == null || !model) && !HiveSupervisor.IdleOnline(slot)) continue;
             var v = hive.VitalsOf(slot);
             var at = v.X is { } x && v.Y is { } y && v.Z is { } z ? new BlockPos((int)Math.Floor(x), (int)Math.Floor(y), (int)Math.Floor(z)) : default;
             list.Add(new CrewMember(slot.Name, at, v.Items?.Any(i => i.Id == Items.WaterBucket) == true));
@@ -39,6 +42,8 @@ public sealed class HiveBuildJobs(HiveSupervisor hive, IReadOnlyList<string> clo
 
     public string? StartLane(string body, long blueprintId, int lane)
     {
+        if (MineClaw.Agent.Tools.ToolCaller.Current == null && hive.Resolve(body) is { } who && hive.Slot(who) is { IsLive: false })
+            return $"{body} isn't in game: a resumed build never logs clones in (ask again to bring it in)";
         var args = JsonSerializer.Serialize(new { bp = blueprintId, lane });
         var r = hive.Spawn($"build design #{blueprintId}, lane {lane} of its crew plan", body, options: new HiveSpawnOptions(Code: LaneScript, Args: args));
         return r.StartsWith("error", StringComparison.OrdinalIgnoreCase) ? r : null;

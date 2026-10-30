@@ -56,19 +56,47 @@ public static class CloneMode
         return (dir, tdir);
     }
 
-    public static async Task<int> RunAsync(AppCli cli, MinecraftSettings mc, AgentOptions agentOptions, BotOptions botOptions, HostSettings host,
+    /// <summary>The clone process (<c>--clone</c>): SIGTERM to it is its planned logout.</summary>
+    public static Task<int> RunAsync(AppCli cli, MinecraftSettings mc, AgentOptions agentOptions, BotOptions botOptions, HostSettings host,
         HiveConfig hive, TelemetryOptions telemetryOptions, string telemetryDir, ILoggerFactory loggers, ILogger log, ShutdownSignals signals,
-        MineClaw.Client.Versioning.GameVersionProfile? gameVersion = null, MineClaw.Bot.Bodies.BodiesOptions? bodiesOptions = null)
+        MineClaw.Client.Versioning.GameVersionProfile? gameVersion = null, MineClaw.Bot.Bodies.BodiesOptions? bodiesOptions = null) =>
+        RunAsync(new CloneRun
+        {
+            Clone = cli.CloneName!, Parent = cli.ParentPipe!, Mc = mc, Agent = agentOptions, Bot = botOptions, Host = host, Hive = hive,
+            Telemetry = telemetryOptions, TelemetryDir = telemetryDir, Loggers = loggers, Log = log, Stop = signals.Source,
+            Profile = gameVersion, Bodies = bodiesOptions,
+        });
+
+    /// <summary>
+    /// One clone's whole life, in its own process or as a hive inside main's process (<see cref="InProcHiveLauncher"/>): the same
+    /// wiring either way, only the link (pipe / in-memory), the scope (<see cref="CloneRun.Stop"/> = SIGTERM, <see cref="CloneRun.Kill"/>
+    /// = the process kill) and the test seams differ.
+    /// </summary>
+    public static async Task<int> RunAsync(CloneRun run)
     {
-        var clone = cli.CloneName!;
         // Bot:Protection:ServerOp describes main's account: a clone's login isn't op, so spawn protection applies to it (and the
         // remembered fact must not be dropped on its behalf).
-        botOptions.Protection.ServerOp = false;
-        var host0 = new CloneHost(clone, cli.ParentPipe!, hive, log: loggers.CreateLogger("MineClaw.Hive"));
+        run.Bot.Protection.ServerOp = false;
+        var host0 = new CloneHost(run.Clone, run.Parent, run.Hive, log: run.Loggers.CreateLogger("MineClaw.Hive"), transport: run.Transport);
         // Never unsupervised: the parent pipe comes first, before the shared db is opened or anything logs in.
-        var welcome = await host0.ConnectParentAsync(TimeSpan.FromSeconds(10), signals.Token);
+        var welcome = await host0.ConnectParentAsync(TimeSpan.FromSeconds(10), run.Stop.Token);
         if (welcome == null) return CloneExitCodes.NoParent;
+        try { return await RunConnectedAsync(run, host0, welcome); }
+        catch
+        {
+            // A clone that throws after its hello (a bad profile, the db, a build error): main sees its link close at once (a
+            // process exit closes the pipe by itself; inside main's process nothing else would).
+            if (host0.Link is { } l) try { await l.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3)); } catch (Exception) { }
+            throw;
+        }
+    }
 
+    private static async Task<int> RunConnectedAsync(CloneRun run, CloneHost host0, WelcomeMsg welcome)
+    {
+        var (clone, mc, agentOptions, botOptions, host, hive) = (run.Clone, run.Mc, run.Agent, run.Bot, run.Host, run.Hive);
+        var (telemetryOptions, telemetryDir, loggers, log) = (run.Telemetry, run.TelemetryDir, run.Loggers, run.Log);
+        var (gameVersion, bodiesOptions) = (run.Profile, run.Bodies);
+        var stop = run.Stop.Token;
         // Main chose a model profile for this clone's brain (worker/memory too when the profile says so). A non-Opus brain runs
         // saved scripts but never writes them (LlmOptions.BrainAuthorsScripts, enforced by the script tool policy).
         if (welcome.Task?.Profile is { Length: > 0 } profile)
@@ -78,8 +106,9 @@ public static class CloneMode
                 agentOptions.Llm.MainProvider, agentOptions.Llm.MainModel, agentOptions.Llm.BrainAuthorsScripts ? "" : "; runs saved scripts only");
         }
         var telemetry = new PromptTelemetry(agentOptions, telemetryOptions, telemetryOptions.Enabled ? telemetryDir : null);
-        ILlmClient llm = LlmClientFactory.Create(agentOptions.Llm);
+        ILlmClient llm = run.Llm?.Invoke(agentOptions) ?? LlmClientFactory.Create(agentOptions.Llm);
         if (telemetryOptions.Enabled) llm = telemetry.Wrap(llm);
+        if (run.Health is { } health) llm = new ProgressLlmClient(llm, health); // the in-process watchdog's "a model call finished"
         // A hive-kind clone hosts subhive bodies in this process (one brain, many bodies): accounts from main over the bus, each
         // with its own login and world view (a small view distance, this process's one chunk store), driven by this brain.
         int wantedBodies = welcome.Task?.Bodies ?? 0;
@@ -90,16 +119,22 @@ public static class CloneMode
                 SubhiveWiring.Layered(bodyBoard, host0.Claims))
             : null;
         var gated = new GatedLlmClient(llm, agentOptions.Prices, hive.Budget, () => host0.Link);
-        gated.Denied += why => { log.LogWarning("hive budget refused a call: {Why}; logging out", why); _ = host0.LogoutAsync("budget", planned: true); };
+        gated.Denied += why =>
+        {
+            log.LogWarning("hive budget refused a call: {Why}; logging out", why);
+            run.Health?.Flag("over budget: " + why); // in main's process the watchdog makes sure this logout ends (else the kill)
+            _ = host0.LogoutAsync("budget", planned: true);
+        };
 
         var clientLog = loggers.CreateLogger("MineClaw.Client");
-        var client = new MinecraftClient(new ClientOptions
+        var clientOptions = new ClientOptions
         {
             Host = mc.Host, Port = mc.Port, Username = clone, Profile = gameVersion ?? MineClaw.Client.Versioning.GameVersionProfiles.Beta181,
             AutoReconnect = true,
             AutoRespawn = !hive.OnCloneDeath.Equals("logout", StringComparison.OrdinalIgnoreCase),
             Log = m => clientLog.LogDebug("{Msg}", m),
-        });
+        };
+        var client = new MinecraftClient(run.ClientSetup?.Invoke(clientOptions) ?? clientOptions);
         var game = new MinecraftGameClient(client);
         var bot = BotHost.Create(game, agentOptions, botOptions, llm: gated, loggers: loggers, claims: host0.Claims,
             hiveBots: () => [host0.Main ?? "", .. host0.Arbiter.Clones, .. subhives?.Registry?.Accounts ?? []], // dynamic accounts: main's roster names them
@@ -114,7 +149,7 @@ public static class CloneMode
                 : new MineClaw.Bot.Bodies.LaneOnlyCrewPort(new MineClaw.Bot.Bodies.DbCrewBoard(rt.Memory.Db));
         // A brain that isn't Anthropic's has no prompt cache: every call resends the tools, so it gets the compact set.
         if (!agentOptions.Llm.BrainAuthorsScripts) CompactBrainTools.Apply(rt.Tools, log);
-        _ = rt.Rag.WarmUpAsync(signals.Token); // DNS + first TLS to the embedding provider now, not in the first turn
+        _ = rt.Rag.WarmUpAsync(stop); // DNS + first TLS to the embedding provider now, not in the first turn
         game.ReservedItems = new HashSet<int>(); // a clone keeps nothing back: everything goes into storage before logout
 
         // Identity: the identity row in the shared db is main's; a clone has its own fixed chat name and can't rename it.
@@ -170,12 +205,13 @@ public static class CloneMode
         CloneHierarchyWiring.Attach(host0, welcome, rt, hive, clone, log);
         if (subhives != null)
         {
-            subhives.Attach(bot, client, signals.Token);
+            subhives.Attach(bot, client, stop);
             // A line naming one of this hive's bodies ("113 stop") is this hive's own: its arbiter must say "mine".
             if (subhives.Registry is { } hostedBodies)
                 hostedBodies.Changed += (b, added) => host0.Arbiter.SetHost(b.Name, added ? clone : null);
             var bodyInbox = SubhiveWiring.AttachClone(clone, (type, msg, timeout) => host0.BusAsync(type, msg, timeout: timeout), subhives, rt, hive,
-                wantedBodies, () => client.IsPlaying, signals.Token, log);
+                wantedBodies, () => client.IsPlaying, stop, log);
+            if (run.ClientSetup is { } setup && subhives.ClientSetup is { } own) subhives.ClientSetup = o => setup(own(o)); // tests: fake servers
             var inner = host0.BusInbox;
             host0.BusInbox = (env, ct) => bodyInbox(env, ct) ?? inner?.Invoke(env, ct) ?? Task.FromResult(new MineClaw.Hive.Hierarchy.Bus.BusReply(true));
         }
@@ -191,8 +227,8 @@ public static class CloneMode
         client.Kicked += host0.OnServerKick;
 
         var agent = new PausableAgent(rt, log);
-        var commands = new ConsoleCommands(game, rt, agent, log, signals.Source);
-        var source = new InProcessBotSource(game, rt, telemetry, agent, commands, host.Tui.Viewport, signals.Token);
+        var commands = new ConsoleCommands(game, rt, agent, log, run.Stop); // /quit = this hive's planned logout, never main's
+        var source = new InProcessBotSource(game, rt, telemetry, agent, commands, host.Tui.Viewport, stop);
         var body = new GameCloneBody(client, game, rt, agent, commands, source, telemetry, new GameInventoryPort(game, rt.Observations, rt.Memory), log,
             () => client.ActiveVoidStep is { } vs ? MineClaw.Hive.Clone.CloneHost.IntentionalResetCause + " (" + vs.Reason + ")"
                 : DateTimeOffset.UtcNow - lastDangerAt < TimeSpan.FromSeconds(15) ? lastDanger : "died", runner, taskOrders, subhives,
@@ -203,9 +239,19 @@ public static class CloneMode
         host0.TrustedPlayers = () => rt.Options.Self.TrustedPlayers;
         client.HoldingOverVoid += p => _ = host0.OnVoidHoldAsync(p.X, p.Y, p.Z);
         client.VoidHoldEnded += p => _ = host0.OnVoidHoldEndedAsync(p.X, p.Y, p.Z);
-        log.LogInformation("clone {Clone} starting (pipe {Pipe}, scope {Scope})", clone, cli.ParentPipe, agentOptions.Hive.ScopeFor(clone));
+        log.LogInformation("clone {Clone} starting ({Kind} {Pipe}, scope {Scope})", clone, run.Transport?.Kind ?? "pipe", run.Parent, agentOptions.Hive.ScopeFor(clone));
+        run.Health?.Attach(host0, rt.Agent);
 
-        int code = await host0.RunAsync(signals.Token, welcome);
+        int code;
+        // In main's process the kill (watchdog, a failed ping probe, main's last shutdown step) skips the logout gate and goes
+        // straight to the teardown below, exactly where a killed process would have stopped.
+        try { code = await host0.RunAsync(stop, welcome).WaitAsync(run.Kill); }
+        catch (OperationCanceledException) when (run.Kill.IsCancellationRequested)
+        {
+            code = CloneExitCodes.Watchdog;
+            log.LogWarning("clone {Clone}: stopped hard ({Why}); tearing down without the logout gate", clone, run.KillReason?.Invoke() ?? "killed");
+            try { await client.DisconnectAsync("Bye!").WaitAsync(TimeSpan.FromSeconds(3)); } catch (Exception) { }
+        }
 
         log.LogInformation("clone {Clone} exiting ({Code}): {Reason}; {Usage}", clone, code, host0.LogoutReason ?? "-", rt.Usage.Summary());
         try { await agent.StopAsync(); } catch (Exception) { }
@@ -213,6 +259,8 @@ public static class CloneMode
         source.Dispose();
         bot.Dispose();
         try { await client.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3)); } catch (Exception) { }
+        // A process exit closes the pipe by itself; a hive in main's process closes its link here (main sees the end at once).
+        if (host0.Link is { } link) try { await link.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3)); } catch (Exception) { }
         rt.Dispose();
         telemetry.Dispose();
         return code;
