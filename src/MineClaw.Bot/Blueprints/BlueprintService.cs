@@ -110,6 +110,57 @@ public sealed class BlueprintService
     public Func<long, string?>? Rules { get; set; }
     /// <summary>Last finished design run (tests).</summary>
     public Task? LastRun { get; private set; }
+    /// <summary>Revisions (git-style history: every save a revision; log/diff/commit/revert). Null = no history kept.</summary>
+    public DesignHistory? History { get; set; }
+    /// <summary>The editing context: a design's build/revert/undo job edits it (<see cref="EditContext.JobFor"/>).</summary>
+    public EditContext? Edits { get; set; }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<long, int> _jobs = new();
+
+    /// <summary>A build/lane/undo/delete of design <paramref name="id"/> runs in this flow until disposed: the protection policy's
+    /// editing context (its own job edits it) and the drift watcher's "busy" (its changes are the job's, not drift).</summary>
+    private IDisposable Job(long id)
+    {
+        _jobs.AddOrUpdate(id, 1, (_, n) => n + 1);
+        var scope = EditContext.JobFor(id);
+        return new JobScope(() =>
+        {
+            scope.Dispose();
+            if (_jobs.AddOrUpdate(id, 0, (_, n) => n - 1) <= 0) _jobs.TryRemove(id, out _);
+        });
+    }
+
+    private sealed class JobScope(Action end) : IDisposable
+    {
+        private int _done;
+        public void Dispose() { if (Interlocked.Exchange(ref _done, 1) == 0) end(); }
+    }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<long, HashSet<BlockPos>> _refit = new();
+
+    /// <summary>
+    /// A revert's turned cells (the right block, another facing/state): the executor counts the same block as placed (it never
+    /// re-faces one: SameState compares metas of variants only), so the revert's job digs them first and the plan places them
+    /// again with the revision's facing. Consumed by the next whole build of the design.
+    /// </summary>
+    internal void Refit(long id, IEnumerable<BlockPos> cells) => _refit[id] = cells.ToHashSet();
+
+    private async Task RefitAsync(long id, VoxelPlan plan, IBuildBody body, CancellationToken ct)
+    {
+        if (!_refit.TryRemove(id, out var cells)) return;
+        var w = body.World;
+        foreach (var p in cells.OrderByDescending(c => c.Y))
+        {
+            if (!plan.Blocks.TryGetValue(p, out var want) || want.UpperDoor) continue; // a door's lower half takes both
+            int at = w.GetBlock(p);
+            if (at != want.Id || w.GetMeta(p) == want.Meta || body.IsProtected(p, at)) continue;
+            var r = await body.DigAsync(p, ct).ConfigureAwait(false);
+            if (!r.Ok) _log?.LogInformation("blueprint #{Id}: couldn't take the turned {Block} at {Pos} down: {Why}", id, want, p, r.Message);
+        }
+    }
+
+    /// <summary>A build, lane, undo or delete of the design runs now (in any flow of this process).</summary>
+    public bool Busy(long id) => _jobs.TryGetValue(id, out var n) && n > 0;
 
     public bool IsTrusted(string? player) => player != null && Trusted().Contains(player, StringComparer.OrdinalIgnoreCase);
 
@@ -205,6 +256,7 @@ public sealed class BlueprintService
         rec.Summary = Summary(rec, plan, best.Eval!);
         if (CrewEstimate(rec, plan) is { } est) rec.Summary += "; " + est;
         Store.Update(rec, best.Picture?.Png);
+        History?.Sync(rec, rec.Bot.Length > 0 ? rec.Bot : "bot", RevisionAuthor.Bot, change != null ? "revised: " + Trim(change, 80) : "designed: " + Trim(rec.Description, 80));
         var line = best.Passing
             ? $"{rec.Summary}; say 'build it' or tell me what to change"
             : $"{rec.Summary}, but it still has problems ({Trim(string.Join("; ", best.Eval!.Issues.Where(i => i.Level == IssueLevel.Error).Take(2)), 90)}); tell me what to change";
@@ -356,6 +408,7 @@ public sealed class BlueprintService
         }
         try { Store.Update(copy, Preview.Render(plan, Site().World, Roles(), Light(), Atlas(), WorldTime()).Png); } catch (Exception) { Store.Update(copy); }
         if (crew != null) RequestCrew(copy.Id, crew);
+        History?.Sync(copy, by, RevisionAuthor.Player, $"copy of #{source.Id}" + (History.Revisions.Head(source.Id) is { } sh ? $" r{sh.Rev}" : ""));
         var original = CancelOriginal(source);
         var refusal = StartBuild(copy.Id, null);
         return (copy, WithRules(copy.Id, (refusal == null ? $"building another {source.Name} (#{copy.Id})" : $"#{copy.Id} ready but can't start: {refusal}") + original));
@@ -538,6 +591,7 @@ public sealed class BlueprintService
     {
         if (Store.Find(idOrName) is not { } rec) return (false, $"no design '{idOrName}'");
         if (Plans is not { } plans) return (false, "no build plans stored");
+        using var job = Job(rec.Id); // its own job: the protection policy's editing context
         if (await TakeDownAsync(rec.Id, ct).ConfigureAwait(false) is not { } down) return (false, "no body to undo with");
         var (removed, left) = down;
         plans.Delete(rec.Id);
@@ -558,6 +612,7 @@ public sealed class BlueprintService
         if (Store.Find(idOrName) is not { } rec) return (false, $"no design '{idOrName}'");
         if (rec.Status == DesignStatus.Deleted) return (false, $"design #{rec.Id} is already deleted");
         if (!IsTrusted(by)) return (false, $"deleting a design needs a trusted player's word ({string.Join("/", Trusted().Take(2))}); {by ?? "nobody"} asked");
+        using var job = Job(rec.Id);
         var down = await TakeDownAsync(rec.Id, ct).ConfigureAwait(false);
         var removed = down?.Removed ?? [];
         var left = down?.Left ?? [];
@@ -566,6 +621,7 @@ public sealed class BlueprintService
         RequestCrew(rec.Id, null);
         rec.Status = DesignStatus.Deleted;
         Store.Update(rec);
+        Edits?.Close(rec.Id);
         _log?.LogInformation("blueprint #{Id} deleted by {By}: removed {N}", rec.Id, by, removed.Count);
         int n = removed.Count;
         return (true, $"deleted design #{rec.Id}: removed {n} block{(n == 1 ? "" : "s")}" + (n > 0 ? $" at {Cells(removed)}" : "") + LeftLine(left) + "; plan cancelled");
@@ -646,8 +702,11 @@ public sealed class BlueprintService
         if (PlanOf(rec, out var err) is not { } plan) return (false, $"#{rec.Id} doesn't parse: {err}");
         var bodies = Crew().Bodies;
         if (bodies.Count == 0) return (false, "no body to build with");
+        // Its own job (lanes and the finale inherit the flow): the build/revert may dig and swap its own design's cells.
+        using var job = Job(rec.Id);
         rec.Status = DesignStatus.Building;
         Store.Update(rec);
+        if (part == null && layer == null) await RefitAsync(rec.Id, plan, bodies[0], ct).ConfigureAwait(false);
         List<(BuildPart Part, IBuildBody Body)> work;
         if (part is { } p1)
         {
@@ -687,6 +746,7 @@ public sealed class BlueprintService
                 rec.Status = DesignStatus.Built;
                 Store.Update(rec);
                 try { Built?.Invoke(rec, built); } catch (Exception ex) { _log?.LogWarning(ex, "recording build #{Id} failed", rec.Id); }
+                History?.Sync(rec, rec.AcceptedBy ?? rec.Bot, RevisionAuthor.Bot, "built", History.World(), blocksOnly: true);
                 await Say($"finished the {rec.Name}").ConfigureAwait(false);
                 return (true, $"built #{rec.Id} \"{rec.Name}\": {text}");
             }
@@ -772,6 +832,7 @@ public sealed class BlueprintService
         if (Store.Find(idOrName) is not { } rec) return (false, $"no design '{idOrName}'");
         if (PlanOf(rec, out var err) is not { } plan) return (false, $"#{rec.Id} doesn't parse: {err}");
         if (Crew().Bodies.FirstOrDefault() is not { } body) return (false, "no body to build with");
+        using var job = Job(rec.Id);
         var r = await Crews.RunLaneAsync(rec.Id, plan, lane, body, ct).ConfigureAwait(false);
         return (r.State == "done", $"#{rec.Id} \"{rec.Name}\" lane {lane}: {r.Text}");
     }

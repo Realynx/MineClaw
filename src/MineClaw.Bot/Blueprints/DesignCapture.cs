@@ -63,6 +63,10 @@ public static partial class DesignCapture
         }
         catch (Exception) { /* a capture without a picture is still a capture */ }
         s.Store.Update(rec, png);
+        // r1: the build as it stands (its block set and the air around it), the owner's. Saving is a record, not a lock: a trusted
+        // capturer keeps working on it (live 10-30: "memorize these stairs", then every next column was refused).
+        s.History?.Sync(rec, by ?? "a player", RevisionAuthor.Player, $"captured by {by ?? "a player"}", s.History.World());
+        if (s.Edits?.IsTrusted(by) == true) s.Edits.Touch(rec.Id, $"{by} captured it");
         try { link?.Invoke(rec, r); } catch (Exception) { /* the design stands; the memory link is best effort */ }
         var tail = r.Report() is { Length: > 0 } report ? $"; {report}" : "";
         var text = $"captured '{rec.Name}' as design #{rec.Id}: {plan.Blueprint.SizeText}, {r.Blocks} blocks (palette: {palette}); bill to rebuild: {bill}{tail}"

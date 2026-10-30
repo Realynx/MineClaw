@@ -26,10 +26,16 @@ public sealed class BlueprintWiring
 {
     public const string DesignTool = "design", BuildTool = "build", InfoTool = "blueprint";
 
+    /// <summary>The brain's design tool (≈ the same tokens as before revisions: the op enum moved into the text, ToolBudgets.Brain).</summary>
     public const string DesignDescription =
-        "Design a build from a wish: drafted, checked and previewed in the background; summary+bill go to chat. Builds only on a " +
-        "trusted player's go (resuming an approved one needs none). op new{what,at?} revise{id,what} build{id,at?,bodies?|crew?} show{id,image?} list cancel{id} undo{id} delete{id} capture{name,at?|corners?}: undo takes down only its placed blocks; delete also drops its plan; " +
-        "capture saves a standing build as a design (read-only; corners \"x,y,z x,y,z\", default the speaker's spot)";
+        "Builds from a wish (drafted, checked, previewed in the background; summary+bill to chat); building needs a trusted go, resuming " +
+        "an approved one doesn't. op new{what,at?} revise{id,what} build{id,at?,bodies?|crew?} show{id,image?} list cancel{id} " +
+        "undo{id}: take down its placed blocks; delete{id}: and its plan; capture{name,at?|corners?}: save a standing build (corners " +
+        "\"x,y,z x,y,z\"). Saves are revisions: log{id} status{id} diff{id,what?=\"r2\"|\"r1 r3\"} (vs world) commit{id,what?=msg}: " +
+        "world edits as a revision; revert{id,what?=rev}: rebuild it (default the one before)";
+
+    /// <summary>Every op the design tool takes (the schema's op is free text; unknown ops answer with this list).</summary>
+    internal static readonly string[] Ops = ["new", "revise", "build", "show", "list", "cancel", "undo", "delete", "capture", "log", "status", "diff", "commit", "revert"];
 
     public required BlueprintService Service { get; init; }
     /// <summary>Set after vision is wired (roles, atlas, perception for the critique).</summary>
@@ -40,6 +46,12 @@ public sealed class BlueprintWiring
     internal Func<JsonElement, string?, ToolResult>? CaptureOp { get; set; }
     /// <summary>"my house" (speaker) → the captured design it names, or null (<see cref="DesignCapture.Resolve"/>).</summary>
     internal Func<string, string?, BlueprintRecord?>? Owned { get; set; }
+    /// <summary>Revisions and the world diff (null = no history kept: no db).</summary>
+    public DesignHistory? History => Service.History;
+    /// <summary>The drift watcher on the main body's world (the [design] line).</summary>
+    public DesignDrift? Drift { get; private set; }
+    /// <summary>The editing context (a trusted touch opens a design for requested edits).</summary>
+    public EditContext? Edits => Service.Edits;
 
     private readonly List<(string Player, string Text, DateTimeOffset At)> _consumed = new();
 
@@ -94,8 +106,33 @@ public sealed class BlueprintWiring
         wiring.CaptureOp = (input, who) => DesignCapture.Op(input, who, service, client, rt.Memory, () => wiring.Vision?.Hub,
             exclude: p => protection.IndexerKind?.Invoke(p) == WorldIndex.IndexKinds.Generator, protectionChanged: protection.Invalidate, time: clock);
         wiring.Owned = (text, who) => DesignCapture.Resolve(store, rt.Memory, text, who);
+        // Git-style revisions (every save/capture a revision; log/diff/status/commit/revert) and the editing context: saving is a
+        // record, not a lock (Fox 10-30). The drift watcher compares standing designs with HEAD as this body sees them.
+        var edits = protection.Edits;
+        service.Edits = edits;
+        service.History = new DesignHistory(service, new DesignRevisions(rt.Db, clock), clock)
+        {
+            World = () => client.World.PlanningView, Edits = edits, Memory = rt.Memory, BotName = () => client.Username,
+        };
+        if (edits != null)
+            edits.HiveDesign ??= id => store.Get(id) is { } r && r.Status != DesignStatus.Captured && (string.IsNullOrWhiteSpace(r.Requester) || edits.IsBot(r.Requester));
+        wiring.Drift = new DesignDrift(service, service.History, client.World, clock, log, timer: persist)
+        {
+            Notice = line => rt.Events.Post(GameEvent.Notice(line, EventPriority.Background)),
+            Self = () => client.Username,
+            IsBot = n => edits?.IsBot(n) == true,
+            Busy = service.Busy,
+        };
+        // Migration: every design saved before revisions becomes r1 (its current DSL), once, in the background.
+        if (persist)
+            _ = Task.Run(() =>
+            {
+                try { foreach (var r in store.List(200)) service.History.Ensure(r); }
+                catch (Exception ex) { log?.LogDebug(ex, "design revisions migration skipped"); }
+            });
         wiring.RegisterTools(rt);
         wiring.WrapDelegate(rt);
+        wiring._playerAt = name => client.World.Entities.FindPlayer(name) is { } pe ? pe.Position.ToBlockPos() : null;
         wiring.AttachChat(rt, log);
         // Trusted players' standing rules ride along with resume/build results, and a pending build puts its design in play for
         // the turn header's [standing rules] (text only: the brain decides, e.g. "only build in daytime" at night).
@@ -131,7 +168,7 @@ public sealed class BlueprintWiring
     private void RegisterTools(AgentRuntime rt)
     {
         rt.Tools.Register(DesignTool, DesignDescription,
-            ToolSchema.Create().Str("op", enumValues: ["new", "revise", "build", "show", "list", "cancel", "undo", "delete", "capture"], required: false)
+            ToolSchema.Create().Str("op", required: false)
                 // bodies/crew (op build) are read by name, documented in the description only (brain budget, ToolBudgets.Brain).
                 .Str("what", required: false).Str("at", required: false).Str("id", required: false).Bool("image", required: false).Build(),
             (input, ct) => Task.FromResult(Design(input)), tiers: ToolTiers.Main, maxResultChars: 600);
@@ -273,9 +310,43 @@ public sealed class BlueprintWiring
         var speaker = TurnContext.Current?.Speaker;
         var id = Id(input, "id");
         // "my house" → the captured design it names (its remembered structure's link), before the store's name search.
-        BlueprintRecord? Rec() => id is { Length: > 0 } ? Owned?.Invoke(id, speaker) ?? Service.Store.Find(id) : Service.Pending(speaker) ?? Service.Store.List(1).FirstOrDefault();
+        BlueprintRecord? Rec()
+        {
+            var r = id is { Length: > 0 } ? Owned?.Invoke(id, speaker) ?? Service.Store.Find(id) : Service.Pending(speaker) ?? Service.Store.List(1).FirstOrDefault();
+            // A trusted player's turn working on a design opens it for editing (their requested digs may change it).
+            if (r != null && Edits?.IsTrusted(speaker) == true) Edits.Touch(r.Id, $"{speaker} asked about it");
+            return r;
+        }
         switch (op)
         {
+            case "log":
+                {
+                    if (Rec() is not { } rec || History is not { } h) return ToolResult.Error("no design (id?)");
+                    // "r2 good" tags r2 (a name for revert/diff: revert{id, what:"good"}).
+                    if (input.Str("what") is { Length: > 0 } tagSpec && tagSpec.Split(' ', 2, StringSplitOptions.TrimEntries) is [var rs, var tag]
+                        && h.Revisions.Resolve(rec.Id, rs) is { } tr && h.Revisions.TagRev(rec.Id, tr.Rev, tag))
+                        return ToolResult.Success($"tagged r{tr.Rev} '{tag}'; " + h.Log(rec));
+                    return ToolResult.Success(h.Log(rec));
+                }
+            case "status":
+                return Rec() is { } st && History is { } hs ? ToolResult.Success(hs.Status(st)) : ToolResult.Error("no design (id?)");
+            case "diff":
+                return Rec() is { } df && History is { } hd ? ToolResult.Success(hd.Diff(df, input.Str("what"))) : ToolResult.Error("no design (id?)");
+            case "commit":
+                {
+                    if (Rec() is not { } rec || History is not { } h) return ToolResult.Error("no design (id?)");
+                    var (ok, text) = h.Commit(rec, speaker, input.Str("what"));
+                    if (ok) Drift?.Refresh();
+                    return ok ? ToolResult.Success(text) : ToolResult.Error(text);
+                }
+            case "revert":
+            case "checkout":
+                {
+                    if (Rec() is not { } rec || History is not { } h) return ToolResult.Error("no design (id?)");
+                    var (ok, text) = h.Revert(rec, input.Str("what"), speaker);
+                    if (ok) Drift?.Refresh();
+                    return ok ? ToolResult.Success(text) : ToolResult.Error(text);
+                }
             case "new":
                 {
                     var r = Service.Design(input.Str("what") ?? "", input.Str("at"), speaker);
@@ -318,7 +389,8 @@ public sealed class BlueprintWiring
             case "show":
                 {
                     if (Rec() is not { } rec) return ToolResult.Error("no design (id?)");
-                    var res = ToolResult.Success(Service.Describe(rec));
+                    var head = History?.Ensure(rec);
+                    var res = ToolResult.Success(Service.Describe(rec) + (head != null ? $"; at r{head.Rev} (log/status/diff)" : ""));
                     if (input.Bool("image") == true && Service.Store.Picture(rec.Id) is { } png && Png(png) is { } img)
                         res = res with { Image = new LlmImage(png, img.W, img.H, $"[design #{rec.Id} preview]") };
                     return res;
@@ -353,7 +425,7 @@ public sealed class BlueprintWiring
                         : ToolResult.Success($"deleting #{rec.Id} \"{rec.Name}\": taking down the {n} block{(n == 1 ? "" : "s")} it placed, then its plan; a [task] names what came down");
                 }
         }
-        return ToolResult.Error("op: new|revise|build|show|list|cancel|undo|delete|capture");
+        return ToolResult.Error("op: " + string.Join("|", Ops));
     }
 
     private Func<IReadOnlyList<string>> _trusted = () => [];
@@ -381,9 +453,43 @@ public sealed class BlueprintWiring
 
     // ------------------------------------------------------------------ chat review
 
+    private Func<string, BlockPos?> _playerAt = _ => null;
+
+    /// <summary>
+    /// A trusted player's chat line opens the designs it is about for editing: one it names ("the spiral staircase", "the stairs"
+    /// for "spiral_staircase": a 5-letter stem of a name word), or the standing design they are in or right next to (≤ 3).
+    /// Only opens: the edit itself still has to be an explicit, requested dig (<see cref="Protection.EditYields"/>).
+    /// </summary>
+    internal void TouchFromChat(AgentRuntime rt, string? player, string text)
+    {
+        if (Edits is not { } e || !e.IsTrusted(player) || string.IsNullOrWhiteSpace(text)) return;
+        foreach (var rec in Service.Store.List(30))
+            if (rec.Status is not (DesignStatus.Deleted or DesignStatus.Cancelled or DesignStatus.Failed) && Names(text, rec.Name))
+                e.Touch(rec.Id, $"{player} named it");
+        if (Drift != null && _playerAt(player!) is { } at && Drift.At(at, pad: 3) is { } d) e.Touch(d.Id, $"{player} asked while at it");
+    }
+
+    /// <summary>"keep digging the stairs" names "spiral_staircase": the whole name, or a word sharing a 5-letter stem with one of its words.</summary>
+    internal static bool Names(string text, string name)
+    {
+        static string Norm(string s) => new string(s.ToLowerInvariant().Select(c => char.IsLetterOrDigit(c) ? c : ' ').ToArray());
+        var t = Norm(text);
+        var n = Norm(name).Trim();
+        if (n.Length >= 4 && $" {t} ".Contains($" {n} ", StringComparison.Ordinal)) return true;
+        var words = t.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(w => w.Length >= 5).Select(w => w[..5]).ToHashSet();
+        return n.Split(' ', StringSplitOptions.RemoveEmptyEntries).Any(w => w.Length >= 5 && words.Contains(w[..5]));
+    }
+
     private void AttachChat(AgentRuntime rt, ILogger? log)
     {
         _trusted = () => rt.Options.Self.TrustedPlayers;
+        // A trusted player naming a saved design, or talking to me while standing at one, opens it for editing (their requested
+        // digs may change it: "keep digging the staircase", said in the stair shaft).
+        rt.Chat.Accepted += m =>
+        {
+            try { TouchFromChat(rt, m.Player, m.Text); }
+            catch (Exception ex) { log?.LogDebug(ex, "design touch from chat failed"); }
+        };
         rt.Chat.Accepted += m =>
         {
             try
@@ -509,6 +615,13 @@ public sealed class BlueprintWiring
     {
         var w = client.World;
         foreach (var b in plan.Blocks.Keys) w.Placed.Forget(b, w.Dimension);
+        // A design that already has its structure (a captured build reverted in place, a revision built over it): that one moves.
+        var linked = rt.Memory.Read(d => d.Structures.FirstOrDefault(s => Memory.DesignLinks.Of(s.Note) == rec.Id)?.Name);
+        if (linked != null)
+        {
+            DesignHistory.MoveLink(rt.Memory, rec, plan.Min, plan.Max, null);
+            return;
+        }
         var name = rt.Memory.GetStructure(rec.Name) is { Min: { } m } existing && (m.X != plan.Min.X || m.Y != plan.Min.Y || m.Z != plan.Min.Z) ? $"{rec.Name} #{rec.Id}" : rec.Name;
         rt.Memory.UpsertStructure(name, s =>
         {

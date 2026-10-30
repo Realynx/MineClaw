@@ -172,6 +172,7 @@ internal sealed class SimBuildBody : IBuildBody
             Log.Add($"won't dig {pos.X},{pos.Y},{pos.Z}: standing on it");
             return Fail($"won't dig the block I'm standing on at {pos.X},{pos.Y},{pos.Z} (the drop below is too far)");
         }
+        if (Protect?.Invoke(pos, id) == true) return Fail($"{Blocks.Get(id).Name} at {pos.X},{pos.Y},{pos.Z} is protected");
         Log.Add($"dig {pos.X},{pos.Y},{pos.Z}{(_swim != null ? " swimming" : "")}");
         Set(pos.X, pos.Y, pos.Z, 0, 0);
         Link?.Event(this, $"dig {pos.X},{pos.Y},{pos.Z}");
@@ -193,7 +194,9 @@ internal sealed class SimBuildBody : IBuildBody
         Task.FromResult(Count(itemId, damage) >= count ? null : $"missing {Items.Get(itemId).Name} (need {count}, have {Count(itemId, damage)})");
 
     public Task<string?> ClutchAsync(CancellationToken ct) => Task.FromResult<string?>(null);
-    public bool IsProtected(BlockPos p, int id) => false;
+    /// <summary>The host's protection as a build body sees it (GameBuildBody: the policy minus the editing context's yield); null = none.</summary>
+    public Func<BlockPos, int, bool>? Protect { get; set; }
+    public bool IsProtected(BlockPos p, int id) => Protect?.Invoke(p, id) == true;
 
     // ---- water
 
