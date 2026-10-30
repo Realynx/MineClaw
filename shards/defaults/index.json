@@ -13,7 +13,7 @@
         "knowledge": 13
       },
       "records": 1030,
-      "bytes": 203140,
+      "bytes": 203428,
       "vectors": 25,
       "needs_embedding": 1005,
       "embedding_model": "text-embedding-3-large",
@@ -22,8 +22,8 @@
         "mechanics_1122.md"
       ],
       "source": "minecraft-data pc/1.12.2 + smelting + mobs facts (decompiled 1.12.2 client) + block drops from MineClaw.Data 1.12.2",
-      "source_hash": "4971ad8402716bcc6b9e5f0da719f209c2e7c647cd3b6980f43c40625bf7a6c0",
-      "content_hash": "1148aad637801027370b5a06537b88d8e80f17fcff201bdbe010c22aad5e3fd7",
+      "source_hash": "a33fdbf68a7183a7240d2d4dfa99794789dc1d63df0c769c45157c2dcedb7924",
+      "content_hash": "30a088cdcbfab2bc661c8645e80c1c47e8064d8d54b5570845786933ebb1cec1",
       "builder": "ShardPacks/1"
     },
     {
@@ -58,19 +58,19 @@
       "mode": "sdk-js",
       "description": "sdk-js mode pack (every version): the JavaScript scripting SDK as memory: each module and helper with its doc comment, the game functions a script calls (per game version) and worked examples. Generated from MineClaw.Scripting/Sdk/js and the bot's tools.",
       "counts": {
-        "knowledge": 206
+        "knowledge": 207
       },
-      "records": 206,
-      "bytes": 30423,
+      "records": 207,
+      "bytes": 30505,
       "vectors": 0,
-      "needs_embedding": 206,
+      "needs_embedding": 207,
       "dims": 0,
       "files": [
         "sdk-js.md"
       ],
       "source": "MineClaw.Scripting SDK modules (core,world,flow,machine,policies,jobs,dig,crew,character) + game functions (b1.8.1, 1.12.2) + ScriptPrompts examples",
-      "source_hash": "a21d03b92fba300e213cb3b3db98a416616c5892bc94f0ab8c4f78dc96777687",
-      "content_hash": "7601006f0561d9e779a2bfba94e2110a317b9374e03e4eff00c4d77463564900",
+      "source_hash": "7ba8b3b65456a3cb6d41218d6ed2a6b3dfabafcbe53efae32dcc0f9d4267409a",
+      "content_hash": "6148f8436a4c3f51bf3104d2560baf08086312f39696371f2ae7991842a48f2d",
       "builder": "ShardPacks/1"
     },
     {

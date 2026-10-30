@@ -39,6 +39,14 @@ internal static class HiveHierarchyWiring
             Notice = e => rt.Events.Post(e),
         };
         h.Allocated += name => agent.Hive.Register(name); // its chat is a hive bot's, its self profile is main's (one memory)
+        // A body allocated for a job starts clean: a standing order a reused account kept from its last crew isn't this job's
+        // (live 10-30: Fox's hunting crew reused the deforest crew's accounts and "some kept falling back to the old
+        // tree-chopping job", bringing back 0 food).
+        h.Allocated += name =>
+        {
+            try { if (rt.Memory.GetStandingOrder(name) != null) rt.Memory.ClearStandingOrder(name, "allocated for a new job"); }
+            catch (Exception ex) { log.LogDebug(ex, "hive: clearing {Name}'s old standing order failed", name); }
+        };
         sup.Accounts = h;
         // Accounts main managed before (released ones included) are reusable slots: their saved spot and history stay known.
         foreach (var a in managed.All())

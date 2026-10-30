@@ -60,6 +60,14 @@ Hunger points / saturation gained (saturation = hunger × modifier × 2). <!-- I
 - Despawning: a mob more than 128 blocks from every player vanishes at once; after 30 s with no player within 32 blocks it has a 1-in-800 chance per tick. Animals never despawn. <!-- EntityLiving.despawnEntity, EntityAnimal.canDespawn -->
 - Slimes: in slime chunks (1 in 10) below Y 40 at any light, or in swamps at Y 51-69 in darkness, more often near a full moon. Not on Peaceful. <!-- EntitySlime.getCanSpawnHere -->
 
+## Finding animals to hunt
+- Passive animals (cows, pigs, sheep, chickens) appear mostly when a chunk is first generated; after that a world tick gives
+  them a chance only once every 400 ticks (20 s), and only up to the creature cap. Around a base they get hunted out and
+  stay gone. <!-- WorldEntitySpawner.performWorldGenSpawning; WorldServer.tick: getWorldTotalTime() % 400 == 0 -->
+- A body only sees animals in its loaded chunks (hive bodies: about 64 blocks). To hunt, walk out into fresh land in a
+  direction of your own (scout('cow')), each hunter a different way, then bring the meat home before night.
+- Breeding (wheat for cows and sheep, carrots for pigs, seeds for chickens) is the way to keep food near home.
+
 ## Farming and breeding
 - Random ticks: 3 per 16×16×16 section per game tick, so any block gets one about every 68 s. <!-- GameRules randomTickSpeed, WorldServer.updateBlocks -->
 - Wheat, carrots, potatoes, beetroot need light 9+ to grow. Each random tick advances one stage with chance 1/(floor(25/f)+1): f is 4 on wet farmland alone, up to 10 when all 8 surrounding cells are wet farmland, about 1 in 3 per tick. Halved if the same crop is beside it on two axes or on a diagonal, so plant single rows or alternate crops. <!-- BlockCrops.updateTick, getGrowthChance -->
