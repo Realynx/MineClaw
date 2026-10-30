@@ -282,6 +282,41 @@ public class MultiBodyBrainTests(ITestOutputHelper output)
 
     // ------------------------------------------------------------------ addressing reaches the body
 
+    /// <summary>
+    /// Live 10-30: 1337 and 126 kept running the last crew's "deforest" (felled 0) and refused the new crew's lane every 30 s
+    /// ("body 1337 busy: script deforest running L102"), standing still for good. A crew lane takes over a body whose run isn't
+    /// a lane of a live crew.
+    /// </summary>
+    [Fact]
+    public async Task A_crew_lane_takes_over_a_body_still_running_a_leftover_script()
+    {
+        await using var rig = await StartAsync(DualGen, new BrainLlm(), null, "maid_chan_67");
+        var b67 = rig.H.Bodies!.Find("maid_chan_67") as Body;
+        Assert.NotNull(b67);
+        var (old, err) = b67!.ScriptBridge!.Controller.Start(new MineClaw.Scripting.ScriptRequest
+        {
+            Name = "old_deforest", Language = MineClaw.Scripting.ScriptLanguage.Js,
+            Code = """
+                // purpose: the last crew's leftover
+                for (let i = 0; i < 600; i++) wait(0.1)
+                return 'old'
+                """,
+        });
+        Assert.True(old != null, err);
+        Assert.True(await Until(() => b67.ScriptBridge.Controller.Current != null));
+        var port = new BodyCrewPort(rig.H.Bodies!, rig.H.Runtime.Tools, new MineClaw.Scripting.Crew.InMemoryCrewBoard());
+        var code = """
+            // purpose: one role
+            function cutter() { return 'cut' }
+            function main() { return 'x' }
+            """;
+        var lane = port.Start(new MineClaw.Scripting.Crew.LaneSpec("67", "crew_job", code, MineClaw.Scripting.ScriptLanguage.Js, "cutter", null, "c-new"));
+        var r = await lane.Completion.WaitAsync(TimeSpan.FromSeconds(20));
+        Assert.True(r.Ok, r.Msg);
+        Assert.Contains("cut", r.Msg);
+        Assert.True(old!.Finished != null, "the leftover run ended");
+    }
+
     [Fact]
     public async Task Chat_to_67_runs_67s_reflex_and_focuses_67_while_main_stays_put()
     {

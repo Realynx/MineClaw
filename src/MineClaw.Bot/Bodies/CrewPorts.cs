@@ -145,6 +145,13 @@ public sealed class BodyCrewPort(BodyRegistry registry, ToolRegistry tools, ICre
     {
         if (Find(spec.Body) is not { ScriptBridge: { } lane } b) return Lanes.Failed(spec.Body, $"no body {spec.Body} online");
         if (b.State != BodyState.Online) return Lanes.Failed(spec.Body, $"body {spec.Body} is {b.State.ToString().ToLowerInvariant()}");
+        // A crew takes over a body busy with something that isn't a lane of a live crew (its own leftover script run, an old
+        // standing order's job): the crew is the newer order from the same brain (live 10-30: 1337 and 126 kept running
+        // last crew's "deforest" at "felled 0" and refused the new crew's lane every 30 s, so they stood still for good).
+        if (lane.Controller.Current is { } old && old.Request.CrewId != spec.CrewId && !LiveLane(old)) lane.Controller.Cancel("taken over by crew " + spec.CrewId);
+        else if (lane.Controller.Current is null && b.Activities.Current is not null) b.Activities.Cancel("taken over by crew " + spec.CrewId);
+        for (int i = 0; i < 60 && (lane.Controller.Current is { } c0 && c0.Request.CrewId != spec.CrewId || lane.Controller.Current is null && b.Activities.Current is not null); i++)
+            Thread.Sleep(50); // the old run stops at its next safe point
         var busy = lane.Controller.Current is { } cur ? "script " + cur.State() : b.Activities.Current?.Label;
         if (busy != null) return Lanes.Failed(spec.Body, $"body {spec.Body} busy: {ScriptText.Cap(busy, 80)}");
         lane.Crew ??= this; // the lane's crew.* calls see the coordinator's board
@@ -155,6 +162,9 @@ public sealed class BodyCrewPort(BodyRegistry registry, ToolRegistry tools, ICre
         }, b);
         return s == null ? Lanes.Failed(spec.Body, err ?? "can't start") : Lanes.Of(spec.Body, s);
     }
+
+    /// <summary>A lane of another crew whose coordinator still runs: not ours to take (one body, one crew).</summary>
+    private static bool LiveLane(MineClaw.Scripting.ScriptSession s) => s.Request.CrewId is { Length: > 0 } id && MineClaw.Scripting.Crew.Crews.IsLive(id);
 
     public async Task<ActResult> ActAsync(string body, string action, JsonElement args, CancellationToken ct)
     {
