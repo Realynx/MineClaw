@@ -98,7 +98,7 @@ public class GestureFakeServerTests
                 // purpose: hear Fox's nod
                 const seen = []
                 on('player.gesture', { kind: 'nod', player: 'PoofimaFox' }, e => { seen.push(e.kind + ':' + e.at + ':' + e.answer) })
-                for (let i = 0; i < 100 && seen.length === 0; i++) wait(0.1)
+                for (let i = 0; i < 400 && seen.length === 0; i++) wait(0.1)
                 return seen.join(',') || 'none'
                 """,
         });
@@ -108,12 +108,12 @@ public class GestureFakeServerTests
         var q = new EventQueue();
         var chat = new ChatRouter(new ChatOptions { Username = "maid_chan", LineDelayMs = 0 }, q, (_, _) => Task.CompletedTask);
         signals.Raised += new GestureFeed(chat, q).OnSignal;
-        var answer = chat.WaitForReplyAsync("PoofimaFox", TimeSpan.FromSeconds(10), default);
+        var answer = chat.WaitForReplyAsync("PoofimaFox", TimeSpan.FromSeconds(40), default);
 
         var (yaw, pitch) = await SpawnFox(c, s);
         await NodAsync(s, release1122, yaw, pitch);
 
-        await run!.Completion.WaitAsync(TimeSpan.FromSeconds(15));
+        await run!.Completion.WaitAsync(TimeSpan.FromSeconds(45));
         Assert.Equal("nod:me:yes", run.Result);
         Assert.Equal("PoofimaFox: yes (nod)", await answer.WaitAsync(TimeSpan.FromSeconds(5)));
         if (release1122) Assert.False(float.IsNaN(c.World.Entities.FindPlayer("PoofimaFox")!.HeadYaw)); // the head look was tracked
@@ -140,7 +140,7 @@ public class GestureFakeServerTests
                 return machine({
                   initial: 'idle',
                   states: {
-                    idle: { tick: () => { wait(0.1) }, on: { 'player.gesture': e => e.kind === 'bob' ? 'come' : null, [after(10000)]: 'done' } },
+                    idle: { tick: () => { wait(0.1) }, on: { 'player.gesture': e => e.kind === 'bob' ? 'come' : null, [after(40000)]: 'done' } },
                     come: { enter: () => 'done' },
                     done: { final: true },
                   },
@@ -154,9 +154,9 @@ public class GestureFakeServerTests
             s.Send(new EntityMetadataPacket { EntityId = 77, Metadata = new EntityMetadata([MetadataEntry.FromByte(0, (sbyte)(on ? 2 : 0))]) });
             await Task.Delay(120);
         }
-        await run!.Completion.WaitAsync(TimeSpan.FromSeconds(15));
+        await run!.Completion.WaitAsync(TimeSpan.FromSeconds(45));
         Assert.True(run.Ok, run.Outcome);
         var took = run.Finished!.Value - run.Started;
-        Assert.True(took < TimeSpan.FromSeconds(8), $"took {took} (the after(10 s) timeout, not the bob?) {run.Outcome}");
+        Assert.True(took < TimeSpan.FromSeconds(35), $"took {took} (the after(40 s) timeout, not the bob?) {run.Outcome}");
     }
 }

@@ -89,6 +89,34 @@ public class QuietTurnTests
     }
 
     [Fact]
+    public async System.Threading.Tasks.Task In_a_working_session_a_question_reaches_the_player_after_a_quiet_gap_but_a_report_does_not()
+    {
+        // Live 10-30, Fox's stair shaft: gaps of more than 2 min while main dug; its "can I break the next column?" was kept in the
+        // log ("my message asking him got filtered") and the dig sat waiting for an OK that was never asked for.
+        var time = new ManualTime();
+        var (rt, llm, sent) = TestRuntime.Create(time: time);
+        rt.Chat.SetOnlinePlayers(["PoofimaFox"]);
+        llm.ThenText("on it~");
+        rt.Chat.OnServerChat("<PoofimaFox> clawd dig the stairs down to diamond level");
+        await rt.Agent.HandleBatchAsync(rt.Events.TryTakeBatch() ?? Chat("PoofimaFox", "clawd dig the stairs down"), default);
+        int before = sent.Count;
+        time.Advance(TimeSpan.FromMinutes(6));
+        llm.ThenTool(BotAgent.SayToolName, new { text = "the stairs are down to the first room level" }, id: "tu_r")
+            .ThenTool(BotAgent.SayToolName, new { text = "foxy, can I break the next column of your staircase?" }, id: "tu_q")
+            .ThenText("");
+        await rt.Agent.HandleBatchAsync(Task("#20 dig: ok: dug 154,40..38,276"), default);
+        var lines = sent.Skip(before).ToList();
+        Assert.Single(lines);
+        Assert.Contains("next column", lines[0]);
+        // Outside the session (40 min of silence): nobody is waiting.
+        time.Advance(TimeSpan.FromMinutes(40));
+        int mid = sent.Count;
+        llm.ThenTool(BotAgent.SayToolName, new { text = "foxy, can I break the next column?" }, id: "tu_q2").ThenText("");
+        await rt.Agent.HandleBatchAsync(Task("#21 dig: ok: dug 154,37,276"), default);
+        Assert.Equal(mid, sent.Count);
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task A_failure_needing_help_may_be_said()
     {
         var (rt, llm, sent) = TestRuntime.Create();

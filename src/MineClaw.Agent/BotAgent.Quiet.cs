@@ -21,6 +21,13 @@ public sealed partial class BotAgent
     /// <summary>A player who addressed the bot within this long is engaged (a quiet turn's say may reach them).</summary>
     public static readonly TimeSpan EngagedWindow = TimeSpan.FromMinutes(2);
 
+    /// <summary>
+    /// A working session: someone talked to the bot this recently. Within it a question to them is never "nobody is waiting"
+    /// (live 10-30: Fox worked the stair shaft with main for hours with gaps of more than 2 min while it dug; its "can I break the
+    /// next column?" questions were kept in the log and the dig sat waiting). Routine reports stay quiet (low chat verbosity).
+    /// </summary>
+    public static readonly TimeSpan SessionWindow = TimeSpan.FromMinutes(30);
+
     /// <summary>Raised with a quiet turn's plain text (kept internal: log, hive board, supervisor).</summary>
     public event Action<string>? InternalSpeech;
 
@@ -100,11 +107,14 @@ public sealed partial class BotAgent
     };
 
     /// <summary>A quiet turn's say may speak: a player addressed the bot recently, a job failed, or someone is in danger.</summary>
-    private bool Engaged(IReadOnlyCollection<GameEvent> events)
+    private bool Engaged(IReadOnlyCollection<GameEvent> events, string? text = null)
     {
         if (events.Any(e => e.Wakes && (e.Kind is EventKind.TaskFailed or EventKind.LowHealth or EventKind.VoidFall or EventKind.Death || e.MustWake)))
             return true;
-        return _chat.AddressedWithin(EngagedWindow);
+        if (_chat.AddressedWithin(EngagedWindow)) return true;
+        if (!_chat.AddressedWithin(SessionWindow)) return false;
+        // In a session: a question to the partner goes out (the bot is blocked on it); reports and narration stay quiet.
+        return text?.Contains('?') == true;
     }
 
     private void KeepInternal(string text)
@@ -133,7 +143,7 @@ public sealed partial class BotAgent
         List<GameEvent> snapshot;
         lock (events) snapshot = events.ToList();
         // A safety warning ("Robin, a zombie is attacking you") goes out even when nobody is engaged or a quiet rule stands.
-        if (quiet && !Engaged(snapshot) && !_chat.Warnings.Overrides(text, cx.Audience.ToArray()))
+        if (quiet && !Engaged(snapshot, text) && !_chat.Warnings.Overrides(text, cx.Audience.ToArray()))
         {
             KeepInternal(text);
             return ToolResult.Success("not said: nobody is waiting on this (kept in your log)");
