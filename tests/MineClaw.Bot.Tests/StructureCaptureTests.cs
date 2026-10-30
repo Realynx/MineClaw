@@ -366,7 +366,8 @@ public class StructureCaptureTests
         var protection = new Protection(new BotOptions(), adapter, adapter) { Placed = f.W.Placed, Dimension = () => 0 };
         var wall = protection.Check(new BlockPos(0, 64, 2), Blocks.Cobblestone);
         Assert.True(wall.Protected);
-        Assert.Equal("part of the Fox's house build", wall.Why);
+        // A saved design says how to work on it (saving is a record, not a lock: Fox 10-30).
+        Assert.Equal("part of the Fox's house build (design #1; editing it needs a trusted player's ask)", wall.Why);
         Assert.True(protection.IsProtected(new BlockPos(4, 64, 5), Blocks.Slab));    // the bench too
         Assert.False(protection.Check(new BlockPos(-1, 64, 2), Blocks.Log).Protected); // the oak isn't the house
 
