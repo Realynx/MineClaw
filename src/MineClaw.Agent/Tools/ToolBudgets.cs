@@ -7,7 +7,8 @@ namespace MineClaw.Agent.Tools;
 /// History: 2,000 → 2,300 (act, run_command) → 2,400 (amend_task, script ops) → 2,600 (standing_order, ask_player default)
 /// → 2,700 (see, look map) → 2,800 with the <c>do</c> meta-tool, which replaced the brain's goto/follow/chop_tree/act and
 /// lets the brain run mine/harvest/deposit/withdraw/craft/move_items without a delegate round. → 2,950 for <c>design</c> (≈130:
-/// build from a description; its DSL cheat-sheet lives in the designer's own cached prompt, not the brain's).
+/// build from a description; its DSL cheat-sheet lives in the designer's own cached prompt, not the brain's). Its revision ops
+/// (log/status/diff/commit/revert) came at no net cost: the op enum moved into the description (design ≈216 → ≈215).
 /// </summary>
 public static class ToolBudgets
 {

@@ -22,8 +22,17 @@ public sealed partial class Protection
     /// </summary>
     public bool EditYields(BlockPos p, int id) => EditCheck(p, id) == null;
 
-    /// <summary>Why an explicit dig at <paramref name="p"/> does not count as editing (null = it does; see <see cref="EditYields"/>).</summary>
-    public string? EditCheck(BlockPos p, int id)
+    /// <summary>
+    /// The design checks' view while a design is revised or rebuilt (its designer/run under
+    /// <see cref="EditContext.JobFor"/>): its own cells are its to change, every other build keeps its verdict. Without it
+    /// "make the tower taller" over the built tower fails its own check: "overlaps N protected block(s) (part of the tower build)".
+    /// </summary>
+    public ProtectionVerdict CheckFor(BlockPos p, int id) =>
+        EditContext.Job is { } job && EditCheck(p, id, only: job) == null ? ProtectionVerdict.None : Check(p, id);
+
+    /// <summary>Why an explicit dig at <paramref name="p"/> does not count as editing (null = it does; see <see cref="EditYields"/>).
+    /// <paramref name="only"/>: only that design's own boxes (and the bot's own marks) may yield.</summary>
+    public string? EditCheck(BlockPos p, int id, long? only = null)
     {
         if (Edits is not { } e) return "no editing context";
         int dim = Dim;
@@ -38,7 +47,11 @@ public sealed partial class Protection
         if (e.Requested() == null) return "nobody asked (my own choice)";
         foreach (var b in boxes)
         {
-            if (b.Design is { } d) { if (e.Open(d) == null) return $"design #{d} isn't open for editing"; }
+            if (b.Design is { } d)
+            {
+                if (only is { } o && d != o) return $"design #{d} isn't the one being worked on (#{o})";
+                if (e.Open(d) == null) return $"design #{d} isn't open for editing";
+            }
             else if (!(b.Structure && e.BotMade(b.Owner))) return $"the {b.Label ?? "remembered"} build is {b.Owner ?? "someone"}'s";
         }
         return null;

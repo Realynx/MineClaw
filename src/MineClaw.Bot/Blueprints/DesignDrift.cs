@@ -107,7 +107,7 @@ public sealed class DesignDrift : IDisposable
             if (t.Dim != _world.Dimension || !Inside(ch.Pos, t.Min, t.Max)) continue;
             string cause;
             try { cause = Cause(ch); } catch (Exception) { cause = "unknown"; }
-            _causes.GetOrAdd(t.Id, _ => new()).AddOrUpdate(ch.Pos, cause, (_, old) => old == "unknown" ? cause : cause);
+            _causes.GetOrAdd(t.Id, _ => new())[ch.Pos] = cause; // the latest change at a cell says who changed it
             _dirty[t.Id] = _time.GetUtcNow();
         }
     }

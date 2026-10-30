@@ -208,6 +208,8 @@ public sealed class BlueprintService
         lock (_lock) _running[rec.Id] = cts;
         return Task.Run(async () =>
         {
+            // The design's next version is its own to check: its built/captured cells don't count as someone's build in the way.
+            using var own = EditContext.JobFor(rec.Id);
             try { await RunDesignAsync(rec, req, change, cts.Token).ConfigureAwait(false); }
             catch (Exception ex)
             {

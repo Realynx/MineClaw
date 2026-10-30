@@ -540,7 +540,8 @@ public sealed class BlueprintWiring
         return new SiteContext
         {
             World = w.PlanningView,
-            Verdict = protection.Check,
+            // A revision of a design is checked against everything but itself (saving is a record, not a lock).
+            Verdict = protection.CheckFor,
             Inventory = (id, dmg) => w.Inventory.CountItem(id, dmg >= 0 ? dmg : null),
             // The chests the obtainer would take from, read once per site; the exact variant (44:0 never counts for 44:3).
             Stored = (id, dmg) => stock.Value.Count(id, dmg),

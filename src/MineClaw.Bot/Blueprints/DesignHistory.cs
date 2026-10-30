@@ -111,7 +111,7 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
         if (AgainstWorld(rec) is not { } aw) return line + "; world not in view";
         var d = aw.Diff;
         var unk = d.Unknown > 0 ? $" ({d.Unknown} cells not loaded)" : "";
-        if (d.Empty) return line + $"; world matches r{head.Rev}" + unk;
+        if (d.Empty) return line + (d.Unknown >= head.Blocks ? "; world not in view (its chunks aren't loaded)" : $"; world matches r{head.Rev}" + unk);
         var who = Causes?.Invoke(rec.Id, d) is { Length: > 0 } c ? $" ({c})" : "";
         return line + $"; world: {d.Text()}{who}{unk}; commit{{id={rec.Id}}} keeps it, revert{{id={rec.Id}}} restores r{head.Rev}";
     }

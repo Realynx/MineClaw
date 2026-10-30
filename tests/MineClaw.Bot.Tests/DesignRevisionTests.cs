@@ -123,6 +123,21 @@ public class DesignRevisionTests
     }
 
     [Fact]
+    public void A_designs_next_version_is_checked_against_everything_but_itself()
+    {
+        var robins = new ProtectedBox(new BlockPos(157, 36, 272), new BlockPos(162, 48, 280), "robin's tower", "kiwi", Structure: true);
+        var (p, _, _) = Staircase(robins);
+        Assert.True(p.CheckFor(Step, Blocks.Stone).Protected); // no design at work: the ordinary verdict
+        using (EditContext.JobFor(12)) // "make the staircase wider": the designer and the build run as #12's job
+        {
+            Assert.False(p.CheckFor(Step, Blocks.Stone).Protected);
+            Assert.True(p.CheckFor(new BlockPos(160, 40, 276), Blocks.Stone).Protected); // Robin's tower is still in the way
+            Assert.True(p.IsProtected(Step, Blocks.Stone));                            // and no pick takes the old cells
+        }
+        using (EditContext.JobFor(13)) Assert.True(p.CheckFor(Step, Blocks.Stone).Protected); // another design's job: #12 is Fox's build
+    }
+
+    [Fact]
     public void A_hive_authored_design_is_open_for_its_own_requested_work_without_a_lease()
     {
         var (p, e, _) = Staircase();
