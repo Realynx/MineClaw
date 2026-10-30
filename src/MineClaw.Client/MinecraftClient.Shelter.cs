@@ -74,7 +74,7 @@ public sealed partial class MinecraftClient
     {
         var o = Options.Survival;
         if (!o.Enabled || !o.ShelterEnabled || Volatile.Read(ref _sheltering) == 1 || ActiveVoidStep is not null) return false;
-        if (ShelterBlocksTotal() == 0) return false;
+        if (!EnoughToBoxIn()) return false;
         bool low = World.Player.Health <= o.LowHealth;
         if (!low && threats < o.ShelterThreats) return false;
         if (Shelter.Enclosed(World, FeetCell())) return true;
@@ -85,8 +85,22 @@ public sealed partial class MinecraftClient
     private bool CanBoxIn(int threats)
     {
         var o = Options.Survival;
-        return o.Enabled && o.ShelterEnabled && Volatile.Read(ref _sheltering) == 0 && ActiveVoidStep is null && ShelterBlocksTotal() > 0;
+        return o.Enabled && o.ShelterEnabled && Volatile.Read(ref _sheltering) == 0 && ActiveVoidStep is null && EnoughToBoxIn();
     }
+
+    /// <summary>
+    /// Blocks on hand for every open cell of the box here: a half-built box is no cover and only litters the ground (live 10-30:
+    /// bodies with 2-3 planks started boxes they couldn't close, fought on beside them and left the stubs behind).
+    /// </summary>
+    private bool EnoughToBoxIn()
+    {
+        int have = ShelterBlocksTotal();
+        return have > 0 && have >= BlocksToBoxIn(FeetCell());
+    }
+
+    /// <summary>Blocks the box here takes: its plan's cells still to fill (open sides, roof and any block they need to stand on).</summary>
+    private int BlocksToBoxIn(BlockPos feet) =>
+        Shelter.Enclosed(World, feet) ? 0 : Shelter.Plan(World, feet).Count(p => Aiming.IsReplaceable(World, World.GetBlock(p.Target)));
 
     /// <summary>From the tick thread: start the box (once at a time).</summary>
     private void StartShelter(string why)
@@ -118,6 +132,9 @@ public sealed partial class MinecraftClient
             {
                 var feet = FeetCell();
                 var placed = new List<BlockPos>();
+                int need = BlocksToBoxIn(feet), have = ShelterBlocksTotal();
+                if (have < need || have == 0 && need > 0)
+                    return ActionResult.Fail(have == 0 ? "no blocks to box myself in with" : $"only {have} block(s) for a box that takes {need}: not starting one");
                 for (int pass = 0; pass < 3 && !Shelter.Enclosed(World, feet); pass++)
                 {
                     foreach (var p in Shelter.Plan(World, feet))
@@ -134,6 +151,12 @@ public sealed partial class MinecraftClient
                 bool closed = Shelter.Enclosed(World, feet);
                 if (placed.Count == 0 && !closed)
                     return ActionResult.Fail(ShelterBlocksTotal() == 0 ? "no blocks to box myself in with" : $"couldn't box myself in at {Fmt(feet)}");
+                if (!closed && ShelterBlocksTotal() == 0)
+                {
+                    // Ran out part way (a placement failed, a block went to something else): no cover, so take the stub back down.
+                    var back = await ClearShelterAsync(feet, placed, c).ConfigureAwait(false);
+                    return ActionResult.Fail($"ran out of blocks boxing in at {Fmt(feet)} ({Shelter.Open(World, feet).Count} side(s) open){back}");
+                }
                 var line = $"boxed myself in at {Fmt(feet)}: {MobCount(mobs)}, hp {World.Player.Health}; waiting it out"
                            + (closed ? "" : $" ({Shelter.Open(World, feet).Count} side(s) still open)");
                 Log("survival: " + line + $" ({why})");
@@ -154,7 +177,10 @@ public sealed partial class MinecraftClient
                     if (p.Health >= o.ShelterUntilHealth && quiet) break;
                     await Task.Delay(500, c).ConfigureAwait(false);
                 }
-                var open = await OpenShelterAsync(feet, placed, c).ConfigureAwait(false);
+                // Safe now: the whole box comes down. Timed out with mobs still about: only the way out opens (taking it all down would
+                // only box in again), and the rest is cleared once the body is idle by it and nothing can get at it.
+                bool safe = NearestThreat(World.Player.Position, 16) is null;
+                var open = safe ? await ClearShelterAsync(feet, placed, c).ConfigureAwait(false) : await OpenShelterAsync(feet, placed, c).ConfigureAwait(false);
                 return ActionResult.Success($"waited it out boxed in at {Fmt(feet)} (hp {World.Player.Health}){open}");
             }).ConfigureAwait(false);
         }
@@ -165,7 +191,73 @@ public sealed partial class MinecraftClient
         }
     }
 
-    /// <summary>Digs the side of the box toward home (only blocks it placed), so the next walk can leave. The rest stays (mine).</summary>
+    private readonly List<(BlockPos Feet, List<BlockPos> Blocks, long Tick)> _shelterLeft = new();
+    private int _cleaning;
+
+    /// <summary>A box left standing within 5 of <paramref name="me"/> (forgotten after 30 min: someone else may use it by then).</summary>
+    private bool ShelterLeftovers(Vec3d me)
+    {
+        lock (_shelterLeft)
+        {
+            _shelterLeft.RemoveAll(b => TickCount - b.Tick > 20 * 60 * 30 || b.Blocks.Count == 0);
+            return _shelterLeft.Any(b => b.Feet.Center.DistanceTo(me) <= 5);
+        }
+    }
+
+    private void StartShelterCleanup()
+    {
+        if (Interlocked.CompareExchange(ref _cleaning, 1, 0) != 0) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                (BlockPos Feet, List<BlockPos> Blocks, long Tick) box;
+                var me = World.Player.Position;
+                lock (_shelterLeft)
+                {
+                    var i = _shelterLeft.FindIndex(b => b.Feet.Center.DistanceTo(me) <= 5);
+                    if (i < 0) return;
+                    box = _shelterLeft[i];
+                    _shelterLeft.RemoveAt(i);
+                }
+                var r = await RunActionAsync("clear shelter", CancellationToken.None, async c =>
+                    ActionResult.Success("cleared the old box" + await ClearShelterAsync(box.Feet, box.Blocks, c).ConfigureAwait(false))).ConfigureAwait(false);
+                Log($"survival: {r.Message}");
+            }
+            catch (Exception ex) { Log("survival: clearing an old box failed: " + ex.Message); }
+            finally { Volatile.Write(ref _cleaning, 0); }
+        });
+    }
+
+    /// <summary>
+    /// Takes the box down: the side toward home first (the way out), then every other block it placed (top first), picking them
+    /// back up. Only its own blocks; one it can't dig is reported and left (live 10-30: Fox asked for the boxes to be cleaned up).
+    /// </summary>
+    private async Task<string> ClearShelterAsync(BlockPos feet, List<BlockPos> placed, CancellationToken c)
+    {
+        if (placed.Count == 0) return "";
+        var home = HomeLevel ?? feet;
+        var side = new[] { BlockFace.North, BlockFace.East, BlockFace.South, BlockFace.West }
+            .Select(f => f.Normal())
+            .Where(d => placed.Contains(feet + d) || placed.Contains(feet.Up() + d))
+            .OrderBy(d => (feet + d).DistanceSquaredTo(home)).Cast<BlockPos?>().FirstOrDefault();
+        var order = placed.Distinct()
+            .OrderBy(p => side is { } s && (p == feet.Up() + s || p == feet + s) ? 0 : 1)
+            .ThenByDescending(p => p.Y).ToList();
+        int dug = 0;
+        var left = new List<BlockPos>();
+        foreach (var p in order)
+        {
+            if (!BlockShapes.HasCollision(World, p.X, p.Y, p.Z)) continue;
+            var r = await DigCoreAsync(p, c, allowPathing: false).ConfigureAwait(false);
+            if (r.Ok) dug++;
+            else left.Add(p);
+        }
+        return $"; took the box down ({dug} block(s) back)" + (left.Count > 0 ? $", {left.Count} left at {string.Join(" ", left.Take(3).Select(Fmt))}" : "");
+    }
+
+    /// <summary>Digs the side of the box toward home (only blocks it placed), so the next walk can leave; the rest is remembered for
+    /// <see cref="StartShelterCleanup"/>.</summary>
     private async Task<string> OpenShelterAsync(BlockPos feet, List<BlockPos> placed, CancellationToken c)
     {
         var home = HomeLevel ?? feet;
@@ -173,15 +265,21 @@ public sealed partial class MinecraftClient
             .Select(f => f.Normal())
             .Where(d => placed.Contains(feet + d) || placed.Contains(feet.Up() + d))
             .OrderBy(d => (feet + d).DistanceSquaredTo(home)).ToList();
-        if (sides.Count == 0) return "";
-        var side = sides[0];
-        foreach (var p in new[] { feet.Up() + side, feet + side })
+        string said = "";
+        if (sides.Count > 0)
         {
-            if (!placed.Contains(p) || !BlockShapes.HasCollision(World, p.X, p.Y, p.Z)) continue;
-            var r = await DigCoreAsync(p, c, allowPathing: false).ConfigureAwait(false);
-            if (!r.Ok) return $"; couldn't open the box: {r.Message}";
+            var side = sides[0];
+            said = $"; opened the side at {Fmt(feet + side)}";
+            foreach (var p in new[] { feet.Up() + side, feet + side })
+            {
+                if (!placed.Contains(p) || !BlockShapes.HasCollision(World, p.X, p.Y, p.Z)) continue;
+                var r = await DigCoreAsync(p, c, allowPathing: false).ConfigureAwait(false);
+                if (!r.Ok) { said = $"; couldn't open the box: {r.Message}"; break; }
+            }
         }
-        return $"; opened the side at {Fmt(feet + side)}";
+        var rest = placed.Where(p => BlockShapes.HasCollision(World, p.X, p.Y, p.Z)).ToList();
+        if (rest.Count > 0) lock (_shelterLeft) _shelterLeft.Add((feet, rest, TickCount));
+        return said + (rest.Count > 0 ? $" ({rest.Count} block(s) to clear once it's safe)" : "");
     }
 
     private static string MobCount(IReadOnlyList<Entity> mobs)

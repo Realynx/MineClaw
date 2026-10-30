@@ -133,4 +133,71 @@ public class ShelterTests
         Assert.False(s.Blocks.ContainsKey((8, 66, 8)));
         Assert.Equal(13, c.World.Inventory.CountItem(Blocks.Sapling)); // never saplings
     }
+
+    [Fact]
+    public async Task With_too_few_blocks_to_close_a_box_it_places_none()
+    {
+        // Live 10-30: bodies with a few planks started boxes they couldn't close and left the stubs about.
+        var (c, s) = await Harness.StartAsync(srv => srv.Inventory[36] = Harness.Stack(Blocks.Cobblestone, 3));
+        await using var _ = c;
+        using var __ = s;
+        c.World.Spawn = new BlockPos(8, 40, 8);
+        s.SetVitals(6, 20);
+        Assert.True(await Harness.WaitAsync(() => c.World.Player.Health == 6));
+        c.World.Entities.SpawnMob(901, MobTypes.Zombie, new Vec3d(6.5, 64, 6.5), 0, 0, null);
+        c.World.Entities.SpawnMob(902, MobTypes.Zombie, new Vec3d(10.5, 64, 10.5), 0, 0, null);
+        c.World.Entities.SpawnMob(903, MobTypes.Zombie, new Vec3d(10.5, 64, 6.5), 0, 0, null);
+        await Task.Delay(800);
+        Assert.Equal(3, c.World.Inventory.CountItem(Blocks.Cobblestone));
+        Assert.False(s.Blocks.ContainsKey((8, 66, 8)));
+        var r = await c.ShelterAsync("test");
+        Assert.False(r.Ok);
+        Assert.Contains("not starting one", r.Message);
+        Assert.Equal(3, c.World.Inventory.CountItem(Blocks.Cobblestone));
+    }
+
+    [Fact]
+    public async Task Once_it_is_safe_the_whole_box_comes_down_and_the_blocks_come_back()
+    {
+        var (c, s) = await Harness.StartAsync(srv => srv.Inventory[36] = Harness.Stack(Blocks.Cobblestone, 32),
+            o => o with { Survival = o.Survival with { ShelterMaxMinutes = 0.05 } });
+        await using var _ = c;
+        using var __ = s;
+        c.World.Spawn = new BlockPos(8, 40, 8);
+        s.SetVitals(6, 20);
+        Assert.True(await Harness.WaitAsync(() => c.World.Player.Health == 6));
+        foreach (var (id, x, z) in new[] { (901, 6.5, 6.5), (902, 10.5, 10.5), (903, 10.5, 6.5) })
+            c.World.Entities.SpawnMob(id, MobTypes.Zombie, new Vec3d(x, 64, z), 0, 0, null);
+        Assert.True(await Harness.WaitAsync(() => s.Blocks.ContainsKey((8, 66, 8)), 8000), "roof");
+        // The mobs go (they burn, the night ends): the box is taken down when the wait ends.
+        foreach (var id in new[] { 901, 902, 903 }) c.World.Entities.Destroy(id);
+        var box = new[] { (1, 0), (-1, 0), (0, 1), (0, -1) }.SelectMany(d => new[] { (8 + d.Item1, 64, 8 + d.Item2), (8 + d.Item1, 65, 8 + d.Item2) })
+            .Append((8, 66, 8)).ToList();
+        Assert.True(await Harness.WaitAsync(() => box.All(b => !s.Blocks.ContainsKey(b)), 20000),
+            "left standing: " + string.Join(" ", box.Where(b => s.Blocks.ContainsKey(b))));
+        Assert.Equal(Blocks.Stone, s.Blocks[(8, 63, 8)]);
+        Assert.DoesNotContain(s.Dug, d => d.Y < 64);
+    }
+
+    [Fact]
+    public async Task A_box_that_timed_out_with_mobs_about_is_cleared_later_once_nothing_can_get_at_the_body()
+    {
+        var (c, s) = await Harness.StartAsync(srv => srv.Inventory[36] = Harness.Stack(Blocks.Cobblestone, 32),
+            o => o with { Survival = o.Survival with { ShelterMaxMinutes = 0.05 } });
+        await using var _ = c;
+        using var __ = s;
+        c.World.Spawn = new BlockPos(8, 40, 8);
+        s.SetVitals(6, 20);
+        Assert.True(await Harness.WaitAsync(() => c.World.Player.Health == 6));
+        foreach (var (id, x, z) in new[] { (901, 6.5, 6.5), (902, 10.5, 10.5), (903, 10.5, 6.5) })
+            c.World.Entities.SpawnMob(id, MobTypes.Zombie, new Vec3d(x, 64, z), 0, 0, null);
+        Assert.True(await Harness.WaitAsync(() => s.Blocks.ContainsKey((8, 66, 8)), 8000), "roof");
+        // Still there when the wait times out: one side opens, the roof stays.
+        Assert.True(await Harness.WaitAsync(() => s.Dug.Any(d => d.Y >= 64), 15000), "the way out opened");
+        await Task.Delay(500);
+        Assert.True(s.Blocks.ContainsKey((8, 66, 8)));
+        s.SetVitals(20, 20);
+        foreach (var id in new[] { 901, 902, 903 }) c.World.Entities.Destroy(id);
+        Assert.True(await Harness.WaitAsync(() => !s.Blocks.ContainsKey((8, 66, 8)), 15000), "the old box was cleared");
+    }
 }

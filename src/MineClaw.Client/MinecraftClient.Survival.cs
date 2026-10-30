@@ -125,6 +125,10 @@ public sealed partial class MinecraftClient
         bool engaged = _combatInstance?.Engaged ?? false;
         bool idle = !engaged && CurrentAction is null && _driver is null && phys.OnGround && !phys.Frozen;
 
+        // A box left standing (it timed out with mobs around): take it down once the body is idle by it and nothing can get at it.
+        if (idle && TickCount % 40 == 0 && ShelterLeftovers(me) && NearestThreat(me, 16) is null && Volatile.Read(ref _sheltering) == 0)
+            StartShelterCleanup();
+
         // Low health near the edge: step inward first (eating comes after, from a safe spot).
         if (Survival.IsLow(hp) && idle && _healRetreat is null && edge < o.RetreatEdgeDistance)
         {
