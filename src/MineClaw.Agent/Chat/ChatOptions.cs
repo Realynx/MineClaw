@@ -79,6 +79,9 @@ public sealed class ChatOptions
     /// <summary>An unnamed line within this long of the bot asking that player a question is the answer.</summary>
     public int AnswerWindowSeconds { get; set; } = 60;
 
+    /// <summary>A nod/shake within this long of the bot asking that player a question answers it (a gesture is weaker than "yes").</summary>
+    public int GestureAnswerSeconds { get; set; } = 30;
+
     /// <summary>
     /// The bot's last line to a player asked them something or told them to do something ("hop off it when i get there pls"):
     /// their next unnamed line within this long is the reply, even with another bot chatting nearby (live 10-28 15:36: "I hopped

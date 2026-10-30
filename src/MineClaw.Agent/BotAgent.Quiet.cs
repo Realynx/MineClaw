@@ -89,6 +89,8 @@ public sealed partial class BotAgent
     public static bool IsPlayerFacing(GameEvent e) => e.Kind switch
     {
         EventKind.Chat or EventKind.Whisper or EventKind.Emote or EventKind.PlayerJoined => e.Player != null,
+        // A nod/shake answering our question or a wave at us: a player gestured to the bot (a background one never woke it).
+        EventKind.Gesture => e.Player != null && e.Wakes,
         EventKind.Notice => e.Player != null,
         // DangerMonitor posts a player's danger as an Activity at Normal/High ("robin is taking damage near the tree"): a
         // safety warning goes out even when the player asked for quiet. Plain world observations stay Low (quiet).

@@ -45,6 +45,12 @@ public static partial class BodyFactory
             else signals.Raised += s => { try { lane.Controller.Deliver(s.ToScriptEvent()); } catch (Exception) { } };
         }
 
+        // Body language to the brain (after scripts and bindings had their instant go): a nod/shake answers a pending question,
+        // aimed gestures wake it at Low, the rest folds into the next turn.
+        var feed = new Brainstem.GestureFeed(rt.Chat, rt.Events, body.IsMain ? null : body.Name, time,
+            p => body.Gestures?.Play("ack", p), main: body.IsMain, answersOnly: !mainProcess);
+        signals.Raised += feed.OnSignal;
+
         // Hit by a player: an instant "ow" (prefetched, typed like a human), at most every 20 s; the brain hears the hurt as usual.
         var lastOw = DateTimeOffset.MinValue;
         signals.Raised += s =>

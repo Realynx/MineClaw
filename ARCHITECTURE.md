@@ -211,9 +211,15 @@ fills the gaps so the bot reacts at once instead of standing around while Opus t
   said] …` + `[already doing] … for 1.2s` and amends; the instant line counts as the ack (no quick-ack call) and a brain line
   repeating it is suppressed. (2) **Typed game signals** (`Bot/Perception/GameSignals`, `Scripting/Events/GameEventCatalog`):
   player.punchBlock (b1.8.1: swing + look raycast, debounced; 1.12.2: break animation) / swing / hurt / died / pickup / toss /
-  equip / sneak / near / leave / join / quit / say{intent} / lookAt, block.changed{by}, item.dropped, mob.near, me.hurt,
-  me.lowHp, time.dusk/dawn, weather; `EventFilter` (player, block, held class, item, pos/near/region, cooldown, once...);
-  scripts bind with `on(event, filter, fn)` / `react(...)` / machine `on`. (3) **Standing bindings and learned reactions**
+  equip / sneak / near / leave / join / quit / say{intent} / lookAt / gesture, block.changed{by}, item.dropped, mob.near, me.hurt,
+  me.lowHp, time.dusk/dawn, weather; `EventFilter` (player, block, held class, item, kind, at, pos/near/region, cooldown, once...);
+  scripts bind with `on(event, filter, fn)` / `react(...)` / machine `on`. **Gestures** (`Bot/Perception/GestureDetector`,
+  docs/design/reactive-character.md §4): other players' nod / shake / crouch-bob / wave / jump-spam / spin / stare / point from a
+  per-player ring buffer fed at packet rate (`EntityTracker.Updated`; 1.12.2 head yaw, b1.8.1 look yaw), deterministic and tuned
+  against false positives (zigzag strokes with hysteresis, the other axis steady, standing, no work swings) → `player.gesture
+  {kind, strength, at:'me'|bot, answer:yes|no, target}`; the brain (`Bot/Brainstem/GestureFeed`) sees one Background line
+  (`[gesture] PoofimaFox nods yes at you`), a nod/shake answers a pending ask_player or our question (`ChatRouter.AnswerGesture`:
+  waiter "yes (nod)", or a Normal wake), aimed ones wake at Low (30 s per player); meanings beyond yes/no are learned bindings. (3) **Standing bindings and learned reactions**
   (`script{op:bind,name,goal,params:{on,...filter,for,minutes,kind}}`, `op=bindings`, `op=unbind`; ops documented only in the
   cached `ScriptPrompts.BindLine`, no schema bytes): the trigger lives on the script's row (`RoutineScript.Binding`), the
   `Bot/Brainstem/BindingRunner` starts the script the instant the event fires (1-2 ms packet → first action) with the

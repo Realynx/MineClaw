@@ -28,7 +28,7 @@ public sealed record EventBatch(IReadOnlyList<GameEvent> Events)
 
     /// <summary>True when everything that woke us is chat/whisper/join/idle (no task or danger) — triage candidate.</summary>
     public bool IsConversational => Waking.All(e => e.Kind is EventKind.Chat or EventKind.Whisper or EventKind.PlayerJoined
-        or EventKind.PlayerLeft or EventKind.IdleTick or EventKind.Notice or EventKind.Activity or EventKind.Emote);
+        or EventKind.PlayerLeft or EventKind.IdleTick or EventKind.Notice or EventKind.Activity or EventKind.Emote or EventKind.Gesture);
 
     /// <summary>The single player to whisper back to, if every waking message was a whisper from them.</summary>
     public string? WhisperOnlyFrom

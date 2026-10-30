@@ -23,6 +23,11 @@ public enum EventKind
     Activity,
     /// <summary>A player's /me action ("* kiwi pats claudechan"); addressed when it mentions the bot.</summary>
     Emote,
+    /// <summary>
+    /// A player's body language the bot saw (<c>player.gesture</c>: "[gesture] PoofimaFox nods yes at you"). Background unless
+    /// it answers the bot's open question (Normal: a nod is a yes) or is aimed at the bot (Low, rate-limited): Bot/Brainstem/GestureFeed.
+    /// </summary>
+    Gesture,
 }
 
 public enum EventPriority
@@ -101,6 +106,9 @@ public sealed record GameEvent
     /// <summary>/me from a player: <paramref name="action"/> is the text after their name.</summary>
     public static GameEvent Emote(string player, string action, bool addressed = true) =>
         new(EventKind.Emote, action, player, addressed ? EventPriority.Normal : EventPriority.Background);
+    /// <summary>Body language: <paramref name="what"/> reads after the name ("nods yes at you (answering your question)").</summary>
+    public static GameEvent Gesture(string player, string what, EventPriority priority = EventPriority.Background) =>
+        new(EventKind.Gesture, what, player, priority);
     public static GameEvent TaskDone(string summary) => new(EventKind.TaskCompleted, summary);
     public static GameEvent TaskFail(string summary, bool wakes = true) =>
         new(EventKind.TaskFailed, summary, priority: wakes ? EventPriority.Normal : EventPriority.Background);
@@ -133,10 +141,11 @@ public sealed record GameEvent
             EventKind.IdleTick => "idle",
             EventKind.Activity => "noticed",
             EventKind.Emote => "emote",
+            EventKind.Gesture => "gesture",
             _ => "note",
         };
         string body = Player != null ? $"{Player}: {Text}" : Text;
-        if (Kind is EventKind.PlayerJoined or EventKind.PlayerLeft or EventKind.Emote && Player != null) body = $"{Player} {Text}";
+        if (Kind is EventKind.PlayerJoined or EventKind.PlayerLeft or EventKind.Emote or EventKind.Gesture && Player != null) body = $"{Player} {Text}";
         // One brain, many bodies: a non-main body's event says whose it is ("[67 task ok] ...", "[69 DANGER] hp 5/20").
         // Null (hive mode, main, brain-level) renders exactly as before.
         if (BodyTag(Body) is { } who && !Text.StartsWith("[bodies]", StringComparison.Ordinal)) tag = who + " " + tag;

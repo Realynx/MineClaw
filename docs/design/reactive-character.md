@@ -143,6 +143,7 @@ documents each event and its source on both versions:
 | player.near / leave | d | positions (6 blocks) | same |
 | player.join / quit, player.say | text, intent | player list, chat + `ChatIntent` | 0x2E, 0x0F |
 | player.lookAt | target me / block | look ray within 0.6 of my head, or resting on a block, for 1 s | same |
+| player.gesture | kind, strength, at?, answer?, target?, block?, pos | Body language (`Bot/Perception/GestureDetector`, below): look packets 0x20/0x21 (sent only at a turn of 8/256 or more, every 2 ticks), moves, metadata flag 0x02 / anim 104-105, anim 1 into empty air | 0x28/0x27 look (1/256), 0x36 Entity Head Look for the head yaw, 0x3C, 0x06 |
 | block.changed | pos, from, to, by? | 0x35 / 0x34; `by` is the punch that hit it within 2 s | 0x0B / 0x10 |
 | item.dropped, mob.near | item / mob, d | 0x15; a hostile within 8 | same |
 | me.hurt / me.lowHp | by?, hp | 0x08 (low below 8, re-armed above 12) | 0x41 |
@@ -151,7 +152,7 @@ documents each event and its source on both versions:
 **Filters** (`EventFilter`, all optional, all of them must match):
 
 - `player` (a name or a list)
-- `block`, `item`, `mob`, `cause`, `intent`, `target`, `by` (a word matches a name ending in it: `log` takes `oak_log`)
+- `block`, `item`, `mob`, `kind` (a gesture's kind, else the mob), `cause`, `intent`, `target`, `at`, `answer`, `entity`, `by` (a word matches a name ending in it: `log` takes `oak_log`)
 - `held`: pickaxe, axe, shovel, sword, hoe, tool, empty or any, or an item name. A pickaxe is never an axe.
 - `text`, `dist`, `minCount`
 - `pos`, `near {x,y,z,r}`, `region {min,max}`
@@ -159,6 +160,38 @@ documents each event and its source on both versions:
 
 Scripts bind with `on('player.punchBlock', {player:'PoofImaFox', held:'pickaxe'}, e => dig(e.pos))`, with `react(...)`, or
 with a machine's `on` key. Noisy events never cut the running action unless the script asks with `cut:true`.
+
+### Gestures (`player.gesture`)
+
+Fox 10-29: "gesture detection, like nodding my head yes or no ... a signal for the state machine scripting". `GestureDetector`
+keeps a short per-player ring buffer (3.5 s, at most 128 samples) of yaw (the head yaw where 1.12.2 sends it, unwrapped through
+±180), pitch (the byte angle's 330° read as −30°), position, sneak and a ground guess, fed at packet rate by
+`EntityTracker.Updated`; swings and hits come from the animation and status packets, and a 4 Hz poll covers what needs time to
+pass with no packets (a still player sends nothing). Deterministic, tuned against false positives first:
+
+| kind | fires when | never when |
+|---|---|---|
+| nod / shake | 4+ alternating strokes of 10° or more (zigzag with that hysteresis) in 1.6 s, each stroke at most 0.7 s, median stroke 10-80°; the other axis steady (range at most max(10°, half the stroke), and at most 25°) | moved more than 1.5 blocks (walking while turning); a dig/place/hit swing or 2+ swings in the window (mining looks between cells); a single nod; a slow look down and up |
+| bob | 3+ sneak toggles in 1.5 s | a single crouch (2 toggles) |
+| wave | 3+ swings into empty air in 1.5 s, decided 0.3 s after the last | a block in reach, a use-item, anything hurt within 0.5 s of the swing (a fight, punching the bot) |
+| jump | 3+ hops (a rise of 0.5 from a floor and back within 1.1 s) in 3 s within 3 blocks | sprint-jumping across |
+| spin | 320°+ of one-way yaw in at most 1.3 s (at most 45° back) | turning around |
+| stare | the look ray on a body (me or another bot) within 8 blocks for 1 s, once per gaze | further than 8 |
+| point | a look resting 1.5 s on a block or entity out of reach (more than 4.5), then an air swing or a nod within 2 s; target exposed | a near block (that's a punch) or a glance |
+
+One event per gesture instance (its evidence is consumed) and a 4 s cooldown per player and kind (stares 15 s). `at` is the body
+the gesture's median look rests on ("me", or another bot's login), else any sample's, else a stare within 3 s; a nod carries
+`answer:'yes'`, a shake `answer:'no'`. b1.8.1's 11.25° look deadband makes a 15° nod read as about 14°, so the stroke minimum is
+10°; 1.12.2 resolves 1.4°. Meanings beyond nod = yes, shake = no are learned, never coded: "when I crouch twice, come here" is
+a binding (`script{op:bind, params:{on:'player.gesture', kind:'bob', player:'Fox'}}`; `kind` other than reaction/binding is
+the filter).
+
+The brain (`Bot/Brainstem/GestureFeed`): one short line, `[gesture] PoofimaFox nods yes at you`. A nod or shake answers what is
+pending first (`ChatRouter.AnswerGesture`): an ask_player waiting on that player (or an "anyone" ask, when aimed at us) completes
+with "yes (nod)" at once; else our chat question to them within `Chat:GestureAnswerSeconds` (30) wakes the brain at Normal with
+"(answering your question)", and the body nods back first. A gesture aimed at us wakes at Low, once per player per 30 s; the
+rest is Background (one per player and kind per 20 s; stares per 60 s, never waking). A body handles what is aimed at it, main
+the unaimed ones; a gesture aimed at another bot is never our answer.
 
 ## 5. Non-canned output
 
