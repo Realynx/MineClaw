@@ -152,6 +152,7 @@
           <DataTemplate DataType="vm:EditSessionViewModel"><v:EditSessionView /></DataTemplate>
           <DataTemplate DataType="vm:ShardsViewModel"><v:ShardsView /></DataTemplate>
           <DataTemplate DataType="vm:ScriptsViewModel"><v:ScriptsView /></DataTemplate>
+          <DataTemplate DataType="vm:DesignsViewModel"><v:DesignsView /></DataTemplate>
           <DataTemplate DataType="lh:LiveHiveViewModel"><lh:LiveHiveView /></DataTemplate>
         </ContentControl.DataTemplates>
       </ContentControl>

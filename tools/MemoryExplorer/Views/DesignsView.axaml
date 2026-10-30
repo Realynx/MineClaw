@@ -1,0 +1,92 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:MineClaw.MemoryExplorer.ViewModels"
+             x:Class="MineClaw.MemoryExplorer.Views.DesignsView"
+             x:DataType="vm:DesignsViewModel">
+
+  <UserControl.Styles>
+    <Style Selector="TextBlock.cell">
+      <Setter Property="FontFamily" Value="{StaticResource MonoFont}" />
+      <Setter Property="FontSize" Value="12" />
+    </Style>
+  </UserControl.Styles>
+
+  <Grid ColumnDefinitions="2*,3*" Margin="24,20,20,16">
+
+    <!-- ================================================= the designs -->
+    <Grid RowDefinitions="Auto,Auto,*" Margin="0,0,16,0">
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Spacing="3">
+          <TextBlock Classes="h1" Text="Designs" />
+          <TextBlock Classes="muted" Text="{Binding Summary}" TextWrapping="Wrap" />
+        </StackPanel>
+        <Button Grid.Column="1" Classes="icon" Command="{Binding RefreshCommand}" ToolTip.Tip="Reload" VerticalAlignment="Top">
+          <PathIcon Data="{StaticResource IconRefresh}" />
+        </Button>
+      </Grid>
+      <TextBox Grid.Row="1" Classes="search" Margin="0,12,0,10" PlaceholderText="Filter by name, status, requester" Text="{Binding Filter}" />
+      <Panel Grid.Row="2">
+        <ListBox Classes="plain" ItemsSource="{Binding Designs}" SelectedItem="{Binding Selected}">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:DesignRow">
+              <Border Classes="card" Padding="12,10" Margin="0,0,0,8">
+                <StackPanel Spacing="3">
+                  <TextBlock Classes="h3 mono" Text="{Binding Title}" />
+                  <TextBlock Classes="muted" FontSize="12" Text="{Binding Meta}" TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+              </Border>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+        <TextBlock Classes="muted" Text="{Binding EmptyText}" TextWrapping="Wrap" HorizontalAlignment="Center" VerticalAlignment="Center"
+                   IsVisible="{Binding EmptyText, Converter={x:Static ObjectConverters.IsNotNull}}" />
+      </Panel>
+    </Grid>
+
+    <!-- ================================================= the selected design: history, preview, diff -->
+    <Border Grid.Column="1" Classes="card" Padding="16,14" IsVisible="{Binding HasDetail}">
+      <Grid RowDefinitions="Auto,Auto,*">
+        <Grid ColumnDefinitions="*,Auto">
+          <StackPanel Spacing="4">
+            <TextBlock Classes="h2 mono" Text="{Binding Selected.Title, FallbackValue=''}" />
+            <TextBlock Classes="faint" FontSize="12" Text="{Binding WorldNote}" TextWrapping="Wrap"
+                       IsVisible="{Binding WorldNote, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+            <ListBox Classes="plain" ItemsSource="{Binding Revisions}" MaxHeight="220" Margin="0,6,0,0">
+              <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:DesignRevisionRow">
+                  <StackPanel Spacing="1" Margin="0,2">
+                    <TextBlock Classes="mono" FontSize="12.5" Text="{Binding Label}" />
+                    <TextBlock Classes="muted" FontSize="12" Text="{Binding Message}" TextTrimming="CharacterEllipsis" />
+                  </StackPanel>
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+          </StackPanel>
+          <Image Grid.Column="1" Source="{Binding Picture}" MaxWidth="260" MaxHeight="200" Margin="12,0,0,0" VerticalAlignment="Top"
+                 ToolTip.Tip="The bot's rendered preview of the design (ISO, ORBIT, TOP)" />
+        </Grid>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8" Margin="0,12,0,6">
+          <TextBlock Classes="muted" Text="Diff" VerticalAlignment="Center" />
+          <ComboBox ItemsSource="{Binding Revisions}" SelectedItem="{Binding From}" MinWidth="90" />
+          <TextBlock Classes="muted" Text="→" VerticalAlignment="Center" />
+          <ComboBox ItemsSource="{Binding Targets}" SelectedItem="{Binding To}" MinWidth="160" />
+          <Button Classes="icon" Command="{Binding CopyDiffCommand}" ToolTip.Tip="Copy the diff">
+            <PathIcon Data="{StaticResource IconCopy}" />
+          </Button>
+        </StackPanel>
+
+        <Grid Grid.Row="2" RowDefinitions="Auto,*">
+          <TextBlock Classes="mono" FontSize="12.5" Text="{Binding DiffSummary}" TextWrapping="Wrap" Margin="0,0,0,6" />
+          <ListBox Grid.Row="1" Classes="plain" ItemsSource="{Binding DiffCells}">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="x:String">
+                <TextBlock Classes="cell" Text="{Binding}" />
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+      </Grid>
+    </Border>
+  </Grid>
+</UserControl>

@@ -28,6 +28,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         Edit = new EditSessionViewModel(this);
         Shards = new ShardsViewModel(this);
         Scripts = new ScriptsViewModel(this);
+        Designs = new DesignsViewModel(this);
         LiveHive = new LiveHiveViewModel();
         Pages =
         [
@@ -38,6 +39,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
             new NavItem("personality", "Personality", "IconPerson", Personality),
             new NavItem("shards", "Shards", "IconShard", Shards),
             new NavItem("scripts", "Scripts", "IconCode", Scripts),
+            new NavItem("designs", "Designs", "IconCube", Designs),
             new NavItem("audit", "Edits & audit", "IconHistory", Edit),
             new NavItem("live", "Live Hive", "IconVideo", LiveHive),
         ];
@@ -61,6 +63,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     public EditSessionViewModel Edit { get; }
     public ShardsViewModel Shards { get; }
     public ScriptsViewModel Scripts { get; }
+    public DesignsViewModel Designs { get; }
     public LiveHiveViewModel LiveHive { get; }
     public ObservableCollection<NavItem> Pages { get; }
     public ObservableCollection<RecentDb> Recent { get; } = [];
