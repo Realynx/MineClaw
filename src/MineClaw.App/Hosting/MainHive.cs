@@ -77,8 +77,9 @@ public sealed class MainHive : IAsyncDisposable
             agent.PersonaExtra = (agent.PersonaExtra + "\n" + HiveTools.ScriptHint).Trim();
         if (!agent.PersonaExtra.Contains(HiveTools.KindHint, StringComparison.Ordinal))
             agent.PersonaExtra = (agent.PersonaExtra + "\n" + HiveTools.KindHint).Trim();
-        // Hive:Isolation=process and no profile kept in process: no in-process host at all (exactly the old clone processes).
-        bool anyInProc = cfg.RunsInProcess() || cfg.ProcessProfiles.Length > 0;
+        // Hive:Isolation=process: no in-process host at all (exactly the old clone processes; a spawn's inproc override then runs as a
+        // process too). inproc: the host, with Hive:ProcessProfiles and a spawn's process override still getting a process of their own.
+        bool anyInProc = cfg.RunsInProcess();
         return new MainHive(cfg, main, args, log, anyInProc ? inProc : null, loggers);
     }
 
