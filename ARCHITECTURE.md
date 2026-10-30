@@ -730,7 +730,7 @@ EntityMonster/EntityCreature/EntityLiving.
   liquid (World.c's negative-corner quirk kept). Thunder (World.k 10) isn't sent to the client: not modelled.
 - **`spawn_map{area|design|around, y?, exclude?}`** (skill, zero tokens) and **`light_area{area|design|around, y?, exclude?,
   level?, max?, report?}`** (skill; the brain's `do light{area|design,report?}` = that skill, ≈+10 tokens, the short name and `eat`/`equip_armor`
-  without `{}` pay for it: 2,948/2,950 in the strictest budget test, HiveScriptSpawnTests).
+  without `{}` pay for it: 2,948/2,950 in the strictest budget test, HiveScriptSpawnTests; `do dig` since: 2,946).
   `design=N` = its footprint ± `pad` 4 at feet levels base−2..base+2 (`Skills.DesignRegion` via `SkillRegistry.Design` ←
   `BlueprintService.RegionOf`, gate corrections applied); a design target never lights its own **decks** (cells on its blocks
   above the base layer: design #4's platform y77) unless `exclude=none`; `exclude` also takes "design N" (whole box), "N deck"
@@ -745,6 +745,51 @@ EntityMonster/EntityCreature/EntityLiving.
   in `see` sheets and lettered in `look map`; night darkens every open floor, so only the persistent dark spots are drawn. The
   Explorer freecam doesn't draw the overlay yet (it does draw the light itself: below).
 - **Scripts**: `light(pos)` → {sky, block, now, night} and `canSpawn(pos, now?)` in the JS SDK world module.
+
+## Underground: excavation, dig patterns, must-be-air (World/Excavation + Skills/Excavation)
+
+Live 10-30 CT 114 (Fox's spiral stair shaft to diamond level, a 4×4 room at each strip-mine level, strip mines with signs): every
+room and step went through the worker cell by cell with invented coordinates ("can't reach stone at 147,12,275", "goto … no path to
+within 1 of (151,12,275) … need 1 blocks to pillar/bridge", "place failed 2x: 154,17,277 is occupied"); the captured stair was a
+frozen block set ("recorded at y38-60 only"); cobble went into the stairs ("you keep filling in the stairs"; goto bridging on step
+154,15,276); cave holes were scanned by hand over four LLM rounds; it nearly dropped into a dungeon ("be careful about falling").
+- **Must-be-air** (`WorldState.KeepAir`, `KeepAirLog`): cells by owner (a dig site's name). The client's place, place-against (the
+  box-in reflex, builds) and pillar cores refuse a colliding block there ("154,15,276 must stay air (spiral stair)"); torches, signs,
+  levers and buttons are fine. Goto never plans a bridge or pillar block into one (`PathOptions.CanPlace`) and a goto allowed to
+  break never digs a dug design's floor (a stair's tread). In-process bodies share main's log. The clutch reflex (falling) ignores it.
+- **`DigPattern`** (World): a unit of air cells + per repeat a quarter-turn about a vertical axis (pivot may sit on a cell corner)
+  and a step; repeat k = Tᵏ(unit). Fox's stair = `column 3 step 0,-1,0 turn -90 pivot 0.5,0.5` (153,275 → 153,276 → 154,276 →
+  154,275, one lower each); a straight stair `column 3 step 1,-1,0`, a corridor `column 2 step 1,0,0`, a wider spiral a 2-column
+  unit. `Learn(cells)` tries every step within 4 down/3 across and the quarter/half turns about the cells' centre axis (box centre
+  and mean on the half grid), splits the cells into chains c, T(c), …, and keeps the smallest unit that explains them (4 per unit
+  cell + cells off the pattern + cells still to dig; ≥ 3 repeats; ties to a downward step): stray wall holes come back as outliers.
+  `At(anchor, turn)` re-applies it anywhere; `RepeatsTo(y)` is "dig it to y12". `Floors(air)` = a dig's treads.
+- **`Excavator`** (Skills, zero tokens): a target volume (cells with a phase; ordered = a stair's repeats strictly in order, "you've
+  gone too far ahead"), each step: flood the cells the body can walk to (`Pathfinder.Explore`, 1-block drops only, no parkour), pick
+  the exposed target with the cheapest stand that sees a face of it (higher cells first), walk there (`GotoOptions.MaxDrop` 1, no
+  placing), dig. Nothing reaches the volume → a 1×2 access tunnel (flat, a 3-high step down, a step up) from any reachable cell,
+  fewest blocks, never another dig's floor, a protected, liquid or lava-side cell. Fall rule: a cell whose floor would open onto
+  foreign air is probed first: dug only when the floor can be sealed right after ("cave under it (drop 5)" otherwise; an ordered
+  volume stops descending there), and a repeat's already-open cells get their floors too. Gravel/sand that falls in is dug again
+  (8×). Openings around dug cells into foreign air or liquid (not the volume, its doorways, another dig, the space it set out from,
+  the open sky) are filled with the cheapest block on hand, from where it stands or a stand inside the dig. Torches over the light
+  model (`LightPlan`: set cover, only inside the dig) after each finished stretch and at the end. The pick through the acquisition
+  planner. One line: "spiral stair repeats 8→28 of 28 (down to y31): dug 60, sealed 0, torches 5, left 0 (+60 cobblestone)".
+- **Sites** (`DigSite`, `IDigSites`; Bot `DigSiteStore`, db `dig_sites`): a pattern site (rule, anchor, repeats dug, optionally the
+  design id it was learned from: the design carries the rule without the blueprint store changing), rooms and strips with their
+  cells and parent; every site's air is must-be-air from startup (every process loads them).
+- **Rooms** (`MinePlanner.Room`): W×D×H (4×4×3) beside a landing at the room's floor level (a dug cell with head room on a solid
+  floor), never a stair cell or tread or another dig; `gap` 1 (default) keeps the wall except a 1×2 doorway at the landing, gap 0
+  opens it straight onto the stair (the y29 room Fox approved: "see how this room just connects to the stairs easily now?").
+  **Strip mines** (`MinePlanner.Strip`): a main corridor out of the room's far side (away from its shaft) and branches both ways every
+  `spacing`, 1×2 (or 1×3); ores the corridors expose (`*_ore` by the version's names) are dug and the vein followed; `signs` = a
+  wall sign per resource ("iron ore / x5 / y12") on the room wall (signs through the Obtainer).
+- **Surface**: one skill `excavate{op dig|seal|room|strip|learn|light|list|forget, box|site|rule, at, to, repeats, …}` plus
+  `seal_openings`, `dig_room`, `strip_mine` for the worker's catalog (its hints find them: "seal the holes in the stair shaft walls"
+  → seal_openings). Brain: `do dig{op?:seal|room|strip|learn,box|site,to?}` (≈10 tokens; trimmed out of ask_player, reflect_self,
+  ask_stand and do's goto sentence). JS SDK `dig` module: `excavate(vol, opts)`, `seal(vol)`, `lightUp(vol)`,
+  `pattern.learn(name, box|rule)`, `pattern.apply(name|rule, toY, at?)`, each one excavate call (reference 13,922 chars).
+- Both versions: block names and dig rules from the version's data (b1.8.1 128 high, 1.12.2 256 high, diamonds at y ≤ 16).
 
 ## Protection policy (Bot/Protection + ProtectionPolicy/, Client hooks)
 

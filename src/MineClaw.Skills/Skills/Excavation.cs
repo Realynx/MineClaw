@@ -288,7 +288,8 @@ public static class ExcavationOps
     public static DigPattern.Learned? LearnBox(WorldState w, BlockPos min, BlockPos max, out string? why)
     {
         why = null;
-        var cells = BuildOps.Box(min, max).Where(c => w.IsLoaded(c.X, c.Z) && w.GetBlock(c) == 0).ToHashSet();
+        // Dug = open and not liquid: a torch on a step is still the step (a chain broken by it would split the unit).
+        var cells = BuildOps.Box(min, max).Where(c => w.IsLoaded(c.X, c.Z) && Clear(w, c)).ToHashSet();
         if (cells.Count < 3) { why = $"{Span(min, max)} has {cells.Count} dug cells: nothing to learn"; return null; }
         if (cells.Count > 8192) { why = "too many dug cells to learn from (8192 max): give a tighter box"; return null; }
         var l = DigPattern.Learn(cells);
@@ -385,15 +386,8 @@ public static class ExcavationOps
         ctx.World.KeepAir.Set(DigSites.Owner(site), site.Dimension, air);
     }
 
-    /// <summary>A pickaxe before digging rock: the acquisition planner (inventory, chests, crafting) when there's none.</summary>
-    private static async Task PickaxeAsync(SkillContext ctx, CancellationToken ct)
-    {
-        var picks = Items.All.Where(i => i.Tool == ToolType.Pickaxe && Items.Exists(i.Id)).Select(i => i.Id).ToArray();
-        if (picks.Length == 0 || picks.Any(id => ctx.Has(id)) || ctx.Registry.AcquireMissing is not { } acquire) return;
-        try { await acquire(ctx, Spec, picks, ct).ConfigureAwait(false); }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch (Exception e) { ctx.Log?.Invoke($"excavate pickaxe: {e.Message}"); }
-    }
+    /// <summary>A pickaxe before digging rock (the acquisition planner when there's none).</summary>
+    private static Task PickaxeAsync(SkillContext ctx, CancellationToken ct) => Excavator.PickaxeAsync(ctx, ct);
 
     internal static readonly SkillSpec Spec = new() { Name = "excavate", Category = SkillCategory.Building, Summary = "excavate" };
 

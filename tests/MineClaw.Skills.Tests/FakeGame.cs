@@ -163,7 +163,7 @@ public sealed class FakeGame : IGameActions
         if (ProtectedBlocks.Contains(p)) return No("protected");
         if (Safety.SupportBlocks(World, World.Player.Position).Contains(p)) return No("won't dig the block I'm standing on");
         if (StrictReach && Aiming.FindDigAim(World, World.Player.EyePosition, p, Reach) is null) return No($"can't reach {Blocks.Get(id).Name} at {p.X},{p.Y},{p.Z}");
-        if (BlockFaceExtensions.All.Any(f => BlockShapes.IsLava(World.GetBlock(p.Offset(f))))) return No($"won't dig {Blocks.Get(id).Name}: lava next to it would flow out");
+        if (StrictReach && BlockFaceExtensions.All.Any(f => BlockShapes.IsLava(World.GetBlock(p.Offset(f))))) return No($"won't dig {Blocks.Get(id).Name}: lava next to it would flow out");
         Digs++;
         if (id is Blocks.SugarCane or Blocks.Cactus)
         {

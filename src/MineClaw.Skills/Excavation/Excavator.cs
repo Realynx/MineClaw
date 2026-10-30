@@ -115,6 +115,7 @@ public sealed class Excavator(SkillContext ctx, DigVolume vol, ExcavateOptions? 
     private readonly Dictionary<BlockPos, int> _fails = new();
     private readonly Dictionary<BlockPos, int> _refills = new();
     private int _oresAdded;
+    private bool _hadPick;
     private readonly Dictionary<BlockPos, string> _oreAt = new();
     /// <summary>The last phase the dig reached: cells past it (a stair's later repeats crossing a cave) are not this run's to seal.</summary>
     private int _reached = int.MaxValue;
@@ -137,6 +138,7 @@ public sealed class Excavator(SkillContext ctx, DigVolume vol, ExcavateOptions? 
         {
             _keepSolid = KeepSolid(W, vol);
             _home = Home();
+            _hadPick = HasPick();
             await DigLoopAsync(ct).ConfigureAwait(false);
             if (_o.Seal)
                 foreach (var c in vol.Phase.Where(kv => kv.Value <= _reached).Select(kv => kv.Key).Where(Clear))
@@ -272,6 +274,13 @@ public sealed class Excavator(SkillContext ctx, DigVolume vol, ExcavateOptions? 
                     continue;
                 }
                 hole = floor;
+            }
+            // The pick broke mid-dig (live 10-30: 98 → 64 on one failed job): another from chests/crafting, else stop rather
+            // than hand-dig rock for nothing.
+            if (_hadPick && NeedsPick(W.GetBlock(cell)) && !HasPick())
+            {
+                await PickaxeAsync(ctx, ct).ConfigureAwait(false);
+                if (!HasPick()) { _r.Stop = "no pickaxe left (the last one broke)"; return; }
             }
             var r = await ctx.Game.DigAsync(cell, ct).ConfigureAwait(false);
             if (!r.Ok)
@@ -591,6 +600,24 @@ public sealed class Excavator(SkillContext ctx, DigVolume vol, ExcavateOptions? 
             var r = await ctx.Game.PlaceAsync(c, Blocks.Torch, faces[0], ct).ConfigureAwait(false);
             if (r.Ok && W.GetBlock(c) == Blocks.Torch) _r.Torches++;
         }
+    }
+
+    // ------------------------------------------------------------------ tools
+
+    private static readonly Lazy<int[]> Picks = new(() => Items.All.Where(i => i.Tool == ToolType.Pickaxe).Select(i => i.Id).ToArray());
+
+    private bool HasPick() => Picks.Value.Any(id => Items.Exists(id) && ctx.Has(id));
+
+    private static bool NeedsPick(int id) => id != 0 && Blocks.Get(id) is { BestTool: ToolType.Pickaxe, MinHarvestLevel: >= 0 };
+
+    /// <summary>A pickaxe through the acquisition planner (inventory, chests, crafting, bootstrap) when there's none.</summary>
+    public static async Task PickaxeAsync(SkillContext ctx, CancellationToken ct)
+    {
+        var picks = Picks.Value.Where(Items.Exists).ToArray();
+        if (picks.Length == 0 || picks.Any(id => ctx.Has(id)) || ctx.Registry.AcquireMissing is not { } acquire) return;
+        try { await acquire(ctx, ExcavationOps.Spec, picks, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception e) { ctx.Log?.Invoke($"excavate pickaxe: {e.Message}"); }
     }
 
     // ------------------------------------------------------------------ world helpers
