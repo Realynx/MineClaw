@@ -268,6 +268,21 @@ public sealed class BotHost : IDisposable
         // The speaker's facing rides along for a while after they talk to me ("that way" = where they face).
         rt.Chat.Accepted += m => { if (m.Player is { Length: > 0 } p) gestures.NoteSpoke(p, m.Text); };
         // Protection from chat: trusted "break that" (+ punch) / "you can break it" permits, anyone's "never break X" (zero tokens).
+        // The pathfinder asks per cell: the trusted punches of the last 3 min are re-read at most twice a second.
+        (DateTimeOffset At, List<MineClaw.World.BlockPos> Cols) pointedCache = (DateTimeOffset.MinValue, []);
+        protection.PointedByTrusted = p =>
+        {
+            var now = (time ?? TimeProvider.System).GetUtcNow();
+            var c = pointedCache;
+            if (now - c.At > TimeSpan.FromMilliseconds(500))
+            {
+                var trusted = rt.Options?.Self?.TrustedPlayers ?? [];
+                c = pointedCache = (now, trusted.Length == 0 ? [] : (gestures.Recent() ?? []).Where(g => g.At >= now - TimeSpan.FromMinutes(3)
+                    && trusted.Any(t => t.Equals(g.Player, StringComparison.OrdinalIgnoreCase))).Select(g => g.Pos).ToList());
+            }
+            foreach (var g in c.Cols) if (g.X == p.X && g.Z == p.Z && Math.Abs(g.Y - p.Y) <= 2) return true;
+            return false;
+        };
         var protectCmds = new ProtectionCommands(marks, protection, client.World, botOptions.Protection, time)
         {
             Trusted = () => rt.Options.Self.TrustedPlayers,

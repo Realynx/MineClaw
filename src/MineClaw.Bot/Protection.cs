@@ -133,10 +133,18 @@ public sealed partial class Protection
     /// <summary>Rule 1/3 for this block: a hive bot placed it, or a trusted player permitted it (containers: exact permits only).</summary>
     public bool OverridesSoft(BlockPos p, int blockId) => Overridden(p, blockId, Dim);
 
+    /// <summary>
+    /// A trusted player punched this column just now (<c>BotHost</c>: the gesture tracker, 3 min): pointing at the block to break is
+    /// that player's choice, not the bot's, so soft protection yields there (never containers, never a never-break mark). Live 10-30:
+    /// Fox punched each next column of his spiral_staircase ("punched it", "next one") and main refused them as part of that build.
+    /// </summary>
+    public Func<BlockPos, bool>? PointedByTrusted { get; set; }
+
     private bool Overridden(BlockPos p, int id, int dim)
     {
         bool container = IsContainer(id);
         if (!container && Placed?.IsPlaced(p, dim, id) == true) return true;
+        if (!container && PointedByTrusted?.Invoke(p) == true) return true;
         return Marks is { HasPermits: true } m && m.PermitAt(p, dim, exactOnly: container) != null;
     }
 

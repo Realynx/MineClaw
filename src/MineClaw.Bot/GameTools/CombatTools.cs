@@ -28,9 +28,14 @@ public static class CombatTools
             async (i, ct) => GameToolSet.R(await body().SparAsync(i.ReqStr("player"), i.Int("rounds"), ct)), longRunning: true);
         tools.Register("stop_spar", "End the spar/fight now.", ToolSchema.Empty,
             (_, _) => Task.FromResult(GameToolSet.R(body().StopSpar())));
-        tools.Register("defend", "Self-defense reflex on/off.",
-            ToolSchema.Create().Str("mode", enumValues: ["on", "off"]).Build(),
-            (i, _) => Task.FromResult(GameToolSet.R(body().SetDefend(!string.Equals(i.ReqStr("mode"), "off", StringComparison.OrdinalIgnoreCase)))));
+        tools.Register("defend", "Self-defense reflex. brave: no boxing in/picking fights till hit (10 min).",
+            ToolSchema.Create().Str("mode", enumValues: ["on", "off", "brave"]).Build(),
+            (i, _) => Task.FromResult(GameToolSet.R(i.ReqStr("mode").ToLowerInvariant() switch
+            {
+                "brave" => body().SetBrave(true),
+                "off" => body().SetDefend(false),
+                _ => body().SetDefend(true),
+            })));
         tools.Register("guard", "Protect a player from mobs, or 'off'.",
             ToolSchema.Create().Str("player", "name or off").Build(),
             (i, _) => Task.FromResult(GameToolSet.R(body().SetGuard(i.ReqStr("player")))));

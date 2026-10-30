@@ -256,6 +256,43 @@ public class UnreachableThreatTests
     }
 
     [Fact]
+    public void Zombies_in_the_next_cave_behind_solid_stone_are_no_threat_but_one_with_a_way_round_is()
+    {
+        // 10-30 stair shaft: zombies a few blocks away behind the shaft wall boxed main in again and again mid-dig. Fox: "you're
+        // not being attacked, they're behind the wall".
+        var r = new CombatRig(Opts(), half: 12);
+        for (int z = -6; z <= 6; z++) { r.W.SetBlock(2, 64, z, Blocks.Stone, 0); r.W.SetBlock(2, 65, z, Blocks.Stone, 0); }
+        // A sealed wall the full width of the rig: the zombie's side can't reach the bot's.
+        for (int z = -12; z <= 12; z++) { r.W.SetBlock(2, 64, z, Blocks.Stone, 0); r.W.SetBlock(2, 65, z, Blocks.Stone, 0); r.W.SetBlock(2, 66, z, Blocks.Stone, 0); }
+        var zb = r.Mob(9, MobTypes.Zombie, 4.5, 0.5);
+        Assert.False(CombatGeometry.CanGetAt(r.W, zb, r.P.Position));
+        r.W.Time = 18000;
+        bool aborted = false;
+        for (int i = 0; i < 100; i++) aborted |= r.Step().AbortAction;
+        Assert.Equal(0, Starts(r));
+        Assert.False(aborted);
+        // A doorway in the wall: now it can walk round to the bot.
+        r.W.SetBlock(2, 64, 4, Blocks.Air, 0);
+        r.W.SetBlock(2, 65, 4, Blocks.Air, 0);
+        Assert.True(CombatGeometry.CanGetAt(r.W, zb, r.P.Position));
+    }
+
+    [Fact]
+    public void Brave_picks_no_fight_with_a_zombie_that_isnt_hitting_and_still_answers_one_in_reach()
+    {
+        var r = new CombatRig(Opts(), half: 12);
+        r.E.Brave = true;
+        var zb = r.Mob(9, MobTypes.Zombie, 5.5, 0.5);
+        bool aborted = false;
+        for (int i = 0; i < 60; i++) aborted |= r.Step().AbortAction;
+        Assert.Equal(0, Starts(r));
+        Assert.False(aborted);
+        r.W.Entities.Teleport(zb.Id, new Vec3d(r.P.Position.X + 1.6, 64, r.P.Position.Z), 0, 0);
+        for (int i = 0; i < 10; i++) r.Step();
+        Assert.True(r.E.Engaged);
+    }
+
+    [Fact]
     public void Zombie_next_to_the_bot_is_still_fought_at_once()
     {
         var r = new CombatRig(Opts());

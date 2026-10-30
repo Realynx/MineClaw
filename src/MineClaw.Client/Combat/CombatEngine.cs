@@ -150,6 +150,13 @@ public sealed class CombatEngine
     public volatile bool DefendSelf;
 
     /// <summary>
+    /// The brain's "brave" override (defend mode brave): no pre-emptive fights. Only a mob that hit the bot, one in reach or a fusing
+    /// creeper starts one. The client clears it the moment the bot takes damage (live 10-30: main kept stopping Fox's stair dig to
+    /// fight and box in against mobs that weren't hurting it).
+    /// </summary>
+    public volatile bool Brave;
+
+    /// <summary>
     /// The no-path danger reflex (the client decides: blocks on hand, no walk home, low hp or outnumbered): called with the threat
     /// count and whether a retreat cell exists when a fight turns into a retreat. True = the fight ends ("boxing in") and the
     /// step asks the client to box the body in (<see cref="CombatStep.Shelter"/>).
@@ -500,8 +507,10 @@ public sealed class CombatEngine
     }
 
     /// <summary>Melee threats within 8 blocks (what can hit the body in the next seconds).</summary>
+    /// <summary>Melee mobs within 8 that can get at the bot: a zombie in the next cave behind stone is no part of the fight (live
+    /// 10-30: "3 mobs with 53 hp, taking 10.6/s" behind the shaft's walls boxed main in mid-dig).</summary>
     private List<Entity> MeleeThreats(Vec3d me) =>
-        _w.Entities.Nearby(me, 8, e => CombatRules.IsThreat(e) && CombatRules.ProfileOf(e).Tactic == MobTactic.Melee).ToList();
+        _w.Entities.Nearby(me, 8, e => CombatRules.IsThreat(e) && CombatRules.ProfileOf(e).Tactic == MobTactic.Melee && Senses(e, me)).ToList();
 
     /// <summary>The fight's kill and die times (s) and its description; null without a 1.9+ cooldown or a melee target.</summary>
     private (double Kill, double Die, string Text)? Estimate(PhysicsState phys, Entity target)
@@ -625,9 +634,11 @@ public sealed class CombatEngine
                 {
                     // Live 10-28 night: skeletons at 4-11 m on ledges/across gaps held every bot "busy" with 0 hits.
                     // Shot from within its range by one it can walk to: close in (an unwinnable one turns into cover in Tick).
-                    if ((d <= Options.SkeletonEngageRange || provoked && d <= OutOfArcherRange - 2) && approachable) why = provoked ? "it attacked" : "skeleton in sight";
+                    if ((d <= Options.SkeletonEngageRange || provoked && d <= OutOfArcherRange - 2) && approachable && (provoked || !Brave))
+                        why = provoked ? "it attacked" : "skeleton in sight";
                     else if (provoked && _w.Player.Health <= Options.CoverHealth) { why = "taking cover"; cover = true; }
                 }
+                else if (Brave) { if (creeperDanger && CombatRules.IsCreeperFusing(e)) why = "creeper fusing"; else if (inReach && !creeper) why = "in reach"; }
                 else if (creeperDanger) why = CombatRules.IsCreeperFusing(e) ? "creeper fusing" : "creeper close";
                 else if (creeper && d <= CombatRules.CreeperCancelRange && approachable) why = "creeper close";
                 else if (!creeper && d <= Options.DefendRadius && approachable) why = "defending myself";

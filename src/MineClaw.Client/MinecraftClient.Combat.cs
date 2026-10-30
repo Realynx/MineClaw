@@ -344,7 +344,42 @@ public sealed partial class MinecraftClient
     public ActionResult SetDefend(bool on)
     {
         Combat.DefendSelf = on;
+        SetBrave(false);
         return ActionResult.Success($"self-defense {(on ? "on" : "off")}");
+    }
+
+    private long _braveUntil = -1;
+    private int _braveHp;
+
+    /// <summary>The brain's override is on: no box-ins, no pre-emptive fights (<see cref="SetBrave"/>).</summary>
+    public bool Brave => Volatile.Read(ref _braveUntil) > TickCount;
+
+    /// <summary>
+    /// "brave": the brain overrides its fear reflexes while nothing is hurting it. No box-ins, no fights it didn't get hit into
+    /// (one that hits it, one in reach and a fusing creeper are still fought). Damage ends it at once; so do <paramref name="minutes"/>
+    /// (10) and defend on/off. Live 10-30: main boxed itself in again and again mid-dig against zombies behind the shaft walls;
+    /// Fox: "stop filling it in, you're not being attacked".
+    /// </summary>
+    public ActionResult SetBrave(bool on, double minutes = 10)
+    {
+        _braveHp = World.Player.Health;
+        Volatile.Write(ref _braveUntil, on ? TickCount + (long)(Math.Clamp(minutes, 0.5, 30) * 60 * 20) : -1);
+        Combat.Brave = on;
+        if (on) Combat.DefendSelf = true;
+        return ActionResult.Success(on ? $"brave for {Math.Clamp(minutes, 0.5, 30):0.#} min: no boxing in or picking fights; any damage turns the reflexes back on" : "reflexes normal");
+    }
+
+    /// <summary>From the survival tick: damage or the time ends the override.</summary>
+    private void BraveTick(int hp)
+    {
+        if (Volatile.Read(ref _braveUntil) < 0) return;
+        if (!Brave) { SetBrave(false); Log("survival: brave ran out: reflexes normal"); return; }
+        if (hp > _braveHp) _braveHp = hp;
+        if (hp >= _braveHp) return;
+        SetBrave(false);
+        var line = $"took damage (hp {hp}): brave off, reflexes back on";
+        Log("survival: " + line);
+        Raise(() => CombatEventRaised?.Invoke(new CombatEvent(CombatEventKind.Critical, line)));
     }
 
     /// <summary>Adds a player to the guard list, or clears it with "off".</summary>

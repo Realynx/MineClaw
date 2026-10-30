@@ -122,6 +122,7 @@ public sealed partial class MinecraftClient
             Raise(() => Danger?.Invoke(hungry));
         }
 
+        BraveTick(hp);
         bool engaged = _combatInstance?.Engaged ?? false;
         bool idle = !engaged && CurrentAction is null && _driver is null && phys.OnGround && !phys.Frozen;
 
@@ -146,7 +147,7 @@ public sealed partial class MinecraftClient
         }
 
         // No way home and low hp or outnumbered (not in a fight: the combat engine asks itself): box in.
-        if (o.ShelterEnabled && !engaged && CurrentAction is null && phys.OnGround && Volatile.Read(ref _sheltering) == 0 && TickCount % 20 == 0)
+        if (o.ShelterEnabled && !Brave && !engaged && CurrentAction is null && phys.OnGround && Volatile.Read(ref _sheltering) == 0 && TickCount % 20 == 0)
         {
             var near = World.Entities.Nearby(me, 8, e => CombatRules.IsThreat(e) && CombatGeometry.CanGetAt(World, e, me));
             if (near.Count > 0 && (Survival.IsLow(hp) || near.Count >= o.ShelterThreats)
@@ -160,7 +161,7 @@ public sealed partial class MinecraftClient
         // Night in a normal world: an idle or waiting body boxes in (logs and planks are fine walls) before a mob it can't beat
         // reaches it, not at critical hp (live 10-29 02:09: clone 1337 waited out the night "at the hangout" in the open with 30
         // spruce logs; the box started at hp 4 and it died building it).
-        if (o.ShelterEnabled && !WorldMode.Current.HasVoidBelow && World.IsNight && idle && Volatile.Read(ref _sheltering) == 0 && TickCount % 20 == 0)
+        if (o.ShelterEnabled && !Brave && !WorldMode.Current.HasVoidBelow && World.IsNight && idle && Volatile.Read(ref _sheltering) == 0 && TickCount % 20 == 0)
         {
             // A mob on a guarded player is theirs to defend (the guard reflex goes), not a reason to hide while hp holds.
             var guards = Survival.IsLow(hp) ? [] : Combat.Guarded.Select(n => World.Entities.FindPlayer(n)).OfType<Entity>().ToList();

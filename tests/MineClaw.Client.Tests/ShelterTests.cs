@@ -200,4 +200,27 @@ public class ShelterTests
         foreach (var id in new[] { 901, 902, 903 }) c.World.Entities.Destroy(id);
         Assert.True(await Harness.WaitAsync(() => !s.Blocks.ContainsKey((8, 66, 8)), 15000), "the old box was cleared");
     }
+
+    [Fact]
+    public async Task Brave_keeps_the_body_out_of_a_box_until_it_takes_damage()
+    {
+        // 10-30: "stop filling it in, you're not being attacked". The brain's defend brave holds the box-in reflex off; a hit ends it.
+        var (c, s) = await Harness.StartAsync(srv => srv.Inventory[36] = Harness.Stack(Blocks.Cobblestone, 32),
+            o => o with { Survival = o.Survival with { ShelterMaxMinutes = 0.05 } });
+        await using var _ = c;
+        using var __ = s;
+        c.World.Spawn = new BlockPos(8, 40, 8);
+        Assert.True(c.SetBrave(true).Ok);
+        s.SetVitals(6, 20);
+        Assert.True(await Harness.WaitAsync(() => c.World.Player.Health == 6));
+        Assert.True(await Harness.WaitAsync(() => !c.Brave, 3000), "that was damage: brave is off again");
+        Assert.True(c.SetBrave(true).Ok);
+        foreach (var (id, x, z) in new[] { (901, 6.5, 6.5), (902, 10.5, 10.5), (903, 10.5, 6.5) })
+            c.World.Entities.SpawnMob(id, MobTypes.Zombie, new Vec3d(x, 64, z), 0, 0, null);
+        await Task.Delay(1200);
+        Assert.False(s.Blocks.ContainsKey((8, 66, 8)), "boxed in while brave");
+        s.SetVitals(5, 20);
+        Assert.True(await Harness.WaitAsync(() => !c.Brave, 3000), "a hit ends brave");
+        Assert.True(await Harness.WaitAsync(() => s.Blocks.ContainsKey((8, 66, 8)), 8000), "the reflex boxed in again after the hit");
+    }
 }

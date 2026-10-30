@@ -73,7 +73,7 @@ public sealed partial class MinecraftClient
     private bool ShouldShelter(int threats, bool retreatFound)
     {
         var o = Options.Survival;
-        if (!o.Enabled || !o.ShelterEnabled || Volatile.Read(ref _sheltering) == 1 || ActiveVoidStep is not null) return false;
+        if (!o.Enabled || !o.ShelterEnabled || Brave || Volatile.Read(ref _sheltering) == 1 || ActiveVoidStep is not null) return false;
         if (!EnoughToBoxIn()) return false;
         bool low = World.Player.Health <= o.LowHealth;
         if (!low && threats < o.ShelterThreats) return false;
@@ -85,7 +85,7 @@ public sealed partial class MinecraftClient
     private bool CanBoxIn(int threats)
     {
         var o = Options.Survival;
-        return o.Enabled && o.ShelterEnabled && Volatile.Read(ref _sheltering) == 0 && ActiveVoidStep is null && EnoughToBoxIn();
+        return o.Enabled && o.ShelterEnabled && !Brave && Volatile.Read(ref _sheltering) == 0 && ActiveVoidStep is null && EnoughToBoxIn();
     }
 
     /// <summary>
@@ -174,12 +174,12 @@ public sealed partial class MinecraftClient
                         if (eat.Ok) Interlocked.Increment(ref _autoMeals);
                     }
                     bool quiet = NearestThreat(p.Position, 16) is null || !World.IsNight;
-                    if (p.Health >= o.ShelterUntilHealth && quiet) break;
+                    if (p.Health >= o.ShelterUntilHealth && quiet || Brave) break; // brave: the brain called it off
                     await Task.Delay(500, c).ConfigureAwait(false);
                 }
                 // Safe now: the whole box comes down. Timed out with mobs still about: only the way out opens (taking it all down would
                 // only box in again), and the rest is cleared once the body is idle by it and nothing can get at it.
-                bool safe = NearestThreat(World.Player.Position, 16) is null;
+                bool safe = NearestThreat(World.Player.Position, 16) is null || Brave;
                 var open = safe ? await ClearShelterAsync(feet, placed, c).ConfigureAwait(false) : await OpenShelterAsync(feet, placed, c).ConfigureAwait(false);
                 return ActionResult.Success($"waited it out boxed in at {Fmt(feet)} (hp {World.Player.Health}){open}");
             }).ConfigureAwait(false);
