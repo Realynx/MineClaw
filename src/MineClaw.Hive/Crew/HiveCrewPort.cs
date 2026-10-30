@@ -21,7 +21,12 @@ public sealed class HiveCrewPort(HiveSupervisor hive, ICrewBoard board, TimeProv
 
     public ICrewBoard Board { get; } = board;
 
-    public IReadOnlyList<string> Bodies() => hive.Slots.Where(s => s.State != CloneState.Retired).Select(s => s.Number).ToList();
+    /// <summary>
+    /// The clones in game now. A managed account that is offline is no crew body: a lane on it launched a whole clone process past
+    /// the resource ceiling and the player cap (live 10-30 00:23: main's deforest crew started 16 processes on every account it had
+    /// ever used and the CT ran out of memory). New bodies come in through <c>hive spawn … bodies=N</c>, which checks both.
+    /// </summary>
+    public IReadOnlyList<string> Bodies() => hive.Slots.Where(s => s.State != CloneState.Retired && s.IsLive).Select(s => s.Number).ToList();
 
     private CloneSlot? Slot(string body) => hive.Resolve(body) is { } n ? hive.Slot(n) : null;
 
@@ -44,6 +49,7 @@ public sealed class HiveCrewPort(HiveSupervisor hive, ICrewBoard board, TimeProv
     {
         if (hive.Resolve(spec.Body) is not { } name || hive.Slot(name) is not { } slot) return Lanes.Failed(spec.Body, $"no clone {spec.Body}");
         if (slot.Pending) return Lanes.Failed(spec.Body, $"body {spec.Body} busy: {slot.Task?.Text}");
+        if (!slot.IsLive) return Lanes.Failed(spec.Body, $"{spec.Body} isn't in game; bring bodies in with hive spawn script=… bodies=N");
         // The clone runs the script by name from the shared db: an unsaved coordinator is saved first (same lint as any script).
         if (hive.ScriptPrep is { } prep)
         {
