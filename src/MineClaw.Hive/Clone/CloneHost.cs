@@ -222,6 +222,9 @@ public sealed class CloneHost : IHandoffTarget
         }
     }
 
+    /// <summary>The startup deposit of last session's stranded items gets this long; the task never waits longer for it.</summary>
+    public static TimeSpan StartupDeposit { get; set; } = TimeSpan.FromSeconds(20);
+
     /// <summary>Whole clone lifetime. <paramref name="stop"/> (e.g. SIGTERM to the clone itself) = planned logout.</summary>
     /// <param name="welcome">Already connected via <see cref="ConnectParentAsync"/> (the host checks the parent before building the bot).</param>
     public async Task<int> RunAsync(CancellationToken stop, WelcomeMsg? welcome = null)
@@ -248,13 +251,16 @@ public sealed class CloneHost : IHandoffTarget
 
         if (welcome.Stranded && !LoggingOut)
         {
-            // This clone crashed holding items last time: put them away before doing anything else.
-            _log.LogInformation("clone {Name}: depositing {N} stranded item(s) first", Name, welcome.StrandedItems);
+            // This clone crashed holding items last time: a quick try to put them away, then the task starts whatever happened.
+            // Not the logout's 180 s: a body that logged in stuck in a tree tried all 10 chests, a hand-off to main, then all
+            // again, while the new task waited and its 10 bodies stood in game doing nothing (live 10-30 03:50-03:52, Fox:
+            // "how come they take so long to start actually doing anything?"). What's left is the brain's to store later.
+            _log.LogInformation("clone {Name}: depositing {N} stranded item(s) first (at most {S:0}s)", Name, welcome.StrandedItems, StartupDeposit.TotalSeconds);
             var r = await new DepositProcedure(_body.Inventory, Claims, "hive_storage_" + Name, this, _log)
-                .RunAsync(TimeSpan.FromSeconds(_cfg.DepositTimeoutSeconds), ct).ConfigureAwait(false);
+                .RunAsync(StartupDeposit, ct).ConfigureAwait(false);
             LastDeposit = r;
             if (r.Empty) _store?.ClearStranded(Name);
-            await ReportAsync("progress", "stranded items: " + r.Text).ConfigureAwait(false);
+            await ReportAsync("progress", "stranded items: " + r.Text + (r.Empty ? "" : "; still carrying them, store them when it's convenient")).ConfigureAwait(false);
         }
         if (!LoggingOut)
         {

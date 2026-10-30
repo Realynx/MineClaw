@@ -14,6 +14,22 @@ public class LiveSession2FixesTests
 {
     private static ItemMsg Sticks(int n) => new(280, 0, n, "stick");
 
+    /// <summary>Live 10-30 03:50: a hive body stuck in a tree retried every chest for the logout's 180 s before its task
+    /// started; its 10 bodies stood idle. The startup deposit is a quick try, and an unreachable one returns within it.</summary>
+    [Fact]
+    public async Task The_startup_deposit_is_a_quick_try_and_gives_up_in_its_budget()
+    {
+        Assert.True(MineClaw.Hive.Clone.CloneHost.StartupDeposit <= TimeSpan.FromSeconds(30));
+        Assert.True(MineClaw.Hive.Clone.CloneHost.StartupDeposit.TotalSeconds < new MineClaw.Hive.HiveConfig().DepositTimeoutSeconds / 4);
+        var port = new FakePort(0, chestSlots: 0);
+        port.Hidden.Add(Sticks(4));
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var r = await new DepositProcedure(port, new ClaimBoard().ViewFor("maid_chan_107"), "x") { RetryDelay = TimeSpan.FromMilliseconds(50) }
+            .RunAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+        Assert.False(r.Empty);
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(4), $"took {sw.Elapsed}");
+    }
+
     [Fact]
     public async Task Deposit_never_trusts_a_stale_empty_snapshot()
     {
