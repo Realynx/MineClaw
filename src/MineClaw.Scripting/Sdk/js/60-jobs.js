@@ -1,4 +1,4 @@
-// module: jobs | composable primitives every job is built from (any world, any version): gather, stash, handTo, makeRoom, patrol; each returns {ok, n, msg}
+// module: jobs | primitives every job is built from (any world/version): gather, stash, handTo, makeRoom, patrol; each -> {ok, n, msg}
 (H, def) => {
   const isObj = v => v !== null && typeof v === 'object';
   const ok = r => !(r === false || r === null || (isObj(r) && r.ok === false));
@@ -118,11 +118,11 @@
   };
 
   /**
-   * gather(what, n=1, {from, more, stash, chest, near, tool, r, at, per}) - have n of an item by every route known, in order:
-   * inventory, chests (chest, the nearest, every known one holding it), craft (if this version has a recipe), then its source in
-   * this world per the game data (harvest the crop + replant, chop a tree, mine the block that drops it, kill the mob). from = the
+   * gather(what, n=1, {from, more, stash, chest, near, tool, r, at, per}) - have n of an item by every known route, in order:
+   * inventory, chests (chest, else every known one holding it), craft (if this version has a recipe), then its source per the
+   * game data (harvest + replant, chop, mine the block that drops it, kill the mob). from = the
    * routes to try, in order: 'chests' 'craft' 'source' 'harvest' 'chop' 'mine' 'kill' 'gen' (generator cell at, per) or fn(left).
-   * more:true = n more than held; stash: a chest (null|true = any with room) = n more, stored as the bag fills and at the end. near: go first; tool: ensure.
+   * more:true = n more than held; stash: a chest (null|true = any with room): n more, stored as the bag fills. near: go first; tool: ensure.
    * -> {ok, n: gained, have, msg} (+ full, need if every chest is full); never fails the script: expect(r).
    */
   const gather = (what, n = 1, o = {}) => {

@@ -3,8 +3,7 @@
   const isObj = v => v !== null && typeof v === 'object';
   /**
    * machine({initial, states:{name:{enter, tick, exit, on:{event: 'target' | (ev,bb,m)=>target | {to, guard}}, final}}, on, guards, bb, policies, thresholds, id})
-   * - runs a state machine until a final state (or 'done') and returns its name. enter/tick/exit(bb, m) may return a target state;
-   * tick repeats while in the state. Events: danger lowhp void died chat 'chat:<text>' hungry invFull toolBroke[:kind] hurt night day,
+   * - runs until a final state (or 'done'), returns its name. enter/tick/exit(bb, m) may return a target; tick repeats in the state. Events: danger lowhp void died chat 'chat:<text>' hungry invFull toolBroke[:kind] hurt night day,
    * timers after(ms) every(ticks), conditions when(()=>cond); an event cuts the running action. guards: {name:(bb,ev)=>bool}.
    * m.state m.history m.bb m.go(state). State and bb are checkpointed on every transition.
    */

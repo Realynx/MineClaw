@@ -291,6 +291,35 @@ public class SdkLightTests
     }
 }
 
+/// <summary>The dig module: excavate/seal/lightUp/pattern are one excavate skill call each (live 10-30 CT 114: "need scripted
+/// scan+fill of shaft wall ring … no script tool available to me").</summary>
+public class SdkDigTests
+{
+    [Fact]
+    public async Task Excavate_seal_light_and_pattern_are_one_skill_call_each()
+    {
+        using var rig = Rig.Js();
+        var s = await rig.Run("""
+            const r = [excavate('1,60,1,4,62,4'), excavate('spiral stair', { to: 12 }), excavate({ site: 'spiral stair' }, { op: 'room', size: '4x4x3' }),
+              seal('spiral stair'), lightUp([1, 60, 1, 4, 62, 4]),
+              pattern.learn('stair', '0,40,0,1,60,1'), pattern.apply('column 3 step 0,-1,0 turn -90 pivot 0.5,0.5', 12, '5,60,5'), pattern.apply('spiral stair', 20)]
+            return r.every(ok)
+            """);
+        Assert.True(s.Ok, s.Outcome);
+        Assert.Equal(
+        [
+            """skill:excavate {"box":"1,60,1,4,62,4"}""",
+            """skill:excavate {"site":"spiral stair","to":12}""",
+            """skill:excavate {"op":"room","site":"spiral stair","size":"4x4x3"}""",
+            """skill:excavate {"op":"seal","site":"spiral stair"}""",
+            """skill:excavate {"box":"1,60,1,4,62,4","op":"light"}""",
+            """skill:excavate {"box":"0,40,0,1,60,1","name":"stair","op":"learn"}""",
+            """skill:excavate {"at":"5,60,5","rule":"column 3 step 0,-1,0 turn -90 pivot 0.5,0.5","to":12}""",
+            """skill:excavate {"site":"spiral stair","to":20}""",
+        ], rig.Norm().Where(c => c.StartsWith("skill:excavate", StringComparison.Ordinal)).ToList());
+    }
+}
+
 public class SdkReferenceTests
 {
     [Fact]

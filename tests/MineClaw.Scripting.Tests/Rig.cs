@@ -65,7 +65,7 @@ public sealed class Rig : IDisposable
                 Calls.Enqueue($"{name} {args.GetRawText()}");
                 return On.TryGetValue(name, out var f) ? f(args, ct) : Task.FromResult(ActResult.Success($"{name} ok"));
             },
-            Skills = () => ["move_items", "harvest_cane", "log", "give_items", "drop_items", "harvest_wheat"],
+            Skills = () => ["move_items", "harvest_cane", "log", "give_items", "drop_items", "harvest_wheat", "excavate"],
             Skill = (name, args, ct) =>
             {
                 Calls.Enqueue($"skill:{name} {args.GetRawText()}");
@@ -75,6 +75,7 @@ public sealed class Rig : IDisposable
             SkillSchema = n => n == "move_items"
                 ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"moves":{"type":"array"}}}""").RootElement.Clone()
                 : n == "harvest_cane" ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"radius":{"type":"integer"}}}""").RootElement.Clone()
+                : n == "excavate" ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"op":{"type":"string"},"box":{"type":"string"},"site":{"type":"string"},"rule":{"type":"string"},"at":{"type":"string"},"to":{"type":"integer"},"name":{"type":"string"},"size":{"type":"string"}}}""").RootElement.Clone()
                 : n == "harvest_wheat" ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"radius":{"type":"integer"},"replant":{"type":"boolean"},"part":{"type":"string"}}}""").RootElement.Clone()
                 : null,
             Wake = (_, reason) => Wakes.Enqueue(reason),

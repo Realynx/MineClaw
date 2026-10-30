@@ -19,7 +19,7 @@
   def('canSpawn', (...a) => H.canSpawn(...a));
   /** near(kind, r=24) - nearest block/entity/remembered place of that name: {x,y,z,name,d} or null. */
   def('near', (kind, r) => H.near(kind, r));
-  /** find(query, {r:24, filter, limit:16}) - matches nearest first: blocks ('log', 'wheat'), mobs ('cow', 'hostile', 'mob'), players ('player' or a name), drops ('item'), else that remembered place; filter(t) keeps some (ripe: t => t.meta >= 7). -> [{x,y,z,name,d,kind,meta?}]; none within r -> the empty list has .exhausted and .beyond (the nearest up to 64 away: widen with find(q, {r: larger})). */
+  /** find(query, {r:24, filter, limit:16}) - matches nearest first: blocks ('log', 'wheat'), mobs ('cow', 'hostile', 'mob'), players ('player' or a name), drops ('item'), else that remembered place; filter(t) keeps some (ripe: t => t.meta >= 7). -> [{x,y,z,name,d,kind,meta?}]; none within r -> the empty list has .exhausted and .beyond (the nearest within 64: widen r). */
   def('find', (query, o = {}) => {
     const q = String(query), r = o.r ?? 24;
     let list = H.find(q, o.r, o.filter ? 64 : o.limit);

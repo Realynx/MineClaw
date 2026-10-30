@@ -1,4 +1,4 @@
-// module: character | the persona: gaze, gestures, in-character lines, mood, relations, memory, recent chat, instant game-event reactions (read-mostly, zero tokens)
+// module: character | the persona: gaze, gestures, lines, mood, relations, memory, recent chat, instant event reactions (zero tokens)
 (H, def) => {
   const isObj = v => v !== null && typeof v === 'object';
   const call = (name, ...a) => (typeof globalThis[name] === 'function' ? globalThis[name](...a) : { ok: false, msg: 'no ' + name });
@@ -13,9 +13,9 @@
     for (let i = 0; i < n; i++) { H.idle(0.5); H.chLook(player); }
     return true;
   };
-  /** character.gesture(name, target?) - brainstem body language: nod|shake|wave|greet|bow|bob (crouch-bob)|hop|excite|ack|look; target = a player to look at. Social priority: refused during a safety reflex, a fight, near a hostile or an edge -> {ok:false,msg}. */
+  /** character.gesture(name, target?) - brainstem body language: nod|shake|wave|greet|bow|bob (crouch-bob)|hop|excite|ack|look; target = a player to look at. Refused during a reflex, a fight, near a hostile or an edge -> {ok:false,msg}. */
   const gesture = (name, target) => H.chGesture(name, target);
-  /** character.follow(player, {dist=3, s=60}) - walk after a player for up to s seconds (plain walk, re-planned every 5 s) until stopFollow(), the player leaves, or s runs out -> {ok,msg}. */
+  /** character.follow(player, {dist=3, s=60}) - walk after a player for up to s seconds until stopFollow(), the player leaves, or s runs out -> {ok,msg}. */
   const follow = (player, o = {}) => {
     following = true;
     const total = Math.min(1800, Math.max(1, o.s == null ? 60 : o.s));
@@ -61,10 +61,10 @@
   /** character.intent(text) - the intent class of a line: come|follow|stop|give|status|thanks|praise|insult|greeting|farewell|help|question|command|banter. */
   const intent = t => H.chIntent(t);
 
-  /** character - the persona object: look face gesture follow stopFollow line typing speak mood relation recall remember heard intent (see each above). */
+  /** character - the persona object: look face gesture follow stopFollow line typing speak mood relation recall remember heard intent. */
   def('character', Object.freeze({ look, face, gesture, follow, stopFollow, line, typing, speak, mood, relation, recall, remember, heard, intent }));
 
-  /** react(trigger, filter?, fn) - instant, no model: trigger = a game event (player.punchBlock{player,pos,block,held} player.swing{player,held} player.hurt{player,by,cause} player.died{player,cause} player.pickup{player,item,count} player.toss{player,item,count,pos} player.equip{player,slot,item} player.sneak player.unsneak{player} player.near player.leave{player,d} player.join player.quit{player} player.say{player,text,intent} player.lookAt{player,target,pos} player.gesture{player,kind:nod|shake|bob|wave|jump|spin|stare|point,at:'me'|bot,answer:yes|no,target,block} block.changed{pos,from,to,by} item.dropped{pos,item,count} mob.near{mob,d,pos} me.hurt{by,hp} me.lowHp{hp} time.dusk time.dawn{time} weather{rain}; 'player' = all player.*) or a chat intent ('come','thanks',... = player.say with that intent). filter: player, block, item, mob, kind, held (pickaxe|axe|shovel|sword|hoe|tool|empty|any|item), intent, text, target, at, by, cause, pos, near {x,y,z,r}, region {min,max}, dist, minCount, cooldown (s), once, cut. fn(e) runs between actions. Ex: react('player.gesture', {kind:'nod', at:'me'}, e => character.gesture('ack', e.player)). */
+  /** react(trigger, filter?, fn) - instant, no model: trigger = a game event (player.punchBlock{player,pos,block,held} player.swing{player,held} player.hurt{player,by,cause} player.died{player,cause} player.pickup{player,item,count} player.toss{player,item,count,pos} player.equip{player,slot,item} player.sneak player.unsneak{player} player.near player.leave{player,d} player.join player.quit{player} player.say{player,text,intent} player.lookAt{player,target,pos} player.gesture{player,kind:nod|shake|bob|wave|jump|spin|stare|point,at:'me'|bot,answer:yes|no,target,block} block.changed{pos,from,to,by} item.dropped{pos,item,count} mob.near{mob,d,pos} me.hurt{by,hp} me.lowHp{hp} time.dusk time.dawn{time} weather{rain}; 'player' = all player.*) or a chat intent ('come','thanks',...). filter: player, block, item, mob, kind, held (pickaxe|axe|shovel|sword|hoe|tool|empty|any|item), intent, text, target, at, by, cause, pos, near {x,y,z,r}, region {min,max}, dist, minCount, cooldown (s), once, cut. fn(e) runs between actions. */
   def('react', (trigger, filter, fn) => {
     if (typeof filter === 'function') { fn = filter; filter = {}; }
     const t = String(trigger || '');

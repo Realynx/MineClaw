@@ -33,7 +33,7 @@
   def('spawn', spawnLane);
   /**
    * parallel([[body, role, args], ...], {keepGoing}) - run roles on several bodies at once, wait for all; -> results in order.
-   * The first failure cancels the others (unless keepGoing). Roles are top-level functions; the top level holds only functions/constants.
+   * The first failure cancels the others (unless keepGoing). Roles are top-level functions.
    */
   def('parallel', (jobs, o) => {
     const ids = jobs.map(j => (Array.isArray(j) ? spawnLane(j[0], j[1], j[2]) : spawnLane(j.body, j.role, j.args)).id);

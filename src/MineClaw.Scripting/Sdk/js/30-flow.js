@@ -90,7 +90,7 @@
   });
   // This body's own failed targets (key -> clock s until): its next forEach rounds skip them too.
   const failedUntil = new Map();
-  /** forEach(targets, fn, {order:'nearest', budget, claim:true}) - fn(t, i) per target (find() results, positions, places), nearest to you next (order:'given' keeps it); each target is leased while fn runs, one leased by another body is skipped; at most budget calls; 'stop' ends. -> {ok, n: done, failed, taken, msg}; nothing left -> exhausted:true, beyond (from find). */
+  /** forEach(targets, fn, {order:'nearest', budget, claim:true}) - fn(t, i) per target (find() results, positions), nearest to you next (order:'given' keeps it); targets are leased while fn runs (another body's are skipped); at most budget calls; 'stop' ends. -> {ok, n: done, failed, taken, msg}; nothing left -> exhausted:true, beyond (from find). */
   def('forEach', (targets, f, o = {}) => {
     const list = Array.isArray(targets) ? targets.slice() : targets == null ? [] : [targets];
     const budget = Math.max(0, Math.floor(o.budget ?? list.length));
