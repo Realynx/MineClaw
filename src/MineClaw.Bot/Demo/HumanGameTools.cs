@@ -53,7 +53,7 @@ public static partial class HumanGameTools
         TimeSpan? pollInterval = null, Perception.DigCells? digCells = null)
     {
         var poll = pollInterval ?? TimeSpan.FromMilliseconds(500);
-        tools.Register("ask_stand", "Ask a player to stand at x,y,z and wait until they do; omit at = they stand where they mean, say here, you get the spot.",
+        tools.Register("ask_stand", "Ask a player to stand at x,y,z and wait until they do; no at = they go where they mean and say here.",
             ToolSchema.Create().Str("player").Str("at", "x,y,z", required: false).Str("say", "message to send", required: false).Build(),
             async (input, ct) =>
             {

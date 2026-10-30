@@ -23,21 +23,24 @@ public static class DoTool
         // light = the light_area skill: torch an area/design floor so mobs can't spawn; report=true = the spawn map only
         // (live 10-28 16:45, task #29). The short name keeps the brain's tool budget.
         "light",
+        // dig = the excavate skill: a box, a remembered stair pattern to a depth, a room off a landing, a strip mine, seal a dig's
+        // cave holes (live 10-30 CT 114: the shaft to diamond level went through the worker cell by cell with invented coordinates).
+        "dig",
     ];
 
     /// <summary>Actions that are skills of the catalog (run through the worker's <c>skill</c> tool).</summary>
-    public static readonly IReadOnlySet<string> SkillActions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "move_items", "give_items", "drop_items", "equip_armor", "light" };
+    public static readonly IReadOnlySet<string> SkillActions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "move_items", "give_items", "drop_items", "equip_armor", "light", "dig" };
 
     /// <summary>A <c>do</c> action whose catalog skill has a longer name.</summary>
-    public static string SkillName(string action) => action == "light" ? "light_area" : action;
+    public static string SkillName(string action) => action switch { "light" => "light_area", "dig" => "excavate", _ => action };
 
     public const string Description =
-        "Run a game macro yourself (delegate multi-step jobs). then: next steps, skipped if one fails. goto returns at once, " +
-        "walking in the background: plan meanwhile; jobs called now run on arrival. queue=true: after the busy script. " +
+        "Run a game macro yourself (delegate multi-step jobs). then: next steps, skipped if one fails. goto returns at once " +
+        "(walks on in the background; jobs called now run on arrival). queue=true: after the busy script. " +
         "goto{to,dist?,build?,allow_parkour?(only if poofimafox/kiwi asked),into_void?:reason,keep_items_ok?} follow{player} mine{block,count?} " +
         "harvest_generator{at,count,store?} chop_tree{at?} deposit{at?,items?} withdraw{item,count?,at?} craft{item,count?} " +
         "move_items{moves} act{move:jump|spin|wave|crouch|look|punch,target?} see{view?} eat give_items{player,item,count?} " +
-        "drop_items{item,count?} equip_armor light{area|design,report?}";
+        "drop_items{item,count?} equip_armor light{area|design,report?} dig{op?:seal|room|strip|learn,box|site,to?}";
 
     public static JsonElement Schema(IEnumerable<string> actions) => ToolSchema.Create()
         .Str("action", enumValues: actions)
@@ -184,7 +187,7 @@ public static class DoTool
             var key = action switch
             {
                 "goto" => "to", "follow" or "give_items" => "player", "drop_items" => "item", "mine" => "block", "withdraw" or "craft" => "item", "act" => "move",
-                "harvest_generator" or "chop_tree" or "deposit" => "at", "see" => "view", "light" => "design", _ => "value",
+                "harvest_generator" or "chop_tree" or "deposit" => "at", "see" => "view", "light" => "design", "dig" => "site", _ => "value",
             };
             var o = new JsonObject { [key] = JsonNode.Parse(args.GetRawText()) };
             return JsonSerializer.SerializeToElement(o);

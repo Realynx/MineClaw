@@ -9,7 +9,7 @@ namespace MineClaw.Agent.Human;
 public static class HumanTools
 {
     public const string AskPlayerDescription =
-        "Ask a player a real question. Always give default (your recommended answer) and keep working on it: the answer " +
+        "Ask a player a real question. Always give default (your pick) and keep working on it: the answer " +
         "comes back as chat. risky=true for builds/void/rare items. Replies and small talk are plain text.";
 
     /// <summary>Error returned (nothing is sent) when ask_player is called without a question.</summary>
