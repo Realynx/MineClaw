@@ -1109,6 +1109,14 @@ process (main next to MainHive; a hive-kind clone too: `hive spawn kind=hive bra
 brain; release cascades bodies first, each depositing. Per body: view distance `Hive:Subhives:ViewDistance` (4), one chunk store per
 process, lazy 16³ sections. The ceiling is memory-aware (`Hive:Resources`, cgroup limit) plus the player cap; `Hive:MaxClones` is
 only an optional hard cap (0 = none).
+**Crews over a subset, and bodies spawned onto a script** (Fox 10-30; hive-hierarchy.md, "Crews of many bodies"): a brain's
+`script{name, body:[…]|"all"|"67"}` on a crew script is ONE bodiless coordinator over exactly those bodies (`ScriptBridge.StartCrew`
+in `Bot/GameTools/ScriptTools.Crews.cs`; the planner's hidden `__bodies`, no schema bytes), the brain's own body free, one body per
+crew (`Body.Crew`, `ICrewPort.HeldBy/Hold`; a held body is reported, not taken), one `[crew X done|failed]` wake. `hive spawn
+brain=… bodies=N script=X` is one hive whose task carries `Crew = X`: the hive asks main for its bodies tagged with a crew id
+(`SpawnReq.Crew` → `HostReq.Crew`) and C# starts the coordinator over them as they log in (`App/Hosting/HiveCrews`), no brain turn
+first; a hive's own `hive spawn bodies=N script=X` does the same for more bodies. Roles prepare themselves (ensure, gather,
+policies) by the author's rules and examples, not by new SDK helpers.
 
 `App → Hive → Bot`. Clones are allocated per spawn (`Hive:MaxClones` > 0 = an optional ceiling); with `Hive:Isolation=process` each is a **separate OS process**: the same App
 binary as `--clone <name> --parent-pipe <pipe>` (headless, own login, same three-tier brain, own personality shard via

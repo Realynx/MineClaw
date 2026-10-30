@@ -184,6 +184,33 @@ process and use threads instead … so that we can still go back to the beta ver
   bodies once each, then main's brain hears one `[hive] hive script X done|failed: …` line. A hive-kind clone runs one over its own
   bodies with `script{name}` (DeepSeek: saved ones only). `hive list` shows "hive script X: 3 bodies 102-105". Cached hint:
   `script=X bodies=N: X alone drives N` (KindHint, 219 chars).
+- **A crew over all, some or one body** (Fox 10-30: "a hive should be able to assign scripts to all or some or just one of its
+  bodies"): `script{name, body:["67","69"]|"all"|"67"}` on a crew script (everyBody/parallel/spawn; `Crews.IsCrewScript`) is ONE
+  bodiless coordinator over exactly those bodies (`ScriptBridge.StartCrew`, `SubsetCrewPort` with the crew's id), not a copy per
+  body. The planner (`BotAgent.CrewPlan`, asked through `BotAgent.CrewRun`) puts the resolved bodies in the hidden `__bodies` field
+  ("all" stays "all": late logins join; names must be online; main never runs a lane), so no schema grows: the body parameter is
+  in the cached `SubhivesHint`/`BodiesHint` ("A crew script (everyBody) with a body list/"all"/one runs ONCE over just those").
+  The brain's own body is not held (it keeps talking and working); bodies outside the subset keep their jobs. One body, one crew:
+  `Body.Crew` (meaningful while that crew is live) is set when a crew takes a body; a list naming a held body or "all" skips it
+  and says so ("not taken: 67 (in crew crew_long@maid_chan#1-…)"). The crew's one result wakes the brain (`[crew X done|failed] …`,
+  MustWake); `script{op:status}` lists running crews, `script{op:cancel,name:X}` ends one; idle check-ins are dropped meanwhile.
+- **Spawned straight onto a script** (Fox 10-30: "spawn up its bodies with a script already made, so its bodies just go straight
+  to work"): `hive spawn brain=opus|deepseek bodies=N script=X (args)` (or `kind=hive`) is ONE hive whose task carries
+  `Crew = X` (`TaskMsg.Crew`, `HiveSpawnOptions.Crew`), not `Script`: it keeps its brain and hosts its bodies. Main prepares X first
+  (`HiveHierarchy.CrewPrep` = `HiveScriptHost.PrepareCrew`: saved, or the Opus brain's inline code linted and saved, so a DeepSeek
+  hive only runs saved code; a non-crew script is refused). In the hive (`App/Hosting/HiveCrews`): a crew id is reserved, the
+  bodies are asked for with it (`SpawnReq.Crew` → main passes it in each `HostReq.Crew`; such a body gets no job of its own), and
+  when the task lands C# starts the coordinator over exactly the tagged accounts. `everyBody` waits for bodies still coming
+  (allocated, not hosted or not in game yet: b1.8.1 logs in one at a time, each whitelisted first); one that leaves for good is
+  dropped. The brain gets the task and the bodies notice as context only (Background), so its first call is the crew's result; then
+  it supervises (hive_report done/failed). A hive's own `hive spawn bodies=N script=X` (no brain) does the same for more bodies
+  (`CloneHost.CrewSpawn` → `HiveCrews.SpawnAsync`: a crew over just the new ones; a brain named = a new hive, main's path).
+- **Scripts that prepare themselves**: learned, not coded. A role ensures its tools (`ensure`: inventory, chests, the hive, craft,
+  bootstrap), gathers what it lacks (`gather`: chests, craft, source), puts on its policies (keepFed, replaceToolWhenBroken,
+  depositWhenFull), then works, stores, repeats: one rule line in the author's prompt and two examples (the hive chop crew ensures its
+  kit; a mining crew gets pickaxe, sword and torches first). No job-specific helper was added.
+- **Visibility**: a lane's debug snapshot carries its crew and coordinator (`ScriptRequest.Coordinator`), so the Explorer's
+  Controller panel shows "lane worker · crew of maid_chan_101" and the crew/coordinator rows on the Crew tab.
 - **Pre-emption**: a logout that follows a clone's own finished task yields to a new order (main's task, or a player naming it):
   the deposit stops, the clone stays online and takes the order. Recall, budget and shutdown logouts are never pre-empted.
 
@@ -274,10 +301,12 @@ players, world index, structures, script library, blueprints and self profile. N
   every answer says what exists ("none in game yet"), and the cached hint says "Report only what spawned".
 - `brain`: `opus` (default) | `deepseek` | a model profile name (the old `profile`, still read). Shown only when a profile is usable.
 - `release name|all` replaces `recall` (still accepted).
-- One cached prompt line (`HiveTools.KindHint`, 208 chars). Measured: the hive tool with `bodies` ≈115 tokens (≤ `ToolBudgets.HiveTool`
+- One cached prompt line (`HiveTools.KindHint`, ≤ 220 chars; 10-30: "(+script=X: working X)" on the brain hive shape, paid for by
+  dropping "release name|all" and shortening "use 2 agents"). Measured: the hive tool with `bodies` ≈115 tokens (≤ `ToolBudgets.HiveTool`
   115; the description shrank to "Spawn/reassign (not chat)."), brain tools + hive ≈2,940 (≤ 2,950); before: ≈114, the plain one
-  ≈77; the description got shorter to pay for `kind`. A hive clone's own tool ≈95, below main's, so a hive clone's brain set stays
-  under main's: one cap (`ToolBudgets.Brain` 2,950).
+  ≈77; the description got shorter to pay for `kind`. A hive clone's own tool ≈114 (10-30: `spawn bodies=N (+script=X: they start on X)`;
+  `args` is read but not in its schema), below main's 115, so a hive clone's brain set stays under main's: one cap
+  (`ToolBudgets.Brain` 2,950).
 - DeepSeek: available only when the `Hive:Accounts:DeepSeekProfile` model profile (default `deepseek`, Ollama) is usable; otherwise
   `no: brain deepseek not available (…); use brain opus; spawned nothing`. Its brain has no prompt cache, so its tool set is compact
   (`App/Hosting/CompactBrainTools`: design, reflect_self, identity, mark/describe_structure, watch_demo, ask_stand leave the brain
@@ -315,6 +344,13 @@ players, world index, structures, script library, blueprints and self profile. N
   process-wide state audit (ARCHITECTURE.md, "Hive"), the resumed-build storm guard; process isolation kept behind the switch.
 
 ## Tests
+
+Crews (10-30): `tests/MineClaw.Bot.Tests/MultiBodyBrainTests.Crews.cs` (the brain's crew over some, one and all bodies on real clients:
+one coordinator, the rest keep their jobs, a held body reported not taken, status/cancel by name),
+`tests/MineClaw.Hive.Tests/HiveCrewSpawnHierarchyTests.cs` (brain + bodies + script = one crew hive, prep on main, crew-tagged hosting,
+a clone's own spawn onto a script, its tool budget), `tests/MineClaw.App.Tests/HiveCrewSpawnTests.cs` (the real CloneMode in process on
+b1.8.1 and 1.12.2: bodies at work with no brain turn, a late body counted, a clone's further body onto the script),
+`tests/MineClaw.Scripting.Tests/Js/HiveScriptTests.cs` (roles that equip themselves before they work).
 
 `tests/MineClaw.Hive.Tests/HiveHierarchyTests.cs`: allocator rules, collisions, reuse, caps; whitelist only through main and only
 for managed names (model path refused, gate exception exact and one-shot); bus whitelist only for the asker's own clones; startup
