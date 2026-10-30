@@ -162,6 +162,12 @@ public sealed class CloneHost : IHandoffTarget
     /// <summary>The live script debugger's snapshot of this clone's script (main's Supervisor asks at 2-5 Hz while a panel is open).</summary>
     public Func<bool, Scripting.ScriptDebugSnapshot?>? ScriptDebug { get; set; }
 
+    /// <summary>
+    /// This hive's own <c>hive spawn bodies=N script=X</c> (script, args JSON, N, task): N new bodies that go straight to work on X, ONE
+    /// crew over just them (the hosting App wires it; accounts still come from main) → "ok: …" or why not. Null = no bodies here.
+    /// </summary>
+    public Func<string, string?, int, string?, Task<string>>? CrewSpawn { get; set; }
+
     /// <summary>This clone's brain context capture (the Explorer's Controller panel via main's Supervisor): a page or one turn.</summary>
     public Func<MineClaw.Agent.Telemetry.BrainContextQuery, MineClaw.Agent.Telemetry.BrainContextReply?>? BrainContext { get; set; }
 

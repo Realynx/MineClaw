@@ -59,9 +59,12 @@ public static class BusTypes
 public sealed record WhitelistReq(string Op, string Name);
 /// <param name="Bodies">How many (subhive bodies; or bodies a new hive-kind clone hosts).</param>
 /// <param name="Reset">A hive (re)starting asks for its bodies: its old subhive accounts (gone with its old process) are reused first.</param>
+/// <param name="Crew">kind=subhive for a hive: the hive's own crew id these bodies join as they log in (its <c>hive spawn bodies=N
+/// script=X</c>); main passes it on in each <see cref="HostReq"/>.</param>
 public sealed record SpawnReq(string? Kind = null, string? Brain = null, string? Task = null, string? Script = null, string? Args = null,
-    string? After = null, string? Name = null, int? Bodies = null, bool Reset = false);
-public sealed record HostReq(string Account, string? Task = null, string? Script = null);
+    string? After = null, string? Name = null, int? Bodies = null, bool Reset = false, string? Crew = null);
+/// <param name="Crew">The hosting hive's crew this body joins (no job of its own: the crew's coordinator gives it its lane).</param>
+public sealed record HostReq(string Account, string? Task = null, string? Script = null, string? Crew = null);
 public sealed record SubhiveGoneMsg(string Account, string Reason);
 public sealed record AssignReq(string To, string Task);
 public sealed record ReleaseReq(string Id);

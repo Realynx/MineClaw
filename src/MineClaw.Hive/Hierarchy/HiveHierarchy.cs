@@ -11,8 +11,10 @@ namespace MineClaw.Hive.Hierarchy;
 /// <summary>A spawn as the brain (hive tool) or another hive (bus) asks for it.</summary>
 /// <param name="Bodies">kind=subhive: how many bodies; kind=hive: how many subhive bodies the new hive hosts and its brain drives.</param>
 /// <param name="Reset">A hive (re)starting asks for its bodies: accounts it held before (gone with its old process) are reused first.</param>
+/// <param name="Crew">kind=subhive for a hive: its own crew the new bodies join as they log in (passed on in each <see cref="Bus.HostReq"/>).</param>
 public sealed record SpawnRequest(string? Kind = null, string? Brain = null, string? Task = null, string? Script = null, string? Code = null,
-    string? Args = null, string? After = null, string? Name = null, bool Handover = false, string? Profile = null, int? Bodies = null, bool Reset = false);
+    string? Args = null, string? After = null, string? Name = null, bool Handover = false, string? Profile = null, int? Bodies = null, bool Reset = false,
+    string? Crew = null);
 
 /// <summary>
 /// Main's hive hierarchy: the clone kinds (hive / subhive / script), the ownership tree under main, the dynamic accounts (allocate
@@ -56,6 +58,12 @@ public sealed class HiveHierarchy : IHiveAccounts
     public ISubhiveHost? Subhives { get; set; }
     /// <summary>Hive scripts over main's subhive bodies (<c>hive spawn kind=script bodies=N</c>); null = not available.</summary>
     public IHiveScriptHost? ScriptHives { get; set; }
+    /// <summary>
+    /// A crew script for a hive spawned straight onto it (<c>brain=… bodies=N script=X</c>): a saved name, or inline code the hive tool
+    /// already authorised as the Opus brain's (linted and saved here on main, so a DeepSeek hive only runs saved code) → (name, error).
+    /// Null = such spawns are refused.
+    /// </summary>
+    public Func<string?, string?, (string? Name, string? Error)>? CrewPrep { get; set; }
     private readonly Dictionary<string, string> _scripts = new(StringComparer.OrdinalIgnoreCase); // running hive script id → script name
     /// <summary>Hive-kind clones may host subhive bodies in their own process (accounts from main, over the bus).</summary>
     public bool RemoteSubhives { get; set; }
@@ -241,7 +249,12 @@ public sealed class HiveHierarchy : IHiveAccounts
         bool hasScript = !string.IsNullOrWhiteSpace(r.Script) || !string.IsNullOrWhiteSpace(r.Code);
         var (brain, brainProfile) = HiveKinds.ParseBrain(r.Brain);
         string? profile = brainProfile ?? (string.IsNullOrWhiteSpace(r.Profile) ? null : r.Profile.Trim());
-        var k = kind ?? DefaultKind(owner, hasScript, brain != null || profile != null, r.Name);
+        // A hive spawned straight onto a script (Fox 10-30: "spawn up its bodies with a script already made, so its bodies just go
+        // straight to work"): a brain (or kind=hive) + bodies + a script = ONE hive whose bodies run the script as they log in, the
+        // coordinator started by C# with no brain turn; its brain supervises (wakes on the crew's result, a failure or chat).
+        bool crewHive = hasScript && r.Bodies is > 0 && string.IsNullOrWhiteSpace(r.Name)
+            && (kind == CloneKind.Hive || kind == null && (brain != null || profile != null));
+        var k = crewHive ? CloneKind.Hive : kind ?? DefaultKind(owner, hasScript, brain != null || profile != null, r.Name);
 
         switch (k)
         {
@@ -262,6 +275,14 @@ public sealed class HiveHierarchy : IHiveAccounts
         }
         if (r.Name is { Length: > 0 } named && owner != HiveTree.Root && !OwnedBy(named, owner))
             return $"no: {named} isn't one of {Short(owner)}'s clones";
+        string? crew = null;
+        if (crewHive)
+        {
+            if (CrewPrep is not { } prep) return "no: a hive can't start its bodies on a script here; spawned nothing";
+            var (cn, ce) = prep(r.Script, r.Code);
+            if (cn == null) return "error: " + (ce ?? "script not saved");
+            crew = cn;
+        }
         int? hostBodies = null;
         string note = "";
         if (k == CloneKind.Hive && r.Bodies is > 0 and var asked)
@@ -280,11 +301,13 @@ public sealed class HiveHierarchy : IHiveAccounts
             if (n < asked)
                 note = $"; only {n} of {asked} bodies fit (" + (n == want && asked > want ? $"max {want} per spawn" : fit < want ? $"memory: room for {fit}" : $"player cap: {room} slot(s) after the hive") + ")";
         }
-        var opts = new HiveSpawnOptions(profile, r.Script, r.Code, r.Args, r.After) { Kind = HiveKinds.Name(k), Owner = owner, Bodies = hostBodies };
-        var text = bodies.Spawn(r.Task ?? "", r.Name, r.Handover, opts);
+        var opts = new HiveSpawnOptions(profile, crew != null ? null : r.Script, crew != null ? null : r.Code, r.Args, r.After)
+            { Kind = HiveKinds.Name(k), Owner = owner, Bodies = hostBodies, Crew = crew };
+        var text = bodies.Spawn(crew != null ? r.Task ?? $"crew {crew}" : r.Task ?? "", r.Name, r.Handover, opts);
         if (hostBodies is { } hb && text.StartsWith("ok", StringComparison.Ordinal))
             text += $"; ONE {(brain == BrainKind.DeepSeek ? "DeepSeek" : "Opus")} hive whose brain will drive {hb} subhive bod{(hb == 1 ? "y" : "ies")} " +
-                $"(none in game yet: they log in once it is in{Pacing(hb)})" + note;
+                $"(none in game yet: they log in once it is in{Pacing(hb)})" +
+                (crew != null ? $"; they go straight to work on {crew} as they arrive (no brain turn first; its brain wakes on {crew}'s result)" : "") + note;
         return text;
     }
 
@@ -359,7 +382,8 @@ public sealed class HiveHierarchy : IHiveAccounts
         else
         {
             var accounts = got.ToList();
-            _ = Task.Run(() => HostRemoteAsync(owner, accounts, r.Task, r.Script, whitelist: true));
+            // A crew's bodies have no job of their own: the hive's coordinator gives each its lane once it is in.
+            _ = Task.Run(() => HostRemoteAsync(owner, accounts, r.Crew != null ? null : r.Task, r.Crew != null ? null : r.Script, whitelist: true, crew: r.Crew));
         }
         var names = HiveTree.Ranges(got.Select(HiveNode.ShortOf));
         return $"ok: {got.Count} subhive bod{(got.Count == 1 ? "y" : "ies")} ({names}) " +
@@ -463,14 +487,14 @@ public sealed class HiveHierarchy : IHiveAccounts
     }
 
     /// <summary>Whitelists each account (confirmed, one at a time) and asks the owning hive to log it in. A refusal releases it.</summary>
-    private async Task HostRemoteAsync(string owner, IReadOnlyList<string> accounts, string? task, string? script, bool whitelist)
+    private async Task HostRemoteAsync(string owner, IReadOnlyList<string> accounts, string? task, string? script, bool whitelist, string? crew = null)
     {
         foreach (var acc in accounts)
         {
             try
             {
                 if (whitelist) await BeforeLaunchAsync(acc).ConfigureAwait(false); // on the whitelist before the hive logs it in
-                var reply = await Bus!.PublishAsync(BusTypes.Host, new HostReq(acc, task, script), to: owner).ConfigureAwait(false);
+                var reply = await Bus!.PublishAsync(BusTypes.Host, new HostReq(acc, task, script, crew), to: owner).ConfigureAwait(false);
                 var text = reply.Ok ? reply.As<string>() ?? "ok" : reply.Error ?? "failed";
                 if (!reply.Ok || !text.StartsWith("ok", StringComparison.Ordinal))
                 {
@@ -633,7 +657,7 @@ public sealed class HiveHierarchy : IHiveAccounts
         switch (e.Type)
         {
             case BusTypes.Spawn when e.As<SpawnReq>() is { } s:
-                return Text(Spawn(new SpawnRequest(s.Kind, s.Brain, s.Task, s.Script, null, s.Args, s.After, s.Name, Bodies: s.Bodies, Reset: s.Reset), from));
+                return Text(Spawn(new SpawnRequest(s.Kind, s.Brain, s.Task, s.Script, null, s.Args, s.After, s.Name, Bodies: s.Bodies, Reset: s.Reset, Crew: s.Crew), from));
             case BusTypes.Assign when e.As<AssignReq>() is { } a:
                 return Text(Spawn(new SpawnRequest(Task: a.Task, Name: a.To), from));
             case BusTypes.Handover when e.As<AssignReq>() is { } h:

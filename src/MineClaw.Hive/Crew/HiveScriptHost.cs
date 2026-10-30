@@ -22,15 +22,18 @@ public sealed class HiveScriptHost(ScriptBridge bridge, ICrewPort bodies, ILogge
     private readonly ILogger _log = log ?? NullLogger.Instance;
     private readonly ConcurrentDictionary<string, ScriptSession> _running = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>A hive script works through roles; its coordinator has no body to act with.</summary>
-    private static readonly Regex CrewCall = new(@"\b(?:everyBody|parallel|spawn)\s*\(", RegexOptions.Compiled);
+    public (string? Name, string? Error) Prepare(string? script, string? code) => PrepareCrew(bridge, script, code);
 
-    public (string? Name, string? Error) Prepare(string? script, string? code)
+    /// <summary>
+    /// A crew script by name (or inline code from the Opus brain: linted and saved here) → (name, error): it must be JS and work its
+    /// bodies through a role (its coordinator has no body to act with). Hive scripts and hives spawned straight onto a script use it.
+    /// </summary>
+    public static (string? Name, string? Error) PrepareCrew(ScriptBridge bridge, string? script, string? code)
     {
         var (name, error, text) = bridge.PrepareForHive(script, code, MineClaw.Agent.Tools.ToolCaller.Current?.Tag);
         if (name == null) return (null, error);
         if (text != null && ScriptLanguages.Detect(text) != ScriptLanguage.Js) return (null, $"{name} is legacy Lua: a hive script is JS (everyBody)");
-        if (text != null && !CrewCall.IsMatch(text))
+        if (text != null && !Crews.IsCrewScript(text))
             return (null, $"{name} isn't a hive script: its main() works the bodies through a role (everyBody('worker', args)); run it on one body instead");
         return (name, null);
     }
@@ -44,7 +47,7 @@ public sealed class HiveScriptHost(ScriptBridge bridge, ICrewPort bodies, ILogge
         {
             Name = script, Code = v.Code, Language = ScriptLanguage.Js, ArgsJson = args, Version = v.V, Author = v.Author,
             // Its own board per run (the db board outlives runs: an old run's keys must not leak into this one).
-            CrewId = $"hive:{id}:{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}", Unattended = true,
+            CrewId = $"hive:{id}:{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}", Unattended = true, Coordinator = $"hive script {id} (no brain)",
         });
         if (s == null)
         {

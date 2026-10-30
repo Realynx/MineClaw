@@ -24,10 +24,12 @@ public static class HiveTools
     /// <summary>
     /// Main's cached prompt line for the clone kinds (added once, next to the script hint). <c>script=X bodies=N</c> is a hive script:
     /// ONE saved script owns N bodies with no brain (live 10-29: a brain dispatching per-body jobs left bodies idle and doubled up).
+    /// A brain hive given <c>script=X</c> too starts its bodies on X as they log in (Fox 10-30: "so its bodies just go straight to
+    /// work"); "release name|all" left the line to pay for it (the op enum and name carry it), the cap stays 220 chars.
     /// </summary>
     public const string KindHint =
-        "hive spawn bodies=N: N bodies YOUR brain drives (\"use 2 agents\"). kind=hive brain=deepseek bodies=15: ONE DeepSeek " +
-        "hive driving 15 bodies. script=X bodies=N: X alone drives N. release name|all. Report only what spawned.";
+        "hive spawn bodies=N: N bodies YOUR brain drives (\"2 agents\"). kind=hive brain=deepseek bodies=15: ONE DeepSeek " +
+        "hive driving 15 bodies (+script=X: working X). script=X bodies=N: X alone drives N. Report only what spawned.";
 
     /// <param name="llm">Main's model options: the script-authorship policy for inline <c>code</c> (only the Opus brain writes Lua).
     /// Null = no inline code.</param>

@@ -164,7 +164,8 @@ public sealed class MainHive : IAsyncDisposable
         commands.Injected = raw => _ = _supervisor.InjectAsync(raw);
         // Model profiles for clone brains; script spawns (lint + save on main, the clone runs it by name, brain asleep).
         _supervisor.ProfileCheck = name => agent.Llm.CheckProfile(name);
-        if (MineClaw.Bot.GameTools.ScriptTools.Of(rt) is { } bridge)
+        var bridge = MineClaw.Bot.GameTools.ScriptTools.Of(rt);
+        if (bridge != null)
             _supervisor.ScriptPrep = (script, code) => bridge.PrepareForHive(script, code, Agent.Tools.ToolCaller.Current?.Tag);
         _supervisor.ResetClone = clone =>
         {
@@ -172,6 +173,8 @@ public sealed class MainHive : IAsyncDisposable
         };
         // Dynamic accounts, the ownership tree, the off-channel bus, shared-memory writes and the chat budget (new file).
         Hierarchy = HiveHierarchyWiring.Attach(_cfg, _main, _supervisor, bot, client, agent, regulars, _log);
+        // A hive spawned straight onto a crew script (brain=… bodies=N script=X): main lints and saves it here; the hive runs it by name.
+        if (bridge != null) Hierarchy.CrewPrep = (script, code) => MineClaw.Hive.Crew.HiveScriptHost.PrepareCrew(bridge, script, code);
         // The resource ceiling prices a hive in this process as a brain + one client, not a whole process.
         if (InProc != null)
         {

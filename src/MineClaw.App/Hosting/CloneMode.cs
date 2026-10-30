@@ -203,6 +203,15 @@ public static class CloneMode
         };
         // One memory for every hive: writes go through main (its groomer, provenance), main's mem_changed reloads at once.
         CloneHierarchyWiring.Attach(host0, welcome, rt, hive, clone, log);
+        // A hive spawned straight onto a crew script, and its own hive spawn bodies=N script=X: crews over the bodies spawned for them.
+        HiveCrews? crews = null;
+        string? firstCrew = null;
+        if (subhives != null && MineClaw.Bot.GameTools.ScriptTools.Of(rt) is { } crewBridge)
+        {
+            crews = new HiveCrews(crewBridge, (type, msg, timeout) => host0.BusAsync(type, msg, timeout: timeout), loggers.CreateLogger("MineClaw.Hive"));
+            host0.CrewSpawn = crews.SpawnAsync;
+            if (welcome.Task is { Crew: { Length: > 0 } crewScript } && wantedBodies > 0) firstCrew = crews.Reserve(crewScript, wantedBodies);
+        }
         if (subhives != null)
         {
             subhives.Attach(bot, client, stop);
@@ -210,7 +219,7 @@ public static class CloneMode
             if (subhives.Registry is { } hostedBodies)
                 hostedBodies.Changed += (b, added) => host0.Arbiter.SetHost(b.Name, added ? clone : null);
             var bodyInbox = SubhiveWiring.AttachClone(clone, (type, msg, timeout) => host0.BusAsync(type, msg, timeout: timeout), subhives, rt, hive,
-                wantedBodies, () => client.IsPlaying, stop, log);
+                wantedBodies, () => client.IsPlaying, stop, log, crews, firstCrew);
             if (run.ClientSetup is { } setup && subhives.ClientSetup is { } own) subhives.ClientSetup = o => setup(own(o)); // tests: fake servers
             var inner = host0.BusInbox;
             host0.BusInbox = (env, ct) => bodyInbox(env, ct) ?? inner?.Invoke(env, ct) ?? Task.FromResult(new MineClaw.Hive.Hierarchy.Bus.BusReply(true));
@@ -232,7 +241,7 @@ public static class CloneMode
         var body = new GameCloneBody(client, game, rt, agent, commands, source, telemetry, new GameInventoryPort(game, rt.Observations, rt.Memory), log,
             () => client.ActiveVoidStep is { } vs ? MineClaw.Hive.Clone.CloneHost.IntentionalResetCause + " (" + vs.Reason + ")"
                 : DateTimeOffset.UtcNow - lastDangerAt < TimeSpan.FromSeconds(15) ? lastDanger : "died", runner, taskOrders, subhives,
-            TimeSpan.FromSeconds((bodiesOptions ?? new MineClaw.Bot.Bodies.BodiesOptions()).ShutdownRecallSeconds));
+            TimeSpan.FromSeconds((bodiesOptions ?? new MineClaw.Bot.Bodies.BodiesOptions()).ShutdownRecallSeconds), crews, firstCrew);
         host0.Body = body;
         // Spawned/teleported over the void: the client holds still (never falls, never confirms the teleport, so no floating kick);
         // the host asks the trusted players for a /tp once, tells main, pauses the task, and resumes it on landing.
@@ -269,9 +278,11 @@ public static class CloneMode
     /// <summary>The real clone body: client + brain + console + telemetry of this process.</summary>
     private sealed class GameCloneBody(MinecraftClient client, IGameClient game, AgentRuntime rt, PausableAgent agent, ConsoleCommands commands,
         InProcessBotSource source, PromptTelemetry telemetry, IInventoryPort inventory, ILogger log, Func<string> deathCause,
-        CloneScriptRunner? runner = null, CloneTaskOrders? taskOrders = null, InProcBodies? subhives = null, TimeSpan bodyRecall = default) : ICloneBody
+        CloneScriptRunner? runner = null, CloneTaskOrders? taskOrders = null, InProcBodies? subhives = null, TimeSpan bodyRecall = default,
+        HiveCrews? crews = null, string? firstCrew = null) : ICloneBody
     {
         private bool _wired;
+        private string? _firstCrew = firstCrew;
 
         public string Name => game.Username;
         public bool IsPlaying => game.IsPlaying;
@@ -337,11 +348,32 @@ public static class CloneMode
             // Script task: started by C# at once, brain asleep (no notice, no turn).
             if (runner != null && CloneScriptRunner.Handles(task)) { runner.Start(task); return; }
             if (runner?.Task != null) runner.Release("new task from main");
+            if (task.Crew is { Length: > 0 } crewScript && crews != null && StartCrew(task, crewScript)) return;
             taskOrders?.Apply(task); // the new task is the standing order now, replacing any older one
             var text = (task.Restarted ? "(restarted after a crash: check your inventory first) " : "") +
                 $"[hive task] {task.Text} — this replaces any earlier job or standing order; take what you need from storage first; " +
                 "when finished call hive_report done (or failed).";
             rt.Events.Post(GameEvent.Notice(text, EventPriority.Normal));
+        }
+
+        /// <summary>
+        /// Spawned straight onto a crew script: C# starts the coordinator over the bodies main is bringing in (no brain turn); the brain
+        /// gets the task as context only and wakes on the crew's result, a failure or chat (then hive_report done/failed).
+        /// </summary>
+        private bool StartCrew(TaskMsg task, string script)
+        {
+            var id = Interlocked.Exchange(ref _firstCrew, null) ?? crews!.Reserve(script, 0);
+            var (run, text) = crews!.Start(id, script, task.Args);
+            log.LogInformation("hive task {Id}: crew {Script}: {Text}", task.Id, script, text);
+            if (run == null)
+            {
+                rt.Events.Post(GameEvent.Notice($"[hive task] {task.Text} — your crew script {script} didn't start ({text}); do the job another way, " +
+                    "then hive_report done (or failed).", EventPriority.Normal));
+                return true;
+            }
+            rt.Events.Post(GameEvent.Notice($"[hive task] {task.Text} — your bodies work it with crew script {script} as they log in (started for you: " +
+                "nothing to do now; you wake on its result, a failure or chat). When it's done call hive_report done (or failed).", EventPriority.Background));
+            return true;
         }
 
         /// <summary>Task loadout from storage (WorldIndexer chest data in the shared db), crafting a tool when the parts are there.</summary>

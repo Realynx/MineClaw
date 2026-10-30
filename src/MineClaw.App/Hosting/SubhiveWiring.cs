@@ -50,32 +50,52 @@ internal static class SubhiveWiring
     /// task came with, and tells its brain what it actually got.
     /// </summary>
     /// <param name="send">A bus request to main (type, body, timeout): the clone host's pipe; tests route it in process.</param>
+    /// <param name="crews">This hive's crews over bodies spawned for them: a hosted account tagged with a crew joins it, no job of its own.</param>
+    /// <param name="crew">The crew (reserved in <paramref name="crews"/>) the <paramref name="wanted"/> bodies of a hive spawned with a script join.</param>
     public static Func<BusEnvelope, CancellationToken, Task<BusReply>?> AttachClone(string me, Func<string, object?, TimeSpan, Task<BusReply?>> send,
-        InProcBodies bodies, AgentRuntime rt, HiveConfig cfg, int wanted, Func<bool> inGame, CancellationToken stop, ILogger log)
+        InProcBodies bodies, AgentRuntime rt, HiveConfig cfg, int wanted, Func<bool> inGame, CancellationToken stop, ILogger log,
+        HiveCrews? crews = null, string? crew = null)
     {
         ConfigureClients(bodies, cfg);
         bodies.Gone += (account, reason) => _ = send(BusTypes.SubhiveGone, new SubhiveGoneMsg(account, reason), TimeSpan.FromSeconds(5));
-        if (wanted > 0) _ = RequestAsync(send, rt, wanted, inGame, stop, log);
+        if (crews != null) bodies.Gone += (account, _) => crews.Left(account);
+        if (wanted > 0) _ = RequestAsync(send, rt, wanted, inGame, stop, log, crews, crew);
         return (env, _) => env.Type switch
         {
-            BusTypes.Host when env.As<HostReq>() is { } h => Task.FromResult(Reply(bodies.Spawn(me, h.Account, h.Task, h.Script))),
+            BusTypes.Host when env.As<HostReq>() is { } h => Task.FromResult(Reply(Host(me, bodies, crews, h))),
             BusTypes.Release when env.As<ReleaseReq>() is { } r => Task.FromResult(Reply(bodies.Release(r.Id))),
             _ => null,
         };
     }
 
+    /// <summary>Logs a body main allocated in; a crew's body joins its crew first and gets no job of its own (the coordinator's lane).</summary>
+    private static string Host(string me, InProcBodies bodies, HiveCrews? crews, HostReq h)
+    {
+        if (h.Crew == null) return bodies.Spawn(me, h.Account, h.Task, h.Script);
+        crews?.Arrived(h.Crew, h.Account);
+        return bodies.Spawn(me, h.Account, null, null);
+    }
+
     private static BusReply Reply(string text) => text.StartsWith("ok", StringComparison.Ordinal) ? BusReply.Of(text) : BusReply.Fail(text);
 
     private static async Task RequestAsync(Func<string, object?, TimeSpan, Task<BusReply?>> send, AgentRuntime rt, int wanted, Func<bool> inGame,
-        CancellationToken stop, ILogger log)
+        CancellationToken stop, ILogger log, HiveCrews? crews = null, string? crew = null)
     {
         try
         {
             while (!inGame() && !stop.IsCancellationRequested) await Task.Delay(500, stop).ConfigureAwait(false);
             // Reset: after a crash restart the bodies this hive had died with its old process; main reuses those accounts first.
-            var r = await send(BusTypes.Spawn, new SpawnReq(Kind: "subhive", Bodies: wanted, Reset: true), TimeSpan.FromSeconds(60)).ConfigureAwait(false);
+            var r = await send(BusTypes.Spawn, new SpawnReq(Kind: "subhive", Bodies: wanted, Reset: true, Crew: crew), TimeSpan.FromSeconds(60)).ConfigureAwait(false);
             var text = r == null ? "main didn't answer on the hive bus: no bodies" : r.Ok ? r.As<string>() ?? "ok" : r.Error ?? "refused";
             log.LogInformation("hive: asked main for {N} subhive bodies: {Text}", wanted, text);
+            if (crew != null && crews != null)
+            {
+                // Spawned straight onto a crew script: the crew hands out the work; the brain hears it with its next real wake, not now.
+                crews.Answer(crew, text);
+                rt.Events.Post(GameEvent.Notice($"[hive] your bodies: {text}; they work your crew script as they log in (you wake on its result)",
+                    EventPriority.Background));
+                return;
+            }
             rt.Events.Post(GameEvent.Notice($"[hive] your bodies: {text}. Drive them with body=\"<n>\"|[...]|\"all\" on do/stop/status; " +
                 "for a job for all of them run a saved hive script (script{name}: one script works every body, late ones too; you sleep " +
                 "until it ends); [bodies] shows them once they are in game.",
@@ -148,6 +168,8 @@ internal sealed class CompositeCrewPort(ICrewBoard board, params ICrewPort[] por
     public ILane Start(LaneSpec spec) => For(spec.Body).Start(spec);
     public Task<ActResult> ActAsync(string body, string action, System.Text.Json.JsonElement args, CancellationToken ct) => For(body).ActAsync(body, action, args, ct);
     public int Pending() => ports.Sum(p => p.Pending());
+    public string? HeldBy(string body) => For(body).HeldBy(body);
+    public bool Hold(string body, string crew) => For(body).Hold(body, crew);
 }
 
 /// <summary>

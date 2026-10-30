@@ -93,9 +93,11 @@ public sealed record WelcomeMsg(string Main, TaskMsg? Task, RosterMsg Roster, Cl
 /// <param name="Kind">The clone kind main spawned it as (hive | subhive | script; null = legacy): a hive-kind clone gets its own
 /// bus-backed <c>hive</c> tool.</param>
 /// <param name="Bodies">A hive-kind clone hosts this many subhive bodies in its own process, driven by its brain (accounts from main).</param>
+/// <param name="Crew">A hive-kind clone with <paramref name="Bodies"/>: the saved crew script (everyBody) its bodies run as they log in,
+/// started by C# with no brain turn (<paramref name="Args"/> its args); the brain supervises and wakes on its result. Null = none.</param>
 public sealed record TaskMsg(string Id, string Text, bool Restarted = false, string[]? Loadout = null, string[]? Claims = null,
     string? Profile = null, string? Script = null, string? Args = null, string? After = null, string? Kind = null, int? Bodies = null,
-    string? Isolation = null)
+    string? Isolation = null, string? Crew = null)
 {
     public bool SleepsAfter => string.Equals(After, "sleep", StringComparison.OrdinalIgnoreCase);
 }
@@ -115,6 +117,9 @@ public sealed record HiveSpawnOptions(string? Profile = null, string? Script = n
     /// <summary>Per-spawn override of <c>Hive:Isolation</c> (<c>inproc|process</c>; null = the config). Not a tool argument (zero
     /// prompt bytes): set by C# callers (the bus, tests).</summary>
     public string? Isolation { get; init; }
+    /// <summary>A hive-kind clone with <see cref="Bodies"/>: the saved crew script its bodies go straight to work on (already prepared by
+    /// main: linted, saved, a crew script). Not <see cref="Script"/>: the hive keeps its brain and hosts its bodies.</summary>
+    public string? Crew { get; init; }
     public bool HasScript => !string.IsNullOrWhiteSpace(Script) || !string.IsNullOrWhiteSpace(Code);
 }
 public sealed record ProgressMsg(string TaskId, string Text, double? Pct = null);
