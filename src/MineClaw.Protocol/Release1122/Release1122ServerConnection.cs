@@ -281,6 +281,14 @@ public sealed class Release1122ServerConnection : IGameConnection
                 yield return w;
                 break;
             }
+            case ExplosionPacket ex:
+            {
+                var w = WireWriter.ForPacket(Ids1122.Explosion).WriteFloat((float)ex.X).WriteFloat((float)ex.Y).WriteFloat((float)ex.Z).WriteFloat(ex.Radius)
+                    .WriteInt(ex.Records.Length);
+                foreach (var rec in ex.Records) w.WriteSByte(rec.DX).WriteSByte(rec.DY).WriteSByte(rec.DZ);
+                yield return w.WriteFloat(0).WriteFloat(0).WriteFloat(0); // the player's knockback
+                break;
+            }
             case OpenWindowPacket ow:
             {
                 var (type, slots) = Codec1122.WindowTypeName(ow.InventoryType, ow.SlotCount);

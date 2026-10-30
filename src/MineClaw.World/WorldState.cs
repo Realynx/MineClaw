@@ -80,6 +80,8 @@ public sealed class WorldState : IBlockAccess, IDisposable
     public InventoryManager Inventory { get; }
     /// <summary>Cells the bot itself just dug/placed (attribution: the bot's own edits are never a player's).</summary>
     public SelfEditLog SelfEdits { get; } = new();
+    /// <summary>Explosions just reported (the blocks they took are the world's doing, not a player's: design drift).</summary>
+    public BlastLog Blasts { get; } = new();
     /// <summary>Blocks hive bots placed themselves and that still stand (protection rule 1: always minable by the bot).</summary>
     public PlacedBlockLog Placed { get; } = new();
     /// <summary>Recent chop_tree runs (felled/left logs): a remnant they left is the bot's own unfinished tree. In-process

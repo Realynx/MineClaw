@@ -13,7 +13,7 @@ public static class Ids1122
     // play, clientbound
     public const int SpawnObject = 0x00, SpawnPlayer = 0x05, EntityAnimation = 0x06, BlockBreakAnim = 0x08, UpdateBlockEntity = 0x09,
         BlockChange = 0x0B, Difficulty = 0x0D, Chat = 0x0F, MultiBlockChange = 0x10, ConfirmTransaction = 0x11, CloseWindow = 0x12,
-        OpenWindow = 0x13, WindowItems = 0x14, WindowProperty = 0x15, SetSlot = 0x16, Disconnect = 0x1A, EntityStatus = 0x1B,
+        OpenWindow = 0x13, WindowItems = 0x14, WindowProperty = 0x15, SetSlot = 0x16, Disconnect = 0x1A, EntityStatus = 0x1B, Explosion = 0x1C,
         UnloadChunk = 0x1D, ChangeGameState = 0x1E, KeepAlive = 0x1F, ChunkData = 0x20, JoinGame = 0x23, EntityRelMove = 0x26,
         EntityLookRelMove = 0x27, EntityLook = 0x28, OpenSignEditor = 0x2A, PlayerListItem = 0x2E, PlayerPosLook = 0x2F,
         DestroyEntities = 0x32, Respawn = 0x35, HeldItemChangeIn = 0x3A, EntityMetadata = 0x3C, EntityEquipment = 0x3F,
@@ -325,6 +325,18 @@ public sealed partial class Release1122Connection : IGameConnection
                     (ids[i], metas[i]) = Split(r.ReadVarInt());
                 }
                 return new MultiBlockChangePacket { ChunkX = cx, ChunkZ = cz, Coordinates = coords, BlockIds = ids, Metadata = metas };
+            }
+            case Ids1122.Explosion:
+            {
+                // SPacketExplosion: float x, y, z, strength, int count, count × (byte dx, dy, dz) from (int)x/(int)y/(int)z, then
+                // the player's knockback (3 floats, ignored). Same records as b1.8.1's 0x3C (doubles there): the blast takes
+                // those blocks with no block change of their own, so without it a 1.12.2 crater stayed standing in the world view.
+                float x = r.ReadFloat(), y = r.ReadFloat(), z = r.ReadFloat(), radius = r.ReadFloat();
+                int n = r.ReadInt();
+                if (n < 0 || n * 3 > r.Remaining) throw new ProtocolException($"explosion record count {n} out of range");
+                var recs = new ExplosionRecord[n];
+                for (int i = 0; i < n; i++) recs[i] = new ExplosionRecord(r.ReadSByte(), r.ReadSByte(), r.ReadSByte());
+                return new ExplosionPacket { X = x, Y = y, Z = z, Radius = radius, Records = recs };
             }
             default:
                 return TranslatePlay2(id, body); // P2: windows, entities seen by pickup and observers, signs

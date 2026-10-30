@@ -148,6 +148,7 @@ public sealed partial class MinecraftClient
                 foreach (var rec in mb.Records) w.SetBlock(rec.X, rec.Y, rec.Z, rec.BlockId, rec.Metadata);
                 break;
             case ExplosionPacket ex:
+                w.Blasts.Note(new Vec3d(ex.X, ex.Y, ex.Z), ex.Radius); // first: the changes below are the blast's
                 foreach (var (x, y, z) in ex.AffectedBlocks) w.SetBlock(x, y, z, 0, 0);
                 break;
             case UpdateSignPacket sign:
