@@ -78,10 +78,13 @@ export interface EntityFlags {
   glowing?: boolean;
   /** Riding something (boat, minecart, horse…). */
   vehicle?: boolean;
+  usingItem?: boolean;
 }
 
-/** Bit values of `EntityDto.flags` after normalisation (the bitfield form the renderer reads). */
-export const FLAG_ON_FIRE = 0x01, FLAG_SNEAKING = 0x02, FLAG_SPRINTING = 0x08, FLAG_INVISIBLE = 0x20, FLAG_GLOWING = 0x40, FLAG_VEHICLE = 0x80;
+/** Bits of `EntityDto.flags` (the wire's bitmask): burning, sneaking, riding, sprinting, using an item, invisible, glowing. */
+export const FLAG_ON_FIRE = 0x01, FLAG_SNEAKING = 0x02, FLAG_RIDING = 0x04, FLAG_SPRINTING = 0x08, FLAG_USING_ITEM = 0x10, FLAG_INVISIBLE = 0x20, FLAG_GLOWING = 0x40;
+/** @deprecated alias of FLAG_RIDING. */
+export const FLAG_VEHICLE = FLAG_RIDING;
 
 export interface EntityDto {
   /** player | mob | item | painting | item_frame | armor_stand | arrow | boat | minecart | falling_block | tnt | xp_orb |
@@ -104,20 +107,34 @@ export interface EntityDto {
   age?: number | null;
   yaw?: number | null;
   by?: string | null;
-  /** Bitfield after normalisation: FLAG_ON_FIRE 0x01, FLAG_SNEAKING 0x02, FLAG_SPRINTING 0x08, FLAG_INVISIBLE 0x20,
-   * FLAG_GLOWING 0x40, FLAG_VEHICLE 0x80 (the wire's `flags` object is folded into this). */
+  /** Bitmask: FLAG_ON_FIRE 0x01, FLAG_SNEAKING 0x02, FLAG_RIDING 0x04, FLAG_SPRINTING 0x08, FLAG_USING_ITEM 0x10,
+   * FLAG_INVISIBLE 0x20, FLAG_GLOWING 0x40. */
   flags?: number | null;
-  /** Per-kind variant: a number (slime size, cat type, rabbit type, villager profession…) or a compact string such as
-   * "white,sheared" / "creamy,white_spots,saddle,iron" / "collar:red,angry,tame" / "powered" (decoded by the renderer). */
-  variant?: number | string | null;
+  /** Legacy numeric variant (slime size, cat type…); prefer `look`. */
+  variant?: number | null;
+  /**
+   * Comma-separated appearance tokens per kind: sheep "red,sheared"; wolf "tame,sitting,angry,collar=red"; pig "saddle";
+   * creeper "powered,fusing"; slime/magma "size=N"; ghast "attacking"; blaze "burning"; enderman "screaming"; horse
+   * "<colour>,<markings>,tame,saddle,armor=iron|gold|diamond"; donkey/mule/skeleton/zombie horse "tame,saddle,chest"; llama
+   * "<colour>,chest,carpet=<dye>"; villager / zombie villager "profession=<farmer…nitwit>,converting"; ocelot
+   * "wild|black|red|siamese" + tame flags; rabbit coat or "killer"; parrot colour; shulker colour; boat wood; minecart
+   * "chest|furnace|tnt|spawner|hopper|command_block"; armor stand "small,arms,no_base,marker".
+   */
+  look?: string | null;
+  /** The entity this one rides (its id). */
+  vehicle?: number | null;
+  /** Armor stand pose: [x, y, z] degrees per part. */
+  pose?: Partial<Record<'head' | 'body' | 'leftArm' | 'rightArm' | 'leftLeg' | 'rightLeg', [number, number, number]>> | null;
+  /** Arrows stuck in a block. */
+  inGround?: boolean;
   /** Hand items and armour. */
   equipment?: Equipment | null;
   /** Head yaw (degrees, Minecraft convention) when it differs from the body's `yaw`. */
   headYaw?: number | null;
   /** Baby mob (rendered at the vanilla baby scale). */
   baby?: boolean;
-  /** Paintings: the motive ("Kebab", "Aztec"… or the 1.12.2 id "kebab"); paintings and item frames: facing (0 S, 1 W, 2 N,
-   * 3 E, or "north"…). */
+  /** Paintings: the motive (from the wire's `name`: "Kebab", "Aztec"…); paintings and item frames: facing ("north" | "west" |
+   * "south" | "east", or 0 S, 1 W, 2 N, 3 E). */
   motive?: string | null;
   facing?: number | string | null;
   /** Item frames: the item shown and its rotation (0..7, 45° steps). */
@@ -125,7 +142,7 @@ export interface EntityDto {
   /** Item frames: the framed item; falling blocks: `block`. */
   frameItem?: ItemRef;
   block?: ItemRef;
-  /** Minecarts: type (0 plain, 1 chest, 2 furnace, 3 tnt, 4 spawner, 5 hopper, 6 command block, or the name). */
+  /** Minecarts: what they carry (from `look`: chest | furnace | tnt | spawner | hopper | command_block; absent = plain). */
   minecartType?: number | string | null;
   /** Primed TNT: fuse ticks left. */
   fuse?: number | null;
@@ -174,9 +191,11 @@ export interface BlockEntityDto {
   /** Banners: base dye colour and [pattern code, dye colour] layers, bottom first. */
   base?: number | string | null;
   patterns?: Array<[string, number | string]> | null;
-  /** Skulls: type (0 skeleton, 1 wither, 2 zombie, 3 player, 4 creeper, 5 dragon, or the name) and rotation (0..15). */
+  /** Skulls: type (0 skeleton, 1 wither, 2 zombie, 3 player, 4 creeper, 5 dragon, or the name; the wire's `skull`) and
+   * rotation (0..15); `owner` for player heads. */
   type?: number | string | null;
   rotation?: number | null;
+  owner?: string | null;
   /** Flower pots: the plant ([id, meta] or a name). */
   item?: ItemRef | string | null;
   /** Spawners: the mob ("Zombie", "minecraft:zombie"…). */

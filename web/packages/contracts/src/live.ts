@@ -280,21 +280,21 @@ export const WorldEquipment = z.looseObject({
 });
 export type WorldEquipment = z.infer<typeof WorldEquipment>;
 
-/** Entity state flags (omitted when all false). The older bitfield form (0x01 burning, 0x02 sneaking, 0x08 sprinting) is
- * still accepted. */
-export const WorldEntityFlags = z.looseObject({
-  onFire: z.boolean().optional(),
-  sneaking: z.boolean().optional(),
-  sprinting: z.boolean().optional(),
-  invisible: z.boolean().optional(),
-  glowing: z.boolean().optional(),
-  vehicle: z.boolean().optional(),
+/** Armor stand pose: [x, y, z] degrees per part. */
+export const ArmorStandPose = z.looseObject({
+  head: z.tuple([z.number(), z.number(), z.number()]).optional(),
+  body: z.tuple([z.number(), z.number(), z.number()]).optional(),
+  leftArm: z.tuple([z.number(), z.number(), z.number()]).optional(),
+  rightArm: z.tuple([z.number(), z.number(), z.number()]).optional(),
+  leftLeg: z.tuple([z.number(), z.number(), z.number()]).optional(),
+  rightLeg: z.tuple([z.number(), z.number(), z.number()]).optional(),
 });
 
 /**
- * C# WorldEntity. Velocity in blocks/tick. Fields are omitted when default. Loose: fields the bot adds pass through to the
- * viewer, which decodes tolerantly. Kind-specific fields: painting `motive` + `facing`; item_frame `item` ([id, meta]) +
- * `rotation` + `facing`; falling_block `block`; minecart `type` (name or number); tnt `fuse`.
+ * C# WorldEntity. Velocity in blocks/tick. Fields are omitted when unknown or default. Loose: fields the bot adds pass
+ * through to the viewer, which decodes tolerantly. Kind-specific fields: painting `name` (motive) + `facing`; item_frame
+ * `item`/`damage` + `rotation` + `facing`; armor_stand `pose` + equipment + `look`; arrow `in_ground`; falling_block `block`;
+ * tnt `fuse`; xp_orb `count`; firework `item`; object `name`.
  */
 export const WorldEntity = z.looseObject({
   kind: z
@@ -306,8 +306,8 @@ export const WorldEntity = z.looseObject({
   y: z.number(),
   z: z.number(),
   id: z.number().int().nullish(),
-  type: z.union([z.number().int(), z.string()]).nullish(),
-  item: z.union([z.number().int(), ItemRef]).nullish(),
+  type: z.number().int().nullish(),
+  item: z.number().int().nullish(),
   damage: z.number().int().nullish(),
   count: z.number().int().nullish(),
   vx: z.number().nullish(),
@@ -316,14 +316,17 @@ export const WorldEntity = z.looseObject({
   age: Double.nullish(),
   yaw: z.number().nullish(),
   by: z.string().nullish(),
-  flags: z.union([z.number().int(), WorldEntityFlags]).nullish(),
-  variant: z.union([z.number().int(), z.string()]).nullish().describe('per-kind: slime size, villager profession, "red,sheared", …'),
-  equipment: WorldEquipment.nullish(),
-  headYaw: z.number().nullish(),
-  baby: z.boolean().nullish(),
-  motive: z.string().nullish(),
-  facing: z.union([z.number().int(), z.string()]).nullish(),
+  flags: z.number().int().nullish().describe('0x01 burning, 0x02 sneaking, 0x04 riding, 0x08 sprinting, 0x10 using item, 0x20 invisible, 0x40 glowing'),
+  variant: z.number().int().nullish().describe('legacy; prefer look'),
+  look: z.string().nullish().describe('comma-separated appearance tokens per kind ("red,sheared", "profession=farmer", …)'),
+  equipment: WorldEquipment.nullish().describe('[id, meta] per slot; empty slots and an empty object omitted'),
+  headYaw: z.number().nullish().describe('1.12.2'),
+  baby: z.boolean().nullish().describe('1.12.2'),
+  vehicle: z.number().int().nullish().describe('the ridden entity id'),
+  facing: z.string().nullish().describe('north | west | south | east'),
   rotation: z.number().int().nullish(),
+  pose: ArmorStandPose.nullish(),
+  inGround: z.boolean().nullish(),
   block: ItemRef.nullish(),
   fuse: z.number().int().nullish(),
 });
@@ -422,22 +425,26 @@ export const WorldBlockEntitiesQuery = z.object({
 export type WorldBlockEntitiesQuery = z.infer<typeof WorldBlockEntitiesQuery>;
 
 /**
- * One block entity. Loose (kind-specific fields pass through): sign `lines` [4]; bed `color`; banner `base` + `patterns`
- * [[pattern, color], …]; skull `type` + `rotation`; flower_pot `item`; mob_spawner `mob`; chest / trapped_chest / ender_chest.
+ * One block entity. Loose (kind-specific fields pass through): sign `lines` [4]; bed `color`; banner `color` (base) +
+ * `patterns` [{pattern, color}]; skull `skull` (type) + `rotation` + `owner`; flower_pot `item` + `data`; mob_spawner `mob`;
+ * jukebox `record`; note_block `note`; chest / trapped_chest / ender_chest. b1.8.1 sends sign data only.
  */
 export const WorldBlockEntity = z.looseObject({
   x: z.number().int(),
   y: z.number().int(),
   z: z.number().int(),
-  kind: z.string(),
+  kind: z.string().describe('sign | bed | banner | skull | flower_pot | chest | trapped_chest | ender_chest | mob_spawner | jukebox | note_block | …'),
   lines: z.array(z.string()).nullish(),
   color: z.union([z.number().int(), z.string()]).nullish(),
-  base: z.union([z.number().int(), z.string()]).nullish(),
-  patterns: z.array(z.tuple([z.string(), z.union([z.number().int(), z.string()])])).nullish(),
-  type: z.union([z.number().int(), z.string()]).nullish(),
+  patterns: z.array(z.looseObject({ pattern: z.string(), color: z.union([z.number().int(), z.string()]) })).nullish(),
+  skull: z.union([z.number().int(), z.string()]).nullish(),
   rotation: z.number().int().nullish(),
-  item: z.union([ItemRef, z.string()]).nullish(),
+  owner: z.string().nullish(),
+  item: z.union([z.number().int(), z.string()]).nullish(),
+  data: z.number().int().nullish(),
   mob: z.string().nullish(),
+  record: z.union([z.number().int(), z.string()]).nullish(),
+  note: z.number().int().nullish(),
 });
 export type WorldBlockEntity = z.infer<typeof WorldBlockEntity>;
 
@@ -445,7 +452,7 @@ export type WorldBlockEntity = z.infer<typeof WorldBlockEntity>;
 export const WorldBlockEntityColumn = z.object({
   cx: z.number().int(),
   cz: z.number().int(),
-  hash: z.union([z.number(), z.string()]),
+  hash: z.union([z.number(), z.string()]).describe('FNV-1a of the column\'s block entities; 0 when none'),
   entities: z.array(WorldBlockEntity),
 });
 

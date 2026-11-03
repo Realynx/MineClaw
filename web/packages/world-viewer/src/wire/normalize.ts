@@ -1,6 +1,6 @@
 // Accepts the supervisor's snake_case replies or Nest's camelCase mirror and returns the viewer's types with defaults filled.
 
-import { FLAG_GLOWING, FLAG_INVISIBLE, FLAG_ON_FIRE, FLAG_SNEAKING, FLAG_SPRINTING, FLAG_VEHICLE, type BlockEntities, type BlockEntityColumn, type BlockEntityDto, type BotDto, type EntityDelta, type EntityDto, type EntityEvent, type Equipment, type ItemRef, type Mark, type Overlays, type PlanDto, type WorldIndex } from '../types';
+import { FLAG_GLOWING, FLAG_INVISIBLE, FLAG_ON_FIRE, FLAG_RIDING, FLAG_SNEAKING, FLAG_SPRINTING, FLAG_USING_ITEM, type BlockEntities, type BlockEntityColumn, type BlockEntityDto, type BotDto, type EntityDelta, type EntityDto, type EntityEvent, type Equipment, type ItemRef, type Mark, type Overlays, type PlanDto, type WorldIndex } from '../types';
 
 const camel = (k: string) => k.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
 
@@ -82,10 +82,11 @@ export function itemRef(v: unknown): ItemRef {
 const FLAG_BITS: Array<[string[], number]> = [
   [['onFire', 'burning', 'fire'], FLAG_ON_FIRE],
   [['sneaking', 'crouching'], FLAG_SNEAKING],
+  [['riding', 'vehicle'], FLAG_RIDING],
   [['sprinting'], FLAG_SPRINTING],
+  [['usingItem'], FLAG_USING_ITEM],
   [['invisible'], FLAG_INVISIBLE],
   [['glowing'], FLAG_GLOWING],
-  [['vehicle', 'riding'], FLAG_VEHICLE],
 ];
 
 function flags(v: unknown): number {
@@ -119,15 +120,33 @@ function entity(e: Partial<EntityDto> & Record<string, unknown>): EntityDto {
   if (e.equipment != null) out.equipment = equipment(e.equipment);
   if (e.headYaw != null) out.headYaw = num(e.headYaw);
   if (e.baby != null) out.baby = !!e.baby;
+  // `look` is the appearance string; an older string `variant` is read as one.
+  if (typeof e.variant === 'string') {
+    out.look = (e.look as string | undefined) ?? e.variant;
+    out.variant = null;
+  }
+  if (e.look != null) out.look = String(e.look);
+  if (typeof e.vehicle === 'boolean') {
+    if (e.vehicle) out.flags = (out.flags ?? 0) | FLAG_RIDING;
+    out.vehicle = null;
+  }
   // Kind-specific fields that share names with the generic ones.
-  if (kind === 'item_frame' && (Array.isArray(e.item) || (e.item && typeof e.item === 'object'))) {
-    out.frameItem = itemRef(e.item);
+  if (kind === 'painting') out.motive = (e.motive as string | undefined) ?? e.name ?? null;
+  if (kind === 'item_frame') {
+    out.frameItem = Array.isArray(e.item) || (e.item && typeof e.item === 'object') ? itemRef(e.item) : itemRef(e.item != null ? [num(e.item), num(e.damage)] : null);
     out.item = null;
+    out.rotation = e.rotation == null ? 0 : num(e.rotation);
   }
   if (kind === 'falling_block' && e.block != null) out.block = itemRef(e.block);
-  if (kind === 'minecart' && (typeof e.type === 'string' || e.minecartType != null)) {
-    out.minecartType = (e.minecartType as number | string | undefined) ?? (e.type as unknown as string);
+  if (kind === 'minecart') {
+    const t = e.minecartType ?? (typeof e.type === 'string' ? e.type : null) ?? (out.look ? out.look.split(',')[0] : null);
+    out.minecartType = (t as string | number | null) ?? null;
     if (typeof e.type === 'string') out.type = null;
+  }
+  if (e.pose && typeof e.pose === 'object') {
+    const p: NonNullable<EntityDto['pose']> = {};
+    for (const [k, v] of Object.entries(e.pose as Record<string, unknown>)) if (Array.isArray(v) && v.length >= 3) p[k as keyof typeof p] = [num(v[0]), num(v[1]), num(v[2])];
+    out.pose = p;
   }
   return out;
 }
@@ -149,14 +168,18 @@ function blockEntity(b: Record<string, unknown>): BlockEntityDto {
   const patterns = Array.isArray(b.patterns)
     ? (b.patterns as unknown[]).map((p) => (Array.isArray(p) ? [String(p[0]), p[1] as number | string] : [String((p as Record<string, unknown>).pattern ?? ''), (p as Record<string, unknown>).color as number | string])) as Array<[string, number | string]>
     : null;
+  const kind = String(b.kind ?? '').replace(/^minecraft:/, '');
   return {
     ...b,
     x: num(b.x),
     y: num(b.y),
     z: num(b.z),
-    kind: String(b.kind ?? '').replace(/^minecraft:/, ''),
+    kind,
     lines: lines.some((l) => l) ? lines.slice(0, 4) : null,
     patterns,
+    // The wire names the skull type `skull` and a banner's base colour `color`.
+    type: (b.type as number | string | undefined) ?? (b.skull as number | string | undefined) ?? null,
+    base: (b.base as number | string | undefined) ?? (kind === 'banner' ? (b.color as number | string | undefined) : undefined) ?? null,
   };
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { dyeIndex, itemRef, normalizeBlockEntities, normalizeEntities } from '../src/wire/normalize';
-import { FLAG_ON_FIRE, FLAG_SNEAKING, FLAG_VEHICLE } from '../src/types';
+import { FLAG_ON_FIRE, FLAG_RIDING, FLAG_SNEAKING } from '../src/types';
 import { BlockEntityStore } from '../src/world/blockEntities';
 import { InlineMeshHost } from '../src/mesh/host';
 import { createFixtureSource, plaza } from '../src/fixtures/world';
@@ -13,26 +13,37 @@ describe('entity wire additions (tolerant decoder)', () => {
       full: true,
       bots: [],
       entities: [
-        { kind: 'mob', dim: 0, x: 1, y: 2, z: 3, id: 7, type: 54, head_yaw: 30, baby: true, flags: { on_fire: true, sneaking: true, vehicle: true }, equipment: { mainhand: [267, 0], helmet: { id: 306, damage: 3 }, boots: null } },
-        { kind: 'item_frame', dim: 0, x: 0, y: 0, z: 0, id: 8, item: [276, 0], rotation: 3, facing: 'north' },
+        { kind: 'mob', dim: 0, x: 1, y: 2, z: 3, id: 7, type: 54, head_yaw: 30, baby: true, vehicle: 12, flags: 0x01 | 0x02 | 0x04, equipment: { main: [267, 0], head: [306, 3] } },
+        { kind: 'mob', dim: 0, x: 1, y: 2, z: 3, id: 13, type: 54, flags: { on_fire: true, sneaking: true, vehicle: true }, equipment: { mainhand: [267, 0], helmet: { id: 306, damage: 3 }, boots: null } },
+        { kind: 'item_frame', dim: 0, x: 0, y: 0, z: 0, id: 8, item: 276, damage: 0, rotation: 3, facing: 'north' },
+        { kind: 'painting', dim: 0, x: 0, y: 0, z: 0, id: 14, name: 'Kebab', facing: 'west' },
+        { kind: 'armor_stand', dim: 0, x: 0, y: 0, z: 0, id: 15, look: 'small,arms', pose: { head: [10, 0, 0], left_arm: [-10, 0, -10] } },
         { kind: 'falling_block', dim: 0, x: 0, y: 0, z: 0, id: 9, block: [12, 0] },
-        { kind: 'minecart', dim: 0, x: 0, y: 0, z: 0, id: 10, type: 'chest' },
-        { kind: 'mob', dim: 0, x: 0, y: 0, z: 0, id: 11, type: 91, variant: 'red,sheared', flags: 3 },
+        { kind: 'minecart', dim: 0, x: 0, y: 0, z: 0, id: 10, look: 'chest' },
+        { kind: 'mob', dim: 0, x: 0, y: 0, z: 0, id: 11, type: 91, variant: 2, look: 'red,sheared', flags: 3 },
       ],
       events: [{ id: 7, kind: 'swing', at: 1000 }, { kind: 'lightning', at: 1001, x: 5, y: 70, z: 6 }],
     });
-    const [zombie, frame, falling, cart, sheep] = d.entities;
-    expect(zombie.flags).toBe(FLAG_ON_FIRE | FLAG_SNEAKING | FLAG_VEHICLE);
+    const [zombie, legacy, frame, painting, stand, falling, cart, sheep] = d.entities;
+    expect(zombie.flags).toBe(FLAG_ON_FIRE | FLAG_SNEAKING | FLAG_RIDING);
     expect(zombie.headYaw).toBe(30);
     expect(zombie.baby).toBe(true);
+    expect(zombie.vehicle).toBe(12);
     expect(zombie.equipment).toEqual({ main: [267, 0], off: null, head: [306, 3], chest: null, legs: null, feet: null });
+    // The older shapes still decode: a flags object, slot aliases, item objects.
+    expect(legacy.flags).toBe(FLAG_ON_FIRE | FLAG_SNEAKING | FLAG_RIDING);
+    expect(legacy.equipment?.head).toEqual([306, 3]);
+    expect(painting.motive).toBe('Kebab');
+    expect(painting.facing).toBe('west');
+    expect(stand.look).toBe('small,arms');
+    expect(stand.pose).toEqual({ head: [10, 0, 0], leftArm: [-10, 0, -10] });
     expect(frame.frameItem).toEqual([276, 0]);
     expect(frame.item).toBeNull();
     expect(frame.facing).toBe('north');
     expect(falling.block).toEqual([12, 0]);
     expect(cart.minecartType).toBe('chest');
-    expect(cart.type).toBeNull();
-    expect(sheep.variant).toBe('red,sheared');
+    expect(sheep.variant).toBe(2);
+    expect(sheep.look).toBe('red,sheared');
     expect(sheep.flags).toBe(3);
     expect(d.events).toHaveLength(2);
     expect(d.events![1]).toMatchObject({ kind: 'lightning', x: 5, y: 70, z: 6, id: null });
@@ -63,14 +74,18 @@ describe('entity wire additions (tolerant decoder)', () => {
       columns: [
         { cx: 0, cz: 1, hash: '-12345678901234567', entities: [
           { x: 1, y: 64, z: 17, kind: 'minecraft:sign', text1: 'a', text2: '', text3: 'c', text4: '' },
-          { x: 2, y: 64, z: 17, kind: 'banner', base: 'white', patterns: [{ pattern: 'cr', color: 14 }, ['bo', 'black']] },
+          { x: 2, y: 64, z: 17, kind: 'banner', color: 'white', patterns: [{ pattern: 'cr', color: 14 }, ['bo', 'black']] },
+          { x: 3, y: 64, z: 17, kind: 'skull', skull: 4, rotation: 8, owner: 'Notch' },
         ] },
       ],
     });
-    const [sign, banner] = r.columns[0].entities;
+    const [sign, banner, skull] = r.columns[0].entities;
     expect(sign.kind).toBe('sign');
     expect(sign.lines).toEqual(['a', '', 'c', '']);
     expect(banner.patterns).toEqual([['cr', 14], ['bo', 'black']]);
+    expect(banner.base).toBe('white');
+    expect(skull.type).toBe(4);
+    expect(skull.owner).toBe('Notch');
   });
 });
 
