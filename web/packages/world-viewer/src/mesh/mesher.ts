@@ -28,6 +28,8 @@ export interface SectionMesh {
   translucent: MeshArrays | null;
   /** Quads in both passes. */
   quads: number;
+  /** Cave-culling face connectivity (mesh/visibility.ts); set by the engine. */
+  vis?: number;
 }
 
 // Padded neighbourhood: x, z from -2..17 (chest pairing looks two cells out), y from -1..16.

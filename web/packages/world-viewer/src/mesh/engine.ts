@@ -7,6 +7,7 @@ import { ColumnStore, type ApplyResult } from './columns';
 import { meshSection, type CutParams, type SectionMesh } from './mesher';
 import { pick, viewInfo, type PickHit, type V3, type ViewInfo } from './query';
 import { buildStateTable, type StateTable } from './states';
+import { sectionVisibility } from './visibility';
 
 export interface PatchResult {
   dirty: Array<[number, number, number]>;
@@ -50,7 +51,11 @@ export class MeshEngine {
   }
 
   mesh(dim: number, sections: Array<[number, number, number]>, cut: CutParams | null): SectionMesh[] {
-    return sections.map(([cx, sy, cz]) => meshSection(this.store, dim, cx, sy, cz, this.table, cut && sectionTouchesCut(cx, sy, cz, cut) ? cut : null));
+    return sections.map(([cx, sy, cz]) => {
+      const m = meshSection(this.store, dim, cx, sy, cz, this.table, cut && sectionTouchesCut(cx, sy, cz, cut) ? cut : null);
+      m.vis = sectionVisibility(this.store, dim, cx, sy, cz, this.table); // cave culling (orchestrator hunk)
+      return m;
+    });
   }
 
   pick(dim: number, o: V3, d: V3, maxDist: number, cut: CutParams | null): PickHit | null {

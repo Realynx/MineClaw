@@ -186,6 +186,10 @@ function packBeta() {
   const ent = shelfPack(files, src, 1024);
   writePng(join(dest, 'entity.png'), ent.png);
   const env = copyEnv(join(src, 'environment'), join(dest, 'env'));
+  for (const n of ['sun', 'moon']) if (existsSync(join(src, 'terrain', `${n}.png`))) {
+    writeFileSync(join(dest, 'env', `${n}.png`), readFileSync(join(src, 'terrain', `${n}.png`)));
+    env.push(n);
+  }
   for (const m of ['misc']) if (existsSync(join(src, m))) for (const f of walk(join(src, m))) if (/(water|grasscolor|foliagecolor)\.png$/.test(f)) writeFileSync(join(dest, 'env', f.split(/[\\/]/).pop()), readFileSync(f));
   writeFileSync(join(dest, 'pack.json'), JSON.stringify({ version: 'b1.8.1', tileSize: 16, terrain: { columns: 16, rows: 16 }, items: { columns: 16, rows: 16 }, entity: { width: ent.width, height: ent.height, rects: ent.rects }, env }));
   report(dest);

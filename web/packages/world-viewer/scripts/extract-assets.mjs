@@ -58,7 +58,7 @@ const RULES = {
     /^assets\/minecraft\/textures\/entity\/.+\.png(\.mcmeta)?$/,
     /^assets\/minecraft\/textures\/models\/armor\/[^/]+\.png$/,
   ],
-  'b1.8.1': [/^terrain\.png$/, /^gui\/items\.png$/, /^mob\/[^/]+\.png$/, /^char\.png$/, /^environment\/[^/]+\.png$/, /^misc\/[^/]+\.png$/, /^armor\/[^/]+\.png$/, /^item\/[^/]+\.png$/, /^art\/[^/]+\.png$/],
+  'b1.8.1': [/^terrain\.png$/, /^gui\/items\.png$/, /^mob\/[^/]+\.png$/, /^char\.png$/, /^environment\/[^/]+\.png$/, /^misc\/[^/]+\.png$/, /^armor\/[^/]+\.png$/, /^item\/[^/]+\.png$/, /^art\/[^/]+\.png$/, /^terrain\/[^/]+\.png$/],
 };
 
 function extract(jar, version) {

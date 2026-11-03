@@ -95,12 +95,18 @@ export interface ViewInfo {
   roofY: number;
   /** The camera sits inside an opaque block. */
   cameraInside: boolean;
+  /** 1.12.2 biome id at the body (else the camera) column, −1 = unknown (b1.8.1, remembered columns). */
+  biome: number;
 }
 
 export function viewInfo(store: ColumnStore, t: StateTable, dim: number, cam: V3, body: V3 | null, cut?: CutParams | null): ViewInfo {
   const cb = store.blockAt(dim, Math.floor(cam[0]), Math.floor(cam[1]), Math.floor(cam[2]));
   const cameraInside = !!cb && cb.id !== 0 && (t.flags[(cb.id << 4) | cb.meta] & F_OPAQUE) !== 0;
-  if (!body) return { hidden: false, covered: false, roofY: -1, cameraInside };
+  const biomeAt = (x: number, z: number) => {
+    const c = store.get(dim, Math.floor(x) >> 4, Math.floor(z) >> 4);
+    return c?.light?.biomes ? c.light.biomes[((Math.floor(z) & 15) << 4) | (Math.floor(x) & 15)] : -1;
+  };
+  if (!body) return { hidden: false, covered: false, roofY: -1, cameraInside, biome: biomeAt(cam[0], cam[2]) };
   let n = 0;
   for (const h of [0.3, 1.0, 1.55]) if (blocked(store, t, dim, [body[0], body[1] + h, body[2]], cam, cut)) n++;
   let roofY = -1;
@@ -113,5 +119,5 @@ export function viewInfo(store: ColumnStore, t: StateTable, dim: number, cam: V3
       break;
     }
   }
-  return { hidden: n >= 2, covered: roofY >= 0, roofY, cameraInside };
+  return { hidden: n >= 2, covered: roofY >= 0, roofY, cameraInside, biome: biomeAt(body[0], body[2]) };
 }

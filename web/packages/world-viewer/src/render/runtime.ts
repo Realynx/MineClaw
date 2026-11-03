@@ -14,7 +14,7 @@ import { normalizeEntities, normalizeOverlays } from '../wire/normalize';
 import type { GameVersion } from '../world/blocks';
 import { WorldCache } from '../world/cache';
 import { EntityStore, type BotView, type EntityView } from '../world/entities';
-import { fogColour, skyColour, skylightSubtractedSmooth } from '../world/sky';
+import { fogColour, precipitation, skyColour, skylightSubtractedSmooth } from '../world/sky';
 import { Poller, WorldSync, type Interest } from '../world/sync';
 import { atlasTexture, bindAtlas } from './atlasTexture';
 import { createChunkMaterials, createChunkUniforms, type ChunkMaterials, type ChunkUniforms } from './chunkMaterial';
@@ -22,6 +22,9 @@ import { EntityLayer } from './entityLayer';
 import { OverlayLayer } from './overlayLayer';
 import { SectionManager, type Centre } from './sections';
 import { WeatherLayer } from './weather';
+import { SkyLayer } from './sky';
+import { loadBundle, type AssetBundle } from '../assets/bundle';
+import { PROFILES, QualityController, probeRenderer, type QualityName, type RendererProbe } from './quality';
 import { ChangeFlash } from './changeFlash';
 import { BlockDeltaFeed } from '../world/deltas';
 
@@ -29,8 +32,10 @@ export interface RuntimeOptions {
   /** Device pixel ratio cap for the primary view (default min(2, devicePixelRatio)). */
   pixelRatio?: number;
   antialias?: boolean;
-  /** Lower the primary view's resolution while it runs under ~50 fps (back up when it has headroom). Default on. */
+  /** Let the frame-time controller move resolution and draw distance (default on). */
   adaptiveResolution?: boolean;
+  /** Quality profile: auto-detect software rendering (default), or force one. */
+  quality?: 'auto' | QualityName;
   /** Most section entries kept per dimension (LRU beyond). */
   maxSections?: number;
   entityPollMs?: number;
@@ -69,6 +74,10 @@ export interface ViewSetup {
   floorY: number;
   /** Roof cut: cells at y ≥ roof.y within roof.r of (x, z). */
   roof: { x: number; y: number; z: number; r: number } | null;
+  /** What falls here (biome under the view); default rain. */
+  precip?: 'rain' | 'snow' | 'none';
+  /** The view's id (per-view caches such as the cave-culling walk). */
+  viewId?: number;
   /** Where the picture goes: the runtime canvas itself (primary) or a 2D canvas it is copied into. */
   target: 'primary' | CanvasRenderingContext2D;
 }
@@ -104,6 +113,16 @@ export interface RuntimeMemory {
   atlas: string | null;
   drawCalls: number;
   triangles: number;
+  /** Active quality profile, the renderer string and why it was picked. */
+  quality: QualityName;
+  renderer: string;
+  qualityReason: string;
+  /** Smoothed timed frame (CPU + GPU), ms. */
+  frameMs: number;
+  /** Draw-distance factor the controller applies. */
+  drawFactor: number;
+  /** Sections hidden by cave culling in the last view drawn. */
+  culledSections: number;
 }
 
 let nextViewId = 1;
@@ -123,6 +142,9 @@ export class WorldRuntime {
   readonly overlays = new OverlayLayer();
   readonly weather = new WeatherLayer();
   readonly flashes = new ChangeFlash();
+  readonly sky = new SkyLayer();
+  /** The bundled assets of the current version (textures, models); null until loaded. */
+  bundle: AssetBundle | null = null;
   deltas: BlockDeltaFeed;
   private readonly sections = new Map<Dim, SectionManager>();
   private readonly views = new Map<number, RuntimeView>();
@@ -142,10 +164,12 @@ export class WorldRuntime {
   private overlayData = new Map<Dim, Overlays>();
   private readonly botsBuf: BotView[] = [];
   private readonly entsBuf: EntityView[] = [];
-  private scale = 1;
-  private scaleAt = 0;
+  readonly quality: QualityController;
+  readonly probe: RendererProbe;
   private flash = 0;
   private readonly renderedAt = new Map<number, number>();
+  private readonly tmpDir = new THREE.Vector3();
+  private readonly pixel = new Uint8Array(4);
   private slots = 0;
   /** Called (on the runtime's frame) after the overlays of a dimension changed. */
   onOverlays: ((dim: Dim, ov: Overlays) => void) | null = null;
@@ -154,7 +178,12 @@ export class WorldRuntime {
   constructor(source: WorldSource, opts: RuntimeOptions = {}) {
     this.source = source;
     this.opts = opts;
-    this.renderer = new THREE.WebGLRenderer({ antialias: opts.antialias ?? true, powerPreference: 'high-performance', preserveDrawingBuffer: false });
+    // Software WebGL (hardware acceleration off) gets its own profile: no MSAA, 1× pixels, shorter draw distance, 25 ms target.
+    this.probe = opts.quality && opts.quality !== 'auto' ? { software: opts.quality === 'software', renderer: 'forced', reason: `quality: ${opts.quality}` } : probeRenderer();
+    const profile = PROFILES[opts.quality && opts.quality !== 'auto' ? opts.quality : this.probe.software ? 'software' : 'gpu'];
+    this.quality = new QualityController(profile);
+    this.quality.enabled = opts.adaptiveResolution !== false;
+    this.renderer = new THREE.WebGLRenderer({ antialias: (opts.antialias ?? true) && profile.antialias, powerPreference: 'high-performance', preserveDrawingBuffer: false });
     this.renderer.setPixelRatio(1);
     this.renderer.setScissorTest(true);
     this.canvas = this.renderer.domElement;
@@ -177,7 +206,7 @@ export class WorldRuntime {
     this.uniforms = createChunkUniforms();
     this.materials = createChunkMaterials(this.uniforms);
     this.host = opts.inlineMesher ? new InlineMeshHost() : createMeshHost(opts.createWorker);
-    this.scene.add(this.entities.group, this.overlays.group, this.weather.object, this.flashes.mesh);
+    this.scene.add(this.sky.group, this.entities.group, this.overlays.group, this.weather.object, this.flashes.mesh);
     this.sync = this.makeSync();
     this.deltas = this.makeDeltas();
     this.entityPoller = new Poller(
@@ -279,6 +308,7 @@ export class WorldRuntime {
     this.overlays.dispose();
     this.weather.dispose();
     this.flashes.dispose();
+    this.sky.dispose();
     for (const m of [this.materials.solid, this.materials.translucent, this.materials.cap]) m.dispose();
     this.atlasTex?.dispose();
     this.host.dispose();
@@ -314,6 +344,13 @@ export class WorldRuntime {
     return this.cache.timeNow(dim, Date.now());
   }
 
+  /** Precipitation for a 1.12.2 biome id at height y (rain when unknown). */
+  precipAt(biome: number, y: number): 'rain' | 'snow' | 'none' {
+    const p = this.bundle?.pack;
+    const b = p && p.version === '1.12.2' && biome >= 0 ? p.biomes[String(biome)] : null;
+    return precipitation(b, y);
+  }
+
   overlaysFor(dim: Dim): Overlays | null {
     return this.overlayData.get(dim) ?? null;
   }
@@ -344,6 +381,12 @@ export class WorldRuntime {
       atlas: this.atlasMap ? `${this.atlasMap.version} ${this.atlasMap.columns}×${this.atlasMap.rows}` : null,
       drawCalls: info.calls,
       triangles: info.triangles,
+      quality: this.quality.state.profile.name,
+      renderer: this.probe.renderer,
+      qualityReason: this.probe.reason,
+      frameMs: this.quality.state.smoothMs,
+      drawFactor: this.quality.state.drawFactor,
+      culledSections: [...this.sections.values()].reduce((a, s) => a + s.culled, 0),
     };
   }
 
@@ -380,6 +423,14 @@ export class WorldRuntime {
     if (key === this.configKey) return;
     this.configKey = key;
     this.version = v;
+    // The version's bundled assets (sky textures here; blocks and entities take theirs from the same bundle).
+    loadBundle(v)
+      .then((b) => {
+        if (this.disposed || this.version !== v) return;
+        this.bundle = b;
+        this.sky.setBundle(b);
+      })
+      .catch((e) => this.opts.onError?.('assets', e));
     this.uniforms.uTextured.value = atlas && this.atlasTex ? 1 : 0;
     await this.host.configure(v, atlas);
     for (const s of this.sections.values()) s.clear();
@@ -435,8 +486,9 @@ export class WorldRuntime {
     for (const v of this.views.values()) {
       const i = v.interest();
       if (i) interests[`v${v.id}`] = i;
-      const c = v.centre();
-      if (!c) continue;
+      const c0 = v.centre();
+      if (!c0) continue;
+      const c = { ...c0, distance: this.quality.drawDistance(c0.distance) };
       const list = centres.get(c.dim) ?? [];
       list.push(c);
       centres.set(c.dim, list);
@@ -444,7 +496,9 @@ export class WorldRuntime {
     this.sync.setInterests(interests);
     for (const [dim, cs] of centres) this.sectionsFor(dim).maintain(cs, now);
     let primarySetup: ViewSetup | null = null;
-    this.slots = this.opts.viewsPerFrame ?? 2;
+    const timed = this.quality.due(now);
+    const t0 = performance.now();
+    this.slots = Math.min(this.opts.viewsPerFrame ?? 2, this.quality.state.profile.thumbSlots);
     const order = [...this.views.values()].sort((a, b) => (this.renderedAt.get(a.id) ?? 0) - (this.renderedAt.get(b.id) ?? 0));
     for (const v of order) {
       const s = v.frame(this, now, dt);
@@ -453,17 +507,25 @@ export class WorldRuntime {
       if (this.isPrimary(v)) primarySetup = s;
       else this.render(s, now);
     }
-    if (primarySetup) {
-      // Every 1.5 s one primary frame is timed to completion (gl.finish): that measures the GPU cost itself, so a throttled
-      // background tab (slow rAF, cheap frames) never lowers the resolution.
-      const sample = this.opts.adaptiveResolution !== false && now - this.scaleAt >= 1500;
-      const t0 = performance.now();
-      this.render(primarySetup, now);
-      if (sample) {
-        this.renderer.getContext().finish();
-        this.adapt(now, performance.now() - t0);
-      }
+    if (primarySetup) this.render(primarySetup, now);
+    // Once a second the whole frame is timed to completion (gl.finish): CPU and GPU (or the software rasteriser) together,
+    // so a throttled background tab (slow rAF, cheap frames) never lowers the quality.
+    if (timed && primarySetup) {
+      // gl.finish returns early on ANGLE/SwiftShader; reading one pixel back really waits for the frame to be drawn.
+      const gl = this.renderer.getContext();
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, this.pixel);
+      this.quality.sample(now, performance.now() - t0);
     }
+  }
+
+  private overlaysShown: Overlays | null = null;
+
+  /** Puts `dim`'s overlays in the shared overlay layer (rebuilt only when the data or the dimension changed). */
+  private showOverlays(dim: Dim): void {
+    const ov = this.overlayData.get(dim) ?? null;
+    if (ov === this.overlaysShown) return;
+    this.overlaysShown = ov;
+    this.overlays.set(ov, this.version ?? 'b1.8.1');
   }
 
   /** A secondary view asks for one of this frame's render slots (round-robin, most overdue first). */
@@ -479,31 +541,33 @@ export class WorldRuntime {
     return [Math.max(1, Math.floor(cw * k)), Math.max(1, Math.floor(ch * k))];
   }
 
-  /** The canvas size the primary view should use (its container × pixel ratio × the adaptive scale). */
+  /** The canvas size the primary view should use (its container × pixel ratio × the controller's scale). */
   primarySize(container: HTMLElement): [number, number] {
-    const pr = (this.opts.pixelRatio ?? Math.min(2, globalThis.devicePixelRatio || 1)) * this.scale;
+    const q = this.quality.state;
+    const pr = Math.min(this.opts.pixelRatio ?? (globalThis.devicePixelRatio || 1), q.profile.pixelRatioCap) * q.scale;
     return [Math.max(1, Math.round(container.clientWidth * pr)), Math.max(1, Math.round(container.clientHeight * pr))];
   }
 
-  /** Adaptive resolution from a timed frame: over ~14 ms (no room for 60 fps) step down, under ~7 ms step back up. */
-  private adapt(now: number, frameMs: number): void {
-    this.scaleAt = now;
-    this.lastFrameMs = frameMs;
-    if (frameMs > 14 && this.scale > 0.5) this.scale = Math.max(0.5, this.scale * 0.85);
-    else if (frameMs < 7 && this.scale < 1) this.scale = Math.min(1, this.scale * 1.15);
+  /** Duration of the last timed frame (CPU + GPU), ms. */
+  get lastFrameMs(): number {
+    return this.quality.state.frameMs;
   }
 
-  /** Duration of the last timed primary frame (CPU + GPU), ms. */
-  lastFrameMs = 0;
-
   get resolutionScale(): number {
-    return this.scale;
+    return this.quality.state.scale;
+  }
+
+  /** Forces a quality profile (developer details) or returns to the detected one. */
+  setQuality(q: 'auto' | QualityName): void {
+    this.quality.setProfile(PROFILES[q === 'auto' ? (this.probe.software ? 'software' : 'gpu') : q]);
   }
 
   private render(s: ViewSetup, now: number): void {
     const u = this.uniforms;
     const r = this.renderer;
     const primary = s.target === 'primary';
+    // The controller's draw distance (software rendering, slow frames) applies to the interactive view.
+    if (primary) s = { ...s, drawDistance: this.quality.drawDistance(s.drawDistance) };
     // Size: the primary owns the canvas; other views use its bottom-left corner (the canvas grows when nobody owns it).
     let w = s.width, h = s.height;
     const cw = this.canvas.width, ch = this.canvas.height;
@@ -528,7 +592,8 @@ export class WorldRuntime {
     u.uFogCentre.value.copy(s.centre);
     u.uFogRange.value.set(s.drawDistance * 0.72, s.drawDistance);
     u.uStale.value = s.layers.staleness ? 1 : 0;
-    if (primary) this.flash = this.weather.update(s.camera.position, now / 1000, rain, thunder, s.layers.weather && !nether);
+    this.sky.update(s.camera.position, time, rain, nether, s.layers.weather && this.quality.state.profile.clouds, now, s.camera.far * 0.8);
+    if (primary) this.flash = this.weather.update(s.camera.position, now / 1000, rain, thunder, s.layers.weather && !nether, s.precip ?? 'rain');
     this.weather.object.visible = primary && s.layers.weather && !nether && rain > 0.01;
     u.uFlash.value = primary ? this.flash : 0;
     // Per-view cut-aways (uniforms only; the cap pass shows what they open).
@@ -548,10 +613,16 @@ export class WorldRuntime {
     // Shared scene, this view's slice of it.
     for (const [dim, sec] of this.sections) {
       sec.group.visible = dim === s.dim;
-      if (dim === s.dim) sec.showAround(s.centre.x, s.centre.z, s.drawDistance);
+      if (dim === s.dim)
+        sec.showAround(s.centre.x, s.centre.z, s.drawDistance, {
+          // Cave culling, unless a cut-away is opening the rock for this view.
+          cull: this.quality.state.profile.caveCulling && n === 0 && !s.roof ? { viewKey: s.viewId ?? 0, cam: s.camera.position, dir: s.camera.getWorldDirection(this.tmpDir), ymax: 16 } : null,
+          translucentDistance: this.quality.state.profile.translucentDistance,
+        });
     }
     this.entities.showFor(s.dim, cam, { bots: s.layers.bots, entities: s.layers.entities, labels: s.labels, selected: s.selected });
     this.overlays.group.visible = s.overlays;
+    if (s.overlays) this.showOverlays(s.dim);
     this.flashes.showFor(s.dim, now, s.layers.changes);
     r.setViewport(0, 0, w, h);
     r.setScissor(0, 0, w, h);

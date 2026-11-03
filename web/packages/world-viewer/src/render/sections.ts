@@ -8,6 +8,7 @@ import type { MeshHost } from '../mesh/host';
 import type { SectionMesh } from '../mesh/mesher';
 import type { MeshArrays } from '../mesh/sink';
 import type { WorldCache } from '../world/cache';
+import { ALL_VISIBLE, visibleSections } from '../mesh/visibility';
 
 interface Entry {
   cx: number;
@@ -17,6 +18,8 @@ interface Entry {
   cap: THREE.Mesh | null;
   trans: THREE.Mesh | null;
   bytes: number;
+  /** Cave-culling face connectivity. */
+  vis: number;
   lastRendered: number;
   /** Bumped when the section is dirtied; a result for an older generation is re-requested. */
   gen: number;
@@ -122,23 +125,54 @@ export class SectionManager {
     e.solid = e.cap = e.trans = null;
   }
 
-  /** Before rendering one view: only the sections within its draw distance of (x, z). */
-  showAround(x: number, z: number, drawDistance: number): void {
+  /**
+   * Before rendering one view: only the sections within its draw distance of (x, z), and (with `cull`) only those the
+   * camera can see through the cave-culling graph. `viewKey` caches the walk per view while its camera stays in one section
+   * and keeps looking the same way.
+   */
+  showAround(x: number, z: number, drawDistance: number, opts?: { cull?: { viewKey: number; cam: THREE.Vector3; dir: THREE.Vector3; ymax: number } | null; translucentDistance?: number }): void {
     const ccx = x / 16, ccz = z / 16, maxD = drawDistance / 16 + 1;
+    const cull = opts?.cull;
+    const seen = cull ? this.visible(cull, Math.ceil(maxD)) : null;
+    const transD = (opts?.translucentDistance ?? Infinity) / 16 + 1;
     let quads = 0;
+    this.culled = 0;
     for (const e of this.entries.values()) {
-      const vis = Math.hypot(e.cx + 0.5 - ccx, e.cz + 0.5 - ccz) <= maxD;
+      let vis = Math.hypot(e.cx + 0.5 - ccx, e.cz + 0.5 - ccz) <= maxD;
+      if (vis && seen && !seen.has(`${e.cx},${e.sy},${e.cz}`)) {
+        vis = false;
+        if (e.solid || e.trans) this.culled++;
+      }
       if (e.solid) {
         e.solid.visible = vis;
         if (e.cap) e.cap.visible = vis;
         quads += vis ? (e.solid.userData.quads as number) : 0;
       }
       if (e.trans) {
-        e.trans.visible = vis;
-        quads += vis ? (e.trans.userData.quads as number) : 0;
+        // Distant water and glass are the first thing a slow renderer drops (blended overdraw).
+        const tv = vis && Math.hypot(e.cx + 0.5 - ccx, e.cz + 0.5 - ccz) <= transD;
+        e.trans.visible = tv;
+        quads += tv ? (e.trans.userData.quads as number) : 0;
       }
     }
     this.quads = quads;
+  }
+
+  /** Sections hidden by cave culling in the last showAround. */
+  culled = 0;
+  private visRev = 0;
+  private readonly visCache = new Map<number, { s: string; dir: THREE.Vector3; rev: number; set: Set<string> | null }>();
+
+  private visible(c: { viewKey: number; cam: THREE.Vector3; dir: THREE.Vector3; ymax: number }, range: number): Set<string> | null {
+    const sx = Math.floor(c.cam.x / 16), sy = Math.floor(c.cam.y / 16), sz = Math.floor(c.cam.z / 16);
+    const s = `${sx},${sy},${sz}`;
+    const hit = this.visCache.get(c.viewKey);
+    if (hit && hit.s === s && hit.dir.dot(c.dir) > 0.97 && this.visRev - hit.rev < 8) return hit.set;
+    // A camera buried in a solid section sees nothing through the graph: draw everything (the x-ray handles it).
+    const start = this.entries.get(s);
+    const set = start && start.vis === 0 ? null : visibleSections(sx, sy, sz, range, c.ymax, (cx, cy, cz) => this.entries.get(`${cx},${cy},${cz}`)?.vis ?? ALL_VISIBLE, c.dir);
+    this.visCache.set(c.viewKey, { s, dir: c.dir.clone(), rev: this.visRev, set });
+    return set;
   }
 
   /** Once per frame for all views in this dimension: a section is wanted when it is in range of any of them. */
@@ -187,7 +221,7 @@ export class SectionManager {
       pick.push([cx, sy, cz]);
       let e = this.entries.get(k);
       if (!e) {
-        e = { cx, sy, cz, solid: null, cap: null, trans: null, bytes: 0, lastRendered: this.frame, gen: 1, meshedGen: 0 };
+        e = { cx, sy, cz, solid: null, cap: null, trans: null, bytes: 0, vis: ALL_VISIBLE, lastRendered: this.frame, gen: 1, meshedGen: 0 };
         this.entries.set(k, e);
       }
       gens.set(k, e.gen);
@@ -217,6 +251,8 @@ export class SectionManager {
       if (e.meshedGen > 0) return; // keep the old mesh until the fresh one arrives
     }
     e.meshedGen = gen;
+    e.vis = m.vis ?? ALL_VISIBLE;
+    this.visRev++;
     this.builds.set(k, (this.builds.get(k) ?? 0) + 1);
     this.release(e);
     if (m.solid) {

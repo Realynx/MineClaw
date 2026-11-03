@@ -32,7 +32,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "assets:extract": "node scripts/extract-assets.mjs --find",
-    "assets:pack": "node scripts/pack-assets.mjs"
+    "assets:pack": "node scripts/pack-assets.mjs",
+    "perf": "node scripts/perf.mjs"
   },
   "peerDependencies": {
     "react": ">=18.2.0",

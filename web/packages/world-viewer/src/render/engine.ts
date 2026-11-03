@@ -59,6 +59,7 @@ export class WorldViewerEngine implements RuntimeView {
   private xrayBusy = false;
   private coneOn = false;
   private roof: ViewSetup['roof'] = null;
+  private precip: 'rain' | 'snow' | 'none' = 'rain';
   private overlaysSeen: Overlays | null = null;
   private disposed = false;
   private resize: ResizeObserver | null = null;
@@ -101,7 +102,6 @@ export class WorldViewerEngine implements RuntimeView {
     if (d === this.dim) return;
     this.dim = d;
     this.overlaysSeen = null;
-    this.runtime.overlays.set(null, this.runtime.version ?? 'b1.8.1');
   }
 
   setFollow(name: string | null): void {
@@ -228,7 +228,6 @@ export class WorldViewerEngine implements RuntimeView {
     const ov = rt.overlaysFor(this.dim);
     if (ov && ov !== this.overlaysSeen) {
       this.overlaysSeen = ov;
-      rt.overlays.set(ov, rt.version ?? 'b1.8.1');
       this.opts.onNotes?.(this.layers.notes ? ov.notes : []);
     }
     rt.overlays.setVisible(this.layers);
@@ -250,6 +249,8 @@ export class WorldViewerEngine implements RuntimeView {
       cones: subs.length && (this.xray === 'on' || this.coneOn) ? subs.map((s) => ({ x: s.x, y: s.y + 0.9, z: s.z })) : [],
       floorY: subs.length ? Math.floor(Math.min(...subs.map((s) => s.y)) + 0.01) : 0,
       roof: this.roof,
+      viewId: this.id,
+      precip: this.precip,
       target: primary ? 'primary' : (this.ctx2d ?? 'primary'),
     };
     this.frames++;
@@ -296,6 +297,7 @@ export class WorldViewerEngine implements RuntimeView {
       .viewInfo(this.dim, camV, [main.x, main.y, main.z], null)
       .then((info) => {
         this.coneOn = this.xray === 'auto' ? info.hidden || info.cameraInside : this.xray === 'on';
+        this.precip = this.runtime.precipAt(info.biome, main.y);
         // Roof cut-away: the followed bot is under cover and the camera looks down on it (not when flying).
         this.roof = this.layers.cutaway && bot && this.rig.mode !== 'fly' && info.covered && cam.y > bot.y + 1.5 ? { x: bot.x, y: Math.floor(bot.y) + 2, z: bot.z, r: 9 } : null;
       })

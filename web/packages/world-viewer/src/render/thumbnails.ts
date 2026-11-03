@@ -24,6 +24,10 @@ export interface ThumbnailViewOptions {
   drawDistance?: number;
   /** X-ray toward the bot when it is hidden (default on). */
   xray?: boolean;
+  /** Roof cut-away when the bot is under cover (default on). */
+  cutaway?: boolean;
+  /** Claims, places, plans… (default on). */
+  overlays?: boolean;
 }
 
 export interface ThumbnailHandle {
@@ -43,6 +47,7 @@ export class ThumbnailView implements RuntimeView {
   private lastAt = -Infinity;
   private yaw = Number.NaN;
   private cone = false;
+  private roof: ViewSetup['roof'] = null;
   private busy = false;
   private readonly target = new THREE.Vector3();
 
@@ -76,7 +81,7 @@ export class ThumbnailView implements RuntimeView {
   }
 
   overlayDim(): Dim | null {
-    return null;
+    return (this.opts.overlays ?? true) ? (this.bot()?.dim ?? null) : null;
   }
 
   selectedBots(): string[] {
@@ -91,7 +96,7 @@ export class ThumbnailView implements RuntimeView {
     const b = this.bot();
     if (!b || !this.ctx || !this.onScreen) return null;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return null;
-    const fps = Math.max(1, Math.min(10, this.opts.fps ?? 3));
+    const fps = Math.max(0.5, Math.min(10, (this.opts.fps ?? 3) * rt.quality.state.profile.thumbFpsScale));
     if (now - this.lastAt < 1000 / fps || !rt.takeSlot()) return null;
     this.lastAt = now;
     const dpr = Math.min(2, globalThis.devicePixelRatio || 1);
@@ -117,7 +122,11 @@ export class ThumbnailView implements RuntimeView {
       const c = this.camera.position;
       rt.host
         .viewInfo(b.dim, [c.x, c.y, c.z], [b.x, b.y, b.z], null)
-        .then((i) => (this.cone = i.hidden || i.cameraInside))
+        .then((i) => {
+          this.cone = i.hidden || i.cameraInside;
+          // Roof cut-away like the main view: the bot is under cover and the camera looks down on it.
+          this.roof = (this.opts.cutaway ?? true) && i.covered && c.y > b.y + 1.5 ? { x: b.x, y: Math.floor(b.y) + 2, z: b.z, r: 7 } : null;
+        })
         .catch(() => undefined)
         .finally(() => (this.busy = false));
     }
@@ -130,11 +139,12 @@ export class ThumbnailView implements RuntimeView {
       height: h,
       layers: { bots: true, entities: true, weather: false, staleness: true, changes: true },
       labels: false,
-      overlays: false,
+      overlays: this.opts.overlays ?? true,
       selected: null,
       cones: xray && this.cone ? [{ x: b.x, y: b.y + 0.9, z: b.z }] : [],
       floorY: Math.floor(b.y + 0.01),
-      roof: null,
+      roof: this.roof,
+      viewId: this.id,
       target: this.ctx,
     };
   }

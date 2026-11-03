@@ -25,6 +25,10 @@ export interface FixtureOptions {
   /** Build plan blocks placed per second (0 = frozen). */
   buildRate?: number;
   atlas?: () => Promise<AtlasResource | null>;
+  /** Wandering mobs (default 5). */
+  mobs?: number;
+  /** A denser world for benchmarks: a lava lake, a water channel and stone pillars. */
+  dense?: boolean;
 }
 
 const SEA = 62;
@@ -55,6 +59,7 @@ export class FixtureWorld {
   readonly height: number;
   readonly radius: number;
   private placed = 0;
+  dense = false;
   constructor(version: GameVersion = 'b1.8.1', radius = 6) {
     this.version = version;
     this.height = version === '1.12.2' ? 256 : 128;
@@ -103,6 +108,12 @@ export class FixtureWorld {
         }
         // A lava pool (a danger overlay marks it).
         if (Math.hypot(x + 20, z - 20) < 2.5) set(lx, h, lz, 11);
+        if (this.dense) {
+          // Benchmark extras: a lava lake, a flowing water channel, stone pillars with glass tops.
+          if (Math.hypot(x - 20, z + 30) < 7) for (let y = h - 2; y <= h; y++) set(lx, y, lz, y === h && (x + z) % 5 === 0 ? 10 : 11, 0);
+          if (Math.abs(z - 18) <= 1 && x > -40 && x < 40) { set(lx, h, lz, 8, Math.abs(x) % 8); set(lx, h - 1, lz, 4); }
+          if ((x * 7 + z * 13) % 23 === 0 && h > SEA) for (let y = h + 1; y < h + 6; y++) set(lx, y, lz, y === h + 5 ? 20 : 1);
+        }
       }
     const local = (x: number, y: number, z: number, id: number, m = 0) => {
       if (x >> 4 !== cx || z >> 4 !== cz) return;
@@ -184,6 +195,7 @@ export class FixtureWorld {
 /** A WorldSource backed by `FixtureWorld`, with moving bots and mobs. */
 export function createFixtureSource(opts: FixtureOptions = {}): WorldSource & { world: FixtureWorld; calls: { index: number; chunks: number; columns: number } } {
   const world = new FixtureWorld(opts.version ?? 'b1.8.1', opts.radius ?? 6);
+  world.dense = !!opts.dense;
   const now = opts.now ?? (() => Date.now());
   const t0 = now();
   const tps = opts.ticksPerSecond ?? 20;
@@ -234,9 +246,10 @@ export function createFixtureSource(opts: FixtureOptions = {}): WorldSource & { 
   const entities = (): EntityDto[] => {
     const s = (now() - t0) / 1000;
     const out: EntityDto[] = [];
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < (opts.mobs ?? 5); i++) {
       const a = s / (6 + i) + i * 1.3;
-      const x = -20 + i * 9 + Math.cos(a) * 4, z = -10 + Math.sin(a) * 4;
+      const ring = i * 2.399, rr = 6 + (i % 5) * 4; // spread around the island centre
+      const x = Math.cos(ring) * rr + Math.cos(a) * 3, z = Math.sin(ring) * rr - 4 + Math.sin(a) * 3;
       out.push({ kind: 'mob', name: null, dim: 0, x, y: surface(Math.floor(x), Math.floor(z)) + 1, z, id: 100 + i, type: i % 2 ? 92 : 54, yaw: (a * 57) % 360 });
     }
     out.push({ kind: 'item', name: 'cobblestone', dim: 0, x: 3.5, y: surface(3, 0) + 1, z: 0.5, id: 200, item: 4, count: 12, age: s });

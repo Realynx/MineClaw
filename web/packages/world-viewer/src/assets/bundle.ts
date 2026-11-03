@@ -89,6 +89,8 @@ const URLS: Record<GameVersion, () => Record<string, URL>> = {
     'env/clouds': new URL('../../generated/b1.8.1/env/clouds.png', import.meta.url),
     'env/rain': new URL('../../generated/b1.8.1/env/rain.png', import.meta.url),
     'env/snow': new URL('../../generated/b1.8.1/env/snow.png', import.meta.url),
+    'env/sun': new URL('../../generated/b1.8.1/env/sun.png', import.meta.url),
+    'env/moon': new URL('../../generated/b1.8.1/env/moon.png', import.meta.url),
   }),
 };
 

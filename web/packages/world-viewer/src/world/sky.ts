@@ -52,6 +52,25 @@ function grey(c: Rgb, amount: number, k: number): Rgb {
   return [c[0] * (1 - amount) + g * amount, c[1] * (1 - amount) + g * amount, c[2] * (1 - amount) + g * amount];
 }
 
+/** Biome table entry used for precipitation (pack.json `biomes`). */
+export interface BiomeClimate {
+  temp: number;
+  precip: string | null;
+}
+
+/**
+ * What falls in a column (Weather.At, Biome.getTemperature): nothing in dry biomes (deserts, savannas, mesas, the Nether, the
+ * End), snow where the temperature at that height is below 0.15 (it drops 0.05 per 30 blocks above y 64), rain otherwise;
+ * unknown biomes (b1.8.1, remembered columns) rain.
+ */
+export function precipitation(biome: BiomeClimate | null | undefined, y: number): 'rain' | 'snow' | 'none' {
+  if (!biome) return 'rain';
+  if (biome.precip === 'none') return 'none';
+  let t = biome.temp;
+  if (y > 64) t -= ((y - 64) * 0.05) / 30;
+  return t < 0.15 ? 'snow' : 'rain';
+}
+
 /** Sky colour (0..1 rgb) at a time under weather (Weather.Sky): blue by day, deep blue at night, grey in rain. */
 export function skyColour(time: number | null, rain: number, thunder: number, nether: boolean): Rgb {
   if (nether) return [0.2, 0.03, 0.03];

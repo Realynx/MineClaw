@@ -11,7 +11,10 @@ function App() {
   const source = useMemo(
     () =>
       createFixtureSource({
-        radius: 8,
+        radius: Number(params.get('radius') ?? 8),
+        version: params.get('version') === '1.12.2' ? '1.12.2' : 'b1.8.1',
+        dense: params.get('dense') === '1',
+        mobs: Number(params.get('mobs') ?? 5),
         ticksPerSecond: 400,
         startTime: 23000,
         rain: rain ? 1 : 0,
@@ -33,7 +36,7 @@ function App() {
 
   return (
     // One provider: the big view and the thumbnails share one WebGL context, one world store and one mesh per section.
-    <WorldViewerProvider source={source}>
+    <WorldViewerProvider source={source} options={{ quality: (params.get('quality') as 'auto' | 'gpu' | 'software' | null) ?? 'auto' }}>
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', height: '100vh', font: '13px system-ui, sans-serif', background: '#11151c', color: '#dde' }}>
       <div style={{ position: 'relative' }}>
         <WorldViewer

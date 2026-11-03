@@ -5,6 +5,7 @@ import { decodeMcwc, type McwcEntry } from '../wire/mcwc';
 import { cellIndex, lightPacked, parseLight, unpackSnapshot, type ColumnLight } from '../wire/chunk';
 import { inflateRaw } from '../wire/inflate';
 import { F_OPAQUE, tableFor, type GameVersion } from '../world/blocks';
+import { relight } from './light';
 
 export interface StoredColumn {
   dim: number;
@@ -149,6 +150,9 @@ export class ColumnStore {
       for (const dx of xs) for (const dz of zs) for (const dy of ys) dirty.add(`${cx + dx},${sy + dy},${cz + dz}`);
     }
     for (const c of tops) c.top = topMap(c, this.version);
+    // Relight around the changes (a dug hole lets the sky in, a removed torch goes dark) and re-mesh what that touched.
+    const changed = blocks.filter(([x, , z]) => this.get(dim, x >> 4, z >> 4)?.light).map(([x, y, z]) => [x, y, z] as [number, number, number]);
+    for (const d of relight(this, dim, changed)) dirty.add(d.join(','));
     return {
       dirty: [...dirty].map((k) => k.split(',').map(Number) as [number, number, number]),
       missing: [...missing].map((k) => k.split(',').map(Number) as [number, number]),

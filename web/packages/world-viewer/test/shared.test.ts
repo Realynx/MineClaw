@@ -89,7 +89,8 @@ describe('shared world: one mesh per section for any number of views', () => {
 
 describe('block deltas', () => {
   it('a change re-meshes exactly its section, plus the neighbours across the boundaries it sits on', async () => {
-    const store = await storeWith([[4, 64, 4, 1]], { extra: [[1, 0], [0, 1], [1, 1], [-1, 0]] });
+    // Remembered columns (no light): the geometry rule alone (light is covered by the next test).
+    const store = await storeWith([[4, 64, 4, 1]], { extra: [[1, 0], [0, 1], [1, 1], [-1, 0]], light: false });
     const p = (b: [number, number, number, number, number]) => store.patch(0, [b]).dirty.map((d) => d.join(',')).sort();
     expect(p([5, 70, 5, 1, 0])).toEqual(['0,4,0']);
     expect(p([15, 70, 5, 1, 0])).toEqual(['0,4,0', '1,4,0']);
@@ -101,6 +102,34 @@ describe('block deltas', () => {
     const miss = store.patch(0, [[200, 64, 200, 1, 0]]);
     expect(miss.missing).toEqual([[12, 12]]);
     expect(store.blockAt(0, 15, 79, 15)!.id).toBe(1);
+  });
+
+  it('relights locally: a roof shades the ground below it, a torch lights its surroundings, digging lets the sky back in', async () => {
+    // A flat stone floor at y 63 under open sky, full light from the payload.
+    const floor: Array<[number, number, number, number, number?]> = [];
+    for (let x = 0; x < 16; x++) for (let z = 0; z < 16; z++) floor.push([x, 63, z, 1]);
+    const store = await storeWith(floor, { extra: [[1, 0], [0, 1], [-1, 0], [0, -1]] });
+    const at = (x: number, y: number, z: number) => {
+      const c = store.get(0, x >> 4, z >> 4)!;
+      const v = c.light!.full[y >> 4]?.[((x & 15) << 8) | ((z & 15) << 4) | (y & 15)] ?? c.light!.uniform[y >> 4];
+      return { sky: v >> 4, block: v & 15 };
+    };
+    expect(at(8, 64, 8).sky).toBe(15);
+    // A 5×5 roof at y 67: the cell under its middle loses direct sky; light creeps in from the sides (15 − steps).
+    const roof: Array<[number, number, number, number, number]> = [];
+    for (let x = 6; x <= 10; x++) for (let z = 6; z <= 10; z++) roof.push([x, 67, z, 1, 0]);
+    const r = store.patch(0, roof);
+    expect(at(8, 64, 8).sky).toBe(12);
+    expect(at(8, 68, 8).sky).toBe(15);
+    expect(r.dirty.map((d) => d.join(','))).toContain('0,4,0');
+    // A torch under the roof: block light 14 at the torch, 13 next to it.
+    store.patch(0, [[8, 64, 8, 50, 5]]);
+    expect(at(8, 64, 8).block).toBe(14);
+    expect(at(9, 64, 8).block).toBe(13);
+    // Remove it and the roof: back to the payload's open sky, no block light.
+    store.patch(0, [[8, 64, 8, 0, 0], ...roof.map(([x, y, z]) => [x, y, z, 0, 0] as [number, number, number, number, number])]);
+    expect(at(8, 64, 8)).toEqual({ sky: 15, block: 0 });
+    expect(at(9, 64, 8).block).toBe(0);
   });
 
   it('a burst of changes in one frame re-meshes each touched section once', async () => {
