@@ -8,7 +8,7 @@
 
 import * as THREE from 'three';
 import { createMeshHost, InlineMeshHost, type MeshHost } from '../mesh/host';
-import type { Dim, LayerToggles, Overlays, WorldSource } from '../types';
+import type { ChatSay, Dim, LayerToggles, Overlays, WorldSource } from '../types';
 import { normalizeEntities, normalizeOverlays } from '../wire/normalize';
 import type { GameVersion } from '../world/blocks';
 import { WorldCache } from '../world/cache';
@@ -26,6 +26,7 @@ import { SectionManager, type Centre } from './sections';
 import { WeatherLayer } from './weather';
 import { SkyLayer } from './sky';
 import { AidsLayer } from './aids';
+import { BubbleLayer, type BubbleKind, type BubbleMode, type ShownBubble } from './bubbles';
 import { loadBundle, type AssetBundle } from '../assets/bundle';
 import { PROFILES, QualityController, probeRenderer, type QualityName, type RendererProbe } from './quality';
 import { ChangeFlash } from './changeFlash';
@@ -96,6 +97,10 @@ export interface ViewSetup {
   target: 'primary' | CanvasRenderingContext2D;
   /** Wireframe boxes drawn in this view only (the crosshair's selection box, selected bots, a target marker). */
   outlines?: ReadonlyArray<{ min: [number, number, number]; max: [number, number, number]; color: number }>;
+  /** Chat bubbles over speakers: full stacks, one small bubble (thumbnails), or none. Default: full with labels, else compact. */
+  bubbles?: BubbleMode;
+  /** Render pixels per CSS pixel (bubble sizes are chosen in CSS pixels); default 1. */
+  pxScale?: number;
 }
 
 export interface RuntimeView {
@@ -165,6 +170,9 @@ export class WorldRuntime {
   readonly flashes = new ChangeFlash();
   readonly sky = new SkyLayer();
   readonly aids = new AidsLayer();
+  /** Chat bubbles over the heads of bots and players that speak (`say`, `WorldSource.chat`), in every view. */
+  readonly bubbles = new BubbleLayer();
+  private chatOff: (() => void) | null = null;
   /** Block entities of the held columns (sign text, banners, spawner mobs… for the main-thread layers). */
   blockEntities: BlockEntityStore;
   /** The bundled assets of the current version (textures, models); null until loaded. */
@@ -246,7 +254,7 @@ export class WorldRuntime {
     this.scene.add(this.backstop);
     this.entities.setWorldUniforms(this.uniforms); // [entity models] entities light and fog like the sections
     this.host = opts.inlineMesher ? new InlineMeshHost() : createMeshHost(opts.createWorker);
-    this.scene.add(this.aids.group, this.sky.group, this.entities.group, this.overlays.group, this.weather.object, this.flashes.mesh);
+    this.scene.add(this.aids.group, this.sky.group, this.entities.group, this.overlays.group, this.weather.object, this.flashes.mesh, this.bubbles.group);
     this.blockEntityLayer = new BlockEntityLayer(this.host, this.uniforms); // [blocks]
     this.scene.add(this.blockEntityLayer.group);
     this.blockEntities = new BlockEntityStore(source, this.host, (dim, dirty) => this.sections.get(dim)?.markDirty(dirty), (e) => this.opts.onError?.('blockentities', e));
@@ -261,6 +269,7 @@ export class WorldRuntime {
       (e) => this.opts.onError?.('entities', e),
     );
     this.overlayPoller = new Poller(() => this.pollOverlays(), opts.overlayPollMs ?? 4000, (e) => this.opts.onError?.('overlays', e));
+    this.listenChat();
     void this.configure();
     // The network loops start with the first view (and pause when the last one leaves).
     this.paused = true;
@@ -280,6 +289,29 @@ export class WorldRuntime {
     if (this.hidden) this.pause();
     else if (this.views.size) this.resume();
   };
+
+  // ------------------------------------------------------------------------------------------------------------ chat
+
+  /**
+   * A speech bubble over the bot or player called `name` (bot name or short key, or a username; any case) in every view:
+   * stacked with that speaker's last few lines, fading after ~6 s. Nothing shows while nobody of that name is in the world.
+   * False when the line was ignored (empty, or the speaker's newest line again within 2 s, e.g. heard by several bots).
+   */
+  say(name: string, text: string, opts: { kind?: BubbleKind } = {}): boolean {
+    return this.bubbles.say(name, text, opts.kind ?? 'chat', performance.now());
+  }
+
+  /** The chat bubbles a view drew in its last render (speaker, anchor in CSS pixels, lines). */
+  bubblesShown(view: RuntimeView | number): readonly ShownBubble[] {
+    return this.bubbles.shownIn(typeof view === 'number' ? view : view.id);
+  }
+
+  private listenChat(): void {
+    this.chatOff?.();
+    this.chatOff = null;
+    const chat = this.source.chat?.bind(this.source);
+    if (chat) this.chatOff = chat((l: ChatSay) => void this.say(l.from, l.text, { kind: l.kind }));
+  }
 
   // ------------------------------------------------------------------------------------------------------------ lifetime
 
@@ -305,6 +337,7 @@ export class WorldRuntime {
     // No views left (e.g. between pages, persistent runtime): stop the network loops, keep the world.
     if (!this.views.size) this.pause();
     this.renderedAt.delete(v.id);
+    this.bubbles.forgetView(v.id);
     if (this.primary?.view === v) {
       this.canvas.remove();
       this.primary = null;
@@ -357,6 +390,7 @@ export class WorldRuntime {
     this.sync.stop();
     this.deltas.stop();
     this.source = src;
+    this.listenChat();
     this.blockEntities.setSource(src);
     const rev = this.deltas.rev;
     this.sync = this.makeSync();
@@ -375,6 +409,8 @@ export class WorldRuntime {
     this.entityPoller.stop();
     this.overlayPoller.stop();
     this.source = src;
+    this.listenChat();
+    this.bubbles.clear();
     this.blockEntities.setSource(src);
     this.blockEntities.clear();
     this.blockEntityLayer.clear(); // [blocks]
@@ -406,6 +442,9 @@ export class WorldRuntime {
     this.entityPoller.stop();
     this.overlayPoller.stop();
     this.views.clear();
+    this.chatOff?.();
+    this.chatOff = null;
+    this.bubbles.dispose();
     for (const s of this.sections.values()) s.dispose();
     this.sections.clear();
     this.entities.dispose();
@@ -668,6 +707,7 @@ export class WorldRuntime {
     for (const v of this.views.values()) for (const s of v.selectedBots()) selected.add(s);
     this.entities.update(this.store.bots(this.botsBuf), this.store.entities(null, this.entsBuf), now, selected);
     this.overlays.tick(now);
+    this.bubbles.update(now, this.botsBuf, this.entsBuf);
     this.refreshEntityLight(now);
     // Entity events: the entity layer animates them (swings, hurt flashes, deaths…); lightning also flashes the world.
     const events = this.store.drainEvents();
@@ -743,6 +783,7 @@ export class WorldRuntime {
   }
 
   private overlaysShown: Overlays | null = null;
+  private readonly labelLift = (key: string, bot: boolean): number => this.entities.labelLift(key, bot);
 
   /** Puts `dim`'s overlays in the shared overlay layer (rebuilt only when the data or the dimension changed). */
   private showOverlays(dim: Dim): void {
@@ -921,6 +962,11 @@ export class WorldRuntime {
     this.entities.detailDistance = this.quality.state.profile.entityDetailDistance; // posed models near, boxes beyond
     const ghosts = s.ghosts ? this.ghostsFor(s, now) : null;
     this.entities.showFor(s.dim, cam, { bots: s.layers.bots, entities: s.layers.entities, labels: s.labels, selected: s.selected, drawDistance: s.drawDistance, fov: s.camera.fov, ghosts });
+    // After the entities: the name labels this view shows decide where the bubbles sit.
+    this.bubbles.showFor(
+      { dim: s.dim, camera: s.camera, height: h, pxScale: s.pxScale ?? 1, mode: s.bubbles ?? (s.labels ? 'full' : 'compact'), bots: s.layers.bots, players: s.layers.entities, labelLift: this.labelLift },
+      s.viewId ?? 0,
+    );
     this.overlays.group.visible = s.overlays;
     if (s.overlays) this.showOverlays(s.dim);
     this.flashes.showFor(s.dim, now, s.layers.changes);

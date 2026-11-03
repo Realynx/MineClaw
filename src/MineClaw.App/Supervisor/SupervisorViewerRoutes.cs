@@ -23,6 +23,8 @@ public sealed class SupervisorViewerOptions
     public bool AllowCommands { get; set; }
     /// <summary>Viewer lines per player per minute (their own bucket: in-game chat is never demoted by them); more = 429.</summary>
     public int PerMinute { get; set; } = 12;
+    /// <summary>Story Mode writes (<c>POST /api/story/*</c>, docs/web/story-mode.md); null = on whenever the viewer is.</summary>
+    public bool? AllowStory { get; set; }
 }
 
 /// <summary>"What is it doing right now" for one bot (<c>/api/viewer/now</c>); every part is null when unknown.</summary>

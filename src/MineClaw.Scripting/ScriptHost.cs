@@ -141,6 +141,8 @@ public sealed class ScriptHost
     public Func<string, string?>? StoredParams { get; init; }
     /// <summary>The persona's body language, voice, memory and social reads (the <c>character</c> SDK module). Null = no-ops.</summary>
     public Character.ICharacterPort? Character { get; set; }
+    /// <summary>Story Mode: this pawn's colony director (the <c>story</c> SDK module); null = the process-wide <see cref="MineClaw.Scripting.Story.StoryPorts"/> by account.</summary>
+    public Story.IStoryPort? Story { get; set; }
     /// <summary>
     /// Inline interrupt fixing: learned handlers and the patch turn (null = interrupts pause and wake the brain as before; a
     /// script's own onInterrupt handlers still run). Settable: the Bot layer attaches it once the author exists.

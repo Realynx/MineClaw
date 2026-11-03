@@ -8,9 +8,9 @@ import { bundleUrls, itemLookById } from '@mineclaw/world-viewer';
 export { WorldThumbnail, WorldViewer, WorldViewerProvider, useWorldRuntime, disposeWorldRuntimes } from '@mineclaw/world-viewer';
 
 /** Mock mode only: the package's fixture world, re-keyed onto the mock hive's bots (see ./mockSource.ts). */
-export async function loadMockSource() {
+export async function loadMockSource(player?: () => string | null | undefined) {
   const { createMockWorldSource } = await import('./mockSource');
-  return createMockWorldSource();
+  return createMockWorldSource(player);
 }
 
 /**

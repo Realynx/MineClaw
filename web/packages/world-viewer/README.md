@@ -22,6 +22,7 @@ const source: WorldSource = {
   overlays: (dim) => api.get(`/api/world/overlays?dim=${dim}`),
   blocks: (since) => api.get(`/api/world/blocks${since ? `?since=${since}` : ''}`),       // optional
   subscribe: (onBlocks, onReconnect) => sse.on('blocks', onBlocks, onReconnect),           // optional (push instead of poll)
+  chat: (onSay) => feed.on((l) => onSay({ from: l.from, text: l.text, kind: l.kind })),    // optional (chat bubbles)
 };
 
 <WorldViewerProvider source={source}>                {/* one WebGL context + one world for everything inside */}
@@ -40,7 +41,7 @@ JSON may come snake_case (supervisor) or camelCase (Nest): `normalize*` accept b
 | `source` | the `WorldSource` |
 | `dim` | 0 overworld, −1 nether |
 | `follow` | bot name or short key the follow/iso cameras track and the x-ray keeps in sight |
-| `layers` | `bots entities claims places points plans dangers notes weather cutaway staleness changes` (all on by default) |
+| `layers` | `bots entities claims places points plans dangers notes weather cutaway staleness changes bubbles` (all on by default), `aids` (off) |
 | `cameraMode` | `follow` (orbit), `fly` (WASD/QE + mouse, pointer lock, Shift fast, wheel = speed), `iso` (narrow-FOV dolly; Q/E rotate, Shift/right-drag pans) |
 | `xray` | `auto` (silhouettes of hidden bots and players; the cone only when the camera is inside terrain), `on` (silhouettes and the cone), `off` |
 | `drawDistance` | blocks, 32..256 (default 128) |
@@ -55,6 +56,7 @@ The imperative handle offers:
 - `followBot(name)`
 - `bots()`
 - `stats()`
+- `say(name, text, { kind })` (a chat bubble) and `bubbles()` (what this view drew)
 - `engine()`
 
 Mode switches and focus glide over 0.6 s.
@@ -114,6 +116,31 @@ mounted. Call `disposeWorldRuntimes()` on logout. Pass `persist={false}` for a r
 
 `stats().memory` gives views, columns, sections, section geometries, section GPU bytes, approximate worker bytes, bytes
 received, entities, draw calls and triangles, for a developer-details panel.
+
+### Chat bubbles
+
+What players and bots say shows as a speech bubble over the speaker's head, in every view of a runtime: the interactive
+viewer in any camera (follow, fly, iso, top), every `<WorldViewer>` and every thumbnail.
+
+- **Feeding it.** `WorldSource.chat(onSay)` is a push hook: the runtime subscribes once (and again when the source is
+  replaced) and shows each `{ from, text, kind }` it gets. `kind` is `chat` (a player in game), `said` (a bot), `whisper` or
+  `viewer` (sent from the web as the linked player); it picks the bubble's colours. The source filters: the viewer never sees
+  private speech. `runtime.say(name, text, { kind })`, `engine.say` and the `WorldViewerHandle.say` do the same imperatively.
+- **Speakers.** The name is matched case-insensitively against the bots (name, then short key: `maid_chan`, `main`, `109`)
+  and then the players' usernames. A speaker nobody of that name stands for, one in another dimension, or one off screen
+  shows nothing. Bubbles over bots follow `layers.bots`, over players `layers.entities`; `layers.bubbles: false` turns them off.
+- **Look and timing** (`src/render/bubbles.ts`). A rounded bubble with a tail, § codes stripped, word-wrapped to 32
+  characters, at most 3 lines (an ellipsis cuts the rest). The last 3 lines per speaker stack upward, the newest at the
+  bottom with the tail. A line holds 6 s plus 0.5 s per extra line, then fades over 0.5 s. The same newest line again within
+  2 s (several bots heard it) is dropped.
+- **Drawing.** One canvas texture per message and variant (with tail, stacked, compact), reference-counted, with at most 24
+  idle ones kept (LRU). Sprites have depth test off, so they draw on top like labels, never cut by terrain or the x-ray. Each
+  sits over the name label shown in that view and is lifted in screen space, so stacks read the same from the side and from
+  straight above. The size follows the distance, clamped to 14–22 CSS px a line. Views pass `ViewSetup.pxScale` (render
+  pixels per CSS pixel). Thumbnails draw `compact`: only the newest line, cut to 18 characters, at 10 px. Per view the cost
+  is a projection and a few sprite uniforms per speaker; canvases are drawn only when a line arrives.
+- **Queries.** `runtime.bubblesShown(view)`, `engine.bubbles()` and `WorldViewerHandle.bubbles()` give what a view drew
+  in its last frame: speaker, entity key, anchor and bubble edges in CSS pixels, lines, stack size.
 
 ### Block deltas
 
@@ -435,6 +462,9 @@ Vite bundle the mesh worker and emit the atlases themselves, with no copy step.
     text and obfuscated redraws.
   - The bitmap font: glyph tables and advances from both font images, § codes, the 1.12.2 sign line cut, rasterising;
     spawner mob scales and feet; starfield passes by distance.
+  - Chat bubbles (`bubbles.test.ts`): wrapping and the ellipsis, hold and fade times, stacks and repeats, speaker to body
+    mapping, the texture LRU, placement over the right body and hiding (off screen, other dimension, layer off), compact
+    thumbnails.
   - Hash-diff fetching.
   - Shared meshing: N views mesh each section once.
   - Block deltas: exact dirty sections, burst coalescing, fallbacks and local relighting.

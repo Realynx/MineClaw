@@ -6,6 +6,7 @@
  * - `entities()` prefers the SSE-fed query cache (no extra polling) and falls back to GET /api/world/entities.
  * - `blocks()` / `subscribe()` carry live per-block updates (GET /api/world/blocks + the shared stream's `blocks` event; the
  *   reconnect hook fires when the stream had to be reopened).
+ * - `chat()` feeds the chat bubbles over heads from the shared stream's `feed` event (./chatBubbles.ts).
  */
 import type { QueryClient } from '@tanstack/react-query';
 import { toNumber, type WorldEntities } from '@mineclaw/contracts';
@@ -13,6 +14,7 @@ import type { BlockEntities, EntityDelta, WorldSource } from '@mineclaw/world-vi
 import { api, apiBlob } from '@/lib/api/client';
 import { liveKeys } from '@/lib/live/dispatch';
 import { subscribeBlocks } from './blocks';
+import { subscribeChat } from './chatBubbles';
 
 export type { WorldSource };
 
@@ -59,7 +61,12 @@ function toDelta(e: WorldEntities, full: boolean): EntityDelta {
 
 const finite = (n: number): number => (Number.isFinite(n) ? n : 0);
 
-export function createWorldSource(qc?: QueryClient): WorldSource {
+export interface WorldSourceOptions {
+  /** The signed-in user's player (whispers they sent get a bubble). */
+  player?: () => string | null | undefined;
+}
+
+export function createWorldSource(qc?: QueryClient, opts: WorldSourceOptions = {}): WorldSource {
   return {
     index: async (dim, x, z, r) => {
       const i = await api('world.index', { query: { dim, x: Math.round(x), z: Math.round(z), r: Math.max(16, Math.min(256, Math.round(r))), light: true } });
@@ -102,5 +109,7 @@ export function createWorldSource(qc?: QueryClient): WorldSource {
     blocks: (since) => api('world.blocks', { query: { since: since ?? 0 } }),
 
     subscribe: (onBlocks, onReconnect) => subscribeBlocks((d) => onBlocks(d), onReconnect),
+
+    chat: (onSay) => subscribeChat(onSay, opts.player),
   };
 }

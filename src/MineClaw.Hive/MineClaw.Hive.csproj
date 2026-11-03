@@ -7,6 +7,12 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="MineClaw.Hive.Tests" />
+    <InternalsVisibleTo Include="MineClaw.App.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Story Mode: the shipped pawn script, installed into the script library by default (docs/web/story-mode.md). -->
+    <EmbeddedResource Include="Story\story_pawn.js" LogicalName="MineClaw.Hive.Story.story_pawn.js" />
   </ItemGroup>
 
   <PropertyGroup>

@@ -17,6 +17,7 @@ import type {
 } from '@mineclaw/contracts';
 import { mergeColony } from '@/features/story/model';
 import { publishBlocks } from '@/features/world/blocks';
+import { publishFeed } from '@/features/world/chatBubbles';
 import { qk } from '../api/query';
 import { mergeEntities, mergeEvents, mergeFeed, mergeMemoryActivity } from './merge';
 import type { LiveEventName } from './stream';
@@ -45,6 +46,7 @@ export function applyLiveEvent(qc: QueryClient, event: LiveEventName, data: unkn
     }
     case 'feed':
       qc.setQueryData<FeedResponse>(liveKeys.feed, (prev) => mergeFeed(prev, data as FeedResponse));
+      publishFeed(data as FeedResponse); // chat bubbles over heads in the world views (new lines only)
       break;
     case 'event':
       qc.setQueryData<EventsResponse>(liveKeys.events, (prev) => mergeEvents(prev, data as EventsResponse));
