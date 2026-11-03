@@ -369,11 +369,13 @@ export function StoryMode() {
       const name = await api('designs.get', { params: { id } }).then((d) => d.design.name, () => `design #${id}`);
       let blocks = designBlocks(await api('blueprints.get', { params: { id } }).catch(() => null));
       if (!blocks.length) blocks = designBlocks(await api('buildplans.get', { params: { id } }).catch(() => null));
+      // The Design Studio opens a design's newest revision as cells: the reliable source when the account may design.
+      if (!blocks.length && can('design')) blocks = designBlocks((await api('designer.create', { body: { designId: id } }).catch(() => null))?.blocks ?? null);
       if (!blocks.length) return say(`${name} has no block list the colony can build from`, 'warn');
       setTool({ kind: 'design', id, name, blocks });
       say(`${name}: move to a spot and click to queue it (Q/E turns)`);
     })();
-  }, [designParam, state, say]);
+  }, [designParam, state, say, can]);
 
   const create = async (name: string, n: number) => {
     if (!canWrite) return say('Needs the story role', 'warn');

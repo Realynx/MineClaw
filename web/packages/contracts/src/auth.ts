@@ -132,7 +132,7 @@ export const SetupRequest = z
       .regex(PLAYER_PATTERN, 'Minecraft names are 1-16 characters of A-Z a-z 0-9 _')
       .nullish()
       .describe('linked Minecraft player; null = cannot chat'),
-    roles: z.array(Role).min(1).max(5),
+    roles: z.array(Role).min(1).max(6),
   })
   .strict();
 export type SetupRequest = z.infer<typeof SetupRequest>;
