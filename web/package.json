@@ -1,0 +1,39 @@
+{
+  "name": "mineclaw-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MineClaw Web Explorer monorepo (npm workspaces + Turborepo). See docs/web/architecture.md and docs/web/api.md.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "npm@10.9.2",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "check": "turbo run build typecheck lint test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "22.20.5",
+    "eslint": "10.13.0",
+    "eslint-config-prettier": "10.1.8",
+    "globals": "17.13.0",
+    "prettier": "3.9.10",
+    "turbo": "2.11.9",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.2"
+  },
+  "overrides": {
+    "vitest": "4.1.12"
+  }
+}

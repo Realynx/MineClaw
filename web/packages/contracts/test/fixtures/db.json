@@ -1,0 +1,455 @@
+{
+  "overview": {
+    "db": {
+      "file": "mineclaw.db",
+      "size_bytes": 412385280,
+      "schema_version": 41,
+      "fts5": true,
+      "rtree": true,
+      "vectors": [{ "model": "text-embedding-3-small", "dims": 1536, "count": 18233 }],
+      "search_mode": "hybrid",
+      "search_note": "hybrid: FTS + vectors + RAPTOR",
+      "server_version": "b1.8.1",
+      "read_at": "2026-11-02T10:15:30.1234567+00:00"
+    },
+    "knowledge_pack": { "label": "b1.8.1-gamedata (b1.8.1) + skyblock", "version": "b1.8.1", "modes": ["skyblock"] },
+    "embeddings": {
+      "configured": true,
+      "status": "embeddings: configured (deployment emb-small)",
+      "model": "text-embedding-3-small",
+      "dims": 1536,
+      "matches_stored": true
+    },
+    "cards": [
+      { "key": "facts", "label": "Facts", "count": 312, "group": "Memory", "memory_kind": "facts" },
+      {
+        "key": "claims",
+        "label": "Claims",
+        "count": 88,
+        "detail": "41 verified · 30 unverified · 9 disputed · 8 refuted",
+        "group": "Memory",
+        "memory_kind": "claims"
+      },
+      { "key": "vectors", "label": "Vectors", "count": 18233, "group": "Index" }
+    ],
+    "raptor": {
+      "headline": "2911 nodes · 2604 leaves · 3 summary layers",
+      "nodes": 2911,
+      "leaves": 2604,
+      "summary_layers": 3,
+      "layers": [
+        {
+          "layer": 0,
+          "name": "leaves",
+          "nodes": 2604,
+          "avg_children": 0,
+          "avg_tokens": 88.4,
+          "max_tokens": 900,
+          "dirty": 0,
+          "share": 0.894
+        },
+        {
+          "layer": 1,
+          "name": "L1 summaries",
+          "nodes": 270,
+          "avg_children": 9.6,
+          "avg_tokens": 210.2,
+          "max_tokens": 512,
+          "dirty": 4,
+          "share": 0.093
+        },
+        {
+          "layer": 2,
+          "name": "L2 summaries",
+          "nodes": 33,
+          "avg_children": "NaN",
+          "avg_tokens": 240,
+          "max_tokens": 400,
+          "dirty": 0,
+          "share": 0.011
+        }
+      ],
+      "meta": {
+        "num_layers": 4,
+        "next_index": 2950,
+        "dimensions": 1536,
+        "embedding_model": "text-embedding-3-small",
+        "build_id": 7,
+        "built_at": "2026-10-28T03:12:00+00:00",
+        "leaves_at_build": 2410,
+        "inserted_since_build": 230,
+        "removed_since_build": 36,
+        "baseline_leaf_parent_similarity": 0.81,
+        "inserted_similarity_sum": 182.1,
+        "inserted_similarity_count": 230,
+        "insert_seq": 230,
+        "baseline_leaf_parent_similarity_std": 0.06,
+        "insert_temperature": 0.05
+      },
+      "inserted_cos_mean": 0.792,
+      "dirty_summaries": 4,
+      "pending_summaries": 1,
+      "stored_layers": 4
+    }
+  },
+  "memoryKinds": {
+    "kinds": [
+      {
+        "key": "facts",
+        "label": "Facts",
+        "group": "Memory",
+        "count": 312,
+        "available": true,
+        "edit_kind": "fact",
+        "states": []
+      },
+      {
+        "key": "claims",
+        "label": "Claims",
+        "group": "Memory",
+        "count": 88,
+        "available": true,
+        "edit_kind": "claim",
+        "states": ["verified", "unverified", "disputed", "refuted"]
+      },
+      {
+        "key": "chat",
+        "label": "Chat log",
+        "group": "Logs",
+        "count": 48211,
+        "available": true,
+        "states": ["chat", "whisper", "bot"]
+      }
+    ]
+  },
+  "memoryPage": {
+    "kind": "claims",
+    "total": 88,
+    "offset": 0,
+    "limit": 2,
+    "items": [
+      {
+        "id": "41",
+        "name": "the cobble gen at spawn is Fox's",
+        "type": "ownership",
+        "state": "verified",
+        "dim": "overworld",
+        "conf": 0.92,
+        "updated": 1761900000000,
+        "preview": "the cobble gen at spawn is Fox's",
+        "doc_ref": "claim:41",
+        "raptor_leaf": 1203
+      },
+      {
+        "id": "42",
+        "name": "nether portal is unsafe",
+        "state": "disputed",
+        "dim": "nether",
+        "conf": 0.4,
+        "updated": 1761900100000,
+        "preview": "nether portal is unsafe"
+      }
+    ]
+  },
+  "memoryDetailClaim": {
+    "kind": "claims",
+    "id": "41",
+    "row": {
+      "id": "41",
+      "name": "the cobble gen at spawn is Fox's",
+      "state": "verified",
+      "dim": "overworld",
+      "conf": 0.92,
+      "updated": 1761900000000,
+      "preview": "the cobble gen at spawn is Fox's"
+    },
+    "props": [
+      { "key": "claimant", "label": "Claimant", "value": "poofimafox" },
+      { "key": "status", "label": "Status", "value": "verified" }
+    ],
+    "record": {
+      "kind": "claims",
+      "id": 41,
+      "claimant": "poofimafox",
+      "text": "the cobble gen at spawn is Fox's",
+      "category": "ownership",
+      "stakes": "low",
+      "confidence": 0.92,
+      "status": "verified",
+      "attempts": 1,
+      "created": 1761800000000,
+      "updated": 1761900000000,
+      "dimension": 0,
+      "x": 4,
+      "y": 64,
+      "z": 6,
+      "evidence": [
+        {
+          "at": 1761850000000,
+          "kind": "observation",
+          "polarity": 1,
+          "weight": 0.7,
+          "ref": "obs:12",
+          "note": "seen him build it"
+        }
+      ]
+    },
+    "edit_kind": "claim",
+    "edit_prefill": { "status": "verified", "confidence": "0.92", "reason": null },
+    "people": ["poofimafox"]
+  },
+  "memoryDetailChest": {
+    "kind": "chests",
+    "id": "12",
+    "row": {
+      "id": "12",
+      "name": "chest 10,64,3",
+      "type": "chest",
+      "dim": "overworld",
+      "updated": 1761900000000,
+      "preview": "cobble, dirt"
+    },
+    "props": [{ "key": "seen_count", "label": "Seen", "value": "14" }],
+    "record": {
+      "kind": "chests",
+      "id": 12,
+      "observation_kind": "chest",
+      "key": "10,64,3",
+      "min_x": 10,
+      "min_y": 64,
+      "min_z": 3,
+      "max_x": 10,
+      "max_y": 64,
+      "max_z": 3,
+      "source": "seen",
+      "confidence": 1,
+      "first_seen": 1761000000000,
+      "last_seen": 1761900000000,
+      "seen_count": 14,
+      "dimension": 0,
+      "contents_at": 1761900000000,
+      "contents_by": "maid_chan_67",
+      "contents": [
+        { "name": "cobblestone", "count": 640, "damage": 0 },
+        { "name": "dirt", "count": 12 }
+      ]
+    },
+    "edit_kind": "observation",
+    "people": []
+  },
+  "search": {
+    "query": "cobble generator",
+    "mode": "hybrid",
+    "mode_note": "hybrid: FTS + vectors + RAPTOR",
+    "embedded": true,
+    "elapsed_ms": 38.2,
+    "hits": [
+      {
+        "rank": 1,
+        "doc_id": 991,
+        "ref": "st:cobble gen",
+        "kind": "structure",
+        "tag": "cobble_generator",
+        "title": "cobble gen",
+        "snippet": "a lava/water cobble generator by spawn…",
+        "score": 0.0331,
+        "signals": { "bm25": 7.2, "cos": 0.84 },
+        "updated": 1761900000000,
+        "dimension": 0,
+        "where": "4,63,5..6,65,7",
+        "raptor_leaf": 1500,
+        "raptor_path": [
+          { "index": 2940, "layer": 3, "label": "base building" },
+          { "index": 2801, "layer": 2, "label": "cobble, generator" },
+          { "index": 1500, "layer": 0, "label": "structure · cobble gen" }
+        ]
+      }
+    ],
+    "tree_hits": [
+      {
+        "list": "collapsed",
+        "index": 2801,
+        "layer": 2,
+        "score": 0.81,
+        "preview": "Cobble generators and the island base…"
+      }
+    ]
+  },
+  "raptorTree": {
+    "meta": null,
+    "state_key": "7:230:36",
+    "top": [2940, 2941],
+    "nodes": [
+      {
+        "index": 2940,
+        "layer": 3,
+        "is_leaf": false,
+        "title": "base building and storage",
+        "kind_label": "L3",
+        "tokens": 260,
+        "child_count": 12,
+        "leaves_below": 1400,
+        "dirty": false,
+        "parents": [],
+        "children": [2801]
+      },
+      {
+        "index": 2801,
+        "layer": 2,
+        "is_leaf": false,
+        "title": "cobble, generator",
+        "kind_label": "L2",
+        "tokens": 240,
+        "child_count": 9,
+        "leaves_below": 120,
+        "dirty": true,
+        "parents": [2940]
+      },
+      {
+        "index": 2941,
+        "layer": 3,
+        "is_leaf": false,
+        "title": "people",
+        "kind_label": "L3",
+        "tokens": 230,
+        "child_count": 8,
+        "leaves_below": 1204,
+        "dirty": false,
+        "parents": []
+      }
+    ]
+  },
+  "raptorNode": {
+    "node": {
+      "index": 1500,
+      "layer": 0,
+      "is_leaf": true,
+      "title": "structure · cobble gen",
+      "kind_label": "structure",
+      "tokens": 80,
+      "child_count": 0,
+      "leaves_below": 1,
+      "dirty": false,
+      "parents": [2801, 2802],
+      "doc_ref": "st:cobble gen"
+    },
+    "title": "cobble gen",
+    "text": "A lava/water cobble generator by spawn.",
+    "pinned": false,
+    "placeholder": false,
+    "doc": {
+      "id": 991,
+      "ref": "st:cobble gen",
+      "kind": "structure",
+      "tag": "cobble_generator",
+      "source": "taught",
+      "updated": 1761900000000,
+      "dimension": 0
+    },
+    "breadcrumb": [
+      { "index": 2940, "layer": 3, "label": "base building" },
+      { "index": 2801, "layer": 2, "label": "cobble, generator" }
+    ],
+    "children": [],
+    "parents": [{ "index": 2801, "layer": 2, "label": "cobble, generator", "tokens": 240 }]
+  },
+  "raptorGraph": {
+    "layout": "icicle",
+    "color_by": "kind",
+    "state_key": "7:230:36",
+    "breadcrumb": [],
+    "nodes": [
+      {
+        "id": 2940,
+        "layer": 3,
+        "is_leaf": false,
+        "x": 0.25,
+        "y": 0.05,
+        "w": 0.5,
+        "h": 0.1,
+        "label": "base · storage",
+        "terms": ["base", "storage"],
+        "category": "World",
+        "newest": 1761900000000,
+        "time_rank": 0.98,
+        "cluster": 0,
+        "weight": 1400,
+        "tokens": 260,
+        "color": "#4c9a2a",
+        "opacity": 0.8
+      },
+      {
+        "id": 2801,
+        "parent": 2940,
+        "layer": 2,
+        "is_leaf": false,
+        "x": 0.1,
+        "y": 0.15,
+        "w": 0.04,
+        "h": 0.1,
+        "label": "cobble · generator",
+        "terms": ["cobble", "generator"],
+        "category": "World",
+        "time_rank": 0.9,
+        "cluster": 0,
+        "weight": 120,
+        "tokens": 240,
+        "color": "#4c9a2a",
+        "opacity": 0.7
+      }
+    ],
+    "edges": [{ "source": 2940, "target": 2801, "primary": true, "weight": 1 }],
+    "legend": [{ "key": "World", "label": "World", "color": "#4c9a2a" }]
+  },
+  "raptorLeaves": {
+    "node": 2801,
+    "leaves": [{ "index": 1500, "doc_ref": "st:cobble gen", "kind": "structure", "title": "cobble gen", "tokens": 80 }],
+    "token_sum": 80
+  },
+  "personality": {
+    "scopes": ["main", "clone:67"],
+    "scope": "main",
+    "groups": [
+      {
+        "section": "like",
+        "entries": [
+          {
+            "id": 3,
+            "section": "like",
+            "text": "building tidy cobble walls",
+            "strength": 0.7,
+            "observations": 5,
+            "reinforced": 1761900000000,
+            "reason": "said so"
+          }
+        ]
+      },
+      {
+        "section": "relationship",
+        "entries": [
+          {
+            "id": 9,
+            "section": "relationship",
+            "text": "Fox is my friend",
+            "player": "poofimafox",
+            "strength": 0.95,
+            "observations": 40
+          }
+        ]
+      }
+    ],
+    "history": [
+      {
+        "version": 120,
+        "at": 1761900000000,
+        "op": "reinforce",
+        "section": "like",
+        "text": "building tidy cobble walls",
+        "source": "reflection"
+      }
+    ],
+    "mood": [{ "dim": "calm", "value": 0.31, "n": 44 }],
+    "abstractions": [{ "layer": 1, "idx": 0, "text": "a careful builder who likes order", "leaves": 12 }],
+    "summary": "54 entries · 120 versions · last change 2026-11-01 22:10 (reflection)"
+  }
+}

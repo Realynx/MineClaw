@@ -1,0 +1,10 @@
+# The repo-root .gitignore (Visual Studio template) ignores **/packages/*; the npm workspaces live there, so re-include them.
+!/packages/*
+
+node_modules/
+.next/
+dist/
+.turbo/
+coverage/
+*.tsbuildinfo
+.env*.local

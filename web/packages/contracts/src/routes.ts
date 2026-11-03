@@ -1,0 +1,994 @@
+/**
+ * The route table: every public `/api` route with its access role, schemas, bridge route and supervisor route.
+ * Nest registers controllers from it (in this order: specific paths come before parameterised siblings) and the web client
+ * builds typed calls from it. docs/web/api.md is generated from it (`npm run gen:api-doc -w @mineclaw/contracts`).
+ *
+ * Path syntax: public paths use `:param` (Express/Nest). Bridge paths use `{param}` and may carry a fixed query
+ * (`/v1/sup/viewer/now?bot={bot}`); Nest appends the request's own query, keys converted with `camelToSnake`.
+ */
+import type { z } from 'zod';
+import {
+  ActivityCompactionReport,
+  AdminAuditQuery,
+  AdminAuditResponse,
+  BackupResponse,
+  CompactRequest,
+  EditSchemaResponse,
+  GroomPreviewRequest,
+  GroomPreviewResponse,
+  MemoryEditRequest,
+  MemoryEditResult,
+  RebuildEstimate,
+  RebuildJob,
+  RebuildJobParams,
+  RebuildRequestBody,
+  RebuildStarted,
+} from './admin.js';
+import {
+  CsrfResponse,
+  LoginRequest,
+  LoginResponse,
+  LogoutResponse,
+  Me,
+  type RouteAccess,
+  TotpEnrollRequest,
+  TotpEnrollResponse,
+  TotpVerifyRequest,
+  TotpVerifyResponse,
+  type WebAuditKind,
+  WebAuditPage,
+  WebAuditQuery,
+} from './auth.js';
+import { camelToSnake } from './case.js';
+import { Empty, HealthResponse, OkResponse } from './common.js';
+import {
+  BodyControllerInfo,
+  BrainContextPage,
+  BrainContextQuery,
+  BrainParams,
+  BrainTurnDetail,
+  BrainTurnParams,
+  BrainTurnQuery,
+} from './controller.js';
+import {
+  DesignDetail,
+  DesignDiff,
+  DesignDiffQuery,
+  DesignListQuery,
+  DesignListResponse,
+  DesignParams,
+} from './designs.js';
+import {
+  AtlasQuery,
+  BlueprintBill,
+  BlueprintParams,
+  BlueprintsResponse,
+  BotParams,
+  BotsResponse,
+  BuildPlanData,
+  DimQuery,
+  EventsResponse,
+  HiveTreeNode,
+  LocateQuery,
+  LocateResult,
+  SinceQuery,
+  StatusQuery,
+  StatusResponse,
+  TileQuery,
+  WorldAtlasJson,
+  WorldChunksQuery,
+  WorldEntities,
+  WorldEntitiesQuery,
+  WorldIndex,
+  WorldIndexQuery,
+  WorldOverlays,
+} from './live.js';
+import { MemoryActivityQuery, MemoryActivityResponse, MemoryHeatQuery, MemoryHeatResponse } from './memoryActivity.js';
+import {
+  MemoryDetail,
+  MemoryItemParams,
+  MemoryKindParams,
+  MemoryKindsResponse,
+  MemoryListQuery,
+  MemoryPage,
+} from './memory.js';
+import { Overview } from './overview.js';
+import { PersonalityQuery, PersonalityResponse } from './personality.js';
+import {
+  RaptorGraph,
+  RaptorGraphQuery,
+  RaptorLeavesResponse,
+  RaptorNodeDetail,
+  RaptorNodeParams,
+  RaptorTreeQuery,
+  RaptorTreeResponse,
+} from './raptor.js';
+import {
+  BodyParams,
+  BodyScriptQuery,
+  BodyScriptReply,
+  LiveScriptsResponse,
+  ScriptDetailQuery,
+  ScriptDiff,
+  ScriptDiffQuery,
+  ScriptLibraryQuery,
+  ScriptLibraryResponse,
+  ScriptLintQuery,
+  ScriptLintResponse,
+  ScriptNameParams,
+  ScriptVersionDetail,
+} from './scripts.js';
+import { SearchQuery, SearchResponse } from './search.js';
+import {
+  ShardExportRequest,
+  ShardImportOptions,
+  ShardImportPreviewResponse,
+  ShardImportResult,
+  ShardPacksResponse,
+  ShardPreview,
+} from './shards.js';
+import { LiveStreamQuery } from './sse.js';
+import { ChatAccepted, ChatRequest, FeedQuery, FeedResponse, BotNow } from './viewer.js';
+import { VisionList, VisionListQuery, VisionRenderQuery, VisionSheetInfo, VisionSheetParams } from './vision.js';
+
+export type HttpMethod = 'GET' | 'POST';
+
+/** What a 2xx response body is. */
+export type ResponseKind = 'json' | 'png' | 'binary' | 'zip' | 'sse' | 'html';
+
+/** How the request body is sent. `multipart`: a `shard` file part + an `options` JSON part (the `body` schema). */
+export type BodyKind = 'json' | 'multipart';
+
+export interface BridgeTarget {
+  method: HttpMethod;
+  /** `/v1/...` with `{param}` placeholders and an optional fixed query. */
+  path: string;
+}
+
+export interface RouteDef {
+  readonly method: HttpMethod;
+  readonly path: string;
+  readonly access: RouteAccess;
+  readonly params?: z.ZodType;
+  readonly query?: z.ZodType;
+  readonly body?: z.ZodType;
+  readonly bodyKind?: BodyKind;
+  /** JSON response schema (null for binary/SSE). */
+  readonly response: z.ZodType | null;
+  readonly responseKind: ResponseKind;
+  /** 2xx status when not 200. */
+  readonly status?: number;
+  /** null = Nest-native (never reaches the bridge). */
+  readonly bridge: BridgeTarget | null;
+  /** The supervisor route the bridge forwards to, `bridge-native` (the bridge's own C# code), or null (Nest-native). */
+  readonly supervisor: string | null;
+  /** Web audit kind Nest records for this route (null = not audited beyond the access log). */
+  readonly audit: WebAuditKind | null;
+  readonly summary: string;
+}
+
+const NATIVE = 'bridge-native';
+
+function get(path: string, def: Omit<RouteDef, 'method' | 'path'>): RouteDef {
+  return { method: 'GET', path, ...def };
+}
+function post(path: string, def: Omit<RouteDef, 'method' | 'path'>): RouteDef {
+  return { method: 'POST', path, ...def };
+}
+const b = (path: string, method: HttpMethod = 'GET'): BridgeTarget => ({ method, path });
+
+/** Every public route, keyed by route id. Insertion order = registration order. */
+export const ROUTES = {
+  // ---------- auth & web audit (Nest-native) ----------
+  health: get('/api/health', {
+    access: 'public',
+    response: HealthResponse,
+    responseKind: 'json',
+    bridge: null,
+    supervisor: null,
+    audit: null,
+    summary: 'Liveness; Nest pings the bridge `/v1/health` (signed) for the bridge field.',
+  }),
+  'auth.csrf': get('/api/auth/csrf', {
+    access: 'public',
+    response: CsrfResponse,
+    responseKind: 'json',
+    bridge: null,
+    supervisor: null,
+    audit: null,
+    summary: 'CSRF token for the current (possibly anonymous pre-login) session.',
+  }),
+  'auth.login': post('/api/auth/login', {
+    access: 'public',
+    body: LoginRequest,
+    response: LoginResponse,
+    responseKind: 'json',
+    bridge: null,
+    supervisor: null,
+    audit: 'login',
+    summary: 'Password (+ TOTP) login; rate limited per IP and user with exponential lockout; rotates the session id.',
+  }),
+  'auth.logout': post('/api/auth/logout', {
+    access: 'authenticated',
+    body: Empty,
+    response: LogoutResponse,
+    responseKind: 'json',
+    bridge: null,
+    supervisor: null,
+    audit: 'logout',
+    summary: 'Ends the session.',
+  }),
+  'auth.me': get('/api/auth/me', {
+    access: 'authenticated',
+    response: Me,
+    responseKind: 'json',
+    bridge: null,
+    supervisor: null,
+    audit: null,
+    summary: 'The signed-in user, roles and session expiry.',
+  }),
+  'auth.totpEnroll': post('/api/auth/totp/enroll', {
+    access: 'authenticated',
+    body: TotpEnrollRequest,
+    response: TotpEnrollResponse,
+    responseKind: 'json',
+    bridge: null,
+    supervisor: null,
+    audit: 'totp_enroll',
+    summary: 'Starts TOTP enrolment (re-checks the password); active only after verify.',
+  }),
+  'auth.totpVerify': post('/api/auth/totp/verify', {
+    access: 'authenticated',
+    body: TotpVerifyRequest,
+    response: TotpVerifyResponse,
+    responseKind: 'json',
+    bridge: null,
+    supervisor: null,
+    audit: 'totp_verify',
+    summary: 'Verifies a code and activates the pending TOTP secret.',
+  }),
+  'audit.list': get('/api/audit', {
+    access: 'admin',
+    query: WebAuditQuery,
+    response: WebAuditPage,
+    responseKind: 'json',
+    bridge: null,
+    supervisor: null,
+    audit: null,
+    summary: 'The web audit log (logins, chat lines, writes), newest first.',
+  }),
+
+  // ---------- db reads (bridge-native) ----------
+  overview: get('/api/overview', {
+    access: 'viewer',
+    response: Overview,
+    responseKind: 'json',
+    bridge: b('/v1/overview'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: 'Count cards, db lines, knowledge pack, embeddings status, RAPTOR stats.',
+  }),
+  'memory.kinds': get('/api/memory/kinds', {
+    access: 'viewer',
+    response: MemoryKindsResponse,
+    responseKind: 'json',
+    bridge: b('/v1/memory/kinds'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: 'The 16 browser kinds with counts, edit kind and state values.',
+  }),
+  'memory.list': get('/api/memory/:kind', {
+    access: 'viewer',
+    params: MemoryKindParams,
+    query: MemoryListQuery,
+    response: MemoryPage,
+    responseKind: 'json',
+    bridge: b('/v1/memory/{kind}'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: 'Server-paged, filtered, sorted rows of one kind (never whole tables).',
+  }),
+  'memory.get': get('/api/memory/:kind/:id', {
+    access: 'viewer',
+    params: MemoryItemParams,
+    response: MemoryDetail,
+    responseKind: 'json',
+    bridge: b('/v1/memory/{kind}/{id}'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: 'One record: props table, typed record, evidence/contents, edit prefill.',
+  }),
+  search: get('/api/search', {
+    access: 'viewer',
+    query: SearchQuery,
+    response: SearchResponse,
+    responseKind: 'json',
+    bridge: b('/v1/search'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: "The bot's hybrid recall pipeline (FTS5 + vectors + RAPTOR, RRF).",
+  }),
+  'raptor.tree': get('/api/raptor/tree', {
+    access: 'viewer',
+    query: RaptorTreeQuery,
+    response: RaptorTreeResponse,
+    responseKind: 'json',
+    bridge: b('/v1/raptor/tree'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: 'Lazy tree: roots (or a root) down to `depth`, flat.',
+  }),
+  'raptor.graph': get('/api/raptor/graph', {
+    access: 'viewer',
+    query: RaptorGraphQuery,
+    response: RaptorGraph,
+    responseKind: 'json',
+    bridge: b('/v1/raptor/graph'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: 'Server-laid-out graph (icicle/radial/nodelink): nodes with x,y and shape, edges, colours, legend.',
+  }),
+  'raptor.leaves': get('/api/raptor/node/:id/leaves', {
+    access: 'viewer',
+    params: RaptorNodeParams,
+    response: RaptorLeavesResponse,
+    responseKind: 'json',
+    bridge: b('/v1/raptor/node/{id}/leaves'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: 'Every leaf under a node, deduplicated, with the token sum.',
+  }),
+  'raptor.node': get('/api/raptor/node/:id', {
+    access: 'viewer',
+    params: RaptorNodeParams,
+    response: RaptorNodeDetail,
+    responseKind: 'json',
+    bridge: b('/v1/raptor/node/{id}'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: 'Node detail: text, doc line, breadcrumb, children, parents.',
+  }),
+  personality: get('/api/personality', {
+    access: 'viewer',
+    query: PersonalityQuery,
+    response: PersonalityResponse,
+    responseKind: 'json',
+    bridge: b('/v1/personality'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: 'Self-profile groups, history, mood, abstractions for one scope.',
+  }),
+  'shards.packs': get('/api/shards/packs', {
+    access: 'viewer',
+    response: ShardPacksResponse,
+    responseKind: 'json',
+    bridge: b('/v1/shards/packs'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: 'Default knowledge/mode packs (index.json + verification) and the active pack.',
+  }),
+  'shards.exportPreview': post('/api/shards/export/preview', {
+    access: 'viewer',
+    body: ShardExportRequest,
+    response: ShardPreview,
+    responseKind: 'json',
+    bridge: b('/v1/shards/export/preview', 'POST'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: 'What an export would write (counts, exact bytes, samples), nothing written.',
+  }),
+  'shards.export': post('/api/shards/export', {
+    access: 'viewer',
+    body: ShardExportRequest,
+    response: null,
+    responseKind: 'zip',
+    bridge: b('/v1/shards/export', 'POST'),
+    supervisor: NATIVE,
+    audit: 'shard_export',
+    summary: 'Streams the `.mcshard` (application/zip, Content-Disposition attachment).',
+  }),
+  'shards.importPreview': post('/api/shards/import/preview', {
+    access: 'admin',
+    body: ShardImportOptions,
+    bodyKind: 'multipart',
+    response: ShardImportPreviewResponse,
+    responseKind: 'json',
+    bridge: b('/v1/shards/import/preview', 'POST'),
+    supervisor: NATIVE,
+    audit: 'shard_import_preview',
+    summary: 'Import diff of an uploaded shard against the live db (read-only).',
+  }),
+  'scripts.list': get('/api/scripts', {
+    access: 'viewer',
+    query: ScriptLibraryQuery,
+    response: ScriptLibraryResponse,
+    responseKind: 'json',
+    bridge: b('/v1/scripts'),
+    supervisor: '/api/scripts (source=live) | bridge-native (source=db)',
+    audit: null,
+    summary: 'The saved script library.',
+  }),
+  'scripts.diff': get('/api/scripts/:name/diff', {
+    access: 'viewer',
+    params: ScriptNameParams,
+    query: ScriptDiffQuery,
+    response: ScriptDiff,
+    responseKind: 'json',
+    bridge: b('/v1/scripts/{name}/diff'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: 'LCS line diff of two versions in hunks.',
+  }),
+  'scripts.lint': get('/api/scripts/:name/lint', {
+    access: 'viewer',
+    params: ScriptNameParams,
+    query: ScriptLintQuery,
+    response: ScriptLintResponse,
+    responseKind: 'json',
+    bridge: b('/v1/scripts/{name}/lint'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: 'Lint findings and declared params of a version.',
+  }),
+  'scripts.get': get('/api/scripts/:name', {
+    access: 'viewer',
+    params: ScriptNameParams,
+    query: ScriptDetailQuery,
+    response: ScriptVersionDetail,
+    responseKind: 'json',
+    bridge: b('/v1/scripts/{name}'),
+    supervisor: '/api/scripts/{name}[/v{v}] (source=live) | bridge-native (source=db)',
+    audit: null,
+    summary: 'One version in full: code, lint, params, history (versions), runs.',
+  }),
+  'designs.list': get('/api/designs', {
+    access: 'viewer',
+    query: DesignListQuery,
+    response: DesignListResponse,
+    responseKind: 'json',
+    bridge: b('/v1/designs'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: 'Saved designs (not deleted), newest first, paged.',
+  }),
+  'designs.picture': get('/api/designs/:id/picture.png', {
+    access: 'viewer',
+    params: DesignParams,
+    response: null,
+    responseKind: 'png',
+    bridge: b('/v1/designs/{id}/picture.png'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: "The design's stored preview sheet (`blueprints.png`).",
+  }),
+  'designs.diff': get('/api/designs/:id/diff', {
+    access: 'viewer',
+    params: DesignParams,
+    query: DesignDiffQuery,
+    response: DesignDiff,
+    responseKind: 'json',
+    bridge: b('/v1/designs/{id}/diff'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: 'Revision↔revision or revision↔world block diff.',
+  }),
+  'designs.get': get('/api/designs/:id', {
+    access: 'viewer',
+    params: DesignParams,
+    response: DesignDetail,
+    responseKind: 'json',
+    bridge: b('/v1/designs/{id}'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: 'Design detail: revisions, world note, default diff pair.',
+  }),
+
+  // ---------- memory activity ----------
+  'memoryActivity.heat': get('/api/memory-activity/heat', {
+    access: 'viewer',
+    query: MemoryHeatQuery,
+    response: MemoryHeatResponse,
+    responseKind: 'json',
+    bridge: b('/v1/memory-activity/heat'),
+    supervisor: 'bridge-native (aggregates /api/viewer/memory-activity over the RAPTOR tree)',
+    audit: null,
+    summary: 'Per-RAPTOR-node heat (propagated to ancestors) and per-brain staleness, for colouring /api/raptor/graph.',
+  }),
+  'memoryActivity.list': get('/api/memory-activity', {
+    access: 'viewer',
+    query: MemoryActivityQuery,
+    response: MemoryActivityResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/viewer/memory-activity'),
+    supervisor: '/api/viewer/memory-activity',
+    audit: null,
+    summary: 'Memory access ring since a seq plus the in-context set per brain.',
+  }),
+
+  // ---------- admin (bot writes through the supervisor) ----------
+  'admin.schema': get('/api/admin/schema', {
+    access: 'admin',
+    response: EditSchemaResponse,
+    responseKind: 'json',
+    bridge: b('/v1/admin/schema'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: 'Edit-form fields and ops per edit kind (MemoryEditSchema).',
+  }),
+  'admin.memoryEdit': post('/api/admin/memory', {
+    access: 'admin',
+    body: MemoryEditRequest,
+    response: MemoryEditResult,
+    responseKind: 'json',
+    bridge: b('/v1/sup/admin/memory', 'POST'),
+    supervisor: '/api/admin/memory',
+    audit: 'memory_edit',
+    summary: 'Add/update/delete one memory record (the bot applies it, re-embeds, updates the RAPTOR leaf).',
+  }),
+  'admin.rebuildEstimate': post('/api/admin/rebuild/estimate', {
+    access: 'admin',
+    body: RebuildRequestBody,
+    response: RebuildEstimate,
+    responseKind: 'json',
+    bridge: b('/v1/sup/admin/rebuild/estimate', 'POST'),
+    supervisor: '/api/admin/rebuild/estimate',
+    audit: null,
+    summary: 'Cost estimate of a RAPTOR rebuild (node or kind).',
+  }),
+  'admin.rebuildStart': post('/api/admin/rebuild', {
+    access: 'admin',
+    body: RebuildRequestBody,
+    response: RebuildStarted,
+    responseKind: 'json',
+    status: 202,
+    bridge: b('/v1/sup/admin/rebuild', 'POST'),
+    supervisor: '/api/admin/rebuild',
+    audit: 'rebuild',
+    summary: 'Starts a capped rebuild job (202 {jobId}).',
+  }),
+  'admin.rebuildCancel': post('/api/admin/rebuild/:jobId/cancel', {
+    access: 'admin',
+    params: RebuildJobParams,
+    body: Empty,
+    response: OkResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/admin/rebuild/{jobId}/cancel', 'POST'),
+    supervisor: '/api/admin/rebuild/{jobId}/cancel',
+    audit: 'rebuild_cancel',
+    summary: 'Cancels a running job.',
+  }),
+  'admin.rebuildJob': get('/api/admin/rebuild/:jobId', {
+    access: 'admin',
+    params: RebuildJobParams,
+    response: RebuildJob,
+    responseKind: 'json',
+    bridge: b('/v1/sup/admin/rebuild/{jobId}'),
+    supervisor: '/api/admin/rebuild/{jobId}',
+    audit: null,
+    summary: 'Job state, progress and result (poll every 1.5 s).',
+  }),
+  'admin.backup': post('/api/admin/backup', {
+    access: 'admin',
+    body: Empty,
+    response: BackupResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/admin/backup', 'POST'),
+    supervisor: '/api/admin/backup',
+    audit: 'backup',
+    summary: 'Takes a db backup on the bot.',
+  }),
+  'admin.audit': get('/api/admin/audit', {
+    access: 'admin',
+    query: AdminAuditQuery,
+    response: AdminAuditResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/admin/audit'),
+    supervisor: '/api/admin/audit',
+    audit: null,
+    summary: "The bot's admin audit trail (edits, rebuilds, backups, imports).",
+  }),
+  'admin.compact': post('/api/admin/activity/compact', {
+    access: 'admin',
+    body: CompactRequest,
+    response: ActivityCompactionReport,
+    responseKind: 'json',
+    bridge: b('/v1/sup/admin/activity/compact', 'POST'),
+    supervisor: '/api/admin/activity/compact',
+    audit: 'compact',
+    summary: 'Activity compaction (dryRun = preview).',
+  }),
+  'admin.shardImport': post('/api/admin/shard/import', {
+    access: 'admin',
+    body: ShardImportOptions,
+    bodyKind: 'multipart',
+    response: ShardImportResult,
+    responseKind: 'json',
+    bridge: b('/v1/sup/admin/shard/import', 'POST'),
+    supervisor: '/api/admin/shard/import (bridge sends JSON {shard: base64, …options, who})',
+    audit: 'shard_import',
+    summary: 'Applies a shard on the bot (backup first); follow `jobId` for the scoped rebuilds.',
+  }),
+  'groom.preview': post('/api/groom/preview', {
+    access: 'admin',
+    body: GroomPreviewRequest,
+    response: GroomPreviewResponse,
+    responseKind: 'json',
+    bridge: b('/v1/groom/preview', 'POST'),
+    supervisor: NATIVE,
+    audit: 'admin_other',
+    summary: 'Dry run of the grooming pipeline (optional LLM rewrite). Phase 2: may 501 until the bridge ports it.',
+  }),
+
+  // ---------- live hive (supervisor pass-through) ----------
+  'bots.list': get('/api/bots', {
+    access: 'viewer',
+    response: BotsResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/bots'),
+    supervisor: '/api/bots',
+    audit: null,
+    summary: 'Bot tiles.',
+  }),
+  'hive.tree': get('/api/hive/tree', {
+    access: 'viewer',
+    response: HiveTreeNode,
+    responseKind: 'json',
+    bridge: b('/v1/sup/hive/tree'),
+    supervisor: '/api/hive/tree',
+    audit: null,
+    summary: 'The hive hierarchy (main / hive / subhive / script).',
+  }),
+  status: get('/api/status', {
+    access: 'viewer',
+    query: StatusQuery,
+    response: StatusResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/status'),
+    supervisor: '/api/status',
+    audit: null,
+    summary: 'TUI panels: bots (thought/header for the selected bot), usage, hive slots, claims.',
+  }),
+  events: get('/api/events', {
+    access: 'viewer',
+    query: SinceQuery,
+    response: EventsResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/events'),
+    supervisor: '/api/events',
+    audit: null,
+    summary: 'Danger/death/conn/move/players/hive events since an id.',
+  }),
+  locate: get('/api/locate', {
+    access: 'viewer',
+    query: LocateQuery,
+    response: LocateResult,
+    responseKind: 'json',
+    bridge: b('/v1/sup/locate'),
+    supervisor: '/api/locate',
+    audit: null,
+    summary: 'Resolves a place, bot or "x,y,z" (404 = unknown).',
+  }),
+  'world.index': get('/api/world/index', {
+    access: 'viewer',
+    query: WorldIndexQuery,
+    response: WorldIndex,
+    responseKind: 'json',
+    bridge: b('/v1/sup/world/index'),
+    supervisor: '/api/world/index',
+    audit: null,
+    summary: 'Known chunk columns (hash delta keys), version, time and weather.',
+  }),
+  'world.chunks': get('/api/world/chunks', {
+    access: 'viewer',
+    query: WorldChunksQuery,
+    response: null,
+    responseKind: 'binary',
+    bridge: b('/v1/sup/world/chunks'),
+    supervisor: '/api/world/chunks',
+    audit: null,
+    summary: 'Binary MCWC column payload (application/octet-stream), streamed unchanged.',
+  }),
+  'world.entities': get('/api/world/entities', {
+    access: 'viewer',
+    query: WorldEntitiesQuery,
+    response: WorldEntities,
+    responseKind: 'json',
+    bridge: b('/v1/sup/world/entities'),
+    supervisor: '/api/world/entities',
+    audit: null,
+    summary: 'Bots and entities; with since=rev the delta form.',
+  }),
+  'world.overlays': get('/api/world/overlays', {
+    access: 'viewer',
+    query: DimQuery,
+    response: WorldOverlays,
+    responseKind: 'json',
+    bridge: b('/v1/sup/world/overlays'),
+    supervisor: '/api/world/overlays',
+    audit: null,
+    summary: 'Claims, places, points, build plans (ghost blocks), dangers.',
+  }),
+  'world.atlasPng': get('/api/world/atlas.png', {
+    access: 'viewer',
+    query: AtlasQuery,
+    response: null,
+    responseKind: 'png',
+    bridge: b('/v1/world/atlas.png'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: 'Block texture atlas generated at runtime from MineClaw.Render (cacheable, ETag).',
+  }),
+  'world.atlasJson': get('/api/world/atlas.json', {
+    access: 'viewer',
+    query: AtlasQuery,
+    response: WorldAtlasJson,
+    responseKind: 'json',
+    bridge: b('/v1/world/atlas.json'),
+    supervisor: NATIVE,
+    audit: null,
+    summary: 'Atlas tile layout for packages/world-viewer.',
+  }),
+  'bots.tile': get('/api/bots/:bot/tile.png', {
+    access: 'viewer',
+    params: BotParams,
+    query: TileQuery,
+    response: null,
+    responseKind: 'png',
+    bridge: b('/v1/render/tile/{bot}.png'),
+    supervisor: '/view/{bot}?mode&radius&xray',
+    audit: null,
+    summary: 'Server-rendered per-bot view PNG (X-Tokens/X-Width/X-Height headers passed through).',
+  }),
+  'bots.now': get('/api/bots/:bot/now', {
+    access: 'viewer',
+    params: BotParams,
+    response: BotNow,
+    responseKind: 'json',
+    bridge: b('/v1/sup/viewer/now?bot={bot}'),
+    supervisor: '/api/viewer/now?bot=',
+    audit: null,
+    summary: '"What is it doing right now": thought, in-flight call, tool, task, script line, vitals.',
+  }),
+  'bots.chat': post('/api/bots/:bot/chat', {
+    access: 'chat',
+    params: BotParams,
+    body: ChatRequest,
+    response: ChatAccepted,
+    responseKind: 'json',
+    status: 202,
+    bridge: b('/v1/sup/viewer/chat', 'POST'),
+    supervisor: '/api/viewer/chat (bridge adds bot, player from X-MCX-Player, allow_commands from X-MCX-Roles)',
+    audit: 'chat',
+    summary: 'Say a line to a bot as the linked player; the reply arrives in the feed.',
+  }),
+  feed: get('/api/feed', {
+    access: 'viewer',
+    query: FeedQuery,
+    response: FeedResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/viewer/feed'),
+    supervisor: '/api/viewer/feed',
+    audit: null,
+    summary: 'Structured chat/said/whisper/internal/muted/system/viewer lines since a seq (all bots).',
+  }),
+  'blueprints.list': get('/api/blueprints', {
+    access: 'viewer',
+    response: BlueprintsResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/blueprints'),
+    supervisor: '/api/blueprints',
+    audit: null,
+    summary: "The live bot's designs.",
+  }),
+  'blueprints.get': get('/api/blueprints/:id', {
+    access: 'viewer',
+    params: BlueprintParams,
+    response: BlueprintBill,
+    responseKind: 'json',
+    bridge: b('/v1/sup/blueprints/{id}'),
+    supervisor: '/api/blueprints/{id}',
+    audit: null,
+    summary: 'A design bill/eval JSON (shape owned by the bot).',
+  }),
+  'buildplans.get': get('/api/buildplans/:id', {
+    access: 'viewer',
+    params: BlueprintParams,
+    response: BuildPlanData,
+    responseKind: 'json',
+    bridge: b('/v1/sup/buildplans/{id}'),
+    supervisor: '/api/buildplans/{id}',
+    audit: null,
+    summary: 'A build plan as data (shape owned by the bot).',
+  }),
+  'bodies.scripts': get('/api/bodies/scripts', {
+    access: 'viewer',
+    response: LiveScriptsResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/bodies/scripts'),
+    supervisor: '/api/bodies/scripts',
+    audit: null,
+    summary: 'Who is running what (tile script badges).',
+  }),
+  'bodies.script': get('/api/bodies/:body/script', {
+    access: 'viewer',
+    params: BodyParams,
+    query: BodyScriptQuery,
+    response: BodyScriptReply,
+    responseKind: 'json',
+    bridge: b('/v1/sup/bodies/{body}/script'),
+    supervisor: '/api/bodies/{body}/script',
+    audit: null,
+    summary: 'Live script debugger snapshot (keeps ~5 Hz sampling on while polled).',
+  }),
+  'bodies.controller': get('/api/bodies/:body/controller', {
+    access: 'viewer',
+    params: BodyParams,
+    response: BodyControllerInfo,
+    responseKind: 'json',
+    bridge: b('/v1/sup/bodies/{body}/controller'),
+    supervisor: '/api/bodies/{body}/controller',
+    audit: null,
+    summary: 'What drives a body (main/hive/subhive/script) and the links to its panels.',
+  }),
+  'vision.render': get('/api/bodies/:body/vision/render', {
+    access: 'viewer',
+    params: BodyParams,
+    query: VisionRenderQuery,
+    response: null,
+    responseKind: 'png',
+    bridge: b('/v1/sup/bodies/{body}/vision/render'),
+    supervisor: '/api/bodies/{body}/vision/render',
+    audit: null,
+    summary: 'Fresh server render of a `see` input (PNG; JSON ViewMeta with meta=1).',
+  }),
+  'vision.png': get('/api/bodies/:body/vision/:id/image.png', {
+    access: 'viewer',
+    params: VisionSheetParams,
+    response: null,
+    responseKind: 'png',
+    bridge: b('/v1/sup/bodies/{body}/vision/{id}.png'),
+    supervisor: '/api/bodies/{body}/vision/{id}.png',
+    audit: null,
+    summary: 'The exact PNG the model got (X-Sha256, X-Tokens, X-Width, X-Height).',
+  }),
+  'vision.sheet': get('/api/bodies/:body/vision/:id', {
+    access: 'viewer',
+    params: VisionSheetParams,
+    response: VisionSheetInfo,
+    responseKind: 'json',
+    bridge: b('/v1/sup/bodies/{body}/vision/{id}'),
+    supervisor: '/api/bodies/{body}/vision/{id}',
+    audit: null,
+    summary: 'One vision sheet.',
+  }),
+  'vision.list': get('/api/bodies/:body/vision', {
+    access: 'viewer',
+    params: BodyParams,
+    query: VisionListQuery,
+    response: VisionList,
+    responseKind: 'json',
+    bridge: b('/v1/sup/bodies/{body}/vision'),
+    supervisor: '/api/bodies/{body}/vision',
+    audit: null,
+    summary: 'What the models were sent (ring, default 20).',
+  }),
+  'brains.context': get('/api/brains/:brain/context', {
+    access: 'viewer',
+    params: BrainParams,
+    query: BrainContextQuery,
+    response: BrainContextPage,
+    responseKind: 'json',
+    bridge: b('/v1/sup/brains/{brain}/context'),
+    supervisor: '/api/brains/{brain}/context',
+    audit: null,
+    summary: 'Brain context page: changed turns since a version, the live window.',
+  }),
+  'brains.turn': get('/api/brains/:brain/turn/:n', {
+    access: 'viewer',
+    params: BrainTurnParams,
+    query: BrainTurnQuery,
+    response: BrainTurnDetail,
+    responseKind: 'json',
+    bridge: b('/v1/sup/brains/{brain}/turn/{n}'),
+    supervisor: '/api/brains/{brain}/turn/{n}',
+    audit: null,
+    summary: 'One turn in full (calls, added messages, responses, sub-entries).',
+  }),
+
+  // ---------- live stream ----------
+  'live.stream': get('/api/live/stream', {
+    access: 'viewer',
+    query: LiveStreamQuery,
+    response: null,
+    responseKind: 'sse',
+    bridge: b('/v1/live/stream'),
+    supervisor:
+      'bridge-native (polls status, events, viewer/feed, viewer/now, world/entities, hive/tree, viewer/memory-activity)',
+    audit: null,
+    summary: 'SSE fan-out of the single upstream stream (see SSE_EVENTS).',
+  }),
+} as const satisfies Record<string, RouteDef>;
+
+export type RouteId = keyof typeof ROUTES;
+export const ROUTE_IDS = Object.keys(ROUTES) as RouteId[];
+
+type SchemaOf<R, K extends string> = R extends Record<K, infer S> ? (S extends z.ZodType ? S : never) : never;
+/** Parsed (output) type of a route's params/query/body/response. */
+export type RouteParams<K extends RouteId> = z.output<SchemaOf<(typeof ROUTES)[K], 'params'>>;
+export type RouteQuery<K extends RouteId> = z.output<SchemaOf<(typeof ROUTES)[K], 'query'>>;
+/** What a client sends (input type: defaults may be omitted). */
+export type RouteQueryInput<K extends RouteId> = z.input<SchemaOf<(typeof ROUTES)[K], 'query'>>;
+export type RouteBody<K extends RouteId> = z.input<SchemaOf<(typeof ROUTES)[K], 'body'>>;
+export type RouteResponse<K extends RouteId> = z.output<SchemaOf<(typeof ROUTES)[K], 'response'>>;
+
+/** A path or query value as text (scalars only). */
+function scalar(name: string, v: unknown): string | null {
+  if (v === undefined || v === null) return null;
+  if (typeof v === 'boolean') return v ? '1' : '0';
+  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'bigint') return String(v);
+  throw new Error(`param "${name}" must be a scalar`);
+}
+
+function fill(template: string, params: Record<string, unknown>, pattern: RegExp): string {
+  return template.replace(pattern, (_m, name: string) => {
+    const v = scalar(name, params[name]);
+    if (v === null) throw new Error(`missing path param "${name}"`);
+    return encodeURIComponent(v);
+  });
+}
+
+function queryString(query: Record<string, unknown> | undefined, mapKey: (k: string) => string): string {
+  if (!query) return '';
+  const parts: string[] = [];
+  for (const [k, raw] of Object.entries(query)) {
+    const v = scalar(k, raw);
+    if (v !== null) parts.push(`${encodeURIComponent(mapKey(k))}=${encodeURIComponent(v)}`);
+  }
+  return parts.join('&');
+}
+
+/** Public URL path (+ query) for a route, e.g. `apiPath('memory.get', {kind:'facts', id:'12'})`. */
+export function apiPath(id: RouteId, params: Record<string, unknown> = {}, query?: Record<string, unknown>): string {
+  const route: RouteDef = ROUTES[id];
+  const base = fill(route.path, params, /:([A-Za-z0-9_]+)/g);
+  const qs = queryString(query, (k) => k);
+  return qs ? `${base}?${qs}` : base;
+}
+
+/**
+ * The bridge request target for a route: `{param}`s filled, the public query appended with snake_case keys
+ * (after the template's own fixed query, if any). Throws for Nest-native routes.
+ */
+export function bridgePath(id: RouteId, params: Record<string, unknown> = {}, query?: Record<string, unknown>): string {
+  const route: RouteDef = ROUTES[id];
+  if (!route.bridge) throw new Error(`route ${id} is Nest-native`);
+  const base = fill(route.bridge.path, params, /\{([A-Za-z0-9_]+)\}/g);
+  const qs = queryString(query, camelToSnake);
+  if (!qs) return base;
+  return base.includes('?') ? `${base}&${qs}` : `${base}?${qs}`;
+}
+
+/** Supervisor paths the bridge's `/v1/sup/*` pass-through may forward to (prefix match on the path after `/api/`). */
+export const SUPERVISOR_PASSTHROUGH_ALLOW = {
+  get: [
+    'bots',
+    'hive/tree',
+    'status',
+    'events',
+    'locate',
+    'blueprints',
+    'buildplans',
+    'world/',
+    'scripts',
+    'bodies/',
+    'brains/',
+    'viewer/feed',
+    'viewer/now',
+    'viewer/memory-activity',
+    'admin/rebuild/',
+    'admin/audit',
+  ],
+  post: ['viewer/chat', 'admin/'],
+  /** Paths that require the `admin` role in `X-MCX-Roles` (both methods). */
+  adminOnly: ['admin/'],
+} as const;

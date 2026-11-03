@@ -1,0 +1,398 @@
+/**
+ * Live hive (explorer-spec §12–13, bot-api-spec §1.2–1.3): supervisor pass-through routes.
+ * C# sources: `src/MineClaw.App/Supervisor/SupervisorModels.cs`, `SupervisorWorldRoutes.cs`, `LiveSupervisorData.cs`.
+ */
+import { z } from 'zod';
+import { DimId, Double, IsoDateTime, JsonValue, QBool, QInt, UnixMs, Vec3i } from './common.js';
+
+export const BotParams = z.object({ bot: z.string().min(1).max(64).describe('name, short ("67") or "main"') });
+
+/** C# BotTile. */
+export const BotTile = z.object({
+  name: z.string(),
+  short: z.string(),
+  main: z.boolean(),
+  dim: DimId,
+  x: z.number(),
+  y: z.number(),
+  z: z.number(),
+  hp: z.number().int(),
+  food: z.number().int(),
+  job: z.string().nullish(),
+  brain: z.string().nullish(),
+  ageSeconds: Double,
+  claims: z.array(z.string()),
+});
+export type BotTile = z.infer<typeof BotTile>;
+
+/** GET /api/bots. */
+export const BotsResponse = z.object({ at: IsoDateTime, bots: z.array(BotTile) });
+export type BotsResponse = z.infer<typeof BotsResponse>;
+
+export const ThoughtToolCall = z.object({
+  at: IsoDateTime,
+  name: z.string(),
+  args: z.string().nullish(),
+  result: z.string().nullish().describe('null = still in flight'),
+  ok: z.boolean().nullish(),
+});
+export type ThoughtToolCall = z.infer<typeof ThoughtToolCall>;
+
+/** C# ThoughtSnapshot (capped: output 400, thinking 600, tool args 60, tool result 120 chars). */
+export const ThoughtSnapshot = z.object({
+  updatedAt: IsoDateTime,
+  turnAt: IsoDateTime.nullish(),
+  header: z.string().nullish(),
+  events: z.string().nullish(),
+  digest: z.string().nullish(),
+  memory: z.string().nullish(),
+  output: z.string().nullish(),
+  thinking: z.string().nullish(),
+  tools: z.array(ThoughtToolCall).nullish(),
+  task: z.string().nullish(),
+  delegate: z.string().nullish(),
+  journal: z.string().nullish(),
+});
+export type ThoughtSnapshot = z.infer<typeof ThoughtSnapshot>;
+
+export const TierUsage = z.object({
+  tier: z.string(),
+  usd: z.number(),
+  calls: z.number().int(),
+  cacheHit: Double,
+  promptTokens: z.number().int(),
+  outputTokens: z.number().int(),
+});
+
+export const BotUsage = z.object({
+  todayUsd: z.number(),
+  monthUsd: z.number(),
+  dailyCapUsd: z.number(),
+  monthlyCapUsd: z.number(),
+  mode: z.string(),
+  cacheHit: Double,
+  today: z.array(TierUsage),
+  month: z.array(TierUsage),
+  callsLastHour: z.number().int(),
+  callsPerHour: z.array(z.number().int()).describe('24 buckets'),
+  last: z
+    .object({
+      at: IsoDateTime,
+      tier: z.string(),
+      model: z.string(),
+      purpose: z.string().nullish(),
+      costUsd: z.number(),
+    })
+    .nullish(),
+  latency: JsonValue.describe('LatencySummary; shape owned by the bot'),
+});
+export type BotUsage = z.infer<typeof BotUsage>;
+
+export const BotStatus = z.enum(['offline', 'connecting', 'online', 'dead', 'paused']);
+export type BotStatus = z.infer<typeof BotStatus>;
+
+export const BotStatusView = z.object({
+  name: z.string(),
+  status: BotStatus,
+  at: IsoDateTime,
+  pos: z.string().nullish().describe('"x,y,z" floored'),
+  dim: DimId,
+  hp: z.number().int(),
+  food: z.number().int(),
+  task: z.string().nullish(),
+  brain: z.string().nullish(),
+  budgetMode: z.string(),
+  header: z.string().nullish().describe('selected bot only'),
+  usage: BotUsage.nullish(),
+  thought: ThoughtSnapshot.nullish().describe('selected bot only'),
+  chat: z.array(z.string()).describe('last 60 (selected) or 12 raw lines, "HH:mm:ss " prefixed'),
+});
+export type BotStatusView = z.infer<typeof BotStatusView>;
+
+export const HiveSlot = z.object({
+  name: z.string(),
+  number: z.number().int(),
+  state: z.string(),
+  connected: z.boolean(),
+  task: z.string().nullish(),
+  pending: z.number().int().nullish(),
+  progress: z.string().nullish(),
+  lastProgress: z.union([IsoDateTime, z.number()]).nullish(),
+  result: z.string().nullish(),
+  deaths: z.number().int().nullish(),
+  lastExit: z.string().nullish(),
+});
+export type HiveSlot = z.infer<typeof HiveSlot>;
+
+export const StatusQuery = z.object({ bot: z.string().max(64).optional() });
+
+/** GET /api/status?bot (also the `bots` SSE payload, without a selected bot). */
+export const StatusResponse = z.object({
+  at: IsoDateTime,
+  main: z.string(),
+  bots: z.array(BotStatusView),
+  hive: z
+    .object({
+      list: JsonValue,
+      clonesTodayUsd: z.number(),
+      clonesMonthUsd: z.number(),
+      slots: z.array(HiveSlot),
+    })
+    .nullish(),
+  claims: z.array(z.object({ owner: z.string(), what: z.string() })),
+});
+export type StatusResponse = z.infer<typeof StatusResponse>;
+
+/** C# FeedEvent. Kinds: danger, death, conn, move, players, hive. */
+export const SupervisorEvent = z.object({
+  id: z.number().int(),
+  at: IsoDateTime,
+  kind: z.string(),
+  level: z.string(),
+  text: z.string(),
+});
+export type SupervisorEvent = z.infer<typeof SupervisorEvent>;
+
+export const SinceQuery = z.object({ since: QInt.min(0).default(0) });
+
+/** GET /api/events?since (≤ 200 per call from a 400-entry ring). Also the `event` SSE payload. */
+export const EventsResponse = z.object({ events: z.array(SupervisorEvent), last: z.number().int() });
+export type EventsResponse = z.infer<typeof EventsResponse>;
+
+/** GET /api/hive/tree (HiveTreeNodeDto). Also the `hive` SSE payload. */
+export interface HiveTreeNode {
+  id: string;
+  name: string;
+  kind: 'main' | 'hive' | 'subhive' | 'script';
+  brain?: string | null | undefined;
+  owner?: string | null | undefined;
+  state: string;
+  task?: string | null | undefined;
+  children?: HiveTreeNode[] | null | undefined;
+}
+export const HiveTreeNode: z.ZodType<HiveTreeNode> = z.lazy(() =>
+  z.object({
+    id: z.string(),
+    name: z.string(),
+    kind: z.enum(['main', 'hive', 'subhive', 'script']),
+    brain: z.string().nullish(),
+    owner: z.string().nullish(),
+    state: z.string(),
+    task: z.string().nullish(),
+    children: z.array(HiveTreeNode).nullish(),
+  }),
+);
+
+export const LocateQuery = z.object({ q: z.string().min(1).max(200) });
+/** GET /api/locate?q (404 = "no place called …"). */
+export const LocateResult = z.object({ name: z.string(), dim: DimId, x: z.number(), y: z.number(), z: z.number() });
+export type LocateResult = z.infer<typeof LocateResult>;
+
+// ---- world ----
+
+export const WorldIndexQuery = z.object({
+  dim: QInt.default(0),
+  x: QInt,
+  z: QInt,
+  r: QInt.min(16).max(256).default(96),
+  light: QBool.optional(),
+});
+export type WorldIndexQuery = z.infer<typeof WorldIndexQuery>;
+
+export const WorldColumnInfo = z.object({
+  cx: z.number().int(),
+  cz: z.number().int(),
+  hash: z
+    .union([z.string().regex(/^-?\d+$/), z.number()])
+    .describe('i64 as a decimal string (Nest parses bridge JSON with `parseBridgeJson`); compare with `hashKey`'),
+  seen: UnixMs,
+  by: z.string().nullish(),
+  live: z.boolean(),
+});
+export type WorldColumnInfo = z.infer<typeof WorldColumnInfo>;
+
+/** GET /api/world/index. `at` is unix ms here. */
+export const WorldIndex = z.object({
+  dim: DimId,
+  at: UnixMs,
+  columns: z.array(WorldColumnInfo),
+  version: z.enum(['b1.8.1', '1.12.2']),
+  time: z.number().describe('world ticks'),
+  rain: Double.describe('0..1'),
+  thunder: Double.describe('0..1'),
+});
+export type WorldIndex = z.infer<typeof WorldIndex>;
+
+/**
+ * i64 hashes beyond 2^53 lose precision in a plain JSON.parse. Nest parses bridge JSON with `parseBridgeJson`, which turns
+ * every `hash` number into its exact decimal string, so the public API always carries strings. Clients compare with this key.
+ */
+export function hashKey(hash: number | string): string {
+  return typeof hash === 'string' ? hash : String(hash);
+}
+
+/** GET /api/world/chunks: binary MCWC (application/octet-stream), documented in api.md. */
+export const WorldChunksQuery = z.object({
+  dim: QInt.default(0),
+  cols: z
+    .string()
+    .regex(/^-?\d+,-?\d+(;-?\d+,-?\d+){0,63}$/)
+    .describe('"cx,cz;cx,cz;…" ≤ 64 columns'),
+  light: QBool.optional(),
+});
+export type WorldChunksQuery = z.infer<typeof WorldChunksQuery>;
+
+/** C# WorldBot. */
+export const WorldBot = z.object({
+  name: z.string(),
+  short: z.string(),
+  main: z.boolean(),
+  dim: DimId,
+  x: z.number(),
+  y: z.number(),
+  z: z.number(),
+  yaw: z.number().nullish(),
+  pitch: z.number().nullish(),
+  poseAge: Double.nullish(),
+  hp: z.number().int(),
+  food: z.number().int(),
+  job: z.string().nullish(),
+  brain: z.string().nullish(),
+  held: z.string().nullish(),
+  claims: z.array(z.string()),
+  live: z.boolean(),
+  ageSeconds: Double,
+});
+export type WorldBot = z.infer<typeof WorldBot>;
+
+/** C# WorldEntity. flags: 0x01 burning, 0x02 sneaking, 0x08 sprinting. Velocity in blocks/tick. */
+export const WorldEntity = z.object({
+  kind: z.string().describe('player | mob | item | …'),
+  name: z.string().nullish(),
+  dim: DimId,
+  x: z.number(),
+  y: z.number(),
+  z: z.number(),
+  id: z.number().int().nullish(),
+  type: z.number().int().nullish(),
+  item: z.number().int().nullish(),
+  damage: z.number().int().nullish(),
+  count: z.number().int().nullish(),
+  vx: z.number().nullish(),
+  vy: z.number().nullish(),
+  vz: z.number().nullish(),
+  age: Double.nullish(),
+  yaw: z.number().nullish(),
+  by: z.string().nullish(),
+  flags: z.number().int().nullish(),
+  variant: z.number().int().nullish(),
+});
+export type WorldEntity = z.infer<typeof WorldEntity>;
+
+export const WorldEntitiesQuery = z.object({ dim: QInt.optional(), since: QInt.min(0).optional() });
+
+/**
+ * GET /api/world/entities[?since=rev] and the `entities` SSE payload. Without `since` (or since=0): everything, `full` true.
+ * `full` true = replace the whole set; otherwise `entities` are changed ones and `removed` = [[dim,id],…]. Bots always in full.
+ */
+export const WorldEntities = z.object({
+  at: UnixMs,
+  rev: z.number().int().nullish().describe('absent on the plain ?dim form'),
+  full: z.boolean().nullish(),
+  bots: z.array(WorldBot),
+  entities: z.array(WorldEntity),
+  removed: z.array(z.tuple([z.number().int(), z.number().int()])).nullish(),
+});
+export type WorldEntities = z.infer<typeof WorldEntities>;
+
+/** C# WorldMark. */
+export const WorldMark = z.object({
+  kind: z.string(),
+  text: z.string(),
+  min: Vec3i,
+  max: Vec3i,
+  owner: z.string().nullish(),
+});
+export type WorldMark = z.infer<typeof WorldMark>;
+
+/** Ghost blocks [x, y, z, id, meta, done(0/1)]. */
+export const WorldPlanBlock = z.tuple([
+  z.number().int(),
+  z.number().int(),
+  z.number().int(),
+  z.number().int(),
+  z.number().int(),
+  z.number().int(),
+]);
+export const WorldPlan = z.object({
+  id: z.number().int(),
+  name: z.string(),
+  status: z.string(),
+  part: z.number().int(),
+  blocks: z.array(WorldPlanBlock),
+});
+export type WorldPlan = z.infer<typeof WorldPlan>;
+
+export const DimQuery = z.object({ dim: QInt.default(0) });
+
+/** GET /api/world/overlays?dim. */
+export const WorldOverlays = z.object({
+  at: IsoDateTime,
+  dim: DimId,
+  claims: z.array(WorldMark),
+  places: z.array(WorldMark),
+  points: z.array(WorldMark),
+  plans: z.array(WorldPlan),
+  dangers: z.array(WorldMark),
+  notes: z.array(z.string()),
+});
+export type WorldOverlays = z.infer<typeof WorldOverlays>;
+
+export const AtlasQuery = z.object({ version: z.enum(['b1.8.1', '1.12.2']).optional() });
+
+/**
+ * GET /api/world/atlas.json: the block texture atlas the browser viewer uses (generated at runtime by the bridge from
+ * MineClaw.Render; no Mojang assets are committed). The tile layout beyond these fields is owned by packages/world-viewer and
+ * the bridge, and passes through unchanged.
+ */
+export const WorldAtlasJson = z.looseObject({
+  version: z.enum(['b1.8.1', '1.12.2']),
+  width: z.number().int(),
+  height: z.number().int(),
+  tileSize: z.number().int().nullish(),
+});
+export type WorldAtlasJson = z.infer<typeof WorldAtlasJson>;
+
+/** GET /api/bots/:bot/tile.png — the server-rendered per-bot view (supervisor /view/{bot}). */
+export const TileQuery = z.object({
+  mode: z.enum(['sheet', 'brain', 'eye', 'iso', 'shoulder', 'orbit', 'high', 'top', 'side', 'layers']).default('iso'),
+  radius: QInt.min(3).max(12).optional(),
+  xray: z.enum(['on', 'off', 'auto']).optional(),
+});
+export type TileQuery = z.infer<typeof TileQuery>;
+
+// ---- live designs (supervisor blueprints) ----
+
+export const BlueprintSummary = z.object({
+  id: z.number().int(),
+  name: z.string(),
+  status: z.string(),
+  summary: z.string().nullish(),
+  requester: z.string().nullish(),
+  rev: z.number().int().nullish(),
+  costUsd: z.number().nullish(),
+  picture: z.union([z.string(), z.boolean()]).nullish(),
+  updated: z.union([IsoDateTime, z.number()]).nullish(),
+});
+export type BlueprintSummary = z.infer<typeof BlueprintSummary>;
+
+/** GET /api/blueprints. */
+export const BlueprintsResponse = z.object({ designs: z.array(BlueprintSummary) });
+export type BlueprintsResponse = z.infer<typeof BlueprintsResponse>;
+
+export const BlueprintParams = z.object({ id: QInt.min(1) });
+
+/** GET /api/blueprints/:id — the design bill/eval JSON (BlueprintService.BillJson); shape owned by the bot. */
+export const BlueprintBill = z.looseObject({});
+/** GET /api/buildplans/:id — build plan parts as JSON; shape owned by the bot. */
+export const BuildPlanData = z.looseObject({});

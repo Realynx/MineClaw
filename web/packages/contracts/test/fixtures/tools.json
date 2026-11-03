@@ -1,0 +1,413 @@
+{
+  "shardPacks": {
+    "packs": [
+      {
+        "file": "b1.8.1-gamedata.mcshard",
+        "name": "b1.8.1-gamedata",
+        "kind": "version",
+        "version": "b1.8.1",
+        "description": "Game data and general mechanics for b1.8.1",
+        "counts": { "gamedata": 812, "knowledge": 140 },
+        "records": 952,
+        "bytes": 5242880,
+        "vectors": 952,
+        "needs_embedding": 0,
+        "embedding_model": "text-embedding-3-small",
+        "dims": 1536,
+        "files": ["docs/knowledge/mechanics.md"],
+        "source": "MineClaw.Data b1.8.1 tables",
+        "source_hash": "9f2c3b1a7e44d0c1",
+        "content_hash": "c0ffee1234",
+        "builder": "ShardPacks 1.4",
+        "kind_label": "knowledge pack b1.8.1",
+        "active": true
+      },
+      {
+        "file": "skyblock.mcshard",
+        "name": "skyblock",
+        "kind": "mode",
+        "version": "b1.8.1",
+        "mode": "skyblock",
+        "counts": { "knowledge": 40 },
+        "records": 40,
+        "bytes": 204800,
+        "vectors": 0,
+        "needs_embedding": 40,
+        "dims": 0,
+        "files": ["docs/knowledge/skyblock.md"],
+        "kind_label": "mode pack skyblock (b1.8.1)",
+        "error": "manifest ContentHash differs from index.json",
+        "active": true
+      }
+    ],
+    "extra": [],
+    "active_pack": "b1.8.1-gamedata (b1.8.1) + skyblock",
+    "active_modes": ["skyblock"]
+  },
+  "shardPreview": {
+    "counts": { "fact": 12, "claim": 3, "trait": 4 },
+    "total": 19,
+    "vectors": 19,
+    "embedding_model": "text-embedding-3-small",
+    "dims": 1536,
+    "summaries": 2,
+    "bytes": 182044,
+    "secrets_redacted": 1,
+    "samples": ["fact: Fox likes birch", "claim: the cobble gen at spawn is Fox's"],
+    "notes": ["1 record looked like a secret and was redacted"]
+  },
+  "shardImportPreview": {
+    "manifest": {
+      "format": 1,
+      "name": "about-fox",
+      "created": "2026-11-01T12:00:00+00:00",
+      "created_by": "fox (web)",
+      "source": { "db": "mineclaw.db", "schema_version": 41, "bot": "maid_chan" },
+      "kind": "person",
+      "selection": {
+        "mode": "person",
+        "people": ["poofimafox", "Fox", "foxy"],
+        "semantic": false,
+        "include_knowledge_docs": false,
+        "include_rules": true,
+        "include_world": false
+      },
+      "counts": { "fact": 12, "claim": 3, "trait": 4 },
+      "total": 19,
+      "content_hash": "ab12",
+      "embeddings": { "model": "text-embedding-3-small", "dims": 1536, "count": 19, "sha256": "ee11" },
+      "secrets_redacted": 1
+    },
+    "diff": {
+      "shard": "about-fox",
+      "mode": "merge",
+      "conflict": "keep-newer",
+      "items": [
+        {
+          "id": "note:12",
+          "kind": "fact",
+          "change": "conflict",
+          "label": "Fox likes birch",
+          "apply": false,
+          "note": "kept: target is newer"
+        },
+        { "id": "note:99", "kind": "fact", "change": "added", "label": "Fox prefers spruce doors", "apply": true }
+      ],
+      "added": 1,
+      "changed": 0,
+      "conflicts": 1,
+      "removed": 0,
+      "unchanged": 17,
+      "skipped": 0,
+      "writes": 1,
+      "rebuild": [{ "scope": "kind", "kind": "fact", "max_usd": 0.25 }],
+      "estimate": {
+        "summaries": 2,
+        "input_tokens": 4100,
+        "output_tokens": 600,
+        "embedding_tokens": 300,
+        "usd": 0.004,
+        "model": "claude-haiku-5-5",
+        "note": "2 summaries"
+      },
+      "reusable_vectors": 1,
+      "to_embed": 0,
+      "notes": []
+    }
+  },
+  "shardImportResult": {
+    "ok": true,
+    "message": "imported 1 record",
+    "written": 1,
+    "removed": 0,
+    "reused_vectors": 1,
+    "embedded": 0,
+    "rebuild": [{ "scope": "kind", "kind": "fact", "max_usd": 0.25 }],
+    "job_id": "rb-20261102-0001",
+    "active_pack": "b1.8.1-gamedata (b1.8.1) + skyblock"
+  },
+  "scriptLibrary": {
+    "at": "2026-11-02T10:00:00+00:00",
+    "scripts": [
+      {
+        "name": "cobble_loop",
+        "version": 4,
+        "versions": 4,
+        "lang": "js",
+        "author": "opus",
+        "author_kind": "opus",
+        "purpose": "mine cobble from the generator and store it",
+        "params": [{ "name": "n", "default": "64", "tuned": "80" }],
+        "last_run": "2026-11-02T09:40:00+00:00",
+        "runs": 21,
+        "success_rate": 0.9,
+        "avg_seconds": 312.5,
+        "timings": "mine 1.1s · store 4.2s",
+        "used_by": ["standing order #3"],
+        "lint": {
+          "status": "warnings",
+          "errors": 0,
+          "warnings": 1,
+          "findings": [{ "severity": "warn", "line": 12, "rule": "loop-no-yield", "message": "loop without a yield" }]
+        },
+        "archived": false,
+        "updated": "2026-11-01T20:00:00+00:00",
+        "has_lua_history": true,
+        "handlers": [
+          {
+            "kind": "failed",
+            "signature": "failed|chest full|store()",
+            "js": "await goTo('overflow'); return 'resume';",
+            "then": "resume",
+            "author": "opus",
+            "version": 3,
+            "learned_at": "2026-10-30T12:00:00+00:00",
+            "successes": 5,
+            "failures": 1,
+            "demoted": false
+          }
+        ]
+      }
+    ]
+  },
+  "scriptDetail": {
+    "script": {
+      "name": "cobble_loop",
+      "version": 4,
+      "versions": 4,
+      "lang": "js",
+      "author_kind": "opus",
+      "params": [],
+      "runs": 21,
+      "success_rate": "NaN",
+      "avg_seconds": 0,
+      "used_by": [],
+      "lint": { "status": "ok", "errors": 0, "warnings": 0, "findings": [] },
+      "archived": false,
+      "updated": "2026-11-01T20:00:00+00:00",
+      "has_lua_history": false
+    },
+    "version": {
+      "v": 4,
+      "lang": "js",
+      "author": "opus",
+      "author_kind": "opus",
+      "saved_at": "2026-11-01T20:00:00+00:00",
+      "active": true,
+      "runs": 21,
+      "successes": 19,
+      "failures": 2,
+      "avg_seconds": 312.5,
+      "top_failures": ["chest full"],
+      "lines": 48
+    },
+    "code": "const { n } = params({ n: 64 });\nfor (let i = 0; i < n; i++) { await mine('cobblestone'); }\n",
+    "lint": { "status": "ok", "errors": 0, "warnings": 0, "findings": [] },
+    "params": [{ "name": "n", "default": "64" }],
+    "history": [],
+    "runs": [
+      {
+        "at": "2026-11-02T09:40:00+00:00",
+        "ok": true,
+        "seconds": 300.1,
+        "source": "live",
+        "outcome": "stored 64",
+        "actions": 140,
+        "version": 4,
+        "body": "maid_chan"
+      }
+    ],
+    "tuned_params": "{\"n\":80}"
+  },
+  "scriptDiff": {
+    "name": "cobble_loop",
+    "a": 3,
+    "b": 4,
+    "added": 1,
+    "removed": 1,
+    "hunks": [
+      {
+        "a_start": 1,
+        "a_lines": 2,
+        "b_start": 1,
+        "b_lines": 2,
+        "lines": [
+          { "op": "-", "text": "const { n } = params({ n: 32 });", "a_line": 1 },
+          { "op": "+", "text": "const { n } = params({ n: 64 });", "b_line": 1 },
+          { "op": " ", "text": "for (let i = 0; i < n; i++) {", "a_line": 2, "b_line": 2 }
+        ]
+      }
+    ],
+    "unified": "--- v3\n+++ v4\n@@ -1,2 +1,2 @@\n-const { n } = params({ n: 32 });\n+const { n } = params({ n: 64 });\n for (let i = 0; i < n; i++) {\n"
+  },
+  "designDetail": {
+    "design": {
+      "id": 7,
+      "name": "watch tower",
+      "status": "built",
+      "requester": "kiwi",
+      "rev": 3,
+      "revisions": 3,
+      "updated": 1761900000000,
+      "has_picture": true
+    },
+    "revisions": [
+      {
+        "rev": 3,
+        "author": "maid_chan",
+        "author_kind": "bot",
+        "message": "add roof",
+        "tag": "v1",
+        "created": 1761900000000,
+        "n": 412
+      },
+      { "rev": 2, "author": "kiwi", "author_kind": "player", "message": "walls", "created": 1761800000000, "n": 380 }
+    ],
+    "world": {
+      "rev": 3,
+      "seen": 1761950000000,
+      "seen_by": "maid_chan_67",
+      "diff": "+0 −3",
+      "causes": "creeper",
+      "text": "last seen by maid_chan_67 at r3: +0 −3 (creeper)"
+    },
+    "default_diff": { "a": "3", "b": "world" }
+  },
+  "designDiff": {
+    "id": 7,
+    "a": "3",
+    "b": "world",
+    "added": 0,
+    "removed": 3,
+    "changed": 1,
+    "unseen": 2,
+    "summary": "−3 planks, ~1 oak stairs facing (0 added, 3 removed, 1 changed, 2 not seen)",
+    "cells": [
+      { "op": "-", "x": 10, "y": 70, "z": 4, "name": "planks" },
+      { "op": "~", "x": 11, "y": 70, "z": 4, "name": "oak stairs", "from": "oak stairs:0", "to": "oak stairs:2" }
+    ],
+    "total": 4,
+    "truncated": false,
+    "text": "− 10,70,4 planks\n~ 11,70,4 oak stairs:0 → oak stairs:2\n"
+  },
+  "editSchema": {
+    "kinds": [
+      {
+        "kind": "fact",
+        "ops": ["add", "update", "delete"],
+        "fields": [
+          {
+            "name": "subject",
+            "label": "Subject",
+            "type": "text",
+            "required": true,
+            "help": "who/what the fact is about: a player name, world, base, ..."
+          },
+          { "name": "text", "label": "Fact", "type": "multiline", "required": true }
+        ]
+      },
+      {
+        "kind": "place",
+        "ops": ["add", "update", "delete"],
+        "fields": [
+          { "name": "name", "label": "Name", "type": "text", "required": true },
+          { "name": "x", "label": "X", "type": "int", "required": true },
+          {
+            "name": "dim",
+            "label": "Dimension",
+            "type": "enum",
+            "options": ["overworld", "nether"],
+            "help": "overworld (0) or nether (-1); default overworld"
+          }
+        ]
+      },
+      {
+        "kind": "observation",
+        "ops": ["update", "delete"],
+        "fields": [{ "name": "annotation", "label": "Annotation", "type": "text" }]
+      }
+    ],
+    "reason_field": "__reason"
+  },
+  "memoryEditResult": {
+    "ok": true,
+    "message": "updated fact 12",
+    "id": "12",
+    "before": "{\"subject\":\"Fox\",\"text\":\"likes oak\"}",
+    "after": "{\"subject\":\"Fox\",\"text\":\"likes birch\"}",
+    "reembedded": true
+  },
+  "rebuildJob": {
+    "state": "done",
+    "progress": { "stage": "summarize", "done": 2, "total": 2 },
+    "result": {
+      "ok": true,
+      "message": "rebuilt 2 summaries",
+      "diffs": [{ "index": 2801, "layer": 2, "old": "cobble", "new": "cobble, generator" }],
+      "spent_usd": 0.0031,
+      "elapsed": "00:00:12.4410000"
+    }
+  },
+  "adminAudit": {
+    "entries": [
+      {
+        "at": "2026-11-02T09:00:00+00:00",
+        "who": "fox (web)",
+        "target": "live:maid_chan",
+        "op": "update",
+        "kind": "fact",
+        "id": "12",
+        "before": "{}",
+        "after": "{}",
+        "reason": "typo",
+        "ok": true,
+        "message": "updated fact 12"
+      }
+    ]
+  },
+  "compaction": {
+    "ok": true,
+    "dry_run": true,
+    "docs_before": 18000,
+    "docs_after": 17200,
+    "activity_before": 50000,
+    "activity_after": 41000,
+    "processed": 9000,
+    "removed": 800,
+    "rewritten": 120,
+    "episodes": 40,
+    "dirty_summaries": 12,
+    "message": "dry run: 800 docs would go",
+    "samples": ["act:123 → ep:9"]
+  },
+  "webAudit": {
+    "total": 1,
+    "offset": 0,
+    "limit": 100,
+    "items": [
+      {
+        "id": 1,
+        "at": "2026-11-02T10:00:00+00:00",
+        "username": "fox",
+        "player": "poofimafox",
+        "ip": "10.0.10.5",
+        "kind": "chat",
+        "method": "POST",
+        "route": "bots.chat",
+        "target": "maid_chan",
+        "ok": true,
+        "status": 202,
+        "summary": "claude, set it to day"
+      }
+    ]
+  },
+  "me": {
+    "username": "fox",
+    "player": "poofimafox",
+    "roles": ["viewer", "chat", "commands", "admin"],
+    "totp_enrolled": true,
+    "session_created_at": "2026-11-02T08:00:00.000Z",
+    "idle_expires_at": "2026-11-02T22:00:00.000Z",
+    "absolute_expires_at": "2026-11-09T08:00:00.000Z"
+  }
+}
