@@ -1,10 +1,9 @@
 /**
- * RAPTOR tree and graph (explorer-spec §4). Bridge-native: `/v1/raptor/tree`, `/v1/raptor/node/{id}`,
+ * RAPTOR graph and node detail (explorer-spec §4), shown by the Memory activity tab. Bridge-native: `/v1/raptor/node/{id}`,
  * `/v1/raptor/node/{id}/leaves`, `/v1/raptor/graph`. Node ids are RAPTOR indexes (`docs.raptor_idx`).
  */
 import { z } from 'zod';
 import { Double, QInt, UnixMs } from './common.js';
-import { RaptorMeta } from './overview.js';
 import { RaptorCrumb } from './search.js';
 
 export const RaptorNodeParams = z.object({ id: QInt.min(0) });
@@ -28,23 +27,6 @@ export const RaptorTreeNode = z.object({
   docRef: z.string().nullish(),
 });
 export type RaptorTreeNode = z.infer<typeof RaptorTreeNode>;
-
-/** GET /api/raptor/tree. `root` omitted = the roots; `depth` = levels below root to include (1 = root + its children). */
-export const RaptorTreeQuery = z.object({
-  root: QInt.min(0).optional(),
-  depth: QInt.min(0).max(8).default(1),
-});
-export type RaptorTreeQuery = z.infer<typeof RaptorTreeQuery>;
-
-export const RaptorTreeResponse = z.object({
-  meta: RaptorMeta.nullish(),
-  note: z.string().nullish().describe('set when there is no tree'),
-  stateKey: z.string().describe('changes whenever the tree changes (cache key for graph/labels)'),
-  root: z.number().int().nullish(),
-  top: z.array(z.number().int()).describe('the top-level indexes of this response (roots, or [root])'),
-  nodes: z.array(RaptorTreeNode).describe('flat; follow `children`'),
-});
-export type RaptorTreeResponse = z.infer<typeof RaptorTreeResponse>;
 
 export const RaptorNodeRef = z.object({
   index: z.number().int(),

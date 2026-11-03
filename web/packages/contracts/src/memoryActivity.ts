@@ -91,6 +91,69 @@ export const MemoryHeatResponse = z.object({
 });
 export type MemoryHeatResponse = z.infer<typeof MemoryHeatResponse>;
 
+/**
+ * GET /api/memory-activity/cloud: the memory cloud (architecture.md, "Memory activity tab" → Cloud). Every RAPTOR leaf at its
+ * 2-D UMAP position (the bot's own reducer over the stored leaf embeddings, cosine, seeded), in the unit square. Leaves inserted
+ * since the last RAPTOR build are placed from their nearest build leaves, so the picture never reshuffles between builds. Columns
+ * are parallel arrays (index `i` is one leaf) to keep tens of thousands of points small on the wire. Ids are RAPTOR node ids,
+ * the same as `/api/raptor/graph` and the heat routes.
+ */
+export const CloudPoints = z.object({
+  id: z.array(z.number().int()),
+  xy: z.array(z.number()).describe('x, y interleaved, each 0..1 (y down)'),
+  cluster: z.array(z.number().int()).describe('index into `clusters`, −1 when the leaf hangs under no cluster'),
+  kind: z.array(z.number().int()).describe('index into `kinds`'),
+  title: z.array(z.string()).describe('the doc title (≤ 80 chars)'),
+  parents: z.array(z.array(z.number().int())).describe('every RAPTOR parent (soft clusters give several)'),
+  inserted: z.array(z.boolean()).describe('inserted since the last build (placed, not laid out)'),
+});
+export type CloudPoints = z.infer<typeof CloudPoints>;
+
+/** Summaries at the mean of their children (bottom-up): the faded link overlay's inner ends. */
+export const CloudSummaries = z.object({
+  id: z.array(z.number().int()),
+  xy: z.array(z.number()),
+  layer: z.array(z.number().int()),
+  cluster: z.array(z.number().int()).describe('the cluster the summary lies in, −1 above the cluster layer'),
+  parents: z.array(z.array(z.number().int())),
+});
+export type CloudSummaries = z.infer<typeof CloudSummaries>;
+
+export const CloudCluster = z.object({
+  id: z.number().int().describe('position in `clusters` (largest first); colour slots follow it'),
+  node: z.number().int().describe('the RAPTOR summary node this cluster is'),
+  layer: z.number().int(),
+  label: z.string().describe('TF-IDF topic terms of the summary, " · "-joined (deterministic, no model calls)'),
+  terms: z.array(z.string()),
+  summary: z.string().describe('the summary text, ≤ 180 chars'),
+  size: z.number().int().describe('leaves in the cluster'),
+  x: z.number(),
+  y: z.number(),
+  spread: z.number().describe('RMS distance of its leaves from (x, y)'),
+});
+export type CloudCluster = z.infer<typeof CloudCluster>;
+
+export const MemoryCloudStatus = z.enum(['ready', 'computing', 'empty', 'error']);
+export type MemoryCloudStatus = z.infer<typeof MemoryCloudStatus>;
+
+export const MemoryCloudResponse = z.object({
+  status: MemoryCloudStatus.describe('computing: the layout for the current tree is running; the last one (if any) is served meanwhile'),
+  version: z.string().describe('changes when the layout changes (tree state + algorithm)'),
+  stateKey: z.string().describe('the RAPTOR tree state the layout was computed for'),
+  note: z.string().nullish(),
+  clusterLayer: z.number().int().describe('the summary layer the clusters come from: the highest with ≥ 6 nodes'),
+  kinds: z.array(z.string()),
+  points: CloudPoints,
+  summaries: CloudSummaries,
+  clusters: z.array(CloudCluster),
+  anchors: z.number().int().describe('leaves the UMAP ran on (an even sample above 2000)'),
+  placedSinceBuild: z.number().int().describe('leaves placed from their neighbours instead'),
+  computeMs: Double.nullish(),
+  computedAt: IsoDateTime.nullish(),
+  computingStateKey: z.string().nullish(),
+});
+export type MemoryCloudResponse = z.infer<typeof MemoryCloudResponse>;
+
 /** Client helper: brightness of a node now, from its lastAccessAt and the server half-life. */
 export function decayHeat(lastAccessAtMs: number | null | undefined, nowMs: number, halfLifeS: number): number {
   if (lastAccessAtMs === null || lastAccessAtMs === undefined || halfLifeS <= 0) return 0;

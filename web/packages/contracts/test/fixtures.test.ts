@@ -12,7 +12,6 @@ const cases: Record<'db' | 'tools' | 'live', Record<string, z.ZodType>> = {
     memoryDetailClaim: C.MemoryDetail,
     memoryDetailChest: C.MemoryDetail,
     search: C.SearchResponse,
-    raptorTree: C.RaptorTreeResponse,
     raptorNode: C.RaptorNodeDetail,
     raptorGraph: C.RaptorGraph,
     raptorLeaves: C.RaptorLeavesResponse,

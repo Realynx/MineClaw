@@ -266,7 +266,6 @@ Notes on specific routes:
 | `memory.list` | `GET /api/memory/:kind` | viewer | params `MemoryKindParams`<br>query `MemoryListQuery` | `MemoryPage` | `GET /v1/memory/{kind}` | bridge-native | – |
 | `memory.get` | `GET /api/memory/:kind/:id` | viewer | params `MemoryItemParams` | `MemoryDetail` | `GET /v1/memory/{kind}/{id}` | bridge-native | – |
 | `search` | `GET /api/search` | viewer | query `SearchQuery` | `SearchResponse` | `GET /v1/search` | bridge-native | – |
-| `raptor.tree` | `GET /api/raptor/tree` | viewer | query `RaptorTreeQuery` | `RaptorTreeResponse` | `GET /v1/raptor/tree` | bridge-native | – |
 | `raptor.graph` | `GET /api/raptor/graph` | viewer | query `RaptorGraphQuery` | `RaptorGraph` | `GET /v1/raptor/graph` | bridge-native | – |
 | `raptor.leaves` | `GET /api/raptor/node/:id/leaves` | viewer | params `RaptorNodeParams` | `RaptorLeavesResponse` | `GET /v1/raptor/node/{id}/leaves` | bridge-native | – |
 | `raptor.node` | `GET /api/raptor/node/:id` | viewer | params `RaptorNodeParams` | `RaptorNodeDetail` | `GET /v1/raptor/node/{id}` | bridge-native | – |
@@ -289,6 +288,7 @@ Notes on specific routes:
 | Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
 |---|---|---|---|---|---|---|---|
 | `memoryActivity.heat` | `GET /api/memory-activity/heat` | viewer | query `MemoryHeatQuery` | `MemoryHeatResponse` | `GET /v1/memory-activity/heat` | bridge-native (aggregates /api/viewer/memory-activity over the RAPTOR tree) | – |
+| `memoryActivity.cloud` | `GET /api/memory-activity/cloud` | viewer | – | `MemoryCloudResponse` | `GET /v1/memory-activity/cloud` | bridge-native (UMAP over the RAPTOR leaf embeddings, computed in the background and cached per tree state) | – |
 | `memoryActivity.list` | `GET /api/memory-activity` | viewer | query `MemoryActivityQuery` | `MemoryActivityResponse` | `GET /v1/sup/viewer/memory-activity` | /api/viewer/memory-activity | – |
 
 ### Admin (bot writes)
@@ -532,6 +532,23 @@ These are the bot-side additions from architecture.md, in their wire form. They 
   - **Per node.** Each node carries `{node_id, last_access_at, access_count, heat (0..1), brains:[{brain, last_access_at,
 in_context, staleness_s, evicted}]}`.
   - **Decay.** `heat = 0.5^((at − last_access_at)/half_life_s)`. The client re-decays between refreshes with `decayHeat`.
+
+- **Memory cloud** (`MemoryCloudResponse`, added 2026-11-03): `GET /v1/memory-activity/cloud`. Every RAPTOR leaf at a 2-D
+  position from the bot's own UMAP (`MineClaw.Raptor.Umap`, cosine, spectral init, seeded single-threaded SGD) over the
+  stored leaf embeddings, in the unit square:
+  - **Never blocks.** The first request for a tree state starts the layout in the background (`Bridge:CloudThreads`, default
+    1) and answers at once with `status: "computing"` and the previous layout (or none); the client polls. `ready` layouts are
+    cached per tree state; `empty` = no tree; `error` = the layout failed (logged, not retried for that state).
+  - **Stable.** UMAP runs on the build's leaves (`InsertedSeq == 0`; an even index-ordered sample of 2000 above that), and
+    every other leaf is placed at the softmax(cos/0.04)-weighted mean of its 6 most similar anchors plus a tiny offset from
+    its id. Placement depends on the anchors only, so incremental refreshes and a bridge restart give the same picture;
+    only a new RAPTOR build (or a removed build leaf) lays it out again.
+  - **Columns.** `points` and `summaries` are parallel arrays (`id`, `xy` interleaved, `cluster`, `kind`, `title`,
+    `parents`, `inserted`) to keep tens of thousands of points small (the live db's 2466 leaves are 208 KiB).
+  - **Clusters** are the bot's own: the summary layer with ≥ 6 nodes nearest the top (`cluster_layer`), each leaf under its
+    primary-parent ancestor there; labels are the graph's TF-IDF terms, ordered largest first.
+  - Brightness is not in this route: the client lights points with `/api/memory-activity/heat` and the `memoryActivity`
+    stream, exactly as the other layouts.
 
 - **Story Mode (added 2026-11-03).** The bot's routes and every wire shape are in `docs/web/story-mode.md` ("Supervisor
   routes", "Designations", "Construction", "Storage", "Workbenches & bills", "AI hives"); the schemas are `story.ts` in the
