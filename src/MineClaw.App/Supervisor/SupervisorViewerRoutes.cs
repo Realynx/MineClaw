@@ -71,6 +71,8 @@ public interface IViewerData
 /// <item><c>GET /api/viewer/feed?since=&amp;max=</c> → <c>{lines:[ViewerLine], last}</c> (oldest first; pass <c>last</c> back as <c>since</c>)</item>
 /// <item><c>GET /api/viewer/now?bot=</c> → <see cref="ViewerNow"/></item>
 /// <item><c>GET /api/viewer/memory-activity?since=&amp;brain=</c> → <c>{events:[ViewerMemoryEvent], in_context:[ViewerInContext], last}</c></item>
+/// <item><c>GET /api/viewer/bodies/{name}/inventory</c> → <see cref="BodyInventory"/> (any in-process body: main, hives, subhive bodies, pawns;
+/// <c>online:false</c> = its last known inventory); 404 <c>{error, online:false}</c> when the body is unknown or never seen here.</item>
 /// </list>
 /// 404 unless <see cref="SupervisorViewerOptions.Enabled"/>; 403 without a configured token or without it in the X-Supervisor-Token
 /// header (never <c>?token=</c>; constant-time compare). JSON is snake_case with nulls written out.
@@ -88,6 +90,8 @@ public sealed class SupervisorViewerRoutes
         NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
     };
     private static readonly Regex RequestId = new(@"^[A-Za-z0-9_.:\-]{1,64}$", RegexOptions.Compiled);
+    private static readonly Regex InventoryPath = new(@"^/bodies/(?<name>[^/]{1,96})/inventory$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex BodyName = new(@"^[A-Za-z0-9_]{1,32}$", RegexOptions.Compiled);
 
     private readonly SupervisorOptions _o;
     private readonly IViewerData _data;
@@ -106,6 +110,8 @@ public sealed class SupervisorViewerRoutes
 
     public ViewerFeed Feed { get; }
     public ViewerMemoryActivity Memory { get; }
+    /// <summary>The bodies' inventories (<c>/bodies/{name}/inventory</c>); null = <see cref="BodyInventories.Process"/>.</summary>
+    public BodyInventories? Inventories { get; init; }
 
     public static bool IsViewerPath(string path)
     {
@@ -151,6 +157,8 @@ public sealed class SupervisorViewerRoutes
         bool get = r.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) || r.Method.Equals("HEAD", StringComparison.OrdinalIgnoreCase);
         try
         {
+            if (InventoryPath.Match(path[Prefix.Length..]) is { Success: true } inv)
+                return get ? Inventory(inv.Groups["name"].Value) : NotAllowed("GET, HEAD");
             switch (path[Prefix.Length..].ToLowerInvariant())
             {
                 case "/chat":
@@ -224,6 +232,22 @@ public sealed class SupervisorViewerRoutes
             retry = TimeSpan.Zero;
             return true;
         }
+    }
+
+    // ------------------------------------------------------------------ inventory
+
+    /// <summary>A body by login or short name ("main", "102"); read-only, one snapshot (shared by viewers within half a second).</summary>
+    private SupervisorReply Inventory(string raw)
+    {
+        string name;
+        try { name = Uri.UnescapeDataString(raw).Trim(); }
+        catch (UriFormatException) { return Reply(404, new { error = "no such body", online = false }); }
+        if (!BodyName.IsMatch(name)) return Reply(404, new { error = "no such body", online = false });
+        var reg = Inventories ?? BodyInventories.Process;
+        var login = _data.Resolve(name);
+        var inv = (login != null ? reg.Get(login) : null) ?? reg.Get(name);
+        if (inv != null) return Reply(200, inv);
+        return Reply(404, new { error = login != null ? "no inventory known for this body" : "no such body", online = false });
     }
 
     // ------------------------------------------------------------------ memory activity

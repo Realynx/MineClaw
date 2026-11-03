@@ -181,6 +181,7 @@ import {
 } from './shards.js';
 import { LiveStreamQuery } from './sse.js';
 import { ChatAccepted, ChatRequest, FeedQuery, FeedResponse, BotNow } from './viewer.js';
+import { BodyInventory } from './inventory.js';
 import { VisionList, VisionListQuery, VisionRenderQuery, VisionSheetInfo, VisionSheetParams } from './vision.js';
 
 export type HttpMethod = 'GET' | 'POST';
@@ -823,6 +824,16 @@ export const ROUTES = {
     audit: null,
     summary: '"What is it doing right now": thought, in-flight call, tool, task, script line, vitals.',
   }),
+  'bots.inventory': get('/api/bots/:bot/inventory', {
+    access: 'viewer',
+    params: BotParams,
+    response: BodyInventory,
+    responseKind: 'json',
+    bridge: b('/v1/sup/viewer/bodies/{bot}/inventory'),
+    supervisor: '/api/viewer/bodies/{name}/inventory',
+    audit: null,
+    summary: "A body's inventory (hotbar + held slot, main, armour, off hand) as a read-only snapshot; online:false = last known.",
+  }),
   'bots.chat': post('/api/bots/:bot/chat', {
     access: 'chat',
     params: BotParams,
@@ -1359,6 +1370,7 @@ export const SUPERVISOR_PASSTHROUGH_ALLOW = {
     'viewer/feed',
     'viewer/now',
     'viewer/memory-activity',
+    'viewer/bodies/',
     'admin/rebuild/',
     'admin/audit',
     'designer/',
