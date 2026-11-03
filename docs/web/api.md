@@ -255,6 +255,7 @@ Notes on specific routes:
 | `auth.me` | `GET /api/auth/me` | authenticated | – | `Me` | Nest-native | – | – |
 | `auth.totpEnroll` | `POST /api/auth/totp/enroll` | authenticated | body `TotpEnrollRequest` | `TotpEnrollResponse` | Nest-native | – | totp_enroll |
 | `auth.totpVerify` | `POST /api/auth/totp/verify` | authenticated | body `TotpVerifyRequest` | `TotpVerifyResponse` | Nest-native | – | totp_verify |
+| `auth.stepUp` | `POST /api/auth/step-up` | authenticated | body `StepUpRequest` | `StepUpResponse` | Nest-native | – | step_up |
 | `audit.list` | `GET /api/audit` | admin | query `WebAuditQuery` | `WebAuditPage` | Nest-native | – | – |
 
 ### Db reads (bridge-native)
@@ -306,6 +307,14 @@ Notes on specific routes:
 | `admin.compact` | `POST /api/admin/activity/compact` | admin | body `CompactRequest` | `ActivityCompactionReport` | `POST /v1/sup/admin/activity/compact` | /api/admin/activity/compact | compact |
 | `admin.shardImport` | `POST /api/admin/shard/import` | admin | multipart `ShardImportOptions` | `ShardImportResult` | `POST /v1/sup/admin/shard/import` | /api/admin/shard/import (bridge sends JSON {shard: base64, …options, who}) | shard_import |
 | `groom.preview` | `POST /api/groom/preview` | admin | body `GroomPreviewRequest` | `GroomPreviewResponse` | `POST /v1/groom/preview` | bridge-native | admin_other |
+| `admin.nodes` | `GET /api/admin/nodes` | admin | – | `AdminNodesResponse` | `GET /v1/admin/nodes` | /api/admin/settings/node | – |
+| `admin.settings` | `GET /api/admin/nodes/:node/settings` | admin | params `AdminNodeParams` | `AdminSettingsResponse` | `GET /v1/admin/nodes/{node}/settings` | /api/admin/settings | – |
+| `admin.settingsSave` | `POST /api/admin/nodes/:node/settings` | admin | params `AdminNodeParams`<br>body `AdminSettingsSaveRequest` | `AdminSettingsSaveResponse` | `POST /v1/admin/nodes/{node}/settings` | PUT /api/admin/settings | admin_settings |
+| `admin.settingsTest` | `POST /api/admin/nodes/:node/settings/test` | admin | params `AdminNodeParams`<br>body `ProviderTestRequest` | `ProviderTestResponse` | `POST /v1/admin/nodes/{node}/settings/test` | /api/admin/settings/test | admin_settings |
+| `admin.ollamaModels` | `GET /api/admin/nodes/:node/ollama/models` | admin | params `AdminNodeParams`<br>query `OllamaModelsQuery` | `OllamaModelsResponse` | `GET /v1/admin/nodes/{node}/ollama/models` | /api/admin/ollama/models | – |
+| `admin.restartSafety` | `GET /api/admin/nodes/:node/restart/safety` | admin | params `AdminNodeParams` | `RestartSafety` | `GET /v1/admin/nodes/{node}/restart/safety` | /api/admin/restart/safety | – |
+| `admin.restart` | `POST /api/admin/nodes/:node/restart` | admin | params `AdminNodeParams`<br>body `RestartRequest` | `RestartResponse` (202) | `POST /v1/admin/nodes/{node}/restart` | /api/admin/restart | admin_settings |
+| `admin.settingsAudit` | `GET /api/admin/nodes/:node/audit` | admin | params `AdminNodeParams`<br>query `SettingsAuditQuery` | `SettingsAuditResponse` | `GET /v1/admin/nodes/{node}/audit` | /api/admin/settings/audit | – |
 
 ### Live hive (supervisor pass-through)
 

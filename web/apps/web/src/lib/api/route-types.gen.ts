@@ -14,6 +14,7 @@ export interface RouteTypes {
   'auth.me': { params: never; query: never; body: never; response: z.output<typeof C.Me> };
   'auth.totpEnroll': { params: never; query: never; body: z.input<typeof C.TotpEnrollRequest>; response: z.output<typeof C.TotpEnrollResponse> };
   'auth.totpVerify': { params: never; query: never; body: z.input<typeof C.TotpVerifyRequest>; response: z.output<typeof C.TotpVerifyResponse> };
+  'auth.stepUp': { params: never; query: never; body: z.input<typeof C.StepUpRequest>; response: z.output<typeof C.StepUpResponse> };
   'audit.list': { params: never; query: z.input<typeof C.WebAuditQuery>; body: never; response: z.output<typeof C.WebAuditPage> };
   'overview': { params: never; query: never; body: never; response: z.output<typeof C.Overview> };
   'memory.kinds': { params: never; query: never; body: never; response: z.output<typeof C.MemoryKindsResponse> };
@@ -50,6 +51,14 @@ export interface RouteTypes {
   'admin.compact': { params: never; query: never; body: z.input<typeof C.CompactRequest>; response: z.output<typeof C.ActivityCompactionReport> };
   'admin.shardImport': { params: never; query: never; body: z.input<typeof C.ShardImportOptions>; response: z.output<typeof C.ShardImportResult> };
   'groom.preview': { params: never; query: never; body: z.input<typeof C.GroomPreviewRequest>; response: z.output<typeof C.GroomPreviewResponse> };
+  'admin.nodes': { params: never; query: never; body: never; response: z.output<typeof C.AdminNodesResponse> };
+  'admin.settings': { params: z.input<typeof C.AdminNodeParams>; query: never; body: never; response: z.output<typeof C.AdminSettingsResponse> };
+  'admin.settingsSave': { params: z.input<typeof C.AdminNodeParams>; query: never; body: z.input<typeof C.AdminSettingsSaveRequest>; response: z.output<typeof C.AdminSettingsSaveResponse> };
+  'admin.settingsTest': { params: z.input<typeof C.AdminNodeParams>; query: never; body: z.input<typeof C.ProviderTestRequest>; response: z.output<typeof C.ProviderTestResponse> };
+  'admin.ollamaModels': { params: z.input<typeof C.AdminNodeParams>; query: z.input<typeof C.OllamaModelsQuery>; body: never; response: z.output<typeof C.OllamaModelsResponse> };
+  'admin.restartSafety': { params: z.input<typeof C.AdminNodeParams>; query: never; body: never; response: z.output<typeof C.RestartSafety> };
+  'admin.restart': { params: z.input<typeof C.AdminNodeParams>; query: never; body: z.input<typeof C.RestartRequest>; response: z.output<typeof C.RestartResponse> };
+  'admin.settingsAudit': { params: z.input<typeof C.AdminNodeParams>; query: z.input<typeof C.SettingsAuditQuery>; body: never; response: z.output<typeof C.SettingsAuditResponse> };
   'bots.list': { params: never; query: never; body: never; response: z.output<typeof C.BotsResponse> };
   'hive.tree': { params: never; query: never; body: never; response: z.output<typeof C.HiveTreeNode> };
   'status': { params: never; query: z.input<typeof C.StatusQuery>; body: never; response: z.output<typeof C.StatusResponse> };
