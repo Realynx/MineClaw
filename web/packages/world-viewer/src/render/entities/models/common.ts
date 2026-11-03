@@ -2,7 +2,7 @@
 // pig, cow, sheep, chicken, wolf, slime, ghast, squid, and the LOD box. Dimensions, pivots and texture offsets are the
 // vanilla ones (1.12.2 model classes; b1.8.1 where its layout differs: `_beta` ids).
 
-import { box, D2R, look, mbox, part, PI, walkLegs } from '../dsl';
+import { BIPED_BABY, box, D2R, look, mbox, part, PI, quadBaby, walkLegs } from '../dsl';
 import type { ModelDef, PartDef, PartState, PoseCtx, PoseFn } from '../types';
 
 // ------------------------------------------------------------------------------------------------------------ bipeds
@@ -44,6 +44,32 @@ export function poseBiped(p: Record<string, PartState>, c: PoseCtx): void {
     ra.rx -= s * 1.2 + i;
     ra.ry += body.ry * 2;
     ra.rz += Math.sin(g * PI) * -0.4;
+  }
+  if (c.attackOff > 0) {
+    // The off hand (left arm) mirrors the main-hand swing.
+    const g = c.attackOff;
+    const twist = -Math.sin(Math.sqrt(g) * PI * 2) * 0.2;
+    body.ry += twist;
+    la.ry += twist;
+    let h = 1 - g;
+    h *= h;
+    h *= h;
+    h = 1 - h;
+    la.rx -= Math.sin(h * PI) * 1.2 + Math.sin(g * PI) * -(head.rx - 0.7) * 0.75;
+    la.ry += twist * 2;
+    la.rz -= Math.sin(g * PI) * -0.4;
+  }
+  if (c.using && c.bow) {
+    // Drawing a bow (ArmPose.BOW_AND_ARROW): both arms forward along the look, the left one across.
+    ra.ry = -0.1 + head.ry;
+    la.ry = 0.1 + head.ry + 0.4;
+    ra.rx = -PI / 2 + head.rx;
+    la.rx = -PI / 2 + head.rx;
+  } else if (c.eat > 0 || c.using) {
+    // Eating / drinking: the hand at the mouth, bobbing (third person: the arm raised toward the head).
+    ra.rx = -1.2 - Math.abs(Math.cos(c.age * 0.9)) * 0.15 + head.rx * 0.5;
+    ra.ry = -0.35 + head.ry;
+    head.rx += Math.abs(Math.sin(c.age * 0.9)) * 0.1;
   }
   if (c.sneaking) {
     body.rx = 0.5;
@@ -151,6 +177,7 @@ function biped(o: BipedOpts): ModelDef {
     width: 0.6,
     height: o.height ?? 1.95,
     pose: o.pose,
+    baby: BIPED_BABY,
     parts: [
       part('head', [0, 0, 0], headC, { children: over('head', headC) }),
       part('hat', [0, 0, 0], [box(-4, -8, -4, 8, 8, 8, 32, 0, 0.5)]),
@@ -199,19 +226,23 @@ const poseCreeper: PoseFn = (p, c) => {
 };
 
 function creeper(id: string, y: number): ModelDef {
+  // The charge aura (ModelCreeper(2.0)): every part again, inflated by 2, tagged 'charge'.
+  const p = (name: string, pivot: [number, number, number], c: ReturnType<typeof box>) =>
+    part(name, pivot, [c], { children: [part(name + 'Charge', [0, 0, 0], [{ ...c, inflate: 2 }], { layer: 'charge' })] });
   return {
     id,
     tex: [64, 32],
+    layers: ['charge'],
     width: 0.6,
     height: 1.7,
     pose: poseCreeper,
     parts: [
-      part('head', [0, y, 0], [box(-4, -8, -4, 8, 8, 8, 0, 0)]),
-      part('body', [0, y, 0], [box(-4, 0, -2, 8, 12, 4, 16, 16)]),
-      part('leg1', [-2, y + 12, 4], [box(-2, 0, -2, 4, 6, 4, 0, 16)]),
-      part('leg2', [2, y + 12, 4], [box(-2, 0, -2, 4, 6, 4, 0, 16)]),
-      part('leg3', [-2, y + 12, -4], [box(-2, 0, -2, 4, 6, 4, 0, 16)]),
-      part('leg4', [2, y + 12, -4], [box(-2, 0, -2, 4, 6, 4, 0, 16)]),
+      p('head', [0, y, 0], box(-4, -8, -4, 8, 8, 8, 0, 0)),
+      p('body', [0, y, 0], box(-4, 0, -2, 8, 12, 4, 16, 16)),
+      p('leg1', [-2, y + 12, 4], box(-2, 0, -2, 4, 6, 4, 0, 16)),
+      p('leg2', [2, y + 12, 4], box(-2, 0, -2, 4, 6, 4, 0, 16)),
+      p('leg3', [-2, y + 12, -4], box(-2, 0, -2, 4, 6, 4, 0, 16)),
+      p('leg4', [2, y + 12, -4], box(-2, 0, -2, 4, 6, 4, 0, 16)),
     ],
   };
 }
@@ -280,6 +311,7 @@ const pigBody = [box(-5, -10, -7, 10, 16, 8, 28, 8)];
 export const PIG: ModelDef = {
   id: 'pig',
   tex: [64, 32],
+  baby: quadBaby(4, 4),
   layers: ['saddle'],
   width: 0.9,
   height: 0.9,
@@ -294,6 +326,7 @@ export const PIG: ModelDef = {
 export const COW: ModelDef = {
   id: 'cow',
   tex: [64, 32],
+  baby: quadBaby(8, 6),
   width: 0.9,
   height: 1.4,
   pose: poseQuadruped,
@@ -306,12 +339,18 @@ export const COW: ModelDef = {
 
 const poseSheep: PoseFn = (p, c) => {
   poseQuadruped(p, c);
+  if (c.eat > 0) {
+    // EntitySheep eating grass: the head down to the ground, chewing.
+    p.head.py += 9 * Math.min(1, c.eat * 4, (1 - c.eat) * 4);
+    p.head.rx = PI / 5 + Math.sin(c.age * 2.7) * 0.25 * PI / 5;
+  }
 };
 
 /** ModelSheep2 + the wool (ModelSheep1 with sheep_fur.png) as tagged children. */
 export const SHEEP: ModelDef = {
   id: 'sheep',
   tex: [64, 32],
+  baby: quadBaby(8, 4),
   layers: ['wool'],
   width: 0.9,
   height: 1.3,
@@ -339,6 +378,7 @@ const poseChicken: PoseFn = (p, c) => {
 export const CHICKEN: ModelDef = {
   id: 'chicken',
   tex: [64, 32],
+  baby: quadBaby(5, 2),
   width: 0.4,
   height: 0.7,
   pose: poseChicken,
@@ -358,7 +398,8 @@ export const CHICKEN: ModelDef = {
 
 /** ModelWolf: sitting (Mob16 & 1) folds the legs; the tail rises when tamed, angry or wagging. */
 const poseWolf: PoseFn = (p, c) => {
-  const sitting = (c.variant & 1) !== 0, angry = (c.variant & 2) !== 0, tame = (c.variant & 4) !== 0;
+  const n = c.v.isString ? 0 : c.variant;
+  const sitting = (n & 1) !== 0 || c.v.has('sitting', 'sit'), angry = (n & 2) !== 0 || c.v.has('angry'), tame = (n & 4) !== 0 || c.v.has('tame', 'tamed');
   p.head.ry = c.headYaw * D2R;
   p.head.rx = c.pitch * D2R;
   p.tail.ry = angry ? 0 : Math.cos(c.swing * 0.6662) * 1.4 * c.amount;
@@ -395,6 +436,7 @@ function wolf(id: string, dx: number): ModelDef {
     width: 0.6,
     height: 0.85,
     pose: poseWolf,
+    baby: quadBaby(5, 2),
     parts: [
       part('head', [-1, 13.5, -7], [box(-2 + dx, -3, -2, 6, 6, 4, 0, 0), box(-2 + dx, -5, 0, 2, 2, 1, 16, 14), box(2 + dx, -5, 0, 2, 2, 1, 16, 14), box(-0.5 + dx, 0, -5, 3, 3, 4, 0, 10)]),
       part('body', [0, 14, 2], [box(-3 + dx, -2, -3, 6, 9, 6, 18, 14)], { rot: [PI / 2, 0, 0] }),

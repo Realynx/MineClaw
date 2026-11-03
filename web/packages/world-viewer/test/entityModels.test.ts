@@ -12,6 +12,7 @@ import { attackProgress, deathAngle, newMotion, stepMotion } from '../src/render
 import { apply, rootMatrix, Skeleton } from '../src/render/entities/pose';
 import { ALL_MODELS, lookFn, lookKeys, MOB_NAMES, MODEL_BY_ID, mobLook, objectLook, playerLook } from '../src/render/entities/registry';
 import type { PoseCtx } from '../src/render/entities/types';
+import { Variant } from '../src/render/entities/variant';
 import type { BotView, EntityView } from '../src/world/entities';
 import type { EntityDto } from '../src/types';
 
@@ -20,7 +21,7 @@ const PACK_1122 = JSON.parse(readFileSync(join(gen, '1.12.2', 'pack.json'), 'utf
 const PACK_BETA = JSON.parse(readFileSync(join(gen, 'b1.8.1', 'pack.json'), 'utf8')) as PackBeta;
 
 const ctx = (o: Partial<PoseCtx> = {}): PoseCtx => ({
-  swing: 0, amount: 0, age: 0, headYaw: 0, pitch: 0, attack: 0, variant: 0, flags: 0, sneaking: false, riding: false, holding: false, aggressive: false, beta: false, seed: 0, speed: 0, ...o,
+  swing: 0, amount: 0, age: 0, headYaw: 0, pitch: 0, attack: 0, attackOff: 0, eat: 0, baby: false, v: Variant.NONE, using: false, bow: false, standPose: null, variant: 0, flags: 0, sneaking: false, riding: false, holding: false, aggressive: false, beta: false, seed: 0, speed: 0, ...o,
 });
 
 describe('entity model data', () => {
@@ -64,7 +65,7 @@ describe('entity model data', () => {
       }
     }
     for (const key of lookKeys()) {
-      const l = lookFn(key)!(0, false, 1);
+      const l = lookFn(key)!(Variant.of(0), false, 1);
       expect(MODEL_BY_ID[l.model], key).toBeDefined();
     }
     for (const o of ['boat', 'minecart', 'arrow'])

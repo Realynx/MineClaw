@@ -7,8 +7,9 @@
 // wrapper at y = 24.016 − 16·h puts its origin h blocks above the entity position; rotZ(π) on it turns the y-down model
 // frame into the vanilla y-up frame of renderers that never flip (arrow, ender crystal).
 
-import { box, D2R, look, mbox, part, PI } from '../dsl';
+import { BIPED_BABY, box, D2R, look, mbox, part, PI } from '../dsl';
 import type { CubeDef, Look, LookFn, ModelDef, PartState, PoseCtx, PoseFn } from '../types';
+import type { Variant } from '../variant';
 
 /** Model y (pixels) of the point `h` blocks above the entity position (scale 1). */
 const lift = (h: number) => 24.016 - 16 * h;
@@ -137,6 +138,7 @@ export const WITCH: ModelDef = {
 /** ModelZombieVillager (64×64): villager head and robe on a biped, zombie arms. */
 export const ZOMBIE_VILLAGER: ModelDef = {
   id: 'zombie_villager',
+  baby: BIPED_BABY,
   tex: [64, 64],
   parts: [
     part('head', [0, 0, 0], [box(-4, -10, -4, 8, 10, 8, 0, 0), box(-1, -3, -6, 2, 4, 2, 24, 0)], {
@@ -568,30 +570,49 @@ export const MODELS: ModelDef[] = [
 
 // ------------------------------------------------------------------------------------------------------------ looks
 
-const PROFESSIONS = ['farmer', 'librarian', 'priest', 'smith', 'butcher'];
+const PROFESSIONS = ['farmer', 'librarian', 'priest', 'smith', 'butcher', 'nitwit'];
 const WOODS = ['oak', 'spruce', 'birch', 'jungle', 'acacia', 'darkoak'];
-const prof = (id: number) => PROFESSIONS[((id % 5) + 5) % 5];
+const WOOD_NAMES = ['oak', 'spruce', 'birch', 'jungle', 'acacia', 'dark_oak'];
+
+/** A villager profession 0..5 from the variant (a number, or a name / "profession:" token), else picked by entity id. */
+function profession(v: Variant, id: number): number {
+  const byName = v.pick(PROFESSIONS, 'profession');
+  if (byName >= 0) return byName;
+  if (v.isString ? /^\d+$/.test(v.tokens[0] ?? '') : v.raw != null) return Math.max(0, Math.min(5, v.num));
+  return ((id % 5) + 5) % 5;
+}
 
 const crystal: LookFn = () => ({ model: 'ender_crystal', texture: 'entity/endercrystal/endercrystal', colour: 0xc080d0 });
 
 export const LOOKS: Record<string, LookFn> = {
-  villager: (_v, _b, id) => ({ model: 'villager', texture: `entity/villager/${prof(id)}`, colour: 0x9a6a4a }),
+  // Nitwits wear the plain villager skin (1.12.2 has no nitwit texture).
+  villager: (v, _b, id) => {
+    const p = profession(v, id);
+    return { model: 'villager', texture: `entity/villager/${p === 5 ? 'villager' : PROFESSIONS[p]}`, colour: 0x9a6a4a };
+  },
   witch: () => ({ model: 'witch', texture: 'entity/witch', colour: 0x4a2a5a }),
-  zombie_villager: (_v, _b, id) => ({ model: 'zombie_villager', texture: `entity/zombie_villager/zombie_${prof(id)}`, colour: 0x4a7a4a }),
+  zombie_villager: (v, _b, id) => {
+    const p = profession(v, id);
+    return { model: 'zombie_villager', texture: p === 5 ? 'entity/zombie_villager/zombie_villager' : `entity/zombie_villager/zombie_${PROFESSIONS[p]}`, colour: 0x4a7a4a };
+  },
   villager_golem: () => ({ model: 'iron_golem', texture: 'entity/iron_golem', colour: 0xc8c0b0 }),
   snowman: () => ({ model: 'snow_golem', texture: 'entity/snowman', colour: 0xf0f8ff }),
   vindication_illager: () => ({ model: 'vindicator', texture: 'entity/illager/vindicator', colour: 0x5a6a6a }),
   evocation_illager: () => ({ model: 'evoker', texture: 'entity/illager/evoker', colour: 0x3a3a3a }),
   illusion_illager: () => ({ model: 'illusioner', texture: 'entity/illager/illusionist', colour: 0x2a3a7a }),
-  vex: () => ({ model: 'vex', texture: 'entity/illager/vex', colour: 0x8aa0c0 }),
+  vex: (v) => ({ model: 'vex', texture: v.has('charging', 'angry') ? 'entity/illager/vex_charging' : 'entity/illager/vex', colour: 0x8aa0c0 }),
   blaze: () => ({ model: 'blaze', texture: 'entity/blaze', colour: 0xf0b020 }),
-  magma_cube: (v) => ({ model: 'magma_cube', texture: 'entity/slime/magmacube', scale: Math.max(1, v), colour: 0x8a2a10 }),
+  magma_cube: (v) => ({ model: 'magma_cube', texture: 'entity/slime/magmacube', scale: Math.max(1, v.numOf('size', v.num) || 1), colour: 0x8a2a10 }),
   silverfish: (_v, beta) => ({ model: 'silverfish', texture: beta ? 'mob/silverfish' : 'entity/silverfish', colour: 0x9a9a9a }),
   endermite: () => ({ model: 'endermite', texture: 'entity/endermite', colour: 0x2a1a3a }),
   ender_crystal: crystal,
   'object:ender_crystal': crystal,
-  'object:boat': (v, beta) =>
-    beta ? { model: 'boat_beta', texture: 'item/boat', colour: 0x8a6a3a } : { model: 'boat', texture: `entity/boat/boat_${WOODS[v >= 0 && v < 6 ? v : 0]}`, colour: 0x8a6a3a },
+  'object:boat': (v, beta) => {
+    if (beta) return { model: 'boat_beta', texture: 'item/boat', colour: 0x8a6a3a };
+    const w = v.pick(WOOD_NAMES, 'wood');
+    const k = w >= 0 ? w : v.pick(WOODS) >= 0 ? v.pick(WOODS) : v.num >= 0 && v.num < 6 ? v.num : 0;
+    return { model: 'boat', texture: `entity/boat/boat_${WOODS[k]}`, colour: 0x8a6a3a };
+  },
   'object:minecart': (_v, beta) => ({ model: 'minecart', texture: beta ? 'item/cart' : 'entity/minecart', colour: 0x6a6a6a }),
   'object:arrow': (_v, beta) => ({ model: 'arrow', texture: beta ? 'item/arrows' : 'entity/projectiles/arrow', colour: 0x9a7a5a }),
   'object:spectral_arrow': () => ({ model: 'arrow', texture: 'entity/projectiles/spectral_arrow', colour: 0xd8c040 }),

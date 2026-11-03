@@ -152,6 +152,8 @@ export interface EntityDto {
 export interface EntityEvent {
   /** The entity (absent for lightning). */
   id?: number | null;
+  /** [entity models] A hive bot the event is about (bots carry no entity id on the wire). */
+  name?: string | null;
   dim?: Dim;
   kind: 'swing' | 'swing_off' | 'hurt' | 'death' | 'crit' | 'magic_crit' | 'eat' | 'teleport' | 'lightning' | string;
   /** Unix ms. */

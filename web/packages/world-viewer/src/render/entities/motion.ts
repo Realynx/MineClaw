@@ -15,6 +15,11 @@ export interface Motion {
   speed: number;
   /** ms timestamps (0 = none). */
   attackAt: number;
+  /** Off-hand swing, eating start (ms; 0 = none). */
+  attackOffAt: number;
+  eatAt: number;
+  /** Smoothed head yaw (degrees) when the wire sends one apart from the body yaw; NaN = none. */
+  head: number;
   hurtAt: number;
   deadAt: number;
   /** Last known health (bots) to detect damage. */
@@ -29,7 +34,7 @@ export interface Motion {
 export function newMotion(x: number, y: number, z: number, yaw: number, key: string, now: number): Motion {
   let h = 2166136261;
   for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 16777619);
-  return { x, y, z, swing: 0, amount: 0, body: yaw, speed: 0, attackAt: 0, hurtAt: 0, deadAt: 0, hp: NaN, seed: (h >>> 0) / 4294967296, lastMs: now, seen: 0 };
+  return { x, y, z, swing: 0, amount: 0, body: yaw, speed: 0, attackAt: 0, attackOffAt: 0, eatAt: 0, head: NaN, hurtAt: 0, deadAt: 0, hp: NaN, seed: (h >>> 0) / 4294967296, lastMs: now, seen: 0 };
 }
 
 export const wrapDeg = (a: number) => ((((a + 180) % 360) + 360) % 360) - 180;
@@ -72,6 +77,39 @@ export function stepMotion(m: Motion, x: number, y: number, z: number, look: num
   // Idle: the body slowly follows the head (players turn their body after the head).
   else if (m.speed <= 0.02 && Math.abs(head) > 50) m.body += wrapDeg(look - m.body) * (1 - Math.pow(0.9, ticks));
   m.body = wrapDeg(m.body);
+}
+
+/** Eating lasts 32 ticks (EntityLivingBase item use of food). */
+export const EAT_TICKS = 32;
+/** After the 20-tick fall the body lies there, then shrinks away and is hidden (ms after death). */
+export const DEATH_SHRINK_MS = 1200, DEATH_GONE_MS = 1700;
+
+/** Progress 0..1 of something that started at `at` (ms) and lasts `ticks`; 0 when not running. */
+export function progress(at: number, ticks: number, now: number): number {
+  if (!at) return 0;
+  const k = (now - at) / (ticks * 50);
+  return k >= 1 || k < 0 ? 0 : Math.max(1e-6, k);
+}
+
+/** Off-hand swingProgress 0..1. */
+export function attackOffProgress(m: Motion, now: number): number {
+  const k = progress(m.attackOffAt, SWING_TICKS, now);
+  if (!k && m.attackOffAt && now - m.attackOffAt > SWING_TICKS * 50) m.attackOffAt = 0;
+  return k;
+}
+
+/** Eating progress 0..1. */
+export function eatProgress(m: Motion, now: number): number {
+  const k = progress(m.eatAt, EAT_TICKS, now);
+  if (!k && m.eatAt && now - m.eatAt > EAT_TICKS * 50) m.eatAt = 0;
+  return k;
+}
+
+/** Size of a dead body (1 while falling and lying, shrinking to 0, then gone). */
+export function deathScale(m: Motion, now: number): number {
+  if (!m.deadAt) return 1;
+  const t = now - m.deadAt;
+  return t <= DEATH_SHRINK_MS ? 1 : Math.max(0, 1 - (t - DEATH_SHRINK_MS) / (DEATH_GONE_MS - DEATH_SHRINK_MS));
 }
 
 /** swingProgress 0..1 (0 when not swinging). */

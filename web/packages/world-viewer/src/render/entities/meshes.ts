@@ -69,6 +69,9 @@ export class InstancedDraw {
       this.geometry.setAttribute(k, attr);
     }
     this.cap = cap;
+    // three caches the instance cap of an instanced geometry the first time it binds it (WebGLBindingStates): forget it so
+    // the grown arrays are drawn in full.
+    delete (this.geometry as unknown as { _maxInstanceCount?: number })._maxInstanceCount;
   }
 
   reset(): void {
@@ -212,6 +215,7 @@ export class ShadowDraw {
     this.geometry.setAttribute('aShadow', new THREE.InstancedBufferAttribute(s, 4).setUsage(THREE.DynamicDrawUsage));
     this.geometry.setAttribute('aAlpha', new THREE.InstancedBufferAttribute(a, 1).setUsage(THREE.DynamicDrawUsage));
     this.cap = cap;
+    delete (this.geometry as unknown as { _maxInstanceCount?: number })._maxInstanceCount;
   }
 
   reset(): void {
