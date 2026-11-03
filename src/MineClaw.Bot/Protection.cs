@@ -121,11 +121,18 @@ public sealed partial class Protection
         or Ids1122.TrappedChest or Ids1122.Hopper or Ids1122.Dropper || Ids1122.IsShulkerBox(id);
 
     /// <summary>The fast predicate: may the bot's own choices break this block? (Hard marks, then soft sources minus overrides.)</summary>
-    public bool IsProtected(BlockPos p, int blockId)
+    public bool IsProtected(BlockPos p, int blockId) => IsProtected(p, blockId, Claims);
+
+    /// <summary>
+    /// <see cref="IsProtected(BlockPos, int)"/> as one body sees it: hive leases through <paramref name="claims"/>, that body's own claim
+    /// view, so its own lease is never "another hive bot" (live 11-03: a Story pawn's dig took its lease on the block under its own
+    /// name, then the shared policy looked through main's view, saw the pawn's lease and refused every cut "claimed").
+    /// </summary>
+    public bool IsProtected(BlockPos p, int blockId, IClaimBoard? claims)
     {
         int dim = Dim;
         if (Marks is { HasNever: true } marks && marks.NeverAt(p, dim) != null) return true;
-        if (!AnySoft(p, blockId, dim)) return false;
+        if (!AnySoft(p, blockId, dim, claims)) return false;
         if (IsDigCell?.Invoke(p) == true) return false;
         return !Overridden(p, blockId, dim);
     }
@@ -148,7 +155,7 @@ public sealed partial class Protection
         return Marks is { HasPermits: true } m && m.PermitAt(p, dim, exactOnly: container) != null;
     }
 
-    private bool AnySoft(BlockPos p, int id, int dim)
+    private bool AnySoft(BlockPos p, int id, int dim, IClaimBoard? claims)
     {
         if (_blockIds.Contains(id)) return true;
         foreach (var r in _configRegions) if (Inside(p, r.Min, r.Max)) return true;
@@ -156,11 +163,11 @@ public sealed partial class Protection
         {
             // Crops are farm plants wherever they grow: no structure box or indexed build owns them; unripe ones wait.
             if (UnripeReason(p, id) != null) return true;
-            return Claims != null && !Claims.IsFree(ClaimKey.Block(p, dim));
+            return claims != null && !claims.IsFree(ClaimKey.Block(p, dim));
         }
         if (InMemoryRegion(p, id) != null) return true;
         if (IndexerKind?.Invoke(p) != null) return true;
-        return Claims != null && !Claims.IsFree(ClaimKey.Block(p, dim));
+        return claims != null && !claims.IsFree(ClaimKey.Block(p, dim));
     }
 
     /// <summary>The remembered structure box holding <paramref name="p"/> as one of its parts (farmland: as its farm), or null.
@@ -183,20 +190,26 @@ public sealed partial class Protection
                            || l.Contains("garden", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>The verdict without counting it (tests, diagnostics).</summary>
-    public ProtectionVerdict Check(BlockPos p, int blockId)
+    public ProtectionVerdict Check(BlockPos p, int blockId) => Check(p, blockId, Claims);
+
+    /// <summary><see cref="Check(BlockPos, int)"/> with hive leases seen through one body's claim view.</summary>
+    public ProtectionVerdict Check(BlockPos p, int blockId, IClaimBoard? claims)
     {
         int dim = Dim;
         if (Marks?.NeverAt(p, dim) is { } never)
             return new ProtectionVerdict(ProtectionLevel.Hard, "never_break",
                 $"{never.By} marked {(string.IsNullOrWhiteSpace(never.Label) ? "it" : never.Label)} never-break");
-        if (!AnySoft(p, blockId, dim) || IsDigCell?.Invoke(p) == true || Overridden(p, blockId, dim)) return ProtectionVerdict.None;
-        return SoftReason(p, blockId, dim);
+        if (!AnySoft(p, blockId, dim, claims) || IsDigCell?.Invoke(p) == true || Overridden(p, blockId, dim)) return ProtectionVerdict.None;
+        return SoftReason(p, blockId, dim, claims);
     }
 
     /// <summary>Why it's protected, counted by reason, flagged as a repeat when the same refusal was given recently (rule 5/6).</summary>
-    public ProtectionVerdict Explain(BlockPos p, int blockId)
+    public ProtectionVerdict Explain(BlockPos p, int blockId) => Explain(p, blockId, Claims);
+
+    /// <summary><see cref="Explain(BlockPos, int)"/> with hive leases seen through one body's claim view.</summary>
+    public ProtectionVerdict Explain(BlockPos p, int blockId, IClaimBoard? claims)
     {
-        var v = Check(p, blockId);
+        var v = Check(p, blockId, claims);
         if (!v.Protected) return v;
         var now = _time.GetUtcNow();
         var key = (v.Reason, p.X, p.Z);
@@ -221,7 +234,7 @@ public sealed partial class Protection
     /// <summary>The last refused block ("you can break it" right after a refusal unlocks it).</summary>
     public (BlockPos Pos, int Id, DateTimeOffset At)? LastRefusal { get; private set; }
 
-    private ProtectionVerdict SoftReason(BlockPos p, int id, int dim)
+    private ProtectionVerdict SoftReason(BlockPos p, int id, int dim, IClaimBoard? claims)
     {
         static ProtectionVerdict S(string reason, string why, string? unlock = null) => new(ProtectionLevel.Soft, reason, why, unlock);
         string name = Blocks.Get(id).Name.Replace('_', ' ');
@@ -252,7 +265,7 @@ public sealed partial class Protection
                 _ when IsContainer(id) => S("container", $"a {name}: it may hold items", containerUnlock),
                 _ => S("station", $"a {kind.Replace('_', ' ')}"),
             };
-        if (Claims != null && !Claims.IsFree(ClaimKey.Block(p, dim))) return S("claimed", ClaimedWhy);
+        if (claims != null && !claims.IsFree(ClaimKey.Block(p, dim))) return S("claimed", ClaimedWhy);
         return S("unknown", "a protected block");
     }
 

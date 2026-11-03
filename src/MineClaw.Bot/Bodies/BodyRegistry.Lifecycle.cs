@@ -185,7 +185,7 @@ public sealed partial class BodyRegistry
                 acc = pick;
             }
             // Pending: logging in, not in game (and not on the tab list) yet.
-            var slot = Host.CanSpawn(_accounts.Values.Count(x => x.Live && x.Body is { } pb && !pb.Adapter.IsPlaying));
+            var slot = Host.CanSpawn(acc.Name, _accounts.Values.Count(x => x.Live && x.Body is { } pb && !pb.Adapter.IsPlaying));
             if (!slot.Ok) return BodySpawnResult.No($"no: {slot.Reason}");
             try { acc.Body ??= Host.Create(acc.Name); }
             catch (Exception ex)
@@ -233,6 +233,9 @@ public sealed partial class BodyRegistry
         try { return Host.VoidSpot(name); }
         catch (Exception) { return null; }
     }
+
+    /// <summary>A body whose login is waiting out a reconnect backoff tries again now. False = no such body, or it isn't waiting.</summary>
+    public bool RetryNow(string name) => Acc(name)?.Runner is { IsRunning: true } r && r.RetryNow();
 
     /// <summary>A trusted player said they'll /tp this body: its void login spot doesn't block a spawn for a while.</summary>
     public bool ConfirmVoid(string name, TimeSpan? window = null)

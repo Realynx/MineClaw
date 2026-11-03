@@ -133,4 +133,24 @@ public class BodyRunnerTests
     [InlineData("Server closed", false)]
     [InlineData(null, false)]
     public void Only_the_duplicate_login_kick_counts(string? reason, bool dup) => Assert.Equal(dup, BodyExit.IsDuplicateLogin(reason));
+
+    [Fact]
+    public async Task RetryNow_cuts_a_long_reconnect_wait_short()
+    {
+        // Live 11-03: a pawn kicked "not white-listed" waited out a 60 s backoff after main had added it again. "Bring online" (and
+        // the re-add) cut the wait: the next login starts at once.
+        int tries = 0;
+        var session = new BodySession(_ => Task.CompletedTask,
+            _ => ++tries < 2 ? throw new IOException("kicked: You are not white-listed on this server!") : Task.CompletedTask,
+            ct => Task.Delay(Timeout.Infinite, ct).ContinueWith(_ => BodyExit.Stopped()), () => Task.CompletedTask);
+        var o = Fast();
+        o.ReconnectSeconds = 120;
+        await using var r = new BodyRunner("maid_chan_105", session, o);
+        Assert.False(r.RetryNow()); // not waiting
+        r.Start();
+        await Until(() => tries == 1, 3000, "the first, refused login");
+        await Until(() => r.RetryNow(), 3000, "the reconnect wait");
+        await Until(() => r.State == BodyState.Online, 3000, "online right after RetryNow (not 120 s later)");
+        Assert.Equal(2, tries);
+    }
 }

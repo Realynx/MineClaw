@@ -235,8 +235,31 @@ public sealed class BodyRunner : IAsyncDisposable
     private async Task<bool> DelayAsync(TimeSpan t, CancellationToken ct)
     {
         if (t <= TimeSpan.Zero) return !ct.IsCancellationRequested;
-        try { await Task.Delay(t, _time, ct).ConfigureAwait(false); return true; }
-        catch (OperationCanceledException) { return false; }
+        var wait = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        lock (_lock) _wait = wait;
+        try { await Task.Delay(t, _time, wait.Token).ConfigureAwait(false); return true; }
+        catch (OperationCanceledException) { return !ct.IsCancellationRequested; } // RetryNow cut it short: go on
+        finally
+        {
+            lock (_lock) if (_wait == wait) _wait = null;
+            wait.Dispose();
+        }
+    }
+
+    private CancellationTokenSource? _wait;
+
+    /// <summary>
+    /// Cuts a reconnect (or crash) wait short: the next login attempt starts now (Story Mode's "Bring online", or after main put the
+    /// account back on the whitelist). False = it isn't waiting.
+    /// </summary>
+    public bool RetryNow()
+    {
+        lock (_lock)
+        {
+            if (_wait == null) return false;
+            try { _wait.Cancel(); } catch (ObjectDisposedException) { return false; }
+            return true;
+        }
     }
 
     public async ValueTask DisposeAsync()

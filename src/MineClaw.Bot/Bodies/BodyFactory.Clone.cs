@@ -65,8 +65,11 @@ public static partial class BodyFactory
     private static void ProtectClone(BrainContext brain, MinecraftGameClient adapter, MinecraftClient c, IClaimBoard? claims)
     {
         var protection = brain.Protection;
-        adapter.IsProtected = protection.IsProtected;
-        c.ExplainProtection = protection.Explain;
+        // Hive leases through THIS body's claim view: its own lease (ClaimAwareGameClient takes one on the block it digs, under its own
+        // name) is free to it. Through main's view (protection.Claims) every body was refused by its own lease (live 11-03).
+        var view = claims ?? protection.Claims;
+        adapter.IsProtected = (p, id) => protection.IsProtected(p, id, view);
+        c.ExplainProtection = (p, id) => protection.Explain(p, id, view);
         c.SoftOverride = protection.OverridesSoft;
         c.EditYields = protection.EditYields; // the editing context: requested digs on an open design (one EditContext per process)
         if (brain.ProtectionTelemetry is { } telemetry) c.CountRefusal = r => telemetry.Count(r);

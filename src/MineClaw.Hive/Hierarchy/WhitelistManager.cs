@@ -37,6 +37,10 @@ public sealed partial class WhitelistManager
 
     public Task<bool> AddAsync(string name, CancellationToken ct = default) => RunAsync("add", name, ct);
 
+    /// <summary>The server refused a login because the account isn't on the whitelist ("You are not white-listed on this server!").</summary>
+    public static bool IsNotWhitelistedKick(string? reason) => reason != null
+        && (reason.Contains("not white-listed", StringComparison.OrdinalIgnoreCase) || reason.Contains("not whitelisted", StringComparison.OrdinalIgnoreCase));
+
     /// <summary>How long an add waits for the server's confirmation line once replies are fed (<see cref="NoteServerLine"/>).</summary>
     public TimeSpan ConfirmTimeout { get; set; } = TimeSpan.FromSeconds(8);
 

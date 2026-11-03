@@ -28,6 +28,7 @@ internal static class StoryWiring
         }
         var host = new StoryHost(hierarchy, () => bot.Bodies, () => client.World, client.Options.Profile.Data, () => scripts, log, rt.Observations)
         {
+            MainInGame = () => client.IsPlaying,
             // Founding a colony or moving its home is the owner's request: its pawns (the hive's own maid_ bodies) are brought there with
             // /tp, armed in the gate's scoped exception (managed accounts only, the blocklist applies) and sent on main's chat.
             OpCommand = async (line, why) =>
@@ -37,6 +38,9 @@ internal static class StoryWiring
             },
         };
         var colonies = new StoryColonies(host, new StoryStore(rt.Memory.Db), log: log);
+        // Every pawn of an active colony is the colony's, online or still waiting for a seat: the startup reconcile never takes it
+        // off the whitelist (live 11-03: it raced the colony's respawn and four pawns were kicked "not white-listed" for good).
+        hierarchy?.AddOwner(colonies.Owns);
         try
         {
             int n = colonies.Load();

@@ -41,6 +41,35 @@ public sealed class StoryHost : IStoryHost
 
     public int Release(string colony) => _hierarchy?.ReleaseGroup(colony, "story colony released") ?? 0;
 
+    /// <summary>Main is in game (null = assume so).</summary>
+    public Func<bool>? MainInGame { get; init; }
+    public bool InGame => MainInGame?.Invoke() ?? true;
+
+    public PawnSeat Seat(string account)
+    {
+        if (_hierarchy is not { } h) return new(false, "the hive is off");
+        var note = h.BodyNote(account);
+        if (h.Tree.Get(account) is not { } node) return new(false, note);
+        if (node.State == "releasing") return new(true, "logging out");
+        var body = Find(account);
+        if (body is { State: BodyState.Online }) return new(true, null);
+        if (note != null) return new(true, note);
+        return new(true, body?.State switch
+        {
+            BodyState.Retired => "retired for this session (crashed too often)",
+            BodyState.Occupied => "someone else is logged in as it",
+            BodyState.Yielding => "logging out",
+            BodyState.Offline => "reconnecting",
+            _ => "connecting",
+        });
+    }
+
+    public (int Free, int Kept)? Seats() => _hierarchy?.Seats();
+
+    public IReadOnlyList<(string Account, string? Why)> Bring(string colony, IReadOnlyList<string> accounts, bool overCap) =>
+        _hierarchy is { } h ? h.BringGroup(colony, accounts, StoryColonies.PawnScript, overCap)
+            : accounts.Select(a => (a, (string?)"the hive is off: Story Mode needs Hive:Enabled and Hive:Subhives:Enabled")).ToList();
+
     private Body? Find(string account) => _bodies()?.Find(account) as Body;
 
     public PawnLive Live(string account)

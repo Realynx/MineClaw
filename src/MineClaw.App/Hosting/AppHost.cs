@@ -246,6 +246,7 @@ public static class AppHost
             : mainHive?.SourceFor(n) ?? new OfflineBotSource(n)).ToList();
         var supervisorServer = StartSupervisor(supervisorOptions, bot, client, mc.Username, sources, mainHive, loggers.CreateLogger("MineClaw.Supervisor"),
             telemetryOptions.Enabled ? telemetry.Capture : null);
+        mainHive?.Hierarchy?.ClaimsReady(); // the saved colonies (Story Mode) claimed their pawns: the startup reconcile may run
 
         Task tuiTask = Task.CompletedTask;
         if (useTui)

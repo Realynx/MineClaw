@@ -78,6 +78,7 @@ work, so viewers can watch). JSON is snake_case with nulls written. Errors are `
 | POST | `/api/story/colonies` | `{name (1..40 chars), pawns (1..12), home?:{x,y,z}}` → `{id}` (`story-<n>`). Spawns script-only bodies running `story_pawn` |
 | POST | `/api/story/colonies/{id}/release` | `{}` → `{id, released}`. The pawns deposit and log out; the saved state is kept (`active:false`) |
 | POST | `/api/story/colonies/{id}/resume` | `{}` → `{id, pawns, note}`. A released colony spawns its pawns again, their old accounts first |
+| POST | `/api/story/colonies/{id}/online` | `{pawns:[name]\|null, over_cap?:bool}` → `{started:[account], blocked:[{pawn, reason}]}`; 400 on a bad body, 404 for an unknown colony or pawn. Offline pawns are whitelisted again and (re)started now, the player cap permitting (see "Offline pawns") |
 | POST | `/api/story/colonies/{id}/pause` | `{paused}` → `{paused}` |
 | POST | `/api/story/colonies/{id}/home` | `{home:{x,y,z}}` (whole numbers) → `{home:[x,y,z]}`; 400 on a bad body, 404 for an unknown colony. Moves and saves the colony's home; pawns far from it are brought there (see "Home") |
 | GET | `/api/story/colonies/{id}?since=rev` | The state (below): full, or a delta when `since` is given |
@@ -103,7 +104,7 @@ storage is chests (see "Storage").
 ```
 {id, rev, since, full, at, time_of_day, hour, paused, active, home:[x,y,z]|null, tie_break: "column"|"skill", version,
  work_types:[guard, doctor, cook, hunt, build, farm, mine, chop, craft, haul],
- pawns:[Pawn], zones:[{id, kind, area, name}], beds:[{pos:[x,y,z], dim, pawn, zone}], designations:[Designation], orders:[{id, pawn, kind, target, design, given, left}],
+ pawns:[Pawn], seats:{online, wanted, cap_free, kept_for_regulars}, zones:[{id, kind, area, name}], beds:[{pos:[x,y,z], dim, pawn, zone}], designations:[Designation], orders:[{id, pawn, kind, target, design, given, left}],
  alerts:[{at, level: info|warn, text, pawn}], builds:[Build], ghosts:{rev, blocks:[[x,y,z,id,meta,build_id,state]]},
  storages:[Storage], workbenches:[Workbench], categories:[Category] (full only), ai:[Ai], directives:[Directive],
  time_control:{available: bool, by: account|null},
@@ -117,7 +118,7 @@ watches.
 The **Pawn** object:
 
 ```
-{name, display, kind:"pawn", online, hp, food, pos:[x,y,z], dim, drafted, state: idle|working|moving|eating|sleeping|fleeing|fighting|drafted|offline,
+{name, display, kind:"pawn", online, hp, food, pos:[x,y,z], dim, drafted, state: idle|working|moving|eating|sleeping|fleeing|fighting|drafted|offline, offline_reason,
  job:{type, label, target?, progress?, since}|null, queue:[Order],
  skills:{type:{level, xp, passion}}, traits:[{id, label, effect}], priorities:{type:0..4}, schedule:[24 × block], held, inventory:[[id,meta,count]] }
 ```
@@ -195,6 +196,61 @@ is `{available, by}`. It is available when an account this bot controls is op: m
   scoped exception (only that exact shape, never when the config blocks `/time`, audited), and another body's after the same
   blocklist check, audited. The request is the authenticated story-role owner's. At most one change a second (429 otherwise,
   with `Retry-After: 1`). Each change logs one line.
+
+### Offline pawns (added 2026-11-03)
+
+Live 11-03 (CT 114, `story-1`, 10 pawns, 1.12.2): after a restart only 5 pawns came (the player cap) and four of those were then
+kicked "You are not white-listed" every 60 s for good. Three causes, all fixed:
+
+- **The startup reconcile** (crash cleanup: managed accounts main left whitelisted but that aren't running are released and taken
+  off the whitelist) judged "running" by the supervisor's clone processes only, so every in-process body, story pawns included, looked
+  stale. Now an account is kept when it is a node of the ownership tree or claimed by an owner (`HiveHierarchy.AddOwner`: Story Mode
+  registers "a pawn of an active colony", spawned or still waiting for a seat), and the reconcile waits until the owners have loaded
+  (`ExpectClaims` / `ClaimsReady`, AppHost calls it once the supervisor and its Story wiring are up; at most 2 min).
+- **A "not white-listed" kick** was retried forever without a re-add (the add ran only before a body's first login). Now the body
+  asks main to add it again (`HiveHierarchy.RewhitelistAsync`: managed accounts of the tree or an owner only, through the gate's
+  scoped, armed `/whitelist` exception) and retries after 2, 4, 8, 16, then 30 s; after three tries in a row the body's own reconnect
+  backoff takes over and each later login re-adds again. When main can't (it isn't op), the pawn's reason says so, the log warns once
+  per 5 min and the colony raises one alert.
+- **The player cap.** Pawns that didn't fit ("only 2 slot(s) free and 2 kept for offline regulars") were never tried again. Now an
+  active colony retries every 15 s, once main is in game: the pawns that aren't hosted are brought in as seats free up, the same
+  accounts only (never a new one); a colony founded short grows to its wanted size the same way. A pawn that yielded its seat to a
+  regular comes back the same way.
+
+Each pawn carries `offline_reason` (null while online): `released`, `connecting`, `reconnecting`, `logging out`,
+`not whitelisted — re-adding`, `not whitelisted — main (<main>) isn't op, so it can't whitelist <pawn>: op <main> on the server`,
+`server full (player cap: 2 free, 2 kept for regulars)` (the regulars' seats would fit it), `server full (7/7 seats taken)`
+(nothing would), `someone else is logged in as it`, `retired for this session (crashed too often)`, `waiting for a seat`. The colony
+state carries `seats: {online, wanted, cap_free, kept_for_regulars}` (the last two null when unknown).
+
+`POST /api/story/colonies/{id}/online` `{pawns:[name]|null, over_cap?:bool}` → 200 `{started:[account], blocked:[{pawn, reason}]}`.
+`null` means every offline pawn. Each one is whitelisted again (through main) and (re)started now: a hosted body's reconnect wait is
+cut short, another logs in, the player cap permitting. An online pawn named explicitly counts as started. A released colony's pawns
+are blocked with `the colony is released: resume it first`. 404 for an unknown colony or pawn, 400 for a bad body (`pawns` not a
+non-empty list of names or null, `over_cap` not a boolean).
+
+**`over_cap: true`** is the owner's explicit choice to use the seats kept for offline regulars. It can lock a regular out (the
+server is full when they come) until a pawn leaves: such a pawn is spared by the yield check that otherwise logs bodies out to make
+room for a regular, until it logs out for good. Even over the cap a pawn never takes a seat that isn't free.
+
+Web: offline pawns are greyed in the colonist bar with an offline badge, the reason on hover and in the inspector; an offline pawn's
+inspector has "Bring online", the Colony tab has "Bring all online (k offline)" and the colonist bar a small button for it whenever
+a pawn is offline. When the answer is blocked by the cap, the reason is shown with a secondary "Use regulars' seats" action and a
+one-line warning.
+
+### A pawn's own claim (added 2026-11-03)
+
+Live 11-03 22:08: the only pawn online couldn't cut a single plant: "double_plant at 208,64,412: another hive bot is working on that
+part right now". Its dig takes a hive lease on the block under its own name (`ClaimAwareGameClient`), then the one shared protection
+policy checked leases through main's claim view and saw the pawn's own lease as someone else's. Every in-process body now checks
+leases through its own view (`Protection.IsProtected/Explain(p, id, claims)`), so its own lease is free to it and another body's still
+isn't. Also: a cut over a tall plant (1.12.2 `double_plant`) is one designation on its lower half (breaking it drops the upper), leased
+once; a pawn that goes offline gives its job and leases back at once (not after the 90 s lease), as a failed or cancelled job does.
+
+Designations carry `retry_at` (when a resting, failed designation is tried again; null when open), and
+`POST .../designations {op:"retry", ids}` → `{count, retried}` tries them again now. The map shows a failed designation's reason as a
+short label (one per cluster of adjacent designations with the same reason), the full text on hover and in its inspector (reason,
+fail count, next retry, Retry now / Cancel).
 
 ### Pawn bodies and the pawn script
 
