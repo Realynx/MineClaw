@@ -13,7 +13,9 @@ public static class StoryBlocks
     public static readonly HashSet<int> Leaves = [18, 161];
     /// <summary>The cut tool: grass, flowers, ferns, dead bushes, saplings, mushrooms, vines, lily pads (and leaves).</summary>
     public static readonly HashSet<int> Plants = [6, 31, 32, 37, 38, 39, 40, 106, 111, 175];
-    public static readonly HashSet<int> Ores = [14, 15, 16, 21, 56, 73, 74, 129, 153];
+    /// <summary>1.12.2's two-block-tall plants (sunflower, lilac, double grass, large fern, rose bush, peony): one plant, two halves.</summary>
+    public const int DoublePlant = 175;
+    public static readonly HashSet<int> Ores =[14, 15, 16, 21, 56, 73, 74, 129, 153];
     public static readonly HashSet<int> Stone = [1, 4, 24, 48, 87, 121, 179];
     public static readonly HashSet<int> Soil = [2, 3, 12, 13, 60, 78, 80, 82, 88, 110];
     public static readonly HashSet<int> Liquids = [8, 9, 10, 11];

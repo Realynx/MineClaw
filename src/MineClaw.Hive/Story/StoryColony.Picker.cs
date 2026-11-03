@@ -293,15 +293,32 @@ public sealed partial class StoryColony
     /// <summary>A block designation of <paramref name="kind"/> (nearest open first).</summary>
     private ActiveJob? DesignationJob(PawnState p, P3 from, string type, string kind, string scriptKind, string label)
     {
-        var d = Designations.Where(x => x.Kind == kind && x.At is { } at && Open("b:" + at, p.Name, at)).OrderBy(x => x.At!.Value.Dist(from)).FirstOrDefault();
+        // A tall plant's two halves are one target: its lower half (breaking it drops the upper), leased once, so two pawns never split it.
+        P3 T(P3 at) => kind == "cut" ? PlantBase(at) : at;
+        var d = Designations.Where(x => x.Kind == kind && x.At is { } at && Open("b:" + T(at), p.Name, T(at))).OrderBy(x => x.At!.Value.Dist(from)).FirstOrDefault();
         if (d == null) return null;
-        var at = d.At!.Value;
+        var at = T(d.At!.Value);
         return Job(type, scriptKind, d.Label ?? label, at, "b:" + at, "designation", d.Id, "working",
             j =>
             {
                 if (d.Replant != null) j["replant"] = d.Replant;
                 if (kind == "chop") ChopFill(j, d.Blocks);
             }, xp: kind == "chop" ? 40 : 20);
+    }
+
+    /// <summary>A designation's lease (and rest) key: its entity, or its block (a tall plant's lower half).</summary>
+    internal string DesignationKey(DesignationState d) =>
+        d.Entity is { } e ? "e:" + e : d.At is { } at ? "b:" + (d.Kind == "cut" ? PlantBase(at) : at) : "d:" + d.Id;
+
+    /// <summary>When a resting (failed) designation is tried again, or null when it is open now.</summary>
+    internal DateTimeOffset? RetryAt(DesignationState d) => _skip.TryGetValue(DesignationKey(d), out var until) && until > Now ? until : null;
+
+    /// <summary>The lower half of a tall plant (1.12.2 double_plant: sunflower, lilac, tall grass, large fern, rose bush, peony) at or
+    /// under <paramref name="at"/>; any other block is its own base.</summary>
+    internal P3 PlantBase(P3 at)
+    {
+        if (World is not { } w || w.Block(at.X, at.Y, at.Z).Id != StoryBlocks.DoublePlant) return at;
+        return w.Block(at.X, at.Y - 1, at.Z).Id == StoryBlocks.DoublePlant ? at.Add(0, -1, 0) : at;
     }
 
     /// <summary>

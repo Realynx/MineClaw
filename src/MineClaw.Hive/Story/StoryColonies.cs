@@ -54,8 +54,99 @@ public sealed class StoryColonies : IDisposable
     public void Tick()
     {
         foreach (var c in All)
+        {
             try { c.Tick(); }
             catch (Exception ex) { _log.LogWarning(ex, "story {Colony}: tick failed", c.Id); } // a timer callback never throws
+            try { RetrySeats(c); }
+            catch (Exception ex) { _log.LogWarning(ex, "story {Colony}: seat retry failed", c.Id); }
+        }
+    }
+
+    /// <summary>Is the account a pawn of an active colony (spawned or still waiting for a seat)? The startup reconcile keeps those.</summary>
+    public bool Owns(string account) => All.Any(c => c.Meta.Active && c.HasPawn(account));
+
+    /// <summary>How often an active colony tries again to bring in the pawns that aren't hosted (the player cap, a body that left).</summary>
+    public TimeSpan RetryEvery { get; set; } = TimeSpan.FromSeconds(15);
+    private readonly Dictionary<string, DateTimeOffset> _nextRetry = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The seat retry: an active colony's pawns that aren't hosted (they didn't fit under the player cap, or yielded a seat to a regular)
+    /// are brought in again as seats free up, the same accounts only; a colony founded short grows to its wanted size the same way.
+    /// Refusals become each pawn's offline_reason. Hosted pawns whose login trouble needs the owner (main can't whitelist) raise an alert.
+    /// </summary>
+    public void RetrySeats(StoryColony c, bool force = false)
+    {
+        if (!c.Meta.Active || !_host.InGame) return;
+        var now = _time.GetUtcNow();
+        lock (_nextRetry)
+        {
+            if (!force && _nextRetry.TryGetValue(c.Id, out var at) && now < at) return;
+            _nextRetry[c.Id] = now + RetryEvery;
+        }
+        var missing = new List<string>();
+        foreach (var a in c.PawnNames())
+        {
+            if (_host.Live(a).Online) { c.NoteTrouble(a, null); continue; }
+            var seat = _host.Seat(a);
+            if (!seat.Hosted) missing.Add(a);
+            else c.NoteTrouble(a, seat.Why is { } w && w.StartsWith("not whitelisted — ", StringComparison.Ordinal) && !w.EndsWith("re-adding", StringComparison.Ordinal) ? w : null);
+        }
+        if (missing.Count > 0)
+        {
+            var res = _host.Bring(c.Id, missing, overCap: false);
+            Came(c, res);
+            return;
+        }
+        int short_ = c.Meta.Wanted - c.PawnNames().Count;
+        if (short_ > 0 && _host.Seats() is { } s && s.Free - 1 >= s.Kept)
+        {
+            (IReadOnlyList<string> Accounts, string? Why) r;
+            try { r = _host.Spawn(c.Id, short_, null); } catch (Exception ex) { r = ([], ex.Message); }
+            if (r.Accounts.Count > 0)
+            {
+                c.Joined(r.Accounts);
+                c.Alert("info", $"{r.Accounts.Count} more pawn(s) joined now that seats are free ({string.Join(", ", r.Accounts.Select(MineClaw.Hive.Hierarchy.HiveNode.ShortOf))})");
+                c.Save(force: true);
+            }
+        }
+    }
+
+    private void Came(StoryColony c, IReadOnlyList<(string Account, string? Why)> res)
+    {
+        var came = res.Where(r => r.Why == null).Select(r => r.Account).ToList();
+        if (came.Count > 0)
+        {
+            c.Joined(came); // their scripts talk to this director again
+            Scripting.Crew.Crews.Open(c.Id);
+            _log.LogInformation("story {Colony}: bringing {Names} online", c.Id, string.Join(", ", came));
+        }
+        c.NoteSeats(res);
+    }
+
+    /// <summary>
+    /// "Bring online" (<c>POST …/online</c>): these pawns (null = every offline one) are whitelisted again (through main) and (re)started
+    /// now, the player cap permitting; <paramref name="overCap"/> lets them take the seats kept for offline regulars. → (started, blocked).
+    /// </summary>
+    public (List<string> Started, List<(string Pawn, string Reason)> Blocked) BringOnline(StoryColony c, IReadOnlyList<string>? pawns, bool overCap)
+    {
+        var started = new List<string>();
+        var blocked = new List<(string, string)>();
+        var names = pawns ?? c.PawnNames().Where(a => !_host.Live(a).Online).ToList();
+        var bring = new List<string>();
+        foreach (var a in names)
+        {
+            if (!c.Meta.Active) blocked.Add((a, "the colony is released: resume it first"));
+            else if (_host.Live(a).Online) started.Add(a); // in game already
+            else bring.Add(a);
+        }
+        if (bring.Count > 0)
+        {
+            var res = _host.Bring(c.Id, bring, overCap);
+            Came(c, res);
+            foreach (var (a, why) in res)
+                if (why == null) started.Add(a); else blocked.Add((a, why));
+        }
+        return (started, blocked);
     }
 
     /// <summary>A new colony with <paramref name="pawns"/> (1..12) script-only bodies → (id, error).</summary>

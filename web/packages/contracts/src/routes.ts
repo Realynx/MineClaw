@@ -162,6 +162,8 @@ import {
   StoryTimeRequest,
   StoryTimeResponse,
   StoryPauseRequest,
+  StoryOnlineRequest,
+  StoryOnlineResponse,
   StoryPrioritiesRequest,
   StoryRecipesQuery,
   StoryRecipesResponse,
@@ -1081,6 +1083,19 @@ export const ROUTES = {
     supervisor: '/api/story/colonies/{id}/resume',
     audit: 'story',
     summary: 'Spawns a released colony\'s pawns again (their old accounts first).',
+  }),
+  'story.online': post('/api/story/colonies/:id/online', {
+    access: 'story',
+    params: StoryColonyParams,
+    body: StoryOnlineRequest,
+    response: StoryOnlineResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/story/colonies/{id}/online', 'POST'),
+    supervisor: '/api/story/colonies/{id}/online',
+    audit: 'story',
+    summary:
+      'Brings offline pawns in now (null = every offline one): whitelisted again through main and (re)started, the player cap ' +
+      'permitting; overCap uses the seats kept for offline regulars (can lock a regular out until a pawn leaves). 404 unknown colony or pawn.',
   }),
   'story.pause': post('/api/story/colonies/:id/pause', {
     access: 'story',

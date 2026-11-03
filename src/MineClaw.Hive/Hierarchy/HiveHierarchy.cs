@@ -34,6 +34,7 @@ public sealed class HiveHierarchy : IHiveAccounts
     private readonly ILogger _log;
     private readonly object _lock = new();
     private readonly Dictionary<string, TaskCompletionSource> _gone = new(StringComparer.OrdinalIgnoreCase);
+    private readonly int _maxPlayersFallback;
 
     public HiveHierarchy(HiveAccountsConfig cfg, string main, ManagedAccounts managed, WhitelistManager whitelist, int maxClones = 0,
         Func<IReadOnlyCollection<string>>? regulars = null, Func<IReadOnlyCollection<string>>? knownPlayers = null, ILogger? log = null,
@@ -45,6 +46,7 @@ public sealed class HiveHierarchy : IHiveAccounts
         Whitelist = whitelist;
         Tree = new HiveTree(main);
         _allocator = new AccountAllocator(cfg, managed, main, maxClones, maxPlayersFallback);
+        _maxPlayersFallback = maxPlayersFallback;
         _regulars = regulars ?? (() => []);
         _knownPlayers = knownPlayers ?? (() => []);
         _log = log ?? NullLogger.Instance;
@@ -101,12 +103,127 @@ public sealed class HiveHierarchy : IHiveAccounts
 
     // ================================================================ startup
 
-    /// <summary>Adopts old fixed-roster names once and removes every stale managed account from the whitelist.</summary>
+    /// <summary>
+    /// Adopts old fixed-roster names once and removes every stale managed account from the whitelist. Stale means: not running as a
+    /// clone process (<paramref name="isRunning"/>), not a node of the ownership tree (a subhive body in any process, a Story Mode pawn
+    /// logging in) and not claimed by an owner (<see cref="AddOwner"/>: a saved colony's pawns, spawned or still waiting for a seat).
+    /// When <see cref="ExpectClaims"/> was called it first waits for <see cref="ClaimsReady"/> (at most <see cref="ClaimsWait"/>), so
+    /// the owners have loaded before anything is judged stale.
+    /// </summary>
     public async Task<int> StartAsync(IEnumerable<string> legacyNames, Func<string, bool> isRunning, CancellationToken ct = default)
     {
         if (_cfg.AdoptLegacy && Whitelist.Adopt(legacyNames) is > 0 and var n)
             _log.LogInformation("hive: adopted {N} old fixed clone name(s) into the managed list (Hive:CloneUsernames is ignored now)", n);
-        return _cfg.ReconcileOnStart ? await Whitelist.ReconcileAsync(isRunning, ct).ConfigureAwait(false) : 0;
+        if (!_cfg.ReconcileOnStart) return 0;
+        if (Volatile.Read(ref _claims) is { } claims)
+            try { await claims.Task.WaitAsync(ClaimsWait, ct).ConfigureAwait(false); }
+            catch (TimeoutException) { _log.LogWarning("hive: startup reconcile: the owners didn't load within {S:0}s; reconciling anyway", ClaimsWait.TotalSeconds); }
+        return await Whitelist.ReconcileAsync(a => isRunning(a) || Tree.Get(a) != null || OwnedElsewhere(a), ct).ConfigureAwait(false);
+    }
+
+    private readonly List<Func<string, bool>> _owners = new();
+    private TaskCompletionSource? _claims;
+
+    /// <summary>Longest the startup reconcile waits for <see cref="ClaimsReady"/>.</summary>
+    public TimeSpan ClaimsWait { get; set; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// Something outside the tree owns managed accounts (Story Mode: every pawn of an active colony, online or not). The startup
+    /// reconcile never releases or un-whitelists them.
+    /// </summary>
+    public void AddOwner(Func<string, bool> owns) { lock (_owners) _owners.Add(owns); }
+
+    /// <summary>Is the account claimed by an owner (<see cref="AddOwner"/>)?</summary>
+    public bool OwnedElsewhere(string account)
+    {
+        Func<string, bool>[] owners;
+        lock (_owners) owners = _owners.ToArray();
+        foreach (var o in owners)
+        {
+            try { if (o(account)) return true; }
+            catch (Exception ex) { _log.LogDebug(ex, "hive: owner check for {Account} failed", account); return true; } // in doubt, keep it
+        }
+        return false;
+    }
+
+    /// <summary>The startup reconcile waits for <see cref="ClaimsReady"/> (main's process: the saved colonies load first).</summary>
+    public void ExpectClaims() => Interlocked.CompareExchange(ref _claims, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously), null);
+
+    /// <summary>Every owner has loaded and registered its accounts: the startup reconcile may run.</summary>
+    public void ClaimsReady() => Volatile.Read(ref _claims)?.TrySetResult();
+
+    // ================================================================ a body's login trouble (whitelist kicks, the player cap)
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _notes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset> _rewhitelistWarned = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Is main op (1.12.2 says; null = unknown)? It decides the message when a whitelist add fails.</summary>
+    public Func<bool?>? MainIsOp { get; set; }
+
+    /// <summary>Why a hosted body isn't in game ("not whitelisted — re-adding"); null clears it (it got in).</summary>
+    public void NoteBody(string account, string? why)
+    {
+        if (why == null) _notes.TryRemove(account, out _);
+        else _notes[account] = why;
+    }
+
+    /// <summary>The last login trouble noted for a body, or null.</summary>
+    public string? BodyNote(string account) => _notes.GetValueOrDefault(account);
+
+    /// <summary>
+    /// A managed body was kicked "You are not white-listed": main adds it again (the gate's scoped, armed exception; only an account of
+    /// the tree or of an owner, never main or a stranger). Null = added (confirmed when replies are fed), else why not: main isn't op,
+    /// or the server didn't confirm. The body's note says so (Story Mode shows it as the pawn's offline reason).
+    /// </summary>
+    public async Task<string?> RewhitelistAsync(string account, CancellationToken ct = default)
+    {
+        account = (account ?? "").Trim();
+        if (!Whitelist.Accepts(account)) return "not a managed account";
+        if (Tree.Get(account) == null && !OwnedElsewhere(account)) return "not one of the hive's bodies";
+        NoteBody(account, "not whitelisted — re-adding");
+        bool ok;
+        try { ok = await Whitelist.AddAsync(account, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { _log.LogDebug(ex, "hive: re-whitelisting {Account} failed", account); ok = false; }
+        if (ok)
+        {
+            NoteBody(account, "connecting");
+            _log.LogInformation("hive: {Account} was kicked as not whitelisted; added it again", account);
+            return null;
+        }
+        var why = MainIsOp?.Invoke() == false
+            ? $"main ({_main}) isn't op, so it can't whitelist {account}: op {_main} on the server"
+            : $"the server didn't confirm /whitelist add {account}";
+        NoteBody(account, "not whitelisted — " + why);
+        var now = DateTimeOffset.UtcNow;
+        if (!_rewhitelistWarned.TryGetValue(account, out var last) || now - last > TimeSpan.FromMinutes(5))
+        {
+            _rewhitelistWarned[account] = now;
+            _log.LogWarning("hive: {Account} isn't whitelisted and main can't add it: {Why}", account, why);
+        }
+        return why;
+    }
+
+    /// <summary>
+    /// The server's seats as the slot policy sees them now: free = max players − online − logging in; kept = one per offline regular.
+    /// Null without a bodies host.
+    /// </summary>
+    public (int Free, int Kept)? Seats()
+    {
+        if (Bodies is not { } b) return null;
+        var f = Facts(b);
+        var d = SlotPolicy.CanSpawn(f.Slots, f.Regulars, f.Pending, _maxPlayersFallback);
+        return (Math.Max(0, d.Free), d.Reserved);
+    }
+
+    /// <summary>
+    /// "server full (player cap: 2 free, 2 kept for regulars)" (the regulars' seats would fit it: the owner may choose over_cap) or
+    /// "server full (7/7 seats taken)" (nothing would): why one more can't log in.
+    /// </summary>
+    public static string CapReason(SlotDecision d, SlotFacts f, int fallback)
+    {
+        int cap = SlotPolicy.Capacity(f, fallback);
+        return d.Free <= 0 ? $"server full ({cap - Math.Max(0, d.Free)}/{cap} seats taken)"
+            : $"server full (player cap: {d.Free} free, {d.Reserved} kept for regulars)";
     }
 
     // ================================================================ IHiveAccounts (the supervisor's seam)
@@ -216,6 +333,7 @@ public sealed class HiveHierarchy : IHiveAccounts
         }
         foreach (var child in Tree.Children(account)) Tree.Put(child with { Owner = HiveTree.Root }); // re-parented while they log out
         Tree.Remove(account);
+        NoteBody(account, null);
         try
         {
             if (!Managed.IsManaged(account)) return;
@@ -498,6 +616,66 @@ public sealed class HiveHierarchy : IHiveAccounts
         }
         if (got.Count > 0) _log.LogInformation("hive: group {Group}: {N} script-only bodies ({Names})", group, got.Count, string.Join(", ", got));
         return (got, got.Count < n ? why ?? (n > target ? $"max {target} per spawn" : null) : null);
+    }
+
+    /// <summary>
+    /// Brings exactly these accounts of a group in (Story Mode's "Bring online" and the colony's seat retry). An account hosted already
+    /// (its login loops: a kick, a backoff) is whitelisted again and retried now; one that isn't is put back in the tree and logged in,
+    /// the player cap permitting. <paramref name="overCap"/> lets it take the seats kept for offline regulars (the owner's explicit
+    /// choice: a regular may find the server full until a body leaves; the yield check spares it). Never allocates another account.
+    /// Returns (account, null = started | why not).
+    /// </summary>
+    public IReadOnlyList<(string Account, string? Why)> BringGroup(string group, IReadOnlyList<string> accounts, string script, bool overCap = false)
+    {
+        var res = new List<(string, string?)>();
+        if (Bodies is not { } b) return accounts.Select(a => (a, (string?)"hive is off")).ToList();
+        if (Subhives is not { } host) return accounts.Select(a => (a, (string?)"subhive bodies aren't available here (Hive:Subhives:Enabled is off)")).ToList();
+        foreach (var raw in accounts)
+        {
+            var acc = (raw ?? "").Trim();
+            if (!Whitelist.Accepts(acc)) { res.Add((acc, "not a managed account")); continue; }
+            var node = Tree.Get(acc);
+            if (node != null)
+            {
+                if (!string.Equals(node.Crew, group, StringComparison.OrdinalIgnoreCase)) { res.Add((acc, $"it belongs to {node.Crew ?? Short(node.Owner)} now")); continue; }
+                if (node.State == "releasing") { res.Add((acc, "it is logging out")); continue; }
+                if (overCap) host.AllowOverCap(acc);
+                // Hosted already: its login is looping. Put it back on the whitelist, then cut the reconnect wait short.
+                _ = Task.Run(async () =>
+                {
+                    try { await RewhitelistAsync(acc).ConfigureAwait(false); }
+                    catch (Exception ex) { _log.LogDebug(ex, "hive: re-whitelisting {Account} failed", acc); }
+                    host.RetryNow(acc);
+                });
+                res.Add((acc, null));
+                continue;
+            }
+            string? why = null;
+            lock (_lock)
+            {
+                var f = Facts(b);
+                if (f.Slots.Online.Contains(acc, StringComparer.OrdinalIgnoreCase)) why = "someone else is logged in as it";
+                else if (SlotPolicy.CanSpawn(f.Slots, overCap ? [] : f.Regulars, f.Pending, _maxPlayersFallback) is { Ok: false } d)
+                    why = CapReason(d, f.Slots, _maxPlayersFallback);
+                else if (Resources?.CanAdd(0, 1) is { Ok: false } full) why = full.Why;
+                else
+                {
+                    Managed.Upsert(acc, x => x);
+                    Tree.Put(new HiveNode(acc, CloneKind.Subhive, null, HiveTree.Root) { Task = "story " + group, Script = script, Since = DateTimeOffset.UtcNow, Crew = group });
+                    Managed.MarkActive(acc, HiveKinds.Name(CloneKind.Script), null, HiveTree.Root);
+                }
+            }
+            if (why != null) { res.Add((acc, why)); continue; }
+            NoteBody(acc, "connecting");
+            if (overCap) host.AllowOverCap(acc);
+            var t = host.Spawn(HiveTree.Root, acc, null, null);
+            if (!t.StartsWith("ok", StringComparison.Ordinal)) { Released(acc, "not spawned: " + t); res.Add((acc, t)); continue; }
+            res.Add((acc, null));
+        }
+        var started = res.Where(r => r.Item2 == null).Select(r => r.Item1).ToList();
+        if (started.Count > 0)
+            _log.LogInformation("hive: group {Group}: bringing {Names} in{Over}", group, string.Join(", ", started), overCap ? " (on the regulars' seats)" : "");
+        return res;
     }
 
     /// <summary>A group's bodies deposit and log out (whitelist remove follows each logout). Returns how many go.</summary>

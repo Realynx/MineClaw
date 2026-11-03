@@ -70,6 +70,8 @@ export interface Selection {
   bench: V3 | null;
   /** A selected bed (its foot block, as the colony lists it). */
   bed?: V3 | null;
+  /** A selected (failed) designation, by id; `cluster` = the ids its map label stands for. */
+  designation?: { id: string | number; cluster: Array<string | number> } | null;
 }
 
 export const EMPTY_SELECTION: Selection = { bodies: [], chests: [], bench: null };

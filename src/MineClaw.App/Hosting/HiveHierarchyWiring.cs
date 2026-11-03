@@ -38,6 +38,10 @@ internal static class HiveHierarchyWiring
             ProfileCheck = agent.Llm.CheckProfile,
             Notice = e => rt.Events.Post(e),
         };
+        h.MainIsOp = () => client.IsOp; // a failed whitelist add says "main isn't op" when the server told us so
+        // The startup reconcile waits until every owner of managed accounts (Story Mode's saved colonies) has loaded: AppHost calls
+        // ClaimsReady once the supervisor (and its Story wiring) is up. A colony's pawns are never taken off the whitelist.
+        h.ExpectClaims();
         h.Allocated += name => agent.Hive.Register(name); // its chat is a hive bot's, its self profile is main's (one memory)
         // A body allocated for a job starts clean: a standing order a reused account kept from its last crew isn't this job's
         // (live 10-30: Fox's hunting crew reused the deforest crew's accounts and "some kept falling back to the old

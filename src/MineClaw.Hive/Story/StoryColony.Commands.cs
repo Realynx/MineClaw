@@ -235,7 +235,25 @@ public sealed partial class StoryColony
                 return (new JsonObject { ["count"] = gone.Count, ["removed"] = new JsonArray(gone.Select(d => (JsonNode)d.Id!).ToArray()) }, null);
             }
         }
-        if (op != "add") return (null, "op must be add|remove|cancel");
+        if (op == "retry")
+        {
+            // {op:"retry", ids} → {count, retried}: a failed designation is tried again now (its rest is over, its status open again).
+            if (ids == null || ids.Count == 0) return (null, "ids required");
+            lock (_lock)
+            {
+                var hit = Designations.Where(d => ids.Contains(d.Id)).ToList();
+                foreach (var d in hit)
+                {
+                    var key = DesignationKey(d);
+                    _skip.Remove(key);
+                    _leaseFails.Remove(key);
+                    d.Status = "open";
+                    d.Rev = Touch();
+                }
+                return (new JsonObject { ["count"] = hit.Count, ["retried"] = new JsonArray(hit.Select(d => (JsonNode)d.Id!).ToArray()) }, null);
+            }
+        }
+        if (op != "add") return (null, "op must be add|remove|cancel|retry");
         if (kind == null || !DesignationKinds.Contains(kind)) return (null, $"kind must be {string.Join("|", DesignationKinds)}");
         if (filter != null && filter is not ("all" or "ores" or "stone" or "soil")) return (null, "filter must be all|ores|stone|soil");
         if (area == null && (blocks == null || blocks.Count == 0)) return (null, "area or blocks required");
@@ -245,7 +263,11 @@ public sealed partial class StoryColony
         {
             var targets = new JsonArray();
             var made = new List<DesignationState>();
-            bool Taken(string k, P3? at, int? ent) => Designations.Any(d => d.Kind == k && (at != null && d.At == at || ent != null && d.Entity == ent));
+            var madeAt = new HashSet<P3>();
+            var madeEnt = new HashSet<int>();
+            // Also what this call made already: a tall plant's two halves (or any repeated cell) become one designation.
+            bool Taken(string k, P3? at, int? ent) => at is { } ma && !madeAt.Add(ma) || ent is { } me && !madeEnt.Add(me)
+                || Designations.Any(d => d.Kind == k && (at != null && d.At == at || ent != null && d.Entity == ent));
             void Block(P3 at, List<P3>? col = null, string? replant = null, string? label = null)
             {
                 if (Taken(kind, at, null)) return;
@@ -272,7 +294,8 @@ public sealed partial class StoryColony
                 }
                 case "cut":
                     foreach (var c in Cells())
-                        if (w.Block(c.X, c.Y, c.Z).Id is var id && (StoryBlocks.Plants.Contains(id) || StoryBlocks.Leaves.Contains(id))) Block(c, null, null, "cutting plants");
+                        if (w.Block(c.X, c.Y, c.Z).Id is var id && (StoryBlocks.Plants.Contains(id) || StoryBlocks.Leaves.Contains(id)))
+                            Block(PlantBase(c), null, null, "cutting plants"); // a tall plant is one designation, on its lower half
                     break;
                 case "harvest":
                     foreach (var c in Cells())

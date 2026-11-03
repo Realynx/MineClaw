@@ -45,6 +45,9 @@ public interface IBodyHost
     /// <summary>May one more body log in now (<paramref name="pending"/> are logging in already)?</summary>
     BodySlotDecision CanSpawn(int pending);
 
+    /// <summary>May this account log in now? (A host may let one the owner chose take the seats kept for offline regulars.)</summary>
+    BodySlotDecision CanSpawn(string account, int pending) => CanSpawn(pending);
+
     /// <summary>Bodies that must log out, in order, so the offline regulars' slots are free again.</summary>
     IReadOnlyList<string> MustYield(IReadOnlyList<BodyProgress> running);
 

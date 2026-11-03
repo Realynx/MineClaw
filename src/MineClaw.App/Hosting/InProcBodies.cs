@@ -225,6 +225,8 @@ public sealed class InProcBodies : IBodyHost, MineClaw.Hive.Hierarchy.ISubhiveHo
             Registry?.RemoveAccount(body.Name);
             lock (_built) _built.Remove(body);
             lock (_cleared) _cleared.Remove(body.Name);
+            lock (_overCap) _overCap.Remove(body.Name);
+            _whitelistKicks.TryRemove(body.Name, out _);
             try { Gone?.Invoke(body.Name, reason); } catch (Exception ex) { _log.LogWarning(ex, "bodies: gone hook for {Body} failed", body.Name); }
             BodyFactory.DisposeClone(body, Flusher);
             if (body.Client is { } c) try { await c.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false); } catch (Exception) { }
@@ -271,9 +273,51 @@ public sealed class InProcBodies : IBodyHost, MineClaw.Hive.Hierarchy.ISubhiveHo
             try { await before(body.Name, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { lock (_cleared) _cleared.Remove(body.Name); throw; }
             catch (Exception ex) { _log.LogWarning(ex, "bodies: whitelisting {Body} before login failed; logging in anyway", body.Name); }
-        _log.LogInformation("bodies: connecting {Body} to {Host}:{Port}", body.Name, _mc.Host, _mc.Port);
-        await ClientBodySessions.ConnectAsync(body.Client!, ct).ConfigureAwait(false);
+        for (int attempt = 0; ; attempt++)
+        {
+            _log.LogInformation("bodies: connecting {Body} to {Host}:{Port}", body.Name, _mc.Host, _mc.Port);
+            try
+            {
+                await ClientBodySessions.ConnectAsync(body.Client!, ct).ConfigureAwait(false);
+                _whitelistKicks.TryRemove(body.Name, out _);
+                Note?.Invoke(body.Name, null);
+                return;
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested && Rewhitelist is { } re
+                                       && MineClaw.Hive.Hierarchy.WhitelistManager.IsNotWhitelistedKick(ex.Message))
+            {
+                // Live 11-03: the startup reconcile had taken colony pawns off the whitelist, and every reconnect was kicked "not
+                // white-listed" for good (the add ran only before the first login). Main adds it again, then it retries soon.
+                int n = _whitelistKicks.AddOrUpdate(body.Name, 1, (_, v) => v + 1);
+                _log.LogWarning("bodies: {Body} isn't on the whitelist ({Reason}); asking main to add it again", body.Name, ex.Message);
+                string? why;
+                try { why = await re(body.Name, ct).ConfigureAwait(false); }
+                catch (Exception e) when (e is not OperationCanceledException) { why = e.Message; }
+                if (why != null || attempt >= 2) throw; // main can't (its note says why), or still refused: the runner's backoff takes over
+                await Task.Delay(WhitelistRetryDelay(n), ct).ConfigureAwait(false);
+            }
+        }
     }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _whitelistKicks = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The wait before a login retries after main re-added it: 2, 4, 8, 16, then 30 s (consecutive kicks, reset once it's in).</summary>
+    public static TimeSpan WhitelistRetryDelay(int kicks) => TimeSpan.FromSeconds(Math.Min(30, 2 * Math.Pow(2, Math.Max(0, kicks - 1))));
+
+    /// <summary>Subhive mode: a body was kicked "not white-listed": main adds it again → null, else why it can't (main isn't op).</summary>
+    public Func<string, CancellationToken, Task<string?>>? Rewhitelist { get; set; }
+    /// <summary>Subhive mode: a body's login trouble changed (null = it got in).</summary>
+    public Action<string, string?>? Note { get; set; }
+
+    private readonly HashSet<string> _overCap = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The owner let this account use the seats kept for offline regulars (until it logs out for good).</summary>
+    public void AllowOverCap(string account) { lock (_overCap) _overCap.Add(account); }
+
+    private bool OverCap(string account) { lock (_overCap) return _overCap.Contains(account); }
+
+    /// <summary>A body waiting out a reconnect backoff logs in now.</summary>
+    public bool RetryNow(string account) => Registry?.RetryNow(account) ?? false;
 
     public Task<BodyExit> RunAsync(IBody body, CancellationToken ct) => ClientBodySessions.RunAsync(body.Client!, ct);
 
@@ -297,8 +341,17 @@ public sealed class InProcBodies : IBodyHost, MineClaw.Hive.Hierarchy.ISubhiveHo
         return new BodySlotDecision(d.Ok, d.Reason);
     }
 
+    public BodySlotDecision CanSpawn(string account, int pending)
+    {
+        if (!OverCap(account)) return CanSpawn(pending);
+        var d = SlotPolicy.CanSpawn(Facts(), [], pending, _o.MaxPlayersFallback); // the owner's choice: the regulars' seats too
+        return new BodySlotDecision(d.Ok, d.Reason);
+    }
+
+    /// <summary>Bodies that must make room for an offline regular; one the owner put on the regulars' seats stays.</summary>
     public IReadOnlyList<string> MustYield(IReadOnlyList<BodyProgress> running) =>
-        SlotPolicy.MustYield(Facts(), _regulars, running.Select(r => new CloneProgress(r.Name, r.Progress, r.Started)), _o.MaxPlayersFallback);
+        SlotPolicy.MustYield(Facts(), _regulars, running.Where(r => !OverCap(r.Name)).Select(r => new CloneProgress(r.Name, r.Progress, r.Started)),
+            _o.MaxPlayersFallback);
 
     public async Task<BodyDeposit> DepositAsync(IBody body, TimeSpan timeout, CancellationToken ct)
     {

@@ -469,6 +469,7 @@ export type KeyAction =
   | 'heightDown'
   | 'help'
   | 'focus'
+  | 'fullscreen'
   | `tool:${DesignateId}`
   | `tab:${string}`;
 
@@ -513,6 +514,10 @@ export function keyAction(e: { code: string; key: string; shiftKey?: boolean; ct
       return e.shiftKey ? 'help' : null;
     case 'Home':
       return 'focus';
+    case 'KeyF':
+      // Shift+F: full screen (F alone is the Forbid tool; the browser's F11 shows the whole page, not the colony).
+      if (e.shiftKey) return 'fullscreen';
+      break;
   }
   const tool = DESIGNATE_TOOLS.find((t) => t.key === e.code);
   if (tool && !e.shiftKey) return `tool:${tool.id}`;

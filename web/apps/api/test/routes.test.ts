@@ -40,6 +40,7 @@ function storyOverrides(): typeof OVERRIDES {
     'story.get': { params: id, query: {} },
     'story.release': { params: id, body: {} },
     'story.resume': { params: id, body: {} },
+    'story.online': { params: id, body: { pawns: null } },
     'story.directive': { params: { id: 'dir-r-story0001' } },
     'story.pause': { params: id, body: { paused: false } },
     'story.home': { params: id, body: { home: { x: 4, y: 64, z: -3 } } },

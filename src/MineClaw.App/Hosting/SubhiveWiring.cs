@@ -40,6 +40,9 @@ internal static class SubhiveWiring
         if (host == null) return;
         h.Subhives = host;
         host.BeforeConnect = (account, ct) => h.BeforeLaunchAsync(account, ct);
+        // A "not white-listed" kick: main adds the account again (the gate's scoped exception), the login retries soon.
+        host.Rewhitelist = (account, ct) => h.RewhitelistAsync(account, ct);
+        host.Note = h.NoteBody;
         host.Gone += (account, reason) => h.Released(account, reason);
         ConfigureClients(host, cfg);
     }

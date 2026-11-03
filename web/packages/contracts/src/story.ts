@@ -282,6 +282,12 @@ export const StoryPawn = z.object({
   dim: z.number().int().nullish(),
   drafted: z.boolean().nullish(),
   state: z.string().nullish().describe(STORY_PAWN_STATES.join(' | ')),
+  offlineReason: z
+    .string()
+    .nullish()
+    .describe(
+      'why an offline pawn is not in game (null while online): released, connecting, not whitelisted — re-adding, server full (…)',
+    ),
   job: StoryJob.nullish(),
   queue: z.array(StoryOrder).default([]),
   skills: z.record(z.string(), StorySkill).default({}),
@@ -325,6 +331,7 @@ export const StoryDesignation = z.object({
   status: z.string().nullish().describe('open | failed (3 failures; still retried after its rest)'),
   reason: z.string().nullish().describe('why the last try failed'),
   fails: z.number().int().nullish(),
+  retryAt: When.nullish().describe('when a resting (failed) designation is tried again; null when it is open'),
 });
 export type StoryDesignation = z.infer<typeof StoryDesignation>;
 
@@ -591,6 +598,7 @@ export const StoryColonyState = z.object({
   home: Vec3i.nullish(),
   workTypes: z.array(z.string()).default([...STORY_WORK_TYPES]),
   pawns: z.array(StoryPawn).default([]),
+  seats: z.lazy(() => StorySeats).nullish(),
   zones: z.array(StoryZone).default([]),
   designations: z.array(StoryDesignation).default([]),
   orders: z.array(StoryOrder).default([]),
@@ -617,6 +625,42 @@ export type StoryColonyFrame = z.infer<typeof StoryColonyFrame>;
 // ------------------------------------------------------------------ writes
 
 const PawnList = z.array(z.string().min(1).max(64)).min(1).max(64);
+
+/** The colony's seats: pawns in game, pawns wanted, the server's free seats and those kept for offline regulars (null = unknown). */
+export const StorySeats = z.object({
+  online: z.number().int().default(0),
+  wanted: z.number().int().default(0),
+  capFree: z.number().int().nullish(),
+  keptForRegulars: z.number().int().nullish(),
+});
+export type StorySeats = z.infer<typeof StorySeats>;
+
+/**
+ * POST /api/story/colonies/{id}/online: bring offline pawns in now (`pawns: null` = every offline pawn). `overCap` is the
+ * owner's explicit choice to use the seats kept for offline regulars: a regular may then find the server full until a pawn leaves.
+ */
+export const StoryOnlineRequest = z
+  .object({
+    pawns: PawnList.nullable(),
+    overCap: z.boolean().optional(),
+  })
+  .strict();
+export type StoryOnlineRequest = z.infer<typeof StoryOnlineRequest>;
+
+export const StoryOnlineBlocked = z.object({ pawn: z.string(), reason: z.string() });
+export type StoryOnlineBlocked = z.infer<typeof StoryOnlineBlocked>;
+
+export const StoryOnlineResponse = z.object({
+  started: z.array(z.string()).default([]),
+  blocked: z.array(StoryOnlineBlocked).default([]),
+});
+export type StoryOnlineResponse = z.infer<typeof StoryOnlineResponse>;
+
+/** Would the seats kept for offline regulars let it in? (`server full (player cap: N free, M kept for regulars)` with N ≥ 1, M ≥ 1.) */
+export function regularsSeatsWouldHelp(reason: string | null | undefined): boolean {
+  const m = /player cap: (\d+) free, (\d+) kept for regulars/.exec(reason ?? '');
+  return !!m && Number(m[1]) > 0 && Number(m[2]) > 0;
+}
 
 export const StoryPauseRequest = z.object({ paused: z.boolean() }).strict();
 export type StoryPauseRequest = z.infer<typeof StoryPauseRequest>;
@@ -719,7 +763,9 @@ export type StoryZoneRequest = z.infer<typeof StoryZoneRequest>;
  */
 export const StoryDesignationRequest = z
   .object({
-    op: z.enum(['add', 'remove', 'cancel']),
+    op: z
+      .enum(['add', 'remove', 'cancel', 'retry'])
+      .describe('retry: the failed designations named by `ids` are tried again now'),
     kind: StoryDesignationKind.optional(),
     area: StoryArea.optional(),
     blocks: z.array(Vec3i).max(4096).optional(),
@@ -742,6 +788,10 @@ export const StoryDesignationResponse = z.object({
     .nullish()
     .describe('blocks, or entity ids (haul, hunt)'),
   removed: z.array(z.union([z.string(), z.number()])).nullish(),
+  retried: z
+    .array(z.union([z.string(), z.number()]))
+    .nullish()
+    .describe('retry: the designations tried again now'),
   entities: z.array(z.number().int()).nullish(),
   rev: z.number().int().nullish(),
 });

@@ -15,6 +15,7 @@ interface StoryDebug {
   mode(): string;
   level(): number;
   beds(): Array<{ pos: [number, number, number]; pawn: string | null }>;
+  failed(): Array<{ id: string | number; cell: [number, number, number] | null; x: number | null; y: number | null }>;
 }
 
 async function signIn(page: Page, empty: boolean) {
@@ -515,4 +516,106 @@ test('a design from the design pages is placed on the map and queued (/story?des
   // The mock design: a 5×5 hut, walls 3 high with a 2-high doorway, a plank roof.
   expect(b.items.reduce((n, i) => n + i.blocks.length, 0)).toBe(46 + 25);
   await expect(page.getByTestId('story-toast')).toContainText(/Queued .*: 71 blocks/);
+});
+
+test('offline pawns say why and come back; a failed cut says why; full screen keeps the whole HUD', async ({
+  page,
+}) => {
+  // The seeded colony (mocks/data/story.ts): one pawn kicked "not white-listed", one kept out by the player cap
+  // (1 seat free, 2 kept for regulars), and a cut over the tall grass that kept failing on a hive claim.
+  await signIn(page, false);
+  await openStory(page);
+  const bar = page.getByTestId('colonist-bar');
+  const pawnBadges = bar.locator('[data-kind="pawn"]').getByTestId('offline-badge');
+  await expect(pawnBadges).toHaveCount(2);
+  const kicked = bar.locator('[data-kind="pawn"][data-offline="true"]').last();
+  await kicked.hover();
+  await expect(bar.getByTestId('offline-reason')).toHaveText('Offline: not whitelisted — re-adding');
+  // Its inspector says why and can bring it online.
+  await kicked.click();
+  await expect(page.getByTestId('pawn-offline-reason')).toHaveText('not whitelisted — re-adding');
+  if (shots) await page.screenshot({ path: `${shots}/story-offline.png` });
+
+  // "Bring 2 online" on the bar: every offline pawn. The kicked one is re-added; the other is refused by the cap, and the
+  // Colony tab says why with the explicit "Use regulars' seats".
+  const all = post(page, /\/api\/story\/colonies\/[^/]+\/online$/);
+  await bar.getByTestId('bar-bring-online').click();
+  expect(body(await all)).toEqual({ pawns: null });
+  const box = page.getByTestId('colony-bring-online');
+  await expect(box).toBeVisible();
+  await expect(box.getByTestId('online-blocked')).toContainText(
+    'server full (player cap: 1 free, 2 kept for regulars)',
+  );
+  await expect(box).toContainText('A regular may then find the server full until a pawn leaves');
+  const over = post(page, /\/api\/story\/colonies\/[^/]+\/online$/);
+  await box.getByTestId('use-regulars-seats').click();
+  expect(body(await over)).toEqual({ pawns: null, overCap: true });
+  await expect(pawnBadges).toHaveCount(0, { timeout: 15_000 });
+  await page.keyboard.press('Escape'); // the Colony tab
+  await page.keyboard.press('Escape'); // the selection
+
+  // A failed cut: the red ring and one calm label for the cluster; clicking it opens why, in full, with Retry now.
+  const failed = await story(page, 'failed');
+  expect(failed.length).toBeGreaterThan(0);
+  const cell = failed[0]!.cell!;
+  await story(page, 'focus', cell[0], cell[2]);
+  await story(page, 'setZoom', 24);
+  const label = page.getByTestId('designation-label').first();
+  await expect(label).toBeVisible();
+  await expect(label).toHaveText(/busy — claimed|Busy: claimed by another bot/);
+  if (shots) await page.screenshot({ path: `${shots}/story-failed-label.png` });
+  await label.click();
+  const inspector = page.getByTestId('designation-inspector');
+  await expect(inspector.getByTestId('designation-reason')).toContainText('another hive bot is working on that part');
+  await expect(inspector.getByTestId('designation-fails')).toHaveText('3 failed');
+  const retry = post(page, /\/designations$/);
+  await inspector.getByRole('button', { name: 'Retry now' }).click();
+  expect(body(await retry)).toMatchObject({ op: 'retry', ids: [failed[0]!.id] });
+  await page.keyboard.press('Escape');
+
+  // Full screen: the button (Shift+F works too) puts the map AND the HUD in it; a toast shows inside; it leaves cleanly.
+  const fsEl = () => page.evaluate(() => document.fullscreenElement?.getAttribute('data-testid') ?? null);
+  await page.getByTestId('story-fullscreen').click();
+  await expect.poll(fsEl).toBe('story-mode');
+  await expect(bar).toBeVisible();
+  await expect(page.getByTestId('tab-bar')).toBeVisible();
+  // The map follows the new size (its overlay canvas fills the screen).
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const c = document.querySelector(
+          '[data-testid="story-map"] canvas[aria-label^="Colony map"]',
+        ) as HTMLCanvasElement;
+        return c.width === window.innerWidth && c.clientWidth === window.innerWidth;
+      }),
+    )
+    .toBe(true);
+  await page.keyboard.press('Space'); // pause: its toast
+  const toast = page.getByTestId('story-toast');
+  await expect(toast).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => !!document.fullscreenElement?.contains(document.querySelector('[data-testid="story-toast"]')),
+    ),
+  ).toBe(true);
+  if (shots) await page.screenshot({ path: `${shots}/story-fullscreen.png` });
+  await page.keyboard.press('Space'); // unpause
+  // A drag box-select still works in full screen: over home, a box around the first pawn on screen.
+  await page.keyboard.press('Home');
+  await page.waitForTimeout(1200);
+  const vw = await page.evaluate(() => [window.innerWidth, window.innerHeight]);
+  const pawnOnScreen = (await story(page, 'bodies')).find(
+    (b) => b.name.startsWith('maid_s1_') && b.x > 80 && b.y > 160 && b.x < vw[0]! - 80 && b.y < vw[1]! - 160,
+  );
+  expect(pawnOnScreen).toBeTruthy();
+  await page.mouse.move(pawnOnScreen!.x - 40, pawnOnScreen!.y - 40);
+  await page.mouse.down();
+  await page.mouse.move(pawnOnScreen!.x + 40, pawnOnScreen!.y + 40, { steps: 6 });
+  await page.mouse.up();
+  await expect(bar.locator('[aria-pressed="true"]').first()).toBeVisible();
+  await expect.poll(fsEl).toBe('story-mode'); // still full screen
+  await page.keyboard.press('Shift+F');
+  await expect.poll(fsEl).toBe(null);
+  await expect(page.getByTestId('story-fullscreen')).toHaveAttribute('aria-pressed', 'false');
+  await expect(bar).toBeVisible();
 });
