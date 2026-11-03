@@ -1,6 +1,7 @@
 using System.Text.Json;
 using MineClaw.Agent.Events;
 using MineClaw.Agent.Telemetry;
+using MineClaw.Data;
 using MineClaw.Hive.Budget;
 using MineClaw.Hive.Chat;
 using MineClaw.Hive.Claims;
@@ -142,6 +143,49 @@ public sealed class HiveSupervisor : IAsyncDisposable
     private readonly object _spawnGate = new();
     private int _rosterPush, _claimsPush;
     private volatile bool _shuttingDown;
+    private readonly object _chorusGate = new();
+    private readonly Queue<DateTimeOffset> _choruses = new();
+    private DateTimeOffset? _lastChorus;
+
+    /// <summary>Main and its locally hosted bodies. Remote hive bodies receive the same message over their host's IPC.</summary>
+    public Func<IReadOnlyList<ChorusSpeaker>>? ChorusSpeakers { get; set; }
+
+    /// <summary>Main-only fan-out; name is all, a login/short name, or comma-separated names.</summary>
+    public async Task<string> ChorusAsync(string? text, string? name = null, bool includeMain = true)
+    {
+        if (HiveChorus.Prepare(text, out var clean) is { } error) return error;
+        if (_shuttingDown) return "error: hive is shutting down";
+        ChorusMsg message;
+        lock (_chorusGate)
+        {
+            var now = _time.GetUtcNow();
+            var window = TimeSpan.FromSeconds(Math.Max(1, _cfg.ChorusWindowSeconds));
+            while (_choruses.TryPeek(out var at) && now - at >= window) _choruses.Dequeue();
+            if (_lastChorus is { } last && now - last < TimeSpan.FromSeconds(Math.Max(1, _cfg.ChorusIntervalSeconds))
+                || _choruses.Count >= Math.Max(1, _cfg.ChorusMaxPerWindow))
+                return "error: chorus rate limit; try later";
+            _lastChorus = now;
+            _choruses.Enqueue(now);
+            var names = string.IsNullOrWhiteSpace(name) || name.Trim().Equals("all", StringComparison.OrdinalIgnoreCase)
+                ? null : name.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            message = new ChorusMsg(clean, now.ToUnixTimeMilliseconds() + HiveChorus.LeadMilliseconds, names, includeMain);
+        }
+        // Schedule before awaiting any link; one slow link must not move another body's fire time.
+        _ = SayChorusAsync(message);
+        var sends = _slots.Values.Where(s => s.IsLive && s.Link is { IsOpen: true }).Select(async s =>
+        {
+            try { await s.Link!.SendAsync(Msg.Chorus, message, _cts.Token).ConfigureAwait(false); }
+            catch (Exception ex) { _log.LogDebug(ex, "chorus: {Clone} disconnected during fan-out", s.Name); }
+        });
+        await Task.WhenAll(sends).ConfigureAwait(false);
+        return $"ok: chorus scheduled at {message.FireAtMs}; text={clean}";
+    }
+
+    private async Task SayChorusAsync(ChorusMsg message)
+    {
+        try { await HiveChorus.SayAtAsync(message, ChorusSpeakers?.Invoke() ?? [], _time, _cts.Token).ConfigureAwait(false); }
+        catch (Exception ex) { _log.LogDebug(ex, "chorus: local chat failed"); }
+    }
 
     public HiveSupervisor(HiveConfig cfg, string main, IProcessLauncher launcher, ClaimBoard claims, BudgetLedger ledger, ChatArbiter arbiter,
         HiveStore? store, Func<SlotFacts> slots, IReadOnlyList<string> regulars, ILogger? log = null, TimeProvider? time = null)
@@ -391,6 +435,10 @@ public sealed class HiveSupervisor : IAsyncDisposable
     /// </summary>
     internal string? ExternalOccupant(CloneSlot s)
     {
+        // A subhive account is online in its owner's host, not this supervisor's process slot. It is still ours.
+        if (Accounts is MineClaw.Hive.Hierarchy.HiveHierarchy hierarchy && hierarchy.Tree.Get(s.Name) is { } node
+            && (node.Kind == MineClaw.Hive.Hierarchy.CloneKind.Subhive || node.Owner != MineClaw.Hive.Hierarchy.HiveTree.Root))
+            return $"managed by hive {node.Owner} (one of ours; use its host, not another login)";
         var now = Now;
         if (now < s.ExternalUntil)
             return $"is in use by a player's viewer (someone else logged in as {s.Name}); left alone for {Math.Max(1, (int)Math.Ceiling((s.ExternalUntil - now).TotalMinutes))} more min";
@@ -965,7 +1013,7 @@ public sealed class HiveSupervisor : IAsyncDisposable
             {
                 if (s.Task.Profile != null) line += $" (profile {s.Task.Profile})";
                 line += $": {Trunc(s.Task.Text, 50)}" + (s.Pending ? " (pending, no result yet)" : s.ResultIn ? $" (result: {Trunc(s.ResultText ?? "", 60)})" : "");
-                if (s.Progress > 0) line += $" {s.Progress:P0}";
+                if (s.Progress > 0) line += $" {Percent.Of(s.Progress)}";
                 if (s.Snapshot?.Pos is { } p) line += $" @{p}";
             }
             if (s.Deaths > 0) line += $" died x{s.Deaths}";

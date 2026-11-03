@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <None Include="../../docs/offline-brain.json" Link="offline-brain.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

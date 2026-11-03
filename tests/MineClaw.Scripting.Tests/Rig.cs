@@ -19,6 +19,8 @@ public sealed class Rig : IDisposable
     public ConcurrentQueue<string> Wakes { get; } = new();
     public string? AskReply { get; set; } = "yes";
     public string? Veto { get; set; }
+    /// <summary>What where(item) answers (the real tool's format: "name x12: chest@3,64,2 (...) | total 17"); null = nowhere known.</summary>
+    public Func<string, string?> Where { get; set; } = item => item == "iron" ? "iron: chest 3,64,2 (x12)" : null;
     public ScriptController C { get; }
     public ScriptHost Host { get; }
 
@@ -65,7 +67,7 @@ public sealed class Rig : IDisposable
                 Calls.Enqueue($"{name} {args.GetRawText()}");
                 return On.TryGetValue(name, out var f) ? f(args, ct) : Task.FromResult(ActResult.Success($"{name} ok"));
             },
-            Skills = () => ["move_items", "harvest_cane", "log", "give_items", "drop_items", "harvest_wheat", "excavate"],
+            Skills = () => ["move_items", "harvest_cane", "log", "give_items", "drop_items", "harvest_wheat", "excavate", "enter_portal", "strip_mine", "smelt_batch", "collect_furnace", "find_biome", "scout_biome"],
             Skill = (name, args, ct) =>
             {
                 Calls.Enqueue($"skill:{name} {args.GetRawText()}");
@@ -76,13 +78,16 @@ public sealed class Rig : IDisposable
                 ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"moves":{"type":"array"}}}""").RootElement.Clone()
                 : n == "harvest_cane" ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"radius":{"type":"integer"}}}""").RootElement.Clone()
                 : n == "excavate" ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"op":{"type":"string"},"box":{"type":"string"},"site":{"type":"string"},"rule":{"type":"string"},"at":{"type":"string"},"to":{"type":"integer"},"name":{"type":"string"},"size":{"type":"string"}}}""").RootElement.Clone()
+                : n == "smelt_batch" ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"item":{"type":"string"},"count":{"type":"integer"},"wait":{"type":"boolean"}}}""").RootElement.Clone()
+                : n == "strip_mine" ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"site":{"type":"string"},"length":{"type":"integer"}}}""").RootElement.Clone()
+                : n is "find_biome" or "scout_biome" ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"biome":{"type":"string"},"dir":{"type":"integer"},"max":{"type":"integer"},"min_chunks":{"type":"integer"},"leg":{"type":"integer"}}}""").RootElement.Clone()
                 : n == "harvest_wheat" ? (JsonElement?)JsonDocument.Parse("""{"type":"object","properties":{"radius":{"type":"integer"},"replant":{"type":"boolean"},"part":{"type":"string"}}}""").RootElement.Clone()
                 : null,
             Wake = (_, reason) => Wakes.Enqueue(reason),
             Say = (t, _) => { Said.Enqueue(t); return Task.FromResult(ActResult.Success("said")); },
             Emote = (t, _) => { Emoted.Enqueue(t); return Task.FromResult(ActResult.Success("emoted")); },
             Ask = (p, q, _, _) => { Said.Enqueue($"{p}: {q}"); return Task.FromResult(AskReply); },
-            WhereIs = (item, _) => Task.FromResult<string?>(item == "iron" ? "iron: chest 3,64,2 (x12)" : null),
+            WhereIs = (item, _) => Task.FromResult(Where(item)),
             NearestKnown = k => k == "home" ? new BlockPos(5, 65, 5) : null,
             OnlinePlayers = () => ["kiwi", "maid_chan", "robin"],
             ActionVeto = () => Veto,

@@ -50,6 +50,16 @@ public static class CombatGeometry
         return true;
     }
 
+    /// <summary>A one-block rise at <paramref name="cell"/> (my feet level) that a jump climbs: its collision top at most one
+    /// block up (no fence or wall), two free cells over it, head room over me for the jump, and a safe walk on top.</summary>
+    public static bool CanStepUp(IBlockAccess w, Vec3d from, BlockPos cell)
+    {
+        int y = cell.Y, mx = (int)Math.Floor(from.X), mz = (int)Math.Floor(from.Z);
+        if (!BlockShapes.HasCollision(w, cell.X, y, cell.Z) || BlockShapes.CollisionTop(w, cell.X, y, cell.Z) > 1.0001) return false;
+        if (BlockShapes.HasCollision(w, mx, y + 2, mz)) return false;
+        return WalkSafe(w, from, cell with { Y = y + 1 });
+    }
+
     /// <summary>
     /// Where to stand against <paramref name="threat"/>: a standable cell within <paramref name="radius"/>, reachable
     /// by a safe straight walk, with no edge behind it relative to the threat. Prefers the island interior, then short

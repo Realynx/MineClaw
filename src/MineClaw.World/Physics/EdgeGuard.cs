@@ -351,7 +351,9 @@ public sealed class EdgeGuard
                 if (!overVoid && (s.OnLadder || (s.InWater && !s.InLava))) return true;
             }
         }
-        return false;
+        // On the ground in flowing water the current keeps pushing, so the speed never settles under 0.02.
+        // A whole horizon that stayed on the ground, in water, never over the void (strict: checked every tick) is safe.
+        return strict && s.OnGround && s.InWater && !s.InLava && !Safety.IsPlayerOverVoid(w, s.Position);
     }
 
     /// <summary>The planned-parkour exemption test: the proposed input is the plan's input for this tick, and the

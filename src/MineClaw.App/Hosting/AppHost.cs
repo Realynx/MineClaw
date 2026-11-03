@@ -79,6 +79,8 @@ public static class AppHost
 
         try
         {
+            if (agentOptions.Llm.MockInUse)
+                log.LogWarning("MOCK LLM provider enabled: deterministic offline script replies, not a real language model");
             // -------------------------------------------------------- key check (models API: free)
             if (!cli.NoKeyCheck)
             {

@@ -39,11 +39,13 @@ public static partial class BodyFactory
             brain.Loggers?.CreateLogger("MineClaw.Orders"));
         var body = new Body(name, isMain: false, adapter, game, activities, orders);
         activities.Body = body.Short;
+        AttachTemporaryCleanup(body);
         rt.Agent.Guard.Watch(activities, name); // its failures are its own (keyed by body)
         body.Latency = new LatencyTracker(time) { Bot = name };
 
         ProtectClone(brain, adapter, client, claims);
         // Spawn protection is learned per account into the one shared fact, and adopted by every body it binds (not op).
+        client.SpawnProtectionDisabled = brain.BotOptions.Protection.SpawnProtectionOff;
         BotHost.WireProtectedRegion(client, rt, brain.Log, claims, brain.HiveBots);
         if (brain.Persist)
             body.Owned.Add(new System.Threading.Timer(_ => BotHost.SyncProtectedRegion(client, rt, brain.Log), null,
@@ -112,6 +114,7 @@ public static partial class BodyFactory
         };
         bridge.Attach();
         body.Bridge = bridge;
+        if (brain.Recovery is { } recovery) body.Owned.Add(recovery.Watch(body));
         // Its own lane (step 4 adds crews): the script tool routes calls for this body here (BodyScope). A brain-run script
         // holds THIS body's slot; its interrupts are this body's dangers and chat addressed to it (a plain trusted stop too).
         var scripts = new ScriptBridge(rt, body.Adapter, brain.Skills, brain.BotOptions.Scripts ?? new MineClaw.Scripting.ScriptOptions(),
@@ -128,6 +131,7 @@ public static partial class BodyFactory
         scripts.Controller.Host.Claims = () => GameClients.Claimed(body.Game)?.Claims;
         ScriptTools.AttachLaneGate(rt, scripts);
         body.ScriptBridge = scripts;
+        scripts.Controller.Host.SafetyBusy = () => body.Adapter.SafetyEngaged || brain.Recovery?.IsHolding(body) == true;
     }
 
     /// <summary>

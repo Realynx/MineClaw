@@ -116,7 +116,7 @@ public sealed class BodyRoutingGameClient(BodyRegistry registry, Func<IBody, IGa
         T().HarvestGeneratorAsync(x, y, z, count, stand, ct);
     public Task<ActionResult> HarvestGeneratorAsync(IReadOnlyList<BlockPos> cells, int count, BlockPos? stand, CancellationToken ct = default) =>
         T().HarvestGeneratorAsync(cells, count, stand, ct);
-    public Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default) => T().CollectDropsAsync(radius, ct);
+    public Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default, bool dryOnly = false) => T().CollectDropsAsync(radius, ct, dryOnly);
     public Task<ActionResult> CraftAsync(int itemId, int damage = -1, int count = 1, CancellationToken ct = default) => T().CraftAsync(itemId, damage, count, ct);
     public Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, BlockPos? furnace = null, CancellationToken ct = default) =>
         T().SmeltAsync(inputItemId, count, fuelItemId, wait, furnace, ct);
@@ -133,6 +133,8 @@ public sealed class BodyRoutingGameClient(BodyRegistry registry, Func<IBody, IGa
         T().PlaceVariantAsync(x, y, z, itemId, damage, face, ct);
     public Task<ActionResult> DigBlockAsync(int x, int y, int z, CancellationToken ct = default) => T().DigBlockAsync(x, y, z, ct);
     public Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default) => T().ActivateBlockAsync(x, y, z, ct);
+    public Task<ActionResult> UseItemOnBlockAsync(BlockPos pos, BlockFace face, int itemId, int? damage = null, CancellationToken ct = default) =>
+        T().UseItemOnBlockAsync(pos, face, itemId, damage, ct);
     public Task<ActionResult> EatAsync(CancellationToken ct = default) => T().EatAsync(ct);
     public Task<ActionResult> ChopTreeAsync(BlockPos? at = null, int? wood = null, CancellationToken ct = default) => T().ChopTreeAsync(at, wood, ct);
     public Task<ActionResult> ChopThisTreeAsync(BlockPos at, CancellationToken ct = default) => T().ChopThisTreeAsync(at, ct);

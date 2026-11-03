@@ -131,8 +131,17 @@ public sealed record PathOptions
     // Movement costs (ticks)
     public const double WalkCost = 1 / 0.21585; // ≈4.633 ticks per block at walking speed
     public const double SneakFactor = 1 / 0.3;
-    /// <summary>Extra cost per move on farmland (walked sneaking so it isn't trampled; paths go around fields when they can).</summary>
+    /// <summary>Extra cost per move on farmland within <see cref="FarmlandGoalRange"/> of the goal (walked sneaking so it isn't
+    /// trampled; the target is on the field, so this is the trip's point).</summary>
     public const double FarmlandPenalty = 4;
+    /// <summary>Extra cost per move on farmland anywhere else: prefer a short detour, without exhausting the search budget
+    /// when fields surround the start or destination.</summary>
+    public const double FarmlandWalkPenalty = 8;
+    /// <summary>Extra cost of a hop up onto farmland (or out of water onto it): jumping/falling on farmland trampled it in 1.12
+    /// (BlockFarmland.onFallenUpon), so a ~20-block detour is cheaper. Drops and gap jumps onto farmland are never planned.</summary>
+    public const double FarmlandJumpPenalty = 100;
+    /// <summary>A cell this close (goal.Distance) to the goal counts as "the target is on the field".</summary>
+    public const double FarmlandGoalRange = 2;
     public const double JumpExtra = 2.0;
     public const double ClimbUpCost = 8.5, ClimbDownCost = 6.7, SwimCost = 9.0;
 }

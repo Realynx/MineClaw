@@ -114,7 +114,8 @@ public sealed class FakeGameClient : IGameClient
     public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, CancellationToken ct = default) => Act($"generator {x},{y},{z} {count}");
     public Task<ActionResult> HarvestGeneratorAsync(int x, int y, int z, int count, MineClaw.World.BlockPos? stand, CancellationToken ct = default) =>
         stand is { } s ? Act($"generator {x},{y},{z} {count} stand {s.X},{s.Y},{s.Z}") : HarvestGeneratorAsync(x, y, z, count, ct);
-    public Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default) => Act($"collect {radius}");
+    public Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default) => CollectDropsAsync(radius, ct, false);
+    public Task<ActionResult> CollectDropsAsync(double radius, CancellationToken ct, bool dryOnly) => Act($"collect {radius}");
     public Task<ActionResult> CraftAsync(int itemId, int damage = -1, int count = 1, CancellationToken ct = default)
     {
         LastCraftDamage = damage;
@@ -152,6 +153,8 @@ public sealed class FakeGameClient : IGameClient
     public Task<ActionResult> PlaceBlockAsync(int x, int y, int z, int itemId, CancellationToken ct = default) => Act($"place {x},{y},{z} {itemId}");
     public Task<ActionResult> DigBlockAsync(int x, int y, int z, CancellationToken ct = default) => Act($"dig {x},{y},{z}");
     public Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default) => Act($"activate {x},{y},{z}");
+    public Task<ActionResult> UseItemOnBlockAsync(MineClaw.World.BlockPos pos, MineClaw.World.BlockFace face, int itemId, int? damage = null,
+        CancellationToken ct = default) => Act($"use_on {pos.X},{pos.Y},{pos.Z} {face} {itemId}:{damage}");
     public Task<ActionResult> EatAsync(CancellationToken ct = default) => Act("eat");
     public Task<ActionResult> ChopTreeAsync(MineClaw.World.BlockPos? at = null, int? wood = null, CancellationToken ct = default) =>
         Act($"chop at={(at is { } p ? $"{p.X},{p.Y},{p.Z}" : "")} wood={wood}");

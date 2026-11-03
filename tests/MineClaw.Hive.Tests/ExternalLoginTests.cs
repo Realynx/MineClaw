@@ -25,6 +25,26 @@ public class ExternalLoginTests
     }
 
     [Fact]
+    public async Task A_nested_managed_body_is_family_not_an_outside_viewer()
+    {
+        await using var h = new TestHive(Cfg("maid_chan_103"));
+        var k = new HierarchyKit();
+        h.Supervisor.Accounts = k.H;
+        h.Supervisor.Arbiter.Follow(k.H.Tree);
+        k.H.Tree.Put(new MineClaw.Hive.Hierarchy.HiveNode("maid_chan_102", MineClaw.Hive.Hierarchy.CloneKind.Hive,
+            MineClaw.Hive.Hierarchy.BrainKind.DeepSeek, MineClaw.Hive.Hierarchy.HiveTree.Root));
+        k.H.Tree.Put(new MineClaw.Hive.Hierarchy.HiveNode("maid_chan_103", MineClaw.Hive.Hierarchy.CloneKind.Subhive, null, "maid_chan_102"));
+        h.Facts = () => new SlotFacts(16, ["maid_chan", "maid_chan_102", "maid_chan_103"]);
+        Assert.True(h.Supervisor.Arbiter.IsHiveBot("maid_chan_102"));
+        Assert.True(h.Supervisor.Arbiter.IsHiveBot("maid_chan_103"));
+        string? why = h.Supervisor.ExternalOccupant(h.Supervisor.Slot("maid_chan_103")!);
+        Assert.NotNull(why); // occupied by our other hive: don't launch a duplicate session
+        Assert.Contains("managed by hive", why);
+        Assert.DoesNotContain("isn't one of ours", h.NoticeText());
+        Assert.DoesNotContain("player's viewer", h.Supervisor.List());
+    }
+
+    [Fact]
     public async Task A_clone_name_on_the_servers_player_list_that_isnt_ours_is_skipped_before_launch()
     {
         // Main's real client on the fake server: the 0xC9 tab list is the player list the supervisor checks.

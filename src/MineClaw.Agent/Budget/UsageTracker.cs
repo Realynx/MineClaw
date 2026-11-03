@@ -1,5 +1,6 @@
 using MineClaw.Agent.Llm;
 using MineClaw.Agent.Runtime;
+using MineClaw.Data;
 
 namespace MineClaw.Agent.Budget;
 
@@ -387,7 +388,7 @@ public sealed class UsageTracker
             var perTier = CallsByTier();
             string perHour = perTier.Count == 0 ? "0 calls/h"
                 : "calls/h " + string.Join(" ", TierLabels.Where(perTier.ContainsKey).Select(l => $"{l} {perTier[l]}"));
-            return today + $", cache {d.CacheHitRatio:P0}" +
+            return today + $", cache {Percent.Of(d.CacheHitRatio)}" +
                    (d.EmbeddingTokens > 0 ? $", emb ${d.EmbeddingUsd:0.0000}" : "") +
                    $"), month ${m.TotalUsd + (ext?.Month ?? 0):0.00}/{_options.MonthlyCapUsd:0.00}, {perHour}" +
                    (d.Tiers is { Count: > 0 } ? " | " + TierSummary(d) : "") +
@@ -400,7 +401,7 @@ public sealed class UsageTracker
         string.Join(" | ", TierLabels.Where(l => totals.Tiers?.ContainsKey(l) == true).Select(l =>
         {
             var t = totals.Tiers[l];
-            return $"{l} ${t.Usd:0.000} {t.Calls}c cache {t.CacheHitRatio:P0}";
+            return $"{l} ${t.Usd:0.000} {t.Calls}c cache {Percent.Of(t.CacheHitRatio)}";
         }));
 
     private (BudgetMode Mode, string Reason) Evaluate()

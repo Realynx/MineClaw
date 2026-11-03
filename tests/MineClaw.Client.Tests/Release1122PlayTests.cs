@@ -69,6 +69,41 @@ public class Release1122PlayTests
         }
     }
 
+    public static TheoryData<bool, bool> VersionsAndSneak => new() { { false, false }, { true, false }, { false, true }, { true, true } };
+
+    [Theory]
+    [MemberData(nameof(VersionsAndSneak))]
+    public async Task Place_with_a_water_bucket_pours_into_the_dug_hole(bool release1122, bool sneaking)
+    {
+        // Only the use-item packet pours, along the server's own raytrace of the sent look
+        // from its eye (0.08 lower while sneaking on 1.12.2).
+        var (c, s) = await Start(release1122, srv =>
+        {
+            for (int x = 2; x <= 14; x++)
+            for (int z = 2; z <= 14; z++)
+            {
+                srv.Blocks[(x, 62, z)] = Blocks.Dirt;
+                srv.Blocks[(x, 63, z)] = Blocks.Grass;
+            }
+            srv.Blocks.Remove((8, 63, 8)); // the dug hole
+            srv.SpawnAt = (6.5, 64, 8.5); // two cells west: the placement aim's sneaking ray clips the rim from here
+            srv.Inventory[36] = Harness.Stack(Items.WaterBucket, 1);
+            srv.Buckets = true;
+        });
+        await using var _ = c;
+        using var __ = s;
+        if (sneaking)
+        {
+            Assert.True((await c.CrouchAsync(true)).Ok);
+            Assert.True(await Harness.WaitAsync(() => s.Got<EntityActionPacket>().Any(a => a.Action == 1)));
+        }
+        var r = await c.PlaceBlockAsync(8, 63, 8, Items.WaterBucket);
+        Assert.True(r.Ok, r.Message);
+        Assert.Equal([(8, 63, 8)], s.Pours.ToArray());
+        Assert.True(await Harness.WaitAsync(() => c.World.Inventory.CountItem(Items.Bucket) == 1));
+        Assert.True(BlockShapes.IsWater(c.World.GetBlock(8, 63, 8)));
+    }
+
     [Fact]
     public async Task Clicks_with_confirm_accept_reject_and_the_apology()
     {

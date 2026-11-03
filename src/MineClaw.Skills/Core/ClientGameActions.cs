@@ -30,7 +30,7 @@ public sealed class ClientGameActions(MinecraftClient client) : IGameActions
     public Task<ActionResult> LookAtAsync(Vec3d point, CancellationToken ct) => Inner.LookAtAsync(point, ct);
     public Task<ActionResult> UseItemAsync(int? itemId, CancellationToken ct) => Inner.UseItemAsync(itemId, ct);
     public Task<ActionResult> EatAsync(CancellationToken ct) => Inner.EatAsync(ct);
-    public Task<ActionResult> CollectDropsAsync(double radius, CancellationToken ct) => Inner.CollectDropsAsync(radius, ct);
+    public Task<ActionResult> CollectDropsAsync(double radius, CancellationToken ct, bool dryOnly = false) => Inner.CollectDropsAsync(radius, ct, dryOnly);
     public Task<ActionResult> MineAsync(string blockName, int count, double radius, CancellationToken ct) =>
         Inner.MineAsync(blockName, count, radius, null, ct);
     public Task<ActionResult> CraftAsync(string itemName, int count, CancellationToken ct) => Inner.CraftAsync(itemName, count, ct);

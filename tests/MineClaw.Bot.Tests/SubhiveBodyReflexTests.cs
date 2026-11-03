@@ -40,6 +40,46 @@ public class SubhiveBodyReflexTests
     }
 
     [Fact]
+    public async Task A_claim_wrapped_clone_can_plant_via_skill_and_place_on_its_own_body()
+    {
+        var (mainC, mainS) = await Start("maid_chan", null);
+        var (bodyC, bodyS) = await Start("maid_chan_113", srv =>
+        {
+            srv.Blocks[(9, 63, 8)] = Blocks.Farmland;
+            srv.Inventory[36] = new ItemStack(Items.Seeds, 3, 0);
+            srv.Hook = p =>
+            {
+                if (p is MineClaw.Protocol.Packets.PlayerBlockPlacementPacket { Direction: 1 } u && u.HeldItem.Id == Items.Seeds)
+                {
+                    srv.SetBlock(u.X, u.Y + 1, u.Z, Blocks.Crops);
+                    return true;
+                }
+                return false;
+            };
+        });
+        await using var _m = mainC;
+        await using var _b = bodyC;
+        using var __m = mainS;
+        using var __b = bodyS;
+        using var h = BotHost.Create(new MinecraftGameClient(mainC), TestBot.Options(), null, new NoLlm(), persist: false);
+        var body = BodyFactory.CreateClone(h.Brain!, bodyC, new TestLeases().ViewFor("maid_chan_113"));
+        try
+        {
+            using var scope = BodyScope.Push(body);
+            var r = await h.Brain!.Skills.RunAsync("plant_seeds", System.Text.Json.JsonDocument.Parse("{}").RootElement, default);
+            Assert.True(r.Ok, r.Text);
+            Assert.Equal(Blocks.Crops, bodyC.World.GetBlock(9, 64, 8));
+            bodyS.SetBlock(9, 64, 8, 0);
+            Assert.True(await Until(() => bodyC.World.GetBlock(9, 64, 8) == 0, 2000));
+            var placed = await body.Game.PlaceBlockAsync(9, 63, 8, Items.Seeds, default);
+            Assert.True(placed.Ok, placed.Message);
+            Assert.Equal(Blocks.Crops, bodyC.World.GetBlock(9, 64, 8));
+            Assert.Empty(mainS.Got<MineClaw.Protocol.Packets.PlayerBlockPlacementPacket>());
+        }
+        finally { BodyFactory.DisposeClone(body); }
+    }
+
+    [Fact]
     public async Task A_factory_built_subhive_body_has_every_safety_reflex_and_takes_cover_from_a_skeleton_it_cant_beat()
     {
         using var mode = WorldMode.Override(WorldMode.Normal);

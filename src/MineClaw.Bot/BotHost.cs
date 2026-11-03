@@ -198,7 +198,7 @@ public sealed class BotHost : IDisposable
             // Autonomous mine: taught / regen-confirmed generator cells are resource sources too.
             mgx.Inner.MineSource = (p, _) => digCells.IsDigCell(p) || indexer?.IsConfirmedDigCell(p) == true;
         }
-        if (botOptions.Protection.ServerOp) ForgetSpawnProtection(rt, log, client.Username);
+        ApplySpawnProtectionAtStartup(rt, log, botOptions.Protection, client.Username);
         client.ReservedItems = protection.ReservedItems();
 
         Func<double, double, double, string?> landmark = (x, y, z) => Agent.Memory.Landmarks.Near(rt.Memory, rt.Observations, x, y, z);
@@ -297,7 +297,7 @@ public sealed class BotHost : IDisposable
         var protectCmds = new ProtectionCommands(marks, protection, client.World, botOptions.Protection, time)
         {
             Trusted = () => rt.Options.Self.TrustedPlayers,
-            PointedBy = name => gestures.Recent().LastOrDefault(g => g.Player.Equals(name, StringComparison.OrdinalIgnoreCase))?.Pos,
+            PointedBy = name => gestures.Recent().LastOrDefault(g => g.Player.Equals(name, StringComparison.OrdinalIgnoreCase)) is { } g ? (g.Pos, g.BlockId) : null,
             NamedArea = name => NamedStructure(rt, client, name),
             GenCells = () => acquisition.GeneratorCells?.Invoke() ?? [],
             Say = line => _ = rt.Chat.SayAsync(line),
@@ -331,6 +331,7 @@ public sealed class BotHost : IDisposable
         System.Threading.Timer? protectionSync = null;
         if (client is MinecraftGameClient mgp)
         {
+            mgp.Inner.SpawnProtectionDisabled = botOptions.Protection.SpawnProtectionOff;
             WireProtectedRegion(mgp.Inner, rt, log, claims, hiveBots);
             // Hive: the protected_region fact is shared (one db); a success in ANY process retracts it, so every process
             // drops its in-memory copy, and a region learned elsewhere is adopted (it already needed two undone edits).
@@ -466,6 +467,13 @@ public sealed class BotHost : IDisposable
     /// remembered fact. The fact itself stays in the shared memory for every other hive account (clones and bodies aren't op);
     /// a fact that never named the accounts it binds is dropped, as before (nothing says anyone else is bound).
     /// </summary>
+    /// <summary>Startup: Bot:Protection:SpawnProtectionOff drops the remembered fact for everyone; else an op account is exempt.</summary>
+    public static void ApplySpawnProtectionAtStartup(AgentRuntime rt, ILogger? log, ProtectionOptions protection, string? account)
+    {
+        if (protection.SpawnProtectionOff) ForgetSpawnProtection(rt, log);
+        else if (protection.ServerOp) ForgetSpawnProtection(rt, log, account);
+    }
+
     public static void ForgetSpawnProtection(AgentRuntime rt, ILogger? log, string? account = null)
     {
         try
@@ -576,8 +584,7 @@ public sealed class BotHost : IDisposable
         // (two bots on one tree crown), never evidence of spawn protection.
         if (claims != null || hiveBots != null)
             c.EditContested = p => IsContested(c, p, claims, hiveBots);
-        // An edit that worked inside the remembered region: evidence for THIS account only. An account the fact binds is free of
-        // it now (the fact goes once it binds nobody: then the brain's notes about it go too); any other account is exempt (op).
+        // Any hive account's successful edit inside disproves this inferred region for everyone, including its saved notes.
         c.EditSucceededNearSpawn += (p, dim) =>
         {
             try { NoteEditWorked(rt, account, p, dim, c.World.WorldHeight, log); }
@@ -587,7 +594,7 @@ public sealed class BotHost : IDisposable
         {
             try
             {
-                if (r == null) return; // a success inside the client's region: EditSucceededNearSpawn above already updated the fact
+                if (r == null || c.SpawnProtectionDisabled) return; // successes update the fact through EditSucceededNearSpawn
                 var fact = SpawnProtectionFact.Learned(SpawnProtectionFact.Read(rt.Observations, r.Dimension), r, account);
                 fact.Write(rt.Observations, c.World.WorldHeight);
                 log?.LogInformation("spawn protection fact: {Text}", fact.Text());
@@ -606,13 +613,12 @@ public sealed class BotHost : IDisposable
         {
             SpawnProtectionFact.Retract(rt.Observations, dim);
             int n = RetractSpawnProtectionNotes(rt);
-            log?.LogInformation("edit by {Account} at {Pos} worked inside the remembered spawn protection, which bound only it: retracted ({Notes} note(s))",
+            log?.LogInformation("edit by {Account} at {Pos} worked inside the remembered spawn protection, disproved it for the hive: retracted ({Notes} note(s))",
                 account, p, n);
             return;
         }
         next.Write(rt.Observations, worldHeight);
-        log?.LogInformation("edit by {Account} at {Pos} worked inside the spawn protection: {Account} is exempt (op); it still binds {Others}",
-            account, p, account, string.Join(", ", next.Affects));
+        log?.LogInformation("spawn protection fact updated after edit by {Account} at {Pos}", account, p);
     }
 
     /// <summary>
@@ -654,6 +660,12 @@ public sealed class BotHost : IDisposable
     {
         try
         {
+            if (c.SpawnProtectionDisabled)
+            {
+                c.ForgetProtectedRegion("spawn protection is disabled by the owner");
+                SpawnProtectionFact.Retract(rt.Observations, c.World.Dimension);
+                return;
+            }
             var account = c.Options.Username;
             var fact = SpawnProtectionFact.Read(rt.Observations, c.World.Dimension);
             if (c.ProtectedRegion is { } mine)
@@ -749,6 +761,7 @@ public sealed class BotHost : IDisposable
 
     public void Dispose()
     {
+        Brain?.Recovery?.Dispose();
         HandoverPump?.Dispose();
         ProtectionSync?.Dispose();
         PlacedBlocks?.Dispose();

@@ -41,7 +41,9 @@ public class LiveSession6BotTests
         clock.Advance(0.2);
         var (text, player) = Assert.Single(watch.Poll(_ => 0));
         Assert.Equal("PoofimaFox", player);
-        Assert.Equal("PoofimaFox gave you 1 planks, 10 wooden pressure plate, 12 fence" + HandoverWatch.AckHint, text);
+        // Not picked up, so not "gave you": still one wake, debounced.
+        Assert.Equal("PoofimaFox tossed you 1 planks, 10 wooden pressure plate, 12 fence, but it's still on the ground: not in your " +
+                     "inventory until you pick it up (collect_drops)" + HandoverWatch.AckHint, text);
         // A later pickup of a counted toss is not a second hand-over.
         Assert.True(watch.OnPickup(903, Blocks.Fence, 12));
         clock.Advance(5);
@@ -49,7 +51,27 @@ public class LiveSession6BotTests
         // 23:31:37.6: another plank, 27 s later: its own (one) wake.
         Assert.Equal("PoofimaFox", watch.OnItemSpawn(904, Toss, [Fox()], Blocks.Planks, 1));
         clock.Advance(3.1);
-        Assert.StartsWith("PoofimaFox gave you 1 planks", Assert.Single(watch.Poll(_ => 0)).Text);
+        Assert.StartsWith("PoofimaFox tossed you 1 planks", Assert.Single(watch.Poll(_ => 0)).Text); // its own wake; still not picked up
+    }
+
+    [Fact]
+    public void A_toss_wakes_with_what_actually_reached_my_inventory()
+    {
+        // A different body collects the arrows; only the seeds reach the recipient's inventory.
+        var clock = new Clock();
+        var watch = new HandoverWatch(clock);
+        var player = new HandoverWatch.PlayerView("player_one", FoxFeet, 0, 0);
+        Assert.Equal("player_one", watch.OnItemSpawn(911, Toss, [player], Items.Arrow, 2));
+        Assert.Equal("player_one", watch.OnItemSpawn(912, Toss, [player], Items.Bone, 1));
+        Assert.Equal("player_one", watch.OnItemSpawn(913, Toss, [player], Items.Seeds, 3));
+        watch.OnTakenByOther(911);           // the clone's Collect Item
+        Assert.True(watch.OnPickup(913, Items.Seeds, 3));
+        clock.Advance(3.1);
+        var text = Assert.Single(watch.Poll(_ => 0)).Text;
+        Assert.StartsWith("player_one gave you 3 wheat seeds; 1 bone still on the ground: not in your inventory until you pick it up", text);
+        Assert.Contains("2 arrow was picked up by someone else, not you", text);
+        Assert.DoesNotContain("gave you 2 arrow", text);
+        Assert.DoesNotContain("1 bone,", text.Split(';')[0]);
     }
 
     [Fact]

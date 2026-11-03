@@ -12,8 +12,9 @@ public sealed class TextureOptions
     public string? ClientJar { get; set; }
     /// <summary>Directory holding extracted <c>terrain.png</c>/<c>items.png</c> (and the cached jar); default "&lt;data&gt;/assets".</summary>
     public string? AssetsDir { get; set; }
-    /// <summary>Last resort: download the official client jar listed in Mojang's version manifest (SHA-1 verified).</summary>
-    public bool AllowDownload { get; set; } = true;
+    /// <summary>Last resort: download the official client jar listed in Mojang's version manifest (SHA-1 verified). Off by
+    /// default: nothing is fetched unless asked for (a jar cached in <see cref="AssetsDir"/> by an earlier download still loads).</summary>
+    public bool AllowDownload { get; set; }
     /// <summary>Also look in the usual launcher folders (PrismLauncher libraries, vanilla .minecraft/versions).</summary>
     public bool SearchLauncherDirs { get; set; } = true;
     public string ManifestUrl { get; set; } = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
@@ -201,7 +202,12 @@ public static class TextureLocator
             catch (Exception ex) { log?.Invoke($"textures: {jar} unreadable ({ex.Message})"); }
         }
 
-        if (!o.AllowDownload || string.IsNullOrWhiteSpace(o.AssetsDir)) return null;
+        if (!o.AllowDownload || string.IsNullOrWhiteSpace(o.AssetsDir))
+        {
+            log?.Invoke("no b1.8.1 textures found; using flat colours (set Bot:Vision:ClientJar, put terrain.png/items.png in the " +
+                "assets folder, or allow the one-time download with Bot:Vision:AllowDownload=true)");
+            return null;
+        }
         try
         {
             var jar = DownloadAsync(o, http, CancellationToken.None).GetAwaiter().GetResult();

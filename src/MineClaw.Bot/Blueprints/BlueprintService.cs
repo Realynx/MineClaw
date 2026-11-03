@@ -462,6 +462,15 @@ public sealed class BlueprintService
         try
         {
             if (Crew().Bodies.FirstOrDefault() is not { } body || PlanOf(rec, out _) is not { } plan) return null;
+            // A massive design is sliced band by band as each one starts (minutes of planning up front, on the chat thread, for
+            // nothing the player needs to see yet): the summary is counted, not sliced.
+            if (Sectioned(plan))
+            {
+                _crewRequests.TryGetValue(rec.Id, out var want);
+                var (l, r) = PickCrew(plan, want, Crew().Bodies);
+                return SectionedSummary(plan, Math.Max(1, l.Count + r.Count))
+                       + (Executor.GateOn ? $"; I'll check the first {_o.GateBlocks} blocks with you (plan {PlanUrl(rec.Id)})" : "");
+            }
             var bp = Executor.PlanFor(rec.Id, plan, BuildPart.Whole(plan, rec.Dim), body);
             // The crew that will build it (and its benefit, from the plan: travel + placements, lanes in parallel).
             _crewRequests.TryGetValue(rec.Id, out var req);
@@ -727,7 +736,8 @@ public sealed class BlueprintService
             // The crew: one body, or lanes over several (in-process bodies, or hive clones as jobs).
             _crewRequests.TryRemove(rec.Id, out var req);
             var (local, remote) = layer == null ? PickCrew(plan, req, bodies) : ([bodies[0]], []);
-            if (local.Count > 1 || remote.Count > 0 && Jobs != null)
+            // A massive design goes band by band even with one body (CrewExecutor: each band a plan of its own).
+            if (local.Count > 1 || remote.Count > 0 && Jobs != null || layer == null && Sectioned(plan))
             {
                 _log?.LogInformation("blueprint #{Id}: crew build with {Bodies}", rec.Id, string.Join(", ", local.Select(b => b.Name).Concat(remote.Select(m => m.Name))));
                 var keep = req ?? new CrewRequest(local.Select(b => b.Name).ToList());
@@ -820,6 +830,7 @@ public sealed class BlueprintService
             var (local, remote) = PickCrew(plan, req, bodies);
             var members = Members(local, remote);
             if (members.Count <= 1) return null;
+            if (Sectioned(plan)) return RoughCrewText(plan.Blocks.Count, members.Count);
             var o = Executor.Options(local[0], BuildPart.Whole(plan, rec.Dim), null) with { GateBlocks = 0 };
             return Building.CrewSlicer.Slice(plan, local[0].World.PlanningView, members, BuildPart.Whole(plan, rec.Dim), o).CrewText();
         }
@@ -828,6 +839,34 @@ public sealed class BlueprintService
             _log?.LogDebug(ex, "crew estimate for #{Id} failed", rec.Id);
             return null;
         }
+    }
+
+    /// <summary>Built band by band (more blocks than <see cref="BlueprintOptions.SectionBlocks"/>).</summary>
+    internal bool Sectioned(VoxelPlan plan) => _o.SectionBlocks > 0 && plan.Blocks.Count > _o.SectionBlocks;
+
+    /// <summary>Seconds one body takes per block of a big solid build: the slicer's own estimate on the stepped pyramids (b=21: 1,771
+    /// blocks ≈ 22 min solo), walking and placing; restocking and pauses come on top.</summary>
+    internal const double RoughSecondsPerBlock = 0.75;
+
+    /// <summary>"with 8 bodies ≈68 min instead of 9 h alone" for a design too big to slice up front (strips: no waits).</summary>
+    internal static string RoughCrewText(int blocks, int bodies)
+    {
+        double solo = blocks * RoughSecondsPerBlock;
+        return $"with {bodies} bodies ≈{RoughTime(solo / Math.Max(1, bodies))} instead of {RoughTime(solo)} alone (rough)";
+    }
+
+    private static string RoughTime(double s) => s >= 5400
+        ? (s / 3600).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " h" : $"{Math.Max(1, Math.Round(s / 60))} min";
+
+    /// <summary>"43680 placements in 10 sections (bottom-up layer bands, each sliced as it starts), needs: 43680 sand; est. …".</summary>
+    internal string SectionedSummary(VoxelPlan plan, int bodies)
+    {
+        var bands = plan.Bands(_o.SectionBlocks);
+        var needs = plan.Blocks.Values.Where(b => !b.UpperDoor).GroupBy(b => BuildBlocks.ItemFor(b.Id, b.Meta))
+            .OrderByDescending(g => g.Count()).Take(4).Select(g => $"{g.Count()} {ConstructionExecutor.Name(g.Key.Item, g.Key.Damage)}");
+        var text = $"{plan.Blocks.Count(b => !b.Value.UpperDoor)} placements in {bands.Count} sections (bottom-up layer bands, each sliced as it starts), needs: "
+                   + string.Join(", ", needs);
+        return text + "; " + (bodies > 1 ? RoughCrewText(plan.Blocks.Count, bodies) : $"est. {RoughTime(plan.Blocks.Count * RoughSecondsPerBlock)} alone (rough)");
     }
 
     /// <summary>

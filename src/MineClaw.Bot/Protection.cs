@@ -207,7 +207,8 @@ public sealed partial class Protection
             _refusals[key] = now;
             if (_refusals.Count > 256)
                 foreach (var k in _refusals.Where(kv => now - kv.Value > RepeatWindow).Select(kv => kv.Key).ToList()) _refusals.Remove(k);
-            LastRefusal = (p, blockId, now);
+            // A hive lease ("claimed") is coordination, not ownership: no permit unlocks it, so it is never "the one I refused".
+            if (v.Reason != "claimed") LastRefusal = (p, blockId, now);
         }
         Telemetry.Count(v.Reason, $"{Blocks.Get(blockId).Name} at {Locations.Fmt(p)}: {v.Why}");
         return v with { Repeat = repeat };

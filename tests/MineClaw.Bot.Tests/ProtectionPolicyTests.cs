@@ -244,6 +244,100 @@ public class ProtectionPolicyTests
         return (h, c);
     }
 
+    [Theory]
+    [InlineData("maid_chan: you can break it: one unripe wheat next to each water hole")]
+    [InlineData("maid_chan, you can break the wheat next to the water holes")]
+    public async Task A_trusted_player_can_permit_named_wheat_without_a_pointing_gesture(string text)
+    {
+        var (c, s) = await StartAsync(srv =>
+        {
+            srv.Blocks[(9, 63, 8)] = Blocks.Farmland;
+            srv.Blocks[(9, 64, 8)] = Blocks.Crops;
+            srv.Blocks[(10, 63, 8)] = Blocks.Water;
+            srv.Blocks[(8, 63, 10)] = Blocks.Farmland;
+            srv.Blocks[(8, 64, 10)] = Blocks.Crops; // unrelated wheat: not by a hole
+        }, "maid_chan");
+        await using var _ = c;
+        using var __ = s;
+        var options = Options();
+        options.Self.TrustedPlayers = ["player_one"];
+        options.Chat.DisplayName = "maid_chan";
+        using var h = BotHost.Create(new MinecraftGameClient(c), options, null, new NoLlm(), persist: false);
+        var wheat = new BlockPos(9, 64, 8);
+        Assert.True(h.Protection.IsProtected(wheat, Blocks.Crops));
+        s.Send(new MineClaw.Protocol.Packets.ChatPacket("<player_one> " + text));
+        Assert.True(await Until(() => !h.Protection.IsProtected(wheat, Blocks.Crops), 3000),
+            "trusted named permit was ignored: " + string.Join(" | ", h.Runtime.Events.Snapshot().Select(e => e.Text)));
+        Assert.True(h.Protection.IsProtected(new BlockPos(8, 64, 10), Blocks.Crops));
+        Assert.True((await c.DigBlockAsync(9, 64, 8)).Ok);
+        Assert.Equal(Blocks.Farmland, c.World.GetBlock(9, 63, 8));
+        Assert.Null(h.ProtectionMarks!.PermitAt(new BlockPos(10, 63, 8), c.World.Dimension));
+    }
+
+    [Theory]
+    [InlineData("unripe")]
+    [InlineData("ripe")]
+    [InlineData("growing")]
+    public void Named_wheat_permits_filter_every_growth_stage_by_metadata(string qualifier)
+    {
+        var (h, c) = Host();
+        using var _ = h;
+        var crops = Enumerable.Range(0, 8).Select(age => (Pos: new BlockPos(age % 4 - 2, 65, age / 4 - 1), Age: age)).ToArray();
+        foreach (var (p, age) in crops)
+        {
+            c.World.SetBlock(p.X, p.Y - 1, p.Z, Blocks.Farmland, 0);
+            c.World.SetBlock(p.X, p.Y, p.Z, Blocks.Crops, age);
+            // Ripe wheat is normally harvestable; individual never-break marks make every stage need a permit.
+            h.ProtectionMarks!.Add(MarkKind.Never, c.World.Dimension, [(p, p)], "wheat", "PoofimaFox", null, false);
+            Assert.True(h.Protection.IsProtected(p, Blocks.Crops));
+        }
+        c.RaiseChat($"<PoofimaFox> {c.Username} you can break the {qualifier} wheat");
+        foreach (var (p, age) in crops)
+        {
+            bool selected = qualifier == "ripe" ? age == 7 : age < 7;
+            Assert.Equal(selected, h.ProtectionMarks!.PermitAt(p, c.World.Dimension) != null);
+            Assert.Equal(!selected, h.Protection.IsProtected(p, Blocks.Crops));
+            Assert.Null(h.ProtectionMarks.PermitAt(p.Down(), c.World.Dimension));
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void One_wheat_next_to_each_water_hole_permits_one_crop_per_separate_hole(bool connectedWaterCells)
+    {
+        var (h, c) = Host();
+        using var _ = h;
+        var holes = new[] { new BlockPos(-3, 64, 1), new BlockPos(2, 64, 1) };
+        var groups = holes.Select(p => new[] { p.Up().Offset(BlockFace.North),
+            connectedWaterCells ? p.Up().Offset(BlockFace.East).Offset(BlockFace.North) : p.Up().Offset(BlockFace.South) }).ToArray();
+        foreach (var hole in holes)
+        {
+            c.World.SetBlock(hole.X, hole.Y, hole.Z, Blocks.Water, 0);
+            if (connectedWaterCells) c.World.SetBlock(hole.X + 1, hole.Y, hole.Z, Blocks.Water, 0);
+        }
+        var unrelated = new BlockPos(0, 65, -2);
+        foreach (var p in groups.SelectMany(g => g).Append(unrelated))
+        {
+            c.World.SetBlock(p.X, p.Y - 1, p.Z, Blocks.Farmland, 0);
+            c.World.SetBlock(p.X, p.Y, p.Z, Blocks.Crops, 2);
+            Assert.True(h.Protection.IsProtected(p, Blocks.Crops));
+        }
+        c.RaiseChat($"<PoofimaFox> {c.Username} you can break one unripe wheat next to each water hole");
+        foreach (var group in groups)
+        {
+            Assert.Single(group, p => h.ProtectionMarks!.PermitAt(p, c.World.Dimension) != null);
+            Assert.Single(group, p => !h.Protection.IsProtected(p, Blocks.Crops));
+        }
+        Assert.True(h.Protection.IsProtected(unrelated, Blocks.Crops));
+        foreach (var p in groups.SelectMany(g => g)) Assert.Null(h.ProtectionMarks!.PermitAt(p.Down(), c.World.Dimension));
+        foreach (var hole in holes)
+        {
+            Assert.Null(h.ProtectionMarks!.PermitAt(hole, c.World.Dimension));
+            Assert.Null(h.ProtectionMarks.PermitAt(hole.Offset(BlockFace.East), c.World.Dimension));
+        }
+    }
+
     private static readonly BlockPos Wall = new(2, 66, 2);
 
     /// <summary>A player at (2.5, 65, 5.5) punch-pointing at the wall block.</summary>
@@ -307,6 +401,64 @@ public class ProtectionPolicyTests
         Assert.Contains("say 'you can break it'", text);
         c.RaiseChat("<PoofimaFox> claudechan you can break it");
         Assert.False(h.Protection.IsProtected(Wall, Blocks.Planks));
+    }
+
+    /// <summary>A trusted player at (2.5, 65, 5.5) punches the instant-break block at <paramref name="punched"/>: the dig lands before the
+    /// swing (vanilla clickMouse), so the block is air when the swing arrives.</summary>
+    private static void PunchAndBreak(BotHost h, FakeGameClient c, BlockPos punched)
+    {
+        var feet = new Vec3d(2.5, 65, 5.5);
+        var (yaw, pitch) = PlayerPhysics.YawPitchTo(feet + new Vec3d(0, PlayerPhysics.EyeHeight, 0), punched.Center);
+        c.World.Entities.SpawnPlayer(7, "PoofimaFox", feet, yaw, pitch);
+        int id = c.World.GetBlock(punched);
+        c.World.SetBlock(punched.X, punched.Y, punched.Z, 0, 0);
+        h.Gestures!.Observe(7);
+        Assert.Contains(h.Gestures.Recent(), g => g.Player == "PoofimaFox" && g.Pos == punched && g.BlockId == id);
+    }
+
+    [Fact]
+    public void You_can_break_it_after_a_punch_that_broke_the_block_binds_to_that_kind_not_a_stale_refusal()
+    {
+        // An instant-break target must take precedence over a stale refusal. House torches are soft-protected.
+        var (h, c) = Host();
+        var torches = new[] { new BlockPos(1, 65, 3), new BlockPos(3, 65, 3), new BlockPos(1, 65, 4) };
+        foreach (var t in torches) c.World.SetBlock(t.X, t.Y, t.Z, Blocks.Torch, 5);
+        var punched = new BlockPos(2, 65, 3);
+        c.World.SetBlock(punched.X, punched.Y, punched.Z, Blocks.Torch, 5);
+        h.Protection.Invalidate();
+        Assert.All(torches, t => Assert.True(h.Protection.IsProtected(t, Blocks.Torch)));
+        h.Protection.Explain(Wall, Blocks.Planks);       // an earlier refusal...
+        c.World.SetBlock(Wall.X, Wall.Y, Wall.Z, 0, 0);  // ...whose block is gone since
+        PunchAndBreak(h, c, punched);
+        c.RaiseChat($"<PoofimaFox> {c.Username} you can break it");
+        Assert.All(torches, t => Assert.False(h.Protection.IsProtected(t, Blocks.Torch), $"{t} still protected"));
+        Assert.True(h.Protection.IsProtected(new BlockPos(2, 67, 2), Blocks.Planks)); // not the refused wall's column
+        Assert.True(h.Protection.IsProtected(new BlockPos(2, 65, 2), Blocks.Planks));
+    }
+
+    [Fact]
+    public void Punching_wild_tall_grass_and_you_can_break_it_says_it_needs_no_permit()
+    {
+        var (h, c) = Host();
+        c.World.SetBlock(1, 65, 3, Blocks.TallGrass, 1);
+        var punched = new BlockPos(2, 65, 3);
+        c.World.SetBlock(punched.X, punched.Y, punched.Z, Blocks.TallGrass, 1);
+        PunchAndBreak(h, c, punched);
+        c.RaiseChat($"<PoofimaFox> {c.Username} you can break it");
+        Assert.Contains(c.Said, l => l.Contains("tallgrass") && l.Contains("can already break it"));
+        Assert.True(h.Protection.IsProtected(new BlockPos(2, 65, 2), Blocks.Planks)); // nothing else got unlocked
+    }
+
+    [Fact]
+    public void You_can_break_it_with_only_a_stale_refusal_asks_which_block_instead_of_permitting_nothing()
+    {
+        var (h, c) = Host();
+        h.Protection.Explain(Wall, Blocks.Planks);
+        c.World.SetBlock(Wall.X, Wall.Y, Wall.Z, 0, 0); // broken meanwhile
+        c.RaiseChat($"<PoofimaFox> {c.Username} you can break it");
+        Assert.Contains(c.Said, l => l.Contains("which block"));
+        Assert.True(h.Protection.IsProtected(new BlockPos(2, 67, 2), Blocks.Planks));
+        Assert.True(h.Protection.IsProtected(new BlockPos(2, 65, 2), Blocks.Planks));
     }
 
     [Fact]

@@ -19,6 +19,33 @@ public class InteractTests
         s.SpawnAt = (4.5, 64, 8.5);
     }
 
+    [Theory]
+    [InlineData(true)]
+    public async Task Place_seeds_on_farmland_or_the_air_above_plants_them(bool targetSoil)
+    {
+        var (c, s) = await Harness.StartAsync(srv =>
+        {
+            srv.Blocks[(9, 63, 8)] = Blocks.Farmland;
+            srv.Inventory[36] = Harness.Stack(Items.Seeds, 3);
+            srv.Hook = p =>
+            {
+                if (p is not PlayerBlockPlacementPacket u) return false;
+                if ((u.X, u.Y, u.Z, u.Direction, u.HeldItem.Id) == (9, 63, 8, (byte)1, Items.Seeds))
+                    srv.SetBlock(9, 64, 8, Blocks.Crops);
+                return true;
+            };
+        });
+        await using var _ = c;
+        using var __ = s;
+        var r = await c.PlaceBlockAsync(9, targetSoil ? 63 : 64, 8, Items.Seeds);
+        Assert.True(r.Ok, r.ToString());
+        Assert.Equal(Blocks.Crops, c.World.GetBlock(9, 64, 8));
+        Assert.Equal(Blocks.Farmland, c.World.GetBlock(9, 63, 8));
+        s.SetBlock(9, 64, 8, 0);
+        Assert.True(await Harness.WaitAsync(() => c.World.GetBlock(9, 64, 8) == 0));
+        Assert.True((await c.PlaceBlockAsync(9, 64, 8, Items.Seeds)).Ok); // air-above targeting still works
+    }
+
     [Fact]
     public async Task Hoe_on_the_top_face_sends_that_face_and_waits_for_the_block_change()
     {
@@ -59,6 +86,30 @@ public class InteractTests
         var chest = await c.UseItemOnBlockAsync(new BlockPos(9, 64, 8), BlockFace.Top, Items.StoneHoe);
         Assert.False(chest.Ok);
         Assert.Contains("opened/used instead", chest.Message);
+    }
+
+    [Fact]
+    public async Task Hoe_on_protected_water_is_a_no_op_not_a_refusal_but_protected_dirt_is_refused()
+    {
+        // ItemHoe never changes water, so only the dirt it would till needs an edit-protection check.
+        var (c, s) = await Harness.StartAsync(srv =>
+        {
+            srv.Blocks[(9, 64, 8)] = Blocks.Water;
+            srv.Blocks[(8, 64, 10)] = Blocks.Dirt;
+            srv.Inventory[37] = Harness.Stack(Items.StoneHoe, 1);
+        });
+        await using var _ = c;
+        using var __ = s;
+        c.IsProtected = (_, id) => id is Blocks.Water or Blocks.Dirt;
+        var water = await c.UseItemOnBlockAsync(new BlockPos(9, 64, 8), BlockFace.Top, Items.StoneHoe);
+        Assert.False(water.Ok);
+        Assert.Contains("no effect", water.Message);
+        Assert.DoesNotContain("protected", water.Message);
+        int sent = s.Got<PlayerBlockPlacementPacket>().Count();
+        var dirt = await c.UseItemOnBlockAsync(new BlockPos(8, 64, 10), BlockFace.Top, Items.StoneHoe);
+        Assert.False(dirt.Ok);
+        Assert.Contains("protected", dirt.Message);
+        Assert.Equal(sent, s.Got<PlayerBlockPlacementPacket>().Count()); // refused before any click
     }
 
     [Fact]

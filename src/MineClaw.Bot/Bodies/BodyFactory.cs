@@ -37,6 +37,7 @@ public static partial class BodyFactory
         var log = brain.Log;
         Func<IDisposable?> scope = () => BodyScope.Push(body);
         body.Activities.StepScope = scope;
+        AttachTemporaryCleanup(body);
         body.Latency ??= rt.Latency; // main's chat latency is the runtime's tracker
         // Step 1-2: the one worker drives main; a delegate run on a clone body's slot (that slot pushed the clone) keeps that
         // clone (a pool per body comes in step 3).
@@ -49,10 +50,13 @@ public static partial class BodyFactory
         };
         bridge.Attach();
         body.Bridge = bridge;
+        brain.Recovery ??= new DeathRecovery(brain.Bodies, rt.Events, time);
+        brain.Recovery.Watch(body);
 
         var scripts = ScriptTools.Register(rt, client, brain.Skills, brain.BotOptions.Scripts, time, log); // script tool (brain+worker), after split + header
         scripts.Controller.StepScope = scope;
         body.ScriptBridge = scripts;
+        scripts.Controller.Host.SafetyBusy = () => client.SafetyEngaged || brain.Recovery?.IsHolding(body) == true;
     }
 
     /// <summary>
@@ -102,6 +106,12 @@ public static partial class BodyFactory
         if (!body.IsMain) throw new NotSupportedException($"body {body.Name}: a clone body is built by BodyFactory.CreateClone (Bodies:Mode=inproc)");
     }
 
+    private static void AttachTemporaryCleanup(Body body)
+    {
+        if (body.Client is { } client)
+            body.Activities.CleanupJob = async ct => (await client.CleanupTemporaryBlocksAsync(ct).ConfigureAwait(false)).Message;
+    }
+
     private static readonly string[] PassiveTools = ["follow", "guard", "watch_demo", "ask_player", "ask_stand", "wait", "sit", "look", "see"];
 
     /// <summary>Stall watchdog: a job/script/order that claims to work while the body hasn't changed for 45 s wakes the brain.</summary>
@@ -128,18 +138,22 @@ public static partial class BodyFactory
             }
             return null;
         }
-        string Snapshot()
-        {
-            var p = client.World.Player.Position;
-            var inv = client.World.Inventory.PlayerSlots();
-            int h = 17;
-            foreach (var st in inv) h = h * 31 + (st.IsEmpty ? 0 : st.Id * 1000 + st.Count);
-            return $"{Math.Round(p.X * 2)},{Math.Round(p.Y * 2)},{Math.Round(p.Z * 2)}|{h}|{client.CurrentAction}";
-        }
+        string Snapshot() => StallSignature(client, body.Name);
         Func<string?> LastResult = () => rt.Worker?.IsRunning == true && rt.Worker.Trail is { } trail ? trail : last;
         string? tag = body.IsMain ? null : body.Short;
         if (!body.IsMain) LastResult = () => last; // the one worker's trail is main's
         return new Brainstem.StallWatchdog(Work, Snapshot, LastResult, e => rt.Events.Post(tag != null && e.Body == null ? e with { Body = tag } : e), time);
+    }
+
+    /// <summary>What the stall watchdog compares: where the body is, what it carries, what it does, and the pulse of a crew build it
+    /// coordinates (<see cref="Blueprints.BuildPulse"/>: the crew placing blocks or the slicer planning while this body stands still).</summary>
+    internal static string StallSignature(IGameClient client, string body)
+    {
+        var p = client.World.Player.Position;
+        var inv = client.World.Inventory.PlayerSlots();
+        int h = 17;
+        foreach (var st in inv) h = h * 31 + (st.IsEmpty ? 0 : st.Id * 1000 + st.Count);
+        return $"{Math.Round(p.X * 2)},{Math.Round(p.Y * 2)},{Math.Round(p.Z * 2)}|{h}|{client.CurrentAction}|{Blueprints.BuildPulse.Of(body)}";
     }
 
     /// <summary>Posts settled hand-overs / kept promises as wake events (the timer does this live; tests call it by hand).</summary>
@@ -186,7 +200,8 @@ public static partial class BodyFactory
         if (client is MinecraftGameClient mg)
             mg.Inner.ItemCollected += (collector, entity, stack) =>
             {
-                if (collector != w.Player.EntityId || stack is not { IsEmpty: false } s) return;
+                if (collector != w.Player.EntityId) { watch.OnTakenByOther(entity); return; }
+                if (stack is not { IsEmpty: false } s) return;
                 watch.OnPickup(entity, s.Id, s.Count);
             };
         if (body == null) // main's account speaks and hears: the player lines and promises are main's

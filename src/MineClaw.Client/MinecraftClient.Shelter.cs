@@ -126,12 +126,13 @@ public sealed partial class MinecraftClient
     {
         if (!alreadyMarked && Interlocked.CompareExchange(ref _sheltering, 1, 0) != 0) return ActionResult.Fail("already boxed in");
         Combat.Sheltering = true;
+        var feet = FeetCell();
+        var placed = new List<BlockPos>();
         try
         {
             return await RunActionAsync("shelter", ct, async c =>
             {
-                var feet = FeetCell();
-                var placed = new List<BlockPos>();
+                feet = FeetCell();
                 int need = BlocksToBoxIn(feet), have = ShelterBlocksTotal();
                 if (have < need || have == 0 && need > 0)
                     return ActionResult.Fail(have == 0 ? "no blocks to box myself in with" : $"only {have} block(s) for a box that takes {need}: not starting one");
@@ -143,7 +144,7 @@ public sealed partial class MinecraftClient
                         if (n == 0) break;
                         if (!Aiming.IsReplaceable(World, World.GetBlock(p.Target))) continue;
                         var r = await PlaceAgainstCoreAsync(p.Target, p.Face, id, null, null, allowHidden: true, c).ConfigureAwait(false);
-                        if (r.Ok) placed.Add(p.Target);
+                        if (r.Ok) { placed.Add(p.Target); RememberTemporaryBlock(p.Target); }
                         else Log($"survival: shelter block at {Fmt(p.Target)}: {r.Message}");
                     }
                 }
@@ -186,6 +187,13 @@ public sealed partial class MinecraftClient
         }
         finally
         {
+            // Cancellation/death can leave the wait before ClearShelterAsync. Keep every confirmed own block for cleanup.
+            var rest = placed.Where(OwnTemporaryBlock).ToList();
+            if (rest.Count > 0) lock (_shelterLeft)
+            {
+                _shelterLeft.RemoveAll(b => b.Feet == feet);
+                _shelterLeft.Add((feet, rest, TickCount));
+            }
             Combat.Sheltering = false;
             Volatile.Write(ref _sheltering, 0);
         }
@@ -248,11 +256,12 @@ public sealed partial class MinecraftClient
         var left = new List<BlockPos>();
         foreach (var p in order)
         {
-            if (!BlockShapes.HasCollision(World, p.X, p.Y, p.Z)) continue;
+            if (!OwnTemporaryBlock(p) || !BlockShapes.HasCollision(World, p.X, p.Y, p.Z)) continue;
             var r = await DigCoreAsync(p, c, allowPathing: false).ConfigureAwait(false);
             if (r.Ok) dug++;
             else left.Add(p);
         }
+        if (left.Count > 0) lock (_shelterLeft) _shelterLeft.Add((feet, left, TickCount));
         return $"; took the box down ({dug} block(s) back)" + (left.Count > 0 ? $", {left.Count} left at {string.Join(" ", left.Take(3).Select(Fmt))}" : "");
     }
 
@@ -272,7 +281,7 @@ public sealed partial class MinecraftClient
             said = $"; opened the side at {Fmt(feet + side)}";
             foreach (var p in new[] { feet.Up() + side, feet + side })
             {
-                if (!placed.Contains(p) || !BlockShapes.HasCollision(World, p.X, p.Y, p.Z)) continue;
+                if (!placed.Contains(p) || !OwnTemporaryBlock(p) || !BlockShapes.HasCollision(World, p.X, p.Y, p.Z)) continue;
                 var r = await DigCoreAsync(p, c, allowPathing: false).ConfigureAwait(false);
                 if (!r.Ok) { said = $"; couldn't open the box: {r.Message}"; break; }
             }

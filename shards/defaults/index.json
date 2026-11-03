@@ -37,7 +37,7 @@
         "knowledge": 7
       },
       "records": 454,
-      "bytes": 1906660,
+      "bytes": 1906664,
       "vectors": 445,
       "needs_embedding": 7,
       "embedding_model": "text-embedding-3-large",
@@ -46,8 +46,8 @@
         "mechanics_b181.md"
       ],
       "source": "MineClaw.Data b1.8.1 tables (client jar / mc-dev), rendered by SeedCorpus",
-      "source_hash": "d7bb32352430964bfe4460c214c9d39e182f1b2c48b0c7e67398f984ab13d54f",
-      "content_hash": "013ddf6ee00d0c0b112a572fafdd547b870bfac2c27def768e0b27eef45c5530",
+      "source_hash": "401f3f8ddd57ceb0b338771c08a3315dc8a30d076dab9808891db27d21d7a4d0",
+      "content_hash": "a5f925dfd0e1b6e06505188d18070af48cdc0c85c83b25108faef729f0e120f8",
       "builder": "ShardPacks/1"
     },
     {
@@ -58,19 +58,19 @@
       "mode": "sdk-js",
       "description": "sdk-js mode pack (every version): the JavaScript scripting SDK as memory: each module and helper with its doc comment, the game functions a script calls (per game version) and worked examples. Generated from MineClaw.Scripting/Sdk/js and the bot's tools.",
       "counts": {
-        "knowledge": 210
+        "knowledge": 215
       },
-      "records": 210,
-      "bytes": 31020,
+      "records": 215,
+      "bytes": 31670,
       "vectors": 0,
-      "needs_embedding": 210,
+      "needs_embedding": 215,
       "dims": 0,
       "files": [
         "sdk-js.md"
       ],
       "source": "MineClaw.Scripting SDK modules (core,world,flow,machine,policies,jobs,dig,crew,story,character) + game functions (b1.8.1, 1.12.2) + ScriptPrompts examples",
-      "source_hash": "5d023c45340b0332ca42ff511ff37942817b293154d4790465f4bde113bc6511",
-      "content_hash": "ac53f7befd8d9c171cdcb7447ac392eedabaa3979e6dd9b9c7573a7556454680",
+      "source_hash": "ef063868c3f21095276ec8f806a0fee310c2ed294e6400d10452c71a8fa19dfa",
+      "content_hash": "36df67b2398532a514effa18a964d7344aa3ff28979d80f35be21b28ac48d62f",
       "builder": "ShardPacks/1"
     },
     {

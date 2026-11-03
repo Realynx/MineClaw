@@ -354,7 +354,14 @@ public sealed class WorldState : IBlockAccess, IDisposable
         if (biomes.Length < 256) return;
         var col = GetOrCreate(chunkX, chunkZ, out _);
         col.Biomes = biomes.AsSpan(0, 256).ToArray();
+        BiomeMemory.Record(Dimension, chunkX, chunkZ, biomes);
     }
+
+    private readonly BiomeMemory _ownBiomes = new();
+
+    /// <summary>Every biome seen, kept after chunks unload (find_biome, scout_biome): this world's own, or the whole crew's when the
+    /// world is on a <see cref="SharedChunkStore"/>.</summary>
+    public BiomeMemory BiomeMemory => _store?.Biomes ?? _ownBiomes;
 
     public int GetBlock(BlockPos p) => GetBlock(p.X, p.Y, p.Z);
     public int GetMeta(BlockPos p) => GetMeta(p.X, p.Y, p.Z);

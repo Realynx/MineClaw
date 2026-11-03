@@ -10,20 +10,20 @@ public sealed partial class MinecraftClient
     /// <summary>Walks over dropped items within <paramref name="radius"/>. Never chases items over or near the void:
     /// an item is collected only from a standing spot at least 2 blocks from any edge (vanilla picks items up within
     /// ~1.3 blocks), otherwise it is reported as lost.</summary>
-    public Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default) =>
+    public Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default, bool dryOnly = false) =>
         RunActionAsync("collect", ct, async c =>
         {
-            var r = await CollectDropsCoreAsync(radius, 32, c).ConfigureAwait(false);
+            var r = await CollectDropsCoreAsync(radius, 32, c, dryOnly: dryOnly).ConfigureAwait(false);
             string lost = LostText(r)
                           + (r.Stuck > 0 ? $"; {r.Stuck} drop(s) lying up on leaves (break the leaf under them; not lost)" : "");
-            return r.Entities > 0
+            return r.Entities > 0 || r.Water > 0
                 ? ActionResult.Success($"picked up {r.Items} item(s){lost}", r.Items)
                 : ActionResult.Fail("no reachable drops nearby" + lost);
         });
 
     /// <param name="Hazard">Of <paramref name="Lost"/>: drops left in/next to lava or water (a generator's channel), not
     /// over the void.</param>
-    private readonly record struct CollectResult(int Entities, int Items, int Lost, int LostItems, int Stuck = 0, int Hazard = 0);
+    private readonly record struct CollectResult(int Entities, int Items, int Lost, int LostItems, int Stuck = 0, int Hazard = 0, int Water = 0);
 
     /// <summary>"; 2 drop(s) left near the void (2 item(s) lost); 3 drop(s) left in lava/water (hazard, not chased)".</summary>
     private static string LostText(CollectResult r)
@@ -54,11 +54,12 @@ public sealed partial class MinecraftClient
     /// the old ±1.3-from-the-cell-centre test wrote them off. Flowing water is no hazard to stand in (b1.8.1 water doesn't hurt);
     /// lava within a block still is.
     /// </summary>
-    private Goal SafePickupGoal(Vec3d item)
+    private Goal SafePickupGoal(Vec3d item, bool dryOnly = false)
     {
         var cell = new BlockPos((int)Math.Floor(item.X), (int)Math.Floor(item.Y + 0.1), (int)Math.Floor(item.Z));
         return new GoalFiltered(new GoalNear(cell, 2), (x, y, z) =>
                 PickupPoint(x, y, z, item) is not null
+                && (!dryOnly || !BlockShapes.IsWater(World.GetBlock(x, y, z)) && !BlockShapes.IsWater(World.GetBlock(x, y + 1, z)))
                 && Safety.EdgeDistance(World, x, y, z, 2) >= 2 && !Safety.LavaNear(World, x, y, z)
                 && !Trees.Wood.IsLeaves(World.GetBlock(x, y - 1, z)), // never walk out onto a crown for a drop
             "safe pickup spot");
@@ -109,17 +110,17 @@ public sealed partial class MinecraftClient
     /// Why a drop can't be picked up safely (null = it can): "over the void", "in lava/water (hazard)" (a cobble generator's
     /// channel: lava or water at/next to it), or "next to the void" (only edge cells could reach it).
     /// </summary>
-    private string? LostDropReason(Vec3d item)
+    private string? LostDropReason(Vec3d item, bool dryOnly = false)
     {
         int cx = (int)Math.Floor(item.X), cy = (int)Math.Floor(item.Y + 0.1), cz = (int)Math.Floor(item.Z);
         if (World.IsOverVoid(cx, cy, cz)) return "over the void";
-        var goal = SafePickupGoal(item);
+        var goal = SafePickupGoal(item, dryOnly);
         for (int x = cx - 2; x <= cx + 2; x++)
         for (int y = cy - 1; y <= cy + 1; y++)
         for (int z = cz - 2; z <= cz + 2; z++)
             if (PickupStandable(x, y, z) && goal.IsReached(x, y, z)) return null;
         if (Safety.LavaNear(World, cx, cy, cz)) return "in lava/water (hazard)";
-        return HazardAround(cx, cy, cz) ? "in the gen's water, no safe spot in pickup reach (hazard)" : "next to the void";
+        return HazardAround(cx, cy, cz) ? "in water, no safe spot in pickup reach (hazard)" : "next to the void";
     }
 
     /// <summary>How long a fresh drop with no pickup spot yet may still move (regen push-out, water flow) before it is written off.</summary>
@@ -171,11 +172,11 @@ public sealed partial class MinecraftClient
     /// <param name="stuckIds">Collects (and logs once) drops lying on a leaf block up in a crown: out of pickup reach from
     /// the ground but not lost (breaking that leaf drops them; chop_tree does).</param>
     private async Task<CollectResult> CollectDropsCoreAsync(double radius, int maxEntities, CancellationToken ct, Vec3d? around = null,
-        ISet<int>? lostIds = null, ISet<int>? stuckIds = null)
+        ISet<int>? lostIds = null, ISet<int>? stuckIds = null, bool dryOnly = false)
     {
         var skip = new HashSet<int>();
         var settled = new HashSet<int>();
-        int picked = 0, lost = 0, lostItems = 0, stuck = 0, hazard = 0;
+        int picked = 0, lost = 0, lostItems = 0, stuck = 0, hazard = 0, water = 0;
         int startCount = TotalItems();
         var origin = around ?? World.Player.Position;
         for (int guard = 0; guard < maxEntities * 2 && picked < maxEntities; guard++)
@@ -200,26 +201,28 @@ public sealed partial class MinecraftClient
                         Log($"collect: {drop.DisplayName} at {Fmt(drop.Position)} is lying on the leaves at {Fmt(leaf)} (out of reach, not lost)");
                     continue;
                 }
-                if (LostDropReason(drop.Position) is not null && DateTime.UtcNow - drop.SpawnedAt < DropSettleTime && settled.Add(id))
+                if (LostDropReason(drop.Position, dryOnly) is not null && DateTime.UtcNow - drop.SpawnedAt < DropSettleTime && settled.Add(id))
                 {
                     // A fresh gen drop is still moving: it lies in the just-dug cell until the regen pushes it out (mc-dev
                     // Entity.g pushOutOfBlocks) and the water carries it to a corner. Give it a moment to settle, then look again.
                     var left = DropSettleTime - (DateTime.UtcNow - drop.SpawnedAt);
-                    await WaitUntilAsync(() => World.Entities.Get(id) is not { } e || LostDropReason(e.Position) is null, left, ct).ConfigureAwait(false);
+                    await WaitUntilAsync(() => World.Entities.Get(id) is not { } e || LostDropReason(e.Position, dryOnly) is null, left, ct).ConfigureAwait(false);
                     continue;
                 }
-                if (LostDropReason(drop.Position) is { } why)
+                if (LostDropReason(drop.Position, dryOnly) is { } why)
                 {
                     skip.Add(id);
                     lost++;
                     lostItems += drop.Item.Count;
                     if (why.Contains("hazard", StringComparison.Ordinal)) hazard++;
+                    if (why.StartsWith("in water,", StringComparison.Ordinal)) water++;
                     // Logged once per drop: callers without their own set (mine/harvest passes) share the client's.
                     if (lostIds?.Add(id) ?? FirstLostReport(id))
                         Log($"collect: not chasing {drop.DisplayName} at {Fmt(drop.Position)}: {why}");
                     continue;
                 }
-                var g = await GotoCoreAsync(SafePickupGoal(drop.Position), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(15), MaxReplans = 1 }, ct)
+                var g = await GotoCoreAsync(SafePickupGoal(drop.Position, dryOnly), GotoOptions.Default with
+                    { Timeout = TimeSpan.FromSeconds(dryOnly ? 2 : 15), MaxReplans = dryOnly ? 0 : 1 }, ct)
                     .ConfigureAwait(false);
                 if (!g.Ok && World.Entities.Get(id) is not null) { skip.Add(id); continue; }
                 // The spot touches the drop only off its centre (a corner of the gen's water): lean into range.
@@ -231,7 +234,7 @@ public sealed partial class MinecraftClient
             if (await WaitUntilAsync(() => World.Entities.Get(id) is null, wait, ct).ConfigureAwait(false)) picked++;
             else skip.Add(id);
         }
-        return new CollectResult(picked, Math.Max(0, TotalItems() - startCount), lost, lostItems, stuck, hazard);
+        return new CollectResult(picked, Math.Max(0, TotalItems() - startCount), lost, lostItems, stuck, hazard, water);
     }
 
     private int TotalItems()
@@ -541,7 +544,7 @@ public sealed partial class MinecraftClient
                     if (window < MinGeneratorYield && overall < MinGeneratorYield && !watch.Shared && watch.Sharer(World.Entities) is null)
                     {
                         badYield = true;
-                        stop = $"{Fmt(pos)} isn't regenerating cobble for me (yield {overall:P0}: {produced} drops from {mined} digs), need the right cell";
+                        stop = $"{Fmt(pos)} isn't regenerating cobble for me (yield {Percent.Of(overall)}: {produced} drops from {mined} digs), need the right cell";
                         break;
                     }
                 }

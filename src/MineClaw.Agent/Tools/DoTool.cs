@@ -54,6 +54,7 @@ public static class DoTool
     {
         var actions = Actions.Where(a => tools.Contains(a) || (SkillActions.Contains(a) && tools.Contains("skill"))).ToArray();
         if (actions.Length == 0) return;
+        tools.SetInputAdapter(ToolName, NormalizeInput);
         tools.Register(new DelegateTool(ToolName, Description, Schema(actions), async (input, ct) =>
         {
             // Outside the brain loop (a script, a test): run the steps in order, stopping at the first failure.
@@ -97,6 +98,48 @@ public static class DoTool
             }
         }
         return steps;
+    }
+
+    /// <summary>Project supported shorthand onto the canonical schema before registry validation; keep routing metadata.</summary>
+    private static JsonElement NormalizeInput(JsonElement input)
+    {
+        if (input.ValueKind != JsonValueKind.Object) return input;
+        var o = JsonNode.Parse(input.GetRawText())!.AsObject();
+        var action = input.Str("action");
+        if (!input.TryGetProperty("action", out _))
+        {
+            var shorthand = input.EnumerateObject().FirstOrDefault(p => Actions.Contains(p.Name, StringComparer.OrdinalIgnoreCase));
+            if (shorthand.Name != null)
+            {
+                action = shorthand.Name;
+                o["action"] = action;
+                o["args"] = JsonNode.Parse(shorthand.Value.GetRawText());
+                o.Remove(shorthand.Name);
+            }
+        }
+        if (action != null && o["action"] is JsonValue v && v.TryGetValue<string>(out _))
+        {
+            action = action.Trim().ToLowerInvariant();
+            o["action"] = action;
+            if (o["args"] is { } args)
+            {
+                var element = JsonSerializer.SerializeToElement(args);
+                if (element.ValueKind is JsonValueKind.String or JsonValueKind.Number)
+                    o["args"] = JsonNode.Parse(Normalize(action, element).GetRawText());
+            }
+        }
+        if (input.TryGetProperty("then", out var then))
+        {
+            var steps = then.ValueKind switch
+            {
+                JsonValueKind.Array => then.EnumerateArray().ToArray(),
+                JsonValueKind.Object => [then],
+                JsonValueKind.String => [JsonSerializer.SerializeToElement(new { action = then.GetString() })],
+                _ => null,
+            };
+            if (steps != null) o["then"] = new JsonArray(steps.Select(s => JsonNode.Parse(NormalizeInput(s).GetRawText())).ToArray());
+        }
+        return JsonSerializer.SerializeToElement(o);
     }
 
     private static readonly HashSet<string> Reserved = new(StringComparer.OrdinalIgnoreCase) { "action", "args", "then", "queue", "body" };

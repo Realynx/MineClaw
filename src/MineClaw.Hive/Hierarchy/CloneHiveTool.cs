@@ -21,7 +21,9 @@ public static class CloneHiveTool
     public const string Description =
         "Bodies/clones via main, never chat: spawn bodies=N (+script=X: they start on X), release name|all, list. Yours now: script{name,body}.";
 
-    public static void Register(ToolRegistry tools, CloneHost host) =>
+    public static void Register(ToolRegistry tools, CloneHost host)
+    {
+        tools.SetInputAdapter(HiveTools.MainTool, HiveTools.NormalizeInput);
         tools.Register(HiveTools.MainTool, Description,
             ToolSchema.Create().Str("op", enumValues: ["spawn", "release", "list"]).Str("task", required: false).Str("name", required: false)
                 .Str("script", required: false).Str("kind", required: false).Int("bodies", required: false).Build(),
@@ -50,4 +52,5 @@ public static class CloneHiveTool
                 var text = r.Ok ? r.As<string>() ?? "ok" : r.Error ?? "failed";
                 return r.Ok && !text.StartsWith("error", StringComparison.Ordinal) ? ToolResult.Success(text) : ToolResult.Error(text);
             }, tiers: ToolTiers.Main);
+    }
 }

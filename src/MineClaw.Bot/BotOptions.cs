@@ -47,6 +47,10 @@ public sealed class ProtectionOptions
     /// <summary>The bot account is op: spawn protection doesn't apply, so a remembered spawn-protection region is dropped at
     /// startup and never adopted from memory; only real server reverts this session re-learn it.</summary>
     public bool ServerOp { get; set; } = true;
+    /// <summary>The server has no spawn protection (server.properties spawn-protection=0): any remembered spawn-protection region
+    /// is dropped at startup for EVERY account, clones included (a learned fact otherwise binds non-op clones until each one
+    /// edits inside it, which they otherwise refuse to try).</summary>
+    public bool SpawnProtectionOff { get; set; }
     /// <summary>A trusted permit covering more blocks than this asks for a one-line confirmation first.</summary>
     public int ConfirmAboveBlocks { get; set; } = 32;
     /// <summary>How long a trusted "you can break it" permit lasts.</summary>

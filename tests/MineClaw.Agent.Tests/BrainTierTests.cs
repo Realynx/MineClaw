@@ -143,7 +143,7 @@ public class BrainTierTests
         Assert.Equal(2, brainCalls.Count);
         var result = brainCalls[1].Messages[^1].ToolResults.Single();
         Assert.Equal("d1", result.ToolUseId);
-        Assert.Equal("ok: mined 8 cobblestone, inv 8", result.Content);
+        Assert.Equal("ok: mined 8 cobblestone, inv 8; 1 actions", result.Content); // job results always carry their action count
         Assert.False(result.IsError);
 
         // The brain never sees the worker's tool chatter: not in any request, not in committed history.
@@ -237,7 +237,7 @@ public class BrainTierTests
         Assert.Contains("stopped delegate", stop.Text);
         await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(30));
         await WaitUntil(() => !rt.Activities.IsBusy);
-        Assert.Equal(0, workerDone); // cancelled: no summary produced, and no wake event for a model-initiated stop
+        Assert.Equal(1, workerDone); // cancelled: the partial result is still reported (a job that ends always reports), but no wake event for a model-initiated stop
         Assert.Null(rt.Events.TryTakeUrgent(EventPriority.Background));
 
         // An interrupt (danger) cancels a running delegate too.

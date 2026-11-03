@@ -57,7 +57,7 @@ public interface IGameActions
     /// (0x0F direction -1): eat, buckets (server-side raytrace), boats, snowballs, eggs, fishing rod, bow draw.</summary>
     Task<ActionResult> UseItemAsync(int? itemId, CancellationToken ct);
     Task<ActionResult> EatAsync(CancellationToken ct);
-    Task<ActionResult> CollectDropsAsync(double radius, CancellationToken ct);
+    Task<ActionResult> CollectDropsAsync(double radius, CancellationToken ct, bool dryOnly = false);
     Task<ActionResult> MineAsync(string blockName, int count, double radius, CancellationToken ct);
     Task<ActionResult> CraftAsync(string itemName, int count, CancellationToken ct);
     Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId, bool wait, BlockPos? furnace, CancellationToken ct);

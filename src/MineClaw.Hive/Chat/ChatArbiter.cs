@@ -94,6 +94,7 @@ public sealed class ChatArbiter
     {
         void Put(Hierarchy.HiveNode n)
         {
+            AddClone(n.Account); // every depth and kind is family, not only directly supervised process slots
             if (n.Kind != Hierarchy.CloneKind.Subhive) return;
             SetHost(n.Account, n.Owner.Equals(Hierarchy.HiveTree.Root, StringComparison.OrdinalIgnoreCase) ? _main : n.Owner);
         }

@@ -128,11 +128,20 @@ public sealed partial class MinecraftClient
     {
         if (itemId <= 0) return ActionResult.Fail("no block to place");
         if (World.Inventory.CountItem(itemId, damage) == 0) return ActionResult.Fail($"no {ItemName(itemId, damage ?? 0)} in inventory");
+        if (itemId is Items.Seeds or Items.MelonSeeds or Items.PumpkinSeeds)
+        {
+            var soil = World.GetBlock(pos) == Blocks.Farmland ? pos : pos.Offset(BlockFace.Bottom);
+            if (World.GetBlock(soil) != Blocks.Farmland) return ActionResult.Fail($"{Fmt(pos)} has no farmland for seeds");
+            return await UseOnBlockCoreAsync(soil, BlockFace.Top, itemId, damage, ct).ConfigureAwait(false);
+        }
+        if (PlacementRefusedTooOften(pos, itemId, damage))
+            return ActionResult.Fail($"stopped after 3 identical server refusals at {Fmt(pos)}; change the target/support before retrying");
         int existing = World.GetBlock(pos);
         if (!Aiming.IsReplaceable(World, existing)) return ActionResult.Fail($"{Fmt(pos)} is occupied by {BlockName(existing, World.GetMeta(pos))}");
         if (!World.IsLoaded(pos.X, pos.Z)) return ActionResult.Fail($"{Fmt(pos)} is not loaded");
         if (EditBlocked(pos)) return ActionResult.Fail(BlockedReason(pos));
         if (World.KeepAir.Refusal(pos, World.Dimension, itemId) is { } keep) return ActionResult.Fail(keep);
+        if (itemId is Items.WaterBucket or Items.LavaBucket) return await PourIntoCoreAsync(pos, itemId, allowPathing, ct).ConfigureAwait(false);
 
         await EnsureNoWindowAsync(ct).ConfigureAwait(false);
         // Placing (and bridging) always sneaks: vanilla edge clamping while the arm is busy.
@@ -172,6 +181,7 @@ public sealed partial class MinecraftClient
         }
         if (face is null && PlaceRules.NoSupportProblem(World, pos) is { } none) return ActionResult.Fail(none);
         var aim = FindAim();
+        bool hiddenFace = false;
         if (aim is null)
         {
             if (!allowPathing) return ActionResult.Fail($"no visible support face for {Fmt(pos)}");
@@ -190,6 +200,7 @@ public sealed partial class MinecraftClient
             {
                 Log($"place: no visible support face for {Fmt(pos)}; clicking {BlockName(World.GetBlock(blind.Against), World.GetMeta(blind.Against))} at {Fmt(blind.Against)} ({blind.Face.ToString().ToLowerInvariant()} face) unseen");
                 aim = blind;
+                hiddenFace = true;
             }
             if (aim is null)
             {
@@ -216,10 +227,13 @@ public sealed partial class MinecraftClient
         Send(new AnimationPacket { EntityId = World.Player.EntityId, Animation = 1 });
         if (!await WaitUntilAsync(() => !Aiming.IsReplaceable(World, World.GetBlock(pos)), TimeSpan.FromMilliseconds(1500), ct).ConfigureAwait(false))
         {
-            NoteEditReverted(pos, "placement");
+            NotePlacementRefusal(pos, itemId, damage);
+            // A blind click is not evidence about server permissions: its face/geometry may simply be invalid.
+            if (!hiddenFace) NoteEditReverted(pos, "placement");
             return ActionResult.Fail($"{ItemName(itemId)} didn't appear at {Fmt(pos)}" + SpawnProtectionHint(pos));
         }
         await AwaitPlacementConsumedAsync(itemId, heldBefore, ct).ConfigureAwait(false);
+        _placementRefusals.Remove((World.Dimension, pos, itemId, damage));
         NoteEditOk(pos);
         if (itemId == Blocks.Sapling) NoteSaplingPlanted();
         return ActionResult.Success($"placed {ItemName(itemId)} at {Fmt(pos)}");

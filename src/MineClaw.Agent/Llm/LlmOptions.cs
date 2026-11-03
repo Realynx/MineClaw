@@ -120,6 +120,9 @@ public sealed class LlmOptions
     /// <summary>The perception tier ("Agent:Llm:Perception"): the model that looks at <c>see</c> pictures for the brain.</summary>
     public Perception.PerceptionOptions Perception { get; set; } = new();
 
+    /// <summary>Optional JSON rules file for the explicit offline mock provider. Empty = fallback replies only.</summary>
+    public string? MockScriptPath { get; set; }
+
     /// <summary>
     /// Named model profiles ("Agent:Llm:Profiles") the brain can pick for a delegated task or a clone's brain. Built-ins:
     /// opus, sonnet, haiku. A profile without a model, or on an unconfigured provider, is never offered or accepted.
@@ -159,11 +162,15 @@ public sealed class LlmOptions
     /// <summary>Ollama is reachable from some call: a tier uses it, or the endpoint is set (profiles may use it).</summary>
     public bool OllamaInUse => TiersUseOllama || Ollama.IsConfigured;
 
+    public bool MockInUse => new[] { ModelTier.Main, ModelTier.Worker, ModelTier.Cheap }.Any(t => ProviderFor(t) == LlmProviders.Mock)
+        || Profiles.Values.Any(p => LlmProviders.Normalize(p.Provider) == LlmProviders.Mock && !string.IsNullOrWhiteSpace(p.Model));
+
     /// <summary>A provider counts as configured: anthropic = an API key is set; ollama = the endpoint is set.</summary>
     public bool ProviderConfigured(string provider) => LlmProviders.Normalize(provider) switch
     {
         LlmProviders.Anthropic => !string.IsNullOrWhiteSpace(ApiKey),
         LlmProviders.Ollama => Ollama.IsConfigured,
+        LlmProviders.Mock => true,
         _ => false,
     };
 
@@ -208,7 +215,7 @@ public sealed class LlmOptions
         if (_disabled.TryGetValue(name, out var why)) return $"profile '{name}' is unavailable: {why}";
         if (string.IsNullOrWhiteSpace(p.Model)) return $"profile '{name}' isn't configured (no model)";
         var provider = LlmProviders.Normalize(p.Provider);
-        if (!LlmProviders.IsKnown(provider)) return $"profile '{name}' has an invalid provider '{p.Provider}' (anthropic|ollama)";
+        if (!LlmProviders.IsKnown(provider)) return $"profile '{name}' has an invalid provider '{p.Provider}' (anthropic|ollama|mock)";
         if (!ProviderConfigured(provider))
             return provider == LlmProviders.Ollama ? $"profile '{name}' needs Agent:Llm:Ollama:Endpoint" : $"profile '{name}' needs an Anthropic API key";
         foreach (var sub in new[] { p.Worker, p.Memory })
@@ -276,13 +283,13 @@ public sealed class LlmOptions
     {
         var p = new List<string>();
         foreach (var (key, value) in new[] { ("MainProvider", MainProvider), ("WorkerProvider", WorkerProvider), ("CheapProvider", CheapProvider) })
-            if (!LlmProviders.IsKnown(LlmProviders.Normalize(value))) p.Add($"Agent:Llm:{key} '{value}' is not a provider (anthropic|ollama)");
+            if (!LlmProviders.IsKnown(LlmProviders.Normalize(value))) p.Add($"Agent:Llm:{key} '{value}' is not a provider (anthropic|ollama|mock)");
         foreach (var (tier, key) in new[] { (ModelTier.Main, "MainProvider"), (ModelTier.Worker, "WorkerProvider"), (ModelTier.Cheap, "CheapProvider") })
             if (ProviderFor(tier) == LlmProviders.Ollama && !Ollama.IsConfigured)
                 p.Add($"Agent:Llm:{key} is ollama but Agent:Llm:Ollama:Endpoint is empty");
         foreach (var (name, prof) in Profiles)
             if (!string.IsNullOrWhiteSpace(prof.Model) && !LlmProviders.IsKnown(LlmProviders.Normalize(prof.Provider)))
-                p.Add($"Agent:Llm:Profiles:{name}:Provider '{prof.Provider}' is not a provider (anthropic|ollama)");
+                p.Add($"Agent:Llm:Profiles:{name}:Provider '{prof.Provider}' is not a provider (anthropic|ollama|mock)");
         if (Ollama.IsConfigured && !Uri.TryCreate(Ollama.Endpoint.Trim(), UriKind.Absolute, out _))
             p.Add($"Agent:Llm:Ollama:Endpoint '{Ollama.Endpoint}' is not an absolute URL");
         // Anthropic tiers and profiles run only on the 5.5 generation (user rule, 2026-10-28).
@@ -313,11 +320,12 @@ public static class LlmProviders
 {
     public const string Anthropic = "anthropic";
     public const string Ollama = "ollama";
+    public const string Mock = "mock";
 
     /// <summary>"Ollama " → "ollama"; empty → anthropic (the default).</summary>
     public static string Normalize(string? provider) => string.IsNullOrWhiteSpace(provider) ? Anthropic : provider.Trim().ToLowerInvariant();
 
-    public static bool IsKnown(string provider) => provider is Anthropic or Ollama;
+    public static bool IsKnown(string provider) => provider is Anthropic or Ollama or Mock;
 }
 
 /// <summary>A named model choice ("Agent:Llm:Profiles:&lt;name&gt;").</summary>

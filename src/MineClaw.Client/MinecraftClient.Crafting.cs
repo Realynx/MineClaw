@@ -153,35 +153,49 @@ public sealed partial class MinecraftClient
             if (batch <= 0)
                 return ActionResult.Fail($"ran out of ingredients for {name} (crafted {Crafted()}/{times}; have {Have()})");
 
-            string? fail = null;
-            // Lay out the pattern: for each distinct ingredient, distribute `batch` items to each of its cells.
-            foreach (var group in groups)
+            // A wildcard accepts different variants in different cells, never in one stack. Choose the largest batch
+            // whose cells can each be filled with ONE concrete variant (3 oak + 5 spruce => batches of 3, then 1).
+            var concrete = new Dictionary<int, Ingredient>();
+            for (; batch > 0; batch--)
             {
-                var cells = group.Select(t => t.i + 1).ToList();
-                var need = cells.ToDictionary(c => c, _ => batch);
-                for (int g2 = 0; g2 < 32 && need.Values.Any(v => v > 0) && !Desynced(); g2++)
+                concrete.Clear();
+                foreach (var group in groups)
                 {
+                    var cells = new Queue<int>(group.Select(t => t.i + 1));
+                    var stock = Enumerable.Range(w.MainStart, w.SlotCount - w.MainStart).Select(w.Get)
+                        .Where(s => group.Key.Matches(s)).GroupBy(s => (s.Id, s.Damage));
+                    foreach (var variant in stock)
+                        for (int n = variant.Sum(s => (int)s.Count) / batch; n > 0 && cells.Count > 0; n--)
+                            concrete[cells.Dequeue()] = new Ingredient(variant.Key.Id, variant.Key.Damage);
+                    if (cells.Count > 0) break;
+                }
+                if (concrete.Count == layout.Count(i => i != null)) break;
+            }
+            if (batch <= 0) return ActionResult.Fail($"couldn't lay out ingredients for {name}");
+            string? fail = null;
+            foreach (var (cell, ing) in concrete)
+            {
+                int need = batch;
+                for (int g2 = 0; g2 < 64 && need > 0 && !Desynced(); g2++)
+                {
+                    if (!World.Inventory.Cursor.IsEmpty && !ing.Matches(World.Inventory.Cursor))
+                        await StashCursorAsync(ct).ConfigureAwait(false);
                     if (World.Inventory.Cursor.IsEmpty)
                     {
-                        int src = FindIngredientSlot(w, group.Key);
-                        if (src < 0) { fail = $"lost track of {group.Key} while crafting {name}"; break; }
+                        int src = FindIngredientSlot(w, ing);
+                        if (src < 0) { fail = $"lost track of {ing} while crafting {name}"; break; }
                         if (!await ClickCoreAsync(src, false, false, ct).ConfigureAwait(false)) break;
                     }
-                    foreach (int cell in cells)
-                    {
-                        var cur = World.Inventory.Cursor;
-                        if (cur.IsEmpty || need[cell] <= 0 || Desynced()) continue;
-                        int k = Math.Min(need[cell], cur.Count);
-                        if (k == cur.Count) await ClickCoreAsync(cell, false, false, ct).ConfigureAwait(false);
-                        else for (int i = 0; i < k && !Desynced(); i++) await ClickCoreAsync(cell, true, false, ct).ConfigureAwait(false);
-                        need[cell] -= cur.Count - World.Inventory.Cursor.Count;
-                    }
-                    if (!Desynced() && need.Values.All(v => v <= 0) && !World.Inventory.Cursor.IsEmpty)
-                        await StashCursorAsync(ct).ConfigureAwait(false);
+                    var cur = World.Inventory.Cursor;
+                    int k = Math.Min(need, cur.Count);
+                    if (k == cur.Count) await ClickCoreAsync(cell, false, false, ct).ConfigureAwait(false);
+                    else for (int i = 0; i < k && !Desynced(); i++) await ClickCoreAsync(cell, true, false, ct).ConfigureAwait(false);
+                    need -= cur.Count - World.Inventory.Cursor.Count;
                 }
                 if (fail != null || Desynced()) break;
-                if (need.Values.Any(v => v > 0)) { fail = $"couldn't lay out {group.Key} for {name}"; break; }
+                if (need > 0) { fail = $"couldn't lay out {ing} for {name}"; break; }
             }
+            if (!Desynced() && !World.Inventory.Cursor.IsEmpty) await StashCursorAsync(ct).ConfigureAwait(false);
 
             if (fail == null && !Desynced())
             {

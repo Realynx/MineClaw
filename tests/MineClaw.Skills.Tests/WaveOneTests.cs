@@ -81,6 +81,47 @@ public class FarmingTests
     }
 
     [Fact]
+    public async Task Till_around_a_water_source_hoes_the_ring_never_the_water()
+    {
+        // A protected irrigation source may name the patch center, but must never receive a hoe click.
+        var g = LiquidTests.Island();
+        var water = new BlockPos(2, 63, 2);
+        g.Set(water, Blocks.Water);
+        g.ProtectedBlocks.Add(water);
+        g.Give(Items.StoneHoe, 1);
+        var r = await g.Run("till_soil", new { pos = "2,63,2", count = 4 });
+        Assert.True(r.Ok, r.Text);
+        Assert.Contains("tilled 4", r.Text);
+        Assert.DoesNotContain(g.Log, l => l.StartsWith($"use {water} "));
+        Assert.Equal(Blocks.Water, g.World.GetBlock(water));
+        foreach (var o in new[] { new BlockPos(1, 63, 2), new BlockPos(3, 63, 2), new BlockPos(2, 63, 1), new BlockPos(2, 63, 3) })
+            Assert.Equal(Blocks.Farmland, g.World.GetBlock(o)); // the ring next to the water, nearest to pos first
+    }
+
+    [Fact]
+    public async Task Till_counts_farmland_already_there_as_done_and_moves_on()
+    {
+        // Existing farmland at the patch center must not prevent tilling the surrounding dirt.
+        var g = LiquidTests.Island(1);
+        g.Set(1, 63, 1, Blocks.Water);
+        var tilledBefore = new BlockPos(1, 63, 0);
+        g.Set(tilledBefore, Blocks.Farmland);
+        g.Give(Items.StoneHoe, 1);
+        var r = await g.Run("till_soil", new { pos = "1,63,0", count = 40 });
+        Assert.True(r.Ok, r.Text);
+        Assert.Contains("tilled 7", r.Text); // the other 8 - 1 top cells of the 3x3 island
+        Assert.Contains("1 already farmland", r.Text);
+        Assert.DoesNotContain(g.Log, l => l.StartsWith($"use {tilledBefore} "));
+        // A repeat (the routine's next iteration) finds nothing left to hoe: done, not an error, and no hoe use at all.
+        int uses = g.Log.Count(l => l.StartsWith("use BlockPos"));
+        var again = await g.Run("till_soil", new { pos = "1,63,0", count = 40 });
+        Assert.True(again.Ok, again.Text);
+        Assert.Contains("tilled 0", again.Text);
+        Assert.Contains("8 already farmland", again.Text);
+        Assert.Equal(uses, g.Log.Count(l => l.StartsWith("use BlockPos")));
+    }
+
+    [Fact]
     public async Task Bonemeal_grows_crops_and_needs_bonemeal()
     {
         var g = LiquidTests.Island();
@@ -91,6 +132,27 @@ public class FarmingTests
         var r = await g.Run("apply_bonemeal");
         Assert.True(r.Ok, r.Text);
         Assert.Equal(7, g.World.GetMeta(1, 64, 2));
+    }
+
+    [Fact]
+    public async Task Bonemeal_finds_protected_growing_wheat_and_grows_it_ripe_with_1122_partial_growth()
+    {
+        // Dig-protected growing crops still accept bone meal. Partial growth needs repeated uses to reach ripeness.
+        var g = LiquidTests.Island();
+        var wheat = new[] { new BlockPos(1, 64, 2), new BlockPos(2, 64, 2), new BlockPos(3, 64, 2) };
+        foreach (var w in wheat)
+        {
+            g.Set(w.Down(), Blocks.Farmland);
+            g.Set(w, Blocks.Crops, 0);
+            g.ProtectedBlocks.Add(w); // "wheat is a farm crop (ripe? no: stage 0/7)"
+        }
+        g.BonemealStages = 3;
+        g.Give(Items.Dye, 10, Items.BoneMeal);
+        var r = await g.Run("apply_bonemeal", new { count = 3 });
+        Assert.True(r.Ok, r.Text);
+        Assert.Contains("bonemealed 3", r.Text);
+        Assert.All(wheat, w => Assert.Equal(7, g.World.GetMeta(w)));
+        Assert.Equal(1, g.World.Inventory.CountItem(Items.Dye)); // 3 uses a crop (0 -> 3 -> 6 -> 7), none on a ripe one
     }
 
     [Fact]

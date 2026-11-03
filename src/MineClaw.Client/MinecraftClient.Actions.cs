@@ -381,6 +381,7 @@ public sealed partial class MinecraftClient
                         _ => await PlaceCoreAsync(a.Pos, ScaffoldItem() ?? -1, ct, allowPathing: false).ConfigureAwait(false),
                     };
                     _idleSneak = false;
+                    if (r.Ok && a.Kind == FollowerActionKind.Place) RememberTemporaryBlock(a.Pos);
                     // Pillar jump fell back before the block went out: jump again (the follower re-centers), not a failure.
                     if (!r.Ok && a.Kind == FollowerActionKind.Place && r.Message.StartsWith(InTheWay, StringComparison.Ordinal)
                         && ++pillarRetries <= 6)

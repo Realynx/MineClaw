@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using MineClaw.Agent.Llm;
 using MineClaw.Agent.Tools;
 using MineClaw.Hive.Ipc;
@@ -7,7 +9,7 @@ using MineClaw.Hive.Supervisor;
 namespace MineClaw.Hive;
 
 /// <summary>
-/// Hive tools. Main brain: ONE merged tool, <c>hive</c> (op spawn | release | list | handover; kind, brain), instead of spawn_clone/recall_clone/
+/// Hive tools. Main brain: ONE merged tool, <c>hive</c> (op spawn | release | list | handover | chorus; kind, brain), instead of spawn_clone/recall_clone/
 /// list_clones — a third of the cached-prefix cost, keeping the brain's tool budget under 2,300 tokens. Clone brain:
 /// <c>hive_report</c> (progress/done/failed back to main; done/failed starts the deposit-then-logout).
 /// </summary>
@@ -20,6 +22,10 @@ public static class HiveTools
     public const string ScriptHint =
         "hive spawn script=<saved name> (or code=<JS>, args) starts a clone straight on it, brain asleep (no calls) until it " +
         "ends/fails/asks; after=logout (default) or sleep.";
+
+    /// <summary>Main's cached prompt line for the chorus (the tool text is budget-pinned, so its usage lives here).</summary>
+    public const string ChorusHint =
+        "Reassign bodies with hive, never via chat. hive op=chorus task=<line> name=all|names: every body says that plain-chat line at the same moment, even mid-job (salutes: o7).";
 
     /// <summary>
     /// Main's cached prompt line for the clone kinds (added once, next to the script hint). <c>script=X bodies=N</c> is a hive script:
@@ -36,7 +42,7 @@ public static class HiveTools
     /// <param name="hierarchy">Kinds, ownership and dynamic accounts; null = the supervisor's slots only (old behaviour).</param>
     public static void RegisterMain(ToolRegistry tools, HiveSupervisor hive, LlmOptions? llm = null, Hierarchy.HiveHierarchy? hierarchy = null)
     {
-        var schema = ToolSchema.Create().Str("op", enumValues: ["spawn", "release", "list", "handover"]).Str("task", required: false).Str("name", required: false);
+        var schema = ToolSchema.Create().Str("op", enumValues: ["spawn", "release", "list", "handover", "chorus"]).Str("task", required: false).Str("name", required: false);
         // Script spawn: the clone starts it at once with its brain asleep (zero calls until a wake). Tiny: no descriptions.
         // How to use them is one cached prompt line (HiveTools.ScriptHint/KindHint), not tool text.
         if (hive.ScriptPrep != null)
@@ -46,14 +52,21 @@ public static class HiveTools
         // is still read) only when there is a brain to choose, as profile was. Paid for by the shorter description below.
         schema = schema.Str("kind", required: false).Int("bodies", required: false);
         if (llm != null && llm.UsableProfiles().Any()) schema = schema.Str("brain", required: false);
+        tools.SetInputAdapter(MainTool, NormalizeInput);
         tools.Register(MainTool,
             // Reassigning goes through spawn/handover: a clone ignores hive bots' chat (live 3, 14:34: "69, robin wants you on the
             // cobble gen" never reached 69). Budget pinned in ToolBudgets.HiveTool.
-            "Spawn/reassign (not chat).",
+            "Spawn or reassign.",
             schema.Build(),
-            (input, _) =>
+            async (input, _) =>
             {
                 var op = input.ReqStr("op").Trim().ToLowerInvariant();
+                if (op == "chorus")
+                {
+                    // The line rides in "task" (no extra fields: the tool's text is budget-pinned); main always joins in.
+                    var result = await hive.ChorusAsync(input.Str("task"), input.Str("name")).ConfigureAwait(false);
+                    return result.StartsWith("error") ? ToolResult.Error(result) : ToolResult.Success(result);
+                }
                 string? args = input.ValueKind == System.Text.Json.JsonValueKind.Object && input.TryGetProperty("args", out var a)
                     && a.ValueKind == System.Text.Json.JsonValueKind.Object ? a.GetRawText() : null;
                 var brain = input.Str("brain") ?? input.Str("profile");
@@ -86,11 +99,21 @@ public static class HiveTools
                         _ => "error: op is spawn|release|list|handover",
                     };
                 }
-                return Task.FromResult(r.StartsWith("error") ? ToolResult.Error(r) : ToolResult.Success(r));
+                return r.StartsWith("error") ? ToolResult.Error(r) : ToolResult.Success(r);
             }, tiers: ToolTiers.Main);
         // Inline Lua for a clone is script authorship: only main's Opus brain (same rule as the script tool), on every path.
         tools.AddPolicy(MainTool, (input, caller) =>
             !string.IsNullOrWhiteSpace(input.Str("code")) && (llm == null || caller?.IsBrainModel(llm) != true) ? Scripting.ScriptPrompts.BrainOnly : null);
+    }
+
+    // recall is the legacy spelling of release; profile/brain and body metadata remain extra allowed properties.
+    internal static JsonElement NormalizeInput(JsonElement input)
+    {
+        if (input.ValueKind != JsonValueKind.Object || !input.TryGetProperty("op", out var op) || op.ValueKind != JsonValueKind.String) return input;
+        var value = op.GetString()!.Trim().ToLowerInvariant();
+        var o = JsonNode.Parse(input.GetRawText())!.AsObject();
+        o["op"] = value == "recall" ? "release" : value;
+        return JsonSerializer.SerializeToElement(o);
     }
 
     public static void RegisterClone(ToolRegistry tools, CloneHost host) =>

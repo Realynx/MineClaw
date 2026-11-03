@@ -110,6 +110,25 @@ public class LiquidTests
     }
 
     [Fact]
+    public async Task Water_poured_into_a_dug_hole_lands_in_it_even_from_the_sneaking_eye()
+    {
+        // From a stand two cells off, the nearest visible point of the hole's far wall is just over the near rim:
+        // the 0.08-lower sneaking ray
+        // hits the rim's top and the server fills the cell above it.
+        var g = Island();
+        var hole = new BlockPos(2, 63, 0);
+        g.Set(hole, 0);
+        g.ServerEyeDrop = Aiming.SneakEyeDrop;
+        g.Give(Items.WaterBucket, 1);
+        var r = await g.Run("empty_bucket", new { pos = "2,63,0" });
+        Assert.True(r.Ok, r.Text);
+        Assert.True(BlockShapes.IsWater(g.World.GetBlock(hole)), $"hole holds {g.World.GetBlock(hole)}");
+        for (int x = -4; x <= 4; x++)
+        for (int z = -4; z <= 4; z++)
+            Assert.False(BlockShapes.IsWater(g.World.GetBlock(x, 64, z)), $"water on top of the grass at {x},64,{z}");
+    }
+
+    [Fact]
     public async Task Water_cant_be_placed_in_the_nether()
     {
         var g = Island();

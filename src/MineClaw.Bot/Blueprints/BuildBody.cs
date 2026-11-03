@@ -58,6 +58,9 @@ public interface IBuildBody
     IClaimBoard? Claims => null;
     /// <summary>Puts this body in scope for the calling flow (routed tools and acquisition act on it); null = nothing to do.</summary>
     IDisposable? Enter() => null;
+    /// <summary>Puts every <paramref name="itemId"/> it carries back into storage (the nearest known chests with room); null = done,
+    /// else why not (all of it or some is still in the bag).</summary>
+    Task<string?> ReturnAsync(int itemId, int damage, CancellationToken ct) => Task.FromResult<string?>("this body can't put things away");
 }
 
 /// <summary>
@@ -181,6 +184,13 @@ public sealed class GameBuildBody(Func<IGameClient> client, IBody? owner = null)
     }
 
     public Task<string?> ClutchAsync(CancellationToken ct) => ClutchBlocks.EnsureAsync(C, ct);
+
+    public async Task<string?> ReturnAsync(int itemId, int damage, CancellationToken ct)
+    {
+        bool variants = BuildBlocks.HasVariants(itemId);
+        var r = await ChestStore.StoreAsync(C, Acquisition.Of(C)?.Observations, null, s => s.Id == itemId && (!variants || s.Damage == damage), ct).ConfigureAwait(false);
+        return Count(itemId, damage) == 0 ? null : r.Text;
+    }
 
     /// <summary>Protected for this build: the host's predicate, except where the editing context yields (the build's own job
     /// edits its design: a revert's or a next revision's obstructions are its cells; <see cref="MinecraftClient.EditYields"/>).</summary>

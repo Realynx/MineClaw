@@ -5,7 +5,7 @@ using MineClaw.Data;
 using MineClaw.Protocol;
 using MineClaw.Protocol.Packets;
 
-namespace MineClaw.Client.Tests;
+namespace MineClaw.Sim;
 
 /// <summary>
 /// Multi-version P4 of the fake server: mobs with health, metadata, a chase-and-hit AI, hurt and death (status 2/3, the health
@@ -14,9 +14,9 @@ namespace MineClaw.Client.Tests;
 /// arm swing and held-item change; the crit from its fall distance and on-ground state; the 10-tick hurt resistance).
 /// One server tick = <see cref="TickMs"/> (the client tests run 5 ms ticks).
 /// </summary>
-internal sealed partial class FakeServer
+public partial class FakeServer
 {
-    internal sealed class FakeMob
+    public sealed class FakeMob
     {
         public required int Id;
         public required int Type;

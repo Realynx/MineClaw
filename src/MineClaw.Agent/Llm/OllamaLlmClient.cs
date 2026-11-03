@@ -324,7 +324,7 @@ public sealed class OllamaLlmClient : ILlmClient, IDisposable
             var text = _text.ToString();
             if (text.Trim().Length > 0) blocks.Add(new LlmText(text));
             blocks.AddRange(_calls);
-            string stop = _calls.Count > 0 ? StopReasons.ToolUse : _doneReason == "length" ? StopReasons.MaxTokens : StopReasons.EndTurn;
+            string stop = _doneReason == "length" ? StopReasons.MaxTokens : _calls.Count > 0 ? StopReasons.ToolUse : StopReasons.EndTurn;
             return new LlmResponse(blocks, stop, new LlmUsage(_in, _out, 0, 0), model) { Provider = LlmProviders.Ollama, Reasoning = _thinking.Length > 0 ? _thinking.ToString() : null };
         }
     }

@@ -50,6 +50,8 @@ public sealed class HandoverWatch(TimeProvider? time = null)
     private sealed class Bucket
     {
         public readonly Dictionary<int, int> Items = new();
+        /// <summary>Counted tosses (entity → stack) not picked up by me yet; <see cref="Taken"/>: picked up by someone else.</summary>
+        public readonly Dictionary<int, (int Item, int Count)> Unpicked = new(), Taken = new();
         public DateTimeOffset Last;
     }
 
@@ -94,7 +96,11 @@ public sealed class HandoverWatch(TimeProvider? time = null)
             bool counted = itemId > 0;
             _thrown[entityId] = (who, now, counted);
             foreach (var k in _thrown.Where(t => now - t.Value.At > TimeSpan.FromMinutes(5)).Select(t => t.Key).ToList()) _thrown.Remove(k);
-            if (counted) AddLocked(who, itemId, count, now);
+            if (counted)
+            {
+                AddLocked(who, itemId, count, now);
+                _buckets[who].Unpicked[entityId] = (itemId, Math.Max(1, count));
+            }
             return who;
         }
     }
@@ -133,9 +139,24 @@ public sealed class HandoverWatch(TimeProvider? time = null)
         lock (_lock)
         {
             if (!_thrown.Remove(entityId, out var t)) return false;
-            if (t.Counted) { if (_buckets.TryGetValue(t.Player, out var open)) open.Last = now; return true; } // the toss already counted it
+            if (t.Counted)
+            {
+                if (_buckets.TryGetValue(t.Player, out var open)) { open.Last = now; open.Unpicked.Remove(entityId); }
+                return true; // the toss already counted it
+            }
             AddLocked(t.Player, itemId, count, now);
             return true;
+        }
+    }
+
+    /// <summary>Someone else (a player, another hive body) picked up <paramref name="entityId"/>: if it was a toss to me, it never
+    /// reached my inventory.</summary>
+    public void OnTakenByOther(int entityId)
+    {
+        lock (_lock)
+        {
+            if (!_thrown.Remove(entityId, out var t) || !t.Counted || !_buckets.TryGetValue(t.Player, out var b)) return;
+            if (b.Unpicked.Remove(entityId, out var st)) b.Taken[entityId] = st;
         }
     }
 
@@ -229,8 +250,17 @@ public sealed class HandoverWatch(TimeProvider? time = null)
             foreach (var (player, b) in _buckets.Where(kv => now - kv.Value.Last >= Debounce).ToList())
             {
                 _buckets.Remove(player);
-                var h = new Handover(player, b.Items.Select(kv => (kv.Key, kv.Value)).ToList(), b.Last);
-                var text = $"{player} gave you {h.ItemsText}";
+                // Only items actually picked up count as received; distinguish pending tosses and other collectors.
+                var got = new Dictionary<int, int>(b.Items);
+                foreach (var (item, n) in b.Unpicked.Values.Concat(b.Taken.Values)) got[item] = got.GetValueOrDefault(item) - n;
+                var h = new Handover(player, got.Where(kv => kv.Value > 0).Select(kv => (kv.Key, kv.Value)).ToList(), b.Last);
+                var ground = Stacks(b.Unpicked.Values);
+                var taken = Stacks(b.Taken.Values);
+                var text = h.Items.Count > 0 ? $"{player} gave you {h.ItemsText}"
+                    : ground.Count > 0 ? $"{player} tossed you {Text(ground)}" : $"{player} tossed {Text(taken)} toward you";
+                if (ground.Count > 0)
+                    text += (h.Items.Count > 0 ? $"; {Text(ground)} still" : ", but it's still") + " on the ground: not in your inventory until you pick it up (collect_drops)";
+                if (taken.Count > 0) text += $"; {Text(taken)} was picked up by someone else, not you";
                 bool promised = false;
                 var kept = _promises.FirstOrDefault(p => (p.From is null || p.From.Equals(player, StringComparison.OrdinalIgnoreCase))
                                                           && (p.ItemId is null || b.Items.ContainsKey(p.ItemId.Value)));
@@ -255,6 +285,11 @@ public sealed class HandoverWatch(TimeProvider? time = null)
         }
         return outp;
     }
+
+    private static List<(int Item, int Count)> Stacks(IEnumerable<(int Item, int Count)> stacks) =>
+        stacks.GroupBy(x => x.Item).Select(g => (g.Key, g.Sum(x => x.Count))).ToList();
+
+    private static string Text(List<(int Item, int Count)> stacks) => string.Join(", ", stacks.Select(i => $"{i.Count} {ItemWord(i.Item, i.Count)}"));
 
     /// <summary>Appended to a plain hand-over wake: one cheap thank-you ("ty Foxy, got 12 fences!"), nothing more.</summary>
     public const string AckHint = " (thank them in one short line)";

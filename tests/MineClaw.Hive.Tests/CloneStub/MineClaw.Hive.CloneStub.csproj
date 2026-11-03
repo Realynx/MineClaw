@@ -10,12 +10,12 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\src\MineClaw.Hive\MineClaw.Hive.csproj" />
+    <ProjectReference Include="..\..\..\tools\MineClaw.Sim\MineClaw.Sim.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <!-- The "dupkick" mode logs a real MinecraftClient into the in-memory fake server, which then kicks it. -->
     <Compile Include="..\..\MineClaw.Client.Tests\FakeServer.cs" Link="FakeServer.cs" />
-    <Compile Include="..\..\MineClaw.Client.Tests\FakeServer.Mobs.cs" Link="FakeServer.Mobs.cs" />
   </ItemGroup>
 
 </Project>

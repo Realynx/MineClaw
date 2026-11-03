@@ -180,6 +180,7 @@ public sealed class BlueprintWiring
         // The worker's (and a hive clone's worker's) way to run an approved design: a thin wrapper over BlueprintService
         // (BuildAsync / BuildLaneAsync), the same method the script bindings call. Schema = bp + lane only (worker budget);
         // scripts also pass part/of/layer/by_layer/undo/bodies/crew by name.
+        rt.Tools.SetInputAdapter(BuildTool, NormalizeBlueprintId);
         rt.Tools.Register(BuildTool, "Build/resume an approved saved design by id (its saved plan); lane = crew lane; undo/delete:true (trusted word) remove only its placed blocks.",
             ToolSchema.Create().Str("bp").Int("lane", required: false).Build(),
             async (input, ct) =>
@@ -208,6 +209,7 @@ public sealed class BlueprintWiring
                 var (ok, text) = await Service.BuildAsync(bp, input.Int("part"), input.Int("of"), input.Int("layer"), ct, input.Bool("by_layer") == true).ConfigureAwait(false);
                 return ok ? ToolResult.Success(text) : ToolResult.Error(text);
             }, longRunning: true, tiers: ToolTiers.Worker, maxResultChars: 600);
+        rt.Tools.SetInputAdapter(InfoTool, NormalizeBlueprintId);
         rt.Tools.Register(InfoTool, "A saved blueprint: size, layers, bill, status.",
             ToolSchema.Create().Str("bp").Build(),
             (input, _) => Task.FromResult(Service.Store.Find(Id(input, "bp") ?? Id(input, "id") ?? "") is { } r ? ToolResult.Success(Service.Describe(r)) : ToolResult.Error("no such blueprint")),
@@ -278,6 +280,18 @@ public sealed class BlueprintWiring
             o["task"] = t.GetString() + "\n" + d.Hint;
             return inner.ExecuteAsync(JsonSerializer.SerializeToElement(o), ct);
         }
+    }
+
+    /// <summary>Keep the script bindings' numeric saved ids and the handler's id alias within the canonical bp schema.</summary>
+    private static JsonElement NormalizeBlueprintId(JsonElement input)
+    {
+        if (input.ValueKind != JsonValueKind.Object) return input;
+        var o = System.Text.Json.Nodes.JsonNode.Parse(input.GetRawText())!.AsObject();
+        if (!input.TryGetProperty("bp", out var bp) && input.TryGetProperty("id", out var alias))
+            bp = alias;
+        if (bp.ValueKind is JsonValueKind.Number or JsonValueKind.String)
+            o["bp"] = bp.ValueKind == JsonValueKind.Number ? bp.GetRawText() : bp.GetString();
+        return JsonSerializer.SerializeToElement(o);
     }
 
     /// <summary>An id given as a string ("3", "hut") or a number (Lua <c>build{bp=3}</c>).</summary>

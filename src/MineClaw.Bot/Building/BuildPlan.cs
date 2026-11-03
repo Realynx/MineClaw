@@ -211,6 +211,9 @@ public sealed class BuildPlan
     /// <summary>Estimated ticks with one body (travel + actions, in plan order) and with the crew (lanes in parallel, waits honoured).</summary>
     public double SoloTicks { get; set; }
     public double CrewTicks { get; set; }
+    /// <summary>The layer band (world y) of a massive design this plan builds (<see cref="Blueprints.VoxelPlan.Bands"/>); null = all.</summary>
+    public int? BandLo { get; set; }
+    public int? BandHi { get; set; }
 
     public int Placements => Steps.Count(s => s.Action == StepAction.Place);
     public int Scaffolds => Steps.Count(s => s.Action == StepAction.Scaffold);

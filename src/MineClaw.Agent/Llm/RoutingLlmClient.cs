@@ -10,12 +10,14 @@ public sealed class RoutingLlmClient : ILlmClient, IDisposable
     private readonly LlmOptions _options;
     private readonly Lazy<ILlmClient> _anthropic;
     private readonly Lazy<ILlmClient> _ollama;
+    private readonly Lazy<ILlmClient> _mock;
 
     public RoutingLlmClient(LlmOptions options, Func<ILlmClient>? anthropic = null, Func<ILlmClient>? ollama = null)
     {
         _options = options;
         _anthropic = new(anthropic ?? (() => new AnthropicLlmClient(options)));
         _ollama = new(ollama ?? (() => new OllamaLlmClient(options)));
+        _mock = new(() => new MockLlmClient(options));
     }
 
     public LlmOptions Options => _options;
@@ -24,7 +26,12 @@ public sealed class RoutingLlmClient : ILlmClient, IDisposable
     public ILlmClient Ollama => _ollama.Value;
 
     public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken ct) =>
-        (_options.ProviderFor(request) == LlmProviders.Ollama ? _ollama.Value : _anthropic.Value).CompleteAsync(request, ct);
+        (_options.ProviderFor(request) switch
+        {
+            LlmProviders.Mock => _mock.Value,
+            LlmProviders.Ollama => _ollama.Value,
+            _ => _anthropic.Value,
+        }).CompleteAsync(request, ct);
 
     public void Dispose()
     {
@@ -39,5 +46,5 @@ public static class LlmClientFactory
     /// <see cref="AnthropicLlmClient"/>, unwrapped; otherwise a <see cref="RoutingLlmClient"/>.
     /// </summary>
     public static ILlmClient Create(LlmOptions options) =>
-        options.OllamaInUse ? new RoutingLlmClient(options) : new AnthropicLlmClient(options);
+        options.OllamaInUse || options.MockInUse ? new RoutingLlmClient(options) : new AnthropicLlmClient(options);
 }

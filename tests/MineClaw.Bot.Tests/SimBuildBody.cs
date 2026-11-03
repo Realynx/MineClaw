@@ -28,9 +28,15 @@ internal sealed class SimBuildBody : IBuildBody
     }
 
     public Dictionary<(int Id, int Dmg), int> Inv { get; }
+    /// <summary>A chest the body restocks from in <see cref="EnsureAsync"/> (shared between bodies; null = none).</summary>
+    public SimChest? Chest { get; set; }
+    /// <summary>Gravity blocks (sand, gravel) that were placed with nothing solid under them and fell (the server's BlockFalling).</summary>
+    public List<string> Falls { get; } = new();
     public List<string> Log { get; } = new();
     public HashSet<BlockPos> Placed { get; } = new();
     public int PlaceLimit = int.MaxValue;
+    /// <summary>Every placement fails ("jammed"): a body that can't build any more (its lane gets stuck).</summary>
+    public bool Jammed;
     public CancellationTokenSource? Stop;
     /// <summary>Called after each successful placement (a "player" interferes, tests).</summary>
     public Action<int>? AfterPlace;
@@ -135,6 +141,7 @@ internal sealed class SimBuildBody : IBuildBody
     {
         ct.ThrowIfCancellationRequested();
         if (PlaceLimit-- <= 0) { Stop?.Cancel(); ct.ThrowIfCancellationRequested(); }
+        if (Jammed) return Fail("jammed");
         var key = (itemId, BuildBlocks.HasVariants(itemId) ? damage : 0);
         if (Inv.GetValueOrDefault(key) <= 0) return Fail($"no {itemId}");
         if (!Aiming.IsReplaceable(_w, _w.GetBlock(step.Pos))) return Fail("occupied");
@@ -153,12 +160,24 @@ internal sealed class SimBuildBody : IBuildBody
         Inv[key]--;
         Set(step.Pos.X, step.Pos.Y, step.Pos.Z, step.Id, meta);
         if (BuildBlocks.KindOf(step.Id) == BuildKind.Door) Set(step.Pos.X, step.Pos.Y + 1, step.Pos.Z, step.Id, meta | 8);
+        if (BuildBlocks.KindOf(step.Id) == BuildKind.Gravity) Settle(step.Pos, step.Id);
         foreach (var world in Worlds) world.Placed.Note(step.Pos, world.Dimension, step.Id, Name, DateTimeOffset.UtcNow);
         Link?.Event(this, $"{(step.Kind == StepKind.Scaffold ? "scaffold" : "place")} {step.Pos.X},{step.Pos.Y},{step.Pos.Z}");
         Placed.Add(step.Pos);
         Log.Add($"{(step.Kind == StepKind.Scaffold ? "scaffold" : "place")} {step.Pos.X},{step.Pos.Y},{step.Pos.Z}{(step.Hidden ? " hidden" : "")}{(_swim != null ? " swimming" : "")}");
         AfterPlace?.Invoke(++_placed);
         return Task.FromResult(ActionResult.Success("placed"));
+    }
+
+    /// <summary>BlockFalling: sand or gravel with no solid block under it drops to the first one below (gone in the void).</summary>
+    private void Settle(BlockPos pos, int id)
+    {
+        if (BuildBlocks.Supports(_w.GetBlock(pos.X, pos.Y - 1, pos.Z))) return;
+        Set(pos.X, pos.Y, pos.Z, 0, 0);
+        int y = pos.Y - 1;
+        while (y >= 0 && !BuildBlocks.Supports(_w.GetBlock(pos.X, y, pos.Z))) y--;
+        Falls.Add(y < 0 ? $"{pos.X},{pos.Y},{pos.Z} fell out of the world" : $"{pos.X},{pos.Y},{pos.Z} fell to y{y + 1}");
+        if (y >= 0) Set(pos.X, y + 1, pos.Z, id, 0);
     }
 
     private Task<ActionResult> DigCore(BlockPos pos, CancellationToken ct)
@@ -190,10 +209,38 @@ internal sealed class SimBuildBody : IBuildBody
 
     public int Count(int itemId, int damage) => Inv.GetValueOrDefault((itemId, BuildBlocks.HasVariants(itemId) && damage >= 0 ? damage : 0));
 
-    public Task<string?> EnsureAsync(int itemId, int damage, int count, CancellationToken ct) =>
-        Task.FromResult(Count(itemId, damage) >= count ? null : $"missing {Items.Get(itemId).Name} (need {count}, have {Count(itemId, damage)})");
+    /// <summary>How long a restock at the chest takes (walking there, the window), so bodies at the chest overlap; 0 = at once.</summary>
+    public int EnsureMs;
+
+    public async Task<string?> EnsureAsync(int itemId, int damage, int count, CancellationToken ct)
+    {
+        if (Chest is { } chest && Count(itemId, damage) < count)
+        {
+            chest.Enter();
+            try
+            {
+                if (EnsureMs > 0) await Task.Delay(EnsureMs, ct);
+                var key = (itemId, BuildBlocks.HasVariants(itemId) ? damage : 0);
+                int took = chest.Take(key, count - Count(itemId, damage), Math.Max(0, chest.BodyCapacity - Inv.Values.Sum()));
+                if (took > 0) Inv[key] = Inv.GetValueOrDefault(key) + took;
+                Log.Add($"restock {took} {Items.Get(itemId).Name} from the chest");
+            }
+            finally { chest.Leave(); }
+        }
+        return Count(itemId, damage) >= count ? null : $"missing {Items.Get(itemId).Name} (need {count}, have {Count(itemId, damage)})";
+    }
 
     public Task<string?> ClutchAsync(CancellationToken ct) => Task.FromResult<string?>(null);
+
+    /// <summary>Puts every one of the item it carries into <see cref="Chest"/>.</summary>
+    public Task<string?> ReturnAsync(int itemId, int damage, CancellationToken ct)
+    {
+        var key = (itemId, BuildBlocks.HasVariants(itemId) ? damage : 0);
+        if (Chest is not { } chest) return Task.FromResult<string?>("no chest");
+        int n = Inv.GetValueOrDefault(key);
+        if (n > 0) { chest.Put(key, n); Inv[key] = 0; Log.Add($"return {n} {Items.Get(itemId).Name} to the chest"); }
+        return Task.FromResult<string?>(null);
+    }
     /// <summary>The host's protection as a build body sees it (GameBuildBody: the policy minus the editing context's yield); null = none.</summary>
     public Func<BlockPos, int, bool>? Protect { get; set; }
     public bool IsProtected(BlockPos p, int id) => Protect?.Invoke(p, id) == true;
@@ -293,6 +340,38 @@ internal sealed class SimBuildBody : IBuildBody
     private void Set(int x, int y, int z, int id, int meta)
     {
         foreach (var world in Worlds) world.SetBlock(x, y, z, id, meta);
+    }
+}
+
+/// <summary>A storage chest shared by the sim bodies: <see cref="Take"/> moves items out, at most what a body's bag still has room for.</summary>
+internal sealed class SimChest(Dictionary<(int Id, int Dmg), int> stock, int bodyCapacity)
+{
+    public Dictionary<(int Id, int Dmg), int> Stock { get; } = stock;
+    /// <summary>The most items one body can hold at once (its bag).</summary>
+    public int BodyCapacity { get; } = bodyCapacity;
+    public int Withdrawals { get; private set; }
+    private int _at;
+    /// <summary>The most bodies that were at the chest at once.</summary>
+    public int PeakAt { get; private set; }
+
+    public void Enter() { lock (Stock) { _at++; PeakAt = Math.Max(PeakAt, _at); } }
+    public void Leave() { lock (Stock) _at--; }
+
+    public void Put((int Id, int Dmg) key, int n)
+    {
+        lock (Stock) Stock[key] = Stock.GetValueOrDefault(key) + n;
+    }
+
+    public int Take((int Id, int Dmg) key, int want, int room)
+    {
+        lock (Stock)
+        {
+            int n = Math.Min(Math.Min(want, room), Stock.GetValueOrDefault(key));
+            if (n <= 0) return 0;
+            Stock[key] -= n;
+            Withdrawals++;
+            return n;
+        }
     }
 }
 

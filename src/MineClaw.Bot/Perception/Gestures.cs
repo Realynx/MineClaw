@@ -68,9 +68,57 @@ public sealed class GestureTracker : IDisposable
         _time = time ?? TimeProvider.System;
         _describe = describe ?? ((w, p, id) => BlockDescriber.Describe(w, p, null));
         _client.EntityAnimated += OnAnimated;
+        _world = _client.World;
+        _world.BlockChanged += OnBlockChanged;
     }
 
-    public void Dispose() => _client.EntityAnimated -= OnAnimated;
+    public void Dispose()
+    {
+        _client.EntityAnimated -= OnAnimated;
+        _world.BlockChanged -= OnBlockChanged;
+    }
+
+    private readonly WorldState _world;
+
+    /// <summary>A punch on a block that breaks in one hit (tall grass, a flower): the vanilla client sends the dig before its
+    /// swing, so by the swing the block is air already. Recent breaks still count as what a swing's look ray points at.</summary>
+    public TimeSpan BrokenWindow { get; init; } = TimeSpan.FromSeconds(2);
+
+    private readonly List<(BlockPos Pos, int Id, DateTimeOffset At)> _broken = new();
+
+    private void OnBlockChanged(BlockChange ch)
+    {
+        if (ch.NewId != 0 || ch.OldId == 0 || !Blocks.Exists(ch.OldId) || Blocks.Get(ch.OldId).Hardness != 0) return;
+        lock (_lock)
+        {
+            _broken.Add((ch.Pos, ch.OldId, _time.GetUtcNow()));
+            if (_broken.Count > 16) _broken.RemoveAt(0);
+        }
+    }
+
+    /// <summary>What a swing points at: the first block along the look (liquids skipped), or an instant block just broken
+    /// there, with the id it had.</summary>
+    private (BlockPos Pos, int Id, bool Broken)? Target(WorldState w, Entity e)
+    {
+        var now = _time.GetUtcNow();
+        List<(BlockPos Pos, int Id)> broken;
+        lock (_lock) broken = _broken.Where(b => now - b.At <= BrokenWindow).Select(b => (b.Pos, b.Id)).ToList();
+        if (broken.Count == 0)
+            return DemonstrationRecorder.LookTarget(w, e.Position, e.Yaw, e.Pitch, solidOnly: true) is { } t ? (t.Pos, t.Id, false) : null;
+        var eye = e.Position + new Vec3d(0, PlayerPhysics.EyeHeight, 0);
+        var dir = PlayerPhysics.LookVector(e.Yaw, e.Pitch);
+        BlockPos? last = null;
+        for (double d = 0.1; d <= 5; d += 0.1)
+        {
+            var p = (eye + dir * d).ToBlockPos();
+            if (last == p) continue;
+            last = p;
+            int id = w.GetBlock(p);
+            if (id == 0 && broken.FindLast(b => b.Pos == p) is { Id: > 0 } hit) return (p, hit.Id, true);
+            if (id != 0 && !BlockShapes.IsLiquid(id) && id != Blocks.Fire) return (p, id, false);
+        }
+        return null;
+    }
 
     private void OnAnimated(int entityId, int animation)
     {
@@ -86,7 +134,7 @@ public sealed class GestureTracker : IDisposable
         if (e == null || e.Kind != EntityKind.Player || e.Name is not { Length: > 0 } name) return null;
         if (name.Equals(_client.Username, StringComparison.OrdinalIgnoreCase) || _isBot(name)) return null;
         if (Gestures.IsUseItem(e.HeldItem)) return null; // a right-click use is an action, not pointing
-        if (DemonstrationRecorder.LookTarget(w, e.Position, e.Yaw, e.Pitch, solidOnly: true) is not { } t) return null;
+        if (Target(w, e) is not { } t) return null;
         var now = _time.GetUtcNow();
         lock (_lock)
         {
@@ -97,7 +145,7 @@ public sealed class GestureTracker : IDisposable
                 return null;
             }
         }
-        var g = new Gesture(name, t.Pos, t.Id, now, _describe(w, t.Pos, t.Id));
+        var g = new Gesture(name, t.Pos, t.Id, now, t.Broken ? $"{Names.Block(t.Id)} (and broke it)" : _describe(w, t.Pos, t.Id));
         lock (_lock)
         {
             _recent.Add(g);

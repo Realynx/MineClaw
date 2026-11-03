@@ -6,6 +6,10 @@ using MineClaw.Agent.Tools;
 
 namespace MineClaw.Agent.Context;
 
+/// <summary>A model reply that cannot serve as a completed memory checkpoint.</summary>
+internal sealed class IncompleteCompactionSummaryException(string stopReason)
+    : Exception($"Incomplete compaction summary (stop reason: {stopReason}).");
+
 public sealed class ContextOptions
 {
     /// <summary>
@@ -151,10 +155,12 @@ public sealed class ContextManager
 
     /// <summary>
     /// Folds the oldest episodes into the journal until both renderings fit their targets. <paramref name="summarize"/>
-    /// gets a prompt and returns the new journal (cheap tier); on failure a mechanical digest is used instead.
+    /// gets a prompt and returns the new journal (cheap tier). Rejected model checkpoints retain history when it fits
+    /// the hard ceiling; other failures or pressure beyond that ceiling use a labelled, lossy mechanical digest.
     /// </summary>
     public async Task<int> CompactAsync(Func<string, CancellationToken, Task<string>>? summarize, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         List<Episode> old;
         string journal;
         lock (_lock)
@@ -184,15 +190,25 @@ public sealed class ContextManager
                 next = (await summarize(prompt, ct).ConfigureAwait(false)).Trim();
                 if (next.Length == 0) throw new InvalidOperationException("empty summary");
             }
-            catch (Exception) when (!ct.IsCancellationRequested)
+            catch (IncompleteCompactionSummaryException) when (!ct.IsCancellationRequested &&
+                Scaled(EstimateTokens()) <= _options.MaxTokens && EstimateCheapTokens() <= _options.MaxTokens)
             {
+                // A soft compaction threshold is not a reason to replace intact history with an unfinished checkpoint.
+                return 0;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && !ct.IsCancellationRequested)
+            {
+                const string label = "[mechanical fallback; lossy]";
                 next = (journal + "\n" + digest).Trim();
-                // Keep the most recent part if the mechanical digest is too long.
-                if (next.Length > _options.JournalMaxChars) next = "..." + next[^(_options.JournalMaxChars - 3)..];
+                // Reserve room for the label even when retaining only the newest part of the digest.
+                int chars = Math.Max(0, _options.JournalMaxChars - label.Length - 1);
+                if (next.Length > chars) next = chars > 3 ? "..." + next[^(chars - 3)..] : "";
+                next = label + "\n" + next;
             }
             next = TextUtil.Truncate(next, _options.JournalMaxChars);
         }
 
+        ct.ThrowIfCancellationRequested();
         lock (_lock)
         {
             foreach (var e in old) _episodes.Remove(e);

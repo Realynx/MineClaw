@@ -126,6 +126,38 @@ public sealed class VoxelPlan
     public List<BuildPart> Partition(int n, bool byLayer = false, int dim = 0) =>
         byLayer ? ConstructionPlanner.SplitLayers(this, n, dim) : ConstructionPlanner.Split(this, n, dim);
 
+    /// <summary>
+    /// Bottom-up layer bands (world y, inclusive) of at most <paramref name="maxBlocks"/> blocks each (a layer bigger than that is
+    /// a band by itself): a massive design is built band by band (<see cref="CrewExecutor"/>), each band a plan of its own, so
+    /// slicing, persisting and re-planning stay the size of one band. One band when the whole design fits.
+    /// </summary>
+    public List<(int Lo, int Hi)> Bands(int maxBlocks)
+    {
+        if (maxBlocks <= 0 || Blocks.Count <= maxBlocks) return [(Min.Y, Max.Y)];
+        var per = Blocks.Keys.GroupBy(p => p.Y).ToDictionary(g => g.Key, g => g.Count());
+        var bands = new List<(int, int)>();
+        int lo = Min.Y, acc = 0;
+        for (int y = Min.Y; y <= Max.Y; y++)
+        {
+            int n = per.GetValueOrDefault(y);
+            if (acc > 0 && acc + n > maxBlocks) { bands.Add((lo, y - 1)); lo = y; acc = 0; }
+            acc += n;
+        }
+        bands.Add((lo, Max.Y));
+        return bands;
+    }
+
+    /// <summary>The part of this design in layers <paramref name="lo"/>..<paramref name="hi"/> (world y): its blocks and its air
+    /// cells there, the same blueprint and origin (so the box, the footprint and the front stay the design's).</summary>
+    public VoxelPlan Band(int lo, int hi)
+    {
+        if (lo <= Min.Y && hi >= Max.Y) return this;
+        var band = new VoxelPlan { Blueprint = Blueprint, Origin = Origin };
+        foreach (var (p, b) in Blocks) if (p.Y >= lo && p.Y <= hi) band.Blocks[p] = b;
+        foreach (var p in Air) if (p.Y >= lo && p.Y <= hi) band.Air.Add(p);
+        return band;
+    }
+
     /// <summary>Layers (local y) that place blocks.</summary>
     public int LayerCount => Blueprint.H;
 

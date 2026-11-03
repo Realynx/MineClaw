@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using MineClaw.Agent.Llm;
 
@@ -16,6 +17,9 @@ public sealed class ToolRegistry
     private readonly Dictionary<string, ToolTiers> _tiers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _caps = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<ToolCallerPolicy>> _policies = new(StringComparer.OrdinalIgnoreCase);
+    // Per instance, not name: replacement/wrapping cannot reuse a stale compiled schema.
+    private readonly ConditionalWeakTable<IAgentTool, ToolInputValidator> _validators = new();
+    private readonly Dictionary<string, (Func<JsonElement, JsonElement> Normalize, ToolInputValidator? Validator)> _inputAdapters = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _lock = new();
 
     public ToolRegistry(int maxResultLength = 400) => MaxResultLength = maxResultLength;
@@ -132,6 +136,17 @@ public sealed class ToolRegistry
         }
     }
 
+    /// <summary>
+    /// Registers explicit legacy spellings/defaults before validation and caller policy. An execution-only schema may
+    /// include documented aliases omitted from the compact model definition; it must retain the canonical constraints.
+    /// Adapters must not perform effects or coerce arbitrary malformed values. Configure at startup, like caller policies.
+    /// </summary>
+    public void SetInputAdapter(string name, Func<JsonElement, JsonElement> normalize, JsonElement? executionSchema = null)
+    {
+        var validator = executionSchema is { } schema ? new ToolInputValidator(schema) : null;
+        lock (_lock) _inputAdapters[name] = (normalize, validator);
+    }
+
     /// <summary>The refusal a call would get right now (null = allowed).</summary>
     public string? Refusal(string name, JsonElement input, ToolCallerInfo? caller)
     {
@@ -168,6 +183,11 @@ public sealed class ToolRegistry
             // A model sent arguments that weren't JSON (even after the client's repair attempt): answer, never run.
             if (Llm.LlmToolArgs.IsInvalid(input, out var raw))
                 return ToolResult.Error($"invalid arguments for {tool.Name} (not a JSON object): {TextUtil.Truncate(raw, 120)}; call it again with valid JSON");
+            (Func<JsonElement, JsonElement>? Normalize, ToolInputValidator? Validator) adapter;
+            lock (_lock) adapter = _inputAdapters.TryGetValue(tool.Name, out var a) ? a : default;
+            if (adapter.Normalize != null) input = adapter.Normalize(input);
+            if ((adapter.Validator ?? _validators.GetValue(tool, t => new ToolInputValidator(t.InputSchema))).Error(input) is { } invalid)
+                return ToolResult.Error("bad input: " + invalid).Truncate(CapFor(tool.Name));
             if (Refusal(tool.Name, input, ToolCaller.Current) is { } refused) return ToolResult.Error(refused).Truncate(CapFor(tool.Name));
             try { Executing?.Invoke(tool.Name, input); } catch (Exception) { /* telemetry only */ }
             result = await tool.ExecuteAsync(input, ct).ConfigureAwait(false) ?? ToolResult.Error("no result");

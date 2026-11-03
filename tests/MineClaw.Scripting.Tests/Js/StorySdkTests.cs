@@ -52,7 +52,7 @@ public sealed class StorySdkTests
         Assert.True(s.Ok, s.Outcome);
         Assert.Contains("released", s.Outcome);
         var calls = rig.Norm();
-        Assert.Contains("""chop_tree {"at":"3,64,0"}""", calls);
+        Assert.Contains("""chop_tree {"at":"3,64,0 only"}""", calls);
         int take = calls.FindIndex(c => c.StartsWith("withdraw "));
         int place = calls.FindIndex(c => c.StartsWith("place "));
         Assert.True(take >= 0 && take < place, string.Join(" | ", calls)); // fetch first

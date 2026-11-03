@@ -98,7 +98,8 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
         }
         prev = resumed;
         var (voxel, p) = Shape(design, part, prev?.Transform ?? BuildTransform.None, w.Dimension);
-        var bp = BuildPlanner.Plan(voxel, w.PlanningView, StartCell(w), p, Options(body, part, prev), prev);
+        BuildPlan bp;
+        using (BuildPulse.While(body.Name)) bp = BuildPlanner.Plan(voxel, w.PlanningView, StartCell(w), p, Options(body, part, prev), prev);
         bp.BlueprintId = blueprintId;
         bp.Version = design.Hash();
         bp.Dim = w.Dimension;
@@ -119,6 +120,7 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
         WaterAvailable = body.Count(Items.WaterBucket, 0) > 0,
         GateBlocks = GateOn && part.Index == 0 && prev?.Gate.State is null or GateState.Pending ? o.GateBlocks : 0,
         IsProtected = body.IsProtected,
+        StripsAbove = o.CrewStripsAbove,
     };
 
     internal static BlockPos StartCell(WorldState w) => Pathfinder.StartCellFor(w.PlanningView, w.Player.Position) ?? w.Player.Position.ToBlockPos();
@@ -488,7 +490,7 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
             foreach (var (item, dmg, count) in needs)
             {
                 if (body.Count(item, dmg) >= count) continue;
-                var why = await body.EnsureAsync(item, dmg, Math.Min(count, 64 * 4), ct).ConfigureAwait(false);
+                var why = await body.EnsureAsync(item, dmg, Math.Min(count, o.FetchMax), ct).ConfigureAwait(false);
                 if (why != null && body.Count(item, dmg) == 0) shortItems[(item, dmg)] = why;
             }
             // Scaffold (climbing pillars and stairs included) comes out of the same cobblestone: fetched on top of what the
@@ -498,7 +500,7 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
             {
                 int cobble = needs.Where(n => n.Item == Blocks.Cobblestone).Sum(n => n.Count) + scaffold;
                 if (body.Count(Blocks.Cobblestone, 0) < cobble)
-                    _ = await body.EnsureAsync(Blocks.Cobblestone, 0, Math.Min(cobble, 64 * 4), ct).ConfigureAwait(false);
+                    _ = await body.EnsureAsync(Blocks.Cobblestone, 0, Math.Min(cobble, o.FetchMax), ct).ConfigureAwait(false);
             }
         }
 
@@ -507,7 +509,7 @@ public sealed class ConstructionExecutor(BlueprintOptions o, BlueprintStore? sto
         {
             if (shortItems.ContainsKey((item, dmg)) && !await Retry().ConfigureAwait(false)) return false;
             int left = bp.Steps.Count(s => s.Action == StepAction.Place && !s.Finished && s.Item == item && s.Damage == dmg);
-            var why = await body.EnsureAsync(item, dmg, Math.Max(1, Math.Min(left, 64 * 4)), ct).ConfigureAwait(false);
+            var why = await body.EnsureAsync(item, dmg, Math.Max(1, Math.Min(left, o.FetchMax)), ct).ConfigureAwait(false);
             if (body.Count(item, dmg) > 0) { shortItems.Remove((item, dmg)); return true; }
             shortItems[(item, dmg)] = why ?? $"missing {Name(item, dmg)} (need {left}, have 0)";
             return false;

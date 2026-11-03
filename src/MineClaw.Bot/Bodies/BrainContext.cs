@@ -62,6 +62,9 @@ public sealed class BrainContext
     /// </summary>
     public BodyDirectory? Directory { get; internal set; }
 
+    /// <summary>Deterministic death-drop recovery shared by this brain's bodies.</summary>
+    public DeathRecovery? Recovery { get; internal set; }
+
     /// <summary>Vision v2 (set by <see cref="BotHost.FinishTools"/>).</summary>
     public Perception.Vision.VisionWiring.Result? Vision { get; internal set; }
     /// <summary>see + do are registered (after every body's macro and the script tool): bodies attached later skip it.</summary>

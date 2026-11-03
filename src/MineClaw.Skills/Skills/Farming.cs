@@ -200,6 +200,7 @@ public sealed class HarvestWheatSkill : Skill
         var refused = new List<ClaimKey>();
         int theirs = part != null ? ripeAll.Count(c => !strips.Any(s => s.Key.Contains(c))) : 0;
         var st = new Tally();
+        st.ExistingDrops.UnionWith(ctx.World.Entities.All().Where(e => e.Kind == EntityKind.Item).Select(e => e.Id));
         bool any = false;
         // One strip at a time, nearest first: lease it, harvest + replant it, release it (its crops are growing again, so the
         // next bot passes it by), then the next. The crew interleaves strip by strip; no bot sits on the whole field.
@@ -238,6 +239,37 @@ public sealed class HarvestWheatSkill : Skill
         public bool HoeChecked;
         public string? HoeNote;
         public readonly List<BlockPos> Harvested = new();
+        public readonly HashSet<int> ExistingDrops = new(), Drops = new(), DropItems = new();
+        public TimeSpan PickupTimeLeft = TimeSpan.FromSeconds(4);
+    }
+
+    private static void ObserveDrops(SkillContext ctx, Tally st)
+    {
+        foreach (var drop in ctx.World.Entities.All().Where(e => e.Kind == EntityKind.Item
+                     && st.DropItems.Contains(e.Item.Id) && !st.ExistingDrops.Contains(e.Id)
+                     && st.Harvested.Any(p => p.Center.DistanceSquaredTo(e.Position) <= 16)))
+            st.Drops.Add(drop.Id);
+    }
+
+    // Pickup is opportunistic, not a precondition for harvesting the next crop. One drifting stack must not consume the
+    // whole job: at most two seconds per attempt and four seconds across the field, always from dry ground/the rim.
+    private static async Task CollectHarvestDropsAsync(SkillContext ctx, Tally st, int radius, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        ObserveDrops(ctx, st);
+        if (st.PickupTimeLeft <= TimeSpan.Zero) return;
+        using var pickup = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        pickup.CancelAfter(st.PickupTimeLeft < TimeSpan.FromSeconds(2) ? st.PickupTimeLeft : TimeSpan.FromSeconds(2));
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        try { await ctx.Game.CollectDropsAsync(radius, pickup.Token, dryOnly: true); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        { ctx.Log?.Invoke($"harvest_wheat: skipped pickup: {ex.Message}"); }
+        finally
+        {
+            st.PickupTimeLeft -= clock.Elapsed;
+            ObserveDrops(ctx, st);
+        }
     }
 
     /// <summary>harvest → hoe → plant on each ripe cell (nearest first).</summary>
@@ -267,9 +299,11 @@ public sealed class HarvestWheatSkill : Skill
             st.Cut++;
             if (crop != Blocks.Crops) st.OtherCrops = true;
             st.Harvested.Add(c.Pos);
+            st.DropItems.Add(CropKinds.Seed(crop));
+            if (crop == Blocks.Crops) st.DropItems.Add(Items.Wheat);
             if (!replant) continue;
             var soil = c.Pos.Down();
-            await FarmOps.CollectAsync(ctx, 3, ct);
+            await CollectHarvestDropsAsync(ctx, st, 3, ct);
             if (hoe is { } h && ctx.Block(soil) is Blocks.Farmland or Blocks.Dirt or Blocks.Grass && SkillWorld.Air(ctx.World, c.Pos))
             {
                 bool wasSoil = ctx.Block(soil) != Blocks.Farmland;
@@ -285,7 +319,7 @@ public sealed class HarvestWheatSkill : Skill
     private async Task<SkillResult> FinishAsync(SkillContext ctx, Tally st, int growing, bool replant, int radius, Func<BlockPos, bool> fillable,
         CancellationToken ct)
     {
-        await FarmOps.CollectAsync(ctx, radius, ct);
+        await CollectHarvestDropsAsync(ctx, st, radius, ct);
         // 4. Verify the whole field (live 10-28, 420: "done, maybe 3 empty plots left"; Robin: "420 didn't finish replanting"):
         // every farmland cell of it gets a crop, from the seeds just picked up; the count reported is the real one.
         string field = "";
@@ -297,8 +331,10 @@ public sealed class HarvestWheatSkill : Skill
         }
         string re = $"replanted {st.Planted}" + (st.Tilled > 0 ? $" (re-tilled {st.Tilled})" : "")
                     + (replant && st.HoeChecked && st.Hoe is null ? " (no hoe: planted only on farmland)" : "");
+        ObserveDrops(ctx, st);
+        int left = st.Drops.Count(id => ctx.World.Entities.Get(id) is not null);
         return st.Cut > 0 ? Ok($"harvested {st.Cut} {(st.OtherCrops ? "crops" : "wheat")}, {re} (wheat {ctx.Count(Items.Wheat)}, seeds {ctx.Count(Items.Seeds)}; {growing} growing)"
-                               + field + (st.HoeNote != null ? "; " + st.HoeNote : ""))
+                               + field + $"; {left} drop(s) left behind" + (st.HoeNote != null ? "; " + st.HoeNote : ""))
                           : Fail("couldn't harvest any wheat");
     }
 }
@@ -346,12 +382,24 @@ public sealed class TillSoilSkill : Skill
     {
         int want = Clamp(args.Int("count"), 4, 1, 32);
         int hoe = ctx.FirstOwned(FarmOps.Hoes)!.Value;
-        var spots = (args.Pos() is { } p ? [new FoundBlock(p, ctx.Block(p), 0, 0)] : ctx.Find((id, _) => id is Blocks.Dirt or Blocks.Grass, 8))
-            .Where(f => SkillWorld.Air(ctx.World, f.Pos.Up()) && NearWater(ctx.World, f.Pos)).Take(want).ToList();
+        // pos names the patch center, which may be water or existing farmland. Hoe only dirt/grass with air above near
+        // water, nearest to pos first; existing farmland counts as done and is planted if empty.
+        var given = args.Pos();
+        var near = ctx.World.FindBlocks(given?.Center ?? ctx.Feet, given is null ? 8 : PatchRadius,
+                (id, _) => id is Blocks.Dirt or Blocks.Grass or Blocks.Farmland, int.MaxValue)
+            .Where(f => SkillWorld.Air(ctx.World, f.Pos.Up()) && NearWater(ctx.World, f.Pos)).ToList();
+        var spots = near.Where(f => f.Id != Blocks.Farmland && !ctx.Game.IsProtected(f.Pos, f.Id))
+            .Concat(near.Where(f => f.Id == Blocks.Farmland)).Take(want).ToList();
         if (spots.Count == 0) return Fail("no dirt/grass within 4 of water with air above");
-        int tilled = 0, planted = 0;
+        int tilled = 0, planted = 0, already = 0;
         foreach (var s in spots)
         {
+            if (ctx.Block(s.Pos) == Blocks.Farmland)
+            {
+                already++;
+                if (ctx.Has(Items.Seeds) && await FarmOps.PlantAsync(ctx, s.Pos, Items.Seeds, ct)) planted++;
+                continue;
+            }
             var reach = await ctx.ReachAsync(s.Pos, ct);
             if (!reach.Ok) continue;
             var r = await ctx.Game.UseOnBlockAsync(s.Pos, BlockFace.Top, hoe, ct);
@@ -360,8 +408,12 @@ public sealed class TillSoilSkill : Skill
             tilled++;
             if (await FarmOps.PlantAsync(ctx, s.Pos, Items.Seeds, ct)) planted++;
         }
-        return tilled > 0 ? Ok($"tilled {tilled}, planted {planted}") : Fail("nothing tilled (protected or no block change)");
+        string done = already > 0 ? $" ({already} already farmland)" : "";
+        return tilled > 0 || already > 0 ? Ok($"tilled {tilled}, planted {planted}{done}") : Fail("nothing tilled (protected or no block change)");
     }
+
+    /// <summary>Around a given pos: the hydration range (farmland within 4 of water stays wet).</summary>
+    private const double PatchRadius = 4.5;
 
     /// <summary>b1.8.1 farmland stays wet (and doesn't revert) within 4 blocks of water.</summary>
     private static bool NearWater(IBlockAccess w, BlockPos p)
@@ -469,22 +521,36 @@ public sealed class BonemealSkill : Skill
     {
         if (!ctx.Has(Items.Dye, Items.BoneMeal)) return Fail("no bone meal");
         int want = Clamp(args.Int("count"), 3, 1, 16);
+        // ctx.Find hides crops protected against digging. Bone meal grows them without breaking anything.
+        static bool Growing(int id, int m) => (CropKinds.IsCrop(id) && !CropKinds.Ripe(id, m)) || id == Blocks.Sapling;
         var targets = args.Pos() is { } p ? [p]
-            : ctx.Find((id, m) => (CropKinds.IsCrop(id) && !CropKinds.Ripe(id, m)) || id == Blocks.Sapling, 8).Select(f => f.Pos).Take(want).ToList();
+            : ctx.World.FindBlocks(ctx.Feet, 8, Growing, int.MaxValue).Select(f => f.Pos).Take(want).ToList();
         if (targets.Count == 0) return Fail("no growing crops or saplings nearby");
-        int n = 0;
+        int n = 0, uses = 0;
         foreach (var t in targets)
         {
-            if (!ctx.Has(Items.Dye, Items.BoneMeal)) break;
-            var reach = await ctx.ReachAsync(t, ct);
-            if (!reach.Ok) continue;
-            int id0 = ctx.Block(t), m0 = ctx.Meta(t);
-            var r = await ctx.Game.UseOnBlockAsync(t, BlockFace.Top, Items.Dye, ct);
-            if (!r.Ok) return n > 0 ? Ok($"bonemealed {n}, then {r.Message}") : SkillResult.From(r);
-            if (await ctx.WaitBlockAsync(t, (id, m) => id != id0 || m != m0, ct)) n++;
+            // b1.8.1 grows a crop or sapling fully at once; 1.12.2 (ItemDye.applyBonemeal) adds 2-5 crop stages, a sapling stage
+            // 45% of the time: keep using it on the same one until it is ripe / a tree, like a player clicking again.
+            bool grew = false;
+            for (int i = 0; i < MaxUsesPerTarget && Growing(ctx.Block(t), ctx.Meta(t)); i++)
+            {
+                if (!ctx.Has(Items.Dye, Items.BoneMeal)) break;
+                var reach = await ctx.ReachAsync(t, ct);
+                if (!reach.Ok) break;
+                int id0 = ctx.Block(t), m0 = ctx.Meta(t), meal0 = ctx.Count(Items.Dye);
+                var r = await ctx.Game.UseOnBlockAsync(t, BlockFace.Top, Items.Dye, ct);
+                if (!r.Ok) return n > 0 ? Ok($"bonemealed {n} ({uses} bone meal), then {r.Message}") : SkillResult.From(r);
+                uses++;
+                if (await ctx.WaitBlockAsync(t, (id, m) => id != id0 || m != m0, ct)) grew = true;
+                else if (ctx.Count(Items.Dye) >= meal0) break; // not taken and nothing grew: it won't take bone meal
+            }
+            if (grew) n++;
         }
-        return n > 0 ? Ok($"bonemealed {n}") : Fail("nothing grew");
+        return n > 0 ? Ok($"bonemealed {n} ({uses} bone meal)") : Fail("nothing grew");
     }
+
+    /// <summary>1.12.2: 2-5 stages a use, so a seedling (0/7) is ripe after at most 4; a sapling 45% a use (two stages).</summary>
+    private const int MaxUsesPerTarget = 6;
 }
 
 [Skill]
