@@ -51,6 +51,9 @@ public sealed class CommandGate
         public string Player { get; } = player;
         public string Text { get; } = text;
         public DateTimeOffset At { get; } = at;
+        /// <summary>Where the request came from when not the game (<see cref="ObserveRemote"/>: "viewer"); null = in game.</summary>
+        public string? Via { get; init; }
+        public string By => Via == null ? Player : $"{Player} ({Via})";
         public int Used;
     }
 
@@ -142,6 +145,35 @@ public sealed class CommandGate
         return n;
     }
 
+    /// <summary>
+    /// A trusted player's line from an authenticated surface outside the game (the web viewer, with its request and the host
+    /// config both allowing commands) that this bot took: records its request or exact commands like <see cref="Observe"/>, but
+    /// there is no server framing to check, so the caller vouches for the player. Grants and audits read "player (origin)".
+    /// Never clears the player's in-game requests.
+    /// </summary>
+    public int ObserveRemote(string player, string text, string origin)
+    {
+        if (!IsTrusted(player) || string.IsNullOrWhiteSpace(text)) return 0;
+        var now = _time.GetUtcNow();
+        var by = $"{player} ({origin})";
+        int n = 0;
+        lock (_lock)
+        {
+            Prune(now);
+            if (_o.RequestSeconds > 0 && !CommandInText.IsMatch(text))
+                _requests.Add(new Request(player, text.Trim(), now) { Via = origin });
+            foreach (Match m in CommandInText.Matches(text))
+            {
+                var cmd = m.Groups["cmd"].Value.Trim();
+                if (cmd.Length < 2) continue;
+                _grants.Add(new Grant(cmd, by, now));
+                n++;
+            }
+        }
+        if (n > 0) _log.LogInformation("command authorisation from {Player}: {Text}", by, text);
+        return n;
+    }
+
     /// <summary>The raw line really is the vanilla "&lt;name&gt; msg" form for this player (not "[x] name: msg" or a server notice).</summary>
     private static bool IsOwnLine(ChatMessage msg)
     {
@@ -184,8 +216,8 @@ public sealed class CommandGate
                 {
                     req.Used++;
                     Arm(cmd, now);
-                    _log.LogInformation("run_command {Command} for {Player}'s request: {Text}", cmd, req.Player, req.Text);
-                    return new(true, "ok", $"{req.Player} (asked: \"{(req.Text.Length > 80 ? req.Text[..80] + "…" : req.Text)}\")");
+                    _log.LogInformation("run_command {Command} for {Player}'s request: {Text}", cmd, req.By, req.Text);
+                    return new(true, "ok", $"{req.By} (asked: \"{(req.Text.Length > 80 ? req.Text[..80] + "…" : req.Text)}\")");
                 }
                 _log.LogWarning("run_command refused (no trusted request): {Command}", cmd);
                 return new(false, $"refused: no trusted player asked you for this in the last {Math.Max(_o.RequestSeconds, (int)Window.TotalSeconds)}s");

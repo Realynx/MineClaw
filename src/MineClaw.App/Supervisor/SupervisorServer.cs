@@ -65,6 +65,8 @@ public sealed class SupervisorServer : IAsyncDisposable
     /// <summary>The read-only controller routes (<c>/api/bodies/{name}/controller</c>, <c>/api/brains/{id}/context|turn/{n}</c>: what drives a
     /// body, its brain's live context and thinking; 403 without the token); null = off.</summary>
     public SupervisorControllerRoutes? Controller { get; set; }
+    /// <summary>The web viewer's routes (<c>/api/viewer/*</c>, Supervisor:Viewer:Enabled + token header; the only non-admin POST); null = 404.</summary>
+    public SupervisorViewerRoutes? Viewer { get; set; }
     /// <summary><c>/api/hive/tree</c>: the hive's ownership tree (main → children: kind, brain, state, task); null = main alone.</summary>
     public Func<object?>? HiveTree { get; set; }
     public string? Prefix { get; private set; }
@@ -109,7 +111,8 @@ public sealed class SupervisorServer : IAsyncDisposable
                     var q = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                     var nv = ctx.Request.QueryString;
                     foreach (var k in nv.AllKeys) if (k != null && nv[k] is { } v) q[k] = v;
-                    var body = await SupervisorAdminRoutes.ReadBodyAsync(ctx.Request, ct, _o).ConfigureAwait(false);
+                    var body = await SupervisorAdminRoutes.ReadBodyAsync(ctx.Request, ct, _o).ConfigureAwait(false)
+                        ?? await SupervisorViewerRoutes.ReadBodyAsync(ctx.Request, _o, ct).ConfigureAwait(false);
                     var req = new SupervisorRequest(ctx.Request.HttpMethod, ctx.Request.Url?.AbsolutePath ?? "/", q, ctx.Request.Headers["X-Supervisor-Token"], body);
                     reply = await HandleAsync(req, ct).ConfigureAwait(false);
                 }
@@ -137,6 +140,8 @@ public sealed class SupervisorServer : IAsyncDisposable
     public async Task<SupervisorReply> HandleAsync(SupervisorRequest r, CancellationToken ct = default)
     {
         if (SupervisorAdminRoutes.IsAdminPath(r.Path)) return await SupervisorAdminRoutes.HandleAsync(r, _o, Admin, ct).ConfigureAwait(false);
+        if (SupervisorViewerRoutes.IsViewerPath(r.Path)) // own gate: Supervisor:Viewer:Enabled (else 404) + the token header (else 403)
+            return Viewer != null ? await Viewer.TryHandleAsync(r, ct).ConfigureAwait(false) ?? Json(404, new { error = "not found" }) : Json(404, new { error = "not found" });
         bool get = r.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) || r.Method.Equals("HEAD", StringComparison.OrdinalIgnoreCase);
         if (!get) return Json(405, new { error = "read-only: GET only" }, new Dictionary<string, string> { ["Allow"] = "GET, HEAD" });
         var path = r.Path.TrimEnd('/');

@@ -221,7 +221,7 @@ public sealed partial class ChatRouter
 
     [ThreadStatic] private static bool _injectingTest;
 
-    private void Post(GameEvent e) => _events.Post(_injectingTest ? e with { IsTest = true } : e);
+    private void Post(GameEvent e) => _events.Post(_remote is { } remote ? e with { Origin = remote.Origin } : _injectingTest ? e with { IsTest = true } : e);
 
     private ChatMessage Route(string raw)
     {
@@ -304,7 +304,8 @@ public sealed partial class ChatRouter
         double? confidence = addressed ? reason.Confidence() : null;
         if (addressed) lock (_lock) _startupUntil = DateTimeOffset.MinValue; // a conversation: the startup cap is over
         if (addressed) Accepted?.Invoke(msg);
-        if (Commands != null)
+        if (_remote is { } remoteLine) NoteRemoteCommands(remoteLine, msg, addressed); // never Observe: no server framing to prove it
+        else if (Commands != null)
         {
             bool named = msg.Kind == ChatKind.Whisper || _identity.NameRegex.IsMatch(msg.Text);
             if (!named && ExplicitlyAddressed != null)
@@ -327,14 +328,14 @@ public sealed partial class ChatRouter
         // Hive: another bot owns this conversation thread (it asked / is watching a demo), or the player named another bot:
         // that reply is theirs; never let our own waiter eat it.
         bool elsewhere = false;
-        if (OwnedElsewhere != null)
+        if (OwnedElsewhere != null && _remote == null) // a remote line names its bot: nobody else's thread takes it
         {
             try { elsewhere = OwnedElsewhere(msg); } catch (Exception) { }
         }
         if (elsewhere || foreignBot != null) addressed = false;
         else if (TryCompleteWaiter(player, msg.Text, addressed)) return;
 
-        if (addressed && !AllowIncoming(player)) addressed = false; // spam: keep as context only
+        if (addressed && !AllowIncoming(_remote is { } r ? RemoteBucket(player, r) : player)) addressed = false; // spam: keep as context only
         if (!addressed && DropBackgroundChat) return;
 
         if (foreignBot != null && !addressed)

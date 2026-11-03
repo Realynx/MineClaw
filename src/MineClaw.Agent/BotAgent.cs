@@ -1162,14 +1162,16 @@ public sealed partial class BotAgent
         {
             foreach (var e in batch.Events)
             {
-                if (!LogPublicChat && e.Kind != EventKind.Whisper) continue; // hive clone: main logs public chat
+                // Hive clone: main logs public chat; a remote (viewer) line only reaches the bot it names, so that bot logs it.
+                if (!LogPublicChat && e.Kind != EventKind.Whisper && e.Origin == null) continue;
                 string? kind = e.Kind switch
                 {
                     EventKind.Chat => "chat", EventKind.Whisper => "whisper", EventKind.Emote => "emote",
                     EventKind.PlayerJoined => "join", EventKind.PlayerLeft => "leave", _ => null,
                 };
                 // Injected test chat (console /as) is kept, tagged: it never counts as the real player speaking.
-                if (kind != null) Rag.LogChat(e.At, e.IsTest ? "test_" + kind : kind, e.Player, e.Text);
+                // Viewer lines are real speech, kept apart from server lines: "viewer_chat".
+                if (kind != null) Rag.LogChat(e.At, e.IsTest ? "test_" + kind : e.Origin is { Length: > 0 } origin ? origin + "_" + kind : kind, e.Player, e.Text);
             }
         }
         catch (Exception ex) { _log.LogWarning(ex, "chat log write failed"); }

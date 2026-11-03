@@ -40,6 +40,8 @@ public interface ICloneBody
     Task<bool> ExecuteAsync(string line, CancellationToken ct);
     /// <summary>A console /as test line forwarded by main (same line every process arbitrates).</summary>
     void InjectChat(string raw);
+    /// <summary>A web-viewer line forwarded by main (every process gets it; only the target's router takes it). Default: ignored.</summary>
+    void InjectRemoteChat(MineClaw.Agent.Chat.RemoteChat chat) { }
     /// <summary>An update from main for the running task (a partner joined or changed): context for the brain, the task stays.</summary>
     void Note(string text) { }
     /// <summary>Public chat from C# (not the brain): the void-spawn help request. Default: can't speak.</summary>
@@ -300,7 +302,9 @@ public sealed class CloneHost : IHandoffTarget
             case Msg.Cmd when m.As<CmdMsg>() is { } cmd:
                 return await _body.ExecuteAsync(cmd.Line, ct).ConfigureAwait(false);
             case Msg.Inject when m.As<InjectMsg>() is { } inj:
-                _body.InjectChat(inj.Raw);
+                if (inj is { Origin: { } origin, Player: { } player, Target: { } target })
+                    _body.InjectRemoteChat(new MineClaw.Agent.Chat.RemoteChat(player, inj.Raw, origin, target, inj.AllowCommands, inj.RequestId));
+                else _body.InjectChat(inj.Raw);
                 return null;
             case Msg.Note when m.As<NoteMsg>() is { } note:
                 _body.Note(note.Text);

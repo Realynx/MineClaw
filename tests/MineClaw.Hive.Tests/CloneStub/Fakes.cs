@@ -113,6 +113,9 @@ public sealed class FakeBody : ICloneBody
     public Task<LoadoutReport?> PrepareLoadoutAsync(IReadOnlyList<string> loadout, CancellationToken ct) => Task.FromResult(Loadout?.Invoke(loadout));
     public Task<bool> ExecuteAsync(string line, CancellationToken ct) { Call("cmd " + line); return Task.FromResult(true); }
     public void InjectChat(string raw) { Call("inject " + raw); OnInject?.Invoke(raw); }
+    /// <summary>Web-viewer lines main forwards (InjectMsg with an origin).</summary>
+    public List<MineClaw.Agent.Chat.RemoteChat> Remote { get; } = new();
+    public void InjectRemoteChat(MineClaw.Agent.Chat.RemoteChat chat) { Call("remote " + chat.Text); lock (Remote) Remote.Add(chat); }
     public void Note(string text) => Call("note " + text);
     /// <summary>Public chat the host said from C# (the void-spawn help request).</summary>
     public List<string> Said { get; } = new();

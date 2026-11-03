@@ -132,6 +132,7 @@ public static class SkillTools
             try
             {
                 var rag = await rt.Rag.SearchAsync(new RagQuery { Text = query, Kinds = ["skill"], Limit = SkillCatalog.MaxResults }, ct);
+                MemoryAccess.Note(rt.Rag, "search", rag); // the viewer's memory map (observer only)
                 foreach (var h in rag)
                     if (hub.Registry.TryGet(h.Ref[RagPrefix.Length..], out var s) && !hits.Contains(s.Spec)) hits.Add(s.Spec);
             }

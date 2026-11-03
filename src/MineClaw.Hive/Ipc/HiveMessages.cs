@@ -52,7 +52,7 @@ public static class Msg
     public const string Roster = "roster";        // M→C      RosterMsg (live clones, main names, sticky owners)
     public const string ChatAccepted = "chat_ok"; // C→M      ChatAcceptedMsg (this clone took a player's message)
     public const string Thread = "thread";        // C→M      ThreadMsg (this clone owns / released a player's replies)
-    public const string Inject = "inject";        // M→C      InjectMsg (console /as test chat, so every process arbitrates it)
+    public const string Inject = "inject";        // M→C      InjectMsg (console /as test chat or a viewer line, so every process arbitrates it)
     public const string Note = "note";            // M→C      NoteMsg (an update for the running task: a partner joined/changed; never replaces it)
     // budget ledger
     public const string SpendAuth = "spend_auth"; // C→M req  SpendAuthMsg → SpendGrantMsg
@@ -139,7 +139,11 @@ public sealed record RosterMsg(string Main, string[] MainNames, string[] Live, D
 public sealed record ThreadMsg(string Player, bool Open, double TtlSeconds);
 /// <param name="Spoke">True: the clone spoke to the player (continuation window), not took a line from them.</param>
 public sealed record ChatAcceptedMsg(string Player, bool Spoke = false);
-public sealed record InjectMsg(string Raw);
+/// <param name="Origin">Null = a console <c>/as</c> test line (<see cref="Raw"/> is the server form). "viewer" = a web-viewer line:
+/// <see cref="Raw"/> is the bare text for <see cref="Target"/> from <see cref="Player"/>, handled by <c>ChatRouter.OnRemoteChat</c>
+/// in every process (exactly the target's router takes it), real speech, not test.</param>
+public sealed record InjectMsg(string Raw, string? Origin = null, string? Player = null, string? Target = null, bool AllowCommands = false,
+    string? RequestId = null);
 public sealed record NoteMsg(string Text);
 public sealed record SpendAuthMsg(decimal EstimateUsd, string Tier);
 public sealed record SpendGrantMsg(bool Ok, decimal GrantUsd, string Mode, string? Reason);

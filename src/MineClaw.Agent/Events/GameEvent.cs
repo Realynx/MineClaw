@@ -72,6 +72,13 @@ public sealed record GameEvent
     public bool IsTest { get; init; }
 
     /// <summary>
+    /// Where a player's line came from when it wasn't the game server: <c>"viewer"</c> = the web viewer (a trusted player typing
+    /// to one bot, <c>ChatRouter.OnRemoteChat</c>). Real speech (not <see cref="IsTest"/>); chat_log keeps it as <c>viewer_chat</c>.
+    /// Null = in-game chat.
+    /// </summary>
+    public string? Origin { get; init; }
+
+    /// <summary>
     /// A background job failed or stalled (script failure/limit, a queued step that never ran, a walk that can't arrive, a worker
     /// or clone failure, the stall watchdog): it wakes the brain even while a script has it asleep, at its normal priority, so it
     /// never interrupts the body the way <see cref="AgentOptions.InterruptPriority"/> events do.

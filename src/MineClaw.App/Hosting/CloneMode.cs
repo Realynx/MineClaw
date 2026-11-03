@@ -161,6 +161,7 @@ public static class CloneMode
             muted: text => _ = host0.ReportAsync("progress", text.Length > 160 ? text[..160] : text));
         rt.Chat.Accepted += m => { if (m.Player != null) host0.ChatAccepted(m.Player); };
         rt.Chat.SpokeTo += p => host0.ChatSpoke(p); // "it spoke to that player within ~30 s" keeps the thread with this clone
+        MineClaw.App.Supervisor.ViewerTaps.Attach(clone, rt, client, mainHears: false); // the web viewer's feed + memory map (in main's process)
         HiveTools.RegisterClone(rt.Tools, host0);
         // The acquisition planner's hive seam (loadout, ensure, skill preconditions): main hands over a spare it carries.
         if (bot.Acquisition is { } acquisition)
@@ -388,6 +389,8 @@ public static class CloneMode
         public async Task<bool> ExecuteAsync(string line, CancellationToken ct) { await commands.ExecuteAsync(line, ct); return true; }
 
         public void InjectChat(string raw) => rt.Chat.OnServerChat(raw, test: true);
+
+        public void InjectRemoteChat(MineClaw.Agent.Chat.RemoteChat chat) => rt.Chat.OnRemoteChat(chat);
 
         public void Note(string text) => rt.Events.Post(GameEvent.Notice(text, EventPriority.Normal));
 
