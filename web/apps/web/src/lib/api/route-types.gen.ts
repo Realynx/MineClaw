@@ -63,6 +63,7 @@ export interface RouteTypes {
   'world.blockEntities': { params: never; query: z.input<typeof C.WorldBlockEntitiesQuery>; body: never; response: z.output<typeof C.WorldBlockEntities> };
   'bots.tile': { params: z.input<typeof C.BotParams>; query: z.input<typeof C.TileQuery>; body: never; response: never };
   'bots.now': { params: z.input<typeof C.BotParams>; query: never; body: never; response: z.output<typeof C.BotNow> };
+  'bots.inventory': { params: z.input<typeof C.BotParams>; query: never; body: never; response: z.output<typeof C.BodyInventory> };
   'bots.chat': { params: z.input<typeof C.BotParams>; query: never; body: z.input<typeof C.ChatRequest>; response: z.output<typeof C.ChatAccepted> };
   'feed': { params: never; query: z.input<typeof C.FeedQuery>; body: never; response: z.output<typeof C.FeedResponse> };
   'blueprints.list': { params: never; query: never; body: never; response: z.output<typeof C.BlueprintsResponse> };

@@ -33,7 +33,7 @@ export interface EngineOptions extends RuntimeOptions {
   layers?: Partial<LayerToggles>;
   cameraMode?: CameraMode;
   xray?: XRayMode;
-  /** Blocks (32..256, default 128). */
+  /** Blocks (32..256): the most this view ever draws; the viewer settings' draw distance applies below it. Absent = the setting. */
   drawDistance?: number;
   onSelectBot?: (name: string) => void;
   onPick?: (block: PickedBlock) => void;
@@ -64,7 +64,8 @@ export class WorldViewerEngine implements RuntimeView {
   private acquired = false;
   private layers: LayerToggles;
   private xray: XRayMode;
-  private drawDistance: number;
+  /** The view's own cap (the drawDistance prop), null = the viewer settings' distance alone. */
+  private drawCap: number | null;
   private keys = new Set<string>();
   private drag: { x: number; y: number; t: number; button: number; moved: boolean } | null = null;
   private frames = 0;
@@ -97,7 +98,7 @@ export class WorldViewerEngine implements RuntimeView {
     this.followName = opts.follow ?? null;
     this.layers = { ...DEFAULT_LAYERS, ...opts.layers };
     this.xray = opts.xray ?? 'auto';
-    this.drawDistance = clampDraw(opts.drawDistance ?? 128);
+    this.drawCap = opts.drawDistance ?? null;
     if (opts.cameraMode) this.rig.mode = opts.cameraMode;
     this.ownsRuntime = !opts.runtime;
     this.runtime = (opts.runtime ?? new WorldRuntime(opts.source, opts)).retain();
@@ -160,8 +161,15 @@ export class WorldViewerEngine implements RuntimeView {
     this.xray = m;
   }
 
-  setDrawDistance(n: number): void {
-    this.drawDistance = clampDraw(n);
+  /** The most this view draws (blocks); null = whatever the viewer settings say. */
+  setDrawDistance(n: number | null): void {
+    this.drawCap = n;
+  }
+
+  /** The draw distance in force: the viewer settings' distance, lowered by this view's own cap. */
+  get drawDistance(): number {
+    const q = this.runtime.viewerQuality.drawDistance;
+    return clampDraw(this.drawCap === null ? q : Math.min(this.drawCap, q));
   }
 
   /** A target position marker (a block), drawn in this view; null clears it. */
@@ -315,7 +323,7 @@ export class WorldViewerEngine implements RuntimeView {
 
   /** Top-down and iso views: the ground the picture shows is always drawn (and unfogged) this far; 0 otherwise. */
   cover(): number {
-    return this.rig.groundCover(this.camera.aspect);
+    return this.rig.groundCover(this.camera.aspect, this.runtime.viewerQuality.coverCap);
   }
 
   overlayDim(): Dim | null {

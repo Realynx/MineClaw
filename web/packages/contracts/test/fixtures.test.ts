@@ -53,6 +53,8 @@ const cases: Record<'db' | 'tools' | 'live', Record<string, z.ZodType>> = {
     bodyScript: C.BodyScriptReply,
     feed: C.FeedResponse,
     now: C.BotNow,
+    inventory: C.BodyInventory,
+    inventoryOffline: C.BodyInventory,
     nowStringPos: C.BotNow,
     chatAccepted: C.ChatAccepted,
     memoryActivity: C.MemoryActivityResponse,

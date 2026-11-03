@@ -2,13 +2,14 @@
 
 import { AlertTriangle, Bell, Box, LayoutGrid, Network } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Suspense, useMemo, useState } from 'react';
+import { Suspense, useCallback, useMemo, useState } from 'react';
 import { PageBody } from '@/components/shell/Shell';
 import { Card, CardHeader, EmptyState, ErrorState, PageHeader, Select, Skeleton } from '@/components/ui/primitives';
 import { Segmented } from '@/components/ui/overlays';
 import { HiveGrid } from '@/features/live/HiveGrid';
 import { useHiveIndex } from '@/features/live/common';
 import { HiveTreeView } from '@/features/live/HiveTreeView';
+import { BodyPanel } from '@/features/live/inventory/BodyPanel';
 import { WorldHost } from '@/features/world/integration';
 import { WorldPane } from '@/features/world/WorldPane';
 import { useEvents, useStatus } from '@/lib/live/hooks';
@@ -60,6 +61,9 @@ function LiveInner() {
   }, [status.data]);
   const [follow, setFollow] = useState<string>('');
   const followed = follow || bots[0]?.name || '';
+  // The body clicked in the world view: its panel (inventory polled only while it is open).
+  const [panel, setPanel] = useState<string | null>(null);
+  const closePanel = useCallback(() => setPanel(null), []);
   const online = bots.filter((b) => b.status === 'online').length;
 
   return (
@@ -112,6 +116,8 @@ function LiveInner() {
             {followed ? (
               <WorldPane
                 follow={followed}
+                onBodyClick={setPanel}
+                overlay={panel ? <BodyPanel bot={panel} onClose={closePanel} className="absolute right-3 bottom-3 z-10 max-h-[calc(100%-4.5rem)]" /> : null}
                 toolbarStart={
                   <Select aria-label="Follow bot" value={followed} onChange={(e) => setFollow(e.target.value)} className="h-8 min-w-40">
                     {bots.map((b) => (

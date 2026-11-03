@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Kbd } from '@/components/ui/primitives';
+import { ViewerQualityButton } from '@/features/settings/QuickSettings';
 import { cn } from '@/lib/utils';
 import { pawnMood, reorderNames, type PawnMood } from './model';
 import {
@@ -516,6 +517,7 @@ export function ControlCluster({
         >
           <Info className="size-3.5" />
         </button>
+        <ViewerQualityButton compact />
       </div>
       {children}
     </div>

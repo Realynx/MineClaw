@@ -18,7 +18,7 @@ public static class SupervisorProxy
 {
     public static readonly string[] AllowGet =
         ["bots", "hive/tree", "status", "events", "locate", "blueprints", "buildplans", "world/", "scripts", "bodies/", "brains/", "viewer/feed", "viewer/now",
-         "viewer/memory-activity", "admin/rebuild/", "admin/audit", "designer/", "story"];
+         "viewer/memory-activity", "viewer/bodies/", "admin/rebuild/", "admin/audit", "designer/", "story"];
     public static readonly string[] AllowPost = ["viewer/chat", "admin/", "designer/", "story/"];
     public static readonly string[] AdminOnly = ["admin/"];
     /// <summary>POST paths that need the <c>story</c> or the <c>admin</c> role (contracts <c>storyWrite</c>).</summary>
@@ -77,7 +77,7 @@ public static class SupervisorProxy
         _ when path.StartsWith("admin/", StringComparison.Ordinal) => TimeSpan.FromSeconds(60),
         _ when path.EndsWith("/vision/render", StringComparison.Ordinal) => TimeSpan.FromSeconds(12),
         _ when path.EndsWith(".png", StringComparison.Ordinal) => TimeSpan.FromSeconds(6),
-        _ when path.StartsWith("bodies/", StringComparison.Ordinal) => TimeSpan.FromSeconds(4),
+        _ when path.StartsWith("bodies/", StringComparison.Ordinal) || path.StartsWith("viewer/bodies/", StringComparison.Ordinal) => TimeSpan.FromSeconds(4),
         _ => TimeSpan.FromSeconds(8),
     };
 
