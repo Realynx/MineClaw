@@ -1,7 +1,33 @@
-import { StoryBillsRequest, StoryBuildRequest, StoryDesignationRequest, StoryDirectiveRequest, StoryOrderRequest, StoryScheduleRequest, StoryStorageRequest, type StoryColonyState } from '@mineclaw/contracts';
+import {
+  StoryBillsRequest,
+  StoryBuildRequest,
+  StoryDesignationRequest,
+  StoryDirectiveRequest,
+  StoryOrderRequest,
+  StoryScheduleRequest,
+  StoryStorageRequest,
+  type StoryColonyState,
+} from '@mineclaw/contracts';
 import { describe, expect, it } from 'vitest';
 import { isTyping } from '@/features/world/directives';
-import { boxPick, cellAt, cellRect, edgePan, isDrag, nearest, project, rayAt, rectOf, zoomAt, type ViewMats } from '@/features/story/math';
+import {
+  assignAlong,
+  boxPick,
+  cellAt,
+  cellRect,
+  edgePan,
+  isDrag,
+  lineSlots,
+  nearest,
+  project,
+  rayAt,
+  rectOf,
+  snapCells,
+  standFeet,
+  zoomAt,
+  ZOOM_MAX,
+  type ViewMats,
+} from '@/features/story/math';
 import {
   applyPaint,
   boxBodies,
@@ -21,7 +47,22 @@ import {
   sortPawns,
   splitBodies,
 } from '@/features/story/model';
-import { addBillBody, billProgress, billSummary, buildTree, draftOf, itemAllowed, newDraft, nodeState, pasteBody, reorderBills, searchRecipes, toggleItem, toggleNode, updateBillBody } from '@/features/story/storage';
+import {
+  addBillBody,
+  billProgress,
+  billSummary,
+  buildTree,
+  draftOf,
+  itemAllowed,
+  newDraft,
+  nodeState,
+  pasteBody,
+  reorderBills,
+  searchRecipes,
+  toggleItem,
+  toggleNode,
+  updateBillBody,
+} from '@/features/story/storage';
 import {
   buildItem,
   contextMenu,
@@ -52,24 +93,60 @@ function topMats(cx: number, cz: number, upp: number, w = 800, h = 600): ViewMat
   // view: rotate so that -y is forward (camera looks down), +x right, -z up; translate to (cx, 100, cz).
   // Column-major. Rows of the rotation: x' = x, y' = -z, z' = y (camera space looks along -z').
   const view = [1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, -cx, cz, -100, 1];
-  const sx = 2 / (w * upp), sy = 2 / (h * upp);
+  const sx = 2 / (w * upp),
+    sy = 2 / (h * upp);
   const proj = [sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, -0.01, 0, 0, 0, -1, 1];
   const inv = (m: number[]) => {
     // generic 4x4 inverse (column-major)
-    const a = m, o = new Array<number>(16);
-    const [a00, a01, a02, a03, a10, a11, a12, a13, a20, a21, a22, a23, a30, a31, a32, a33] = a as [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number];
-    const b00 = a00 * a11 - a01 * a10, b01 = a00 * a12 - a02 * a10, b02 = a00 * a13 - a03 * a10, b03 = a01 * a12 - a02 * a11;
-    const b04 = a01 * a13 - a03 * a11, b05 = a02 * a13 - a03 * a12, b06 = a20 * a31 - a21 * a30, b07 = a20 * a32 - a22 * a30;
-    const b08 = a20 * a33 - a23 * a30, b09 = a21 * a32 - a22 * a31, b10 = a21 * a33 - a23 * a31, b11 = a22 * a33 - a23 * a32;
+    const a = m,
+      o = new Array<number>(16);
+    const [a00, a01, a02, a03, a10, a11, a12, a13, a20, a21, a22, a23, a30, a31, a32, a33] = a as [
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+    ];
+    const b00 = a00 * a11 - a01 * a10,
+      b01 = a00 * a12 - a02 * a10,
+      b02 = a00 * a13 - a03 * a10,
+      b03 = a01 * a12 - a02 * a11;
+    const b04 = a01 * a13 - a03 * a11,
+      b05 = a02 * a13 - a03 * a12,
+      b06 = a20 * a31 - a21 * a30,
+      b07 = a20 * a32 - a22 * a30;
+    const b08 = a20 * a33 - a23 * a30,
+      b09 = a21 * a32 - a22 * a31,
+      b10 = a21 * a33 - a23 * a31,
+      b11 = a22 * a33 - a23 * a32;
     const det = 1 / (b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06);
-    o[0] = (a11 * b11 - a12 * b10 + a13 * b09) * det; o[1] = (a02 * b10 - a01 * b11 - a03 * b09) * det;
-    o[2] = (a31 * b05 - a32 * b04 + a33 * b03) * det; o[3] = (a22 * b04 - a21 * b05 - a23 * b03) * det;
-    o[4] = (a12 * b08 - a10 * b11 - a13 * b07) * det; o[5] = (a00 * b11 - a02 * b08 + a03 * b07) * det;
-    o[6] = (a32 * b02 - a30 * b05 - a33 * b01) * det; o[7] = (a20 * b05 - a22 * b02 + a23 * b01) * det;
-    o[8] = (a10 * b10 - a11 * b08 + a13 * b06) * det; o[9] = (a01 * b08 - a00 * b10 - a03 * b06) * det;
-    o[10] = (a30 * b04 - a31 * b02 + a33 * b00) * det; o[11] = (a21 * b02 - a20 * b04 - a23 * b00) * det;
-    o[12] = (a11 * b07 - a10 * b09 - a12 * b06) * det; o[13] = (a00 * b09 - a01 * b07 + a02 * b06) * det;
-    o[14] = (a31 * b01 - a30 * b03 - a32 * b00) * det; o[15] = (a20 * b03 - a21 * b01 + a22 * b00) * det;
+    o[0] = (a11 * b11 - a12 * b10 + a13 * b09) * det;
+    o[1] = (a02 * b10 - a01 * b11 - a03 * b09) * det;
+    o[2] = (a31 * b05 - a32 * b04 + a33 * b03) * det;
+    o[3] = (a22 * b04 - a21 * b05 - a23 * b03) * det;
+    o[4] = (a12 * b08 - a10 * b11 - a13 * b07) * det;
+    o[5] = (a00 * b11 - a02 * b08 + a03 * b07) * det;
+    o[6] = (a32 * b02 - a30 * b05 - a33 * b01) * det;
+    o[7] = (a20 * b05 - a22 * b02 + a23 * b01) * det;
+    o[8] = (a10 * b10 - a11 * b08 + a13 * b06) * det;
+    o[9] = (a01 * b08 - a00 * b10 - a03 * b06) * det;
+    o[10] = (a30 * b04 - a31 * b02 + a33 * b00) * det;
+    o[11] = (a21 * b02 - a20 * b04 - a23 * b00) * det;
+    o[12] = (a11 * b07 - a10 * b09 - a12 * b06) * det;
+    o[13] = (a00 * b09 - a01 * b07 + a02 * b06) * det;
+    o[14] = (a31 * b01 - a30 * b03 - a32 * b00) * det;
+    o[15] = (a20 * b03 - a21 * b01 + a22 * b00) * det;
     return o;
   };
   return { view, proj, world: inv(view), projInv: inv(proj), w, h };
@@ -106,38 +183,166 @@ describe('map math', () => {
     expect(cellRect([5, 64, 9], [2, 64, -1])).toEqual([2, -1, 5, 9]);
   });
 
+  it('formations: slots spread along a drag line, at least a cell apart, in line order', () => {
+    const s = lineSlots({ x: 0.5, z: 0.5 }, { x: 10.5, z: 0.5 }, 3);
+    expect(s.map((p) => [p.x, p.z])).toEqual([
+      [0.5, 0.5],
+      [5.5, 0.5],
+      [10.5, 0.5],
+    ]);
+    // a short drag fans out around its middle, one cell apart
+    const short = lineSlots({ x: 0.5, z: 0.5 }, { x: 1.5, z: 0.5 }, 4);
+    expect(short.map((p) => p.x)).toEqual([-0.5, 0.5, 1.5, 2.5]);
+    // a diagonal needs a full cell on both axes per pawn: every slot lands in its own cell
+    const diag = lineSlots({ x: 0.5, z: 0.5 }, { x: 1.5, z: 1.5 }, 4);
+    expect(new Set(diag.map((p) => `${Math.floor(p.x)},${Math.floor(p.z)}`)).size).toBe(4);
+    expect(lineSlots({ x: 3, z: 4 }, { x: 3, z: 4 }, 1)).toEqual([{ x: 3, z: 4 }]);
+    expect(lineSlots({ x: 0, z: 0 }, { x: 1, z: 0 }, 0)).toEqual([]);
+  });
+
+  it('formations: slots snap to distinct standable cells; pawns pair with slots without crossing', () => {
+    const wall = (x: number, z: number) => !(x === 5 && z === 0);
+    const cells = snapCells(
+      [
+        { x: 0.5, z: 0.5 },
+        { x: 5.5, z: 0.5 },
+        { x: 5.6, z: 0.5 },
+      ],
+      wall,
+    );
+    expect(cells[0]).toEqual([0, 0]);
+    expect(cells[1]).not.toEqual([5, 0]); // unstandable: the nearest standable cell
+    expect(new Set(cells.map((c) => c.join(','))).size).toBe(3); // never two on one cell
+    expect(Math.hypot(cells[1]![0] - 5, cells[1]![1])).toBeLessThanOrEqual(1);
+    // nowhere standable: still distinct cells
+    expect(
+      new Set(
+        snapCells(
+          [
+            { x: 0.5, z: 0.5 },
+            { x: 0.5, z: 0.5 },
+          ],
+          () => false,
+        ).map((c) => c.join(',')),
+      ).size,
+    ).toBe(2);
+    // the pawn on the left takes the left slot, whatever the list order
+    const slots = [
+      { x: 0.5, z: 5.5 },
+      { x: 10.5, z: 5.5 },
+    ];
+    expect(
+      assignAlong(
+        [
+          { key: 'east', x: 12, z: 0 },
+          { key: 'west', x: -3, z: 0 },
+        ],
+        slots,
+        slots[0]!,
+        slots[1]!,
+      ),
+    ).toEqual([
+      ['west', 0],
+      ['east', 1],
+    ]);
+    // a line drawn the other way round keeps the pairing on the same sides
+    expect(
+      assignAlong(
+        [
+          { key: 'east', x: 12, z: 0 },
+          { key: 'west', x: -3, z: 0 },
+        ],
+        [slots[1]!, slots[0]!],
+        slots[1]!,
+        slots[0]!,
+      ).sort(),
+    ).toEqual([
+      ['east', 0],
+      ['west', 1],
+    ]);
+    // more bodies than slots: the extra ones get none
+    expect(
+      assignAlong(
+        [
+          { key: 'a', x: 0, z: 0 },
+          { key: 'b', x: 1, z: 0 },
+        ],
+        [{ x: 0, z: 0 }],
+        { x: 0, z: 0 },
+        { x: 1, z: 0 },
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("formations: a column's standing height nearest the level", () => {
+    // y0 = 60: stone up to 63, grass at 64, then air; feet at 65
+    expect(standFeet([1, 1, 1, 1, 2, 0, 0, 0, 0, 0, 0], 60, 64)).toBe(65);
+    // tall grass on top does not block the feet
+    expect(standFeet([1, 1, 1, 1, 2, 31, 0, 0, 0, 0, 0], 60, 64)).toBe(65);
+    // water is never a floor; a solid column with no headroom has nowhere to stand
+    expect(standFeet([1, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], 60, 64)).toBeNull();
+    expect(standFeet([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], 60, 64)).toBeNull();
+    // not loaded
+    expect(standFeet([-1, -1, -1], 60, 64)).toBeUndefined();
+  });
+
   it('zooms around the cursor and pans at the screen edge', () => {
     const z = zoomAt({ x: 0, z: 0 }, 40, -1, { x: 10, z: 0 });
     expect(z.zoom).toBeCloseTo(40 / 1.15);
     // the cursor point stays where it is: target moved toward it in proportion
     expect(z.x).toBeCloseTo(10 - 10 / 1.15);
-    expect(zoomAt({ x: 0, z: 0 }, 220, 3, { x: 0, z: 0 }).zoom).toBe(220);
+    expect(zoomAt({ x: 0, z: 0 }, ZOOM_MAX, 3, { x: 0, z: 0 }).zoom).toBe(ZOOM_MAX);
     expect(edgePan({ x: 2, y: 300 }, 800, 600)).toEqual([-1, 0]);
     expect(edgePan({ x: 400, y: 599 }, 800, 600)).toEqual([0, 1]);
     expect(edgePan({ x: 400, y: 300 }, 800, 600)).toEqual([0, 0]);
   });
 });
 
-const state = (over: Partial<StoryColonyState> = {}): StoryColonyState =>
-  ({
-    rev: 5,
-    at: 0,
-    workTypes: [],
-    pawns: [
-      { name: 'p_ash', display: 'Ash', kind: 'pawn', queue: [], skills: { chop: { level: 12 } }, traits: [], priorities: { chop: 1 }, schedule: [], inventory: [], hp: 20, food: 20, state: 'working' },
-      { name: 'p_bryn', display: 'Bryn', kind: 'pawn', queue: [], skills: { chop: { level: 3 } }, traits: [], priorities: {}, schedule: [], inventory: [], hp: 5, food: 20, state: 'working' },
-    ],
-    zones: [],
-    designations: [],
-    orders: [],
-    alerts: [],
-    ai: [
-      { name: 'maid_chan_102', kind: 'subhive', owner: 'maid_chan_109' },
-      { name: 'maid_chan', kind: 'main' },
-      { name: 'maid_chan_109', kind: 'hive', owner: 'maid_chan' },
-    ],
-    ...over,
-  });
+const state = (over: Partial<StoryColonyState> = {}): StoryColonyState => ({
+  rev: 5,
+  at: 0,
+  workTypes: [],
+  pawns: [
+    {
+      name: 'p_ash',
+      display: 'Ash',
+      kind: 'pawn',
+      queue: [],
+      skills: { chop: { level: 12 } },
+      traits: [],
+      priorities: { chop: 1 },
+      schedule: [],
+      inventory: [],
+      hp: 20,
+      food: 20,
+      state: 'working',
+    },
+    {
+      name: 'p_bryn',
+      display: 'Bryn',
+      kind: 'pawn',
+      queue: [],
+      skills: { chop: { level: 3 } },
+      traits: [],
+      priorities: {},
+      schedule: [],
+      inventory: [],
+      hp: 5,
+      food: 20,
+      state: 'working',
+    },
+  ],
+  zones: [],
+  designations: [],
+  orders: [],
+  alerts: [],
+  ai: [
+    { name: 'maid_chan_102', kind: 'subhive', owner: 'maid_chan_109' },
+    { name: 'maid_chan', kind: 'main' },
+    { name: 'maid_chan_109', kind: 'hive', owner: 'maid_chan' },
+  ],
+  ...over,
+});
 
 describe('selection and the colonist bar', () => {
   it('click selects only it, Shift adds, Ctrl toggles; a box replaces or adds', () => {
@@ -162,8 +367,24 @@ describe('selection and the colonist bar', () => {
   });
 
   it('merges deltas: changed pawns replace, removed designations go, older revisions are ignored', () => {
-    const base = state({ designations: [{ id: 'd1', kind: 'chop', block: [1, 64, 1] }, { id: 'd2', kind: 'mine', block: [2, 64, 2] }] });
-    const next = mergeColony(base, { rev: 6, at: 1, full: false, workTypes: [], pawns: [{ ...base.pawns[0]!, state: 'idle' }], zones: [], designations: [], orders: [], alerts: [{ id: 'a1', at: 1, level: 'warn', text: 'x' }], removed: { designations: ['d1'] } });
+    const base = state({
+      designations: [
+        { id: 'd1', kind: 'chop', block: [1, 64, 1] },
+        { id: 'd2', kind: 'mine', block: [2, 64, 2] },
+      ],
+    });
+    const next = mergeColony(base, {
+      rev: 6,
+      at: 1,
+      full: false,
+      workTypes: [],
+      pawns: [{ ...base.pawns[0]!, state: 'idle' }],
+      zones: [],
+      designations: [],
+      orders: [],
+      alerts: [{ id: 'a1', at: 1, level: 'warn', text: 'x' }],
+      removed: { designations: ['d1'] },
+    });
     expect(next.pawns).toHaveLength(2);
     expect(next.pawns.find((p) => p.name === 'p_ash')?.state).toBe('idle');
     expect(next.designations.map((d) => d.id)).toEqual(['d2']);
@@ -211,12 +432,25 @@ describe('orders, designations and the mixed selection', () => {
     const tree = contextMenu({ kind: 'block', x: 6, y: 72, z: 6, id: 17, name: 'log' }, true, false);
     expect(tree.map((i) => i.id)).toEqual(['chop', 'move', 'hold', 'stop']);
     const chop = orderBody(['p_ash', 'p_bryn'], tree[0]!, true)!;
-    expect(chop).toEqual({ pawns: ['p_ash', 'p_bryn'], order: { kind: 'chop', target: { x: 6, y: 72, z: 6 } }, queue: true });
+    expect(chop).toEqual({
+      pawns: ['p_ash', 'p_bryn'],
+      order: { kind: 'chop', target: { x: 6, y: 72, z: 6 } },
+      queue: true,
+    });
     expect(StoryOrderRequest.safeParse(chop).success).toBe(true);
-    expect(contextMenu({ kind: 'mob', entity: 9, name: 'cow', animal: true, x: 1, y: 2, z: 3 }, true, false)[0]).toMatchObject({ id: 'attack', label: 'Hunt cow', order: { kind: 'attack', target: { entity: 9 } } });
-    expect(contextMenu({ kind: 'item', entity: 4, name: 'cobble', x: 1, y: 2, z: 3 }, true, false)[0]?.order).toEqual({ kind: 'haul', target: { entity: 4 } });
-    expect(contextMenu({ kind: 'block', x: 1, y: 2, z: 3, id: 54, name: 'chest' }, false, false).map((i) => i.id)).toEqual(['storage']);
-    expect(contextMenu({ kind: 'ghost', build: 'b1', label: 'Wall', x: 0, y: 0, z: 0 }, false, false).map((i) => i.action)).toEqual(['first-build', 'cancel-build']);
+    expect(
+      contextMenu({ kind: 'mob', entity: 9, name: 'cow', animal: true, x: 1, y: 2, z: 3 }, true, false)[0],
+    ).toMatchObject({ id: 'attack', label: 'Hunt cow', order: { kind: 'attack', target: { entity: 9 } } });
+    expect(contextMenu({ kind: 'item', entity: 4, name: 'cobble', x: 1, y: 2, z: 3 }, true, false)[0]?.order).toEqual({
+      kind: 'haul',
+      target: { entity: 4 },
+    });
+    expect(
+      contextMenu({ kind: 'block', x: 1, y: 2, z: 3, id: 54, name: 'chest' }, false, false).map((i) => i.id),
+    ).toEqual(['storage']);
+    expect(
+      contextMenu({ kind: 'ghost', build: 'b1', label: 'Wall', x: 0, y: 0, z: 0 }, false, false).map((i) => i.action),
+    ).toEqual(['first-build', 'cancel-build']);
     expect(orderBody([], tree[0]!, false)).toBeNull();
   });
 
@@ -224,29 +458,58 @@ describe('orders, designations and the mixed selection', () => {
     const area = [0, 60, 0, 9, 80, 9] as [number, number, number, number, number, number];
     const body = designationBody('chop', area);
     expect(StoryDesignationRequest.safeParse(body).success).toBe(true);
-    const plan = dispatch({ pawns: ['p_ash'], ai: ['maid_chan'] }, { route: 'story.designations', body }, designationDirective('chop', area, [[6, 66, 6]]), 'r-12345678', 'designated');
+    const plan = dispatch(
+      { pawns: ['p_ash'], ai: ['maid_chan'] },
+      { route: 'story.designations', body },
+      designationDirective('chop', area, [[6, 66, 6]]),
+      'r-12345678',
+      'designated',
+    );
     expect(plan.director?.route).toBe('story.designations');
-    expect(plan.directive).toEqual({ bots: ['maid_chan'], directive: { kind: 'chop', area, targets: [[6, 66, 6]] }, requestId: 'r-12345678' });
+    expect(plan.directive).toEqual({
+      bots: ['maid_chan'],
+      directive: { kind: 'chop', area, targets: [[6, 66, 6]] },
+      requestId: 'r-12345678',
+    });
     expect(StoryDirectiveRequest.safeParse(plan.directive).success).toBe(true);
     expect(plan.summary).toBe('colony: designated · sent to maid_chan (AI)');
     // An order needs pawns; with only AI selected only the directive goes.
-    const only = dispatch({ pawns: [], ai: ['maid_chan'] }, { route: 'story.orders', body: {} }, { kind: 'move', targets: [[1, 2, 3]] }, 'r-12345678');
+    const only = dispatch(
+      { pawns: [], ai: ['maid_chan'] },
+      { route: 'story.orders', body: {} },
+      { kind: 'move', targets: [[1, 2, 3]] },
+      'r-12345678',
+    );
     expect(only.director).toBeNull();
     expect(only.summary).toBe('sent to maid_chan (AI)');
-    expect(dispatch({ pawns: ['a', 'b', 'c'], ai: [] }, { route: 'story.orders', body: {} }, null, 'r-12345678').summary).toBe('3 pawns ordered');
+    expect(
+      dispatch({ pawns: ['a', 'b', 'c'], ai: [] }, { route: 'story.orders', body: {} }, null, 'r-12345678').summary,
+    ).toBe('3 pawns ordered');
     expect(designationBody('cancel', area)).toEqual({ op: 'remove', area });
     expect(designationBody('mine', area, 'ores')).toEqual({ op: 'add', kind: 'mine', area, filter: 'ores' });
   });
 
   it('the designate preview counts whole trees and only ripe crops; drops and animals by entity', () => {
     // scan rows: x, y, z, id, meta, below
-    const scan = [6, 66, 6, 17, 0, 2, 6, 67, 6, 17, 0, 17, 9, 66, 9, 17, 0, 2, 1, 70, 1, 59, 7, 60, 2, 70, 1, 59, 2, 60];
+    const scan = [
+      6, 66, 6, 17, 0, 2, 6, 67, 6, 17, 0, 17, 9, 66, 9, 17, 0, 2, 1, 70, 1, 59, 7, 60, 2, 70, 1, 59, 2, 60,
+    ];
     expect(previewTargets('chop', scan)).toMatchObject({ count: 2 });
     expect(previewTargets('harvest', scan).cells).toEqual([[1, 70, 1]]);
     const hunt = DESIGNATE_TOOLS.find((t) => t.id === 'hunt')!;
-    const ents = [{ id: 1, kind: 'mob', type: 92, x: 2.5, y: 70, z: 2.5 }, { id: 2, kind: 'mob', type: 54, x: 3, y: 70, z: 3 }, { id: 3, kind: 'item', x: 2, y: 70, z: 2 }];
+    const ents = [
+      { id: 1, kind: 'mob', type: 92, x: 2.5, y: 70, z: 2.5 },
+      { id: 2, kind: 'mob', type: 54, x: 3, y: 70, z: 3 },
+      { id: 3, kind: 'item', x: 2, y: 70, z: 2 },
+    ];
     expect(entitiesIn(hunt, [0, 0, 5, 5], ents).map((e) => e.id)).toEqual([1]);
-    expect(entitiesIn(DESIGNATE_TOOLS.find((t) => t.id === 'haul')!, [0, 0, 5, 5], ents).map((e) => e.id)).toEqual([3]);
+    expect(
+      entitiesIn(
+        DESIGNATE_TOOLS.find((t) => t.id === 'haul')!,
+        [0, 0, 5, 5],
+        ents,
+      ).map((e) => e.id),
+    ).toEqual([3]);
     expect(toolYRange('mine', 64, 3, 68)).toEqual([63, 67]);
   });
 });
@@ -271,7 +534,12 @@ describe('the Architect', () => {
     const blocks = preview(roof).blocks;
     expect(Math.max(...blocks.map((b) => b[1]))).toBe(68 + 3);
     expect(StoryBuildRequest.safeParse({ op: 'add', items: [roof] }).success).toBe(true);
-    expect(StoryBuildRequest.safeParse({ op: 'add', items: [buildItem('door', [2, 65, 0], [2, 65, 0], o), buildItem('furniture:bed', [1, 65, 1], [1, 65, 1], o)] }).success).toBe(true);
+    expect(
+      StoryBuildRequest.safeParse({
+        op: 'add',
+        items: [buildItem('door', [2, 65, 0], [2, 65, 0], o), buildItem('furniture:bed', [1, 65, 1], [1, 65, 1], o)],
+      }).success,
+    ).toBe(true);
     expect(preview(buildItem('block', [0, 65, 0], [0, 65, 0], o), 0).reason).toBe('short of 1');
   });
 
@@ -312,8 +580,19 @@ describe('storage settings', () => {
   });
 
   it('copy / paste and request bodies', () => {
-    const body = pasteBody({ filter: { allow: ['food'], deny: [] }, priority: 'preferred' }, [[1, 64, 2], [5, 64, 2]]);
-    expect(body).toEqual({ op: 'set', chests: [[1, 64, 2], [5, 64, 2]], filter: { allow: ['food'], deny: [] }, priority: 'preferred' });
+    const body = pasteBody({ filter: { allow: ['food'], deny: [] }, priority: 'preferred' }, [
+      [1, 64, 2],
+      [5, 64, 2],
+    ]);
+    expect(body).toEqual({
+      op: 'set',
+      chests: [
+        [1, 64, 2],
+        [5, 64, 2],
+      ],
+      filter: { allow: ['food'], deny: [] },
+      priority: 'preferred',
+    });
     expect(StoryStorageRequest.safeParse(body).success).toBe(true);
   });
 });
@@ -324,9 +603,28 @@ describe('bills', () => {
   it('the dialog state becomes add / update / reorder requests', () => {
     const d = { ...newDraft(sticks, 'until', 64), radius: 20, pawn: 'p_ash' };
     const add = addBillBody([1, 64, 2], d);
-    expect(add.bill).toMatchObject({ recipe: 'sticks', mode: 'until', target: 64, radius: 20, pawn: 'p_ash', store: 'best' });
+    expect(add.bill).toMatchObject({
+      recipe: 'sticks',
+      mode: 'until',
+      target: 64,
+      radius: 20,
+      pawn: 'p_ash',
+      store: 'best',
+    });
     expect(StoryBillsRequest.safeParse(add).success).toBe(true);
-    const bill = { id: 'b1', recipe: 'sticks', mode: 'until', target: 64, done: 3, paused: false, ingredients: d.ingredients, radius: 20, pawn: 'p_ash', minSkill: null, store: 'best' as const };
+    const bill = {
+      id: 'b1',
+      recipe: 'sticks',
+      mode: 'until',
+      target: 64,
+      done: 3,
+      paused: false,
+      ingredients: d.ingredients,
+      radius: 20,
+      pawn: 'p_ash',
+      minSkill: null,
+      store: 'best' as const,
+    };
     expect(updateBillBody(bill, draftOf(bill))).toBeNull();
     const up = updateBillBody(bill, { ...draftOf(bill), radius: 48, pawn: 'any' })!;
     expect(up).toEqual({ op: 'update', id: 'b1', radius: 48, pawn: 'any' });
@@ -372,15 +670,31 @@ describe('keys', () => {
 
 describe('designs on the map (/story?design=N)', () => {
   it('finds the block list in the design JSON, turns it with the facing and queues one block item per material', () => {
-    const json = { id: 9, bill: { cobblestone: 3 }, blocks: [[10, 64, 10, 4, 0], [11, 64, 10, 4, 0], [10, 65, 10, 5, 2], [12, 64, 10, 0, 0]] };
+    const json = {
+      id: 9,
+      bill: { cobblestone: 3 },
+      blocks: [
+        [10, 64, 10, 4, 0],
+        [11, 64, 10, 4, 0],
+        [10, 65, 10, 5, 2],
+        [12, 64, 10, 0, 0],
+      ],
+    };
     const blocks = designBlocks(json);
-    expect(blocks).toEqual([[0, 0, 0, 4, 0], [1, 0, 0, 4, 0], [0, 1, 0, 5, 2]]);
+    expect(blocks).toEqual([
+      [0, 0, 0, 4, 0],
+      [1, 0, 0, 4, 0],
+      [0, 1, 0, 5, 2],
+    ]);
     expect(designBlocks({ parts: [{ steps: [{ x: 1, y: 2, z: 3, id: 20 }] }] })).toEqual([[0, 0, 0, 20, 0]]);
     expect(designBlocks({ nothing: true })).toEqual([]);
     const east = placeDesign(blocks, [100, 70, 100], 'e');
     expect(east[1]).toEqual([100, 70, 101, 4, 0]); // +x turns to +z
     const items = designItems(placeDesign(blocks, [100, 70, 100], 'n'), 'hut');
-    expect(items.map((i) => [i.kind, i.material, i.blocks?.length])).toEqual([['block', [4, 0], 2], ['block', [5, 2], 1]]);
+    expect(items.map((i) => [i.kind, i.material, i.blocks?.length])).toEqual([
+      ['block', [4, 0], 2],
+      ['block', [5, 2], 1],
+    ]);
     expect(StoryBuildRequest.safeParse({ op: 'add', items }).success).toBe(true);
   });
 

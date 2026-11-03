@@ -80,6 +80,7 @@ export interface RouteTypes {
   'story.list': { params: never; query: never; body: never; response: z.output<typeof C.StoryListResponse> };
   'story.recipes': { params: never; query: z.input<typeof C.StoryRecipesQuery>; body: never; response: z.output<typeof C.StoryRecipesResponse> };
   'story.create': { params: never; query: never; body: z.input<typeof C.StoryCreateRequest>; response: z.output<typeof C.StoryCreateResponse> };
+  'story.time': { params: never; query: never; body: z.input<typeof C.StoryTimeRequest>; response: z.output<typeof C.StoryTimeResponse> };
   'story.directives': { params: never; query: never; body: z.input<typeof C.StoryDirectiveRequest>; response: z.output<typeof C.StoryDirectiveResponse> };
   'story.directives.list': { params: never; query: never; body: never; response: z.output<typeof C.StoryDirectiveList> };
   'story.directive': { params: z.input<typeof C.StoryDirectiveParams>; query: never; body: never; response: z.output<typeof C.StoryDirectiveDetail> };
@@ -87,6 +88,8 @@ export interface RouteTypes {
   'story.release': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.Empty>; response: z.output<typeof C.StoryAck> };
   'story.resume': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.Empty>; response: z.output<typeof C.StoryAck> };
   'story.pause': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryPauseRequest>; response: z.output<typeof C.StoryAck> };
+  'story.home': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryHomeRequest>; response: z.output<typeof C.StoryHomeResponse> };
+  'story.beds': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryBedsRequest>; response: z.output<typeof C.StoryBedsResponse> };
   'story.priorities': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryPrioritiesRequest>; response: z.output<typeof C.StoryAck> };
   'story.schedule': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryScheduleRequest>; response: z.output<typeof C.StoryAck> };
   'story.draft': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryDraftRequest>; response: z.output<typeof C.StoryAck> };

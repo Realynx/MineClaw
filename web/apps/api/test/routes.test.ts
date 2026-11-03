@@ -8,6 +8,7 @@ import { ROUTES, ROUTE_IDS, apiPath, hasRole, type RouteDef, type RouteId } from
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { generate } from '../src/mock/generate.js';
+import { CAMP, topAt } from '../src/mock/terrain.js';
 import { csrfSession, login, ORIGIN, PERSONAS, startApp, type Session, type TestApp } from './helpers.js';
 
 /** Routes whose success path has side effects or needs its own flow; tested in auth/setup/sse tests. Gating is still checked. */
@@ -41,6 +42,10 @@ function storyOverrides(): typeof OVERRIDES {
     'story.resume': { params: id, body: {} },
     'story.directive': { params: { id: 'dir-r-story0001' } },
     'story.pause': { params: id, body: { paused: false } },
+    'story.home': { params: id, body: { home: { x: 4, y: 64, z: -3 } } },
+    'story.time': { body: { time: 6000 } },
+    // the first of the camp's two beds (mock/terrain.ts)
+    'story.beds': { params: id, body: { op: 'assign', bed: { x: CAMP[0] - 3, y: topAt(CAMP[0] - 3, CAMP[2] + 3) + 1, z: CAMP[2] + 3 }, pawn: 'maid_s1_dara' } },
     'story.priorities': { params: id, body: { pawns, work: { chop: 1, haul: 2 } } },
     'story.schedule': { params: id, body: { pawns, hours: { '0': 'work', '20': 'sleep' } } },
     'story.draft': { params: id, body: { pawns, drafted: false } },

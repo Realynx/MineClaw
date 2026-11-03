@@ -430,7 +430,15 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
 ## Web: the Story Mode tab
 
 - **Map.** A top-down orthographic view (the world viewer's `top` camera) over the colony.
-  - The mouse wheel zooms around the cursor. Pan with WASD/arrows, a middle-drag or the screen edge.
+  - The mouse wheel zooms around the cursor, out to 112 blocks of view height. Pan with WASD/arrows, a middle-drag or the
+    screen edge.
+  - In the top-down and angled views the viewer draws the whole ground the picture shows (its footprint's half diagonal,
+    capped at 192 blocks) whatever the draw distance or the software quality lever says, with the fog beyond it; mobs keep
+    the plain draw distance, so a zoomed-out map does not pay for far entities. Zoomed out past the draw distance, sections
+    more than 32 blocks below the look-at point are skipped. The cave-culling walk of a camera far above the world starts
+    just above it along the view ray (started at the camera it culled every section: the ground vanished past about 47
+    blocks of zoom).
+  - With no colony yet, the map opens over the main bot (else the signed-in user's player), not the world origin.
   - Pawns draw with name labels and job icons, and zones and designations are coloured overlays.
 - **Selection.**
   - A left-drag box selects many pawns, or objects (trees, blocks, drops) in designation mode.
@@ -441,8 +449,18 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   - a drop gives haul
   - a design gives build
 - **Draft.** A draft toggle, with R as the hotkey. Shift queues orders.
+- **Formations.** With drafted pawns selected, a right-drag draws a line; on release every drafted pawn gets its own move
+  order (`POST .../orders`, one pawn each) to a distinct standable cell spread evenly along it, at least a cell apart. Pawns
+  and slots are paired in order along the line, so their paths do not cross. While dragging, the line and a ghost token
+  per slot (the pawn's colour and initials) show where they go; a slot on an unstandable cell (water, a wall, no headroom)
+  moves to the nearest standable one within 3 cells, never two pawns on one cell. Undrafted pawns in the selection are left
+  out (the genre's rule; the toast says so). A right-click without a drag (under 5 px) is the order menu as before.
+- **Time of day.** A slider under the clock over one day (06:00 at tick 0; dawn, noon, dusk and midnight marked) sets the
+  world time on release, through the bot's op account. Without one it is disabled with "No op account — op the main bot
+  to change time". Needs the `story` role.
 - **Bottom bar:**
-  - pawn portraits with hp, food and job, where clicking selects and a double-click centres the map
+  - pawn portraits with hp, food and job, where clicking selects (and centres the map when the pawn is off it) and a
+    double-click always centres the map
   - a designate palette: chop, mine, harvest, haul, build, deconstruct, cancel
   - a zones palette
   - Work, Schedule and Colony panels
@@ -451,7 +469,14 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
 - **Schedule panel.** A grid of pawns by the 24 hours. Paint with the brush (work, sleep, anything, free) by dragging
   across cells. Copy and paste between pawns.
 - **Inspector.** The selected pawn's characteristics, skills, current job and queue, and orders.
-- **Colony panel.** Create a colony (name, number of pawns, home = the current map centre), pause it or release it.
+- **Houses and beds.** Any number of home zones (the Zones tool's Home area, or "Draw a house" in the Colony tab), each
+  named, renamed and deleted from the Colony tab's Houses list and drawn with the home-area tint and its name. Beds show on
+  the map with the owner's colour and initials; clicking one opens its inspector (owner, a "Set owner" pawn picker, Clear).
+  A pawn's inspector shows its bed with "Show".
+- **Colony panel.** Create a colony (name, number of pawns, home = the current map centre, shown as "Settles at x, z"),
+  pause it or release it, and migrate: "Move home here (migrate)" (the map centre) or "Set home on the map" (a house tool:
+  click the spot) asks for a confirm, then home moves to that column (its surface) and far pawns are brought there. The
+  map marks home with a house.
 - **Alerts.** A feed of alerts, such as a pawn in danger or idle with nothing to do.
 - **Permissions.** Needs the `admin` role, or a new `story` role, for writes. Viewers can watch.
 - **Performance.** It must stay smooth with software WebGL at 40 fps or more. It uses the shared renderer, and the

@@ -15,7 +15,12 @@ import { mergeColony } from './model';
 export const colonyKey = (id: string) => qk('story.get', { id });
 
 export function useColonies() {
-  return useQuery({ queryKey: qk('story.list'), queryFn: ({ signal }) => api('story.list', { signal }), staleTime: 10_000, refetchInterval: 15_000 });
+  return useQuery({
+    queryKey: qk('story.list'),
+    queryFn: ({ signal }) => api('story.list', { signal }),
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+  });
 }
 
 /** Catches the colony up from its revision (merged like a stream frame). */
@@ -53,7 +58,8 @@ export function useColony(id: string | null) {
 export function useRecipes(workbench: string | null) {
   return useQuery<StoryRecipe[]>({
     queryKey: qk('story.recipes', {}, { workbench }),
-    queryFn: ({ signal }) => api('story.recipes', { query: workbench ? { workbench: workbench as never } : {}, signal }),
+    queryFn: ({ signal }) =>
+      api('story.recipes', { query: workbench ? { workbench: workbench as never } : {}, signal }),
     enabled: !!workbench,
     staleTime: 5 * 60_000,
   });
@@ -63,6 +69,8 @@ type ColonyWrite =
   | 'story.release'
   | 'story.resume'
   | 'story.pause'
+  | 'story.home'
+  | 'story.beds'
   | 'story.priorities'
   | 'story.schedule'
   | 'story.draft'

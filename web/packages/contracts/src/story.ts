@@ -142,8 +142,20 @@ export const StoryColonySummary = z.object({
 });
 export type StoryColonySummary = z.infer<typeof StoryColonySummary>;
 
+/** Whether the world's time of day can be set from Story Mode: it needs an op account (`by`) the bot runs it as. */
+export const StoryTimeControl = z.object({ available: z.boolean(), by: z.string().nullish() });
+export type StoryTimeControl = z.infer<typeof StoryTimeControl>;
+
+/** POST /api/story/time: sets the world's time of day (ticks, 0 = 06:00). */
+export const StoryTimeRequest = z.object({ time: z.number().int().min(0).max(23999) }).strict();
+export type StoryTimeRequest = z.infer<typeof StoryTimeRequest>;
+
+export const StoryTimeResponse = z.object({ time: z.number().int(), by: z.string().nullish() });
+export type StoryTimeResponse = z.infer<typeof StoryTimeResponse>;
+
 /** GET /api/story (the AI bodies and their directives come along for the bar). */
 export const StoryListResponse = z.object({
+  timeControl: StoryTimeControl.nullish(),
   colonies: z.array(StoryColonySummary).default([]),
   ai: z.array(z.lazy(() => StoryAiBody)).nullish(),
   directives: z.array(z.lazy(() => StoryDirective)).nullish(),
@@ -186,6 +198,7 @@ export const StoryAck = z.object({
     .nullish()
     .describe('resume: the pawns spawned again'),
   note: z.string().nullish(),
+  name: z.string().nullish().describe('zones rename: the new name'),
   removed: z
     .array(z.union([z.string(), z.number()]))
     .nullish()
@@ -284,6 +297,8 @@ export const StoryZone = z.object({
   id: z.union([z.string(), z.number()]),
   kind: z.string(),
   area: StoryArea,
+  /** The zone's name (the bot's field; houses are named home zones). */
+  name: z.string().nullish(),
   label: z.string().nullish(),
 });
 export type StoryZone = z.infer<typeof StoryZone>;
@@ -307,6 +322,9 @@ export const StoryDesignation = z.object({
   design: z.union([z.string(), z.number()]).nullish(),
   pawn: z.string().nullish().describe('the pawn holding the lease'),
   state: z.string().nullish(),
+  status: z.string().nullish().describe('open | failed (3 failures; still retried after its rest)'),
+  reason: z.string().nullish().describe('why the last try failed'),
+  fails: z.number().int().nullish(),
 });
 export type StoryDesignation = z.infer<typeof StoryDesignation>;
 
@@ -558,6 +576,7 @@ export type StoryRemoved = z.infer<typeof StoryRemoved>;
 /** GET /api/story/colonies/{id}[?since=rev]. */
 export const StoryColonyState = z.object({
   id: z.string().nullish(),
+  timeControl: StoryTimeControl.nullish(),
   name: z.string().nullish(),
   rev: z.number().int(),
   at: When,
@@ -581,6 +600,10 @@ export const StoryColonyState = z.object({
   categories: z.array(StoryCategory).nullish(),
   storages: z.array(StoryStorage).nullish(),
   workbenches: z.array(StoryWorkbench).nullish(),
+  beds: z
+    .array(z.lazy(() => StoryBed))
+    .nullish()
+    .describe('every bed the colony knows, in full whenever it is sent'),
   ai: z.array(StoryAiBody).nullish(),
   directives: z.array(StoryDirective).nullish(),
   removed: StoryRemoved.nullish(),
@@ -597,6 +620,36 @@ const PawnList = z.array(z.string().min(1).max(64)).min(1).max(64);
 
 export const StoryPauseRequest = z.object({ paused: z.boolean() }).strict();
 export type StoryPauseRequest = z.infer<typeof StoryPauseRequest>;
+
+/** A bed and who sleeps in it (`pos` is the bed's foot block; `zone` the home zone it stands in). */
+export const StoryBed = z.object({
+  pos: Vec3i,
+  dim: z.number().int().nullish(),
+  pawn: z.string().nullish(),
+  zone: z.union([z.string(), z.number()]).nullish(),
+});
+export type StoryBed = z.infer<typeof StoryBed>;
+
+const BedPos = z.object({ x: z.number().int(), y: z.number().int(), z: z.number().int() }).strict();
+
+/** POST /api/story/colonies/{id}/beds: give a bed to a pawn (its other bed is freed), or free one. */
+export const StoryBedsRequest = z.discriminatedUnion('op', [
+  z.object({ op: z.literal('assign'), bed: BedPos, pawn: z.string().min(1).max(64) }).strict(),
+  z.object({ op: z.literal('unassign'), bed: BedPos }).strict(),
+]);
+export type StoryBedsRequest = z.infer<typeof StoryBedsRequest>;
+
+export const StoryBedsResponse = z.object({ beds: z.array(StoryBed) });
+export type StoryBedsResponse = z.infer<typeof StoryBedsResponse>;
+
+/** POST /api/story/colonies/{id}/home: moves the colony's home; the director brings pawns far from it there. */
+export const StoryHomeRequest = z
+  .object({ home: z.object({ x: z.number().int(), y: z.number().int(), z: z.number().int() }).strict() })
+  .strict();
+export type StoryHomeRequest = z.infer<typeof StoryHomeRequest>;
+
+export const StoryHomeResponse = z.object({ home: Vec3i });
+export type StoryHomeResponse = z.infer<typeof StoryHomeResponse>;
 
 /** `work`: type → 0 (off) .. 4; types left out keep their value. */
 export const StoryPrioritiesRequest = z
@@ -635,9 +688,29 @@ export const StoryOrderRequest = z
 export type StoryOrderRequest = z.infer<typeof StoryOrderRequest>;
 
 /** `remove` without a kind removes every zone overlapping the area. */
-export const StoryZoneRequest = z
-  .object({ op: z.enum(['add', 'remove']), kind: StoryZoneKind.optional(), area: StoryArea })
-  .strict();
+/**
+ * Zones (houses are zones of kind `home`: any number, each with its own name): `add` an area (optionally named), `remove`
+ * every zone (of a kind) overlapping an area or one zone by id, `rename` one zone (an empty name clears it).
+ */
+export const StoryZoneRequest = z.union([
+  z
+    .object({
+      op: z.literal('add'),
+      kind: StoryZoneKind.optional(),
+      area: StoryArea,
+      name: z.string().trim().max(40).optional(),
+    })
+    .strict(),
+  z.object({ op: z.literal('remove'), kind: StoryZoneKind.optional(), area: StoryArea }).strict(),
+  z.object({ op: z.literal('remove'), id: z.union([z.string().min(1).max(64), z.number().int()]) }).strict(),
+  z
+    .object({
+      op: z.literal('rename'),
+      id: z.union([z.string().min(1).max(64), z.number().int()]),
+      name: z.string().trim().max(40),
+    })
+    .strict(),
+]);
 export type StoryZoneRequest = z.infer<typeof StoryZoneRequest>;
 
 /**
@@ -875,6 +948,19 @@ export function storyHour(timeOfDay: number): number {
 /** Schedule hour → clock label ("06:00"). */
 export function storyClock(hour: number): string {
   return `${String((hour + 6) % 24).padStart(2, '0')}:00`;
+}
+
+/** Time of day (ticks, 0 = 06:00, 1000 a game hour) → clock label to the minute ("13:30"). */
+export function tickClock(tick: number): string {
+  const t = (((Math.round(tick) % 24000) + 24000) % 24000) + 6000;
+  const h = Math.floor(t / 1000) % 24,
+    m = Math.floor(((t % 1000) * 60) / 1000);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+/** Clock time (hours 0..23, minutes) → time of day in ticks (06:00 = 0, midnight = 18000). */
+export function clockTick(hour: number, minute = 0): number {
+  return ((Math.round((hour - 6) * 1000 + (minute * 1000) / 60) % 24000) + 24000) % 24000;
 }
 
 /** A normalised area: [minX, minY, minZ, maxX, maxY, maxZ]. */

@@ -22,6 +22,12 @@ const WRITES: Partial<Record<RouteId, Ctx>> = {
   ...storyWrites(),
 };
 
+function bedPos(): { x: number; y: number; z: number } {
+  seedStory();
+  const p = storySim.state('story-1').beds?.[0]?.pos ?? [0, 0, 0];
+  return { x: p[0], y: p[1], z: p[2] };
+}
+
 function benchPos(): number[] {
   seedStory();
   return storySim.state('story-1').workbenches?.[0]?.pos ?? [0, 0, 0];
@@ -36,6 +42,9 @@ function storyWrites(): Partial<Record<RouteId, Ctx>> {
     'story.create': { params: {}, query: {}, body: { name: 'Second', pawns: 2 } },
     'story.release': w({}),
     'story.pause': w({ paused: false }),
+    'story.home': w({ home: { x: 4, y: 64, z: -3 } }),
+    'story.time': { params: {}, query: {}, body: { time: 6000 } },
+    'story.beds': w({ op: 'assign', bed: bedPos(), pawn: 'maid_s1_dara' }),
     'story.priorities': w({ pawns, work: { chop: 1 } }),
     'story.schedule': w({ pawns, hours: { '0': 'work' } }),
     'story.draft': w({ pawns, drafted: true }),

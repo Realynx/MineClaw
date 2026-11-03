@@ -68,6 +68,11 @@ export const CAMP: [number, number, number] = [20, 63, 10];
   put(cx + 1, topAt(cx + 1, cz - 3) + 1, cz - 3, 54, 3);
   put(cx + 2, topAt(cx + 2, cz - 3) + 1, cz - 3, 54, 3);
   put(cx + 4, topAt(cx + 4, cz - 3) + 1, cz - 3, 54, 3);
+  // Two beds by the fire (foot, then head one block south: meta 8).
+  for (const bx of [cx - 3, cx - 1]) {
+    put(bx, topAt(bx, cz + 3) + 1, cz + 3, 26, 0);
+    put(bx, topAt(bx, cz + 4) + 1, cz + 4, 26, 8);
+  }
 })();
 
 const overrides = new Map<string, Map<number, Cell>>();

@@ -41,14 +41,38 @@ export function hashOf(s: string): number {
 }
 
 /** Pawn colours (map token rings and portrait backs). */
-export const PAWN_COLORS = ['#5ec8e5', '#f28c6b', '#9bd36a', '#c49bf2', '#f2d16b', '#58d6ae', '#f26bab', '#8aa9ff', '#f2a65e', '#7de0e0', '#c9e26b', '#ff9fd0'];
+export const PAWN_COLORS = [
+  '#5ec8e5',
+  '#f28c6b',
+  '#9bd36a',
+  '#c49bf2',
+  '#f2d16b',
+  '#58d6ae',
+  '#f26bab',
+  '#8aa9ff',
+  '#f2a65e',
+  '#7de0e0',
+  '#c9e26b',
+  '#ff9fd0',
+];
 export const pawnColor = (name: string) => PAWN_COLORS[hashOf(name) % PAWN_COLORS.length]!;
 
 export const COLORS = {
   select: '#f5c542',
   ai: '#a78bfa',
   ghost: { todo: '#7fd3ff', leased: '#ffd166', done: '#8ee59b', blocked: '#ff6b6b' } as Record<string, string>,
-  designation: { chop: '#e8a85a', cut: '#9ad16b', harvest: '#f2d16b', mine: '#c3ccd6', haul: '#6bc5f2', hunt: '#f2836b', deconstruct: '#f29e6b', forbid: '#ff5f6d', allow: '#6ee7a8', build: '#7fd3ff' } as Record<string, string>,
+  designation: {
+    chop: '#e8a85a',
+    cut: '#9ad16b',
+    harvest: '#f2d16b',
+    mine: '#c3ccd6',
+    haul: '#6bc5f2',
+    hunt: '#f2836b',
+    deconstruct: '#f29e6b',
+    forbid: '#ff5f6d',
+    allow: '#6ee7a8',
+    build: '#7fd3ff',
+  } as Record<string, string>,
   danger: '#ff5f6d',
   order: '#f5c542',
   chest: '#d9a25f',
@@ -59,7 +83,17 @@ const SKIN = ['#f2d2b6', '#e3b48f', '#c98e66', '#9c6a48', '#6e4a33'];
 const HAIR = ['#2b1f17', '#5a3a22', '#a2652f', '#d9b25f', '#e8e2d0', '#7d2d24', '#3b4a6b'];
 
 /** A blocky face drawn from the name: skin, hair colour and cut, eyes; the back is the pawn's colour. */
-export function Avatar({ name, size = 40, ai = false, className }: { name: string; size?: number; ai?: boolean; className?: string }) {
+export function Avatar({
+  name,
+  size = 40,
+  ai = false,
+  className,
+}: {
+  name: string;
+  size?: number;
+  ai?: boolean;
+  className?: string;
+}) {
   const h = hashOf(name);
   const skin = SKIN[h % SKIN.length]!;
   const hair = HAIR[(h >> 4) % HAIR.length]!;
@@ -67,7 +101,14 @@ export function Avatar({ name, size = 40, ai = false, className }: { name: strin
   const eye = (h >> 12) % 3 === 0 ? '#3d6fb5' : (h >> 12) % 3 === 1 ? '#4a7d3a' : '#4a3424';
   const back = ai ? '#2a2445' : pawnColor(name);
   return (
-    <svg viewBox="0 0 16 16" width={size} height={size} className={cn('block', className)} aria-hidden shapeRendering="crispEdges">
+    <svg
+      viewBox="0 0 16 16"
+      width={size}
+      height={size}
+      className={cn('block', className)}
+      aria-hidden
+      shapeRendering="crispEdges"
+    >
       <rect width="16" height="16" fill={back} opacity={ai ? 1 : 0.85} />
       <rect x="4" y="3" width="8" height="9" fill={skin} />
       {/* hair */}
@@ -105,7 +146,15 @@ export function AiMark({ className }: { className?: string }) {
 /** Our own stairs icon (lucide has none). */
 export function StairsIcon(props: SVGProps<SVGSVGElement>) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      {...props}
+    >
       <path d="M3 20h5v-5h5v-5h5V5h3" />
       <path d="M3 20h18" opacity=".5" />
     </svg>
@@ -132,7 +181,15 @@ export function BenchIcon(props: SVGProps<SVGSVGElement>) {
 
 export function RoofIcon(props: SVGProps<SVGSVGElement>) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      {...props}
+    >
       <path d="M2 13 12 5l10 8" />
       <path d="M5 11v8h14v-8" opacity=".45" />
     </svg>
@@ -180,7 +237,8 @@ export function ToolIcon({ id, className }: { id: string; className?: string }) 
 export const GLYPHS: Record<string, string> = {
   chop: 'M4 13 10 7l1.5 1.5L5.5 14.5ZM9.5 3.5c2-1 4 .5 4.5 2.5L11 9 7.5 5.5Z',
   cut: 'M4 4a2 2 0 1 1 0 .1ZM4 12a2 2 0 1 1 0 .1ZM5.5 5 13 11l-1 1-7-5.5ZM5.5 11 13 5l-1-1-7 5.5Z',
-  harvest: 'M8 2c1.5 1.5 1.5 3 0 4.5C6.5 5 6.5 3.5 8 2Zm-3 4c2 0 3 1.5 3 3-2 0-3-1.5-3-3Zm6 0c0 1.5-1 3-3 3 0-1.5 1-3 3-3ZM7.3 8h1.4v6H7.3Z',
+  harvest:
+    'M8 2c1.5 1.5 1.5 3 0 4.5C6.5 5 6.5 3.5 8 2Zm-3 4c2 0 3 1.5 3 3-2 0-3-1.5-3-3Zm6 0c0 1.5-1 3-3 3 0-1.5 1-3 3-3ZM7.3 8h1.4v6H7.3Z',
   mine: 'M2.5 6C5 3 11 3 13.5 6l-1 .8C10.6 5 5.4 5 3.5 6.8ZM7.3 5h1.4v9H7.3Z',
   haul: 'M3 8.5 5 6.5l2 2V3h2v5.5l2-2 2 2-5 5Z',
   hunt: 'M8 2v3M8 11v3M2 8h3M11 8h3M8 5.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5Z',
@@ -191,6 +249,8 @@ export const GLYPHS: Record<string, string> = {
   chest: 'M2.5 5h11v8h-11Zm0 0 1.5-2h8l1.5 2M7 7.5h2v2H7Z',
   bench: 'M2 5h12v3H2Zm1 3h2v5H3Zm8 0h2v5h-2Z',
   drafted: 'M8 1.5 13 3.5v4c0 3-2.2 5.5-5 7-2.8-1.5-5-4-5-7v-4Z',
+  home: 'M8 1.8 14.5 7.5h-2V14H9.6v-3.8H6.4V14H3.5V7.5h-2Z',
+  bed: 'M1.5 5h2v3.5h11V13h-2v-2h-9v2h-2Zm3.5.5h3.5v2.5H5Zm4.5.5H13a1 1 0 0 1 1 1v1H10Z',
 };
 
 const pathCache = new Map<string, Path2D>();
@@ -224,14 +284,27 @@ function useIconSource() {
 }
 
 /** An item or block icon from the committed textures (a 16×16 cell of a 256×256 sheet), or a lettered tile until they load. */
-export function ItemIcon({ id, meta = 0, size = 20, className }: { id: number; meta?: number; size?: number; className?: string }) {
+export function ItemIcon({
+  id,
+  meta = 0,
+  size = 20,
+  className,
+}: {
+  id: number;
+  meta?: number;
+  size?: number;
+  className?: string;
+}) {
   const src = useIconSource();
   const hit = src?.(id, Math.max(0, meta)) ?? null;
   const label = storyItemLabel(id, Math.max(0, meta));
   if (!hit) {
     return (
       <span
-        className={cn('inline-grid shrink-0 place-items-center rounded-sm bg-surface-3 text-[9px] font-semibold text-muted', className)}
+        className={cn(
+          'inline-grid shrink-0 place-items-center rounded-sm bg-surface-3 text-[9px] font-semibold text-muted',
+          className,
+        )}
         style={{ width: size, height: size }}
         title={label}
         aria-label={label}
@@ -240,7 +313,8 @@ export function ItemIcon({ id, meta = 0, size = 20, className }: { id: number; m
       </span>
     );
   }
-  const x = hit.cell % 16, y = Math.floor(hit.cell / 16);
+  const x = hit.cell % 16,
+    y = Math.floor(hit.cell / 16);
   return (
     <span
       className={cn('inline-block shrink-0', className)}

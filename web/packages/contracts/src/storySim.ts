@@ -7,7 +7,13 @@
  * drops into chests whose storage filter accepts them, and work bills at workbenches. Area designations are expanded against
  * the world it is given, so counts are real. AI bodies take directives that go sent → acknowledged → done with a reply.
  */
-import { categoryItems, filterAccepts, STORY_DEFAULT_CATEGORIES, STORY_DEFAULT_RECIPES, storyItemLabel } from './storyData.js';
+import {
+  categoryItems,
+  filterAccepts,
+  STORY_DEFAULT_CATEGORIES,
+  STORY_DEFAULT_RECIPES,
+  storyItemLabel,
+} from './storyData.js';
 import {
   CHEST_IDS,
   expandBuildItem,
@@ -23,6 +29,8 @@ import {
   type StoryAiBody,
   type StoryAlert,
   type StoryArea,
+  type StoryBed,
+  type StoryBedsRequest,
   type StoryBill,
   type StoryBillsRequest,
   type StoryBuild,
@@ -79,6 +87,10 @@ export interface StorySimOptions {
   world: StoryWorld;
   /** Where a colony settles when created without a home. */
   defaultHome?: [number, number, number];
+  /** The op account time changes run as (null = none: POST /api/story/time answers 409). Default `maid_chan`. */
+  timeOp?: string | null;
+  /** Least time between two time changes (ms; default 1000, as the bot limits it). */
+  timeRateMs?: number;
   now?: () => number;
 }
 
@@ -116,9 +128,15 @@ interface Colony {
   ghostsRev: number;
   storages: Map<string, Fn<StoryStorage>>;
   benches: Map<string, Fn<StoryWorkbench>>;
+  beds: Map<string, StoryBed>;
+  bedsRev: number;
   directives: Map<Key, Fn<StoryDirective>>;
   alerts: Array<Fn<StoryAlert>>;
-  removed: Array<{ rev: number; kind: keyof NonNullable<StoryColonyState['removed']>; key: Key | [number, number, number] }>;
+  removed: Array<{
+    rev: number;
+    kind: keyof NonNullable<StoryColonyState['removed']>;
+    key: Key | [number, number, number];
+  }>;
   seq: number;
   stock: Map<string, number>;
 }
@@ -132,11 +150,33 @@ const TRAITS = [
   { id: 'green_thumb', label: 'Green thumb', effect: 'Farming skill grows faster' },
   { id: 'steady_hands', label: 'Steady hands', effect: 'Building skill grows faster' },
 ];
-const DEFAULT_SCHEDULE = Array.from({ length: 24 }, (_, h) => (h < 14 ? 'work' : h < 16 ? 'anything' : h < 17 ? 'free' : 'sleep'));
+const DEFAULT_SCHEDULE = Array.from({ length: 24 }, (_, h) =>
+  h < 14 ? 'work' : h < 16 ? 'anything' : h < 17 ? 'free' : 'sleep',
+);
 const SPEED = 4.3; // blocks per second
-const WORK_MS: Record<string, number> = { chop: 3500, mine: 1400, harvest: 900, cut: 700, haul: 1500, build: 700, deconstruct: 900, hunt: 2500, craft: 2600, cook: 2600 };
+const WORK_MS: Record<string, number> = {
+  chop: 3500,
+  mine: 1400,
+  harvest: 900,
+  cut: 700,
+  haul: 1500,
+  build: 700,
+  deconstruct: 900,
+  hunt: 2500,
+  craft: 2600,
+  cook: 2600,
+};
 /** Which work type a designation feeds. */
-const WORK_OF: Record<string, string> = { chop: 'chop', mine: 'mine', harvest: 'farm', cut: 'farm', haul: 'haul', hunt: 'hunt', deconstruct: 'build', build: 'build' };
+const WORK_OF: Record<string, string> = {
+  chop: 'chop',
+  mine: 'mine',
+  harvest: 'farm',
+  cut: 'farm',
+  haul: 'haul',
+  hunt: 'hunt',
+  deconstruct: 'build',
+  build: 'build',
+};
 
 function hash(s: string): number {
   let h = 2166136261;
@@ -156,7 +196,8 @@ function rng(seed: number): () => number {
 }
 
 const keyOf = (p: readonly number[]) => `${p[0]},${p[1]},${p[2]}`;
-const dist = (a: readonly unknown[], b: readonly unknown[]) => Math.hypot(Number(a[0]) - Number(b[0]), Number(a[2]) - Number(b[2]));
+const dist = (a: readonly unknown[], b: readonly unknown[]) =>
+  Math.hypot(Number(a[0]) - Number(b[0]), Number(a[2]) - Number(b[2]));
 
 export class StorySim {
   readonly colonies = new Map<string, Colony>();
@@ -197,7 +238,34 @@ export class StorySim {
       })),
       ai: this.opts.world.ai?.() ?? [],
       directives: this.directives(),
+      timeControl: this.timeControl(),
     };
+  }
+
+  private timeAt = -Infinity;
+
+  /** Whether the time of day can be set, and as whom. */
+  timeControl() {
+    const by = this.opts.timeOp === undefined ? 'maid_chan' : this.opts.timeOp;
+    return { available: !!by, by: by ?? null };
+  }
+
+  /** Sets every colony's time of day (as the bot does through its op account): at most once a second. */
+  time(body: { time?: unknown }) {
+    const t = body?.time;
+    if (typeof t !== 'number' || !Number.isInteger(t) || t < 0 || t > 23999)
+      throw Object.assign(new Error('time must be an integer 0..23999'), { status: 400 });
+    const tc = this.timeControl();
+    if (!tc.available) throw Object.assign(new Error('no op account'), { status: 409 });
+    const now = this.now();
+    if (now - this.timeAt < (this.opts.timeRateMs ?? 1000))
+      throw Object.assign(new Error('rate limited: one time change a second'), { status: 429 });
+    this.timeAt = now;
+    for (const c of this.colonies.values()) {
+      c.tod = t;
+      for (const p of c.pawns.values()) p.rev = this.bump(c);
+    }
+    return { time: t, by: tc.by };
   }
 
   create(req: StoryCreateRequest): { id: string } {
@@ -223,6 +291,8 @@ export class StorySim {
       ghostsRev: 1,
       storages: new Map(),
       benches: new Map(),
+      beds: new Map(),
+      bedsRev: 1,
       directives: new Map(),
       alerts: [],
       removed: [],
@@ -251,7 +321,8 @@ export class StorySim {
   private newPawn(c: Colony, name: string, display: string, i: number): PawnSim {
     const r = rng(hash(name));
     const skills: StoryPawn['skills'] = {};
-    for (const t of STORY_WORK_TYPES) skills[t] = { level: Math.floor(r() * 15) + (r() < 0.2 ? 5 : 0), xp: 0, passion: r() < 0.25 };
+    for (const t of STORY_WORK_TYPES)
+      skills[t] = { level: Math.floor(r() * 15) + (r() < 0.2 ? 5 : 0), xp: 0, passion: r() < 0.25 };
     const priorities: Record<string, number> = {};
     for (const t of STORY_WORK_TYPES) {
       const lv = skills[t]!.level;
@@ -259,7 +330,11 @@ export class StorySim {
     }
     priorities.haul = Math.max(priorities.haul ?? 0, 3);
     const traits = [...TRAITS].sort(() => r() - 0.5).slice(0, 1 + Math.floor(r() * 3));
-    if (traits.some((t) => t.id === 'brave') && traits.some((t) => t.id === 'skittish')) traits.splice(traits.findIndex((t) => t.id === 'skittish'), 1);
+    if (traits.some((t) => t.id === 'brave') && traits.some((t) => t.id === 'skittish'))
+      traits.splice(
+        traits.findIndex((t) => t.id === 'skittish'),
+        1,
+      );
     const x = c.home[0] + ((i % 4) - 1.5) * 1.6 + 0.5;
     const z = c.home[2] + (Math.floor(i / 4) - 1) * 1.6 + 0.5;
     const y = this.opts.world.ground(Math.floor(x), Math.floor(z)) + 1;
@@ -322,18 +397,23 @@ export class StorySim {
       active: !c.released,
       since: since ?? null,
       tieBreak: 'column',
+      timeControl: this.timeControl(),
       home: c.home,
       workTypes: [...STORY_WORK_TYPES],
       pawns: [...c.pawns.values()].filter((p) => full || p.rev > s).map((p) => structuredClone(p.p)),
       zones: pick(c.zones),
       designations: pick(c.designations),
       orders: pick(c.orders),
-      alerts: c.alerts.filter((a) => full || a.rev > s).map((a) => a.v).slice(-40),
+      alerts: c.alerts
+        .filter((a) => full || a.rev > s)
+        .map((a) => a.v)
+        .slice(-40),
       builds: pick(c.builds),
       ...(full || c.ghostsRev > s ? { ghosts: { rev: c.ghostsRev, blocks: [...c.ghostCells.values()].flat() } } : {}),
       ...(full ? { categories: STORY_DEFAULT_CATEGORIES } : {}),
       storages: pick(c.storages),
       workbenches: pick(c.benches),
+      ...(full || c.bedsRev > s ? { beds: this.bedList(c) } : {}),
       ai: this.opts.world.ai?.() ?? [],
       directives: pick(c.directives),
       ...(Object.keys(removed).length ? { removed } : {}),
@@ -369,6 +449,68 @@ export class StorySim {
     }
     this.alert(c, 'info', 'The pawns are back.');
     return { id: c.id, pawns: c.pawns.size, note: 'spawned again', rev: c.rev };
+  }
+
+  private bedList(c: Colony): StoryBed[] {
+    const zoneOf = (p: readonly number[]) =>
+      [...c.zones.values()].find(
+        (z) =>
+          z.v.kind === 'home' &&
+          p[0]! >= z.v.area[0] &&
+          p[0]! <= z.v.area[3] &&
+          p[2]! >= z.v.area[2] &&
+          p[2]! <= z.v.area[5],
+      )?.v.id ?? null;
+    return [...c.beds.values()].map((b) => ({ ...b, zone: zoneOf(b.pos) }));
+  }
+
+  /** Beds: give one to a pawn (its other bed is freed: one bed a pawn) or free one. */
+  beds(id: string, body: StoryBedsRequest) {
+    const c = this.colony(id);
+    const bp = body?.bed;
+    if (!bp || ![bp.x, bp.y, bp.z].every((v) => Number.isInteger(v)))
+      throw Object.assign(new Error('bed must be {x,y,z}'), { status: 400 });
+    // The head half names the bed too (a bed is named by its foot).
+    const bed =
+      c.beds.get(keyOf([bp.x, bp.y, bp.z])) ??
+      [...c.beds.values()].find(
+        (b) => b.pos[1] === bp.y && Math.abs(b.pos[0] - bp.x) + Math.abs(b.pos[2] - bp.z) === 1,
+      );
+    if (!bed) throw Object.assign(new Error('no bed there'), { status: 400 });
+    if (body.op === 'assign') {
+      if (!c.pawns.has(body.pawn)) throw Object.assign(new Error('no such pawn'), { status: 404 });
+      for (const b of c.beds.values()) if (b.pawn === body.pawn) b.pawn = null;
+      bed.pawn = body.pawn;
+    } else if (body.op === 'unassign') bed.pawn = null;
+    else throw Object.assign(new Error('op must be assign|unassign'), { status: 400 });
+    c.bedsRev = this.bump(c);
+    return { beds: this.bedList(c) };
+  }
+
+  /** Moves home (as the director does): pawns farther than 48 blocks from the new home are brought next to it. */
+  home(id: string, body: { home?: { x?: unknown; y?: unknown; z?: unknown } }) {
+    const c = this.colony(id);
+    const h = body?.home;
+    if (!h || ![h.x, h.y, h.z].every((v) => Number.isInteger(v)))
+      throw Object.assign(new Error('home must be {x,y,z}'), { status: 400 });
+    const x = h.x as number,
+      z = h.z as number;
+    c.home = [x, this.opts.world.ground(x, z), z];
+    this.bump(c);
+    this.discover(c, [x - 24, c.home[1] - 6, z - 24, x + 24, c.home[1] + 10, z + 24]);
+    let i = 0;
+    for (const p of c.pawns.values()) {
+      if (Math.hypot(p.x - x, p.z - z) <= 48) continue;
+      this.drop(c, p);
+      p.x = x + ((i % 4) - 1.5) * 1.6 + 0.5;
+      p.z = z + (Math.floor(i / 4) - 1) * 1.6 + 0.5;
+      p.y = this.opts.world.ground(Math.floor(p.x), Math.floor(p.z)) + 1;
+      p.p.pos = [Math.round(p.x * 100) / 100, p.y, Math.round(p.z * 100) / 100];
+      p.rev = this.bump(c);
+      i++;
+    }
+    this.alert(c, 'info', i ? `Home moved; ${i} pawn${i === 1 ? ' is' : 's are'} brought there.` : 'Home moved.');
+    return { home: c.home };
   }
 
   pause(id: string, paused: boolean) {
@@ -429,7 +571,14 @@ export class StorySim {
         at: this.iso(),
       };
       // A group move fans out around the spot so the pawns do not stack.
-      if (o.kind === 'move' && o.target && typeof o.target === 'object' && !Array.isArray(o.target) && 'x' in o.target && pawns.length > 1) {
+      if (
+        o.kind === 'move' &&
+        o.target &&
+        typeof o.target === 'object' &&
+        !Array.isArray(o.target) &&
+        'x' in o.target &&
+        pawns.length > 1
+      ) {
         const t = o.target as { x: number; y: number; z: number };
         o.target = { x: t.x + ((i % 3) - 1), y: t.y, z: t.z + (Math.floor(i / 3) - 1) };
       }
@@ -451,22 +600,52 @@ export class StorySim {
 
   zones(id: string, body: StoryZoneRequest) {
     const c = this.colony(id);
+    if (body.op === 'rename') {
+      const f = c.zones.get(String(body.id));
+      if (!f) throw Object.assign(new Error('no such zone'), { status: 404 });
+      f.v = { ...f.v, name: body.name || null };
+      f.rev = this.bump(c);
+      return { id: f.v.id, name: f.v.name ?? '', rev: c.rev };
+    }
+    const drop = (k: Key, f: Fn<StoryZone>) => {
+      c.zones.delete(k);
+      c.removed.push({ rev: this.bump(c), kind: 'zones', key: k });
+      if (f.v.kind === 'home') c.bedsRev = this.bump(c);
+    };
+    if (body.op === 'remove' && 'id' in body) {
+      const f = c.zones.get(String(body.id));
+      if (!f) throw Object.assign(new Error('no such zone'), { status: 404 });
+      drop(String(body.id), f);
+      return { removed: [body.id], rev: c.rev };
+    }
+    if (!('area' in body)) throw Object.assign(new Error('area must be [x1,y1,z1,x2,y2,z2]'), { status: 400 });
     const a = normArea(body.area);
     if (body.op === 'add') {
-      const z: StoryZone = { id: `z${c.seq++}`, kind: body.kind ?? 'home', area: a };
+      const z: StoryZone = {
+        id: `z${c.seq++}`,
+        kind: body.kind ?? 'home',
+        area: a,
+        ...(body.name ? { name: body.name } : {}),
+      };
       c.zones.set(z.id, { rev: this.bump(c), v: z });
-    } else {
-      for (const [k, f] of c.zones)
-        if ((!body.kind || f.v.kind === body.kind) && overlaps(f.v.area, a)) {
-          c.zones.delete(k);
-          c.removed.push({ rev: this.bump(c), kind: 'zones', key: k });
-        }
+      if (z.kind === 'home') c.bedsRev = this.bump(c); // beds in it now belong to that house
+      return { id: z.id, rev: c.rev };
     }
-    return { ok: true, rev: c.rev };
+    const removed: Array<string | number> = [];
+    for (const [k, f] of c.zones)
+      if ((!body.kind || f.v.kind === body.kind) && overlaps(f.v.area, a)) {
+        drop(k, f);
+        removed.push(f.v.id);
+      }
+    return { removed, rev: c.rev };
   }
 
   /** Every target of a block tool in an area (capped). */
-  private scan(a: StoryArea, kind: StoryDesignationKind, filter: StoryDesignationRequest['filter']): Array<[number, number, number]> {
+  private scan(
+    a: StoryArea,
+    kind: StoryDesignationKind,
+    filter: StoryDesignationRequest['filter'],
+  ): Array<[number, number, number]> {
     const w = this.opts.world;
     const out: Array<[number, number, number]> = [];
     const [x1, y1, z1, x2, y2, z2] = a;
@@ -482,7 +661,10 @@ export class StorySim {
     return out;
   }
 
-  designations(id: string, body: StoryDesignationRequest): { ok: boolean; count: number; targets?: Array<[number, number, number]>; entities?: number[]; rev: number } {
+  designations(
+    id: string,
+    body: StoryDesignationRequest,
+  ): { ok: boolean; count: number; targets?: Array<[number, number, number]>; entities?: number[]; rev: number } {
     const c = this.colony(id);
     const a = body.area ? normArea(body.area) : null;
     if (body.op === 'remove' || body.op === 'cancel') {
@@ -491,8 +673,14 @@ export class StorySim {
         const d = f.v;
         if (body.kind && d.kind !== body.kind) continue;
         const cells = d.targets ?? (d.block ? [d.block] : []);
-        const inArea = a ? cells.some((p) => inside(a, p)) || ((d.entity !== null && d.entity !== undefined) && this.entityIn(d.entity, a)) : false;
-        const listed = body.ids?.map(String).includes(String(k)) || body.blocks?.some((b) => cells.some((p) => keyOf(p) === keyOf(b))) || ((d.entity !== null && d.entity !== undefined) && body.entities?.includes(d.entity));
+        const inArea = a
+          ? cells.some((p) => inside(a, p)) ||
+            (d.entity !== null && d.entity !== undefined && this.entityIn(d.entity, a))
+          : false;
+        const listed =
+          body.ids?.map(String).includes(String(k)) ||
+          body.blocks?.some((b) => cells.some((p) => keyOf(p) === keyOf(b))) ||
+          (d.entity !== null && d.entity !== undefined && body.entities?.includes(d.entity));
         if (!inArea && !listed) continue;
         c.designations.delete(k);
         c.removed.push({ rev: this.bump(c), kind: 'designations', key: k });
@@ -502,8 +690,12 @@ export class StorySim {
       return { ok: true, count: n, rev: c.rev };
     }
     const kind = body.kind ?? 'mine';
-    const held = new Set([...c.designations.values()].flatMap((f) => (f.v.targets ?? (f.v.block ? [f.v.block] : [])).map(keyOf)));
-    const heldEnt = new Set([...c.designations.values()].map((f) => f.v.entity).filter((e) => (e !== null && e !== undefined)));
+    const held = new Set(
+      [...c.designations.values()].flatMap((f) => (f.v.targets ?? (f.v.block ? [f.v.block] : [])).map(keyOf)),
+    );
+    const heldEnt = new Set(
+      [...c.designations.values()].map((f) => f.v.entity).filter((e) => e !== null && e !== undefined),
+    );
     const add = (d: Omit<StoryDesignation, 'id'>) => {
       const des: StoryDesignation = { id: `d${c.seq++}`, ...d };
       c.designations.set(des.id, { rev: this.bump(c), v: des });
@@ -512,15 +704,26 @@ export class StorySim {
       const ents = this.opts.world
         .entities()
         .filter((e) => (kind === 'hunt' ? e.kind === 'mob' && ANIMAL_TYPES.has(e.type ?? -1) : e.kind === 'item'))
-        .filter((e) => (a ? inside(a, [Math.floor(e.x), Math.floor(e.y), Math.floor(e.z)], 2) : body.entities?.includes(e.id)));
+        .filter((e) =>
+          a ? inside(a, [Math.floor(e.x), Math.floor(e.y), Math.floor(e.z)], 2) : body.entities?.includes(e.id),
+        );
       const fresh = ents.filter((e) => !heldEnt.has(e.id));
-      for (const e of fresh) add({ kind, entity: e.id, block: [Math.floor(e.x), Math.floor(e.y), Math.floor(e.z)], state: 'todo' });
+      for (const e of fresh)
+        add({ kind, entity: e.id, block: [Math.floor(e.x), Math.floor(e.y), Math.floor(e.z)], state: 'todo' });
       // Doors too, for forbid/allow over an area.
       const doors = a && (kind === 'forbid' || kind === 'allow') ? this.scan(a, kind, undefined) : [];
       for (const b of doors) if (!held.has(keyOf(b))) add({ kind, block: b, state: 'todo' });
-      return { ok: true, count: fresh.length + doors.length, entities: fresh.map((e) => e.id), targets: doors, rev: c.rev };
+      return {
+        ok: true,
+        count: fresh.length + doors.length,
+        entities: fresh.map((e) => e.id),
+        targets: doors,
+        rev: c.rev,
+      };
     }
-    const cells = a ? this.scan(a, kind, body.filter) : (body.blocks ?? []).map((b) => [b[0], b[1], b[2]] as [number, number, number]);
+    const cells = a
+      ? this.scan(a, kind, body.filter)
+      : (body.blocks ?? []).map((b) => [b[0], b[1], b[2]] as [number, number, number]);
     const fresh = cells.filter((p) => !held.has(keyOf(p)));
     if (kind === 'chop') {
       // One designation per tree: its log columns that touch, lowest log first.
@@ -528,7 +731,13 @@ export class StorySim {
       for (const logs of byTree) add({ kind, block: logs[0], targets: logs, state: 'todo' });
       return { ok: true, count: byTree.length, targets: fresh, rev: c.rev };
     }
-    for (const b of fresh) add({ kind, block: b, state: 'todo', ...((body.design !== null && body.design !== undefined) ? { design: body.design } : {}) });
+    for (const b of fresh)
+      add({
+        kind,
+        block: b,
+        state: 'todo',
+        ...(body.design !== null && body.design !== undefined ? { design: body.design } : {}),
+      });
     return { ok: true, count: fresh.length, targets: fresh, rev: c.rev };
   }
 
@@ -553,7 +762,10 @@ export class StorySim {
           kind: item.kind,
           label: buildLabel(item.kind, cells.length, item.material),
           status: 'queued',
-          reason: have < need && item.kind !== 'remove' && !(STORY_FURNITURE as readonly string[]).includes(item.kind) ? `needs ${need - have} more ${storyItemLabel(mid, mmeta).toLowerCase()}` : null,
+          reason:
+            have < need && item.kind !== 'remove' && !(STORY_FURNITURE as readonly string[]).includes(item.kind)
+              ? `needs ${need - have} more ${storyItemLabel(mid, mmeta).toLowerCase()}`
+              : null,
           blocksTotal: cells.length,
           blocksDone: 0,
           material: item.material,
@@ -573,7 +785,10 @@ export class StorySim {
     const ids = body.ids.map(String);
     if (body.op === 'reorder') {
       // The listed builds take the front of the queue in the listed order; the rest keep theirs after them.
-      const rest = [...c.builds.values()].map((f) => f.v).filter((b) => !ids.includes(String(b.id))).sort((x, y) => x.order - y.order);
+      const rest = [...c.builds.values()]
+        .map((f) => f.v)
+        .filter((b) => !ids.includes(String(b.id)))
+        .sort((x, y) => x.order - y.order);
       const front = ids.map((i) => c.builds.get(i)?.v).filter((b): b is StoryBuild => !!b);
       [...front, ...rest].forEach((b, i) => {
         b.order = i + 1;
@@ -599,7 +814,12 @@ export class StorySim {
   }
 
   /** Registers the chests and workbenches that stand in an area. */
-  private discover(c: Colony, area: StoryArea, filter?: StoryFilter, priority?: string): Array<[number, number, number]> {
+  private discover(
+    c: Colony,
+    area: StoryArea,
+    filter?: StoryFilter,
+    priority?: string,
+  ): Array<[number, number, number]> {
     const w = this.opts.world;
     const a = normArea(area);
     const found: Array<[number, number, number]> = [];
@@ -608,11 +828,32 @@ export class StorySim {
         for (let y = Math.max(1, a[1]); y <= Math.min(255, a[4]); y++) {
           const [id] = w.blockAt(x, y, z);
           if (CHEST_IDS.has(id)) found.push([x, y, z]);
-          else if (id === 58 || id === 61 || id === 62 || id === 117 || id === 145 || id === 116) {
+          else if (id === 26 && (w.blockAt(x, y, z)[1] & 8) === 0 && !c.beds.has(keyOf([x, y, z]))) {
+            c.beds.set(keyOf([x, y, z]), { pos: [x, y, z], dim: 0, pawn: null, zone: null });
+            c.bedsRev = this.bump(c);
+          } else if (id === 58 || id === 61 || id === 62 || id === 117 || id === 145 || id === 116) {
             const k = keyOf([x, y, z]);
             if (!c.benches.has(k)) {
-              const kind = id === 58 ? 'crafting_table' : id === 117 ? 'brewing_stand' : id === 145 ? 'anvil' : id === 116 ? 'enchanting_table' : 'furnace';
-              c.benches.set(k, { rev: this.bump(c), v: { pos: [x, y, z], kind, label: null, supported: kind === 'crafting_table' || kind === 'furnace', bills: [] } });
+              const kind =
+                id === 58
+                  ? 'crafting_table'
+                  : id === 117
+                    ? 'brewing_stand'
+                    : id === 145
+                      ? 'anvil'
+                      : id === 116
+                        ? 'enchanting_table'
+                        : 'furnace';
+              c.benches.set(k, {
+                rev: this.bump(c),
+                v: {
+                  pos: [x, y, z],
+                  kind,
+                  label: null,
+                  supported: kind === 'crafting_table' || kind === 'furnace',
+                  bills: [],
+                },
+              });
             }
           }
         }
@@ -643,9 +884,14 @@ export class StorySim {
     return out;
   }
 
-  storage(id: string, body: StoryStorageRequest): { ok: boolean; count: number; chests?: Array<[number, number, number]>; rev: number } {
+  storage(
+    id: string,
+    body: StoryStorageRequest,
+  ): { ok: boolean; count: number; chests?: Array<[number, number, number]>; rev: number } {
     const c = this.colony(id);
-    const find = (p: readonly number[]) => c.storages.get(keyOf(p)) ?? [...c.storages.values()].find((f) => f.v.doubleWith && keyOf(f.v.doubleWith) === keyOf(p));
+    const find = (p: readonly number[]) =>
+      c.storages.get(keyOf(p)) ??
+      [...c.storages.values()].find((f) => f.v.doubleWith && keyOf(f.v.doubleWith) === keyOf(p));
     switch (body.op) {
       case 'assign_area': {
         const chests = this.discover(c, body.area, body.filter ?? undefined, body.priority ?? 'normal');
@@ -701,7 +947,8 @@ export class StorySim {
     const benchAt = (pos: readonly number[]) => {
       const f = c.benches.get(keyOf(pos));
       if (!f) throw Object.assign(new Error('no workbench there'), { status: 404 });
-      if (f.v.supported === false) throw Object.assign(new Error(`a ${f.v.kind.replace(/_/g, ' ')} takes no bills yet`), { status: 400 });
+      if (f.v.supported === false)
+        throw Object.assign(new Error(`a ${f.v.kind.replace(/_/g, ' ')} takes no bills yet`), { status: 400 });
       return f;
     };
     const holder = (billId: Key) => {
@@ -724,7 +971,12 @@ export class StorySim {
           done: 0,
           paused: spec.paused ?? false,
           suspendedReason: null,
-          ingredients: spec.ingredients ?? { allow: recipe.inputs.flatMap((i) => (i.category ? [i.category] : (i.options ?? []).map(([a, m]) => `${a}:${m}`))), deny: [] },
+          ingredients: spec.ingredients ?? {
+            allow: recipe.inputs.flatMap((i) =>
+              i.category ? [i.category] : (i.options ?? []).map(([a, m]) => `${a}:${m}`),
+            ),
+            deny: [],
+          },
           radius: spec.radius ?? 32,
           pawn: spec.pawn ?? 'any',
           minSkill: spec.minSkill ?? null,
@@ -830,7 +1082,10 @@ export class StorySim {
   }
 
   private alert(c: Colony, level: string, text: string, pawn?: string, fix?: StoryAlert['fix']): void {
-    c.alerts.push({ rev: this.bump(c), v: { id: `a${c.seq++}`, at: this.iso(), level, text, ...(pawn ? { pawn } : {}), ...(fix ? { fix } : {}) } });
+    c.alerts.push({
+      rev: this.bump(c),
+      v: { id: `a${c.seq++}`, at: this.iso(), level, text, ...(pawn ? { pawn } : {}), ...(fix ? { fix } : {}) },
+    });
   }
 
   /** Releases a pawn's lease (the designation or ghost goes back to the pool). */
@@ -875,12 +1130,13 @@ export class StorySim {
       const o = pawn.queue[0]!;
       const t = o.target;
       const ent = t && typeof t === 'object' && !Array.isArray(t) ? t.entity : null;
-      const at: [number, number, number] | null = targetPos(t) ?? (ent !== null && ent !== undefined ? this.entityPos(ent) : null);
+      const at: [number, number, number] | null =
+        targetPos(t) ?? (ent !== null && ent !== undefined ? this.entityPos(ent) : null);
       p.task = { kind: `order:${o.kind}`, ref: o.id ?? null, label: orderLabel(o.kind), target: at, type: o.kind };
       p.goal = at;
-      p.work = o.kind === 'hold' ? Infinity : WORK_MS[o.kind] ?? (o.kind === 'move' ? 0 : 1500);
+      p.work = o.kind === 'hold' ? Infinity : (WORK_MS[o.kind] ?? (o.kind === 'move' ? 0 : 1500));
       o.state = 'active';
-      const of = (o.id !== null && o.id !== undefined) ? c.orders.get(o.id) : undefined;
+      const of = o.id !== null && o.id !== undefined ? c.orders.get(o.id) : undefined;
       if (of) of.rev = this.bump(c);
       changed = true;
     }
@@ -903,7 +1159,10 @@ export class StorySim {
         const now = this.now();
         if (now - p.idleSince > 60_000 && now - p.lastAlert > 120_000) {
           p.lastAlert = now;
-          this.alert(c, 'warn', `${pawn.display} is idle: nothing to do in their enabled work.`, pawn.name, { tab: 'work', pawn: pawn.name });
+          this.alert(c, 'warn', `${pawn.display} is idle: nothing to do in their enabled work.`, pawn.name, {
+            tab: 'work',
+            pawn: pawn.name,
+          });
         }
       }
       if (p.task) changed = true;
@@ -919,8 +1178,13 @@ export class StorySim {
     p.idleSince = this.now();
     // Move toward the goal, then work.
     const t = p.task;
-    if (p.goal && Math.hypot(p.goal[0] - p.x, p.goal[2] - p.z) > (t.kind.startsWith('order:move') || t.kind === 'sleep' || t.kind === 'free' ? 0.3 : 1.6)) {
-      const dx = p.goal[0] - p.x, dz = p.goal[2] - p.z;
+    if (
+      p.goal &&
+      Math.hypot(p.goal[0] - p.x, p.goal[2] - p.z) >
+        (t.kind.startsWith('order:move') || t.kind === 'sleep' || t.kind === 'free' ? 0.3 : 1.6)
+    ) {
+      const dx = p.goal[0] - p.x,
+        dz = p.goal[2] - p.z;
       const d = Math.hypot(dx, dz);
       const s = Math.min(d, (SPEED * (pawn.food < 4 ? 0.6 : 1) * dt) / 1000);
       p.x += (dx / d) * s;
@@ -928,7 +1192,18 @@ export class StorySim {
       p.y = this.opts.world.ground(Math.floor(p.x), Math.floor(p.z)) + 1;
       pawn.state = pawn.drafted ? 'drafted' : t.kind === 'flee' ? 'fleeing' : 'moving';
     } else {
-      pawn.state = t.kind === 'eat' ? 'eating' : t.kind === 'sleep' ? 'sleeping' : t.kind === 'free' ? 'idle' : t.type === 'attack' ? 'fighting' : pawn.drafted ? 'drafted' : 'working';
+      pawn.state =
+        t.kind === 'eat'
+          ? 'eating'
+          : t.kind === 'sleep'
+            ? 'sleeping'
+            : t.kind === 'free'
+              ? 'idle'
+              : t.type === 'attack'
+                ? 'fighting'
+                : pawn.drafted
+                  ? 'drafted'
+                  : 'working';
       p.work -= dt * (pawn.traits.some((x) => x.id === 'night_owl') && storyHour(c.tod) >= 14 ? 1.25 : 1);
       if (p.work <= 0) this.finish(c, p);
     }
@@ -960,7 +1235,13 @@ export class StorySim {
     const add = (type: string, at: readonly unknown[], take: () => void) => {
       const pri = pawn.priorities[type] ?? 0;
       if (pri <= 0) return;
-      cands.push({ pri, col: STORY_WORK_TYPES.indexOf(type as never), skill: pawn.skills[type]?.level ?? 0, d: dist(here, at), take });
+      cands.push({
+        pri,
+        col: STORY_WORK_TYPES.indexOf(type as never),
+        skill: pawn.skills[type]?.level ?? 0,
+        d: dist(here, at),
+        take,
+      });
     };
     for (const [k, f] of c.designations) {
       const d = f.v;
@@ -974,11 +1255,17 @@ export class StorySim {
         f.rev = this.bump(c);
         p.task = { kind: d.kind, ref: k, label: designationLabel(d.kind), target: [at[0], at[1], at[2]], type: d.kind };
         p.goal = [at[0] + 0.5, at[1], at[2] + 0.5];
-        p.work = (WORK_MS[d.kind] ?? 1500) * (d.kind === 'chop' ? Math.max(1, (d.targets?.length ?? 1) / 4) : 1) * (1.4 - (pawn.skills[type]?.level ?? 0) / 40);
+        p.work =
+          (WORK_MS[d.kind] ?? 1500) *
+          (d.kind === 'chop' ? Math.max(1, (d.targets?.length ?? 1) / 4) : 1) *
+          (1.4 - (pawn.skills[type]?.level ?? 0) / 40);
       });
     }
     // Builds in queue order: the first unpaused build with a todo ghost.
-    const queue = [...c.builds.values()].map((f) => f.v).filter((b) => b.status !== 'paused' && b.status !== 'done').sort((a, b) => a.order - b.order);
+    const queue = [...c.builds.values()]
+      .map((f) => f.v)
+      .filter((b) => b.status !== 'paused' && b.status !== 'done')
+      .sort((a, b) => a.order - b.order);
     for (const b of queue) {
       const cells = c.ghostCells.get(b.id) ?? [];
       const g = cells.filter((x) => x[6] === 'todo').sort((a, b2) => a[1] - b2[1] || dist(here, a) - dist(here, b2))[0];
@@ -986,7 +1273,13 @@ export class StorySim {
       add('build', g, () => {
         g[6] = 'leased';
         c.ghostsRev = this.bump(c);
-        p.task = { kind: 'build', ref: b.id, label: `Building ${b.label.toLowerCase()}`, target: [g[0], g[1], g[2]], type: 'build' };
+        p.task = {
+          kind: 'build',
+          ref: b.id,
+          label: `Building ${b.label.toLowerCase()}`,
+          target: [g[0], g[1], g[2]],
+          type: 'build',
+        };
         p.goal = [g[0] + 0.5, g[1], g[2] + 0.5];
         p.work = WORK_MS.build! * (1.4 - (pawn.skills.build?.level ?? 0) / 40);
       });
@@ -995,12 +1288,25 @@ export class StorySim {
     // Bills at workbenches, top to bottom.
     for (const f of c.benches.values()) {
       const bench = f.v;
-      const bill = bench.bills.find((b) => !b.paused && !b.suspendedReason && (b.mode === 'forever' || b.done < b.target) && (b.pawn === 'any' || b.pawn === pawn.name) && ((b.minSkill === null || b.minSkill === undefined) || (pawn.skills.craft?.level ?? 0) >= b.minSkill));
+      const bill = bench.bills.find(
+        (b) =>
+          !b.paused &&
+          !b.suspendedReason &&
+          (b.mode === 'forever' || b.done < b.target) &&
+          (b.pawn === 'any' || b.pawn === pawn.name) &&
+          (b.minSkill === null || b.minSkill === undefined || (pawn.skills.craft?.level ?? 0) >= b.minSkill),
+      );
       if (!bill) continue;
       const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === bill.recipe);
       const type = recipe?.workType === 'cook' ? 'cook' : 'craft';
       add(type, bench.pos, () => {
-        p.task = { kind: 'bill', ref: bill.id, label: `${type === 'cook' ? 'Cooking' : 'Crafting'} ${recipe?.label.toLowerCase() ?? bill.recipe}`, target: bench.pos, type };
+        p.task = {
+          kind: 'bill',
+          ref: bill.id,
+          label: `${type === 'cook' ? 'Cooking' : 'Crafting'} ${recipe?.label.toLowerCase() ?? bill.recipe}`,
+          target: bench.pos,
+          type,
+        };
         p.goal = [bench.pos[0] + 0.5, bench.pos[1], bench.pos[2] + 0.5];
         p.work = WORK_MS.craft!;
       });
@@ -1014,7 +1320,9 @@ export class StorySim {
   private grow(c: Colony, p: PawnSim, type: string): void {
     const s = p.p.skills[type];
     if (!s) return;
-    const fast = (type === 'farm' && p.p.traits.some((t) => t.id === 'green_thumb')) || (type === 'build' && p.p.traits.some((t) => t.id === 'steady_hands'));
+    const fast =
+      (type === 'farm' && p.p.traits.some((t) => t.id === 'green_thumb')) ||
+      (type === 'build' && p.p.traits.some((t) => t.id === 'steady_hands'));
     s.xp = (s.xp ?? 0) + (s.passion ? 60 : 30) * (fast ? 2 : 1);
     if (s.xp >= 1000 && s.level < 20) {
       s.xp -= 1000;
@@ -1029,7 +1337,7 @@ export class StorySim {
     if (t.kind === 'eat') p.p.food = 20;
     else if (t.kind.startsWith('order:')) {
       const o = p.p.queue.shift();
-      if ((o?.id !== null && o?.id !== undefined)) {
+      if (o?.id !== null && o?.id !== undefined) {
         const of = c.orders.get(o.id);
         if (of) {
           of.v.state = 'done';
@@ -1043,12 +1351,20 @@ export class StorySim {
         const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === bill.recipe);
         const k = recipe ? `${recipe.output[0]}:${recipe.output[1]}` : '';
         const missing = recipe?.inputs.find((i) => {
-          const keys = i.category ? categoryItems(STORY_DEFAULT_CATEGORIES, i.category) : (i.options ?? []).map(([a, m]) => `${a}:${m === -1 ? 0 : m}`);
+          const keys = i.category
+            ? categoryItems(STORY_DEFAULT_CATEGORIES, i.category)
+            : (i.options ?? []).map(([a, m]) => `${a}:${m === -1 ? 0 : m}`);
           return !keys.some((key) => (c.stock.get(key.replace(':-1', ':0')) ?? 0) >= i.count);
         });
         if (missing && bill.mode !== 'forever' && Math.random() < 0.15) {
           bill.suspendedReason = `missing ${storyItemLabel(missing.options?.[0]?.[0] ?? 0).toLowerCase()} within ${bill.radius} blocks`;
-          this.alert(c, 'warn', `A bill was suspended: ${recipe?.label ?? bill.recipe} (${bill.suspendedReason}).`, undefined, { tab: 'bills', workbench: f.v.pos });
+          this.alert(
+            c,
+            'warn',
+            `A bill was suspended: ${recipe?.label ?? bill.recipe} (${bill.suspendedReason}).`,
+            undefined,
+            { tab: 'bills', workbench: f.v.pos },
+          );
         } else {
           bill.done++;
           if (recipe) c.stock.set(k, (c.stock.get(k) ?? 0) + recipe.output[2]);
@@ -1057,7 +1373,7 @@ export class StorySim {
         f.rev = this.bump(c);
       }
       this.grow(c, p, t.type);
-    } else if (t.kind === 'build' && (t.ref !== null && t.ref !== undefined)) {
+    } else if (t.kind === 'build' && t.ref !== null && t.ref !== undefined) {
       const cells = c.ghostCells.get(t.ref) ?? [];
       const g = cells.find((x) => t.target && x[0] === t.target[0] && x[1] === t.target[1] && x[2] === t.target[2]);
       const f = c.builds.get(t.ref);
@@ -1070,16 +1386,24 @@ export class StorySim {
         c.ghostsRev = this.bump(c);
         if (f.v.status === 'done') {
           // Built furniture becomes a workbench or a chest the colony can use.
-          for (const [x, y, z, id] of cells) if (id === 58 || id === 61 || CHEST_IDS.has(id)) this.discover(c, [x, y, z, x, y, z], CHEST_IDS.has(id) ? undefined : undefined);
+          for (const [x, y, z, id] of cells)
+            if (id === 58 || id === 61 || CHEST_IDS.has(id))
+              this.discover(c, [x, y, z, x, y, z], CHEST_IDS.has(id) ? undefined : undefined);
           this.alert(c, 'info', `Finished building: ${f.v.label}.`);
         }
       }
       this.grow(c, p, 'build');
-    } else if ((t.ref !== null && t.ref !== undefined)) {
+    } else if (t.ref !== null && t.ref !== undefined) {
       const f = c.designations.get(t.ref);
       if (f) {
         const d = f.v;
-        if (d.kind === 'chop' || d.kind === 'mine' || d.kind === 'cut' || d.kind === 'harvest' || d.kind === 'deconstruct')
+        if (
+          d.kind === 'chop' ||
+          d.kind === 'mine' ||
+          d.kind === 'cut' ||
+          d.kind === 'harvest' ||
+          d.kind === 'deconstruct'
+        )
           for (const b of d.targets ?? (d.block ? [d.block] : [])) w.setBlock?.(b[0], b[1], b[2], 0, 0);
         if (d.kind === 'chop') c.stock.set('17:0', (c.stock.get('17:0') ?? 0) + (d.targets?.length ?? 1));
         if (d.kind === 'haul') this.haul(c, p);
@@ -1097,7 +1421,15 @@ export class StorySim {
   /** A hauled drop goes to the best storage that accepts it (by priority), or raises an alert. */
   private haul(c: Colony, p: PawnSim): void {
     const r = rng(hash(`${p.p.name}${c.seq}`));
-    const options: Array<[number, number]> = [[17, 0], [4, 0], [3, 0], [295, 0], [367, 0], [319, 0], [287, 0]];
+    const options: Array<[number, number]> = [
+      [17, 0],
+      [4, 0],
+      [3, 0],
+      [295, 0],
+      [367, 0],
+      [319, 0],
+      [287, 0],
+    ];
     const [id, meta] = options[Math.floor(r() * options.length)]!;
     const order = ['critical', 'important', 'preferred', 'normal', 'low'];
     const best = [...c.storages.values()]
@@ -1105,7 +1437,10 @@ export class StorySim {
       .filter((f) => filterAccepts(STORY_DEFAULT_CATEGORIES, f.v.filter, id, meta) && (f.v.freeSlots ?? 1) > 0)
       .sort((a, b) => order.indexOf(a.v.priority) - order.indexOf(b.v.priority))[0];
     if (!best) {
-      this.alert(c, 'warn', `No storage accepts ${storyItemLabel(id, meta).toLowerCase()}.`, p.p.name, { tab: 'storage', item: [id, meta] });
+      this.alert(c, 'warn', `No storage accepts ${storyItemLabel(id, meta).toLowerCase()}.`, p.p.name, {
+        tab: 'storage',
+        item: [id, meta],
+      });
       return;
     }
     const s = best.v;
@@ -1123,7 +1458,9 @@ export class StorySim {
 // ------------------------------------------------------------------ helpers
 
 function inside(a: StoryArea, p: readonly number[], slackY = 0): boolean {
-  return p[0]! >= a[0] && p[0]! <= a[3] && p[2]! >= a[2] && p[2]! <= a[5] && p[1]! >= a[1] - slackY && p[1]! <= a[4] + slackY;
+  return (
+    p[0]! >= a[0] && p[0]! <= a[3] && p[2]! >= a[2] && p[2]! <= a[5] && p[1]! >= a[1] - slackY && p[1]! <= a[4] + slackY
+  );
 }
 
 function overlaps(a: StoryArea, b: StoryArea): boolean {
@@ -1155,7 +1492,16 @@ function groupTrees(logs: Array<[number, number, number]>): Array<Array<[number,
 
 function seedContents(p: readonly number[]): Array<[number, number, number]> {
   const r = rng(hash(keyOf(p)));
-  const pool: Array<[number, number]> = [[4, 0], [17, 0], [5, 0], [263, 0], [295, 0], [296, 0], [280, 0], [3, 0]];
+  const pool: Array<[number, number]> = [
+    [4, 0],
+    [17, 0],
+    [5, 0],
+    [263, 0],
+    [295, 0],
+    [296, 0],
+    [280, 0],
+    [3, 0],
+  ];
   return Array.from({ length: 2 + Math.floor(r() * 4) }, () => {
     const [id, meta] = pool[Math.floor(r() * pool.length)]!;
     return [id, meta, 1 + Math.floor(r() * 64)] as [number, number, number];
@@ -1170,16 +1516,48 @@ function buildLabel(kind: string, cells: number, material: unknown): string {
     const [fid, fmeta] = materialKey(kind);
     return storyItemLabel(fid, fmeta);
   }
-  const name = { wall: 'Wall', floor: 'Floor', roof: 'Roof', door: 'Door', window: 'Window', stairs: 'Stairs', fence: 'Fence', block: 'Blocks', remove: 'Clear blocks' }[kind] ?? kind;
+  const name =
+    {
+      wall: 'Wall',
+      floor: 'Floor',
+      roof: 'Roof',
+      door: 'Door',
+      window: 'Window',
+      stairs: 'Stairs',
+      fence: 'Fence',
+      block: 'Blocks',
+      remove: 'Clear blocks',
+    }[kind] ?? kind;
   return kind === 'door' || kind === 'window' ? name : `${name} (${cells} ${what})`;
 }
 
 function orderLabel(kind: string): string {
-  return { move: 'Moving to the spot', attack: 'Attacking', chop: 'Chopping (ordered)', mine: 'Mining (ordered)', haul: 'Hauling (ordered)', build: 'Building (ordered)', hold: 'Holding position', stop: 'Stopping' }[kind] ?? kind;
+  return (
+    {
+      move: 'Moving to the spot',
+      attack: 'Attacking',
+      chop: 'Chopping (ordered)',
+      mine: 'Mining (ordered)',
+      haul: 'Hauling (ordered)',
+      build: 'Building (ordered)',
+      hold: 'Holding position',
+      stop: 'Stopping',
+    }[kind] ?? kind
+  );
 }
 
 function designationLabel(kind: string): string {
-  return { chop: 'Chopping a tree', mine: 'Mining', harvest: 'Harvesting', cut: 'Cutting plants', haul: 'Hauling', hunt: 'Hunting', deconstruct: 'Deconstructing' }[kind] ?? kind;
+  return (
+    {
+      chop: 'Chopping a tree',
+      mine: 'Mining',
+      harvest: 'Harvesting',
+      cut: 'Cutting plants',
+      haul: 'Hauling',
+      hunt: 'Hunting',
+      deconstruct: 'Deconstructing',
+    }[kind] ?? kind
+  );
 }
 
 function directiveSummary(d: StoryDirectiveRequest['directive']): string {
