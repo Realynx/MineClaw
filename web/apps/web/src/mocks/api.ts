@@ -10,6 +10,7 @@ import * as mem from './data/memory';
 import * as misc from './data/misc';
 import * as raptor from './data/raptor';
 import * as scripts from './data/scripts';
+import { designer } from './data/designer';
 import { seedStory, storySim } from './data/story';
 
 export class MockError extends Error {
@@ -284,6 +285,20 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     return d;
   },
 
+  // The Design Studio: the shared fake designer (a little house, a door, a roof) over an in-memory canvas.
+  'designer.models': () => designer.models(),
+  'designer.create': ({ body }) => designer.create(body as { model?: string; designId?: number }, me()?.player ?? me()?.username ?? 'poofimafox'),
+  'designer.get': ({ params }) => designer.get(num(params.id)),
+  'designer.message': ({ params, body }) => designer.message(num(params.id), body as Parameters<typeof designer.message>[1]),
+  'designer.canvas': ({ params, body }) => designer.canvas(num(params.id), body as Parameters<typeof designer.canvas>[1]),
+  'designer.save': ({ params, body }) => {
+    try {
+      return designer.save(num(params.id), body as Parameters<typeof designer.save>[1], me()?.player ?? me()?.username ?? 'poofimafox');
+    } catch (e) {
+      throw new MockError(400, e instanceof Error ? e.message : 'save failed', 'bad_request');
+    }
+  },
+
   'memoryActivity.heat': ({ query }) => live.memoryHeat(query.brain as string | undefined, num(query.windowS), raptor.STATE_KEY),
   'memoryActivity.list': ({ query }) => live.memoryActivitySince(num(query.since), query.brain as string | undefined),
 
@@ -456,6 +471,10 @@ export const SAMPLE_CALLS: Partial<Record<RouteId, Ctx>> = {
   'scripts.lint': { params: { name: 'cobble_loop' }, query: {}, body: null },
   'designs.get': { params: { id: 12 }, query: {}, body: null },
   'designs.diff': { params: { id: 12 }, query: {}, body: null },
+  'designer.get': { params: { id: 1 }, query: {}, body: null },
+  'designer.message': { params: { id: 1 }, query: {}, body: { text: 'build a little house', canvas: { rev: 0 } } },
+  'designer.canvas': { params: { id: 1 }, query: {}, body: { rev: 0, ops: [{ kind: 'place', cells: [[1, 0, 1, 4, 0]] }] } },
+  'designer.save': { params: { id: 1 }, query: {}, body: { name: 'mock hut' } },
   'bots.now': { params: { bot: 'maid_chan' }, query: {}, body: null },
   'bodies.script': { params: { body: 'maid_chan' }, query: { code: '1' }, body: null },
   'bodies.controller': { params: { body: 'maid_chan_68' }, query: {}, body: null },

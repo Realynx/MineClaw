@@ -2,7 +2,7 @@
  * Users file CLI (no self-signup). Run on CT 114 as the service user so file ownership stays right:
  *   sudo -u mineclaw-web npm run users -w @mineclaw/api -- <command> ...      (or: node dist/cli/users.js <command> ...)
  *
- *   add <user> --roles viewer,chat[,commands,admin,story] [--player <mc name>] [--password-stdin]
+ *   add <user> --roles viewer,chat[,commands,admin,design,story] [--player <mc name>] [--password-stdin]
  *   passwd <user> [--password-stdin]          resets the password and ends the user's sessions
  *   roles <user> <role,role,...>              replaces the roles
  *   player <user> <mc name | ->               links (or unlinks with -) the Minecraft player
@@ -64,7 +64,7 @@ function parseRoles(text: string | undefined): Role[] {
     .map((r) => r.trim().toLowerCase())
     .filter(Boolean);
   for (const r of roles)
-    if (!Role.options.includes(r as Role)) throw new CliError(`unknown role "${r}" (viewer, chat, commands, admin, story)`);
+    if (!Role.options.includes(r as Role)) throw new CliError(`unknown role "${r}" (${Role.options.join(', ')})`);
   if (roles.length === 0) throw new CliError('at least one role is required');
   return canonicalRoles(roles as Role[]).split(',') as Role[];
 }

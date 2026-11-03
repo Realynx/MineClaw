@@ -18,8 +18,8 @@ public static class SupervisorProxy
 {
     public static readonly string[] AllowGet =
         ["bots", "hive/tree", "status", "events", "locate", "blueprints", "buildplans", "world/", "scripts", "bodies/", "brains/", "viewer/feed", "viewer/now",
-         "viewer/memory-activity", "admin/rebuild/", "admin/audit", "story"];
-    public static readonly string[] AllowPost = ["viewer/chat", "admin/", "story/"];
+         "viewer/memory-activity", "admin/rebuild/", "admin/audit", "designer/", "story"];
+    public static readonly string[] AllowPost = ["viewer/chat", "admin/", "designer/", "story/"];
     public static readonly string[] AdminOnly = ["admin/"];
     /// <summary>POST paths that need the <c>story</c> or the <c>admin</c> role (contracts <c>storyWrite</c>).</summary>
     public static readonly string[] StoryWrite = ["story/"];

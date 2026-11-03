@@ -87,12 +87,13 @@ All three new processes run on CT 114 beside the bot:
 
 ## 2. Auth, sessions, roles (Nest-native)
 
-- **Roles** (`Role`): `viewer`, `chat`, `commands`, `admin`, `story`. Route access (`RouteAccess`) is `public`,
+- **Roles** (`Role`): `viewer`, `chat`, `commands`, `admin`, `design`, `story`. Route access (`RouteAccess`) is `public`,
   `authenticated` or a role. `hasRole` implements these semantics:
   - Every signed-in user can read: `viewer` is implied by holding any role.
   - `chat`, `commands` and `admin` are independent grants, and none implies another.
+  - `design` (Design Studio writes) and `story` are the grants `admin` implies.
   - `commands` has an effect only together with `chat`: the user's viewer lines may arm CommandGate request grants.
-  - `story` (added 2026-11-03) plays Story Mode: every `story.*` write. `admin` holds it too (the one implied grant);
+  - `story` (added 2026-11-03) plays Story Mode: every `story.*` write. `admin` holds it too;
     viewers watch.
 - **Session.**
   - An opaque id in the `__Host-mcx` cookie. It is HttpOnly, SameSite=Lax, and Secure when served over HTTPS.
@@ -368,6 +369,17 @@ Notes on specific routes:
 |---|---|---|---|---|---|---|---|
 | `live.stream` | `GET /api/live/stream` | viewer | query `LiveStreamQuery` | sse | `GET /v1/live/stream` | bridge-native (polls status, events, viewer/feed, viewer/now, world/entities, world/blocks, hive/tree, viewer/memory-activity, story) | – |
 
+### Design Studio (supervisor pass-through; writes need `design` or `admin`)
+
+| Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
+|---|---|---|---|---|---|---|---|
+| `designer.models` | `GET /api/designer/models` | viewer | – | `DesignerModelsResponse` | `GET /v1/sup/designer/models` | /api/designer/models | – |
+| `designer.create` | `POST /api/designer/sessions` | design | body `DesignerCreateRequest` | `DesignerSession` | `POST /v1/sup/designer/sessions` | /api/designer/sessions | design |
+| `designer.get` | `GET /api/designer/sessions/:id` | viewer | params `DesignerSessionParams` | `DesignerSession` | `GET /v1/sup/designer/sessions/{id}` | /api/designer/sessions/{id} | – |
+| `designer.message` | `POST /api/designer/sessions/:id/messages` | design | params `DesignerSessionParams`<br>body `DesignerMessageRequest` | `DesignerMessageResponse` | `POST /v1/sup/designer/sessions/{id}/messages` | /api/designer/sessions/{id}/messages | design |
+| `designer.canvas` | `POST /api/designer/sessions/:id/canvas` | design | params `DesignerSessionParams`<br>body `DesignerCanvasRequest` | `DesignerCanvasResponse` | `POST /v1/sup/designer/sessions/{id}/canvas` | /api/designer/sessions/{id}/canvas | – |
+| `designer.save` | `POST /api/designer/sessions/:id/save` | design | params `DesignerSessionParams`<br>body `DesignerSaveRequest` | `DesignerSaveResponse` | `POST /v1/sup/designer/sessions/{id}/save` | /api/designer/sessions/{id}/save | design |
+
 <!-- routes:end -->
 
 ## 5. SSE: `GET /api/live/stream`
@@ -537,6 +549,39 @@ in_context, staleness_s, evicted}]}`.
   - **Unsupported benches** (`supported:false`: brewing stands, anvils, enchanting tables) show without the Add bill button.
   - **Designs** (`/story?design=N`): the web reads the design's blocks from `/api/blueprints/{id}` (or `/api/buildplans/{id}`),
     lets the user place the ghost, and queues it as `block` build items with explicit blocks, one per material.
+
+### Design Studio (`/api/designer/*`, added 2026-11-03)
+
+The bot's sandbox canvas for co-designing a build with a model (src/MineClaw.App/Supervisor/DesignerRoutes.cs, the canvas
+and tools in src/MineClaw.Bot/Blueprints/Designer*.cs). Never the live world. Behind `Supervisor:Viewer:Enabled`,
+`Supervisor:Viewer:Designer:Enabled` (default true) and the token header. JSON is snake_case; schemas in contracts `designer.ts`.
+
+- **Canvas.** Local coordinates x, z 0..63 and y 0..47 (y 0 stands on the plot's grass, +x east, +z south). A cell is
+  `[x, y, z, id, meta]` in the server version's ids, id 0 = air. Only the design palette is accepted (`palette` in the
+  session: `BuildBlocks.Buildable` blocks with their variants). A door is kept as two halves (upper = lower | 8).
+- **`GET models`** → `{models:[{id, label, provider, model, tier, profile, cost_hint, default}], default, version, budget}`:
+  every tier model (`main`, `worker`, `cheap`) and every usable profile (`profile:<name>`, Ollama/DeepSeek too), de-duplicated;
+  a Claude model outside the 5.5 generation is never offered.
+- **`POST sessions {model?, design_id?}`** → the session `{id, owner, model, design_id, name, rev, blocks, anchor, messages,
+  cost_usd, calls, version, palette, plot, revisions}`: an empty canvas, or the design's newest revision centred on the plot.
+- **`POST sessions/{id}/messages {text, model?, canvas:{rev, edits?}, selection?:{min, max}}`** → `{reply, ops:[{kind, label,
+  by, cells}], rev, cost_usd, session_cost_usd, model, calls, usage, message, user_message, refusal}`. Pending user edits are
+  applied first and summarised for the model, with the canvas summary and the selection. The model edits through seven
+  tools (place, box fill/hollow/walls, line, remove, replace, clear, describe) for up to `MaxRounds` calls; the system prompt
+  and tools are cached, history is the last `HistoryTurns` exchanges as plain text. Spend is recorded on the bot's
+  `UsageTracker` (the shared daily/monthly caps; `designer` purpose rollup); a paused budget answers 429, the cheap-only
+  stage refuses Claude models above the memory tier, and a message stops at `MaxUsdPerMessage`. A second write while a
+  message runs is 409 (the bridge maps it to a retryable 429).
+- **`POST sessions/{id}/canvas {rev, ops:[{kind, label, cells}], anchor?, clear_anchor?}`** → `{rev, applied, stale}`: the
+  user's own edits (manual tools, undo of AI ops), and the anchor ("move origin").
+- **`POST sessions/{id}/save {name, summary?, as_new?}`** → `{design_id, rev, name, blocks, created, text}`. The canvas is
+  drawn as DSL exactly like a capture (`DesignHistory.Draw`, interior air between each column's lowest and highest block),
+  saved as an accepted design with no site (the bot builds a copy where asked), and its revision is added through
+  `DesignHistory.Sync` with the signed-in player as author: a new design, or the next revision of the loaded one (Git-style,
+  never locked). Over 32 a side is refused.
+- **Bridge.** `/v1/sup/designer/*` passes reads for any signed role; every POST needs `design` or `admin`, and the bridge
+  writes `player` (the linked player) and `who` ("user (web)") into the body, refusing a body that sets them.
+- **Persistence.** `designer_sessions` and `designer_messages` in the agent db.
 
 ## 7. Binary formats
 

@@ -14,6 +14,7 @@ export * from './admin.js';
 export * from './shards.js';
 export * from './scripts.js';
 export * from './designs.js';
+export * from './designer.js';
 export * from './live.js';
 export * from './controller.js';
 export * from './vision.js';

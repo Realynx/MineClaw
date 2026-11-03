@@ -2,7 +2,8 @@
 
 import type { DesignDiffCell } from '@mineclaw/contracts';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Boxes, Copy, Eye, Search } from 'lucide-react';
+import { Boxes, Copy, Eye, Plus, Search, Sparkles } from 'lucide-react';
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useDeferredValue, useEffect, useRef, useState } from 'react';
 import { Badge, Button, Card, EmptyState, ErrorState, Input, Select, Skeleton, SkeletonLines } from '@/components/ui/primitives';
@@ -64,6 +65,12 @@ function Detail({ id }: { id: number }) {
             <span className="text-subtle">#{des.design.id}</span> {des.design.name}
           </h2>
           <Badge tone={des.design.status === 'built' ? 'ok' : des.design.status === 'building' ? 'info' : 'neutral'}>{des.design.status}</Badge>
+          <Link
+            href={`/designs/studio?id=${des.design.id}`}
+            className="ml-auto inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-xs text-fg hover:bg-surface-2"
+          >
+            <Sparkles className="size-3.5" /> Open in studio
+          </Link>
         </div>
         <p className="text-xs text-muted">
           r{des.design.rev} · {des.design.revisions} revisions{des.design.requester ? ` · for ${des.design.requester}` : ''} · updated {ago(des.design.updated)}
@@ -149,7 +156,16 @@ function DesignsInner() {
     <div className="flex h-full min-h-0 flex-col lg:flex-row">
       <aside className="flex max-h-[40vh] shrink-0 flex-col border-b border-border bg-surface lg:max-h-none lg:w-80 lg:border-r lg:border-b-0">
         <div className="space-y-2.5 border-b border-border p-4">
-          <h1 className="text-[15px] font-semibold text-fg">Designs</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-[15px] font-semibold text-fg">Designs</h1>
+            <Link
+              href="/designs/studio"
+              className="ml-auto inline-flex h-7 items-center gap-1 rounded-md bg-accent px-2.5 text-xs font-medium text-accent-fg hover:bg-accent-strong"
+              aria-label="New design"
+            >
+              <Plus className="size-3.5" /> New design
+            </Link>
+          </div>
           <div className="relative">
             <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-subtle" />
             <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter by name, status, requester…" aria-label="Filter designs" className="h-8 pl-8" />

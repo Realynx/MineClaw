@@ -2,8 +2,17 @@
 import { z } from 'zod';
 import { IsoDateTime, QInt } from './common.js';
 
-/** The roles (architecture.md, Security model). `story` (added 2026-11-03) plays Story Mode: colony writes. */
-export const Role = z.enum(['viewer', 'chat', 'commands', 'admin', 'story']);
+/** The roles (architecture.md, Security model). */
+export const Role = z.enum([
+  'viewer',
+  'chat',
+  'commands',
+  'admin',
+  /** Design Studio writes (sessions, messages, saves); `admin` implies it. */
+  'design',
+  /** Story Mode writes (colonies, orders, builds, storage, bills, directives); `admin` implies it. */
+  'story',
+]);
 export type Role = z.infer<typeof Role>;
 
 /**
@@ -18,12 +27,13 @@ export type RouteAccess = z.infer<typeof RouteAccess>;
 /**
  * Role semantics (resolves an ambiguity in architecture.md): every signed-in user can read (`viewer` is implied by any role);
  * `chat`, `commands` and `admin` are independent grants and never imply each other. `commands` only has an effect together
- * with `chat` (it lets the user's viewer chat lines arm CommandGate request grants). `story` (Story Mode writes) is held by
- * the `story` role or by `admin`: the one grant another role implies.
+ * with `chat` (it lets the user's viewer chat lines arm CommandGate request grants). `design` (Design Studio writes) and
+ * `story` (Story Mode writes) are the grants `admin` implies.
  */
 export function hasRole(userRoles: readonly Role[], required: RouteAccess): boolean {
   if (required === 'public') return true;
   if (required === 'authenticated' || required === 'viewer') return userRoles.length > 0;
+  if (required === 'design') return userRoles.includes('design') || userRoles.includes('admin');
   if (required === 'story') return userRoles.includes('story') || userRoles.includes('admin');
   return userRoles.includes(required);
 }
@@ -146,6 +156,7 @@ export const WebAuditKind = z.enum([
   'shard_import_preview',
   'shard_export',
   'admin_other',
+  'design',
   'story',
 ]);
 export type WebAuditKind = z.infer<typeof WebAuditKind>;
