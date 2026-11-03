@@ -5,6 +5,7 @@
  */
 import type { BotDto, EntityDelta, WorldSource } from '@mineclaw/world-viewer';
 import { createFixtureSource, surface } from '@mineclaw/world-viewer/testing';
+import { subscribeChat } from './chatBubbles';
 
 const RENAME: Record<string, { name: string; short: string }> = {
   Alice: { name: 'maid_chan', short: 'main' },
@@ -38,10 +39,12 @@ function extras(bots: BotDto[]): BotDto[] {
   ];
 }
 
-export function createMockWorldSource(): WorldSource {
+export function createMockWorldSource(player?: () => string | null | undefined): WorldSource {
   const src = createFixtureSource({ radius: 8, ticksPerSecond: 60 });
   return {
     ...src,
+    // The mock stream's feed (viewer lines, the bots' replies) bubbles over the renamed bodies like the real one.
+    chat: (onSay) => subscribeChat(onSay, player),
     async entities(since?: number): Promise<EntityDelta> {
       const d = await src.entities(since);
       const bots = d.bots.map((b) => (RENAME[b.name] ? { ...b, ...RENAME[b.name] } : b));

@@ -28,6 +28,8 @@ export interface ThumbnailViewOptions {
   cutaway?: boolean;
   /** Claims, places, plans… (default on). */
   overlays?: boolean;
+  /** A small chat bubble over speakers' heads (the newest line, cut short; default on). */
+  bubbles?: boolean;
 }
 
 export interface ThumbnailHandle {
@@ -146,6 +148,8 @@ export class ThumbnailView implements RuntimeView {
       roof: this.roof,
       ghosts: xray,
       viewId: this.id,
+      bubbles: (this.opts.bubbles ?? true) ? 'compact' : 'off',
+      pxScale: h / Math.max(1, this.canvas.clientHeight),
       target: this.ctx,
     };
   }
