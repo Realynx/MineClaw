@@ -187,12 +187,13 @@ export class CameraRig {
   }
 
   /** Fly to look at a point from a short distance (fly mode), or centre on it (follow / iso). */
-  focus(x: number, y: number, z: number, cam: THREE.PerspectiveCamera, now: number): void {
+  focus(x: number, y: number, z: number, cam: THREE.PerspectiveCamera, now: number, view?: { distance?: number; pitch?: number }): void {
     this.beginTransition(cam, now, 800);
     this.target.set(x, y, z);
     if (this.mode === 'fly') {
+      if (view?.pitch !== undefined) this.flyPitch = view.pitch;
       const dir = lookDir(this.flyYaw, this.flyPitch);
-      this.flyPos.set(x, y, z).addScaledVector(dir, -10);
+      this.flyPos.set(x, y, z).addScaledVector(dir, -(view?.distance ?? 10));
     }
   }
 }

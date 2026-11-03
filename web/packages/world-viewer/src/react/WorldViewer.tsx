@@ -41,7 +41,7 @@ export interface WorldViewerProps {
 
 export interface WorldViewerHandle {
   /** Centre the camera on a block (stops following until `follow` changes or `followBot` is called). */
-  focus(x: number, y: number, z: number): void;
+  focus(x: number, y: number, z: number, view?: { distance?: number; pitch?: number }): void;
   setCameraMode(mode: CameraMode): void;
   getCameraMode(): CameraMode;
   followBot(name: string | null): void;
@@ -132,7 +132,7 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
   useImperativeHandle(
     ref,
     () => ({
-      focus: (x, y, z) => engine.current?.focus(x, y, z),
+      focus: (x, y, z, view) => engine.current?.focus(x, y, z, view),
       setCameraMode: (m) => engine.current?.setCameraMode(m),
       getCameraMode: () => engine.current?.getCameraMode() ?? 'follow',
       followBot: (n) => engine.current?.setFollow(n),

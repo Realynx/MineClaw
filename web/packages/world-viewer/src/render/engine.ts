@@ -201,9 +201,9 @@ export class WorldViewerEngine implements RuntimeView {
   }
 
   /** Centres the camera on a block position (stops following until `setFollow`). */
-  focus(x: number, y: number, z: number): void {
+  focus(x: number, y: number, z: number, view?: { distance?: number; pitch?: number }): void {
     this.following = false;
-    this.rig.focus(x + 0.5, y + 0.5, z + 0.5, this.camera, performance.now());
+    this.rig.focus(x + 0.5, y + 0.5, z + 0.5, this.camera, performance.now(), view);
   }
 
   bots(): BotView[] {
@@ -450,7 +450,14 @@ export class WorldViewerEngine implements RuntimeView {
         return;
       }
       this.drag = { x: e.clientX, y: e.clientY, t: performance.now(), button: e.button, moved: false };
-      c.setPointerCapture?.(e.pointerId);
+      // A locked pointer cannot also be captured (InvalidStateError); it already goes nowhere else.
+      if (document.pointerLockElement !== c) {
+        try {
+          c.setPointerCapture?.(e.pointerId);
+        } catch {
+          // the pointer went away meanwhile
+        }
+      }
     });
     this.listen(c, 'pointermove', (e: PointerEvent) => {
       if (document.pointerLockElement === c) {

@@ -4,33 +4,37 @@
  * to the mock hive's bodies, so thumbnails and the follow camera line up with the rest of the mock data.
  */
 import type { BotDto, EntityDelta, WorldSource } from '@mineclaw/world-viewer';
-import { createFixtureSource } from '@mineclaw/world-viewer/testing';
+import { createFixtureSource, surface } from '@mineclaw/world-viewer/testing';
 
 const RENAME: Record<string, { name: string; short: string }> = {
   Alice: { name: 'maid_chan', short: 'main' },
   Bob: { name: 'maid_chan_67', short: '67' },
 };
 
-/** Extra mock bodies placed near the fixture's bots. */
+/** Extra mock bodies: standing still on the island's surface west of the house (the fixture's own bots walk about). */
 function extras(bots: BotDto[]): BotDto[] {
   const a = bots.find((b) => b.name === 'maid_chan');
   if (!a) return [];
+  const at = (name: string, short: string, x: number, z: number, yaw: number, job: string, held: string): BotDto => ({
+    ...a,
+    name,
+    short,
+    main: false,
+    x: x + 0.5,
+    y: surface(x, z) + 1,
+    z: z + 0.5,
+    yaw,
+    job,
+    held,
+  });
   return [
-    { ...a, name: 'maid_chan_68', short: '68', main: false, x: a.x - 6, z: a.z + 5, yaw: ((a.yaw ?? 0) + 120) % 360, job: 'tending the wheat farm', held: 'iron hoe' },
-    { ...a, name: 'maid_chan_70', short: '70', main: false, x: a.x + 4, z: a.z - 7, yaw: ((a.yaw ?? 0) + 240) % 360, job: 'sorting chests', held: 'chest' },
-    { ...a, name: 'maid_chan_109', short: '109', main: false, x: a.x - 3, z: a.z - 4, yaw: ((a.yaw ?? 0) + 60) % 360, job: 'running the crew', held: 'iron axe' },
+    at('maid_chan_68', '68', -6, 18, 120, 'tending the wheat farm', 'iron hoe'),
+    at('maid_chan_70', '70', 4, -7, 240, 'sorting chests', 'chest'),
+    at('maid_chan_109', '109', -2, 22, 60, 'running the crew', 'iron axe'),
     // maid_chan_109's lumberjack crew (the mock hive's subhive bodies)
-    ...['102', '114', '124', '126', '131', '135'].map((short, i) => ({
-      ...a,
-      name: `maid_chan_${short}`,
-      short,
-      main: false,
-      x: a.x - 8 + (i % 3) * 3,
-      z: a.z - 2 + Math.floor(i / 3) * 3,
-      yaw: (i * 70) % 360,
-      job: 'chopping birch',
-      held: 'iron axe',
-    })),
+    ...['102', '114', '124', '126', '131', '135'].map((short, i) =>
+      at(`maid_chan_${short}`, short, -12 + (i % 3) * 3, 24 + Math.floor(i / 3) * 3, (i * 70) % 360, 'chopping birch', 'iron axe'),
+    ),
   ];
 }
 

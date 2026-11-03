@@ -79,7 +79,7 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
   const [marker, setMarker] = useState<[number, number, number] | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
   const [sent, setSent] = useState<SendResult[] | null>(null);
-  const escLocked = useRef(false);
+  const [escToPage, setEscToPage] = useState(false);
   const targets = selected.length ? selected : me ? [me.name] : [];
 
   const toggleFullscreen = useCallback(() => {
@@ -93,10 +93,10 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
     const onFs = () => {
       const on = !!stage.current && document.fullscreenElement === stage.current;
       setFullscreen(on);
-      escLocked.current = false;
+      setEscToPage(false);
       // Where the browser allows it (HTTPS), Esc comes to the page while fullscreen: the first Esc frees the mouse, the next
       // leaves fullscreen, like the game. Over plain HTTP the browser takes Esc and does both at once.
-      if (on) void keyboardOf()?.lock?.(['Escape']).then(() => (escLocked.current = true)).catch(() => undefined);
+      if (on) void keyboardOf()?.lock?.(['Escape']).then(() => setEscToPage(true)).catch(() => undefined);
       else keyboardOf()?.unlock?.();
     };
     const onLock = () => setLocked(!!stage.current && !!document.pointerLockElement && stage.current.contains(document.pointerLockElement));
@@ -129,6 +129,7 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
       const el = stage.current;
       const inWorld = !!el && (el.contains(document.activeElement) || document.fullscreenElement === el || (!!document.pointerLockElement && el.contains(document.pointerLockElement)));
       if (!inWorld || e.altKey || e.ctrlKey || e.metaKey) return;
+      if ((e.key === 'Enter' || e.key === ' ') && (e.target as HTMLElement | null)?.closest?.('button, a')) return; // a focused control
       if (e.code === 'KeyF' && !e.shiftKey) {
         e.preventDefault();
         toggleFullscreen();
@@ -179,6 +180,11 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
       return;
     }
     const bot = viewer.current?.bots().find((b) => b.name.toLowerCase() === q.toLowerCase() || b.dto.short === q);
+    if (bot && mode === 'fly') {
+      // Free cam stays free: fly to the bot with the crosshair on its body.
+      viewer.current?.focus(bot.x - 0.5, bot.y + 0.6, bot.z - 0.5, { distance: 4, pitch: 8 });
+      return;
+    }
     if (bot) {
       viewer.current?.followBot(bot.name);
       setMode('follow');
@@ -333,7 +339,7 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
               ]}
             />
             <Button size="sm" variant="subtle" onClick={toggleFullscreen} aria-label="Exit full screen">
-              <Minimize className="size-3.5" /> Exit {escLocked.current ? '(Esc twice)' : '(Esc)'}
+              <Minimize className="size-3.5" /> Exit {escToPage ? '(Esc twice)' : '(Esc)'}
             </Button>
           </div>
         ) : null}

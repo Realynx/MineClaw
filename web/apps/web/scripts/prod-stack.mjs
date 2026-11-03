@@ -29,7 +29,10 @@ const standalone = join(app, '.next', 'standalone', 'apps', 'web');
 const server = join(standalone, 'server.js');
 if (process.argv.includes('--build') || !existsSync(server)) {
   console.log('[prod-stack] next build (standalone)…');
-  const r = spawnSync('npx', ['next', 'build', '--turbopack'], { cwd: app, stdio: 'inherit', shell: process.platform === 'win32', env: { ...process.env, NEXT_PUBLIC_MOCK: '', NEXT_DIST_DIR: '' } });
+  // The real build: no mock flags, the default .next (an e2e run of the mock dev server sets NEXT_DIST_DIR for itself).
+  const env = { ...process.env };
+  for (const k of Object.keys(env)) if (k === 'NEXT_DIST_DIR' || k.startsWith('NEXT_PUBLIC_MOCK')) delete env[k];
+  const r = spawnSync('npx', ['next', 'build', '--turbopack'], { cwd: app, stdio: 'inherit', shell: process.platform === 'win32', env });
   if (r.status !== 0) process.exit(r.status ?? 1);
 }
 // Standalone output leaves the static assets to the deploy step (deploy-alice.ps1 copies them the same way).

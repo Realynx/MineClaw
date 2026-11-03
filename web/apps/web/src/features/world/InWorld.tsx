@@ -130,7 +130,7 @@ export function ChatOverlay({
     }
   };
   return (
-    <div className="absolute inset-x-3 bottom-3 flex flex-col items-start gap-1.5" data-testid="chat-overlay">
+    <div className="absolute inset-x-3 bottom-9 flex flex-col items-start gap-1.5" data-testid="chat-overlay">
       {lines.length ? (
         <ul className="max-w-[min(42rem,90%)] space-y-0.5 font-mono text-[12px] leading-snug text-white" aria-label="Chat" aria-live="polite">
           {lines.map((l) => (
