@@ -14,6 +14,8 @@ export const TEX_WRAP = 2;
 export const TEX_STARFIELD = 4;
 /** Ignore the texel's alpha (fast leaves). */
 export const TEX_OPAQUE = 8;
+/** With TEX_STARFIELD: the end gateway (one more starfield layer than the portal). */
+export const TEX_GATEWAY = 16;
 
 export const LF_EMISSIVE = 1;
 export const LF_UNKNOWN = 2;

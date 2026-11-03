@@ -152,13 +152,25 @@ Changed blocks glow briefly (`layers.changes`).
   bed colours, skull type (skeleton, wither, zombie and player with the hat layer, creeper, dragon head) and 16-step
   rotation, flower pot contents (item id or name); without one the defaults stay (red bed, skeleton skull, empty pot).
   End portals and gateways carry a starfield flag: the section shader draws the client's layered, screen-projected,
-  scrolling starfield (`render/starfield.ts`; end_sky + end_portal sheets, colours from `java.util.Random(31100)`).
+  scrolling starfield (`render/starfield.ts`; the native 128 px end_sky and 256 px end_portal sheets, colours from
+  `java.util.Random(31100)`, getPasses' layer count by the squared distance to the block: 16 within 16 blocks down to 2
+  beyond 192, the gateway one more).
   Flowing water and lava sample their native 32 px textures on 2×2-cell sheets (animated at 32 px).
 - **Block-entity layer** (`render/blockEntityLayer.ts`, main thread, shared by every view, rebuilt only when the
-  block-entity revision or the dimension changes): sign text on the board fronts (vanilla layout and glyph advances,
-  one small canvas texture per sign, LRU-capped, within 24 blocks in the software profile, 48 otherwise), banners with
-  their base colour and pattern layers composited like `LayeredColorMaskTexture` and swaying (those banners leave the
-  section mesh), and spawners' display mobs through the entity layer's `showDisplayMob` hook when it exists.
+  block-entity revision or the dimension changes):
+  - Sign text on the board fronts in the version's own bitmap font (`render/font.ts`: 1.12.2 `textures/font/ascii.png`,
+    b1.8.1 `font/default.png` with `font.txt`'s character table; per-glyph advances measured from the image at pack time
+    like `FontRenderer.readFontTexture`). § colour codes; on 1.12.2 also bold, italic, underline, strikethrough,
+    obfuscated (a fixed same-width stand-in) and reset. 1.12.2 cuts a long line at the last space that fits 90 px
+    (`splitText`); b1.8.1 draws it whole, at its slightly larger 1/90 text scale. One small texture per sign, LRU-capped,
+    within 24 blocks in the software profile, 48 otherwise. Characters outside the font image (1.12.2's unicode pages)
+    are not drawn.
+  - Banners with their base colour and pattern layers composited like `LayeredColorMaskTexture` and swaying (those
+    banners leave the section mesh).
+  - Spawners' display mobs through the entity layer's `showDisplayMob` hook: the named mob, else the default pig (every
+    b1.8.1 spawner, whose client never learns the type), scaled like `renderMob` (1.12.2 0.53125 over the larger hitbox
+    side above a block, b1.8.1 0.4375), leaning back 30°, spinning and giving off flame and smoke particles only while a
+    player or bot is within 16 blocks. No blob shadow under them.
   `RuntimeOptions.fastLeaves` opts into opaque fast leaves (not on by default: no measurable gain under SwiftShader).
 - **b1.8.1 geometry** (`src/mesh/beta/`, ported from the C# `BlockGeometry`/`BlockTextures`): every render type (torches
   leaning, crossed plants, crops, doors, ladders, rails incl. curves/slopes, stairs, fences, levers, cactus, beds,
@@ -258,19 +270,31 @@ entity kind the wire reports.
   - cat types, rabbit coats, parrot colours, shulker colours and lid, boat wood
   - minecart contents
   - armor stand options and pose
-- **Equipment.** `equipment` draws on every biped (players, bots, zombies, skeletons, armor stands):
-  - armour pieces in their material; undyed leather is brown
+- **Equipment.** `equipment` (`[id, meta]`, or `[id, meta, rgb]` for a dyed item) draws on the renderers that have the
+  layer (players, bots, armor stands, zombies and their kin, skeletons and their kin, zombie villagers; the giant wears
+  armour but no head item; villagers wear head items but no armour):
+  - armour pieces in their material; 1.12.2 leather tinted by its dye (default `0xA06540`) with its untinted overlay,
+    b1.8.1's brown cloth as it is; zombie villagers wear `LayerVillagerArmor`'s taller helmet
   - main- and off-hand items (item sprites, or block cubes)
-  - a pumpkin worn on the head
+  - head items like `LayerCustomHead`: a skull (item 397, its meta the type) as the skull model, the dragon head with
+    its jaw moving with the walk; a block (pumpkin) at its 0.625 head scale; a 1.12.2 flat item with its "head"
+    transform; the child and villager offsets
+  - elytra in the chest slot (`LayerElytra`, spread while sneaking)
+- **Implied layers.** The snow golem's pumpkin (unless the look says `sheared`) and an adult mooshroom's three crossed
+  red mushrooms.
 - **Flags.** The flag bits drive these effects:
   - fire on burning entities
-  - sneaking and riding poses
+  - sneaking and riding poses (a sneaking 1.12.2 biped sinks 0.2 like `ModelBiped.render`)
   - faster limb swing while sprinting
   - the item-use pose (drawing a bow, eating)
   - invisibility (the body is hidden; armour and held items stay)
   - glowing (lit)
-- **Babies.** Babies use vanilla's child layouts: a big head on a half-size body for bipeds and animals, and other models at
-  half size.
+- **Babies.** Babies use vanilla's child layouts: a big head on a half-size body for bipeds and animals, per-group
+  proportions for foals (`ModelHorse` with `getHorseSize()` 0.5: long thin legs, a half-size body, a 0.625 head) and baby
+  llamas (`ModelLlama`'s per-axis head, body and leg scales), and other models at half size.
+- **Looks from the variant.** A fusing creeper swells and flashes like `RenderCreeper` (from when the look said it began);
+  primed TNT flashes at `RenderTNTPrimed`'s fading strength; a screaming enderman opens its jaw and jitters; a converting
+  zombie villager shakes.
 - **GPU skinning.** Every frame each entity's part matrices are written into one row of a float texture. A vertex fetches
   its part's matrix (`texelFetch`). A view only fills small per-instance arrays, so there is one draw call per model kind
   in view, plus armour, item sprites (held items, drops, paintings, particles, fire), item cubes, shadows and LOD boxes.
@@ -305,12 +329,15 @@ entity kind the wire reports.
 - **Light.** Entities take the world's time-of-day light and fog uniforms (`setWorldUniforms`), and per-entity light via
   `lightAt`.
 - **Not on the wire.** These are still missing or picked by entity id:
-  - skins: bots wear Steve; other players get Steve or Alex by a name hash
-  - leather dye colours
-  - skulls on heads
+  - skins and capes: bots wear Steve; other players get Steve or Alex by a name hash; player skulls show Steve
+  - the enchantment glint on enchanted armour and items
+  - an enderman's carried block, an iron golem's offered flower, parrots on shoulders, arrows stuck in players
+  - JSON text styles on 1.12.2 sign lines (the bot flattens them to plain text; § codes typed in the text do show)
   - horse coats and villager professions when the look gives none
 - **Gallery.** `/models.html` in the dev server shows every model on a flat floor, with scripted events. It takes
-  `?version=b1.8.1`, `?walk=0`, `?spin=1`, `?events=0` and `?n=20` (the perf scene).
+  `?version=b1.8.1`, `?walk=0`, `?spin=1`, `?events=0`, `?n=20` (the perf scene) and `?set=looks` (only the equipment,
+  head item, elytra, baby and implied-layer showcase). `node scripts/shot.mjs --page models.html --query set=looks --eval
+  "g.set(yaw, pitch, dist, x, z, y)"` screenshots it headlessly.
 - **Fixture.** The fixture world (`zoo`, on in the demo) has three areas:
   - a zoo of every mob type south of the island
   - a showcase of equipment, babies, variants, paintings, an item frame and minecarts in the final wire shape
@@ -336,8 +363,9 @@ Vite bundle the mesh worker and emit the atlases themselves, with no copy step.
 - **Assets.** The Minecraft assets are committed: the repo is private and unreleased (docs/web/architecture.md, "Render
   parity").
   - `assets/1.12.2` holds the blockstates, the block and item models, and the block, item, entity, environment, misc and
-    colormap textures with their `.mcmeta` animation files.
-  - `assets/b1.8.1` holds terrain, items, mob, armor, environment, misc and terrain/sun+moon.
+    colormap textures with their `.mcmeta` animation files, and the default font (`textures/font/ascii.png`).
+  - `assets/b1.8.1` holds terrain, items, mob, armor, environment, misc, terrain/sun+moon and the font
+    (`font/default.png`, `font.txt`).
   - `generated/<version>` holds what the browser loads (`src/assets/bundle.ts`).
 ```
 
@@ -354,7 +382,11 @@ Vite bundle the mesh worker and emit the atlases themselves, with no copy step.
   - Entity models: every model builds inside its texture, every mob type has a model and existing textures in both
     versions, poses from walking, yaw and pitch, LOD, and held and dropped item resolution.
   - Entity wire: variant and look parsing per kind, equipment to armour, event timings (swing, hurt, death fade), baby
-    layouts, painting motives, item frames, minecart contents, display mobs and lightning.
+    layouts, painting motives, item frames, minecart contents, display mobs and lightning; dyed leather passes, worn
+    skulls, head items and elytra per renderer, villager armour, foal and baby llama proportions, the creeper swell and
+    flash, the screaming enderman, the snow golem's pumpkin and the mooshroom's mushrooms, spawner mobs without shadows.
+  - The bitmap font: glyph tables and advances from both font images, § codes, the 1.12.2 sign line cut, rasterising;
+    spawner mob scales and feet; starfield passes by distance.
   - Hash-diff fetching.
   - Shared meshing: N views mesh each section once.
   - Block deltas: exact dirty sections, burst coalescing, fallbacks and local relighting.

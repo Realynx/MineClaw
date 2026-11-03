@@ -3,6 +3,7 @@
 // the given query, waits for the world to load, optionally runs a few viewer calls, and saves a PNG.
 //
 //   node scripts/shot.mjs --query "version=1.12.2&thumbs=0" --out shot.png [--wait 8000] [--eval "h.setCameraMode('iso')"]
+//   node scripts/shot.mjs --page models.html --query "set=looks" --eval "g.set(0.5, 0.4, 12)"   (the model gallery: g = __gallery)
 //   (--gpu uses the machine's GPU; default SwiftShader)
 
 import { createServer } from 'vite';
@@ -22,6 +23,7 @@ const query = arg('query', 'thumbs=0');
 const wait = Number(arg('wait', '8000'));
 const script = arg('eval', '');
 const gpu = args.includes('--gpu');
+const pageName = arg('page', '');
 
 const server = await createServer({ configFile: resolve(root, 'vite.demo.config.ts'), root, server: { port: 0 }, logLevel: 'error' });
 await server.listen();
@@ -31,10 +33,10 @@ try {
   const page = await browser.newPage({ viewport: { width: Number(arg('width', '1280')), height: Number(arg('height', '800')) } });
   page.on('pageerror', (e) => console.error('page error:', e.message));
   page.on('console', (m) => m.type() === 'error' && console.error('console:', m.text()));
-  await page.goto(`http://localhost:${port}/?${query}`, { waitUntil: 'load' });
+  await page.goto(`http://localhost:${port}/${pageName}?${query}`, { waitUntil: 'load' });
   await page.waitForTimeout(wait);
   if (script) {
-    await page.evaluate(`(async () => { const h = window.__viewer.current; ${script} })()`);
+    await page.evaluate(`(async () => { const h = window.__viewer?.current, g = window.__gallery; ${script} })()`);
     await page.waitForTimeout(Number(arg('after', '2500')));
   }
   await page.screenshot({ path: out });

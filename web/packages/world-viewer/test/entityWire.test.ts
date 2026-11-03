@@ -5,7 +5,8 @@ import * as THREE from 'three';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { AssetBundle, Pack, Pack1122, PackBeta } from '../src/assets/bundle';
 import { compose, EntityLayer } from '../src/render/entityLayer';
-import { armorFromEquipment, armorMaterial } from '../src/render/entities/armor';
+import { armorDyes, armorFromEquipment, armorMaterial, armorPasses, buildArmor, buildElytra, buildSkull, LEATHER_DEFAULT, skullKind } from '../src/render/entities/armor';
+import { equipRef } from '../src/wire/normalize';
 import { buildModel } from '../src/render/entities/builder';
 import { facingYaw, minecartBlock, motive, paintingSheet } from '../src/render/entities/hanging';
 import { attackOffProgress, attackProgress, DEATH_GONE_MS, deathAngle, deathScale, eatProgress, hurtAmount, newMotion } from '../src/render/entities/motion';
@@ -130,6 +131,49 @@ describe('equipment', () => {
     expect(armorFromEquipment({ head: [310, 0], chest: [303, 0], legs: [86, 0], feet: null })).toEqual(['diamond', 'chainmail', null, null]);
     expect(armorFromEquipment({ main: [276, 0] })).toBeNull();
   });
+
+  it('dyed leather: the wire’s third element is the dye; LayerArmorBase tints the piece and adds the untinted overlay', () => {
+    expect(equipRef([299, 0, 0x3366cc])).toEqual([299, 0, 0x3366cc]);
+    expect(equipRef([299, 0])).toEqual([299, 0]);
+    expect(equipRef({ id: 301, meta: 0, color: 0x112233 })).toEqual([301, 0, 0x112233]);
+    expect(armorDyes({ chest: [299, 0, 0x3366cc], feet: [301, 0] })).toEqual([null, 0x3366cc, null, null]);
+    expect(armorDyes({ chest: [299, 0] })).toBeNull();
+    expect(armorPasses('leather', 'chest', false, 0x3366cc)).toEqual([
+      { texture: 'models/armor/leather_layer_1', tint: 0x3366cc },
+      { texture: 'models/armor/leather_layer_1_overlay', tint: null },
+    ]);
+    expect(armorPasses('leather', 'legs', false, null)[0]).toEqual({ texture: 'models/armor/leather_layer_2', tint: LEATHER_DEFAULT });
+    expect(PACK_1122.entity.rects['models/armor/leather_layer_2_overlay']).toBeDefined();
+    // b1.8.1's cloth texture is already brown: drawn as it is.
+    expect(armorPasses('leather', 'chest', true, null)).toEqual([{ texture: 'armor/cloth_1', tint: null }]);
+    expect(armorPasses('iron', 'chest', false, 0x3366cc)).toEqual([{ texture: 'models/armor/iron_layer_1', tint: null }]);
+  });
+
+  it('skulls (ModelSkeletonHead / ModelHumanoidHead / ModelDragonHead) and the elytra build inside their textures', () => {
+    expect([0, 1, 2, 3, 4, 5].map(skullKind)).toEqual(['head', 'head', 'humanoid', 'humanoid', 'head', 'dragon']);
+    for (const k of ['head', 'humanoid', 'dragon'] as const) {
+      const s = buildSkull(k);
+      const [tw, th] = s.def.tex;
+      expect(s.uvRects.every(([u0, v0, u1, v1]) => u0 >= 0 && v0 >= 0 && u1 <= tw && v1 <= th)).toBe(true);
+    }
+    expect(buildSkull('humanoid').indices.length).toBe(2 * buildSkull('head').indices.length); // the hat layer
+    expect(new Set(buildSkull('dragon').partIds)).toEqual(new Set([0, 1])); // head + jaw
+    expect(new Set(buildElytra().partIds)).toEqual(new Set([0, 1])); // two wings
+    expect(PACK_1122.entity.rects['entity/elytra']).toBeDefined();
+  });
+
+  it('zombie villagers wear LayerVillagerArmor (helmet 2 px higher, body and legs 0.1 more inflated)', () => {
+    const plain = buildArmor(buildModel(MODEL_BY_ID.zombie))!, villager = buildArmor(buildModel(MODEL_BY_ID.zombie_villager))!;
+    const minY = (b: typeof plain, layer: number) => {
+      let m = Infinity;
+      for (let i = 0; i < b.partIds.length; i++) if (Math.floor(b.partIds[i] / 256) === layer) m = Math.min(m, b.positions[i * 3 + 1]);
+      return m;
+    };
+    expect(minY(plain, 1)).toBeCloseTo(-9);
+    expect(minY(villager, 1)).toBeCloseTo(-11);
+    expect(minY(plain, 3)).toBeCloseTo(-0.5); // leggings: body and legs at 0.5
+    expect(minY(villager, 3)).toBeCloseTo(-0.6);
+  });
 });
 
 describe('animation timing', () => {
@@ -172,6 +216,30 @@ describe('babies', () => {
     cs.pose(null, r, out, 0, true);
     const legFoot = apply(out.subarray(cow.index.leg1 * 12, cow.index.leg1 * 12 + 12), 0, 12, 0)[1];
     expect(legFoot).toBeCloseTo(0, 2);
+  });
+
+  it('foals and baby llamas: ModelHorse / ModelLlama child proportions per part group', () => {
+    const r = rootMatrix(new Float32Array(12), { x: 0, y: 0, z: 0, yaw: 0, death: 0, scale: [1, 1, 1], offset: [0, 0, 0] });
+    const out = new Float32Array(64 * 12);
+    const at = (m: ReturnType<typeof buildModel>, part: string, x: number, y: number, z: number) => apply(out.subarray(m.index[part] * 12, m.index[part] * 12 + 12), x, y, z);
+    const horse = buildModel(MODEL_BY_ID.horse);
+    new Skeleton(horse).pose(null, r, out, 0, true);
+    // Legs scale(0.5, 0.75, 0.5) · translate(0, 7.6 px): the hooves stay on the ground (model y 24.1 → 0.75 · 31.7 px).
+    expect(at(horse, 'backLeftHoof', 0, 8.1, 0)[1]).toBeCloseTo(1.501 - (0.75 * (24.1 + 7.6)) / 16, 3);
+    expect(at(horse, 'backLeftHoof', 0, 8.1, 0)[1]).toBeLessThan(0.03);
+    // The legs are 3/4 tall but half as thick; the body is half size; the head 0.625.
+    const legTop = at(horse, 'backLeftLeg', 0, -2, 0)[1], legBottom = at(horse, 'backLeftLeg', 0, 7, 0)[1];
+    expect(legTop - legBottom).toBeCloseTo((9 * 0.75) / 16, 3);
+    const bodyLen = Math.abs(at(horse, 'body', 0, 0, -19)[2] - at(horse, 'body', 0, 0, 5)[2]);
+    expect(bodyLen).toBeCloseTo((24 * 0.5) / 16, 2);
+    const headLen = Math.hypot(...([0, 1, 2].map((k) => at(horse, 'head', 0, -10, -1.5)[k] - at(horse, 'head', 0, -5, -1.5)[k]) as [number, number, number]));
+    expect(headLen).toBeCloseTo((5 * 0.625) / 16, 3);
+    const llama = buildModel(MODEL_BY_ID.llama);
+    new Skeleton(llama).pose(null, r, out, 0, true);
+    // Legs scale(0.4545, 0.4132, 0.4545) · translate(0, 33 px): the feet (model y 24) at 0.4132 · 57 px.
+    expect(at(llama, 'leg1', 0, 14, 0)[1]).toBeCloseTo(1.501 - (0.41322312 * 57) / 16, 3);
+    const neck = Math.abs(at(llama, 'head', 0, -16, -6)[1] - at(llama, 'head', 0, 2, -6)[1]);
+    expect(neck).toBeCloseTo((18 * 0.64935064) / 16, 3);
   });
 });
 
@@ -292,6 +360,96 @@ describe('EntityLayer with the newer wire', () => {
     run(layer, [], []);
     expect(meshes(layer)['entity spider']).toBeUndefined();
     layer.dispose();
+  });
+
+  it('spawner display mobs cast no blob shadow and lean back 30°', () => {
+    const layer = new EntityLayer();
+    layer.setBundle(bundle(PACK_1122));
+    layer.showDisplayMob('spawner@1,2,3', 0, 0.5, 64.2, 0.5, 'pig', 0.53125, 0, -30);
+    run(layer, [], []);
+    let m = meshes(layer);
+    expect(m['entity pig']).toBe(1);
+    expect(m['entity shadows']).toBeUndefined();
+    run(layer, [], [ent(1, 3, { type: 90 })]);
+    m = meshes(layer);
+    expect(m['entity pig']).toBe(2);
+    expect(m['entity shadows']).toBe(1); // the real pig only
+    // Leaning back: the pig's snout (front, model −z) rises above its tail.
+    const bones = (layer as unknown as { bones: Float32Array }).bones;
+    const drawn = (layer as unknown as { drawn: Map<string, { row: number; model: { built: { index: Record<string, number> } } }> }).drawn;
+    const d = drawn.get('display:spawner@1,2,3')!;
+    const body = d.model.built.index.body, o = (d.row * 64 + body) * 12;
+    const front = apply(bones.subarray(o, o + 12), 0, -10, 0), back = apply(bones.subarray(o, o + 12), 0, 8, 0);
+    expect(Math.abs(front[1] - back[1])).toBeGreaterThan(0.05);
+    // An active spawner: one flame and one smoke a tick.
+    const before = layer.effects.particles;
+    layer.spawnerParticles(0, 0, 64, 0, 3, 1100);
+    expect(layer.effects.particles - before).toBe(6);
+    layer.dispose();
+  });
+
+  it('head items: skulls by type as the skull model, blocks and flat items as items; only on the renderers with the layer', () => {
+    const layer = new EntityLayer();
+    layer.setBundle(bundle(PACK_1122));
+    run(layer, [], [
+      ent(1, 0, { type: 54, equipment: { head: [397, 4] } }), // creeper head on a zombie
+      ent(2, 2, { type: 51, equipment: { head: [397, 5] } }), // dragon head on a skeleton
+      ent(3, 4, { kind: 'player', name: 'Fox', equipment: { head: [397, 3] } }),
+      ent(4, 6, { type: 54, equipment: { head: [264, 0] } }), // a diamond on the head
+      ent(5, 8, { type: 53, equipment: { head: [86, 0], chest: [307, 0] } }), // the giant: armour but no custom head
+      ent(6, 10, { type: 35, equipment: { chest: [307, 0] } }), // the vex: no armour layer
+      ent(7, 12, { type: 54, equipment: { chest: [443, 0] } }), // elytra on a zombie
+    ]);
+    const m = meshes(layer);
+    expect(m['skull head']).toBe(1);
+    expect(m['skull dragon']).toBe(1);
+    expect(m['skull humanoid']).toBe(1);
+    expect(m['item sprites']).toBe(1); // the diamond
+    expect(m['item cubes']).toBeUndefined(); // the giant's pumpkin is not drawn
+    expect(m['armour zombie']).toBe(1); // the giant's chestplate (the vex wears none)
+    expect(m.elytra).toBe(1);
+    layer.dispose();
+  });
+
+  it('implied layers: the snow golem’s pumpkin, an adult mooshroom’s three crossed mushrooms (none on a calf)', () => {
+    const layer = new EntityLayer();
+    layer.setBundle(bundle(PACK_1122));
+    run(layer, [], [ent(1, 0, { type: 97 }), ent(2, 3, { type: 96 }), ent(3, 6, { type: 96, baby: true }), ent(4, 9, { type: 97, look: 'sheared' })]);
+    const m = meshes(layer);
+    expect(m['item cubes']).toBe(1); // one pumpkin (the sheared golem has none)
+    expect(m['item sprites']).toBe(6); // 3 mushrooms × 2 crossed planes, the calf none
+    layer.dispose();
+  });
+
+  it('a fusing creeper swells and flashes white at most 0.2 (RenderCreeper), from when the wire says it began', () => {
+    const layer = new EntityLayer();
+    layer.setBundle(bundle(PACK_1122));
+    const drawn = (layer as unknown as { drawn: Map<string, { flash: number; fuseAt: number }> }).drawn;
+    const c = ent(1, 0, { type: 50, look: 'fusing' });
+    const flashes: number[] = [];
+    for (let t = 1000; t <= 2400; t += 50) {
+      layer.update([], [c], t, new Set());
+      flashes.push(drawn.get('0:1')!.flash);
+    }
+    expect(drawn.get('0:1')!.fuseAt).toBe(1000);
+    expect(Math.max(...flashes)).toBeGreaterThan(0.1);
+    expect(Math.max(...flashes)).toBeLessThanOrEqual(0.2);
+    expect(flashes.filter((f) => f === 0).length).toBeGreaterThan(5); // it blinks
+    layer.update([], [{ ...c, dto: { ...c.dto, look: undefined } }], 2500, new Set());
+    expect(drawn.get('0:1')!.fuseAt).toBe(0);
+    layer.dispose();
+  });
+
+  it('a screaming enderman opens its jaw: the head rises 5 px off the headwear', () => {
+    const enderman = buildModel(MODEL_BY_ID.enderman);
+    const sk = new Skeleton(enderman);
+    const r = rootMatrix(new Float32Array(12), { x: 0, y: 0, z: 0, yaw: 0, death: 0, scale: [1, 1, 1], offset: [0, 0, 0] });
+    const out = new Float32Array(64 * 12);
+    sk.pose({ ...CTX, v: Variant.of('screaming') }, r, out, 0);
+    const y = (part: string) => apply(out.subarray(enderman.index[part] * 12, enderman.index[part] * 12 + 12), 0, 0, 0)[1];
+    expect(y('head') - y('hat')).toBeCloseTo(5 / 16, 4);
+    sk.pose(CTX, r, out, 0);
+    expect(y('head') - y('hat')).toBeCloseTo(0, 4);
   });
 
   it('babies are drawn at half the hitbox; glowing entities are lit', () => {

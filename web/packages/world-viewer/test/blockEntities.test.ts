@@ -4,8 +4,12 @@ import type { Models1122 } from '../src/mesh/models/index';
 import { potContents, resolveState, skullType, type Nb } from '../src/mesh/models/states';
 import { TEX_STARFIELD, TEX_TEXTURED } from '../src/mesh/sink';
 import type { BlockEntityDto } from '../src/types';
-import { bannerPatternName, compositeBanner, DYE_RGB, signLayout, SIGN_LINE_WIDTH, textWidth } from '../src/render/blockEntityTex';
-import { javaRandomFloats, starLayerColours } from '../src/render/starfield';
+import { bannerPatternName, compositeBanner, DYE_RGB, signLayout, SIGN_LINE_WIDTH, spawnerMobFeet, spawnerMobScale, textWidth } from '../src/render/blockEntityTex';
+import { charWidth, fontTable, FORMAT_RGB, glyphIndex, layoutLine, rasterLine, signLineText, stringWidth, trimToWidth } from '../src/render/font';
+import { javaRandomFloats, starLayerColours, starPasses } from '../src/render/starfield';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { Pack1122, PackBeta } from '../src/assets/bundle';
 import { storeWith, type B } from './helpers';
 import { pack1122, table1122 } from './pack';
 
@@ -114,7 +118,99 @@ describe('fast leaves (opt-in)', () => {
   });
 });
 
+const gen = join(__dirname, '..', 'generated');
+const FONT_1122 = fontTable((JSON.parse(readFileSync(join(gen, '1.12.2', 'pack.json'), 'utf8')) as Pack1122).font, false)!;
+const FONT_BETA = fontTable((JSON.parse(readFileSync(join(gen, 'b1.8.1', 'pack.json'), 'utf8')) as PackBeta).font, true)!;
+
+describe('the bitmap font (FontRenderer)', () => {
+  it('glyph tables and advances measured from each version’s own font image', () => {
+    expect(FONT_1122.widths.length).toBe(256);
+    expect(glyphIndex(FONT_1122, 'A')).toBe(65);
+    expect(glyphIndex(FONT_1122, 'é')).toBe(130);
+    expect(glyphIndex(FONT_BETA, 'A')).toBe(65);
+    expect(glyphIndex(FONT_BETA, '`')).toBe(-1); // font.txt has a second ' where ` would be
+    for (const f of [FONT_1122, FONT_BETA]) {
+      expect([...'il!I tf@'].map((c) => charWidth(f, c))).toEqual([2, 3, 2, 4, 4, 4, 5, 7]);
+      expect(charWidth(f, '§')).toBe(-1);
+      expect(stringWidth(f, 'MineClaw')).toBe(6 * 6 + 2 + 3);
+    }
+    expect(charWidth(FONT_1122, 'あ')).toBe(0); // unicode pages are not bundled
+  });
+
+  it('§ codes: zero width, 1.12.2 bold adds 1 per glyph until §r; colours reset the styles when drawing', () => {
+    expect(stringWidth(FONT_1122, '§4red')).toBe(stringWidth(FONT_1122, 'red'));
+    expect(stringWidth(FONT_1122, '§lab')).toBe(stringWidth(FONT_1122, 'ab') + 2);
+    expect(stringWidth(FONT_1122, '§la§rb')).toBe(stringWidth(FONT_1122, 'ab') + 1);
+    expect(stringWidth(FONT_BETA, '§lab')).toBe(stringWidth(FONT_BETA, 'ab'));
+    const l = layoutLine(FONT_1122, '§4R§lB§nU§6c', 0);
+    expect(l.glyphs.map((g) => [g.rgb, g.bold])).toEqual([[FORMAT_RGB[4], false], [FORMAT_RGB[4], true], [FORMAT_RGB[4], true], [FORMAT_RGB[6], false]]);
+    expect(l.rules).toEqual([{ x0: 12, x1: 20, y0: 8, y1: 9, rgb: FORMAT_RGB[4] }]); // U's underline, from x − 1 to its bold advance
+    expect(l.width).toBe(6 + 7 + 7 + 6);
+    // b1.8.1: colours only; an unknown code is white.
+    expect(layoutLine(FONT_BETA, '§zx§ly', 0).glyphs.map((g) => [g.rgb, g.bold])).toEqual([[0xffffff, false], [0xffffff, false]]);
+  });
+
+  it('sign lines: 1.12.2 cuts at the last space that fits 90 px (splitText), b1.8.1 draws the line as is', () => {
+    const long = 'a much longer line that cannot fit';
+    const cut = signLineText(FONT_1122, long);
+    expect(stringWidth(FONT_1122, cut)).toBeLessThanOrEqual(90);
+    expect(long.startsWith(cut)).toBe(true);
+    expect(long[cut.length]).toBe(' ');
+    expect(trimToWidth(FONT_1122, 'WWWWWWWWWWWWWWWWWWWWW', 90).length).toBe(15);
+    expect(signLineText(FONT_1122, 'WWWWWWWWWWWWWWWWWWWWW').length).toBe(15); // no space: cut to width
+    expect(signLineText(FONT_1122, 'one\ntwo')).toBe('one');
+    expect(signLineText(FONT_BETA, long)).toBe(long);
+    const s = signLayout(['MineClaw', '§4red', long, 'i'], FONT_1122);
+    expect(s.map((x) => x.y)).toEqual([-20, -10, 0, 10]);
+    expect(s[0]).toMatchObject({ text: 'MineClaw', width: 41, x: -20 });
+    expect(s[1]).toMatchObject({ text: '§4red', width: stringWidth(FONT_1122, 'red') });
+    expect(s[2].text).toBe(cut);
+  });
+
+  it('rasterises glyph texels in the run colour, bold twice, italic sheared, rules filled', () => {
+    // A 128×128 sheet whose glyph 65 ('A') is a 1×8 column at x = 0.
+    const sheet = new Uint8ClampedArray(128 * 128 * 4);
+    for (let y = 0; y < 8; y++) sheet.set([255, 255, 255, 255], ((32 + y) * 128 + 8) * 4);
+    const font = { data: sheet, width: 128, cell: 8 };
+    const W = 16, H = 10;
+    const px = (out: Uint8Array, x: number, y: number) => Array.from(out.subarray((y * W + x) * 4, (y * W + x) * 4 + 4));
+    const out = new Uint8Array(W * H * 4);
+    rasterLine(out, W, H, 1, font, { glyphs: [{ cell: 65, x: 2, rgb: 0xff0000, bold: true, italic: false }], rules: [{ x0: 0, x1: 4, y0: 8, y1: 9, rgb: 0x0000ff }] }, 0, 0);
+    expect(px(out, 2, 0)).toEqual([255, 0, 0, 255]);
+    expect(px(out, 3, 7)).toEqual([255, 0, 0, 255]); // the bold copy
+    expect(px(out, 4, 3)[3]).toBe(0);
+    expect(px(out, 1, 8)).toEqual([0, 0, 255, 255]);
+    const it2 = new Uint8Array(W * H * 4);
+    rasterLine(it2, W, H, 1, font, { glyphs: [{ cell: 65, x: 4, rgb: 0, bold: false, italic: true }], rules: [] }, 0, 0);
+    expect(px(it2, 5, 0)[3]).toBe(255); // the top leans right
+    expect(px(it2, 3, 7)[3]).toBe(255); // the bottom left
+  });
+});
+
 describe('block-entity layer helpers', () => {
+  it('spawner display mobs: 1.12.2 0.53125 over the larger hitbox side when it exceeds a block, b1.8.1 0.4375; the feet', () => {
+    expect(spawnerMobScale('minecraft:pig')).toBeCloseTo(0.53125);
+    expect(spawnerMobScale('chicken')).toBeCloseTo(0.53125);
+    expect(spawnerMobScale('Zombie')).toBeCloseTo(0.53125 / 1.95);
+    expect(spawnerMobScale('CaveSpider')).toBeCloseTo(0.53125);
+    expect(spawnerMobScale('minecraft:ghast')).toBeCloseTo(0.53125 / 4);
+    expect(spawnerMobScale('Zombie', true)).toBe(0.4375);
+    expect(spawnerMobFeet(1, false)).toEqual([0, 0.2, 0]);
+    const [x, y, z] = spawnerMobFeet(0, true);
+    expect(x).toBeCloseTo(0);
+    expect(y).toBeCloseTo(0.4 - 0.4 * Math.cos(Math.PI / 6));
+    expect(z).toBeCloseTo(0.2);
+  });
+
+  it('starfield passes by the squared distance (TileEntityEndPortalRenderer.getPasses), the gateway one more', () => {
+    expect(starPasses(0)).toBe(16);
+    expect(starPasses(17 * 17)).toBe(15);
+    expect(starPasses(30 * 30)).toBe(14);
+    expect(starPasses(50 * 50)).toBe(12);
+    expect(starPasses(200 * 200)).toBe(2);
+    expect(starPasses(0, true)).toBe(17);
+  });
+
   it('sign text: four lines centred, at j·10 − 20, cut to the board width', () => {
     const l = signLayout(['MineClaw', '', 'a much longer line that cannot fit on a sign board at all', 'i']);
     expect(l.map((x) => x.y)).toEqual([-20, -10, 0, 10]);
@@ -144,7 +240,7 @@ describe('block-entity layer helpers', () => {
   it('starfield colours come from java.util.Random(31100), layer 0 the 0.15 grey sky', () => {
     expect(javaRandomFloats(0, 1)[0]).toBeCloseTo(0.7309677, 6);
     const c = starLayerColours();
-    expect(c.length).toBe(16);
+    expect(c.length).toBe(17); // the gateway's extra layer too
     expect(c[0]).toEqual([0.15, 0.15, 0.15]);
     expect(c[15][2]).toBeGreaterThan(c[1][2]); // later layers are brighter (2 / (18 − j))
   });

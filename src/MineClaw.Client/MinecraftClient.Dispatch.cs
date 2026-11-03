@@ -218,7 +218,7 @@ public sealed partial class MinecraftClient
                 break;
             case EntityEquipmentPacket eq:
             {
-                w.Entities.SetEquipment(eq.EntityId, eq.Slot, eq.ItemId < 0 ? ItemStack.Empty : new ItemStack(eq.ItemId, 1, eq.Damage));
+                w.Entities.SetEquipment(eq.EntityId, eq.Slot, eq.Item);
                 int eid = eq.EntityId, slot = eq.Slot, item = eq.ItemId, dmg = eq.Damage;
                 Raise(() => EquipmentChanged?.Invoke(eid, slot, item, dmg));
                 break;

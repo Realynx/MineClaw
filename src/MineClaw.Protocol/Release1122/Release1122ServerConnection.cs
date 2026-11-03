@@ -404,7 +404,7 @@ public sealed class Release1122ServerConnection : IGameConnection
                 int slot = eq.Slot switch { 0 => 0, 1 => 2, 2 => 3, 3 => 4, 4 => 5, 5 => 1, _ => -1 };
                 if (slot >= 0)
                     yield return WireWriter.ForPacket(Ids1122.EntityEquipment).WriteVarInt(eq.EntityId).WriteVarInt(slot)
-                        .WriteSlot(eq.ItemId < 0 ? ItemStack.Empty : new ItemStack(eq.ItemId, 1, eq.Damage));
+                        .WriteSlot(eq.Item);
                 break;
             }
             default:

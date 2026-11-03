@@ -45,6 +45,10 @@ export const BURSTS: Record<string, BurstStyle> = {
   teleport: { colour: [0.75, 0.3, 0.95], jitter: 0.2, count: 22, speed: 1.6, spread: 0.6, life: 900, size: 0.08, gravity: -0.6 },
   // Death "poof": grey-white smoke rising.
   death: { colour: [0.85, 0.85, 0.85], jitter: 0.15, count: 18, speed: 1.2, spread: 0.5, life: 900, size: 0.16, gravity: -1.2 },
+  // An active spawner (MobSpawnerBaseLogic.updateSpawner, client side): every tick one ParticleFlame and one
+  // ParticleSmokeNormal at a random point of the block, still at first (the smoke drifts up).
+  spawner_flame: { colour: [1, 0.62, 0.18], jitter: 0.12, count: 1, speed: 0.05, spread: 1, life: 1100, size: 0.07, gravity: 0 },
+  spawner_smoke: { colour: [0.32, 0.32, 0.32], jitter: 0.25, count: 1, speed: 0.08, spread: 1, life: 1300, size: 0.11, gravity: -1.5 },
 };
 
 const MAX_PARTICLES = 1024;
