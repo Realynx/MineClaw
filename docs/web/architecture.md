@@ -170,3 +170,17 @@ and caching. It never reshapes domain data beyond camelCase conversion.
 - **Status.** One connection-status indicator in the header, not one per poller.
 - **Dev stats.** Hidden unless the user turns on "developer details".
 - **Theme.** Dark and light, keyboard navigable, a command palette (Ctrl+K) to jump to bots, scripts, memories and designs.
+
+## Memory activity tab (added 2026-11-02)
+
+This tab shows the RAPTOR memory map (the server-laid-out graph) with regions lit by what each hive brain is using.
+- **Brightness** is how recently a node was accessed. It is an exponential decay over time since the last access, and
+  heat propagates up to its ancestors, so a region glows.
+- **Staleness** is a ring around the node: how long the memory has sat in that brain's live context without a refresh.
+  An evicted memory is shown hollow.
+- **Filtering.** Per-brain colour and filter: all brains, or one hive or body.
+- **Timeline.** A scrubber replays the last N minutes.
+- **Sources.**
+  - The bot route `GET /api/viewer/memory-activity?since&brain` gives the access ring plus the in-context set per brain.
+  - The bridge-native `heat` aggregate per RAPTOR node feeds the graph colouring.
+  - SSE event `memoryActivity`.
