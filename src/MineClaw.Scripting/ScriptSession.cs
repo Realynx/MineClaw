@@ -59,6 +59,8 @@ public sealed record ScriptRequest
     /// <see cref="ScriptOptions.LaneDangerMaxSeconds"/> (the run fails, so its coordinator re-runs the role and its leases go back).
     /// </summary>
     public bool Unattended { get; init; }
+    /// <summary>No model may ever be asked for this run (a Story Mode pawn): no patch turn, no brain wake; interrupts resume or fail it.</summary>
+    public bool NoModel { get; init; }
 }
 
 /// <summary>

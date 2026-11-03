@@ -1,4 +1,4 @@
-// module: crew | several bodies: lanes run a role of this script on another body
+// module: crew | lanes run a role of this script on another body
 (H, def) => {
   const lane = (id, b) => Object.freeze({
     id, body: b,
