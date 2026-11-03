@@ -210,3 +210,13 @@ entity and overlay data plus the runtime-generated texture atlas. No world image
   - Materials, the atlas texture, and the entity and overlay meshes are single shared instances.
   - A view owns only its camera, viewport and per-view uniforms (cutaway or x-ray through clipping uniforms, not
     rebuilt geometry). Interest regions are refcounted across views, so bots near each other share sections.
+- **Live block updates.** Columns are downloaded once, then kept current in two layers:
+  1. **Block deltas (fast path).** The bot logs every `WorldState.BlockChanged`, plus column load and unload events, in a
+     rev-numbered `BlockDeltaLog`. It is deduplicated across bodies that share a column, and bulk chunk loads produce
+     only a column event.
+     - It is served by `GET /api/world/blocks?since=REV` and pushed as the SSE `blocks` event at about 5 Hz.
+     - The browser patches the block in the shared store. It then re-meshes only that section, plus the neighbouring
+       section when the block sits on a boundary. Changes are batched per animation frame, so a burst such as tunnel
+       digging re-meshes each section once.
+  2. **Hash diff (backstop).** Each column's hash in `/api/world/index` changes with any block change. On a rev gap,
+     `full:true` (the ring overflowed) or a reconnect, the client refetches only the columns whose hash changed.
