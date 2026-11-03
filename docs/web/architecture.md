@@ -194,3 +194,29 @@ This tab shows the RAPTOR memory map (the server-laid-out graph) with regions li
   - The bot route `GET /api/viewer/memory-activity?since&brain` gives the access ring plus the in-context set per brain.
   - The bridge-native `heat` aggregate per RAPTOR node feeds the graph colouring.
   - SSE event `memoryActivity`.
+
+## World rendering is browser-only (decided 2026-11-02)
+
+All world viewing renders in the browser with `@mineclaw/world-viewer` (three.js/WebGL), from the raw MCWC chunk,
+entity and overlay data plus the runtime-generated texture atlas. No world images or video are rendered on the server.
+- The bot view's world pane is a follow camera. The hive grid's per-bot cards use the package's shared-renderer
+  multi-view mode: one WebGL context for every card, so the browser's context limit is never hit.
+- `/v1/render/tile/{bot}.png` is deprecated and unused by the UI.
+- Vision sheet PNGs remain. They are the exact images a model was sent, kept as a debugging record rather than a view
+  of the world.
+- **Shared world data across views.**
+  - Every view (the main pane and all the thumbnails) shares one world store per dimension: each column is fetched and
+    decoded once. Each section is meshed once and its geometry is uploaded once.
+  - Materials, the atlas texture, and the entity and overlay meshes are single shared instances.
+  - A view owns only its camera, viewport and per-view uniforms (cutaway or x-ray through clipping uniforms, not
+    rebuilt geometry). Interest regions are refcounted across views, so bots near each other share sections.
+- **Live block updates.** Columns are downloaded once, then kept current in two layers:
+  1. **Block deltas (fast path).** The bot logs every `WorldState.BlockChanged`, plus column load and unload events, in a
+     rev-numbered `BlockDeltaLog`. It is deduplicated across bodies that share a column, and bulk chunk loads produce
+     only a column event.
+     - It is served by `GET /api/world/blocks?since=REV` and pushed as the SSE `blocks` event at about 5 Hz.
+     - The browser patches the block in the shared store. It then re-meshes only that section, plus the neighbouring
+       section when the block sits on a boundary. Changes are batched per animation frame, so a burst such as tunnel
+       digging re-meshes each section once.
+  2. **Hash diff (backstop).** Each column's hash in `/api/world/index` changes with any block change. On a rev gap,
+     `full:true` (the ring overflowed) or a reconnect, the client refetches only the columns whose hash changed.

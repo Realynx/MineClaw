@@ -54,7 +54,8 @@ public interface ISupervisorWorld
 
 /// <summary>Per-route caps for the world routes (requests per second, burst).</summary>
 public sealed record WorldRouteLimits(double IndexPerSec = 8, double IndexBurst = 16, double ChunksPerSec = 25, double ChunksBurst = 50,
-    double EntitiesPerSec = 12, double EntitiesBurst = 24, double OverlaysPerSec = 1, double OverlaysBurst = 4)
+    double EntitiesPerSec = 12, double EntitiesBurst = 24, double OverlaysPerSec = 1, double OverlaysBurst = 4, double BlocksPerSec = 10,
+    double BlocksBurst = 20)
 {
     public static WorldRouteLimits Default { get; } = new();
 }
@@ -93,6 +94,9 @@ public sealed class TokenBucket(double perSecond, double burst, TimeProvider tim
 /// <item><c>/api/world/entities?since=REV</c> → the delta stream: <c>{at, rev, full, bots, entities:[changed since REV], removed:[[dim,id]…]}</c>
 /// (every dimension; <c>full</c> = the client was too far behind and gets everything)</item>
 /// <item><c>/api/world/overlays?dim</c> → JSON claims, places, points (chests, gens, farms…), plan ghost blocks, dangers</item>
+/// <item><c>/api/world/blocks?since=REV[&amp;dim=]</c> → the live block feed (<see cref="BlockDeltaLog"/>): <c>{rev, full, more,
+/// blocks:{"dim":[[x,y,z,id,meta]…]}, columns:[{rev,at,dim,cx,cz,kind}]}</c>, at most <see cref="MaxBlockEntries"/> entries
+/// (<c>more</c>: ask again from <c>rev</c>); <c>full</c> = too far behind, refetch the columns whose index hash changed</item>
 /// </list>
 /// </summary>
 public sealed class SupervisorWorldRoutes
@@ -100,6 +104,7 @@ public sealed class SupervisorWorldRoutes
     public const string Prefix = "/api/world/";
     public const int MaxColumnsPerRequest = 64;
     public const int MaxIndexRadius = 256;
+    public const int MaxBlockEntries = 4000;
 
     private readonly ISupervisorWorld _world;
     private readonly TimeProvider _time;
@@ -121,8 +126,12 @@ public sealed class SupervisorWorldRoutes
             ["chunks"] = new(l.ChunksPerSec, l.ChunksBurst, _time),
             ["entities"] = new(l.EntitiesPerSec, l.EntitiesBurst, _time),
             ["overlays"] = new(l.OverlaysPerSec, l.OverlaysBurst, _time),
+            ["blocks"] = new(l.BlocksPerSec, l.BlocksBurst, _time),
         };
     }
+
+    /// <summary>The live block feed (<c>/api/world/blocks</c>); null = <see cref="BlockDeltaLog.Process"/>, none = 404.</summary>
+    public BlockDeltaLog? Blocks { get; init; }
 
     /// <summary>Index/entity/overlay replies are shared for this long (several viewers or tiles = one read).</summary>
     public TimeSpan IndexCache { get; init; } = TimeSpan.FromMilliseconds(400);
@@ -180,6 +189,15 @@ public sealed class SupervisorWorldRoutes
                         return await _cache.GetAsync($"entities:{edim}", EntitiesCache, () => Work(() =>
                             Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), bots = _world.Bots(), entities = _world.Entities(edim) }), ct))
                             .ConfigureAwait(false);
+                    }
+                case "blocks":
+                    {
+                        if ((Blocks ?? BlockDeltaLog.Process) is not { } log) return Json(404, new { error = "no block feed in this process" });
+                        long since = long.TryParse(Q(r, "since"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var sv) ? sv : 0;
+                        int? bdim = Q(r, "dim") is { Length: > 0 } ? dim : null;
+                        var page = log.Since(since, bdim, MaxBlockEntries); // a ring read under its lock: no pool hop
+                        return Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), rev = page.Rev, full = page.Full, more = page.More,
+                            blocks = page.Blocks, columns = page.Columns });
                     }
                 case "overlays":
                     return await _cache.GetAsync($"overlays:{dim}", OverlaysCache, () => Work(() => Json(200, _world.Overlays(dim)), ct)).ConfigureAwait(false);

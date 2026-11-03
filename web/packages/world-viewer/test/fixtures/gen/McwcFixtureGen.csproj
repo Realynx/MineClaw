@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Writes ../csharp-payload.json: MCWC payloads produced by the real C# encoders (ColumnPayload, ChunkSnapshot,
+       LightSnapshot) so the TypeScript decoder is tested against .NET's own DeflateStream output and hashes.
+       Run (from the repo root): dotnet run with project web/packages/world-viewer/test/fixtures/gen -->
+  <!-- Arguments: the output path (default ../csharp-payload.json). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\..\..\..\src\MineClaw.World\MineClaw.World.csproj" />
+  </ItemGroup>
+</Project>

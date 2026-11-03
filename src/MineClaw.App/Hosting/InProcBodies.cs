@@ -248,6 +248,7 @@ public sealed class InProcBodies : IBodyHost, MineClaw.Hive.Hierarchy.ISubhiveHo
         };
         if (ClientSetup is { } setup) options = setup(options);
         var client = new MinecraftClient(options);
+        MineClaw.App.Supervisor.BlockDeltaLog.Attach(client.World); // the browser viewer's live block feed (deduped across shared columns)
         if (_mainClient is { } main) client.World.Chops = main.World.Chops; // a remnant any body left is the hive's unfinished tree
         if (_mainClient is { } m2) client.World.KeepAir = m2.World.KeepAir; // one hive: a stair main dug is air for every body
         client.Kicked += r => _log.LogWarning("{Body} kicked: {Reason}", name, r);

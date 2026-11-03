@@ -135,6 +135,7 @@ public static class CloneMode
             Log = m => clientLog.LogDebug("{Msg}", m),
         };
         var client = new MinecraftClient(run.ClientSetup?.Invoke(clientOptions) ?? clientOptions);
+        MineClaw.App.Supervisor.BlockDeltaLog.Attach(client.World); // the browser viewer's block feed (in main's process; a no-op elsewhere)
         var game = new MinecraftGameClient(client);
         var bot = BotHost.Create(game, agentOptions, botOptions, llm: gated, loggers: loggers, claims: host0.Claims,
             hiveBots: () => [host0.Main ?? "", .. host0.Arbiter.Clones, .. subhives?.Registry?.Accounts ?? []], // dynamic accounts: main's roster names them
