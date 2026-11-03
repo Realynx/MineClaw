@@ -390,7 +390,7 @@ what it holds:
 | `bots`           | `StatusResponse`                                                     | supervisor `/api/status`, 1 Hz                                          | on change                |
 | `event`          | `EventsResponse`                                                     | `/api/events?since=`, 2 Hz                                              | when non-empty           |
 | `feed`           | `FeedResponse`                                                       | `/api/viewer/feed?since=`, 2 Hz                                         | when non-empty           |
-| `now`            | `BotNow` (one frame per bot)                                         | `/api/viewer/now?bot=`, 2 Hz per bot (all online bots; hives are small) | on change                |
+| `now`            | `BotNow` (one frame per bot)                                         | `/api/viewer/now?bot=`, 2 Hz per bot, 1 Hz per subhive body (every online row of `/api/status`) | on change                |
 | `entities`       | `WorldEntities` (delta; `full: true` means replace the set)          | `/api/world/entities?since=rev`, 5 Hz                                   | when changed             |
 | `hive`           | `HiveTreeNode`                                                       | `/api/hive/tree`, every 3 s                                             | on change                |
 | `memoryActivity` | `MemoryActivityResponse` (new events + the full in-context snapshot) | `/api/viewer/memory-activity?since=`, 1 Hz                              | on change                |
@@ -422,11 +422,27 @@ These are the bot-side additions from architecture.md, in their wire form. They 
    tool{name, args_short, at},
    task,
    script{name, version, status, line, paused},
-   body{hp, food, pos, dim, held}}
+   body{hp, food, pos, dim, held},
+   kind, owner}
   ```
 
   `body.pos` is canonically `[x, y, z]` numbers. The `"x,y,z"` string that `/api/status` uses is also accepted; read either
   form with `parsePos`.
+
+  A subhive body answers too: `brain_state` reads `driven by <owner short>`, `thought`, `tool` and `in_flight` are null (its
+  owner hive's brain thinks for it), and `body` and `script` come from the snapshot its hive streams to main.
+
+- **Every body in the bot lists (added 2026-11-03).** `/api/bots`, `/api/status` `bots[]` (and the `bots` frame),
+  `/api/world/entities` `bots[]`, `/api/viewer/now` and `/api/bodies/scripts` cover every body the process controls: main,
+  each hive (in-process or its own process), main's own subhive and script bodies, every hive's subhive bodies (each hive
+  clone streams them with its telemetry snapshot, `BotSnapshot.bodies`), and tree nodes still spawning. Additive fields:
+  - `kind`: `main | hive | subhive | script`; `owner`: the owning hive's account (main's login for main's children; null for
+    main); `state`: the tree state (`spawning | running | releasing`).
+  - `script{name, status, line, paused, version}` on `/api/bots` and `/api/status` rows; `short` on `/api/status` rows;
+    `online` on `/api/bots` and `/api/world/entities` rows (false = in the tree, not in game yet).
+  - A body without a telemetry source gets a synthetic `/api/status` row (`budget_mode` Normal, `chat` [], no usage).
+  - `owner` on `/api/bodies/scripts` rows.
+  The web groups the hive grid by `owner` (falling back to the hive tree for an older bot).
 
 - **`GET /api/viewer/memory-activity?since&brain`** (`MemoryActivityResponse`). Response:
 

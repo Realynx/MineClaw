@@ -361,7 +361,8 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
     };
     const replay = world.replay;
     if (replay) {
-      const cols = () => (query.get('cols') ?? '0,0').split(';').map((p) => p.split(',').map(Number) as [number, number]);
+      const cols = () =>
+        (query.get('cols') ?? '0,0').split(';').map((p) => p.split(',').map(Number) as [number, number]);
       const dim = Number(query.get('dim') ?? 0);
       const captured: Partial<Record<RouteId, string>> = {
         'bots.list': 'bots',
@@ -406,16 +407,19 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
           origin: 'viewer',
           request_id: b.request_id,
         });
-        const t = setTimeout(() => {
-          world.pushFeed({
-            bot,
-            kind: 'said',
-            from: bot,
-            text: REPLIES[(line.seq as number) % REPLIES.length],
-            origin: 'game',
-            reply_to: line.seq,
-          });
-        }, Number(process.env.MOCK_CHAT_REPLY_MS) || 1500); // a slow bot: MOCK_CHAT_REPLY_MS
+        const t = setTimeout(
+          () => {
+            world.pushFeed({
+              bot,
+              kind: 'said',
+              from: bot,
+              text: REPLIES[(line.seq as number) % REPLIES.length],
+              origin: 'game',
+              reply_to: line.seq,
+            });
+          },
+          Number(process.env.MOCK_CHAT_REPLY_MS) || 1500,
+        ); // a slow bot: MOCK_CHAT_REPLY_MS
         t.unref();
         return { status: 202, json: { accepted: true, id: line.seq, feed_seq: line.seq } };
       }
@@ -431,7 +435,8 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
       case 'world.blockEntities': {
         // A sign and a red bed in the first column asked for; other columns have none.
         const [cx = 0, cz = 0] = (query.get('cols') ?? '0,0').split(';', 1)[0]?.split(',').map(Number) ?? [];
-        const x = cx * 16 + 4, z = cz * 16 + 4;
+        const x = cx * 16 + 4,
+          z = cz * 16 + 4;
         return {
           json: {
             dim: Number(query.get('dim') ?? 0),
@@ -523,34 +528,42 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
     // Production rates (the bridge's pollers): entities and blocks 5 Hz, `now` 2 Hz per body, bots 1 Hz, events and memory
     // activity 2 Hz, the hive tree every 3 s; feed lines and pings as the bot makes them. `interval` = one second of mock time.
     let n = 0;
-    const timer = setInterval(() => {
-      n++;
-      world.hive.advance();
-      if (n % 2 === 0) {
-        frame('entities', world.entities());
-        frame('blocks', world.blocks());
-      }
-      if (n % 5 === 0) {
-        for (const b of world.botNames()) frame('now', world.now(b));
-        frame('event', world.event());
-        frame('memoryActivity', world.activity());
-      }
-      if (n % 30 === 0) frame('hive', world.tree());
-      if (n % 10 !== 0) return;
-      world.tick++;
-      const t = world.tick;
-      frame('bots', world.status());
-      if (t % 9 === 0)
-        world.pushFeed({ bot: 'maid_chan_109', kind: 'chat', from: 'kiwi', text: 'the sand pit is past the oak tree' });
-      if (t % 7 === 0)
-        world.pushFeed({
-          bot: 'maid_chan',
-          kind: 'internal',
-          from: 'maid_chan',
-          text: '(the chest by the door is nearly full)',
-        });
-      if (t % 15 === 0) res.write(': ping\n\n');
-    }, Math.max(1, interval / 10));
+    const timer = setInterval(
+      () => {
+        n++;
+        world.hive.advance();
+        if (n % 2 === 0) {
+          frame('entities', world.entities());
+          frame('blocks', world.blocks());
+        }
+        if (n % 5 === 0) {
+          for (const b of world.botNames()) frame('now', world.now(b));
+          frame('event', world.event());
+          frame('memoryActivity', world.activity());
+        }
+        if (n % 30 === 0) frame('hive', world.tree());
+        if (n % 10 !== 0) return;
+        world.tick++;
+        const t = world.tick;
+        frame('bots', world.status());
+        if (t % 9 === 0)
+          world.pushFeed({
+            bot: 'maid_chan_109',
+            kind: 'chat',
+            from: 'kiwi',
+            text: 'the sand pit is past the oak tree',
+          });
+        if (t % 7 === 0)
+          world.pushFeed({
+            bot: 'maid_chan',
+            kind: 'internal',
+            from: 'maid_chan',
+            text: '(the chest by the door is nearly full)',
+          });
+        if (t % 15 === 0) res.write(': ping\n\n');
+      },
+      Math.max(1, interval / 10),
+    );
     const stop = () => {
       clearInterval(timer);
       off();

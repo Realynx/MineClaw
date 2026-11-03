@@ -58,6 +58,8 @@ describe('crosshair aim', () => {
     expect(rayBox([0, 0, 0], [-1, 0, 0], [2, -1, -1], [3, 1, 1])).toBeNull();
     expect(botAlong([0, 1, 0], [1, 0, 0], [{ name: 'a', x: 5, y: 0, z: 0 }], 4)).toBeNull(); // beyond reach
     expect(botAlong([0, 1, 0], [1, 0, 0], [{ name: 'a', x: 5, y: 0, z: 0 }], 10)?.bot.name).toBe('a');
-    expect(outlineOf({ kind: 'block', x: 1, y: 2, z: 3, id: 1, meta: 0, face: 0, name: 'stone', distance: 1 }).min).toEqual([0.998, 1.998, 2.998]);
+    expect(
+      outlineOf({ kind: 'block', x: 1, y: 2, z: 3, id: 1, meta: 0, face: 0, name: 'stone', distance: 1 }).min,
+    ).toEqual([0.998, 1.998, 2.998]);
   });
 });

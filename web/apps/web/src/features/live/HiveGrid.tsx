@@ -19,7 +19,17 @@ function loadCollapsed(): Set<string> {
   }
 }
 
-function GroupHeader({ g, open, onToggle, tree }: { g: BodyGroup; open: boolean; onToggle: () => void; tree: ReadonlyMap<string, HiveTreeNode> }) {
+function GroupHeader({
+  g,
+  open,
+  onToggle,
+  tree,
+}: {
+  g: BodyGroup;
+  open: boolean;
+  onToggle: () => void;
+  tree: ReadonlyMap<string, HiveTreeNode>;
+}) {
   const total = (g.head ? 1 : 0) + g.bodies.length;
   const brain = tree.get(g.id)?.brain ?? (g.kind === 'main' ? 'opus' : null);
   return (
@@ -46,7 +56,15 @@ function GroupHeader({ g, open, onToggle, tree }: { g: BodyGroup; open: boolean;
  * The hive grid: every body as a card, grouped by the hive that drives it (main and main's own bodies, then each hive and its
  * subhive bodies), each group collapsible. Collapsed groups unmount their thumbnails, so a large hive costs nothing folded.
  */
-export function HiveGrid({ bots, main, tree }: { bots: readonly BotStatusView[]; main: string; tree: ReadonlyMap<string, HiveTreeNode> }) {
+export function HiveGrid({
+  bots,
+  main,
+  tree,
+}: {
+  bots: readonly BotStatusView[];
+  main: string;
+  tree: ReadonlyMap<string, HiveTreeNode>;
+}) {
   const groups = useMemo(() => groupBodies(bots, main, tree), [bots, main, tree]);
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
   const toggle = (id: string) =>

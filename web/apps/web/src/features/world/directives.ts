@@ -39,7 +39,11 @@ export function directiveText(kind: DirectiveKind, p: readonly [number, number, 
 }
 
 /** A crosshair click on a bot: plain = select only it, Shift = add/remove it, Ctrl = clear the selection. */
-export function nextSelection(current: readonly string[], name: string | null, mods: { shift: boolean; ctrl: boolean }): string[] {
+export function nextSelection(
+  current: readonly string[],
+  name: string | null,
+  mods: { shift: boolean; ctrl: boolean },
+): string[] {
   if (mods.ctrl) return [];
   if (!name) return [...current];
   if (mods.shift) return current.includes(name) ? current.filter((n) => n !== name) : [...current, name];
@@ -47,7 +51,12 @@ export function nextSelection(current: readonly string[], name: string | null, m
 }
 
 /** Number key n (1–9): the n-th bot in view (nearest first); Shift adds it to the selection instead of replacing it. */
-export function selectByNumber(current: readonly string[], inView: readonly string[], n: number, shift: boolean): string[] {
+export function selectByNumber(
+  current: readonly string[],
+  inView: readonly string[],
+  n: number,
+  shift: boolean,
+): string[] {
   const name = inView[n - 1];
   if (!name) return [...current];
   return nextSelection(current, name, { shift, ctrl: false });
@@ -67,7 +76,11 @@ const postChat: Post = (bot, body) => api('bots.chat', { params: { bot }, body }
  * Sends one line, as the signed-in user's linked player (the server adds who; the `chat` role is required), to every target
  * bot: one request per bot, each with its own request id, in parallel. Never throws.
  */
-export async function sendDirective(bots: readonly string[], text: string, post: Post = postChat): Promise<SendResult[]> {
+export async function sendDirective(
+  bots: readonly string[],
+  text: string,
+  post: Post = postChat,
+): Promise<SendResult[]> {
   const t = text.trim();
   if (!t || bots.length === 0) return [];
   return Promise.all(

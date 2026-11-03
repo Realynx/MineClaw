@@ -128,6 +128,12 @@ the one observe hook, and don't touch BotAgent.Quiet, Prompts, EventQueue/GameEv
      task, script{name, version, status, line, paused}, body{hp, food, pos, dim, held}}`.
    - Assembled from what `/api/status`, the context page and `/api/bodies/scripts` already know.
 
+4. **Every body in the bot lists (added 2026-11-03).** A hive clone's telemetry snapshot carries its subhive bodies
+   (`BotSnapshot.Bodies`: name, position, vitals, job, script), and `Supervisor/HiveBodyList` merges main, the hive slots,
+   main's own bodies, those streamed bodies and still-spawning tree nodes for `/api/bots`, `/api/status`,
+   `/api/world/entities`, `/api/viewer/now` and `/api/bodies/scripts`, with `kind`, `owner` and `script` (api.md §6). The
+   brain's own hive overview (`HiveBots()`) is unchanged.
+
 Tests for these go in `tests/MineClaw.App.Tests` (or the closest existing test project).
 
 ## Bridge API (`/v1`, JSON snake_case, all signed)
@@ -181,8 +187,22 @@ and caching. It never reshapes domain data beyond camelCase conversion.
     shown subtly behind a toggle.
   - The composer sends as the linked player, and a pending state resolves when the bot's reply arrives in the feed.
 - **Layout.**
-  - Hive-wide is a grid of bot cards (vitals, task, one-line thought) that opens the bot view.
+  - Hive-wide is a grid of bot cards (vitals, task, one-line thought) that opens the bot view. Every body has a card,
+    grouped by the hive that drives it (main and main's own bodies, then each hive and its subhive bodies) in collapsible
+    groups with counts; a folded group unmounts its cards and thumbnails.
   - The 3D world is a tab or split pane, not the default.
+  - **In the world (added 2026-11-03).** The world stage goes fullscreen (button or `F`) with the one shared canvas. Free
+    cam with the mouse locked shows the vanilla crosshair: it outlines and names the bot or block at the screen centre; a
+    click selects bots (Shift adds, Ctrl clears) or sets a target block, `1`–`9` pick the nearest bots, `Tab` toggles the
+    HUD, and `T`/`Enter` opens a chat bar (directive chips for the target block) that sends ordinary chat as the user's
+    linked player to every selected bot, with their replies shown over the world. Esc: on HTTPS (Keyboard Lock) the first
+    frees the mouse and the second leaves fullscreen; over plain HTTP the browser does both at once. World shortcuts never
+    fire while a text field has focus.
+- **Connections.** Over plain HTTP/1.1 the browser allows six connections per host for every tab together, and each tab's
+  live stream holds one for good. A hidden tab therefore closes its stream after 15 s and pauses the world's network loops
+  (reopened and re-synced when shown). `npm run test:e2e` runs a `prod` project against the standalone build behind Nest
+  (`apps/web/scripts/prod-stack.mjs`, mock bridge at production stream rates; `MOCK_REPLAY_DIR` replays a capture of a real
+  bot) next to the mock-mode specs.
 - **Tables.** Every table is server-paged and virtualised.
 - **Status.** One connection-status indicator in the header, not one per poller.
 - **Dev stats.** Hidden unless the user turns on "developer details".

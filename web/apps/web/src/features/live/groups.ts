@@ -34,7 +34,11 @@ const byShort = (a: BotStatusView, b: BotStatusView) => shortNum(a) - shortNum(b
  * Groups every body by the hive that drives it: main (with main's own subhive and script bodies), then each hive with its
  * bodies. A hive's sub-hives (a hive owned by a hive) get a group of their own after their parent. Pure (unit-tested).
  */
-export function groupBodies(bots: readonly BotStatusView[], main: string, tree: ReadonlyMap<string, HiveTreeNode>): BodyGroup[] {
+export function groupBodies(
+  bots: readonly BotStatusView[],
+  main: string,
+  tree: ReadonlyMap<string, HiveTreeNode>,
+): BodyGroup[] {
   const kind = new Map(bots.map((b) => [b.name, kindOf(b, main, tree.get(b.name))]));
   const groups = new Map<string, BodyGroup>();
   const group = (id: string): BodyGroup => {
@@ -69,7 +73,9 @@ export function groupBodies(bots: readonly BotStatusView[], main: string, tree: 
     seen.add(id);
     const g = groups.get(id);
     if (g) ordered.push(g);
-    const kids = [...groups.keys()].filter((k) => k !== id && k !== main && parentOf(k) === id).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    const kids = [...groups.keys()]
+      .filter((k) => k !== id && k !== main && parentOf(k) === id)
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
     for (const k of kids) visit(k, depth + 1);
   };
   visit(main, 0);

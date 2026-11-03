@@ -16,8 +16,16 @@ describe('directives', () => {
     posts = [];
     setCsrfToken('tok-test-0000000000000');
     setFetch((input, init) => {
-      posts.push({ url: urlOf(input), body: JSON.parse(String(init?.body)) as { text: string; requestId: string } });
-      return Promise.resolve(new Response(JSON.stringify({ accepted: true, id: 'x', feedSeq: 3 }), { status: 202, headers: { 'Content-Type': 'application/json' } }));
+      posts.push({
+        url: urlOf(input),
+        body: JSON.parse(typeof init?.body === 'string' ? init.body : 'null') as { text: string; requestId: string },
+      });
+      return Promise.resolve(
+        new Response(JSON.stringify({ accepted: true, id: 'x', feedSeq: 3 }), {
+          status: 202,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
     });
   });
   afterEach(() => setCsrfToken(null));
@@ -28,14 +36,24 @@ describe('directives', () => {
       { bot: 'maid_chan_102', ok: true },
       { bot: 'maid_chan_114', ok: true },
     ]);
-    expect(posts.map((p) => new URL(p.url, 'http://x').pathname).sort()).toEqual(['/api/bots/maid_chan_102/chat', '/api/bots/maid_chan_114/chat']);
+    expect(posts.map((p) => new URL(p.url, 'http://x').pathname).sort()).toEqual([
+      '/api/bots/maid_chan_102/chat',
+      '/api/bots/maid_chan_114/chat',
+    ]);
     expect(posts.every((p) => p.body.text === 'come here (12, 64, -3)')).toBe(true);
     expect(new Set(posts.map((p) => p.body.requestId)).size).toBe(2);
     expect(Object.keys(posts[0]!.body).sort()).toEqual(['requestId', 'text']); // never a player or a command grant
   });
 
   it('reports a refused send per bot and sends nothing without targets or text', async () => {
-    setFetch(() => Promise.resolve(new Response(JSON.stringify({ error: 'forbidden', code: 'forbidden' }), { status: 403, headers: { 'Content-Type': 'application/json' } })));
+    setFetch(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ error: 'forbidden', code: 'forbidden' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    );
     const res = await sendDirective(['maid_chan'], 'hi');
     expect(res[0]).toMatchObject({ bot: 'maid_chan', ok: false });
     expect(await sendDirective([], 'hi')).toEqual([]);
@@ -82,7 +100,16 @@ describe('ChatOverlay', () => {
     const onClose = vi.fn();
     render(
       <QueryClientProvider client={qc}>
-        <ChatOverlay open targets={['maid_chan_102']} marker={[12, 64, -3]} canChat onSend={onSend} onClose={onClose} results={null} {...props} />
+        <ChatOverlay
+          open
+          targets={['maid_chan_102']}
+          marker={[12, 64, -3]}
+          canChat
+          onSend={onSend}
+          onClose={onClose}
+          results={null}
+          {...props}
+        />
       </QueryClientProvider>,
     );
     return { onSend, onClose };

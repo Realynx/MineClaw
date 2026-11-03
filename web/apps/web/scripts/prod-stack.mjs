@@ -32,7 +32,12 @@ if (process.argv.includes('--build') || !existsSync(server)) {
   // The real build: no mock flags, the default .next (an e2e run of the mock dev server sets NEXT_DIST_DIR for itself).
   const env = { ...process.env };
   for (const k of Object.keys(env)) if (k === 'NEXT_DIST_DIR' || k.startsWith('NEXT_PUBLIC_MOCK')) delete env[k];
-  const r = spawnSync('npx', ['next', 'build', '--turbopack'], { cwd: app, stdio: 'inherit', shell: process.platform === 'win32', env });
+  const r = spawnSync('npx', ['next', 'build', '--turbopack'], {
+    cwd: app,
+    stdio: 'inherit',
+    shell: process.platform === 'win32',
+    env,
+  });
   if (r.status !== 0) process.exit(r.status ?? 1);
 }
 // Standalone output leaves the static assets to the deploy step (deploy-alice.ps1 copies them the same way).
@@ -51,7 +56,16 @@ const dir = mkdtempSync(join(tmpdir(), 'mcx-prod-stack-'));
 const usersFile = join(dir, 'users.json');
 writeUsersFile(usersFile, {
   version: 1,
-  users: [{ username: USER, passwordHash: await hashPassword(PASSWORD), roles: ['admin', 'chat', 'commands', 'viewer'], player: 'poofimafox', totp: null, disabled: false }],
+  users: [
+    {
+      username: USER,
+      passwordHash: await hashPassword(PASSWORD),
+      roles: ['admin', 'chat', 'commands', 'viewer'],
+      player: 'poofimafox',
+      totp: null,
+      disabled: false,
+    },
+  ],
 });
 const config = join(dir, 'config.json');
 const origin = `http://127.0.0.1:${port}`;
@@ -103,12 +117,23 @@ process.on('SIGTERM', () => stop(0));
 
 start('next', process.execPath, [server], {
   cwd: standalone,
-  env: { ...process.env, NODE_ENV: 'production', PORT: String(nextPort), HOSTNAME: '127.0.0.1', NEXT_TELEMETRY_DISABLED: '1' },
+  env: {
+    ...process.env,
+    NODE_ENV: 'production',
+    PORT: String(nextPort),
+    HOSTNAME: '127.0.0.1',
+    NEXT_TELEMETRY_DISABLED: '1',
+  },
 });
 // The mock bridge is refused under NODE_ENV=production; Nest itself runs its prod code paths (proxy, CSP) regardless.
 const env = { ...process.env };
 delete env.NODE_ENV;
-start('nest', process.execPath, ['--disable-warning=ExperimentalWarning', apiMain, '--mock-bridge', '--config', config], { cwd: apiDir, env });
+start(
+  'nest',
+  process.execPath,
+  ['--disable-warning=ExperimentalWarning', apiMain, '--mock-bridge', '--config', config],
+  { cwd: apiDir, env },
+);
 
 let ready = false;
 for (let i = 0; i < 240 && !ready; i++) {

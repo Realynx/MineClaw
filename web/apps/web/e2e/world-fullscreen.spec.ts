@@ -49,13 +49,24 @@ test('fullscreen free cam: crosshair, selection, chat bar and Esc', async ({ pag
   await page.waitForTimeout(1500);
   const before = await contexts();
   await page.getByRole('button', { name: 'Full screen' }).click();
-  await expect.poll(() => page.evaluate(() => document.fullscreenElement?.getAttribute('data-testid') ?? null)).toBe('world-stage');
+  await expect
+    .poll(() => page.evaluate(() => document.fullscreenElement?.getAttribute('data-testid') ?? null))
+    .toBe('world-stage');
   expect(await contexts()).toBe(before); // the canvas moved with its container; no second WebGL context
   // The renderer follows the new size (ResizeObserver): the canvas fills the screen.
-  await expect.poll(() => page.evaluate(() => (document.querySelector('[data-testid="world-stage"] canvas') as HTMLCanvasElement).clientWidth)).toBe(1440);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (document.querySelector('[data-testid="world-stage"] canvas') as HTMLCanvasElement).clientWidth,
+      ),
+    )
+    .toBe(1440);
   await expect(page.getByRole('radio', { name: 'Free cam' })).toHaveAttribute('aria-checked', 'true');
   // First click locks the mouse; the crosshair appears.
-  await stage.locator('canvas').first().click({ position: { x: 720, y: 450 } });
+  await stage
+    .locator('canvas')
+    .first()
+    .click({ position: { x: 720, y: 450 } });
   await expect.poll(() => page.evaluate(() => !!document.pointerLockElement)).toBe(true);
   await expect(page.getByTestId('crosshair')).toBeVisible();
   await expect(page.getByTestId('aim-readout')).toContainText('maid_chan_114');
@@ -78,7 +89,9 @@ test('fullscreen free cam: crosshair, selection, chat bar and Esc', async ({ pag
   await page.getByRole('button', { name: 'Come here' }).click();
   await expect(bar).toHaveValue(/^come here \(-?\d+, -?\d+, -?\d+\)$/);
   await bar.pressSequentially(' F1 come on');
-  await expect.poll(() => page.evaluate(() => document.fullscreenElement?.getAttribute('data-testid') ?? null)).toBe('world-stage');
+  await expect
+    .poll(() => page.evaluate(() => document.fullscreenElement?.getAttribute('data-testid') ?? null))
+    .toBe('world-stage');
   if (shots) await page.screenshot({ path: `${shots}/fullscreen-chat.png` });
   await bar.press('Enter');
   await expect(page.getByTestId('chat-overlay')).toContainText('come on');

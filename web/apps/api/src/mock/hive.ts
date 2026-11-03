@@ -20,7 +20,9 @@ export interface MockBody {
 
 const MAIN = 'maid_chan';
 const HIVE = 'maid_chan_109';
-const SUB_IDS = [102, 114, 124, 131, 135, 141, 146, 152, 158, 163, 167, 172, 178, 183, 189, 194, 199, 205, 211, 216, 222, 228];
+const SUB_IDS = [
+  102, 114, 124, 131, 135, 141, 146, 152, 158, 163, 167, 172, 178, 183, 189, 194, 199, 205, 211, 216, 222, 228,
+];
 const SUB_TASKS: Array<[string, string, string]> = [
   ['chopping oak', 'chop_crew', 'iron axe'],
   ['hauling logs', 'chop_crew', 'oak log'],
@@ -31,10 +33,54 @@ const SUB_TASKS: Array<[string, string, string]> = [
 export function mockBodies(count = Number(process.env.MOCK_BODIES) || 12): MockBody[] {
   const n = Math.max(4, Math.min(SUB_IDS.length + 4, count));
   const list: MockBody[] = [
-    { name: MAIN, short: 'main', kind: 'main', owner: null, brain: 'opus', dim: 0, home: [4.5, 64, 6.5], task: 'mining cobble', held: 'stone pickaxe', script: { name: 'cobble_loop', version: 4, line: 12 } },
-    { name: HIVE, short: '109', kind: 'hive', owner: MAIN, brain: 'opus', dim: 0, home: [-18.5, 64, 30.5], task: 'tree farm with the crew', held: 'iron axe', script: null },
-    { name: 'maid_chan_68', short: '68', kind: 'subhive', owner: MAIN, brain: null, dim: 0, home: [14.5, 64, -9.5], task: 'tending the wheat farm', held: 'iron hoe', script: { name: 'farm_tend', version: 4, line: 8 } },
-    { name: 'maid_chan_70', short: '70', kind: 'script', owner: MAIN, brain: null, dim: 0, home: [9.5, 64, -4.5], task: 'sorting the storage room', held: 'chest', script: { name: 'sort_chests', version: 2, line: 30 } },
+    {
+      name: MAIN,
+      short: 'main',
+      kind: 'main',
+      owner: null,
+      brain: 'opus',
+      dim: 0,
+      home: [4.5, 64, 6.5],
+      task: 'mining cobble',
+      held: 'stone pickaxe',
+      script: { name: 'cobble_loop', version: 4, line: 12 },
+    },
+    {
+      name: HIVE,
+      short: '109',
+      kind: 'hive',
+      owner: MAIN,
+      brain: 'opus',
+      dim: 0,
+      home: [-18.5, 64, 30.5],
+      task: 'tree farm with the crew',
+      held: 'iron axe',
+      script: null,
+    },
+    {
+      name: 'maid_chan_68',
+      short: '68',
+      kind: 'subhive',
+      owner: MAIN,
+      brain: null,
+      dim: 0,
+      home: [14.5, 64, -9.5],
+      task: 'tending the wheat farm',
+      held: 'iron hoe',
+      script: { name: 'farm_tend', version: 4, line: 8 },
+    },
+    {
+      name: 'maid_chan_70',
+      short: '70',
+      kind: 'script',
+      owner: MAIN,
+      brain: null,
+      dim: 0,
+      home: [9.5, 64, -4.5],
+      task: 'sorting the storage room',
+      held: 'chest',
+      script: { name: 'sort_chests', version: 2, line: 30 },
+    },
   ];
   for (let i = 0; i < n - 4; i++) {
     const id = SUB_IDS[i]!;
@@ -99,12 +145,20 @@ export class MockHive {
 
   private vitals(b: MockBody, i: number): { hp: number; food: number } {
     const t = Math.floor(this.step / 10);
-    return { hp: Math.max(1, 20 - ((t + i) % 5) - (b.kind === 'subhive' && i % 7 === 0 ? 12 : 0)), food: 20 - ((t + i * 3) % 9) };
+    return {
+      hp: Math.max(1, 20 - ((t + i) % 5) - (b.kind === 'subhive' && i % 7 === 0 ? 12 : 0)),
+      food: 20 - ((t + i * 3) % 9),
+    };
   }
 
   pose(b: MockBody, i: number): { x: number; y: number; z: number; yaw: number } {
     const a = this.step / 25 + i;
-    return { x: r2(b.home[0] + Math.sin(a) * 2.5), y: b.home[1], z: r2(b.home[2] + Math.cos(a) * 2.5), yaw: Math.round(((a * 57.3) % 360) + 360) % 360 };
+    return {
+      x: r2(b.home[0] + Math.sin(a) * 2.5),
+      y: b.home[1],
+      z: r2(b.home[2] + Math.cos(a) * 2.5),
+      yaw: Math.round(((a * 57.3) % 360) + 360) % 360,
+    };
   }
 
   private scriptOf(b: MockBody, i: number): Obj | null {
@@ -115,7 +169,8 @@ export class MockHive {
 
   private brainState(b: MockBody): string {
     if (b.kind === 'script') return 'script-only';
-    if (b.kind === 'subhive') return `driven by ${b.owner === MAIN ? 'main' : (this.find(b.owner ?? '')?.short ?? b.owner)}`;
+    if (b.kind === 'subhive')
+      return `driven by ${b.owner === MAIN ? 'main' : (this.find(b.owner ?? '')?.short ?? b.owner)}`;
     return b.script ? `asleep (script ${b.script.name} 34%)` : 'awake';
   }
 
@@ -155,7 +210,15 @@ export class MockHive {
         clones_month_usd: 6.3,
         slots: this.bodies
           .filter((b) => b.kind === 'hive' || b.kind === 'script')
-          .map((b) => ({ name: b.name, number: Number(b.short), state: 'running', connected: true, task: b.task, pending: 0, deaths: 0 })),
+          .map((b) => ({
+            name: b.name,
+            number: Number(b.short),
+            state: 'running',
+            connected: true,
+            task: b.task,
+            pending: 0,
+            deaths: 0,
+          })),
       },
       claims: [{ owner: MAIN, what: 'cobble gen' }],
     };
@@ -236,7 +299,16 @@ export class MockHive {
       bodies: this.bodies
         .map((b, i) => ({ b, s: this.scriptOf(b, i) }))
         .filter((x) => x.s)
-        .map(({ b, s }) => ({ body: b.name, short: b.short, script: s!.name, status: s!.status, line: s!.line, paused: false, version: s!.version, owner: b.owner })),
+        .map(({ b, s }) => ({
+          body: b.name,
+          short: b.short,
+          script: s!.name,
+          status: s!.status,
+          line: s!.line,
+          paused: false,
+          version: s!.version,
+          owner: b.owner,
+        })),
     };
   }
 
@@ -272,16 +344,62 @@ export class MockHive {
     const crowd = this.bodies.length * 10;
     for (let k = 0; k < crowd; k++) {
       const a = this.step / 15 + k * 1.7;
-      const cx = ((k * 37) % 80) - 40, cz = ((k * 53) % 80) - 30;
-      const x = r2(cx + Math.sin(a) * 1.5), z = r2(cz + Math.cos(a) * 1.5);
+      const cx = ((k * 37) % 80) - 40,
+        cz = ((k * 53) % 80) - 30;
+      const x = r2(cx + Math.sin(a) * 1.5),
+        z = r2(cz + Math.cos(a) * 1.5);
       if (k % 10 === 0) {
-        entities.push({ kind: 'player', name: NAMES[(k / 10) % NAMES.length], dim: 0, x, y: 64, z, id: 5000 + k, yaw: (k * 40) % 360, head_yaw: (k * 40) % 360, flags: 0, by: MAIN });
+        entities.push({
+          kind: 'player',
+          name: NAMES[(k / 10) % NAMES.length],
+          dim: 0,
+          x,
+          y: 64,
+          z,
+          id: 5000 + k,
+          yaw: (k * 40) % 360,
+          head_yaw: (k * 40) % 360,
+          flags: 0,
+          by: MAIN,
+        });
       } else if (k % 3 === 0) {
         const [name, item] = DROPS[k % DROPS.length]!;
-        entities.push({ kind: 'item', name, dim: 0, x, y: 64.1, z, id: 5000 + k, item, damage: 0, count: 1 + (k % 4), vx: 0, vy: 0, vz: 0, age: 30, by: MAIN });
+        entities.push({
+          kind: 'item',
+          name,
+          dim: 0,
+          x,
+          y: 64.1,
+          z,
+          id: 5000 + k,
+          item,
+          damage: 0,
+          count: 1 + (k % 4),
+          vx: 0,
+          vy: 0,
+          vz: 0,
+          age: 30,
+          by: MAIN,
+        });
       } else {
         const [name, type] = MOBS[k % MOBS.length]!;
-        entities.push({ kind: 'mob', name, dim: 0, x, y: 64, z, id: 5000 + k, type, yaw: (a * 57.3) % 360, head_yaw: (a * 57.3) % 360, vx: 0.01, vy: 0, vz: 0.01, age: 120, by: MAIN });
+        entities.push({
+          kind: 'mob',
+          name,
+          dim: 0,
+          x,
+          y: 64,
+          z,
+          id: 5000 + k,
+          type,
+          yaw: (a * 57.3) % 360,
+          head_yaw: (a * 57.3) % 360,
+          vx: 0.01,
+          vy: 0,
+          vz: 0.01,
+          age: 120,
+          by: MAIN,
+        });
       }
     }
     return { at: Date.now(), rev, full: false, bots, entities, removed: [] };
@@ -290,8 +408,17 @@ export class MockHive {
   /** A `blocks` frame: one crew body breaks or places a log near its spot (every other frame). */
   blocks(rev: number): Obj {
     const b = this.bodies[4 + (this.step % Math.max(1, this.bodies.length - 4))] ?? this.bodies[0]!;
-    const x = Math.floor(b.home[0]) + 1, z = Math.floor(b.home[2]) + 1, y = 65;
+    const x = Math.floor(b.home[0]) + 1,
+      z = Math.floor(b.home[2]) + 1,
+      y = 65;
     const placed = Math.floor(this.step / 2) % 2 === 0;
-    return { at: Date.now(), rev, full: false, more: false, blocks: { '0': [[x, y, z, placed ? 17 : 0, 0]] }, columns: [] };
+    return {
+      at: Date.now(),
+      rev,
+      full: false,
+      more: false,
+      blocks: { '0': [[x, y, z, placed ? 17 : 0, 0]] },
+      columns: [],
+    };
   }
 }

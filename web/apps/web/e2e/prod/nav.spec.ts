@@ -21,7 +21,10 @@ async function navigate(page: Page, name: string, path: string, ms = 8000) {
   const link = page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name, exact: true });
   const box = await link.boundingBox();
   expect(box).not.toBeNull();
-  const hit = await page.evaluate(([x, y]) => document.elementFromPoint(x!, y!)?.closest('a')?.getAttribute('href') ?? null, [box!.x + box!.width / 2, box!.y + box!.height / 2]);
+  const hit = await page.evaluate(
+    ([x, y]) => document.elementFromPoint(x!, y!)?.closest('a')?.getAttribute('href') ?? null,
+    [box!.x + box!.width / 2, box!.y + box!.height / 2],
+  );
   expect(hit, `nothing covers the ${name} link`).toBe(path);
   await link.click();
   await page.waitForURL(`**${path}`, { timeout: ms });
@@ -77,7 +80,9 @@ test.describe('sidebar navigation (production build behind Nest)', () => {
 
   test('the grid shows every body, grouped by hive', async ({ page }) => {
     await signIn(page);
-    const status = await page.evaluate(async () => (await (await fetch('/api/status')).json()) as { bots: Array<{ name: string }> });
+    const status = await page.evaluate(
+      async () => (await (await fetch('/api/status')).json()) as { bots: Array<{ name: string }> },
+    );
     await expect(page.locator('[data-body]')).toHaveCount(status.bots.length);
     expect(status.bots.length).toBeGreaterThanOrEqual(8);
     await expect(page.locator('[data-group]')).toHaveCount(2); // main, and the hive with its crew

@@ -46,7 +46,11 @@ describe('groupBodies', () => {
   });
 
   it('keeps bodies of a hive that is not listed yet (still spawning) in a group of their own', () => {
-    const g = groupBodies([row('maid_chan'), row('maid_chan_150', { kind: 'subhive', owner: 'maid_chan_149' })], 'maid_chan', new Map());
+    const g = groupBodies(
+      [row('maid_chan'), row('maid_chan_150', { kind: 'subhive', owner: 'maid_chan_149' })],
+      'maid_chan',
+      new Map(),
+    );
     expect(g.map((x) => [x.id, x.head?.name ?? null, x.bodies.length])).toEqual([
       ['maid_chan', 'maid_chan', 0],
       ['maid_chan_149', null, 1],

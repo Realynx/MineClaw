@@ -30,25 +30,41 @@ export default defineConfig({
   },
   projects: [
     ...(wantMock ? [{ name: 'mock', testIgnore: /prod\//, use: { ...desktop, baseURL } }] : []),
-    ...(!wantProd ? [] : [{ name: 'prod', testMatch: /prod\/.*\.spec\.ts/, use: { ...desktop, baseURL: `http://127.0.0.1:${prodPort}` } }]),
+    ...(!wantProd
+      ? []
+      : [
+          {
+            name: 'prod',
+            testMatch: /prod\/.*\.spec\.ts/,
+            use: { ...desktop, baseURL: `http://127.0.0.1:${prodPort}` },
+          },
+        ]),
   ],
   webServer: external
     ? undefined
     : [
-        ...(wantProd ? [{
-          // Built first, while nothing else compiles; then the mock dev server below.
-          command: `node scripts/prod-stack.mjs --build --port ${prodPort}`,
-          url: `http://127.0.0.1:${prodPort}/login`,
-          timeout: 600_000,
-          reuseExistingServer: false,
-          env: { MOCK_CHAT_REPLY_MS: '20000' },
-        }] : []),
-        ...(wantMock ? [{
-          command: `node scripts/with-mock.mjs next dev --turbopack -p ${port}`,
-          url: `${baseURL}/login`,
-          timeout: 180_000,
-          reuseExistingServer: true,
-          env: { NEXT_DIST_DIR: '.next-e2e' },
-        }] : []),
+        ...(wantProd
+          ? [
+              {
+                // Built first, while nothing else compiles; then the mock dev server below.
+                command: `node scripts/prod-stack.mjs --build --port ${prodPort}`,
+                url: `http://127.0.0.1:${prodPort}/login`,
+                timeout: 600_000,
+                reuseExistingServer: false,
+                env: { MOCK_CHAT_REPLY_MS: '20000' },
+              },
+            ]
+          : []),
+        ...(wantMock
+          ? [
+              {
+                command: `node scripts/with-mock.mjs next dev --turbopack -p ${port}`,
+                url: `${baseURL}/login`,
+                timeout: 180_000,
+                reuseExistingServer: true,
+                env: { NEXT_DIST_DIR: '.next-e2e' },
+              },
+            ]
+          : []),
       ],
 });

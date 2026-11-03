@@ -17,18 +17,31 @@ export interface AimBot {
 
 export type AimTarget =
   | { kind: 'bot'; name: string; x: number; y: number; z: number; distance: number }
-  | { kind: 'block'; x: number; y: number; z: number; id: number; meta: number; face: number; name: string; distance: number };
+  | {
+      kind: 'block';
+      x: number;
+      y: number;
+      z: number;
+      id: number;
+      meta: number;
+      face: number;
+      name: string;
+      distance: number;
+    };
 
 /** Slab test: the distance along the (unit) ray where it enters the box, or null when it misses or the box is behind. */
 export function rayBox(o: V3, d: V3, min: V3, max: V3): number | null {
-  let t0 = 0, t1 = Infinity;
+  let t0 = 0,
+    t1 = Infinity;
   for (let i = 0; i < 3; i++) {
-    const oi = o[i]!, di = d[i]!;
+    const oi = o[i]!,
+      di = d[i]!;
     if (Math.abs(di) < 1e-12) {
       if (oi < min[i]! || oi > max[i]!) return null;
       continue;
     }
-    let a = (min[i]! - oi) / di, b = (max[i]! - oi) / di;
+    let a = (min[i]! - oi) / di,
+      b = (max[i]! - oi) / di;
     if (a > b) [a, b] = [b, a];
     t0 = Math.max(t0, a);
     t1 = Math.min(t1, b);
@@ -43,11 +56,17 @@ const unit = (d: V3): V3 => {
 };
 
 /** The bot whose hit box the ray enters first, within `max` blocks. */
-export function botAlong(o: V3, dir: V3, bots: readonly AimBot[], max: number): { bot: AimBot; distance: number } | null {
+export function botAlong(
+  o: V3,
+  dir: V3,
+  bots: readonly AimBot[],
+  max: number,
+): { bot: AimBot; distance: number } | null {
   const d = unit(dir);
   let best: { bot: AimBot; distance: number } | null = null;
   for (const b of bots) {
-    const hw = (b.w ?? 0.6) / 2, h = b.h ?? 1.8;
+    const hw = (b.w ?? 0.6) / 2,
+      h = b.h ?? 1.8;
     const t = rayBox(o, d, [b.x - hw, b.y, b.z - hw], [b.x + hw, b.y + h, b.z + hw]);
     if (t !== null && t <= max && (!best || t < best.distance)) best = { bot: b, distance: t };
   }
@@ -56,7 +75,9 @@ export function botAlong(o: V3, dir: V3, bots: readonly AimBot[], max: number): 
 
 /** Distance from the eye to where the ray enters block (x, y, z). */
 function blockDistance(o: V3, d: V3, x: number, y: number, z: number): number {
-  return rayBox(o, unit(d), [x, y, z], [x + 1, y + 1, z + 1]) ?? Math.hypot(x + 0.5 - o[0], y + 0.5 - o[1], z + 0.5 - o[2]);
+  return (
+    rayBox(o, unit(d), [x, y, z], [x + 1, y + 1, z + 1]) ?? Math.hypot(x + 0.5 - o[0], y + 0.5 - o[1], z + 0.5 - o[2])
+  );
 }
 
 /**
@@ -74,13 +95,25 @@ export async function aimAt(
   const bot = botAlong(o, d, bots, max);
   const hit = await pickBlock(o, d, bot ? bot.distance + 1 : max).catch(() => null);
   const hitD = hit ? blockDistance(o, d, hit.x, hit.y, hit.z) : Infinity;
-  if (bot && bot.distance <= hitD) return { kind: 'bot', name: bot.bot.name, x: bot.bot.x, y: bot.bot.y, z: bot.bot.z, distance: bot.distance };
+  if (bot && bot.distance <= hitD)
+    return { kind: 'bot', name: bot.bot.name, x: bot.bot.x, y: bot.bot.y, z: bot.bot.z, distance: bot.distance };
   if (!hit) return null;
-  return { kind: 'block', x: hit.x, y: hit.y, z: hit.z, id: hit.id, meta: hit.meta, face: hit.face, name: nameOf(hit.id), distance: hitD };
+  return {
+    kind: 'block',
+    x: hit.x,
+    y: hit.y,
+    z: hit.z,
+    id: hit.id,
+    meta: hit.meta,
+    face: hit.face,
+    name: nameOf(hit.id),
+    distance: hitD,
+  };
 }
 
 /** The outline box drawn around a target: a block's cell (vanilla's selection box, a hair larger) or a bot's hit box. */
 export function outlineOf(t: AimTarget): { min: V3; max: V3 } {
-  if (t.kind === 'block') return { min: [t.x - 0.002, t.y - 0.002, t.z - 0.002], max: [t.x + 1.002, t.y + 1.002, t.z + 1.002] };
+  if (t.kind === 'block')
+    return { min: [t.x - 0.002, t.y - 0.002, t.z - 0.002], max: [t.x + 1.002, t.y + 1.002, t.z + 1.002] };
   return { min: [t.x - 0.35, t.y, t.z - 0.35], max: [t.x + 0.35, t.y + 1.85, t.z + 0.35] };
 }

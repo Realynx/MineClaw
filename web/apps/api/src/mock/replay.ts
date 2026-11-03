@@ -71,7 +71,8 @@ export class Replay {
     let o = 16;
     for (let i = 0; i < count; i++) {
       const start = o;
-      const cx = buf.readInt32LE(o), cz = buf.readInt32LE(o + 4);
+      const cx = buf.readInt32LE(o),
+        cz = buf.readInt32LE(o + 4);
       o += 8 + 8 + 8 + 1;
       const byLen = buf.readUInt8(o);
       o += 1 + byLen;
