@@ -56,6 +56,7 @@ uniform vec4 uRoof;
 uniform float uDimBelow;
 uniform float uAlphaTest;
 uniform float uCap;
+uniform float uAo;
 ${starfieldGlsl()}
 varying vec2 vUv;
 flat varying vec4 vTile;
@@ -181,7 +182,7 @@ void main() {
   bool emissive = flag(vFlags, 1.0);
   float b = emissive ? 1.0 : bright(max(vLight.y, vLight.x - uSkySub));
   if (!emissive && flag(vFlags, 2.0)) b = 0.75;
-  b = max(b, uMinBright) * (emissive ? 1.0 : vLight.z);
+  b = max(b, uMinBright) * (emissive ? 1.0 : mix(1.0, vLight.z, uAo));
   vec3 rgb = c.rgb;
   if (flag(vFlags, 8.0)) {
     float s = step(0.5, fract((vWorld.x + vWorld.y + vWorld.z) * 2.0));
@@ -222,6 +223,8 @@ export interface ChunkUniforms {
   uDimBelow: THREE.IUniform<number>;
   uAlphaTest: THREE.IUniform<number>;
   uCap: THREE.IUniform<number>;
+  /** Ambient occlusion strength: 1 = the mesher's corner shading, 0 = none (the viewer settings' toggle; no re-mesh). */
+  uAo: THREE.IUniform<number>;
   /** [blocks] Seconds (animated block shaders: the end starfield), the view's size in device pixels, the starfield's sheets
    * (column, row, width, height in cells) and layer count. */
   uTime: THREE.IUniform<number>;
@@ -254,6 +257,7 @@ export function createChunkUniforms(): ChunkUniforms {
     uDimBelow: { value: -1e9 },
     uAlphaTest: { value: 0.5 },
     uCap: { value: 0 },
+    uAo: { value: 1 },
     uTime: { value: 0 },
     uViewport: { value: new THREE.Vector2(1, 1) },
     uStarSky: { value: new THREE.Vector4(0, 0, 1, 1) },

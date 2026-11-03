@@ -27,6 +27,7 @@ import {
   type RouteId,
   type SseEventName,
 } from '@mineclaw/contracts';
+import { mockInventory } from '@mineclaw/contracts/testing';
 import { SignatureVerifier, type BridgeIdentity } from '../bridge/signing.js';
 import { makeMcwc, makePng, makeZip } from './binary.js';
 import { generate } from './generate.js';
@@ -442,6 +443,13 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
     switch (id) {
       case 'bots.now':
         return { json: world.now(params.bot ?? query.get('bot') ?? 'maid_chan') };
+      case 'bots.inventory': {
+        // Like the bridge in front of the bot: any body by login or short name (snake_case); unknown = the ApiError 404.
+        const found = world.hive.find(params.bot ?? '');
+        if (!found) return { status: 404, json: { error: 'no such body', code: 'not_found' } };
+        const index = world.hive.names().indexOf(found.name);
+        return { json: toSnake(mockInventory(found.name, index, world.tick)) };
+      }
       case 'bots.list':
         return { json: world.hive.tiles() };
       case 'status':

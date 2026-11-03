@@ -174,6 +174,7 @@ public static class AppHost
         });
         var game = new MinecraftGameClient(client);
         Supervisor.BlockDeltaLog.Attach(client.World); // the browser viewer's live block feed (logs only while someone reads it)
+        Supervisor.BodyInventories.Attach(mc.Username, client); // the viewer's body inventory panel (read only when asked)
         // One brain, many bodies (step 2): Bodies:Mode=inproc runs the clone accounts as bodies in this process (no MainHive);
         // the default "hive" keeps one process per clone.
         var inproc = InProcBodies.Create(hive, bodiesOptions ?? new MineClaw.Bot.Bodies.BodiesOptions(), mc, agentOptions, loggers, profile);

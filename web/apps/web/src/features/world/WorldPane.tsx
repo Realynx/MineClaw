@@ -16,6 +16,9 @@ import { usePrefs } from '@/lib/prefs';
 import { bytes, cn, dimName, num } from '@/lib/utils';
 import { Button, Checkbox, Input, Select } from '@/components/ui/primitives';
 import { Segmented, Tooltip } from '@/components/ui/overlays';
+import { ViewerQualityButton } from '@/features/settings/QuickSettings';
+import { concreteFields } from '@/features/settings/schema';
+import { detectedProfile, setField, useRendererProbe, useViewerSettings } from '@/features/settings/store';
 import { DotMap } from './DotMap';
 import { useWorldHost } from './integration';
 import { ChatOverlay, Crosshair as AimCross, SelectionBar, TargetReadout } from './InWorld';
@@ -53,13 +56,37 @@ function parseCoords(q: string): [number, number, number] | null {
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
 }
 
-export function WorldPane({ follow, className, toolbarStart }: { follow?: string; className?: string; toolbarStart?: ReactNode }) {
+/**
+ * `onBodyClick`: a bot clicked in the world (a plain click, or a free-cam click that selects it); the Live hive opens its
+ * panel. `overlay`: drawn over the stage (inside it, so it stays in fullscreen).
+ */
+export function WorldPane({
+  follow,
+  className,
+  toolbarStart,
+  onBodyClick,
+  overlay,
+}: {
+  follow?: string;
+  className?: string;
+  toolbarStart?: ReactNode;
+  onBodyClick?: (name: string) => void;
+  overlay?: ReactNode;
+}) {
   const { mod, source, ready } = useWorldHost();
+  const bodyClick = useRef(onBodyClick);
+  useEffect(() => {
+    bodyClick.current = onBodyClick;
+  }, [onBodyClick]);
   const { devDetails } = usePrefs();
   const viewer = useRef<WorldViewerHandle>(null);
   const [mode, setMode] = useState<CameraMode>(follow ? 'follow' : 'fly');
   const [xray, setXray] = useState<XRayMode>('auto');
-  const [distance, setDistance] = useState(128);
+  // The draw distance is the device's viewer setting (Settings → Viewer quality): this slider edits it for every view.
+  const viewerSettings = useViewerSettings();
+  const probe = useRendererProbe();
+  const distance = concreteFields(viewerSettings, detectedProfile(probe)).drawDistance;
+  const setDistance = (v: number) => setField('drawDistance', v, probe);
   const [layers, setLayers] = useState<Partial<LayerToggles>>({});
   const [hud, setHud] = useState(true);
   const [picked, setPicked] = useState<PickedBlock | null>(null);
@@ -112,8 +139,12 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
   // Mock mode only (e2e): the chat bubbles this pane drew in its last frame, and its camera, for headless checks.
   useEffect(() => {
     if (process.env.NEXT_PUBLIC_MOCK !== '1') return;
-    const w = window as unknown as { __mcxWorld?: { bubbles: () => unknown; camera: (m: CameraMode) => void } };
-    w.__mcxWorld = { bubbles: () => viewer.current?.bubbles() ?? [], camera: (m) => viewer.current?.setCameraMode(m) };
+    const w = window as unknown as { __mcxWorld?: { bubbles: () => unknown; camera: (m: CameraMode) => void; clickBot: (name: string) => void } };
+    w.__mcxWorld = {
+      bubbles: () => viewer.current?.bubbles() ?? [],
+      camera: (m) => viewer.current?.setCameraMode(m),
+      clickBot: (name) => bodyClick.current?.(name), // what a click on that bot's model does
+    };
     return () => {
       delete w.__mcxWorld;
     };
@@ -196,8 +227,10 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
       setSelected([]);
       return;
     }
-    if (t?.kind === 'bot') setSelected((cur) => nextSelection(cur, t.name, mods));
-    else if (t?.kind === 'block') setMarker([t.x, t.y, t.z]);
+    if (t?.kind === 'bot') {
+      setSelected((cur) => nextSelection(cur, t.name, mods));
+      if (!mods.shift) bodyClick.current?.(t.name);
+    } else if (t?.kind === 'block') setMarker([t.x, t.y, t.z]);
   }, []);
 
   const nearbyDrops = useMemo(() => {
@@ -294,13 +327,14 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
               </div>
               <div>
                 <label className="mb-1 flex justify-between text-xs text-muted" htmlFor="dist">
-                  Draw distance <span className="tabular text-fg">{distance} blocks</span>
+                  Draw distance (all views) <span className="tabular text-fg">{distance} blocks</span>
                 </label>
                 <input id="dist" type="range" min={32} max={256} step={16} value={distance} onChange={(e) => setDistance(Number(e.target.value))} className="w-full accent-[var(--accent)]" />
               </div>
             </Popover.Content>
           </Popover.Portal>
         </Popover.Root>
+        <ViewerQualityButton />
         <form onSubmit={(e) => void go(e)} className="flex items-center gap-1">
           <Input
             value={gotoText}
@@ -340,11 +374,13 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
           layers={layers}
           cameraMode={mode}
           xray={xray}
-          drawDistance={distance}
           onPick={setPicked}
           onStats={devDetails ? setStats : undefined}
           onCameraModeChange={setMode}
-          onSelectBot={(name) => viewer.current?.followBot(name)}
+          onSelectBot={(name) => {
+            viewer.current?.followBot(name);
+            bodyClick.current?.(name);
+          }}
           onAim={setAim}
           onAimClick={onAimClick}
           marker={marker}
@@ -435,6 +471,7 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
             </ul>
           </div>
         ) : null}
+        {overlay}
         {devDetails && stats ? (
           <div className="pointer-events-none absolute bottom-3 left-3 rounded-md bg-black/55 px-2.5 py-2 font-mono text-[11px] leading-snug text-white">
             <div className="flex items-center gap-1.5">
