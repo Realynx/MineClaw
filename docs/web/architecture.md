@@ -220,3 +220,9 @@ entity and overlay data plus the runtime-generated texture atlas. No world image
        digging re-meshes each section once.
   2. **Hash diff (backstop).** Each column's hash in `/api/world/index` changes with any block change. On a rev gap,
      `full:true` (the ring overflowed) or a reconnect, the client refetches only the columns whose hash changed.
+- **Render parity (decided 2026-11-02).** The repo is private and unreleased, so the Minecraft assets are committed:
+  1.12.2 blockstates, models, textures and .mcmeta animations, and the b1.8.1 terrain, items and mob textures. They live
+  under `web/packages/world-viewer/assets/`, and the atlas is built client-side.
+  - The browser must match the old freecam and every C# renderer: animated water and lava, real fluids, real player and
+    mob models with animation, and every block shape.
+  - Decompiled Java is never committed. Entity geometry is our own data files.
