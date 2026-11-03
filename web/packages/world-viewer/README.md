@@ -94,6 +94,16 @@ Browsers cap live WebGL contexts at around 16, so cards must never get one conte
 A `<WorldViewer>` without a provider creates a private runtime. Two `<WorldViewer>`s under one provider share it: the second
 one draws through a 2D-canvas copy.
 
+The runtime survives page navigation. Providers with the same `persist` key (default `"default"`) attach to one module-level
+runtime, so going from the hive grid to a bot view keeps:
+
+- the world store
+- the meshes
+- the WebGL context
+
+A new `source` object for the same key is swapped in without dropping the world. The network loops pause while no view is
+mounted. Call `disposeWorldRuntimes()` on logout. Pass `persist={false}` for a runtime that lives and dies with its provider.
+
 `stats().memory` gives views, columns, sections, section geometries, section GPU bytes, approximate worker bytes, bytes
 received, entities, draw calls and triangles, for a developer-details panel.
 
@@ -115,8 +125,10 @@ The rest falls back to the index hash-diff:
 - `loaded` for a held column means a bulk change, so that column is refetched.
 - `unloaded` keeps the column but dims it as remembered.
 
-Patched columns pick up their new light when their changed hash brings them in again. Changed blocks glow briefly
-(`layers.changes`).
+Light is recomputed locally around each batch of changes: sky light falls and spreads, and block light floods out from
+emitters, within ±15 blocks. A dug hole lets the sky in and a placed torch lights its room at once. Cells just outside the
+region seed it, so the patch joins seamlessly. The column's light still refreshes when its changed hash brings it in again.
+Changed blocks glow briefly (`layers.changes`).
 
 ### Rendering notes
 
@@ -135,18 +147,73 @@ Patched columns pick up their new light when their changed hash brings them in a
 - **X-ray.** The cone is `ViewCut`: per fragment, toward the followed bot, or toward up to two bots in front when flying. The
   roof cut removes cells above the bot's head within 9 blocks when it is under cover and the camera looks down. The faces a
   cut opens are hatched.
-- **Weather.** Rain streaks and thunder flashes.
-- **Performance.** Sections out of draw distance are hidden. Sections far from every view are freed, and least recently
-  rendered sections are evicted beyond `maxSections`. Resolution is adaptive: one primary frame every 1.5 s is timed with
-  `gl.finish`, and the resolution steps down (to 0.5×) above 14 ms and back up below 7 ms.
+- **Sky.** Sun, moon (with its phase), stars at night and drifting clouds come from the version's own textures and follow the
+  celestial angle. Rain or snow falls by the biome under the view: cold biomes and high ground snow, dry biomes stay clear.
+  Thunder flashes.
+- **Cameras.** `follow`, `fly`, `iso`, and `top` (straight down, north up).
+- **Reading aids.** The optional `layers.aids` draws the C# reading aids around the followed bot: a ground grid with
+  coordinate rulers, distance rings at 2/4/8 blocks, and a compass.
+- **Performance.**
+  - Sections out of draw distance are hidden. Sections far from every view are freed, and least recently rendered sections
+    are evicted beyond `maxSections`.
+  - Cave culling follows Minecraft's chunk visibility graph. The worker computes each section's face connectivity, and each
+    view walks it from its camera, so caves and hillsides behind rock are not drawn. Culling is off while a cut-away is open.
+
+### Quality: GPU vs software WebGL
+
+With hardware acceleration off, Chrome renders WebGL on SwiftShader. The viewer detects this from the renderer string
+(SwiftShader, llvmpipe, Microsoft Basic Render Driver) or from a refused `failIfMajorPerformanceCaveat` probe, and picks a
+profile:
+
+| | GPU | software |
+|---|---|---|
+| frame target | 16 ms (60 fps) | 25 ms (40 fps) |
+| MSAA / pixel ratio cap | on / 2 | off / 1 |
+| draw distance cap (min) | 256 (64) | 128 (48) |
+| translucent pass beyond | 256 blocks | 64 blocks |
+| entity detail beyond | 64 blocks | 24 blocks (boxes) |
+| animated textures | 20 Hz, all | 10 Hz, ≤ 8 cells per tick |
+| thumbnails | ×1 rate, 2 per frame | ×0.5 rate, 1 per frame |
+| clouds | on | off |
+
+A frame-time controller runs once a second. It times one whole frame to completion, with a one-pixel readback because
+`gl.finish` returns early on ANGLE/SwiftShader. It lowers the render resolution first (to 0.5× on software), then the draw
+distance, and gives them back when there is headroom.
+
+The options are:
+
+- `options.quality`: `'auto'` (default), `'gpu'` or `'software'`
+- `options.adaptiveResolution`: set it to `false` to freeze the levers
+
+`stats().memory` shows the profile, the renderer string, why the profile was picked, the frame time, the draw factor and the
+culled sections.
+
+`npm run perf` is the benchmark. It serves the demo, opens it in Playwright's Chromium with SwiftShader and then with the GPU,
+and measures sustained fps at the follow camera over the dense fixture world (lava lake, water channel, glass pillars,
+20 mobs). It prints one JSON line per run and exits non-zero when software rendering falls under 40 fps.
 
 ## Development
 
 ```
-npm install        # package-local; .npmrc sets legacy-peer-deps (npm 10.9 crashes on vitest's optional peers)
-npm run dev        # demo at http://localhost:5178 (fixture world, no bot needed): ?atlas=0 flat colours, ?thumbs=0, ?rain=1
-npm run build      # d.ts (tsc) + ES library with the worker emitted beside it (vite)
-npm test           # vitest
+npm install            # in web/ (npm workspaces)
+npm run dev            # demo at http://localhost:5178 (fixture world): ?version=1.12.2 ?dense=1 ?mobs=20 ?quality=software ?thumbs=0 ?rain=1
+npm run build          # plain ESM + d.ts (tsc, then scripts/fix-esm.mjs makes relative imports fully specified)
+npm test               # vitest
+npm run perf           # Playwright fps benchmark (software + GPU)
+npm run assets:extract # re-extract assets/ from the client jars (PrismLauncher / .minecraft; read as zips, never run)
+npm run assets:pack    # rebuild generated/ (atlases, animation sheet, entity sheet, pack.json) from assets/
+```
+
+The package is published as plain ESM, not a bundle. `new Worker(new URL('./worker.js', import.meta.url))` and the
+`new URL('../../generated/…', import.meta.url)` asset references reach the app's bundler verbatim. Next/Turbopack, webpack and
+Vite bundle the mesh worker and emit the atlases themselves, with no copy step.
+
+- **Assets.** The Minecraft assets are committed: the repo is private and unreleased (docs/web/architecture.md, "Render
+  parity").
+  - `assets/1.12.2` holds the blockstates, the block and item models, and the block, item, entity, environment, misc and
+    colormap textures with their `.mcmeta` animation files.
+  - `assets/b1.8.1` holds terrain, items, mob, armor, environment, misc and terrain/sun+moon.
+  - `generated/<version>` holds what the browser loads (`src/assets/bundle.ts`).
 ```
 
 - **Tests.**
@@ -157,5 +224,8 @@ npm test           # vitest
   - Entity interpolation.
   - Hash-diff fetching.
   - Shared meshing: N views mesh each section once.
-  - Block deltas.
+  - Block deltas: exact dirty sections, burst coalescing, fallbacks and local relighting.
+  - Cave-culling graph.
+  - Quality controller.
+  - Precipitation by biome.
 - **Exports.** `@mineclaw/world-viewer/testing` exports the encoders and `createFixtureSource()` for stories and app tests.
