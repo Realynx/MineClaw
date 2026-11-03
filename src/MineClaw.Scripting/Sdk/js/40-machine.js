@@ -1,4 +1,4 @@
-// module: machine | reactive state machines: states, events, timers, conditions, a blackboard; resumes in the same state after a restart
+// module: machine | reactive state machines: states, events, timers, conditions, a blackboard; resume after a restart
 (H, def) => {
   const isObj = v => v !== null && typeof v === 'object';
   /**

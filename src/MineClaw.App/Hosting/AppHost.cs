@@ -390,6 +390,8 @@ public static class AppHost
             Supervisor.ViewerTaps.Enable(viewerFeed, memory);
             var viewer = new Supervisor.LiveViewerData(bot, main, sources, () => mainHive?.Supervisor, controller, scriptData, log) { Bodies = allBodies };
             server.Viewer = new Supervisor.SupervisorViewerRoutes(o, viewer, viewerFeed, memory);
+            // /api/story/*: Story Mode (colonies of script-only pawns, docs/web/story-mode.md); the viewer's gate, AllowStory for writes
+            server.Story = Supervisor.StoryWiring.Attach(o, bot, client, mainHive?.Hierarchy, viewer, viewerFeed, allBodies, log);
         }
         try
         {

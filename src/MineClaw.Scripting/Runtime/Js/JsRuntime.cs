@@ -370,6 +370,7 @@ internal sealed partial class JsRuntime(ScriptSession s) : IScriptRuntime, IPatc
 
         InstallCrew(h);
         InstallCharacter(h); // JsRuntime.Character.cs: the character module's host calls
+        InstallStory(h); // JsRuntime.Story.cs: Story Mode pawns (story.next / story.report)
     }
 
     private sealed class StrongBox(JsValue v) { public JsValue Value { get; } = v; }

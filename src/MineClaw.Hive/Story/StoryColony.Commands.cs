@@ -1,0 +1,284 @@
+using System.Text.Json.Nodes;
+
+namespace MineClaw.Hive.Story;
+
+/// <summary>What the browser asks of a colony: priorities, schedules, drafting, orders, zones and designations.</summary>
+public sealed partial class StoryColony
+{
+    public static readonly IReadOnlyList<string> ZoneKinds = ["chop", "mine", "farm", "home", "forbidden"];
+    public static readonly IReadOnlyList<string> OrderKinds = ["move", "attack", "chop", "mine", "haul", "build", "hold", "stop"];
+    public static readonly IReadOnlyList<string> DesignationKinds = ["chop", "cut", "harvest", "mine", "haul", "hunt", "deconstruct", "forbid", "allow"];
+
+    /// <summary>The work type each designation becomes (cut is plant cutting: the Chop column).</summary>
+    public static string WorkOf(string designation) => designation switch
+    {
+        "chop" or "cut" => WorkTypes.Chop, "harvest" => WorkTypes.Farm, "mine" => WorkTypes.Mine, "haul" => WorkTypes.Haul,
+        "hunt" => WorkTypes.Hunt, "deconstruct" => WorkTypes.Build, _ => "",
+    };
+
+    public string? SetPriorities(IReadOnlyList<PawnState> pawns, IReadOnlyDictionary<string, int> work)
+    {
+        foreach (var (t, v) in work)
+        {
+            if (!WorkTypes.Known(t)) return $"unknown work type '{t}' ({string.Join("|", WorkTypes.All)})";
+            if (v is < 0 or > 4) return "priority is 0 (off) .. 4";
+        }
+        lock (_lock)
+            foreach (var p in pawns)
+            {
+                foreach (var (t, v) in work) p.Priorities[t] = v;
+                p.Rev = Touch();
+            }
+        return null;
+    }
+
+    public string? SetSchedule(IReadOnlyList<PawnState> pawns, IReadOnlyDictionary<string, string> hours)
+    {
+        var parsed = new Dictionary<int, string>();
+        foreach (var (h, b) in hours)
+        {
+            if (!int.TryParse(h, out var hour) || hour is < 0 or > 23) return $"hour '{h}' must be \"0\"..\"23\"";
+            if (!ScheduleBlocks.Known(b)) return $"hour {h}: block must be work|sleep|anything|free";
+            parsed[hour] = b;
+        }
+        lock (_lock)
+            foreach (var p in pawns)
+            {
+                if (p.Schedule.Length != 24) p.Schedule = StoryCharacter.DefaultSchedule(false);
+                foreach (var (h, b) in parsed) p.Schedule[h] = b;
+                p.Rev = Touch();
+            }
+        return null;
+    }
+
+    public void Draft(IReadOnlyList<PawnState> pawns, bool drafted)
+    {
+        lock (_lock)
+            foreach (var p in pawns)
+            {
+                if (p.Drafted == drafted) continue;
+                p.Drafted = drafted;
+                if (!drafted) p.Queue.Clear(); // undrafted pawns go back to the job picker
+                p.Rev = Touch();
+                Supersede(p, drafted ? "drafted" : "undrafted");
+            }
+    }
+
+    /// <summary>An order for each pawn: replaces its queue (and cuts what it does now) unless <paramref name="queue"/>.</summary>
+    public (JsonNode? Result, string? Error) GiveOrder(IReadOnlyList<PawnState> pawns, JsonObject order, bool queue)
+    {
+        var kind = order["kind"]?.GetValue<string>()?.Trim().ToLowerInvariant();
+        if (kind == null || !OrderKinds.Contains(kind)) return (null, $"order.kind must be {string.Join("|", OrderKinds)}");
+        P3? at = null;
+        int? entity = null;
+        Area? area = null;
+        if (order["target"] is JsonNode t)
+        {
+            if (t is JsonObject to && to["entity"] is { } en) entity = StoryJson.Int(en);
+            else if (t is JsonObject ta && ta["area"] is { } an) area = Area.Parse(an) ?? (Area?)null;
+            else at = P3.Parse(t);
+            if (at == null && entity == null && area == null) return (null, "target must be {x,y,z} | {entity:id} | {area:[x1,y1,z1,x2,y2,z2]}");
+        }
+        long? design = StoryJson.Int(order["design"]);
+        if (kind is "move" or "chop" or "mine" && at == null && area == null) return (null, $"{kind} needs a target position or area");
+        if (kind is "attack" && entity == null && at == null) return (null, "attack needs a target entity");
+        if (kind == "haul" && entity == null && at == null && area == null) return (null, "haul needs a target");
+        if (kind == "build" && design == null && at == null) return (null, "build needs a design (or a target)");
+        if (area is { Volume: > 32_768 }) return (null, "area too large for an order (max 32768 blocks)");
+        var ids = new JsonArray();
+        lock (_lock)
+            foreach (var p in pawns)
+            {
+                if (kind == "stop") { p.Queue.Clear(); p.Rev = Touch(); Supersede(p, "stop"); continue; }
+                var o = new Order { Id = NextId("o"), Kind = kind, At = at, Entity = entity, Area = area, Design = design, Given = Now };
+                if (area is { } a && World is { } w)
+                    o.Targets = kind switch
+                    {
+                        "chop" => StoryBlocks.TreeBases(w, a).Take(64).ToList(),
+                        "mine" => a.Blocks().Where(b => StoryBlocks.MineMatch(w.Block(b.X, b.Y, b.Z).Id, "all")).OrderByDescending(b => b.Y).Take(512).ToList(),
+                        _ => null,
+                    };
+                if (!queue) { p.Queue.Clear(); Supersede(p, "new order"); }
+                if (p.Queue.Count >= 32) return (null, "queue full (32 orders)");
+                p.Queue.Add(o);
+                p.Rev = Touch();
+                ids.Add(o.Id);
+            }
+        return (new JsonObject { ["ids"] = ids }, null);
+    }
+
+    /// <summary>The job for a pawn's first order (null = no runnable order: the order is dropped).</summary>
+    private ActiveJob? OrderJob(PawnState p, PawnLive live)
+    {
+        while (p.Queue.Count > 0)
+        {
+            var o = p.Queue[0];
+            var at = o.At;
+            if (o.Targets is { } ts)
+            {
+                if (ts.Count == 0) { p.Queue.RemoveAt(0); p.Rev = Touch(); continue; }
+                at = ts.OrderBy(t => t.Dist(live.Block)).First();
+            }
+            StoryEntity? e = null;
+            if (o.Entity is { } eid)
+            {
+                e = World?.Entities().FirstOrDefault(x => x.Id == eid);
+                if (e == null) { p.Queue.RemoveAt(0); Alert("info", $"{p.Display}: the {o.Kind} target is gone", p.Name); p.Rev = Touch(); continue; }
+                at = e.Block;
+            }
+            string type = "order", src = "order";
+            return o.Kind switch
+            {
+                "move" => Job(type, "go", $"moving to {at}", at ?? o.Area?.Center, null, src, o.Id, "moving", j => j["dist"] = 0, xp: 0),
+                "attack" => Job(type, "attack", $"attacking {e?.Name ?? "target"}", at, e != null ? "e:" + e.Id : null, src, o.Id, "fighting", j => j["mob"] = e?.Name ?? "", xp: 0),
+                "chop" => Job(WorkTypes.Chop, "chop", "chopping (order)", at, at is { } c ? "b:" + c : null, src, o.Id, xp: 40),
+                "mine" => Job(WorkTypes.Mine, "dig", "mining (order)", at, at is { } m ? "b:" + m : null, src, o.Id),
+                "haul" => Job(WorkTypes.Haul, "collect", "hauling (order)", at ?? o.Area?.Center, e != null ? "e:" + e.Id : null, src, o.Id, "working", j => j["r"] = 4, xp: 5),
+                "build" when o.Design is { } d => Job(WorkTypes.Build, "blueprint", $"building design #{d}", at, "design:" + d, src, o.Id, "working", j => j["design"] = d.ToString(), xp: 60),
+                "hold" => Job(type, "hold", "holding position", at, null, src, o.Id, p.Drafted ? "drafted" : "idle", j => j["s"] = 5, xp: 0),
+                _ => Job(type, "hold", "waiting", at, null, src, o.Id, "idle", j => j["s"] = 3, xp: 0),
+            };
+        }
+        return null;
+    }
+
+    private void OrderDone(PawnState p, ActiveJob j, bool ok, string? note)
+    {
+        var o = p.Queue.FirstOrDefault(x => x.Id == j.SourceId);
+        if (o == null) return;
+        if (o.Kind == "hold" && ok) return; // holds until the next order (or undraft)
+        if (o.Targets is { } ts && j.At is { } at)
+        {
+            ts.Remove(at);
+            if (ts.Count > 0 && (ok || !string.IsNullOrEmpty(note))) { p.Rev = Touch(); return; }
+        }
+        p.Queue.Remove(o);
+        if (!ok) Alert("warn", $"{p.Display} couldn't {o.Kind}: {note}", p.Name);
+        p.Rev = Touch();
+    }
+
+    // ---------------------------------------------------------------- zones
+
+    public (JsonNode? Result, string? Error) ZoneOp(string op, string? kind, Area? area)
+    {
+        if (op is not ("add" or "remove")) return (null, "op must be add|remove");
+        if (area is not { } a) return (null, "area [x1,y1,z1,x2,y2,z2] required");
+        if (kind == "stockpile") return (null, "storage is chests: register them with /storage (no ground stockpiles)");
+        if (op == "add" && (kind == null || !ZoneKinds.Contains(kind))) return (null, $"kind must be {string.Join("|", ZoneKinds)}");
+        if ((long)(a.X2 - a.X1 + 1) * (a.Z2 - a.Z1 + 1) > 256 * 256) return (null, "zone too large (256 x 256 max)");
+        lock (_lock)
+        {
+            if (op == "add")
+            {
+                var z = new ZoneState { Id = NextId("z"), Kind = kind!, Area = a, Rev = Touch() };
+                Zones.Add(z);
+                return (new JsonObject { ["id"] = z.Id }, null);
+            }
+            var gone = Zones.Where(z => (kind == null || z.Kind == kind) && z.Area.Overlaps(a)).ToList();
+            foreach (var z in gone) { Zones.Remove(z); Removed("zone", z.Id); _zoneScan.Remove(z.Id); }
+            return (new JsonObject { ["removed"] = new JsonArray(gone.Select(z => (JsonNode)z.Id!).ToArray()) }, null);
+        }
+    }
+
+    // ---------------------------------------------------------------- designations
+
+    /// <summary>
+    /// add: the area (or blocks) expands now to matching targets from the world view, one designation per target (a tree is one
+    /// job: its log column(s)); remove|cancel: designations in the area (or by id) go.
+    /// </summary>
+    public (JsonNode? Result, string? Error) Designate(string op, string? kind, Area? area, IReadOnlyList<P3>? blocks, string? filter,
+        IReadOnlyList<string>? ids = null)
+    {
+        if (op is "remove" or "cancel")
+        {
+            lock (_lock)
+            {
+                var gone = Designations.Where(d => (ids != null && ids.Contains(d.Id))
+                    || (kind == null || d.Kind == kind) && (area is { } a && (d.At is { } at && a.Contains(at) || d.Entity != null && d.Blocks?.FirstOrDefault() is { } eb && a.Contains(eb))
+                        || blocks != null && d.At is { } bt && blocks.Contains(bt))).ToList();
+                foreach (var d in gone) { Designations.Remove(d); Removed("designation", d.Id); }
+                return (new JsonObject { ["count"] = gone.Count, ["removed"] = new JsonArray(gone.Select(d => (JsonNode)d.Id!).ToArray()) }, null);
+            }
+        }
+        if (op != "add") return (null, "op must be add|remove|cancel");
+        if (kind == null || !DesignationKinds.Contains(kind)) return (null, $"kind must be {string.Join("|", DesignationKinds)}");
+        if (filter != null && filter is not ("all" or "ores" or "stone" or "soil")) return (null, "filter must be all|ores|stone|soil");
+        if (area == null && (blocks == null || blocks.Count == 0)) return (null, "area or blocks required");
+        if (area is { Volume: > 262_144 }) return (null, "area too large (max 262144 blocks)");
+        if (World is not { } w) return (null, "no world view yet");
+        lock (_lock)
+        {
+            var targets = new JsonArray();
+            var made = new List<DesignationState>();
+            bool Taken(string k, P3? at, int? ent) => Designations.Any(d => d.Kind == k && (at != null && d.At == at || ent != null && d.Entity == ent));
+            void Block(P3 at, List<P3>? col = null, string? replant = null, string? label = null)
+            {
+                if (Taken(kind, at, null)) return;
+                made.Add(new DesignationState { Id = NextId("d"), Kind = kind, At = at, Blocks = col, Replant = replant, Label = label, Created = Now });
+                targets.Add(at.Json());
+            }
+            void Entity(StoryEntity e, string label)
+            {
+                if (Taken(kind, null, e.Id)) return;
+                made.Add(new DesignationState { Id = NextId("d"), Kind = kind, Entity = e.Id, Blocks = [e.Block], Label = label, Created = Now });
+                targets.Add(e.Id);
+            }
+            IEnumerable<P3> Cells() => blocks ?? area!.Value.Blocks();
+            bool In(StoryEntity e) => area is { } a ? a.Contains(e.Block) || a.Contains(e.Block.Add(0, 1, 0)) : blocks!.Contains(e.Block);
+            switch (kind)
+            {
+                case "chop":
+                {
+                    var bases = area is { } a ? StoryBlocks.TreeBases(w, a).ToList()
+                        : blocks!.Select(b => DownToBase(w, b)).Where(b => b != null).Select(b => b!.Value).Distinct().ToList();
+                    foreach (var b in bases.Take(512)) Block(b, StoryBlocks.TreeFrom(w, b), null, "chopping a tree");
+                    break;
+                }
+                case "cut":
+                    foreach (var c in Cells())
+                        if (w.Block(c.X, c.Y, c.Z).Id is var id && (StoryBlocks.Plants.Contains(id) || StoryBlocks.Leaves.Contains(id))) Block(c, null, null, "cutting plants");
+                    break;
+                case "harvest":
+                    foreach (var c in Cells())
+                        if (StoryBlocks.Crop(w, c.X, c.Y, c.Z) is { Ripe: true } crop) Block(c, null, crop.Replant, "harvesting");
+                    break;
+                case "mine":
+                    foreach (var c in Cells())
+                        if (StoryBlocks.MineMatch(w.Block(c.X, c.Y, c.Z).Id, filter)) Block(c, null, null, "mining");
+                    break;
+                case "deconstruct":
+                    foreach (var c in Cells())
+                        if (w.Block(c.X, c.Y, c.Z).Id is var id && !StoryBlocks.Natural.Contains(id) && !StoryBlocks.Undiggable.Contains(id)) Block(c, null, null, "deconstructing");
+                    break;
+                case "haul":
+                    foreach (var e in w.Entities().Where(e => e.Kind == "item" && In(e))) Entity(e, "hauling " + e.Name);
+                    break;
+                case "hunt":
+                    foreach (var e in w.Entities().Where(e => e.Kind == "mob" && !e.Hostile && In(e))) Entity(e, "hunting a " + e.Name);
+                    break;
+                case "forbid":
+                    foreach (var e in w.Entities().Where(e => e.Kind == "item" && In(e))) Entity(e, "forbidden " + e.Name);
+                    foreach (var c in Cells().Take(100_000)) if (StoryBlocks.IsDoor(w.Block(c.X, c.Y, c.Z).Id)) Block(c, null, null, "forbidden door");
+                    break;
+                case "allow":
+                {
+                    var gone = Designations.Where(d => d.Kind == "forbid" && (d.At is { } at && (area?.Contains(at) ?? blocks!.Contains(at))
+                        || d.Blocks?.FirstOrDefault() is { } eb && (area?.Contains(eb) ?? blocks!.Contains(eb)))).ToList();
+                    foreach (var d in gone) { Designations.Remove(d); Removed("designation", d.Id); }
+                    return (new JsonObject { ["count"] = gone.Count, ["targets"] = new JsonArray() }, null);
+                }
+            }
+            if (made.Count > 4096) return (null, $"{made.Count} targets: designate a smaller area (max 4096)");
+            foreach (var d in made) { d.Rev = Touch(); Designations.Add(d); }
+            return (new JsonObject { ["count"] = made.Count, ["targets"] = targets }, null);
+        }
+    }
+
+    private static P3? DownToBase(IStoryWorld w, P3 b)
+    {
+        if (!StoryBlocks.Logs.Contains(w.Block(b.X, b.Y, b.Z).Id)) return null;
+        var p = b;
+        for (int i = 0; i < 32 && StoryBlocks.Logs.Contains(w.Block(p.X, p.Y - 1, p.Z).Id); i++) p = p.Add(0, -1, 0);
+        return p;
+    }
+}

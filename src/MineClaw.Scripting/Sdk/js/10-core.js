@@ -1,4 +1,4 @@
-// module: core | results, control, chat, logging, checkpoints, params (every call is a gated host call)
+// module: core | results, control, chat, logging, checkpoints, params
 (H, def) => {
   const isObj = v => v !== null && typeof v === 'object';
   const failed = r => r === false || r === null || (isObj(r) && r.ok === false);
