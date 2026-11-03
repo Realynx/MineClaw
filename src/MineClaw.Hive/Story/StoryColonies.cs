@@ -78,6 +78,7 @@ public sealed class StoryColonies : IDisposable
             return (null, why ?? "no pawn could spawn");
         }
         c.Save(force: true);
+        c.BringHome("colony founded"); // pawns that came online far away (a reused body) go home; later joins: the tick
         return (c, null);
     }
 
@@ -113,6 +114,7 @@ public sealed class StoryColonies : IDisposable
         c.Meta.Active = true;
         var why = Spawn(c, Math.Max(1, c.Meta.Wanted), c.Pawns.Keys.ToList());
         c.Save(force: true);
+        c.BringHome("colony resumed");
         return why;
     }
 

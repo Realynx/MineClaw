@@ -26,7 +26,16 @@ internal static class StoryWiring
             try { log.LogInformation("story: default script story_pawn {State}", StoryColonies.Install(scripts.Library)); }
             catch (Exception ex) { log.LogWarning(ex, "story: installing story_pawn failed"); }
         }
-        var host = new StoryHost(hierarchy, () => bot.Bodies, () => client.World, client.Options.Profile.Data, () => scripts, log, rt.Observations);
+        var host = new StoryHost(hierarchy, () => bot.Bodies, () => client.World, client.Options.Profile.Data, () => scripts, log, rt.Observations)
+        {
+            // Founding a colony or moving its home is the owner's request: its pawns (the hive's own maid_ bodies) are brought there with
+            // /tp, armed in the gate's scoped exception (managed accounts only, the blocklist applies) and sent on main's chat.
+            OpCommand = async (line, why) =>
+            {
+                if (!rt.Commands.ArmManagedTeleport(line, why)) return "refused by the command gate";
+                return await rt.Chat.SendCommandAsync(line).ConfigureAwait(false) ? null : "not sent";
+            },
+        };
         var colonies = new StoryColonies(host, new StoryStore(rt.Memory.Db), log: log);
         try
         {
@@ -41,7 +50,40 @@ internal static class StoryWiring
             World = () => host.World,
             SaveDesign = (name, ghosts, by) => bot.Blueprints?.Service is { } svc ? SaveDesign(svc.Store, name, ghosts, by, client.World.Dimension) : null,
         };
-        return new SupervisorStoryRoutes(o, colonies, directives, bodies == null ? null : bodies.Rows, viewer);
+        var timeControl = new StoryTimeControl(() => OpAccounts(o, bot, client), (account, line, why) => SendOpAsync(rt, bot, client, account, line, why), log: log);
+        return new SupervisorStoryRoutes(o, colonies, directives, bodies == null ? null : bodies.Rows, viewer, timeControl: timeControl);
+    }
+
+    /// <summary>The accounts this process controls (main, then its in-process bodies) and whether each is op: the server's word (1.12.2),
+    /// else the config's <c>Supervisor:Viewer:OpAccounts</c>, else unknown.</summary>
+    internal static IReadOnlyList<OpAccount> OpAccounts(SupervisorOptions o, BotHost bot, MinecraftClient client)
+    {
+        bool? Op(string name, MinecraftClient? c) => c?.IsOp ?? (o.Viewer.OpAccounts.Contains(name, StringComparer.OrdinalIgnoreCase) ? true : null);
+        var list = new List<OpAccount> { new(client.Options.Username, true, client.IsPlaying ? Op(client.Options.Username, client) : null) };
+        foreach (var b in bot.Bodies?.All ?? [])
+            if (b is MineClaw.Bot.Bodies.Body body && !body.IsMain && body.State == MineClaw.Bot.Bodies.BodyState.Online)
+                list.Add(new OpAccount(body.Name, false, Op(body.Name, body.Client)));
+        return list;
+    }
+
+    /// <summary>
+    /// One op command from <paramref name="account"/>: main's through the command gate's scoped exception (armed, audited, blocklist
+    /// applied) and its gated chat; another body's straight on its own connection after the same blocklist check, audited the same way.
+    /// </summary>
+    private static async Task<string?> SendOpAsync(MineClaw.Agent.AgentRuntime rt, BotHost bot, MinecraftClient client, string account, string line,
+        string why)
+    {
+        if (string.Equals(account, client.Options.Username, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!rt.Commands.ArmStoryTime(line, why)) return "refused by the command gate";
+            return await rt.Chat.SendCommandAsync(line).ConfigureAwait(false) ? null : "not sent";
+        }
+        if (rt.Commands.IsBlocked(line)) return "refused: blocked command";
+        if (bot.Bodies?.Find(account) is not MineClaw.Bot.Bodies.Body { Client: { } c }) return "no such body";
+        var r = await c.SendChatAsync(line, CancellationToken.None).ConfigureAwait(false);
+        if (!r.Ok) return r.Message;
+        rt.Commands.Audit(line, why + " via " + account);
+        return null;
     }
 
     /// <summary>

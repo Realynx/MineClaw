@@ -136,7 +136,7 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         }
     }
 
-    private async Task Colony(string version, int pawns, Func<Ctx, Task> scenario)
+    private async Task Colony(string version, int pawns, Func<Ctx, Task> scenario, Action<FakeServer>? tune = null)
     {
         bool modern = version == "1.12.2";
         using var data = modern ? GameData.Override(Release1122GameData.Instance) : null;
@@ -150,6 +150,7 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         {
             var s = new FakeServer(release1122: modern) { BlockLock = OneWorld }; // one lock for every server: mirrored writes never deadlock
             World(s, modern);
+            tune?.Invoke(s);
             // One world for the pawns: what one places or digs, the others' servers get too.
             s.Mirror = (x, y, z, id, meta) =>
             {
@@ -324,4 +325,90 @@ public sealed class StoryFakeServerTests(ITestOutputHelper output)
         Assert.Empty(c.StorageAt(FoodChest)!.Contents);
         Assert.NotEqual("craft", c.CurrentOf(pawn)?.Kind); // done: no more
     });
+
+    // ================================================================ live 11-03: every designation kind, from an empty inventory
+
+    private static void EmptyHanded(FakeServer s) => s.Inventory[37] = ItemStack.Empty; // no clutch cobble: pawns start with nothing
+
+    /// <summary>A tree of <paramref name="h"/> logs from y 64 with a 3x3 crown over its top two logs and a cap.</summary>
+    private static void Tree(FakeServer s, int x, int z, int h)
+    {
+        int top = 64 + h - 1;
+        for (int y = top - 1; y <= top + 1; y++)
+            for (int dx = -1; dx <= 1; dx++)
+                for (int dz = -1; dz <= 1; dz++)
+                    s.Blocks[(x + dx, y, z + dz)] = Blocks.Leaves;
+        for (int y = 64; y <= top; y++) s.Blocks[(x, y, z)] = Blocks.Log;
+    }
+
+    [Theory]
+    [InlineData("b1.8.1")]
+    [InlineData("1.12.2")]
+    public Task An_empty_handed_pawn_does_every_designation_kind(string version) => Colony(version, 1, async x =>
+    {
+        var c = x.C;
+        var pawn = x.Pawns[0];
+        var srv = x.Servers[pawn];
+        Assert.Null(c.StorageOp("set", [WoodChest], null, "normal", "Everything").Error);
+        Only(x, WorkTypes.Chop, WorkTypes.Farm, WorkTypes.Mine, WorkTypes.Build, WorkTypes.Haul);
+        // A drop to haul, seen by the colony.
+        srv.SpawnDrop(3.5, 64.1, 6.5, new ItemStack((short)Blocks.Cobblestone, 3, 0));
+        Assert.True(await Until(() => c.Host.World!.Entities().Any(e => e.Kind == "item" && e.ItemId == Blocks.Cobblestone), 5000), "the drop is seen");
+        Assert.Equal(1, c.Designate("add", "cut", null, [new P3(4, 64, 4)], null).Result!["count"]!.GetValue<int>());
+        Assert.Equal(1, c.Designate("add", "harvest", null, [new P3(5, 64, 4)], null).Result!["count"]!.GetValue<int>());
+        Assert.Equal(1, c.Designate("add", "mine", null, [new P3(6, 64, 4)], null).Result!["count"]!.GetValue<int>());
+        Assert.Equal(1, c.Designate("add", "deconstruct", null, [new P3(7, 64, 4)], null).Result!["count"]!.GetValue<int>());
+        Assert.Equal(1, c.Designate("add", "haul", Area.Of(2, 63, 5, 4, 66, 7), null, null).Result!["count"]!.GetValue<int>());
+        Assert.Equal(1, c.Designate("add", "chop", null, [new P3(12, 68, 8)], null).Result!["count"]!.GetValue<int>()); // the crown's cap
+        Assert.True(await Until(() => c.Designations.Count == 0, 150_000),
+            "all done: " + string.Join(", ", c.Designations.Select(d => $"{d.Kind} {d.Fails} {d.Reason}")) + " | " + x.Diag());
+        int B(int bx, int by, int bz) => srv.Blocks.GetValueOrDefault((bx, by, bz));
+        Assert.Equal(0, B(4, 64, 4));                                         // the tall grass is cut
+        Assert.True(B(5, 64, 4) == 0 || srv.Metas.GetValueOrDefault((5, 64, 4)) < 7, "the wheat is harvested");
+        Assert.Equal(0, B(6, 64, 4));                                         // mined
+        Assert.Equal(0, B(7, 64, 4));                                         // deconstructed
+        Assert.All(Enumerable.Range(64, 4), y => Assert.Equal(0, B(12, y, 8))); // the tree is down
+        Assert.True(await Until(() => !c.Host.World!.Entities().Any(e => e.Kind == "item" && e.ItemId == Blocks.Cobblestone && e.X < 5), 5000), "hauled");
+        Assert.DoesNotContain(c.Alerts, a => a.Text.Contains("failed 3 times"));
+    }, s =>
+    {
+        EmptyHanded(s);
+        s.Blocks[(4, 64, 4)] = 31; s.Metas[(4, 64, 4)] = 1;   // tall grass
+        s.Blocks[(5, 63, 4)] = 60;                            // farmland
+        s.Blocks[(5, 64, 4)] = 59; s.Metas[(5, 64, 4)] = 7;   // ripe wheat
+        s.Blocks[(6, 64, 4)] = Blocks.Dirt;                   // a dirt block to mine
+        s.Blocks[(7, 64, 4)] = Blocks.Planks;                 // a built block to deconstruct
+    });
+
+    [Fact]
+    public Task An_empty_handed_pawn_chops_a_tall_tree_or_takes_what_it_can_reach_and_says_so() => Colony("1.12.2", 1, async x =>
+    {
+        var c = x.C;
+        var srv = x.Servers[x.Pawns[0]];
+        Only(x, WorkTypes.Chop);
+        Assert.Equal(1, c.Designate("add", "chop", null, [new P3(16, 73, 16)], null).Result!["count"]!.GetValue<int>()); // its canopy top
+        Assert.Equal(new P3(16, 64, 16), c.Designations.Single().At);
+        Assert.True(await Until(() => c.Designations.Count == 0, 150_000),
+            "done: " + string.Join(", ", c.Designations.Select(d => $"{d.Kind} {d.Fails} {d.Reason}")) + " | " + x.Diag());
+        int left = Enumerable.Range(64, 9).Count(y => srv.Blocks.GetValueOrDefault((16, y, 16)) == Blocks.Log);
+        Assert.True(srv.Dug.Count(d => d.Id == Blocks.Log && d.X == 16 && d.Z == 16) >= 5, "most of the trunk came down");
+        if (left > 0) Assert.Contains(c.Alerts, a => a.Text.Contains("took what it could reach")); // partial: said, not silent
+    }, s => { EmptyHanded(s); Tree(s, 16, 16, 9); });
+
+    [Fact]
+    public Task Four_pawns_take_four_designated_trees_one_each() => Colony("1.12.2", 4, async x =>
+    {
+        var c = x.C;
+        Only(x, WorkTypes.Chop);
+        Assert.Equal(4, c.Designate("add", "chop", Area.Of(0, 60, 15, 20, 75, 17), null, null).Result!["count"]!.GetValue<int>());
+        Assert.True(await Until(() => c.Designations.Count == 0, 150_000),
+            "done: " + string.Join(", ", c.Designations.Select(d => $"{d.Kind} {d.At} {d.Fails} {d.Reason}")) + " | " + x.Diag());
+        var byTree = new Dictionary<int, HashSet<string>>();
+        foreach (var p in x.Pawns)
+            foreach (var d in x.Servers[p].Dug.Where(d => d.Id == Blocks.Log && d.Z == 16))
+                (byTree.TryGetValue(d.X, out var set) ? set : byTree[d.X] = new HashSet<string>()).Add(p);
+        Assert.Equal(new[] { 1, 6, 11, 16 }, byTree.Keys.Order().ToArray());
+        Assert.All(byTree, t => Assert.True(t.Value.Count == 1, $"tree x={t.Key} chopped by {string.Join(", ", t.Value)}"));
+        Assert.True(byTree.Values.SelectMany(v => v).Distinct().Count() >= 3, "the work spread over the pawns: " + string.Join("; ", byTree.Select(t => $"{t.Key}: {string.Join(",", t.Value)}")));
+    }, s => { foreach (var tx in new[] { 1, 6, 11, 16 }) Tree(s, tx, 16, 4); });
 }

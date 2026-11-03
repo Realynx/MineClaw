@@ -15,12 +15,13 @@ namespace MineClaw.App.Supervisor;
 /// <list type="bullet">
 /// <item><c>GET /api/story</c> → <c>{colonies:[…], ai:[…], directives:[…]}</c>; <c>GET /api/story/recipes?workbench=</c> → <c>[Recipe]</c></item>
 /// <item><c>POST /api/story/colonies</c> <c>{name, pawns, home?}</c> → <c>{id}</c>; <c>GET /api/story/colonies/{id}?since=rev</c> → the state (delta with since)</item>
-/// <item><c>POST /api/story/colonies/{id}/release|resume|pause|priorities|schedule|draft|orders|zones|designations|builds|storage|bills</c></item>
+/// <item><c>POST /api/story/colonies/{id}/release|resume|pause|home|priorities|schedule|draft|orders|zones|designations|builds|storage|bills</c></item>
+/// <item><c>POST /api/story/time</c> <c>{time}</c> → <c>{time, by}</c> (409 no op account, 429 over one a second)</item>
 /// <item><c>POST /api/story/directives</c> → <c>{id, delivered}</c>; <c>GET /api/story/directives[/{id}]</c></item>
 /// </list>
 /// </summary>
 public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies colonies, StoryDirectives? directives = null,
-    Func<IReadOnlyList<BodyRow>>? ai = null, IViewerData? viewer = null, TimeProvider? time = null)
+    Func<IReadOnlyList<BodyRow>>? ai = null, IViewerData? viewer = null, TimeProvider? time = null, StoryTimeControl? timeControl = null)
 {
     public const string Prefix = "/api/story";
     public const int MaxBodyBytes = 64 * 1024;
@@ -94,7 +95,10 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                     return get ? Reply(200, new JsonObject
                     {
                         ["colonies"] = new JsonArray(colonies.All.Select(c => (JsonNode)c.Row()).ToArray()), ["ai"] = Ai(), ["directives"] = directives?.Json() ?? new JsonArray(),
+                        ["time_control"] = TimeControl(),
                     }) : NotAllowed("GET, HEAD");
+                case ["time"]:
+                    return post ? await SetTimeAsync(body).ConfigureAwait(false) : NotAllowed("POST");
                 case ["recipes"]:
                 {
                     if (!get) return NotAllowed("GET, HEAD");
@@ -115,8 +119,10 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                         if (!long.TryParse(sv, NumberStyles.Integer, CultureInfo.InvariantCulture, out var s) || s < 0) return Bad("since must be a revision number");
                         since = s;
                     }
+                    NoteMainNotOp(c);
                     var st = c.State(since);
                     st["ai"] = Ai(c);
+                    st["time_control"] = TimeControl();
                     st["directives"] = directives?.Json() ?? new JsonArray();
                     return Reply(200, st);
                 }
@@ -175,6 +181,27 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                 var why = colonies.Resume(c);
                 return Reply(200, new JsonObject { ["id"] = c.Id, ["pawns"] = c.Pawns.Count, ["note"] = why });
             }
+            case "home":
+            {
+                // {home:{x,y,z}} → {home:[x,y,z]}: the colony's home moves (persisted); pawns far from it are brought there.
+                if (b["home"] is not JsonObject ho || P3.Parse(ho) is not { } home) return Bad("home must be {x,y,z} (whole numbers)");
+                if (home.Y is < -64 or > 320 || Math.Abs(home.X) > 30_000_000 || Math.Abs(home.Z) > 30_000_000) return Bad("home is outside the world");
+                c.SetHome(home);
+                return Reply(200, new JsonObject { ["home"] = home.Json() });
+            }
+            case "beds":
+            {
+                // {op:"assign", bed:{x,y,z}, pawn} | {op:"unassign", bed:{x,y,z}} → {beds:[…]}
+                var op = S(b, "op") ?? "";
+                if (op is not ("assign" or "unassign")) return Bad("op must be assign|unassign");
+                if (b["bed"] is not JsonObject bo || P3.Parse(bo) is not { } bed) return Bad("bed must be {x,y,z}");
+                if (op == "assign" && S(b, "pawn") is not { Length: > 0 }) return Bad("pawn required");
+                var (res, err, notFound) = c.BedsOp(op, bed, S(b, "pawn"));
+                if (err != null)
+                    return notFound ? Reply(404, new JsonObject { ["error"] = err })
+                        : err.StartsWith("no world", StringComparison.Ordinal) ? Reply(503, new JsonObject { ["error"] = err }) : Bad(err);
+                return Reply(200, res!);
+            }
             case "pause":
             {
                 if (b["paused"] is not JsonValue v || !v.TryGetValue<bool>(out var paused)) return Bad("paused must be true|false");
@@ -215,7 +242,7 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
             {
                 Area? area = b["area"] != null ? Area.Parse(b["area"]) : null;
                 if (b["area"] != null && area == null) return Bad("area must be [x1,y1,z1,x2,y2,z2]");
-                return Result(c.ZoneOp(S(b, "op") ?? "", S(b, "kind"), area));
+                return Result(c.ZoneOp(S(b, "op") ?? "", S(b, "kind"), area, S(b, "id"), S(b, "name")));
             }
             case "designations":
             {
@@ -255,6 +282,42 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
             default:
                 return Reply(404, new JsonObject { ["error"] = "not found" });
         }
+    }
+
+    // ---------------------------------------------------------------- time of day
+
+    /// <summary><c>{available, by}</c>: an op account the bot controls can set the time (main first).</summary>
+    private JsonObject TimeControl()
+    {
+        var (available, by) = timeControl?.Status() ?? (false, null);
+        return new JsonObject { ["available"] = available, ["by"] = by };
+    }
+
+    private readonly HashSet<string> _notOpAlerted = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Main known not to be op: the colony hears it once (main should be op: it runs the whitelist).</summary>
+    private void NoteMainNotOp(StoryColony c)
+    {
+        if (timeControl?.MainNotOp() is not { } main) return;
+        lock (_notOpAlerted)
+            if (!_notOpAlerted.Add(c.Id)) return;
+        c.Alert("warn", $"{main} (main) isn't op on the server: it can't run the whitelist or set the time (/op {main})");
+    }
+
+    /// <summary><c>{time: 0..23999}</c> → <c>{time, by}</c>; 409 with no op account, 429 for more than one change a second.</summary>
+    private async Task<SupervisorReply> SetTimeAsync(JsonObject b)
+    {
+        if (b["time"] is not JsonValue tv || !tv.TryGetValue<int>(out var ticks) || ticks is < 0 or > StoryTimeControl.MaxTime)
+            return Bad($"time must be a whole number 0..{StoryTimeControl.MaxTime}");
+        if (timeControl == null) return Reply(409, new JsonObject { ["error"] = "no op account" });
+        var (result, by, err) = await timeControl.SetAsync(ticks, S(b, "player")).ConfigureAwait(false);
+        return result switch
+        {
+            StoryTimeControl.Outcome.Ok => Reply(200, new JsonObject { ["time"] = ticks, ["by"] = by }),
+            StoryTimeControl.Outcome.NoOp => Reply(409, new JsonObject { ["error"] = "no op account" }),
+            StoryTimeControl.Outcome.TooSoon => Reply(429, new JsonObject { ["error"] = err }, new Dictionary<string, string> { ["Retry-After"] = "1" }),
+            _ => Reply(503, new JsonObject { ["error"] = err }),
+        };
     }
 
     // ---------------------------------------------------------------- AI hives

@@ -20,6 +20,10 @@ public interface IStoryWorld
     int Height { get; }
     (int Id, int Meta) Block(int x, int y, int z);
     IReadOnlyList<StoryEntity> Entities();
+    /// <summary>The view's dimension (0 overworld, -1 nether, 1 end).</summary>
+    int Dimension => 0;
+    /// <summary>The column at x,z is in the view (an unloaded one reads as air: never a spot to send a pawn to).</summary>
+    bool Loaded(int x, int z) => true;
 }
 
 /// <summary>A live pawn body as the director reads it each time it picks.</summary>
@@ -46,6 +50,11 @@ public interface IStoryHost
     void Interrupt(string account, string why);
     /// <summary>What the bot remembers of a chest (last seen contents), or null.</summary>
     IReadOnlyList<Stack>? KnownChest(P3 at) => null;
+    /// <summary>
+    /// Brings a pawn to <paramref name="to"/> at once (the bot is op: <c>/tp</c> through the op command path and its blocklist), for
+    /// the colony owner's founding or home move. Null = sent; else why not (the director then walks it there).
+    /// </summary>
+    string? Teleport(string account, P3 to, string why) => "teleport isn't available here";
 }
 
 /// <summary><see cref="IStoryWorld"/> over a client's <see cref="WorldState"/>.</summary>
@@ -54,6 +63,8 @@ public sealed class WorldStateStoryWorld(Func<WorldState?> world, IGameData data
     public IGameData Data => data;
     public long TimeOfDay => world()?.TimeOfDay ?? 0;
     public int Height => world()?.WorldHeight ?? 128;
+    public int Dimension => world()?.Dimension ?? 0;
+    public bool Loaded(int x, int z) => world()?.IsLoaded(x, z) ?? false;
 
     public (int Id, int Meta) Block(int x, int y, int z) => world() is { } w ? (w.GetBlock(x, y, z), w.GetMeta(x, y, z)) : (0, 0);
 

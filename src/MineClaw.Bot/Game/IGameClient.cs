@@ -87,6 +87,10 @@ public interface IGameClient
     Task<ActionResult> ChopTreeAsync(BlockPos? at = null, int? wood = null, CancellationToken ct = default) =>
         Task.FromResult(ActionResult.Fail("chop_tree isn't available on this client"));
 
+    /// <summary>Fell exactly the tree at <paramref name="at"/>: when it's gone or another body holds it, fail rather than take another
+    /// tree (Story Mode's designations: the director already spread the pawns over the trees).</summary>
+    Task<ActionResult> ChopThisTreeAsync(BlockPos at, CancellationToken ct = default) => ChopTreeAsync(at, null, ct);
+
     // ---- brainstem body (defaults: unsupported, so wrappers and fakes needn't implement them)
 
     /// <summary>Head turn toward a point on the next tick while the body is idle (no action lock). False = busy/unsupported.</summary>
@@ -199,6 +203,8 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
     public Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default) => Inner.ActivateBlockAsync(x, y, z, ct);
     public Task<ActionResult> EatAsync(CancellationToken ct = default) => Inner.EatAsync(ct);
     public Task<ActionResult> ChopTreeAsync(BlockPos? at = null, int? wood = null, CancellationToken ct = default) => Inner.ChopTreeAsync(at, wood, null, ct);
+    public Task<ActionResult> ChopThisTreeAsync(BlockPos at, CancellationToken ct = default) =>
+        Inner.ChopTreeAsync(at, null, TreeChopOptions.Default with { OnlyThisTree = true }, ct);
     public bool FaceIdle(Vec3d point) => Inner.FaceIdle(point);
     public bool SwingIdle() => Inner.SwingIdle();
     public bool SafetyEngaged => Inner.SafetyEngaged;

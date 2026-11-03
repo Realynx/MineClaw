@@ -24,12 +24,20 @@ public sealed partial class StoryColony
             if (v is < 0 or > 4) return "priority is 0 (off) .. 4";
         }
         lock (_lock)
+        {
+            bool changed = false;
             foreach (var p in pawns)
             {
-                foreach (var (t, v) in work) p.Priorities[t] = v;
+                foreach (var (t, v) in work)
+                {
+                    if (p.Priorities.GetValueOrDefault(t) == v) continue;
+                    p.Priorities[t] = v;
+                    changed = true;
+                }
                 p.Rev = Touch();
             }
-        lock (_lock) WakeIdle();
+            if (changed) WakeIdle(); // the same values again aren't new work
+        }
         return null;
     }
 
@@ -86,6 +94,8 @@ public sealed partial class StoryColony
         if (kind == "haul" && entity == null && at == null && area == null) return (null, "haul needs a target");
         if (kind == "build" && design == null && at == null) return (null, "build needs a design (or a target)");
         if (area is { Volume: > 32_768 }) return (null, "area too large for an order (max 32768 blocks)");
+        // A chop order on a tree's canopy (a top-down click) or a branch means the tree: its trunk base.
+        if (kind == "chop" && at is { } ca && World is { } cw && StoryBlocks.TreeBaseOf(cw, ca) is { } cb) at = cb;
         var ids = new JsonArray();
         lock (_lock)
             foreach (var p in pawns)
@@ -95,7 +105,7 @@ public sealed partial class StoryColony
                 if (area is { } a && World is { } w)
                     o.Targets = kind switch
                     {
-                        "chop" => StoryBlocks.TreeBases(w, a).Take(64).ToList(),
+                        "chop" => StoryBlocks.TreesIn(w, a, max: 64),
                         "mine" => a.Blocks().Where(b => StoryBlocks.MineMatch(w.Block(b.X, b.Y, b.Z).Id, "all")).OrderByDescending(b => b.Y).Take(512).ToList(),
                         _ => null,
                     };
@@ -132,7 +142,8 @@ public sealed partial class StoryColony
             {
                 "move" => Job(type, "go", $"moving to {at}", at ?? o.Area?.Center, null, src, o.Id, "moving", j => j["dist"] = 0, xp: 0),
                 "attack" => Job(type, "attack", $"attacking {e?.Name ?? "target"}", at, e != null ? "e:" + e.Id : null, src, o.Id, "fighting", j => j["mob"] = e?.Name ?? "", xp: 0),
-                "chop" => Job(WorkTypes.Chop, "chop", "chopping (order)", at, at is { } c ? "b:" + c : null, src, o.Id, xp: 40),
+                "chop" => Job(WorkTypes.Chop, "chop", "chopping (order)", at, at is { } c ? "b:" + c : null, src, o.Id,
+                    fill: j => ChopFill(j, at is { } ct && World is { } ow ? StoryBlocks.TreeFrom(ow, ct) : null), xp: 40),
                 "mine" => Job(WorkTypes.Mine, "dig", "mining (order)", at, at is { } m ? "b:" + m : null, src, o.Id),
                 "haul" => Job(WorkTypes.Haul, "collect", "hauling (order)", at ?? o.Area?.Center, e != null ? "e:" + e.Id : null, src, o.Id, "working", j => j["r"] = 4, xp: 5),
                 "build" when o.Design is { } d => Job(WorkTypes.Build, "blueprint", $"building design #{d}", at, "design:" + d, src, o.Id, "working", j => j["design"] = d.ToString(), xp: 60),
@@ -160,9 +171,29 @@ public sealed partial class StoryColony
 
     // ---------------------------------------------------------------- zones
 
-    public (JsonNode? Result, string? Error) ZoneOp(string op, string? kind, Area? area)
+    public (JsonNode? Result, string? Error) ZoneOp(string op, string? kind, Area? area, string? id = null, string? name = null)
     {
-        if (op is not ("add" or "remove")) return (null, "op must be add|remove");
+        if (name is { Length: > 40 }) return (null, "name: at most 40 characters");
+        if (op == "rename")
+        {
+            lock (_lock)
+            {
+                if (Zones.FirstOrDefault(z => z.Id == id) is not { } rz) return (null, "id: no such zone");
+                rz.Name = string.IsNullOrWhiteSpace(name) ? null : name.Trim();
+                rz.Rev = Touch();
+                return (new JsonObject { ["id"] = rz.Id, ["name"] = rz.Name }, null);
+            }
+        }
+        if (op == "remove" && id != null)
+        {
+            lock (_lock)
+            {
+                if (Zones.FirstOrDefault(z => z.Id == id) is not { } gz) return (null, "id: no such zone");
+                Zones.Remove(gz); Removed("zone", gz.Id); _zoneScan.Remove(gz.Id); _bedScan = null;
+                return (new JsonObject { ["removed"] = new JsonArray(gz.Id) }, null);
+            }
+        }
+        if (op is not ("add" or "remove")) return (null, "op must be add|remove|rename");
         if (area is not { } a) return (null, "area [x1,y1,z1,x2,y2,z2] required");
         if (kind == "stockpile") return (null, "storage is chests: register them with /storage (no ground stockpiles)");
         if (op == "add" && (kind == null || !ZoneKinds.Contains(kind))) return (null, $"kind must be {string.Join("|", ZoneKinds)}");
@@ -171,13 +202,15 @@ public sealed partial class StoryColony
         {
             if (op == "add")
             {
-                var z = new ZoneState { Id = NextId("z"), Kind = kind!, Area = a, Rev = Touch() };
+                var z = new ZoneState { Id = NextId("z"), Kind = kind!, Area = a, Name = string.IsNullOrWhiteSpace(name) ? null : name.Trim(), Rev = Touch() };
                 Zones.Add(z);
+                _bedScan = null;
                 WakeIdle();
                 return (new JsonObject { ["id"] = z.Id }, null);
             }
             var gone = Zones.Where(z => (kind == null || z.Kind == kind) && z.Area.Overlaps(a)).ToList();
             foreach (var z in gone) { Zones.Remove(z); Removed("zone", z.Id); _zoneScan.Remove(z.Id); }
+            _bedScan = null;
             return (new JsonObject { ["removed"] = new JsonArray(gone.Select(z => (JsonNode)z.Id!).ToArray()) }, null);
         }
     }
@@ -231,8 +264,9 @@ public sealed partial class StoryColony
             {
                 case "chop":
                 {
-                    var bases = area is { } a ? StoryBlocks.TreeBases(w, a).ToList()
-                        : blocks!.Select(b => DownToBase(w, b)).Where(b => b != null).Select(b => b!.Value).Distinct().ToList();
+                    // Any log or leaf of a tree (the canopy top a top-down click lands on included) stands for that tree: its trunk base.
+                    var bases = area is { } a ? StoryBlocks.TreesIn(w, a)
+                        : blocks!.Select(b => StoryBlocks.TreeBaseOf(w, b)).Where(b => b != null).Select(b => b!.Value).Distinct().ToList();
                     foreach (var b in bases.Take(512)) Block(b, StoryBlocks.TreeFrom(w, b), null, "chopping a tree");
                     break;
                 }
@@ -275,13 +309,5 @@ public sealed partial class StoryColony
             if (made.Count > 0) WakeIdle();
             return (new JsonObject { ["count"] = made.Count, ["targets"] = targets }, null);
         }
-    }
-
-    private static P3? DownToBase(IStoryWorld w, P3 b)
-    {
-        if (!StoryBlocks.Logs.Contains(w.Block(b.X, b.Y, b.Z).Id)) return null;
-        var p = b;
-        for (int i = 0; i < 32 && StoryBlocks.Logs.Contains(w.Block(p.X, p.Y - 1, p.Z).Id); i++) p = p.Add(0, -1, 0);
-        return p;
     }
 }

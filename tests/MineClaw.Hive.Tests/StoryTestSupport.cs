@@ -46,6 +46,15 @@ internal sealed class FakeStoryHost(FakeStoryWorld world) : IStoryHost
     public PawnLive Live(string account) => Lives.TryGetValue(account, out var l) ? l : PawnLive.Offline;
     public string? StartPawn(string account, string colony) { Started.Add(account); return null; }
     public void Interrupt(string account, string why) => Interrupted.Add(account + ": " + why);
+    public List<(string Account, P3 To)> Teleported { get; } = new();
+    /// <summary>Non-null: every teleport is refused with this (the director walks the pawn instead).</summary>
+    public string? TeleportError;
+    public string? Teleport(string account, P3 to, string why)
+    {
+        if (TeleportError != null) return TeleportError;
+        Teleported.Add((account, to));
+        return null;
+    }
     public IReadOnlyList<Stack>? KnownChest(P3 at) => Chests.TryGetValue(at, out var c) ? c : null;
 
     public static PawnLive Live(double x, double y, double z, int hp = 20, int food = 20, params Stack[] inv) =>

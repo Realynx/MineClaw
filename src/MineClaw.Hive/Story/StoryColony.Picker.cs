@@ -49,6 +49,7 @@ public sealed partial class StoryColony
         if (p.Drafted) return OrderJob(p, live) ?? Hold("drafted: waiting for orders", "drafted", s: 3, type: "order");
         if (p.Queue.Count > 0 && OrderJob(p, live) is { } order) return order;
         if (Urgent(p, live) is { } need) return need;
+        if (Resting(p) is { } rest) return rest;
         if (Deliver(p, live) is { } deliver) return deliver;
         int hour = HourNow;
         var block = p.Schedule.Length == 24 && ScheduleBlocks.Known(p.Schedule[hour]) ? p.Schedule[hour] : ScheduleBlocks.Anything;
@@ -56,7 +57,7 @@ public sealed partial class StoryColony
         switch (block)
         {
             case ScheduleBlocks.Sleep:
-                return Hold($"sleeping ({hour:00}:00)", "sleeping", home, 30, "schedule");
+                return SleepJob(p, live, hour, home);
             case ScheduleBlocks.Free:
                 return Hold($"free time ({hour:00}:00)", "idle", home, 10, "schedule");
             case ScheduleBlocks.Anything when live.Food <= 14 && FoodIn(live) != null:
@@ -69,8 +70,35 @@ public sealed partial class StoryColony
             _idleAlert[p.Name] = Now;
             Alert("info", $"{p.Display} is idle: nothing to do", p.Name);
         }
-        return Hold("idle: nothing to do", "idle", home, StoryCharacter.IdleSeconds(p));
+        return Hold(NothingToDo, "idle", home, StoryCharacter.IdleSeconds(p));
     }
+
+    // ---------------------------------------------------------------- back-off
+
+    private readonly Dictionary<string, List<DateTimeOffset>> _fails = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Failures in a row this close together make a pawn rest before it picks again (no tight fail → pick → fail loop).</summary>
+    public static readonly TimeSpan FailWindow = TimeSpan.FromSeconds(20), FailRest = TimeSpan.FromSeconds(15);
+    public const int FailBurst = 3;
+
+    /// <summary>A pawn whose last <see cref="FailBurst"/> jobs all failed within <see cref="FailWindow"/> holds a while (orders and needs still win).</summary>
+    private ActiveJob? Resting(PawnState p)
+    {
+        if (!_fails.TryGetValue(p.Name, out var f) || f.Count < FailBurst) return null;
+        var last = f[^1];
+        if (last - f[^FailBurst] > FailWindow || Now - last >= FailRest) return null;
+        return Hold("resting: the last jobs failed", "idle", null, (int)Math.Ceiling((FailRest - (Now - last)).TotalSeconds));
+    }
+
+    private void NoteFailure(PawnState p)
+    {
+        if (!_fails.TryGetValue(p.Name, out var f)) _fails[p.Name] = f = new List<DateTimeOffset>();
+        f.Add(Now);
+        if (f.Count > FailBurst) f.RemoveRange(0, f.Count - FailBurst);
+    }
+
+    /// <summary>The rest after the n-th failure of one target: 30 s, 1 min, then 10 min.</summary>
+    private static TimeSpan Backoff(int n) => n >= 3 ? TimeSpan.FromMinutes(10) : TimeSpan.FromSeconds(30 * Math.Max(1, n));
 
     // ---------------------------------------------------------------- needs
 
@@ -142,6 +170,7 @@ public sealed partial class StoryColony
     {
         bool after = _lastSource.TryGetValue(p.Name, out var src) && Gathering.Contains(src);
         if (!after && !force && live.FreeSlots > 4) return null;
+        if (Skipped("deliver:" + p.Name)) return null; // its last delivery failed: not again right away
         var items = Deliverables(live);
         if (items.Count == 0) { _lastSource.Remove(p.Name); return null; }
         var groups = new Dictionary<P3, List<Stack>>();
@@ -261,12 +290,6 @@ public sealed partial class StoryColony
         return null;
     }
 
-    private bool InHome(P3 at, P3 home)
-    {
-        var hz = Zones.Where(z => z.Kind == "home").ToList();
-        return hz.Count > 0 ? hz.Any(z => z.Area.ContainsXZ(at.X, at.Z)) : at.Dist(home) <= 24;
-    }
-
     /// <summary>A block designation of <paramref name="kind"/> (nearest open first).</summary>
     private ActiveJob? DesignationJob(PawnState p, P3 from, string type, string kind, string scriptKind, string label)
     {
@@ -274,7 +297,27 @@ public sealed partial class StoryColony
         if (d == null) return null;
         var at = d.At!.Value;
         return Job(type, scriptKind, d.Label ?? label, at, "b:" + at, "designation", d.Id, "working",
-            j => { if (d.Replant != null) j["replant"] = d.Replant; }, xp: kind == "chop" ? 40 : 20);
+            j =>
+            {
+                if (d.Replant != null) j["replant"] = d.Replant;
+                if (kind == "chop") ChopFill(j, d.Blocks);
+            }, xp: kind == "chop" ? 40 : 20);
+    }
+
+    /// <summary>
+    /// What the pawn script needs to finish a tree from an empty inventory: the version's log item names (to tell whether any came
+    /// down), its planks name (logs → planks in the 2x2 grid: clutch and pillar blocks for the logs up high) and the tree's logs (where
+    /// the rest of it is).
+    /// </summary>
+    private void ChopFill(JsonObject j, IReadOnlyList<P3>? logs)
+    {
+        if (World?.Data is { } d)
+        {
+            j["wood"] = new JsonArray(StoryBlocks.Logs.Where(d.ItemExists).Select(id => (JsonNode)d.Item(id).Name).ToArray());
+            j["wood_blocks"] = new JsonArray(StoryBlocks.Logs.Where(d.BlockExists).Select(id => (JsonNode)d.Block(id).Name).ToArray());
+            if (d.ItemExists(5)) j["planks"] = d.Item(5).Name;
+        }
+        if (logs is { Count: > 0 }) j["logs"] = new JsonArray(logs.OrderBy(l => l.Y).Take(48).Select(l => (JsonNode)l.ToString()).ToArray());
     }
 
     // ---------------------------------------------------------------- zones (standing tasks)
@@ -290,7 +333,7 @@ public sealed partial class StoryColony
         {
             var a = z.Area;
             long scanned = 0;
-            if (z.Kind == "chop") list.AddRange(StoryBlocks.TreeBases(w, a).Take(64).Select(b => (b, (string?)null, "chop")));
+            if (z.Kind == "chop") list.AddRange(StoryBlocks.TreesIn(w, a, max: 64).Select(b => (b, (string?)null, "chop")));
             else
                 for (int x = a.X1; x <= a.X2 && list.Count < 256; x++)
                     for (int zz = a.Z1; zz <= a.Z2 && list.Count < 256; zz++)
@@ -318,7 +361,8 @@ public sealed partial class StoryColony
             var t = ZoneTasks(z).Where(t => Open("b:" + t.Pos, p.Name, t.Pos)).OrderBy(t => t.Pos.Dist(from)).FirstOrDefault();
             if (t.Kind == null) continue;
             return zoneKind == "chop"
-                ? Job(type, "chop", "chopping a tree (zone)", t.Pos, "b:" + t.Pos, "zone", z.Id, xp: 40)
+                ? Job(type, "chop", "chopping a tree (zone)", t.Pos, "b:" + t.Pos, "zone", z.Id,
+                    fill: j => ChopFill(j, World is { } tw ? StoryBlocks.TreeFrom(tw, t.Pos) : null), xp: 40)
                 : Job(type, "dig", "mining ore (zone)", t.Pos, "b:" + t.Pos, "zone", z.Id);
         }
         return null;
@@ -376,6 +420,9 @@ public sealed partial class StoryColony
         foreach (var (chest, stacks) in j.Puts) if (StorageAt(chest) is { } st) foreach (var s in stacks) AddContents(st, s);
         if (WorkTypes.Known(j.Type) && j.Xp > 0 && StoryCharacter.Learn(p, j.Type, j.Xp, HourNow) > 0)
             Alert("info", $"{p.Display} is now level {p.Skills[j.Type].Level} at {j.Type}", p.Name);
+        _fails.Remove(p.Name);
+        if (j.Lease != null) _leaseFails.Remove(j.Lease);
+        if (j.Source == "deliver") _leaseFails.Remove("deliver:" + p.Name);
         switch (j.Source)
         {
             case "designation":
@@ -383,6 +430,9 @@ public sealed partial class StoryColony
                 {
                     Designations.Remove(des);
                     Removed("designation", des.Id);
+                    // Part of the tree was out of reach: what could be reached came down; the rest is said, not silently dropped.
+                    if (note is { } n && n.StartsWith("partial", StringComparison.OrdinalIgnoreCase))
+                        Alert("info", $"{p.Display} took what it could reach of the {des.Kind} at {des.At?.ToString() ?? "#" + des.Entity}: {Short(n)}", p.Name);
                 }
                 break;
             case "ghost":
@@ -401,6 +451,33 @@ public sealed partial class StoryColony
         }
     }
 
+    /// <summary>
+    /// What of a designation's target the colony's view still sees after the pawn said done (null = it's done, or the view can't tell:
+    /// not loaded). chop: the trunk's base log; cut: the plant; harvest: the ripe crop; mine, deconstruct: the block; haul, hunt: the entity.
+    /// </summary>
+    private string? StillThere(ActiveJob j)
+    {
+        if (World is not { } w || Designations.FirstOrDefault(d => d.Id == j.SourceId) is not { } d) return null;
+        if (d.Entity is { } eid)
+            return d.Kind is "haul" or "hunt" && w.Entities().FirstOrDefault(e => e.Id == eid) is { } e ? $"the {e.Name} is still there" : null;
+        if (d.At is not { } at || !w.Loaded(at.X, at.Z)) return null;
+        var (id, _) = w.Block(at.X, at.Y, at.Z);
+        string Name() => w.Data.BlockExists(id) ? w.Data.Block(id).Name : id.ToString();
+        return d.Kind switch
+        {
+            "chop" when StoryBlocks.Logs.Contains(id) => $"the tree's base log at {at} is still standing",
+            "cut" when StoryBlocks.Plants.Contains(id) || StoryBlocks.Leaves.Contains(id) => $"the {Name()} at {at} is still there",
+            "harvest" when StoryBlocks.Crop(w, at.X, at.Y, at.Z) is { Ripe: true } => $"the ripe {Name()} at {at} is still there",
+            "mine" or "deconstruct" when id != 0 && !StoryBlocks.Liquids.Contains(id) => $"the {Name()} at {at} is still there",
+            _ => null,
+        };
+    }
+
+    /// <summary>Failures after which a designation shows as failed (it stays, with its reason).</summary>
+    public const int DesignationFailLimit = 3;
+
+    private static string Short(string s) => s.Length > 160 ? s[..159] + "…" : s;
+
     private void Failed(PawnState p, ActiveJob j, string? note)
     {
         var why = string.IsNullOrWhiteSpace(note) ? "failed" : note.Trim();
@@ -408,20 +485,31 @@ public sealed partial class StoryColony
         _log.LogInformation("story {Colony}: {Pawn} {Kind} {At} failed: {Why}", Id, p.Name, j.Kind, j.At?.ToString() ?? "", why);
         foreach (var (chest, _) in j.Puts)
             if (StorageAt(chest) is { } st && why.Contains("full", StringComparison.OrdinalIgnoreCase)) { st.FreeSlots = 0; st.Rev = Touch(); }
+        NoteFailure(p);
         if (j.Lease != null)
         {
-            // Not this target again right away; one that keeps failing (an unreachable drop) rests for 10 minutes.
+            // Not this target again right away; one that keeps failing (an unreachable drop) rests longer each time (up to 10 minutes).
             int n = _leaseFails[j.Lease] = _leaseFails.GetValueOrDefault(j.Lease) + 1;
-            _skip[j.Lease] = Now + (n >= 3 ? TimeSpan.FromMinutes(10) : TimeSpan.FromSeconds(30));
+            _skip[j.Lease] = Now + Backoff(n);
+        }
+        if (j.Source == "deliver")
+        {
+            int n = _leaseFails["deliver:" + p.Name] = _leaseFails.GetValueOrDefault("deliver:" + p.Name) + 1;
+            _skip["deliver:" + p.Name] = Now + Backoff(n);
         }
         switch (j.Source)
         {
             case "designation":
-                if (Designations.FirstOrDefault(d => d.Id == j.SourceId) is { } des && ++des.Fails >= 3)
+                if (Designations.FirstOrDefault(d => d.Id == j.SourceId) is { } des)
                 {
-                    Designations.Remove(des);
-                    Removed("designation", des.Id);
-                    Alert("warn", $"Gave up {des.Kind} at {des.At?.ToString() ?? "#" + des.Entity}: {why}", p.Name);
+                    // Kept on the map with why (the browser shows it); retried after a rest, until it is done or cancelled.
+                    des.Fails++;
+                    des.Reason = why;
+                    if (des.Fails >= DesignationFailLimit) des.Status = "failed";
+                    des.Rev = Touch();
+                    if (des.Fails == 1 || des.Fails % DesignationFailLimit == 0)
+                        Alert("warn", $"{des.Kind} at {des.At?.ToString() ?? "#" + des.Entity} failed {des.Fails} times: {why} (kept on the map, "
+                            + $"retried in {Backoff(des.Fails).TotalMinutes:0} min; cancel it to drop it)", p.Name);
                 }
                 break;
             case "ghost":
