@@ -8,12 +8,20 @@ import { memoryCloudMock } from '@mineclaw/contracts/testing';
 import { STATE_KEY, cloudTree, extraLeafDetail } from './raptor';
 
 export const EXTRA_FROM = 100_000;
-const EXTRA = 2520;
+/** Cloud-only leaves on top of the tree's 480. The perf check raises it through localStorage `mcx-mock-cloud-extra`. */
+function extraLeaves(): number {
+  try {
+    const v = Number(globalThis.localStorage?.getItem('mcx-mock-cloud-extra'));
+    return Number.isInteger(v) && v > 0 && v <= 200_000 ? v : 2520;
+  } catch {
+    return 2520;
+  }
+}
 
 let cached: MemoryCloudResponse | null = null;
 
 export function memoryCloud(): MemoryCloudResponse {
-  cached ??= memoryCloudMock(cloudTree(), { extraLeaves: EXTRA, extraFrom: EXTRA_FROM, seed: 23, stateKey: STATE_KEY });
+  cached ??= memoryCloudMock(cloudTree(), { extraLeaves: extraLeaves(), extraFrom: EXTRA_FROM, seed: 23, stateKey: STATE_KEY });
   return cached;
 }
 

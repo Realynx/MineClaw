@@ -25,18 +25,17 @@ export const PAGES = [
   ['memory', '/memory?kind=claims'],
   ['memory-detail', '/memory?kind=chests&id=2'],
   ['search', '/search?q=melons'],
-  ['raptor', '/raptor'],
-  ['raptor-tree', '/raptor?view=tree&node=481'],
+  ['memory-cloud', '/memory-activity?layout=cloud'],
   ['personality', '/personality'],
   ['scripts', '/scripts?name=cobble_loop'],
   ['designs', '/designs?id=12'],
   ['shards', '/shards'],
   ['admin', '/admin'],
 ];
-const GRAPH_PAGES = new Set(['memory-activity', 'raptor']);
+const GRAPH_PAGES = new Set(['memory-activity', 'memory-cloud']);
 
 async function measure(page) {
-  const box = await page.locator('canvas[role=application]').first().boundingBox();
+  const box = await page.locator('[role=application]').first().boundingBox();
   if (!box) return null;
   await page.evaluate(() => {
     window.__mcxGraphDraws = [];
