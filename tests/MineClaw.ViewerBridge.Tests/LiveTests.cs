@@ -96,8 +96,12 @@ public class LiveTests
         var now = frames.FirstOrDefault(f => f.Event == "now");
         if (now.Data != null) Assert.Equal(JsonValueKind.Array, JsonDocument.Parse(now.Data).RootElement.GetProperty("body").GetProperty("pos").ValueKind);
         // The first blocks page (full: only the cursor) is not emitted; the second is.
-        var more = await ReadFrames(stream, 6, TimeSpan.FromSeconds(5));
-        var blocks = frames.Concat(more).Where(f => f.Event == "blocks").ToList();
+        // Read until the blocks frame arrives rather than a fixed count: under load other topics can fill any fixed window first.
+        var seen = frames.ToList();
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        while (!seen.Any(f => f.Event == "blocks") && DateTime.UtcNow < deadline)
+            seen.AddRange(await ReadFrames(stream, 1, deadline - DateTime.UtcNow));
+        var blocks = seen.Where(f => f.Event == "blocks").ToList();
         Assert.Single(blocks);
         Assert.Contains("[1,64,2,4,0]", blocks[0].Data);
         Assert.True(hub.Polling);
