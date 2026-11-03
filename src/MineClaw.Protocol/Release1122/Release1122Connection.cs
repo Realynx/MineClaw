@@ -300,7 +300,7 @@ public sealed partial class Release1122Connection : IGameConnection
                 foreach (var be in chunk.BlockEntities)
                 {
                     if (Codec1122.SignLines(be, Lang) is { } lines && be.GetInt("x") is { } sx && be.GetInt("y") is { } sy && be.GetInt("z") is { } sz)
-                        _extra.Enqueue(new UpdateSignPacket { X = sx, Y = (short)sy, Z = sz, Lines = lines });
+                        _extra.Enqueue(new UpdateSignPacket { X = sx, Y = (short)sy, Z = sz, Lines = lines, Legacy = Codec1122.SignLegacy(be, Lang) });
                     // The viewer's looks of every other block entity (beds, banners, skulls, pots, spawners, chests…).
                     else if (BlockEntities1122.Info(be) is { } info && BlockEntities1122.PositionOf(be) is { } bp)
                         _extra.Enqueue(new BlockEntityMessage { X = bp.X, Y = bp.Y, Z = bp.Z, Info = info });

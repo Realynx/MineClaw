@@ -19,7 +19,7 @@ import { dyeIndex } from '../wire/normalize';
 import type { GameVersion } from '../world/blocks';
 import { bannerPatternName, charWidth as charWidthOf, compositeBanner, DYE_RGB, signLayout, SPAWNER_SPIN_RAD_S, spawnerMobFeet, spawnerMobScale } from './blockEntityTex';
 import type { ChunkUniforms } from './chunkMaterial';
-import { fontTable, layoutLine, rasterLine, type FontPixels, type FontTable } from './font';
+import { fontTable, layoutLine, rasterLine, richToLegacy, type FontPixels, type FontTable } from './font';
 
 const vertex = /* glsl */ `
 attribute float aShade;
@@ -77,6 +77,9 @@ interface Obj {
   texture?: THREE.Texture;
   usedAt: number;
   kind: 'sign' | 'banner' | 'spawner';
+  /** Sign text with obfuscated (§k) glyphs: redrawn with new stand-ins every `obfuscatedMs` while in view; when it was drawn. */
+  obfuscated?: boolean;
+  textAt?: number;
   /** Spawner: the display mob's spin (radians) and the game ticks of particles not yet emitted. */
   spin?: number;
   ticks?: number;
@@ -237,8 +240,12 @@ export class BlockEntityLayer {
       o.group.visible = vis;
       if (!vis) continue;
       o.usedAt = p.now;
+      if (o.kind === 'sign' && o.text && o.obfuscated && p.now - (o.textAt ?? 0) >= (p.software ? 100 : 50) && texts < 4) {
+        // FontRenderer draws obfuscated text with a new random glyph of the same width every frame: redraw it often.
+        this.dropText(o);
+      }
       if (o.kind === 'sign' && !o.text) {
-        if (texts++ < 4) this.buildText(o); // a few new text textures a frame
+        if (texts++ < 4) this.buildText(o, p.now); // a few new text textures a frame
       }
       if (o.slate) {
         // TileEntityBannerRenderer: (−0.0125 + 0.01·cos(f·π·0.02))·π, f = x·7 + y·9 + z·13 + world time.
@@ -327,8 +334,11 @@ export class BlockEntityLayer {
     return this.fontData;
   }
 
-  private buildText(o: Obj): void {
-    const lines = o.be.lines ?? [];
+  private buildText(o: Obj, now = 0): void {
+    // A styled 1.12.2 sign draws its rich runs (as the § text the font renderer reads); else the plain lines.
+    const lines = o.be.rich?.length ? [0, 1, 2, 3].map((j) => richToLegacy(o.be.rich?.[j])) : (o.be.lines ?? []);
+    o.obfuscated = lines.some((l) => /§k/i.test(l));
+    o.textAt = now;
     if (!lines.some((l) => l)) {
       o.text = new THREE.Mesh(); // nothing to draw: remember that
       return;
@@ -340,7 +350,8 @@ export class BlockEntityLayer {
     if (font) {
       // The bitmap font: each line's glyphs from font.png at one texel per font pixel (two when italic text needs the
       // half-pixel shear), coloured by the § codes (black by default), magnified with nearest sampling.
-      const laid = signLayout(lines, font.table).map((l, j) => ({ ...layoutLine(font.table, l.text, l.x, 0, o.be.x * 31 + o.be.z * 17 + j), y: l.y, x0: l.x }));
+      const seed = o.be.x * 31 + o.be.z * 17 + (o.obfuscated ? Math.floor(now / 50) * 7919 : 0);
+      const laid = signLayout(lines, font.table).map((l, j) => ({ ...layoutLine(font.table, l.text, l.x, 0, seed + j), y: l.y, x0: l.x }));
       // Wide enough for every line (b1.8.1 lines are not cut), with room for underlines, bold and italic.
       W = 2 * Math.ceil(Math.max(48, ...laid.map((l) => Math.max(2 - l.x0, l.x0 + l.width + 2))));
       const S = laid.some((l) => l.glyphs.some((g) => g.italic)) ? 2 : 1;

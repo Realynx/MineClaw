@@ -5,10 +5,16 @@ using MineClaw.World;
 
 namespace MineClaw.App.Supervisor;
 
-/// <summary>An item on the wire as <c>[id, meta]</c> (equipment, a falling block), or <c>[id, meta, rgb]</c> when the item is
-/// dyed (1.12.2 leather armour's display.color; b1.8.1 has no dyed items, so never there).</summary>
+/// <summary>An item on the wire as <c>[id, meta]</c> (equipment, a falling block, an enderman's block), <c>[id, meta, rgb]</c> when
+/// the item is dyed (1.12.2 leather armour's display.color; b1.8.1 has no dyed items, so never there), and a trailing flags
+/// object when it glints: <c>[id, meta, {"glint": true}]</c> / <c>[id, meta, rgb, {"glint": true}]</c> (1.12.2 enchanted items and
+/// potions with effects; b1.8.1 items carry no NBT). Readers that take the numbers ignore the object.</summary>
 [JsonConverter(typeof(WireItemConverter))]
-public readonly record struct WireItem(int Id, int Meta, int? Color = null);
+public readonly record struct WireItem(int Id, int Meta, int? Color = null, bool Glint = false);
+
+/// <summary>The parrots on a player's shoulders (1.12.2), by colour name (<c>red_blue</c>, <c>blue</c>, <c>green</c>, <c>yellow_blue</c>,
+/// <c>grey</c>); a free shoulder is left out.</summary>
+public sealed record WorldShoulders(string? Left = null, string? Right = null);
 
 /// <summary>Three ints on the wire as <c>[x, y, z]</c> (an armour stand's pose angles in whole degrees).</summary>
 [JsonConverter(typeof(WireVecConverter))]
@@ -30,14 +36,21 @@ internal sealed class WireItemConverter : JsonConverter<WireItem>
 {
     public override WireItem Read(ref Utf8JsonReader r, Type t, JsonSerializerOptions o)
     {
-        var a = JsonSerializer.Deserialize<int[]>(ref r, o) ?? [];
-        return new WireItem(a.Length > 0 ? a[0] : 0, a.Length > 1 ? a[1] : 0, a.Length > 2 ? a[2] : null);
+        using var doc = JsonDocument.ParseValue(ref r);
+        var ints = new List<int>();
+        bool glint = false;
+        if (doc.RootElement.ValueKind == JsonValueKind.Array)
+            foreach (var e in doc.RootElement.EnumerateArray())
+                if (e.ValueKind == JsonValueKind.Number) ints.Add(e.GetInt32());
+                else if (e.ValueKind == JsonValueKind.Object && e.TryGetProperty("glint", out var g)) glint = g.ValueKind == JsonValueKind.True;
+        return new WireItem(ints.Count > 0 ? ints[0] : 0, ints.Count > 1 ? ints[1] : 0, ints.Count > 2 ? ints[2] : null, glint);
     }
 
     public override void Write(Utf8JsonWriter w, WireItem v, JsonSerializerOptions o)
     {
         w.WriteStartArray(); w.WriteNumberValue(v.Id); w.WriteNumberValue(v.Meta);
         if (v.Color is { } c) w.WriteNumberValue(c);
+        if (v.Glint) { w.WriteStartObject(); w.WriteBoolean("glint", true); w.WriteEndObject(); }
         w.WriteEndArray();
     }
 }
@@ -108,14 +121,44 @@ public static class EntityLooks
     };
 
     /// <summary>Equipment in wire slots (canonical 0 held, 1 feet, 2 legs, 3 chest, 4 head, 5 off hand); null when nothing is worn.
-    /// A dyed item (1.12.2 display.color) carries its colour as the third element.</summary>
+    /// A dyed item (1.12.2 display.color) carries its colour as the third element, a glinting one its flags object.</summary>
     public static WorldEquipment? Equipment(Entity e)
     {
         if (e.Equipment is null) return null;
-        WireItem? S(int slot) => e.EquipmentAt(slot) is { IsEmpty: false } st ? new WireItem(st.Id, st.Damage, st.Tag?.DisplayColor) : null;
+        WireItem? S(int slot) => e.EquipmentAt(slot) is { IsEmpty: false } st ? new WireItem(st.Id, st.Damage, st.Tag?.DisplayColor, Glint(st)) : null;
         var eq = new WorldEquipment(S(0), S(5), S(4), S(3), S(2), S(1));
         return eq == new WorldEquipment() ? null : eq;
     }
+
+    /// <summary>Whether the stack's NBT makes vanilla draw the enchantment glint on it (<c>ItemStack.hasEffect</c>): enchantments
+    /// (an "ench" list, an enchanted book's stored ones) or a potion (373 potion, 438 splash, 441 lingering) with effects. Items
+    /// that always glint whatever their NBT (enchanted book, nether star, bottle o' enchanting, written book, end crystal, the
+    /// enchanted golden apple) the viewer knows by id. b1.8.1 stacks have no NBT: never.</summary>
+    public static bool Glint(ItemStack s) =>
+        !s.IsEmpty && s.Tag is { } t && (t.Enchanted || (t.PotionEffects && s.Id is 373 or 438 or 441));
+
+    /// <summary>An enderman's carried block (<c>LayerHeldBlock</c>): 1.12.2's <c>CARRIED_BLOCK</c> state, b1.8.1's metadata 16 (id)
+    /// and 17 (data); null when it carries nothing.</summary>
+    public static WireItem? Carried(Entity e)
+    {
+        if (e.Kind != EntityKind.Mob || NameOf(e) != "enderman") return null;
+        if (e.MetaInt(EntityMeta.CarriedBlock) is { } state)
+            return (state & 0xFFF) > 0 ? new WireItem(state & 0xFFF, (state >> 12) & 15) : null;
+        if (e.TypeName is null && e.MetaInt(EntityMeta.Mob16) is { } id && (id & 0xFF) > 0)
+            return new WireItem(id & 0xFF, (e.MetaInt(EntityMeta.Mob17) ?? 0) & 15);
+        return null;
+    }
+
+    /// <summary>The parrots on a player's shoulders (1.12.2 metadata); null when both are free.</summary>
+    public static WorldShoulders? Shoulders(Entity e)
+    {
+        if (e.Kind != EntityKind.Player) return null;
+        var s = new WorldShoulders(At(ParrotColors, e.MetaInt(EntityMeta.ShoulderLeft)), At(ParrotColors, e.MetaInt(EntityMeta.ShoulderRight)));
+        return s == new WorldShoulders() ? null : s;
+    }
+
+    /// <summary>Arrows stuck in a living entity (1.12.2 <c>EntityLivingBase.ARROW_COUNT_IN_ENTITY</c>; b1.8.1 has none); null for 0.</summary>
+    public static int? Arrows(Entity e) => e.Kind is EntityKind.Mob or EntityKind.Player && e.MetaInt(EntityMeta.ArrowsInEntity) is int n && n > 0 ? n : null;
 
     /// <summary>The number <c>variant</c>: b1.8.1's metadata 16 where it is set (sheep fleece, slime size, wolf flags… as before),
     /// else the kind's main number (horse colour+markings, llama colour, rabbit coat, profession, ocelot/parrot type, boat wood,
@@ -136,7 +179,7 @@ public static class EntityLooks
 
     /// <summary>The compact <c>look</c> string per kind (comma-separated tokens: "red,sheared", "chestnut,white_dots,saddle,armor=iron",
     /// "tame,collar=red", "profession=librarian", "size=4", "powered"); null when there's nothing to say.</summary>
-    public static string? Look(Entity e)
+    public static string? Look(Entity e, DateTime? nowUtc = null)
     {
         var t = new List<string>();
         int? m16 = e.MetaInt(EntityMeta.Mob16);
@@ -183,6 +226,9 @@ public static class EntityLooks
                 break;
             case "enderman" when e.MetaFlag(EntityMeta.Screaming):
                 t.Add("screaming");
+                break;
+            case "villager_golem" or "iron_golem" when e.RoseUntil > (nowUtc ?? DateTime.UtcNow):
+                t.Add("holding_rose"); // EntityIronGolem.holdRoseTick (Entity Status 11, 400 ticks; 34 ends it)
                 break;
             case "horse":
                 if (e.MetaInt(EntityMeta.HorseVariant) is { } hv)

@@ -64,6 +64,13 @@ public sealed class EntityEventRing
         2 => "hurt", 3 => "death", 9 => "eat", _ => null,
     };
 
+    /// <summary>How long an iron golem holds out its flower (<c>EntityIronGolem.holdRoseTick</c> = 400).</summary>
+    public const int RoseTicks = 400;
+
+    /// <summary>An iron golem's own statuses (<c>EntityIronGolem.handleStatusUpdate</c>): 4 its attack swing (both arms, the
+    /// viewer's <c>swing</c>), 11 offering a flower, 34 taking it back; null for the others.</summary>
+    public static string? GolemStatus(int status) => status switch { 4 => "swing", 11 => "rose", 34 => "no_rose", _ => null };
+
     /// <summary>A position jump at least this far in one update is a teleport (neither version has a status for it: an enderman,
     /// an ender pearl, /tp).</summary>
     public const double TeleportJump = 8;

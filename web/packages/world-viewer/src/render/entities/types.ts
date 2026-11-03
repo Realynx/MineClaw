@@ -91,6 +91,10 @@ export interface PoseCtx {
   seed: number;
   /** Horizontal speed in blocks/tick (bats/birds flap, ghast tentacles…). */
   speed: number;
+  /** An enderman carries a block (ModelEnderman.isCarrying: both arms forward). */
+  carrying?: boolean;
+  /** An iron golem's holdRoseTick (400 → 0 while it offers a flower; 0 = none). */
+  rose?: number;
 }
 
 /** A part's pose this frame (reset to the rest pose before every pose call). */

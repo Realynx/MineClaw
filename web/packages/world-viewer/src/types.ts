@@ -51,6 +51,8 @@ export interface BotDto {
   job?: string | null;
   brain?: string | null;
   held?: string | null;
+  /** An in-process body's own armour and hand items (the entity slots); without it the bot holds `held` only. */
+  equipment?: Equipment | null;
   claims?: string[] | null;
   live?: boolean;
   ageSeconds?: number;
@@ -59,8 +61,11 @@ export interface BotDto {
 /** An item or block: [id, meta/damage] (version-specific numbering), or null for an empty slot. */
 export type ItemRef = [number, number] | null;
 
-/** A worn or held item: [id, meta], or [id, meta, rgb] when it is dyed (1.12.2 leather armour's display.color). */
+/** A worn or held item: [id, meta], or [id, meta, rgb] when it is dyed (1.12.2 leather armour's display.color). The wire's
+ * trailing flags object (`{glint: true}`) is read into `Equipment.glint`. */
 export type EquipRef = [number, number] | [number, number, number] | null;
+
+export type EquipSlot = 'main' | 'off' | 'head' | 'chest' | 'legs' | 'feet';
 
 /** What an entity holds and wears (players, bots, zombies, skeletons, armor stands…). */
 export interface Equipment {
@@ -70,6 +75,19 @@ export interface Equipment {
   chest?: EquipRef;
   legs?: EquipRef;
   feet?: EquipRef;
+  /** The slots whose item glints (the wire's `{glint: true}`: 1.12.2 enchantments, a potion with effects). */
+  glint?: Partial<Record<EquipSlot, boolean>> | null;
+}
+
+/** One styled run of a 1.12.2 sign line (`rich`); absent styles are off, no colour = the sign's black. */
+export interface SignRun {
+  text: string;
+  color?: string | null;
+  bold?: boolean | null;
+  italic?: boolean | null;
+  underlined?: boolean | null;
+  strikethrough?: boolean | null;
+  obfuscated?: boolean | null;
 }
 
 /** Entity state flags as the wire names them (the decoder also accepts the older bitfield). */
@@ -149,6 +167,14 @@ export interface EntityDto {
   minecartType?: number | string | null;
   /** Primed TNT: fuse ticks left. */
   fuse?: number | null;
+  /** Drops and item frames: the stack glints (enchanted, a potion with effects). */
+  glint?: boolean | null;
+  /** Endermen: the carried block. */
+  carried?: ItemRef;
+  /** Players (1.12.2): the parrots on their shoulders, by colour (red_blue | blue | green | yellow_blue | grey). */
+  shoulders?: { left?: string | null; right?: string | null } | null;
+  /** Living (1.12.2): arrows stuck in it (drawn on players, like vanilla's LayerArrow). */
+  arrows?: number | null;
 }
 
 /** A one-off thing that happened to an entity (or at a place: lightning). */
@@ -191,6 +217,8 @@ export interface BlockEntityDto {
   kind: string;
   /** Signs: four lines of plain text. */
   lines?: string[] | null;
+  /** 1.12.2 signs with styled text: the four lines as runs (drawn instead of `lines`). */
+  rich?: SignRun[][] | null;
   /** Beds: dye colour (0..15 or a name). */
   color?: number | string | null;
   /** Banners: base dye colour and [pattern code, dye colour] layers, bottom first. */

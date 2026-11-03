@@ -5,6 +5,7 @@
 // pixels from the font sheet (glyph texels × the text colour; italic shear, bold double strike, underline, strikethrough).
 
 import type { PackFont } from '../assets/bundle';
+import type { SignRun } from '../types';
 
 export interface FontTable {
   /** The character at each glyph cell ("\0" = none). */
@@ -95,6 +96,27 @@ export function signLineText(f: FontTable, raw: string): string {
     if (l >= 0 && stringWidth(f, s.slice(0, l)) > 0) return s.slice(0, l);
   }
   return fit;
+}
+
+/** The colour names of the 16 formatting colours (TextFormatting), by code 0..f. */
+export const FORMAT_NAMES = ['black', 'dark_blue', 'dark_green', 'dark_aqua', 'dark_red', 'dark_purple', 'gold', 'gray', 'dark_gray', 'blue', 'green', 'aqua', 'red', 'light_purple', 'yellow', 'white'];
+
+/** A styled sign line (the wire's `rich` runs) as the § text getFormattedText hands the font renderer: each run its colour
+ * (§r for the default) then its styles (§l §o §n §m §k), then its text. */
+export function richToLegacy(runs: ReadonlyArray<SignRun> | null | undefined): string {
+  let s = '';
+  for (const r of runs ?? []) {
+    if (!r.text) continue;
+    const c = r.color ? FORMAT_NAMES.indexOf(r.color) : -1;
+    s += c >= 0 ? `§${c.toString(16)}` : '§r';
+    if (r.bold) s += '§l';
+    if (r.italic) s += '§o';
+    if (r.underlined) s += '§n';
+    if (r.strikethrough) s += '§m';
+    if (r.obfuscated) s += '§k';
+    s += r.text;
+  }
+  return s;
 }
 
 export interface GlyphRun {

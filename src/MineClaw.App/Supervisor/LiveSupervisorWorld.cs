@@ -327,7 +327,21 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
         if (job == null && b.Job != null) try { job = b.Job(); } catch (Exception) { }
         var pos = me.Position;
         return new WorldBot(b.Name, b.IsMain ? "main" : b.Short, b.IsMain, w.Dimension, R(pos.X), R(pos.Y), R(pos.Z), me.Yaw, me.Pitch, 0,
-            me.Health, me.Food, job, hb?.Brain, HeldOf(w), claims, true, 0);
+            me.Health, me.Food, job, hb?.Brain, HeldOf(w), claims, true, 0) { Equipment = EquipmentOf(w) };
+    }
+
+    /// <summary>What a live body wears and holds (player window: 5 helmet .. 8 boots, the held hotbar slot, 45 the off hand).</summary>
+    internal static WorldEquipment? EquipmentOf(WorldState w)
+    {
+        try
+        {
+            var inv = w.Inventory;
+            WireItem? S(ItemStack st) => st.IsEmpty ? null : new WireItem(st.Id, st.Damage, st.Tag?.DisplayColor, EntityLooks.Glint(st));
+            var eq = new WorldEquipment(S(inv.HeldItem(w.Player.HeldSlot)), S(inv.Offhand), S(inv.GetPlayerSlot(5)), S(inv.GetPlayerSlot(6)),
+                S(inv.GetPlayerSlot(7)), S(inv.GetPlayerSlot(8)));
+            return eq == new WorldEquipment() ? null : eq;
+        }
+        catch (Exception) { return null; }
     }
 
     /// <summary>Every entity any in-process body tracks (players, mobs, drops), merged by server entity id

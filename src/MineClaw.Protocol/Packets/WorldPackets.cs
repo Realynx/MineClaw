@@ -356,6 +356,11 @@ public sealed class UpdateSignPacket : IPacket
     public short Y { get; set; }
     public int Z { get; set; }
     public string[] Lines { get; set; } = ["", "", "", ""];
+    /// <summary>1.12.2 only, received: the lines with their JSON styles as legacy § codes (<see cref="Release1122.ChatComponent.ToLegacy"/>),
+    /// null when no line has any (the viewer's rich sign text; b1.8.1's wire has plain strings).</summary>
+    public string[]? Legacy { get; set; }
+    /// <summary>1.12.2 only, sent by the fake server: the four lines as raw JSON text components (null = <see cref="Lines"/> as plain text).</summary>
+    public string[]? Json { get; set; }
 
     public void Read(MinecraftReader r, PacketDirection d)
     {

@@ -148,6 +148,11 @@ public sealed class EntityTracker
         });
     }
 
+    /// <summary>An iron golem's offered flower (Entity Status 11 holds it for <see cref="EntityEventRing.RoseTicks"/> ticks, 34 drops
+    /// it; <c>EntityIronGolem.handleStatusUpdate</c>). Display only.</summary>
+    public bool HoldRose(int id, bool hold) =>
+        Update(id, e => e with { RoseUntil = hold ? DateTime.UtcNow.AddMilliseconds(EntityEventRing.RoseTicks * 50) : DateTime.MinValue });
+
     /// <summary>1.12.2 Entity Head Look (angle in degrees).</summary>
     public bool SetHeadYaw(int id, float yaw) => Update(id, e => e with { HeadYaw = yaw });
 

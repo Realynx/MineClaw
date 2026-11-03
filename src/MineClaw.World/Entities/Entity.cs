@@ -53,6 +53,9 @@ public sealed record Entity(
     /// id | meta &lt;&lt; 12, an item frame's facing, a minecart's type, an arrow's shooter + 1), a painting's direction (b1.8.1
     /// 0 −Z, 1 −X, 2 +Z, 3 +X). 0 = none. The viewer's looks only.</summary>
     public int Data { get; init; }
+    /// <summary>An iron golem offers a poppy until then (1.12.2 Entity Status 11 sets <c>holdRoseTick</c> to 400 ticks, 34 clears
+    /// it); <see cref="DateTime.MinValue"/> = not holding one. The viewer's looks only.</summary>
+    public DateTime RoseUntil { get; init; }
     /// <summary>Synced attribute values by key ("generic.movementSpeed"…; 1.12.2 Entity Properties); null = none seen.</summary>
     public IReadOnlyDictionary<string, double>? Attributes { get; init; }
 

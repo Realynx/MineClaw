@@ -1,6 +1,6 @@
 // Accepts the supervisor's snake_case replies or Nest's camelCase mirror and returns the viewer's types with defaults filled.
 
-import { FLAG_GLOWING, FLAG_INVISIBLE, FLAG_ON_FIRE, FLAG_RIDING, FLAG_SNEAKING, FLAG_SPRINTING, FLAG_USING_ITEM, type BlockEntities, type BlockEntityColumn, type BlockEntityDto, type BotDto, type EntityDelta, type EntityDto, type EntityEvent, type EquipRef, type Equipment, type ItemRef, type Mark, type Overlays, type PlanDto, type WorldIndex } from '../types';
+import { FLAG_GLOWING, FLAG_INVISIBLE, FLAG_ON_FIRE, FLAG_RIDING, FLAG_SNEAKING, FLAG_SPRINTING, FLAG_USING_ITEM, type BlockEntities, type BlockEntityColumn, type BlockEntityDto, type BotDto, type EntityDelta, type EntityDto, type EntityEvent, type EquipRef, type EquipSlot, type Equipment, type ItemRef, type SignRun, type Mark, type Overlays, type PlanDto, type WorldIndex } from '../types';
 
 const camel = (k: string) => k.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
 
@@ -31,8 +31,10 @@ export function normalizeIndex(raw: unknown): WorldIndex {
 }
 
 function bot(b: Partial<BotDto>): BotDto {
+  const eq = b.equipment != null ? equipment(b.equipment) : undefined;
   return {
     ...b,
+    ...(eq !== undefined ? { equipment: eq } : {}),
     name: b.name ?? '?',
     short: b.short ?? b.name ?? '?',
     main: !!b.main,
@@ -98,7 +100,8 @@ function flags(v: unknown): number {
   return f;
 }
 
-/** An equipment slot: [id, meta], keeping a dye colour (a third array element, or `color`/`rgb`) when there is one. */
+/** An equipment slot: [id, meta], keeping a dye colour (a third array element, or `color`/`rgb`) when there is one. A trailing
+ * flags object (`[id, meta, {glint}]`, `[id, meta, rgb, {glint}]`) is not part of the ref: see `equipGlint`. */
 export function equipRef(v: unknown): EquipRef {
   const r = itemRef(v);
   if (!r) return null;
@@ -106,19 +109,39 @@ export function equipRef(v: unknown): EquipRef {
   return typeof c === 'number' && Number.isFinite(c) ? [r[0], r[1], c & 0xffffff] : r;
 }
 
+/** Whether a wire equipment slot glints: its trailing flags object (or an object form's own `glint`) says so. */
+export function equipGlint(v: unknown): boolean {
+  if (Array.isArray(v)) {
+    const last: unknown = v[v.length - 1];
+    return !!last && typeof last === 'object' && (last as Record<string, unknown>).glint === true;
+  }
+  return !!v && typeof v === 'object' && (v as Record<string, unknown>).glint === true;
+}
+
+const SLOT_NAMES: Array<[EquipSlot, string[]]> = [
+  ['main', ['main', 'mainhand', 'mainHand', 'hand']],
+  ['off', ['off', 'offhand', 'offHand']],
+  ['head', ['head', 'helmet']],
+  ['chest', ['chest', 'chestplate']],
+  ['legs', ['legs', 'leggings']],
+  ['feet', ['feet', 'boots']],
+];
+
 function equipment(v: unknown): Equipment | null {
   if (!v || typeof v !== 'object') return null;
   const o = v as Record<string, unknown>;
-  const pick = (...k: string[]) => equipRef(k.map((n) => o[n]).find((x) => x != null));
-  const e: Equipment = {
-    main: pick('main', 'mainhand', 'mainHand', 'hand'),
-    off: pick('off', 'offhand', 'offHand'),
-    head: pick('head', 'helmet'),
-    chest: pick('chest', 'chestplate'),
-    legs: pick('legs', 'leggings'),
-    feet: pick('feet', 'boots'),
-  };
-  return Object.values(e).some(Boolean) ? e : null;
+  const e: Equipment = {};
+  const glint: Partial<Record<EquipSlot, boolean>> = {};
+  let any = false, shiny = false;
+  for (const [slot, names] of SLOT_NAMES) {
+    const raw = names.map((n) => o[n]).find((x) => x != null);
+    const ref = equipRef(raw);
+    e[slot] = ref;
+    if (ref) any = true;
+    if (ref && equipGlint(raw)) shiny = glint[slot] = true;
+  }
+  if (shiny) e.glint = glint;
+  return any ? e : null;
 }
 
 function entity(e: Partial<EntityDto> & Record<string, unknown>): EntityDto {
@@ -146,6 +169,13 @@ function entity(e: Partial<EntityDto> & Record<string, unknown>): EntityDto {
     out.rotation = e.rotation == null ? 0 : num(e.rotation);
   }
   if (kind === 'falling_block' && e.block != null) out.block = itemRef(e.block);
+  if (e.carried != null) out.carried = itemRef(e.carried);
+  if (e.glint != null) out.glint = !!e.glint;
+  if (e.arrows != null) out.arrows = Math.max(0, Math.floor(num(e.arrows)));
+  if (e.shoulders && typeof e.shoulders === 'object') {
+    const s = e.shoulders as Record<string, unknown>;
+    out.shoulders = { left: typeof s.left === 'string' ? s.left : null, right: typeof s.right === 'string' ? s.right : null };
+  }
   if (kind === 'minecart') {
     const t = e.minecartType ?? (typeof e.type === 'string' ? e.type : null) ?? (out.look ? out.look.split(',')[0] : null);
     out.minecartType = (t as string | number | null) ?? null;
@@ -177,8 +207,14 @@ function blockEntity(b: Record<string, unknown>): BlockEntityDto {
     ? (b.patterns as unknown[]).map((p) => (Array.isArray(p) ? [String(p[0]), p[1] as number | string] : [String((p as Record<string, unknown>).pattern ?? ''), (p as Record<string, unknown>).color as number | string])) as Array<[string, number | string]>
     : null;
   const kind = String(b.kind ?? '').replace(/^minecraft:/, '');
+  const rich = Array.isArray(b.rich)
+    ? (b.rich as unknown[]).slice(0, 4).map((l) =>
+        Array.isArray(l) ? (l as unknown[]).filter((r) => !!r && typeof r === 'object').map((r) => ({ ...(r as SignRun), text: String((r as SignRun).text ?? '') })) : [],
+      )
+    : null;
   return {
     ...b,
+    ...(rich ? { rich } : {}),
     x: num(b.x),
     y: num(b.y),
     z: num(b.z),

@@ -3,6 +3,7 @@
 // wheel = zoom.
 //   ?version=1.12.2|b1.8.1  ?walk=0 (stand still)  ?spin=1 (turn around)  ?cols=10  ?detail=48  ?labels=0
 //   ?n=20 (perf: n walking zombies and nothing else)  ?set=looks (only the equipment / baby showcase)
+//   ?set=last (the last looks: glint, carried blocks, the golem's poppy, shoulder parrots, stuck arrows)
 
 import * as THREE from 'three';
 import { loadBundle } from '../src/assets/bundle';
@@ -37,7 +38,7 @@ const types = perf ? Array<number>(perf).fill(54) : version === 'b1.8.1' ? BETA_
 const variants: Record<number, number[]> = { 55: [2], 62: [2], 90: [1], 91: [14, 16], 95: [4, 2], 98: [4] };
 const entries: Array<Partial<EntityDto>> = [];
 const looksOnly = q.get('set') === 'looks';
-if (!looksOnly) for (const t of types) for (const v of perf ? [0] : (variants[t] ?? [0])) entries.push({ kind: 'mob', type: t, variant: v });
+if (!looksOnly && q.get('set') !== 'last') for (const t of types) for (const v of perf ? [0] : (variants[t] ?? [0])) entries.push({ kind: 'mob', type: t, variant: v });
 // Dyed leather, worn skulls and head items, elytra, foals and baby llamas next to their adults.
 const LOOKS: Array<Partial<EntityDto>> = [
   { kind: 'mob', type: 54, equipment: { head: [298, 0, 0x3366cc], chest: [299, 0, 0xb02e26], legs: [300, 0], feet: [301, 0, 0x80c71f] } },
@@ -63,7 +64,23 @@ const LOOKS: Array<Partial<EntityDto>> = [
   { kind: 'mob', type: 58, look: 'screaming' },
 ];
 if (looksOnly) entries.push(...LOOKS);
-if (!perf && !looksOnly) {
+// The last looks: enchanted gear and drops glint, endermen carry a block and a plant, an iron golem holds out its poppy,
+// players carry parrots and arrows.
+const all = { main: true, off: true, head: true, chest: true, legs: true, feet: true };
+const LAST: Array<Partial<EntityDto>> = [
+  { kind: 'player', name: 'Enchanter', equipment: { main: [276, 0], head: [310, 0], chest: [311, 0], legs: [312, 0], feet: [313, 0], glint: all } },
+  { kind: 'player', name: 'Parrots', shoulders: { left: 'red_blue', right: 'green' }, arrows: 7 },
+  { kind: 'player', name: 'Pincushion', arrows: 14, equipment: { main: [261, 0], glint: { main: true } } },
+  { kind: 'mob', type: 54, equipment: { main: [267, 0], head: [306, 0], chest: [299, 0, 0x3366cc], glint: { main: true, chest: true } } },
+  { kind: 'mob', type: 58, carried: [2, 0] },
+  { kind: 'mob', type: 58, carried: [38, 0] },
+  { kind: 'mob', type: 99, look: 'holding_rose' },
+  { kind: 'item', item: 276, glint: true },
+  { kind: 'item', item: 403 },
+  { kind: 'item_frame', frameItem: [399, 0], facing: 0 },
+];
+if (q.get('set') === 'last') entries.push(...LAST);
+if (!perf && !looksOnly && q.get('set') !== 'last') {
   for (const [item, count] of [[1, 64], [278, 1], [264, 5], [38, 1], [50, 3], [17, 2], [2, 1], [35, 14]]) entries.push({ kind: 'item', item, count });
   entries.push(
     { kind: 'object', type: 1 },

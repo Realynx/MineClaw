@@ -153,7 +153,7 @@ public sealed partial class MinecraftClient
                 break;
             case UpdateSignPacket sign:
                 _signs[new BlockPos(sign.X, sign.Y, sign.Z)] = sign.Lines;
-                w.BlockEntities.Set(new BlockPos(sign.X, sign.Y, sign.Z), BlockEntityInfo.Sign(sign.Lines)); // the viewer's sign text
+                w.BlockEntities.Set(new BlockPos(sign.X, sign.Y, sign.Z), BlockEntityInfo.Sign(sign.Lines, sign.Legacy)); // the viewer's sign text
                 { int sx = sign.X, sy = sign.Y, sz = sign.Z; var lines = (string[])sign.Lines.Clone(); Raise(() => SignUpdated?.Invoke(sx, sy, sz, lines)); }
                 break;
 
@@ -250,6 +250,11 @@ public sealed partial class MinecraftClient
                 OnEntityStatusSeen(st.EntityId);
                 if (EntityEventRing.StatusKind(st.Status) is { } statusKind && w.Entities.Get(st.EntityId) is not { Kind: EntityKind.Object })
                     w.Entities.NoteEvent(st.EntityId, statusKind); // the viewer's hurt/death (a breaking egg's 3 isn't one)
+                if (EntityEventRing.GolemStatus(st.Status) is { } golem && w.Entities.Get(st.EntityId) is { Kind: EntityKind.Mob, TypeId: MobTypes.IronGolem })
+                {
+                    if (golem == "swing") w.Entities.NoteEvent(st.EntityId, golem); // the viewer's golem attack (display only)
+                    else w.Entities.HoldRose(st.EntityId, golem == "rose");
+                }
                 if (st.Status == 2 && st.EntityId != w.Player.EntityId) OnPlayerHurtForPunch(st.EntityId);
                 int eid = st.EntityId, status = st.Status;
                 Raise(() => EntityStatus?.Invoke(eid, status));

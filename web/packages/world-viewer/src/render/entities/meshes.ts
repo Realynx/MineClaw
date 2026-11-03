@@ -4,7 +4,7 @@
 
 import * as THREE from 'three';
 import type { BuiltModel } from './builder';
-import { GHOST_FLAG } from './material';
+import { GHOST_FLAG, GLINT_FLAG } from './material';
 
 /** Entity draws come after the world and its silhouette pass (sections 0, cut cap 1, ghosts 1.5). */
 export const ENTITY_ORDER = 2;
@@ -50,6 +50,9 @@ export class InstancedDraw {
   ghosts = 0;
   /** The silhouette twin (same geometry and instances, the ghost material), made on first use by `ghostMesh`. */
   ghost: THREE.Mesh | null = null;
+  /** Instances flagged GLINT_FLAG this view, and their glint twin (made on first use by `glintMesh`). */
+  glints = 0;
+  glint: THREE.Mesh | null = null;
 
   constructor(
     base: THREE.BufferGeometry,
@@ -87,6 +90,19 @@ export class InstancedDraw {
   reset(): void {
     this.count = 0;
     this.ghosts = 0;
+    this.glints = 0;
+  }
+
+  /** The enchantment glint twin, created on first use (the caller adds it to the scene). */
+  glintMesh(material: THREE.Material): { mesh: THREE.Mesh; created: boolean } {
+    if (this.glint) return { mesh: this.glint, created: false };
+    const g = new THREE.Mesh(this.geometry, material);
+    g.name = `${this.mesh.name} (glint)`;
+    g.frustumCulled = false;
+    g.visible = false;
+    g.renderOrder = this.mesh.renderOrder + 0.5;
+    this.glint = g;
+    return { mesh: g, created: true };
   }
 
   /** The silhouette twin, created on first use (the caller adds it to the scene). */
@@ -105,6 +121,7 @@ export class InstancedDraw {
     if (this.count >= this.cap) this.grow(this.count + 1);
     const i = this.count++;
     if (d.flags & GHOST_FLAG) this.ghosts++;
+    if (d.flags & GLINT_FLAG) this.glints++;
     const a = this.arrays;
     a.aBone.set([d.row, d.slot, d.layer], i * 3);
     const t = a.aTex;
@@ -138,6 +155,7 @@ export class InstancedDraw {
     this.geometry.instanceCount = this.count;
     this.mesh.visible = this.count > 0;
     if (this.ghost) this.ghost.visible = this.ghosts > 0;
+    if (this.glint) this.glint.visible = this.glints > 0;
     if (!this.count) return;
     for (const [k, size] of this.tile ? [...INSTANCE_ATTRS, ...TILE_ATTRS] : INSTANCE_ATTRS) {
       const attr = this.attrs[k];

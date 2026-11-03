@@ -6,10 +6,11 @@ namespace MineClaw.App.Supervisor;
 /// <summary>A known chunk column in the hive's merged world memory (no blocks): the viewer's delta key.</summary>
 public sealed record WorldColumnInfo(int Cx, int Cz, long Hash, long Seen, string? By, bool Live);
 
-/// <summary>A hive bot for the live viewer: pose (yaw/pitch when known), vitals, job, held item, claims.</summary>
+/// <summary>A hive bot for the live viewer: pose (yaw/pitch when known), vitals, job, held item, claims; an in-process body also
+/// what it wears and holds (<paramref name="Equipment"/>, the entity wire's slots, glint included), from its own inventory.</summary>
 public sealed record WorldBot(string Name, string Short, bool Main, int Dim, double X, double Y, double Z, float? Yaw, float? Pitch,
     double? PoseAge, int Hp, int Food, string? Job, string? Brain, string? Held, IReadOnlyList<string> Claims, bool Live, double AgeSeconds,
-    string? Kind = null, string? Owner = null, bool? Online = null);
+    string? Kind = null, string? Owner = null, bool? Online = null, WorldEquipment? Equipment = null);
 
 /// <summary>Anything else to draw (players, mobs, items, and objects: paintings, item frames, armour stands, arrows, boats,
 /// minecarts, falling blocks, primed TNT, xp orbs, ender crystals, fireworks) the hive knows of, merged across every body. Items
@@ -19,12 +20,15 @@ public sealed record WorldBot(string Name, string Short, bool Main, int Dim, dou
 /// <paramref name="HeadYaw"/>, <paramref name="Baby"/>, <paramref name="Look"/> (the compact per-kind string, <see cref="EntityLooks.Look"/>),
 /// <paramref name="Vehicle"/> (the ridden entity's id), <paramref name="Facing"/> (paintings, item frames), <paramref name="Rotation"/>
 /// (an item frame's item, 0..7), <paramref name="Block"/> (a falling block), <paramref name="Fuse"/> (primed TNT ticks),
-/// <paramref name="Pose"/> (an armour stand), <paramref name="InGround"/> (an arrow that stopped).</summary>
+/// <paramref name="Pose"/> (an armour stand), <paramref name="InGround"/> (an arrow that stopped), <paramref name="Glint"/> (a dropped or
+/// framed item that glints), <paramref name="Carried"/> (an enderman's block), <paramref name="Shoulders"/> (a player's parrots),
+/// <paramref name="Arrows"/> (arrows stuck in a living entity).</summary>
 public sealed record WorldEntity(string Kind, string? Name, int Dim, double X, double Y, double Z, int? Id = null, int? Type = null,
     int? Item = null, int? Damage = null, int? Count = null, double? Vx = null, double? Vy = null, double? Vz = null, double? Age = null,
     float? Yaw = null, string? By = null, int? Flags = null, int? Variant = null, WorldEquipment? Equipment = null, float? HeadYaw = null,
     bool? Baby = null, string? Look = null, int? Vehicle = null, string? Facing = null, int? Rotation = null, WireItem? Block = null,
-    int? Fuse = null, WorldPose? Pose = null, bool? InGround = null);
+    int? Fuse = null, WorldPose? Pose = null, bool? InGround = null, bool? Glint = null, WireItem? Carried = null, WorldShoulders? Shoulders = null,
+    int? Arrows = null);
 
 /// <summary>A labelled box or point (claims, structures, waypoints, chests, gens, dangers). Min/Max are [x, y, z].</summary>
 public sealed record WorldMark(string Kind, string Text, int[] Min, int[] Max, string? Owner = null);

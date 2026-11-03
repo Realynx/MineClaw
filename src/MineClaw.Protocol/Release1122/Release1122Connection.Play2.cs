@@ -95,7 +95,7 @@ public sealed partial class Release1122Connection
                 int action = r.ReadUByte();
                 var tag = Nbt.ReadRoot(ref r);
                 if (action == Codec1122.SignAction && tag is not null && Codec1122.SignLines(tag, Lang) is { } lines)
-                    return new UpdateSignPacket { X = x, Y = (short)y, Z = z, Lines = lines };
+                    return new UpdateSignPacket { X = x, Y = (short)y, Z = z, Lines = lines, Legacy = Codec1122.SignLegacy(tag, Lang) };
                 // Any other block entity's new looks (a spawner's mob, a skull, a pot, a banner, a bed): the viewer's block entities.
                 return tag is null ? null : BlockEntities1122.Info(tag) is { } info ? new BlockEntityMessage { X = x, Y = y, Z = z, Info = info } : null;
             }

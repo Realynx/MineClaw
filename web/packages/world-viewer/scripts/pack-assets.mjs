@@ -262,6 +262,8 @@ function pack1122() {
   writePng(join(dest, 'entity.png'), ent.png);
   const env = copyEnv(join(src, 'textures', 'environment'), join(dest, 'env'));
   for (const c of ['grass', 'foliage']) writeFileSync(join(dest, 'env', `colormap_${c}.png`), readFileSync(join(src, 'textures', 'colormap', `${c}.png`)));
+  // The enchantment glint (textures/misc/enchanted_item_glint.png): its own repeating texture, scrolled by the entity shader.
+  writeFileSync(join(dest, 'env', 'glint.png'), readFileSync(join(src, 'textures', 'misc', 'enchanted_item_glint.png')));
   const blockstates = {}, models = {}, itemModels = {};
   for (const f of walk(join(src, 'blockstates'))) blockstates[relative(join(src, 'blockstates'), f).replace(/\.json$/, '')] = minify(f);
   for (const f of walk(join(src, 'models', 'block'))) models['block/' + relative(join(src, 'models', 'block'), f).replace(/\\/g, '/').replace(/\.json$/, '')] = minify(f);
