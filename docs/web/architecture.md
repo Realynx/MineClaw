@@ -269,7 +269,9 @@ This tab shows the RAPTOR memory map (the server-laid-out graph) with regions li
     arrive as `?hits=`), and a faded link overlay draws the RAPTOR parent links (leaf → summary → summary).
   - **Rendering.** One WebGL2 context draws every point and link from GPU buffers, on demand only; 2-D canvases add cluster
     density blobs underneath (the level of detail when zoomed out: points shrink, blobs carry the shape) and labels, rings and
-    pulses on top. Measured on software WebGL (SwiftShader, GPU off): see the numbers in the Cloud commit / report.
+    pulses on top. Measured on software WebGL (Chromium `--disable-gpu`, ANGLE on SwiftShader, 1440×900, `CLOUD_PERF=1` in
+    `e2e/memory-cloud.spec.ts`): 60 fps (p95 frame 17 ms) while panning and zooming at 3000 and at 20 000 points, links on or off;
+    the JS side of a frame is ~0.2 ms.
 
 ## Design Studio (added 2026-11-03)
 
