@@ -72,7 +72,14 @@ public static class BridgeEndpoints
             string db;
             try { await banks.GetAsync(ctx.RequestAborted); db = "up"; }
             catch (BankUnavailableException) { db = "down"; }
-            string bot = sup.LastOk is { } ok && (sup.LastFailure is not { } f || ok > f) ? "up" : sup.LastFailure != null ? "down" : "unknown";
+            // "up" | "down" (Nest's status indicator): a supervisor answer in the last 10 s counts, else one quick probe.
+            bool up = sup.LastOk is { } ok && (sup.LastFailure is not { } f || ok > f) && DateTimeOffset.UtcNow - ok < TimeSpan.FromSeconds(10);
+            if (!up)
+            {
+                try { up = (await sup.GetAsync("api/bots", TimeSpan.FromMilliseconds(1500), ctx.RequestAborted)).Status == 200; }
+                catch (SupervisorUnavailableException) { up = false; }
+            }
+            string bot = up ? "up" : "down";
             return Json(new { ok = true, version = Version, db, supervisor = bot, latency_ms = sup.LatencyMs >= 0 ? Math.Round(sup.LatencyMs, 1) : (double?)null });
         });
 

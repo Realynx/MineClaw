@@ -77,7 +77,8 @@ public class AtlasAndToolsTests(ITestOutputHelper output)
         Assert.Equal("fox (web)", manifest.CreatedBy);
 
         var boundary = "----mcx" + Guid.NewGuid().ToString("N");
-        var body = Multipart(boundary, shard, """{"mode":"merge","conflict":"keep-newer"}""");
+        // Nest re-encodes the options part in snake_case.
+        var body = Multipart(boundary, shard, """{"mode":"merge","conflict":"keep-newer","include_rules":false,"include_world":true,"max_usd":0.25}""");
         var viewer = h.Signed("POST", "/v1/shards/import/preview", body, roles: "viewer", contentType: $"multipart/form-data; boundary={boundary}");
         using (var forbidden = await h.SendAsync(viewer)) Assert.Equal(403, (int)forbidden.StatusCode);
         var admin = h.Signed("POST", "/v1/shards/import/preview", body, roles: "admin,viewer", contentType: $"multipart/form-data; boundary={boundary}");

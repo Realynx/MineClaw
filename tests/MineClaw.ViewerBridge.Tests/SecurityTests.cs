@@ -12,7 +12,10 @@ public class SecurityTests
     {
         await using var h = await BridgeHost.StartAsync();
         using (var ok = await h.SendAsync(h.Signed("GET", "/v1/health")))
+        {
             Assert.Equal(200, (int)ok.StatusCode);
+            Assert.Equal("up", JsonDocument.Parse(await ok.Content.ReadAsStringAsync()).RootElement.GetProperty("supervisor").GetString());
+        }
 
         using (var none = await h.Http.GetAsync("/v1/health"))
         {
@@ -253,6 +256,7 @@ public class PassthroughTests
     {
         await using var h = await BridgeHost.StartAsync();
         await h.Sup.DisposeAsync();
+        Assert.Equal("down", JsonDocument.Parse((await h.GetAsync("/v1/health")).Body).RootElement.GetProperty("supervisor").GetString());
         var (s, body) = await h.GetAsync("/v1/sup/bots");
         Assert.Equal(503, s);
         Assert.Contains("upstream_unavailable", body);
