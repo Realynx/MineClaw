@@ -20,6 +20,8 @@ interface Entry {
   bytes: number;
   /** Cave-culling face connectivity. */
   vis: number;
+  /** Animated atlas cells the section samples. */
+  animCells: number[] | null;
   lastRendered: number;
   /** Bumped when the section is dirtied; a result for an older generation is re-requested. */
   gen: number;
@@ -45,7 +47,9 @@ export class SectionManager {
   private frame = 0;
   private scanAt = -Infinity;
   maxSections = 6000;
-  batch = 12;
+  batch = 24;
+  /** Hold meshing (the version's textures are still loading: meshing flat first would mesh every section twice). */
+  hold = false;
   dim = 0;
   quads = 0;
   /** Bytes of every section buffer held (what the GPU holds for this dimension's world). */
@@ -158,6 +162,14 @@ export class SectionManager {
     this.quads = quads;
   }
 
+  /** Adds the animated cells of the sections drawn in the last showAround (the atlas animation's visible-only set). */
+  visibleAnimCells(into: Set<number>): void {
+    for (const e of this.entries.values()) {
+      if (!e.animCells) continue;
+      if ((e.solid && e.solid.visible) || (e.trans && e.trans.visible)) for (const c of e.animCells) into.add(c);
+    }
+  }
+
   /** Sections hidden by cave culling in the last showAround. */
   culled = 0;
   private visRev = 0;
@@ -197,8 +209,11 @@ export class SectionManager {
       const lru = [...this.entries].sort((a, b) => a[1].lastRendered - b[1].lastRendered);
       for (const [k, e] of lru.slice(0, this.entries.size - this.maxSections)) this.remove(k, e);
     }
-    if (!this.inFlight && this.dirty.size) this.schedule(cs);
+    this.lastCs = cs;
+    if (!this.inFlight && !this.hold && this.dirty.size) this.schedule(cs);
   }
+
+  private lastCs: Array<{ x: number; y: number; z: number; d: number }> = [];
 
   private schedule(cs: Array<{ x: number; y: number; z: number; d: number }>): void {
     const scored: Array<[number, string]> = [];
@@ -221,7 +236,7 @@ export class SectionManager {
       pick.push([cx, sy, cz]);
       let e = this.entries.get(k);
       if (!e) {
-        e = { cx, sy, cz, solid: null, cap: null, trans: null, bytes: 0, vis: ALL_VISIBLE, lastRendered: this.frame, gen: 1, meshedGen: 0 };
+        e = { cx, sy, cz, solid: null, cap: null, trans: null, bytes: 0, vis: ALL_VISIBLE, animCells: null, lastRendered: this.frame, gen: 1, meshedGen: 0 };
         this.entries.set(k, e);
       }
       gens.set(k, e.gen);
@@ -239,6 +254,9 @@ export class SectionManager {
       })
       .finally(() => {
         this.inFlight = false;
+        // Keep the worker busy: the next batch goes out as soon as this one is back, not on the next animation frame
+        // (a slow or throttled page would otherwise mesh one batch per frame).
+        if (!this.hold && this.dirty.size && this.lastCs.length) this.schedule(this.lastCs);
       });
   }
 
@@ -252,6 +270,7 @@ export class SectionManager {
     }
     e.meshedGen = gen;
     e.vis = m.vis ?? ALL_VISIBLE;
+    e.animCells = m.animCells?.length ? m.animCells : null;
     this.visRev++;
     this.builds.set(k, (this.builds.get(k) ?? 0) + 1);
     this.release(e);

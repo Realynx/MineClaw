@@ -1,13 +1,14 @@
 // The worker-side world: decoded columns + the state table + the mesher and queries. Runs inside the Web Worker, or on the
 // calling thread (InlineMeshHost) where workers are unavailable (tests, SSR-less fallbacks).
 
-import type { AtlasMap } from '../atlas/types';
 import type { GameVersion } from '../world/blocks';
 import { ColumnStore, type ApplyResult } from './columns';
 import { meshSection, type CutParams, type SectionMesh } from './mesher';
 import { pick, viewInfo, type PickHit, type V3, type ViewInfo } from './query';
 import { buildStateTable, type StateTable } from './states';
 import { sectionVisibility } from './visibility';
+import { lightPacked } from '../wire/chunk';
+import type { MeshAssets } from './source';
 
 export interface PatchResult {
   dirty: Array<[number, number, number]>;
@@ -27,9 +28,10 @@ export class MeshEngine {
   readonly store = new ColumnStore();
   table: StateTable = buildStateTable('b1.8.1', null);
 
-  configure(version: GameVersion, atlas: AtlasMap | null): void {
+  /** The version and its bundled block assets (null = flat palette shapes); `textured` = quads sample the block atlas. */
+  configure(version: GameVersion, assets: MeshAssets | null, textured = assets != null): void {
     this.store.version = version;
-    this.table = buildStateTable(version, atlas && atlas.format === 'mineclaw-atlas' ? atlas : null);
+    this.table = buildStateTable(version, assets && (assets.kind === version ? assets : null), textured);
   }
 
   apply(buf: ArrayBuffer): Promise<ApplyResult> {
@@ -60,6 +62,19 @@ export class MeshEngine {
 
   pick(dim: number, o: V3, d: V3, maxDist: number, cut: CutParams | null): PickHit | null {
     return pick(this.store, this.table, dim, o, d, maxDist, cut);
+  }
+
+  /** Packed light (sky << 4 | block) at each point (entities take the light of their cell); -1 = unknown. */
+  lights(dim: number, pts: number[]): number[] {
+    const out: number[] = [];
+    for (let i = 0; i + 2 < pts.length; i += 3) {
+      const x = Math.floor(pts[i]), y = Math.floor(pts[i + 1]), z = Math.floor(pts[i + 2]);
+      const c = this.store.get(dim, x >> 4, z >> 4);
+      if (!c || !c.light) out.push(-1);
+      else if (y >= c.height) out.push(0xf0);
+      else out.push(lightPacked(c.light, x & 15, Math.max(0, y), z & 15));
+    }
+    return out;
   }
 
   viewInfo(dim: number, cam: V3, body: V3 | null, cut: CutParams | null): ViewInfo {

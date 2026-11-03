@@ -14,7 +14,7 @@ let clock = 0;
 async function world(radius = 3) {
   const src = createFixtureSource({ radius, now: () => 0 });
   const host = new InlineMeshHost();
-  await host.configure('b1.8.1', null);
+  await host.configure('b1.8.1', null, false);
   const cache = new WorldCache();
   const sections = new SectionManager(host, cache, createChunkMaterials(createChunkUniforms()));
   const sync = new WorldSync(src, host, cache, {

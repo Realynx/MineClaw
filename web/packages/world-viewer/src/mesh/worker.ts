@@ -18,7 +18,7 @@ async function handle(m: WorkerRequest): Promise<void> {
   try {
     switch (m.op) {
       case 'configure':
-        engine.configure(m.version, m.atlas);
+        engine.configure(m.version, m.assets, m.textured);
         return reply({ id: m.id, ok: true, result: null });
       case 'apply':
         return reply({ id: m.id, ok: true, result: await engine.apply(m.buf) });
@@ -35,6 +35,8 @@ async function handle(m: WorkerRequest): Promise<void> {
       }
       case 'pick':
         return reply({ id: m.id, ok: true, result: engine.pick(m.dim, m.o, m.d, m.max, m.cut) });
+      case 'lights':
+        return reply({ id: m.id, ok: true, result: engine.lights(m.dim, m.pts) });
       case 'view':
         return reply({ id: m.id, ok: true, result: engine.viewInfo(m.dim, m.cam, m.body, m.cut) });
       case 'clear':

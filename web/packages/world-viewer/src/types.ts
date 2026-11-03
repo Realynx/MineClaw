@@ -1,7 +1,6 @@
 // Wire types of the supervisor's world routes (docs/web/reference/explorer-spec.md §13), as the app hands them to the viewer.
 // Nest mirrors the bridge with camelCase keys; `normalize*` (wire/normalize.ts) also accepts the raw snake_case replies.
 
-import type { AtlasMap } from './atlas/types';
 import type { RuntimeMemory } from './render/runtime';
 
 /** 0 overworld, -1 nether (1 = the End on 1.12.2). */
@@ -151,9 +150,10 @@ export interface BlockDeltas {
   columns?: Array<{ rev?: number; at?: number; dim: Dim; cx: number; cz: number; kind: 'loaded' | 'unloaded' }>;
 }
 
+/** Deprecated: the bridge's runtime atlas. The viewer ships its own textures (generated/<version>/) and ignores it. */
 export interface AtlasResource {
   image: ImageBitmap | HTMLImageElement | HTMLCanvasElement;
-  map: AtlasMap;
+  map: unknown;
 }
 
 /**
@@ -165,8 +165,8 @@ export interface WorldSource {
   chunks(dim: Dim, cols: Array<[number, number]>): Promise<ArrayBuffer>;
   entities(since?: number): Promise<EntityDelta>;
   overlays(dim: Dim): Promise<Overlays>;
-  /** Optional in practice: reject (or resolve null) and the viewer draws its flat-colour palette. */
-  atlas(): Promise<AtlasResource | null>;
+  /** Deprecated and ignored: blocks are textured from the bundled atlas (RuntimeOptions.textures = false for flat colours). */
+  atlas?(): Promise<AtlasResource | null>;
   /** Per-block changes since a revision (polled ~4 Hz when there is no `subscribe`). Optional: without it columns only
    * update through the index hash-diff. */
   blocks?(since?: number): Promise<BlockDeltas>;

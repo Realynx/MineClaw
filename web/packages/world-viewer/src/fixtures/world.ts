@@ -66,6 +66,54 @@ export const PLAN: PlanBlock[] = (() => {
 })();
 
 export const TORCH_ROOM = { x: 30, z: 2, y: 0 };
+/** The block gallery's plinth (top surface at y). */
+export const GALLERY = { x0: 8, x1: 30, z0: -40, z1: -26, y: 69 };
+
+/** One of each specially shaped block, on the gallery plinth: [x, y, z, id, meta]. */
+export function galleryBlocks(modern: boolean): Array<[number, number, number, number, number]> {
+  const y = GALLERY.y + 1, out: Array<[number, number, number, number, number]> = [];
+  const put = (x: number, dy: number, z: number, id: number, m = 0) => out.push([x, y + dy, z, id, m]);
+  let z = GALLERY.z0 + 1;
+  // Row 1: stairs (straight, outer and inner corners), slabs, fences with a gate, panes, iron bars.
+  put(9, 0, z, 53, 0); put(10, 0, z, 53, 3); // outer corner
+  put(13, 0, z, 53, 3); put(14, 0, z, 53, 0); // inner corner (the back stair faces across)
+  put(16, 0, z, 67, 2); put(17, 0, z, 44, 0); put(18, 0, z, 44, modern ? 8 : 0);
+  for (let x = 20; x <= 23; x++) put(x, 0, z, x === 22 ? 107 : 85, 0);
+  for (let x = 25; x <= 27; x++) put(x, 0, z, 102);
+  put(28, 0, z, 101); put(29, 0, z, 101); put(29, 0, z + 1, 101);
+  // Row 2: redstone (a line, a corner, a torch, a repeater, a lever), rails (straight, curve, slope), a piston.
+  z += 3;
+  for (let x = 9; x <= 12; x++) put(x, 0, z, 55, x === 12 ? 15 : 15 - (12 - x) * 4);
+  put(12, 0, z + 1, 55, 13); put(13, 0, z, 76, 5); put(9, 0, z + 1, 93, 1); put(10, 0, z + 2, 69, 5 | 8);
+  for (let x = 15; x <= 17; x++) put(x, 0, z, 66, 1);
+  put(18, 0, z, 66, 7); put(18, 0, z + 1, 66, 0); put(19, 0, z, 66, 2); put(20, 0, z, 1); put(20, 1, z, 66, 1);
+  put(22, 0, z, 33, 1); put(23, 0, z, 29, 3); put(24, 0, z, 96, 0); put(25, 0, z, 92, 2); put(26, 0, z, 78, 3);
+  // Row 3: doors, beds, chests (a pair and a single), signs and torches on a wall, a ladder, vines.
+  z += 4;
+  put(9, 0, z, 64, 0); put(9, 1, z, 64, 8); put(11, 0, z, 71, 4 | 1); put(11, 1, z, 71, 8 | 1);
+  put(13, 0, z, 26, 0); put(13, 0, z + 1, 26, 8); put(15, 0, z, 26, 3); put(16, 0, z, 26, 8 | 3);
+  put(17, 0, z, 54, 3); put(18, 0, z, 54, 3); put(20, 0, z, 54, 3);
+  for (let x = 22; x <= 27; x++) for (let dy = 0; dy < 3; dy++) put(x, dy, z + 1, 5);
+  put(22, 0, z, 63, 8); put(23, 1, z, 68, 2); put(24, 1, z, 50, 4); put(25, 0, z, 65, 2); put(25, 1, z, 65, 2); put(26, 1, z, 106, 4); put(26, 0, z, 106, 4);
+  put(27, 0, z, 77, 4);
+  // Row 4: fluids (a source, a flowing run, a fall) for water and lava, fire, a portal, plants.
+  z += 3;
+  for (let i = 0; i < 5; i++) put(9 + i, 0, z, i === 0 ? 9 : 8, i);
+  put(9, 1, z, 1); put(9, 2, z, 9, 0); put(10, 1, z, 8, 8);
+  for (let i = 0; i < 4; i++) put(9 + i, 0, z + 2, i === 0 ? 11 : 10, i * 2);
+  put(16, -1, z, 87); put(16, 0, z, 51, 0);
+  for (let dy = 0; dy < 5; dy++) for (let dx = 0; dx < 4; dx++) put(18 + dx, dy, z, dx === 0 || dx === 3 || dy === 0 || dy === 4 ? 49 : 90);
+  put(23, -1, z, 12); put(23, 0, z, 81); put(23, 1, z, 81); put(24, -1, z, 60, 7); put(24, 0, z, 59, 7); put(25, -1, z, 60, 7); put(25, 0, z, 104, 7); put(26, 0, z, 86, 1);
+  put(27, -1, z, 12); put(27, 0, z, 83); put(27, 1, z, 83); put(28, 0, z, 31, 1); put(29, 0, z, 37);
+  if (modern) {
+    // Row 5 (1.12.2): banners, a skull, shulker boxes, trapped/ender chests, a wall, stained glass, glazed terracotta.
+    z += 3;
+    put(9, 0, z, 176, 0); put(11, 0, z, 144, 1); put(12, 0, z, 219, 1); put(13, 0, z, 229, 1); put(14, 0, z, 146, 3); put(15, 0, z, 146, 3); put(17, 0, z, 130, 3);
+    for (let x = 19; x <= 21; x++) put(x, 0, z, 139);
+    put(23, 0, z, 95, 14); put(24, 0, z, 95, 3); put(25, 0, z, 160, 5); put(26, 0, z, 160, 5); put(27, 0, z, 235 + 4, 0); put(28, 0, z, 198, 1); put(29, 0, z, 251, 11);
+  }
+  return out;
+}
 const TUNNEL = { x0: 18, x1: 44, z: 2 };
 
 export function tunnelY(): number {
@@ -169,6 +217,15 @@ export class FixtureWorld {
     local(2, surface(2, 2) + 1, 2, 44, 0);
     local(0, surface(0, 4) + 1, 4, 38);
     local(1, surface(1, 4) + 1, 4, 31, 1);
+    // The block gallery: a raised stone plinth with one of everything the mesher shapes specially.
+    if (cx * 16 + 15 >= GALLERY.x0 && cx * 16 <= GALLERY.x1 && cz * 16 + 15 >= GALLERY.z0 && cz * 16 <= GALLERY.z1) {
+      for (let x = GALLERY.x0; x <= GALLERY.x1; x++)
+        for (let z = GALLERY.z0; z <= GALLERY.z1; z++) {
+          for (let y = surface(x, z) + 1; y <= GALLERY.y; y++) local(x, y, z, y === GALLERY.y ? (modern ? 1 : 1) : 4);
+          for (let y = GALLERY.y + 1; y <= GALLERY.y + 8; y++) local(x, y, z, 0);
+        }
+      for (const [x, y, z, id, m] of galleryBlocks(modern)) local(x, y, z, id, m);
+    }
     // The build plan's placed blocks.
     for (let i = 0; i < this.placed; i++) {
       const b = PLAN[i];
@@ -180,7 +237,7 @@ export class FixtureWorld {
   /** Sky light: 15 down to the first opaque block, then dark; block light from the torches (no occlusion). */
   light(cx: number, cz: number, ids: Uint8Array) {
     const tops = new Int16Array(256);
-    const clear = new Set([0, 8, 9, 18, 20, 50, 38, 31, 85, 53, 44]);
+    const clear = new Set([0, 6, 8, 9, 10, 11, 18, 20, 26, 27, 28, 29, 31, 32, 33, 37, 38, 44, 50, 51, 53, 54, 55, 59, 63, 64, 65, 66, 67, 68, 69, 71, 75, 76, 77, 78, 81, 83, 85, 86, 90, 92, 93, 94, 95, 96, 101, 102, 104, 106, 107, 130, 139, 144, 146, 160, 176, 198, 219, 229]);
     for (let lx = 0; lx < 16; lx++)
       for (let lz = 0; lz < 16; lz++) {
         let y = this.height - 1;

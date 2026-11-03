@@ -145,7 +145,7 @@ describe('fixture world', () => {
   it.each(['b1.8.1', '1.12.2'] as const)('%s fixture payloads decode and mesh', async (version) => {
     const src = createFixtureSource({ version, radius: 1, now: () => 0 });
     const host = new InlineMeshHost();
-    await host.configure(version, null);
+    await host.configure(version, null, false);
     const res = await host.apply(await src.chunks(0, [[0, 0], [1, 0], [0, 1], [-1, -1]]));
     expect(res.columns.every((c) => !c.missing && c.height === (version === '1.12.2' ? 256 : 128))).toBe(true);
     let q = 0;

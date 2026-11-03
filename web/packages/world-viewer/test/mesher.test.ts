@@ -2,11 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { meshSection } from '../src/mesh/mesher';
 import { buildStateTable } from '../src/mesh/states';
 import { LF_CUT, LF_REMEMBERED, TEX_TEXTURED } from '../src/mesh/sink';
-import type { AtlasMap } from '../src/atlas/types';
 import { storeWith, type B } from './helpers';
+import { table1122, tableBeta } from './pack';
 
 const flat = buildStateTable('b1.8.1', null);
-const flat1122 = buildStateTable('1.12.2', null);
 const Y = 64;
 const sy = Y >> 4;
 
@@ -14,6 +13,14 @@ async function quads(blocks: B[], table = flat, opts?: Parameters<typeof storeWi
   const store = await storeWith(blocks, opts);
   const m = meshSection(store, 0, 0, sy, 0, table);
   return { solid: m.solid?.quads ?? 0, trans: m.translucent?.quads ?? 0, m, store };
+}
+
+/** Atlas cells (c + r·16) of every quad in a pass. */
+function cells(m: { tile: Uint16Array } | null): number[] {
+  if (!m) return [];
+  const out: number[] = [];
+  for (let v = 0; v < m.tile.length / 4; v += 4) out.push(m.tile[v * 4 + 1] * 16 + m.tile[v * 4]);
+  return out;
 }
 
 describe('section meshing: face culling', () => {
@@ -43,38 +50,42 @@ describe('section meshing: face culling', () => {
     expect((await quads([[15, Y, 3, 1]])).solid).toBe(6);
   });
 
-  it('glass and water cull against themselves and go to the translucent pass', async () => {
+  it('glass culls against itself in the (alpha-tested) solid pass; ice and water are translucent', async () => {
     const g = await quads([[4, Y, 4, 20], [5, Y, 4, 20]]);
-    expect(g.trans).toBe(10);
-    expect(g.solid).toBe(0);
+    expect(g.solid).toBe(10);
+    expect(g.trans).toBe(0);
+    expect((await quads([[4, Y, 4, 79], [5, Y, 4, 79]])).trans).toBe(10);
     // Two still-water cells: per cell 1 top (+ its underside) + 1 bottom + 3 sides = 6.
     const w = await quads([[4, Y, 4, 9], [5, Y, 4, 9]]);
     expect(w.trans).toBe(12);
   });
 
   it('a cube next to glass or water still shows the shared face', async () => {
-    expect((await quads([[4, Y, 4, 1], [5, Y, 4, 20]])).solid).toBe(6);
+    expect((await quads([[4, Y, 4, 1], [5, Y, 4, 20]])).solid).toBe(6 + 5); // the glass face against the stone is culled
   });
 
-  it('crossed plants are two two-sided planes; a torch is a 6-face post; empty sections mesh to nothing', async () => {
+  it('crossed plants are two two-sided planes; a torch is four two-sided planes and a cap; empty sections mesh to nothing', async () => {
     expect((await quads([[4, Y, 4, 38]])).solid).toBe(4);
-    expect((await quads([[4, Y, 4, 50, 5]])).solid).toBe(6);
+    expect((await quads([[4, Y, 4, 50, 5]])).solid).toBe(10);
     const e = await quads([[4, 10, 4, 1]]);
     expect(e.m.solid).toBeNull();
     expect(e.m.translucent).toBeNull();
   });
 
-  it("a slab on stone hides its own bottom (not the stone top: a slab is not opaque); stairs are two boxes", async () => {
+  it('a slab on stone hides its own bottom (not the stone top: a slab is not opaque); stairs are two boxes', async () => {
     const s = await quads([[4, Y, 4, 1], [4, Y + 1, 4, 44]]);
     expect(s.solid).toBe(6 + 5);
     expect((await quads([[4, Y, 4, 53, 0]])).solid).toBe(12);
   });
 
-  it('pairs adjacent chests into one large chest (the seam faces are skipped), singles stay boxes', async () => {
+  it('b1.8.1 chests are opaque cubes whose pairs show the wide front and back halves (ChestTile)', async () => {
     expect((await quads([[4, Y, 4, 54]])).solid).toBe(6);
     expect((await quads([[4, Y, 4, 54], [5, Y, 4, 54]])).solid).toBe(10);
-    // Three in a row: the middle one has two neighbours, so none pair (ChestPairs' rule).
-    expect((await quads([[4, Y, 4, 54], [5, Y, 4, 54], [6, Y, 4, 54]])).solid).toBe(18);
+    const pair = await quads([[4, Y, 4, 54], [5, Y, 4, 54]], tableBeta());
+    const used = new Set(cells(pair.m.solid));
+    for (const t of [41, 42, 57, 58]) expect(used.has(t)).toBe(true);
+    expect(used.has(27)).toBe(false); // no single-chest front
+    expect(new Set(cells((await quads([[4, Y, 4, 54]], tableBeta())).m.solid)).has(27)).toBe(true);
   });
 
   it('fences connect to each other', async () => {
@@ -85,8 +96,8 @@ describe('section meshing: face culling', () => {
   });
 
   it('1.12.2: top slabs and 256-high columns', async () => {
-    const r = await quads([[4, 200, 4, 44, 8]], flat1122, { height: 256 });
-    const m = meshSection(r.store, 0, 0, 200 >> 4, 0, flat1122);
+    const r = await quads([[4, 200, 4, 44, 8]], table1122(), { height: 256 });
+    const m = meshSection(r.store, 0, 0, 200 >> 4, 0, table1122());
     expect(m.solid!.quads).toBe(6);
     const ys = [...m.solid!.pos].filter((_, i) => i % 3 === 1);
     expect(Math.min(...ys)).toBeCloseTo((200 & 15) + 0.5);
@@ -120,39 +131,23 @@ describe('section meshing: light, AO and flags', () => {
   });
 });
 
-describe('section meshing: atlas', () => {
-  const atlas: AtlasMap = {
-    format: 'mineclaw-atlas',
-    formatVersion: 1,
-    version: 'b1.8.1',
-    tileSize: 16,
-    columns: 16,
-    rows: 34,
-    states: {
-      '1': { shape: 'cube', layer: 'opaque', faces: Array.from({ length: 6 }, () => ({ c: 1, r: 0 })) },
-      '2': {
-        shape: 'cube',
-        layer: 'opaque',
-        faces: [{ c: 2, r: 0 }, { c: 0, r: 0, tint: 0x91bd59 }, ...Array.from({ length: 4 }, () => ({ c: 3, r: 0, ov: { c: 6, r: 2, tint: 0x91bd59 } }))],
-      },
-      '37': { shape: 'quads', layer: 'cutout', quads: [{ p: [0, 1, 0.5, 0, 0, 0.5, 1, 0, 0.5, 1, 1, 0.5], uv: [0, 0, 0, 1, 1, 1, 1, 0], c: 13, r: 0, twoSided: true }] },
-    },
-  };
-  const table = buildStateTable('b1.8.1', atlas);
-
-  it('cube faces carry their atlas cell and the textured flag', async () => {
-    const { m } = await quads([[4, Y, 4, 1]], table);
+describe('section meshing: bundled atlas', () => {
+  it('b1.8.1 cube faces carry their terrain cell and the textured flag; untextured tables do not', async () => {
+    const { m } = await quads([[4, Y, 4, 1]], tableBeta());
     const t = m.solid!.tile;
     expect([t[0], t[1], t[2] & TEX_TEXTURED]).toEqual([1, 0, TEX_TEXTURED]);
+    expect((await quads([[4, Y, 4, 1]])).m.solid!.tile[2] & TEX_TEXTURED).toBe(0);
   });
 
-  it('overlays add a second quad per side; atlas quads are emitted as given (two-sided = mirrored)', async () => {
-    expect((await quads([[4, Y, 4, 2]], table)).solid).toBe(6 + 4);
-    expect((await quads([[4, Y, 4, 37]], table)).solid).toBe(2);
+  it('grass sides carry their tinted overlay as a second quad (both versions)', async () => {
+    expect((await quads([[4, Y, 4, 2]], tableBeta())).solid).toBe(6 + 4);
+    expect((await quads([[4, Y, 4, 2]], table1122(), { height: 256 })).solid).toBe(6 + 4);
   });
 
-  it('states the atlas does not list fall back to the flat palette', async () => {
-    const { m } = await quads([[4, Y, 4, 4]], table);
-    expect(m.solid!.tile[2] & TEX_TEXTURED).toBe(0);
+  it('lists the animated cells a section samples (water, lava)', async () => {
+    const b = await quads([[4, Y, 4, 9], [6, Y, 4, 11]], tableBeta());
+    expect(b.m.animCells?.sort((x, y) => x - y)).toEqual([205, 206, 237, 238]); // still tops, flowing sides
+    const m = await quads([[4, Y, 4, 9]], table1122(), { height: 256 });
+    expect(m.m.animCells?.length).toBe(2);
   });
 });

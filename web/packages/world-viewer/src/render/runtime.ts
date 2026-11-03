@@ -7,7 +7,6 @@
 // every other view is rendered into a corner of it and copied into its own 2D canvas in the same frame.
 
 import * as THREE from 'three';
-import type { AtlasMap } from '../atlas/types';
 import { createMeshHost, InlineMeshHost, type MeshHost } from '../mesh/host';
 import type { Dim, LayerToggles, Overlays, WorldSource } from '../types';
 import { normalizeEntities, normalizeOverlays } from '../wire/normalize';
@@ -16,7 +15,9 @@ import { WorldCache } from '../world/cache';
 import { EntityStore, type BotView, type EntityView } from '../world/entities';
 import { fogColour, precipitation, skyColour, skylightSubtractedSmooth } from '../world/sky';
 import { Poller, WorldSync, type Interest } from '../world/sync';
-import { atlasTexture, bindAtlas } from './atlasTexture';
+// [blocks] the bundled block atlas + its animation pass
+import { meshAssets } from '../atlas/assets';
+import { BlockAtlas } from './blockAtlas';
 import { createChunkMaterials, createChunkUniforms, type ChunkMaterials, type ChunkUniforms } from './chunkMaterial';
 import { EntityLayer } from './entityLayer';
 import { OverlayLayer } from './overlayLayer';
@@ -45,6 +46,8 @@ export interface RuntimeOptions {
   /** Most columns kept per dimension. */
   maxColumns?: number;
   createWorker?: () => Worker;
+  /** [blocks] Textured blocks from the bundled atlas (default true); false = the flat palette (no bundle download). */
+  textures?: boolean;
   /** Mesh on the main thread (tests, environments without module workers). */
   inlineMesher?: boolean;
   /** Secondary (thumbnail) renders per animation frame at most (default 2); the most overdue go first. */
@@ -162,8 +165,9 @@ export class WorldRuntime {
   private refs = 0;
   private disposed = false;
   version: GameVersion | null = null;
-  private atlasMap: AtlasMap | null = null;
-  private atlasTex: THREE.Texture | null = null;
+  // [blocks] the bundled block atlas of the configured version (null = flat palette or still loading).
+  blockAtlas: BlockAtlas | null = null;
+  private atlasFor: GameVersion | null = null;
   private configKey = '';
   private overlayData = new Map<Dim, Overlays>();
   private readonly botsBuf: BotView[] = [];
@@ -224,7 +228,6 @@ export class WorldRuntime {
     );
     this.overlayPoller = new Poller(() => this.pollOverlays(), opts.overlayPollMs ?? 4000, (e) => this.opts.onError?.('overlays', e));
     void this.configure();
-    void this.loadAtlas();
     // The network loops start with the first view (and pause when the last one leaves).
     this.paused = true;
     this.raf = requestAnimationFrame(this.tick);
@@ -332,7 +335,6 @@ export class WorldRuntime {
     this.overlays.set(null, this.version ?? 'b1.8.1');
     this.configKey = '';
     void this.configure();
-    void this.loadAtlas();
     if (!this.paused) {
       this.sync.start();
       this.deltas.start();
@@ -359,7 +361,7 @@ export class WorldRuntime {
     this.sky.dispose();
     this.aids.dispose();
     for (const m of [this.materials.solid, this.materials.translucent, this.materials.cap]) m.dispose();
-    this.atlasTex?.dispose();
+    this.blockAtlas?.dispose();
     this.host.dispose();
     this.renderer.renderLists.dispose();
     this.renderer.dispose();
@@ -373,11 +375,60 @@ export class WorldRuntime {
 
   // ------------------------------------------------------------------------------------------------------------ world
 
+  private meshHold = false;
+  private readonly entityLight = new Map<string, readonly [number, number]>();
+  private lightAt = 0;
+  private lightBusy = false;
+
+  /** Entity models take the light of their cell: asked from the worker a few times a second, cached per cell. */
+  private refreshEntityLight(now: number): void {
+    if (!this.entities.lightAt)
+      this.entities.lightAt = (dim, x, y, z) => {
+        // The cells sampled are near the body's middle; take the closest one sampled.
+        const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z);
+        for (const dy of [0, -1, 1, -2, 2]) {
+          const v = this.entityLight.get(`${dim},${bx},${by + dy},${bz}`);
+          if (v) return v;
+        }
+        return null;
+      };
+    if (this.lightBusy || now - this.lightAt < 300) return;
+    this.lightAt = now;
+    const byDim = new Map<Dim, number[]>();
+    const add = (dim: Dim, x: number, y: number, z: number) => {
+      let l = byDim.get(dim);
+      if (!l) byDim.set(dim, (l = []));
+      l.push(Math.floor(x), Math.floor(y), Math.floor(z));
+    };
+    for (const b of this.botsBuf) add(b.dim, b.x, b.y + 0.9, b.z);
+    for (const e of this.entsBuf) add(e.dim, e.x, e.y + 0.4, e.z);
+    if (!byDim.size) return;
+    this.lightBusy = true;
+    Promise.all(
+      [...byDim].map(([dim, pts]) =>
+        this.host.lights(dim, pts).then((v) => {
+          for (let i = 0; i < v.length; i++) if (v[i] >= 0) this.entityLight.set(`${dim},${pts[i * 3]},${pts[i * 3 + 1]},${pts[i * 3 + 2]}`, [v[i] >> 4, v[i] & 15]);
+        }),
+      ),
+    )
+      .catch(() => undefined)
+      .finally(() => {
+        this.lightBusy = false;
+        if (this.entityLight.size > 4096) this.entityLight.clear();
+      });
+  }
+
+  private setMeshHold(h: boolean): void {
+    this.meshHold = h;
+    for (const s of this.sections.values()) s.hold = h;
+  }
+
   sectionsFor(dim: Dim): SectionManager {
     let s = this.sections.get(dim);
     if (!s) {
       s = new SectionManager(this.host, this.cache, this.materials);
       s.dim = dim;
+      s.hold = this.meshHold;
       if (this.opts.maxSections) s.maxSections = this.opts.maxSections;
       this.sections.set(dim, s);
       this.scene.add(s.group);
@@ -386,7 +437,7 @@ export class WorldRuntime {
   }
 
   get textured(): boolean {
-    return !!this.atlasTex && this.uniforms.uTextured.value > 0;
+    return !!this.blockAtlas && this.uniforms.uTextured.value > 0;
   }
 
   timeNow(dim: Dim): number | null {
@@ -427,7 +478,7 @@ export class WorldRuntime {
       bytesReceived: this.cache.bytesReceived,
       entities: this.store.count,
       bots: this.store.bots().length,
-      atlas: this.atlasMap ? `${this.atlasMap.version} ${this.atlasMap.columns}×${this.atlasMap.rows}` : null,
+      atlas: this.blockAtlas ? `${this.blockAtlas.bundle.version} ${this.blockAtlas.columns}×${this.blockAtlas.rows}` : null,
       drawCalls: info.calls,
       triangles: info.triangles,
       quality: this.quality.state.profile.name,
@@ -464,15 +515,20 @@ export class WorldRuntime {
     });
   }
 
-  /** (Re)configures the mesher when the version or atlas changed; every section is meshed again. */
+  // [blocks] -------------------------------------------------------------------------------------------------------
+  /** (Re)configures the mesher when the version changed: flat at once, then textured when the version's bundle has loaded
+   * (the bundled atlas replaces the bridge's; `source.atlas` is not read). Every section is meshed again. */
   private async configure(): Promise<void> {
-    const v = this.cache.detectedVersion() ?? (this.atlasMap?.version === '1.12.2' ? '1.12.2' : 'b1.8.1');
-    const atlas = this.atlasMap && (this.atlasMap.version === v || !this.atlasMap.version) ? this.atlasMap : null;
-    const key = `${v}|${atlas ? 'atlas' : 'flat'}`;
+    const v = this.cache.detectedVersion() ?? 'b1.8.1';
+    const want = this.opts.textures !== false;
+    const ready = want && this.blockAtlas?.bundle.version === v;
+    const key = `${v}|${ready ? 'atlas' : 'flat'}`;
+    // While the version's textures load, sections wait instead of meshing flat first and textured again.
+    this.setMeshHold(want && !ready);
     if (key === this.configKey) return;
     this.configKey = key;
     this.version = v;
-    // The version's bundled assets (sky textures here; blocks and entities take theirs from the same bundle).
+    // The version's bundled assets: sky and entities here, the block atlas in loadBlockAtlas (one fetch, cached).
     loadBundle(v)
       .then((b) => {
         if (this.disposed || this.version !== v) return;
@@ -481,9 +537,10 @@ export class WorldRuntime {
       })
       .catch((e) => this.opts.onError?.('assets', e));
     this.loadEntityBundle(v); // [entity models]
-    this.uniforms.uTextured.value = atlas && this.atlasTex ? 1 : 0;
-    await this.host.configure(v, atlas);
+    this.uniforms.uTextured.value = ready ? 1 : 0;
+    await this.host.configure(v, ready ? meshAssets(this.blockAtlas!.bundle.pack) : null, ready);
     for (const s of this.sections.values()) s.clear();
+    if (want && !ready && this.atlasFor !== v) void this.loadBlockAtlas(v);
   }
 
   // [entity models] The entity layer textures its models from the bundled sheets of the world's version.
@@ -499,17 +556,18 @@ export class WorldRuntime {
       .catch((e) => this.opts.onError?.('bundle', e));
   }
 
-  private async loadAtlas(): Promise<void> {
+  private async loadBlockAtlas(v: GameVersion): Promise<void> {
+    this.atlasFor = v;
     try {
-      const res = await this.source.atlas();
-      if (!res || this.disposed || res.map?.format !== 'mineclaw-atlas') return;
-      this.atlasTex?.dispose();
-      this.atlasTex = atlasTexture(res);
-      this.atlasMap = res.map;
-      bindAtlas(this.uniforms, this.atlasTex, res);
-      this.configKey = '';
+      const bundle = await loadBundle(v);
+      if (this.disposed || this.atlasFor !== v) return;
+      this.blockAtlas?.dispose();
+      this.blockAtlas = new BlockAtlas(bundle);
+      this.blockAtlas.bind(this.uniforms);
       await this.configure();
     } catch (e) {
+      this.atlasFor = null;
+      this.setMeshHold(false); // no textures: mesh flat rather than nothing
       this.opts.onError?.('atlas', e);
     }
   }
@@ -543,7 +601,18 @@ export class WorldRuntime {
     for (const v of this.views.values()) for (const s of v.selectedBots()) selected.add(s);
     this.entities.update(this.store.bots(this.botsBuf), this.store.entities(null, this.entsBuf), now, selected);
     this.overlays.tick(now);
+    this.refreshEntityLight(now);
     void this.deltas.flush(); // a frame's worth of block changes, applied together
+    if (this.uniforms.uTextured.value > 0 && this.blockAtlas) {
+      // [blocks] atlas animation: the profile's tick rate and cell budget, only the cells the drawn sections sample.
+      const p = this.quality.state.profile;
+      this.blockAtlas.animHz = p.animHz;
+      this.blockAtlas.animCellsPerTick = p.animCellsPerTick;
+      const cells = new Set<number>();
+      for (const s of this.sections.values()) s.visibleAnimCells(cells);
+      this.blockAtlas.setVisible(cells);
+      this.blockAtlas.update(this.renderer, now);
+    }
     const interests: Record<string, Interest> = {};
     const centres = new Map<Dim, Centre[]>();
     for (const v of this.views.values()) {
@@ -642,6 +711,7 @@ export class WorldRuntime {
     h = Math.min(h, fh);
     s.camera.aspect = w / h;
     s.camera.updateProjectionMatrix();
+    this.uniforms.uProj.value.copy(s.camera.projectionMatrix);
     // World uniforms for this view.
     const nether = s.dim === -1;
     const time = this.cache.timeNow(s.dim, Date.now());

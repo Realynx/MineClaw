@@ -1,17 +1,18 @@
 // The main thread's handle on the mesh engine: a Web Worker (default) or the same engine in-thread.
 
-import type { AtlasMap } from '../atlas/types';
 import type { GameVersion } from '../world/blocks';
 import type { ApplyResult } from './columns';
 import { MeshEngine, type PatchResult, type TouchCol } from './engine';
 import type { CutParams, SectionMesh } from './mesher';
 import type { WorkerRequest, WorkerResponse } from './protocol';
 import type { PickHit, V3, ViewInfo } from './query';
+import type { MeshAssets } from './source';
 
 type Dirty = Array<[number, number, number]>;
 
 export interface MeshHost {
-  configure(version: GameVersion, atlas: AtlasMap | null): Promise<void>;
+  /** The version and its bundled block assets (structured-cloned once to the worker); `textured` = sample the atlas. */
+  configure(version: GameVersion, assets: MeshAssets | null, textured: boolean): Promise<void>;
   /** Decodes and stores an MCWC payload; the buffer is transferred (unusable afterwards). */
   apply(buf: ArrayBuffer): Promise<ApplyResult>;
   touch(dim: number, cols: TouchCol[]): Promise<Dirty>;
@@ -21,6 +22,8 @@ export interface MeshHost {
   mesh(dim: number, sections: Dirty, cut: CutParams | null): Promise<SectionMesh[]>;
   pick(dim: number, o: V3, d: V3, max: number, cut: CutParams | null): Promise<PickHit | null>;
   viewInfo(dim: number, cam: V3, body: V3 | null, cut: CutParams | null): Promise<ViewInfo>;
+  /** Packed light (sky << 4 | block, -1 unknown) at points [x, y, z, x, y, z, …]. */
+  lights(dim: number, pts: number[]): Promise<number[]>;
   clear(): Promise<void>;
   dispose(): void;
 }
@@ -34,7 +37,7 @@ export class InlineMeshHost implements MeshHost {
     this.chain = p.catch(() => undefined);
     return p;
   }
-  configure(version: GameVersion, atlas: AtlasMap | null) { return this.run(() => this.engine.configure(version, atlas)); }
+  configure(version: GameVersion, assets: MeshAssets | null, textured: boolean) { return this.run(() => this.engine.configure(version, assets, textured)); }
   apply(buf: ArrayBuffer) { return this.run(() => this.engine.apply(buf)); }
   touch(dim: number, cols: TouchCol[]) { return this.run(() => this.engine.touch(dim, cols)); }
   drop(dim: number, cols: Array<[number, number]>) { return this.run(() => this.engine.drop(dim, cols)); }
@@ -42,6 +45,7 @@ export class InlineMeshHost implements MeshHost {
   mesh(dim: number, sections: Dirty, cut: CutParams | null) { return this.run(() => this.engine.mesh(dim, sections, cut)); }
   pick(dim: number, o: V3, d: V3, max: number, cut: CutParams | null) { return this.run(() => this.engine.pick(dim, o, d, max, cut)); }
   viewInfo(dim: number, cam: V3, body: V3 | null, cut: CutParams | null) { return this.run(() => this.engine.viewInfo(dim, cam, body, cut)); }
+  lights(dim: number, pts: number[]) { return this.run(() => this.engine.lights(dim, pts)); }
   clear() { return this.run(() => this.engine.clear()); }
   dispose(): void {
     this.engine.clear();
@@ -82,7 +86,7 @@ export class WorkerMeshHost implements MeshHost {
     });
   }
 
-  configure(version: GameVersion, atlas: AtlasMap | null) { return this.send<void>({ op: 'configure', version, atlas }); }
+  configure(version: GameVersion, assets: MeshAssets | null, textured: boolean) { return this.send<void>({ op: 'configure', version, assets, textured }); }
   apply(buf: ArrayBuffer) { return this.send<ApplyResult>({ op: 'apply', buf }, [buf]); }
   touch(dim: number, cols: TouchCol[]) { return this.send<Dirty>({ op: 'touch', dim, cols }); }
   drop(dim: number, cols: Array<[number, number]>) { return this.send<Dirty>({ op: 'drop', dim, cols }); }
@@ -90,6 +94,7 @@ export class WorkerMeshHost implements MeshHost {
   mesh(dim: number, sections: Dirty, cut: CutParams | null) { return this.send<SectionMesh[]>({ op: 'mesh', dim, sections, cut }); }
   pick(dim: number, o: V3, d: V3, max: number, cut: CutParams | null) { return this.send<PickHit | null>({ op: 'pick', dim, o, d, max, cut }); }
   viewInfo(dim: number, cam: V3, body: V3 | null, cut: CutParams | null) { return this.send<ViewInfo>({ op: 'view', dim, cam, body, cut }); }
+  lights(dim: number, pts: number[]) { return this.send<number[]>({ op: 'lights', dim, pts }); }
   clear() { return this.send<void>({ op: 'clear' }); }
 
   dispose(): void {

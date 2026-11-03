@@ -30,6 +30,8 @@ export class CameraRig {
   orbitYaw = 315;
   orbitPitch = 30;
   orbitDist = 9;
+  /** Follow camera pulled in so it stays out of solid blocks (vanilla third person); Infinity = free. */
+  collideDist = Infinity;
   readonly flyPos = new THREE.Vector3(0, 80, 0);
   flyYaw = 315;
   flyPitch = 30;
@@ -122,7 +124,7 @@ export class CameraRig {
       return { pos, quat, fov: this.isoFov };
     }
     const dir = lookDir(this.orbitYaw, this.orbitPitch);
-    const pos = this.target.clone().addScaledVector(dir, -this.orbitDist);
+    const pos = this.target.clone().addScaledVector(dir, -Math.min(this.orbitDist, this.collideDist));
     m.lookAt(pos, this.target, up);
     quat.setFromRotationMatrix(m);
     return { pos, quat, fov: this.fov };

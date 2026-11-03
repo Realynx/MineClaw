@@ -8,7 +8,7 @@ import { DEFAULT_LAYERS, type CameraMode, type Dim, type LayerToggles, type Over
 import { blockName } from '../world/blocks';
 import type { BotView } from '../world/entities';
 import type { Interest } from '../world/sync';
-import { CameraRig } from './cameraRig';
+import { CameraRig, lookDir } from './cameraRig';
 import { newViewId, WorldRuntime, type RuntimeOptions, type RuntimeView, type ViewSetup } from './runtime';
 import type { Centre } from './sections';
 
@@ -224,6 +224,8 @@ export class WorldViewerEngine implements RuntimeView {
     const iso = this.rig.mode === 'iso' || this.rig.mode === 'top';
     this.camera.far = this.drawDistance * 1.6 + (iso ? this.rig.isoDistance() : 0) + 32;
     this.camera.near = iso ? Math.max(0.5, this.rig.isoDistance() * 0.2) : 0.05;
+    // A cut-away shows solids from the inside: the cap pass needs their far side (down to the world floor) in range.
+    if (this.roof || this.coneOn) this.camera.far += 256;
     // Overlays: this view's dimension, its toggles; notes go to the app.
     const ov = rt.overlaysFor(this.dim);
     if (ov && ov !== this.overlaysSeen) {
@@ -302,11 +304,33 @@ export class WorldViewerEngine implements RuntimeView {
         // Roof cut-away: the followed bot is under cover and the camera looks down on it (not when flying).
         this.roof = this.layers.cutaway && bot && this.rig.mode !== 'fly' && info.covered && cam.y > bot.y + 1.5 ? { x: bot.x, y: Math.floor(bot.y) + 2, z: bot.z, r: 9 } : null;
       })
+      .then(() => this.collide())
       .catch(() => undefined)
       .finally(() => {
         this.xrayBusy = false;
       });
   }
+
+  /** Follow camera collision (vanilla third person): pull the camera in front of the first solid block between the bot
+   * and where the camera wants to be, so it never sits inside rock in a tunnel; the x-ray handles walls seen from outside. */
+  private async collide(): Promise<void> {
+    if (this.rig.mode !== 'follow' || !this.cameraCollision) {
+      this.rig.collideDist = Infinity;
+      return;
+    }
+    const t = this.rig.target;
+    const d = lookDir(this.rig.orbitYaw, this.rig.orbitPitch).negate(); // from the bot back toward the camera
+    // Blocks the roof cut removes don't push the camera in: with the bot under cover the camera stays up and looks down
+    // into the opened room or tunnel (the C# orbit panels' framing).
+    const roof = this.roof ? { x: this.roof.x, y: this.roof.y, z: this.roof.z, r: this.roof.r } : null;
+    const hit = await this.runtime.host.pick(this.dim, [t.x, t.y, t.z], [d.x, d.y, d.z], this.rig.orbitDist + 1, roof).catch(() => null);
+    const want = hit ? Math.max(1, Math.hypot(hit.x + 0.5 - t.x, hit.y + 0.5 - t.y, hit.z + 0.5 - t.z) - 0.9) : Infinity;
+    // Pull in at once, ease back out.
+    this.rig.collideDist = want < this.rig.collideDist ? want : Math.min(want, this.rig.collideDist + 0.8);
+  }
+
+  /** Keep the follow camera out of solid blocks (default on). */
+  cameraCollision = true;
 
   // ------------------------------------------------------------------------------------------------------------ input
 

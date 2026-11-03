@@ -1,7 +1,8 @@
 // Growable vertex buffers for one section pass. Vertex layout (per vertex):
 //   pos   f32×3  section-local position
 //   uv    f32×2  cell-local texture coordinate (0..1; wraps/spans per tile flags)
-//   tile  u16×4  atlas cell column, row, texture flags (1 textured, 2 wrap, 4 span 4×2), 0
+//   tile  u16×4  atlas cell column, row, texture flags (1 textured, 2 wrap), span ((w << 8) | h cells of a tile-entity
+//                sheet the UVs address; 0 = one cell)
 //   color u8×4   rgb = tint × face shade (or the flat colour), a = opacity
 //   light u8×4   sky×17, block×17, ambient occlusion factor×255, light flags (LF_*)
 //   cell  u8×4   the block's section-local cell (x, y, z) for the x-ray cone, 0
@@ -9,7 +10,6 @@
 
 export const TEX_TEXTURED = 1;
 export const TEX_WRAP = 2;
-export const TEX_SPAN = 4;
 
 export const LF_EMISSIVE = 1;
 export const LF_UNKNOWN = 2;
@@ -81,13 +81,13 @@ export class VertexSink {
   }
 
   /** Same tile, colour and cell on all four vertices of the quad starting at v. */
-  quadAttrs(v: number, col: number, row: number, tex: number, rgb: number, alpha: number, cx: number, cy: number, cz: number): void {
+  quadAttrs(v: number, col: number, row: number, tex: number, rgb: number, alpha: number, cx: number, cy: number, cz: number, span = 0): void {
     const r = (rgb >> 16) & 255, g = (rgb >> 8) & 255, b = rgb & 255, a = Math.max(0, Math.min(255, Math.round(alpha * 255)));
     for (let i = v; i < v + 4; i++) {
       this.tile[i * 4] = col;
       this.tile[i * 4 + 1] = row;
       this.tile[i * 4 + 2] = tex;
-      this.tile[i * 4 + 3] = 0;
+      this.tile[i * 4 + 3] = span;
       this.color[i * 4] = r;
       this.color[i * 4 + 1] = g;
       this.color[i * 4 + 2] = b;

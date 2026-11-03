@@ -1,4 +1,5 @@
-// The section shader: atlas cell + cell-local UV → texel (wrapping for procedural liquids), vanilla light levels resolved per
+// The section shader: atlas cell + cell-local UV → texel (wrapping for procedural liquids; tile-entity quads address a
+// w×h-cell sheet given in the tile attribute's 4th component), vanilla light levels resolved per
 // fragment from the baked sky/block light and the time of day (World.k as a uniform), ambient occlusion, remembered-column
 // dimming and distance fog around a centre (the camera, or the iso target).
 // Cut-aways are per-view uniforms, never geometry: the x-ray cone (ViewCut.Hides per fragment) and the roof cut (cells above a
@@ -85,23 +86,80 @@ bool hidden(vec3 c) {
   return false;
 }
 
+#ifdef CAP
+uniform mat4 uProj;
+// Where the ray from the camera leaves the cut-away volume (and so enters the solid behind it), or -1.
+float cutExit(vec3 o, vec3 d, float tBack) {
+  float best = -1.0;
+  // Cone toward each subject: the solid starts at the subject's plane (cells beyond it are not cut) or the floor.
+  for (int i = 0; i < 2; i++) {
+    if (i >= uCones) break;
+    vec3 u = uConeU[i].xyz;
+    float D = uConeU[i].w;
+    float du = dot(d, u);
+    if (du > 1e-4) {
+      float t = D / du;
+      // Only rays inside this cone were cut (outside it, e.g. a camera buried in rock, the back face itself is shown).
+      vec3 q = d * t;
+      float along = dot(q, u);
+      float r = uConeR * along / D + 0.87;
+      if (dot(q, q) - along * along > r * r) continue;
+      if (d.y < -1e-4) t = min(t, (uFloorY - o.y) / d.y);
+      if (t > 0.0 && t < tBack) best = best < 0.0 ? t : min(best, t);
+    }
+  }
+  // Roof: the cut volume is y >= roof.y within roof.w of (x, z); leave it through its floor or its side.
+  if (uRoof.w > 0.0) {
+    float t = 1e9;
+    if (d.y < -1e-4) {
+      float tp = (uRoof.y - o.y) / d.y;
+      vec2 q = o.xz + d.xz * tp - uRoof.xz;
+      if (tp > 0.0 && dot(q, q) <= uRoof.w * uRoof.w) t = tp;
+    }
+    vec2 oc = o.xz - uRoof.xz;
+    float a = dot(d.xz, d.xz), b = dot(oc, d.xz), c = dot(oc, oc) - uRoof.w * uRoof.w;
+    float disc = b * b - a * c;
+    if (a > 1e-6 && disc >= 0.0) {
+      float t2 = (-b + sqrt(disc)) / a;
+      if (t2 > 0.0 && o.y + d.y * t2 >= uRoof.y) t = min(t, t2);
+    }
+    if (t < tBack) best = best < 0.0 ? t : min(best, t);
+  }
+  return best;
+}
+#endif
+
+vec4 texel() {
+  float tf = vTile.z;
+  if (uTextured < 0.5 || !flag(tf, 1.0)) return vec4(1.0);
+  vec2 span = vTile.w > 0.5 ? vec2(floor(vTile.w / 256.0), mod(vTile.w, 256.0)) : vec2(1.0);
+  vec2 luv = flag(tf, 2.0) ? fract(vUv) : vUv;
+  luv = clamp(luv, vec2(uInset), span - vec2(uInset));
+  return texture2D(uAtlas, (vTile.xy + luv) / uGrid);
+}
+
 void main() {
   if (hidden(floor(vCell) + 0.5)) discard;
-  if (uCap > 0.5) {
-    float s = step(0.5, fract((vWorld.x + vWorld.y + vWorld.z) * 2.0));
-    vec3 cap = mix(vec3(0.36, 0.42, 0.5), vec3(0.43, 0.5, 0.6), s);
-    float f = smoothstep(uFogRange.x, uFogRange.y, length(vWorld.xz - uFogCentre.xz));
-    gl_FragColor = vec4(mix(cap, uFogColor, f), 1.0);
-    return;
-  }
-  vec4 c = vColor;
-  float tf = vTile.z;
-  if (uTextured > 0.5 && flag(tf, 1.0)) {
-    vec2 span = flag(tf, 4.0) ? vec2(4.0, 2.0) : vec2(1.0);
-    vec2 luv = flag(tf, 2.0) ? fract(vUv) : vUv;
-    luv = clamp(luv, vec2(uInset), span - vec2(uInset));
-    c *= texture2D(uAtlas, (vTile.xy + luv) / uGrid);
-  }
+#ifdef CAP
+  // [blocks] cut-out texels open no cut: the back of a plant, rail or pane is not a wall.
+  if (texel().a < 0.5) discard;
+  // The true section wall: this back face shows that the ray runs inside a solid the cut opened; draw the hatched wall
+  // where the ray leaves the cut volume (the cone's subject plane / floor, the roof cut's floor or side), not here.
+  vec3 ray = vWorld - cameraPosition;
+  float tBack = length(ray);
+  vec3 dir = ray / tBack;
+  float t = cutExit(cameraPosition, dir, tBack);
+  vec3 p = t > 0.0 ? cameraPosition + dir * t : vWorld;
+  vec4 clip = uProj * viewMatrix * vec4(p, 1.0);
+  gl_FragDepth = t > 0.0 ? clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0) : gl_FragCoord.z;
+  float s = step(0.5, fract((p.x + p.y + p.z) * 2.0));
+  vec3 cap = mix(vec3(0.36, 0.42, 0.5), vec3(0.43, 0.5, 0.6), s);
+  // No analytic exit (the camera itself is buried): the back face is the wall; never fog it into the sky colour.
+  float f = t > 0.0 ? smoothstep(uFogRange.x, uFogRange.y, length(p.xz - uFogCentre.xz)) : 0.0;
+  gl_FragColor = vec4(mix(cap, uFogColor, f), 1.0);
+  return;
+#endif
+  vec4 c = vColor * texel();
   if (c.a < uAlphaTest) discard;
   bool emissive = flag(vFlags, 1.0);
   float b = emissive ? 1.0 : bright(max(vLight.y, vLight.x - uSkySub));
@@ -143,6 +201,8 @@ export interface ChunkUniforms {
   uRoof: THREE.IUniform<THREE.Vector4>;
   uAlphaTest: THREE.IUniform<number>;
   uCap: THREE.IUniform<number>;
+  /** The view's projection matrix (the cap pass projects the cut wall itself). */
+  uProj: THREE.IUniform<THREE.Matrix4>;
 }
 
 /** Uniforms shared by both passes (one object: updating it updates both materials). */
@@ -167,6 +227,7 @@ export function createChunkUniforms(): ChunkUniforms {
     uRoof: { value: new THREE.Vector4(0, 0, 0, 0) },
     uAlphaTest: { value: 0.5 },
     uCap: { value: 0 },
+    uProj: { value: new THREE.Matrix4() },
   };
 }
 
@@ -192,6 +253,7 @@ export function createChunkMaterials(shared: ChunkUniforms): ChunkMaterials {
     vertexShader: vertex,
     fragmentShader: fragment,
     uniforms: { ...shared, uCap: { value: 1 } },
+    defines: { CAP: 1 },
     side: THREE.BackSide,
     depthFunc: THREE.LessDepth,
   });
