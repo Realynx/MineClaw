@@ -3,6 +3,7 @@
 export { WorldViewer, type WorldViewerProps, type WorldViewerHandle } from './react/WorldViewer';
 export { WorldViewerProvider, WorldThumbnail, useWorldRuntime, disposeWorldRuntimes, type WorldViewerProviderProps, type WorldThumbnailProps } from './react/WorldThumbnail';
 export { WorldViewerEngine, type EngineOptions } from './render/engine';
+export { aimAt, botAlong, rayBox, outlineOf, type AimTarget, type AimBot } from './render/aim';
 export { WorldRuntime, type RuntimeOptions, type RuntimeMemory, type RuntimeView, type ViewSetup } from './render/runtime';
 export { registerThumbnail, ThumbnailView, type ThumbnailViewOptions, type ThumbnailHandle } from './render/thumbnails';
 export * from './types';

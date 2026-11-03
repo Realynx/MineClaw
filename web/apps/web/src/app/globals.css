@@ -186,6 +186,21 @@
   animation: pulse-dot 1.6s ease-in-out infinite;
 }
 
+/* In-world chat lines: shown, then fading out like the game's chat. */
+@keyframes chat-fade {
+  0%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.animate-chat-fade {
+  animation: chat-fade 10s ease-in forwards;
+}
+
 /* CodeMirror: blend into the card it sits in. */
 .cm-editor {
   background: var(--code-bg);

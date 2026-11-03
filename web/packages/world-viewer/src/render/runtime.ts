@@ -90,6 +90,8 @@ export interface ViewSetup {
   viewId?: number;
   /** Where the picture goes: the runtime canvas itself (primary) or a 2D canvas it is copied into. */
   target: 'primary' | CanvasRenderingContext2D;
+  /** Wireframe boxes drawn in this view only (the crosshair's selection box, selected bots, a target marker). */
+  outlines?: ReadonlyArray<{ min: [number, number, number]; max: [number, number, number]; color: number }>;
 }
 
 export interface RuntimeView {
@@ -763,6 +765,32 @@ export class WorldRuntime {
     this.quality.setProfile(PROFILES[q === 'auto' ? (this.probe.software ? 'software' : 'gpu') : q]);
   }
 
+  private readonly outlineBoxes: THREE.LineSegments[] = [];
+
+  /** Positions this view's wireframe boxes (a small pool of unit-cube edges, scaled; hidden when unused). */
+  private showOutlines(list: NonNullable<ViewSetup['outlines']>): void {
+    for (let i = 0; i < Math.max(list.length, this.outlineBoxes.length); i++) {
+      const o = list[i];
+      let box = this.outlineBoxes[i];
+      if (!o) {
+        if (box) box.visible = false;
+        continue;
+      }
+      if (!box) {
+        const geo = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1).translate(0.5, 0.5, 0.5));
+        box = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.8, depthTest: true }));
+        box.renderOrder = 10;
+        box.frustumCulled = false;
+        this.outlineBoxes.push(box);
+        this.scene.add(box);
+      }
+      box.visible = true;
+      box.position.set(o.min[0], o.min[1], o.min[2]);
+      box.scale.set(o.max[0] - o.min[0], o.max[1] - o.min[1], o.max[2] - o.min[2]);
+      (box.material as THREE.LineBasicMaterial).color.setHex(o.color);
+    }
+  }
+
   private render(s: ViewSetup, now: number): void {
     const u = this.uniforms;
     const r = this.renderer;
@@ -831,6 +859,7 @@ export class WorldRuntime {
     this.flashes.showFor(s.dim, now, s.layers.changes);
     this.blockEntityLayer.showFor(s.dim); // [blocks]
     this.aids.showAt(s.aids ?? null);
+    this.showOutlines(s.outlines ?? []);
     r.setViewport(0, 0, w, h);
     r.setScissor(0, 0, w, h);
     r.render(this.scene, s.camera);

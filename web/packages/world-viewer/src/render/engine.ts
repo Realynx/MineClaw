@@ -8,6 +8,7 @@ import { DEFAULT_LAYERS, type CameraMode, type Dim, type LayerToggles, type Over
 import { blockName } from '../world/blocks';
 import type { BotView } from '../world/entities';
 import type { Interest } from '../world/sync';
+import { aimAt, outlineOf, type AimTarget } from './aim';
 import { CameraRig, lookDir } from './cameraRig';
 import { newViewId, WorldRuntime, type RuntimeOptions, type RuntimeView, type ViewSetup } from './runtime';
 import type { Centre } from './sections';
@@ -28,6 +29,10 @@ export interface EngineOptions extends RuntimeOptions {
   onStats?: (s: ViewerStats) => void;
   onNotes?: (notes: string[]) => void;
   onCameraModeChange?: (m: CameraMode) => void;
+  /** Free cam with the mouse locked: what the crosshair points at, whenever it changes (null = nothing or unlocked). */
+  onAim?: (t: AimTarget | null) => void;
+  /** A left click with the mouse locked, on what the crosshair points at. Without it the click picks as before. */
+  onAimClick?: (t: AimTarget | null, mods: { shift: boolean; ctrl: boolean }) => void;
 }
 
 const XRAY_RANGE = 48; // FreecamXRay.Range
@@ -65,6 +70,11 @@ export class WorldViewerEngine implements RuntimeView {
   private resize: ResizeObserver | null = null;
   private readonly cleanups: Array<() => void> = [];
   private size: [number, number] = [1, 1];
+  private aimed: AimTarget | null = null;
+  private aimAtMs = 0;
+  private aimBusy = false;
+  private marker: [number, number, number] | null = null;
+  private highlighted: string[] = [];
 
   constructor(private readonly container: HTMLElement, opts: EngineOptions) {
     this.opts = opts;
@@ -133,7 +143,60 @@ export class WorldViewerEngine implements RuntimeView {
     this.drawDistance = clampDraw(n);
   }
 
-  setCallbacks(c: Pick<EngineOptions, 'onSelectBot' | 'onPick' | 'onStats' | 'onNotes' | 'onCameraModeChange' | 'onError'>): void {
+  /** A target position marker (a block), drawn in this view; null clears it. */
+  setMarker(p: [number, number, number] | null): void {
+    this.marker = p;
+  }
+
+  /** Bots outlined in this view (the app's selection). */
+  setHighlighted(names: string[]): void {
+    this.highlighted = names;
+  }
+
+  /** What the crosshair points at (free cam, mouse locked), as last computed. */
+  aim(): AimTarget | null {
+    return this.aimed;
+  }
+
+  /** Whether the mouse is locked to this view (free cam look mode). */
+  locked(): boolean {
+    return document.pointerLockElement === this.surface;
+  }
+
+  /** The bots of this view's dimension, nearest the camera first (number keys pick from these). */
+  botsInView(): BotView[] {
+    const p = this.camera.position;
+    return this.runtime.store
+      .bots()
+      .filter((b) => b.dim === this.dim)
+      .sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y, a.z - p.z) - Math.hypot(b.x - p.x, b.y - p.y, b.z - p.z));
+  }
+
+  /** Recomputes the crosshair target now (the centre ray of this view's camera). */
+  async aimNow(): Promise<AimTarget | null> {
+    const o = this.camera.position;
+    const d = this.camera.getWorldDirection(new THREE.Vector3());
+    const bots = this.layers.bots ? this.runtime.store.bots().filter((b) => b.dim === this.dim) : [];
+    const t = await aimAt(
+      [o.x, o.y, o.z],
+      [d.x, d.y, d.z],
+      bots,
+      (oo, dd, max) => this.runtime.host.pick(this.dim, oo, dd, max, null),
+      (id) => blockName(this.runtime.version ?? 'b1.8.1', id),
+      this.drawDistance + 32,
+    );
+    this.setAim(t);
+    return t;
+  }
+
+  private setAim(t: AimTarget | null): void {
+    const a = this.aimed;
+    const same = a === t || (!!a && !!t && a.kind === t.kind && (a.kind === 'bot' ? a.name === (t as typeof a).name : a.x === t.x && a.y === t.y && a.z === t.z));
+    this.aimed = t;
+    if (!same) this.opts.onAim?.(t);
+  }
+
+  setCallbacks(c: Pick<EngineOptions, 'onSelectBot' | 'onPick' | 'onStats' | 'onNotes' | 'onCameraModeChange' | 'onError' | 'onAim' | 'onAimClick'>): void {
     this.opts = { ...this.opts, ...c };
   }
 
@@ -235,6 +298,27 @@ export class WorldViewerEngine implements RuntimeView {
     rt.overlays.setVisible(this.layers);
     const subs = this.xray === 'off' ? [] : this.subjects(bot);
     this.updateXRay(now, bot, subs);
+    // The crosshair (free cam, mouse locked): what the centre ray hits, ten times a second.
+    if (this.locked() && this.rig.mode === 'fly') {
+      if (!this.aimBusy && now - this.aimAtMs >= 100) {
+        this.aimAtMs = now;
+        this.aimBusy = true;
+        void this.aimNow().finally(() => {
+          this.aimBusy = false;
+        });
+      }
+    } else if (this.aimed) this.setAim(null);
+    const outlines: Array<{ min: [number, number, number]; max: [number, number, number]; color: number }> = [];
+    for (const name of this.highlighted) {
+      const b = this.runtime.store.bot(name);
+      if (b && b.dim === this.dim) outlines.push({ ...outlineOf({ kind: 'bot', name, x: b.x, y: b.y, z: b.z, distance: 0 }), color: 0x5ee08a });
+    }
+    if (this.marker) outlines.push({ min: [this.marker[0] - 0.01, this.marker[1] - 0.01, this.marker[2] - 0.01], max: [this.marker[0] + 1.01, this.marker[1] + 1.01, this.marker[2] + 1.01], color: 0x38bdf8 });
+    if (this.aimed) {
+      const b = this.aimed.kind === 'bot' ? this.runtime.store.bot(this.aimed.name) : null;
+      const t = b ? { ...this.aimed, x: b.x, y: b.y, z: b.z } : this.aimed;
+      outlines.push({ ...outlineOf(t), color: t.kind === 'bot' ? 0xffffff : 0x000000 });
+    }
     const primary = rt.isPrimary(this);
     const [w, h] = primary ? rt.primarySize(this.container) : this.size;
     const setup: ViewSetup = {
@@ -255,6 +339,7 @@ export class WorldViewerEngine implements RuntimeView {
       precip: this.precip,
       aids: this.layers.aids && bot ? { x: bot.x, y: bot.y, z: bot.z } : null,
       target: primary ? 'primary' : (this.ctx2d ?? 'primary'),
+      outlines,
     };
     this.frames++;
     this.frameMs = this.frameMs * 0.9 + (performance.now() - t0) * 0.1;
@@ -388,6 +473,13 @@ export class WorldViewerEngine implements RuntimeView {
       if (c.hasPointerCapture?.(e.pointerId)) c.releasePointerCapture(e.pointerId);
       if (!d || d.moved || performance.now() - d.t > 500 || d.button !== 0) return;
       const locked = document.pointerLockElement === c;
+      if (locked && this.opts.onAimClick) {
+        const mods = { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey };
+        void this.aimNow().then((t) => {
+          if (!this.disposed) this.opts.onAimClick?.(t, mods);
+        });
+        return;
+      }
       const rect = c.getBoundingClientRect();
       const ndc = locked ? new THREE.Vector2(0, 0) : new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
       void this.pickAt(ndc);

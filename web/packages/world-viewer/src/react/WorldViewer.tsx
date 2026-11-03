@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type CSSP
 import { WorldViewerEngine, type EngineOptions } from '../render/engine';
 import type { CameraMode, Dim, LayerToggles, PickedBlock, ViewerStats, WorldSource, XRayMode } from '../types';
 import type { BotView } from '../world/entities';
+import type { AimTarget } from '../render/aim';
 import { useWorldRuntime } from './WorldThumbnail';
 
 export interface WorldViewerProps {
@@ -21,6 +22,16 @@ export interface WorldViewerProps {
   onStats?: (s: ViewerStats) => void;
   onCameraModeChange?: (m: CameraMode) => void;
   onError?: (route: string, e: unknown) => void;
+  /** Free cam, mouse locked: what the crosshair points at (null = nothing, or the mouse was released). */
+  onAim?: (t: AimTarget | null) => void;
+  /** A left click with the mouse locked, on the crosshair's target (replaces the plain pick while locked). */
+  onAimClick?: (t: AimTarget | null, mods: { shift: boolean; ctrl: boolean }) => void;
+  /** A target block marker drawn in the world. */
+  marker?: [number, number, number] | null;
+  /** Bots outlined in the world (a selection). */
+  highlighted?: string[];
+  /** Hide the built-in "click to look around" hint (the app draws its own HUD). */
+  hideHint?: boolean;
   /** Runtime tuning when the viewer has no WorldViewerProvider above (poll periods, LRU size, worker factory, pixel ratio).
    * Read once at mount. Inside a provider the shared runtime's options apply. */
   options?: Omit<EngineOptions, 'source' | 'runtime' | 'dim' | 'follow' | 'layers' | 'cameraMode' | 'xray' | 'drawDistance' | 'onSelectBot' | 'onPick' | 'onStats' | 'onNotes' | 'onCameraModeChange' | 'onError'>;
@@ -36,6 +47,14 @@ export interface WorldViewerHandle {
   followBot(name: string | null): void;
   bots(): BotView[];
   stats(): ViewerStats | null;
+  /** The crosshair's current target (free cam, mouse locked). */
+  aim(): AimTarget | null;
+  /** Bots of the viewed dimension, nearest the camera first. */
+  botsInView(): BotView[];
+  /** Locks the mouse to the view (free cam look); needs a user gesture. */
+  lock(): void;
+  /** Whether the mouse is locked to this view. */
+  locked(): boolean;
   /** The underlying engine (advanced use). */
   engine(): WorldViewerEngine | null;
 }
@@ -81,7 +100,10 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
         cbs.current.onCameraModeChange?.(m);
       },
       onError: (r, err) => cbs.current.onError?.(r, err),
+      onAim: (t) => cbs.current.onAim?.(t),
+      onAimClick: (t, m) => (cbs.current.onAimClick ? cbs.current.onAimClick(t, m) : undefined),
     });
+    if (!props.onAimClick) e.setCallbacks({ onAimClick: undefined });
     engine.current = e;
     return () => {
       engine.current = null;
@@ -102,6 +124,10 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
   }, [props.cameraMode]);
   useEffect(() => engine.current?.setXRay(props.xray ?? 'auto'), [props.xray]);
   useEffect(() => engine.current?.setDrawDistance(props.drawDistance ?? 128), [props.drawDistance]);
+  const markerKey = props.marker ? props.marker.join(',') : '';
+  useEffect(() => engine.current?.setMarker(props.marker ?? null), [markerKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const highlightKey = (props.highlighted ?? []).join(',');
+  useEffect(() => engine.current?.setHighlighted(props.highlighted ?? []), [highlightKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useImperativeHandle(
     ref,
@@ -112,6 +138,15 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
       followBot: (n) => engine.current?.setFollow(n),
       bots: () => engine.current?.bots() ?? [],
       stats: () => engine.current?.stats() ?? null,
+      aim: () => engine.current?.aim() ?? null,
+      botsInView: () => engine.current?.botsInView() ?? [],
+      lock: () => {
+        const s = engine.current?.surface;
+        if (!s) return;
+        s.focus();
+        void Promise.resolve(s.requestPointerLock?.()).catch(() => undefined);
+      },
+      locked: () => engine.current?.locked() ?? false,
       engine: () => engine.current,
     }),
     [],
@@ -121,7 +156,7 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
   return (
     <div className={props.className} style={{ position: 'relative', overflow: 'hidden', width: '100%', height: '100%', ...props.style }}>
       <div ref={host} style={{ position: 'absolute', inset: 0 }} />
-      {mode === 'fly' && !locked && (
+      {mode === 'fly' && !locked && !props.hideHint && (
         <div
           style={{ position: 'absolute', left: '50%', top: 12, transform: 'translateX(-50%)', padding: '4px 10px', font: '12px system-ui, sans-serif', color: '#fff', background: 'rgba(0,0,0,0.55)', borderRadius: 6, pointerEvents: 'none', whiteSpace: 'nowrap' }}
         >

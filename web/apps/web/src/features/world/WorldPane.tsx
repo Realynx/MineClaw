@@ -5,11 +5,12 @@
  * tools the viewer does not provide: a "go to" lookup (place, bot or x,y,z via /api/locate), a drops list, and an F3-style HUD
  * (position, facing, the last picked block). Renderer stats appear only with developer details on.
  */
-import type { CameraMode, LayerToggles, PickedBlock, ViewerStats, WorldViewerHandle, XRayMode } from '@mineclaw/world-viewer';
-import { Crosshair, Gem, Layers, LocateFixed, Monitor } from 'lucide-react';
+import type { AimTarget, CameraMode, LayerToggles, PickedBlock, ViewerStats, WorldViewerHandle, XRayMode } from '@mineclaw/world-viewer';
+import { Crosshair, Gem, Layers, LocateFixed, Maximize, Minimize, Monitor } from 'lucide-react';
 import { Popover } from 'radix-ui';
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { api, errorText } from '@/lib/api/client';
+import { useAuth } from '@/lib/auth';
 import { useEntities } from '@/lib/live/hooks';
 import { usePrefs } from '@/lib/prefs';
 import { bytes, cn, dimName, num } from '@/lib/utils';
@@ -17,6 +18,12 @@ import { Button, Checkbox, Input, Select } from '@/components/ui/primitives';
 import { Segmented, Tooltip } from '@/components/ui/overlays';
 import { DotMap } from './DotMap';
 import { useWorldHost } from './integration';
+import { ChatOverlay, Crosshair as AimCross, SelectionBar, TargetReadout } from './InWorld';
+import { isTyping, nextSelection, selectByNumber, sendDirective, type SendResult } from './directives';
+
+/** The Keyboard Lock API (fullscreen, secure contexts only): with Escape locked, Esc reaches the page instead of the browser. */
+type KeyboardLock = { lock?: (keys: string[]) => Promise<void>; unlock?: () => void };
+const keyboardOf = () => (navigator as Navigator & { keyboard?: KeyboardLock }).keyboard;
 
 const LAYER_LABELS: Array<[keyof LayerToggles, string]> = [
   ['bots', 'Bots'],
@@ -62,16 +69,94 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
   const entities = useEntities();
   const me = entities.data?.bots.find((b) => b.name === follow || b.short === follow);
   const dim = me?.dim ?? 0;
+  const { canChat } = useAuth();
+  // The stage (the world and every overlay on it) is what goes fullscreen: the shared canvas moves with it, no new context.
+  const stage = useRef<HTMLDivElement>(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [locked, setLocked] = useState(false);
+  const [aim, setAim] = useState<AimTarget | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [marker, setMarker] = useState<[number, number, number] | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [sent, setSent] = useState<SendResult[] | null>(null);
+  const escLocked = useRef(false);
+  const targets = selected.length ? selected : me ? [me.name] : [];
+
+  const toggleFullscreen = useCallback(() => {
+    const el = stage.current;
+    if (!el) return;
+    if (document.fullscreenElement === el) void document.exitFullscreen().catch(() => undefined);
+    else void el.requestFullscreen?.({ navigationUI: 'hide' }).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    const onFs = () => {
+      const on = !!stage.current && document.fullscreenElement === stage.current;
+      setFullscreen(on);
+      escLocked.current = false;
+      // Where the browser allows it (HTTPS), Esc comes to the page while fullscreen: the first Esc frees the mouse, the next
+      // leaves fullscreen, like the game. Over plain HTTP the browser takes Esc and does both at once.
+      if (on) void keyboardOf()?.lock?.(['Escape']).then(() => (escLocked.current = true)).catch(() => undefined);
+      else keyboardOf()?.unlock?.();
+    };
+    const onLock = () => setLocked(!!stage.current && !!document.pointerLockElement && stage.current.contains(document.pointerLockElement));
+    document.addEventListener('fullscreenchange', onFs);
+    document.addEventListener('pointerlockchange', onLock);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFs);
+      document.removeEventListener('pointerlockchange', onLock);
+    };
+  }, []);
+
+  const openChat = useCallback(() => {
+    if (document.pointerLockElement) document.exitPointerLock(); // typing needs the cursor
+    setSent(null);
+    setChatOpen(true);
+  }, []);
+  const closeChat = useCallback(() => {
+    setChatOpen(false);
+    viewer.current?.engine()?.surface.focus(); // back in the game: the next click locks the mouse again
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'F3') {
         e.preventDefault();
         setHud((h) => !h);
+        return;
+      }
+      if (isTyping(e.target)) return;
+      const el = stage.current;
+      const inWorld = !!el && (el.contains(document.activeElement) || document.fullscreenElement === el || (!!document.pointerLockElement && el.contains(document.pointerLockElement)));
+      if (!inWorld || e.altKey || e.ctrlKey || e.metaKey) return;
+      if (e.code === 'KeyF' && !e.shiftKey) {
+        e.preventDefault();
+        toggleFullscreen();
+      } else if (e.code === 'KeyT' || e.key === 'Enter' || e.key === '/') {
+        e.preventDefault();
+        openChat();
+      } else if (e.key === 'Tab') {
+        e.preventDefault();
+        setHud((h) => !h);
+      } else if (/^Digit[1-9]$/.test(e.code)) {
+        const names = viewer.current?.botsInView().map((b) => b.name) ?? [];
+        setSelected((cur) => selectByNumber(cur, names, Number(e.code.slice(5)), e.shiftKey));
+      } else if (e.key === 'Escape') {
+        if (document.pointerLockElement) document.exitPointerLock();
+        else if (document.fullscreenElement === el) void document.exitFullscreen().catch(() => undefined);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
+  }, [toggleFullscreen, openChat]);
+
+  const onAimClick = useCallback((t: AimTarget | null, mods: { shift: boolean; ctrl: boolean }) => {
+    if (mods.ctrl) {
+      setSelected([]);
+      return;
+    }
+    if (t?.kind === 'bot') setSelected((cur) => nextSelection(cur, t.name, mods));
+    else if (t?.kind === 'block') setMarker([t.x, t.y, t.z]);
   }, []);
 
   const nearbyDrops = useMemo(() => {
@@ -194,8 +279,13 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
             <Crosshair className="size-3.5" /> HUD
           </Button>
         </Tooltip>
+        <Tooltip content="Full screen (F)">
+          <Button size="icon-sm" variant="ghost" aria-label="Full screen" onClick={toggleFullscreen}>
+            <Maximize className="size-3.5" />
+          </Button>
+        </Tooltip>
       </div>
-      <div className="relative min-h-0 flex-1 bg-canvas">
+      <div ref={stage} className="relative min-h-0 flex-1 bg-canvas" data-testid="world-stage">
         <mod.WorldViewer
           ref={viewer}
           source={source}
@@ -209,7 +299,53 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
           onStats={devDetails ? setStats : undefined}
           onCameraModeChange={setMode}
           onSelectBot={(name) => viewer.current?.followBot(name)}
+          onAim={setAim}
+          onAimClick={onAimClick}
+          marker={marker}
+          highlighted={selected}
+          hideHint
           className="absolute inset-0"
+        />
+        {locked && mode === 'fly' ? (
+          <>
+            <AimCross />
+            <TargetReadout target={aim} bot={aim?.kind === 'bot' ? entities.data?.bots.find((b) => b.name === aim.name) : undefined} />
+          </>
+        ) : null}
+        {mode === 'fly' && !locked && !chatOpen ? (
+          <div className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 rounded-md bg-black/55 px-2.5 py-1 text-center text-xs whitespace-nowrap text-white">
+            Click to look around · WASD move · T chat · 1–9 pick a bot · Tab HUD · F full screen
+          </div>
+        ) : null}
+        {fullscreen ? (
+          <div className="absolute top-3 right-3 z-10 flex gap-1.5" style={{ marginTop: selected.length || marker ? 32 : 0 }}>
+            <Segmented<CameraMode>
+              label="Camera"
+              size="sm"
+              value={mode}
+              onChange={(m) => {
+                setMode(m);
+                viewer.current?.setCameraMode(m);
+              }}
+              options={[
+                { value: 'follow', label: 'Follow' },
+                { value: 'fly', label: 'Free cam' },
+              ]}
+            />
+            <Button size="sm" variant="subtle" onClick={toggleFullscreen} aria-label="Exit full screen">
+              <Minimize className="size-3.5" /> Exit {escLocked.current ? '(Esc twice)' : '(Esc)'}
+            </Button>
+          </div>
+        ) : null}
+        {hud ? <SelectionBar selected={selected} marker={marker} onClear={() => setSelected([])} onClearMarker={() => setMarker(null)} /> : null}
+        <ChatOverlay
+          open={chatOpen}
+          targets={targets}
+          marker={marker}
+          canChat={canChat}
+          onSend={(text) => void sendDirective(targets, text).then(setSent)}
+          onClose={closeChat}
+          results={sent}
         />
         {hud ? (
           <div className="pointer-events-none absolute top-3 left-3 space-y-0.5 rounded-md bg-black/55 px-2.5 py-2 font-mono text-[11px] leading-snug text-white">
