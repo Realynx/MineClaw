@@ -119,7 +119,7 @@ public sealed class StoryColonies : IDisposable
     public void Dispose()
     {
         _timer?.Dispose();
-        foreach (var c in All) { try { c.Save(); } catch (Exception) { } }
+        foreach (var c in All) { try { c.Save(force: true); } catch (Exception) { } }
     }
 
     // ================================================================ the default pawn script

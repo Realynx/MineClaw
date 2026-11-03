@@ -82,6 +82,11 @@ public sealed partial class StoryColony : IStoryPort
     /// <summary>A new revision (every change stamps its object with it: the delta's "since").</summary>
     private long Touch() { _dirty = true; return ++_rev; }
 
+    /// <summary>A new revision for what isn't saved (a pawn's current job, alerts): the browser sees it, the db isn't written.</summary>
+    private long Bump() => ++_rev;
+
+    private DateTimeOffset _lastSave = DateTimeOffset.MinValue;
+
     /// <summary>Restores the revision counter after a load (objects keep their saved revs).</summary>
     internal void SetRev(long rev) { lock (_lock) _rev = Math.Max(_rev, rev); }
 
@@ -91,7 +96,7 @@ public sealed partial class StoryColony : IStoryPort
     {
         lock (_lock)
         {
-            Alerts.Add(new AlertState(Now, level, text, pawn, Touch()));
+            Alerts.Add(new AlertState(Now, level, text, pawn, Bump()));
             if (Alerts.Count > 100) Alerts.RemoveRange(0, Alerts.Count - 100);
         }
         _log.LogInformation("story {Colony}: {Level}: {Text}", Id, level, text);
@@ -147,7 +152,7 @@ public sealed partial class StoryColony : IStoryPort
             var job = Pick(p, live);
             if (job.Lease != null) _leases[job.Lease] = (body, Now + LeaseTtl);
             _current[body] = job;
-            p.Rev = Touch();
+            p.Rev = Bump();
             return job.Json;
         }
     }
@@ -163,21 +168,21 @@ public sealed partial class StoryColony : IStoryPort
                 case "progress":
                     cur.Progress = pct;
                     if (cur.Lease != null) _leases[cur.Lease] = (body, Now + LeaseTtl);
-                    if (p != null) p.Rev = Touch();
+                    if (p != null) p.Rev = Bump();
                     return true;
                 case "done":
                     _current.Remove(body);
                     Release(cur);
                     if (p != null) Done(p, cur, note);
                     _lastSource[body] = cur.Source;
-                    if (p != null) p.Rev = Touch();
+                    if (p != null) p.Rev = Touch(); // its experience is saved
                     return true;
                 default:
                     _current.Remove(body);
                     Release(cur);
                     if (p != null) Failed(p, cur, note);
                     _lastSource[body] = "failed";
-                    if (p != null) p.Rev = Touch();
+                    if (p != null) p.Rev = Bump();
                     return true;
             }
         }
@@ -203,8 +208,16 @@ public sealed partial class StoryColony : IStoryPort
         if (_current.Remove(p.Name, out var cur))
         {
             Release(cur);
+            _started.Remove(p.Name); // the watchdog starts it again at once (no 5 s gap)
             try { Host.Interrupt(p.Name, why); } catch (Exception ex) { _log.LogDebug(ex, "story: interrupt {Pawn}", p.Name); }
         }
+    }
+
+    /// <summary>New work (a build, a designation, a bill, a zone, a storage, priorities): idle pawns stop waiting and pick again.</summary>
+    internal void WakeIdle()
+    {
+        foreach (var p in Pawns.Values)
+            if (!p.Drafted && _current.TryGetValue(p.Name, out var cur) && cur.Source == "none" && cur.Kind is "idle" or "hold") Supersede(p, "new work");
     }
 
     /// <summary>The current job of a pawn (null = none).</summary>
@@ -240,7 +253,7 @@ public sealed partial class StoryColony : IStoryPort
                     if (_current.Remove(p.Name, out var stale)) Release(stale);
                     restart.Add(p.Name);
                 }
-            if (Now - _benchScan > TimeSpan.FromSeconds(30)) { _benchScan = Now; ScanBenches(); }
+            if (Now - _benchScan > TimeSpan.FromSeconds(30)) { _benchScan = Now; ScanBenches(); RetrySuspended(); } // missing ingredients may be stored by now
         }
         foreach (var name in restart)
         {
@@ -259,8 +272,9 @@ public sealed partial class StoryColony : IStoryPort
         if (Store == null) return;
         lock (_lock)
         {
-            if (!_dirty && !force) return;
+            if (!force && (!_dirty || Now - _lastSave < TimeSpan.FromSeconds(5))) return; // at most every 5 s
             _dirty = false;
+            _lastSave = Now;
             try { Store.Save(this); }
             catch (Exception ex) { _dirty = true; _log.LogWarning(ex, "story {Colony}: save failed", Id); }
         }

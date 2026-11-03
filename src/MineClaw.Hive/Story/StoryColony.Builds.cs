@@ -62,6 +62,7 @@ public sealed partial class StoryColony
                         }
                         Builds.Add(b);
                     }
+                    WakeIdle();
                     return (new JsonObject { ["ids"] = new JsonArray(made.Select(b => (JsonNode)b.Id!).ToArray()) }, null);
                 }
                 case "remove":
@@ -126,7 +127,8 @@ public sealed partial class StoryColony
                 b.Status = "done"; b.Rev = Touch();
                 continue;
             }
-            int lowest = todo.Min(g => g.At.Y);
+            // Support first: a level waits for the one below, blocked blocks included (it never builds over a gap).
+            int lowest = b.Ghosts.Where(g => g.Job && g.State is "todo" or "leased" or "blocked").Min(g => g.At.Y);
             var open = todo.Where(g => g.State == "todo" && g.At.Y == lowest).ToList();
             foreach (var g in StoryConstruction.Ordered(open, Solid, from))
             {
@@ -162,6 +164,7 @@ public sealed partial class StoryColony
                     f["block"] = item;
                     if (clear) f["clear"] = true;
                     if (g.Facing is { } fc) f["facing"] = fc;
+                    if (StandOutside(b, g.At) is { } stand) f["stand"] = stand.ToString(); // builders work from outside: never walled in
                     if (stored is { } st) f["fetch"] = Fetch(st.Store.Chest, st.Stack, n);
                 }, xp: 12);
                 if (stored is { } st2) job.Takes.Add((st2.Store.Chest, st2.Stack with { Count = Math.Min(n, st2.Stack.Count) }));
@@ -170,6 +173,17 @@ public sealed partial class StoryColony
             nextBuild:;
         }
         return null;
+    }
+
+    /// <summary>A spot just outside the build's footprint, on its ground level, nearest the block (null for a single block).</summary>
+    private static P3? StandOutside(BuildState b, P3 at)
+    {
+        var job = b.Ghosts.Where(g => g.Job).ToList();
+        if (job.Count < 2) return null;
+        int x1 = job.Min(g => g.At.X), x2 = job.Max(g => g.At.X), z1 = job.Min(g => g.At.Z), z2 = job.Max(g => g.At.Z), y = job.Min(g => g.At.Y);
+        int cx = Math.Clamp(at.X, x1, x2), cz = Math.Clamp(at.Z, z1, z2);
+        var spots = new[] { new P3(x1 - 1, y, cz), new P3(x2 + 1, y, cz), new P3(cx, y, z1 - 1), new P3(cx, y, z2 + 1) };
+        return spots.OrderBy(s => Math.Abs(s.X - at.X) + Math.Abs(s.Z - at.Z)).First();
     }
 
     private ActiveJob Claim(BuildState b, GhostState g, ActiveJob j)

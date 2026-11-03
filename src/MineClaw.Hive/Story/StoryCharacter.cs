@@ -117,5 +117,5 @@ public static class StoryCharacter
     public static int FleeHp(PawnState p) => p.Traits.Contains("brave") ? 4 : p.Traits.Contains("skittish") ? 12 : 8;
     public static int EatFood(PawnState p) => p.Traits.Contains("skittish") ? 8 : 6;
     /// <summary>Seconds a pawn idles when it has nothing to do.</summary>
-    public static int IdleSeconds(PawnState p) => p.Traits.Contains("industrious") ? 3 : 6;
+    public static int IdleSeconds(PawnState p) => p.Traits.Contains("industrious") ? 2 : 4;
 }

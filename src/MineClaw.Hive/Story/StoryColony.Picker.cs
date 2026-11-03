@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using System.Text.Json.Nodes;
 
 namespace MineClaw.Hive.Story;
@@ -11,6 +12,7 @@ public sealed partial class StoryColony
 {
     private readonly Dictionary<string, DateTimeOffset> _skip = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _ghostFails = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _leaseFails = new(StringComparer.Ordinal);
     private readonly HashSet<string> _noStorageAlerted = new(StringComparer.Ordinal);
 
     /// <summary>The in-game hour now (12 when there is no world view yet).</summary>
@@ -61,6 +63,7 @@ public sealed partial class StoryColony
                 return Job("need", "eat", "eating", null, null, "need", null, "eating", xp: 0);
         }
         if (Work(p, live) is { } work) return work;
+        if (Deliver(p, live, force: true) is { } leftovers) return leftovers; // nothing else to do: store what it still carries
         if (!_idleAlert.TryGetValue(p.Name, out var last) || Now - last > TimeSpan.FromMinutes(5))
         {
             _idleAlert[p.Name] = Now;
@@ -135,10 +138,10 @@ public sealed partial class StoryColony
         return list;
     }
 
-    private ActiveJob? Deliver(PawnState p, PawnLive live)
+    private ActiveJob? Deliver(PawnState p, PawnLive live, bool force = false)
     {
         bool after = _lastSource.TryGetValue(p.Name, out var src) && Gathering.Contains(src);
-        if (!after && live.FreeSlots > 4) return null;
+        if (!after && !force && live.FreeSlots > 4) return null;
         var items = Deliverables(live);
         if (items.Count == 0) { _lastSource.Remove(p.Name); return null; }
         var groups = new Dictionary<P3, List<Stack>>();
@@ -402,9 +405,15 @@ public sealed partial class StoryColony
     {
         var why = string.IsNullOrWhiteSpace(note) ? "failed" : note.Trim();
         if (why.Length > 120) why = why[..119] + "…";
+        _log.LogInformation("story {Colony}: {Pawn} {Kind} {At} failed: {Why}", Id, p.Name, j.Kind, j.At?.ToString() ?? "", why);
         foreach (var (chest, _) in j.Puts)
             if (StorageAt(chest) is { } st && why.Contains("full", StringComparison.OrdinalIgnoreCase)) { st.FreeSlots = 0; st.Rev = Touch(); }
-        if (j.Lease != null) _skip[j.Lease] = Now + TimeSpan.FromSeconds(30); // not this target again right away
+        if (j.Lease != null)
+        {
+            // Not this target again right away; one that keeps failing (an unreachable drop) rests for 10 minutes.
+            int n = _leaseFails[j.Lease] = _leaseFails.GetValueOrDefault(j.Lease) + 1;
+            _skip[j.Lease] = Now + (n >= 3 ? TimeSpan.FromMinutes(10) : TimeSpan.FromSeconds(30));
+        }
         switch (j.Source)
         {
             case "designation":

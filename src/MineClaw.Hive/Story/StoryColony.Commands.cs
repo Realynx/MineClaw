@@ -29,6 +29,7 @@ public sealed partial class StoryColony
                 foreach (var (t, v) in work) p.Priorities[t] = v;
                 p.Rev = Touch();
             }
+        lock (_lock) WakeIdle();
         return null;
     }
 
@@ -172,6 +173,7 @@ public sealed partial class StoryColony
             {
                 var z = new ZoneState { Id = NextId("z"), Kind = kind!, Area = a, Rev = Touch() };
                 Zones.Add(z);
+                WakeIdle();
                 return (new JsonObject { ["id"] = z.Id }, null);
             }
             var gone = Zones.Where(z => (kind == null || z.Kind == kind) && z.Area.Overlaps(a)).ToList();
@@ -270,6 +272,7 @@ public sealed partial class StoryColony
             }
             if (made.Count > 4096) return (null, $"{made.Count} targets: designate a smaller area (max 4096)");
             foreach (var d in made) { d.Rev = Touch(); Designations.Add(d); }
+            if (made.Count > 0) WakeIdle();
             return (new JsonObject { ["count"] = made.Count, ["targets"] = targets }, null);
         }
     }

@@ -304,5 +304,6 @@ public sealed class SupervisorServer : IAsyncDisposable
         if (_loop != null) { try { await _loop.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch (Exception) { } }
         Gate.Dispose();
         (Admin as IDisposable)?.Dispose();
+        Story?.Colonies.Dispose(); // the colony tick stops; each colony saves
     }
 }

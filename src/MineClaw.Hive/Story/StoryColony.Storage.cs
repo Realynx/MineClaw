@@ -120,6 +120,7 @@ public sealed partial class StoryColony
                 case "set":
                     if (chests is not { Count: > 0 }) return (null, "chests required");
                     foreach (var c in chests) Set(c, filter, priority, label);
+                    WakeIdle();
                     return (Done(chests), null);
                 case "remove":
                     if (chests is not { Count: > 0 }) return (null, "chests required");

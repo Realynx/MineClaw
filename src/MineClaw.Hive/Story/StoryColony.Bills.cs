@@ -62,6 +62,7 @@ public sealed partial class StoryColony
                     bill.Id = NextId("bill");
                     bench.Bills.Add(bill);
                     bench.Rev = Touch();
+                    WakeIdle();
                     return (new JsonObject { ["id"] = bill.Id }, null);
                 }
                 case "update":
@@ -138,6 +139,7 @@ public sealed partial class StoryColony
     }
 
     private readonly Dictionary<string, int> _billFails = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _billAlerted = new(StringComparer.Ordinal);
 
     /// <summary>Is the bill still wanted (count not reached, until-amount not in stock, forever)?</summary>
     internal bool Wanted(BillState b, StoryRecipe r) => b.Mode switch
@@ -196,7 +198,7 @@ public sealed partial class StoryColony
                 {
                     bill.SuspendedReason = missing;
                     bench.Rev = Touch();
-                    Alert("warn", $"Bill {r.Label} suspended: {missing}");
+                    if (_billAlerted.GetValueOrDefault(bill.Id) != missing) { _billAlerted[bill.Id] = missing; Alert("warn", $"Bill {r.Label} suspended: {missing}"); }
                     continue;
                 }
                 var fetch = new JsonArray();
@@ -232,7 +234,7 @@ public sealed partial class StoryColony
                     {
                         bill.SuspendedReason = "no fuel (coal, planks or logs) in storage";
                         bench.Rev = Touch();
-                        Alert("warn", $"Bill {r.Label} suspended: no fuel");
+                        if (_billAlerted.GetValueOrDefault(bill.Id) != "fuel") { _billAlerted[bill.Id] = "fuel"; Alert("warn", $"Bill {r.Label} suspended: no fuel"); }
                         continue;
                     }
                     job.Json["fuel"] = fuel;

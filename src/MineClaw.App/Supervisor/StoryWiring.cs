@@ -26,7 +26,7 @@ internal static class StoryWiring
             try { log.LogInformation("story: default script story_pawn {State}", StoryColonies.Install(scripts.Library)); }
             catch (Exception ex) { log.LogWarning(ex, "story: installing story_pawn failed"); }
         }
-        var host = new StoryHost(hierarchy, () => bot.Bodies, () => client.World, client.Options.Profile.Data, () => scripts, log);
+        var host = new StoryHost(hierarchy, () => bot.Bodies, () => client.World, client.Options.Profile.Data, () => scripts, log, rt.Observations);
         var colonies = new StoryColonies(host, new StoryStore(rt.Memory.Db), log: log);
         try
         {

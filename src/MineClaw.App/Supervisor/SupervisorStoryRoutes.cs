@@ -132,6 +132,7 @@ public sealed class SupervisorStoryRoutes(SupervisorOptions o, StoryColonies col
                 case ["directives", var did]:
                 {
                     if (!get) return NotAllowed("GET, HEAD");
+                    directives?.Correlate();
                     if (directives?.Get(did) is not { } d) return Reply(404, new JsonObject { ["error"] = "no such directive" });
                     return Reply(200, new JsonObject
                     {

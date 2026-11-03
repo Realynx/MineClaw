@@ -21,10 +21,12 @@ public sealed class StoryHost : IStoryHost
     private readonly Func<BodyRegistry?> _bodies;
     private readonly Func<MineClaw.Bot.GameTools.ScriptBridge?> _scripts;
     private readonly ILogger _log;
+    private readonly MineClaw.Agent.Rag.ObservationStore? _observations;
 
     public StoryHost(HiveHierarchy? hierarchy, Func<BodyRegistry?> bodies, Func<WorldState?> world, IGameData data,
-        Func<MineClaw.Bot.GameTools.ScriptBridge?> scripts, ILogger? log = null)
+        Func<MineClaw.Bot.GameTools.ScriptBridge?> scripts, ILogger? log = null, MineClaw.Agent.Rag.ObservationStore? observations = null)
     {
+        _observations = observations;
         _hierarchy = hierarchy;
         _bodies = bodies;
         _scripts = scripts;
@@ -74,6 +76,20 @@ public sealed class StoryHost : IStoryHost
         }, b);
         if (s == null) return err ?? "can't start";
         _log.LogDebug("story {Colony}: {Pawn} runs story_pawn v{V}", colony, account, v.V);
+        return null;
+    }
+
+    /// <summary>The bot's memory of a chest (the world index's last seen contents, either half of a double chest), or null.</summary>
+    public IReadOnlyList<Stack>? KnownChest(P3 at)
+    {
+        if (_observations is not { } obs) return null;
+        try
+        {
+            foreach (var p in new[] { at, at.Add(-1, 0, 0), at.Add(0, 0, -1), at.Add(1, 0, 0), at.Add(0, 0, 1) })
+                if (obs.Get("chest", MineClaw.Agent.Rag.ObservationStore.KeyFor(p.X, p.Y, p.Z)) is { } row)
+                    return obs.Contents(row.Id).Select(c => new Stack(c.ItemId, c.Damage, c.Count)).ToList();
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "story: chest memory at {At}", at); }
         return null;
     }
 
