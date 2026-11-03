@@ -123,3 +123,20 @@ a client watches.
 - **Permissions.** Needs the `admin` role, or a new `story` role, for writes. Viewers can watch.
 - **Performance.** It must stay smooth with software WebGL at 40 fps or more. It uses the shared renderer, and the
   overlays are cheap.
+
+## Construction (added 2026-11-03)
+
+Building is queued, colony-sim style. Pawns with Build enabled fill queued builds in queue order, bottom-up.
+- **Architect palette:** wall (height 1–12), floor, door, window, stairs, fence, roof (flat, slab, gable or none, with an
+  optional overhang), single block, and deconstruct. Each takes a material.
+- **Placement:** drag on the map to place, and Q/E rotates. Blueprints draw as ghost blocks, coloured todo, leased, done
+  or blocked.
+- **Build queue panel:** progress, the reason a build is blocked (such as missing materials), reorder, pause and cancel.
+- **Multi-floor levels:** PgUp/PgDn change the working level. Everything above it, roofs included, is x-rayed in
+  top-down, and the level below is dimmed.
+- **Angled view:** a button (V) switches to an angled 3D view with the same tools and queue, for precise 3D building.
+  Placement snaps to block faces. Top-down stays the default.
+- **Bot side:** each build item expands into per-block placement tasks, leased across builder pawns. Pawns fetch
+  materials from stockpiles. A material shortage marks the build blocked and raises an alert. Routes:
+  `POST /api/story/colonies/{id}/builds` (add, remove, pause, resume, reorder), with `builds` and `ghosts` in the colony
+  state.
