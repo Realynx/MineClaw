@@ -298,8 +298,13 @@ public sealed partial class Release1122Connection : IGameConnection
             {
                 var chunk = ChunkData.Decode(body, hasSky: _dimension == 0);
                 foreach (var be in chunk.BlockEntities)
+                {
                     if (Codec1122.SignLines(be, Lang) is { } lines && be.GetInt("x") is { } sx && be.GetInt("y") is { } sy && be.GetInt("z") is { } sz)
                         _extra.Enqueue(new UpdateSignPacket { X = sx, Y = (short)sy, Z = sz, Lines = lines });
+                    // The viewer's looks of every other block entity (beds, banners, skulls, pots, spawners, chests…).
+                    else if (BlockEntities1122.Info(be) is { } info && BlockEntities1122.PositionOf(be) is { } bp)
+                        _extra.Enqueue(new BlockEntityMessage { X = bp.X, Y = bp.Y, Z = bp.Z, Info = info });
+                }
                 return chunk;
             }
             case Ids1122.UnloadChunk:

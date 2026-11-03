@@ -61,6 +61,7 @@ public sealed class WorldState : IBlockAccess, IDisposable
         _store = chunkStore;
         Light = new LightEngine(this);
         Inventory = new InventoryManager(model: inventory);
+        ColumnUnloaded += (cx, cz) => BlockEntities.DropColumn(cx, cz);
     }
 
     /// <summary>Blocks per column of this world (128 b1.8.1, 256 1.12.2).</summary>
@@ -76,6 +77,8 @@ public sealed class WorldState : IBlockAccess, IDisposable
     public LightEngine Light { get; }
 
     public EntityTracker Entities { get; } = new();
+    /// <summary>The block entities this connection described (the viewer's signs, beds, banners, skulls, pots, spawners…).</summary>
+    public BlockEntityStore BlockEntities { get; } = new();
     public PlayerState Player { get; } = new();
     public InventoryManager Inventory { get; }
     /// <summary>Cells the bot itself just dug/placed (attribution: the bot's own edits are never a player's).</summary>

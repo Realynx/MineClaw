@@ -52,17 +52,25 @@ public sealed class EntityTracker
     public Entity SpawnItem(int id, ItemStack item, Vec3d pos, Vec3d velocity = default) =>
         Spawn(new Entity(id, EntityKind.Item, pos, velocity, Item: item));
 
-    /// <summary>0x17 Add Object/Vehicle.</summary>
-    public Entity SpawnObject(int id, int type, Vec3d pos, Vec3d velocity = default) =>
-        Spawn(new Entity(id, EntityKind.Object, pos, velocity, TypeId: type) { TypeName = Rules.ObjectName(type) });
+    /// <summary>0x17 Add Object/Vehicle (<paramref name="data"/>: its data word, see <see cref="Entity.Data"/>).</summary>
+    public Entity SpawnObject(int id, int type, Vec3d pos, Vec3d velocity = default, int data = 0) =>
+        Spawn(new Entity(id, EntityKind.Object, pos, velocity, TypeId: type) { TypeName = Rules.ObjectName(type), Data = data });
 
     /// <summary>0x1A Experience Orb.</summary>
     public Entity SpawnXpOrb(int id, Vec3d pos, int count) =>
         Spawn(new Entity(id, EntityKind.XpOrb, pos, Count: count));
 
-    /// <summary>0x19 Painting.</summary>
-    public Entity SpawnPainting(int id, string title, Vec3d pos) =>
-        Spawn(new Entity(id, EntityKind.Painting, pos, Name: title));
+    /// <summary>0x19 Painting (<paramref name="direction"/>: b1.8.1's 0 −Z, 1 −X, 2 +Z, 3 +X).</summary>
+    public Entity SpawnPainting(int id, string title, Vec3d pos, int direction = 0) =>
+        Spawn(new Entity(id, EntityKind.Painting, pos, Name: title) { Data = direction });
+
+    // ---- one-shot events (the viewer's swings, hurts, deaths, crits, lightning) ----
+
+    /// <summary>The last few seconds of <see cref="EntityEvent"/>s (display only).</summary>
+    public EntityEventRing Events { get; } = new();
+
+    /// <summary>Records an entity's one-shot event (an animation or status the viewer draws; <paramref name="pos"/> for lightning).</summary>
+    public void NoteEvent(int id, string kind, Vec3d? pos = null) => Events.Add(new EntityEvent(id, kind, DateTime.UtcNow, pos));
 
     // ---- updates ----
 
@@ -96,9 +104,15 @@ public sealed class EntityTracker
     /// <summary>0x20/0x21 look.</summary>
     public bool Look(int id, float yaw, float pitch) => Update(id, e => e with { Yaw = yaw, Pitch = pitch });
 
-    /// <summary>0x22 teleport (absolute position).</summary>
+    /// <summary>0x22 teleport (absolute position). A jump of <see cref="EntityEventRing.TeleportJump"/>+ blocks is noted as a
+    /// <c>teleport</c> event (the viewer's puff; display only).</summary>
     public bool Teleport(int id, Vec3d pos, float yaw, float pitch) =>
-        Update(id, e => Landed(e, pos) with { Yaw = yaw, Pitch = pitch });
+        Update(id, e =>
+        {
+            if (e.Kind is EntityKind.Player or EntityKind.Mob && e.Position.DistanceSquaredTo(pos) >= EntityEventRing.TeleportJump * EntityEventRing.TeleportJump)
+                NoteEvent(id, "teleport", e.Position);
+            return Landed(e, pos) with { Yaw = yaw, Pitch = pitch };
+        });
 
     /// <summary>0x1C velocity (blocks/tick).</summary>
     public bool SetVelocity(int id, Vec3d velocity) => Update(id, e => e with { Velocity = velocity });

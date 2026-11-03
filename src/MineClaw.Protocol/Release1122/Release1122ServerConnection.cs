@@ -329,6 +329,13 @@ public sealed class Release1122ServerConnection : IGameConnection
                 yield return w;
                 break;
             }
+            case BlockEntityMessage be when be.Info is { } info:
+            {
+                var w = WireWriter.ForPacket(Ids1122.UpdateBlockEntity).WritePosition(be.X, be.Y, be.Z).WriteUByte((byte)BlockEntities1122.ActionOf(info.Kind));
+                Nbt.WriteRoot(w, BlockEntities1122.Tag(be.X, be.Y, be.Z, info));
+                yield return w;
+                break;
+            }
             case BlockBreakAnimationMessage bb:
                 yield return WireWriter.ForPacket(Ids1122.BlockBreakAnim).WriteVarInt(bb.EntityId).WritePosition(bb.X, bb.Y, bb.Z).WriteSByte((sbyte)bb.Stage);
                 break;
@@ -388,7 +395,7 @@ public sealed class Release1122ServerConnection : IGameConnection
                 break;
             case AnimationPacket an:
             {
-                int anim = an.Animation switch { 1 => 0, 2 => 1, 3 => 2, _ => -1 };
+                int anim = an.Animation switch { 1 => an.Hand == 1 ? 3 : 0, 2 => 1, 3 => 2, 6 => 4, 7 => 5, _ => -1 };
                 if (anim >= 0) yield return WireWriter.ForPacket(Ids1122.EntityAnimation).WriteVarInt(an.EntityId).WriteUByte((byte)anim);
                 break;
             }
@@ -438,6 +445,12 @@ public sealed class Release1122ServerConnection : IGameConnection
                 yield return WireWriter.ForPacket(EntityIds1122.SpawnXpOrb).WriteVarInt(orb.EntityId).WriteDouble(x).WriteDouble(y).WriteDouble(z).WriteShort(orb.Count);
                 break;
             }
+            case EntityPaintingPacket pt:
+                _kinds[pt.EntityId] = (EntityWireKind.Painting, 0);
+                // b1.8.1's direction 0 −Z, 1 −X, 2 +Z, 3 +X → EnumFacing's horizontal index 0 south, 1 west, 2 north, 3 east.
+                yield return WireWriter.ForPacket(EntityIds1122.SpawnPainting).WriteVarInt(pt.EntityId).WriteUuid(Guid.NewGuid()).WriteString(pt.Title)
+                    .WritePosition(pt.X, pt.Y, pt.Z).WriteUByte((byte)(pt.Direction switch { 2 => 0, 1 => 1, 0 => 2, _ => 3 }));
+                break;
             case ThunderboltPacket tb:
                 yield return WireWriter.ForPacket(EntityIds1122.SpawnGlobal).WriteVarInt(tb.EntityId).WriteUByte(EntityIds1122.GlobalLightning)
                     .WriteDouble(FixedPoint.FromAbsolute(tb.X)).WriteDouble(FixedPoint.FromAbsolute(tb.Y)).WriteDouble(FixedPoint.FromAbsolute(tb.Z));

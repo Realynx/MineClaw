@@ -19,13 +19,13 @@ namespace MineClaw.App.Supervisor;
 /// </summary>
 public sealed class BlockDeltaLog
 {
-    public const string Loaded = "loaded", Unloaded = "unloaded";
+    public const string Loaded = "loaded", Unloaded = "unloaded", BlockEntity = "block_entity";
 
     private struct Entry
     {
         public long Rev, AtMs;
         public int Dim, X, Y, Z, Id, Meta;
-        public byte Kind; // 0 block, 1 loaded, 2 unloaded
+        public byte Kind; // 0 block, 1 loaded, 2 unloaded, 3 block entity
     }
 
     /// <summary>One page for a client at <c>since</c>. <see cref="Rev"/>: pass it back as the next <c>since</c>.</summary>
@@ -77,6 +77,7 @@ public sealed class BlockDeltaLog
         world.ColumnLoaded += (cx, cz) => Process?.OnColumnLoaded(world, cx, cz);
         world.ColumnUnloaded += (cx, cz) => Process?.OnColumnUnloaded(world, cx, cz);
         world.RegionUpdated += (min, size) => Process?.OnRegion(world, min, size);
+        world.BlockEntities.Changed += pos => Process?.OnBlockEntity(world, pos);
         Track(world);
     }
 
@@ -112,6 +113,7 @@ public sealed class BlockDeltaLog
         world.ColumnLoaded += (cx, cz) => OnColumnLoaded(world, cx, cz);
         world.ColumnUnloaded += (cx, cz) => OnColumnUnloaded(world, cx, cz);
         world.RegionUpdated += (min, size) => OnRegion(world, min, size);
+        world.BlockEntities.Changed += pos => OnBlockEntity(world, pos);
         lock (_lock) _worlds.Add(new WeakReference<WorldState>(world));
     }
 
@@ -152,6 +154,14 @@ public sealed class BlockDeltaLog
         Column(dim, cx, cz, 2);
     }
 
+    /// <summary>A sign, bed, banner, skull, pot or spawner changed (or a chunk brought its block entities): one <c>block_entity</c>
+    /// column entry, so the viewer refetches that column's <c>/api/world/blockentities</c> (a burst within 200 ms is one).</summary>
+    public void OnBlockEntity(WorldState world, BlockPos pos)
+    {
+        if (!Active(NowMs)) return;
+        Column(world.Dimension, pos.X >> 4, pos.Z >> 4, 3);
+    }
+
     /// <summary>Chunk data (a load, or a b1.8.1 partial update of a loaded column): one <c>loaded</c> entry per column, no block entries.</summary>
     public void OnRegion(WorldState world, BlockPos min, BlockPos size)
     {
@@ -166,7 +176,7 @@ public sealed class BlockDeltaLog
     {
         long now = NowMs;
         if (!Active(now)) return;
-        long window = (long)DedupeWindow.TotalMilliseconds;
+        long window = kind == 3 ? 200 : (long)DedupeWindow.TotalMilliseconds; // a later sign edit is news: only a burst folds
         lock (_lock)
         {
             var key = (dim, cx, cz, kind);
@@ -174,7 +184,7 @@ public sealed class BlockDeltaLog
             if (_recentColumns.Count > 8192)
                 foreach (var k in _recentColumns.Where(kv => now - kv.Value > window).Select(kv => kv.Key).ToList()) _recentColumns.Remove(k);
             _recentColumns[key] = now;
-            _recentColumns.Remove((dim, cx, cz, kind == 1 ? (byte)2 : (byte)1)); // a reload right after an unload is news again
+            if (kind is 1 or 2) _recentColumns.Remove((dim, cx, cz, kind == 1 ? (byte)2 : (byte)1)); // a reload right after an unload is news again
             if (_changedAt.Count > 16384) _changedAt.Clear();
             _changedAt[(dim, cx, cz)] = now;
             Push(new Entry { AtMs = now, Dim = dim, X = cx, Z = cz, Kind = kind });
@@ -251,7 +261,7 @@ public sealed class BlockDeltaLog
                     if (!blocks.TryGetValue(key, out var list)) blocks[key] = list = new List<int[]>();
                     list.Add([e.X, e.Y, e.Z, e.Id, e.Meta]);
                 }
-                else columns.Add(new ColumnEvent(e.Rev, e.AtMs, e.Dim, e.X, e.Z, e.Kind == 1 ? Loaded : Unloaded));
+                else columns.Add(new ColumnEvent(e.Rev, e.AtMs, e.Dim, e.X, e.Z, e.Kind switch { 1 => Loaded, 2 => Unloaded, _ => BlockEntity }));
                 last = e.Rev;
                 n++;
             }

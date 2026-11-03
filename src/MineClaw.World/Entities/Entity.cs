@@ -49,6 +49,10 @@ public sealed record Entity(
     public float HeadYaw { get; init; } = float.NaN;
     /// <summary>Potion effects by id (1.12.2 Entity Effect); null = none seen.</summary>
     public IReadOnlyDictionary<int, StatusEffect>? Effects { get; init; }
+    /// <summary>The spawn's data word: an object's (b1.8.1 0x17 thrower id; 1.12.2 Spawn Object data: a falling block's state
+    /// id | meta &lt;&lt; 12, an item frame's facing, a minecart's type, an arrow's shooter + 1), a painting's direction (b1.8.1
+    /// 0 −Z, 1 −X, 2 +Z, 3 +X). 0 = none. The viewer's looks only.</summary>
+    public int Data { get; init; }
     /// <summary>Synced attribute values by key ("generic.movementSpeed"…; 1.12.2 Entity Properties); null = none seen.</summary>
     public IReadOnlyDictionary<string, double>? Attributes { get; init; }
 
