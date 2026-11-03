@@ -9,7 +9,7 @@
  */
 import type { QueryClient } from '@tanstack/react-query';
 import { toNumber, type WorldEntities } from '@mineclaw/contracts';
-import type { AtlasMap, AtlasResource, EntityDelta, WorldSource } from '@mineclaw/world-viewer';
+import type { EntityDelta, WorldSource } from '@mineclaw/world-viewer';
 import { api, apiBlob } from '@/lib/api/client';
 import { liveKeys } from '@/lib/live/dispatch';
 import { subscribeBlocks } from './blocks';
@@ -53,19 +53,6 @@ export function mergeMcwc(parts: ArrayBuffer[]): ArrayBuffer {
   return out.buffer;
 }
 
-async function loadImage(blob: Blob): Promise<ImageBitmap | HTMLImageElement> {
-  if (typeof createImageBitmap === 'function') return createImageBitmap(blob);
-  const url = URL.createObjectURL(blob);
-  try {
-    const img = new Image();
-    img.src = url;
-    await img.decode();
-    return img;
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
-
 function toDelta(e: WorldEntities, full: boolean): EntityDelta {
   return { ...e, rev: e.rev ?? 0, full, removed: full ? [] : (e.removed ?? []) } as EntityDelta;
 }
@@ -73,7 +60,6 @@ function toDelta(e: WorldEntities, full: boolean): EntityDelta {
 const finite = (n: number): number => (Number.isFinite(n) ? n : 0);
 
 export function createWorldSource(qc?: QueryClient): WorldSource {
-  let atlasPromise: Promise<AtlasResource | null> | null = null;
   return {
     index: async (dim, x, z, r) => {
       const i = await api('world.index', { query: { dim, x: Math.round(x), z: Math.round(z), r: Math.max(16, Math.min(256, Math.round(r))), light: true } });
@@ -107,17 +93,7 @@ export function createWorldSource(qc?: QueryClient): WorldSource {
 
     overlays: (dim) => api('world.overlays', { query: { dim } }),
 
-    atlas() {
-      atlasPromise ??= (async () => {
-        try {
-          const [map, png] = await Promise.all([api('world.atlasJson'), apiBlob('world.atlasPng')]);
-          return { map: map as unknown as AtlasMap, image: await loadImage(png.blob) };
-        } catch {
-          return null; // the viewer falls back to its flat palette
-        }
-      })();
-      return atlasPromise;
-    },
+    // No atlas(): the viewer ships the Minecraft textures and builds its atlas itself (bundled with the package).
 
     blocks: (since) => api('world.blocks', { query: { since: since ?? 0 } }),
 
