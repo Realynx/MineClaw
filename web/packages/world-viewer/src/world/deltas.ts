@@ -15,6 +15,8 @@ export interface DeltaEvents {
   /** Blocks that changed (for the highlight). */
   onChanged?(dim: Dim, blocks: Array<[number, number, number]>): void;
   onError?(e: unknown): void;
+  /** A column's block entities changed: refetch them. */
+  onBlockEntities?(dim: Dim, cx: number, cz: number): void;
 }
 
 type Change5 = [number, number, number, number, number];
@@ -23,7 +25,7 @@ export class BlockDeltaFeed {
   /** The revision to ask from next (0 = not started: the first reply only sets it). */
   rev = 0;
   private pending = new Map<Dim, Change5[]>();
-  private stale: Array<{ dim: Dim; cx: number; cz: number; kind: 'loaded' | 'unloaded' }> = [];
+  private stale: Array<{ dim: Dim; cx: number; cz: number; kind: 'loaded' | 'unloaded' | 'block_entity' }> = [];
   private fallbackDue = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private unsubscribe: (() => void) | null = null;
@@ -133,7 +135,9 @@ export class BlockDeltaFeed {
       }
       for (const c of cols) {
         const have = this.cache.get(c.dim, c.cx, c.cz);
-        if (c.kind === 'loaded') {
+        if (c.kind === 'block_entity') {
+          this.ev.onBlockEntities?.(c.dim, c.cx, c.cz);
+        } else if (c.kind === 'loaded') {
           this.cache.invalidate(c.dim, [[c.cx, c.cz]]);
           reindex = true;
         } else if (have && have.live) {

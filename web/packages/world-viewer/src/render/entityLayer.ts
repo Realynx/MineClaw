@@ -1,3 +1,4 @@
+import type { EntityEvent } from '../types';
 // Bots, players, mobs, drops and objects at the EntityStore's interpolated positions, shared by every view of the runtime.
 //
 // Once per frame (`update`) every entity is animated (limb swing from how far it moved, body yaw toward the walk direction,
@@ -52,7 +53,7 @@ export function entityLook(e: EntityView, version: GameVersion = '1.12.2'): { co
   if (e.kind === 'player') return { colour: 0x4a7ad8, w: 0.6, h: 1.8 };
   if (e.kind === 'item') return { colour: 0xd8b040, w: 0.25, h: 0.25 };
   if (e.kind === 'mob') {
-    const look = mobLook(version, e.type, e.name, e.dto.variant ?? 0, e.id);
+    const look = mobLook(version, e.type, e.name, numVariant(e.dto.variant), e.id);
     const def = MODEL_BY_ID[look.model];
     const s = look.scale ?? 1;
     return { colour: look.colour, w: (def?.width ?? 0.6) * s, h: (def?.height ?? 1.8) * s };
@@ -155,6 +156,8 @@ export class EntityLayer {
   /** Optional per-entity light: [sky 0..15, block 0..15] at a world position (null = open sky). The runtime may provide it
    * once light is queryable on the main thread; until then entities take full sky light minus the time of day. */
   lightAt: ((dim: number, x: number, y: number, z: number) => readonly [number, number] | null) | null = null;
+  /** Entity events from the delta stream (swing, swing_off, hurt, death, crit, magic_crit, eat, teleport, lightning). */
+  onEvents: ((events: EntityEvent[], nowMs: number) => void) | null = null;
   /** Blob shadows under entities. */
   shadows = true;
   private readonly labels = new LabelFactory();
@@ -413,7 +416,7 @@ export class EntityLayer {
   }
 
   private refreshEntity(d: Drawn, e: EntityView, now: number): void {
-    const variant = e.dto.variant ?? 0;
+    const variant = numVariant(e.dto.variant);
     const sig = `${this.version}|${!!this.bundle}|${e.kind}|${e.type}|${variant}|${e.item}|${e.dto.damage ?? 0}|${e.name ?? ''}`;
     const beta = this.version === 'b1.8.1';
     if (d.sig !== sig) {
@@ -530,7 +533,7 @@ export class EntityLayer {
     c.headYaw = Math.max(-75, Math.min(75, wrapDeg(lookYaw - m.body)));
     c.pitch = Math.max(-90, Math.min(90, d.botView?.dto.pitch ?? 0));
     c.attack = attackProgress(m, now);
-    c.variant = d.ent?.dto.variant ?? 0;
+    c.variant = numVariant(d.ent?.dto.variant);
     c.flags = flags;
     c.sneaking = sneaking;
     c.riding = (flags & 4) !== 0;
@@ -989,4 +992,9 @@ function tint(i: InstanceData, rgb: number | undefined, k: number): void {
 
 function scale(m: Affine, k: number): void {
   for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) m[r * 4 + c] *= k;
+}
+
+/** The numeric variant the models read today (string variants from the newer wire decode to 0 until parsed per kind). */
+export function numVariant(v: number | string | null | undefined): number {
+  return typeof v === 'number' ? v : 0;
 }

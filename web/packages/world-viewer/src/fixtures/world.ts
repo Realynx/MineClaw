@@ -3,7 +3,7 @@
 // a tunnel through a hill, a torch-lit room, bots walking about, mobs, a drop, overlays and a build plan that progresses (so
 // column hashes change and the index-then-fetch path is exercised). No Mojang assets.
 
-import type { AtlasResource, BlockChange, BlockDeltas, BotDto, EntityDelta, EntityDto, Overlays, PlanBlock, WorldIndex, WorldSource } from '../types';
+import type { AtlasResource, BlockChange, BlockDeltas, BlockEntities, BlockEntityDto, BotDto, EntityDelta, EntityDto, Overlays, PlanBlock, WorldIndex, WorldSource } from '../types';
 import { cellIndex } from '../wire/chunk';
 import { combineHash } from '../wire/hash';
 import { encodeColumn, encodeMcwc, lightSections, type EncodeEntry } from '../wire/encode';
@@ -226,6 +226,8 @@ export class FixtureWorld {
         }
       for (const [x, y, z, id, m] of galleryBlocks(modern)) local(x, y, z, id, m);
     }
+    // The block-entity plaza (signs, beds, banners, skulls, flower pots, a spawner).
+    for (const b of plaza(this.version)) local(b.x, b.y, b.z, b.id, b.meta);
     // The build plan's placed blocks.
     for (let i = 0; i < this.placed; i++) {
       const b = PLAN[i];
@@ -268,6 +270,51 @@ export class FixtureWorld {
 }
 
 /** A WorldSource backed by `FixtureWorld`, with moving bots and mobs. */
+export interface PlazaBlock {
+  x: number;
+  y: number;
+  z: number;
+  id: number;
+  meta: number;
+  be?: BlockEntityDto;
+}
+
+/** A row of block-entity blocks south-east of spawn with their block entities (version-aware: b1.8.1 has signs, beds and
+ * spawners only). */
+export function plaza(version: GameVersion): PlazaBlock[] {
+  const x0 = 12, z0 = 30;
+  const y = surface(x0, z0) + 1;
+  const out: PlazaBlock[] = [];
+  // A platform so everything stands level.
+  for (let x = x0 - 1; x <= x0 + 16; x++) for (let z = z0 - 2; z <= z0 + 3; z++) out.push({ x, y: y - 1, z, id: 1, meta: 0 });
+  for (let x = x0 - 1; x <= x0 + 16; x++) for (let z = z0 - 2; z <= z0 + 3; z++) for (let h = 0; h < 4; h++) out.push({ x, y: y + h, z, id: 0, meta: 0 });
+  out.push({ x: x0, y, z: z0, id: 63, meta: 8, be: { x: x0, y, z: z0, kind: 'sign', lines: ['MineClaw', 'world viewer', '- signs -', 'line four'] } });
+  out.push({ x: x0 + 1, y, z: z0 - 1, id: 1, meta: 0 });
+  out.push({ x: x0 + 1, y, z: z0, id: 68, meta: 3, be: { x: x0 + 1, y, z: z0, kind: 'sign', lines: ['Wall sign', '', 'facing south', ''] } });
+  // A bed: foot at z0, head at z0+1 (facing south), and a second, blue one in 1.12.2.
+  out.push({ x: x0 + 3, y, z: z0, id: 26, meta: 0, be: { x: x0 + 3, y, z: z0, kind: 'bed', color: 14 } });
+  out.push({ x: x0 + 3, y, z: z0 + 1, id: 26, meta: 8, be: { x: x0 + 3, y, z: z0 + 1, kind: 'bed', color: 14 } });
+  out.push({ x: x0 + 4, y, z: z0 + 1, id: 26, meta: 0, be: { x: x0 + 4, y, z: z0 + 1, kind: 'bed', color: 'blue' } });
+  out.push({ x: x0 + 4, y, z: z0 + 2, id: 26, meta: 8, be: { x: x0 + 4, y, z: z0 + 2, kind: 'bed', color: 'blue' } });
+  out.push({ x: x0 + 6, y, z: z0, id: 52, meta: 0, be: { x: x0 + 6, y, z: z0, kind: 'mob_spawner', mob: 'Zombie' } });
+  if (version === '1.12.2') {
+    out.push({ x: x0 + 8, y, z: z0, id: 176, meta: 0, be: { x: x0 + 8, y, z: z0, kind: 'banner', base: 11, patterns: [['bs', 0], ['cr', 14], ['bo', 15]] } });
+    out.push({ x: x0 + 9, y, z: z0, id: 176, meta: 4, be: { x: x0 + 9, y, z: z0, kind: 'banner', base: 'white', patterns: [['mr', 'red'], ['ts', 'black']] } });
+    out.push({ x: x0 + 11, y, z: z0, id: 144, meta: 1, be: { x: x0 + 11, y, z: z0, kind: 'skull', type: 4, rotation: 0 } });
+    out.push({ x: x0 + 12, y, z: z0, id: 144, meta: 1, be: { x: x0 + 12, y, z: z0, kind: 'skull', type: 'wither', rotation: 4 } });
+    out.push({ x: x0 + 13, y, z: z0, id: 144, meta: 1, be: { x: x0 + 13, y, z: z0, kind: 'skull', type: 'player', rotation: 8 } });
+    out.push({ x: x0 + 15, y, z: z0, id: 140, meta: 0, be: { x: x0 + 15, y, z: z0, kind: 'flower_pot', item: [38, 0] } });
+    out.push({ x: x0 + 16, y, z: z0, id: 140, meta: 0, be: { x: x0 + 16, y, z: z0, kind: 'flower_pot', item: 'minecraft:cactus' } });
+  }
+  return out;
+}
+
+function hashString(t: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < t.length; i++) h = Math.imul(h ^ t.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+
 export function createFixtureSource(opts: FixtureOptions = {}): WorldSource & { world: FixtureWorld; calls: { index: number; chunks: number; columns: number } } {
   const world = new FixtureWorld(opts.version ?? 'b1.8.1', opts.radius ?? 6);
   world.dense = !!opts.dense;
@@ -381,6 +428,23 @@ export function createFixtureSource(opts: FixtureOptions = {}): WorldSource & { 
     async entities(since): Promise<EntityDelta> {
       rev++;
       return { at: now(), rev, full: since == null, bots: bots(), entities: entities(), removed: [] };
+    },
+    async blockEntities(dim, cols): Promise<BlockEntities> {
+      const want = new Set(cols.map(([cx, cz]) => `${cx},${cz}`));
+      const byCol = new Map<string, BlockEntityDto[]>();
+      if (dim === 0)
+        for (const b of plaza(world.version))
+          if (b.be && want.has(`${b.x >> 4},${b.z >> 4}`)) {
+            const k = `${b.x >> 4},${b.z >> 4}`;
+            byCol.set(k, [...(byCol.get(k) ?? []), b.be]);
+          }
+      return {
+        dim,
+        columns: [...byCol].map(([k, entities]) => {
+          const [cx, cz] = k.split(',').map(Number);
+          return { cx, cz, hash: hashString(JSON.stringify(entities)), entities };
+        }),
+      };
     },
     async blocks(since): Promise<BlockDeltas> {
       syncPlan();

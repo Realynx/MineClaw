@@ -8,6 +8,7 @@ import { pick, viewInfo, type PickHit, type V3, type ViewInfo } from './query';
 import { buildStateTable, type StateTable } from './states';
 import { sectionVisibility } from './visibility';
 import { lightPacked } from '../wire/chunk';
+import type { BlockEntityDto } from '../types';
 import type { MeshAssets } from './source';
 
 export interface PatchResult {
@@ -79,6 +80,13 @@ export class MeshEngine {
 
   viewInfo(dim: number, cam: V3, body: V3 | null, cut: CutParams | null): ViewInfo {
     return viewInfo(this.store, this.table, dim, cam, body, cut);
+  }
+
+  /** Stores block entities per column; the sections they sit in are returned for re-meshing. */
+  setBlockEntities(dim: number, cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }>): Array<[number, number, number]> {
+    const out: Array<[number, number, number]> = [];
+    for (const c of cols) out.push(...this.store.setBlockEntities(dim, c.cx, c.cz, c.entities));
+    return out;
   }
 
   clear(): void {

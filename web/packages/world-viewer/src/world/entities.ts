@@ -2,7 +2,7 @@
 // from where the entity is drawn now to the new position over the measured update interval (EWMA, 50..1000 ms), so 5 Hz
 // polls read as smooth motion; a jump of more than 8 blocks snaps. Bots glide the same way. Ages advance locally.
 
-import type { BotDto, Dim, EntityDelta, EntityDto } from '../types';
+import type { BotDto, Dim, EntityDelta, EntityDto, EntityEvent } from '../types';
 
 interface Track {
   fromX: number; fromY: number; fromZ: number;
@@ -128,8 +128,19 @@ export class EntityStore {
       t.b = b;
     }
     for (const k of [...this.botTracks.keys()]) if (!names.has(k)) this.botTracks.delete(k);
+    for (const ev of d.events ?? []) this.pending.push(ev);
+    if (this.pending.length > 512) this.pending.splice(0, this.pending.length - 512);
     this.rev = d.rev;
     this.version++;
+  }
+
+  private pending: EntityEvent[] = [];
+
+  /** Events (swing, hurt, death, crit, eat, teleport, lightning…) received since the last call, oldest first. */
+  drainEvents(): EntityEvent[] {
+    const out = this.pending;
+    this.pending = [];
+    return out;
   }
 
   private ticks(t: EntityTrack, now: number): number {

@@ -1,3 +1,4 @@
+import type { BlockEntityDto } from '../types';
 // Messages between the main thread and the mesh worker. Every request carries an id; the worker answers in order.
 
 import type { GameVersion } from '../world/blocks';
@@ -17,6 +18,7 @@ export type WorkerRequest =
   | { id: number; op: 'pick'; dim: number; o: V3; d: V3; max: number; cut: CutParams | null }
   | { id: number; op: 'view'; dim: number; cam: V3; body: V3 | null; cut: CutParams | null }
   | { id: number; op: 'lights'; dim: number; pts: number[] }
+  | { id: number; op: 'blockEntities'; dim: number; cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }> }
   | { id: number; op: 'clear' };
 
 export type WorkerResponse =

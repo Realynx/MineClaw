@@ -1,3 +1,4 @@
+import type { BlockEntityDto } from '../types';
 // The main thread's handle on the mesh engine: a Web Worker (default) or the same engine in-thread.
 
 import type { GameVersion } from '../world/blocks';
@@ -22,6 +23,8 @@ export interface MeshHost {
   mesh(dim: number, sections: Dirty, cut: CutParams | null): Promise<SectionMesh[]>;
   pick(dim: number, o: V3, d: V3, max: number, cut: CutParams | null): Promise<PickHit | null>;
   viewInfo(dim: number, cam: V3, body: V3 | null, cut: CutParams | null): Promise<ViewInfo>;
+  /** Stores block entities per column; resolves to the sections to re-mesh. */
+  setBlockEntities(dim: number, cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }>): Promise<Dirty>;
   /** Packed light (sky << 4 | block, -1 unknown) at points [x, y, z, x, y, z, …]. */
   lights(dim: number, pts: number[]): Promise<number[]>;
   clear(): Promise<void>;
@@ -46,6 +49,7 @@ export class InlineMeshHost implements MeshHost {
   pick(dim: number, o: V3, d: V3, max: number, cut: CutParams | null) { return this.run(() => this.engine.pick(dim, o, d, max, cut)); }
   viewInfo(dim: number, cam: V3, body: V3 | null, cut: CutParams | null) { return this.run(() => this.engine.viewInfo(dim, cam, body, cut)); }
   lights(dim: number, pts: number[]) { return this.run(() => this.engine.lights(dim, pts)); }
+  setBlockEntities(dim: number, cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }>) { return this.run(() => this.engine.setBlockEntities(dim, cols)); }
   clear() { return this.run(() => this.engine.clear()); }
   dispose(): void {
     this.engine.clear();
@@ -95,6 +99,7 @@ export class WorkerMeshHost implements MeshHost {
   pick(dim: number, o: V3, d: V3, max: number, cut: CutParams | null) { return this.send<PickHit | null>({ op: 'pick', dim, o, d, max, cut }); }
   viewInfo(dim: number, cam: V3, body: V3 | null, cut: CutParams | null) { return this.send<ViewInfo>({ op: 'view', dim, cam, body, cut }); }
   lights(dim: number, pts: number[]) { return this.send<number[]>({ op: 'lights', dim, pts }); }
+  setBlockEntities(dim: number, cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }>) { return this.send<Dirty>({ op: 'blockEntities', dim, cols }); }
   clear() { return this.send<void>({ op: 'clear' }); }
 
   dispose(): void {

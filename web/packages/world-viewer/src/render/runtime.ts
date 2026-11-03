@@ -29,6 +29,7 @@ import { loadBundle, type AssetBundle } from '../assets/bundle';
 import { PROFILES, QualityController, probeRenderer, type QualityName, type RendererProbe } from './quality';
 import { ChangeFlash } from './changeFlash';
 import { BlockDeltaFeed } from '../world/deltas';
+import { BlockEntityStore } from '../world/blockEntities';
 
 export interface RuntimeOptions {
   /** Device pixel ratio cap for the primary view (default min(2, devicePixelRatio)). */
@@ -150,6 +151,8 @@ export class WorldRuntime {
   readonly flashes = new ChangeFlash();
   readonly sky = new SkyLayer();
   readonly aids = new AidsLayer();
+  /** Block entities of the held columns (sign text, banners, spawner mobs… for the main-thread layers). */
+  blockEntities: BlockEntityStore;
   /** The bundled assets of the current version (textures, models); null until loaded. */
   bundle: AssetBundle | null = null;
   deltas: BlockDeltaFeed;
@@ -177,6 +180,8 @@ export class WorldRuntime {
   private flash = 0;
   private readonly renderedAt = new Map<number, number>();
   private readonly tmpDir = new THREE.Vector3();
+  /** World brightening from a lightning strike (decays over ~25 frames). */
+  private lightningFlash = 0;
   private readonly pixel = new Uint8Array(4);
   private slots = 0;
   /** Called (on the runtime's frame) after the overlays of a dimension changed. */
@@ -216,6 +221,7 @@ export class WorldRuntime {
     this.entities.setWorldUniforms(this.uniforms); // [entity models] entities light and fog like the sections
     this.host = opts.inlineMesher ? new InlineMeshHost() : createMeshHost(opts.createWorker);
     this.scene.add(this.aids.group, this.sky.group, this.entities.group, this.overlays.group, this.weather.object, this.flashes.mesh);
+    this.blockEntities = new BlockEntityStore(source, this.host, (dim, dirty) => this.sections.get(dim)?.markDirty(dirty), (e) => this.opts.onError?.('blockentities', e));
     this.sync = this.makeSync();
     this.deltas = this.makeDeltas();
     this.entityPoller = new Poller(
@@ -308,6 +314,7 @@ export class WorldRuntime {
     this.sync.stop();
     this.deltas.stop();
     this.source = src;
+    this.blockEntities.setSource(src);
     const rev = this.deltas.rev;
     this.sync = this.makeSync();
     this.deltas = this.makeDeltas();
@@ -325,6 +332,8 @@ export class WorldRuntime {
     this.entityPoller.stop();
     this.overlayPoller.stop();
     this.source = src;
+    this.blockEntities.setSource(src);
+    this.blockEntities.clear();
     this.store.clear();
     this.cache = new WorldCache();
     for (const s of this.sections.values()) s.setCache(this.cache);
@@ -492,11 +501,17 @@ export class WorldRuntime {
 
   private makeSync(): WorldSync {
     const s = new WorldSync(this.source, this.host, this.cache, {
-      onApplied: (res) => this.sections.get(res.dim)?.markDirty(res.dirty),
+      onApplied: (res) => {
+        this.sections.get(res.dim)?.markDirty(res.dirty);
+        // A column that arrived or changed: its block entities may have too.
+        this.blockEntities.want(res.dim, res.columns.filter((c) => !c.missing).map((c) => [c.cx, c.cz] as [number, number]));
+        this.blockEntities.drop(res.dim, res.columns.filter((c) => c.missing).map((c) => [c.cx, c.cz] as [number, number]));
+      },
       onDropped: (dim, cols, dirty) => {
         const m = this.sections.get(dim);
         m?.dropColumns(cols);
         m?.markDirty(dirty);
+        this.blockEntities.drop(dim, cols);
       },
       onTouched: (dim, dirty) => this.sections.get(dim)?.markDirty(dirty),
       onInfo: () => void this.configure(),
@@ -511,6 +526,7 @@ export class WorldRuntime {
     return new BlockDeltaFeed(this.source, this.host, this.cache, this.sync, {
       onDirty: (dim, dirty) => this.sections.get(dim)?.markDirty(dirty),
       onChanged: (dim, blocks) => this.flashes.add(dim, blocks, performance.now()),
+      onBlockEntities: (dim, cx, cz) => this.blockEntities.want(dim, [[cx, cz]]),
       onError: (e) => this.opts.onError?.('blocks', e),
     });
   }
@@ -602,6 +618,13 @@ export class WorldRuntime {
     this.entities.update(this.store.bots(this.botsBuf), this.store.entities(null, this.entsBuf), now, selected);
     this.overlays.tick(now);
     this.refreshEntityLight(now);
+    // Entity events: the entity layer animates them (swings, hurt flashes, deaths…); lightning also flashes the world.
+    const events = this.store.drainEvents();
+    if (events.length) {
+      for (const ev of events) if (ev.kind === 'lightning') this.lightningFlash = 0.7;
+      this.entities.onEvents?.(events, now);
+    }
+    this.blockEntities.tick(now);
     void this.deltas.flush(); // a frame's worth of block changes, applied together
     if (this.uniforms.uTextured.value > 0 && this.blockAtlas) {
       // [blocks] atlas animation: the profile's tick rate and cell budget, only the cells the drawn sections sample.
@@ -728,7 +751,8 @@ export class WorldRuntime {
     this.sky.update(s.camera.position, time, rain, nether, s.layers.weather && this.quality.state.profile.clouds, now, s.camera.far * 0.8);
     if (primary) this.flash = this.weather.update(s.camera.position, now / 1000, rain, thunder, s.layers.weather && !nether, s.precip ?? 'rain');
     this.weather.object.visible = primary && s.layers.weather && !nether && rain > 0.01;
-    u.uFlash.value = primary ? this.flash : 0;
+    this.lightningFlash = Math.max(0, this.lightningFlash - 0.03);
+    u.uFlash.value = (primary ? this.flash : 0) + this.lightningFlash;
     // Per-view cut-aways (uniforms only; the cap pass shows what they open).
     const cam = s.camera.position;
     let n = 0;

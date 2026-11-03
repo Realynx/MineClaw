@@ -56,8 +56,36 @@ export interface BotDto {
   ageSeconds?: number;
 }
 
+/** An item or block: [id, meta/damage] (version-specific numbering), or null for an empty slot. */
+export type ItemRef = [number, number] | null;
+
+/** What an entity holds and wears (players, bots, zombies, skeletons, armor stands…). */
+export interface Equipment {
+  main?: ItemRef;
+  off?: ItemRef;
+  head?: ItemRef;
+  chest?: ItemRef;
+  legs?: ItemRef;
+  feet?: ItemRef;
+}
+
+/** Entity state flags as the wire names them (the decoder also accepts the older bitfield). */
+export interface EntityFlags {
+  onFire?: boolean;
+  sneaking?: boolean;
+  sprinting?: boolean;
+  invisible?: boolean;
+  glowing?: boolean;
+  /** Riding something (boat, minecart, horse…). */
+  vehicle?: boolean;
+}
+
+/** Bit values of `EntityDto.flags` after normalisation (the bitfield form the renderer reads). */
+export const FLAG_ON_FIRE = 0x01, FLAG_SNEAKING = 0x02, FLAG_SPRINTING = 0x08, FLAG_INVISIBLE = 0x20, FLAG_GLOWING = 0x40, FLAG_VEHICLE = 0x80;
+
 export interface EntityDto {
-  /** player | mob | item | … */
+  /** player | mob | item | painting | item_frame | armor_stand | arrow | boat | minecart | falling_block | tnt | xp_orb |
+   * ender_crystal | firework | … */
   kind: string;
   name?: string | null;
   dim: Dim;
@@ -76,9 +104,44 @@ export interface EntityDto {
   age?: number | null;
   yaw?: number | null;
   by?: string | null;
-  /** 0x01 burning, 0x02 sneaking, 0x08 sprinting. */
+  /** Bitfield after normalisation: FLAG_ON_FIRE 0x01, FLAG_SNEAKING 0x02, FLAG_SPRINTING 0x08, FLAG_INVISIBLE 0x20,
+   * FLAG_GLOWING 0x40, FLAG_VEHICLE 0x80 (the wire's `flags` object is folded into this). */
   flags?: number | null;
-  variant?: number | null;
+  /** Per-kind variant: a number (slime size, cat type, rabbit type, villager profession…) or a compact string such as
+   * "white,sheared" / "creamy,white_spots,saddle,iron" / "collar:red,angry,tame" / "powered" (decoded by the renderer). */
+  variant?: number | string | null;
+  /** Hand items and armour. */
+  equipment?: Equipment | null;
+  /** Head yaw (degrees, Minecraft convention) when it differs from the body's `yaw`. */
+  headYaw?: number | null;
+  /** Baby mob (rendered at the vanilla baby scale). */
+  baby?: boolean;
+  /** Paintings: the motive ("Kebab", "Aztec"… or the 1.12.2 id "kebab"); paintings and item frames: facing (0 S, 1 W, 2 N,
+   * 3 E, or "north"…). */
+  motive?: string | null;
+  facing?: number | string | null;
+  /** Item frames: the item shown and its rotation (0..7, 45° steps). */
+  rotation?: number | null;
+  /** Item frames: the framed item; falling blocks: `block`. */
+  frameItem?: ItemRef;
+  block?: ItemRef;
+  /** Minecarts: type (0 plain, 1 chest, 2 furnace, 3 tnt, 4 spawner, 5 hopper, 6 command block, or the name). */
+  minecartType?: number | string | null;
+  /** Primed TNT: fuse ticks left. */
+  fuse?: number | null;
+}
+
+/** A one-off thing that happened to an entity (or at a place: lightning). */
+export interface EntityEvent {
+  /** The entity (absent for lightning). */
+  id?: number | null;
+  dim?: Dim;
+  kind: 'swing' | 'swing_off' | 'hurt' | 'death' | 'crit' | 'magic_crit' | 'eat' | 'teleport' | 'lightning' | string;
+  /** Unix ms. */
+  at: number;
+  x?: number | null;
+  y?: number | null;
+  z?: number | null;
 }
 
 /** `GET api/world/entities[?since=rev]`. */
@@ -92,6 +155,45 @@ export interface EntityDelta {
   entities: EntityDto[];
   /** [dim, id] pairs gone since `since`. */
   removed?: Array<[number, number]> | null;
+  /** Swings, hurts, deaths, crits, eating, teleports and lightning since `since` (oldest first). */
+  events?: EntityEvent[] | null;
+}
+
+/** A block entity (`GET api/world/blockentities?dim&cols=`): what the block id/meta can't say. Tolerant: unknown fields are
+ * kept, missing ones default. */
+export interface BlockEntityDto {
+  x: number;
+  y: number;
+  z: number;
+  /** sign | bed | banner | skull | flower_pot | chest | trapped_chest | ender_chest | mob_spawner | … */
+  kind: string;
+  /** Signs: four lines of plain text. */
+  lines?: string[] | null;
+  /** Beds: dye colour (0..15 or a name). */
+  color?: number | string | null;
+  /** Banners: base dye colour and [pattern code, dye colour] layers, bottom first. */
+  base?: number | string | null;
+  patterns?: Array<[string, number | string]> | null;
+  /** Skulls: type (0 skeleton, 1 wither, 2 zombie, 3 player, 4 creeper, 5 dragon, or the name) and rotation (0..15). */
+  type?: number | string | null;
+  rotation?: number | null;
+  /** Flower pots: the plant ([id, meta] or a name). */
+  item?: ItemRef | string | null;
+  /** Spawners: the mob ("Zombie", "minecraft:zombie"…). */
+  mob?: string | null;
+  [extra: string]: unknown;
+}
+
+export interface BlockEntityColumn {
+  cx: number;
+  cz: number;
+  hash: WireHash;
+  entities: BlockEntityDto[];
+}
+
+export interface BlockEntities {
+  dim?: Dim;
+  columns: BlockEntityColumn[];
 }
 
 export type Vec3i = [number, number, number];
@@ -147,7 +249,8 @@ export interface BlockDeltas {
   dim?: Dim;
   /** Columns that came into (`loaded`) or left (`unloaded`) a bot's view. `loaded` for a column already held means its
    * contents changed in bulk (b1.8.1 chunk updates for explosions, large edits): refetch it. */
-  columns?: Array<{ rev?: number; at?: number; dim: Dim; cx: number; cz: number; kind: 'loaded' | 'unloaded' }>;
+  /** `block_entity`: the column's block entities changed (a sign edited, a banner placed): refetch them. */
+  columns?: Array<{ rev?: number; at?: number; dim: Dim; cx: number; cz: number; kind: 'loaded' | 'unloaded' | 'block_entity' }>;
 }
 
 /** Deprecated: the bridge's runtime atlas. The viewer ships its own textures (generated/<version>/) and ignores it. */
@@ -170,6 +273,9 @@ export interface WorldSource {
   /** Per-block changes since a revision (polled ~4 Hz when there is no `subscribe`). Optional: without it columns only
    * update through the index hash-diff. */
   blocks?(since?: number): Promise<BlockDeltas>;
+  /** Block entities (signs, beds, banners, skulls, flower pots, spawners…) of some columns. Optional: without it those blocks
+   * draw with defaults (blank signs, red beds, white banners, skeleton skulls, empty pots, an idle spawner). */
+  blockEntities?(dim: Dim, cols: Array<[number, number]>): Promise<BlockEntities>;
   /** Push hook (the bridge's SSE `blocks` event): call `onBlocks` per delta, and `onReconnect` after the stream dropped and came
    * back (the viewer then refetches through the index). Returns an unsubscribe function. */
   subscribe?(onBlocks: (d: BlockDeltas) => void, onReconnect?: () => void): () => void;

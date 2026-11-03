@@ -1,6 +1,6 @@
 // Accepts the supervisor's snake_case replies or Nest's camelCase mirror and returns the viewer's types with defaults filled.
 
-import type { BotDto, EntityDelta, EntityDto, Mark, Overlays, PlanDto, WorldIndex } from '../types';
+import { FLAG_GLOWING, FLAG_INVISIBLE, FLAG_ON_FIRE, FLAG_SNEAKING, FLAG_SPRINTING, FLAG_VEHICLE, type BlockEntities, type BlockEntityColumn, type BlockEntityDto, type BotDto, type EntityDelta, type EntityDto, type EntityEvent, type Equipment, type ItemRef, type Mark, type Overlays, type PlanDto, type WorldIndex } from '../types';
 
 const camel = (k: string) => k.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
 
@@ -52,8 +52,125 @@ export function normalizeEntities(raw: unknown): EntityDelta {
     rev: num(r.rev),
     full: r.full ?? true,
     bots: (r.bots ?? []).map(bot),
-    entities: (r.entities ?? []).map((e: Partial<EntityDto>) => ({ ...e, kind: e.kind ?? 'mob', dim: num(e.dim), x: num(e.x), y: num(e.y), z: num(e.z) })),
+    entities: (r.entities ?? []).map((e: Partial<EntityDto>) => entity(e)),
     removed: (r.removed ?? []).filter((p) => Array.isArray(p) && p.length >= 2).map((p) => [num(p[0]), num(p[1])] as [number, number]),
+    events: (r.events ?? []).filter((v) => v && typeof v === 'object').map((v: Partial<EntityEvent>) => ({
+      ...v,
+      id: v.id ?? null,
+      kind: String(v.kind ?? ''),
+      at: num(v.at),
+      x: v.x == null ? null : num(v.x),
+      y: v.y == null ? null : num(v.y),
+      z: v.z == null ? null : num(v.z),
+    })),
+  };
+}
+
+/** [id, meta] from [id, meta] / [id] / {id, meta|damage} / a bare id; null for empty. */
+export function itemRef(v: unknown): ItemRef {
+  if (v == null || v === false) return null;
+  if (typeof v === 'number') return v > 0 ? [v, 0] : null;
+  if (Array.isArray(v)) return v.length && num(v[0]) > 0 ? [num(v[0]), num(v[1])] : null;
+  if (typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    const id = num(o.id ?? o.item);
+    return id > 0 ? [id, num(o.meta ?? o.damage)] : null;
+  }
+  return null;
+}
+
+const FLAG_BITS: Array<[string[], number]> = [
+  [['onFire', 'burning', 'fire'], FLAG_ON_FIRE],
+  [['sneaking', 'crouching'], FLAG_SNEAKING],
+  [['sprinting'], FLAG_SPRINTING],
+  [['invisible'], FLAG_INVISIBLE],
+  [['glowing'], FLAG_GLOWING],
+  [['vehicle', 'riding'], FLAG_VEHICLE],
+];
+
+function flags(v: unknown): number {
+  if (typeof v === 'number') return v;
+  if (!v || typeof v !== 'object') return 0;
+  const o = v as Record<string, unknown>;
+  let f = 0;
+  for (const [names, bit] of FLAG_BITS) if (names.some((n) => !!o[n])) f |= bit;
+  return f;
+}
+
+function equipment(v: unknown): Equipment | null {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  const pick = (...k: string[]) => itemRef(k.map((n) => o[n]).find((x) => x != null));
+  const e: Equipment = {
+    main: pick('main', 'mainhand', 'mainHand', 'hand'),
+    off: pick('off', 'offhand', 'offHand'),
+    head: pick('head', 'helmet'),
+    chest: pick('chest', 'chestplate'),
+    legs: pick('legs', 'leggings'),
+    feet: pick('feet', 'boots'),
+  };
+  return Object.values(e).some(Boolean) ? e : null;
+}
+
+function entity(e: Partial<EntityDto> & Record<string, unknown>): EntityDto {
+  const kind = e.kind ?? 'mob';
+  const out: EntityDto = { ...e, kind, dim: num(e.dim), x: num(e.x), y: num(e.y), z: num(e.z) };
+  if (e.flags != null) out.flags = flags(e.flags);
+  if (e.equipment != null) out.equipment = equipment(e.equipment);
+  if (e.headYaw != null) out.headYaw = num(e.headYaw);
+  if (e.baby != null) out.baby = !!e.baby;
+  // Kind-specific fields that share names with the generic ones.
+  if (kind === 'item_frame' && (Array.isArray(e.item) || (e.item && typeof e.item === 'object'))) {
+    out.frameItem = itemRef(e.item);
+    out.item = null;
+  }
+  if (kind === 'falling_block' && e.block != null) out.block = itemRef(e.block);
+  if (kind === 'minecart' && (typeof e.type === 'string' || e.minecartType != null)) {
+    out.minecartType = (e.minecartType as number | string | undefined) ?? (e.type as unknown as string);
+    if (typeof e.type === 'string') out.type = null;
+  }
+  return out;
+}
+
+const DYES = ['white', 'orange', 'magenta', 'light_blue', 'yellow', 'lime', 'pink', 'gray', 'silver', 'cyan', 'purple', 'blue', 'brown', 'green', 'red', 'black'];
+
+/** A dye colour as 0..15 from a number or a name ("light_blue", "lightBlue", "silver"/"light_gray"); -1 = unknown. */
+export function dyeIndex(v: unknown): number {
+  if (typeof v === 'number') return v >= 0 && v < 16 ? Math.floor(v) : -1;
+  if (typeof v !== 'string') return -1;
+  const n = v.replace(/^minecraft:/, '').replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase().replace('light_gray', 'silver');
+  return DYES.indexOf(n);
+}
+
+function blockEntity(b: Record<string, unknown>): BlockEntityDto {
+  const lines = Array.isArray(b.lines)
+    ? (b.lines as unknown[]).map((l) => (l == null ? '' : String(l)))
+    : ['text1', 'text2', 'text3', 'text4'].map((k) => (b[k] == null ? '' : String(b[k])));
+  const patterns = Array.isArray(b.patterns)
+    ? (b.patterns as unknown[]).map((p) => (Array.isArray(p) ? [String(p[0]), p[1] as number | string] : [String((p as Record<string, unknown>).pattern ?? ''), (p as Record<string, unknown>).color as number | string])) as Array<[string, number | string]>
+    : null;
+  return {
+    ...b,
+    x: num(b.x),
+    y: num(b.y),
+    z: num(b.z),
+    kind: String(b.kind ?? '').replace(/^minecraft:/, ''),
+    lines: lines.some((l) => l) ? lines.slice(0, 4) : null,
+    patterns,
+  };
+}
+
+/** `api/world/blockentities` (snake_case or camelCase; sign lines as `lines` or text1..text4; patterns as pairs or objects). */
+export function normalizeBlockEntities(raw: unknown): BlockEntities {
+  const r = camelize<Partial<BlockEntities> & { dim?: number }>(raw) ?? { columns: [] };
+  return {
+    dim: r.dim,
+    columns: (r.columns ?? []).map((c: Partial<BlockEntityColumn>) => ({
+      cx: num(c.cx),
+      cz: num(c.cz),
+      hash: c.hash ?? 0,
+      entities: (c.entities ?? []).map((e) => blockEntity(e as Record<string, unknown>)),
+    })),
   };
 }
 

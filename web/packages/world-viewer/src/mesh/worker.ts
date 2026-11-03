@@ -39,6 +39,8 @@ async function handle(m: WorkerRequest): Promise<void> {
         return reply({ id: m.id, ok: true, result: engine.lights(m.dim, m.pts) });
       case 'view':
         return reply({ id: m.id, ok: true, result: engine.viewInfo(m.dim, m.cam, m.body, m.cut) });
+      case 'blockEntities':
+        return reply({ id: m.id, ok: true, result: engine.setBlockEntities(m.dim, m.cols) });
       case 'clear':
         engine.clear();
         return reply({ id: m.id, ok: true, result: null });

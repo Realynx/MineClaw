@@ -6,6 +6,7 @@ import { cellIndex, lightPacked, parseLight, unpackSnapshot, type ColumnLight } 
 import { inflateRaw } from '../wire/inflate';
 import { F_OPAQUE, tableFor, type GameVersion } from '../world/blocks';
 import { relight } from './light';
+import type { BlockEntityDto } from '../types';
 
 export interface StoredColumn {
   dim: number;
@@ -116,6 +117,34 @@ export class ColumnStore {
 
   clear(): void {
     this.cols.clear();
+    this.blockEntities.clear();
+    this.blockEntityAtCell.clear();
+  }
+
+  /** Block entities by column key "dim,cx,cz" (signs, beds, banners, skulls, flower pots, spawners…). */
+  readonly blockEntities = new Map<string, BlockEntityDto[]>();
+  private readonly blockEntityAtCell = new Map<string, BlockEntityDto>();
+
+  /** The block entity at a world cell, if its column sent one (the mesher reads bed colours, skull types, pot contents). */
+  blockEntityAt(dim: number, x: number, y: number, z: number): BlockEntityDto | undefined {
+    return this.blockEntityAtCell.get(`${dim},${x},${y},${z}`);
+  }
+
+  /** Replaces a column's block entities; returns the sections to re-mesh (those holding an old or a new one). */
+  setBlockEntities(dim: number, cx: number, cz: number, list: BlockEntityDto[]): Array<[number, number, number]> {
+    const k = colKey(dim, cx, cz);
+    const dirty = new Set<string>();
+    for (const b of this.blockEntities.get(k) ?? []) {
+      this.blockEntityAtCell.delete(`${dim},${b.x},${b.y},${b.z}`);
+      dirty.add(`${cx},${b.y >> 4},${cz}`);
+    }
+    if (list.length) this.blockEntities.set(k, list);
+    else this.blockEntities.delete(k);
+    for (const b of list) {
+      this.blockEntityAtCell.set(`${dim},${b.x},${b.y},${b.z}`, b);
+      dirty.add(`${cx},${b.y >> 4},${cz}`);
+    }
+    return [...dirty].map((d) => d.split(',').map(Number) as [number, number, number]);
   }
 
   /**
