@@ -497,3 +497,7 @@ src/MineClaw.App/appsettings.*.json
 **/items.png
 **/char.png
 *.jar
+
+# Agent worktrees and Turborepo cache
+.claude/worktrees/
+.turbo/
