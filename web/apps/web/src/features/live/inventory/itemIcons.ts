@@ -99,7 +99,14 @@ function render(bundle: AssetBundle, look: ItemLook): string | null {
     g.setTransform(...m);
     g.drawImage(tmp, 0, 0);
   };
-  if (look.kind === 'sprite') {
+  if (look.kind === 'sprite' && look.entityRect) {
+    // A builtin/entity item (the shield): its face from the entity sheet, fitted into the slot, centred.
+    const [x, y, w, h] = look.entityRect;
+    const k = (SIZE - 2) / Math.max(w, h);
+    g.drawImage(bundle.entity, x, y, w, h, (SIZE - w * k) / 2, (SIZE - h * k) / 2, w * k, h * k);
+  } else if (look.kind === 'sprite') {
+    // A layer beneath first (a potion's tinted liquid), then the sprite.
+    if (look.under) face(look.under.atlas, look.under.cell, look.under.tint, 1, [s * 2, 0, 0, s * 2, 0, 0]);
     face(look.atlas, look.cell, look.tint, 1, [s * 2, 0, 0, s * 2, 0, 0]);
   } else {
     const t = (f: number) => (look.tintMask & (1 << f) ? look.tint : 0);

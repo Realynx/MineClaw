@@ -2,9 +2,10 @@
 // fixture world and a scripted view, stepped by hand.
 import * as THREE from 'three';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { RuntimeView, ViewSetup } from '../src/render/runtime';
 
 vi.mock('three', async (orig) => {
-  const real = await orig<typeof import('three')>();
+  const real = await orig<typeof THREE>();
   class FakeRenderer {
     readonly domElement = { style: {}, width: 300, height: 150, tabIndex: 0, remove: () => undefined } as unknown as HTMLCanvasElement;
     readonly info = { render: { calls: 0, triangles: 0 } };
@@ -33,8 +34,6 @@ vi.mock('three', async (orig) => {
 const { WorldRuntime } = await import('../src/render/runtime');
 const { resetViewerQuality, setViewerQuality, viewerStatus } = await import('../src/render/viewerQuality');
 const { createFixtureSource } = await import('../src/testing');
-type ViewSetup = import('../src/render/runtime').ViewSetup;
-type RuntimeView = import('../src/render/runtime').RuntimeView;
 
 beforeAll(() => {
   const g = globalThis as Record<string, unknown>;
@@ -105,7 +104,7 @@ describe('WorldRuntime under the viewer settings', () => {
         { kind: 'item', id: 3, dim: 0, x: 1, y: 64, z: 1, item: 1, count: 1 },
         { kind: 'mob', id: 4, dim: 0, x: 90, y: 64, z: 0, type: 54 },
       ],
-    } as never);
+    });
     let t = 1000;
     const step = () => rt.step((t += 16), 0.016);
     step();
