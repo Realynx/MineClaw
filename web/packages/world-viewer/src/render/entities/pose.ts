@@ -25,6 +25,30 @@ export function mul(out: Affine, a: ArrayLike<number>, b: ArrayLike<number>): Af
   return out;
 }
 
+/** out = a⁻¹ (affine; `out` may not alias `a`). */
+export function invert(out: Affine, a: ArrayLike<number>): Affine {
+  const a00 = a[0], a01 = a[1], a02 = a[2], a10 = a[4], a11 = a[5], a12 = a[6], a20 = a[8], a21 = a[9], a22 = a[10];
+  const c00 = a11 * a22 - a12 * a21, c01 = a02 * a21 - a01 * a22, c02 = a01 * a12 - a02 * a11;
+  const c10 = a12 * a20 - a10 * a22, c11 = a00 * a22 - a02 * a20, c12 = a02 * a10 - a00 * a12;
+  const c20 = a10 * a21 - a11 * a20, c21 = a01 * a20 - a00 * a21, c22 = a00 * a11 - a01 * a10;
+  const det = a00 * c00 + a01 * c10 + a02 * c20;
+  const k = det ? 1 / det : 0;
+  out[0] = c00 * k;
+  out[1] = c01 * k;
+  out[2] = c02 * k;
+  out[4] = c10 * k;
+  out[5] = c11 * k;
+  out[6] = c12 * k;
+  out[8] = c20 * k;
+  out[9] = c21 * k;
+  out[10] = c22 * k;
+  const tx = a[3], ty = a[7], tz = a[11];
+  out[3] = -(out[0] * tx + out[1] * ty + out[2] * tz);
+  out[7] = -(out[4] * tx + out[5] * ty + out[6] * tz);
+  out[11] = -(out[8] * tx + out[9] * ty + out[10] * tz);
+  return out;
+}
+
 /** translate(p) · rotZ(rz) · rotY(ry) · rotX(rx) (vanilla ModelRenderer order). */
 export function partLocal(out: Affine, px: number, py: number, pz: number, rx: number, ry: number, rz: number): Affine {
   const cx = Math.cos(rx), sx = Math.sin(rx), cy = Math.cos(ry), sy = Math.sin(ry), cz = Math.cos(rz), sz = Math.sin(rz);
@@ -61,17 +85,22 @@ export interface RootParams {
   offset: readonly [number, number, number];
   /** World-space y offset after everything (sneaking sinks players 0.125, bob…). */
   lift?: number;
+  /** Degrees about the turned x axis between the yaw and the death roll (a spawner's display mob leans back 30°). */
+  tilt?: number;
 }
 
-/** RenderLivingBase: translate(pos) · rotY(180 − yaw) · rotZ(death) · scale(−1, −1, 1) · scale · translate(0, −1.501, 0) ·
- * scale(1/16) · translate(offset). */
+/** RenderLivingBase: translate(pos) · rotY(180 − yaw) · rotX(tilt) · rotZ(death) · scale(−1, −1, 1) · scale ·
+ * translate(0, −1.501, 0) · scale(1/16) · translate(offset). */
 export function rootMatrix(out: Affine, r: RootParams): Affine {
   const a = ((180 - r.yaw) * Math.PI) / 180, d = (r.death * Math.PI) / 180;
   const ca = Math.cos(a), sa = Math.sin(a), cd = Math.cos(d), sd = Math.sin(d);
-  // R = Ry(a) · Rz(d)
-  const r00 = ca * cd, r01 = -ca * sd, r02 = sa;
-  const r10 = sd, r11 = cd, r12 = 0;
-  const r20 = -sa * cd, r21 = sa * sd, r22 = ca;
+  // R = Ry(a) · Rx(t) · Rz(d)
+  const t = ((r.tilt ?? 0) * Math.PI) / 180, ct = Math.cos(t), st = Math.sin(t);
+  // Rx(t) · Rz(d) = [[cd, −sd, 0], [ct·sd, ct·cd, −st], [st·sd, st·cd, ct]]
+  const x10 = ct * sd, x11 = ct * cd, x12 = -st, x20 = st * sd, x21 = st * cd, x22 = ct;
+  const r00 = ca * cd + sa * x20, r01 = -ca * sd + sa * x21, r02 = sa * x22;
+  const r10 = x10, r11 = x11, r12 = x12;
+  const r20 = -sa * cd + ca * x20, r21 = sa * sd + ca * x21, r22 = ca * x22;
   // · S(-1,-1,1) · S(scale) · S(1/16): column scales.
   const kx = (-r.scale[0]) / 16, ky = (-r.scale[1]) / 16, kz = r.scale[2] / 16;
   // translation inside: T(0, -1.501, 0) in scaled space, then offset (pixels) in model space.
@@ -129,28 +158,41 @@ export class Skeleton {
     this.write(root, out, offset, baby);
   }
 
-  /** The child layout's two pre-transforms (root · pre · part): [head, body], each scale(s) · translate(offset px). */
-  private babyPre: [Float32Array, Float32Array] | null = null;
-  private readonly rootH = new Float32Array(12);
-  private readonly rootB = new Float32Array(12);
+  /** The child layout's pre-transforms (root · pre · part), each scale(s) · translate(offset px): [head, body, …groups], and
+   * which of them each top-level part takes. */
+  private babyPre: Float32Array[] | null = null;
+  private babyOf: Int8Array | null = null;
+  private babyRoots: Float32Array[] = [];
 
   write(root: ArrayLike<number>, out: Float32Array, offset: number, baby = false): void {
     const parts = this.model.parts, w = this.world, l = this.local;
     const layout = baby ? this.model.def.baby : undefined;
     if (layout) {
       if (!this.babyPre) {
-        const pre = (k: number, o: readonly [number, number, number]) => {
+        const pre = (k: number | readonly [number, number, number], o: readonly [number, number, number]) => {
+          const s = typeof k === 'number' ? [k, k, k] : k;
           const m = identity();
-          m[0] = m[5] = m[10] = k;
-          m[3] = k * o[0];
-          m[7] = k * o[1];
-          m[11] = k * o[2];
+          m[0] = s[0];
+          m[5] = s[1];
+          m[10] = s[2];
+          m[3] = s[0] * o[0];
+          m[7] = s[1] * o[1];
+          m[11] = s[2] * o[2];
           return m;
         };
-        this.babyPre = [pre(layout.headScale, layout.headOffset), pre(layout.bodyScale, layout.bodyOffset)];
+        const groups = layout.groups ?? [];
+        this.babyPre = [pre(layout.headScale, layout.headOffset), pre(layout.bodyScale, layout.bodyOffset), ...groups.map((g) => pre(g.scale, g.offset))];
+        this.babyRoots = this.babyPre.map(() => new Float32Array(12));
+        // Top-level parts: a group that names them, else head or body; −1 = drawn without the layout (vanilla renders it outside
+        // the child push/pop: the horse's saddle).
+        this.babyOf = Int8Array.from(parts.map((p) => {
+          const g = groups.findIndex((x) => x.parts.includes(p.name));
+          if (g >= 0) return 2 + g;
+          if (layout.head.includes(p.name)) return 0;
+          return layout.unscaled?.includes(p.name) ? -1 : 1;
+        }));
       }
-      mul(this.rootH, root, this.babyPre[0]);
-      mul(this.rootB, root, this.babyPre[1]);
+      for (let k = 0; k < this.babyPre.length; k++) mul(this.babyRoots[k], root, this.babyPre[k]);
     }
     for (let i = 0; i < parts.length; i++) {
       const s = this.states[i], par = parts[i].parent;
@@ -158,8 +200,10 @@ export class Skeleton {
       this.hidden[i] = hide ? 1 : 0;
       partLocal(l, s.px, s.py, s.pz, s.rx, s.ry, s.rz);
       const dst = w.subarray(i * 12, i * 12 + 12);
-      if (par < 0) mul(dst, layout ? (layout.head.includes(parts[i].name) ? this.rootH : this.rootB) : root, l);
-      else mul(dst, w.subarray(par * 12, par * 12 + 12), l);
+      if (par < 0) {
+        const g = layout ? this.babyOf![i] : -1;
+        mul(dst, g >= 0 ? this.babyRoots[g] : root, l);
+      } else mul(dst, w.subarray(par * 12, par * 12 + 12), l);
       const o = offset + i * 12;
       if (hide) out.fill(0, o, o + 12);
       else out.set(dst, o);

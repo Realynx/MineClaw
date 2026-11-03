@@ -5,9 +5,10 @@ using MineClaw.World;
 
 namespace MineClaw.App.Supervisor;
 
-/// <summary>An item on the wire as <c>[id, meta]</c> (equipment, a falling block).</summary>
+/// <summary>An item on the wire as <c>[id, meta]</c> (equipment, a falling block), or <c>[id, meta, rgb]</c> when the item is
+/// dyed (1.12.2 leather armour's display.color; b1.8.1 has no dyed items, so never there).</summary>
 [JsonConverter(typeof(WireItemConverter))]
-public readonly record struct WireItem(int Id, int Meta);
+public readonly record struct WireItem(int Id, int Meta, int? Color = null);
 
 /// <summary>Three ints on the wire as <c>[x, y, z]</c> (an armour stand's pose angles in whole degrees).</summary>
 [JsonConverter(typeof(WireVecConverter))]
@@ -30,12 +31,14 @@ internal sealed class WireItemConverter : JsonConverter<WireItem>
     public override WireItem Read(ref Utf8JsonReader r, Type t, JsonSerializerOptions o)
     {
         var a = JsonSerializer.Deserialize<int[]>(ref r, o) ?? [];
-        return new WireItem(a.Length > 0 ? a[0] : 0, a.Length > 1 ? a[1] : 0);
+        return new WireItem(a.Length > 0 ? a[0] : 0, a.Length > 1 ? a[1] : 0, a.Length > 2 ? a[2] : null);
     }
 
     public override void Write(Utf8JsonWriter w, WireItem v, JsonSerializerOptions o)
     {
-        w.WriteStartArray(); w.WriteNumberValue(v.Id); w.WriteNumberValue(v.Meta); w.WriteEndArray();
+        w.WriteStartArray(); w.WriteNumberValue(v.Id); w.WriteNumberValue(v.Meta);
+        if (v.Color is { } c) w.WriteNumberValue(c);
+        w.WriteEndArray();
     }
 }
 
@@ -104,11 +107,12 @@ public static class EntityLooks
         },
     };
 
-    /// <summary>Equipment in wire slots (canonical 0 held, 1 feet, 2 legs, 3 chest, 4 head, 5 off hand); null when nothing is worn.</summary>
+    /// <summary>Equipment in wire slots (canonical 0 held, 1 feet, 2 legs, 3 chest, 4 head, 5 off hand); null when nothing is worn.
+    /// A dyed item (1.12.2 display.color) carries its colour as the third element.</summary>
     public static WorldEquipment? Equipment(Entity e)
     {
         if (e.Equipment is null) return null;
-        WireItem? S(int slot) => e.EquipmentAt(slot) is { IsEmpty: false } st ? new WireItem(st.Id, st.Damage) : null;
+        WireItem? S(int slot) => e.EquipmentAt(slot) is { IsEmpty: false } st ? new WireItem(st.Id, st.Damage, st.Tag?.DisplayColor) : null;
         var eq = new WorldEquipment(S(0), S(5), S(4), S(3), S(2), S(1));
         return eq == new WorldEquipment() ? null : eq;
     }

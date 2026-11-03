@@ -129,7 +129,18 @@ export interface ModelDef {
    * scale(headScale) · translate(headOffset px); every other top-level part with scale(bodyScale) · translate(bodyOffset
    * px). Absent: a baby is the whole model at half size (the renderer's preRender scale).
    */
-  baby?: { head: string[]; headScale: number; headOffset: V3; bodyScale: number; bodyOffset: V3 };
+  baby?: {
+    head: string[];
+    headScale: number | V3;
+    headOffset: V3;
+    bodyScale: number | V3;
+    bodyOffset: V3;
+    /** More groups of top-level parts with their own scale(s) · translate(offset px), per axis where vanilla scales so (the
+     * horse's legs / body / head, the llama's head / body / legs). */
+    groups?: Array<{ parts: string[]; scale: number | V3; offset: V3 }>;
+    /** Top-level parts drawn without the layout (rendered outside vanilla's child push/pop). */
+    unscaled?: string[];
+  };
 }
 
 /** How an entity looks: a model, a skin, extra layers (same geometry or a tagged part layer) and a scale. */

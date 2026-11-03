@@ -89,8 +89,8 @@ export class BlockAtlas {
   }
 
   private uniforms: ChunkUniforms | null = null;
-  /** Starfield layers drawn (the client's 16; fewer under software rendering). */
-  starLayers = 16;
+  /** A cap on the starfield's layers (vanilla's distance-dependent count is never cut by default: the gateway's 17). */
+  starLayers = 17;
 
   /** Restrict the animation pass to these cells (row * columns + column); null = every animated cell. */
   setVisible(cells: Iterable<number> | null): void {

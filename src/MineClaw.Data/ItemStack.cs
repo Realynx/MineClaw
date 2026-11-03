@@ -27,11 +27,12 @@ public sealed class ItemTag : IEquatable<ItemTag>
     private readonly byte[] _bytes;
     private readonly int _hash;
 
-    public ItemTag(byte[] bytes, IReadOnlyDictionary<int, int>? enchantments = null, string? displayName = null)
+    public ItemTag(byte[] bytes, IReadOnlyDictionary<int, int>? enchantments = null, string? displayName = null, int? displayColor = null)
     {
         _bytes = bytes ?? throw new ArgumentNullException(nameof(bytes));
         Enchantments = enchantments ?? new Dictionary<int, int>();
         DisplayName = displayName;
+        DisplayColor = displayColor;
         var h = new HashCode();
         h.AddBytes(bytes);
         _hash = h.ToHashCode();
@@ -43,6 +44,8 @@ public sealed class ItemTag : IEquatable<ItemTag>
     public IReadOnlyDictionary<int, int> Enchantments { get; }
     /// <summary>display.Name, if the item was renamed.</summary>
     public string? DisplayName { get; }
+    /// <summary>display.color (0xRRGGBB): the dye of leather armour; null when undyed.</summary>
+    public int? DisplayColor { get; }
 
     public int EnchantmentLevel(int id) => Enchantments.TryGetValue(id, out int l) ? l : 0;
 

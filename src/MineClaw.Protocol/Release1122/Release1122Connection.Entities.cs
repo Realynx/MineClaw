@@ -258,7 +258,7 @@ public sealed partial class Release1122Connection
                 // EntityEquipmentSlot: 0 main hand, 1 off hand, 2 feet, 3 legs, 4 chest, 5 head → canonical 0 held, 1..4 boots..helmet, 5 off hand.
                 short cslot = slot switch { 0 => 0, 1 => 5, 2 => 1, 3 => 2, 4 => 3, 5 => 4, _ => -1 };
                 if (cslot < 0) return null;
-                return new EntityEquipmentPacket { EntityId = eid, Slot = cslot, ItemId = item.IsEmpty ? (short)-1 : item.Id, Damage = item.Damage };
+                return new EntityEquipmentPacket { EntityId = eid, Slot = cslot, ItemId = item.IsEmpty ? (short)-1 : item.Id, Damage = item.Damage, Tag = item.IsEmpty ? null : item.Tag };
             }
             case EntityIds1122.EntityEffect:
             {

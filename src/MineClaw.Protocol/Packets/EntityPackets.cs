@@ -1,3 +1,5 @@
+using MineClaw.Data;
+
 namespace MineClaw.Protocol.Packets;
 
 // Units used below (see FixedPoint): absolute positions are int = floor(blocks × 32); relative moves are
@@ -5,7 +7,8 @@ namespace MineClaw.Protocol.Packets;
 
 /// <summary>
 /// 0x05 Entity Equipment (S→C). Fields: int EntityId, short Slot (0 held, 1–4 armour boots..helmet),
-/// short ItemId (−1 = empty), short Damage.
+/// short ItemId (−1 = empty), short Damage. <see cref="Tag"/> is the item's NBT on 1.12.2 (dyed leather's display.color);
+/// b1.8.1's wire has none, so it is never read or written here.
 /// </summary>
 public sealed class EntityEquipmentPacket : IPacket
 {
@@ -15,6 +18,10 @@ public sealed class EntityEquipmentPacket : IPacket
     public short Slot { get; set; }
     public short ItemId { get; set; }
     public short Damage { get; set; }
+    public ItemTag? Tag { get; set; }
+
+    /// <summary>The worn item (empty when <see cref="ItemId"/> is −1), its tag included.</summary>
+    public ItemStack Item => ItemId < 0 ? ItemStack.Empty : new ItemStack(ItemId, 1, Damage) { Tag = Tag };
 
     public void Read(MinecraftReader r, PacketDirection d)
     {

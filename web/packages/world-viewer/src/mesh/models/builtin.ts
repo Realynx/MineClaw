@@ -9,7 +9,7 @@
 import { Layer } from '../../world/blocks';
 import { chain, clipAxis, cloneQuad, makeQuad, offsetQuad, orient, rotate, scale, translate, apply, type M4, type Quad, TINT_NONE } from '../quad';
 import type { Nb, StateRef } from './states';
-import { TEX_STARFIELD } from '../sink';
+import { TEX_GATEWAY, TEX_STARFIELD } from '../sink';
 
 /** An entity texture placed in the block atlas: origin cell, size in cells (the texture is wc·16 × hc·16 px). */
 export interface Sheet {
@@ -250,7 +250,7 @@ function shulkerQuads(s: StateRef, sheets: SheetLookup, out: Quad[]): void {
 /** The end portal (top surface at 12/16) and gateway (a cube): the starfield shader flag (dark flat when untextured). */
 function voidQuads(id: number, out: Quad[]): void {
   const flat = 0x0c0e1a;
-  const opt = { textured: true, fx: TEX_STARFIELD, flat, emissive: true, layer: Layer.Opaque, ao: false };
+  const opt = { textured: true, fx: id === 209 ? TEX_STARFIELD | TEX_GATEWAY : TEX_STARFIELD, flat, emissive: true, layer: Layer.Opaque, ao: false };
   if (id === 119) {
     out.push(makeQuad([0, 0.75, 0, 0, 0.75, 1, 1, 0.75, 1, 1, 0.75, 0], [0, 0, 0, 1, 1, 1, 1, 0], opt));
     return;

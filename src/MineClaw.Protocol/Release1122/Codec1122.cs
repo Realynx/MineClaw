@@ -46,15 +46,17 @@ public static class Codec1122
         return w;
     }
 
-    /// <summary>An <see cref="ItemTag"/> for a compound: its exact bytes plus the enchantments ("ench": [{id, lvl}]) and
-    /// display.Name.</summary>
+    /// <summary>An <see cref="ItemTag"/> for a compound: its exact bytes plus the enchantments ("ench": [{id, lvl}]),
+    /// display.Name and display.color (dyed leather armour, <c>ItemArmor.getColor</c>).</summary>
     public static ItemTag TagOf(byte[] bytes, NbtCompound c)
     {
         var ench = new Dictionary<int, int>();
         if (c.GetList("ench") is { } list)
             foreach (var o in list.Items)
                 if (o is NbtCompound e && e.GetInt("id") is { } id) ench[id] = e.GetInt("lvl") ?? 1;
-        return new ItemTag(bytes, ench, c.GetCompound("display")?.GetString("Name"));
+        var display = c.GetCompound("display");
+        int? color = display?.GetInt("color") is { } rgb ? rgb & 0xFFFFFF : null;
+        return new ItemTag(bytes, ench, display?.GetString("Name"), color);
     }
 
     /// <summary>A tag built from a compound (fixtures, the fake server).</summary>

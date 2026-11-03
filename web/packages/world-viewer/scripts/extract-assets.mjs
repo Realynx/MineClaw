@@ -7,8 +7,9 @@
 //   node scripts/extract-assets.mjs --find            (looks in the PrismLauncher / .minecraft folders and extracts both)
 //
 // Only what MineClaw.Render and this viewer use is kept: 1.12.2 blockstates, block and item models, block, item, entity,
-// environment, misc, colormap and painting textures with their .mcmeta; b1.8.1 terrain.png, gui/items.png, mob/*, char.png, environment,
-// misc and armor.
+// environment, misc, colormap and painting textures with their .mcmeta and the default font (textures/font/ascii.png); b1.8.1
+// terrain.png, gui/items.png, mob/*, char.png, environment, misc, armor and the font (font/default.png with font.txt, the
+// character table ChatAllowedCharacters reads).
 
 import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -58,8 +59,9 @@ const RULES = {
     /^assets\/minecraft\/textures\/entity\/.+\.png(\.mcmeta)?$/,
     /^assets\/minecraft\/textures\/models\/armor\/[^/]+\.png$/,
     /^assets\/minecraft\/textures\/painting\/[^/]+\.png$/,
+    /^assets\/minecraft\/textures\/font\/ascii\.png$/,
   ],
-  'b1.8.1': [/^terrain\.png$/, /^gui\/items\.png$/, /^mob\/[^/]+\.png$/, /^char\.png$/, /^environment\/[^/]+\.png$/, /^misc\/[^/]+\.png$/, /^armor\/[^/]+\.png$/, /^item\/[^/]+\.png$/, /^art\/[^/]+\.png$/, /^terrain\/[^/]+\.png$/],
+  'b1.8.1': [/^terrain\.png$/, /^gui\/items\.png$/, /^mob\/[^/]+\.png$/, /^char\.png$/, /^environment\/[^/]+\.png$/, /^misc\/[^/]+\.png$/, /^armor\/[^/]+\.png$/, /^item\/[^/]+\.png$/, /^art\/[^/]+\.png$/, /^terrain\/[^/]+\.png$/, /^font\/default\.png$/, /^font\.txt$/],
 };
 
 function extract(jar, version) {

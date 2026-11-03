@@ -137,8 +137,9 @@ export const poseEnderman: PoseFn = (p, c) => {
   p.leftArm.rx = clamp(p.leftArm.rx * 0.5);
   p.rightLeg.rx = clamp(p.rightLeg.rx * 0.5);
   p.leftLeg.rx = clamp(p.leftLeg.rx * 0.5);
-  if (c.aggressive) p.head.py -= 5;
+  // The jaw (headwear) copies the head first; a screaming enderman then lifts only the head 5 px: its mouth opens.
   copyAngles(p.head, p.hat);
+  if (c.aggressive || c.v.has('screaming')) p.head.py -= 5;
 };
 
 interface BipedOpts {

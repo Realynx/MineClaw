@@ -57,6 +57,7 @@ function horseModel(id: string, longEars: boolean): ModelDef {
     width: 1.3964844,
     height: 1.6,
     layers: longEars ? ['saddle', 'chest'] : ['saddle'],
+    baby: HORSE_BABY,
     parts: [
       part('body', [0, 11, 9], [box(-5, -8, -19, 10, 10, 24, 0, 34)]),
       part('tailBase', [0, 3, 14], [box(-1, -1, 0, 2, 2, 3, 44, 0)], { rot: [-1.134464, 0, 0] }),
@@ -87,6 +88,24 @@ function horseModel(id: string, longEars: boolean): ModelDef {
     pose: poseHorse,
   };
 }
+
+/**
+ * ModelHorse.render's child layout with AbstractHorse.getHorseSize() = 0.5 (constant in 1.12.2) and no grazing: the legs
+ * scale(g, 0.5 + g/2, g) · translate(0, 0.95(1 − g)), the body, tail, neck and mane scale(g) · translate(0, 1.35(1 − g)),
+ * the head and ears scale(0.5 + g²/2) · translate(0, 1.35(1 − g)) (blocks; here pixels). The saddle and chest bags render
+ * outside the push/pop (and never on a foal).
+ */
+const HORSE_G = 0.5;
+const HORSE_LEGS = ['back', 'front'].flatMap((a) => ['Left', 'Right'].flatMap((s) => ['Leg', 'Shin', 'Hoof'].map((p) => `${a}${s}${p}`)));
+const HORSE_BABY: NonNullable<ModelDef['baby']> = {
+  head: ['head', 'leftEar', 'rightEar'],
+  headScale: 0.5 + HORSE_G * HORSE_G * 0.5,
+  headOffset: [0, 1.35 * (1 - HORSE_G) * 16, 0],
+  bodyScale: HORSE_G,
+  bodyOffset: [0, 1.35 * (1 - HORSE_G) * 16, 0],
+  groups: [{ parts: HORSE_LEGS, scale: [HORSE_G, 0.5 + HORSE_G * 0.5, HORSE_G], offset: [0, 0.95 * (1 - HORSE_G) * 16, 0] }],
+  unscaled: ['saddleBottom', 'saddleFront', 'saddleBack', 'leftSaddleRope', 'leftSaddleMetal', 'rightSaddleRope', 'rightSaddleMetal', 'leftChest', 'rightChest'],
+};
 
 /** ModelHorse.setLivingAnimations with no rearing, grazing or open mouth. */
 const poseHorse: PoseFn = (p, c) => {
@@ -176,6 +195,18 @@ export const LLAMA: ModelDef = {
   width: 0.9,
   height: 1.87,
   layers: ['decor', 'chest'],
+  // ModelLlama.render's child layout: head scale(0.714, 0.649, 0.794) · translate(0, 21 px, 0.22), body
+  // scale(0.625, 0.4545, 0.4545) · translate(0, 33 px, 0), legs scale(0.4545, 0.4132, 0.4545) · translate(0, 33 px, 0); the
+  // chest bags are drawn outside it (and never on a baby).
+  baby: {
+    head: ['head'],
+    headScale: [0.71428573, 0.64935064, 0.7936508],
+    headOffset: [0, 21, 0.22 * 16],
+    bodyScale: [0.625, 0.45454544, 0.45454544],
+    bodyOffset: [0, 33, 0],
+    groups: [{ parts: ['leg1', 'leg2', 'leg3', 'leg4'], scale: [0.45454544, 0.41322312, 0.45454544], offset: [0, 33, 0] }],
+    unscaled: ['chest1', 'chest2'],
+  },
   parts: [
     part('head', [0, 7, -6], LLAMA_HEAD, { children: [grown('headDecor', LLAMA_HEAD, 0.5, 'decor')] }),
     part('body', [0, 5, 2], LLAMA_BODY, { rot: [PI / 2, 0, 0], children: [grown('bodyDecor', LLAMA_BODY, 0.5, 'decor')] }),

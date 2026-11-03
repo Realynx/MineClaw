@@ -70,6 +70,14 @@ describe.each(Object.entries(cases))('fixtures/%s.json', (file, schemas) => {
 
 describe('fixture specifics', () => {
   const live = loadFixture('live');
+
+  it('equipment slots are [id, meta] or [id, meta, rgb] (a dyed item)', () => {
+    const e = { kind: 'mob', dim: 0, x: 0, y: 64, z: 0 };
+    const ok = C.WorldEntity.safeParse({ ...e, equipment: { head: [298, 0, 0x3366cc], chest: [299, 0], feet: null } });
+    expect(ok.success).toBe(true);
+    expect(ok.data?.equipment?.head).toEqual([298, 0, 0x3366cc]);
+    expect(C.WorldEntity.safeParse({ ...e, equipment: { head: [298, 0, 1, 2] } }).success).toBe(false);
+  });
   const db = loadFixture('db');
   const tools = loadFixture('tools');
 

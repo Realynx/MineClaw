@@ -269,14 +269,21 @@ export type WorldBot = z.infer<typeof WorldBot>;
 export const ItemRef = z.tuple([z.number().int(), z.number().int()]).nullable();
 export type ItemRef = z.infer<typeof ItemRef>;
 
+/** A worn or held item: [id, meta/damage], plus the dye colour 0xRRGGBB as a third element when the item is dyed (1.12.2
+ * leather armour's display.color; b1.8.1 has no dyed items), or null for an empty slot. */
+export const EquipmentItem = z
+  .union([z.tuple([z.number().int(), z.number().int()]), z.tuple([z.number().int(), z.number().int(), z.number().int()])])
+  .nullable();
+export type EquipmentItem = z.infer<typeof EquipmentItem>;
+
 /** Hand items and armour. */
 export const WorldEquipment = z.looseObject({
-  main: ItemRef.optional(),
-  off: ItemRef.optional(),
-  head: ItemRef.optional(),
-  chest: ItemRef.optional(),
-  legs: ItemRef.optional(),
-  feet: ItemRef.optional(),
+  main: EquipmentItem.optional(),
+  off: EquipmentItem.optional(),
+  head: EquipmentItem.optional(),
+  chest: EquipmentItem.optional(),
+  legs: EquipmentItem.optional(),
+  feet: EquipmentItem.optional(),
 });
 export type WorldEquipment = z.infer<typeof WorldEquipment>;
 
@@ -319,7 +326,7 @@ export const WorldEntity = z.looseObject({
   flags: z.number().int().nullish().describe('0x01 burning, 0x02 sneaking, 0x04 riding, 0x08 sprinting, 0x10 using item, 0x20 invisible, 0x40 glowing'),
   variant: z.number().int().nullish().describe('legacy; prefer look'),
   look: z.string().nullish().describe('comma-separated appearance tokens per kind ("red,sheared", "profession=farmer", …)'),
-  equipment: WorldEquipment.nullish().describe('[id, meta] per slot; empty slots and an empty object omitted'),
+  equipment: WorldEquipment.nullish().describe('[id, meta] or [id, meta, rgb] (dyed) per slot; empty slots and an empty object omitted'),
   headYaw: z.number().nullish().describe('1.12.2'),
   baby: z.boolean().nullish().describe('1.12.2'),
   vehicle: z.number().int().nullish().describe('the ridden entity id'),

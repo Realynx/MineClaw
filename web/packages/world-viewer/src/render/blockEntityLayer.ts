@@ -1,9 +1,11 @@
 // The main-thread block-entity layer, shared by every view: what the static section meshes cannot carry.
-// - Sign text: the four lines in the sign font's metrics on the board's front (TileEntitySignRenderer's transform), one small
-//   canvas texture per sign (LRU-capped), drawn only within `signDistance` of the view.
+// - Sign text: the four lines drawn with the version's own bitmap font (font.png and its measured advances: FontRenderer's
+//   glyphs, § colours and styles) on the board's front (TileEntitySignRenderer's transform; b1.8.1's slightly larger
+//   1/90 text scale), one small texture per sign (LRU-capped), drawn only within `signDistance` of the view.
 // - Banners with their block entity: base colour + pattern layers composited into a per-banner texture
 //   (LayeredColorMaskTexture), the slate swaying like TileEntityBannerRenderer (the section mesh leaves these banners out).
-// - Spawners: the display mob, spinning, through the entity layer's `showDisplayMob` hook when it has one.
+// - Spawners: the display mob (a pig when the wire names none, MobSpawnerBaseLogic's default; b1.8.1 never sends one),
+//   leaning back 30° and spinning while a player is within 16 blocks, through the entity layer's `showDisplayMob` hook.
 // Rebuilt only when the block-entity store's revision or the dimension changes (block id/meta and light come from the worker
 // once per rebuild, light again every few seconds); per frame only distances, the sway and the spin are updated.
 
@@ -15,8 +17,9 @@ import { chain, rotate, scale, translate, type M4, type Quad } from '../mesh/qua
 import type { BlockEntityDto, Dim } from '../types';
 import { dyeIndex } from '../wire/normalize';
 import type { GameVersion } from '../world/blocks';
-import { bannerPatternName, charWidth as charWidthOf, compositeBanner, DYE_RGB, signLayout, spawnerMobScale } from './blockEntityTex';
+import { bannerPatternName, charWidth as charWidthOf, compositeBanner, DYE_RGB, signLayout, SPAWNER_SPIN_RAD_S, spawnerMobFeet, spawnerMobScale } from './blockEntityTex';
 import type { ChunkUniforms } from './chunkMaterial';
+import { fontTable, layoutLine, rasterLine, type FontPixels, type FontTable } from './font';
 
 const vertex = /* glsl */ `
 attribute float aShade;
@@ -74,6 +77,9 @@ interface Obj {
   texture?: THREE.Texture;
   usedAt: number;
   kind: 'sign' | 'banner' | 'spawner';
+  /** Spawner: the display mob's spin (radians) and the game ticks of particles not yet emitted. */
+  spin?: number;
+  ticks?: number;
 }
 
 /** Model-space quads (px) → a BufferGeometry with uv in a w×h px texture and a per-vertex face shade. */
@@ -120,9 +126,13 @@ export interface BlockEntityLayerUpdate {
   ticks: number;
   /** The entity layer's display-mob hook (spawners), when present. */
   displayMobs?: {
-    showDisplayMob?: (key: string, dim: Dim, x: number, y: number, z: number, mob: string, scale: number, spinRad: number) => void;
+    showDisplayMob?: (key: string, dim: Dim, x: number, y: number, z: number, mob: string, scale: number, spinRad: number, tiltDeg?: number) => void;
     hideDisplayMob?: (key: string) => void;
+    /** An active spawner's flame and smoke (`ticks` game ticks' worth). */
+    spawnerParticles?: (dim: Dim, x: number, y: number, z: number, ticks: number, now: number) => void;
   };
+  /** Whether a player (or bot) is within `r` blocks of a point (MobSpawnerBaseLogic.isActivated); absent = always. */
+  playerNear?: (dim: Dim, x: number, y: number, z: number, r: number) => boolean;
 }
 
 export class BlockEntityLayer {
@@ -134,6 +144,8 @@ export class BlockEntityLayer {
   private lightAt = 0;
   private bundle: AssetBundle | null = null;
   private pixels: { data: Uint8ClampedArray; width: number } | null = null;
+  private fontData: { table: FontTable; pixels: FontPixels } | null | undefined = undefined;
+  private lastNow = 0;
   private readonly shown = new Set<string>();
   /** Signs with text within this distance (blocks) get their text; banners and spawner mobs within `detailDistance`. */
   signDistance = 32;
@@ -152,7 +164,8 @@ export class BlockEntityLayer {
     if (b === this.bundle) return;
     this.bundle = b;
     this.pixels = null;
-    this.revision = -1; // banner textures come from the bundle: rebuild
+    this.fontData = undefined;
+    this.revision = -1; // banner textures and sign text come from the bundle: rebuild
   }
 
   get version(): GameVersion | null {
@@ -192,13 +205,30 @@ export class BlockEntityLayer {
     const c = p.centre;
     let texts = 0;
     const seen = new Set<string>();
+    const dt = Math.min(0.25, Math.max(0, (p.now - this.lastNow) / 1000));
+    this.lastNow = p.now;
+    const beta = this.version === 'b1.8.1';
     for (const o of this.objs.values()) {
       const x = o.be.x + 0.5, y = o.be.y + 0.5, z = o.be.z + 0.5;
       const d = Math.hypot(x - c.x, y - c.y, z - c.z);
       if (o.kind === 'spawner') {
-        if (d <= this.detailDistance && p.displayMobs?.showDisplayMob && o.be.mob) {
-          // MobSpawnerBaseLogic: the mob turns ~(1000 / (delay + 200))° a tick, drawn ×10: about 4 rad/s.
-          p.displayMobs.showDisplayMob(o.key, p.dim, x, o.be.y + 0.2, z, String(o.be.mob), spawnerMobScale(String(o.be.mob)), (p.now / 1000) * 4);
+        if (d <= this.detailDistance && p.displayMobs?.showDisplayMob) {
+          // The cached entity defaults to a pig (b1.8.1's client never learns the type: every spawner shows one).
+          const mob = o.be.mob ? String(o.be.mob) : 'pig';
+          // It spins, and the block smokes and flickers with flames, only while a player is within 16 blocks of its centre;
+          // the mob is drawn either way.
+          if (!p.playerNear || p.playerNear(p.dim, x, y, z, 16)) {
+            o.spin = ((o.spin ?? 0) + dt * SPAWNER_SPIN_RAD_S) % (Math.PI * 2);
+            o.ticks = (o.ticks ?? 0) + dt * 20;
+            const n = Math.floor(o.ticks);
+            if (n > 0) {
+              o.ticks -= n;
+              p.displayMobs.spawnerParticles?.(p.dim, o.be.x, o.be.y, o.be.z, Math.min(n, 4), p.now);
+            }
+          }
+          const spin = o.spin ?? 0;
+          const [fx, fy, fz] = spawnerMobFeet(spin, beta);
+          p.displayMobs.showDisplayMob(o.key, p.dim, x + fx, o.be.y + fy, z + fz, mob, spawnerMobScale(mob, beta), spin, -30);
           seen.add(o.key);
         }
         continue;
@@ -278,42 +308,78 @@ export class BlockEntityLayer {
 
   // ------------------------------------------------------------------------------------------------------------ signs
 
+  /** The version's font: its glyph table and the sheet's pixels (null without one: the fallback canvas text). */
+  private font(): { table: FontTable; pixels: FontPixels } | null {
+    if (this.fontData !== undefined) return this.fontData;
+    this.fontData = null;
+    const b = this.bundle, img = b?.font;
+    const table = b ? fontTable(b.pack.font, b.version === 'b1.8.1') : null;
+    if (!img || !table) return null;
+    try {
+      const canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(img.width, img.height) : Object.assign(document.createElement('canvas'), { width: img.width, height: img.height });
+      const ctx = canvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
+      if (!ctx) return null;
+      ctx.drawImage(img, 0, 0);
+      this.fontData = { table, pixels: { data: ctx.getImageData(0, 0, img.width, img.height).data, width: img.width, cell: img.width / 16 } };
+    } catch {
+      this.fontData = null;
+    }
+    return this.fontData;
+  }
+
   private buildText(o: Obj): void {
     const lines = o.be.lines ?? [];
     if (!lines.some((l) => l)) {
       o.text = new THREE.Mesh(); // nothing to draw: remember that
       return;
     }
-    // One canvas pixel per font pixel: glyphs drawn at the font's 8 px height, centred in their vanilla advances, then cut
-    // to opaque/clear (no anti-aliasing) and magnified with nearest sampling — the blocky sign-font look.
-    const S = 1;
-    const W = 96, H = 42;
-    const canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(W * S, H * S) : Object.assign(document.createElement('canvas'), { width: W * S, height: H * S });
-    const ctx = canvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
-    if (!ctx) return;
-    ctx.clearRect(0, 0, W * S, H * S);
-    ctx.fillStyle = '#000';
-    ctx.textBaseline = 'top';
-    ctx.font = `bold ${8 * S}px "Lucida Console", "DejaVu Sans Mono", monospace`;
-    for (const l of signLayout(lines)) {
-      let x = l.x + W / 2;
-      for (const ch of l.text) {
-        const w = charWidthOf(ch);
-        ctx.fillText(ch, (x + (w - 1) / 2) * S - ctx.measureText(ch).width / 2, (l.y + H / 2) * S);
-        x += w;
+    const font = this.font();
+    let W = 96;
+    const H = 42;
+    let tex: THREE.Texture;
+    if (font) {
+      // The bitmap font: each line's glyphs from font.png at one texel per font pixel (two when italic text needs the
+      // half-pixel shear), coloured by the § codes (black by default), magnified with nearest sampling.
+      const laid = signLayout(lines, font.table).map((l, j) => ({ ...layoutLine(font.table, l.text, l.x, 0, o.be.x * 31 + o.be.z * 17 + j), y: l.y, x0: l.x }));
+      // Wide enough for every line (b1.8.1 lines are not cut), with room for underlines, bold and italic.
+      W = 2 * Math.ceil(Math.max(48, ...laid.map((l) => Math.max(2 - l.x0, l.x0 + l.width + 2))));
+      const S = laid.some((l) => l.glyphs.some((g) => g.italic)) ? 2 : 1;
+      const data = new Uint8Array(W * S * H * S * 4);
+      for (const l of laid) rasterLine(data, W * S, H * S, S, font.pixels, l, W / 2, l.y + H / 2);
+      const t = new THREE.DataTexture(data, W * S, H * S, THREE.RGBAFormat, THREE.UnsignedByteType);
+      t.needsUpdate = true;
+      tex = t;
+    } else {
+      // No font in the pack: a system monospace font at the font's 8 px height in the vanilla advances, cut to opaque.
+      const canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(W, H) : Object.assign(document.createElement('canvas'), { width: W, height: H });
+      const ctx = canvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
+      if (!ctx) return;
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = '#000';
+      ctx.textBaseline = 'top';
+      ctx.font = `bold 8px "Lucida Console", "DejaVu Sans Mono", monospace`;
+      for (const l of signLayout(lines)) {
+        let x = l.x + W / 2;
+        for (const ch of l.text) {
+          const w = charWidthOf(ch);
+          ctx.fillText(ch, x + (w - 1) / 2 - ctx.measureText(ch).width / 2, l.y + H / 2);
+          x += w;
+        }
       }
+      const img = ctx.getImageData(0, 0, W, H);
+      for (let i = 3; i < img.data.length; i += 4) img.data[i] = img.data[i] >= 96 ? 255 : 0;
+      ctx.putImageData(img, 0, 0);
+      tex = new THREE.CanvasTexture(canvas as HTMLCanvasElement);
+      tex.flipY = false;
     }
-    const img = ctx.getImageData(0, 0, W * S, H * S);
-    for (let i = 3; i < img.data.length; i += 4) img.data[i] = img.data[i] >= 96 ? 255 : 0;
-    ctx.putImageData(img, 0, 0);
-    const tex = new THREE.CanvasTexture(canvas as HTMLCanvasElement);
-    tex.flipY = false;
     tex.magFilter = THREE.NearestFilter;
     tex.minFilter = THREE.NearestFilter;
     tex.generateMipmaps = false;
     tex.colorSpace = THREE.NoColorSpace;
-    // TileEntitySignRenderer: the frame, then translate(0, 1/3, 0.0467) and scale(1/96, −1/96, 1/96) in font pixels.
-    const m = chain(frameOf(o.id === 63, o.meta, false), translate(0, 0.33333334, 0.046666667 + 0.002), scale(0.010416667, -0.010416667, 0.010416667));
+    // TileEntitySignRenderer: the frame, then translate(0, 1/3, 0.0467) and scale(1/96, −1/96, 1/96) in font pixels
+    // (b1.8.1: 0.01666667 × 2/3 = 1/90).
+    const k = this.version === 'b1.8.1' ? 0.016666668 * 0.6666667 : 0.010416667;
+    const m = chain(frameOf(o.id === 63, o.meta, false), translate(0, 0.33333334, 0.046666667 + 0.002), scale(k, -k, k));
     const g = new THREE.BufferGeometry();
     const corners = [[-W / 2, -H / 2], [-W / 2, H / 2], [W / 2, H / 2], [W / 2, -H / 2]];
     g.setAttribute('position', new THREE.Float32BufferAttribute(corners.flatMap(([x, y]) => [x, y, 0]), 3));

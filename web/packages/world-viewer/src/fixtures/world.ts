@@ -84,6 +84,15 @@ const SHOWCASE: Array<[number, number, number, Partial<EntityDto> & { look?: str
   [4028, 8, -30, { kind: 'firework' }],
   [4029, 10, -30, { kind: 'ender_crystal' }],
   [4030, 12, -30, { kind: 'mob', type: 69, look: 'red,open' }],
+  // Dyed leather ([id, meta, rgb]; undyed legs), worn skulls (creeper, dragon, player), elytra, a foal and a baby llama.
+  [4031, -10, -18, { kind: 'mob', type: 54, equipment: { head: [298, 0, 0x3366cc], chest: [299, 0, 0xb02e26], legs: [300, 0], feet: [301, 0, 0x80c71f] } }],
+  [4032, -8, -18, { kind: 'mob', type: 51, equipment: { head: [397, 4] } }],
+  [4033, -6, -18, { kind: 'mob', type: 54, equipment: { head: [397, 5] } }],
+  [4034, -4, -18, { kind: 'mob', type: 27, variant: 2, equipment: { head: [397, 3], chest: [303, 0] } }],
+  [4035, -2, -18, { kind: 'armor_stand', equipment: { head: [397, 0], chest: [443, 0] }, look: 'arms' }],
+  [4036, 1, -18, { kind: 'mob', type: 100, look: 'chestnut', baby: true }],
+  [4037, 4, -18, { kind: 'mob', type: 103, look: 'brown', baby: true }],
+  [4038, 7, -18, { kind: 'mob', type: 100, look: 'chestnut' }],
 ];
 /** [entity models] The mob the hurt → death cycle and the teleporting enderman. */
 const DYING_ID = 4100, TELEPORT_ID = 4101;
@@ -339,6 +348,10 @@ export function plaza(version: GameVersion): PlazaBlock[] {
   out.push({ x: x0 + 4, y, z: z0 + 1, id: 26, meta: 0, be: { x: x0 + 4, y, z: z0 + 1, kind: 'bed', color: 'blue' } });
   out.push({ x: x0 + 4, y, z: z0 + 2, id: 26, meta: 8, be: { x: x0 + 4, y, z: z0 + 2, kind: 'bed', color: 'blue' } });
   out.push({ x: x0 + 6, y, z: z0, id: 52, meta: 0, be: { x: x0 + 6, y, z: z0, kind: 'mob_spawner', mob: 'Zombie' } });
+  // A spawner whose mob the wire does not name (every b1.8.1 spawner): the default pig.
+  out.push({ x: x0 + 7, y, z: z0 + 2, id: 52, meta: 0, be: { x: x0 + 7, y, z: z0 + 2, kind: 'mob_spawner' } });
+  // § formatting on a sign (1.12.2 colours and styles; b1.8.1 colours only).
+  out.push({ x: x0 + 2, y, z: z0 + 2, id: 63, meta: 8, be: { x: x0 + 2, y, z: z0 + 2, kind: 'sign', lines: ['§4Red §1blue §2green', '§lBold§r and §oitalic', '§nunder§r §mstrike', 'a long line that wraps at ninety px'] } });
   if (version === '1.12.2') {
     out.push({ x: x0 + 8, y, z: z0, id: 176, meta: 0, be: { x: x0 + 8, y, z: z0, kind: 'banner', base: 11, patterns: [['bs', 0], ['cr', 14], ['bo', 15]] } });
     out.push({ x: x0 + 9, y, z: z0, id: 176, meta: 4, be: { x: x0 + 9, y, z: z0, kind: 'banner', base: 'white', patterns: [['mr', 'red'], ['ts', 'black']] } });

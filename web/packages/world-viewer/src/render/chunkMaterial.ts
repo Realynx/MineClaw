@@ -162,9 +162,11 @@ void main() {
   return;
 #endif
   if (uTextured > 0.5 && flag(vTile.z, 4.0)) {
-    // [blocks] end portal / gateway: the layered starfield, full bright.
+    // [blocks] end portal / gateway: the layered starfield, full bright; getPasses from the squared distance to the block's
+    // corner (the tile entity's render offset).
     float sf = smoothstep(uFogRange.x, uFogRange.y, length(vWorld.xz - uFogCentre.xz));
-    gl_FragColor = vec4(mix(starfield() + vec3(uFlash), uFogColor, sf), 1.0);
+    vec3 rel = (vCell - 0.5) - cameraPosition;
+    gl_FragColor = vec4(mix(starfield(dot(rel, rel), flag(vTile.z, 16.0)) + vec3(uFlash), uFogColor, sf), 1.0);
     return;
   }
   vec4 c = vColor * texel();
@@ -248,7 +250,7 @@ export function createChunkUniforms(): ChunkUniforms {
     uViewport: { value: new THREE.Vector2(1, 1) },
     uStarSky: { value: new THREE.Vector4(0, 0, 1, 1) },
     uStarPortal: { value: new THREE.Vector4(0, 0, 1, 1) },
-    uStarLayers: { value: 16 },
+    uStarLayers: { value: 17 },
   };
 }
 

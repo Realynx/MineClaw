@@ -18,6 +18,13 @@ export interface PackAnim {
   size?: number;
 }
 
+/** The default font: the character drawn at each of the 256 glyph cells of font.png ("\0" = none) and FontRenderer's
+ * advance per cell (glyph width + spacing), measured from the image at pack time. */
+export interface PackFont {
+  chars: string;
+  widths: number[];
+}
+
 export interface PackBiome {
   name: string;
   temp: number;
@@ -50,6 +57,7 @@ export interface Pack1122 {
   models: Record<string, unknown>;
   itemModels: Record<string, unknown>;
   biomes: Record<string, PackBiome>;
+  font?: PackFont;
 }
 
 /** b1.8.1 pack.json: terrain.png / items.png are 16×16-tile atlases already; entity textures "mob/zombie", "armor/iron_1". */
@@ -61,6 +69,7 @@ export interface PackBeta {
   items: { columns: number; rows: number };
   entity: { width: number; height: number; rects: Record<string, [number, number, number, number]> };
   env: string[];
+  font?: PackFont;
 }
 
 export type Pack = Pack1122 | PackBeta;
@@ -75,6 +84,8 @@ export interface AssetBundle {
   anim: ImageBitmap | null;
   entity: ImageBitmap;
   env: Record<string, ImageBitmap>;
+  /** The default font sheet (1.12.2 textures/font/ascii.png, b1.8.1 font/default.png); null when it failed to load. */
+  font?: ImageBitmap | null;
 }
 
 const URLS: Record<GameVersion, () => Record<string, URL>> = {
@@ -84,6 +95,7 @@ const URLS: Record<GameVersion, () => Record<string, URL>> = {
     items: new URL('../../generated/1.12.2/items.png', import.meta.url),
     anim: new URL('../../generated/1.12.2/anim.png', import.meta.url),
     entity: new URL('../../generated/1.12.2/entity.png', import.meta.url),
+    font: new URL('../../generated/1.12.2/font.png', import.meta.url),
     'env/sun': new URL('../../generated/1.12.2/env/sun.png', import.meta.url),
     'env/moon_phases': new URL('../../generated/1.12.2/env/moon_phases.png', import.meta.url),
     'env/clouds': new URL('../../generated/1.12.2/env/clouds.png', import.meta.url),
@@ -97,6 +109,7 @@ const URLS: Record<GameVersion, () => Record<string, URL>> = {
     blocks: new URL('../../generated/b1.8.1/terrain.png', import.meta.url),
     items: new URL('../../generated/b1.8.1/items.png', import.meta.url),
     entity: new URL('../../generated/b1.8.1/entity.png', import.meta.url),
+    font: new URL('../../generated/b1.8.1/font.png', import.meta.url),
     'env/clouds': new URL('../../generated/b1.8.1/env/clouds.png', import.meta.url),
     'env/rain': new URL('../../generated/b1.8.1/env/rain.png', import.meta.url),
     'env/snow': new URL('../../generated/b1.8.1/env/snow.png', import.meta.url),
@@ -129,12 +142,13 @@ export function loadBundle(version: GameVersion): Promise<AssetBundle> {
         return r.json() as Promise<Pack>;
       });
       const envKeys = Object.keys(u).filter((k) => k.startsWith('env/'));
-      const [pack, blocks, items, anim, entity, ...env] = await Promise.all([
+      const [pack, blocks, items, anim, entity, font, ...env] = await Promise.all([
         packP,
         image(u.blocks),
         image(u.items),
         u.anim ? image(u.anim) : Promise.resolve(null),
         image(u.entity),
+        u.font ? image(u.font).catch(() => null) : Promise.resolve(null),
         ...envKeys.map((k) => image(u[k]).catch(() => null)),
       ]);
       const envMap: Record<string, ImageBitmap> = {};
@@ -142,7 +156,7 @@ export function loadBundle(version: GameVersion): Promise<AssetBundle> {
         const b = env[i];
         if (b) envMap[k.slice(4)] = b;
       });
-      return { version, pack, blocks, items, anim, entity, env: envMap };
+      return { version, pack, blocks, items, anim, entity, env: envMap, font };
     })();
     p.catch(() => cache.delete(version));
     cache.set(version, p);

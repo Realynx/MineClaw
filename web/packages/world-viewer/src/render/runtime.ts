@@ -181,6 +181,13 @@ export class WorldRuntime {
   private overlayData = new Map<Dim, Overlays>();
   private readonly botsBuf: BotView[] = [];
   private readonly entsBuf: EntityView[] = [];
+  /** A bot or player within `r` of a point this frame (spawners spin only then). */
+  private readonly playerNear = (dim: number, x: number, y: number, z: number, r: number): boolean => {
+    const r2 = r * r;
+    for (const b of this.botsBuf) if (b.dim === dim && (b.x - x) ** 2 + (b.y - y) ** 2 + (b.z - z) ** 2 < r2) return true;
+    for (const e of this.entsBuf) if (e.kind === 'player' && e.dim === dim && (e.x - x) ** 2 + (e.y - y) ** 2 + (e.z - z) ** 2 < r2) return true;
+    return false;
+  };
   readonly quality: QualityController;
   readonly probe: RendererProbe;
   private flash = 0;
@@ -652,6 +659,7 @@ export class WorldRuntime {
           now,
           ticks: this.cache.timeNow(c.dim, Date.now()) ?? now / 50,
           displayMobs: this.entities as unknown as BlockEntityLayerUpdate['displayMobs'],
+          playerNear: this.playerNear,
         });
       }
     }
@@ -661,7 +669,7 @@ export class WorldRuntime {
       const p = this.quality.state.profile;
       this.blockAtlas.animHz = p.animHz;
       this.blockAtlas.animCellsPerTick = p.animCellsPerTick;
-      this.blockAtlas.starLayers = p.name === 'software' ? 8 : 16;
+      this.blockAtlas.starLayers = 17; // vanilla's own distance-based layer count on every profile
       const cells = new Set<number>();
       for (const s of this.sections.values()) s.visibleAnimCells(cells);
       this.blockAtlas.setVisible(cells);
