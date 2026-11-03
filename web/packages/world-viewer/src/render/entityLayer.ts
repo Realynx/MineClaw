@@ -16,18 +16,18 @@
 
 import * as THREE from 'three';
 import type { AssetBundle, Pack } from '../assets/bundle';
-import { FLAG_GLOWING, FLAG_INVISIBLE, FLAG_ON_FIRE, FLAG_SNEAKING, FLAG_SPRINTING, type EntityDto, type EntityEvent, type Equipment, type ItemRef } from '../types';
+import { FLAG_GLOWING, FLAG_INVISIBLE, FLAG_ON_FIRE, FLAG_SNEAKING, FLAG_SPRINTING, type EntityDto, type EntityEvent, type EquipRef, type Equipment, type ItemRef } from '../types';
 import type { GameVersion } from '../world/blocks';
 import type { BotView, EntityView } from '../world/entities';
-import { ARMOR_PIECES, armorFromEquipment, armorTexture, buildArmor } from './entities/armor';
+import { ARMOR_PIECES, armorDyes, armorFromEquipment, armorMaterial, armorPasses, buildArmor, buildElytra, buildSkull, SKULL_TEXTURES, skullKind } from './entities/armor';
 import { BOX_SLOT, buildModel, type BuiltModel } from './entities/builder';
 import { Lightning, Particles } from './entities/effects';
 import { facingYaw, minecartBlock, motive, paintingSheet } from './entities/hanging';
 import { isHandheld, itemLookById, itemLookByName, itemName, parseHeld, type ItemLook } from './entities/items';
-import { createEntityMaterials, defaultWorldUniforms, sheetTexture, type EntityMaterials, type WorldUniforms } from './entities/material';
+import { createEntityMaterials, GHOST_FLAG, GHOST_LEVEL, GHOST_PLAYER, GHOST_SELECTED, defaultWorldUniforms, sheetTexture, type EntityMaterials, type WorldUniforms } from './entities/material';
 import { cubeGeometry, InstancedDraw, modelGeometry, ShadowDraw, spriteGeometry, type InstanceData } from './entities/meshes';
 import { attackOffProgress, attackProgress, DEATH_GONE_MS, DEATH_SHRINK_MS, deathAngle, deathScale, eatProgress, hurtAmount, newMotion, stepMotion, wrapDeg, type Motion } from './entities/motion';
-import { identity, mul, rootMatrix, ROW_FLOATS, Skeleton, type Affine } from './entities/pose';
+import { identity, invert, mul, partLocal, rootMatrix, ROW_FLOATS, Skeleton, type Affine } from './entities/pose';
 import { canonical, MOB_NAMES, MODEL_BY_ID, mobLook, mobName, objectLook, objectName, playerLook } from './entities/registry';
 import type { Look, PoseCtx } from './entities/types';
 import { Variant } from './entities/variant';
@@ -92,6 +92,8 @@ interface DisplayMob {
   mob: string;
   scale: number;
   spin: number;
+  /** Degrees about x after the spin (TileEntityMobSpawnerRenderer: −30, leaning back). */
+  tilt: number;
 }
 
 /** What one entity (or bot, or display mob) draws; kept across frames, refreshed by `update`. */
@@ -126,8 +128,25 @@ interface Drawn {
   /** The main hand holds a bow (drawn while using an item). */
   bow: boolean;
   headBlock: ItemLook | null;
+  /** A flat item worn on the head (1.12.2 LayerCustomHead draws any head item that is not a helmet). */
+  headItem: ItemLook | null;
+  /** A skull worn on the head: its type (item meta 0 skeleton, 1 wither, 2 zombie, 3 player, 4 creeper, 5 dragon); −1 none. */
+  skull: number;
+  /** Elytra worn in the chest slot (LayerElytra). */
+  elytra: boolean;
+  /** When a creeper began fusing (its swell and flash run from it), 0 when it is not. */
+  fuseAt: number;
+  /** A minecart's content block id (0 none). */
+  cartBlock: number;
   /** Worn armour materials [helmet, chestplate, leggings, boots]. */
   armor: ReadonlyArray<string | null> | null;
+  /** Their dye colours (1.12.2 leather; null = undyed). */
+  armorDye: ReadonlyArray<number | null> | null;
+  /** The renderer draws head items (LayerCustomHead) / armour (LayerBipedArmor, LayerVillagerArmor) / elytra (LayerElytra). */
+  headLayer: boolean;
+  armorLayer: boolean;
+  /** Head items sit a little higher on villager heads (LayerCustomHead: skulls 1.1875 px, blocks 1.875 px). */
+  villagerHead: boolean;
   baby: boolean;
   invisible: boolean;
   glowing: boolean;
@@ -182,10 +201,23 @@ const FIRE_SLOT = 61;
 const OFF_SLOT = 60;
 const HEAD_SLOT = 59;
 const CONTENT_SLOT = 58;
+/** A worn skull: its head at 58, the dragon's jaw at 59 (never together with a head block or minecart contents). */
+const SKULL_SLOT = CONTENT_SLOT;
+/** Elytra wings: left 56, right 57 (models with at most 56 parts). */
+const ELYTRA_SLOT = 56;
+/** A mooshroom's mushrooms: 3 × 2 crossed planes at 50..55. */
+const MUSHROOM_SLOT = 50;
+/** Mobs whose renderer has LayerCustomHead (RenderBiped and its subclasses, RenderVillager); players, bots and armor stands too. */
+const HEAD_MOBS = new Set(['zombie', 'husk', 'zombie_pigman', 'skeleton', 'stray', 'wither_skeleton', 'zombie_villager', 'vex', 'villager']);
+/** Mobs whose renderer has LayerBipedArmor / LayerVillagerArmor (the giant has armour but no custom head). */
+const ARMOR_MOBS = new Set(['zombie', 'husk', 'zombie_pigman', 'skeleton', 'stray', 'wither_skeleton', 'zombie_villager', 'giant']);
+/** Mobs with LayerElytra (RenderBiped's subclasses); players and armor stands too. */
+const ELYTRA_MOBS = new Set(['zombie', 'husk', 'zombie_pigman', 'skeleton', 'stray', 'wither_skeleton', 'zombie_villager', 'vex']);
 /** Particles per bone row. */
 const PER_ROW = 63;
 const F_EMISSIVE = 1, F_FLAT = 2, F_BLOCKS = 4, F_ENTITY = 8, F_BILLBOARD = 16, F_FIRE = 32, F_FRONT = 64, F_SCROLL = 128;
 const LIVING = new Set(['mob', 'player', 'armor_stand']);
+const ZERO3: readonly [number, number, number] = [0, 0, 0];
 /** Flag bits read by number (the wire's final layout: 0x04 riding, 0x10 using an item). */
 const FLAG_RIDING = 0x04, FLAG_USING_ITEM = 0x10;
 
@@ -210,6 +242,16 @@ export interface EntityShowOptions {
   drawDistance?: number;
   /** The view's vertical field of view (degrees): narrow (iso) views see far entities large, so detail reaches further. */
   fov?: number;
+  /** Occluded-body silhouettes: strength 0..1 per entity key (bot name, player "dim:id"); absent = none. */
+  ghosts?: ReadonlyMap<string, number> | null;
+}
+
+/** A body the silhouette test considers: its key and feet. */
+export interface GhostCandidate {
+  key: string;
+  x: number;
+  y: number;
+  z: number;
 }
 
 export class EntityLayer {
@@ -234,6 +276,10 @@ export class EntityLayer {
   private readonly boxModel: ModelEntry;
   private readonly sprites: InstancedDraw;
   private readonly cubes: InstancedDraw;
+  /** Worn skulls (one draw per skull geometry) and elytra; built on first use. */
+  private readonly skullDraws = new Map<string, InstancedDraw>();
+  private elytraDraw: InstancedDraw | null = null;
+  private readonly extraGeos: THREE.BufferGeometry[] = [];
   private readonly shadowDraw: ShadowDraw;
   private readonly particles = new Particles();
   private particleRow = 0;
@@ -256,8 +302,12 @@ export class EntityLayer {
   private drawnCount = 0;
   private heldCache = new Map<string, ItemLook | null>();
   private readonly root = new Float32Array(12);
+  /** The root without the sneaking sink (the elytra layer). */
+  private readonly rootBase = new Float32Array(12);
   private readonly tmpA = new Float32Array(12);
   private readonly tmpB = new Float32Array(12);
+  private readonly tmpC = new Float32Array(12);
+  private readonly tmpD = new Float32Array(12);
   private readonly inst: InstanceData = { row: 0, slot: 0, layer: 0, tex: [0, 0, 1, 1], r: 1, g: 1, b: 1, flags: 0, hurt: 0, sky: 15, block: 0, flash: 0 };
   private readonly ctx: PoseCtx = {
     swing: 0, amount: 0, age: 0, headYaw: 0, pitch: 0, attack: 0, attackOff: 0, eat: 0, baby: false, v: Variant.NONE, variant: 0, flags: 0, sneaking: false, riding: false,
@@ -302,7 +352,7 @@ export class EntityLayer {
 
   /** Shares the world's per-view uniforms (time of day, fog) so entities light and fog like the sections. */
   setWorldUniforms(u: WorldUniforms): void {
-    for (const m of [this.mats.model, this.mats.modelTranslucent, this.mats.tile, this.mats.shadow])
+    for (const m of [this.mats.model, this.mats.modelTranslucent, this.mats.tile, this.mats.shadow, this.mats.ghost])
       for (const k of Object.keys(u) as Array<keyof WorldUniforms>) if (m.uniforms[k]) m.uniforms[k] = u[k];
   }
 
@@ -391,14 +441,23 @@ export class EntityLayer {
    * "cave_spider"…), drawn at (x, y, z) (its feet) scaled by `scale` and turned by `spinRad` about y. Call again to move or
    * turn it (cheap: one map update); `hideDisplayMob` removes it. Display mobs share the entity draw calls and LOD.
    */
-  showDisplayMob(key: string, dim: number, x: number, y: number, z: number, mob: string, scale: number, spinRad: number): void {
+  showDisplayMob(key: string, dim: number, x: number, y: number, z: number, mob: string, scale: number, spinRad: number, tiltDeg = 0): void {
     const d = this.displays.get(key);
-    if (d) Object.assign(d, { dim, x, y, z, mob, scale, spin: spinRad });
-    else this.displays.set(key, { dim, x, y, z, mob, scale, spin: spinRad });
+    if (d) Object.assign(d, { dim, x, y, z, mob, scale, spin: spinRad, tilt: tiltDeg });
+    else this.displays.set(key, { dim, x, y, z, mob, scale, spin: spinRad, tilt: tiltDeg });
   }
 
   hideDisplayMob(key: string): void {
     this.displays.delete(key);
+  }
+
+  /** An active spawner's particles: `ticks` ticks' worth of one flame and one smoke each, in the block at (x, y, z) (its
+   * min corner). */
+  spawnerParticles(dim: number, x: number, y: number, z: number, ticks: number, now = performance.now()): void {
+    for (let i = 0; i < ticks; i++) {
+      this.particles.burst('spawner_smoke', dim, x + 0.5, y + 0.5, z + 0.5, now);
+      this.particles.burst('spawner_flame', dim, x + 0.5, y + 0.5, z + 0.5, now);
+    }
   }
 
   /** The entity event animations: swings, hurts, deaths, sparks, eating, teleport puffs, lightning bolts. */
@@ -525,7 +584,8 @@ export class EntityLayer {
     if (!d) {
       d = {
         key, bot, dim: 0, x, y, z, kind: 'box', sig: '', look: null, model: null, v: Variant.NONE, w: 0.6, h: 1.8, colour: 0x9a9a9a, row: 0, posed: false, detail: null,
-        item: null, count: 1, held: null, heldTool: false, heldOff: null, heldOffTool: false, bow: false, headBlock: null, armor: null, baby: false, invisible: false, glowing: false,
+        item: null, count: 1, held: null, heldTool: false, heldOff: null, heldOffTool: false, bow: false, headBlock: null, headItem: null, skull: -1, elytra: false, fuseAt: 0, cartBlock: 0,
+        armor: null, armorDye: null, headLayer: false, armorLayer: false, villagerHead: false, baby: false, invisible: false, glowing: false,
         burning: false, flash: 0, hurt: 0, sky: 15, block: 0, bright: 1, age: 0, fixedYaw: null, fixedPitch: 0, hang: null, display: null, smoked: false, eqSig: '',
         motion: newMotion(x, y, z, yaw, key, now), frame: 0, ent: null, botView: null,
       };
@@ -548,22 +608,51 @@ export class EntityLayer {
     d.colour = look?.colour ?? 0x9a9a9a;
   }
 
-  private itemById(ref: ItemRef | undefined, fallbackId = 0): ItemLook | null {
+  private itemById(ref: ItemRef | EquipRef | undefined, fallbackId = 0): ItemLook | null {
     const id = ref?.[0] ?? fallbackId;
     if (!this.bundle || id <= 0) return null;
     return itemLookById(this.version, this.bundle.pack, id, ref?.[1] ?? 0);
   }
 
-  /** Hands, head block and armour from wire equipment (ids in the world's version). */
+  /** Hands, head items, armour and elytra from wire equipment (ids in the world's version). */
   private equip(d: Drawn, eq: Equipment | null | undefined, mainFallback: ItemLook | null, mainName: string | null): void {
+    const beta = this.version === 'b1.8.1';
     d.held = eq?.main ? this.itemById(eq.main) : mainFallback;
     d.heldTool = eq?.main ? isHandheld(itemName(eq.main[0]) ?? '') : !!mainName && isHandheld(parseHeld(mainName).name);
     d.heldOff = eq?.off ? this.itemById(eq.off) : null;
     d.heldOffTool = !!eq?.off && isHandheld(itemName(eq.off[0]) ?? '');
     d.bow = eq?.main?.[0] === 261 || (!!mainName && parseHeld(mainName).name === 'bow');
-    // A pumpkin (or jack-o'-lantern) on the head is drawn as a block; skulls and other head items are not modelled.
-    d.headBlock = eq?.head && (eq.head[0] === 86 || eq.head[0] === 91) ? this.itemById(eq.head) : null;
-    d.armor = armorFromEquipment(eq) ?? armorOf(d.ent?.dto ?? d.botView?.dto ?? {});
+    // LayerCustomHead: a skull (1.12.2 item 397, its meta the type) as the skull model; any other head item that is not a
+    // helmet as its item (blocks as a block, 1.12.2 flat items with their "head" transform). b1.8.1's RenderPlayer draws
+    // only blocks.
+    d.headBlock = d.headItem = null;
+    d.skull = -1;
+    const head = eq?.head;
+    if (head && d.headLayer && armorMaterial(head[0], 'helmet') == null) {
+      if (!beta && head[0] === 397) d.skull = head[1] >= 0 && head[1] <= 5 ? head[1] : 0;
+      else {
+        const l = this.itemById(head);
+        if (l?.kind === 'cube') d.headBlock = l;
+        else if (l && !beta) d.headItem = l;
+      }
+    }
+    d.elytra = !beta && eq?.chest?.[0] === 443 && this.elytraWearer(d);
+    d.armor = d.armorLayer ? (armorFromEquipment(eq) ?? armorOf(d.ent?.dto ?? d.botView?.dto ?? {})) : null;
+    d.armorDye = d.armor ? armorDyes(eq) : null;
+  }
+
+  private elytraWearer(d: Drawn): boolean {
+    if (d.bot || d.ent?.kind === 'player' || d.look?.model === 'armor_stand') return true;
+    return d.ent?.kind === 'mob' && ELYTRA_MOBS.has(mobName(d.ent.type, d.ent.name) ?? '');
+  }
+
+  /** Which equipment layers the entity's renderer has (head items, armour). */
+  private layersFor(d: Drawn, kind: string, e: EntityView | null): void {
+    const all = d.bot || kind === 'player' || kind === 'armor_stand';
+    const name = !all && kind === 'mob' && e ? (mobName(e.type, e.name) ?? '') : '';
+    d.headLayer = all || HEAD_MOBS.has(name);
+    d.armorLayer = all || ARMOR_MOBS.has(name);
+    d.villagerHead = name === 'villager' || name === 'zombie_villager';
   }
 
   private refreshBot(d: Drawn, b: BotView, now: number): void {
@@ -589,6 +678,7 @@ export class EntityLayer {
     const held = b.dto.held ?? null;
     const sigEq = `${held}|${JSON.stringify(extra.equipment ?? null)}`;
     if (d.sig + sigEq !== d.eqSig) {
+      this.layersFor(d, 'player', null);
       this.equip(d, extra.equipment, held ? this.heldLook(held) : null, held);
       d.eqSig = d.sig + sigEq;
     }
@@ -659,10 +749,12 @@ export class EntityLayer {
         }
         if (kind === 'minecart' || kind.endsWith('_minecart')) {
           const block = minecartBlock(dto.minecartType ?? (kind === 'minecart' ? 0 : kind));
+          d.cartBlock = block;
           d.item = block ? this.itemById([block, 0]) : null;
         }
       }
       // Hand items and armour: wire equipment, else a player's held item id.
+      this.layersFor(d, kind, e);
       this.equip(d, dto.equipment, kind === 'player' && e.item > 0 ? this.itemById(null, e.item) : null, null);
       if (!LIVING.has(kind) && d.kind === 'model') d.fixedYaw = e.yaw;
     }
@@ -677,7 +769,12 @@ export class EntityLayer {
     const fuse = e.kind === 'mob' && e.type === 50 && ((!d.v.isString && d.v.num === 1) || d.v.has('fuse', 'fusing', 'ignited'));
     const tnt = d.kind === 'block' && d.colour === 0xd04030;
     const fuseTicks = dto.fuse ?? 80 - (e.ageTicks % 80);
-    d.flash = fuse ? (Math.sin(now / 60) > 0 ? 0.8 : 0) : tnt ? (Math.floor(fuseTicks / 5) % 2 === 0 ? 0.8 : 0) : 0;
+    // RenderCreeper.getColorMultiplier: a white overlay of f·0.2 on odd tenths of the flash intensity f (the fuse's progress
+    // over 28 ticks, from when the wire said it began); RenderTNTPrimed: (1 − (fuse + 1)/100)·0.8 every other 5 ticks.
+    if (fuse && !d.fuseAt) d.fuseAt = now;
+    else if (!fuse) d.fuseAt = 0;
+    const fi = creeperFlash(d.fuseAt, now);
+    d.flash = fuse ? (Math.floor(fi * 10) % 2 === 0 ? 0 : fi * 0.2) : tnt ? (Math.floor(fuseTicks / 5) % 2 === 0 ? Math.max(0, 1 - (fuseTicks + 1) / 100) * 0.8 : 0) : 0;
     if (d.motion.deadAt && now - d.motion.deadAt > 4000) d.motion.deadAt = 0; // still reported long after: it lives
     stepMotion(d.motion, e.x, e.y, e.z, e.yaw, now, (flags & FLAG_SPRINTING) !== 0);
   }
@@ -729,7 +826,9 @@ export class EntityLayer {
       const name = dm.mob.toLowerCase().replace(/^minecraft:/, '').replace(/^entity/, '');
       this.setLook(d, mobLook(this.version, -1, mobName(-1, name), null, 0));
     }
-    d.fixedYaw = (dm.spin * 180) / Math.PI;
+    // The spawner turns the mob by +spin about y, then the mob renders with yaw 0 (rotY(180) inside): rotY(180 + spin), i.e.
+    // a body yaw of −spin; rotX(tilt) there is rotX(−tilt) in the turned mob's frame.
+    d.fixedYaw = (-dm.spin * 180) / Math.PI;
     d.age = this.now / 50;
   }
 
@@ -786,20 +885,39 @@ export class EntityLayer {
     const layout = d.baby && def.baby ? true : false;
     const s0 = def.scale ?? 1, k = (look.scale ?? 1) * (d.baby && !def.baby ? 0.5 : 1) * deathScale(m, now) * (d.display?.scale ?? 1);
     const sc: [number, number, number] = typeof s0 === 'number' ? [s0 * k, s0 * k, s0 * k] : [s0[0] * k, s0[1] * k, s0[2] * k];
+    if (d.fuseAt) {
+      // RenderCreeper.preRenderCallback: the swell scale(h, i, h) from the flash intensity.
+      const f = creeperFlash(d.fuseAt, now), g = 1 + Math.sin(f * 100) * f * 0.01, f4 = Math.min(1, Math.max(0, f)) ** 4;
+      const h = (1 + f4 * 0.4) * g, i = (1 + f4 * 0.1) / g;
+      sc[0] *= h;
+      sc[1] *= i;
+      sc[2] *= h;
+    }
     const flags = d.ent?.flags ?? (d.botView?.dto as { flags?: number } | undefined)?.flags ?? 0;
     const sneaking = (flags & FLAG_SNEAKING) !== 0;
     const isPlayer = d.bot || d.ent?.kind === 'player';
     const body = d.fixedYaw ?? m.body;
-    rootMatrix(this.root, {
-      x: d.x,
+    // RenderEnderman: a screaming enderman jitters (gaussian 0.02 on x and z); RenderZombieVillager: a converting one shakes
+    // its yaw by cos(ticks · 3.25) · π/4 degrees.
+    const screaming = d.look?.model === 'enderman' && d.v.has('screaming');
+    const jx = screaming ? gaussian() * 0.02 : 0, jz = screaming ? gaussian() * 0.02 : 0;
+    const shake = d.look?.model === 'zombie_villager' && d.v.has('converting') ? Math.cos((now / 50) * 3.25) * Math.PI * 0.25 : 0;
+    const root = {
+      x: d.x + jx,
       y: d.y,
-      z: d.z,
-      yaw: body,
+      z: d.z + jz,
+      yaw: body + shake,
       death: deathAngle(m, now),
       scale: sc,
-      offset: def.offset ?? [0, 0, 0],
+      offset: def.offset ?? ZERO3,
       lift: sneaking && isPlayer ? -0.125 : 0,
-    });
+      tilt: d.display ? -d.display.tilt : 0,
+    };
+    // 1.12.2 ModelBiped.render sinks a sneaking adult's parts 0.2 (3.2 px) after the pose (its layers follow: armour, held
+    // items, the custom head); the elytra layer does not.
+    const sneakSink = sneaking && !d.baby && !this.beta && d.armorLayer;
+    if (sneakSink || d.elytra) rootMatrix(this.rootBase, root);
+    rootMatrix(this.root, sneakSink ? { ...root, offset: [root.offset[0], root.offset[1] + 3.2, root.offset[2]] } : root);
     const c = this.ctx;
     // Head yaw: the wire's own when it sends one (1.12.2 head look), else the look yaw; smoothed toward it.
     const wireHead = d.ent?.dto.headYaw ?? (d.botView?.dto as { headYaw?: number | null } | undefined)?.headYaw ?? null;
@@ -831,10 +949,178 @@ export class EntityLayer {
     if (e.built.parts.length <= CONTENT_SLOT) {
       if (d.held) this.poseHeld(d, e, off, false);
       if (d.heldOff) this.poseHeld(d, e, off, true);
-      if (d.headBlock) this.poseHeadBlock(e, off);
+      if (d.skull >= 0 || d.headBlock || d.headItem) this.poseHead(d, e, off, m.swing);
+      else if (this.snowPumpkin(d)) this.poseSnowPumpkin(e, off);
       if (d.item) this.poseContents(d, off, body);
     }
+    if (this.mushrooms(d) && e.built.parts.length <= MUSHROOM_SLOT) this.poseMushrooms(e, off);
+    if (d.elytra && e.built.parts.length <= ELYTRA_SLOT) this.poseElytra(d, off, sneaking, this.rootBase);
     if (d.burning) this.poseFire(d, off);
+  }
+
+  private get beta(): boolean {
+    return this.version === 'b1.8.1';
+  }
+
+  /**
+   * LayerCustomHead: the head part's frame (with the layer's own child transform: translate(0, 0.5 px) · scale(0.7) ·
+   * translate(0, 16 px) where the model's child head is scale(0.75) · translate(0, 16 px)), then
+   * - a skull: scale(1.1875) about the neck (the layer's scale(1.1875, −1.1875, −1.1875) and the skull renderer's
+   *   scale(−1, −1, 1) and 180° turn cancel out), villagers 1.1875 px higher; the dragon head translate(0, −0.374375) ·
+   *   scale(0.75) inside that, its jaw open by (sin(limbSwing·0.2π) + 1)·0.2;
+   * - a block: translate(0, −0.25) · rotY(180°) · scale(0.625, −0.625, −0.625) (b1.8.1: scale(0.625, −0.625, 0.625)), the
+   *   cube centred, villagers 0.1875 higher in that frame;
+   * - a flat item: the same frame, then item/generated's head transform (rotY 180°, translate(0, 13, 7) px).
+   */
+  private poseHead(d: Drawn, e: ModelEntry, off: number, swing: number): void {
+    const hi = e.built.index.head;
+    if (hi == null) return;
+    const frame = this.tmpC;
+    frame.set(e.skel.partMatrix(hi));
+    const def = e.built.def;
+    if (d.baby && def.baby && !d.villagerHead) {
+      // root · T(0, 0.5) · S(0.7 / headScale) · root⁻¹ · head (the child head already carries the model's own layout).
+      const hs = typeof def.baby.headScale === 'number' ? def.baby.headScale : def.baby.headScale[1];
+      const adj = identity(this.tmpA);
+      adj[0] = adj[5] = adj[10] = 0.7 / hs;
+      adj[7] = 0.5;
+      invert(this.tmpB, this.root);
+      mul(this.tmpD, adj, this.tmpB);
+      mul(this.tmpB, this.root, this.tmpD);
+      mul(this.tmpD, this.tmpB, frame);
+      frame.set(this.tmpD);
+    }
+    const l = identity(this.tmpA);
+    if (d.skull >= 0) {
+      const k = 1.1875;
+      if (d.skull === 5) {
+        // ModelDragonHead inside the skull frame: T(0, −0.374375 blocks) · S(0.75), all × 1.1875.
+        l[0] = l[5] = l[10] = k * 0.75;
+        l[7] = -k * 0.374375 * 16 - (d.villagerHead ? k : 0);
+        mul(this.tmpB, frame, l);
+        this.bones.set(this.tmpB, off + SKULL_SLOT * 12);
+        // The jaw: its pivot (0, 4, −8) in the head, rotX((sin(limbSwing·π·0.2) + 1)·0.2).
+        partLocal(this.tmpD, 0, 4, -8, (Math.sin(swing * Math.PI * 0.2) + 1) * 0.2, 0, 0);
+        mul(this.tmpA, this.tmpB, this.tmpD);
+        this.bones.set(this.tmpA, off + (SKULL_SLOT + 1) * 12);
+        return;
+      }
+      l[0] = l[5] = l[10] = k;
+      l[7] = d.villagerHead ? -k : 0;
+      mul(this.tmpB, frame, l);
+      this.bones.set(this.tmpB, off + SKULL_SLOT * 12);
+      return;
+    }
+    if (d.headBlock) {
+      // Cube geometry: x, z ±0.5, y 0..1 → centred, then diag(−10, −10, 10) px (b1.8.1: turned 180°, its pumpkin face is
+      // the south one), up 4 px (+1.875 for villagers).
+      const s = 10;
+      l[0] = this.beta ? s : -s;
+      l[5] = -s;
+      l[10] = this.beta ? -s : s;
+      l[7] = s * 0.5 - 4 - (d.villagerHead ? 1.875 : 0);
+      mul(this.tmpB, frame, l);
+      this.bones.set(this.tmpB, off + HEAD_SLOT * 12);
+      return;
+    }
+    // A flat item (the sprite: x −0.5..0.5, y 0..1): x' = 10x, y' = −10y − 7.125, z' = 4.375 px (villagers 1.875 higher).
+    l[0] = 10;
+    l[5] = -10;
+    l[10] = -10;
+    l[7] = -7.125 - (d.villagerHead ? 1.875 : 0);
+    l[11] = 4.375;
+    mul(this.tmpB, frame, l);
+    this.bones.set(this.tmpB, off + HEAD_SLOT * 12);
+  }
+
+  /** LayerSnowmanHead: a pumpkin unless the wire says it was sheared off (1.12.2 snow golems only). */
+  private snowPumpkin(d: Drawn): boolean {
+    return d.look?.model === 'snow_golem' && !d.invisible && !d.v.has('sheared', 'no_pumpkin', 'nopumpkin');
+  }
+
+  /** The pumpkin on a snow golem's head: translate(0, −0.34375) · rotY(180°) · scale(0.625, −0.625, −0.625), the cube
+   * centred (as poseHead's block, 5.5 px up instead of 4). */
+  private poseSnowPumpkin(e: ModelEntry, off: number): void {
+    const hi = e.built.index.head;
+    if (hi == null) return;
+    const l = identity(this.tmpA);
+    l[0] = -10;
+    l[5] = -10;
+    l[10] = 10;
+    l[7] = 5 - 5.5;
+    mul(this.tmpB, e.skel.partMatrix(hi), l);
+    this.bones.set(this.tmpB, off + HEAD_SLOT * 12);
+  }
+
+  /** LayerMooshroomMushroom: adult mooshrooms carry three red mushrooms (two on the back, one on the head). */
+  private mushrooms(d: Drawn): boolean {
+    return d.look?.texture === 'entity/cow/mooshroom' && !d.baby && !d.invisible;
+  }
+
+  /**
+   * The mushrooms as crossed sprites (the block/cross model: two diagonal planes from 0.8 to 15.2 px), each plane one bone:
+   * in the model root frame (blocks) scale(1, −1, 1) · translate(0.2, 0.35, 0.5) · rotY(42°), then translate(−0.5, −0.5, 0.5)
+   * for the first and translate(0.1, 0, −0.6) · rotY(42°) · translate(−0.5, −0.5, 0.5) for the second; the third on the head
+   * scale(1, −1, 1) · translate(0, 0.7, −0.2) · rotY(12°) · translate(−0.5, −0.5, 0.5); each block then rotY(90°).
+   */
+  private poseMushrooms(e: ModelEntry, off: number): void {
+    const hi = e.built.index.head;
+    const blocks = identity(this.tmpC);
+    blocks[0] = blocks[5] = blocks[10] = 16; // root/part frames are in pixels; vanilla's layer works in blocks
+    const frames: Array<[ArrayLike<number>, number[]]> = [];
+    const back = mul(new Float32Array(12), this.root, blocks);
+    const head = hi != null ? mul(new Float32Array(12), e.skel.partMatrix(hi), blocks) : null;
+    const a = (42 * Math.PI) / 180, b = (12 * Math.PI) / 180;
+    // [frame, chain of (tx, ty, tz, rotY) steps]
+    // BlockModelRenderer.renderModelBrightness turns the block 90° about y before drawing it (which centres it here).
+    const q = Math.PI / 2;
+    frames.push([back, [0.2, 0.35, 0.5, a, -0.5, -0.5, 0.5, q]]);
+    frames.push([back, [0.2, 0.35, 0.5, a, 0.1, 0, -0.6, a, -0.5, -0.5, 0.5, q]]);
+    if (head) frames.push([head, [0, 0.7, -0.2, b, -0.5, -0.5, 0.5, q]]);
+    let slot = MUSHROOM_SLOT;
+    for (const [frame, steps] of frames) {
+      // scale(1, −1, 1) first.
+      const m = identity(this.tmpA);
+      m[5] = -1;
+      let cur = mul(new Float32Array(12), frame, m);
+      for (let s = 0; s < steps.length; s += 4) {
+        compose(this.tmpD, steps[s], steps[s + 1], steps[s + 2], steps[s + 3], 0, 1, 1, 1, 0, 0, 0);
+        cur = mul(new Float32Array(12), cur, this.tmpD);
+      }
+      // The two cross planes in block space: centre (0.5, y, 0.5), along (±1, 0, 1) × 14.4/16 / √2·√2, 1 tall.
+      for (const dir of [1, -1]) {
+        const p = identity(this.tmpA);
+        const w = 14.4 / 16;
+        p[0] = w * dir;
+        p[8] = w;
+        p[2] = -dir * 0.01;
+        p[10] = 0.01;
+        p[3] = 0.5;
+        p[11] = 0.5;
+        mul(this.tmpB, cur, p);
+        this.bones.set(this.tmpB, off + slot * 12);
+        slot++;
+      }
+    }
+  }
+
+  /** LayerElytra: in the body's root frame, translate(0, 0, 0.125) (2 px back); ModelElytra's wings at (±5, h, 0) turned
+   * (x 15°, z ∓15°; sneaking x 40°, z ∓45°, y ±5°, h = 3); a child's at scale(0.5) · translate(0, 24 px, −1.6 px). */
+  private poseElytra(d: Drawn, off: number, sneaking: boolean, root: ArrayLike<number>): void {
+    const pre = identity(this.tmpA);
+    if (d.baby) {
+      pre[0] = pre[5] = pre[10] = 0.5;
+      pre[7] = 12;
+      pre[11] = 2 - 0.8; // translate(0, 0, 2) · scale(0.5) · translate(0, 24, −1.6)
+    } else pre[11] = 2;
+    mul(this.tmpB, root, pre);
+    const rx = sneaking ? 0.6981317 : 0.2617994, rz = sneaking ? -0.7853982 : -0.2617994, ry = sneaking ? 0.08726646 : 0, h = sneaking ? 3 : 0;
+    partLocal(this.tmpD, 5, h, 0, rx, ry, rz);
+    mul(this.tmpC, this.tmpB, this.tmpD);
+    this.bones.set(this.tmpC, off + ELYTRA_SLOT * 12);
+    partLocal(this.tmpD, -5, h, 0, rx, -ry, -rz);
+    mul(this.tmpC, this.tmpB, this.tmpD);
+    this.bones.set(this.tmpC, off + (ELYTRA_SLOT + 1) * 12);
   }
 
   /** A held item in the right (or left) hand: arm matrix · hand offset (pixels, arm space) · item orientation · size. */
@@ -865,24 +1151,19 @@ export class EntityLayer {
     this.bones.set(out, off + (left ? OFF_SLOT : HELD_SLOT) * 12);
   }
 
-  /** A pumpkin worn on the head: a block over the head box (rotated 180° about z so its front stays at the face). */
-  private poseHeadBlock(e: ModelEntry, off: number): void {
-    const head = e.built.index.head;
-    if (head == null) return;
-    const l = identity(this.tmpA);
-    const s = 8.6;
-    l[0] = -s;
-    l[5] = -s;
-    l[10] = s;
-    l[7] = 0.3;
-    mul(this.tmpB, e.skel.partMatrix(head), l);
-    this.bones.set(this.tmpB, off + HEAD_SLOT * 12);
-  }
 
-  /** Minecart contents: the block inside, at the cart's floor, turned with it. */
+  /**
+   * Minecart contents: the block inside, turned with the cart. 1.12.2 RenderMinecart: translate(0, 0.375) · rotY(180 − yaw)
+   * · scale(0.75) · translate(−0.5, (offset − 8)/16, 0.5) · (renderBlockBrightness) rotY(90°), the display offset 6 (chest 8,
+   * hopper 1): a 0.75 block turned rotY(270 − yaw), its bottom 0.375 + 0.75·(offset − 8)/16 up.
+   */
   private poseContents(d: Drawn, off: number, yaw: number): void {
     if (d.look?.model !== 'minecart') return;
-    compose(this.tmpA, d.x, d.y + 0.3, d.z, (-yaw * Math.PI) / 180, 0, 0.6, 0.6, 0.6, 0, 0, 0);
+    if (this.beta) compose(this.tmpA, d.x, d.y + 0.3, d.z, (-yaw * Math.PI) / 180, 0, 0.6, 0.6, 0.6, 0, 0, 0);
+    else {
+      const j = d.cartBlock === 54 ? 8 : d.cartBlock === 154 ? 1 : 6;
+      compose(this.tmpA, d.x, d.y + 0.375 + (0.75 * (j - 8)) / 16, d.z, ((270 - yaw) * Math.PI) / 180, 0, 0.75, 0.75, 0.75, 0, 0, 0);
+    }
     this.bones.set(this.tmpA, off + CONTENT_SLOT * 12);
   }
 
@@ -986,7 +1267,11 @@ export class EntityLayer {
     this.sprites.reset();
     this.cubes.reset();
     this.shadowDraw.reset();
+    for (const s of this.skullDraws.values()) s.reset();
+    this.elytraDraw?.reset();
     this.visibleBots.length = 0;
+    this.ghostMap = opts.ghosts ?? null;
+    this.ghostSelected = opts.selected ?? null;
     const far = (opts.drawDistance ?? 1e9) + 8, detail = this.detailDistance;
     const want = new Set<string>();
     let n = 0;
@@ -1016,6 +1301,8 @@ export class EntityLayer {
     this.sprites.commit();
     this.cubes.commit();
     this.shadowDraw.commit();
+    for (const s of this.skullDraws.values()) s.commit();
+    this.elytraDraw?.commit();
     this.drawnCount = n;
     for (const [k, l] of this.entLabels) {
       if (want.has(k)) l.sprite.visible = true;
@@ -1057,7 +1344,37 @@ export class EntityLayer {
     i.b = ((d.colour & 255) / 255) * d.bright;
     i.flags |= F_FLAT;
     i.tex = [0, 0, 1, 1];
+    this.ghostFlags(d, i, this.boxModel.opaque);
     this.boxModel.opaque.push(i);
+  }
+
+  // ------------------------------------------------------------------------------------------------------- silhouettes
+
+  private ghostMap: ReadonlyMap<string, number> | null = null;
+  private ghostSelected: string | null = null;
+
+  /** Bots and players in `dim` within `max` blocks of `cam` (not invisible): what a view tests for occlusion. */
+  ghostCandidates(dim: number, cam: THREE.Vector3, max: number): GhostCandidate[] {
+    const out: GhostCandidate[] = [];
+    for (const d of this.list) {
+      if (d.dim !== dim || d.invisible || d.display || d.motion.deadAt) continue;
+      if (!d.bot && d.ent?.kind !== 'player') continue;
+      if (Math.hypot(d.x - cam.x, d.y - cam.y, d.z - cam.z) > max) continue;
+      out.push({ key: d.key, x: d.x, y: d.y, z: d.z });
+    }
+    return out;
+  }
+
+  /** Flags the body's base instance for the silhouette pass (when this view found it hidden) and makes the draw's ghost twin. */
+  private ghostFlags(d: Drawn, i: InstanceData, draw: InstancedDraw): void {
+    const a = this.ghostMap?.get(d.key) ?? 0;
+    if (a < 0.02 || d.invisible || (!d.bot && d.ent?.kind !== 'player')) return;
+    const sel = this.ghostSelected;
+    const selected = d.bot && !!sel && (d.key === sel || this.botObjs.get(d.key)?.root.userData.short === sel);
+    i.flags |= GHOST_FLAG | (d.bot ? (selected ? GHOST_SELECTED : 0) : GHOST_PLAYER);
+    i.flags += Math.max(1, Math.min(15, Math.round(a * 15))) * GHOST_LEVEL;
+    const g = draw.ghostMesh(this.mats.ghost);
+    if (g.created) this.group.add(g.mesh);
   }
 
   private rect(key: string): [number, number, number, number] | null {
@@ -1068,6 +1385,7 @@ export class EntityLayer {
   }
 
   private pushDetail(d: Drawn, dist: number): void {
+    // No blob under spawner display mobs, hanging entities or the invisible.
     if (this.shadows && dist < this.detailDistance && !d.display && !d.hang && !d.invisible) {
       const r = d.kind === 'item' ? 0.15 : Math.min(3, Math.max(0.25, d.w * 0.5 + 0.1));
       this.shadowDraw.push(d.x, d.y, d.z, r * deathScale(d.motion, this.now), d.motion.deadAt ? 0.2 : 0.45);
@@ -1081,6 +1399,7 @@ export class EntityLayer {
         const i = this.base(d, 0, 0);
         i.tex = tex;
         tint(i, look.tint, d.bright);
+        if (!look.translucent) this.ghostFlags(d, i, e.opaque);
         (look.translucent ? this.translucentOf(e) : e.opaque).push(i);
         for (const l of look.layers ?? []) {
           const lt = this.rect(l.texture);
@@ -1097,9 +1416,20 @@ export class EntityLayer {
         if (d.armor) this.pushArmor(d, e);
         if (d.held) this.pushItem(d, d.held, HELD_SLOT, false);
         if (d.heldOff) this.pushItem(d, d.heldOff, OFF_SLOT, false);
-        if (d.headBlock) this.pushItem(d, d.headBlock, HEAD_SLOT, false);
+        if (d.skull >= 0) this.pushSkull(d);
+        else if (d.headBlock) this.pushItem(d, d.headBlock, HEAD_SLOT, false);
+        else if (d.headItem) this.pushItem(d, d.headItem, HEAD_SLOT, false);
+        else if (this.snowPumpkin(d)) {
+          const l = this.pumpkinLook();
+          if (l) this.pushItem(d, l, HEAD_SLOT, false);
+        }
+        if (this.mushrooms(d) && e.built.parts.length <= MUSHROOM_SLOT) {
+          const l = this.mushroomLook();
+          if (l) for (let s = 0; s < 6; s++) this.pushItem(d, l, MUSHROOM_SLOT + s, false);
+        }
         if (d.item && d.look?.model === 'minecart') this.pushItem(d, d.item, CONTENT_SLOT, false);
       }
+      if (d.elytra && e.built.parts.length <= ELYTRA_SLOT) this.pushElytra(d);
       if (d.burning) this.pushFire(d);
       return;
     }
@@ -1125,14 +1455,62 @@ export class EntityLayer {
     ARMOR_PIECES.forEach((piece, k) => {
       const m = d.armor![k];
       if (!m) return;
-      const tex = this.rect(armorTexture(m, piece, beta));
-      if (!tex) return;
-      const i = this.base(d, 0, k + 1);
-      i.tex = tex;
-      // Undyed leather (the dye colour is not on the wire).
-      if (/leather|cloth/.test(m)) tint(i, 0xa06540, d.bright);
-      e.armor!.push(i);
+      // LayerArmorBase: the piece (1.12.2 leather tinted by its dye, default 0xA06540), then leather's untinted overlay.
+      for (const pass of armorPasses(m, piece, beta, d.armorDye?.[k])) {
+        const tex = this.rect(pass.texture);
+        if (!tex) continue;
+        const i = this.base(d, 0, k + 1);
+        i.tex = tex;
+        if (pass.tint != null) tint(i, pass.tint, d.bright);
+        e.armor!.push(i);
+      }
     });
+  }
+
+  private pumpkinLook(): ItemLook | null {
+    if (!this.bundle) return null;
+    const k = 'pumpkin';
+    if (!this.heldCache.has(k)) this.heldCache.set(k, itemLookById(this.version, this.bundle.pack, 86, 0));
+    return this.heldCache.get(k) ?? null;
+  }
+
+  private mushroomLook(): ItemLook | null {
+    const p = this.bundle?.pack;
+    if (!p || p.version !== '1.12.2') return null;
+    const t = p.blocks.tiles['blocks/mushroom_red'];
+    return t ? { kind: 'sprite', atlas: 'blocks', cell: t[1] * p.blocks.columns + t[0], tint: 0 } : null;
+  }
+
+  /** A worn skull: one instance of its skull geometry, textured by its type. */
+  private pushSkull(d: Drawn): void {
+    const kind = skullKind(d.skull);
+    const tex = this.rect(SKULL_TEXTURES[d.skull] ?? SKULL_TEXTURES[0]);
+    if (!tex) return;
+    let draw = this.skullDraws.get(kind);
+    if (!draw) {
+      const g = modelGeometry(buildSkull(kind));
+      this.extraGeos.push(g);
+      draw = new InstancedDraw(g, this.mats.model, false, `skull ${kind}`);
+      this.group.add(draw.mesh);
+      this.skullDraws.set(kind, draw);
+    }
+    const i = this.base(d, SKULL_SLOT, 0);
+    i.tex = tex;
+    draw.push(i);
+  }
+
+  private pushElytra(d: Drawn): void {
+    const tex = this.rect('entity/elytra');
+    if (!tex) return;
+    if (!this.elytraDraw) {
+      const g = modelGeometry(buildElytra());
+      this.extraGeos.push(g);
+      this.elytraDraw = new InstancedDraw(g, this.mats.model, false, 'elytra');
+      this.group.add(this.elytraDraw.mesh);
+    }
+    const i = this.base(d, ELYTRA_SLOT, 0);
+    i.tex = tex;
+    this.elytraDraw.push(i);
   }
 
   private pushItem(d: Drawn, l: ItemLook, slot: number, billboard: boolean): void {
@@ -1349,6 +1727,10 @@ export class EntityLayer {
       e.geometry.dispose();
     }
     this.models.clear();
+    for (const s of this.skullDraws.values()) s.dispose();
+    this.skullDraws.clear();
+    this.elytraDraw?.dispose();
+    for (const g of this.extraGeos) g.dispose();
     this.sprites.dispose();
     this.cubes.dispose();
     this.shadowDraw.dispose();
@@ -1360,6 +1742,16 @@ export class EntityLayer {
     for (const t of this.textures) t.dispose();
     this.labels.dispose();
   }
+}
+
+/** EntityCreeper.getCreeperFlashIntensity: the fuse's progress over fuseTime − 2 = 28 ticks since it began (0 = not fusing). */
+function creeperFlash(fuseAt: number, now: number): number {
+  return fuseAt ? Math.min(1, Math.max(0, (now - fuseAt) / (28 * 50))) : 0;
+}
+
+/** A standard normal sample (Box–Muller), for java.util.Random.nextGaussian jitter. */
+function gaussian(): number {
+  return Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
 }
 
 /** Held item placement in arm space (pixels, y down the arm, −z forward): the fist position, the item's axes there (right,

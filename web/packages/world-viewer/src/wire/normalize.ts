@@ -1,6 +1,6 @@
 // Accepts the supervisor's snake_case replies or Nest's camelCase mirror and returns the viewer's types with defaults filled.
 
-import { FLAG_GLOWING, FLAG_INVISIBLE, FLAG_ON_FIRE, FLAG_RIDING, FLAG_SNEAKING, FLAG_SPRINTING, FLAG_USING_ITEM, type BlockEntities, type BlockEntityColumn, type BlockEntityDto, type BotDto, type EntityDelta, type EntityDto, type EntityEvent, type Equipment, type ItemRef, type Mark, type Overlays, type PlanDto, type WorldIndex } from '../types';
+import { FLAG_GLOWING, FLAG_INVISIBLE, FLAG_ON_FIRE, FLAG_RIDING, FLAG_SNEAKING, FLAG_SPRINTING, FLAG_USING_ITEM, type BlockEntities, type BlockEntityColumn, type BlockEntityDto, type BotDto, type EntityDelta, type EntityDto, type EntityEvent, type EquipRef, type Equipment, type ItemRef, type Mark, type Overlays, type PlanDto, type WorldIndex } from '../types';
 
 const camel = (k: string) => k.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
 
@@ -98,10 +98,18 @@ function flags(v: unknown): number {
   return f;
 }
 
+/** An equipment slot: [id, meta], keeping a dye colour (a third array element, or `color`/`rgb`) when there is one. */
+export function equipRef(v: unknown): EquipRef {
+  const r = itemRef(v);
+  if (!r) return null;
+  const c = Array.isArray(v) ? v[2] : v && typeof v === 'object' ? ((v as Record<string, unknown>).color ?? (v as Record<string, unknown>).rgb) : undefined;
+  return typeof c === 'number' && Number.isFinite(c) ? [r[0], r[1], c & 0xffffff] : r;
+}
+
 function equipment(v: unknown): Equipment | null {
   if (!v || typeof v !== 'object') return null;
   const o = v as Record<string, unknown>;
-  const pick = (...k: string[]) => itemRef(k.map((n) => o[n]).find((x) => x != null));
+  const pick = (...k: string[]) => equipRef(k.map((n) => o[n]).find((x) => x != null));
   const e: Equipment = {
     main: pick('main', 'mainhand', 'mainHand', 'hand'),
     off: pick('off', 'offhand', 'offHand'),

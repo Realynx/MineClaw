@@ -7,10 +7,15 @@
 //   anim.png     every frame of every animated block/item texture, one row per animation
 //   entity.png   every textures/entity/**.png, models/armor/*.png and painting/*.png, shelf-packed
 //   env/*.png    sun, moon phases, clouds, rain, snow (copied)
-//   pack.json    { tiles, items, anims, entity, blockstates, models, itemModels, biomes, colormaps }
+//   font.png     textures/font/ascii.png (copied)
+//   pack.json    { tiles, items, anims, entity, blockstates, models, itemModels, biomes, colormaps, font }
 // b1.8.1
 //   terrain.png, items.png (copied: already 16×16-tile atlases), entity.png (mob/*, char.png, armor/*, item/{boat,cart,arrows,xporb}, art/kz),
-//   env/*.png, pack.json
+//   env/*.png, font.png (font/default.png), pack.json
+//
+// pack.json `font`: { chars, widths }: the glyph table (the character at each of the 256 glyph cells; b1.8.1 from font.txt
+// at cell 32 on, as ChatAllowedCharacters) and FontRenderer's advance per glyph cell, measured from the image like
+// FontRenderer.readFontTexture (1.12.2: last column with alpha, + 1 spacing; b1.8.1: last column with blue > 0, + 2).
 //
 //   node scripts/pack-assets.mjs            (both versions)
 
@@ -226,11 +231,11 @@ function pack1122() {
   // Native-resolution textures for the cases a 16 px cell would halve (32 px flowing water and lava), and the starfield and
   // dragon head textures; a block quad addresses them through the tile attribute's sheet size.
   const flowBig = ['water_flow', 'lava_flow'].map((n) => ({ n, png: tex(`blocks/${n}`), meta: existsSync(join(src, 'textures', 'blocks', `${n}.png.mcmeta`)) ? minify(join(src, 'textures', 'blocks', `${n}.png.mcmeta`)).animation ?? {} : null })).filter((b) => b.png && b.png.width > 16);
-  const halve = (p, size) => (p && p.width > size ? resample(p, 0, 0, p.width, p.width, size, size) : p);
   const sheetList = [
     ...flowBig.map((b) => ({ name: `blocks/${b.n}@${b.png.width}`, png: resample(b.png, 0, 0, b.png.width, b.png.width, b.png.width, b.png.width) })),
-    { name: 'environment/end_sky', png: halve(tex('environment/end_sky'), 128) },
-    { name: 'entity/end_portal', png: halve(tex('entity/end_portal'), 128) },
+    // The starfield's textures at their native size (end_sky 128 px, end_portal 256 px), as TileEntityEndPortalRenderer binds them.
+    { name: 'environment/end_sky', png: tex('environment/end_sky') },
+    { name: 'entity/end_portal', png: tex('entity/end_portal') },
     { name: 'entity/enderdragon/dragon', png: tex('entity/enderdragon/dragon') },
     ...['normal', 'trapped', 'ender', 'normal_double', 'trapped_double'].map((k) => ({ name: `entity/chest/${k}`, png: tex(`entity/chest/${k}`) })),
     ...colours.map((c) => ({ name: `entity/bed/${c}`, png: tex(`entity/bed/${c}`) })),
@@ -273,6 +278,7 @@ function pack1122() {
     models,
     itemModels,
     biomes: biomes1122(),
+    font: packFont(join(src, 'textures', 'font', 'ascii.png'), dest, false),
   };
   writeFileSync(join(dest, 'pack.json'), JSON.stringify(packJson));
   report(dest);
@@ -300,8 +306,46 @@ function packBeta() {
     env.push(n);
   }
   for (const m of ['misc']) if (existsSync(join(src, m))) for (const f of walk(join(src, m))) if (/(water|grasscolor|foliagecolor)\.png$/.test(f)) writeFileSync(join(dest, 'env', f.split(/[\\/]/).pop()), readFileSync(f));
-  writeFileSync(join(dest, 'pack.json'), JSON.stringify({ version: 'b1.8.1', tileSize: 16, terrain: { columns: 16, rows: 16, info: terrainInfo }, items: { columns: 16, rows: 16 }, entity: { width: ent.width, height: ent.height, rects: ent.rects }, env }));
+  const font = packFont(join(src, 'font', 'default.png'), dest, true);
+  writeFileSync(join(dest, 'pack.json'), JSON.stringify({ version: 'b1.8.1', tileSize: 16, terrain: { columns: 16, rows: 16, info: terrainInfo }, items: { columns: 16, rows: 16 }, entity: { width: ent.width, height: ent.height, rects: ent.rects }, env, font }));
   report(dest);
+}
+
+/** FontRenderer's glyph table of 1.12.2 (the character at each cell of ascii.png; \0 = none). */
+const CHARS_1122 =
+  'ÀÁÂÈÊËÍÓÔÕÚßãõğİıŒœŞşŴŵžȇ\0\0\0\0\0\0\0 !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\0ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜø£Ø×ƒáíóúñÑªº¿®¬½¼¡«»░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀αβΓπΣσμτΦΘΩδ∞∅∈∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■\0';
+
+/** Per-cell advances of a 16×16-cell font image: 1.12.2 readFontTexture (alpha), b1.8.1's constructor (blue channel). */
+function fontWidths(png, beta) {
+  const cw = png.width / 16, ch = png.height / 16;
+  const widths = [];
+  for (let n = 0; n < 256; n++) {
+    const cx = (n % 16) * cw, cy = Math.floor(n / 16) * ch;
+    let q = cw - 1;
+    for (; q >= 0; q--) {
+      let empty = true;
+      for (let s = 0; s < ch && empty; s++) {
+        const o = ((cy + s) * png.width + cx + q) * 4;
+        if (beta ? png.data[o + 2] > 0 : png.data[o + 3] !== 0) empty = false;
+      }
+      if (!empty) break;
+    }
+    if (beta) widths.push(n === 32 ? 4 : q + 2);
+    else widths.push(n === 32 ? 4 : Math.floor(0.5 + (q + 1) * (8 / cw)) + 1);
+  }
+  return widths;
+}
+
+function packFont(src, dest, beta) {
+  if (!existsSync(src)) return undefined;
+  writeFileSync(join(dest, 'font.png'), readFileSync(src));
+  let chars = CHARS_1122;
+  if (beta) {
+    const txt = join(dirname(src), '..', 'font.txt');
+    const table = existsSync(txt) ? readFileSync(txt, 'utf8').split(/\r?\n/).filter((l) => !l.startsWith('#')).join('') : '';
+    chars = '\0'.repeat(32) + table;
+  }
+  return { chars, widths: fontWidths(readPng(src), beta) };
 }
 
 function report(dir) {

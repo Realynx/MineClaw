@@ -19,7 +19,7 @@ import { Poller, WorldSync, type Interest } from '../world/sync';
 import { meshAssets } from '../atlas/assets';
 import { BlockAtlas } from './blockAtlas';
 import { BlockEntityLayer, type BlockEntityLayerUpdate } from './blockEntityLayer'; // [blocks] sign text, banners, spawner mobs
-import { createChunkMaterials, createChunkUniforms, type ChunkMaterials, type ChunkUniforms } from './chunkMaterial';
+import { capBackstop, createChunkMaterials, createChunkUniforms, type ChunkMaterials, type ChunkUniforms } from './chunkMaterial';
 import { EntityLayer } from './entityLayer';
 import { OverlayLayer } from './overlayLayer';
 import { SectionManager, type Centre } from './sections';
@@ -82,6 +82,8 @@ export interface ViewSetup {
   floorY: number;
   /** Roof cut: cells at y ≥ roof.y within roof.r of (x, z). */
   roof: { x: number; y: number; z: number; r: number } | null;
+  /** Silhouettes of the bots and players that blocks (leaves included) hide from this view's camera. */
+  ghosts?: boolean;
   /** Reading aids around this point (the followed bot's feet), or none. */
   aids?: { x: number; y: number; z: number } | null;
   /** What falls here (biome under the view); default rain. */
@@ -140,12 +142,17 @@ export interface RuntimeMemory {
 let nextViewId = 1;
 export const newViewId = () => nextViewId++;
 
+/** Silhouettes: how often a view re-tests which bodies are hidden, how far it looks, and the fade (seconds). */
+const GHOST_TEST_MS = 200, GHOST_RANGE = 96, GHOST_FADE_S = 0.18;
+
 export class WorldRuntime {
   readonly renderer: THREE.WebGLRenderer;
   readonly canvas: HTMLCanvasElement;
   readonly scene = new THREE.Scene();
   readonly uniforms: ChunkUniforms;
   readonly materials: ChunkMaterials;
+  /** The cut cap's world-floor backstop (follows the drawn view's camera). */
+  private readonly backstop: THREE.Mesh;
   readonly host: MeshHost;
   cache = new WorldCache();
   sync: WorldSync;
@@ -183,6 +190,13 @@ export class WorldRuntime {
   private overlayData = new Map<Dim, Overlays>();
   private readonly botsBuf: BotView[] = [];
   private readonly entsBuf: EntityView[] = [];
+  /** A bot or player within `r` of a point this frame (spawners spin only then). */
+  private readonly playerNear = (dim: number, x: number, y: number, z: number, r: number): boolean => {
+    const r2 = r * r;
+    for (const b of this.botsBuf) if (b.dim === dim && (b.x - x) ** 2 + (b.y - y) ** 2 + (b.z - z) ** 2 < r2) return true;
+    for (const e of this.entsBuf) if (e.kind === 'player' && e.dim === dim && (e.x - x) ** 2 + (e.y - y) ** 2 + (e.z - z) ** 2 < r2) return true;
+    return false;
+  };
   readonly quality: QualityController;
   readonly probe: RendererProbe;
   private flash = 0;
@@ -226,6 +240,8 @@ export class WorldRuntime {
     this.scene.add(sun);
     this.uniforms = createChunkUniforms();
     this.materials = createChunkMaterials(this.uniforms);
+    this.backstop = capBackstop(this.materials.cap);
+    this.scene.add(this.backstop);
     this.entities.setWorldUniforms(this.uniforms); // [entity models] entities light and fog like the sections
     this.host = opts.inlineMesher ? new InlineMeshHost() : createMeshHost(opts.createWorker);
     this.scene.add(this.aids.group, this.sky.group, this.entities.group, this.overlays.group, this.weather.object, this.flashes.mesh);
@@ -283,6 +299,7 @@ export class WorldRuntime {
 
   removeView(v: RuntimeView): void {
     this.views.delete(v.id);
+    this.ghostViews.delete(v.id);
     // No views left (e.g. between pages, persistent runtime): stop the network loops, keep the world.
     if (!this.views.size) this.pause();
     this.renderedAt.delete(v.id);
@@ -397,6 +414,7 @@ export class WorldRuntime {
     this.sky.dispose();
     this.aids.dispose();
     for (const m of [this.materials.solid, this.materials.translucent, this.materials.cap]) m.dispose();
+    this.backstop.geometry.dispose();
     this.blockAtlas?.dispose();
     this.host.dispose();
     this.renderer.renderLists.dispose();
@@ -669,6 +687,7 @@ export class WorldRuntime {
           now,
           ticks: this.cache.timeNow(c.dim, Date.now()) ?? now / 50,
           displayMobs: this.entities as unknown as BlockEntityLayerUpdate['displayMobs'],
+          playerNear: this.playerNear,
         });
       }
     }
@@ -678,7 +697,7 @@ export class WorldRuntime {
       const p = this.quality.state.profile;
       this.blockAtlas.animHz = p.animHz;
       this.blockAtlas.animCellsPerTick = p.animCellsPerTick;
-      this.blockAtlas.starLayers = p.name === 'software' ? 8 : 16;
+      this.blockAtlas.starLayers = 17; // vanilla's own distance-based layer count on every profile
       const cells = new Set<number>();
       for (const s of this.sections.values()) s.visibleAnimCells(cells);
       this.blockAtlas.setVisible(cells);
@@ -791,6 +810,49 @@ export class WorldRuntime {
     }
   }
 
+  /** Per view: which bodies the last occlusion test found hidden, and each one's silhouette strength (faded in and out). */
+  private readonly ghostViews = new Map<number, { busy: boolean; at: number; t: number; hidden: Set<string>; alpha: Map<string, number> }>();
+
+  /** The view's silhouette strengths. The worker ray-tests every bot and player near the camera a few times a second
+   * (opaque blocks and leaves hide, plants and glass don't); the ghost pass itself is per pixel (depth GREATER), so a stale
+   * answer only decides who may get one, never where it shows. */
+  private ghostsFor(s: ViewSetup, now: number): Map<string, number> {
+    const id = s.viewId ?? 0;
+    let g = this.ghostViews.get(id);
+    if (!g) {
+      g = { busy: false, at: -Infinity, t: now, hidden: new Set(), alpha: new Map() };
+      this.ghostViews.set(id, g);
+    }
+    const st = g;
+    const cam = s.camera.position;
+    if (!st.busy && now - st.at >= GHOST_TEST_MS) {
+      st.at = now;
+      const cands = s.layers.bots || s.layers.entities ? this.entities.ghostCandidates(s.dim, cam, Math.min(s.drawDistance, GHOST_RANGE)) : [];
+      if (cands.length) {
+        st.busy = true;
+        this.host
+          .occluded(s.dim, [cam.x, cam.y, cam.z], cands.flatMap((c) => [c.x, c.y, c.z]))
+          .then((r) => {
+            st.hidden = new Set(cands.filter((_, i) => r[i]).map((c) => c.key));
+          })
+          .catch(() => undefined)
+          .finally(() => {
+            st.busy = false;
+          });
+      } else st.hidden.clear();
+    }
+    const step = Math.min(0.25, Math.max(0, (now - st.t) / 1000)) / GHOST_FADE_S;
+    st.t = now;
+    for (const k of st.hidden) if (!st.alpha.has(k)) st.alpha.set(k, 0);
+    for (const [k, a] of st.alpha) {
+      const want = st.hidden.has(k);
+      const v = want ? Math.min(1, a + step) : Math.max(0, a - step);
+      if (!want && v <= 0) st.alpha.delete(k);
+      else st.alpha.set(k, v);
+    }
+    return st.alpha;
+  }
+
   private render(s: ViewSetup, now: number): void {
     const u = this.uniforms;
     const r = this.renderer;
@@ -808,7 +870,6 @@ export class WorldRuntime {
     h = Math.min(h, fh);
     s.camera.aspect = w / h;
     s.camera.updateProjectionMatrix();
-    this.uniforms.uProj.value.copy(s.camera.projectionMatrix);
     this.uniforms.uViewport.value.set(w, h); // [blocks] the starfield's screen-space projection
     // World uniforms for this view.
     const nether = s.dim === -1;
@@ -842,6 +903,8 @@ export class WorldRuntime {
     if (s.roof) u.uRoof.value.set(s.roof.x, s.roof.y, s.roof.z, s.roof.r);
     else u.uRoof.value.set(0, 0, 0, 0);
     this.materials.cap.visible = n > 0 || !!s.roof;
+    this.backstop.position.set(Math.round(cam.x), 0, Math.round(cam.z));
+    this.backstop.updateMatrixWorld();
     // Shared scene, this view's slice of it.
     for (const [dim, sec] of this.sections) {
       sec.group.visible = dim === s.dim;
@@ -853,7 +916,8 @@ export class WorldRuntime {
         });
     }
     this.entities.detailDistance = this.quality.state.profile.entityDetailDistance; // posed models near, boxes beyond
-    this.entities.showFor(s.dim, cam, { bots: s.layers.bots, entities: s.layers.entities, labels: s.labels, selected: s.selected, drawDistance: s.drawDistance, fov: s.camera.fov });
+    const ghosts = s.ghosts ? this.ghostsFor(s, now) : null;
+    this.entities.showFor(s.dim, cam, { bots: s.layers.bots, entities: s.layers.entities, labels: s.labels, selected: s.selected, drawDistance: s.drawDistance, fov: s.camera.fov, ghosts });
     this.overlays.group.visible = s.overlays;
     if (s.overlays) this.showOverlays(s.dim);
     this.flashes.showFor(s.dim, now, s.layers.changes);

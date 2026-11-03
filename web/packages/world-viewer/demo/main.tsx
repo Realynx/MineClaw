@@ -15,8 +15,8 @@ function App() {
         dense: params.get('dense') === '1',
         mobs: Number(params.get('mobs') ?? 5),
         zoo: params.get('zoo') !== '0' && params.get('dense') !== '1', // every mob type (?zoo=0 off; off in the benchmark)
-        ticksPerSecond: 400,
-        startTime: 23000,
+        ticksPerSecond: Number(params.get('tps') ?? 400), // ?tps=0&time=6000 holds noon (screenshots)
+        startTime: Number(params.get('time') ?? 23000),
         rain: rain ? 1 : 0,
         thunder: rain ? 1 : 0,
         buildRate: 1,
@@ -25,7 +25,8 @@ function App() {
     [textured, rain, version],
   );
   const viewer = useRef<WorldViewerHandle>(null);
-  (window as unknown as { __viewer: typeof viewer }).__viewer = viewer; // for poking at it from devtools
+  (window as unknown as { __viewer: typeof viewer; __source: typeof source }).__viewer = viewer; // for poking at it from devtools
+  (window as unknown as { __source: typeof source }).__source = source; // __source.pin('Alice', {x, y, z}) holds a bot still
   const [mode, setMode] = useState<CameraMode>('follow');
   const [follow, setFollow] = useState<string>('Bob');
   const [xray, setXray] = useState<XRayMode>('auto');

@@ -22,7 +22,7 @@ export interface ThumbnailViewOptions {
   fps?: number;
   /** Blocks drawn around the bot (default 40). */
   drawDistance?: number;
-  /** X-ray toward the bot when it is hidden (default on). */
+  /** X-ray: the bot's silhouette when blocks hide it, the cone when the camera is buried (default on). */
   xray?: boolean;
   /** Roof cut-away when the bot is under cover (default on). */
   cutaway?: boolean;
@@ -115,7 +115,7 @@ export class ThumbnailView implements RuntimeView {
     this.camera.lookAt(this.target);
     this.camera.far = this.drawDistance * 1.6 + 16;
     this.camera.updateMatrixWorld();
-    // The cone toward the bot when the last test found it hidden (tested at the view's own rate, never blocking).
+    // The cone toward the bot when the last test found the camera buried (tested at the view's own rate, never blocking).
     const xray = this.opts.xray ?? true;
     if (xray && !this.busy) {
       this.busy = true;
@@ -123,7 +123,7 @@ export class ThumbnailView implements RuntimeView {
       rt.host
         .viewInfo(b.dim, [c.x, c.y, c.z], [b.x, b.y, b.z], null)
         .then((i) => {
-          this.cone = i.hidden || i.cameraInside;
+          this.cone = i.cameraInside; // a hidden bot shows as a silhouette (ghosts below)
           // Roof cut-away like the main view: the bot is under cover and the camera looks down on it.
           this.roof = (this.opts.cutaway ?? true) && i.covered && c.y > b.y + 1.5 ? { x: b.x, y: Math.floor(b.y) + 2, z: b.z, r: 7 } : null;
         })
@@ -144,6 +144,7 @@ export class ThumbnailView implements RuntimeView {
       cones: xray && this.cone ? [{ x: b.x, y: b.y + 0.9, z: b.z }] : [],
       floorY: Math.floor(b.y + 0.01),
       roof: this.roof,
+      ghosts: xray,
       viewId: this.id,
       target: this.ctx,
     };

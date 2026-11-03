@@ -2,7 +2,7 @@
 // and forth, for checking geometry, textures, layers and animation without a world. Drag = orbit, right-drag = pan,
 // wheel = zoom.
 //   ?version=1.12.2|b1.8.1  ?walk=0 (stand still)  ?spin=1 (turn around)  ?cols=10  ?detail=48  ?labels=0
-//   ?n=20 (perf: n walking zombies and nothing else)
+//   ?n=20 (perf: n walking zombies and nothing else)  ?set=looks (only the equipment / baby showcase)
 
 import * as THREE from 'three';
 import { loadBundle } from '../src/assets/bundle';
@@ -36,8 +36,34 @@ const BETA_TYPES = [50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 90, 91, 92, 93, 
 const types = perf ? Array<number>(perf).fill(54) : version === 'b1.8.1' ? BETA_TYPES : Object.keys(MOB_NAMES).map(Number);
 const variants: Record<number, number[]> = { 55: [2], 62: [2], 90: [1], 91: [14, 16], 95: [4, 2], 98: [4] };
 const entries: Array<Partial<EntityDto>> = [];
-for (const t of types) for (const v of perf ? [0] : (variants[t] ?? [0])) entries.push({ kind: 'mob', type: t, variant: v });
-if (!perf) {
+const looksOnly = q.get('set') === 'looks';
+if (!looksOnly) for (const t of types) for (const v of perf ? [0] : (variants[t] ?? [0])) entries.push({ kind: 'mob', type: t, variant: v });
+// Dyed leather, worn skulls and head items, elytra, foals and baby llamas next to their adults.
+const LOOKS: Array<Partial<EntityDto>> = [
+  { kind: 'mob', type: 54, equipment: { head: [298, 0, 0x3366cc], chest: [299, 0, 0xb02e26], legs: [300, 0], feet: [301, 0, 0x80c71f] } },
+  { kind: 'player', name: 'Steve', equipment: { head: [298, 0], chest: [299, 0], legs: [300, 0, 0xfed83d], feet: [301, 0] } },
+  { kind: 'mob', type: 51, equipment: { head: [397, 4] } },
+  { kind: 'mob', type: 54, equipment: { head: [397, 5] } },
+  { kind: 'mob', type: 27, variant: 2, equipment: { head: [397, 3], chest: [303, 0] } },
+  { kind: 'mob', type: 120, variant: 1, equipment: { head: [397, 2] } },
+  { kind: 'mob', type: 54, baby: true, equipment: { head: [397, 1] } },
+  { kind: 'armor_stand', look: 'arms', equipment: { head: [397, 0], chest: [443, 0] } },
+  { kind: 'player', name: 'Glider', equipment: { chest: [443, 0], head: [264, 0] } },
+  { kind: 'player', name: 'Sneak', flags: 0x02, equipment: { chest: [443, 0], head: [86, 0] } },
+  { kind: 'mob', type: 100, look: 'chestnut', baby: true },
+  { kind: 'mob', type: 100, look: 'chestnut' },
+  { kind: 'mob', type: 103, look: 'brown', baby: true },
+  { kind: 'mob', type: 103, look: 'brown' },
+  { kind: 'mob', type: 31, baby: true },
+  { kind: 'mob', type: 120, equipment: { head: [86, 0] } },
+  // Layers the wire implies: the snow golem's pumpkin, the mooshroom's mushrooms, a fusing creeper, a screaming enderman.
+  { kind: 'mob', type: 97 },
+  { kind: 'mob', type: 96 },
+  { kind: 'mob', type: 50, look: 'fusing' },
+  { kind: 'mob', type: 58, look: 'screaming' },
+];
+if (looksOnly) entries.push(...LOOKS);
+if (!perf && !looksOnly) {
   for (const [item, count] of [[1, 64], [278, 1], [264, 5], [38, 1], [50, 3], [17, 2], [2, 1], [35, 14]]) entries.push({ kind: 'item', item, count });
   entries.push(
     { kind: 'object', type: 1 },

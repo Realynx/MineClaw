@@ -173,4 +173,22 @@ public class Release1122LooksTests
         server.Send(new AnimationPacket { EntityId = 40, Animation = 1, Hand = 1 });
         Assert.Equal(1, Next<AnimationPacket>(client).Hand);
     }
+
+    [Fact]
+    public void Equipment_keeps_the_item_tag_and_its_dye_colour_both_ways()
+    {
+        var (client, server) = InPlay();
+        // Entity Equipment (0x3F) with a dyed leather chestplate (display.color, ItemArmor.setColor) in slot 4 (chest).
+        var dyed = new ItemStack(Items.LeatherChestplate, 1, 0) { Tag = Codec1122.TagOf(new NbtCompound { ["display"] = new NbtCompound { ["color"] = 0x3366CC } }) };
+        server.Send(0x3F, w => w.WriteVarInt(12).WriteVarInt(4).WriteSlot(dyed));
+        var eq = Next<EntityEquipmentPacket>(client);
+        Assert.Equal((3, (short)Items.LeatherChestplate), (eq.Slot, eq.ItemId));
+        Assert.Equal(0x3366CC, eq.Tag?.DisplayColor);
+        Assert.Equal(0x3366CC, eq.Item.Tag?.DisplayColor);
+        // Undyed: no colour; empty: no tag.
+        server.Send(0x3F, w => w.WriteVarInt(12).WriteVarInt(2).WriteSlot(new ItemStack(Items.LeatherBoots, 1, 0)));
+        Assert.Null(Next<EntityEquipmentPacket>(client).Tag);
+        server.Send(0x3F, w => w.WriteVarInt(12).WriteVarInt(5).WriteSlot(ItemStack.Empty));
+        Assert.True(Next<EntityEquipmentPacket>(client).Item.IsEmpty);
+    }
 }

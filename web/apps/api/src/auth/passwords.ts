@@ -3,13 +3,15 @@
  * verifications run at once so a login flood cannot exhaust memory; unknown users are verified against a dummy hash so the
  * response time does not reveal whether a username exists.
  */
+import { PASSWORD_MIN_LENGTH } from '@mineclaw/contracts';
 import { hash, verify, type Algorithm } from '@node-rs/argon2';
 
 const ARGON2ID = 2 as Algorithm;
 
 export const ARGON2_PARAMS = { algorithm: ARGON2ID, memoryCost: 19456, timeCost: 2, parallelism: 1 } as const;
 
-export const MIN_PASSWORD_LENGTH = 12;
+/** The shared rule (contracts `PASSWORD_MIN_LENGTH`): the setup page and the users CLI. */
+export const MIN_PASSWORD_LENGTH = PASSWORD_MIN_LENGTH;
 
 export function hashPassword(password: string): Promise<string> {
   return hash(password, ARGON2_PARAMS);

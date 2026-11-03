@@ -335,6 +335,7 @@ export class WorldViewerEngine implements RuntimeView {
       cones: subs.length && (this.xray === 'on' || this.coneOn) ? subs.map((s) => ({ x: s.x, y: s.y + 0.9, z: s.z })) : [],
       floorY: subs.length ? Math.floor(Math.min(...subs.map((s) => s.y)) + 0.01) : 0,
       roof: this.roof,
+      ghosts: this.xray !== 'off',
       viewId: this.id,
       precip: this.precip,
       aids: this.layers.aids && bot ? { x: bot.x, y: bot.y, z: bot.z } : null,
@@ -384,7 +385,8 @@ export class WorldViewerEngine implements RuntimeView {
     this.runtime.host
       .viewInfo(this.dim, camV, [main.x, main.y, main.z], null)
       .then((info) => {
-        this.coneOn = this.xray === 'auto' ? info.hidden || info.cameraInside : this.xray === 'on';
+        // Auto: a hidden body shows as a silhouette (ViewSetup.ghosts); the cone only opens the rock around a buried camera.
+        this.coneOn = this.xray === 'auto' ? info.cameraInside : this.xray === 'on';
         this.precip = this.runtime.precipAt(info.biome, main.y);
         // Roof cut-away: the followed bot is under cover and the camera looks down on it (not when flying).
         this.roof = this.layers.cutaway && bot && this.rig.mode !== 'fly' && info.covered && cam.y > bot.y + 1.5 ? { x: bot.x, y: Math.floor(bot.y) + 2, z: bot.z, r: 9 } : null;

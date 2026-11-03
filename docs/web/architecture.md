@@ -61,6 +61,13 @@ deploy/viewer/               systemd units, cloudflared notes, and the web + bri
 - **Users.** A users file on CT 114 (`/etc/mineclaw-web/users.json`, 0600) holds username, argon2id hash,
   optional TOTP secret, roles and the linked Minecraft player. Fox maps to `poofimafox` and Robin to `kiwi`. A
   `web/apps/api` CLI adds a user, resets a password and enrolls TOTP. There is no self-signup.
+- **First-run setup (added 2026-11-03).** While the users file has no users the app is an installation step: every page
+  redirects to `/setup`, login is off, and the page creates the first account (preset admin + chat + commands + viewer),
+  offers an optional TOTP enrolment, and signs it in. The first visit is expected to be open; whoever completes it first
+  becomes the admin. It is fenced: direct LAN/loopback clients only (never through a trusted proxy or with Cloudflare
+  headers; `Web:Setup:AllowProxied` defaults to false), CSRF + Origin, rate limited, audited (`setup`), and an atomic
+  create-if-empty under the users file's lock, so two simultaneous setups can't both win. Once any user exists, `/setup`
+  redirects to `/login` and `POST /api/setup` answers 409, checked on every request. The CLI stays for manual management.
 - **Roles.**
   - `viewer`: read only.
   - `chat`: can talk to bots as their linked player.
@@ -222,7 +229,8 @@ server.
   2. **Hash diff (backstop).** Each column's hash in `/api/world/index` changes with any block change. On a rev gap,
      `full:true` (the ring overflowed) or a reconnect, the client refetches only the columns whose hash changed.
 - **Render parity (decided 2026-11-02).** The repo is private and unreleased, so the Minecraft assets are committed:
-  1.12.2 blockstates, models, textures and .mcmeta animations, and the b1.8.1 terrain, items and mob textures. They live
+  1.12.2 blockstates, models, textures and .mcmeta animations, the b1.8.1 terrain, items and mob textures, and both
+  versions' default font (sign text is drawn with it). They live
   under `web/packages/world-viewer/assets/`, and the atlas is built client-side.
   - The browser must match the old freecam and every C# renderer: animated water and lava, real fluids, real player and
     mob models with animation, and every block shape.

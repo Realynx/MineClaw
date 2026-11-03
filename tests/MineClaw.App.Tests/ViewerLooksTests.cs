@@ -62,6 +62,30 @@ public class ViewerLooksTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public async Task Dyed_leather_carries_its_colour_as_a_third_element(bool modern)
+    {
+        var (c, s) = await Start(modern);
+        await using var cc = c;
+        using var ss = s;
+        // A zombie in a dyed leather chestplate and undyed leather boots. The b1.8.1 wire has no item NBT: the tag never
+        // reaches the client, so the slot stays [id, meta].
+        var tag = MineClaw.Protocol.Release1122.Codec1122.TagOf(new MineClaw.Protocol.Release1122.NbtCompound
+        {
+            ["display"] = new MineClaw.Protocol.Release1122.NbtCompound { ["color"] = 0x3366CC },
+        });
+        s.Send(new MobSpawnPacket { EntityId = 201, Type = 54, X = F(10.5), Y = F(64), Z = F(10.5) });
+        s.Send(new EntityEquipmentPacket { EntityId = 201, Slot = 3, ItemId = (short)Items.LeatherChestplate, Damage = 0, Tag = tag });
+        s.Send(new EntityEquipmentPacket { EntityId = 201, Slot = 1, ItemId = (short)Items.LeatherBoots, Damage = 0 });
+        Assert.True(await Wait(() => c.World.Entities.Get(201) is { } z && !z.EquipmentAt(3).IsEmpty && !z.EquipmentAt(1).IsEmpty));
+
+        var eq = ById(Wire(c), 201).GetProperty("equipment");
+        Assert.Equal(modern ? new[] { Items.LeatherChestplate, 0, 0x3366CC } : new[] { Items.LeatherChestplate, 0 }, Ints(eq.GetProperty("chest")));
+        Assert.Equal(new[] { Items.LeatherBoots, 0 }, Ints(eq.GetProperty("feet")));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task Entities_carry_equipment_looks_flags_and_vehicle(bool modern)
     {
         var (c, s) = await Start(modern);

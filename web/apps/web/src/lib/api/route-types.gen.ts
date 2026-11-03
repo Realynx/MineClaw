@@ -7,6 +7,8 @@ import type { z } from 'zod';
 export interface RouteTypes {
   'health': { params: never; query: never; body: never; response: z.output<typeof C.HealthResponse> };
   'auth.csrf': { params: never; query: never; body: never; response: z.output<typeof C.CsrfResponse> };
+  'setup.status': { params: never; query: never; body: never; response: z.output<typeof C.SetupStatus> };
+  'setup.create': { params: never; query: never; body: z.input<typeof C.SetupRequest>; response: z.output<typeof C.LoginResponse> };
   'auth.login': { params: never; query: never; body: z.input<typeof C.LoginRequest>; response: z.output<typeof C.LoginResponse> };
   'auth.logout': { params: never; query: never; body: z.input<typeof C.Empty>; response: z.output<typeof C.LogoutResponse> };
   'auth.me': { params: never; query: never; body: never; response: z.output<typeof C.Me> };

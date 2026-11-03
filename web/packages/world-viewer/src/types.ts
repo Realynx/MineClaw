@@ -59,14 +59,17 @@ export interface BotDto {
 /** An item or block: [id, meta/damage] (version-specific numbering), or null for an empty slot. */
 export type ItemRef = [number, number] | null;
 
+/** A worn or held item: [id, meta], or [id, meta, rgb] when it is dyed (1.12.2 leather armour's display.color). */
+export type EquipRef = [number, number] | [number, number, number] | null;
+
 /** What an entity holds and wears (players, bots, zombies, skeletons, armor stands…). */
 export interface Equipment {
-  main?: ItemRef;
-  off?: ItemRef;
-  head?: ItemRef;
-  chest?: ItemRef;
-  legs?: ItemRef;
-  feet?: ItemRef;
+  main?: EquipRef;
+  off?: EquipRef;
+  head?: EquipRef;
+  chest?: EquipRef;
+  legs?: EquipRef;
+  feet?: EquipRef;
 }
 
 /** Entity state flags as the wire names them (the decoder also accepts the older bitfield). */

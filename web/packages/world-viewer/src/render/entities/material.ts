@@ -5,6 +5,9 @@
 //   MODEL  box models, texture = the entity sheet (per-instance rectangle), part layer masking
 //   TILE   dropped/held items and block cubes: sprites from the items/blocks/entity sheets, cubes from the blocks grid
 //   SHADOW soft round blobs under entities (procedural, no texture)
+//   GHOST  (MODEL + GHOST) the occluded-body silhouette: the same instances again, only those flagged GHOST_FLAG, drawn
+//          after the world and before the entities with depth GREATER and no depth write, so it paints exactly the parts
+//          of the body that terrain (leaves included) hides: a flat tint with a bright rim, never over a visible part.
 
 import * as THREE from 'three';
 
@@ -63,6 +66,10 @@ varying vec3 vWorld;
 varying vec4 vFx;
 flat varying float vFlags;
 flat varying vec4 vTex;
+#ifdef GHOST
+varying vec3 vN;
+flat varying vec4 vGhost;
+#endif
 
 mat4 bone(int slot, int row) {
   int x = slot * 3;
@@ -79,6 +86,13 @@ void main() {
   float layer = floor(aPart / 256.0 + 0.001);
   float part = aPart - layer * 256.0;
   if (abs(layer - aBone.z) > 0.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+#ifdef GHOST
+  if (!flag(aColor.w, 256.0)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  // Strength (bits 2048 × 0..15) and tint: the selected bot, another bot, a player.
+  float strength = floor(aColor.w / 2048.0) / 15.0;
+  vec3 tint = flag(aColor.w, 512.0) ? vec3(0.35, 1.0, 0.8) : flag(aColor.w, 1024.0) ? vec3(1.0, 0.82, 0.4) : vec3(0.55, 0.8, 1.0);
+  vGhost = vec4(strength, tint);
+#endif
   mat4 m = bone(int(part + aBone.y + 0.5), int(aBone.x + 0.5));
   vec3 p = position;
   vec4 w;
@@ -119,6 +133,9 @@ void main() {
   vUv = uv;
   vWorld = w.xyz;
   vFx = aFx;
+#ifdef GHOST
+  vN = n;
+#endif
   float shade = min(1.0, 0.4 + 0.6 * (max(0.0, dot(n, L1)) + max(0.0, dot(n, L2))));
   bool emissive = flag(aColor.w, 1.0);
   float b = emissive ? 1.0 : max(bright(max(aFx.z, aFx.y - uSkySub)), uMinBright) * shade;
@@ -139,6 +156,10 @@ varying vec3 vWorld;
 varying vec4 vFx;
 flat varying float vFlags;
 flat varying vec4 vTex;
+#ifdef GHOST
+varying vec3 vN;
+flat varying vec4 vGhost;
+#endif
 void main() {
   vec4 c = vec4(1.0);
   if (flag(vFlags, 32.0)) {
@@ -164,6 +185,15 @@ void main() {
 #endif
   }
   if (c.a < uAlphaTest) discard;
+#ifdef GHOST
+  // Flat tint, a little of the skin's shading so limbs stay readable, and a bright rim (an outline at any size).
+  float rim = 1.0 - abs(dot(normalize(vN), normalize(cameraPosition - vWorld)));
+  rim = rim * rim;
+  float lum = dot(c.rgb, vec3(0.3, 0.59, 0.11));
+  vec3 g = vGhost.yzw * (0.55 + 0.45 * lum) + vec3(rim * 0.45);
+  gl_FragColor = vec4(g, vGhost.x * (0.5 + 0.45 * rim));
+  return;
+#endif
   vec3 rgb = c.rgb * vLit;
   // Hurt / death: vanilla's red overlay (1, 0, 0, 0.3); fuse / TNT: a white flash.
   rgb = mix(rgb, vec3(1.0, 0.0, 0.0), vFx.x * 0.3);
@@ -209,6 +239,8 @@ export interface EntityMaterials {
   modelTranslucent: THREE.ShaderMaterial;
   tile: THREE.ShaderMaterial;
   shadow: THREE.ShaderMaterial;
+  /** The occluded-body silhouette pass (see the header). */
+  ghost: THREE.ShaderMaterial;
   /** Uniforms shared by every variant (bones, textures, time). */
   shared: {
     uBones: THREE.IUniform<THREE.Texture | null>;
@@ -241,6 +273,7 @@ export function createEntityMaterials(world: WorldUniforms): EntityMaterials {
     depthWrite: false,
   });
   const tile = new THREE.ShaderMaterial({ vertexShader: vertex, fragmentShader: fragment, uniforms: uniforms(0.1), defines: { TILE: 1 } });
+  const ghost = createGhostMaterial(uniforms(0.1));
   const shadow = new THREE.ShaderMaterial({
     vertexShader: shadowVertex,
     fragmentShader: shadowFragment,
@@ -256,11 +289,39 @@ export function createEntityMaterials(world: WorldUniforms): EntityMaterials {
     modelTranslucent,
     tile,
     shadow,
+    ghost,
     shared,
     dispose() {
-      for (const m of [model, modelTranslucent, tile, shadow]) m.dispose();
+      for (const m of [model, modelTranslucent, tile, shadow, ghost]) m.dispose();
     },
   };
+}
+
+/** Instance flag bits of the silhouette pass (aColor.w): drawn as a ghost, the selected bot, a player (not a bot); the
+ * strength 0..15 sits in the bits from GHOST_LEVEL up. */
+export const GHOST_FLAG = 256, GHOST_SELECTED = 512, GHOST_PLAYER = 1024, GHOST_LEVEL = 2048;
+
+/** The ghost pass's render state: only where the body is behind what is already drawn (GREATER), blended over it without
+ * touching depth, pulled a little toward the camera so a body merely touching a block (feet on the ground, a shoulder in a
+ * doorway) never shimmers. Not `transparent`: it must run in the opaque list, after the world (sections render order 0,
+ * cut cap 1) and before the entities themselves (render order 2), or it would also ghost a body's far side behind its own
+ * front and anything behind another mob. */
+export function createGhostMaterial(uniforms: Record<string, THREE.IUniform>): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexShader: vertex,
+    fragmentShader: fragment,
+    uniforms,
+    defines: { MODEL: 1, GHOST: 1 },
+    transparent: false,
+    blending: THREE.CustomBlending,
+    blendSrc: THREE.SrcAlphaFactor,
+    blendDst: THREE.OneMinusSrcAlphaFactor,
+    depthWrite: false,
+    depthFunc: THREE.GreaterDepth,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -4,
+  });
 }
 
 /** A sheet texture as the entity shader samples it: nearest, no mipmaps, no flip (v grows downwards like vanilla UVs). */

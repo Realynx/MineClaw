@@ -10,8 +10,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { generate } from '../src/mock/generate.js';
 import { csrfSession, login, ORIGIN, PERSONAS, startApp, type Session, type TestApp } from './helpers.js';
 
-/** Routes whose success path has side effects or needs its own flow; tested in auth/sse tests. Gating is still checked. */
+/** Routes whose success path has side effects or needs its own flow; tested in auth/setup/sse tests. Gating is still checked. */
 const OWN_FLOW: ReadonlySet<RouteId> = new Set([
+  'setup.create',
   'auth.login',
   'auth.logout',
   'auth.totpEnroll',

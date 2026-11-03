@@ -89,9 +89,10 @@ bool hidden(vec3 c) {
 }
 
 #ifdef CAP
-uniform mat4 uProj;
 // Where the ray from the camera leaves the cut-away volume (and so enters the solid behind it), or -1.
-float cutExit(vec3 o, vec3 d, float tBack) {
+// grow widens the cone for the backstop: a ray through a cut cell at the cone's rim can leave the analytic cone before the
+// subject plane (cells are cut by their centres).
+float cutExit(vec3 o, vec3 d, float tBack, float grow) {
   float best = -1.0;
   // Cone toward each subject: the solid starts at the subject's plane (cells beyond it are not cut) or the floor.
   for (int i = 0; i < 2; i++) {
@@ -104,7 +105,7 @@ float cutExit(vec3 o, vec3 d, float tBack) {
       // Only rays inside this cone were cut (outside it, e.g. a camera buried in rock, the back face itself is shown).
       vec3 q = d * t;
       float along = dot(q, u);
-      float r = uConeR * along / D + 0.87;
+      float r = (uConeR * along / D + 0.87) * grow;
       if (dot(q, q) - along * along > r * r) continue;
       if (d.y < -1e-4) t = min(t, (uFloorY - o.y) / d.y);
       if (t > 0.0 && t < tBack) best = best < 0.0 ? t : min(best, t);
@@ -145,15 +146,19 @@ void main() {
 #ifdef CAP
   // [blocks] cut-out texels open no cut: the back of a plant, rail or pane is not a wall.
   if (texel().a < 0.5) discard;
-  // The true section wall: this back face shows that the ray runs inside a solid the cut opened; draw the hatched wall
-  // where the ray leaves the cut volume (the cone's subject plane / floor, the roof cut's floor or side), not here.
+  // The true section wall: this back face, passing the depth test at its OWN depth, is the first surface behind the cut, so
+  // the ray runs inside a solid the cut opened (had the ray left the cut volume in air, the next front face would be nearer
+  // and win). Paint the hatched wall as it looks where the ray leaves the cut volume (the cone's subject plane / floor, the
+  // roof cut's floor or side). The depth stays the back face's: replacing it with the exit's (gl_FragDepth) would also win
+  // over visible ground beyond an exit in open air, and costs early depth rejection on software renderers.
   vec3 ray = vWorld - cameraPosition;
   float tBack = length(ray);
   vec3 dir = ray / tBack;
-  float t = cutExit(cameraPosition, dir, tBack);
+  float t = cutExit(cameraPosition, dir, tBack, flag(vFlags, 16.0) ? 1.6 : 1.0);
+  // The backstop (see capBackstop) only stands in for a solid's missing far side: only where a cut was crossed and the ray
+  // leaves it at the subject's floor (into the ground under it), never higher up where it may be in open air.
+  if (flag(vFlags, 16.0) && (t <= 0.0 || cameraPosition.y + dir.y * t > uFloorY + 1.0)) discard;
   vec3 p = t > 0.0 ? cameraPosition + dir * t : vWorld;
-  vec4 clip = uProj * viewMatrix * vec4(p, 1.0);
-  gl_FragDepth = t > 0.0 ? clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0) : gl_FragCoord.z;
   float s = step(0.5, fract((p.x + p.y + p.z) * 2.0));
   vec3 cap = mix(vec3(0.36, 0.42, 0.5), vec3(0.43, 0.5, 0.6), s);
   // No analytic exit (the camera itself is buried): the back face is the wall; never fog it into the sky colour.
@@ -162,9 +167,11 @@ void main() {
   return;
 #endif
   if (uTextured > 0.5 && flag(vTile.z, 4.0)) {
-    // [blocks] end portal / gateway: the layered starfield, full bright.
+    // [blocks] end portal / gateway: the layered starfield, full bright; getPasses from the squared distance to the block's
+    // corner (the tile entity's render offset).
     float sf = smoothstep(uFogRange.x, uFogRange.y, length(vWorld.xz - uFogCentre.xz));
-    gl_FragColor = vec4(mix(starfield() + vec3(uFlash), uFogColor, sf), 1.0);
+    vec3 rel = (vCell - 0.5) - cameraPosition;
+    gl_FragColor = vec4(mix(starfield(dot(rel, rel), flag(vTile.z, 16.0)) + vec3(uFlash), uFogColor, sf), 1.0);
     return;
   }
   vec4 c = vColor * texel();
@@ -210,8 +217,6 @@ export interface ChunkUniforms {
   uRoof: THREE.IUniform<THREE.Vector4>;
   uAlphaTest: THREE.IUniform<number>;
   uCap: THREE.IUniform<number>;
-  /** The view's projection matrix (the cap pass projects the cut wall itself). */
-  uProj: THREE.IUniform<THREE.Matrix4>;
   /** [blocks] Seconds (animated block shaders: the end starfield), the view's size in device pixels, the starfield's sheets
    * (column, row, width, height in cells) and layer count. */
   uTime: THREE.IUniform<number>;
@@ -243,12 +248,11 @@ export function createChunkUniforms(): ChunkUniforms {
     uRoof: { value: new THREE.Vector4(0, 0, 0, 0) },
     uAlphaTest: { value: 0.5 },
     uCap: { value: 0 },
-    uProj: { value: new THREE.Matrix4() },
     uTime: { value: 0 },
     uViewport: { value: new THREE.Vector2(1, 1) },
     uStarSky: { value: new THREE.Vector4(0, 0, 1, 1) },
     uStarPortal: { value: new THREE.Vector4(0, 0, 1, 1) },
-    uStarLayers: { value: 16 },
+    uStarLayers: { value: 17 },
   };
 }
 
@@ -280,4 +284,30 @@ export function createChunkMaterials(shared: ChunkUniforms): ChunkMaterials {
   });
   cap.visible = false;
   return { solid, translucent, cap };
+}
+
+/** Light flag of the backstop's vertices (LF_* bit 16). */
+export const LF_BACKSTOP = 16;
+
+/**
+ * The cap pass's backstop: one world-floor quad (y = 0, `size` blocks square, facing down like the per-section floor
+ * quads, so it is a back face from above), moved under the camera each frame. A ray the cut lets into rock usually leaves
+ * it far below or far away, past the sections drawn (the draw distance), where no back face exists, and the opening would
+ * show the sky. The backstop catches those rays (only rays that crossed a cut: the shader discards it elsewhere).
+ */
+export function capBackstop(material: THREE.Material, size = 2048): THREE.Mesh {
+  const h = size / 2;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-h, 0, h, -h, 0, -h, h, 0, -h, h, 0, h]), 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(8), 2));
+  g.setAttribute('aTile', new THREE.BufferAttribute(new Uint16Array(16), 4, false));
+  g.setAttribute('aColor', new THREE.BufferAttribute(new Uint8Array([21, 21, 21, 255, 21, 21, 21, 255, 21, 21, 21, 255, 21, 21, 21, 255]), 4, true));
+  g.setAttribute('aLight', new THREE.BufferAttribute(new Uint8Array([0, 0, 255, LF_BACKSTOP, 0, 0, 255, LF_BACKSTOP, 0, 0, 255, LF_BACKSTOP, 0, 0, 255, LF_BACKSTOP]), 4, true));
+  g.setAttribute('aCell', new THREE.BufferAttribute(new Uint8Array(16), 4, false));
+  g.setIndex([0, 1, 2, 0, 2, 3]);
+  const m = new THREE.Mesh(g, material);
+  m.name = 'cap backstop';
+  m.frustumCulled = false;
+  m.renderOrder = 1;
+  return m;
 }

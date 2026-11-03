@@ -86,10 +86,24 @@ export function blocked(store: ColumnStore, t: StateTable, dim: number, p: V3, c
   return false;
 }
 
+/** For each body (x, y, z of its feet, 3 numbers each): is any of its feet / waist / head points hidden from the camera by an
+ * opaque block or leaves? (The occluded-body silhouettes: plants, glass and water never count, a body standing in wheat
+ * is not hidden.) */
+export function occluded(store: ColumnStore, t: StateTable, dim: number, cam: V3, bodies: number[], heights: number[] = [0.3, 1.0, 1.55]): boolean[] {
+  const out: boolean[] = [];
+  for (let i = 0; i + 2 < bodies.length; i += 3) {
+    let hid = false;
+    for (const h of heights) if (blocked(store, t, dim, [bodies[i], bodies[i + 1] + h, bodies[i + 2]], cam)) { hid = true; break; }
+    out.push(hid);
+  }
+  return out;
+}
+
 export interface ViewInfo {
   /** Two of the body's feet / waist / head points are hidden from the camera (ViewCut.For). */
   hidden: boolean;
-  /** Opaque blocks above the body's head (indoors, a tunnel, a cave): the roof cut-away is useful. */
+  /** Opaque blocks above the body's head (indoors, a tunnel, a cave): the roof cut-away is useful. A tree's canopy is not a
+   * roof (cutting it away would slice the hillside around an outdoor bot); bodies under leaves show as silhouettes. */
   covered: boolean;
   /** The lowest covering block above the head (the roof cut's y), or -1. */
   roofY: number;
@@ -114,7 +128,7 @@ export function viewInfo(store: ColumnStore, t: StateTable, dim: number, cam: V3
   for (let y = Math.floor(body[1]) + 2; y < Math.floor(body[1]) + 40; y++) {
     const b = store.blockAt(dim, bx, y, bz);
     if (!b) break;
-    if (b.id !== 0 && t.flags[(b.id << 4) | b.meta] & (F_OPAQUE | F_LEAVES)) {
+    if (b.id !== 0 && t.flags[(b.id << 4) | b.meta] & F_OPAQUE) {
       roofY = y;
       break;
     }
