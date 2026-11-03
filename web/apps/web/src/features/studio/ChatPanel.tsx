@@ -57,16 +57,29 @@ export const ChatPanel = forwardRef<
     p.onClose();
   };
   return (
-    <aside className="flex min-h-0 w-full flex-col border-l border-border bg-surface lg:w-[360px]" aria-label="Design chat">
+    <aside
+      className="flex min-h-0 w-full flex-col border-l border-border bg-surface lg:w-[360px]"
+      aria-label="Design chat"
+    >
       <div className="space-y-2 border-b border-border p-3">
         <div className="flex items-center gap-2">
           <Sparkles className="size-4 text-accent" />
           <h2 className="text-sm font-semibold text-fg">Design with</h2>
-          <span className="ml-auto text-xs text-muted" data-testid="session-cost" title="What this session cost (counted against the bot's budget)">
+          <span
+            className="ml-auto text-xs text-muted"
+            data-testid="session-cost"
+            title="What this session cost (counted against the bot's budget)"
+          >
             {usd(p.costUsd)}
           </span>
         </div>
-        <Select aria-label="Model" value={p.model} onChange={(e) => p.onModel(e.target.value)} className="h-8 w-full" disabled={p.models.length === 0}>
+        <Select
+          aria-label="Model"
+          value={p.model}
+          onChange={(e) => p.onModel(e.target.value)}
+          className="h-8 w-full"
+          disabled={p.models.length === 0}
+        >
           {p.models.map((m) => (
             <option key={m.id} value={m.id}>
               {m.label}
@@ -75,24 +88,47 @@ export const ChatPanel = forwardRef<
           ))}
         </Select>
       </div>
-      <ol ref={list} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3" aria-label="Transcript" aria-live="polite">
+      <ol
+        ref={list}
+        className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3"
+        aria-label="Transcript"
+        aria-live="polite"
+      >
         {p.messages.length === 0 ? (
           <li className="rounded-lg border border-dashed border-border p-3 text-sm text-muted">
-            Tell the AI what to build (“a small cobblestone watchtower with a ladder”), or build by hand and ask it to finish. Your edits and
-            the selection reach it with your next message.
+            Tell the AI what to build (“a small cobblestone watchtower with a ladder”), or build by hand and ask it to
+            finish. Your edits and the selection reach it with your next message.
           </li>
         ) : null}
         {p.messages.map((m) => (
-          <li key={`${m.seq}:${m.at}`} className={cn('flex gap-2 text-sm', m.role === 'user' ? 'flex-row-reverse' : '')} data-role={m.role}>
-            <span className={cn('mt-0.5 grid size-6 shrink-0 place-items-center rounded-full', m.role === 'user' ? 'bg-accent-soft text-accent' : 'bg-surface-2 text-muted')}>
+          <li
+            key={`${m.seq}:${m.at}`}
+            className={cn('flex gap-2 text-sm', m.role === 'user' ? 'flex-row-reverse' : '')}
+            data-role={m.role}
+          >
+            <span
+              className={cn(
+                'mt-0.5 grid size-6 shrink-0 place-items-center rounded-full',
+                m.role === 'user' ? 'bg-accent-soft text-accent' : 'bg-surface-2 text-muted',
+              )}
+            >
               {m.role === 'user' ? <User className="size-3.5" /> : <Bot className="size-3.5" />}
             </span>
-            <div className={cn('max-w-[85%] rounded-lg px-3 py-2', m.role === 'user' ? 'bg-accent-soft text-fg' : 'bg-surface-2 text-fg')}>
+            <div
+              className={cn(
+                'max-w-[85%] rounded-lg px-3 py-2',
+                m.role === 'user' ? 'bg-accent-soft text-fg' : 'bg-surface-2 text-fg',
+              )}
+            >
               <p className="whitespace-pre-wrap">{m.text}</p>
               {m.ops?.length ? (
                 <ul className="mt-1.5 flex flex-wrap gap-1" aria-label="What it changed">
                   {m.ops.map((o, i) => (
-                    <li key={i} className="rounded bg-ok-soft px-1.5 py-0.5 text-[11px] text-ok" title={`${o.cells} cells`}>
+                    <li
+                      key={i}
+                      className="rounded bg-ok-soft px-1.5 py-0.5 text-[11px] text-ok"
+                      title={`${o.cells} cells`}
+                    >
                       {o.label}
                     </li>
                   ))}
@@ -101,7 +137,7 @@ export const ChatPanel = forwardRef<
               {m.role === 'assistant' && (m.model || (m.costUsd !== null && m.costUsd !== undefined)) ? (
                 <p className="mt-1 text-[11px] text-subtle" data-testid="message-cost">
                   {m.model ?? ''}
-                  {(m.costUsd !== null && m.costUsd !== undefined) ? ` · ${usd(m.costUsd)}` : ''}
+                  {m.costUsd !== null && m.costUsd !== undefined ? ` · ${usd(m.costUsd)}` : ''}
                 </p>
               ) : null}
             </div>
@@ -120,7 +156,12 @@ export const ChatPanel = forwardRef<
           </p>
         ) : null}
         <label className={cn('flex items-center gap-2 text-xs', p.hasSelection ? 'text-muted' : 'text-subtle')}>
-          <input type="checkbox" checked={p.withSelection && p.hasSelection} disabled={!p.hasSelection} onChange={(e) => p.onWithSelection(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={p.withSelection && p.hasSelection}
+            disabled={!p.hasSelection}
+            onChange={(e) => p.onWithSelection(e.target.checked)}
+          />
           Send the selection with the message (“the selection”)
         </label>
         <div className="flex items-end gap-2">
@@ -133,7 +174,11 @@ export const ChatPanel = forwardRef<
             maxLength={2000}
             disabled={!p.canWrite}
             aria-label="Message the designer"
-            placeholder={p.canWrite ? 'Ask for a build or a change (Enter sends, Enter on an empty line returns to the world)' : 'Your account needs the design role'}
+            placeholder={
+              p.canWrite
+                ? 'Ask for a build or a change (Enter sends, Enter on an empty line returns to the world)'
+                : 'Your account needs the design role'
+            }
             className="min-h-[2.5rem] flex-1 resize-none rounded-lg border border-border bg-canvas px-2.5 py-1.5 text-sm text-fg outline-none focus:border-accent"
           />
           <Button

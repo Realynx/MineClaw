@@ -222,6 +222,32 @@ This tab shows the RAPTOR memory map (the server-laid-out graph) with regions li
   - The bridge-native `heat` aggregate per RAPTOR node feeds the graph colouring.
   - SSE event `memoryActivity`.
 
+## Design Studio (added 2026-11-03)
+
+`/designs/studio` (the Designs page's "New design", or "Open in studio" on a design: `?id=N`; a reload reopens `?session=S`)
+is a creative-mode build canvas the user co-designs with any model the bot is configured for. It is the AI's head: nothing in
+it touches the world, and a save is an ordinary design, so the bot can build it later through Story Mode or chat.
+- **Canvas.** The world viewer over an in-memory `WorldSource` (`features/studio/studioWorld.ts`): a flat grassland of 8×8
+  columns at noon whose middle 64×64 is the plot, its own private runtime. Edits are pushed as block deltas, so only the
+  touched sections re-mesh; column hashes never change.
+- **Creative controls.** Fly camera, the vanilla crosshair with the mouse locked: left breaks, right places (facing from the
+  look, R turns it), middle picks; hotbar 1–9 with icons drawn from the bundled textures (`blockIconUrl`), B opens the
+  searchable palette, Ctrl+Z / Ctrl+Y undo and redo AI and user ops alike, a grid and a coordinate HUD. T / Enter opens the
+  chat (the mouse is freed; Enter on an empty line or Esc goes back to the world, like the world view's chat bar).
+- **Manual toolkit.** Box (fill / hollow / walls / outline) and line tools by drag; box select (Shift extends, scroll or
+  PgUp/PgDn sets the height), select connected (right-click; Ctrl = the whole structure), all, invert, deselect, the
+  selection outlined with its size; move (gizmo arrows, arrow keys / PgUp / PgDn, Shift ×5), rotate 90° and mirror X/Z with
+  block facing turned per family (stairs, doors, fronts, ladders, torches, trapdoors, gates, pumpkins, 1.12.2 log axes),
+  copy / paste / duplicate with a placement ghost, delete, replace a material, fill / hollow / walls of the selection, raise /
+  lower its top surface, brushes (sphere or cube, 1–8: add, remove, paint, replace, smooth), face flood fill, extrude /
+  push-pull by N, and "move origin" (the design's anchor). Every edit goes through the same op stream as the AI's (sent with
+  `POST …/canvas`, so the model hears about it on its next turn), and a message can carry the selection's box.
+- **Chat.** A model picker (`/api/designer/models`), the transcript with each reply's ops and cost, the AI's ops flashing
+  green as they land. Save / Save as new revision / Save as new design with a name and a revision message, the revision
+  history, then "Build in Story Mode" and "Ask the bot to build it" (a chat line to main naming the design).
+- **Performance.** One private WebGL context, a handful of overlay objects, re-meshing only touched sections: the 40 fps
+  software-WebGL target holds.
+
 ## World rendering is browser-only (decided 2026-11-02)
 
 All world viewing renders in the browser with `@mineclaw/world-viewer` (three.js/WebGL), from the raw MCWC chunk,

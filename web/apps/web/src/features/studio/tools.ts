@@ -5,7 +5,19 @@
  * mirror X/Z, copy / paste) with block facing turned per family (./facing). Each returns the cells to apply; the page applies
  * them through `Canvas.apply`, so everything lands in one history and one op stream to the bot.
  */
-import { boxOf, type Canvas, type Cell, inSel, inside, keyOf, N6, posOf, selected, type Selection, type V3 } from './canvas';
+import {
+  boxOf,
+  type Canvas,
+  type Cell,
+  inSel,
+  inside,
+  keyOf,
+  N6,
+  posOf,
+  selected,
+  type Selection,
+  type V3,
+} from './canvas';
 import { FACE_NORMAL, mirrorMeta, rotateMeta, type Version } from './facing';
 
 export type BoxMode = 'fill' | 'hollow' | 'walls' | 'outline';
@@ -17,8 +29,17 @@ export function boxCells(a: V3, b: V3, id: number, meta: number, mode: BoxMode =
   for (let y = min[1]; y <= max[1]; y++)
     for (let z = min[2]; z <= max[2]; z++)
       for (let x = min[0]; x <= max[0]; x++) {
-        const ex = x === min[0] || x === max[0], ey = y === min[1] || y === max[1], ez = z === min[2] || z === max[2];
-        const on = mode === 'fill' ? true : mode === 'hollow' ? ex || ey || ez : mode === 'walls' ? ex || ez : (ex ? 1 : 0) + (ey ? 1 : 0) + (ez ? 1 : 0) >= 2;
+        const ex = x === min[0] || x === max[0],
+          ey = y === min[1] || y === max[1],
+          ez = z === min[2] || z === max[2];
+        const on =
+          mode === 'fill'
+            ? true
+            : mode === 'hollow'
+              ? ex || ey || ez
+              : mode === 'walls'
+                ? ex || ez
+                : (ex ? 1 : 0) + (ey ? 1 : 0) + (ez ? 1 : 0) >= 2;
         if (on) out.push([x, y, z, id, meta]);
         else if (mode === 'hollow' || mode === 'walls') out.push([x, y, z, 0, 0]);
       }
@@ -32,7 +53,11 @@ export function lineCells(a: V3, b: V3, id: number, meta: number): Cell[] {
   const seen = new Set<number>();
   for (let i = 0; i <= n; i++) {
     const t = n === 0 ? 0 : i / n;
-    const p: V3 = [Math.round(a[0] + (b[0] - a[0]) * t), Math.round(a[1] + (b[1] - a[1]) * t), Math.round(a[2] + (b[2] - a[2]) * t)];
+    const p: V3 = [
+      Math.round(a[0] + (b[0] - a[0]) * t),
+      Math.round(a[1] + (b[1] - a[1]) * t),
+      Math.round(a[2] + (b[2] - a[2]) * t),
+    ];
     const k = keyOf(...p);
     if (seen.has(k)) continue;
     seen.add(k);
@@ -64,7 +89,16 @@ export function brushCells(centre: V3, size: number, shape: BrushShape): V3[] {
  * One brush stroke: add (fills air), remove (to air), paint (re-blocks what is there), replace (only `target` blocks),
  * smooth (each cell follows its 26 neighbours: 14+ filled fills it with their commonest block, under 10 empties it).
  */
-export function brush(c: Canvas, centre: V3, size: number, shape: BrushShape, mode: BrushMode, id: number, meta: number, target?: number): Cell[] {
+export function brush(
+  c: Canvas,
+  centre: V3,
+  size: number,
+  shape: BrushShape,
+  mode: BrushMode,
+  id: number,
+  meta: number,
+  target?: number,
+): Cell[] {
   const cells = brushCells(centre, size, shape);
   const out: Cell[] = [];
   for (const [x, y, z] of cells) {
@@ -114,7 +148,8 @@ export function selectionShape(s: Selection, id: number, meta: number, mode: 'fi
   // hollow: the inside of the box becomes air, the shell stays as it is
   const out: Cell[] = [];
   for (let y = s.min[1] + 1; y < s.max[1]; y++)
-    for (let z = s.min[2] + 1; z < s.max[2]; z++) for (let x = s.min[0] + 1; x < s.max[0]; x++) out.push([x, y, z, 0, 0]);
+    for (let z = s.min[2] + 1; z < s.max[2]; z++)
+      for (let x = s.min[0] + 1; x < s.max[0]; x++) out.push([x, y, z, 0, 0]);
   return out;
 }
 
@@ -210,12 +245,22 @@ function relocate(blocks: Cell[], s: Selection, map: (b: Cell) => Cell): Transfo
   const moved = blocks.map(map);
   const cells: Cell[] = blocks.map((b): Cell => [b[0], b[1], b[2], 0, 0]);
   for (const m of moved) cells.push(m);
-  const corners = [s.min, s.max, [s.min[0], s.min[1], s.max[2]] as V3, [s.max[0], s.min[1], s.min[2]] as V3].map((p) => {
-    const c = map([p[0], p[1], p[2], 0, 0]);
-    return [c[0], c[1], c[2]] as V3;
-  });
-  const min: V3 = [Math.min(...corners.map((p) => p[0])), Math.min(...corners.map((p) => p[1])), Math.min(...corners.map((p) => p[2]))];
-  const max: V3 = [Math.max(...corners.map((p) => p[0])), Math.max(...corners.map((p) => p[1])), Math.max(...corners.map((p) => p[2]))];
+  const corners = [s.min, s.max, [s.min[0], s.min[1], s.max[2]] as V3, [s.max[0], s.min[1], s.min[2]] as V3].map(
+    (p) => {
+      const c = map([p[0], p[1], p[2], 0, 0]);
+      return [c[0], c[1], c[2]] as V3;
+    },
+  );
+  const min: V3 = [
+    Math.min(...corners.map((p) => p[0])),
+    Math.min(...corners.map((p) => p[1])),
+    Math.min(...corners.map((p) => p[2])),
+  ];
+  const max: V3 = [
+    Math.max(...corners.map((p) => p[0])),
+    Math.max(...corners.map((p) => p[1])),
+    Math.max(...corners.map((p) => p[2])),
+  ];
   const mask = s.mask ? new Set(moved.map((b) => keyOf(b[0], b[1], b[2]))) : null;
   return { cells, selection: { min, max, mask } };
 }
@@ -225,21 +270,19 @@ export function move(c: Canvas, s: Selection, d: V3): Transformed {
   return relocate(selected(c, s), s, (b) => [b[0] + d[0], b[1] + d[1], b[2] + d[2], b[3], b[4]]);
 }
 
-/** Rotate the selected blocks 90° clockwise (seen from above) `quarters` times around the selection's centre column. */
+/**
+ * Rotate the selected blocks 90° clockwise (seen from above) `quarters` times around the selection's middle column (a fixed
+ * cell, so four turns are exactly the identity and the design stays where it stands).
+ */
 export function rotate(c: Canvas, s: Selection, quarters: number, version: Version): Transformed {
   const q = ((quarters % 4) + 4) % 4;
-  // Pivot such that the box keeps its min corner when it turns (no drift out of place for an even/odd footprint).
-  const w = s.max[0] - s.min[0], d = s.max[2] - s.min[2];
-  const turnOnce = (x: number, z: number): [number, number] => [-z, x];
+  const px = Math.floor((s.min[0] + s.max[0]) / 2),
+    pz = Math.floor((s.min[2] + s.max[2]) / 2);
   return relocate(selected(c, s), s, (b) => {
-    let dx = b[0] - s.min[0], dz = b[2] - s.min[2];
-    let ww = w, dd = d;
-    for (let i = 0; i < q; i++) {
-      [dx, dz] = turnOnce(dx, dz);
-      dx += dd; // (-z) shifted back into the positive range
-      [ww, dd] = [dd, ww];
-    }
-    return [s.min[0] + dx, b[1], s.min[2] + dz, b[3], rotateMeta(b[3], b[4], q, version)];
+    let dx = b[0] - px,
+      dz = b[2] - pz;
+    for (let i = 0; i < q; i++) [dx, dz] = [-dz, dx];
+    return [px + dx, b[1], pz + dz, b[3], rotateMeta(b[3], b[4], q, version)];
   });
 }
 
@@ -261,8 +304,16 @@ export interface Clip {
 export function copy(c: Canvas, s: Selection): Clip | null {
   const blocks = selected(c, s);
   if (!blocks.length) return null;
-  const min: V3 = [Math.min(...blocks.map((b) => b[0])), Math.min(...blocks.map((b) => b[1])), Math.min(...blocks.map((b) => b[2]))];
-  const max: V3 = [Math.max(...blocks.map((b) => b[0])), Math.max(...blocks.map((b) => b[1])), Math.max(...blocks.map((b) => b[2]))];
+  const min: V3 = [
+    Math.min(...blocks.map((b) => b[0])),
+    Math.min(...blocks.map((b) => b[1])),
+    Math.min(...blocks.map((b) => b[2])),
+  ];
+  const max: V3 = [
+    Math.max(...blocks.map((b) => b[0])),
+    Math.max(...blocks.map((b) => b[1])),
+    Math.max(...blocks.map((b) => b[2])),
+  ];
   return {
     size: [max[0] - min[0] + 1, max[1] - min[1] + 1, max[2] - min[2] + 1],
     cells: blocks.map((b): Cell => [b[0] - min[0], b[1] - min[1], b[2] - min[2], b[3], b[4]]),
@@ -271,7 +322,9 @@ export function copy(c: Canvas, s: Selection): Clip | null {
 
 /** The clip's cells placed with its min corner at `at` (the paste ghost and the paste itself). */
 export function pasteCells(clip: Clip, at: V3): Cell[] {
-  return clip.cells.map((b): Cell => [b[0] + at[0], b[1] + at[1], b[2] + at[2], b[3], b[4]]).filter((b) => inside(b[0], b[1], b[2]));
+  return clip.cells
+    .map((b): Cell => [b[0] + at[0], b[1] + at[1], b[2] + at[2], b[3], b[4]])
+    .filter((b) => inside(b[0], b[1], b[2]));
 }
 
 /** Delete the selected blocks. */

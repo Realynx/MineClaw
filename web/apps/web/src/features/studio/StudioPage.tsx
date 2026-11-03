@@ -46,7 +46,19 @@ import { cn, newRequestId } from '@/lib/utils';
 import { isTyping } from '@/features/world/directives';
 import { Crosshair } from '@/features/world/InWorld';
 import { Hotbar, PaletteDrawer, type IconOf } from './BlockBar';
-import { boxOf, connected, extend, inside, invert, maskSelection, type Selection, selectAll, sizeOf, type V3, type Cell } from './canvas';
+import {
+  boxOf,
+  connected,
+  extend,
+  inside,
+  invert,
+  maskSelection,
+  type Selection,
+  selectAll,
+  sizeOf,
+  type V3,
+  type Cell,
+} from './canvas';
 import { ChatPanel, type ChatPanelHandle } from './ChatPanel';
 import { dirOfMcYaw, type Dir, FACE_NORMAL, hasFacing, placeMeta, turn, type Version } from './facing';
 import { defaultHotbar, type PaletteEntry } from './palette';
@@ -79,18 +91,49 @@ type Tool = 'build' | 'box' | 'line' | 'select' | 'brush' | 'face' | 'extrude' |
 
 const TOOLS: Array<{ id: Tool; label: string; key: string; icon: ReactNode }> = [
   { id: 'build', label: 'Build (left breaks, right places)', key: 'P', icon: <Hammer className="size-4" /> },
-  { id: 'select', label: 'Select (drag a box; right-click: connected, Ctrl: whole structure)', key: 'V', icon: <BoxSelect className="size-4" /> },
+  {
+    id: 'select',
+    label: 'Select (drag a box; right-click: connected, Ctrl: whole structure)',
+    key: 'V',
+    icon: <BoxSelect className="size-4" />,
+  },
   { id: 'box', label: 'Box (right-drag fills, left-drag removes)', key: 'X', icon: <Box className="size-4" /> },
   { id: 'line', label: 'Line (right-drag)', key: 'L', icon: <Slash className="size-4" /> },
   { id: 'brush', label: 'Brush (sculpt)', key: 'G', icon: <Paintbrush className="size-4" /> },
-  { id: 'face', label: 'Face fill (right: paint the face area, left: remove it)', key: 'F', icon: <PaintBucket className="size-4" /> },
-  { id: 'extrude', label: 'Extrude (right pushes, left pulls the face by N)', key: 'U', icon: <ArrowUpFromLine className="size-4" /> },
-  { id: 'anchor', label: 'Move origin (click the design’s anchor block)', key: 'O', icon: <Anchor className="size-4" /> },
+  {
+    id: 'face',
+    label: 'Face fill (right: paint the face area, left: remove it)',
+    key: 'F',
+    icon: <PaintBucket className="size-4" />,
+  },
+  {
+    id: 'extrude',
+    label: 'Extrude (right pushes, left pulls the face by N)',
+    key: 'U',
+    icon: <ArrowUpFromLine className="size-4" />,
+  },
+  {
+    id: 'anchor',
+    label: 'Move origin (click the design’s anchor block)',
+    key: 'O',
+    icon: <Anchor className="size-4" />,
+  },
 ];
 
 const LAYERS = {
-  bots: false, entities: false, claims: false, places: false, points: false, plans: false, dangers: false, notes: false, weather: false,
-  cutaway: false, staleness: false, changes: false, aids: false,
+  bots: false,
+  entities: false,
+  claims: false,
+  places: false,
+  points: false,
+  plans: false,
+  dangers: false,
+  notes: false,
+  weather: false,
+  cutaway: false,
+  staleness: false,
+  changes: false,
+  aids: false,
 };
 
 const BASE_Y = 64;
@@ -142,7 +185,10 @@ export function StudioPage() {
           ? await api('designer.get', { params: { id: sessionParam } })
           : await api('designer.create', { body: designParam ? { designId: designParam } : {} });
         setSession(s);
-        if (!sessionParam) router.replace(`/designs/studio?session=${s.id}${designParam ? `&id=${designParam}` : ''}`, { scroll: false });
+        if (!sessionParam)
+          router.replace(`/designs/studio?session=${s.id}${designParam ? `&id=${designParam}` : ''}`, {
+            scroll: false,
+          });
       } catch (e) {
         setLoadError(e);
       }
@@ -166,7 +212,19 @@ export function StudioPage() {
         </span>
       </div>
     );
-  return <StudioBody key={session.id} session={session} mod={mod} models={models.data?.models ?? []} defaultModel={models.data?.default ?? null} canWrite={canWrite} canChat={canChat} player={me.player ?? me.username} invalidate={() => void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === 'designs.list' })} />;
+  return (
+    <StudioBody
+      key={session.id}
+      session={session}
+      mod={mod}
+      models={models.data?.models ?? []}
+      defaultModel={models.data?.default ?? null}
+      canWrite={canWrite}
+      canChat={canChat}
+      player={me.player ?? me.username}
+      invalidate={() => void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === 'designs.list' })}
+    />
+  );
 }
 
 function StudioBody({
@@ -222,7 +280,9 @@ function StudioBody({
   const [saveName, setSaveName] = useState(session.name === 'new design' ? '' : session.name);
   const [saveSummary, setSaveSummary] = useState('');
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState<{ designId: number; rev: number; text: string } | null>(session.designId ? { designId: session.designId, rev: session.revisions[0]?.rev ?? 0, text: '' } : null);
+  const [saved, setSaved] = useState<{ designId: number; rev: number; text: string } | null>(
+    session.designId ? { designId: session.designId, rev: session.revisions[0]?.rev ?? 0, text: '' } : null,
+  );
   const [revisions, setRevisions] = useState<DesignRevision[]>(session.revisions);
   const [notice, setNotice] = useState<string | null>(null);
   const bots = useApi('bots.list', {}, { enabled: canChat });
@@ -232,11 +292,14 @@ function StudioBody({
   const bundle = useRef<Awaited<ReturnType<Mod['loadBundle']>> | null>(null);
   useEffect(() => {
     let live = true;
-    void mod.loadBundle(version).then((b) => {
-      if (!live) return;
-      bundle.current = b;
-      setIconTick((n) => n + 1);
-    }).catch(() => undefined);
+    void mod
+      .loadBundle(version)
+      .then((b) => {
+        if (!live) return;
+        bundle.current = b;
+        setIconTick((n) => n + 1);
+      })
+      .catch(() => undefined);
     return () => {
       live = false;
     };
@@ -250,13 +313,51 @@ function StudioBody({
   );
 
   // Everything the input handlers read, current on every render (they are bound once).
-  const st = useRef({ tool, boxMode, brushShape, brushSize, brushMode, extrudeN, slots, active, facing, clip, pasting, drag, snap, aim, version });
+  const st = useRef({
+    tool,
+    boxMode,
+    brushShape,
+    brushSize,
+    brushMode,
+    extrudeN,
+    slots,
+    active,
+    facing,
+    clip,
+    pasting,
+    drag,
+    snap,
+    aim,
+    version,
+  });
   useEffect(() => {
-    st.current = { tool, boxMode, brushShape, brushSize, brushMode, extrudeN, slots, active, facing, clip, pasting, drag, snap, aim, version };
+    st.current = {
+      tool,
+      boxMode,
+      brushShape,
+      brushSize,
+      brushMode,
+      extrudeN,
+      slots,
+      active,
+      facing,
+      clip,
+      pasting,
+      drag,
+      snap,
+      aim,
+      version,
+    };
   });
   const [lookNow, setLookNow] = useState<Dir>('north');
 
   useEffect(() => () => studio.dispose(), [studio]);
+
+  // Mock mode only: the e2e reads the canvas and points the camera (the clicks themselves are real input).
+  useEffect(() => {
+    if (process.env.NEXT_PUBLIC_MOCK !== '1') return;
+    (window as unknown as { __studio?: unknown }).__studio = { studio, engine: () => viewer.current?.engine() ?? null };
+  }, [studio]);
 
   // The world follows the canvas; the AI's cells flash as they land.
   useEffect(
@@ -297,7 +398,10 @@ function StudioBody({
   useEffect(() => overlay.setGrid(grid), [overlay, grid]);
 
   useEffect(() => {
-    const onLock = () => setLocked(!!stage.current && !!document.pointerLockElement && stage.current.contains(document.pointerLockElement));
+    const onLock = () =>
+      setLocked(
+        !!stage.current && !!document.pointerLockElement && stage.current.contains(document.pointerLockElement),
+      );
     document.addEventListener('pointerlockchange', onLock);
     return () => document.removeEventListener('pointerlockchange', onLock);
   }, []);
@@ -311,16 +415,27 @@ function StudioBody({
     const h = hitOf(aim);
     const s = st.current;
     if (drag && h) {
-      const b = (drag.button === 2 && (tool === 'box' || tool === 'line') ? h.place : h.hit ?? h.place) ?? drag.a;
+      const b = (drag.button === 2 && (tool === 'box' || tool === 'line') ? h.place : (h.hit ?? h.place)) ?? drag.a;
       const box = boxOf(drag.a, b);
-      overlay.setDrag(tool === 'select' ? { min: box.min, max: [box.max[0], Math.min(47, box.max[1] + drag.dy), box.max[2]] } : box);
+      overlay.setDrag(
+        tool === 'select' ? { min: box.min, max: [box.max[0], Math.min(47, box.max[1] + drag.dy), box.max[2]] } : box,
+      );
     } else overlay.setDrag(null);
     if (tool === 'brush' && h) {
       const c = (s.brushMode === 'add' ? h.place : h.hit) ?? h.place;
       if (c) {
         const cells = brushCells(c, brushSize, brushShape);
-        const xs = cells.map((p) => p[0]), ys = cells.map((p) => p[1]), zs = cells.map((p) => p[2]);
-        overlay.setBrush(cells.length ? { min: [Math.min(...xs), Math.min(...ys), Math.min(...zs)], max: [Math.max(...xs), Math.max(...ys), Math.max(...zs)] } : null);
+        const xs = cells.map((p) => p[0]),
+          ys = cells.map((p) => p[1]),
+          zs = cells.map((p) => p[2]);
+        overlay.setBrush(
+          cells.length
+            ? {
+                min: [Math.min(...xs), Math.min(...ys), Math.min(...zs)],
+                max: [Math.max(...xs), Math.max(...ys), Math.max(...zs)],
+              }
+            : null,
+        );
       } else overlay.setBrush(null);
     } else overlay.setBrush(null);
     if (pasting && clip && h?.place) overlay.setGhost(pasteCells(clip, h.place));
@@ -343,7 +458,10 @@ function StudioBody({
     [studio, selOrAll],
   );
 
-  const moveSel = useCallback((d: V3, group?: string) => applyTransform(`move ${d.join(',')}`, (s) => move(studio.canvas, s, d), group), [applyTransform, studio]);
+  const moveSel = useCallback(
+    (d: V3, group?: string) => applyTransform(`move ${d.join(',')}`, (s) => move(studio.canvas, s, d), group),
+    [applyTransform, studio],
+  );
 
   const placeAt = useCallback(
     (p: V3, face: number) => {
@@ -376,7 +494,12 @@ function StudioBody({
     [studio, session.palette],
   );
 
-  const stroke = useRef<{ button: number; group: string; target?: number; timer: ReturnType<typeof setInterval> | null } | null>(null);
+  const stroke = useRef<{
+    button: number;
+    group: string;
+    target?: number;
+    timer: ReturnType<typeof setInterval> | null;
+  } | null>(null);
 
   const brushAt = useCallback(
     (h: Hit | null, button: number, group: string, target?: number) => {
@@ -386,7 +509,12 @@ function StudioBody({
       const mode: BrushMode = button === 0 ? 'remove' : s.brushMode;
       const centre = (mode === 'add' ? h.place : h.hit) ?? h.place;
       if (!centre) return;
-      studio.edit(brush(studio.canvas, centre, s.brushSize, s.brushShape, mode, e?.id ?? 4, e?.meta ?? 0, target), 'brush', `brush ${mode}`, group);
+      studio.edit(
+        brush(studio.canvas, centre, s.brushSize, s.brushShape, mode, e?.id ?? 4, e?.meta ?? 0, target),
+        'brush',
+        `brush ${mode}`,
+        group,
+      );
     },
     [studio],
   );
@@ -427,18 +555,29 @@ function StudioBody({
           const target = h.hit ? studio.canvas.id(...h.hit) : undefined;
           brushAt(h, button, group, target);
           const timer = setInterval(() => {
-            void viewer.current?.engine()?.aimNow().then((tt) => brushAt(hitOf(tt), button, group, target));
+            void viewer.current
+              ?.engine()
+              ?.aimNow()
+              .then((tt) => brushAt(hitOf(tt), button, group, target));
           }, 140);
           stroke.current = { button, group, target, timer };
           return;
         }
         case 'face':
           if (!h.hit) return;
-          studio.edit(floodFace(studio.canvas, h.hit, h.face, button === 0 ? 0 : (e?.id ?? 4), button === 0 ? 0 : (e?.meta ?? 0)), 'face', button === 0 ? 'removed a face area' : `painted a face area ${e?.name ?? ''}`);
+          studio.edit(
+            floodFace(studio.canvas, h.hit, h.face, button === 0 ? 0 : (e?.id ?? 4), button === 0 ? 0 : (e?.meta ?? 0)),
+            'face',
+            button === 0 ? 'removed a face area' : `painted a face area ${e?.name ?? ''}`,
+          );
           return;
         case 'extrude':
           if (!h.hit) return;
-          studio.edit(extrude(studio.canvas, h.hit, h.face, button === 0 ? -s.extrudeN : s.extrudeN), 'extrude', `${button === 0 ? 'pulled' : 'pushed'} a face by ${s.extrudeN}`);
+          studio.edit(
+            extrude(studio.canvas, h.hit, h.face, button === 0 ? -s.extrudeN : s.extrudeN),
+            'extrude',
+            `${button === 0 ? 'pulled' : 'pushed'} a face by ${s.extrudeN}`,
+          );
           return;
         case 'anchor': {
           const p = h.hit ?? h.place;
@@ -470,8 +609,14 @@ function StudioBody({
         return;
       }
       if (s.tool === 'box') {
-        if (button === 2 && e) studio.edit(boxCells(d.a, b, e.id, e.meta, s.boxMode), s.boxMode, `${s.boxMode} ${sizeOf(boxOf(d.a, b)).join('×')} ${e.name}`);
-        if (button === 0) studio.edit(boxCells(d.a, b, 0, 0, 'fill'), 'remove', `removed ${sizeOf(boxOf(d.a, b)).join('×')}`);
+        if (button === 2 && e)
+          studio.edit(
+            boxCells(d.a, b, e.id, e.meta, s.boxMode),
+            s.boxMode,
+            `${s.boxMode} ${sizeOf(boxOf(d.a, b)).join('×')} ${e.name}`,
+          );
+        if (button === 0)
+          studio.edit(boxCells(d.a, b, 0, 0, 'fill'), 'remove', `removed ${sizeOf(boxOf(d.a, b)).join('×')}`);
       }
       if (s.tool === 'line') {
         if (button === 2 && e) studio.edit(lineCells(d.a, b, e.id, e.meta), 'line', `line of ${e.name}`);
@@ -487,7 +632,15 @@ function StudioBody({
     const e = viewer.current?.engine();
     if (!e) return;
     const c = e.surface;
-    let giz: { axis: 'x' | 'y' | 'z'; x0: number; y0: number; dir: [number, number]; px: number; applied: number; group: string } | null = null;
+    let giz: {
+      axis: 'x' | 'y' | 'z';
+      x0: number;
+      y0: number;
+      dir: [number, number];
+      px: number;
+      applied: number;
+      group: string;
+    } | null = null;
     const onDown = (ev: PointerEvent) => {
       if (document.pointerLockElement === c) {
         ev.stopPropagation();
@@ -497,7 +650,10 @@ function StudioBody({
       }
       if (ev.button !== 0 || !studio.selection) return;
       const r = c.getBoundingClientRect();
-      const ndc = new mod.Vector2(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+      const ndc = new mod.Vector2(
+        ((ev.clientX - r.left) / r.width) * 2 - 1,
+        -((ev.clientY - r.top) / r.height) * 2 + 1,
+      );
       const ray = new mod.Raycaster();
       ray.setFromCamera(ndc, e.camera);
       const axis = overlay.pickHandle(ray);
@@ -506,10 +662,20 @@ function StudioBody({
       ev.preventDefault();
       const o = overlay.gizmo.position.clone();
       const unit = new mod.Vector3(axis === 'x' ? 1 : 0, axis === 'y' ? 1 : 0, axis === 'z' ? 1 : 0);
-      const p0 = o.clone().project(e.camera), p1 = o.clone().add(unit).project(e.camera);
-      const dx = ((p1.x - p0.x) * r.width) / 2, dy = (-(p1.y - p0.y) * r.height) / 2;
+      const p0 = o.clone().project(e.camera),
+        p1 = o.clone().add(unit).project(e.camera);
+      const dx = ((p1.x - p0.x) * r.width) / 2,
+        dy = (-(p1.y - p0.y) * r.height) / 2;
       const len = Math.hypot(dx, dy) || 1;
-      giz = { axis, x0: ev.clientX, y0: ev.clientY, dir: [dx / len, dy / len], px: len, applied: 0, group: `gizmo-${Date.now()}` };
+      giz = {
+        axis,
+        x0: ev.clientX,
+        y0: ev.clientY,
+        dir: [dx / len, dy / len],
+        px: len,
+        applied: 0,
+        group: `gizmo-${Date.now()}`,
+      };
     };
     const onMove = (ev: PointerEvent) => {
       if (!giz) return;
@@ -542,7 +708,11 @@ function StudioBody({
         ev.preventDefault();
         ev.stopPropagation();
         const cur = studio.selection;
-        studio.setSelection({ ...cur, mask: null, max: [cur.max[0], Math.max(cur.min[1], Math.min(47, cur.max[1] + (ev.deltaY < 0 ? 1 : -1))), cur.max[2]] });
+        studio.setSelection({
+          ...cur,
+          mask: null,
+          max: [cur.max[0], Math.max(cur.min[1], Math.min(47, cur.max[1] + (ev.deltaY < 0 ? 1 : -1))), cur.max[2]],
+        });
       }
     };
     c.addEventListener('pointerdown', onDown, true);
@@ -577,7 +747,10 @@ function StudioBody({
     const onKey = (e: KeyboardEvent) => {
       if (isTyping(e.target)) return;
       const el = stage.current;
-      const inWorld = !!el && (el.contains(document.activeElement) || (!!document.pointerLockElement && el.contains(document.pointerLockElement)));
+      const inWorld =
+        !!el &&
+        (el.contains(document.activeElement) ||
+          (!!document.pointerLockElement && el.contains(document.pointerLockElement)));
       if (!inWorld) return;
       const ctrl = e.ctrlKey || e.metaKey;
       const s = st.current;
@@ -608,7 +781,18 @@ function StudioBody({
       if (studio.selection && !s.drag && (e.key.startsWith('Arrow') || e.key === 'PageUp' || e.key === 'PageDown')) {
         stop();
         const n = e.shiftKey ? 5 : 1;
-        const d: V3 = e.key === 'ArrowLeft' ? [-n, 0, 0] : e.key === 'ArrowRight' ? [n, 0, 0] : e.key === 'ArrowUp' ? [0, 0, -n] : e.key === 'ArrowDown' ? [0, 0, n] : e.key === 'PageUp' ? [0, n, 0] : [0, -n, 0];
+        const d: V3 =
+          e.key === 'ArrowLeft'
+            ? [-n, 0, 0]
+            : e.key === 'ArrowRight'
+              ? [n, 0, 0]
+              : e.key === 'ArrowUp'
+                ? [0, 0, -n]
+                : e.key === 'ArrowDown'
+                  ? [0, 0, n]
+                  : e.key === 'PageUp'
+                    ? [0, n, 0]
+                    : [0, -n, 0];
         moveSel(d);
         return;
       }
@@ -638,10 +822,23 @@ function StudioBody({
         else if (s.drag) setDrag(null);
         return;
       }
-      if (e.key === '[' || e.key === ']') return applyTransform(`rotate ${e.key === ']' ? 'clockwise' : 'counter-clockwise'}`, (x) => rotate(studio.canvas, x, e.key === ']' ? 1 : 3, s.version));
-      const tools: Record<string, Tool> = { KeyP: 'build', KeyV: 'select', KeyX: 'box', KeyL: 'line', KeyG: 'brush', KeyF: 'face', KeyU: 'extrude', KeyO: 'anchor' };
+      if (e.key === '[' || e.key === ']')
+        return applyTransform(`rotate ${e.key === ']' ? 'clockwise' : 'counter-clockwise'}`, (x) =>
+          rotate(studio.canvas, x, e.key === ']' ? 1 : 3, s.version),
+        );
+      const tools: Record<string, Tool> = {
+        KeyP: 'build',
+        KeyV: 'select',
+        KeyX: 'box',
+        KeyL: 'line',
+        KeyG: 'brush',
+        KeyF: 'face',
+        KeyU: 'extrude',
+        KeyO: 'anchor',
+      };
       if (tools[e.code]) return setTool(tools[e.code]!);
-      if (e.code === 'KeyR') return setFacing((f) => turn(f ?? dirOfMcYaw(viewer.current?.engine()?.rig.flyYaw ?? 0), e.shiftKey ? -1 : 1));
+      if (e.code === 'KeyR')
+        return setFacing((f) => turn(f ?? dirOfMcYaw(viewer.current?.engine()?.rig.flyYaw ?? 0), e.shiftKey ? -1 : 1));
       if (e.code === 'KeyB') {
         if (document.pointerLockElement) document.exitPointerLock();
         return setPaletteOpen((v) => !v);
@@ -687,9 +884,14 @@ function StudioBody({
     try {
       const r = await api('bots.chat', {
         params: { bot: mainBot },
-        body: { text: `please build a copy of design #${saved.designId} (${snap.name}) from the Design Studio near me`, requestId: newRequestId() },
+        body: {
+          text: `please build a copy of design #${saved.designId} (${snap.name}) from the Design Studio near me`,
+          requestId: newRequestId(),
+        },
       });
-      setNotice(r.accepted ? `Asked ${mainBot} to build design #${saved.designId}.` : `${mainBot} did not take the line.`);
+      setNotice(
+        r.accepted ? `Asked ${mainBot} to build design #${saved.designId}.` : `${mainBot} did not take the line.`,
+      );
     } catch (e) {
       setNotice(errorText(e));
     }
@@ -699,12 +901,38 @@ function StudioBody({
 
   const h = hitOf(aim);
   const selSize = sel ? sizeOf(sel) : null;
-  const selBlocks = useMemo(() => (sel ? studio.canvas.cells().filter((c) => c[0] >= sel.min[0] && c[0] <= sel.max[0] && c[1] >= sel.min[1] && c[1] <= sel.max[1] && c[2] >= sel.min[2] && c[2] <= sel.max[2]).length : 0), [sel, studio, snap.rev, snap.blocks]); // eslint-disable-line react-hooks/exhaustive-deps
+  const selBlocks = useMemo(
+    () =>
+      sel
+        ? studio.canvas
+            .cells()
+            .filter(
+              (c) =>
+                c[0] >= sel.min[0] &&
+                c[0] <= sel.max[0] &&
+                c[1] >= sel.min[1] &&
+                c[1] <= sel.max[1] &&
+                c[2] >= sel.min[2] &&
+                c[2] <= sel.max[2],
+            ).length
+        : 0,
+    [sel, studio, snap.rev, snap.blocks],
+  ); // eslint-disable-line react-hooks/exhaustive-deps
   const bounds = useMemo(() => studio.canvas.bounds(), [studio, snap.blocks, snap.rev]); // eslint-disable-line react-hooks/exhaustive-deps
   const over = !!bounds && sizeOf(bounds).some((n) => n > 32);
   const selMaterials = useMemo(() => {
     const ids = new Map<number, string>();
-    if (sel) for (const c of studio.canvas.cells()) if (c[0] >= sel.min[0] && c[0] <= sel.max[0] && c[1] >= sel.min[1] && c[1] <= sel.max[1] && c[2] >= sel.min[2] && c[2] <= sel.max[2]) ids.set(c[3], session.palette.find((p) => p.id === c[3])?.name ?? `#${c[3]}`);
+    if (sel)
+      for (const c of studio.canvas.cells())
+        if (
+          c[0] >= sel.min[0] &&
+          c[0] <= sel.max[0] &&
+          c[1] >= sel.min[1] &&
+          c[1] <= sel.max[1] &&
+          c[2] >= sel.min[2] &&
+          c[2] <= sel.max[2]
+        )
+          ids.set(c[3], session.palette.find((p) => p.id === c[3])?.name ?? `#${c[3]}`);
     return [...ids];
   }, [sel, studio, session.palette, snap.rev]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -718,25 +946,62 @@ function StudioBody({
         <h1 className="text-sm font-semibold text-fg">Design Studio</h1>
         {snap.designId ? <Badge tone="accent">#{snap.designId}</Badge> : <Badge>unsaved</Badge>}
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Input value={saveName} onChange={(e) => setSaveName(e.target.value)} placeholder="Design name" aria-label="Design name" className="h-8 w-44" maxLength={48} />
-          <Input value={saveSummary} onChange={(e) => setSaveSummary(e.target.value)} placeholder="What changed (revision message)" aria-label="Revision message" className="h-8 w-56" maxLength={120} />
-          <Button size="sm" onClick={() => void doSave(false)} disabled={!canWrite || saving || snap.blocks === 0} loading={saving}>
+          <div className="w-40">
+            <Input
+              value={saveName}
+              onChange={(e) => setSaveName(e.target.value)}
+              placeholder="Design name"
+              aria-label="Design name"
+              className="h-8"
+              maxLength={48}
+            />
+          </div>
+          <div className="w-56">
+            <Input
+              value={saveSummary}
+              onChange={(e) => setSaveSummary(e.target.value)}
+              placeholder="What changed (revision message)"
+              aria-label="Revision message"
+              className="h-8"
+              maxLength={120}
+            />
+          </div>
+          <Button
+            size="sm"
+            onClick={() => void doSave(false)}
+            disabled={!canWrite || saving || snap.blocks === 0}
+            loading={saving}
+          >
             {snap.designId ? 'Save as new revision' : 'Save'}
           </Button>
           {snap.designId ? (
-            <Button size="sm" variant="secondary" onClick={() => void doSave(true)} disabled={!canWrite || saving || snap.blocks === 0}>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => void doSave(true)}
+              disabled={!canWrite || saving || snap.blocks === 0}
+            >
               Save as new design
             </Button>
           ) : null}
           {revisions.length ? (
             <details className="relative">
-              <summary className="flex h-8 cursor-pointer list-none items-center gap-1 rounded-md px-2 text-xs text-muted hover:bg-surface-2" aria-label="Revision history">
+              <summary
+                className="flex h-8 cursor-pointer list-none items-center gap-1 rounded-md px-2 text-xs text-muted hover:bg-surface-2"
+                aria-label="Revision history"
+              >
                 <HistoryIcon className="size-3.5" /> r{revisions[0]!.rev} · {revisions.length}
               </summary>
-              <ol className="absolute right-0 z-20 mt-1 max-h-72 w-80 overflow-y-auto rounded-lg border border-border bg-surface p-2 shadow-card" aria-label="Revisions">
+              <ol
+                className="absolute right-0 z-20 mt-1 max-h-72 w-80 overflow-y-auto rounded-lg border border-border bg-surface p-2 shadow-card"
+                aria-label="Revisions"
+              >
                 {revisions.map((r) => (
                   <li key={r.rev} className="border-b border-border py-1.5 text-xs last:border-0">
-                    <span className="font-medium text-fg">r{r.rev}</span> <span className="text-muted">“{r.message}” · {r.n} blocks</span>
+                    <span className="font-medium text-fg">r{r.rev}</span>{' '}
+                    <span className="text-muted">
+                      “{r.message}” · {r.n} blocks
+                    </span>
                     <div className="text-subtle">{r.author}</div>
                   </li>
                 ))}
@@ -746,13 +1011,28 @@ function StudioBody({
         </div>
       </header>
       {saved?.designId ? (
-        <div className="flex flex-wrap items-center gap-2 border-b border-border bg-ok-soft px-3 py-1.5 text-xs text-ok" data-testid="saved-bar">
+        <div
+          className="flex flex-wrap items-center gap-2 border-b border-border bg-ok-soft px-3 py-1.5 text-xs text-ok"
+          data-testid="saved-bar"
+        >
           <span>{saved.text || `Design #${saved.designId}${saved.rev ? ` r${saved.rev}` : ''}`}</span>
           <span className="ml-auto" />
-          <Link href={`/story?design=${saved.designId}`} className="rounded-md bg-surface px-2 py-1 text-fg hover:bg-surface-2" title="Opens Story Mode with a build placement for this design">
+          <Link
+            href={`/story?design=${saved.designId}`}
+            className="rounded-md bg-surface px-2 py-1 text-fg hover:bg-surface-2"
+            title="Opens Story Mode with a build placement for this design"
+          >
             Build in Story Mode
           </Link>
-          <Button size="sm" variant="secondary" onClick={() => void askBot()} disabled={!canChat || !mainBot} title={canChat ? `Ask ${mainBot ?? 'the bot'} in chat to build it` : 'Your account cannot chat with the bots'}>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => void askBot()}
+            disabled={!canChat || !mainBot}
+            title={
+              canChat ? `Ask ${mainBot ?? 'the bot'} in chat to build it` : 'Your account cannot chat with the bots'
+            }
+          >
             Ask the bot to build it
           </Button>
           <Link href={`/designs?id=${saved.designId}`} className="text-ok underline">
@@ -785,27 +1065,43 @@ function StudioBody({
           />
           {locked ? <Crosshair /> : null}
           {!locked && ready ? (
-            <div className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 rounded bg-black/55 px-2.5 py-1 font-mono text-[11px] whitespace-nowrap text-white">
+            <div className="pointer-events-none absolute bottom-24 left-1/2 -translate-x-1/2 rounded bg-black/55 px-2.5 py-1 font-mono text-[11px] whitespace-nowrap text-white">
               Click to build · WASD fly · Space/E up · Q down · B blocks · T chat · Ctrl+Z undo
             </div>
           ) : null}
           {hud ? (
-            <div className="pointer-events-none absolute top-3 left-14 space-y-1 font-mono text-[11px] text-white" data-testid="studio-hud">
+            <div
+              className="pointer-events-none absolute top-3 left-14 space-y-1 font-mono text-[11px] text-white"
+              data-testid="studio-hud"
+            >
               <div className="rounded bg-black/55 px-2 py-0.5">
-                {h?.hit ? `${h.hit.join(', ')}` : h?.place ? `ground · ${h.place.join(', ')}` : '—'} · facing {facing ?? `${lookNow} (look)`} · {TOOLS.find((t) => t.id === tool)?.label.split(' (')[0]}
-                {tool === 'box' ? ` (${boxMode})` : tool === 'brush' ? ` (${brushMode} ${brushShape} ${brushSize})` : tool === 'extrude' ? ` (${extrudeN})` : ''}
+                {h?.hit ? `${h.hit.join(', ')}` : h?.place ? `ground · ${h.place.join(', ')}` : '—'} · facing{' '}
+                {facing ?? `${lookNow} (look)`} · {TOOLS.find((t) => t.id === tool)?.label.split(' (')[0]}
+                {tool === 'box'
+                  ? ` (${boxMode})`
+                  : tool === 'brush'
+                    ? ` (${brushMode} ${brushShape} ${brushSize})`
+                    : tool === 'extrude'
+                      ? ` (${extrudeN})`
+                      : ''}
               </div>
               <div className="rounded bg-black/55 px-2 py-0.5">
                 {snap.blocks} blocks{bounds ? ` · ${sizeOf(bounds).join('×')}` : ''} · r{snap.rev}
                 {snap.pending ? ` · ${snap.pending} unsent` : ''} · {fps} fps
               </div>
-              {over ? <div className="rounded bg-danger px-2 py-0.5">over 32 a side: too big to save as one design</div> : null}
+              {over ? (
+                <div className="rounded bg-danger px-2 py-0.5">over 32 a side: too big to save as one design</div>
+              ) : null}
               {sel && selSize ? (
                 <div className="rounded bg-[#0369a1]/80 px-2 py-0.5" data-testid="selection-hud">
                   Selection {selSize[0]}×{selSize[1]}×{selSize[2]} · {sel.mask ? sel.mask.size : selBlocks} blocks
                 </div>
               ) : null}
-              {pasting ? <div className="rounded bg-[#a16207]/80 px-2 py-0.5">Pasting: click to place (Shift keeps pasting) · Esc cancels</div> : null}
+              {pasting ? (
+                <div className="rounded bg-[#a16207]/80 px-2 py-0.5">
+                  Pasting: click to place (Shift keeps pasting) · Esc cancels
+                </div>
+              ) : null}
             </div>
           ) : null}
           {/* Tools */}
@@ -818,37 +1114,88 @@ function StudioBody({
                 aria-pressed={tool === t.id}
                 aria-label={t.label}
                 title={`${t.label} [${t.key}]`}
-                className={cn('grid size-8 place-items-center rounded text-white', tool === t.id ? 'bg-accent' : 'bg-black/55 hover:bg-black/75')}
+                className={cn(
+                  'grid size-8 place-items-center rounded text-white',
+                  tool === t.id ? 'bg-accent' : 'bg-black/55 hover:bg-black/75',
+                )}
               >
                 {t.icon}
               </button>
             ))}
             <div className="my-1 h-px bg-white/20" />
-            <button type="button" onClick={() => studio.undo()} disabled={!snap.canUndo} aria-label="Undo" title={`Undo ${snap.undoLabel ?? ''} [Ctrl+Z]`} className="grid size-8 place-items-center rounded bg-black/55 text-white disabled:opacity-40">
+            <button
+              type="button"
+              onClick={() => studio.undo()}
+              disabled={!snap.canUndo}
+              aria-label="Undo"
+              title={`Undo ${snap.undoLabel ?? ''} [Ctrl+Z]`}
+              className="grid size-8 place-items-center rounded bg-black/55 text-white disabled:opacity-40"
+            >
               <Undo2 className="size-4" />
             </button>
-            <button type="button" onClick={() => studio.redo()} disabled={!snap.canRedo} aria-label="Redo" title={`Redo ${snap.redoLabel ?? ''} [Ctrl+Y]`} className="grid size-8 place-items-center rounded bg-black/55 text-white disabled:opacity-40">
+            <button
+              type="button"
+              onClick={() => studio.redo()}
+              disabled={!snap.canRedo}
+              aria-label="Redo"
+              title={`Redo ${snap.redoLabel ?? ''} [Ctrl+Y]`}
+              className="grid size-8 place-items-center rounded bg-black/55 text-white disabled:opacity-40"
+            >
               <Redo2 className="size-4" />
             </button>
-            <button type="button" onClick={() => setGrid((v) => !v)} aria-pressed={grid} aria-label="Grid" title="Grid [H]" className="grid size-8 place-items-center rounded bg-black/55 text-white">
+            <button
+              type="button"
+              onClick={() => setGrid((v) => !v)}
+              aria-pressed={grid}
+              aria-label="Grid"
+              title="Grid [H]"
+              className="grid size-8 place-items-center rounded bg-black/55 text-white"
+            >
               <Grid3x3 className="size-4" />
             </button>
-            <button type="button" onClick={() => void stage.current?.requestFullscreen?.().catch(() => undefined)} aria-label="Full screen" className="grid size-8 place-items-center rounded bg-black/55 text-white">
+            <button
+              type="button"
+              onClick={() => void stage.current?.requestFullscreen?.().catch(() => undefined)}
+              aria-label="Full screen"
+              className="grid size-8 place-items-center rounded bg-black/55 text-white"
+            >
               <Maximize2 className="size-4" />
             </button>
           </div>
           {/* Tool options and the selection's actions */}
           <div className="absolute top-3 right-3 flex max-w-[52%] flex-col items-end gap-1.5 text-[11px] text-white">
             {tool === 'box' ? (
-              <Seg label="Box" value={boxMode} options={['fill', 'hollow', 'walls', 'outline']} onChange={(v) => setBoxMode(v as BoxMode)} />
+              <Seg
+                label="Box"
+                value={boxMode}
+                options={['fill', 'hollow', 'walls', 'outline']}
+                onChange={(v) => setBoxMode(v as BoxMode)}
+              />
             ) : null}
             {tool === 'brush' ? (
               <div className="flex flex-wrap items-center justify-end gap-1.5">
-                <Seg label="Brush" value={brushMode} options={['add', 'remove', 'paint', 'replace', 'smooth']} onChange={(v) => setBrushMode(v as BrushMode)} />
-                <Seg label="Shape" value={brushShape} options={['sphere', 'cube']} onChange={(v) => setBrushShape(v as BrushShape)} />
+                <Seg
+                  label="Brush"
+                  value={brushMode}
+                  options={['add', 'remove', 'paint', 'replace', 'smooth']}
+                  onChange={(v) => setBrushMode(v as BrushMode)}
+                />
+                <Seg
+                  label="Shape"
+                  value={brushShape}
+                  options={['sphere', 'cube']}
+                  onChange={(v) => setBrushShape(v as BrushShape)}
+                />
                 <label className="flex items-center gap-1 rounded bg-black/55 px-2 py-1">
                   Size
-                  <input type="range" min={1} max={8} value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} aria-label="Brush size" />
+                  <input
+                    type="range"
+                    min={1}
+                    max={8}
+                    value={brushSize}
+                    onChange={(e) => setBrushSize(Number(e.target.value))}
+                    aria-label="Brush size"
+                  />
                   {brushSize}
                 </label>
               </div>
@@ -856,28 +1203,56 @@ function StudioBody({
             {tool === 'extrude' ? (
               <label className="flex items-center gap-1 rounded bg-black/55 px-2 py-1">
                 By
-                <input type="number" min={1} max={16} value={extrudeN} onChange={(e) => setExtrudeN(Math.max(1, Math.min(16, Number(e.target.value) || 1)))} className="w-12 bg-transparent" aria-label="Extrude by" />
+                <input
+                  type="number"
+                  min={1}
+                  max={16}
+                  value={extrudeN}
+                  onChange={(e) => setExtrudeN(Math.max(1, Math.min(16, Number(e.target.value) || 1)))}
+                  className="w-12 bg-transparent"
+                  aria-label="Extrude by"
+                />
               </label>
             ) : null}
-            <div className="flex flex-wrap justify-end gap-1" role="toolbar" aria-label={sel ? 'Selection' : 'Whole design'}>
+            <div
+              className="flex flex-wrap justify-end gap-1"
+              role="toolbar"
+              aria-label={sel ? 'Selection' : 'Whole design'}
+            >
               <span className="rounded bg-black/55 px-2 py-1 text-white/70">{sel ? 'Selection' : 'Whole design'}</span>
-              <Act label="Rotate 90° counter-clockwise [ [ ]" onClick={() => applyTransform('rotate counter-clockwise', (s) => rotate(studio.canvas, s, 3, version))}>
+              <Act
+                label="Rotate 90° counter-clockwise [ [ ]"
+                onClick={() => applyTransform('rotate counter-clockwise', (s) => rotate(studio.canvas, s, 3, version))}
+              >
                 <RotateCcw className="size-3.5" />
               </Act>
-              <Act label="Rotate 90° clockwise [ ] ]" onClick={() => applyTransform('rotate clockwise', (s) => rotate(studio.canvas, s, 1, version))}>
+              <Act
+                label="Rotate 90° clockwise [ ] ]"
+                onClick={() => applyTransform('rotate clockwise', (s) => rotate(studio.canvas, s, 1, version))}
+              >
                 <RotateCw className="size-3.5" />
               </Act>
-              <Act label="Mirror east–west" onClick={() => applyTransform('mirror x', (s) => mirrorSel(studio.canvas, s, 'x'))}>
+              <Act
+                label="Mirror east–west"
+                onClick={() => applyTransform('mirror x', (s) => mirrorSel(studio.canvas, s, 'x'))}
+              >
                 <FlipHorizontal2 className="size-3.5" />
               </Act>
-              <Act label="Mirror north–south" onClick={() => applyTransform('mirror z', (s) => mirrorSel(studio.canvas, s, 'z'))}>
+              <Act
+                label="Mirror north–south"
+                onClick={() => applyTransform('mirror z', (s) => mirrorSel(studio.canvas, s, 'z'))}
+              >
                 <FlipVertical2 className="size-3.5" />
               </Act>
               {sel ? (
                 <>
                   {(['x', 'y', 'z'] as const).map((a) =>
                     [-1, 1].map((sgn) => (
-                      <Act key={a + sgn} label={`Move ${sgn > 0 ? '+' : '−'}${a}`} onClick={() => moveSel([a === 'x' ? sgn : 0, a === 'y' ? sgn : 0, a === 'z' ? sgn : 0])}>
+                      <Act
+                        key={a + sgn}
+                        label={`Move ${sgn > 0 ? '+' : '−'}${a}`}
+                        onClick={() => moveSel([a === 'x' ? sgn : 0, a === 'y' ? sgn : 0, a === 'z' ? sgn : 0])}
+                      >
                         <span className="font-mono">
                           {sgn > 0 ? '+' : '−'}
                           {a}
@@ -891,7 +1266,10 @@ function StudioBody({
                   <Act label="Duplicate [Ctrl+D]" onClick={() => doCopy() && setPasting(true)}>
                     <span>dup</span>
                   </Act>
-                  <Act label="Delete [Delete]" onClick={() => studio.edit(erase(studio.canvas, sel), 'remove', 'deleted the selection')}>
+                  <Act
+                    label="Delete [Delete]"
+                    onClick={() => studio.edit(erase(studio.canvas, sel), 'remove', 'deleted the selection')}
+                  >
                     <Trash2 className="size-3.5" />
                   </Act>
                 </>
@@ -906,26 +1284,58 @@ function StudioBody({
               <div className="flex flex-wrap justify-end gap-1" role="toolbar" aria-label="Selection edits">
                 {current ? (
                   <>
-                    <Act label={`Fill with ${current.name}`} onClick={() => studio.edit(selectionShape(sel, current.id, current.meta, 'fill'), 'fill', `filled the selection with ${current.name}`)}>
+                    <Act
+                      label={`Fill with ${current.name}`}
+                      onClick={() =>
+                        studio.edit(
+                          selectionShape(sel, current.id, current.meta, 'fill'),
+                          'fill',
+                          `filled the selection with ${current.name}`,
+                        )
+                      }
+                    >
                       <span>fill</span>
                     </Act>
-                    <Act label={`Walls of ${current.name}`} onClick={() => studio.edit(selectionShape(sel, current.id, current.meta, 'walls'), 'walls', `walls of ${current.name}`)}>
+                    <Act
+                      label={`Walls of ${current.name}`}
+                      onClick={() =>
+                        studio.edit(
+                          selectionShape(sel, current.id, current.meta, 'walls'),
+                          'walls',
+                          `walls of ${current.name}`,
+                        )
+                      }
+                    >
                       <span>walls</span>
                     </Act>
                   </>
                 ) : null}
-                <Act label="Hollow it out" onClick={() => studio.edit(selectionShape(sel, 0, 0, 'hollow'), 'hollow', 'hollowed the selection')}>
+                <Act
+                  label="Hollow it out"
+                  onClick={() => studio.edit(selectionShape(sel, 0, 0, 'hollow'), 'hollow', 'hollowed the selection')}
+                >
                   <span>hollow</span>
                 </Act>
-                <Act label="Raise the top surface" onClick={() => studio.edit(raiseLower(studio.canvas, sel, true), 'raise', 'raised the top surface')}>
+                <Act
+                  label="Raise the top surface"
+                  onClick={() => studio.edit(raiseLower(studio.canvas, sel, true), 'raise', 'raised the top surface')}
+                >
                   <span>raise</span>
                 </Act>
-                <Act label="Lower the top surface" onClick={() => studio.edit(raiseLower(studio.canvas, sel, false), 'lower', 'lowered the top surface')}>
+                <Act
+                  label="Lower the top surface"
+                  onClick={() => studio.edit(raiseLower(studio.canvas, sel, false), 'lower', 'lowered the top surface')}
+                >
                   <span>lower</span>
                 </Act>
                 <label className="flex items-center gap-1 rounded bg-black/55 px-1.5 py-0.5">
                   Replace
-                  <select value={replaceFrom} onChange={(e) => setReplaceFrom(e.target.value)} aria-label="Replace which block" className="bg-black/40 text-white">
+                  <select
+                    value={replaceFrom}
+                    onChange={(e) => setReplaceFrom(e.target.value)}
+                    aria-label="Replace which block"
+                    className="bg-black/40 text-white"
+                  >
                     <option value="any">all</option>
                     {selMaterials.map(([id, name]) => (
                       <option key={id} value={String(id)}>
@@ -938,7 +1348,20 @@ function StudioBody({
                     type="button"
                     className="rounded bg-white/15 px-1 hover:bg-white/30"
                     disabled={!current}
-                    onClick={() => current && studio.edit(replaceIn(studio.canvas, sel, replaceFrom === 'any' ? 'any' : Number(replaceFrom), current.id, current.meta), 'replace', `replaced ${replaceFrom === 'any' ? 'everything' : (selMaterials.find(([i]) => String(i) === replaceFrom)?.[1] ?? replaceFrom)} with ${current.name}`)}
+                    onClick={() =>
+                      current &&
+                      studio.edit(
+                        replaceIn(
+                          studio.canvas,
+                          sel,
+                          replaceFrom === 'any' ? 'any' : Number(replaceFrom),
+                          current.id,
+                          current.meta,
+                        ),
+                        'replace',
+                        `replaced ${replaceFrom === 'any' ? 'everything' : (selMaterials.find(([i]) => String(i) === replaceFrom)?.[1] ?? replaceFrom)} with ${current.name}`,
+                      )
+                    }
                   >
                     go
                   </button>
@@ -1009,19 +1432,40 @@ function StudioBody({
         />
       </div>
       {models.length === 0 ? (
-        <p className="border-t border-border bg-warn-soft px-3 py-1 text-xs text-warn">The bot has no usable model configured (Agent:Llm), so the AI can't answer.</p>
+        <p className="border-t border-border bg-warn-soft px-3 py-1 text-xs text-warn">
+          The bot has no usable model configured (Agent:Llm), so the AI can't answer.
+        </p>
       ) : null}
-      <span hidden data-testid="player">{player}</span>
+      <span hidden data-testid="player">
+        {player}
+      </span>
     </div>
   );
 }
 
-function Seg({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (v: string) => void }) {
+function Seg({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: string[];
+  onChange: (v: string) => void;
+}) {
   return (
     <div className="flex items-center gap-0.5 rounded bg-black/55 p-0.5" role="radiogroup" aria-label={label}>
       <span className="px-1 text-white/70">{label}</span>
       {options.map((o) => (
-        <button key={o} type="button" role="radio" aria-checked={value === o} onClick={() => onChange(o)} className={cn('rounded px-1.5 py-0.5', value === o ? 'bg-accent' : 'hover:bg-white/15')}>
+        <button
+          key={o}
+          type="button"
+          role="radio"
+          aria-checked={value === o}
+          onClick={() => onChange(o)}
+          className={cn('rounded px-1.5 py-0.5', value === o ? 'bg-accent' : 'hover:bg-white/15')}
+        >
           {o}
         </button>
       ))}
@@ -1031,7 +1475,13 @@ function Seg({ label, value, options, onChange }: { label: string; value: string
 
 function Act({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) {
   return (
-    <button type="button" onClick={onClick} aria-label={label} title={label} className="grid h-7 min-w-7 place-items-center rounded bg-black/55 px-1.5 text-white hover:bg-black/75">
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className="grid h-7 min-w-7 place-items-center rounded bg-black/55 px-1.5 text-white hover:bg-black/75"
+    >
       {children}
     </button>
   );

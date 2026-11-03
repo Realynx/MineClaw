@@ -13,7 +13,8 @@ export type V3 = [number, number, number];
 export const SIZE = DESIGNER_PLOT.size;
 export const HEIGHT = DESIGNER_PLOT.height;
 
-export const inside = (x: number, y: number, z: number): boolean => x >= 0 && x < SIZE && z >= 0 && z < SIZE && y >= 0 && y < HEIGHT;
+export const inside = (x: number, y: number, z: number): boolean =>
+  x >= 0 && x < SIZE && z >= 0 && z < SIZE && y >= 0 && y < HEIGHT;
 export const keyOf = (x: number, y: number, z: number): number => x + SIZE * (z + SIZE * y);
 export const posOf = (k: number): V3 => [k % SIZE, Math.floor(k / (SIZE * SIZE)), Math.floor(k / SIZE) % SIZE];
 
@@ -53,7 +54,8 @@ export class Canvas {
 
   load(cells: readonly Cell[]): void {
     this.blocks.clear();
-    for (const c of cells) if (inside(c[0], c[1], c[2]) && c[3] !== 0) this.blocks.set(keyOf(c[0], c[1], c[2]), c[3] * 16 + (c[4] & 15));
+    for (const c of cells)
+      if (inside(c[0], c[1], c[2]) && c[3] !== 0) this.blocks.set(keyOf(c[0], c[1], c[2]), c[3] * 16 + (c[4] & 15));
   }
 
   /**
@@ -293,7 +295,9 @@ export function connected(c: Canvas, start: V3, same: boolean, limit = 50_000): 
   while (stack.length && out.size < limit) {
     const [x, y, z] = posOf(stack.pop()!);
     for (const [dx, dy, dz] of N6) {
-      const nx = x + dx, ny = y + dy, nz = z + dz;
+      const nx = x + dx,
+        ny = y + dy,
+        nz = z + dz;
       if (!inside(nx, ny, nz)) continue;
       const k = keyOf(nx, ny, nz);
       if (out.has(k)) continue;

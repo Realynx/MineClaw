@@ -7,65 +7,140 @@ import type { AssetBundle, Pack1122 } from '../assets/bundle';
 import { tileFor } from '../mesh/beta/textures';
 import { flatColour } from '../world/blocks';
 
-const FLAT = new Set([6, 27, 28, 30, 31, 32, 37, 38, 39, 40, 50, 55, 59, 64, 65, 66, 69, 71, 75, 76, 77, 83, 101, 102, 106, 143]);
+const FLAT = new Set([
+  6, 27, 28, 30, 31, 32, 37, 38, 39, 40, 50, 55, 59, 64, 65, 66, 69, 71, 75, 76, 77, 83, 101, 102, 106, 143,
+]);
 
-const WOOL = ['white', 'orange', 'magenta', 'light_blue', 'yellow', 'lime', 'pink', 'gray', 'silver', 'cyan', 'purple', 'blue', 'brown', 'green', 'red', 'black'];
+const WOOL = [
+  'white',
+  'orange',
+  'magenta',
+  'light_blue',
+  'yellow',
+  'lime',
+  'pink',
+  'gray',
+  'silver',
+  'cyan',
+  'purple',
+  'blue',
+  'brown',
+  'green',
+  'red',
+  'black',
+];
 const WOOD = ['oak', 'spruce', 'birch', 'jungle', 'acacia', 'big_oak'];
 
 /** 1.12.2 textures [top, side] (or one for every face) of a state; null = unknown. */
 function textures1122(id: number, meta: number): [string, string] | null {
   const one = (t: string): [string, string] => [t, t];
   switch (id) {
-    case 1: return one('stone');
-    case 2: return ['grass_top', 'grass_side'];
-    case 3: return one('dirt');
-    case 4: return one('cobblestone');
-    case 5: return one(`planks_${WOOD[meta % 6]}`);
-    case 12: return one('sand');
-    case 13: return one('gravel');
-    case 17: return [`log_${WOOD[meta & 3]}_top`, `log_${WOOD[meta & 3]}`];
-    case 19: return one('sponge');
-    case 20: return one('glass');
-    case 22: return one('lapis_block');
-    case 23: return ['furnace_top', 'dispenser_front_horizontal'];
-    case 24: return ['sandstone_top', 'sandstone_normal'];
-    case 25: return one('noteblock');
-    case 35: return one(`wool_colored_${WOOL[meta & 15]}`);
-    case 41: return one('gold_block');
-    case 42: return one('iron_block');
+    case 1:
+      return one('stone');
+    case 2:
+      return ['grass_top', 'grass_side'];
+    case 3:
+      return one('dirt');
+    case 4:
+      return one('cobblestone');
+    case 5:
+      return one(`planks_${WOOD[meta % 6]}`);
+    case 12:
+      return one('sand');
+    case 13:
+      return one('gravel');
+    case 17:
+      return [`log_${WOOD[meta & 3]}_top`, `log_${WOOD[meta & 3]}`];
+    case 19:
+      return one('sponge');
+    case 20:
+      return one('glass');
+    case 22:
+      return one('lapis_block');
+    case 23:
+      return ['furnace_top', 'dispenser_front_horizontal'];
+    case 24:
+      return ['sandstone_top', 'sandstone_normal'];
+    case 25:
+      return one('noteblock');
+    case 35:
+      return one(`wool_colored_${WOOL[meta & 15]}`);
+    case 41:
+      return one('gold_block');
+    case 42:
+      return one('iron_block');
     case 43:
-    case 44: return [['stone_slab_top', 'sandstone_top', 'planks_oak', 'cobblestone', 'brick', 'stonebrick'][meta & 7] ?? 'stone_slab_top', ['stone_slab_side', 'sandstone_normal', 'planks_oak', 'cobblestone', 'brick', 'stonebrick'][meta & 7] ?? 'stone_slab_side'];
-    case 45: return one('brick');
-    case 47: return ['planks_oak', 'bookshelf'];
-    case 48: return one('cobblestone_mossy');
-    case 49: return one('obsidian');
-    case 50: return one('torch_on');
-    case 53: return one('planks_oak');
-    case 54: return one('planks_oak');
-    case 57: return one('diamond_block');
-    case 58: return ['crafting_table_top', 'crafting_table_front'];
-    case 61: return ['furnace_top', 'furnace_front_off'];
-    case 64: return one('door_wood_lower');
-    case 65: return one('ladder');
-    case 67: return one('cobblestone');
-    case 71: return one('door_iron_lower');
-    case 80: return one('snow');
-    case 82: return one('clay');
-    case 84: return ['jukebox_top', 'jukebox_side'];
-    case 85: return one('planks_oak');
-    case 86: return ['pumpkin_top', 'pumpkin_face_off'];
-    case 87: return one('netherrack');
-    case 88: return one('soul_sand');
-    case 89: return one('glowstone');
-    case 91: return ['pumpkin_top', 'pumpkin_face_on'];
-    case 96: return one('trapdoor');
-    case 98: return one(['stonebrick', 'stonebrick_mossy', 'stonebrick_cracked', 'stonebrick_carved'][meta & 3] ?? 'stonebrick');
-    case 101: return one('iron_bars');
-    case 102: return one('glass');
-    case 103: return ['melon_top', 'melon_side'];
-    case 107: return one('planks_oak');
-    case 108: return one('brick');
-    case 109: return one('stonebrick');
+    case 44:
+      return [
+        ['stone_slab_top', 'sandstone_top', 'planks_oak', 'cobblestone', 'brick', 'stonebrick'][meta & 7] ??
+          'stone_slab_top',
+        ['stone_slab_side', 'sandstone_normal', 'planks_oak', 'cobblestone', 'brick', 'stonebrick'][meta & 7] ??
+          'stone_slab_side',
+      ];
+    case 45:
+      return one('brick');
+    case 47:
+      return ['planks_oak', 'bookshelf'];
+    case 48:
+      return one('cobblestone_mossy');
+    case 49:
+      return one('obsidian');
+    case 50:
+      return one('torch_on');
+    case 53:
+      return one('planks_oak');
+    case 54:
+      return one('planks_oak');
+    case 57:
+      return one('diamond_block');
+    case 58:
+      return ['crafting_table_top', 'crafting_table_front'];
+    case 61:
+      return ['furnace_top', 'furnace_front_off'];
+    case 64:
+      return one('door_wood_lower');
+    case 65:
+      return one('ladder');
+    case 67:
+      return one('cobblestone');
+    case 71:
+      return one('door_iron_lower');
+    case 80:
+      return one('snow');
+    case 82:
+      return one('clay');
+    case 84:
+      return ['jukebox_top', 'jukebox_side'];
+    case 85:
+      return one('planks_oak');
+    case 86:
+      return ['pumpkin_top', 'pumpkin_face_off'];
+    case 87:
+      return one('netherrack');
+    case 88:
+      return one('soul_sand');
+    case 89:
+      return one('glowstone');
+    case 91:
+      return ['pumpkin_top', 'pumpkin_face_on'];
+    case 96:
+      return one('trapdoor');
+    case 98:
+      return one(
+        ['stonebrick', 'stonebrick_mossy', 'stonebrick_cracked', 'stonebrick_carved'][meta & 3] ?? 'stonebrick',
+      );
+    case 101:
+      return one('iron_bars');
+    case 102:
+      return one('glass');
+    case 103:
+      return ['melon_top', 'melon_side'];
+    case 107:
+      return one('planks_oak');
+    case 108:
+      return one('brick');
+    case 109:
+      return one('stonebrick');
   }
   return null;
 }
@@ -85,7 +160,13 @@ function tileOf(bundle: AssetBundle, id: number, meta: number, face: number): Ti
   const cell = name ? pack.blocks.tiles[`blocks/${name}`] : undefined;
   if (!cell) return { colour: flatColour('1.12.2', id, meta, face === 1) };
   const ts = pack.tileSize;
-  return { img: bundle.blocks, sx: cell[0] * ts, sy: cell[1] * ts, size: ts, tint: id === 2 && face === 1 ? 0x91bd59 : 0 };
+  return {
+    img: bundle.blocks,
+    sx: cell[0] * ts,
+    sy: cell[1] * ts,
+    size: ts,
+    tint: id === 2 && face === 1 ? 0x91bd59 : 0,
+  };
 }
 
 function drawTile(g: CanvasRenderingContext2D, t: Tile, shade: number): void {

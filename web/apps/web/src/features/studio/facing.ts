@@ -16,11 +16,21 @@ export const DIRS: readonly Dir[] = ['north', 'east', 'south', 'west'];
 export const turn = (d: Dir, quarters: number): Dir => DIRS[(((DIRS.indexOf(d) + quarters) % 4) + 4) % 4]!;
 export const opposite = (d: Dir): Dir => turn(d, 2);
 export const mirror = (d: Dir, axis: 'x' | 'z'): Dir =>
-  axis === 'x' ? (d === 'east' ? 'west' : d === 'west' ? 'east' : d) : d === 'north' ? 'south' : d === 'south' ? 'north' : d;
+  axis === 'x'
+    ? d === 'east'
+      ? 'west'
+      : d === 'west'
+        ? 'east'
+        : d
+    : d === 'north'
+      ? 'south'
+      : d === 'south'
+        ? 'north'
+        : d;
 
 /** The horizontal direction a camera looks (yaw in radians, three.js: 0 = looking -z = north). */
 export function dirOfYaw(yaw: number): Dir {
-  const a = (((-yaw * 180) / Math.PI) % 360 + 360) % 360; // 0 = north, 90 = east
+  const a = ((((-yaw * 180) / Math.PI) % 360) + 360) % 360; // 0 = north, 90 = east
   return DIRS[Math.round(a / 90) % 4]!;
 }
 
@@ -56,7 +66,15 @@ export const isStairs = (id: number) => STAIRS.has(id);
 
 /** Blocks whose meta says where they face (placement asks for a direction). */
 export function hasFacing(id: number): boolean {
-  return STAIRS.has(id) || DOORS.has(id) || FRONT.has(id) || TORCH.has(id) || TRAPDOOR.has(id) || GATES.has(id) || PUMPKIN.has(id);
+  return (
+    STAIRS.has(id) ||
+    DOORS.has(id) ||
+    FRONT.has(id) ||
+    TORCH.has(id) ||
+    TRAPDOOR.has(id) ||
+    GATES.has(id) ||
+    PUMPKIN.has(id)
+  );
 }
 
 const STAIRS_DIRS: Dir[] = ['east', 'west', 'south', 'north'];
@@ -78,9 +96,15 @@ function codecOf(id: number): Codec | null {
   if (STAIRS.has(id)) return low2(STAIRS_DIRS);
   if (DOORS.has(id)) return low2(DOOR_DIRS); // both halves: the designs system stores the upper as lower | 8 in both versions
   if (FRONT.has(id))
-    return { get: (m) => (m >= 2 && m <= 5 ? FRONT_DIRS[m - 2]! : null), set: (m, d) => (m >= 2 && m <= 5 ? FRONT_DIRS.indexOf(d) + 2 : m) };
+    return {
+      get: (m) => (m >= 2 && m <= 5 ? FRONT_DIRS[m - 2]! : null),
+      set: (m, d) => (m >= 2 && m <= 5 ? FRONT_DIRS.indexOf(d) + 2 : m),
+    };
   if (TORCH.has(id))
-    return { get: (m) => (m >= 1 && m <= 4 ? TORCH_WALLS[m - 1]! : null), set: (m, d) => (m >= 1 && m <= 4 ? TORCH_WALLS.indexOf(d) + 1 : m) };
+    return {
+      get: (m) => (m >= 1 && m <= 4 ? TORCH_WALLS[m - 1]! : null),
+      set: (m, d) => (m >= 1 && m <= 4 ? TORCH_WALLS.indexOf(d) + 1 : m),
+    };
   if (TRAPDOOR.has(id)) return low2(TRAP_WALLS);
   if (GATES.has(id)) return low2(GATE_DIRS);
   if (PUMPKIN.has(id)) return low2(PUMPKIN_FRONTS);
@@ -109,7 +133,8 @@ export function placeMeta(id: number, baseMeta: number, look: Dir, face: number,
   if (TRAPDOOR.has(id)) return low2(TRAP_WALLS).set(baseMeta & ~3, wall ?? look);
   if (GATES.has(id)) return low2(GATE_DIRS).set(0, look);
   if (PUMPKIN.has(id)) return low2(PUMPKIN_FRONTS).set(0, opposite(look));
-  if (LOGS.has(id) && version === '1.12.2') return (baseMeta & 3) | (face === 2 || face === 3 ? 8 : face === 4 || face === 5 ? 4 : 0);
+  if (LOGS.has(id) && version === '1.12.2')
+    return (baseMeta & 3) | (face === 2 || face === 3 ? 8 : face === 4 || face === 5 ? 4 : 0);
   return baseMeta;
 }
 

@@ -18,8 +18,12 @@ describe('Design Studio contract', () => {
     expect(C.DesignerCreateRequest.safeParse({ model: 'main', player: 'kiwi' }).success).toBe(false);
     expect(C.DesignerMessageRequest.safeParse({ text: 'add a door', canvas: { rev: 3 } }).success).toBe(true);
     expect(C.DesignerMessageRequest.safeParse({ text: ' ', canvas: { rev: 3 } }).success).toBe(false);
-    expect(C.DesignerCanvasRequest.safeParse({ rev: 1, ops: [{ kind: 'place', cells: [[1, 2, 3, 4, 0]] }] }).success).toBe(true);
-    expect(C.DesignerCanvasRequest.safeParse({ rev: 1, ops: [{ kind: 'place', cells: [[1, 2, 3]] }] }).success).toBe(false);
+    expect(
+      C.DesignerCanvasRequest.safeParse({ rev: 1, ops: [{ kind: 'place', cells: [[1, 2, 3, 4, 0]] }] }).success,
+    ).toBe(true);
+    expect(C.DesignerCanvasRequest.safeParse({ rev: 1, ops: [{ kind: 'place', cells: [[1, 2, 3]] }] }).success).toBe(
+      false,
+    );
     expect(C.DesignerSaveRequest.safeParse({ name: '' }).success).toBe(false);
   });
 
@@ -27,7 +31,9 @@ describe('Design Studio contract', () => {
     const m = C.createDesignerMock(100);
     const s = C.DesignerSession.parse(m.create({ model: 'main' }, 'poofimafox'));
     expect(s.blocks).toEqual([]);
-    const house = C.DesignerMessageResponse.parse(m.message(s.id, { text: 'build a little house', canvas: { rev: 0 } }));
+    const house = C.DesignerMessageResponse.parse(
+      m.message(s.id, { text: 'build a little house', canvas: { rev: 0 } }),
+    );
     expect(house.ops.map((o) => o.kind)).toEqual(['fill', 'walls', 'fill']);
     expect(house.costUsd).toBeGreaterThan(0);
     const door = m.message(s.id, { text: 'add a door', canvas: { rev: house.rev } });
@@ -41,6 +47,10 @@ describe('Design Studio contract', () => {
     expect(again.blocks.length).toBe(m.get(s.id).blocks.length);
     expect(again.revisions.map((r) => r.rev)).toEqual([2, 1]);
     expect(C.fakeDesignerTurn('hello', []).ops).toEqual([]);
-    expect(C.DesignerModelsResponse.parse(m.models()).models.every((x) => !x.model.startsWith('claude') || x.model.endsWith('5-5'))).toBe(true);
+    expect(
+      C.DesignerModelsResponse.parse(m.models()).models.every(
+        (x) => !x.model.startsWith('claude') || x.model.endsWith('5-5'),
+      ),
+    ).toBe(true);
   });
 });

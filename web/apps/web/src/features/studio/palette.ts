@@ -28,7 +28,17 @@ export function searchPalette(entries: readonly PaletteEntry[], query: string): 
 
 /** The first hotbar: the building basics, in palette order when present. */
 export function defaultHotbar(entries: readonly PaletteEntry[]): Array<PaletteEntry | null> {
-  const want: Array<[number, number]> = [[4, 0], [5, 0], [17, 0], [20, 0], [45, 0], [98, 0], [53, 0], [64, 0], [50, 5]];
+  const want: Array<[number, number]> = [
+    [4, 0],
+    [5, 0],
+    [17, 0],
+    [20, 0],
+    [45, 0],
+    [98, 0],
+    [53, 0],
+    [64, 0],
+    [50, 5],
+  ];
   const out = want.map(([id, meta]) => entries.find((e) => e.id === id && e.meta === meta) ?? null);
   for (let i = 0; i < out.length; i++) if (!out[i]) out[i] = entries[i] ?? null;
   return out;

@@ -11,14 +11,33 @@ export type IconOf = (id: number, meta: number) => string | null;
 function Icon({ entry, icon, size = 32 }: { entry: PaletteEntry; icon: IconOf; size?: number }) {
   const url = icon(entry.id, entry.meta);
   // eslint-disable-next-line @next/next/no-img-element -- generated data URLs from the bundled textures
-  return url ? <img src={url} alt="" width={size} height={size} style={{ imageRendering: 'pixelated' }} draggable={false} /> : <span className="block size-6 rounded bg-surface-3" />;
+  return url ? (
+    <img src={url} alt="" width={size} height={size} style={{ imageRendering: 'pixelated' }} draggable={false} />
+  ) : (
+    <span className="block size-6 rounded bg-surface-3" />
+  );
 }
 
-export function Hotbar({ slots, active, onPick, icon }: { slots: Array<PaletteEntry | null>; active: number; onPick: (i: number) => void; icon: IconOf }) {
+export function Hotbar({
+  slots,
+  active,
+  onPick,
+  icon,
+}: {
+  slots: Array<PaletteEntry | null>;
+  active: number;
+  onPick: (i: number) => void;
+  icon: IconOf;
+}) {
   const cur = slots[active];
   return (
-    <div className="pointer-events-auto absolute bottom-3 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1" data-testid="hotbar">
-      {cur ? <span className="rounded bg-black/60 px-2 py-0.5 font-mono text-[11px] text-white">{cur.name}</span> : null}
+    <div
+      className="pointer-events-auto absolute bottom-3 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1"
+      data-testid="hotbar"
+    >
+      {cur ? (
+        <span className="rounded bg-black/60 px-2 py-0.5 font-mono text-[11px] text-white">{cur.name}</span>
+      ) : null}
       <div className="flex gap-0.5 rounded bg-black/55 p-0.5">
         {slots.map((s, i) => (
           <button
@@ -27,7 +46,10 @@ export function Hotbar({ slots, active, onPick, icon }: { slots: Array<PaletteEn
             onClick={() => onPick(i)}
             aria-label={`Slot ${i + 1}${s ? `: ${s.name}` : ''}`}
             aria-pressed={i === active}
-            className={cn('relative grid size-11 place-items-center border-2', i === active ? 'border-white' : 'border-white/15 hover:border-white/40')}
+            className={cn(
+              'relative grid size-11 place-items-center border-2',
+              i === active ? 'border-white' : 'border-white/15 hover:border-white/40',
+            )}
           >
             {s ? <Icon entry={s} icon={icon} /> : null}
             <span className="absolute top-0 left-0.5 font-mono text-[9px] text-white/70">{i + 1}</span>
@@ -89,7 +111,12 @@ export function PaletteDrawer({
               title={`${e.name} (${e.id}${e.meta ? `:${e.meta}` : ''})`}
               aria-label={e.name}
               onClick={() => onChoose(e)}
-              className={cn('grid size-11 place-items-center rounded border', sameEntry(e, current) ? 'border-accent bg-accent-soft' : 'border-transparent hover:border-border hover:bg-surface-2')}
+              className={cn(
+                'grid size-11 place-items-center rounded border',
+                sameEntry(e, current)
+                  ? 'border-accent bg-accent-soft'
+                  : 'border-transparent hover:border-border hover:bg-surface-2',
+              )}
             >
               <Icon entry={e} icon={icon} />
             </button>

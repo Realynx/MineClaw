@@ -45,8 +45,16 @@ export class Overlay3D {
 
   constructor(plot: number) {
     const cube = new THREE.BoxGeometry(1.02, 1.02, 1.02);
-    this.ghosts = new THREE.InstancedMesh(cube, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.38, depthWrite: false }), MAX_GHOSTS);
-    this.flash = new THREE.InstancedMesh(cube, new THREE.MeshBasicMaterial({ color: 0x5ee08a, transparent: true, opacity: 0.55, depthWrite: false }), MAX_GHOSTS);
+    this.ghosts = new THREE.InstancedMesh(
+      cube,
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.38, depthWrite: false }),
+      MAX_GHOSTS,
+    );
+    this.flash = new THREE.InstancedMesh(
+      cube,
+      new THREE.MeshBasicMaterial({ color: 0x5ee08a, transparent: true, opacity: 0.55, depthWrite: false }),
+      MAX_GHOSTS,
+    );
     for (const m of [this.ghosts, this.flash]) {
       m.count = 0;
       m.frustumCulled = false;
@@ -65,7 +73,10 @@ export class Overlay3D {
     );
     grid.name = 'grid';
     const border = new THREE.LineLoop(
-      new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([0, y, 0, plot, y, 0, plot, y, plot, 0, y, plot], 3)),
+      new THREE.BufferGeometry().setAttribute(
+        'position',
+        new THREE.Float32BufferAttribute([0, y, 0, plot, y, 0, plot, y, plot, 0, y, plot], 3),
+      ),
       new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6 }),
     );
     // The move gizmo: three arrows (x red, y green, z blue) from the selection's centre.
@@ -88,7 +99,17 @@ export class Overlay3D {
     };
     this.gizmo.add(arrow('x', 0xef4444), arrow('y', 0x22c55e), arrow('z', 0x3b82f6));
     this.gizmo.visible = false;
-    this.group.add(grid, border, this.selection, this.drag, this.brush, this.anchor, this.ghosts, this.flash, this.gizmo);
+    this.group.add(
+      grid,
+      border,
+      this.selection,
+      this.drag,
+      this.brush,
+      this.anchor,
+      this.ghosts,
+      this.flash,
+      this.gizmo,
+    );
   }
 
   setGrid(on: boolean): void {

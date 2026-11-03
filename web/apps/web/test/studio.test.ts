@@ -5,7 +5,18 @@
 import type { DesignerMessageResponse, DesignerSession } from '@mineclaw/contracts';
 import { MOCK_DESIGNER_PALETTE } from '@mineclaw/contracts';
 import { describe, expect, it, vi } from 'vitest';
-import { Canvas, connected, extend, History, invert, keyOf, maskSelection, selectAll, selected, type Cell } from '@/features/studio/canvas';
+import {
+  Canvas,
+  connected,
+  extend,
+  History,
+  invert,
+  keyOf,
+  maskSelection,
+  selectAll,
+  selected,
+  type Cell,
+} from '@/features/studio/canvas';
 import { dirOfMcYaw, facingOf, mirrorMeta, placeMeta, rotateMeta, turn } from '@/features/studio/facing';
 import { defaultHotbar, searchPalette } from '@/features/studio/palette';
 import { Studio, type StudioApi } from '@/features/studio/studio';
@@ -28,14 +39,33 @@ import {
 } from '@/features/studio/tools';
 
 const session = (over: Partial<DesignerSession> = {}): DesignerSession => ({
-  id: 7, owner: 'poofimafox', model: 'main', designId: null, name: 'new design', rev: 0, blocks: [], anchor: null, messages: [], costUsd: 0,
-  calls: 0, version: 'b1.8.1', palette: MOCK_DESIGNER_PALETTE, plot: { size: 64, height: 48 }, revisions: [], ...over,
+  id: 7,
+  owner: 'poofimafox',
+  model: 'main',
+  designId: null,
+  name: 'new design',
+  rev: 0,
+  blocks: [],
+  anchor: null,
+  messages: [],
+  costUsd: 0,
+  calls: 0,
+  version: 'b1.8.1',
+  palette: MOCK_DESIGNER_PALETTE,
+  plot: { size: 64, height: 48 },
+  revisions: [],
+  ...over,
 });
 
 describe('canvas', () => {
   it('applies cells, returns the inverse, skips no-ops and the outside of the plot', () => {
     const c = new Canvas();
-    const ch = c.apply([[1, 0, 1, 4, 0], [1, 0, 1, 5, 0], [99, 0, 0, 4, 0], [2, 0, 2, 0, 0]]);
+    const ch = c.apply([
+      [1, 0, 1, 4, 0],
+      [1, 0, 1, 5, 0],
+      [99, 0, 0, 4, 0],
+      [2, 0, 2, 0, 0],
+    ]);
     expect(ch.forward).toEqual([[1, 0, 1, 5, 0]]);
     expect(ch.backward).toEqual([[1, 0, 1, 0, 0]]);
     expect(c.size).toBe(1);
@@ -95,7 +125,10 @@ describe('brushes', () => {
     // A lone block on a flat floor is smoothed away; a pit in it is filled.
     const f = new Canvas();
     f.apply(boxCells([0, 0, 0], [8, 1, 8], 1, 0));
-    f.apply([[4, 2, 4, 1, 0], [6, 1, 6, 0, 0]]);
+    f.apply([
+      [4, 2, 4, 1, 0],
+      [6, 1, 6, 0, 0],
+    ]);
     const sm = brush(f, [4, 2, 4], 2, 'cube', 'smooth', 0, 0);
     expect(sm).toContainEqual([4, 2, 4, 0, 0]);
     const pit = brush(f, [6, 1, 6], 1, 'cube', 'smooth', 0, 0);
@@ -200,7 +233,11 @@ describe('facing per block family', () => {
 describe('transforms', () => {
   it('moves, rotates a wall with its stairs, mirrors, copies and pastes', () => {
     const c = new Canvas();
-    c.apply([[10, 0, 10, 4, 0], [11, 0, 10, 4, 0], [12, 0, 10, 53, 0]]); // a row along x, the stairs going up east
+    c.apply([
+      [10, 0, 10, 4, 0],
+      [11, 0, 10, 4, 0],
+      [12, 0, 10, 53, 0],
+    ]); // a row along x, the stairs going up east
     const s = { min: [10, 0, 10] as [number, number, number], max: [12, 0, 10] as [number, number, number] };
     const m = move(c, s, [0, 0, 2]);
     c.apply(m.cells);
@@ -209,13 +246,13 @@ describe('transforms', () => {
     expect(m.selection!.min).toEqual([10, 0, 12]);
     const r = rotate(c, m.selection!, 1, 'b1.8.1');
     c.apply(r.cells);
-    // The row now runs along z from the same corner, the stairs turned to go up south.
-    expect(r.selection!.min).toEqual([10, 0, 12]);
-    expect(r.selection!.max).toEqual([10, 0, 14]);
-    expect(c.get(10, 0, 14)).toEqual([53, 2]);
+    // The row now runs along z through its middle block, the stairs turned to go up south.
+    expect(r.selection!.min).toEqual([11, 0, 11]);
+    expect(r.selection!.max).toEqual([11, 0, 13]);
+    expect(c.get(11, 0, 13)).toEqual([53, 2]);
     const f = mirrorSel(c, r.selection!, 'z');
     c.apply(f.cells);
-    expect(c.get(10, 0, 12)).toEqual([53, 3]);
+    expect(c.get(11, 0, 11)).toEqual([53, 3]);
     const clip = copy(c, f.selection!)!;
     expect(clip.size).toEqual([1, 1, 3]);
     c.apply(pasteCells(clip, [20, 0, 20]));
@@ -226,7 +263,10 @@ describe('transforms', () => {
   it('rotating the whole design 4 times is the identity', () => {
     const c = new Canvas();
     c.apply(boxCells([5, 0, 5], [9, 0, 7], 4, 0));
-    c.apply([[5, 1, 5, 64, 0], [9, 1, 7, 54, 2]]);
+    c.apply([
+      [5, 1, 5, 64, 0],
+      [9, 1, 7, 54, 2],
+    ]);
     const before = JSON.stringify(c.cells().sort());
     let s = selectAll(c)!;
     for (let i = 0; i < 4; i++) {
@@ -272,18 +312,49 @@ describe('studio controller', () => {
       }),
       message: vi.fn((id: number, body: unknown) => {
         calls.push(['message', body]);
-        const ops = [{ kind: 'place', label: 'placed an oak door', by: 'ai' as const, cells: [[3, 0, 3, 64, 1], [3, 1, 3, 64, 9]] as Cell[] }];
+        const ops = [
+          {
+            kind: 'place',
+            label: 'placed an oak door',
+            by: 'ai' as const,
+            cells: [
+              [3, 0, 3, 64, 1],
+              [3, 1, 3, 64, 9],
+            ] as Cell[],
+          },
+        ];
         const r: DesignerMessageResponse = {
-          reply: 'Added a door.', ops, rev: 9, costUsd: 0.02, sessionCostUsd: 0.02, model: 'claude-opus-5-5', calls: 2,
+          reply: 'Added a door.',
+          ops,
+          rev: 9,
+          costUsd: 0.02,
+          sessionCostUsd: 0.02,
+          model: 'claude-opus-5-5',
+          calls: 2,
           usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
-          message: { seq: 2, role: 'assistant', text: 'Added a door.', at: 1, model: 'claude-opus-5-5', costUsd: 0.02, ops: [{ kind: 'place', label: 'placed an oak door', cells: 2 }] },
+          message: {
+            seq: 2,
+            role: 'assistant',
+            text: 'Added a door.',
+            at: 1,
+            model: 'claude-opus-5-5',
+            costUsd: 0.02,
+            ops: [{ kind: 'place', label: 'placed an oak door', cells: 2 }],
+          },
           userMessage: { seq: 1, role: 'user', text: 'add a door', at: 1 },
         };
         return Promise.resolve(r);
       }),
       save: vi.fn((id: number, body: unknown) => {
         calls.push(['save', body]);
-        return Promise.resolve({ designId: 101, rev: 1, name: 'hut', blocks: 3, created: true, text: 'saved as design #101 r1' });
+        return Promise.resolve({
+          designId: 101,
+          rev: 1,
+          name: 'hut',
+          blocks: 3,
+          created: true,
+          text: 'saved as design #101 r1',
+        });
       }),
     };
     return { api, calls };
@@ -297,7 +368,12 @@ describe('studio controller', () => {
     const seen: string[] = [];
     s.onCells((_c, by) => seen.push(by));
     await s.send('add a door', { withSelection: true, model: 'worker' });
-    const body = calls.find((c) => c[0] === 'message')![1] as { text: string; canvas: { rev: number; edits: Array<{ cells: Cell[] }> }; selection: unknown; model: string };
+    const body = calls.find((c) => c[0] === 'message')![1] as {
+      text: string;
+      canvas: { rev: number; edits: Array<{ cells: Cell[] }> };
+      selection: unknown;
+      model: string;
+    };
     expect(body.text).toBe('add a door');
     expect(body.canvas.edits[0]!.cells).toEqual([[1, 0, 1, 4, 0]]);
     expect(body.selection).toEqual({ min: [0, 0, 0], max: [4, 2, 4] });
@@ -314,7 +390,9 @@ describe('studio controller', () => {
     s.redo();
     expect(s.canvas.id(1, 0, 1)).toBe(4);
     await s.flush();
-    const canvasBody = calls.filter((c) => c[0] === 'canvas').at(-1)![1] as { ops: Array<{ kind: string; label: string }> };
+    const canvasBody = calls.filter((c) => c[0] === 'canvas').at(-1)![1] as {
+      ops: Array<{ kind: string; label: string }>;
+    };
     expect(canvasBody.ops.map((o) => o.kind)).toEqual(['undo', 'undo', 'redo']);
     expect(canvasBody.ops[0]!.label).toBe('undo placed an oak door');
     s.dispose();

@@ -20,7 +20,7 @@ describe('studio chat panel', () => {
   it('lists the configured models and picks one', () => {
     const onModel = vi.fn();
     render(<ChatPanel {...base} onModel={onModel} onSend={() => undefined} onClose={() => undefined} />);
-    const picker = screen.getByLabelText('Model') as HTMLSelectElement;
+    const picker = screen.getByLabelText<HTMLSelectElement>('Model');
     expect([...picker.options].map((o) => o.value)).toEqual(['main', 'worker', 'cheap', 'profile:deepseek']);
     expect(picker.options[3]!.textContent).toContain('deepseek');
     fireEvent.change(picker, { target: { value: 'profile:deepseek' } });
@@ -46,7 +46,15 @@ describe('studio chat panel', () => {
         {...base}
         messages={[
           { seq: 1, role: 'user', text: 'build a hut', at: 1 },
-          { seq: 2, role: 'assistant', text: 'Built it.', at: 2, model: 'claude-opus-5-5', costUsd: 0.0123, ops: [{ kind: 'fill', label: 'filled a floor', cells: 49 }] },
+          {
+            seq: 2,
+            role: 'assistant',
+            text: 'Built it.',
+            at: 2,
+            model: 'claude-opus-5-5',
+            costUsd: 0.0123,
+            ops: [{ kind: 'fill', label: 'filled a floor', cells: 49 }],
+          },
         ]}
         onModel={() => undefined}
         onSend={() => undefined}
