@@ -165,6 +165,7 @@ public static class AppHost
             Log = m => clientLog.LogDebug("{Msg}", m),
         });
         var game = new MinecraftGameClient(client);
+        Supervisor.BlockDeltaLog.Attach(client.World); // the browser viewer's live block feed (logs only while someone reads it)
         // One brain, many bodies (step 2): Bodies:Mode=inproc runs the clone accounts as bodies in this process (no MainHive);
         // the default "hive" keeps one process per clone.
         var inproc = InProcBodies.Create(hive, bodiesOptions ?? new MineClaw.Bot.Bodies.BodiesOptions(), mc, agentOptions, loggers, profile);
@@ -358,6 +359,7 @@ public static class AppHost
             bodies.Changed += (b, added) => feed.Add("hive", $"{b.Short} {(added ? "spawning" : "logged out")} ({b.State})");
         if (mainHive?.Supervisor is { } sup)
             sup.Notice += e => feed.Add("hive", e.Format(), e.Priority >= Agent.Events.EventPriority.Normal ? "warn" : "info");
+        Supervisor.BlockDeltaLog.Process = new Supervisor.BlockDeltaLog(); // /api/world/blocks: every attached world of this process
         var data = new Supervisor.LiveSupervisorData(hub, () => client.World, main, sources, () => mainHive?.Supervisor, feed, o, log)
         {
             Blueprints = () => bot.Blueprints?.Service, // /view/blueprint/{id}, /api/blueprints: designs + preview + bill

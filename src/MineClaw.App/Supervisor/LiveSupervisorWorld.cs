@@ -45,7 +45,8 @@ public sealed class WorldColumnSource(Func<IReadOnlyList<LiveBody>> bodies, Func
     {
         var k = (dim, c.ChunkX, c.ChunkZ, light);
         lock (_lock)
-            if (_liveHash.TryGetValue(k, out var e) && now - e.At < LiveHashTtl && e.By == by) return e.Hash;
+            if (_liveHash.TryGetValue(k, out var e) && now - e.At < LiveHashTtl && e.By == by
+                && (BlockDeltaLog.Process?.ChangedSince(dim, c.ChunkX, c.ChunkZ, e.At) != true)) return e.Hash; // a logged change: rehash now
         long h = c.ContentHash(); // = ChunkSnapshot.ComputeHash(c.IdData, c.MetaData), without the two flat copies
         if (light) h = LightSnapshot.Combine(h, LightSnapshot.HashOf(c));
         lock (_lock)
