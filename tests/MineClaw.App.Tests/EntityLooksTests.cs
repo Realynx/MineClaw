@@ -18,15 +18,19 @@ public class EntityLooksTests
     [Fact]
     public void Looks_per_kind()
     {
-        Assert.Equal("tame,sitting,collar=blue", EntityLooks.Look(Mob(MobTypes.Wolf, (EntityMeta.Mob16, (sbyte)5), (EntityMeta.CollarColor, 11))));
+        // COLLAR_COLOR is a dye damage: 1 = red (the default), 4 = blue (EnumDyeColor).
+        Assert.Equal("tame,sitting,collar=red", EntityLooks.Look(Mob(MobTypes.Wolf, (EntityMeta.Mob16, (sbyte)5), (EntityMeta.CollarColor, 1))));
+        Assert.Equal("tame,collar=blue", EntityLooks.Look(Mob(MobTypes.Wolf, (EntityMeta.Mob16, (sbyte)4), (EntityMeta.CollarColor, 4))));
         Assert.Equal("angry", EntityLooks.Look(Mob(MobTypes.Wolf, (EntityMeta.Mob16, (sbyte)2))));
         Assert.Equal("powered,fusing", EntityLooks.Look(Mob(MobTypes.Creeper, (EntityMeta.Mob16, 1), (EntityMeta.Mob17, (sbyte)1))));
         Assert.Equal("size=4", EntityLooks.Look(Mob(MobTypes.Slime, (EntityMeta.Mob16, 4))));
         Assert.Equal("profession=librarian,converting", EntityLooks.Look(Mob(MobTypes.ZombieVillager, (EntityMeta.Profession, 1), (EntityMeta.Converting, (sbyte)1))));
         Assert.Equal("brown,chest,carpet=red", EntityLooks.Look(Mob(MobTypes.Llama, (EntityMeta.LlamaVariant, 2), (EntityMeta.HasChest, (sbyte)1), (EntityMeta.CarpetColor, 14))));
-        Assert.Equal("killer", EntityLooks.Look(Mob(MobTypes.Rabbit, (EntityMeta.RabbitType, 99))));
+        Assert.Equal("caerbannog", EntityLooks.Look(Mob(MobTypes.Rabbit, (EntityMeta.RabbitType, 99))));
+        Assert.Equal("white_splotched", EntityLooks.Look(Mob(MobTypes.Rabbit, (EntityMeta.RabbitType, 3))));
         Assert.Equal("siamese,tame", EntityLooks.Look(Mob(MobTypes.Ocelot, (EntityMeta.OcelotType, 3), (EntityMeta.Mob16, (sbyte)4))));
-        Assert.Equal("cyan", EntityLooks.Look(Mob(MobTypes.Parrot, (EntityMeta.ParrotVariant, 3))));
+        Assert.Equal("yellow_blue", EntityLooks.Look(Mob(MobTypes.Parrot, (EntityMeta.ParrotVariant, 3))));
+        Assert.Equal("purple", EntityLooks.Look(Mob(MobTypes.Shulker, (EntityMeta.ShulkerColor, 10)))); // the default
         Assert.Null(EntityLooks.Look(Mob(MobTypes.Cow)));
         Assert.Equal(3, EntityLooks.Variant(Mob(MobTypes.Ocelot, (EntityMeta.OcelotType, 3))));
         Assert.Equal(2, EntityLooks.Variant(Mob(MobTypes.Llama, (EntityMeta.LlamaVariant, 2))));

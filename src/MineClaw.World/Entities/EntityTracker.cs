@@ -104,9 +104,15 @@ public sealed class EntityTracker
     /// <summary>0x20/0x21 look.</summary>
     public bool Look(int id, float yaw, float pitch) => Update(id, e => e with { Yaw = yaw, Pitch = pitch });
 
-    /// <summary>0x22 teleport (absolute position).</summary>
+    /// <summary>0x22 teleport (absolute position). A jump of <see cref="EntityEventRing.TeleportJump"/>+ blocks is noted as a
+    /// <c>teleport</c> event (the viewer's puff; display only).</summary>
     public bool Teleport(int id, Vec3d pos, float yaw, float pitch) =>
-        Update(id, e => Landed(e, pos) with { Yaw = yaw, Pitch = pitch });
+        Update(id, e =>
+        {
+            if (e.Kind is EntityKind.Player or EntityKind.Mob && e.Position.DistanceSquaredTo(pos) >= EntityEventRing.TeleportJump * EntityEventRing.TeleportJump)
+                NoteEvent(id, "teleport", e.Position);
+            return Landed(e, pos) with { Yaw = yaw, Pitch = pitch };
+        });
 
     /// <summary>0x1C velocity (blocks/tick).</summary>
     public bool SetVelocity(int id, Vec3d velocity) => Update(id, e => e with { Velocity = velocity });

@@ -16,11 +16,14 @@ public class ViewerFactsTests
         for (int i = 0; i < EntityEventRing.Capacity + 10; i++) ring.Add(new EntityEvent(i, "swing", now));
         Assert.Equal(EntityEventRing.Capacity, ring.Recent(now).Count); // bounded
 
-        Assert.Equal(("swing", "swing_off", "hurt", "crit", "magic_crit"), (EntityEventRing.AnimationKind(1, 0), EntityEventRing.AnimationKind(1, 1),
-            EntityEventRing.AnimationKind(2, 0), EntityEventRing.AnimationKind(6, 0), EntityEventRing.AnimationKind(7, 0)));
+        // mc-dev (b1.8.1 server): Packet18 1 swing, 3 leave bed, 5 start eating; 6/7 are the canonical values of 1.12.2's crits.
+        Assert.Equal(("swing", "swing_off", "hurt", "eat", "crit", "magic_crit"), (EntityEventRing.AnimationKind(1, 0), EntityEventRing.AnimationKind(1, 1),
+            EntityEventRing.AnimationKind(2, 0), EntityEventRing.AnimationKind(5, 0), EntityEventRing.AnimationKind(6, 0), EntityEventRing.AnimationKind(7, 0)));
         Assert.Null(EntityEventRing.AnimationKind(3, 0)); // waking up
-        Assert.Equal(("hurt", "death", "eat", "teleport"), (EntityEventRing.StatusKind(2), EntityEventRing.StatusKind(3), EntityEventRing.StatusKind(9), EntityEventRing.StatusKind(46)));
+        // mc-dev EntityLiving: 2 hurt, 3 death; EntityPlayer 9 eat finished. Neither version has a teleport status (1.12.2 has no 46).
+        Assert.Equal(("hurt", "death", "eat"), (EntityEventRing.StatusKind(2), EntityEventRing.StatusKind(3), EntityEventRing.StatusKind(9)));
         Assert.Null(EntityEventRing.StatusKind(7));
+        Assert.Null(EntityEventRing.StatusKind(46));
     }
 
     [Fact]
@@ -52,5 +55,11 @@ public class ViewerFactsTests
         Assert.Equal(2, t.SpawnPainting(2, "Kebab", new Vec3d(0.5, 65.5, 0.5), direction: 2).Data);
         t.NoteEvent(1, "hurt");
         Assert.Equal("hurt", Assert.Single(t.Events.Recent(DateTime.UtcNow)).Kind);
+        // A mob that jumps 8+ blocks in one update teleported (an enderman); a short move doesn't.
+        t.SpawnMob(3, MobTypes.Enderman, new Vec3d(0, 64, 0), 0, 0);
+        t.Teleport(3, new Vec3d(3, 64, 0), 0, 0);
+        t.Teleport(3, new Vec3d(3, 64, 20), 0, 0);
+        var tp = t.Events.Recent(DateTime.UtcNow).Where(e => e.Kind == "teleport").ToList();
+        Assert.Equal(new Vec3d(3, 64, 0), Assert.Single(tp).Position); // where it left from
     }
 }

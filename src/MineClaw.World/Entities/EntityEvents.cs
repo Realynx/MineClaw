@@ -45,17 +45,26 @@ public sealed class EntityEventRing
         return list;
     }
 
-    /// <summary>Animation (b1.8.1 Packet18Animation; 1.12.2 translated onto it): 1 swing (hand 1 = the off hand), 2 hurt, 6 crit,
-    /// 7 magic crit; null for the others (wake up, crouch…).</summary>
+    /// <summary>
+    /// Animation (canonical = b1.8.1 Packet18ArmAnimation; mc-dev's server sends 1 swing, 3 leave bed and 5 start eating; 1.12.2
+    /// SPacketAnimation translated onto it): 1 swing (hand 1 = the off hand), 2 hurt, 5 eat, 6 crit, 7 magic crit. 6 and 7 never
+    /// come over the b1.8.1 wire (its crits are client-side particles); they are the canonical values of 1.12.2's 4 and 5. Null
+    /// for the others (wake up, crouch…).
+    /// </summary>
     public static string? AnimationKind(int animation, int hand) => animation switch
     {
-        1 => hand == 1 ? "swing_off" : "swing", 2 => "hurt", 6 => "crit", 7 => "magic_crit", _ => null,
+        1 => hand == 1 ? "swing_off" : "swing", 2 => "hurt", 5 => "eat", 6 => "crit", 7 => "magic_crit", _ => null,
     };
 
-    /// <summary>Entity Status (b1.8.1 Packet38; 1.12.2 with its hurt variants folded into 2): 2 hurt, 3 death, 9 eat (item use
-    /// finished), 46 teleport (1.12.2 chorus fruit / enderman particles); null for the others.</summary>
+    /// <summary>Entity Status (b1.8.1 Packet38: mc-dev's EntityLiving sends 2 hurt, 3 death, EntityPlayer 9 eat finished to the
+    /// eater only; 1.12.2 the same, its hurt variants 33/36/37 folded into 2): null for the others. A projectile's 3 (an egg or
+    /// snowball breaking) is not a death: the client leaves objects out.</summary>
     public static string? StatusKind(int status) => status switch
     {
-        2 => "hurt", 3 => "death", 9 => "eat", 46 => "teleport", _ => null,
+        2 => "hurt", 3 => "death", 9 => "eat", _ => null,
     };
+
+    /// <summary>A position jump at least this far in one update is a teleport (neither version has a status for it: an enderman,
+    /// an ender pearl, /tp).</summary>
+    public const double TeleportJump = 8;
 }

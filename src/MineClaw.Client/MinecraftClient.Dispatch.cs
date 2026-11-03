@@ -248,7 +248,8 @@ public sealed partial class MinecraftClient
                 if (st.EntityId == w.Player.EntityId) OnSelfStatus(st.Status);
                 if (st.EntityId != w.Player.EntityId) Combat.OnEntityStatus(st.EntityId, st.Status);
                 OnEntityStatusSeen(st.EntityId);
-                if (EntityEventRing.StatusKind(st.Status) is { } statusKind) w.Entities.NoteEvent(st.EntityId, statusKind); // the viewer's hurt/death
+                if (EntityEventRing.StatusKind(st.Status) is { } statusKind && w.Entities.Get(st.EntityId) is not { Kind: EntityKind.Object })
+                    w.Entities.NoteEvent(st.EntityId, statusKind); // the viewer's hurt/death (a breaking egg's 3 isn't one)
                 if (st.Status == 2 && st.EntityId != w.Player.EntityId) OnPlayerHurtForPunch(st.EntityId);
                 int eid = st.EntityId, status = st.Status;
                 Raise(() => EntityStatus?.Invoke(eid, status));

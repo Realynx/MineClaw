@@ -51,7 +51,7 @@ public class Release1122LooksTests
         Assert.Equal(((sbyte)1, (byte)0), Anim(0)); // main-hand swing: the b1.8.1 swing, as before
         Assert.Equal(((sbyte)1, (byte)1), Anim(3)); // off-hand swing: still a swing for the bot, the hand says which
         Assert.Equal(((sbyte)2, (byte)0), Anim(1));
-        Assert.Equal(((sbyte)6, (byte)0), Anim(4)); // crit (b1.8.1's Packet18 numbering)
+        Assert.Equal(((sbyte)6, (byte)0), Anim(4)); // crit: canonical 6 (b1.8.1's wire has no crit; its 5 is start eating)
         Assert.Equal(((sbyte)7, (byte)0), Anim(5)); // magic crit
     }
 

@@ -81,11 +81,11 @@ public static class EntityMeta
     public const int Profession = 56;
     /// <summary>An ocelot's skin (int: 0 wild, 1 black, 2 red, 3 siamese).</summary>
     public const int OcelotType = 57;
-    /// <summary>A rabbit's coat (int: 0 brown, 1 white, 2 black, 3 black and white, 4 gold, 5 salt and pepper, 99 the killer bunny).</summary>
+    /// <summary>A rabbit's coat (int: 0 brown, 1 white, 2 black, 3 white splotched, 4 gold, 5 salt, 99 the killer bunny; RenderRabbit).</summary>
     public const int RabbitType = 58;
-    /// <summary>A parrot's colour (int: 0 red, 1 blue, 2 green, 3 cyan, 4 gray).</summary>
+    /// <summary>A parrot's colour (int: 0 red-blue, 1 blue, 2 green, 3 yellow-blue, 4 grey; RenderParrot's textures).</summary>
     public const int ParrotVariant = 59;
-    /// <summary>A tame wolf's collar (int: dye meta).</summary>
+    /// <summary>A tame wolf's collar (int: <c>EnumDyeColor.getDyeDamage</c>, 0 black..15 white, 1 red by default — not the wool meta).</summary>
     public const int CollarColor = 60;
     /// <summary>An item frame's item rotation (int 0..7).</summary>
     public const int FrameRotation = 61;
@@ -95,7 +95,7 @@ public static class EntityMeta
     public const int StandFlags = 63;
     /// <summary>Armour stand pose, head / body / left arm / right arm / left leg / right leg (the Protocol's three-int vector: whole degrees x, y, z).</summary>
     public const int StandHead = 64, StandBody = 65, StandLeftArm = 66, StandRightArm = 67, StandLeftLeg = 68, StandRightLeg = 69;
-    /// <summary>A shulker's colour (int: dye meta, 16 = the default purple).</summary>
+    /// <summary>A shulker's colour (int: <c>EnumDyeColor</c> metadata; 10 purple by default).</summary>
     public const int ShulkerColor = 70;
 
     /// <summary>The flag bit of a <see cref="HandStates"/> value: an item is being used.</summary>

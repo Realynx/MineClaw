@@ -120,14 +120,19 @@ public class ViewerLooksTests
         List<WorldEntityEvent> Events() => EntityLooks.EventsOf(c.World, DateTime.UtcNow).ToList();
         var first = log.Since(0, () => Wire2(c), Events);
 
+        // A snowball breaking (status 3 on an object) is no death.
+        s.Send(new AddObjectVehiclePacket { EntityId = 202, Type = 61, X = F(11.5), Y = F(66), Z = F(10.5) });
+        Assert.True(await Wait(() => c.World.Entities.Get(202) != null));
+        s.Send(new EntityStatusPacket { EntityId = 202, Status = 3 });
         s.Send(new AnimationPacket { EntityId = 201, Animation = 1 });
         s.Send(new EntityStatusPacket { EntityId = 201, Status = 2 });
-        s.Send(new AnimationPacket { EntityId = 201, Animation = 6 });
+        // b1.8.1's server sends Packet18 5 when a player starts eating (mc-dev EntityPlayer); 1.12.2 sends crits (SPacketAnimation 4).
+        s.Send(new AnimationPacket { EntityId = 201, Animation = (sbyte)(modern ? 6 : 5) });
         s.Send(new EntityStatusPacket { EntityId = 201, Status = 3 });
         s.Send(new ThunderboltPacket { EntityId = 900, Type = 1, X = 9 * 32, Y = 64 * 32, Z = 8 * 32 });
         Assert.True(await Wait(() => Events().Count >= 5));
         var d = log.Since(first.Rev, () => Wire2(c), Events);
-        Assert.Equal(new[] { "swing", "hurt", "crit", "death", "lightning" }, d.Events.Select(e => e.Kind));
+        Assert.Equal(new[] { "swing", "hurt", modern ? "crit" : "eat", "death", "lightning" }, d.Events.Select(e => e.Kind));
         var bolt = d.Events.Single(e => e.Kind == "lightning");
         Assert.Equal((900, 9.0, 64.0, 8.0), (bolt.Id, bolt.X!.Value, bolt.Y!.Value, bolt.Z!.Value));
         var json = JsonDocument.Parse(SupervisorJson.Bytes(new { events = d.Events })).RootElement.GetProperty("events")[0];

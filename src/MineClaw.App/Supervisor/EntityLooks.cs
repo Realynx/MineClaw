@@ -69,8 +69,9 @@ public static class EntityLooks
     private static readonly string[] LlamaColors = ["creamy", "white", "brown", "gray"];
     private static readonly string[] Professions = ["farmer", "librarian", "priest", "blacksmith", "butcher", "nitwit"];
     private static readonly string[] OcelotTypes = ["wild", "black", "red", "siamese"];
-    private static readonly string[] RabbitTypes = ["brown", "white", "black", "black_white", "gold", "salt_pepper"];
-    private static readonly string[] ParrotColors = ["red", "blue", "green", "cyan", "gray"];
+    // Names after the 1.12.2 renderers' textures (RenderRabbit, RenderParrot), so the viewer can pick the texture by name.
+    private static readonly string[] RabbitTypes = ["brown", "white", "black", "white_splotched", "gold", "salt"];
+    private static readonly string[] ParrotColors = ["red_blue", "blue", "green", "yellow_blue", "grey"];
     private static readonly string[] BoatWoods = ["oak", "spruce", "birch", "jungle", "acacia", "dark_oak"];
     private static readonly string[] CartTypes = ["", "chest", "furnace", "tnt", "spawner", "hopper", "command_block"];
     private static readonly string[] Facings = ["north", "west", "south", "east"]; // b1.8.1 painting direction 0 −Z, 1 −X, 2 +Z, 3 +X
@@ -159,7 +160,8 @@ public static class EntityLooks
                 break;
             case "wolf":
                 Tame(m16);
-                if ((m16 & 4) != 0 && e.MetaInt(EntityMeta.CollarColor) is { } collar && At(Dyes, collar) is { } cn) t.Add("collar=" + cn);
+                // COLLAR_COLOR is a dye damage (0 black..15 white), the reverse of the wool order of Dyes.
+                if ((m16 & 4) != 0 && e.MetaInt(EntityMeta.CollarColor) is { } collar && At(Dyes, 15 - (collar & 15)) is { } cn) t.Add("collar=" + cn);
                 break;
             case "pig" when m16 == 1:
                 t.Add("saddle");
@@ -204,7 +206,7 @@ public static class EntityLooks
                 Tame(m16);
                 break;
             case "rabbit":
-                if (e.MetaInt(EntityMeta.RabbitType) is 99) t.Add("killer");
+                if (e.MetaInt(EntityMeta.RabbitType) is 99) t.Add("caerbannog");
                 else if (At(RabbitTypes, e.MetaInt(EntityMeta.RabbitType)) is { } rt) t.Add(rt);
                 break;
             case "parrot":
