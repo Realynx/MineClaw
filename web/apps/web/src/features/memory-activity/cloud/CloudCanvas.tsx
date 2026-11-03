@@ -39,6 +39,9 @@ interface View {
 
 const PULSE_MS = 1600;
 const MAX_K = 60;
+/** Width the legend card takes, left clear in the fitted view on canvases at least LEGEND_ROOM_MIN_W wide. */
+export const LEGEND_W = 290;
+export const LEGEND_ROOM_MIN_W = 720;
 
 const VS = `#version 300 es
 in vec2 a_pos;
@@ -137,6 +140,7 @@ interface Stats {
   frames: number;
   drawMs: number;
   points: number;
+  renderer?: string;
 }
 
 export const CloudCanvas = forwardRef<
@@ -210,8 +214,10 @@ export const CloudCanvas = forwardRef<
 
   // ---- frame geometry ----
   const frame = useCallback((w: number, h: number) => {
-    const base = Math.min(w, h) * 0.94;
-    return { base, ox: (w - base) / 2, oy: (h - base) / 2 };
+    // The fitted view keeps clear of the legend card (top left) when there is room for it.
+    const left = w >= LEGEND_ROOM_MIN_W ? LEGEND_W : 0;
+    const base = Math.min(w - left, h) * 0.94;
+    return { base, ox: left + (w - left - base) / 2, oy: (h - base) / 2 };
   }, []);
   const toData = useCallback(
     (sx: number, sy: number): [number, number] => {
@@ -279,6 +285,8 @@ export const CloudCanvas = forwardRef<
           haloCount: 0,
           lineCount: 0,
         };
+        const info = gl.getExtension('WEBGL_debug_renderer_info');
+        stats.current.renderer = String(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
         setGlError(null);
       } catch (e) {
         setGlError(e instanceof Error ? e.message : 'WebGL setup failed');
@@ -653,7 +661,7 @@ export const CloudCanvas = forwardRef<
       tabIndex={0}
       data-points={n}
       className={cn(
-        'relative touch-none overflow-hidden outline-none select-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]',
+        'touch-none overflow-hidden outline-none select-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]',
         className,
       )}
       onPointerDown={(e) => {

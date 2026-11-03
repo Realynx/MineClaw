@@ -19,11 +19,32 @@ interface CloudXY {
   xy: number[];
 }
 
-/** Screen position of point `i` at the fitted view (the canvas fits the unit square into 94 % of its short side, centred). */
+/**
+ * Screen position of point `i` at the fitted view: the unit square in 94 % of the short side, centred in the room right of the
+ * legend card (290 px on canvases ≥ 720 px wide), as CloudCanvas fits it.
+ */
 async function pointOnScreen(page: Page, cloud: CloudXY, i: number): Promise<[number, number]> {
   const box = (await page.getByRole('application', { name: 'Memory cloud' }).boundingBox())!;
-  const base = Math.min(box.width, box.height) * 0.94;
-  return [box.x + (box.width - base) / 2 + cloud.xy[2 * i]! * base, box.y + (box.height - base) / 2 + cloud.xy[2 * i + 1]! * base];
+  const left = box.width >= 720 ? 290 : 0;
+  const base = Math.min(box.width - left, box.height) * 0.94;
+  return [
+    box.x + left + (box.width - left - base) / 2 + cloud.xy[2 * i]! * base,
+    box.y + (box.height - base) / 2 + cloud.xy[2 * i + 1]! * base,
+  ];
+}
+
+/** The point nearest (0.6, 0.6): well inside the canvas, away from the legend and the corner hints. */
+function centralPoint(cloud: CloudXY): number {
+  let best = 0;
+  let bd = Infinity;
+  for (let i = 0; i < cloud.ids.length; i++) {
+    const d = (cloud.xy[2 * i]! - 0.6) ** 2 + (cloud.xy[2 * i + 1]! - 0.6) ** 2;
+    if (d < bd) {
+      bd = d;
+      best = i;
+    }
+  }
+  return best;
 }
 
 async function openCloud(page: Page): Promise<CloudXY> {
@@ -48,13 +69,15 @@ test('the RAPTOR tree page redirects into Memory activity, keeping the node', as
   await expect(page.locator('aside').getByText('#481', { exact: true })).toBeVisible();
 });
 
-test('cloud: hover shows a tooltip, click opens detail, the hive filter changes brightness, lasso lists memories', async ({ page }) => {
+test('cloud: hover shows a tooltip, click opens detail, the hive filter changes brightness, lasso lists memories', async ({
+  page,
+}) => {
   await signIn(page);
   const cloud = await openCloud(page);
   if (shots) await page.screenshot({ path: `${shots}/memory-cloud.png` });
 
-  // hover the point that sits alone the most is overkill: any point gives a tooltip (the nearest one within 9 px)
-  const i = Math.floor(cloud.ids.length / 3);
+  // any point gives a tooltip (the nearest one within 9 px)
+  const i = centralPoint(cloud);
   const [x, y] = await pointOnScreen(page, cloud, i);
   await page.mouse.move(x, y);
   const tip = page.getByRole('tooltip');
@@ -72,7 +95,9 @@ test('cloud: hover shows a tooltip, click opens detail, the hive filter changes 
   await expect.poll(async () => Number(await lit.getAttribute('data-lit')), { timeout: 30_000 }).toBeGreaterThan(0);
   const all = Number(await lit.getAttribute('data-lit'));
   const who = page.locator('#who');
-  const brains = await who.locator('optgroup[label="Hive brains"] option').evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value));
+  const brains = await who
+    .locator('optgroup[label="Hive brains"] option')
+    .evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value));
   expect(brains.length).toBeGreaterThan(1);
   await who.selectOption(brains[brains.length - 1]!);
   await page.waitForURL(/who=brain/);
@@ -97,7 +122,7 @@ test('cloud: hover shows a tooltip, click opens detail, the hive filter changes 
   await expect(sel).toContainText(/\d+ memories selected/);
 
   // legend toggle hides a cluster (fewer visible after it), search counts matches
-  const first = page.locator('button[aria-pressed]').first();
+  const first = page.getByTestId('memory-cloud').locator('li button[aria-pressed]').first();
   await first.click();
   await expect(first).toHaveAttribute('aria-pressed', 'false');
   await first.click();
@@ -118,17 +143,24 @@ test('cloud frame rate on software WebGL', async ({ page }) => {
     const run = async (label: string, links: boolean) => {
       if (links) await page.getByText('Links').click();
       await page.evaluate(() => {
-        const w = window as unknown as { __frames: number[]; __mineclawCloudStats: { frames: number; drawMs: number } };
+        const w = window as unknown as {
+          __frames: number[];
+          __run: number;
+          __mineclawCloudStats: { frames: number; drawMs: number };
+        };
+        const run = (w.__run = (w.__run ?? 0) + 1);
         w.__frames = [];
         w.__mineclawCloudStats.frames = 0;
         w.__mineclawCloudStats.drawMs = 0;
         const tick = (t: number) => {
+          if (w.__run !== run) return; // an earlier measurement's loop stops here
           w.__frames.push(t);
           if (w.__frames.length < 5000) requestAnimationFrame(tick);
         };
         requestAnimationFrame(tick);
       });
-      const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+      const cx = box.x + box.width / 2,
+        cy = box.y + box.height / 2;
       await page.mouse.move(cx, cy);
       await page.mouse.down();
       const start = Date.now();
@@ -140,12 +172,19 @@ test('cloud frame rate on software WebGL', async ({ page }) => {
       }
       await page.mouse.up();
       out[label] = await page.evaluate(() => {
-        const w = window as unknown as { __frames: number[]; __mineclawCloudStats: { frames: number; drawMs: number; points: number } };
+        const w = window as unknown as {
+          __frames: number[];
+          __mineclawCloudStats: { frames: number; drawMs: number; points: number; renderer?: string };
+        };
         const f = w.__frames;
-        const gaps = f.slice(1).map((t, i) => t - f[i]!).sort((a, b) => a - b);
+        const gaps = f
+          .slice(1)
+          .map((t, i) => t - f[i]!)
+          .sort((a, b) => a - b);
         const span = (f[f.length - 1]! - f[0]!) / 1000;
         const s = w.__mineclawCloudStats;
         return {
+          renderer: s.renderer,
           points: s.points,
           fps: Math.round((f.length - 1) / span),
           frameP95: Math.round(gaps[Math.floor(gaps.length * 0.95)] ?? NaN),
