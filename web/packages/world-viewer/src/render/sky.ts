@@ -114,7 +114,8 @@ export class SkyLayer {
     this.stars.visible = this.starMat.opacity > 0.01;
     this.stars.position.copy(cam);
     this.stars.rotation.set(0, 0, th);
-    this.clouds.visible = clouds && !!this.cloudMat.map;
+    // Only from below: the iso/top cameras sit far above the cloud layer, which would hide the world they look at.
+    this.clouds.visible = clouds && !!this.cloudMat.map && cam.y < this.cloudHeight - 1;
     if (this.clouds.visible && this.cloudMat.map) {
       // Clouds drift with world time (vanilla: 0.03 blocks per tick westward); kept centred on the camera.
       const drift = ((time ?? nowMs / 50) * 0.03) / 12 / 256;

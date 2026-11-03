@@ -1,0 +1,45 @@
+#!/usr/bin/env node
+// Headless screenshots of the demo (Playwright's own Chromium, never the user's browser): serves the demo with Vite, opens
+// the given query, waits for the world to load, optionally runs a few viewer calls, and saves a PNG.
+//
+//   node scripts/shot.mjs --query "version=1.12.2&thumbs=0" --out shot.png [--wait 8000] [--eval "h.setCameraMode('iso')"]
+//   (--gpu uses the machine's GPU; default SwiftShader)
+
+import { createServer } from 'vite';
+import { chromium } from 'playwright';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const root = resolve(here, '..');
+const args = process.argv.slice(2);
+const arg = (k, d) => {
+  const i = args.indexOf(`--${k}`);
+  return i >= 0 ? args[i + 1] : d;
+};
+const out = resolve(arg('out', 'shot.png'));
+const query = arg('query', 'thumbs=0');
+const wait = Number(arg('wait', '8000'));
+const script = arg('eval', '');
+const gpu = args.includes('--gpu');
+
+const server = await createServer({ configFile: resolve(root, 'vite.demo.config.ts'), root, server: { port: 0 }, logLevel: 'error' });
+await server.listen();
+const port = server.httpServer.address().port;
+const browser = await chromium.launch({ headless: true, args: gpu ? ['--enable-gpu', '--ignore-gpu-blocklist'] : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+try {
+  const page = await browser.newPage({ viewport: { width: Number(arg('width', '1280')), height: Number(arg('height', '800')) } });
+  page.on('pageerror', (e) => console.error('page error:', e.message));
+  page.on('console', (m) => m.type() === 'error' && console.error('console:', m.text()));
+  await page.goto(`http://localhost:${port}/?${query}`, { waitUntil: 'load' });
+  await page.waitForTimeout(wait);
+  if (script) {
+    await page.evaluate(`(async () => { const h = window.__viewer.current; ${script} })()`);
+    await page.waitForTimeout(Number(arg('after', '2500')));
+  }
+  await page.screenshot({ path: out });
+  console.log(out);
+} finally {
+  await browser.close();
+  await server.close();
+}
