@@ -13,8 +13,8 @@ import type {
   RaptorLeavesResponse,
   RaptorNodeDetail,
   RaptorTreeNode,
-  RaptorTreeResponse,
 } from '@mineclaw/contracts';
+import type { CloudMockNode } from '@mineclaw/contracts/testing';
 import { isoAgo, minsAgo, pick, rng } from '../util';
 
 export const STATE_KEY = 'raptor-b7-480';
@@ -223,19 +223,6 @@ export function treeRow(n: Node, includeChildren: boolean): RaptorTreeNode {
   };
 }
 
-export function treeResponse(root: number | undefined, depth: number): RaptorTreeResponse {
-  const top = root !== undefined ? [root] : roots;
-  const out: RaptorTreeNode[] = [];
-  const visit = (id: number, d: number) => {
-    const n = nodes.get(id);
-    if (!n) return;
-    out.push(treeRow(n, d < depth));
-    if (d < depth) for (const c of n.children) visit(c, d + 1);
-  };
-  for (const t of top) visit(t, 0);
-  return { meta: null, note: null, stateKey: STATE_KEY, root: root ?? null, top, nodes: out };
-}
-
 export function crumbs(id: number): RaptorCrumb[] {
   const path: RaptorCrumb[] = [];
   let cur: Node | undefined = nodes.get(id);
@@ -266,6 +253,36 @@ export function nodeDetail(id: number): RaptorNodeDetail | null {
     breadcrumb: crumbs(id),
     children: n.children.map(ref).sort((a, b) => b.tokens - a.tokens),
     parents: n.parents.map(ref),
+  };
+}
+
+/** The tree as the shared cloud generator's input (`@mineclaw/contracts/testing`). */
+export function cloudTree(): CloudMockNode[] {
+  return [...nodes.values()].map((n) => ({
+    id: n.index,
+    layer: n.layer,
+    parents: n.parents,
+    title: n.layer === 0 ? (n.title.split(' · ').slice(1).join(' · ') || n.title) : n.title,
+    kind: n.layer === 0 ? n.category.toLowerCase() : 'summary',
+    terms: n.terms,
+    text: n.text,
+  }));
+}
+
+/** Node detail for a cloud-only synthetic leaf (the cloud mock pads the 480-leaf tree to a realistic size). */
+export function extraLeafDetail(id: number, parent: number, title: string, kind: string): RaptorNodeDetail | null {
+  const p = nodes.get(parent);
+  if (!p) return null;
+  return {
+    node: { index: id, layer: 0, isLeaf: true, title: `${kind} · ${title}`, kindLabel: kind, tokens: 64, childCount: 0, leavesBelow: 1, dirty: false, parents: [parent], children: [], docRef: `syn:${id}` },
+    title,
+    text: `${title}. A synthetic memory the mock cloud adds under “${p.terms.join(' · ')}”.`,
+    pinned: false,
+    placeholder: false,
+    doc: { id: 50_000 + id, ref: `syn:${id}`, kind, tag: null, title, source: 'bot', updated: p.newest, dimension: 0 },
+    breadcrumb: [...crumbs(parent), { index: id, layer: 0, label: title }],
+    children: [],
+    parents: [{ index: parent, layer: p.layer, label: label(p), tokens: p.tokens }],
   };
 }
 

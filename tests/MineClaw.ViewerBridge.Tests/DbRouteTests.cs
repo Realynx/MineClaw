@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using System.Diagnostics;
 using System.Text.Json;
 using Xunit.Abstractions;
@@ -10,6 +11,11 @@ public class DbRouteTests(ITestOutputHelper output)
     private static async Task<BridgeHost> Host() => await BridgeHost.StartAsync((await FixtureDb.SharedAsync()).Path, new HashEmbeddings());
 
     private static JsonElement J(string body) => JsonDocument.Parse(body).RootElement.Clone();
+
+    /// <summary>The graph's top-level nodes (no parent), highest layer first.</summary>
+    private static List<int> TopNodes(JsonElement graph) => graph.GetProperty("nodes").EnumerateArray()
+        .Where(n => !n.TryGetProperty("parent", out var p) || p.ValueKind == JsonValueKind.Null)
+        .OrderByDescending(n => n.GetProperty("layer").GetInt32()).ThenBy(n => n.GetProperty("id").GetInt32()).Select(n => n.GetProperty("id").GetInt32()).ToList();
 
     [Fact]
     public async Task Memory_lists_are_paged_filtered_and_sorted_in_sql()
@@ -78,9 +84,9 @@ public class DbRouteTests(ITestOutputHelper output)
         var lexical = J((await h.GetAsync("/v1/search?q=cobblestone&mode=lexical")).Body);
         Assert.Equal("lexical", lexical.GetProperty("mode").GetString());
 
-        var tree = J((await h.GetAsync("/v1/raptor/tree?depth=2")).Body);
-        Assert.True(tree.GetProperty("top").GetArrayLength() > 0);
-        var root = tree.GetProperty("top")[0].GetInt32();
+        var top = TopNodes(J((await h.GetAsync("/v1/raptor/graph")).Body));
+        Assert.True(top.Count > 0);
+        var root = top[0];
         var leaves = J((await h.GetAsync($"/v1/raptor/node/{root}/leaves")).Body);
         Assert.True(leaves.GetProperty("leaves").GetArrayLength() > 0);
         var node = J((await h.GetAsync($"/v1/raptor/node/{root}")).Body);
@@ -96,10 +102,9 @@ public class DbRouteTests(ITestOutputHelper output)
                 Assert.InRange(n.GetProperty("y").GetDouble(), 0, 1);
                 Assert.Matches("^#[0-9a-f]{6}$", n.GetProperty("color").GetString()!);
             }
-            Assert.Equal(tree.GetProperty("state_key").GetString(), g.GetProperty("state_key").GetString());
         }
         var focused = J((await h.GetAsync($"/v1/raptor/graph?focus={root}")).Body);
-        Assert.True(focused.GetProperty("nodes").GetArrayLength() < fx.TreeNodes || tree.GetProperty("top").GetArrayLength() == 1);
+        Assert.True(focused.GetProperty("nodes").GetArrayLength() < fx.TreeNodes || top.Count == 1);
         Assert.Equal(root, focused.GetProperty("focus").GetInt32());
     }
 
@@ -153,8 +158,10 @@ public class DbRouteTests(ITestOutputHelper output)
         var dist = ContractDist();
         if (dist == null || !NodeAvailable()) { output.WriteLine("skipped: node or web/packages/contracts/dist missing (npm run build -w @mineclaw/contracts)"); return; }
         await using var h = await Host();
-        var tree = J((await h.GetAsync("/v1/raptor/tree")).Body);
-        int root = tree.GetProperty("top")[0].GetInt32();
+        int root = TopNodes(J((await h.GetAsync("/v1/raptor/graph")).Body))[0];
+        var cloud = h.Services.GetRequiredService<MineClaw.ViewerBridge.Graph.MemoryCloudService>();
+        await h.GetAsync("/v1/memory-activity/cloud");
+        await cloud.Idle();
         var factId = J((await h.GetAsync("/v1/memory/facts")).Body).GetProperty("items")[0].GetProperty("id").GetString();
         var checks = new List<(string Schema, string Target)>
         {
@@ -163,7 +170,7 @@ public class DbRouteTests(ITestOutputHelper output)
             ("MemoryDetail", $"/v1/memory/facts/{factId}"), ("MemoryDetail", "/v1/memory/structures/cobble%20gen"), ("MemoryDetail", "/v1/memory/places/spawn"),
             ("MemoryDetail", "/v1/memory/episodes/ep:fixture:3"), ("MemoryDetail", "/v1/memory/chat/5"),
             ("SearchResponse", "/v1/search?q=cobblestone%20generator"), ("SearchResponse", "/v1/search?q=wheat&mode=lexical&kind=episode"),
-            ("RaptorTreeResponse", "/v1/raptor/tree?depth=3"), ("RaptorNodeDetail", $"/v1/raptor/node/{root}"), ("RaptorLeavesResponse", $"/v1/raptor/node/{root}/leaves"),
+            ("MemoryCloudResponse", "/v1/memory-activity/cloud"), ("RaptorNodeDetail", $"/v1/raptor/node/{root}"), ("RaptorLeavesResponse", $"/v1/raptor/node/{root}/leaves"),
             ("RaptorGraph", "/v1/raptor/graph"), ("RaptorGraph", "/v1/raptor/graph?layout=radial&color_by=time"), ("RaptorGraph", $"/v1/raptor/graph?layout=nodelink&focus={root}"),
             ("PersonalityResponse", "/v1/personality"), ("ShardPacksResponse", "/v1/shards/packs"), ("ScriptLibraryResponse", "/v1/scripts?source=db"),
             ("DesignListResponse", "/v1/designs"), ("DesignDetail", "/v1/designs/1"), ("DesignDiff", "/v1/designs/1/diff?a=1&b=2"),

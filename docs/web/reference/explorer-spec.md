@@ -147,6 +147,9 @@ renders a key or an endpoint.
 
 ## 4. RAPTOR tree / graph page (`RaptorTreeViewModel`, `Controls/LayeredGraph.cs`, `Controls/Graph/*`)
 
+> **Web (2026-11-03):** not ported as its own page. The web shows the tree in the Memory activity tab (radial, icicle,
+> node-link and the memory cloud) with the same node detail; `/raptor` redirects there. The lazy tree list (§4.1) was dropped.
+
 ### 4.1 Tree mode
 - Lazy tree view of the roots, ordered by index. Each child list is sorted by children count desc, then index. Node row: title
   (leaf: `docKind · title`; summary: the first 90 chars), kind (`L{layer}` or doc kind), meta `#idx · N children · T tok`, dirty flag.

@@ -55,6 +55,7 @@ namespace MineClaw.ViewerBridge
             s.AddSingleton<SupervisorClient>(sp => new SupervisorClient(sp.GetRequiredService<BridgeConfig>()));
             s.AddSingleton<ChunkCache>();
             s.AddSingleton<MemoryActivityStore>();
+            s.AddSingleton<MineClaw.ViewerBridge.Graph.MemoryCloudService>();
             s.AddSingleton<LiveHub>();
             configure?.Invoke(s);
 

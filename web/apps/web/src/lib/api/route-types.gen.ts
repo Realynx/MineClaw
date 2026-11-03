@@ -21,7 +21,6 @@ export interface RouteTypes {
   'memory.list': { params: z.input<typeof C.MemoryKindParams>; query: z.input<typeof C.MemoryListQuery>; body: never; response: z.output<typeof C.MemoryPage> };
   'memory.get': { params: z.input<typeof C.MemoryItemParams>; query: never; body: never; response: z.output<typeof C.MemoryDetail> };
   'search': { params: never; query: z.input<typeof C.SearchQuery>; body: never; response: z.output<typeof C.SearchResponse> };
-  'raptor.tree': { params: never; query: z.input<typeof C.RaptorTreeQuery>; body: never; response: z.output<typeof C.RaptorTreeResponse> };
   'raptor.graph': { params: never; query: z.input<typeof C.RaptorGraphQuery>; body: never; response: z.output<typeof C.RaptorGraph> };
   'raptor.leaves': { params: z.input<typeof C.RaptorNodeParams>; query: never; body: never; response: z.output<typeof C.RaptorLeavesResponse> };
   'raptor.node': { params: z.input<typeof C.RaptorNodeParams>; query: never; body: never; response: z.output<typeof C.RaptorNodeDetail> };
@@ -39,6 +38,7 @@ export interface RouteTypes {
   'designs.diff': { params: z.input<typeof C.DesignParams>; query: z.input<typeof C.DesignDiffQuery>; body: never; response: z.output<typeof C.DesignDiff> };
   'designs.get': { params: z.input<typeof C.DesignParams>; query: never; body: never; response: z.output<typeof C.DesignDetail> };
   'memoryActivity.heat': { params: never; query: z.input<typeof C.MemoryHeatQuery>; body: never; response: z.output<typeof C.MemoryHeatResponse> };
+  'memoryActivity.cloud': { params: never; query: never; body: never; response: z.output<typeof C.MemoryCloudResponse> };
   'memoryActivity.list': { params: never; query: z.input<typeof C.MemoryActivityQuery>; body: never; response: z.output<typeof C.MemoryActivityResponse> };
   'admin.schema': { params: never; query: never; body: never; response: z.output<typeof C.EditSchemaResponse> };
   'admin.memoryEdit': { params: never; query: never; body: z.input<typeof C.MemoryEditRequest>; response: z.output<typeof C.MemoryEditResult> };

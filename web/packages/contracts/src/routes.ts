@@ -119,7 +119,7 @@ import {
   WorldIndexQuery,
   WorldOverlays,
 } from './live.js';
-import { MemoryActivityQuery, MemoryActivityResponse, MemoryHeatQuery, MemoryHeatResponse } from './memoryActivity.js';
+import { MemoryActivityQuery, MemoryActivityResponse, MemoryCloudResponse, MemoryHeatQuery, MemoryHeatResponse } from './memoryActivity.js';
 import {
   MemoryDetail,
   MemoryItemParams,
@@ -136,8 +136,6 @@ import {
   RaptorLeavesResponse,
   RaptorNodeDetail,
   RaptorNodeParams,
-  RaptorTreeQuery,
-  RaptorTreeResponse,
 } from './raptor.js';
 import {
   BodyParams,
@@ -421,16 +419,6 @@ export const ROUTES = {
     audit: null,
     summary: "The bot's hybrid recall pipeline (FTS5 + vectors + RAPTOR, RRF).",
   }),
-  'raptor.tree': get('/api/raptor/tree', {
-    access: 'viewer',
-    query: RaptorTreeQuery,
-    response: RaptorTreeResponse,
-    responseKind: 'json',
-    bridge: b('/v1/raptor/tree'),
-    supervisor: NATIVE,
-    audit: null,
-    summary: 'Lazy tree: roots (or a root) down to `depth`, flat.',
-  }),
   'raptor.graph': get('/api/raptor/graph', {
     access: 'viewer',
     query: RaptorGraphQuery,
@@ -606,6 +594,15 @@ export const ROUTES = {
     supervisor: 'bridge-native (aggregates /api/viewer/memory-activity over the RAPTOR tree)',
     audit: null,
     summary: 'Per-RAPTOR-node heat (propagated to ancestors) and per-brain staleness, for colouring /api/raptor/graph.',
+  }),
+  'memoryActivity.cloud': get('/api/memory-activity/cloud', {
+    access: 'viewer',
+    response: MemoryCloudResponse,
+    responseKind: 'json',
+    bridge: b('/v1/memory-activity/cloud'),
+    supervisor: 'bridge-native (UMAP over the RAPTOR leaf embeddings, computed in the background and cached per tree state)',
+    audit: null,
+    summary: "Memory cloud: every RAPTOR leaf at its 2-D UMAP position, coloured by the bot's own clusters; `status: computing` while the layout runs.",
   }),
   'memoryActivity.list': get('/api/memory-activity', {
     access: 'viewer',

@@ -275,50 +275,6 @@
       }
     ]
   },
-  "raptorTree": {
-    "meta": null,
-    "state_key": "7:230:36",
-    "top": [2940, 2941],
-    "nodes": [
-      {
-        "index": 2940,
-        "layer": 3,
-        "is_leaf": false,
-        "title": "base building and storage",
-        "kind_label": "L3",
-        "tokens": 260,
-        "child_count": 12,
-        "leaves_below": 1400,
-        "dirty": false,
-        "parents": [],
-        "children": [2801]
-      },
-      {
-        "index": 2801,
-        "layer": 2,
-        "is_leaf": false,
-        "title": "cobble, generator",
-        "kind_label": "L2",
-        "tokens": 240,
-        "child_count": 9,
-        "leaves_below": 120,
-        "dirty": true,
-        "parents": [2940]
-      },
-      {
-        "index": 2941,
-        "layer": 3,
-        "is_leaf": false,
-        "title": "people",
-        "kind_label": "L3",
-        "tokens": 230,
-        "child_count": 8,
-        "leaves_below": 1204,
-        "dirty": false,
-        "parents": []
-      }
-    ]
-  },
   "raptorNode": {
     "node": {
       "index": 1500,

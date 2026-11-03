@@ -9,6 +9,7 @@ import * as admin from './data/administration';
 import * as live from './data/live';
 import * as mem from './data/memory';
 import * as misc from './data/misc';
+import * as cloud from './data/cloud';
 import * as raptor from './data/raptor';
 import * as scripts from './data/scripts';
 import { designer } from './data/designer';
@@ -306,11 +307,10 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
       ]),
     };
   },
-  'raptor.tree': ({ query }) => raptor.treeResponse(query.root === undefined ? undefined : num(query.root), num(query.depth)),
   'raptor.graph': ({ query }) => raptor.graph(query.layout as never, query.colorBy as never, query.focus === undefined ? undefined : num(query.focus)),
   'raptor.leaves': ({ params }) => raptor.leavesResponse(num(params.id)),
   'raptor.node': ({ params }) => {
-    const d = raptor.nodeDetail(num(params.id));
+    const d = raptor.nodeDetail(num(params.id)) ?? cloud.extraDetail(num(params.id));
     if (!d) throw new MockError(404, 'No such node', 'not_found');
     return d;
   },
@@ -366,6 +366,7 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
   },
 
   'memoryActivity.heat': ({ query }) => live.memoryHeat(query.brain as string | undefined, num(query.windowS), raptor.STATE_KEY),
+  'memoryActivity.cloud': () => cloud.memoryCloud(),
   'memoryActivity.list': ({ query }) => live.memoryActivitySince(num(query.since), query.brain as string | undefined),
 
   'admin.schema': () => misc.editSchema,

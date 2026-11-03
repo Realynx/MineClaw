@@ -35,6 +35,7 @@ import { MockHive } from './hive.js';
 import { Replay } from './replay.js';
 import { MockStory } from './story.js';
 import { drainBlockChanges } from './terrain.js';
+import { memoryCloudMock, type CloudMockNode } from '@mineclaw/contracts/testing';
 
 type Obj = Record<string, unknown>;
 type Fixtures = Record<'db' | 'tools' | 'live', Obj>;
@@ -46,7 +47,6 @@ const FIXTURE_OF: Partial<Record<RouteId, [keyof Fixtures, string]>> = {
   'memory.list': ['db', 'memoryPage'],
   'memory.get': ['db', 'memoryDetailClaim'],
   search: ['db', 'search'],
-  'raptor.tree': ['db', 'raptorTree'],
   'raptor.graph': ['db', 'raptorGraph'],
   'raptor.leaves': ['db', 'raptorLeaves'],
   'raptor.node': ['db', 'raptorNode'],
@@ -143,6 +143,29 @@ interface Reply {
   bytes?: Buffer;
   type?: string;
   headers?: Record<string, string>;
+}
+
+/**
+ * A memory cloud of 3000 leaves under 60 layer-1 and 10 layer-2 summaries (2 roots), laid out by the shared synthetic generator
+ * (`@mineclaw/contracts/testing`). The fixture graph is too small to show what the view is for.
+ */
+function syntheticCloud(): Obj {
+  const topics = [
+    ['cobble', 'generator'], ['wheat', 'farm'], ['oak', 'trees'], ['storage', 'chests'], ['nether', 'portal'],
+    ['mob', 'grinder'], ['fox', 'requests'], ['recipes', 'crafting'], ['island', 'platform'], ['scripts', 'loops'],
+  ];
+  const kinds = ['episode', 'activity', 'fact', 'recipe', 'chat', 'world', 'self'];
+  const tree: CloudMockNode[] = [];
+  for (let i = 0; i < 3000; i++) {
+    const l1 = 3000 + (i % 60);
+    const t = topics[(l1 - 3000) % 10]!;
+    tree.push({ id: i, layer: 0, parents: [l1], title: `${t[0]} ${t[1]} memory ${i}`, kind: kinds[(i * 7) % kinds.length]! });
+  }
+  for (let j = 0; j < 60; j++) tree.push({ id: 3000 + j, layer: 1, parents: [3100 + (j % 10)], title: `L1 #${3000 + j}`, kind: 'summary' });
+  for (let k = 0; k < 10; k++)
+    tree.push({ id: 3100 + k, layer: 2, parents: [3200 + (k % 2)], title: `L2 #${3100 + k}`, kind: 'summary', terms: topics[k]!, text: `Memories about ${topics[k]!.join(' and ')}.` });
+  for (let m = 0; m < 2; m++) tree.push({ id: 3200 + m, layer: 3, parents: [], title: `root ${m}`, kind: 'summary' });
+  return toSnake<Obj>(memoryCloudMock(tree, { stateKey: 'mock-cloud-3000' }));
 }
 
 const iso = (ms = Date.now()) => new Date(ms).toISOString().replace('Z', '+00:00');
@@ -381,6 +404,7 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
     }
   };
 
+  let cloud: Obj | undefined;
   const dataFor = (id: RouteId, params: Record<string, string>): unknown => {
     const route: RouteDef = ROUTES[id];
     const f = FIXTURE_OF[id];
@@ -443,6 +467,8 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
       return { json: { ...base, items: [...saved, ...(base.items ?? [])], total: (base.total ?? 0) + saved.length } };
     }
     switch (id) {
+      case 'memoryActivity.cloud':
+        return { json: (cloud ??= syntheticCloud()) };
       case 'bots.now':
         return { json: world.now(params.bot ?? query.get('bot') ?? 'maid_chan') };
       case 'bots.inventory': {

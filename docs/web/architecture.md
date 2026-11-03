@@ -155,8 +155,9 @@ Tests for these go in `tests/MineClaw.App.Tests` (or the closest existing test p
   - `/v1/memory/{kind}?q&sort&offset&limit`: server-side paging; never whole tables.
   - `/v1/memory/{kind}/{id}`
   - `/v1/search?q&mode&k`
-  - `/v1/raptor/tree?root&depth`, `/v1/raptor/node/{id}`, `/v1/raptor/graph?layout&color_by`: graph layout is computed
-    server-side and returned as nodes with x, y and edges.
+  - `/v1/raptor/node/{id}`, `/v1/raptor/graph?layout&color_by`: graph layout is computed server-side and returned as nodes
+    with x, y and edges. (`/v1/raptor/tree` went with the RAPTOR tree page, 2026-11-03.)
+  - `/v1/memory-activity/heat`, `/v1/memory-activity/cloud` (see "Memory activity tab")
   - `/v1/personality`
   - `/v1/scripts`, `/v1/scripts/{name}`, `/v1/scripts/{name}/diff?a&b`, `/v1/scripts/{name}/lint`
   - `/v1/designs`, `/v1/designs/{id}`, `/v1/designs/{id}/diff?a&b`
@@ -238,6 +239,39 @@ This tab shows the RAPTOR memory map (the server-laid-out graph) with regions li
   - The bot route `GET /api/viewer/memory-activity?since&brain` gives the access ring plus the in-context set per brain.
   - The bridge-native `heat` aggregate per RAPTOR node feeds the graph colouring.
   - SSE event `memoryActivity`.
+- **One home for the tree (2026-11-03).** The separate RAPTOR tree page is gone: it showed the same graph. `/raptor` redirects
+  here (query kept, so `?node=` links still open that node's detail), and the Search page, memory browser and command palette
+  link here. The bot's RAPTOR memory itself is untouched; this tab reads it.
+- **Layouts.** Radial, icicle and node-link draw the server-laid-out tree (`/v1/raptor/graph`). **Cloud** draws every memory
+  as a point where similar memories sit together:
+  - **Projection: in the bridge, with the bot's own UMAP** (`MineClaw.Raptor.Umap`, cosine, spectral init, seeded
+    single-threaded SGD) over the stored RAPTOR leaf embeddings (`RaptorNode.Embedding`, 1024-d `text-embedding-3-large` on
+    the live bot). Why the bridge and not a browser worker: the vectors are 4 KB each (2466 leaves = 10 MB of floats today,
+    tens of thousands later) and never need to leave CT 114; the bridge already holds them in memory, the C# UMAP is the one
+    RAPTOR clusters with, and the layout is computed once per tree state instead of once per visitor. No new dependency.
+  - **Bounded and never blocking.** `GET /v1/memory-activity/cloud` answers at once; the first request for a tree state starts
+    one background job on `Bridge:CloudThreads` (default 1) and the client polls while `status` is `computing`, showing the
+    previous layout meanwhile. UMAP runs on at most 2000 anchors (above that the bot's kNN would go parallel on every core);
+    the live 2466-leaf db takes ~4.8 s on one thread, once per RAPTOR build.
+  - **Stable.** Anchors are the build's leaves (`InsertedSeq == 0`, an even sample above 2000) under a fixed seed. Every other
+    leaf is placed at the softmax(cos/0.04)-weighted mean of its 6 most similar anchors (plus a tiny id-seeded offset), so a
+    new memory appears next to its neighbours without moving anything, and a restart reproduces the same picture. Only a new
+    RAPTOR build lays the cloud out again.
+  - **Colour = the bot's own clusters**: the highest summary layer with ≥ 6 nodes (layer 3 of 4 on the live db: 13 clusters),
+    each leaf under its primary-parent ancestor there; labels are that summary's TF-IDF terms. Eight fixed categorical slots
+    (largest clusters first, stepped per theme, validated for colour-vision deficiency); the rest fold into "other". The legend
+    toggles clusters (Alt-click: only this one).
+  - **Brightness = recency**, the same heat as the other layouts (`0.5^(age/halfLife)`, hive/body filter, window, timeline
+    replay) with a faint linear tail across the window so a memory used 10 minutes ago still reads apart from an unused one.
+    Live accesses pulse once (a thin fading ring, at most 24 at a time). Hot points get a soft halo.
+  - **Interaction.** Pan, zoom, hover tooltip (title, text after a short dwell, cluster, last use and by whom), click opens the
+    shared node detail, Shift-drag lasso lists the memories inside, search dims everything but the matches (Search page hits
+    arrive as `?hits=`), and a faded link overlay draws the RAPTOR parent links (leaf → summary → summary).
+  - **Rendering.** One WebGL2 context draws every point and link from GPU buffers, on demand only; 2-D canvases add cluster
+    density blobs underneath (the level of detail when zoomed out: points shrink, blobs carry the shape) and labels, rings and
+    pulses on top. Measured on software WebGL (Chromium `--disable-gpu`, ANGLE on SwiftShader, 1440×900, `CLOUD_PERF=1` in
+    `e2e/memory-cloud.spec.ts`): 60 fps (p95 frame 17 ms) while panning and zooming at 3000 and at 20 000 points, links on or off;
+    the JS side of a frame is ~0.2 ms.
 
 ## Design Studio (added 2026-11-03)
 

@@ -117,9 +117,6 @@ public static class BridgeEndpoints
                 ctx.RequestAborted));
         });
 
-        v1.MapGet("/raptor/tree", async (HttpContext ctx, BankHost banks) =>
-            Json(RaptorViews.Tree(await banks.GetAsync(ctx.RequestAborted), Q.IntOpt(ctx, "root", 0, int.MaxValue), Q.Int(ctx, "depth", 1, 0, 8))));
-
         v1.MapGet("/raptor/graph", async (HttpContext ctx, BankHost banks) =>
         {
             var layout = Q.Enum(ctx, "layout", "icicle", "icicle", "radial", "nodelink");
@@ -261,6 +258,10 @@ public static class BridgeEndpoints
                 MemoryHeat.Compute(events, inCtx, null, bank.NodeOfDoc, "none", at, window, half, brain));
             return Json(r);
         });
+
+        // Memory cloud: every RAPTOR leaf at its UMAP position, coloured by the bot's clusters. Never waits for the layout.
+        v1.MapGet("/memory-activity/cloud", async (HttpContext ctx, BankHost banks, MemoryCloudService cloud) =>
+            Json(cloud.Get(await banks.GetAsync(ctx.RequestAborted))));
 
         // ---------------- admin (bridge-native) ----------------
         v1.MapGet("/admin/schema", (HttpContext ctx) => ctx.Identity().IsAdmin ? Json(AdminViews.Schema()) : RequireRole(ctx, "admin"));

@@ -109,7 +109,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
                       onSelect={() =>
                         go(
                           h.raptorLeaf !== null && h.raptorLeaf !== undefined
-                            ? `/raptor?node=${h.raptorLeaf}`
+                            ? `/memory-activity?layout=cloud&node=${h.raptorLeaf}`
                             : `/search?q=${encodeURIComponent(dq)}`,
                         )
                       }

@@ -1,5 +1,5 @@
 /** `--mock-bridge`: the synthetic stream validates against SSE_EVENTS, and a chat line resolves the way the web will do it. */
-import { SSE_EVENTS, type SseEventName } from '@mineclaw/contracts';
+import { MemoryCloudResponse, SSE_EVENTS, type SseEventName } from '@mineclaw/contracts';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { z } from 'zod';
 import { fetchLogin, ORIGIN, readSse, startApp, type TestApp } from './helpers.js';
@@ -13,6 +13,20 @@ afterAll(async () => {
 });
 
 describe('mock bridge', () => {
+  it('memory cloud: a viewer gets the camelCase layout through the gateway; the RAPTOR tree route is gone', async () => {
+    const s = await fetchLogin(t.url, 'vera');
+    const res = await fetch(`${t.url}/api/memory-activity/cloud`, { headers: { cookie: s.cookie } });
+    expect(res.status).toBe(200);
+    const cloud = MemoryCloudResponse.parse(await res.json());
+    expect(cloud.status).toBe('ready');
+    expect(cloud.points.id).toHaveLength(3000);
+    expect(cloud.points.xy).toHaveLength(6000);
+    expect(cloud.clusters.length).toBe(10);
+    expect(cloud.clusterLayer).toBe(2);
+    expect((await fetch(`${t.url}/api/memory-activity/cloud`)).status).toBe(401);
+    expect((await fetch(`${t.url}/api/raptor/tree`, { headers: { cookie: s.cookie } })).status).toBe(404);
+  });
+
   it('streams every topic, each frame valid against its schema', async () => {
     const s = await fetchLogin(t.url, 'vera');
     const ac = new AbortController();
