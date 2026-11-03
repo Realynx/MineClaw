@@ -1,0 +1,69 @@
+# /etc/systemd/system/mineclaw-bridge.service: the web explorer's C# bridge (tools/ViewerBridge), CT 114 beside the bot.
+# Loopback only (127.0.0.1:8766), HMAC-signed requests from Nest only. Reads the bot's db READ-ONLY and proxies its Supervisor.
+# Install: deploy/viewer/bridge/README.md.
+[Unit]
+Description=MineClaw viewer bridge (web explorer C# side, loopback only)
+Wants=network-online.target
+After=network-online.target mineclaw.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=mineclaw-bridge
+# Group mineclaw: read /etc/mineclaw/appsettings.json (0640 root:mineclaw) and the db in /var/lib/mineclaw (0750, files 0640).
+Group=mineclaw
+WorkingDirectory=/opt/mineclaw-bridge/current
+LogsDirectory=mineclaw-bridge
+LogsDirectoryMode=0750
+# The bot's env file carries the embeddings key search needs (MINECLAW_Agent__Embeddings__ApiKey); systemd reads it as root.
+EnvironmentFile=-/etc/mineclaw/mineclaw.env
+# The bridge's own secret (MINECLAW_BRIDGE_KEY=...) if not in /etc/mineclaw-bridge/bridge.json.
+EnvironmentFile=-/etc/mineclaw-bridge/bridge.env
+Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
+Environment=DOTNET_ENVIRONMENT=Production
+Environment=MINECLAW_Bridge__DataDir=/var/lib/mineclaw
+Environment=MINECLAW_Bridge__PacksDir=/opt/mineclaw/current/shards/defaults
+ExecStart=/opt/mineclaw-bridge/current/MineClaw.ViewerBridge
+SyslogIdentifier=mineclaw-bridge
+StandardOutput=journal
+StandardError=journal
+Restart=always
+RestartSec=5
+# Exit 2 = missing/short Bridge:Key: needs a human.
+RestartPreventExitStatus=2
+
+# The web stack shares a ~1 GB budget (docs/web/architecture.md); the bridge holds the vectors + RAPTOR tree in memory.
+MemoryMax=600M
+
+# ---- hardening ----
+NoNewPrivileges=yes
+UMask=0027
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# Inbound is loopback only (Kestrel binds 127.0.0.1 and refuses non-loopback sources). Outbound: the Supervisor on loopback plus
+# the query-embedding provider (Azure OpenAI / Ollama) for hybrid search, so no IPAddressDeny here. AF_UNIX for journald.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Read-only db access: SQLite may need the -shm beside a WAL db; the bot's dir stays read-only to us.
+ReadOnlyPaths=/opt/mineclaw-bridge /opt/mineclaw /etc/mineclaw /etc/mineclaw-bridge /var/lib/mineclaw
+
+[Install]
+WantedBy=multi-user.target

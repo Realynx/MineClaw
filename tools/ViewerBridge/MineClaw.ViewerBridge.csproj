@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!-- MineClaw Viewer Bridge: the web explorer's C# side (docs/web/architecture.md). Loopback-only ASP.NET Core minimal API
+       (127.0.0.1:8766), HMAC-signed requests from Nest only. Reads the bot's db READ-ONLY, runs the C#-only logic (search,
+       RAPTOR, shards, lint, diffs, atlas) and proxies the Supervisor with its token. Never writes the db. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>MineClaw.ViewerBridge</RootNamespace>
+    <AssemblyName>MineClaw.ViewerBridge</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\MineClaw.Agent\MineClaw.Agent.csproj" />
+    <ProjectReference Include="..\..\src\MineClaw.Raptor\MineClaw.Raptor.csproj" />
+    <ProjectReference Include="..\..\src\MineClaw.World\MineClaw.World.csproj" />
+    <ProjectReference Include="..\..\src\MineClaw.Render\MineClaw.Render.csproj" />
+    <ProjectReference Include="..\..\src\MineClaw.Scripting\MineClaw.Scripting.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="MineClaw.ViewerBridge.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Dev secrets live in appsettings.Development.json (gitignored); never ship it. -->
+    <Content Update="appsettings.Development.json" CopyToPublishDirectory="Never" />
+  </ItemGroup>
+
+</Project>
