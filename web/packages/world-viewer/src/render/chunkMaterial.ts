@@ -53,6 +53,7 @@ uniform vec4 uConeU[2];
 uniform float uConeR;
 uniform float uFloorY;
 uniform vec4 uRoof;
+uniform float uDimBelow;
 uniform float uAlphaTest;
 uniform float uCap;
 ${starfieldGlsl()}
@@ -188,6 +189,8 @@ void main() {
     b = max(b, 0.8);
   }
   rgb *= b;
+  // [level cut] the storeys below the working level are dimmed for reference (Story Mode).
+  if (vWorld.y < uDimBelow) rgb *= 0.55;
   if (uStale > 0.5 && flag(vFlags, 4.0)) rgb = mix(rgb, vec3(dot(rgb, vec3(0.3, 0.59, 0.11))), 0.45) * 0.8;
   rgb += vec3(uFlash);
   float fog = smoothstep(uFogRange.x, uFogRange.y, length(vWorld.xz - uFogCentre.xz));
@@ -215,6 +218,8 @@ export interface ChunkUniforms {
   uFloorY: THREE.IUniform<number>;
   /** Roof cut: centre x, cut y, centre z, radius (0 = off). */
   uRoof: THREE.IUniform<THREE.Vector4>;
+  /** World y below which the chunk colour is dimmed (−1e9 = off). */
+  uDimBelow: THREE.IUniform<number>;
   uAlphaTest: THREE.IUniform<number>;
   uCap: THREE.IUniform<number>;
   /** [blocks] Seconds (animated block shaders: the end starfield), the view's size in device pixels, the starfield's sheets
@@ -246,6 +251,7 @@ export function createChunkUniforms(): ChunkUniforms {
     uConeR: { value: 3 },
     uFloorY: { value: 0 },
     uRoof: { value: new THREE.Vector4(0, 0, 0, 0) },
+    uDimBelow: { value: -1e9 },
     uAlphaTest: { value: 0.5 },
     uCap: { value: 0 },
     uTime: { value: 0 },

@@ -37,6 +37,8 @@ async function handle(m: WorkerRequest): Promise<void> {
         return reply({ id: m.id, ok: true, result: engine.pick(m.dim, m.o, m.d, m.max, m.cut) });
       case 'blocksAt':
         return reply({ id: m.id, ok: true, result: engine.blocksAt(m.dim, m.pts) });
+      case 'scan':
+        return reply({ id: m.id, ok: true, result: engine.scan(m.dim, m.min, m.max, m.ids, m.maxHits) });
       case 'lights':
         return reply({ id: m.id, ok: true, result: engine.lights(m.dim, m.pts) });
       case 'occluded':

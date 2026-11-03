@@ -20,6 +20,7 @@ export type WorkerRequest =
   | { id: number; op: 'occluded'; dim: number; cam: V3; bodies: number[] }
   | { id: number; op: 'lights'; dim: number; pts: number[] }
   | { id: number; op: 'blocksAt'; dim: number; pts: number[] }
+  | { id: number; op: 'scan'; dim: number; min: V3; max: V3; ids: number[]; maxHits?: number }
   | { id: number; op: 'blockEntities'; dim: number; cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }> }
   | { id: number; op: 'clear' };
 

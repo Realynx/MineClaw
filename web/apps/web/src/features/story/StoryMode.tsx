@@ -1,0 +1,517 @@
+'use client';
+
+/**
+ * The Story Mode screen: the colony map full-bleed with the game HUD over it. It owns the selection, the active tool and its
+ * options, the working level and x-ray, the view (top-down by default, angled for 3D building), the open bottom tab, the
+ * keyboard map, and turns every map gesture into director requests for the colony's pawns and directives for selected AI
+ * bodies (one toast says what went where).
+ */
+import { materialKey, normArea, type StoryAlert, type StoryColonyState, type StoryDirectiveSpec } from '@mineclaw/contracts';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChatOverlay } from '@/features/world/InWorld';
+import { isTyping, sendDirective } from '@/features/world/directives';
+import { loadWorldViewer, WorldHost } from '@/features/world/integration';
+import { api, errorText } from '@/lib/api/client';
+import { useAuth } from '@/lib/auth';
+import { newRequestId } from '@/lib/utils';
+import { cn } from '@/lib/utils';
+import { clickBody, dispatch, EMPTY_SELECTION, orderAi, orderPawns, splitBodies, type DirectorCall, type Selection } from './model';
+import { AlertsStack, barBodies, ColonistBar, ContextMenu, ControlCluster, HelpOverlay, OptionsBar, panel, Toast } from './StoryHud';
+import { AiInspector, BillsInspector, GroupInspector, PawnInspector, StorageInspector } from './StoryInspector';
+import { StoryMap, type DragResult, type MapTool, type StoryMapHandle } from './StoryMap';
+import { ArchitectPanel, ColonyPanel, DirectivesPanel, NewColony, QueuePanel, SchedulePanel, TabBar, WorkPanel, type TabId } from './StoryPanels';
+import { buildItem, clampHeight, contextMenu, countLabel, designationBody, designationDirective, DESIGNATE_TOOLS, keyAction, levelCutY, nextLevel, orderBody, PAN_KEYS, preview, rotateFacing, toolArea, toolYRange, type BuildOpts, type MenuItem, type Target } from './tools';
+import type { StorageClip } from './storage';
+import { colonyKey, useColonies, useColony, useStoryWrite } from './useStory';
+import { setItemIconSource } from './visuals';
+import { useQueryClient } from '@tanstack/react-query';
+
+type V3 = [number, number, number];
+const k3 = (p: readonly number[]) => `${p[0]},${p[1]},${p[2]}`;
+
+function useBarOrder(user: string): [string[], (n: string[]) => void] {
+  const key = `mcx-story-bar:${user}`;
+  const [order, setOrder] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? (JSON.parse(raw) as string[]) : [];
+    } catch {
+      return [];
+    }
+  });
+  const save = useCallback(
+    (n: string[]) => {
+      setOrder(n);
+      try {
+        localStorage.setItem(key, JSON.stringify(n));
+      } catch {
+        /* storage unavailable */
+      }
+    },
+    [key],
+  );
+  return [order, save];
+}
+
+export function StoryMode() {
+  const { me, can, canChat } = useAuth();
+  const canWrite = can('story');
+  const router = useRouter();
+  const params = useSearchParams();
+  const qc = useQueryClient();
+  const colonies = useColonies();
+  const list = colonies.data?.colonies ?? [];
+  const id = params.get('colony') ?? list[0]?.id ?? null;
+  const colony = useColony(id);
+  const state = colony.data;
+  const write = useStoryWrite(id);
+
+  const map = useRef<StoryMapHandle | null>(null);
+  const keys = useRef(new Set<string>());
+  const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
+  const [tool, setTool] = useState<MapTool>({ kind: 'select' });
+  const [build, setBuild] = useState<BuildOpts>({ height: 3, roof: 'flat', overhang: false, facing: 's', material: 'oak_planks' });
+  const [mineFilter, setMineFilter] = useState<'all' | 'ores' | 'stone' | 'soil'>('all');
+  const ground = state?.home?.[1] ?? 64;
+  const [level, setLevel] = useState<number | null>(null);
+  const lv = level ?? ground;
+  // X-ray above the working level: automatic while building or on an upper storey (trees and hills stay whole otherwise).
+  const [xray, setXray] = useState<'auto' | 'on' | 'off'>('auto');
+  const [view, setView] = useState<'top' | 'angled'>('top');
+  const [tab, setTab] = useState<TabId | null>(null);
+  const [menu, setMenu] = useState<{ at: { x: number; y: number }; title: string; items: MenuItem[]; target: Target } | null>(null);
+  const [toast, setToast] = useState<{ text: string; tone: 'ok' | 'warn' } | null>(null);
+  const [help, setHelp] = useState(false);
+  const [chat, setChat] = useState(false);
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  const [clip, setClip] = useState<StorageClip | null>(null);
+  const picking = useRef<((c: V3 | null) => void) | null>(null);
+  const lastDraft = useRef<{ key: string; drafted: boolean; at: number } | null>(null);
+  const [pickHint, setPickHint] = useState(false);
+  const [order, setOrder] = useBarOrder(me.username);
+  const xrayOn = xray === 'on' || (xray === 'auto' && (tool.kind === 'build' || lv > ground));
+  const cutY = levelCutY(lv, build.height, xrayOn);
+
+  // Item icons from the committed textures, once the viewer module is here.
+  useEffect(() => {
+    void loadWorldViewer().then((m) => m && setItemIconSource(m.itemIconResolver()));
+  }, []);
+
+  const say = useCallback((text: string, tone: 'ok' | 'warn' = 'ok') => {
+    setToast({ text, tone });
+  }, []);
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 3500);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const pawns = useMemo(() => orderPawns(state?.pawns ?? [], order), [state?.pawns, order]);
+  const ai = useMemo(() => orderAi(state?.ai ?? []), [state?.ai]);
+  const bodies = useMemo(() => barBodies(pawns, ai), [pawns, ai]);
+  const split = splitBodies(state, selection.bodies);
+
+  const stock = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const s of state?.storages ?? []) for (const [i, mm, n] of s.contents) m.set(`${i}:${mm}`, (m.get(`${i}:${mm}`) ?? 0) + n);
+    return m;
+  }, [state?.storages]);
+
+  /** Runs one action: the director call for the colony and/or a directive for the AI bodies. */
+  const run = useCallback(
+    async (director: DirectorCall | null, directive: StoryDirectiveSpec | null, verb: string, after?: (out: unknown) => string | null) => {
+      if (!canWrite) {
+        say('Your account can watch Story Mode but not give orders (needs the story role)', 'warn');
+        return;
+      }
+      const plan = dispatch(split, director, directive, newRequestId(), verb);
+      try {
+        const [out] = await Promise.all([
+          plan.director ? write(plan.director.route, plan.director.body as never) : Promise.resolve(null),
+          plan.directive ? api('story.directives', { body: plan.directive }) : Promise.resolve(null),
+        ]);
+        const head = after?.(out);
+        say([head, plan.summary].filter(Boolean).join(' · '));
+      } catch (e) {
+        say(errorText(e), 'warn');
+      }
+    },
+    [canWrite, split, write, say],
+  );
+
+  const focusBody = useCallback(
+    (name: string) => {
+      const b = bodies.find((x) => x.name === name);
+      if (b?.pos) map.current?.focus(Math.floor(b.pos[0]!), Math.floor(b.pos[2]!), Math.floor(b.pos[1]!));
+    },
+    [bodies],
+  );
+
+  // ------------------------------------------------------------------ map gestures
+
+  const onSelect = (sel: Selection) => {
+    if (picking.current && sel.chests.length) {
+      const r = picking.current;
+      picking.current = null;
+      setPickHint(false);
+      r(sel.chests[0]!);
+      return;
+    }
+    setSelection(sel);
+    setMenu(null);
+  };
+
+  const onTool = async (r: DragResult, shift: boolean) => {
+    if (!shift) setTool({ kind: 'select' });
+    if (tool.kind === 'designate') {
+      const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
+      const area = toolArea(r.rect, toolYRange(tool.id, lv, build.height, cutY));
+      const body = designationBody(tool.id, area, mineFilter);
+      if (t.entities && r.entities.length) Object.assign(body, { entities: r.entities.map((e) => e.id) });
+      await run({ route: 'story.designations', body }, designationDirective(tool.id, area, r.cells, mineFilter), tool.id === 'cancel' ? 'cancelled' : 'designated', (out) => {
+        const n = (out as { count?: number } | null)?.count ?? r.count;
+        return tool.id === 'cancel' ? `Cancelled ${n}` : countLabel(t, n);
+      });
+      return;
+    }
+    if (tool.kind === 'zone') {
+      const area = normArea([r.rect[0], lv, r.rect[1], r.rect[2], lv, r.rect[3]]);
+      if (!canWrite) return say('Needs the story role', 'warn');
+      await write('story.zones', { op: tool.op, kind: tool.id as never, area }).then(
+        () => say(`${tool.op === 'add' ? 'Zone painted' : 'Zone removed'}: ${r.rect[2] - r.rect[0] + 1} × ${r.rect[3] - r.rect[1] + 1}`),
+        (e) => say(errorText(e), 'warn'),
+      );
+      return;
+    }
+    if (tool.kind === 'storage') {
+      const area = normArea([r.rect[0], lv - 4, r.rect[1], r.rect[2], lv + 8, r.rect[3]]);
+      if (!canWrite) return say('Needs the story role', 'warn');
+      await write('story.storage', { op: 'assign_area', area }).then(
+        (out) => say(`${(out as { count?: number }).count ?? 0} chest${(out as { count?: number }).count === 1 ? '' : 's'} registered as storage`),
+        (e) => say(errorText(e), 'warn'),
+      );
+      return;
+    }
+    if (tool.kind === 'build') {
+      const item = buildItem(tool.id, r.a, r.b, build);
+      const pv = preview(item, stock.get(materialKey(item.material).join(':')));
+      if (!pv.valid) return say(pv.reason ?? 'cannot place that', 'warn');
+      await run({ route: 'story.builds', body: { op: 'add', items: [item] } }, { kind: 'build', build: [item] }, 'queued', () => `Queued: ${pv.blocks.length} block${pv.blocks.length === 1 ? '' : 's'}`);
+    }
+  };
+
+  const onContext = (target: Target, at: { x: number; y: number }) => {
+    const items = contextMenu(target, split.pawns.length > 0, split.ai.length > 0);
+    const title = target.kind === 'block' ? target.name : target.kind === 'ghost' ? 'Blueprint' : target.kind === 'mob' || target.kind === 'item' ? target.name : 'Here';
+    setMenu({ at, title, items, target });
+  };
+
+  const onMenuPick = async (item: MenuItem, queue: boolean) => {
+    const target = menu?.target;
+    setMenu(null);
+    if (item.action === 'cancel-build' && target?.kind === 'ghost') {
+      await write('story.builds', { op: 'remove', ids: [target.build] }).then(() => say('Blueprint cancelled'), (e) => say(errorText(e), 'warn'));
+      return;
+    }
+    if (item.action === 'first-build' && target?.kind === 'ghost') {
+      await write('story.builds', { op: 'reorder', ids: [target.build] }).then(() => say('Moved to the front of the queue'), (e) => say(errorText(e), 'warn'));
+      return;
+    }
+    if ((item.action === 'storage' || item.action === 'bills') && target?.kind === 'block') {
+      const pos: V3 = [target.x, target.y, target.z];
+      setSelection(item.action === 'storage' ? { bodies: [], chests: [pos], bench: null } : { bodies: [], chests: [], bench: pos });
+      return;
+    }
+    const body = orderBody(split.pawns, item, queue);
+    await run(body ? { route: 'story.orders', body } : null, item.directive ?? null, queue ? 'queued' : 'ordered', () => item.label);
+  };
+
+  const draft = useCallback(
+    async (names: string[], drafted: boolean) => {
+      if (!names.length) return;
+      if (!canWrite) return say('Needs the story role', 'warn');
+      await write('story.draft', { pawns: names, drafted }).then(() => say(`${drafted ? 'Drafted' : 'Undrafted'} ${names.length} pawn${names.length === 1 ? '' : 's'}`), (e) => say(errorText(e), 'warn'));
+    },
+    [canWrite, write, say],
+  );
+
+  const togglePause = useCallback(() => {
+    if (!state || !canWrite) return;
+    void write('story.pause', { paused: !state.paused }).then(() => say(state.paused ? 'Colony resumed' : 'Colony paused'));
+  }, [state, canWrite, write, say]);
+
+  const pickChest = useCallback(
+    () =>
+      new Promise<V3 | null>((resolve) => {
+        picking.current = resolve;
+        setPickHint(true);
+      }),
+    [],
+  );
+
+  // ------------------------------------------------------------------ keys
+
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (isTyping(e.target) || document.querySelector('[role="dialog"][data-state="open"]')) return;
+      if (PAN_KEYS[e.code]) {
+        keys.current.add(e.code);
+        e.preventDefault();
+        return;
+      }
+      const a = keyAction(e, tool.kind === 'build');
+      if (!a) return;
+      e.preventDefault();
+      if (a === 'draft') {
+        // R toggles; a second press before the state caught up flips the last request rather than re-reading old state.
+        const key = [...split.pawns].sort().join(',');
+        const last = lastDraft.current;
+        const anyUndrafted = last && last.key === key && Date.now() - last.at < 4000 ? !last.drafted : split.pawns.some((n) => !state?.pawns.find((p) => p.name === n)?.drafted);
+        lastDraft.current = { key, drafted: anyUndrafted, at: Date.now() };
+        void draft(split.pawns, anyUndrafted);
+      } else if (a === 'pause') togglePause();
+      else if (a === 'escape') {
+        if (picking.current) {
+          picking.current(null);
+          picking.current = null;
+          setPickHint(false);
+        } else if (menu) setMenu(null);
+        else if (help) setHelp(false);
+        else if (chat) setChat(false);
+        else if (tool.kind !== 'select') setTool({ kind: 'select' });
+        else if (tab) setTab(null);
+        else setSelection(EMPTY_SELECTION);
+      } else if (a === 'chat') setChat(true);
+      else if (a === 'view') setView((v) => (v === 'top' ? 'angled' : 'top'));
+      else if (a === 'xray') setXray(xrayOn ? 'off' : 'on');
+      else if (a === 'levelUp' || a === 'levelDown') setLevel(nextLevel(lv, build.height, a === 'levelUp' ? 1 : -1, e.shiftKey));
+      else if (a === 'rotateCcw' || a === 'rotateCw') setBuild((b) => ({ ...b, facing: rotateFacing(b.facing, a === 'rotateCw' ? 1 : -1) }));
+      else if (a === 'heightUp' || a === 'heightDown') setBuild((b) => ({ ...b, height: clampHeight(b.height + (a === 'heightUp' ? 1 : -1)) }));
+      else if (a === 'help') setHelp((h) => !h);
+      else if (a === 'focus') {
+        if (selection.bodies[0]) focusBody(selection.bodies[0]);
+        else if (state?.home) map.current?.focus(state.home[0], state.home[2], state.home[1]);
+      } else if (a.startsWith('tool:')) {
+        const t = a.slice(5) as never;
+        setTool((cur) => (cur.kind === 'designate' && cur.id === t ? { kind: 'select' } : { kind: 'designate', id: t }));
+      } else if (a.startsWith('tab:')) {
+        const t = a.slice(4) as TabId;
+        setTab((cur) => (cur === t ? null : t));
+      }
+    };
+    const up = (e: KeyboardEvent) => keys.current.delete(e.code);
+    const blur = () => keys.current.clear();
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    window.addEventListener('blur', blur);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+      window.removeEventListener('blur', blur);
+    };
+  }, [tool, split, state, menu, help, chat, tab, lv, build.height, selection, draft, togglePause, focusBody, xrayOn]);
+
+  // ------------------------------------------------------------------ alerts
+
+  const alerts = (state?.alerts ?? []).filter((a) => !dismissed.has(String(a.id ?? `${a.at}|${a.text}`)) && a.level !== 'info').concat((state?.alerts ?? []).filter((a) => a.level === 'info' && !dismissed.has(String(a.id ?? `${a.at}|${a.text}`))).slice(-2));
+  const onAlert = (a: StoryAlert) => {
+    if (a.pawn) {
+      setSelection({ ...EMPTY_SELECTION, bodies: [a.pawn] });
+      focusBody(a.pawn);
+    }
+    if (a.fix?.tab === 'work') setTab('work');
+    if (a.fix?.tab === 'storage') {
+      const s = state?.storages?.[0];
+      if (s) setSelection({ bodies: [], chests: [s.chest], bench: null });
+      else setTool({ kind: 'storage' });
+    }
+    if (a.fix?.workbench) setSelection({ bodies: [], chests: [], bench: a.fix.workbench });
+  };
+
+  // ------------------------------------------------------------------ the inspector
+
+  const inspector = (() => {
+    const close = () => setSelection(EMPTY_SELECTION);
+    if (selection.bench) {
+      const bench = (state?.workbenches ?? []).find((w) => k3(w.pos) === k3(selection.bench!));
+      return bench ? <BillsInspector bench={bench} state={state} canWrite={canWrite} write={write} onPickChest={pickChest} onClose={close} /> : null;
+    }
+    if (selection.chests.length) return <StorageInspector chests={selection.chests} state={state} canWrite={canWrite} write={write} clip={clip} onClip={(c) => (setClip(c), say('Storage settings copied'))} onClose={close} />;
+    if (selection.bodies.length === 1) {
+      const p = state?.pawns.find((x) => x.name === selection.bodies[0]);
+      if (p) return <PawnInspector pawn={p} canWrite={canWrite} onDraft={(d) => void draft([p.name], d)} onClearQueue={() => void write('story.orders', { pawns: [p.name], order: { kind: 'stop' } })} onClose={close} />;
+      const a = state?.ai?.find((x) => x.name === selection.bodies[0]);
+      if (a) return <AiInspector body={a} state={state} onChat={() => setChat(true)} onClose={close} />;
+    }
+    if (selection.bodies.length > 1) return <GroupInspector names={selection.bodies} state={state} canWrite={canWrite} onDraft={(d) => void draft(split.pawns, d)} onClose={close} />;
+    return null;
+  })();
+
+  const create = async (name: string, n: number) => {
+    if (!canWrite) return say('Needs the story role', 'warn');
+    const c = map.current?.center();
+    try {
+      const out = await api('story.create', { body: { name, pawns: n, ...(c ? { home: { x: c[0], y: c[1], z: c[2] } } : {}) } });
+      await qc.invalidateQueries({ queryKey: ['story.list'] });
+      router.replace(`/story?colony=${encodeURIComponent(out.id)}`);
+      setTab(null);
+      say(`${name} founded with ${n} pawn${n === 1 ? '' : 's'}`);
+    } catch (e) {
+      say(errorText(e), 'warn');
+    }
+  };
+
+  const panelEl = (() => {
+    switch (tab) {
+      case 'architect':
+        return <ArchitectPanel tool={tool} onTool={setTool} />;
+      case 'work':
+        return <WorkPanel pawns={pawns} ai={ai} canWrite={canWrite} onSet={(names, work) => void write('story.priorities', { pawns: names, work }).catch((e) => say(errorText(e), 'warn'))} />;
+      case 'schedule':
+        return <SchedulePanel pawns={pawns} ai={ai} hour={state?.hour} canWrite={canWrite} onPaint={(reqs) => reqs.forEach((r) => void write('story.schedule', r).catch((e) => say(errorText(e), 'warn')))} />;
+      case 'queue':
+        return <QueuePanel builds={state?.builds ?? []} canWrite={canWrite} onOp={(op, ids) => void write('story.builds', { op, ids }).catch((e) => say(errorText(e), 'warn'))} />;
+      case 'directives':
+        return <DirectivesPanel state={state} />;
+      case 'colony':
+        return (
+          <ColonyPanel
+            state={state}
+            colonies={list}
+            current={id}
+            canWrite={canWrite}
+            onSwitch={(c) => router.replace(`/story?colony=${encodeURIComponent(c)}`)}
+            onCreate={(name, n) => void create(name, n)}
+            onPause={togglePause}
+            onRelease={() => void write('story.release', {}).then(() => say('Pawns released; the colony is saved'))}
+          />
+        );
+      default:
+        return null;
+    }
+  })();
+
+  const queued = (state?.builds ?? []).filter((b) => b.status !== 'done').length;
+  const directivesLive = (state?.directives ?? []).filter((d) => d.status === 'sent' || d.status === 'acknowledged').length;
+
+  return (
+    <div className="relative h-full min-h-[32rem] overflow-hidden select-none" data-testid="story-mode">
+      <WorldHost>
+        <StoryMap
+          ref={map}
+          state={state}
+          selection={selection}
+          tool={tool}
+          build={build}
+          mineFilter={mineFilter}
+          level={lv}
+          cutY={cutY}
+          view={view}
+          keys={keys}
+          home={(state?.home as V3 | undefined) ?? null}
+          onSelect={onSelect}
+          onSelectSame={(kind, visible) => setSelection({ ...EMPTY_SELECTION, bodies: visible.filter((n) => (kind === 'pawn' ? state?.pawns.some((p) => p.name === n) : state?.ai?.some((x) => x.name === n))) })}
+          onTool={(r, shift) => void onTool(r, shift)}
+          onContext={onContext}
+          onDropTool={() => setTool({ kind: 'select' })}
+        />
+      </WorldHost>
+
+      <div className="pointer-events-none absolute inset-0">
+        {/* top: controls (left), the colonist bar (centre), alerts (right) */}
+        <div className="absolute right-2 bottom-2">
+          {state ? (
+            <ControlCluster
+              name={state.name ?? id ?? ''}
+              hour={state.hour}
+              paused={!!state.paused}
+              canWrite={canWrite}
+              onPause={togglePause}
+              view={view}
+              onView={() => setView((v) => (v === 'top' ? 'angled' : 'top'))}
+              level={lv}
+              ground={ground}
+              height={build.height}
+              xray={xrayOn}
+              onLevel={(dir) => setLevel(nextLevel(lv, build.height, dir, false))}
+              onXray={() => setXray(xrayOn ? 'off' : 'on')}
+              onHelp={() => setHelp((h) => !h)}
+            />
+          ) : null}
+        </div>
+        <div className="absolute inset-x-2 top-2 flex flex-col items-center gap-1.5">
+          {state ? (
+            <ColonistBar
+              bodies={bodies}
+              selected={selection.bodies}
+              order={order}
+              onOrder={setOrder}
+              onClick={(name, mods) => setSelection((s) => clickBody(s, name, mods))}
+              onBox={(names, add) => setSelection((s) => ({ ...EMPTY_SELECTION, bodies: add ? [...new Set([...s.bodies, ...names])] : names }))}
+              onJump={(name) => {
+                setSelection({ ...EMPTY_SELECTION, bodies: [name] });
+                focusBody(name);
+              }}
+            />
+          ) : null}
+          <OptionsBar tool={tool} build={build} onBuild={(b) => setBuild((x) => ({ ...x, ...b }))} mineFilter={mineFilter} onMineFilter={setMineFilter} stock={stock} onClose={() => setTool({ kind: 'select' })} />
+          {pickHint ? <div className={cn(panel, 'pointer-events-auto px-3 py-1.5 text-xs font-medium')}>Click a chest on the map to store the bill&apos;s products there (Esc cancels)</div> : null}
+        </div>
+        <div className="absolute top-[5.75rem] right-2">
+          <AlertsStack alerts={alerts} onPick={onAlert} onDismiss={(k) => setDismissed((d) => new Set([...d, k]))} />
+        </div>
+
+        {/* middle overlays */}
+        {help ? (
+          <div className="absolute top-24 left-1/2 -translate-x-1/2">
+            <HelpOverlay onClose={() => setHelp(false)} />
+          </div>
+        ) : null}
+        {!state && !colony.isLoading && !colonies.isLoading ? (
+          <div className="absolute inset-0 grid place-items-center">
+            <div className={cn(panel, 'pointer-events-auto w-96 space-y-2 p-4')}>
+              <h2 className="text-base font-semibold">Story Mode</h2>
+              <p className="text-xs text-muted">Run a colony of pawns: script-only bodies that take work by your priorities and schedule. Pan to where they should settle, then found it.</p>
+              <NewColony canWrite={canWrite} onCreate={(name, n) => void create(name, n)} />
+            </div>
+          </div>
+        ) : null}
+
+        {/* bottom: inspector + the open tab's window, the tab bar, the toast, the chat */}
+        <div className="absolute bottom-9 left-2 flex items-end gap-2">
+          {inspector}
+          {panelEl}
+        </div>
+        <div className="absolute bottom-12 left-1/2 -translate-x-1/2">
+          <Toast text={toast?.text ?? null} tone={toast?.tone} />
+        </div>
+        <div className="absolute bottom-0 left-2">
+          <TabBar open={tab} onOpen={setTab} badge={{ queue: queued, directives: directivesLive }} />
+        </div>
+        {state ? (
+          <div className="pointer-events-auto">
+            <ChatOverlay
+              open={chat}
+              targets={split.ai.length ? split.ai : selection.bodies.filter((n) => state?.ai?.some((a) => a.name === n))}
+              marker={null}
+              canChat={canChat}
+              results={null}
+              onClose={() => setChat(false)}
+              onSend={(text) =>
+                void sendDirective(split.ai, text).then((res) => {
+                  const bad = res.filter((r) => !r.ok);
+                  say(bad.length ? `Not sent to ${bad.map((b) => b.bot).join(', ')}` : `Said to ${split.ai.join(', ')}`, bad.length ? 'warn' : 'ok');
+                })
+              }
+            />
+          </div>
+        ) : null}
+      </div>
+      {menu ? <ContextMenu at={menu.at} title={menu.title} items={menu.items} onPick={(it, q) => void onMenuPick(it, q)} onClose={() => setMenu(null)} /> : null}
+    </div>
+  );
+}
+
+export type { StoryColonyState };
+export { colonyKey };

@@ -8,7 +8,8 @@ namespace MineClaw.ViewerBridge.Supervisor;
 
 /// <summary>
 /// <c>/v1/sup/&lt;path&gt;</c> → supervisor <c>/api/&lt;path&gt;</c>: allow-listed exactly as <c>SUPERVISOR_PASSTHROUGH_ALLOW</c> in
-/// @mineclaw/contracts (anything else 404), admin paths only with the <c>admin</c> role, the token added here, binary replies
+/// @mineclaw/contracts (anything else 404), admin paths only with the <c>admin</c> role, Story Mode writes only with the
+/// <c>story</c> or the <c>admin</c> role, the token added here, binary replies
 /// streamed unbuffered, upstream errors mapped to <c>ApiError</c>. Three bot replies are adapted to the contracts:
 /// <c>viewer/now</c> (<c>body.pos</c> "x,y,z" → [x,y,z]), <c>viewer/memory-activity</c> (<c>memory_id</c> → string) and
 /// <c>viewer/chat</c> (<c>{accepted, id: feed seq}</c> → <c>{accepted, id: request_id, feed_seq}</c>).
@@ -17,9 +18,11 @@ public static class SupervisorProxy
 {
     public static readonly string[] AllowGet =
         ["bots", "hive/tree", "status", "events", "locate", "blueprints", "buildplans", "world/", "scripts", "bodies/", "brains/", "viewer/feed", "viewer/now",
-         "viewer/memory-activity", "admin/rebuild/", "admin/audit"];
-    public static readonly string[] AllowPost = ["viewer/chat", "admin/"];
+         "viewer/memory-activity", "admin/rebuild/", "admin/audit", "story"];
+    public static readonly string[] AllowPost = ["viewer/chat", "admin/", "story/"];
     public static readonly string[] AdminOnly = ["admin/"];
+    /// <summary>POST paths that need the <c>story</c> or the <c>admin</c> role (contracts <c>storyWrite</c>).</summary>
+    public static readonly string[] StoryWrite = ["story/"];
 
     /// <summary>Prefix match as the contract defines it: an entry ending in "/" is a prefix; any other entry matches itself and its sub-paths.</summary>
     public static bool Matches(string path, string entry) =>
@@ -30,6 +33,11 @@ public static class SupervisorProxy
         (HttpMethods.IsGet(method) || HttpMethods.IsHead(method) ? AllowGet : HttpMethods.IsPost(method) ? AllowPost : []).Any(e => Matches(path, e));
 
     public static bool NeedsAdmin(string path) => AdminOnly.Any(e => Matches(path, e));
+
+    public static bool NeedsStory(string method, string path) => HttpMethods.IsPost(method) && StoryWrite.Any(e => Matches(path, e));
+
+    /// <summary>Story Mode writes: the <c>story</c> role, or <c>admin</c> (which holds every story grant).</summary>
+    public static bool MayWriteStory(BridgeIdentity id) => id.Has("story") || id.IsAdmin;
 
     /// <summary>
     /// The raw <c>/v1/sup/…</c> target split into a decoded, validated path (segments joined with "/", no "."/".." or encoded
@@ -82,11 +90,12 @@ public static class SupervisorProxy
         var method = ctx.Request.Method;
         if (!Allowed(method, s.Path)) { await ApiErrors.Write(ctx, 404, "not_found", "not found"); return; }
         if (NeedsAdmin(s.Path) && !id.IsAdmin) { await ApiErrors.Write(ctx, 403, "forbidden", "admin role required"); return; }
+        if (NeedsStory(method, s.Path) && !MayWriteStory(id)) { await ApiErrors.Write(ctx, 403, "forbidden", "story role required"); return; }
 
         HttpContent? content = null;
         if (HttpMethods.IsPost(method))
         {
-            // Admin writes: `who` is always the signed user, never the body's.
+            // Admin and story writes: `who` is always the signed user, never the body's.
             var obj = ParseObject(ctx.BodyBytes());
             if (obj == null) { await ApiErrors.Write(ctx, 400, "bad_request", "body must be a JSON object"); return; }
             if (obj.ContainsKey("who")) { await ApiErrors.Write(ctx, 400, "bad_request", "who is set by the bridge"); return; }

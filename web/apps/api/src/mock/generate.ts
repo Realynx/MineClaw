@@ -121,7 +121,7 @@ function sampleNumber(s: Schema, i: number): number {
 export function generate(schema: z.ZodType, key = '', depth = 0, i = 0): unknown {
   const s = schema as unknown as Schema;
   const def = inner(s);
-  if (depth > 12) return undefined;
+  if (depth > 24) return undefined;
   switch (def.type) {
     case 'string':
       return sampleString(key, s, i);
@@ -173,6 +173,8 @@ export function generate(schema: z.ZodType, key = '', depth = 0, i = 0): unknown
       };
     case 'array': {
       const lim = limitsOf(s);
+      // Recursive schemas (the hive tree, loot categories) bottom out in empty lists.
+      if (depth > 10 && !(lim.minLength ?? 0)) return [];
       const n = Math.max(lim.minLength ?? 0, Math.min(2, lim.maxLength ?? 2));
       const singular = key.endsWith('s') ? key.slice(0, -1) : key;
       return Array.from({ length: n }, (_, j) => generate(def.element as z.ZodType, singular, depth + 1, j));

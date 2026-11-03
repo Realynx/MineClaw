@@ -79,6 +79,34 @@ export class MeshEngine {
     return out;
   }
 
+  /**
+   * [scan] Every block of a box whose id is in `ids` (all non-air when `ids` is empty), as flat [x, y, z, id, meta, below-id, …]
+   * (below-id = the block under it: crops on farmland, cane on cane). At most `max` hits; columns not held are skipped.
+   */
+  scan(dim: number, min: V3, max: V3, ids: number[], maxHits = 4096): number[] {
+    const out: number[] = [];
+    const want = ids.length ? new Set(ids) : null;
+    const x1 = Math.floor(Math.min(min[0], max[0])), x2 = Math.floor(Math.max(min[0], max[0]));
+    const z1 = Math.floor(Math.min(min[2], max[2])), z2 = Math.floor(Math.max(min[2], max[2]));
+    const y1 = Math.max(0, Math.floor(Math.min(min[1], max[1]))), y2 = Math.floor(Math.max(min[1], max[1]));
+    for (let x = x1; x <= x2; x++)
+      for (let z = z1; z <= z2; z++) {
+        const col = this.store.get(dim, x >> 4, z >> 4);
+        if (!col) continue;
+        let below = y1 > 0 ? (this.store.blockAt(dim, x, y1 - 1, z)?.id ?? 0) : 0;
+        for (let y = y1; y <= Math.min(y2, col.height - 1); y++) {
+          const b = this.store.blockAt(dim, x, y, z);
+          const id = b?.id ?? 0;
+          if (id !== 0 && (!want || want.has(id))) {
+            out.push(x, y, z, id, b!.meta, below);
+            if (out.length >= maxHits * 6) return out;
+          }
+          below = id;
+        }
+      }
+    return out;
+  }
+
   /** Packed light (sky << 4 | block) at each point (entities take the light of their cell); -1 = unknown. */
   lights(dim: number, pts: number[]): number[] {
     const out: number[] = [];

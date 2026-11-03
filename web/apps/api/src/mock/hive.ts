@@ -254,6 +254,29 @@ export class MockHive {
     };
   }
 
+  /** Story Mode's AI bodies (public camelCase; the story mock converts to snake_case). */
+  aiBodies(): Obj[] {
+    return this.bodies
+      .filter((b) => b.kind !== 'script')
+      .map((b, i) => {
+        const p = this.pose(b, i);
+        const v = this.vitals(b, i);
+        return {
+          name: b.name,
+          kind: b.kind,
+          owner: b.owner,
+          online: true,
+          hp: v.hp,
+          food: v.food,
+          pos: [p.x, p.y, p.z],
+          dim: b.dim,
+          task: b.task,
+          brainState: this.brainState(b),
+          ...(b.script ? { script: b.script.name } : {}),
+        };
+      });
+  }
+
   /** `/api/hive/tree`. */
   tree(): Obj {
     const node = (b: MockBody): Obj => ({

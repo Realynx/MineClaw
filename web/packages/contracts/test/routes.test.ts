@@ -124,5 +124,8 @@ describe('request schemas', () => {
     expect(C.hasRole(['admin'], 'chat')).toBe(false);
     expect(C.hasRole([], 'authenticated')).toBe(false);
     expect(C.hasRole([], 'public')).toBe(true);
+    expect(C.hasRole(['story'], 'story')).toBe(true);
+    expect(C.hasRole(['admin'], 'story')).toBe(true);
+    expect(C.hasRole(['chat'], 'story')).toBe(false);
   });
 });

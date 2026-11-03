@@ -1,0 +1,887 @@
+/**
+ * Story Mode (docs/web/story-mode.md): colonies of script-only pawns run by the bot's colony director, played from the
+ * browser. Supervisor routes `/api/story*` (snake_case), passed through by the bridge (`/v1/sup/story*`), public camelCase.
+ *
+ * Response objects are lenient (the director may add fields; unknown enum values arrive as plain strings). Request bodies are
+ * strict. Writes need the `story` role (or `admin`, see `hasRole`).
+ *
+ * Deltas: `GET /api/story/colonies/{id}?since=rev` returns only what changed after `rev` (items keyed by pawn name, zone /
+ * designation / order / build id, storage chest position) plus `removed` keys; without `since`, or with `full: true`, the
+ * reply is the whole state and replaces what the client holds. `ghosts` and `categories`, when present, always replace.
+ */
+import { z } from 'zod';
+import { IsoDateTime, Vec3, Vec3i } from './common.js';
+
+// ------------------------------------------------------------------ vocabulary
+
+/** Work types in their fixed column order (ties in priority go to the earlier column). */
+export const STORY_WORK_TYPES = ['guard', 'doctor', 'cook', 'hunt', 'build', 'farm', 'mine', 'chop', 'craft', 'haul'] as const;
+export const StoryWorkType = z.enum(STORY_WORK_TYPES);
+export type StoryWorkType = z.infer<typeof StoryWorkType>;
+
+/** One schedule hour. Hour 0 = 06:00 (world time 0), 1000 ticks per hour. */
+export const STORY_SCHEDULE_BLOCKS = ['work', 'sleep', 'anything', 'free'] as const;
+export const StoryScheduleBlock = z.enum(STORY_SCHEDULE_BLOCKS);
+export type StoryScheduleBlock = z.infer<typeof StoryScheduleBlock>;
+
+export const STORY_PAWN_STATES = ['idle', 'working', 'moving', 'eating', 'sleeping', 'fleeing', 'fighting', 'drafted', 'offline'] as const;
+export const STORY_ORDER_KINDS = ['move', 'attack', 'chop', 'mine', 'haul', 'build', 'hold', 'stop'] as const;
+export const StoryOrderKind = z.enum(STORY_ORDER_KINDS);
+export type StoryOrderKind = z.infer<typeof StoryOrderKind>;
+
+/** Zone kinds. Loot goes into chests with storage settings (`storage`), so the palette offers no ground stockpile. */
+export const STORY_ZONE_KINDS = ['chop', 'mine', 'farm', 'stockpile', 'home', 'forbidden'] as const;
+export const StoryZoneKind = z.enum(STORY_ZONE_KINDS);
+export type StoryZoneKind = z.infer<typeof StoryZoneKind>;
+
+export const STORY_DESIGNATION_KINDS = ['chop', 'mine', 'harvest', 'haul', 'build', 'deconstruct', 'cut', 'hunt', 'forbid', 'allow'] as const;
+export const StoryDesignationKind = z.enum(STORY_DESIGNATION_KINDS);
+export type StoryDesignationKind = z.infer<typeof StoryDesignationKind>;
+
+/** Mine tool filter: every block, ores only, stone only, or dirt + gravel + sand. */
+export const StoryMineFilter = z.enum(['all', 'ores', 'stone', 'soil']);
+export type StoryMineFilter = z.infer<typeof StoryMineFilter>;
+
+export const STORY_BUILD_KINDS = ['wall', 'floor', 'roof', 'door', 'window', 'stairs', 'fence', 'block', 'furniture', 'remove'] as const;
+export const StoryBuildKind = z.enum(STORY_BUILD_KINDS);
+export type StoryBuildKind = z.infer<typeof StoryBuildKind>;
+
+export const StoryRoofStyle = z.enum(['flat', 'slab', 'gable', 'none']);
+export type StoryRoofStyle = z.infer<typeof StoryRoofStyle>;
+
+export const StoryFacing = z.enum(['n', 'e', 's', 'w']);
+export type StoryFacing = z.infer<typeof StoryFacing>;
+
+export const STORY_STORAGE_PRIORITIES = ['low', 'normal', 'preferred', 'important', 'critical'] as const;
+export const StoryStoragePriority = z.enum(STORY_STORAGE_PRIORITIES);
+export type StoryStoragePriority = z.infer<typeof StoryStoragePriority>;
+
+/** An axis-aligned box of blocks [x1, y1, z1, x2, y2, z2] (corners inclusive, in any order). */
+export const StoryArea = z.tuple([z.number().int(), z.number().int(), z.number().int(), z.number().int(), z.number().int(), z.number().int()]);
+export type StoryArea = z.infer<typeof StoryArea>;
+
+/** An item stack or block kind [id, meta] (meta -1 = any). */
+export const StoryItemKey = z.tuple([z.number().int(), z.number().int()]);
+export type StoryItemKey = z.infer<typeof StoryItemKey>;
+
+/** [id, meta, count]. */
+export const StoryStack = z.tuple([z.number().int(), z.number().int(), z.number().int()]);
+export type StoryStack = z.infer<typeof StoryStack>;
+
+/** A block material: a block name ("oak_planks", "cobblestone") or [id, meta]. Any block is allowed. */
+export const StoryMaterial = z.union([z.string().min(1).max(64), StoryItemKey]);
+export type StoryMaterial = z.infer<typeof StoryMaterial>;
+
+const Num = z.number();
+const When = z.union([IsoDateTime, z.number()]);
+
+// ------------------------------------------------------------------ colony list / create
+
+export const StoryColonySummary = z.object({
+  id: z.string(),
+  name: z.string(),
+  created: When.nullish(),
+  paused: z.boolean().nullish(),
+  pawns: z.array(z.string()).default([]),
+  version: z.union([z.string(), z.number()]).nullish().describe('state revision (or the director version)'),
+});
+export type StoryColonySummary = z.infer<typeof StoryColonySummary>;
+
+/** GET /api/story. */
+export const StoryListResponse = z.object({ colonies: z.array(StoryColonySummary).default([]) });
+export type StoryListResponse = z.infer<typeof StoryListResponse>;
+
+/** POST /api/story/colonies: spawns `pawns` script-only bodies running `story_pawn`. */
+export const StoryCreateRequest = z
+  .object({
+    name: z.string().trim().min(1).max(40),
+    pawns: z.number().int().min(1).max(12),
+    home: z.object({ x: z.number().int(), y: z.number().int(), z: z.number().int() }).strict().optional(),
+  })
+  .strict();
+export type StoryCreateRequest = z.infer<typeof StoryCreateRequest>;
+
+export const StoryCreateResponse = z.object({ id: z.string() });
+export type StoryCreateResponse = z.infer<typeof StoryCreateResponse>;
+
+export const StoryColonyParams = z.object({ id: z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/) });
+export type StoryColonyParams = z.infer<typeof StoryColonyParams>;
+
+export const StoryStateQuery = z.object({ since: z.coerce.number().int().min(0).optional() });
+export type StoryStateQuery = z.infer<typeof StoryStateQuery>;
+
+/** What a write answers (the director's new revision when it knows it). */
+export const StoryAck = z.object({
+  ok: z.boolean().nullish(),
+  rev: z.number().int().nullish(),
+  message: z.string().nullish(),
+});
+export type StoryAck = z.infer<typeof StoryAck>;
+
+// ------------------------------------------------------------------ state
+
+/** An order target: a block, an entity, or an area. */
+export const StoryTargetOut = z.object({
+  x: Num.nullish(),
+  y: Num.nullish(),
+  z: Num.nullish(),
+  entity: z.number().int().nullish(),
+  area: StoryArea.nullish(),
+});
+export type StoryTargetOut = z.infer<typeof StoryTargetOut>;
+
+export const StoryOrder = z.object({
+  id: z.union([z.string(), z.number()]).nullish(),
+  kind: z.string(),
+  target: StoryTargetOut.nullish(),
+  design: z.union([z.string(), z.number()]).nullish(),
+  pawn: z.string().nullish(),
+  pawns: z.array(z.string()).nullish(),
+  state: z.string().nullish().describe('queued | active | done | failed'),
+  at: When.nullish(),
+});
+export type StoryOrder = z.infer<typeof StoryOrder>;
+
+export const StoryJob = z.object({
+  type: z.string().describe('a work type, an order kind, or eat / sleep / flee / idle'),
+  label: z.string(),
+  target: StoryTargetOut.nullish(),
+  progress: Num.nullish().describe('0..1'),
+  since: When.nullish(),
+});
+export type StoryJob = z.infer<typeof StoryJob>;
+
+export const StorySkill = z.object({
+  level: Num,
+  xp: Num.nullish(),
+  passion: z.union([z.boolean(), z.number()]).nullish().describe('true (or 1/2: minor/major) when the pawn loves this work'),
+});
+export type StorySkill = z.infer<typeof StorySkill>;
+
+export const StoryTrait = z.object({ id: z.string(), label: z.string(), effect: z.string().nullish() });
+export type StoryTrait = z.infer<typeof StoryTrait>;
+
+export const StoryPawn = z.object({
+  name: z.string().describe('the body (account) name'),
+  display: z.string(),
+  kind: z.string().default('pawn'),
+  online: z.boolean().nullish(),
+  hp: Num.nullish(),
+  food: Num.nullish(),
+  pos: Vec3.nullish(),
+  dim: z.number().int().nullish(),
+  drafted: z.boolean().nullish(),
+  state: z.string().nullish().describe(STORY_PAWN_STATES.join(' | ')),
+  job: StoryJob.nullish(),
+  queue: z.array(StoryOrder).default([]),
+  skills: z.record(z.string(), StorySkill).default({}),
+  traits: z.array(StoryTrait).default([]),
+  priorities: z.record(z.string(), z.number().int()).default({}).describe('work type → 0 (off) .. 4'),
+  schedule: z.array(z.string()).default([]).describe('24 blocks, hour 0 = 06:00'),
+  held: z.string().nullish(),
+  inventory: z.array(StoryStack).default([]),
+});
+export type StoryPawn = z.infer<typeof StoryPawn>;
+
+export const StoryZone = z.object({
+  id: z.union([z.string(), z.number()]),
+  kind: z.string(),
+  area: StoryArea,
+  label: z.string().nullish(),
+});
+export type StoryZone = z.infer<typeof StoryZone>;
+
+export const StoryDesignation = z.object({
+  id: z.union([z.string(), z.number()]),
+  kind: z.string(),
+  block: Vec3i.nullish(),
+  area: StoryArea.nullish(),
+  entity: z.number().int().nullish(),
+  targets: z.array(Vec3i).nullish().describe('the matching blocks an area expanded to'),
+  design: z.union([z.string(), z.number()]).nullish(),
+  pawn: z.string().nullish().describe('the pawn holding the lease'),
+  state: z.string().nullish(),
+});
+export type StoryDesignation = z.infer<typeof StoryDesignation>;
+
+export const StoryAlert = z.object({
+  id: z.union([z.string(), z.number()]).nullish(),
+  at: When,
+  level: z.string().describe('info | warn | danger'),
+  text: z.string(),
+  pawn: z.string().nullish(),
+  fix: z
+    .object({ tab: z.string().nullish(), chest: Vec3i.nullish(), workbench: Vec3i.nullish(), item: StoryItemKey.nullish(), pawn: z.string().nullish() })
+    .nullish()
+    .describe('where the web sends the user to fix it'),
+});
+export type StoryAlert = z.infer<typeof StoryAlert>;
+
+export const StoryBuild = z.object({
+  id: z.union([z.string(), z.number()]),
+  kind: z.string(),
+  label: z.string(),
+  status: z.string().describe('queued | active | paused | blocked | done'),
+  reason: z.string().nullish(),
+  blocksTotal: z.number().int().default(0),
+  blocksDone: z.number().int().default(0),
+  material: StoryMaterial.nullish(),
+  order: z.number().int().default(0),
+  created: When.nullish(),
+});
+export type StoryBuild = z.infer<typeof StoryBuild>;
+
+/** Ghost block [x, y, z, id, meta, build_id, state] (state: todo | leased | done | blocked). */
+export const StoryGhostBlock = z.tuple([
+  z.number().int(),
+  z.number().int(),
+  z.number().int(),
+  z.number().int(),
+  z.number().int(),
+  z.union([z.string(), z.number()]),
+  z.string(),
+]);
+export type StoryGhostBlock = z.infer<typeof StoryGhostBlock>;
+
+export const StoryGhosts = z.object({ rev: z.number().int(), blocks: z.array(StoryGhostBlock).default([]) });
+export type StoryGhosts = z.infer<typeof StoryGhosts>;
+
+/** A loot category: a node of the storage filter tree (`children` are child ids or nested categories). */
+export interface StoryCategory {
+  id: string;
+  label: string;
+  children: Array<string | StoryCategory>;
+  items: Array<[number, number]>;
+}
+export const StoryCategory: z.ZodType<StoryCategory> = z.lazy(() =>
+  z.object({
+    id: z.string(),
+    label: z.string(),
+    children: z.array(z.union([z.string(), StoryCategory])).default([]),
+    items: z.array(StoryItemKey).default([]),
+  }),
+);
+
+/** Allowed / denied entries: category ids or "id:meta" item keys ("17:-1" = every log). */
+export const StoryFilter = z.object({
+  allow: z.array(z.string().max(64)).max(512).default([]),
+  deny: z.array(z.string().max(64)).max(512).default([]),
+});
+export type StoryFilter = z.infer<typeof StoryFilter>;
+
+export const StoryStorage = z.object({
+  chest: Vec3i,
+  doubleWith: Vec3i.nullish().describe('the other half of a double chest'),
+  label: z.string().nullish(),
+  priority: z.string().default('normal'),
+  filter: StoryFilter.default({ allow: [], deny: [] }),
+  contents: z.array(StoryStack).default([]),
+  freeSlots: z.number().int().nullish(),
+  knownAt: When.nullish().describe('when a pawn last saw inside'),
+});
+export type StoryStorage = z.infer<typeof StoryStorage>;
+
+export const STORY_WORKBENCH_KINDS = ['crafting_table', 'furnace', 'brewing_stand', 'anvil', 'enchanting_table'] as const;
+export const StoryWorkbenchKind = z.enum(STORY_WORKBENCH_KINDS);
+export type StoryWorkbenchKind = z.infer<typeof StoryWorkbenchKind>;
+
+export const StoryBillMode = z.enum(['count', 'until', 'forever']);
+export type StoryBillMode = z.infer<typeof StoryBillMode>;
+
+/** Where a bill's product goes: the best storage that accepts it, or one chest. */
+export const StoryBillStore = z.union([z.literal('best'), z.object({ chest: Vec3i }).strict()]);
+export type StoryBillStore = z.infer<typeof StoryBillStore>;
+
+export const StoryBill = z.object({
+  id: z.union([z.string(), z.number()]),
+  recipe: z.string(),
+  mode: z.string().describe('count (do N times) | until (until you have N) | forever'),
+  target: z.number().int().default(1),
+  done: z.number().int().default(0),
+  paused: z.boolean().default(false),
+  suspendedReason: z.string().nullish(),
+  ingredients: StoryFilter.default({ allow: [], deny: [] }),
+  radius: z.number().int().default(32).describe('ingredient search radius, blocks'),
+  pawn: z.string().default('any').describe('"any" or a pawn name'),
+  minSkill: z.number().int().nullish(),
+  store: z.union([z.literal('best'), z.object({ chest: Vec3i })]).default('best'),
+});
+export type StoryBill = z.infer<typeof StoryBill>;
+
+export const StoryWorkbench = z.object({
+  pos: Vec3i,
+  kind: z.string(),
+  label: z.string().nullish(),
+  bills: z.array(StoryBill).default([]),
+});
+export type StoryWorkbench = z.infer<typeof StoryWorkbench>;
+
+export const StoryRecipeInput = z.object({
+  options: z.array(StoryItemKey).nullish().describe('any of these items'),
+  category: z.string().nullish().describe('or anything in this loot category'),
+  count: z.number().int(),
+});
+export type StoryRecipeInput = z.infer<typeof StoryRecipeInput>;
+
+export const StoryRecipe = z.object({
+  id: z.string(),
+  label: z.string(),
+  workbench: z.string(),
+  workType: z.string(),
+  output: StoryStack,
+  inputs: z.array(StoryRecipeInput).default([]),
+  fuel: z.union([z.boolean(), z.number(), z.string()]).nullish(),
+  group: z.string().nullish().describe('a loot category id for the picker (the web groups by it when present)'),
+});
+export type StoryRecipe = z.infer<typeof StoryRecipe>;
+
+/** GET /api/story/recipes?workbench=<kind>. */
+export const StoryRecipesQuery = z.object({ workbench: StoryWorkbenchKind.optional() });
+export type StoryRecipesQuery = z.infer<typeof StoryRecipesQuery>;
+export const StoryRecipesResponse = z.array(StoryRecipe);
+export type StoryRecipesResponse = z.infer<typeof StoryRecipesResponse>;
+
+/** An AI-driven body (main, a hive, a subhive body) shown beside the colony pawns; it takes directives, not director jobs. */
+export const StoryAiBody = z.object({
+  name: z.string(),
+  kind: z.string().describe('main | hive | subhive'),
+  owner: z.string().nullish(),
+  online: z.boolean().nullish(),
+  hp: Num.nullish(),
+  food: Num.nullish(),
+  pos: Vec3.nullish(),
+  dim: z.number().int().nullish(),
+  task: z.string().nullish(),
+  brainState: z.string().nullish(),
+  script: z.string().nullish(),
+});
+export type StoryAiBody = z.infer<typeof StoryAiBody>;
+
+export const STORY_DIRECTIVE_KINDS = [
+  'chop', 'cut', 'harvest', 'mine', 'haul', 'hunt', 'deconstruct', 'build', 'move', 'attack', 'guard', 'craft', 'text',
+] as const;
+export const StoryDirectiveKind = z.enum(STORY_DIRECTIVE_KINDS);
+export type StoryDirectiveKind = z.infer<typeof StoryDirectiveKind>;
+
+/** A directive sent to AI bodies and how it went (sent → acknowledged → done | failed, or unknown). */
+export const StoryDirective = z.object({
+  id: z.union([z.string(), z.number()]),
+  at: When,
+  bots: z.array(z.string()).default([]),
+  kind: z.string(),
+  summary: z.string(),
+  status: z.string().describe('sent | acknowledged | done | failed | unknown'),
+  reply: z.string().nullish(),
+});
+export type StoryDirective = z.infer<typeof StoryDirective>;
+
+export const StoryRemoved = z.object({
+  pawns: z.array(z.string()).nullish(),
+  zones: z.array(z.union([z.string(), z.number()])).nullish(),
+  designations: z.array(z.union([z.string(), z.number()])).nullish(),
+  orders: z.array(z.union([z.string(), z.number()])).nullish(),
+  builds: z.array(z.union([z.string(), z.number()])).nullish(),
+  storages: z.array(Vec3i).nullish(),
+  workbenches: z.array(Vec3i).nullish(),
+  directives: z.array(z.union([z.string(), z.number()])).nullish(),
+  alerts: z.array(z.union([z.string(), z.number()])).nullish(),
+});
+export type StoryRemoved = z.infer<typeof StoryRemoved>;
+
+/** GET /api/story/colonies/{id}[?since=rev]. */
+export const StoryColonyState = z.object({
+  id: z.string().nullish(),
+  name: z.string().nullish(),
+  rev: z.number().int(),
+  at: When,
+  full: z.boolean().nullish().describe('true = the whole state (replace); a reply without `since` is always whole'),
+  timeOfDay: z.number().nullish().describe('world ticks 0..24000'),
+  hour: z.number().int().nullish().describe('0..23, 0 = 06:00'),
+  paused: z.boolean().nullish(),
+  home: Vec3i.nullish(),
+  workTypes: z.array(z.string()).default([...STORY_WORK_TYPES]),
+  pawns: z.array(StoryPawn).default([]),
+  zones: z.array(StoryZone).default([]),
+  designations: z.array(StoryDesignation).default([]),
+  orders: z.array(StoryOrder).default([]),
+  alerts: z.array(StoryAlert).default([]),
+  builds: z.array(StoryBuild).nullish(),
+  ghosts: StoryGhosts.nullish(),
+  categories: z.array(StoryCategory).nullish(),
+  storages: z.array(StoryStorage).nullish(),
+  workbenches: z.array(StoryWorkbench).nullish(),
+  ai: z.array(StoryAiBody).nullish(),
+  directives: z.array(StoryDirective).nullish(),
+  removed: StoryRemoved.nullish(),
+});
+export type StoryColonyState = z.infer<typeof StoryColonyState>;
+
+/** The SSE `story` frame: one colony's delta (the bridge adds the colony `id`). */
+export const StoryColonyFrame = StoryColonyState.extend({ id: z.string() });
+export type StoryColonyFrame = z.infer<typeof StoryColonyFrame>;
+
+// ------------------------------------------------------------------ writes
+
+const PawnList = z.array(z.string().min(1).max(64)).min(1).max(64);
+
+export const StoryPauseRequest = z.object({ paused: z.boolean() }).strict();
+export type StoryPauseRequest = z.infer<typeof StoryPauseRequest>;
+
+/** `work`: type → 0 (off) .. 4; types left out keep their value. */
+export const StoryPrioritiesRequest = z
+  .object({ pawns: PawnList, work: z.partialRecord(StoryWorkType, z.number().int().min(0).max(4)) })
+  .strict();
+export type StoryPrioritiesRequest = z.infer<typeof StoryPrioritiesRequest>;
+
+export const STORY_HOURS = Array.from({ length: 24 }, (_, i) => String(i)) as [string, ...string[]];
+export const StoryScheduleRequest = z
+  .object({ pawns: PawnList, hours: z.partialRecord(z.enum(STORY_HOURS), StoryScheduleBlock) })
+  .strict();
+export type StoryScheduleRequest = z.infer<typeof StoryScheduleRequest>;
+
+export const StoryDraftRequest = z.object({ pawns: PawnList, drafted: z.boolean() }).strict();
+export type StoryDraftRequest = z.infer<typeof StoryDraftRequest>;
+
+export const StoryTarget = z.union([
+  z.object({ x: z.number().int(), y: z.number().int(), z: z.number().int() }).strict(),
+  z.object({ entity: z.number().int() }).strict(),
+  z.object({ area: StoryArea }).strict(),
+]);
+export type StoryTarget = z.infer<typeof StoryTarget>;
+
+export const StoryOrderSpec = z
+  .object({
+    kind: StoryOrderKind,
+    target: StoryTarget.optional(),
+    design: z.union([z.string().max(64), z.number().int()]).optional(),
+  })
+  .strict();
+export type StoryOrderSpec = z.infer<typeof StoryOrderSpec>;
+
+export const StoryOrderRequest = z.object({ pawns: PawnList, order: StoryOrderSpec, queue: z.boolean().optional() }).strict();
+export type StoryOrderRequest = z.infer<typeof StoryOrderRequest>;
+
+export const StoryZoneRequest = z.object({ op: z.enum(['add', 'remove']), kind: StoryZoneKind, area: StoryArea }).strict();
+export type StoryZoneRequest = z.infer<typeof StoryZoneRequest>;
+
+/**
+ * Designate by area (the director expands it to every matching target: whole trees for chop, ripe crops for harvest, items
+ * for haul, animals for hunt…) or by blocks / entities. `remove` without a kind cancels every designation in the area.
+ */
+export const StoryDesignationRequest = z
+  .object({
+    op: z.enum(['add', 'remove']),
+    kind: StoryDesignationKind.optional(),
+    area: StoryArea.optional(),
+    blocks: z.array(Vec3i).max(4096).optional(),
+    entities: z.array(z.number().int()).max(512).optional(),
+    design: z.union([z.string().max(64), z.number().int()]).optional(),
+    filter: StoryMineFilter.optional(),
+  })
+  .strict();
+export type StoryDesignationRequest = z.infer<typeof StoryDesignationRequest>;
+
+export const StoryDesignationResponse = z.object({
+  ok: z.boolean().nullish(),
+  count: z.number().int().default(0).describe('how many targets were designated (or removed)'),
+  targets: z.array(Vec3i).nullish(),
+  entities: z.array(z.number().int()).nullish(),
+  rev: z.number().int().nullish(),
+});
+export type StoryDesignationResponse = z.infer<typeof StoryDesignationResponse>;
+
+export const StoryRoofSpec = z
+  .object({ style: StoryRoofStyle, material: StoryMaterial.optional(), overhang: z.union([z.literal(0), z.literal(1)]).optional() })
+  .strict();
+export type StoryRoofSpec = z.infer<typeof StoryRoofSpec>;
+
+/**
+ * One queued build. `area` y1 is the first block layer: walls rise `height` blocks from it, a floor fills it, a roof sits on
+ * it. `blocks` lists single cells (doors, windows, a single block). `level` is the storey's floor Y (informational).
+ */
+export const StoryBuildItem = z
+  .object({
+    kind: StoryBuildKind,
+    area: StoryArea.optional(),
+    blocks: z.array(Vec3i).max(4096).optional(),
+    material: StoryMaterial,
+    height: z.number().int().min(1).max(12).optional(),
+    roof: StoryRoofSpec.optional(),
+    facing: StoryFacing.optional(),
+    level: z.number().int().optional(),
+  })
+  .strict();
+export type StoryBuildItem = z.infer<typeof StoryBuildItem>;
+
+export const StoryBuildRequest = z.discriminatedUnion('op', [
+  z.object({ op: z.literal('add'), items: z.array(StoryBuildItem).min(1).max(64) }).strict(),
+  z.object({ op: z.literal('remove'), ids: z.array(z.union([z.string(), z.number()])).min(1).max(256) }).strict(),
+  z.object({ op: z.literal('pause'), ids: z.array(z.union([z.string(), z.number()])).min(1).max(256) }).strict(),
+  z.object({ op: z.literal('resume'), ids: z.array(z.union([z.string(), z.number()])).min(1).max(256) }).strict(),
+  z.object({ op: z.literal('reorder'), ids: z.array(z.union([z.string(), z.number()])).min(1).max(256) }).strict(),
+]);
+export type StoryBuildRequest = z.infer<typeof StoryBuildRequest>;
+
+export const StoryBuildResponse = z.object({
+  ok: z.boolean().nullish(),
+  ids: z.array(z.union([z.string(), z.number()])).nullish(),
+  rev: z.number().int().nullish(),
+});
+export type StoryBuildResponse = z.infer<typeof StoryBuildResponse>;
+
+const Chests = z.array(Vec3i).min(1).max(256);
+export const StoryStorageRequest = z.discriminatedUnion('op', [
+  z
+    .object({
+      op: z.literal('set'),
+      chests: Chests,
+      filter: StoryFilter.optional(),
+      priority: StoryStoragePriority.optional(),
+      label: z.string().max(40).optional(),
+    })
+    .strict(),
+  z.object({ op: z.literal('remove'), chests: Chests }).strict(),
+  z.object({ op: z.literal('copy'), from: Vec3i, to: Chests }).strict(),
+  z
+    .object({ op: z.literal('assign_area'), area: StoryArea, filter: StoryFilter.optional(), priority: StoryStoragePriority.optional() })
+    .strict(),
+]);
+export type StoryStorageRequest = z.infer<typeof StoryStorageRequest>;
+
+export const StoryStorageResponse = z.object({
+  ok: z.boolean().nullish(),
+  count: z.number().int().nullish(),
+  chests: z.array(Vec3i).nullish(),
+  rev: z.number().int().nullish(),
+});
+export type StoryStorageResponse = z.infer<typeof StoryStorageResponse>;
+
+const BillIds = z.array(z.union([z.string(), z.number()])).min(1).max(64);
+export const StoryBillSpec = z
+  .object({
+    recipe: z.string().min(1).max(64),
+    mode: StoryBillMode,
+    target: z.number().int().min(1).max(9999).optional(),
+    paused: z.boolean().optional(),
+    ingredients: StoryFilter.optional(),
+    radius: z.number().int().min(4).max(128).optional(),
+    pawn: z.string().min(1).max(64).optional(),
+    minSkill: z.number().int().min(0).max(20).optional(),
+    store: StoryBillStore.optional(),
+  })
+  .strict();
+export type StoryBillSpec = z.infer<typeof StoryBillSpec>;
+
+/** POST /api/story/colonies/{id}/bills: the bills of the workbench at `workbench` (`spec` = the bill settings). */
+export const StoryBillsRequest = z.discriminatedUnion('op', [
+  z.object({ op: z.literal('add'), workbench: Vec3i, spec: StoryBillSpec }).strict(),
+  z.object({ op: z.literal('update'), workbench: Vec3i, id: z.union([z.string(), z.number()]), spec: StoryBillSpec.partial().strict() }).strict(),
+  z.object({ op: z.literal('remove'), workbench: Vec3i, ids: BillIds }).strict(),
+  z.object({ op: z.literal('pause'), workbench: Vec3i, ids: BillIds }).strict(),
+  z.object({ op: z.literal('resume'), workbench: Vec3i, ids: BillIds }).strict(),
+  z.object({ op: z.literal('reorder'), workbench: Vec3i, ids: BillIds }).strict(),
+]);
+export type StoryBillsRequest = z.infer<typeof StoryBillsRequest>;
+
+export const StoryBillsResponse = z.object({
+  ok: z.boolean().nullish(),
+  id: z.union([z.string(), z.number()]).nullish().describe('the new bill (add)'),
+  rev: z.number().int().nullish(),
+});
+export type StoryBillsResponse = z.infer<typeof StoryBillsResponse>;
+
+/**
+ * POST /api/story/directives: the same payload a colony tool sends the director, addressed to AI bodies (they work it out
+ * themselves). `text` is plain words. The signed-in player is the sender.
+ */
+export const StoryDirectiveSpec = z
+  .object({
+    kind: StoryDirectiveKind,
+    area: StoryArea.optional(),
+    targets: z.array(Vec3i).max(4096).optional(),
+    entities: z.array(z.number().int()).max(512).optional(),
+    filter: StoryMineFilter.optional(),
+    build: z.array(StoryBuildItem).max(64).optional(),
+    // `bill` is an opaque key for case conversion (OPAQUE_KEYS), so its fields are single words.
+    bill: StoryBillSpec.omit({ minSkill: true }).extend({ workbench: Vec3i }).strict().optional(),
+    text: z.string().trim().min(1).max(500).optional(),
+  })
+  .strict();
+export type StoryDirectiveSpec = z.infer<typeof StoryDirectiveSpec>;
+
+export const StoryDirectiveRequest = z
+  .object({
+    bots: z.array(z.string().min(1).max(64)).min(1).max(64),
+    directive: StoryDirectiveSpec,
+    requestId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/),
+  })
+  .strict();
+export type StoryDirectiveRequest = z.infer<typeof StoryDirectiveRequest>;
+
+export const StoryDirectiveResponse = z.object({
+  id: z.union([z.string(), z.number()]),
+  delivered: z.union([z.boolean(), z.array(z.string())]).describe('true, or the bots that got it'),
+});
+export type StoryDirectiveResponse = z.infer<typeof StoryDirectiveResponse>;
+
+// ------------------------------------------------------------------ helpers (the web's preview and the mocks share them)
+
+/** Time of day (ticks) → schedule hour (0 = 06:00). */
+export function storyHour(timeOfDay: number): number {
+  return Math.floor((((timeOfDay % 24000) + 24000) % 24000) / 1000);
+}
+
+/** Schedule hour → clock label ("06:00"). */
+export function storyClock(hour: number): string {
+  return `${String((hour + 6) % 24).padStart(2, '0')}:00`;
+}
+
+/** A normalised area: [minX, minY, minZ, maxX, maxY, maxZ]. */
+export function normArea(a: readonly number[]): StoryArea {
+  return [Math.min(a[0]!, a[3]!), Math.min(a[1]!, a[4]!), Math.min(a[2]!, a[5]!), Math.max(a[0]!, a[3]!), Math.max(a[1]!, a[4]!), Math.max(a[2]!, a[5]!)];
+}
+
+/** Named build materials (any [id, meta] works too). */
+export const STORY_MATERIALS: ReadonlyArray<{ name: string; label: string; id: number; meta: number }> = [
+  { name: 'oak_planks', label: 'Oak planks', id: 5, meta: 0 },
+  { name: 'spruce_planks', label: 'Spruce planks', id: 5, meta: 1 },
+  { name: 'birch_planks', label: 'Birch planks', id: 5, meta: 2 },
+  { name: 'cobblestone', label: 'Cobblestone', id: 4, meta: 0 },
+  { name: 'stone', label: 'Stone', id: 1, meta: 0 },
+  { name: 'stone_bricks', label: 'Stone bricks', id: 98, meta: 0 },
+  { name: 'bricks', label: 'Bricks', id: 45, meta: 0 },
+  { name: 'sandstone', label: 'Sandstone', id: 24, meta: 0 },
+  { name: 'oak_log', label: 'Oak log', id: 17, meta: 0 },
+  { name: 'glass', label: 'Glass', id: 20, meta: 0 },
+  { name: 'white_wool', label: 'White wool', id: 35, meta: 0 },
+  { name: 'dirt', label: 'Dirt', id: 3, meta: 0 },
+  { name: 'crafting_table', label: 'Crafting table', id: 58, meta: 0 },
+  { name: 'furnace', label: 'Furnace', id: 61, meta: 0 },
+  { name: 'chest', label: 'Chest', id: 54, meta: 0 },
+  { name: 'bed', label: 'Bed', id: 26, meta: 0 },
+  { name: 'torch', label: 'Torch', id: 50, meta: 5 },
+];
+
+/** Furniture the Architect places through the build queue (`kind: "furniture"`, material = one of these names). */
+export const STORY_FURNITURE = ['crafting_table', 'furnace', 'chest', 'bed', 'torch'] as const;
+
+/** Resolves a material to [id, meta] (unknown names → stone). */
+export function materialKey(m: StoryMaterial | null | undefined): [number, number] {
+  if (Array.isArray(m)) return [m[0], m[1]];
+  const hit = STORY_MATERIALS.find((x) => x.name === m);
+  return hit ? [hit.id, hit.meta] : [1, 0];
+}
+
+/** Block ids a build kind places besides its material. */
+const DOOR = 64;
+const FENCE = 85;
+const SLAB = 44;
+const OAK_STAIRS = 53;
+const COBBLE_STAIRS = 67;
+const STAIRS_META: Record<StoryFacing, number> = { e: 0, w: 1, s: 2, n: 3 };
+
+/**
+ * The reference expansion of a build item into blocks [x, y, z, id, meta] (the director owns the real one; the web uses this
+ * for the placement preview and its block count, the mocks for ghosts):
+ * - wall: the outline of the area's rectangle (a line when it is one block thick), `height` blocks up from y1
+ * - floor: the rectangle filled at y1; roof: by `roof.style` from y1 (flat = material, slab = slabs, gable = rising toward
+ *   the ridge along the longer side, none = nothing), `overhang` grows it one block each way
+ * - door: 2 high at each cell; window: glass at each cell; fence: the outline at y1, one high; stairs: the cells, facing
+ * - block: each cell or the whole box; remove: the same with id 0
+ */
+export function expandBuildItem(item: StoryBuildItem): Array<[number, number, number, number, number]> {
+  const out: Array<[number, number, number, number, number]> = [];
+  const [id, meta] = materialKey(item.material);
+  const cells: Array<[number, number, number]> = [...(item.blocks ?? [])];
+  const a = item.area ? normArea(item.area) : null;
+  const h = item.height ?? 1;
+  const seen = new Set<string>();
+  const put = (x: number, y: number, z: number, bid: number, bm: number) => {
+    const k = `${x},${y},${z}`;
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push([x, y, z, bid, bm]);
+  };
+  const outline = (fn: (x: number, z: number) => void) => {
+    if (!a) return;
+    for (let x = a[0]; x <= a[3]; x++)
+      for (let z = a[2]; z <= a[5]; z++) if (x === a[0] || x === a[3] || z === a[2] || z === a[5]) fn(x, z);
+  };
+  switch (item.kind) {
+    case 'wall':
+      outline((x, z) => {
+        for (let y = a![1]; y < a![1] + h; y++) put(x, y, z, id, meta);
+      });
+      for (const [x, y, z] of cells) for (let k = 0; k < h; k++) put(x, y + k, z, id, meta);
+      break;
+    case 'floor':
+      if (a) for (let x = a[0]; x <= a[3]; x++) for (let z = a[2]; z <= a[5]; z++) put(x, a[1], z, id, meta);
+      for (const [x, y, z] of cells) put(x, y, z, id, meta);
+      break;
+    case 'roof': {
+      if (!a) break;
+      const style = item.roof?.style ?? 'flat';
+      if (style === 'none') break;
+      const o = item.roof?.overhang ?? 0;
+      const [rid, rmeta] = item.roof?.material ? materialKey(item.roof.material) : [id, meta];
+      const x1 = a[0] - o, x2 = a[3] + o, z1 = a[2] - o, z2 = a[5] + o, y0 = a[1];
+      for (let x = x1; x <= x2; x++)
+        for (let z = z1; z <= z2; z++) {
+          if (style === 'flat') put(x, y0, z, rid, rmeta);
+          else if (style === 'slab') put(x, y0, z, SLAB, rid === 4 ? 3 : rid === 5 ? 2 : 0);
+          else {
+            // Gable: the ridge runs along the longer side; each row rises one block per step in from the eaves.
+            const alongX = x2 - x1 >= z2 - z1;
+            const rise = alongX ? Math.min(z - z1, z2 - z) : Math.min(x - x1, x2 - x);
+            put(x, y0 + rise, z, rid, rmeta);
+          }
+        }
+      break;
+    }
+    case 'door':
+      for (const [x, y, z] of a ? [[a[0], a[1], a[2]] as [number, number, number]] : cells) {
+        put(x, y, z, DOOR, STAIRS_META[item.facing ?? 's'] & 3);
+        put(x, y + 1, z, DOOR, 8);
+      }
+      break;
+    case 'window':
+      for (const [x, y, z] of cells) put(x, y, z, 20, 0);
+      if (a) for (let x = a[0]; x <= a[3]; x++) for (let y = a[1]; y <= a[4]; y++) for (let z = a[2]; z <= a[5]; z++) put(x, y, z, 20, 0);
+      break;
+    case 'fence':
+      outline((x, z) => put(x, a![1], z, FENCE, 0));
+      for (const [x, y, z] of cells) put(x, y, z, FENCE, 0);
+      break;
+    case 'stairs': {
+      const sid = id === 4 ? COBBLE_STAIRS : OAK_STAIRS;
+      const m = STAIRS_META[item.facing ?? 'n'];
+      for (const [x, y, z] of cells) put(x, y, z, sid, m);
+      if (a) {
+        // A run climbing toward `facing`: one step up per block along it.
+        const f = item.facing ?? 'n';
+        for (let x = a[0]; x <= a[3]; x++)
+          for (let z = a[2]; z <= a[5]; z++) {
+            const step = f === 'n' ? a[5] - z : f === 's' ? z - a[2] : f === 'e' ? x - a[0] : a[3] - x;
+            put(x, a[1] + step, z, sid, m);
+          }
+      }
+      break;
+    }
+    case 'furniture': {
+      // A bed is two cells: the foot here, the head one block toward `facing`.
+      const f = item.facing ?? 's';
+      for (const [x, y, z] of a ? [[a[0], a[1], a[2]] as [number, number, number]] : cells) {
+        if (id === 26) {
+          const dir = { s: 0, w: 1, n: 2, e: 3 }[f];
+          const [dx, dz] = ({ s: [0, 1], w: [-1, 0], n: [0, -1], e: [1, 0] } as const)[f];
+          put(x, y, z, 26, dir);
+          put(x + dx, y, z + dz, 26, dir | 8);
+        } else put(x, y, z, id, meta);
+      }
+      break;
+    }
+    case 'block':
+    case 'remove': {
+      const bid = item.kind === 'remove' ? 0 : id, bm = item.kind === 'remove' ? 0 : meta;
+      for (const [x, y, z] of cells) put(x, y, z, bid, bm);
+      if (a) for (let x = a[0]; x <= a[3]; x++) for (let y = a[1]; y <= a[4]; y++) for (let z = a[2]; z <= a[5]; z++) put(x, y, z, bid, bm);
+      break;
+    }
+  }
+  return out;
+}
+
+// ------------------------------------------------------------------ what each designate tool matches (preview + mocks)
+
+export const LOG_IDS: ReadonlySet<number> = new Set([17, 162]);
+export const PLANT_IDS: ReadonlySet<number> = new Set([6, 31, 32, 37, 38, 175]);
+export const ORE_IDS: ReadonlySet<number> = new Set([14, 15, 16, 21, 56, 73, 74, 129, 153]);
+export const STONE_IDS: ReadonlySet<number> = new Set([1, 4, 48, 87, 98, 24]);
+export const SOIL_IDS: ReadonlySet<number> = new Set([2, 3, 12, 13, 82, 88]);
+export const CHEST_IDS: ReadonlySet<number> = new Set([54, 146]);
+export const DOOR_IDS: ReadonlySet<number> = new Set([64, 71, 96, 107, 193, 194, 195, 196, 197]);
+/** Blocks that only exist because someone placed them (the deconstruct preview). */
+export const STRUCTURE_IDS: ReadonlySet<number> = new Set([
+  4, 5, 20, 26, 35, 43, 44, 45, 47, 50, 53, 54, 58, 61, 62, 64, 65, 67, 71, 85, 96, 98, 101, 102, 107, 108, 109, 126, 134, 135, 136, 139, 146, 160, 171,
+]);
+/** Animal mob types (b1.8.1 and 1.12.2 network ids) for the hunt tool. */
+export const ANIMAL_TYPES: ReadonlySet<number> = new Set([90, 91, 92, 93, 94, 95, 96, 98, 100, 101, 102, 103]);
+const UNMINEABLE: ReadonlySet<number> = new Set([0, 7, 8, 9, 10, 11]);
+
+/** Does this block ripen to harvest (fully grown crops, melons, pumpkins, cane/cactus above the base, ripe cocoa)? */
+export function harvestable(id: number, meta: number, below: number): boolean {
+  switch (id) {
+    case 59:
+    case 141:
+    case 142:
+      return meta >= 7;
+    case 207:
+    case 115:
+      return meta >= 3;
+    case 103:
+    case 86:
+      return true;
+    case 83:
+    case 81:
+      return below === id;
+    case 127:
+      return meta >> 2 >= 2;
+    default:
+      return false;
+  }
+}
+
+/** Does a block match a block-based designate tool? (`below` = the id under it.) */
+export function matchesTool(kind: StoryDesignationKind, id: number, meta: number, below: number, filter: StoryMineFilter = 'all'): boolean {
+  switch (kind) {
+    case 'chop':
+      return LOG_IDS.has(id);
+    case 'cut':
+      return PLANT_IDS.has(id);
+    case 'harvest':
+      return harvestable(id, meta, below);
+    case 'mine':
+      if (UNMINEABLE.has(id)) return false;
+      if (filter === 'ores') return ORE_IDS.has(id);
+      if (filter === 'stone') return STONE_IDS.has(id);
+      if (filter === 'soil') return SOIL_IDS.has(id);
+      return !LOG_IDS.has(id) && !PLANT_IDS.has(id) && id !== 18 && id !== 161;
+    case 'deconstruct':
+      return STRUCTURE_IDS.has(id);
+    case 'forbid':
+    case 'allow':
+      return DOOR_IDS.has(id);
+    default:
+      return false;
+  }
+}
+
+/** Groups log cells into trees (log columns that touch, diagonals included). Returns the tree count. */
+export function countTrees(logs: ReadonlyArray<readonly [number, number, number]>): number {
+  const cols = new Set(logs.map(([x, , z]) => `${x},${z}`));
+  const seen = new Set<string>();
+  let trees = 0;
+  for (const c of cols) {
+    if (seen.has(c)) continue;
+    trees++;
+    const stack = [c];
+    seen.add(c);
+    while (stack.length) {
+      const [x, z] = stack.pop()!.split(',').map(Number) as [number, number];
+      for (let dx = -1; dx <= 1; dx++)
+        for (let dz = -1; dz <= 1; dz++) {
+          const k = `${x + dx},${z + dz}`;
+          if (cols.has(k) && !seen.has(k)) {
+            seen.add(k);
+            stack.push(k);
+          }
+        }
+    }
+  }
+  return trees;
+}
+
+/** The filter key of one item ("17:0"), and of every meta of an id ("17:-1"). */
+export function itemFilterKey(id: number, meta: number): string {
+  return `${id}:${meta}`;
+}

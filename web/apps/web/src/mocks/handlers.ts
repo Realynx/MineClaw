@@ -3,6 +3,7 @@ import { ROUTES, type RouteId } from '@mineclaw/contracts';
 import { delay, http, HttpResponse, sse, type HttpHandler } from 'msw';
 import { checkAccess, MockError, resolvers } from './api';
 import { liveStatus, setEmitter, statusResponse, hiveTree, tick } from './data/live';
+import { startStory } from './data/story';
 
 function errorResponse(e: unknown): Response {
   if (e instanceof MockError) {
@@ -78,6 +79,7 @@ const stream = sse(ROUTES['live.stream'].path, ({ client, request }) => {
   send('status', liveStatus());
   send('bots', statusResponse());
   send('hive', hiveTree());
+  startStory(broadcast);
   timer ??= setInterval(() => {
     for (const [event, data] of tick()) broadcast(event, data);
   }, Number(process.env.NEXT_PUBLIC_MOCK_TICK_MS) || 1000);

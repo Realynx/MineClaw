@@ -32,6 +32,8 @@ export interface MeshHost {
   /** [blocks] Block id, meta and packed light (sky << 4 | block; -1 unknown) at each integer point: 3 numbers per point,
    * id -1 where no column is held. */
   blocksAt(dim: number, pts: number[]): Promise<number[]>;
+  /** [scan] Blocks of a box whose id is in `ids` (every non-air block when empty): [x, y, z, id, meta, below-id, …]. */
+  scan(dim: number, min: V3, max: V3, ids: number[], maxHits?: number): Promise<number[]>;
   clear(): Promise<void>;
   dispose(): void;
 }
@@ -56,6 +58,7 @@ export class InlineMeshHost implements MeshHost {
   occluded(dim: number, cam: V3, bodies: number[]) { return this.run(() => this.engine.occluded(dim, cam, bodies)); }
   lights(dim: number, pts: number[]) { return this.run(() => this.engine.lights(dim, pts)); }
   blocksAt(dim: number, pts: number[]) { return this.run(() => this.engine.blocksAt(dim, pts)); }
+  scan(dim: number, min: V3, max: V3, ids: number[], maxHits?: number) { return this.run(() => this.engine.scan(dim, min, max, ids, maxHits)); }
   setBlockEntities(dim: number, cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }>) { return this.run(() => this.engine.setBlockEntities(dim, cols)); }
   clear() { return this.run(() => this.engine.clear()); }
   dispose(): void {
@@ -108,6 +111,7 @@ export class WorkerMeshHost implements MeshHost {
   occluded(dim: number, cam: V3, bodies: number[]) { return this.send<boolean[]>({ op: 'occluded', dim, cam, bodies }); }
   lights(dim: number, pts: number[]) { return this.send<number[]>({ op: 'lights', dim, pts }); }
   blocksAt(dim: number, pts: number[]) { return this.send<number[]>({ op: 'blocksAt', dim, pts }); }
+  scan(dim: number, min: V3, max: V3, ids: number[], maxHits?: number) { return this.send<number[]>({ op: 'scan', dim, min, max, ids, maxHits }); }
   setBlockEntities(dim: number, cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }>) { return this.send<Dirty>({ op: 'blockEntities', dim, cols }); }
   clear() { return this.send<void>({ op: 'clear' }); }
 

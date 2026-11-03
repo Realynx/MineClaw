@@ -11,9 +11,11 @@ import type {
   LiveStatus,
   MemoryActivityResponse,
   StatusResponse,
+  StoryColonyFrame,
   WorldBlockDeltas,
   WorldEntities,
 } from '@mineclaw/contracts';
+import { mergeColony } from '@/features/story/model';
 import { publishBlocks } from '@/features/world/blocks';
 import { qk } from '../api/query';
 import { mergeEntities, mergeEvents, mergeFeed, mergeMemoryActivity } from './merge';
@@ -65,11 +67,17 @@ export function applyLiveEvent(qc: QueryClient, event: LiveEventName, data: unkn
       // Live per-block world updates go to the world viewer's subscribers, not the query cache (they are a stream).
       publishBlocks(data as WorldBlockDeltas);
       break;
+    case 'story': {
+      // One colony's delta: merged into that colony's state query (fetched once by the Story Mode page).
+      const f = data as StoryColonyFrame;
+      qc.setQueryData(qk('story.get', { id: f.id }), (prev: StoryColonyFrame | undefined) => (prev ? mergeColony(prev, f) : prev));
+      break;
+    }
   }
 }
 
 /** After a resync: re-fetch the REST state of every live topic (merges keep what the stream already delivered). */
 export function resyncLive(qc: QueryClient): Promise<void> {
-  const ids = ['status', 'bots.now', 'feed', 'events', 'world.entities', 'hive.tree', 'memoryActivity.list'];
+  const ids = ['status', 'bots.now', 'feed', 'events', 'world.entities', 'hive.tree', 'memoryActivity.list', 'story.get'];
   return qc.invalidateQueries({ predicate: (q) => ids.includes(String(q.queryKey[0])) });
 }

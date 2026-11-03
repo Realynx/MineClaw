@@ -1,0 +1,988 @@
+'use client';
+
+/**
+ * The Story Mode map: the shared world viewer in its `top` camera (or the angled `iso` view for 3D building) under one 2D
+ * overlay canvas that takes every pointer event and draws the colony (zones, designation markers, build ghosts, chests and
+ * workbenches, pawn tokens with names and job marks, AI bodies, selection and drag boxes, order targets, the placement
+ * preview). The overlay redraws in one animation-frame loop that also pans (keys, screen edge) and keeps it ≥ 40 fps on
+ * software WebGL: no blur, no DOM per pawn, a few hundred canvas primitives.
+ */
+import type { PickedBlock, WorldViewerEngine, WorldViewerHandle } from '@mineclaw/world-viewer';
+import type { StoryColonyState } from '@mineclaw/contracts';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
+import { useWorldHost } from '@/features/world/integration';
+import { DotMap } from '@/features/world/DotMap';
+import { cellAt, cellRect, edgePan, isDrag, nearest, project, rayAt, rayPlaneY, rectOf, unitsPerPx, zoomAt, type Pt, type Rect, type V3, type ViewMats } from './math';
+import { type Selection } from './model';
+import { buildItem, entitiesIn, faceCell, preview as buildPreview, previewTargets, scanIds, toolArea, toolYRange, DESIGNATE_TOOLS, zoneColor, type BuildOpts, type BuildToolId, type DesignateId, type EntityLite, type Target } from './tools';
+import { COLORS, glyph, pawnColor } from './visuals';
+
+export type MapTool =
+  | { kind: 'select' }
+  | { kind: 'designate'; id: DesignateId }
+  | { kind: 'zone'; id: string; op: 'add' | 'remove' }
+  | { kind: 'build'; id: BuildToolId }
+  | { kind: 'storage' };
+
+export interface DragResult {
+  rect: [number, number, number, number];
+  /** First and last cells (build tools: the placement cells). */
+  a: V3;
+  b: V3;
+  /** Preview of a designate drag: matching blocks and entities. */
+  cells: V3[];
+  entities: EntityLite[];
+  count: number;
+}
+
+export interface StoryMapHandle {
+  focus(x: number, z: number, y?: number): void;
+  center(): V3 | null;
+  zoom(): number;
+  /** World → page coordinates (tests, the context menu). */
+  toPage(x: number, y: number, z: number): Pt | null;
+}
+
+export interface StoryMapProps {
+  state: StoryColonyState | undefined;
+  selection: Selection;
+  tool: MapTool;
+  build: BuildOpts;
+  mineFilter: 'all' | 'ores' | 'stone' | 'soil';
+  level: number;
+  cutY: number | null;
+  view: 'top' | 'angled';
+  /** Keys held (pan), owned by the page's key handler. */
+  keys: React.RefObject<Set<string>>;
+  home: V3 | null;
+  onSelect: (sel: Selection) => void;
+  /** Double-click on a body: every visible body of the same kind. */
+  onSelectSame: (kind: 'pawn' | 'ai', visible: string[]) => void;
+  onTool: (result: DragResult, shift: boolean) => void;
+  onContext: (target: Target, page: Pt) => void;
+  onDropTool: () => void;
+  onHover?(info: string | null): void;
+}
+
+const TOP_ZOOM = 44;
+const k3 = (p: readonly number[]) => `${p[0]},${p[1]},${p[2]}`;
+
+interface DragState {
+  start: Pt;
+  now: Pt;
+  button: number;
+  shift: boolean;
+  alt: boolean;
+  startCell: V3 | null;
+  endCell: V3 | null;
+  moved: boolean;
+}
+
+export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function StoryMap(props, ref) {
+  const { mod, source, ready } = useWorldHost();
+  const viewer = useRef<WorldViewerHandle | null>(null);
+  const canvas = useRef<HTMLCanvasElement | null>(null);
+  const wrap = useRef<HTMLDivElement | null>(null);
+  const p = useRef(props);
+  p.current = props;
+  const drag = useRef<DragState | null>(null);
+  const hover = useRef<{ at: Pt; cell: V3 | null; face: V3 | null; pickAt: number } | null>(null);
+  const shown = useRef(new Map<string, V3>());
+  const scan = useRef<{ key: string; busy: boolean; result: DragResult | null }>({ key: '', busy: false, result: null });
+  const chests = useRef<{ at: number; cells: Array<{ pos: V3; id: number }> }>({ at: 0, cells: [] });
+  const mats = useRef<ViewMats | null>(null);
+  const lastClick = useRef<{ t: number; name: string } | null>(null);
+  const placed = useRef(false);
+  const appliedCut = useRef<string | undefined>(undefined);
+  const lastEngine = useRef<WorldViewerEngine | null>(null);
+
+  const engine = (): WorldViewerEngine | null => viewer.current?.engine() ?? null;
+
+  const toPage = (x: number, y: number, z: number): Pt | null => {
+    const m = mats.current, c = canvas.current;
+    if (!m || !c) return null;
+    const s = project(m, x, y, z);
+    if (!s) return null;
+    const r = c.getBoundingClientRect();
+    return { x: r.left + s.x, y: r.top + s.y };
+  };
+
+  useImperativeHandle(ref, () => ({
+    focus: (x, z, y) => {
+      const e = engine();
+      if (!e) return;
+      e.rig.beginTransition(e.camera, performance.now(), 500);
+      e.rig.target.set(x + 0.5, y ?? p.current.level + 1, z + 0.5);
+    },
+    center: () => {
+      const t = engine()?.rig.target;
+      return t ? [Math.floor(t.x), Math.floor(t.y), Math.floor(t.z)] : null;
+    },
+    zoom: () => engine()?.rig.isoZoom ?? TOP_ZOOM,
+    toPage,
+  }));
+
+
+  // First placement over the colony's home; the target height follows the level.
+  useEffect(() => {
+    let raf = 0;
+    const tryPlace = () => {
+      const e = engine();
+      if (!e || placed.current) return;
+      if (!p.current.home) return;
+      placed.current = true;
+      e.rig.isoZoom = TOP_ZOOM;
+      e.rig.target.set(p.current.home[0] + 0.5, p.current.level + 1, p.current.home[2] + 0.5);
+    };
+    const loop = () => {
+      tryPlace();
+      if (!placed.current) raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [props.home, ready]);  
+
+
+  // ------------------------------------------------------------------ the frame loop: pan, project, draw
+  useEffect(() => {
+    let raf = 0;
+    let last = performance.now();
+    const loop = (now: number) => {
+      raf = requestAnimationFrame(loop);
+      const dt = Math.min(0.1, (now - last) / 1000);
+      last = now;
+      const e = engine(), c = canvas.current;
+      if (!e || !c) return;
+      // The level cut (x-ray above the working level) is a per-view uniform: no re-meshing when it moves. The camera looks
+      // at the level's floor.
+      if (lastEngine.current !== e) {
+        lastEngine.current = e;
+        appliedCut.current = undefined;
+      }
+      // Above the ground storey, the storeys below are dimmed for reference.
+      const home = p.current.home;
+      const dim = home && p.current.level > home[1] ? p.current.level + 1 : null;
+      const cutKey = `${p.current.cutY}|${dim}`;
+      if (appliedCut.current !== cutKey) {
+        appliedCut.current = cutKey;
+        e.setLevelCut(p.current.cutY !== null || dim !== null ? { y: p.current.cutY ?? 1e6, dimBelow: dim } : null);
+      }
+      if (placed.current) e.rig.target.y = p.current.level + 1;
+      const w = c.clientWidth, h = c.clientHeight;
+      if (c.width !== w || c.height !== h) {
+        c.width = w;
+        c.height = h;
+      }
+      // Pan: keys, then the screen edge (only while the pointer is over the map and not dragging a box).
+      const keys = p.current.keys.current;
+      let px = 0, pz = 0;
+      for (const code of keys ?? []) {
+        if (code === 'KeyW' || code === 'ArrowUp') pz -= 1;
+        if (code === 'KeyS' || code === 'ArrowDown') pz += 1;
+        if (code === 'KeyA' || code === 'ArrowLeft') px -= 1;
+        if (code === 'KeyD' || code === 'ArrowRight') px += 1;
+      }
+      const hv = hover.current;
+      if (hv && !drag.current && document.hasFocus()) {
+        const [ex, ey] = edgePan(hv.at, w, h, 8);
+        px += ex;
+        pz += ey;
+      }
+      if (px || pz) {
+        const speed = e.rig.isoZoom * 0.9 * dt;
+        if (e.rig.mode === 'top') {
+          e.rig.target.x += px * speed;
+          e.rig.target.z += pz * speed;
+        } else e.rig.pan(-px * speed * (h / e.rig.isoZoom), -pz * speed * (h / e.rig.isoZoom), h);
+      }
+      const cam = e.camera;
+      mats.current = { view: cam.matrixWorldInverse.elements, proj: cam.projectionMatrix.elements, world: cam.matrixWorld.elements, projInv: cam.projectionMatrixInverse.elements, w, h };
+      // Chests and workbenches near the view (a worker scan every few seconds).
+      if (now - chests.current.at > 4000) {
+        chests.current.at = now;
+        const t = e.rig.target, r = Math.min(64, e.rig.isoZoom);
+        const lv = p.current.level;
+        void e.runtime.host
+          .scan(0, [t.x - r, lv - 12, t.z - r], [t.x + r, lv + 16, t.z + r], [54, 146, 58, 61, 62], 400)
+          .then((s) => {
+            const cells: Array<{ pos: V3; id: number }> = [];
+            for (let i = 0; i + 5 < s.length + 1; i += 6) cells.push({ pos: [s[i]!, s[i + 1]!, s[i + 2]!], id: s[i + 3]! });
+            chests.current.cells = cells;
+          })
+          .catch(() => undefined);
+      }
+      draw(c, dt, now);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Every selectable body with its screen point (pawns interpolated toward their reported positions). */
+  const bodies = (dt: number): Array<{ key: string; at: Pt | null; kind: 'pawn' | 'ai'; pos: V3 }> => {
+    const m = mats.current;
+    const st = p.current.state;
+    const out: Array<{ key: string; at: Pt | null; kind: 'pawn' | 'ai'; pos: V3 }> = [];
+    const k = Math.min(1, dt * 6);
+    const add = (name: string, pos: readonly number[] | null | undefined, kind: 'pawn' | 'ai') => {
+      if (!pos) return;
+      const prev = shown.current.get(name);
+      const next: V3 = prev && Math.hypot(prev[0] - pos[0]!, prev[2] - pos[2]!) < 12 ? [prev[0] + (pos[0]! - prev[0]) * k, prev[1] + (pos[1]! - prev[1]) * k, prev[2] + (pos[2]! - prev[2]) * k] : [pos[0]!, pos[1]!, pos[2]!];
+      shown.current.set(name, next);
+      out.push({ key: name, at: m ? project(m, next[0], next[1] + 0.2, next[2]) : null, kind, pos: next });
+    };
+    for (const pw of st?.pawns ?? []) if (pw.online !== false) add(pw.name, pw.pos, 'pawn');
+    for (const a of st?.ai ?? []) if (a.online !== false && (a.dim ?? 0) === 0) add(a.name, a.pos, 'ai');
+    return out;
+  };
+
+  const entityList = (): EntityLite[] => {
+    const e = engine();
+    if (!e) return [];
+    return e.runtime.store.entities(0).map((x) => ({ id: x.id, kind: x.kind, type: x.type, x: x.x, y: x.y, z: x.z }));
+  };
+
+  // ------------------------------------------------------------------ drawing
+
+  const draw = (c: HTMLCanvasElement, dt: number, now: number) => {
+    const ctx = c.getContext('2d');
+    const m = mats.current;
+    if (!ctx || !m) return;
+    const props = p.current;
+    const st = props.state;
+    ctx.clearRect(0, 0, c.width, c.height);
+    const e = engine()!;
+    const upp = unitsPerPx(e.rig.isoZoom, m.h);
+    const cell = 1 / upp; // px per block
+    const cutY = props.cutY;
+    const quad = (x1: number, z1: number, x2: number, z2: number, y: number): Pt[] | null => {
+      const a = project(m, x1, y, z1), b = project(m, x2, y, z1), cc = project(m, x2, y, z2), d = project(m, x1, y, z2);
+      return a && b && cc && d ? [a, b, cc, d] : null;
+    };
+    const poly = (pts: Pt[]) => {
+      ctx.beginPath();
+      ctx.moveTo(pts[0]!.x, pts[0]!.y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i]!.x, pts[i]!.y);
+      ctx.closePath();
+    };
+    const mark = (id: string, at: Pt, color: string, size = 14) => {
+      const g = glyph(id);
+      ctx.save();
+      ctx.translate(at.x - size / 2, at.y - size / 2);
+      ctx.fillStyle = 'rgba(12,14,18,0.72)';
+      ctx.beginPath();
+      ctx.arc(size / 2, size / 2, size / 2 + 2, 0, Math.PI * 2);
+      ctx.fill();
+      if (g) {
+        ctx.scale(size / 16, size / 16);
+        ctx.fillStyle = color;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.4;
+        ctx.fill(g, 'evenodd');
+        if (id === 'hunt') ctx.stroke(g);
+      }
+      ctx.restore();
+    };
+    // Zones: tinted areas.
+    for (const z of st?.zones ?? []) {
+      const [x1, y1, z1, x2, , z2] = z.area;
+      const q = quad(Math.min(x1, x2), Math.min(z1, z2), Math.max(x1, x2) + 1, Math.max(z1, z2) + 1, y1 + 1.02);
+      if (!q) continue;
+      const col = zoneColor(z.kind);
+      poly(q);
+      ctx.fillStyle = `${col}2e`;
+      ctx.fill();
+      ctx.strokeStyle = `${col}cc`;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    // Build ghosts: translucent blocks by state; anything above the level cut only as a faint outline (x-rayed).
+    const ghosts = st?.ghosts?.blocks ?? [];
+    const angled = props.view === 'angled';
+    const cube = (x: number, y: number, z: number, color: string, alpha: number, faint: boolean) => {
+      if (!angled) {
+        const q = quad(x, z, x + 1, z + 1, y + 1);
+        if (!q) return;
+        poly(q);
+        if (faint) {
+          ctx.strokeStyle = `${color}66`;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        } else {
+          ctx.globalAlpha = alpha;
+          ctx.fillStyle = color;
+          ctx.fill();
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = color;
+          ctx.lineWidth = cell > 10 ? 1.2 : 0.6;
+          ctx.stroke();
+        }
+        return;
+      }
+      // Angled: the top and the two faces toward the camera.
+      const camPos = e.camera.position;
+      const faces: Array<Array<[number, number, number]>> = [[[x, y + 1, z], [x + 1, y + 1, z], [x + 1, y + 1, z + 1], [x, y + 1, z + 1]]];
+      if (camPos.x > x + 1) faces.push([[x + 1, y, z], [x + 1, y + 1, z], [x + 1, y + 1, z + 1], [x + 1, y, z + 1]]);
+      else if (camPos.x < x) faces.push([[x, y, z], [x, y + 1, z], [x, y + 1, z + 1], [x, y, z + 1]]);
+      if (camPos.z > z + 1) faces.push([[x, y, z + 1], [x + 1, y, z + 1], [x + 1, y + 1, z + 1], [x, y + 1, z + 1]]);
+      else if (camPos.z < z) faces.push([[x, y, z], [x + 1, y, z], [x + 1, y + 1, z], [x, y + 1, z]]);
+      for (const f of faces) {
+        const pts = f.map(([a, b, cc]) => project(m, a, b, cc));
+        if (pts.some((q) => !q)) continue;
+        poly(pts as Pt[]);
+        if (!faint) {
+          ctx.globalAlpha = alpha;
+          ctx.fillStyle = color;
+          ctx.fill();
+          ctx.globalAlpha = 1;
+        }
+        ctx.strokeStyle = faint ? `${color}66` : color;
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+      }
+    };
+    const sorted = angled ? [...ghosts].sort((a, b) => a[1] - b[1]) : ghosts;
+    let drawn = 0;
+    for (const g of sorted) {
+      if (drawn++ > 3000) break;
+      const state = g[6];
+      if (state === 'done') continue;
+      const col = COLORS.ghost[state] ?? COLORS.ghost.todo!;
+      cube(g[0], g[1], g[2], col, state === 'leased' ? 0.5 : 0.32, cutY !== null && g[1] >= cutY);
+    }
+    // Designations: a mark on every target (one per tree for chop).
+    for (const d of st?.designations ?? []) {
+      const col = COLORS.designation[d.kind] ?? '#ffffff';
+      const cells = d.kind === 'chop' && d.targets?.length ? [d.targets.reduce((a, b) => (b[1] > a[1] ? b : a))] : d.block ? [d.block] : (d.targets ?? []).slice(0, 1);
+      for (const b of cells) {
+        const at = project(m, b[0] + 0.5, Math.min(b[1] + 1, cutY ?? 999), b[2] + 0.5);
+        if (at) mark(d.kind, at, col, cell > 18 ? 14 : 11);
+        if (d.pawn && at) {
+          ctx.strokeStyle = pawnColor(d.pawn);
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(at.x, at.y, 10, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+    }
+    // Chests and workbenches: registered storage gets its mark and a priority pip; unregistered chests show faintly.
+    const storages = new Map((st?.storages ?? []).flatMap((s) => [[k3(s.chest), s] as const, ...(s.doubleWith ? [[k3(s.doubleWith), s] as const] : [])]));
+    const selChests = new Set(props.selection.chests.map(k3));
+    const seen = new Set<string>();
+    for (const { pos, id } of chests.current.cells) {
+      if (cutY !== null && pos[1] >= cutY) continue;
+      const at = project(m, pos[0] + 0.5, pos[1] + 1, pos[2] + 0.5);
+      if (!at) continue;
+      if (id === 54 || id === 146) {
+        const s = storages.get(k3(pos));
+        if (s && seen.has(k3(s.chest))) continue;
+        if (s) seen.add(k3(s.chest));
+        const sel = selChests.has(k3(pos)) || (s && selChests.has(k3(s.chest)));
+        ctx.globalAlpha = s ? 1 : 0.45;
+        mark('chest', at, COLORS.chest, 13);
+        ctx.globalAlpha = 1;
+        if (s) {
+          const pri = ['low', 'normal', 'preferred', 'important', 'critical'].indexOf(s.priority);
+          for (let i = 0; i <= Math.max(0, pri); i++) {
+            ctx.fillStyle = pri >= 3 ? '#ff9f43' : '#ffd166';
+            ctx.fillRect(at.x + 9, at.y + 5 - i * 4, 3, 3);
+          }
+        }
+        if (sel) {
+          ctx.strokeStyle = COLORS.select;
+          ctx.lineWidth = 2;
+          ctx.strokeRect(at.x - 11, at.y - 11, 22, 22);
+        }
+      } else {
+        const bench = (st?.workbenches ?? []).find((w) => k3(w.pos) === k3(pos));
+        mark('bench', at, COLORS.bench, 13);
+        const n = bench?.bills.length ?? 0;
+        if (n) {
+          ctx.fillStyle = '#9ec7ff';
+          ctx.beginPath();
+          ctx.arc(at.x + 10, at.y - 9, 6, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#0c1220';
+          ctx.font = '600 9px system-ui, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(String(n), at.x + 10, at.y - 9);
+        }
+        if (props.selection.bench && k3(props.selection.bench) === k3(pos)) {
+          ctx.strokeStyle = COLORS.select;
+          ctx.lineWidth = 2;
+          ctx.strokeRect(at.x - 11, at.y - 11, 22, 22);
+        }
+      }
+    }
+    // Bodies: order lines first, then tokens.
+    const list = bodies(dt);
+    const sel = new Set(props.selection.bodies);
+    for (const b of list) {
+      if (!sel.has(b.key) || !b.at) continue;
+      const pw = st?.pawns.find((x) => x.name === b.key);
+      const targets = [pw?.job?.target, ...(pw?.queue ?? []).map((o) => o.target)].filter((t): t is NonNullable<typeof t> => !!t && (t.x !== null && t.x !== undefined));
+      let from = b.at;
+      ctx.strokeStyle = COLORS.order;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 4]);
+      for (const t of targets.slice(0, 6)) {
+        const at = project(m, t.x! + 0.5, (t.y ?? b.pos[1]) + 0.2, t.z! + 0.5);
+        if (!at) continue;
+        ctx.beginPath();
+        ctx.moveTo(from.x, from.y);
+        ctx.lineTo(at.x, at.y);
+        ctx.stroke();
+        ctx.strokeRect(at.x - 4, at.y - 4, 8, 8);
+        from = at;
+      }
+      ctx.setLineDash([]);
+    }
+    const r = Math.max(7, Math.min(13, cell * 0.55));
+    ctx.font = '600 11px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    for (const b of list) {
+      if (!b.at) continue;
+      const pw = b.kind === 'pawn' ? st?.pawns.find((x) => x.name === b.key) : undefined;
+      const ai = b.kind === 'ai' ? st?.ai?.find((x) => x.name === b.key) : undefined;
+      const color = b.kind === 'ai' ? COLORS.ai : pawnColor(b.key);
+      const { x, y } = b.at;
+      if (sel.has(b.key)) {
+        ctx.strokeStyle = COLORS.select;
+        ctx.lineWidth = 2;
+        const s = r + 5;
+        ctx.beginPath();
+        // corner brackets (the genre's selection mark, our own drawing)
+        for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const) {
+          ctx.moveTo(x + sx * s, y + sy * (s - 5));
+          ctx.lineTo(x + sx * s, y + sy * s);
+          ctx.lineTo(x + sx * (s - 5), y + sy * s);
+        }
+        ctx.stroke();
+      }
+      ctx.fillStyle = 'rgba(10,12,16,0.78)';
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(x, y, r * 0.42, 0, Math.PI * 2);
+      ctx.fill();
+      if (pw?.drafted) {
+        const g = glyph('drafted');
+        if (g) {
+          ctx.save();
+          ctx.translate(x + r - 4, y - r - 6);
+          ctx.scale(0.75, 0.75);
+          ctx.fillStyle = '#ff9f43';
+          ctx.fill(g);
+          ctx.restore();
+        }
+      }
+      // job mark
+      const job = pw?.job?.type;
+      if (job && GLYPH_OF[job]) {
+        const g = glyph(GLYPH_OF[job]);
+        if (g) {
+          ctx.save();
+          ctx.translate(x - r - 8, y - r - 6);
+          ctx.scale(0.7, 0.7);
+          ctx.fillStyle = COLORS.designation[job] ?? '#ffffff';
+          ctx.fill(g);
+          ctx.restore();
+        }
+      }
+      const danger = pw ? (pw.hp ?? 20) <= 8 || (pw.food ?? 20) <= 4 : false;
+      const label = pw?.display ?? (ai ? (ai.kind === 'main' ? 'main' : ai.name.replace(/^maid_chan_/, '')) : b.key);
+      const tw = ctx.measureText(label).width;
+      ctx.fillStyle = 'rgba(10,12,16,0.7)';
+      ctx.fillRect(x - tw / 2 - 4, y + r + 3, tw + 8, 15);
+      ctx.fillStyle = danger ? COLORS.danger : b.kind === 'ai' ? '#d9ccff' : '#f4f6f8';
+      ctx.fillText(label, x, y + r + 4);
+    }
+    // The drag: a selection box, or a tool's grid rectangle with its live targets.
+    const d = drag.current;
+    const tool = props.tool;
+    if (d && d.moved && d.button === 0) {
+      if (tool.kind === 'select') {
+        const rr = rectOf(d.start, d.now);
+        ctx.fillStyle = 'rgba(245,197,66,0.10)';
+        ctx.fillRect(rr.x, rr.y, rr.w, rr.h);
+        ctx.strokeStyle = COLORS.select;
+        ctx.lineWidth = 1.2;
+        ctx.strokeRect(rr.x + 0.5, rr.y + 0.5, rr.w, rr.h);
+      } else if (d.startCell && d.endCell) {
+        drawToolDrag(ctx, m, d, quad, poly, mark, cube);
+      }
+    } else if (tool.kind === 'build' && hover.current?.cell && !d) {
+      // The placement ghost under the cursor before a drag starts.
+      const a = startCellOf(hover.current);
+      if (a) {
+        const pv = buildPreview(buildItem(tool.id, a, a, props.build));
+        for (const b of pv.blocks.slice(0, 600)) cube(b[0], b[1], b[2], b[3] === 0 ? '#ff6b6b' : '#7fd3ff', 0.4, false);
+      }
+    } else if (tool.kind !== 'select' && hover.current?.cell && !d) {
+      const hc = hover.current.cell;
+      const q = quad(hc[0], hc[2], hc[0] + 1, hc[2] + 1, hc[1] + 1.02);
+      if (q) {
+        poly(q);
+        ctx.strokeStyle = '#ffffffaa';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+    void now;
+  };
+
+  const GLYPH_OF: Record<string, string> = { chop: 'chop', mine: 'mine', harvest: 'harvest', cut: 'cut', haul: 'haul', hunt: 'hunt', build: 'build', deconstruct: 'deconstruct', attack: 'hunt', craft: 'bench', cook: 'bench' };
+
+  const drawToolDrag = (
+    ctx: CanvasRenderingContext2D,
+    m: ViewMats,
+    d: DragState,
+    quad: (x1: number, z1: number, x2: number, z2: number, y: number) => Pt[] | null,
+    poly: (pts: Pt[]) => void,
+    mark: (id: string, at: Pt, color: string, size?: number) => void,
+    cube: (x: number, y: number, z: number, color: string, alpha: number, faint: boolean) => void,
+  ) => {
+    const props = p.current;
+    const tool = props.tool;
+    const a = d.startCell!, b = d.endCell!;
+    const rect = cellRect(a, b);
+    if (tool.kind === 'build') {
+      const pv = buildPreview(buildItem(tool.id, a, b, { ...props.build, line: d.alt }));
+      const col = pv.valid ? (pv.item.kind === 'remove' ? '#ff6b6b' : '#7fd3ff') : '#ff6b6b';
+      for (const g of pv.blocks.slice(0, 1500)) cube(g[0], g[1], g[2], col, 0.42, false);
+      label(ctx, d.now, `${pv.blocks.length} block${pv.blocks.length === 1 ? '' : 's'}${pv.item.kind !== 'remove' ? ` · ${pv.cost} ${typeof pv.item.material === 'string' ? pv.item.material.replace(/_/g, ' ') : 'blocks'}` : ''}${pv.reason ? ` · ${pv.reason}` : ''}`, pv.valid);
+      return;
+    }
+    const q = quad(rect[0], rect[1], rect[2] + 1, rect[3] + 1, props.level + 1.02);
+    const col = tool.kind === 'designate' ? (COLORS.designation[tool.id] ?? '#ffffff') : tool.kind === 'zone' ? zoneColor(tool.id) : COLORS.chest;
+    if (q) {
+      poly(q);
+      ctx.fillStyle = `${col}22`;
+      ctx.fill();
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      // the grid
+      const upp = unitsPerPx(engine()!.rig.isoZoom, m.h);
+      if (1 / upp >= 9 && (rect[2] - rect[0]) * (rect[3] - rect[1]) < 2500) {
+        ctx.strokeStyle = `${col}33`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let x = rect[0] + 1; x <= rect[2]; x++) {
+          const s1 = project(m, x, props.level + 1.02, rect[1]), s2 = project(m, x, props.level + 1.02, rect[3] + 1);
+          if (s1 && s2) {
+            ctx.moveTo(s1.x, s1.y);
+            ctx.lineTo(s2.x, s2.y);
+          }
+        }
+        for (let z = rect[1] + 1; z <= rect[3]; z++) {
+          const s1 = project(m, rect[0], props.level + 1.02, z), s2 = project(m, rect[2] + 1, props.level + 1.02, z);
+          if (s1 && s2) {
+            ctx.moveTo(s1.x, s1.y);
+            ctx.lineTo(s2.x, s2.y);
+          }
+        }
+        ctx.stroke();
+      }
+    }
+    if (tool.kind === 'designate') {
+      const res = scan.current.result;
+      const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
+      if (res) {
+        for (const c of res.cells.slice(0, 1200)) {
+          const s = project(m, c[0] + 0.5, c[1] + 1, c[2] + 0.5);
+          if (s) {
+            ctx.fillStyle = `${col}bb`;
+            ctx.fillRect(s.x - 3, s.y - 3, 6, 6);
+          }
+        }
+        for (const en of res.entities) {
+          const s = project(m, en.x, en.y + 0.3, en.z);
+          if (s) mark(tool.id, s, col, 12);
+        }
+        if (tool.id === 'cancel') {
+          for (const dd of props.state?.designations ?? []) {
+            const bb = dd.block;
+            if (bb && bb[0] >= rect[0] && bb[0] <= rect[2] && bb[2] >= rect[1] && bb[2] <= rect[3]) {
+              const s = project(m, bb[0] + 0.5, bb[1] + 1, bb[2] + 0.5);
+              if (s) {
+                ctx.strokeStyle = '#ff6b6b';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(s.x - 6, s.y - 6);
+                ctx.lineTo(s.x + 6, s.y + 6);
+                ctx.moveTo(s.x + 6, s.y - 6);
+                ctx.lineTo(s.x - 6, s.y + 6);
+                ctx.stroke();
+              }
+            }
+          }
+        }
+        label(ctx, d.now, `${t.label}: ${res.count} ${res.count === 1 ? t.noun[0] : t.noun[1]}`, true);
+      } else label(ctx, d.now, `${t.label}: …`, true);
+    } else {
+      label(ctx, d.now, `${rect[2] - rect[0] + 1} × ${rect[3] - rect[1] + 1}`, true);
+    }
+  };
+
+  const label = (ctx: CanvasRenderingContext2D, at: Pt, text: string, ok: boolean) => {
+    ctx.font = '600 12px system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const w = ctx.measureText(text).width + 12;
+    ctx.fillStyle = 'rgba(10,12,16,0.85)';
+    ctx.fillRect(at.x + 14, at.y + 10, w, 20);
+    ctx.fillStyle = ok ? '#f4f6f8' : '#ff8a8a';
+    ctx.fillText(text, at.x + 20, at.y + 20);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+  };
+
+  // ------------------------------------------------------------------ input
+
+  const local = (ev: { clientX: number; clientY: number }): Pt => {
+    const r = canvas.current!.getBoundingClientRect();
+    return { x: ev.clientX - r.left, y: ev.clientY - r.top };
+  };
+
+  /** The level's floor plane under a point (top-down placement and drags). */
+  const groundCell = (pt: Pt): V3 | null => {
+    const m = mats.current;
+    if (!m) return null;
+    return cellAt(m, pt.x, pt.y, p.current.level + 1);
+  };
+
+  const pick = async (pt: Pt): Promise<(PickedBlock & { face: number }) | null> => {
+    const e = engine(), m = mats.current;
+    if (!e || !m) return null;
+    const r = rayAt(m, pt.x, pt.y);
+    const hit = await e.runtime.host.pick(0, r.o, r.d, 400, e.pickCut()).catch(() => null);
+    if (!hit) return null;
+    return { ...hit, name: '', dim: 0 };
+  };
+
+  /** Where a build starts: the level's first layer in top-down, the face against the hovered block in the angled view. */
+  const startCellOf = (h: { cell: V3 | null; face: V3 | null }): V3 | null => {
+    if (p.current.view === 'angled' && h.face) return h.face;
+    return h.cell ? [h.cell[0], p.current.level + 1, h.cell[2]] : null;
+  };
+
+  const updateHover = (pt: Pt) => {
+    const now = performance.now();
+    const cell = groundCell(pt);
+    const h = hover.current ?? { at: pt, cell, face: null, pickAt: 0 };
+    h.at = pt;
+    h.cell = cell;
+    hover.current = h;
+    const tool = p.current.tool;
+    if (p.current.view === 'angled' && tool.kind === 'build' && now - h.pickAt > 60) {
+      h.pickAt = now;
+      void pick(pt).then((hit) => {
+        if (!hover.current) return;
+        hover.current.face = hit ? faceCell(hit) : null;
+        if (hit) hover.current.cell = [hit.x, hit.y, hit.z];
+      });
+    }
+  };
+
+  /** Rescans a designate drag's targets (one scan in flight; the latest rectangle wins). */
+  const rescan = () => {
+    const d = drag.current, e = engine();
+    const tool = p.current.tool;
+    if (!d || !e || !d.startCell || !d.endCell || tool.kind !== 'designate') return;
+    const rect = cellRect(d.startCell, d.endCell);
+    const key = rect.join(',') + tool.id + p.current.mineFilter;
+    if (scan.current.key === key || scan.current.busy) return;
+    scan.current.key = key;
+    const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
+    const y = toolYRange(tool.id, p.current.level, p.current.build.height, p.current.cutY);
+    const finish = (cells: V3[], count: number, ents: EntityLite[]) => {
+      scan.current.result = { rect, a: d.startCell!, b: d.endCell!, cells, entities: ents, count };
+    };
+    if (t.entities) {
+      const ents = entitiesIn(t, rect, entityList());
+      finish([], ents.length, ents);
+      return;
+    }
+    if (tool.id === 'cancel') {
+      const n = (p.current.state?.designations ?? []).filter((dd) => dd.block && dd.block[0] >= rect[0] && dd.block[0] <= rect[2] && dd.block[2] >= rect[1] && dd.block[2] <= rect[3]).length;
+      finish([], n, []);
+      return;
+    }
+    scan.current.busy = true;
+    void e.runtime.host
+      .scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(tool.id), 6000)
+      .then((s) => {
+        const pv = previewTargets(tool.id, s, p.current.mineFilter);
+        finish(pv.cells, pv.count, []);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        scan.current.busy = false;
+        if (drag.current) {
+          const r2 = drag.current.startCell && drag.current.endCell ? cellRect(drag.current.startCell, drag.current.endCell).join(',') + tool.id + p.current.mineFilter : '';
+          if (r2 !== scan.current.key) rescan();
+        }
+      });
+  };
+
+  const onPointerDown = (ev: React.PointerEvent<HTMLCanvasElement>) => {
+    const pt = local(ev);
+    canvas.current?.setPointerCapture(ev.pointerId);
+    canvas.current?.focus({ preventScroll: true });
+    updateHover(pt);
+    if (ev.button === 2) return; // context menu on up
+    const startCell = p.current.tool.kind === 'build' && hover.current ? startCellOf(hover.current) : groundCell(pt);
+    drag.current = { start: pt, now: pt, button: ev.button, shift: ev.shiftKey, alt: ev.altKey, startCell, endCell: startCell, moved: false };
+    scan.current = { key: '', busy: false, result: null };
+  };
+
+  const onPointerMove = (ev: React.PointerEvent<HTMLCanvasElement>) => {
+    const pt = local(ev);
+    const d = drag.current;
+    if (d && d.button === 1) {
+      // Middle-drag pans (Shift + middle-drag turns the angled view).
+      const e = engine();
+      if (e) {
+        const dx = pt.x - d.now.x, dy = pt.y - d.now.y;
+        if (ev.shiftKey && e.rig.mode === 'iso') e.rig.look(dx, dy);
+        else e.rig.pan(dx, dy, canvas.current!.clientHeight);
+      }
+      d.now = pt;
+      d.moved = true;
+      return;
+    }
+    updateHover(pt);
+    if (!d) return;
+    d.now = pt;
+    d.alt = ev.altKey;
+    if (!d.moved && isDrag(d.start, pt)) d.moved = true;
+    const tool = p.current.tool;
+    if (tool.kind === 'build') {
+      const h = hover.current;
+      const c = h ? startCellOf(h) : null;
+      if (c && d.startCell) d.endCell = p.current.view === 'angled' && (tool.id === 'wall' || tool.id === 'floor' || tool.id === 'roof' || tool.id === 'fence') ? [c[0], d.startCell[1], c[2]] : c;
+    } else d.endCell = groundCell(pt) ?? d.endCell;
+    if (d.moved && tool.kind === 'designate') rescan();
+  };
+
+  const bodyAt = (pt: Pt) => nearest(bodies(0), pt, 18);
+
+  const onPointerUp = async (ev: React.PointerEvent<HTMLCanvasElement>) => {
+    const pt = local(ev);
+    const d = drag.current;
+    drag.current = null;
+    const props = p.current;
+    if (ev.button === 2) {
+      // Right click: drops the active tool (the genre); with something selected, the order menu for the thing under it.
+      if (props.tool.kind !== 'select') {
+        props.onDropTool();
+        return;
+      }
+      const target = await targetAt(pt);
+      if (target) props.onContext(target, { x: ev.clientX, y: ev.clientY });
+      return;
+    }
+    if (!d || d.button !== 0) return;
+    const tool = props.tool;
+    if (tool.kind === 'select') {
+      if (d.moved) {
+        const r: Rect = rectOf(d.start, pt);
+        const inBox = bodies(0).filter((b) => b.at && b.at.x >= r.x && b.at.x <= r.x + r.w && b.at.y >= r.y && b.at.y <= r.y + r.h);
+        if (inBox.length) {
+          props.onSelect({ bodies: d.shift ? [...new Set([...props.selection.bodies, ...inBox.map((b) => b.key)])] : inBox.map((b) => b.key), chests: [], bench: null });
+          return;
+        }
+        // No bodies: the chests in the box (edit their storage together).
+        const m = mats.current;
+        const boxChests = chests.current.cells
+          .filter((c) => c.id === 54 || c.id === 146)
+          .filter((c) => {
+            const s = m ? project(m, c.pos[0] + 0.5, c.pos[1] + 1, c.pos[2] + 0.5) : null;
+            return s && s.x >= r.x && s.x <= r.x + r.w && s.y >= r.y && s.y <= r.y + r.h;
+          })
+          .map((c) => c.pos);
+        props.onSelect({ bodies: d.shift ? props.selection.bodies : [], chests: boxChests, bench: null });
+        return;
+      }
+      const hit = bodyAt(pt);
+      if (hit) {
+        const now = performance.now();
+        if (lastClick.current && lastClick.current.name === hit.key && now - lastClick.current.t < 350) {
+          const visible = bodies(0).filter((b) => b.kind === hit.kind && b.at && b.at.x >= 0 && b.at.y >= 0 && b.at.x <= canvas.current!.clientWidth && b.at.y <= canvas.current!.clientHeight);
+          props.onSelectSame(hit.kind, visible.map((b) => b.key));
+          lastClick.current = null;
+          return;
+        }
+        lastClick.current = { t: now, name: hit.key };
+        const sel = props.selection;
+        const has = sel.bodies.includes(hit.key);
+        props.onSelect({ bodies: ev.ctrlKey || ev.metaKey ? (has ? sel.bodies.filter((n) => n !== hit.key) : [...sel.bodies, hit.key]) : ev.shiftKey ? (has ? sel.bodies : [...sel.bodies, hit.key]) : [hit.key], chests: [], bench: null });
+        return;
+      }
+      // A chest or a workbench under the cursor.
+      const block = await pick(pt);
+      if (block && (block.id === 54 || block.id === 146)) {
+        const pos: V3 = [block.x, block.y, block.z];
+        const s = (props.state?.storages ?? []).find((x) => k3(x.chest) === k3(pos) || (x.doubleWith && k3(x.doubleWith) === k3(pos)));
+        const chest: V3 = s ? (s.chest) : pos;
+        const sel = props.selection;
+        const has = sel.chests.some((c) => k3(c) === k3(chest));
+        props.onSelect({ bodies: [], chests: ev.shiftKey ? (has ? sel.chests.filter((c) => k3(c) !== k3(chest)) : [...sel.chests, chest]) : [chest], bench: null });
+        return;
+      }
+      if (block && (block.id === 58 || block.id === 61 || block.id === 62)) {
+        props.onSelect({ bodies: [], chests: [], bench: [block.x, block.y, block.z] });
+        return;
+      }
+      if (!ev.shiftKey) props.onSelect({ bodies: [], chests: [], bench: null });
+      return;
+    }
+    // A tool: a click is a 1×1 drag.
+    if (!d.startCell) return;
+    const end = d.endCell ?? d.startCell;
+    if (tool.kind === 'designate') {
+      const t = DESIGNATE_TOOLS.find((x) => x.id === tool.id)!;
+      const rect = cellRect(d.startCell, end);
+      const y = toolYRange(tool.id, props.level, props.build.height, props.cutY);
+      let res = scan.current.result;
+      if (!res || res.rect.join(',') !== rect.join(',')) {
+        // A click, or the scan had not caught up: scan now.
+        const e = engine();
+        if (t.entities) {
+          const ents = entitiesIn(t, rect, entityList());
+          res = { rect, a: d.startCell, b: end, cells: [], entities: ents, count: ents.length };
+        } else if (e && tool.id !== 'cancel') {
+          const s = await e.runtime.host.scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(tool.id), 6000).catch(() => []);
+          const pv = previewTargets(tool.id, s, props.mineFilter);
+          res = { rect, a: d.startCell, b: end, cells: pv.cells, entities: [], count: pv.count };
+        } else res = { rect, a: d.startCell, b: end, cells: [], entities: [], count: 0 };
+      }
+      void toolArea;
+      props.onTool(res, ev.shiftKey);
+      return;
+    }
+    props.onTool({ rect: cellRect(d.startCell, end), a: d.startCell, b: end, cells: [], entities: [], count: 0 }, ev.shiftKey);
+  };
+
+  /** What is under the cursor for the order menu: a ghost, a mob or a drop, a block, or bare ground. */
+  const targetAt = async (pt: Pt): Promise<Target | null> => {
+    const m = mats.current;
+    const st = p.current.state;
+    const e = engine();
+    if (!m || !e) return null;
+    const ents = e.runtime.store.entities(0);
+    let best: Target | null = null;
+    let bd = 18;
+    for (const x of ents) {
+      const s = project(m, x.x, x.y + 0.4, x.z);
+      if (!s) continue;
+      const dd = Math.hypot(s.x - pt.x, s.y - pt.y);
+      if (dd > bd) continue;
+      bd = dd;
+      if (x.kind === 'item') best = { kind: 'item', entity: x.id, name: x.name ?? 'the drop', x: x.x, y: x.y, z: x.z };
+      else if (x.kind === 'mob') best = { kind: 'mob', entity: x.id, name: x.name ?? 'the mob', animal: [90, 91, 92, 93, 94, 95, 96, 98, 100, 101, 102, 103].includes(x.type), x: x.x, y: x.y, z: x.z };
+    }
+    if (best) return best;
+    const cell = groundCell(pt);
+    if (cell) {
+      const g = (st?.ghosts?.blocks ?? []).find((b) => b[0] === cell[0] && b[2] === cell[2] && b[6] !== 'done');
+      if (g) {
+        const build = (st?.builds ?? []).find((b) => String(b.id) === String(g[5]));
+        return { kind: 'ghost', build: g[5], label: build?.label ?? 'build', x: g[0], y: g[1], z: g[2] };
+      }
+    }
+    const hit = await pick(pt);
+    if (hit) return { kind: 'block', x: hit.x, y: hit.y, z: hit.z, id: hit.id, name: blockLabel(hit.id) };
+    return cell ? { kind: 'ground', x: cell[0], y: p.current.level + 1, z: cell[2] } : null;
+  };
+
+  const onWheel = (ev: React.WheelEvent<HTMLCanvasElement>) => {
+    const e = engine(), m = mats.current;
+    if (!e || !m) return;
+    const pt = local(ev);
+    const r = rayAt(m, pt.x, pt.y);
+    const at = rayPlaneY(r.o, r.d, e.rig.target.y) ?? [e.rig.target.x, 0, e.rig.target.z];
+    const z = zoomAt({ x: e.rig.target.x, z: e.rig.target.z }, e.rig.isoZoom, Math.sign(ev.deltaY), { x: at[0], z: at[2] });
+    e.rig.isoZoom = z.zoom;
+    e.rig.target.x = z.x;
+    e.rig.target.z = z.z;
+  };
+
+  // The wheel must not scroll the page (a passive React listener cannot prevent it).
+  useEffect(() => {
+    const c = canvas.current;
+    if (!c) return;
+    const stop = (e: WheelEvent) => e.preventDefault();
+    c.addEventListener('wheel', stop, { passive: false });
+    return () => c.removeEventListener('wheel', stop);
+  }, [ready]);
+
+  // Tests and tools read the map through this (mock mode only).
+  useEffect(() => {
+    if (process.env.NEXT_PUBLIC_MOCK !== '1') return;
+    (window as unknown as { __story?: unknown }).__story = {
+      toPage,
+      center: () => engine()?.rig.target.toArray(),
+      zoom: () => engine()?.rig.isoZoom,
+      setZoom: (z: number) => {
+        const e = engine();
+        if (e) e.rig.isoZoom = z;
+      },
+      focus: (x: number, z: number) => {
+        const e = engine();
+        if (e) e.rig.target.set(x + 0.5, p.current.level + 1, z + 0.5);
+      },
+      ready: () => !!engine() && !!mats.current,
+      bodies: () =>
+        [...shown.current].map(([name, pos]) => ({ name, ...(toPage(pos[0], pos[1] + 0.2, pos[2]) ?? { x: NaN, y: NaN }) })),
+      fps: () => engine()?.stats().fps,
+      mode: () => engine()?.rig.mode,
+      level: () => p.current.level,
+    };
+  });
+
+  const layers = useMemo(
+    () => ({ bots: false, entities: true, claims: false, places: false, points: false, plans: false, dangers: false, notes: false, weather: false, cutaway: false, staleness: false, changes: true, aids: false }),
+    [],
+  );
+
+  if (!ready) return <div className="absolute inset-0 bg-canvas" aria-busy="true" />;
+  return (
+    <div ref={wrap} className="absolute inset-0 overflow-hidden bg-canvas" data-testid="story-map">
+      {mod && source ? (
+        <mod.WorldViewer ref={viewer} source={source} dim={0} follow={null} layers={layers} cameraMode={props.view === 'top' ? 'top' : 'iso'} xray="off" drawDistance={112} hideHint className="absolute inset-0" />
+      ) : (
+        <DotMap follow={props.state?.pawns[0]?.name ?? ''} radius={40} className="absolute inset-0" label={false} />
+      )}
+      <canvas
+        ref={canvas}
+        tabIndex={0}
+        aria-label="Colony map: drag to select, right-click for orders, wheel to zoom, WASD to pan"
+        className="absolute inset-0 size-full cursor-crosshair outline-none"
+        style={{ touchAction: 'none' }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={(e) => void onPointerUp(e)}
+        onPointerLeave={() => (hover.current = null)}
+        onWheel={onWheel}
+        onContextMenu={(e) => e.preventDefault()}
+        onAuxClick={(e) => e.preventDefault()}
+      />
+    </div>
+  );
+});
+
+const BLOCK_LABELS: Record<number, string> = { 1: 'stone', 2: 'grass', 3: 'dirt', 4: 'cobblestone', 5: 'planks', 12: 'sand', 13: 'gravel', 14: 'gold ore', 15: 'iron ore', 16: 'coal ore', 17: 'log', 18: 'leaves', 20: 'glass', 56: 'diamond ore', 58: 'crafting table', 61: 'furnace', 54: 'chest' };
+function blockLabel(id: number): string {
+  return BLOCK_LABELS[id] ?? `block ${id}`;
+}

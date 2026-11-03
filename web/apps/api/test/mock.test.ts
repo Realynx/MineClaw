@@ -17,7 +17,7 @@ describe('mock bridge', () => {
     const s = await fetchLogin(t.url, 'vera');
     const ac = new AbortController();
     const res = await fetch(`${t.url}/api/live/stream`, { headers: { cookie: s.cookie }, signal: ac.signal });
-    const want = ['bots', 'now', 'entities', 'event', 'memoryActivity', 'hive', 'feed', 'status'];
+    const want = ['bots', 'now', 'entities', 'event', 'memoryActivity', 'hive', 'feed', 'status', 'story'];
     const frames = await readSse(res.body!, (f) => want.every((w) => f.some((x) => x.event === w)), 6000);
     ac.abort();
     for (const w of want)

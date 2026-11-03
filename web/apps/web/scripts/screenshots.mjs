@@ -20,6 +20,7 @@ export const PAGES = [
   ['bot', '/live/maid_chan'],
   ['bot-subhive', '/live/maid_chan_68'],
   ['memory-activity', '/memory-activity'],
+  ['story', '/story'],
   ['overview', '/overview'],
   ['memory', '/memory?kind=claims'],
   ['memory-detail', '/memory?kind=chests&id=2'],

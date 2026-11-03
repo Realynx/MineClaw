@@ -1,6 +1,7 @@
 import {
   Activity,
   BookOpen,
+  Castle,
   Boxes,
   Code2,
   Gauge,
@@ -34,6 +35,7 @@ export const NAV: NavGroup[] = [
     items: [
       { href: '/live', label: 'Live hive', icon: Radio, description: 'Bots, thoughts, scripts and chat', keywords: ['bots', 'hive', 'world'] },
       { href: '/memory-activity', label: 'Memory activity', icon: Activity, description: 'Which memories each brain is using', keywords: ['heat', 'raptor', 'context'] },
+      { href: '/story', label: 'Story Mode', icon: Castle, description: 'Run a colony of pawns from a top-down map', keywords: ['colony', 'pawns', 'build', 'work', 'schedule'] },
     ],
   },
   {

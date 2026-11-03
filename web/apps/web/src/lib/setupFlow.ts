@@ -21,11 +21,12 @@ export const ROLE_INFO: ReadonlyArray<{ role: Role; label: string; hint: string 
   { role: 'admin', label: 'Admin', hint: 'memory edits, rebuilds, backups, shard import, the audit log' },
   { role: 'chat', label: 'Chat', hint: 'talk to the bots as the linked player' },
   { role: 'commands', label: 'Commands', hint: 'your chat lines may arm command grants (with Chat)' },
+  { role: 'story', label: 'Story Mode', hint: 'run colonies: orders, work, schedules, builds (Admin can too)' },
   { role: 'viewer', label: 'Viewer', hint: 'read everything (every account can)' },
 ];
 
 /** The first account gets everything; each role can be unticked. */
-export const FIRST_ACCOUNT_ROLES: readonly Role[] = ['admin', 'chat', 'commands', 'viewer'];
+export const FIRST_ACCOUNT_ROLES: readonly Role[] = ['admin', 'chat', 'commands', 'story', 'viewer'];
 
 export interface Strength {
   /** 0 = too short (refused), 1 weak, 2 fair, 3 good, 4 strong. */

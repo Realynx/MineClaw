@@ -1,6 +1,7 @@
 /** Binary payloads for the mock bridge: real PNGs, MCWC v1 chunk replies (api.md §7) and a store-only `.mcshard` zip. */
 import { createHash } from 'node:crypto';
 import { crc32, deflateRawSync, deflateSync } from 'node:zlib';
+import { mockBlock } from './terrain.js';
 
 function chunk(type: string, data: Buffer): Buffer {
   const len = Buffer.alloc(4);
@@ -40,7 +41,7 @@ export function makePng(w: number, h: number, seed = 0): Buffer {
   ]);
 }
 
-/** One b1.8.1 column (H = 128): bedrock, stone to y 59, dirt, grass at y 63, a few ores; raw DEFLATE of ChunkSnapshot. */
+/** One b1.8.1 column (H = 128) of the mock terrain (./terrain.ts); raw DEFLATE of ChunkSnapshot. */
 function column(cx: number, cz: number): Buffer {
   const H = 128;
   const V = 16 * H * 16;
@@ -48,20 +49,12 @@ function column(cx: number, cz: number): Buffer {
   const meta = Buffer.alloc(V / 2);
   for (let lx = 0; lx < 16; lx++) {
     for (let lz = 0; lz < 16; lz++) {
-      const top = 62 + ((lx + cx * 3 + lz + cz * 5) % 3 === 0 ? 1 : 0);
-      for (let y = 0; y <= top; y++) {
+      for (let y = 0; y < H; y++) {
+        const [id, m] = mockBlock(cx * 16 + lx, y, cz * 16 + lz);
+        if (id === 0) continue;
         const idx = (lx * 16 + lz) * 128 + y;
-        let id = 1; // stone
-        if (y === 0)
-          id = 7; // bedrock
-        else if (y >= top - 2 && y < top)
-          id = 3; // dirt
-        else if (y === top)
-          id = 2; // grass
-        else if (y < 16 && (lx * 7 + lz * 13 + y) % 41 === 0)
-          id = 56; // diamond ore
-        else if ((lx * 5 + lz * 3 + y) % 23 === 0) id = 16; // coal ore
         blocks[idx] = id;
+        if (m) meta[idx >> 1]! |= (idx & 1) === 0 ? m & 15 : (m & 15) << 4;
       }
     }
   }

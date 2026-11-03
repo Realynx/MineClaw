@@ -62,7 +62,7 @@ deploy/viewer/               systemd units, cloudflared notes, and the web + bri
   optional TOTP secret, roles and the linked Minecraft player. Fox maps to `poofimafox` and Robin to `kiwi`. A
   `web/apps/api` CLI adds a user, resets a password and enrolls TOTP. There is no self-signup.
 - **First-run setup (added 2026-11-03).** While the users file has no users the app is an installation step: every page
-  redirects to `/setup`, login is off, and the page creates the first account (preset admin + chat + commands + viewer),
+  redirects to `/setup`, login is off, and the page creates the first account (preset admin + chat + commands + story + viewer),
   offers an optional TOTP enrolment, and signs it in. The first visit is expected to be open; whoever completes it first
   becomes the admin. It is fenced: direct LAN/loopback clients only (never through a trusted proxy or with Cloudflare
   headers; `Web:Setup:AllowProxied` defaults to false), CSRF + Origin, rate limited, audited (`setup`), and an atomic
@@ -73,6 +73,7 @@ deploy/viewer/               systemd units, cloudflared notes, and the web + bri
   - `chat`: can talk to bots as their linked player.
   - `commands`: their viewer lines may arm CommandGate request grants.
   - `admin`: memory edits, rebuilds, backups, shard import.
+  - `story` (added 2026-11-03): plays Story Mode (colony writes); `admin` holds it too. See `docs/web/story-mode.md`.
 - **Sessions.**
   - Opaque random id in a `__Host-mcx` cookie (HttpOnly, Secure when served over HTTPS, SameSite=Lax), held in a server
     store (SQLite at `/var/lib/mineclaw-web/web.db` on CT 114).

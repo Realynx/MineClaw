@@ -10,8 +10,8 @@ namespace MineClaw.ViewerBridge.Live;
 /// <summary>
 /// <c>GET /v1/live/stream</c>: the bridge polls the supervisor on loopback only while at least one client is connected
 /// (status 1 Hz, events 2 Hz, viewer/feed 2 Hz, viewer/now 2 Hz per online bot (1 Hz per subhive body), entity deltas 5 Hz, hive/tree every 3 s,
-/// viewer/memory-activity 1 Hz, world/blocks 5 Hz) and emits the typed events of api.md §5 (<c>bots</c>, <c>event</c>, <c>feed</c>, <c>now</c>,
-/// <c>entities</c>, <c>hive</c>, <c>memoryActivity</c>, <c>blocks</c>) as <c>event/id/data</c> frames with increasing ids. The last 256 frames
+/// viewer/memory-activity 1 Hz, world/blocks 5 Hz, Story Mode colonies 2 Hz) and emits the typed events of api.md §5 (<c>bots</c>, <c>event</c>,
+/// <c>feed</c>, <c>now</c>, <c>entities</c>, <c>hive</c>, <c>memoryActivity</c>, <c>blocks</c>, <c>story</c>) as <c>event/id/data</c> frames with increasing ids. The last 256 frames
 /// are kept for <c>Last-Event-ID</c> resume; a fresh client first gets the latest state frames (bots, hive, one now per bot).
 /// Delta topics start from the supervisor's current cursor (clients fetch the REST route once, then apply newer frames).
 /// </summary>
@@ -169,6 +169,7 @@ public sealed class LiveHub : IDisposable
         _ = Loop("hive", TimeSpan.FromSeconds(3), PollChanged("api/hive/tree", "hive", "hive", TimeSpan.FromSeconds(3)), ct);
         _ = Loop("memoryActivity", TimeSpan.FromSeconds(1), PollMemory(), ct);
         _ = Loop("blocks", TimeSpan.FromMilliseconds(200), PollBlocks(), ct);
+        _ = Loop("story", TimeSpan.FromMilliseconds(500), PollStory(), ct);
     }
 
     private async Task Loop(string name, TimeSpan every, Func<CancellationToken, Task> poll, CancellationToken ct)
@@ -345,6 +346,45 @@ public sealed class LiveHub : IDisposable
                 bool any = o["blocks"] is JsonObject per && per.Any(kv => kv.Value is JsonArray { Count: > 0 });
                 if (full || any || o["columns"] is JsonArray { Count: > 0 }) Publish("blocks", o);
                 if (!more) return;
+            }
+        };
+    }
+
+    /// <summary>
+    /// Story Mode (<c>/api/story</c> every 5 s for the colony list, then <c>/api/story/colonies/{id}?since=rev</c> per colony at
+    /// 2 Hz): the first look at a colony only takes its revision (clients fetch the REST state); then every reply whose
+    /// <c>rev</c> moved is emitted as a <c>story</c> frame with the colony <c>id</c> added. A bot without the routes (404) is
+    /// skipped quietly (the loop backs off). A colony that left the list is forgotten.
+    /// </summary>
+    private Func<CancellationToken, Task> PollStory()
+    {
+        var revs = new Dictionary<string, long>(StringComparer.Ordinal);
+        IReadOnlyList<string> colonies = [];
+        DateTimeOffset listedAt = DateTimeOffset.MinValue;
+        return async ct =>
+        {
+            if (DateTimeOffset.UtcNow - listedAt >= TimeSpan.FromSeconds(5))
+            {
+                var list = await GetJson("api/story", TimeSpan.FromSeconds(3), ct);
+                colonies = (list?["colonies"] as JsonArray ?? []).OfType<JsonObject>().Select(c => (string?)c["id"]).OfType<string>().ToList();
+                listedAt = DateTimeOffset.UtcNow;
+                foreach (var gone in revs.Keys.Except(colonies).ToList()) revs.Remove(gone);
+            }
+            foreach (var id in colonies)
+            {
+                bool known = revs.TryGetValue(id, out var since);
+                JsonNode? node;
+                try
+                {
+                    var q = known ? $"?since={since.ToString(CultureInfo.InvariantCulture)}" : "";
+                    node = await GetJson($"api/story/colonies/{Uri.EscapeDataString(id)}{q}", TimeSpan.FromSeconds(3), ct);
+                }
+                catch (SupervisorUnavailableException) { continue; }
+                if (node is not JsonObject o || o["rev"] is not JsonValue rv || !rv.TryGetValue<long>(out var rev)) continue;
+                revs[id] = rev;
+                if (!known || rev == since) continue;
+                o["id"] = id;
+                Publish("story", o);
             }
         };
     }

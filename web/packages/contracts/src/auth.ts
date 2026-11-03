@@ -2,8 +2,8 @@
 import { z } from 'zod';
 import { IsoDateTime, QInt } from './common.js';
 
-/** The four roles (architecture.md, Security model). */
-export const Role = z.enum(['viewer', 'chat', 'commands', 'admin']);
+/** The roles (architecture.md, Security model). `story` (added 2026-11-03) plays Story Mode: colony writes. */
+export const Role = z.enum(['viewer', 'chat', 'commands', 'admin', 'story']);
 export type Role = z.infer<typeof Role>;
 
 /**
@@ -18,11 +18,13 @@ export type RouteAccess = z.infer<typeof RouteAccess>;
 /**
  * Role semantics (resolves an ambiguity in architecture.md): every signed-in user can read (`viewer` is implied by any role);
  * `chat`, `commands` and `admin` are independent grants and never imply each other. `commands` only has an effect together
- * with `chat` (it lets the user's viewer chat lines arm CommandGate request grants).
+ * with `chat` (it lets the user's viewer chat lines arm CommandGate request grants). `story` (Story Mode writes) is held by
+ * the `story` role or by `admin`: the one grant another role implies.
  */
 export function hasRole(userRoles: readonly Role[], required: RouteAccess): boolean {
   if (required === 'public') return true;
   if (required === 'authenticated' || required === 'viewer') return userRoles.length > 0;
+  if (required === 'story') return userRoles.includes('story') || userRoles.includes('admin');
   return userRoles.includes(required);
 }
 
@@ -120,7 +122,7 @@ export const SetupRequest = z
       .regex(PLAYER_PATTERN, 'Minecraft names are 1-16 characters of A-Z a-z 0-9 _')
       .nullish()
       .describe('linked Minecraft player; null = cannot chat'),
-    roles: z.array(Role).min(1).max(4),
+    roles: z.array(Role).min(1).max(5),
   })
   .strict();
 export type SetupRequest = z.infer<typeof SetupRequest>;
@@ -144,6 +146,7 @@ export const WebAuditKind = z.enum([
   'shard_import_preview',
   'shard_export',
   'admin_other',
+  'story',
 ]);
 export type WebAuditKind = z.infer<typeof WebAuditKind>;
 

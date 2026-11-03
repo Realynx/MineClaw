@@ -28,6 +28,7 @@ const groups = [
         id,
       ),
   ],
+  ['Story Mode (supervisor pass-through)', (id) => id.startsWith('story.')],
   ['Live stream', (id) => id === 'live.stream'],
 ];
 

@@ -87,11 +87,13 @@ All three new processes run on CT 114 beside the bot:
 
 ## 2. Auth, sessions, roles (Nest-native)
 
-- **Roles** (`Role`): `viewer`, `chat`, `commands`, `admin`. Route access (`RouteAccess`) is `public`, `authenticated` or a
-  role. `hasRole` implements these semantics:
+- **Roles** (`Role`): `viewer`, `chat`, `commands`, `admin`, `story`. Route access (`RouteAccess`) is `public`,
+  `authenticated` or a role. `hasRole` implements these semantics:
   - Every signed-in user can read: `viewer` is implied by holding any role.
   - `chat`, `commands` and `admin` are independent grants, and none implies another.
   - `commands` has an effect only together with `chat`: the user's viewer lines may arm CommandGate request grants.
+  - `story` (added 2026-11-03) plays Story Mode: every `story.*` write. `admin` holds it too (the one implied grant);
+    viewers watch.
 - **Session.**
   - An opaque id in the `__Host-mcx` cookie. It is HttpOnly, SameSite=Lax, and Secure when served over HTTPS.
   - Sessions are stored in `web.db`. The idle timeout is 12 h and the absolute timeout 7 d.
@@ -209,9 +211,10 @@ signed string)`. The bridge compares in constant time.
 include_world, max_usd, who}`.
 - **Pass-through allow-list** (`SUPERVISOR_PASSTHROUGH_ALLOW`): `/v1/sup/<path>` forwards to supervisor `/api/<path>`.
   - GET: `bots`, `hive/tree`, `status`, `events`, `locate`, `blueprints`, `buildplans`, `world/*`, `scripts`, `bodies/*`,
-    `brains/*`, `viewer/feed`, `viewer/now`, `viewer/memory-activity`, plus the admin reads `admin/rebuild/*` and
-    `admin/audit` (admin role).
-  - POST: `viewer/chat` and `admin/*` (admin role).
+    `brains/*`, `viewer/feed`, `viewer/now`, `viewer/memory-activity`, `story` and `story/*`, plus the admin reads
+    `admin/rebuild/*` and `admin/audit` (admin role).
+  - POST: `viewer/chat`, `admin/*` (admin role) and `story/*` (`storyWrite`: the `story` or the `admin` role; `who` is set
+    like for admin writes).
   - Anything else gets a 404.
   - Binary replies are streamed.
 - **Render routes:** `/v1/render/tile/{bot}.png` forwards to the supervisor's `/view/{bot}?mode&radius&xray`. This is the only
@@ -335,11 +338,32 @@ Notes on specific routes:
 | `brains.context` | `GET /api/brains/:brain/context` | viewer | params `BrainParams`<br>query `BrainContextQuery` | `BrainContextPage` | `GET /v1/sup/brains/{brain}/context` | /api/brains/{brain}/context | – |
 | `brains.turn` | `GET /api/brains/:brain/turn/:n` | viewer | params `BrainTurnParams`<br>query `BrainTurnQuery` | `BrainTurnDetail` | `GET /v1/sup/brains/{brain}/turn/{n}` | /api/brains/{brain}/turn/{n} | – |
 
+### Story Mode (supervisor pass-through)
+
+| Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
+|---|---|---|---|---|---|---|---|
+| `story.list` | `GET /api/story` | viewer | – | `StoryListResponse` | `GET /v1/sup/story` | /api/story | – |
+| `story.recipes` | `GET /api/story/recipes` | viewer | query `StoryRecipesQuery` | `StoryRecipesResponse` | `GET /v1/sup/story/recipes` | /api/story/recipes | – |
+| `story.create` | `POST /api/story/colonies` | story | body `StoryCreateRequest` | `StoryCreateResponse` | `POST /v1/sup/story/colonies` | /api/story/colonies | story |
+| `story.directives` | `POST /api/story/directives` | story | body `StoryDirectiveRequest` | `StoryDirectiveResponse` | `POST /v1/sup/story/directives` | /api/story/directives | story |
+| `story.get` | `GET /api/story/colonies/:id` | viewer | params `StoryColonyParams`<br>query `StoryStateQuery` | `StoryColonyState` | `GET /v1/sup/story/colonies/{id}` | /api/story/colonies/{id} | – |
+| `story.release` | `POST /api/story/colonies/:id/release` | story | params `StoryColonyParams`<br>body `Empty` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/release` | /api/story/colonies/{id}/release | story |
+| `story.pause` | `POST /api/story/colonies/:id/pause` | story | params `StoryColonyParams`<br>body `StoryPauseRequest` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/pause` | /api/story/colonies/{id}/pause | story |
+| `story.priorities` | `POST /api/story/colonies/:id/priorities` | story | params `StoryColonyParams`<br>body `StoryPrioritiesRequest` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/priorities` | /api/story/colonies/{id}/priorities | story |
+| `story.schedule` | `POST /api/story/colonies/:id/schedule` | story | params `StoryColonyParams`<br>body `StoryScheduleRequest` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/schedule` | /api/story/colonies/{id}/schedule | story |
+| `story.draft` | `POST /api/story/colonies/:id/draft` | story | params `StoryColonyParams`<br>body `StoryDraftRequest` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/draft` | /api/story/colonies/{id}/draft | story |
+| `story.orders` | `POST /api/story/colonies/:id/orders` | story | params `StoryColonyParams`<br>body `StoryOrderRequest` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/orders` | /api/story/colonies/{id}/orders | story |
+| `story.zones` | `POST /api/story/colonies/:id/zones` | story | params `StoryColonyParams`<br>body `StoryZoneRequest` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/zones` | /api/story/colonies/{id}/zones | story |
+| `story.designations` | `POST /api/story/colonies/:id/designations` | story | params `StoryColonyParams`<br>body `StoryDesignationRequest` | `StoryDesignationResponse` | `POST /v1/sup/story/colonies/{id}/designations` | /api/story/colonies/{id}/designations | story |
+| `story.builds` | `POST /api/story/colonies/:id/builds` | story | params `StoryColonyParams`<br>body `StoryBuildRequest` | `StoryBuildResponse` | `POST /v1/sup/story/colonies/{id}/builds` | /api/story/colonies/{id}/builds | story |
+| `story.storage` | `POST /api/story/colonies/:id/storage` | story | params `StoryColonyParams`<br>body `StoryStorageRequest` | `StoryStorageResponse` | `POST /v1/sup/story/colonies/{id}/storage` | /api/story/colonies/{id}/storage | story |
+| `story.bills` | `POST /api/story/colonies/:id/bills` | story | params `StoryColonyParams`<br>body `StoryBillsRequest` | `StoryBillsResponse` | `POST /v1/sup/story/colonies/{id}/bills` | /api/story/colonies/{id}/bills | story |
+
 ### Live stream
 
 | Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
 |---|---|---|---|---|---|---|---|
-| `live.stream` | `GET /api/live/stream` | viewer | query `LiveStreamQuery` | sse | `GET /v1/live/stream` | bridge-native (polls status, events, viewer/feed, viewer/now, world/entities, world/blocks, hive/tree, viewer/memory-activity) | – |
+| `live.stream` | `GET /api/live/stream` | viewer | query `LiveStreamQuery` | sse | `GET /v1/live/stream` | bridge-native (polls status, events, viewer/feed, viewer/now, world/entities, world/blocks, hive/tree, viewer/memory-activity, story) | – |
 
 <!-- routes:end -->
 
@@ -384,6 +408,7 @@ what it holds:
 | `entities`       | `/api/world/entities`  | `rev`  |
 | `memoryActivity` | `/api/memory-activity` | `seq`  |
 | `blocks`         | `/api/world/blocks`    | `rev`  |
+| `story`          | `/api/story/colonies/{id}` | `rev` per colony `id` |
 
 | Event            | Payload schema                                                       | Bridge source and cadence                                               | Emitted                  |
 | ---------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------ |
@@ -395,6 +420,7 @@ what it holds:
 | `hive`           | `HiveTreeNode`                                                       | `/api/hive/tree`, every 3 s                                             | on change                |
 | `memoryActivity` | `MemoryActivityResponse` (new events + the full in-context snapshot) | `/api/viewer/memory-activity?since=`, 1 Hz                              | on change                |
 | `blocks`         | `WorldBlockDeltas` (per-block changes; `full: true` = refetch via index/chunks) | `/api/world/blocks?since=rev`, 5 Hz (pages while `more`)       | when non-empty or full   |
+| `story`          | `StoryColonyFrame` (one colony's delta + its `id`)                   | `/api/story` every 5 s, then `/api/story/colonies/{id}?since=rev` per colony, 2 Hz, while the stream has clients | when the colony's `rev` moved |
 | `status`         | `LiveStatus`                                                         | Nest-native: upstream state, bot reachability, latency                  | on change and every 15 s |
 
 ## 6. New bot routes (supervisor, snake_case)
@@ -488,6 +514,36 @@ These are the bot-side additions from architecture.md, in their wire form. They 
   - **Per node.** Each node carries `{node_id, last_access_at, access_count, heat (0..1), brains:[{brain, last_access_at,
 in_context, staleness_s, evicted}]}`.
   - **Decay.** `heat = 0.5^((at − last_access_at)/half_life_s)`. The client re-decays between refreshes with `decayHeat`.
+
+- **Story Mode (added 2026-11-03; design: `docs/web/story-mode.md`).** `/api/story*` routes behind
+  `Supervisor:Viewer:Enabled` and the token, writes behind `Supervisor:Viewer:AllowStory`. Schemas: `story.ts` in the
+  contracts (snake_case on the wire). What the web relies on beyond the design doc's tables:
+  - **Deltas.** `GET /api/story/colonies/{id}?since=rev` returns only the items whose revision is after `rev`, keyed by pawn
+    `name`, zone / designation / order / build / directive `id`, storage `chest` and workbench `pos`, plus
+    `removed: {pawns, zones, designations, orders, builds, storages, workbenches, directives, alerts}` (keys). No `since`
+    (or `full: true`) is the whole state and replaces the client's. `ghosts` and `categories`, when present, replace.
+    `alerts` are appended (de-duplicated by `id`).
+  - **Designations by area.** `{op: "add", kind, area, filter?}` (kinds `chop cut harvest mine haul hunt deconstruct forbid
+    allow build`; `filter` for mine: `all ores stone soil`) is expanded by the director to every matching target (whole
+    trees for chop, ripe crops, items, animals) and answers `StoryDesignationResponse {count, targets?, entities?}`.
+    `{op: "remove", area}` without a kind cancels every designation there. A chop designation is one tree: `block` = its
+    base log, `targets` = its logs.
+  - **Builds.** `{op: "add", items: [StoryBuildItem]}` → `{ids}`; `remove | pause | resume | reorder` take `ids` (reorder:
+    the listed builds move to the front, in that order). `area` y1 is the first layer: walls rise `height` (1–12), a roof
+    sits on it with `roof: {style: flat|slab|gable|none, material?, overhang?}`. `kind: "furniture"` places
+    `crafting_table | furnace | chest | bed | torch`. `expandBuildItem` is the reference expansion (the web's preview).
+    State: `builds` + `ghosts {rev, blocks: [[x, y, z, id, meta, build_id, todo|leased|done|blocked]]}`.
+  - **Storage** (chests; there is no ground stockpile): `{op: "set", chests, filter?, priority?, label?}`,
+    `{op: "remove", chests}`, `{op: "copy", from, to}`, `{op: "assign_area", area, filter?, priority?}`. Filters are
+    `{allow, deny}` of category ids or `"id:meta"` keys (`-1` = every meta); deny wins. State: `categories` (the loot tree)
+    and `storages`.
+  - **Bills.** `POST …/bills` `{op: "add", workbench, spec}`, `{op: "update", workbench, id, spec}` (partial),
+    `{op: remove|pause|resume|reorder, workbench, ids}`; `spec` = `{recipe, mode: count|until|forever, target?, paused?,
+    ingredients?, radius?, pawn?, min_skill?, store?: "best" | {chest}}`. (`bill` is an opaque key for case conversion, so
+    the request names it `spec`.) `GET /api/story/recipes?workbench=` lists `StoryRecipe`s. State: `workbenches`.
+  - **AI bodies.** State `ai` (main, hives, subhive bodies) and `directives`; `POST /api/story/directives` `{bots,
+    directive: {kind, area?, targets?, entities?, filter?, build?, bill?, text?}, request_id}` → `{id, delivered}`. The web
+    sends the same payload a colony tool sends the director, to AI bodies in the selection.
 
 ## 7. Binary formats
 

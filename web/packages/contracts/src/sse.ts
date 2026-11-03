@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { IsoDateTime } from './common.js';
 import { EventsResponse, HiveTreeNode, StatusResponse, WorldBlockDeltas, WorldEntities } from './live.js';
 import { MemoryActivityResponse } from './memoryActivity.js';
+import { StoryColonyFrame } from './story.js';
 import { BotNow, FeedResponse } from './viewer.js';
 
 /** Nest-native connection state (drives the single header indicator). */
@@ -44,6 +45,8 @@ export const SSE_EVENTS = {
   memoryActivity: MemoryActivityResponse,
   /** Per-block world changes (5 Hz; when non-empty, rev order). `full: true` = refetch through index/chunks. */
   blocks: WorldBlockDeltas,
+  /** One Story Mode colony's delta (2 Hz while a client watches; when its revision moved). Cursor: `rev` per colony id. */
+  story: StoryColonyFrame,
   /** Nest-native: upstream connection state (on change, and every 15 s). Never sent by the bridge. */
   status: LiveStatus,
 } as const;
@@ -54,7 +57,7 @@ export type SsePayload<E extends SseEventName> = z.infer<(typeof SSE_EVENTS)[E]>
 export type SseMessage = { [E in SseEventName]: { event: E; id: number; data: SsePayload<E> } }[SseEventName];
 
 /** Topics a browser can subscribe to (`status` is always sent). */
-export const SseTopic = z.enum(['bots', 'event', 'feed', 'now', 'entities', 'hive', 'memoryActivity', 'blocks']);
+export const SseTopic = z.enum(['bots', 'event', 'feed', 'now', 'entities', 'hive', 'memoryActivity', 'blocks', 'story']);
 export type SseTopic = z.infer<typeof SseTopic>;
 
 /**

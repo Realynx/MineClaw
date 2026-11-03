@@ -59,6 +59,15 @@ The imperative handle offers:
 
 Mode switches and focus glide over 0.6 s.
 
+For an app that draws its own HUD over the view (Story Mode), the engine also offers:
+
+- `setLevelCut({y, r?} | null)`: cuts every block at y ≥ `y` within `r` blocks (default 512) of where the view looks, through
+  the roof-cut uniforms (no re-meshing); what it opens shows as the hatched cap. `pickCut()` is the cut a pick should honour.
+- `runtime.host.scan(dim, min, max, ids, maxHits?)`: the blocks of a box whose id is in `ids` (every non-air block when empty),
+  as flat `[x, y, z, id, meta, below-id, …]`, answered by the mesh worker.
+- `itemLookById(version, pack, id, meta)` and `itemName(id)` (package exports): the icon cell of an item or block in the
+  bundled sheets (`bundleUrls(version)`), for item icons in panels.
+
 ### `<WorldViewerProvider>` and `<WorldThumbnail>`: many views, one world
 
 The world exists once in memory, whatever number of views draw it:

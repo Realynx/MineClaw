@@ -19,6 +19,8 @@ export * from './controller.js';
 export * from './vision.js';
 export * from './viewer.js';
 export * from './memoryActivity.js';
+export * from './story.js';
+export * from './storyData.js';
 export * from './sse.js';
 export * from './bridge.js';
 export * from './routes.js';

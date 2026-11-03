@@ -112,6 +112,45 @@ public class LiveTests
     }
 
     [Fact]
+    public async Task Story_colonies_are_polled_and_each_moved_revision_is_a_story_frame_with_its_id()
+    {
+        await using var h = await BridgeHost.StartAsync();
+        int calls = 0;
+        h.Sup.Routes["/api/story"] = _ => FakeSupervisor.Json("""{"colonies":[{"id":"story-1","name":"Hollow","pawns":["maid_s1_ash"]}]}""");
+        h.Sup.Routes["/api/story/colonies/story-1"] = req =>
+        {
+            int n = Interlocked.Increment(ref calls);
+            var since = req.Query["since"].ToString();
+            // 1st: the whole state (only takes the cursor); 2nd: a delta at rev 8; afterwards nothing moves (rev stays 8).
+            if (n == 1) return FakeSupervisor.Json("""{"rev":7,"at":"2026-11-03T10:00:00+00:00","full":true,"pawns":[],"zones":[],"designations":[],"orders":[],"alerts":[]}""");
+            if (n == 2 && since == "7") return FakeSupervisor.Json("""{"rev":8,"at":"2026-11-03T10:00:00.5+00:00","full":false,"pawns":[{"name":"maid_s1_ash","display":"Ash","pos":[1,64,2],"state":"working"}]}""");
+            return FakeSupervisor.Json("""{"rev":8,"at":"2026-11-03T10:00:01+00:00","full":false}""");
+        };
+        using var req = h.Signed("GET", "/v1/live/stream");
+        using var res = await h.Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
+        var stream = await res.Content.ReadAsStreamAsync();
+        var seen = new List<(string Event, long Id, string Data)>();
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        while (!seen.Any(f => f.Event == "story") && DateTime.UtcNow < deadline)
+            seen.AddRange(await ReadFrames(stream, 1, deadline - DateTime.UtcNow));
+        // A few more polls with nothing new emit nothing.
+        for (int i = 0; i < 40 && Volatile.Read(ref calls) < 5; i++) await Task.Delay(100);
+        var more = new List<(string Event, long Id, string Data)>();
+        try
+        {
+            while (more.Count < 50) more.AddRange(await ReadFrames(stream, 1, TimeSpan.FromSeconds(1.5)));
+        }
+        catch (OperationCanceledException) { } // quiet: nothing more to read
+        var story = seen.Concat(more).Where(f => f.Event == "story").ToList();
+        Assert.Single(story);
+        using var doc = JsonDocument.Parse(story[0].Data);
+        Assert.Equal("story-1", doc.RootElement.GetProperty("id").GetString());
+        Assert.Equal(8, doc.RootElement.GetProperty("rev").GetInt64());
+        Assert.Equal("Ash", doc.RootElement.GetProperty("pawns")[0].GetProperty("display").GetString());
+        Assert.Contains(h.Sup.Seen, r => r.Target == "/api/story/colonies/story-1?since=8");
+    }
+
+    [Fact]
     public async Task Heat_propagates_to_every_ancestor_with_decay_staleness_and_eviction()
     {
         var fx = await FixtureDb.SharedAsync();

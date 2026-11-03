@@ -26,7 +26,31 @@ const OVERRIDES: Partial<
   'memory.get': { params: { kind: 'facts', id: '12' } },
   'bots.chat': { body: { text: 'claude, set it to day', requestId: 'r-8f14e45fceea' } },
   'vision.render': { query: { see: '{"mode":"eye"}' } },
+  // Story Mode: the mock bridge's colony `story-1` (Mock Hollow, founded at start) and its first pawn.
+  ...storyOverrides(),
 };
+
+function storyOverrides(): typeof OVERRIDES {
+  const id = { id: 'story-1' };
+  const pawns = ['maid_s1_dara'];
+  return {
+    'story.recipes': { query: { workbench: 'crafting_table' } },
+    'story.create': { body: { name: 'Second Hollow', pawns: 2 } },
+    'story.get': { params: id, query: {} },
+    'story.release': { params: id, body: {} },
+    'story.pause': { params: id, body: { paused: false } },
+    'story.priorities': { params: id, body: { pawns, work: { chop: 1, haul: 2 } } },
+    'story.schedule': { params: id, body: { pawns, hours: { '0': 'work', '20': 'sleep' } } },
+    'story.draft': { params: id, body: { pawns, drafted: false } },
+    'story.orders': { params: id, body: { pawns, order: { kind: 'move', target: { x: 20, y: 64, z: 12 } }, queue: true } },
+    'story.zones': { params: id, body: { op: 'add', kind: 'farm', area: [12, 63, 18, 19, 63, 23] } },
+    'story.designations': { params: id, body: { op: 'add', kind: 'chop', area: [26, 60, 2, 50, 75, 20] } },
+    'story.builds': { params: id, body: { op: 'add', items: [{ kind: 'wall', area: [0, 64, 0, 4, 64, 4], material: 'cobblestone', height: 3 }] } },
+    'story.storage': { params: id, body: { op: 'assign_area', area: [14, 60, 0, 30, 70, 10] } },
+    'story.bills': { params: id, body: { op: 'add', workbench: [17, 63, 7], spec: { recipe: 'sticks', mode: 'until', target: 64 } } },
+    'story.directives': { body: { bots: ['maid_chan'], directive: { kind: 'text', text: 'come here' }, requestId: 'r-story0001' } },
+  };
+}
 
 function toQuery(v: unknown): Record<string, string> {
   const out: Record<string, string> = {};
@@ -51,7 +75,7 @@ export function sampleInput(id: RouteId): { path: string; body?: unknown } {
 }
 
 type Who = 'anon' | keyof typeof PERSONAS;
-const WHO: Who[] = ['anon', 'viewer', 'chat', 'commands', 'admin'];
+const WHO: Who[] = ['anon', 'viewer', 'chat', 'commands', 'admin', 'story'];
 
 let t: TestApp;
 const sessions = new Map<Who, Session>();

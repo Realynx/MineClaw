@@ -6,6 +6,7 @@ import { LoginResponse, Me, ROUTES, SetupRequest, SetupStatus, SSE_EVENTS, type 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mockSetupMode, mockSignIn, resolvers, SAMPLE_CALLS, type Ctx } from '@/mocks/api';
 import { tick } from '@/mocks/data/live';
+import { seedStory, storySim } from '@/mocks/data/story';
 
 // Answer errors by design (phase 2 / unused; setup.create is 409 once users exist, so it has its own test below).
 const SKIP = new Set<RouteId>(['groom.preview', 'bots.tile', 'setup.create']);
@@ -18,7 +19,35 @@ const WRITES: Partial<Record<RouteId, Ctx>> = {
   'admin.rebuildStart': { params: {}, query: {}, body: { scope: 'kind', kind: 'fact' } },
   'admin.rebuildCancel': { params: { jobId: 'job-1' }, query: {}, body: {} },
   'bots.chat': { params: { bot: 'maid_chan' }, query: {}, body: { text: 'hi', requestId: 'abcdefgh1234' } },
+  ...storyWrites(),
 };
+
+function benchPos(): number[] {
+  seedStory();
+  return storySim.state('story-1').workbenches?.[0]?.pos ?? [0, 0, 0];
+}
+
+/** Story Mode writes against the seeded mock colony (story-1, first pawn maid_s1_dara). */
+function storyWrites(): Partial<Record<RouteId, Ctx>> {
+  const p = { id: 'story-1' };
+  const pawns = ['maid_s1_dara'];
+  const w = (body: unknown): Ctx => ({ params: p, query: {}, body });
+  return {
+    'story.create': { params: {}, query: {}, body: { name: 'Second', pawns: 2 } },
+    'story.release': w({}),
+    'story.pause': w({ paused: false }),
+    'story.priorities': w({ pawns, work: { chop: 1 } }),
+    'story.schedule': w({ pawns, hours: { '0': 'work' } }),
+    'story.draft': w({ pawns, drafted: true }),
+    'story.orders': w({ pawns, order: { kind: 'move', target: { x: 0, y: 70, z: 0 } } }),
+    'story.zones': w({ op: 'add', kind: 'farm', area: [8, 66, -6, 13, 66, -1] }),
+    'story.designations': w({ op: 'add', kind: 'chop', area: [-10, 50, -14, 8, 90, 8] }),
+    'story.builds': w({ op: 'add', items: [{ kind: 'wall', area: [0, 70, 0, 4, 70, 4], material: 'cobblestone', height: 3 }] }),
+    'story.storage': w({ op: 'assign_area', area: [1, 60, -5, 7, 80, -3] }),
+    'story.bills': w({ op: 'add', workbench: benchPos(), spec: { recipe: 'sticks', mode: 'until', target: 64 } }),
+    'story.directives': { params: {}, query: {}, body: { bots: ['maid_chan'], directive: { kind: 'text', text: 'hi' }, requestId: 'r-12345678' } },
+  };
+}
 
 describe('mock fixtures satisfy the contracts', () => {
   beforeEach(() => mockSignIn('fox'));

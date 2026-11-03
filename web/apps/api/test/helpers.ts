@@ -23,12 +23,13 @@ export interface Persona {
 }
 
 /** One user per access level. */
-export const PERSONAS: Record<'viewer' | 'chat' | 'chatNoPlayer' | 'commands' | 'admin', Persona> = {
+export const PERSONAS: Record<'viewer' | 'chat' | 'chatNoPlayer' | 'commands' | 'admin' | 'story', Persona> = {
   viewer: { username: 'vera', roles: ['viewer'], player: null },
   chat: { username: 'robin', roles: ['chat', 'viewer'], player: 'kiwi' },
   chatNoPlayer: { username: 'nemo', roles: ['chat'], player: null },
   commands: { username: 'cora', roles: ['chat', 'commands', 'viewer'], player: 'cora_mc' },
   admin: { username: 'fox', roles: ['admin', 'chat', 'commands', 'viewer'], player: 'poofimafox' },
+  story: { username: 'sky', roles: ['story', 'viewer'], player: null },
 };
 
 let cachedHash: Promise<string> | undefined;

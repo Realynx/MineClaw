@@ -94,6 +94,28 @@ The **Pawn** object:
 The bridge passes these through (allow-list). The live stream gets a `story` event with the colony delta at 2 Hz while
 a client watches.
 
+## Additions (2026-11-03)
+
+The design grew while it was built. The wire forms are in `docs/web/api.md` §6 ("Story Mode") and `story.ts` in the contracts.
+
+- **Builds.** The Architect queues structures (wall, floor, roof, door, window, stairs, fence, single block, deconstruct) and
+  furniture (crafting table, furnace, chest, bed, torch); pawns with build work fill them in queue order. Walls take a height
+  (1–12), roofs a style (flat, slab, gable, none) and an overhang. State: `builds` and `ghosts`.
+- **Levels.** Top-down shows the working level: everything from the roof line up (level + wall height + 1) is x-rayed, drawn
+  as the hatched cut. PgUp / PgDn move a storey; an angled view (V) builds in 3D with the same tools, placing against the
+  hovered face.
+- **Designate tools** work by area the genre's way: pick a tool, drag a grid rectangle, every matching target lights up with a
+  live count, release designates (Shift keeps the tool). Kinds gain `cut`, `hunt`, `forbid`, `allow` and a mine `filter`; the
+  director expands an area to its targets and answers the count.
+- **Storage is chests.** There is no ground stockpile (loose loot despawns). Chests get the genre's storage settings: a
+  priority and a filter over a loot category tree. State: `categories` and `storages`.
+- **Bills.** Workbenches (crafting table, furnace, brewing stand, anvil, enchanting table) take bills: a recipe, repeat
+  mode (count, until, forever), ingredient filter and radius, worker restriction, where the product goes. State:
+  `workbenches`; recipes come from `GET /api/story/recipes`.
+- **AI bodies.** Main, the hives and their bodies sit in the top bar after the pawns. With them in the selection, a tool,
+  order, build or bill also goes to them as a directive (`POST /api/story/directives`) with the same payload; the chat bar
+  talks to them as the signed-in player. State: `ai` and `directives`.
+
 ## Web: the Story Mode tab
 
 - **Map.** A top-down orthographic view (the world viewer's `top` camera) over the colony.

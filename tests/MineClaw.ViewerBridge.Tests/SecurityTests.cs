@@ -179,8 +179,41 @@ public class PassthroughTests
     [InlineData("POST", "admin/backup", true)]
     [InlineData("POST", "status", false)]
     [InlineData("POST", "bots", false)]
+    [InlineData("GET", "story", true)]
+    [InlineData("GET", "story/colonies/story-1", true)]
+    [InlineData("GET", "story/recipes", true)]
+    [InlineData("GET", "storyx", false)]
+    [InlineData("POST", "story/colonies/story-1/orders", true)]
+    [InlineData("POST", "story/directives", true)]
+    [InlineData("POST", "story", false)]
     public void Allow_list_matches_the_contract(string method, string path, bool allowed) =>
         Assert.Equal(allowed, SupervisorProxy.Allowed(method, path));
+
+    [Fact]
+    public async Task Story_reads_pass_for_viewers_and_writes_need_the_story_or_admin_role()
+    {
+        await using var h = await BridgeHost.StartAsync();
+        h.Sup.Routes["/api/story"] = _ => FakeSupervisor.Json("""{"colonies":[{"id":"story-1","name":"Hollow","paused":false,"pawns":["maid_s1_ash"]}]}""");
+        h.Sup.Routes["/api/story/colonies/story-1/orders"] = _ => FakeSupervisor.Json("""{"ok":true,"rev":12}""");
+        var (s, body) = await h.GetAsync("/v1/sup/story", roles: "viewer");
+        Assert.Equal(200, s);
+        Assert.Contains("story-1", body);
+        const string order = """{"pawns":["maid_s1_ash"],"order":{"kind":"chop","target":{"x":1,"y":64,"z":2}},"queue":true}""";
+        Assert.Equal(403, (await h.PostAsync("/v1/sup/story/colonies/story-1/orders", order, roles: "chat,commands,viewer")).Status);
+        Assert.DoesNotContain(h.Sup.Seen, r => r.Target.StartsWith("/api/story/colonies/story-1/orders", StringComparison.Ordinal));
+        var (ok, _) = await h.PostAsync("/v1/sup/story/colonies/story-1/orders", order, roles: "story,viewer", user: "sky");
+        Assert.Equal(200, ok);
+        var seen = h.Sup.Seen.Last(r => r.Target == "/api/story/colonies/story-1/orders");
+        Assert.Equal("test-token", seen.Token);
+        using (var doc = JsonDocument.Parse(seen.Body))
+        {
+            Assert.Equal("sky (web)", doc.RootElement.GetProperty("who").GetString());
+            Assert.Equal("chop", doc.RootElement.GetProperty("order").GetProperty("kind").GetString());
+        }
+        Assert.Equal(200, (await h.PostAsync("/v1/sup/story/colonies/story-1/orders", order, roles: "admin,viewer")).Status);
+        // `who` comes from the signature, never the body.
+        Assert.Equal(400, (await h.PostAsync("/v1/sup/story/colonies/story-1/orders", """{"who":"mallory"}""", roles: "story")).Status);
+    }
 
     [Theory]
     [InlineData("/v1/sup/bodies/..%2Fadmin/x")]

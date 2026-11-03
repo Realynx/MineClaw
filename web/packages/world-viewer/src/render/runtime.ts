@@ -82,6 +82,8 @@ export interface ViewSetup {
   floorY: number;
   /** Roof cut: cells at y ≥ roof.y within roof.r of (x, z). */
   roof: { x: number; y: number; z: number; r: number } | null;
+  /** Dim the world below this y (a level cut's lower storeys); null/absent = off. */
+  dimBelow?: number | null;
   /** Silhouettes of the bots and players that blocks (leaves included) hide from this view's camera. */
   ghosts?: boolean;
   /** Reading aids around this point (the followed bot's feet), or none. */
@@ -902,6 +904,7 @@ export class WorldRuntime {
     u.uFloorY.value = s.floorY;
     if (s.roof) u.uRoof.value.set(s.roof.x, s.roof.y, s.roof.z, s.roof.r);
     else u.uRoof.value.set(0, 0, 0, 0);
+    u.uDimBelow.value = s.dimBelow ?? -1e9;
     this.materials.cap.visible = n > 0 || !!s.roof;
     this.backstop.position.set(Math.round(cam.x), 0, Math.round(cam.z));
     this.backstop.updateMatrixWorld();

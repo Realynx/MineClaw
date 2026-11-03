@@ -31,6 +31,8 @@ import { makeMcwc, makePng, makeZip } from './binary.js';
 import { generate } from './generate.js';
 import { MockHive } from './hive.js';
 import { Replay } from './replay.js';
+import { MockStory } from './story.js';
+import { drainBlockChanges } from './terrain.js';
 
 type Obj = Record<string, unknown>;
 type Fixtures = Record<'db' | 'tools' | 'live', Obj>;
@@ -195,6 +197,7 @@ class MockWorld {
   blocksRev = 900;
   tick = 0;
   readonly hive = new MockHive();
+  readonly story = new MockStory(this.hive);
   readonly feed: Obj[] = [];
   private readonly listeners = new Set<(event: SseEventName, data: unknown) => void>();
 
@@ -266,7 +269,11 @@ class MockWorld {
   }
 
   blocks(): Obj {
-    return this.hive.blocks(++this.blocksRev);
+    const frame = this.hive.blocks(++this.blocksRev);
+    // The colony director's changes (felled trees, built ghosts) ride along.
+    const story = drainBlockChanges();
+    if (story.length) (frame.blocks as Record<string, unknown[]>)['0']!.push(...story);
+    return frame;
   }
 
   event(): Obj {
@@ -359,6 +366,14 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
       if (inm === etag) return { status: 304, raw: '', headers: { ETag: etag } };
       return { bytes, type, headers: { ETag: etag, ...headers } };
     };
+    if (id.startsWith('story.')) {
+      // Like the real bridge: Story Mode writes need the story or the admin role.
+      const roles = identity.roles.split(',');
+      if (route.method === 'POST' && !roles.includes('story') && !roles.includes('admin'))
+        return { status: 403, json: { error: 'story role required', code: 'forbidden' } };
+      const r = world.story.handle(id, params, query, body);
+      return { status: r.status, json: r.json };
+    }
     const replay = world.replay;
     if (replay) {
       const cols = () =>
@@ -532,6 +547,8 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
       () => {
         n++;
         world.hive.advance();
+        world.story.sim.step(100);
+        if (n % 5 === 0) for (const f of world.story.frames()) frame('story', f);
         if (n % 2 === 0) {
           frame('entities', world.entities());
           frame('blocks', world.blocks());

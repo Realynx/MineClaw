@@ -75,6 +75,7 @@ export class WorldViewerEngine implements RuntimeView {
   private aimBusy = false;
   private marker: [number, number, number] | null = null;
   private highlighted: string[] = [];
+  private levelCut: { y: number; r: number; dimBelow: number | null } | null = null;
 
   constructor(private readonly container: HTMLElement, opts: EngineOptions) {
     this.opts = opts;
@@ -146,6 +147,21 @@ export class WorldViewerEngine implements RuntimeView {
   /** A target position marker (a block), drawn in this view; null clears it. */
   setMarker(p: [number, number, number] | null): void {
     this.marker = p;
+  }
+
+  /**
+   * [level cut] Cuts every block at y >= `y` away within `r` blocks of the view's centre (the roof cut's uniforms, so nothing is
+   * re-meshed): what was cut shows as the hatched cap. Story Mode's top-down levels x-ray roofs this way; `dimBelow` dims the
+   * world under that y (the storeys below the working one). null = off.
+   */
+  setLevelCut(cut: { y: number; r?: number; dimBelow?: number | null } | null): void {
+    this.levelCut = cut ? { y: cut.y, r: cut.r ?? 512, dimBelow: cut.dimBelow ?? null } : null;
+  }
+
+  /** The cut a pick should honour (the level cut, else the roof cut), centred where this view looks. */
+  pickCut(): { x: number; y: number; z: number; r: number } | null {
+    if (this.levelCut) return { x: this.rig.target.x, y: this.levelCut.y, z: this.rig.target.z, r: this.levelCut.r };
+    return this.roof ? { ...this.roof } : null;
   }
 
   /** Bots outlined in this view (the app's selection). */
@@ -288,7 +304,7 @@ export class WorldViewerEngine implements RuntimeView {
     this.camera.far = this.drawDistance * 1.6 + (iso ? this.rig.isoDistance() : 0) + 32;
     this.camera.near = iso ? Math.max(0.5, this.rig.isoDistance() * 0.2) : 0.05;
     // A cut-away shows solids from the inside: the cap pass needs their far side (down to the world floor) in range.
-    if (this.roof || this.coneOn) this.camera.far += 256;
+    if (this.roof || this.coneOn || this.levelCut) this.camera.far += 256;
     // Overlays: this view's dimension, its toggles; notes go to the app.
     const ov = rt.overlaysFor(this.dim);
     if (ov && ov !== this.overlaysSeen) {
@@ -334,7 +350,8 @@ export class WorldViewerEngine implements RuntimeView {
       selected: this.followName,
       cones: subs.length && (this.xray === 'on' || this.coneOn) ? subs.map((s) => ({ x: s.x, y: s.y + 0.9, z: s.z })) : [],
       floorY: subs.length ? Math.floor(Math.min(...subs.map((s) => s.y)) + 0.01) : 0,
-      roof: this.roof,
+      roof: this.levelCut ? { x: this.rig.target.x, y: this.levelCut.y, z: this.rig.target.z, r: this.levelCut.r } : this.roof,
+      dimBelow: this.levelCut?.dimBelow ?? null,
       ghosts: this.xray !== 'off',
       viewId: this.id,
       precip: this.precip,

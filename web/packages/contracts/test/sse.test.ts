@@ -21,6 +21,7 @@ describe('SSE catalogue', () => {
       columns: [{ rev: 41, at: 1762077599000, dim: 0, cx: 0, cz: -1, kind: 'loaded' }],
     },
     status: { at: '2026-11-02T10:00:00Z', upstream: 'connected', bot: 'up', latency_ms: 4.2 },
+    story: { ...(live.storyState as object), id: 'story-1' },
   };
 
   it.each(C.SSE_EVENT_NAMES)('%s frame round-trips', (name) => {
@@ -35,7 +36,7 @@ describe('SSE catalogue', () => {
   it('ignores unknown events and parses topics', () => {
     expect(C.parseSseFrame('nope', {})).toBeNull();
     expect(C.parseTopics('feed,now,bogus')).toEqual(['feed', 'now']);
-    expect(C.parseTopics(undefined)).toHaveLength(8);
+    expect(C.parseTopics(undefined)).toHaveLength(9);
   });
 
   it('decays heat by half-life', () => {

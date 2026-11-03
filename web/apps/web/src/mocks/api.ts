@@ -10,6 +10,7 @@ import * as mem from './data/memory';
 import * as misc from './data/misc';
 import * as raptor from './data/raptor';
 import * as scripts from './data/scripts';
+import { seedStory, storySim } from './data/story';
 
 export class MockError extends Error {
   constructor(
@@ -392,7 +393,41 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
   'vision.list': ({ params }) => live.visionList(String(params.body)),
   'brains.context': ({ params, query }) => live.brainContext(String(params.brain), num(query.since)),
   'brains.turn': ({ params }) => live.brainTurn(String(params.brain), num(params.n)),
+  ...storyResolvers(),
 };
+
+/** Story Mode: the shared mock director (mocks/data/story.ts); its errors become API errors. */
+function storyResolvers(): Partial<Record<RouteId, Resolver>> {
+  const run = (f: () => unknown) => {
+    seedStory();
+    try {
+      return f();
+    } catch (e) {
+      const status = (e as { status?: number }).status ?? 500;
+      throw new MockError(status, e instanceof Error ? e.message : 'story error', status === 404 ? 'not_found' : 'bad_request');
+    }
+  };
+  const id = (c: Ctx) => String(c.params.id);
+  const b = (c: Ctx) => c.body as never;
+  return {
+    'story.list': () => run(() => storySim.list()),
+    'story.recipes': ({ query }) => run(() => storySim.recipes(query.workbench as string | undefined)),
+    'story.create': (c) => run(() => storySim.create(b(c))),
+    'story.get': (c) => run(() => storySim.state(id(c), c.query.since === undefined ? undefined : num(c.query.since))),
+    'story.release': (c) => run(() => storySim.release(id(c))),
+    'story.pause': (c) => run(() => storySim.pause(id(c), (c.body as { paused: boolean }).paused)),
+    'story.priorities': (c) => run(() => storySim.priorities(id(c), b(c))),
+    'story.schedule': (c) => run(() => storySim.schedule(id(c), b(c))),
+    'story.draft': (c) => run(() => storySim.draft(id(c), b(c))),
+    'story.orders': (c) => run(() => storySim.orders(id(c), b(c))),
+    'story.zones': (c) => run(() => storySim.zones(id(c), b(c))),
+    'story.designations': (c) => run(() => storySim.designations(id(c), b(c))),
+    'story.builds': (c) => run(() => storySim.builds(id(c), b(c))),
+    'story.storage': (c) => run(() => storySim.storage(id(c), b(c))),
+    'story.bills': (c) => run(() => storySim.bills(id(c), b(c))),
+    'story.directives': (c) => run(() => storySim.directive(b(c))),
+  };
+}
 
 /** Sample calls for the fixture tests: route id → params + query (+ body) that exercise the resolver. */
 export const SAMPLE_CALLS: Partial<Record<RouteId, Ctx>> = {
@@ -424,4 +459,6 @@ export const SAMPLE_CALLS: Partial<Record<RouteId, Ctx>> = {
   locate: { params: {}, query: { q: 'home' }, body: null },
   'blueprints.get': { params: { id: 12 }, query: {}, body: null },
   'buildplans.get': { params: { id: 12 }, query: {}, body: null },
+  'story.get': { params: { id: 'story-1' }, query: {}, body: null },
+  'story.recipes': { params: {}, query: { workbench: 'crafting_table' }, body: null },
 };
