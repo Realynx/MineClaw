@@ -10,12 +10,20 @@ public sealed record WorldColumnInfo(int Cx, int Cz, long Hash, long Seen, strin
 public sealed record WorldBot(string Name, string Short, bool Main, int Dim, double X, double Y, double Z, float? Yaw, float? Pitch,
     double? PoseAge, int Hp, int Food, string? Job, string? Brain, string? Held, IReadOnlyList<string> Claims, bool Live, double AgeSeconds);
 
-/// <summary>Anything else to draw (players, mobs, items) the hive knows of, merged across every body. Items carry the stack
-/// (<paramref name="Item"/> id, <paramref name="Damage"/>, <paramref name="Count"/>); velocity is blocks/tick, <paramref name="Age"/>
-/// seconds since the body first saw it, <paramref name="By"/> the body whose tracker it came from.</summary>
+/// <summary>Anything else to draw (players, mobs, items, and objects: paintings, item frames, armour stands, arrows, boats,
+/// minecarts, falling blocks, primed TNT, xp orbs, ender crystals, fireworks) the hive knows of, merged across every body. Items
+/// carry the stack (<paramref name="Item"/> id, <paramref name="Damage"/>, <paramref name="Count"/>; an item frame's or firework's
+/// item too); velocity is blocks/tick, <paramref name="Age"/> seconds since the body first saw it, <paramref name="By"/> the body
+/// whose tracker it came from. The looks (all left out when unknown or default, so deltas stay small): <paramref name="Equipment"/>,
+/// <paramref name="HeadYaw"/>, <paramref name="Baby"/>, <paramref name="Look"/> (the compact per-kind string, <see cref="EntityLooks.Look"/>),
+/// <paramref name="Vehicle"/> (the ridden entity's id), <paramref name="Facing"/> (paintings, item frames), <paramref name="Rotation"/>
+/// (an item frame's item, 0..7), <paramref name="Block"/> (a falling block), <paramref name="Fuse"/> (primed TNT ticks),
+/// <paramref name="Pose"/> (an armour stand), <paramref name="InGround"/> (an arrow that stopped).</summary>
 public sealed record WorldEntity(string Kind, string? Name, int Dim, double X, double Y, double Z, int? Id = null, int? Type = null,
     int? Item = null, int? Damage = null, int? Count = null, double? Vx = null, double? Vy = null, double? Vz = null, double? Age = null,
-    float? Yaw = null, string? By = null, int? Flags = null, int? Variant = null);
+    float? Yaw = null, string? By = null, int? Flags = null, int? Variant = null, WorldEquipment? Equipment = null, float? HeadYaw = null,
+    bool? Baby = null, string? Look = null, int? Vehicle = null, string? Facing = null, int? Rotation = null, WireItem? Block = null,
+    int? Fuse = null, WorldPose? Pose = null, bool? InGround = null);
 
 /// <summary>A labelled box or point (claims, structures, waypoints, chests, gens, dangers). Min/Max are [x, y, z].</summary>
 public sealed record WorldMark(string Kind, string Text, int[] Min, int[] Max, string? Owner = null);
@@ -49,6 +57,11 @@ public interface ISupervisorWorld
     (float Rain, float Thunder)? WorldWeather(int dim) => null;
     IReadOnlyList<WorldBot> Bots();
     IReadOnlyList<WorldEntity> Entities(int? dim);
+    /// <summary>The last few seconds of one-shot entity events (swings, hurts, deaths, crits, lightning) of every body, as each saw
+    /// them (the delta log dedupes the copies).</summary>
+    IReadOnlyList<WorldEntityEvent> EntityEvents() => [];
+    /// <summary>The block entities of the columns (<c>/api/world/blockentities</c>); an unknown column comes back empty.</summary>
+    IReadOnlyList<WorldBlockEntityColumn> BlockEntities(int dim, IReadOnlyList<(int Cx, int Cz)> cols) => [];
     WorldOverlays Overlays(int dim);
 }
 
@@ -91,9 +104,12 @@ public sealed class TokenBucket(double perSecond, double burst, TimeProvider tim
 /// <item><c>/api/world/chunks?dim&amp;cols=cx,cz;cx,cz…[&amp;light=1]</c> (≤ 64) → <see cref="ColumnPayload"/> binary (<c>light=1</c>: version 2,
 /// live columns with their <see cref="LightSnapshot"/>)</item>
 /// <item><c>/api/world/entities?dim</c> → JSON <c>{at, rev, bots:[…], entities:[…]}</c> (bots of every dimension, entities of <c>dim</c> or all)</item>
-/// <item><c>/api/world/entities?since=REV</c> → the delta stream: <c>{at, rev, full, bots, entities:[changed since REV], removed:[[dim,id]…]}</c>
+/// <item><c>/api/world/entities?since=REV</c> → the delta stream: <c>{at, rev, full, bots, entities:[changed since REV], removed:[[dim,id]…],
+/// events:[{id, kind, at, dim, x?, y?, z?}] (one-shot: each once per client)}</c>
 /// (every dimension; <c>full</c> = the client was too far behind and gets everything)</item>
 /// <item><c>/api/world/overlays?dim</c> → JSON claims, places, points (chests, gens, farms…), plan ghost blocks, dangers</item>
+/// <item><c>/api/world/blockentities?dim&amp;cols=cx,cz;…(≤ 64)</c> → <c>{dim, columns:[{cx, cz, hash, entities:[{x,y,z,kind,…}]}]}</c>
+/// (signs, beds, banners, skulls, flower pots, chests, spawners…; <c>hash</c> changes with any of them)</item>
 /// <item><c>/api/world/blocks?since=REV[&amp;dim=]</c> → the live block feed (<see cref="BlockDeltaLog"/>): <c>{rev, full, more,
 /// blocks:{"dim":[[x,y,z,id,meta]…]}, columns:[{rev,at,dim,cx,cz,kind}]}</c>, at most <see cref="MaxBlockEntries"/> entries
 /// (<c>more</c>: ask again from <c>rev</c>); <c>full</c> = too far behind, refetch the columns whose index hash changed</item>
@@ -127,6 +143,7 @@ public sealed class SupervisorWorldRoutes
             ["entities"] = new(l.EntitiesPerSec, l.EntitiesBurst, _time),
             ["overlays"] = new(l.OverlaysPerSec, l.OverlaysBurst, _time),
             ["blocks"] = new(l.BlocksPerSec, l.BlocksBurst, _time),
+            ["blockentities"] = new(l.ChunksPerSec, l.ChunksBurst, _time),
         };
     }
 
@@ -182,8 +199,9 @@ public sealed class SupervisorWorldRoutes
                             long since = long.TryParse(sinceText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var sv) ? sv : 0;
                             return await Work(() =>
                             {
-                                var d = _entityLog.Since(since, () => _world.Entities(null));
-                                return Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), rev = d.Rev, full = d.Full, bots = _world.Bots(), entities = d.Entities, removed = d.Removed });
+                                var d = _entityLog.Since(since, () => _world.Entities(null), _world.EntityEvents);
+                                return Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), rev = d.Rev, full = d.Full, bots = _world.Bots(), entities = d.Entities, removed = d.Removed,
+                                    events = d.Events });
                             }, ct).ConfigureAwait(false);
                         }
                         return await _cache.GetAsync($"entities:{edim}", EntitiesCache, () => Work(() =>
@@ -198,6 +216,11 @@ public sealed class SupervisorWorldRoutes
                         var page = log.Since(since, bdim, MaxBlockEntries); // a ring read under its lock: no pool hop
                         return Json(200, new { at = _time.GetUtcNow().ToUnixTimeMilliseconds(), rev = page.Rev, full = page.Full, more = page.More,
                             blocks = page.Blocks, columns = page.Columns });
+                    }
+                case "blockentities":
+                    {
+                        if (ParseCols(Q(r, "cols")) is not { } bcols) return Json(400, new { error = $"blockentities needs cols=cx,cz;cx,cz (1..{MaxColumnsPerRequest})" });
+                        return await Work(() => Json(200, new { dim, columns = _world.BlockEntities(dim, bcols) }), ct).ConfigureAwait(false);
                     }
                 case "overlays":
                     return await _cache.GetAsync($"overlays:{dim}", OverlaysCache, () => Work(() => Json(200, _world.Overlays(dim)), ct)).ConfigureAwait(false);

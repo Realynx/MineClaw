@@ -79,6 +79,7 @@ public static class EntityMeta1122
                 case 3: case 4: w.WriteString((string)e.Value!); break;
                 case 5: w.WriteSlot(e.Value is ItemStack s ? s : ItemStack.Empty); break;
                 case 6: w.WriteBool((bool)e.Value!); break;
+                case 7: { var (a, b, c) = ((float, float, float))e.Value!; w.WriteFloat(a).WriteFloat(b).WriteFloat(c); break; }
                 default: throw new NotSupportedException($"writing metadata serializer {e.Serializer}");
             }
         }
@@ -102,6 +103,8 @@ public static class EntityMeta1122
         VarInt,
         Float,
         Slot,
+        /// <summary>rotation (float x, y, z degrees) ↔ a three-int vector of whole degrees.</summary>
+        Rotation,
     }
 
     private readonly record struct Rule(int Wire, int Canon, Conv Conv);
@@ -118,14 +121,23 @@ public static class EntityMeta1122
         // EntityAgeable subclasses: animals and villagers (12 baby), then their own keys.
         [90] = [.. Ageable, new(13, EntityMeta.Mob16, Conv.Bool)],          // pig: SADDLED
         [91] = [.. Ageable, new(13, EntityMeta.Mob16, Conv.Byte)],          // sheep: DYE_COLOR (colour | 0x10 sheared), as b1.8.1's 16
-        [92] = Ageable, [93] = Ageable, [96] = Ageable, [100] = Ageable, [101] = Ageable, [102] = Ageable, [103] = Ageable, [120] = Ageable,
-        [28] = Ageable, [29] = Ageable, [31] = Ageable, [32] = Ageable,
-        [95] = [.. Ageable, new(13, EntityMeta.Mob16, Conv.Byte)],          // wolf: EntityTameable.TAMED (1 sitting, 2 angry, 4 tamed)
-        [98] = [.. Ageable, new(13, EntityMeta.Mob16, Conv.Byte)],          // ocelot
-        [105] = [.. Ageable, new(13, EntityMeta.Mob16, Conv.Byte)],         // parrot
+        [92] = Ageable, [93] = Ageable, [96] = Ageable, [102] = Ageable,
+        // AbstractHorse.STATUS 13 (OWNER 14): EntityHorse VARIANT 15, ARMOR 16; AbstractChestHorse HAS_CHEST 15; EntityLlama
+        // STRENGTH 16, CARPET_COLOR 17, VARIANT 18 (the viewer's looks: canonical 50+).
+        [100] = [.. Ageable, new(13, EntityMeta.HorseStatus, Conv.Byte), new(15, EntityMeta.HorseVariant, Conv.VarInt), new(16, EntityMeta.HorseArmor, Conv.VarInt)],
+        [28] = [.. Ageable, new(13, EntityMeta.HorseStatus, Conv.Byte)], [29] = [.. Ageable, new(13, EntityMeta.HorseStatus, Conv.Byte)],
+        [31] = [.. Ageable, new(13, EntityMeta.HorseStatus, Conv.Byte), new(15, EntityMeta.HasChest, Conv.Bool)],
+        [32] = [.. Ageable, new(13, EntityMeta.HorseStatus, Conv.Byte), new(15, EntityMeta.HasChest, Conv.Bool)],
+        [103] = [.. Ageable, new(13, EntityMeta.HorseStatus, Conv.Byte), new(15, EntityMeta.HasChest, Conv.Bool),
+            new(17, EntityMeta.CarpetColor, Conv.VarInt), new(18, EntityMeta.LlamaVariant, Conv.VarInt)],
+        [101] = [.. Ageable, new(13, EntityMeta.RabbitType, Conv.VarInt)],  // rabbit: RABBIT_TYPE
+        [120] = [.. Ageable, new(13, EntityMeta.Profession, Conv.VarInt)],  // villager: PROFESSION
+        [95] = [.. Ageable, new(13, EntityMeta.Mob16, Conv.Byte), new(17, EntityMeta.CollarColor, Conv.VarInt)], // wolf: EntityTameable.TAMED (1 sitting, 2 angry, 4 tamed), COLLAR_COLOR
+        [98] = [.. Ageable, new(13, EntityMeta.Mob16, Conv.Byte), new(15, EntityMeta.OcelotType, Conv.VarInt)],   // ocelot: + OCELOT_VARIANT
+        [105] = [.. Ageable, new(13, EntityMeta.Mob16, Conv.Byte), new(15, EntityMeta.ParrotVariant, Conv.VarInt)], // parrot: + VARIANT
         // EntityZombie (IS_CHILD 12, VILLAGER_TYPE 13, ARMS_RAISED 14): zombie, husk, zombie pigman, zombie villager (+ CONVERTING 15).
         [54] = Zombie, [23] = Zombie, [57] = Zombie,
-        [27] = [.. Zombie, new(15, EntityMeta.Converting, Conv.Bool)],
+        [27] = [.. Zombie, new(15, EntityMeta.Converting, Conv.Bool), new(16, EntityMeta.Profession, Conv.VarInt)],
         // AbstractSkeleton.SWINGING_ARMS: skeleton, stray, wither skeleton.
         [51] = [.. Living, new(12, EntityMeta.Aggressive, Conv.Bool)],
         [6] = [.. Living, new(12, EntityMeta.Aggressive, Conv.Bool)],
@@ -142,7 +154,7 @@ public static class EntityMeta1122
         [66] = [.. Living, new(12, EntityMeta.Drinking, Conv.Bool)],        // witch: IS_DRINKING
         [68] = [.. Living, new(13, EntityMeta.TargetEntity, Conv.VarInt)],  // guardian: MOVING 12, TARGET_ENTITY 13
         [4] = [.. Living, new(13, EntityMeta.TargetEntity, Conv.VarInt)],   // elder guardian
-        [69] = [.. Living, new(14, EntityMeta.Peek, Conv.ByteInt)],         // shulker: ATTACHED_FACE 12, POS 13, PEEK_TICK 14, COLOR 15
+        [69] = [.. Living, new(14, EntityMeta.Peek, Conv.ByteInt), new(15, EntityMeta.ShulkerColor, Conv.ByteInt)], // shulker: ATTACHED_FACE 12, POS 13, PEEK_TICK 14, COLOR 15
         [36] = [.. Living, new(12, EntityMeta.Aggressive, Conv.NonZero)],   // vindicator: AbstractIllager.AGGRESSIVE
         [34] = [.. Living, new(12, EntityMeta.Aggressive, Conv.NonZero), new(13, EntityMeta.Spell, Conv.ByteInt)], // evoker: + SPELL
         [37] = [.. Living, new(12, EntityMeta.Aggressive, Conv.NonZero), new(13, EntityMeta.Spell, Conv.ByteInt)], // illusioner
@@ -151,7 +163,12 @@ public static class EntityMeta1122
     {
         [60] = [new(6, EntityMeta.ArrowCritical, Conv.Bit0)],               // EntityArrow.CRITICAL
         [91] = [new(6, EntityMeta.ArrowCritical, Conv.Bit0)],               // spectral arrow
-        [71] = [new(6, EntityMeta.Item, Conv.Slot)],                        // EntityItemFrame.ITEM
+        [71] = [new(6, EntityMeta.Item, Conv.Slot), new(7, EntityMeta.FrameRotation, Conv.VarInt)], // EntityItemFrame.ITEM, ROTATION
+        [1] = [new(9, EntityMeta.BoatType, Conv.VarInt)],                   // EntityBoat.BOAT_TYPE
+        // EntityArmorStand (living, spawned as an object): STATUS 11, then the six pose rotations 12..17.
+        [78] = [new(11, EntityMeta.StandFlags, Conv.Byte), new(12, EntityMeta.StandHead, Conv.Rotation), new(13, EntityMeta.StandBody, Conv.Rotation),
+            new(14, EntityMeta.StandLeftArm, Conv.Rotation), new(15, EntityMeta.StandRightArm, Conv.Rotation),
+            new(16, EntityMeta.StandLeftLeg, Conv.Rotation), new(17, EntityMeta.StandRightLeg, Conv.Rotation)],
         [73] = [new(6, EntityMeta.Item, Conv.Slot)],                        // EntityPotion.ITEM
         [76] = [new(6, EntityMeta.Item, Conv.Slot)],                        // EntityFireworkRocket.FIREWORK_ITEM
         [50] = [new(6, EntityMeta.Fuse, Conv.VarInt)],                      // EntityTNTPrimed.FUSE
@@ -203,6 +220,8 @@ public static class EntityMeta1122
         return new EntityMetadata(outList);
     }
 
+    private static int Deg(float f) => float.IsFinite(f) ? (int)MathF.Round(f) : 0;
+
     private static MetadataEntry? ToEntry(Rule rule, object? v)
     {
         byte i = (byte)rule.Canon;
@@ -216,6 +235,7 @@ public static class EntityMeta1122
             (Conv.VarInt, int n) => MetadataEntry.FromInt(i, n),
             (Conv.Float, float x) => MetadataEntry.FromFloat(i, x),
             (Conv.Slot, ItemStack s) => MetadataEntry.FromItem(i, s),
+            (Conv.Rotation, ValueTuple<float, float, float> t) => MetadataEntry.FromVector(i, new MetadataVector(Deg(t.Item1), Deg(t.Item2), Deg(t.Item3))),
             _ => null,
         };
     }
@@ -247,11 +267,12 @@ public static class EntityMeta1122
                     Conv.VarInt => e.AsInt() ?? 0,
                     Conv.Float => e.Value is float x ? x : (float)(e.AsInt() ?? 0),
                     Conv.Slot => e.Value is ItemStack s ? s : ItemStack.Empty,
+                    Conv.Rotation => e.Value is MetadataVector v ? ((float)v.X, (float)v.Y, (float)v.Z) : (0f, 0f, 0f),
                     _ => null,
                 };
                 int ser = rule.Conv switch
                 {
-                    Conv.Bool => 6, Conv.VarInt => 1, Conv.Float => 2, Conv.Slot => 5, _ => 0,
+                    Conv.Bool => 6, Conv.VarInt => 1, Conv.Float => 2, Conv.Slot => 5, Conv.Rotation => 7, _ => 0,
                 };
                 list.Add(new(rule.Wire, ser, wire));
                 break;

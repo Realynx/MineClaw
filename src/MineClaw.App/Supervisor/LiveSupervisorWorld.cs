@@ -333,6 +333,29 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
         return HiveEntityMerge.Merge(bodies, botNames, _time.GetUtcNow().UtcDateTime);
     }
 
+    /// <summary>Every in-process body's one-shot entity events of the last few seconds (the delta log dedupes the copies).</summary>
+    public IReadOnlyList<WorldEntityEvent> EntityEvents()
+    {
+        var now = _time.GetUtcNow().UtcDateTime;
+        var list = new List<WorldEntityEvent>();
+        foreach (var b in Bodies())
+        {
+            try
+            {
+                list.AddRange(EntityLooks.EventsOf(b.World, now));
+            }
+            catch (Exception ex) { _log?.LogDebug(ex, "supervisor world: events of {Body} unavailable", b.Name); }
+        }
+        return list;
+    }
+
+    /// <summary>The columns' block entities, merged over every in-process body in <paramref name="dim"/>.</summary>
+    public IReadOnlyList<WorldBlockEntityColumn> BlockEntities(int dim, IReadOnlyList<(int Cx, int Cz)> cols)
+    {
+        var worlds = Bodies().Select(b => b.World).Where(w => w.Dimension == dim).ToList();
+        return cols.Select(c => BlockEntityColumns.Build(c.Cx, c.Cz, worlds)).ToList();
+    }
+
     private static int[] P(BlockPos p) => [p.X, p.Y, p.Z];
     private static int[] P(double x, double y, double z) => [(int)Math.Floor(x), (int)Math.Floor(y), (int)Math.Floor(z)];
 

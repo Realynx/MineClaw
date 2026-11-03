@@ -153,6 +153,7 @@ public sealed partial class MinecraftClient
                 break;
             case UpdateSignPacket sign:
                 _signs[new BlockPos(sign.X, sign.Y, sign.Z)] = sign.Lines;
+                w.BlockEntities.Set(new BlockPos(sign.X, sign.Y, sign.Z), BlockEntityInfo.Sign(sign.Lines)); // the viewer's sign text
                 { int sx = sign.X, sy = sign.Y, sz = sign.Z; var lines = (string[])sign.Lines.Clone(); Raise(() => SignUpdated?.Invoke(sx, sy, sz, lines)); }
                 break;
 
@@ -167,20 +168,22 @@ public sealed partial class MinecraftClient
                 break;
             case AddObjectVehiclePacket ao:
                 w.Entities.SpawnObject(ao.EntityId, ao.Type, Pos(ao.Exact, ao.X, ao.Y, ao.Z),
-                    ao.HasSpeed ? new Vec3d(FixedPoint.FromVelocity(ao.SpeedX), FixedPoint.FromVelocity(ao.SpeedY), FixedPoint.FromVelocity(ao.SpeedZ)) : default);
+                    ao.HasSpeed ? new Vec3d(FixedPoint.FromVelocity(ao.SpeedX), FixedPoint.FromVelocity(ao.SpeedY), FixedPoint.FromVelocity(ao.SpeedZ)) : default,
+                    ao.ThrowerEntityId);
                 break;
             case MobSpawnPacket ms:
                 w.Entities.SpawnMob(ms.EntityId, ms.Type, Pos(ms.Exact, ms.X, ms.Y, ms.Z), FixedPoint.FromAngle(ms.Yaw),
                     FixedPoint.FromAngle(ms.Pitch), ToDictionary(ms.Metadata));
                 break;
             case EntityPaintingPacket pt:
-                w.Entities.SpawnPainting(pt.EntityId, pt.Title, new Vec3d(pt.X + 0.5, pt.Y + 0.5, pt.Z + 0.5));
+                w.Entities.SpawnPainting(pt.EntityId, pt.Title, new Vec3d(pt.X + 0.5, pt.Y + 0.5, pt.Z + 0.5), pt.Direction);
                 break;
             case ExperienceOrbPacket orb:
                 w.Entities.SpawnXpOrb(orb.EntityId, Pos(orb.Exact, orb.X, orb.Y, orb.Z), orb.Count);
                 break;
             case ThunderboltPacket tb:
                 w.Entities.Spawn(new Entity(tb.EntityId, EntityKind.Weather, Abs(tb.X, tb.Y, tb.Z)));
+                w.Entities.NoteEvent(tb.EntityId, "lightning", Abs(tb.X, tb.Y, tb.Z)); // the viewer's flash
                 // b1.8.1 never says "thunder": a bolt while it rains is the storm (1.12.2's reason 8 keeps it exact afterwards).
                 if (IsRaining && w.Thunder < 0.5f) w.Thunder = 1f;
                 break;
@@ -245,6 +248,7 @@ public sealed partial class MinecraftClient
                 if (st.EntityId == w.Player.EntityId) OnSelfStatus(st.Status);
                 if (st.EntityId != w.Player.EntityId) Combat.OnEntityStatus(st.EntityId, st.Status);
                 OnEntityStatusSeen(st.EntityId);
+                if (EntityEventRing.StatusKind(st.Status) is { } statusKind) w.Entities.NoteEvent(st.EntityId, statusKind); // the viewer's hurt/death
                 if (st.Status == 2 && st.EntityId != w.Player.EntityId) OnPlayerHurtForPunch(st.EntityId);
                 int eid = st.EntityId, status = st.Status;
                 Raise(() => EntityStatus?.Invoke(eid, status));
@@ -260,6 +264,7 @@ public sealed partial class MinecraftClient
                 if (an.EntityId != w.Player.EntityId)
                 {
                     int eid = an.EntityId, anim = an.Animation;
+                    if (EntityEventRing.AnimationKind(anim, an.Hand) is { } animKind) w.Entities.NoteEvent(eid, animKind); // the viewer's swing/crit
                     Combat.OnAnimation(eid, anim);
                     Raise(() => EntityAnimated?.Invoke(eid, anim));
                 }

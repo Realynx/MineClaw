@@ -59,6 +59,9 @@ public sealed partial class MinecraftClient
                 else w.Entities.SetAttributes(pm.EntityId, values);
                 break;
             }
+            case BlockEntityMessage be:
+                w.BlockEntities.Set(new BlockPos(be.X, be.Y, be.Z), be.Info); // the viewer's beds, banners, skulls, pots, spawners
+                break;
             case EntityHeadLookMessage hl:
                 w.Entities.SetHeadYaw(hl.EntityId, FixedPoint.FromAngle(hl.Yaw));
                 break;

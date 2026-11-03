@@ -243,9 +243,11 @@ public sealed partial class Release1122Connection
             case Ids1122.EntityAnimation:
             {
                 int eid = r.ReadVarInt();
-                // SPacketAnimation: 0 swing main arm, 1 hurt, 2 wake up, 3 swing off hand, 4 crit, 5 magic crit → b1.8.1's 1/2/3.
-                sbyte anim = (sbyte)(r.ReadUByte() switch { 0 or 3 => 1, 1 => 2, 2 => 3, _ => 0 });
-                return anim == 0 ? null : new AnimationPacket { EntityId = eid, Animation = anim };
+                // SPacketAnimation: 0 swing main arm, 1 hurt, 2 wake up, 3 swing off hand, 4 crit, 5 magic crit → b1.8.1's 1/2/3 and
+                // its crit numbering 6/7 (Packet18Animation); the off hand is a swing (1) with Hand = 1.
+                int raw = r.ReadUByte();
+                sbyte anim = (sbyte)(raw switch { 0 or 3 => 1, 1 => 2, 2 => 3, 4 => 6, 5 => 7, _ => 0 });
+                return anim == 0 ? null : new AnimationPacket { EntityId = eid, Animation = anim, Hand = raw == 3 ? (byte)1 : (byte)0 };
             }
             case Ids1122.EntityEquipment:
             {

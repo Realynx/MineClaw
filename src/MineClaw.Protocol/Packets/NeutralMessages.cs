@@ -127,3 +127,21 @@ public sealed class ItemCooldownMessage : IPacket
     public void Write(MinecraftWriter w, PacketDirection d) => throw new NotSupportedException("ItemCooldownMessage has no b1.8.1 wire form");
     public override string ToString() => $"ItemCooldown(item {ItemId}: {Ticks} ticks)";
 }
+
+/// <summary>
+/// A block entity's looks (1.12.2 Chunk Data block entities and Update Block Entity, <c>SPacketUpdateTileEntity</c>): beds, banners,
+/// skulls, flower pots, spawners, chests… for the viewer. <see cref="Info"/> null = the block entity is gone. Signs keep travelling
+/// as <see cref="UpdateSignPacket"/>. Version-neutral: b1.8.1 sends only signs.
+/// </summary>
+public sealed class BlockEntityMessage : IPacket
+{
+    public byte Id => UpdateSignPacket.PacketId;
+    public int X { get; init; }
+    public int Y { get; init; }
+    public int Z { get; init; }
+    public BlockEntityInfo? Info { get; init; }
+
+    public void Read(MinecraftReader r, PacketDirection d) => throw new NotSupportedException("BlockEntityMessage has no b1.8.1 wire form");
+    public void Write(MinecraftWriter w, PacketDirection d) => throw new NotSupportedException("BlockEntityMessage has no b1.8.1 wire form");
+    public override string ToString() => $"BlockEntity({X},{Y},{Z}: {Info?.Kind ?? "removed"})";
+}
