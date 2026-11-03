@@ -12,7 +12,7 @@ import {
   type UseQueryOptions,
 } from '@tanstack/react-query';
 import type { RouteId } from '@mineclaw/contracts';
-import { api, ApiError, type CallOptions, type RouteBody, type RouteQueryInput, type RouteResponse } from './client';
+import { api, ApiError, type RouteBody, type RouteQueryInput, type RouteResponse } from './client';
 
 export type ParamMap = Record<string, string | number>;
 
@@ -74,8 +74,8 @@ export function useApi<K extends RouteId>(
   options: ApiQueryOptions<K> = {},
 ) {
   return useQuery<RouteResponse<K>, ApiError, RouteResponse<K>, QueryKey>({
-    queryKey: qk(id, call.params, call.query as object | undefined),
-    queryFn: ({ signal }) => api(id, { params: call.params, query: call.query, signal } as CallOptions<K>),
+    queryKey: qk(id, call.params, call.query),
+    queryFn: ({ signal }) => api(id, { params: call.params, query: call.query, signal }),
     staleTime: staleTimeFor(id),
     ...options,
   });
@@ -93,7 +93,7 @@ export function useApiMutation<K extends RouteId>(
   options: Omit<UseMutationOptions<RouteResponse<K>, ApiError, MutationVars<K>>, 'mutationFn'> = {},
 ) {
   return useMutation<RouteResponse<K>, ApiError, MutationVars<K>>({
-    mutationFn: (vars) => api(id, { params: vars.params, body: vars.body, file: vars.file } as CallOptions<K>),
+    mutationFn: (vars) => api(id, { params: vars.params, body: vars.body, file: vars.file }),
     ...options,
   });
 }

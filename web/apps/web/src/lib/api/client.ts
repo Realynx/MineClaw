@@ -81,7 +81,7 @@ export async function ensureCsrf(force = false): Promise<string> {
   csrfInflight ??= (async () => {
     try {
       const res = await rawFetch(apiPath('auth.csrf'), { method: 'GET' });
-      const data = (await readJson(res)) as unknown;
+      const data = (await readJson(res));
       if (!res.ok) throw toApiError(res, data);
       const parsed = CsrfResponse.parse(data);
       csrfToken = parsed.csrfToken;
@@ -176,7 +176,7 @@ function buildInit<K extends RouteId>(route: RouteDef, opts: CallOptions<K>): Re
 
 async function send<K extends RouteId>(id: K, opts: CallOptions<K>): Promise<Response> {
   const route: RouteDef = ROUTES[id];
-  const url = apiPath(id, opts.params ?? {}, opts.query as Record<string, unknown> | undefined);
+  const url = apiPath(id, opts.params ?? {}, opts.query);
   const attempt = async (): Promise<Response> => {
     const init = buildInit(route, opts);
     if (route.method !== 'GET') {
@@ -244,7 +244,7 @@ export function apiUrl<K extends RouteId>(
   params: Record<string, string | number> = {},
   query?: RouteQueryInput<K>,
 ): string {
-  return apiPath(id, params, query as Record<string, unknown> | undefined);
+  return apiPath(id, params, query);
 }
 
 /** Human text for any error thrown by the client. */

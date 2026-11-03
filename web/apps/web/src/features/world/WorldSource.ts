@@ -8,11 +8,11 @@
  *   reconnect hook fires when the stream had to be reopened).
  */
 import type { QueryClient } from '@tanstack/react-query';
-import type { WorldEntities } from '@mineclaw/contracts';
-import type { AtlasMap, AtlasResource, EntityDelta, Overlays, WorldIndex, WorldSource } from '@mineclaw/world-viewer';
-import { api, apiBlob, ApiError } from '@/lib/api/client';
+import { toNumber, type WorldEntities } from '@mineclaw/contracts';
+import type { AtlasMap, AtlasResource, EntityDelta, WorldSource } from '@mineclaw/world-viewer';
+import { api, apiBlob } from '@/lib/api/client';
 import { liveKeys } from '@/lib/live/dispatch';
-import { emptyBlockDeltas, subscribeBlocks, type WorldBlockDeltas } from './blocks';
+import { subscribeBlocks } from './blocks';
 
 export type { WorldSource };
 
@@ -66,26 +66,20 @@ async function loadImage(blob: Blob): Promise<ImageBitmap | HTMLImageElement> {
   }
 }
 
-/** The blocks route is not in the contracts ROUTES yet (see blocks.ts), so it is fetched directly. */
-async function fetchBlocks(since?: number, dim?: number): Promise<WorldBlockDeltas> {
-  const qs = new URLSearchParams();
-  if (since !== undefined) qs.set('since', String(since));
-  if (dim !== undefined) qs.set('dim', String(dim));
-  const res = await fetch(`/api/world/blocks${qs.size ? `?${qs.toString()}` : ''}`, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
-  if (res.status === 404) return emptyBlockDeltas(since ?? 0);
-  if (!res.ok) throw new ApiError(res.status, `world blocks: HTTP ${res.status}`, {});
-  return (await res.json()) as WorldBlockDeltas;
-}
-
 function toDelta(e: WorldEntities, full: boolean): EntityDelta {
   return { ...e, rev: e.rev ?? 0, full, removed: full ? [] : (e.removed ?? []) } as EntityDelta;
 }
 
+const finite = (n: number): number => (Number.isFinite(n) ? n : 0);
+
 export function createWorldSource(qc?: QueryClient): WorldSource {
   let atlasPromise: Promise<AtlasResource | null> | null = null;
   return {
-    index: (dim, x, z, r) =>
-      api('world.index', { query: { dim, x: Math.round(x), z: Math.round(z), r: Math.max(16, Math.min(256, Math.round(r))), light: true } }) as Promise<WorldIndex>,
+    index: async (dim, x, z, r) => {
+      const i = await api('world.index', { query: { dim, x: Math.round(x), z: Math.round(z), r: Math.max(16, Math.min(256, Math.round(r))), light: true } });
+      // weather doubles may arrive as named literals ("NaN"); the viewer wants plain numbers
+      return { ...i, rain: finite(toNumber(i.rain)), thunder: finite(toNumber(i.thunder)) };
+    },
 
     async chunks(dim, cols) {
       const batches: string[] = [];
@@ -111,7 +105,7 @@ export function createWorldSource(qc?: QueryClient): WorldSource {
       return toDelta(await api('world.entities', { query: since ? { since } : {} }), !since);
     },
 
-    overlays: (dim) => api('world.overlays', { query: { dim } }) as Promise<Overlays>,
+    overlays: (dim) => api('world.overlays', { query: { dim } }),
 
     atlas() {
       atlasPromise ??= (async () => {
@@ -125,8 +119,8 @@ export function createWorldSource(qc?: QueryClient): WorldSource {
       return atlasPromise;
     },
 
-    blocks: (since) => fetchBlocks(since),
+    blocks: (since) => api('world.blocks', { query: { since: since ?? 0 } }),
 
-    subscribe: (onBlocks, onReconnect) => subscribeBlocks(onBlocks, onReconnect),
+    subscribe: (onBlocks, onReconnect) => subscribeBlocks((d) => onBlocks(d), onReconnect),
   };
 }

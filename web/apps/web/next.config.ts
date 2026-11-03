@@ -23,9 +23,7 @@ const config: NextConfig = {
   devIndicators: false,
   // Next 16 writes an AGENTS.md into the app on `next dev`; this repo keeps agent guidance elsewhere.
   agentRules: false,
-  async rewrites() {
-    return [{ source: '/api/:path*', destination: `${apiUrl}/api/:path*` }];
-  },
+  rewrites: () => Promise.resolve([{ source: '/api/:path*', destination: `${apiUrl}/api/:path*` }]),
 };
 
 export default config;

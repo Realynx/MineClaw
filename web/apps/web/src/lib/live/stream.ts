@@ -10,12 +10,7 @@
  */
 import { SSE_EVENT_NAMES, SSE_EVENTS, type SseEventName } from '@mineclaw/contracts';
 
-/**
- * Events not (yet) in the contracts SSE catalogue. locks (live per-block world updates) is being added to the contracts in
- * another branch; until then its payload is checked by isBlockDeltas in features/world/blocks.ts.
- */
-export const EXTRA_EVENTS = ['blocks'] as const;
-export type LiveEventName = SseEventName | (typeof EXTRA_EVENTS)[number];
+export type LiveEventName = SseEventName;
 
 export type StreamState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed';
 
@@ -68,7 +63,7 @@ export class LiveStream {
     opts: LiveStreamOptions = {},
   ) {
     this.url = opts.url ?? '/api/live/stream';
-    this.factory = opts.factory ?? ((url) => new EventSource(url, { withCredentials: true }) as unknown as EventSourceLike);
+    this.factory = opts.factory ?? ((url) => new EventSource(url, { withCredentials: true }));
     this.validate = opts.validate ?? DEV;
     this.minBackoff = opts.minBackoffMs ?? 1000;
     this.maxBackoff = opts.maxBackoffMs ?? 15000;
@@ -123,7 +118,7 @@ export class LiveStream {
         this.setState('reconnecting');
       }
     };
-    for (const name of [...SSE_EVENT_NAMES, ...EXTRA_EVENTS]) {
+    for (const name of SSE_EVENT_NAMES) {
       es.addEventListener(name, (ev) => this.receive(name, ev));
     }
   }
@@ -148,11 +143,7 @@ export class LiveStream {
       console.warn(`[live] ${name}: frame is not JSON`);
       return;
     }
-    if (!(name in SSE_EVENTS)) {
-      this.handlers.onMessage(name, data, ev.lastEventId);
-      return;
-    }
-    const parsed = SSE_EVENTS[name as SseEventName].safeParse(data);
+    const parsed = SSE_EVENTS[name].safeParse(data);
     if (!parsed.success) {
       if (this.validate) {
         console.error(`[live] ${name}: payload does not match the contract`, parsed.error.issues);

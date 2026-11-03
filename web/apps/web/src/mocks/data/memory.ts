@@ -143,7 +143,7 @@ function rows(kind: MemoryKindKey): MemoryRow[] {
       name,
       type,
       state,
-      dim: dim as MemoryRow['dim'],
+      dim: dim,
       conf: ['claims', 'beliefs', 'structures', 'observed'].includes(kind) ? Number((0.3 + r() * 0.7).toFixed(2)) : null,
       updated,
       preview,

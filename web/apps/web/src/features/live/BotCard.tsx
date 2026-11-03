@@ -10,6 +10,9 @@ import { Badge, Skeleton } from '@/components/ui/primitives';
 import { BotThumbnail } from '@/features/world/integration';
 import { InFlight, KIND_LABEL, ScriptBadge, StatusDot, Vitals } from './common';
 
+/** Labels over the 3D thumbnail: solid so they read on any scene. */
+const chip = 'inline-flex h-5 items-center rounded-md bg-surface px-1.5 text-[11px] font-medium shadow-card';
+
 /** One bot in the hive grid: thumbnail, vitals, task, one-line thought, script and brain state. Calm by design. */
 export function BotCard({ bot, node }: { bot: BotStatusView; node: HiveTreeNode | undefined }) {
   const { devDetails } = usePrefs();
@@ -32,8 +35,8 @@ export function BotCard({ bot, node }: { bot: BotStatusView; node: HiveTreeNode 
       <div className="relative aspect-[16/9] w-full border-b border-border">
         <BotThumbnail bot={bot.name} className="absolute inset-0" />
         <div className="absolute top-2 left-2 flex gap-1">
-          {node ? <Badge className="bg-surface">{KIND_LABEL[node.kind]}</Badge> : null}
-          {bot.dim !== 0 ? <Badge tone="warn" className="backdrop-blur">{dimName(bot.dim)}</Badge> : null}
+          {node ? <span className={cn(chip, 'text-fg')}>{KIND_LABEL[node.kind]}</span> : null}
+          {bot.dim !== 0 ? <span className={cn(chip, 'text-warn')}>{dimName(bot.dim)}</span> : null}
         </div>
         {n?.inFlight ? (
           <div className="absolute right-2 bottom-2 rounded-md bg-surface px-2 py-1 shadow-card">

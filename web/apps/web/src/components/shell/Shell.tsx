@@ -3,7 +3,7 @@
 import { ChevronsLeft, ChevronsRight, Menu, X } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useAuth } from '@/lib/auth';
 import { setPrefs, usePrefs } from '@/lib/prefs';
 import { cn } from '@/lib/utils';
@@ -85,13 +85,31 @@ function SidebarNav({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?
   );
 }
 
+/** True at and above the given min-width (client only; false during SSR). */
+function useMinWidth(px: number): boolean {
+  return useSyncExternalStore(
+    (cb) => {
+      const mq = window.matchMedia(`(min-width: ${px}px)`);
+      mq.addEventListener('change', cb);
+      return () => mq.removeEventListener('change', cb);
+    },
+    () => window.matchMedia(`(min-width: ${px}px)`).matches,
+    () => true,
+  );
+}
+
 export function Shell({ children }: { children: ReactNode }) {
-  const { sidebarCollapsed } = usePrefs();
+  const prefs = usePrefs();
+  const wide = useMinWidth(1024);
+  // Tablets get the icon rail; the full sidebar needs a laptop-wide screen (or an explicit choice to collapse it).
+  const sidebarCollapsed = prefs.sidebarCollapsed || !wide;
   const [mobileOpen, setMobileOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const pathname = usePathname();
 
-  useEffect(() => setMobileOpen(false), [pathname]);
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -126,7 +144,8 @@ export function Shell({ children }: { children: ReactNode }) {
             variant="ghost"
             size={sidebarCollapsed ? 'icon-sm' : 'sm'}
             className={cn(!sidebarCollapsed && 'w-full justify-start')}
-            onClick={() => setPrefs({ sidebarCollapsed: !sidebarCollapsed })}
+            onClick={() => setPrefs({ sidebarCollapsed: !prefs.sidebarCollapsed })}
+            disabled={!wide}
             aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
             {sidebarCollapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}

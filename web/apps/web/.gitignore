@@ -2,3 +2,5 @@
 next-env.d.ts
 test-results/
 playwright-report/
+.next-e2e/
+public/assets/

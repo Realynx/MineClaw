@@ -173,7 +173,7 @@ function RaptorInner() {
                     ))}
                   </div>
                 ) : null}
-                <div className="pointer-events-none absolute right-3 bottom-3 hidden gap-1 text-[11px] text-subtle xl:flex">
+                <div className="pointer-events-none absolute right-3 bottom-3 hidden items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-[11px] text-muted shadow-card xl:flex">
                   <Kbd>↑↓←→</Kbd> walk <Kbd>Enter</Kbd> focus <Kbd>F</Kbd> fit <Kbd>Esc</Kbd> out
                 </div>
                 {hover ? (

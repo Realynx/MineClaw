@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from 'next';
+import { headers } from 'next/headers';
 import type { ReactNode } from 'react';
 import { Providers } from '@/components/shell/Providers';
 import { themeBootScript } from '@/lib/prefs';
@@ -19,12 +20,17 @@ export const viewport: Viewport = {
   ],
 };
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+/**
+ * Pages render per request so the CSP nonce applies: in production Nest sends the nonce as the `x-nonce` request header (and
+ * the policy as `content-security-policy`, from which Next tags its own scripts). Our one inline script carries it too.
+ */
+export default async function RootLayout({ children }: { children: ReactNode }) {
+  const nonce = (await headers()).get('x-nonce') ?? undefined;
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
         {/* Sets the theme class before first paint (no flash). */}
-        <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
+        <script nonce={nonce} dangerouslySetInnerHTML={{ __html: themeBootScript }} />
       </head>
       <body>
         <Providers>{children}</Providers>

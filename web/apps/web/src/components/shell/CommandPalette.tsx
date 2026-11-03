@@ -1,6 +1,6 @@
 'use client';
 
-import { Command } from 'cmdk';
+import { Command, defaultFilter } from 'cmdk';
 import { Bot, Boxes, Bug, Code2, FileText, Moon, Search, Sun } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { Dialog as D } from 'radix-ui';
@@ -25,6 +25,12 @@ function Item({ onSelect, icon, children, hint, value }: { onSelect: () => void;
       {hint ? <span className="truncate text-xs text-subtle">{hint}</span> : null}
     </Command.Item>
   );
+}
+
+/** Named things (bots, pages, scripts, designs) outrank the free-text memory search for the same words. */
+function rank(value: string, search: string, keywords?: string[]): number {
+  const s = defaultFilter(value, search, keywords);
+  return value.startsWith('search memories') || value.startsWith('memory ') ? s * 0.5 : s;
 }
 
 /** Ctrl+K: jump to bots, scripts, memories, designs and pages. Lists load only while the palette is open. */
@@ -57,7 +63,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
           className="fixed top-[12vh] left-1/2 z-50 w-[calc(100vw-2rem)] max-w-xl -translate-x-1/2 overflow-hidden rounded-xl border border-border bg-surface shadow-pop"
         >
           <D.Title className="sr-only">Command palette</D.Title>
-          <Command label="Command palette" shouldFilter loop>
+          <Command label="Command palette" shouldFilter loop filter={rank}>
             <div className="flex items-center gap-2 border-b border-border px-4">
               <Search className="size-4 text-subtle" />
               <Command.Input

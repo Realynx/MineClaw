@@ -20,7 +20,9 @@ export function VisionDrawer({ open, onOpenChange, body }: { open: boolean; onOp
   const [zoom, setZoom] = useState(1);
   const sheets = list.data?.sheets ?? [];
   const sheet = sheets.find((s) => s.id === selected) ?? sheets[0];
-  useEffect(() => setZoom(1), [selected]);
+  useEffect(() => {
+    setZoom(1);
+  }, [selected]);
 
   return (
     <Drawer open={open} onOpenChange={onOpenChange} title={`What ${body} saw`} subtitle="The exact images sent to the model" width="xl">

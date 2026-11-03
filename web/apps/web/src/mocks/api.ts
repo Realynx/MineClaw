@@ -215,7 +215,7 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     new Response(blockSheetSvg(num(params.id), 640, 400, `design #${String(params.id)}`), { headers: { 'Content-Type': 'image/svg+xml' } }),
   'designs.diff': ({ params, query }) => {
     const d = misc.designDetail(num(params.id));
-    return misc.designDiff(num(params.id), String(query.a ?? d?.defaultDiff.a ?? '1'), String(query.b ?? d?.defaultDiff.b ?? '2'));
+    return misc.designDiff(num(params.id), (query.a as string | undefined) ?? d?.defaultDiff.a ?? '1', (query.b as string | undefined) ?? d?.defaultDiff.b ?? '2');
   },
   'designs.get': ({ params }) => {
     const d = misc.designDetail(num(params.id));
@@ -289,6 +289,7 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
   },
   'world.entities': ({ query }) => live.entitiesSince(query.since === undefined ? undefined : num(query.since)),
   'world.overlays': ({ query }) => live.overlays(num(query.dim)),
+  'world.blocks': ({ query }) => ({ at: Date.now(), rev: Math.max(1, num(query.since)), full: num(query.since) === 0, more: false, blocks: {}, columns: [] }),
   'world.atlasPng': () =>
     new Response(Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='), (c) => c.charCodeAt(0)), {
       headers: { 'Content-Type': 'image/png' },
@@ -316,8 +317,8 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     chatTimes.push(now);
     const req = body as { text: string; requestId: string };
     const line = live.acceptChat(b, req.text, req.requestId, user.player);
-    // Contract: `id` correlates with the viewer feed line. The orchestrator says it is that line's seq (tolerate both).
-    return { accepted: true, id: line.seq, note: null };
+    // Contract: `id` echoes the request id; `feedSeq` is the viewer line's feed seq.
+    return { accepted: true, id: req.requestId, feedSeq: line.seq, note: null };
   },
   feed: ({ query }) => live.feedSince(num(query.since)),
   'blueprints.list': () => ({ designs: misc.designList().items.map((d) => ({ id: d.id, name: d.name, status: d.status, requester: d.requester, rev: d.rev, updated: d.updated })) }),

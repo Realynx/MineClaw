@@ -14,11 +14,11 @@ import { NAV_ITEMS } from './nav';
 import { TotpDialog } from './TotpDialog';
 
 const levelStyle = {
-  live: { dot: 'bg-ok', ring: 'bg-ok/30', text: 'text-fg' },
-  connecting: { dot: 'bg-info', ring: 'bg-info/30', text: 'text-muted' },
-  reconnecting: { dot: 'bg-warn', ring: 'bg-warn/30', text: 'text-warn' },
-  degraded: { dot: 'bg-warn', ring: 'bg-warn/30', text: 'text-warn' },
-  offline: { dot: 'bg-danger', ring: 'bg-danger/30', text: 'text-danger' },
+  live: { dot: 'bg-ok', ring: 'ring-ok/25', text: 'text-fg' },
+  connecting: { dot: 'bg-info', ring: 'ring-info/25', text: 'text-muted' },
+  reconnecting: { dot: 'bg-warn', ring: 'ring-warn/25', text: 'text-warn' },
+  degraded: { dot: 'bg-warn', ring: 'ring-warn/25', text: 'text-warn' },
+  offline: { dot: 'bg-danger', ring: 'ring-danger/25', text: 'text-danger' },
 } as const;
 
 /** The ONE connection indicator (explorer-spec §17.7): stream state + Nest's `status` event. */
@@ -34,8 +34,7 @@ export function ConnectionIndicator() {
           aria-label={`Connection: ${c.label}. ${c.detail}`}
         >
           <span className="relative flex size-2.5 items-center justify-center">
-            {c.level === 'live' ? <span className={cn('absolute inline-flex size-full animate-ping rounded-full opacity-60', s.ring)} style={{ animationDuration: '2.4s' }} /> : null}
-            <span className={cn('relative inline-flex size-2 rounded-full', s.dot, pulsing && 'animate-pulse-dot')} />
+            <span className={cn('relative inline-flex size-2 rounded-full ring-3', s.dot, s.ring, pulsing && 'animate-pulse-dot')} />
           </span>
           <span className={cn('hidden sm:inline', s.text)}>{c.label}</span>
         </button>
@@ -166,7 +165,7 @@ export function Header({ onOpenPalette, menuButton }: { onOpenPalette: () => voi
   return (
     <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border bg-surface px-3 sm:px-4">
       {menuButton}
-      <div className="min-w-0 text-[13px] font-medium text-muted max-md:hidden lg:w-44">{page?.label}</div>
+      <div className="hidden w-40 min-w-0 truncate text-[13px] font-medium text-muted xl:block">{page?.label}</div>
       <button
         onClick={onOpenPalette}
         className="mx-auto flex h-9 w-full max-w-md min-w-0 items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 text-left text-[13px] text-subtle transition-colors hover:border-border-strong hover:text-muted"

@@ -27,6 +27,14 @@ export interface GraphCanvasHandle {
 
 const TAU = Math.PI * 2;
 
+/** Draw timings (ms) for the perf check in scripts/screenshots.mjs (window.__mcxGraphDraws, last 240 draws). */
+function recordDraw(ms: number): void {
+  const w = window as unknown as { __mcxGraphDraws?: number[] };
+  const list = (w.__mcxGraphDraws ??= []);
+  list.push(ms);
+  if (list.length > 240) list.shift();
+}
+
 function cssVar(name: string, fallback: string): string {
   if (typeof window === 'undefined') return fallback;
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
@@ -87,7 +95,9 @@ export const GraphCanvas = forwardRef<
   // draw order: shallow first, leaves last (hit testing relies on it)
   const ordered = useMemo(() => [...graph.nodes].sort((a, b) => b.layer - a.layer), [graph.nodes]);
 
-  useEffect(() => setView({ k: 1, tx: 0, ty: 0 }), [graph.layout, graph.focus]);
+  useEffect(() => {
+    setView({ k: 1, tx: 0, ty: 0 });
+  }, [graph.layout, graph.focus]);
 
   useEffect(() => {
     const el = canvas.current;
@@ -113,8 +123,10 @@ export const GraphCanvas = forwardRef<
     [idx, size, view.k, frame, graph.layout],
   );
 
-  // ---- draw ----
+  // ---- draw (once per animation frame, however many state changes arrived) ----
   useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+    const t0 = performance.now();
     const el = canvas.current;
     if (!el || !size.w || !size.h) return;
     const dpr = window.devicePixelRatio || 1;
@@ -191,12 +203,17 @@ export const GraphCanvas = forwardRef<
       ctx.globalCompositeOperation = document.documentElement.classList.contains('dark') ? 'screen' : 'source-over';
       for (const [n, st] of glowing) {
         const g = st.glow!;
-        traceShape(ctx, n, layout, frame, view);
-        ctx.shadowColor = g.color;
-        ctx.shadowBlur = 4 + 18 * g.strength;
-        ctx.globalAlpha = 0.15 + 0.6 * g.strength;
+        // Cheap on software rendering: per-node alpha plus a thin halo stroke, never shadowBlur or filters.
+        const { w, h } = traceShape(ctx, n, layout, frame, view);
+        ctx.globalAlpha = 0.12 + 0.7 * g.strength;
         ctx.fillStyle = g.color;
         ctx.fill();
+        if (g.strength > 0.35 && Math.min(w, h) > 2) {
+          ctx.globalAlpha = g.strength * 0.9;
+          ctx.strokeStyle = g.color;
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        }
       }
       ctx.restore();
     }
@@ -239,6 +256,9 @@ export const GraphCanvas = forwardRef<
       }
     }
     ctx.globalAlpha = 1;
+    recordDraw(performance.now() - t0);
+    });
+    return () => cancelAnimationFrame(raf);
   }, [graph, ordered, idx, frame, view, size, selected, styleFor, frameKey]);
 
   // ---- interaction ----

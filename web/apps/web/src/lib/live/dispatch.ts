@@ -11,9 +11,10 @@ import type {
   LiveStatus,
   MemoryActivityResponse,
   StatusResponse,
+  WorldBlockDeltas,
   WorldEntities,
 } from '@mineclaw/contracts';
-import { isBlockDeltas, publishBlocks } from '@/features/world/blocks';
+import { publishBlocks } from '@/features/world/blocks';
 import { qk } from '../api/query';
 import { mergeEntities, mergeEvents, mergeFeed, mergeMemoryActivity } from './merge';
 import type { LiveEventName } from './stream';
@@ -62,7 +63,7 @@ export function applyLiveEvent(qc: QueryClient, event: LiveEventName, data: unkn
       break;
     case 'blocks':
       // Live per-block world updates go to the world viewer's subscribers, not the query cache (they are a stream).
-      if (isBlockDeltas(data)) publishBlocks(data);
+      publishBlocks(data as WorldBlockDeltas);
       break;
   }
 }

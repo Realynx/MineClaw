@@ -4,7 +4,7 @@ import { AlertTriangle, Bell, Box, LayoutGrid, Network } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useMemo, useState } from 'react';
 import { PageBody } from '@/components/shell/Shell';
-import { Badge, Card, CardHeader, EmptyState, ErrorState, PageHeader, Select, Skeleton } from '@/components/ui/primitives';
+import { Card, CardHeader, EmptyState, ErrorState, PageHeader, Select, Skeleton } from '@/components/ui/primitives';
 import { Segmented } from '@/components/ui/overlays';
 import { BotCard } from '@/features/live/BotCard';
 import { useHiveIndex } from '@/features/live/common';
@@ -103,23 +103,23 @@ function LiveInner() {
           <EventsCard />
         </div>
       ) : (
-        <Card className="overflow-hidden">
-          <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2.5">
-            <label htmlFor="follow" className="text-xs font-medium text-muted">
-              Follow
-            </label>
-            <Select id="follow" value={followed} onChange={(e) => setFollow(e.target.value)} className="h-8 w-auto min-w-44">
-              {bots.map((b) => (
-                <option key={b.name} value={b.name}>
-                  {b.name}
-                </option>
-              ))}
-            </Select>
-            <Badge>follow camera</Badge>
-          </div>
-          <div className="h-[min(70vh,48rem)]">
-            <WorldHost>{followed ? <WorldPane follow={followed} /> : null}</WorldHost>
-          </div>
+        <Card className="h-[min(74vh,52rem)] overflow-hidden">
+          <WorldHost>
+            {followed ? (
+              <WorldPane
+                follow={followed}
+                toolbarStart={
+                  <Select aria-label="Follow bot" value={followed} onChange={(e) => setFollow(e.target.value)} className="h-8 min-w-40">
+                    {bots.map((b) => (
+                      <option key={b.name} value={b.name}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </Select>
+                }
+              />
+            ) : null}
+          </WorldHost>
         </Card>
       )}
     </PageBody>

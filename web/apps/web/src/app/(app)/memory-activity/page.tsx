@@ -4,7 +4,7 @@ import { toNumber, type GraphLayout, type GraphNode } from '@mineclaw/contracts'
 import { Activity, Pause, Play, Radio } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Badge, Button, Card, EmptyState, ErrorState, Select, Skeleton } from '@/components/ui/primitives';
+import { Badge, Button, EmptyState, ErrorState, Select, Skeleton } from '@/components/ui/primitives';
 import { Segmented } from '@/components/ui/overlays';
 import { GraphCanvas, type GraphCanvasHandle, type NodeStyle } from '@/features/graph/GraphCanvas';
 import { indexGraph } from '@/features/graph/geometry';
@@ -22,13 +22,15 @@ import {
   stalenessColor,
   stalenessShare,
   type ActivityFilter,
+  type LastAccess,
+  type Staleness,
 } from '@/features/memory-activity/heat';
 import { NodeDetail } from '@/features/raptor/NodeDetail';
 import { useApi } from '@/lib/api/query';
 import { useMemoryActivity } from '@/lib/live/hooks';
 import { useTicker } from '@/lib/live/ticker';
 import { usePrefs } from '@/lib/prefs';
-import { ago, clock, cn, duration } from '@/lib/utils';
+import { ago, clock, duration } from '@/lib/utils';
 
 const WINDOWS = [5, 15, 30, 60] as const;
 const LAYER_GLOW = [1, 0.75, 0.4, 0.22];
@@ -74,7 +76,7 @@ function Scrubber({
         aria-valuetext={value === null ? 'live' : clock(t)}
         className="relative h-10 min-w-0 flex-1 cursor-pointer touch-none rounded-md focus-visible:outline-2"
         onPointerDown={(e) => {
-          (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+          (e.currentTarget).setPointerCapture(e.pointerId);
           seek(e);
         }}
         onPointerMove={(e) => {
@@ -101,7 +103,7 @@ function Scrubber({
                 width={0.76}
                 height={h}
                 rx={0.2}
-                className={(i + 0.5) / counts.length <= pct / 100 ? 'fill-accent/70' : 'fill-surface-3'}
+                className={(i + 0.5) / counts.length <= pct / 100 ? 'fill-accent/40' : 'fill-surface-3'}
               />
             );
           })}
@@ -127,7 +129,8 @@ function ActivityInner() {
   const params = useSearchParams();
   const router = useRouter();
   const { devDetails } = usePrefs();
-  const filter = parseFilter(params.get('who'));
+  const whoKey = params.get('who') ?? 'all';
+  const filter = useMemo(() => parseFilter(whoKey), [whoKey]);
   const layout = (params.get('layout') as GraphLayout | null) ?? 'radial';
   const windowMin = Number(params.get('window') ?? 15) as (typeof WINDOWS)[number];
   const setParam = (k: string, v: string | null) => {
@@ -177,15 +180,13 @@ function ActivityInner() {
   }, [playing, from]);
 
   const last = useMemo(() => {
-    if (!idx) return new Map();
+    if (!idx) return new Map<number, LastAccess>();
     const fromEvents = lastAccessFromEvents(events, idx.parents, t, filter);
     return replayT === null ? mergeLast(lastAccessFromServer(heat.data, filter, bodyBrain), fromEvents) : fromEvents;
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- filterKey captures the filter
-  }, [idx, events, t, replayT, heat.data, filterKey(filter), bodyBrain]);
+  }, [idx, events, t, replayT, heat.data, filter, bodyBrain]);
   const stale = useMemo(
-    () => (replayT === null ? stalenessByNode(activity.data?.inContext ?? [], now, filter, bodyBrain) : new Map()),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- filterKey captures the filter
-    [activity.data, now, replayT, filterKey(filter), bodyBrain],
+    () => (replayT === null ? stalenessByNode(activity.data?.inContext ?? [], now, filter, bodyBrain) : new Map<number, Staleness>()),
+    [activity.data, now, replayT, filter, bodyBrain],
   );
 
   const styleFor = useCallback(

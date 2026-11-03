@@ -12,9 +12,10 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { WorldSource } from '@mineclaw/world-viewer';
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { DotMap } from './DotMap';
+import type * as ViewerModule from './viewer-module';
 import { createWorldSource } from './WorldSource';
 
-export type WorldViewerModule = typeof import('./viewer-module');
+export type WorldViewerModule = typeof ViewerModule;
 
 const MOCK = process.env.NEXT_PUBLIC_MOCK === '1';
 

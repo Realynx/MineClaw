@@ -2,7 +2,7 @@
 
 import type { FeedLine } from '@mineclaw/contracts';
 import { ArrowDown, EyeOff, Eye, Gamepad2, Globe, Lock, RotateCcw, Send } from 'lucide-react';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { api, ApiError, errorText } from '@/lib/api/client';
 import { useAuth } from '@/lib/auth';
 import { useFeed } from '@/lib/live/hooks';
@@ -274,7 +274,7 @@ export function ChatPane({ bot, aliases = [], className }: { bot: string; aliase
               maxLength={MAX + 40}
               placeholder={`Message ${bot} as ${me.player ?? ''}…`}
               className="max-h-32 min-h-8 flex-1 resize-none bg-transparent px-2 py-1.5 text-[13.5px] text-fg outline-none placeholder:text-subtle"
-              style={{ fieldSizing: 'content' } as CSSProperties}
+              style={{ fieldSizing: 'content' }}
               disabled={!!rateLimited}
             />
             <Button type="submit" variant="primary" size="icon-sm" aria-label="Send" disabled={!text.trim() || text.trim().length > MAX || !!rateLimited}>

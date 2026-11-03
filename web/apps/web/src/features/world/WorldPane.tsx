@@ -8,7 +8,7 @@
 import type { CameraMode, LayerToggles, PickedBlock, ViewerStats, WorldViewerHandle, XRayMode } from '@mineclaw/world-viewer';
 import { Crosshair, Gem, Layers, LocateFixed, Monitor } from 'lucide-react';
 import { Popover } from 'radix-ui';
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { api, errorText } from '@/lib/api/client';
 import { useEntities } from '@/lib/live/hooks';
 import { usePrefs } from '@/lib/prefs';
@@ -45,7 +45,7 @@ function parseCoords(q: string): [number, number, number] | null {
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
 }
 
-export function WorldPane({ follow, className }: { follow?: string; className?: string }) {
+export function WorldPane({ follow, className, toolbarStart }: { follow?: string; className?: string; toolbarStart?: ReactNode }) {
   const { mod, source, ready } = useWorldHost();
   const { devDetails } = usePrefs();
   const viewer = useRef<WorldViewerHandle>(null);
@@ -123,6 +123,7 @@ export function WorldPane({ follow, className }: { follow?: string; className?: 
   return (
     <div className={cn('flex size-full min-h-0 flex-col', className)}>
       <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface px-3 py-2">
+        {toolbarStart}
         <Segmented<CameraMode>
           label="Camera"
           size="sm"

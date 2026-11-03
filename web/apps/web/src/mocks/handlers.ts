@@ -39,7 +39,7 @@ function routeHandler(id: RouteId): HttpHandler | null {
       const query = route.query ? (route.query.parse(rawQuery) as Record<string, unknown>) : {};
       const parsedParams = route.params ? (route.params.parse(params) as Record<string, unknown>) : {};
       const { body, file } = await readBody(request, route.bodyKind === 'multipart');
-      const parsedBody = route.body ? (route.body.parse(body) as unknown) : body;
+      const parsedBody = route.body ? (route.body.parse(body)) : body;
       const out = resolve({ params: parsedParams, query, body: parsedBody, file });
       if (out instanceof Response) return out;
       return HttpResponse.json(out as never, { status: route.status ?? 200 });
@@ -70,9 +70,10 @@ function broadcast(event: string, data: unknown): void {
 
 setEmitter(broadcast);
 
-const stream = sse(ROUTES['live.stream'].path, ({ client }) => {
+const stream = sse(ROUTES['live.stream'].path, ({ client, request }) => {
   const c = client as unknown as Client;
   clients.add(c);
+  request.signal.addEventListener('abort', () => clients.delete(c));
   const send = (event: string, data: unknown) => c.send({ event, id: String(++frameId), data });
   send('status', liveStatus());
   send('bots', statusResponse());

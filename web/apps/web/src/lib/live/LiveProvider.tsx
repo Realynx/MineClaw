@@ -1,11 +1,12 @@
 'use client';
 
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { notifyManager, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { LiveStatus } from '@mineclaw/contracts';
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { publishReconnect } from '@/features/world/blocks';
 import { applyLiveEvent, liveKeys, resyncLive } from './dispatch';
 import { connectionView, type ConnectionView } from './connection';
-import { LiveStream, type StreamState } from './stream';
+import { LiveStream, type LiveEventName, type StreamState } from './stream';
 
 interface LiveContextValue {
   stream: StreamState;
@@ -14,24 +15,59 @@ interface LiveContextValue {
 
 const LiveContext = createContext<LiveContextValue>({ stream: 'idle', changedAt: 0 });
 
+/**
+ * Coalesces stream frames and applies them once per animation frame (inside one query-cache batch), so a burst of SSE
+ * events causes one render pass, not one per frame. While the tab is hidden (no rAF) it flushes on a short timer.
+ */
+export function createFrameBatcher(apply: (batch: Array<[LiveEventName, unknown]>) => void) {
+  let queue: Array<[LiveEventName, unknown]> = [];
+  let scheduled = false;
+  const flush = () => {
+    scheduled = false;
+    const batch = queue;
+    queue = [];
+    if (batch.length) apply(batch);
+  };
+  return {
+    push(event: LiveEventName, data: unknown) {
+      queue.push([event, data]);
+      if (scheduled) return;
+      scheduled = true;
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible' && typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(flush);
+      } else {
+        setTimeout(flush, 100);
+      }
+    },
+    flush,
+  };
+}
+
 /** Opens the tab's single SSE connection for the signed-in shell and feeds the query cache. */
 export function LiveProvider({ children, enabled = true }: { children: ReactNode; enabled?: boolean }) {
   const qc = useQueryClient();
   const [stream, setStream] = useState<StreamState>('idle');
   const [changedAt, setChangedAt] = useState(() => Date.now());
-  const ref = useRef<LiveStream | null>(null);
 
   useEffect(() => {
     if (!enabled) return;
+    const batcher = createFrameBatcher((batch) =>
+      notifyManager.batch(() => {
+        for (const [event, data] of batch) applyLiveEvent(qc, event, data);
+      }),
+    );
     const live = new LiveStream({
-      onMessage: (event, data) => applyLiveEvent(qc, event, data),
+      onMessage: (event, data) => batcher.push(event, data),
       onState: (s) => {
         setStream(s);
         setChangedAt(Date.now());
       },
-      onResync: () => void resyncLive(qc),
+      onResync: () => {
+        batcher.flush();
+        publishReconnect();
+        void resyncLive(qc);
+      },
     });
-    ref.current = live;
     live.start();
     const onVisible = () => {
       // A long-hidden tab may have been throttled: catch up on return.
@@ -41,7 +77,6 @@ export function LiveProvider({ children, enabled = true }: { children: ReactNode
     return () => {
       document.removeEventListener('visibilitychange', onVisible);
       live.stop();
-      ref.current = null;
     };
   }, [qc, enabled]);
 

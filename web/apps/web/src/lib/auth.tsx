@@ -26,6 +26,21 @@ export function useAuth(): AuthValue {
   return v;
 }
 
+/** Provides a fixed signed-in user (tests and stories). */
+export function StaticAuthProvider({ me, children }: { me: Me; children: ReactNode }) {
+  const value = useMemo<AuthValue>(
+    () => ({
+      me,
+      can: (a) => hasRole(me.roles, a),
+      canChat: hasRole(me.roles, 'chat') && !!me.player,
+      isAdmin: hasRole(me.roles, 'admin'),
+      signOut: () => Promise.resolve(),
+    }),
+    [me],
+  );
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
 /** Same as useAuth but tolerant of being outside the gate (e.g. the login page). */
 export function useMaybeAuth(): AuthValue | null {
   return useContext(AuthContext);

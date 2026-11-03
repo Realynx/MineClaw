@@ -57,6 +57,7 @@ export interface RouteTypes {
   'world.chunks': { params: never; query: z.input<typeof C.WorldChunksQuery>; body: never; response: never };
   'world.entities': { params: never; query: z.input<typeof C.WorldEntitiesQuery>; body: never; response: z.output<typeof C.WorldEntities> };
   'world.overlays': { params: never; query: z.input<typeof C.DimQuery>; body: never; response: z.output<typeof C.WorldOverlays> };
+  'world.blocks': { params: never; query: z.input<typeof C.WorldBlocksQuery>; body: never; response: z.output<typeof C.WorldBlockDeltas> };
   'world.atlasPng': { params: never; query: z.input<typeof C.AtlasQuery>; body: never; response: never };
   'world.atlasJson': { params: never; query: z.input<typeof C.AtlasQuery>; body: never; response: z.output<typeof C.WorldAtlasJson> };
   'bots.tile': { params: z.input<typeof C.BotParams>; query: z.input<typeof C.TileQuery>; body: never; response: never };
