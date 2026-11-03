@@ -150,4 +150,16 @@ export function seedStory(): void {
   if (bench) storySim.bills(id, { op: 'add', bench: [bench[0], bench[1], bench[2]], bill: { recipe: 'torch', mode: 'count', target: 8 } });
   const y = surface(-8, 4) + 1;
   storySim.builds(id, { op: 'add', items: [{ kind: 'wall', area: [-10, y, 3, -6, y, 6], material: 'cobblestone', height: 2 }] });
+  // Live 11-03 as the mock plays it: the server's seats are tight (1 free, 2 kept for offline regulars). One pawn was kicked
+  // "not white-listed" (main re-adds it; it is back in a few minutes, or at once with "Bring online"), one didn't fit.
+  storySim.setSeats(id, 1, 2);
+  const names = [...storySim.colony(id).pawns.keys()];
+  storySim.setOffline(id, names[names.length - 1]!, 'whitelist', 5 * 60_000);
+  storySim.setOffline(id, names[names.length - 2]!, 'cap');
+  // A cut over the tall grass by the camp that kept failing (a hive claim): kept on the map with why, resting.
+  const cut = storySim.designations(id, { op: 'add', kind: 'cut', area: [-14, 50, -14, 14, 90, 14] });
+  if (cut.count > 0) {
+    const ids = (storySim.state(id).designations ?? []).filter((d) => d.kind === 'cut').map((d) => d.id);
+    storySim.failDesignations(id, ids.slice(0, 6), 'double_plant at 5,64,2 is busy: another hive bot is working on that part right now');
+  }
 }

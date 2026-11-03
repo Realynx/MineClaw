@@ -534,6 +534,12 @@ The design grew while it was built. The wire forms are in `docs/web/api.md` §6 
   click the spot) asks for a confirm, then home moves to that column (its surface) and far pawns are brought there. The
   map marks home with a house.
 - **Alerts.** A feed of alerts, such as a pawn in danger or idle with nothing to do.
+- **Full screen (added 2026-11-03).** The button at the top right or Shift+F (F alone is the Forbid tool) puts the whole Story
+  Mode element in full screen, the Live world pane's way: the map and the whole HUD (colonist bar, tabs, inspector, alerts,
+  clock, toasts, menus). Esc (the browser's) or Shift+F leaves it. The map follows the new size every frame; drags, box
+  selection and formations work the same. Portalled overlays (dialogs such as the bill dialog, tooltips) mount inside the
+  full-screen element through `PortalContainer` (`components/ui/overlays`), or they would be invisible.
+- **Offline pawns and failed designations** see "Offline pawns" and "A pawn's own claim" above.
 - **Permissions.** Needs the `admin` role, or a new `story` role, for writes. Viewers can watch.
 - **Performance.** It must stay smooth with software WebGL at 40 fps or more. It uses the shared renderer, and the
   overlays are cheap.

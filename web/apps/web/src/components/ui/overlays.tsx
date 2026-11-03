@@ -2,9 +2,16 @@
 
 import { X } from 'lucide-react';
 import { Dialog as D, Switch as S, Tabs as T, ToggleGroup, Tooltip as TT } from 'radix-ui';
-import type { ReactNode } from 'react';
+import { createContext, useContext, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from './primitives';
+
+/**
+ * Where portalled overlays (dialogs, drawers, tooltips) mount: `document.body` by default. A view that goes full screen
+ * (Story Mode) provides its full-screen element, or they would render outside it and be invisible.
+ */
+export const PortalContainer = createContext<HTMLElement | null>(null);
+const usePortalContainer = () => useContext(PortalContainer) ?? undefined;
 
 // ---------- Dialog ----------
 
@@ -26,9 +33,10 @@ export function Dialog({
   size?: 'sm' | 'md' | 'lg' | 'xl';
 }) {
   const width = { sm: 'max-w-sm', md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-4xl' }[size];
+  const container = usePortalContainer();
   return (
     <D.Root open={open} onOpenChange={onOpenChange}>
-      <D.Portal>
+      <D.Portal container={container}>
         <D.Overlay className="fixed inset-0 z-50 bg-black/45 data-[state=open]:animate-in" />
         <D.Content
           className={cn(
@@ -78,9 +86,10 @@ export function Drawer({
   width?: 'md' | 'lg' | 'xl';
 }) {
   const w = { md: 'sm:w-[30rem]', lg: 'sm:w-[42rem]', xl: 'sm:w-[min(64rem,92vw)]' }[width];
+  const container = usePortalContainer();
   return (
     <D.Root open={open} onOpenChange={onOpenChange}>
-      <D.Portal>
+      <D.Portal container={container}>
         <D.Overlay className="fixed inset-0 z-40 bg-black/30" />
         <D.Content
           className={cn(
@@ -243,11 +252,12 @@ export function TooltipProvider({ children }: { children: ReactNode }) {
 }
 
 export function Tooltip({ content, children, side = 'top' }: { content: ReactNode; children: ReactNode; side?: 'top' | 'bottom' | 'left' | 'right' }) {
+  const container = usePortalContainer();
   if (!content) return <>{children}</>;
   return (
     <TT.Root>
       <TT.Trigger asChild>{children}</TT.Trigger>
-      <TT.Portal>
+      <TT.Portal container={container}>
         <TT.Content
           side={side}
           sideOffset={6}

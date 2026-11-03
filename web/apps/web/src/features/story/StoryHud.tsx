@@ -26,9 +26,11 @@ import {
   Moon,
   Pause,
   Play,
+  Power,
   RotateCcw,
   RotateCw,
   Sun,
+  WifiOff,
   X,
 } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
@@ -62,21 +64,35 @@ export interface BarBody {
   drafted: boolean;
   mood: PawnMood;
   pos: readonly number[] | null;
+  /** Not in game (a pawn the server kicked, one waiting for a seat, a released colony's). */
+  offline: boolean;
+  /** Why (the director's `offlineReason`), when offline. */
+  offlineReason: string | null;
 }
+
+/** The offline pawns of the bar (not the AI bodies). */
+export const offlinePawns = (bodies: readonly BarBody[]) => bodies.filter((b) => b.kind === 'pawn' && b.offline);
 
 export function barBodies(pawns: readonly StoryPawn[], ai: readonly StoryAiBody[]): BarBody[] {
   return [
-    ...pawns.map((p) => ({
-      name: p.name,
-      label: p.display,
-      kind: 'pawn' as const,
-      hp: p.hp ?? 20,
-      food: p.food ?? 20,
-      job: p.job?.label ?? (p.drafted ? 'Drafted, awaiting orders' : p.state === 'sleeping' ? 'Sleeping' : 'Idle'),
-      drafted: !!p.drafted,
-      mood: pawnMood(p),
-      pos: p.pos ?? null,
-    })),
+    ...pawns.map((p) => {
+      const offline = p.online === false || p.state === 'offline';
+      return {
+        name: p.name,
+        label: p.display,
+        kind: 'pawn' as const,
+        hp: p.hp ?? 20,
+        food: p.food ?? 20,
+        job: offline
+          ? 'Offline'
+          : (p.job?.label ?? (p.drafted ? 'Drafted, awaiting orders' : p.state === 'sleeping' ? 'Sleeping' : 'Idle')),
+        drafted: !!p.drafted,
+        mood: pawnMood(p),
+        pos: p.pos ?? null,
+        offline,
+        offlineReason: offline ? (p.offlineReason ?? 'offline') : null,
+      };
+    }),
     ...ai.map((a) => ({
       name: a.name,
       label: a.kind === 'main' ? 'main' : a.name.replace(/^maid_chan_?/, '') || a.name,
@@ -93,6 +109,8 @@ export function barBodies(pawns: readonly StoryPawn[], ai: readonly StoryAiBody[
         online: a.online,
       }),
       pos: a.pos ?? null,
+      offline: a.online === false,
+      offlineReason: null,
     })),
   ];
 }
@@ -113,6 +131,7 @@ export function ColonistBar({
   onClick,
   onBox,
   onJump,
+  onBringAll,
 }: {
   bodies: BarBody[];
   selected: readonly string[];
@@ -121,6 +140,8 @@ export function ColonistBar({
   onClick: (name: string, mods: { shift: boolean; ctrl: boolean }) => void;
   onBox: (names: string[], add: boolean) => void;
   onJump: (name: string) => void;
+  /** Shown while any pawn is offline: bring every offline pawn in (null = no button: viewers can't). */
+  onBringAll?: (() => void) | null;
 }) {
   const row = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState<{ x0: number; x1: number; top: number } | null>(null);
@@ -241,7 +262,8 @@ export function ColonistBar({
         role="button"
         tabIndex={-1}
         aria-pressed={isSel}
-        aria-label={`${b.label}: ${b.job}`}
+        aria-label={b.offline ? `${b.label}: offline, ${b.offlineReason}` : `${b.label}: ${b.job}`}
+        data-offline={b.offline || undefined}
         onPointerDown={(e) => down(e, b.name)}
         onPointerMove={move}
         onPointerUp={up}
@@ -252,6 +274,7 @@ export function ColonistBar({
           b.kind === 'ai' ? 'w-[48px]' : 'w-[58px]',
           isSel ? 'bg-[#f5c542]/20 ring-2 ring-[#f5c542]' : 'hover:bg-surface-2',
           lift?.name === b.name && 'opacity-40',
+          b.offline && lift?.name !== b.name && 'opacity-60',
         )}
       >
         <div
@@ -268,6 +291,15 @@ export function ColonistBar({
               title="AI-driven"
             >
               <AiMark className="size-2.5" />
+            </span>
+          ) : null}
+          {b.offline ? (
+            <span
+              className="absolute -bottom-0.5 -left-0.5 grid size-3.5 place-items-center rounded-sm bg-surface-3 text-muted ring-1 ring-border"
+              title={`Offline: ${b.offlineReason}`}
+              data-testid="offline-badge"
+            >
+              <WifiOff className="size-2.5" aria-hidden />
             </span>
           ) : null}
           {b.drafted ? (
@@ -311,7 +343,13 @@ export function ColonistBar({
             <div className="font-semibold">
               {b.label} {b.kind === 'ai' ? <span className="text-[#a78bfa]">· AI</span> : null}
             </div>
-            <div className="text-muted">{b.job}</div>
+            {b.offline ? (
+              <div className="text-muted" data-testid="offline-reason">
+                Offline: {b.offlineReason}
+              </div>
+            ) : (
+              <div className="text-muted">{b.job}</div>
+            )}
           </div>
         ) : null}
       </div>
@@ -329,6 +367,18 @@ export function ColonistBar({
       aria-label="Colonists"
     >
       {pawns.map(portrait)}
+      {onBringAll && offlinePawns(bodies).length ? (
+        <button
+          type="button"
+          onClick={onBringAll}
+          className="flex h-[58px] w-[58px] flex-col items-center justify-center gap-0.5 rounded-md border border-dashed border-border-strong text-[10px] leading-tight font-semibold text-muted hover:bg-surface-2 hover:text-fg"
+          title="Bring every offline pawn online (main whitelists them again; the player cap permitting)"
+          data-testid="bar-bring-online"
+        >
+          <Power className="size-3.5" aria-hidden />
+          Bring {offlinePawns(bodies).length} online
+        </button>
+      ) : null}
       {ai.length ? <div className="mx-1 w-px self-stretch bg-border" aria-hidden /> : null}
       {ai.map(portrait)}
       {box ? (
@@ -871,6 +921,7 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
     [<Kbd key="11">PgUp / PgDn</Kbd>, 'Change storey (Shift: one block) · X x-ray above it'],
     [<Kbd key="12">Q / E · + / −</Kbd>, 'Turn a door or stairs · wall height'],
     [<Kbd key="13">V</Kbd>, 'Top-down ↔ angled view'],
+    [<Kbd key="13f">Shift+F</Kbd>, 'Full screen: the map and every panel (Esc leaves)'],
     [<Kbd key="14">T / Enter</Kbd>, 'Chat to the selected AI bodies'],
     [<Kbd key="15">Esc</Kbd>, 'Close a menu · drop the tool · clear the selection'],
   ];

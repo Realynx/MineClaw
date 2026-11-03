@@ -353,6 +353,7 @@ Notes on specific routes:
 | `story.get` | `GET /api/story/colonies/:id` | viewer | params `StoryColonyParams`<br>query `StoryStateQuery` | `StoryColonyState` | `GET /v1/sup/story/colonies/{id}` | /api/story/colonies/{id} | – |
 | `story.release` | `POST /api/story/colonies/:id/release` | story | params `StoryColonyParams`<br>body `Empty` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/release` | /api/story/colonies/{id}/release | story |
 | `story.resume` | `POST /api/story/colonies/:id/resume` | story | params `StoryColonyParams`<br>body `Empty` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/resume` | /api/story/colonies/{id}/resume | story |
+| `story.online` | `POST /api/story/colonies/:id/online` | story | params `StoryColonyParams`<br>body `StoryOnlineRequest` | `StoryOnlineResponse` | `POST /v1/sup/story/colonies/{id}/online` | /api/story/colonies/{id}/online | story |
 | `story.pause` | `POST /api/story/colonies/:id/pause` | story | params `StoryColonyParams`<br>body `StoryPauseRequest` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/pause` | /api/story/colonies/{id}/pause | story |
 | `story.home` | `POST /api/story/colonies/:id/home` | story | params `StoryColonyParams`<br>body `StoryHomeRequest` | `StoryHomeResponse` | `POST /v1/sup/story/colonies/{id}/home` | /api/story/colonies/{id}/home | story |
 | `story.beds` | `POST /api/story/colonies/:id/beds` | story | params `StoryColonyParams`<br>body `StoryBedsRequest` | `StoryBedsResponse` | `POST /v1/sup/story/colonies/{id}/beds` | /api/story/colonies/{id}/beds | story |

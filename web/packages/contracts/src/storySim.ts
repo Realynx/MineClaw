@@ -45,6 +45,9 @@ import {
   type StoryFilter,
   type StoryOrder,
   type StoryOrderRequest,
+  type StoryOnlineBlocked,
+  type StoryOnlineRequest,
+  type StoryOnlineResponse,
   type StoryPawn,
   type StoryStorage,
   type StoryStorageRequest,
@@ -108,6 +111,8 @@ interface PawnSim {
   task: { kind: string; ref: Key | null; label: string; target: [number, number, number] | null; type: string } | null;
   idleSince: number;
   lastAlert: number;
+  /** Offline: when it comes back by itself (a whitelist re-add, a login under way); null = it waits for a seat. */
+  backAt?: number | null;
 }
 
 interface Colony {
@@ -119,6 +124,9 @@ interface Colony {
   home: [number, number, number];
   rev: number;
   tod: number;
+  /** The server's free seats and those kept for offline regulars (mock). */
+  capFree: number;
+  kept: number;
   pawns: Map<string, PawnSim>;
   zones: Map<Key, Fn<StoryZone>>;
   designations: Map<Key, Fn<StoryDesignation>>;
@@ -282,6 +290,8 @@ export class StorySim {
       home,
       rev: 1,
       tod: 3000,
+      capFree: 6,
+      kept: 2,
       pawns: new Map(),
       zones: new Map(),
       designations: new Map(),
@@ -401,6 +411,12 @@ export class StorySim {
       home: c.home,
       workTypes: [...STORY_WORK_TYPES],
       pawns: [...c.pawns.values()].filter((p) => full || p.rev > s).map((p) => structuredClone(p.p)),
+      seats: {
+        online: [...c.pawns.values()].filter((p) => p.p.online).length,
+        wanted: c.pawns.size,
+        capFree: this.seatsOf(c).capFree,
+        keptForRegulars: this.seatsOf(c).kept,
+      },
       zones: pick(c.zones),
       designations: pick(c.designations),
       orders: pick(c.orders),
@@ -432,6 +448,8 @@ export class StorySim {
     for (const p of c.pawns.values()) {
       p.p.online = false;
       p.p.state = 'offline';
+      p.p.offlineReason = 'released';
+      p.backAt = null;
       p.p.job = null;
       p.rev = this.bump(c);
     }
@@ -445,10 +463,103 @@ export class StorySim {
     for (const p of c.pawns.values()) {
       p.p.online = true;
       p.p.state = 'idle';
+      p.p.offlineReason = null;
       p.rev = this.bump(c);
     }
     this.alert(c, 'info', 'The pawns are back.');
     return { id: c.id, pawns: c.pawns.size, note: 'spawned again', rev: c.rev };
+  }
+
+  // ------------------------------------------------------------------ seats (offline pawns: a whitelist kick, the player cap)
+
+  /** The server's seats as the bot's slot policy would see them (mock: set by `setSeats`). */
+  private seatsOf(c: Colony) {
+    return { capFree: c.capFree, kept: c.kept };
+  }
+
+  /** Mock knobs: the free seats and those kept for offline regulars. */
+  setSeats(id: string, capFree: number, kept: number): void {
+    const c = this.colony(id);
+    c.capFree = capFree;
+    c.kept = kept;
+    for (const p of c.pawns.values()) p.rev = this.bump(c);
+  }
+
+  private capReason(c: Colony): string {
+    return c.capFree <= 0
+      ? 'server full (7/7 seats taken)'
+      : `server full (player cap: ${c.capFree} free, ${c.kept} kept for regulars)`;
+  }
+
+  /**
+   * Takes a pawn offline the way the bot sees it: `whitelist` = kicked "not white-listed" (main re-adds it; it is back after
+   * `backInMs`), `cap` = it didn't fit under the player cap (it waits for a seat or "Bring online" with the regulars' seats).
+   */
+  setOffline(id: string, pawn: string, why: 'whitelist' | 'cap', backInMs = 20000): void {
+    const c = this.colony(id);
+    const p = c.pawns.get(pawn);
+    if (!p) throw Object.assign(new Error(`no pawn '${pawn}'`), { status: 404 });
+    this.drop(c, p);
+    p.p.online = false;
+    p.p.state = 'offline';
+    p.p.offlineReason = why === 'whitelist' ? 'not whitelisted — re-adding' : this.capReason(c);
+    p.backAt = why === 'whitelist' ? this.now() + backInMs : null;
+    p.rev = this.bump(c);
+    this.alert(c, 'warn', `${p.p.display} can't come online: ${p.p.offlineReason}`, pawn);
+  }
+
+  /** POST /api/story/colonies/{id}/online: offline pawns (null = all) are whitelisted again and started, the cap permitting. */
+  online(id: string, body: StoryOnlineRequest): StoryOnlineResponse {
+    const c = this.colony(id);
+    const names: string[] = [];
+    if (body.pawns === null) {
+      for (const p of c.pawns.values()) if (!p.p.online) names.push(p.p.name);
+    } else
+      for (const n of body.pawns) {
+        const p = c.pawns.get(n) ?? [...c.pawns.values()].find((x) => x.p.display.toLowerCase() === n.toLowerCase());
+        if (!p) throw Object.assign(new Error(`no pawn '${n}'`), { status: 404 });
+        names.push(p.p.name);
+      }
+    const started: string[] = [];
+    const blocked: StoryOnlineBlocked[] = [];
+    for (const n of names) {
+      const p = c.pawns.get(n)!;
+      if (c.released) {
+        blocked.push({ pawn: n, reason: 'the colony is released: resume it first' });
+        continue;
+      }
+      if (p.p.online) {
+        started.push(n);
+        continue;
+      }
+      // A hosted pawn (kicked "not white-listed") is re-added and retried now; one that never got a seat needs one.
+      const hosted = p.backAt !== null && p.backAt !== undefined;
+      if (!hosted && c.capFree - 1 < (body.overCap ? 0 : c.kept)) {
+        p.p.offlineReason = this.capReason(c);
+        p.rev = this.bump(c);
+        blocked.push({ pawn: n, reason: p.p.offlineReason });
+        continue;
+      }
+      if (!hosted) c.capFree--;
+      p.p.offlineReason = 'connecting';
+      p.backAt = this.now() + 1500;
+      p.rev = this.bump(c);
+      started.push(n);
+    }
+    if (started.length)
+      this.alert(c, 'info', `Bringing ${started.length} pawn${started.length === 1 ? '' : 's'} online.`);
+    return { started, blocked };
+  }
+
+  /** Mock: marks designations failed (3 tries) with a reason, resting 10 minutes. */
+  failDesignations(id: string, ids: Key[], reason: string): void {
+    const c = this.colony(id);
+    for (const k of ids) {
+      const f = c.designations.get(k);
+      if (!f) continue;
+      f.v = { ...f.v, status: 'failed', fails: 3, reason, retryAt: new Date(this.now() + 600000).toISOString() };
+      f.rev = this.bump(c);
+    }
   }
 
   private bedList(c: Colony): StoryBed[] {
@@ -667,6 +778,19 @@ export class StorySim {
   ): { ok: boolean; count: number; targets?: Array<[number, number, number]>; entities?: number[]; rev: number } {
     const c = this.colony(id);
     const a = body.area ? normArea(body.area) : null;
+    if (body.op === 'retry') {
+      // The failed designations named by `ids` are tried again now (their rest is over).
+      const ids = (body.ids ?? []).map(String);
+      if (!ids.length) throw Object.assign(new Error('ids required'), { status: 400 });
+      const retried: Key[] = [];
+      for (const [k, f] of c.designations) {
+        if (!ids.includes(String(k))) continue;
+        f.v = { ...f.v, status: 'open', retryAt: null, state: 'todo' };
+        f.rev = this.bump(c);
+        retried.push(k);
+      }
+      return { ok: true, count: retried.length, retried, rev: c.rev } as never;
+    }
     if (body.op === 'remove' || body.op === 'cancel') {
       let n = 0;
       for (const [k, f] of c.designations) {
@@ -1066,7 +1190,18 @@ export class StorySim {
       if (c.released) continue;
       const before = c.rev;
       c.tod = (c.tod + dtMs / 50) % 24000;
-      if (!c.paused) for (const p of c.pawns.values()) this.stepPawn(c, p, dtMs);
+      for (const p of c.pawns.values()) {
+        if (p.p.online) continue;
+        // An offline pawn comes back when its re-add / login is through (backAt); one waiting for a seat stays out.
+        if (p.backAt !== null && p.backAt !== undefined && this.now() >= p.backAt) {
+          p.backAt = null;
+          p.p.online = true;
+          p.p.state = 'idle';
+          p.p.offlineReason = null;
+          p.rev = this.bump(c);
+        }
+      }
+      if (!c.paused) for (const p of c.pawns.values()) if (p.p.online) this.stepPawn(c, p, dtMs);
       this.prune(c);
       if (c.rev !== before) this.emit(c);
     }
@@ -1246,6 +1381,8 @@ export class StorySim {
     for (const [k, f] of c.designations) {
       const d = f.v;
       if (d.pawn || d.state === 'done' || d.kind === 'forbid' || d.kind === 'allow') continue;
+      // A failed one rests until its retry.
+      if (d.retryAt && (typeof d.retryAt === 'number' ? d.retryAt : Date.parse(d.retryAt)) > this.now()) continue;
       const type = WORK_OF[d.kind];
       if (!type || !d.block) continue;
       const at = d.block;

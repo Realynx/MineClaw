@@ -12,6 +12,7 @@ import {
   type StoryBuild,
   type StoryColonyState,
   type StoryDirective,
+  type StoryOnlineBlocked,
   type StoryPawn,
   type StoryScheduleBlock,
   type StoryZone,
@@ -48,6 +49,7 @@ import {
   type SortKey,
 } from './model';
 import { panel } from './StoryHud';
+import { BringOnlineBox } from './StoryInspector';
 import { DESIGNATE_TOOLS, FURNITURE_TOOLS, STRUCTURE_TOOLS, ZONE_TOOLS } from './tools';
 import type { MapTool } from './StoryMap';
 import { AiMark, Avatar, ToolIcon } from './visuals';
@@ -672,6 +674,9 @@ export function ColonyPanel({
   onPause,
   onRelease,
   onResume,
+  blocked = [],
+  onBringAll,
+  displayOf,
 }: {
   state: StoryColonyState | undefined;
   colonies: Array<{ id: string; name: string; pawns: string[]; paused?: boolean | null }>;
@@ -695,7 +700,14 @@ export function ColonyPanel({
   onPause: () => void;
   onRelease: () => void;
   onResume: () => void;
+  /** The last "Bring online" refusals. */
+  blocked?: readonly StoryOnlineBlocked[];
+  /** Bring every offline pawn in (overCap: the regulars' seats too). */
+  onBringAll?: (overCap: boolean) => void;
+  displayOf?: (account: string) => string;
 }) {
+  const offline = (state?.pawns ?? []).filter((p) => p.online === false || p.state === 'offline').length;
+  const seats = state?.seats;
   return (
     <section
       className={cn(panel, 'pointer-events-auto w-[26rem] space-y-3 p-3 text-xs')}
@@ -744,6 +756,24 @@ export function ColonyPanel({
             </Button>
           ) : null}
         </div>
+      ) : null}
+      {state && seats ? (
+        <div className="text-muted" data-testid="colony-seats">
+          {seats.online} of {seats.wanted} pawns in game
+          {seats.capFree !== null && seats.capFree !== undefined
+            ? ` · server: ${seats.capFree} seat${seats.capFree === 1 ? '' : 's'} free, ${seats.keptForRegulars ?? 0} kept for regulars`
+            : ''}
+        </div>
+      ) : null}
+      {state && state.active !== false && offline > 0 && onBringAll ? (
+        <BringOnlineBox
+          blocked={blocked}
+          canWrite={canWrite}
+          label={`Bring all online (${offline} offline)`}
+          onBring={onBringAll}
+          testid="colony-bring-online"
+          names={displayOf}
+        />
       ) : null}
       {state ? (
         <div className="space-y-1.5 rounded-md border border-border p-2" data-testid="colony-home">
