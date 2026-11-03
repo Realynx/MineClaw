@@ -9,20 +9,30 @@ Reference specs (read these; they hold the details this file only names):
 
 ## Topology
 
+Everything runs on CT 114 (claudechan, 10.1.2.73), beside the bot. This was decided 2026-11-02 and replaces the earlier
+plan for a separate CT.
+
 ```
- browser ──HTTPS (cloudflared, later) / HTTP on the LAN──▶  viewer CT on alice (new)
-                                                             ├─ apps/api  NestJS :8080  (the only listener on the network)
-                                                             │    ├─ /api/*            REST + SSE (/api/live/stream)
-                                                             │    └─ everything else ▶ proxied to Next on 127.0.0.1:3000
-                                                             └─ apps/web  Next.js standalone, 127.0.0.1:3000
-                     HTTPS (cert pinned) + HMAC, viewer CT IP only
- viewer CT ──────────────────────────────────────────────▶  CT 114 (10.1.2.73)
-                                                             ├─ tools/ViewerBridge  ASP.NET Core :8766 (new service, own systemd unit)
-                                                             │    ├─ reads the agent db READ-ONLY (live, no snapshots)
-                                                             │    ├─ runs the C#-only logic (search, RAPTOR, shards, lint, diff, renders)
-                                                             │    └─ proxies the Supervisor on 127.0.0.1:8765 (adds the token)
-                                                             └─ mineclaw (bot)  Supervisor HttpListener :8765 (existing)
+ browser ──HTTP on the LAN (now) / HTTPS via cloudflared (later)──▶ CT 114 (10.1.2.73)
+   ├─ apps/api   NestJS 0.0.0.0:8080   the only new port on the network
+   │    ├─ /api/*            REST + SSE (/api/live/stream)
+   │    └─ everything else ▶ Next standalone on 127.0.0.1:3000
+   ├─ apps/web   Next.js standalone, 127.0.0.1:3000
+   ├─ tools/ViewerBridge   ASP.NET Core 127.0.0.1:8766   HMAC-signed requests from Nest only
+   │    ├─ reads the agent db READ-ONLY (live, no snapshots)
+   │    ├─ runs the C#-only logic (search, RAPTOR, shards, lint, diff, renders)
+   │    └─ proxies the Supervisor on 127.0.0.1:8765 (adds the token)
+   └─ mineclaw (bot)   Supervisor HttpListener :8765 (existing)
 ```
+
+Each of the three new processes has its own systemd unit:
+- `mineclaw-web-api` and `mineclaw-web-ui`, running as the `mineclaw-web` user.
+- `mineclaw-bridge`, running as the `mineclaw-bridge` user in group `mineclaw`, so it can read `/etc/mineclaw/appsettings.json`
+  and open the db read-only.
+
+Memory use:
+- The web stack is budgeted at about 1 GB with `MemoryMax` on the units.
+- The hive's `ResourceCeiling` (14336 MB) has to leave room for it.
 
 Why a C# bridge: eight of the ten Explorer pages read the bot's SQLite db, and hybrid search, the RAPTOR tree, shard
 export and import, script lint, design diff and the voxel and vision renderers exist only in C#
@@ -43,12 +53,12 @@ web/                         npm workspaces + Turborepo (turbo.json); Node 22
   packages/world-viewer/     three.js voxel world renderer (React component), consumes MCWC chunks / entities / overlays
 tools/ViewerBridge/          C# ASP.NET Core minimal API (net10.0), references src/ libs
 tests/MineClaw.ViewerBridge.Tests/
-deploy/viewer/               systemd units, cloudflared notes, deploy script for the viewer CT and the bridge
+deploy/viewer/               systemd units, cloudflared notes, and the web + bridge steps in deploy-alice.ps1 (CT 114)
 ```
 
 ## Security model (design as if public)
 
-- **Users.** A users file on the viewer CT (`/etc/mineclaw-web/users.json`, 0600) holds username, argon2id hash,
+- **Users.** A users file on the viewer CT on CT 114 (`/etc/mineclaw-web/users.json`, 0600) holds username, argon2id hash,
   optional TOTP secret, roles and the linked Minecraft player. Fox maps to `poofimafox` and Robin to `kiwi`. A
   `web/apps/api` CLI adds a user, resets a password and enrolls TOTP. There is no self-signup.
 - **Roles.**
@@ -58,7 +68,7 @@ deploy/viewer/               systemd units, cloudflared notes, deploy script for
   - `admin`: memory edits, rebuilds, backups, shard import.
 - **Sessions.**
   - Opaque random id in a `__Host-mcx` cookie (HttpOnly, Secure when served over HTTPS, SameSite=Lax), held in a server
-    store (SQLite at `/var/lib/mineclaw-web/web.db`).
+    store (SQLite at `/var/lib/mineclaw-web/web.db` on CT 114).
   - Idle timeout is 12 h and absolute timeout 7 d. The id rotates on login.
 - **CSRF.** Every non-GET needs the `X-CSRF-Token` header to match the session's token, and `Origin` must be in
   `Web:AllowedOrigins`.
@@ -66,17 +76,17 @@ deploy/viewer/               systemd units, cloudflared notes, deploy script for
 - **Headers.** HSTS when HTTPS, a strict CSP (self plus inline styles only where Tailwind needs them), `X-Frame-Options:
   DENY`, `Referrer-Policy: same-origin`.
 - **Cloudflare.**
-  - `Web:TrustProxy` makes Nest honor `CF-Connecting-IP` / `X-Forwarded-*`, but only from loopback, because cloudflared
-    runs on the CT.
+  - `Web:TrustProxy` makes Nest honor `CF-Connecting-IP` / `X-Forwarded-*`, but only from the configured cloudflared
+    source (`Web:TrustedProxies`).
   - Optional `Web:CloudflareAccess:{TeamDomain,Aud}` verifies `Cf-Access-Jwt-Assertion` as a second gate before login.
 - **Audit.** Every write, every chat line and every login is recorded in `web.db` with user, IP and time, and shown on the
   Audit page.
 - **Nest ↔ bridge.**
-  - HTTPS with a self-signed cert generated on install. Nest pins its SHA-256 (`Bridge:CertSha256`).
+  - Loopback only (127.0.0.1:8766), so no TLS is needed.
   - Each request is HMAC-SHA256 signed over `method\npath?query\ntimestamp\nnonce\nsha256(body)` with `Bridge:Key`.
     Headers: `X-MCX-Ts`, `X-MCX-Nonce`, `X-MCX-Sig`.
   - The bridge rejects skew over 30 s and replayed nonces (5 min LRU).
-  - Source IP must be in `Bridge:AllowedClients`.
+  - Source IP must be loopback.
   - Nest also sends `X-MCX-User` (username) and `X-MCX-Player` (linked player) and `X-MCX-Roles`. They are covered by the
     signature (included in the signed string after the body hash, newline-separated), and the bridge uses them for
     audit and chat identity.
