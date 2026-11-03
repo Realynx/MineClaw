@@ -223,47 +223,88 @@ and measures sustained fps at the follow camera over the dense fixture world (la
 ### Entity models
 
 Bots, players, mobs, drops and objects are drawn as vanilla-shaped box models, textured from the bundled entity sheet
-(`generated/<version>/entity.png`; `loadBundle`). This covers both versions and every mob type the wire can report, plus
-the layers: spider and enderman eyes, sheep wool in its colour, pig saddle, the stray overlay, the wolf collar, slime gel
-and dragon eyes.
+(`generated/<version>/entity.png`, which also holds the painting sheets; `loadBundle`). This covers both versions and every
+entity kind the wire reports.
 
-- **Data.** The models are our own data files in `src/render/entities/models/`; `types.ts` documents the format. A model
-  has named parts with a pivot, a rest rotation and children. Each part holds cuboids (origin, size, inflate, mirror, texture
-  offset or per-face rectangles), and the model has a texture size, an optional layer per part and a pose function (the
-  vanilla `setRotationAngles`). `builder.ts` turns a model into geometry, and `registry.ts` maps a mob type, Mob16
-  variant, object type or player to a model, a skin and its layers.
+- **Data.** The models are our own data files in `src/render/entities/models/`; `types.ts` documents the format.
+  - A model has named parts with a pivot, a rest rotation and children.
+  - Each part holds cuboids (origin, size, inflate, mirror, texture offset or per-face rectangles).
+  - A model also has a texture size, optional texture layers per part (wool, saddle, chests, carpet, charge…), an optional
+    vanilla child layout and a pose function (the vanilla `setRotationAngles`).
+  - `builder.ts` turns a model into geometry.
+  - `registry.ts` maps a mob type or name, an object kind or a player to a model, a skin and its layers.
+- **Appearance.** `variant.ts` decodes the legacy numeric `variant` together with the `look` tokens (`red,sheared`,
+  `creamy,white_dots,tame,saddle,armor=iron`, `tame,sitting,collar=red`, `powered,fusing`, `size=4`,
+  `profession=librarian`…). Each look reads the tokens it knows and ignores the rest. The decoded variants cover:
+  - sheep colour and shearing
+  - wolf collar colour, anger and taming
+  - pig saddle
+  - the powered creeper's scrolling aura
+  - slime and magma cube size
+  - horse coat, markings, armour and saddle; donkey and mule chests
+  - llama colour, carpet and chests
+  - villager and zombie villager professions
+  - cat types, rabbit coats, parrot colours, shulker colours and lid, boat wood
+  - minecart contents
+  - armor stand options and pose
+- **Equipment.** `equipment` draws on every biped (players, bots, zombies, skeletons, armor stands):
+  - armour pieces in their material; undyed leather is brown
+  - main- and off-hand items (item sprites, or block cubes)
+  - a pumpkin worn on the head
+- **Flags.** The flag bits drive these effects:
+  - fire on burning entities
+  - sneaking and riding poses
+  - faster limb swing while sprinting
+  - the item-use pose (drawing a bow, eating)
+  - invisibility (the body is hidden; armour and held items stay)
+  - glowing (lit)
+- **Babies.** Babies use vanilla's child layouts: a big head on a half-size body for bipeds and animals, and other models at
+  half size.
 - **GPU skinning.** Every frame each entity's part matrices are written into one row of a float texture. A vertex fetches
   its part's matrix (`texelFetch`). A view only fills small per-instance arrays, so there is one draw call per model kind
-  in view, plus item sprites, item cubes, shadows and LOD boxes. A skin and its layers are instances of the same geometry;
-  a layer instance draws only the parts tagged with its layer. With 20 walking mobs on SwiftShader at 1280×800, the models
-  cost about 1.5 ms over plain boxes (`/models.html?n=20`, `__gallery.bench()`).
-- **Animation.** All of these are driven by data the wire already has:
-  - Limb swing comes from the distance walked (the vanilla limb-swing filter) and runs faster while sprinting.
-  - The body yaw turns toward the walk direction and keeps the head within 75°.
-  - Bots get head yaw and pitch; mobs have one yaw on the wire.
-  - Arms sway when idle. Players crouch while sneaking.
-  - A creeper flashes while fusing and primed TNT flashes.
-  - Burning entities (flag 0x01) show fire.
-  - A bot flashes red when its hp drops and falls over at hp 0.
-- **Hooks.** `swing(key)`, `hurt(key)` and `kill(key)` drive what the wire does not report yet.
-- **Detail.** Beyond `detailDistance` (default 48 blocks; the perf controller sets it), entities draw as plain coloured
+  in view, plus armour, item sprites (held items, drops, paintings, particles, fire), item cubes, shadows and LOD boxes.
+  - A skin and its layers are instances of the same geometry; a layer instance draws only the parts tagged with its layer.
+  - With 20 walking zombies on SwiftShader at 1280×800, the models cost about 0.7–1.5 ms over plain boxes
+    (`/models.html?n=20`, `__gallery.bench()`).
+- **Animation.** Animation comes from motion and events:
+  - Limb swing follows the distance walked; the body yaw turns toward the walk direction.
+  - The head follows `headYaw` (or the look yaw), within 75° of the body, plus bot pitch.
+  - Arms sway when idle.
+- **Events** (`onEvents`, fed by the runtime from the delta stream):
+  - `swing` and `swing_off` swing the right or left arm.
+  - `hurt` gives a red flash.
+  - `death` makes the body fall over, shrink away with a smoke puff, then disappear. It stays drawn that long even when
+    removed.
+  - `crit` and `magic_crit` throw spark bursts.
+  - `eat` puts the hand to the mouth (a sheep puts its head down).
+  - `teleport` leaves portal puffs at the old and new places.
+  - `lightning` draws a jagged additive bolt for half a second.
+  - Bots also flash on an hp drop and fall at hp 0.
+  - `swing(key)`, `hurt(key)` and `kill(key)` are direct hooks.
+- **Display mobs.** `showDisplayMob(key, dim, x, y, z, mob, scale, spinRad)` and `hideDisplayMob(key)` draw a mob (by name)
+  inside a block, as spawner cages do. They share the entity draws.
+- **Other kinds.** These have their own render paths:
+  - paintings (motive and facing)
+  - item frames (frame plate plus item, rotated in 45° steps)
+  - minecarts with their block; boats; arrows aimed along their velocity
+  - falling blocks; primed TNT that flashes by fuse and swells
+  - XP orbs, fireworks, ender crystals
+- **Detail.** Beyond `detailDistance` (the perf controller sets it from the quality profile), entities draw as plain coloured
   boxes and are not posed. The distance is scaled by the view's field of view, so iso views keep detail further out.
-- **Light.** Entities take the world's time-of-day light and fog uniforms (`setWorldUniforms`). `lightAt(dim, x, y, z)` is
-  the hook for per-entity sky and block light once that is queryable on the main thread.
-- **Items.** A bot's held item comes from its `held` name; a player's comes from its held item id. Held items and drops
-  resolve to an item sprite or a block cube: on 1.12.2 through the packed item models and textures, on b1.8.1 through the
-  `items.png` icons and terrain tiles. Drops bob and spin with vanilla's stack copies. XP orbs, boats, minecarts, arrows,
-  falling blocks and primed TNT have render paths, but the supervisor sends only players, mobs and drops today.
-- **Not on the wire today.** These render paths exist but get no data:
-  - equipment and armour (the layer reads an optional DTO `armor: [helmet, chest, legs, boots]`)
-  - skins (bots wear Steve; other players get Steve or Alex by a name hash)
-  - mob health and hurt events, mob deaths and arm swings
-  - separate mob head yaw
-  - villager professions and horse coats (picked by entity id)
-  - baby flags
-- **Gallery.** `/models.html` in the dev server shows every model on a flat floor. It takes `?version=b1.8.1`, `?walk=0`,
-  `?spin=1` and `?n=20` (the perf scene). The fixture world has a zoo of every mob type south of the island (`?zoo=0` turns
-  it off; `?version=1.12.2` switches the version).
+- **Light.** Entities take the world's time-of-day light and fog uniforms (`setWorldUniforms`), and per-entity light via
+  `lightAt`.
+- **Not on the wire.** These are still missing or picked by entity id:
+  - skins: bots wear Steve; other players get Steve or Alex by a name hash
+  - leather dye colours
+  - skulls on heads
+  - horse coats and villager professions when the look gives none
+- **Gallery.** `/models.html` in the dev server shows every model on a flat floor, with scripted events. It takes
+  `?version=b1.8.1`, `?walk=0`, `?spin=1`, `?events=0` and `?n=20` (the perf scene).
+- **Fixture.** The fixture world (`zoo`, on in the demo) has three areas:
+  - a zoo of every mob type south of the island
+  - a showcase of equipment, babies, variants, paintings, an item frame and minecarts in the final wire shape
+  - scheduled events: Alice swings every second, a pigman is hurt and dies every 12 s, an enderman teleports, and lightning
+    strikes every 20 s
 
 ## Development
 
@@ -301,6 +342,8 @@ Vite bundle the mesh worker and emit the atlases themselves, with no copy step.
   - Entity interpolation.
   - Entity models: every model builds inside its texture, every mob type has a model and existing textures in both
     versions, poses from walking, yaw and pitch, LOD, and held and dropped item resolution.
+  - Entity wire: variant and look parsing per kind, equipment to armour, event timings (swing, hurt, death fade), baby
+    layouts, painting motives, item frames, minecart contents, display mobs and lightning.
   - Hash-diff fetching.
   - Shared meshing: N views mesh each section once.
   - Block deltas: exact dirty sections, burst coalescing, fallbacks and local relighting.

@@ -8,7 +8,7 @@ import * as THREE from 'three';
 import { loadBundle } from '../src/assets/bundle';
 import { EntityLayer } from '../src/render/entityLayer';
 import { MOB_NAMES } from '../src/render/entities/registry';
-import type { EntityDto } from '../src/types';
+import type { EntityDto, EntityEvent } from '../src/types';
 import type { BotView, EntityView } from '../src/world/entities';
 
 const q = new URLSearchParams(location.search);
@@ -49,15 +49,30 @@ if (!perf) {
     { kind: 'player', name: 'Steve' },
     { kind: 'player', name: 'alexa', item: 276 },
     { kind: 'mob', type: 54, flags: 1 },
-    // Armour is not on the wire today; the DTO field the layer reads when it is.
-    { kind: 'player', name: 'Knight', armor: ['iron', 'diamond', 'gold', 'leather'] } as Partial<EntityDto>,
-    { kind: 'mob', type: 51, armor: ['chainmail', null, null, 'iron'] } as Partial<EntityDto>,
+    // The newer wire: equipment, variants, babies, hanging things, loaded carts.
+    { kind: 'player', name: 'Knight', equipment: { main: [276, 0], off: [50, 0], head: [306, 0], chest: [311, 0], legs: [316, 0], feet: [301, 0] } },
+    { kind: 'mob', type: 51, equipment: { main: [261, 0], head: [302, 0], feet: [309, 0] } },
+    { kind: 'armor_stand', variant: 'arms', equipment: { main: [267, 0], head: [314, 0], chest: [315, 0] } },
+    { kind: 'mob', type: 54, baby: true, equipment: { head: [86, 0] } },
+    { kind: 'mob', type: 92, baby: true },
+    { kind: 'mob', type: 91, variant: 'lime', baby: true },
+    { kind: 'mob', type: 100, variant: 'creamy,white_dots,saddle,iron' },
+    { kind: 'mob', type: 31, variant: 'saddle,chest' },
+    { kind: 'mob', type: 103, variant: 'gray,carpet:blue,chest' },
+    { kind: 'mob', type: 50, variant: 'powered' },
+    { kind: 'mob', type: 95, variant: 'collar:lime,tame' },
+    { kind: 'mob', type: 69, variant: 'cyan,open' },
+    { kind: 'painting', motive: 'BurningSkull', facing: 0 },
+    { kind: 'item_frame', frameItem: [264, 0], rotation: 1, facing: 0 },
+    { kind: 'minecart', minecartType: 'tnt' },
+    { kind: 'mob', type: 54, flags: 0x40 },
+    { kind: 'mob', type: 54, flags: 0x20, equipment: { head: [310, 0], chest: [311, 0] } },
   );
 }
 const spacing = 4;
 const hud = document.getElementById('hud')!;
 const t0 = performance.now();
-let frames = 0, fpsAt = t0;
+let frames = 0, fpsAt = t0, lastSec = -1;
 
 function views(now: number): { bots: BotView[]; ents: EntityView[] } {
   const s = (now - t0) / 1000;
@@ -128,6 +143,18 @@ function frame(now: number) {
   requestAnimationFrame(frame);
   const { bots, ents } = views(now);
   layer.update(bots, ents, now, new Set(['Alice']));
+  // Events: Alice swings every second; the first zombie is hurt, sparks and dies every 6 s; lightning every 5 s.
+  const sec = Math.floor((now - t0) / 1000);
+  if (sec !== lastSec) {
+    lastSec = sec;
+    const zi = entries.findIndex((e) => e.type === 54);
+    const ev: EntityEvent[] = [{ kind: 'swing', name: 'Alice', at: now }];
+    if (sec % 6 === 1) ev.push({ kind: 'hurt', id: zi, dim: 0, at: now }, { kind: 'crit', id: zi, dim: 0, at: now });
+    if (sec % 6 === 2) ev.push({ kind: 'magic_crit', id: zi, dim: 0, at: now }, { kind: 'eat', name: 'Cleo', at: now });
+    if (sec % 6 === 3) ev.push({ kind: 'death', id: zi, dim: 0, at: now });
+    if (sec % 5 === 0) ev.push({ kind: 'lightning', dim: 0, at: now, x: centre.x + 6, y: 0, z: centre.z - 6 });
+    if (q.get('events') !== '0') layer.onEvents?.(ev, now);
+  }
   camera.position.set(centre.x + Math.sin(camYaw) * Math.cos(camPitch) * camDist, centre.y + Math.sin(camPitch) * camDist, centre.z + Math.cos(camYaw) * Math.cos(camPitch) * camDist);
   camera.lookAt(centre);
   layer.showFor(0, camera.position, { bots: true, entities: true, labels: q.get('labels') !== '0', selected: 'Alice', fov: camera.fov });

@@ -12,6 +12,8 @@
 // them into the texture's rectangle of the packed entity sheet per instance, so one geometry serves every skin of a model
 // (zombie / husk / drowned, horse colours, villager professions…).
 
+import type { Variant } from './variant';
+
 export type V3 = readonly [number, number, number];
 
 /** Face keys of a cuboid: −x west, +x east, y0 top (model y is down), y1 bottom, z0 north (front), z1 south (back). */
@@ -58,8 +60,16 @@ export interface PoseCtx {
   headYaw: number;
   /** headPitch, degrees (positive = looking down). */
   pitch: number;
-  /** swingProgress 0..1 of an arm swing (0 = none). */
+  /** swingProgress 0..1 of a main-hand (right arm) swing (0 = none). */
   attack: number;
+  /** swingProgress 0..1 of an off-hand (left arm) swing. */
+  attackOff: number;
+  /** Eating / drinking progress 0..1 (0 = not eating): arm to the mouth, head bob. */
+  eat: number;
+  /** A baby (models without a `baby` layout are scaled by the renderer). */
+  baby: boolean;
+  /** The decoded variant (string tokens and the number); `variant` keeps the numeric form. */
+  v: Variant;
   /** Mob16 variant from the wire (slime size, sheep wool, pig saddle, wolf flags, creeper state…), 0 when absent. */
   variant: number;
   /** Entity flags (0x01 burning, 0x02 sneaking, 0x04 riding, 0x08 sprinting, 0x10 using an item). */
@@ -68,8 +78,13 @@ export interface PoseCtx {
   riding: boolean;
   /** Something in the right hand (players/bots: the held item; mobs: never on the wire). */
   holding: boolean;
-  /** Zombie arms raised / skeleton aiming / illager aggressive — not on the wire today (always false). */
+  /** Zombie arms raised / skeleton aiming / illager aggressive (look tokens such as "aggressive", "attacking"). */
   aggressive: boolean;
+  /** Using an item (flag 0x10): drawing a bow (`bow`), eating or drinking, raising a shield. */
+  using: boolean;
+  bow: boolean;
+  /** Armor stands: the wire's pose, part → [x, y, z] degrees (head, body, leftArm, rightArm, leftLeg, rightLeg). */
+  standPose: Readonly<Record<string, readonly number[]>> | null;
   /** The b1.8.1 client's pose rules (some setRotationAngles differ between versions). */
   beta: boolean;
   /** Seconds-free per-entity phase 0..1 (desynchronises idle animations of identical mobs). */
@@ -109,6 +124,12 @@ export interface ModelDef {
   width: number;
   height: number;
   pose?: PoseFn;
+  /**
+   * The vanilla child layout (ModelBiped/ModelQuadruped `isChild`): top-level parts named in `head` are drawn with
+   * scale(headScale) · translate(headOffset px); every other top-level part with scale(bodyScale) · translate(bodyOffset
+   * px). Absent: a baby is the whole model at half size (the renderer's preRender scale).
+   */
+  baby?: { head: string[]; headScale: number; headOffset: V3; bodyScale: number; bodyOffset: V3 };
 }
 
 /** How an entity looks: a model, a skin, extra layers (same geometry or a tagged part layer) and a scale. */
@@ -127,8 +148,9 @@ export interface Look {
   colour: number;
 }
 
-/** The look of one entity kind from the facts the wire carries (Mob16 `variant`, entity id for stable random picks). */
-export type LookFn = (variant: number, beta: boolean, id: number) => Look;
+/** The look of one entity kind from the facts the wire carries (the decoded variant: `v.num` is the numeric / Mob16 form;
+ * the entity id for stable picks where the wire has no selector). */
+export type LookFn = (v: Variant, beta: boolean, id: number) => Look;
 
 export interface LayerUse {
   /** The model layer drawn (a `ModelDef.layers` name); absent = the base geometry again (eyes, collar, markings). */
@@ -138,4 +160,6 @@ export interface LayerUse {
   /** Full bright (spider/enderman eyes). */
   emissive?: boolean;
   translucent?: boolean;
+  /** Texture scrolls with time (creeper charge, wither armour). */
+  scroll?: boolean;
 }

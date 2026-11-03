@@ -5,9 +5,11 @@ import type { GameVersion } from '../../world/blocks';
 import * as animals from './models/animals';
 import * as common from './models/common';
 import * as misc from './models/misc';
+import * as stand from './models/stand';
 import type { Look, LookFn, ModelDef } from './types';
+import { Variant } from './variant';
 
-export const ALL_MODELS: ModelDef[] = [...common.MODELS, ...animals.MODELS, ...misc.MODELS];
+export const ALL_MODELS: ModelDef[] = [...common.MODELS, ...animals.MODELS, ...misc.MODELS, ...stand.MODELS];
 export const MODEL_BY_ID: Record<string, ModelDef> = Object.fromEntries(ALL_MODELS.map((m) => [m.id, m]));
 
 /** Mob type id → canonical (1.12.2 registry) name. */
@@ -48,6 +50,9 @@ export function fleece(colour: number, beta: boolean): number {
 
 const b = (beta: boolean, modern: string, old: string) => (beta ? old : modern);
 
+/** Numeric Mob16 bits apply only to the older numeric variant. */
+const bit = (v: Variant, mask: number) => !v.isString && (v.num & mask) !== 0;
+
 /** The common mobs (models in common.ts); both versions. */
 const COMMON_LOOKS: Record<string, LookFn> = {
   zombie: (_v, beta) => ({ model: beta ? 'zombie_beta' : 'zombie', texture: b(beta, 'entity/zombie/zombie', 'mob/zombie'), colour: 0x3a7a5a }),
@@ -57,59 +62,94 @@ const COMMON_LOOKS: Record<string, LookFn> = {
   skeleton: (_v, beta) => ({ model: 'skeleton', texture: b(beta, 'entity/skeleton/skeleton', 'mob/skeleton'), colour: 0xd0d0d0 }),
   stray: () => ({ model: 'skeleton', texture: 'entity/skeleton/stray', layers: [{ layer: 'overlay', texture: 'entity/skeleton/stray_overlay' }], colour: 0x8aa0a0 }),
   wither_skeleton: () => ({ model: 'skeleton', texture: 'entity/skeleton/wither_skeleton', scale: 1.2, colour: 0x2a2a2a }),
-  creeper: (_v, beta) => ({ model: beta ? 'creeper_beta' : 'creeper', texture: b(beta, 'entity/creeper/creeper', 'mob/creeper'), colour: 0x4caf50 }),
+  // Powered ("powered"/"charged"): the scrolling charge aura (LayerCreeperCharge, creeper_armor.png on an inflated copy).
+  creeper: (v, beta) => ({
+    model: beta ? 'creeper_beta' : 'creeper',
+    texture: b(beta, 'entity/creeper/creeper', 'mob/creeper'),
+    layers: v.has('powered', 'charged') ? [{ layer: 'charge', texture: b(beta, 'entity/creeper/creeper_armor', 'armor/power'), translucent: true, emissive: true, scroll: true }] : [],
+    colour: 0x4caf50,
+  }),
   spider: (_v, beta) => ({ model: 'spider', texture: b(beta, 'entity/spider/spider', 'mob/spider'), layers: [{ texture: b(beta, 'entity/spider_eyes', 'mob/spider_eyes'), emissive: true }], colour: 0x3a2e28 }),
   cave_spider: (_v, beta) => ({ model: 'spider', texture: b(beta, 'entity/spider/cave_spider', 'mob/cavespider'), scale: 0.7, layers: [{ texture: b(beta, 'entity/spider_eyes', 'mob/spider_eyes'), emissive: true }], colour: 0x1c3a40 }),
   enderman: (_v, beta) => ({ model: 'enderman', texture: b(beta, 'entity/enderman/enderman', 'mob/enderman'), layers: [{ texture: b(beta, 'entity/enderman/enderman_eyes', 'mob/enderman_eyes'), emissive: true }], colour: 0x1a1020 }),
-  pig: (v, beta) => ({ model: 'pig', texture: b(beta, 'entity/pig/pig', 'mob/pig'), layers: v & 1 ? [{ layer: 'saddle', texture: b(beta, 'entity/pig/pig_saddle', 'mob/saddle') }] : [], colour: 0xf0a0a0 }),
+  pig: (v, beta) => ({ model: 'pig', texture: b(beta, 'entity/pig/pig', 'mob/pig'), layers: v.has('saddle', 'saddled') || bit(v, 1) ? [{ layer: 'saddle', texture: b(beta, 'entity/pig/pig_saddle', 'mob/saddle') }] : [], colour: 0xf0a0a0 }),
   cow: (_v, beta) => ({ model: 'cow', texture: b(beta, 'entity/cow/cow', 'mob/cow'), colour: 0x5a3a24 }),
   mooshroom: () => ({ model: 'cow', texture: 'entity/cow/mooshroom', colour: 0xb02020 }),
-  sheep: (v, beta) => ({
-    model: 'sheep',
-    texture: b(beta, 'entity/sheep/sheep', 'mob/sheep'),
-    layers: v & 16 ? [] : [{ layer: 'wool', texture: b(beta, 'entity/sheep/sheep_fur', 'mob/sheep_fur'), tint: fleece(v, beta) }],
-    colour: v & 16 ? 0xc8b49c : fleece(v, beta),
-  }),
+  // "red,sheared" / numeric colour | 0x10 sheared.
+  sheep: (v, beta) => {
+    const sheared = v.has('sheared') || bit(v, 16);
+    const d = v.dye('color') >= 0 ? v.dye('color') : v.dye();
+    const colour = d >= 0 ? d : v.isString ? 0 : v.num & 15;
+    return {
+      model: 'sheep',
+      texture: b(beta, 'entity/sheep/sheep', 'mob/sheep'),
+      layers: sheared ? [] : [{ layer: 'wool', texture: b(beta, 'entity/sheep/sheep_fur', 'mob/sheep_fur'), tint: fleece(colour, beta) }],
+      colour: sheared ? 0xc8b49c : fleece(colour, beta),
+    };
+  },
   chicken: (_v, beta) => ({ model: 'chicken', texture: b(beta, 'entity/chicken', 'mob/chicken'), colour: 0xf8f8f8 }),
+  // "collar:red,angry,tame" / numeric flags (2 angry, 4 tame).
   wolf: (v, beta) => {
-    const tex = v & 2 ? 'angry' : v & 4 ? 'tame' : '';
+    const angry = v.has('angry') || bit(v, 2), tame = v.has('tame', 'tamed') || v.get('collar') != null || bit(v, 4);
+    const tex = angry ? 'angry' : tame ? 'tame' : '';
+    const collar = v.dye('collar');
     return {
       model: beta ? 'wolf_beta' : 'wolf',
       texture: beta ? `mob/wolf${tex ? '_' + tex : ''}` : `entity/wolf/wolf${tex ? '_' + tex : ''}`,
-      // The collar colour is not on the wire: vanilla's default red.
-      layers: !beta && v & 4 ? [{ texture: 'entity/wolf/wolf_collar', tint: 0x993333 }] : [],
+      // EntityWolf collar colour (EnumDyeColor components); vanilla's default red.
+      layers: !beta && tame ? [{ texture: 'entity/wolf/wolf_collar', tint: dyeRgb(collar >= 0 ? collar : 14) }] : [],
       colour: 0xd8d8d8,
     };
   },
-  slime: (v, beta) => ({ model: 'slime', texture: b(beta, 'entity/slime/slime', 'mob/slime'), scale: Math.max(1, v || 1), layers: [{ layer: 'outer', texture: b(beta, 'entity/slime/slime', 'mob/slime'), translucent: true }], colour: 0x78c868 }),
-  ghast: (_v, beta) => ({ model: 'ghast', texture: b(beta, 'entity/ghast/ghast', 'mob/ghast'), colour: 0xf0f0f0 }),
+  slime: (v, beta) => {
+    const size = Math.max(1, v.numOf('size', v.num) || 1);
+    return { model: 'slime', texture: b(beta, 'entity/slime/slime', 'mob/slime'), scale: size, layers: [{ layer: 'outer', texture: b(beta, 'entity/slime/slime', 'mob/slime'), translucent: true }], colour: 0x78c868 };
+  },
+  ghast: (v, beta) => ({ model: 'ghast', texture: v.has('shooting', 'attacking') || bit(v, 1) ? b(beta, 'entity/ghast/ghast_shooting', 'mob/ghast_fire') : b(beta, 'entity/ghast/ghast', 'mob/ghast'), colour: 0xf0f0f0 }),
   squid: (_v, beta) => ({ model: 'squid', texture: b(beta, 'entity/squid', 'mob/squid'), colour: 0x2a3a5a }),
 };
 
-const ALL_LOOKS: Record<string, LookFn> = { ...animals.LOOKS, ...misc.LOOKS, ...COMMON_LOOKS };
+/** A dye's colour (1.12.2 EnumDyeColor). */
+export function dyeRgb(d: number): number {
+  return FLEECE_1122[d & 15];
+}
+
+const ALL_LOOKS: Record<string, LookFn> = { ...animals.LOOKS, ...misc.LOOKS, ...stand.LOOKS, ...COMMON_LOOKS };
 const FALLBACK: Look = { model: 'box', texture: '', colour: 0xb05050 };
 
 /** The canonical name of a mob type, or of a mob name the wire sends ("Zombie", "PigZombie"). */
 export function mobName(type: number, name: string | null): string | null {
+  // A name the looks know wins over the type (the wire sends wither skeletons and strays by name).
+  const n = name ? canonical(name) : null;
+  if (n && ALL_LOOKS[n] && n !== MOB_NAMES[type]) {
+    const alias = ALIASES[n] ?? n;
+    if (alias !== 'zombie' && alias !== 'skeleton') return alias;
+  }
   const byId = MOB_NAMES[type];
   if (byId) return byId;
-  if (!name) return null;
-  const n = name.toLowerCase().replace(/[\s-]+/g, '_');
-  return { pigzombie: 'zombie_pigman', pig_zombie: 'zombie_pigman', cavespider: 'cave_spider', lavaslime: 'magma_cube', snow_golem: 'snowman', iron_golem: 'villager_golem', mushroomcow: 'mooshroom' }[n] ?? n;
+  if (!n) return null;
+  return ALIASES[n] ?? n;
+}
+
+const ALIASES: Record<string, string> = { pigzombie: 'zombie_pigman', pig_zombie: 'zombie_pigman', cavespider: 'cave_spider', lavaslime: 'magma_cube', lava_slime: 'magma_cube', snow_golem: 'snowman', iron_golem: 'villager_golem', mushroomcow: 'mooshroom', mushroom_cow: 'mooshroom', witherskeleton: 'wither_skeleton', polarbear: 'polar_bear', zombievillager: 'zombie_villager', skeletonhorse: 'skeleton_horse', zombiehorse: 'zombie_horse', villagergolem: 'villager_golem', enderdragon: 'ender_dragon', entityhorse: 'horse', ozelot: 'ocelot', vindicator: 'vindication_illager', evoker: 'evocation_illager', illusioner: 'illusion_illager', elderguardian: 'elder_guardian' };
+
+/** "WitherSkeleton" / "minecraft:wither_skeleton" / "Wither Skeleton" → "wither_skeleton". */
+export function canonical(name: string): string {
+  return name.replace(/^minecraft:/, '').replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase().replace(/[\s-]+/g, '_');
 }
 
 /** A mob's look (FALLBACK box when the type is unknown). */
-export function mobLook(version: GameVersion, type: number, name: string | null, variant: number, id: number): Look {
+export function mobLook(version: GameVersion, type: number, name: string | null, variant: Variant | number | string | null | undefined, id: number): Look {
   const n = mobName(type, name);
   const f = n ? ALL_LOOKS[n] : undefined;
-  return f ? f(variant, version === 'b1.8.1', id) : FALLBACK;
+  return f ? f(variant instanceof Variant ? variant : Variant.of(variant), version === 'b1.8.1', id) : FALLBACK;
 }
 
 /** An object's look by name (boat, minecart, arrow, ender crystal…) or null (drawn by the item/block paths or as a box). */
-export function objectLook(version: GameVersion, name: string, variant: number, id: number): Look | null {
+export function objectLook(version: GameVersion, name: string, variant: Variant | number | string | null | undefined, id: number): Look | null {
   const n = name === 'chest_minecart' || name === 'furnace_minecart' || name.endsWith('_minecart') ? 'minecart' : name;
-  const f = ALL_LOOKS[`object:${n}`];
-  return f ? f(variant, version === 'b1.8.1', id) : null;
+  const f = ALL_LOOKS[`object:${n}`] ?? ALL_LOOKS[n];
+  return f ? f(variant instanceof Variant ? variant : Variant.of(variant), version === 'b1.8.1', id) : null;
 }
 
 function nameHash(s: string): number {

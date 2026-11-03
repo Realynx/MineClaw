@@ -5,11 +5,11 @@
 //   blocks.png   every textures/blocks/*.png (frame 0 of animated ones) in a 16 px grid
 //   items.png    every textures/items/*.png in a 16 px grid
 //   anim.png     every frame of every animated block/item texture, one row per animation
-//   entity.png   every textures/entity/**.png and models/armor/*.png, shelf-packed
+//   entity.png   every textures/entity/**.png, models/armor/*.png and painting/*.png, shelf-packed
 //   env/*.png    sun, moon phases, clouds, rain, snow (copied)
 //   pack.json    { tiles, items, anims, entity, blockstates, models, itemModels, biomes, colormaps }
 // b1.8.1
-//   terrain.png, items.png (copied: already 16×16-tile atlases), entity.png (mob/*, char.png, armor/*, item/{boat,cart,arrows,xporb}),
+//   terrain.png, items.png (copied: already 16×16-tile atlases), entity.png (mob/*, char.png, armor/*, item/{boat,cart,arrows,xporb}, art/kz),
 //   env/*.png, pack.json
 //
 //   node scripts/pack-assets.mjs            (both versions)
@@ -229,7 +229,7 @@ function pack1122() {
   writePng(join(dest, 'blocks.png'), blocks.png);
   writePng(join(dest, 'items.png'), items.png);
   writePng(join(dest, 'anim.png'), animSheet(animFrames));
-  const ent = shelfPack([...walk(join(src, 'textures', 'entity')), ...walk(join(src, 'textures', 'models', 'armor'))].filter((f) => f.endsWith('.png')), join(src, 'textures'));
+  const ent = shelfPack([...walk(join(src, 'textures', 'entity')), ...walk(join(src, 'textures', 'models', 'armor')), ...walk(join(src, 'textures', 'painting'))].filter((f) => f.endsWith('.png')), join(src, 'textures'));
   writePng(join(dest, 'entity.png'), ent.png);
   const env = copyEnv(join(src, 'textures', 'environment'), join(dest, 'env'));
   for (const c of ['grass', 'foliage']) writeFileSync(join(dest, 'env', `colormap_${c}.png`), readFileSync(join(src, 'textures', 'colormap', `${c}.png`)));
@@ -266,7 +266,7 @@ function packBeta() {
   for (let i = 0; i < 256; i++) terrainInfo.push(tileInfo(terrain, (i % 16) * 16, Math.floor(i / 16) * 16));
   writeFileSync(join(dest, 'items.png'), readFileSync(join(src, 'gui', 'items.png')));
   // Entity models' textures: mobs, armour, and the object textures the entity layer draws (boat, minecart, arrows, XP orb).
-  const objects = ['boat', 'cart', 'arrows', 'xporb'].map((n) => join(src, 'item', `${n}.png`));
+  const objects = [...['boat', 'cart', 'arrows', 'xporb'].map((n) => join(src, 'item', `${n}.png`)), join(src, 'art', 'kz.png')];
   const files = [...walk(join(src, 'mob')), ...walk(join(src, 'armor')), join(src, 'char.png'), ...objects].filter((f) => f.endsWith('.png') && existsSync(f));
   const ent = shelfPack(files, src, 1024);
   writePng(join(dest, 'entity.png'), ent.png);

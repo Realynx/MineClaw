@@ -1,15 +1,46 @@
 // The 1.12.2-only animals and bosses: the horse family, llama, polar bear, rabbit, parrot, ocelot/cats, bat, guardians,
 // shulker, ender dragon and wither. Dimensions, pivots, rest rotations and texture offsets are the vanilla model ones;
 // renderer-level transforms (preRender scales, the dragon's own root offsets, the rabbit's inner 0.6 scale) are folded into
-// `scale` or a root part. Facts the wire does not carry (saddles, chests, rearing, eating, perching, peeking, a horse's
-// colour) fall back to the plain standing pose and a skin picked from the entity id.
+// `scale` or a root part. Saddles, chest bags and llama carpets are part layers drawn when the variant asks for them;
+// coats, markings, horse armour and skins come from the variant (or are picked from the entity id when it says nothing).
+// Rearing, grazing, perching and flying poses are not on the wire.
 
 import { box, D2R, look, mbox, part, PI, walkLegs } from '../dsl';
-import type { CubeDef, Look, LookFn, ModelDef, PartDef, PartState, PoseFn } from '../types';
+import type { CubeDef, LayerUse, Look, LookFn, ModelDef, PartDef, PartState, PoseFn } from '../types';
+import { Variant } from '../variant';
 
-const pick = <T>(list: readonly T[], id: number): T => list[((id % list.length) + list.length) % list.length];
 
 // ------------------------------------------------------------------------------------------------------------ horses
+
+/** ModelHorse's saddle (tagged 'saddle'): the seat and stirrups on the back; the bridle as head children (they share its
+ * pivot and turn), the reins drawn only while ridden. */
+function saddleParts(): PartDef[] {
+  const o = { layer: 'saddle' };
+  return [
+    part('saddleBottom', [0, 2, 2], [box(-5, 0, -3, 10, 1, 8, 80, 0)], o),
+    part('saddleFront', [0, 2, 2], [box(-1.5, -1, -3, 3, 1, 2, 106, 9)], o),
+    part('saddleBack', [0, 2, 2], [box(-4, -1, 3, 8, 1, 2, 80, 9)], o),
+    part('leftSaddleRope', [5, 2, 2], [box(-0.5, 0, -0.5, 1, 6, 1, 70, 0)], o),
+    part('leftSaddleMetal', [5, 2, 2], [box(-0.5, 6, -1, 1, 2, 2, 74, 0)], o),
+    part('rightSaddleRope', [-5, 2, 2], [box(-0.5, 0, -0.5, 1, 6, 1, 80, 0)], o),
+    part('rightSaddleMetal', [-5, 2, 2], [box(-0.5, 6, -1, 1, 2, 2, 74, 4)], o),
+  ];
+}
+
+const bridle = (): PartDef[] => [
+  part('faceRopes', [0, 0, 0], [box(-2.5, -10.1, -7, 5, 5, 12, 80, 12, 0.2)], { layer: 'saddle' }),
+  part('leftFaceMetal', [0, 0, 0], [box(1.5, -8, -4, 1, 2, 2, 74, 13)], { layer: 'saddle' }),
+  part('rightFaceMetal', [0, 0, 0], [box(-2.5, -8, -4, 1, 2, 2, 74, 13)], { layer: 'saddle' }),
+  // Reins turn with the head's yaw and the pitch only (not its rest tilt).
+  part('leftRein', [0, 0, 0], [box(2.6, -6, -6, 0, 3, 16, 44, 10)], { layer: 'saddle', rot: [-0.5235988, 0, 0] }),
+  part('rightRein', [0, 0, 0], [box(-2.6, -6, -6, 0, 3, 16, 44, 5)], { layer: 'saddle', rot: [-0.5235988, 0, 0] }),
+];
+
+/** Mule / donkey chest bags (tagged 'chest'). */
+const chestBags = (): PartDef[] => [
+  part('leftChest', [-7.5, 3, 10], [box(-3, 0, 0, 8, 8, 3, 0, 34)], { rot: [0, PI / 2, 0], layer: 'chest' }),
+  part('rightChest', [4.5, 3, 10], [box(-3, 0, 0, 8, 8, 3, 0, 47)], { rot: [0, PI / 2, 0], layer: 'chest' }),
+];
 
 function horseModel(id: string, longEars: boolean): ModelDef {
   const headRot = [0.5235988, 0, 0] as const;
@@ -25,6 +56,7 @@ function horseModel(id: string, longEars: boolean): ModelDef {
     tex: [128, 128],
     width: 1.3964844,
     height: 1.6,
+    layers: longEars ? ['saddle', 'chest'] : ['saddle'],
     parts: [
       part('body', [0, 11, 9], [box(-5, -8, -19, 10, 10, 24, 0, 34)]),
       part('tailBase', [0, 3, 14], [box(-1, -1, 0, 2, 2, 3, 44, 0)], { rot: [-1.134464, 0, 0] }),
@@ -44,11 +76,13 @@ function horseModel(id: string, longEars: boolean): ModelDef {
       part('frontRightHoof', [-4, 16, -8], [box(-1.6, 5.1, -2.1, 4, 3, 4, 60, 51)]),
       part('head', at, [box(-2.5, -10, -1.5, 5, 5, 7, 0, 0)], {
         rot: headRot,
-        children: [part('upperMouth', [0, 0.02, 0.02], [box(-2, -10, -7, 4, 3, 6, 24, 18)]), part('lowerMouth', [0, 0, 0], [box(-2, -7, -6.5, 4, 2, 5, 24, 27)])],
+        children: [part('upperMouth', [0, 0.02, 0.02], [box(-2, -10, -7, 4, 3, 6, 24, 18)]), part('lowerMouth', [0, 0, 0], [box(-2, -7, -6.5, 4, 2, 5, 24, 27)]), ...bridle()],
       }),
       ...ears,
       part('neck', at, [box(-2.05, -9.8, -2, 4, 14, 8, 0, 12)], { rot: headRot }),
       part('mane', at, [box(-1, -11.5, 5, 2, 16, 4, 58, 0)], { rot: headRot }),
+      ...saddleParts(),
+      ...(longEars ? chestBags() : []),
     ],
     pose: poseHorse,
   };
@@ -101,6 +135,17 @@ const poseHorse: PoseFn = (p, c) => {
   const tail = Math.min(0, -1.3089969 + a * 1.5);
   p.tailBase.rx = p.tailMiddle.rx = tail;
   p.tailTip.rx = -0.2617994 + tail;
+  // Saddle stirrups swing with the stride (held back while ridden); reins only while ridden; chest bags sway.
+  const ridden = c.riding;
+  for (const [n, side] of [['leftSaddleRope', 1], ['leftSaddleMetal', 1], ['rightSaddleRope', -1], ['rightSaddleMetal', -1]] as const) {
+    p[n].rx = ridden ? -1.0471976 : q / 3;
+    p[n].rz = ridden ? 0 : (side * q) / 5;
+  }
+  p.leftRein.visible = p.rightRein.visible = ridden;
+  if (p.leftChest) {
+    p.leftChest.rx = q / 5;
+    p.rightChest.rx = -q / 5;
+  }
 };
 
 export const HORSE = horseModel('horse', false);
@@ -115,18 +160,31 @@ const poseQuadruped: PoseFn = (p, c) => {
   walkLegs(p, c.swing, c.amount);
 };
 
+/** An inflated copy of a part's cubes as a child at its pivot, tagged with a layer (ModelLlama(0.5) for the carpet). */
+const grown = (name: string, cubes: CubeDef[], inflate: number, layer: string): PartDef =>
+  part(name, [0, 0, 0], cubes.map((c) => ({ ...c, inflate: (c.inflate ?? 0) + inflate })), { layer });
+
+const LLAMA_HEAD = [box(-2, -14, -10, 4, 4, 9, 0, 0), box(-4, -16, -6, 8, 18, 6, 0, 14), box(-4, -19, -4, 3, 3, 2, 17, 0), box(1, -19, -4, 3, 3, 2, 17, 0)];
+const LLAMA_BODY = [box(-6, -10, -7, 12, 18, 10, 29, 0)];
+const LLAMA_LEG = [box(-2, 0, -2, 4, 14, 4, 29, 29)];
+const llamaLeg = (n: string, x: number, z: number) => part(n, [x, 10, z], LLAMA_LEG, { children: [grown(n + 'Decor', LLAMA_LEG, 0.5, 'decor')] });
+
+/** ModelLlama; the carpet ('decor': the same boxes grown 0.5 with decor_<colour>.png) and the chest bags ('chest'). */
 export const LLAMA: ModelDef = {
   id: 'llama',
   tex: [128, 64],
   width: 0.9,
   height: 1.87,
+  layers: ['decor', 'chest'],
   parts: [
-    part('head', [0, 7, -6], [box(-2, -14, -10, 4, 4, 9, 0, 0), box(-4, -16, -6, 8, 18, 6, 0, 14), box(-4, -19, -4, 3, 3, 2, 17, 0), box(1, -19, -4, 3, 3, 2, 17, 0)]),
-    part('body', [0, 5, 2], [box(-6, -10, -7, 12, 18, 10, 29, 0)], { rot: [PI / 2, 0, 0] }),
-    part('leg1', [-3.5, 10, 6], [box(-2, 0, -2, 4, 14, 4, 29, 29)]),
-    part('leg2', [3.5, 10, 6], [box(-2, 0, -2, 4, 14, 4, 29, 29)]),
-    part('leg3', [-3.5, 10, -5], [box(-2, 0, -2, 4, 14, 4, 29, 29)]),
-    part('leg4', [3.5, 10, -5], [box(-2, 0, -2, 4, 14, 4, 29, 29)]),
+    part('head', [0, 7, -6], LLAMA_HEAD, { children: [grown('headDecor', LLAMA_HEAD, 0.5, 'decor')] }),
+    part('body', [0, 5, 2], LLAMA_BODY, { rot: [PI / 2, 0, 0], children: [grown('bodyDecor', LLAMA_BODY, 0.5, 'decor')] }),
+    llamaLeg('leg1', -3.5, 6),
+    llamaLeg('leg2', 3.5, 6),
+    llamaLeg('leg3', -3.5, -5),
+    llamaLeg('leg4', 3.5, -5),
+    part('chest1', [-8.5, 3, 3], [box(-3, 0, 0, 8, 8, 3, 45, 28)], { rot: [0, PI / 2, 0], layer: 'chest' }),
+    part('chest2', [5.5, 3, 3], [box(-3, 0, 0, 8, 8, 3, 45, 41)], { rot: [0, PI / 2, 0], layer: 'chest' }),
   ],
   pose: poseQuadruped,
 };
@@ -137,6 +195,8 @@ export const POLAR_BEAR: ModelDef = {
   width: 1.3,
   height: 1.4,
   scale: 1.2,
+  // ModelPolarBear child: head scale(2/3) · translate(0, 16, 4) px; the rest scale(0.5) · translate(0, 24) px.
+  baby: { head: ['head'], headScale: 2 / 3, headOffset: [0, 16, 4], bodyScale: 0.5, bodyOffset: [0, 24, 0] },
   parts: [
     part('head', [0, 10, -16], [box(-3.5, -3, -3, 7, 7, 7, 0, 0), box(-2.5, 1, -6, 5, 3, 3, 0, 44), box(-4.5, -4, -1, 2, 2, 1, 26, 0), mbox(2.5, -4, -1, 2, 2, 1, 26, 0)]),
     part('body', [-2, 9, 12], [box(-5, -13, -7, 14, 14, 11, 0, 19), box(-4, -25, -7, 12, 12, 10, 39, 0)], { rot: [PI / 2, 0, 0] }),
@@ -157,6 +217,9 @@ export const RABBIT: ModelDef = {
   width: 0.4,
   height: 0.5,
   scale: 0.6,
+  // ModelRabbit child: head group scale(0.5667) · translate(0, 22, 2) px, body group scale(0.4) · translate(0, 36) px — in
+  // vanilla without the adult 0.6; re-expressed inside this model's 0.6 root (and its −1.501 block shift).
+  baby: { head: ['head', 'leftEar', 'rightEar', 'nose'], headScale: 0.56666666 / 0.6, headOffset: [0, 5.05, 2], bodyScale: 0.4 / 0.6, bodyOffset: [0, 12, 0] },
   parts: [
     part('leftFoot', [3, 17.5, 3.7], [box(-1, 5.5, -3.7, 2, 1, 7, 26, 24)]),
     part('rightFoot', [-3, 17.5, 3.7], [box(-1, 5.5, -3.7, 2, 1, 7, 8, 24)]),
@@ -224,6 +287,8 @@ export const OCELOT: ModelDef = {
   tex: [64, 32],
   width: 0.6,
   height: 0.7,
+  // ModelOcelot child: head scale(0.75) · translate(0, 10, 4) px; the rest scale(0.5) · translate(0, 24) px.
+  baby: { head: ['head'], headScale: 0.75, headOffset: [0, 10, 4], bodyScale: 0.5, bodyOffset: [0, 24, 0] },
   parts: [
     part('head', [0, 15, -9], [box(-2.5, -2, -3, 5, 4, 5, 0, 0), box(-1.5, 0, -4, 3, 2, 2, 0, 24), box(-2, -3, 0, 1, 1, 2, 0, 10), box(1, -3, 0, 1, 1, 2, 6, 10)]),
     part('body', [0, 12, -10], [box(-2, 3, -8, 4, 16, 6, 20, 0)], { rot: [PI / 2, 0, 0] }),
@@ -234,11 +299,12 @@ export const OCELOT: ModelDef = {
     part('frontLeftLeg', [1.2, 13.8, -5], [box(-1, 0, 0, 2, 10, 2, 40, 0)]),
     part('frontRightLeg', [-1.2, 13.8, -5], [box(-1, 0, 0, 2, 10, 2, 40, 0)]),
   ],
-  /** ModelOcelot.setLivingAnimations + setRotationAngles: sneaking, sprinting, sitting (Mob16 bit 1) or walking. */
+  /** ModelOcelot.setLivingAnimations + setRotationAngles: sneaking, sprinting, sitting ("sitting", or the older Mob16 flags
+   * ≥ 4 with bit 1) or walking. */
   pose: (p, c) => {
     look(p.head, c.headYaw, c.pitch);
     const f = c.swing, a = c.amount;
-    const sprint = (c.flags & 0x08) !== 0, sit = (c.variant & 1) !== 0;
+    const sprint = (c.flags & 0x08) !== 0, sit = c.v.has('sitting', 'sit') || (!c.v.isString && c.v.num >= 4 && (c.v.num & 1) !== 0);
     if (c.sneaking) {
       p.body.py += 1;
       p.head.py += 2;
@@ -395,9 +461,25 @@ export const SHULKER: ModelDef = {
     part('lid', [0, 24, 0], [box(-8, -16, -8, 16, 12, 16, 0, 0)]),
     part('head', [0, 12, 0], [box(-3, 0, -3, 6, 6, 6, 0, 52)]),
   ],
-  /** Closed (the peek amount is not on the wire), the head looking about. */
-  pose: (p, c) => look(p.head, c.headYaw, c.pitch),
+  /** ModelShulker: the lid rises with the peek amount (and turns once it is open past 0.3), the head looks about. */
+  pose: (p, c) => {
+    look(p.head, c.headYaw, c.pitch);
+    const peek = shulkerPeek(c.v);
+    const g = (0.5 + peek) * PI;
+    const h = -1 + Math.sin(g);
+    p.lid.py = 16 + Math.sin(g) * 8 + (g > PI ? Math.sin(c.age * 0.1) * 0.7 : 0);
+    p.lid.ry = peek > 0.3 ? h * h * h * h * PI * 0.125 : 0;
+  },
 };
+
+/** Peek 0..1: "open" → 1, "peek:x" (0..1, or 0..100), a bare number 16..100 (the vanilla peek byte; 0..15 are colours). */
+export function shulkerPeek(v: Variant): number {
+  if (v.has('open')) return 1;
+  const k = v.numOf('peek', NaN);
+  if (Number.isFinite(k)) return Math.max(0, Math.min(1, k > 1 ? k / 100 : k));
+  if (!v.isString && v.num >= 16) return Math.min(1, v.num / 100);
+  return 0;
+}
 
 // ------------------------------------------------------------------------------------------------------------ ender dragon
 
@@ -566,35 +648,151 @@ export const WITHER: ModelDef = {
 
 export const MODELS: ModelDef[] = [HORSE, DONKEY, LLAMA, POLAR_BEAR, RABBIT, PARROT, OCELOT, BAT, GUARDIAN, SHULKER, ENDER_DRAGON, WITHER];
 
-const HORSE_COATS = ['white', 'creamy', 'chestnut', 'brown', 'black', 'gray', 'darkbrown'].map((c) => `entity/horse/horse_${c}`);
+// ------------------------------------------------------------------------------------------------------------ looks
+
+/** Whether the wire said anything at all (else skins are picked from the entity id). */
+const said = (v: Variant) => v.raw != null;
+
+const HORSE_COAT_NAMES = ['white', 'creamy', 'chestnut', 'brown', 'black', 'gray', 'darkbrown'];
+const HORSE_COAT_ALIASES = [...HORSE_COAT_NAMES.slice(0, 5), 'grey', 'dark_brown'];
 const HORSE_COLOURS = [0xe8e4dc, 0xc49a62, 0x8a4f26, 0x6b4426, 0x2a2420, 0x7a7670, 0x3f2a1c];
-const LLAMAS = ['creamy', 'white', 'brown', 'gray'].map((c) => `entity/llama/llama_${c}`);
+/** Markings by vanilla number (1..4) and their texture suffixes. */
+const MARKINGS = ['white', 'whitefield', 'whitedots', 'blackdots'];
+const MARKING_TOKENS = [
+  ['white', 'white_stockings'],
+  ['white_field', 'whitefield'],
+  ['white_dots', 'whitedots', 'white_spots'],
+  ['black_dots', 'blackdots', 'black_spots'],
+];
+const HORSE_ARMOURS = ['iron', 'gold', 'diamond'];
+
+/** Coat index 0..6: a coat token ("creamy", "dark_brown"…), else vanilla's variant number (colour | markings << 8). */
+function horseCoat(v: Variant, id: number): number {
+  let i = v.pick(HORSE_COAT_NAMES, 'color');
+  if (i < 0) i = v.pick(HORSE_COAT_ALIASES, 'color');
+  if (i >= 0) return i;
+  if (!said(v)) return ((id % 7) + 7) % 7;
+  return Math.min(6, Math.max(0, (v.num & 0xff) % 7));
+}
+
+/** Markings 0 none, 1 white, 2 white field, 3 white dots, 4 black dots. */
+function horseMarkings(v: Variant): number {
+  const k = v.get('markings');
+  for (let m = 0; m < MARKING_TOKENS.length; m++) if (MARKING_TOKENS[m].some((t) => v.has(t) || t === k)) return m + 1;
+  if (k === 'none') return 0;
+  return v.isString ? 0 : (v.num >> 8) & 0xff;
+}
+
+function horseArmour(v: Variant): string | null {
+  const k = v.get('armor') ?? v.get('armour');
+  const name = k ?? HORSE_ARMOURS.find((a) => v.has(a)) ?? (v.has('golden') ? 'gold' : undefined);
+  const n = name === 'golden' ? 'gold' : name;
+  return n && HORSE_ARMOURS.includes(n) ? n : null;
+}
+
+/** A horse-family look: the coat or skin, then saddle and chest layers when the variant has them, markings and armour
+ * (horses only) as layers over the base geometry. */
+function horseLook(model: string, texture: string, colour: number, v: Variant, opts: { markings?: boolean; armour?: boolean; chest?: boolean; scale?: number } = {}): Look {
+  const layers: LayerUse[] = [];
+  if (opts.markings) {
+    const m = horseMarkings(v);
+    if (m >= 1 && m <= 4) layers.push({ texture: `entity/horse/horse_markings_${MARKINGS[m - 1]}` });
+  }
+  if (v.has('saddle', 'saddled')) layers.push({ layer: 'saddle', texture });
+  if (opts.chest && v.has('chest', 'chested')) layers.push({ layer: 'chest', texture });
+  if (opts.armour) {
+    const a = horseArmour(v);
+    if (a) layers.push({ texture: `entity/horse/armor/horse_armor_${a}` });
+  }
+  return look1(model, texture, colour, { layers, ...(opts.scale ? { scale: opts.scale } : {}) });
+}
+
+const LLAMA_NAMES = ['creamy', 'white', 'brown', 'gray'];
 const LLAMA_COLOURS = [0xd8c8a0, 0xeeeeee, 0x7a5434, 0x8c8c8c];
-const RABBITS = ['brown', 'white', 'black', 'gold', 'salt', 'white_splotched'].map((c) => `entity/rabbit/${c}`);
-const RABBIT_COLOURS = [0x8a6a4a, 0xf0f0f0, 0x2a2a2a, 0xd8b060, 0xb09a78, 0xe0e0e0];
-const PARROTS = ['red_blue', 'blue', 'green', 'yellow_blue', 'grey'].map((c) => `entity/parrot/parrot_${c}`);
+const DYE_FILES = ['white', 'orange', 'magenta', 'light_blue', 'yellow', 'lime', 'pink', 'gray', 'silver', 'cyan', 'purple', 'blue', 'brown', 'green', 'red', 'black'];
+
+/** Rabbit skins in vanilla's type order (0 brown, 1 white, 2 black, 3 black-and-white, 4 gold, 5 salt). */
+const RABBIT_NAMES = ['brown', 'white', 'black', 'white_splotched', 'gold', 'salt'];
+const RABBIT_COLOURS = [0x8a6a4a, 0xf0f0f0, 0x2a2a2a, 0xe0e0e0, 0xd8b060, 0xb09a78];
+
+const PARROT_NAMES = ['red_blue', 'blue', 'green', 'yellow_blue', 'grey'];
 const PARROT_COLOURS = [0xd02020, 0x2050d0, 0x40c020, 0x40b0e0, 0xa0a0a0];
-const CATS = ['black', 'red', 'siamese'].map((c) => `entity/cat/${c}`);
+
+/** Ocelot skins by vanilla type (0 wild ocelot, 1 black, 2 red/ginger, 3 siamese). */
+const CAT_NAMES = ['ocelot', 'black', 'red', 'siamese'];
+const CAT_COLOURS = [0xe0c060, 0x2a2a2a, 0xd08030, 0xd8c8a8];
 
 const look1 = (model: string, texture: string, colour: number, extra: Partial<Look> = {}): Look => ({ model, texture, colour, ...extra });
 
 export const LOOKS: Record<string, LookFn> = {
-  horse: (_v, _b, id) => look1('horse', pick(HORSE_COATS, id), pick(HORSE_COLOURS, id)),
-  donkey: () => look1('donkey', 'entity/horse/donkey', 0x8a7a6a, { scale: 0.87 }),
-  mule: () => look1('donkey', 'entity/horse/mule', 0x5a3a24, { scale: 0.92 }),
-  skeleton_horse: () => look1('horse', 'entity/horse/horse_skeleton', 0xd0d0c8),
-  zombie_horse: () => look1('horse', 'entity/horse/horse_zombie', 0x4a7a4a),
-  llama: (_v, _b, id) => look1('llama', pick(LLAMAS, id), pick(LLAMA_COLOURS, id)),
+  // Horses: "creamy,white_dots,saddle,iron" or vanilla's number (colour | markings << 8); the coat is picked from the id when
+  // the wire says nothing.
+  horse: (v, _b, id) => {
+    const c = horseCoat(v, id);
+    return horseLook('horse', `entity/horse/horse_${HORSE_COAT_NAMES[c]}`, HORSE_COLOURS[c], v, { markings: true, armour: true });
+  },
+  donkey: (v) => horseLook('donkey', 'entity/horse/donkey', 0x8a7a6a, v, { chest: true, scale: 0.87 }),
+  mule: (v) => horseLook('donkey', 'entity/horse/mule', 0x5a3a24, v, { chest: true, scale: 0.92 }),
+  skeleton_horse: (v) => horseLook('horse', 'entity/horse/horse_skeleton', 0xd0d0c8, v),
+  zombie_horse: (v) => horseLook('horse', 'entity/horse/horse_zombie', 0x4a7a4a, v),
+  // Llamas: "creamy,carpet:red,chest" or the colour number 0..3; a bare dye token or "decor:<dye>" also lays a carpet.
+  llama: (v, _b, id) => {
+    let c = v.pick(LLAMA_NAMES, 'color');
+    if (c < 0) c = v.isString || !said(v) ? ((id % 4) + 4) % 4 : Math.max(0, Math.min(3, v.num));
+    const texture = `entity/llama/llama_${LLAMA_NAMES[c]}`;
+    const layers: LayerUse[] = [];
+    let carpet = v.dye('carpet');
+    if (carpet < 0) carpet = v.dye('decor');
+    if (carpet < 0 && v.has('carpet')) carpet = v.dye();
+    if (carpet >= 0) layers.push({ layer: 'decor', texture: `entity/llama/decor/decor_${DYE_FILES[carpet]}` });
+    if (v.has('chest', 'chested')) layers.push({ layer: 'chest', texture });
+    return look1('llama', texture, LLAMA_COLOURS[c], { layers });
+  },
   polar_bear: () => look1('polar_bear', 'entity/bear/polarbear', 0xf0f0f0),
-  rabbit: (_v, _b, id) => look1('rabbit', pick(RABBITS, id), pick(RABBIT_COLOURS, id)),
-  parrot: (_v, _b, id) => look1('parrot', pick(PARROTS, id), pick(PARROT_COLOURS, id)),
-  // Mob16 on an ocelot is EntityTameable's flags (1 sitting, 4 tamed): a tamed one is a cat (its skin index is not on the
-  // wire: picked from the id) drawn at 0.8.
-  ocelot: (v, _b, id) => ((v & 4) !== 0 ? look1('ocelot', pick(CATS, id), 0x3a3a3a, { scale: 0.8 }) : look1('ocelot', 'entity/cat/ocelot', 0xe0c060)),
+  // Rabbits: the vanilla type number (99 = the killer bunny) or its name; "toast" by name.
+  rabbit: (v, _b, id) => {
+    if (v.has('toast')) return look1('rabbit', 'entity/rabbit/toast', 0xc0a080);
+    if (v.has('caerbannog', 'killer', 'killer_bunny') || v.num === 99) return look1('rabbit', 'entity/rabbit/caerbannog', 0xf0f0f0);
+    let t = v.pick(RABBIT_NAMES, 'type');
+    if (t < 0) t = v.pick(['brown', 'white', 'black', 'black_and_white', 'gold', 'salt_and_pepper', 'salt']);
+    if (t > 5) t = 5;
+    if (t < 0) t = v.isString || !said(v) ? ((id % 6) + 6) % 6 : Math.max(0, Math.min(5, v.num));
+    return look1('rabbit', `entity/rabbit/${RABBIT_NAMES[t]}`, RABBIT_COLOURS[t]);
+  },
+  // Parrots: 0 red_blue, 1 blue, 2 green, 3 yellow_blue, 4 grey (or the names).
+  parrot: (v, _b, id) => {
+    let t = v.pick(PARROT_NAMES, 'color');
+    if (t < 0) t = v.pick(['red', 'blue', 'green', 'cyan', 'gray']);
+    if (t < 0) t = v.isString || !said(v) ? ((id % 5) + 5) % 5 : Math.max(0, Math.min(4, v.num));
+    return look1('parrot', `entity/parrot/parrot_${PARROT_NAMES[t]}`, PARROT_COLOURS[t]);
+  },
+  // Ocelots and cats: the type 0..3 (0 wild ocelot) or its name; "tame" without a type picks a cat skin from the id. The older
+  // Mob16 flags (numbers ≥ 4: bit 4 tamed, bit 1 sitting) still work. Cats draw at 0.8.
+  ocelot: (v, _b, id) => {
+    let t = v.pick(CAT_NAMES, 'type');
+    if (t < 0) t = v.pick(['wild', 'tuxedo', 'ginger', 'siamese']);
+    const legacy = !v.isString && v.num >= 4;
+    if (t < 0 && !v.isString && !legacy && said(v)) t = Math.max(0, Math.min(3, v.num));
+    const tame = v.has('tame', 'tamed') || (legacy && (v.num & 4) !== 0) || t > 0;
+    if (tame && t <= 0) t = 1 + (((id % 3) + 3) % 3);
+    if (t <= 0) return look1('ocelot', 'entity/cat/ocelot', CAT_COLOURS[0]);
+    return look1('ocelot', `entity/cat/${CAT_NAMES[t]}`, CAT_COLOURS[t], { scale: 0.8 });
+  },
   bat: () => look1('bat', 'entity/bat', 0x4a3a2a),
   guardian: () => look1('guardian', 'entity/guardian', 0x70a090),
   elder_guardian: () => look1('guardian', 'entity/guardian_elder', 0xc8c0a8, { scale: 2.35 }),
-  shulker: () => look1('shulker', 'entity/shulker/shulker_purple', 0x9a6a9a),
+  // Shulkers: a dye colour (token, "color:<dye>" or a number 0..15; vanilla's 16 = the default purple); the lid opens in the
+  // pose ("open", "peek:x").
+  shulker: (v) => {
+    let d = v.dye('color');
+    if (d < 0) d = v.dye();
+    if (d < 0 && !v.isString && said(v) && v.num >= 0 && v.num < 16) d = v.num;
+    return look1('shulker', `entity/shulker/shulker_${d >= 0 ? DYE_FILES[d] : 'purple'}`, 0x9a6a9a);
+  },
   ender_dragon: () => look1('ender_dragon', 'entity/enderdragon/dragon', 0x200a30, { layers: [{ texture: 'entity/enderdragon/dragon_eyes', emissive: true }] }),
-  wither: () => look1('wither', 'entity/wither/wither', 0x1a1a1a),
+  // Withers: "invulnerable" (spawning: the blue skin), "armored"/"armoured" (below half health: the scrolling aura).
+  wither: (v) =>
+    look1('wither', v.has('invulnerable') ? 'entity/wither/wither_invulnerable' : 'entity/wither/wither', 0x1a1a1a, {
+      layers: v.has('armored', 'armoured', 'armor', 'armour', 'powered') ? [{ texture: 'entity/wither/wither_armor', translucent: true, emissive: true, scroll: true }] : [],
+    }),
 };

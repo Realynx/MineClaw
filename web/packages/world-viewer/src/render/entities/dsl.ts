@@ -1,6 +1,6 @@
 // Small constructors that keep the model data files terse (types.ts describes the format).
 
-import type { CubeDef, PartDef, PartState, V3 } from './types';
+import type { CubeDef, ModelDef, PartDef, PartState, V3 } from './types';
 
 /** addBox(x, y, z, dx, dy, dz, inflate) at texture offset (u, v). */
 export function box(x: number, y: number, z: number, dx: number, dy: number, dz: number, u: number, v: number, inflate = 0, mirror = false): CubeDef {
@@ -46,3 +46,9 @@ export function look(head: PartState | undefined, yawDeg: number, pitchDeg: numb
   head.ry = yawDeg * D2R;
   head.rx = pitchDeg * D2R;
 }
+
+/** ModelBiped's child layout: the head at 0.75 lifted 16 px, the rest at half size lifted 24 px. */
+export const BIPED_BABY: NonNullable<ModelDef['baby']> = { head: ['head', 'hat'], headScale: 0.75, headOffset: [0, 16, 0], bodyScale: 0.5, bodyOffset: [0, 24, 0] };
+
+/** ModelQuadruped's child layout: a full-size head moved by (childYOffset, childZOffset), the rest at half size. */
+export const quadBaby = (y = 8, z = 4, head = ['head']): NonNullable<ModelDef['baby']> => ({ head, headScale: 1, headOffset: [0, y, z], bodyScale: 0.5, bodyOffset: [0, 24, 0] });

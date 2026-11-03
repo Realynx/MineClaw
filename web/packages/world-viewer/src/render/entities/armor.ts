@@ -81,3 +81,22 @@ export function armorTexture(material: string, piece: ArmorPiece, beta: boolean)
   const n = m === 'cloth' ? 'leather' : m === 'chain' ? 'chainmail' : m;
   return `models/armor/${n}_layer_${inner ? 2 : 1}`;
 }
+
+const MATERIALS = ['leather', 'chainmail', 'iron', 'diamond', 'gold'];
+
+/** The armour material of an item id (298..317, the same ids in both versions) worn in `piece`'s slot, or null. */
+export function armorMaterial(id: number, piece: ArmorPiece): string | null {
+  if (id < 298 || id > 317) return null;
+  const k = id - 298;
+  return k % 4 === ARMOR_PIECES.indexOf(piece) ? MATERIALS[Math.floor(k / 4)] : null;
+}
+
+type Ref = readonly [number, number] | null | undefined;
+
+/** [helmet, chestplate, leggings, boots] materials from wire equipment (null where the slot holds no armour). */
+export function armorFromEquipment(eq: Partial<Record<'main' | 'off' | 'head' | 'chest' | 'legs' | 'feet', Ref>> | null | undefined): Array<string | null> | null {
+  if (!eq) return null;
+  const slots = [eq.head, eq.chest, eq.legs, eq.feet];
+  const out = ARMOR_PIECES.map((p, i) => (slots[i] ? armorMaterial(slots[i]![0], p) : null));
+  return out.some(Boolean) ? out : null;
+}

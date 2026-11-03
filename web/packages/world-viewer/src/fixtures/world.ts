@@ -3,7 +3,7 @@
 // a tunnel through a hill, a torch-lit room, bots walking about, mobs, a drop, overlays and a build plan that progresses (so
 // column hashes change and the index-then-fetch path is exercised). No Mojang assets.
 
-import type { AtlasResource, BlockChange, BlockDeltas, BlockEntities, BlockEntityDto, BotDto, EntityDelta, EntityDto, Overlays, PlanBlock, WorldIndex, WorldSource } from '../types';
+import type { AtlasResource, BlockChange, BlockDeltas, BlockEntities, BlockEntityDto, BotDto, EntityDelta, EntityDto, EntityEvent, Overlays, PlanBlock, WorldIndex, WorldSource } from '../types';
 import { cellIndex } from '../wire/chunk';
 import { combineHash } from '../wire/hash';
 import { encodeColumn, encodeMcwc, lightSections, type EncodeEntry } from '../wire/encode';
@@ -48,6 +48,45 @@ const ZOO_OBJECTS: Array<Partial<EntityDto>> = [
   { kind: 'object', type: 50 },
   { kind: 'xp_orb', count: 20 },
 ];
+
+/** [entity models] The showcase south-west of spawn in the final wire shape (numeric `variant`, `look` tokens, equipment,
+ * babies, hanging things, a loaded minecart). Each entry: [id, x, z, dto, versions]; entries without 'both' are
+ * 1.12.2-only. */
+const SHOWCASE: Array<[number, number, number, Partial<EntityDto> & { look?: string }, ('1.12.2' | 'both')?]> = [
+  [4000, -10, -22, { kind: 'mob', type: 54, equipment: { main: [267, 0], head: [306, 0], chest: [307, 0], legs: [308, 0], feet: [309, 0] } }, 'both'],
+  [4001, -8, -22, { kind: 'mob', type: 51, equipment: { main: [261, 0], head: [314, 0], chest: [303, 0] } }, 'both'],
+  [4002, -6, -22, { kind: 'armor_stand', equipment: { main: [276, 0], off: [50, 0], head: [310, 0], chest: [311, 0], legs: [300, 0], feet: [317, 0] }, look: 'arms' }],
+  [4003, -4, -22, { kind: 'mob', type: 54, baby: true, equipment: { head: [86, 0] } }],
+  [4004, -2, -22, { kind: 'mob', type: 92, baby: true }],
+  [4005, 0, -22, { kind: 'mob', type: 90, baby: true }],
+  [4006, 2, -22, { kind: 'mob', type: 91, look: 'red', baby: true }],
+  [4007, 4, -22, { kind: 'mob', type: 91, look: 'light_blue,sheared' }],
+  [4008, 6, -22, { kind: 'mob', type: 91, variant: 14 }, 'both'],
+  [4009, 8, -22, { kind: 'mob', type: 100, look: 'creamy,white_dots,tame,saddle,armor=iron' }],
+  [4010, 10, -22, { kind: 'mob', type: 31, look: 'tame,saddle,chest' }],
+  [4011, -10, -26, { kind: 'mob', type: 120, variant: 1 }],
+  [4012, -8, -26, { kind: 'mob', type: 120, look: 'profession=smith' }],
+  [4013, -6, -26, { kind: 'mob', type: 27, variant: 4 }],
+  [4014, -4, -26, { kind: 'mob', type: 95, look: 'tame,collar=blue' }],
+  [4015, -2, -26, { kind: 'mob', type: 95, look: 'angry' }, 'both'],
+  [4016, 0, -26, { kind: 'mob', type: 103, look: 'white,chest,carpet=red' }],
+  [4017, 2, -26, { kind: 'mob', type: 98, variant: 3 }],
+  [4018, 4, -26, { kind: 'mob', type: 101, variant: 3 }],
+  [4019, 6, -26, { kind: 'mob', type: 105, variant: 1 }],
+  [4020, 8, -26, { kind: 'mob', type: 50, look: 'powered' }],
+  [4021, 10, -26, { kind: 'mob', type: 55, variant: 2 }, 'both'],
+  [4022, -10, -30, { kind: 'minecart', look: 'chest', minecartType: 'chest' }, 'both'],
+  [4023, -7, -30, { kind: 'minecart', minecartType: 2 }, 'both'],
+  [4024, -4, -30, { kind: 'item_frame', frameItem: [264, 0], rotation: 1, facing: 'south' }],
+  [4025, -1, -30, { kind: 'painting', motive: 'SkullAndRoses', facing: 'south' }, 'both'],
+  [4026, 3, -30, { kind: 'painting', motive: 'kebab', facing: 'south' }, 'both'],
+  [4027, 6, -30, { kind: 'falling_block', block: [12, 0] }, 'both'],
+  [4028, 8, -30, { kind: 'firework' }],
+  [4029, 10, -30, { kind: 'ender_crystal' }],
+  [4030, 12, -30, { kind: 'mob', type: 69, look: 'red,open' }],
+];
+/** [entity models] The mob the hurt → death cycle and the teleporting enderman. */
+const DYING_ID = 4100, TELEPORT_ID = 4101;
 
 const SEA = 62;
 
@@ -365,6 +404,33 @@ export function createFixtureSource(opts: FixtureOptions = {}): WorldSource & { 
     ];
   };
 
+  // [entity models] Scheduled entity events, emitted with the delta that covers their time.
+  let eventsAt = 0;
+  const cycle = (s: number, period: number) => ((s % period) + period) % period;
+  const events = (): EntityEvent[] => {
+    const s0 = eventsAt, s1 = (now() - t0) / 1000;
+    eventsAt = s1;
+    if (!opts.zoo || s1 <= s0) return [];
+    const out: EntityEvent[] = [];
+    const at = (t: number) => t0 + t * 1000;
+    // Every whole step k·period + phase in (s0, s1].
+    const each = (period: number, phase: number, f: (t: number) => void) => {
+      for (let k = Math.floor((s0 - phase) / period) + 1; k * period + phase <= s1; k++) if (k * period + phase > s0) f(k * period + phase);
+    };
+    each(1, 0, (t) => out.push({ kind: 'swing', name: 'Alice', at: at(t) }));
+    each(9, 5, (t) => out.push({ kind: 'eat', name: 'Alice', at: at(t) }));
+    each(3, 1.5, (t) => out.push({ kind: 'swing_off', id: 300, dim: 0, at: at(t) }));
+    each(12, 2, (t) => out.push({ kind: 'hurt', id: DYING_ID, dim: 0, at: at(t) }, { kind: 'crit', id: DYING_ID, dim: 0, at: at(t) }));
+    each(12, 4, (t) => out.push({ kind: 'hurt', id: DYING_ID, dim: 0, at: at(t) }, { kind: 'magic_crit', id: DYING_ID, dim: 0, at: at(t) }));
+    each(12, 6, (t) => out.push({ kind: 'death', id: DYING_ID, dim: 0, at: at(t) }));
+    each(8, 0, (t) => {
+      const [ox, oz] = Math.floor(t / 8) % 2 ? [0, -34] : [6, -34];
+      out.push({ kind: 'teleport', id: TELEPORT_ID, dim: 0, at: at(t), x: ox, y: surface(ox, oz) + 1, z: oz });
+    });
+    each(20, 10, (t) => out.push({ kind: 'lightning', dim: 0, at: at(t), x: -14, y: surface(-14, -34) + 1, z: -34 }));
+    return out;
+  };
+
   const entities = (): EntityDto[] => {
     const s = (now() - t0) / 1000;
     const out: EntityDto[] = [];
@@ -380,7 +446,7 @@ export function createFixtureSource(opts: FixtureOptions = {}): WorldSource & { 
       const types = world.version === '1.12.2' ? ZOO_1122 : ZOO_BETA;
       types.forEach(([type, variant], i) => {
         const walk = i % 2 === 0, a = s / 3 + i;
-        const x = -14 + (i % 10) * 3 + (walk ? Math.cos(a) * 0.8 : 0), z = 18 + Math.floor(i / 10) * 5 + (walk ? Math.sin(a) * 0.8 : 0);
+        const x = -17 + (i % 10) * 3 + (walk ? Math.cos(a) * 0.8 : 0), z = 18 + Math.floor(i / 10) * 5 + (walk ? Math.sin(a) * 0.8 : 0);
         const yaw = walk ? ((((a + Math.PI / 2) * 180) / Math.PI) + 90) % 360 : (i * 40) % 360;
         const fly = type === 56 || type === 65 || type === 63 ? 4 : 0;
         out.push({ kind: 'mob', name: null, dim: 0, x, y: surface(Math.floor(x), Math.floor(z)) + 1 + fly, z, id: 1000 + i, type, variant: variant ?? 0, yaw, age: s, flags: type === 57 && i % 3 === 0 ? 1 : 0 });
@@ -392,6 +458,17 @@ export function createFixtureSource(opts: FixtureOptions = {}): WorldSource & { 
       ZOO_OBJECTS.forEach((o, i) =>
         out.push({ name: null, dim: 0, x: 6 + i * 2.5, y: surface(6 + i * 2.5, -12) + 1, z: -12, id: 3000 + i, yaw: 30 * i, age: s, ...o, kind: o.kind! }),
       );
+      // [entity models] The showcase, the mob that is hurt and dies every 12 s (gone for the rest of the cycle) and the
+      // enderman that teleports every 8 s.
+      for (const [id, x, z, o, v] of SHOWCASE) {
+        if (v !== 'both' && world.version !== '1.12.2') continue;
+        const hanging = o.kind === 'painting' || o.kind === 'item_frame';
+        const y = surface(x, z) + 1 + (hanging ? 1.5 : 0) + (o.kind === 'firework' ? 2 + cycle(s, 3) * 3 : 0);
+        out.push({ name: null, dim: 0, x: x + 0.5, y, z: z + 0.5, id, yaw: 0, age: s, ...o, kind: o.kind! });
+      }
+      if (cycle(s, 12) < 6.2) out.push({ kind: 'mob', name: null, dim: 0, x: 12.5, y: surface(12, -22) + 1, z: -21.5, id: DYING_ID, type: 57, yaw: 0, age: s });
+      const tp = Math.floor(s / 8) % 2 ? [6, -34] : [0, -34];
+      out.push({ kind: 'mob', name: null, dim: 0, x: tp[0] + 0.5, y: surface(tp[0], tp[1]) + 1, z: tp[1] + 0.5, id: TELEPORT_ID, type: 58, yaw: 0, age: s });
     }
     out.push({ kind: 'player', name: 'poofimafox', dim: 0, x: -2, y: surface(-2, 12) + 1, z: 12, id: 300, yaw: 180 });
     return out;
@@ -427,7 +504,10 @@ export function createFixtureSource(opts: FixtureOptions = {}): WorldSource & { 
     },
     async entities(since): Promise<EntityDelta> {
       rev++;
-      return { at: now(), rev, full: since == null, bots: bots(), entities: entities(), removed: [] };
+      const list = entities();
+      // [entity models] The dying mob is removed for the rest of its cycle.
+      const removed: Array<[number, number]> = opts.zoo && !list.some((e) => e.id === DYING_ID) ? [[0, DYING_ID]] : [];
+      return { at: now(), rev, full: since == null, bots: bots(), entities: list, removed, events: events() };
     },
     async blockEntities(dim, cols): Promise<BlockEntities> {
       const want = new Set(cols.map(([cx, cz]) => `${cx},${cz}`));

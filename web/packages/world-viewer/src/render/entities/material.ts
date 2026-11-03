@@ -152,7 +152,9 @@ void main() {
     if (k < 0.33) discard;
     c = vec4(mix(vec3(0.85, 0.25, 0.0), vec3(1.0, 0.85, 0.3), clamp((k - 0.33) * 1.6, 0.0, 1.0)), 1.0);
   } else if (!flag(vFlags, 2.0)) {
-    vec2 uv = vTex.xy + clamp(vUv, 0.0, 1.0) * vTex.zw;
+    // Scrolling layers (creeper charge, wither armour: flag 128) slide their texture with time, wrapping in their rect.
+    vec2 luv = flag(vFlags, 128.0) ? fract(vUv + vec2(uTime * 0.02, uTime * 0.01)) : clamp(vUv, 0.0, 1.0);
+    vec2 uv = vTex.xy + luv * vTex.zw;
 #ifdef TILE
     // Atlas: bits 4 and 8 of the flags (0 items, 1 blocks, 2 entity sheet).
     float atlas = mod(floor(vFlags / 4.0), 4.0);

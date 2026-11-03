@@ -7,7 +7,7 @@
 //   node scripts/extract-assets.mjs --find            (looks in the PrismLauncher / .minecraft folders and extracts both)
 //
 // Only what MineClaw.Render and this viewer use is kept: 1.12.2 blockstates, block and item models, block, item, entity,
-// environment, misc and colormap textures with their .mcmeta; b1.8.1 terrain.png, gui/items.png, mob/*, char.png, environment,
+// environment, misc, colormap and painting textures with their .mcmeta; b1.8.1 terrain.png, gui/items.png, mob/*, char.png, environment,
 // misc and armor.
 
 import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
@@ -57,6 +57,7 @@ const RULES = {
     /^assets\/minecraft\/textures\/(blocks|items|environment|misc|colormap)\/[^/]+\.png(\.mcmeta)?$/,
     /^assets\/minecraft\/textures\/entity\/.+\.png(\.mcmeta)?$/,
     /^assets\/minecraft\/textures\/models\/armor\/[^/]+\.png$/,
+    /^assets\/minecraft\/textures\/painting\/[^/]+\.png$/,
   ],
   'b1.8.1': [/^terrain\.png$/, /^gui\/items\.png$/, /^mob\/[^/]+\.png$/, /^char\.png$/, /^environment\/[^/]+\.png$/, /^misc\/[^/]+\.png$/, /^armor\/[^/]+\.png$/, /^item\/[^/]+\.png$/, /^art\/[^/]+\.png$/, /^terrain\/[^/]+\.png$/],
 };

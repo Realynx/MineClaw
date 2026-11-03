@@ -123,21 +123,42 @@ export class Skeleton {
   }
 
   /** Rest pose → pose function → bones (root · chain) into `out` at `offset` (floats), 12 per part. */
-  pose(ctx: PoseCtx | null, root: ArrayLike<number>, out: Float32Array, offset: number): void {
+  pose(ctx: PoseCtx | null, root: ArrayLike<number>, out: Float32Array, offset: number, baby = false): void {
     this.reset();
     if (ctx) this.model.def.pose?.(this.byName, ctx);
-    this.write(root, out, offset);
+    this.write(root, out, offset, baby);
   }
 
-  write(root: ArrayLike<number>, out: Float32Array, offset: number): void {
+  /** The child layout's two pre-transforms (root · pre · part): [head, body], each scale(s) · translate(offset px). */
+  private babyPre: [Float32Array, Float32Array] | null = null;
+  private readonly rootH = new Float32Array(12);
+  private readonly rootB = new Float32Array(12);
+
+  write(root: ArrayLike<number>, out: Float32Array, offset: number, baby = false): void {
     const parts = this.model.parts, w = this.world, l = this.local;
+    const layout = baby ? this.model.def.baby : undefined;
+    if (layout) {
+      if (!this.babyPre) {
+        const pre = (k: number, o: readonly [number, number, number]) => {
+          const m = identity();
+          m[0] = m[5] = m[10] = k;
+          m[3] = k * o[0];
+          m[7] = k * o[1];
+          m[11] = k * o[2];
+          return m;
+        };
+        this.babyPre = [pre(layout.headScale, layout.headOffset), pre(layout.bodyScale, layout.bodyOffset)];
+      }
+      mul(this.rootH, root, this.babyPre[0]);
+      mul(this.rootB, root, this.babyPre[1]);
+    }
     for (let i = 0; i < parts.length; i++) {
       const s = this.states[i], par = parts[i].parent;
       const hide = !s.visible || (par >= 0 && this.hidden[par] === 1);
       this.hidden[i] = hide ? 1 : 0;
       partLocal(l, s.px, s.py, s.pz, s.rx, s.ry, s.rz);
       const dst = w.subarray(i * 12, i * 12 + 12);
-      if (par < 0) mul(dst, root, l);
+      if (par < 0) mul(dst, layout ? (layout.head.includes(parts[i].name) ? this.rootH : this.rootB) : root, l);
       else mul(dst, w.subarray(par * 12, par * 12 + 12), l);
       const o = offset + i * 12;
       if (hide) out.fill(0, o, o + 12);
