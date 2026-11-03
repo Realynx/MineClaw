@@ -1,0 +1,5 @@
+node_modules/
+dist/
+*.tsbuildinfo
+test/fixtures/gen/bin/
+test/fixtures/gen/obj/
