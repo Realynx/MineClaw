@@ -47,6 +47,13 @@ public sealed class ItemTag : IEquatable<ItemTag>
     /// <summary>display.color (0xRRGGBB): the dye of leather armour; null when undyed.</summary>
     public int? DisplayColor { get; }
 
+    /// <summary>The stack carries enchantments, its own ("ench") or an enchanted book's stored ones ("StoredEnchantments"): vanilla
+    /// draws the enchantment glint on it (<c>ItemStack.isItemEnchanted</c>, <c>ItemEnchantedBook</c>). The viewer's looks only.</summary>
+    public bool Enchanted { get; init; }
+    /// <summary>A potion's NBT names effects (a "Potion" type other than water, mundane, thick, awkward or empty, or
+    /// "CustomPotionEffects"): a potion glints (<c>ItemPotion.hasEffect</c>). The viewer's looks only.</summary>
+    public bool PotionEffects { get; init; }
+
     public int EnchantmentLevel(int id) => Enchantments.TryGetValue(id, out int l) ? l : 0;
 
     public bool Equals(ItemTag? other) => other is not null && (ReferenceEquals(this, other) || _bytes.AsSpan().SequenceEqual(other._bytes));

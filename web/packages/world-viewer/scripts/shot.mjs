@@ -53,8 +53,10 @@ try {
     await page.evaluate(`(async () => { const h = window.__viewer?.current, g = window.__gallery; ${script} })()`);
     await page.waitForTimeout(Number(arg('after', '2500')));
   }
-  await page.screenshot({ path: out });
-  console.log(out);
+  if (!plan) {
+    await page.screenshot({ path: out });
+    console.log(out);
+  }
 } finally {
   await browser.close();
   await server.close();

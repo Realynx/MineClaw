@@ -8,6 +8,12 @@
 //   GHOST  (MODEL + GHOST) the occluded-body silhouette: the same instances again, only those flagged GHOST_FLAG, drawn
 //          after the world and before the entities with depth GREATER and no depth write, so it paints exactly the parts
 //          of the body that terrain (leaves included) hides: a flat tint with a bright rim, never over a visible part.
+//   GLINT  (MODEL or TILE + GLINT) the enchantment glint: the same instances again, only those flagged GLINT_FLAG, drawn
+//          over themselves (depth LEQUAL, no depth write) with vanilla's two scrolling passes of enchanted_item_glint.png
+//          added on top (GL_SRC_COLOR, GL_ONE): armour like LayerArmorBase.renderEnchantedGlint (colour 0.38, 0.19, 0.608;
+//          texture scale 1/3, turned 30° and −30°, sliding 0.02 and 0.08 per tick), items like RenderItem.renderEffect
+//          (colour 0x8040CC; atlas uv × 8, turned −50° and 10°, a full slide every 3 and 4.873 s). One extra draw per drawn
+//          geometry that has a glinting instance this view; no texture fetch beyond the base alpha and the two glint taps.
 
 import * as THREE from 'three';
 
@@ -89,9 +95,12 @@ void main() {
 #ifdef GHOST
   if (!flag(aColor.w, 256.0)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   // Strength (bits 2048 × 0..15) and tint: the selected bot, another bot, a player.
-  float strength = floor(aColor.w / 2048.0) / 15.0;
+  float strength = mod(floor(aColor.w / 2048.0), 16.0) / 15.0;
   vec3 tint = flag(aColor.w, 512.0) ? vec3(0.35, 1.0, 0.8) : flag(aColor.w, 1024.0) ? vec3(1.0, 0.82, 0.4) : vec3(0.55, 0.8, 1.0);
   vGhost = vec4(strength, tint);
+#endif
+#ifdef GLINT
+  if (!flag(aColor.w, 32768.0)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
 #endif
   mat4 m = bone(int(part + aBone.y + 0.5), int(aBone.x + 0.5));
   vec3 p = position;
@@ -150,6 +159,13 @@ uniform sampler2D uTex;
 uniform sampler2D uItems;
 uniform sampler2D uBlocks;
 uniform float uAlphaTest;
+#ifdef GLINT
+uniform sampler2D uGlint;
+vec2 turn(vec2 p, float deg) {
+  float a = radians(deg), c = cos(a), s = sin(a);
+  return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+}
+#endif
 varying vec2 vUv;
 varying vec3 vLit;
 varying vec3 vWorld;
@@ -162,6 +178,7 @@ flat varying vec4 vGhost;
 #endif
 void main() {
   vec4 c = vec4(1.0);
+  vec2 luv = clamp(vUv, 0.0, 1.0);
   if (flag(vFlags, 32.0)) {
     // Procedural flames (b1.8.1 animates fire in code; its terrain tile is a placeholder): 16×16 cells flickering at 8 Hz,
     // hotter and denser toward the bottom.
@@ -174,8 +191,8 @@ void main() {
     c = vec4(mix(vec3(0.85, 0.25, 0.0), vec3(1.0, 0.85, 0.3), clamp((k - 0.33) * 1.6, 0.0, 1.0)), 1.0);
   } else if (!flag(vFlags, 2.0)) {
     // Scrolling layers (creeper charge, wither armour: flag 128) slide their texture with time, wrapping in their rect.
-    vec2 luv = flag(vFlags, 128.0) ? fract(vUv + vec2(uTime * 0.02, uTime * 0.01)) : clamp(vUv, 0.0, 1.0);
-    vec2 uv = vTex.xy + luv * vTex.zw;
+    vec2 suv = flag(vFlags, 128.0) ? fract(vUv + vec2(uTime * 0.02, uTime * 0.01)) : luv;
+    vec2 uv = vTex.xy + suv * vTex.zw;
 #ifdef TILE
     // Atlas: bits 4 and 8 of the flags (0 items, 1 blocks, 2 entity sheet).
     float atlas = mod(floor(vFlags / 4.0), 4.0);
@@ -185,6 +202,26 @@ void main() {
 #endif
   }
   if (c.a < uAlphaTest) discard;
+#ifdef GLINT
+  float gfog = 1.0 - smoothstep(uFogRange.x, uFogRange.y, length(vWorld.xz - uFogCentre.xz));
+#ifdef TILE
+  // RenderItem.renderEffect: the atlas coordinates × 8; a 16 px item is 1/64 of vanilla's 1024 px atlas, so one item spans
+  // an eighth of the glint texture.
+  vec3 col = vec3(0.502, 0.251, 0.8);
+  vec2 iuv = luv * 0.125;
+  vec3 g1 = texture2D(uGlint, turn(iuv, -50.0) + vec2(fract(uTime / 3.0), 0.0)).rgb * col;
+  vec3 g2 = texture2D(uGlint, turn(iuv, 10.0) - vec2(fract(uTime / 4.873), 0.0)).rgb * col;
+#else
+  // LayerArmorBase.renderEnchantedGlint over the armour texture's coordinates, f = ticks.
+  vec3 col = vec3(0.38, 0.19, 0.608);
+  float f = uTime * 20.0;
+  vec3 g1 = texture2D(uGlint, turn(luv + vec2(0.0, f * 0.02), 30.0) / 3.0).rgb * col;
+  vec3 g2 = texture2D(uGlint, turn(luv + vec2(0.0, f * 0.08), -30.0) / 3.0).rgb * col;
+#endif
+  // GL_SRC_COLOR, GL_ONE: each pass adds its colour squared.
+  gl_FragColor = vec4((g1 * g1 + g2 * g2) * gfog, 1.0);
+  return;
+#endif
 #ifdef GHOST
   // Flat tint, a little of the skin's shading so limbs stay readable, and a bright rim (an outline at any size).
   float rim = 1.0 - abs(dot(normalize(vN), normalize(cameraPosition - vWorld)));
@@ -241,6 +278,9 @@ export interface EntityMaterials {
   shadow: THREE.ShaderMaterial;
   /** The occluded-body silhouette pass (see the header). */
   ghost: THREE.ShaderMaterial;
+  /** The enchantment glint over models (armour) and over tiles (items, cubes) (see the header). */
+  glintModel: THREE.ShaderMaterial;
+  glintTile: THREE.ShaderMaterial;
   /** Uniforms shared by every variant (bones, textures, time). */
   shared: {
     uBones: THREE.IUniform<THREE.Texture | null>;
@@ -249,6 +289,8 @@ export interface EntityMaterials {
     uBlocks: THREE.IUniform<THREE.Texture | null>;
     uBlocksGrid: THREE.IUniform<THREE.Vector2>;
     uTime: THREE.IUniform<number>;
+    /** enchanted_item_glint.png (repeating, linear like its .mcmeta blur); null = no glint drawn. */
+    uGlint: THREE.IUniform<THREE.Texture | null>;
   };
   dispose(): void;
 }
@@ -261,6 +303,7 @@ export function createEntityMaterials(world: WorldUniforms): EntityMaterials {
     uBlocks: { value: null as THREE.Texture | null },
     uBlocksGrid: { value: new THREE.Vector2(16, 16) },
     uTime: { value: 0 },
+    uGlint: { value: null as THREE.Texture | null },
   };
   const uniforms = (alpha: number) => ({ ...world, ...shared, uAlphaTest: { value: alpha } }) as unknown as Record<string, THREE.IUniform>;
   const model = new THREE.ShaderMaterial({ vertexShader: vertex, fragmentShader: fragment, uniforms: uniforms(0.1), defines: { MODEL: 1 } });
@@ -274,6 +317,8 @@ export function createEntityMaterials(world: WorldUniforms): EntityMaterials {
   });
   const tile = new THREE.ShaderMaterial({ vertexShader: vertex, fragmentShader: fragment, uniforms: uniforms(0.1), defines: { TILE: 1 } });
   const ghost = createGhostMaterial(uniforms(0.1));
+  const glintModel = createGlintMaterial(uniforms(0.1), 'MODEL');
+  const glintTile = createGlintMaterial(uniforms(0.1), 'TILE');
   const shadow = new THREE.ShaderMaterial({
     vertexShader: shadowVertex,
     fragmentShader: shadowFragment,
@@ -290,16 +335,53 @@ export function createEntityMaterials(world: WorldUniforms): EntityMaterials {
     tile,
     shadow,
     ghost,
+    glintModel,
+    glintTile,
     shared,
     dispose() {
-      for (const m of [model, modelTranslucent, tile, shadow, ghost]) m.dispose();
+      for (const m of [model, modelTranslucent, tile, shadow, ghost, glintModel, glintTile]) m.dispose();
     },
   };
 }
 
 /** Instance flag bits of the silhouette pass (aColor.w): drawn as a ghost, the selected bot, a player (not a bot); the
- * strength 0..15 sits in the bits from GHOST_LEVEL up. */
+ * strength 0..15 sits in the four bits from GHOST_LEVEL up. */
 export const GHOST_FLAG = 256, GHOST_SELECTED = 512, GHOST_PLAYER = 1024, GHOST_LEVEL = 2048;
+/** Instance flag bit of the glint pass (above the ghost strength bits). */
+export const GLINT_FLAG = 32768;
+
+/** The glint pass's render state: over the instance's own surface (depth LEQUAL, nudged toward the camera, no depth write),
+ * added on top (the shader squares each pass's colour: vanilla's GL_SRC_COLOR, GL_ONE). Drawn after the opaque entities. */
+export function createGlintMaterial(uniforms: Record<string, THREE.IUniform>, variant: 'MODEL' | 'TILE'): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexShader: vertex,
+    fragmentShader: fragment,
+    uniforms,
+    defines: { [variant]: 1, GLINT: 1 },
+    transparent: true,
+    blending: THREE.CustomBlending,
+    blendSrc: THREE.OneFactor,
+    blendDst: THREE.OneFactor,
+    depthWrite: false,
+    depthFunc: THREE.LessEqualDepth,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+}
+
+/** The glint texture as the glint pass samples it: repeating both ways, linear (its .mcmeta asks for blur). */
+export function glintTexture(img: ImageBitmap | HTMLCanvasElement | HTMLImageElement): THREE.Texture {
+  const t = new THREE.Texture(img as unknown as HTMLImageElement);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.magFilter = THREE.LinearFilter;
+  t.minFilter = THREE.LinearFilter;
+  t.generateMipmaps = false;
+  t.flipY = false;
+  t.colorSpace = THREE.NoColorSpace;
+  t.needsUpdate = true;
+  return t;
+}
 
 /** The ghost pass's render state: only where the body is behind what is already drawn (GREATER), blended over it without
  * touching depth, pulled a little toward the camera so a body merely touching a block (feet on the ground, a shoulder in a

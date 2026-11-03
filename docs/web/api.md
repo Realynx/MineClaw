@@ -444,6 +444,31 @@ These are the bot-side additions from architecture.md, in their wire form. They 
   - `owner` on `/api/bodies/scripts` rows.
   The web groups the hive grid by `owner` (falling back to the hive tree for an older bot).
 
+- **World looks (added 2026-11-03).** Additive fields on `/api/world/entities` and `/api/world/blockentities`, each left
+  out when absent or default (both versions where the game has the fact):
+  - **Equipment glint.** An equipment slot is `[id, meta]`, `[id, meta, rgb]` (dyed), or either followed by a flags object
+    when the item glints: `[id, meta, {glint: true}]`, `[id, meta, rgb, {glint: true}]` (`ItemFlags`, `EquipmentItem`;
+    `equipmentGlints(slot)` reads it). A reader that only takes numbers ignores the object. 1.12.2 only: an `ench` list
+    (`ItemStack.isItemEnchanted`), an enchanted book's `StoredEnchantments`, or a potion (373/438/441) whose `Potion` type or
+    `CustomPotionEffects` has effects. b1.8.1 items carry no NBT (mc-dev `ItemStack` has only id, count and damage), so
+    never there. Items that glint by id alone (enchanted book, nether star, bottle o' enchanting, written book, end crystal,
+    the enchanted golden apple) the viewer knows itself.
+  - `glint: true` on `item` and `item_frame` entities: the dropped or framed stack glints (same rule).
+  - `carried: [id, meta]` on an enderman: 1.12.2 `CARRIED_BLOCK` (optional block state, id | meta << 12), b1.8.1
+    metadata 16 (id) and 17 (data).
+  - `look` token `holding_rose` on an iron golem: from 1.12.2 Entity Status 11 for 400 ticks (`holdRoseTick`), ended early
+    by status 34. Status 4 (its attack) is a `swing` event. b1.8.1 has no iron golem.
+  - `shoulders: {left?, right?}` on a 1.12.2 player: the parrot colour (`red_blue`, `blue`, `green`, `yellow_blue`,
+    `grey`) from `LEFT/RIGHT_SHOULDER_ENTITY` (NBT `{id: "minecraft:parrot", Variant}`); a free shoulder is left out.
+  - `arrows: N` on a living entity: 1.12.2 `ARROW_COUNT_IN_ENTITY` (b1.8.1 has no such metadata). The viewer draws them on
+    players only, like vanilla's `LayerArrow`.
+  - `equipment` on `/api/world/entities` `bots[]` rows of in-process bodies: their own armour and hands (same slot shape).
+  - `rich` on a 1.12.2 sign whose JSON text has styles: four lines of runs `{text, color?, bold?, italic?, underlined?,
+    strikethrough?, obfuscated?}` (`SignRun`), built from the components, their `extra` and § codes in the text, read like
+    `FontRenderer` (a colour resets the styles; no colour = the sign's black). `lines` stays plain for older readers.
+  - Still not on the wire: player skins and capes (offline server). Horse coats and villager professions are always sent on
+    1.12.2 (`look`); b1.8.1 has neither mob.
+
 - **`GET /api/viewer/memory-activity?since&brain`** (`MemoryActivityResponse`). Response:
 
   ```

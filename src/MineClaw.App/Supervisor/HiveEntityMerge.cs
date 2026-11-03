@@ -62,8 +62,12 @@ public static class HiveEntityMerge
             Equipment = EntityLooks.Equipment(e),
             HeadYaw = float.IsNaN(e.HeadYaw) ? null : (float)Math.Round(e.HeadYaw, 1),
             Baby = e.IsBaby ? true : null,
-            Look = EntityLooks.Look(e),
+            Look = EntityLooks.Look(e, nowUtc),
             Vehicle = e.VehicleId >= 0 ? e.VehicleId : null,
+            Glint = (e.Kind == EntityKind.Item ? EntityLooks.Glint(e.Item) : EntityLooks.Glint(e.FramedItem)) ? true : null,
+            Carried = EntityLooks.Carried(e),
+            Shoulders = EntityLooks.Shoulders(e),
+            Arrows = EntityLooks.Arrows(e),
         };
     }
 

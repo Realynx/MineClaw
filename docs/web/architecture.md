@@ -255,6 +255,10 @@ server.
   - The browser must match the old freecam and every C# renderer: animated water and lava, real fluids, real player and
     mob models with animation, and every block shape.
   - Decompiled Java is never committed. Entity geometry is our own data files.
+  - **The last looks (added 2026-11-03).** The wire now carries what the id cannot say, so the browser draws vanilla's
+    layers too: the enchantment glint (equipment, held, framed and dropped items), an enderman's carried block, an iron
+    golem's offered poppy, parrots on shoulders, arrows stuck in players, and styled 1.12.2 sign text. Wire shapes:
+    api.md §6, "World looks". Only player skins and capes stay unsaid (an offline server has none to send).
 - **Frame-rate targets.** At least 60 fps with a GPU. At least 40 fps sustained on software WebGL (SwiftShader), which
   is Fox's usual development browser, with hardware acceleration off.
   - Software rendering is detected automatically and selects a profile tuned by a frame-time controller that aims for

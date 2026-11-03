@@ -161,7 +161,9 @@ Changed blocks glow briefly (`layers.changes`).
   - Sign text on the board fronts in the version's own bitmap font (`render/font.ts`: 1.12.2 `textures/font/ascii.png`,
     b1.8.1 `font/default.png` with `font.txt`'s character table; per-glyph advances measured from the image at pack time
     like `FontRenderer.readFontTexture`). § colour codes; on 1.12.2 also bold, italic, underline, strikethrough,
-    obfuscated (a fixed same-width stand-in) and reset. 1.12.2 cuts a long line at the last space that fits 90 px
+    obfuscated (random same-width glyphs, redrawn every 50 ms, 100 ms in the software profile, while in view) and reset.
+    A styled 1.12.2 sign's `rich` runs (the JSON components' colours and styles) are drawn as the § text
+    `getFormattedText` would hand the font renderer; `lines` otherwise. 1.12.2 cuts a long line at the last space that fits 90 px
     (`splitText`); b1.8.1 draws it whole, at its slightly larger 1/90 text scale. One small texture per sign, LRU-capped,
     within 24 blocks in the software profile, 48 otherwise. Characters outside the font image (1.12.2's unicode pages)
     are not drawn.
@@ -282,8 +284,8 @@ entity kind the wire reports.
   - cat types, rabbit coats, parrot colours, shulker colours and lid, boat wood
   - minecart contents
   - armor stand options and pose
-- **Equipment.** `equipment` (`[id, meta]`, or `[id, meta, rgb]` for a dyed item) draws on the renderers that have the
-  layer (players, bots, armor stands, zombies and their kin, skeletons and their kin, zombie villagers; the giant wears
+- **Equipment.** `equipment` (`[id, meta]`, or `[id, meta, rgb]` for a dyed item; a trailing `{glint: true}` is read into
+  `Equipment.glint`) draws on the renderers that have the layer (players, bots, armor stands, zombies and their kin, skeletons and their kin, zombie villagers; the giant wears
   armour but no head item; villagers wear head items but no armour):
   - armour pieces in their material; 1.12.2 leather tinted by its dye (default `0xA06540`) with its untinted overlay,
     b1.8.1's brown cloth as it is; zombie villagers wear `LayerVillagerArmor`'s taller helmet
@@ -294,6 +296,26 @@ entity kind the wire reports.
   - elytra in the chest slot (`LayerElytra`, spread while sneaking)
 - **Implied layers.** The snow golem's pumpkin (unless the look says `sheared`) and an adult mooshroom's three crossed
   red mushrooms.
+- **Enchantment glint** (1.12.2). Armour pieces, both hands, head items, elytra, drops and framed items glint when the
+  wire says so (`glint`) or the item always does (enchanted book, nether star, bottle o' enchanting, written book, end
+  crystal, the enchanted golden apple). A glinting instance is flagged for its draw's glint twin: the same geometry and
+  instances again with the `GLINT` shader, depth `LEQUAL` over itself, adding vanilla's two scrolling passes of
+  `enchanted_item_glint.png` (bundled as `env/glint`, repeating, linear). Armour like `LayerArmorBase.renderEnchantedGlint`
+  (colour 0.38, 0.19, 0.608; uv / 3, turned 30° and −30°, sliding 0.02 and 0.08 per tick), items like
+  `RenderItem.renderEffect` (colour 0x8040CC; turned −50° and 10°, sliding once every 3 and 4.873 s). Each pass adds its
+  colour squared (`GL_SRC_COLOR, GL_ONE`). One extra draw per geometry with a glinting instance, nothing otherwise.
+- **Held blocks.** An enderman's `carried` block (`LayerHeldBlock`: translate(0, 0.6875, −0.75) · rotX 20° · rotY 45° ·
+  translate(0.25, 0.1875, 0.25) · scale(−0.5, −0.5, 0.5) in the model frame; a cube, or crossed planes for a plant) with
+  its arms held out (`ModelEnderman.isCarrying`); b1.8.1 centres the block like `renderBlockOnInventory` (client code,
+  not in mc-dev: unverified). An iron golem
+  whose look says `holding_rose` holds out its right arm (−0.8 + 0.025 · triangleWave(holdRoseTick, 70)) with the poppy
+  (`LayerIronGolemFlower`) for 400 ticks from when the look first said so.
+- **Riders.** A body owns extra bone rows it poses with itself: a 1.12.2 player's shoulder parrots (`shoulders`;
+  `LayerEntityOnShoulder`: translate(±0.4, −1.5 or sneaking −1.3, 0) in the model frame, the parrot model standing with
+  the player's limb swing and head angles) and its stuck arrows (`arrows`; `LayerArrow`: `java.util.Random(entityId)` picks
+  a box of `ModelPlayer.boxList` (replaced arms and legs, the ears and the cape frozen where vanilla leaves them), a point
+  in it and an aim back through it; the arrow model drawn there; at most 32). Riders share their body's detail, light and
+  hurt flash, cast no shadow and draw through the shared arrow and parrot draws.
 - **Flags.** The flag bits drive these effects:
   - fire on burning entities
   - sneaking and riding poses (a sneaking 1.12.2 biped sinks 0.2 like `ModelBiped.render`)
@@ -340,19 +362,20 @@ entity kind the wire reports.
   boxes and are not posed. The distance is scaled by the view's field of view, so iso views keep detail further out.
 - **Light.** Entities take the world's time-of-day light and fog uniforms (`setWorldUniforms`), and per-entity light via
   `lightAt`.
-- **Not on the wire.** These are still missing or picked by entity id:
-  - skins and capes: bots wear Steve; other players get Steve or Alex by a name hash; player skulls show Steve
-  - the enchantment glint on enchanted armour and items
-  - an enderman's carried block, an iron golem's offered flower, parrots on shoulders, arrows stuck in players
-  - JSON text styles on 1.12.2 sign lines (the bot flattens them to plain text; § codes typed in the text do show)
-  - horse coats and villager professions when the look gives none
+- **Not on the wire.** Skins and capes (an offline server has none): bots wear Steve; other players get Steve or Alex by a
+  name hash; player skulls show Steve. Horse coats and villager professions are picked by entity id only when a look gives
+  none (1.12.2 always sends them; b1.8.1 has neither mob).
 - **Gallery.** `/models.html` in the dev server shows every model on a flat floor, with scripted events. It takes
-  `?version=b1.8.1`, `?walk=0`, `?spin=1`, `?events=0`, `?n=20` (the perf scene) and `?set=looks` (only the equipment,
-  head item, elytra, baby and implied-layer showcase). `node scripts/shot.mjs --page models.html --query set=looks --eval
+  `?version=b1.8.1`, `?walk=0`, `?spin=1`, `?events=0`, `?n=20` (the perf scene), `?set=looks` (only the equipment,
+  head item, elytra, baby and implied-layer showcase) and `?set=last` (glint, carried blocks, the golem's poppy, shoulder
+  parrots, stuck arrows). `node scripts/shot.mjs --page models.html --query set=looks --eval
   "g.set(yaw, pitch, dist, x, z, y)"` screenshots it headlessly.
 - **Fixture.** The fixture world (`zoo`, on in the demo) has three areas:
   - a zoo of every mob type south of the island
-  - a showcase of equipment, babies, variants, paintings, an item frame and minecarts in the final wire shape
+  - a showcase of equipment, babies, variants, paintings, an item frame and minecarts in the final wire shape, and a row
+    (z −15) of the last looks: glinting gear, endermen carrying a block and a poppy, an iron golem with its flower, a
+    player with shoulder parrots and stuck arrows, a glinting drop, an enchanted book in a frame; the block-entity plaza
+    has a sign with styled (`rich`) text and an obfuscated word
   - scheduled events: Alice swings every second, a pigman is hurt and dies every 12 s, an enderman teleports, and lightning
     strikes every 20 s
 
@@ -397,6 +420,10 @@ Vite bundle the mesh worker and emit the atlases themselves, with no copy step.
     layouts, painting motives, item frames, minecart contents, display mobs and lightning; dyed leather passes, worn
     skulls, head items and elytra per renderer, villager armour, foal and baby llama proportions, the creeper swell and
     flash, the screaming enderman, the snow golem's pumpkin and the mooshroom's mushrooms, spawner mobs without shadows.
+  - The last looks (`lastLooks.test.ts`): equipment glint flags and the other new fields through the wire decoder, the
+    glint materials and twins (and none on b1.8.1), carried blocks and the carrying pose, the golem's flower and its 400
+    ticks, shoulder parrots and stuck arrows as rider rows (`java.util.Random` against the JDK), rich sign runs to §
+    text and obfuscated redraws.
   - The bitmap font: glyph tables and advances from both font images, § codes, the 1.12.2 sign line cut, rasterising;
     spawner mob scales and feet; starfield passes by distance.
   - Hash-diff fetching.

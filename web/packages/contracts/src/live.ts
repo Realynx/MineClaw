@@ -268,6 +268,50 @@ export const WorldChunksQuery = z.object({
 });
 export type WorldChunksQuery = z.infer<typeof WorldChunksQuery>;
 
+/** An item or block [id, meta/damage] (version-specific numbering), or null for an empty slot. */
+export const ItemRef = z.tuple([z.number().int(), z.number().int()]).nullable();
+export type ItemRef = z.infer<typeof ItemRef>;
+
+/** An item's render flags, the optional last element of an equipment slot: `glint` = vanilla draws the enchantment glint
+ * (1.12.2 enchantments or a potion with effects; b1.8.1 items carry no NBT). Loose: later flags pass through. */
+export const ItemFlags = z.looseObject({ glint: z.boolean().optional() });
+export type ItemFlags = z.infer<typeof ItemFlags>;
+
+/** A worn or held item: [id, meta/damage], plus the dye colour 0xRRGGBB as a third element when the item is dyed (1.12.2
+ * leather armour's display.color; b1.8.1 has no dyed items), plus a trailing {@link ItemFlags} object when it glints
+ * (`[id, meta, {glint: true}]`, `[id, meta, rgb, {glint: true}]`), or null for an empty slot. A reader that only takes numbers
+ * ignores the object. */
+export const EquipmentItem = z
+  .union([
+    z.tuple([z.number().int(), z.number().int()]),
+    z.tuple([z.number().int(), z.number().int(), z.number().int()]),
+    z.tuple([z.number().int(), z.number().int(), ItemFlags]),
+    z.tuple([z.number().int(), z.number().int(), z.number().int(), ItemFlags]),
+  ])
+  .nullable();
+export type EquipmentItem = z.infer<typeof EquipmentItem>;
+
+/** Whether an equipment slot glints (its trailing flags object says `glint: true`). */
+export function equipmentGlints(v: EquipmentItem | undefined): boolean {
+  const last = v ? v[v.length - 1] : null;
+  return !!last && typeof last === 'object' && last.glint === true;
+}
+
+/** A player's shoulder parrots by colour (red_blue | blue | green | yellow_blue | grey); a free shoulder is absent. */
+export const WorldShoulders = z.looseObject({ left: z.string().nullish(), right: z.string().nullish() });
+export type WorldShoulders = z.infer<typeof WorldShoulders>;
+
+/** Hand items and armour. */
+export const WorldEquipment = z.looseObject({
+  main: EquipmentItem.optional(),
+  off: EquipmentItem.optional(),
+  head: EquipmentItem.optional(),
+  chest: EquipmentItem.optional(),
+  legs: EquipmentItem.optional(),
+  feet: EquipmentItem.optional(),
+});
+export type WorldEquipment = z.infer<typeof WorldEquipment>;
+
 /** C# WorldBot. */
 export const WorldBot = z.object({
   name: z.string(),
@@ -291,30 +335,10 @@ export const WorldBot = z.object({
   kind: HiveBodyKind.nullish(),
   owner: z.string().nullish(),
   online: z.boolean().nullish(),
+  equipment: WorldEquipment.nullish().describe('an in-process body: what it wears and holds, the entity slots (glint included)'),
 });
 export type WorldBot = z.infer<typeof WorldBot>;
 
-/** An item or block [id, meta/damage] (version-specific numbering), or null for an empty slot. */
-export const ItemRef = z.tuple([z.number().int(), z.number().int()]).nullable();
-export type ItemRef = z.infer<typeof ItemRef>;
-
-/** A worn or held item: [id, meta/damage], plus the dye colour 0xRRGGBB as a third element when the item is dyed (1.12.2
- * leather armour's display.color; b1.8.1 has no dyed items), or null for an empty slot. */
-export const EquipmentItem = z
-  .union([z.tuple([z.number().int(), z.number().int()]), z.tuple([z.number().int(), z.number().int(), z.number().int()])])
-  .nullable();
-export type EquipmentItem = z.infer<typeof EquipmentItem>;
-
-/** Hand items and armour. */
-export const WorldEquipment = z.looseObject({
-  main: EquipmentItem.optional(),
-  off: EquipmentItem.optional(),
-  head: EquipmentItem.optional(),
-  chest: EquipmentItem.optional(),
-  legs: EquipmentItem.optional(),
-  feet: EquipmentItem.optional(),
-});
-export type WorldEquipment = z.infer<typeof WorldEquipment>;
 
 /** Armor stand pose: [x, y, z] degrees per part. */
 export const ArmorStandPose = z.looseObject({
@@ -330,7 +354,9 @@ export const ArmorStandPose = z.looseObject({
  * C# WorldEntity. Velocity in blocks/tick. Fields are omitted when unknown or default. Loose: fields the bot adds pass
  * through to the viewer, which decodes tolerantly. Kind-specific fields: painting `name` (motive) + `facing`; item_frame
  * `item`/`damage` + `rotation` + `facing`; armor_stand `pose` + equipment + `look`; arrow `in_ground`; falling_block `block`;
- * tnt `fuse`; xp_orb `count`; firework `item`; object `name`.
+ * tnt `fuse`; xp_orb `count`; firework `item`; object `name`. The last looks (2026-11): equipment slots may end in a
+ * `{glint: true}` flags object; item / item_frame `glint`; enderman `carried`; player `shoulders`; living `arrows`; iron golem
+ * `look` token `holding_rose` (for 400 ticks after Entity Status 11, until 34).
  */
 export const WorldEntity = z.looseObject({
   kind: z
@@ -355,7 +381,7 @@ export const WorldEntity = z.looseObject({
   flags: z.number().int().nullish().describe('0x01 burning, 0x02 sneaking, 0x04 riding, 0x08 sprinting, 0x10 using item, 0x20 invisible, 0x40 glowing'),
   variant: z.number().int().nullish().describe('legacy; prefer look'),
   look: z.string().nullish().describe('comma-separated appearance tokens per kind ("red,sheared", "profession=farmer", …)'),
-  equipment: WorldEquipment.nullish().describe('[id, meta] or [id, meta, rgb] (dyed) per slot; empty slots and an empty object omitted'),
+  equipment: WorldEquipment.nullish().describe('[id, meta], [id, meta, rgb] (dyed), plus a trailing {glint: true} when enchanted, per slot; empty slots and an empty object omitted'),
   headYaw: z.number().nullish().describe('1.12.2'),
   baby: z.boolean().nullish().describe('1.12.2'),
   vehicle: z.number().int().nullish().describe('the ridden entity id'),
@@ -365,6 +391,10 @@ export const WorldEntity = z.looseObject({
   inGround: z.boolean().nullish(),
   block: ItemRef.nullish(),
   fuse: z.number().int().nullish(),
+  glint: z.boolean().nullish().describe('item / item_frame: the dropped or framed stack glints (1.12.2 enchantments, a potion with effects)'),
+  carried: ItemRef.nullish().describe('enderman: the carried block [id, meta] (1.12.2 CARRIED_BLOCK, b1.8.1 metadata 16/17)'),
+  shoulders: WorldShoulders.nullish().describe('player (1.12.2): the parrots on its shoulders by colour'),
+  arrows: z.number().int().nullish().describe('living (1.12.2): arrows stuck in it (vanilla draws them on players)'),
 });
 export type WorldEntity = z.infer<typeof WorldEntity>;
 
@@ -460,8 +490,21 @@ export const WorldBlockEntitiesQuery = z.object({
 });
 export type WorldBlockEntitiesQuery = z.infer<typeof WorldBlockEntitiesQuery>;
 
+/** One styled piece of a 1.12.2 sign line (`rich`): only the styles that are on are present; no colour = the sign's black. */
+export const SignRun = z.looseObject({
+  text: z.string(),
+  color: z.string().nullish().describe('black | dark_blue | dark_green | dark_aqua | dark_red | dark_purple | gold | gray | dark_gray | blue | green | aqua | red | light_purple | yellow | white'),
+  bold: z.boolean().nullish(),
+  italic: z.boolean().nullish(),
+  underlined: z.boolean().nullish(),
+  strikethrough: z.boolean().nullish(),
+  obfuscated: z.boolean().nullish(),
+});
+export type SignRun = z.infer<typeof SignRun>;
+
 /**
- * One block entity. Loose (kind-specific fields pass through): sign `lines` [4]; bed `color`; banner `color` (base) +
+ * One block entity. Loose (kind-specific fields pass through): sign `lines` [4] (plain) and, for a styled 1.12.2 sign, `rich`
+ * [4][runs]; bed `color`; banner `color` (base) +
  * `patterns` [{pattern, color}]; skull `skull` (type) + `rotation` + `owner`; flower_pot `item` + `data`; mob_spawner `mob`;
  * jukebox `record`; note_block `note`; chest / trapped_chest / ender_chest. b1.8.1 sends sign data only.
  */
@@ -471,6 +514,7 @@ export const WorldBlockEntity = z.looseObject({
   z: z.number().int(),
   kind: z.string().describe('sign | bed | banner | skull | flower_pot | chest | trapped_chest | ender_chest | mob_spawner | jukebox | note_block | …'),
   lines: z.array(z.string()).nullish(),
+  rich: z.array(z.array(SignRun)).nullish().describe('1.12.2 signs with JSON styles: the four lines as styled runs (component styles, extra, § codes)'),
   color: z.union([z.number().int(), z.string()]).nullish(),
   patterns: z.array(z.looseObject({ pattern: z.string(), color: z.union([z.number().int(), z.string()]) })).nullish(),
   skull: z.union([z.number().int(), z.string()]).nullish(),

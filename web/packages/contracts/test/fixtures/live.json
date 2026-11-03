@@ -171,7 +171,8 @@
         "held": "stone_pickaxe",
         "claims": [],
         "live": true,
-        "age_seconds": 0.1
+        "age_seconds": 0.1,
+        "equipment": { "main": [274, 3, { "glint": true }], "head": [298, 0, 3368652] }
       }
     ],
     "entities": [
@@ -202,10 +203,55 @@
         "id": 77,
         "yaw": 90,
         "flags": 2,
+        "by": "maid_chan",
+        "equipment": { "main": [276, 0, { "glint": true }], "feet": [301, 0, 3368652, { "glint": true }] },
+        "shoulders": { "left": "red_blue", "right": "grey" },
+        "arrows": 3
+      },
+      {
+        "kind": "item",
+        "name": "enchanted book",
+        "dim": 0,
+        "x": 6,
+        "y": 64,
+        "z": 7,
+        "id": 3302,
+        "item": 403,
+        "damage": 0,
+        "count": 1,
+        "glint": true,
         "by": "maid_chan"
-      }
+      },
+      { "kind": "mob", "name": "enderman", "dim": 0, "x": 12, "y": 64, "z": 3, "id": 88, "type": 58, "carried": [12, 1], "by": "maid_chan" },
+      { "kind": "mob", "name": "villager_golem", "dim": 0, "x": 14, "y": 64, "z": 3, "id": 89, "type": 99, "look": "holding_rose", "by": "maid_chan" }
     ],
     "removed": [[0, 3290]]
+  },
+  "worldBlockEntities": {
+    "dim": 0,
+    "columns": [
+      {
+        "cx": 0,
+        "cz": 0,
+        "hash": 42,
+        "entities": [
+          {
+            "x": 10,
+            "y": 66,
+            "z": 9,
+            "kind": "sign",
+            "lines": ["Foxie", "house !", "ab cd", ""],
+            "rich": [
+              [{ "text": "Fox", "color": "red", "bold": true }, { "text": "ie", "color": "gold" }],
+              [{ "text": "house " }, { "text": "!", "italic": true, "underlined": true }],
+              [{ "text": "ab", "obfuscated": true }, { "text": " cd" }],
+              []
+            ]
+          },
+          { "x": 9, "y": 66, "z": 9, "kind": "chest" }
+        ]
+      }
+    ]
   },
   "worldOverlays": {
     "at": "2026-11-02T10:00:00+00:00",

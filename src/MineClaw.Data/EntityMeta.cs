@@ -97,6 +97,12 @@ public static class EntityMeta
     public const int StandHead = 64, StandBody = 65, StandLeftArm = 66, StandRightArm = 67, StandLeftLeg = 68, StandRightLeg = 69;
     /// <summary>A shulker's colour (int: <c>EnumDyeColor</c> metadata; 10 purple by default).</summary>
     public const int ShulkerColor = 70;
+    /// <summary>An enderman's carried block (int: 1.12.2 <c>Block.getStateId</c> = id | meta &lt;&lt; 12, 0 none; <c>EntityEnderman.CARRIED_BLOCK</c>).
+    /// b1.8.1 says it in its own 16 (id) and 17 (data).</summary>
+    public const int CarriedBlock = 71;
+    /// <summary>The parrot on a player's left / right shoulder (int: its colour, <see cref="ParrotVariant"/>'s numbers; −1 none;
+    /// 1.12.2 <c>EntityPlayer.LEFT_SHOULDER_ENTITY</c> / <c>RIGHT_SHOULDER_ENTITY</c> NBT).</summary>
+    public const int ShoulderLeft = 72, ShoulderRight = 73;
 
     /// <summary>The flag bit of a <see cref="HandStates"/> value: an item is being used.</summary>
     public const int HandActive = 0x01, HandOffhand = 0x02;

@@ -93,7 +93,23 @@ const SHOWCASE: Array<[number, number, number, Partial<EntityDto> & { look?: str
   [4036, 1, -18, { kind: 'mob', type: 100, look: 'chestnut', baby: true }],
   [4037, 4, -18, { kind: 'mob', type: 103, look: 'brown', baby: true }],
   [4038, 7, -18, { kind: 'mob', type: 100, look: 'chestnut' }],
+  // The last looks, in their wire form (row z −15): enchanted gear glints (a trailing {glint} on the slot), an enderman's
+  // carried block (b1.8.1 too) and plant, an iron golem offering its poppy, a player with shoulder parrots and stuck arrows,
+  // a glinting drop and an enchanted book in a frame.
+  [4040, -10, -15, wire({ kind: 'player', name: 'Enchanter', equipment: { main: [276, 0, { glint: true }], head: [310, 0, { glint: true }], chest: [311, 0, { glint: true }], legs: [312, 0, { glint: true }], feet: [313, 0, { glint: true }] } })],
+  [4041, -7, -15, wire({ kind: 'player', name: 'Parrots', shoulders: { left: 'red_blue', right: 'green' }, arrows: 6 })],
+  [4042, -4, -15, { kind: 'mob', type: 58, carried: [2, 0] }, 'both'],
+  [4043, -1, -15, { kind: 'mob', type: 58, carried: [38, 0] }],
+  [4044, 2, -15, { kind: 'mob', type: 99, look: 'holding_rose' }],
+  [4045, 5, -15, wire({ kind: 'mob', type: 54, equipment: { head: [306, 0, { glint: true }], chest: [299, 0, 0x3366cc, { glint: true }] } })],
+  [4046, 7, -15, { kind: 'item', item: 276, count: 1, glint: true }],
+  [4047, 9, -15, { kind: 'item_frame', frameItem: [403, 0], facing: 'south' }],
 ];
+
+/** A showcase entry written exactly as the wire sends it (equipment slots with their trailing flags object). */
+function wire(o: Record<string, unknown>): Partial<EntityDto> & { look?: string } {
+  return o as Partial<EntityDto> & { look?: string };
+}
 /** [entity models] The mob the hurt → death cycle and the teleporting enderman. */
 const DYING_ID = 4100, TELEPORT_ID = 4101;
 
@@ -396,6 +412,19 @@ export function plaza(version: GameVersion): PlazaBlock[] {
     out.push({ x: x0 + 13, y, z: z0, id: 144, meta: 1, be: { x: x0 + 13, y, z: z0, kind: 'skull', type: 'player', rotation: 8 } });
     out.push({ x: x0 + 15, y, z: z0, id: 140, meta: 0, be: { x: x0 + 15, y, z: z0, kind: 'flower_pot', item: [38, 0] } });
     out.push({ x: x0 + 16, y, z: z0, id: 140, meta: 0, be: { x: x0 + 16, y, z: z0, kind: 'flower_pot', item: 'minecraft:cactus' } });
+    // A sign with JSON text styles, as the wire's rich runs beside the plain lines (an obfuscated word redraws).
+    out.push({
+      x: x0 + 10, y, z: z0 + 2, id: 63, meta: 8,
+      be: {
+        x: x0 + 10, y, z: z0 + 2, kind: 'sign', lines: ['Fox & Robin', 'keep out', 'secret word', 'by order'],
+        rich: [
+          [{ text: 'Fox', color: 'gold', bold: true }, { text: ' & ' }, { text: 'Robin', color: 'light_purple', bold: true }],
+          [{ text: 'keep out', color: 'dark_red', underlined: true }],
+          [{ text: 'secret ', color: 'dark_gray', italic: true }, { text: 'word', color: 'dark_aqua', obfuscated: true }],
+          [{ text: 'by order', color: 'dark_blue', strikethrough: true }],
+        ],
+      },
+    });
   }
   return out;
 }

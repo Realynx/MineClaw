@@ -4,10 +4,12 @@ using MineClaw.World;
 
 namespace MineClaw.App.Supervisor;
 
-/// <summary>One block entity for the viewer (<c>/api/world/blockentities</c>): position, kind and its looks (null facts left out).</summary>
+/// <summary>One block entity for the viewer (<c>/api/world/blockentities</c>): position, kind and its looks (null facts left out).
+/// A 1.12.2 sign whose text has styles carries <paramref name="Rich"/> too: four lines of <see cref="SignRun"/>s (the plain
+/// <paramref name="Lines"/> stay for older readers).</summary>
 public sealed record WorldBlockEntity(int X, int Y, int Z, string Kind, IReadOnlyList<string>? Lines = null, int? Color = null,
     IReadOnlyList<BannerPattern>? Patterns = null, int? Skull = null, int? Rotation = null, string? Owner = null, string? Item = null, int? Data = null,
-    string? Mob = null, string? Record = null, int? Note = null);
+    string? Mob = null, string? Record = null, int? Note = null, IReadOnlyList<IReadOnlyList<SignRun>>? Rich = null);
 
 /// <summary>A column's block entities and their hash (changes with any of them: the viewer refetches only changed columns).</summary>
 public sealed record WorldBlockEntityColumn(int Cx, int Cz, long Hash, IReadOnlyList<WorldBlockEntity> Entities);
@@ -59,7 +61,8 @@ public static class BlockEntityColumns
         described == block || (described is "chest" && block is "trapped_chest") || (described is "note_block" or "noteblock" && block == "note_block");
 
     private static WorldBlockEntity Wire(BlockPos p, BlockEntityInfo i) =>
-        new(p.X, p.Y, p.Z, i.Kind, i.Lines, i.Color, i.Patterns, i.Skull, i.Rotation, i.Owner, i.Item, i.Data, i.Mob, i.Record, i.Note);
+        new(p.X, p.Y, p.Z, i.Kind, i.Lines, i.Color, i.Patterns, i.Skull, i.Rotation, i.Owner, i.Item, i.Data, i.Mob, i.Record, i.Note,
+            i.Kind == "sign" ? SignText.Rich(i.Formatted) : null);
 
     /// <summary>FNV-1a over the entries' JSON: any change of a kind, a line, a colour… changes it.</summary>
     public static long Hash(IReadOnlyList<WorldBlockEntity> list)

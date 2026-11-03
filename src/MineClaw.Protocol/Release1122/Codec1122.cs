@@ -56,7 +56,13 @@ public static class Codec1122
                 if (o is NbtCompound e && e.GetInt("id") is { } id) ench[id] = e.GetInt("lvl") ?? 1;
         var display = c.GetCompound("display");
         int? color = display?.GetInt("color") is { } rgb ? rgb & 0xFFFFFF : null;
-        return new ItemTag(bytes, ench, display?.GetString("Name"), color);
+        // The glint (ItemStack.isItemEnchanted: an "ench" list, even an empty one; an enchanted book's StoredEnchantments) and a
+        // potion's effects (PotionUtils.getEffectsFromStack: its "Potion" type's effects, then CustomPotionEffects).
+        bool enchanted = c.GetList("ench") is not null || c.GetList("StoredEnchantments") is { Count: > 0 };
+        var potion = c.GetString("Potion") is { } pt ? (pt.StartsWith("minecraft:", StringComparison.Ordinal) ? pt[10..] : pt) : null;
+        bool effects = (potion is not null && potion is not ("empty" or "water" or "mundane" or "thick" or "awkward"))
+                       || c.GetList("CustomPotionEffects") is { Count: > 0 };
+        return new ItemTag(bytes, ench, display?.GetString("Name"), color) { Enchanted = enchanted, PotionEffects = effects };
     }
 
     /// <summary>A tag built from a compound (fixtures, the fake server).</summary>
@@ -187,11 +193,31 @@ public static class Codec1122
         return lines;
     }
 
-    /// <summary>The block entity NBT the server sends for a sign (<c>TileEntitySign.writeToNBT</c>).</summary>
-    public static NbtCompound SignTag(int x, int y, int z, IReadOnlyList<string> lines)
+    /// <summary>A sign's four lines with their JSON styles as legacy § codes (<see cref="ChatComponent.ToLegacy"/>: colours,
+    /// bold, italic, underline, strikethrough, obfuscated, from the component, its <c>extra</c> and § codes in its text, as
+    /// <c>getFormattedText</c> hands TileEntitySignRenderer), or null when it isn't a sign or no line has a code.</summary>
+    public static string[]? SignLegacy(NbtCompound tag, LangTable? lang = null)
+    {
+        if (tag.GetString("Text1") is null) return null;
+        var id = tag.GetString("id");
+        if (id is not null && id is not ("minecraft:sign" or "Sign")) return null;
+        var lines = new string[4];
+        bool any = false;
+        for (int i = 0; i < 4; i++)
+        {
+            lines[i] = ChatComponent.ToLegacy(tag.GetString("Text" + (i + 1)) ?? "", lang);
+            any |= lines[i].Contains('§');
+        }
+        return any ? lines : null;
+    }
+
+    /// <summary>The block entity NBT the server sends for a sign (<c>TileEntitySign.writeToNBT</c>); <paramref name="json"/> = the
+    /// lines as raw JSON components (styled text), else plain text components.</summary>
+    public static NbtCompound SignTag(int x, int y, int z, IReadOnlyList<string> lines, IReadOnlyList<string>? json = null)
     {
         var c = new NbtCompound { ["id"] = "minecraft:sign", ["x"] = x, ["y"] = y, ["z"] = z };
-        for (int i = 0; i < 4; i++) c["Text" + (i + 1)] = ChatComponent.Text(i < lines.Count ? lines[i] : "");
+        for (int i = 0; i < 4; i++)
+            c["Text" + (i + 1)] = json is not null && i < json.Count ? json[i] : ChatComponent.Text(i < lines.Count ? lines[i] : "");
         return c;
     }
 }

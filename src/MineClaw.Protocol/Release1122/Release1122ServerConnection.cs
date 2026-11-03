@@ -325,7 +325,7 @@ public sealed class Release1122ServerConnection : IGameConnection
             case UpdateSignPacket sign:
             {
                 var w = WireWriter.ForPacket(Ids1122.UpdateBlockEntity).WritePosition(sign.X, sign.Y, sign.Z).WriteUByte(Codec1122.SignAction);
-                Nbt.WriteRoot(w, Codec1122.SignTag(sign.X, sign.Y, sign.Z, sign.Lines));
+                Nbt.WriteRoot(w, Codec1122.SignTag(sign.X, sign.Y, sign.Z, sign.Lines, sign.Json));
                 yield return w;
                 break;
             }

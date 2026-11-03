@@ -43,6 +43,7 @@ const cases: Record<'db' | 'tools' | 'live', Record<string, z.ZodType>> = {
     hiveTree: C.HiveTreeNode,
     locate: C.LocateResult,
     worldEntities: C.WorldEntities,
+    worldBlockEntities: C.WorldBlockEntities,
     worldOverlays: C.WorldOverlays,
     controller: C.BodyControllerInfo,
     brainContext: C.BrainContextPage,
@@ -77,6 +78,38 @@ describe('fixture specifics', () => {
     expect(ok.success).toBe(true);
     expect(ok.data?.equipment?.head).toEqual([298, 0, 0x3366cc]);
     expect(C.WorldEntity.safeParse({ ...e, equipment: { head: [298, 0, 1, 2] } }).success).toBe(false);
+  });
+
+  it('equipment slots may end in a {glint} flags object, after the optional dye', () => {
+    const e = { kind: 'player', dim: 0, x: 0, y: 64, z: 0 };
+    const ok = C.WorldEntity.safeParse({ ...e, equipment: { main: [276, 0, { glint: true }], feet: [301, 0, 0x3366cc, { glint: true }], head: [298, 0] } });
+    expect(ok.success).toBe(true);
+    expect(C.equipmentGlints(ok.data?.equipment?.main)).toBe(true);
+    expect(C.equipmentGlints(ok.data?.equipment?.feet)).toBe(true);
+    expect(C.equipmentGlints(ok.data?.equipment?.head)).toBe(false);
+    expect(ok.data?.equipment?.feet?.[2]).toBe(0x3366cc);
+    // The object only ever comes last.
+    expect(C.WorldEntity.safeParse({ ...e, equipment: { main: [276, { glint: true }, 0] } }).success).toBe(false);
+  });
+
+  it('carries the last looks: glint, carried block, shoulder parrots, stuck arrows, the golem rose', () => {
+    const w = C.WorldEntities.parse(C.toCamel(live.worldEntities));
+    const fox = w.entities.find((x) => x.id === 77)!;
+    expect(fox.shoulders).toEqual({ left: 'red_blue', right: 'grey' });
+    expect(fox.arrows).toBe(3);
+    expect(w.entities.find((x) => x.id === 3302)?.glint).toBe(true);
+    expect(w.entities.find((x) => x.id === 88)?.carried).toEqual([12, 1]);
+    expect(w.entities.find((x) => x.id === 89)?.look).toBe('holding_rose');
+    expect(C.equipmentGlints(w.bots[0]?.equipment?.main)).toBe(true);
+  });
+
+  it('sign rich text keeps the plain lines beside the styled runs', () => {
+    const b = C.WorldBlockEntities.parse(C.toCamel(live.worldBlockEntities));
+    const sign = b.columns[0]!.entities[0]!;
+    expect(sign.lines?.[0]).toBe('Foxie');
+    expect(sign.rich?.[0]?.[0]).toEqual({ text: 'Fox', color: 'red', bold: true });
+    expect(sign.rich?.[2]?.[0]?.obfuscated).toBe(true);
+    expect(sign.rich?.[3]).toEqual([]);
   });
   const db = loadFixture('db');
   const tools = loadFixture('tools');

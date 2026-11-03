@@ -280,6 +280,10 @@ export const IRON_GOLEM: ModelDef = {
     if (c.attack > 0) {
       // The attack timer counts 10 → 0; swingProgress runs 0 → 1.
       p.rightArm.rx = p.leftArm.rx = -2 + 1.5 * tri(10 * (1 - c.attack), 10);
+    } else if (c.rose) {
+      // setLivingAnimations while holdRoseTick > 0: the right arm held out with the flower, the left one still.
+      p.rightArm.rx = -0.8 + 0.025 * tri(c.rose, 70);
+      p.leftArm.rx = 0;
     } else {
       p.rightArm.rx = (-0.2 + 1.5 * tri(c.swing, 13)) * c.amount;
       p.leftArm.rx = (-0.2 - 1.5 * tri(c.swing, 13)) * c.amount;

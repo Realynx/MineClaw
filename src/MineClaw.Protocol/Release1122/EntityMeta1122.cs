@@ -4,7 +4,7 @@ namespace MineClaw.Protocol.Release1122;
 
 /// <summary>One decoded 1.12.2 metadata entry: wire index, serializer id (<c>DataSerializers</c> registration order) and the value
 /// (byte → byte, VarInt/facing/opt block → int, float, string/chat → string, slot → <see cref="ItemStack"/>, bool, rotation →
-/// (float, float, float), position → long, opt position → long?, opt UUID → Guid?, NBT → null).</summary>
+/// (float, float, float), position → long, opt position → long?, opt UUID → Guid?, NBT → <see cref="NbtCompound"/> or null).</summary>
 public readonly record struct Meta1122(int Index, int Serializer, object? Value);
 
 /// <summary>What spawned an entity on the 1.12.2 wire: the metadata layout depends on it.</summary>
@@ -40,9 +40,9 @@ public static class EntityMeta1122
             }
             if (type == 13)
             {
-                Nbt.ReadRoot(data[pos..], out int used);
+                var tag = Nbt.ReadRoot(data[pos..], out int used);
                 pos += used;
-                list.Add(new(index, 13, null));
+                list.Add(new(index, 13, tag));
                 continue;
             }
             r = new WireReader(data[pos..]);
@@ -65,7 +65,7 @@ public static class EntityMeta1122
     }
 
     /// <summary><c>EntityDataManager.writeEntries</c> (the serializers the fake server needs: byte, VarInt, float, string, slot,
-    /// bool), then the 0xFF end.</summary>
+    /// bool, rotation, optional block state, NBT), then the 0xFF end.</summary>
     public static WireWriter WriteMetadata(this WireWriter w, IEnumerable<Meta1122> entries)
     {
         foreach (var e in entries)
@@ -80,6 +80,7 @@ public static class EntityMeta1122
                 case 5: w.WriteSlot(e.Value is ItemStack s ? s : ItemStack.Empty); break;
                 case 6: w.WriteBool((bool)e.Value!); break;
                 case 7: { var (a, b, c) = ((float, float, float))e.Value!; w.WriteFloat(a).WriteFloat(b).WriteFloat(c); break; }
+                case 13: Nbt.WriteRoot(w, e.Value as NbtCompound ?? new NbtCompound()); break;
                 default: throw new NotSupportedException($"writing metadata serializer {e.Serializer}");
             }
         }
@@ -105,6 +106,10 @@ public static class EntityMeta1122
         Slot,
         /// <summary>rotation (float x, y, z degrees) ↔ a three-int vector of whole degrees.</summary>
         Rotation,
+        /// <summary>optional block state (VarInt <c>Block.getStateId</c>, 0 absent) ↔ int.</summary>
+        BlockState,
+        /// <summary>a shoulder entity's NBT (<c>{id: "minecraft:parrot", Variant}</c>, empty = none) ↔ int parrot colour, −1 none.</summary>
+        Shoulder,
     }
 
     private readonly record struct Rule(int Wire, int Canon, Conv Conv);
@@ -113,7 +118,9 @@ public static class EntityMeta1122
     public const int HandStatesIndex = 6;
 
     private static readonly Rule[] Living = [new(1, EntityMeta.Air, Conv.VarInt), new(7, EntityMeta.Health, Conv.Float), new(10, EntityMeta.ArrowsInEntity, Conv.VarInt)];
-    private static readonly Rule[] PlayerRules = [.. Living, new(11, EntityMeta.Absorption, Conv.Float), new(14, EntityMeta.MainHand, Conv.Byte)];
+    // EntityPlayer: ABSORPTION 11, PLAYER_SCORE 12, PLAYER_MODEL_FLAG 13, MAIN_HAND 14, LEFT/RIGHT_SHOULDER_ENTITY 15/16.
+    private static readonly Rule[] PlayerRules = [.. Living, new(11, EntityMeta.Absorption, Conv.Float), new(14, EntityMeta.MainHand, Conv.Byte),
+        new(15, EntityMeta.ShoulderLeft, Conv.Shoulder), new(16, EntityMeta.ShoulderRight, Conv.Shoulder)];
     private static readonly Rule[] Ageable = [.. Living, new(12, EntityMeta.Baby, Conv.Bool)];
     private static readonly Rule[] Zombie = [.. Living, new(12, EntityMeta.Baby, Conv.Bool), new(14, EntityMeta.Aggressive, Conv.Bool)];
     private static readonly Dictionary<int, Rule[]> MobRules = new()
@@ -146,7 +153,7 @@ public static class EntityMeta1122
         [50] = [.. Living, new(12, EntityMeta.Mob16, Conv.VarInt), new(13, EntityMeta.Mob17, Conv.Bool), new(14, EntityMeta.CreeperIgnited, Conv.Bool)],
         [52] = [.. Living, new(12, EntityMeta.Mob16, Conv.Byte)],           // spider: CLIMBING
         [59] = [.. Living, new(12, EntityMeta.Mob16, Conv.Byte)],           // cave spider
-        [58] = [.. Living, new(13, EntityMeta.Screaming, Conv.Bool)],       // enderman: CARRIED_BLOCK 12, SCREAMING 13
+        [58] = [.. Living, new(12, EntityMeta.CarriedBlock, Conv.BlockState), new(13, EntityMeta.Screaming, Conv.Bool)], // enderman: CARRIED_BLOCK, SCREAMING
         [61] = [.. Living, new(12, EntityMeta.Mob16, Conv.Byte)],           // blaze: ON_FIRE
         [55] = [.. Living, new(12, EntityMeta.Mob16, Conv.VarInt)],         // slime: SLIME_SIZE
         [62] = [.. Living, new(12, EntityMeta.Mob16, Conv.VarInt)],         // magma cube
@@ -236,9 +243,17 @@ public static class EntityMeta1122
             (Conv.Float, float x) => MetadataEntry.FromFloat(i, x),
             (Conv.Slot, ItemStack s) => MetadataEntry.FromItem(i, s),
             (Conv.Rotation, ValueTuple<float, float, float> t) => MetadataEntry.FromVector(i, new MetadataVector(Deg(t.Item1), Deg(t.Item2), Deg(t.Item3))),
+            (Conv.BlockState, int n) => MetadataEntry.FromInt(i, n),
+            (Conv.Shoulder, NbtCompound c) => MetadataEntry.FromInt(i, ShoulderParrot(c)),
+            (Conv.Shoulder, null) => MetadataEntry.FromInt(i, -1),
             _ => null,
         };
     }
+
+    /// <summary>A shoulder entity's parrot colour (<c>LayerEntityOnShoulder</c>: an <c>id</c> of minecraft:parrot, its <c>Variant</c>);
+    /// −1 for an empty compound or any other entity.</summary>
+    public static int ShoulderParrot(NbtCompound c) =>
+        c.GetString("id") is "minecraft:parrot" or "parrot" or "Parrot" ? Math.Clamp(c.GetInt("Variant") ?? 0, 0, 4) : -1;
 
     /// <summary>The inverse (the fake server's connection): canonical entries → 1.12.2 entries for that entity's class.
     /// Canonical flags 0x10 becomes hand states 1 (main hand) unless hand states are given.</summary>
@@ -268,11 +283,13 @@ public static class EntityMeta1122
                     Conv.Float => e.Value is float x ? x : (float)(e.AsInt() ?? 0),
                     Conv.Slot => e.Value is ItemStack s ? s : ItemStack.Empty,
                     Conv.Rotation => e.Value is MetadataVector v ? ((float)v.X, (float)v.Y, (float)v.Z) : (0f, 0f, 0f),
+                    Conv.BlockState => e.AsInt() ?? 0,
+                    Conv.Shoulder => e.AsInt() is int p && p >= 0 ? new NbtCompound { ["id"] = "minecraft:parrot", ["Variant"] = p } : new NbtCompound(),
                     _ => null,
                 };
                 int ser = rule.Conv switch
                 {
-                    Conv.Bool => 6, Conv.VarInt => 1, Conv.Float => 2, Conv.Slot => 5, Conv.Rotation => 7, _ => 0,
+                    Conv.Bool => 6, Conv.VarInt => 1, Conv.Float => 2, Conv.Slot => 5, Conv.Rotation => 7, Conv.BlockState => 12, Conv.Shoulder => 13, _ => 0,
                 };
                 list.Add(new(rule.Wire, ser, wire));
                 break;

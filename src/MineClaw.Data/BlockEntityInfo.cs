@@ -13,6 +13,8 @@ public sealed record BlockEntityInfo(string Kind)
 {
     /// <summary>A sign's four lines, plain text.</summary>
     public IReadOnlyList<string>? Lines { get; init; }
+    /// <summary>A 1.12.2 sign's four lines with their styles as legacy § codes (null when none has a style): the viewer's rich text.</summary>
+    public IReadOnlyList<string>? Formatted { get; init; }
     /// <summary>A bed's colour (1.12.2 <c>EnumDyeColor</c> meta, 14 red) or a banner's base colour (dye damage).</summary>
     public int? Color { get; init; }
     /// <summary>A banner's layers, bottom first.</summary>
@@ -33,5 +35,6 @@ public sealed record BlockEntityInfo(string Kind)
     /// <summary>A note block's pitch (0..24).</summary>
     public int? Note { get; init; }
 
-    public static BlockEntityInfo Sign(IReadOnlyList<string> lines) => new("sign") { Lines = lines.ToArray() };
+    public static BlockEntityInfo Sign(IReadOnlyList<string> lines, IReadOnlyList<string>? formatted = null) =>
+        new("sign") { Lines = lines.ToArray(), Formatted = formatted?.ToArray() };
 }
