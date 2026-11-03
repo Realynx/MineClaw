@@ -209,7 +209,7 @@ function PerfOverlay({ engine }: { engine: { current: WorldViewerEngine | null }
   return (
     <div
       data-testid="viewer-perf"
-      style={{ position: 'absolute', right: 8, bottom: 8, padding: '3px 8px', font: '11px ui-monospace, monospace', color: '#fff', background: 'rgba(0,0,0,0.55)', borderRadius: 6, pointerEvents: 'none', whiteSpace: 'nowrap', zIndex: 5 }}
+      style={{ position: 'absolute', right: 8, top: 8, padding: '3px 8px', font: '11px ui-monospace, monospace', color: '#fff', background: 'rgba(0,0,0,0.55)', borderRadius: 6, pointerEvents: 'none', whiteSpace: 'nowrap', zIndex: 5 }}
     >
       {text}
     </div>
