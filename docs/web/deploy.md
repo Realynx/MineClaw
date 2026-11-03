@@ -18,11 +18,11 @@ Everything goes the way the bot's deploy goes: `ssh alice`, then `pct push` / `p
 |---|---|---|
 | `/opt/node/current` → `node-v22.23.4-linux-x64`, `/usr/local/bin/node` | 0755 root | Node 22 LTS, the official tarball pinned by sha256 in `deploy/viewer/install-ct114.sh` |
 | `/opt/mineclaw-web/releases/<id>`, `/opt/mineclaw-bridge/releases/<id>` | 0755 root, read-only to the services | one release id for both, the newest 3 kept |
-| `/etc/mineclaw-web/` | 0750 mineclaw-web | `config.json` (0640), `users.json` (0600, the users CLI writes it), `bridge.key` (0600 root) |
+| `/etc/mineclaw-web/` | 0750 mineclaw-web | `config.json` (0640), `users.json` (0600: the setup page writes the first account, the users CLI the rest), `bridge.key` (0600 root) |
 | `/etc/mineclaw-bridge/bridge.json` | 0600 root | `{"Bridge":{"Key":...}}`, the same key as `bridge.key` |
 | `/var/lib/mineclaw-web/web.db` | 0700 dir, mineclaw-web | sessions, login counters, web audit |
 | `/usr/local/sbin/mineclaw-web-release` | | release manager (install / rollback / restart / health / status) |
-| `/usr/local/sbin/mineclaw-web-users` | | the users CLI, run as `mineclaw-web` |
+| `/usr/local/sbin/mineclaw-web-users` | | the users CLI, run as `mineclaw-web` (manual user management; needs a real terminal) |
 | `/usr/local/sbin/mineclaw-viewer-config` | | the bot config step (dry run unless `--apply`) |
 
 Both key files are root-only. systemd hands them to the services as credentials (`LoadCredential=`), so neither service user can
@@ -52,8 +52,8 @@ restarts or reconfigures the bot.
    adds two system users, writes the key files and installs three units. It does not start anything.
 3. **The bot config change** (step 3). It edits `/etc/mineclaw/appsettings.json`. The bot has to restart to pick it up,
    which you can do then or later.
-4. **Creating the web users and enrolling TOTP** (step 5). Do this yourself in your own terminal: the CLI prompts for
-   passwords and prints the TOTP secret once.
+4. **Creating your account** (step 5). Do this yourself in your browser on the LAN, right after the first deploy: whoever
+   completes the setup page first becomes the admin.
 5. **Optionally, the hive memory ceiling** (see Memory). This is only a recommendation; nothing changes it for you.
 
 ### 1. Firewall: allow TCP 8080 from the LAN
@@ -172,30 +172,49 @@ The script refuses to ship any link, or any native module that is not a Linux EL
 - all three units are active
 - `GET 127.0.0.1:8080/api/health` returns `ok: true` with `bridge: "up"`. That is Nest's signed ping of the bridge's
   `/v1/health`, so it also proves both sides hold the same key.
-- `/login` answers on 127.0.0.1:3000 and through :8080
+- `/login` answers on 127.0.0.1:3000 and through :8080 (a redirect to `/setup` counts while no account exists)
 
 Finally, the PC tries `http://10.1.2.73:8080/api/health` itself. Failing that is only a warning: it means the firewall rule
-from step 1 is missing.
+from step 1 is missing. While no account exists it also prints **FIRST-RUN SETUP IS OPEN**: go to step 5 now.
 
-### 5. Web users (yourself, in your own terminal)
+### 5. First account: the setup page (yourself, in your browser)
 
-There is no self-signup. Run these interactively (`-t` gives the password prompt a TTY), or use `ssh -t alice` and then
-`pct enter 114`. Use a real terminal window, not Claude Code's `!` prefix. `!` has no TTY, so the password prompt can't
-hide your typing, and the TOTP secret would land in the transcript.
+Open **http://10.1.2.73:8080** and complete the setup page. With no users yet, the explorer is in setup mode: every page
+goes to `/setup` and sign-in is off. It is an installation step, so this first visit is expected to be open:
+
+1. **Your account.** Username, password (twice, with a strength hint; at least 12 characters), your Minecraft player
+   (`poofimafox`) and roles, preset to admin + chat + commands + viewer.
+2. **Authenticator (optional, recommended).** Scan the QR code (drawn in your browser, never sent anywhere) or type the key
+   into an authenticator app, then enter the current code. **Skip for now** works too; you can enrol later from the account
+   menu.
+3. **Done.** You are signed in and land on the live hive.
+
+- **Whoever completes it first becomes the admin.** Do it right after the deploy, before the explorer is reachable by
+  anyone else.
+- **LAN only.** A request through cloudflared or another proxy is refused (`Web:Setup:AllowProxied` stays false), and so is
+  one from a non-LAN address.
+- **Once.** As soon as an account exists, `/setup` redirects to `/login` for good and `POST /api/setup` answers 409. Two
+  setups at the same moment can't both win: the users file is created atomically under its lock.
+- **Audited** as `setup` on the Audit page, refusals included.
+
+**More users, and manual management: the users CLI.** It stays for everything after the first account, and whenever you
+prefer the terminal. Call it by its full path (`pct exec`'s PATH has no `/usr/local/sbin`) and from a real terminal:
+`-t` gives the password prompt a TTY, or use `ssh -t alice` and then `pct enter 114`. Use a real terminal window, not Claude
+Code's `!` prefix. `!` has no TTY, so the password prompt can't hide your typing, and the TOTP secret would land in the
+transcript.
 
 ```sh
-ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users add fox --roles admin,chat,commands,viewer --player poofimafox
-ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users totp fox enroll     # prints the otpauth URL + secret ONCE, then asks for a code
 ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users add robin --roles chat,viewer --player kiwi
 ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users totp robin enroll   # or Robin enrols herself after her first login
 ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users list
 ```
 
-- **TOTP.** Scan the otpauth URL into an authenticator app (or type in the secret), then enter the current code to activate
-  it. Don't run this through an agent or paste the output anywhere: the secret is the second factor.
-- **Other commands:** `passwd <user>`, `roles <user> <r,r>`, `player <user> <name|->`, `totp <user> disable`,
-  `disable|enable|remove <user>`.
+- **TOTP from the CLI.** `totp <user> enroll` prints the otpauth URL and secret once, then asks for the current code to
+  activate it. Don't run this through an agent or paste the output anywhere: the secret is the second factor.
+- **Other commands:** `add <user> --roles <r,r> [--player <name>]`, `passwd <user>`, `roles <user> <r,r>`,
+  `player <user> <name|->`, `totp <user> disable`, `disable|enable|remove <user>`.
 - **Sessions.** `passwd`, `disable` and `remove` end that user's sessions.
+- **Starting over.** Removing every user re-opens the setup page (LAN only, as above).
 
 ### 6. Verify
 
@@ -203,11 +222,12 @@ ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users list
    - both releases on the same id
    - all three units `active/running` and under their `MemoryMax`
    - `probe: api 200 ok v… bridge up; ui 200; ui via :8080 200`
-2. Open `http://10.1.2.73:8080` in a browser and log in, including the TOTP code.
+2. Open `http://10.1.2.73:8080` in a browser. After the setup page you are signed in; sign out and in again once,
+   with the TOTP code if you enrolled one.
 3. Check that the bot grid shows live vitals: the bridge reaches the Supervisor.
 4. Run a memory search: the bridge reads the db and has the embeddings key from `/etc/mineclaw/mineclaw.env`.
 5. Send a chat line to a bot: the viewer routes are enabled.
-6. Check the Audit page: your login is listed.
+6. Check the Audit page: the `setup` row and your logins are listed.
 7. Run `journalctl -u mineclaw-bridge -n 5` in the CT. The start line names where every setting came from (never values):
    `key: key file`, `supervisor token: config`.
 
@@ -308,7 +328,7 @@ pwsh deploy/deploy-web.ps1 -BuildOnly -Smoke [-SkipTests]
    ports, wired like the CT: Nest proxies non-`/api` to Next.
 3. **Check.** It checks:
    - `/api/health` (ok, bridge up)
-   - `/` and `/login` through Nest (with the CSP nonce)
+   - `/login` redirecting to `/setup` (the smoke run has no users), and `/setup` through Nest (with the CSP nonce)
    - a `/_next/static` asset (the copied static dir)
    - the viewer worker under `/assets` (the copied `public/`)
    - `/login` on Next directly

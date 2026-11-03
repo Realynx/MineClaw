@@ -71,11 +71,12 @@ export interface TestApp {
 
 export async function startApp(
   overrides: { web?: Record<string, unknown>; bridge?: Record<string, unknown> } = {},
-  opts: CreateAppOptions & { users?: Partial<UserRecord>[] } = {},
+  /** `users: null` starts with no users file at all (first-run setup mode). */
+  opts: CreateAppOptions & { users?: Partial<UserRecord>[] | null } = {},
 ): Promise<TestApp> {
   const dir = mkdtempSync(join(tmpdir(), 'mcx-api-'));
   const usersFile = join(dir, 'users.json');
-  await writeUsers(usersFile, opts.users);
+  if (opts.users !== null) await writeUsers(usersFile, opts.users);
   const base = {
     web: {
       allowedOrigins: [ORIGIN],

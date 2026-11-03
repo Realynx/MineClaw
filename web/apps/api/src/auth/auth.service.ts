@@ -1,6 +1,6 @@
 /**
  * Nest-native auth (docs/web/api.md §2): CSRF pre-sessions, password + TOTP login with lockout, logout, `me`, and TOTP
- * enrolment. Errors are generic: a wrong password, an unknown user, a missing or wrong TOTP code and a disabled account all
+ * enrolment. While no user exists (first-run setup mode, see setup.service.ts) login answers 409. Errors are generic: a wrong password, an unknown user, a missing or wrong TOTP code and a disabled account all
  * answer the same 401 "invalid credentials", so the login form should always offer the code field.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -119,6 +119,8 @@ export class AuthService {
 
     const wait = this.attempts.hit(ctx.ip);
     if (wait > 0) throw Errors.rateLimited(wait, 'too many login attempts');
+    // Setup mode (no users at all): sign-in is off until the first account is created at /setup.
+    if (this.users.setupNeeded()) throw Errors.conflict('first-run setup is not complete; open /setup');
 
     const k = LoginLimiter.keys(ctx.ip, username);
     const keys = [k.ip, k.user];

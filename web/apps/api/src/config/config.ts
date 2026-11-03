@@ -61,6 +61,17 @@ const WebExtra = NestConfig.shape.web.extend({
     })
     .default({ scripts: 'nonce', reportOnly: false }),
   maxSseClients: z.number().int().positive().default(200),
+  /**
+   * First-run setup (`/setup`, open while the users file has no users). By default only a direct LAN/loopback client may
+   * complete it: never a request through a trusted proxy or one that carries Cloudflare/forwarding headers.
+   */
+  setup: z
+    .object({
+      allowProxied: z.boolean().default(false),
+      /** POST /api/setup attempts per IP per minute. */
+      attemptsPerMinute: z.number().int().positive().default(10),
+    })
+    .default({ allowProxied: false, attemptsPerMinute: 10 }),
 });
 
 const BridgeExtra = NestConfig.shape.bridge.extend({

@@ -6,6 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api, ApiError, onUnauthorized, setCsrfToken } from './api/client';
 import { qk } from './api/query';
+import { setupNeeded } from './setupFlow';
 import { disposeWorld } from '@/features/world/integration';
 
 interface AuthValue {
@@ -54,7 +55,7 @@ export function loginHref(pathname: string, reason?: 'expired'): string {
 }
 
 /**
- * Gates the app shell on a session. No session → the login page. A 401 later (idle or absolute timeout) shows the
+ * Gates the app shell on a session. No session → the login page (or /setup while no account exists). A 401 later (idle or absolute timeout) shows the
  * session-expired dialog instead of silently failing every widget.
  */
 export function AuthGate({
@@ -79,7 +80,15 @@ export function AuthGate({
   });
 
   useEffect(() => {
-    if (me.error?.status === 401 && !me.data) router.replace(loginHref(pathname));
+    if (me.error?.status !== 401 || me.data) return;
+    // Signed out: to sign-in, or to the first-run setup while no account exists yet.
+    let live = true;
+    void setupNeeded().then((needed) => {
+      if (live) router.replace(needed ? '/setup' : loginHref(pathname));
+    });
+    return () => {
+      live = false;
+    };
   }, [me.error, me.data, router, pathname]);
 
   useEffect(

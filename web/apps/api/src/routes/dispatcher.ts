@@ -22,6 +22,7 @@ import type { z } from 'zod';
 import type { AuditService } from '../audit/audit.service.js';
 import { clip } from '../audit/audit.service.js';
 import type { AuthService, AuthState } from '../auth/auth.service.js';
+import type { SetupService } from '../auth/setup.service.js';
 import type { TokenBucket } from '../auth/rate-limit.js';
 import { tokensEqual } from '../auth/sessions.js';
 import type { UserRecord } from '../auth/users-store.js';
@@ -39,6 +40,7 @@ export type RoutedRequest = IncomingMessage & { params?: Record<string, string |
 
 export interface DispatcherDeps {
   auth: AuthService;
+  setup: SetupService;
   audit: AuditService;
   bridge: BridgeClient;
   health: BridgeHealth;
@@ -114,6 +116,8 @@ export class RouteDispatcher {
         const h = await d.health.check();
         return { ok: true, version: VERSION, bridge: h.up ? 'up' : 'down' };
       },
+      'setup.status': (req) => Promise.resolve(d.setup.status(req)),
+      'setup.create': (req, res, ctx, state, input) => d.setup.create(res, req, ctx, state, input.body as never),
       'auth.csrf': (req, res, ctx, state) => Promise.resolve(d.auth.csrf(res, req, ctx, state)),
       'auth.login': (req, res, ctx, state, input) => d.auth.login(res, req, ctx, state, input.body as never),
       'auth.logout': (req, res, ctx, state) => Promise.resolve(d.auth.logout(res, req, ctx, signed(state))),

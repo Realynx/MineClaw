@@ -1,17 +1,31 @@
 /**
  * The users file (`Web:UsersFile`, default /etc/mineclaw-web/users.json, mode 0600): username, argon2id hash, roles, linked
- * Minecraft player and optional TOTP secret. Managed by the `users` CLI (no self-signup); the server only writes it to
- * activate a verified TOTP enrolment. Writes are atomic (temp file + rename). The server re-reads it when it changes, so CLI
- * edits (roles, removal, password resets) apply without a restart.
+ * Minecraft player and optional TOTP secret. Managed by the `users` CLI; the server writes it only for the first-run setup
+ * (`createFirst`: the first account, while the file has no users) and to activate a verified TOTP enrolment. There is no
+ * self-signup. Writes are atomic (temp file + rename), and the server's read-modify-writes hold an exclusive lock file
+ * (`.users.json.lock`, O_EXCL) so two of them never interleave. The server re-reads the file when it changes, so CLI edits
+ * (roles, removal, password resets) apply without a restart.
  */
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+  writeSync,
+} from 'node:fs';
 import { dirname, join, basename } from 'node:path';
-import { Role } from '@mineclaw/contracts';
+import { PLAYER_PATTERN, Role, USERNAME_PATTERN } from '@mineclaw/contracts';
 import { z } from 'zod';
 
-export const USERNAME_RE = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
-export const PLAYER_RE = /^[A-Za-z0-9_]{1,16}$/;
+export const USERNAME_RE = USERNAME_PATTERN;
+export const PLAYER_RE = PLAYER_PATTERN;
 
 export const UserRecord = z.object({
   username: z.string().regex(USERNAME_RE),
@@ -66,6 +80,55 @@ export function writeUsersFile(path: string, data: UsersFileData): void {
   renameSync(tmp, path);
 }
 
+const LOCK_STALE_MS = 30_000;
+const LOCK_WAIT_MS = 3_000;
+
+/** Thrown by `createFirst` when the file already holds a user (setup is closed). */
+export class UsersExistError extends Error {
+  constructor() {
+    super('the users file already has users');
+    this.name = 'UsersExistError';
+  }
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Runs `fn` while holding `<dir>/.<file>.lock` (created with O_EXCL). `fn` must be synchronous, so the whole
+ * read-check-write is one step for this process too. A lock older than 30 s is a crashed writer's and is broken.
+ */
+export function withUsersFileLock<T>(path: string, fn: () => T): T {
+  const dir = dirname(path);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const lock = join(dir, `.${basename(path)}.lock`);
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  let fd: number | undefined;
+  while (fd === undefined) {
+    try {
+      fd = openSync(lock, 'wx', 0o600);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      try {
+        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) rmSync(lock, { force: true });
+      } catch {
+        // released meanwhile
+      }
+      if (Date.now() > deadline) throw new Error(`users file is locked (${lock})`, { cause: e });
+      sleepSync(20);
+    }
+  }
+  try {
+    writeSync(fd, `${process.pid}
+`);
+    return fn();
+  } finally {
+    closeSync(fd);
+    rmSync(lock, { force: true });
+  }
+}
+
 export interface UsersStoreLog {
   warn(obj: object, msg: string): void;
   error(obj: object, msg: string): void;
@@ -73,6 +136,8 @@ export interface UsersStoreLog {
 
 export class UsersStore {
   private data: UsersFileData = { version: 1, users: [] };
+  /** False until the file has been read successfully once (a missing file counts as read: no users). */
+  private loaded = false;
   private stamp = '';
   private checkedAt = 0;
 
@@ -98,8 +163,15 @@ export class UsersStore {
     if (!force && stamp === this.stamp) return;
     try {
       this.data = readUsersFile(this.path);
+      this.loaded = true;
       this.stamp = stamp;
-      if (stamp === 'missing') this.log?.warn({ path: this.path }, 'users file not found: nobody can sign in');
+      if (this.data.users.length === 0)
+        this.log?.warn(
+          { path: this.path },
+          stamp === 'missing'
+            ? 'users file not found: first-run setup is open at /setup (LAN only)'
+            : 'users file has no users: first-run setup is open at /setup (LAN only)',
+        );
     } catch (e) {
       // Keep the last good copy; a half-edited file must not lock everyone out or let anyone in.
       this.log?.error({ path: this.path, err: (e as Error).message }, 'users file invalid; keeping the previous copy');
@@ -123,15 +195,42 @@ export class UsersStore {
     return [...this.data.users];
   }
 
-  /** Read-modify-write against the file on disk (not the cached copy). */
+  /**
+   * First-run setup mode: the users file is missing or valid with no users. A file that has never parsed is not "empty"
+   * (it may hold users we cannot read), so a broken file never opens setup.
+   */
+  setupNeeded(): boolean {
+    this.reload();
+    return this.loaded && this.data.users.length === 0;
+  }
+
+  /**
+   * Atomic create-if-empty for the first-run setup: under the lock, re-reads the file on disk and adds `record` only if it
+   * holds no users; otherwise throws `UsersExistError`. Of any number of concurrent setups exactly one wins.
+   */
+  createFirst(record: UserRecord): UserRecord {
+    const next = UserRecord.parse(record);
+    withUsersFileLock(this.path, () => {
+      const data = readUsersFile(this.path);
+      if (data.users.length > 0) throw new UsersExistError();
+      writeUsersFile(this.path, { ...data, users: [next] });
+    });
+    this.reload(true);
+    return next;
+  }
+
+  /** Read-modify-write against the file on disk (not the cached copy), under the lock. */
   update(username: string, fn: (u: UserRecord) => UserRecord): UserRecord {
-    const data = readUsersFile(this.path);
-    const name = normalizeUsername(username);
-    const i = data.users.findIndex((u) => u.username === name);
-    if (i < 0) throw new Error(`no such user "${name}"`);
-    const next = UserRecord.parse({ ...fn(data.users[i]!), updatedAt: new Date().toISOString() });
-    data.users[i] = next;
-    writeUsersFile(this.path, data);
+    const next = withUsersFileLock(this.path, () => {
+      const data = readUsersFile(this.path);
+      const name = normalizeUsername(username);
+      const i = data.users.findIndex((u) => u.username === name);
+      if (i < 0) throw new Error(`no such user "${name}"`);
+      const updated = UserRecord.parse({ ...fn(data.users[i]!), updatedAt: new Date().toISOString() });
+      data.users[i] = updated;
+      writeUsersFile(this.path, data);
+      return updated;
+    });
     this.reload(true);
     return next;
   }

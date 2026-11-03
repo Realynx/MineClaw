@@ -61,6 +61,13 @@ deploy/viewer/               systemd units, cloudflared notes, and the web + bri
 - **Users.** A users file on CT 114 (`/etc/mineclaw-web/users.json`, 0600) holds username, argon2id hash,
   optional TOTP secret, roles and the linked Minecraft player. Fox maps to `poofimafox` and Robin to `kiwi`. A
   `web/apps/api` CLI adds a user, resets a password and enrolls TOTP. There is no self-signup.
+- **First-run setup (added 2026-11-03).** While the users file has no users the app is an installation step: every page
+  redirects to `/setup`, login is off, and the page creates the first account (preset admin + chat + commands + viewer),
+  offers an optional TOTP enrolment, and signs it in. The first visit is expected to be open; whoever completes it first
+  becomes the admin. It is fenced: direct LAN/loopback clients only (never through a trusted proxy or with Cloudflare
+  headers; `Web:Setup:AllowProxied` defaults to false), CSRF + Origin, rate limited, audited (`setup`), and an atomic
+  create-if-empty under the users file's lock, so two simultaneous setups can't both win. Once any user exists, `/setup`
+  redirects to `/login` and `POST /api/setup` answers 409, checked on every request. The CLI stays for manual management.
 - **Roles.**
   - `viewer`: read only.
   - `chat`: can talk to bots as their linked player.

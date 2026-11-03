@@ -75,3 +75,61 @@ export class TrustedProxies {
     return { ip, https: proto ? proto === 'https' : direct.https };
   }
 }
+
+const LOCAL = new BlockList();
+for (const [net, bits] of [
+  ['127.0.0.0', 8],
+  ['10.0.0.0', 8],
+  ['172.16.0.0', 12],
+  ['192.168.0.0', 16],
+  ['169.254.0.0', 16],
+  ['100.64.0.0', 10], // CGNAT / Tailscale
+] as const)
+  LOCAL.addSubnet(net, bits, 'ipv4');
+for (const [net, bits] of [
+  ['::1', 128],
+  ['fc00::', 7],
+  ['fe80::', 10],
+] as const)
+  LOCAL.addSubnet(net, bits, 'ipv6');
+
+/** Loopback, RFC 1918, link-local, CGNAT (Tailscale) or IPv6 ULA / link-local. */
+export function isLocalAddress(ip: string): boolean {
+  const a = normalizeIp(ip);
+  const family = isIP(a);
+  if (!family) return false;
+  return LOCAL.check(a, family === 6 ? 'ipv6' : 'ipv4');
+}
+
+function isLoopback(ip: string): boolean {
+  const a = normalizeIp(ip);
+  return a === '::1' || (isIP(a) === 4 && a.startsWith('127.'));
+}
+
+/** Headers only a Cloudflare edge / tunnel adds. */
+const CLOUDFLARE_HEADERS = [
+  'cf-connecting-ip',
+  'cf-ray',
+  'cf-visitor',
+  'cf-ipcountry',
+  'cdn-loop',
+  'cf-access-jwt-assertion',
+] as const;
+const FORWARDING_HEADERS = ['x-forwarded-for', 'forwarded', 'x-real-ip'] as const;
+
+/**
+ * Why a request is NOT a direct LAN/loopback client (null = it is). Keeps the first-run setup off the tunnel:
+ * - the socket peer is one of `Web:TrustedProxies` (cloudflared, a reverse proxy);
+ * - it carries Cloudflare headers, whatever the trust config says (a tunnel set up before `TrustProxy` was turned on);
+ * - it carries forwarding headers from a non-loopback peer (a proxy we were not told about; the dev server's own rewrite
+ *   proxy on loopback is fine);
+ * - the peer is not a LAN address (loopback, RFC 1918, link-local, CGNAT/Tailscale, ULA).
+ */
+export function notDirectLan(req: IncomingMessage, trusted: TrustedProxies): string | null {
+  const peer = normalizeIp(req.socket.remoteAddress);
+  if (trusted.isTrusted(peer)) return 'through a trusted proxy';
+  if (CLOUDFLARE_HEADERS.some((h) => req.headers[h] !== undefined)) return 'through Cloudflare';
+  if (!isLoopback(peer) && FORWARDING_HEADERS.some((h) => req.headers[h] !== undefined)) return 'through a proxy';
+  if (!isLocalAddress(peer)) return 'not from a LAN address';
+  return null;
+}

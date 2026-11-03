@@ -44,7 +44,7 @@ describe('route table', () => {
 
   it('writes are POST and need a role or session', () => {
     for (const [id, r] of routes) {
-      if (r.method === 'POST' && id !== 'auth.login') expect(r.access, id).not.toBe('public');
+      if (r.method === 'POST' && id !== 'auth.login' && id !== 'setup.create') expect(r.access, id).not.toBe('public');
       if (r.path.startsWith('/api/admin/')) expect(r.access, id).toBe('admin');
     }
   });
