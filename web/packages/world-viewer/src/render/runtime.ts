@@ -23,6 +23,7 @@ import { OverlayLayer } from './overlayLayer';
 import { SectionManager, type Centre } from './sections';
 import { WeatherLayer } from './weather';
 import { SkyLayer } from './sky';
+import { AidsLayer } from './aids';
 import { loadBundle, type AssetBundle } from '../assets/bundle';
 import { PROFILES, QualityController, probeRenderer, type QualityName, type RendererProbe } from './quality';
 import { ChangeFlash } from './changeFlash';
@@ -74,6 +75,8 @@ export interface ViewSetup {
   floorY: number;
   /** Roof cut: cells at y ≥ roof.y within roof.r of (x, z). */
   roof: { x: number; y: number; z: number; r: number } | null;
+  /** Reading aids around this point (the followed bot's feet), or none. */
+  aids?: { x: number; y: number; z: number } | null;
   /** What falls here (biome under the view); default rain. */
   precip?: 'rain' | 'snow' | 'none';
   /** The view's id (per-view caches such as the cave-culling walk). */
@@ -143,6 +146,7 @@ export class WorldRuntime {
   readonly weather = new WeatherLayer();
   readonly flashes = new ChangeFlash();
   readonly sky = new SkyLayer();
+  readonly aids = new AidsLayer();
   /** The bundled assets of the current version (textures, models); null until loaded. */
   bundle: AssetBundle | null = null;
   deltas: BlockDeltaFeed;
@@ -206,7 +210,7 @@ export class WorldRuntime {
     this.uniforms = createChunkUniforms();
     this.materials = createChunkMaterials(this.uniforms);
     this.host = opts.inlineMesher ? new InlineMeshHost() : createMeshHost(opts.createWorker);
-    this.scene.add(this.sky.group, this.entities.group, this.overlays.group, this.weather.object, this.flashes.mesh);
+    this.scene.add(this.aids.group, this.sky.group, this.entities.group, this.overlays.group, this.weather.object, this.flashes.mesh);
     this.sync = this.makeSync();
     this.deltas = this.makeDeltas();
     this.entityPoller = new Poller(
@@ -309,6 +313,7 @@ export class WorldRuntime {
     this.weather.dispose();
     this.flashes.dispose();
     this.sky.dispose();
+    this.aids.dispose();
     for (const m of [this.materials.solid, this.materials.translucent, this.materials.cap]) m.dispose();
     this.atlasTex?.dispose();
     this.host.dispose();
@@ -624,6 +629,7 @@ export class WorldRuntime {
     this.overlays.group.visible = s.overlays;
     if (s.overlays) this.showOverlays(s.dim);
     this.flashes.showFor(s.dim, now, s.layers.changes);
+    this.aids.showAt(s.aids ?? null);
     r.setViewport(0, 0, w, h);
     r.setScissor(0, 0, w, h);
     r.render(this.scene, s.camera);

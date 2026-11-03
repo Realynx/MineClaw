@@ -59,7 +59,7 @@ function App() {
         <p style={{ opacity: 0.7, marginTop: 0 }}>Fixture world (synthetic MCWC). Click a bot to follow it, a block to pick it. Fly: click to lock the mouse, WASD/QE, Shift fast, wheel = speed, Esc to release.</p>
         <fieldset>
           <legend>camera</legend>
-          {(['follow', 'fly', 'iso'] as CameraMode[]).map((m) => (
+          {(['follow', 'fly', 'iso', 'top'] as CameraMode[]).map((m) => (
             <button key={m} onClick={() => viewer.current?.setCameraMode(m)} style={{ fontWeight: mode === m ? 700 : 400 }}>
               {m}
             </button>

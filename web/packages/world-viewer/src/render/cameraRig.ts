@@ -103,10 +103,10 @@ export class CameraRig {
       quat.setFromRotationMatrix(m);
       return { pos: this.flyPos.clone(), quat, fov: this.fov };
     }
-    if (this.mode === 'iso') {
+    if (this.mode === 'iso' || this.mode === 'top') {
       const k = input.keys;
       const pan = (this.isoZoom / 2) * dt;
-      const fwd = lookDir(this.isoYaw, 0);
+      const fwd = lookDir(this.mode === 'top' ? 180 : this.isoYaw, 0);
       const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
       if (k.has('KeyW') || k.has('ArrowUp')) this.target.addScaledVector(fwd, pan);
       if (k.has('KeyS') || k.has('ArrowDown')) this.target.addScaledVector(fwd, -pan);
@@ -114,9 +114,10 @@ export class CameraRig {
       if (k.has('KeyA') || k.has('ArrowLeft')) this.target.addScaledVector(right, -pan);
       this.isoYaw += (this.isoYawTarget - this.isoYaw) * Math.min(1, dt * 8);
       const dist = this.isoDistance();
-      const dir = lookDir(this.isoYaw, this.isoPitch);
+      const top = this.mode === 'top';
+      const dir = lookDir(top ? 180 : this.isoYaw, top ? 89.9 : this.isoPitch);
       const pos = this.target.clone().addScaledVector(dir, -dist);
-      m.lookAt(pos, this.target, up);
+      m.lookAt(pos, this.target, top ? new THREE.Vector3(0, 0, -1) : up);
       quat.setFromRotationMatrix(m);
       return { pos, quat, fov: this.isoFov };
     }
@@ -170,9 +171,10 @@ export class CameraRig {
   /** Iso: drag the target across the ground plane. */
   pan(dx: number, dy: number, viewHeightPx: number): void {
     const k = this.isoZoom / Math.max(1, viewHeightPx);
-    const fwd = lookDir(this.isoYaw, 0);
+    const top = this.mode === 'top';
+    const fwd = lookDir(top ? 180 : this.isoYaw, 0);
     const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
-    this.target.addScaledVector(right, -dx * k).addScaledVector(fwd, dy * k / Math.max(0.2, Math.sin((this.isoPitch * Math.PI) / 180)));
+    this.target.addScaledVector(right, -dx * k).addScaledVector(fwd, (dy * k) / (top ? 1 : Math.max(0.2, Math.sin((this.isoPitch * Math.PI) / 180))));
   }
 
   wheel(deltaY: number): void {

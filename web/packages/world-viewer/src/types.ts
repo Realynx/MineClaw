@@ -175,7 +175,8 @@ export interface WorldSource {
   subscribe?(onBlocks: (d: BlockDeltas) => void, onReconnect?: () => void): () => void;
 }
 
-export type CameraMode = 'follow' | 'fly' | 'iso';
+/** follow (orbit), fly, iso (narrow-FOV dolly, 35° down), top (the same looking straight down, north up: the C# top panel). */
+export type CameraMode = 'follow' | 'fly' | 'iso' | 'top';
 
 /** auto = cut only when the followed body is hidden (the AI pictures' rule) or the camera is inside terrain. */
 export type XRayMode = 'auto' | 'on' | 'off';
@@ -198,6 +199,8 @@ export interface LayerToggles {
   staleness: boolean;
   /** Briefly outline blocks that just changed (block deltas). */
   changes: boolean;
+  /** Reading aids around the followed bot: ground grid with coordinate rulers, distance rings, compass. */
+  aids: boolean;
 }
 
 export const DEFAULT_LAYERS: LayerToggles = {
@@ -213,6 +216,7 @@ export const DEFAULT_LAYERS: LayerToggles = {
   cutaway: true,
   staleness: true,
   changes: true,
+  aids: false,
 };
 
 /** What `onPick` reports for a clicked block. */

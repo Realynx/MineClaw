@@ -221,7 +221,7 @@ export class WorldViewerEngine implements RuntimeView {
       } else this.rig.target.lerp(want, Math.min(1, dt * 10));
     }
     this.rig.apply(this.camera, dt, { keys: this.keys }, now);
-    const iso = this.rig.mode === 'iso';
+    const iso = this.rig.mode === 'iso' || this.rig.mode === 'top';
     this.camera.far = this.drawDistance * 1.6 + (iso ? this.rig.isoDistance() : 0) + 32;
     this.camera.near = iso ? Math.max(0.5, this.rig.isoDistance() * 0.2) : 0.05;
     // Overlays: this view's dimension, its toggles; notes go to the app.
@@ -251,6 +251,7 @@ export class WorldViewerEngine implements RuntimeView {
       roof: this.roof,
       viewId: this.id,
       precip: this.precip,
+      aids: this.layers.aids && bot ? { x: bot.x, y: bot.y, z: bot.z } : null,
       target: primary ? 'primary' : (this.ctx2d ?? 'primary'),
     };
     this.frames++;
@@ -348,7 +349,7 @@ export class WorldViewerEngine implements RuntimeView {
       d.moved = true;
       d.x = e.clientX;
       d.y = e.clientY;
-      if (this.rig.mode === 'iso' && (d.button === 2 || e.shiftKey)) this.rig.pan(dx, dy, c.clientHeight);
+      if ((this.rig.mode === 'iso' || this.rig.mode === 'top') && (d.button === 2 || e.shiftKey || this.rig.mode === 'top')) this.rig.pan(dx, dy, c.clientHeight);
       else if (this.rig.mode === 'fly') this.rig.look(-dx, -dy);
       else this.rig.look(dx, dy);
     });
