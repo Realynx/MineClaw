@@ -52,6 +52,23 @@ public static class StoryRecipes
     private static string Name(IGameData d, int id, int meta) =>
         meta > 0 ? d.VariantName(id, meta) is { Length: > 0 } v ? v : d.Item(id).Name : d.ItemExists(id) ? d.Item(id).Name : d.Block(id).Name;
 
+    private static readonly HashSet<string> SmallWords = new(StringComparer.OrdinalIgnoreCase) { "of", "and", "with", "on", "a", "the", "into" };
+
+    /// <summary>The item's display name in title case ("Light gray Wool" → "Light Gray Wool"); any-variant inputs (damage -1) take the
+    /// generic name ("Wood", not "Oak Wood").</summary>
+    internal static string Label(IGameData d, int id, int damage)
+    {
+        string raw = damage < 0 && d.ItemExists(id) ? d.Item(id).DisplayName : d.DisplayName(id, Math.Max(0, damage));
+        var words = raw.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i < words.Length; i++)
+        {
+            var w = words[i];
+            if (i > 0 && SmallWords.Contains(w)) words[i] = w.ToLowerInvariant();
+            else if (w.Length > 0 && char.IsLower(w[0])) words[i] = char.ToUpperInvariant(w[0]) + w[1..];
+        }
+        return string.Join(' ', words);
+    }
+
     private static IReadOnlyList<StoryRecipe> Build(IGameData d)
     {
         var list = new List<StoryRecipe>();
@@ -62,8 +79,8 @@ public static class StoryRecipes
             var id = "craft:" + name;
             if (!seen.Add(id)) continue;
             var inputs = r.Totals.Select(t => new RecipeInput([new ItemKey(t.Ingredient.Id, t.Ingredient.Damage)], t.Count)).ToList();
-            list.Add(new StoryRecipe(id, $"Make {d.DisplayName(r.OutputId, Math.Max(0, r.OutputDamage))}", "crafting_table", WorkTypes.Craft,
-                new Stack(r.OutputId, Math.Max(0, r.OutputDamage), r.OutputCount), inputs, false) { ToolItem = d.Item(r.OutputId).Name });
+            list.Add(new StoryRecipe(id, $"Make {Label(d, r.OutputId, r.OutputDamage)}", "crafting_table", WorkTypes.Craft,
+                new Stack(r.OutputId, Math.Max(0, r.OutputDamage), r.OutputCount), inputs, false) { ToolItem = name });
         }
         foreach (var s in d.AllSmelting)
         {
@@ -71,9 +88,9 @@ public static class StoryRecipes
             var id = "smelt:" + name;
             if (!seen.Add(id)) continue;
             bool food = d.Food(s.OutputId, s.OutputDamage) != null;
-            list.Add(new StoryRecipe(id, $"{(food ? "Cook" : "Smelt")} {d.DisplayName(s.InputId, Math.Max(0, s.InputDamage))}", "furnace",
+            list.Add(new StoryRecipe(id, $"{(food ? "Cook" : "Smelt")} {Label(d, s.InputId, s.InputDamage)} → {Label(d, s.OutputId, s.OutputDamage)}", "furnace",
                 food ? WorkTypes.Cook : WorkTypes.Craft, new Stack(s.OutputId, Math.Max(0, s.OutputDamage), s.OutputCount),
-                [new RecipeInput([new ItemKey(s.InputId, s.InputDamage)], 1)], true) { ToolItem = d.Item(s.InputId).Name });
+                [new RecipeInput([new ItemKey(s.InputId, s.InputDamage)], 1)], true) { ToolItem = name });
         }
         return list;
     }

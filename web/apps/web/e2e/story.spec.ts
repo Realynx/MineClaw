@@ -44,7 +44,9 @@ function story<K extends keyof StoryDebug>(page: Page, method: K, ...args: Param
 const pageAt = async (page: Page, x: number, z: number, dy = 1) => (await story(page, 'toPage', x, (await story(page, 'level')) + dy, z))!;
 
 async function foundColony(page: Page, pawns = 4) {
-  await page.getByLabel('Number of pawns').fill(String(pawns));
+  const count = page.getByLabel('Number of pawns');
+  while (Number(await count.textContent()) !== pawns)
+    await page.getByRole('button', { name: Number(await count.textContent()) < pawns ? 'More pawns' : 'Fewer pawns' }).click();
   await page.getByRole('button', { name: 'Found colony' }).click();
   await expect(page.getByTestId('colonist-bar').locator('[data-kind="pawn"]')).toHaveCount(pawns);
   await page.waitForTimeout(1500); // the camera settles over home, tokens interpolate in

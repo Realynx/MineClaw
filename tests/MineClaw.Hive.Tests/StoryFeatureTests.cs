@@ -313,6 +313,23 @@ public sealed class StoryFeatureTests
         Assert.All(furnace, r => Assert.True(r.Fuel));
         Assert.Empty(StoryRecipes.For(d, "anvil")); // no primitive yet
         Assert.Equal(version == "1.12.2", table.Any(r => r.Output.Id == 145)); // anvils exist in 1.12.2 only
+        Assert.All(table.Concat(furnace), r => Assert.DoesNotMatch(@"(^| )(?!of |and |with |on |a |the |into )[a-z]", r.Label));
+    }
+
+    [Fact]
+    public void Recipe_labels_name_the_variant_and_the_tool_item_resolves_it()
+    {
+        IGameData d = Release1122GameData.Instance;
+        var table = StoryRecipes.For(d, "crafting_table");
+        Assert.DoesNotContain(table, r => r.Id == "craft:stone"); // stone itself is smelted, never crafted
+        var pg = table.Single(r => r.Id == "craft:polished_granite");
+        Assert.Equal("Make Polished Granite", pg.Label);
+        Assert.Equal(new Stack(1, 2, 4), pg.Output);
+        Assert.Contains(table, r => r.Label == "Make Andesite");
+        Assert.Equal("Make Light Gray Wool", table.Single(r => r.Output == new Stack(35, 8, 1)).Label);
+        var spruce = table.Single(r => r.Output == new Stack(5, 1, 4));
+        Assert.Equal((5, 1), d.ItemByNameWithDamage(spruce.ToolItem) is { } hit ? (hit.Item.Id, hit.Damage) : (0, 0));
+        Assert.Equal("Smelt Iron Ore → Iron Ingot", StoryRecipes.For(d, "furnace").Single(r => r.Id == "smelt:iron_ore").Label);
     }
 
     private static (StoryColony C, FakeStoryHost H, FakeStoryWorld W) Workshop()

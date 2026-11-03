@@ -176,6 +176,16 @@ public sealed class Release1122GameData : IGameData
                 t.Blocks[id] = b;
                 t.IdOfName.TryAdd(b.Name, id);
             }
+        // minecraft-data 1.12.2 lists no stone variants, so granite/diorite/andesite (and polished) had no names of their own.
+        if (t.Blocks.TryGetValue(1, out var stone) && stone.Variants.Count == 0)
+            t.Blocks[1] = stone with
+            {
+                Variants = new Dictionary<int, string>
+                {
+                    [0] = "Stone", [1] = "Granite", [2] = "Polished Granite", [3] = "Diorite", [4] = "Polished Diorite",
+                    [5] = "Andesite", [6] = "Polished Andesite",
+                },
+            };
         using (var doc = JsonDocument.Parse(Resource("mcdata.1.12.2.items.json")))
             foreach (var e in doc.RootElement.EnumerateArray())
             {

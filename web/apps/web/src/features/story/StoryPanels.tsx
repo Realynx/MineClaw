@@ -478,10 +478,18 @@ export function NewColony({ canWrite, onCreate }: { canWrite: boolean; onCreate:
       <div className="font-semibold">Found a colony</div>
       <div className="flex items-center gap-2">
         <Input aria-label="Colony name" value={name} maxLength={40} onChange={(e) => setName(e.target.value)} className="h-7 text-xs" />
-        <label className="flex items-center gap-1 whitespace-nowrap">
-          Pawns
-          <Input aria-label="Number of pawns" type="number" min={1} max={12} value={n} onChange={(e) => setN(Math.max(1, Math.min(12, Number(e.target.value) || 1)))} className="h-7 w-14 text-xs" />
-        </label>
+        <div className="flex items-center gap-1 whitespace-nowrap" role="group" aria-label="Pawns">
+          <span>Pawns</span>
+          <Button type="button" size="sm" variant="ghost" className="h-7 w-7 px-0" aria-label="Fewer pawns" disabled={n <= 1} onClick={() => setN((v) => Math.max(1, v - 1))}>
+            −
+          </Button>
+          <output aria-label="Number of pawns" aria-live="polite" className="min-w-[2ch] text-center text-sm font-semibold tabular-nums text-fg">
+            {n}
+          </output>
+          <Button type="button" size="sm" variant="ghost" className="h-7 w-7 px-0" aria-label="More pawns" disabled={n >= 12} onClick={() => setN((v) => Math.min(12, v + 1))}>
+            +
+          </Button>
+        </div>
       </div>
       <p className="text-[10.5px] text-subtle">They settle where the map is centred: script-only bodies running the colony script.</p>
       <Button type="submit" size="sm" variant="primary" disabled={!canWrite}>
