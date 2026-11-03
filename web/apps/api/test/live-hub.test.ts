@@ -88,7 +88,7 @@ describe('backpressure', () => {
   it('a full frame supersedes queued deltas of the same event', () => {
     expect(coalesceKey('entities', { full: true })).toBe('entities:full');
     expect(coalesceKey('entities', { full: false })).toBeUndefined();
-    expect(coalesceKey('blocks' as never, { full: true })).toBe('blocks:full');
+    expect(coalesceKey('blocks', { full: true })).toBe('blocks:full');
     const h = hub();
     const res = new FakeRes();
     h.attach(fakeReq(), res as unknown as ServerResponse, undefined, { username: 'u', stillValid: () => true });
@@ -146,12 +146,12 @@ describe('filters', () => {
 
   it('dim limits blocks frames (frame dim or column dims)', () => {
     const f = filterOf({ dim: -1 });
-    expect(filterPayload(f, 'blocks' as never, { dim: 0, blocks: [[1, 2, 3, 4, 0]] }, aliases)).toBeNull();
-    expect(filterPayload(f, 'blocks' as never, { dim: -1, blocks: [] }, aliases)).toEqual({ dim: -1, blocks: [] });
+    expect(filterPayload(f, 'blocks', { dim: 0, blocks: [[1, 2, 3, 4, 0]] }, aliases)).toBeNull();
+    expect(filterPayload(f, 'blocks', { dim: -1, blocks: [] }, aliases)).toEqual({ dim: -1, blocks: [] });
     expect(
       filterPayload(
         f,
-        'blocks' as never,
+        'blocks',
         {
           rev: 1,
           blocks: [],

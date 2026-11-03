@@ -226,3 +226,8 @@ entity and overlay data plus the runtime-generated texture atlas. No world image
   - The browser must match the old freecam and every C# renderer: animated water and lava, real fluids, real player and
     mob models with animation, and every block shape.
   - Decompiled Java is never committed. Entity geometry is our own data files.
+- **Frame-rate targets.** At least 60 fps with a GPU. At least 40 fps sustained on software WebGL (SwiftShader), which
+  is Fox's usual development browser, with hardware acceleration off.
+  - Software rendering is detected automatically and selects a profile tuned by a frame-time controller that aims for
+    25 ms per frame.
+  - Benchmarks run in Chromium with `--disable-gpu`.

@@ -224,107 +224,107 @@ Notes on specific routes:
 - **`groom.preview`** is phase 2. The bridge may answer 501 until it ports the grooming pipeline.
 
 <!-- routes:begin -->
-
 ### Auth and web audit (Nest-native)
 
-| Route id          | Public route                 | Role          | Request                  | Response             | Bridge `/v1` | Supervisor | Audit       |
-| ----------------- | ---------------------------- | ------------- | ------------------------ | -------------------- | ------------ | ---------- | ----------- |
-| `health`          | `GET /api/health`            | public        | –                        | `HealthResponse`     | Nest-native  | –          | –           |
-| `auth.csrf`       | `GET /api/auth/csrf`         | public        | –                        | `CsrfResponse`       | Nest-native  | –          | –           |
-| `auth.login`      | `POST /api/auth/login`       | public        | body `LoginRequest`      | `LoginResponse`      | Nest-native  | –          | login       |
-| `auth.logout`     | `POST /api/auth/logout`      | authenticated | body `Empty`             | `LogoutResponse`     | Nest-native  | –          | logout      |
-| `auth.me`         | `GET /api/auth/me`           | authenticated | –                        | `Me`                 | Nest-native  | –          | –           |
-| `auth.totpEnroll` | `POST /api/auth/totp/enroll` | authenticated | body `TotpEnrollRequest` | `TotpEnrollResponse` | Nest-native  | –          | totp_enroll |
-| `auth.totpVerify` | `POST /api/auth/totp/verify` | authenticated | body `TotpVerifyRequest` | `TotpVerifyResponse` | Nest-native  | –          | totp_verify |
-| `audit.list`      | `GET /api/audit`             | admin         | query `WebAuditQuery`    | `WebAuditPage`       | Nest-native  | –          | –           |
+| Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
+|---|---|---|---|---|---|---|---|
+| `health` | `GET /api/health` | public | – | `HealthResponse` | Nest-native | – | – |
+| `auth.csrf` | `GET /api/auth/csrf` | public | – | `CsrfResponse` | Nest-native | – | – |
+| `auth.login` | `POST /api/auth/login` | public | body `LoginRequest` | `LoginResponse` | Nest-native | – | login |
+| `auth.logout` | `POST /api/auth/logout` | authenticated | body `Empty` | `LogoutResponse` | Nest-native | – | logout |
+| `auth.me` | `GET /api/auth/me` | authenticated | – | `Me` | Nest-native | – | – |
+| `auth.totpEnroll` | `POST /api/auth/totp/enroll` | authenticated | body `TotpEnrollRequest` | `TotpEnrollResponse` | Nest-native | – | totp_enroll |
+| `auth.totpVerify` | `POST /api/auth/totp/verify` | authenticated | body `TotpVerifyRequest` | `TotpVerifyResponse` | Nest-native | – | totp_verify |
+| `audit.list` | `GET /api/audit` | admin | query `WebAuditQuery` | `WebAuditPage` | Nest-native | – | – |
 
 ### Db reads (bridge-native)
 
-| Route id               | Public route                       | Role   | Request                                                | Response                     | Bridge `/v1`                       | Supervisor                                                            | Audit                |
-| ---------------------- | ---------------------------------- | ------ | ------------------------------------------------------ | ---------------------------- | ---------------------------------- | --------------------------------------------------------------------- | -------------------- |
-| `overview`             | `GET /api/overview`                | viewer | –                                                      | `Overview`                   | `GET /v1/overview`                 | bridge-native                                                         | –                    |
-| `memory.kinds`         | `GET /api/memory/kinds`            | viewer | –                                                      | `MemoryKindsResponse`        | `GET /v1/memory/kinds`             | bridge-native                                                         | –                    |
-| `memory.list`          | `GET /api/memory/:kind`            | viewer | params `MemoryKindParams`<br>query `MemoryListQuery`   | `MemoryPage`                 | `GET /v1/memory/{kind}`            | bridge-native                                                         | –                    |
-| `memory.get`           | `GET /api/memory/:kind/:id`        | viewer | params `MemoryItemParams`                              | `MemoryDetail`               | `GET /v1/memory/{kind}/{id}`       | bridge-native                                                         | –                    |
-| `search`               | `GET /api/search`                  | viewer | query `SearchQuery`                                    | `SearchResponse`             | `GET /v1/search`                   | bridge-native                                                         | –                    |
-| `raptor.tree`          | `GET /api/raptor/tree`             | viewer | query `RaptorTreeQuery`                                | `RaptorTreeResponse`         | `GET /v1/raptor/tree`              | bridge-native                                                         | –                    |
-| `raptor.graph`         | `GET /api/raptor/graph`            | viewer | query `RaptorGraphQuery`                               | `RaptorGraph`                | `GET /v1/raptor/graph`             | bridge-native                                                         | –                    |
-| `raptor.leaves`        | `GET /api/raptor/node/:id/leaves`  | viewer | params `RaptorNodeParams`                              | `RaptorLeavesResponse`       | `GET /v1/raptor/node/{id}/leaves`  | bridge-native                                                         | –                    |
-| `raptor.node`          | `GET /api/raptor/node/:id`         | viewer | params `RaptorNodeParams`                              | `RaptorNodeDetail`           | `GET /v1/raptor/node/{id}`         | bridge-native                                                         | –                    |
-| `personality`          | `GET /api/personality`             | viewer | query `PersonalityQuery`                               | `PersonalityResponse`        | `GET /v1/personality`              | bridge-native                                                         | –                    |
-| `shards.packs`         | `GET /api/shards/packs`            | viewer | –                                                      | `ShardPacksResponse`         | `GET /v1/shards/packs`             | bridge-native                                                         | –                    |
-| `shards.exportPreview` | `POST /api/shards/export/preview`  | viewer | body `ShardExportRequest`                              | `ShardPreview`               | `POST /v1/shards/export/preview`   | bridge-native                                                         | –                    |
-| `shards.export`        | `POST /api/shards/export`          | viewer | body `ShardExportRequest`                              | zip                          | `POST /v1/shards/export`           | bridge-native                                                         | shard_export         |
-| `shards.importPreview` | `POST /api/shards/import/preview`  | admin  | multipart `ShardImportOptions`                         | `ShardImportPreviewResponse` | `POST /v1/shards/import/preview`   | bridge-native                                                         | shard_import_preview |
-| `scripts.list`         | `GET /api/scripts`                 | viewer | query `ScriptLibraryQuery`                             | `ScriptLibraryResponse`      | `GET /v1/scripts`                  | /api/scripts (source=live) \| bridge-native (source=db)               | –                    |
-| `scripts.diff`         | `GET /api/scripts/:name/diff`      | viewer | params `ScriptNameParams`<br>query `ScriptDiffQuery`   | `ScriptDiff`                 | `GET /v1/scripts/{name}/diff`      | bridge-native                                                         | –                    |
-| `scripts.lint`         | `GET /api/scripts/:name/lint`      | viewer | params `ScriptNameParams`<br>query `ScriptLintQuery`   | `ScriptLintResponse`         | `GET /v1/scripts/{name}/lint`      | bridge-native                                                         | –                    |
-| `scripts.get`          | `GET /api/scripts/:name`           | viewer | params `ScriptNameParams`<br>query `ScriptDetailQuery` | `ScriptVersionDetail`        | `GET /v1/scripts/{name}`           | /api/scripts/{name}[/v{v}] (source=live) \| bridge-native (source=db) | –                    |
-| `designs.list`         | `GET /api/designs`                 | viewer | query `DesignListQuery`                                | `DesignListResponse`         | `GET /v1/designs`                  | bridge-native                                                         | –                    |
-| `designs.picture`      | `GET /api/designs/:id/picture.png` | viewer | params `DesignParams`                                  | png                          | `GET /v1/designs/{id}/picture.png` | bridge-native                                                         | –                    |
-| `designs.diff`         | `GET /api/designs/:id/diff`        | viewer | params `DesignParams`<br>query `DesignDiffQuery`       | `DesignDiff`                 | `GET /v1/designs/{id}/diff`        | bridge-native                                                         | –                    |
-| `designs.get`          | `GET /api/designs/:id`             | viewer | params `DesignParams`                                  | `DesignDetail`               | `GET /v1/designs/{id}`             | bridge-native                                                         | –                    |
+| Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
+|---|---|---|---|---|---|---|---|
+| `overview` | `GET /api/overview` | viewer | – | `Overview` | `GET /v1/overview` | bridge-native | – |
+| `memory.kinds` | `GET /api/memory/kinds` | viewer | – | `MemoryKindsResponse` | `GET /v1/memory/kinds` | bridge-native | – |
+| `memory.list` | `GET /api/memory/:kind` | viewer | params `MemoryKindParams`<br>query `MemoryListQuery` | `MemoryPage` | `GET /v1/memory/{kind}` | bridge-native | – |
+| `memory.get` | `GET /api/memory/:kind/:id` | viewer | params `MemoryItemParams` | `MemoryDetail` | `GET /v1/memory/{kind}/{id}` | bridge-native | – |
+| `search` | `GET /api/search` | viewer | query `SearchQuery` | `SearchResponse` | `GET /v1/search` | bridge-native | – |
+| `raptor.tree` | `GET /api/raptor/tree` | viewer | query `RaptorTreeQuery` | `RaptorTreeResponse` | `GET /v1/raptor/tree` | bridge-native | – |
+| `raptor.graph` | `GET /api/raptor/graph` | viewer | query `RaptorGraphQuery` | `RaptorGraph` | `GET /v1/raptor/graph` | bridge-native | – |
+| `raptor.leaves` | `GET /api/raptor/node/:id/leaves` | viewer | params `RaptorNodeParams` | `RaptorLeavesResponse` | `GET /v1/raptor/node/{id}/leaves` | bridge-native | – |
+| `raptor.node` | `GET /api/raptor/node/:id` | viewer | params `RaptorNodeParams` | `RaptorNodeDetail` | `GET /v1/raptor/node/{id}` | bridge-native | – |
+| `personality` | `GET /api/personality` | viewer | query `PersonalityQuery` | `PersonalityResponse` | `GET /v1/personality` | bridge-native | – |
+| `shards.packs` | `GET /api/shards/packs` | viewer | – | `ShardPacksResponse` | `GET /v1/shards/packs` | bridge-native | – |
+| `shards.exportPreview` | `POST /api/shards/export/preview` | viewer | body `ShardExportRequest` | `ShardPreview` | `POST /v1/shards/export/preview` | bridge-native | – |
+| `shards.export` | `POST /api/shards/export` | viewer | body `ShardExportRequest` | zip | `POST /v1/shards/export` | bridge-native | shard_export |
+| `shards.importPreview` | `POST /api/shards/import/preview` | admin | multipart `ShardImportOptions` | `ShardImportPreviewResponse` | `POST /v1/shards/import/preview` | bridge-native | shard_import_preview |
+| `scripts.list` | `GET /api/scripts` | viewer | query `ScriptLibraryQuery` | `ScriptLibraryResponse` | `GET /v1/scripts` | /api/scripts (source=live) \| bridge-native (source=db) | – |
+| `scripts.diff` | `GET /api/scripts/:name/diff` | viewer | params `ScriptNameParams`<br>query `ScriptDiffQuery` | `ScriptDiff` | `GET /v1/scripts/{name}/diff` | bridge-native | – |
+| `scripts.lint` | `GET /api/scripts/:name/lint` | viewer | params `ScriptNameParams`<br>query `ScriptLintQuery` | `ScriptLintResponse` | `GET /v1/scripts/{name}/lint` | bridge-native | – |
+| `scripts.get` | `GET /api/scripts/:name` | viewer | params `ScriptNameParams`<br>query `ScriptDetailQuery` | `ScriptVersionDetail` | `GET /v1/scripts/{name}` | /api/scripts/{name}[/v{v}] (source=live) \| bridge-native (source=db) | – |
+| `designs.list` | `GET /api/designs` | viewer | query `DesignListQuery` | `DesignListResponse` | `GET /v1/designs` | bridge-native | – |
+| `designs.picture` | `GET /api/designs/:id/picture.png` | viewer | params `DesignParams` | png | `GET /v1/designs/{id}/picture.png` | bridge-native | – |
+| `designs.diff` | `GET /api/designs/:id/diff` | viewer | params `DesignParams`<br>query `DesignDiffQuery` | `DesignDiff` | `GET /v1/designs/{id}/diff` | bridge-native | – |
+| `designs.get` | `GET /api/designs/:id` | viewer | params `DesignParams` | `DesignDetail` | `GET /v1/designs/{id}` | bridge-native | – |
 
 ### Memory activity
 
-| Route id              | Public route                    | Role   | Request                     | Response                 | Bridge `/v1`                         | Supervisor                                                                  | Audit |
-| --------------------- | ------------------------------- | ------ | --------------------------- | ------------------------ | ------------------------------------ | --------------------------------------------------------------------------- | ----- |
-| `memoryActivity.heat` | `GET /api/memory-activity/heat` | viewer | query `MemoryHeatQuery`     | `MemoryHeatResponse`     | `GET /v1/memory-activity/heat`       | bridge-native (aggregates /api/viewer/memory-activity over the RAPTOR tree) | –     |
-| `memoryActivity.list` | `GET /api/memory-activity`      | viewer | query `MemoryActivityQuery` | `MemoryActivityResponse` | `GET /v1/sup/viewer/memory-activity` | /api/viewer/memory-activity                                                 | –     |
+| Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
+|---|---|---|---|---|---|---|---|
+| `memoryActivity.heat` | `GET /api/memory-activity/heat` | viewer | query `MemoryHeatQuery` | `MemoryHeatResponse` | `GET /v1/memory-activity/heat` | bridge-native (aggregates /api/viewer/memory-activity over the RAPTOR tree) | – |
+| `memoryActivity.list` | `GET /api/memory-activity` | viewer | query `MemoryActivityQuery` | `MemoryActivityResponse` | `GET /v1/sup/viewer/memory-activity` | /api/viewer/memory-activity | – |
 
 ### Admin (bot writes)
 
-| Route id                | Public route                            | Role  | Request                                   | Response                   | Bridge `/v1`                                | Supervisor                                                                 | Audit          |
-| ----------------------- | --------------------------------------- | ----- | ----------------------------------------- | -------------------------- | ------------------------------------------- | -------------------------------------------------------------------------- | -------------- |
-| `admin.schema`          | `GET /api/admin/schema`                 | admin | –                                         | `EditSchemaResponse`       | `GET /v1/admin/schema`                      | bridge-native                                                              | –              |
-| `admin.memoryEdit`      | `POST /api/admin/memory`                | admin | body `MemoryEditRequest`                  | `MemoryEditResult`         | `POST /v1/sup/admin/memory`                 | /api/admin/memory                                                          | memory_edit    |
-| `admin.rebuildEstimate` | `POST /api/admin/rebuild/estimate`      | admin | body `RebuildRequestBody`                 | `RebuildEstimate`          | `POST /v1/sup/admin/rebuild/estimate`       | /api/admin/rebuild/estimate                                                | –              |
-| `admin.rebuildStart`    | `POST /api/admin/rebuild`               | admin | body `RebuildRequestBody`                 | `RebuildStarted` (202)     | `POST /v1/sup/admin/rebuild`                | /api/admin/rebuild                                                         | rebuild        |
-| `admin.rebuildCancel`   | `POST /api/admin/rebuild/:jobId/cancel` | admin | params `RebuildJobParams`<br>body `Empty` | `OkResponse`               | `POST /v1/sup/admin/rebuild/{jobId}/cancel` | /api/admin/rebuild/{jobId}/cancel                                          | rebuild_cancel |
-| `admin.rebuildJob`      | `GET /api/admin/rebuild/:jobId`         | admin | params `RebuildJobParams`                 | `RebuildJob`               | `GET /v1/sup/admin/rebuild/{jobId}`         | /api/admin/rebuild/{jobId}                                                 | –              |
-| `admin.backup`          | `POST /api/admin/backup`                | admin | body `Empty`                              | `BackupResponse`           | `POST /v1/sup/admin/backup`                 | /api/admin/backup                                                          | backup         |
-| `admin.audit`           | `GET /api/admin/audit`                  | admin | query `AdminAuditQuery`                   | `AdminAuditResponse`       | `GET /v1/sup/admin/audit`                   | /api/admin/audit                                                           | –              |
-| `admin.compact`         | `POST /api/admin/activity/compact`      | admin | body `CompactRequest`                     | `ActivityCompactionReport` | `POST /v1/sup/admin/activity/compact`       | /api/admin/activity/compact                                                | compact        |
-| `admin.shardImport`     | `POST /api/admin/shard/import`          | admin | multipart `ShardImportOptions`            | `ShardImportResult`        | `POST /v1/sup/admin/shard/import`           | /api/admin/shard/import (bridge sends JSON {shard: base64, …options, who}) | shard_import   |
-| `groom.preview`         | `POST /api/groom/preview`               | admin | body `GroomPreviewRequest`                | `GroomPreviewResponse`     | `POST /v1/groom/preview`                    | bridge-native                                                              | admin_other    |
+| Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
+|---|---|---|---|---|---|---|---|
+| `admin.schema` | `GET /api/admin/schema` | admin | – | `EditSchemaResponse` | `GET /v1/admin/schema` | bridge-native | – |
+| `admin.memoryEdit` | `POST /api/admin/memory` | admin | body `MemoryEditRequest` | `MemoryEditResult` | `POST /v1/sup/admin/memory` | /api/admin/memory | memory_edit |
+| `admin.rebuildEstimate` | `POST /api/admin/rebuild/estimate` | admin | body `RebuildRequestBody` | `RebuildEstimate` | `POST /v1/sup/admin/rebuild/estimate` | /api/admin/rebuild/estimate | – |
+| `admin.rebuildStart` | `POST /api/admin/rebuild` | admin | body `RebuildRequestBody` | `RebuildStarted` (202) | `POST /v1/sup/admin/rebuild` | /api/admin/rebuild | rebuild |
+| `admin.rebuildCancel` | `POST /api/admin/rebuild/:jobId/cancel` | admin | params `RebuildJobParams`<br>body `Empty` | `OkResponse` | `POST /v1/sup/admin/rebuild/{jobId}/cancel` | /api/admin/rebuild/{jobId}/cancel | rebuild_cancel |
+| `admin.rebuildJob` | `GET /api/admin/rebuild/:jobId` | admin | params `RebuildJobParams` | `RebuildJob` | `GET /v1/sup/admin/rebuild/{jobId}` | /api/admin/rebuild/{jobId} | – |
+| `admin.backup` | `POST /api/admin/backup` | admin | body `Empty` | `BackupResponse` | `POST /v1/sup/admin/backup` | /api/admin/backup | backup |
+| `admin.audit` | `GET /api/admin/audit` | admin | query `AdminAuditQuery` | `AdminAuditResponse` | `GET /v1/sup/admin/audit` | /api/admin/audit | – |
+| `admin.compact` | `POST /api/admin/activity/compact` | admin | body `CompactRequest` | `ActivityCompactionReport` | `POST /v1/sup/admin/activity/compact` | /api/admin/activity/compact | compact |
+| `admin.shardImport` | `POST /api/admin/shard/import` | admin | multipart `ShardImportOptions` | `ShardImportResult` | `POST /v1/sup/admin/shard/import` | /api/admin/shard/import (bridge sends JSON {shard: base64, …options, who}) | shard_import |
+| `groom.preview` | `POST /api/groom/preview` | admin | body `GroomPreviewRequest` | `GroomPreviewResponse` | `POST /v1/groom/preview` | bridge-native | admin_other |
 
 ### Live hive (supervisor pass-through)
 
-| Route id            | Public route                                 | Role   | Request                                            | Response              | Bridge `/v1`                                | Supervisor                                                                                    | Audit |
-| ------------------- | -------------------------------------------- | ------ | -------------------------------------------------- | --------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------- | ----- |
-| `bots.list`         | `GET /api/bots`                              | viewer | –                                                  | `BotsResponse`        | `GET /v1/sup/bots`                          | /api/bots                                                                                     | –     |
-| `hive.tree`         | `GET /api/hive/tree`                         | viewer | –                                                  | `HiveTreeNode`        | `GET /v1/sup/hive/tree`                     | /api/hive/tree                                                                                | –     |
-| `status`            | `GET /api/status`                            | viewer | query `StatusQuery`                                | `StatusResponse`      | `GET /v1/sup/status`                        | /api/status                                                                                   | –     |
-| `events`            | `GET /api/events`                            | viewer | query `SinceQuery`                                 | `EventsResponse`      | `GET /v1/sup/events`                        | /api/events                                                                                   | –     |
-| `locate`            | `GET /api/locate`                            | viewer | query `LocateQuery`                                | `LocateResult`        | `GET /v1/sup/locate`                        | /api/locate                                                                                   | –     |
-| `world.index`       | `GET /api/world/index`                       | viewer | query `WorldIndexQuery`                            | `WorldIndex`          | `GET /v1/sup/world/index`                   | /api/world/index                                                                              | –     |
-| `world.chunks`      | `GET /api/world/chunks`                      | viewer | query `WorldChunksQuery`                           | binary                | `GET /v1/sup/world/chunks`                  | /api/world/chunks                                                                             | –     |
-| `world.entities`    | `GET /api/world/entities`                    | viewer | query `WorldEntitiesQuery`                         | `WorldEntities`       | `GET /v1/sup/world/entities`                | /api/world/entities                                                                           | –     |
-| `world.overlays`    | `GET /api/world/overlays`                    | viewer | query `DimQuery`                                   | `WorldOverlays`       | `GET /v1/sup/world/overlays`                | /api/world/overlays                                                                           | –     |
-| `world.atlasPng`    | `GET /api/world/atlas.png`                   | viewer | query `AtlasQuery`                                 | png                   | `GET /v1/world/atlas.png`                   | bridge-native                                                                                 | –     |
-| `world.atlasJson`   | `GET /api/world/atlas.json`                  | viewer | query `AtlasQuery`                                 | `WorldAtlasJson`      | `GET /v1/world/atlas.json`                  | bridge-native                                                                                 | –     |
-| `bots.tile`         | `GET /api/bots/:bot/tile.png`                | viewer | params `BotParams`<br>query `TileQuery`            | png                   | `GET /v1/render/tile/{bot}.png`             | /view/{bot}?mode&radius&xray                                                                  | –     |
-| `bots.now`          | `GET /api/bots/:bot/now`                     | viewer | params `BotParams`                                 | `BotNow`              | `GET /v1/sup/viewer/now?bot={bot}`          | /api/viewer/now?bot=                                                                          | –     |
-| `bots.chat`         | `POST /api/bots/:bot/chat`                   | chat   | params `BotParams`<br>body `ChatRequest`           | `ChatAccepted` (202)  | `POST /v1/sup/viewer/chat`                  | /api/viewer/chat (bridge adds bot, player from X-MCX-Player, allow_commands from X-MCX-Roles) | chat  |
-| `feed`              | `GET /api/feed`                              | viewer | query `FeedQuery`                                  | `FeedResponse`        | `GET /v1/sup/viewer/feed`                   | /api/viewer/feed                                                                              | –     |
-| `blueprints.list`   | `GET /api/blueprints`                        | viewer | –                                                  | `BlueprintsResponse`  | `GET /v1/sup/blueprints`                    | /api/blueprints                                                                               | –     |
-| `blueprints.get`    | `GET /api/blueprints/:id`                    | viewer | params `BlueprintParams`                           | `BlueprintBill`       | `GET /v1/sup/blueprints/{id}`               | /api/blueprints/{id}                                                                          | –     |
-| `buildplans.get`    | `GET /api/buildplans/:id`                    | viewer | params `BlueprintParams`                           | `BuildPlanData`       | `GET /v1/sup/buildplans/{id}`               | /api/buildplans/{id}                                                                          | –     |
-| `bodies.scripts`    | `GET /api/bodies/scripts`                    | viewer | –                                                  | `LiveScriptsResponse` | `GET /v1/sup/bodies/scripts`                | /api/bodies/scripts                                                                           | –     |
-| `bodies.script`     | `GET /api/bodies/:body/script`               | viewer | params `BodyParams`<br>query `BodyScriptQuery`     | `BodyScriptReply`     | `GET /v1/sup/bodies/{body}/script`          | /api/bodies/{body}/script                                                                     | –     |
-| `bodies.controller` | `GET /api/bodies/:body/controller`           | viewer | params `BodyParams`                                | `BodyControllerInfo`  | `GET /v1/sup/bodies/{body}/controller`      | /api/bodies/{body}/controller                                                                 | –     |
-| `vision.render`     | `GET /api/bodies/:body/vision/render`        | viewer | params `BodyParams`<br>query `VisionRenderQuery`   | png                   | `GET /v1/sup/bodies/{body}/vision/render`   | /api/bodies/{body}/vision/render                                                              | –     |
-| `vision.png`        | `GET /api/bodies/:body/vision/:id/image.png` | viewer | params `VisionSheetParams`                         | png                   | `GET /v1/sup/bodies/{body}/vision/{id}.png` | /api/bodies/{body}/vision/{id}.png                                                            | –     |
-| `vision.sheet`      | `GET /api/bodies/:body/vision/:id`           | viewer | params `VisionSheetParams`                         | `VisionSheetInfo`     | `GET /v1/sup/bodies/{body}/vision/{id}`     | /api/bodies/{body}/vision/{id}                                                                | –     |
-| `vision.list`       | `GET /api/bodies/:body/vision`               | viewer | params `BodyParams`<br>query `VisionListQuery`     | `VisionList`          | `GET /v1/sup/bodies/{body}/vision`          | /api/bodies/{body}/vision                                                                     | –     |
-| `brains.context`    | `GET /api/brains/:brain/context`             | viewer | params `BrainParams`<br>query `BrainContextQuery`  | `BrainContextPage`    | `GET /v1/sup/brains/{brain}/context`        | /api/brains/{brain}/context                                                                   | –     |
-| `brains.turn`       | `GET /api/brains/:brain/turn/:n`             | viewer | params `BrainTurnParams`<br>query `BrainTurnQuery` | `BrainTurnDetail`     | `GET /v1/sup/brains/{brain}/turn/{n}`       | /api/brains/{brain}/turn/{n}                                                                  | –     |
+| Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
+|---|---|---|---|---|---|---|---|
+| `bots.list` | `GET /api/bots` | viewer | – | `BotsResponse` | `GET /v1/sup/bots` | /api/bots | – |
+| `hive.tree` | `GET /api/hive/tree` | viewer | – | `HiveTreeNode` | `GET /v1/sup/hive/tree` | /api/hive/tree | – |
+| `status` | `GET /api/status` | viewer | query `StatusQuery` | `StatusResponse` | `GET /v1/sup/status` | /api/status | – |
+| `events` | `GET /api/events` | viewer | query `SinceQuery` | `EventsResponse` | `GET /v1/sup/events` | /api/events | – |
+| `locate` | `GET /api/locate` | viewer | query `LocateQuery` | `LocateResult` | `GET /v1/sup/locate` | /api/locate | – |
+| `world.index` | `GET /api/world/index` | viewer | query `WorldIndexQuery` | `WorldIndex` | `GET /v1/sup/world/index` | /api/world/index | – |
+| `world.chunks` | `GET /api/world/chunks` | viewer | query `WorldChunksQuery` | binary | `GET /v1/sup/world/chunks` | /api/world/chunks | – |
+| `world.entities` | `GET /api/world/entities` | viewer | query `WorldEntitiesQuery` | `WorldEntities` | `GET /v1/sup/world/entities` | /api/world/entities | – |
+| `world.overlays` | `GET /api/world/overlays` | viewer | query `DimQuery` | `WorldOverlays` | `GET /v1/sup/world/overlays` | /api/world/overlays | – |
+| `world.blocks` | `GET /api/world/blocks` | viewer | query `WorldBlocksQuery` | `WorldBlockDeltas` | `GET /v1/sup/world/blocks` | /api/world/blocks | – |
+| `world.atlasPng` | `GET /api/world/atlas.png` | viewer | query `AtlasQuery` | png | `GET /v1/world/atlas.png` | bridge-native | – |
+| `world.atlasJson` | `GET /api/world/atlas.json` | viewer | query `AtlasQuery` | `WorldAtlasJson` | `GET /v1/world/atlas.json` | bridge-native | – |
+| `bots.tile` | `GET /api/bots/:bot/tile.png` | viewer | params `BotParams`<br>query `TileQuery` | png | `GET /v1/render/tile/{bot}.png` | /view/{bot}?mode&radius&xray | – |
+| `bots.now` | `GET /api/bots/:bot/now` | viewer | params `BotParams` | `BotNow` | `GET /v1/sup/viewer/now?bot={bot}` | /api/viewer/now?bot= | – |
+| `bots.chat` | `POST /api/bots/:bot/chat` | chat | params `BotParams`<br>body `ChatRequest` | `ChatAccepted` (202) | `POST /v1/sup/viewer/chat` | /api/viewer/chat (bridge adds bot, player from X-MCX-Player, allow_commands from X-MCX-Roles) | chat |
+| `feed` | `GET /api/feed` | viewer | query `FeedQuery` | `FeedResponse` | `GET /v1/sup/viewer/feed` | /api/viewer/feed | – |
+| `blueprints.list` | `GET /api/blueprints` | viewer | – | `BlueprintsResponse` | `GET /v1/sup/blueprints` | /api/blueprints | – |
+| `blueprints.get` | `GET /api/blueprints/:id` | viewer | params `BlueprintParams` | `BlueprintBill` | `GET /v1/sup/blueprints/{id}` | /api/blueprints/{id} | – |
+| `buildplans.get` | `GET /api/buildplans/:id` | viewer | params `BlueprintParams` | `BuildPlanData` | `GET /v1/sup/buildplans/{id}` | /api/buildplans/{id} | – |
+| `bodies.scripts` | `GET /api/bodies/scripts` | viewer | – | `LiveScriptsResponse` | `GET /v1/sup/bodies/scripts` | /api/bodies/scripts | – |
+| `bodies.script` | `GET /api/bodies/:body/script` | viewer | params `BodyParams`<br>query `BodyScriptQuery` | `BodyScriptReply` | `GET /v1/sup/bodies/{body}/script` | /api/bodies/{body}/script | – |
+| `bodies.controller` | `GET /api/bodies/:body/controller` | viewer | params `BodyParams` | `BodyControllerInfo` | `GET /v1/sup/bodies/{body}/controller` | /api/bodies/{body}/controller | – |
+| `vision.render` | `GET /api/bodies/:body/vision/render` | viewer | params `BodyParams`<br>query `VisionRenderQuery` | png | `GET /v1/sup/bodies/{body}/vision/render` | /api/bodies/{body}/vision/render | – |
+| `vision.png` | `GET /api/bodies/:body/vision/:id/image.png` | viewer | params `VisionSheetParams` | png | `GET /v1/sup/bodies/{body}/vision/{id}.png` | /api/bodies/{body}/vision/{id}.png | – |
+| `vision.sheet` | `GET /api/bodies/:body/vision/:id` | viewer | params `VisionSheetParams` | `VisionSheetInfo` | `GET /v1/sup/bodies/{body}/vision/{id}` | /api/bodies/{body}/vision/{id} | – |
+| `vision.list` | `GET /api/bodies/:body/vision` | viewer | params `BodyParams`<br>query `VisionListQuery` | `VisionList` | `GET /v1/sup/bodies/{body}/vision` | /api/bodies/{body}/vision | – |
+| `brains.context` | `GET /api/brains/:brain/context` | viewer | params `BrainParams`<br>query `BrainContextQuery` | `BrainContextPage` | `GET /v1/sup/brains/{brain}/context` | /api/brains/{brain}/context | – |
+| `brains.turn` | `GET /api/brains/:brain/turn/:n` | viewer | params `BrainTurnParams`<br>query `BrainTurnQuery` | `BrainTurnDetail` | `GET /v1/sup/brains/{brain}/turn/{n}` | /api/brains/{brain}/turn/{n} | – |
 
 ### Live stream
 
-| Route id      | Public route           | Role   | Request                 | Response | Bridge `/v1`          | Supervisor                                                                                                       | Audit |
-| ------------- | ---------------------- | ------ | ----------------------- | -------- | --------------------- | ---------------------------------------------------------------------------------------------------------------- | ----- |
-| `live.stream` | `GET /api/live/stream` | viewer | query `LiveStreamQuery` | sse      | `GET /v1/live/stream` | bridge-native (polls status, events, viewer/feed, viewer/now, world/entities, hive/tree, viewer/memory-activity) | –     |
+| Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
+|---|---|---|---|---|---|---|---|
+| `live.stream` | `GET /api/live/stream` | viewer | query `LiveStreamQuery` | sse | `GET /v1/live/stream` | bridge-native (polls status, events, viewer/feed, viewer/now, world/entities, world/blocks, hive/tree, viewer/memory-activity) | – |
 
 <!-- routes:end -->
 
@@ -368,6 +368,7 @@ what it holds:
 | `event`          | `/api/events`          | `id`   |
 | `entities`       | `/api/world/entities`  | `rev`  |
 | `memoryActivity` | `/api/memory-activity` | `seq`  |
+| `blocks`         | `/api/world/blocks`    | `rev`  |
 
 | Event            | Payload schema                                                       | Bridge source and cadence                                               | Emitted                  |
 | ---------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------ |
@@ -378,6 +379,7 @@ what it holds:
 | `entities`       | `WorldEntities` (delta; `full: true` means replace the set)          | `/api/world/entities?since=rev`, 5 Hz                                   | when changed             |
 | `hive`           | `HiveTreeNode`                                                       | `/api/hive/tree`, every 3 s                                             | on change                |
 | `memoryActivity` | `MemoryActivityResponse` (new events + the full in-context snapshot) | `/api/viewer/memory-activity?since=`, 1 Hz                              | on change                |
+| `blocks`         | `WorldBlockDeltas` (per-block changes; `full: true` = refetch via index/chunks) | `/api/world/blocks?since=rev`, 5 Hz (pages while `more`)       | when non-empty or full   |
 | `status`         | `LiveStatus`                                                         | Nest-native: upstream state, bot reachability, latency                  | on change and every 15 s |
 
 ## 6. New bot routes (supervisor, snake_case)
@@ -389,8 +391,9 @@ These are the bot-side additions from architecture.md, in their wire form. They 
   - Body: `{bot, text, player, allow_commands, request_id}`.
   - It is accepted only with the supervisor token header and when `Supervisor:Viewer:Enabled` is true. `player` must be in
     `TrustedPlayers`.
-  - It answers `{accepted, id, note?}`. `id` echoes `request_id` (or a feed id) so the client can match the `viewer` feed line
-    and the reply.
+  - The bot answers `{accepted, id}` with `id` = the feed seq of the `viewer` line (which carries `request_id`). The bridge
+    answers 202 `ChatAccepted {accepted, id, feed_seq, note?}`: `id` echoes `request_id`, `feed_seq` is the bot's seq, so the
+    client can match the `viewer` feed line and the reply.
 - **`GET /api/viewer/feed?since=<seq>`** (`FeedResponse`).
   - Response: `{lines:[{seq, at, bot, kind, from, text, origin, request_id?, reply_to?}], last}`.
   - `kind` is one of chat, said, whisper, internal, muted, system, viewer.
