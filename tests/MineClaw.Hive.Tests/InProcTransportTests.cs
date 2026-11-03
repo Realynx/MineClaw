@@ -182,6 +182,40 @@ public class InProcTransportTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task A_viewer_line_reaches_every_hive_over_the_inject_broadcast_and_only_its_target_router_takes_it()
+    {
+        Directory.CreateDirectory(_dir);
+        _db = AgentDb.Open(Path.Combine(_dir, "mineclaw.db"));
+        var cfg = TestHive.Config();
+        cfg.FailureGraceSeconds = 0;
+        var launcher = new InProcLauncher(cfg);
+        var ledger = new BudgetLedger(new BudgetOptions { DailyCapUsd = 10, MonthlyCapUsd = 190 }, cfg.Budget, () => (0m, 0m));
+        _sup = new HiveSupervisor(cfg, "maid_chan", launcher, new ClaimBoard(TimeSpan.FromSeconds(60)), ledger,
+            new ChatArbiter("maid_chan", "maid_chan", cfg.Clones()), new HiveStore(_db, "maid_chan"),
+            () => new SlotFacts(20, ["maid_chan", "PoofimaFox"]), ["PoofimaFox"]);
+        Assert.StartsWith("ok", _sup.Spawn("wait here", "420", forPlayer: "PoofimaFox"));
+        await Wait.Until(() => _sup.Slot("maid_chan_420")!.Connected, 20, "420 up");
+        var (_, body, _) = launcher.Started.Single();
+
+        await _sup.InjectAsync(new InjectMsg("come here", "viewer", "PoofimaFox", "maid_chan_420", AllowCommands: false, RequestId: "r9"));
+        await Wait.Until(() => { lock (body.Remote) return body.Remote.Count == 1; }, 10, "the viewer line reaches the hive");
+        Assert.Equal(new MineClaw.Agent.Chat.RemoteChat("PoofimaFox", "come here", "viewer", "maid_chan_420", false, "r9"), body.Remote.Single());
+        Assert.DoesNotContain(body.Calls, c => c.StartsWith("inject ")); // never the /as test path
+
+        // In each process the clone's real router (ClonePolicy + its arbiter) takes exactly its own lines.
+        var events = new MineClaw.Agent.Events.EventQueue();
+        var chat = new MineClaw.Agent.Chat.ChatRouter(new MineClaw.Agent.Chat.ChatOptions { Username = "maid_chan_420", DisplayName = "claudechan 420", LineDelayMs = 0 },
+            events, (_, _) => Task.CompletedTask);
+        var arbiter = new ChatArbiter("maid_chan_420", "maid_chan", cfg.Clones());
+        ClonePolicy.Apply(chat, events, arbiter);
+        Assert.False(chat.OnRemoteChat(body.Remote.Single() with { Target = "maid_chan" }));
+        Assert.False(chat.OnRemoteChat(body.Remote.Single() with { Target = "maid_chan_69" }));
+        Assert.True(chat.OnRemoteChat(body.Remote.Single()));
+        var e = Assert.Single(events.Snapshot());
+        Assert.Equal(("viewer", false, true), (e.Origin, e.IsTest, e.Wakes));
+    }
+
+    [Fact]
     public void Isolation_is_inproc_by_default_process_on_request_per_profile_and_per_spawn()
     {
         var cfg = new HiveConfig();

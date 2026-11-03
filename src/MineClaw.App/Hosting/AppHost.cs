@@ -203,6 +203,7 @@ public static class AppHost
         var agent = new PausableAgent(rt, log);
         var commands = new ConsoleCommands(game, rt, agent, log, signals.Source);
         var source = new InProcessBotSource(game, rt, telemetry, agent, commands, host.Tui.Viewport, signals.Token);
+        Supervisor.ViewerTaps.Attach(mc.Username, rt, client, mainHears: true); // the web viewer's feed + memory map (read only when it's on)
         mainHive?.Attach(bot, client, commands, agentOptions, subhives);
         inproc?.Attach(bot, client, signals.Token);
         subhives?.Attach(bot, client, signals.Token);
@@ -373,8 +374,18 @@ public static class AppHost
         server.Vision = new Supervisor.SupervisorVisionRoutes(new Supervisor.LiveVisionData(hub, bot, main, () => mainHive?.Supervisor, log), o.Token, server.Gate);
         // /api/bodies/{name}/controller, /api/brains/{id}/context|turn/{n}: what drives a body and its brain's live context (token or 403)
         capture?.AddSecrets([o.Token]);
-        server.Controller = new Supervisor.SupervisorControllerRoutes(new Supervisor.SupervisorControllerData(bot, main, capture, () => mainHive?.Supervisor,
-            () => mainHive?.Hierarchy?.Tree, log), o.Token);
+        var controller = new Supervisor.SupervisorControllerData(bot, main, capture, () => mainHive?.Supervisor, () => mainHive?.Hierarchy?.Tree, log);
+        server.Controller = new Supervisor.SupervisorControllerRoutes(controller, o.Token);
+        // /api/viewer/*: the web viewer (chat as a trusted player, the live feed, "now", memory activity); Viewer:Enabled + token header
+        if (o.Viewer.Enabled)
+        {
+            var viewerFeed = new Supervisor.ViewerFeed();
+            var memory = new Supervisor.ViewerMemoryActivity();
+            Supervisor.ViewerTaps.Enable(viewerFeed, memory);
+            var viewer = new Supervisor.LiveViewerData(bot, main, sources, () => mainHive?.Supervisor, controller,
+                new Supervisor.LiveScriptData(bot, main, () => mainHive?.Supervisor, log), log);
+            server.Viewer = new Supervisor.SupervisorViewerRoutes(o, viewer, viewerFeed, memory);
+        }
         try
         {
             server.Start();

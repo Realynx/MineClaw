@@ -205,6 +205,7 @@ public static class MemoryTools
                     Text = query, Kinds = kinds, Near = near, Radius = Math.Clamp(input.Int("radius") ?? 16, 1, 128), Limit = limit,
                     Dimension = dim,
                 }, ct).ConfigureAwait(false);
+                MemoryAccess.Note(index, "recall", hits); // the viewer's memory map (observer only)
                 return ToolResult.Success(MemoryStore.FormatHits(index, hits, o.RecallMaxChars, 200));
             }, cheapTier: true);
 
@@ -230,6 +231,7 @@ public static class MemoryTools
                     };
                     if (h.Bounds is { } b && h.Kind is "world" or "episode") text += $" @{b.Format()}";
                     text = $"#{h.Id} [{h.Tag ?? h.Kind}] " + text;
+                    MemoryAccess.Note(index, "tool", [h]); // the viewer's memory map (observer only)
                     if (index.Corrections?.Superseding(h) is { } fix) text = $"[{fix.Correction}] " + text; // stale lesson, corrected
                 }
                 if (text == null) return Task.FromResult(ToolResult.Error("no such id"));

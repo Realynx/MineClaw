@@ -1740,6 +1740,9 @@ public sealed class HiveSupervisor : IAsyncDisposable
     /// <summary>Forward a console /as line so every live clone's arbiter sees the same message.</summary>
     public Task InjectAsync(string raw) => BroadcastAsync(Msg.Inject, new InjectMsg(raw));
 
+    /// <summary>Forward a web-viewer line (<see cref="InjectMsg.Origin"/> set) to every live clone, the same way.</summary>
+    public Task InjectAsync(InjectMsg msg) => BroadcastAsync(Msg.Inject, msg);
+
     private void Tick()
     {
         // A timer callback: an exception here would end the whole process (and, with in-process hives, every hive in it).

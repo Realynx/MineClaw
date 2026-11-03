@@ -92,6 +92,7 @@ public sealed class AutoRetriever
             used.Add(h.Id);
         }
         if (used.Count == 0) return "";
+        MemoryAccess.Note(this, "rag", hits.Where(h => used.Contains(h.Id))); // the viewer's memory map (observer only)
         lock (_lock)
         {
             foreach (var id in used) _injectedAt[id] = next;

@@ -39,4 +39,6 @@ public sealed class SupervisorOptions
     public int CameraDistance { get; set; } = 48;
     /// <summary>A clone's "send me your view" IPC (it flushes world memory to the db) at most this often per clone.</summary>
     public int PoseCacheMs { get; set; } = 2500;
+    /// <summary>The web viewer's routes (<c>/api/viewer/*</c>: chat as a trusted player, the live feed, "now", memory activity). Off by default.</summary>
+    public SupervisorViewerOptions Viewer { get; set; } = new();
 }
