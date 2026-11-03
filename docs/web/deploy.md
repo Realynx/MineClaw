@@ -180,7 +180,8 @@ from step 1 is missing.
 ### 5. Web users (yourself, in your own terminal)
 
 There is no self-signup. Run these interactively (`-t` gives the password prompt a TTY), or use `ssh -t alice` and then
-`pct enter 114`:
+`pct enter 114`. Use a real terminal window, not Claude Code's `!` prefix. `!` has no TTY, so the password prompt can't
+hide your typing, and the TOTP secret would land in the transcript.
 
 ```sh
 ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users add fox --roles admin,chat,commands,viewer --player poofimafox
