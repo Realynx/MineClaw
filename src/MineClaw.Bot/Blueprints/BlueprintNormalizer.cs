@@ -18,6 +18,8 @@ public static class BlueprintNormalizer
     /// <param name="worldHeight">The world's height (<see cref="IBlockAccess.WorldHeight"/>): b1.8.1 128, 1.12.2 256.</param>
     public static (VoxelPlan? Plan, List<BlueprintIssue> Issues) Normalize(Blueprint bp, BlockPos? defaultOrigin = null, int worldHeight = ChunkColumn.SizeY)
     {
+        // A versioned design normalizes in its own version (its ids, its metas, its rules).
+        using var scope = DesignVersions.Use(bp.Version);
         var issues = new List<BlueprintIssue>();
         void Err(string code, string text, int line = 0) => issues.Add(new(IssueLevel.Error, code, text, line));
         if (bp.W < 1 || bp.H < 1 || bp.D < 1) { Err("size", "no valid size"); return (null, issues); }
@@ -217,11 +219,15 @@ public static class BlueprintNormalizer
                 Err("door", $"door at {x},{y},{z} stands on {BuildBlocks.Name(floor.Id, floor.Meta)}: it needs a full opaque block under it");
         }
         // Slab on a same-type slab merges into a double slab in the lower cell (mc-dev BlockStep.onPlace).
-        foreach (var ((x, y, z), (id, meta)) in states)
-            if (id == Blocks.Slab && states.TryGetValue((x, y - 1, z), out var b2) && b2.Id == Blocks.Slab && (b2.Meta & 7) == (meta & 7))
-                Err("slab", $"slab at {x},{y},{z} sits on the same slab type: they would merge into a double slab (use a full block)");
+        // (b1.8.1 only: a 1.12.2 slab stays in its own cell.)
+        if (bp.Version != DesignVersions.Release)
+            foreach (var ((x, y, z), (id, meta)) in states)
+                if (id == Blocks.Slab && states.TryGetValue((x, y - 1, z), out var b2) && b2.Id == Blocks.Slab && (b2.Meta & 7) == (meta & 7) && (b2.Meta & 8) == 0)
+                    Err("slab", $"slab at {x},{y},{z} sits on the same slab type: they would merge into a double slab (use a full block)");
+        // A versioned design holds any state of its version's design palette; a legacy one only what the builder builds.
+        var palette = bp.Version != null ? DesignPalette.Current : null;
         foreach (var (k, (id, meta)) in states)
-            if (BuildBlocks.MetaProblem(id, meta) is { } mp) Err("meta", $"{k.X},{k.Y},{k.Z}: {mp}");
+            if ((palette != null ? palette.Refusal(id, meta) : BuildBlocks.MetaProblem(id, meta)) is { } mp) Err("meta", $"{k.X},{k.Y},{k.Z}: {mp}");
 
         // The drawn front. Canonically the front is the south row and `facing` turns the drawing (facing north = a 180° turn: local
         // z=0 lands on the world's south side, x flips too). An author who drew every door on the very side `facing` names (live

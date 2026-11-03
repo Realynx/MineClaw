@@ -41,6 +41,9 @@ public sealed class Blueprint
     /// '.' cells under that are dug out of the terrain and its blocks there replace it.
     /// </summary>
     public int Ground { get; set; }
+    /// <summary>The game version the design is drawn for (<c>version X</c>; <see cref="DesignVersions"/>): its palette resolves in
+    /// that version's names and may hold any of its design blocks. Null = the server's (a legacy DSL: buildable blocks only).</summary>
+    public string? Version { get; set; }
     public Dictionary<char, PaletteEntry> Palette { get; } = new();
     /// <summary>Layer index → rows (north first), each W chars.</summary>
     public SortedDictionary<int, (List<string> Rows, int Line)> Layers { get; } = new();
@@ -89,6 +92,11 @@ public sealed class VoxelPlan
     public required BlockPos Origin { get; init; }
     public Dictionary<BlockPos, PlannedBlock> Blocks { get; } = new();
     public HashSet<BlockPos> Air { get; } = new();
+    /// <summary>Design cells the survival builder can't place yet (not <see cref="BuildBlocks"/> states: beds, redstone, upside-down
+    /// stairs…), taken out of <see cref="Blocks"/> for a build and reported, never placed wrong (<see cref="BlueprintService.PlanOf"/>).</summary>
+    public Dictionary<BlockPos, (int Id, int Meta)> Unsupported { get; } = new();
+    /// <summary>"1.12.2 → b1.8.1: 120 the same; 20 Spruce Planks → Wooden Planks" when the design was converted for this world.</summary>
+    public string? Converted { get; set; }
     public BlockPos Min => Origin;
     public BlockPos Max => new(Origin.X + Blueprint.Footprint.Wx - 1, Origin.Y + Blueprint.H - 1, Origin.Z + Blueprint.Footprint.Dz - 1);
     public bool Inside(BlockPos p) => p.X >= Min.X && p.X <= Max.X && p.Y >= Min.Y && p.Y <= Max.Y && p.Z >= Min.Z && p.Z <= Max.Z;

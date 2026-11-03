@@ -22,6 +22,16 @@ public sealed class DesignerSessionRecord
     public string PendingEdits { get; set; } = "";
     public DateTimeOffset Created { get; set; }
     public DateTimeOffset Updated { get; set; }
+
+    /// <summary>The canvas's game version (<see cref="DesignerCanvas.Version"/>).</summary>
+    public string Version => Canvas.Version;
+
+    /// <summary>Sets the canvas's version (null/unknown: the server's: a session saved before versions were recorded).</summary>
+    public DesignerSessionRecord WithVersion(string? version)
+    {
+        Canvas.Version = DesignVersions.Normalize(version) ?? DesignVersions.Server;
+        return this;
+    }
 }
 
 /// <summary>One transcript line (user or assistant). Assistant lines carry the ops they applied (kind, label, cell count).</summary>
@@ -53,9 +63,12 @@ public sealed class DesignerStore
                 CREATE TABLE IF NOT EXISTS designer_messages(session_id INTEGER NOT NULL, seq INTEGER NOT NULL, role TEXT NOT NULL, text TEXT NOT NULL,
                     at INTEGER NOT NULL, model TEXT, cost_usd REAL NOT NULL DEFAULT 0, ops TEXT NOT NULL DEFAULT '', PRIMARY KEY(session_id, seq));
                 """);
+        // The canvas's game version (added 2026-11-03). A session from before has none: it is the server's (its blocks are).
+        lock (_db.Gate)
+            try { _db.Exec("ALTER TABLE designer_sessions ADD COLUMN version TEXT"); } catch (Microsoft.Data.Sqlite.SqliteException) { /* already there */ }
     }
 
-    private const string Cols = "id,owner,model,design_id,name,rev,blocks,ox,oy,oz,ax,ay,az,cost_usd,calls,pending,created,updated";
+    private const string Cols = "id,owner,model,design_id,name,rev,blocks,ox,oy,oz,ax,ay,az,cost_usd,calls,pending,created,updated,version";
 
     public DesignerSessionRecord Insert(DesignerSessionRecord s)
     {
@@ -63,10 +76,10 @@ public sealed class DesignerStore
         lock (_db.Gate)
         {
             _db.Exec("""
-                INSERT INTO designer_sessions(owner,model,design_id,name,rev,blocks,ox,oy,oz,cost_usd,calls,pending,created,updated)
-                VALUES($o,$m,$d,$n,$r,$b,$ox,$oy,$oz,0,0,'',$t,$t)
+                INSERT INTO designer_sessions(owner,model,design_id,name,rev,blocks,ox,oy,oz,cost_usd,calls,pending,created,updated,version)
+                VALUES($o,$m,$d,$n,$r,$b,$ox,$oy,$oz,0,0,'',$t,$t,$v)
                 """, ("$o", s.Owner), ("$m", s.Model), ("$d", s.DesignId), ("$n", s.Name), ("$r", s.Canvas.Rev), ("$b", s.Canvas.Encode()),
-                ("$ox", s.Offset.X), ("$oy", s.Offset.Y), ("$oz", s.Offset.Z), ("$t", AgentDb.ToUnixMs(s.Created)));
+                ("$ox", s.Offset.X), ("$oy", s.Offset.Y), ("$oz", s.Offset.Z), ("$t", AgentDb.ToUnixMs(s.Created)), ("$v", s.Canvas.Version));
             s.Id = _db.ScalarLong("SELECT last_insert_rowid()");
         }
         return s;
@@ -78,8 +91,8 @@ public sealed class DesignerStore
         lock (_db.Gate)
             _db.Exec("""
                 UPDATE designer_sessions SET model=$m, design_id=$d, name=$n, rev=$r, blocks=$b, ox=$ox, oy=$oy, oz=$oz, ax=$ax, ay=$ay, az=$az,
-                    cost_usd=$c, calls=$k, pending=$p, updated=$t WHERE id=$id
-                """, ("$m", s.Model), ("$d", s.DesignId), ("$n", s.Name), ("$r", s.Canvas.Rev), ("$b", s.Canvas.Encode()),
+                    cost_usd=$c, calls=$k, pending=$p, updated=$t, version=$v WHERE id=$id
+                """, ("$v", s.Canvas.Version), ("$m", s.Model), ("$d", s.DesignId), ("$n", s.Name), ("$r", s.Canvas.Rev), ("$b", s.Canvas.Encode()),
                 ("$ox", s.Offset.X), ("$oy", s.Offset.Y), ("$oz", s.Offset.Z), ("$ax", s.Anchor?.X), ("$ay", s.Anchor?.Y), ("$az", s.Anchor?.Z),
                 ("$c", (double)s.CostUsd), ("$k", s.Calls), ("$p", s.PendingEdits), ("$t", AgentDb.ToUnixMs(s.Updated)), ("$id", s.Id));
     }
@@ -94,7 +107,7 @@ public sealed class DesignerStore
                 Anchor = r.IsDBNull(10) ? null : new BlockPos(r.GetInt32(10), r.GetInt32(11), r.GetInt32(12)),
                 CostUsd = (decimal)r.GetDouble(13), Calls = r.GetInt32(14), PendingEdits = r.GetString(15),
                 Created = AgentDb.FromUnixMs(r.GetInt64(16)), Updated = AgentDb.FromUnixMs(r.GetInt64(17)),
-            }, ("$id", id)).FirstOrDefault();
+            }.WithVersion(AgentDb.StrOrNull(r, 18)), ("$id", id)).FirstOrDefault();
     }
 
     public DesignerMessageRecord AddMessage(long session, string role, string text, string? model = null, decimal cost = 0,

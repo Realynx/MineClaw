@@ -61,6 +61,10 @@ public sealed partial class StoryColony
                             if (g.Remove && id == 0) g.State = "done";
                         }
                         Builds.Add(b);
+                        // Blocks the pawns can't place yet (crops, liquids, signs…): shown as ghosts and said once, never a stuck job.
+                        if (b.Ghosts.Where(g => g.State == "unsupported").ToList() is { Count: > 0 } odd)
+                            Alert("warn", $"Build {b.Id} ({b.Kind}): {odd.Count} block{(odd.Count == 1 ? "" : "s")} the pawns can't place yet, left as ghosts: "
+                                          + string.Join("; ", odd.Select(g => g.Reason ?? "special placement").Distinct().Take(3)));
                     }
                     WakeIdle();
                     return (new JsonObject { ["ids"] = new JsonArray(made.Select(b => (JsonNode)b.Id!).ToArray()) }, null);

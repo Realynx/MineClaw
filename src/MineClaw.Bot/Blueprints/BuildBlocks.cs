@@ -162,7 +162,7 @@ public static class BuildBlocks
         if (quarters % 4 == 0) return meta;
         switch (KindOf(id))
         {
-            case BuildKind.Stairs: return StairsMeta(StairsAscend(meta).Turn(quarters));
+            case BuildKind.Stairs: return StairsMeta(StairsAscend(meta).Turn(quarters)) | (meta & 4); // 1.12.2: keep upside down
             case BuildKind.Door:
                 {
                     int upper = meta & 8, hinge = meta & 4;
@@ -181,7 +181,8 @@ public static class BuildBlocks
         if (id == Blocks.Torch && meta is >= 1 and <= 4) return Array.IndexOf(torchWalls, torchWalls[meta - 1].Turn(quarters)) + 1;
         if (id == Blocks.Trapdoor) return Array.IndexOf(trapWalls, trapWalls[meta & 3].Turn(quarters)) | (meta & 4);
         if (id is Blocks.Pumpkin or Blocks.JackOLantern) return ((meta + quarters) % 4 + 4) % 4;
-        return meta;
+        // Every other design block (1.12.2 stairs and doors of other woods, beds, signs, rails, logs' axes…): the design rules.
+        return DesignFacing.Rotate(id, meta, quarters);
     }
 
     /// <summary>Null = (id, meta) is a valid b1.8.1 state for a blueprint cell; else why not.</summary>

@@ -56,6 +56,7 @@ public static class PlanTransform
             return BuildBlocks.FrontMeta(M(((Dir[])[Dir.North, Dir.South, Dir.West, Dir.East])[meta - 2]));
         if (id == Blocks.FenceGate) return BuildBlocks.GateMeta(M(((Dir[])[Dir.South, Dir.West, Dir.North, Dir.East])[meta & 3])) | (meta & 4);
         if (id == Blocks.Torch) return axis == 'x' ? meta switch { 3 => 4, 4 => 3, _ => meta } : meta switch { 1 => 2, 2 => 1, _ => meta };
-        return meta;
+        // Every other design block: the design rules (axis 'x' here flips north↔south, the design rules' 'z').
+        return DesignFacing.Mirror(id, meta, axis == 'x' ? 'z' : 'x');
     }
 }

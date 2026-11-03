@@ -285,7 +285,10 @@ public sealed class GhostState
     /// <summary>False = placed with another ghost (a door's top half): drawn, never a job of its own.</summary>
     public bool Job { get; set; } = true;
     public bool Remove { get; set; }
+    /// <summary>todo | leased | blocked | done | unsupported (a block pawns can't place yet: shown and alerted, never a job).</summary>
     public string State { get; set; } = "todo";
+    /// <summary>Why an unsupported ghost can't be placed ("crops are planted, not placed").</summary>
+    public string? Reason { get; set; }
     public long Rev { get; set; }
 }
 

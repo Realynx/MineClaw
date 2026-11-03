@@ -39,32 +39,53 @@ public static class DesignerTools
             Obj("\"a\":" + Str0 + ",\"b\":" + Str0 + ",\"from\":" + P3 + ",\"to\":" + P3, "a", "b")),
         new("clear", "Empty the whole canvas.", Obj("")),
         new("describe", "Canvas summary, or one layer y as rows with a legend.", Obj("\"y\":{\"type\":\"integer\"}")),
+        new("find_blocks", "Look up block names (words: name, colour, wood, category). Returns specs to use as b.",
+            Obj("\"q\":" + Str0 + ",\"n\":{\"type\":\"integer\"}", "q")),
     ];
 
-    /// <summary>The cached system prompt (≈400 tokens): the plot, the ground, the conventions and the palette.</summary>
-    public static string System(string? player) =>
-        $"You are the Design Studio builder: you co-design a Minecraft {GameData.Current.VersionId} build with {player ?? "the player"} on a sandbox " +
+    /// <summary>
+    /// The cached system prompt: the plot, the ground, the conventions and the version's vocabulary as a compact category summary
+    /// (<see cref="DesignPalette.Summary"/>, ≈200 tokens: never the whole list; find_blocks looks names up). One text per version
+    /// and player, so the cached prefix holds.
+    /// </summary>
+    public static string System(string? player, string? version = null)
+    {
+        var pal = DesignPalette.For(version ?? GameData.Current.VersionId);
+        return $"You are the Design Studio builder: you co-design a Minecraft {pal.Version} build with {player ?? "the player"} on a sandbox " +
         "canvas (not the world; nothing is spent). Plot: x,z 0..63, y -16..47; +x east, +z south (north = -z); the view starts at the " +
         "centre (32,0,32). y=0 is the first layer above flat grass; y=-1 is the grass layer and y -16..-1 is solid ground: dig it with " +
         "remove (that air is dug out when built), then build floors, walls, stairs or ladders down there (basements, cellars, " +
         "foundations); \"earth\" fills dug cells back. Edit only with the tools, coordinates inclusive. Prefer few big calls (box, line) " +
-        "over many places. A saved design is at most 32 wide/deep and 32 high, dug layers included: stay inside that. Blocks (design palette only): stone cobblestone " +
-        "mossy_cobblestone planks log:oak|spruce|birch sandstone bricks stone_bricks:mossy|cracked obsidian glass glass_pane wool:<colour> " +
-        "glowstone bookshelf clay netherrack snow_block fence fence_gate iron_bars torch:floor (stands on the block below) " +
-        "torch:wall=<side> and ladder:wall=<side> (<side> = where the supporting block is, seen from the torch or ladder: torch:wall=west " +
-        "hangs on the solid block to its west, on that block's east face; it must be a full block) trapdoor slab:stone|sandstone|wood|cobble|brick|stonebrick wooden_stairs cobblestone_stairs brick_stairs " +
-        "stone_brick_stairs (:dir = the way up) wooden_door iron_door (:dir = the side it opens to; place the lower half, the top is added; it " +
-        "stands on a full block) chest furnace dispenser (:dir = front) crafting_table pumpkin jack_o_lantern sand gravel. No grass, leaves, " +
-        "liquids, beds, signs. Doors and windows need openings in walls. When the user names \"the selection\" use its box. Reply after the " +
-        "edits with ONE or two short sentences on what changed, in plain words (no coordinates unless asked).";
+        "over many places. A saved design is at most 32 wide/deep and 32 high, dug layers included: stay inside that.\n" +
+        $"Blocks: any {pal.Version} block by its minecraft name (oak_stairs), display name, or name:variant (wool:red, " +
+        (pal.Version == DesignVersions.Release ? "stained_glass:light_blue, log:spruce, planks:birch, concrete:white" : "log:spruce, stone_slab:cobblestone, stone_bricks:mossy") +
+        "); unsure of a name: find_blocks. Add :<dir> for a facing: stairs = the way up, doors = the side they open to (place the lower " +
+        "half, the top is added; on a full block), beds = the head's side (the head is added), chests/furnaces/pumpkins = the front, " +
+        "gates = the way through; torch:floor (stands on the block below), torch:wall=<side>, ladder:wall=<side> (<side> = where the " +
+        "supporting block is, seen from the torch or ladder: torch:wall=west hangs on the solid block to its west, on that block's east " +
+        "face; it must be a full block)" + (pal.Version == DesignVersions.Release ? "; :top for upper slabs and upside-down stairs" : "") +
+        ". Doors and windows need openings in walls.\n" + pal.Summary() +
+        "When the user names \"the selection\" use its box. Reply after the edits with ONE or two short sentences on what changed, in plain " +
+        "words (no coordinates unless asked).";
+    }
 
     /// <summary>Runs one tool call on the canvas: (text for the model, the op applied or null, whether it was an error).</summary>
     public static (string Text, DesignerOp? Op, bool Error) Run(DesignerCanvas canvas, string name, JsonElement input)
     {
+        // Every name, rule and summary in the canvas's own version.
+        using var scope = DesignVersions.Use(canvas.Version);
         try
         {
             switch (name)
             {
+                case "find_blocks":
+                    {
+                        var q = Str(input, "q");
+                        int n = input.TryGetProperty("n", out var nv) && nv.ValueKind == JsonValueKind.Number ? Math.Clamp(nv.GetInt32(), 1, 40) : 15;
+                        var hits = canvas.Palette.Find(q, n);
+                        if (hits.Count == 0) return ($"no {canvas.Version} block matches '{q}'" + (canvas.Palette.DidYouMean(q) is { Count: > 0 } dm ? "; did you mean " + string.Join(", ", dm) : ""), null, false);
+                        return (string.Join("\n", hits.Select(e => $"{e.Spec} = {e.Name} ({e.Category}{(e.Facing ? ", facing" : "")})")), null, false);
+                    }
                 case "describe":
                     return (input.TryGetProperty("y", out var y) && y.ValueKind == JsonValueKind.Number ? canvas.Layer(y.GetInt32()) : canvas.Describe(16), null, false);
                 case "clear":
@@ -112,9 +133,17 @@ public static class DesignerTools
                         var (id, meta) = Block(input, "b");
                         ((int X, int Y, int Z) Lo, (int X, int Y, int Z) Hi) box = input.TryGetProperty("from", out _) ? Norm(P(input, "from"), P(input, "to")) : ((0, -DesignerCanvas.Depth, 0), (DesignerCanvas.Size - 1, DesignerCanvas.Height - 1, DesignerCanvas.Size - 1));
                         var (lo, hi) = (box.Lo, box.Hi);
+                        // Same block = same id and variant (wool colour, slab material; not its facing or half); a two-cell block
+                        // (door, bed) is replaced by its first half only (the canvas pairs the second).
+                        bool Matches(int cid, int cmeta) => from == null ? !DesignFacing.TwoCell(cid)
+                            : cid == from.Value.Id && (cmeta & DesignFacing.VariantMask(cid)) == (from.Value.Meta & DesignFacing.VariantMask(cid)) && !DesignFacing.SecondHalf(cid, cmeta);
+                        var famTo = DesignFacing.FamilyOf(id);
                         var cells = canvas.Blocks.Where(kv => kv.Key.X >= lo.X && kv.Key.X <= hi.X && kv.Key.Y >= lo.Y && kv.Key.Y <= hi.Y && kv.Key.Z >= lo.Z && kv.Key.Z <= hi.Z)
-                            .Where(kv => from == null ? !(BuildBlocks.KindOf(kv.Value.Id) == BuildKind.Door) : kv.Value.Id == from.Value.Id && (BuildBlocks.HasVariants(kv.Value.Id) ? kv.Value.Meta == from.Value.Meta : true))
-                            .Select(kv => new CanvasCell(kv.Key.X, kv.Key.Y, kv.Key.Z, id, BuildBlocks.Directional(id) && BuildBlocks.KindOf(kv.Value.Id) == BuildBlocks.KindOf(id) ? kv.Value.Meta : meta)).ToList();
+                            .Where(kv => Matches(kv.Value.Id, kv.Value.Meta))
+                            // A facing block replaced by one of its family keeps its facing (stairs for stairs, chest for furnace).
+                            .Select(kv => new CanvasCell(kv.Key.X, kv.Key.Y, kv.Key.Z, id, DesignFacing.HasFacing(famTo) && DesignFacing.FamilyOf(kv.Value.Id) == famTo
+                                && canvas.RefusalOf(id, (kv.Value.Meta & ~DesignFacing.VariantMask(id)) | (meta & DesignFacing.VariantMask(id))) == null
+                                ? (kv.Value.Meta & ~DesignFacing.VariantMask(id)) | (meta & DesignFacing.VariantMask(id)) : meta)).ToList();
                         return Done(canvas, "replace", $"replaced {aSpec} with {Name(id, meta)}", canvas.Apply(cells, out var rej), rej);
                     }
             }
@@ -135,7 +164,7 @@ public static class DesignerTools
         return ($"ok, {changed.Count} cells changed (r{canvas.Rev}){tail}", new DesignerOp(kind, label, changed), false);
     }
 
-    private static string Name(int id, int meta) => id == DesignerCanvas.Earth ? "ground" : BuildBlocks.Name(id, meta);
+    private static string Name(int id, int meta) => id == DesignerCanvas.Earth ? "ground" : DesignPalette.Current.Name(id, meta).ToLowerInvariant();
 
     // ------------------------------------------------------------------ argument parsing
 
@@ -145,18 +174,19 @@ public static class DesignerTools
     /// <summary>A block spec ("cobblestone_stairs:north") → (id, canonical meta).</summary>
     public static (int Id, int Meta) Block(JsonElement e, string k) => Resolve(Str(e, k));
 
+    /// <summary>
+    /// A block spec in the version of this flow → (id, meta): "earth" (a dug cell filled back), else the design palette's spelling
+    /// (<see cref="DesignPalette.TryResolve"/>: names, variants, facings, wall sides); a bad one throws with "did you mean …?".
+    /// </summary>
     public static (int Id, int Meta) Resolve(string spec)
     {
         var s = spec.Trim().ToLowerInvariant().Replace(' ', '_');
         // Undisturbed ground (below y 0 only): a dug cell filled back in.
         if (s is "earth" or "ground" or "fill_ground") return (DesignerCanvas.Earth, 0);
         if (Attached(s) is { } named) return named;
-        var parts = s.Split(':', 2);
-        var (entry, why) = BlueprintParser.Resolve('X', parts[0], parts.Length > 1 ? parts[1] : null, s);
-        if (entry == null) throw new ArgumentException(why ?? $"unknown block '{spec}'");
-        int meta = entry.CanonicalMeta;
-        if (entry.Id == Blocks.Torch && meta == 0) meta = 5;
-        return (entry.Id, meta);
+        var (id, meta) = DesignPalette.Current.Resolve(s);
+        if (id == Blocks.Torch && meta == 0) meta = 5;
+        return (id, meta);
     }
 
     /// <summary>

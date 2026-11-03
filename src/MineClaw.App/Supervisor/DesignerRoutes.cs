@@ -124,6 +124,7 @@ public sealed class DesignerRoutes
                     "messages" => await Locked(id, () => MessageAsync(id, r, ct), ct).ConfigureAwait(false),
                     "canvas" => await Locked(id, () => Task.FromResult(Canvas(id, r)), ct).ConfigureAwait(false),
                     "save" => await Locked(id, () => Task.FromResult(Save(id, r)), ct).ConfigureAwait(false),
+                    "version" => await Locked(id, () => Task.FromResult(Version(id, r)), ct).ConfigureAwait(false),
                     _ => Reply(404, new { error = "not found" }),
                 };
             }
@@ -163,24 +164,30 @@ public sealed class DesignerRoutes
             }),
             @default = def?.Id,
             version = GameData.Current.VersionId,
+            versions = DesignVersions.All,
             budget,
         });
     }
 
     // ------------------------------------------------------------------ sessions
 
-    private sealed record CreateBody(string? Model, long? DesignId, string? Player, string? Who);
+    private sealed record CreateBody(string? Model, long? DesignId, string? Version, string? ConvertTo, string? Player, string? Who);
 
     private static string Requester(string? player, string? who) =>
         !string.IsNullOrWhiteSpace(player) ? player.Trim() : !string.IsNullOrWhiteSpace(who) ? who.Trim() : "a player";
 
     private SupervisorReply Create(SupervisorRequest r)
     {
-        var b = Parse<CreateBody>(r.Body) ?? new CreateBody(null, null, null, null);
+        var b = Parse<CreateBody>(r.Body) ?? new CreateBody(null, null, null, null, null, null);
         var model = DesignerModels.Resolve(_llm, b.Model);
         if (model == null) return Reply(400, new { error = b.Model is { Length: > 0 } ? $"model '{b.Model}' isn't configured" : "no model is configured" });
+        string? version = null, convertTo = null;
+        if (b.Version is { Length: > 0 } && (version = DesignVersions.Normalize(b.Version)) == null) return Reply(400, new { error = BadVersion(b.Version) });
+        if (b.ConvertTo is { Length: > 0 } && (convertTo = DesignVersions.Normalize(b.ConvertTo)) == null) return Reply(400, new { error = BadVersion(b.ConvertTo) });
         var s = new DesignerSessionRecord { Owner = Requester(b.Player, b.Who), Model = model.Id, Name = "new design" };
+        s.Canvas.Version = version ?? DesignVersions.Server;
         string? note = null;
+        ConvertReport? compat = null;
         if (b.DesignId is { } did)
         {
             if (_service() is not { } svc) return Reply(503, new { error = "designs are unavailable (Bot:Blueprints off)" });
@@ -191,16 +198,76 @@ public sealed class DesignerRoutes
             s.DesignId = did;
             s.Name = rec?.Name ?? s.Name;
             note = why;
-            Settle(s);
+            // "Use it in a world of another version" (Story): the design's cells converted, with the report (missing ones left out).
+            if (convertTo != null && convertTo != canvas.Version) compat = Convert(s, convertTo);
+            using (DesignVersions.Use(s.Version)) Settle(s);
         }
         _store.Insert(s);
         if (note != null) _store.AddMessage(s.Id, "assistant", note);
-        return Reply(200, SessionJson(s));
+        return Reply(200, SessionJson(s, compat));
     }
+
+    private static string BadVersion(string v) => $"version '{v}': use {string.Join(" or ", DesignVersions.All)}";
+
+    /// <summary>The session's canvas converted to <paramref name="to"/> (cells that don't exist there left out), its version set.</summary>
+    private static ConvertReport Convert(DesignerSessionRecord s, string to)
+    {
+        var from = s.Version;
+        var (cells, report) = DesignConvert.Convert(s.Canvas.Blocks, from, to);
+        var next = new DesignerCanvas { Version = to, Rev = s.Canvas.Rev + 1 };
+        // Straight onto the new canvas (pairs and attachments are carried over as they stand, already whole).
+        next.Load(cells, s.Canvas.Dug);
+        s.Canvas = next;
+        return report;
+    }
+
+    private sealed record VersionBody(string? Version, bool? Apply, string? Player, string? Who);
+
+    /// <summary>
+    /// <c>POST sessions/{id}/version {version, apply?}</c>: the canvas's target version. An empty canvas just switches. Otherwise
+    /// <c>apply</c> false (the default) is the compatibility check: <c>{version, target, report}</c> (what stays the same, what is
+    /// substituted, what doesn't exist there); <c>apply</c> true converts (the missing blocks are left out), tells the model, and
+    /// returns the session.
+    /// </summary>
+    private SupervisorReply Version(long id, SupervisorRequest r)
+    {
+        if (_store.Get(id) is not { } s) return Reply(404, new { error = "no such session" });
+        var b = Parse<VersionBody>(r.Body);
+        if (DesignVersions.Normalize(b?.Version) is not { } target) return Reply(400, new { error = BadVersion(b?.Version ?? "") });
+        if (target == s.Version) return Reply(200, new { version = s.Version, target, changed = false, report = (object?)null, session = SessionJson(s) });
+        bool empty = s.Canvas.Count == 0 && s.Canvas.Dug.Count == 0;
+        if (empty)
+        {
+            s.Canvas.Version = target;
+            _store.Update(s);
+            return Reply(200, new { version = s.Version, target, changed = true, report = (object?)null, session = SessionJson(s) });
+        }
+        if (b!.Apply != true)
+        {
+            var (_, check) = DesignConvert.Convert(s.Canvas.Blocks, s.Version, target);
+            return Reply(200, new { version = s.Version, target, changed = false, report = ReportJson(check), session = (object?)null });
+        }
+        var from = s.Version;
+        var report = Convert(s, target);
+        var line = $"the canvas was converted {report.Text()}" + (report.Missing.Count > 0 ? " (left out)" : "");
+        s.PendingEdits = s.PendingEdits.Length == 0 ? line : Clip(s.PendingEdits + "; " + line, 600);
+        using (DesignVersions.Use(s.Version)) Settle(s);
+        _store.Update(s);
+        _store.AddMessage(s.Id, "assistant", $"Converted the design from {from} to {target}: {report.Text()}.");
+        return Reply(200, new { version = s.Version, target, changed = true, report = ReportJson(report), session = SessionJson(s) });
+    }
+
+    private static object ReportJson(ConvertReport r) => new
+    {
+        from = r.From, to = r.To, same = r.Same, compatible = r.Compatible, exact = r.Exact, text = r.Text(),
+        substituted = r.Substituted.Select(kv => new { name = kv.Key, count = kv.Value }),
+        missing = r.Missing.Select(kv => new { name = kv.Key, count = kv.Value }),
+    };
 
     private SupervisorReply Session(long id)
     {
         if (_store.Get(id) is not { } s) return Reply(404, new { error = "no such session" });
+        using var scope = DesignVersions.Use(s.Version);
         if (Settle(s)) _store.Update(s);
         return Reply(200, SessionJson(s));
     }
@@ -220,18 +287,34 @@ public sealed class DesignerRoutes
         return true;
     }
 
-    private object SessionJson(DesignerSessionRecord s)
+    private object SessionJson(DesignerSessionRecord s, ConvertReport? compat = null)
     {
         var revs = s.DesignId is { } did && _service()?.History?.Revisions is { } h
-            ? h.List(did, 50).Select(v => (object)new { rev = v.Rev, author = v.Author, author_kind = v.AuthorKind, message = v.Message, tag = v.Tag, created = v.At.ToUnixTimeMilliseconds(), n = v.Blocks }).ToList()
+            ? h.List(did, 50).Select(v => (object)new
+            {
+                rev = v.Rev, author = v.Author, author_kind = v.AuthorKind, message = v.Message, tag = v.Tag, created = v.At.ToUnixTimeMilliseconds(), n = v.Blocks,
+                version = DesignVersions.OfDsl(v.Dsl),
+            }).ToList()
             : [];
+        var server = DesignVersions.Server;
+        var pal = DesignPalette.For(s.Version);
+        // Built on this server: as it is, converted (substitutions) or not at all (blocks it doesn't have).
+        object? serverCompat = null;
+        if (s.Version != server && s.Canvas.Count > 0) serverCompat = ReportJson(DesignConvert.Convert(s.Canvas.Blocks, s.Version, server).Report);
         return new
         {
             id = s.Id, owner = s.Owner, model = s.Model, design_id = s.DesignId, name = s.Name, rev = s.Canvas.Rev, blocks = s.Canvas.Wire(), dug = s.Canvas.DugWire(),
             anchor = s.Anchor is { } a ? new[] { a.X, a.Y, a.Z } : null,
             messages = _store.Messages(s.Id).Select(MessageJson),
-            cost_usd = (double)s.CostUsd, calls = s.Calls, version = GameData.Current.VersionId,
-            palette = DesignerCanvas.Palette().Select(p => new { id = p.Id, meta = p.Meta, name = p.Name, facing = p.Facing }),
+            cost_usd = (double)s.CostUsd, calls = s.Calls, version = s.Version, server_version = server, versions = DesignVersions.All,
+            palette = pal.Entries.Select(p => new
+            {
+                id = p.Id, meta = p.Meta, name = p.Name, facing = p.Facing, spec = p.Spec, cat = p.Category, family = p.Family.ToString().ToLowerInvariant(),
+                icon = p.Icon,
+            }),
+            categories = DesignPalette.Categories,
+            compat = compat == null ? null : ReportJson(compat),
+            server_compat = serverCompat,
             plot = new { size = DesignerCanvas.Size, height = DesignerCanvas.Height, depth = DesignerCanvas.Depth },
             revisions = revs,
             created = s.Created.ToUnixTimeMilliseconds(), updated = s.Updated.ToUnixTimeMilliseconds(),
@@ -288,6 +371,7 @@ public sealed class DesignerRoutes
     private SupervisorReply Canvas(long id, SupervisorRequest r)
     {
         if (_store.Get(id) is not { } s) return Reply(404, new { error = "no such session" });
+        using var scope = DesignVersions.Use(s.Version);
         var b = Parse<CanvasBody>(r.Body);
         if (b == null) return Reply(400, new { error = "body must be JSON {rev, ops:[{kind, label, cells:[[x,y,z,id,meta]]}], anchor?}" });
         if (ApplyEdits(s, b.Ops, out var applied, out var fixedCells) is { } err) return Reply(400, new { error = err });
@@ -300,6 +384,7 @@ public sealed class DesignerRoutes
     private async Task<SupervisorReply> MessageAsync(long id, SupervisorRequest r, CancellationToken ct)
     {
         if (_store.Get(id) is not { } s) return Reply(404, new { error = "no such session" });
+        using var scope = DesignVersions.Use(s.Version);
         var b = Parse<MessageBody>(r.Body);
         var text = b?.Text?.Trim() ?? "";
         if (text.Length == 0) return Reply(400, new { error = "text is empty" });
