@@ -6,7 +6,6 @@ namespace MineClaw.ViewerBridge.Data;
 
 public sealed record RaptorTreeNodeDto(int Index, int Layer, bool IsLeaf, string Title, string KindLabel, int Tokens, int ChildCount, int LeavesBelow, bool Dirty,
     IReadOnlyList<int> Parents, IReadOnlyList<int>? Children, string? DocRef);
-public sealed record RaptorTreeResponse(RaptorMetaDto? Meta, string? Note, string StateKey, int? Root, IReadOnlyList<int> Top, IReadOnlyList<RaptorTreeNodeDto> Nodes);
 /// <summary>RaptorTreeMeta on the wire: <c>build_id</c> is an i64 beyond JS's safe range, so it goes as its exact decimal string.</summary>
 public sealed record RaptorMetaDto(int NumLayers, int NextIndex, int Dimensions, string EmbeddingModel, string BuildId, DateTimeOffset BuiltAt, int LeavesAtBuild,
     int InsertedSinceBuild, int RemovedSinceBuild, double BaselineLeafParentSimilarity, double InsertedSimilaritySum, int InsertedSimilarityCount, long InsertSeq,
@@ -24,35 +23,9 @@ public sealed record RaptorNodeDetail(RaptorTreeNodeDto Node, string Title, stri
 public sealed record RaptorLeaf(int Index, string DocRef, string Kind, string Title, int Tokens);
 public sealed record RaptorLeavesResponse(int Node, IReadOnlyList<RaptorLeaf> Leaves, int TokenSum);
 
-/// <summary>The RAPTOR tree page (explorer-spec §4), ported from the explorer's RaptorTreeViewModel: lazy tree rows, node detail, leaves.</summary>
+/// <summary>RAPTOR node detail and leaves (explorer-spec §4, ported from the explorer's RaptorTreeViewModel) for the Memory activity detail panel.</summary>
 public static class RaptorViews
 {
-    public static RaptorTreeResponse Tree(MemoryBank bank, int? root, int depth)
-    {
-        if (!bank.HasTree) return new RaptorTreeResponse(RaptorMetaDto.From(bank.TreeMeta), bank.TreeNote ?? "no RAPTOR tree", bank.StateKey, root, [], []);
-        var g = bank.Graph();
-        return bank.ReadTree(t =>
-        {
-            var top = root is { } r ? (t.TryGet(r, out _) ? [r] : new List<int>()) : t.Roots.OrderBy(n => n.Index).Select(n => n.Index).ToList();
-            var nodes = new List<RaptorTreeNodeDto>();
-            var seen = new HashSet<int>();
-            var queue = new Queue<(int Index, int Level)>(top.Select(i => (i, 0)));
-            while (queue.Count > 0 && nodes.Count < 5000)
-            {
-                var (i, level) = queue.Dequeue();
-                if (!seen.Add(i) || !t.TryGet(i, out var n)) continue;
-                List<int>? kids = null;
-                if (level < depth)
-                {
-                    kids = SortedChildren(t, n);
-                    foreach (var c in kids) queue.Enqueue((c, level + 1));
-                }
-                nodes.Add(Row(bank, g, t, n, kids));
-            }
-            return new RaptorTreeResponse(RaptorMetaDto.From(bank.TreeMeta), null, MemoryBank.StateKeyOf(t), root, top, nodes);
-        }, new RaptorTreeResponse(RaptorMetaDto.From(bank.TreeMeta), "no RAPTOR tree", "none", root, [], []));
-    }
-
     public static RaptorNodeDetail? Node(MemoryBank bank, int index)
     {
         if (!bank.HasTree) return null;
