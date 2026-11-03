@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using MineClaw.Agent.Tools;
 using MineClaw.Bot.Game;
 using MineClaw.Bot.Memory;
@@ -231,6 +232,15 @@ public static class GameToolSet
                     Math.Clamp(i.Int("radius") ?? options.DefaultMineRadius, 2, 48), ct));
                 return tool is { } t && !t.Note.StartsWith("had ", StringComparison.Ordinal) ? r with { Text = t.Note + "; " + r.Text } : r;
             }, longRunning: true);
+        // The established boolean store shorthand is a default-store/keep switch, not an arbitrary type coercion.
+        tools.SetInputAdapter("harvest_generator", input =>
+        {
+            if (input.ValueKind != JsonValueKind.Object || !input.TryGetProperty("store", out var store)
+                || store.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return input;
+            var o = JsonNode.Parse(input.GetRawText())!.AsObject();
+            o["store"] = store.GetBoolean() ? "true" : "false";
+            return JsonSerializer.SerializeToElement(o);
+        });
         tools.Register("harvest_generator",
             "Repeatedly mine a cobble generator's output block. Big counts run unattended: deposits when full (store), re-tools, eats.",
             ToolSchema.Create().Str("at", "output block " + At + ", or auto").Int("count", "up to 20000").Str("store", "chest " + At, required: false)
@@ -433,12 +443,17 @@ public static class GameToolSet
             ToolSchema.Create().Str("at", "x,y,z").Build(),
             async (i, ct) => Locations.ParseCoords(i.ReqStr("at")) is { } p ? R(await c.DigBlockAsync(p.X, p.Y, p.Z, ct)) : ToolResult.Error("at must be x,y,z"),
             longRunning: true);
-        tools.Register("use_block", "Right-click a block (door, lever, button, bed...).",
+        tools.Register("use_block", "Right-click a block (door, bed...; held hoe/seeds/bonemeal).",
             ToolSchema.Create().Str("at", At).Build(),
             async (i, ct) =>
             {
                 var at = i.ReqStr("at");
                 if (Resolve(at, places) is not { } p) return ToolResult.Error($"unknown place '{at}'");
+                // On a block that doesn't open, right-click uses the held farming item on that block.
+                int id = c.World.GetBlock(p);
+                var held = c.World.Inventory.HeldItem(c.World.Player.HeldSlot);
+                if ((id == 0 || !Blocks.Get(id).Interactable) && UsedOnBlocks(held))
+                    return R(await c.UseItemOnBlockAsync(p, BlockFace.Top, held.Id, held.Id == Items.Dye ? held.Damage : null, ct));
                 return R(await c.ActivateBlockAsync(p.X, p.Y, p.Z, ct));
             }, longRunning: true);
         // None carried: fetched from a chest, crafted (bread from chest wheat) or cooked first (FoodSupply); else the shortfall.
@@ -449,6 +464,11 @@ public static class GameToolSet
     }
 
     // ------------------------------------------------------------------ helpers
+
+    /// <summary>Held items whose right-click acts on the clicked block: hoes, seeds (wheat, melon, pumpkin), bone meal (dye 15).</summary>
+    internal static bool UsedOnBlocks(ItemStack held) =>
+        !held.IsEmpty && (held.Id is >= Items.WoodenHoe and <= Items.GoldenHoe or Items.Seeds or Items.MelonSeeds or Items.PumpkinSeeds
+                          || held.Id == Items.Dye && held.Damage == Items.BoneMeal);
 
     /// <summary>
     /// Live 10-28 (torching the island at night): the worker guessed torch cells over air ("-12,64,-3 has nothing solid on

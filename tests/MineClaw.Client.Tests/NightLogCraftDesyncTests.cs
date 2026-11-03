@@ -103,6 +103,25 @@ public class NightLogCraftDesyncTests
         Assert.True(v.Rejected <= 1, $"{v.Rejected} real clicks rejected");
     }
 
+    [Theory]
+    [InlineData(3, 5, 16)]
+    public async Task Mixed_planks_share_a_recipe_but_never_a_grid_stack(int oak, int spruce, int sticks)
+    {
+        using var data = MineClaw.Data.Versioning.GameData.Override(MineClaw.Data.Versioning.Release1122GameData.Instance);
+        var (c, s, v) = await StartAsync(inv =>
+        {
+            inv[9] = Harness.Stack(Blocks.Planks, oak);
+            inv[10] = Harness.Stack(Blocks.Planks, spruce, 1);
+        });
+        await using var _ = c;
+        using var __ = s;
+        var r = await c.CraftAsync(Items.Stick, -1, sticks);
+        Assert.True(r.Ok, r.ToString());
+        AssertSameAsServer(c, v);
+        Assert.Equal(sticks, v.Srv.CountItem(Items.Stick));
+        Assert.Equal(oak + spruce - sticks / 2, v.Srv.CountItem(Blocks.Planks));
+    }
+
     [Fact]
     public async Task Without_a_race_crafting_needs_no_resync()
     {

@@ -84,6 +84,12 @@ public sealed class HiveConfig
     public double ClaimTtlSeconds { get; set; } = 60;
     /// <summary>A player who talked to a specific hive bot keeps talking to it for this long (follow-ups without a name).</summary>
     public double StickySeconds { get; set; } = 45;
+    /// <summary>Minimum time between main-initiated choruses (seconds).</summary>
+    public double ChorusIntervalSeconds { get; set; } = 20;
+    /// <summary>Rolling chorus rate-limit window (seconds).</summary>
+    public double ChorusWindowSeconds { get; set; } = 300;
+    /// <summary>Maximum choruses in the rolling window.</summary>
+    public int ChorusMaxPerWindow { get; set; } = 3;
     /// <summary>A clone keeps a player's unnamed follow-ups only this long after it last heard or answered them (else main).</summary>
     public double CloneThreadSeconds { get; set; } = 30;
     /// <summary>Clone chat name: {0} = main display name, {1} = the clone's number ("maid-chan 67").</summary>

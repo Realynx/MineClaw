@@ -233,6 +233,35 @@ public class VisionTests
     }
 
     [Fact]
+    public void Default_options_never_download_the_client_jar()
+    {
+        // Game assets are never fetched unless the operator opts in (Bot:Vision:AllowDownload=true).
+        Assert.False(new TextureOptions().AllowDownload);
+        Assert.False(new VisionOptions().AllowDownload);
+        var dir = Directory.CreateTempSubdirectory("mc-nodownload").FullName;
+        try
+        {
+            var handler = new CountingHandler();
+            var lines = new List<string>();
+            var o = new TextureOptions { ClientJar = Path.Combine(dir, "missing.jar"), AssetsDir = dir, SearchLauncherDirs = false };
+            Assert.Null(TextureLocator.Load(o, lines.Add, new HttpClient(handler)));
+            Assert.Equal(0, handler.Requests);
+            Assert.Contains(lines, l => l.Contains("AllowDownload=true"));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    private sealed class CountingHandler : HttpMessageHandler
+    {
+        public int Requests;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Interlocked.Increment(ref Requests);
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
+        }
+    }
+
+    [Fact]
     public void Atlas_reads_only_the_pngs_from_a_jar_and_extracts_them()
     {
         var dir = Directory.CreateTempSubdirectory("mc-jar").FullName;

@@ -86,6 +86,30 @@ public class ToolMappingTests
     }
 
     [Fact]
+    public async Task Use_block_with_a_hoe_seeds_or_bone_meal_held_uses_it_on_the_block_doors_still_open()
+    {
+        // Farming items act on the target block; containers still open and ordinary held blocks do not place.
+        var (h, c) = TestBot.Create();
+        c.World.SetBlock(1, 64, 1, Blocks.Grass, 0);
+        c.World.SetBlock(2, 65, 0, Blocks.Chest, 0);
+        c.World.SetBlock(3, 65, 1, Blocks.Crops, 2);
+        c.World.Player.HeldSlot = 0;
+        c.Give(36, Items.StoneHoe, 1);
+        await h.Run("use_block", new { at = "1,64,1" });
+        await h.Run("use_block", new { at = "2,65,0" }); // a chest opens, whatever is held
+        c.Give(36, Items.Dye, 3, Items.BoneMeal);
+        await h.Run("use_block", new { at = "3,65,1" });
+        c.Give(36, Blocks.Cobblestone, 3);
+        await h.Run("use_block", new { at = "1,64,1" }); // a block in hand: still a plain right-click (place is its own tool)
+        var calls = c.CallList;
+        Assert.Contains($"use_on 1,64,1 Top {Items.StoneHoe}:", calls);
+        Assert.Contains("activate 2,65,0", calls);
+        Assert.Contains($"use_on 3,65,1 Top {Items.Dye}:{Items.BoneMeal}", calls);
+        Assert.Contains("activate 1,64,1", calls);
+        Assert.DoesNotContain("activate 3,65,1", calls);
+    }
+
+    [Fact]
     public async Task Actions_map_to_client_calls()
     {
         var (h, c) = TestBot.Create();

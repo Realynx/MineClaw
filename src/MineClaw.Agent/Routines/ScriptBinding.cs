@@ -56,7 +56,7 @@ public static class ScriptBindings
 
     /// <summary>Calls that act on the world or other players (dig/place/attack/take/give items, build...): trusted creators only.</summary>
     private static readonly Regex WorldCalls = new(
-        @"\b(?:dig|mine|mineAt|mine_at|place|attack|defend|guard|guardArea|build|use_block|useBlock|use|deposit|withdraw|take|give|give_items|giveItems|toss|drop|drop_items|dropItems|craft|smelt|chop|chop_tree|chopTree|gen|harvest_generator|harvestGenerator|mineGen|harvestFarm|chopTrees|store|restock|deliver|gather|stash|handTo|makeRoom|move|move_items|moveItems|organize_chest|sort|eat|skill|collect|collect_drops|acquire|ensure|parallel|spawn|crew)\s*\(",
+        @"\b(?:dig|mine|mineAt|mine_at|place|attack|defend|guard|guardArea|build|use_block|useBlock|use|deposit|withdraw|take|give|give_items|giveItems|toss|drop|drop_items|dropItems|craft|smelt|chop|chop_tree|chopTree|gen|harvest_generator|harvestGenerator|mineGen|harvestFarm|chopTrees|store|restock|deliver|gather|stash|handTo|makeRoom|move|move_items|moveItems|organize_chest|sort|eat|skill|collect|collect_drops|acquire|ensure|parallel|spawn|crew|excavate|seal|lightUp|pattern\.(?:learn|apply))\s*\(",
         RegexOptions.Compiled);
 
     /// <summary>True when the code calls anything beyond movement, gaze, gestures, chat and reads.</summary>

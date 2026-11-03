@@ -182,7 +182,7 @@ public sealed partial class MinecraftClient
         var parts = groups.OrderByDescending(kv => kv.Value).Select(kv => $"{ItemName(kv.Key.Item1, kv.Key.Item2)} x{kv.Value}");
         string head = $"{w.Type.ToString().ToLowerInvariant()} ({w.ContainerSlots} slots, {free} free)";
         if (w.Type == WindowType.Furnace)
-            head += $" progress {w.SmeltProgress:P0}{(w.IsBurning ? " burning" : "")}; in={Stack(w.Get(0))} fuel={Stack(w.Get(1))} out={Stack(w.Get(2))}";
+            head += $" progress {Percent.Of(w.SmeltProgress)}{(w.IsBurning ? " burning" : "")}; in={Stack(w.Get(0))} fuel={Stack(w.Get(1))} out={Stack(w.Get(2))}";
         return Truncate(head + ": " + (groups.Count == 0 ? "empty" : string.Join(", ", parts)), maxChars);
     }
 

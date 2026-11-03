@@ -245,6 +245,7 @@ public static class CloneMode
                 : DateTimeOffset.UtcNow - lastDangerAt < TimeSpan.FromSeconds(15) ? lastDanger : "died", runner, taskOrders, subhives,
             TimeSpan.FromSeconds((bodiesOptions ?? new MineClaw.Bot.Bodies.BodiesOptions()).ShutdownRecallSeconds), crews, firstCrew);
         host0.Body = body;
+        host0.ChorusSpeakers = () => MineClaw.Hive.Chat.HiveChorus.Speakers(bot.Bodies, main: false);
         // Spawned/teleported over the void: the client holds still (never falls, never confirms the teleport, so no floating kick);
         // the host asks the trusted players for a /tp once, tells main, pauses the task, and resumes it on landing.
         host0.TrustedPlayers = () => rt.Options.Self.TrustedPlayers;

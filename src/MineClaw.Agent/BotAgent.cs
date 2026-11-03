@@ -618,6 +618,15 @@ public sealed partial class BotAgent
                 await SayBrainAsync(speech, cx, text, ct).ConfigureAwait(false);
             }
 
+            if (response.StopReason == StopReasons.MaxTokens)
+            {
+                var cappedUses = response.ToolUses.ToList();
+                if (cappedUses.Count > 0)
+                    episode.Messages.Add(new LlmMessage(LlmRole.User, (await TruncatedToolsAsync(cappedUses).ConfigureAwait(false)).ToList<LlmBlock>()));
+                _log.LogWarning("response truncated; remaining tools not executed");
+                break;
+            }
+
             if (response.StopReason == StopReasons.Refusal)
             {
                 _log.LogWarning("model refused");
@@ -1199,6 +1208,9 @@ public sealed partial class BotAgent
             Purpose = "compact",
         }, ct).ConfigureAwait(false);
         _usage.Record(response.Model, response.Usage, ModelTier.Cheap);
+        ct.ThrowIfCancellationRequested();
+        if (response.StopReason != StopReasons.EndTurn || response.ToolUses.Any() || string.IsNullOrWhiteSpace(response.Text))
+            throw new IncompleteCompactionSummaryException(response.StopReason);
         return response.Text;
     }
 

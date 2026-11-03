@@ -45,6 +45,9 @@ public sealed class SharedChunkStore
     /// shared light arrays.</summary>
     internal object LightSync { get; } = new();
 
+    /// <summary>The biomes every body on this store has walked past (one memory for the crew, kept after chunks unload).</summary>
+    public BiomeMemory Biomes { get; } = new();
+
     /// <summary>Distinct columns held.</summary>
     public int ColumnCount { get { lock (_sync) return _columns.Count; } }
 

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/MineClaw.Protocol/MineClaw.Protocol.csproj" />
+    <ProjectReference Include="../../src/MineClaw.Data/MineClaw.Data.csproj" />
+    <ProjectReference Include="../../src/MineClaw.World/MineClaw.World.csproj" />
+    <ProjectReference Include="../../src/MineClaw.Client/MineClaw.Client.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The test seam (tests/MineClaw.Client.Tests/FakeServer.cs) subclasses the sandbox server and reaches its fixtures. -->
+    <InternalsVisibleTo Include="MineClaw.Client.Tests" />
+    <InternalsVisibleTo Include="MineClaw.Bot.Tests" />
+    <InternalsVisibleTo Include="MineClaw.App.Tests" />
+    <InternalsVisibleTo Include="MineClaw.Skills.Tests" />
+    <InternalsVisibleTo Include="MineClaw.Hive.Tests" />
+    <InternalsVisibleTo Include="MineClaw.Hive.CloneStub" />
+  </ItemGroup>
+</Project>

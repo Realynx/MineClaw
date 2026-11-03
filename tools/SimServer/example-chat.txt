@@ -1,0 +1,5 @@
+# Commands begin after the first bot login.
+wait 2000
+say come here
+wait 3000
+say hello

@@ -72,7 +72,9 @@ public static partial class BlueprintPrompts
         "'.' must be air (interior, doorway), '_' leave the site as it is. Layer 0 sits ON the ground (the ground is not part of it).\n" +
         "Primitives (local coords x,y,z from the west-north-bottom corner, later statements win): box X a b | hollow X a b | walls X a b " +
         "(4 sides, inside air) | floor X a b | clear a b | pillar X x,y,z h | door D x,y,z [dir] | window G a b | stairs S x,y,z dir " +
-        "| roof X flat|gable|slope:dir x1,y,z1 x2,z2 [ridge-symbol] (gable/slope step up one layer per row; with stairs they face up-slope).\n" +
+        "| roof X flat|gable|slope:dir x1,y,z1 x2,z2 [ridge-symbol] (gable/slope step up one layer per row; with stairs they face up-slope) " +
+        "| pyramid X x,y,z base [core:Y] (a stepped pyramid, bottom layer side `base` from corner x,y,z, one row in per layer, (base+1)/2 layers, so " +
+        "`size {base}x{(base+1)/2}x{base}`; max base 63 (the one shape allowed past 24 wide); core:Y fills all but the outer two rows of each layer with Y; use it, never draw its layers by hand).\n" +
         $"Blocks: {GameData.Current.VersionId} names only: stone cobblestone planks log(:oak|spruce|birch) sandstone bricks stone_bricks(:mossy|cracked) " +
         "mossy_cobblestone obsidian glass glass_pane wool(:colour) glowstone bookshelf clay netherrack fence fence_gate iron_bars ladder(:wall side) " +
         "torch trapdoor slab(:stone|sandstone|wood|cobble|brick|stonebrick) wooden_stairs cobblestone_stairs brick_stairs stone_brick_stairs " +

@@ -43,6 +43,7 @@ public static class CrewSlicer
     {
         if (crew.Count == 0) throw new ArgumentException("a crew needs at least one body", nameof(crew));
         var o = options;
+        if (crew.Count > 1 && Strips(plan, world, crew, part ?? BuildPart.Whole(plan), options ?? new BuildPlannerOptions(), previous) is { } strips) return strips;
         if (crew.Count > 1)
         {
             o ??= new BuildPlannerOptions();
@@ -53,6 +54,158 @@ public static class CrewSlicer
         var bp = BuildPlanner.Plan(plan, world, crew[0].Start, part, o, previous);
         Assign(bp, plan, crew);
         return bp;
+    }
+
+    // ------------------------------------------------------------------ strips planned each on its own
+
+    /// <summary>A strip at least this wide (cells along the long axis): narrower strips give one body too little room to work in.</summary>
+    public const int MinStripWidth = 2;
+
+    /// <summary>
+    /// A big design (<see cref="BuildPlannerOptions.StripsAbove"/> blocks or more) for a crew: the footprint's columns cut into
+    /// contiguous strips along the long axis, balanced by the blocks still to place, one per body, and each strip planned on its
+    /// own (in parallel), from its body's own feet, standing only inside its strip (or beyond the footprint at its ends) and never
+    /// walking through another strip's design cells. The lanes then share nothing (no stand, no cell, no support), so nobody waits
+    /// on anybody and a 63-wide pyramid is built by every body at once. One plan cut into lanes (the slicer below) was planned from
+    /// one body's feet: its stands wandered into the neighbours' strips, the lanes waited on each other, timed out and fell back to
+    /// one builder (b=15, 4 bodies: 3 re-balances, 55% of the blocks placed by the finale). Null when it doesn't apply or a strip
+    /// can't stand on its own (a cell it can't place, a water descent, a gate still to show): then the one-plan slicer decides.
+    /// </summary>
+    public static BuildPlan? Strips(VoxelPlan plan, IBlockAccess world, IReadOnlyList<CrewMember> crew, BuildPart part, BuildPlannerOptions o,
+        BuildPlan? previous)
+    {
+        if (o.StripsAbove <= 0 || o.GateBlocks > 0 && previous?.Gate.State is null or GateState.Pending) return null;
+        if (previous?.Columns.Any(c => c.Poured && !c.Removed) == true) return null;
+        var todo = plan.Blocks.Values.Where(b => part.Cells.Contains(b.Pos) && !b.UpperDoor
+            && !(world.IsLoaded(b.Pos.X, b.Pos.Z) && DesignChecks.SameState(b, world.GetBlock(b.Pos.X, b.Pos.Y, b.Pos.Z), world.GetMeta(b.Pos.X, b.Pos.Y, b.Pos.Z)))).ToList();
+        if (plan.Blocks.Count < o.StripsAbove || todo.Count == 0) return null;
+        bool alongX = plan.Max.X - plan.Min.X >= plan.Max.Z - plan.Min.Z;
+        int lo = alongX ? plan.Min.X : plan.Min.Z, hi = alongX ? plan.Max.X : plan.Max.Z;
+        int Axis(BlockPos p) => alongX ? p.X : p.Z;
+        var per = new int[hi - lo + 1];
+        foreach (var b in todo) per[Math.Clamp(Axis(b.Pos), lo, hi) - lo]++;
+        int n = Math.Min(crew.Count, (hi - lo + 1) / MinStripWidth);
+        if (n < 2) return null;
+        // Contiguous runs of columns balanced by what is left to place; the most strips whose balanced cut leaves every one at least
+        // MinStripWidth wide (a pyramid's middle columns hold the most blocks, so its middle strips are the narrow ones).
+        List<(int A, int B)>? bounds = null;
+        for (; n >= 2 && bounds == null; n--)
+        {
+            var cut = Balanced(per, lo, n);
+            if (cut.Count == n && cut.All(r => r.B - r.A + 1 >= MinStripWidth)) bounds = cut;
+        }
+        if (bounds == null) return null;
+        n = bounds.Count;
+        var parts = bounds.Select((r, i) =>
+        {
+            int axisLo = i == 0 ? int.MinValue : r.A, axisHi = i == n - 1 ? int.MaxValue : r.B;
+            var cells = part.Cells.Where(p => Axis(p) >= r.A && Axis(p) <= r.B).ToHashSet();
+            return new BuildPart(i, n, cells, part.Claim, axisLo, axisHi, alongX ? 'x' : 'z');
+        }).ToList();
+        var blocks = parts.Select(p => todo.Count(b => p.Cells.Contains(b.Pos))).ToArray();
+        // Bodies: whoever reaches a strip and finishes it soonest (the slowest strip minimised).
+        var cost = new double[crew.Count, n];
+        for (int m = 0; m < crew.Count; m++)
+            for (int g = 0; g < n; g++)
+            {
+                int a = Math.Clamp(Axis(crew[m].Start), bounds[g].A, bounds[g].B);
+                var near = alongX ? new BlockPos(a, crew[m].Start.Y, Math.Clamp(crew[m].Start.Z, plan.Min.Z, plan.Max.Z))
+                    : new BlockPos(Math.Clamp(crew[m].Start.X, plan.Min.X, plan.Max.X), crew[m].Start.Y, a);
+                cost[m, g] = Walk(crew[m].Start, near) + blocks[g] * 8.0;
+            }
+        var pick = Choose(cost, crew.Count, n);
+        // Every strip is planned on its own world (the real one + its own steps), so none counts on another's blocks either way.
+        var designCells = plan.Blocks.Keys.Where(part.Cells.Contains).ToList();
+        var plans = new BuildPlan[n];
+        var tasks = Enumerable.Range(0, n).Select(g => Task.Run(() =>
+        {
+            var mine = parts[g];
+            var avoid = designCells.Where(p => !mine.Cells.Contains(p)).ToHashSet();
+            var lane = o with
+            {
+                Avoid = avoid, StandOk = mine.Allows, SharedClimb = false, WaterAvailable = false, GateBlocks = 0,
+                Reach = Math.Min(o.Reach, crew[pick[g]].Reach),
+            };
+            plans[g] = BuildPlanner.Plan(plan, world, crew[pick[g]].Start, mine, lane, ForStrip(previous, mine, g == 0));
+        })).ToArray();
+        Task.WaitAll(tasks);
+        if (plans.Any(p => p.Infeasible.Count > 0 || p.Columns.Count > 0)) return null;
+
+        // One plan: the strips' steps one after another (the first keeps the history), each strip a lane.
+        var first = plans[0];
+        var bp = new BuildPlan
+        {
+            Part = part.Index, Parts = part.Count, Version = first.Version, Format = first.Format, Origin = first.Origin, Facing = first.Facing,
+            Gate = previous?.Gate ?? first.Gate, Home = BuildPlanner.HomeFor(plan, crew[0].Start, previous), BlueprintId = previous?.BlueprintId ?? 0,
+            Placed = previous?.Placed.Distinct().ToList() ?? new(), Transform = previous?.Transform ?? BuildTransform.None,
+            Replans = previous != null ? previous.Replans + 1 : 0, Exit = previous?.Exit.ToList() ?? new(),
+            SliceId = Guid.NewGuid().ToString("N")[..12],
+        };
+        var lanes = new List<PlanLane>();
+        for (int g = 0; g < n; g++)
+        {
+            int offset = bp.Steps.Count;
+            var lane = new PlanLane { Index = g, Body = crew[pick[g]].Name };
+            foreach (var st in plans[g].Steps)
+            {
+                st.Index += offset;
+                for (int k = 0; k < st.Deps.Count; k++) st.Deps[k] += offset;
+                st.Lane = st.Finished ? 0 : g;
+                if (!st.Finished) lane.Steps.Add(st.Index);
+                bp.Steps.Add(st);
+            }
+            foreach (var c in plans[g].ScaffoldUp) if (!bp.ScaffoldUp.Contains(c)) bp.ScaffoldUp.Add(c);
+            lane.EstTicks = LaneTicks(lane.Steps.Select(i => bp.Steps[i]), crew[pick[g]].Start);
+            lanes.Add(lane);
+        }
+        bp.Lanes = lanes;
+        bp.CrewTicks = lanes.Max(l => l.EstTicks);
+        // One body alone: every strip in turn, walking from the end of one to the start of the next.
+        bp.SoloTicks = LaneTicks(lanes.SelectMany(l => l.Steps).Select(i => bp.Steps[i]), crew[0].Start);
+        return bp;
+    }
+
+    /// <summary>Cuts columns <paramref name="lo"/>.. (counts <paramref name="per"/>) into <paramref name="n"/> contiguous runs of about
+    /// equal count (a run never empty).</summary>
+    internal static List<(int A, int B)> Balanced(int[] per, int lo, int n)
+    {
+        var bounds = new List<(int A, int B)>();
+        int hi = lo + per.Length - 1, start = lo;
+        long total = per.Sum(), acc = 0, done = 0;
+        for (int c = lo; c <= hi && bounds.Count < n - 1; c++)
+        {
+            acc += per[c - lo];
+            int left = n - bounds.Count - 1;
+            double target = (double)(total - done) / (n - bounds.Count);
+            // Cut where the run is closest to its share (before or after this column), keeping a column for every run left.
+            bool over = acc >= target, room = hi - c >= left;
+            if (!room) break;
+            if (over || hi - c == left)
+            {
+                bool back = over && c > start && acc - per[c - lo] > 0 && target - (acc - per[c - lo]) < acc - target;
+                int end = back ? c - 1 : c;
+                bounds.Add((start, end));
+                done += back ? acc - per[c - lo] : acc;
+                acc = back ? per[c - lo] : 0;
+                start = end + 1;
+            }
+        }
+        bounds.Add((start, hi));
+        return bounds;
+    }
+
+    /// <summary>What a strip's own plan carries over from the last one: the ledger, gate and corrections for all; the finished
+    /// steps (history) once; the scaffold still standing in that strip.</summary>
+    private static BuildPlan? ForStrip(BuildPlan? prev, BuildPart strip, bool history)
+    {
+        if (prev == null) return null;
+        return new BuildPlan
+        {
+            BlueprintId = prev.BlueprintId, Part = prev.Part, Parts = prev.Parts, Version = prev.Version, Format = prev.Format, Origin = prev.Origin,
+            Facing = prev.Facing, Dim = prev.Dim, Transform = prev.Transform, Gate = prev.Gate, Placed = prev.Placed, Replans = prev.Replans, Home = prev.Home,
+            Steps = history ? prev.Steps.Where(s => s.Finished).ToList() : new(),
+            ScaffoldUp = prev.ScaffoldUp.Where(strip.Allows).ToList(), Exit = prev.Exit.Where(strip.Allows).ToList(),
+        };
     }
 
     /// <summary>Cuts the plan's unfinished steps into lanes for <paramref name="crew"/> (see the class remarks) and estimates both ways.</summary>

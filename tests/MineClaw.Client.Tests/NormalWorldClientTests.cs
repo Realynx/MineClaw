@@ -118,6 +118,34 @@ public class NormalWorldClientTests
         }
     }
 
+    public static TheoryData<bool, bool> VersionsAndWorlds => new() { { false, false }, { true, false }, { false, true }, { true, true } };
+
+    [Theory]
+    [MemberData(nameof(VersionsAndWorlds))]
+    public async Task Mine_mows_wild_tall_grass_for_seeds_never_calling_it_placed(bool release1122, bool normalWorld)
+    {
+        // Wild plants provide resources in either world mode; other plant kinds are left alone.
+        using var mode = normalWorld ? WorldMode.Override(WorldMode.Normal) : null;
+        var (c, s) = await Harness.StartAsync(srv =>
+        {
+            srv.Blocks[(9, 64, 9)] = Blocks.TallGrass;
+            srv.Metas[(9, 64, 9)] = 1;
+            srv.Blocks[(7, 64, 7)] = Blocks.TallGrass;
+            srv.Metas[(7, 64, 7)] = 1;
+            srv.Blocks[(9, 64, 7)] = Blocks.Dandelion;
+        }, release1122: release1122);
+        await using var _ = c;
+        using var __ = s;
+        var r = await c.MineAsync(new HashSet<int> { Blocks.TallGrass }, 2, 6);
+        Assert.True(r.Ok, r.Message);
+        Assert.Equal(2, r.Count);
+        Assert.DoesNotContain("placed", r.Message);
+        Assert.False(s.Blocks.ContainsKey((9, 64, 9)));
+        Assert.False(s.Blocks.ContainsKey((7, 64, 7)));
+        Assert.Equal(Blocks.Dandelion, s.Blocks[(9, 64, 7)]); // only what was asked for
+        Assert.True(MinecraftClient.NaturalPlant(175) && MinecraftClient.NaturalPlant(Blocks.Rose) && !MinecraftClient.NaturalPlant(Blocks.Sapling));
+    }
+
     [Fact]
     public void Natural_terrain_and_1122_ores_are_resources()
     {

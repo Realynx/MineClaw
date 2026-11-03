@@ -62,6 +62,7 @@ public sealed partial class Pathfinder
                 int ty = y + dy;
                 var c = Cell(tx, ty, tz);
                 if (!c.Ok || !c.Ground || c.Water || c.Climb) continue;
+                if (OnFarmland(tx, ty, tz)) continue; // a gap jump lands with a fall of 1.25+: it would trample the field
                 double rise = c.Floor - here.Floor;
                 if (rise > Parkour.MaxRise + 1e-6 || rise < -3 - 1e-6 || -rise + 1.25 > _o.ParkourMaxFall + 1e-6) continue;
                 var to = new BlockPos(tx, ty, tz);
@@ -119,7 +120,8 @@ public sealed partial class Pathfinder
         for (int i = 1; i <= Parkour.MaxRunCells + 1; i++)
         {
             int cx = x + i * dx, cz = z + i * dz;
-            var c = Cell(cx, y, cz);
+            // A partial-height walk into the adjacent foot-cell row is a step, not a gap to simulate jumps across.
+            var c = WalkCell(cx, y, cz, here.Floor, out _);
             bool flat = c.Ok && c.Ground && !c.Water && !c.Climb && Math.Abs(c.Floor - here.Floor) < 0.01;
             if (flat && dx != 0 && dz != 0)
             {

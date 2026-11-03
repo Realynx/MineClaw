@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using MineClaw.Agent.Memory;
+using MineClaw.Data;
 
 namespace MineClaw.Agent.Routines;
 
@@ -33,7 +34,7 @@ public sealed class ScriptVersion
     public double AvgYield => Runs == 0 ? 0 : (double)TotalYield / Runs;
 
     /// <summary>"62% of 8" style reliability ("new" before any run).</summary>
-    public string Reliability => Runs == 0 ? "new" : $"{Rate:P0}/{Runs}";
+    public string Reliability => Runs == 0 ? "new" : $"{Percent.Of(Rate)}/{Runs}";
 
     public IEnumerable<string> TopFailures(int n = 2) => FailReasons.OrderByDescending(kv => kv.Value).Take(n).Select(kv => $"{kv.Key} x{kv.Value}");
 }

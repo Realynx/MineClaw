@@ -253,11 +253,13 @@ public sealed class ClaimAwareGameClient(IGameClient inner, IClaimBoard claims) 
     public Task<ActionResult> FollowPlayerAsync(string name, double distance = 3, CancellationToken ct = default) => inner.FollowPlayerAsync(name, distance, ct);
     public Task<ActionResult> StopAsync(CancellationToken ct = default) => inner.StopAsync(ct);
     public Task<ActionResult> MineAsync(string blockName, int count, double radius = 16, CancellationToken ct = default) => inner.MineAsync(blockName, count, radius, ct);
-    public Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default) => inner.CollectDropsAsync(radius, ct);
+    public Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default, bool dryOnly = false) => inner.CollectDropsAsync(radius, ct, dryOnly);
     public Task<ActionResult> CraftAsync(int itemId, int damage = -1, int count = 1, CancellationToken ct = default) => inner.CraftAsync(itemId, damage, count, ct);
     public Task<ActionResult> ClickSlotAsync(int slot, bool rightClick = false, bool shift = false, CancellationToken ct = default) => inner.ClickSlotAsync(slot, rightClick, shift, ct);
     public Task<ActionResult> CloseWindowAsync(CancellationToken ct = default) => inner.CloseWindowAsync(ct);
     public Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default) => inner.ActivateBlockAsync(x, y, z, ct);
+    public Task<ActionResult> UseItemOnBlockAsync(BlockPos pos, BlockFace face, int itemId, int? damage = null, CancellationToken ct = default) =>
+        inner.UseItemOnBlockAsync(pos, face, itemId, damage, ct);
     public Task<ActionResult> EatAsync(CancellationToken ct = default) => inner.EatAsync(ct);
     public bool FaceIdle(Vec3d point) => inner.FaceIdle(point);
     public bool SwingIdle() => inner.SwingIdle();

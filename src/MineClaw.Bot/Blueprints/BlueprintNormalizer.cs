@@ -10,7 +10,9 @@ namespace MineClaw.Bot.Blueprints;
 /// </summary>
 public static class BlueprintNormalizer
 {
-    public const int MaxBlocks = 1500;
+    /// <summary>Blocks per design: a base-63 stepped pyramid is 43,680 blocks; designs past <see cref="BlueprintOptions.SectionBlocks"/>
+    /// are built band by band, so slicing never takes on more than a band at once.</summary>
+    public const int MaxBlocks = 50_000;
     private const char Air = '.', Keep = '_';
 
     /// <param name="worldHeight">The world's height (<see cref="IBlockAccess.WorldHeight"/>): b1.8.1 128, 1.12.2 256.</param>
@@ -90,6 +92,30 @@ public static class BlueprintNormalizer
                 case "roof":
                     Roof(op, lo, hi);
                     break;
+                case "pyramid":
+                    if (!Bounds(lo, hi, op)) break;
+                    Pyramid(op, lo, hi);
+                    break;
+            }
+        }
+
+        // A stepped pyramid: layer k is the square (lo.X+k..hi.X-k, lo.Z+k..hi.Z-k), one row in per layer. Every block rests on the
+        // layer below (it covers the whole footprint of the one above), so sand and gravel never hang. With core:Y the cells more
+        // than two rows from their layer's edge are Y: the outer two rows (the skin) cover the next layer's whole outer ring, so
+        // a skin of sand always rests on skin or core, never on air.
+        void Pyramid(BlueprintOp op, (int X, int Y, int Z) lo, (int X, int Y, int Z) hi)
+        {
+            char core = op.Arg.Length == 1 ? op.Arg[0] : '\0';
+            if (core != '\0' && !bp.Palette.ContainsKey(core)) { Undefined(core, op.Line); core = '\0'; }
+            for (int k = 0; lo.X + k <= hi.X - k && lo.Z + k <= hi.Z - k && lo.Y + k <= hi.Y; k++)
+            {
+                (int x0, int x1, int z0, int z1) = (lo.X + k, hi.X - k, lo.Z + k, hi.Z - k);
+                for (int z = z0; z <= z1; z++)
+                    for (int x = x0; x <= x1; x++)
+                    {
+                        int edge = Math.Min(Math.Min(x - x0, x1 - x), Math.Min(z - z0, z1 - z));
+                        Set(x, lo.Y + k, z, core != '\0' && edge >= 2 ? core : op.Symbol, op.Line);
+                    }
             }
         }
 

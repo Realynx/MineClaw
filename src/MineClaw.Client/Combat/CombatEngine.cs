@@ -933,6 +933,7 @@ public sealed class CombatEngine
 
         // ---- positioning: never with the void behind (knockback goes away from the attacker)
         Vec3d? moveTo = null;
+        bool climbStep = false;
         bool edgeBehind = CombatGeometry.EdgeBehind(_w, me, target.Position, Options.KnockbackDepth);
         if (edgeBehind)
         {
@@ -952,7 +953,10 @@ public sealed class CombatEngine
             if (prof.Tactic == MobTactic.Ranged)
                 moveTo = RangedApproach(f, phys, target);
             else if (!(melee && approaching && dist < 8)) // let it come to us; otherwise close in on safe ground only
-                moveTo = SafeApproachPoint(me, target.Position, Options.Reach - 0.6);
+            {
+                moveTo = SafeApproachPoint(me, target.Position, Options.Reach - 0.6, out bool up);
+                climbStep = up;
+            }
         }
 
         // ---- swing timing: one full hit per invulnerability window; crit when falling
@@ -983,7 +987,10 @@ public sealed class CombatEngine
             ctx.Block = true;
 
         var input = moveTo is { } m ? CombatGeometry.SteerTo(me, m, look.Yaw, look.Pitch) : look;
-        if (jump) input = input with { Jump = true };
+        if (jump || climbStep && phys.OnGround && phys.CollidedHorizontally) input = input with { Jump = true };
+        // A passive animal runs when hit (panic: faster than a walk): sprint after it on open ground, like a player hunting.
+        if (!prof.Hostile && moveTo is not null && !edgeBehind && !ctx.Block && _w.Player.Food > 6 && dist > Options.Reach)
+            input = input with { Sprint = true };
         // Closing on an archer: sprint the zig-zag (fewer arrows on the way in); never with the void behind or while blocking.
         if (prof.Tactic == MobTactic.Ranged && moveTo is not null && !edgeBehind && !ctx.Block && _w.Player.Food > 6 && dist > Options.Reach + 1)
             input = input with { Sprint = true };
@@ -1140,8 +1147,12 @@ public sealed class CombatEngine
     }
 
     /// <summary>A point <paramref name="standOff"/> short of the target, if walking there stays ≥ 2 from every edge.</summary>
-    private Vec3d? SafeApproachPoint(Vec3d me, Vec3d target, double standOff)
+    private Vec3d? SafeApproachPoint(Vec3d me, Vec3d target, double standOff) => SafeApproachPoint(me, target, standOff, out _);
+
+    /// <param name="climb">The next step is a safe one-block rise: jump it instead of ending the chase at a ledge.</param>
+    private Vec3d? SafeApproachPoint(Vec3d me, Vec3d target, double standOff, out bool climb)
     {
+        climb = false;
         double dx = target.X - me.X, dz = target.Z - me.Z, len = Math.Sqrt(dx * dx + dz * dz);
         if (len <= standOff) return null;
         double t = (len - standOff) / len;
@@ -1150,9 +1161,14 @@ public sealed class CombatEngine
         var step = new Vec3d(me.X + dx / len * Math.Min(1.5, len - standOff), me.Y, me.Z + dz / len * Math.Min(1.5, len - standOff));
         int y = (int)Math.Floor(me.Y + 1e-6);
         var stepCell = new BlockPos((int)Math.Floor(step.X), y, (int)Math.Floor(step.Z));
-        if (!CombatGeometry.WalkSafe(_w, me, stepCell, 2)) return null;
-        if (Safety.EdgeDistance(_w, stepCell.X, y, stepCell.Z, 1) < 2) return null;
-        return Horizontal(me, p) > 1.5 ? step : p;
+        if (!CombatGeometry.WalkSafe(_w, me, stepCell, 2))
+        {
+            if (!CombatGeometry.CanStepUp(_w, me, stepCell)) return null;
+            climb = true;
+            stepCell = stepCell with { Y = y + 1 };
+        }
+        if (Safety.EdgeDistance(_w, stepCell.X, stepCell.Y, stepCell.Z, 1) < 2) return null;
+        return Horizontal(me, p) > 1.5 || climb ? step : p;
     }
 
     // ------------------------------------------------------------------ sparring

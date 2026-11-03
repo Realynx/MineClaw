@@ -1,0 +1,20 @@
+{
+  "Minecraft": { "Host": "127.0.0.1", "Port": 25565, "Username": "MineClaw" },
+  "Agent": {
+    "Llm": {
+      "MainProvider": "mock", "WorkerProvider": "mock", "CheapProvider": "mock",
+      "MainModel": "mock-main", "WorkerModel": "mock-worker", "CheapModel": "mock-memory",
+      "MockScriptPath": "docs/offline-brain.json",
+      "Ollama": { "Endpoint": "" }
+    },
+    "Chat": { "Username": "MineClaw", "DisplayName": "MineClaw" },
+    "DataDirectory": "data/offline-sandbox",
+    "Rag": { "Enabled": false },
+    "Brainstem": { "Enabled": false },
+    "Idle": { "IdleDefault": false, "ResumeStandingOrders": false },
+    "IdleCheckInMinutes": 0
+  },
+  "Bot": { "Vision": { "AllowDownload": false } },
+  "Hive": { "Enabled": false },
+  "Host": { "LogDirectory": "logs/offline-sandbox" }
+}

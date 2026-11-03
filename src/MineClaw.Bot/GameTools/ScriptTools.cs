@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using MineClaw.Agent;
 using MineClaw.Agent.Authoring;
@@ -1275,9 +1276,19 @@ public static class ScriptTools
 
         // The brain's whole view: script{name|goal, params?, op}. code/args/resume_from/force still work (tools, hive, tests)
         // but cost no schema bytes; only the separate author writes code.
+        JsonElement Schema(IEnumerable<string> ops) => ToolSchema.Create().Str("op", enumValues: ops)
+            .Str("name", required: false).Str("goal", required: false).Raw("params", """{"type":"object"}""", required: false).Build();
+        // Binding ops are documented in the system hint, not the budget-pinned tool definition. Validate them too.
+        rt.Tools.SetInputAdapter(ToolName, input =>
+        {
+            if (input.ValueKind != JsonValueKind.Object) return input;
+            if (input.TryGetProperty("op", out var op) && op.ValueKind != JsonValueKind.String) return input;
+            var o = JsonNode.Parse(input.GetRawText())!.AsObject();
+            o["op"] = ScriptBridge.DefaultOp(input);
+            return JsonSerializer.SerializeToElement(o);
+        }, Schema(ScriptPrompts.Ops.Concat(ScriptPrompts.BindOps)));
         rt.Tools.Register(ToolName, ScriptPrompts.ToolDescription,
-            ToolSchema.Create().Str("op", enumValues: ScriptPrompts.Ops).Str("name", required: false).Str("goal", required: false)
-                .Raw("params", """{"type":"object"}""", required: false).Build(),
+            Schema(ScriptPrompts.Ops),
             // One brain, many bodies: a call for a clone body (its slot, its worker, the brain's body=67) runs on that body's lane.
             (input, ct) => (Bodies.BodyScope.Current is Bodies.Body { IsMain: false, ScriptBridge: { } lane } && !ReferenceEquals(lane, bridge) ? lane : bridge)
                 .ExecuteAsync(input, ct),

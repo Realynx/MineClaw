@@ -108,6 +108,7 @@ public sealed partial class Pathfinder
     private PathResult Search(BlockPos start, Goal goal, CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
+        _goal = goal;
         _w.Mods = _baseMods;
         _w.Pulse = null;
         var startCell = Cell(start.X, start.Y, start.Z);
@@ -241,7 +242,7 @@ public sealed partial class Pathfinder
         foreach (var (dx, dz) in Cardinals)
         {
             int tx = x + dx, tz = z + dz;
-            var t = Cell(tx, y, tz);
+            var t = WalkCell(tx, y, tz, here.Floor, out int ty);
             bool walked = false;
 
             // Doors and trapdoors are thin panels on a cell edge: the centred boxes never touch them, so the move
@@ -256,14 +257,14 @@ public sealed partial class Pathfinder
             double edge = Math.Max(here.Floor, t.Floor);
             if (t.Ok && t.Floor - here.Floor <= _step + 1e-6 && BodyClear(x, z, edge) && BodyClear(tx, tz, edge))
             {
-                if (transit) AddWalk(output, here, hereEdge, tx, y, tz, t, MoveKind.Walk, 1.0, [], opens);
+                if (transit) AddWalk(output, here, hereEdge, tx, ty, tz, t, MoveKind.Walk, 1.0, [], opens);
                 walked = true;
             }
-            else if (t.Ok && t.Floor - here.Floor <= 1.25 && !here.Water && BodyClear(x, z, t.Floor))
+            else if (t.Ok && t.Floor - here.Floor <= 1.25 && BodyClear(x, z, t.Floor))
             {
                 if (!transit || opens != null) continue;
-                // Higher partial block in the same cell row (soul sand, 0.875): needs a jump.
-                AddJump(output, here, hereEdge, tx, y, tz, t, []);
+                // Higher partial block (including a farmland bank beside a water trench): needs a jump.
+                AddJump(output, here, hereEdge, tx, ty, tz, t, []);
                 walked = true;
             }
 
@@ -330,7 +331,7 @@ public sealed partial class Pathfinder
 
         // Pillar: jump and place a block in the current foot cell.
         if (_o.AllowPlace && !here.Water && !here.Climb && Math.Abs(here.Floor - y) < 1e-6
-            && (_o.CanPlace is null || _o.CanPlace(new BlockPos(x, y, z)))
+            && CanPlaceScaffold(new BlockPos(x, y, z))
             && Aiming.IsReplaceable(_w, _w.GetBlock(x, y, z)) && BodyClear(x, z, y + 1) && y + 2 < _worldHeight)
         {
             output.Add(new Candidate(x, y + 1, z, MoveKind.Pillar, y + 1, _o.PlaceCost + PathOptions.JumpExtra + 4, [],
@@ -344,8 +345,33 @@ public sealed partial class Pathfinder
         if (_view is not null) TryTriggers(output, n, here);
     }
 
+    private CellInfo WalkCell(int x, int y, int z, double floor, out int ty)
+    {
+        ty = y;
+        var c = Cell(x, y, z);
+        if (c.Ok) return c;
+        // Foot cells use floor(floor height): a 15/16 top and the neighbouring full block are in different rows.
+        // Resolve a normal step by its physical rise, not by matching the integer foot-cell Y.
+        for (int sy = y - 1; sy <= y + 1; sy += 2)
+        {
+            var step = Cell(x, sy, z);
+            double rise = step.Floor - floor;
+            if (!step.Ok || rise < -0.5 - 1e-6 || rise > _step + 1e-6) continue;
+            ty = sy;
+            return step;
+        }
+        return c;
+    }
+
     /// <summary>The node being expanded stands on farmland (set per <see cref="Expand"/>).</summary>
     private bool _hereFarmland;
+
+    /// <summary>The goal of the running search (farmland is walked cheaply only near it).</summary>
+    private Goal? _goal;
+
+    /// <summary>Cell (x,y,z) is within <see cref="PathOptions.FarmlandGoalRange"/> of the goal: the target is on this field
+    /// (planting, harvesting), so walking it is the point of the trip.</summary>
+    private bool NearGoal(int x, int y, int z) => _goal is { } g && g.Distance(x, y, z) <= PathOptions.FarmlandGoalRange;
 
     /// <summary>
     /// Farmland under the feet of foot cell (x,y,z). mc-dev Entity.move calls Block.b(world, x, y, z, entity) on each step of a
@@ -362,13 +388,17 @@ public sealed partial class Pathfinder
         if (t.Floor > here.Floor + 1e-6) cost += 0.5;
         bool sneak = (hereEdge || targetEdge) && !water;
         if (sneak) cost *= _o.EdgeCostMultiplier;
-        // Across a field: sneak (no trampling) and prefer the paths around it.
-        if (!water && (_hereFarmland || OnFarmland(tx, ty, tz)))
+        // Across a field: sneak (no trampling) and prefer the paths around it. Only a target ON the field (planting, harvesting)
+        // makes it worth walking: everywhere else crossing costs PathOptions.FarmlandWalkPenalty a step (a detour of ~9 blocks).
+        bool toFarm = OnFarmland(tx, ty, tz);
+        if (!water && (_hereFarmland || toFarm))
         {
             if (!sneak) cost *= PathOptions.SneakFactor;
             sneak = true;
-            cost += PathOptions.FarmlandPenalty;
+            cost += NearGoal(tx, ty, tz) ? PathOptions.FarmlandPenalty : PathOptions.FarmlandWalkPenalty;
         }
+        // Out of the water onto a field (the trench rim): the swimmer jumps out, and a jump lands on the soil.
+        else if (water && toFarm && !NearGoal(tx, ty, tz)) cost += PathOptions.FarmlandJumpPenalty;
         double time = cost + (breaks.Count > 0 ? DigCosts(breaks) : 0);
         cost += HazardPenalty(tx, ty, tz) + DigCosts(breaks);
         if (open is { Count: > 0 })
@@ -389,7 +419,9 @@ public sealed partial class Pathfinder
         bool sneak = hereEdge || targetEdge;
         if (sneak) cost *= _o.EdgeCostMultiplier;
         // Jumping onto/off a field: sneak through it like a walk (steps on farmland trample it), and avoid it when possible.
-        if (_hereFarmland || OnFarmland(tx, ty, tz)) { sneak = true; cost += PathOptions.FarmlandPenalty * 2; }
+        // Landing on one is what tramples in 1.12 (BlockFarmland.onFallenUpon): costed so high that any walk round wins.
+        if (OnFarmland(tx, ty, tz)) { sneak = true; cost += PathOptions.FarmlandJumpPenalty; }
+        else if (_hereFarmland) { sneak = true; cost += PathOptions.FarmlandPenalty * 2; }
         cost += HazardPenalty(tx, ty, tz) + DigCosts(breaks);
         output.Add(new Candidate(tx, ty, tz, MoveKind.Jump, t.Floor, cost, breaks, null, sneak && !here.Water));
     }
@@ -430,6 +462,8 @@ public sealed partial class Pathfinder
                 }
             }
             if (!soft && fall > _o.MaxDrop + 1e-6) return false;
+            // A fall of more than half a block onto farmland turns it to dirt (1.12 BlockFarmland.onFallenUpon): never planned.
+            if (!c.Water && OnFarmland(tx, ty, tz)) return false;
             if (soft && (!_o.AllowSwim || fall > _o.MaxWaterDrop + 1e-6)) return false;
             // Overshoot guard: the cell beyond the landing spot must not be a deadly drop.
             if (!soft && IsDeadly(tx + dx, ty, tz + dz)) return false;
@@ -442,13 +476,23 @@ public sealed partial class Pathfinder
         return false;
     }
 
+    private bool CanPlaceScaffold(BlockPos p)
+    {
+        // Protect the original field even if an earlier hypothetical edit removed a crop. Never replace crops or cover
+        // farmland/crops with scaffold in either of the two cells above them (bridging and pillaring share this veto).
+        for (int y = p.Y; y >= Math.Max(0, p.Y - 2); y--)
+            if (_world.GetBlock(p.X, y, p.Z) is BlockShapes.Farmland or 59 or 81 or 83 or 86 or 103 or 104 or 105 or 115 or 127 or 141 or 142 or 207)
+                return false; // wheat, cactus, cane, fruit/stems, nether wart, cocoa, carrots, potatoes, beetroot
+        return _o.CanPlace is null || _o.CanPlace(p);
+    }
+
     private void TryBridge(List<Candidate> output, CellInfo here, int x, int y, int z, int tx, int tz)
     {
         if (!here.Ground || here.Water || Math.Abs(here.Floor - y) > 1e-6) return;
         int fy = y - 1;
         if (fy < 0) return;
         if (!Aiming.IsReplaceable(_w, _w.GetBlock(tx, fy, tz))) return;
-        if (_o.CanPlace is { } veto && !veto(new BlockPos(tx, fy, tz))) return;
+        if (!CanPlaceScaffold(new BlockPos(tx, fy, tz))) return;
         if (!HasCollisionAt(x, fy, z) || _w.Info(_w.GetBlock(x, fy, z)).Interactable) return; // block we stand on = placement support
         if (!BodyClear(tx, tz, y) || HazardInColumn(tx, y, y + 1, tz)) return;
         // Evaluate the target with the scaffold in place.

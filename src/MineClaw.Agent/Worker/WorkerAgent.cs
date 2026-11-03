@@ -222,6 +222,7 @@ public sealed class WorkerAgent
                 else o = await RunAsync(task, input.Str("done_when"), input.Int("max_minutes"), ct, profile).ConfigureAwait(false);
                 // needs_input usually ends in a question for the players: give the brain landmarks next to the coordinates.
                 var summary = o.NeedsInput ? Human.Questions.Annotate(o.Summary, Landmark) : o.Summary;
+                summary += $"; {o.ToolCalls} actions";
                 return o.Ok ? ToolResult.Success(summary) : ToolResult.Error(summary);
             },
             longRunning: true, tiers: ToolTiers.Main, maxResultChars: _o.SummaryChars + 140);
@@ -235,7 +236,7 @@ public sealed class WorkerAgent
             tiers: ToolTiers.Main);
     }
 
-    /// <summary>Runs one task to completion. Throws <see cref="OperationCanceledException"/> when <paramref name="ct"/> is cancelled.</summary>
+    /// <summary>Runs one task to completion, including a partial failed outcome when interrupted or cancelled.</summary>
     /// <param name="profile">Named model profile the worker loop runs on (validated; null = the worker tier's model).</param>
     public async Task<WorkerOutcome> RunAsync(string task, string? doneWhen, int? maxMinutes, CancellationToken ct, string? profile = null)
     {
@@ -292,6 +293,15 @@ public sealed class WorkerAgent
                 messages.Add(new LlmMessage(LlmRole.Assistant, content));
 
                 var uses = response.ToolUses.ToList();
+                if (response.StopReason == StopReasons.MaxTokens)
+                {
+                    if (uses.Count > 0)
+                        messages.Add(new LlmMessage(LlmRole.User, uses.Select(u => (LlmBlock)new LlmToolResult(u.Id,
+                            "not executed: response truncated (max_tokens)", true)).ToList()));
+                    stop = StopReasons.MaxTokens;
+                    summary = "failed: response truncated (max_tokens); remaining tools not executed";
+                    break;
+                }
                 if (uses.Count == 0 || response.StopReason == StopReasons.Refusal)
                 {
                     summary = response.Text.Trim();
@@ -328,8 +338,8 @@ public sealed class WorkerAgent
                             r = await _tools.ExecuteAsync(tool, u.Input, token).ConfigureAwait(false);
                         toolCalls++;
                     }
+                    log.Add($"{u.Name}{(r.Ok ? "" : "!")} {TextUtil.Truncate(TextUtil.OneLine(r.Text), 160)}");
                     token.ThrowIfCancellationRequested();
-                    log.Add($"{u.Name}{(r.Ok ? "" : "!")} {TextUtil.Truncate(TextUtil.OneLine(r.Text), 60)}");
                     _trail = TrailOf(log, null);
                     results.Add(new LlmToolResult(u.Id, r.Text.Length == 0 ? (r.Ok ? "ok" : "error") : r.Text, !r.Ok) { Image = r.Image });
                     // Protection rule 5: the first protected refusal ends the task and goes back as-is (why + unlock phrase),
@@ -363,13 +373,28 @@ public sealed class WorkerAgent
                     var response = await CallAsync(messages, tools, token, profile, prof).ConfigureAwait(false);
                     calls++;
                     cost += _usage.Record(response.Model, response.Usage, ModelTier.Worker);
-                    if (!response.ToolUses.Any() && response.Text.Trim() is { Length: > 0 } t) summary = t;
+                    if (response.StopReason == StopReasons.MaxTokens)
+                    {
+                        messages.Add(new LlmMessage(LlmRole.Assistant, response.Content));
+                        var uses = response.ToolUses.ToList();
+                        if (uses.Count > 0)
+                            messages.Add(new LlmMessage(LlmRole.User, uses.Select(u => (LlmBlock)new LlmToolResult(u.Id,
+                                "not executed: response truncated (max_tokens)", true)).ToList()));
+                        stop = StopReasons.MaxTokens;
+                        summary = "failed: response truncated (max_tokens); remaining tools not executed";
+                    }
+                    else if (!response.ToolUses.Any() && response.Text.Trim() is { Length: > 0 } t) summary = t;
                 }
             }
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested && timeout.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
-            stop = "time";
+            stop = ct.IsCancellationRequested ? "cancelled" : "time";
+        }
+        catch (Exception ex)
+        {
+            stop = "error";
+            log.Add("error: " + TextUtil.OneLine(ex.Message));
         }
         finally
         {
@@ -382,6 +407,7 @@ public sealed class WorkerAgent
         {
             "time" => $"failed: out of time ({minutes} min)",
             "budget low" => "failed: budget low, stopped",
+            "cancelled" => "failed: cancelled; partial work only",
             _ => $"failed: stopped ({stop})",
         } + (log.Count > 0 ? "; last: " + log[^1] : "") + $"; {toolCalls} actions";
         var outcome = Classify(summary, calls, toolCalls, cost, stop);

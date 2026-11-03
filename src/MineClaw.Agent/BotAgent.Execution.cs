@@ -84,7 +84,7 @@ public sealed partial class BotAgent
         public bool AllInstant => Steps.Count > 0 && Steps.All(s => !s.Tool.IsLongRunning);
     }
 
-    private readonly ConcurrentDictionary<string, Task<ToolResult>> _early = new();
+    private readonly ConcurrentDictionary<string, (Task<ToolResult> Result, bool Movement)> _early = new();
     private int _earlyChains;
 
     private Planned Plan(LlmToolUse u, ModelTier tier, bool retry, bool stopping, ICollection<string> queuedSigs, string? body = null)
@@ -182,7 +182,7 @@ public sealed partial class BotAgent
             if (!ReadOnlyTools.Contains(u.Name) && !IsBodyTool(u.Name) && u.Name != DoTool.ToolName) Latency?.NoteSequence(u.Name);
             if (_early.TryRemove(u.Id, out var early))
             {
-                tasks.Add(Task.Run(async () => results[idx] = await early.ConfigureAwait(false), ct));
+                tasks.Add(Task.Run(async () => results[idx] = await early.Result.ConfigureAwait(false), ct));
                 continue;
             }
             foreach (var p in PlanAll(u, tier, retry, stopping, sigs))
@@ -242,6 +242,30 @@ public sealed partial class BotAgent
             _log.LogDebug("tool {Name} → {Result}", u.Name, r);
             return new LlmToolResult(u.Id, r.Text.Length == 0 ? (r.Ok ? "ok" : "error") : r.Text, !r.Ok) { Image = r.Image };
         }).ToList();
+    }
+
+    /// <summary>A capped reply cannot authorize new work. Keep real early outcomes; movement is not a rollback.</summary>
+    private async Task<IReadOnlyList<LlmToolResult>> TruncatedToolsAsync(List<LlmToolUse> uses)
+    {
+        var results = new List<LlmToolResult>(uses.Count);
+        foreach (var u in uses)
+        {
+            if (!_early.TryRemove(u.Id, out var early))
+            {
+                results.Add(new LlmToolResult(u.Id, "not executed: response truncated (max_tokens)", true));
+                continue;
+            }
+            var r = await early.Result.ConfigureAwait(false);
+            if (early.Movement)
+            {
+                // Await the early start before cancelling: a queued Task must not start a walk after cancellation.
+                _activities.Cancel("response truncated (max_tokens)");
+                Interlocked.Exchange(ref _earlyChains, 0);
+                results.Add(new LlmToolResult(u.Id, r.Text + "; response truncated: movement already started; cancellation requested, any movement so far was not undone", true));
+            }
+            else results.Add(new LlmToolResult(u.Id, r.Text.Length == 0 ? (r.Ok ? "ok" : "error") : r.Text, !r.Ok) { Image = r.Image });
+        }
+        return results;
     }
 
     /// <summary>The in-turn dedupe signature: per body, so 67's and 69's identical jobs are two jobs.</summary>
@@ -319,8 +343,8 @@ public sealed partial class BotAgent
 
     /// <summary>
     /// Streaming execution: the hook handed to the provider for this call. Read-only lookups start at once; the first
-    /// body call of the message starts too when it is a walk (a <c>goto</c>/<c>follow</c>, or a <c>do</c> led by one):
-    /// walking begins while the model is still writing. Anything else waits for the message (order is kept).
+    /// body call of the message starts too when it is only cancellable movement (<c>goto</c>/<c>follow</c>):
+    /// walking begins while the model is still writing. Effectful tails wait for the message (order is kept).
     /// </summary>
     private Action<LlmToolUse>? EarlyStarter(ModelTier tier, bool retry, string model, CancellationToken ct)
     {
@@ -340,15 +364,16 @@ public sealed partial class BotAgent
                     if (p.Result != null) { blocked |= !ReadOnlyTools.Contains(use.Name); return; }
                     if (p.AllInstant && p.Steps.All(s => ReadOnlyTools.Contains(s.Tool.Name)))
                     {
-                        _early[use.Id] = Task.Run(() => RunInstantAsync(p, ct), ct);
+                        _early[use.Id] = (Task.Run(() => RunInstantAsync(p, ct), ct), false);
                         return;
                     }
                     blocked = true; // from here on nothing starts early: tool order is the model's order
-                    if (p.Steps.Count > 0 && p.Steps[0].Tool.IsLongRunning && ActivityManager.MovementTools.Contains(p.Steps[0].Tool.Name))
+                    if (!p.Queue && p.Steps.Count > 0 && p.Steps.All(s => s.Tool.IsLongRunning && ActivityManager.MovementTools.Contains(s.Tool.Name)
+                        && s.Input.Bool("build") != true && s.Input.Str("into_void") == null && s.Input.Str("allow_parkour") != "void"))
                     {
                         Interlocked.Increment(ref _earlyChains);
                         _log.LogDebug("streaming: started {Tool} before the message ended", use.Name);
-                        _early[use.Id] = Task.Run(async () => (await RunChainAsync([p], ct).ConfigureAwait(false))[0], ct);
+                        _early[use.Id] = (Task.Run(async () => (await RunChainAsync([p], ct).ConfigureAwait(false))[0], ct), true);
                     }
                 }
             }

@@ -35,8 +35,8 @@ public sealed class VisionOptions
     public string? ModernClientJar { get; set; }
     /// <summary>Extracted textures + cached jar; default "&lt;Agent:DataDirectory&gt;/assets" (gitignored).</summary>
     public string? AssetsDir { get; set; }
-    /// <summary>Download Mojang's official client jar (SHA-1 verified) when nothing local is found.</summary>
-    public bool AllowDownload { get; set; } = true;
+    /// <summary>Download Mojang's official client jar (SHA-1 verified) when nothing local is found. Off by default.</summary>
+    public bool AllowDownload { get; set; }
     /// <summary>Sheets a model received, kept per body for the Live Hive's "what the AI saw" (memory ring; 0 = off).</summary>
     public int HistorySize { get; set; } = 20;
     /// <summary>Optional on-disk ring of those sheets (relative = under Agent:DataDirectory; a folder per body); null = memory only.</summary>
@@ -185,7 +185,7 @@ public static class VisionTools
         Contexts.AddOrUpdate(c.World, new Context { Marks = Marks, IsHive = IsHive, Roles = roles?.Map });
         if (!o.Enabled) return null;
 
-        // Textures: found once in the background (local jar, extracted atlas, or a verified download); flat colours meanwhile.
+        // Textures: found once in the background (local jar, extracted atlas, or an opt-in verified download); flat colours meanwhile.
         // The body's version picks the assets (multi-version §2.9): b1.8.1's terrain.png atlas, or 1.12.2's blockstates + models.
         string version = c is MinecraftGameClient mgc ? mgc.Inner.Options.Profile.Data.VersionId : "b1.8.1";
         bool modern = version == MineClaw.Render.Models.Release1122Assets.Version;

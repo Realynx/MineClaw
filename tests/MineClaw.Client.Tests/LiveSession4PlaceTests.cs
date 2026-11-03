@@ -51,6 +51,42 @@ public class LiveSession4PlaceTests
     }
 
     [Fact]
+    public async Task Identical_refused_placements_stop_sending_after_three_attempts()
+    {
+        var (c, s) = await Harness.StartAsync(srv =>
+        {
+            GenHole(srv);
+            srv.Hook = p => p is PlayerBlockPlacementPacket;
+        });
+        await using var _ = c;
+        using var __ = s;
+        for (int i = 0; i < 3; i++) Assert.False((await c.PlaceBlockAsync(7, 62, 9, Blocks.Cobblestone)).Ok);
+        int before = s.Got<PlayerBlockPlacementPacket>().Count();
+        var stopped = await c.PlaceBlockAsync(7, 62, 9, Blocks.Cobblestone);
+        Assert.Contains("stopped after 3 identical server refusals", stopped.Message);
+        Assert.Equal(before, s.Got<PlayerBlockPlacementPacket>().Count());
+        // A changed support/target is new evidence, not a permanent ban on this coordinate.
+        s.SetBlock(7, 62, 8, Blocks.Stone);
+        Assert.True(await Until(() => c.World.GetBlock(7, 62, 8) == Blocks.Stone));
+        await c.PlaceBlockAsync(7, 62, 9, Blocks.Cobblestone);
+        Assert.True(s.Got<PlayerBlockPlacementPacket>().Count() > before);
+    }
+
+    [Fact]
+    public async Task Hidden_face_refusals_near_spawn_never_teach_spawn_protection()
+    {
+        var (c, s) = await Harness.StartAsync(srv =>
+        {
+            GenHole(srv);
+            srv.Hook = p => p is PlayerBlockPlacementPacket;
+        });
+        await using var _ = c;
+        using var __ = s;
+        for (int i = 0; i < 2; i++) Assert.False((await c.PlaceBlockAsync(7, 62, 9, Blocks.Cobblestone)).Ok);
+        Assert.Null(c.ProtectedRegion);
+    }
+
+    [Fact]
     public async Task Refills_7_62_9_from_inside_the_hole_by_clicking_the_hidden_south_face_of_7_62_8()
     {
         var (c, s) = await Harness.StartAsync(GenHole);

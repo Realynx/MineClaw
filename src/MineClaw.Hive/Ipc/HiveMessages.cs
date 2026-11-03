@@ -53,6 +53,7 @@ public static class Msg
     public const string ChatAccepted = "chat_ok"; // C→M      ChatAcceptedMsg (this clone took a player's message)
     public const string Thread = "thread";        // C→M      ThreadMsg (this clone owns / released a player's replies)
     public const string Inject = "inject";        // M→C      InjectMsg (console /as test chat or a viewer line, so every process arbitrates it)
+    public const string Chorus = "chorus";        // M→C      ChorusMsg (plain chat at a shared UTC fire time)
     public const string Note = "note";            // M→C      NoteMsg (an update for the running task: a partner joined/changed; never replaces it)
     // budget ledger
     public const string SpendAuth = "spend_auth"; // C→M req  SpendAuthMsg → SpendGrantMsg
@@ -144,6 +145,8 @@ public sealed record ChatAcceptedMsg(string Player, bool Spoke = false);
 /// in every process (exactly the target's router takes it), real speech, not test.</param>
 public sealed record InjectMsg(string Raw, string? Origin = null, string? Player = null, string? Target = null, bool AllowCommands = false,
     string? RequestId = null);
+/// <summary>Main-initiated plain chat. Null Names selects every live body; IncludeMain controls main's own copy.</summary>
+public sealed record ChorusMsg(string Text, long FireAtMs, string[]? Names = null, bool IncludeMain = true);
 public sealed record NoteMsg(string Text);
 public sealed record SpendAuthMsg(decimal EstimateUsd, string Tier);
 public sealed record SpendGrantMsg(bool Ok, decimal GrantUsd, string Mode, string? Reason);

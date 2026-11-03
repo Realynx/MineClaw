@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using MineClaw.Data;
+using MineClaw.Skills;
 using MineClaw.World;
 
 namespace MineClaw.Bot;
@@ -47,8 +48,8 @@ public sealed partial class ProtectionCommands
 
     /// <summary>Trusted players (poofimafox, kiwi): only they unlock protected blocks.</summary>
     public Func<IEnumerable<string>> Trusted { get; set; } = () => [];
-    /// <summary>The block a player punch-pointed at just now, or null.</summary>
-    public Func<string, BlockPos?>? PointedBy { get; set; }
+    /// <summary>The block a player punch-pointed at just now and what it was then (a plant broken by the punch is air now), or null.</summary>
+    public Func<string, (BlockPos Pos, int Id)?>? PointedBy { get; set; }
     /// <summary>A remembered structure/place by name → its box, or null.</summary>
     public Func<string, (BlockPos Min, BlockPos Max)?>? NamedArea { get; set; }
     /// <summary>Generator dig cells near the bot ("the middle one").</summary>
@@ -137,7 +138,7 @@ public sealed partial class ProtectionCommands
         }
         if (intent.Kind == ProtectionIntentKind.Never)
         {
-            if (Resolve(player, intent) is not { } nt) return null;
+            if (Resolve(player, intent) is not { } nt || nt.Boxes.Count == 0) return null;
             // Live 10-27: a vague "don't mine the middle one" took one of the gen's three regen cells away for good. A gen cell
             // takes a never-break mark only when the player names that exact cell (coordinates or a punch).
             if (nt.GenCell && intent.Coords is null)
@@ -157,7 +158,22 @@ public sealed partial class ProtectionCommands
             Notice?.Invoke(line);
             return "ignored: " + line;
         }
-        if (Resolve(player, intent) is not { } t) return null;
+        if (Resolve(player, intent) is not { } t)
+        {
+            if (intent.Target is not null)
+            {
+                var note = $"[protect] couldn't resolve '{intent.Target}': name a block kind near me, a place, or x,y,z";
+                Notice?.Invoke(note);
+                return "ask: " + note;
+            }
+            // A stale refusal may refer to a block that is already gone. Ask for a current target.
+            return AskWhich(player);
+        }
+        if (t.Already is { } already)
+        {
+            Say?.Invoke(already);
+            return "nothing to unlock: " + already;
+        }
         if (intent.Kind == ProtectionIntentKind.Allow && GenCellAllowed is { } allowed)
         {
             var cells = GenCells?.Invoke() ?? [];
@@ -167,6 +183,7 @@ public sealed partial class ProtectionCommands
         }
         var draft = new ProtectionMark(0, MarkKind.Permit, Dim, t.Boxes, t.Label, player, now, null, t.Exact);
         int count = CountBlocks(t.Boxes);
+        if (count == 0) return AskWhich(player);
         bool unmark = intent.Kind == ProtectionIntentKind.Allow;
         if (count > _o.ConfirmAboveBlocks)
         {
@@ -189,8 +206,17 @@ public sealed partial class ProtectionCommands
         return line;
     }
 
+    private string AskWhich(string player)
+    {
+        var ask = $"{player}, which block? punch it (or give x,y,z) and say it again";
+        Say?.Invoke(ask);
+        return "ask: " + ask;
+    }
+
     /// <param name="GenCell">Resolved as a generator cell by a vague phrase ("the middle one").</param>
-    private sealed record Target(IReadOnlyList<(BlockPos Min, BlockPos Max)> Boxes, string Label, bool Exact, bool GenCell = false);
+    /// <param name="Already">Nothing there is protected: say this instead of granting a permit.</param>
+    private sealed record Target(IReadOnlyList<(BlockPos Min, BlockPos Max)> Boxes, string Label, bool Exact, bool GenCell = false,
+        string? Already = null);
 
     private Target? Resolve(string player, ProtectionIntent intent)
     {
@@ -198,8 +224,15 @@ public sealed partial class ProtectionCommands
         if (intent.Target is null)
         {
             if (PointedBy?.Invoke(player) is { } pointed)
-                return new([Column(pointed)], $"the {BlockName(pointed)} column at {Locations.Fmt(pointed)} (pointed)", true);
-            if (_policy.LastRefusal is { } r && _time.GetUtcNow() - r.At <= TimeSpan.FromMinutes(Math.Max(1, _o.RefusalContextMinutes)))
+            {
+                if (_world.GetBlock(pointed.Pos) != 0)
+                    return new([Column(pointed.Pos)], $"the {BlockName(pointed.Pos)} column at {Locations.Fmt(pointed.Pos)} (pointed)", true);
+                // The punch broke it (tall grass, a flower): they mean that kind of block, around the spot.
+                if (pointed.Id != 0 && SameKindAround(pointed.Pos, pointed.Id) is { } kind) return kind;
+            }
+            // Only use a refusal whose block is still present.
+            if (_policy.LastRefusal is { } r && _time.GetUtcNow() - r.At <= TimeSpan.FromMinutes(Math.Max(1, _o.RefusalContextMinutes))
+                && _world.GetBlock(r.Pos) == r.Id)
                 return new([Column(r.Pos)], $"the {BlockName(r.Pos)} column at {Locations.Fmt(r.Pos)} (the one I refused)", true);
             return null;
         }
@@ -212,13 +245,65 @@ public sealed partial class ProtectionCommands
         }
         if (NamedArea?.Invoke(name) is { } box) return new([box], "the " + name, false);
         // A block type near me ("you can break the planks"): the protected ones within 6 (Allow only: "mine cobble" is a job).
-        if (intent.Kind != ProtectionIntentKind.Command && ResolveBlock(name) is { } id)
-        {
-            var me = _world.Player.Position;
-            var found = _world.FindBlocks(me, 6, (b, _) => b == id, 256).Select(f => f.Pos).Where(p => _policy.IsProtected(p, id)).ToList();
-            if (found.Count > 0) return new(found.Select(p => (p, p)).ToList(), $"the {Blocks.Get(id).Name.Replace('_', ' ')} near me", false);
-        }
+        if (intent.Kind != ProtectionIntentKind.Command && NamedBlocks(name) is { } blocks) return blocks;
         return null;
+    }
+
+    private Target? NamedBlocks(string name)
+    {
+        // Keep the named kind separate from its qualifiers. Previously the entire sentence (including "next to the
+        // water holes" / "replant it right after") was looked up as one block name and silently discarded.
+        var parts = Regex.Split(name, @"\s+(?:next\s+to|near|around|beside|by|for|then|and|replant)\s+", RegexOptions.IgnoreCase);
+        var kind = Regex.Replace(parts[0], @"^(?:(?:it|that|this)\s+)?(?:(?:one|the|a|an|some)\s+)?(?:(?:unripe|ripe|growing)\s+)?", "").Trim();
+        if (ResolveBlock(kind) is not { } id) return null;
+        var age = Regex.Match(parts[0], @"\b(?:unripe|ripe|growing)\b", RegexOptions.IgnoreCase).Value;
+        if (age.Length > 0 && !CropKinds.IsCrop(id)) return null;
+        bool water = Regex.IsMatch(name, @"\bwater\s+holes?\b", RegexOptions.IgnoreCase);
+        var origin = _world.Player.Position;
+        if (!water && parts.Length > 1)
+        {
+            var landmark = Regex.Replace(parts[1], @"^(?:the|each)\s+", "").Trim();
+            if (NamedArea?.Invoke(landmark) is { } area)
+                origin = new Vec3d((area.Min.X + area.Max.X + 1) / 2.0, (area.Min.Y + area.Max.Y) / 2.0, (area.Min.Z + area.Max.Z + 1) / 2.0);
+        }
+        var found = _world.FindBlocks(origin, 6, (b, meta) => b == id
+            && (age.Length == 0 || CropKinds.Ripe(b, meta) == age.Equals("ripe", StringComparison.OrdinalIgnoreCase)), 256)
+            .Select(f => f.Pos).Where(p => _policy.IsProtected(p, id)).ToList();
+        bool one = Regex.IsMatch(parts[0], @"\bone\b", RegexOptions.IgnoreCase);
+        var faces = new[] { BlockFace.North, BlockFace.South, BlockFace.East, BlockFace.West };
+        var holes = new Dictionary<BlockPos, BlockPos?>();
+        BlockPos? WaterHole(BlockPos start)
+        {
+            if (holes.TryGetValue(start, out var known)) return known;
+            // One hole can contain several horizontally connected water cells. Bound the scan and decline large bodies
+            // of water rather than treating an arbitrary truncated piece as a separate hole.
+            var cells = new HashSet<BlockPos> { start };
+            var queue = new Queue<BlockPos>();
+            queue.Enqueue(start);
+            while (queue.TryDequeue(out var p) && cells.Count <= 256)
+                foreach (var face in faces)
+                {
+                    var q = p.Offset(face);
+                    if (BlockShapes.IsWater(_world.GetBlock(q)) && cells.Add(q)) queue.Enqueue(q);
+                }
+            BlockPos? key = cells.Count > 256 ? null : cells.OrderBy(p => p.X).ThenBy(p => p.Z).First();
+            foreach (var p in cells) holes[p] = key;
+            return key;
+        }
+        BlockPos? WaterAt(BlockPos p)
+        {
+            foreach (var face in faces)
+                for (int dy = -1; dy <= 0; dy++)
+                {
+                    var q = p.Offset(face) with { Y = p.Y + dy };
+                    if (BlockShapes.IsWater(_world.GetBlock(q))) return one ? WaterHole(q) : q;
+                }
+            return null;
+        }
+        if (water) found = found.Where(p => WaterAt(p) != null).ToList();
+        if (one)
+            found = water ? found.GroupBy(p => WaterAt(p)).Select(g => g.First()).ToList() : found.Take(1).ToList();
+        return found.Count == 0 ? null : new(found.Select(p => (p, p)).ToList(), $"the {Blocks.Get(id).Name.Replace('_', ' ')} near { (water ? "the water holes" : "me") }", false);
     }
 
     private static int? ResolveBlock(string name)
@@ -226,7 +311,21 @@ public sealed partial class ProtectionCommands
         var n = name.Replace(' ', '_');
         if (Blocks.ByName(n) is { } b) return b.Id;
         if (n.EndsWith('s') && Blocks.ByName(n[..^1]) is { } b2) return b2.Id;
-        return n switch { "cobble" => Blocks.Cobblestone, "wood" or "logs" => Blocks.Log, "plank" or "planks" => Blocks.Planks, _ => null };
+        return n switch { "wheat" => Blocks.Crops, "cobble" => Blocks.Cobblestone, "wood" or "logs" => Blocks.Log, "plank" or "planks" => Blocks.Planks, _ => null };
+    }
+
+    /// <summary>Blocks of <paramref name="id"/> within 6 of <paramref name="at"/>: the protected ones (one box each), or an
+    /// "already" line when none of them is protected; null when there are none.</summary>
+    private Target? SameKindAround(BlockPos at, int id)
+    {
+        string name = Blocks.Get(id).Name.Replace('_', ' ');
+        var found = _world.FindBlocks(at.Center, 6, (b, _) => b == id, 256).Select(f => f.Pos).ToList();
+        if (found.Count == 0) return null;
+        var locked = found.Where(p => _policy.IsProtected(p, id)).ToList();
+        string label = $"the {name} around {Locations.Fmt(at)} (pointed)";
+        return locked.Count > 0
+            ? new(locked.Select(p => (p, p)).ToList(), label, false)
+            : new([], label, false, Already: $"the {name} around {Locations.Fmt(at)} isn't protected: I can already break it");
     }
 
     /// <summary>The cell between the others (a dual gen's three cells in a line: the middle one).</summary>

@@ -2,6 +2,7 @@ using System.Text;
 using MineClaw.Agent.Telemetry;
 using MineClaw.App.Hosting;
 using MineClaw.App.Viewport;
+using MineClaw.Data;
 using Microsoft.Extensions.Logging;
 using Spectre.Console;
 using Spectre.Console.Rendering;
@@ -271,15 +272,15 @@ public static class TuiFrame
                 var m = u.Month.FirstOrDefault(x => x.Tier == tier);
                 if (t == null && m == null) continue;
                 lines.Add(new MLine(iw).Add($"{tier,-7}", TierStyle(tier))
-                    .Add($"{"$" + (t?.Usd ?? 0).ToString("0.000"),9}{t?.Calls ?? 0,7}{(t?.CacheHit ?? 0),7:P0}{"$" + (m?.Usd ?? 0).ToString("0.00"),10}").ToString());
+                    .Add($"{"$" + (t?.Usd ?? 0).ToString("0.000"),9}{t?.Calls ?? 0,7}{Percent.Of(t?.CacheHit ?? 0),7}{"$" + (m?.Usd ?? 0).ToString("0.00"),10}").ToString());
             }
             var last = u.Last;
-            lines.Add(new MLine(iw).Add("cache ", "grey").Add($"today {u.TodayCacheHit:P0}").Add(" · last ", "grey")
-                .Add(last != null ? $"{last.CacheHit:P0}" : "-").Add(" · ", "grey").Add($"{u.CallsLastHour} calls/h").ToString());
+            lines.Add(new MLine(iw).Add("cache ", "grey").Add($"today {Percent.Of(u.TodayCacheHit)}").Add(" · last ", "grey")
+                .Add(last != null ? Percent.Of(last.CacheHit) : "-").Add(" · ", "grey").Add($"{u.CallsLastHour} calls/h").ToString());
             if (last != null)
             {
                 lines.Add(new MLine(iw).Add("last ", "grey").Add(last.Tier + " ", TierStyle(last.Tier)).Add($"{last.Purpose} r{last.Round} ")
-                    .Add($"{K(last.PromptTokens)}→{last.OutputTokens} ${last.CostUsd:0.0000} {last.LatencyMs / 1000.0:0.0}s ctx {last.ContextPct:P0}", "grey").ToString());
+                    .Add($"{K(last.PromptTokens)}→{last.OutputTokens} ${last.CostUsd:0.0000} {last.LatencyMs / 1000.0:0.0}s ctx {Percent.Of(last.ContextPct)}", "grey").ToString());
                 lines.Add(SectionBar(last, iw, f.Unicode));
                 lines.Add(SectionLegend(last, iw));
             }
@@ -302,7 +303,7 @@ public static class TuiFrame
     {
         double frac = cap > 0 ? (double)(spent / cap) : 0;
         return new MLine(iw).Add($"{label,-6}", "grey").Add($"${spent:0.000}/{cap:0} ".PadRight(14))
-            .Add(Bar(frac, barW, unicode), frac >= 0.8 ? "red" : frac >= 0.6 ? "yellow" : "green").Add($" {frac:P0}");
+            .Add(Bar(frac, barW, unicode), frac >= 0.8 ? "red" : frac >= 0.6 ? "yellow" : "green").Add($" {Percent.Of(frac)}");
     }
 
     private static Panel BrainPanel(FrameInput f, int w, int h, string dash)

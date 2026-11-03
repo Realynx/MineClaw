@@ -46,6 +46,39 @@ public class EdgeGuardTests
 
     private static Func<int, PhysicsState, MoveInput> Hold(MoveInput i) => (_, _) => i;
 
+    [Fact]
+    public void Standing_in_flowing_water_on_the_ground_is_not_an_unrecoverable_fall()
+    {
+        // The current keeps horizontal speed above the brake's 0.02 threshold even on solid ground.
+        // Remaining grounded in flowing water must count as a viable outcome.
+        var w = TestWorld.Create();
+        w.Fill(-8, 50, -8, 8, 55, 8, Stone);
+        for (int x = -7; x <= 7; x++)
+        for (int z = -2; z <= 2; z++)
+            w.SetBlock(x, 56, z, Water, Math.Clamp((x + 8) / 2, 1, 7)); // shallow, flowing east
+        var s = TestWorld.Standing(-2.5, 56, 0.5);
+        var g = new EdgeGuard();
+        var run = Drive(w, g, s, Hold(new MoveInput(Yaw: East)), 40, clutch: false);
+        Assert.Equal(GuardActions.None, run.Seen & GuardActions.Unrecoverable);
+        Assert.True(run.State.Position.X > -2.5, "the current still carries me (physics unchanged)");
+        Assert.True(run.MinY >= 56 - 1e-6);
+    }
+
+    [Fact]
+    public void Flowing_water_toward_the_void_edge_is_still_braked_against()
+    {
+        // The same current on a skyblock ledge: the guard must still keep me on the island (the water rule only accepts a
+        // horizon that stays on ground, in water, never over the void).
+        var w = TestWorld.Create();
+        w.Fill(0, 61, 0, 4, 63, 4, Dirt);
+        for (int x = 0; x <= 4; x++)
+        for (int z = 0; z <= 4; z++)
+            w.SetBlock(x, 64, z, Water, Math.Clamp(x + 1, 1, 7)); // flowing east, off the island at x = 5
+        var s = TestWorld.Standing(3.5, 64, 2.5);
+        var run = Drive(w, new EdgeGuard(), s, Hold(new MoveInput(Yaw: East)), 120);
+        Assert.False(run.EverOverVoid, $"pushed over the void, ended at {run.State.Position}");
+    }
+
     [Theory]
     [InlineData(East)]
     [InlineData(West)]

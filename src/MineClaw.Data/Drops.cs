@@ -9,7 +9,7 @@ public readonly record struct Drop(int ItemId, int Damage, int Min, int Max, flo
     /// <summary>Expected number of items.</summary>
     public double Expected => (Min + Max) / 2.0 * Chance;
     public override string ToString() =>
-        $"{(Min == Max ? Min.ToString() : $"{Min}-{Max}")} {Items.DisplayName(ItemId, Damage)}{(Chance < 1f ? $" ({Chance:P0})" : "")}";
+        $"{(Min == Max ? Min.ToString() : $"{Min}-{Max}")} {Items.DisplayName(ItemId, Damage)}{(Chance < 1f ? $" ({Percent.Of(Chance)})" : "")}";
 }
 
 /// <summary>Block drops in Beta 1.8.1 (idDropped / quantityDropped / damageDropped / harvestBlock overrides in the jar).</summary>

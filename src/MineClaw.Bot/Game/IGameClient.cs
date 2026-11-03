@@ -64,7 +64,7 @@ public interface IGameClient
     Task<ActionResult> HarvestGeneratorAsync(IReadOnlyList<BlockPos> cells, int count, BlockPos? stand, CancellationToken ct = default) =>
         cells.Count == 0 ? Task.FromResult(ActionResult.Fail("no generator cell given"))
             : HarvestGeneratorAsync(cells[0].X, cells[0].Y, cells[0].Z, count, stand, ct);
-    Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default);
+    Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default, bool dryOnly = false);
     Task<ActionResult> CraftAsync(int itemId, int damage = -1, int count = 1, CancellationToken ct = default);
     Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, BlockPos? furnace = null, CancellationToken ct = default);
     Task<ActionResult> CollectFurnaceAsync(BlockPos? furnace = null, CancellationToken ct = default);
@@ -80,6 +80,10 @@ public interface IGameClient
         PlaceBlockAsync(x, y, z, itemId, ct);
     Task<ActionResult> DigBlockAsync(int x, int y, int z, CancellationToken ct = default);
     Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default);
+    /// <summary>Right-clicks <paramref name="face"/> of a block holding <paramref name="itemId"/>: a hoe tills dirt/grass, seeds
+    /// plant farmland, bone meal grows a crop (<see cref="MinecraftClient.UseItemOnBlockAsync"/>). Default: unsupported.</summary>
+    Task<ActionResult> UseItemOnBlockAsync(BlockPos pos, BlockFace face, int itemId, int? damage = null, CancellationToken ct = default) =>
+        Task.FromResult(ActionResult.Fail("using an item on a block isn't available on this client"));
     Task<ActionResult> EatAsync(CancellationToken ct = default);
 
     /// <summary>Fell one tree (nearest / near <paramref name="at"/> / of a wood type), gather saplings, replant
@@ -182,7 +186,7 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
         Inner.HarvestGeneratorAsync(x, y, z, count, stand, ct);
     public Task<ActionResult> HarvestGeneratorAsync(IReadOnlyList<BlockPos> cells, int count, BlockPos? stand, CancellationToken ct = default) =>
         Inner.HarvestGeneratorAsync(cells, count, stand, ct);
-    public Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default) => Inner.CollectDropsAsync(radius, ct);
+    public Task<ActionResult> CollectDropsAsync(double radius = 8, CancellationToken ct = default, bool dryOnly = false) => Inner.CollectDropsAsync(radius, ct, dryOnly);
     public Task<ActionResult> CraftAsync(int itemId, int damage = -1, int count = 1, CancellationToken ct = default) => Inner.CraftAsync(itemId, damage, count, ct);
     public Task<ActionResult> SmeltAsync(int inputItemId, int count, int? fuelItemId = null, bool wait = false, BlockPos? furnace = null, CancellationToken ct = default) =>
         Inner.SmeltAsync(inputItemId, count, fuelItemId, wait, furnace, ct);
@@ -197,6 +201,8 @@ public sealed class MinecraftGameClient(MinecraftClient client) : IGameClient
         Inner.PlaceVariantAsync(x, y, z, itemId, damage, face, ct);
     public Task<ActionResult> DigBlockAsync(int x, int y, int z, CancellationToken ct = default) => Inner.DigBlockAsync(x, y, z, ct);
     public Task<ActionResult> ActivateBlockAsync(int x, int y, int z, CancellationToken ct = default) => Inner.ActivateBlockAsync(x, y, z, ct);
+    public Task<ActionResult> UseItemOnBlockAsync(BlockPos pos, BlockFace face, int itemId, int? damage = null, CancellationToken ct = default) =>
+        Inner.UseItemOnBlockAsync(pos, face, itemId, damage, ct);
     public Task<ActionResult> EatAsync(CancellationToken ct = default) => Inner.EatAsync(ct);
     public Task<ActionResult> ChopTreeAsync(BlockPos? at = null, int? wood = null, CancellationToken ct = default) => Inner.ChopTreeAsync(at, wood, null, ct);
     public bool FaceIdle(Vec3d point) => Inner.FaceIdle(point);

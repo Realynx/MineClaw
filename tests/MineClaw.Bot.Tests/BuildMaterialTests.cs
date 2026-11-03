@@ -117,6 +117,25 @@ public class BuildMaterialTests
     }
 
     [Fact]
+    public async Task A_sand_order_is_withdrawn_from_every_chest_that_holds_sand()
+    {
+        // The giant pyramid's sand sits in several staging chests: a lane asks for a bagful (256) at a time and the withdraw walks
+        // the chests until the bag is full, never asking anyone while the chests still hold it.
+        var i = Make();
+        using var _ = i.H;
+        Chest(i, 3, 3, Blocks.Sand, 100);
+        Chest(i, -3, 3, Blocks.Sand, 120);
+        Chest(i, 3, -3, Blocks.Sand, 900);
+        Chest(i, -3, -3, Blocks.Cobblestone, 500);
+        var r = await Acquisition.Planner(i.C).AcquireAsync(new Need("sand", 256), CancellationToken.None);
+        Assert.True(r.Ok, r.Text);
+        Assert.Equal(256, i.C.World.Inventory.CountItem(Blocks.Sand));
+        Assert.DoesNotContain(i.C.CallList, x => x.StartsWith($"withdraw {Blocks.Cobblestone} ", StringComparison.Ordinal));
+        Assert.True(i.C.CallList.Count(x => x.StartsWith($"withdraw {Blocks.Sand} ", StringComparison.Ordinal)) >= 2);
+        Assert.Empty(i.Asked);
+    }
+
+    [Fact]
     public async Task A_build_withdraws_storage_cobble_and_proceeds()
     {
         var i = Make();

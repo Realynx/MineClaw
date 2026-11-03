@@ -133,6 +133,49 @@ public class BucketSourceTests
     }
 
     [Fact]
+    public async Task Fill_walks_around_a_wall_to_a_visible_source()
+    {
+        var g = LiquidTests.Island();
+        g.Stand(0.5, 64, 0.5);
+        g.Set(0, 63, -3, Blocks.Water);
+        // A distance-only reach goal is already satisfied on the wrong side of this wall.
+        g.Fill(-2, 64, -2, 2, 66, -2, Blocks.Cobblestone);
+        g.Give(Items.Bucket, 1);
+        var r = await g.Run("fill_bucket", new { pos = "0,63,-3" });
+        Assert.True(r.Ok, r.Text);
+        Assert.NotEmpty(g.Visited);
+        Assert.Equal(1, g.World.Inventory.CountItem(Items.WaterBucket));
+    }
+
+    [Fact]
+    public async Task Fill_tries_another_source_in_the_same_pond_but_not_a_protected_one()
+    {
+        var g = LiquidTests.Island();
+        g.Stand(0.5, 64, 0.5);
+        g.Set(0, 63, -3, Blocks.Water);
+        g.Set(0, 64, -3, Blocks.Cobblestone); // covered target
+        g.Set(0, 63, -2, Blocks.Water); // the only exposed face hits this source first
+        g.ProtectedBlocks.Add(new BlockPos(0, 63, -2));
+        g.Set(1, 63, -2, Blocks.Water);
+        g.Give(Items.Bucket, 1);
+        var r = await g.Run("fill_bucket", new { pos = "0,63,-3" });
+        Assert.True(r.Ok, r.Text);
+        Assert.Contains("1,63,-2", r.Text);
+        Assert.Equal(Blocks.Water, g.World.GetBlock(0, 63, -2));
+        Assert.Equal(Blocks.Water, g.World.GetBlock(0, 63, -3));
+    }
+
+    [Fact]
+    public async Task Empty_trench_pass_reports_zero_changes_and_the_reason()
+    {
+        var g = LiquidTests.Island();
+        var r = await g.Run("excavate", new { box = "1,66,1,3,66,1" });
+        Assert.True(r.Ok, r.Text);
+        Assert.Contains("dug 0", r.Text);
+        Assert.Contains("already clear", r.Text);
+    }
+
+    [Fact]
     public void Infinite_pool_cell_refills()
     {
         var g = LiquidTests.Island();

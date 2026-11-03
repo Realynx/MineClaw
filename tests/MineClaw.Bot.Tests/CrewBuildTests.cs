@@ -357,7 +357,7 @@ public class CrewBuildTests
     // ------------------------------------------------------------------ hive mode
 
     /// <summary>A shared in-memory claim board (stands are leased per body, like the hive's).</summary>
-    private sealed class Board
+    internal sealed class Board
     {
         private readonly List<(string Owner, ClaimKey Key)> _leases = new();
         public IClaimBoard View(string owner) => new V(this, owner);
@@ -381,7 +381,7 @@ public class CrewBuildTests
     }
 
     /// <summary>The hive seam: each clone "process" is its own BlueprintService over the same db, running build{bp, lane}.</summary>
-    private sealed class Jobs(Dictionary<string, (SimBuildBody Body, BlueprintService Service)> clones, AgentDb db) : IBuildJobs
+    internal sealed class Jobs(Dictionary<string, (SimBuildBody Body, BlueprintService Service)> clones, AgentDb db) : IBuildJobs
     {
         public List<(string Body, long Id, int Lane, string LaneBody)> Started { get; } = new();
         public List<Task<(bool Ok, string Text)>> Runs { get; } = new();
@@ -480,7 +480,7 @@ public class CrewBuildTests
         var draft = s.Store.Insert(new BlueprintRecord { Name = "glass dome", Description = "dome", Bot = "maid_chan", Dsl = BlueprintTests.Hut, Status = DesignStatus.Review });
         var (_, no) = h.Blueprints.DesignTask($"build design #{draft.Id}");
         Assert.Contains("not approved", no);
-        var del = await h.RunAs(Agent.Llm.ModelTier.Main, "delegate", new { task = $"keep building design #{draft.Id}" });
+        var del = await h.RunAs(Agent.Llm.ModelTier.Main, "delegate", new { task = $"keep building design #{draft.Id}", done_when = "design is built" });
         Assert.False(del.Ok);
         Assert.Contains("design build", del.Text);
         Assert.Equal((null, null), h.Blueprints.DesignTask("mine 32 cobblestone"));

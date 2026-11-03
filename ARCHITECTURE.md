@@ -18,7 +18,10 @@ MineClaw.Client    TCP connection + packet dispatch, 20 TPS tick, physics, playe
             └── MineClaw.Data  game data: b1.8.1 tables + 1.12.2 (Versioning/Release1122*), static facades over GameData.Current (no deps)
 ```
 
-`tests/MineClaw.Tests` (xUnit) covers all layers.
+Tests use one xUnit project per area, `tests/MineClaw.<Area>.Tests`. Run them one assembly at a time
+(`dotnet test MineClaw.sln -m:1`) to avoid contention in wall-clock-budget tests. Client tests share the in-memory
+`tools/MineClaw.Sim` core; `tools/SimServer` exposes it over loopback TCP, with an opt-in deterministic `mock` LLM provider
+for the [offline sandbox](docs/offline-sandbox.md).
 
 **Multi-version** (`docs/design/multi-version.md`; target 1.12.2 / protocol 340 next to b1.8.1): one process speaks one version,
 resolved once by the App before any client exists (`Bot:Server:Version` auto | b1.8.1 | 1.12.2, `--server-version`; auto =
@@ -546,7 +549,10 @@ keys, planks that keep the log's wood type), FurnaceRecipes, burn times, drops a
 - **DSL** (`BlueprintParser`, written by the Opus brain tier only): `blueprint name`, `size WxHxD`, optional `origin`, `facing`
   (drawings put the front on the south/bottom row; `facing east` turns the build and every directional meta), `light`, a palette
   (`C=cobblestone D=door:south S=cobblestone_stairs:north W=wool:red H=slab:cobble`), `layer N` / `layer 1-3` rows (`.` air, `_` keep),
-  and primitives in order (box, hollow, walls, wall, floor, clear, pillar, door, window, stairs, `roof flat|gable|slope:dir`).
+  and primitives in order (box, hollow, walls, wall, floor, clear, pillar, door, window, stairs, `roof flat|gable|slope:dir`,
+  `pyramid X x,y,z base [core:Y]`: a stepped pyramid, one row in per layer, (base+1)/2 layers, every layer wholly on the one below so sand
+  never hangs; `core:Y` fills all but each layer's outer two rows with Y). A design holds at most 32 a side and `BlueprintNormalizer.MaxBlocks`
+  (6000) blocks: a 31-wide solid pyramid is 5,456. The giant-pyramid plan (sand run, staging chests, who builds): docs/pyramid-plan.md.
   `BlueprintNormalizer` → `VoxelPlan` (world blocks + forced air). Blocks must be b1.8.1 building blocks (`BuildBlocks`); metas follow
   mc-dev: door lower = placer quarter 0..3 (+4 hinge), upper = lower|8, only on a top face; stairs 0 E/1 W/2 S/3 N; 6 slab types and a
   same-type slab on a slab merges (refused); ladder 2..5 = wall side; chest/furnace front 2..5.
@@ -682,6 +688,25 @@ keys, planks that keep the log's wood type), FurnaceRecipes, burn times, drops a
   bodies/crew by name) is a thin wrapper over `BlueprintService.BuildAsync`/`BuildLaneAsync`; a delegated "continue building
   design #4" gets its `build{bp:"4"}` line, an unapproved one is refused back to the brain (`design build{id}` after a trusted go).
   The old `VoxelPlan.Partition(n, byLayer)` strips (`build{bp, part, of}`) remain for scripts.
+  **Big designs** (for example, a base-63 pyramid with 43,680 sand blocks): a design (or band) of at least
+  `CrewStripsAbove` (400) blocks is cut into strips first (`CrewSlicer.Strips`: contiguous column runs along the long axis balanced
+  by blocks still to place, at least 2 wide, one per body) and each strip is planned on its own, in parallel, from its own body's
+  feet, standing only in its strip (or beyond the footprint at its end: `BuildPlannerOptions.StandOk`) and never walking through
+  another strip's design cells (`Avoid`): the lanes share nothing, so no waits, no stand contention (b=21 with 8 bodies: 0 waits,
+  0 re-balances, the finale places nothing; the one-plan slicing had 1,254 waiting steps and fell back to turns). A strip that
+  can't plan clean on its own (an overhang into the next strip) leaves the crew to the one-plan slicer. A design of more than
+  `SectionBlocks` (6,000) blocks is built in bottom-up layer bands (`VoxelPlan.Bands`/`Band`; the b=63 pyramid is 10), one
+  after another, each a whole build of its own (gate on the first, slice, lanes, finale), so slicing, the persisted plan and
+  re-plans stay one band in size; a run that stops resumes at the first band not standing; the saved plan names its band
+  (`BuildPlan.BandLo/BandHi`) so a hive clone's lane job rebuilds the same band; one body builds a sectioned design the same way.
+  `design build`/"build it" no longer slices a sectioned design up front (it was minutes on the chat thread): the summary is
+  counted ("43680 placements in 10 sections …, with 8 bodies ≈68 min (rough)"). The walk flood after each placement stops at
+  `FloodLocal` (128) cells and the full flood (6,000) decides only what the partial one can't vouch for (same plan; b=63 band 0 single-body 10.6 s in Release, was minutes); the wall-in check forks the plan world as an overlay. Materials: one fetch takes up to `FetchStacks` (16)
+  stacks, `StorageBodies` (3) bodies at the chests at once (each chest still one withdrawal at a time: its lease), a body dropped
+  from the crew puts the design's materials it carries back (`IBuildBody.ReturnAsync` = `ChestStore`). Lanes write the whole plan
+  at most every 10 s (their own progress rows every checkpoint). The brain: every finished lane step and every slicing beats the
+  coordinating body's `BuildPulse`, part of its stall-watchdog signature, so a healthy build never raises "stalled: build idle"
+  (one wake per pause or finish).
 - **Design revisions** (`Bot/Blueprints/DesignRevisions` + `DesignHistory` + `DesignDrift`, `World/Designs/DesignSnapshot`; Fox
   10-30: "similar to Git style, so that we can detect changes and do revisions and regressions"). Linear history per design in
   the shared db (`blueprint_revisions`: rev, author, author kind player|bot|body, message, optional tag, time, DSL, origin and the
@@ -794,11 +819,11 @@ frozen block set ("recorded at y38-60 only"); cobble went into the stairs ("you 
 ## Protection policy (Bot/Protection + ProtectionPolicy/, Client hooks)
 
 **Spawn protection is a learned world fact** (`ProtectionPolicy/SpawnProtectionFact`, one shared `protected_region`/`spawn`
-observation per dimension): a client that had two independent edits undone near the world spawn learns the radius; the fact records
-the accounts it binds (`affects`) and the ones whose edits inside worked (`exempt`, i.e. op). An exempt account's success never
-retracts it (live 10-28: op main's chopping erased what 420 learned); an affected account's success frees that account, and the fact
-goes when it binds nobody. Every process and in-process body adopts it unless exempt; `Bot:Protection:ServerOp` marks main exempt
-(clone processes force it off: only main is op).
+observation per dimension): two valid, visible edits undone near the world spawn can teach the radius; blind/invalid placements
+are not permission evidence. The fact records the accounts it binds (`affects`) and explicitly configured op accounts (`exempt`).
+A successful edit inside by any hive account disproves the region globally. Every process and in-process body adopts it unless
+exempt; `Bot:Protection:ServerOp` marks main exempt (clone processes force it off: only main is op).
+`Bot:Protection:SpawnProtectionOff` prevents runtime learning and adoption on main and clones, not just startup recall.
 
 One place decides whether the bot may break a block, why not, and how a player unlocks it: `Protection` builds the client's
 `IsProtected` (fast; the pathfinder asks), `ExplainProtection` (refusal text + telemetry) and `SoftOverride`.
@@ -1166,6 +1191,7 @@ connects its pipe before opening anything and exits 75 without one (never unsupe
   (`ClaimAwareGameClient.GenCell`: a nested gen run digs the held cell; an unanswered claim is released, never orphaned); "no
   free gen cell: held by 1337 ×2" names the holders (`IClaimBoard.HolderOf`). Shared fields: `harvest_wheat` cuts the field
   (`FarmField`, connected crops+farmland) into 3-row strips and leases one at a time nearest first (or `part=i/n` bands).
+  `lay_field` (Skills/LayField.cs) builds the field those strips work: trench(es) + tilled rows + fence/gate/torches, `level:true` to flatten, resumable (CATALOG.md). Pathing never plans a drop or gap-jump landing on farmland (1.12 `onFallenUpon` tramples it), costs a hop onto a field +100 and walking one +40 a cell unless the goal is on it (`PathOptions.Farmland*`).
 - **Chat arbiter**: one deterministic owner per player message in every process — named clone > thread lease (the bot that asked the player something or is watching their demo owns their replies until resolved/timeout; `thread` IPC) > sticky partner > main; a bare clone number addresses it only at the start of a line/sentence or next to an address word ("69 bring me…", "hey 69", "maid 69", "69 maid", "also 67, ..."), never as a mention/quantity/coordinate ("get 67 cobble", "with 67?", "6,67,8"); a clone as the object of a request ("have clone 69 harvest") addresses main, and an address to an offline clone goes to main; a line naming several bots goes to each of them with main coordinating; ownership covers a player's *conversation*: an unnamed spawn of the request the clone talking with that player is on (or any spawn while it is asking them about it) is refused without `hive op=handover`, while additional clones for the same player's new or parallel request (a spar needs two) go ahead and clones already on that job get a `note` with the newcomer's task; a clone's task is *pending* in main's turn hint until its result event arrives, and main's speech guard drops claims about pending results;
   hive bots' chat, /me, joins/leaves are internal. Main pushes live roster + sticky map.
 - **Budget**: Agent:Budget caps are shared by the hive; main's ledger adds clone spend to main's tracker, grants clones spend in

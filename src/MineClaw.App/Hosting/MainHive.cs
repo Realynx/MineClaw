@@ -77,6 +77,8 @@ public sealed class MainHive : IAsyncDisposable
             agent.PersonaExtra = (agent.PersonaExtra + "\n" + HiveTools.ScriptHint).Trim();
         if (!agent.PersonaExtra.Contains(HiveTools.KindHint, StringComparison.Ordinal))
             agent.PersonaExtra = (agent.PersonaExtra + "\n" + HiveTools.KindHint).Trim();
+        if (!agent.PersonaExtra.Contains(HiveTools.ChorusHint, StringComparison.Ordinal))
+            agent.PersonaExtra = (agent.PersonaExtra + "\n" + HiveTools.ChorusHint).Trim();
         // Hive:Isolation=process: no in-process host at all (exactly the old clone processes; a spawn's inproc override then runs as a
         // process too). inproc: the host, with Hive:ProcessProfiles and a spawn's process override still getting a process of their own.
         bool anyInProc = cfg.RunsInProcess();
@@ -184,6 +186,7 @@ public sealed class MainHive : IAsyncDisposable
         SubhiveWiring.AttachMain(Hierarchy, subhives, _cfg, _log); // main's own subhive bodies, hive-hosted ones, the resource ceiling
         // "113 stop" names a body 420's brain drives: the line is 420's (main stays out unless 420 is unreachable).
         Arbiter.Follow(Hierarchy.Tree);
+        _supervisor.ChorusSpeakers = () => HiveChorus.Speakers(bot.Bodies, main: true);
         HiveTools.RegisterMain(rt.Tools, _supervisor, agent.Llm, Hierarchy);
         // Crew builds: idle clones (or the ones the brain names) build lanes of a design as hive jobs (build{bp, lane}).
         if (bot.Blueprints?.Service is { } blueprints) blueprints.Jobs = new HiveBuildJobs(_supervisor, _cfg.Clones());

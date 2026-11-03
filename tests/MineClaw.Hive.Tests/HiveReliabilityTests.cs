@@ -167,4 +167,12 @@ public class HiveReliabilityTests(Xunit.Abstractions.ITestOutputHelper output)
     [InlineData("stay near the house overnight", "food")]
     public void Task_loadout_from_the_task_text(string task, string want) =>
         Assert.Equal(want, string.Join(",", TaskLoadout.For(task) ?? []));
+
+    [Theory]
+    [InlineData("lay the standard field at 150,67,255: trench, tilled rows, fence", "hoe,food")]
+    [InlineData("till the rows and plant wheat seeds between the trenches", "hoe,food")]
+    [InlineData("replant the empty farmland", "hoe,food")]
+    [InlineData("chop trees and replant saplings", "axe,food")]
+    public void Farm_tasks_fetch_a_hoe_first(string task, string want) =>
+        Assert.Equal(want, string.Join(",", TaskLoadout.For(task) ?? []));
 }

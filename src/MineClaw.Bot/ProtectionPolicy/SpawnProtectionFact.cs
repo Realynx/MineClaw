@@ -10,10 +10,8 @@ namespace MineClaw.Bot;
 /// Spawn protection as a world fact in the shared memory (one <c>protected_region</c>/<c>spawn</c> observation per dimension),
 /// learned from the world, never configured: the server undid digs/placements near the world spawn → a radius around it
 /// (<see cref="MinecraftClient"/> learns it from two independent undone edits). Who it binds is learned too: <see cref="Affects"/> are
-/// the accounts whose edits were undone there, <see cref="Exempt"/> the ones whose edits inside it worked (op). An exempt account's
-/// success is no evidence against the fact (live 10-28: main is op, its chopping near spawn retracted the region 420 had learned,
-/// and every other body went back to digging there); only an affected account editing inside it retracts it for that account,
-/// and the fact goes once no affected account is left. Every hive process and body adopts it unless its account is exempt.
+/// the accounts whose edits were undone there, <see cref="Exempt"/> accounts explicitly configured as op. A later successful
+/// edit inside the region disproves this inferred fact for the whole hive; refusals alone aren't proof of permissions.
 /// </summary>
 public sealed record SpawnProtectionFact(BlockPos Center, int Radius, int Dimension, IReadOnlyList<string> Affects, IReadOnlyList<string> Exempt,
     string Reason)
@@ -43,19 +41,12 @@ public sealed record SpawnProtectionFact(BlockPos Center, int Radius, int Dimens
 
     /// <summary>
     /// <paramref name="account"/>'s edit at <paramref name="p"/> worked. Outside the region: no change (null, false). Inside, by an
-    /// account it binds: that account is free of it now; the fact is retracted (null, true) once nobody it binds is left. Inside, by
-    /// an account it never bound: that account is exempt (op), the fact stays for everyone else.
+    /// any hive account: the inferred restriction is disproved for everyone (null, true).
     /// </summary>
     public (SpawnProtectionFact? Fact, bool Changed) AfterSuccess(string account, BlockPos p, int dimension)
     {
         if (!Contains(p, dimension)) return (this, false);
-        if (Affects.Contains(account, StringComparer.OrdinalIgnoreCase))
-        {
-            var left = Affects.Where(a => !a.Equals(account, StringComparison.OrdinalIgnoreCase)).ToList();
-            return left.Count == 0 ? (null, true) : (this with { Affects = left, Exempt = Add(Exempt, account) }, true);
-        }
-        if (Affects.Count == 0) return (null, true); // nobody known it binds (an old fact without its accounts): a success disproves it
-        return Exempt.Contains(account, StringComparer.OrdinalIgnoreCase) ? (this, false) : (this with { Exempt = Add(Exempt, account) }, true);
+        return (null, true);
     }
 
     /// <summary>The account is known to be op (<c>Bot:Protection:ServerOp</c> for main): exempt, the fact stays for the others.</summary>

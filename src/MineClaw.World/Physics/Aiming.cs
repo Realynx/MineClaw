@@ -90,6 +90,59 @@ public static class Aiming
         return best;
     }
 
+    /// <summary>How far the server's bucket raytrace reaches (ItemBucket / Item.rayTrace: 5 blocks, b1.8.1 and 1.12.2).</summary>
+    public const double BucketReach = 5.0;
+
+    /// <summary>1.12.2 EntityPlayer.getEyeHeight while sneaking: 1.62 − 0.08 (b1.8.1's server keeps 1.62).</summary>
+    public const double SneakEyeDrop = 0.08;
+
+    /// <summary>
+    /// Where to look to pour a full bucket into <paramref name="target"/>. A bucket has no onItemUse: the server pours only on
+    /// the use-item packet (b1.8.1 0x0F direction −1, 1.12.2 CPacketPlayerTryUseItem), raytracing from ITS idea of my eye along
+    /// my last sent look, passing liquids, and fills hit.offset(face). So the look must hit a solid neighbour's face toward
+    /// the target from the standing eye <paramref name="eye"/> (feet + 1.62) AND from the 1.12.2 sneaking eye 0.08 lower: a
+    /// point barely in view over a hole's rim is hit on the rim's top by the lower ray, and the water lands on the grass beside
+    /// the hole. Nearest such point within <paramref name="reach"/> (and the 5-block bucket ray), or null.
+    /// </summary>
+    public static PlaceAim? FindPourAim(IBlockAccess w, Vec3d eye, BlockPos target, double reach = DefaultReach)
+    {
+        if (!IsReplaceable(w, w.GetBlock(target.X, target.Y, target.Z))) return null;
+        double range = Math.Min(reach, BucketReach);
+        var low = eye with { Y = eye.Y - SneakEyeDrop };
+        PlaceAim? best = null;
+        var boxes = new List<AABB>();
+        foreach (var face in BlockFaceExtensions.All)
+        {
+            var n = face.Normal();
+            var against = new BlockPos(target.X - n.X, target.Y - n.Y, target.Z - n.Z);
+            int id = w.GetBlock(against.X, against.Y, against.Z);
+            // A replaceable block (snow layer) hit on its top takes the liquid itself (1.12.2 ItemBucket), not the target.
+            if (id == 0 || IsReplaceable(w, id) || w.Info(id).Interactable) continue;
+            if (!BlockShapes.HasCollision(w, against.X, against.Y, against.Z)) continue;
+            boxes.Clear();
+            BlockShapes.AddSelectionBoxes(w, against.X, against.Y, against.Z, boxes);
+            foreach (var box in boxes)
+            {
+                if (!FacesEye(box, face, eye) || !FacesEye(box, face, low)) continue;
+                foreach (var (u, v) in Samples)
+                {
+                    var p = PointOnFace(box, face, u, v);
+                    double d = eye.DistanceTo(p);
+                    if (d > range || (best is not null && d >= best.Value.Distance)) continue;
+                    var (yaw, pitch) = PlayerPhysics.YawPitchTo(eye, p);
+                    var dir = PlayerPhysics.LookVector(yaw, pitch); // what the server rebuilds from the sent floats
+                    if (!HitsFace(w, eye, dir, range, against, face) || !HitsFace(w, low, dir, range, against, face)) continue;
+                    best = new PlaceAim(target, against, face, p, yaw, pitch, d);
+                    break;
+                }
+            }
+        }
+        return best;
+    }
+
+    private static bool HitsFace(IBlockAccess w, Vec3d from, Vec3d dir, double range, BlockPos against, BlockFace face) =>
+        Raycast.Cast(w, from, dir, range) is { } h && h.Pos == against && h.Face == face;
+
     /// <summary>Blocks that placing replaces (air, liquids, fire, snow layer, tall grass).</summary>
     public static bool IsReplaceable(IBlockAccess w, int id) =>
         id == 0 || BlockShapes.IsLiquid(id) || id == BlockShapes.Fire || id == BlockShapes.SnowLayer || id == 31;

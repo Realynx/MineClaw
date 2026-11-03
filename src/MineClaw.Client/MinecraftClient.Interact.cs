@@ -57,6 +57,10 @@ public sealed partial class MinecraftClient
 
     private static bool IsHoe(int id) => id is >= Items.WoodenHoe and <= Items.GoldenHoe;
 
+    /// <summary>Blocks a hoe turns into farmland (or dirt): grass, dirt, and 1.12.2's grass path (208).</summary>
+    private static bool HoeTills(int id) => id is Blocks.Grass or Blocks.Dirt or GrassPath;
+    private const int GrassPath = 208;
+
     private async Task<ActionResult> UseOnBlockCoreAsync(BlockPos pos, BlockFace face, int itemId, int? damage, CancellationToken ct)
     {
         if (face == BlockFace.None) return ActionResult.Fail("a face is required");
@@ -67,8 +71,9 @@ public sealed partial class MinecraftClient
         string name = BlockName(id, World.GetMeta(pos));
         if (id != 0 && Blocks.Get(id).Interactable)
             return ActionResult.Fail($"{name} at {Fmt(pos)} would be opened/used instead (b1.8.1 activates the block first)");
-        // A hoe on farmland is a harmless no-op (mc-dev ItemHoe tills only grass/dirt): re-tilling a field is never refused.
-        if ((IsHoe(itemId) && id != Blocks.Farmland || itemId == Items.FlintAndSteel) && IsBlockProtected(pos, id))
+        // A hoe changes only what it tills (mc-dev ItemHoe: grass/dirt; 1.12.2 also grass path): on farmland, water or anything
+        // else it is a harmless no-op, never a protected edit.
+        if ((IsHoe(itemId) && HoeTills(id) || itemId == Items.FlintAndSteel) && IsBlockProtected(pos, id))
             return ActionResult.Fail(ProtectedRefusal(pos, id));
         var beside = pos.Offset(face);
         if (itemId == Items.FlintAndSteel)

@@ -45,4 +45,18 @@ public sealed class BlueprintOptions
     public bool Climb { get; set; } = true;
     /// <summary>Re-plans per run after deviations before stopping to ask.</summary>
     public int MaxReplans { get; set; } = 4;
+    /// <summary>A design with more blocks than this is built in bottom-up layer bands of at most this many, one after another
+    /// (each a plan of its own: slicing, saving and re-planning stay this size; a 43,680-block pyramid is 10 bands). 0 = never.</summary>
+    public int SectionBlocks { get; set; } = 6000;
+    /// <summary>One fetch of a build material from storage takes up to this many stacks (the bag permitting): a lane of a
+    /// massive build restocks a few times, not every 256 blocks.</summary>
+    public int FetchStacks { get; set; } = 16;
+    /// <summary>Crew bodies at the chests at once (each chest still serves one withdrawal at a time: its claim-board lease).</summary>
+    public int StorageBodies { get; set; } = 3;
+    /// <summary>A crew builds a design (or band) of at least this many blocks as strips planned each on its own, side by side
+    /// with no waits (<see cref="Building.CrewSlicer.Strips"/>); smaller ones are one plan cut into lanes. 0 = never strips.</summary>
+    public int CrewStripsAbove { get; set; } = 400;
+
+    /// <summary>The most items one fetch takes.</summary>
+    internal int FetchMax => Math.Max(64, FetchStacks * 64);
 }

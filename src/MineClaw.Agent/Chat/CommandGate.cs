@@ -11,9 +11,19 @@ public sealed class CommandOptions
     /// <summary>Commands the bot may always send (roleplay and whispers). Nothing else is free.</summary>
     public string[] AlwaysAllowed { get; set; } = ["/me", "/tell", "/msg"];
 
-    /// <summary>Never sent, even when a trusted player gives the exact command.</summary>
+    /// <summary>
+    /// Never sent, even when a trusted player gives the exact command. <c>/execute</c> is here because it runs a command the
+    /// caller names (<c>/execute as @a run op bob</c>): whatever follows "run" is checked against this list too.
+    /// </summary>
     public string[] Blocked { get; set; } =
-        ["/stop", "/op", "/deop", "/ban", "/ban-ip", "/pardon", "/pardon-ip", "/whitelist", "/save-off", "/kick"];
+        ["/stop", "/op", "/deop", "/ban", "/ban-ip", "/pardon", "/pardon-ip", "/whitelist", "/save-off", "/kick", "/execute"];
+
+    /// <summary>
+    /// When not empty, the only commands the bot may ever send besides <see cref="AlwaysAllowed"/> (e.g. ["/tp", "/time",
+    /// "/weather"]): anything else counts as blocked, even when a trusted player gives the exact command. Empty = every
+    /// command not in <see cref="Blocked"/> may be authorised.
+    /// </summary>
+    public string[] Allowed { get; set; } = [];
 
     /// <summary>How long a trusted player's "run /x" line authorises exactly one <c>run_command</c> of /x.</summary>
     public int AuthorizationSeconds { get; set; } = 60;
@@ -58,6 +68,8 @@ public sealed class CommandGate
     }
 
     private static readonly Regex CommandInText = new(@"(?:^|[\s`'""(])(?<cmd>/[A-Za-z][^`'""\r\n]*)", RegexOptions.Compiled);
+    private static readonly Regex NamespacedName = new(@"^/(?:[A-Za-z0-9_.\-]+):(?<cmd>[A-Za-z0-9_.\-]+)$", RegexOptions.Compiled);
+    private static readonly Regex RunKeyword = new(@"(?:^|\s)run\s+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private readonly CommandOptions _o;
     private readonly Func<IReadOnlyCollection<string>> _trusted;
@@ -86,20 +98,45 @@ public sealed class CommandGate
 
     private TimeSpan Window => TimeSpan.FromSeconds(Math.Max(1, _o.AuthorizationSeconds));
 
-    /// <summary>"/time set day" → "/time" (lower case), or null for non-commands.</summary>
+    /// <summary>"/time set day" → "/time", "/minecraft:op bob" → "/op" (lower case), or null for non-commands.</summary>
     public static string? NameOf(string line)
     {
         var t = (line ?? "").Trim();
         if (t.Length < 2 || t[0] != '/') return null;
         int sp = t.IndexOfAny([' ', '\t']);
-        return (sp < 0 ? t : t[..sp]).ToLowerInvariant();
+        return WithoutNamespace((sp < 0 ? t : t[..sp]).ToLowerInvariant());
     }
+
+    /// <summary>"/minecraft:op" → "/op": the server accepts a namespace prefix on any command.</summary>
+    private static string WithoutNamespace(string name) =>
+        NamespacedName.Match(name) is { Success: true } m ? "/" + m.Groups["cmd"].Value : name;
 
     private static bool InList(string[] list, string? name) =>
         name != null && list.Any(c => string.Equals(c.Trim(), name, StringComparison.OrdinalIgnoreCase));
 
     public bool IsAlwaysAllowed(string line) => InList(_o.AlwaysAllowed, NameOf(line));
-    public bool IsBlocked(string line) => InList(_o.Blocked, NameOf(line));
+
+    /// <summary>
+    /// True when the line must not be sent. <c>/execute ... run &lt;command&gt;</c> runs a command the caller names, so what follows
+    /// "run" counts too, however deep it nests: an /execute the config allows still can't wrap a blocked command.
+    /// </summary>
+    public bool IsBlocked(string line)
+    {
+        var text = (line ?? "").Trim();
+        if (_o.Allowed is { Length: > 0 } && NameOf(text) is { } first && !InList(_o.Allowed, first) && !InList(_o.AlwaysAllowed, first))
+            return true; // an allowlist is set and this command isn't on it
+        for (int depth = 0; depth < 16; depth++)
+        {
+            var name = NameOf(text);
+            if (name == null) return false;
+            if (InList(_o.Blocked, name)) return true;
+            if (!string.Equals(name, "/execute", StringComparison.Ordinal)) return false;
+            var m = RunKeyword.Match(text);
+            if (!m.Success) return false;
+            text = "/" + text[(m.Index + m.Length)..].TrimStart('/', ' ').Trim();
+        }
+        return true; // absurdly nested: refuse rather than guess
+    }
 
     private bool IsTrusted(string? player) =>
         player != null && _trusted().Any(p => string.Equals(p, player, StringComparison.OrdinalIgnoreCase));
@@ -129,9 +166,9 @@ public sealed class CommandGate
         lock (_lock)
         {
             Prune(now);
-            // A request of theirs to this bot that names no command: the commands it takes may be written by the bot (Authorize,
-            // RequestSeconds). A line that gives the exact command authorises just that one, as before.
-            if (_o.RequestSeconds > 0 && msg.Text.Trim().Length > 0 && !CommandInText.IsMatch(msg.Text))
+            // An example /command doesn't cancel the request in plain words ("teleport him: /tp it to ...").
+            // Keep both paths; Authorize still enforces the allowlist and blocklist before either grant is used.
+            if (_o.RequestSeconds > 0 && msg.Text.Trim().Length > 0)
                 _requests.Add(new Request(msg.Player, msg.Text.Trim(), now));
             foreach (Match m in CommandInText.Matches(msg.Text))
             {

@@ -80,6 +80,8 @@ public sealed class ExcavateReport
                 .Select(g => $"{g.Count()} {g.Key} e.g. {SkillJson.Fmt(g.First().Key)}"))).Append(')');
         if (Unsealed.Count > 0) sb.Append($"; {Unsealed.Count} opening{(Unsealed.Count == 1 ? "" : "s")} not sealed e.g. {SkillJson.Fmt(Unsealed[0])}");
         if (Ores.Count > 0) sb.Append("; ores: ").Append(string.Join(", ", Ores.OrderByDescending(o => o.Value).Select(o => $"{o.Key} {o.Value}")));
+        if (Dug == 0 && Sealed == 0 && Torches == 0 && Left.Count == 0 && Stop == null)
+            sb.Append("; 0 changes: target volume already clear");
         if (Stop != null) sb.Append($"; stopped: {Stop}");
         if (Gained.Length > 0) sb.Append($" ({Gained})");
         return sb.ToString();

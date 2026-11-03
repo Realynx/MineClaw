@@ -170,6 +170,20 @@ public sealed class CloneHost : IHandoffTarget
     /// </summary>
     public Func<string, string?, int, string?, Task<string>>? CrewSpawn { get; set; }
 
+    /// <summary>This hive's own character and its hosted subhive bodies (never the global main).</summary>
+    public Func<IReadOnlyList<ChorusSpeaker>>? ChorusSpeakers { get; set; }
+
+    private async Task SayChorusAsync(ChorusMsg message)
+    {
+        try
+        {
+            var speakers = ChorusSpeakers?.Invoke() ?? [new ChorusSpeaker(Name, false,
+                () => _bodyRef?.IsPlaying == true && !LoggingOut, (text, _) => Body.SayAsync(text))];
+            await HiveChorus.SayAtAsync(message, speakers, TimeProvider.System, _cts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex) { _log.LogDebug(ex, "chorus: chat failed"); }
+    }
+
     /// <summary>This clone's brain context capture (the Explorer's Controller panel via main's Supervisor): a page or one turn.</summary>
     public Func<MineClaw.Agent.Telemetry.BrainContextQuery, MineClaw.Agent.Telemetry.BrainContextReply?>? BrainContext { get; set; }
 
@@ -305,6 +319,9 @@ public sealed class CloneHost : IHandoffTarget
                 if (inj is { Origin: { } origin, Player: { } player, Target: { } target })
                     _body.InjectRemoteChat(new MineClaw.Agent.Chat.RemoteChat(player, inj.Raw, origin, target, inj.AllowCommands, inj.RequestId));
                 else _body.InjectChat(inj.Raw);
+                return null;
+            case Msg.Chorus when m.As<ChorusMsg>() is { } chorus:
+                _ = SayChorusAsync(chorus); // never block the IPC inbox until the shared fire time
                 return null;
             case Msg.Note when m.As<NoteMsg>() is { } note:
                 _body.Note(note.Text);

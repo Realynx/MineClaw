@@ -40,6 +40,10 @@ public sealed class CrewReport
     /// <summary>Each round's crew plan (the first slice, then one per re-balance or crew change).</summary>
     public List<BuildPlan> Rounds { get; } = new();
     public bool Complete => Stopped == null && Finale?.Complete == true;
+    /// <summary>The band being built of a massive design (k of n, 1-based; (1, 1) = the whole design at once).</summary>
+    public (int K, int N) Section { get; set; } = (1, 1);
+    /// <summary>Material put back in storage by bodies dropped from the crew.</summary>
+    public int Returned { get; set; }
 
     public string Text(string what)
     {
@@ -52,6 +56,8 @@ public sealed class CrewReport
         if (Finale?.Missing.Count > 0) text += $", {Finale.Missing.Count} missing";
         // The build's skip reasons: the finale's (every cell left), else the plan's own (it never got that far).
         if ((Finale?.Skips ?? (Plan != null ? BuildSkips.OfPlan(Plan) : null)) is { } skips) text += " — " + skips;
+        if (Returned > 0) text += $"; {Returned} put back in storage";
+        if (Section.N > 1) text += Complete && Section.K == Section.N ? $" ({Section.N} sections)" : $"; section {Section.K}/{Section.N}";
         if (Stopped != null) text += "; stopped: " + Stopped;
         return text;
     }
@@ -108,45 +114,106 @@ public sealed class CrewExecutor(ConstructionExecutor single, TimeProvider? time
         live ??= Live;
         var report = new CrewReport();
         if (bodies.Count == 0) { report.Stopped = "no body to build with"; return report; }
-        int dim = bodies[0].World.Dimension;
         try
         {
-            if (await GateAsync(id, design, bodies[0], report, ct).ConfigureAwait(false) is false) return report;
-            var crew = bodies.Where(b => b.Available).ToList();
-            if (crew.Count == 0) crew = bodies.ToList();
-            IBuildBody? last = null;
-            BuildPlan? current = null;
-            for (int round = 0; ; round++)
+            // A massive design goes band by band (bottom-up): each band is a build of its own (gate on the first, slice, lanes,
+            // finale); a band left unfinished stops here and the next run carries on from the first band not standing.
+            foreach (var (band, k, n) in BandsToDo(id, design, bodies[0].World))
             {
-                ct.ThrowIfCancellationRequested();
-                var (bp, voxel) = Prepare(id, design, crew, current, resume: round == 0);
-                current = bp;
-                report.Plan = bp;
-                report.Rounds.Add(bp);
-                if (bp.Lanes.Count <= 1 || !bp.Lanes.Any(l => l.Steps.Any(i => !bp.Steps[i].Finished))) break;
-                var ctx = new CrewContext(id, voxel, bp, single.Plans, ownsPlan: true);
-                var runs = bp.Lanes.Select(l => Start(ctx, l, crew.First(b => b.Name == l.Body), ct)).ToList();
-                var (next, lastBody) = await CoordinateAsync(ctx, runs, crew, report, live, ct).ConfigureAwait(false);
-                ctx.Stands.Clear();
-                if (lastBody != null) last = lastBody;
-                single.Plans?.Save(bp);
-                if (next == null || round >= MaxRebalances) break;
-                report.Rebalances++;
-                crew = next;
-                Progress?.Invoke($"re-slicing the rest over {string.Join(", ", crew.Select(b => LaneReport.Short(b.Name)))}");
+                report.Section = (k, n);
+                if (n > 1) Progress?.Invoke($"section {k}/{n} (layers {band.Blocks.Keys.Min(p => p.Y)}..{band.Blocks.Keys.Max(p => p.Y)}, {band.Blocks.Count} blocks)");
+                await RunBandAsync(id, band, bodies, report, live, ct).ConfigureAwait(false);
+                if (!report.Complete) break;
             }
-            // Finale: whoever finished last takes the scaffolding down and does what's left.
-            var fin = last is { Available: true } ? last : crew.FirstOrDefault(b => b.Available) ?? bodies[0];
-            var f = await single.RunAsync(id, design, BuildPart.Whole(design, dim), fin, ct, previous: current).ConfigureAwait(false);
-            report.Finale = f;
-            report.Plan = f.Plan;
-            report.Stopped = f.Stopped;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             report.Stopped = "cancelled";
         }
         return report;
+    }
+
+    /// <summary>
+    /// The bands still to build (<see cref="VoxelPlan.Bands"/>, <see cref="BlueprintOptions.SectionBlocks"/>): every band from the
+    /// first one not wholly standing (as built: the gate's corrections applied), the last one always (it finishes the build).
+    /// </summary>
+    internal IEnumerable<(VoxelPlan Band, int K, int N)> BandsToDo(long id, VoxelPlan design, WorldState w)
+    {
+        var bands = design.Bands(single.Options0.SectionBlocks);
+        if (bands.Count == 1) { yield return (design, 1, 1); yield break; }
+        var t = single.Plans?.Get(id, 0)?.Transform ?? BuildTransform.None;
+        bool skipping = true;
+        for (int k = 0; k < bands.Count; k++)
+        {
+            var band = design.Band(bands[k].Lo, bands[k].Hi);
+            if (skipping && k < bands.Count - 1)
+            {
+                var (built, _) = ConstructionExecutor.Shape(band, BuildPart.Whole(band, w.Dimension), t, w.Dimension);
+                if (built.Blocks.Values.All(b => w.IsLoaded(b.Pos.X, b.Pos.Z) && DesignChecks.SameState(b, w.GetBlock(b.Pos), w.GetMeta(b.Pos)))) continue;
+            }
+            skipping = false;
+            yield return (band, k + 1, bands.Count);
+        }
+    }
+
+    /// <summary>One band (or the whole design): the gate, the rounds of lanes, the finale. The outcome lands in <paramref name="report"/>.</summary>
+    private async Task RunBandAsync(long id, VoxelPlan design, IReadOnlyList<IBuildBody> bodies, CrewReport report,
+        Func<IReadOnlyList<IBuildBody>>? live, CancellationToken ct)
+    {
+        int dim = bodies[0].World.Dimension;
+        report.Finale = null;
+        if (await GateAsync(id, design, bodies[0], report, ct).ConfigureAwait(false) is false) return;
+        var crew = bodies.Where(b => b.Available).ToList();
+        if (crew.Count == 0) crew = bodies.ToList();
+        IBuildBody? last = null;
+        BuildPlan? current = null;
+        for (int round = 0; ; round++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var (bp, voxel) = Prepare(id, design, crew, current, resume: round == 0);
+            current = bp;
+            report.Plan = bp;
+            report.Rounds.Add(bp);
+            if (bp.Lanes.Count <= 1 || !bp.Lanes.Any(l => l.Steps.Any(i => !bp.Steps[i].Finished))) break;
+            var ctx = new CrewContext(id, voxel, bp, single.Plans, ownsPlan: true, single.Options0.StorageBodies, _time) { Coordinator = bodies[0].Name };
+            var runs = bp.Lanes.Select(l => Start(ctx, l, crew.First(b => b.Name == l.Body), ct)).ToList();
+            var (next, lastBody) = await CoordinateAsync(ctx, runs, crew, report, live, ct).ConfigureAwait(false);
+            ctx.Stands.Clear();
+            if (lastBody != null) last = lastBody;
+            single.Plans?.Save(bp);
+            // A body dropped from the crew (stuck, it can't go on) gives back what it carries for this build: the others need it.
+            if (next != null) await ReturnLeftoversAsync(design, crew.Where(b => !next.Contains(b)), report, ct).ConfigureAwait(false);
+            if (next == null || round >= MaxRebalances) break;
+            report.Rebalances++;
+            crew = next;
+            Progress?.Invoke($"re-slicing the rest over {string.Join(", ", crew.Select(b => LaneReport.Short(b.Name)))}");
+        }
+        // Finale: whoever finished last takes the scaffolding down and does what's left.
+        var fin = last is { Available: true } ? last : crew.FirstOrDefault(b => b.Available) ?? bodies[0];
+        var f = await single.RunAsync(id, design, BuildPart.Whole(design, dim), fin, ct, previous: current).ConfigureAwait(false);
+        report.Finale = f;
+        report.Plan = f.Plan;
+        report.Stopped = f.Stopped;
+    }
+
+    /// <summary>
+    /// What <paramref name="dropped"/> bodies still carry of this design's materials goes back into storage (the nearest chests
+    /// with room), so a crew re-sliced without them is not left short of materials held by a stuck lane.
+    /// </summary>
+    private async Task ReturnLeftoversAsync(VoxelPlan design, IEnumerable<IBuildBody> dropped, CrewReport report, CancellationToken ct)
+    {
+        var items = design.Blocks.Values.Where(b => !b.UpperDoor).Select(b => BuildBlocks.ItemFor(b.Id, b.Meta)).ToHashSet();
+        foreach (var body in dropped.Where(b => b.Available))
+            foreach (var (item, dmg) in items.Where(i => body.Count(i.Item, i.Damage) > 0).ToList())
+            {
+                int had = body.Count(item, dmg);
+                string? why;
+                try { why = await body.ReturnAsync(item, dmg, ct).ConfigureAwait(false); }
+                catch (Exception ex) when (ex is not OperationCanceledException) { why = ex.Message; }
+                int back = had - body.Count(item, dmg);
+                if (back > 0) report.Returned += back;
+                Progress?.Invoke($"{LaneReport.Short(body.Name)} {(back > 0 ? $"put {back} {ConstructionExecutor.Name(item, dmg)} back in storage" : $"kept its {ConstructionExecutor.Name(item, dmg)}")}" + (why != null ? $" ({why})" : ""));
+            }
     }
 
     /// <summary>The one gate of the build, by one body; false = not passed (paused at it, undone, or the build ended there).</summary>
@@ -197,11 +264,13 @@ public sealed class CrewExecutor(ConstructionExecutor single, TimeProvider? time
             WaterAvailable = members.Any(m => m.Water),
             Buckets = Math.Max(1, crew.Max(b => b.Count(Items.WaterBucket, 0))),
         };
-        var bp = CrewSlicer.Slice(voxel, w.PlanningView, members, vpart, o, prev);
+        BuildPlan bp;
+        using (BuildPulse.While(crew[0].Name)) bp = CrewSlicer.Slice(voxel, w.PlanningView, members, vpart, o, prev);
         bp.BlueprintId = id;
         bp.Version = design.Hash();
         bp.Dim = dim;
         bp.State = "building";
+        (bp.BandLo, bp.BandHi) = BandOf(design);
         plans?.Save(bp);
         if (bp.Lanes.Count > 1) Progress?.Invoke($"split into {bp.Lanes.Count} lanes: {bp.CrewText()}");
         log?.LogInformation("blueprint #{Id}: {Lanes} lane(s) over {Crew}; {Text}", id, bp.Lanes.Count, string.Join(",", crew.Select(b => b.Name)),
@@ -326,28 +395,52 @@ public sealed class CrewExecutor(ConstructionExecutor single, TimeProvider? time
         CancellationToken ct)
     {
         var report = new CrewReport();
-        int dim = main.World.Dimension;
-        var plans = single.Plans;
         try
         {
-            if (await GateAsync(id, design, main, report, ct).ConfigureAwait(false) is false) return report;
+            foreach (var (band, k, n) in BandsToDo(id, design, main.World))
+            {
+                report.Section = (k, n);
+                if (n > 1) Progress?.Invoke($"section {k}/{n} (layers {band.Blocks.Keys.Min(p => p.Y)}..{band.Blocks.Keys.Max(p => p.Y)}, {band.Blocks.Count} blocks)");
+                // Where the clones stand now (a band later they are up on the build, not where the first band found them).
+                var crew = k == 1 || n == 1 ? clones : jobs.Candidates(clones.Select(c => c.Name).ToList());
+                await RunHiveBandAsync(id, band, main, crew, jobs, report, ct).ConfigureAwait(false);
+                if (!report.Complete) break;
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            report.Stopped = "cancelled";
+        }
+        return report;
+    }
+
+    private async Task RunHiveBandAsync(long id, VoxelPlan design, IBuildBody main, IReadOnlyList<CrewMember> clones, IBuildJobs jobs, CrewReport report,
+        CancellationToken ct)
+    {
+        int dim = main.World.Dimension;
+        var plans = single.Plans;
+        report.Finale = null;
+        {
+            if (await GateAsync(id, design, main, report, ct).ConfigureAwait(false) is false) return;
             var prev = BuildPlan.Resume(plans?.Get(id, 0), design.Hash());
             var (voxel, vpart) = ConstructionExecutor.Shape(design, BuildPart.Whole(design, dim), prev?.Transform ?? BuildTransform.None, dim);
             var members = new List<CrewMember> { new(main.Name, ConstructionExecutor.StartCell(main.World), main.Count(Items.WaterBucket, 0) > 0) };
             members.AddRange(clones.Where(c => !c.Name.Equals(main.Name, StringComparison.OrdinalIgnoreCase)));
             var o = single.Options(main, vpart, prev) with { WaterAvailable = members.Any(m => m.Water) };
-            var bp = CrewSlicer.Slice(voxel, main.World.PlanningView, members, vpart, o, prev);
+            BuildPlan bp;
+            using (BuildPulse.While(main.Name)) bp = CrewSlicer.Slice(voxel, main.World.PlanningView, members, vpart, o, prev);
             bp.BlueprintId = id;
             bp.Version = design.Hash();
             bp.Dim = dim;
             bp.State = "building";
+            (bp.BandLo, bp.BandHi) = BandOf(design);
             plans?.Save(bp);
             report.Plan = bp;
             report.Rounds.Add(bp);
             if (bp.Lanes.Count > 1)
             {
                 Progress?.Invoke($"split into {bp.Lanes.Count} lanes: {bp.CrewText()}");
-                var ctx = new CrewContext(id, voxel, bp, plans, ownsPlan: true) { Reload = true };
+                var ctx = new CrewContext(id, voxel, bp, plans, ownsPlan: true, single.Options0.StorageBodies, _time) { Reload = true, Coordinator = main.Name };
                 foreach (var lane in bp.Lanes.Where(l => !l.Body.Equals(main.Name, StringComparison.OrdinalIgnoreCase)))
                 {
                     var why = jobs.StartLane(lane.Body, id, lane.Index);
@@ -365,12 +458,12 @@ public sealed class CrewExecutor(ConstructionExecutor single, TimeProvider? time
             report.Plan = f.Plan;
             report.Stopped = f.Stopped;
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            report.Stopped = "cancelled";
-        }
-        return report;
     }
+
+    /// <summary>The band a (band) design covers, for the persisted plan (a clone's lane job rebuilds the same band); null = whole.</summary>
+    private static (int?, int?) BandOf(VoxelPlan design) =>
+        design.Blocks.Count == 0 || design.Blocks.Keys.Min(p => p.Y) <= design.Min.Y && design.Blocks.Keys.Max(p => p.Y) >= design.Max.Y
+            ? (null, null) : (design.Blocks.Keys.Min(p => p.Y), design.Blocks.Keys.Max(p => p.Y));
 
     private static bool Terminal(string state) => state is "done" or "lost" or "stuck" or "cancelled" or "failed" or "yielded" or "held";
 
@@ -405,6 +498,8 @@ public sealed class CrewExecutor(ConstructionExecutor single, TimeProvider? time
     public async Task<LaneReport> RunLaneAsync(long id, VoxelPlan design, int laneIndex, IBuildBody body, CancellationToken ct)
     {
         var plans = single.Plans;
+        // A band of a massive design: the plan says which (main slices one band at a time).
+        if (plans?.Get(id, 0) is { BandLo: int lo, BandHi: int hi }) design = design.Band(lo, hi);
         if (plans?.Get(id, 0) is not { } bp || bp.IsStale(design.Hash()))
             return new LaneReport { Lane = laneIndex, Body = body.Name, State = "failed", Why = "no crew plan for this design (or only a stale one: main re-slices it)" };
         plans.MergeLanes(bp);
@@ -419,7 +514,8 @@ public sealed class CrewExecutor(ConstructionExecutor single, TimeProvider? time
 }
 
 /// <summary>What the lanes of one round share: the plan (locked for every change), the stand reservations, the storage turn.</summary>
-internal sealed class CrewContext(long id, VoxelPlan voxel, BuildPlan plan, BuildPlanStore? plans, bool ownsPlan)
+internal sealed class CrewContext(long id, VoxelPlan voxel, BuildPlan plan, BuildPlanStore? plans, bool ownsPlan, int storageBodies = 1,
+    TimeProvider? time = null)
 {
     public long Id => id;
     public VoxelPlan Voxel => voxel;
@@ -429,9 +525,30 @@ internal sealed class CrewContext(long id, VoxelPlan voxel, BuildPlan plan, Buil
     public bool OwnsPlan => ownsPlan;
     /// <summary>Read the other lanes' progress rows while waiting (they run in other processes).</summary>
     public bool Reload { get; init; }
+    /// <summary>The body running the build job: every lane's progress is its <see cref="BuildPulse"/> (it may stand idle meanwhile).</summary>
+    public string Coordinator { get; init; } = "";
     public StandBoard Stands { get; } = new();
-    /// <summary>One body at the chests at a time: the bill's shares are fetched staggered, not as a race to the same chest.</summary>
-    public SemaphoreSlim Storage { get; } = new(1, 1);
+    /// <summary>Bodies at the chests at once (<see cref="BlueprintOptions.StorageBodies"/>): the bill's shares are fetched a few at a
+    /// time, not as a race of the whole crew; each chest still serves one withdrawal at a time (its claim-board lease).</summary>
+    public SemaphoreSlim Storage { get; } = new(Math.Max(1, storageBodies), Math.Max(1, storageBodies));
+    private readonly TimeProvider _time = time ?? TimeProvider.System;
+    private DateTimeOffset _savedAt = DateTimeOffset.MinValue;
+
+    /// <summary>The whole plan is written at most this often by the lanes (each lane's own progress row every checkpoint): a band of
+    /// thousands of steps re-serialised every 8 placements by every lane was most of a massive build's bookkeeping.</summary>
+    public static readonly TimeSpan SaveEvery = TimeSpan.FromSeconds(10);
+
+    /// <summary>True when the whole plan is due to be written again (then not again for <see cref="SaveEvery"/>).</summary>
+    public bool SaveDue()
+    {
+        lock (this)
+        {
+            var now = _time.GetUtcNow();
+            if (now - _savedAt < SaveEvery) return false;
+            _savedAt = now;
+            return true;
+        }
+    }
     private volatile bool _yield;
     /// <summary>Stop at the next step boundary (re-slice).</summary>
     public bool Yield { get => _yield; set => _yield = value; }
@@ -547,6 +664,7 @@ internal sealed class LaneRunner(CrewExecutor x, CrewContext c, PlanLane lane, I
                 parked = false;
                 var o = await StepAsync(pick, ct).ConfigureAwait(false);
                 idleSince = x.Time.GetUtcNow();
+                if (o == Outcome.Done) BuildPulse.Beat(c.Coordinator);
                 if (o == Outcome.Failed)
                 {
                     if ((tries[pick.Index] = tries.GetValueOrDefault(pick.Index) + 1) >= 3) queue.Remove(pick.Index);
@@ -589,7 +707,7 @@ internal sealed class LaneRunner(CrewExecutor x, CrewContext c, PlanLane lane, I
             }
             catch (Exception ex) when (ex is not OutOfMemoryException) { x.Log?.LogDebug(ex, "lane {Lane} skip reasons failed", lane.Index); }
             lock (Bp) { lane.State = _r.State; lane.Note = _r.Why; }
-            Checkpoint();
+            Checkpoint(final: true);
         }
         return _r;
     }
@@ -731,7 +849,7 @@ internal sealed class LaneRunner(CrewExecutor x, CrewContext c, PlanLane lane, I
         {
             foreach (var (item, dmg, count) in needs)
                 if (body.Count(item, dmg) < count)
-                    await body.EnsureAsync(item, dmg, Math.Min(count, 64 * 4), ct).ConfigureAwait(false);
+                    await body.EnsureAsync(item, dmg, Math.Min(count, x.Single.Options0.FetchMax), ct).ConfigureAwait(false);
         }
         finally { c.Storage.Release(); }
     }
@@ -741,7 +859,7 @@ internal sealed class LaneRunner(CrewExecutor x, CrewContext c, PlanLane lane, I
         int left;
         lock (Bp) left = lane.Steps.Select(i => Bp.Steps[i]).Count(s => s.Action == StepAction.Place && !s.Finished && s.Item == item && s.Damage == dmg);
         await c.Storage.WaitAsync(ct).ConfigureAwait(false);
-        try { await body.EnsureAsync(item, dmg, Math.Max(1, Math.Min(left, 64 * 4)), ct).ConfigureAwait(false); }
+        try { await body.EnsureAsync(item, dmg, Math.Max(1, Math.Min(left, x.Single.Options0.FetchMax)), ct).ConfigureAwait(false); }
         finally { c.Storage.Release(); }
         return body.Count(item, dmg) > 0;
     }
@@ -919,12 +1037,12 @@ internal sealed class LaneRunner(CrewExecutor x, CrewContext c, PlanLane lane, I
         return true;
     }
 
-    private void Checkpoint()
+    private void Checkpoint(bool final = false)
     {
         try
         {
             c.Plans?.SaveLane(Bp, lane);
-            if (c.OwnsPlan) c.Plans?.Save(Bp);
+            if (c.OwnsPlan && (final || c.SaveDue())) c.Plans?.Save(Bp);
         }
         catch (Exception ex) { x.Log?.LogDebug(ex, "lane {Lane} checkpoint failed", lane.Index); }
     }

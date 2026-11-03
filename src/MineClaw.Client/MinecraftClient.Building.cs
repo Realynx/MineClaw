@@ -188,6 +188,39 @@ public sealed partial class MinecraftClient
             finally { _idleSneak = sneakBefore; }
         });
 
+    /// <summary>
+    /// Placing a full bucket must pour liquid: ItemBucket has no onItemUse, so the block-placement click (0x0F with a face / 1.12.2
+    /// CPacketPlayerTryUseItemOnBlock) does nothing for a bucket and the wait for a solid block could never succeed. Pours
+    /// instead: look along <see cref="Aiming.FindPourAim"/> (lands in the cell from the standing and the sneaking eye) and send
+    /// only the use-item packet the server raytraces, then wait for the liquid in the cell.
+    /// </summary>
+    private async Task<ActionResult> PourIntoCoreAsync(BlockPos pos, int bucket, bool allowPathing, CancellationToken ct)
+    {
+        bool lava = bucket == Items.LavaBucket;
+        string what = lava ? "lava" : "water";
+        bool Arrived() => (lava ? BlockShapes.IsLava(World.GetBlock(pos)) : BlockShapes.IsWater(World.GetBlock(pos))) && World.GetMeta(pos) == 0;
+        if (!lava && World.Dimension == -1) return ActionResult.Fail("water evaporates in the nether");
+        if (Arrived()) return ActionResult.Success($"{what} source already at {Fmt(pos)}");
+        await EnsureNoWindowAsync(ct).ConfigureAwait(false);
+        PlaceAim? Aim() => Aiming.FindPourAim(World, World.Player.EyePosition, pos, Options.Reach);
+        var aim = Aim();
+        if (aim is null && allowPathing)
+        {
+            await GotoCoreAsync(new GoalWithinReach(pos, 2.0), GotoOptions.Default with { Timeout = TimeSpan.FromSeconds(30) }, ct).ConfigureAwait(false);
+            aim = Aim();
+        }
+        if (aim is not { } a)
+            return ActionResult.Fail($"no block face to pour {what} against into {Fmt(pos)} from {Fmt(World.Player.Position)} " +
+                                     "(the server aims a bucket along my look)");
+        if (await SelectItemAsync(bucket, null, ct).ConfigureAwait(false) < 0) return ActionResult.Fail($"couldn't hold the {what} bucket");
+        await LookCoreAsync(a.Yaw, a.Pitch, ct).ConfigureAwait(false);
+        Send(PlayerBlockPlacementPacket.UseItem(HeldStack()));
+        if (!await WaitUntilAsync(Arrived, TimeSpan.FromMilliseconds(2000), ct).ConfigureAwait(false))
+            return ActionResult.Fail($"{what} didn't appear at {Fmt(pos)}" + SpawnProtectionHint(pos));
+        NoteEditOk(pos);
+        return ActionResult.Success($"poured {what} at {Fmt(pos)} (against the {a.Face.ToString().ToLowerInvariant()} face of {Fmt(a.Against)})");
+    }
+
     /// <summary>Takes the water source back with an empty bucket (the ray passes flowing water and stops at the first source).</summary>
     public Task<ActionResult> PickupWaterAsync(BlockPos source, CancellationToken ct = default) =>
         RunActionAsync("pickup", ct, async c =>

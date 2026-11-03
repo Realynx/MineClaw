@@ -21,6 +21,11 @@ public sealed record BuildPlannerOptions
     /// <summary>Confirmation gate: ask after this many placements (0 = off).</summary>
     public int GateBlocks { get; init; } = 5;
     public int FloodNodes { get; init; } = 6000;
+    /// <summary>The walk flood after each placement covers only this many cells first (0 = always <see cref="FloodNodes"/>): a
+    /// placement whose stand it can vouch for (cheaper than any cell beyond it) is exactly the one the full flood picks; anything
+    /// else (no such stand, techniques, wall-in questions it can't answer) floods fully first. Same plan, a fraction of the cost on
+    /// a big open footprint (b=63 pyramid: the full flood is ~6000 cells after every one of 43,680 placements).</summary>
+    public int FloodLocal { get; init; } = 128;
     /// <summary>Ready blocks evaluated per step (nearest first).</summary>
     public int Candidates { get; init; } = 8;
     public Func<BlockPos, int, bool>? IsProtected { get; init; }
@@ -41,6 +46,14 @@ public sealed record BuildPlannerOptions
     public bool SharedClimb { get; init; }
     /// <summary>Highest pillar per climb (blocks).</summary>
     public int MaxPillar { get; init; } = 16;
+    /// <summary>Cells the body never walks or stands in (another crew lane's design cells: whether they are built yet is not
+    /// this plan's to know, so it neither stands on them nor counts on passing through them).</summary>
+    public IReadOnlySet<BlockPos>? Avoid { get; init; }
+    /// <summary>Stands this plan may use (a crew lane's own strip); null = any.</summary>
+    public Func<BlockPos, bool>? StandOk { get; init; }
+    /// <summary>A crew splits a design of at least this many blocks into strips planned each on its own (<see cref="CrewSlicer"/>);
+    /// 0 = never (one plan cut into lanes).</summary>
+    public int StripsAbove { get; init; } = 400;
 }
 
 /// <summary>
@@ -57,7 +70,7 @@ public sealed partial class BuildPlanner
     private readonly VoxelPlan _plan;
     private readonly BuildPart _part;
     private readonly BuildPlannerOptions _o;
-    private readonly PathOptions _path = new() { AllowOpenDoors = true, AllowParkour = false, MaxDrop = 3 };
+    private readonly PathOptions _path;
     private St _s;
     private bool _escapeCheck;
     private readonly BuildPlan _out;
@@ -67,6 +80,10 @@ public sealed partial class BuildPlanner
     {
         public required PlanWorld Sim;
         public required Dictionary<BlockPos, double> Flood;
+        /// <summary>The flood stopped at <see cref="BuildPlannerOptions.FloodLocal"/> cells: only cells up to <see cref="Reach"/> are known.</summary>
+        public bool Partial;
+        /// <summary>A partial flood's largest travel cost (every cell cheaper than it is in the flood).</summary>
+        public double Reach = double.MaxValue;
         public BlockPos Land;          // where the body is (or exits to, from a column)
         public int Col = -1;           // column the body is in
         public int ColY;               // its hover feet y there
@@ -81,7 +98,7 @@ public sealed partial class BuildPlanner
 
         public St Clone() => new()
         {
-            Sim = Sim.Fork(), Flood = new(Flood), Land = Land, Col = Col, ColY = ColY, Steps = Steps.Select(Copy).ToList(),
+            Sim = Sim.Fork(), Flood = new(Flood), Partial = Partial, Reach = Reach, Land = Land, Col = Col, ColY = ColY, Steps = Steps.Select(Copy).ToList(),
             Columns = Columns.Select(c => new PlanColumn
             {
                 Index = c.Index, Source = c.Source, Face = c.Face, Entry = c.Entry, Depth = c.Depth, DescendTicks = c.DescendTicks,
@@ -103,6 +120,7 @@ public sealed partial class BuildPlanner
         _plan = plan;
         _part = part;
         _o = o;
+        _path = new() { AllowOpenDoors = true, AllowParkour = false, MaxDrop = 3, Avoid = o.Avoid };
         _s = new St { Sim = sim, Flood = new(), Land = start };
         _home = HomeFor(plan, start, previous);
         _out = new BuildPlan
@@ -145,7 +163,7 @@ public sealed partial class BuildPlanner
     private BuildPlan Run(BuildPlan? previous)
     {
         if (previous != null) Carry(previous);
-        _s.Flood = Flood(_s.Sim, _s.Land);
+        Reflood();
         _escapeCheck = CanLeave(_s.Sim, _s.Land, _outside);
         if (_s.Flood.Count == 0)
             foreach (var b in Todo()) Fail(b.Pos, b.Id, $"I'm not standing anywhere walkable ({_s.Land.X},{_s.Land.Y},{_s.Land.Z})");
@@ -249,7 +267,7 @@ public sealed partial class BuildPlanner
             _s.Sim.Set(p, 0);
             if (dig is { } d) MoveTo(d.Stand, d.Column);
         }
-        _s.Flood = Flood(_s.Sim, _s.Land);
+        Reflood();
     }
 
     /// <summary>The body standing in <paramref name="feet"/> is held up by <paramref name="p"/>.</summary>
@@ -311,7 +329,7 @@ public sealed partial class BuildPlanner
             bool placed = false;
             foreach (var b in order.Take(gating ? order.Count : _o.Candidates))
             {
-                if (TryPlace(T(b), gating && _s.Placements < _o.GateBlocks))
+                if (LocalTry(() => TryPlace(T(b), gating && _s.Placements < _o.GateBlocks)))
                 {
                     todo.Remove(b);
                     placed = true;
@@ -328,7 +346,7 @@ public sealed partial class BuildPlanner
             if (n <= 2 && Resolve(T(stuck), out _)) continue;
             // Before giving up on it: a ready block of the layer farther away that can be placed now goes first (it may be the
             // floor this one is reached from: a platform bridged out from its middle).
-            if (!gating && order.Skip(_o.Candidates).FirstOrDefault(b => b.Pos != stuck.Pos && TryPlace(T(b), false)) is { } other)
+            if (!gating && order.Skip(_o.Candidates).FirstOrDefault(b => b.Pos != stuck.Pos && LocalTry(() => TryPlace(T(b), false))) is { } other)
             {
                 todo.Remove(other);
                 continue;
@@ -341,6 +359,14 @@ public sealed partial class BuildPlanner
             Fail(stuck.Pos, stuck.Id, why ?? "no stand reaches a support face");
             todo.Remove(stuck);
         }
+    }
+
+    /// <summary>A main-loop placement: its own re-flood may stop early (<see cref="Reflood"/>).</summary>
+    private bool LocalTry(Func<bool> place)
+    {
+        _localOk = true;
+        try { return place(); }
+        finally { _localOk = false; }
     }
 
     private static Target T(PlannedBlock b) => new(b.Pos, b.Id, b.Meta & (b.Kind == BuildKind.Door ? 7 : 15), false);
@@ -394,18 +420,29 @@ public sealed partial class BuildPlanner
     /// <summary>Picks the cheapest (stand, face) for <paramref name="t"/> that keeps a way out, and commits it.</summary>
     private bool TryPlace(Target t, bool gateStep)
     {
+        // Hover stands price their way in through the column's entry: only the whole flood knows every entry's cost.
+        if (_s.Partial && _s.Columns.Any(c => c.Poured && !c.Removed)) _ = FloodAll;
+        bool partial = _s.Partial;
+        // A stand the partial flood lacks costs at least its reach plus a placement: everything cheaper is ordered as the full
+        // flood orders it, so the first acceptable one below that bound is the full flood's pick too.
+        double bound = _s.Reach + _o.PlaceTicks;
+        int seen = 0;
         foreach (var pl in Placements(t).OrderBy(p => p.Cost).Take(12))
         {
+            if (partial && pl.Cost >= bound) break;
+            seen++;
             if (pl.Column < 0 && _escapeCheck && !t.Scaffold)
             {
-                var fork = _s.Sim.Fork();
+                var fork = _s.Sim.Overlay();
                 ApplyBlock(fork, t);
                 if (!CanLeave(fork, pl.Stand, _outside, t.Pos, placing: true)) continue; // would wall me in: another stand (or block) first
             }
             Commit(t, pl, gateStep);
             return true;
         }
-        return false;
+        if (!partial || seen >= 12) return false;
+        _ = FloodAll; // the partial flood can't decide this one: as the full flood would
+        return TryPlace(t, gateStep);
     }
 
     private void Commit(Target t, Placement pl, bool gateStep)
@@ -467,7 +504,7 @@ public sealed partial class BuildPlanner
             _s.Col = -1;
             _s.Land = stand;
         }
-        _s.Flood = Flood(_s.Sim, _s.Land);
+        Reflood();
     }
 
     /// <summary>Every feasible (stand, face) for a block: walkable stands from the flood, and hover cells of poured columns.</summary>
@@ -486,7 +523,8 @@ public sealed partial class BuildPlanner
         for (int dx = -5; dx <= 5; dx++)
         {
             var s = new BlockPos(t.Pos.X + dx, t.Pos.Y + dy, t.Pos.Z + dz);
-            if (!_s.Flood.TryGetValue(s, out var travel)) continue;
+            if (!_s.Flood.TryGetValue(s, out var travel)) continue; // partial in the main loop: TryPlace vouches for the pick
+            if (_o.StandOk?.Invoke(s) == false) continue;
             var eye = GoalUseBlock.EyeAt(_s.Sim, s.X, s.Y, s.Z);
             var feet = eye with { Y = eye.Y - PlayerPhysics.EyeHeight };
             if (AABB.ForPlayer(feet).Intersects(block)) continue;
@@ -552,6 +590,7 @@ public sealed partial class BuildPlanner
     private bool Resolve(Target t, out string? why, bool dryRun = false)
     {
         why = null;
+        _ = FloodAll; // techniques read the whole flood (and their own moves flood fully)
         var saved = _s.Clone();
         bool ok = ResolveCore(t, ref why);
         if (!ok || dryRun) _s = saved;
@@ -642,7 +681,7 @@ public sealed partial class BuildPlanner
     private int HighestStandNear(BlockPos p)
     {
         int top = int.MinValue;
-        foreach (var s in _s.Flood.Keys)
+        foreach (var s in FloodAll.Keys)
             if (Math.Abs(s.X - p.X) <= 5 && Math.Abs(s.Z - p.Z) <= 5 && s.Y > top) top = s.Y;
         return top;
     }
@@ -687,7 +726,7 @@ public sealed partial class BuildPlanner
     private int LowestStandNear(BlockPos p)
     {
         int best = int.MaxValue;
-        foreach (var s in _s.Flood.Keys)
+        foreach (var s in FloodAll.Keys)
             if (Math.Abs(s.X - p.X) <= 4 && Math.Abs(s.Z - p.Z) <= 4 && s.Y < best) best = s.Y;
         return best == int.MaxValue ? p.Y : best;
     }
@@ -743,7 +782,7 @@ public sealed partial class BuildPlanner
     {
         BlockPos? from = null;
         double best = double.MaxValue;
-        foreach (var s in _s.Flood.Keys)
+        foreach (var s in FloodAll.Keys)
         {
             if (s.Y < t.Y - 3 || s.Y > t.Y + 1) continue;
             double d = s.DistanceSquaredTo(t);
@@ -775,7 +814,7 @@ public sealed partial class BuildPlanner
     {
         int depth = near.Y - 1;
         var options = new List<(BlockPos Entry, BlockPos Source, BlockFace Face, double Score)>();
-        foreach (var (e, cost) in _s.Flood)
+        foreach (var (e, cost) in FloodAll)
         {
             if (Math.Abs(e.X - near.X) > 6 || Math.Abs(e.Z - near.Z) > 6 || e.Y <= near.Y) continue;
             var floor = e.Down();
@@ -812,7 +851,7 @@ public sealed partial class BuildPlanner
             // One bucket per standing column: take the oldest back first (it may be poured again later).
             while (_s.Columns.Count(c => c.Poured && !c.Removed) >= Math.Max(1, _o.Buckets)) PickupColumn(_s.Columns.First(c => c.Poured && !c.Removed));
             // Get out of any other column first; the pour is done from the edge stand (leaning out).
-            double travel = (_s.Col >= 0 ? AscendCost(_s.Columns[_s.Col], _s.ColY) : 0) + (_s.Flood.TryGetValue(entry, out var tc) ? tc : 0);
+            double travel = (_s.Col >= 0 ? AscendCost(_s.Columns[_s.Col], _s.ColY) : 0) + (FloodAll.TryGetValue(entry, out var tc) ? tc : 0);
             _s.Columns.Add(pc);
             Add(new PlanStep
             {
@@ -854,7 +893,7 @@ public sealed partial class BuildPlanner
     /// <summary>Climb out (if in it), take the source back: the column dries (BlockFlowing: unfed water evaluates to −1).</summary>
     private void PickupColumn(PlanColumn c)
     {
-        double travel = (_s.Col >= 0 ? AscendCost(_s.Columns[_s.Col], _s.ColY) : 0) + (_s.Flood.TryGetValue(c.Entry, out var e) ? e : 0);
+        double travel = (_s.Col >= 0 ? AscendCost(_s.Columns[_s.Col], _s.ColY) : 0) + (FloodAll.TryGetValue(c.Entry, out var e) ? e : 0);
         Add(new PlanStep
         {
             Action = StepAction.PickupWater, Technique = Technique.Water, Target = c.Source, Id = Blocks.Water, Item = Items.Bucket,
@@ -865,7 +904,7 @@ public sealed partial class BuildPlanner
         if (BlockShapes.IsWater(_s.Sim.Get(c.Source))) _s.Sim.Set(c.Source, 0);
         _s.Col = -1;
         _s.Land = c.Entry;
-        _s.Flood = Flood(_s.Sim, _s.Land);
+        Reflood();
     }
 
     private sealed record Dig(BlockPos Stand, int Column, double Cost);
@@ -883,9 +922,10 @@ public sealed partial class BuildPlanner
     {
         double fromColumn = _s.Col >= 0 ? AscendCost(_s.Columns[_s.Col], _s.ColY) : 0;
         var block = AABB.Block(p.X, p.Y, p.Z);
-        foreach (var (s, travel) in _s.Flood)
+        foreach (var (s, travel) in FloodAll)
         {
             if (Math.Abs(s.X - p.X) > 5 || Math.Abs(s.Z - p.Z) > 5 || s.Y < p.Y - 6 || s.Y > p.Y + 4) continue;
+            if (_o.StandOk?.Invoke(s) == false) continue;
             var eye = GoalUseBlock.EyeAt(_s.Sim, s.X, s.Y, s.Z);
             var feet = eye with { Y = eye.Y - PlayerPhysics.EyeHeight };
             if (AABB.ForPlayer(feet).Intersects(block) || Safety.SupportBlocks(_s.Sim, feet).Contains(p)) continue;
@@ -937,6 +977,40 @@ public sealed partial class BuildPlanner
     }
 
     private Dictionary<BlockPos, double> Flood(IBlockAccess w, BlockPos from) => Pathfinder.Explore(w, from, _path, _o.FloodNodes);
+
+    /// <summary>Only the main placement loop's own placements may use a partial flood (<see cref="TryPlace"/> vouches for each).</summary>
+    private bool _localOk;
+
+    /// <summary>The flood from where the body is now: partial (<see cref="BuildPlannerOptions.FloodLocal"/>) in the main loop.</summary>
+    private void Reflood()
+    {
+        if (_localOk && _o.FloodLocal > 0 && _o.FloodLocal < _o.FloodNodes)
+        {
+            var f = Pathfinder.Explore(_s.Sim, _s.Land, _path, _o.FloodLocal);
+            _s.Flood = f;
+            _s.Partial = f.Count >= _o.FloodLocal;
+            _s.Reach = _s.Partial ? f.Values.Max() : double.MaxValue;
+            return;
+        }
+        _s.Flood = Flood(_s.Sim, _s.Land);
+        _s.Partial = false;
+        _s.Reach = double.MaxValue;
+    }
+
+    /// <summary>The whole flood (cells as far as <see cref="BuildPlannerOptions.FloodNodes"/>): a partial one is completed first.</summary>
+    private Dictionary<BlockPos, double> FloodAll
+    {
+        get
+        {
+            if (_s.Partial)
+            {
+                _s.Flood = Flood(_s.Sim, _s.Land);
+                _s.Partial = false;
+                _s.Reach = double.MaxValue;
+            }
+            return _s.Flood;
+        }
+    }
 
     /// <summary>Outside the build's footprint (a way out of anything it encloses).</summary>
     private bool Outside(BlockPos p) => p.X < _plan.Min.X - 1 || p.X > _plan.Max.X + 1 || p.Z < _plan.Min.Z - 1 || p.Z > _plan.Max.Z + 1;

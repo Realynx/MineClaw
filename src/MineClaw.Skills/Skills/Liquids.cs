@@ -237,15 +237,30 @@ public static class BucketOps
         if (ctx.Meta(src) != 0) return SkillResult.Fail($"{SkillJson.Fmt(src)} is {FluidRules.Describe(id, ctx.Meta(src))}, not a source");
         if (!ctx.Has(Items.Bucket)) return SkillResult.Fail("no empty bucket");
         if (ctx.Protected(src)) return SkillResult.Fail(ctx.ProtectedText(src, $"{(lava ? "lava" : "water")} source at {SkillJson.Fmt(src)}"));
-        var reach = await ctx.ReachAsync(src, ct, Math.Min(4.5, ctx.Game.Reach)).ConfigureAwait(false);
-        if (!reach.Ok) return SkillResult.Fail($"can't reach {SkillJson.Fmt(src)}: {reach.Message}");
-        var aim = SourceAim(ctx.World, ctx.World.Player.EyePosition, src, 4.5);
-        if (aim is null)
+        double reach = Math.Min(4.5, ctx.Game.Reach);
+        var sources = lava ? new List<BlockPos> { src } : PoolSources(ctx, src, lava);
+        (BlockPos Src, Vec3d Point)? Visible()
         {
-            await ctx.Game.GotoAsync(new GoalWithinReach(src, 2.0), null, ct).ConfigureAwait(false);
-            aim = SourceAim(ctx.World, ctx.World.Player.EyePosition, src, 4.5);
+            foreach (var s in sources)
+                if (!ctx.Protected(s) && FluidRules.IsSource(ctx.World, s, lava)
+                    && SourceAim(ctx.World, ctx.World.Player.EyePosition, s, reach) is { } a) return (s, a);
+            return null;
         }
-        if (aim is not { } point) return SkillResult.Fail($"no clear line to the source at {SkillJson.Fmt(src)}");
+        var visible = Visible();
+        if (visible is null)
+        {
+            // Distance alone can be satisfied behind a bank or lid. Path to a dry stand with a bucket ray,
+            // allowing any unprotected source connected to this pond, not unrelated irrigation nearby.
+            var goals = sources.Select(s => (Goal)new GoalFiltered(new GoalWithinReach(s, reach),
+                (x, y, z) => !BlockShapes.IsLiquid(ctx.World.GetBlock(x, y, z))
+                    && SourceAim(ctx.World, GoalUseBlock.EyeAt(ctx.World, x, y, z), s, reach - 0.3) is not null,
+                $"visible source {s}")).ToArray();
+            var walk = await ctx.Game.GotoAsync(new GoalAny(goals), GotoOptions.Default, ct).ConfigureAwait(false);
+            visible = Visible();
+            if (visible is null) return SkillResult.Fail($"no reachable visible source in the pond at {SkillJson.Fmt(src)}: {walk.Message}");
+        }
+        var (chosen, point) = visible.Value;
+        src = chosen;
         int full = lava ? Items.LavaBucket : Items.WaterBucket;
         int before = ctx.Count(full);
         await ctx.Game.LookAtAsync(point, ct).ConfigureAwait(false);
@@ -256,6 +271,26 @@ public static class BucketOps
         return SkillResult.Success($"filled {(lava ? "lava" : "water")} bucket at {SkillJson.Fmt(src)}");
     }
 
+    private static List<BlockPos> PoolSources(SkillContext ctx, BlockPos src, bool lava)
+    {
+        var sources = new List<BlockPos>();
+        var seen = new HashSet<BlockPos> { src };
+        var queue = new Queue<BlockPos>();
+        queue.Enqueue(src);
+        while (queue.TryDequeue(out var p) && seen.Count <= 256)
+        {
+            if (FluidRules.IsSource(ctx.World, p, lava) && !ctx.Protected(p)) sources.Add(p);
+            foreach (var f in BlockFaceExtensions.All)
+            {
+                var n = p.Offset(f);
+                if (n.DistanceSquaredTo(src) > 36 || !ctx.World.IsLoaded(n.X, n.Z)) continue;
+                int id = ctx.Block(n);
+                if ((lava ? BlockShapes.IsLava(id) : BlockShapes.IsWater(id)) && seen.Add(n)) queue.Enqueue(n);
+            }
+        }
+        return sources;
+    }
+
     /// <summary>Pours a full bucket into the empty cell <paramref name="cell"/> by clicking a neighbour's face.</summary>
     public static async Task<SkillResult> EmptyAsync(SkillContext ctx, BlockPos cell, bool lava, CancellationToken ct, Func<string?>? veto = null)
     {
@@ -264,14 +299,15 @@ public static class BucketOps
         if (!lava && ctx.InNether) return SkillResult.Fail("water evaporates in the nether");
         if (!SkillWorld.Replaceable(ctx.World, cell)) return SkillResult.Fail($"{SkillJson.Fmt(cell)} is not empty ({ctx.BlockName(cell)})");
         if (ctx.Protected(cell)) return SkillResult.Fail(ctx.ProtectedText(cell, SkillJson.Fmt(cell)));
-        var eye = ctx.World.Player.EyePosition;
-        var aim = Aiming.FindPlaceAim(ctx.World, eye, cell, 4.5, AABB.ForPlayer(ctx.Feet));
+        // The server pours along its own raytrace of my look (from a lower eye while sneaking on 1.12.2): the pour aim keeps the
+        // water in the cell from either eye, rather than on the rim of a dug hole.
+        var aim = Aiming.FindPourAim(ctx.World, ctx.World.Player.EyePosition, cell, 4.5);
         if (aim is null)
         {
             // Step right next to it: from the side the face you need (often the floor of a hole) is usually hidden.
             var g = await ctx.Game.GotoAsync(new GoalWithinReach(cell, 2.0), null, ct).ConfigureAwait(false);
             if (!g.Ok) return SkillResult.Fail($"can't get near {SkillJson.Fmt(cell)}: {g.Message}");
-            aim = Aiming.FindPlaceAim(ctx.World, ctx.World.Player.EyePosition, cell, 4.5, AABB.ForPlayer(ctx.Feet));
+            aim = Aiming.FindPourAim(ctx.World, ctx.World.Player.EyePosition, cell, 4.5);
             if (aim is null) return SkillResult.Fail($"no block face to pour against at {SkillJson.Fmt(cell)}");
         }
         if (veto?.Invoke() is { } why) return SkillResult.Fail($"won't pour from here: {why}");

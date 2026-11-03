@@ -112,7 +112,7 @@ public sealed partial class BuildPlanner
         var (yaw, look) = LookFor(t);
         var options = new List<(BlockPos Base, int K, double Score)>();
         int walks = 0;
-        foreach (var (b, travel) in _s.Flood)
+        foreach (var (b, travel) in FloodAll)
         {
             if (Math.Abs(b.X - t.Pos.X) > 6 || Math.Abs(b.Z - t.Pos.Z) > 6 || b.Y > t.Pos.Y || t.Pos.Y - b.Y > _o.MaxPillar + 6) continue;
             if (!BuildBlocks.NormalCube(_s.Sim.Get(b.Down())) || !Open(_s.Sim, b) || !Open(_s.Sim, b.Up())) continue;
@@ -191,7 +191,7 @@ public sealed partial class BuildPlanner
     /// at the top of a jump, clicking the top of the block below; the body ends on top.</summary>
     private void CommitPillar(BlockPos b, int k)
     {
-        double travel = _s.Flood.GetValueOrDefault(b);
+        double travel = FloodAll.GetValueOrDefault(b);
         for (int i = 0; i < k; i++)
         {
             var cell = b.Up(i);
@@ -225,7 +225,7 @@ public sealed partial class BuildPlanner
         var found = new List<(List<BlockPos> Cells, BlockPos Top, double Score, BlockPos Base)>();
         // An existing stair's treads first (it grows by the steps the next layer needs: one stair for repeated access, not many).
         bool OnStair(BlockPos c) => _s.Stair.Contains(c.Down());
-        var bases = _s.Flood.Where(kv => Math.Max(Math.Abs(kv.Key.X - t.Pos.X), Math.Abs(kv.Key.Z - t.Pos.Z)) <= (OnStair(kv.Key) ? 10 : 6) && kv.Key.Y <= t.Pos.Y
+        var bases = FloodAll.Where(kv => Math.Max(Math.Abs(kv.Key.X - t.Pos.X), Math.Abs(kv.Key.Z - t.Pos.Z)) <= (OnStair(kv.Key) ? 10 : 6) && kv.Key.Y <= t.Pos.Y
                 && SolidIn(_s.Sim, kv.Key.Down()) && Open(_s.Sim, kv.Key) && Open(_s.Sim, kv.Key.Up()))
             .OrderByDescending(kv => OnStair(kv.Key)).ThenByDescending(kv => kv.Key.Y).ThenBy(kv => kv.Value).Take(12).ToList();
         int budget = 12000;
@@ -345,7 +345,7 @@ public sealed partial class BuildPlanner
                 _s.Stair.Add(c);
             }
             // Walkable both ways: up to its top, and back down from there to where it starts.
-            if (ok && _s.Flood.ContainsKey(top) && PlaceableNow(t)
+            if (ok && FloodAll.ContainsKey(top) && PlaceableNow(t)
                 && Pathfinder.FindPath(_s.Sim, top, new GoalBlock(from), _path with { AllowPartial = false, AllowOneWay = true, MaxNodes = _o.FloodNodes }).Success)
                 return true;
             _s = saved;
@@ -364,7 +364,8 @@ public sealed partial class BuildPlanner
     private bool CanLeave(PlanWorld w, BlockPos from, Func<BlockPos, bool> exit, BlockPos? changed = null, bool placing = false)
     {
         bool known = ReferenceEquals(exit, _outside) || ReferenceEquals(exit, _grounded);
-        bool shut = known && placing && _s.Flood.ContainsKey(from) && !FloodExits(exit);
+        // A partial flood can't tell that no way out exists (a goal search answers instead).
+        bool shut = known && placing && !_s.Partial && _s.Flood.ContainsKey(from) && !FloodExits(exit);
         if (!shut && Reaches(w, from, exit)) return true;
         if (_s.Pillar.Count == 0) return false;
         foreach (var top in (shut ? _s.Flood.Keys : Flood(w, from).Keys).ToList())
@@ -450,7 +451,7 @@ public sealed partial class BuildPlanner
     private Dig? DigUnder(BlockPos p)
     {
         var stand = p.Up();
-        if (!_s.Flood.TryGetValue(stand, out var travel) || _plan.Blocks.ContainsKey(p) || !BuildBlocks.Supports(_s.Sim.Get(p))) return null;
+        if (!FloodAll.TryGetValue(stand, out var travel) || _plan.Blocks.ContainsKey(p) || !BuildBlocks.Supports(_s.Sim.Get(p))) return null;
         if (!BuildBlocks.NormalCube(_s.Sim.Get(p.Down())) || !SafeLevel(_s.Sim, p)) return null;
         return new Dig(stand, -1, travel);
     }

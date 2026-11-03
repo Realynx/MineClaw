@@ -22,12 +22,12 @@
     <Compile Remove="CloneStub/**" />
     <Compile Include="CloneStub/Fakes.cs" Link="Fakes.cs" />
     <Compile Include="../MineClaw.Client.Tests/FakeServer.cs" Link="Linked/FakeServer.cs" />
-    <Compile Include="../MineClaw.Client.Tests/FakeServer.Mobs.cs" Link="Linked/FakeServer.Mobs.cs" />
     <None Remove="CloneStub/**" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\MineClaw.Hive\MineClaw.Hive.csproj" />
+    <ProjectReference Include="..\..\tools\MineClaw.Sim\MineClaw.Sim.csproj" />
     <!-- Replays tests/fixtures/live-hive/*.mcrec (the first live hive test) through the real chat/arbiter/world pipeline. -->
     <ProjectReference Include="..\..\tools\ReplayKit\ReplayKit.csproj" />
     <ProjectReference Include="CloneStub\MineClaw.Hive.CloneStub.csproj" ReferenceOutputAssembly="false" />

@@ -54,6 +54,7 @@ public sealed class ActivityManager
         public readonly TaskCompletionSource<ToolResult?> Done = new(TaskCreationOptions.RunContinuationsAsynchronously);
         /// <summary>The last step's result (the adopted move's answer for an adopting chain).</summary>
         public ToolResult? LastResult;
+        public string? CleanupReport;
         /// <summary>A job queued behind this move: it reports the move's failure itself.</summary>
         public Activity? Queued;
         /// <summary>This activity waits for <see cref="Activity"/> (a move or an adopted speculative step) first.</summary>
@@ -94,6 +95,9 @@ public sealed class ActivityManager
     /// act on this body and never on whatever the caller had in scope. Null = no scope (tests, no body layer).
     /// </summary>
     public Func<IDisposable?>? StepScope { get; set; }
+
+    /// <summary>Reclaim this body's self-scaffolding after a job. Never runs for a move or a superseded job's successor.</summary>
+    public Func<CancellationToken, Task<string?>>? CleanupJob { get; set; }
 
     /// <summary>The body this slot belongs to (a clone's short name, "67"): stamped on its task events. Null = the main body.</summary>
     public string? Body { get; set; }
@@ -209,6 +213,22 @@ public sealed class ActivityManager
     private void RaiseResolved(bool adopted, string why)
     {
         try { SpeculationResolved?.Invoke(adopted, why); } catch (Exception) { }
+    }
+
+    /// <summary>Atomically reserves an idle body's job slot for deterministic work; never supersedes a player's job.</summary>
+    public bool TryStartIdleJob(IAgentTool tool, JsonElement input, string label)
+    {
+        IReadOnlyList<(IAgentTool Tool, JsonElement Input)> steps = [(tool, input)];
+        Activity act;
+        lock (_lock)
+        {
+            if (_current is { Finished: false }) return false;
+            act = NewActivityLocked(steps, ActivityKind.Job, label);
+            _current = act;
+        }
+        RaiseStarted(act);
+        _ = RunChainAsync(act, steps, new ToolResult?[1]);
+        return true;
     }
 
     /// <summary>
@@ -377,7 +397,7 @@ public sealed class ActivityManager
                 for (int i = start; i < steps.Count; i++) results[i] = ToolResult.Error(i == start ? why : "skipped (earlier step failed)");
                 failure = adoptFirst && moveFail != null ? results[0] : results[start];
                 failedAt = adoptFirst && moveFail != null ? 0 : start;
-                Finish(act, steps, results, failure, failedAt);
+                await FinishAsync(act, steps, results, failure, failedAt).ConfigureAwait(false);
                 return;
             }
             lock (_lock)
@@ -399,7 +419,7 @@ public sealed class ActivityManager
             using (StepScope?.Invoke())
                 r = await _registry.ExecuteAsync(steps[i].Tool, steps[i].Input, act.Cts.Token).ConfigureAwait(false);
             if (act.Cts.IsCancellationRequested && r.Ok == false && act.CancelReason != null)
-                r = ToolResult.Error("cancelled: " + act.CancelReason);
+                r = ToolResult.Error("cancelled: " + act.CancelReason + "; " + r.Text);
             results[i] = r;
             act.LastResult = r;
             if (!act.Silent)
@@ -409,32 +429,63 @@ public sealed class ActivityManager
             }
             if (!r.Ok) { failure = r; failedAt = i; }
         }
-        Finish(act, steps, results, failure, failedAt);
+        if (failure == null && act.Cts.IsCancellationRequested)
+        {
+            failure = ToolResult.Error("cancelled: " + (act.CancelReason ?? "shutdown"));
+            failedAt = start;
+        }
+        await FinishAsync(act, steps, results, failure, failedAt).ConfigureAwait(false);
     }
 
-    private void Finish(Activity act, IReadOnlyList<(IAgentTool Tool, JsonElement Input)> steps, ToolResult?[] results,
+    private async Task FinishAsync(Activity act, IReadOnlyList<(IAgentTool Tool, JsonElement Input)> steps, ToolResult?[] results,
         ToolResult? failure, int failedAt)
     {
+        if (act.Kind == ActivityKind.Job && CleanupJob is { } cleanup && act.Queued == null
+            && act.CancelReason?.StartsWith("superseded", StringComparison.Ordinal) != true)
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            try
+            {
+                using (StepScope?.Invoke()) act.CleanupReport = await cleanup(timeout.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex) { act.CleanupReport = "temporary cleanup deferred: " + ex.Message; }
+        }
         bool post;
         Activity? queued;
         lock (_lock)
         {
-            act.Finished = true;
             post = act.Detached && !act.Silent;
             queued = act.Queued is { Finished: false } q ? q : null;
-            if (ReferenceEquals(_current, act)) _current = queued; // the queued job takes the body next
         }
-        act.Done.TrySetResult(failure);
-        try { act.Cts.Dispose(); } catch (Exception) { }
+        try { PublishOutcome(act, steps, results, failure, failedAt, post, queued); }
+        finally
+        {
+            // Publish the outcome before exposing an idle body or releasing a queued successor.
+            lock (_lock)
+            {
+                act.Finished = true;
+                if (ReferenceEquals(_current, act)) _current = act.Queued is { Finished: false } q ? q : null;
+            }
+            act.Done.TrySetResult(failure);
+            try { act.Cts.Dispose(); } catch (Exception) { }
+        }
+    }
+
+    private void PublishOutcome(Activity act, IReadOnlyList<(IAgentTool Tool, JsonElement Input)> steps, ToolResult?[] results,
+        ToolResult? failure, int failedAt, bool post, Activity? queued)
+    {
         if (!post) return;
         // A job is queued behind this move: it reports the outcome (a failed move = "not run: goto failed: ...").
         // A job queued with do{queue:true} runs even when this one failed (it doesn't require success): then nobody would report
         // this failure, so it is posted here.
-        if (queued != null && (failure == null || queued.RequireSuccess)) return;
+        if (queued != null && act.Kind == ActivityKind.Move && (failure == null || queued.RequireSuccess)) return;
+        // Every completed step matters: a final planting result must not hide the excavation/tilling counts.
+        var report = string.Join("; ", results.Select((r, i) => r == null ? null : $"{steps[i].Tool.Name}: {r.Text}").Where(s => s != null));
+        if (act.CleanupReport is { Length: > 0 } cr) report += "; " + cr;
 
         if (failure == null)
         {
-            var text = act.Kind == ActivityKind.Move ? $"#{act.Id} {act.Label}: {results[^1]?.Text ?? act.LastResult?.Text}" : $"#{act.Id} {act.Label}: {results[^1]?.Text}";
+            var text = $"#{act.Id} {act.Label}: {report}";
             // An arrival nobody waits on is context, not a reason to wake the brain (it already said what it's doing).
             bool quiet = false;
             try { quiet = QuietOutcome?.Invoke(text) == true; } catch (Exception) { }
@@ -448,9 +499,9 @@ public sealed class ActivityManager
         // The model asked for this (stop / new activity): it already knows — keep as quiet context only.
         bool modelInitiated = reason != null && (reason == "stop" || reason.StartsWith("superseded", StringComparison.Ordinal));
         bool wakes = reason == null; // plain failures wake; interruptions are explained by the interrupting event
-        if (modelInitiated) return;
+        if (modelInitiated) wakes = false;
         var tool = failedAt >= 0 && failedAt < steps.Count ? steps[failedAt].Tool.Name : act.Label;
-        var failText = $"#{act.Id} {tool}: {failure.Text}";
+        var failText = $"#{act.Id} {tool}: {failure.Text}" + (report.Length > 0 ? $"; results: {report}" : "");
         bool quietFail = false;
         try { quietFail = wakes && QuietOutcome?.Invoke(failText) == true; } catch (Exception) { }
         if (quietFail) wakes = false;

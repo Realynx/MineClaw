@@ -16,11 +16,14 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <None Include="../../docs/offline-config.json" Link="offline-config.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../docs/offline-brain.json" Link="offline-brain.json" CopyToOutputDirectory="PreserveNewest" />
     <Using Include="MineClaw.Render" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\MineClaw.App\MineClaw.App.csproj" />
+    <ProjectReference Include="..\..\tools\MineClaw.Sim\MineClaw.Sim.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -28,7 +31,6 @@
     <Compile Include="..\MineClaw.Bot.Tests\TestSupport.cs" Link="Linked\BotTestSupport.cs" />
     <!-- The fake (1.12.2) server for the P6 end-to-end scenario. -->
     <Compile Include="..\MineClaw.Client.Tests\FakeServer.cs" Link="Linked\FakeServer.cs" />
-    <Compile Include="..\MineClaw.Client.Tests\FakeServer.Mobs.cs" Link="Linked\FakeServer.Mobs.cs" />
   </ItemGroup>
 
 </Project>

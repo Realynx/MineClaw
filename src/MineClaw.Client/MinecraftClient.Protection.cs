@@ -66,7 +66,7 @@ public sealed partial class MinecraftClient
     {
         if (NeverBreak?.Invoke(p) == true) return false;
         if (MineSource?.Invoke(p, id) == true || OverridesSoft(p, id)) return true;
-        if (NaturalResource(id, World.Dimension)) return true;
+        if (NaturalResource(id, World.Dimension) || NaturalPlant(id)) return true;
         bool skyblock = WorldMode.Current.GeneratorStone;
         if (!skyblock && NaturalTerrain(id)) return true;
         if (skyblock && id is Blocks.Cobblestone or Blocks.Stone) return LavaCouldFlowInto(p) && NextToWater(p);
@@ -87,6 +87,14 @@ public sealed partial class MinecraftClient
         QuartzOre or Blocks.Netherrack or Blocks.SoulSand or Blocks.Glowstone => dimension == -1,
         _ => false,
     };
+
+    /// <summary>Wild plants are resources for mining/mowing, not placed structures. Includes tall grass and ferns,
+    /// dead bush, dandelion, poppy and the 1.12.2 flowers (same id), and
+    /// 1.12.2 double_plant (175: sunflower, lilac, tall grass, large fern, rose bush, peony).</summary>
+    public static bool NaturalPlant(int id) => id is Blocks.TallGrass or Blocks.DeadBush or Blocks.Dandelion or Blocks.Rose or DoublePlant;
+
+    /// <summary>1.12.2 double_plant.</summary>
+    private const int DoublePlant = 175;
 
     /// <summary>Generated terrain of a normal world (not a resource on skyblock, where all of it was placed by someone).</summary>
     public static bool NaturalTerrain(int id) =>
@@ -139,6 +147,9 @@ public sealed partial class MinecraftClient
     /// after that one attempt there is allowed again, and a success clears it.</summary>
     public LearnedProtectedRegion? ProtectedRegion => _protectedRegion;
 
+    /// <summary>The owner confirmed spawn protection is off: never learn or adopt it, including at runtime.</summary>
+    public bool SpawnProtectionDisabled { get; set; }
+
     /// <summary>Raised (event dispatcher) when a protected region is learned/updated, or cleared (null) after a
     /// successful edit inside it. The Bot records it as an observation of kind <c>protected_region</c>.</summary>
     public event Action<LearnedProtectedRegion?>? ProtectedRegionChanged;
@@ -189,7 +200,7 @@ public sealed partial class MinecraftClient
     {
         var sp = World.Spawn;
         int d = Math.Max(Math.Abs(p.X - sp.X), Math.Abs(p.Z - sp.Z));
-        bool nearSpawn = World.Dimension == 0 && d <= VanillaSpawnProtection;
+        bool nearSpawn = !SpawnProtectionDisabled && World.Dimension == 0 && d <= VanillaSpawnProtection;
         if (nearSpawn && _lastOkInsideSpawn is { } proof && Environment.TickCount64 - proof.At < SpawnProofWindow.TotalMilliseconds)
         {
             // My digs/placements inside the spawn square worked minutes ago (op, or protection off): one that didn't take
@@ -266,7 +277,7 @@ public sealed partial class MinecraftClient
     /// </summary>
     public bool AdoptProtectedRegion(LearnedProtectedRegion r)
     {
-        if (_protectedRegion != null) return false;
+        if (SpawnProtectionDisabled || _protectedRegion != null) return false;
         if (_lastOkInsideSpawn is { } proof && Environment.TickCount64 - proof.At < SpawnProofWindow.TotalMilliseconds) return false; // my edits work here
         _protectedRegion = r;
         Log("adopted shared " + r);

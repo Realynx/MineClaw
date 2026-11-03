@@ -20,14 +20,16 @@ namespace MineClaw.Bot.Blueprints;
 /// layer 1-2
 /// ...
 /// box C 0,0,0 4,0,4     # also: hollow, walls, wall, floor, clear, pillar C x,y,z h, door D x,y,z [dir],
-/// window G 1,2,0 3,2,0  # stairs S x,y,z dir, roof C flat|gable|slope:dir x1,y,z1 x2,z2 [ridge-symbol]
+/// window G 1,2,0 3,2,0  # stairs S x,y,z dir, roof C flat|gable|slope:dir x1,y,z1 x2,z2 [ridge-symbol],
+///                       # pyramid S 0,0,0 21 [core:D] (stepped, base 21, 11 layers; size 21x11x21)
 /// </code>
 /// Statements apply in order; later ones win. Block names are b1.8.1 names/aliases (MineClaw.Data); a palette value may add
 /// a facing (north/east/south/west), a variant (wool:red, log:birch, slab:cobble) or a raw meta (slab:3).
 /// </summary>
 public static partial class BlueprintParser
 {
-    public const int MaxSide = 32, MaxHeight = 32; // 32: a captured build (StructureCapture); the author is asked for ≤ 24
+    // 64 a side (a base-63 pyramid has 32 layers); a capture stays 32 (StructureCapture); the author is asked for ≤ 24
+    public const int MaxSide = 64, MaxHeight = 32;
 
     [GeneratedRegex(@"^(\d+)\s*[x×*]\s*(\d+)\s*[x×*]\s*(\d+)$", RegexOptions.IgnoreCase)]
     private static partial Regex SizeRx();
@@ -176,7 +178,7 @@ public static partial class BlueprintParser
     private static readonly HashSet<string> Statements = new(StringComparer.OrdinalIgnoreCase)
     {
         "blueprint", "name", "size", "origin", "facing", "front", "light", "lit", "palette", "layer", "layers", "box", "fill", "hollow", "walls", "wall",
-        "floor", "clear", "air", "pillar", "door", "window", "stairs", "roof",
+        "floor", "clear", "air", "pillar", "door", "window", "stairs", "roof", "pyramid",
     };
 
     private static bool IsStatement(string line)
@@ -297,6 +299,21 @@ public static partial class BlueprintParser
                 {
                     if (t.Length < 3 || Sym(0) == '\0' || P3(t[1]) is not { } a || !int.TryParse(t[2], out var h) || h < 1) { Err("use 'pillar X x,y,z height'"); return null; }
                     return new BlueprintOp("box", Sym(0), a, (a.X, a.Y + h - 1, a.Z), null, "", ln);
+                }
+            case "pyramid":
+                {
+                    // pyramid X x,y,z base [core:Y]: the stepped pyramid whose base layer's min corner is x,y,z (side `base`, one row
+                    // in per layer, (base+1)/2 layers); the optional core: fills everything deeper than two rows in with Y.
+                    if (t.Length < 3 || Sym(0) == '\0' || P3(t[1]) is not { } a || !int.TryParse(t[2], out var b) || b < 1)
+                    { Err("use 'pyramid X x,y,z base [core:Y]' (base = side length of the bottom layer)"); return null; }
+                    string core = "";
+                    if (t.Length > 3)
+                    {
+                        var c = t[3].Split(':');
+                        if (c.Length != 2 || !c[0].Equals("core", StringComparison.OrdinalIgnoreCase) || c[1].Length != 1) { Err($"'{t[3]}': use core:Y with one palette symbol"); return null; }
+                        core = c[1];
+                    }
+                    return new BlueprintOp("pyramid", Sym(0), a, (a.X + b - 1, a.Y + (b + 1) / 2 - 1, a.Z + b - 1), null, core, ln);
                 }
             case "door":
                 {

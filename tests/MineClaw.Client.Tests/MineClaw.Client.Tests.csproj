@@ -19,6 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\tools\MineClaw.Sim\MineClaw.Sim.csproj" />
     <ProjectReference Include="..\..\src\MineClaw.Protocol\MineClaw.Protocol.csproj" />
     <ProjectReference Include="..\..\src\MineClaw.Data\MineClaw.Data.csproj" />
     <ProjectReference Include="..\..\src\MineClaw.World\MineClaw.World.csproj" />

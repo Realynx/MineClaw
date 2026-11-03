@@ -141,8 +141,12 @@ public sealed class FakeGame : IGameActions
             Visited.Add(feet);
             if (Safety.IsPlayerOverVoid(World, feet)) Violations.Add($"over void at {feet}");
         }
+        Arrived?.Invoke(World.Player.Position);
         return Ok($"arrived at {World.Player.Position}");
     }
+
+    /// <summary>Called after every goto that walked: a test makes new chunks "arrive" where the body now stands.</summary>
+    public Action<Vec3d>? Arrived { get; set; }
 
     /// <summary>Called right after a dig changes the world (simulates what the server does next, e.g. trampled farmland).</summary>
     public Action<BlockPos>? AfterDig { get; set; }
@@ -296,6 +300,13 @@ public sealed class FakeGame : IGameActions
 
     public Task<ActionResult> LookAtAsync(Vec3d point, CancellationToken ct) { _look = point; return Ok("looking"); }
 
+    /// <summary>How much lower than <see cref="WorldState.Player"/>'s standing eye the "server" casts a full bucket's ray
+    /// (1.12.2 sneaking: <see cref="Aiming.SneakEyeDrop"/>). 0 = the same eye.</summary>
+    public double ServerEyeDrop { get; set; }
+
+    /// <summary>Crop stages one bone meal adds: 7 = b1.8.1 (grown at once); 1.12.2 adds 2-5 (ItemDye.applyBonemeal).</summary>
+    public int BonemealStages { get; set; } = 7;
+
     public Task<ActionResult> UseItemAsync(int? itemId, CancellationToken ct)
     {
         int id = itemId ?? World.Inventory.HeldItem(World.Player.HeldSlot).Id;
@@ -309,11 +320,13 @@ public sealed class FakeGame : IGameActions
             Set(src, 0);
             Take(Items.Bucket);
             Give(lava ? Items.LavaBucket : Items.WaterBucket, 1);
+            if (Fluids) FlowWater(src);
             return Ok("filled");
         }
         if (id is Items.WaterBucket or Items.LavaBucket)
         {
-            var hit = Raycast.Cast(World, eye, _look - eye, 6);
+            // The server raytraces the look from ITS eye: ServerEyeDrop lower while sneaking on 1.12.2 (same direction).
+            var hit = Raycast.Cast(World, eye with { Y = eye.Y - ServerEyeDrop }, _look - eye, 6);
             if (hit is not { } h) return Ok("nothing");
             var target = h.Pos.Offset(h.Face);
             if (!Aiming.IsReplaceable(World, World.GetBlock(target))) return Ok("blocked");
@@ -322,11 +335,66 @@ public sealed class FakeGame : IGameActions
             Take(id);
             Give(Items.Bucket, 1);
             Settle(target, lava);
+            if (Fluids && !lava) FlowWater(target);
             return Ok("poured");
         }
         if (Items.Food(id) is not null) { Take(id); return Ok("ate"); }
         Take(id);
         return Ok("used");
+    }
+
+    /// <summary>Opt-in 1.12 water model (<see cref="FlowWater"/>): sources spread flowing water (levels 1-7, falling when over air),
+    /// a cell beside 2+ sources over a solid floor becomes a source (so scooped infinite cells come back), and flowing water with
+    /// no source behind it dries up. Off by default: existing tests keep the tiny model below.</summary>
+    public bool Fluids { get; set; }
+
+    private void FlowWater(BlockPos near)
+    {
+        const int Radius = 24;
+        bool Open(BlockPos p)
+        {
+            int id = World.GetBlock(p);
+            if (BlockShapes.IsLiquid(id)) return BlockShapes.IsWater(id) && World.GetMeta(p) != 0; // flowing water yields, sources and lava stay
+            return id == 0 || Aiming.IsReplaceable(World, id);
+        }
+        bool WaterAt(BlockPos p) => BlockShapes.IsWater(World.GetBlock(p));
+        var before = World.FindBlocks(near.Center, Radius, (id, _) => BlockShapes.IsWater(id), 8192).ToList();
+        var sources = before.Where(f => f.Meta == 0).Select(f => f.Pos).ToHashSet();
+        for (bool changed = true; changed;)
+        {
+            changed = false;
+            foreach (var cand in sources.SelectMany(s => SkillWorld.Horizontal.Select(o => s + o)).Distinct().ToList())
+            {
+                if (sources.Contains(cand) || !Open(cand) || World.GetBlock(cand) != 0 && !(WaterAt(cand) && World.GetMeta(cand) != 0)) continue;
+                var below = cand.Down();
+                if (SkillWorld.Horizontal.Count(o => sources.Contains(cand + o)) >= 2 && (BlockShapes.HasCollision(World, below.X, below.Y, below.Z) || sources.Contains(below)))
+                { sources.Add(cand); changed = true; }
+            }
+        }
+        var level = new Dictionary<BlockPos, int>();
+        var q = new Queue<BlockPos>();
+        foreach (var s in sources) { level[s] = 0; q.Enqueue(s); }
+        while (q.Count > 0 && level.Count < 8192)
+        {
+            var c = q.Dequeue();
+            int l = level[c] >= 8 ? 0 : level[c];
+            var below = c.Down();
+            if (below.Y >= 1 && Open(below) && !sources.Contains(below)) { if (!level.ContainsKey(below)) { level[below] = 8; q.Enqueue(below); } continue; }
+            if (l >= 7) continue;
+            foreach (var o in SkillWorld.Horizontal)
+            {
+                var n = c + o;
+                if (!Open(n) || sources.Contains(n)) continue;
+                if (!level.TryGetValue(n, out int have) || have > l + 1) { level[n] = l + 1; q.Enqueue(n); }
+            }
+        }
+        foreach (var f in before)
+            if (!level.ContainsKey(f.Pos)) Set(f.Pos, 0);
+        foreach (var (pos, l) in level)
+        {
+            if (l == 0) { if (!WaterAt(pos)) Set(pos, Blocks.Water, 0); }
+            else if (World.GetBlock(pos) != Blocks.FlowingWater || World.GetMeta(pos) != l) Set(pos, Blocks.FlowingWater, l);
+        }
     }
 
     /// <summary>Tiny liquid model: infinite sources (≥2 source neighbours over a solid/source floor) and hardening.</summary>
@@ -337,7 +405,9 @@ public sealed class FakeGame : IGameActions
         {
             var n = placed.Offset(f);
             int nid = World.GetBlock(n);
-            if (!lava && BlockShapes.IsLava(nid) && f != BlockFace.Bottom) { Set(n, World.GetMeta(n) == 0 ? Blocks.Obsidian : Blocks.Cobblestone); Mixed.Add(n); }
+            // Lava hardens when water touches it on any side but BELOW it (BlockLiquid.func_149805_n checks y+1 and the four sides, never y-1):
+            // so placed water hardens the lava beside and below it, not the lava above it.
+            if (!lava && BlockShapes.IsLava(nid) && f != BlockFace.Top) { Set(n, World.GetMeta(n) == 0 ? Blocks.Obsidian : Blocks.Cobblestone); Mixed.Add(n); }
             if (lava && BlockShapes.IsWater(nid) && f != BlockFace.Bottom) { Set(placed, Blocks.Obsidian); Mixed.Add(placed); return; }
         }
         if (lava) return;
@@ -364,7 +434,15 @@ public sealed class FakeGame : IGameActions
     }
 
     public Task<ActionResult> EatAsync(CancellationToken ct) => World.Player.Food >= 20 ? Ok("already full (food 20/20)") : Ok("ate bread");
-    public Task<ActionResult> CollectDropsAsync(double radius, CancellationToken ct) { Log.Add("collect"); return Ok("collected"); }
+    public Func<double, CancellationToken, Task<ActionResult>>? CollectDropsHook { get; set; }
+    public bool DryCollectionRequested { get; private set; }
+    public Task<ActionResult> CollectDropsAsync(double radius, CancellationToken ct) => CollectDropsAsync(radius, ct, false);
+    public Task<ActionResult> CollectDropsAsync(double radius, CancellationToken ct, bool dryOnly)
+    {
+        Log.Add("collect");
+        DryCollectionRequested = dryOnly;
+        return CollectDropsHook?.Invoke(radius, ct) ?? Ok("collected");
+    }
     public Task<ActionResult> MineAsync(string blockName, int count, double radius, CancellationToken ct) { Log.Add($"mine {blockName} {count}"); return Ok($"mined {count} {blockName}"); }
     public Task<ActionResult> CraftAsync(string itemName, int count, CancellationToken ct) { Log.Add($"craft {itemName} {count}"); return Ok($"crafted {count} {itemName}"); }
     public Task<ActionResult> SmeltAsync(int input, int count, int? fuel, bool wait, BlockPos? furnace, CancellationToken ct)
@@ -417,7 +495,7 @@ public sealed class FakeGame : IGameActions
         Log.Add($"use {pos} {itemId}");
         int id = World.GetBlock(pos);
         if (itemId is >= Items.WoodenHoe and <= Items.GoldenHoe && id is Blocks.Dirt or Blocks.Grass && World.GetBlock(pos.Up()) == 0) Set(pos, Blocks.Farmland);
-        else if (itemId == Items.Dye && id == Blocks.Crops) { Set(pos, id, 7); Take(Items.Dye); }
+        else if (itemId == Items.Dye && id == Blocks.Crops) { Set(pos, id, Math.Min(7, World.GetMeta(pos) + BonemealStages)); Take(Items.Dye); }
         return Ok("used on block");
     }
 

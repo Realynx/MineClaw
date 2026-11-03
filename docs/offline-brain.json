@@ -1,0 +1,13 @@
+{
+  "fallback": "Offline and ready.",
+  "rules": [
+    {
+      "match": "come here",
+      "reply": "On my way.",
+      "tool_use": [
+        { "name": "do", "input": { "action": "goto", "args": { "to": "tester", "dist": 1 } } }
+      ]
+    },
+    { "match": "hello", "reply": "Hello from the offline sandbox!" }
+  ]
+}
