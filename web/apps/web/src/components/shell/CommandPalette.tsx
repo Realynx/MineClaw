@@ -51,7 +51,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
   return (
     <D.Root open={open} onOpenChange={onOpenChange}>
       <D.Portal>
-        <D.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-[2px]" />
+        <D.Overlay className="fixed inset-0 z-50 bg-black/40" />
         <D.Content
           aria-describedby={undefined}
           className="fixed top-[12vh] left-1/2 z-50 w-[calc(100vw-2rem)] max-w-xl -translate-x-1/2 overflow-hidden rounded-xl border border-border bg-surface shadow-pop"

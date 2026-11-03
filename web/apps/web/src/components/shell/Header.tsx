@@ -164,7 +164,7 @@ export function Header({ onOpenPalette, menuButton }: { onOpenPalette: () => voi
   const { devDetails } = usePrefs();
   const page = NAV_ITEMS.find((i) => pathname === i.href || pathname.startsWith(`${i.href}/`));
   return (
-    <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border bg-surface/80 px-3 backdrop-blur sm:px-4">
+    <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border bg-surface px-3 sm:px-4">
       {menuButton}
       <div className="min-w-0 text-[13px] font-medium text-muted max-md:hidden lg:w-44">{page?.label}</div>
       <button

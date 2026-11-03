@@ -32,11 +32,11 @@ export function BotCard({ bot, node }: { bot: BotStatusView; node: HiveTreeNode 
       <div className="relative aspect-[16/9] w-full border-b border-border">
         <BotThumbnail bot={bot.name} className="absolute inset-0" />
         <div className="absolute top-2 left-2 flex gap-1">
-          {node ? <Badge className="bg-surface/90 backdrop-blur">{KIND_LABEL[node.kind]}</Badge> : null}
+          {node ? <Badge className="bg-surface">{KIND_LABEL[node.kind]}</Badge> : null}
           {bot.dim !== 0 ? <Badge tone="warn" className="backdrop-blur">{dimName(bot.dim)}</Badge> : null}
         </div>
         {n?.inFlight ? (
-          <div className="absolute right-2 bottom-2 rounded-md bg-surface/90 px-2 py-1 shadow-card backdrop-blur">
+          <div className="absolute right-2 bottom-2 rounded-md bg-surface px-2 py-1 shadow-card">
             <InFlight inFlight={n.inFlight} />
           </div>
         ) : null}

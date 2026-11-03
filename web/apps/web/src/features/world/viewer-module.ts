@@ -1,19 +1,12 @@
 /**
- * ===== THE SINGLE INTEGRATION POINT for @mineclaw/world-viewer =====
- *
- * The world viewer package (three.js, renders the world in the browser) is built in a parallel branch and is not installed
- * here. Everything in the app reaches it only through `loadWorldViewer()` in ./integration.ts, which dynamic-imports THIS
- * module. To wire it after the merge:
- *
- *   1. add "@mineclaw/world-viewer": "*" to apps/web/package.json dependencies;
- *   2. replace the body of this file with:
- *
- *        export * from '@mineclaw/world-viewer';
- *        export const available = true;
- *
- * Expected exports (adapters in ./integration.ts tolerate small naming differences):
- *   - WorldViewerProvider  { source: WorldSource; children }      one shared WebGL renderer for all views
- *   - WorldThumbnail       { source: WorldSource; follow: string } a small live 3D view (multi-view mode)
- *   - WorldViewer          { source: WorldSource; follow?: string; dim?: number; camera?: 'follow' | 'free' }
+ * The lazy chunk boundary for @mineclaw/world-viewer (three.js and its mesh worker): the ONLY module that imports the package
+ * at runtime. `loadWorldViewer()` in ./integration.tsx dynamic-imports this file, so pages that never show the world do not
+ * download the renderer, and a load failure degrades to the 2D placeholder instead of breaking the page.
  */
-export const available = false;
+export { WorldThumbnail, WorldViewer, WorldViewerProvider, useWorldRuntime } from '@mineclaw/world-viewer';
+
+/** Mock mode only: the package's fixture world, re-keyed onto the mock hive's bots (see ./mockSource.ts). */
+export async function loadMockSource() {
+  const { createMockWorldSource } = await import('./mockSource');
+  return createMockWorldSource();
+}

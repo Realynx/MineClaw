@@ -293,7 +293,7 @@ function ActivityInner() {
             )}
             {/* legend */}
             {graph.data ? (
-              <div className="pointer-events-none absolute top-3 left-3 max-w-[16rem] space-y-2 rounded-lg border border-border bg-surface/90 p-3 text-[11px] text-muted shadow-card backdrop-blur">
+              <div className="pointer-events-none absolute top-3 left-3 max-w-[16rem] space-y-2 rounded-lg border border-border bg-surface p-3 text-[11px] text-muted shadow-card">
                 <div className="flex flex-wrap gap-x-3 gap-y-1">
                   {brains.map((b) => (
                     <span key={b} className="inline-flex items-center gap-1.5">

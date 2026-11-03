@@ -1,30 +1,20 @@
 /**
- * `WorldSource`: everything @mineclaw/world-viewer needs, implemented against the public /api/world/* routes. The viewer
- * package renders in the browser (no server images); this adapter is its only door to the network.
+ * The app's `WorldSource` for @mineclaw/world-viewer, implemented against the public /api/world/* routes. The viewer renders
+ * the world in the browser (no server images); this adapter is its only door to the network.
  *
- * - `entities()` prefers the SSE-fed query cache (no extra polling); it falls back to GET /api/world/entities.
- * - `chunks()` splits requests into the server's 64-column cap and merges the MCWC payloads into one buffer.
- * - `blocks()` / `subscribe()` carry live per-block updates (GET /api/world/blocks + the `blocks` SSE event).
+ * - `chunks()` asks with `light=1`, splits requests into the server's 64-column cap and merges the MCWC payloads.
+ * - `entities()` prefers the SSE-fed query cache (no extra polling) and falls back to GET /api/world/entities.
+ * - `blocks()` / `subscribe()` carry live per-block updates (GET /api/world/blocks + the shared stream's `blocks` event; the
+ *   reconnect hook fires when the stream had to be reopened).
  */
 import type { QueryClient } from '@tanstack/react-query';
-import type { WorldAtlasJson, WorldEntities, WorldIndex, WorldOverlays } from '@mineclaw/contracts';
+import type { WorldEntities } from '@mineclaw/contracts';
+import type { AtlasMap, AtlasResource, EntityDelta, Overlays, WorldIndex, WorldSource } from '@mineclaw/world-viewer';
 import { api, apiBlob, ApiError } from '@/lib/api/client';
 import { liveKeys } from '@/lib/live/dispatch';
-import { emptyBlockDeltas, publishBlocks, subscribeBlocks, type WorldBlockDeltas } from './blocks';
+import { emptyBlockDeltas, subscribeBlocks, type WorldBlockDeltas } from './blocks';
 
-export type EntityDelta = WorldEntities;
-export type Overlays = WorldOverlays;
-
-export interface WorldSource {
-  index(dim: number, x: number, z: number, r: number): Promise<WorldIndex>;
-  chunks(dim: number, cols: ReadonlyArray<readonly [number, number]>): Promise<ArrayBuffer>;
-  entities(since?: number): Promise<EntityDelta>;
-  overlays(dim: number): Promise<Overlays>;
-  atlas(): Promise<{ image: ImageBitmap | HTMLImageElement; map: WorldAtlasJson }>;
-  blocks(since: number, dim?: number): Promise<WorldBlockDeltas>;
-  /** Live block deltas pushed by the shared SSE client. Returns an unsubscribe function. */
-  subscribe(onBlocks: (d: WorldBlockDeltas) => void): () => void;
-}
+export type { WorldSource };
 
 /** Server cap per /api/world/chunks request. */
 export const MAX_COLS_PER_REQUEST = 64;
@@ -51,7 +41,7 @@ export function mergeMcwc(parts: ArrayBuffer[]): ArrayBuffer {
   const out = new Uint8Array(16 + bodyLen);
   const v = new DataView(out.buffer);
   MAGIC.forEach((m, i) => v.setUint8(i, m));
-  v.setUint16(4, version, true);
+  v.setUint16(4, version || 1, true);
   v.setUint16(6, 0, true);
   v.setInt32(8, dim, true);
   v.setInt32(12, count, true);
@@ -76,23 +66,28 @@ async function loadImage(blob: Blob): Promise<ImageBitmap | HTMLImageElement> {
   }
 }
 
-/** Blocks route: called through fetch directly because the route is not in the contracts ROUTES yet (see blocks.ts). */
-async function fetchBlocks(since: number, dim?: number): Promise<WorldBlockDeltas> {
-  const qs = new URLSearchParams({ since: String(since) });
+/** The blocks route is not in the contracts ROUTES yet (see blocks.ts), so it is fetched directly. */
+async function fetchBlocks(since?: number, dim?: number): Promise<WorldBlockDeltas> {
+  const qs = new URLSearchParams();
+  if (since !== undefined) qs.set('since', String(since));
   if (dim !== undefined) qs.set('dim', String(dim));
-  const res = await fetch(`/api/world/blocks?${qs.toString()}`, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
-  if (res.status === 404) return emptyBlockDeltas(since);
+  const res = await fetch(`/api/world/blocks${qs.size ? `?${qs.toString()}` : ''}`, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+  if (res.status === 404) return emptyBlockDeltas(since ?? 0);
   if (!res.ok) throw new ApiError(res.status, `world blocks: HTTP ${res.status}`, {});
   return (await res.json()) as WorldBlockDeltas;
 }
 
+function toDelta(e: WorldEntities, full: boolean): EntityDelta {
+  return { ...e, rev: e.rev ?? 0, full, removed: full ? [] : (e.removed ?? []) } as EntityDelta;
+}
+
 export function createWorldSource(qc?: QueryClient): WorldSource {
-  let atlasPromise: Promise<{ image: ImageBitmap | HTMLImageElement; map: WorldAtlasJson }> | null = null;
+  let atlasPromise: Promise<AtlasResource | null> | null = null;
   return {
-    index: (dim, x, z, r) => api('world.index', { query: { dim, x: Math.round(x), z: Math.round(z), r: Math.max(16, Math.min(256, Math.round(r))) } }),
+    index: (dim, x, z, r) =>
+      api('world.index', { query: { dim, x: Math.round(x), z: Math.round(z), r: Math.max(16, Math.min(256, Math.round(r))), light: true } }) as Promise<WorldIndex>,
 
     async chunks(dim, cols) {
-      if (cols.length === 0) return mergeMcwc([emptyMcwc(dim)]);
       const batches: string[] = [];
       for (let i = 0; i < cols.length; i += MAX_COLS_PER_REQUEST) {
         batches.push(
@@ -102,48 +97,36 @@ export function createWorldSource(qc?: QueryClient): WorldSource {
             .join(';'),
         );
       }
-      const parts = await Promise.all(
-        batches.map(async (b) => (await apiBlob('world.chunks', { query: { dim, cols: b, light: true } })).blob.arrayBuffer()),
-      );
+      if (batches.length === 0) return mergeMcwc([new Uint8Array([...MAGIC, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).buffer]);
+      const parts = await Promise.all(batches.map(async (b) => (await apiBlob('world.chunks', { query: { dim, cols: b, light: true } })).blob.arrayBuffer()));
       return mergeMcwc(parts);
     },
 
     async entities(since) {
       const cached = qc?.getQueryData<WorldEntities>(liveKeys.entities);
-      if (cached && (since === undefined || (cached.rev ?? 0) > since)) return { ...cached, full: true };
-      if (cached && since !== undefined && (cached.rev ?? 0) === since) return { ...cached, entities: [], removed: [], full: false };
-      return api('world.entities', { query: since === undefined ? {} : { since } });
+      if (cached && (cached.rev ?? 0) > 0) {
+        if (since === undefined || since === 0 || (cached.rev ?? 0) > since) return toDelta(cached, true);
+        return toDelta({ ...cached, entities: [], removed: [] }, false);
+      }
+      return toDelta(await api('world.entities', { query: since ? { since } : {} }), !since);
     },
 
-    overlays: (dim) => api('world.overlays', { query: { dim } }),
+    overlays: (dim) => api('world.overlays', { query: { dim } }) as Promise<Overlays>,
 
     atlas() {
       atlasPromise ??= (async () => {
-        const [map, png] = await Promise.all([api('world.atlasJson'), apiBlob('world.atlasPng')]);
-        return { map, image: await loadImage(png.blob) };
-      })().catch((e: unknown) => {
-        atlasPromise = null;
-        throw e;
-      });
+        try {
+          const [map, png] = await Promise.all([api('world.atlasJson'), apiBlob('world.atlasPng')]);
+          return { map: map as unknown as AtlasMap, image: await loadImage(png.blob) };
+        } catch {
+          return null; // the viewer falls back to its flat palette
+        }
+      })();
       return atlasPromise;
     },
 
-    async blocks(since, dim) {
-      const d = await fetchBlocks(since, dim);
-      return d;
-    },
+    blocks: (since) => fetchBlocks(since),
 
-    subscribe: (onBlocks) => subscribeBlocks(onBlocks),
+    subscribe: (onBlocks, onReconnect) => subscribeBlocks(onBlocks, onReconnect),
   };
 }
-
-function emptyMcwc(dim: number): ArrayBuffer {
-  const b = new ArrayBuffer(16);
-  const v = new DataView(b);
-  MAGIC.forEach((m, i) => v.setUint8(i, m));
-  v.setUint16(4, 1, true);
-  v.setInt32(8, dim, true);
-  return b;
-}
-
-export { publishBlocks };

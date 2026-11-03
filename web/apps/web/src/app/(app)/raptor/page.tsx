@@ -165,7 +165,7 @@ function RaptorInner() {
                   />
                 )}
                 {graph.data ? (
-                  <div className="pointer-events-none absolute bottom-3 left-3 flex flex-wrap gap-x-3 gap-y-1 rounded-lg border border-border bg-surface/90 px-3 py-2 text-[11px] text-muted shadow-card backdrop-blur">
+                  <div className="pointer-events-none absolute bottom-3 left-3 flex flex-wrap gap-x-3 gap-y-1 rounded-lg border border-border bg-surface px-3 py-2 text-[11px] text-muted shadow-card">
                     {graph.data.legend.map((l) => (
                       <span key={l.key} className="inline-flex items-center gap-1.5">
                         <span className="size-2.5 rounded-sm" style={{ background: l.color }} /> {l.label}

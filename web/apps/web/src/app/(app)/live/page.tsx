@@ -9,7 +9,8 @@ import { Segmented } from '@/components/ui/overlays';
 import { BotCard } from '@/features/live/BotCard';
 import { useHiveIndex } from '@/features/live/common';
 import { HiveTreeView } from '@/features/live/HiveTreeView';
-import { WorldHost, WorldPane } from '@/features/world/integration';
+import { WorldHost } from '@/features/world/integration';
+import { WorldPane } from '@/features/world/WorldPane';
 import { useEvents, useStatus } from '@/lib/live/hooks';
 import { ago, cn } from '@/lib/utils';
 
