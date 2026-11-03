@@ -1,6 +1,6 @@
 // Quality profiles and the frame-time controller. The user's everyday browser runs WebGL in software (hardware acceleration
 // off: SwiftShader / ANGLE-on-SwiftShader / llvmpipe / Microsoft Basic Render Driver), so the viewer detects that and picks a
-// "software" profile aiming at 25 ms frames (40 fps); with a GPU it aims at 16 ms (60 fps). The controller times one primary
+// "software" profile aiming at 22 ms of measured work (40 fps once the compositor adds its share); with a GPU 16 ms (60 fps). The controller times one primary
 // frame to completion every second (gl.finish, so a throttled background tab never misleads it) and turns the levers in
 // order: render resolution, then draw distance, then (software) translucent and entity detail distances; it gives them back
 // in reverse order when there is headroom.
@@ -42,7 +42,8 @@ export const PROFILES: Record<QualityName, QualityProfile> = {
     entityDetailDistance: 64, animHz: 20, animCellsPerTick: 0, thumbFpsScale: 1, thumbSlots: 2, caveCulling: true, clouds: true,
   },
   software: {
-    name: 'software', targetMs: 25, antialias: false, pixelRatioCap: 1, minScale: 0.5, maxDraw: 128, minDraw: 48, translucentDistance: 64,
+    // 22 ms of measured work leaves room for the compositor's own (unmeasured) present, so the page holds 40 fps.
+    name: 'software', targetMs: 22, antialias: false, pixelRatioCap: 1, minScale: 0.5, maxDraw: 128, minDraw: 48, translucentDistance: 64,
     entityDetailDistance: 24, animHz: 10, animCellsPerTick: 8, thumbFpsScale: 0.5, thumbSlots: 1, caveCulling: true, clouds: false,
   },
 };

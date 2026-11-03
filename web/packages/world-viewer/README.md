@@ -206,7 +206,7 @@ profile:
 
 | | GPU | software |
 |---|---|---|
-| frame target | 16 ms (60 fps) | 25 ms (40 fps) |
+| frame target (measured work) | 16 ms (60 fps) | 22 ms (40 fps with the compositor) |
 | MSAA / pixel ratio cap | on / 2 | off / 1 |
 | draw distance cap (min) | 256 (64) | 128 (48) |
 | translucent pass beyond | 256 blocks | 64 blocks |

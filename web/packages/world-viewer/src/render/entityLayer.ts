@@ -949,13 +949,21 @@ export class EntityLayer {
       this.bones.set(this.tmpA, off);
       return;
     }
-    compose(this.tmpA, d.x, d.y, d.z, ry, 0, 0.75, 0.75, 1 / 16, 0, -0.5, 0);
+    // The 1.12.2 wire gives an item frame's hanging block (its integer corner), not the entity centre: the frame sits in that
+    // block against the wall behind it, 1/32 off the wall, centred vertically.
+    let fx = d.x, fy = d.y, fz = d.z;
+    if (Number.isInteger(d.x) && Number.isInteger(d.y) && Number.isInteger(d.z)) {
+      fx = d.x + 0.5 - nx * (0.5 - 1 / 32);
+      fy = d.y + 0.5;
+      fz = d.z + 0.5 - nz * (0.5 - 1 / 32);
+    }
+    compose(this.tmpA, fx, fy, fz, ry, 0, 0.75, 0.75, 1 / 16, 0, -0.5, 0);
     this.bones.set(this.tmpA, off);
     if (d.item) {
       const cube = d.item.kind === 'cube';
       const s = cube ? 0.32 : 0.5;
       const lift = 1 / 32 + (cube ? 0 : 0.01);
-      compose(this.tmpA, d.x + nx * lift, d.y, d.z + nz * lift, ry, (-h.rot * Math.PI) / 4, s, s, cube ? s : 1, 0, -0.5, cube ? 0 : 0);
+      compose(this.tmpA, fx + nx * lift, fy, fz + nz * lift, ry, (-h.rot * Math.PI) / 4, s, s, cube ? s : 1, 0, -0.5, cube ? 0 : 0);
       this.bones.set(this.tmpA, off + 12);
     }
   }
