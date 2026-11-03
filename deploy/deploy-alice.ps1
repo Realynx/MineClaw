@@ -27,6 +27,11 @@
                                                 # beside it, no mode), server-version.txt; the service stays stopped
   pwsh deploy/deploy-alice.ps1 -ResetMemory -Pack shards/defaults/1.12.2-gamedata.mcshard -Start   # ... and start it after
   pwsh deploy/deploy-alice.ps1 -ResetMemory -Pack shards/defaults/1.12.2-gamedata.mcshard -DryRun  # print the CT script, touch nothing
+  pwsh deploy/deploy-alice.ps1 -Web             # the Web Explorer stack instead of the bot (deploy/deploy-web.ps1): build web/ +
+                                                # ViewerBridge, ship both as one release, restart only mineclaw-bridge,
+                                                # mineclaw-web-ui, mineclaw-web-api, health check. Takes -SkipTests -NoStart
+                                                # -DryRun -Rollback -Status. The bot is not touched.
+  pwsh deploy/deploy-alice.ps1 -WebStatus       # the web stack's status (= deploy-web.ps1 -Status)
 
 .NOTES
   -ResetMemory runs MineClaw.App --reset-memory inside the CT as the service user while the service is stopped (see
@@ -46,11 +51,27 @@ param(
     [switch]$ResetMemory,
     [string]$Pack,
     [switch]$Start,
+    [switch]$Web,
+    [switch]$WebStatus,
     [string]$PveHost = 'alice',
     [int]$Vmid = 114,
     [int]$HealthTimeoutSec = 180
 )
 $ErrorActionPreference = 'Stop'
+
+# The Web Explorer stack has its own script (one-time -Install, -BotConfig and the local -BuildOnly -Smoke live there too).
+if ($Web -or $WebStatus) {
+    foreach ($botOnly in 'PushConfig', 'Force', 'ResetMemory', 'Start') {
+        if ($PSBoundParameters.ContainsKey($botOnly)) { throw "-$botOnly is a bot deploy flag; it doesn't go with -Web / -WebStatus" }
+    }
+    if ($Pack) { throw "-Pack is a bot deploy flag; it doesn't go with -Web / -WebStatus" }
+    $webArgs = @{ PveHost = $PveHost; Vmid = $Vmid }
+    if ($WebStatus) { $webArgs.Status = $true }
+    else { foreach ($n in 'SkipTests', 'Rollback', 'Status', 'NoStart', 'DryRun') { if (Get-Variable -Name $n -ValueOnly) { $webArgs[$n] = $true } } }
+    if ($PSBoundParameters.ContainsKey('HealthTimeoutSec')) { $webArgs.HealthTimeoutSec = $HealthTimeoutSec }
+    & (Join-Path $PSScriptRoot 'deploy-web.ps1') @webArgs
+    return
+}
 $repo = Split-Path -Parent $PSScriptRoot
 $ssh = @('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15')
 

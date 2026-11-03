@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# /usr/local/sbin/mineclaw-web-users: the Web Explorer users CLI (web/apps/api/src/cli/users.ts) as the service user, so
+# /etc/mineclaw-web/users.json keeps its owner and mode. Installed by deploy/viewer/install-ct114.sh. Run it yourself, in your own
+# terminal (passwords are prompted without echo; `totp <user> enroll` prints the TOTP secret once):
+#   ssh -t alice pct exec 114 -- mineclaw-web-users add fox --roles admin,chat,commands,viewer --player poofimafox
+#   ssh -t alice pct exec 114 -- mineclaw-web-users totp fox enroll
+#   ssh -t alice pct exec 114 -- mineclaw-web-users list
+# Commands: add | passwd | roles | player | totp <user> enroll|disable | disable | enable | remove | list (see users.ts).
+set -euo pipefail
+[[ $(id -u) -eq 0 ]] || { echo "run as root (it switches to mineclaw-web itself)" >&2; exit 1; }
+api=/opt/mineclaw-web/current/apps/api
+[[ -f $api/dist/cli/users.js ]] || { echo "no web release at /opt/mineclaw-web/current yet: deploy first (deploy-web.ps1)" >&2; exit 1; }
+cd "$api"
+exec runuser -u mineclaw-web -- env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/var/lib/mineclaw-web NODE_ENV=production \
+    MINECLAW_WEB_CONFIG=/etc/mineclaw-web/config.json TERM="${TERM:-dumb}" \
+    /usr/local/bin/node --disable-warning=ExperimentalWarning dist/cli/users.js "$@"

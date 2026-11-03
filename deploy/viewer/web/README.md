@@ -16,34 +16,34 @@ browser ──HTTP :8080 (LAN now) / HTTPS via cloudflared (later)──▶ mine
 | --------------------------------------------- | ----------------------------- | -------------------------------------------------------- |
 | `/etc/systemd/system/mineclaw-web-api.service` | 0644 root                     | from `mineclaw-web-api.service`                          |
 | `/etc/systemd/system/mineclaw-web-ui.service`  | 0644 root                     | from `mineclaw-web-ui.service`                           |
-| `/etc/mineclaw-web/`                          | 0700 mineclaw-web             | config dir (the API rewrites `users.json` on TOTP verify) |
+| `/etc/mineclaw-web/`                          | 0750 mineclaw-web             | config dir (the API rewrites `users.json` on TOTP verify) |
 | `/etc/mineclaw-web/config.json`               | 0640 mineclaw-web             | from `config.example.json`                               |
 | `/etc/mineclaw-web/users.json`                | 0600 mineclaw-web             | managed by the users CLI only                            |
 | `/etc/mineclaw-web/bridge.key`                | 0600 root                     | HMAC key shared with the bridge (systemd credential)     |
 | `/etc/mineclaw-web/mineclaw-web.env`          | 0640 root:mineclaw-web        | optional overrides, from `mineclaw-web.env.example`      |
 | `/var/lib/mineclaw-web/web.db`                | 0600 mineclaw-web (StateDir)  | sessions, login counters, pending TOTP, web audit        |
-| `/opt/mineclaw-web/current/`                  | read-only                     | the built `web/` tree (node_modules, apps/api/dist, apps/web/.next/standalone) |
+| `/opt/mineclaw-web/current/`                  | read-only                     | -> `releases/<id>`: apps/api/dist + node_modules, apps/web/.next/standalone |
 
 ## First install
 
-```sh
-useradd --system --home /var/lib/mineclaw-web --shell /usr/sbin/nologin mineclaw-web
-install -d -m 0700 -o mineclaw-web -g mineclaw-web /etc/mineclaw-web
-install -m 0640 -o mineclaw-web -g mineclaw-web config.example.json /etc/mineclaw-web/config.json   # then edit AllowedOrigins
-# One key for both sides (the bridge reads its own copy of the same value):
-umask 077; openssl rand -hex 32 > /etc/mineclaw-web/bridge.key
-install -m 0644 mineclaw-web-api.service mineclaw-web-ui.service /etc/systemd/system/
-systemctl daemon-reload && systemctl enable --now mineclaw-web-ui mineclaw-web-api
-```
+Scripted: `pwsh deploy/deploy-web.ps1 -Install` once, `-BotConfig [-Apply]` for the bot side, then `pwsh deploy/deploy-web.ps1`
+per release. Runbook (firewall rule, verify, rollback, logs): `docs/web/deploy.md`. `deploy/viewer/install-ct114.sh`
+(idempotent) installs Node 22 to `/opt/node` (`/usr/local/bin/node`, which the units use), creates `mineclaw-web` and
+`mineclaw-bridge`, the dirs above, ONE bridge key in both root-only files (`/etc/mineclaw-web/bridge.key`,
+`/etc/mineclaw-bridge/bridge.json`), `config.json` from `config.example.json`, and installs the units.
 
-Users (no self-signup; passwords are prompted without echo or read from stdin, never from argv):
+A release (`/opt/mineclaw-web/releases/<id>`, `current` symlink) holds `apps/api/{package.json,dist}`, the api's production
+`node_modules` (installed for linux-x64 glibc on the dev box) and `apps/web/.next/standalone` with `.next/static` and `public/`
+copied beside `server.js`. There is no workspace root in it, so the users CLI runs through a wrapper.
+
+Users (no self-signup; passwords are prompted without echo or read from stdin, never from argv).
+`/usr/local/sbin/mineclaw-web-users` runs `apps/api/dist/cli/users.js` as `mineclaw-web` with the right config:
 
 ```sh
-cd /opt/mineclaw-web/current
-sudo -u mineclaw-web MINECLAW_WEB_CONFIG=/etc/mineclaw-web/config.json npm run users -w @mineclaw/api -- add fox --roles admin,chat,commands,viewer --player poofimafox
-sudo -u mineclaw-web MINECLAW_WEB_CONFIG=/etc/mineclaw-web/config.json npm run users -w @mineclaw/api -- add robin --roles chat,viewer --player kiwi
-sudo -u mineclaw-web ... npm run users -w @mineclaw/api -- totp fox enroll      # prints the otpauth URL once, asks for a code
-sudo -u mineclaw-web ... npm run users -w @mineclaw/api -- passwd|roles|player|disable|enable|remove|list ...
+ssh -t alice pct exec 114 -- mineclaw-web-users add fox --roles admin,chat,commands,viewer --player poofimafox
+ssh -t alice pct exec 114 -- mineclaw-web-users add robin --roles chat,viewer --player kiwi
+ssh -t alice pct exec 114 -- mineclaw-web-users totp fox enroll      # prints the otpauth URL once, asks for a code
+ssh -t alice pct exec 114 -- mineclaw-web-users passwd|roles|player|disable|enable|remove|list ...
 ```
 
 `passwd`, `disable` and `remove` end that user's sessions; role and player changes apply on the next request. Users can
