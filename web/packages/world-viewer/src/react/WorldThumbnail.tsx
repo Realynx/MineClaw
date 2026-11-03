@@ -73,13 +73,13 @@ export interface WorldThumbnailProps extends ThumbnailViewOptions {
 }
 
 /** A small live third-person view of one bot, rendered by the surrounding `WorldViewerProvider` at a few frames a second. */
-export function WorldThumbnail({ follow, className, style, onClick, title, angle, distance, pitch, fps, drawDistance, xray }: WorldThumbnailProps) {
+export function WorldThumbnail({ follow, className, style, onClick, title, angle, distance, pitch, fps, drawDistance, xray, bubbles }: WorldThumbnailProps) {
   const rt = useWorldRuntime();
   const canvas = useRef<HTMLCanvasElement | null>(null);
   const handle = useRef<ThumbnailHandle | null>(null);
   useEffect(() => {
     if (!rt || !canvas.current) return;
-    const h = registerThumbnail(rt, canvas.current, follow, { angle, distance, pitch, fps, drawDistance, xray });
+    const h = registerThumbnail(rt, canvas.current, follow, { angle, distance, pitch, fps, drawDistance, xray, bubbles });
     handle.current = h;
     return () => {
       handle.current = null;
@@ -88,7 +88,7 @@ export function WorldThumbnail({ follow, className, style, onClick, title, angle
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rt]);
   useEffect(() => handle.current?.setFollow(follow), [follow]);
-  useEffect(() => handle.current?.setOptions({ angle, distance, pitch, fps, drawDistance, xray }), [angle, distance, pitch, fps, drawDistance, xray]);
+  useEffect(() => handle.current?.setOptions({ angle, distance, pitch, fps, drawDistance, xray, bubbles }), [angle, distance, pitch, fps, drawDistance, xray, bubbles]);
   return (
     <canvas
       ref={canvas}

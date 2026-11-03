@@ -34,6 +34,7 @@ const LAYER_LABELS: Array<[keyof LayerToggles, string]> = [
   ['plans', 'Build plans (ghosts)'],
   ['dangers', 'Dangers'],
   ['notes', 'Notes'],
+  ['bubbles', 'Chat bubbles'],
   ['weather', 'Weather'],
   ['cutaway', 'Roof cut-away'],
   ['staleness', 'Tint unseen areas'],
@@ -105,6 +106,16 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
     return () => {
       document.removeEventListener('fullscreenchange', onFs);
       document.removeEventListener('pointerlockchange', onLock);
+    };
+  }, []);
+
+  // Mock mode only (e2e): the chat bubbles this pane drew in its last frame, and its camera, for headless checks.
+  useEffect(() => {
+    if (process.env.NEXT_PUBLIC_MOCK !== '1') return;
+    const w = window as unknown as { __mcxWorld?: { bubbles: () => unknown; camera: (m: CameraMode) => void } };
+    w.__mcxWorld = { bubbles: () => viewer.current?.bubbles() ?? [], camera: (m) => viewer.current?.setCameraMode(m) };
+    return () => {
+      delete w.__mcxWorld;
     };
   }, []);
 

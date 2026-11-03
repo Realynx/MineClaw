@@ -9,6 +9,7 @@ import { blockName } from '../world/blocks';
 import type { BotView } from '../world/entities';
 import type { Interest } from '../world/sync';
 import { aimAt, outlineOf, type AimTarget } from './aim';
+import type { BubbleKind, ShownBubble } from './bubbles';
 import { CameraRig, lookDir } from './cameraRig';
 import { newViewId, WorldRuntime, type RuntimeOptions, type RuntimeView, type ViewSetup } from './runtime';
 import type { Centre } from './sections';
@@ -210,6 +211,16 @@ export class WorldViewerEngine implements RuntimeView {
     return this.runtime.store.bots();
   }
 
+  /** A chat bubble over a speaker's head (in every view of the runtime; see `WorldRuntime.say`). */
+  say(name: string, text: string, opts?: { kind?: BubbleKind }): boolean {
+    return this.runtime.say(name, text, opts);
+  }
+
+  /** The chat bubbles this view drew in its last frame (speaker, anchor in CSS pixels of the view, lines). */
+  bubbles(): readonly ShownBubble[] {
+    return this.runtime.bubblesShown(this.id);
+  }
+
   stats(): ViewerStats {
     const m = this.runtime.memory();
     return {
@@ -341,6 +352,8 @@ export class WorldViewerEngine implements RuntimeView {
       aids: this.layers.aids && bot ? { x: bot.x, y: bot.y, z: bot.z } : null,
       target: primary ? 'primary' : (this.ctx2d ?? 'primary'),
       outlines,
+      bubbles: this.layers.bubbles === false ? 'off' : 'full',
+      pxScale: h / Math.max(1, this.container.clientHeight),
     };
     this.frames++;
     this.frameMs = this.frameMs * 0.9 + (performance.now() - t0) * 0.1;

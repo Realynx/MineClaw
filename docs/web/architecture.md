@@ -198,6 +198,12 @@ and caching. It never reshapes domain data beyond camelCase conversion.
     linked player to every selected bot, with their replies shown over the world. Esc: on HTTPS (Keyboard Lock) the first
     frees the mouse and the second leaves fullscreen; over plain HTTP the browser does both at once. World shortcuts never
     fire while a text field has focus.
+  - **Chat bubbles (added 2026-11-03).** What players and bots say also shows as a speech bubble over the speaker's head
+    in every world view: the pane in each camera, fullscreen, the hive-card thumbnails (one small bubble) and any page that
+    shows the world under `WorldHost`. Lines come from the shared stream's `feed` frames only
+    (`features/world/chatBubbles.ts`, one subscription per world runtime through `WorldSource.chat`): `chat`, `said` and
+    `viewer` lines, and whispers only when the signed-in user's player sent them. Private speech, system lines and
+    commands never bubble. The text chat stays as it was. A "Chat bubbles" layer toggle turns them off in the pane.
 - **Connections.** Over plain HTTP/1.1 the browser allows six connections per host for every tab together, and each tab's
   live stream holds one for good. A hidden tab therefore closes its stream after 15 s and pauses the world's network loops
   (reopened and re-synced when shown). `npm run test:e2e` runs a `prod` project against the standalone build behind Nest
