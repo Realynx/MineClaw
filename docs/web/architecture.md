@@ -1,0 +1,172 @@
+# MineClaw Web Explorer: architecture and contract
+
+This is the web successor to `tools/MemoryExplorer`, the Avalonia app. It keeps every feature and adds a better layout,
+calm live viewers, and chat to a bot as the signed-in player. The old app stays in the tree until the web app reaches parity.
+
+Reference specs (read these; they hold the details this file only names):
+- Explorer feature and data inventory: `docs/web/reference/explorer-spec.md`
+- Bot HTTP surface, live state and chat path: `docs/web/reference/bot-api-spec.md`
+
+## Topology
+
+```
+ browser ──HTTPS (cloudflared, later) / HTTP on the LAN──▶  viewer CT on alice (new)
+                                                             ├─ apps/api  NestJS :8080  (the only listener on the network)
+                                                             │    ├─ /api/*            REST + SSE (/api/live/stream)
+                                                             │    └─ everything else ▶ proxied to Next on 127.0.0.1:3000
+                                                             └─ apps/web  Next.js standalone, 127.0.0.1:3000
+                     HTTPS (cert pinned) + HMAC, viewer CT IP only
+ viewer CT ──────────────────────────────────────────────▶  CT 114 (10.1.2.73)
+                                                             ├─ tools/ViewerBridge  ASP.NET Core :8766 (new service, own systemd unit)
+                                                             │    ├─ reads the agent db READ-ONLY (live, no snapshots)
+                                                             │    ├─ runs the C#-only logic (search, RAPTOR, shards, lint, diff, renders)
+                                                             │    └─ proxies the Supervisor on 127.0.0.1:8765 (adds the token)
+                                                             └─ mineclaw (bot)  Supervisor HttpListener :8765 (existing)
+```
+
+Why a C# bridge: eight of the ten Explorer pages read the bot's SQLite db, and hybrid search, the RAPTOR tree, shard
+export and import, script lint, design diff and the voxel and vision renderers exist only in C#
+(explorer-spec §15). The bridge reuses those libraries rather than reimplementing them in Node. It also gives one
+encrypted, signed channel for every piece of debug data that leaves CT 114: the Supervisor itself is plain HTTP with a
+static token.
+
+Dev on Fox's PC: `npm run dev` in `web/` starts Next (Turbopack) on :3000, which rewrites `/api/*` to Nest on :4000. Nest
+points at a bridge URL: a local `dotnet run --project tools/ViewerBridge` with a local db and supervisor, or the real one.
+
+## Repo layout
+
+```
+web/                         npm workspaces + Turborepo (turbo.json); Node 22
+  apps/web/                  Next.js (App Router, Turbopack, React, TS, Tailwind v4)
+  apps/api/                  NestJS (TS): auth, sessions, CSRF, RBAC, audit, bridge client, SSE fan-out, prod reverse proxy
+  packages/contracts/        Shared TS types + zod schemas for every /api route and SSE event (single source of truth)
+  packages/world-viewer/     three.js voxel world renderer (React component), consumes MCWC chunks / entities / overlays
+tools/ViewerBridge/          C# ASP.NET Core minimal API (net10.0), references src/ libs
+tests/MineClaw.ViewerBridge.Tests/
+deploy/viewer/               systemd units, cloudflared notes, deploy script for the viewer CT and the bridge
+```
+
+## Security model (design as if public)
+
+- **Users.** A users file on the viewer CT (`/etc/mineclaw-web/users.json`, 0600) holds username, argon2id hash,
+  optional TOTP secret, roles and the linked Minecraft player. Fox maps to `poofimafox` and Robin to `kiwi`. A
+  `web/apps/api` CLI adds a user, resets a password and enrolls TOTP. There is no self-signup.
+- **Roles.**
+  - `viewer`: read only.
+  - `chat`: can talk to bots as their linked player.
+  - `commands`: their viewer lines may arm CommandGate request grants.
+  - `admin`: memory edits, rebuilds, backups, shard import.
+- **Sessions.**
+  - Opaque random id in a `__Host-mcx` cookie (HttpOnly, Secure when served over HTTPS, SameSite=Lax), held in a server
+    store (SQLite at `/var/lib/mineclaw-web/web.db`).
+  - Idle timeout is 12 h and absolute timeout 7 d. The id rotates on login.
+- **CSRF.** Every non-GET needs the `X-CSRF-Token` header to match the session's token, and `Origin` must be in
+  `Web:AllowedOrigins`.
+- **Login.** Rate limited per IP and per user, with exponential lockout. Errors are generic.
+- **Headers.** HSTS when HTTPS, a strict CSP (self plus inline styles only where Tailwind needs them), `X-Frame-Options:
+  DENY`, `Referrer-Policy: same-origin`.
+- **Cloudflare.**
+  - `Web:TrustProxy` makes Nest honor `CF-Connecting-IP` / `X-Forwarded-*`, but only from loopback, because cloudflared
+    runs on the CT.
+  - Optional `Web:CloudflareAccess:{TeamDomain,Aud}` verifies `Cf-Access-Jwt-Assertion` as a second gate before login.
+- **Audit.** Every write, every chat line and every login is recorded in `web.db` with user, IP and time, and shown on the
+  Audit page.
+- **Nest ↔ bridge.**
+  - HTTPS with a self-signed cert generated on install. Nest pins its SHA-256 (`Bridge:CertSha256`).
+  - Each request is HMAC-SHA256 signed over `method\npath?query\ntimestamp\nnonce\nsha256(body)` with `Bridge:Key`.
+    Headers: `X-MCX-Ts`, `X-MCX-Nonce`, `X-MCX-Sig`.
+  - The bridge rejects skew over 30 s and replayed nonces (5 min LRU).
+  - Source IP must be in `Bridge:AllowedClients`.
+  - Nest also sends `X-MCX-User` (username) and `X-MCX-Player` (linked player) and `X-MCX-Roles`. They are covered by the
+    signature (included in the signed string after the body hash, newline-separated), and the bridge uses them for
+    audit and chat identity.
+- **Bridge ↔ supervisor.** Loopback only. The bridge reads `Supervisor:Token` from the bot's own config
+  (`/etc/mineclaw/appsettings.json`; the bridge runs as the `mineclaw` group). Admin passthrough requires the `admin` role in
+  the signed headers, and the bridge sets `who` from `X-MCX-User`, never from the body.
+- **Secrets.** Never commit or print secrets. Config values come from files or env on the CTs. Dev uses a gitignored
+  `.env.local` / `appsettings.Development.json`.
+
+## Bot-side changes (keep them small; someone else is working on optimisation code)
+
+These go in new files under `src/MineClaw.App/Supervisor/` plus minimal hooks. Don't touch CommandGate internals beyond
+the one observe hook, and don't touch BotAgent.Quiet, Prompts, EventQueue/GameEvent internals, or budget/optimisation code.
+
+1. **`POST /api/viewer/chat`.** Body `{bot, text, player, allow_commands, request_id}`. It is accepted only with the
+   supervisor token and only when `Supervisor:Viewer:Enabled` is true.
+   - `player` must be in `TrustedPlayers`.
+   - It enters via a new `ChatRouter.OnRemoteChat(player, text, origin:"viewer", targetBot)`. It builds the `ChatMessage`
+     directly and never fabricates a `<name>` raw line. It is explicitly addressed to the target bot.
+   - It skips `_online.Add`, uses its own rate bucket, and logs to chat_log as kind `viewer_chat`.
+   - In hives, the line is broadcast like `/as`, with an origin field and without IsTest.
+   - Command grants are armed only when `allow_commands` and `Supervisor:Viewer:AllowCommands` are both true. The audit
+     then reads `poofimafox (viewer)`.
+   - Replies still go to in-game chat as today. The viewer sees them through the feed below.
+   - Returns `{accepted, id}`.
+2. **`GET /api/viewer/feed?since=<seq>`.** A ring of structured lines (1000 entries):
+   - `{seq, at, bot, kind: chat|said|whisper|internal|muted|system|viewer, from, text, origin}`.
+   - Built from the router's chat events plus `ChatRouter.Said`, `BotAgent.InternalSpeech` and `Muted`.
+   - The response is `{lines, last}`.
+3. **`GET /api/viewer/now?bot=`.** One compact "what is it doing right now" snapshot:
+   - `{bot, at, brain_state, in_flight{purpose, model, since}, thought{text, thinking, at}, tool{name, args_short, at},
+     task, script{name, version, status, line, paused}, body{hp, food, pos, dim, held}}`.
+   - Assembled from what `/api/status`, the context page and `/api/bodies/scripts` already know.
+
+Tests for these go in `tests/MineClaw.App.Tests` (or the closest existing test project).
+
+## Bridge API (`/v1`, JSON snake_case, all signed)
+
+- **Pass-through, allow-listed, GET only.** `/v1/sup/<path>` forwards to the supervisor `/api/<path>`. Allowed:
+  bots, hive/tree, status, events, locate, blueprints, buildplans, world/*, scripts, bodies/*, brains/*, viewer/feed,
+  viewer/now. Binary responses are streamed.
+- **Supervisor writes.**
+  - `POST /v1/sup/viewer/chat`: the bridge injects `player` from `X-MCX-Player`, and sets `allow_commands` only if
+    `X-MCX-Roles` contains `commands`.
+  - `POST /v1/sup/admin/*`: requires the `admin` role.
+- **Db reads (the bridge's own code, ported from `tools/MemoryExplorer/Services`).**
+  - `/v1/overview`
+  - `/v1/memory/kinds`
+  - `/v1/memory/{kind}?q&sort&offset&limit`: server-side paging; never whole tables.
+  - `/v1/memory/{kind}/{id}`
+  - `/v1/search?q&mode&k`
+  - `/v1/raptor/tree?root&depth`, `/v1/raptor/node/{id}`, `/v1/raptor/graph?layout&color_by`: graph layout is computed
+    server-side and returned as nodes with x, y and edges.
+  - `/v1/personality`
+  - `/v1/scripts`, `/v1/scripts/{name}`, `/v1/scripts/{name}/diff?a&b`, `/v1/scripts/{name}/lint`
+  - `/v1/designs`, `/v1/designs/{id}`, `/v1/designs/{id}/diff?a&b`
+  - `/v1/shards/packs`, `/v1/shards/export` (POST returns the `.mcshard` download), `/v1/shards/import/preview` (POST,
+    multipart)
+  - `/v1/admin/schema`
+- **Renders.**
+  - `/v1/world/atlas.png` and `/v1/world/atlas.json`: the block texture atlas the browser viewer uses, generated at runtime
+    from MineClaw.Render. No Mojang assets are committed.
+  - `/v1/render/tile/{bot}.png`: the per-bot tile.
+- **Live.** `GET /v1/live/stream` is SSE. The bridge polls the supervisor on loopback (status 1 Hz, events 2 Hz, feed
+  2 Hz, `viewer/now` 2 Hz per watched bot, entity deltas 5 Hz) and emits typed events: `bots`, `event`, `feed`, `now`,
+  `entities`, `hive`. Nest holds one upstream stream and fans it out to browsers.
+
+Nest's public `/api` mirrors these one-to-one under friendlier paths, typed by `packages/contracts`. Examples:
+`/api/memory/:kind`, `/api/live/stream`, `/api/bots/:bot/chat`, `/api/world/chunks`. Nest adds auth, RBAC, CSRF, audit
+and caching. It never reshapes domain data beyond camelCase conversion.
+
+## UX principles for the web app
+
+- **Live page.**
+  - The default view of a bot is calm and shows only:
+    - the current thought (latest text plus a collapsed thinking summary)
+    - the in-flight call with an elapsed timer
+    - the current tool
+    - the current script with the running line highlighted
+    - the body vitals
+    - a chat pane
+  - History is one click away (a turn timeline drawer, the full context on demand) and is never on screen by default.
+- **Chat pane.**
+  - It is the conversation with that bot: viewer, in-game and bot lines threaded together. Internal or muted speech is
+    shown subtly behind a toggle.
+  - The composer sends as the linked player, and a pending state resolves when the bot's reply arrives in the feed.
+- **Layout.**
+  - Hive-wide is a grid of bot cards (vitals, task, one-line thought) that opens the bot view.
+  - The 3D world is a tab or split pane, not the default.
+- **Tables.** Every table is server-paged and virtualised.
+- **Status.** One connection-status indicator in the header, not one per poller.
+- **Dev stats.** Hidden unless the user turns on "developer details".
+- **Theme.** Dark and light, keyboard navigable, a command palette (Ctrl+K) to jump to bots, scripts, memories and designs.
