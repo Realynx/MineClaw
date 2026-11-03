@@ -346,6 +346,7 @@ Notes on specific routes:
 | `story.list` | `GET /api/story` | viewer | – | `StoryListResponse` | `GET /v1/sup/story` | /api/story | – |
 | `story.recipes` | `GET /api/story/recipes` | viewer | query `StoryRecipesQuery` | `StoryRecipesResponse` | `GET /v1/sup/story/recipes` | /api/story/recipes | – |
 | `story.create` | `POST /api/story/colonies` | story | body `StoryCreateRequest` | `StoryCreateResponse` | `POST /v1/sup/story/colonies` | /api/story/colonies | story |
+| `story.time` | `POST /api/story/time` | story | body `StoryTimeRequest` | `StoryTimeResponse` | `POST /v1/sup/story/time` | /api/story/time | story |
 | `story.directives` | `POST /api/story/directives` | story | body `StoryDirectiveRequest` | `StoryDirectiveResponse` | `POST /v1/sup/story/directives` | /api/story/directives (bridge adds player from X-MCX-Player, allow_commands from X-MCX-Roles) | story |
 | `story.directives.list` | `GET /api/story/directives` | viewer | – | `StoryDirectiveList` | `GET /v1/sup/story/directives` | /api/story/directives | – |
 | `story.directive` | `GET /api/story/directives/:id` | viewer | params `StoryDirectiveParams` | `StoryDirectiveDetail` | `GET /v1/sup/story/directives/{id}` | /api/story/directives/{id} | – |
@@ -353,6 +354,8 @@ Notes on specific routes:
 | `story.release` | `POST /api/story/colonies/:id/release` | story | params `StoryColonyParams`<br>body `Empty` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/release` | /api/story/colonies/{id}/release | story |
 | `story.resume` | `POST /api/story/colonies/:id/resume` | story | params `StoryColonyParams`<br>body `Empty` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/resume` | /api/story/colonies/{id}/resume | story |
 | `story.pause` | `POST /api/story/colonies/:id/pause` | story | params `StoryColonyParams`<br>body `StoryPauseRequest` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/pause` | /api/story/colonies/{id}/pause | story |
+| `story.home` | `POST /api/story/colonies/:id/home` | story | params `StoryColonyParams`<br>body `StoryHomeRequest` | `StoryHomeResponse` | `POST /v1/sup/story/colonies/{id}/home` | /api/story/colonies/{id}/home | story |
+| `story.beds` | `POST /api/story/colonies/:id/beds` | story | params `StoryColonyParams`<br>body `StoryBedsRequest` | `StoryBedsResponse` | `POST /v1/sup/story/colonies/{id}/beds` | /api/story/colonies/{id}/beds | story |
 | `story.priorities` | `POST /api/story/colonies/:id/priorities` | story | params `StoryColonyParams`<br>body `StoryPrioritiesRequest` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/priorities` | /api/story/colonies/{id}/priorities | story |
 | `story.schedule` | `POST /api/story/colonies/:id/schedule` | story | params `StoryColonyParams`<br>body `StoryScheduleRequest` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/schedule` | /api/story/colonies/{id}/schedule | story |
 | `story.draft` | `POST /api/story/colonies/:id/draft` | story | params `StoryColonyParams`<br>body `StoryDraftRequest` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/draft` | /api/story/colonies/{id}/draft | story |

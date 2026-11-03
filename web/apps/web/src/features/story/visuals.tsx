@@ -191,6 +191,8 @@ export const GLYPHS: Record<string, string> = {
   chest: 'M2.5 5h11v8h-11Zm0 0 1.5-2h8l1.5 2M7 7.5h2v2H7Z',
   bench: 'M2 5h12v3H2Zm1 3h2v5H3Zm8 0h2v5h-2Z',
   drafted: 'M8 1.5 13 3.5v4c0 3-2.2 5.5-5 7-2.8-1.5-5-4-5-7v-4Z',
+  home: 'M8 1.8 14.5 7.5h-2V14H9.6v-3.8H6.4V14H3.5V7.5h-2Z',
+  bed: 'M1.5 5h2v3.5h11V13h-2v-2h-9v2h-2Zm3.5.5h3.5v2.5H5Zm4.5.5H13a1 1 0 0 1 1 1v1H10Z',
 };
 
 const pathCache = new Map<string, Path2D>();

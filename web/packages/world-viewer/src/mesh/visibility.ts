@@ -113,3 +113,19 @@ export function visibleSections(sx: number, sy: number, sz: number, range: numbe
   }
   return out;
 }
+
+/**
+ * Where the cave-culling walk starts for a camera at `cam` looking along `dir` (unit), the walk's top layer `ymax`, and the
+ * drawn area's centre (in chunks). Normally the camera itself. A camera far above the world (the top-down and iso views
+ * zoomed out sit hundreds of blocks up) would start in a layer the walk never leaves and cull everything, so it enters
+ * along the view ray just above the world instead, with `extra` chunks of range to still reach the drawn area. Null: the
+ * camera is above the world looking up or level, so nothing is culled.
+ */
+export function walkStart(cam: { x: number; y: number; z: number }, dir: { x: number; y: number; z: number }, ymax: number, ccx: number, ccz: number): { x: number; y: number; z: number; extra: number } | null {
+  const ceil = (ymax + 1) * 16;
+  if (cam.y < ceil + 16) return { x: cam.x, y: cam.y, z: cam.z, extra: 0 };
+  if (dir.y > -0.05) return null;
+  const t = (cam.y - (ceil + 8)) / -dir.y;
+  const x = cam.x + dir.x * t, z = cam.z + dir.z * t;
+  return { x, y: ceil + 8, z, extra: Math.ceil(Math.hypot(x / 16 - ccx, z / 16 - ccz)) };
+}

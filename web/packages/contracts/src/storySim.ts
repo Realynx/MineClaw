@@ -23,6 +23,8 @@ import {
   type StoryAiBody,
   type StoryAlert,
   type StoryArea,
+  type StoryBed,
+  type StoryBedsRequest,
   type StoryBill,
   type StoryBillsRequest,
   type StoryBuild,
@@ -79,6 +81,10 @@ export interface StorySimOptions {
   world: StoryWorld;
   /** Where a colony settles when created without a home. */
   defaultHome?: [number, number, number];
+  /** The op account time changes run as (null = none: POST /api/story/time answers 409). Default `maid_chan`. */
+  timeOp?: string | null;
+  /** Least time between two time changes (ms; default 1000, as the bot limits it). */
+  timeRateMs?: number;
   now?: () => number;
 }
 
@@ -116,6 +122,8 @@ interface Colony {
   ghostsRev: number;
   storages: Map<string, Fn<StoryStorage>>;
   benches: Map<string, Fn<StoryWorkbench>>;
+  beds: Map<string, StoryBed>;
+  bedsRev: number;
   directives: Map<Key, Fn<StoryDirective>>;
   alerts: Array<Fn<StoryAlert>>;
   removed: Array<{ rev: number; kind: keyof NonNullable<StoryColonyState['removed']>; key: Key | [number, number, number] }>;
@@ -197,7 +205,32 @@ export class StorySim {
       })),
       ai: this.opts.world.ai?.() ?? [],
       directives: this.directives(),
+      timeControl: this.timeControl(),
     };
+  }
+
+  private timeAt = -Infinity;
+
+  /** Whether the time of day can be set, and as whom. */
+  timeControl() {
+    const by = this.opts.timeOp === undefined ? 'maid_chan' : this.opts.timeOp;
+    return { available: !!by, by: by ?? null };
+  }
+
+  /** Sets every colony's time of day (as the bot does through its op account): at most once a second. */
+  time(body: { time?: unknown }) {
+    const t = body?.time;
+    if (typeof t !== 'number' || !Number.isInteger(t) || t < 0 || t > 23999) throw Object.assign(new Error('time must be an integer 0..23999'), { status: 400 });
+    const tc = this.timeControl();
+    if (!tc.available) throw Object.assign(new Error('no op account'), { status: 409 });
+    const now = this.now();
+    if (now - this.timeAt < (this.opts.timeRateMs ?? 1000)) throw Object.assign(new Error('rate limited: one time change a second'), { status: 429 });
+    this.timeAt = now;
+    for (const c of this.colonies.values()) {
+      c.tod = t;
+      for (const p of c.pawns.values()) p.rev = this.bump(c);
+    }
+    return { time: t, by: tc.by };
   }
 
   create(req: StoryCreateRequest): { id: string } {
@@ -223,6 +256,8 @@ export class StorySim {
       ghostsRev: 1,
       storages: new Map(),
       benches: new Map(),
+      beds: new Map(),
+      bedsRev: 1,
       directives: new Map(),
       alerts: [],
       removed: [],
@@ -322,6 +357,7 @@ export class StorySim {
       active: !c.released,
       since: since ?? null,
       tieBreak: 'column',
+      timeControl: this.timeControl(),
       home: c.home,
       workTypes: [...STORY_WORK_TYPES],
       pawns: [...c.pawns.values()].filter((p) => full || p.rev > s).map((p) => structuredClone(p.p)),
@@ -334,6 +370,7 @@ export class StorySim {
       ...(full ? { categories: STORY_DEFAULT_CATEGORIES } : {}),
       storages: pick(c.storages),
       workbenches: pick(c.benches),
+      ...(full || c.bedsRev > s ? { beds: this.bedList(c) } : {}),
       ai: this.opts.world.ai?.() ?? [],
       directives: pick(c.directives),
       ...(Object.keys(removed).length ? { removed } : {}),
@@ -369,6 +406,53 @@ export class StorySim {
     }
     this.alert(c, 'info', 'The pawns are back.');
     return { id: c.id, pawns: c.pawns.size, note: 'spawned again', rev: c.rev };
+  }
+
+  private bedList(c: Colony): StoryBed[] {
+    const zoneOf = (p: readonly number[]) =>
+      [...c.zones.values()].find((z) => z.v.kind === 'home' && p[0]! >= z.v.area[0] && p[0]! <= z.v.area[3] && p[2]! >= z.v.area[2] && p[2]! <= z.v.area[5])?.v.id ?? null;
+    return [...c.beds.values()].map((b) => ({ ...b, zone: zoneOf(b.pos) }));
+  }
+
+  /** Beds: give one to a pawn (its other bed is freed: one bed a pawn) or free one. */
+  beds(id: string, body: StoryBedsRequest) {
+    const c = this.colony(id);
+    const bp = body?.bed;
+    if (!bp || ![bp.x, bp.y, bp.z].every((v) => Number.isInteger(v))) throw Object.assign(new Error('bed must be {x,y,z}'), { status: 400 });
+    const bed = c.beds.get(keyOf([bp.x, bp.y, bp.z]));
+    if (!bed) throw Object.assign(new Error('no bed there'), { status: 404 });
+    if (body.op === 'assign') {
+      if (!c.pawns.has(body.pawn)) throw Object.assign(new Error('no such pawn'), { status: 400 });
+      for (const b of c.beds.values()) if (b.pawn === body.pawn) b.pawn = null;
+      bed.pawn = body.pawn;
+    } else if (body.op === 'unassign') bed.pawn = null;
+    else throw Object.assign(new Error('op must be assign|unassign'), { status: 400 });
+    c.bedsRev = this.bump(c);
+    return { beds: this.bedList(c) };
+  }
+
+  /** Moves home (as the director does): pawns farther than 48 blocks from the new home are brought next to it. */
+  home(id: string, body: { home?: { x?: unknown; y?: unknown; z?: unknown } }) {
+    const c = this.colony(id);
+    const h = body?.home;
+    if (!h || ![h.x, h.y, h.z].every((v) => Number.isInteger(v))) throw Object.assign(new Error('home must be {x,y,z}'), { status: 400 });
+    const x = h.x as number, z = h.z as number;
+    c.home = [x, this.opts.world.ground(x, z), z];
+    this.bump(c);
+    this.discover(c, [x - 24, c.home[1] - 6, z - 24, x + 24, c.home[1] + 10, z + 24]);
+    let i = 0;
+    for (const p of c.pawns.values()) {
+      if (Math.hypot(p.x - x, p.z - z) <= 48) continue;
+      this.drop(c, p);
+      p.x = x + ((i % 4) - 1.5) * 1.6 + 0.5;
+      p.z = z + (Math.floor(i / 4) - 1) * 1.6 + 0.5;
+      p.y = this.opts.world.ground(Math.floor(p.x), Math.floor(p.z)) + 1;
+      p.p.pos = [Math.round(p.x * 100) / 100, p.y, Math.round(p.z * 100) / 100];
+      p.rev = this.bump(c);
+      i++;
+    }
+    this.alert(c, 'info', i ? `Home moved; ${i} pawn${i === 1 ? ' is' : 's are'} brought there.` : 'Home moved.');
+    return { home: c.home };
   }
 
   pause(id: string, paused: boolean) {
@@ -451,15 +535,26 @@ export class StorySim {
 
   zones(id: string, body: StoryZoneRequest) {
     const c = this.colony(id);
-    const a = normArea(body.area);
+    const a = body.area ? normArea(body.area) : null;
+    if (body.op === 'rename') {
+      const f = c.zones.get(String(body.id));
+      if (!f) throw Object.assign(new Error('no such zone'), { status: 404 });
+      f.v = { ...f.v, label: body.label || null };
+      f.rev = this.bump(c);
+      return { ok: true, id: f.v.id, rev: c.rev };
+    }
+    if (!a) throw Object.assign(new Error('area must be [x1,y1,z1,x2,y2,z2]'), { status: 400 });
     if (body.op === 'add') {
-      const z: StoryZone = { id: `z${c.seq++}`, kind: body.kind ?? 'home', area: a };
+      const z: StoryZone = { id: `z${c.seq++}`, kind: body.kind ?? 'home', area: a, ...(body.label ? { label: body.label } : {}) };
       c.zones.set(z.id, { rev: this.bump(c), v: z });
+      if (z.kind === 'home') c.bedsRev = this.bump(c); // beds in it now belong to that house
+      return { ok: true, id: z.id, rev: c.rev };
     } else {
       for (const [k, f] of c.zones)
         if ((!body.kind || f.v.kind === body.kind) && overlaps(f.v.area, a)) {
           c.zones.delete(k);
           c.removed.push({ rev: this.bump(c), kind: 'zones', key: k });
+          if (f.v.kind === 'home') c.bedsRev = this.bump(c);
         }
     }
     return { ok: true, rev: c.rev };
@@ -608,6 +703,10 @@ export class StorySim {
         for (let y = Math.max(1, a[1]); y <= Math.min(255, a[4]); y++) {
           const [id] = w.blockAt(x, y, z);
           if (CHEST_IDS.has(id)) found.push([x, y, z]);
+          else if (id === 26 && (w.blockAt(x, y, z)[1] & 8) === 0 && !c.beds.has(keyOf([x, y, z]))) {
+            c.beds.set(keyOf([x, y, z]), { pos: [x, y, z], dim: 0, pawn: null, zone: null });
+            c.bedsRev = this.bump(c);
+          }
           else if (id === 58 || id === 61 || id === 62 || id === 117 || id === 145 || id === 116) {
             const k = keyOf([x, y, z]);
             if (!c.benches.has(k)) {

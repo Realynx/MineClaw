@@ -11,6 +11,7 @@ import {
   storyItemLabel,
   type StoryAiBody,
   targetPos,
+  type StoryBed,
   type StoryBill,
   type StoryColonyState,
   type StoryOrder,
@@ -20,7 +21,7 @@ import {
   type StoryStorage,
   type StoryWorkbench,
 } from '@mineclaw/contracts';
-import { ChevronDown, ChevronRight, ClipboardPaste, Copy, Flame, GripVertical, MessageSquare, Minus, Pause, Play, Plus, Search, Shield, ShieldOff, Trash2, X } from 'lucide-react';
+import { BedDouble, ChevronDown, ChevronRight, ClipboardPaste, Copy, Flame, GripVertical, MessageSquare, Minus, Pause, Play, Plus, Search, Shield, ShieldOff, Trash2, X } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 import { Dialog } from '@/components/ui/overlays';
 import { Button, Input } from '@/components/ui/primitives';
@@ -109,7 +110,7 @@ function TabRow<T extends string>({ tabs, value, onChange }: { tabs: Array<[T, s
 
 // ------------------------------------------------------------------ pawn
 
-export function PawnInspector({ pawn, canWrite, onDraft, onClearQueue, onClose }: { pawn: StoryPawn; canWrite: boolean; onDraft: (d: boolean) => void; onClearQueue: () => void; onClose: () => void }) {
+export function PawnInspector({ pawn, bed, canWrite, onDraft, onClearQueue, onShowBed, onClose }: { pawn: StoryPawn; bed?: StoryBed | null; canWrite: boolean; onDraft: (d: boolean) => void; onClearQueue: () => void; onShowBed?: () => void; onClose: () => void }) {
   const [tab, setTab] = useState<'overview' | 'skills' | 'orders'>('overview');
   return (
     <Shell title={pawn.display} sub={`${pawn.state ?? 'idle'}${pawn.online === false ? ' · offline' : ''}`} onClose={onClose} avatar={<Avatar name={pawn.name} size={30} />}>
@@ -138,6 +139,15 @@ export function PawnInspector({ pawn, canWrite, onDraft, onClearQueue, onClose }
             </ul>
           </div>
           {pawn.held ? <div className="text-muted">Holding {pawn.held}</div> : null}
+          <div className="flex items-center gap-2 rounded-md bg-surface-2 px-2 py-1.5" data-testid="pawn-bed">
+            <BedDouble className="size-3.5 text-muted" aria-hidden />
+            <span className="min-w-0 flex-1 truncate">{bed ? `Bed at ${bed.pos[0]}, ${bed.pos[2]}` : 'No bed of its own'}</span>
+            {bed && onShowBed ? (
+              <Button size="sm" variant="ghost" onClick={onShowBed}>
+                Show
+              </Button>
+            ) : null}
+          </div>
           <Button size="sm" variant={pawn.drafted ? 'subtle' : 'secondary'} disabled={!canWrite} onClick={() => onDraft(!pawn.drafted)}>
             {pawn.drafted ? <ShieldOff className="size-3.5" /> : <Shield className="size-3.5" />}
             {pawn.drafted ? 'Undraft (R)' : 'Draft (R)'}
@@ -186,6 +196,56 @@ export function PawnInspector({ pawn, canWrite, onDraft, onClearQueue, onClose }
 }
 
 // ------------------------------------------------------------------ several bodies, AI
+
+/** A selected bed: who sleeps in it, and a picker to give it to a pawn (their other bed is freed) or clear it. */
+export function BedInspector({ bed, state, canWrite, write, onClose }: { bed: StoryBed; state: StoryColonyState | undefined; canWrite: boolean; write: StoryWrite; onClose: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const owner = bed.pawn ? state?.pawns.find((p) => p.name === bed.pawn) : undefined;
+  const zone = bed.zone !== null && bed.zone !== undefined ? state?.zones.find((z) => String(z.id) === String(bed.zone)) : undefined;
+  const pos = { x: bed.pos[0], y: bed.pos[1], z: bed.pos[2] };
+  const run = (body: Parameters<StoryWrite>[1]) => {
+    setBusy(true);
+    void write('story.beds', body as never).finally(() => setBusy(false));
+  };
+  return (
+    <Shell title="Bed" sub={`${bed.pos[0]}, ${bed.pos[1]}, ${bed.pos[2]}${zone ? ` · ${zone.label || 'a house'}` : ''}`} onClose={onClose} testid="bed-inspector" avatar={<BedDouble className="size-6 text-muted" />}>
+      <div className="space-y-2 text-xs">
+        <div className="flex items-center gap-2">
+          <span className="text-muted">Owner</span>
+          {owner || bed.pawn ? (
+            <span className="flex items-center gap-1.5 font-medium">
+              <Avatar name={bed.pawn!} size={18} />
+              {owner?.display ?? bed.pawn}
+            </span>
+          ) : (
+            <span className="text-subtle">nobody</span>
+          )}
+        </div>
+        <label className="flex items-center gap-2">
+          <span className="text-muted">Set owner</span>
+          <select
+            aria-label="Set owner"
+            className="h-7 min-w-0 flex-1 rounded border border-border bg-surface px-1"
+            disabled={!canWrite || busy}
+            value={bed.pawn ?? ''}
+            onChange={(e) => (e.target.value ? run({ op: 'assign', bed: pos, pawn: e.target.value }) : run({ op: 'unassign', bed: pos }))}
+          >
+            <option value="">nobody</option>
+            {(state?.pawns ?? []).map((p) => (
+              <option key={p.name} value={p.name}>
+                {p.display}
+                {(state?.beds ?? []).some((b) => b.pawn === p.name && b !== bed) ? ' (moves from their bed)' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+        <Button size="sm" variant="ghost" disabled={!canWrite || busy || !bed.pawn} onClick={() => run({ op: 'unassign', bed: pos })}>
+          Clear
+        </Button>
+      </div>
+    </Shell>
+  );
+}
 
 export function GroupInspector({ names, state, canWrite, onDraft, onClose }: { names: string[]; state: StoryColonyState | undefined; canWrite: boolean; onDraft: (d: boolean) => void; onClose: () => void }) {
   const pawns = (state?.pawns ?? []).filter((p) => names.includes(p.name));

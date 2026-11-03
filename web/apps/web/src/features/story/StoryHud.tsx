@@ -5,7 +5,7 @@
  * click to jump, long-press and drag to reorder), the alerts stack, the toast, the right-click order menu, the clock / pause /
  * view / level cluster and the active tool's options bar. Panels are plain DOM over the canvas: no blur, cheap to draw.
  */
-import { storyClock, STORY_MATERIALS, type StoryAiBody, type StoryAlert, type StoryPawn } from '@mineclaw/contracts';
+import { storyClock, STORY_MATERIALS, tickClock, type StoryAiBody, type StoryAlert, type StoryPawn, type StoryTimeControl } from '@mineclaw/contracts';
 import { AlertTriangle, ArrowDown, ArrowUp, Box, Eye, EyeOff, Info, Layers, Moon, Pause, Play, RotateCcw, RotateCw, Sun, X } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Kbd } from '@/components/ui/primitives';
@@ -246,6 +246,7 @@ export function ControlCluster({
   onLevel,
   onXray,
   onHelp,
+  children,
 }: {
   name: string;
   hour: number | null | undefined;
@@ -261,6 +262,8 @@ export function ControlCluster({
   onLevel: (dir: 1 | -1) => void;
   onXray: () => void;
   onHelp: () => void;
+  /** Extra rows (the time of day control). */
+  children?: ReactNode;
 }) {
   const night = (hour !== null && hour !== undefined) && hour >= 13 && hour < 23;
   return (
@@ -306,6 +309,73 @@ export function ControlCluster({
           <Info className="size-3.5" />
         </button>
       </div>
+      {children}
+    </div>
+  );
+}
+
+/** Day marks on the time slider (ticks; 0 = 06:00, the Minecraft convention). */
+const DAY_MARKS: Array<[number, string]> = [
+  [0, 'dawn'],
+  [6000, 'noon'],
+  [12000, 'dusk'],
+  [18000, 'midnight'],
+];
+
+/**
+ * The world's time of day as a slider over one day (0..23999 ticks). It follows the colony clock; a drag shows the time it
+ * would set and commits once on release (debounced), through the bot's op account. Without one it stays disabled with the
+ * reason.
+ */
+export function TimeSlider({ tod, control, canWrite, onSet }: { tod: number | null | undefined; control: StoryTimeControl | null | undefined; canWrite: boolean; onSet: (tick: number) => Promise<unknown> }) {
+  const [held, setHeld] = useState<number | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const live = useRef<number | null>(null);
+  useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
+  const available = !!control?.available;
+  const value = held ?? Math.max(0, Math.min(23999, Math.round(tod ?? 0)));
+  const commit = () => {
+    if (live.current === null) return;
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      const t = live.current;
+      live.current = null;
+      if (t === null) return;
+      void onSet(t).finally(() => setHeld((h) => (h === t ? null : h)));
+    }, 300);
+  };
+  const hint = !available ? 'No op account — op the main bot to change time' : !canWrite ? 'Changing the time needs the story role' : `Set the time of day via ${control?.by ?? 'the main bot'} (op)`;
+  return (
+    <div className="space-y-0.5" data-testid="time-control" title={hint}>
+      <div className="flex items-center gap-2">
+        <span className="w-10 shrink-0 tabular-nums font-medium">{tickClock(value)}</span>
+        <input
+          type="range"
+          min={0}
+          max={23999}
+          step={50}
+          value={value}
+          disabled={!available || !canWrite}
+          aria-label="Time of day"
+          aria-valuetext={tickClock(value)}
+          onChange={(e) => {
+            const t = Number(e.target.value);
+            live.current = t;
+            setHeld(t);
+          }}
+          onPointerUp={commit}
+          onKeyUp={commit}
+          className="h-1.5 flex-1 cursor-pointer accent-[#f5c542] disabled:cursor-not-allowed disabled:opacity-50"
+        />
+      </div>
+      <div className="relative ml-12 h-3 text-[9.5px] text-subtle" aria-hidden>
+        {DAY_MARKS.map(([t, name]) => (
+          <span key={name} className="absolute -translate-x-1/2 whitespace-nowrap first:translate-x-0" style={{ left: `${(t / 24000) * 100}%` }}>
+            {name}
+          </span>
+        ))}
+      </div>
+      {!available ? <div className="text-[10.5px] text-warn">{hint}</div> : null}
     </div>
   );
 }
@@ -337,6 +407,8 @@ export function OptionsBar({
         ? `${tool.op === 'remove' ? 'Remove ' : ''}${ZONE_TOOLS.find((z) => z.id === tool.id)?.label ?? 'Zone'}`
         : tool.kind === 'storage'
           ? 'Register chests'
+          : tool.kind === 'home'
+            ? 'Set home'
           : tool.kind === 'design'
             ? `Design: ${tool.name}`
           : tool.id.startsWith('furniture:')
@@ -349,10 +421,12 @@ export function OptionsBar({
         ? (STRUCTURE_TOOLS.find((s) => s.id === tool.id)?.hint ?? 'Click to place; Q/E turns')
         : tool.kind === 'storage'
           ? 'Drag over chests to make them storage'
+          : tool.kind === 'home'
+            ? 'Click where home should be: the colony migrates there (you confirm first)'
           : tool.kind === 'design'
             ? `${tool.blocks.length} blocks: click to queue it here (Q/E turns, PgUp/PgDn changes the level)`
             : 'Drag to paint the zone';
-  const icon = tool.kind === 'designate' ? tool.id : tool.kind === 'build' ? tool.id.replace('furniture:', '') : tool.kind === 'storage' ? 'storage' : tool.kind === 'design' ? 'block' : 'zone';
+  const icon = tool.kind === 'designate' ? tool.id : tool.kind === 'build' ? tool.id.replace('furniture:', '') : tool.kind === 'storage' ? 'storage' : tool.kind === 'design' ? 'block' : tool.kind === 'home' ? 'home' : 'zone';
   const isStructure = tool.kind === 'build' && !tool.id.startsWith('furniture:');
   const matKey = (m: BuildOpts['material']) => (Array.isArray(m) ? m.join(':') : m);
   return (

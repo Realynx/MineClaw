@@ -63,6 +63,8 @@ export interface Selection {
   chests: V3[];
   /** A selected workbench (bills). */
   bench: V3 | null;
+  /** A selected bed (its foot block, as the colony lists it). */
+  bed?: V3 | null;
 }
 
 export const EMPTY_SELECTION: Selection = { bodies: [], chests: [], bench: null };

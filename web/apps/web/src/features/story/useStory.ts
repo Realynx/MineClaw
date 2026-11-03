@@ -63,6 +63,8 @@ type ColonyWrite =
   | 'story.release'
   | 'story.resume'
   | 'story.pause'
+  | 'story.home'
+  | 'story.beds'
   | 'story.priorities'
   | 'story.schedule'
   | 'story.draft'

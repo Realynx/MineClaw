@@ -14,6 +14,7 @@ interface StoryDebug {
   setZoom(z: number): void;
   mode(): string;
   level(): number;
+  beds(): Array<{ pos: [number, number, number]; pawn: string | null }>;
 }
 
 async function signIn(page: Page, empty: boolean) {
@@ -70,7 +71,15 @@ async function dragCells(page: Page, a: [number, number, number], b: [number, nu
 test('found a colony, box-select, right-click a tree to chop, priorities, a schedule, draft, the top bar', async ({ page }) => {
   await signIn(page, true);
   await openStory(page);
+  // With no colony the map settles over the main bot (the fixture's Alice, renamed maid_chan, circles the island centre 10
+  // blocks out), not the world origin; the form says where the colony will settle.
+  await expect(page.getByTestId('settle-at')).toContainText(/Settles at -?\d+, -?\d+: the map centre/);
+  const settle = (await page.getByTestId('settle-at').textContent())!.match(/Settles at (-?\d+), (-?\d+)/)!;
+  expect(Math.hypot(Number(settle[1]), Number(settle[2]))).toBeGreaterThan(5);
+  const founded = post(page, /\/api\/story\/colonies$/);
   await foundColony(page, 4);
+  const home = body(await founded).home as { x: number; y: number; z: number };
+  expect(Math.hypot(home.x, home.z)).toBeGreaterThan(5);
   // Box-select three of the four pawns (they stand in a row).
   const bodies = (await story(page, 'bodies')).filter((b) => b.name.startsWith('maid_s1_')).sort((a, b) => a.x - b.x);
   expect(bodies).toHaveLength(4);
@@ -142,10 +151,122 @@ test('found a colony, box-select, right-click a tree to chop, priorities, a sche
   await page.waitForTimeout(1200);
   const c = await story(page, 'center');
   expect(Math.abs(c[0] - 40)).toBeGreaterThan(20); // moved back from (40, 40) to the pawn by home
+  // A single click on a pawn that is off the map's picture also finds it.
+  await story(page, 'focus', 40, 40);
+  await page.waitForTimeout(300);
+  await bar.locator(`[data-portrait="${bodies[2]!.name}"]`).click();
+  await page.waitForTimeout(1200);
+  expect(Math.abs((await story(page, 'center'))[0] - 40)).toBeGreaterThan(20);
   // Typing in a field never drives the map.
   await page.keyboard.press('i');
   await page.getByLabel('Colony name').fill('rrr');
   await expect(page.getByTestId('colonist-bar').locator('[data-drafted="true"]')).toHaveCount(0);
+  // Beds: click one of the camp's beds on the map, give it to a pawn; that pawn's inspector shows it. (The Colony tab is
+  // closed first: it covers the middle of the map.)
+  const colonyTab = page.getByTestId('tab-bar').getByRole('button', { name: /^Colony/ });
+  await colonyTab.click();
+  const bed = (await story(page, 'beds'))[0]!;
+  await story(page, 'focus', bed.pos[0], bed.pos[2]);
+  await page.waitForTimeout(600);
+  const bedAt = (await story(page, 'toPage', bed.pos[0] + 0.5, bed.pos[1] + 0.5, bed.pos[2] + 0.5))!;
+  await page.mouse.click(bedAt.x, bedAt.y);
+  const bedPanel = page.getByTestId('bed-inspector');
+  await expect(bedPanel).toBeVisible();
+  const assigned = post(page, /\/api\/story\/colonies\/[^/]+\/beds$/);
+  await bedPanel.getByLabel('Set owner').selectOption(bodies[0]!.name);
+  expect(body(await assigned)).toEqual({ op: 'assign', bed: { x: bed.pos[0], y: bed.pos[1], z: bed.pos[2] }, pawn: bodies[0]!.name });
+  await expect(bedPanel.getByLabel('Set owner')).toHaveValue(bodies[0]!.name);
+  if (shots) await page.screenshot({ path: `${shots}/story-bed.png` });
+  await bar.locator(`[data-portrait="${bodies[0]!.name}"]`).click();
+  await expect(page.getByTestId('pawn-bed')).toContainText(`Bed at ${bed.pos[0]}, ${bed.pos[2]}`);
+
+  // Migrate home to the map centre (confirmed first): the request names the centre column, the toast and the panel say
+  // where home is now.
+  await colonyTab.click();
+  await story(page, 'focus', 60, -20);
+  const homePanel = page.getByTestId('colony-home');
+  await expect(homePanel).toContainText('Here is 60, -20');
+  const moved = post(page, /\/api\/story\/colonies\/[^/]+\/home$/);
+  await homePanel.getByRole('button', { name: 'Move home here' }).click();
+  await expect(page.getByTestId('migrate-confirm')).toContainText('Migrate home to 60, -20?');
+  await page.getByTestId('migrate-confirm').getByRole('button', { name: 'Migrate' }).click();
+  expect(body(await moved)).toMatchObject({ home: { x: 60, z: -20 } });
+  await expect(page.getByText(/Home moved to 60, -20/)).toBeVisible();
+  await expect(homePanel).toContainText('Home60, -20');
+  if (shots) await page.screenshot({ path: `${shots}/story-move-home.png` });
+});
+
+test('drafted pawns line up along a right-drag; the time of day slider', async ({ page }) => {
+  await signIn(page, true);
+  await openStory(page);
+  await foundColony(page, 3);
+  const bar = page.getByTestId('colonist-bar');
+  const names = await bar.locator('[data-kind="pawn"]').evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.portrait!));
+  expect(names).toHaveLength(3);
+  await bar.locator(`[data-portrait="${names[0]}"]`).click();
+  for (const n of names.slice(1)) await bar.locator(`[data-portrait="${n}"]`).click({ modifiers: ['Shift'] });
+  await expect(page.getByTestId('inspector')).toContainText('3 selected');
+  await page.mouse.move(700, 500);
+  await page.keyboard.press('r');
+  await expect(bar.locator('[data-kind="pawn"][data-drafted="true"]')).toHaveCount(3);
+
+  // Right-drag a line east-west just south of the centre: one move per pawn, each to its own cell along the line.
+  const c = await story(page, 'center');
+  const lv = await story(page, 'level');
+  const a: [number, number] = [Math.floor(c[0]) - 4, Math.floor(c[2]) + 3];
+  const b: [number, number] = [Math.floor(c[0]) + 4, Math.floor(c[2]) + 3];
+  const pa = (await story(page, 'toPage', a[0] + 0.5, lv + 1, a[1] + 0.5))!;
+  const pb = (await story(page, 'toPage', b[0] + 0.5, lv + 1, b[1] + 0.5))!;
+  const orders: Request[] = [];
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && /\/api\/story\/colonies\/[^/]+\/orders$/.test(new URL(r.url()).pathname)) orders.push(r);
+  });
+  await page.mouse.move(pa.x, pa.y);
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.move((pa.x + pb.x) / 2, (pa.y + pb.y) / 2, { steps: 4 });
+  await page.mouse.move(pb.x, pb.y, { steps: 4 });
+  await page.waitForTimeout(400); // the preview reads the standing heights
+  if (shots) await page.screenshot({ path: `${shots}/story-formation.png` });
+  await page.mouse.up({ button: 'right' });
+  await expect.poll(() => orders.length).toBe(3);
+  await expect(page.getByTestId('order-menu')).toHaveCount(0);
+  const bodies = orders.map(body) as Array<{ pawns: string[]; order: { kind: string; target: { x: number; y: number; z: number } } }>;
+  expect(bodies.map((o) => o.pawns.length)).toEqual([1, 1, 1]);
+  expect(bodies.map((o) => o.pawns[0]).sort()).toEqual([...names].sort());
+  expect(bodies.every((o) => o.order.kind === 'move')).toBe(true);
+  const cells = bodies.map((o) => `${o.order.target.x},${o.order.target.z}`);
+  expect(new Set(cells).size).toBe(3);
+  for (const o of bodies) {
+    // on the line (snapping to a standable cell moves a slot at most a few cells)
+    expect(Math.abs(o.order.target.z - a[1])).toBeLessThanOrEqual(3);
+    expect(o.order.target.x).toBeGreaterThanOrEqual(a[0] - 3);
+    expect(o.order.target.x).toBeLessThanOrEqual(b[0] + 3);
+  }
+  // Spread along the line, not bunched: the ends are a good part of the line apart.
+  const xs = bodies.map((o) => o.order.target.x);
+  expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThanOrEqual(5);
+  await expect(page.getByTestId('story-toast')).toContainText('Formation: 3 pawns along the line');
+
+  // The time of day: drag the slider, one POST on release with the tick the slider shows.
+  const slider = page.getByLabel('Time of day');
+  await expect(slider).toBeEnabled();
+  const sb = (await slider.boundingBox())!;
+  const times: Request[] = [];
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && new URL(r.url()).pathname === '/api/story/time') times.push(r);
+  });
+  await page.mouse.move(sb.x + sb.width * 0.25, sb.y + sb.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(sb.x + sb.width * 0.5, sb.y + sb.height / 2, { steps: 6 });
+  await page.mouse.up();
+  const shown = Number(await slider.inputValue());
+  await expect.poll(() => times.length).toBe(1);
+  expect(Math.abs(shown - 12000)).toBeLessThan(1500);
+  expect(body(times[0]!)).toEqual({ time: shown });
+  await expect(page.getByTestId('story-toast')).toContainText(/Time set to \d\d:\d\d via maid_chan/);
+  await page.waitForTimeout(600);
+  expect(times).toHaveLength(1); // one commit per release
+  if (shots) await page.screenshot({ path: `${shots}/story-time.png` });
 });
 
 test('designate tools: chop a grove for a pawn and main, haul a drop, cancel; chat to main', async ({ page }) => {

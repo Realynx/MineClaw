@@ -64,6 +64,24 @@ describe('story contracts', () => {
     expect(C.storyClock(0)).toBe('06:00');
     expect(C.storyClock(20)).toBe('02:00');
   });
+
+  it('time of day: ticks and clock times map both ways (0 = 06:00, 6000 noon, 18000 midnight)', () => {
+    expect(C.tickClock(0)).toBe('06:00');
+    expect(C.tickClock(6000)).toBe('12:00');
+    expect(C.tickClock(12000)).toBe('18:00');
+    expect(C.tickClock(18000)).toBe('00:00');
+    expect(C.tickClock(23999)).toBe('05:59');
+    expect(C.tickClock(7500)).toBe('13:30');
+    expect(C.tickClock(24000 + 500)).toBe('06:30');
+    expect(C.clockTick(6)).toBe(0);
+    expect(C.clockTick(12)).toBe(6000);
+    expect(C.clockTick(0)).toBe(18000);
+    expect(C.clockTick(5, 30)).toBe(23500);
+    for (const t of [0, 1000, 7500, 18000, 23000]) expect(C.clockTick(...(C.tickClock(t).split(':').map(Number) as [number, number]))).toBe(t);
+    expect(C.StoryTimeRequest.safeParse({ time: 24000 }).success).toBe(false);
+    expect(C.StoryTimeRequest.safeParse({ time: 12.5 }).success).toBe(false);
+    expect(C.StoryTimeRequest.safeParse({ time: 0 }).success).toBe(true);
+  });
 });
 
 describe('build expansion (the preview)', () => {
@@ -149,6 +167,73 @@ describe('the mock director', () => {
     expect(cancel.count).toBe(2);
     const after = sim.state(id, delta.rev);
     expect(after.removed?.designations).toHaveLength(2);
+  });
+
+  it('moves home: far pawns are brought there, near ones stay; bad bodies and unknown colonies fail', () => {
+    const sim = new StorySim({ world: world(), defaultHome: [0, 63, 0], now: () => 1_762_000_000_000 });
+    const { id } = sim.create({ name: 'Test', pawns: 2 });
+    const rev = sim.state(id).rev;
+    expect(C.StoryHomeRequest.safeParse({ home: { x: 1, y: 2, z: 3 } }).success).toBe(true);
+    expect(C.StoryHomeRequest.safeParse({ home: { x: 1.5, y: 2, z: 3 } }).success).toBe(false);
+    expect(C.StoryHomeRequest.safeParse({ x: 1, y: 2, z: 3 }).success).toBe(false);
+    // Nearby: the pawns keep their places.
+    const before = sim.state(id).pawns.map((p) => p.pos);
+    expect(C.StoryHomeResponse.parse(sim.home(id, { home: { x: 10, y: 70, z: 10 } }))).toEqual({ home: [10, 63, 10] });
+    expect(sim.state(id).pawns.map((p) => p.pos)).toEqual(before);
+    // Far: every pawn is brought next to the new home.
+    sim.home(id, { home: { x: 400, y: 64, z: -300 } });
+    const s = sim.state(id, rev);
+    expect(s.home).toEqual([400, 63, -300]);
+    for (const p of s.pawns) expect(Math.hypot((p.pos?.[0] ?? 0) - 400, (p.pos?.[2] ?? 0) + 300)).toBeLessThan(6);
+    expect(() => sim.home(id, { home: { x: 1, y: 2 } })).toThrow(expect.objectContaining({ status: 400 }));
+    expect(() => sim.home('story-99', { home: { x: 1, y: 2, z: 3 } })).toThrow(expect.objectContaining({ status: 404 }));
+  });
+
+  it('beds: found near home, one per pawn, in the house they stand in; houses are named home zones', () => {
+    const w = world();
+    const blocks = new Map<string, [number, number]>([['3,64,3', [26, 0]], ['3,64,4', [26, 8]], ['5,64,3', [26, 0]], ['5,64,4', [26, 8]]]);
+    const inner = w.blockAt.bind(w);
+    w.blockAt = (x, y, z) => blocks.get(`${x},${y},${z}`) ?? inner(x, y, z);
+    const sim = new StorySim({ world: w, defaultHome: [0, 63, 0], now: () => 1_762_000_000_000 });
+    const { id } = sim.create({ name: 'Test', pawns: 2 });
+    const [a, b] = sim.state(id).pawns.map((p) => p.name) as [string, string];
+    expect(sim.state(id).beds?.map((x) => x.pos)).toEqual([[3, 64, 3], [5, 64, 3]]); // the foot halves only
+    expect(C.StoryBedsRequest.safeParse({ op: 'assign', bed: { x: 3, y: 64, z: 3 }, pawn: a }).success).toBe(true);
+    expect(C.StoryBedsRequest.safeParse({ op: 'unassign', bed: { x: 3, y: 64, z: 3 }, pawn: a }).success).toBe(false);
+    sim.beds(id, { op: 'assign', bed: { x: 3, y: 64, z: 3 }, pawn: a });
+    const out = C.StoryBedsResponse.parse(sim.beds(id, { op: 'assign', bed: { x: 5, y: 64, z: 3 }, pawn: a }));
+    expect(out.beds.map((x) => x.pawn)).toEqual([null, a]); // one bed a pawn: the first one is freed
+    sim.beds(id, { op: 'assign', bed: { x: 3, y: 64, z: 3 }, pawn: b });
+    expect(sim.beds(id, { op: 'unassign', bed: { x: 5, y: 64, z: 3 } }).beds.map((x) => x.pawn)).toEqual([b, null]);
+    expect(() => sim.beds(id, { op: 'unassign', bed: { x: 9, y: 9, z: 9 } })).toThrow(expect.objectContaining({ status: 404 }));
+    expect(() => sim.beds(id, { op: 'assign', bed: { x: 3, y: 64, z: 3 }, pawn: 'nobody' })).toThrow(expect.objectContaining({ status: 400 }));
+    // Two houses; a bed knows its house; a house can be renamed.
+    const h1 = sim.zones(id, { op: 'add', kind: 'home', area: [2, 63, 2, 4, 63, 5], label: 'Cabin' }) as { id: string };
+    sim.zones(id, { op: 'add', kind: 'home', area: [20, 63, 20, 24, 63, 24] });
+    expect(sim.state(id).zones.filter((z) => z.kind === 'home')).toHaveLength(2);
+    expect(sim.state(id).beds?.[0]?.zone).toBe(h1.id);
+    sim.zones(id, { op: 'rename', id: h1.id, label: 'Lodge' });
+    expect(sim.state(id).zones.find((z) => z.id === h1.id)?.label).toBe('Lodge');
+    expect(C.StoryZoneRequest.safeParse({ op: 'rename', id: 'z1' }).success).toBe(false);
+    expect(C.StoryZoneRequest.safeParse({ op: 'add', kind: 'home' }).success).toBe(false);
+    sim.zones(id, { op: 'remove', kind: 'home', area: [2, 63, 2, 4, 63, 5] });
+    expect(sim.state(id).zones.filter((z) => z.kind === 'home')).toHaveLength(1);
+  });
+
+  it('sets the time of day through the op account: 400 bad, 409 without an op, 429 above once a second', () => {
+    let t = 1_762_000_000_000;
+    const sim = new StorySim({ world: world(), defaultHome: [0, 63, 0], now: () => t });
+    const { id } = sim.create({ name: 'Test', pawns: 1 });
+    expect(sim.list().timeControl).toEqual({ available: true, by: 'maid_chan' });
+    expect(C.StoryTimeResponse.parse(sim.time({ time: 13000 }))).toEqual({ time: 13000, by: 'maid_chan' });
+    expect(sim.state(id).timeOfDay).toBe(13000);
+    expect(() => sim.time({ time: 100 })).toThrow(expect.objectContaining({ status: 429 }));
+    t += 1500;
+    expect(() => sim.time({ time: 24000 })).toThrow(expect.objectContaining({ status: 400 }));
+    expect(sim.time({ time: 100 }).time).toBe(100);
+    const none = new StorySim({ world: world(), timeOp: null, now: () => t });
+    expect(none.state(none.create({ name: 'X', pawns: 1 }).id).timeControl).toEqual({ available: false, by: null });
+    expect(() => none.time({ time: 100 })).toThrow(expect.objectContaining({ status: 409 }));
   });
 
   it('pawns pick jobs by priority, lease them and finish them', () => {

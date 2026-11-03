@@ -47,7 +47,7 @@ function App() {
           cameraMode={mode}
           xray={xray}
           layers={layers}
-          drawDistance={128}
+          drawDistance={Number(params.get('draw') ?? 128)}
           onSelectBot={setFollow}
           onPick={setPicked}
           onStats={setStats}

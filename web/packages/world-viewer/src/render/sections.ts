@@ -8,7 +8,7 @@ import type { MeshHost } from '../mesh/host';
 import type { SectionMesh } from '../mesh/mesher';
 import type { MeshArrays } from '../mesh/sink';
 import type { WorldCache } from '../world/cache';
-import { ALL_VISIBLE, visibleSections } from '../mesh/visibility';
+import { ALL_VISIBLE, visibleSections, walkStart } from '../mesh/visibility';
 
 interface Entry {
   cx: number;
@@ -34,6 +34,9 @@ export interface Centre {
   z: number;
   /** Draw distance in blocks. */
   distance: number;
+  /** Top-down / iso views: the radius of ground the picture shows. Sections are kept to at least this (the quality
+   * controller's draw-distance lever never cuts below it), so zooming out never shows empty sky at the edges. */
+  cover?: number;
 }
 
 const skey = (cx: number, sy: number, cz: number) => `${cx},${sy},${cz}`;
@@ -147,15 +150,17 @@ export class SectionManager {
    * camera can see through the cave-culling graph. `viewKey` caches the walk per view while its camera stays in one section
    * and keeps looking the same way.
    */
-  showAround(x: number, z: number, drawDistance: number, opts?: { cull?: { viewKey: number; cam: THREE.Vector3; dir: THREE.Vector3; ymax: number } | null; translucentDistance?: number }): void {
+  showAround(x: number, z: number, drawDistance: number, opts?: { cull?: { viewKey: number; cam: THREE.Vector3; dir: THREE.Vector3; ymax: number } | null; translucentDistance?: number; floorY?: number | null }): void {
     const ccx = x / 16, ccz = z / 16, maxD = drawDistance / 16 + 1;
     const cull = opts?.cull;
-    const seen = cull ? this.visible(cull, Math.ceil(maxD)) : null;
+    const seen = cull ? this.visible(cull, Math.ceil(maxD), ccx, ccz) : null;
     const transD = (opts?.translucentDistance ?? Infinity) / 16 + 1;
+    // Sections wholly below this height are not drawn (a zoomed-out top-down / iso view: nothing that deep shows from above).
+    const floorY = opts?.floorY ?? -Infinity;
     let quads = 0;
     this.culled = 0;
     for (const e of this.entries.values()) {
-      let vis = Math.hypot(e.cx + 0.5 - ccx, e.cz + 0.5 - ccz) <= maxD;
+      let vis = Math.hypot(e.cx + 0.5 - ccx, e.cz + 0.5 - ccz) <= maxD && (e.sy + 1) * 16 > floorY;
       if (vis && seen && !seen.has(`${e.cx},${e.sy},${e.cz}`)) {
         vis = false;
         if (e.solid || e.trans) this.culled++;
@@ -188,14 +193,21 @@ export class SectionManager {
   private visRev = 0;
   private readonly visCache = new Map<number, { s: string; dir: THREE.Vector3; rev: number; set: Set<string> | null }>();
 
-  private visible(c: { viewKey: number; cam: THREE.Vector3; dir: THREE.Vector3; ymax: number }, range: number): Set<string> | null {
-    const sx = Math.floor(c.cam.x / 16), sy = Math.floor(c.cam.y / 16), sz = Math.floor(c.cam.z / 16);
+  /** The highest section layer held (the walk never needs to climb above it). */
+  private topSy = 0;
+
+  private visible(c: { viewKey: number; cam: THREE.Vector3; dir: THREE.Vector3; ymax: number }, range: number, ccx: number, ccz: number): Set<string> | null {
+    const ymax = Math.min(c.ymax, this.topSy + 1);
+    const from = walkStart(c.cam, c.dir, ymax, ccx, ccz);
+    if (!from) return null;
+    range += from.extra;
+    const sx = Math.floor(from.x / 16), sy = Math.floor(from.y / 16), sz = Math.floor(from.z / 16);
     const s = `${sx},${sy},${sz}`;
     const hit = this.visCache.get(c.viewKey);
     if (hit && hit.s === s && hit.dir.dot(c.dir) > 0.97 && this.visRev - hit.rev < 8) return hit.set;
     // A camera buried in a solid section sees nothing through the graph: draw everything (the x-ray handles it).
     const start = this.entries.get(s);
-    const set = start && start.vis === 0 ? null : visibleSections(sx, sy, sz, range, c.ymax, (cx, cy, cz) => this.entries.get(`${cx},${cy},${cz}`)?.vis ?? ALL_VISIBLE, c.dir);
+    const set = start && start.vis === 0 ? null : visibleSections(sx, sy, sz, range, ymax, (cx, cy, cz) => this.entries.get(`${cx},${cy},${cz}`)?.vis ?? ALL_VISIBLE, c.dir);
     this.visCache.set(c.viewKey, { s, dir: c.dir.clone(), rev: this.visRev, set });
     return set;
   }
@@ -251,6 +263,7 @@ export class SectionManager {
       if (!e) {
         e = { cx, sy, cz, solid: null, cap: null, trans: null, bytes: 0, vis: ALL_VISIBLE, animCells: null, lastRendered: this.frame, gen: 1, meshedGen: 0 };
         this.entries.set(k, e);
+        if (sy > this.topSy) this.topSy = sy;
       }
       gens.set(k, e.gen);
     }

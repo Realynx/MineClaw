@@ -5,6 +5,7 @@
 //
 //   npm run perf                      (both profiles)
 //   npm run perf -- --profile software --seconds 20 --version 1.12.2 --mobs 20
+//   npm run perf -- --profile software --camera top --zoom 144 --draw 112 --radius 14   (Story Mode's map zoomed all the way out)
 //
 // Prints one JSON line per run: renderer, detected quality profile, fps (median of 1 s windows), p10 fps, the controller's
 // resolution scale and draw factor, draw calls, triangles, sections.
@@ -25,6 +26,11 @@ const profiles = arg('profile', 'software,gpu').split(',');
 const seconds = Number(arg('seconds', '15'));
 const version = arg('version', 'b1.8.1');
 const mobs = arg('mobs', '20');
+/** A fixed top-down / iso view over the island centre at this zoom (view height in blocks) instead of following Bob. */
+const camera = arg('camera', null);
+const zoom = Number(arg('zoom', '48'));
+const draw = arg('draw', '128');
+const radius = arg('radius', '8');
 
 const FLAGS = {
   software: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-gpu', '--ignore-gpu-blocklist'],
@@ -41,8 +47,19 @@ try {
     try {
       const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
       page.on('pageerror', (e) => console.error(`[${p}] page error:`, e.message));
-      const url = `http://localhost:${port}/?thumbs=0&dense=1&mobs=${mobs}&version=${version}&radius=8`;
+      const url = `http://localhost:${port}/?thumbs=0&dense=1&mobs=${mobs}&version=${version}&radius=${radius}&draw=${draw}`;
       await page.goto(url, { waitUntil: 'load' });
+      if (camera) {
+        await page.waitForFunction(() => !!window.__viewer?.current?.engine(), null, { timeout: 25_000 });
+        await page.evaluate(([mode, z]) => {
+          const v = window.__viewer.current;
+          v.setCameraMode(mode);
+          v.focus(0, 64, 0);
+          // As Story Mode's map: no x-ray cone (so the cave-culling walk runs), the zoom given.
+          v.engine().setXRay('off');
+          v.engine().rig.isoZoom = z;
+        }, [camera, zoom]);
+      }
       // Let the world stream in and the meshes settle (or 25 s), then measure.
       await page.waitForFunction(() => {
         const e = window.__viewer?.current?.engine();
@@ -85,7 +102,7 @@ try {
           entities: s.memory.entities,
         };
       }, seconds);
-      const line = { profile: p, version, mobs: Number(mobs), ...r };
+      const line = { profile: p, version, mobs: Number(mobs), ...(camera ? { camera, zoom, draw: Number(draw), radius: Number(radius) } : {}), ...r };
       results.push(line);
       console.log(JSON.stringify(line));
     } finally {

@@ -6,24 +6,24 @@
  * keyboard map, and turns every map gesture into director requests for the colony's pawns and directives for selected AI
  * bodies (one toast says what went where).
  */
-import { materialKey, normArea, type StoryAlert, type StoryColonyState, type StoryDirectiveSpec } from '@mineclaw/contracts';
+import { materialKey, normArea, tickClock, type StoryAlert, type StoryColonyState, type StoryDirectiveSpec } from '@mineclaw/contracts';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChatOverlay } from '@/features/world/InWorld';
 import { isTyping, sendDirective } from '@/features/world/directives';
 import { loadWorldViewer, WorldHost } from '@/features/world/integration';
-import { api, errorText } from '@/lib/api/client';
+import { api, ApiError, errorText } from '@/lib/api/client';
 import { useAuth } from '@/lib/auth';
 import { newRequestId } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import { clickBody, dispatch, EMPTY_SELECTION, orderAi, orderPawns, splitBodies, type DirectorCall, type Selection } from './model';
-import { AlertsStack, barBodies, ColonistBar, ContextMenu, ControlCluster, HelpOverlay, OptionsBar, panel, Toast } from './StoryHud';
-import { AiInspector, BillsInspector, GroupInspector, PawnInspector, StorageInspector } from './StoryInspector';
-import { StoryMap, type DragResult, type MapTool, type StoryMapHandle } from './StoryMap';
+import { AlertsStack, barBodies, ColonistBar, ContextMenu, ControlCluster, HelpOverlay, OptionsBar, panel, TimeSlider, Toast } from './StoryHud';
+import { AiInspector, BedInspector, BillsInspector, GroupInspector, PawnInspector, StorageInspector } from './StoryInspector';
+import { StoryMap, type DragResult, type FormationMove, type MapTool, type StoryMapHandle } from './StoryMap';
 import { ArchitectPanel, ColonyPanel, DirectivesPanel, NewColony, QueuePanel, SchedulePanel, TabBar, WorkPanel, type TabId } from './StoryPanels';
 import { buildItem, clampHeight, contextMenu, countLabel, designBlocks, designationBody, designationDirective, designItems, DESIGNATE_TOOLS, placeDesign, keyAction, levelCutY, nextLevel, orderBody, PAN_KEYS, preview, rotateFacing, toolArea, toolYRange, type BuildOpts, type MenuItem, type Target } from './tools';
 import type { StorageClip } from './storage';
-import { colonyKey, useColonies, useColony, useStoryWrite } from './useStory';
+import { catchUp, colonyKey, useColonies, useColony, useStoryWrite } from './useStory';
 import { setItemIconSource } from './visuals';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -73,7 +73,14 @@ export function StoryMode() {
   const [tool, setTool] = useState<MapTool>({ kind: 'select' });
   const [build, setBuild] = useState<BuildOpts>({ height: 3, roof: 'flat', overhang: false, facing: 's', material: 'oak_planks' });
   const [mineFilter, setMineFilter] = useState<'all' | 'ores' | 'stone' | 'soil'>('all');
-  const ground = state?.home?.[1] ?? 64;
+  // Before a colony exists, the floor under the main bot the map settled over.
+  const [settledY, setSettledY] = useState<number | null>(null);
+  const ground = state?.home?.[1] ?? settledY ?? 64;
+  /** The map centre's column (x, level, z): where a new colony settles, where "move home here" moves it. */
+  const [centre, setCentre] = useState<V3 | null>(null);
+  /** A home migration waiting for its confirm (the new home column). */
+  const [migrate, setMigrate] = useState<V3 | null>(null);
+  const noColony = !state && !colony.isLoading && !colonies.isLoading;
   const [level, setLevel] = useState<number | null>(null);
   const lv = level ?? ground;
   // X-ray above the working level: automatic while building or on an upper storey (trees and hills stay whole otherwise).
@@ -175,6 +182,11 @@ export function StoryMode() {
       });
       return;
     }
+    if (tool.kind === 'home') {
+      setMigrate([r.a[0], lv, r.a[2]]);
+      setTab('colony');
+      return;
+    }
     if (tool.kind === 'zone') {
       const area = normArea([r.rect[0], lv, r.rect[1], r.rect[2], lv, r.rect[3]]);
       if (!canWrite) return say('Needs the story role', 'warn');
@@ -236,6 +248,18 @@ export function StoryMode() {
     await run(body ? { route: 'story.orders', body } : null, item.directive ?? null, queue ? 'queued' : 'ordered', () => item.label);
   };
 
+  /** A right-drag line: each drafted pawn moves to its own cell on it (drafted pawns then hold there). */
+  const onFormation = async (moves: FormationMove[], queue: boolean, ignored: number) => {
+    if (!canWrite) return say('Needs the story role', 'warn');
+    const res = await Promise.allSettled(
+      moves.map((mv) => write('story.orders', { pawns: [mv.pawn], order: { kind: 'move', target: { x: mv.target[0], y: mv.target[1], z: mv.target[2] } }, ...(queue ? { queue: true } : {}) })),
+    );
+    const bad = res.filter((r) => r.status === 'rejected');
+    const note = ignored ? ` · ${ignored} undrafted pawn${ignored === 1 ? '' : 's'} not in it (draft with R)` : '';
+    if (bad.length) say(`${bad.length} of ${moves.length} formation orders failed: ${errorText((bad[0] as PromiseRejectedResult).reason)}`, 'warn');
+    else say(`${queue ? 'Queued a formation' : 'Formation'}: ${moves.length} pawn${moves.length === 1 ? '' : 's'} along the line${note}`);
+  };
+
   const draft = useCallback(
     async (names: string[], drafted: boolean) => {
       if (!names.length) return;
@@ -243,6 +267,22 @@ export function StoryMode() {
       await write('story.draft', { pawns: names, drafted }).then(() => say(`${drafted ? 'Drafted' : 'Undrafted'} ${names.length} pawn${names.length === 1 ? '' : 's'}`), (e) => say(errorText(e), 'warn'));
     },
     [canWrite, write, say],
+  );
+
+  /** The world's time of day (through the bot's op account); the colony clock catches up after. */
+  const setTime = useCallback(
+    async (tick: number) => {
+      if (!canWrite) return say('Changing the time needs the story role', 'warn');
+      try {
+        const out = await api('story.time', { body: { time: tick } });
+        say(`Time set to ${tickClock(out.time)}${out.by ? ` via ${out.by}` : ''}`);
+        if (id) void catchUp(qc, id).catch(() => undefined);
+      } catch (e) {
+        const status = e instanceof ApiError ? e.status : 0;
+        say(status === 409 ? 'No op account — op the main bot to change time' : status === 429 ? 'One time change a second: try again' : errorText(e), 'warn');
+      }
+    },
+    [canWrite, say, id, qc],
   );
 
   const togglePause = useCallback(() => {
@@ -346,10 +386,15 @@ export function StoryMode() {
       const bench = (state?.workbenches ?? []).find((w) => k3(w.pos) === k3(selection.bench!));
       return bench ? <BillsInspector bench={bench} state={state} canWrite={canWrite} write={write} onPickChest={pickChest} onClose={close} /> : null;
     }
+    if (selection.bed) {
+      const bed = (state?.beds ?? []).find((b) => k3(b.pos) === k3(selection.bed!));
+      return bed ? <BedInspector bed={bed} state={state} canWrite={canWrite} write={write} onClose={close} /> : null;
+    }
     if (selection.chests.length) return <StorageInspector chests={selection.chests} state={state} canWrite={canWrite} write={write} clip={clip} onClip={(c) => (setClip(c), say('Storage settings copied'))} onClose={close} />;
     if (selection.bodies.length === 1) {
       const p = state?.pawns.find((x) => x.name === selection.bodies[0]);
-      if (p) return <PawnInspector pawn={p} canWrite={canWrite} onDraft={(d) => void draft([p.name], d)} onClearQueue={() => void write('story.orders', { pawns: [p.name], order: { kind: 'stop' } })} onClose={close} />;
+      const bed = p ? (state?.beds ?? []).find((b) => b.pawn === p.name) : undefined;
+      if (p) return <PawnInspector pawn={p} bed={bed} onShowBed={bed ? () => map.current?.focus(bed.pos[0], bed.pos[2], bed.pos[1]) : undefined} canWrite={canWrite} onDraft={(d) => void draft([p.name], d)} onClearQueue={() => void write('story.orders', { pawns: [p.name], order: { kind: 'stop' } })} onClose={close} />;
       const a = state?.ai?.find((x) => x.name === selection.bodies[0]);
       if (a) return <AiInspector body={a} state={state} onChat={() => setChat(true)} onClose={close} />;
     }
@@ -377,11 +422,23 @@ export function StoryMode() {
     })();
   }, [designParam, state, say, can]);
 
+  /** A column as a home: the surface there (the working level when its chunk is not loaded). */
+  const homeAt = async (x: number, z: number): Promise<{ x: number; y: number; z: number }> => {
+    const y = (await map.current?.surface(x, z).catch(() => null)) ?? lv;
+    return { x, y, z };
+  };
+
+  /** The map centre as a home. */
+  const centreHome = async (): Promise<{ x: number; y: number; z: number } | null> => {
+    const c = map.current?.center();
+    return c ? homeAt(c[0], c[2]) : null;
+  };
+
   const create = async (name: string, n: number) => {
     if (!canWrite) return say('Needs the story role', 'warn');
-    const c = map.current?.center();
+    const home = await centreHome();
     try {
-      const out = await api('story.create', { body: { name, pawns: n, ...(c ? { home: { x: c[0], y: c[1], z: c[2] } } : {}) } });
+      const out = await api('story.create', { body: { name, pawns: n, ...(home ? { home } : {}) } });
       await qc.invalidateQueries({ queryKey: ['story.list'] });
       router.replace(`/story?colony=${encodeURIComponent(out.id)}`);
       setTab(null);
@@ -389,6 +446,26 @@ export function StoryMode() {
     } catch (e) {
       say(errorText(e), 'warn');
     }
+  };
+
+  /** Migrates home to a column (after the confirm): the bot brings far pawns over. */
+  const moveHome = async (at: V3) => {
+    setMigrate(null);
+    if (!canWrite) return say('Needs the story role', 'warn');
+    const home = await homeAt(at[0], at[2]);
+    try {
+      const out = await write('story.home', { home });
+      setLevel(null);
+      say(`Home moved to ${out.home[0]}, ${out.home[2]}: pawns far from it are brought here`);
+    } catch (e) {
+      say(errorText(e), 'warn');
+    }
+  };
+
+  /** A body from the top bar: focus it when it is off the map's picture (a double-click always does). */
+  const showBody = (name: string) => {
+    const b = bodies.find((x) => x.name === name);
+    if (b?.pos && !map.current?.onScreen(b.pos[0]!, b.pos[1]!, b.pos[2]!)) focusBody(name);
   };
 
   const panelEl = (() => {
@@ -412,6 +489,19 @@ export function StoryMode() {
             canWrite={canWrite}
             onSwitch={(c) => router.replace(`/story?colony=${encodeURIComponent(c)}`)}
             onCreate={(name, n) => void create(name, n)}
+            centre={centre}
+            migrate={migrate}
+            onMoveHome={() => setMigrate(map.current?.center() ?? centre)}
+            onConfirmMove={() => migrate && void moveHome(migrate)}
+            onCancelMove={() => setMigrate(null)}
+            onPickHome={() => {
+              setMigrate(null);
+              setTool({ kind: 'home' });
+            }}
+            onDrawHouse={() => setTool({ kind: 'zone', id: 'home', op: 'add' })}
+            onShowZone={(z) => map.current?.focus(Math.floor((z.area[0] + z.area[3]) / 2), Math.floor((z.area[2] + z.area[5]) / 2), z.area[1])}
+            onRenameZone={(z, label) => void write('story.zones', { op: 'rename', id: z.id, label }).then(() => say(label ? `Renamed to ${label}` : 'Name cleared'), (e) => say(errorText(e), 'warn'))}
+            onDeleteZone={(z) => void write('story.zones', { op: 'remove', kind: 'home', area: z.area }).then(() => say(`${z.label || 'House'} removed`), (e) => say(errorText(e), 'warn'))}
             onPause={togglePause}
             onRelease={() => void write('story.release', {}).then(() => say('Pawns released; the colony is saved'))}
             onResume={() => void write('story.resume', {}).then(() => say('The pawns are coming back'), (e) => say(errorText(e), 'warn'))}
@@ -440,10 +530,15 @@ export function StoryMode() {
           view={view}
           keys={keys}
           home={(state?.home as V3 | undefined) ?? null}
+          settle={noColony}
+          player={me.player ?? null}
+          onCentre={setCentre}
+          onSettled={setSettledY}
           onSelect={onSelect}
           onSelectSame={(kind, visible) => setSelection({ ...EMPTY_SELECTION, bodies: visible.filter((n) => (kind === 'pawn' ? state?.pawns.some((p) => p.name === n) : state?.ai?.some((x) => x.name === n))) })}
           onTool={(r, shift) => void onTool(r, shift)}
           onContext={onContext}
+          onFormation={(moves, queue, ignored) => void onFormation(moves, queue, ignored)}
           onDropTool={() => setTool({ kind: 'select' })}
         />
       </WorldHost>
@@ -467,7 +562,9 @@ export function StoryMode() {
               onLevel={(dir) => setLevel(nextLevel(lv, build.height, dir, false))}
               onXray={() => setXray(xrayOn ? 'off' : 'on')}
               onHelp={() => setHelp((h) => !h)}
-            />
+            >
+              <TimeSlider tod={state.timeOfDay} control={state.timeControl ?? colonies.data?.timeControl} canWrite={canWrite} onSet={setTime} />
+            </ControlCluster>
           ) : null}
         </div>
         <div className="absolute inset-x-2 top-2 flex flex-col items-center gap-1.5">
@@ -477,7 +574,10 @@ export function StoryMode() {
               selected={selection.bodies}
               order={order}
               onOrder={setOrder}
-              onClick={(name, mods) => setSelection((s) => clickBody(s, name, mods))}
+              onClick={(name, mods) => {
+                setSelection((s) => clickBody(s, name, mods));
+                if (!mods.shift && !mods.ctrl) showBody(name);
+              }}
               onBox={(names, add) => setSelection((s) => ({ ...EMPTY_SELECTION, bodies: add ? [...new Set([...s.bodies, ...names])] : names }))}
               onJump={(name) => {
                 setSelection({ ...EMPTY_SELECTION, bodies: [name] });
@@ -498,12 +598,12 @@ export function StoryMode() {
             <HelpOverlay onClose={() => setHelp(false)} />
           </div>
         ) : null}
-        {!state && !colony.isLoading && !colonies.isLoading ? (
+        {noColony ? (
           <div className="absolute inset-0 grid place-items-center">
             <div className={cn(panel, 'pointer-events-auto w-96 space-y-2 p-4')}>
               <h2 className="text-base font-semibold">Story Mode</h2>
               <p className="text-xs text-muted">Run a colony of pawns: script-only bodies that take work by your priorities and schedule. Pan to where they should settle, then found it.</p>
-              <NewColony canWrite={canWrite} onCreate={(name, n) => void create(name, n)} />
+              <NewColony canWrite={canWrite} at={centre} onCreate={(name, n) => void create(name, n)} />
             </div>
           </div>
         ) : null}

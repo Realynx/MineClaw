@@ -17,6 +17,9 @@ export function lookDir(yaw: number, pitch: number, out = new THREE.Vector3()): 
   return out.set(-Math.sin(y) * Math.cos(p), -Math.sin(p), Math.cos(y) * Math.cos(p));
 }
 
+/** The most ground a top-down / iso view asks to have drawn (blocks): about 450 chunk columns of sections. */
+export const COVER_MAX = 192;
+
 const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 
 export interface RigInput {
@@ -128,6 +131,18 @@ export class CameraRig {
     m.lookAt(pos, this.target, up);
     quat.setFromRotationMatrix(m);
     return { pos, quat, fov: this.fov };
+  }
+
+  /**
+   * Top-down and iso: how far from the target the picture reaches on the ground (the footprint's half diagonal plus a
+   * margin, for a view `aspect` wide), capped at `max`; 0 in the other modes.
+   */
+  groundCover(aspect: number, max = COVER_MAX): number {
+    if (this.mode !== 'iso' && this.mode !== 'top') return 0;
+    const pitch = this.mode === 'top' ? 90 : Math.max(10, this.isoPitch);
+    const halfH = this.isoZoom / 2 / Math.sin((pitch * Math.PI) / 180);
+    const halfW = (this.isoZoom / 2) * Math.max(1, aspect || 1);
+    return Math.min(max, Math.hypot(halfH, halfW) + 12);
   }
 
   isoDistance(): number {

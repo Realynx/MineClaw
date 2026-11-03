@@ -49,6 +49,11 @@ export const STORY_HOME: [number, number, number] = [-2, surface(-2, 1), 1];
 // The camp: a crafting table and a furnace by home.
 setBlock(-4, surface(-4, -2) + 1, -2, 58, 0);
 setBlock(-3, surface(-3, -2) + 1, -2, 61, 3);
+// Two beds by the camp (foot, then head one block south: meta 8).
+for (const bx of [-6, -8]) {
+  setBlock(bx, surface(bx, 2) + 1, 2, 26, 0);
+  setBlock(bx, surface(bx, 3) + 1, 3, 26, 8);
+}
 
 let entityCache: SimEntity[] = [];
 let botCache: Array<{ name: string; x: number; y: number; z: number; hp?: number; food?: number; job?: string }> = [];

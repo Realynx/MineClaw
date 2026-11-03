@@ -22,6 +22,7 @@ export class MockStory {
   constructor(private readonly hive: MockHive) {
     this.sim = new StorySim({
       defaultHome: CAMP,
+      timeRateMs: 0, // the route sweep calls it once per persona in a row
       world: {
         blockAt: (x, y, z) => mockBlock(x, y, z),
         ground: (x, z) => groundAt(x, z),
@@ -89,6 +90,12 @@ export class MockStory {
         return { directives: s.directives() };
       case 'story.directive':
         return s.directiveDetail(cid);
+      case 'story.beds':
+        return s.beds(cid, body);
+      case 'story.time':
+        return s.time(body);
+      case 'story.home':
+        return s.home(cid, body);
       case 'story.pause':
         return s.pause(cid, (body as { paused: boolean }).paused);
       case 'story.priorities':

@@ -70,6 +70,10 @@ export interface ViewSetup {
   /** Fog and section-visibility centre (the camera, or what it looks at). */
   centre: THREE.Vector3;
   drawDistance: number;
+  /** Top-down / iso: the radius of ground the picture shows (drawn at least this far, unfogged; see Centre.cover). */
+  cover?: number;
+  /** Sections wholly below this height are skipped (a zoomed-out top-down / iso view's cheaper picture); null = none. */
+  depthFloor?: number | null;
   /** Device pixels. */
   width: number;
   height: number;
@@ -752,7 +756,7 @@ export class WorldRuntime {
       if (i) interests[`v${v.id}`] = i;
       const c0 = v.centre();
       if (!c0) continue;
-      const c = { ...c0, distance: this.quality.drawDistance(c0.distance) };
+      const c = { ...c0, distance: Math.max(c0.cover ?? 0, this.quality.drawDistance(c0.distance)) };
       const list = centres.get(c.dim) ?? [];
       list.push(c);
       centres.set(c.dim, list);
@@ -901,7 +905,11 @@ export class WorldRuntime {
     const r = this.renderer;
     const primary = s.target === 'primary';
     // The controller's draw distance (software rendering, slow frames) applies to the interactive view.
-    if (primary) s = { ...s, drawDistance: this.quality.drawDistance(s.drawDistance) };
+    // A top-down / iso view's visible ground is drawn whatever the lever says (the render scale gives way instead); entities
+    // keep the plain distance, so a zoomed-out map does not pay for far mobs a few pixels big.
+    const cover = s.cover ?? 0;
+    const entityDistance = primary ? this.quality.drawDistance(s.drawDistance) : s.drawDistance;
+    s = { ...s, drawDistance: Math.max(cover, entityDistance) };
     // Size: the primary owns the canvas; other views use its bottom-left corner (the canvas grows when nobody owns it).
     let w = s.width, h = s.height;
     const cw = this.canvas.width, ch = this.canvas.height;
@@ -925,7 +933,9 @@ export class WorldRuntime {
     (this.scene.background as THREE.Color).setRGB(sky[0], sky[1], sky[2], THREE.SRGBColorSpace);
     u.uFogColor.value.setRGB(fog[0], fog[1], fog[2]);
     u.uFogCentre.value.copy(s.centre);
-    u.uFogRange.value.set(s.drawDistance * 0.72, s.drawDistance);
+    // Fog starts past the picture's own ground in top-down / iso views (in the others cover is 0: the usual 72 %).
+    const fogStart = Math.max(s.drawDistance * 0.72, cover);
+    u.uFogRange.value.set(fogStart, Math.max(s.drawDistance, fogStart + 16));
     u.uStale.value = s.layers.staleness ? 1 : 0;
     this.sky.update(s.camera.position, time, rain, nether, s.layers.weather && this.quality.state.profile.clouds, now, s.camera.far * 0.8);
     if (primary) this.flash = this.weather.update(s.camera.position, now / 1000, rain, thunder, s.layers.weather && !nether, s.precip ?? 'rain');
@@ -956,12 +966,13 @@ export class WorldRuntime {
         sec.showAround(s.centre.x, s.centre.z, s.drawDistance, {
           // Cave culling, unless a cut-away is opening the rock for this view.
           cull: this.quality.state.profile.caveCulling && n === 0 && !s.roof ? { viewKey: s.viewId ?? 0, cam: s.camera.position, dir: s.camera.getWorldDirection(this.tmpDir), ymax: 16 } : null,
-          translucentDistance: this.quality.state.profile.translucentDistance,
+          translucentDistance: Math.max(cover, this.quality.state.profile.translucentDistance),
+          floorY: s.depthFloor ?? null,
         });
     }
     this.entities.detailDistance = this.quality.state.profile.entityDetailDistance; // posed models near, boxes beyond
     const ghosts = s.ghosts ? this.ghostsFor(s, now) : null;
-    this.entities.showFor(s.dim, cam, { bots: s.layers.bots, entities: s.layers.entities, labels: s.labels, selected: s.selected, drawDistance: s.drawDistance, fov: s.camera.fov, ghosts });
+    this.entities.showFor(s.dim, cam, { bots: s.layers.bots, entities: s.layers.entities, labels: s.labels, selected: s.selected, drawDistance: entityDistance, fov: s.camera.fov, ghosts });
     // After the entities: the name labels this view shows decide where the bubbles sit.
     this.bubbles.showFor(
       { dim: s.dim, camera: s.camera, height: h, pxScale: s.pxScale ?? 1, mode: s.bubbles ?? (s.labels ? 'full' : 'compact'), bots: s.layers.bots, players: s.layers.entities, labelLift: this.labelLift },

@@ -276,12 +276,17 @@ export class WorldViewerEngine implements RuntimeView {
 
   interest(): Interest {
     const c = this.lookCentre();
-    return { dim: this.dim, x: c.x, z: c.z, r: this.drawDistance + 24 };
+    return { dim: this.dim, x: c.x, z: c.z, r: Math.max(this.drawDistance, this.cover()) + 24 };
   }
 
   centre(): Centre & { dim: Dim } {
     const c = this.lookCentre();
-    return { dim: this.dim, x: c.x, y: c.y, z: c.z, distance: this.drawDistance };
+    return { dim: this.dim, x: c.x, y: c.y, z: c.z, distance: this.drawDistance, cover: this.cover() };
+  }
+
+  /** Top-down and iso views: the ground the picture shows is always drawn (and unfogged) this far; 0 otherwise. */
+  cover(): number {
+    return this.rig.groundCover(this.camera.aspect);
   }
 
   overlayDim(): Dim | null {
@@ -312,7 +317,8 @@ export class WorldViewerEngine implements RuntimeView {
     }
     this.rig.apply(this.camera, dt, { keys: this.keys }, now);
     const iso = this.rig.mode === 'iso' || this.rig.mode === 'top';
-    this.camera.far = this.drawDistance * 1.6 + (iso ? this.rig.isoDistance() : 0) + 32;
+    const cover = this.cover();
+    this.camera.far = Math.max(this.drawDistance, cover) * 1.6 + (iso ? this.rig.isoDistance() : 0) + 32;
     this.camera.near = iso ? Math.max(0.5, this.rig.isoDistance() * 0.2) : 0.05;
     // A cut-away shows solids from the inside: the cap pass needs their far side (down to the world floor) in range.
     if (this.roof || this.coneOn || this.levelCut) this.camera.far += 256;
@@ -353,6 +359,9 @@ export class WorldViewerEngine implements RuntimeView {
       camera: this.camera,
       centre: iso || this.rig.mode === 'follow' ? this.rig.target : this.camera.position,
       drawDistance: this.drawDistance,
+      cover,
+      // Zoomed out past the draw distance, a top-down / iso picture skips what lies deep below the ground it looks at.
+      depthFloor: cover > this.drawDistance ? this.rig.target.y - FLOOR_DEPTH : null,
       width: w,
       height: h,
       layers: this.layers,
@@ -557,6 +566,9 @@ export class WorldViewerEngine implements RuntimeView {
     this.opts.onPick({ ...hit, name: blockName(this.runtime.version ?? 'b1.8.1', hit.id), dim: this.dim });
   }
 }
+
+/** How deep below the look-at point a zoomed-out top-down / iso view still draws (ocean floors stay; caves do not). */
+const FLOOR_DEPTH = 32;
 
 function clampDraw(n: number): number {
   return Math.max(32, Math.min(256, Math.round(n)));

@@ -5,8 +5,8 @@
  * 1–4 and off, skill as the tint, passion mark, sort by a column), the Schedule grid (paint hours with a brush by dragging;
  * copy and paste between pawns), the build queue (drag to reorder, pause, cancel), the AI directives and the colony.
  */
-import { STORY_HOURS, storyClock, type StoryAiBody, type StoryBuild, type StoryColonyState, type StoryDirective, type StoryPawn, type StoryScheduleBlock } from '@mineclaw/contracts';
-import { ClipboardPaste, Copy, Flame, GripVertical, Pause, Play, Trash2 } from 'lucide-react';
+import { STORY_HOURS, storyClock, type StoryAiBody, type StoryBuild, type StoryColonyState, type StoryDirective, type StoryPawn, type StoryScheduleBlock, type StoryZone } from '@mineclaw/contracts';
+import { ClipboardPaste, Copy, Flame, GripVertical, Home, MapPin, Pause, Pencil, Play, Plus, Trash2 } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 import { Button, Input } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
@@ -412,6 +412,16 @@ export function ColonyPanel({
   canWrite,
   onSwitch,
   onCreate,
+  centre,
+  migrate,
+  onMoveHome,
+  onConfirmMove,
+  onCancelMove,
+  onPickHome,
+  onDrawHouse,
+  onShowZone,
+  onRenameZone,
+  onDeleteZone,
   onPause,
   onRelease,
   onResume,
@@ -422,6 +432,19 @@ export function ColonyPanel({
   canWrite: boolean;
   onSwitch: (id: string) => void;
   onCreate: (name: string, pawns: number) => void;
+  /** The map centre's column: where a new colony settles and where "Move home here" moves this one. */
+  centre: readonly number[] | null;
+  /** A migration waiting for the confirm: the new home column. */
+  migrate: readonly number[] | null;
+  onMoveHome: () => void;
+  onConfirmMove: () => void;
+  onCancelMove: () => void;
+  /** The "Set home" map tool: click the spot. */
+  onPickHome: () => void;
+  onDrawHouse: () => void;
+  onShowZone: (z: StoryZone) => void;
+  onRenameZone: (z: StoryZone, label: string) => void;
+  onDeleteZone: (z: StoryZone) => void;
   onPause: () => void;
   onRelease: () => void;
   onResume: () => void;
@@ -458,12 +481,110 @@ export function ColonyPanel({
           ) : null}
         </div>
       ) : null}
-      <NewColony canWrite={canWrite} onCreate={onCreate} />
+      {state ? (
+        <div className="space-y-1.5 rounded-md border border-border p-2" data-testid="colony-home">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold">Home</span>
+            <span className="text-muted tabular-nums">{state.home ? `${state.home[0]}, ${state.home[2]}` : 'not set'}</span>
+            <Button size="sm" variant="ghost" className="ml-auto" disabled={!canWrite} onClick={onPickHome} title="Click the spot on the map">
+              <MapPin className="size-3.5" />
+              Set home on the map
+            </Button>
+            <Button size="sm" disabled={!canWrite || !centre} onClick={onMoveHome}>
+              <Home className="size-3.5" />
+              Move home here (migrate)
+            </Button>
+          </div>
+          {migrate ? (
+            <div className="space-y-1.5 rounded border border-accent bg-accent-soft p-2" role="alertdialog" aria-label="Migrate home" data-testid="migrate-confirm">
+              <p>
+                Migrate home to <span className="font-semibold tabular-nums">{migrate[0]}, {migrate[2]}</span>? Pawns far from it are brought over; zones,
+                storage and builds stay where they are.
+              </p>
+              <div className="flex gap-2">
+                <Button size="sm" variant="primary" onClick={onConfirmMove}>
+                  Migrate
+                </Button>
+                <Button size="sm" variant="ghost" onClick={onCancelMove}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <p className="text-[10.5px] text-subtle">
+              {centre ? `Here is ${centre[0]}, ${centre[2]}: the map centre.` : 'Here is the map centre.'} Pawns far from the new home are brought to it.
+            </p>
+          )}
+        </div>
+      ) : null}
+      {state ? <Houses zones={state.zones.filter((z) => z.kind === 'home')} canWrite={canWrite} onDraw={onDrawHouse} onShow={onShowZone} onRename={onRenameZone} onDelete={onDeleteZone} /> : null}
+      <NewColony canWrite={canWrite} at={centre} onCreate={onCreate} />
     </section>
   );
 }
 
-export function NewColony({ canWrite, onCreate }: { canWrite: boolean; onCreate: (name: string, pawns: number) => void }) {
+/** The houses: home zones, any number, each named; the pawns sleep, eat and idle in them. */
+function Houses({ zones, canWrite, onDraw, onShow, onRename, onDelete }: { zones: StoryZone[]; canWrite: boolean; onDraw: () => void; onShow: (z: StoryZone) => void; onRename: (z: StoryZone, label: string) => void; onDelete: (z: StoryZone) => void }) {
+  const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
+  return (
+    <div className="space-y-1.5 rounded-md border border-border p-2" data-testid="houses">
+      <div className="flex items-center gap-2">
+        <span className="font-semibold">Houses</span>
+        <span className="text-muted">home areas</span>
+        <Button size="sm" variant="ghost" className="ml-auto" disabled={!canWrite} onClick={onDraw}>
+          <Plus className="size-3.5" />
+          Draw a house
+        </Button>
+      </div>
+      {zones.length ? (
+        <ul className="space-y-1">
+          {zones.map((z, i) => {
+            const name = z.label || `House ${i + 1}`;
+            const id = String(z.id);
+            return (
+              <li key={id} className="flex items-center gap-1.5" data-zone={id}>
+                {editing?.id === id ? (
+                  <form
+                    className="flex min-w-0 flex-1 gap-1"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      onRename(z, editing.text.trim());
+                      setEditing(null);
+                    }}
+                  >
+                    <Input aria-label={`Name of ${name}`} autoFocus value={editing.text} maxLength={40} onChange={(e) => setEditing({ id, text: e.target.value })} className="h-6 text-xs" />
+                    <Button size="sm" type="submit" className="h-6">
+                      Save
+                    </Button>
+                  </form>
+                ) : (
+                  <>
+                    <button type="button" className="min-w-0 flex-1 truncate text-left font-medium hover:underline" onClick={() => onShow(z)} title="Show on the map">
+                      {name}
+                    </button>
+                    <span className="text-subtle tabular-nums">
+                      {Math.abs(z.area[3] - z.area[0]) + 1} × {Math.abs(z.area[5] - z.area[2]) + 1}
+                    </span>
+                    <Button size="sm" variant="ghost" className="h-6 px-1.5" disabled={!canWrite} onClick={() => setEditing({ id, text: z.label ?? '' })} aria-label={`Rename ${name}`}>
+                      <Pencil className="size-3.5" />
+                    </Button>
+                    <Button size="sm" variant="ghost" className="h-6 px-1.5 text-danger" disabled={!canWrite} onClick={() => onDelete(z)} aria-label={`Delete ${name}`}>
+                      <Trash2 className="size-3.5" />
+                    </Button>
+                  </>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <p className="text-[10.5px] text-subtle">No houses yet: draw home areas where the pawns should sleep and rest.</p>
+      )}
+    </div>
+  );
+}
+
+export function NewColony({ canWrite, at, onCreate }: { canWrite: boolean; at: readonly number[] | null; onCreate: (name: string, pawns: number) => void }) {
   const [name, setName] = useState('Hollow');
   const [n, setN] = useState(4);
   return (
@@ -491,7 +612,16 @@ export function NewColony({ canWrite, onCreate }: { canWrite: boolean; onCreate:
           </Button>
         </div>
       </div>
-      <p className="text-[10.5px] text-subtle">They settle where the map is centred: script-only bodies running the colony script.</p>
+      <p className="text-[10.5px] text-muted" data-testid="settle-at">
+        {at ? (
+          <>
+            Settles at <span className="font-semibold tabular-nums text-fg">{at[0]}, {at[2]}</span>: the map centre. Pan to settle elsewhere.
+          </>
+        ) : (
+          'Settles at the map centre.'
+        )}
+      </p>
+      <p className="text-[10.5px] text-subtle">Pawns are script-only bodies running the colony script.</p>
       <Button type="submit" size="sm" variant="primary" disabled={!canWrite}>
         Found colony
       </Button>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ALL_VISIBLE, connects, pairBit, sectionVisibility, visibleSections } from '../src/mesh/visibility';
+import { ALL_VISIBLE, connects, pairBit, sectionVisibility, visibleSections, walkStart } from '../src/mesh/visibility';
 import { buildStateTable } from '../src/mesh/states';
 import { PROFILES, QualityController } from '../src/render/quality';
 import { precipitation } from '../src/world/sky';
@@ -47,6 +47,27 @@ describe('cave culling (visibility graph)', () => {
     const seen = visibleSections(0, 0, 0, 4, 1, () => ALL_VISIBLE, { x: 1, y: 0, z: 0 });
     expect(seen.has('3,0,0')).toBe(true);
     expect(seen.has('-3,0,0')).toBe(false);
+  });
+
+  it('a camera far above the world (a zoomed-out top-down map) enters the walk just above it, so the ground stays drawn', () => {
+    // Open air in layers 4..8 over a solid layer 3 with sealed caves below it.
+    const world = (_cx: number, cy: number) => (cy >= 4 ? ALL_VISIBLE : 0);
+    const down = { x: 0, y: -1, z: 0 };
+    // Started where the camera is (layer 40), the walk never leaves its layer: everything would be culled.
+    expect(visibleSections(0, 40, 0, 6, 8, world, down).size).toBe(1);
+    const from = walkStart({ x: 8, y: 650, z: 8 }, down, 8, 0.5, 0.5)!;
+    expect(from.y).toBeLessThan(10 * 16);
+    expect(from.extra).toBe(0);
+    const seen = visibleSections(Math.floor(from.x / 16), Math.floor(from.y / 16), Math.floor(from.z / 16), 6, 8, world, down);
+    expect(seen.has('3,3,-2')).toBe(true); // the ground's top layer, across the view
+    expect(seen.has('3,2,-2')).toBe(false); // the sealed rock under it stays culled
+    // An angled view far out enters along its ray, with the range to reach the centre again.
+    const iso = { x: 0.5, y: -Math.sqrt(0.75), z: 0 };
+    const a = walkStart({ x: -400, y: 700, z: 0 }, iso, 8, 0, 0)!;
+    expect(a.y).toBe(9 * 16 + 8);
+    expect(a.extra).toBeGreaterThan(0);
+    expect(walkStart({ x: 0, y: 700, z: 0 }, { x: 1, y: 0, z: 0 }, 8, 0, 0)).toBeNull();
+    expect(walkStart({ x: 1, y: 70, z: 2 }, down, 8, 0, 0)).toEqual({ x: 1, y: 70, z: 2, extra: 0 });
   });
 });
 

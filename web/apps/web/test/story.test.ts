@@ -1,7 +1,7 @@
 import { StoryBillsRequest, StoryBuildRequest, StoryDesignationRequest, StoryDirectiveRequest, StoryOrderRequest, StoryScheduleRequest, StoryStorageRequest, type StoryColonyState } from '@mineclaw/contracts';
 import { describe, expect, it } from 'vitest';
 import { isTyping } from '@/features/world/directives';
-import { boxPick, cellAt, cellRect, edgePan, isDrag, nearest, project, rayAt, rectOf, zoomAt, type ViewMats } from '@/features/story/math';
+import { assignAlong, boxPick, cellAt, cellRect, edgePan, isDrag, lineSlots, nearest, project, rayAt, rectOf, snapCells, standFeet, zoomAt, ZOOM_MAX, type ViewMats } from '@/features/story/math';
 import {
   applyPaint,
   boxBodies,
@@ -106,12 +106,55 @@ describe('map math', () => {
     expect(cellRect([5, 64, 9], [2, 64, -1])).toEqual([2, -1, 5, 9]);
   });
 
+  it('formations: slots spread along a drag line, at least a cell apart, in line order', () => {
+    const s = lineSlots({ x: 0.5, z: 0.5 }, { x: 10.5, z: 0.5 }, 3);
+    expect(s.map((p) => [p.x, p.z])).toEqual([[0.5, 0.5], [5.5, 0.5], [10.5, 0.5]]);
+    // a short drag fans out around its middle, one cell apart
+    const short = lineSlots({ x: 0.5, z: 0.5 }, { x: 1.5, z: 0.5 }, 4);
+    expect(short.map((p) => p.x)).toEqual([-0.5, 0.5, 1.5, 2.5]);
+    // a diagonal needs a full cell on both axes per pawn: every slot lands in its own cell
+    const diag = lineSlots({ x: 0.5, z: 0.5 }, { x: 1.5, z: 1.5 }, 4);
+    expect(new Set(diag.map((p) => `${Math.floor(p.x)},${Math.floor(p.z)}`)).size).toBe(4);
+    expect(lineSlots({ x: 3, z: 4 }, { x: 3, z: 4 }, 1)).toEqual([{ x: 3, z: 4 }]);
+    expect(lineSlots({ x: 0, z: 0 }, { x: 1, z: 0 }, 0)).toEqual([]);
+  });
+
+  it('formations: slots snap to distinct standable cells; pawns pair with slots without crossing', () => {
+    const wall = (x: number, z: number) => !(x === 5 && z === 0);
+    const cells = snapCells([{ x: 0.5, z: 0.5 }, { x: 5.5, z: 0.5 }, { x: 5.6, z: 0.5 }], wall);
+    expect(cells[0]).toEqual([0, 0]);
+    expect(cells[1]).not.toEqual([5, 0]); // unstandable: the nearest standable cell
+    expect(new Set(cells.map((c) => c.join(','))).size).toBe(3); // never two on one cell
+    expect(Math.hypot(cells[1]![0] - 5, cells[1]![1])).toBeLessThanOrEqual(1);
+    // nowhere standable: still distinct cells
+    expect(new Set(snapCells([{ x: 0.5, z: 0.5 }, { x: 0.5, z: 0.5 }], () => false).map((c) => c.join(','))).size).toBe(2);
+    // the pawn on the left takes the left slot, whatever the list order
+    const slots = [{ x: 0.5, z: 5.5 }, { x: 10.5, z: 5.5 }];
+    expect(assignAlong([{ key: 'east', x: 12, z: 0 }, { key: 'west', x: -3, z: 0 }], slots, slots[0]!, slots[1]!)).toEqual([['west', 0], ['east', 1]]);
+    // a line drawn the other way round keeps the pairing on the same sides
+    expect(assignAlong([{ key: 'east', x: 12, z: 0 }, { key: 'west', x: -3, z: 0 }], [slots[1]!, slots[0]!], slots[1]!, slots[0]!).sort()).toEqual([['east', 0], ['west', 1]]);
+    // more bodies than slots: the extra ones get none
+    expect(assignAlong([{ key: 'a', x: 0, z: 0 }, { key: 'b', x: 1, z: 0 }], [{ x: 0, z: 0 }], { x: 0, z: 0 }, { x: 1, z: 0 })).toHaveLength(1);
+  });
+
+  it('formations: a column\'s standing height nearest the level', () => {
+    // y0 = 60: stone up to 63, grass at 64, then air; feet at 65
+    expect(standFeet([1, 1, 1, 1, 2, 0, 0, 0, 0, 0, 0], 60, 64)).toBe(65);
+    // tall grass on top does not block the feet
+    expect(standFeet([1, 1, 1, 1, 2, 31, 0, 0, 0, 0, 0], 60, 64)).toBe(65);
+    // water is never a floor; a solid column with no headroom has nowhere to stand
+    expect(standFeet([1, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9], 60, 64)).toBeNull();
+    expect(standFeet([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], 60, 64)).toBeNull();
+    // not loaded
+    expect(standFeet([-1, -1, -1], 60, 64)).toBeUndefined();
+  });
+
   it('zooms around the cursor and pans at the screen edge', () => {
     const z = zoomAt({ x: 0, z: 0 }, 40, -1, { x: 10, z: 0 });
     expect(z.zoom).toBeCloseTo(40 / 1.15);
     // the cursor point stays where it is: target moved toward it in proportion
     expect(z.x).toBeCloseTo(10 - 10 / 1.15);
-    expect(zoomAt({ x: 0, z: 0 }, 220, 3, { x: 0, z: 0 }).zoom).toBe(220);
+    expect(zoomAt({ x: 0, z: 0 }, ZOOM_MAX, 3, { x: 0, z: 0 }).zoom).toBe(ZOOM_MAX);
     expect(edgePan({ x: 2, y: 300 }, 800, 600)).toEqual([-1, 0]);
     expect(edgePan({ x: 400, y: 599 }, 800, 600)).toEqual([0, 1]);
     expect(edgePan({ x: 400, y: 300 }, 800, 600)).toEqual([0, 0]);
