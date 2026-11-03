@@ -25,7 +25,8 @@ EnvironmentFile=-/etc/mineclaw-web/mineclaw-web.env
 # The HMAC key shared with the bridge: root-only on disk, handed to the service as a credential (never in env or argv).
 LoadCredential=bridge.key:/etc/mineclaw-web/bridge.key
 Environment=MINECLAW_BRIDGE_KEY_FILE=%d/bridge.key
-ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning dist/main.js
+# The V8 heap cap keeps the GC working well below MemoryMax (V8 would otherwise size its heap from the whole CT).
+ExecStart=/usr/local/bin/node --max-old-space-size=384 --disable-warning=ExperimentalWarning dist/main.js
 SyslogIdentifier=mineclaw-web-api
 StandardOutput=journal
 StandardError=journal
@@ -39,7 +40,7 @@ RestartMaxDelaySec=60
 # 1 = config/startup error (bad config, missing key, mock refused): needs a human.
 RestartPreventExitStatus=1
 
-# Web stack budget is ~1 GB in total (architecture.md › Topology): api 512 MB + ui 512 MB.
+# Web stack budget is ~1.5 GB in total (docs/web/deploy.md › Memory): api 512 MB + ui 384 MB + bridge 600 MB.
 MemoryMax=512M
 MemoryHigh=448M
 TasksMax=256

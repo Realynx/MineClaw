@@ -18,7 +18,8 @@ Environment=PORT=3000
 Environment=HOSTNAME=127.0.0.1
 Environment=NEXT_TELEMETRY_DISABLED=1
 EnvironmentFile=-/etc/mineclaw-web/mineclaw-web-ui.env
-ExecStart=/usr/bin/node server.js
+# The V8 heap cap keeps the GC working well below MemoryMax (V8 would otherwise size its heap from the whole CT).
+ExecStart=/usr/local/bin/node --max-old-space-size=256 server.js
 SyslogIdentifier=mineclaw-web-ui
 StandardOutput=journal
 StandardError=journal
@@ -30,8 +31,8 @@ RestartSec=3
 RestartSteps=5
 RestartMaxDelaySec=60
 
-MemoryMax=512M
-MemoryHigh=448M
+MemoryMax=384M
+MemoryHigh=320M
 TasksMax=256
 
 # ---- hardening ----
