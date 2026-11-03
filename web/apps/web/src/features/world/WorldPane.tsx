@@ -19,7 +19,7 @@ import { Segmented, Tooltip } from '@/components/ui/overlays';
 import { DotMap } from './DotMap';
 import { useWorldHost } from './integration';
 import { ChatOverlay, Crosshair as AimCross, SelectionBar, TargetReadout } from './InWorld';
-import { isTyping, nextSelection, selectByNumber, sendDirective, type SendResult } from './directives';
+import { closesOpenBar, isTyping, nextSelection, selectByNumber, sendDirective, type SendResult } from './directives';
 
 /** The Keyboard Lock API (fullscreen, secure contexts only): with Escape locked, Esc reaches the page instead of the browser. */
 type KeyboardLock = { lock?: (keys: string[]) => Promise<void>; unlock?: () => void };
@@ -108,15 +108,36 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
     };
   }, []);
 
+  // The bar needs the cursor: opening it releases the mouse, and while it is open nothing may lock it again (a click on the
+  // world closes the bar instead, see below), so the chips and the close button stay clickable.
+  const chatOpenRef = useRef(false);
   const openChat = useCallback(() => {
-    if (document.pointerLockElement) document.exitPointerLock(); // typing needs the cursor
+    chatOpenRef.current = true;
+    if (document.pointerLockElement) document.exitPointerLock();
     setSent(null);
     setChatOpen(true);
   }, []);
   const closeChat = useCallback(() => {
+    chatOpenRef.current = false;
     setChatOpen(false);
     viewer.current?.engine()?.surface.focus(); // back in the game: the next click locks the mouse again
   }, []);
+
+  // While the bar is open, a press on the world (the canvas) closes it and takes the mouse back in free cam: one click,
+  // which the viewer never sees (no pick, no selection). Capture phase, so it runs before the viewer's own listener.
+  useEffect(() => {
+    const el = stage.current;
+    if (!el) return;
+    const onDown = (e: PointerEvent) => {
+      if (!chatOpenRef.current || !(e.target instanceof HTMLCanvasElement)) return;
+      e.stopPropagation();
+      e.preventDefault();
+      closeChat();
+      if (viewer.current?.getCameraMode() === 'fly' && e.button === 0) viewer.current.lock();
+    };
+    el.addEventListener('pointerdown', onDown, true);
+    return () => el.removeEventListener('pointerdown', onDown, true);
+  }, [closeChat, ready]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -130,6 +151,14 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
       const inWorld = !!el && (el.contains(document.activeElement) || document.fullscreenElement === el || (!!document.pointerLockElement && el.contains(document.pointerLockElement)));
       if (!inWorld || e.altKey || e.ctrlKey || e.metaKey) return;
       if ((e.key === 'Enter' || e.key === ' ') && (e.target as HTMLElement | null)?.closest?.('button, a')) return; // a focused control
+      if (chatOpenRef.current) {
+        // The bar is open but its input doesn't have the keys (disabled, or a button has focus): T / Enter / Esc close it.
+        if (closesOpenBar(e)) {
+          e.preventDefault();
+          closeChat();
+        }
+        return;
+      }
       if (e.code === 'KeyF' && !e.shiftKey) {
         e.preventDefault();
         toggleFullscreen();
@@ -149,7 +178,7 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [toggleFullscreen, openChat]);
+  }, [toggleFullscreen, openChat, closeChat]);
 
   const onAimClick = useCallback((t: AimTarget | null, mods: { shift: boolean; ctrl: boolean }) => {
     if (mods.ctrl) {

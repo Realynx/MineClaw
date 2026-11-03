@@ -12,7 +12,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useFeed } from '@/lib/live/hooks';
 import { useTicker } from '@/lib/live/ticker';
 import { cn } from '@/lib/utils';
-import { DIRECTIVES, directiveText, type SendResult } from './directives';
+import { chatBarKey, DIRECTIVES, directiveText, type SendResult } from './directives';
 
 /** Vanilla's 9×9 "+" drawn in inverted colour (white blended by difference, like the game's GL_ONE_MINUS_DST_COLOR). */
 export function Crosshair() {
@@ -142,20 +142,21 @@ export function ChatOverlay({
   }, [open]);
   const onKey = (e: KeyboardEvent<HTMLInputElement>) => {
     e.stopPropagation(); // the world's shortcuts never see what is typed here
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      onClose();
-    } else if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-      e.preventDefault();
-      if (text.trim() && targets.length && canChat) {
-        onSend(text.trim());
-        setText('');
-        onClose();
-      }
+    if (e.nativeEvent.isComposing) return;
+    const action = chatBarKey(e.key, text, targets.length > 0 && canChat);
+    if (!action) return;
+    e.preventDefault();
+    if (action === 'send') {
+      onSend(text.trim());
+      setText('');
     }
+    onClose();
   };
   return (
-    <div className="absolute inset-x-3 bottom-9 flex flex-col items-start gap-1.5" data-testid="chat-overlay">
+    <div
+      className="pointer-events-none absolute inset-x-3 bottom-9 flex flex-col items-start gap-1.5"
+      data-testid="chat-overlay"
+    >
       {lines.length ? (
         <ul
           className="max-w-[min(42rem,90%)] space-y-0.5 font-mono text-[12px] leading-snug text-white"
@@ -173,7 +174,7 @@ export function ChatOverlay({
         </ul>
       ) : null}
       {open ? (
-        <div className="w-full space-y-1.5">
+        <div className="pointer-events-auto w-full space-y-1.5">
           {marker && canChat ? (
             <div className="flex flex-wrap gap-1.5" aria-label="Directives">
               {DIRECTIVES.map((d) => (
@@ -208,11 +209,20 @@ export function ChatOverlay({
                 !canChat
                   ? 'Your account cannot chat with the bots'
                   : targets.length
-                    ? 'Say something (Enter sends, Esc closes)'
+                    ? 'Say something (Enter sends; Enter on an empty line or clicking the world closes)'
                     : 'Click a bot with the crosshair first'
               }
               className="min-w-0 flex-1 bg-transparent text-white outline-none placeholder:text-white/40"
             />
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close the chat"
+              title="Close the chat (Enter on an empty line, or click the world)"
+              className="shrink-0 rounded-sm px-1 text-white/70 hover:bg-white/10 hover:text-white"
+            >
+              <X className="size-3.5" />
+            </button>
           </div>
         </div>
       ) : results && results.some((r) => !r.ok) ? (

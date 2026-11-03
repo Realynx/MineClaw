@@ -4,7 +4,15 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatOverlay } from '@/features/world/InWorld';
-import { directiveText, isTyping, nextSelection, selectByNumber, sendDirective } from '@/features/world/directives';
+import {
+  chatBarKey,
+  closesOpenBar,
+  directiveText,
+  isTyping,
+  nextSelection,
+  selectByNumber,
+  sendDirective,
+} from '@/features/world/directives';
 import { setCsrfToken, setFetch } from '@/lib/api/client';
 import { liveKeys } from '@/lib/live/dispatch';
 
@@ -142,5 +150,45 @@ describe('ChatOverlay', () => {
     setup({ canChat: false });
     expect(screen.getByRole('textbox')).toBeDisabled();
     expect(screen.queryByRole('button', { name: 'Come here' })).toBeNull();
+    // ...but it can still be closed without Esc
+    expect(screen.getByRole('button', { name: 'Close the chat' })).toBeEnabled();
+  });
+
+  it('closes without Esc: Enter on an empty line, or the close button; typing a T never closes it', async () => {
+    const { onSend, onClose } = setup();
+    const box = screen.getByRole('textbox', { name: /chat to the selected bots/i });
+    await userEvent.type(box, 'thanks');
+    expect(onClose).not.toHaveBeenCalled();
+    await userEvent.clear(box);
+    await userEvent.type(box, '{Enter}');
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onSend).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Close the chat' }));
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it('sending closes the bar', async () => {
+    const { onSend, onClose } = setup();
+    await userEvent.type(screen.getByRole('textbox', { name: /chat to the selected bots/i }), 'stay here{Enter}');
+    expect(onSend).toHaveBeenCalledWith('stay here');
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('chat bar keys', () => {
+  it('Enter sends a line, closes an empty bar; Esc closes; letters do nothing', () => {
+    expect(chatBarKey('Enter', 'come here', true)).toBe('send');
+    expect(chatBarKey('Enter', '   ', true)).toBe('close');
+    expect(chatBarKey('Enter', 'hi', false)).toBeNull(); // can't send (no target / no chat role): keep the text
+    expect(chatBarKey('Escape', 'half a sentence', true)).toBe('close');
+    expect(chatBarKey('t', '', true)).toBeNull();
+  });
+
+  it('with the input not holding the keys, T, Enter and Esc close the open bar; other keys do not', () => {
+    expect(closesOpenBar({ key: 't', code: 'KeyT' })).toBe(true);
+    expect(closesOpenBar({ key: 'Enter', code: 'Enter' })).toBe(true);
+    expect(closesOpenBar({ key: 'Escape', code: 'Escape' })).toBe(true);
+    expect(closesOpenBar({ key: '1', code: 'Digit1' })).toBe(false);
+    expect(closesOpenBar({ key: 'f', code: 'KeyF' })).toBe(false);
   });
 });

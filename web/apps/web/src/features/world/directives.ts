@@ -94,3 +94,24 @@ export async function sendDirective(
     }),
   );
 }
+
+export type ChatBarAction = 'send' | 'close' | null;
+
+/**
+ * A key typed in the chat bar: Enter sends the line, or closes the bar when it is empty (a way out without Esc: over plain
+ * HTTP the browser takes Esc in fullscreen to leave fullscreen); Esc closes whenever the browser hands it to the page.
+ */
+export function chatBarKey(key: string, text: string, canSend: boolean): ChatBarAction {
+  if (key === 'Escape') return 'close';
+  if (key !== 'Enter') return null;
+  if (!text.trim()) return 'close';
+  return canSend ? 'send' : null;
+}
+
+/**
+ * A world key while the bar is open but its input doesn't have the keys (disabled, or a button has focus): T, Enter and Esc
+ * close it. Inside the input T is just a letter ("thanks"), so typing never closes the bar.
+ */
+export function closesOpenBar(e: { key: string; code: string }): boolean {
+  return e.key === 'Escape' || e.key === 'Enter' || e.code === 'KeyT';
+}
