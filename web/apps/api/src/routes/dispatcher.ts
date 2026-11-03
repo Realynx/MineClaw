@@ -7,6 +7,7 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
+  REQUEST_OPAQUE_KEYS,
   ROUTES,
   ViewMeta,
   bridgePath,
@@ -246,7 +247,7 @@ export class RouteDispatcher {
       const payload = { bot: input.params.bot, text: b.text, request_id: b.requestId };
       return { body: Buffer.from(JSON.stringify(payload), 'utf8'), contentType: 'application/json' };
     }
-    return { body: Buffer.from(JSON.stringify(toSnake(input.body)), 'utf8'), contentType: 'application/json' };
+    return { body: Buffer.from(JSON.stringify(toSnake(input.body, { opaque: REQUEST_OPAQUE_KEYS })), 'utf8'), contentType: 'application/json' };
   }
 
   private auditTarget(input: Input): string | null {

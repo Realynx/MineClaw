@@ -215,6 +215,28 @@ public class PassthroughTests
         Assert.Equal(400, (await h.PostAsync("/v1/sup/story/colonies/story-1/orders", """{"who":"mallory"}""", roles: "story")).Status);
     }
 
+    [Fact]
+    public async Task Story_directives_carry_the_signed_player_and_commands_only_with_the_role()
+    {
+        await using var h = await BridgeHost.StartAsync();
+        h.Sup.Routes["/api/story/directives"] = _ => FakeSupervisor.Json("""{"id":"dir3","delivered":["maid_chan"],"line":"poofimafox (story map): come here [dir3]"}""");
+        const string dir = """{"bots":["maid_chan"],"directive":{"kind":"text","text":"come here"},"request_id":"r-12345678"}""";
+        Assert.Equal(200, (await h.PostAsync("/v1/sup/story/directives", dir, roles: "story,viewer")).Status);
+        using (var doc = JsonDocument.Parse(h.Sup.Seen.Last(r => r.Target == "/api/story/directives").Body))
+        {
+            Assert.Equal("poofimafox", doc.RootElement.GetProperty("player").GetString());
+            Assert.False(doc.RootElement.GetProperty("allow_commands").GetBoolean());
+            Assert.False(doc.RootElement.TryGetProperty("who", out _));
+        }
+        Assert.Equal(200, (await h.PostAsync("/v1/sup/story/directives", dir, roles: "commands,story,viewer")).Status);
+        using (var doc = JsonDocument.Parse(h.Sup.Seen.Last(r => r.Target == "/api/story/directives").Body))
+            Assert.True(doc.RootElement.GetProperty("allow_commands").GetBoolean());
+        // Never from the body; never without a linked player.
+        Assert.Equal(400, (await h.PostAsync("/v1/sup/story/directives", """{"bots":["maid_chan"],"player":"mallory"}""", roles: "story")).Status);
+        Assert.Equal(400, (await h.PostAsync("/v1/sup/story/directives", """{"bots":["maid_chan"],"allow_commands":true}""", roles: "story")).Status);
+        Assert.Equal(403, (await h.PostAsync("/v1/sup/story/directives", dir, roles: "story", player: "")).Status);
+    }
+
     [Theory]
     [InlineData("/v1/sup/bodies/..%2Fadmin/x")]
     [InlineData("/v1/sup/bodies/%2e%2e/admin")]

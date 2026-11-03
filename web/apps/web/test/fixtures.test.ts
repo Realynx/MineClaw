@@ -9,7 +9,7 @@ import { tick } from '@/mocks/data/live';
 import { seedStory, storySim } from '@/mocks/data/story';
 
 // Answer errors by design (phase 2 / unused; setup.create is 409 once users exist, so it has its own test below).
-const SKIP = new Set<RouteId>(['groom.preview', 'bots.tile', 'setup.create']);
+const SKIP = new Set<RouteId>(['groom.preview', 'bots.tile', 'setup.create', 'story.directive']);
 
 /** Bodies and params for the write routes (the shared SAMPLE_CALLS cover the reads). */
 const WRITES: Partial<Record<RouteId, Ctx>> = {
@@ -44,7 +44,8 @@ function storyWrites(): Partial<Record<RouteId, Ctx>> {
     'story.designations': w({ op: 'add', kind: 'chop', area: [-10, 50, -14, 8, 90, 8] }),
     'story.builds': w({ op: 'add', items: [{ kind: 'wall', area: [0, 70, 0, 4, 70, 4], material: 'cobblestone', height: 3 }] }),
     'story.storage': w({ op: 'assign_area', area: [1, 60, -5, 7, 80, -3] }),
-    'story.bills': w({ op: 'add', workbench: benchPos(), spec: { recipe: 'sticks', mode: 'until', target: 64 } }),
+    'story.bills': w({ op: 'add', bench: benchPos(), bill: { recipe: 'sticks', mode: 'until', target: 64 } }),
+    'story.resume': w({}),
     'story.directives': { params: {}, query: {}, body: { bots: ['maid_chan'], directive: { kind: 'text', text: 'hi' }, requestId: 'r-12345678' } },
   };
 }

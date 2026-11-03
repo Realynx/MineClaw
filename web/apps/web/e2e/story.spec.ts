@@ -265,8 +265,8 @@ test('storage, bills, the build queue and the angled view', async ({ page }) => 
   const add = post(page, /\/bills$/);
   await page.getByRole('button', { name: 'Add bill' }).last().click();
   const added = body(await add);
-  expect(added).toMatchObject({ op: 'add', spec: { recipe: 'sticks', mode: 'until', target: 64, radius: 48 } });
-  expect((added.spec as { pawn: string }).pawn).toMatch(/^maid_s1_/);
+  expect(added).toMatchObject({ op: 'add', bill: { recipe: 'sticks', mode: 'until', target: 64, radius: 48 } });
+  expect((added.bill as { pawn: string }).pawn).toMatch(/^maid_s1_/);
   await bills.getByRole('button', { name: 'Add bill' }).click();
   await page.getByRole('button', { name: 'Recipe Torches' }).click();
   const add2 = post(page, /\/bills$/);
@@ -331,4 +331,24 @@ test('storage, bills, the build queue and the angled view', async ({ page }) => 
   if (shots) await page.screenshot({ path: `${shots}/story-angled.png` });
   await page.keyboard.press('v');
   await expect.poll(() => story(page, 'mode')).toBe('top');
+});
+
+test('a design from the design pages is placed on the map and queued (/story?design=N)', async ({ page }) => {
+  await signIn(page, false);
+  await page.goto('/story?design=12');
+  await page.waitForFunction(() => (window as unknown as { __story?: StoryDebug }).__story?.ready());
+  await expect(page.getByTestId('tool-options')).toContainText('Design:');
+  const at = await pageAt(page, 6.5, 2.5);
+  await page.mouse.move(at.x, at.y);
+  await page.keyboard.press('e'); // turned a quarter
+  await page.waitForTimeout(400);
+  if (shots) await page.screenshot({ path: `${shots}/story-design.png` });
+  const queued = post(page, /\/builds$/);
+  await page.mouse.click(at.x, at.y);
+  const b = body(await queued) as { op: string; items: Array<{ kind: string; blocks: number[][]; material: number[] }> };
+  expect(b.op).toBe('add');
+  expect(b.items.every((i) => i.kind === 'block' && i.blocks.length > 0)).toBe(true);
+  // The mock design: a 5×5 hut, walls 3 high with a 2-high doorway, a plank roof.
+  expect(b.items.reduce((n, i) => n + i.blocks.length, 0)).toBe(46 + 25);
+  await expect(page.getByTestId('story-toast')).toContainText(/Queued .*: 71 blocks/);
 });

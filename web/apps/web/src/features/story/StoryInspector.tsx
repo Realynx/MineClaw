@@ -10,8 +10,10 @@ import {
   STORY_STORAGE_PRIORITIES,
   storyItemLabel,
   type StoryAiBody,
+  targetPos,
   type StoryBill,
   type StoryColonyState,
+  type StoryOrder,
   type StoryFilter,
   type StoryPawn,
   type StoryRecipe,
@@ -55,6 +57,12 @@ import { useRecipes, type StoryWrite } from './useStory';
 import { AiMark, Avatar, ItemIcon } from './visuals';
 
 type V3 = [number, number, number];
+
+function orderWhere(t: StoryOrder['target']): string {
+  const p = targetPos(t);
+  if (p) return p.map((n) => Math.floor(n)).join(', ');
+  return t && typeof t === 'object' && !Array.isArray(t) && t.entity !== null && t.entity !== undefined ? `#${t.entity}` : '';
+}
 const k3 = (p: readonly number[]) => `${p[0]},${p[1]},${p[2]}`;
 
 function Bar({ value, color, label }: { value: number; color: string; label: string }) {
@@ -161,7 +169,7 @@ export function PawnInspector({ pawn, canWrite, onDraft, onClearQueue, onClose }
               <li key={String(o.id ?? i)} className="flex items-center gap-1.5 rounded bg-surface-2 px-1.5 py-1">
                 <span className="w-4 text-subtle">{i + 1}</span>
                 <span className="font-medium capitalize">{o.kind}</span>
-                <span className="text-muted">{(o.target?.x !== null && o.target?.x !== undefined) ? `${o.target.x}, ${o.target.y}, ${o.target.z}` : (o.target?.entity !== null && o.target?.entity !== undefined) ? `#${o.target.entity}` : ''}</span>
+                <span className="text-muted">{orderWhere(o.target)}</span>
                 <span className="ml-auto text-subtle">{o.state}</span>
               </li>
             ))}
@@ -410,7 +418,12 @@ export function BillsInspector({ bench, state, canWrite, write, onPickChest, onC
   return (
     <Shell title={label[0]!.toUpperCase() + label.slice(1)} sub={`${bench.bills.length} bill${bench.bills.length === 1 ? '' : 's'} · top to bottom`} onClose={onClose} testid="bills-inspector">
       <div className="space-y-2 text-xs">
-        <Button size="sm" variant="primary" disabled={!canWrite} onClick={() => setPicker(true)}>
+        {bench.supported === false ? (
+          <p className="rounded-md bg-surface-2 px-2 py-1.5 text-muted" title="The colony has no way to work this bench yet">
+            A {bench.kind.replace(/_/g, ' ')} takes no bills yet.
+          </p>
+        ) : null}
+        <Button size="sm" variant="primary" disabled={!canWrite || bench.supported === false} onClick={() => setPicker(true)} title={bench.supported === false ? 'Not supported yet' : undefined}>
           <Plus className="size-3.5" /> Add bill
         </Button>
         <ol className="space-y-1" data-testid="bills">
@@ -441,10 +454,10 @@ export function BillsInspector({ bench, state, canWrite, write, onPickChest, onC
                   </div>
                   {b.suspendedReason ? <div className="text-[10.5px] text-danger">Suspended: {b.suspendedReason}</div> : null}
                 </button>
-                <button type="button" disabled={!canWrite} onClick={() => void write('story.bills', { op: b.paused ? 'resume' : 'pause', workbench: pos, ids: [b.id] } as never)} aria-label={b.paused ? `Resume ${r?.label ?? b.recipe}` : `Pause ${r?.label ?? b.recipe}`} className="rounded p-0.5 hover:bg-surface-3">
+                <button type="button" disabled={!canWrite} onClick={() => void write('story.bills', { op: b.paused ? 'resume' : 'pause', id: b.id } as never)} aria-label={b.paused ? `Resume ${r?.label ?? b.recipe}` : `Pause ${r?.label ?? b.recipe}`} className="rounded p-0.5 hover:bg-surface-3">
                   {b.paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
                 </button>
-                <button type="button" disabled={!canWrite} onClick={() => void write('story.bills', { op: 'remove', workbench: pos, ids: [b.id] } as never)} aria-label={`Delete ${r?.label ?? b.recipe}`} className="rounded p-0.5 text-danger hover:bg-danger-soft">
+                <button type="button" disabled={!canWrite} onClick={() => void write('story.bills', { op: 'remove', id: b.id } as never)} aria-label={`Delete ${r?.label ?? b.recipe}`} className="rounded p-0.5 text-danger hover:bg-danger-soft">
                   <Trash2 className="size-3.5" />
                 </button>
               </li>
@@ -472,7 +485,7 @@ export function BillsInspector({ bench, state, canWrite, write, onPickChest, onC
           onPickChest={pickChest}
           onClose={() => setEditing(null)}
           onSave={(d) => {
-            const body = editing.bill ? updateBillBody(pos, editing.bill, d) : addBillBody(pos, d);
+            const body = editing.bill ? updateBillBody(editing.bill, d) : addBillBody(pos, d);
             setEditing(null);
             if (body) void write('story.bills', body as never);
           }}

@@ -414,6 +414,7 @@ export function ColonyPanel({
   onCreate,
   onPause,
   onRelease,
+  onResume,
 }: {
   state: StoryColonyState | undefined;
   colonies: Array<{ id: string; name: string; pawns: string[]; paused?: boolean | null }>;
@@ -423,6 +424,7 @@ export function ColonyPanel({
   onCreate: (name: string, pawns: number) => void;
   onPause: () => void;
   onRelease: () => void;
+  onResume: () => void;
 }) {
   return (
     <section className={cn(panel, 'pointer-events-auto w-[26rem] space-y-3 p-3 text-xs')} aria-label="Colony" data-testid="colony-panel">
@@ -449,6 +451,11 @@ export function ColonyPanel({
           <Button size="sm" variant="ghost" disabled={!canWrite || !state.pawns.some((p) => p.online !== false)} onClick={onRelease}>
             Release pawns
           </Button>
+          {state.active === false ? (
+            <Button size="sm" variant="primary" disabled={!canWrite} onClick={onResume}>
+              Resume colony
+            </Button>
+          ) : null}
         </div>
       ) : null}
       <NewColony canWrite={canWrite} onCreate={onCreate} />

@@ -371,7 +371,7 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
       const roles = identity.roles.split(',');
       if (route.method === 'POST' && !roles.includes('story') && !roles.includes('admin'))
         return { status: 403, json: { error: 'story role required', code: 'forbidden' } };
-      const r = world.story.handle(id, params, query, body);
+      const r = world.story.handle(id, params, query, body, identity.player);
       return { status: r.status, json: r.json };
     }
     const replay = world.replay;

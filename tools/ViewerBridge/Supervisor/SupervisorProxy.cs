@@ -23,6 +23,8 @@ public static class SupervisorProxy
     public static readonly string[] AdminOnly = ["admin/"];
     /// <summary>POST paths that need the <c>story</c> or the <c>admin</c> role (contracts <c>storyWrite</c>).</summary>
     public static readonly string[] StoryWrite = ["story/"];
+    /// <summary>Story directives to AI bodies: the bridge adds <c>player</c> and <c>allow_commands</c> from the identity, as for viewer chat.</summary>
+    public const string StoryDirectives = "story/directives";
 
     /// <summary>Prefix match as the contract defines it: an entry ending in "/" is a prefix; any other entry matches itself and its sub-paths.</summary>
     public static bool Matches(string path, string entry) =>
@@ -99,7 +101,15 @@ public static class SupervisorProxy
             var obj = ParseObject(ctx.BodyBytes());
             if (obj == null) { await ApiErrors.Write(ctx, 400, "bad_request", "body must be a JSON object"); return; }
             if (obj.ContainsKey("who")) { await ApiErrors.Write(ctx, 400, "bad_request", "who is set by the bridge"); return; }
-            obj["who"] = id.Who;
+            if (s.Path == StoryDirectives)
+            {
+                // Like viewer chat: the sender is the signed player, and commands only with the `commands` role.
+                if (obj.ContainsKey("player") || obj.ContainsKey("allow_commands")) { await ApiErrors.Write(ctx, 400, "bad_request", "player and allow_commands are set by the bridge"); return; }
+                if (id.Player.Length == 0) { await ApiErrors.Write(ctx, 403, "forbidden", "no Minecraft player is linked to this account"); return; }
+                obj["player"] = id.Player;
+                obj["allow_commands"] = id.Has("commands");
+            }
+            else obj["who"] = id.Who;
             content = new StringContent(obj.ToJsonString(), Encoding.UTF8, "application/json");
         }
         await ForwardAsync(ctx, sup, HttpMethods.IsHead(method) ? HttpMethod.Head : HttpMethods.IsPost(method) ? HttpMethod.Post : HttpMethod.Get, s.Path,

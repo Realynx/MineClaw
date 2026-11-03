@@ -81,8 +81,11 @@ export interface RouteTypes {
   'story.recipes': { params: never; query: z.input<typeof C.StoryRecipesQuery>; body: never; response: z.output<typeof C.StoryRecipesResponse> };
   'story.create': { params: never; query: never; body: z.input<typeof C.StoryCreateRequest>; response: z.output<typeof C.StoryCreateResponse> };
   'story.directives': { params: never; query: never; body: z.input<typeof C.StoryDirectiveRequest>; response: z.output<typeof C.StoryDirectiveResponse> };
+  'story.directives.list': { params: never; query: never; body: never; response: z.output<typeof C.StoryDirectiveList> };
+  'story.directive': { params: z.input<typeof C.StoryDirectiveParams>; query: never; body: never; response: z.output<typeof C.StoryDirectiveDetail> };
   'story.get': { params: z.input<typeof C.StoryColonyParams>; query: z.input<typeof C.StoryStateQuery>; body: never; response: z.output<typeof C.StoryColonyState> };
   'story.release': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.Empty>; response: z.output<typeof C.StoryAck> };
+  'story.resume': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.Empty>; response: z.output<typeof C.StoryAck> };
   'story.pause': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryPauseRequest>; response: z.output<typeof C.StoryAck> };
   'story.priorities': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryPrioritiesRequest>; response: z.output<typeof C.StoryAck> };
   'story.schedule': { params: z.input<typeof C.StoryColonyParams>; query: never; body: z.input<typeof C.StoryScheduleRequest>; response: z.output<typeof C.StoryAck> };

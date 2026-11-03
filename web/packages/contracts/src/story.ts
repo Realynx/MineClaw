@@ -29,8 +29,8 @@ export const STORY_ORDER_KINDS = ['move', 'attack', 'chop', 'mine', 'haul', 'bui
 export const StoryOrderKind = z.enum(STORY_ORDER_KINDS);
 export type StoryOrderKind = z.infer<typeof StoryOrderKind>;
 
-/** Zone kinds. Loot goes into chests with storage settings (`storage`), so the palette offers no ground stockpile. */
-export const STORY_ZONE_KINDS = ['chop', 'mine', 'farm', 'stockpile', 'home', 'forbidden'] as const;
+/** Zone kinds. Loot goes into chests with storage settings (`storage`): the director refuses a `stockpile` zone. */
+export const STORY_ZONE_KINDS = ['chop', 'mine', 'farm', 'home', 'forbidden'] as const;
 export const StoryZoneKind = z.enum(STORY_ZONE_KINDS);
 export type StoryZoneKind = z.infer<typeof StoryZoneKind>;
 
@@ -42,7 +42,7 @@ export type StoryDesignationKind = z.infer<typeof StoryDesignationKind>;
 export const StoryMineFilter = z.enum(['all', 'ores', 'stone', 'soil']);
 export type StoryMineFilter = z.infer<typeof StoryMineFilter>;
 
-export const STORY_BUILD_KINDS = ['wall', 'floor', 'roof', 'door', 'window', 'stairs', 'fence', 'block', 'furniture', 'remove'] as const;
+export const STORY_BUILD_KINDS = ['wall', 'floor', 'roof', 'door', 'window', 'stairs', 'fence', 'block', 'remove', 'crafting_table', 'furnace', 'chest', 'bed', 'torch'] as const;
 export const StoryBuildKind = z.enum(STORY_BUILD_KINDS);
 export type StoryBuildKind = z.infer<typeof StoryBuildKind>;
 
@@ -83,12 +83,17 @@ export const StoryColonySummary = z.object({
   created: When.nullish(),
   paused: z.boolean().nullish(),
   pawns: z.array(z.string()).default([]),
+  active: z.boolean().nullish().describe('false once released (the saved state stays; resume spawns the pawns again)'),
   version: z.union([z.string(), z.number()]).nullish().describe('state revision (or the director version)'),
 });
 export type StoryColonySummary = z.infer<typeof StoryColonySummary>;
 
-/** GET /api/story. */
-export const StoryListResponse = z.object({ colonies: z.array(StoryColonySummary).default([]) });
+/** GET /api/story (the AI bodies and their directives come along for the bar). */
+export const StoryListResponse = z.object({
+  colonies: z.array(StoryColonySummary).default([]),
+  ai: z.array(z.lazy(() => StoryAiBody)).nullish(),
+  directives: z.array(z.lazy(() => StoryDirective)).nullish(),
+});
 export type StoryListResponse = z.infer<typeof StoryListResponse>;
 
 /** POST /api/story/colonies: spawns `pawns` script-only bodies running `story_pawn`. */
@@ -115,6 +120,13 @@ export const StoryAck = z.object({
   ok: z.boolean().nullish(),
   rev: z.number().int().nullish(),
   message: z.string().nullish(),
+  id: z.union([z.string(), z.number()]).nullish().describe('release / resume: the colony; zones add: the zone'),
+  ids: z.array(z.union([z.string(), z.number()])).nullish().describe('orders: the new order ids'),
+  released: z.boolean().nullish(),
+  paused: z.boolean().nullish(),
+  pawns: z.union([z.number(), z.array(z.string())]).nullish().describe('resume: the pawns spawned again'),
+  note: z.string().nullish(),
+  removed: z.array(z.union([z.string(), z.number()])).nullish().describe('zones remove: the zones removed'),
 });
 export type StoryAck = z.infer<typeof StoryAck>;
 
@@ -130,22 +142,41 @@ export const StoryTargetOut = z.object({
 });
 export type StoryTargetOut = z.infer<typeof StoryTargetOut>;
 
+/** A target as the director may write it: `{x,y,z}` / `{entity}` / `{area}`, `[x,y,z]`, or `"x,y,z"`. */
+export const StoryTargetAny = z.union([StoryTargetOut, Vec3, z.string()]);
+export type StoryTargetAny = z.infer<typeof StoryTargetAny>;
+
+/** The block position of a target, whatever its form (null for an entity without a known position). */
+export function targetPos(t: StoryTargetAny | null | undefined): [number, number, number] | null {
+  if (t === null || t === undefined) return null;
+  if (typeof t === 'string') {
+    const p = t.split(',').map(Number);
+    return p.length === 3 && p.every(Number.isFinite) ? [p[0]!, p[1]!, p[2]!] : null;
+  }
+  if (Array.isArray(t)) return [t[0], t[1], t[2]];
+  if (t.x !== null && t.x !== undefined && t.z !== null && t.z !== undefined) return [t.x, t.y ?? 0, t.z];
+  if (t.area) return [(t.area[0] + t.area[3]) / 2, t.area[1], (t.area[2] + t.area[5]) / 2];
+  return null;
+}
+
 export const StoryOrder = z.object({
   id: z.union([z.string(), z.number()]).nullish(),
   kind: z.string(),
-  target: StoryTargetOut.nullish(),
+  target: StoryTargetAny.nullish(),
   design: z.union([z.string(), z.number()]).nullish(),
   pawn: z.string().nullish(),
   pawns: z.array(z.string()).nullish(),
   state: z.string().nullish().describe('queued | active | done | failed'),
   at: When.nullish(),
+  given: When.nullish(),
+  left: z.number().nullish(),
 });
 export type StoryOrder = z.infer<typeof StoryOrder>;
 
 export const StoryJob = z.object({
   type: z.string().describe('a work type, an order kind, or eat / sleep / flee / idle'),
   label: z.string(),
-  target: StoryTargetOut.nullish(),
+  target: StoryTargetAny.nullish(),
   progress: Num.nullish().describe('0..1'),
   since: When.nullish(),
 });
@@ -191,9 +222,18 @@ export const StoryZone = z.object({
 });
 export type StoryZone = z.infer<typeof StoryZone>;
 
+/**
+ * One designated target. The director writes `target` ([x,y,z] or {entity}) and `blocks` (a tree's logs); the mocks also send
+ * `block` / `targets` / `entity`. Read it with `designationCells` / `designationEntity`.
+ */
 export const StoryDesignation = z.object({
   id: z.union([z.string(), z.number()]),
   kind: z.string(),
+  workType: z.string().nullish(),
+  label: z.string().nullish(),
+  created: When.nullish(),
+  target: z.union([Vec3i, z.object({ entity: z.number().int() })]).nullish(),
+  blocks: z.array(Vec3i).nullish(),
   block: Vec3i.nullish(),
   area: StoryArea.nullish(),
   entity: z.number().int().nullish(),
@@ -203,6 +243,20 @@ export const StoryDesignation = z.object({
   state: z.string().nullish(),
 });
 export type StoryDesignation = z.infer<typeof StoryDesignation>;
+
+/** The blocks a designation covers (a tree: every log, the base first). */
+export function designationCells(d: StoryDesignation): Array<[number, number, number]> {
+  const list = d.blocks?.length ? d.blocks : d.targets?.length ? d.targets : null;
+  if (list) return list.map((b) => [b[0], b[1], b[2]]);
+  const t = Array.isArray(d.target) ? d.target : d.block;
+  return t ? [[t[0], t[1], t[2]]] : [];
+}
+
+/** The entity a designation is about (haul, hunt, forbid), if any. */
+export function designationEntity(d: StoryDesignation): number | null {
+  if (d.entity !== null && d.entity !== undefined) return d.entity;
+  return d.target && !Array.isArray(d.target) ? d.target.entity : null;
+}
 
 export const StoryAlert = z.object({
   id: z.union([z.string(), z.number()]).nullish(),
@@ -312,6 +366,9 @@ export const StoryWorkbench = z.object({
   pos: Vec3i,
   kind: z.string(),
   label: z.string().nullish(),
+  supported: z.boolean().nullish().describe('false: listed, but no bills yet (brewing stand, anvil, enchanting table)'),
+  loaded: z.unknown().optional().describe('a furnace: what is smelting'),
+  readyAt: When.nullish(),
   bills: z.array(StoryBill).default([]),
 });
 export type StoryWorkbench = z.infer<typeof StoryWorkbench>;
@@ -352,7 +409,8 @@ export const StoryAiBody = z.object({
   pos: Vec3.nullish(),
   dim: z.number().int().nullish(),
   task: z.string().nullish(),
-  brainState: z.string().nullish(),
+  brain: z.string().nullish(),
+  brainState: z.string().nullish().describe('offline | script | working | idle'),
   script: z.string().nullish(),
 });
 export type StoryAiBody = z.infer<typeof StoryAiBody>;
@@ -372,8 +430,24 @@ export const StoryDirective = z.object({
   summary: z.string(),
   status: z.string().describe('sent | acknowledged | done | failed | unknown'),
   reply: z.string().nullish(),
+  design: z.union([z.string(), z.number()]).nullish().describe('a build directive: the design saved for it'),
 });
 export type StoryDirective = z.infer<typeof StoryDirective>;
+
+/** GET /api/story/directives. */
+export const StoryDirectiveList = z.object({ directives: z.array(StoryDirective).default([]) });
+export type StoryDirectiveList = z.infer<typeof StoryDirectiveList>;
+
+export const StoryDirectiveParams = z.object({ id: z.string().regex(/^[A-Za-z0-9_.:-]{1,80}$/) });
+export type StoryDirectiveParams = z.infer<typeof StoryDirectiveParams>;
+
+/** GET /api/story/directives/{id}: the directive with the line it became, who got it, and the exact targets (`detail`). */
+export const StoryDirectiveDetail = StoryDirective.extend({
+  line: z.string().nullish(),
+  delivered: z.array(z.string()).nullish(),
+  detail: z.unknown().optional(),
+});
+export type StoryDirectiveDetail = z.infer<typeof StoryDirectiveDetail>;
 
 export const StoryRemoved = z.object({
   pawns: z.array(z.string()).nullish(),
@@ -381,8 +455,8 @@ export const StoryRemoved = z.object({
   designations: z.array(z.union([z.string(), z.number()])).nullish(),
   orders: z.array(z.union([z.string(), z.number()])).nullish(),
   builds: z.array(z.union([z.string(), z.number()])).nullish(),
-  storages: z.array(Vec3i).nullish(),
-  workbenches: z.array(Vec3i).nullish(),
+  storages: z.array(z.union([z.string(), Vec3i])).nullish().describe('chest keys "x,y,z"'),
+  workbenches: z.array(z.union([z.string(), Vec3i])).nullish(),
   directives: z.array(z.union([z.string(), z.number()])).nullish(),
   alerts: z.array(z.union([z.string(), z.number()])).nullish(),
 });
@@ -395,6 +469,10 @@ export const StoryColonyState = z.object({
   rev: z.number().int(),
   at: When,
   full: z.boolean().nullish().describe('true = the whole state (replace); a reply without `since` is always whole'),
+  since: z.number().int().nullish(),
+  active: z.boolean().nullish(),
+  tieBreak: z.string().nullish().describe('column | skill: equal priorities go by column order or by skill'),
+  version: z.union([z.string(), z.number()]).nullish(),
   timeOfDay: z.number().nullish().describe('world ticks 0..24000'),
   hour: z.number().int().nullish().describe('0..23, 0 = 06:00'),
   paused: z.boolean().nullish(),
@@ -461,7 +539,8 @@ export type StoryOrderSpec = z.infer<typeof StoryOrderSpec>;
 export const StoryOrderRequest = z.object({ pawns: PawnList, order: StoryOrderSpec, queue: z.boolean().optional() }).strict();
 export type StoryOrderRequest = z.infer<typeof StoryOrderRequest>;
 
-export const StoryZoneRequest = z.object({ op: z.enum(['add', 'remove']), kind: StoryZoneKind, area: StoryArea }).strict();
+/** `remove` without a kind removes every zone overlapping the area. */
+export const StoryZoneRequest = z.object({ op: z.enum(['add', 'remove']), kind: StoryZoneKind.optional(), area: StoryArea }).strict();
 export type StoryZoneRequest = z.infer<typeof StoryZoneRequest>;
 
 /**
@@ -470,10 +549,11 @@ export type StoryZoneRequest = z.infer<typeof StoryZoneRequest>;
  */
 export const StoryDesignationRequest = z
   .object({
-    op: z.enum(['add', 'remove']),
+    op: z.enum(['add', 'remove', 'cancel']),
     kind: StoryDesignationKind.optional(),
     area: StoryArea.optional(),
     blocks: z.array(Vec3i).max(4096).optional(),
+    ids: z.array(z.union([z.string(), z.number()])).max(4096).optional(),
     entities: z.array(z.number().int()).max(512).optional(),
     design: z.union([z.string().max(64), z.number().int()]).optional(),
     filter: StoryMineFilter.optional(),
@@ -484,7 +564,8 @@ export type StoryDesignationRequest = z.infer<typeof StoryDesignationRequest>;
 export const StoryDesignationResponse = z.object({
   ok: z.boolean().nullish(),
   count: z.number().int().default(0).describe('how many targets were designated (or removed)'),
-  targets: z.array(Vec3i).nullish(),
+  targets: z.union([z.array(Vec3i), z.array(z.number().int())]).nullish().describe('blocks, or entity ids (haul, hunt)'),
+  removed: z.array(z.union([z.string(), z.number()])).nullish(),
   entities: z.array(z.number().int()).nullish(),
   rev: z.number().int().nullish(),
 });
@@ -504,11 +585,12 @@ export const StoryBuildItem = z
     kind: StoryBuildKind,
     area: StoryArea.optional(),
     blocks: z.array(Vec3i).max(4096).optional(),
-    material: StoryMaterial,
+    material: StoryMaterial.optional(),
     height: z.number().int().min(1).max(12).optional(),
     roof: StoryRoofSpec.optional(),
     facing: StoryFacing.optional(),
     level: z.number().int().optional(),
+    name: z.string().max(40).optional(),
   })
   .strict();
 export type StoryBuildItem = z.infer<typeof StoryBuildItem>;
@@ -543,7 +625,7 @@ export const StoryStorageRequest = z.discriminatedUnion('op', [
   z.object({ op: z.literal('remove'), chests: Chests }).strict(),
   z.object({ op: z.literal('copy'), from: Vec3i, to: Chests }).strict(),
   z
-    .object({ op: z.literal('assign_area'), area: StoryArea, filter: StoryFilter.optional(), priority: StoryStoragePriority.optional() })
+    .object({ op: z.literal('assign_area'), area: StoryArea, filter: StoryFilter.optional(), priority: StoryStoragePriority.optional(), label: z.string().max(40).optional() })
     .strict(),
 ]);
 export type StoryStorageRequest = z.infer<typeof StoryStorageRequest>;
@@ -556,7 +638,7 @@ export const StoryStorageResponse = z.object({
 });
 export type StoryStorageResponse = z.infer<typeof StoryStorageResponse>;
 
-const BillIds = z.array(z.union([z.string(), z.number()])).min(1).max(64);
+const BillId = z.union([z.string().max(80), z.number().int()]);
 export const StoryBillSpec = z
   .object({
     recipe: z.string().min(1).max(64),
@@ -572,27 +654,33 @@ export const StoryBillSpec = z
   .strict();
 export type StoryBillSpec = z.infer<typeof StoryBillSpec>;
 
-/** POST /api/story/colonies/{id}/bills: the bills of the workbench at `workbench` (`spec` = the bill settings). */
+/**
+ * POST /api/story/colonies/{id}/bills: `add` a bill to the bench at `bench`; `update` a bill's fields (flat); `remove` /
+ * `pause` / `resume` one bill; `reorder` a bench's bills (top to bottom). (Nest converts `bill`'s keys too: the request side
+ * does not treat `bill` as opaque.)
+ */
 export const StoryBillsRequest = z.discriminatedUnion('op', [
-  z.object({ op: z.literal('add'), workbench: Vec3i, spec: StoryBillSpec }).strict(),
-  z.object({ op: z.literal('update'), workbench: Vec3i, id: z.union([z.string(), z.number()]), spec: StoryBillSpec.partial().strict() }).strict(),
-  z.object({ op: z.literal('remove'), workbench: Vec3i, ids: BillIds }).strict(),
-  z.object({ op: z.literal('pause'), workbench: Vec3i, ids: BillIds }).strict(),
-  z.object({ op: z.literal('resume'), workbench: Vec3i, ids: BillIds }).strict(),
-  z.object({ op: z.literal('reorder'), workbench: Vec3i, ids: BillIds }).strict(),
+  z.object({ op: z.literal('add'), bench: Vec3i, bill: StoryBillSpec }).strict(),
+  StoryBillSpec.partial().extend({ op: z.literal('update'), id: BillId }).strict(),
+  z.object({ op: z.literal('remove'), id: BillId }).strict(),
+  z.object({ op: z.literal('pause'), id: BillId }).strict(),
+  z.object({ op: z.literal('resume'), id: BillId }).strict(),
+  z.object({ op: z.literal('reorder'), bench: Vec3i, ids: z.array(BillId).min(1).max(64) }).strict(),
 ]);
 export type StoryBillsRequest = z.infer<typeof StoryBillsRequest>;
 
 export const StoryBillsResponse = z.object({
   ok: z.boolean().nullish(),
   id: z.union([z.string(), z.number()]).nullish().describe('the new bill (add)'),
+  ids: z.array(z.union([z.string(), z.number()])).nullish(),
   rev: z.number().int().nullish(),
 });
 export type StoryBillsResponse = z.infer<typeof StoryBillsResponse>;
 
 /**
  * POST /api/story/directives: the same payload a colony tool sends the director, addressed to AI bodies (they work it out
- * themselves). `text` is plain words. The signed-in player is the sender.
+ * themselves). `text` is plain words. The signed-in player is the sender: the bridge adds `player` and `allow_commands` from
+ * the signed identity, as for viewer chat (a body carrying either is refused).
  */
 export const StoryDirectiveSpec = z
   .object({
@@ -602,8 +690,7 @@ export const StoryDirectiveSpec = z
     entities: z.array(z.number().int()).max(512).optional(),
     filter: StoryMineFilter.optional(),
     build: z.array(StoryBuildItem).max(64).optional(),
-    // `bill` is an opaque key for case conversion (OPAQUE_KEYS), so its fields are single words.
-    bill: StoryBillSpec.omit({ minSkill: true }).extend({ workbench: Vec3i }).strict().optional(),
+    bill: StoryBillSpec.extend({ bench: Vec3i }).strict().optional(),
     text: z.string().trim().min(1).max(500).optional(),
   })
   .strict();
@@ -621,6 +708,8 @@ export type StoryDirectiveRequest = z.infer<typeof StoryDirectiveRequest>;
 export const StoryDirectiveResponse = z.object({
   id: z.union([z.string(), z.number()]),
   delivered: z.union([z.boolean(), z.array(z.string())]).describe('true, or the bots that got it'),
+  line: z.string().nullish().describe('the one chat line it became'),
+  design: z.union([z.string(), z.number()]).nullish(),
 });
 export type StoryDirectiveResponse = z.infer<typeof StoryDirectiveResponse>;
 
@@ -662,7 +751,7 @@ export const STORY_MATERIALS: ReadonlyArray<{ name: string; label: string; id: n
   { name: 'torch', label: 'Torch', id: 50, meta: 5 },
 ];
 
-/** Furniture the Architect places through the build queue (`kind: "furniture"`, material = one of these names). */
+/** Furniture the Architect places through the build queue (each is its own build kind). */
 export const STORY_FURNITURE = ['crafting_table', 'furnace', 'chest', 'bed', 'torch'] as const;
 
 /** Resolves a material to [id, meta] (unknown names → stone). */
@@ -767,16 +856,21 @@ export function expandBuildItem(item: StoryBuildItem): Array<[number, number, nu
       }
       break;
     }
-    case 'furniture': {
+    case 'crafting_table':
+    case 'furnace':
+    case 'chest':
+    case 'bed':
+    case 'torch': {
       // A bed is two cells: the foot here, the head one block toward `facing`.
       const f = item.facing ?? 's';
+      const [fid, fmeta] = materialKey(item.kind);
       for (const [x, y, z] of a ? [[a[0], a[1], a[2]] as [number, number, number]] : cells) {
-        if (id === 26) {
+        if (fid === 26) {
           const dir = { s: 0, w: 1, n: 2, e: 3 }[f];
           const [dx, dz] = ({ s: [0, 1], w: [-1, 0], n: [0, -1], e: [1, 0] } as const)[f];
           put(x, y, z, 26, dir);
           put(x + dx, y, z + dz, 26, dir | 8);
-        } else put(x, y, z, id, meta);
+        } else put(x, y, z, fid, fmeta);
       }
       break;
     }

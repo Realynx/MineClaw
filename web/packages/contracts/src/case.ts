@@ -23,6 +23,12 @@ export const OPAQUE_KEYS: ReadonlySet<string> = new Set([
   'data',
 ]);
 
+/**
+ * The opaque keys for REQUEST bodies (public → bridge): `bill` is opaque only in responses (a blueprint's material map); a
+ * Story Mode bill in a request is ordinary fields (`min_skill`).
+ */
+export const REQUEST_OPAQUE_KEYS: ReadonlySet<string> = new Set([...OPAQUE_KEYS].filter((k) => k !== 'bill'));
+
 export interface CaseOptions {
   /** Replace the default opaque key set. */
   opaque?: ReadonlySet<string>;

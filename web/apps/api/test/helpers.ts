@@ -29,7 +29,7 @@ export const PERSONAS: Record<'viewer' | 'chat' | 'chatNoPlayer' | 'commands' | 
   chatNoPlayer: { username: 'nemo', roles: ['chat'], player: null },
   commands: { username: 'cora', roles: ['chat', 'commands', 'viewer'], player: 'cora_mc' },
   admin: { username: 'fox', roles: ['admin', 'chat', 'commands', 'viewer'], player: 'poofimafox' },
-  story: { username: 'sky', roles: ['story', 'viewer'], player: null },
+  story: { username: 'sky', roles: ['story', 'viewer'], player: 'sky_mc' },
 };
 
 let cachedHash: Promise<string> | undefined;

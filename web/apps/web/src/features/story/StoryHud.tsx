@@ -337,6 +337,8 @@ export function OptionsBar({
         ? `${tool.op === 'remove' ? 'Remove ' : ''}${ZONE_TOOLS.find((z) => z.id === tool.id)?.label ?? 'Zone'}`
         : tool.kind === 'storage'
           ? 'Register chests'
+          : tool.kind === 'design'
+            ? `Design: ${tool.name}`
           : tool.id.startsWith('furniture:')
             ? FURNITURE_TOOLS.find((f) => `furniture:${f.id}` === tool.id)?.label
             : STRUCTURE_TOOLS.find((s) => s.id === tool.id)?.label;
@@ -347,8 +349,10 @@ export function OptionsBar({
         ? (STRUCTURE_TOOLS.find((s) => s.id === tool.id)?.hint ?? 'Click to place; Q/E turns')
         : tool.kind === 'storage'
           ? 'Drag over chests to make them storage'
-          : 'Drag to paint the zone';
-  const icon = tool.kind === 'designate' ? tool.id : tool.kind === 'build' ? tool.id.replace('furniture:', '') : tool.kind === 'storage' ? 'storage' : 'zone';
+          : tool.kind === 'design'
+            ? `${tool.blocks.length} blocks: click to queue it here (Q/E turns, PgUp/PgDn changes the level)`
+            : 'Drag to paint the zone';
+  const icon = tool.kind === 'designate' ? tool.id : tool.kind === 'build' ? tool.id.replace('furniture:', '') : tool.kind === 'storage' ? 'storage' : tool.kind === 'design' ? 'block' : 'zone';
   const isStructure = tool.kind === 'build' && !tool.id.startsWith('furniture:');
   const matKey = (m: BuildOpts['material']) => (Array.isArray(m) ? m.join(':') : m);
   return (
@@ -408,7 +412,7 @@ export function OptionsBar({
           ) : null}
         </>
       ) : null}
-      {tool.kind === 'build' && (tool.id === 'door' || tool.id === 'stairs' || tool.id.startsWith('furniture:')) ? (
+      {(tool.kind === 'build' && (tool.id === 'door' || tool.id === 'stairs' || tool.id.startsWith('furniture:'))) || tool.kind === 'design' ? (
         <span className="flex items-center gap-1" title="Facing (Q / E)">
           <RotateCcw className="size-3.5 text-muted" />
           <span className="w-4 text-center font-semibold uppercase" data-testid="facing">

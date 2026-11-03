@@ -379,7 +379,7 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
   },
   feed: ({ query }) => live.feedSince(num(query.since)),
   'blueprints.list': () => ({ designs: misc.designList().items.map((d) => ({ id: d.id, name: d.name, status: d.status, requester: d.requester, rev: d.rev, updated: d.updated })) }),
-  'blueprints.get': ({ params }) => ({ id: num(params.id), bill: { cobblestone: 240, glass: 12 } }),
+  'blueprints.get': ({ params }) => ({ id: num(params.id), bill: { cobblestone: 240, glass: 12 }, blocks: mockDesignBlocks() }),
   'buildplans.get': ({ params }) => ({ id: num(params.id), parts: [] }),
   'bodies.scripts': () => live.bodyScripts(),
   'bodies.script': ({ params, query }) => live.bodyScript(String(params.body), query.code === true),
@@ -395,6 +395,18 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
   'brains.turn': ({ params }) => live.brainTurn(String(params.brain), num(params.n)),
   ...storyResolvers(),
 };
+
+/** A 5×5 cobblestone hut, 3 high with a doorway and a plank roof (the blocks a design page's "Build in Story Mode" places). */
+function mockDesignBlocks(): Array<[number, number, number, number, number]> {
+  const out: Array<[number, number, number, number, number]> = [];
+  for (let x = 0; x < 5; x++)
+    for (let z = 0; z < 5; z++) {
+      const edge = x === 0 || x === 4 || z === 0 || z === 4;
+      for (let y = 0; y < 3; y++) if (edge && !(x === 2 && z === 0 && y < 2)) out.push([x, y, z, 4, 0]);
+      out.push([x, 3, z, 5, 0]);
+    }
+  return out;
+}
 
 /** Story Mode: the shared mock director (mocks/data/story.ts); its errors become API errors. */
 function storyResolvers(): Partial<Record<RouteId, Resolver>> {
@@ -415,6 +427,9 @@ function storyResolvers(): Partial<Record<RouteId, Resolver>> {
     'story.create': (c) => run(() => storySim.create(b(c))),
     'story.get': (c) => run(() => storySim.state(id(c), c.query.since === undefined ? undefined : num(c.query.since))),
     'story.release': (c) => run(() => storySim.release(id(c))),
+    'story.resume': (c) => run(() => storySim.resume(id(c))),
+    'story.directives.list': () => run(() => ({ directives: storySim.directives() })),
+    'story.directive': (c) => run(() => storySim.directiveDetail(id(c))),
     'story.pause': (c) => run(() => storySim.pause(id(c), (c.body as { paused: boolean }).paused)),
     'story.priorities': (c) => run(() => storySim.priorities(id(c), b(c))),
     'story.schedule': (c) => run(() => storySim.schedule(id(c), b(c))),

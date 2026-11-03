@@ -53,7 +53,7 @@ describe('story contracts', () => {
     expect(C.StoryOrderRequest.safeParse({ pawns: ['a'], order: { kind: 'chop', target: { x: 1, y: 2, z: 3 } }, queue: true }).success).toBe(true);
     expect(C.StoryOrderRequest.safeParse({ pawns: ['a'], order: { kind: 'chop', target: { x: 1, y: 2, z: 3, who: 'x' } } }).success).toBe(false);
     expect(C.StoryBuildRequest.safeParse({ op: 'add', items: [{ kind: 'wall', area: [0, 64, 0, 4, 64, 4], material: 'oak_planks', height: 13 }] }).success).toBe(false);
-    expect(C.StoryBillsRequest.safeParse({ op: 'add', workbench: [1, 2, 3], spec: { recipe: 'sticks', mode: 'until', target: 64 } }).success).toBe(true);
+    expect(C.StoryBillsRequest.safeParse({ op: 'add', bench: [1, 2, 3], bill: { recipe: 'sticks', mode: 'until', target: 64, minSkill: 3 } }).success).toBe(true);
     expect(C.StoryStorageRequest.safeParse({ op: 'set', chests: [[1, 2, 3]], filter: { allow: ['wood'] }, priority: 'preferred' }).success).toBe(true);
     expect(C.StoryDirectiveRequest.safeParse({ bots: ['maid_chan'], directive: { kind: 'text', text: 'come here' }, requestId: 'r-12345678' }).success).toBe(true);
   });
@@ -92,7 +92,7 @@ describe('build expansion (the preview)', () => {
 
   it('doors are two high, furniture beds two long, remove places air', () => {
     expect(C.expandBuildItem({ kind: 'door', blocks: [[2, 64, 0]], material: 'oak_planks' }).map((b) => b[1])).toEqual([64, 65]);
-    const bed = C.expandBuildItem({ kind: 'furniture', blocks: [[0, 64, 0]], material: 'bed', facing: 'e' });
+    const bed = C.expandBuildItem({ kind: 'bed', blocks: [[0, 64, 0]], facing: 'e' });
     expect(bed.map((b) => [b[0], b[2], b[4]])).toEqual([[0, 0, 3], [1, 0, 11]]);
     expect(C.expandBuildItem({ kind: 'remove', area: [0, 64, 0, 1, 65, 0], material: 'stone' }).every((b) => b[3] === 0)).toBe(true);
   });
@@ -194,7 +194,7 @@ describe('the mock director', () => {
     expect(Math.round(pa.pos![0])).toBe(6);
     expect((s.ghosts?.blocks ?? []).some((g) => g[6] === 'done')).toBe(true);
     const bench = s.workbenches![0]!;
-    const added = sim.bills(id, { op: 'add', workbench: bench.pos, spec: { recipe: 'sticks', mode: 'until', target: 64 } });
+    const added = sim.bills(id, { op: 'add', bench: bench.pos, bill: { recipe: 'sticks', mode: 'until', target: 64 } });
     expect(added.id).toBeTruthy();
     const reg = sim.storage(id, { op: 'assign_area', area: [0, 60, -3, 3, 70, -1] });
     expect(reg.count).toBe(1); // a double chest is one storage
@@ -216,6 +216,23 @@ describe('story fixtures', () => {
     expect(live[key], key).toBeDefined();
     const r = (schema as C.RouteDef['response'] & object).safeParse(C.toCamel(live[key]));
     if (!r.success) throw new Error(JSON.stringify(r.error.issues.slice(0, 5)));
+  });
+
+  it("the director's own delta form parses: designation targets, string removed keys, array order targets", () => {
+    const d = C.StoryColonyState.parse(C.toCamel(live.storyStateBot));
+    expect(d.tieBreak).toBe('column');
+    expect(C.designationCells(d.designations[0]!)).toHaveLength(3);
+    expect(C.designationEntity(d.designations[1]!)).toBe(7);
+    expect(d.removed?.storages).toEqual(['6,64,-4']);
+    expect(C.targetPos(d.orders[0]!.target)).toEqual([3, 64, 3]);
+    expect(C.targetPos(d.pawns[0]!.job!.target)).toEqual([10, 64, 0]);
+    expect(d.workbenches?.[1]?.supported).toBe(false);
+    expect(C.targetPos('1,2,3')).toEqual([1, 2, 3]);
+  });
+
+  it('a bill in a request is converted like any field (`bill` is opaque only in responses)', () => {
+    const body = C.toSnake({ op: 'add', bench: [1, 2, 3], bill: { recipe: 'sticks', mode: 'count', minSkill: 4 } }, { opaque: C.REQUEST_OPAQUE_KEYS });
+    expect((body as { bill: Record<string, unknown> }).bill.min_skill).toBe(4);
   });
 
   it('a story frame carries the colony id and pawn details', () => {

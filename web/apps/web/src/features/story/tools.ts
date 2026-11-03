@@ -220,7 +220,7 @@ export function lineEnd(a: V3, b: V3): V3 {
  * height (`a.y + height`); a floor goes one below the first layer (on the level's floor).
  */
 export function buildItem(tool: BuildToolId, a: V3, b: V3, o: BuildOpts): StoryBuildItem {
-  if (tool.startsWith('furniture:')) return { kind: 'furniture', blocks: [a], material: tool.slice('furniture:'.length), facing: o.facing };
+  if (tool.startsWith('furniture:')) return { kind: tool.slice('furniture:'.length) as FurnitureId, blocks: [a], facing: o.facing };
   const t = tool as StructureId;
   const spec = STRUCTURE_TOOLS.find((s) => s.id === t)!;
   const end = spec.drag === 'line' || (t === 'wall' && o.line) ? lineEnd(a, b) : b;
@@ -298,6 +298,60 @@ export function faceCell(hit: { x: number; y: number; z: number; face: number })
 export function materialLabel(m: StoryMaterial): string {
   const [id, meta] = materialKey(m);
   return typeof m === 'string' ? m.replace(/_/g, ' ') : `${id}:${meta}`;
+}
+
+// ------------------------------------------------------------------ designs (`/story?design=N`)
+
+export type DesignBlock = [number, number, number, number, number];
+
+/**
+ * A design's blocks from whatever JSON the bot gives for it: the first list of `[x, y, z, id, meta?]` tuples or of objects with
+ * numeric `x, y, z` and `id` (or `block`), moved so its lowest corner is (0, 0, 0). Empty when there is none.
+ */
+export function designBlocks(json: unknown, depth = 0): DesignBlock[] {
+  if (depth > 6 || json === null || typeof json !== 'object') return [];
+  if (Array.isArray(json) && json.length) {
+    const tuples = json.every((e) => Array.isArray(e) && e.length >= 4 && e.slice(0, 4).every((n) => typeof n === 'number'));
+    const objects = json.every((e) => e && typeof e === 'object' && !Array.isArray(e) && ['x', 'y', 'z'].every((k) => typeof (e as Record<string, unknown>)[k] === 'number') && typeof ((e as Record<string, unknown>).id ?? (e as Record<string, unknown>).block) === 'number');
+    let out: DesignBlock[] = [];
+    if (tuples) out = (json as number[][]).map((e) => [e[0]!, e[1]!, e[2]!, e[3]!, e[4] ?? 0]);
+    else if (objects)
+      out = (json as Array<Record<string, number>>).map((e) => [e.x!, e.y!, e.z!, e.id ?? e.block!, e.meta ?? e.data ?? 0]);
+    if (out.length) {
+      const mx = Math.min(...out.map((b) => b[0])), my = Math.min(...out.map((b) => b[1])), mz = Math.min(...out.map((b) => b[2]));
+      return out.filter((b) => b[3] !== 0).map((b) => [b[0] - mx, b[1] - my, b[2] - mz, b[3], b[4]]);
+    }
+  }
+  for (const v of Array.isArray(json) ? json : Object.values(json as Record<string, unknown>)) {
+    const found = designBlocks(v, depth + 1);
+    if (found.length) return found;
+  }
+  return [];
+}
+
+/** A design placed with its origin at `at`, turned by `facing` (n = as drawn, then clockwise). */
+export function placeDesign(blocks: readonly DesignBlock[], at: V3, facing: StoryFacing): DesignBlock[] {
+  const turns = FACINGS.indexOf(facing);
+  return blocks.map(([x, y, z, id, meta]) => {
+    let dx = x, dz = z;
+    for (let i = 0; i < turns; i++) [dx, dz] = [-dz, dx];
+    return [at[0] + dx, at[1] + y, at[2] + dz, id, meta];
+  });
+}
+
+/** The build request for a placed design: one `block` item per material, explicit blocks (at most 64 × 4096). */
+export function designItems(placed: readonly DesignBlock[], name?: string): StoryBuildItem[] {
+  const by = new Map<string, Array<[number, number, number]>>();
+  for (const [x, y, z, id, meta] of placed) {
+    const k = `${id}:${meta}`;
+    by.set(k, [...(by.get(k) ?? []), [x, y, z]]);
+  }
+  const items: StoryBuildItem[] = [];
+  for (const [k, cells] of by) {
+    const [id, meta] = k.split(':').map(Number) as [number, number];
+    for (let i = 0; i < cells.length; i += 4096) items.push({ kind: 'block', blocks: cells.slice(i, i + 4096), material: [id, meta], ...(name ? { name: name.slice(0, 40) } : {}) });
+  }
+  return items.slice(0, 64);
 }
 
 // ------------------------------------------------------------------ the right-click menu

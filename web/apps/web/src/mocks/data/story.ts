@@ -142,7 +142,7 @@ export function seedStory(): void {
   storySim.designations(id, { op: 'add', kind: 'chop', area: [-10, 50, -4, -6, 90, 0] });
   storySim.storage(id, { op: 'assign_area', area: [1, 50, -5, 7, 90, -3], priority: 'preferred' });
   const bench = storySim.state(id).workbenches?.[0]?.pos;
-  if (bench) storySim.bills(id, { op: 'add', workbench: [bench[0], bench[1], bench[2]], spec: { recipe: 'torch', mode: 'count', target: 8 } });
+  if (bench) storySim.bills(id, { op: 'add', bench: [bench[0], bench[1], bench[2]], bill: { recipe: 'torch', mode: 'count', target: 8 } });
   const y = surface(-8, 4) + 1;
   storySim.builds(id, { op: 'add', items: [{ kind: 'wall', area: [-10, y, 3, -6, y, 6], material: 'cobblestone', height: 2 }] });
 }

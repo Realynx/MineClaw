@@ -113,10 +113,12 @@ export function categoryItems(categories: readonly StoryCategory[], id: string, 
   return out;
 }
 
-/** Does a storage filter accept an item? Deny wins over allow; "id:-1" matches every meta; an empty allow list takes nothing. */
+/** Does a storage filter accept an item? Deny wins over allow; "*" is everything, "id" or "id:-1" every meta; an empty allow list takes nothing. */
 export function filterAccepts(categories: readonly StoryCategory[], filter: { allow: readonly string[]; deny: readonly string[] }, id: number, meta: number): boolean {
-  const keys = (list: readonly string[]) => new Set(list.flatMap((k) => (/^-?\d+:-?\d+$/.test(k) ? [k] : categoryItems(categories, k))));
-  const hit = (set: Set<string>) => set.has(`${id}:${meta}`) || set.has(`${id}:-1`);
+  // Entries: "*" (everything), a category id, "id" (every meta) or "id:meta" (meta -1 = every meta).
+  const keys = (list: readonly string[]) =>
+    new Set(list.flatMap((k) => (k === '*' ? ['*'] : /^-?\d+$/.test(k) ? [`${k}:-1`] : /^-?\d+:-?\d+$/.test(k) ? [k] : categoryItems(categories, k))));
+  const hit = (set: Set<string>) => set.has('*') || set.has(`${id}:${meta}`) || set.has(`${id}:-1`);
   if (hit(keys(filter.deny))) return false;
   return hit(keys(filter.allow));
 }

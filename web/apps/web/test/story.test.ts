@@ -29,8 +29,11 @@ import {
   designationDirective,
   entitiesIn,
   faceCell,
+  designBlocks,
+  designItems,
   keyAction,
   levelCutY,
+  placeDesign,
   lineEnd,
   nextLevel,
   orderBody,
@@ -321,12 +324,12 @@ describe('bills', () => {
   it('the dialog state becomes add / update / reorder requests', () => {
     const d = { ...newDraft(sticks, 'until', 64), radius: 20, pawn: 'p_ash' };
     const add = addBillBody([1, 64, 2], d);
-    expect(add.spec).toMatchObject({ recipe: 'sticks', mode: 'until', target: 64, radius: 20, pawn: 'p_ash', store: 'best' });
+    expect(add.bill).toMatchObject({ recipe: 'sticks', mode: 'until', target: 64, radius: 20, pawn: 'p_ash', store: 'best' });
     expect(StoryBillsRequest.safeParse(add).success).toBe(true);
     const bill = { id: 'b1', recipe: 'sticks', mode: 'until', target: 64, done: 3, paused: false, ingredients: d.ingredients, radius: 20, pawn: 'p_ash', minSkill: null, store: 'best' as const };
-    expect(updateBillBody([1, 64, 2], bill, draftOf(bill))).toBeNull();
-    const up = updateBillBody([1, 64, 2], bill, { ...draftOf(bill), radius: 48, pawn: 'any' })!;
-    expect(up).toEqual({ op: 'update', workbench: [1, 64, 2], id: 'b1', spec: { radius: 48, pawn: 'any' } });
+    expect(updateBillBody(bill, draftOf(bill))).toBeNull();
+    const up = updateBillBody(bill, { ...draftOf(bill), radius: 48, pawn: 'any' })!;
+    expect(up).toEqual({ op: 'update', id: 'b1', radius: 48, pawn: 'any' });
     expect(StoryBillsRequest.safeParse(up).success).toBe(true);
     expect(reorderBills([1, 64, 2], ['a', 'b', 'c'], 2, 0).ids).toEqual(['c', 'a', 'b']);
     expect(billSummary({ mode: 'count', target: 8 })).toBe('Do 8 times');
@@ -364,5 +367,28 @@ describe('keys', () => {
     expect(isTyping(ta)).toBe(true);
     expect(isTyping(document.body)).toBe(false);
     input.remove();
+  });
+});
+
+describe('designs on the map (/story?design=N)', () => {
+  it('finds the block list in the design JSON, turns it with the facing and queues one block item per material', () => {
+    const json = { id: 9, bill: { cobblestone: 3 }, blocks: [[10, 64, 10, 4, 0], [11, 64, 10, 4, 0], [10, 65, 10, 5, 2], [12, 64, 10, 0, 0]] };
+    const blocks = designBlocks(json);
+    expect(blocks).toEqual([[0, 0, 0, 4, 0], [1, 0, 0, 4, 0], [0, 1, 0, 5, 2]]);
+    expect(designBlocks({ parts: [{ steps: [{ x: 1, y: 2, z: 3, id: 20 }] }] })).toEqual([[0, 0, 0, 20, 0]]);
+    expect(designBlocks({ nothing: true })).toEqual([]);
+    const east = placeDesign(blocks, [100, 70, 100], 'e');
+    expect(east[1]).toEqual([100, 70, 101, 4, 0]); // +x turns to +z
+    const items = designItems(placeDesign(blocks, [100, 70, 100], 'n'), 'hut');
+    expect(items.map((i) => [i.kind, i.material, i.blocks?.length])).toEqual([['block', [4, 0], 2], ['block', [5, 2], 1]]);
+    expect(StoryBuildRequest.safeParse({ op: 'add', items }).success).toBe(true);
+  });
+
+  it('storage filters take "*" and bare ids like the director', () => {
+    const tree = buildTree(null);
+    const wood = tree.find((n) => n.id === 'resources')!.children.find((n) => n.id === 'wood')!;
+    expect(itemAllowed({ allow: ['*'], deny: [] }, wood, '17:-1')).toBe(true);
+    expect(itemAllowed({ allow: ['*'], deny: ['17'] }, wood, '17:-1')).toBe(false);
+    expect(toggleNode({ allow: ['*'], deny: [] }, wood)).toEqual({ allow: ['*'], deny: ['wood'] });
   });
 });

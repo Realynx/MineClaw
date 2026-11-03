@@ -17,6 +17,8 @@ import {
   materialKey,
   normArea,
   storyHour,
+  STORY_FURNITURE,
+  targetPos,
   STORY_WORK_TYPES,
   type StoryAiBody,
   type StoryAlert,
@@ -182,16 +184,19 @@ export class StorySim {
 
   // ------------------------------------------------------------------ colonies
 
-  list(): { colonies: Array<{ id: string; name: string; created: string; paused: boolean; pawns: string[]; version: number }> } {
+  list() {
     return {
       colonies: [...this.colonies.values()].map((c) => ({
         id: c.id,
         name: c.name,
         created: c.created,
         paused: c.paused,
+        active: !c.released,
         pawns: c.released ? [] : [...c.pawns.keys()],
         version: c.rev,
       })),
+      ai: this.opts.world.ai?.() ?? [],
+      directives: this.directives(),
     };
   }
 
@@ -314,6 +319,9 @@ export class StorySim {
       timeOfDay: Math.round(c.tod),
       hour: storyHour(c.tod),
       paused: c.paused,
+      active: !c.released,
+      since: since ?? null,
+      tieBreak: 'column',
       home: c.home,
       workTypes: [...STORY_WORK_TYPES],
       pawns: [...c.pawns.values()].filter((p) => full || p.rev > s).map((p) => structuredClone(p.p)),
@@ -349,6 +357,18 @@ export class StorySim {
     }
     this.alert(c, 'info', 'The pawns were released; the colony is saved.');
     return { ok: true, rev: c.rev };
+  }
+
+  resume(id: string) {
+    const c = this.colony(id);
+    c.released = false;
+    for (const p of c.pawns.values()) {
+      p.p.online = true;
+      p.p.state = 'idle';
+      p.rev = this.bump(c);
+    }
+    this.alert(c, 'info', 'The pawns are back.');
+    return { id: c.id, pawns: c.pawns.size, note: 'spawned again', rev: c.rev };
   }
 
   pause(id: string, paused: boolean) {
@@ -409,7 +429,7 @@ export class StorySim {
         at: this.iso(),
       };
       // A group move fans out around the spot so the pawns do not stack.
-      if (o.kind === 'move' && o.target && 'x' in o.target && pawns.length > 1) {
+      if (o.kind === 'move' && o.target && typeof o.target === 'object' && !Array.isArray(o.target) && 'x' in o.target && pawns.length > 1) {
         const t = o.target as { x: number; y: number; z: number };
         o.target = { x: t.x + ((i % 3) - 1), y: t.y, z: t.z + (Math.floor(i / 3) - 1) };
       }
@@ -433,11 +453,11 @@ export class StorySim {
     const c = this.colony(id);
     const a = normArea(body.area);
     if (body.op === 'add') {
-      const z: StoryZone = { id: `z${c.seq++}`, kind: body.kind, area: a };
+      const z: StoryZone = { id: `z${c.seq++}`, kind: body.kind ?? 'home', area: a };
       c.zones.set(z.id, { rev: this.bump(c), v: z });
     } else {
       for (const [k, f] of c.zones)
-        if (f.v.kind === body.kind && overlaps(f.v.area, a)) {
+        if ((!body.kind || f.v.kind === body.kind) && overlaps(f.v.area, a)) {
           c.zones.delete(k);
           c.removed.push({ rev: this.bump(c), kind: 'zones', key: k });
         }
@@ -465,14 +485,14 @@ export class StorySim {
   designations(id: string, body: StoryDesignationRequest): { ok: boolean; count: number; targets?: Array<[number, number, number]>; entities?: number[]; rev: number } {
     const c = this.colony(id);
     const a = body.area ? normArea(body.area) : null;
-    if (body.op === 'remove') {
+    if (body.op === 'remove' || body.op === 'cancel') {
       let n = 0;
       for (const [k, f] of c.designations) {
         const d = f.v;
         if (body.kind && d.kind !== body.kind) continue;
         const cells = d.targets ?? (d.block ? [d.block] : []);
         const inArea = a ? cells.some((p) => inside(a, p)) || ((d.entity !== null && d.entity !== undefined) && this.entityIn(d.entity, a)) : false;
-        const listed = body.blocks?.some((b) => cells.some((p) => keyOf(p) === keyOf(b))) || ((d.entity !== null && d.entity !== undefined) && body.entities?.includes(d.entity));
+        const listed = body.ids?.map(String).includes(String(k)) || body.blocks?.some((b) => cells.some((p) => keyOf(p) === keyOf(b))) || ((d.entity !== null && d.entity !== undefined) && body.entities?.includes(d.entity));
         if (!inArea && !listed) continue;
         c.designations.delete(k);
         c.removed.push({ rev: this.bump(c), kind: 'designations', key: k });
@@ -533,7 +553,7 @@ export class StorySim {
           kind: item.kind,
           label: buildLabel(item.kind, cells.length, item.material),
           status: 'queued',
-          reason: have < need && item.kind !== 'remove' && item.kind !== 'furniture' ? `needs ${need - have} more ${storyItemLabel(mid, mmeta).toLowerCase()}` : null,
+          reason: have < need && item.kind !== 'remove' && !(STORY_FURNITURE as readonly string[]).includes(item.kind) ? `needs ${need - have} more ${storyItemLabel(mid, mmeta).toLowerCase()}` : null,
           blocksTotal: cells.length,
           blocksDone: 0,
           material: item.material,
@@ -592,7 +612,7 @@ export class StorySim {
             const k = keyOf([x, y, z]);
             if (!c.benches.has(k)) {
               const kind = id === 58 ? 'crafting_table' : id === 117 ? 'brewing_stand' : id === 145 ? 'anvil' : id === 116 ? 'enchanting_table' : 'furnace';
-              c.benches.set(k, { rev: this.bump(c), v: { pos: [x, y, z], kind, label: null, bills: [] } });
+              c.benches.set(k, { rev: this.bump(c), v: { pos: [x, y, z], kind, label: null, supported: kind === 'crafting_table' || kind === 'furnace', bills: [] } });
             }
           }
         }
@@ -612,7 +632,7 @@ export class StorySim {
         doubleWith: other ?? null,
         label: prev?.label ?? null,
         priority: priority ?? prev?.priority ?? 'normal',
-        filter: filter ?? prev?.filter ?? { allow: ['resources', 'food', 'plants', 'gear', 'mob_drops', 'building', 'furniture'], deny: [] },
+        filter: filter ?? prev?.filter ?? { allow: ['*'], deny: [] },
         contents: prev?.contents ?? seedContents(p),
         freeSlots: prev?.freeSlots ?? (other ? 46 : 22),
         knownAt: this.iso(),
@@ -676,59 +696,90 @@ export class StorySim {
     }
   }
 
-  bills(id: string, body: StoryBillsRequest): { ok: boolean; id?: Key; rev: number } {
+  bills(id: string, body: StoryBillsRequest): { ok: boolean; id?: Key; ids?: Key[]; rev: number } {
     const c = this.colony(id);
-    const f = c.benches.get(keyOf(body.workbench));
-    if (!f) throw Object.assign(new Error('no workbench there'), { status: 404 });
-    const bench = f.v;
+    const benchAt = (pos: readonly number[]) => {
+      const f = c.benches.get(keyOf(pos));
+      if (!f) throw Object.assign(new Error('no workbench there'), { status: 404 });
+      if (f.v.supported === false) throw Object.assign(new Error(`a ${f.v.kind.replace(/_/g, ' ')} takes no bills yet`), { status: 400 });
+      return f;
+    };
+    const holder = (billId: Key) => {
+      for (const f of c.benches.values()) if (f.v.bills.some((b) => String(b.id) === String(billId))) return f;
+      throw Object.assign(new Error('no such bill'), { status: 404 });
+    };
+    let f: Fn<StoryWorkbench>;
     let newId: Key | undefined;
     switch (body.op) {
       case 'add': {
-        const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === body.spec.recipe);
+        f = benchAt(body.bench);
+        const spec = body.bill;
+        const recipe = STORY_DEFAULT_RECIPES.find((r) => r.id === spec.recipe);
         if (!recipe) throw Object.assign(new Error('unknown recipe'), { status: 400 });
         const b: StoryBill = {
           id: `bill${c.seq++}`,
           recipe: recipe.id,
-          mode: body.spec.mode,
-          target: body.spec.target ?? (body.spec.mode === 'until' ? 64 : 1),
+          mode: spec.mode,
+          target: spec.target ?? (spec.mode === 'until' ? 64 : 1),
           done: 0,
-          paused: body.spec.paused ?? false,
+          paused: spec.paused ?? false,
           suspendedReason: null,
-          ingredients: body.spec.ingredients ?? { allow: recipe.inputs.flatMap((i) => (i.category ? [i.category] : (i.options ?? []).map(([a, m]) => `${a}:${m}`))), deny: [] },
-          radius: body.spec.radius ?? 32,
-          pawn: body.spec.pawn ?? 'any',
-          minSkill: body.spec.minSkill ?? null,
-          store: body.spec.store ?? 'best',
+          ingredients: spec.ingredients ?? { allow: recipe.inputs.flatMap((i) => (i.category ? [i.category] : (i.options ?? []).map(([a, m]) => `${a}:${m}`))), deny: [] },
+          radius: spec.radius ?? 32,
+          pawn: spec.pawn ?? 'any',
+          minSkill: spec.minSkill ?? null,
+          store: spec.store ?? 'best',
         };
-        bench.bills.push(b);
+        f.v.bills.push(b);
         newId = b.id;
         break;
       }
       case 'update': {
-        const b = bench.bills.find((x) => String(x.id) === String(body.id));
-        if (!b) throw Object.assign(new Error('no such bill'), { status: 404 });
-        Object.assign(b, body.spec);
+        f = holder(body.id);
+        const b = f.v.bills.find((x) => String(x.id) === String(body.id))!;
+        const { op: _op, id: _id, ...fields } = body;
+        Object.assign(b, fields);
+        if (fields.paused === false) b.suspendedReason = null;
         break;
       }
       case 'remove':
-        bench.bills = bench.bills.filter((b) => !body.ids.map(String).includes(String(b.id)));
+        f = holder(body.id);
+        f.v.bills = f.v.bills.filter((b) => String(b.id) !== String(body.id));
         break;
       case 'pause':
       case 'resume':
-        for (const b of bench.bills) if (body.ids.map(String).includes(String(b.id))) b.paused = body.op === 'pause';
+        f = holder(body.id);
+        for (const b of f.v.bills)
+          if (String(b.id) === String(body.id)) {
+            b.paused = body.op === 'pause';
+            if (body.op === 'resume') b.suspendedReason = null;
+          }
         break;
       case 'reorder': {
+        f = benchAt(body.bench);
         const ids = body.ids.map(String);
-        const front = ids.map((i) => bench.bills.find((b) => String(b.id) === i)).filter((b): b is StoryBill => !!b);
-        bench.bills = [...front, ...bench.bills.filter((b) => !ids.includes(String(b.id)))];
-        break;
+        const front = ids.map((i) => f.v.bills.find((b) => String(b.id) === i)).filter((b): b is StoryBill => !!b);
+        f.v.bills = [...front, ...f.v.bills.filter((b) => !ids.includes(String(b.id)))];
+        f.rev = this.bump(c);
+        return { ok: true, ids: f.v.bills.map((b) => b.id), rev: c.rev };
       }
     }
     f.rev = this.bump(c);
     return { ok: true, ...(newId ? { id: newId } : {}), rev: c.rev };
   }
 
-  directive(body: StoryDirectiveRequest): { id: string; delivered: string[] } {
+  /** Every directive of every colony (newest last). */
+  directives(): StoryDirective[] {
+    return [...this.colonies.values()].flatMap((c) => [...c.directives.values()].map((f) => f.v));
+  }
+
+  directiveDetail(id: string) {
+    const d = this.directives().find((x) => String(x.id) === id);
+    if (!d) throw Object.assign(new Error('no such directive'), { status: 404 });
+    return { ...d, line: `${d.summary} [${d.id}]`, delivered: d.bots, detail: null };
+  }
+
+  directive(body: StoryDirectiveRequest): { id: string; delivered: string[]; line: string } {
     const c = [...this.colonies.values()].at(-1);
     const d: StoryDirective = {
       id: `dir-${body.requestId}`,
@@ -752,7 +803,7 @@ export class StorySim {
       step('acknowledged', `On it: ${d.summary.toLowerCase()}.`, 1500);
       step('done', 'Done!', 7000);
     }
-    return { id: String(d.id), delivered: body.bots };
+    return { id: String(d.id), delivered: body.bots, line: `${d.summary} [${d.id}]` };
   }
 
   // ------------------------------------------------------------------ the director's loop
@@ -823,8 +874,8 @@ export class StorySim {
     if (!p.task && pawn.queue.length) {
       const o = pawn.queue[0]!;
       const t = o.target;
-      const at: [number, number, number] | null =
-        t && (t.x !== null && t.x !== undefined) ? [t.x, t.y ?? p.y, t.z ?? p.z] : t?.area ? [(t.area[0] + t.area[3]) / 2, t.area[1], (t.area[2] + t.area[5]) / 2] : (t?.entity !== null && t?.entity !== undefined) ? this.entityPos(t.entity) : null;
+      const ent = t && typeof t === 'object' && !Array.isArray(t) ? t.entity : null;
+      const at: [number, number, number] | null = targetPos(t) ?? (ent !== null && ent !== undefined ? this.entityPos(ent) : null);
       p.task = { kind: `order:${o.kind}`, ref: o.id ?? null, label: orderLabel(o.kind), target: at, type: o.kind };
       p.goal = at;
       p.work = o.kind === 'hold' ? Infinity : WORK_MS[o.kind] ?? (o.kind === 'move' ? 0 : 1500);
@@ -1114,8 +1165,13 @@ function seedContents(p: readonly number[]): Array<[number, number, number]> {
 function buildLabel(kind: string, cells: number, material: unknown): string {
   const [id, meta] = materialKey(material as never);
   const what = storyItemLabel(id, meta).toLowerCase();
-  const name = { wall: 'Wall', floor: 'Floor', roof: 'Roof', door: 'Door', window: 'Window', stairs: 'Stairs', fence: 'Fence', block: 'Blocks', furniture: storyItemLabel(id, meta), remove: 'Clear blocks' }[kind] ?? kind;
-  return kind === 'furniture' || kind === 'door' || kind === 'window' ? name : `${name} (${cells} ${what})`;
+  const furniture = (STORY_FURNITURE as readonly string[]).includes(kind);
+  if (furniture) {
+    const [fid, fmeta] = materialKey(kind);
+    return storyItemLabel(fid, fmeta);
+  }
+  const name = { wall: 'Wall', floor: 'Floor', roof: 'Roof', door: 'Door', window: 'Window', stairs: 'Stairs', fence: 'Fence', block: 'Blocks', remove: 'Clear blocks' }[kind] ?? kind;
+  return kind === 'door' || kind === 'window' ? name : `${name} (${cells} ${what})`;
 }
 
 function orderLabel(kind: string): string {

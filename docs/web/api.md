@@ -345,9 +345,12 @@ Notes on specific routes:
 | `story.list` | `GET /api/story` | viewer | – | `StoryListResponse` | `GET /v1/sup/story` | /api/story | – |
 | `story.recipes` | `GET /api/story/recipes` | viewer | query `StoryRecipesQuery` | `StoryRecipesResponse` | `GET /v1/sup/story/recipes` | /api/story/recipes | – |
 | `story.create` | `POST /api/story/colonies` | story | body `StoryCreateRequest` | `StoryCreateResponse` | `POST /v1/sup/story/colonies` | /api/story/colonies | story |
-| `story.directives` | `POST /api/story/directives` | story | body `StoryDirectiveRequest` | `StoryDirectiveResponse` | `POST /v1/sup/story/directives` | /api/story/directives | story |
+| `story.directives` | `POST /api/story/directives` | story | body `StoryDirectiveRequest` | `StoryDirectiveResponse` | `POST /v1/sup/story/directives` | /api/story/directives (bridge adds player from X-MCX-Player, allow_commands from X-MCX-Roles) | story |
+| `story.directives.list` | `GET /api/story/directives` | viewer | – | `StoryDirectiveList` | `GET /v1/sup/story/directives` | /api/story/directives | – |
+| `story.directive` | `GET /api/story/directives/:id` | viewer | params `StoryDirectiveParams` | `StoryDirectiveDetail` | `GET /v1/sup/story/directives/{id}` | /api/story/directives/{id} | – |
 | `story.get` | `GET /api/story/colonies/:id` | viewer | params `StoryColonyParams`<br>query `StoryStateQuery` | `StoryColonyState` | `GET /v1/sup/story/colonies/{id}` | /api/story/colonies/{id} | – |
 | `story.release` | `POST /api/story/colonies/:id/release` | story | params `StoryColonyParams`<br>body `Empty` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/release` | /api/story/colonies/{id}/release | story |
+| `story.resume` | `POST /api/story/colonies/:id/resume` | story | params `StoryColonyParams`<br>body `Empty` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/resume` | /api/story/colonies/{id}/resume | story |
 | `story.pause` | `POST /api/story/colonies/:id/pause` | story | params `StoryColonyParams`<br>body `StoryPauseRequest` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/pause` | /api/story/colonies/{id}/pause | story |
 | `story.priorities` | `POST /api/story/colonies/:id/priorities` | story | params `StoryColonyParams`<br>body `StoryPrioritiesRequest` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/priorities` | /api/story/colonies/{id}/priorities | story |
 | `story.schedule` | `POST /api/story/colonies/:id/schedule` | story | params `StoryColonyParams`<br>body `StoryScheduleRequest` | `StoryAck` | `POST /v1/sup/story/colonies/{id}/schedule` | /api/story/colonies/{id}/schedule | story |
@@ -515,35 +518,25 @@ These are the bot-side additions from architecture.md, in their wire form. They 
 in_context, staleness_s, evicted}]}`.
   - **Decay.** `heat = 0.5^((at − last_access_at)/half_life_s)`. The client re-decays between refreshes with `decayHeat`.
 
-- **Story Mode (added 2026-11-03; design: `docs/web/story-mode.md`).** `/api/story*` routes behind
-  `Supervisor:Viewer:Enabled` and the token, writes behind `Supervisor:Viewer:AllowStory`. Schemas: `story.ts` in the
-  contracts (snake_case on the wire). What the web relies on beyond the design doc's tables:
-  - **Deltas.** `GET /api/story/colonies/{id}?since=rev` returns only the items whose revision is after `rev`, keyed by pawn
-    `name`, zone / designation / order / build / directive `id`, storage `chest` and workbench `pos`, plus
-    `removed: {pawns, zones, designations, orders, builds, storages, workbenches, directives, alerts}` (keys). No `since`
-    (or `full: true`) is the whole state and replaces the client's. `ghosts` and `categories`, when present, replace.
-    `alerts` are appended (de-duplicated by `id`).
-  - **Designations by area.** `{op: "add", kind, area, filter?}` (kinds `chop cut harvest mine haul hunt deconstruct forbid
-    allow build`; `filter` for mine: `all ores stone soil`) is expanded by the director to every matching target (whole
-    trees for chop, ripe crops, items, animals) and answers `StoryDesignationResponse {count, targets?, entities?}`.
-    `{op: "remove", area}` without a kind cancels every designation there. A chop designation is one tree: `block` = its
-    base log, `targets` = its logs.
-  - **Builds.** `{op: "add", items: [StoryBuildItem]}` → `{ids}`; `remove | pause | resume | reorder` take `ids` (reorder:
-    the listed builds move to the front, in that order). `area` y1 is the first layer: walls rise `height` (1–12), a roof
-    sits on it with `roof: {style: flat|slab|gable|none, material?, overhang?}`. `kind: "furniture"` places
-    `crafting_table | furnace | chest | bed | torch`. `expandBuildItem` is the reference expansion (the web's preview).
-    State: `builds` + `ghosts {rev, blocks: [[x, y, z, id, meta, build_id, todo|leased|done|blocked]]}`.
-  - **Storage** (chests; there is no ground stockpile): `{op: "set", chests, filter?, priority?, label?}`,
-    `{op: "remove", chests}`, `{op: "copy", from, to}`, `{op: "assign_area", area, filter?, priority?}`. Filters are
-    `{allow, deny}` of category ids or `"id:meta"` keys (`-1` = every meta); deny wins. State: `categories` (the loot tree)
-    and `storages`.
-  - **Bills.** `POST …/bills` `{op: "add", workbench, spec}`, `{op: "update", workbench, id, spec}` (partial),
-    `{op: remove|pause|resume|reorder, workbench, ids}`; `spec` = `{recipe, mode: count|until|forever, target?, paused?,
-    ingredients?, radius?, pawn?, min_skill?, store?: "best" | {chest}}`. (`bill` is an opaque key for case conversion, so
-    the request names it `spec`.) `GET /api/story/recipes?workbench=` lists `StoryRecipe`s. State: `workbenches`.
-  - **AI bodies.** State `ai` (main, hives, subhive bodies) and `directives`; `POST /api/story/directives` `{bots,
-    directive: {kind, area?, targets?, entities?, filter?, build?, bill?, text?}, request_id}` → `{id, delivered}`. The web
-    sends the same payload a colony tool sends the director, to AI bodies in the selection.
+- **Story Mode (added 2026-11-03).** The bot's routes and every wire shape are in `docs/web/story-mode.md` ("Supervisor
+  routes", "Designations", "Construction", "Storage", "Workbenches & bills", "AI hives"); the schemas are `story.ts` in the
+  contracts (lenient on responses: designations may carry `target`/`blocks` or `block`/`targets`, order and job targets may be
+  `{x,y,z}`, `[x,y,z]` or `"x,y,z"`; read them with `designationCells`, `designationEntity`, `targetPos`). What the web
+  relies on:
+  - **Deltas.** `GET /api/story/colonies/{id}?since=rev`: only what changed, every pawn, and `removed: {zones, designations,
+    builds, storages}` (storages as `"x,y,z"` keys). No `since` (or `full: true`) replaces the whole state. `ghosts` and
+    `categories` replace when present; `alerts` append (de-duplicated). The SSE `story` frame is the same delta plus the colony
+    `id`; the client also catches up with `since=rev` every 3 s and refetches in full every minute.
+  - **Bills** use `{op:"add", bench, bill}`, `{op:"update", id, …bill fields}`, `{op:"remove"|"pause"|"resume", id}`,
+    `{op:"reorder", bench, ids}`. `bill` is an opaque key for case conversion only in responses (a blueprint's material
+    map): request bodies convert with `REQUEST_OPAQUE_KEYS`, so a bill's `minSkill` reaches the bot as `min_skill`.
+  - **Directives** (`POST /api/story/directives`): the public body is `{bots, directive, requestId}`; the bridge adds `player`
+    from `X-MCX-Player` (403 when empty) and `allow_commands` from `X-MCX-Roles` (`commands`), and refuses a body that
+    carries either (400), as for viewer chat. `GET /api/story/directives[/{id}]` reads them back.
+  - **Release / resume.** `POST …/release` keeps the colony (`active:false`); `POST …/resume` spawns its pawns again.
+  - **Unsupported benches** (`supported:false`: brewing stands, anvils, enchanting tables) show without the Add bill button.
+  - **Designs** (`/story?design=N`): the web reads the design's blocks from `/api/blueprints/{id}` (or `/api/buildplans/{id}`),
+    lets the user place the ghost, and queues it as `block` build items with explicit blocks, one per material.
 
 ## 7. Binary formats
 

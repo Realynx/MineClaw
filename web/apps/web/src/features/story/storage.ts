@@ -67,9 +67,10 @@ function ancestors(n: TreeNode | null): TreeNode[] {
 /** Is one item leaf allowed under its node path? Deny on the item or any ancestor wins; allow needs the item or an ancestor. */
 export function itemAllowed(filter: StoryFilter, node: TreeNode, key: string): boolean {
   const path = ancestors(node).map((a) => a.id);
-  const anyKey = `${key.split(':')[0]}:-1`;
-  if (filter.deny.includes(key) || filter.deny.includes(anyKey) || path.some((p) => filter.deny.includes(p))) return false;
-  return filter.allow.includes(key) || filter.allow.includes(anyKey) || path.some((p) => filter.allow.includes(p));
+  const id = key.split(':')[0]!;
+  const covers = (list: readonly string[]) => list.includes(key) || list.includes(`${id}:-1`) || list.includes(id) || list.includes('*') || path.some((p) => list.includes(p));
+  if (covers(filter.deny)) return false;
+  return covers(filter.allow);
 }
 
 /** A node's checkbox: on (all its items allowed), off (none) or partial. */
@@ -100,7 +101,7 @@ export function toggleNode(filter: StoryFilter, node: TreeNode): StoryFilter {
   const inner = new Set(subtreeIds(node));
   const allow = filter.allow.filter((k) => !inner.has(k));
   const deny = filter.deny.filter((k) => !inner.has(k));
-  const covered = (list: string[]) => ancestors(node.parent).some((a) => list.includes(a.id));
+  const covered = (list: string[]) => list.includes('*') || ancestors(node.parent).some((a) => list.includes(a.id));
   if (turnOn) {
     if (!covered(allow) || covered(deny)) allow.push(node.id);
   } else if (covered(allow)) deny.push(node.id);
@@ -117,8 +118,9 @@ export function toggleItem(filter: StoryFilter, node: TreeNode, key: string): St
   return { allow, deny };
 }
 
-export function allowAll(tree: readonly TreeNode[]): StoryFilter {
-  return { allow: tree.map((n) => n.id), deny: [] };
+/** Everything (`"*"`, what a new chest allows). */
+export function allowAll(_tree?: readonly TreeNode[]): StoryFilter {
+  return { allow: ['*'], deny: [] };
 }
 
 export const CLEAR_FILTER: StoryFilter = { allow: [], deny: [] };
@@ -242,18 +244,18 @@ export function specOf(d: BillDraft): StoryBillSpec {
 }
 
 export function addBillBody(bench: V3, d: BillDraft) {
-  return { op: 'add' as const, workbench: bench, spec: specOf(d) };
+  return { op: 'add' as const, bench, bill: specOf(d) };
 }
 
 /** Only what changed between the bill and the edited draft (null = nothing). */
-export function updateBillBody(bench: V3, bill: StoryBill, d: BillDraft) {
+export function updateBillBody(bill: StoryBill, d: BillDraft) {
   const before = specOf(draftOf(bill)) as Record<string, unknown>;
   const after = specOf(d) as Record<string, unknown>;
   const spec: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(after)) if (JSON.stringify(before[k]) !== JSON.stringify(v)) spec[k] = v;
   if (d.minSkill === null && (bill.minSkill !== null && bill.minSkill !== undefined)) spec.minSkill = 0;
   if (Object.keys(spec).length === 0) return null;
-  return { op: 'update' as const, workbench: bench, id: bill.id, spec };
+  return { op: 'update' as const, id: bill.id, ...spec };
 }
 
 /** Moves the bill at `from` to `to`; the reorder request lists every bill in the new order. */
@@ -261,7 +263,7 @@ export function reorderBills(bench: V3, ids: ReadonlyArray<string | number>, fro
   const list = [...ids];
   const [m] = list.splice(from, 1);
   list.splice(Math.max(0, Math.min(list.length, to)), 0, m!);
-  return { op: 'reorder' as const, workbench: bench, ids: list };
+  return { op: 'reorder' as const, bench, ids: list };
 }
 
 /** The recipe picker: search on label and ingredient names, grouped by category (or work type). */

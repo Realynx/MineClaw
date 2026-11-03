@@ -38,6 +38,8 @@ function storyOverrides(): typeof OVERRIDES {
     'story.create': { body: { name: 'Second Hollow', pawns: 2 } },
     'story.get': { params: id, query: {} },
     'story.release': { params: id, body: {} },
+    'story.resume': { params: id, body: {} },
+    'story.directive': { params: { id: 'dir-r-story0001' } },
     'story.pause': { params: id, body: { paused: false } },
     'story.priorities': { params: id, body: { pawns, work: { chop: 1, haul: 2 } } },
     'story.schedule': { params: id, body: { pawns, hours: { '0': 'work', '20': 'sleep' } } },
@@ -47,7 +49,7 @@ function storyOverrides(): typeof OVERRIDES {
     'story.designations': { params: id, body: { op: 'add', kind: 'chop', area: [26, 60, 2, 50, 75, 20] } },
     'story.builds': { params: id, body: { op: 'add', items: [{ kind: 'wall', area: [0, 64, 0, 4, 64, 4], material: 'cobblestone', height: 3 }] } },
     'story.storage': { params: id, body: { op: 'assign_area', area: [14, 60, 0, 30, 70, 10] } },
-    'story.bills': { params: id, body: { op: 'add', workbench: [17, 63, 7], spec: { recipe: 'sticks', mode: 'until', target: 64 } } },
+    'story.bills': { params: id, body: { op: 'add', bench: [17, 63, 7], bill: { recipe: 'sticks', mode: 'until', target: 64, minSkill: 2 } } },
     'story.directives': { body: { bots: ['maid_chan'], directive: { kind: 'text', text: 'come here' }, requestId: 'r-story0001' } },
   };
 }

@@ -61,6 +61,7 @@ export function useRecipes(workbench: string | null) {
 
 type ColonyWrite =
   | 'story.release'
+  | 'story.resume'
   | 'story.pause'
   | 'story.priorities'
   | 'story.schedule'

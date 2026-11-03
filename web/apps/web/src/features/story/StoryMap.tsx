@@ -8,13 +8,13 @@
  * software WebGL: no blur, no DOM per pawn, a few hundred canvas primitives.
  */
 import type { PickedBlock, WorldViewerEngine, WorldViewerHandle } from '@mineclaw/world-viewer';
-import type { StoryColonyState } from '@mineclaw/contracts';
+import { designationCells, targetPos, type StoryColonyState } from '@mineclaw/contracts';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import { useWorldHost } from '@/features/world/integration';
 import { DotMap } from '@/features/world/DotMap';
 import { cellAt, cellRect, edgePan, isDrag, nearest, project, rayAt, rayPlaneY, rectOf, unitsPerPx, zoomAt, type Pt, type Rect, type V3, type ViewMats } from './math';
 import { type Selection } from './model';
-import { buildItem, entitiesIn, faceCell, preview as buildPreview, previewTargets, scanIds, toolArea, toolYRange, DESIGNATE_TOOLS, zoneColor, type BuildOpts, type BuildToolId, type DesignateId, type EntityLite, type Target } from './tools';
+import { buildItem, entitiesIn, faceCell, placeDesign, type DesignBlock, preview as buildPreview, previewTargets, scanIds, toolArea, toolYRange, DESIGNATE_TOOLS, zoneColor, type BuildOpts, type BuildToolId, type DesignateId, type EntityLite, type Target } from './tools';
 import { COLORS, glyph, pawnColor } from './visuals';
 
 export type MapTool =
@@ -22,6 +22,7 @@ export type MapTool =
   | { kind: 'designate'; id: DesignateId }
   | { kind: 'zone'; id: string; op: 'add' | 'remove' }
   | { kind: 'build'; id: BuildToolId }
+  | { kind: 'design'; id: number; name: string; blocks: DesignBlock[] }
   | { kind: 'storage' };
 
 export interface DragResult {
@@ -354,7 +355,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     // Designations: a mark on every target (one per tree for chop).
     for (const d of st?.designations ?? []) {
       const col = COLORS.designation[d.kind] ?? '#ffffff';
-      const cells = d.kind === 'chop' && d.targets?.length ? [d.targets.reduce((a, b) => (b[1] > a[1] ? b : a))] : d.block ? [d.block] : (d.targets ?? []).slice(0, 1);
+      const all = designationCells(d);
+      const cells = d.kind === 'chop' && all.length > 1 ? [all.reduce((a, b) => (b[1] > a[1] ? b : a))] : all.slice(0, 1);
       for (const b of cells) {
         const at = project(m, b[0] + 0.5, Math.min(b[1] + 1, cutY ?? 999), b[2] + 0.5);
         if (at) mark(d.kind, at, col, cell > 18 ? 14 : 11);
@@ -423,13 +425,13 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     for (const b of list) {
       if (!sel.has(b.key) || !b.at) continue;
       const pw = st?.pawns.find((x) => x.name === b.key);
-      const targets = [pw?.job?.target, ...(pw?.queue ?? []).map((o) => o.target)].filter((t): t is NonNullable<typeof t> => !!t && (t.x !== null && t.x !== undefined));
+      const targets = [pw?.job?.target, ...(pw?.queue ?? []).map((o) => o.target)].map((t) => targetPos(t)).filter((t): t is [number, number, number] => !!t);
       let from = b.at;
       ctx.strokeStyle = COLORS.order;
       ctx.lineWidth = 1.5;
       ctx.setLineDash([5, 4]);
       for (const t of targets.slice(0, 6)) {
-        const at = project(m, t.x! + 0.5, (t.y ?? b.pos[1]) + 0.2, t.z! + 0.5);
+        const at = project(m, t[0] + 0.5, t[1] + 0.2, t[2] + 0.5);
         if (!at) continue;
         ctx.beginPath();
         ctx.moveTo(from.x, from.y);
@@ -520,6 +522,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       } else if (d.startCell && d.endCell) {
         drawToolDrag(ctx, m, d, quad, poly, mark, cube);
       }
+    } else if (tool.kind === 'design' && hover.current?.cell && !d) {
+      // A design follows the cursor (Q/E turns it) on the working level.
+      const a = startCellOf(hover.current);
+      if (a) for (const b of placeDesign(tool.blocks, a, props.build.facing).slice(0, 2500)) cube(b[0], b[1], b[2], '#7fd3ff', 0.38, false);
+      if (a) label(ctx, hover.current.at, `${tool.name}: ${tool.blocks.length} blocks · click to queue`, true);
     } else if (tool.kind === 'build' && hover.current?.cell && !d) {
       // The placement ghost under the cursor before a drag starts.
       const a = startCellOf(hover.current);
@@ -611,7 +618,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         }
         if (tool.id === 'cancel') {
           for (const dd of props.state?.designations ?? []) {
-            const bb = dd.block;
+            const bb = designationCells(dd)[0];
             if (bb && bb[0] >= rect[0] && bb[0] <= rect[2] && bb[2] >= rect[1] && bb[2] <= rect[3]) {
               const s = project(m, bb[0] + 0.5, bb[1] + 1, bb[2] + 0.5);
               if (s) {
@@ -684,7 +691,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     h.cell = cell;
     hover.current = h;
     const tool = p.current.tool;
-    if (p.current.view === 'angled' && tool.kind === 'build' && now - h.pickAt > 60) {
+    if (p.current.view === 'angled' && (tool.kind === 'build' || tool.kind === 'design') && now - h.pickAt > 60) {
       h.pickAt = now;
       void pick(pt).then((hit) => {
         if (!hover.current) return;
@@ -714,7 +721,10 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       return;
     }
     if (tool.id === 'cancel') {
-      const n = (p.current.state?.designations ?? []).filter((dd) => dd.block && dd.block[0] >= rect[0] && dd.block[0] <= rect[2] && dd.block[2] >= rect[1] && dd.block[2] <= rect[3]).length;
+      const n = (p.current.state?.designations ?? []).filter((dd) => {
+        const bb = designationCells(dd)[0];
+        return bb && bb[0] >= rect[0] && bb[0] <= rect[2] && bb[2] >= rect[1] && bb[2] <= rect[3];
+      }).length;
       finish([], n, []);
       return;
     }
@@ -741,7 +751,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     canvas.current?.focus({ preventScroll: true });
     updateHover(pt);
     if (ev.button === 2) return; // context menu on up
-    const startCell = p.current.tool.kind === 'build' && hover.current ? startCellOf(hover.current) : groundCell(pt);
+    const startCell = (p.current.tool.kind === 'build' || p.current.tool.kind === 'design') && hover.current ? startCellOf(hover.current) : groundCell(pt);
     drag.current = { start: pt, now: pt, button: ev.button, shift: ev.shiftKey, alt: ev.altKey, startCell, endCell: startCell, moved: false };
     scan.current = { key: '', busy: false, result: null };
   };

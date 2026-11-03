@@ -3,7 +3,7 @@
  * with the mock hive's bodies as the AI bodies. Requests arrive snake_case (as the bridge forwards them) and replies leave
  * snake_case. A colony ("Mock Hollow", `story-1`) is founded at start so mock mode is playable at once.
  */
-import { toCamel, toSnake, type RouteId, type StoryAiBody } from '@mineclaw/contracts';
+import { REQUEST_OPAQUE_KEYS, toCamel, toSnake, type RouteId, type StoryAiBody } from '@mineclaw/contracts';
 import { StorySim, type SimEntity } from '@mineclaw/contracts/testing';
 import type { MockHive } from './hive.js';
 import { CAMP, groundAt, mockBlock, setMockBlock } from './terrain.js';
@@ -50,8 +50,14 @@ export class MockStory {
   }
 
   /** Answers a story route (bodies and replies snake_case). */
-  handle(id: RouteId, params: Record<string, string>, query: URLSearchParams, rawBody: Buffer): StoryReply {
-    const body = rawBody.length ? toCamel<never>(JSON.parse(rawBody.toString('utf8'))) : ({} as never);
+  handle(id: RouteId, params: Record<string, string>, query: URLSearchParams, rawBody: Buffer, player = ''): StoryReply {
+    if (id === 'story.directives') {
+      // As the bridge does: the sender is the signed player; the body never names one.
+      const raw = rawBody.length ? (JSON.parse(rawBody.toString('utf8')) as Record<string, unknown>) : {};
+      if ('player' in raw || 'allow_commands' in raw) return { status: 400, json: { error: 'player and allow_commands are set by the bridge', code: 'bad_request' } };
+      if (!player) return { status: 403, json: { error: 'no Minecraft player is linked to this account', code: 'forbidden' } };
+    }
+    const body = rawBody.length ? toCamel<never>(JSON.parse(rawBody.toString('utf8')), { opaque: REQUEST_OPAQUE_KEYS }) : ({} as never);
     const cid = params.id ?? '';
     try {
       const out = this.run(id, cid, query, body);
@@ -77,6 +83,12 @@ export class MockStory {
       }
       case 'story.release':
         return s.release(cid);
+      case 'story.resume':
+        return s.resume(cid);
+      case 'story.directives.list':
+        return { directives: s.directives() };
+      case 'story.directive':
+        return s.directiveDetail(cid);
       case 'story.pause':
         return s.pause(cid, (body as { paused: boolean }).paused);
       case 'story.priorities':

@@ -21,7 +21,7 @@ import { AlertsStack, barBodies, ColonistBar, ContextMenu, ControlCluster, HelpO
 import { AiInspector, BillsInspector, GroupInspector, PawnInspector, StorageInspector } from './StoryInspector';
 import { StoryMap, type DragResult, type MapTool, type StoryMapHandle } from './StoryMap';
 import { ArchitectPanel, ColonyPanel, DirectivesPanel, NewColony, QueuePanel, SchedulePanel, TabBar, WorkPanel, type TabId } from './StoryPanels';
-import { buildItem, clampHeight, contextMenu, countLabel, designationBody, designationDirective, DESIGNATE_TOOLS, keyAction, levelCutY, nextLevel, orderBody, PAN_KEYS, preview, rotateFacing, toolArea, toolYRange, type BuildOpts, type MenuItem, type Target } from './tools';
+import { buildItem, clampHeight, contextMenu, countLabel, designBlocks, designationBody, designationDirective, designItems, DESIGNATE_TOOLS, placeDesign, keyAction, levelCutY, nextLevel, orderBody, PAN_KEYS, preview, rotateFacing, toolArea, toolYRange, type BuildOpts, type MenuItem, type Target } from './tools';
 import type { StorageClip } from './storage';
 import { colonyKey, useColonies, useColony, useStoryWrite } from './useStory';
 import { setItemIconSource } from './visuals';
@@ -188,9 +188,18 @@ export function StoryMode() {
       const area = normArea([r.rect[0], lv - 4, r.rect[1], r.rect[2], lv + 8, r.rect[3]]);
       if (!canWrite) return say('Needs the story role', 'warn');
       await write('story.storage', { op: 'assign_area', area }).then(
-        (out) => say(`${(out as { count?: number }).count ?? 0} chest${(out as { count?: number }).count === 1 ? '' : 's'} registered as storage`),
+        (out) => {
+          const n = out.count ?? out.chests?.length ?? 0;
+          say(`${n} chest${n === 1 ? '' : 's'} registered as storage`);
+        },
         (e) => say(errorText(e), 'warn'),
       );
+      return;
+    }
+    if (tool.kind === 'design') {
+      const placed = placeDesign(tool.blocks, r.a, build.facing);
+      const items = designItems(placed, tool.name);
+      await run({ route: 'story.builds', body: { op: 'add', items } }, { kind: 'build', build: items }, 'queued', () => `Queued ${tool.name}: ${placed.length} blocks`);
       return;
     }
     if (tool.kind === 'build') {
@@ -348,6 +357,24 @@ export function StoryMode() {
     return null;
   })();
 
+  // `/story?design=N` (from the design pages): pick the design up as a placement ghost on the map.
+  const designParam = params.get('design');
+  const designDone = useRef<string | null>(null);
+  useEffect(() => {
+    if (!designParam || !state || designDone.current === designParam) return;
+    designDone.current = designParam;
+    const id = Number(designParam);
+    if (!Number.isInteger(id) || id < 1) return;
+    void (async () => {
+      const name = await api('designs.get', { params: { id } }).then((d) => d.design.name, () => `design #${id}`);
+      let blocks = designBlocks(await api('blueprints.get', { params: { id } }).catch(() => null));
+      if (!blocks.length) blocks = designBlocks(await api('buildplans.get', { params: { id } }).catch(() => null));
+      if (!blocks.length) return say(`${name} has no block list the colony can build from`, 'warn');
+      setTool({ kind: 'design', id, name, blocks });
+      say(`${name}: move to a spot and click to queue it (Q/E turns)`);
+    })();
+  }, [designParam, state, say]);
+
   const create = async (name: string, n: number) => {
     if (!canWrite) return say('Needs the story role', 'warn');
     const c = map.current?.center();
@@ -385,6 +412,7 @@ export function StoryMode() {
             onCreate={(name, n) => void create(name, n)}
             onPause={togglePause}
             onRelease={() => void write('story.release', {}).then(() => say('Pawns released; the colony is saved'))}
+            onResume={() => void write('story.resume', {}).then(() => say('The pawns are coming back'), (e) => say(errorText(e), 'warn'))}
           />
         );
       default:
