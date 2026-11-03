@@ -109,7 +109,7 @@ function PersonalityInner() {
                               {e.player ? <span className="text-subtle"> · about {e.player}</span> : null}
                             </p>
                             <div className="mt-1.5 h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-surface-3" role="meter" aria-label="strength" aria-valuenow={toNumber(e.strength)} aria-valuemin={0} aria-valuemax={1}>
-                              <div className="h-full rounded-full bg-accent" style={{ width: `${toNumber(e.strength) * 100}%` }} />
+                              <div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(1, Math.max(0, toNumber(e.strength))) * 100}%` }} />
                             </div>
                           </div>
                           <p className="mt-0.5 text-[11px] text-subtle">
@@ -134,6 +134,7 @@ function PersonalityInner() {
               <ul className="space-y-3 p-4">
                 {p.mood.map((m) => {
                   const v = toNumber(m.value);
+                  const bar = Math.min(1, Math.abs(v)) * 50;
                   return (
                     <li key={m.dim}>
                       <div className="mb-1 flex justify-between text-xs">
@@ -147,7 +148,7 @@ function PersonalityInner() {
                         <span className="absolute top-[-2px] left-1/2 h-2.5 w-px bg-border-strong" aria-hidden />
                         <div
                           className={v >= 0 ? 'absolute inset-y-0 left-1/2 rounded-r-full bg-ok' : 'absolute inset-y-0 rounded-l-full bg-warn'}
-                          style={v >= 0 ? { width: `${v * 50}%` } : { right: '50%', width: `${-v * 50}%` }}
+                          style={v >= 0 ? { width: `${bar}%` } : { right: '50%', width: `${bar}%` }}
                         />
                       </div>
                     </li>

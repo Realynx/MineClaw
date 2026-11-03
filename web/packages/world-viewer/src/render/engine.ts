@@ -358,6 +358,12 @@ export class WorldViewerEngine implements RuntimeView {
     this.listen(c, 'contextmenu', (e: MouseEvent) => e.preventDefault());
     this.listen(c, 'pointerdown', (e: PointerEvent) => {
       c.focus();
+      // Free cam plays like the game: the first click locks and hides the cursor (Esc releases it); that click picks nothing.
+      if (this.rig.mode === 'fly' && e.button === 0 && document.pointerLockElement !== c) {
+        this.drag = null;
+        c.requestPointerLock?.();
+        return;
+      }
       this.drag = { x: e.clientX, y: e.clientY, t: performance.now(), button: e.button, moved: false };
       c.setPointerCapture?.(e.pointerId);
     });
@@ -374,7 +380,6 @@ export class WorldViewerEngine implements RuntimeView {
       d.x = e.clientX;
       d.y = e.clientY;
       if ((this.rig.mode === 'iso' || this.rig.mode === 'top') && (d.button === 2 || e.shiftKey || this.rig.mode === 'top')) this.rig.pan(dx, dy, c.clientHeight);
-      else if (this.rig.mode === 'fly') this.rig.look(-dx, -dy);
       else this.rig.look(dx, dy);
     });
     this.listen(c, 'pointerup', (e: PointerEvent) => {
@@ -382,10 +387,6 @@ export class WorldViewerEngine implements RuntimeView {
       this.drag = null;
       if (c.hasPointerCapture?.(e.pointerId)) c.releasePointerCapture(e.pointerId);
       if (!d || d.moved || performance.now() - d.t > 500 || d.button !== 0) return;
-      if (this.rig.mode === 'fly' && document.pointerLockElement !== c) {
-        c.requestPointerLock?.();
-        return;
-      }
       const locked = document.pointerLockElement === c;
       const rect = c.getBoundingClientRect();
       const ndc = locked ? new THREE.Vector2(0, 0) : new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);

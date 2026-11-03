@@ -48,6 +48,13 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
   const host = useRef<HTMLDivElement | null>(null);
   const engine = useRef<WorldViewerEngine | null>(null);
   const [notes, setNotes] = useState<string[]>([]);
+  const [mode, setMode] = useState<CameraMode>(props.cameraMode ?? 'follow');
+  const [locked, setLocked] = useState(false);
+  useEffect(() => {
+    const onLock = () => setLocked(!!document.pointerLockElement && !!host.current?.contains(document.pointerLockElement));
+    document.addEventListener('pointerlockchange', onLock);
+    return () => document.removeEventListener('pointerlockchange', onLock);
+  }, []);
   const cbs = useRef(props);
   cbs.current = props;
   // Inside a WorldViewerProvider: draw from the shared runtime (wait while it mounts); otherwise own a private one.
@@ -69,7 +76,10 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
       onPick: (b) => cbs.current.onPick?.(b),
       onStats: (s) => cbs.current.onStats?.(s),
       onNotes: (n) => setNotes((old) => (old.join('\n') === n.join('\n') ? old : n)),
-      onCameraModeChange: (m) => cbs.current.onCameraModeChange?.(m),
+      onCameraModeChange: (m) => {
+        setMode(m);
+        cbs.current.onCameraModeChange?.(m);
+      },
       onError: (r, err) => cbs.current.onError?.(r, err),
     });
     engine.current = e;
@@ -87,6 +97,7 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
   const layersKey = JSON.stringify(props.layers ?? {});
   useEffect(() => engine.current?.setLayers(props.layers ?? {}), [layersKey]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
+    if (props.cameraMode) setMode(props.cameraMode);
     if (props.cameraMode && engine.current && engine.current.getCameraMode() !== props.cameraMode) engine.current.setCameraMode(props.cameraMode);
   }, [props.cameraMode]);
   useEffect(() => engine.current?.setXRay(props.xray ?? 'auto'), [props.xray]);
@@ -110,6 +121,13 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
   return (
     <div className={props.className} style={{ position: 'relative', overflow: 'hidden', width: '100%', height: '100%', ...props.style }}>
       <div ref={host} style={{ position: 'absolute', inset: 0 }} />
+      {mode === 'fly' && !locked && (
+        <div
+          style={{ position: 'absolute', left: '50%', top: 12, transform: 'translateX(-50%)', padding: '4px 10px', font: '12px system-ui, sans-serif', color: '#fff', background: 'rgba(0,0,0,0.55)', borderRadius: 6, pointerEvents: 'none', whiteSpace: 'nowrap' }}
+        >
+          Click to look around · WASD move · Space/E up · Q down · Shift fast · Esc releases the mouse
+        </div>
+      )}
       {showNotes && (
         <ul
           style={{ position: 'absolute', left: 8, bottom: 8, margin: 0, padding: '4px 8px', listStyle: 'none', font: '12px system-ui, sans-serif', color: '#fff', background: 'rgba(0,0,0,0.5)', borderRadius: 6, pointerEvents: 'none' }}

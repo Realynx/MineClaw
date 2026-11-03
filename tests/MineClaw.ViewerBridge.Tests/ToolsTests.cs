@@ -10,6 +10,17 @@ namespace MineClaw.ViewerBridge.Tests;
 public class ToolsTests
 {
     [Fact]
+    public void Mood_is_the_bots_own_reading_decayed_and_within_minus_one_to_one()
+    {
+        long now = 1_000_000_000;
+        // A large raw accumulator (live db had -6.58) must still land in -1..1, as SelfGrowth.Mood reads it.
+        Assert.InRange(DbViews.MoodValue(-6.58, now, 3, now), -1, -0.99);
+        Assert.Equal(Math.Tanh(1.0 / 1.5), DbViews.MoodValue(1.0, now, 3, now), 9);
+        // One half-life later the sum counts half.
+        Assert.Equal(Math.Tanh(0.5 / 1.5), DbViews.MoodValue(1.0, now - 3 * 3_600_000L, 3, now), 9);
+    }
+
+    [Fact]
     public async Task Shard_export_streams_a_zip_and_import_preview_diffs_it_read_only()
     {
         var fx = await FixtureDb.SharedAsync();

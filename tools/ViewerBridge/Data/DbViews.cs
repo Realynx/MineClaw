@@ -128,6 +128,12 @@ public static class DbViews
     private static readonly string[] SectionOrder = ["trait", "like", "dislike", "opinion", "joke", "nickname", "relationship", "milestone"];
     private static readonly HashSet<string> Ops = ["add", "reinforce", "adjust", "remove"];
 
+    internal static double MoodValue(double sum, long updatedMs, double halfLifeHours, long? nowMs = null)
+    {
+        double hours = Math.Max(0, ((nowMs ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) - updatedMs) / 3_600_000.0);
+        return Math.Tanh(sum * Math.Pow(0.5, hours / Math.Max(0.1, halfLifeHours)) / 1.5);
+    }
+
     public static PersonalityResponse Personality(MemoryBank bank, string scope)
     {
         var db = bank.Db;
@@ -161,8 +167,10 @@ public static class DbViews
                     AgentDb.StrOrNull(r, 5), AgentDb.StrOrNull(r, 6)), ("$s", scope)).Where(h => Ops.Contains(h.Op)).ToList();
         }
         var mood = Has("self_acc")
-            ? db.Query("SELECT dim, sum, n FROM self_acc WHERE scope = $s AND family = 'mood' AND key IN ('', '_') ORDER BY dim",
-                r => new MoodEntry(r.GetString(0), r.GetDouble(1), r.GetInt64(2)), ("$s", scope))
+            // The stored sum is a decayed accumulator as of `updated`; report what the bot itself reads (SelfGrowth.Mood):
+            // decayed to now, then tanh(sum / 1.5), so the value is always within -1..1.
+            ? db.Query("SELECT dim, sum, n, updated FROM self_acc WHERE scope = $s AND family = 'mood' AND key IN ('', '_') ORDER BY dim",
+                r => new MoodEntry(r.GetString(0), MoodValue(r.GetDouble(1), r.GetInt64(3), bank.MoodHalfLifeHours), r.GetInt64(2)), ("$s", scope))
             : [];
         var abstractions = Has("self_abstractions")
             ? db.Query("SELECT layer, idx, text, leaves FROM self_abstractions WHERE scope = $s ORDER BY layer DESC, idx",

@@ -38,6 +38,8 @@ public sealed class MemoryBank : IDisposable
     public RagIndex Rag { get; }
     public RaptorMemory? Raptor { get; private set; }
     public IEmbeddingProvider Embeddings { get; }
+    /// <summary>Mood half-life from the bot's <c>Agent:Self</c> config, so mood reads decay exactly as the bot's own do.</summary>
+    public double MoodHalfLifeHours { get; private init; } = new MineClaw.Agent.Self.SelfOptions().MoodHalfLifeHours;
     public RaptorTreeMeta? TreeMeta { get; private set; }
     public string? TreeNote { get; private set; }
     public DateTimeOffset OpenedAt { get; } = DateTimeOffset.UtcNow;
@@ -61,7 +63,7 @@ public sealed class MemoryBank : IDisposable
                 if (same == 0 && other > 0) provider = NullEmbeddingProvider.Instance;
             }
             var rag = new RagIndex(db, options.Rag, provider, usage: null, options.Embeddings, backgroundEmbedding: false);
-            var bank = new MemoryBank(path, db, rag, provider);
+            var bank = new MemoryBank(path, db, rag, provider) { MoodHalfLifeHours = options.Self.MoodHalfLifeHours };
             await Task.Run(() => bank.LoadTreeAsync(options, ct), ct).ConfigureAwait(false);
             return bank;
         }
