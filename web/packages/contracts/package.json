@@ -1,0 +1,41 @@
+{
+  "name": "@mineclaw/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zod schemas, inferred types, the route table and the SSE catalogue for every public /api route (single source of truth for Nest and the web app).",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "gen:api-doc": "tsc -p tsconfig.build.json && node scripts/gen-api-doc.mjs"
+  },
+  "dependencies": {
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "6.0.3",
+    "vite": "8.3.4",
+    "vitest": "4.1.12"
+  }
+}
