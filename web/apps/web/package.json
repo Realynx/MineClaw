@@ -1,0 +1,70 @@
+{
+  "name": "@mineclaw/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MineClaw Web Explorer front end (Next.js App Router). See docs/web/architecture.md.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "next dev --turbopack -p 3000",
+    "dev:mock": "node scripts/with-mock.mjs next dev --turbopack -p 3000",
+    "build": "next build --turbopack",
+    "build:mock": "node scripts/with-mock.mjs next build --turbopack",
+    "start": "next start -p 3000 -H 127.0.0.1",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "screenshots": "node scripts/screenshots.mjs",
+    "msw:init": "msw init public --no-save"
+  },
+  "dependencies": {
+    "@codemirror/lang-javascript": "6.2.5",
+    "@codemirror/language": "6.13.1",
+    "@codemirror/legacy-modes": "6.5.5",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.14",
+    "@lezer/highlight": "1.2.5",
+    "@mineclaw/contracts": "*",
+    "@tanstack/react-query": "5.104.4",
+    "@tanstack/react-virtual": "3.14.21",
+    "cmdk": "1.1.1",
+    "lucide-react": "1.59.0",
+    "next": "16.4.2",
+    "radix-ui": "1.8.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@next/eslint-plugin-next": "16.4.2",
+    "@playwright/test": "1.64.1",
+    "@tailwindcss/postcss": "4.3.3",
+    "@testing-library/dom": "10.4.2",
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.8",
+    "@types/node": "22.20.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "eslint": "10.13.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "happy-dom": "21.0.3",
+    "msw": "3.0.3",
+    "postcss": "8.5.31",
+    "tailwindcss": "4.3.3",
+    "typescript": "6.0.3",
+    "vite": "8.3.4",
+    "vitest": "4.1.12"
+  },
+  "msw": {
+    "workerDirectory": [
+      "public"
+    ]
+  }
+}

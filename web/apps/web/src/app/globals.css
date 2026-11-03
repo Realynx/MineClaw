@@ -1,0 +1,233 @@
+@import 'tailwindcss';
+
+/* Dark mode follows the `dark` class on <html> (set before paint by the theme script in layout.tsx). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Design tokens. Every colour in the app comes from these variables (through the Tailwind theme below), so light and dark
+ * stay one system. Light is the :root default; .dark overrides.
+ */
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --surface-2: #f0f2f5;
+  --surface-3: #e7eaef;
+  --border: #e1e5eb;
+  --border-strong: #cbd1da;
+  --text: #14171c;
+  --text-muted: #555e6b;
+  --text-subtle: #858e9b;
+  --accent: #0b8a5f;
+  --accent-strong: #08744f;
+  --accent-fg: #ffffff;
+  --accent-soft: color-mix(in oklab, var(--accent) 12%, transparent);
+  --danger: #c93636;
+  --danger-soft: color-mix(in oklab, var(--danger) 12%, transparent);
+  --warn: #b26b00;
+  --warn-soft: color-mix(in oklab, var(--warn) 14%, transparent);
+  --ok: #1f8a4c;
+  --ok-soft: color-mix(in oklab, var(--ok) 12%, transparent);
+  --info: #2b6cd4;
+  --info-soft: color-mix(in oklab, var(--info) 12%, transparent);
+  --ring: color-mix(in oklab, var(--accent) 55%, transparent);
+  --shadow: 0 1px 2px rgb(16 24 40 / 0.06), 0 1px 3px rgb(16 24 40 / 0.08);
+  --shadow-lg: 0 12px 32px rgb(16 24 40 / 0.14), 0 2px 6px rgb(16 24 40 / 0.08);
+  --code-bg: #f7f8fa;
+  --line-hl: color-mix(in oklab, var(--accent) 16%, transparent);
+  --canvas-bg: #eef1f5;
+  --code-kw: #8b3fc9;
+  --code-str: #0f7a4a;
+  --code-num: #b5560b;
+  --code-comment: #8a929c;
+  --code-fn: #1f62c4;
+  color-scheme: light;
+}
+
+.dark {
+  --bg: #0c0e12;
+  --surface: #13161b;
+  --surface-2: #1a1e25;
+  --surface-3: #222730;
+  --border: #252a33;
+  --border-strong: #353c47;
+  --text: #e7e9ec;
+  --text-muted: #a0a8b3;
+  --text-subtle: #6f7884;
+  --accent: #3ad19a;
+  --accent-strong: #5fe0b0;
+  --accent-fg: #04241a;
+  --accent-soft: color-mix(in oklab, var(--accent) 14%, transparent);
+  --danger: #f06a6a;
+  --warn: #f0b046;
+  --ok: #4fd18b;
+  --info: #6aa4ff;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-lg: 0 16px 40px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.4);
+  --code-bg: #0f1216;
+  --line-hl: color-mix(in oklab, var(--accent) 20%, transparent);
+  --canvas-bg: #0a0c0f;
+  --code-kw: #c59bff;
+  --code-str: #8fd7a8;
+  --code-num: #f2b072;
+  --code-comment: #6f7884;
+  --code-fn: #7fb4ff;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-fg: var(--text);
+  --color-muted: var(--text-muted);
+  --color-subtle: var(--text-subtle);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-code: var(--code-bg);
+  --color-canvas: var(--canvas-bg);
+  --font-sans:
+    'Inter', 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', Consolas, 'Liberation Mono', monospace;
+  --shadow-card: var(--shadow);
+  --shadow-pop: var(--shadow-lg);
+  --radius-card: 0.75rem;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    font-feature-settings: 'cv11', 'ss01';
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--accent) 30%, transparent);
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+  * {
+    border-color: var(--border);
+  }
+  /* Quiet scrollbars that match the theme. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.01em;
+  }
+}
+
+@layer utilities {
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  .text-balance {
+    text-wrap: balance;
+  }
+  .skeleton {
+    background: linear-gradient(90deg, var(--surface-2) 0%, var(--surface-3) 50%, var(--surface-2) 100%);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s ease-in-out infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton {
+      animation: none;
+    }
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.animate-pulse-dot {
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+
+/* CodeMirror: blend into the card it sits in. */
+.cm-editor {
+  background: var(--code-bg);
+  color: var(--text);
+  font-size: 12.5px;
+  height: 100%;
+}
+.cm-editor.cm-focused {
+  outline: none;
+}
+.cm-scroller {
+  font-family: var(--font-mono);
+  line-height: 1.6;
+}
+.cm-gutters {
+  background: var(--code-bg) !important;
+  color: var(--text-subtle) !important;
+  border-right: 1px solid var(--border) !important;
+}
+.cm-activeLine,
+.cm-activeLineGutter {
+  background: transparent !important;
+}
+.cm-running-line {
+  background: var(--line-hl);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.cm-running-gutter {
+  color: var(--accent) !important;
+  font-weight: 600;
+}
+.cm-lint-error {
+  text-decoration: underline wavy var(--danger);
+  text-underline-offset: 3px;
+}
+.cm-lint-warn {
+  text-decoration: underline wavy var(--warn);
+  text-underline-offset: 3px;
+}
+.cm-lint-gutter-error {
+  color: var(--danger) !important;
+}
+.cm-lint-gutter-warn {
+  color: var(--warn) !important;
+}
