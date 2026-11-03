@@ -171,6 +171,12 @@ export const DesignerCanvasResponse = z.object({
   rev: z.number().int(),
   applied: z.number().int(),
   stale: z.boolean().nullish(),
+  fixed: z
+    .array(DesignerCell)
+    .nullish()
+    .describe(
+      'wall torches / ladders of these edits the bot turned to their solid side (or onto the floor): apply them too',
+    ),
 });
 export type DesignerCanvasResponse = z.infer<typeof DesignerCanvasResponse>;
 

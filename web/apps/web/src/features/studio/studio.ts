@@ -195,6 +195,18 @@ export class Studio {
     return ch.forward;
   }
 
+  /**
+   * The bot's corrections of the user's own cells (a wall torch turned to its solid side): applied without an undo step of
+   * their own, counted as changes (dirty) like the edit they belong to.
+   */
+  correct(cells: readonly Cell[]): void {
+    const ch = this.canvas.apply(cells, false);
+    if (ch.forward.length === 0) return;
+    this.track(ch);
+    this.emit(ch.forward, 'ai');
+    this.changed();
+  }
+
   /** The AI's ops from a reply (the bot applied them already): applied here, recorded for undo, never sent back. */
   applyAi(ops: DesignerMessageResponse['ops']): Cell[] {
     const all: Cell[] = [];
@@ -274,6 +286,7 @@ export class Studio {
         const r = await this.api.canvas(this.id, { rev: this.rev, ops });
         this.rev = r.rev;
         this.error = null;
+        if (r.fixed?.length) this.correct(r.fixed);
       } catch (e) {
         this.pending.unshift(...ops);
         this.error = e instanceof Error ? e.message : String(e);

@@ -276,3 +276,20 @@ describe('a placed design with a basement (Story Mode)', () => {
     expect(designItems(placeDesign([[0, 0, 0, 5, 0]], [1, 64, 1], 'n'))[0]!.group).toBeUndefined();
   });
 });
+
+describe("the bot's corrections of the user's cells", () => {
+  it('a wall torch the bot turned to its wall is applied after the flush, as part of the unsaved edit', async () => {
+    const fixed: Array<[number, number, number, number, number]> = [[9, 1, 10, 50, 2]];
+    const canvas = vi.fn(() => Promise.resolve({ rev: 2, applied: 2, fixed }));
+    const api: StudioApi = { canvas, message: vi.fn(), save: vi.fn() };
+    const s = new Studio(session({ blocks: [[10, 1, 10, 4, 0]] }), api, 60_000);
+    const seen: Array<[number[][], string]> = [];
+    s.onCells((c, by) => seen.push([c, by]));
+    s.edit([[9, 1, 10, 50, 1]], 'place', 'placed torch');
+    await s.flush();
+    expect(s.canvas.get(9, 1, 10)).toEqual([50, 2]);
+    expect(seen.at(-1)).toEqual([[[9, 1, 10, 50, 2]], 'ai']);
+    expect(s.dirty).toBe(true);
+    s.dispose();
+  });
+});

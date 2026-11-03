@@ -87,11 +87,96 @@ public sealed class DesignerCanvas
                 if ((c.Meta & 8) == 0 && Inside(c.X, c.Y + 1, c.Z)) Set(new CanvasCell(c.X, c.Y + 1, c.Z, c.Id, (c.Meta & 7) | 8), changed);
             }
         }
+        // Wall torches and ladders hang on their wall: the changed ones and the ones next to a changed cell (a wall placed after
+        // its torch) are turned to the solid side when theirs is open.
+        var near = new HashSet<BlockPos>();
+        foreach (var p in changed.Keys)
+        {
+            near.Add(p);
+            near.Add(p.Up());
+            foreach (var (dx, dz) in Sides) near.Add(new BlockPos(p.X + dx, p.Y, p.Z + dz));
+        }
+        LastFixed = FixAttachments(near, changed);
         if (changed.Count > 0) Rev++;
         return changed.Values.ToList();
     }
 
     public List<CanvasCell> Apply(IEnumerable<CanvasCell> cells) => Apply(cells, out _);
+
+    /// <summary>The attached blocks the last <see cref="Apply"/> turned to their wall (or put on the floor), as their new states.</summary>
+    public List<CanvasCell> LastFixed { get; private set; } = [];
+
+    private static readonly (int Dx, int Dz)[] Sides = [(-1, 0), (1, 0), (0, -1), (0, 1)];
+
+    /// <summary>The side (dx, dz) of the block a wall torch (1..4) or a ladder (2..5) hangs on; null for anything else (a floor torch).</summary>
+    public static (int Dx, int Dz)? WallOf(int id, int meta) =>
+        id == MineClaw.Data.Blocks.Torch ? meta switch { 1 => (-1, 0), 2 => (1, 0), 3 => (0, -1), 4 => (0, 1), _ => null }
+        : id == MineClaw.Data.Blocks.Ladder ? meta switch { 2 => (0, 1), 3 => (0, -1), 4 => (1, 0), 5 => (-1, 0), _ => null }
+        : null;
+
+    /// <summary>The meta that hangs a torch or a ladder on the block at side (dx, dz).</summary>
+    public static int MetaOn(int id, (int Dx, int Dz) wall) => id == MineClaw.Data.Blocks.Torch
+        ? wall switch { (-1, 0) => 1, (1, 0) => 2, (0, -1) => 3, _ => 4 }
+        : wall switch { (0, 1) => 2, (0, -1) => 3, (1, 0) => 4, _ => 5 };
+
+    /// <summary>A full block a torch or a ladder can hang on (a block on the canvas, or undisturbed ground below the grass).</summary>
+    public bool Holds(int x, int y, int z)
+    {
+        if (y < -Depth) return true;
+        if (x is < 0 or >= Size || z is < 0 or >= Size || y >= Height) return false;
+        if (IsEarth(x, y, z)) return true;
+        var (id, _) = Get(x, y, z);
+        return BuildBlocks.NormalCube(id);
+    }
+
+    /// <summary>
+    /// The attachment rule (mc-dev BlockTorch/BlockLadder canPlaceBlockAt): a wall torch or a ladder whose wall side is open but
+    /// whose opposite side is solid is turned around (the usual mistake: the side named as the torch's, not its wall's); a wall
+    /// torch with neither but a solid block under it stands on the floor (meta 5); anything else is left for the design checks
+    /// ("torch … has no wall or floor"). Returns the corrected cells (also recorded in <paramref name="changed"/>).
+    /// </summary>
+    private List<CanvasCell> FixAttachments(IEnumerable<BlockPos> cells, Dictionary<BlockPos, CanvasCell>? changed)
+    {
+        var fixedCells = new List<CanvasCell>();
+        foreach (var p in cells)
+        {
+            if (!_blocks.TryGetValue(p, out var st) || WallOf(st.Id, st.Meta) is not { } wall) continue;
+            if (Holds(p.X + wall.Dx, p.Y, p.Z + wall.Dz)) continue;
+            int meta;
+            if (Holds(p.X - wall.Dx, p.Y, p.Z - wall.Dz)) meta = MetaOn(st.Id, (-wall.Dx, -wall.Dz));
+            else if (st.Id == MineClaw.Data.Blocks.Torch && Holds(p.X, p.Y - 1, p.Z)) meta = 5;
+            else continue;
+            _blocks[p] = (st.Id, meta);
+            var c = new CanvasCell(p.X, p.Y, p.Z, st.Id, meta);
+            if (changed != null) changed[p] = c;
+            fixedCells.Add(c);
+        }
+        return fixedCells;
+    }
+
+    /// <summary>
+    /// Every attached block on the canvas checked against the rule (a session saved before it existed, opened again): the
+    /// corrected cells, the canvas revision bumped when any. Not an edit of the user's: it is how the build would stand.
+    /// </summary>
+    public List<CanvasCell> FixAllAttachments()
+    {
+        var fixedCells = FixAttachments(_blocks.Keys.ToList(), null);
+        if (fixedCells.Count > 0) Rev++;
+        return fixedCells;
+    }
+
+    /// <summary>"turned 3 wall torches to face their wall, put 1 on the floor" (empty when nothing was fixed).</summary>
+    public static string FixText(IReadOnlyCollection<CanvasCell> fixedCells)
+    {
+        if (fixedCells.Count == 0) return "";
+        int floor = fixedCells.Count(c => c.Id == MineClaw.Data.Blocks.Torch && c.Meta == 5);
+        int torches = fixedCells.Count(c => c.Id == MineClaw.Data.Blocks.Torch && c.Meta != 5), ladders = fixedCells.Count(c => c.Id == MineClaw.Data.Blocks.Ladder);
+        var parts = new List<string>();
+        if (torches > 0) parts.Add($"turned {torches} wall torch{(torches == 1 ? "" : "es")} around to hang on the solid side");
+        if (ladders > 0) parts.Add($"turned {ladders} ladder{(ladders == 1 ? "" : "s")} around to the solid side");
+        if (floor > 0) parts.Add($"stood {floor} torch{(floor == 1 ? "" : "es")} with no wall on the floor");
+        return string.Join(", ", parts);
+    }
 
     /// <summary>A cell's state as a wire id: a block, air (0) or, below ground, undisturbed earth.</summary>
     private (int Id, int Meta) State(BlockPos p) =>

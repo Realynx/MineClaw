@@ -191,14 +191,34 @@ public sealed class DesignerRoutes
             s.DesignId = did;
             s.Name = rec?.Name ?? s.Name;
             note = why;
+            Settle(s);
         }
         _store.Insert(s);
         if (note != null) _store.AddMessage(s.Id, "assistant", note);
         return Reply(200, SessionJson(s));
     }
 
-    private SupervisorReply Session(long id) =>
-        _store.Get(id) is { } s ? Reply(200, SessionJson(s)) : Reply(404, new { error = "no such session" });
+    private SupervisorReply Session(long id)
+    {
+        if (_store.Get(id) is not { } s) return Reply(404, new { error = "no such session" });
+        if (Settle(s)) _store.Update(s);
+        return Reply(200, SessionJson(s));
+    }
+
+    /// <summary>
+    /// A canvas opened (a session again, or a design loaded): wall torches and ladders hanging on air are turned to their solid
+    /// side (<see cref="DesignerCanvas.FixAllAttachments"/>), and the model hears about it with the next message. The browser
+    /// opens the corrected canvas as its starting point (not an unsaved change); the correction reaches the design on the next
+    /// save. True = the canvas changed.
+    /// </summary>
+    private static bool Settle(DesignerSessionRecord s)
+    {
+        var fixedCells = s.Canvas.FixAllAttachments();
+        if (fixedCells.Count == 0) return false;
+        var line = "the canvas opened with " + DesignerCanvas.FixText(fixedCells);
+        s.PendingEdits = s.PendingEdits.Length == 0 ? line : Clip(s.PendingEdits + "; " + line, 600);
+        return true;
+    }
 
     private object SessionJson(DesignerSessionRecord s)
     {
@@ -236,9 +256,14 @@ public sealed class DesignerRoutes
     private sealed record SaveBody(string? Name, string? Summary, bool? AsNew, string? Player, string? Who);
 
     /// <summary>The user's edits applied in order; null = nothing malformed. Each changed cell is summarised for the AI's next turn.</summary>
-    private static string? ApplyEdits(DesignerSessionRecord s, OpBody[]? ops, out int applied)
+    private static string? ApplyEdits(DesignerSessionRecord s, OpBody[]? ops, out int applied) => ApplyEdits(s, ops, out applied, out _);
+
+    /// <summary>The same, with the attachment rule's corrections of the user's cells (<paramref name="fixedCells"/>: the browser
+    /// applies them to stay in step).</summary>
+    private static string? ApplyEdits(DesignerSessionRecord s, OpBody[]? ops, out int applied, out List<CanvasCell> fixedCells)
     {
         applied = 0;
+        fixedCells = [];
         if (ops == null || ops.Length == 0) return null;
         if (ops.Length > 256) return "at most 256 ops per request";
         var all = new List<CanvasCell>();
@@ -251,9 +276,10 @@ public sealed class DesignerRoutes
         if (all.Count > DesignerCanvas.MaxCellsPerOp) return $"at most {DesignerCanvas.MaxCellsPerOp} cells per request";
         var changed = s.Canvas.Apply(all);
         applied = changed.Count;
+        fixedCells = s.Canvas.LastFixed;
         if (changed.Count > 0)
         {
-            var line = DesignerCanvas.Summarize(changed);
+            var line = DesignerCanvas.Summarize(changed) + (DesignerCanvas.FixText(fixedCells) is { Length: > 0 } fix ? $" ({fix})" : "");
             s.PendingEdits = s.PendingEdits.Length == 0 ? line : Clip(s.PendingEdits + "; " + line, 600);
         }
         return null;
@@ -264,11 +290,11 @@ public sealed class DesignerRoutes
         if (_store.Get(id) is not { } s) return Reply(404, new { error = "no such session" });
         var b = Parse<CanvasBody>(r.Body);
         if (b == null) return Reply(400, new { error = "body must be JSON {rev, ops:[{kind, label, cells:[[x,y,z,id,meta]]}], anchor?}" });
-        if (ApplyEdits(s, b.Ops, out var applied) is { } err) return Reply(400, new { error = err });
+        if (ApplyEdits(s, b.Ops, out var applied, out var fixedCells) is { } err) return Reply(400, new { error = err });
         if (b.Anchor is { Length: 3 } a && DesignerCanvas.Inside(a[0], a[1], a[2])) s.Anchor = new MineClaw.World.BlockPos(a[0], a[1], a[2]);
         else if (b.ClearAnchor == true) s.Anchor = null;
         _store.Update(s);
-        return Reply(200, new { rev = s.Canvas.Rev, applied, stale = b.Rev != 0 && b.Rev > s.Canvas.Rev });
+        return Reply(200, new { rev = s.Canvas.Rev, applied, stale = b.Rev != 0 && b.Rev > s.Canvas.Rev, @fixed = fixedCells.Select(c => c.Wire) });
     }
 
     private async Task<SupervisorReply> MessageAsync(long id, SupervisorRequest r, CancellationToken ct)
@@ -285,7 +311,7 @@ public sealed class DesignerRoutes
         }
         var model = DesignerModels.Resolve(_llm, s.Model);
         if (model == null) return Reply(400, new { error = "no model is configured" });
-        if (ApplyEdits(s, b.Canvas?.Edits, out _) is { } err) return Reply(400, new { error = err });
+        if (ApplyEdits(s, b.Canvas?.Edits, out _, out var editFixes) is { } err) return Reply(400, new { error = err });
         if (_agent.BudgetRefusal(model) is { } refusal)
         {
             _store.Update(s);
@@ -312,7 +338,10 @@ public sealed class DesignerRoutes
         var msg = _store.AddMessage(s.Id, "assistant", reply, turn.Model, turn.CostUsd, summaries);
         return Reply(200, new
         {
-            reply, ops = turn.Ops.Select(OpJson), rev = s.Canvas.Rev, cost_usd = (double)turn.CostUsd, session_cost_usd = (double)s.CostUsd,
+            reply,
+            // The user's own cells the attachment rule corrected come first (the browser applies them like the AI's).
+            ops = (editFixes.Count > 0 ? [new DesignerOp("fix", DesignerCanvas.FixText(editFixes), editFixes)] : Array.Empty<DesignerOp>()).Concat(turn.Ops).Select(OpJson),
+            rev = s.Canvas.Rev, cost_usd = (double)turn.CostUsd, session_cost_usd = (double)s.CostUsd,
             model = turn.Model, calls = turn.Calls,
             usage = new { input = turn.Usage.InputTokens, output = turn.Usage.OutputTokens, cache_read = turn.Usage.CacheReadTokens, cache_write = turn.Usage.CacheWriteTokens },
             message = MessageJson(msg), user_message = MessageJson(userLine), refusal = turn.Refusal,

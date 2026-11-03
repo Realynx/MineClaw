@@ -50,8 +50,9 @@ public static class DesignerTools
         "foundations); \"earth\" fills dug cells back. Edit only with the tools, coordinates inclusive. Prefer few big calls (box, line) " +
         "over many places. A saved design is at most 32 wide/deep and 32 high, dug layers included: stay inside that. Blocks (design palette only): stone cobblestone " +
         "mossy_cobblestone planks log:oak|spruce|birch sandstone bricks stone_bricks:mossy|cracked obsidian glass glass_pane wool:<colour> " +
-        "glowstone bookshelf clay netherrack snow_block fence fence_gate iron_bars ladder:<wall side> torch:1-4 (on a wall: 1 west 2 east 3 north " +
-        "4 south of it) torch:5 (floor) trapdoor slab:stone|sandstone|wood|cobble|brick|stonebrick wooden_stairs cobblestone_stairs brick_stairs " +
+        "glowstone bookshelf clay netherrack snow_block fence fence_gate iron_bars torch:floor (stands on the block below) " +
+        "torch:wall=<side> and ladder:wall=<side> (<side> = where the supporting block is, seen from the torch or ladder: torch:wall=west " +
+        "hangs on the solid block to its west, on that block's east face; it must be a full block) trapdoor slab:stone|sandstone|wood|cobble|brick|stonebrick wooden_stairs cobblestone_stairs brick_stairs " +
         "stone_brick_stairs (:dir = the way up) wooden_door iron_door (:dir = the side it opens to; place the lower half, the top is added; it " +
         "stands on a full block) chest furnace dispenser (:dir = front) crafting_table pumpkin jack_o_lantern sand gravel. No grass, leaves, " +
         "liquids, beds, signs. Doors and windows need openings in walls. When the user names \"the selection\" use its box. Reply after the " +
@@ -128,6 +129,8 @@ public static class DesignerTools
     private static (string, DesignerOp?, bool) Done(DesignerCanvas canvas, string kind, string label, List<CanvasCell> changed, int rejected)
     {
         var tail = rejected > 0 ? $" ({rejected} cells skipped: outside the plot or not placeable)" : "";
+        // The attachment rule's corrections, said back so the model learns the convention.
+        if (DesignerCanvas.FixText(canvas.LastFixed) is { Length: > 0 } fix) tail += $" (note: {fix}; wall=<side> names the side the supporting block is on)";
         if (changed.Count == 0) return ($"nothing changed{tail}", null, false);
         return ($"ok, {changed.Count} cells changed (r{canvas.Rev}){tail}", new DesignerOp(kind, label, changed), false);
     }
@@ -147,12 +150,32 @@ public static class DesignerTools
         var s = spec.Trim().ToLowerInvariant().Replace(' ', '_');
         // Undisturbed ground (below y 0 only): a dug cell filled back in.
         if (s is "earth" or "ground" or "fill_ground") return (DesignerCanvas.Earth, 0);
+        if (Attached(s) is { } named) return named;
         var parts = s.Split(':', 2);
         var (entry, why) = BlueprintParser.Resolve('X', parts[0], parts.Length > 1 ? parts[1] : null, s);
         if (entry == null) throw new ArgumentException(why ?? $"unknown block '{spec}'");
         int meta = entry.CanonicalMeta;
         if (entry.Id == Blocks.Torch && meta == 0) meta = 5;
         return (entry.Id, meta);
+    }
+
+    /// <summary>
+    /// Torches and ladders by the side their supporting block is on: "torch:wall=west" / "torch:on=west" / "ladder:wall=south"
+    /// (the block is west / south of it), "torch:floor"; null = not such a spelling (numeric metas go the usual way).
+    /// </summary>
+    internal static (int Id, int Meta)? Attached(string s)
+    {
+        var parts = s.Split(':', 2);
+        if (parts.Length < 2 || parts[0] is not ("torch" or "ladder")) return null;
+        int id = parts[0] == "torch" ? Blocks.Torch : Blocks.Ladder;
+        var arg = parts[1].Trim();
+        if (id == Blocks.Torch && arg is "floor" or "ground" or "up" or "standing") return (id, 5);
+        int eq = arg.IndexOfAny(['=', '_', '-']);
+        if (eq > 0 && arg[..eq] is "wall" or "on" or "against" or "support") arg = arg[(eq + 1)..];
+        else if (eq > 0 || Dirs.Parse(arg) == null) return null; // "torch:north" / "ladder:south": the side the block is on
+        if (Dirs.Parse(arg) is not { } d) throw new ArgumentException($"'{s}': the side is north, east, south or west (where the supporting block is)");
+        var wall = d switch { Dir.West => (-1, 0), Dir.East => (1, 0), Dir.North => (0, -1), _ => (0, 1) };
+        return (id, DesignerCanvas.MetaOn(id, wall));
     }
 
     private static (int X, int Y, int Z) V(JsonElement a)

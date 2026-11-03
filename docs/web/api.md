@@ -562,6 +562,16 @@ and tools in src/MineClaw.Bot/Blueprints/Designer*.cs). Never the live world. Be
   ground again (fills a dug cell back; below y 0 only). The session lists `blocks` and `dug` (`[[x,y,z]]`, the cells below
   ground dug out to air); `plot` is `{size, height, depth}`. Only the design palette is accepted (`palette` in the session:
   `BuildBlocks.Buildable` blocks with their variants). A door is kept as two halves (upper = lower | 8).
+- **Attached blocks (added 2026-11-03).** Wall torches and ladders hang on a full block: every apply (the AI's ops and the
+  user's) checks the changed ones and the ones next to a changed cell; one whose wall side is open but whose opposite side
+  is solid is turned around, a wall torch with neither but a solid block under it stands on the floor (meta 5), anything
+  else is left for the design checks ("torch … has no wall or floor"). The AI's tool result says what was corrected; the
+  canvas route returns the user's corrected cells as `fixed` (the browser applies them), and a message's corrections of
+  pending edits come first in its `ops` (kind `fix`). Opening a session or loading a design settles the whole canvas the
+  same way (the browser starts from the corrected canvas: not an unsaved change; the design gets it on the next save; the
+  model hears about it with the next message). The model spells them by the side the supporting block is on:
+  `torch:wall=west` (or `torch:on=west`, `torch:west`) hangs on the block to its west, `torch:floor`, `ladder:wall=south`;
+  numeric metas still work.
 - **`GET models`** → `{models:[{id, label, provider, model, tier, profile, cost_hint, default}], default, version, budget}`:
   every tier model (`main`, `worker`, `cheap`) and every usable profile (`profile:<name>`, Ollama/DeepSeek too), de-duplicated;
   a Claude model outside the 5.5 generation is never offered.
