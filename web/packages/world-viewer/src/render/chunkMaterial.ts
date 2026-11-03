@@ -8,6 +8,7 @@
 // like the C# renderer's cut faces), so a cut never reads as a hole or a real wall.
 
 import * as THREE from 'three';
+import { starfieldGlsl } from './starfield';
 
 const vertex = /* glsl */ `
 attribute vec4 aTile;
@@ -54,6 +55,7 @@ uniform float uFloorY;
 uniform vec4 uRoof;
 uniform float uAlphaTest;
 uniform float uCap;
+${starfieldGlsl()}
 varying vec2 vUv;
 flat varying vec4 vTile;
 varying vec4 vColor;
@@ -159,7 +161,14 @@ void main() {
   gl_FragColor = vec4(mix(cap, uFogColor, f), 1.0);
   return;
 #endif
+  if (uTextured > 0.5 && flag(vTile.z, 4.0)) {
+    // [blocks] end portal / gateway: the layered starfield, full bright.
+    float sf = smoothstep(uFogRange.x, uFogRange.y, length(vWorld.xz - uFogCentre.xz));
+    gl_FragColor = vec4(mix(starfield() + vec3(uFlash), uFogColor, sf), 1.0);
+    return;
+  }
   vec4 c = vColor * texel();
+  if (flag(vTile.z, 8.0)) c.a = vColor.a; // [blocks] fast leaves: the texel's alpha is ignored
   if (c.a < uAlphaTest) discard;
   bool emissive = flag(vFlags, 1.0);
   float b = emissive ? 1.0 : bright(max(vLight.y, vLight.x - uSkySub));
@@ -203,6 +212,13 @@ export interface ChunkUniforms {
   uCap: THREE.IUniform<number>;
   /** The view's projection matrix (the cap pass projects the cut wall itself). */
   uProj: THREE.IUniform<THREE.Matrix4>;
+  /** [blocks] Seconds (animated block shaders: the end starfield), the view's size in device pixels, the starfield's sheets
+   * (column, row, width, height in cells) and layer count. */
+  uTime: THREE.IUniform<number>;
+  uViewport: THREE.IUniform<THREE.Vector2>;
+  uStarSky: THREE.IUniform<THREE.Vector4>;
+  uStarPortal: THREE.IUniform<THREE.Vector4>;
+  uStarLayers: THREE.IUniform<number>;
 }
 
 /** Uniforms shared by both passes (one object: updating it updates both materials). */
@@ -228,6 +244,11 @@ export function createChunkUniforms(): ChunkUniforms {
     uAlphaTest: { value: 0.5 },
     uCap: { value: 0 },
     uProj: { value: new THREE.Matrix4() },
+    uTime: { value: 0 },
+    uViewport: { value: new THREE.Vector2(1, 1) },
+    uStarSky: { value: new THREE.Vector4(0, 0, 1, 1) },
+    uStarPortal: { value: new THREE.Vector4(0, 0, 1, 1) },
+    uStarLayers: { value: 16 },
   };
 }
 

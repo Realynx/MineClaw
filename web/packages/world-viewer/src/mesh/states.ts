@@ -25,14 +25,15 @@ export interface StateTable {
 
 const INVISIBLE = new Set([0, 36, 166, 217]);
 
-export function buildStateTable(version: GameVersion, assets: MeshAssets | null = null, textured = assets != null): StateTable {
+/** `fastLeaves`: opaque leaves that hide each other (vanilla "fast" graphics), for software rendering. */
+export function buildStateTable(version: GameVersion, assets: MeshAssets | null = null, textured = assets != null, fastLeaves = false): StateTable {
   let source: BlockSource;
   let cols = 16, rows = 16;
   if (assets && assets.kind === '1.12.2' && version === '1.12.2') {
-    source = new Models1122(assets, textured);
+    source = new Models1122(assets, textured, fastLeaves);
     cols = assets.columns;
     rows = assets.rows;
-  } else source = new BetaSource(textured && !!assets && assets.kind === 'b1.8.1', assets && assets.kind === 'b1.8.1' ? assets.info : null);
+  } else source = new BetaSource(textured && !!assets && assets.kind === 'b1.8.1', assets && assets.kind === 'b1.8.1' ? assets.info : null, fastLeaves);
   const shape = new Uint8Array(STATES);
   for (let s = 0; s < STATES; s++) shape[s] = INVISIBLE.has(s >> 4) ? Shape.None : Shape.Cube;
   return { version, textured: source.textured, source, flags: source.flags, shape, cols, rows };

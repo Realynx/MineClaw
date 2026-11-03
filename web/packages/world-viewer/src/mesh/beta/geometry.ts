@@ -74,6 +74,8 @@ export class BetaBuilder {
   constructor(
     private readonly textured: boolean,
     private readonly avg: TileAverage,
+    /** Fancy leaves (alpha-cut tiles 52/132) or fast ones (the opaque tiles 53/133). */
+    private readonly fancy = true,
   ) {}
 
   private flatOf(tile: number, f: number): number {
@@ -153,7 +155,7 @@ export class BetaBuilder {
     // Faces tagged in a cull mask are culled by the mesher against an opaque neighbour on that side (the C# `skip`).
     const skip = 0b111111;
     const N = [[0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0]];
-    const std = (f: number) => tileFor(id, meta, f);
+    const std = (f: number) => tileFor(id, meta, f, this.fancy);
     switch (renderType(id)) {
       case 1: return this.crossed(nb, id, meta);
       case 2: return this.torch(id, meta);
@@ -266,7 +268,7 @@ export class BetaBuilder {
     }
     // A full cube; glass/ice/spawners are culled against themselves by the mesher's self-cull flag.
     const shape = classifyBeta(id);
-    const layer = shape === BetaShape.CutoutCube ? Layer.Cutout : shape === BetaShape.TranslucentCube ? Layer.Translucent : Layer.Opaque;
+    const layer = shape === BetaShape.CutoutCube && !(id === 18 && !this.fancy) ? Layer.Cutout : shape === BetaShape.TranslucentCube ? Layer.Translucent : Layer.Opaque;
     const tf = id === 54 ? (f: number) => ref1(chestTile(nb, f)) : std;
     const qs = this.box(0, 0, 0, 1, 1, 1, tf, layer, skip);
     if (id === 79 && !this.textured) for (const q of qs) q.alpha = 0.62;

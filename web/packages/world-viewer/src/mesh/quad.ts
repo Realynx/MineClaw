@@ -50,6 +50,8 @@ export interface Quad {
   /** Vertex alpha (1 = the texel's own). */
   alpha: number;
   textured: boolean;
+  /** Extra texture flags (TEX_STARFIELD). */
+  fx?: number;
 }
 
 export const FACE_N: ReadonlyArray<readonly [number, number, number]> = [
@@ -157,6 +159,7 @@ export interface QuadInit {
   flat?: number;
   alpha?: number;
   textured?: boolean;
+  fx?: number;
   /** Override the computed facing (-1 forces a rotated/flat-lit quad). */
   dir?: number;
 }
@@ -187,6 +190,7 @@ export function makeQuad(p: number[], uv: number[], o: QuadInit = {}): Quad {
     flat: o.flat ?? 0x808080,
     alpha: o.alpha ?? 1,
     textured: o.textured ?? true,
+    fx: o.fx,
   };
 }
 

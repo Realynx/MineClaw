@@ -18,6 +18,7 @@ import { Poller, WorldSync, type Interest } from '../world/sync';
 // [blocks] the bundled block atlas + its animation pass
 import { meshAssets } from '../atlas/assets';
 import { BlockAtlas } from './blockAtlas';
+import { BlockEntityLayer, type BlockEntityLayerUpdate } from './blockEntityLayer'; // [blocks] sign text, banners, spawner mobs
 import { createChunkMaterials, createChunkUniforms, type ChunkMaterials, type ChunkUniforms } from './chunkMaterial';
 import { EntityLayer } from './entityLayer';
 import { OverlayLayer } from './overlayLayer';
@@ -49,6 +50,8 @@ export interface RuntimeOptions {
   createWorker?: () => Worker;
   /** [blocks] Textured blocks from the bundled atlas (default true); false = the flat palette (no bundle download). */
   textures?: boolean;
+  /** [blocks] Opaque "fast graphics" leaves (default false). */
+  fastLeaves?: boolean;
   /** Mesh on the main thread (tests, environments without module workers). */
   inlineMesher?: boolean;
   /** Secondary (thumbnail) renders per animation frame at most (default 2); the most overdue go first. */
@@ -170,6 +173,9 @@ export class WorldRuntime {
   version: GameVersion | null = null;
   // [blocks] the bundled block atlas of the configured version (null = flat palette or still loading).
   blockAtlas: BlockAtlas | null = null;
+  /** [blocks] Sign text, patterned swaying banners and spawner mobs (main thread, shared by every view). */
+  readonly blockEntityLayer: BlockEntityLayer;
+  private readonly beCentre = new THREE.Vector3();
   private atlasFor: GameVersion | null = null;
   private configKey = '';
   private overlayData = new Map<Dim, Overlays>();
@@ -221,6 +227,8 @@ export class WorldRuntime {
     this.entities.setWorldUniforms(this.uniforms); // [entity models] entities light and fog like the sections
     this.host = opts.inlineMesher ? new InlineMeshHost() : createMeshHost(opts.createWorker);
     this.scene.add(this.aids.group, this.sky.group, this.entities.group, this.overlays.group, this.weather.object, this.flashes.mesh);
+    this.blockEntityLayer = new BlockEntityLayer(this.host, this.uniforms); // [blocks]
+    this.scene.add(this.blockEntityLayer.group);
     this.blockEntities = new BlockEntityStore(source, this.host, (dim, dirty) => this.sections.get(dim)?.markDirty(dirty), (e) => this.opts.onError?.('blockentities', e));
     this.sync = this.makeSync();
     this.deltas = this.makeDeltas();
@@ -334,6 +342,7 @@ export class WorldRuntime {
     this.source = src;
     this.blockEntities.setSource(src);
     this.blockEntities.clear();
+    this.blockEntityLayer.clear(); // [blocks]
     this.store.clear();
     this.cache = new WorldCache();
     for (const s of this.sections.values()) s.setCache(this.cache);
@@ -367,6 +376,7 @@ export class WorldRuntime {
     this.overlays.dispose();
     this.weather.dispose();
     this.flashes.dispose();
+    this.blockEntityLayer.dispose(); // [blocks]
     this.sky.dispose();
     this.aids.dispose();
     for (const m of [this.materials.solid, this.materials.translucent, this.materials.cap]) m.dispose();
@@ -538,7 +548,10 @@ export class WorldRuntime {
     const v = this.cache.detectedVersion() ?? 'b1.8.1';
     const want = this.opts.textures !== false;
     const ready = want && this.blockAtlas?.bundle.version === v;
-    const key = `${v}|${ready ? 'atlas' : 'flat'}`;
+    // [blocks] Fast (opaque, mutually culled) leaves on request only: `npm run perf` showed no measurable gain under
+    // SwiftShader on the dense fixture (within run-to-run noise), so the software profile keeps fancy leaves.
+    const fastLeaves = ready && this.opts.fastLeaves === true;
+    const key = `${v}|${ready ? 'atlas' : 'flat'}|${fastLeaves ? 'fast' : 'fancy'}`;
     // While the version's textures load, sections wait instead of meshing flat first and textured again.
     this.setMeshHold(want && !ready);
     if (key === this.configKey) return;
@@ -554,7 +567,7 @@ export class WorldRuntime {
       .catch((e) => this.opts.onError?.('assets', e));
     this.loadEntityBundle(v); // [entity models]
     this.uniforms.uTextured.value = ready ? 1 : 0;
-    await this.host.configure(v, ready ? meshAssets(this.blockAtlas!.bundle.pack) : null, ready);
+    await this.host.configure(v, ready ? meshAssets(this.blockAtlas!.bundle.pack) : null, ready, fastLeaves);
     for (const s of this.sections.values()) s.clear();
     if (want && !ready && this.atlasFor !== v) void this.loadBlockAtlas(v);
   }
@@ -580,6 +593,7 @@ export class WorldRuntime {
       this.blockAtlas?.dispose();
       this.blockAtlas = new BlockAtlas(bundle);
       this.blockAtlas.bind(this.uniforms);
+      this.blockEntityLayer.setBundle(bundle); // [blocks] banner pattern textures
       await this.configure();
     } catch (e) {
       this.atlasFor = null;
@@ -625,12 +639,29 @@ export class WorldRuntime {
       this.entities.onEvents?.(events, now);
     }
     this.blockEntities.tick(now);
+    {
+      // [blocks] the block-entity layer around the primary view (else the first view): sign text, banners, spawner mobs.
+      const v = this.primary?.view ?? this.views.values().next().value;
+      const c = v?.centre();
+      if (c) {
+        this.beCentre.set(c.x, c.y, c.z);
+        this.blockEntityLayer.update(this.blockEntities, {
+          dim: c.dim,
+          centre: this.beCentre,
+          software: this.quality.state.profile.name === 'software',
+          now,
+          ticks: this.cache.timeNow(c.dim, Date.now()) ?? now / 50,
+          displayMobs: this.entities as unknown as BlockEntityLayerUpdate['displayMobs'],
+        });
+      }
+    }
     void this.deltas.flush(); // a frame's worth of block changes, applied together
     if (this.uniforms.uTextured.value > 0 && this.blockAtlas) {
       // [blocks] atlas animation: the profile's tick rate and cell budget, only the cells the drawn sections sample.
       const p = this.quality.state.profile;
       this.blockAtlas.animHz = p.animHz;
       this.blockAtlas.animCellsPerTick = p.animCellsPerTick;
+      this.blockAtlas.starLayers = p.name === 'software' ? 8 : 16;
       const cells = new Set<number>();
       for (const s of this.sections.values()) s.visibleAnimCells(cells);
       this.blockAtlas.setVisible(cells);
@@ -735,6 +766,7 @@ export class WorldRuntime {
     s.camera.aspect = w / h;
     s.camera.updateProjectionMatrix();
     this.uniforms.uProj.value.copy(s.camera.projectionMatrix);
+    this.uniforms.uViewport.value.set(w, h); // [blocks] the starfield's screen-space projection
     // World uniforms for this view.
     const nether = s.dim === -1;
     const time = this.cache.timeNow(s.dim, Date.now());
@@ -782,6 +814,7 @@ export class WorldRuntime {
     this.overlays.group.visible = s.overlays;
     if (s.overlays) this.showOverlays(s.dim);
     this.flashes.showFor(s.dim, now, s.layers.changes);
+    this.blockEntityLayer.showFor(s.dim); // [blocks]
     this.aids.showAt(s.aids ?? null);
     r.setViewport(0, 0, w, h);
     r.setScissor(0, 0, w, h);

@@ -46,7 +46,7 @@ describe('atlas animation pass', () => {
   const sheet = { data: new Uint8Array(32 * 48 * 4), width: 32 };
   const writer = () => {
     const log: string[] = [];
-    const w: CellWriter = { fromSheet: (c, r, sx, sy) => log.push(`s${c},${r}@${sx},${sy}`), fromPixels: (c, r) => log.push(`p${c},${r}`) };
+    const w: CellWriter = { fromSheet: (c, r, sx, sy, size) => log.push(`s${c},${r}@${sx},${sy}${size !== 16 ? `x${size}` : ''}`), fromPixels: (c, r) => log.push(`p${c},${r}`) };
     return { log, w };
   };
 

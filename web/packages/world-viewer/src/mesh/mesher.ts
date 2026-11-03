@@ -70,6 +70,8 @@ let T: StateTable;
 let remembered = 0;
 let baseX = 0, baseY = 0, baseZ = 0;
 let hasBiomes = false;
+let curStore: ColumnStore | null = null;
+let curDim = 0;
 
 function mul(rgb: number, k: number): number {
   const r = Math.min(255, ((rgb >> 16) & 255) * k) | 0, g = Math.min(255, ((rgb >> 8) & 255) * k) | 0, b = Math.min(255, (rgb & 255) * k) | 0;
@@ -163,6 +165,9 @@ const nb = {
   },
   meta(dx: number, dy: number, dz: number): number {
     return metas[this.p + dx + dy * PX * PZ + dz * PX];
+  },
+  be() {
+    return curStore?.blockEntityAt(curDim, this.wx, this.wy, this.wz);
   },
 } satisfies Nb & { p: number };
 
@@ -274,7 +279,7 @@ function emit(q: Quad, x: number, y: number, z: number, p: number, id: number, s
   }
   const tint = resolveTint(q.tint, x, z);
   const rgb = mul(q.textured ? tint : mulRgb(q.flat, tint), q.shade);
-  const tex = q.textured ? TEX_TEXTURED | (q.wrap ? TEX_WRAP : 0) : 0;
+  const tex = q.textured ? TEX_TEXTURED | (q.wrap ? TEX_WRAP : 0) | (q.fx ?? 0) : 0;
   const flip = vl[2] + vl[8] < vl[5] + vl[11];
   const v = sink.begin(flip);
   for (let k = 0; k < 4; k++) {
@@ -317,6 +322,8 @@ export function meshSection(store: ColumnStore, dim: number, cx: number, sy: num
     }
   if (!any) return emptySection(cx, sy, cz);
   T = table;
+  curStore = store;
+  curDim = dim;
   remembered = centre.live ? 0 : LF_REMEMBERED;
   fill(store, dim, cx, sy, cz, cut);
   tintCache.fill(-1);

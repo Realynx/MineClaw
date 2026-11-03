@@ -111,6 +111,9 @@ export function galleryBlocks(modern: boolean): Array<[number, number, number, n
     put(9, 0, z, 176, 0); put(11, 0, z, 144, 1); put(12, 0, z, 219, 1); put(13, 0, z, 229, 1); put(14, 0, z, 146, 3); put(15, 0, z, 146, 3); put(17, 0, z, 130, 3);
     for (let x = 19; x <= 21; x++) put(x, 0, z, 139);
     put(23, 0, z, 95, 14); put(24, 0, z, 95, 3); put(25, 0, z, 160, 5); put(26, 0, z, 160, 5); put(27, 0, z, 235 + 4, 0); put(28, 0, z, 198, 1); put(29, 0, z, 251, 11);
+    // An end portal pool (sunk into the plinth) and an end gateway: the starfield.
+    for (let x = 23; x <= 25; x++) for (let dz = 1; dz <= 2; dz++) put(x, -1, z - dz, 119);
+    put(27, 0, z - 2, 209);
   }
   return out;
 }

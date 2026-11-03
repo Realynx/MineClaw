@@ -12,8 +12,10 @@ export interface PackAnim {
   interpolate: boolean;
   /** Frames in its strip. */
   count: number;
-  /** Row of its strip in anim.png (16 px rows, frame k at x = 16k). */
+  /** Row of its strip in anim.png (16 px rows, frame k at x = size·k). */
   row: number;
+  /** Frame size in px when not 16 (the 32 px flowing water/lava sheets, cell = their 2×2 sheet origin). */
+  size?: number;
 }
 
 export interface PackBiome {

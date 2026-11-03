@@ -15,8 +15,10 @@ export interface AnimSpec {
   cell: [number, number];
   frames: AnimFrame[];
   interpolate: boolean;
-  /** Row of its strip in anim.png (frame i at x = 16·i). */
+  /** Row of its strip in anim.png in 16 px units (frame i at x = size·i). */
   row: number;
+  /** Frame size in px (16; 32 for the native flowing water/lava sheets). */
+  size?: number;
 }
 
 export interface FrameState {
@@ -49,11 +51,11 @@ export function frameAt(frames: AnimFrame[], tick: number, interpolate = false):
   return { k, frame: frames[k].index, next, weight, tickInFrame: t };
 }
 
-/** 16×16 RGBA blend of two frames: rgb = w·a + (1 − w)·b (truncated), alpha from a. */
-export function blendFrames(a: Uint8Array | Uint8ClampedArray, ao: number, b: Uint8Array | Uint8ClampedArray, bo: number, stride: number, w: number, out: Uint8Array): void {
-  for (let y = 0; y < 16; y++)
-    for (let x = 0; x < 16; x++) {
-      const ia = ao + y * stride + x * 4, ib = bo + y * stride + x * 4, o = (y * 16 + x) * 4;
+/** size×size RGBA blend of two frames: rgb = w·a + (1 − w)·b (truncated), alpha from a. */
+export function blendFrames(a: Uint8Array | Uint8ClampedArray, ao: number, b: Uint8Array | Uint8ClampedArray, bo: number, stride: number, w: number, out: Uint8Array, size = 16): void {
+  for (let y = 0; y < size; y++)
+    for (let x = 0; x < size; x++) {
+      const ia = ao + y * stride + x * 4, ib = bo + y * stride + x * 4, o = (y * size + x) * 4;
       out[o] = (w * a[ia] + (1 - w) * b[ib]) | 0;
       out[o + 1] = (w * a[ia + 1] + (1 - w) * b[ib + 1]) | 0;
       out[o + 2] = (w * a[ia + 2] + (1 - w) * b[ib + 2]) | 0;
@@ -63,10 +65,10 @@ export function blendFrames(a: Uint8Array | Uint8ClampedArray, ao: number, b: Ui
 
 /** Where a cell's new pixels come from. */
 export interface CellWriter {
-  /** Copy the 16×16 frame at (sx, sy) px of the animation sheet into cell (c, r). */
-  fromSheet(c: number, r: number, sx: number, sy: number): void;
-  /** Upload 16×16 RGBA pixels into cell (c, r). */
-  fromPixels(c: number, r: number, px: Uint8Array): void;
+  /** Copy the size×size frame at (sx, sy) px of the animation sheet into the cells from (c, r). */
+  fromSheet(c: number, r: number, sx: number, sy: number, size: number): void;
+  /** Upload size×size RGBA pixels into the cells from (c, r). */
+  fromPixels(c: number, r: number, px: Uint8Array, size: number): void;
 }
 
 export interface AnimBudget {
@@ -80,7 +82,7 @@ export interface AnimBudget {
 export class SpriteAnimator {
   private readonly shown: Float64Array;
   private cursor = 0;
-  private readonly scratch = new Uint8Array(16 * 16 * 4);
+  private readonly scratch = new Map<number, Uint8Array>();
 
   constructor(
     readonly anims: AnimSpec[],
@@ -104,11 +106,14 @@ export class SpriteAnimator {
       const key = f.weight >= 1 ? f.frame : f.frame * 1e6 + f.next * 1e3 + Math.round(f.weight * 255);
       if (this.shown[j] === key) continue;
       this.shown[j] = key;
-      if (f.weight >= 1 || !this.sheet) w.fromSheet(a.cell[0], a.cell[1], f.frame * 16, a.row * 16);
+      const size = a.size ?? 16;
+      if (f.weight >= 1 || !this.sheet) w.fromSheet(a.cell[0], a.cell[1], f.frame * size, a.row * 16, size);
       else {
         const stride = this.sheet.width * 4;
-        blendFrames(this.sheet.data, a.row * 16 * stride + f.frame * 64, this.sheet.data, a.row * 16 * stride + f.next * 64, stride, f.weight, this.scratch);
-        w.fromPixels(a.cell[0], a.cell[1], this.scratch);
+        let px = this.scratch.get(size);
+        if (!px) this.scratch.set(size, (px = new Uint8Array(size * size * 4)));
+        blendFrames(this.sheet.data, a.row * 16 * stride + f.frame * size * 4, this.sheet.data, a.row * 16 * stride + f.next * size * 4, stride, f.weight, px, size);
+        w.fromPixels(a.cell[0], a.cell[1], px, size);
       }
       done++;
       last = j;

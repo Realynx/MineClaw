@@ -30,9 +30,9 @@ export class MeshEngine {
   table: StateTable = buildStateTable('b1.8.1', null);
 
   /** The version and its bundled block assets (null = flat palette shapes); `textured` = quads sample the block atlas. */
-  configure(version: GameVersion, assets: MeshAssets | null, textured = assets != null): void {
+  configure(version: GameVersion, assets: MeshAssets | null, textured = assets != null, fastLeaves = false): void {
     this.store.version = version;
-    this.table = buildStateTable(version, assets && (assets.kind === version ? assets : null), textured);
+    this.table = buildStateTable(version, assets && (assets.kind === version ? assets : null), textured, fastLeaves);
   }
 
   apply(buf: ArrayBuffer): Promise<ApplyResult> {
@@ -63,6 +63,20 @@ export class MeshEngine {
 
   pick(dim: number, o: V3, d: V3, maxDist: number, cut: CutParams | null): PickHit | null {
     return pick(this.store, this.table, dim, o, d, maxDist, cut);
+  }
+
+  /** [blocks] id, meta and packed light (or -1) at each integer point; id -1 where the column is not held. */
+  blocksAt(dim: number, pts: number[]): number[] {
+    const out: number[] = [];
+    for (let i = 0; i + 2 < pts.length; i += 3) {
+      const b = this.store.blockAt(dim, Math.floor(pts[i]), Math.floor(pts[i + 1]), Math.floor(pts[i + 2]));
+      if (!b) out.push(-1, 0, -1);
+      else {
+        const l = b.col.light;
+        out.push(b.id, b.meta, l ? lightPacked(l, Math.floor(pts[i]) & 15, Math.floor(pts[i + 1]), Math.floor(pts[i + 2]) & 15) : -1);
+      }
+    }
+    return out;
   }
 
   /** Packed light (sky << 4 | block) at each point (entities take the light of their cell); -1 = unknown. */

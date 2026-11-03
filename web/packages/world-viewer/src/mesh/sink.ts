@@ -10,6 +10,10 @@
 
 export const TEX_TEXTURED = 1;
 export const TEX_WRAP = 2;
+/** The end portal / gateway starfield (render/starfield.ts) instead of a texel. */
+export const TEX_STARFIELD = 4;
+/** Ignore the texel's alpha (fast leaves). */
+export const TEX_OPAQUE = 8;
 
 export const LF_EMISSIVE = 1;
 export const LF_UNKNOWN = 2;

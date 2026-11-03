@@ -148,7 +148,18 @@ Changed blocks glow briefly (`layers.changes`).
   rotation, cullface, tintindex (biome grass/foliage/water blended over 3×3 columns from the chunk's biome bytes; redstone
   power; stems; spruce/birch/lily pad), shade and `ambientocclusion`, baked once per state. Tile-entity blocks have our own
   ports of their entity models: chests (large chests drawn half per cell), trapped/ender chests, beds, signs, banners,
-  skulls, shulker boxes (defaults where the chunk can't tell: red bed, white banner, skeleton skull).
+  skulls, shulker boxes, end portal/gateway. The mesher reads the column's block entities (`ColumnStore.blockEntityAt`):
+  bed colours, skull type (skeleton, wither, zombie and player with the hat layer, creeper, dragon head) and 16-step
+  rotation, flower pot contents (item id or name); without one the defaults stay (red bed, skeleton skull, empty pot).
+  End portals and gateways carry a starfield flag: the section shader draws the client's layered, screen-projected,
+  scrolling starfield (`render/starfield.ts`; end_sky + end_portal sheets, colours from `java.util.Random(31100)`).
+  Flowing water and lava sample their native 32 px textures on 2×2-cell sheets (animated at 32 px).
+- **Block-entity layer** (`render/blockEntityLayer.ts`, main thread, shared by every view, rebuilt only when the
+  block-entity revision or the dimension changes): sign text on the board fronts (vanilla layout and glyph advances,
+  one small canvas texture per sign, LRU-capped, within 24 blocks in the software profile, 48 otherwise), banners with
+  their base colour and pattern layers composited like `LayeredColorMaskTexture` and swaying (those banners leave the
+  section mesh), and spawners' display mobs through the entity layer's `showDisplayMob` hook when it exists.
+  `RuntimeOptions.fastLeaves` opts into opaque fast leaves (not on by default: no measurable gain under SwiftShader).
 - **b1.8.1 geometry** (`src/mesh/beta/`, ported from the C# `BlockGeometry`/`BlockTextures`): every render type (torches
   leaning, crossed plants, crops, doors, ladders, rails incl. curves/slopes, stairs, fences, levers, cactus, beds,
   repeaters with their torches, pistons, panes, stems, vines, fence gates, signs, redstone lines), chest halves via

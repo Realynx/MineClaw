@@ -105,6 +105,9 @@ export interface FluidTex {
   stillR: number;
   flowC: number;
   flowR: number;
+  /** The flowing texture as a w×h-cell sheet at native resolution (1.12.2's 32 px flow on 2×2 cells): (w << 8) | h, 0 = one
+   * cell. UVs are scaled to the sheet. */
+  flowSpan?: number;
   /** b1.8.1: tiling procedural textures (UVs wrap, the flow window is a whole tile); 1.12.2: a sprite (half windows). */
   beta: boolean;
   tint: number;
@@ -120,20 +123,23 @@ export function fluidQuads(nb: Nb, id: number, tex: FluidTex, opaque: (dx: numbe
   const layer = water ? Layer.Translucent : Layer.Opaque;
   const base = { layer, emissive: !water, ao: false, tint: water ? tex.tint : TINT_NONE, flat: tex.flat, textured: tex.textured, alpha: tex.textured ? 1 : water ? 0.62 : 1 };
   const win = tex.beta ? 0.5 : 0.25;
+  const fspan = tex.flowSpan ?? 0, fk = fspan ? fspan >> 8 : 1;
+  const flowUv = (uv: number[]) => (fk === 1 ? uv : uv.map((v) => v * fk));
   if (!sameFluid(id, nb.id(0, 1, 0))) {
     const ang = flowAngle(nb, id);
-    let uv: number[], c: number, r: number;
+    let uv: number[], c: number, r: number, span = 0;
     if (ang < -999) {
       uv = [0, 0, 0, 1, 1, 1, 1, 0];
       c = tex.stillC;
       r = tex.stillR;
     } else {
       const s = Math.sin(ang) * win, k = Math.cos(ang) * win;
-      uv = [0.5 - k - s, 0.5 - k + s, 0.5 - k + s, 0.5 + k + s, 0.5 + k + s, 0.5 + k - s, 0.5 + k - s, 0.5 - k - s];
+      uv = flowUv([0.5 - k - s, 0.5 - k + s, 0.5 - k + s, 0.5 + k + s, 0.5 + k + s, 0.5 + k - s, 0.5 + k - s, 0.5 - k - s]);
       c = tex.flowC;
       r = tex.flowR;
+      span = fspan;
     }
-    out.push(makeQuad([0, h00, 0, 0, h01, 1, 1, h11, 1, 1, h10, 0], uv, { ...base, c, r, wrap: tex.beta, shade: 1, dir: 1, twoSided: water }));
+    out.push(makeQuad([0, h00, 0, 0, h01, 1, 1, h11, 1, 1, h10, 0], uv, { ...base, c, r, span, wrap: tex.beta, shade: 1, dir: 1, twoSided: water }));
   }
   const below = nb.id(0, -1, 0);
   if (!sameFluid(id, below) && !opaque(0, -1, 0))
@@ -143,10 +149,11 @@ export function fluidQuads(nb: Nb, id: number, tex: FluidTex, opaque: (dx: numbe
     const n = nb.id(nx, 0, nz);
     if (sameFluid(id, n) || opaque(nx, 0, nz) || n === 79) return;
     out.push(
-      makeQuad([ax, ha, az, bx, hb, bz, bx, 0, bz, ax, 0, az], [0, (1 - ha) * 0.5, su, (1 - hb) * 0.5, su, 0.5, 0, 0.5], {
+      makeQuad([ax, ha, az, bx, hb, bz, bx, 0, bz, ax, 0, az], flowUv([0, (1 - ha) * 0.5, su, (1 - hb) * 0.5, su, 0.5, 0, 0.5]), {
         ...base,
         c: tex.flowC,
         r: tex.flowR,
+        span: fspan,
         wrap: tex.beta,
         shade: FACE_SHADE[f],
         dir: f,

@@ -41,7 +41,7 @@ export class BlockAtlas {
   private readonly sheetTex: THREE.DataTexture | null = null;
   private readonly fx: TextureFX[] = [];
   private fxCursor = 0;
-  private readonly scratch: THREE.DataTexture;
+  private readonly scratch = new Map<number, THREE.DataTexture>();
   private readonly region = new THREE.Box2(new THREE.Vector2(), new THREE.Vector2(16, 16));
   private readonly at = new THREE.Vector2();
 
@@ -54,7 +54,6 @@ export class BlockAtlas {
     tex.colorSpace = THREE.NoColorSpace;
     tex.needsUpdate = true;
     this.texture = tex;
-    this.scratch = new THREE.DataTexture(new Uint8Array(16 * 16 * 4), 16, 16, THREE.RGBAFormat, THREE.UnsignedByteType);
     if (bundle.pack.version === '1.12.2') {
       const pack = bundle.pack as Pack1122;
       this.columns = pack.blocks.columns;
@@ -77,10 +76,21 @@ export class BlockAtlas {
 
   /** The atlas grid and texture on the section uniforms. */
   bind(u: ChunkUniforms): void {
+    this.uniforms = u;
     u.uAtlas.value = this.texture;
     u.uGrid.value.set(this.columns, this.rows);
     u.uInset.value = 0.5 / 16;
+    if (this.bundle.pack.version === '1.12.2') {
+      const sh = (this.bundle.pack as Pack1122).blocks.sheets ?? {};
+      const set = (v: { set(a: number, b: number, c: number, d: number): unknown }, s?: [number, number, number, number]) => s && v.set(s[0], s[1], s[2], s[3]);
+      set(u.uStarSky.value, sh['environment/end_sky']);
+      set(u.uStarPortal.value, sh['entity/end_portal']);
+    }
   }
+
+  private uniforms: ChunkUniforms | null = null;
+  /** Starfield layers drawn (the client's 16; fewer under software rendering). */
+  starLayers = 16;
 
   /** Restrict the animation pass to these cells (row * columns + column); null = every animated cell. */
   setVisible(cells: Iterable<number> | null): void {
@@ -95,6 +105,10 @@ export class BlockAtlas {
 
   /** Called every frame: advances the animations when a new (rate-limited) game tick has begun. */
   update(renderer: THREE.WebGLRenderer, nowMs: number): void {
+    if (this.uniforms) {
+      this.uniforms.uTime.value = nowMs / 1000;
+      this.uniforms.uStarLayers.value = this.starLayers;
+    }
     const hz = Math.max(1, Math.min(20, this.animHz || 20));
     const tick = Math.floor((nowMs / 1000) * hz);
     if (tick === this.lastTick) return;
@@ -102,18 +116,20 @@ export class BlockAtlas {
     this.lastTick = tick;
     const gameTick = Math.floor((nowMs / 1000) * 20);
     const writer: CellWriter = {
-      fromSheet: (c, r, sx, sy) => {
+      fromSheet: (c, r, sx, sy, size) => {
         if (!this.sheetTex) return;
         this.region.min.set(sx, sy);
-        this.region.max.set(sx + 16, sy + 16);
+        this.region.max.set(sx + size, sy + size);
         this.at.set(c * 16, r * 16);
         renderer.copyTextureToTexture(this.sheetTex, this.texture, this.region, this.at);
         this.writes++;
       },
-      fromPixels: (c, r, px) => {
-        (this.scratch.image.data as Uint8Array).set(px);
+      fromPixels: (c, r, px, size) => {
+        let tex = this.scratch.get(size);
+        if (!tex) this.scratch.set(size, (tex = new THREE.DataTexture(new Uint8Array(size * size * 4), size, size, THREE.RGBAFormat, THREE.UnsignedByteType)));
+        (tex.image.data as Uint8Array).set(px);
         this.at.set(c * 16, r * 16);
-        renderer.copyTextureToTexture(this.scratch, this.texture, null, this.at);
+        renderer.copyTextureToTexture(tex, this.texture, null, this.at);
         this.writes++;
       },
     };
@@ -130,7 +146,7 @@ export class BlockAtlas {
       const f = this.fx[(this.fxCursor + i) % n];
       const cell = (f.tile >> 4) * 16 + (f.tile & 15);
       if (this.visible && !this.visible.has(cell)) continue;
-      writer.fromPixels(f.tile & 15, f.tile >> 4, f.pixels);
+      writer.fromPixels(f.tile & 15, f.tile >> 4, f.pixels, 16);
       done++;
     }
     this.fxCursor = (this.fxCursor + done) % n;
@@ -138,7 +154,7 @@ export class BlockAtlas {
 
   dispose(): void {
     this.texture.dispose();
-    this.scratch.dispose();
+    for (const t of this.scratch.values()) t.dispose();
     this.sheetTex?.dispose();
   }
 }
