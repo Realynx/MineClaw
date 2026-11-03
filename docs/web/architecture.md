@@ -368,5 +368,9 @@ when storage is unavailable. Other tabs follow through the `storage` event.
   plot is 64 × 64). Story Mode caps its perspective distance at 112; its top-down picture is governed by the ground cover.
 - **Debug hook.** In mock mode `window.__mcxViewer` exposes the applied quality, the stored settings and the live viewer status
   (fps, entity reach, entities drawn) for the e2e (`e2e/settings.spec.ts`).
-- **Measured** (`scripts/perf.mjs`, Chromium with SwiftShader, dense fixture, 1280 × 800, Auto): see the "Viewer settings"
-  numbers below.
+- **Measured** (`scripts/perf.mjs --profile software`, Chromium with SwiftShader, dense b1.8.1 fixture, 1280 × 800, Auto,
+  2026-11-03): Live follow view 48 fps (p10 45); Story top view at the default zoom (44) 59 fps with every mob drawn; Story
+  at the farthest zoom (112) with entities "Same as ground" 32 fps with 20 mobs and 30 fps with 200 (205 entities drawn, reach
+  102 blocks), against 29.6 fps with the entity distance at 16: the entities cost nothing measurable there. The farthest zoom
+  stays under 40 fps on software WebGL because of the ground it draws (214k triangles, 579 draws), as before this change
+  (33 fps measured when the ground cover was introduced); a lower map ground cover or the Low preset trades picture for it.
