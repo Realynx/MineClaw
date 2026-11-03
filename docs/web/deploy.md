@@ -183,11 +183,11 @@ There is no self-signup. Run these interactively (`-t` gives the password prompt
 `pct enter 114`:
 
 ```sh
-ssh -t alice pct exec 114 -- mineclaw-web-users add fox --roles admin,chat,commands,viewer --player poofimafox
-ssh -t alice pct exec 114 -- mineclaw-web-users totp fox enroll     # prints the otpauth URL + secret ONCE, then asks for a code
-ssh -t alice pct exec 114 -- mineclaw-web-users add robin --roles chat,viewer --player kiwi
-ssh -t alice pct exec 114 -- mineclaw-web-users totp robin enroll   # or Robin enrols herself after her first login
-ssh -t alice pct exec 114 -- mineclaw-web-users list
+ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users add fox --roles admin,chat,commands,viewer --player poofimafox
+ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users totp fox enroll     # prints the otpauth URL + secret ONCE, then asks for a code
+ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users add robin --roles chat,viewer --player kiwi
+ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users totp robin enroll   # or Robin enrols herself after her first login
+ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users list
 ```
 
 - **TOTP.** Scan the otpauth URL into an authenticator app (or type in the secret), then enter the current code to activate
@@ -218,7 +218,7 @@ pwsh deploy/deploy-web.ps1 -SkipTests      # when the tests just ran
 pwsh deploy/deploy-web.ps1 -NoStart        # install and switch, but leave the units as they are (restart later)
 ```
 
-Later: `pct exec 114 -- mineclaw-web-release restart`.
+Later: `pct exec 114 -- /usr/local/sbin/mineclaw-web-release restart`.
 
 The bot keeps running throughout. Browsers reconnect their live stream by themselves after the api restarts. Sessions
 survive, because they live in `web.db`.
@@ -243,7 +243,7 @@ ssh alice pct exec 114 -- journalctl -u mineclaw-web-api -f      # pino JSON: on
 ssh alice pct exec 114 -- journalctl -u mineclaw-web-ui -f
 ssh alice pct exec 114 -- journalctl -u mineclaw-bridge -f       # plus /var/log/mineclaw-bridge/audit.jsonl (one line per write)
 ssh alice pct exec 114 -- journalctl -u mineclaw-web-api -u mineclaw-web-ui -u mineclaw-bridge --since -1h
-ssh alice pct exec 114 -- mineclaw-web-release status
+ssh alice pct exec 114 -- /usr/local/sbin/mineclaw-web-release status
 ```
 
 `/api/health` is not logged per request. Bridge up/down changes are logged once each.

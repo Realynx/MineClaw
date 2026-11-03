@@ -189,5 +189,5 @@ echo "recommendation (not applied): lower the hive's Hive:Resources:LimitMb from
 echo "ceiling leaves room for the web units (mineclaw-viewer-config shows the current value)"
 
 echo
-echo "done. Next: the bot config step (dry run first): pct exec 114 -- mineclaw-viewer-config   (then --apply)"
+echo "done. Next: the bot config step (dry run first): pct exec 114 -- /usr/local/sbin/mineclaw-viewer-config   (then --apply)"
 echo "      then the first deploy from the dev box: pwsh deploy/deploy-web.ps1   (docs/web/deploy.md)"

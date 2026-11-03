@@ -40,10 +40,10 @@ Users (no self-signup; passwords are prompted without echo or read from stdin, n
 `/usr/local/sbin/mineclaw-web-users` runs `apps/api/dist/cli/users.js` as `mineclaw-web` with the right config:
 
 ```sh
-ssh -t alice pct exec 114 -- mineclaw-web-users add fox --roles admin,chat,commands,viewer --player poofimafox
-ssh -t alice pct exec 114 -- mineclaw-web-users add robin --roles chat,viewer --player kiwi
-ssh -t alice pct exec 114 -- mineclaw-web-users totp fox enroll      # prints the otpauth URL once, asks for a code
-ssh -t alice pct exec 114 -- mineclaw-web-users passwd|roles|player|disable|enable|remove|list ...
+ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users add fox --roles admin,chat,commands,viewer --player poofimafox
+ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users add robin --roles chat,viewer --player kiwi
+ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users totp fox enroll      # prints the otpauth URL once, asks for a code
+ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users passwd|roles|player|disable|enable|remove|list ...
 ```
 
 `passwd`, `disable` and `remove` end that user's sessions; role and player changes apply on the next request. Users can
