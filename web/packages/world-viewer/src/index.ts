@@ -5,6 +5,7 @@ export { WorldViewerProvider, WorldThumbnail, useWorldRuntime, disposeWorldRunti
 export { WorldViewerEngine, type EngineOptions } from './render/engine';
 export { aimAt, botAlong, rayBox, outlineOf, type AimTarget, type AimBot } from './render/aim';
 export { WorldRuntime, type RuntimeOptions, type RuntimeMemory, type RuntimeView, type ViewSetup } from './render/runtime';
+export * from './settings';
 export { registerThumbnail, ThumbnailView, type ThumbnailViewOptions, type ThumbnailHandle } from './render/thumbnails';
 export { BubbleLayer, ChatBubbles, BUBBLE, wrapText, cleanText, holdMs, bubbleAlpha, findSpeaker, linePx, stackOffsets, type BubbleKind, type BubbleMode, type BubbleMessage, type ShownBubble, type Speaker } from './render/bubbles';
 export * from './types';

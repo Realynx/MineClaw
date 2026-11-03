@@ -376,6 +376,11 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
     if (!b) throw new MockError(404, 'No such bot', 'not_found');
     return live.botNow(b);
   },
+  'bots.inventory': ({ params }) => {
+    const b = live.findBot(String(params.bot));
+    if (!b) throw new MockError(404, 'No such body', 'not_found');
+    return live.bodyInventory(b);
+  },
   'bots.chat': ({ params, body }) => {
     const b = live.findBot(String(params.bot));
     if (!b) throw new MockError(404, 'No such bot', 'not_found');
@@ -481,6 +486,7 @@ export const SAMPLE_CALLS: Partial<Record<RouteId, Ctx>> = {
   'designer.save': { params: { id: 1 }, query: {}, body: { name: 'mock hut' } },
   'designer.version': { params: { id: 1 }, query: {}, body: { version: '1.12.2' } },
   'bots.now': { params: { bot: 'maid_chan' }, query: {}, body: null },
+  'bots.inventory': { params: { bot: 'maid_chan_67' }, query: {}, body: null },
   'bodies.script': { params: { body: 'maid_chan' }, query: { code: '1' }, body: null },
   'bodies.controller': { params: { body: 'maid_chan_68' }, query: {}, body: null },
   'vision.list': { params: { body: 'maid_chan' }, query: {}, body: null },

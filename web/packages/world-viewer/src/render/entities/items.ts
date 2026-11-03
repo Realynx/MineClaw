@@ -10,7 +10,19 @@ import type { Pack, Pack1122 } from '../../assets/bundle';
 import { BLOCK_NAMES_1122, FOLIAGE_TINT, GRASS_TINT, type GameVersion } from '../../world/blocks';
 
 export type ItemLook =
-  | { kind: 'sprite'; atlas: 'items' | 'blocks'; cell: number; tint: number }
+  | {
+      kind: 'sprite';
+      atlas: 'items' | 'blocks';
+      cell: number;
+      tint: number;
+      /** A layer drawn beneath the sprite by icon renderers (a potion's tinted liquid under its bottle); the 3D view ignores it. */
+      under?: { atlas: 'items' | 'blocks'; cell: number; tint: number };
+      /**
+       * Icon renderers draw this pixel rect of the bundled entity sheet instead (x, y, w, h): a `builtin/entity` item with no
+       * sprite of its own (the shield's front face). `atlas` / `cell` stay a usable stand-in for the 3D view.
+       */
+      entityRect?: [number, number, number, number];
+    }
   /** Six terrain cells in face order down, up, north, south, west, east; `tintMask` bit f = face f takes `tint`. */
   | { kind: 'cube'; faces: [number, number, number, number, number, number]; tint: number; tintMask: number };
 
@@ -154,7 +166,14 @@ const ALIASES_1122: Record<string, string> = {
   sugar_cane: 'reeds',
   lit_furnace: 'furnace',
   double_stone_slab: 'stone_slab',
+  // 1.12.2 potions have no item/potion model: the bottle models (potion_overlay liquid under the bottle).
+  potion: 'bottle_drinkable',
+  splash_potion: 'bottle_splash',
+  lingering_potion: 'bottle_lingering',
 };
+
+/** A potion's liquid when the stack does not say its effect (1.12.2 keeps it in NBT): vanilla's water colour. */
+export const POTION_TINT = 0x385dc6;
 
 interface ModelJson {
   parent?: string;
@@ -199,7 +218,14 @@ export function look1122(pack: Pack1122, modelName: string): ItemLook | null {
     return null;
   };
   if (generated || (!elements && textures.layer0)) {
-    const c = cellOf(resolveTex(textures, textures.layer0 ?? '#layer0'));
+    const layer0 = resolveTex(textures, textures.layer0 ?? '#layer0');
+    const layer1 = textures.layer1 ? resolveTex(textures, textures.layer1) : null;
+    // Potions (and tipped arrows): layer0 is the tinted liquid, layer1 the bottle drawn over it.
+    if (layer0 === 'items/potion_overlay' && layer1) {
+      const top = cellOf(layer1), liquid = cellOf(layer0);
+      if (top) return { kind: 'sprite', atlas: top.atlas, cell: top.cell, tint: 0, ...(liquid ? { under: { ...liquid, tint: POTION_TINT } } : {}) };
+    }
+    const c = cellOf(layer0);
     if (!c) return null;
     const tint = /grass|fern|vine|leaves|lily/.test(modelName) && !/dead/.test(modelName) ? (modelName.includes('leaves') ? FOLIAGE_TINT : GRASS_TINT) : 0;
     return { kind: 'sprite', atlas: c.atlas, cell: c.cell, tint };
@@ -228,10 +254,20 @@ export function look1122(pack: Pack1122, modelName: string): ItemLook | null {
     const tint = mask ? (/leaves/.test(modelName) ? FOLIAGE_TINT : GRASS_TINT) : 0;
     return { kind: 'cube', faces: faces.map((f) => (f < 0 ? fill : f)) as [number, number, number, number, number, number], tint, tintMask: mask };
   }
-  // builtin/entity (chests, banners, shields, skulls): a plank cube for chests, else nothing.
+  // builtin/entity (chests, banners, shields, skulls): a plank cube for chests, the shield's front face, else nothing.
   if (/chest/.test(modelName)) {
     const c = cellOf('blocks/planks_oak');
     if (c) return { kind: 'cube', faces: [c.cell, c.cell, c.cell, c.cell, c.cell, c.cell], tint: 0, tintMask: 0 };
+  }
+  if (modelName === 'shield' || modelName === 'shield_blocking') {
+    // ModelShield's plate (12×22×1 at texture offset 0,0): its front face is the 64×64 texture's (1, 1, 12, 22). The 3D view
+    // keeps the GUI's shield outline sprite as its stand-in.
+    const r = pack.entity.rects['entity/shield_base_nopattern'];
+    const slot = cellOf('items/empty_armor_slot_shield');
+    if (r && slot) {
+      const k = r[2] / 64;
+      return { kind: 'sprite', atlas: slot.atlas, cell: slot.cell, tint: 0, entityRect: [r[0] + k, r[1] + k, 12 * k, 22 * k] };
+    }
   }
   return null;
 }

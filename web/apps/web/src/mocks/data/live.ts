@@ -5,6 +5,7 @@
  */
 import type {
   BodyControllerInfo,
+  BodyInventory,
   BodyScriptReply,
   BotNow,
   BotStatusView,
@@ -29,6 +30,7 @@ import type {
   WorldIndex,
   WorldOverlays,
 } from '@mineclaw/contracts';
+import { mockInventory } from '@mineclaw/contracts/testing';
 import { iso, isoAgo, minsAgo, nowIso, pick, rng, T0 } from '../util';
 import { raptorLeaves, raptorParents } from './raptor';
 import { SCRIPT_CODE } from './scripts';
@@ -351,6 +353,13 @@ export const sim: Sim = {
 };
 
 // ---------- route bodies ----------
+
+/** A body's inventory (the shared mock bodies: a b1.8.1 miner, a 1.12.2 nether scout, a farmer, the chop crew); counts move
+ * with the simulation. A body not in game answers its last known inventory (`online: false`). */
+export function bodyInventory(b: MockBot): BodyInventory {
+  const inv = mockInventory(b.name, BOTS.indexOf(b), sim.tick);
+  return b.status === 'online' ? inv : { ...inv, online: false, at: Date.now() - 90_000 };
+}
 
 function brainStateOf(b: MockBot, inflight: unknown): string {
   if (b.kind === 'script') return 'script-only';
