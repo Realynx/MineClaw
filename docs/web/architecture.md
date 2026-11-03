@@ -58,7 +58,7 @@ deploy/viewer/               systemd units, cloudflared notes, and the web + bri
 
 ## Security model (design as if public)
 
-- **Users.** A users file on the viewer CT on CT 114 (`/etc/mineclaw-web/users.json`, 0600) holds username, argon2id hash,
+- **Users.** A users file on CT 114 (`/etc/mineclaw-web/users.json`, 0600) holds username, argon2id hash,
   optional TOTP secret, roles and the linked Minecraft player. Fox maps to `poofimafox` and Robin to `kiwi`. A
   `web/apps/api` CLI adds a user, resets a password and enrolls TOTP. There is no self-signup.
 - **Roles.**
