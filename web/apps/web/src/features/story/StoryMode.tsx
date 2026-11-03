@@ -716,12 +716,28 @@ export function StoryMode() {
       let blocks = designBlocks(await api('blueprints.get', { params: { id } }).catch(() => null));
       if (!blocks.length) blocks = designBlocks(await api('buildplans.get', { params: { id } }).catch(() => null));
       // The Design Studio opens a design's newest revision as cells: the reliable source when the account may design.
-      // (with its dug cells: a basement goes under the clicked level).
-      if (!blocks.length && can('design'))
-        blocks = designCells(await api('designer.create', { body: { designId: id } }).catch(() => null));
+      // (with its dug cells: a basement goes under the clicked level). Converted to the server's version: a design drawn
+      // for the other one keeps what maps (substitutions said) and is refused when a block of it doesn't exist here.
+      let converted = '';
+      if (!blocks.length && can('design')) {
+        const server = await api('designer.models')
+          .then((m) => m.version)
+          .catch(() => null);
+        const s = await api('designer.create', {
+          body: { designId: id, ...(server === 'b1.8.1' || server === '1.12.2' ? { convertTo: server } : {}) },
+        }).catch(() => null);
+        if (s?.compat && !s.compat.compatible)
+          return say(
+            `${name} is drawn for ${s.compat.from}; ${s.compat.to} has no ${s.compat.missing.map((m) => `${m.name} (${m.count})`).join(', ')}: convert it in the Design Studio first`,
+            'warn',
+          );
+        if (s?.compat?.substituted.length)
+          converted = ` (converted from ${s.compat.from}: ${s.compat.substituted.map((m) => `${m.count} ${m.name}`).join(', ')})`;
+        blocks = designCells(s);
+      }
       if (!blocks.length) return say(`${name} has no block list the colony can build from`, 'warn');
       setTool({ kind: 'design', id, name, blocks });
-      say(`${name}: move to a spot and click to queue it (Q/E turns)`);
+      say(`${name}: move to a spot and click to queue it (Q/E turns)${converted}`);
     })();
   }, [designParam, state, say, can]);
 

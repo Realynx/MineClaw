@@ -382,7 +382,8 @@ export const StoryBuild = z.object({
 });
 export type StoryBuild = z.infer<typeof StoryBuild>;
 
-/** Ghost block [x, y, z, id, meta, build_id, state] (state: todo | leased | done | blocked). */
+/** Ghost block [x, y, z, id, meta, build_id, state] (state: todo | leased | done | blocked | unsupported: a block pawns can't
+ * place yet, shown and alerted, never a job). */
 export const StoryGhostBlock = z.tuple([
   z.number().int(),
   z.number().int(),

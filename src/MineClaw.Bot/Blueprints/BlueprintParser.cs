@@ -69,7 +69,10 @@ public static partial class BlueprintParser
     /// <summary>Parses DSL text. Never throws: problems come back as issues (errors with line numbers).</summary>
     public static (Blueprint Blueprint, List<BlueprintIssue> Issues) Parse(string text)
     {
-        var bp = new Blueprint { Source = text ?? "" };
+        var bp = new Blueprint { Source = text ?? "", Version = DesignVersions.OfDsl(text) };
+        // A versioned design (the Design Studio's) resolves its palette in its own version's names and opens the whole design
+        // palette of that version; a DSL without a version line is the server's and keeps the buildable-blocks palette.
+        using var scope = DesignVersions.Use(bp.Version);
         var issues = new List<BlueprintIssue>();
         void Err(int line, string code, string msg) => issues.Add(new BlueprintIssue(IssueLevel.Error, code, msg, line));
         var lines = (text ?? "").Replace("\r", "").Split('\n');
@@ -125,6 +128,9 @@ public static partial class BlueprintParser
                     break;
                 case "light" or "lit":
                     bp.Light = true;
+                    break;
+                case "version":
+                    if (DesignVersions.Normalize(rest) == null) Err(ln, "version", $"version must be {string.Join(" or ", DesignVersions.All)}");
                     break;
                 case "palette":
                     foreach (var tok in rest.Split([' ', '\t', ';'], StringSplitOptions.RemoveEmptyEntries)) ParsePalette(bp, tok, ln, issues);
@@ -184,7 +190,7 @@ public static partial class BlueprintParser
 
     private static readonly HashSet<string> Statements = new(StringComparer.OrdinalIgnoreCase)
     {
-        "blueprint", "name", "size", "origin", "ground", "facing", "front", "light", "lit", "palette", "layer", "layers", "box", "fill", "hollow", "walls", "wall",
+        "blueprint", "name", "size", "origin", "ground", "facing", "front", "light", "lit", "palette", "version", "layer", "layers", "box", "fill", "hollow", "walls", "wall",
         "floor", "clear", "air", "pillar", "door", "window", "stairs", "roof", "pyramid",
     };
 
@@ -234,14 +240,21 @@ public static partial class BlueprintParser
         }
         var val = tok[2..];
         var parts = val.Split(':', 2);
-        var (entry, why) = Resolve(sym, parts[0], parts.Length > 1 ? parts[1] : null, val);
+        var (entry, why) = Resolve(sym, parts[0], parts.Length > 1 ? parts[1] : null, val, bp.Version != null);
         if (entry == null) issues.Add(new(IssueLevel.Error, "block", $"{sym}={val}: {why}", ln));
         else bp.Palette[sym] = entry;
     }
 
-    /// <summary>A block name (+ facing/variant/meta) → palette entry, or why not.</summary>
-    public static (PaletteEntry? Entry, string? Why) Resolve(char sym, string name, string? arg, string source)
+    /// <summary>A block name (+ facing/variant/meta) → palette entry, or why not. <paramref name="full"/> = a versioned design: any
+    /// block of the version's design palette (<see cref="DesignPalette"/>), else only what <see cref="BuildBlocks"/> builds.</summary>
+    public static (PaletteEntry? Entry, string? Why) Resolve(char sym, string name, string? arg, string source, bool full = false)
     {
+        if (full)
+        {
+            if (!DesignPalette.Current.TryResolve(arg == null ? name : name + ":" + arg, out var st, out var bad)) return (null, bad);
+            int m = BuildBlocks.KindOf(st.Id) == BuildKind.Door ? st.Meta & 7 : st.Meta; // the palette names the lower half
+            return (new PaletteEntry(sym, st.Id, m, null, source), null);
+        }
         int id, meta = 0;
         if (Items.ByNameWithDamage(name) is { } it && (it.Item.Id < 256 || it.Item.Id is Items.WoodenDoor or Items.IronDoor))
         {

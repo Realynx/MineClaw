@@ -172,7 +172,7 @@ public class DesignerTests
         var first = model.Requests.First();
         Assert.True(first.System[0].Cache);
         Assert.Equal("designer", first.Purpose);
-        Assert.Equal(7, first.Tools.Count);
+        Assert.Equal(8, first.Tools.Count); // the seven canvas tools + find_blocks
         var brief = first.Messages[^1].Text;
         Assert.Contains("[canvas]", brief);
         Assert.Contains("[selection] from [28,0,28] to [34,3,34]", brief);

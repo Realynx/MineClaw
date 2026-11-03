@@ -21,6 +21,10 @@ export const DesignSummary = z.object({
   revisions: z.number().int(),
   updated: UnixMs.nullish(),
   hasPicture: z.boolean(),
+  version: z
+    .string()
+    .nullish()
+    .describe('the game version it is drawn for ("b1.8.1" | "1.12.2"; a design saved before versions: the server\'s)'),
 });
 export type DesignSummary = z.infer<typeof DesignSummary>;
 
@@ -43,6 +47,7 @@ export const DesignRevision = z.object({
   tag: z.string().nullish(),
   created: UnixMs,
   n: z.number().int().describe('block count'),
+  version: z.string().nullish().describe('the game version this revision was saved for'),
 });
 export type DesignRevision = z.infer<typeof DesignRevision>;
 

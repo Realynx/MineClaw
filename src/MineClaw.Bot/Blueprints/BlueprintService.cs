@@ -469,7 +469,7 @@ public sealed class BlueprintService
                 _crewRequests.TryGetValue(rec.Id, out var want);
                 var (l, r) = PickCrew(plan, want, Crew().Bodies);
                 return SectionedSummary(plan, Math.Max(1, l.Count + r.Count))
-                       + (Executor.GateOn ? $"; I'll check the first {_o.GateBlocks} blocks with you (plan {PlanUrl(rec.Id)})" : "");
+                       + (Executor.GateOn ? $"; I'll check the first {_o.GateBlocks} blocks with you (plan {PlanUrl(rec.Id)})" : "") + CompatNote(plan);
             }
             var bp = Executor.PlanFor(rec.Id, plan, BuildPart.Whole(plan, rec.Dim), body);
             // The crew that will build it (and its benefit, from the plan: travel + placements, lanes in parallel).
@@ -483,7 +483,7 @@ public sealed class BlueprintService
             }
             var gate = bp.Gate.State == Building.GateState.Pending && bp.Steps.Any(s => s.Gate)
                 ? $"; I'll check the first {bp.Steps.Count(s => s.Gate)} blocks with you (plan {PlanUrl(rec.Id)})" : "";
-            return bp.Summary() + gate;
+            return bp.Summary() + gate + CompatNote(plan);
         }
         catch (Exception ex)
         {
@@ -694,8 +694,14 @@ public sealed class BlueprintService
     internal static BlockPos UnsitedGround(BlueprintRecord rec, Blueprint bp) =>
         rec.Site.Y + 1 - bp.Ground < 1 ? rec.Site with { Y = 63 } : rec.Site;
 
-    /// <summary>The plan of a saved design at its origin.</summary>
-    public VoxelPlan? PlanOf(BlueprintRecord rec, out string? error)
+    /// <summary>
+    /// The plan of a saved design at its origin. <paramref name="forWorld"/> (every builder): a design drawn for another version
+    /// is converted to this world's (<see cref="DesignConvert"/>: the substitutions in <see cref="VoxelPlan.Converted"/>), or
+    /// refused when a block of it doesn't exist here (null, the blocks named in <paramref name="error"/>); then the cells the
+    /// survival builder can't place yet are taken out into <see cref="VoxelPlan.Unsupported"/> (reported, never placed wrong).
+    /// Without it: the design as drawn, in its own version (the history, the Design Studio).
+    /// </summary>
+    public VoxelPlan? PlanOf(BlueprintRecord rec, out string? error, bool forWorld = true)
     {
         var (bp, issues) = BlueprintParser.Parse(rec.Dsl);
         var origin = rec.Origin ?? bp.OriginOn(UnsitedGround(rec, bp));
@@ -703,7 +709,71 @@ public sealed class BlueprintService
         var (plan, more) = BlueprintNormalizer.Normalize(bp, origin, WorldHeight());
         issues.AddRange(more);
         error = plan == null || issues.Any(i => i.Level == IssueLevel.Error) ? string.Join("; ", issues.Where(i => i.Level == IssueLevel.Error).Take(3)) : null;
+        if (plan == null || !forWorld || bp.Version == null) return plan;
+        return ForWorld(rec, plan, ref error);
+    }
+
+    /// <summary>A versioned design's plan made buildable here: converted to this world's version, unsupported cells set aside.</summary>
+    private static VoxelPlan? ForWorld(BlueprintRecord rec, VoxelPlan plan, ref string? error)
+    {
+        var world = DesignVersions.Server;
+        var from = plan.Blueprint.Version ?? world;
+        if (from != world)
+        {
+            var (cells, report) = DesignConvert.Convert(plan.Blocks.Select(kv => KeyValuePair.Create(kv.Key, (kv.Value.Id, kv.Value.Meta))), from, world);
+            if (!report.Compatible)
+            {
+                error = $"#{rec.Id} \"{rec.Name}\" is drawn for {from}; these blocks don't exist in {world}: {report.MissingText()} "
+                        + "(open it in the Design Studio and convert it, or pick other blocks)";
+                return null;
+            }
+            plan.Blocks.Clear();
+            foreach (var (p, (id, meta)) in cells) plan.Blocks[p] = new PlannedBlock(p, id, meta);
+            plan.Converted = report.Text();
+        }
+        foreach (var (p, b) in plan.Blocks.ToList())
+            if ((BuildBlocks.Refusal(b.Id) ?? BuildBlocks.MetaProblem(b.Id, b.Meta)) != null)
+            {
+                plan.Unsupported[p] = (b.Id, b.Meta);
+                plan.Blocks.Remove(p);
+            }
         return plan;
+    }
+
+    /// <summary>
+    /// Why a design can't be built in this world: drawn for another version with blocks this one doesn't have ("#12 "hut" is
+    /// drawn for 1.12.2; these blocks don't exist in b1.8.1: 12 White Concrete …"); null = it can (as is, or converted).
+    /// </summary>
+    public string? WorldRefusal(BlueprintRecord rec)
+    {
+        var from = DesignVersions.OfDsl(rec.Dsl);
+        if (from == null || from == DesignVersions.Server) return null;
+        try
+        {
+            if (PlanOf(rec, out _, forWorld: false) is not { } plan) return null; // a parse error says so on its own
+            var (_, report) = DesignConvert.Convert(plan.Blocks.Select(kv => KeyValuePair.Create(kv.Key, (kv.Value.Id, kv.Value.Meta))), from, DesignVersions.Server);
+            return report.Compatible ? null
+                : $"#{rec.Id} \"{rec.Name}\" is drawn for {from}; these blocks don't exist in {DesignVersions.Server}: {report.MissingText()} "
+                  + "(open it in the Design Studio and convert it, or pick other blocks)";
+        }
+        catch (Exception ex) { _log?.LogDebug(ex, "compatibility of #{Id} unreadable", rec.Id); return null; }
+    }
+
+    /// <summary>"; converted 1.12.2 → b1.8.1: …; 4 cells the builder can't place yet, left out: 2 Bed, 2 Redstone Wire" ("" = none).</summary>
+    public static string CompatNote(VoxelPlan? plan)
+    {
+        if (plan == null) return "";
+        var sb = new System.Text.StringBuilder();
+        if (plan.Converted != null) sb.Append("; converted ").Append(plan.Converted);
+        if (plan.Unsupported.Count > 0)
+        {
+            var pal = DesignPalette.Current;
+            var names = plan.Unsupported.Values.Where(s => !DesignFacing.SecondHalf(s.Id, s.Meta)).GroupBy(s => pal.Name(s.Id, s.Meta))
+                .OrderByDescending(g => g.Count()).Take(6).Select(g => $"{g.Count()} {g.Key}");
+            sb.Append($"; {plan.Unsupported.Count} cell{(plan.Unsupported.Count == 1 ? "" : "s")} the builder can't place yet, left out: ")
+              .Append(string.Join(", ", names));
+        }
+        return sb.ToString();
     }
 
     /// <summary>
@@ -715,6 +785,7 @@ public sealed class BlueprintService
         if (Store.Find(idOrName) is not { } rec) return (false, $"no design '{idOrName}'");
         if (rec.Status is not (DesignStatus.Accepted or DesignStatus.Building or DesignStatus.Built))
             return (false, rec.Status == DesignStatus.Review ? $"#{rec.Id} waits for a trusted player's 'build it'" : $"#{rec.Id} is {rec.Status}, not accepted");
+        if (WorldRefusal(rec) is { } wrong) return (false, wrong);
         if (PlanOf(rec, out var err) is not { } plan) return (false, $"#{rec.Id} doesn't parse: {err}");
         var bodies = Crew().Bodies;
         if (bodies.Count == 0) return (false, "no body to build with");
@@ -754,6 +825,7 @@ public sealed class BlueprintService
 
         async Task<(bool, string)> DoneAsync(string? stop, string text)
         {
+            text += CompatNote(plan); // a converted design, cells left out (never placed wrong)
             var built = AsBuilt(rec, plan);
             var all = built.Blocks.Values.Where(b => b.Pos.Y - built.Origin.Y == layer || layer == null).ToList();
             var world = bodies[0].World;
@@ -1149,7 +1221,7 @@ public sealed class BlueprintService
         eval = r.Eval, critique = r.Critique, cost_usd = Math.Round(r.CostUsd, 4), iterations = r.Iterations, accepted_by = r.AcceptedBy,
         site = new[] { r.Site.X, r.Site.Y, r.Site.Z }, origin = r.Origin is { } o ? new[] { o.X, o.Y, o.Z } : null,
         bill = r.Bill, dsl = r.Dsl, builds = Store.Builds(r.Id).Select(b => new { part = b.Part + 1, parts = b.Parts, owner = b.Owner, state = b.State, placed = b.Placed, total = b.Total, note = b.Note }),
-        updated = r.Updated,
+        updated = r.Updated, version = DesignVersions.Of(r), world_version = DesignVersions.Server, world_refusal = WorldRefusal(r),
     };
 
     internal static string Json(object o) => JsonSerializer.Serialize(o);

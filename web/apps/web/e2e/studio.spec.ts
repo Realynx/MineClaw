@@ -166,7 +166,7 @@ test('design studio: build, ask the AI, edit by hand, save', async ({ page }) =>
   // The palette (B) searches the design palette with icons.
   await page.keyboard.press('KeyB');
   await page.getByLabel('Search blocks').fill('stone br');
-  await expect(page.getByRole('button', { name: 'stone bricks', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Stone Bricks', exact: true })).toBeVisible();
   if (shots) await page.screenshot({ path: `${shots}/studio-palette.png` });
   await page.getByRole('button', { name: 'Close the palette' }).click();
 
@@ -257,4 +257,71 @@ test('design studio: Leave goes without saving; an untouched design never asks',
   await ask.getByRole('button', { name: 'Leave', exact: true }).click();
   await page.waitForURL('**/overview');
   await expect(ask).toHaveCount(0);
+});
+
+test('design studio: a 1.12.2 design from the whole palette keeps its version', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/designs/studio');
+  await page.waitForURL('**/designs/studio?session=**');
+  const stage = page.getByTestId('studio-stage');
+  await expect(stage.locator('canvas').first()).toBeVisible();
+  const version = page.getByTestId('version-select');
+  await expect(version).toHaveValue('b1.8.1'); // a new design starts in the server's version
+  // An empty canvas switches at once; the palette is 1.12.2's now.
+  await version.selectOption('1.12.2');
+  await expect(page.getByTestId('version-select')).toHaveValue('1.12.2');
+  await expect(page.getByText('server is b1.8.1')).toBeVisible();
+  await expect(stage.locator('canvas').first()).toBeVisible();
+  await page.waitForTimeout(3000); // the plot meshes in 1.12.2's models
+
+  // The palette: categories, a search for a 1.12.2-only block, into the hotbar.
+  // Keys go to the world: lock the mouse in it first (B frees it again).
+  await stage
+    .locator('canvas')
+    .first()
+    .click({ position: { x: 300, y: 300 } });
+  await expect.poll(() => page.evaluate(() => !!document.pointerLockElement)).toBe(true);
+  await page.keyboard.press('KeyB');
+  const palette = page.getByRole('dialog', { name: 'Block palette' });
+  await expect(palette).toBeVisible();
+  await expect(palette.getByRole('tab', { name: /Colored/ })).toBeVisible();
+  const all = Number(await palette.getByTestId('palette-count').textContent());
+  expect(all).toBeGreaterThan(250);
+  await palette.getByLabel('Search blocks').fill('magenta concrete');
+  await expect(palette.getByTestId('palette-count')).toHaveText('2'); // the concrete and its powder
+  await palette.getByRole('button', { name: 'Magenta Concrete', exact: true }).click();
+  await palette.getByLabel('Search blocks').press('Escape');
+  await expect(palette).toHaveCount(0);
+  await expect(page.getByTestId('hotbar')).toContainText('Magenta Concrete');
+  if (shots) await page.screenshot({ path: `${shots}/studio-palette-1122.png` });
+
+  // Placed with the mouse locked.
+  await stage
+    .locator('canvas')
+    .first()
+    .click({ position: { x: 300, y: 300 } });
+  await expect.poll(() => page.evaluate(() => !!document.pointerLockElement)).toBe(true);
+  await lookAt(page, [10, 6, 10], [10, -1, 4]);
+  await click(page, 'right');
+  const at = () =>
+    page.evaluate(() => (window as unknown as { __studio?: Hook }).__studio?.studio.canvas.get(10, 0, 4) ?? null);
+  await expect.poll(at).toEqual([251, 2]);
+  await page.evaluate(() => document.exitPointerLock());
+
+  // Saved: the design records 1.12.2; a reload reopens the session in 1.12.2 with the block.
+  await page.getByLabel('Design name').fill('e2e concrete');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByTestId('saved-bar')).toContainText('(1.12.2)');
+  await page.reload();
+  await expect(page.getByTestId('version-select')).toHaveValue('1.12.2');
+  await expect(stage.locator('canvas').first()).toBeVisible();
+  await expect.poll(at).toEqual([251, 2]);
+
+  // Back to b1.8.1: the check names what b1.8.1 doesn't have; Cancel keeps the design as it is.
+  await page.getByTestId('version-select').selectOption('b1.8.1');
+  const ask = page.getByTestId('version-dialog');
+  await expect(ask).toContainText('Magenta Concrete');
+  await ask.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByTestId('version-select')).toHaveValue('1.12.2');
+  await expect.poll(at).toEqual([251, 2]);
 });

@@ -104,6 +104,9 @@ public sealed class DesignerAgent(ILlmClient llm, LlmOptions llmOptions, UsageTr
         (int[] Min, int[] Max)? selection, string? player, CancellationToken ct)
     {
         if (BudgetRefusal(m) is { } refusal) return new DesignerTurnResult("", [], 0, LlmUsage.Zero, m.Model, 0, refusal);
+        // The session's version for the whole turn (names, rules, the summary): it flows into every await.
+        using var scope = DesignVersions.Use(s.Canvas.Version);
+        var system = DesignerTools.System(player, s.Canvas.Version);
         var messages = new List<LlmMessage>();
         foreach (var h in history.TakeLast(Math.Max(0, _o.HistoryTurns) * 2))
             messages.Add(h.Role == "assistant" ? LlmMessage.Assistant(h.Text.Length == 0 ? "(done)" : h.Text) : LlmMessage.User(h.Text));
@@ -124,7 +127,7 @@ public sealed class DesignerAgent(ILlmClient llm, LlmOptions llmOptions, UsageTr
                 resp = await llm.CompleteAsync(new LlmRequest
                 {
                     Tier = m.Tier, Model = m.Model, Profile = m.Profile, MaxTokens = Math.Max(256, _o.MaxTokens), Purpose = "designer",
-                    System = [new LlmSystemBlock(DesignerTools.System(player), Cache: true)], Tools = DesignerTools.All, Messages = messages.ToList(),
+                    System = [new LlmSystemBlock(system, Cache: true)], Tools = DesignerTools.All, Messages = messages.ToList(),
                     CacheHistory = true, Effort = string.IsNullOrWhiteSpace(_o.Effort) ? null : _o.Effort,
                 }, ct).ConfigureAwait(false);
             }
@@ -176,7 +179,7 @@ public sealed class DesignerAgent(ILlmClient llm, LlmOptions llmOptions, UsageTr
     public static string Brief(DesignerSessionRecord s, string text, (int[] Min, int[] Max)? selection)
     {
         var sb = new StringBuilder();
-        sb.Append("[canvas] ").Append(s.Canvas.Describe()).Append('\n');
+        using (DesignVersions.Use(s.Canvas.Version)) sb.Append("[canvas] ").Append(s.Canvas.Describe()).Append('\n');
         if (selection is { } sel && sel.Min.Length == 3 && sel.Max.Length == 3)
             sb.Append(CultureInfo.InvariantCulture, $"[selection] from [{sel.Min[0]},{sel.Min[1]},{sel.Min[2]}] to [{sel.Max[0]},{sel.Max[1]},{sel.Max[2]}]\n");
         if (s.PendingEdits.Length > 0) sb.Append("[user edits since your last turn] ").Append(s.PendingEdits).Append('\n');

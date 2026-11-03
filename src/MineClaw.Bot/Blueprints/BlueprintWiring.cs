@@ -375,6 +375,8 @@ public sealed class BlueprintWiring
             case "build":
                 {
                     if (Rec() is not { } rec) return ToolResult.Error("no design to build (id?)");
+                    // Drawn for another version with blocks this world lacks: refused, the blocks named (never built wrong).
+                    if (Service.WorldRefusal(rec) is { } wrong) return ToolResult.Error(wrong);
                     // Held by a "no" at its gate: only a trusted player's fresh go lifts it (never a resume on its own).
                     if (Service.HeldBy(rec.Id) is { } holder)
                     {

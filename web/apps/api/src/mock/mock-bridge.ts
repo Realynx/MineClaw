@@ -362,7 +362,9 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
         case 'designer.models':
           return { json: toSnake(designer.models()) };
         case 'designer.create':
-          return { json: toSnake(designer.create(camel(body) as { model?: string; designId?: number }, who)) };
+          return { json: toSnake(designer.create(camel(body) as Parameters<typeof designer.create>[0], who)) };
+        case 'designer.version':
+          return { json: toSnake(designer.version(sid, camel(body) as never)) };
         case 'designer.get':
           return { json: toSnake(designer.get(sid)) };
         case 'designer.message':
@@ -436,7 +438,7 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
       const base = dataFor(id, params) as { items?: Obj[]; total?: number };
       const saved = designer.saved.map((d) => ({
         id: d.id, name: d.name, status: 'accepted', requester: d.requester, rev: d.revisions[0]?.rev ?? 1, revisions: d.revisions.length,
-        updated: d.updated, has_picture: false,
+        updated: d.updated, has_picture: false, version: d.version ?? null,
       }));
       return { json: { ...base, items: [...saved, ...(base.items ?? [])], total: (base.total ?? 0) + saved.length } };
     }

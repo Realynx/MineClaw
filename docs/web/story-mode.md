@@ -348,9 +348,16 @@ facing?: n|e|s|w, level?:y, name?, group?}`.
 - **group:** the items of one placed design. A design with a basement (Design Studio dug cells) is queued as a `remove`
   item of its dug cells first, then its block items, all with the same `group`: its blocks wait until that dig is done.
   The design's ground floor goes on the clicked level and the basement under it.
+- **A design's blocks (added 2026-11-03).** The web opens the design converted to the server's version (`designer.create`
+  with `convertTo`): a design drawn for the other version keeps what maps (the substitutions are said with the placement
+  hint) and is refused, naming the blocks, when one of them doesn't exist here. Each `block` item's cells get the item that
+  places exactly that state (red wool, not wool; a spruce door's item for a spruce door); a second half (a door's upper, a
+  bed's head, a double plant's top) comes with its first, never a job of its own. Blocks pawns can't place yet (crops,
+  liquids, signs, banners, skulls) stay `unsupported` ghosts: shown, said once in an alert, never a job, and the build
+  finishes around them.
 
 Build: `{id, kind, label, status: queued|active|paused|blocked|done, reason, blocks_total, blocks_done, material, order, created}`.
-Ghosts: `[x,y,z,id,meta,build_id,state]`, with state `todo|leased|done|blocked`.
+Ghosts: `[x,y,z,id,meta,build_id,state]`, with state `todo|leased|done|blocked|unsupported`.
 
 Execution:
 - Every ghost is one job for a pawn with Build on, by the picker and lease rules.
