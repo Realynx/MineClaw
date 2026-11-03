@@ -1,0 +1,347 @@
+using System.Collections.Concurrent;
+using System.Globalization;
+using System.Net;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using MineClaw.Agent.Budget;
+using MineClaw.Agent.Llm;
+using MineClaw.Bot.Blueprints;
+using MineClaw.Data.Versioning;
+
+namespace MineClaw.App.Supervisor;
+
+/// <summary>
+/// The Design Studio's bot routes (docs/web/api.md "Design Studio"), behind <c>Supervisor:Viewer:Enabled</c>,
+/// <c>Supervisor:Viewer:Designer:Enabled</c> and the token header (the bridge enforces the <c>design</c>/<c>admin</c> role and
+/// injects <c>player</c>/<c>who</c>, the signed-in user, into every write body):
+/// <list type="bullet">
+/// <item><c>GET /api/designer/models</c> → <c>{models:[{id, label, provider, model, tier, profile, cost_hint, default}], default, version, budget}</c></item>
+/// <item><c>POST /api/designer/sessions</c> <c>{model?, design_id?}</c> → the session (a new canvas, or a design's newest revision)</item>
+/// <item><c>GET /api/designer/sessions/{id}</c> → the session: canvas, transcript, palette, the design's revisions</item>
+/// <item><c>POST /api/designer/sessions/{id}/messages</c> <c>{text, model?, canvas:{rev, edits?}, selection?}</c> → the AI's reply + the ops it applied</item>
+/// <item><c>POST /api/designer/sessions/{id}/canvas</c> <c>{rev, ops, anchor?}</c> → the user's own edits (the AI is told about them)</item>
+/// <item><c>POST /api/designer/sessions/{id}/save</c> <c>{name, summary?, as_new?}</c> → <c>{design_id, rev, …}</c> through the designs history</item>
+/// </list>
+/// Everything happens on the sandbox canvas: no route touches the world.
+/// </summary>
+public sealed class DesignerRoutes
+{
+    public const string Prefix = "/api/designer";
+    /// <summary>A message with a canvas edit batch, or a canvas post (the bridge caps JSON bodies at 256 KB too).</summary>
+    public const int MaxBodyBytes = 256 * 1024;
+    public const int MaxText = 2000;
+
+    private static readonly JsonSerializerOptions Json = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        DefaultIgnoreCondition = JsonIgnoreCondition.Never,
+        PropertyNameCaseInsensitive = true,
+    };
+
+    private readonly SupervisorOptions _o;
+    private readonly Func<BlueprintService?> _service;
+    private readonly DesignerStore _store;
+    private readonly LlmOptions _llm;
+    private readonly DesignerAgent _agent;
+    private readonly UsageTracker? _usage;
+    private readonly Func<string> _bot;
+    private readonly ConcurrentDictionary<long, SemaphoreSlim> _locks = new();
+
+    public DesignerRoutes(SupervisorOptions o, Func<BlueprintService?> service, DesignerStore store, ILlmClient llm, LlmOptions llmOptions,
+        UsageTracker? usage, Func<string>? bot = null)
+    {
+        _o = o;
+        _service = service;
+        _store = store;
+        _llm = llmOptions;
+        _usage = usage;
+        _agent = new DesignerAgent(llm, llmOptions, usage, o.Viewer.Designer);
+        _bot = bot ?? (() => "");
+    }
+
+    public DesignerStore Store => _store;
+
+    public static bool IsDesignerPath(string path)
+    {
+        var p = path.TrimEnd('/');
+        return p.Equals(Prefix, StringComparison.OrdinalIgnoreCase) || p.StartsWith(Prefix + "/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The body of a POST to a designer route (null otherwise), only with the token, up to <see cref="MaxBodyBytes"/>.</summary>
+    public static async Task<string?> ReadBodyAsync(HttpListenerRequest req, SupervisorOptions o, CancellationToken ct)
+    {
+        if (!req.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase) || !IsDesignerPath(req.Url?.AbsolutePath ?? "/") || !req.HasEntityBody) return null;
+        if (!o.Viewer.Enabled || !TokenOk(req.Headers["X-Supervisor-Token"], o.Token)) return null;
+        if (req.ContentLength64 > MaxBodyBytes) return SupervisorAdminRoutes.TooLarge;
+        using var ms = new MemoryStream();
+        var buf = new byte[16384];
+        while (true)
+        {
+            int r = await req.InputStream.ReadAsync(buf, ct).ConfigureAwait(false);
+            if (r == 0) break;
+            ms.Write(buf, 0, r);
+            if (ms.Length > MaxBodyBytes) return SupervisorAdminRoutes.TooLarge;
+        }
+        return Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);
+    }
+
+    private static bool TokenOk(string? given, string? token)
+    {
+        if (string.IsNullOrEmpty(token) || string.IsNullOrEmpty(given)) return false;
+        var a = Encoding.UTF8.GetBytes(given);
+        var b = Encoding.UTF8.GetBytes(token);
+        return a.Length == b.Length && CryptographicOperations.FixedTimeEquals(a, b);
+    }
+
+    // ------------------------------------------------------------------ routing
+
+    /// <summary>Null = not a designer route.</summary>
+    public async Task<SupervisorReply?> TryHandleAsync(SupervisorRequest r, CancellationToken ct = default)
+    {
+        var path = r.Path.TrimEnd('/');
+        if (!IsDesignerPath(path)) return null;
+        if (!_o.Viewer.Enabled || !_o.Viewer.Designer.Enabled) return Reply(404, new { error = "not found" });
+        if (string.IsNullOrEmpty(_o.Token)) return Reply(403, new { error = "the designer needs Supervisor:Token" });
+        if (!TokenOk(r.TokenHeader, _o.Token)) return Reply(403, new { error = "X-Supervisor-Token header required" });
+        bool post = r.Method.Equals("POST", StringComparison.OrdinalIgnoreCase);
+        bool get = r.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) || r.Method.Equals("HEAD", StringComparison.OrdinalIgnoreCase);
+        if (r.Body == SupervisorAdminRoutes.TooLarge) return Reply(413, new { error = $"body over {MaxBodyBytes} bytes" });
+        var rest = path[Prefix.Length..];
+        try
+        {
+            if (rest.Equals("/models", StringComparison.OrdinalIgnoreCase)) return get ? Models() : NotAllowed("GET, HEAD");
+            if (rest.Equals("/sessions", StringComparison.OrdinalIgnoreCase)) return post ? Create(r) : NotAllowed("POST");
+            var parts = rest.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length is 2 or 3 && parts[0].Equals("sessions", StringComparison.OrdinalIgnoreCase)
+                && long.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var id))
+            {
+                if (parts.Length == 2) return get ? Session(id) : NotAllowed("GET, HEAD");
+                if (!post) return NotAllowed("POST");
+                return parts[2].ToLowerInvariant() switch
+                {
+                    "messages" => await Locked(id, () => MessageAsync(id, r, ct), ct).ConfigureAwait(false),
+                    "canvas" => await Locked(id, () => Task.FromResult(Canvas(id, r)), ct).ConfigureAwait(false),
+                    "save" => await Locked(id, () => Task.FromResult(Save(id, r)), ct).ConfigureAwait(false),
+                    _ => Reply(404, new { error = "not found" }),
+                };
+            }
+            return Reply(404, new { error = "not found" });
+        }
+        catch (JsonException) { return Reply(400, new { error = "body must be JSON (see docs/web/api.md, Design Studio)" }); }
+        catch (OperationCanceledException) { return Reply(503, new { error = "cancelled" }); }
+    }
+
+    private async Task<SupervisorReply> Locked(long id, Func<Task<SupervisorReply>> body, CancellationToken ct)
+    {
+        var gate = _locks.GetOrAdd(id, _ => new SemaphoreSlim(1, 1));
+        if (!await gate.WaitAsync(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false))
+            return Reply(409, new { error = "the session is busy (a message is still running)" });
+        try { return await body().ConfigureAwait(false); }
+        finally { gate.Release(); }
+    }
+
+    // ------------------------------------------------------------------ models
+
+    private SupervisorReply Models()
+    {
+        var list = DesignerModels.List(_llm);
+        var def = list.FirstOrDefault();
+        object? budget = null;
+        if (_usage != null)
+        {
+            var (today, _) = _usage.SnapshotTotals();
+            budget = new { mode = _usage.Mode.ToString().ToLowerInvariant(), today_usd = (double)today.TotalUsd, daily_cap_usd = (double)_usage.Options.DailyCapUsd };
+        }
+        return Reply(200, new
+        {
+            models = list.Select(m => new
+            {
+                id = m.Id, label = m.Label, provider = m.Provider, model = m.Model, tier = m.Tier.ToString().ToLowerInvariant(), profile = m.Profile,
+                cost_hint = m.CostHint, @default = m == def,
+            }),
+            @default = def?.Id,
+            version = GameData.Current.VersionId,
+            budget,
+        });
+    }
+
+    // ------------------------------------------------------------------ sessions
+
+    private sealed record CreateBody(string? Model, long? DesignId, string? Player, string? Who);
+
+    private static string Requester(string? player, string? who) =>
+        !string.IsNullOrWhiteSpace(player) ? player.Trim() : !string.IsNullOrWhiteSpace(who) ? who.Trim() : "a player";
+
+    private SupervisorReply Create(SupervisorRequest r)
+    {
+        var b = Parse<CreateBody>(r.Body) ?? new CreateBody(null, null, null, null);
+        var model = DesignerModels.Resolve(_llm, b.Model);
+        if (model == null) return Reply(400, new { error = b.Model is { Length: > 0 } ? $"model '{b.Model}' isn't configured" : "no model is configured" });
+        var s = new DesignerSessionRecord { Owner = Requester(b.Player, b.Who), Model = model.Id, Name = "new design" };
+        string? note = null;
+        if (b.DesignId is { } did)
+        {
+            if (_service() is not { } svc) return Reply(503, new { error = "designs are unavailable (Bot:Blueprints off)" });
+            var (canvas, off, rec, why) = DesignerSave.Load(svc, did);
+            if (canvas == null) return Reply(404, new { error = why ?? "no such design" });
+            s.Canvas = canvas;
+            s.Offset = off;
+            s.DesignId = did;
+            s.Name = rec?.Name ?? s.Name;
+            note = why;
+        }
+        _store.Insert(s);
+        if (note != null) _store.AddMessage(s.Id, "assistant", note);
+        return Reply(200, SessionJson(s));
+    }
+
+    private SupervisorReply Session(long id) =>
+        _store.Get(id) is { } s ? Reply(200, SessionJson(s)) : Reply(404, new { error = "no such session" });
+
+    private object SessionJson(DesignerSessionRecord s)
+    {
+        var revs = s.DesignId is { } did && _service()?.History?.Revisions is { } h
+            ? h.List(did, 50).Select(v => (object)new { rev = v.Rev, author = v.Author, author_kind = v.AuthorKind, message = v.Message, tag = v.Tag, created = v.At.ToUnixTimeMilliseconds(), n = v.Blocks }).ToList()
+            : [];
+        return new
+        {
+            id = s.Id, owner = s.Owner, model = s.Model, design_id = s.DesignId, name = s.Name, rev = s.Canvas.Rev, blocks = s.Canvas.Wire(),
+            anchor = s.Anchor is { } a ? new[] { a.X, a.Y, a.Z } : null,
+            messages = _store.Messages(s.Id).Select(MessageJson),
+            cost_usd = (double)s.CostUsd, calls = s.Calls, version = GameData.Current.VersionId,
+            palette = DesignerCanvas.Palette().Select(p => new { id = p.Id, meta = p.Meta, name = p.Name, facing = p.Facing }),
+            plot = new { size = DesignerCanvas.Size, height = DesignerCanvas.Height },
+            revisions = revs,
+            created = s.Created.ToUnixTimeMilliseconds(), updated = s.Updated.ToUnixTimeMilliseconds(),
+        };
+    }
+
+    private static object MessageJson(DesignerMessageRecord m) => new
+    {
+        seq = m.Seq, role = m.Role, text = m.Text, at = m.At.ToUnixTimeMilliseconds(), model = m.Model, cost_usd = (double)m.CostUsd,
+        ops = m.Ops.Select(o => new { kind = o.Kind, label = o.Label, cells = o.Cells }),
+    };
+
+    private static object OpJson(DesignerOp o) => new { kind = o.Kind, label = o.Label, by = o.By, cells = o.Cells.Select(c => c.Wire) };
+
+    // ------------------------------------------------------------------ edits
+
+    private sealed record OpBody(string? Kind, string? Label, int[][]? Cells);
+    private sealed record CanvasRef(int Rev, OpBody[]? Edits);
+    private sealed record Selection(int[]? Min, int[]? Max);
+    private sealed record MessageBody(string? Text, string? Model, CanvasRef? Canvas, Selection? Selection, string? Player, string? Who);
+    private sealed record CanvasBody(int Rev, OpBody[]? Ops, int[]? Anchor, bool? ClearAnchor, string? Player, string? Who);
+    private sealed record SaveBody(string? Name, string? Summary, bool? AsNew, string? Player, string? Who);
+
+    /// <summary>The user's edits applied in order; null = nothing malformed. Each changed cell is summarised for the AI's next turn.</summary>
+    private static string? ApplyEdits(DesignerSessionRecord s, OpBody[]? ops, out int applied)
+    {
+        applied = 0;
+        if (ops == null || ops.Length == 0) return null;
+        if (ops.Length > 256) return "at most 256 ops per request";
+        var all = new List<CanvasCell>();
+        foreach (var op in ops)
+        {
+            if (op.Cells == null) continue;
+            if (op.Cells.Any(c => c == null || c.Length != 5)) return "a cell is [x, y, z, id, meta]";
+            all.AddRange(op.Cells.Select(c => new CanvasCell(c[0], c[1], c[2], c[3], c[4])));
+        }
+        if (all.Count > DesignerCanvas.MaxCellsPerOp) return $"at most {DesignerCanvas.MaxCellsPerOp} cells per request";
+        var changed = s.Canvas.Apply(all);
+        applied = changed.Count;
+        if (changed.Count > 0)
+        {
+            var line = DesignerCanvas.Summarize(changed);
+            s.PendingEdits = s.PendingEdits.Length == 0 ? line : Clip(s.PendingEdits + "; " + line, 600);
+        }
+        return null;
+    }
+
+    private SupervisorReply Canvas(long id, SupervisorRequest r)
+    {
+        if (_store.Get(id) is not { } s) return Reply(404, new { error = "no such session" });
+        var b = Parse<CanvasBody>(r.Body);
+        if (b == null) return Reply(400, new { error = "body must be JSON {rev, ops:[{kind, label, cells:[[x,y,z,id,meta]]}], anchor?}" });
+        if (ApplyEdits(s, b.Ops, out var applied) is { } err) return Reply(400, new { error = err });
+        if (b.Anchor is { Length: 3 } a && DesignerCanvas.Inside(a[0], a[1], a[2])) s.Anchor = new MineClaw.World.BlockPos(a[0], a[1], a[2]);
+        else if (b.ClearAnchor == true) s.Anchor = null;
+        _store.Update(s);
+        return Reply(200, new { rev = s.Canvas.Rev, applied, stale = b.Rev != 0 && b.Rev > s.Canvas.Rev });
+    }
+
+    private async Task<SupervisorReply> MessageAsync(long id, SupervisorRequest r, CancellationToken ct)
+    {
+        if (_store.Get(id) is not { } s) return Reply(404, new { error = "no such session" });
+        var b = Parse<MessageBody>(r.Body);
+        var text = b?.Text?.Trim() ?? "";
+        if (text.Length == 0) return Reply(400, new { error = "text is empty" });
+        if (text.Length > MaxText) return Reply(400, new { error = $"text over {MaxText} chars" });
+        if (b!.Model is { Length: > 0 } wanted)
+        {
+            if (DesignerModels.Resolve(_llm, wanted) is not { } picked) return Reply(400, new { error = $"model '{wanted}' isn't configured" });
+            s.Model = picked.Id;
+        }
+        var model = DesignerModels.Resolve(_llm, s.Model);
+        if (model == null) return Reply(400, new { error = "no model is configured" });
+        if (ApplyEdits(s, b.Canvas?.Edits, out _) is { } err) return Reply(400, new { error = err });
+        if (_agent.BudgetRefusal(model) is { } refusal)
+        {
+            _store.Update(s);
+            return Reply(429, new { error = refusal, retry_after_ms = 60_000 });
+        }
+        var history = _store.Messages(s.Id, 40);
+        var player = Requester(b.Player, b.Who);
+        var userLine = _store.AddMessage(s.Id, "user", text);
+        (int[] Min, int[] Max)? sel = b.Selection is { Min: { Length: 3 } mn, Max: { Length: 3 } mx } ? (mn, mx) : null;
+        DesignerTurnResult turn;
+        try { turn = await _agent.RunAsync(s, history, model, text, sel, player, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _store.Update(s);
+            var line = _store.AddMessage(s.Id, "assistant", "(the model call failed: " + Clip(ex.Message, 160) + ")", model.Model);
+            return Reply(502, new { error = "the model call failed", message = MessageJson(line) });
+        }
+        s.PendingEdits = "";
+        s.CostUsd += turn.CostUsd;
+        s.Calls += turn.Calls;
+        _store.Update(s);
+        var summaries = turn.Ops.Select(o => new DesignerOpSummary(o.Kind, o.Label, o.Cells.Count)).ToList();
+        var reply = turn.Refusal ?? turn.Reply;
+        var msg = _store.AddMessage(s.Id, "assistant", reply, turn.Model, turn.CostUsd, summaries);
+        return Reply(200, new
+        {
+            reply, ops = turn.Ops.Select(OpJson), rev = s.Canvas.Rev, cost_usd = (double)turn.CostUsd, session_cost_usd = (double)s.CostUsd,
+            model = turn.Model, calls = turn.Calls,
+            usage = new { input = turn.Usage.InputTokens, output = turn.Usage.OutputTokens, cache_read = turn.Usage.CacheReadTokens, cache_write = turn.Usage.CacheWriteTokens },
+            message = MessageJson(msg), user_message = MessageJson(userLine), refusal = turn.Refusal,
+        });
+    }
+
+    private SupervisorReply Save(long id, SupervisorRequest r)
+    {
+        if (_store.Get(id) is not { } s) return Reply(404, new { error = "no such session" });
+        if (_service() is not { } svc) return Reply(503, new { error = "designs are unavailable (Bot:Blueprints off)" });
+        var b = Parse<SaveBody>(r.Body);
+        if (b == null || string.IsNullOrWhiteSpace(b.Name)) return Reply(400, new { error = "body must be JSON {name, summary?, as_new?}" });
+        if (b.Summary is { Length: > 120 }) return Reply(400, new { error = "summary over 120 chars" });
+        var res = DesignerSave.Save(svc, s, b.Name, b.Summary, Requester(b.Player, b.Who), b.AsNew == true, _bot());
+        if (!res.Ok) return Reply(400, new { error = res.Text });
+        _store.Update(s);
+        _store.AddMessage(s.Id, "assistant", res.Text);
+        return Reply(200, new { design_id = res.DesignId, rev = res.Rev, name = s.Name, blocks = res.Blocks, created = res.Created, text = res.Text });
+    }
+
+    // ------------------------------------------------------------------ helpers
+
+    private static T? Parse<T>(string? body) where T : class => string.IsNullOrWhiteSpace(body) ? null : JsonSerializer.Deserialize<T>(body, Json);
+
+    private static string Clip(string s, int n) => s.Length <= n ? s : s[..(n - 1)] + "…";
+
+    private static SupervisorReply NotAllowed(string allow) =>
+        Reply(405, new { error = $"{allow} only" }, new Dictionary<string, string> { ["Allow"] = allow });
+
+    private static SupervisorReply Reply(int status, object value, IReadOnlyDictionary<string, string>? headers = null) =>
+        new(status, "application/json; charset=utf-8", JsonSerializer.SerializeToUtf8Bytes(value, value.GetType(), Json), headers);
+}

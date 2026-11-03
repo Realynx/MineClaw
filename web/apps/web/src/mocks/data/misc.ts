@@ -20,6 +20,7 @@ import type {
 import { isoAgo, minsAgo, nowIso, pick, rng } from '../util';
 import { kinds } from './memory';
 import { raptorMetaIso } from './raptor';
+import { designer, savedDesigns } from './designer';
 
 export function overview(): Overview {
   const k = kinds().kinds;
@@ -151,6 +152,7 @@ export function designList(q?: string): { total: number; revisionsTotal: number;
     updated: minsAgo(i * 300 + 40),
     hasPicture: i !== 4,
   }));
+  items = [...savedDesigns().filter((d) => !items.some((x) => x.id === d.id)), ...items];
   if (q) items = items.filter((d) => `${d.id} ${d.name} ${d.status} ${d.requester ?? ''}`.toLowerCase().includes(q.toLowerCase()));
   return { total: items.length, revisionsTotal: items.reduce((s, d) => s + d.revisions, 0), offset: 0, limit: 100, items };
 }
@@ -158,6 +160,11 @@ export function designList(q?: string): { total: number; revisionsTotal: number;
 export function designDetail(id: number): DesignDetail | null {
   const d = designList().items.find((x) => x.id === id);
   if (!d) return null;
+  const studio = designer.saved.find((x) => x.id === id);
+  if (studio && studio.revisions.length) {
+    const head = studio.revisions[0]!;
+    return { design: d, revisions: studio.revisions, world: null, defaultDiff: { a: String(Math.max(1, head.rev - 1)), b: String(head.rev) } };
+  }
   const revisions = Array.from({ length: d.revisions }, (_, i) => ({
     rev: d.rev - i,
     author: i % 2 ? 'poofimafox' : 'maid_chan',

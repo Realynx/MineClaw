@@ -78,4 +78,10 @@ export interface RouteTypes {
   'brains.context': { params: z.input<typeof C.BrainParams>; query: z.input<typeof C.BrainContextQuery>; body: never; response: z.output<typeof C.BrainContextPage> };
   'brains.turn': { params: z.input<typeof C.BrainTurnParams>; query: z.input<typeof C.BrainTurnQuery>; body: never; response: z.output<typeof C.BrainTurnDetail> };
   'live.stream': { params: never; query: z.input<typeof C.LiveStreamQuery>; body: never; response: never };
+  'designer.models': { params: never; query: never; body: never; response: z.output<typeof C.DesignerModelsResponse> };
+  'designer.create': { params: never; query: never; body: z.input<typeof C.DesignerCreateRequest>; response: z.output<typeof C.DesignerSession> };
+  'designer.get': { params: z.input<typeof C.DesignerSessionParams>; query: never; body: never; response: z.output<typeof C.DesignerSession> };
+  'designer.message': { params: z.input<typeof C.DesignerSessionParams>; query: never; body: z.input<typeof C.DesignerMessageRequest>; response: z.output<typeof C.DesignerMessageResponse> };
+  'designer.canvas': { params: z.input<typeof C.DesignerSessionParams>; query: never; body: z.input<typeof C.DesignerCanvasRequest>; response: z.output<typeof C.DesignerCanvasResponse> };
+  'designer.save': { params: z.input<typeof C.DesignerSessionParams>; query: never; body: z.input<typeof C.DesignerSaveRequest>; response: z.output<typeof C.DesignerSaveResponse> };
 }

@@ -317,6 +317,7 @@ export class RouteDispatcher {
         contentType,
         headers: extra,
         requestId: ctx.requestId,
+        ...(route.timeoutMs ? { timeoutMs: route.timeoutMs } : {}),
       });
       const status = upstream.statusCode ?? 502;
 

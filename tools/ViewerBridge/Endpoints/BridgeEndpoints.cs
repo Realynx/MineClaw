@@ -325,6 +325,13 @@ public static class BridgeEndpoints
             return Results.Empty;
         });
 
+        // The Design Studio: reads with any role, writes with design/admin, the designer's identity written into the body.
+        v1.MapMethods("/sup/designer/{**rest}", ["GET", "HEAD", "POST"], async (HttpContext ctx, SupervisorClient sup) =>
+        {
+            await DesignerProxy.HandleAsync(ctx, sup);
+            return Results.Empty;
+        });
+
         v1.MapMethods("/sup/{**rest}", ["GET", "HEAD", "POST"], async (HttpContext ctx, SupervisorClient sup, ChunkCache cache) =>
         {
             await SupervisorProxy.HandleAsync(ctx, sup, cache);

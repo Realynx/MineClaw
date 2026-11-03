@@ -17,8 +17,8 @@ public static class SupervisorProxy
 {
     public static readonly string[] AllowGet =
         ["bots", "hive/tree", "status", "events", "locate", "blueprints", "buildplans", "world/", "scripts", "bodies/", "brains/", "viewer/feed", "viewer/now",
-         "viewer/memory-activity", "admin/rebuild/", "admin/audit"];
-    public static readonly string[] AllowPost = ["viewer/chat", "admin/"];
+         "viewer/memory-activity", "admin/rebuild/", "admin/audit", "designer/"];
+    public static readonly string[] AllowPost = ["viewer/chat", "admin/", "designer/"];
     public static readonly string[] AdminOnly = ["admin/"];
 
     /// <summary>Prefix match as the contract defines it: an entry ending in "/" is a prefix; any other entry matches itself and its sub-paths.</summary>

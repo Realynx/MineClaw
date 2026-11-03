@@ -42,6 +42,18 @@ import {
   WebAuditQuery,
 } from './auth.js';
 import { camelToSnake } from './case.js';
+import {
+  DesignerCanvasRequest,
+  DesignerCanvasResponse,
+  DesignerCreateRequest,
+  DesignerMessageRequest,
+  DesignerMessageResponse,
+  DesignerModelsResponse,
+  DesignerSaveRequest,
+  DesignerSaveResponse,
+  DesignerSession,
+  DesignerSessionParams,
+} from './designer.js';
 import { Empty, HealthResponse, OkResponse } from './common.js';
 import {
   BodyControllerInfo,
@@ -169,6 +181,8 @@ export interface RouteDef {
   /** Web audit kind Nest records for this route (null = not audited beyond the access log). */
   readonly audit: WebAuditKind | null;
   readonly summary: string;
+  /** Nest → bridge timeout when it isn't `Bridge:TimeoutMs` (a Design Studio message runs a model tool loop). */
+  readonly timeoutMs?: number;
 }
 
 const NATIVE = 'bridge-native';
@@ -931,6 +945,71 @@ export const ROUTES = {
     audit: null,
     summary: 'SSE fan-out of the single upstream stream (see SSE_EVENTS).',
   }),
+
+  // ---------- Design Studio (sandbox canvas + a model; saves are designs) ----------
+  'designer.models': get('/api/designer/models', {
+    access: 'viewer',
+    response: DesignerModelsResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/designer/models'),
+    supervisor: '/api/designer/models',
+    audit: null,
+    summary: 'The models the bot is configured to use (its tiers and usable profiles, 5.5 Claude only), the default, the server version.',
+  }),
+  'designer.create': post('/api/designer/sessions', {
+    access: 'design',
+    body: DesignerCreateRequest,
+    response: DesignerSession,
+    responseKind: 'json',
+    bridge: b('/v1/sup/designer/sessions', 'POST'),
+    supervisor: '/api/designer/sessions',
+    audit: 'design',
+    summary: "A new session: an empty 64×64 canvas, or a design's newest revision (`designId`).",
+  }),
+  'designer.get': get('/api/designer/sessions/:id', {
+    access: 'viewer',
+    params: DesignerSessionParams,
+    response: DesignerSession,
+    responseKind: 'json',
+    bridge: b('/v1/sup/designer/sessions/{id}'),
+    supervisor: '/api/designer/sessions/{id}',
+    audit: null,
+    summary: "A session: the canvas, the transcript, the palette and the saved design's revisions.",
+  }),
+  'designer.message': post('/api/designer/sessions/:id/messages', {
+    access: 'design',
+    params: DesignerSessionParams,
+    body: DesignerMessageRequest,
+    response: DesignerMessageResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/designer/sessions/{id}/messages', 'POST'),
+    supervisor: '/api/designer/sessions/{id}/messages',
+    audit: 'design',
+    timeoutMs: 240_000,
+    summary: "A message to the model (with pending canvas edits and the selection); returns its reply and the ops it applied. Booked on the bot's budget.",
+  }),
+  'designer.canvas': post('/api/designer/sessions/:id/canvas', {
+    access: 'design',
+    params: DesignerSessionParams,
+    body: DesignerCanvasRequest,
+    response: DesignerCanvasResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/designer/sessions/{id}/canvas', 'POST'),
+    supervisor: '/api/designer/sessions/{id}/canvas',
+    audit: null,
+    summary: "The user's own edits (and the anchor), so the model sees them on its next turn.",
+  }),
+  'designer.save': post('/api/designer/sessions/:id/save', {
+    access: 'design',
+    params: DesignerSessionParams,
+    body: DesignerSaveRequest,
+    response: DesignerSaveResponse,
+    responseKind: 'json',
+    bridge: b('/v1/sup/designer/sessions/{id}/save', 'POST'),
+    supervisor: '/api/designer/sessions/{id}/save',
+    audit: 'design',
+    summary: 'Saves the canvas as a design: a new one, or the next revision of the loaded one (Git-style, never locked).',
+  }),
 } as const satisfies Record<string, RouteDef>;
 
 export type RouteId = keyof typeof ROUTES;
@@ -1011,8 +1090,9 @@ export const SUPERVISOR_PASSTHROUGH_ALLOW = {
     'viewer/memory-activity',
     'admin/rebuild/',
     'admin/audit',
+    'designer/',
   ],
-  post: ['viewer/chat', 'admin/'],
+  post: ['viewer/chat', 'admin/', 'designer/'],
   /** Paths that require the `admin` role in `X-MCX-Roles` (both methods). */
   adminOnly: ['admin/'],
 } as const;

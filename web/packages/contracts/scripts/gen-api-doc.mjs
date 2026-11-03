@@ -29,6 +29,7 @@ const groups = [
       ),
   ],
   ['Live stream', (id) => id === 'live.stream'],
+  ['Design Studio (supervisor pass-through; writes need `design` or `admin`)', (id) => id.startsWith('designer.')],
 ];
 
 const lines = [];

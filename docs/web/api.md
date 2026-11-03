@@ -341,6 +341,17 @@ Notes on specific routes:
 |---|---|---|---|---|---|---|---|
 | `live.stream` | `GET /api/live/stream` | viewer | query `LiveStreamQuery` | sse | `GET /v1/live/stream` | bridge-native (polls status, events, viewer/feed, viewer/now, world/entities, world/blocks, hive/tree, viewer/memory-activity) | – |
 
+### Design Studio (supervisor pass-through; writes need `design` or `admin`)
+
+| Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
+|---|---|---|---|---|---|---|---|
+| `designer.models` | `GET /api/designer/models` | viewer | – | `DesignerModelsResponse` | `GET /v1/sup/designer/models` | /api/designer/models | – |
+| `designer.create` | `POST /api/designer/sessions` | design | body `DesignerCreateRequest` | `DesignerSession` | `POST /v1/sup/designer/sessions` | /api/designer/sessions | design |
+| `designer.get` | `GET /api/designer/sessions/:id` | viewer | params `DesignerSessionParams` | `DesignerSession` | `GET /v1/sup/designer/sessions/{id}` | /api/designer/sessions/{id} | – |
+| `designer.message` | `POST /api/designer/sessions/:id/messages` | design | params `DesignerSessionParams`<br>body `DesignerMessageRequest` | `DesignerMessageResponse` | `POST /v1/sup/designer/sessions/{id}/messages` | /api/designer/sessions/{id}/messages | design |
+| `designer.canvas` | `POST /api/designer/sessions/:id/canvas` | design | params `DesignerSessionParams`<br>body `DesignerCanvasRequest` | `DesignerCanvasResponse` | `POST /v1/sup/designer/sessions/{id}/canvas` | /api/designer/sessions/{id}/canvas | – |
+| `designer.save` | `POST /api/designer/sessions/:id/save` | design | params `DesignerSessionParams`<br>body `DesignerSaveRequest` | `DesignerSaveResponse` | `POST /v1/sup/designer/sessions/{id}/save` | /api/designer/sessions/{id}/save | design |
+
 <!-- routes:end -->
 
 ## 5. SSE: `GET /api/live/stream`

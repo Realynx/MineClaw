@@ -13,4 +13,5 @@ export { decodeMcwc, McwcError, type McwcEntry, type McwcPayload } from './wire/
 export { cellIndex, unpackSnapshot, parseLight, lightPacked } from './wire/chunk';
 export { hashKey } from './wire/hash';
 export { blockName, type GameVersion } from './world/blocks';
+export { blockIconUrl } from './render/icons';
 export type { BotView, EntityView } from './world/entities';

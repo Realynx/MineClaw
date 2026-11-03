@@ -23,6 +23,8 @@ public sealed class SupervisorViewerOptions
     public bool AllowCommands { get; set; }
     /// <summary>Viewer lines per player per minute (their own bucket: in-game chat is never demoted by them); more = 429.</summary>
     public int PerMinute { get; set; } = 12;
+    /// <summary>The Design Studio (<c>/api/designer/*</c>, <see cref="DesignerRoutes"/>): on with the viewer unless turned off here.</summary>
+    public MineClaw.Bot.Blueprints.DesignerOptions Designer { get; set; } = new();
 }
 
 /// <summary>"What is it doing right now" for one bot (<c>/api/viewer/now</c>); every part is null when unknown.</summary>

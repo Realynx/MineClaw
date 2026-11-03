@@ -390,6 +390,10 @@ public static class AppHost
             Supervisor.ViewerTaps.Enable(viewerFeed, memory);
             var viewer = new Supervisor.LiveViewerData(bot, main, sources, () => mainHive?.Supervisor, controller, scriptData, log) { Bodies = allBodies };
             server.Viewer = new Supervisor.SupervisorViewerRoutes(o, viewer, viewerFeed, memory);
+            // /api/designer/*: the Design Studio (a sandbox canvas co-designed with a model of the user's choice, saved as designs)
+            if (o.Viewer.Designer.Enabled)
+                server.Designer = new Supervisor.DesignerRoutes(o, () => bot.Blueprints?.Service, new MineClaw.Bot.Blueprints.DesignerStore(bot.Runtime.Db),
+                    bot.Runtime.Llm, bot.Runtime.Options.Llm, bot.Runtime.Usage, () => main);
         }
         try
         {

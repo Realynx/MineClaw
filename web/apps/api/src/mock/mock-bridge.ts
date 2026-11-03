@@ -20,6 +20,7 @@ import { dirname, join } from 'node:path';
 import {
   ROUTES,
   SSE_EVENTS,
+  createDesignerMock,
   parseBridgeJson,
   toSnake,
   type RouteDef,
@@ -334,6 +335,41 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
     return b;
   };
   const interval = opts.streamIntervalMs ?? 1000;
+  // The Design Studio: the shared fake designer (contracts), replies snake-cased like the bot's.
+  const designer = createDesignerMock(100);
+  const camel = (b: Buffer): Obj => {
+    const raw = JSON.parse(b.toString('utf8') || '{}') as Obj;
+    const out: Obj = {};
+    for (const [k, v] of Object.entries(raw)) out[k.replace(/_([a-z])/g, (_m, c: string) => c.toUpperCase())] = v;
+    return out;
+  };
+  const designerReply = (id: RouteId, params: Record<string, string>, body: Buffer, identity: BridgeIdentity): Reply | null => {
+    const sid = Number(params.id);
+    const who = identity.player || identity.user || 'poofimafox';
+    const write = id !== 'designer.models' && id !== 'designer.get';
+    if (write && !identity.roles.split(',').some((r) => r === 'design' || r === 'admin'))
+      return { status: 403, json: { error: 'design role required', code: 'forbidden' } };
+    try {
+      switch (id) {
+        case 'designer.models':
+          return { json: toSnake(designer.models()) };
+        case 'designer.create':
+          return { json: toSnake(designer.create(camel(body) as { model?: string; designId?: number }, who)) };
+        case 'designer.get':
+          return { json: toSnake(designer.get(sid)) };
+        case 'designer.message':
+          return { json: toSnake(designer.message(sid, camel(body) as never)) };
+        case 'designer.canvas':
+          return { json: toSnake(designer.canvas(sid, camel(body) as never)) };
+        case 'designer.save':
+          return { json: toSnake(designer.save(sid, camel(body) as never, who)) };
+        default:
+          return null;
+      }
+    } catch (e) {
+      return { status: 400, json: { error: e instanceof Error ? e.message : 'bad request', code: 'bad_request' } };
+    }
+  };
 
   const dataFor = (id: RouteId, params: Record<string, string>): unknown => {
     const route: RouteDef = ROUTES[id];
@@ -375,6 +411,18 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
       if (id === 'world.index' && replay.text('index')) return { raw: replay.text('index') };
       if (id === 'world.chunks') return conditional(replay.chunks(dim, cols()), 'application/octet-stream');
       if (id === 'world.blockEntities') return { json: replay.blockEntityColumns(dim, cols()) };
+    }
+    if (id.startsWith('designer.')) {
+      const r = designerReply(id, params, body, identity);
+      if (r) return r;
+    }
+    if (id === 'designs.list') {
+      const base = dataFor(id, params) as { items?: Obj[]; total?: number };
+      const saved = designer.saved.map((d) => ({
+        id: d.id, name: d.name, status: 'accepted', requester: d.requester, rev: d.revisions[0]?.rev ?? 1, revisions: d.revisions.length,
+        updated: d.updated, has_picture: false,
+      }));
+      return { json: { ...base, items: [...saved, ...(base.items ?? [])], total: (base.total ?? 0) + saved.length } };
     }
     switch (id) {
       case 'bots.now':
