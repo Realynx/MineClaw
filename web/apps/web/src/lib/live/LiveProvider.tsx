@@ -13,6 +13,9 @@ interface LiveContextValue {
   changedAt: number;
 }
 
+/** How long a hidden tab keeps its live stream (quick tab switches don't reconnect). */
+export const HIDDEN_GRACE_MS = 15_000;
+
 const LiveContext = createContext<LiveContextValue>({ stream: 'idle', changedAt: 0 });
 
 /**
@@ -68,14 +71,25 @@ export function LiveProvider({ children, enabled = true }: { children: ReactNode
         void resyncLive(qc);
       },
     });
-    live.start();
-    const onVisible = () => {
-      // A long-hidden tab may have been throttled: catch up on return.
-      if (document.visibilityState === 'visible' && live.current !== 'open') void resyncLive(qc);
+    // A background tab gives its stream back after a short grace: over plain HTTP/1.1 the browser allows six connections per
+    // host, and every open tab's never-ending stream holds one, so a few background tabs starve the visible one (its page
+    // navigations queue forever). On return the stream reopens and the REST state is re-fetched.
+    let hiddenTimer: ReturnType<typeof setTimeout> | null = null;
+    if (document.visibilityState === 'visible') live.start(); // a tab opened in the background connects when first shown
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        if (hiddenTimer === null) hiddenTimer = setTimeout(() => live.stop(), HIDDEN_GRACE_MS);
+        return;
+      }
+      if (hiddenTimer !== null) clearTimeout(hiddenTimer);
+      hiddenTimer = null;
+      if (live.current === 'closed' || live.current === 'idle') live.start(); // reopening resyncs (onResync)
+      else if (live.current !== 'open') void resyncLive(qc); // a long-hidden tab may have been throttled: catch up
     };
-    document.addEventListener('visibilitychange', onVisible);
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
-      document.removeEventListener('visibilitychange', onVisible);
+      document.removeEventListener('visibilitychange', onVisibility);
+      if (hiddenTimer !== null) clearTimeout(hiddenTimer);
       live.stop();
     };
   }, [qc, enabled]);

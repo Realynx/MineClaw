@@ -38,6 +38,15 @@ describe('viewerSeqFrom', () => {
 });
 
 describe('reconcile', () => {
+  it('is a fixed point: an echoed message still waiting for its reply keeps its identity (no setState loop)', () => {
+    const p = onAccepted(createPending('maid_chan', 'hi', 'req00000001', 0), { accepted: true, id: 'req00000001', feedSeq: 5 });
+    const lines = [line(5, 'viewer', { requestId: 'req00000001' })];
+    const once = reconcile([p], lines).pending;
+    expect(once[0]).toMatchObject({ echoed: true, viewerSeq: 5 });
+    const twice = reconcile(once, lines).pending;
+    expect(twice[0]).toBe(once[0]);
+  });
+
   it('hides the optimistic bubble once the viewer line arrives (matched by requestId) and resolves on the reply', () => {
     let p = onAccepted(createPending('maid_chan', 'set it to day', 'reqAAAAAAAA', 0), { accepted: true, id: 'reqAAAAAAAA' });
     expect(p.state).toBe('awaiting');

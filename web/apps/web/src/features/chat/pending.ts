@@ -86,7 +86,9 @@ export function reconcile(
           sameBot(l, p.bot, aliases) &&
           ((p.viewerSeq !== null && l.seq === p.viewerSeq) || (!!l.requestId && l.requestId === p.requestId)),
       );
-      if (echo) p = { ...p, viewerSeq: echo.seq, echoed: true };
+      // Only a real change makes a new object: callers compare by identity to decide whether anything changed (a fresh
+      // object on every pass made ChatPane's reconcile effect set state forever while a reply was pending).
+      if (echo && (!p.echoed || p.viewerSeq !== echo.seq)) p = { ...p, viewerSeq: echo.seq, echoed: true };
     }
     if (p.state === 'awaiting' && p.viewerSeq !== null) {
       const seq = p.viewerSeq;

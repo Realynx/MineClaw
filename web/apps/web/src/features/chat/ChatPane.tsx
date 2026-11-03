@@ -131,7 +131,10 @@ function TypingHint({ bot, slow }: { bot: string; slow: boolean }) {
 }
 
 /** The conversation with one bot: viewer, in-game and bot lines threaded together; private speech behind a toggle. */
-export function ChatPane({ bot, aliases = [], className }: { bot: string; aliases?: string[]; className?: string }) {
+export function ChatPane({ bot, aliases: aliasList, className }: { bot: string; aliases?: string[]; className?: string }) {
+  // Callers pass a fresh array each render; key the memo on its content so the effects below don't re-run every render.
+  const aliasKey = (aliasList ?? []).join('\n');
+  const aliases = useMemo(() => (aliasKey ? aliasKey.split('\n') : []), [aliasKey]);
   const { me, canChat } = useAuth();
   const { showPrivateSpeech } = usePrefs();
   const feed = useFeed();

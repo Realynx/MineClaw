@@ -245,7 +245,21 @@ export class WorldRuntime {
     // The network loops start with the first view (and pause when the last one leaves).
     this.paused = true;
     this.raf = requestAnimationFrame(this.tick);
+    // A hidden tab draws nothing, so it fetches nothing either: over plain HTTP/1.1 every background tab's polling would hold
+    // one of the browser's six connections to the host that the visible tab needs (page navigations included).
+    if (typeof document !== 'undefined') {
+      this.hidden = document.visibilityState === 'hidden';
+      document.addEventListener('visibilitychange', this.onVisibility);
+    }
   }
+
+  private hidden = false;
+
+  private readonly onVisibility = (): void => {
+    this.hidden = document.visibilityState === 'hidden';
+    if (this.hidden) this.pause();
+    else if (this.views.size) this.resume();
+  };
 
   // ------------------------------------------------------------------------------------------------------------ lifetime
 
@@ -261,7 +275,7 @@ export class WorldRuntime {
 
   addView(v: RuntimeView): void {
     this.views.set(v.id, v);
-    if (this.paused) this.resume();
+    if (this.paused && !this.hidden) this.resume();
     this.overlayPoller.kick();
   }
 
@@ -364,6 +378,7 @@ export class WorldRuntime {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.onVisibility);
     cancelAnimationFrame(this.raf);
     this.sync.stop();
     this.deltas.stop();
