@@ -1,0 +1,78 @@
+# /etc/systemd/system/mineclaw-web-api.service: MineClaw Web Explorer gateway (NestJS, web/apps/api). See README.md here.
+#   systemctl daemon-reload && systemctl enable --now mineclaw-web-api
+#   journalctl -u mineclaw-web-api -f          # pino JSON, one line per request/event (no secrets, no cookies)
+# The only new port on the network: 0.0.0.0:8080. It proxies everything outside /api to mineclaw-web-ui (127.0.0.1:3000)
+# and signs every bridge call to mineclaw-bridge (127.0.0.1:8766).
+[Unit]
+Description=MineClaw Web Explorer API gateway (auth, sessions, bridge client, SSE, proxy to Next)
+Wants=network-online.target mineclaw-web-ui.service
+After=network-online.target mineclaw-bridge.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=mineclaw-web
+Group=mineclaw-web
+WorkingDirectory=/opt/mineclaw-web/current/apps/api
+# web.db (sessions, login counters, web audit) lives here, 0600.
+StateDirectory=mineclaw-web
+StateDirectoryMode=0700
+
+Environment=NODE_ENV=production
+# Config: /etc/mineclaw-web/config.json (see config.example.json). Overrides: MINECLAW_WEB_<Section>__<Key>=value.
+Environment=MINECLAW_WEB_CONFIG=/etc/mineclaw-web/config.json
+EnvironmentFile=-/etc/mineclaw-web/mineclaw-web.env
+# The HMAC key shared with the bridge: root-only on disk, handed to the service as a credential (never in env or argv).
+LoadCredential=bridge.key:/etc/mineclaw-web/bridge.key
+Environment=MINECLAW_BRIDGE_KEY_FILE=%d/bridge.key
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning dist/main.js
+SyslogIdentifier=mineclaw-web-api
+StandardOutput=journal
+StandardError=journal
+
+KillSignal=SIGTERM
+TimeoutStopSec=20
+Restart=always
+RestartSec=3
+RestartSteps=5
+RestartMaxDelaySec=60
+# 1 = config/startup error (bad config, missing key, mock refused): needs a human.
+RestartPreventExitStatus=1
+
+# Web stack budget is ~1 GB in total (architecture.md › Topology): api 512 MB + ui 512 MB.
+MemoryMax=512M
+MemoryHigh=448M
+TasksMax=256
+
+# ---- hardening ----
+NoNewPrivileges=yes
+UMask=0077
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Not set: MemoryDenyWriteExecute=yes (breaks V8's JIT).
+ReadOnlyPaths=/opt/mineclaw-web
+# users.json is rewritten atomically (temp + rename) when a user activates TOTP, so its directory must be writable.
+ReadWritePaths=/etc/mineclaw-web
+
+[Install]
+WantedBy=multi-user.target

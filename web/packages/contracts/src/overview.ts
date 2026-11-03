@@ -60,7 +60,9 @@ export const RaptorMeta = z.object({
   nextIndex: z.number().int(),
   dimensions: z.number().int(),
   embeddingModel: z.string(),
-  buildId: z.number().int(),
+  buildId: z
+    .union([z.string().regex(/^-?\d+$/), z.number().int()])
+    .describe('i64 build id; the bridge sends the exact decimal string (it exceeds 2^53)'),
   builtAt: IsoDateTime,
   leavesAtBuild: z.number().int(),
   insertedSinceBuild: z.number().int(),

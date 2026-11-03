@@ -1,0 +1,4 @@
+# Dev config holds the HMAC key and possibly a supervisor token: never commit it.
+appsettings.Development.json
+appsettings.*.local.json
+bridge.json

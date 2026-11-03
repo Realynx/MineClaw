@@ -1,0 +1,68 @@
+# /etc/systemd/system/mineclaw-web-ui.service: MineClaw Web Explorer UI (Next.js standalone, web/apps/web).
+# Loopback only: browsers reach it through mineclaw-web-api on :8080, which adds the CSP nonce and security headers.
+#   systemctl daemon-reload && systemctl enable --now mineclaw-web-ui
+[Unit]
+Description=MineClaw Web Explorer UI (Next.js standalone on 127.0.0.1:3000)
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=mineclaw-web
+Group=mineclaw-web
+# `next build` with output: 'standalone' in a monorepo writes the server under .next/standalone/apps/web/ (the web agent
+# owns the exact path; adjust here if apps/web changes it). static/ and public/ are copied next to server.js at deploy.
+WorkingDirectory=/opt/mineclaw-web/current/apps/web/.next/standalone/apps/web
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOSTNAME=127.0.0.1
+Environment=NEXT_TELEMETRY_DISABLED=1
+EnvironmentFile=-/etc/mineclaw-web/mineclaw-web-ui.env
+ExecStart=/usr/bin/node server.js
+SyslogIdentifier=mineclaw-web-ui
+StandardOutput=journal
+StandardError=journal
+
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=always
+RestartSec=3
+RestartSteps=5
+RestartMaxDelaySec=60
+
+MemoryMax=512M
+MemoryHigh=448M
+TasksMax=256
+
+# ---- hardening ----
+NoNewPrivileges=yes
+UMask=0077
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadOnlyPaths=/opt/mineclaw-web
+# Next's image/ISR cache, if any page uses it.
+CacheDirectory=mineclaw-web-ui
+Environment=NEXT_CACHE_DIR=/var/cache/mineclaw-web-ui
+
+[Install]
+WantedBy=multi-user.target
