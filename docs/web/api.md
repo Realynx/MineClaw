@@ -113,6 +113,13 @@ All three new processes run on CT 114 beside the bot:
 - **TOTP.**
   1. `enroll` re-checks the password and returns a pending `otpauth://` URL and secret, shown once and never logged.
   2. `verify` activates it.
+- **Step-up (added 2026-11-03).** `POST /api/auth/step-up` (`StepUpRequest`: `code` when the user has TOTP, else
+  `password`; never both) re-confirms the signed-in user for `STEP_UP_MS` (5 min), stored in the session row
+  (`sessions.step_up_at`, web.db schema 2). With TOTP a password is refused (a stolen session + password is not enough); codes
+  are single-use (the login replay guard). Failures count toward the login lockout (401 generic, 423 locked) and every attempt
+  is audited as `step_up`. Routes with `stepUp: true` in the table (the Administration POSTs) answer 403
+  `step_up_required` without a fresh one, checked after the role and CSRF and before the body is read. `Me.stepUpUntil`
+  says until when the current one holds (null = none).
 - **First-run setup** (`setup.status`, `setup.create`).
   - `GET /api/setup` → `SetupStatus {needed, allowedHere}`. `needed` is true while the users file is missing or holds no
     users (a file that does not parse never counts as empty). `allowedHere` says whether this request may complete it.
@@ -292,6 +299,19 @@ Notes on specific routes:
 | `memoryActivity.heat` | `GET /api/memory-activity/heat` | viewer | query `MemoryHeatQuery` | `MemoryHeatResponse` | `GET /v1/memory-activity/heat` | bridge-native (aggregates /api/viewer/memory-activity over the RAPTOR tree) | – |
 | `memoryActivity.list` | `GET /api/memory-activity` | viewer | query `MemoryActivityQuery` | `MemoryActivityResponse` | `GET /v1/sup/viewer/memory-activity` | /api/viewer/memory-activity | – |
 
+### Administration (the bot's settings, per node; POSTs need a fresh step-up)
+
+| Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
+|---|---|---|---|---|---|---|---|
+| `admin.nodes` | `GET /api/admin/nodes` | admin | – | `AdminNodesResponse` | `GET /v1/admin/nodes` | /api/admin/settings/node | – |
+| `admin.settings` | `GET /api/admin/nodes/:node/settings` | admin | params `AdminNodeParams` | `AdminSettingsResponse` | `GET /v1/admin/nodes/{node}/settings` | /api/admin/settings | – |
+| `admin.settingsSave` | `POST /api/admin/nodes/:node/settings` | admin + step-up | params `AdminNodeParams`<br>body `AdminSettingsSaveRequest` | `AdminSettingsSaveResponse` | `POST /v1/admin/nodes/{node}/settings` | PUT /api/admin/settings | admin_settings |
+| `admin.settingsTest` | `POST /api/admin/nodes/:node/settings/test` | admin + step-up | params `AdminNodeParams`<br>body `ProviderTestRequest` | `ProviderTestResponse` | `POST /v1/admin/nodes/{node}/settings/test` | /api/admin/settings/test | admin_settings |
+| `admin.ollamaModels` | `GET /api/admin/nodes/:node/ollama/models` | admin | params `AdminNodeParams`<br>query `OllamaModelsQuery` | `OllamaModelsResponse` | `GET /v1/admin/nodes/{node}/ollama/models` | /api/admin/ollama/models | – |
+| `admin.restartSafety` | `GET /api/admin/nodes/:node/restart/safety` | admin | params `AdminNodeParams` | `RestartSafety` | `GET /v1/admin/nodes/{node}/restart/safety` | /api/admin/restart/safety | – |
+| `admin.restart` | `POST /api/admin/nodes/:node/restart` | admin + step-up | params `AdminNodeParams`<br>body `RestartRequest` | `RestartResponse` (202) | `POST /v1/admin/nodes/{node}/restart` | /api/admin/restart | admin_settings |
+| `admin.settingsAudit` | `GET /api/admin/nodes/:node/audit` | admin | params `AdminNodeParams`<br>query `SettingsAuditQuery` | `SettingsAuditResponse` | `GET /v1/admin/nodes/{node}/audit` | /api/admin/settings/audit | – |
+
 ### Admin (bot writes)
 
 | Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
@@ -307,14 +327,6 @@ Notes on specific routes:
 | `admin.compact` | `POST /api/admin/activity/compact` | admin | body `CompactRequest` | `ActivityCompactionReport` | `POST /v1/sup/admin/activity/compact` | /api/admin/activity/compact | compact |
 | `admin.shardImport` | `POST /api/admin/shard/import` | admin | multipart `ShardImportOptions` | `ShardImportResult` | `POST /v1/sup/admin/shard/import` | /api/admin/shard/import (bridge sends JSON {shard: base64, …options, who}) | shard_import |
 | `groom.preview` | `POST /api/groom/preview` | admin | body `GroomPreviewRequest` | `GroomPreviewResponse` | `POST /v1/groom/preview` | bridge-native | admin_other |
-| `admin.nodes` | `GET /api/admin/nodes` | admin | – | `AdminNodesResponse` | `GET /v1/admin/nodes` | /api/admin/settings/node | – |
-| `admin.settings` | `GET /api/admin/nodes/:node/settings` | admin | params `AdminNodeParams` | `AdminSettingsResponse` | `GET /v1/admin/nodes/{node}/settings` | /api/admin/settings | – |
-| `admin.settingsSave` | `POST /api/admin/nodes/:node/settings` | admin | params `AdminNodeParams`<br>body `AdminSettingsSaveRequest` | `AdminSettingsSaveResponse` | `POST /v1/admin/nodes/{node}/settings` | PUT /api/admin/settings | admin_settings |
-| `admin.settingsTest` | `POST /api/admin/nodes/:node/settings/test` | admin | params `AdminNodeParams`<br>body `ProviderTestRequest` | `ProviderTestResponse` | `POST /v1/admin/nodes/{node}/settings/test` | /api/admin/settings/test | admin_settings |
-| `admin.ollamaModels` | `GET /api/admin/nodes/:node/ollama/models` | admin | params `AdminNodeParams`<br>query `OllamaModelsQuery` | `OllamaModelsResponse` | `GET /v1/admin/nodes/{node}/ollama/models` | /api/admin/ollama/models | – |
-| `admin.restartSafety` | `GET /api/admin/nodes/:node/restart/safety` | admin | params `AdminNodeParams` | `RestartSafety` | `GET /v1/admin/nodes/{node}/restart/safety` | /api/admin/restart/safety | – |
-| `admin.restart` | `POST /api/admin/nodes/:node/restart` | admin | params `AdminNodeParams`<br>body `RestartRequest` | `RestartResponse` (202) | `POST /v1/admin/nodes/{node}/restart` | /api/admin/restart | admin_settings |
-| `admin.settingsAudit` | `GET /api/admin/nodes/:node/audit` | admin | params `AdminNodeParams`<br>query `SettingsAuditQuery` | `SettingsAuditResponse` | `GET /v1/admin/nodes/{node}/audit` | /api/admin/settings/audit | – |
 
 ### Live hive (supervisor pass-through)
 
@@ -669,3 +681,48 @@ filename="<slug>-<yyyyMMdd-HHmm>.mcshard"`. The format is `ShardFile` FormatVers
 | 14  | `FeedLine` correlation               | Optional `request_id` on viewer lines and `reply_to` on replies were added, so the composer's pending state can resolve. `ChatAccepted.id` echoes the request id.                                                                                       |
 | 15  | Export permission                    | Shard export (preview and download) is `viewer`, because it is a read: secrets are redacted and the export is audited. Import preview and apply are `admin`.                                                                                            |
 | 16  | Topology (2026-11-02)                | Everything runs on CT 114. Nest ↔ bridge is plain HTTP on loopback with no cert pin, and the bridge accepts loopback sources only. HMAC is unchanged. Cloudflare client-IP trust comes from `Web:TrustedProxies`.                                       |
+
+## 9. Administration: the bot's own settings (added 2026-11-03)
+
+The Administration page (`/administration`, `admin` only) reads and changes the bot's settings. Every route is scoped to a
+**node** (`AdminNode`): one bot instance the bridge can reach. Today there is exactly one, `local` (the bridge's
+`Bridge:SupervisorUrl`), and the UI's node selector is a stub over `admin.nodes`. See docs/web/deploy.md, "Bot settings from the
+web", for storage and the server-side changes.
+
+- **Chain.** Nest (`admin` role; POSTs: CSRF + Origin + a fresh step-up, §2) → bridge `/v1/admin/nodes/{node}/…`
+  (`SettingsProxy`: `admin` role in the signed identity, node `local` only, a closed route table) → supervisor
+  (`AdminSettingsRoutes`: `Supervisor:AllowAdminWrites` + `X-Supervisor-Token` + the identity the bridge forwards as
+  `X-MCX-User` / `X-MCX-Roles`, which must hold `admin`). The generic `/v1/sup/*` pass-through never forwards those headers, so
+  the bot refuses these routes reached through it.
+- **Supervisor routes** (snake_case):
+
+  | Supervisor | Bridge | Body / query | Reply |
+  |---|---|---|---|
+  | `GET /api/admin/settings/node` | `GET /v1/admin/nodes` | | `{id, name, version, started_at, game_version}`; the bridge answers `{nodes:[…]}` with `id: "local"`, `supervisor_url`, `reachable` |
+  | `GET /api/admin/settings` | `GET /v1/admin/nodes/{node}/settings` | | `AdminSettingsResponse`; the bridge stamps `node.id` and `node.supervisor_url` |
+  | `PUT /api/admin/settings` | `POST /v1/admin/nodes/{node}/settings` | `{changes:[{key, value}], reason}` | `{applied, restart_required, backup}`; 400 `{error, errors:[{key, message}]}` becomes `ApiError.details[{path: key, message}]` |
+  | `POST /api/admin/settings/test` | `POST …/settings/test` | `{kind, api_key?, base_url?, model?, endpoint?, ollama_api_key?}` | `{ok, message, latency_ms, models}` |
+  | `GET /api/admin/ollama/models` | `GET …/ollama/models?endpoint=` | | `{endpoint, ok, error, models:[{name, capabilities}]}` |
+  | `GET /api/admin/restart/safety` | `GET …/restart/safety` | | `RestartSafety` |
+  | `POST /api/admin/restart` | `POST …/restart` | `{reason, force?}` | 202 `RestartResponse`; 409 `{error, safety}` while unsafe |
+  | `GET /api/admin/settings/audit?max=` | `GET …/audit` | | `{entries:[SettingsAuditEntry]}` |
+
+- **Values.** `value` and `default` are scalars or string lists (`SettingValue`). A change's `value: null` drops the override
+  (back to the base config); a secret takes its new text (`""` clears it). Secrets never come back: `value` and `default` are
+  absent, and `secretState` is `{set, hint}`, where `hint` is "…" plus the last four characters, only for values of 12 or more
+  characters.
+- **Validation is all-or-nothing.** Unknown or read-only keys, types and ranges, enum choices, URLs (absolute http(s), no
+  credentials, no link-local), model ids (a Claude id must be in `allowedClaudeModels`, the startup 5.5-generation set
+  `ModelProfiles.CurrentGeneration`), then the startup config check on the whole candidate config: only the problems the save
+  would add count (an Ollama tier without an endpoint, a provider typo…). Nothing is written when anything fails.
+- **Live vs restart.** `apply: "live"` settings are written onto the running options objects at once (the brain reads them per
+  call, the viewer per request). `restart` ones are saved and listed in `restart_required` / `restartPending` until the bot
+  restarts. `pendingRestart` compares the saved value with the one the process started with.
+- **Restart safety.** Refused (409) while any body is in the overworld at night under open sky, or stands at a ledge with 8 or
+  more blocks of air (or the void) beside its feet, unless `force: true` (the reason and the overridden findings are audited).
+  A bot that is not in game is judged safe.
+- **Rate limits** (per bot): 12 saves and restarts, and 30 tests and model listings, per minute (429 with `retry_after_ms`).
+  The step-up itself shares the login limiter.
+- **Audit.** The bot appends `{at, who, action, keys, reason, ok, note}` to `settings-audit.jsonl` next to the override file
+  (0600): keys, never values. The web audit records the call as `admin_settings` with only the keys and the reason
+  (`adminSettingsAuditSummary`). The bridge's write log never holds bodies.

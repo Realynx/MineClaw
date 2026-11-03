@@ -167,6 +167,20 @@ function safeMessage(body: Record<string, unknown> | undefined, fallback: string
   return m.length > 300 ? `${m.slice(0, 299)}…` : m;
 }
 
+/** Per-field validation issues a bridge 400 carries (`details`: the admin settings' per-key errors), clipped; undefined = none. */
+function safeDetails(body: Record<string, unknown> | undefined): Array<{ path: string; message: string }> | undefined {
+  const d = body?.details;
+  if (!Array.isArray(d)) return undefined;
+  const out = d
+    .filter((x): x is { path: unknown; message: unknown } => Boolean(x) && typeof x === 'object')
+    .slice(0, 50)
+    .map((x) => ({
+      path: typeof x.path === 'string' ? x.path.slice(0, 200) : '',
+      message: safeMessage({ error: x.message }, 'invalid'),
+    }));
+  return out.length ? out : undefined;
+}
+
 /** Maps a non-2xx bridge reply to the public `ApiError` (api.md §1 table). */
 export function mapUpstreamError(
   status: number,
@@ -184,7 +198,7 @@ export function mapUpstreamError(
   const code = typeof body?.code === 'string' ? body.code : undefined;
   switch (status) {
     case 400:
-      return Errors.badRequest(undefined, safeMessage(body, 'invalid request'));
+      return Errors.badRequest(safeDetails(body), safeMessage(body, 'invalid request'));
     case 401:
       // The bridge rejected our signature: a config problem on our side, never the browser's.
       log.error({ status }, 'bridge rejected the request signature (check Bridge:Key and clocks)');

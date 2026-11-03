@@ -9,7 +9,7 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { generate } from '../src/mock/generate.js';
 import { CAMP, topAt } from '../src/mock/terrain.js';
-import { csrfSession, login, ORIGIN, PERSONAS, startApp, type Session, type TestApp } from './helpers.js';
+import { csrfSession, login, ORIGIN, PASSWORD, PERSONAS, startApp, type Session, type TestApp } from './helpers.js';
 
 /** Routes whose success path has side effects or needs its own flow; tested in auth/setup/sse tests. Gating is still checked. */
 const OWN_FLOW: ReadonlySet<RouteId> = new Set([
@@ -18,6 +18,7 @@ const OWN_FLOW: ReadonlySet<RouteId> = new Set([
   'auth.logout',
   'auth.totpEnroll',
   'auth.totpVerify',
+  'auth.stepUp',
   'live.stream',
 ]);
 
@@ -27,6 +28,8 @@ const OVERRIDES: Partial<
   'memory.get': { params: { kind: 'facts', id: '12' } },
   'bots.chat': { body: { text: 'claude, set it to day', requestId: 'r-8f14e45fceea' } },
   'vision.render': { query: { see: '{"mode":"eye"}' } },
+  'auth.stepUp': { body: { password: 'correct horse battery staple' } },
+  'admin.settingsSave': { params: { node: 'local' }, body: { changes: [{ key: 'Supervisor:Viewer:PerMinute', value: 20 }], reason: 'route table test' } },
   // Story Mode: the mock bridge's colony `story-1` (Mock Hollow, founded at start) and its first pawn.
   ...storyOverrides(),
 };
@@ -106,6 +109,7 @@ async function send(id: RouteId, s: Session) {
   return req.send(body as object);
 }
 
+const steppedUp = new Set<Who>();
 const cases: Array<[RouteId, Who]> = [];
 for (const id of ROUTE_IDS) for (const w of WHO) cases.push([id, w]);
 
@@ -123,6 +127,15 @@ describe('role gating per route table', () => {
       if (allowed) return;
     }
     if (allowed && OWN_FLOW.has(id)) return;
+    if (allowed && route.stepUp && !steppedUp.has(who)) {
+      // Admin settings writes need a fresh step-up first (admin-settings.test.ts covers the flow); it lasts 5 minutes.
+      steppedUp.add(who);
+      const s = sessions.get(who)!;
+      const stale = await send(id, s);
+      expect(stale.status).toBe(403);
+      expect(stale.body.code).toBe('step_up_required');
+      await s.agent.post('/api/auth/step-up').set('Origin', ORIGIN).set('X-CSRF-Token', s.csrf).send({ password: PASSWORD }).expect(200);
+    }
     const res = await send(id, sessions.get(who)!);
     if (!allowed) {
       expect(res.status, JSON.stringify(res.body)).toBe(who === 'anon' ? 401 : 403);

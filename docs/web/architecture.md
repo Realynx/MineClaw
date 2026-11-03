@@ -72,7 +72,7 @@ deploy/viewer/               systemd units, cloudflared notes, and the web + bri
   - `viewer`: read only.
   - `chat`: can talk to bots as their linked player.
   - `commands`: their viewer lines may arm CommandGate request grants.
-  - `admin`: memory edits, rebuilds, backups, shard import.
+  - `admin`: memory edits, rebuilds, backups, shard import, and the bot's settings (Administration, with a step-up).
   - `story` (added 2026-11-03): plays Story Mode (colony writes); `admin` holds it too. See `docs/web/story-mode.md`.
 - **Sessions.**
   - Opaque random id in a `__Host-mcx` cookie (HttpOnly, Secure when served over HTTPS, SameSite=Lax), held in a server
@@ -266,6 +266,27 @@ it touches the world, and a save is an ordinary design, so the bot can build it 
   history, then "Build in Story Mode" and "Ask the bot to build it" (a chat line to main naming the design).
 - **Performance.** One private WebGL context, a handful of overlay objects, re-meshing only touched sections: the 40 fps
   software-WebGL target holds.
+
+## Administration (added 2026-11-03)
+
+`/administration` (sidebar "Administration", `admin` only; separate from the memory "Edits & audit" page and from the viewer's
+own Settings) manages the bot's settings: models and providers (the Anthropic key, base URL, per-tier provider and model,
+Ollama with a Test button and a model list from its tags, vision, budget), bot and chat, viewer access, hive and accounts,
+Story Mode and the Design Studio, logging, and a read-only System group.
+- **Registry.** The bot owns a typed registry (`Supervisor/Admin/SettingsRegistry.cs`): key, editor, default, description,
+  limits, `secret`, `live` or `restart`, read-only reason. Every key binds to a real options property (a test walks them).
+  Claude model fields offer only the startup 5.5-generation set.
+- **Storage.** Changes go to an override file layered above the base config and env
+  (`<data dir>/settings.override.json`: atomic write, 0600, rotated backups), never into `/etc/mineclaw/appsettings.json`.
+  Live settings are written onto the running options objects; the rest wait for a restart, which the page can request
+  (refused while a body is exposed at night or at a ledge, unless forced with a reason).
+- **Security.** `admin` role + a fresh **step-up** (TOTP, or the password without TOTP, within 5 minutes) for every write,
+  provider test and restart, plus the usual CSRF + Origin. The bridge forwards the signed identity to the bot as headers and
+  the bot checks `admin` again (and `AllowAdminWrites` + its token). Secrets travel only inward: responses carry "set" and the
+  last four characters. Every change is audited by keys, never values, in three places (web audit, bridge write log, the bot's
+  `settings-audit.jsonl`). Writes and probes are rate limited.
+- **Nodes.** Everything is addressed per node (`/api/admin/nodes/:node/...`). One node today, `local`, the bridge's supervisor;
+  deploy.md "Bot settings from the web" says how more would plug in.
 
 ## World rendering is browser-only (decided 2026-11-02)
 

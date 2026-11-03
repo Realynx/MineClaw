@@ -285,6 +285,81 @@ ssh alice pct exec 114 -- /usr/local/sbin/mineclaw-web-release status
 - **Checking.** `mineclaw-viewer-config` prints the current value, and `-Status` shows each unit's current memory against
   its max.
 
+## Bot settings from the web (Administration, added 2026-11-03)
+
+The **Administration** page (`/administration`, `admin` role) changes the bot's own settings: the Anthropic key and base URL,
+per-tier providers and models (Claude ids limited to the 5.5 generation the startup check allows), Ollama, vision, budget caps,
+chat identity, viewer access, hive limits, the Design Studio's limits and logging. The registry of what it may change is
+`src/MineClaw.App/Supervisor/Admin/SettingsRegistry.cs`; the wire is api.md §9.
+
+**Before deploying, confirm the server-side changes below with Fox.** Nothing here is applied by an agent.
+
+### What changes on CT 114
+
+| What | Where | Who creates it | Notes |
+|---|---|---|---|
+| Override file | `/var/lib/mineclaw/settings.override.json` | the bot, on the first save | 0600 `mineclaw:mineclaw`, plain JSON of config keys |
+| Its backups | `/var/lib/mineclaw/settings-backups/settings.override.<utc>.json` | the bot, on every later save | dir 0700, files 0600, the newest 10 kept |
+| Settings audit | `/var/lib/mineclaw/settings-audit.jsonl` | the bot | 0600; who, when, which keys (never values) |
+| Step-up column | `web.db` `sessions.step_up_at` | `mineclaw-web-api`, on start | web.db schema 1 → 2, automatic, additive |
+
+- **No new units, users, ports, firewall rules or credentials.** `/var/lib/mineclaw` is already the bot's `StateDirectory`
+  (owned by `mineclaw`, 0750, writable under `ProtectSystem=strict`), so the unit file is unchanged. The files are written with
+  an explicit 0600 regardless of the unit's `UMask=0027`.
+- **`Supervisor:AllowAdminWrites` must be on** (it already gates the Admin page's memory edits): `pwsh deploy/deploy-web.ps1
+  -BotConfig -Apply -AdminWrites`. With it off the page shows "admin writes are off" and changes nothing. `Supervisor:Token`
+  must be set (step 3 above does that).
+- **The base file stays untouched.** `/etc/mineclaw/appsettings.json` (0640 root:mineclaw, read-only to the bot) is never
+  written. The override is layered on top of it.
+- **Layer order** (lowest to highest): `appsettings.json` beside the binary → `/etc/mineclaw/appsettings.json` (`--config`) →
+  env, including `/etc/mineclaw/mineclaw.env` → **the override file** → the unit's command-line paths. A value set on the page
+  therefore wins over `mineclaw.env`. **Reset** on a field drops it from the override and the env/file value applies again.
+- **Applying.** Live settings (the per-tier output budgets, effort and thinking, the author limits, the budget caps, the viewer's
+  gates, the Design Studio's limits, the journal level) apply when saved. Everything else applies at the next bot start; the
+  page lists those and offers **Restart bot**.
+- **Restart bot** stops the bot gracefully (`Restart=always` in `mineclaw.service` starts it again after `RestartSec`, 10 s).
+  It is refused while a body is outside at night or at a ledge over a long drop, unless the admin forces it with a reason
+  (audited). In-process hives read the same override when they start. Process hives inherit `MINECLAW_SETTINGS_OVERRIDE` from
+  main.
+- **What the page never edits**, shown read-only: `Supervisor:Enabled`, `:Bind`, `:Port`, `:Token`, `:AllowAdminWrites` (they
+  would lock the explorer out or break the bridge, which reads the token from the base file at start), `Agent:Embeddings:*` (the
+  bridge reads them too), `Minecraft:Username`, `Hive:Accounts:Prefix` and `Agent:DataDirectory`.
+- **Moving or disabling the override.** `Host:SettingsOverride` in the base file, or `MINECLAW_SETTINGS_OVERRIDE` in
+  `mineclaw.env`: a path, or `off`.
+- **`-PushConfig`** replaces only the base file. The override still applies on top of it.
+- **Rollback.** `deploy-alice.ps1 -Rollback` to a build older than this feature ignores the override file: its settings stop
+  applying (the file stays and applies again after a roll forward). Delete or rename it by hand to drop every web change at once
+  (`pct exec 114 -- mv /var/lib/mineclaw/settings.override.json /var/lib/mineclaw/settings.override.off`, then restart the
+  bot).
+- **A broken override file** (hand-edited JSON that no longer parses) is ignored at start, so the bot always comes up on the base
+  config. The page then refuses to save until the file is fixed or removed.
+
+### Deploying it
+
+1. `pwsh deploy/deploy-web.ps1 -BotConfig` (dry run): check `AllowAdminWrites`. If it is off and Fox agrees,
+   `-BotConfig -Apply -AdminWrites` (that restarts nothing unless `-RestartBot`).
+2. `pwsh deploy/deploy-alice.ps1`: the bot build that loads the override and serves the routes. It restarts the bot, so pick a
+   safe moment (day, no body on a high build).
+3. `pwsh deploy/deploy-web.ps1`: the bridge's node proxy and the web/api pieces (web.db migrates on start).
+4. Verify: open Administration as an admin. It lists the settings with their sources. Change a live setting (for example
+   *Chat lines per minute*), confirm the step-up, save: it reports "applied". `journalctl -u mineclaw -n 20` shows
+   `admin settings: <user> (web) changed Supervisor:Viewer:PerMinute` and no value.
+
+### More nodes later
+
+The API is already per node (`/api/admin/nodes/:node/...`; the bridge's `/v1/admin/nodes/{node}/...`). Today the bridge knows
+one node, `local` (its `Bridge:SupervisorUrl` and the token from `/etc/mineclaw/appsettings.json`). A second bot would plug in
+as:
+
+1. A `Bridge:Nodes` list in `/etc/mineclaw-bridge/bridge.json`: `{id, name, supervisor_url, token_file}` per node, with the
+   token as a systemd credential, the way `bridge.key` is handed over.
+2. `SettingsProxy` looking the node id up in that list (one `SupervisorClient` each) instead of accepting only `local`;
+   `GET /v1/admin/nodes` listing them all with their reachability.
+3. A remote supervisor reached over the network rather than loopback needs TLS or a tunnel (WireGuard/Tailscale) and its own
+   firewall rule; the bot side is unchanged (token + the forwarded admin identity).
+
+The web page needs no change: its node selector already lists whatever `admin.nodes` returns.
+
 ## Later: cloudflared
 
 When the explorer goes public through a Cloudflare tunnel, run cloudflared on CT 114 or on a tunnel host.

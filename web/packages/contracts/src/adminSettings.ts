@@ -241,7 +241,7 @@ export function adminSettingsAuditSummary(body: unknown): string {
   if (!body || typeof body !== 'object') return '';
   const b = body as { changes?: Array<{ key?: unknown }>; reason?: unknown; kind?: unknown; force?: unknown };
   const parts: string[] = [];
-  if (Array.isArray(b.changes)) parts.push(`keys: ${b.changes.map((c) => String(c?.key ?? '?')).join(', ')}`);
+  if (Array.isArray(b.changes)) parts.push(`keys: ${b.changes.map((c) => (typeof c?.key === 'string' ? c.key : '?')).join(', ')}`);
   if (typeof b.kind === 'string') parts.push(`test ${b.kind}`);
   if (b.force === true) parts.push('forced');
   if (typeof b.reason === 'string') parts.push(`reason: ${b.reason}`);

@@ -33,6 +33,8 @@ export interface Session {
   absoluteExpiresAt: number;
   ip: string | null;
   userAgent: string | null;
+  /** When the user last re-confirmed (step-up) in this session; null = never. */
+  stepUpAt: number | null;
 }
 
 interface Row {
@@ -46,6 +48,7 @@ interface Row {
   absolute_expires_at: number;
   ip: string | null;
   user_agent: string | null;
+  step_up_at: number | null;
 }
 
 export interface SessionConfig {
@@ -80,11 +83,12 @@ function fromRow(r: Row): Session {
     absoluteExpiresAt: r.absolute_expires_at,
     ip: r.ip,
     userAgent: r.user_agent,
+    stepUpAt: r.step_up_at ?? null,
   };
 }
 
 export class SessionService {
-  private readonly q: Record<'get' | 'insert' | 'delete' | 'touch' | 'deleteUser' | 'gc' | 'setCred', StatementSync>;
+  private readonly q: Record<'get' | 'insert' | 'delete' | 'touch' | 'deleteUser' | 'gc' | 'setCred' | 'setStepUp', StatementSync>;
 
   constructor(
     db: WebDb,
@@ -103,6 +107,7 @@ export class SessionService {
       deleteUser: d.prepare('delete from sessions where username = ?'),
       gc: d.prepare('delete from sessions where absolute_expires_at <= ? or last_seen_at + idle_ms <= ?'),
       setCred: d.prepare('update sessions set cred = ? where id_hash = ?'),
+      setStepUp: d.prepare('update sessions set step_up_at = ? where id_hash = ?'),
     };
   }
 
@@ -168,6 +173,7 @@ export class SessionService {
       absoluteExpiresAt: now + (user ? this.userAbsoluteMs : PRE_ABSOLUTE_MS),
       ip: meta.ip,
       userAgent: meta.userAgent?.slice(0, 300) ?? null,
+      stepUpAt: null,
     };
     this.q.insert.run(
       s.idHash,
@@ -199,6 +205,17 @@ export class SessionService {
   setCred(s: Session, cred: string): void {
     this.q.setCred.run(cred, s.idHash);
     s.cred = cred;
+  }
+
+  /** Records a successful step-up (re-confirmation) for this session. */
+  setStepUp(s: Session, at: number): void {
+    this.q.setStepUp.run(at, s.idHash);
+    s.stepUpAt = at;
+  }
+
+  /** Whether this session stepped up within `windowMs`. */
+  steppedUp(s: Session | undefined, windowMs: number): boolean {
+    return Boolean(s?.stepUpAt && this.clock.now() - s.stepUpAt < windowMs && this.clock.now() >= s.stepUpAt);
   }
 
   destroy(s: Session | undefined): void {

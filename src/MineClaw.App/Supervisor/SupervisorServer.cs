@@ -5,12 +5,15 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using AdminSettingsRoutes = MineClaw.App.Supervisor.Admin.AdminSettingsRoutes;
 
 namespace MineClaw.App.Supervisor;
 
 /// <summary>One HTTP request as the router sees it (the listener glue and the tests both build these).</summary>
 /// <param name="Body">POST body (admin routes only; capped at <see cref="SupervisorAdminRoutes.MaxBodyBytes"/>).</param>
-public sealed record SupervisorRequest(string Method, string Path, IReadOnlyDictionary<string, string> Query, string? TokenHeader = null, string? Body = null);
+/// <param name="Headers">The bridge's identity headers (<c>X-MCX-User</c>, <c>X-MCX-Roles</c>) for the routes that need them; null = none.</param>
+public sealed record SupervisorRequest(string Method, string Path, IReadOnlyDictionary<string, string> Query, string? TokenHeader = null, string? Body = null,
+    IReadOnlyDictionary<string, string>? Headers = null);
 
 public sealed record SupervisorReply(int Status, string ContentType, byte[] Body, IReadOnlyDictionary<string, string>? Headers = null)
 {
@@ -71,6 +74,8 @@ public sealed class SupervisorServer : IAsyncDisposable
     public DesignerRoutes? Designer { get; set; }
     /// <summary>Story Mode (<c>/api/story/*</c>, the viewer's gate + AllowStory for writes); null = 404.</summary>
     public SupervisorStoryRoutes? Story { get; set; }
+    /// <summary>The Administration page's routes (<c>/api/admin/settings*</c>, <c>/api/admin/ollama/*</c>, <c>/api/admin/restart*</c>); null = 404.</summary>
+    public AdminSettingsRoutes? Settings { get; set; }
     /// <summary><c>/api/hive/tree</c>: the hive's ownership tree (main → children: kind, brain, state, task); null = main alone.</summary>
     public Func<object?>? HiveTree { get; set; }
     public string? Prefix { get; private set; }
@@ -115,11 +120,15 @@ public sealed class SupervisorServer : IAsyncDisposable
                     var q = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                     var nv = ctx.Request.QueryString;
                     foreach (var k in nv.AllKeys) if (k != null && nv[k] is { } v) q[k] = v;
-                    var body = await SupervisorAdminRoutes.ReadBodyAsync(ctx.Request, ct, _o).ConfigureAwait(false)
+                    var body = await AdminSettingsRoutes.ReadBodyAsync(ctx.Request, _o, ct).ConfigureAwait(false)
+                        ?? await SupervisorAdminRoutes.ReadBodyAsync(ctx.Request, ct, _o).ConfigureAwait(false)
                         ?? await SupervisorViewerRoutes.ReadBodyAsync(ctx.Request, _o, ct).ConfigureAwait(false)
                         ?? await DesignerRoutes.ReadBodyAsync(ctx.Request, _o, ct).ConfigureAwait(false)
                         ?? await SupervisorStoryRoutes.ReadBodyAsync(ctx.Request, _o, ct).ConfigureAwait(false);
-                    var req = new SupervisorRequest(ctx.Request.HttpMethod, ctx.Request.Url?.AbsolutePath ?? "/", q, ctx.Request.Headers["X-Supervisor-Token"], body);
+                    Dictionary<string, string>? identity = null;
+                    foreach (var h in new[] { AdminSettingsRoutes.UserHeader, AdminSettingsRoutes.RolesHeader })
+                        if (ctx.Request.Headers[h] is { Length: > 0 } hv) (identity ??= new(StringComparer.OrdinalIgnoreCase))[h] = hv;
+                    var req = new SupervisorRequest(ctx.Request.HttpMethod, ctx.Request.Url?.AbsolutePath ?? "/", q, ctx.Request.Headers["X-Supervisor-Token"], body, identity);
                     reply = await HandleAsync(req, ct).ConfigureAwait(false);
                 }
                 finally { _connections.Release(); }
@@ -145,6 +154,8 @@ public sealed class SupervisorServer : IAsyncDisposable
 
     public async Task<SupervisorReply> HandleAsync(SupervisorRequest r, CancellationToken ct = default)
     {
+        if (AdminSettingsRoutes.IsSettingsPath(r.Path)) // AllowAdminWrites + the token header + the bridge's admin identity
+            return Settings != null ? await Settings.HandleAsync(r, ct).ConfigureAwait(false) : Json(404, new { error = "not found" });
         if (SupervisorAdminRoutes.IsAdminPath(r.Path)) return await SupervisorAdminRoutes.HandleAsync(r, _o, Admin, ct).ConfigureAwait(false);
         if (SupervisorViewerRoutes.IsViewerPath(r.Path)) // own gate: Supervisor:Viewer:Enabled (else 404) + the token header (else 403)
             return Viewer != null ? await Viewer.TryHandleAsync(r, ct).ConfigureAwait(false) ?? Json(404, new { error = "not found" }) : Json(404, new { error = "not found" });
