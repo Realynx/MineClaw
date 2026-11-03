@@ -80,7 +80,7 @@ const stream = sse(ROUTES['live.stream'].path, ({ client, request }) => {
   send('hive', hiveTree());
   timer ??= setInterval(() => {
     for (const [event, data] of tick()) broadcast(event, data);
-  }, 1000);
+  }, Number(process.env.NEXT_PUBLIC_MOCK_TICK_MS) || 1000);
 });
 
 export const handlers: HttpHandler[] = [

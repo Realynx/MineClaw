@@ -59,7 +59,7 @@ export function WorldHost({ children }: { children: ReactNode }) {
     void (async () => {
       const mod = await loadWorldViewer();
       let source: WorldSource | null = null;
-      if (mod) source = MOCK ? await mod.loadMockSource() : createWorldSource(qc);
+      if (mod) source = MOCK && process.env.NEXT_PUBLIC_MOCK_REAL_WORLD !== '1' ? await mod.loadMockSource() : createWorldSource(qc);
       if (live) setState({ mod, source, ready: true });
     })();
     return () => {
