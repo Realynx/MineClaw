@@ -68,12 +68,13 @@ export class BetaSource implements BlockSource {
   constructor(
     readonly textured: boolean,
     info: Array<[number, number, number]> | null,
+    fastLeaves = false,
   ) {
-    this.builder = new BetaBuilder(textured, (t) => (info && info[t] ? info[t][2] : null));
+    this.builder = new BetaBuilder(textured, (t) => (info && info[t] ? info[t][2] : null), !fastLeaves);
     for (let id = 0; id < 256; id++) {
       const shape = classifyBeta(id);
       let f = 0;
-      if (shape === BetaShape.Cube) f |= F_OPAQUE;
+      if (shape === BetaShape.Cube || (fastLeaves && id === 18)) f |= F_OPAQUE;
       if (id === 20 || id === 79) f |= F_SELF_CULL;
       if (emissiveBeta(id)) f |= F_EMISSIVE;
       if (id === 8 || id === 9) f |= F_WATER;

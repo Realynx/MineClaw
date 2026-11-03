@@ -9,6 +9,8 @@
 //   upper half, snowy grass/mycelium/podzol, the vine's top, stems bending to their fruit, redstone wire sides and climbs,
 //   fire on flammable neighbours, chest pairs.
 
+import type { BlockEntityDto } from '../../types';
+import { dyeIndex } from '../../wire/normalize';
 import { BLOCK_NAMES_1122 } from '../../world/blocks';
 
 /** Neighbourhood access around the block being resolved (dx, dy, dz relative). */
@@ -19,6 +21,8 @@ export interface Nb {
   readonly wx: number;
   readonly wy: number;
   readonly wz: number;
+  /** The block entity at the origin cell, if its column sent one (bed colour, skull type/rotation, pot contents, banner). */
+  be?(): BlockEntityDto | undefined;
 }
 
 export interface StateRef {
@@ -68,10 +72,65 @@ function name(id: number): string {
   return BLOCK_NAMES_1122[id] || 'air';
 }
 
-/** Blocks whose state needs the neighbours (never cached per id/meta alone). */
+/** Blocks whose state needs the neighbours or the block entity (never cached per id/meta alone). */
 export function worldDependent(id: number): boolean {
-  return isStairs(id) || isFence(id) || isFenceGate(id) || isPane(id) || isDoor(id) || [139, 106, 175, 104, 105, 55, 54, 146, 2, 3, 110, 51].includes(id);
+  return isStairs(id) || isFence(id) || isFenceGate(id) || isPane(id) || isDoor(id) || [139, 106, 175, 104, 105, 55, 54, 146, 2, 3, 110, 51, 26, 144, 140, 176, 177].includes(id);
 }
+
+const SKULLS = ['skeleton', 'wither', 'zombie', 'player', 'creeper', 'dragon'];
+
+/** TileEntitySkull type (0 skeleton … 5 dragon, or a name) → our name; skeleton when unknown. */
+export function skullType(v: unknown): string {
+  if (typeof v === 'number') return SKULLS[v] ?? 'skeleton';
+  if (typeof v !== 'string') return 'skeleton';
+  const n = v.replace(/^minecraft:/, '').toLowerCase().replace(/_(skull|head)$/, '');
+  if (n === 'wither_skeleton') return 'wither';
+  if (n === 'char' || n === 'steve' || n === 'human') return 'player';
+  if (n === 'ender_dragon' || n === 'enderdragon') return 'dragon';
+  return SKULLS.includes(n) ? n : /^\d+$/.test(n) ? (SKULLS[+n] ?? 'skeleton') : 'skeleton';
+}
+
+const POT_FLOWERS = ['rose', 'blue_orchid', 'allium', 'houstonia', 'red_tulip', 'orange_tulip', 'white_tulip', 'pink_tulip', 'oxeye_daisy'];
+const POT_NAMES: Record<string, string> = {
+  red_flower: 'rose', poppy: 'rose', yellow_flower: 'dandelion', sapling: 'oak_sapling', deadbush: 'dead_bush', tallgrass: 'fern',
+  brown_mushroom: 'mushroom_brown', red_mushroom: 'mushroom_red', azure_bluet: 'houstonia', orchid: 'blue_orchid', daisy: 'oxeye_daisy',
+};
+
+/** BlockFlowerPot contents from the pot's item ([id, meta] (1.12.2 numbering), {id, meta} or a name); "empty" when none. */
+export function potContents(item: unknown): string {
+  if (item == null || item === false) return 'empty';
+  let id = 0, meta = 0;
+  if (typeof item === 'string') {
+    const n = item.replace(/^minecraft:/, '').toLowerCase();
+    if (/^\d+$/.test(n)) id = +n;
+    else {
+      const c = POT_NAMES[n] ?? n;
+      return POT_CONTENTS.has(c) ? c : 'empty';
+    }
+  } else if (Array.isArray(item)) {
+    id = +item[0] || 0;
+    meta = +item[1] || 0;
+  } else if (typeof item === 'number') id = item;
+  else if (typeof item === 'object') {
+    const o = item as Record<string, unknown>;
+    if (typeof o.id === 'string') return potContents(o.id);
+    id = Number(o.id ?? o.item) || 0;
+    meta = Number(o.meta ?? o.damage) || 0;
+  }
+  switch (id) {
+    case 38: return POT_FLOWERS[meta] ?? 'rose';
+    case 37: return 'dandelion';
+    case 6: return WOOD[(meta & 7) % 6] + '_sapling';
+    case 39: return 'mushroom_brown';
+    case 40: return 'mushroom_red';
+    case 32: return 'dead_bush';
+    case 31: return meta === 2 ? 'fern' : 'empty';
+    case 81: return 'cactus';
+    default: return 'empty';
+  }
+}
+
+const POT_CONTENTS = new Set(['rose', 'blue_orchid', 'allium', 'houstonia', 'red_tulip', 'orange_tulip', 'white_tulip', 'pink_tulip', 'oxeye_daisy', 'dandelion', 'oak_sapling', 'spruce_sapling', 'birch_sapling', 'jungle_sapling', 'acacia_sapling', 'dark_oak_sapling', 'mushroom_red', 'mushroom_brown', 'dead_bush', 'fern', 'cactus']);
 
 /** Flammable neighbours fire climbs onto (Blocks.FIRE.setFireInfo encouragement > 0). */
 const FLAMMABLE = new Set([5, 17, 18, 35, 46, 47, 53, 85, 106, 107, 125, 126, 134, 135, 136, 161, 162, 163, 164, 170, 171, 173, 175, 31, 32, 37, 38, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192]);
@@ -229,19 +288,32 @@ export function resolveState(id: number, meta: number, nb: Nb | null, solidFull:
       } else p.facing = horizontal(meta);
       return builtin();
     }
-    case 26:
+    case 26: {
       p.facing = hFacing(meta & 3);
       p.part = (meta & 8) !== 0 ? 'head' : 'foot';
+      const c = dyeIndex(nb?.be?.()?.color);
+      p.color = COLORS[c >= 0 ? c : 14];
       return builtin();
+    }
     case 63: case 176:
       p.rotation = String(meta & 15);
+      if (id === 176 && nb?.be?.()?.kind === 'banner') p.layer = 'true'; // drawn by the block-entity layer
       return builtin();
     case 68: case 177:
       p.facing = horizontal(meta);
+      if (id === 177 && nb?.be?.()?.kind === 'banner') p.layer = 'true'; // drawn by the block-entity layer (patterns, sway)
       return builtin();
-    case 144:
+    case 144: {
       p.facing = facing(meta & 7);
+      const be = nb?.be?.();
+      p.type = skullType(be?.type);
+      if (p.facing === 'up') p.rotation = String((be?.rotation ?? 0) & 15);
       return builtin();
+    }
+    case 140:
+      p.contents = potContents(nb?.be?.()?.item);
+      p.legacy_data = '0';
+      return S(nm);
     case 119: case 209: case 166: case 36: case 217:
       return builtin();
     case 55:

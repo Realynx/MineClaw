@@ -12,6 +12,7 @@ import { STATES, type Assets1122, type BlockSource, NO_NB } from '../source';
 import { ModelBaker, type BakedFace } from './baker';
 import { BlockStateFile } from './blockstate';
 import { builtinQuads, type Sheet } from './builtin';
+import { TEX_OPAQUE } from '../sink';
 import { cacheKey, resolveState, worldDependent, type Nb, type StateRef } from './states';
 
 /** Block.getBlockLayer() == TRANSLUCENT: ice, stained glass (+ panes), slime, frosted ice, portals. */
@@ -49,6 +50,8 @@ export class Models1122 implements BlockSource {
   constructor(
     private readonly a: Assets1122,
     readonly textured: boolean,
+    /** Opaque leaves that hide each other (vanilla "fast" graphics). */
+    private readonly fastLeaves = false,
   ) {
     this.columns = a.columns;
     this.baker = new ModelBaker(a.models, {
@@ -80,7 +83,7 @@ export class Models1122 implements BlockSource {
       if (EMISSIVE.has(id)) base |= F_EMISSIVE;
       if (id === 8 || id === 9) base |= F_WATER;
       if (id === 10 || id === 11) base |= F_LAVA;
-      if (id === 18 || id === 161) base |= F_LEAVES;
+      if (id === 18 || id === 161) base |= F_LEAVES | (this.fastLeaves ? F_OPAQUE : 0);
       if (id === 20 || id === 95 || id === 79 || id === 165 || id === 212) base |= F_SELF_CULL;
       for (let meta = 0; meta < 16; meta++) {
         const s = (id << 4) | meta;
@@ -126,12 +129,14 @@ export class Models1122 implements BlockSource {
     if (isFluid(id)) {
       const water = id === 8 || id === 9;
       const still = this.a.tiles[water ? 'blocks/water_still' : 'blocks/lava_still'] ?? [0, 0];
-      const flow = this.a.tiles[water ? 'blocks/water_flow' : 'blocks/lava_flow'] ?? still;
+      // The flowing texture at its native 32 px when the pack has the 2×2-cell sheet, else its 16 px cell.
+      const big = Object.entries(this.a.sheets).find(([n]) => n.startsWith(water ? 'blocks/water_flow@' : 'blocks/lava_flow@'))?.[1];
+      const flow = big ?? this.a.tiles[water ? 'blocks/water_flow' : 'blocks/lava_flow'] ?? still;
       const info = this.a.info[water ? 'blocks/water_still' : 'blocks/lava_still'];
       fluidQuads(
         nb,
         id,
-        { stillC: still[0], stillR: still[1], flowC: flow[0], flowR: flow[1], beta: false, tint: water ? TINT_WATER : TINT_NONE, flat: info?.[2] ?? (water ? 0x2f5cff : 0xf55a10), textured: this.textured },
+        { stillC: still[0], stillR: still[1], flowC: flow[0], flowR: flow[1], flowSpan: big ? (big[2] << 8) | big[3] : 0, beta: false, tint: water ? TINT_WATER : TINT_NONE, flat: info?.[2] ?? (water ? 0x2f5cff : 0xf55a10), textured: this.textured },
         (dx, dy, dz) => this.solidFull(nb.id(dx, dy, dz), nb.meta(dx, dy, dz)),
         out,
       );
@@ -184,6 +189,10 @@ export class Models1122 implements BlockSource {
       q.layer = translucent ? Layer.Translucent : cov < 0.999 ? Layer.Cutout : Layer.Opaque;
       q.emissive = emissive;
       if (emissive) q.ao = false;
+      if (this.fastLeaves && (id === 18 || id === 161)) {
+        q.layer = Layer.Opaque;
+        q.fx = TEX_OPAQUE;
+      }
       if (!this.textured) q.textured = false;
       // A second element over the same face (the grass side fringe) becomes the first one's overlay.
       const host = list.find((o) => o.ovC < 0 && samePositions(o, q));

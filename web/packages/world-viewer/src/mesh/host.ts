@@ -13,7 +13,7 @@ type Dirty = Array<[number, number, number]>;
 
 export interface MeshHost {
   /** The version and its bundled block assets (structured-cloned once to the worker); `textured` = sample the atlas. */
-  configure(version: GameVersion, assets: MeshAssets | null, textured: boolean): Promise<void>;
+  configure(version: GameVersion, assets: MeshAssets | null, textured: boolean, fastLeaves?: boolean): Promise<void>;
   /** Decodes and stores an MCWC payload; the buffer is transferred (unusable afterwards). */
   apply(buf: ArrayBuffer): Promise<ApplyResult>;
   touch(dim: number, cols: TouchCol[]): Promise<Dirty>;
@@ -27,6 +27,9 @@ export interface MeshHost {
   setBlockEntities(dim: number, cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }>): Promise<Dirty>;
   /** Packed light (sky << 4 | block, -1 unknown) at points [x, y, z, x, y, z, …]. */
   lights(dim: number, pts: number[]): Promise<number[]>;
+  /** [blocks] Block id, meta and packed light (sky << 4 | block; -1 unknown) at each integer point: 3 numbers per point,
+   * id -1 where no column is held. */
+  blocksAt(dim: number, pts: number[]): Promise<number[]>;
   clear(): Promise<void>;
   dispose(): void;
 }
@@ -40,7 +43,7 @@ export class InlineMeshHost implements MeshHost {
     this.chain = p.catch(() => undefined);
     return p;
   }
-  configure(version: GameVersion, assets: MeshAssets | null, textured: boolean) { return this.run(() => this.engine.configure(version, assets, textured)); }
+  configure(version: GameVersion, assets: MeshAssets | null, textured: boolean, fastLeaves = false) { return this.run(() => this.engine.configure(version, assets, textured, fastLeaves)); }
   apply(buf: ArrayBuffer) { return this.run(() => this.engine.apply(buf)); }
   touch(dim: number, cols: TouchCol[]) { return this.run(() => this.engine.touch(dim, cols)); }
   drop(dim: number, cols: Array<[number, number]>) { return this.run(() => this.engine.drop(dim, cols)); }
@@ -49,6 +52,7 @@ export class InlineMeshHost implements MeshHost {
   pick(dim: number, o: V3, d: V3, max: number, cut: CutParams | null) { return this.run(() => this.engine.pick(dim, o, d, max, cut)); }
   viewInfo(dim: number, cam: V3, body: V3 | null, cut: CutParams | null) { return this.run(() => this.engine.viewInfo(dim, cam, body, cut)); }
   lights(dim: number, pts: number[]) { return this.run(() => this.engine.lights(dim, pts)); }
+  blocksAt(dim: number, pts: number[]) { return this.run(() => this.engine.blocksAt(dim, pts)); }
   setBlockEntities(dim: number, cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }>) { return this.run(() => this.engine.setBlockEntities(dim, cols)); }
   clear() { return this.run(() => this.engine.clear()); }
   dispose(): void {
@@ -90,7 +94,7 @@ export class WorkerMeshHost implements MeshHost {
     });
   }
 
-  configure(version: GameVersion, assets: MeshAssets | null, textured: boolean) { return this.send<void>({ op: 'configure', version, assets, textured }); }
+  configure(version: GameVersion, assets: MeshAssets | null, textured: boolean, fastLeaves = false) { return this.send<void>({ op: 'configure', version, assets, textured, fastLeaves }); }
   apply(buf: ArrayBuffer) { return this.send<ApplyResult>({ op: 'apply', buf }, [buf]); }
   touch(dim: number, cols: TouchCol[]) { return this.send<Dirty>({ op: 'touch', dim, cols }); }
   drop(dim: number, cols: Array<[number, number]>) { return this.send<Dirty>({ op: 'drop', dim, cols }); }
@@ -99,6 +103,7 @@ export class WorkerMeshHost implements MeshHost {
   pick(dim: number, o: V3, d: V3, max: number, cut: CutParams | null) { return this.send<PickHit | null>({ op: 'pick', dim, o, d, max, cut }); }
   viewInfo(dim: number, cam: V3, body: V3 | null, cut: CutParams | null) { return this.send<ViewInfo>({ op: 'view', dim, cam, body, cut }); }
   lights(dim: number, pts: number[]) { return this.send<number[]>({ op: 'lights', dim, pts }); }
+  blocksAt(dim: number, pts: number[]) { return this.send<number[]>({ op: 'blocksAt', dim, pts }); }
   setBlockEntities(dim: number, cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }>) { return this.send<Dirty>({ op: 'blockEntities', dim, cols }); }
   clear() { return this.send<void>({ op: 'clear' }); }
 

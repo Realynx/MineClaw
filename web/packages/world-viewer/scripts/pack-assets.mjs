@@ -147,12 +147,21 @@ function over(a, b, tint = 0xffffff) {
   return p;
 }
 
-function animSheet(animFrames) {
-  const w = Math.max(1, ...animFrames.map((s) => s.length)) * 16;
-  const png = new PNG({ width: w, height: Math.max(1, animFrames.length) * 16 });
+/** One row of frames per animation; 16 px strips first (row k at y = 16k), then the native-size big strips (`big`, each
+ * `size` px tall) below them. Returns the sheet and each big strip's row in 16 px units. */
+function animSheet(animFrames, big = []) {
+  const w = Math.max(1, ...animFrames.map((s) => s.length * 16), ...big.map((b) => b.frames.length * b.size));
+  let y = Math.max(1, animFrames.length) * 16;
+  const rows = big.map((b) => {
+    const r = y / 16;
+    y += b.size;
+    return r;
+  });
+  const png = new PNG({ width: w, height: y });
   png.data.fill(0);
   animFrames.forEach((strip, row) => strip.forEach((fr, k) => blit(png, fr.src, 0, fr.y, 16, 16, k * 16, row * 16)));
-  return png;
+  big.forEach((b, i) => b.frames.forEach((fy, k) => blit(png, b.src, 0, fy, b.size, b.size, k * b.size, rows[i] * 16)));
+  return { png, rows };
 }
 
 /** Shelf packer for differently sized textures (entities); rects in pixels. */
@@ -214,7 +223,15 @@ function pack1122() {
   // appended to the block atlas at their native size so one texture serves every section pass.
   const tex = (n) => (existsSync(join(src, 'textures', n + '.png')) ? readPng(join(src, 'textures', n + '.png')) : null);
   const colours = 'white orange magenta light_blue yellow lime pink gray silver cyan purple blue brown green red black'.split(' ');
+  // Native-resolution textures for the cases a 16 px cell would halve (32 px flowing water and lava), and the starfield and
+  // dragon head textures; a block quad addresses them through the tile attribute's sheet size.
+  const flowBig = ['water_flow', 'lava_flow'].map((n) => ({ n, png: tex(`blocks/${n}`), meta: existsSync(join(src, 'textures', 'blocks', `${n}.png.mcmeta`)) ? minify(join(src, 'textures', 'blocks', `${n}.png.mcmeta`)).animation ?? {} : null })).filter((b) => b.png && b.png.width > 16);
+  const halve = (p, size) => (p && p.width > size ? resample(p, 0, 0, p.width, p.width, size, size) : p);
   const sheetList = [
+    ...flowBig.map((b) => ({ name: `blocks/${b.n}@${b.png.width}`, png: resample(b.png, 0, 0, b.png.width, b.png.width, b.png.width, b.png.width) })),
+    { name: 'environment/end_sky', png: halve(tex('environment/end_sky'), 128) },
+    { name: 'entity/end_portal', png: halve(tex('entity/end_portal'), 128) },
+    { name: 'entity/enderdragon/dragon', png: tex('entity/enderdragon/dragon') },
     ...['normal', 'trapped', 'ender', 'normal_double', 'trapped_double'].map((k) => ({ name: `entity/chest/${k}`, png: tex(`entity/chest/${k}`) })),
     ...colours.map((c) => ({ name: `entity/bed/${c}`, png: tex(`entity/bed/${c}`) })),
     ...colours.map((c) => ({ name: `entity/shulker/shulker_${c}`, png: tex(`entity/shulker/shulker_${c}`) })),
@@ -228,7 +245,14 @@ function pack1122() {
   const items = gridAtlas(join(src, 'textures', 'items'), 'items/', 32, itemAnims, animFrames);
   writePng(join(dest, 'blocks.png'), blocks.png);
   writePng(join(dest, 'items.png'), items.png);
-  writePng(join(dest, 'anim.png'), animSheet(animFrames));
+  const big = flowBig.map((b) => {
+    const size = b.png.width, count = Math.floor(b.png.height / size), m = b.meta ?? {};
+    const frames = (m.frames ?? [...Array(count).keys()]).map((fr) => (typeof fr === 'number' ? { index: fr, time: m.frametime ?? 1 } : { index: fr.index, time: fr.time ?? m.frametime ?? 1 }));
+    return { name: `blocks/${b.n}@${size}`, size, src: b.png, frames: [...Array(count).keys()].map((k) => k * size), meta: { frames, interpolate: !!m.interpolate, count } };
+  });
+  const sheetAnim = animSheet(animFrames, big);
+  writePng(join(dest, 'anim.png'), sheetAnim.png);
+  big.forEach((b, i) => anims.push({ name: b.name, cell: sheets[b.name].slice(0, 2), frames: b.meta.frames, interpolate: b.meta.interpolate, count: b.meta.count, row: sheetAnim.rows[i], size: b.size }));
   const ent = shelfPack([...walk(join(src, 'textures', 'entity')), ...walk(join(src, 'textures', 'models', 'armor'))].filter((f) => f.endsWith('.png')), join(src, 'textures'));
   writePng(join(dest, 'entity.png'), ent.png);
   const env = copyEnv(join(src, 'textures', 'environment'), join(dest, 'env'));

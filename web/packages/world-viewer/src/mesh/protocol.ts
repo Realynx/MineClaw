@@ -9,7 +9,7 @@ import type { PickHit, V3, ViewInfo } from './query';
 import type { MeshAssets } from './source';
 
 export type WorkerRequest =
-  | { id: number; op: 'configure'; version: GameVersion; assets: MeshAssets | null; textured: boolean }
+  | { id: number; op: 'configure'; version: GameVersion; assets: MeshAssets | null; textured: boolean; fastLeaves?: boolean }
   | { id: number; op: 'apply'; buf: ArrayBuffer }
   | { id: number; op: 'touch'; dim: number; cols: TouchCol[] }
   | { id: number; op: 'drop'; dim: number; cols: Array<[number, number]> }
@@ -18,6 +18,7 @@ export type WorkerRequest =
   | { id: number; op: 'pick'; dim: number; o: V3; d: V3; max: number; cut: CutParams | null }
   | { id: number; op: 'view'; dim: number; cam: V3; body: V3 | null; cut: CutParams | null }
   | { id: number; op: 'lights'; dim: number; pts: number[] }
+  | { id: number; op: 'blocksAt'; dim: number; pts: number[] }
   | { id: number; op: 'blockEntities'; dim: number; cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }> }
   | { id: number; op: 'clear' };
 

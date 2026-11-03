@@ -9,6 +9,7 @@
 import { Layer } from '../../world/blocks';
 import { chain, clipAxis, cloneQuad, makeQuad, offsetQuad, orient, rotate, scale, translate, apply, type M4, type Quad, TINT_NONE } from '../quad';
 import type { Nb, StateRef } from './states';
+import { TEX_STARFIELD } from '../sink';
 
 /** An entity texture placed in the block atlas: origin cell, size in cells (the texture is wc·16 × hc·16 px). */
 export interface Sheet {
@@ -20,7 +21,7 @@ export interface Sheet {
 
 export type SheetLookup = (name: string) => Sheet | null;
 
-interface Part {
+export interface Part {
   /** Texture offset (px). */
   u: number;
   v: number;
@@ -36,7 +37,7 @@ interface Part {
 const UV_EPS = 0.02; // px: keeps nearest sampling off the neighbouring face's texels at the box edges
 
 /** One ModelRenderer box as block-local quads under `m` (the renderer's transform chain, in block units). */
-function partQuads(sheet: Sheet, part: Part, m: M4, out: Quad[], opts: { layer?: Layer; emissive?: boolean } = {}): void {
+export function partQuads(sheet: Sheet, part: Part, m: M4, out: Quad[], opts: { layer?: Layer; emissive?: boolean } = {}): void {
   const [x0, y0, z0, dx, dy, dz] = part.box;
   const g = part.inflate ?? 0;
   const x = x0 - g, y = y0 - g, z = z0 - g, x2 = x0 + dx + g, y2 = y0 + dy + g, z2 = z0 + dz + g;
@@ -119,7 +120,7 @@ function chestQuads(s: StateRef, sheets: SheetLookup, out: Quad[]): void {
 
 /** TileEntityBedRenderer + ModelBed: the head or foot piece (16×16×6 turned flat) and its two legs. */
 function bedQuads(s: StateRef, sheets: SheetLookup, out: Quad[]): void {
-  const sheet = sheets('entity/bed/red');
+  const sheet = sheets(`entity/bed/${s.props.color ?? 'red'}`) ?? sheets('entity/bed/red');
   if (!sheet) return;
   const head = s.props.part === 'head';
   const f = s.props.facing;
@@ -165,7 +166,7 @@ function signQuads(id: number, s: StateRef, sheets: SheetLookup, out: Quad[]): v
 /** TileEntityBannerRenderer + ModelBanner: slate 20×40×1, the bar on top, the pole when standing (no sway). */
 function bannerQuads(id: number, s: StateRef, sheets: SheetLookup, out: Quad[]): void {
   const sheet = sheets('mineclaw/banner_white');
-  if (!sheet) return;
+  if (!sheet || s.props.layer === 'true') return; // a banner with its block entity: the main-thread layer draws it
   const k = 0.6666667;
   const standing = id === 176;
   let m: M4;
@@ -181,11 +182,34 @@ function bannerQuads(id: number, s: StateRef, sheets: SheetLookup, out: Quad[]):
 }
 
 /** TileEntitySkullRenderer + ModelSkeletonHead (skeleton texture: the skull type lives in the tile entity). */
+const SKULL_TEXTURE: Record<string, string> = {
+  skeleton: 'entity/skeleton/skeleton',
+  wither: 'entity/skeleton/wither_skeleton',
+  zombie: 'entity/zombie/zombie',
+  player: 'entity/steve',
+  creeper: 'entity/creeper/creeper',
+  dragon: 'entity/enderdragon/dragon',
+};
+
+/** ModelDragonHead (1.12.2): upper lip, upper head, scales and nostrils, the jaw; texture offsets from ModelDragon. */
+const DRAGON_HEAD: Part[] = [
+  { u: 176, v: 44, box: [-6, -1, -24, 12, 5, 16] },
+  { u: 112, v: 30, box: [-8, -8, -10, 16, 16, 16] },
+  { u: 0, v: 0, box: [-5, -12, -4, 2, 4, 6] },
+  { u: 112, v: 0, box: [-5, -3, -22, 2, 2, 4] },
+  { u: 0, v: 0, box: [3, -12, -4, 2, 4, 6] },
+  { u: 112, v: 0, box: [3, -3, -22, 2, 2, 4] },
+  { u: 176, v: 65, box: [-6, 0, -16, 12, 4, 16], rp: [0, 4, -8] },
+];
+
+/** TileEntitySkullRenderer: the type's head (ModelSkeletonHead; ModelHumanoidHead adds the hat layer for zombie and player
+ * heads; ModelDragonHead for the dragon), on the floor turned by the 16-step rotation, on a wall by its facing. */
 function skullQuads(s: StateRef, sheets: SheetLookup, out: Quad[]): void {
-  const sheet = sheets('entity/skeleton/skeleton');
+  const type = s.props.type ?? 'skeleton';
+  const sheet = sheets(SKULL_TEXTURE[type] ?? SKULL_TEXTURE.skeleton) ?? sheets(SKULL_TEXTURE.skeleton);
   if (!sheet) return;
   const f = s.props.facing;
-  let pos: M4, yaw = 0;
+  let pos: M4, yaw = ((+s.props.rotation || 0) * 360) / 16;
   switch (f) {
     case 'north': pos = translate(0.5, 0.25, 0.74); break;
     case 'south': pos = translate(0.5, 0.25, 0.26); yaw = 180; break;
@@ -194,7 +218,14 @@ function skullQuads(s: StateRef, sheets: SheetLookup, out: Quad[]): void {
     default: pos = translate(0.5, 0, 0.5);
   }
   const m = chain(pos, scale(-1, -1, 1));
+  if (type === 'dragon' && sheet.wc >= 16) {
+    // The head is a parent with the jaw as its child: the yaw turns both about the head's origin.
+    const dm = chain(m, translate(0, -0.374375, 0), scale(0.75, 0.75, 0.75), scale(1 / 16, 1 / 16, 1 / 16), rotate(yaw, 'y'), scale(16, 16, 16));
+    for (const part of DRAGON_HEAD) partQuads(sheet, part, dm, out, { layer: Layer.Opaque });
+    return;
+  }
   partQuads(sheet, { u: 0, v: 0, box: [-4, -8, -4, 8, 8, 8], rot: [0, yaw, 0] }, m, out);
+  if (type === 'zombie' || type === 'player') partQuads(sheet, { u: 32, v: 0, box: [-4, -8, -4, 8, 8, 8], rot: [0, yaw, 0], inflate: 0.25 }, m, out);
 }
 
 /** TileEntityShulkerBoxRenderer + ModelShulker: base and closed lid, turned to the box's facing. */
@@ -216,10 +247,10 @@ function shulkerQuads(s: StateRef, sheets: SheetLookup, out: Quad[]): void {
   partQuads(sheet, { u: 0, v: 28, box: [-8, -8, -8, 16, 8, 16], rp: [0, 24, 0], inflate: -0.01 }, base, out, { layer: Layer.Opaque });
 }
 
-/** The end portal (top surface at 12/16) and gateway (a cube): a dark starless face, full bright. */
+/** The end portal (top surface at 12/16) and gateway (a cube): the starfield shader flag (dark flat when untextured). */
 function voidQuads(id: number, out: Quad[]): void {
   const flat = 0x0c0e1a;
-  const opt = { textured: false, flat, emissive: true, layer: Layer.Opaque, ao: false };
+  const opt = { textured: true, fx: TEX_STARFIELD, flat, emissive: true, layer: Layer.Opaque, ao: false };
   if (id === 119) {
     out.push(makeQuad([0, 0.75, 0, 0, 0.75, 1, 1, 0.75, 1, 1, 0.75, 0], [0, 0, 0, 1, 1, 1, 1, 0], opt));
     return;
