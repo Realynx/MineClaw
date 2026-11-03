@@ -56,8 +56,28 @@ function parseCoords(q: string): [number, number, number] | null {
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
 }
 
-export function WorldPane({ follow, className, toolbarStart }: { follow?: string; className?: string; toolbarStart?: ReactNode }) {
+/**
+ * `onBodyClick`: a bot clicked in the world (a plain click, or a free-cam click that selects it); the Live hive opens its
+ * panel. `overlay`: drawn over the stage (inside it, so it stays in fullscreen).
+ */
+export function WorldPane({
+  follow,
+  className,
+  toolbarStart,
+  onBodyClick,
+  overlay,
+}: {
+  follow?: string;
+  className?: string;
+  toolbarStart?: ReactNode;
+  onBodyClick?: (name: string) => void;
+  overlay?: ReactNode;
+}) {
   const { mod, source, ready } = useWorldHost();
+  const bodyClick = useRef(onBodyClick);
+  useEffect(() => {
+    bodyClick.current = onBodyClick;
+  }, [onBodyClick]);
   const { devDetails } = usePrefs();
   const viewer = useRef<WorldViewerHandle>(null);
   const [mode, setMode] = useState<CameraMode>(follow ? 'follow' : 'fly');
@@ -119,8 +139,12 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
   // Mock mode only (e2e): the chat bubbles this pane drew in its last frame, and its camera, for headless checks.
   useEffect(() => {
     if (process.env.NEXT_PUBLIC_MOCK !== '1') return;
-    const w = window as unknown as { __mcxWorld?: { bubbles: () => unknown; camera: (m: CameraMode) => void } };
-    w.__mcxWorld = { bubbles: () => viewer.current?.bubbles() ?? [], camera: (m) => viewer.current?.setCameraMode(m) };
+    const w = window as unknown as { __mcxWorld?: { bubbles: () => unknown; camera: (m: CameraMode) => void; clickBot: (name: string) => void } };
+    w.__mcxWorld = {
+      bubbles: () => viewer.current?.bubbles() ?? [],
+      camera: (m) => viewer.current?.setCameraMode(m),
+      clickBot: (name) => bodyClick.current?.(name), // what a click on that bot's model does
+    };
     return () => {
       delete w.__mcxWorld;
     };
@@ -203,8 +227,10 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
       setSelected([]);
       return;
     }
-    if (t?.kind === 'bot') setSelected((cur) => nextSelection(cur, t.name, mods));
-    else if (t?.kind === 'block') setMarker([t.x, t.y, t.z]);
+    if (t?.kind === 'bot') {
+      setSelected((cur) => nextSelection(cur, t.name, mods));
+      if (!mods.shift) bodyClick.current?.(t.name);
+    } else if (t?.kind === 'block') setMarker([t.x, t.y, t.z]);
   }, []);
 
   const nearbyDrops = useMemo(() => {
@@ -351,7 +377,10 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
           onPick={setPicked}
           onStats={devDetails ? setStats : undefined}
           onCameraModeChange={setMode}
-          onSelectBot={(name) => viewer.current?.followBot(name)}
+          onSelectBot={(name) => {
+            viewer.current?.followBot(name);
+            bodyClick.current?.(name);
+          }}
           onAim={setAim}
           onAimClick={onAimClick}
           marker={marker}
@@ -442,6 +471,7 @@ export function WorldPane({ follow, className, toolbarStart }: { follow?: string
             </ul>
           </div>
         ) : null}
+        {overlay}
         {devDetails && stats ? (
           <div className="pointer-events-none absolute bottom-3 left-3 rounded-md bg-black/55 px-2.5 py-2 font-mono text-[11px] leading-snug text-white">
             <div className="flex items-center gap-1.5">

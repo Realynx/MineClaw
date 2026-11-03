@@ -10,6 +10,7 @@ import { ChatPane } from '@/features/chat/ChatPane';
 import { InFlight, KIND_LABEL, StatusDot, useHiveIndex, Vitals } from '@/features/live/common';
 import { DebuggerDrawer } from '@/features/live/DebuggerDrawer';
 import { HistoryDrawer } from '@/features/live/HistoryDrawer';
+import { InventorySection } from '@/features/live/inventory/InventoryPanel';
 import { ScriptCard } from '@/features/live/ScriptCard';
 import { VisionDrawer } from '@/features/live/VisionDrawer';
 import { WorldHost } from '@/features/world/integration';
@@ -171,6 +172,9 @@ export default function BotPage() {
                     {devDetails && pos ? <span className="tabular">{pos.map((v) => Math.floor(v)).join(', ')}</span> : null}
                     {kind === 'subhive' && owner ? <span>Driven by {owner}’s brain</span> : null}
                   </div>
+                </div>
+                <div className="border-t border-border p-5">
+                  <InventorySection bot={bot} />
                 </div>
               </Card>
             </div>

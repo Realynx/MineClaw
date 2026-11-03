@@ -134,6 +134,9 @@ the one observe hook, and don't touch BotAgent.Quiet, Prompts, EventQueue/GameEv
    main's own bodies, those streamed bodies and still-spawning tree nodes for `/api/bots`, `/api/status`,
    `/api/world/entities`, `/api/viewer/now` and `/api/bodies/scripts`, with `kind`, `owner` and `script` (api.md §6). The
    brain's own hive overview (`HiveBots()`) is unchanged.
+5. **Body inventories (added 2026-11-03).** `GET /api/viewer/bodies/{name}/inventory`: any in-process body's hotbar (held
+   slot), main inventory, armour and off hand as a read-only snapshot (`Supervisor/BodyInventories`, registered where each
+   client is built; api.md §6 has the shape and the slot mapping). The Live hive shows it in the body's panel.
 
 Tests for these go in `tests/MineClaw.App.Tests` (or the closest existing test project).
 
@@ -141,7 +144,7 @@ Tests for these go in `tests/MineClaw.App.Tests` (or the closest existing test p
 
 - **Pass-through, allow-listed, GET only.** `/v1/sup/<path>` forwards to the supervisor `/api/<path>`. Allowed:
   bots, hive/tree, status, events, locate, blueprints, buildplans, world/*, scripts, bodies/*, brains/*, viewer/feed,
-  viewer/now. Binary responses are streamed.
+  viewer/now, viewer/bodies/* (inventories). Binary responses are streamed.
 - **Supervisor writes.**
   - `POST /v1/sup/viewer/chat`: the bridge injects `player` from `X-MCX-Player`, and sets `allow_commands` only if
     `X-MCX-Roles` contains `commands`.
@@ -199,6 +202,13 @@ and caching. It never reshapes domain data beyond camelCase conversion.
     linked player to every selected bot, with their replies shown over the world. Esc: on HTTPS (Keyboard Lock) the first
     frees the mouse and the second leaves fullscreen; over plain HTTP the browser does both at once. World shortcuts never
     fire while a text field has focus.
+  - **Body inventories (added 2026-11-03).** A body's panel has an Inventory section: the bot view's Body card (a hive card
+    opens it) and, in the Live hive's world view, a floating panel that a click on a body opens (inside the stage, so it stays
+    in fullscreen; Esc or × closes it). It is the game's inventory screen in DOM and CSS (`features/live/inventory`): armour
+    head..feet and the 1.12.2 off hand, the 3×9 main inventory, the hotbar with the held slot ringed; icons drawn once per
+    item from the bundled atlases of the body's own version (2D canvas, cached), stack counts, durability bars, a CSS glint
+    clipped to the icon, a tooltip (name, id:meta, durability). It polls `GET /api/bots/:bot/inventory` every 2 s only while
+    mounted and the tab is visible, keeps the last snapshot while refetching, and pulses changed slots once. No WebGL.
   - **Chat bubbles (added 2026-11-03).** What players and bots say also shows as a speech bubble over the speaker's head
     in every world view: the pane in each camera, fullscreen, the hive-card thumbnails (one small bubble) and any page that
     shows the world under `WorldHost`. Lines come from the shared stream's `feed` frames only
