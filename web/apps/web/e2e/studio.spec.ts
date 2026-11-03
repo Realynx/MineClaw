@@ -1,8 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
 
 // The Design Studio in mock mode: a new design from the Designs page, blocks placed with the mouse locked, the fake AI's
-// house and door, manual edits (select a wall, move it, rotate the whole design, brush-remove, undo), a save that shows up in
-// the Designs list. SHOTS_DIR=<dir> also saves screenshots there.
+// house and door, manual edits (select a wall, move it, rotate the whole design, brush-remove, undo), digging underground,
+// leaving with unsaved changes (asked first: Stay keeps the canvas, Leave goes), a save that shows up in the Designs list
+// (navigation free again). SHOTS_DIR=<dir> also saves screenshots there.
 const shots = process.env.SHOTS_DIR;
 
 async function signIn(page: Page) {
@@ -15,7 +16,10 @@ async function signIn(page: Page) {
 }
 
 type Hook = {
-  studio: { canvas: { size: number; get(x: number, y: number, z: number): [number, number] }; selection: unknown };
+  studio: {
+    canvas: { size: number; dug: Set<number>; get(x: number, y: number, z: number): [number, number] };
+    selection: unknown;
+  };
   engine: () => {
     rig: { flyPos: { set(x: number, y: number, z: number): void }; flyYaw: number; flyPitch: number };
   } | null;
@@ -170,16 +174,87 @@ test('design studio: build, ask the AI, edit by hand, save', async ({ page }) =>
   console.warn(`[studio] software WebGL fps: ${fps}`);
   expect(fps).toBeGreaterThan(0);
 
+  // Underground (K): the grass becomes diggable; a left click digs a cell out of the ground (the view cuts away above it).
+  await stage
+    .locator('canvas')
+    .first()
+    .click({ position: { x: 300, y: 300 } });
+  await expect.poll(() => page.evaluate(() => !!document.pointerLockElement)).toBe(true);
+  await page.keyboard.press('KeyP');
+  await page.keyboard.press('KeyK');
+  await expect(page.getByTestId('studio')).toHaveAttribute('data-under', '-1');
+  await expect(page.getByLabel('Underground level')).toBeVisible();
+  await page.waitForTimeout(400);
+  await lookAt(page, [14, 6, 14], [14, -1, 8]);
+  await click(page, 'left');
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __studio: Hook }).__studio.studio.canvas.get(14, -1, 8)))
+    .toEqual([0, 0]);
+  expect(await page.evaluate(() => (window as unknown as { __studio: Hook }).__studio.studio.canvas.dug.size)).toBe(1);
+  if (shots) await page.screenshot({ path: `${shots}/studio-underground.png` });
+  await page.keyboard.press('KeyK');
+  await expect(page.getByTestId('studio')).toHaveAttribute('data-under', '');
+
+  // Leaving with unsaved changes asks first; Stay keeps the canvas.
+  await expect(page.getByTestId('studio')).toHaveAttribute('data-dirty', '1');
+  await page.evaluate(() => document.exitPointerLock());
+  const kept = await blocks(page);
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Overview' }).click();
+  const ask = page.getByRole('dialog', { name: 'Leave without saving?' });
+  await expect(ask).toBeVisible();
+  await expect(ask.getByRole('button', { name: 'Save and leave' })).toBeVisible();
+  if (shots) await page.screenshot({ path: `${shots}/studio-leave.png` });
+  await ask.getByRole('button', { name: 'Stay' }).click();
+  await expect(ask).toBeHidden();
+  expect(page.url()).toContain('/designs/studio');
+  expect(await blocks(page)).toBe(kept);
+
   // Save: a new design, then it is in the Designs list.
   await page.getByLabel('Design name').fill('e2e hut');
   await page.getByLabel('Revision message').fill('first draft from the studio');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByTestId('saved-bar')).toContainText('saved as design #100');
+  await expect(page.getByTestId('studio')).toHaveAttribute('data-dirty', '0');
   await expect(page.getByRole('link', { name: 'Build in Story Mode' })).toBeVisible();
   if (shots) await page.screenshot({ path: `${shots}/studio-saved.png` });
   await page.getByRole('link', { name: 'Open in Designs' }).click();
-  await page.waitForURL('**/designs?id=100');
+  await page.waitForURL('**/designs?id=100'); // saved: no question
+  await expect(page.getByRole('dialog', { name: 'Leave without saving?' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /e2e hut/ })).toBeVisible();
   await expect(page.getByText('“first draft from the studio”', { exact: false })).toBeVisible();
   if (shots) await page.screenshot({ path: `${shots}/designs-list.png` });
+});
+
+test('design studio: Leave goes without saving; an untouched design never asks', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/designs/studio');
+  await page.waitForURL('**/designs/studio?session=**');
+  const stage = page.getByTestId('studio-stage');
+  await expect(stage.locator('canvas').first()).toBeVisible();
+  await page.waitForTimeout(2500);
+  // Untouched: navigation is free.
+  await expect(page.getByTestId('studio')).toHaveAttribute('data-dirty', '0');
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Overview' }).click();
+  await page.waitForURL('**/overview');
+  await page.goBack();
+  await page.waitForURL('**/designs/studio**');
+  await expect(stage.locator('canvas').first()).toBeVisible();
+  await page.waitForTimeout(2500);
+  // One block placed: leaving asks; Leave goes.
+  await stage
+    .locator('canvas')
+    .first()
+    .click({ position: { x: 300, y: 300 } });
+  await expect.poll(() => page.evaluate(() => !!document.pointerLockElement)).toBe(true);
+  await lookAt(page, [10, 6, 10], [10, -1, 4]);
+  await click(page, 'right');
+  await expect.poll(() => blocks(page)).toBe(1);
+  await expect(page.getByTestId('studio')).toHaveAttribute('data-dirty', '1');
+  await page.evaluate(() => document.exitPointerLock());
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Overview' }).click();
+  const ask = page.getByRole('dialog', { name: 'Leave without saving?' });
+  await expect(ask).toBeVisible();
+  await ask.getByRole('button', { name: 'Leave', exact: true }).click();
+  await page.waitForURL('**/overview');
+  await expect(ask).toHaveCount(0);
 });

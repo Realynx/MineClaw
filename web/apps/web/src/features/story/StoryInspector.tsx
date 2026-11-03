@@ -21,7 +21,25 @@ import {
   type StoryStorage,
   type StoryWorkbench,
 } from '@mineclaw/contracts';
-import { BedDouble, ChevronDown, ChevronRight, ClipboardPaste, Copy, Flame, GripVertical, MessageSquare, Minus, Pause, Play, Plus, Search, Shield, ShieldOff, Trash2, X } from 'lucide-react';
+import {
+  BedDouble,
+  ChevronDown,
+  ChevronRight,
+  ClipboardPaste,
+  Copy,
+  Flame,
+  GripVertical,
+  MessageSquare,
+  Minus,
+  Pause,
+  Play,
+  Plus,
+  Search,
+  Shield,
+  ShieldOff,
+  Trash2,
+  X,
+} from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 import { Dialog } from '@/components/ui/overlays';
 import { Button, Input } from '@/components/ui/primitives';
@@ -62,7 +80,9 @@ type V3 = [number, number, number];
 function orderWhere(t: StoryOrder['target']): string {
   const p = targetPos(t);
   if (p) return p.map((n) => Math.floor(n)).join(', ');
-  return t && typeof t === 'object' && !Array.isArray(t) && t.entity !== null && t.entity !== undefined ? `#${t.entity}` : '';
+  return t && typeof t === 'object' && !Array.isArray(t) && t.entity !== null && t.entity !== undefined
+    ? `#${t.entity}`
+    : '';
 }
 const k3 = (p: readonly number[]) => `${p[0]},${p[1]},${p[2]}`;
 
@@ -71,23 +91,49 @@ function Bar({ value, color, label }: { value: number; color: string; label: str
     <div className="flex items-center gap-1.5 text-[11px]">
       <span className="w-10 text-muted">{label}</span>
       <span className="block h-2 flex-1 overflow-hidden rounded-full bg-surface-3">
-        <span className="block h-full" style={{ width: `${Math.max(0, Math.min(1, value / 20)) * 100}%`, background: color }} />
+        <span
+          className="block h-full"
+          style={{ width: `${Math.max(0, Math.min(1, value / 20)) * 100}%`, background: color }}
+        />
       </span>
       <span className="w-8 text-right tabular-nums">{Math.round(value)}/20</span>
     </div>
   );
 }
 
-function Shell({ title, sub, onClose, children, avatar, testid }: { title: string; sub?: string; onClose: () => void; children: React.ReactNode; avatar?: React.ReactNode; testid?: string }) {
+function Shell({
+  title,
+  sub,
+  onClose,
+  children,
+  avatar,
+  testid,
+}: {
+  title: string;
+  sub?: string;
+  onClose: () => void;
+  children: React.ReactNode;
+  avatar?: React.ReactNode;
+  testid?: string;
+}) {
   return (
-    <section className={cn(panel, 'pointer-events-auto flex max-h-[52vh] w-[21rem] flex-col')} aria-label={`Inspect ${title}`} data-testid={testid ?? 'inspector'}>
+    <section
+      className={cn(panel, 'pointer-events-auto flex max-h-[52vh] w-[21rem] flex-col')}
+      aria-label={`Inspect ${title}`}
+      data-testid={testid ?? 'inspector'}
+    >
       <header className="flex items-center gap-2 border-b border-border px-2.5 py-2">
         {avatar}
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold">{title}</div>
           {sub ? <div className="truncate text-[11px] text-muted">{sub}</div> : null}
         </div>
-        <button type="button" onClick={onClose} aria-label="Close the inspector" className="rounded p-0.5 hover:bg-surface-2">
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close the inspector"
+          className="rounded p-0.5 hover:bg-surface-2"
+        >
           <X className="size-4" />
         </button>
       </header>
@@ -96,11 +142,29 @@ function Shell({ title, sub, onClose, children, avatar, testid }: { title: strin
   );
 }
 
-function TabRow<T extends string>({ tabs, value, onChange }: { tabs: Array<[T, string]>; value: T; onChange: (t: T) => void }) {
+function TabRow<T extends string>({
+  tabs,
+  value,
+  onChange,
+}: {
+  tabs: Array<[T, string]>;
+  value: T;
+  onChange: (t: T) => void;
+}) {
   return (
     <div className="mb-2 flex gap-0.5 border-b border-border text-xs" role="tablist">
       {tabs.map(([id, label]) => (
-        <button key={id} type="button" role="tab" aria-selected={value === id} onClick={() => onChange(id)} className={cn('-mb-px border-b-2 px-2 py-1 font-semibold', value === id ? 'border-accent text-fg' : 'border-transparent text-muted hover:text-fg')}>
+        <button
+          key={id}
+          type="button"
+          role="tab"
+          aria-selected={value === id}
+          onClick={() => onChange(id)}
+          className={cn(
+            '-mb-px border-b-2 px-2 py-1 font-semibold',
+            value === id ? 'border-accent text-fg' : 'border-transparent text-muted hover:text-fg',
+          )}
+        >
           {label}
         </button>
       ))}
@@ -110,17 +174,48 @@ function TabRow<T extends string>({ tabs, value, onChange }: { tabs: Array<[T, s
 
 // ------------------------------------------------------------------ pawn
 
-export function PawnInspector({ pawn, bed, canWrite, onDraft, onClearQueue, onShowBed, onClose }: { pawn: StoryPawn; bed?: StoryBed | null; canWrite: boolean; onDraft: (d: boolean) => void; onClearQueue: () => void; onShowBed?: () => void; onClose: () => void }) {
+export function PawnInspector({
+  pawn,
+  bed,
+  canWrite,
+  onDraft,
+  onClearQueue,
+  onShowBed,
+  onClose,
+}: {
+  pawn: StoryPawn;
+  bed?: StoryBed | null;
+  canWrite: boolean;
+  onDraft: (d: boolean) => void;
+  onClearQueue: () => void;
+  onShowBed?: () => void;
+  onClose: () => void;
+}) {
   const [tab, setTab] = useState<'overview' | 'skills' | 'orders'>('overview');
   return (
-    <Shell title={pawn.display} sub={`${pawn.state ?? 'idle'}${pawn.online === false ? ' · offline' : ''}`} onClose={onClose} avatar={<Avatar name={pawn.name} size={30} />}>
-      <TabRow<'overview' | 'skills' | 'orders'> tabs={[['overview', 'Overview'], ['skills', 'Skills'], ['orders', 'Orders']]} value={tab} onChange={setTab} />
+    <Shell
+      title={pawn.display}
+      sub={`${pawn.state ?? 'idle'}${pawn.online === false ? ' · offline' : ''}`}
+      onClose={onClose}
+      avatar={<Avatar name={pawn.name} size={30} />}
+    >
+      <TabRow<'overview' | 'skills' | 'orders'>
+        tabs={[
+          ['overview', 'Overview'],
+          ['skills', 'Skills'],
+          ['orders', 'Orders'],
+        ]}
+        value={tab}
+        onChange={setTab}
+      />
       {tab === 'overview' ? (
         <div className="space-y-2 text-xs">
           <div className="rounded-md bg-surface-2 px-2 py-1.5">
             <div className="text-[10.5px] font-semibold tracking-wide text-subtle uppercase">Doing</div>
-            <div className="font-medium">{pawn.job?.label ?? (pawn.drafted ? 'Drafted: awaiting orders' : 'Nothing')}</div>
-            {(pawn.job?.progress !== null && pawn.job?.progress !== undefined) ? (
+            <div className="font-medium">
+              {pawn.job?.label ?? (pawn.drafted ? 'Drafted: awaiting orders' : 'Nothing')}
+            </div>
+            {pawn.job?.progress !== null && pawn.job?.progress !== undefined ? (
               <span className="mt-1 block h-1 overflow-hidden rounded-full bg-surface-3">
                 <span className="block h-full bg-accent" style={{ width: `${pawn.job.progress * 100}%` }} />
               </span>
@@ -141,14 +236,21 @@ export function PawnInspector({ pawn, bed, canWrite, onDraft, onClearQueue, onSh
           {pawn.held ? <div className="text-muted">Holding {pawn.held}</div> : null}
           <div className="flex items-center gap-2 rounded-md bg-surface-2 px-2 py-1.5" data-testid="pawn-bed">
             <BedDouble className="size-3.5 text-muted" aria-hidden />
-            <span className="min-w-0 flex-1 truncate">{bed ? `Bed at ${bed.pos[0]}, ${bed.pos[2]}` : 'No bed of its own'}</span>
+            <span className="min-w-0 flex-1 truncate">
+              {bed ? `Bed at ${bed.pos[0]}, ${bed.pos[2]}` : 'No bed of its own'}
+            </span>
             {bed && onShowBed ? (
               <Button size="sm" variant="ghost" onClick={onShowBed}>
                 Show
               </Button>
             ) : null}
           </div>
-          <Button size="sm" variant={pawn.drafted ? 'subtle' : 'secondary'} disabled={!canWrite} onClick={() => onDraft(!pawn.drafted)}>
+          <Button
+            size="sm"
+            variant={pawn.drafted ? 'subtle' : 'secondary'}
+            disabled={!canWrite}
+            onClick={() => onDraft(!pawn.drafted)}
+          >
             {pawn.drafted ? <ShieldOff className="size-3.5" /> : <Shield className="size-3.5" />}
             {pawn.drafted ? 'Undraft (R)' : 'Draft (R)'}
           </Button>
@@ -165,7 +267,11 @@ export function PawnInspector({ pawn, bed, canWrite, onDraft, onClearQueue, onSh
                   <span className="block h-full bg-accent" style={{ width: `${((s?.level ?? 0) / 20) * 100}%` }} />
                 </span>
                 <span className="w-5 text-right tabular-nums">{s?.level ?? 0}</span>
-                {s?.passion ? <Flame className="size-3 text-[#ff9f43]" aria-label="passion" /> : <span className="w-3" />}
+                {s?.passion ? (
+                  <Flame className="size-3 text-[#ff9f43]" aria-label="passion" />
+                ) : (
+                  <span className="w-3" />
+                )}
               </li>
             );
           })}
@@ -173,7 +279,9 @@ export function PawnInspector({ pawn, bed, canWrite, onDraft, onClearQueue, onSh
       ) : null}
       {tab === 'orders' ? (
         <div className="space-y-1 text-xs">
-          {pawn.queue.length === 0 ? <p className="text-muted">No queued orders. Right-click the map with this pawn selected (Shift queues).</p> : null}
+          {pawn.queue.length === 0 ? (
+            <p className="text-muted">No queued orders. Right-click the map with this pawn selected (Shift queues).</p>
+          ) : null}
           <ol className="space-y-0.5">
             {pawn.queue.map((o, i) => (
               <li key={String(o.id ?? i)} className="flex items-center gap-1.5 rounded bg-surface-2 px-1.5 py-1">
@@ -198,17 +306,38 @@ export function PawnInspector({ pawn, bed, canWrite, onDraft, onClearQueue, onSh
 // ------------------------------------------------------------------ several bodies, AI
 
 /** A selected bed: who sleeps in it, and a picker to give it to a pawn (their other bed is freed) or clear it. */
-export function BedInspector({ bed, state, canWrite, write, onClose }: { bed: StoryBed; state: StoryColonyState | undefined; canWrite: boolean; write: StoryWrite; onClose: () => void }) {
+export function BedInspector({
+  bed,
+  state,
+  canWrite,
+  write,
+  onClose,
+}: {
+  bed: StoryBed;
+  state: StoryColonyState | undefined;
+  canWrite: boolean;
+  write: StoryWrite;
+  onClose: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   const owner = bed.pawn ? state?.pawns.find((p) => p.name === bed.pawn) : undefined;
-  const zone = bed.zone !== null && bed.zone !== undefined ? state?.zones.find((z) => String(z.id) === String(bed.zone)) : undefined;
+  const zone =
+    bed.zone !== null && bed.zone !== undefined
+      ? state?.zones.find((z) => String(z.id) === String(bed.zone))
+      : undefined;
   const pos = { x: bed.pos[0], y: bed.pos[1], z: bed.pos[2] };
   const run = (body: Parameters<StoryWrite>[1]) => {
     setBusy(true);
     void write('story.beds', body as never).finally(() => setBusy(false));
   };
   return (
-    <Shell title="Bed" sub={`${bed.pos[0]}, ${bed.pos[1]}, ${bed.pos[2]}${zone ? ` · ${zone.label || 'a house'}` : ''}`} onClose={onClose} testid="bed-inspector" avatar={<BedDouble className="size-6 text-muted" />}>
+    <Shell
+      title="Bed"
+      sub={`${bed.pos[0]}, ${bed.pos[1]}, ${bed.pos[2]}${zone ? ` · ${zone.name || zone.label || 'a house'}` : ''}`}
+      onClose={onClose}
+      testid="bed-inspector"
+      avatar={<BedDouble className="size-6 text-muted" />}
+    >
       <div className="space-y-2 text-xs">
         <div className="flex items-center gap-2">
           <span className="text-muted">Owner</span>
@@ -228,7 +357,9 @@ export function BedInspector({ bed, state, canWrite, write, onClose }: { bed: St
             className="h-7 min-w-0 flex-1 rounded border border-border bg-surface px-1"
             disabled={!canWrite || busy}
             value={bed.pawn ?? ''}
-            onChange={(e) => (e.target.value ? run({ op: 'assign', bed: pos, pawn: e.target.value }) : run({ op: 'unassign', bed: pos }))}
+            onChange={(e) =>
+              e.target.value ? run({ op: 'assign', bed: pos, pawn: e.target.value }) : run({ op: 'unassign', bed: pos })
+            }
           >
             <option value="">nobody</option>
             {(state?.pawns ?? []).map((p) => (
@@ -239,7 +370,12 @@ export function BedInspector({ bed, state, canWrite, write, onClose }: { bed: St
             ))}
           </select>
         </label>
-        <Button size="sm" variant="ghost" disabled={!canWrite || busy || !bed.pawn} onClick={() => run({ op: 'unassign', bed: pos })}>
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={!canWrite || busy || !bed.pawn}
+          onClick={() => run({ op: 'unassign', bed: pos })}
+        >
           Clear
         </Button>
       </div>
@@ -247,11 +383,29 @@ export function BedInspector({ bed, state, canWrite, write, onClose }: { bed: St
   );
 }
 
-export function GroupInspector({ names, state, canWrite, onDraft, onClose }: { names: string[]; state: StoryColonyState | undefined; canWrite: boolean; onDraft: (d: boolean) => void; onClose: () => void }) {
+export function GroupInspector({
+  names,
+  state,
+  canWrite,
+  onDraft,
+  onClose,
+}: {
+  names: string[];
+  state: StoryColonyState | undefined;
+  canWrite: boolean;
+  onDraft: (d: boolean) => void;
+  onClose: () => void;
+}) {
   const pawns = (state?.pawns ?? []).filter((p) => names.includes(p.name));
   const ai = (state?.ai ?? []).filter((a) => names.includes(a.name) && !pawns.some((p) => p.name === a.name));
   return (
-    <Shell title={`${names.length} selected`} sub={[pawns.length && `${pawns.length} pawn${pawns.length === 1 ? '' : 's'}`, ai.length && `${ai.length} AI`].filter(Boolean).join(' · ')} onClose={onClose}>
+    <Shell
+      title={`${names.length} selected`}
+      sub={[pawns.length && `${pawns.length} pawn${pawns.length === 1 ? '' : 's'}`, ai.length && `${ai.length} AI`]
+        .filter(Boolean)
+        .join(' · ')}
+      onClose={onClose}
+    >
       <ul className="space-y-1 text-xs">
         {pawns.map((p) => (
           <li key={p.name} className="flex items-center gap-1.5">
@@ -283,9 +437,24 @@ export function GroupInspector({ names, state, canWrite, onDraft, onClose }: { n
   );
 }
 
-export function AiInspector({ body, state, onChat, onClose }: { body: StoryAiBody; state: StoryColonyState | undefined; onChat: () => void; onClose: () => void }) {
+export function AiInspector({
+  body,
+  state,
+  onChat,
+  onClose,
+}: {
+  body: StoryAiBody;
+  state: StoryColonyState | undefined;
+  onChat: () => void;
+  onClose: () => void;
+}) {
   return (
-    <Shell title={body.name} sub={`${body.kind}${body.owner ? ` · driven by ${body.owner}` : ''}`} onClose={onClose} avatar={<Avatar name={body.name} size={30} ai />}>
+    <Shell
+      title={body.name}
+      sub={`${body.kind}${body.owner ? ` · driven by ${body.owner}` : ''}`}
+      onClose={onClose}
+      avatar={<Avatar name={body.name} size={30} ai />}
+    >
       <div className="space-y-2 text-xs">
         <div className="rounded-md bg-surface-2 px-2 py-1.5">
           <div className="text-[10.5px] font-semibold tracking-wide text-subtle uppercase">Task</div>
@@ -311,13 +480,39 @@ export function AiInspector({ body, state, onChat, onClose }: { body: StoryAiBod
 
 function Check({ state, onClick, label }: { state: 'on' | 'off' | 'partial'; onClick: () => void; label: string }) {
   return (
-    <button type="button" role="checkbox" aria-checked={state === 'partial' ? 'mixed' : state === 'on'} aria-label={label} onClick={onClick} className={cn('grid size-3.5 shrink-0 place-items-center rounded-[3px] border', state === 'off' ? 'border-border-strong bg-surface' : 'border-accent bg-accent text-accent-fg')}>
-      {state === 'on' ? <svg viewBox="0 0 10 10" className="size-2.5"><path d="M2 5.2 4.2 7.4 8.2 2.8" stroke="currentColor" strokeWidth="1.6" fill="none" /></svg> : state === 'partial' ? <Minus className="size-2.5" /> : null}
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={state === 'partial' ? 'mixed' : state === 'on'}
+      aria-label={label}
+      onClick={onClick}
+      className={cn(
+        'grid size-3.5 shrink-0 place-items-center rounded-[3px] border',
+        state === 'off' ? 'border-border-strong bg-surface' : 'border-accent bg-accent text-accent-fg',
+      )}
+    >
+      {state === 'on' ? (
+        <svg viewBox="0 0 10 10" className="size-2.5">
+          <path d="M2 5.2 4.2 7.4 8.2 2.8" stroke="currentColor" strokeWidth="1.6" fill="none" />
+        </svg>
+      ) : state === 'partial' ? (
+        <Minus className="size-2.5" />
+      ) : null}
     </button>
   );
 }
 
-export function FilterTree({ tree, filter, onChange, compact }: { tree: TreeNode[]; filter: StoryFilter; onChange: (f: StoryFilter) => void; compact?: boolean }) {
+export function FilterTree({
+  tree,
+  filter,
+  onChange,
+  compact,
+}: {
+  tree: TreeNode[];
+  filter: StoryFilter;
+  onChange: (f: StoryFilter) => void;
+  compact?: boolean;
+}) {
   const [open, setOpen] = useState<Set<string>>(() => new Set(compact ? [] : tree.map((n) => n.id)));
   const [q, setQ] = useState('');
   const shown = useMemo(() => searchTree(tree, q), [tree, q]);
@@ -326,7 +521,14 @@ export function FilterTree({ tree, filter, onChange, compact }: { tree: TreeNode
     return (
       <li key={n.id}>
         <div className="flex items-center gap-1 py-0.5" style={{ paddingLeft: depth * 12 }}>
-          <button type="button" onClick={() => setOpen((s) => (s.has(n.id) ? new Set([...s].filter((x) => x !== n.id)) : new Set([...s, n.id])))} className="text-subtle" aria-label={isOpen ? `Collapse ${n.label}` : `Expand ${n.label}`}>
+          <button
+            type="button"
+            onClick={() =>
+              setOpen((s) => (s.has(n.id) ? new Set([...s].filter((x) => x !== n.id)) : new Set([...s, n.id])))
+            }
+            className="text-subtle"
+            aria-label={isOpen ? `Collapse ${n.label}` : `Expand ${n.label}`}
+          >
             {isOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
           </button>
           <Check state={nodeState(filter, n)} onClick={() => onChange(toggleNode(filter, n))} label={n.label} />
@@ -337,7 +539,11 @@ export function FilterTree({ tree, filter, onChange, compact }: { tree: TreeNode
             {n.children.map((c) => node(c, depth + 1))}
             {n.items.map((it) => (
               <li key={it.key} className="flex items-center gap-1 py-0.5" style={{ paddingLeft: depth * 12 + 16 }}>
-                <Check state={itemAllowed(filter, n, it.key) ? 'on' : 'off'} onClick={() => onChange(toggleItem(filter, n, it.key))} label={it.label} />
+                <Check
+                  state={itemAllowed(filter, n, it.key) ? 'on' : 'off'}
+                  onClick={() => onChange(toggleItem(filter, n, it.key))}
+                  label={it.label}
+                />
                 <ItemIcon id={it.id} meta={it.meta} size={16} />
                 <span>{it.label}</span>
               </li>
@@ -352,12 +558,26 @@ export function FilterTree({ tree, filter, onChange, compact }: { tree: TreeNode
       <div className="mb-1 flex items-center gap-1">
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute top-1.5 left-1.5 size-3 text-subtle" />
-          <Input aria-label="Search items" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search" className="h-6 pl-5 text-[11px]" />
+          <Input
+            aria-label="Search items"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search"
+            className="h-6 pl-5 text-[11px]"
+          />
         </div>
-        <button type="button" onClick={() => onChange(allowAll(tree))} className="rounded bg-surface-2 px-1.5 py-0.5 font-medium hover:bg-surface-3">
+        <button
+          type="button"
+          onClick={() => onChange(allowAll(tree))}
+          className="rounded bg-surface-2 px-1.5 py-0.5 font-medium hover:bg-surface-3"
+        >
           Allow all
         </button>
-        <button type="button" onClick={() => onChange(CLEAR_FILTER)} className="rounded bg-surface-2 px-1.5 py-0.5 font-medium hover:bg-surface-3">
+        <button
+          type="button"
+          onClick={() => onChange(CLEAR_FILTER)}
+          className="rounded bg-surface-2 px-1.5 py-0.5 font-medium hover:bg-surface-3"
+        >
           Clear
         </button>
       </div>
@@ -386,22 +606,46 @@ export function StorageInspector({
   onClose: () => void;
 }) {
   const tree = useMemo(() => buildTree(state?.categories), [state?.categories]);
-  const list = chests.map((c) => (state?.storages ?? []).find((s) => k3(s.chest) === k3(c) || (s.doubleWith && k3(s.doubleWith) === k3(c))));
+  const list = chests.map((c) =>
+    (state?.storages ?? []).find((s) => k3(s.chest) === k3(c) || (s.doubleWith && k3(s.doubleWith) === k3(c))),
+  );
   const first = list.find((s): s is StoryStorage => !!s);
   const [pending, setPending] = useState<StoryFilter | null>(null);
   const filter = pending ?? first?.filter ?? CLEAR_FILTER;
   const registered = list.every(Boolean);
-  const keys = chests.map((c, i) => (list[i]?.chest) ?? c);
+  const keys = chests.map((c, i) => list[i]?.chest ?? c);
   const set = (patch: { filter?: StoryFilter; priority?: string; label?: string }) => {
     if (patch.filter) setPending(patch.filter);
     void write('story.storage', storageSetBody(keys, patch) as never).finally(() => setPending(null));
   };
-  const title = chests.length > 1 ? `${chests.length} chests` : first?.label || (first?.doubleWith ? 'Double chest' : 'Chest');
+  const title =
+    chests.length > 1 ? `${chests.length} chests` : first?.label || (first?.doubleWith ? 'Double chest' : 'Chest');
   return (
-    <Shell title={title} sub={registered ? `Storage · ${PRIORITY_LABELS[(first?.priority ?? 'normal') as keyof typeof PRIORITY_LABELS] ?? first?.priority} · ${filterSummary(tree, filter)}` : 'Not storage yet'} onClose={onClose} testid="storage-inspector">
+    <Shell
+      title={title}
+      sub={
+        registered
+          ? `Storage · ${PRIORITY_LABELS[(first?.priority ?? 'normal') as keyof typeof PRIORITY_LABELS] ?? first?.priority} · ${filterSummary(tree, filter)}`
+          : 'Not storage yet'
+      }
+      onClose={onClose}
+      testid="storage-inspector"
+    >
       <div className="space-y-2 text-xs">
         {!registered ? (
-          <Button size="sm" variant="primary" disabled={!canWrite} onClick={() => void write('story.storage', { op: 'set', chests: keys, priority: 'normal', filter: allowAll(tree) } as never)}>
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={!canWrite}
+            onClick={() =>
+              void write('story.storage', {
+                op: 'set',
+                chests: keys,
+                priority: 'normal',
+                filter: allowAll(tree),
+              } as never)
+            }
+          >
             Use as storage
           </Button>
         ) : (
@@ -409,7 +653,13 @@ export function StorageInspector({
             <div className="flex items-center gap-1.5">
               <label className="flex items-center gap-1">
                 Priority
-                <select aria-label="Storage priority" value={first?.priority ?? 'normal'} disabled={!canWrite} onChange={(e) => set({ priority: e.target.value })} className="h-6 rounded border border-border bg-surface-2 px-1">
+                <select
+                  aria-label="Storage priority"
+                  value={first?.priority ?? 'normal'}
+                  disabled={!canWrite}
+                  onChange={(e) => set({ priority: e.target.value })}
+                  className="h-6 rounded border border-border bg-surface-2 px-1"
+                >
                   {STORY_STORAGE_PRIORITIES.map((p) => (
                     <option key={p} value={p}>
                       {PRIORITY_LABELS[p]}
@@ -417,22 +667,42 @@ export function StorageInspector({
                   ))}
                 </select>
               </label>
-              <button type="button" onClick={() => onClip({ filter, priority: first?.priority ?? 'normal' })} className="ml-auto inline-flex items-center gap-1 rounded bg-surface-2 px-1.5 py-0.5 hover:bg-surface-3" title="Copy these settings">
+              <button
+                type="button"
+                onClick={() => onClip({ filter, priority: first?.priority ?? 'normal' })}
+                className="ml-auto inline-flex items-center gap-1 rounded bg-surface-2 px-1.5 py-0.5 hover:bg-surface-3"
+                title="Copy these settings"
+              >
                 <Copy className="size-3" /> Copy
               </button>
-              <button type="button" disabled={!clip || !canWrite} onClick={() => clip && set({ filter: clip.filter, priority: clip.priority })} className="inline-flex items-center gap-1 rounded bg-surface-2 px-1.5 py-0.5 hover:bg-surface-3 disabled:opacity-40" title="Paste copied settings onto the selected chests">
+              <button
+                type="button"
+                disabled={!clip || !canWrite}
+                onClick={() => clip && set({ filter: clip.filter, priority: clip.priority })}
+                className="inline-flex items-center gap-1 rounded bg-surface-2 px-1.5 py-0.5 hover:bg-surface-3 disabled:opacity-40"
+                title="Paste copied settings onto the selected chests"
+              >
                 <ClipboardPaste className="size-3" /> Paste
               </button>
             </div>
             {chests.length === 1 ? (
-              <Input aria-label="Chest label" defaultValue={first?.label ?? ''} placeholder="Label (optional)" maxLength={40} className="h-6 text-[11px]" onBlur={(e) => e.target.value !== (first?.label ?? '') && set({ label: e.target.value })} />
+              <Input
+                aria-label="Chest label"
+                defaultValue={first?.label ?? ''}
+                placeholder="Label (optional)"
+                maxLength={40}
+                className="h-6 text-[11px]"
+                onBlur={(e) => e.target.value !== (first?.label ?? '') && set({ label: e.target.value })}
+              />
             ) : null}
             <FilterTree tree={tree} filter={filter} onChange={(f) => canWrite && set({ filter: f })} />
             {chests.length === 1 && first ? (
               <div>
                 <div className="mb-1 flex items-center text-[10.5px] font-semibold tracking-wide text-subtle uppercase">
                   Contents
-                  <span className="ml-auto font-normal normal-case">{first.knownAt ? `seen ${new Date(String(first.knownAt)).toLocaleTimeString()}` : 'not seen yet'}</span>
+                  <span className="ml-auto font-normal normal-case">
+                    {first.knownAt ? `seen ${new Date(String(first.knownAt)).toLocaleTimeString()}` : 'not seen yet'}
+                  </span>
                 </div>
                 <ul className="grid grid-cols-2 gap-x-2 gap-y-0.5">
                   {first.contents.map(([id, meta, n], i) => (
@@ -443,10 +713,17 @@ export function StorageInspector({
                     </li>
                   ))}
                 </ul>
-                {(first.freeSlots !== null && first.freeSlots !== undefined) ? <div className="mt-1 text-[10.5px] text-subtle">{first.freeSlots} free slots</div> : null}
+                {first.freeSlots !== null && first.freeSlots !== undefined ? (
+                  <div className="mt-1 text-[10.5px] text-subtle">{first.freeSlots} free slots</div>
+                ) : null}
               </div>
             ) : null}
-            <Button size="sm" variant="ghost" disabled={!canWrite} onClick={() => void write('story.storage', { op: 'remove', chests: keys } as never)}>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={!canWrite}
+              onClick={() => void write('story.storage', { op: 'remove', chests: keys } as never)}
+            >
               Stop using as storage
             </Button>
           </>
@@ -458,7 +735,21 @@ export function StorageInspector({
 
 // ------------------------------------------------------------------ bills
 
-export function BillsInspector({ bench, state, canWrite, write, onPickChest, onClose }: { bench: StoryWorkbench; state: StoryColonyState | undefined; canWrite: boolean; write: StoryWrite; onPickChest: () => Promise<V3 | null>; onClose: () => void }) {
+export function BillsInspector({
+  bench,
+  state,
+  canWrite,
+  write,
+  onPickChest,
+  onClose,
+}: {
+  bench: StoryWorkbench;
+  state: StoryColonyState | undefined;
+  canWrite: boolean;
+  write: StoryWrite;
+  onPickChest: () => Promise<V3 | null>;
+  onClose: () => void;
+}) {
   const recipes = useRecipes(bench.kind);
   const [picker, setPicker] = useState(false);
   const [editing, setEditing] = useState<{ bill: StoryBill | null; draft: BillDraft; key: number } | null>(null);
@@ -476,14 +767,28 @@ export function BillsInspector({ bench, state, canWrite, write, onPickChest, onC
   const recipeOf = (id: string) => recipes.data?.find((r) => r.id === id);
   const label = bench.label ?? bench.kind.replace(/_/g, ' ');
   return (
-    <Shell title={label[0]!.toUpperCase() + label.slice(1)} sub={`${bench.bills.length} bill${bench.bills.length === 1 ? '' : 's'} · top to bottom`} onClose={onClose} testid="bills-inspector">
+    <Shell
+      title={label[0]!.toUpperCase() + label.slice(1)}
+      sub={`${bench.bills.length} bill${bench.bills.length === 1 ? '' : 's'} · top to bottom`}
+      onClose={onClose}
+      testid="bills-inspector"
+    >
       <div className="space-y-2 text-xs">
         {bench.supported === false ? (
-          <p className="rounded-md bg-surface-2 px-2 py-1.5 text-muted" title="The colony has no way to work this bench yet">
+          <p
+            className="rounded-md bg-surface-2 px-2 py-1.5 text-muted"
+            title="The colony has no way to work this bench yet"
+          >
             A {bench.kind.replace(/_/g, ' ')} takes no bills yet.
           </p>
         ) : null}
-        <Button size="sm" variant="primary" disabled={!canWrite || bench.supported === false} onClick={() => setPicker(true)} title={bench.supported === false ? 'Not supported yet' : undefined}>
+        <Button
+          size="sm"
+          variant="primary"
+          disabled={!canWrite || bench.supported === false}
+          onClick={() => setPicker(true)}
+          title={bench.supported === false ? 'Not supported yet' : undefined}
+        >
           <Plus className="size-3.5" /> Add bill
         </Button>
         <ol className="space-y-1" data-testid="bills">
@@ -500,24 +805,55 @@ export function BillsInspector({ bench, state, canWrite, write, onPickChest, onC
                   const from = dragFrom.current;
                   dragFrom.current = null;
                   if (from === null || from === i) return;
-                  void write('story.bills', reorderBills(pos, bench.bills.map((x) => x.id), from, i) as never);
+                  void write(
+                    'story.bills',
+                    reorderBills(
+                      pos,
+                      bench.bills.map((x) => x.id),
+                      from,
+                      i,
+                    ) as never,
+                  );
                 }}
-                className={cn('flex items-center gap-1.5 rounded-md border border-border bg-surface-2 px-1.5 py-1', b.paused && 'opacity-60')}
+                className={cn(
+                  'flex items-center gap-1.5 rounded-md border border-border bg-surface-2 px-1.5 py-1',
+                  b.paused && 'opacity-60',
+                )}
               >
                 <GripVertical className="size-3 cursor-grab text-subtle" aria-hidden />
                 {r ? <ItemIcon id={r.output[0]} meta={r.output[1]} size={18} /> : null}
-                <button type="button" onClick={() => setEditing({ bill: b, draft: draftOf(b), key: 0 })} className="min-w-0 flex-1 text-left">
+                <button
+                  type="button"
+                  onClick={() => setEditing({ bill: b, draft: draftOf(b), key: 0 })}
+                  className="min-w-0 flex-1 text-left"
+                >
                   <div className="truncate font-semibold">{r?.label ?? b.recipe}</div>
                   <div className="text-[10.5px] text-muted">
                     {billSummary(b)} · {billProgress(b)}
-                    {b.pawn !== 'any' ? ` · ${(state?.pawns ?? []).find((p) => p.name === b.pawn)?.display ?? b.pawn} only` : ''}
+                    {b.pawn !== 'any'
+                      ? ` · ${(state?.pawns ?? []).find((p) => p.name === b.pawn)?.display ?? b.pawn} only`
+                      : ''}
                   </div>
-                  {b.suspendedReason ? <div className="text-[10.5px] text-danger">Suspended: {b.suspendedReason}</div> : null}
+                  {b.suspendedReason ? (
+                    <div className="text-[10.5px] text-danger">Suspended: {b.suspendedReason}</div>
+                  ) : null}
                 </button>
-                <button type="button" disabled={!canWrite} onClick={() => void write('story.bills', { op: b.paused ? 'resume' : 'pause', id: b.id } as never)} aria-label={b.paused ? `Resume ${r?.label ?? b.recipe}` : `Pause ${r?.label ?? b.recipe}`} className="rounded p-0.5 hover:bg-surface-3">
+                <button
+                  type="button"
+                  disabled={!canWrite}
+                  onClick={() => void write('story.bills', { op: b.paused ? 'resume' : 'pause', id: b.id } as never)}
+                  aria-label={b.paused ? `Resume ${r?.label ?? b.recipe}` : `Pause ${r?.label ?? b.recipe}`}
+                  className="rounded p-0.5 hover:bg-surface-3"
+                >
                   {b.paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
                 </button>
-                <button type="button" disabled={!canWrite} onClick={() => void write('story.bills', { op: 'remove', id: b.id } as never)} aria-label={`Delete ${r?.label ?? b.recipe}`} className="rounded p-0.5 text-danger hover:bg-danger-soft">
+                <button
+                  type="button"
+                  disabled={!canWrite}
+                  onClick={() => void write('story.bills', { op: 'remove', id: b.id } as never)}
+                  aria-label={`Delete ${r?.label ?? b.recipe}`}
+                  className="rounded p-0.5 text-danger hover:bg-danger-soft"
+                >
                   <Trash2 className="size-3.5" />
                 </button>
               </li>
@@ -555,13 +891,38 @@ export function BillsInspector({ bench, state, canWrite, write, onPickChest, onC
   );
 }
 
-export function RecipePicker({ open, recipes, state, onPick, onClose }: { open: boolean; recipes: StoryRecipe[]; state: StoryColonyState | undefined; onPick: (r: StoryRecipe) => void; onClose: () => void }) {
+export function RecipePicker({
+  open,
+  recipes,
+  state,
+  onPick,
+  onClose,
+}: {
+  open: boolean;
+  recipes: StoryRecipe[];
+  state: StoryColonyState | undefined;
+  onPick: (r: StoryRecipe) => void;
+  onClose: () => void;
+}) {
   const [q, setQ] = useState('');
   const tree = useMemo(() => buildTree(state?.categories), [state?.categories]);
   const groups = useMemo(() => searchRecipes(recipes, q, tree), [recipes, q, tree]);
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()} title="Add a bill" description="What should be made here?" size="md">
-      <Input aria-label="Search recipes" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search recipes or ingredients" className="mb-2 h-8 text-sm" autoFocus />
+    <Dialog
+      open={open}
+      onOpenChange={(o) => !o && onClose()}
+      title="Add a bill"
+      description="What should be made here?"
+      size="md"
+    >
+      <Input
+        aria-label="Search recipes"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="Search recipes or ingredients"
+        className="mb-2 h-8 text-sm"
+        autoFocus
+      />
       <div className="max-h-[50vh] space-y-2 overflow-auto" data-testid="recipe-picker">
         {groups.map((g) => (
           <div key={g.group}>
@@ -569,7 +930,12 @@ export function RecipePicker({ open, recipes, state, onPick, onClose }: { open: 
             <ul className="space-y-0.5">
               {g.recipes.map((r) => (
                 <li key={r.id}>
-                  <button type="button" onClick={() => onPick(r)} className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-sm hover:bg-accent-soft" aria-label={`Recipe ${r.label}`}>
+                  <button
+                    type="button"
+                    onClick={() => onPick(r)}
+                    className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-sm hover:bg-accent-soft"
+                    aria-label={`Recipe ${r.label}`}
+                  >
                     <ItemIcon id={r.output[0]} meta={r.output[1]} size={22} />
                     <span className="font-medium">{r.label}</span>
                     <span className="ml-auto text-xs text-muted">{recipeLine(r)}</span>
@@ -585,27 +951,77 @@ export function RecipePicker({ open, recipes, state, onPick, onClose }: { open: 
   );
 }
 
-function Stepper({ value, onChange, min, max, label, step = 1 }: { value: number; onChange: (v: number) => void; min: number; max: number; label: string; step?: number }) {
+function Stepper({
+  value,
+  onChange,
+  min,
+  max,
+  label,
+  step = 1,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  min: number;
+  max: number;
+  label: string;
+  step?: number;
+}) {
   return (
     <span className="inline-flex items-center gap-1">
-      <button type="button" aria-label={`${label} −`} onClick={(e) => onChange(Math.max(min, value - (e.shiftKey ? step * 10 : step)))} className="grid size-6 place-items-center rounded bg-surface-2 hover:bg-surface-3">
+      <button
+        type="button"
+        aria-label={`${label} −`}
+        onClick={(e) => onChange(Math.max(min, value - (e.shiftKey ? step * 10 : step)))}
+        className="grid size-6 place-items-center rounded bg-surface-2 hover:bg-surface-3"
+      >
         <Minus className="size-3" />
       </button>
-      <input aria-label={label} value={value} onChange={(e) => onChange(Math.max(min, Math.min(max, Number(e.target.value) || min)))} className="h-6 w-12 rounded border border-border bg-surface text-center text-xs tabular-nums" />
-      <button type="button" aria-label={`${label} +`} onClick={(e) => onChange(Math.min(max, value + (e.shiftKey ? step * 10 : step)))} className="grid size-6 place-items-center rounded bg-surface-2 hover:bg-surface-3">
+      <input
+        aria-label={label}
+        value={value}
+        onChange={(e) => onChange(Math.max(min, Math.min(max, Number(e.target.value) || min)))}
+        className="h-6 w-12 rounded border border-border bg-surface text-center text-xs tabular-nums"
+      />
+      <button
+        type="button"
+        aria-label={`${label} +`}
+        onClick={(e) => onChange(Math.min(max, value + (e.shiftKey ? step * 10 : step)))}
+        className="grid size-6 place-items-center rounded bg-surface-2 hover:bg-surface-3"
+      >
         <Plus className="size-3" />
       </button>
     </span>
   );
 }
 
-export function BillDialog({ recipe, initial, isNew, state, onPickChest, onSave, onClose }: { recipe: StoryRecipe | undefined; initial: BillDraft; isNew: boolean; state: StoryColonyState | undefined; onPickChest: (current: BillDraft) => void; onSave: (d: BillDraft) => void; onClose: () => void }) {
+export function BillDialog({
+  recipe,
+  initial,
+  isNew,
+  state,
+  onPickChest,
+  onSave,
+  onClose,
+}: {
+  recipe: StoryRecipe | undefined;
+  initial: BillDraft;
+  isNew: boolean;
+  state: StoryColonyState | undefined;
+  onPickChest: (current: BillDraft) => void;
+  onSave: (d: BillDraft) => void;
+  onClose: () => void;
+}) {
   const [d, setD] = useState<BillDraft>(initial);
   const set = (p: Partial<BillDraft>) => setD((x) => ({ ...x, ...p }));
   // The ingredient tree: only the categories and items the recipe can use.
   const tree = useMemo(() => {
     const full = buildTree(state?.categories);
-    const allowed = new Set((recipe?.inputs ?? []).flatMap((i) => [...(i.category ? [i.category] : []), ...(i.options ?? []).map(([a, m]) => `${a}:${m}`)]));
+    const allowed = new Set(
+      (recipe?.inputs ?? []).flatMap((i) => [
+        ...(i.category ? [i.category] : []),
+        ...(i.options ?? []).map(([a, m]) => `${a}:${m}`),
+      ]),
+    );
     const keep = (n: TreeNode): TreeNode | null => {
       if (allowed.has(n.id)) return n;
       const items = n.items.filter((it) => allowed.has(it.key));
@@ -637,12 +1053,24 @@ export function BillDialog({ recipe, initial, isNew, state, onPickChest, onSave,
         <fieldset className="space-y-1.5">
           <legend className="text-xs font-semibold">Repeat</legend>
           <div className="flex flex-wrap items-center gap-2">
-            <select aria-label="Repeat mode" value={d.mode} onChange={(e) => set({ mode: e.target.value as BillDraft['mode'], target: e.target.value === 'until' && d.target < 2 ? 64 : d.target })} className="h-7 rounded border border-border bg-surface-2 px-1 text-xs">
+            <select
+              aria-label="Repeat mode"
+              value={d.mode}
+              onChange={(e) =>
+                set({
+                  mode: e.target.value as BillDraft['mode'],
+                  target: e.target.value === 'until' && d.target < 2 ? 64 : d.target,
+                })
+              }
+              className="h-7 rounded border border-border bg-surface-2 px-1 text-xs"
+            >
               <option value="count">Do X times</option>
               <option value="until">Do until you have X</option>
               <option value="forever">Do forever</option>
             </select>
-            {d.mode !== 'forever' ? <Stepper label="Target" value={d.target} min={1} max={9999} onChange={(v) => set({ target: v })} /> : null}
+            {d.mode !== 'forever' ? (
+              <Stepper label="Target" value={d.target} min={1} max={9999} onChange={(v) => set({ target: v })} />
+            ) : null}
             <span className="text-xs text-muted">{billSummary(d)}</span>
           </div>
         </fieldset>
@@ -652,12 +1080,25 @@ export function BillDialog({ recipe, initial, isNew, state, onPickChest, onSave,
         </fieldset>
         <label className="flex items-center gap-2 text-xs">
           <span className="w-28 font-semibold">Search radius</span>
-          <input type="range" min={4} max={128} value={d.radius} onChange={(e) => set({ radius: Number(e.target.value) })} aria-label="Ingredient search radius" className="flex-1 accent-[var(--accent)]" />
+          <input
+            type="range"
+            min={4}
+            max={128}
+            value={d.radius}
+            onChange={(e) => set({ radius: Number(e.target.value) })}
+            aria-label="Ingredient search radius"
+            className="flex-1 accent-[var(--accent)]"
+          />
           <span className="w-16 text-right tabular-nums">{d.radius} blocks</span>
         </label>
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="w-28 font-semibold">Worker</span>
-          <select aria-label="Worker" value={d.pawn} onChange={(e) => set({ pawn: e.target.value })} className="h-7 rounded border border-border bg-surface-2 px-1">
+          <select
+            aria-label="Worker"
+            value={d.pawn}
+            onChange={(e) => set({ pawn: e.target.value })}
+            className="h-7 rounded border border-border bg-surface-2 px-1"
+          >
             <option value="any">Anyone</option>
             {pawns.map((p) => (
               <option key={p.name} value={p.name}>
@@ -667,22 +1108,29 @@ export function BillDialog({ recipe, initial, isNew, state, onPickChest, onSave,
           </select>
           <label className="flex items-center gap-1">
             Min skill
-            <Stepper label="Minimum skill" value={d.minSkill ?? 0} min={0} max={20} onChange={(v) => set({ minSkill: v || null })} />
+            <Stepper
+              label="Minimum skill"
+              value={d.minSkill ?? 0}
+              min={0}
+              max={20}
+              onChange={(v) => set({ minSkill: v || null })}
+            />
           </label>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="w-28 font-semibold">Store in</span>
-          <select aria-label="Store mode" value={d.store === 'best' ? 'best' : 'chest'} onChange={(e) => e.target.value === 'best' && set({ store: 'best' })} className="h-7 rounded border border-border bg-surface-2 px-1">
+          <select
+            aria-label="Store mode"
+            value={d.store === 'best' ? 'best' : 'chest'}
+            onChange={(e) => e.target.value === 'best' && set({ store: 'best' })}
+            className="h-7 rounded border border-border bg-surface-2 px-1"
+          >
             <option value="best">Best storage</option>
             <option value="chest" disabled={d.store === 'best'}>
               {d.store === 'best' ? 'A chest (pick on the map)' : `Chest ${d.store.chest.join(', ')}`}
             </option>
           </select>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => onPickChest(d)}
-          >
+          <Button size="sm" variant="ghost" onClick={() => onPickChest(d)}>
             Pick a chest…
           </Button>
         </div>

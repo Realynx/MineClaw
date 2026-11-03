@@ -15,7 +15,18 @@ import { IsoDateTime, Vec3, Vec3i } from './common.js';
 // ------------------------------------------------------------------ vocabulary
 
 /** Work types in their fixed column order (ties in priority go to the earlier column). */
-export const STORY_WORK_TYPES = ['guard', 'doctor', 'cook', 'hunt', 'build', 'farm', 'mine', 'chop', 'craft', 'haul'] as const;
+export const STORY_WORK_TYPES = [
+  'guard',
+  'doctor',
+  'cook',
+  'hunt',
+  'build',
+  'farm',
+  'mine',
+  'chop',
+  'craft',
+  'haul',
+] as const;
 export const StoryWorkType = z.enum(STORY_WORK_TYPES);
 export type StoryWorkType = z.infer<typeof StoryWorkType>;
 
@@ -24,7 +35,17 @@ export const STORY_SCHEDULE_BLOCKS = ['work', 'sleep', 'anything', 'free'] as co
 export const StoryScheduleBlock = z.enum(STORY_SCHEDULE_BLOCKS);
 export type StoryScheduleBlock = z.infer<typeof StoryScheduleBlock>;
 
-export const STORY_PAWN_STATES = ['idle', 'working', 'moving', 'eating', 'sleeping', 'fleeing', 'fighting', 'drafted', 'offline'] as const;
+export const STORY_PAWN_STATES = [
+  'idle',
+  'working',
+  'moving',
+  'eating',
+  'sleeping',
+  'fleeing',
+  'fighting',
+  'drafted',
+  'offline',
+] as const;
 export const STORY_ORDER_KINDS = ['move', 'attack', 'chop', 'mine', 'haul', 'build', 'hold', 'stop'] as const;
 export const StoryOrderKind = z.enum(STORY_ORDER_KINDS);
 export type StoryOrderKind = z.infer<typeof StoryOrderKind>;
@@ -34,7 +55,18 @@ export const STORY_ZONE_KINDS = ['chop', 'mine', 'farm', 'home', 'forbidden'] as
 export const StoryZoneKind = z.enum(STORY_ZONE_KINDS);
 export type StoryZoneKind = z.infer<typeof StoryZoneKind>;
 
-export const STORY_DESIGNATION_KINDS = ['chop', 'mine', 'harvest', 'haul', 'build', 'deconstruct', 'cut', 'hunt', 'forbid', 'allow'] as const;
+export const STORY_DESIGNATION_KINDS = [
+  'chop',
+  'mine',
+  'harvest',
+  'haul',
+  'build',
+  'deconstruct',
+  'cut',
+  'hunt',
+  'forbid',
+  'allow',
+] as const;
 export const StoryDesignationKind = z.enum(STORY_DESIGNATION_KINDS);
 export type StoryDesignationKind = z.infer<typeof StoryDesignationKind>;
 
@@ -42,7 +74,22 @@ export type StoryDesignationKind = z.infer<typeof StoryDesignationKind>;
 export const StoryMineFilter = z.enum(['all', 'ores', 'stone', 'soil']);
 export type StoryMineFilter = z.infer<typeof StoryMineFilter>;
 
-export const STORY_BUILD_KINDS = ['wall', 'floor', 'roof', 'door', 'window', 'stairs', 'fence', 'block', 'remove', 'crafting_table', 'furnace', 'chest', 'bed', 'torch'] as const;
+export const STORY_BUILD_KINDS = [
+  'wall',
+  'floor',
+  'roof',
+  'door',
+  'window',
+  'stairs',
+  'fence',
+  'block',
+  'remove',
+  'crafting_table',
+  'furnace',
+  'chest',
+  'bed',
+  'torch',
+] as const;
 export const StoryBuildKind = z.enum(STORY_BUILD_KINDS);
 export type StoryBuildKind = z.infer<typeof StoryBuildKind>;
 
@@ -57,7 +104,14 @@ export const StoryStoragePriority = z.enum(STORY_STORAGE_PRIORITIES);
 export type StoryStoragePriority = z.infer<typeof StoryStoragePriority>;
 
 /** An axis-aligned box of blocks [x1, y1, z1, x2, y2, z2] (corners inclusive, in any order). */
-export const StoryArea = z.tuple([z.number().int(), z.number().int(), z.number().int(), z.number().int(), z.number().int(), z.number().int()]);
+export const StoryArea = z.tuple([
+  z.number().int(),
+  z.number().int(),
+  z.number().int(),
+  z.number().int(),
+  z.number().int(),
+  z.number().int(),
+]);
 export type StoryArea = z.infer<typeof StoryArea>;
 
 /** An item stack or block kind [id, meta] (meta -1 = any). */
@@ -133,12 +187,22 @@ export const StoryAck = z.object({
   rev: z.number().int().nullish(),
   message: z.string().nullish(),
   id: z.union([z.string(), z.number()]).nullish().describe('release / resume: the colony; zones add: the zone'),
-  ids: z.array(z.union([z.string(), z.number()])).nullish().describe('orders: the new order ids'),
+  ids: z
+    .array(z.union([z.string(), z.number()]))
+    .nullish()
+    .describe('orders: the new order ids'),
   released: z.boolean().nullish(),
   paused: z.boolean().nullish(),
-  pawns: z.union([z.number(), z.array(z.string())]).nullish().describe('resume: the pawns spawned again'),
+  pawns: z
+    .union([z.number(), z.array(z.string())])
+    .nullish()
+    .describe('resume: the pawns spawned again'),
   note: z.string().nullish(),
-  removed: z.array(z.union([z.string(), z.number()])).nullish().describe('zones remove: the zones removed'),
+  name: z.string().nullish().describe('zones rename: the new name'),
+  removed: z
+    .array(z.union([z.string(), z.number()]))
+    .nullish()
+    .describe('zones remove: the zones removed'),
 });
 export type StoryAck = z.infer<typeof StoryAck>;
 
@@ -197,7 +261,10 @@ export type StoryJob = z.infer<typeof StoryJob>;
 export const StorySkill = z.object({
   level: Num,
   xp: Num.nullish(),
-  passion: z.union([z.boolean(), z.number()]).nullish().describe('true (or 1/2: minor/major) when the pawn loves this work'),
+  passion: z
+    .union([z.boolean(), z.number()])
+    .nullish()
+    .describe('true (or 1/2: minor/major) when the pawn loves this work'),
 });
 export type StorySkill = z.infer<typeof StorySkill>;
 
@@ -230,6 +297,8 @@ export const StoryZone = z.object({
   id: z.union([z.string(), z.number()]),
   kind: z.string(),
   area: StoryArea,
+  /** The zone's name (the bot's field; houses are named home zones). */
+  name: z.string().nullish(),
   label: z.string().nullish(),
 });
 export type StoryZone = z.infer<typeof StoryZone>;
@@ -253,6 +322,9 @@ export const StoryDesignation = z.object({
   design: z.union([z.string(), z.number()]).nullish(),
   pawn: z.string().nullish().describe('the pawn holding the lease'),
   state: z.string().nullish(),
+  status: z.string().nullish().describe('open | failed (3 failures; still retried after its rest)'),
+  reason: z.string().nullish().describe('why the last try failed'),
+  fails: z.number().int().nullish(),
 });
 export type StoryDesignation = z.infer<typeof StoryDesignation>;
 
@@ -277,7 +349,13 @@ export const StoryAlert = z.object({
   text: z.string(),
   pawn: z.string().nullish(),
   fix: z
-    .object({ tab: z.string().nullish(), chest: Vec3i.nullish(), workbench: Vec3i.nullish(), item: StoryItemKey.nullish(), pawn: z.string().nullish() })
+    .object({
+      tab: z.string().nullish(),
+      chest: Vec3i.nullish(),
+      workbench: Vec3i.nullish(),
+      item: StoryItemKey.nullish(),
+      pawn: z.string().nullish(),
+    })
     .nullish()
     .describe('where the web sends the user to fix it'),
 });
@@ -347,7 +425,13 @@ export const StoryStorage = z.object({
 });
 export type StoryStorage = z.infer<typeof StoryStorage>;
 
-export const STORY_WORKBENCH_KINDS = ['crafting_table', 'furnace', 'brewing_stand', 'anvil', 'enchanting_table'] as const;
+export const STORY_WORKBENCH_KINDS = [
+  'crafting_table',
+  'furnace',
+  'brewing_stand',
+  'anvil',
+  'enchanting_table',
+] as const;
 export const StoryWorkbenchKind = z.enum(STORY_WORKBENCH_KINDS);
 export type StoryWorkbenchKind = z.infer<typeof StoryWorkbenchKind>;
 
@@ -428,7 +512,19 @@ export const StoryAiBody = z.object({
 export type StoryAiBody = z.infer<typeof StoryAiBody>;
 
 export const STORY_DIRECTIVE_KINDS = [
-  'chop', 'cut', 'harvest', 'mine', 'haul', 'hunt', 'deconstruct', 'build', 'move', 'attack', 'guard', 'craft', 'text',
+  'chop',
+  'cut',
+  'harvest',
+  'mine',
+  'haul',
+  'hunt',
+  'deconstruct',
+  'build',
+  'move',
+  'attack',
+  'guard',
+  'craft',
+  'text',
 ] as const;
 export const StoryDirectiveKind = z.enum(STORY_DIRECTIVE_KINDS);
 export type StoryDirectiveKind = z.infer<typeof StoryDirectiveKind>;
@@ -467,7 +563,10 @@ export const StoryRemoved = z.object({
   designations: z.array(z.union([z.string(), z.number()])).nullish(),
   orders: z.array(z.union([z.string(), z.number()])).nullish(),
   builds: z.array(z.union([z.string(), z.number()])).nullish(),
-  storages: z.array(z.union([z.string(), Vec3i])).nullish().describe('chest keys "x,y,z"'),
+  storages: z
+    .array(z.union([z.string(), Vec3i]))
+    .nullish()
+    .describe('chest keys "x,y,z"'),
   workbenches: z.array(z.union([z.string(), Vec3i])).nullish(),
   directives: z.array(z.union([z.string(), z.number()])).nullish(),
   alerts: z.array(z.union([z.string(), z.number()])).nullish(),
@@ -501,7 +600,10 @@ export const StoryColonyState = z.object({
   categories: z.array(StoryCategory).nullish(),
   storages: z.array(StoryStorage).nullish(),
   workbenches: z.array(StoryWorkbench).nullish(),
-  beds: z.array(z.lazy(() => StoryBed)).nullish().describe('every bed the colony knows, in full whenever it is sent'),
+  beds: z
+    .array(z.lazy(() => StoryBed))
+    .nullish()
+    .describe('every bed the colony knows, in full whenever it is sent'),
   ai: z.array(StoryAiBody).nullish(),
   directives: z.array(StoryDirective).nullish(),
   removed: StoryRemoved.nullish(),
@@ -580,24 +682,35 @@ export const StoryOrderSpec = z
   .strict();
 export type StoryOrderSpec = z.infer<typeof StoryOrderSpec>;
 
-export const StoryOrderRequest = z.object({ pawns: PawnList, order: StoryOrderSpec, queue: z.boolean().optional() }).strict();
+export const StoryOrderRequest = z
+  .object({ pawns: PawnList, order: StoryOrderSpec, queue: z.boolean().optional() })
+  .strict();
 export type StoryOrderRequest = z.infer<typeof StoryOrderRequest>;
 
 /** `remove` without a kind removes every zone overlapping the area. */
 /**
- * Zones: `add` an area (optionally named), `remove` every zone (of a kind) overlapping an area, `rename` one zone by id
- * (houses are home zones: any number, each with its own name).
+ * Zones (houses are zones of kind `home`: any number, each with its own name): `add` an area (optionally named), `remove`
+ * every zone (of a kind) overlapping an area or one zone by id, `rename` one zone (an empty name clears it).
  */
-export const StoryZoneRequest = z
-  .object({
-    op: z.enum(['add', 'remove', 'rename']),
-    kind: StoryZoneKind.optional(),
-    area: StoryArea.optional(),
-    id: z.union([z.string().min(1).max(64), z.number().int()]).optional(),
-    label: z.string().trim().max(40).optional(),
-  })
-  .strict()
-  .refine((b) => (b.op === 'rename' ? b.id !== undefined && b.label !== undefined : b.area !== undefined), { message: 'add / remove take an area; rename takes an id and a label' });
+export const StoryZoneRequest = z.union([
+  z
+    .object({
+      op: z.literal('add'),
+      kind: StoryZoneKind.optional(),
+      area: StoryArea,
+      name: z.string().trim().max(40).optional(),
+    })
+    .strict(),
+  z.object({ op: z.literal('remove'), kind: StoryZoneKind.optional(), area: StoryArea }).strict(),
+  z.object({ op: z.literal('remove'), id: z.union([z.string().min(1).max(64), z.number().int()]) }).strict(),
+  z
+    .object({
+      op: z.literal('rename'),
+      id: z.union([z.string().min(1).max(64), z.number().int()]),
+      name: z.string().trim().max(40),
+    })
+    .strict(),
+]);
 export type StoryZoneRequest = z.infer<typeof StoryZoneRequest>;
 
 /**
@@ -610,7 +723,10 @@ export const StoryDesignationRequest = z
     kind: StoryDesignationKind.optional(),
     area: StoryArea.optional(),
     blocks: z.array(Vec3i).max(4096).optional(),
-    ids: z.array(z.union([z.string(), z.number()])).max(4096).optional(),
+    ids: z
+      .array(z.union([z.string(), z.number()]))
+      .max(4096)
+      .optional(),
     entities: z.array(z.number().int()).max(512).optional(),
     design: z.union([z.string().max(64), z.number().int()]).optional(),
     filter: StoryMineFilter.optional(),
@@ -621,7 +737,10 @@ export type StoryDesignationRequest = z.infer<typeof StoryDesignationRequest>;
 export const StoryDesignationResponse = z.object({
   ok: z.boolean().nullish(),
   count: z.number().int().default(0).describe('how many targets were designated (or removed)'),
-  targets: z.union([z.array(Vec3i), z.array(z.number().int())]).nullish().describe('blocks, or entity ids (haul, hunt)'),
+  targets: z
+    .union([z.array(Vec3i), z.array(z.number().int())])
+    .nullish()
+    .describe('blocks, or entity ids (haul, hunt)'),
   removed: z.array(z.union([z.string(), z.number()])).nullish(),
   entities: z.array(z.number().int()).nullish(),
   rev: z.number().int().nullish(),
@@ -629,7 +748,11 @@ export const StoryDesignationResponse = z.object({
 export type StoryDesignationResponse = z.infer<typeof StoryDesignationResponse>;
 
 export const StoryRoofSpec = z
-  .object({ style: StoryRoofStyle, material: StoryMaterial.optional(), overhang: z.union([z.literal(0), z.literal(1)]).optional() })
+  .object({
+    style: StoryRoofStyle,
+    material: StoryMaterial.optional(),
+    overhang: z.union([z.literal(0), z.literal(1)]).optional(),
+  })
   .strict();
 export type StoryRoofSpec = z.infer<typeof StoryRoofSpec>;
 
@@ -648,16 +771,53 @@ export const StoryBuildItem = z
     facing: StoryFacing.optional(),
     level: z.number().int().optional(),
     name: z.string().max(40).optional(),
+    group: z
+      .string()
+      .max(40)
+      .optional()
+      .describe("one placed design's items: its blocks wait until the group's dig item (queued first) is done"),
   })
   .strict();
 export type StoryBuildItem = z.infer<typeof StoryBuildItem>;
 
 export const StoryBuildRequest = z.discriminatedUnion('op', [
   z.object({ op: z.literal('add'), items: z.array(StoryBuildItem).min(1).max(64) }).strict(),
-  z.object({ op: z.literal('remove'), ids: z.array(z.union([z.string(), z.number()])).min(1).max(256) }).strict(),
-  z.object({ op: z.literal('pause'), ids: z.array(z.union([z.string(), z.number()])).min(1).max(256) }).strict(),
-  z.object({ op: z.literal('resume'), ids: z.array(z.union([z.string(), z.number()])).min(1).max(256) }).strict(),
-  z.object({ op: z.literal('reorder'), ids: z.array(z.union([z.string(), z.number()])).min(1).max(256) }).strict(),
+  z
+    .object({
+      op: z.literal('remove'),
+      ids: z
+        .array(z.union([z.string(), z.number()]))
+        .min(1)
+        .max(256),
+    })
+    .strict(),
+  z
+    .object({
+      op: z.literal('pause'),
+      ids: z
+        .array(z.union([z.string(), z.number()]))
+        .min(1)
+        .max(256),
+    })
+    .strict(),
+  z
+    .object({
+      op: z.literal('resume'),
+      ids: z
+        .array(z.union([z.string(), z.number()]))
+        .min(1)
+        .max(256),
+    })
+    .strict(),
+  z
+    .object({
+      op: z.literal('reorder'),
+      ids: z
+        .array(z.union([z.string(), z.number()]))
+        .min(1)
+        .max(256),
+    })
+    .strict(),
 ]);
 export type StoryBuildRequest = z.infer<typeof StoryBuildRequest>;
 
@@ -682,7 +842,13 @@ export const StoryStorageRequest = z.discriminatedUnion('op', [
   z.object({ op: z.literal('remove'), chests: Chests }).strict(),
   z.object({ op: z.literal('copy'), from: Vec3i, to: Chests }).strict(),
   z
-    .object({ op: z.literal('assign_area'), area: StoryArea, filter: StoryFilter.optional(), priority: StoryStoragePriority.optional(), label: z.string().max(40).optional() })
+    .object({
+      op: z.literal('assign_area'),
+      area: StoryArea,
+      filter: StoryFilter.optional(),
+      priority: StoryStoragePriority.optional(),
+      label: z.string().max(40).optional(),
+    })
     .strict(),
 ]);
 export type StoryStorageRequest = z.infer<typeof StoryStorageRequest>;
@@ -718,7 +884,9 @@ export type StoryBillSpec = z.infer<typeof StoryBillSpec>;
  */
 export const StoryBillsRequest = z.discriminatedUnion('op', [
   z.object({ op: z.literal('add'), bench: Vec3i, bill: StoryBillSpec }).strict(),
-  StoryBillSpec.partial().extend({ op: z.literal('update'), id: BillId }).strict(),
+  StoryBillSpec.partial()
+    .extend({ op: z.literal('update'), id: BillId })
+    .strict(),
   z.object({ op: z.literal('remove'), id: BillId }).strict(),
   z.object({ op: z.literal('pause'), id: BillId }).strict(),
   z.object({ op: z.literal('resume'), id: BillId }).strict(),
@@ -785,18 +953,26 @@ export function storyClock(hour: number): string {
 /** Time of day (ticks, 0 = 06:00, 1000 a game hour) → clock label to the minute ("13:30"). */
 export function tickClock(tick: number): string {
   const t = (((Math.round(tick) % 24000) + 24000) % 24000) + 6000;
-  const h = Math.floor(t / 1000) % 24, m = Math.floor(((t % 1000) * 60) / 1000);
+  const h = Math.floor(t / 1000) % 24,
+    m = Math.floor(((t % 1000) * 60) / 1000);
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
 /** Clock time (hours 0..23, minutes) → time of day in ticks (06:00 = 0, midnight = 18000). */
 export function clockTick(hour: number, minute = 0): number {
-  return (((Math.round((hour - 6) * 1000 + (minute * 1000) / 60) % 24000) + 24000) % 24000);
+  return ((Math.round((hour - 6) * 1000 + (minute * 1000) / 60) % 24000) + 24000) % 24000;
 }
 
 /** A normalised area: [minX, minY, minZ, maxX, maxY, maxZ]. */
 export function normArea(a: readonly number[]): StoryArea {
-  return [Math.min(a[0]!, a[3]!), Math.min(a[1]!, a[4]!), Math.min(a[2]!, a[5]!), Math.max(a[0]!, a[3]!), Math.max(a[1]!, a[4]!), Math.max(a[2]!, a[5]!)];
+  return [
+    Math.min(a[0]!, a[3]!),
+    Math.min(a[1]!, a[4]!),
+    Math.min(a[2]!, a[5]!),
+    Math.max(a[0]!, a[3]!),
+    Math.max(a[1]!, a[4]!),
+    Math.max(a[2]!, a[5]!),
+  ];
 }
 
 /** Named build materials (any [id, meta] works too). */
@@ -882,7 +1058,11 @@ export function expandBuildItem(item: StoryBuildItem): Array<[number, number, nu
       if (style === 'none') break;
       const o = item.roof?.overhang ?? 0;
       const [rid, rmeta] = item.roof?.material ? materialKey(item.roof.material) : [id, meta];
-      const x1 = a[0] - o, x2 = a[3] + o, z1 = a[2] - o, z2 = a[5] + o, y0 = a[1];
+      const x1 = a[0] - o,
+        x2 = a[3] + o,
+        z1 = a[2] - o,
+        z2 = a[5] + o,
+        y0 = a[1];
       for (let x = x1; x <= x2; x++)
         for (let z = z1; z <= z2; z++) {
           if (style === 'flat') put(x, y0, z, rid, rmeta);
@@ -904,7 +1084,9 @@ export function expandBuildItem(item: StoryBuildItem): Array<[number, number, nu
       break;
     case 'window':
       for (const [x, y, z] of cells) put(x, y, z, 20, 0);
-      if (a) for (let x = a[0]; x <= a[3]; x++) for (let y = a[1]; y <= a[4]; y++) for (let z = a[2]; z <= a[5]; z++) put(x, y, z, 20, 0);
+      if (a)
+        for (let x = a[0]; x <= a[3]; x++)
+          for (let y = a[1]; y <= a[4]; y++) for (let z = a[2]; z <= a[5]; z++) put(x, y, z, 20, 0);
       break;
     case 'fence':
       outline((x, z) => put(x, a![1], z, FENCE, 0));
@@ -945,9 +1127,12 @@ export function expandBuildItem(item: StoryBuildItem): Array<[number, number, nu
     }
     case 'block':
     case 'remove': {
-      const bid = item.kind === 'remove' ? 0 : id, bm = item.kind === 'remove' ? 0 : meta;
+      const bid = item.kind === 'remove' ? 0 : id,
+        bm = item.kind === 'remove' ? 0 : meta;
       for (const [x, y, z] of cells) put(x, y, z, bid, bm);
-      if (a) for (let x = a[0]; x <= a[3]; x++) for (let y = a[1]; y <= a[4]; y++) for (let z = a[2]; z <= a[5]; z++) put(x, y, z, bid, bm);
+      if (a)
+        for (let x = a[0]; x <= a[3]; x++)
+          for (let y = a[1]; y <= a[4]; y++) for (let z = a[2]; z <= a[5]; z++) put(x, y, z, bid, bm);
       break;
     }
   }
@@ -965,7 +1150,8 @@ export const CHEST_IDS: ReadonlySet<number> = new Set([54, 146]);
 export const DOOR_IDS: ReadonlySet<number> = new Set([64, 71, 96, 107, 193, 194, 195, 196, 197]);
 /** Blocks that only exist because someone placed them (the deconstruct preview). */
 export const STRUCTURE_IDS: ReadonlySet<number> = new Set([
-  4, 5, 20, 26, 35, 43, 44, 45, 47, 50, 53, 54, 58, 61, 62, 64, 65, 67, 71, 85, 96, 98, 101, 102, 107, 108, 109, 126, 134, 135, 136, 139, 146, 160, 171,
+  4, 5, 20, 26, 35, 43, 44, 45, 47, 50, 53, 54, 58, 61, 62, 64, 65, 67, 71, 85, 96, 98, 101, 102, 107, 108, 109, 126,
+  134, 135, 136, 139, 146, 160, 171,
 ]);
 /** Animal mob types (b1.8.1 and 1.12.2 network ids) for the hunt tool. */
 export const ANIMAL_TYPES: ReadonlySet<number> = new Set([90, 91, 92, 93, 94, 95, 96, 98, 100, 101, 102, 103]);
@@ -995,7 +1181,13 @@ export function harvestable(id: number, meta: number, below: number): boolean {
 }
 
 /** Does a block match a block-based designate tool? (`below` = the id under it.) */
-export function matchesTool(kind: StoryDesignationKind, id: number, meta: number, below: number, filter: StoryMineFilter = 'all'): boolean {
+export function matchesTool(
+  kind: StoryDesignationKind,
+  id: number,
+  meta: number,
+  below: number,
+  filter: StoryMineFilter = 'all',
+): boolean {
   switch (kind) {
     case 'chop':
       return LOG_IDS.has(id);

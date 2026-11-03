@@ -329,6 +329,25 @@ export function designBlocks(json: unknown, depth = 0): DesignBlock[] {
   return [];
 }
 
+/**
+ * A Design Studio session's cells as a placeable design: its blocks plus its dug cells (id 0: dug out of the ground), x/z moved
+ * to the box's corner. y stays on the studio's ground (0 = the first layer above the grass, below = dug into it) when the design
+ * digs, so the clicked level is its ground floor and the basement goes under it; else its lowest layer is 0 (as `designBlocks`).
+ */
+export function designCells(session: { blocks?: readonly number[][] | null; dug?: readonly number[][] | null } | null): DesignBlock[] {
+  if (!session) return [];
+  const out: DesignBlock[] = [
+    ...(session.blocks ?? []).filter((b) => (b[3] ?? 0) > 0).map((b): DesignBlock => [b[0]!, b[1]!, b[2]!, b[3]!, b[4] ?? 0]),
+    ...(session.dug ?? []).map((p): DesignBlock => [p[0]!, p[1]!, p[2]!, 0, 0]),
+  ];
+  if (!out.length) return [];
+  const mx = Math.min(...out.map((b) => b[0])),
+    my = Math.min(...out.map((b) => b[1])),
+    mz = Math.min(...out.map((b) => b[2]));
+  const dy = my < 0 ? 0 : my;
+  return out.map((b) => [b[0] - mx, b[1] - dy, b[2] - mz, b[3], b[4]]);
+}
+
 /** A design placed with its origin at `at`, turned by `facing` (n = as drawn, then clockwise). */
 export function placeDesign(blocks: readonly DesignBlock[], at: V3, facing: StoryFacing): DesignBlock[] {
   const turns = FACINGS.indexOf(facing);
@@ -339,17 +358,29 @@ export function placeDesign(blocks: readonly DesignBlock[], at: V3, facing: Stor
   });
 }
 
-/** The build request for a placed design: one `block` item per material, explicit blocks (at most 64 × 4096). */
-export function designItems(placed: readonly DesignBlock[], name?: string): StoryBuildItem[] {
+/**
+ * The build request for a placed design: one `block` item per material, explicit blocks (at most 64 × 4096). A design that digs
+ * (id 0 cells: its basement) queues a `remove` item first and ties its items into one `group`, so its blocks wait for the dig.
+ */
+export function designItems(placed: readonly DesignBlock[], name?: string, group?: string): StoryBuildItem[] {
   const by = new Map<string, Array<[number, number, number]>>();
+  const dig: Array<[number, number, number]> = [];
   for (const [x, y, z, id, meta] of placed) {
+    if (id === 0) {
+      dig.push([x, y, z]);
+      continue;
+    }
     const k = `${id}:${meta}`;
     by.set(k, [...(by.get(k) ?? []), [x, y, z]]);
   }
   const items: StoryBuildItem[] = [];
+  const tag = dig.length ? { group: (group ?? `d${Date.now().toString(36)}`).slice(0, 40) } : {};
+  // Top-down is the colony's own order for a dig; the list order is the queue order (the dig first).
+  for (let i = 0; i < dig.length; i += 4096)
+    items.push({ kind: 'remove', blocks: dig.slice(i, i + 4096), ...(name ? { name: name.slice(0, 40) } : {}), ...tag });
   for (const [k, cells] of by) {
     const [id, meta] = k.split(':').map(Number) as [number, number];
-    for (let i = 0; i < cells.length; i += 4096) items.push({ kind: 'block', blocks: cells.slice(i, i + 4096), material: [id, meta], ...(name ? { name: name.slice(0, 40) } : {}) });
+    for (let i = 0; i < cells.length; i += 4096) items.push({ kind: 'block', blocks: cells.slice(i, i + 4096), material: [id, meta], ...(name ? { name: name.slice(0, 40) } : {}), ...tag });
   }
   return items.slice(0, 64);
 }

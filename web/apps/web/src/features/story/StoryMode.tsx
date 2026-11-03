@@ -6,7 +6,14 @@
  * keyboard map, and turns every map gesture into director requests for the colony's pawns and directives for selected AI
  * bodies (one toast says what went where).
  */
-import { materialKey, normArea, tickClock, type StoryAlert, type StoryColonyState, type StoryDirectiveSpec } from '@mineclaw/contracts';
+import {
+  materialKey,
+  normArea,
+  tickClock,
+  type StoryAlert,
+  type StoryColonyState,
+  type StoryDirectiveSpec,
+} from '@mineclaw/contracts';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChatOverlay } from '@/features/world/InWorld';
@@ -16,12 +23,73 @@ import { api, ApiError, errorText } from '@/lib/api/client';
 import { useAuth } from '@/lib/auth';
 import { newRequestId } from '@/lib/utils';
 import { cn } from '@/lib/utils';
-import { clickBody, dispatch, EMPTY_SELECTION, orderAi, orderPawns, splitBodies, type DirectorCall, type Selection } from './model';
-import { AlertsStack, barBodies, ColonistBar, ContextMenu, ControlCluster, HelpOverlay, OptionsBar, panel, TimeSlider, Toast } from './StoryHud';
-import { AiInspector, BedInspector, BillsInspector, GroupInspector, PawnInspector, StorageInspector } from './StoryInspector';
+import {
+  clickBody,
+  dispatch,
+  EMPTY_SELECTION,
+  orderAi,
+  orderPawns,
+  splitBodies,
+  type DirectorCall,
+  type Selection,
+} from './model';
+import {
+  AlertsStack,
+  barBodies,
+  ColonistBar,
+  ContextMenu,
+  ControlCluster,
+  HelpOverlay,
+  OptionsBar,
+  panel,
+  TimeSlider,
+  Toast,
+} from './StoryHud';
+import {
+  AiInspector,
+  BedInspector,
+  BillsInspector,
+  GroupInspector,
+  PawnInspector,
+  StorageInspector,
+} from './StoryInspector';
 import { StoryMap, type DragResult, type FormationMove, type MapTool, type StoryMapHandle } from './StoryMap';
-import { ArchitectPanel, ColonyPanel, DirectivesPanel, NewColony, QueuePanel, SchedulePanel, TabBar, WorkPanel, type TabId } from './StoryPanels';
-import { buildItem, clampHeight, contextMenu, countLabel, designBlocks, designationBody, designationDirective, designItems, DESIGNATE_TOOLS, placeDesign, keyAction, levelCutY, nextLevel, orderBody, PAN_KEYS, preview, rotateFacing, toolArea, toolYRange, type BuildOpts, type MenuItem, type Target } from './tools';
+import {
+  ArchitectPanel,
+  ColonyPanel,
+  DirectivesPanel,
+  NewColony,
+  QueuePanel,
+  SchedulePanel,
+  TabBar,
+  WorkPanel,
+  type TabId,
+} from './StoryPanels';
+import {
+  buildItem,
+  clampHeight,
+  contextMenu,
+  countLabel,
+  designBlocks,
+  designationBody,
+  designationDirective,
+  designCells,
+  designItems,
+  DESIGNATE_TOOLS,
+  placeDesign,
+  keyAction,
+  levelCutY,
+  nextLevel,
+  orderBody,
+  PAN_KEYS,
+  preview,
+  rotateFacing,
+  toolArea,
+  toolYRange,
+  type BuildOpts,
+  type MenuItem,
+  type Target,
+} from './tools';
 import type { StorageClip } from './storage';
 import { catchUp, colonyKey, useColonies, useColony, useStoryWrite } from './useStory';
 import { setItemIconSource } from './visuals';
@@ -71,7 +139,13 @@ export function StoryMode() {
   const keys = useRef(new Set<string>());
   const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
   const [tool, setTool] = useState<MapTool>({ kind: 'select' });
-  const [build, setBuild] = useState<BuildOpts>({ height: 3, roof: 'flat', overhang: false, facing: 's', material: 'oak_planks' });
+  const [build, setBuild] = useState<BuildOpts>({
+    height: 3,
+    roof: 'flat',
+    overhang: false,
+    facing: 's',
+    material: 'oak_planks',
+  });
   const [mineFilter, setMineFilter] = useState<'all' | 'ores' | 'stone' | 'soil'>('all');
   // Before a colony exists, the floor under the main bot the map settled over.
   const [settledY, setSettledY] = useState<number | null>(null);
@@ -87,7 +161,12 @@ export function StoryMode() {
   const [xray, setXray] = useState<'auto' | 'on' | 'off'>('auto');
   const [view, setView] = useState<'top' | 'angled'>('top');
   const [tab, setTab] = useState<TabId | null>(null);
-  const [menu, setMenu] = useState<{ at: { x: number; y: number }; title: string; items: MenuItem[]; target: Target } | null>(null);
+  const [menu, setMenu] = useState<{
+    at: { x: number; y: number };
+    title: string;
+    items: MenuItem[];
+    target: Target;
+  } | null>(null);
   const [toast, setToast] = useState<{ text: string; tone: 'ok' | 'warn' } | null>(null);
   const [help, setHelp] = useState(false);
   const [chat, setChat] = useState(false);
@@ -121,13 +200,19 @@ export function StoryMode() {
 
   const stock = useMemo(() => {
     const m = new Map<string, number>();
-    for (const s of state?.storages ?? []) for (const [i, mm, n] of s.contents) m.set(`${i}:${mm}`, (m.get(`${i}:${mm}`) ?? 0) + n);
+    for (const s of state?.storages ?? [])
+      for (const [i, mm, n] of s.contents) m.set(`${i}:${mm}`, (m.get(`${i}:${mm}`) ?? 0) + n);
     return m;
   }, [state?.storages]);
 
   /** Runs one action: the director call for the colony and/or a directive for the AI bodies. */
   const run = useCallback(
-    async (director: DirectorCall | null, directive: StoryDirectiveSpec | null, verb: string, after?: (out: unknown) => string | null) => {
+    async (
+      director: DirectorCall | null,
+      directive: StoryDirectiveSpec | null,
+      verb: string,
+      after?: (out: unknown) => string | null,
+    ) => {
       if (!canWrite) {
         say('Your account can watch Story Mode but not give orders (needs the story role)', 'warn');
         return;
@@ -176,10 +261,15 @@ export function StoryMode() {
       const area = toolArea(r.rect, toolYRange(tool.id, lv, build.height, cutY));
       const body = designationBody(tool.id, area, mineFilter);
       if (t.entities && r.entities.length) Object.assign(body, { entities: r.entities.map((e) => e.id) });
-      await run({ route: 'story.designations', body }, designationDirective(tool.id, area, r.cells, mineFilter), tool.id === 'cancel' ? 'cancelled' : 'designated', (out) => {
-        const n = (out as { count?: number } | null)?.count ?? r.count;
-        return tool.id === 'cancel' ? `Cancelled ${n}` : countLabel(t, n);
-      });
+      await run(
+        { route: 'story.designations', body },
+        designationDirective(tool.id, area, r.cells, mineFilter),
+        tool.id === 'cancel' ? 'cancelled' : 'designated',
+        (out) => {
+          const n = (out as { count?: number } | null)?.count ?? r.count;
+          return tool.id === 'cancel' ? `Cancelled ${n}` : countLabel(t, n);
+        },
+      );
       return;
     }
     if (tool.kind === 'home') {
@@ -190,8 +280,16 @@ export function StoryMode() {
     if (tool.kind === 'zone') {
       const area = normArea([r.rect[0], lv, r.rect[1], r.rect[2], lv, r.rect[3]]);
       if (!canWrite) return say('Needs the story role', 'warn');
-      await write('story.zones', { op: tool.op, kind: tool.id as never, area }).then(
-        () => say(`${tool.op === 'add' ? 'Zone painted' : 'Zone removed'}: ${r.rect[2] - r.rect[0] + 1} × ${r.rect[3] - r.rect[1] + 1}`),
+      await write(
+        'story.zones',
+        tool.op === 'add'
+          ? { op: 'add', kind: tool.id as never, area }
+          : { op: 'remove', kind: tool.id as never, area },
+      ).then(
+        () =>
+          say(
+            `${tool.op === 'add' ? 'Zone painted' : 'Zone removed'}: ${r.rect[2] - r.rect[0] + 1} × ${r.rect[3] - r.rect[1] + 1}`,
+          ),
         (e) => say(errorText(e), 'warn'),
       );
       return;
@@ -211,20 +309,37 @@ export function StoryMode() {
     if (tool.kind === 'design') {
       const placed = placeDesign(tool.blocks, r.a, build.facing);
       const items = designItems(placed, tool.name);
-      await run({ route: 'story.builds', body: { op: 'add', items } }, { kind: 'build', build: items }, 'queued', () => `Queued ${tool.name}: ${placed.length} blocks`);
+      await run(
+        { route: 'story.builds', body: { op: 'add', items } },
+        { kind: 'build', build: items },
+        'queued',
+        () => `Queued ${tool.name}: ${placed.length} blocks`,
+      );
       return;
     }
     if (tool.kind === 'build') {
       const item = buildItem(tool.id, r.a, r.b, build);
       const pv = preview(item, stock.get(materialKey(item.material).join(':')));
       if (!pv.valid) return say(pv.reason ?? 'cannot place that', 'warn');
-      await run({ route: 'story.builds', body: { op: 'add', items: [item] } }, { kind: 'build', build: [item] }, 'queued', () => `Queued: ${pv.blocks.length} block${pv.blocks.length === 1 ? '' : 's'}`);
+      await run(
+        { route: 'story.builds', body: { op: 'add', items: [item] } },
+        { kind: 'build', build: [item] },
+        'queued',
+        () => `Queued: ${pv.blocks.length} block${pv.blocks.length === 1 ? '' : 's'}`,
+      );
     }
   };
 
   const onContext = (target: Target, at: { x: number; y: number }) => {
     const items = contextMenu(target, split.pawns.length > 0, split.ai.length > 0);
-    const title = target.kind === 'block' ? target.name : target.kind === 'ghost' ? 'Blueprint' : target.kind === 'mob' || target.kind === 'item' ? target.name : 'Here';
+    const title =
+      target.kind === 'block'
+        ? target.name
+        : target.kind === 'ghost'
+          ? 'Blueprint'
+          : target.kind === 'mob' || target.kind === 'item'
+            ? target.name
+            : 'Here';
     setMenu({ at, title, items, target });
   };
 
@@ -232,39 +347,68 @@ export function StoryMode() {
     const target = menu?.target;
     setMenu(null);
     if (item.action === 'cancel-build' && target?.kind === 'ghost') {
-      await write('story.builds', { op: 'remove', ids: [target.build] }).then(() => say('Blueprint cancelled'), (e) => say(errorText(e), 'warn'));
+      await write('story.builds', { op: 'remove', ids: [target.build] }).then(
+        () => say('Blueprint cancelled'),
+        (e) => say(errorText(e), 'warn'),
+      );
       return;
     }
     if (item.action === 'first-build' && target?.kind === 'ghost') {
-      await write('story.builds', { op: 'reorder', ids: [target.build] }).then(() => say('Moved to the front of the queue'), (e) => say(errorText(e), 'warn'));
+      await write('story.builds', { op: 'reorder', ids: [target.build] }).then(
+        () => say('Moved to the front of the queue'),
+        (e) => say(errorText(e), 'warn'),
+      );
       return;
     }
     if ((item.action === 'storage' || item.action === 'bills') && target?.kind === 'block') {
       const pos: V3 = [target.x, target.y, target.z];
-      setSelection(item.action === 'storage' ? { bodies: [], chests: [pos], bench: null } : { bodies: [], chests: [], bench: pos });
+      setSelection(
+        item.action === 'storage' ? { bodies: [], chests: [pos], bench: null } : { bodies: [], chests: [], bench: pos },
+      );
       return;
     }
     const body = orderBody(split.pawns, item, queue);
-    await run(body ? { route: 'story.orders', body } : null, item.directive ?? null, queue ? 'queued' : 'ordered', () => item.label);
+    await run(
+      body ? { route: 'story.orders', body } : null,
+      item.directive ?? null,
+      queue ? 'queued' : 'ordered',
+      () => item.label,
+    );
   };
 
   /** A right-drag line: each drafted pawn moves to its own cell on it (drafted pawns then hold there). */
   const onFormation = async (moves: FormationMove[], queue: boolean, ignored: number) => {
     if (!canWrite) return say('Needs the story role', 'warn');
     const res = await Promise.allSettled(
-      moves.map((mv) => write('story.orders', { pawns: [mv.pawn], order: { kind: 'move', target: { x: mv.target[0], y: mv.target[1], z: mv.target[2] } }, ...(queue ? { queue: true } : {}) })),
+      moves.map((mv) =>
+        write('story.orders', {
+          pawns: [mv.pawn],
+          order: { kind: 'move', target: { x: mv.target[0], y: mv.target[1], z: mv.target[2] } },
+          ...(queue ? { queue: true } : {}),
+        }),
+      ),
     );
     const bad = res.filter((r) => r.status === 'rejected');
     const note = ignored ? ` · ${ignored} undrafted pawn${ignored === 1 ? '' : 's'} not in it (draft with R)` : '';
-    if (bad.length) say(`${bad.length} of ${moves.length} formation orders failed: ${errorText((bad[0] as PromiseRejectedResult).reason)}`, 'warn');
-    else say(`${queue ? 'Queued a formation' : 'Formation'}: ${moves.length} pawn${moves.length === 1 ? '' : 's'} along the line${note}`);
+    if (bad.length)
+      say(
+        `${bad.length} of ${moves.length} formation orders failed: ${errorText((bad[0] as PromiseRejectedResult).reason)}`,
+        'warn',
+      );
+    else
+      say(
+        `${queue ? 'Queued a formation' : 'Formation'}: ${moves.length} pawn${moves.length === 1 ? '' : 's'} along the line${note}`,
+      );
   };
 
   const draft = useCallback(
     async (names: string[], drafted: boolean) => {
       if (!names.length) return;
       if (!canWrite) return say('Needs the story role', 'warn');
-      await write('story.draft', { pawns: names, drafted }).then(() => say(`${drafted ? 'Drafted' : 'Undrafted'} ${names.length} pawn${names.length === 1 ? '' : 's'}`), (e) => say(errorText(e), 'warn'));
+      await write('story.draft', { pawns: names, drafted }).then(
+        () => say(`${drafted ? 'Drafted' : 'Undrafted'} ${names.length} pawn${names.length === 1 ? '' : 's'}`),
+        (e) => say(errorText(e), 'warn'),
+      );
     },
     [canWrite, write, say],
   );
@@ -279,7 +423,14 @@ export function StoryMode() {
         if (id) void catchUp(qc, id).catch(() => undefined);
       } catch (e) {
         const status = e instanceof ApiError ? e.status : 0;
-        say(status === 409 ? 'No op account — op the main bot to change time' : status === 429 ? 'One time change a second: try again' : errorText(e), 'warn');
+        say(
+          status === 409
+            ? 'No op account — op the main bot to change time'
+            : status === 429
+              ? 'One time change a second: try again'
+              : errorText(e),
+          'warn',
+        );
       }
     },
     [canWrite, say, id, qc],
@@ -287,7 +438,9 @@ export function StoryMode() {
 
   const togglePause = useCallback(() => {
     if (!state || !canWrite) return;
-    void write('story.pause', { paused: !state.paused }).then(() => say(state.paused ? 'Colony resumed' : 'Colony paused'));
+    void write('story.pause', { paused: !state.paused }).then(() =>
+      say(state.paused ? 'Colony resumed' : 'Colony paused'),
+    );
   }, [state, canWrite, write, say]);
 
   const pickChest = useCallback(
@@ -316,7 +469,10 @@ export function StoryMode() {
         // R toggles; a second press before the state caught up flips the last request rather than re-reading old state.
         const key = [...split.pawns].sort().join(',');
         const last = lastDraft.current;
-        const anyUndrafted = last && last.key === key && Date.now() - last.at < 4000 ? !last.drafted : split.pawns.some((n) => !state?.pawns.find((p) => p.name === n)?.drafted);
+        const anyUndrafted =
+          last && last.key === key && Date.now() - last.at < 4000
+            ? !last.drafted
+            : split.pawns.some((n) => !state?.pawns.find((p) => p.name === n)?.drafted);
         lastDraft.current = { key, drafted: anyUndrafted, at: Date.now() };
         void draft(split.pawns, anyUndrafted);
       } else if (a === 'pause') togglePause();
@@ -334,16 +490,21 @@ export function StoryMode() {
       } else if (a === 'chat') setChat(true);
       else if (a === 'view') setView((v) => (v === 'top' ? 'angled' : 'top'));
       else if (a === 'xray') setXray(xrayOn ? 'off' : 'on');
-      else if (a === 'levelUp' || a === 'levelDown') setLevel(nextLevel(lv, build.height, a === 'levelUp' ? 1 : -1, e.shiftKey));
-      else if (a === 'rotateCcw' || a === 'rotateCw') setBuild((b) => ({ ...b, facing: rotateFacing(b.facing, a === 'rotateCw' ? 1 : -1) }));
-      else if (a === 'heightUp' || a === 'heightDown') setBuild((b) => ({ ...b, height: clampHeight(b.height + (a === 'heightUp' ? 1 : -1)) }));
+      else if (a === 'levelUp' || a === 'levelDown')
+        setLevel(nextLevel(lv, build.height, a === 'levelUp' ? 1 : -1, e.shiftKey));
+      else if (a === 'rotateCcw' || a === 'rotateCw')
+        setBuild((b) => ({ ...b, facing: rotateFacing(b.facing, a === 'rotateCw' ? 1 : -1) }));
+      else if (a === 'heightUp' || a === 'heightDown')
+        setBuild((b) => ({ ...b, height: clampHeight(b.height + (a === 'heightUp' ? 1 : -1)) }));
       else if (a === 'help') setHelp((h) => !h);
       else if (a === 'focus') {
         if (selection.bodies[0]) focusBody(selection.bodies[0]);
         else if (state?.home) map.current?.focus(state.home[0], state.home[2], state.home[1]);
       } else if (a.startsWith('tool:')) {
         const t = a.slice(5) as never;
-        setTool((cur) => (cur.kind === 'designate' && cur.id === t ? { kind: 'select' } : { kind: 'designate', id: t }));
+        setTool((cur) =>
+          cur.kind === 'designate' && cur.id === t ? { kind: 'select' } : { kind: 'designate', id: t },
+        );
       } else if (a.startsWith('tab:')) {
         const t = a.slice(4) as TabId;
         setTab((cur) => (cur === t ? null : t));
@@ -363,7 +524,13 @@ export function StoryMode() {
 
   // ------------------------------------------------------------------ alerts
 
-  const alerts = (state?.alerts ?? []).filter((a) => !dismissed.has(String(a.id ?? `${a.at}|${a.text}`)) && a.level !== 'info').concat((state?.alerts ?? []).filter((a) => a.level === 'info' && !dismissed.has(String(a.id ?? `${a.at}|${a.text}`))).slice(-2));
+  const alerts = (state?.alerts ?? [])
+    .filter((a) => !dismissed.has(String(a.id ?? `${a.at}|${a.text}`)) && a.level !== 'info')
+    .concat(
+      (state?.alerts ?? [])
+        .filter((a) => a.level === 'info' && !dismissed.has(String(a.id ?? `${a.at}|${a.text}`)))
+        .slice(-2),
+    );
   const onAlert = (a: StoryAlert) => {
     if (a.pawn) {
       setSelection({ ...EMPTY_SELECTION, bodies: [a.pawn] });
@@ -384,21 +551,61 @@ export function StoryMode() {
     const close = () => setSelection(EMPTY_SELECTION);
     if (selection.bench) {
       const bench = (state?.workbenches ?? []).find((w) => k3(w.pos) === k3(selection.bench!));
-      return bench ? <BillsInspector bench={bench} state={state} canWrite={canWrite} write={write} onPickChest={pickChest} onClose={close} /> : null;
+      return bench ? (
+        <BillsInspector
+          bench={bench}
+          state={state}
+          canWrite={canWrite}
+          write={write}
+          onPickChest={pickChest}
+          onClose={close}
+        />
+      ) : null;
     }
     if (selection.bed) {
       const bed = (state?.beds ?? []).find((b) => k3(b.pos) === k3(selection.bed!));
       return bed ? <BedInspector bed={bed} state={state} canWrite={canWrite} write={write} onClose={close} /> : null;
     }
-    if (selection.chests.length) return <StorageInspector chests={selection.chests} state={state} canWrite={canWrite} write={write} clip={clip} onClip={(c) => (setClip(c), say('Storage settings copied'))} onClose={close} />;
+    if (selection.chests.length)
+      return (
+        <StorageInspector
+          chests={selection.chests}
+          state={state}
+          canWrite={canWrite}
+          write={write}
+          clip={clip}
+          onClip={(c) => (setClip(c), say('Storage settings copied'))}
+          onClose={close}
+        />
+      );
     if (selection.bodies.length === 1) {
       const p = state?.pawns.find((x) => x.name === selection.bodies[0]);
       const bed = p ? (state?.beds ?? []).find((b) => b.pawn === p.name) : undefined;
-      if (p) return <PawnInspector pawn={p} bed={bed} onShowBed={bed ? () => map.current?.focus(bed.pos[0], bed.pos[2], bed.pos[1]) : undefined} canWrite={canWrite} onDraft={(d) => void draft([p.name], d)} onClearQueue={() => void write('story.orders', { pawns: [p.name], order: { kind: 'stop' } })} onClose={close} />;
+      if (p)
+        return (
+          <PawnInspector
+            pawn={p}
+            bed={bed}
+            onShowBed={bed ? () => map.current?.focus(bed.pos[0], bed.pos[2], bed.pos[1]) : undefined}
+            canWrite={canWrite}
+            onDraft={(d) => void draft([p.name], d)}
+            onClearQueue={() => void write('story.orders', { pawns: [p.name], order: { kind: 'stop' } })}
+            onClose={close}
+          />
+        );
       const a = state?.ai?.find((x) => x.name === selection.bodies[0]);
       if (a) return <AiInspector body={a} state={state} onChat={() => setChat(true)} onClose={close} />;
     }
-    if (selection.bodies.length > 1) return <GroupInspector names={selection.bodies} state={state} canWrite={canWrite} onDraft={(d) => void draft(split.pawns, d)} onClose={close} />;
+    if (selection.bodies.length > 1)
+      return (
+        <GroupInspector
+          names={selection.bodies}
+          state={state}
+          canWrite={canWrite}
+          onDraft={(d) => void draft(split.pawns, d)}
+          onClose={close}
+        />
+      );
     return null;
   })();
 
@@ -411,11 +618,16 @@ export function StoryMode() {
     const id = Number(designParam);
     if (!Number.isInteger(id) || id < 1) return;
     void (async () => {
-      const name = await api('designs.get', { params: { id } }).then((d) => d.design.name, () => `design #${id}`);
+      const name = await api('designs.get', { params: { id } }).then(
+        (d) => d.design.name,
+        () => `design #${id}`,
+      );
       let blocks = designBlocks(await api('blueprints.get', { params: { id } }).catch(() => null));
       if (!blocks.length) blocks = designBlocks(await api('buildplans.get', { params: { id } }).catch(() => null));
       // The Design Studio opens a design's newest revision as cells: the reliable source when the account may design.
-      if (!blocks.length && can('design')) blocks = designBlocks((await api('designer.create', { body: { designId: id } }).catch(() => null))?.blocks ?? null);
+      // (with its dug cells: a basement goes under the clicked level).
+      if (!blocks.length && can('design'))
+        blocks = designCells(await api('designer.create', { body: { designId: id } }).catch(() => null));
       if (!blocks.length) return say(`${name} has no block list the colony can build from`, 'warn');
       setTool({ kind: 'design', id, name, blocks });
       say(`${name}: move to a spot and click to queue it (Q/E turns)`);
@@ -473,11 +685,36 @@ export function StoryMode() {
       case 'architect':
         return <ArchitectPanel tool={tool} onTool={setTool} />;
       case 'work':
-        return <WorkPanel pawns={pawns} ai={ai} canWrite={canWrite} onSet={(names, work) => void write('story.priorities', { pawns: names, work }).catch((e) => say(errorText(e), 'warn'))} />;
+        return (
+          <WorkPanel
+            pawns={pawns}
+            ai={ai}
+            canWrite={canWrite}
+            onSet={(names, work) =>
+              void write('story.priorities', { pawns: names, work }).catch((e) => say(errorText(e), 'warn'))
+            }
+          />
+        );
       case 'schedule':
-        return <SchedulePanel pawns={pawns} ai={ai} hour={state?.hour} canWrite={canWrite} onPaint={(reqs) => reqs.forEach((r) => void write('story.schedule', r).catch((e) => say(errorText(e), 'warn')))} />;
+        return (
+          <SchedulePanel
+            pawns={pawns}
+            ai={ai}
+            hour={state?.hour}
+            canWrite={canWrite}
+            onPaint={(reqs) =>
+              reqs.forEach((r) => void write('story.schedule', r).catch((e) => say(errorText(e), 'warn')))
+            }
+          />
+        );
       case 'queue':
-        return <QueuePanel builds={state?.builds ?? []} canWrite={canWrite} onOp={(op, ids) => void write('story.builds', { op, ids }).catch((e) => say(errorText(e), 'warn'))} />;
+        return (
+          <QueuePanel
+            builds={state?.builds ?? []}
+            canWrite={canWrite}
+            onOp={(op, ids) => void write('story.builds', { op, ids }).catch((e) => say(errorText(e), 'warn'))}
+          />
+        );
       case 'directives':
         return <DirectivesPanel state={state} />;
       case 'colony':
@@ -499,12 +736,33 @@ export function StoryMode() {
               setTool({ kind: 'home' });
             }}
             onDrawHouse={() => setTool({ kind: 'zone', id: 'home', op: 'add' })}
-            onShowZone={(z) => map.current?.focus(Math.floor((z.area[0] + z.area[3]) / 2), Math.floor((z.area[2] + z.area[5]) / 2), z.area[1])}
-            onRenameZone={(z, label) => void write('story.zones', { op: 'rename', id: z.id, label }).then(() => say(label ? `Renamed to ${label}` : 'Name cleared'), (e) => say(errorText(e), 'warn'))}
-            onDeleteZone={(z) => void write('story.zones', { op: 'remove', kind: 'home', area: z.area }).then(() => say(`${z.label || 'House'} removed`), (e) => say(errorText(e), 'warn'))}
+            onShowZone={(z) =>
+              map.current?.focus(
+                Math.floor((z.area[0] + z.area[3]) / 2),
+                Math.floor((z.area[2] + z.area[5]) / 2),
+                z.area[1],
+              )
+            }
+            onRenameZone={(z, name) =>
+              void write('story.zones', { op: 'rename', id: z.id, name }).then(
+                () => say(name ? `Renamed to ${name}` : 'Name cleared'),
+                (e) => say(errorText(e), 'warn'),
+              )
+            }
+            onDeleteZone={(z) =>
+              void write('story.zones', { op: 'remove', id: z.id }).then(
+                () => say(`${z.name || z.label || 'House'} removed`),
+                (e) => say(errorText(e), 'warn'),
+              )
+            }
             onPause={togglePause}
             onRelease={() => void write('story.release', {}).then(() => say('Pawns released; the colony is saved'))}
-            onResume={() => void write('story.resume', {}).then(() => say('The pawns are coming back'), (e) => say(errorText(e), 'warn'))}
+            onResume={() =>
+              void write('story.resume', {}).then(
+                () => say('The pawns are coming back'),
+                (e) => say(errorText(e), 'warn'),
+              )
+            }
           />
         );
       default:
@@ -513,7 +771,9 @@ export function StoryMode() {
   })();
 
   const queued = (state?.builds ?? []).filter((b) => b.status !== 'done').length;
-  const directivesLive = (state?.directives ?? []).filter((d) => d.status === 'sent' || d.status === 'acknowledged').length;
+  const directivesLive = (state?.directives ?? []).filter(
+    (d) => d.status === 'sent' || d.status === 'acknowledged',
+  ).length;
 
   return (
     <div className="relative h-full min-h-[32rem] overflow-hidden select-none" data-testid="story-mode">
@@ -535,7 +795,14 @@ export function StoryMode() {
           onCentre={setCentre}
           onSettled={setSettledY}
           onSelect={onSelect}
-          onSelectSame={(kind, visible) => setSelection({ ...EMPTY_SELECTION, bodies: visible.filter((n) => (kind === 'pawn' ? state?.pawns.some((p) => p.name === n) : state?.ai?.some((x) => x.name === n))) })}
+          onSelectSame={(kind, visible) =>
+            setSelection({
+              ...EMPTY_SELECTION,
+              bodies: visible.filter((n) =>
+                kind === 'pawn' ? state?.pawns.some((p) => p.name === n) : state?.ai?.some((x) => x.name === n),
+              ),
+            })
+          }
           onTool={(r, shift) => void onTool(r, shift)}
           onContext={onContext}
           onFormation={(moves, queue, ignored) => void onFormation(moves, queue, ignored)}
@@ -563,7 +830,12 @@ export function StoryMode() {
               onXray={() => setXray(xrayOn ? 'off' : 'on')}
               onHelp={() => setHelp((h) => !h)}
             >
-              <TimeSlider tod={state.timeOfDay} control={state.timeControl ?? colonies.data?.timeControl} canWrite={canWrite} onSet={setTime} />
+              <TimeSlider
+                tod={state.timeOfDay}
+                control={state.timeControl ?? colonies.data?.timeControl}
+                canWrite={canWrite}
+                onSet={setTime}
+              />
             </ControlCluster>
           ) : null}
         </div>
@@ -578,15 +850,32 @@ export function StoryMode() {
                 setSelection((s) => clickBody(s, name, mods));
                 if (!mods.shift && !mods.ctrl) showBody(name);
               }}
-              onBox={(names, add) => setSelection((s) => ({ ...EMPTY_SELECTION, bodies: add ? [...new Set([...s.bodies, ...names])] : names }))}
+              onBox={(names, add) =>
+                setSelection((s) => ({
+                  ...EMPTY_SELECTION,
+                  bodies: add ? [...new Set([...s.bodies, ...names])] : names,
+                }))
+              }
               onJump={(name) => {
                 setSelection({ ...EMPTY_SELECTION, bodies: [name] });
                 focusBody(name);
               }}
             />
           ) : null}
-          <OptionsBar tool={tool} build={build} onBuild={(b) => setBuild((x) => ({ ...x, ...b }))} mineFilter={mineFilter} onMineFilter={setMineFilter} stock={stock} onClose={() => setTool({ kind: 'select' })} />
-          {pickHint ? <div className={cn(panel, 'pointer-events-auto px-3 py-1.5 text-xs font-medium')}>Click a chest on the map to store the bill&apos;s products there (Esc cancels)</div> : null}
+          <OptionsBar
+            tool={tool}
+            build={build}
+            onBuild={(b) => setBuild((x) => ({ ...x, ...b }))}
+            mineFilter={mineFilter}
+            onMineFilter={setMineFilter}
+            stock={stock}
+            onClose={() => setTool({ kind: 'select' })}
+          />
+          {pickHint ? (
+            <div className={cn(panel, 'pointer-events-auto px-3 py-1.5 text-xs font-medium')}>
+              Click a chest on the map to store the bill&apos;s products there (Esc cancels)
+            </div>
+          ) : null}
         </div>
         <div className="absolute top-[5.75rem] right-2">
           <AlertsStack alerts={alerts} onPick={onAlert} onDismiss={(k) => setDismissed((d) => new Set([...d, k]))} />
@@ -602,7 +891,10 @@ export function StoryMode() {
           <div className="absolute inset-0 grid place-items-center">
             <div className={cn(panel, 'pointer-events-auto w-96 space-y-2 p-4')}>
               <h2 className="text-base font-semibold">Story Mode</h2>
-              <p className="text-xs text-muted">Run a colony of pawns: script-only bodies that take work by your priorities and schedule. Pan to where they should settle, then found it.</p>
+              <p className="text-xs text-muted">
+                Run a colony of pawns: script-only bodies that take work by your priorities and schedule. Pan to where
+                they should settle, then found it.
+              </p>
               <NewColony canWrite={canWrite} at={centre} onCreate={(name, n) => void create(name, n)} />
             </div>
           </div>
@@ -623,7 +915,9 @@ export function StoryMode() {
           <div className="pointer-events-auto">
             <ChatOverlay
               open={chat}
-              targets={split.ai.length ? split.ai : selection.bodies.filter((n) => state?.ai?.some((a) => a.name === n))}
+              targets={
+                split.ai.length ? split.ai : selection.bodies.filter((n) => state?.ai?.some((a) => a.name === n))
+              }
               marker={null}
               canChat={canChat}
               results={null}
@@ -631,14 +925,25 @@ export function StoryMode() {
               onSend={(text) =>
                 void sendDirective(split.ai, text).then((res) => {
                   const bad = res.filter((r) => !r.ok);
-                  say(bad.length ? `Not sent to ${bad.map((b) => b.bot).join(', ')}` : `Said to ${split.ai.join(', ')}`, bad.length ? 'warn' : 'ok');
+                  say(
+                    bad.length ? `Not sent to ${bad.map((b) => b.bot).join(', ')}` : `Said to ${split.ai.join(', ')}`,
+                    bad.length ? 'warn' : 'ok',
+                  );
                 })
               }
             />
           </div>
         ) : null}
       </div>
-      {menu ? <ContextMenu at={menu.at} title={menu.title} items={menu.items} onPick={(it, q) => void onMenuPick(it, q)} onClose={() => setMenu(null)} /> : null}
+      {menu ? (
+        <ContextMenu
+          at={menu.at}
+          title={menu.title}
+          items={menu.items}
+          onPick={(it, q) => void onMenuPick(it, q)}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
     </div>
   );
 }

@@ -27,6 +27,11 @@ public sealed class SupervisorViewerOptions
     public MineClaw.Bot.Blueprints.DesignerOptions Designer { get; set; } = new();
     /// <summary>Story Mode writes (<c>POST /api/story/*</c>, docs/web/story-mode.md); null = on whenever the viewer is.</summary>
     public bool? AllowStory { get; set; }
+    /// <summary>
+    /// Accounts the config says are op (Story Mode's time control). 1.12.2 servers tell each account its op level, which wins; b1.8.1
+    /// servers never do, so there an account is op only when it is listed here.
+    /// </summary>
+    public string[] OpAccounts { get; set; } = [];
 }
 
 /// <summary>"What is it doing right now" for one bot (<c>/api/viewer/now</c>); every part is null when unknown.</summary>

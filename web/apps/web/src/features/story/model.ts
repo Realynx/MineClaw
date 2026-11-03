@@ -19,7 +19,12 @@ const k3 = (p: readonly number[]) => `${p[0]},${p[1]},${p[2]}`;
 
 // ------------------------------------------------------------------ colony state
 
-function mergeBy<T>(prev: readonly T[] | null | undefined, next: readonly T[] | null | undefined, key: (t: T) => string, removed: ReadonlyArray<unknown> | null | undefined): T[] {
+function mergeBy<T>(
+  prev: readonly T[] | null | undefined,
+  next: readonly T[] | null | undefined,
+  key: (t: T) => string,
+  removed: ReadonlyArray<unknown> | null | undefined,
+): T[] {
   const map = new Map<string, T>();
   for (const t of prev ?? []) map.set(key(t), t);
   for (const t of next ?? []) map.set(key(t), t);
@@ -71,7 +76,11 @@ export const EMPTY_SELECTION: Selection = { bodies: [], chests: [], bench: null 
 
 /** A click on a body: plain = only it; Shift = add; Ctrl = toggle. */
 export function clickBody(sel: Selection, name: string, mods: { shift?: boolean; ctrl?: boolean } = {}): Selection {
-  if (mods.ctrl) return { ...EMPTY_SELECTION, bodies: sel.bodies.includes(name) ? sel.bodies.filter((n) => n !== name) : [...sel.bodies, name] };
+  if (mods.ctrl)
+    return {
+      ...EMPTY_SELECTION,
+      bodies: sel.bodies.includes(name) ? sel.bodies.filter((n) => n !== name) : [...sel.bodies, name],
+    };
   if (mods.shift) return { ...EMPTY_SELECTION, bodies: sel.bodies.includes(name) ? sel.bodies : [...sel.bodies, name] };
   return { ...EMPTY_SELECTION, bodies: [name] };
 }
@@ -84,12 +93,16 @@ export function boxBodies(sel: Selection, names: readonly string[], add: boolean
 
 export function clickChest(sel: Selection, chest: V3, add: boolean): Selection {
   const has = sel.chests.some((c) => k3(c) === k3(chest));
-  if (add) return { ...EMPTY_SELECTION, chests: has ? sel.chests.filter((c) => k3(c) !== k3(chest)) : [...sel.chests, chest] };
+  if (add)
+    return { ...EMPTY_SELECTION, chests: has ? sel.chests.filter((c) => k3(c) !== k3(chest)) : [...sel.chests, chest] };
   return { ...EMPTY_SELECTION, chests: [chest] };
 }
 
 /** Splits a selection into colony pawns and AI bodies. */
-export function splitBodies(state: StoryColonyState | undefined, names: readonly string[]): { pawns: string[]; ai: string[] } {
+export function splitBodies(
+  state: StoryColonyState | undefined,
+  names: readonly string[],
+): { pawns: string[]; ai: string[] } {
   const pawns = new Set((state?.pawns ?? []).map((p) => p.name));
   const ai = new Set((state?.ai ?? []).map((a) => a.name));
   return { pawns: names.filter((n) => pawns.has(n)), ai: names.filter((n) => ai.has(n) && !pawns.has(n)) };
@@ -111,7 +124,9 @@ export function orderAi(ai: readonly StoryAiBody[]): StoryAiBody[] {
 /** Pawn bar order: the user's saved order first (drag to reorder), new pawns after. */
 export function orderPawns(pawns: readonly StoryPawn[], saved: readonly string[]): StoryPawn[] {
   const rank = new Map(saved.map((n, i) => [n, i]));
-  return [...pawns].sort((a, b) => (rank.get(a.name) ?? 1e6 + pawns.indexOf(a)) - (rank.get(b.name) ?? 1e6 + pawns.indexOf(b)));
+  return [...pawns].sort(
+    (a, b) => (rank.get(a.name) ?? 1e6 + pawns.indexOf(a)) - (rank.get(b.name) ?? 1e6 + pawns.indexOf(b)),
+  );
 }
 
 /** Moves `name` to sit before `before` (null = the end). */
@@ -189,20 +204,32 @@ export const SCHEDULE_BRUSHES: ReadonlyArray<{ id: StoryScheduleBlock; label: st
 ];
 
 /** Cells painted in one drag: pawn → hours. Dragging across rows paints the rectangle the drag spans. */
-export function paintSpan(rows: readonly string[], from: { row: number; hour: number }, to: { row: number; hour: number }): Map<string, number[]> {
+export function paintSpan(
+  rows: readonly string[],
+  from: { row: number; hour: number },
+  to: { row: number; hour: number },
+): Map<string, number[]> {
   const out = new Map<string, number[]>();
-  const r1 = Math.min(from.row, to.row), r2 = Math.max(from.row, to.row);
-  const h1 = Math.min(from.hour, to.hour), h2 = Math.max(from.hour, to.hour);
+  const r1 = Math.min(from.row, to.row),
+    r2 = Math.max(from.row, to.row);
+  const h1 = Math.min(from.hour, to.hour),
+    h2 = Math.max(from.hour, to.hour);
   for (let r = r1; r <= r2; r++) {
     const name = rows[r];
     if (!name) continue;
-    out.set(name, Array.from({ length: h2 - h1 + 1 }, (_, i) => h1 + i));
+    out.set(
+      name,
+      Array.from({ length: h2 - h1 + 1 }, (_, i) => h1 + i),
+    );
   }
   return out;
 }
 
 /** The schedule requests a paint produces: one per distinct pattern (pawns with the same hours share a request). */
-export function paintRequests(cells: Map<string, number[]>, brush: StoryScheduleBlock): Array<{ pawns: string[]; hours: Record<string, StoryScheduleBlock> }> {
+export function paintRequests(
+  cells: Map<string, number[]>,
+  brush: StoryScheduleBlock,
+): Array<{ pawns: string[]; hours: Record<string, StoryScheduleBlock> }> {
   const groups = new Map<string, string[]>();
   for (const [pawn, hours] of cells) {
     const k = hours.join(',');
@@ -212,8 +239,16 @@ export function paintRequests(cells: Map<string, number[]>, brush: StorySchedule
 }
 
 /** A copied schedule pasted onto pawns: one request with all 24 hours. */
-export function pasteRequest(schedule: readonly string[], pawns: readonly string[]): { pawns: string[]; hours: Record<string, StoryScheduleBlock> } {
-  return { pawns: [...pawns], hours: Object.fromEntries(schedule.slice(0, 24).map((b, h) => [String(h), (b as StoryScheduleBlock) ?? 'anything'])) };
+export function pasteRequest(
+  schedule: readonly string[],
+  pawns: readonly string[],
+): { pawns: string[]; hours: Record<string, StoryScheduleBlock> } {
+  return {
+    pawns: [...pawns],
+    hours: Object.fromEntries(
+      schedule.slice(0, 24).map((b, h) => [String(h), (b as StoryScheduleBlock) ?? 'anything']),
+    ),
+  };
 }
 
 /** A local preview of a paint (so the grid updates under the brush before the server answers). */

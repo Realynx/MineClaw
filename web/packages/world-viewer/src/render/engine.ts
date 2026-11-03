@@ -4,7 +4,17 @@
 
 import * as THREE from 'three';
 import type { V3 } from '../mesh/query';
-import { DEFAULT_LAYERS, type CameraMode, type Dim, type LayerToggles, type Overlays, type PickedBlock, type ViewerStats, type WorldSource, type XRayMode } from '../types';
+import {
+  DEFAULT_LAYERS,
+  type CameraMode,
+  type Dim,
+  type LayerToggles,
+  type Overlays,
+  type PickedBlock,
+  type ViewerStats,
+  type WorldSource,
+  type XRayMode,
+} from '../types';
 import { blockName } from '../world/blocks';
 import type { BotView } from '../world/entities';
 import type { Interest } from '../world/sync';
@@ -78,7 +88,10 @@ export class WorldViewerEngine implements RuntimeView {
   private highlighted: string[] = [];
   private levelCut: { y: number; r: number; dimBelow: number | null } | null = null;
 
-  constructor(private readonly container: HTMLElement, opts: EngineOptions) {
+  constructor(
+    private readonly container: HTMLElement,
+    opts: EngineOptions,
+  ) {
     this.opts = opts;
     this.dim = opts.dim ?? 0;
     this.followName = opts.follow ?? null;
@@ -93,7 +106,13 @@ export class WorldViewerEngine implements RuntimeView {
       // Another interactive view owns the shared canvas: draw into our own 2D canvas (same world, same meshes).
       this.surface = document.createElement('canvas');
       this.surface.tabIndex = 0;
-      Object.assign(this.surface.style, { display: 'block', width: '100%', height: '100%', outline: 'none', touchAction: 'none' });
+      Object.assign(this.surface.style, {
+        display: 'block',
+        width: '100%',
+        height: '100%',
+        outline: 'none',
+        touchAction: 'none',
+      });
       container.appendChild(this.surface);
       this.ctx2d = this.surface.getContext('2d');
     }
@@ -189,7 +208,7 @@ export class WorldViewerEngine implements RuntimeView {
       .sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y, a.z - p.z) - Math.hypot(b.x - p.x, b.y - p.y, b.z - p.z));
   }
 
-  /** Recomputes the crosshair target now (the centre ray of this view's camera). */
+  /** Recomputes the crosshair target now (the centre ray of this view's camera); a level cut is looked through. */
   async aimNow(): Promise<AimTarget | null> {
     const o = this.camera.position;
     const d = this.camera.getWorldDirection(new THREE.Vector3());
@@ -198,7 +217,7 @@ export class WorldViewerEngine implements RuntimeView {
       [o.x, o.y, o.z],
       [d.x, d.y, d.z],
       bots,
-      (oo, dd, max) => this.runtime.host.pick(this.dim, oo, dd, max, null),
+      (oo, dd, max) => this.runtime.host.pick(this.dim, oo, dd, max, this.levelCut ? this.pickCut() : null),
       (id) => blockName(this.runtime.version ?? 'b1.8.1', id),
       this.drawDistance + 32,
     );
@@ -208,12 +227,22 @@ export class WorldViewerEngine implements RuntimeView {
 
   private setAim(t: AimTarget | null): void {
     const a = this.aimed;
-    const same = a === t || (!!a && !!t && a.kind === t.kind && (a.kind === 'bot' ? a.name === (t as typeof a).name : a.x === t.x && a.y === t.y && a.z === t.z));
+    const same =
+      a === t ||
+      (!!a &&
+        !!t &&
+        a.kind === t.kind &&
+        (a.kind === 'bot' ? a.name === (t as typeof a).name : a.x === t.x && a.y === t.y && a.z === t.z));
     this.aimed = t;
     if (!same) this.opts.onAim?.(t);
   }
 
-  setCallbacks(c: Pick<EngineOptions, 'onSelectBot' | 'onPick' | 'onStats' | 'onNotes' | 'onCameraModeChange' | 'onError' | 'onAim' | 'onAimClick'>): void {
+  setCallbacks(
+    c: Pick<
+      EngineOptions,
+      'onSelectBot' | 'onPick' | 'onStats' | 'onNotes' | 'onCameraModeChange' | 'onError' | 'onAim' | 'onAimClick'
+    >,
+  ): void {
     this.opts = { ...this.opts, ...c };
   }
 
@@ -344,9 +373,15 @@ export class WorldViewerEngine implements RuntimeView {
     const outlines: Array<{ min: [number, number, number]; max: [number, number, number]; color: number }> = [];
     for (const name of this.highlighted) {
       const b = this.runtime.store.bot(name);
-      if (b && b.dim === this.dim) outlines.push({ ...outlineOf({ kind: 'bot', name, x: b.x, y: b.y, z: b.z, distance: 0 }), color: 0x5ee08a });
+      if (b && b.dim === this.dim)
+        outlines.push({ ...outlineOf({ kind: 'bot', name, x: b.x, y: b.y, z: b.z, distance: 0 }), color: 0x5ee08a });
     }
-    if (this.marker) outlines.push({ min: [this.marker[0] - 0.01, this.marker[1] - 0.01, this.marker[2] - 0.01], max: [this.marker[0] + 1.01, this.marker[1] + 1.01, this.marker[2] + 1.01], color: 0x38bdf8 });
+    if (this.marker)
+      outlines.push({
+        min: [this.marker[0] - 0.01, this.marker[1] - 0.01, this.marker[2] - 0.01],
+        max: [this.marker[0] + 1.01, this.marker[1] + 1.01, this.marker[2] + 1.01],
+        color: 0x38bdf8,
+      });
     if (this.aimed) {
       const b = this.aimed.kind === 'bot' ? this.runtime.store.bot(this.aimed.name) : null;
       const t = b ? { ...this.aimed, x: b.x, y: b.y, z: b.z } : this.aimed;
@@ -368,9 +403,12 @@ export class WorldViewerEngine implements RuntimeView {
       labels: true,
       overlays: true,
       selected: this.followName,
-      cones: subs.length && (this.xray === 'on' || this.coneOn) ? subs.map((s) => ({ x: s.x, y: s.y + 0.9, z: s.z })) : [],
+      cones:
+        subs.length && (this.xray === 'on' || this.coneOn) ? subs.map((s) => ({ x: s.x, y: s.y + 0.9, z: s.z })) : [],
       floorY: subs.length ? Math.floor(Math.min(...subs.map((s) => s.y)) + 0.01) : 0,
-      roof: this.levelCut ? { x: this.rig.target.x, y: this.levelCut.y, z: this.rig.target.z, r: this.levelCut.r } : this.roof,
+      roof: this.levelCut
+        ? { x: this.rig.target.x, y: this.levelCut.y, z: this.rig.target.z, r: this.levelCut.r }
+        : this.roof,
       dimBelow: this.levelCut?.dimBelow ?? null,
       ghosts: this.xray !== 'off',
       viewId: this.id,
@@ -401,7 +439,11 @@ export class WorldViewerEngine implements RuntimeView {
     return this.runtime.store
       .bots()
       .filter((b) => b.dim === this.dim)
-      .map((b) => ({ b, d: Math.hypot(b.x - p.x, b.y + 0.9 - p.y, b.z - p.z), f: (b.x - p.x) * fwd.x + (b.y + 0.9 - p.y) * fwd.y + (b.z - p.z) * fwd.z }))
+      .map((b) => ({
+        b,
+        d: Math.hypot(b.x - p.x, b.y + 0.9 - p.y, b.z - p.z),
+        f: (b.x - p.x) * fwd.x + (b.y + 0.9 - p.y) * fwd.y + (b.z - p.z) * fwd.z,
+      }))
       .filter((t) => t.d > 1.5 && t.d <= XRAY_RANGE && t.f > 1)
       .sort((a, b) => a.d - b.d)
       .slice(0, 2)
@@ -428,7 +470,10 @@ export class WorldViewerEngine implements RuntimeView {
         this.coneOn = this.xray === 'auto' ? info.cameraInside : this.xray === 'on';
         this.precip = this.runtime.precipAt(info.biome, main.y);
         // Roof cut-away: the followed bot is under cover and the camera looks down on it (not when flying).
-        this.roof = this.layers.cutaway && bot && this.rig.mode !== 'fly' && info.covered && cam.y > bot.y + 1.5 ? { x: bot.x, y: Math.floor(bot.y) + 2, z: bot.z, r: 9 } : null;
+        this.roof =
+          this.layers.cutaway && bot && this.rig.mode !== 'fly' && info.covered && cam.y > bot.y + 1.5
+            ? { x: bot.x, y: Math.floor(bot.y) + 2, z: bot.z, r: 9 }
+            : null;
       })
       .then(() => this.collide())
       .catch(() => undefined)
@@ -449,8 +494,12 @@ export class WorldViewerEngine implements RuntimeView {
     // Blocks the roof cut removes don't push the camera in: with the bot under cover the camera stays up and looks down
     // into the opened room or tunnel (the C# orbit panels' framing).
     const roof = this.roof ? { x: this.roof.x, y: this.roof.y, z: this.roof.z, r: this.roof.r } : null;
-    const hit = await this.runtime.host.pick(this.dim, [t.x, t.y, t.z], [d.x, d.y, d.z], this.rig.orbitDist + 1, roof).catch(() => null);
-    const want = hit ? Math.max(1, Math.hypot(hit.x + 0.5 - t.x, hit.y + 0.5 - t.y, hit.z + 0.5 - t.z) - 0.9) : Infinity;
+    const hit = await this.runtime.host
+      .pick(this.dim, [t.x, t.y, t.z], [d.x, d.y, d.z], this.rig.orbitDist + 1, roof)
+      .catch(() => null);
+    const want = hit
+      ? Math.max(1, Math.hypot(hit.x + 0.5 - t.x, hit.y + 0.5 - t.y, hit.z + 0.5 - t.z) - 0.9)
+      : Infinity;
     // Pull in at once, ease back out.
     this.rig.collideDist = want < this.rig.collideDist ? want : Math.min(want, this.rig.collideDist + 0.8);
   }
@@ -462,7 +511,8 @@ export class WorldViewerEngine implements RuntimeView {
 
   private onResize(): void {
     const dpr = this.opts.pixelRatio ?? Math.min(2, globalThis.devicePixelRatio || 1);
-    const w = Math.max(1, Math.round(this.container.clientWidth * dpr)), h = Math.max(1, Math.round(this.container.clientHeight * dpr));
+    const w = Math.max(1, Math.round(this.container.clientWidth * dpr)),
+      h = Math.max(1, Math.round(this.container.clientHeight * dpr));
     this.size = [w, h];
     if (this.ctx2d && (this.surface.width !== w || this.surface.height !== h)) {
       this.surface.width = w;
@@ -507,12 +557,17 @@ export class WorldViewerEngine implements RuntimeView {
       }
       const d = this.drag;
       if (!d) return;
-      const dx = e.clientX - d.x, dy = e.clientY - d.y;
+      const dx = e.clientX - d.x,
+        dy = e.clientY - d.y;
       if (!d.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
       d.moved = true;
       d.x = e.clientX;
       d.y = e.clientY;
-      if ((this.rig.mode === 'iso' || this.rig.mode === 'top') && (d.button === 2 || e.shiftKey || this.rig.mode === 'top')) this.rig.pan(dx, dy, c.clientHeight);
+      if (
+        (this.rig.mode === 'iso' || this.rig.mode === 'top') &&
+        (d.button === 2 || e.shiftKey || this.rig.mode === 'top')
+      )
+        this.rig.pan(dx, dy, c.clientHeight);
       else this.rig.look(dx, dy);
     });
     this.listen(c, 'pointerup', (e: PointerEvent) => {
@@ -529,13 +584,23 @@ export class WorldViewerEngine implements RuntimeView {
         return;
       }
       const rect = c.getBoundingClientRect();
-      const ndc = locked ? new THREE.Vector2(0, 0) : new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+      const ndc = locked
+        ? new THREE.Vector2(0, 0)
+        : new THREE.Vector2(
+            ((e.clientX - rect.left) / rect.width) * 2 - 1,
+            -((e.clientY - rect.top) / rect.height) * 2 + 1,
+          );
       void this.pickAt(ndc);
     });
-    this.listen(c, 'wheel', (e: WheelEvent) => {
-      e.preventDefault();
-      this.rig.wheel(e.deltaY);
-    }, { passive: false });
+    this.listen(
+      c,
+      'wheel',
+      (e: WheelEvent) => {
+        e.preventDefault();
+        this.rig.wheel(e.deltaY);
+      },
+      { passive: false },
+    );
     this.listen(window, 'keydown', (e: KeyboardEvent) => {
       if (!this.active()) return;
       if (e.code === 'KeyQ' && this.rig.mode === 'iso') this.rig.rotateIso(-1);
@@ -559,9 +624,12 @@ export class WorldViewerEngine implements RuntimeView {
       return;
     }
     if (!this.opts.onPick) return;
-    const o = ray.ray.origin, d = ray.ray.direction;
+    const o = ray.ray.origin,
+      d = ray.ray.direction;
     const roof = this.roof ? { x: this.roof.x, y: this.roof.y, z: this.roof.z, r: this.roof.r } : null;
-    const hit = await this.runtime.host.pick(this.dim, [o.x, o.y, o.z], [d.x, d.y, d.z], this.drawDistance + 32, roof).catch(() => null);
+    const hit = await this.runtime.host
+      .pick(this.dim, [o.x, o.y, o.z], [d.x, d.y, d.z], this.drawDistance + 32, roof)
+      .catch(() => null);
     if (!hit || this.disposed) return;
     this.opts.onPick({ ...hit, name: blockName(this.runtime.version ?? 'b1.8.1', hit.id), dim: this.dim });
   }

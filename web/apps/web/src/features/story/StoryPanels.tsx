@@ -5,12 +5,48 @@
  * 1–4 and off, skill as the tint, passion mark, sort by a column), the Schedule grid (paint hours with a brush by dragging;
  * copy and paste between pawns), the build queue (drag to reorder, pause, cancel), the AI directives and the colony.
  */
-import { STORY_HOURS, storyClock, type StoryAiBody, type StoryBuild, type StoryColonyState, type StoryDirective, type StoryPawn, type StoryScheduleBlock, type StoryZone } from '@mineclaw/contracts';
-import { ClipboardPaste, Copy, Flame, GripVertical, Home, MapPin, Pause, Pencil, Play, Plus, Trash2 } from 'lucide-react';
+import {
+  STORY_HOURS,
+  storyClock,
+  type StoryAiBody,
+  type StoryBuild,
+  type StoryColonyState,
+  type StoryDirective,
+  type StoryPawn,
+  type StoryScheduleBlock,
+  type StoryZone,
+} from '@mineclaw/contracts';
+import {
+  ClipboardPaste,
+  Copy,
+  Flame,
+  GripVertical,
+  Home,
+  MapPin,
+  Pause,
+  Pencil,
+  Play,
+  Plus,
+  Trash2,
+} from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 import { Button, Input } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
-import { applyPaint, cyclePriority, directiveStatusTone, nextSort, paintRequests, paintSpan, pasteRequest, SCHEDULE_BRUSHES, skillTint, sortPawns, WORK_LABELS, WORK_TYPES, type SortKey } from './model';
+import {
+  applyPaint,
+  cyclePriority,
+  directiveStatusTone,
+  nextSort,
+  paintRequests,
+  paintSpan,
+  pasteRequest,
+  SCHEDULE_BRUSHES,
+  skillTint,
+  sortPawns,
+  WORK_LABELS,
+  WORK_TYPES,
+  type SortKey,
+} from './model';
 import { panel } from './StoryHud';
 import { DESIGNATE_TOOLS, FURNITURE_TOOLS, STRUCTURE_TOOLS, ZONE_TOOLS } from './tools';
 import type { MapTool } from './StoryMap';
@@ -27,20 +63,40 @@ export const TABS: ReadonlyArray<{ id: TabId; label: string; key: string }> = [
   { id: 'colony', label: 'Colony', key: 'I' },
 ];
 
-export function TabBar({ open, onOpen, badge }: { open: TabId | null; onOpen: (t: TabId | null) => void; badge: Partial<Record<TabId, number>> }) {
+export function TabBar({
+  open,
+  onOpen,
+  badge,
+}: {
+  open: TabId | null;
+  onOpen: (t: TabId | null) => void;
+  badge: Partial<Record<TabId, number>>;
+}) {
   return (
-    <nav className={cn(panel, 'pointer-events-auto flex items-stretch overflow-hidden rounded-b-none border-b-0 text-[12.5px]')} aria-label="Colony tabs" data-testid="tab-bar">
+    <nav
+      className={cn(
+        panel,
+        'pointer-events-auto flex items-stretch overflow-hidden rounded-b-none border-b-0 text-[12.5px]',
+      )}
+      aria-label="Colony tabs"
+      data-testid="tab-bar"
+    >
       {TABS.map((t) => (
         <button
           key={t.id}
           type="button"
           onClick={() => onOpen(open === t.id ? null : t.id)}
           aria-pressed={open === t.id}
-          className={cn('relative flex h-9 items-center gap-1.5 border-r border-border px-3.5 font-semibold transition-colors last:border-r-0', open === t.id ? 'bg-accent-soft text-fg' : 'text-muted hover:bg-surface-2 hover:text-fg')}
+          className={cn(
+            'relative flex h-9 items-center gap-1.5 border-r border-border px-3.5 font-semibold transition-colors last:border-r-0',
+            open === t.id ? 'bg-accent-soft text-fg' : 'text-muted hover:bg-surface-2 hover:text-fg',
+          )}
         >
           {t.label}
           <span className="font-mono text-[10px] text-subtle">{t.key}</span>
-          {badge[t.id] ? <span className="rounded bg-accent px-1 text-[10px] leading-4 text-accent-fg">{badge[t.id]}</span> : null}
+          {badge[t.id] ? (
+            <span className="rounded bg-accent px-1 text-[10px] leading-4 text-accent-fg">{badge[t.id]}</span>
+          ) : null}
         </button>
       ))}
     </nav>
@@ -52,7 +108,17 @@ export function TabBar({ open, onOpen, badge }: { open: TabId | null; onOpen: (t
 type ArchCat = 'orders' | 'zones' | 'structure' | 'furniture' | 'storage';
 
 export function ArchitectPanel({ tool, onTool }: { tool: MapTool; onTool: (t: MapTool) => void }) {
-  const [cat, setCat] = useState<ArchCat>(tool.kind === 'zone' ? 'zones' : tool.kind === 'build' ? (tool.id.startsWith('furniture:') ? 'furniture' : 'structure') : tool.kind === 'storage' ? 'storage' : 'orders');
+  const [cat, setCat] = useState<ArchCat>(
+    tool.kind === 'zone'
+      ? 'zones'
+      : tool.kind === 'build'
+        ? tool.id.startsWith('furniture:')
+          ? 'furniture'
+          : 'structure'
+        : tool.kind === 'storage'
+          ? 'storage'
+          : 'orders',
+  );
   const cats: Array<[ArchCat, string]> = [
     ['orders', 'Orders'],
     ['zones', 'Zones'],
@@ -68,7 +134,12 @@ export function ArchitectPanel({ tool, onTool }: { tool: MapTool; onTool: (t: Ma
       onClick={() => onTool(active(t) ? { kind: 'select' } : t)}
       aria-pressed={active(t)}
       title={hint}
-      className={cn('relative flex h-[62px] w-[74px] flex-col items-center justify-center gap-1 rounded-md border text-[11px] leading-tight font-medium', active(t) ? 'border-accent bg-accent-soft text-fg' : 'border-border bg-surface-2 text-muted hover:border-border-strong hover:text-fg')}
+      className={cn(
+        'relative flex h-[62px] w-[74px] flex-col items-center justify-center gap-1 rounded-md border text-[11px] leading-tight font-medium',
+        active(t)
+          ? 'border-accent bg-accent-soft text-fg'
+          : 'border-border bg-surface-2 text-muted hover:border-border-strong hover:text-fg',
+      )}
     >
       <ToolIcon id={icon} className="size-5" />
       <span className="text-center">{label}</span>
@@ -76,29 +147,63 @@ export function ArchitectPanel({ tool, onTool }: { tool: MapTool; onTool: (t: Ma
     </button>
   );
   return (
-    <section className={cn(panel, 'pointer-events-auto flex w-[34rem] gap-2 p-2')} aria-label="Architect" data-testid="architect">
+    <section
+      className={cn(panel, 'pointer-events-auto flex w-[34rem] gap-2 p-2')}
+      aria-label="Architect"
+      data-testid="architect"
+    >
       <div className="flex w-24 flex-col gap-0.5">
         {cats.map(([id, label]) => (
-          <button key={id} type="button" onClick={() => setCat(id)} aria-pressed={cat === id} className={cn('rounded px-2 py-1.5 text-left text-xs font-semibold', cat === id ? 'bg-accent-soft text-fg' : 'text-muted hover:bg-surface-2')}>
+          <button
+            key={id}
+            type="button"
+            onClick={() => setCat(id)}
+            aria-pressed={cat === id}
+            className={cn(
+              'rounded px-2 py-1.5 text-left text-xs font-semibold',
+              cat === id ? 'bg-accent-soft text-fg' : 'text-muted hover:bg-surface-2',
+            )}
+          >
             {label}
           </button>
         ))}
       </div>
       <div className="flex flex-1 flex-wrap content-start gap-1.5">
-        {cat === 'orders' ? DESIGNATE_TOOLS.map((t) => btn({ kind: 'designate', id: t.id }, t.id, t.label, t.hint, t.key.replace('Key', ''))) : null}
+        {cat === 'orders'
+          ? DESIGNATE_TOOLS.map((t) =>
+              btn({ kind: 'designate', id: t.id }, t.id, t.label, t.hint, t.key.replace('Key', '')),
+            )
+          : null}
         {cat === 'zones'
           ? [
               ...ZONE_TOOLS.map((z) => btn({ kind: 'zone', id: z.id, op: 'add' }, 'zone', z.label, z.hint)),
               btn({ kind: 'zone', id: 'home', op: 'remove' }, 'cancel', 'Remove zone', 'Drag over a zone to remove it'),
             ]
           : null}
-        {cat === 'structure' ? STRUCTURE_TOOLS.map((s) => btn({ kind: 'build', id: s.id }, s.id, s.label, s.hint)) : null}
-        {cat === 'furniture' ? FURNITURE_TOOLS.map((f) => btn({ kind: 'build', id: `furniture:${f.id}` }, f.id, f.label, `Place a ${f.label.toLowerCase()} (Q/E turns)`)) : null}
+        {cat === 'structure'
+          ? STRUCTURE_TOOLS.map((s) => btn({ kind: 'build', id: s.id }, s.id, s.label, s.hint))
+          : null}
+        {cat === 'furniture'
+          ? FURNITURE_TOOLS.map((f) =>
+              btn(
+                { kind: 'build', id: `furniture:${f.id}` },
+                f.id,
+                f.label,
+                `Place a ${f.label.toLowerCase()} (Q/E turns)`,
+              ),
+            )
+          : null}
         {cat === 'storage' ? (
           <>
-            {btn({ kind: 'storage' }, 'storage', 'Register chests', 'Drag over chests: every chest in the area becomes storage')}
+            {btn(
+              { kind: 'storage' },
+              'storage',
+              'Register chests',
+              'Drag over chests: every chest in the area becomes storage',
+            )}
             <p className="w-56 text-[11px] leading-snug text-muted">
-              Loot lives in chests. Drag over chests to register them, then click one (or box-select several) to choose what it keeps and how much it matters.
+              Loot lives in chests. Drag over chests to register them, then click one (or box-select several) to choose
+              what it keeps and how much it matters.
             </p>
           </>
         ) : null}
@@ -109,7 +214,17 @@ export function ArchitectPanel({ tool, onTool }: { tool: MapTool; onTool: (t: Ma
 
 // ------------------------------------------------------------------ work
 
-export function WorkPanel({ pawns, ai, canWrite, onSet }: { pawns: StoryPawn[]; ai: StoryAiBody[]; canWrite: boolean; onSet: (pawns: string[], work: Record<string, number>) => void }) {
+export function WorkPanel({
+  pawns,
+  ai,
+  canWrite,
+  onSet,
+}: {
+  pawns: StoryPawn[];
+  ai: StoryAiBody[];
+  canWrite: boolean;
+  onSet: (pawns: string[], work: Record<string, number>) => void;
+}) {
   const [sort, setSort] = useState<SortKey>(null);
   const [local, setLocal] = useState<Record<string, Record<string, number>>>({});
   const rows = useMemo(() => sortPawns(pawns, sort), [pawns, sort]);
@@ -121,7 +236,11 @@ export function WorkPanel({ pawns, ai, canWrite, onSet }: { pawns: StoryPawn[]; 
     onSet([p.name], { [t]: v });
   };
   return (
-    <section className={cn(panel, 'pointer-events-auto max-h-[46vh] overflow-auto p-2')} aria-label="Work priorities" data-testid="work-panel">
+    <section
+      className={cn(panel, 'pointer-events-auto max-h-[46vh] overflow-auto p-2')}
+      aria-label="Work priorities"
+      data-testid="work-panel"
+    >
       <table className="border-separate border-spacing-0 text-xs">
         <thead>
           <tr>
@@ -132,7 +251,15 @@ export function WorkPanel({ pawns, ai, canWrite, onSet }: { pawns: StoryPawn[]; 
             </th>
             {WORK_TYPES.map((t) => (
               <th key={t} className="sticky top-0 bg-surface px-0.5 pb-1">
-                <button type="button" onClick={() => setSort(nextSort(sort, t))} className={cn('w-11 rounded py-0.5 text-[11px] font-semibold', sort?.col === t ? 'bg-accent-soft' : 'text-muted hover:text-fg')} title={`Sort by ${WORK_LABELS[t]} skill`}>
+                <button
+                  type="button"
+                  onClick={() => setSort(nextSort(sort, t))}
+                  className={cn(
+                    'w-11 rounded py-0.5 text-[11px] font-semibold',
+                    sort?.col === t ? 'bg-accent-soft' : 'text-muted hover:text-fg',
+                  )}
+                  title={`Sort by ${WORK_LABELS[t]} skill`}
+                >
                   {WORK_LABELS[t]}
                   {sort?.col === t ? (sort.dir === 1 ? ' ▾' : ' ▴') : ''}
                 </button>
@@ -165,12 +292,20 @@ export function WorkPanel({ pawns, ai, canWrite, onSet }: { pawns: StoryPawn[]; 
                       }}
                       disabled={!canWrite}
                       className="relative h-7 w-11 rounded border border-border text-[13px] font-bold tabular-nums"
-                      style={{ background: `color-mix(in oklab, var(--accent) ${Math.round(skillTint(sk?.level) * 42)}%, var(--surface-2))` }}
+                      style={{
+                        background: `color-mix(in oklab, var(--accent) ${Math.round(skillTint(sk?.level) * 42)}%, var(--surface-2))`,
+                      }}
                       title={`Skill ${sk?.level ?? 0}/20${sk?.passion ? ' · loves this work' : ''} · click: 1 → 4 → off`}
                     >
-                      <span className={cn(v === 1 ? 'text-fg' : v === 0 ? 'text-subtle' : 'text-muted')}>{v || '·'}</span>
-                      {sk?.passion ? <Flame className="absolute top-0.5 right-0.5 size-2.5 text-[#ff9f43]" aria-hidden /> : null}
-                      <span className="absolute bottom-0.5 left-1 text-[8px] font-medium text-subtle">{sk?.level ?? 0}</span>
+                      <span className={cn(v === 1 ? 'text-fg' : v === 0 ? 'text-subtle' : 'text-muted')}>
+                        {v || '·'}
+                      </span>
+                      {sk?.passion ? (
+                        <Flame className="absolute top-0.5 right-0.5 size-2.5 text-[#ff9f43]" aria-hidden />
+                      ) : null}
+                      <span className="absolute bottom-0.5 left-1 text-[8px] font-medium text-subtle">
+                        {sk?.level ?? 0}
+                      </span>
                     </button>
                   </td>
                 );
@@ -193,7 +328,9 @@ export function WorkPanel({ pawns, ai, canWrite, onSet }: { pawns: StoryPawn[]; 
           ))}
         </tbody>
       </table>
-      <p className="mt-1 px-1 text-[10.5px] text-subtle">1 is done first; ties go left to right, then to skill. Right-click or Shift-click counts down.</p>
+      <p className="mt-1 px-1 text-[10.5px] text-subtle">
+        1 is done first; ties go left to right, then to skill. Right-click or Shift-click counts down.
+      </p>
     </section>
   );
 }
@@ -202,9 +339,23 @@ export function WorkPanel({ pawns, ai, canWrite, onSet }: { pawns: StoryPawn[]; 
 
 const BLOCK_COLOR: Record<string, string> = { work: '#d9a441', sleep: '#4d6fb8', anything: '#6f7b8a', free: '#5bb07a' };
 
-export function SchedulePanel({ pawns, ai, hour, canWrite, onPaint }: { pawns: StoryPawn[]; ai: StoryAiBody[]; hour: number | null | undefined; canWrite: boolean; onPaint: (req: Array<{ pawns: string[]; hours: Record<string, StoryScheduleBlock> }>) => void }) {
+export function SchedulePanel({
+  pawns,
+  ai,
+  hour,
+  canWrite,
+  onPaint,
+}: {
+  pawns: StoryPawn[];
+  ai: StoryAiBody[];
+  hour: number | null | undefined;
+  canWrite: boolean;
+  onPaint: (req: Array<{ pawns: string[]; hours: Record<string, StoryScheduleBlock> }>) => void;
+}) {
   const [brush, setBrush] = useState<StoryScheduleBlock>('work');
-  const [drag, setDrag] = useState<{ from: { row: number; hour: number }; to: { row: number; hour: number } } | null>(null);
+  const [drag, setDrag] = useState<{ from: { row: number; hour: number }; to: { row: number; hour: number } } | null>(
+    null,
+  );
   const [local, setLocal] = useState<Record<string, string[]>>({});
   const [clip, setClip] = useState<string[] | null>(null);
   const names = pawns.map((p) => p.name);
@@ -222,11 +373,27 @@ export function SchedulePanel({ pawns, ai, hour, canWrite, onPaint }: { pawns: S
     setDrag(null);
   };
   return (
-    <section className={cn(panel, 'pointer-events-auto max-h-[46vh] overflow-auto p-2 select-none')} aria-label="Schedule" data-testid="schedule-panel" onPointerUp={commit} onPointerLeave={() => drag && commit()}>
+    <section
+      className={cn(panel, 'pointer-events-auto max-h-[46vh] overflow-auto p-2 select-none')}
+      aria-label="Schedule"
+      data-testid="schedule-panel"
+      onPointerUp={commit}
+      onPointerLeave={() => drag && commit()}
+    >
       <div className="mb-1.5 flex items-center gap-1.5 text-xs">
         <span className="font-semibold">Brush</span>
         {SCHEDULE_BRUSHES.map((b) => (
-          <button key={b.id} type="button" onClick={() => setBrush(b.id)} aria-pressed={brush === b.id} className={cn('flex h-6 items-center gap-1 rounded px-2 font-medium', brush === b.id ? 'ring-2 ring-[#f5c542]' : 'opacity-80 hover:opacity-100')} style={{ background: `${BLOCK_COLOR[b.id]}55` }}>
+          <button
+            key={b.id}
+            type="button"
+            onClick={() => setBrush(b.id)}
+            aria-pressed={brush === b.id}
+            className={cn(
+              'flex h-6 items-center gap-1 rounded px-2 font-medium',
+              brush === b.id ? 'ring-2 ring-[#f5c542]' : 'opacity-80 hover:opacity-100',
+            )}
+            style={{ background: `${BLOCK_COLOR[b.id]}55` }}
+          >
             <span className="size-2.5 rounded-sm" style={{ background: BLOCK_COLOR[b.id] }} />
             {b.label}
           </button>
@@ -238,7 +405,10 @@ export function SchedulePanel({ pawns, ai, hour, canWrite, onPaint }: { pawns: S
           <tr>
             <th />
             {STORY_HOURS.map((h) => (
-              <th key={h} className={cn('w-[22px] pb-0.5 font-medium text-subtle', Number(h) === hour && 'text-accent')}>
+              <th
+                key={h}
+                className={cn('w-[22px] pb-0.5 font-medium text-subtle', Number(h) === hour && 'text-accent')}
+              >
                 {storyClock(Number(h)).slice(0, 2)}
               </th>
             ))}
@@ -270,7 +440,13 @@ export function SchedulePanel({ pawns, ai, hour, canWrite, onPaint }: { pawns: S
                 );
               })}
               <td className="pl-1 whitespace-nowrap">
-                <button type="button" title="Copy this schedule" aria-label={`Copy ${p.display}'s schedule`} onClick={() => setClip([...sched(p)])} className="rounded p-0.5 hover:bg-surface-2">
+                <button
+                  type="button"
+                  title="Copy this schedule"
+                  aria-label={`Copy ${p.display}'s schedule`}
+                  onClick={() => setClip([...sched(p)])}
+                  className="rounded p-0.5 hover:bg-surface-2"
+                >
                   <Copy className="size-3" />
                 </button>
                 <button
@@ -306,14 +482,28 @@ export function SchedulePanel({ pawns, ai, hour, canWrite, onPaint }: { pawns: S
 
 // ------------------------------------------------------------------ build queue
 
-export function QueuePanel({ builds, canWrite, onOp }: { builds: StoryBuild[]; canWrite: boolean; onOp: (op: 'remove' | 'pause' | 'resume' | 'reorder', ids: Array<string | number>) => void }) {
+export function QueuePanel({
+  builds,
+  canWrite,
+  onOp,
+}: {
+  builds: StoryBuild[];
+  canWrite: boolean;
+  onOp: (op: 'remove' | 'pause' | 'resume' | 'reorder', ids: Array<string | number>) => void;
+}) {
   const list = [...builds].filter((b) => b.status !== 'done').sort((a, b) => a.order - b.order);
   const done = builds.filter((b) => b.status === 'done').length;
   const dragId = useRef<string | number | null>(null);
   const [over, setOver] = useState<string | number | null>(null);
   return (
-    <section className={cn(panel, 'pointer-events-auto max-h-[46vh] w-[30rem] overflow-auto p-2')} aria-label="Build queue" data-testid="queue-panel">
-      {list.length === 0 ? <p className="p-2 text-xs text-muted">Nothing queued. Pick a structure in the Architect and drag on the map.</p> : null}
+    <section
+      className={cn(panel, 'pointer-events-auto max-h-[46vh] w-[30rem] overflow-auto p-2')}
+      aria-label="Build queue"
+      data-testid="queue-panel"
+    >
+      {list.length === 0 ? (
+        <p className="p-2 text-xs text-muted">Nothing queued. Pick a structure in the Architect and drag on the map.</p>
+      ) : null}
       <ol className="space-y-1">
         {list.map((b, i) => (
           <li
@@ -330,12 +520,15 @@ export function QueuePanel({ builds, canWrite, onOp }: { builds: StoryBuild[]; c
               setOver(null);
               const from = dragId.current;
               dragId.current = null;
-              if ((from === null || from === undefined) || from === b.id) return;
+              if (from === null || from === undefined || from === b.id) return;
               const ids = list.map((x) => x.id).filter((x) => x !== from);
               ids.splice(ids.indexOf(b.id), 0, from);
               onOp('reorder', ids);
             }}
-            className={cn('flex items-center gap-2 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-xs', over === b.id && 'border-t-2 border-t-[#f5c542]')}
+            className={cn(
+              'flex items-center gap-2 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-xs',
+              over === b.id && 'border-t-2 border-t-[#f5c542]',
+            )}
           >
             <GripVertical className="size-3.5 cursor-grab text-subtle" aria-hidden />
             <span className="w-4 text-right text-subtle tabular-nums">{i + 1}</span>
@@ -344,22 +537,59 @@ export function QueuePanel({ builds, canWrite, onOp }: { builds: StoryBuild[]; c
               <div className="truncate font-semibold">{b.label}</div>
               <div className="mt-0.5 flex items-center gap-1.5">
                 <span className="block h-1.5 flex-1 overflow-hidden rounded-full bg-surface-3">
-                  <span className="block h-full bg-accent" style={{ width: `${b.blocksTotal ? (b.blocksDone / b.blocksTotal) * 100 : 0}%` }} />
+                  <span
+                    className="block h-full bg-accent"
+                    style={{ width: `${b.blocksTotal ? (b.blocksDone / b.blocksTotal) * 100 : 0}%` }}
+                  />
                 </span>
                 <span className="tabular-nums text-subtle">
                   {b.blocksDone}/{b.blocksTotal}
                 </span>
               </div>
-              {b.reason || b.status === 'blocked' ? <div className="text-[10.5px] text-danger">{b.reason ?? 'blocked'}</div> : null}
+              {b.reason || b.status === 'blocked' ? (
+                <div className="text-[10.5px] text-danger">{b.reason ?? 'blocked'}</div>
+              ) : null}
             </div>
-            <span className={cn('rounded px-1 text-[10px] font-semibold uppercase', b.status === 'active' ? 'bg-ok-soft text-ok' : b.status === 'paused' ? 'bg-warn-soft text-warn' : b.status === 'blocked' ? 'bg-danger-soft text-danger' : 'bg-surface-3 text-muted')}>{b.status}</span>
-            <button type="button" disabled={!canWrite || i === 0} onClick={() => onOp('reorder', [b.id, ...list.filter((x) => x.id !== b.id).map((x) => x.id)])} className="rounded px-1 text-[10px] font-semibold text-muted hover:bg-surface-3 disabled:opacity-30" title="Build first" aria-label={`Build ${b.label} first`}>
+            <span
+              className={cn(
+                'rounded px-1 text-[10px] font-semibold uppercase',
+                b.status === 'active'
+                  ? 'bg-ok-soft text-ok'
+                  : b.status === 'paused'
+                    ? 'bg-warn-soft text-warn'
+                    : b.status === 'blocked'
+                      ? 'bg-danger-soft text-danger'
+                      : 'bg-surface-3 text-muted',
+              )}
+            >
+              {b.status}
+            </span>
+            <button
+              type="button"
+              disabled={!canWrite || i === 0}
+              onClick={() => onOp('reorder', [b.id, ...list.filter((x) => x.id !== b.id).map((x) => x.id)])}
+              className="rounded px-1 text-[10px] font-semibold text-muted hover:bg-surface-3 disabled:opacity-30"
+              title="Build first"
+              aria-label={`Build ${b.label} first`}
+            >
               Top
             </button>
-            <button type="button" disabled={!canWrite} onClick={() => onOp(b.status === 'paused' ? 'resume' : 'pause', [b.id])} className="rounded p-0.5 hover:bg-surface-3" aria-label={b.status === 'paused' ? `Resume ${b.label}` : `Pause ${b.label}`}>
+            <button
+              type="button"
+              disabled={!canWrite}
+              onClick={() => onOp(b.status === 'paused' ? 'resume' : 'pause', [b.id])}
+              className="rounded p-0.5 hover:bg-surface-3"
+              aria-label={b.status === 'paused' ? `Resume ${b.label}` : `Pause ${b.label}`}
+            >
               {b.status === 'paused' ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
             </button>
-            <button type="button" disabled={!canWrite} onClick={() => onOp('remove', [b.id])} className="rounded p-0.5 text-danger hover:bg-danger-soft" aria-label={`Cancel ${b.label}`}>
+            <button
+              type="button"
+              disabled={!canWrite}
+              onClick={() => onOp('remove', [b.id])}
+              className="rounded p-0.5 text-danger hover:bg-danger-soft"
+              aria-label={`Cancel ${b.label}`}
+            >
               <Trash2 className="size-3.5" />
             </button>
           </li>
@@ -374,8 +604,19 @@ export function QueuePanel({ builds, canWrite, onOp }: { builds: StoryBuild[]; c
 
 export function DirectiveList({ directives, bot }: { directives: readonly StoryDirective[]; bot?: string }) {
   const list = [...directives].filter((d) => !bot || d.bots.includes(bot)).reverse();
-  if (!list.length) return <p className="text-xs text-muted">No directives yet. Select an AI body and use a tool, an order or a build: it gets the same task.</p>;
-  const tone: Record<string, string> = { info: 'bg-info-soft text-info', warn: 'bg-warn-soft text-warn', ok: 'bg-ok-soft text-ok', danger: 'bg-danger-soft text-danger', muted: 'bg-surface-3 text-muted' };
+  if (!list.length)
+    return (
+      <p className="text-xs text-muted">
+        No directives yet. Select an AI body and use a tool, an order or a build: it gets the same task.
+      </p>
+    );
+  const tone: Record<string, string> = {
+    info: 'bg-info-soft text-info',
+    warn: 'bg-warn-soft text-warn',
+    ok: 'bg-ok-soft text-ok',
+    danger: 'bg-danger-soft text-danger',
+    muted: 'bg-surface-3 text-muted',
+  };
   return (
     <ul className="space-y-1" data-testid="directives">
       {list.map((d) => (
@@ -383,7 +624,10 @@ export function DirectiveList({ directives, bot }: { directives: readonly StoryD
           <div className="flex items-center gap-1.5">
             <ToolIcon id={d.kind === 'text' ? 'block' : d.kind} className="size-3.5 text-muted" />
             <span className="min-w-0 flex-1 truncate font-semibold">{d.summary}</span>
-            <span className={cn('rounded px-1 text-[10px] font-semibold', tone[directiveStatusTone(d.status)])} data-status={d.status}>
+            <span
+              className={cn('rounded px-1 text-[10px] font-semibold', tone[directiveStatusTone(d.status)])}
+              data-status={d.status}
+            >
               {d.status}
             </span>
           </div>
@@ -397,7 +641,10 @@ export function DirectiveList({ directives, bot }: { directives: readonly StoryD
 
 export function DirectivesPanel({ state }: { state: StoryColonyState | undefined }) {
   return (
-    <section className={cn(panel, 'pointer-events-auto max-h-[46vh] w-[26rem] overflow-auto p-2')} aria-label="Directives">
+    <section
+      className={cn(panel, 'pointer-events-auto max-h-[46vh] w-[26rem] overflow-auto p-2')}
+      aria-label="Directives"
+    >
       <DirectiveList directives={state?.directives ?? []} />
     </section>
   );
@@ -450,13 +697,25 @@ export function ColonyPanel({
   onResume: () => void;
 }) {
   return (
-    <section className={cn(panel, 'pointer-events-auto w-[26rem] space-y-3 p-3 text-xs')} aria-label="Colony" data-testid="colony-panel">
+    <section
+      className={cn(panel, 'pointer-events-auto w-[26rem] space-y-3 p-3 text-xs')}
+      aria-label="Colony"
+      data-testid="colony-panel"
+    >
       <div>
         <div className="mb-1 font-semibold">Colonies</div>
         <ul className="space-y-1">
           {colonies.map((c) => (
             <li key={c.id}>
-              <button type="button" onClick={() => onSwitch(c.id)} aria-pressed={c.id === current} className={cn('flex w-full items-center gap-2 rounded border px-2 py-1 text-left', c.id === current ? 'border-accent bg-accent-soft' : 'border-border hover:bg-surface-2')}>
+              <button
+                type="button"
+                onClick={() => onSwitch(c.id)}
+                aria-pressed={c.id === current}
+                className={cn(
+                  'flex w-full items-center gap-2 rounded border px-2 py-1 text-left',
+                  c.id === current ? 'border-accent bg-accent-soft' : 'border-border hover:bg-surface-2',
+                )}
+              >
                 <span className="font-semibold">{c.name}</span>
                 <span className="text-muted">{c.pawns.length ? `${c.pawns.length} pawns` : 'released'}</span>
                 {c.paused ? <span className="ml-auto text-warn">paused</span> : null}
@@ -471,7 +730,12 @@ export function ColonyPanel({
             {state.paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
             {state.paused ? 'Resume colony' : 'Pause colony'}
           </Button>
-          <Button size="sm" variant="ghost" disabled={!canWrite || !state.pawns.some((p) => p.online !== false)} onClick={onRelease}>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={!canWrite || !state.pawns.some((p) => p.online !== false)}
+            onClick={onRelease}
+          >
             Release pawns
           </Button>
           {state.active === false ? (
@@ -485,8 +749,17 @@ export function ColonyPanel({
         <div className="space-y-1.5 rounded-md border border-border p-2" data-testid="colony-home">
           <div className="flex items-center gap-2">
             <span className="font-semibold">Home</span>
-            <span className="text-muted tabular-nums">{state.home ? `${state.home[0]}, ${state.home[2]}` : 'not set'}</span>
-            <Button size="sm" variant="ghost" className="ml-auto" disabled={!canWrite} onClick={onPickHome} title="Click the spot on the map">
+            <span className="text-muted tabular-nums">
+              {state.home ? `${state.home[0]}, ${state.home[2]}` : 'not set'}
+            </span>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="ml-auto"
+              disabled={!canWrite}
+              onClick={onPickHome}
+              title="Click the spot on the map"
+            >
               <MapPin className="size-3.5" />
               Set home on the map
             </Button>
@@ -496,10 +769,18 @@ export function ColonyPanel({
             </Button>
           </div>
           {migrate ? (
-            <div className="space-y-1.5 rounded border border-accent bg-accent-soft p-2" role="alertdialog" aria-label="Migrate home" data-testid="migrate-confirm">
+            <div
+              className="space-y-1.5 rounded border border-accent bg-accent-soft p-2"
+              role="alertdialog"
+              aria-label="Migrate home"
+              data-testid="migrate-confirm"
+            >
               <p>
-                Migrate home to <span className="font-semibold tabular-nums">{migrate[0]}, {migrate[2]}</span>? Pawns far from it are brought over; zones,
-                storage and builds stay where they are.
+                Migrate home to{' '}
+                <span className="font-semibold tabular-nums">
+                  {migrate[0]}, {migrate[2]}
+                </span>
+                ? Pawns far from it are brought over; zones, storage and builds stay where they are.
               </p>
               <div className="flex gap-2">
                 <Button size="sm" variant="primary" onClick={onConfirmMove}>
@@ -512,19 +793,43 @@ export function ColonyPanel({
             </div>
           ) : (
             <p className="text-[10.5px] text-subtle">
-              {centre ? `Here is ${centre[0]}, ${centre[2]}: the map centre.` : 'Here is the map centre.'} Pawns far from the new home are brought to it.
+              {centre ? `Here is ${centre[0]}, ${centre[2]}: the map centre.` : 'Here is the map centre.'} Pawns far
+              from the new home are brought to it.
             </p>
           )}
         </div>
       ) : null}
-      {state ? <Houses zones={state.zones.filter((z) => z.kind === 'home')} canWrite={canWrite} onDraw={onDrawHouse} onShow={onShowZone} onRename={onRenameZone} onDelete={onDeleteZone} /> : null}
+      {state ? (
+        <Houses
+          zones={state.zones.filter((z) => z.kind === 'home')}
+          canWrite={canWrite}
+          onDraw={onDrawHouse}
+          onShow={onShowZone}
+          onRename={onRenameZone}
+          onDelete={onDeleteZone}
+        />
+      ) : null}
       <NewColony canWrite={canWrite} at={centre} onCreate={onCreate} />
     </section>
   );
 }
 
 /** The houses: home zones, any number, each named; the pawns sleep, eat and idle in them. */
-function Houses({ zones, canWrite, onDraw, onShow, onRename, onDelete }: { zones: StoryZone[]; canWrite: boolean; onDraw: () => void; onShow: (z: StoryZone) => void; onRename: (z: StoryZone, label: string) => void; onDelete: (z: StoryZone) => void }) {
+function Houses({
+  zones,
+  canWrite,
+  onDraw,
+  onShow,
+  onRename,
+  onDelete,
+}: {
+  zones: StoryZone[];
+  canWrite: boolean;
+  onDraw: () => void;
+  onShow: (z: StoryZone) => void;
+  onRename: (z: StoryZone, label: string) => void;
+  onDelete: (z: StoryZone) => void;
+}) {
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
   return (
     <div className="space-y-1.5 rounded-md border border-border p-2" data-testid="houses">
@@ -539,7 +844,7 @@ function Houses({ zones, canWrite, onDraw, onShow, onRename, onDelete }: { zones
       {zones.length ? (
         <ul className="space-y-1">
           {zones.map((z, i) => {
-            const name = z.label || `House ${i + 1}`;
+            const name = z.name || z.label || `House ${i + 1}`;
             const id = String(z.id);
             return (
               <li key={id} className="flex items-center gap-1.5" data-zone={id}>
@@ -552,23 +857,49 @@ function Houses({ zones, canWrite, onDraw, onShow, onRename, onDelete }: { zones
                       setEditing(null);
                     }}
                   >
-                    <Input aria-label={`Name of ${name}`} autoFocus value={editing.text} maxLength={40} onChange={(e) => setEditing({ id, text: e.target.value })} className="h-6 text-xs" />
+                    <Input
+                      aria-label={`Name of ${name}`}
+                      autoFocus
+                      value={editing.text}
+                      maxLength={40}
+                      onChange={(e) => setEditing({ id, text: e.target.value })}
+                      className="h-6 text-xs"
+                    />
                     <Button size="sm" type="submit" className="h-6">
                       Save
                     </Button>
                   </form>
                 ) : (
                   <>
-                    <button type="button" className="min-w-0 flex-1 truncate text-left font-medium hover:underline" onClick={() => onShow(z)} title="Show on the map">
+                    <button
+                      type="button"
+                      className="min-w-0 flex-1 truncate text-left font-medium hover:underline"
+                      onClick={() => onShow(z)}
+                      title="Show on the map"
+                    >
                       {name}
                     </button>
                     <span className="text-subtle tabular-nums">
                       {Math.abs(z.area[3] - z.area[0]) + 1} × {Math.abs(z.area[5] - z.area[2]) + 1}
                     </span>
-                    <Button size="sm" variant="ghost" className="h-6 px-1.5" disabled={!canWrite} onClick={() => setEditing({ id, text: z.label ?? '' })} aria-label={`Rename ${name}`}>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-1.5"
+                      disabled={!canWrite}
+                      onClick={() => setEditing({ id, text: z.name ?? z.label ?? '' })}
+                      aria-label={`Rename ${name}`}
+                    >
                       <Pencil className="size-3.5" />
                     </Button>
-                    <Button size="sm" variant="ghost" className="h-6 px-1.5 text-danger" disabled={!canWrite} onClick={() => onDelete(z)} aria-label={`Delete ${name}`}>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-1.5 text-danger"
+                      disabled={!canWrite}
+                      onClick={() => onDelete(z)}
+                      aria-label={`Delete ${name}`}
+                    >
                       <Trash2 className="size-3.5" />
                     </Button>
                   </>
@@ -578,13 +909,23 @@ function Houses({ zones, canWrite, onDraw, onShow, onRename, onDelete }: { zones
           })}
         </ul>
       ) : (
-        <p className="text-[10.5px] text-subtle">No houses yet: draw home areas where the pawns should sleep and rest.</p>
+        <p className="text-[10.5px] text-subtle">
+          No houses yet: draw home areas where the pawns should sleep and rest.
+        </p>
       )}
     </div>
   );
 }
 
-export function NewColony({ canWrite, at, onCreate }: { canWrite: boolean; at: readonly number[] | null; onCreate: (name: string, pawns: number) => void }) {
+export function NewColony({
+  canWrite,
+  at,
+  onCreate,
+}: {
+  canWrite: boolean;
+  at: readonly number[] | null;
+  onCreate: (name: string, pawns: number) => void;
+}) {
   const [name, setName] = useState('Hollow');
   const [n, setN] = useState(4);
   return (
@@ -598,16 +939,42 @@ export function NewColony({ canWrite, at, onCreate }: { canWrite: boolean; at: r
     >
       <div className="font-semibold">Found a colony</div>
       <div className="flex items-center gap-2">
-        <Input aria-label="Colony name" value={name} maxLength={40} onChange={(e) => setName(e.target.value)} className="h-7 text-xs" />
+        <Input
+          aria-label="Colony name"
+          value={name}
+          maxLength={40}
+          onChange={(e) => setName(e.target.value)}
+          className="h-7 text-xs"
+        />
         <div className="flex items-center gap-1 whitespace-nowrap" role="group" aria-label="Pawns">
           <span>Pawns</span>
-          <Button type="button" size="sm" variant="ghost" className="h-7 w-7 px-0" aria-label="Fewer pawns" disabled={n <= 1} onClick={() => setN((v) => Math.max(1, v - 1))}>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 w-7 px-0"
+            aria-label="Fewer pawns"
+            disabled={n <= 1}
+            onClick={() => setN((v) => Math.max(1, v - 1))}
+          >
             −
           </Button>
-          <output aria-label="Number of pawns" aria-live="polite" className="min-w-[2ch] text-center text-sm font-semibold tabular-nums text-fg">
+          <output
+            aria-label="Number of pawns"
+            aria-live="polite"
+            className="min-w-[2ch] text-center text-sm font-semibold tabular-nums text-fg"
+          >
             {n}
           </output>
-          <Button type="button" size="sm" variant="ghost" className="h-7 w-7 px-0" aria-label="More pawns" disabled={n >= 12} onClick={() => setN((v) => Math.min(12, v + 1))}>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 w-7 px-0"
+            aria-label="More pawns"
+            disabled={n >= 12}
+            onClick={() => setN((v) => Math.min(12, v + 1))}
+          >
             +
           </Button>
         </div>
@@ -615,7 +982,11 @@ export function NewColony({ canWrite, at, onCreate }: { canWrite: boolean; at: r
       <p className="text-[10.5px] text-muted" data-testid="settle-at">
         {at ? (
           <>
-            Settles at <span className="font-semibold tabular-nums text-fg">{at[0]}, {at[2]}</span>: the map centre. Pan to settle elsewhere.
+            Settles at{' '}
+            <span className="font-semibold tabular-nums text-fg">
+              {at[0]}, {at[2]}
+            </span>
+            : the map centre. Pan to settle elsewhere.
           </>
         ) : (
           'Settles at the map centre.'

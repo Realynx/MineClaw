@@ -7,7 +7,12 @@ import { loadFixture } from './helpers.js';
 function world(): StoryWorld & { changed: string[] } {
   const blocks = new Map<string, [number, number]>();
   const k = (x: number, y: number, z: number) => `${x},${y},${z}`;
-  for (const [x, z] of [[10, 0], [14, 0], [10, 5]] as const) for (let y = 64; y <= 68; y++) blocks.set(k(x, y, z), [17, 0]);
+  for (const [x, z] of [
+    [10, 0],
+    [14, 0],
+    [10, 5],
+  ] as const)
+    for (let y = 64; y <= 68; y++) blocks.set(k(x, y, z), [17, 0]);
   for (let x = 0; x < 4; x++) blocks.set(k(x, 64, 8), [59, 7]);
   blocks.set(k(3, 64, 8), [59, 3]);
   blocks.set(k(-2, 64, -2), [58, 0]);
@@ -27,7 +32,19 @@ function world(): StoryWorld & { changed: string[] } {
       blocks.set(k(x, y, z), [id, 0]);
       changed.push(k(x, y, z));
     },
-    ai: () => [{ name: 'maid_chan', kind: 'main', owner: null, online: true, hp: 20, food: 20, pos: [0, 64, 0], dim: 0, task: 'mining' }],
+    ai: () => [
+      {
+        name: 'maid_chan',
+        kind: 'main',
+        owner: null,
+        online: true,
+        hp: 20,
+        food: 20,
+        pos: [0, 64, 0],
+        dim: 0,
+        task: 'mining',
+      },
+    ],
   };
 }
 
@@ -49,13 +66,48 @@ describe('story contracts', () => {
     expect(C.StoryPrioritiesRequest.safeParse({ pawns: ['a'], work: { chop: 5 } }).success).toBe(false);
     expect(C.StoryPrioritiesRequest.safeParse({ pawns: ['a'], work: { dance: 1 } }).success).toBe(false);
     expect(C.StoryScheduleRequest.safeParse({ pawns: ['a'], hours: { '24': 'work' } }).success).toBe(false);
-    expect(C.StoryScheduleRequest.safeParse({ pawns: ['a'], hours: { '0': 'sleep', '23': 'free' } }).success).toBe(true);
-    expect(C.StoryOrderRequest.safeParse({ pawns: ['a'], order: { kind: 'chop', target: { x: 1, y: 2, z: 3 } }, queue: true }).success).toBe(true);
-    expect(C.StoryOrderRequest.safeParse({ pawns: ['a'], order: { kind: 'chop', target: { x: 1, y: 2, z: 3, who: 'x' } } }).success).toBe(false);
-    expect(C.StoryBuildRequest.safeParse({ op: 'add', items: [{ kind: 'wall', area: [0, 64, 0, 4, 64, 4], material: 'oak_planks', height: 13 }] }).success).toBe(false);
-    expect(C.StoryBillsRequest.safeParse({ op: 'add', bench: [1, 2, 3], bill: { recipe: 'sticks', mode: 'until', target: 64, minSkill: 3 } }).success).toBe(true);
-    expect(C.StoryStorageRequest.safeParse({ op: 'set', chests: [[1, 2, 3]], filter: { allow: ['wood'] }, priority: 'preferred' }).success).toBe(true);
-    expect(C.StoryDirectiveRequest.safeParse({ bots: ['maid_chan'], directive: { kind: 'text', text: 'come here' }, requestId: 'r-12345678' }).success).toBe(true);
+    expect(C.StoryScheduleRequest.safeParse({ pawns: ['a'], hours: { '0': 'sleep', '23': 'free' } }).success).toBe(
+      true,
+    );
+    expect(
+      C.StoryOrderRequest.safeParse({
+        pawns: ['a'],
+        order: { kind: 'chop', target: { x: 1, y: 2, z: 3 } },
+        queue: true,
+      }).success,
+    ).toBe(true);
+    expect(
+      C.StoryOrderRequest.safeParse({ pawns: ['a'], order: { kind: 'chop', target: { x: 1, y: 2, z: 3, who: 'x' } } })
+        .success,
+    ).toBe(false);
+    expect(
+      C.StoryBuildRequest.safeParse({
+        op: 'add',
+        items: [{ kind: 'wall', area: [0, 64, 0, 4, 64, 4], material: 'oak_planks', height: 13 }],
+      }).success,
+    ).toBe(false);
+    expect(
+      C.StoryBillsRequest.safeParse({
+        op: 'add',
+        bench: [1, 2, 3],
+        bill: { recipe: 'sticks', mode: 'until', target: 64, minSkill: 3 },
+      }).success,
+    ).toBe(true);
+    expect(
+      C.StoryStorageRequest.safeParse({
+        op: 'set',
+        chests: [[1, 2, 3]],
+        filter: { allow: ['wood'] },
+        priority: 'preferred',
+      }).success,
+    ).toBe(true);
+    expect(
+      C.StoryDirectiveRequest.safeParse({
+        bots: ['maid_chan'],
+        directive: { kind: 'text', text: 'come here' },
+        requestId: 'r-12345678',
+      }).success,
+    ).toBe(true);
   });
 
   it('hours and clock labels', () => {
@@ -77,7 +129,8 @@ describe('story contracts', () => {
     expect(C.clockTick(12)).toBe(6000);
     expect(C.clockTick(0)).toBe(18000);
     expect(C.clockTick(5, 30)).toBe(23500);
-    for (const t of [0, 1000, 7500, 18000, 23000]) expect(C.clockTick(...(C.tickClock(t).split(':').map(Number) as [number, number]))).toBe(t);
+    for (const t of [0, 1000, 7500, 18000, 23000])
+      expect(C.clockTick(...(C.tickClock(t).split(':').map(Number) as [number, number]))).toBe(t);
     expect(C.StoryTimeRequest.safeParse({ time: 24000 }).success).toBe(false);
     expect(C.StoryTimeRequest.safeParse({ time: 12.5 }).success).toBe(false);
     expect(C.StoryTimeRequest.safeParse({ time: 0 }).success).toBe(true);
@@ -100,25 +153,45 @@ describe('build expansion (the preview)', () => {
     const area: C.StoryArea = [0, 67, 0, 6, 67, 4];
     expect(C.expandBuildItem({ kind: 'roof', area, material: 'oak_planks', roof: { style: 'flat' } })).toHaveLength(35);
     expect(C.expandBuildItem({ kind: 'roof', area, material: 'oak_planks', roof: { style: 'none' } })).toHaveLength(0);
-    expect(C.expandBuildItem({ kind: 'roof', area, material: 'oak_planks', roof: { style: 'slab' } }).every((b) => b[3] === 44)).toBe(true);
+    expect(
+      C.expandBuildItem({ kind: 'roof', area, material: 'oak_planks', roof: { style: 'slab' } }).every(
+        (b) => b[3] === 44,
+      ),
+    ).toBe(true);
     const gable = C.expandBuildItem({ kind: 'roof', area, material: 'oak_planks', roof: { style: 'gable' } });
     // Ridge along x (the longer side): z 0 and 4 are eaves (y 67), z 2 is the ridge (y 69).
     expect(gable.filter((b) => b[2] === 0).every((b) => b[1] === 67)).toBe(true);
     expect(gable.filter((b) => b[2] === 2).every((b) => b[1] === 69)).toBe(true);
-    expect(C.expandBuildItem({ kind: 'roof', area, material: 'oak_planks', roof: { style: 'flat', overhang: 1 } })).toHaveLength(9 * 7);
+    expect(
+      C.expandBuildItem({ kind: 'roof', area, material: 'oak_planks', roof: { style: 'flat', overhang: 1 } }),
+    ).toHaveLength(9 * 7);
   });
 
   it('doors are two high, furniture beds two long, remove places air', () => {
-    expect(C.expandBuildItem({ kind: 'door', blocks: [[2, 64, 0]], material: 'oak_planks' }).map((b) => b[1])).toEqual([64, 65]);
+    expect(C.expandBuildItem({ kind: 'door', blocks: [[2, 64, 0]], material: 'oak_planks' }).map((b) => b[1])).toEqual([
+      64, 65,
+    ]);
     const bed = C.expandBuildItem({ kind: 'bed', blocks: [[0, 64, 0]], facing: 'e' });
-    expect(bed.map((b) => [b[0], b[2], b[4]])).toEqual([[0, 0, 3], [1, 0, 11]]);
-    expect(C.expandBuildItem({ kind: 'remove', area: [0, 64, 0, 1, 65, 0], material: 'stone' }).every((b) => b[3] === 0)).toBe(true);
+    expect(bed.map((b) => [b[0], b[2], b[4]])).toEqual([
+      [0, 0, 3],
+      [1, 0, 11],
+    ]);
+    expect(
+      C.expandBuildItem({ kind: 'remove', area: [0, 64, 0, 1, 65, 0], material: 'stone' }).every((b) => b[3] === 0),
+    ).toBe(true);
   });
 });
 
 describe('tool matching', () => {
   it('chop counts whole trees; harvest only ripe crops; mine filters', () => {
-    expect(C.countTrees([[0, 64, 0], [0, 65, 0], [1, 64, 1], [5, 64, 5]])).toBe(2);
+    expect(
+      C.countTrees([
+        [0, 64, 0],
+        [0, 65, 0],
+        [1, 64, 1],
+        [5, 64, 5],
+      ]),
+    ).toBe(2);
     expect(C.matchesTool('harvest', 59, 7, 60)).toBe(true);
     expect(C.matchesTool('harvest', 59, 3, 60)).toBe(false);
     expect(C.matchesTool('harvest', 83, 0, 2)).toBe(false);
@@ -186,18 +259,28 @@ describe('the mock director', () => {
     expect(s.home).toEqual([400, 63, -300]);
     for (const p of s.pawns) expect(Math.hypot((p.pos?.[0] ?? 0) - 400, (p.pos?.[2] ?? 0) + 300)).toBeLessThan(6);
     expect(() => sim.home(id, { home: { x: 1, y: 2 } })).toThrow(expect.objectContaining({ status: 400 }));
-    expect(() => sim.home('story-99', { home: { x: 1, y: 2, z: 3 } })).toThrow(expect.objectContaining({ status: 404 }));
+    expect(() => sim.home('story-99', { home: { x: 1, y: 2, z: 3 } })).toThrow(
+      expect.objectContaining({ status: 404 }),
+    );
   });
 
   it('beds: found near home, one per pawn, in the house they stand in; houses are named home zones', () => {
     const w = world();
-    const blocks = new Map<string, [number, number]>([['3,64,3', [26, 0]], ['3,64,4', [26, 8]], ['5,64,3', [26, 0]], ['5,64,4', [26, 8]]]);
+    const blocks = new Map<string, [number, number]>([
+      ['3,64,3', [26, 0]],
+      ['3,64,4', [26, 8]],
+      ['5,64,3', [26, 0]],
+      ['5,64,4', [26, 8]],
+    ]);
     const inner = w.blockAt.bind(w);
     w.blockAt = (x, y, z) => blocks.get(`${x},${y},${z}`) ?? inner(x, y, z);
     const sim = new StorySim({ world: w, defaultHome: [0, 63, 0], now: () => 1_762_000_000_000 });
     const { id } = sim.create({ name: 'Test', pawns: 2 });
     const [a, b] = sim.state(id).pawns.map((p) => p.name) as [string, string];
-    expect(sim.state(id).beds?.map((x) => x.pos)).toEqual([[3, 64, 3], [5, 64, 3]]); // the foot halves only
+    expect(sim.state(id).beds?.map((x) => x.pos)).toEqual([
+      [3, 64, 3],
+      [5, 64, 3],
+    ]); // the foot halves only
     expect(C.StoryBedsRequest.safeParse({ op: 'assign', bed: { x: 3, y: 64, z: 3 }, pawn: a }).success).toBe(true);
     expect(C.StoryBedsRequest.safeParse({ op: 'unassign', bed: { x: 3, y: 64, z: 3 }, pawn: a }).success).toBe(false);
     sim.beds(id, { op: 'assign', bed: { x: 3, y: 64, z: 3 }, pawn: a });
@@ -205,19 +288,27 @@ describe('the mock director', () => {
     expect(out.beds.map((x) => x.pawn)).toEqual([null, a]); // one bed a pawn: the first one is freed
     sim.beds(id, { op: 'assign', bed: { x: 3, y: 64, z: 3 }, pawn: b });
     expect(sim.beds(id, { op: 'unassign', bed: { x: 5, y: 64, z: 3 } }).beds.map((x) => x.pawn)).toEqual([b, null]);
-    expect(() => sim.beds(id, { op: 'unassign', bed: { x: 9, y: 9, z: 9 } })).toThrow(expect.objectContaining({ status: 404 }));
-    expect(() => sim.beds(id, { op: 'assign', bed: { x: 3, y: 64, z: 3 }, pawn: 'nobody' })).toThrow(expect.objectContaining({ status: 400 }));
+    expect(() => sim.beds(id, { op: 'unassign', bed: { x: 9, y: 9, z: 9 } })).toThrow(
+      expect.objectContaining({ status: 400 }),
+    );
+    // the head half names the bed too
+    expect(sim.beds(id, { op: 'unassign', bed: { x: 3, y: 64, z: 4 } }).beds.map((x) => x.pawn)).toEqual([null, null]);
+    expect(() => sim.beds(id, { op: 'assign', bed: { x: 3, y: 64, z: 3 }, pawn: 'nobody' })).toThrow(
+      expect.objectContaining({ status: 404 }),
+    );
     // Two houses; a bed knows its house; a house can be renamed.
-    const h1 = sim.zones(id, { op: 'add', kind: 'home', area: [2, 63, 2, 4, 63, 5], label: 'Cabin' }) as { id: string };
+    const h1 = sim.zones(id, { op: 'add', kind: 'home', area: [2, 63, 2, 4, 63, 5], name: 'Cabin' }) as { id: string };
     sim.zones(id, { op: 'add', kind: 'home', area: [20, 63, 20, 24, 63, 24] });
     expect(sim.state(id).zones.filter((z) => z.kind === 'home')).toHaveLength(2);
     expect(sim.state(id).beds?.[0]?.zone).toBe(h1.id);
-    sim.zones(id, { op: 'rename', id: h1.id, label: 'Lodge' });
-    expect(sim.state(id).zones.find((z) => z.id === h1.id)?.label).toBe('Lodge');
+    expect(sim.zones(id, { op: 'rename', id: h1.id, name: 'Lodge' })).toMatchObject({ id: h1.id, name: 'Lodge' });
+    expect(sim.state(id).zones.find((z) => z.id === h1.id)?.name).toBe('Lodge');
     expect(C.StoryZoneRequest.safeParse({ op: 'rename', id: 'z1' }).success).toBe(false);
     expect(C.StoryZoneRequest.safeParse({ op: 'add', kind: 'home' }).success).toBe(false);
-    sim.zones(id, { op: 'remove', kind: 'home', area: [2, 63, 2, 4, 63, 5] });
+    expect(sim.zones(id, { op: 'remove', id: h1.id })).toMatchObject({ removed: [h1.id] });
     expect(sim.state(id).zones.filter((z) => z.kind === 'home')).toHaveLength(1);
+    sim.zones(id, { op: 'remove', kind: 'home', area: [0, 0, 0, 30, 90, 30] });
+    expect(sim.state(id).zones.filter((z) => z.kind === 'home')).toHaveLength(0);
   });
 
   it('sets the time of day through the op account: 400 bad, 409 without an op, 429 above once a second', () => {
@@ -242,7 +333,10 @@ describe('the mock director', () => {
     const sim = new StorySim({ world: w, defaultHome: [0, 63, 0], now: () => t });
     const { id } = sim.create({ name: 'Test', pawns: 2 });
     const names = sim.state(id).pawns.map((p) => p.name);
-    sim.priorities(id, { pawns: names, work: Object.fromEntries(C.STORY_WORK_TYPES.map((k) => [k, k === 'chop' ? 1 : 0])) });
+    sim.priorities(id, {
+      pawns: names,
+      work: Object.fromEntries(C.STORY_WORK_TYPES.map((k) => [k, k === 'chop' ? 1 : 0])),
+    });
     sim.designations(id, { op: 'add', kind: 'chop', area: [8, 60, -2, 16, 80, 6] });
     for (let i = 0; i < 400; i++) {
       t += 100;
@@ -264,11 +358,20 @@ describe('the mock director', () => {
     const [a, b] = sim.state(id).pawns.map((p) => p.name) as [string, string];
     sim.draft(id, { pawns: [a], drafted: true });
     sim.orders(id, { pawns: [a], order: { kind: 'move', target: { x: 6, y: 64, z: 0 } } });
-    const built = sim.builds(id, { op: 'add', items: [{ kind: 'floor', area: [-6, 63, 4, -4, 63, 6], material: 'cobblestone' }, { kind: 'wall', area: [-6, 64, 4, -4, 64, 6], material: 'cobblestone', height: 2 }] });
+    const built = sim.builds(id, {
+      op: 'add',
+      items: [
+        { kind: 'floor', area: [-6, 63, 4, -4, 63, 6], material: 'cobblestone' },
+        { kind: 'wall', area: [-6, 64, 4, -4, 64, 6], material: 'cobblestone', height: 2 },
+      ],
+    });
     expect(built.ids).toHaveLength(2);
     sim.builds(id, { op: 'reorder', ids: [built.ids![1]!, built.ids![0]!] });
     expect(sim.state(id).builds?.find((x) => x.id === built.ids![1])?.order).toBe(1);
-    sim.priorities(id, { pawns: [b], work: { build: 1, haul: 0, chop: 0, mine: 0, farm: 0, craft: 0, cook: 0, hunt: 0, guard: 0, doctor: 0 } });
+    sim.priorities(id, {
+      pawns: [b],
+      work: { build: 1, haul: 0, chop: 0, mine: 0, farm: 0, craft: 0, cook: 0, hunt: 0, guard: 0, doctor: 0 },
+    });
     for (let i = 0; i < 300; i++) {
       t += 100;
       sim.step(100);
@@ -316,7 +419,10 @@ describe('story fixtures', () => {
   });
 
   it('a bill in a request is converted like any field (`bill` is opaque only in responses)', () => {
-    const body = C.toSnake({ op: 'add', bench: [1, 2, 3], bill: { recipe: 'sticks', mode: 'count', minSkill: 4 } }, { opaque: C.REQUEST_OPAQUE_KEYS });
+    const body = C.toSnake(
+      { op: 'add', bench: [1, 2, 3], bill: { recipe: 'sticks', mode: 'count', minSkill: 4 } },
+      { opaque: C.REQUEST_OPAQUE_KEYS },
+    );
     expect((body as { bill: Record<string, unknown> }).bill.min_skill).toBe(4);
   });
 

@@ -12,9 +12,48 @@ import { designationCells, targetPos, type StoryColonyState } from '@mineclaw/co
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import { useWorldHost } from '@/features/world/integration';
 import { DotMap } from '@/features/world/DotMap';
-import { assignAlong, cellAt, cellRect, edgePan, isDrag, lineSlots, nearest, project, rayAt, rayPlaneY, rectOf, snapCells, standFeet, unitsPerPx, zoomAt, type P2, type Pt, type Rect, type V3, type ViewMats } from './math';
+import {
+  assignAlong,
+  cellAt,
+  cellRect,
+  edgePan,
+  isDrag,
+  lineSlots,
+  nearest,
+  project,
+  rayAt,
+  rayPlaneY,
+  rectOf,
+  snapCells,
+  standFeet,
+  unitsPerPx,
+  zoomAt,
+  type P2,
+  type Pt,
+  type Rect,
+  type V3,
+  type ViewMats,
+} from './math';
 import { type Selection } from './model';
-import { buildItem, entitiesIn, faceCell, placeDesign, type DesignBlock, preview as buildPreview, previewTargets, scanIds, toolArea, toolYRange, DESIGNATE_TOOLS, zoneColor, type BuildOpts, type BuildToolId, type DesignateId, type EntityLite, type Target } from './tools';
+import {
+  buildItem,
+  entitiesIn,
+  faceCell,
+  placeDesign,
+  type DesignBlock,
+  preview as buildPreview,
+  previewTargets,
+  scanIds,
+  toolArea,
+  toolYRange,
+  DESIGNATE_TOOLS,
+  zoneColor,
+  type BuildOpts,
+  type BuildToolId,
+  type DesignateId,
+  type EntityLite,
+  type Target,
+} from './tools';
 import { COLORS, glyph, pawnColor } from './visuals';
 
 export type MapTool =
@@ -101,7 +140,9 @@ function settleSpot(e: WorldViewerEngine, player: string | null | undefined): V3
   const at = (x: number, y: number, z: number): V3 => [Math.floor(x), Math.floor(y + 0.01) - 1, Math.floor(z)];
   const main = e.runtime.store.bots().find((b) => b.dim === 0 && b.dto.main);
   if (main) return at(main.x, main.y, main.z);
-  const me = player ? e.runtime.store.entities(0).find((x) => x.kind === 'player' && x.name?.toLowerCase() === player.toLowerCase()) : undefined;
+  const me = player
+    ? e.runtime.store.entities(0).find((x) => x.kind === 'player' && x.name?.toLowerCase() === player.toLowerCase())
+    : undefined;
   return me ? at(me.x, me.y, me.z) : null;
 }
 const k3 = (p: readonly number[]) => `${p[0]},${p[1]},${p[2]}`;
@@ -134,7 +175,11 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   const drag = useRef<DragState | null>(null);
   const hover = useRef<{ at: Pt; cell: V3 | null; face: V3 | null; pickAt: number } | null>(null);
   const shown = useRef(new Map<string, V3>());
-  const scan = useRef<{ key: string; busy: boolean; result: DragResult | null }>({ key: '', busy: false, result: null });
+  const scan = useRef<{ key: string; busy: boolean; result: DragResult | null }>({
+    key: '',
+    busy: false,
+    result: null,
+  });
   const chests = useRef<{ at: number; cells: Array<{ pos: V3; id: number }> }>({ at: 0, cells: [] });
   const mats = useRef<ViewMats | null>(null);
   const lastClick = useRef<{ t: number; name: string } | null>(null);
@@ -142,13 +187,18 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   const appliedCut = useRef<string | undefined>(undefined);
   const lastEngine = useRef<WorldViewerEngine | null>(null);
   /** Standing heights per column at one level (`x,z` -> feet y, null = nowhere to stand); refilled for each right-drag. */
-  const stand = useRef<{ level: number; cols: Map<string, number | null>; busy: boolean }>({ level: 0, cols: new Map(), busy: false });
+  const stand = useRef<{ level: number; cols: Map<string, number | null>; busy: boolean }>({
+    level: 0,
+    cols: new Map(),
+    busy: false,
+  });
   const formationShown = useRef<Formation | null>(null);
 
   const engine = (): WorldViewerEngine | null => viewer.current?.engine() ?? null;
 
   const toPage = (x: number, y: number, z: number): Pt | null => {
-    const m = mats.current, c = canvas.current;
+    const m = mats.current,
+      c = canvas.current;
     if (!m || !c) return null;
     const s = project(m, x, y, z);
     if (!s) return null;
@@ -188,7 +238,6 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     },
   }));
 
-
   // First placement over the colony's home; with no colony yet, over the main bot (else the viewing user's player) so a new
   // colony settles where the hive is rather than at the world origin. The target height follows the level.
   useEffect(() => {
@@ -218,17 +267,18 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     return () => cancelAnimationFrame(raf);
   }, [props.home, props.settle, ready]);
 
-
   // ------------------------------------------------------------------ the frame loop: pan, project, draw
   useEffect(() => {
     let raf = 0;
     let last = performance.now();
-    let centreAt = 0, centreKey = '';
+    let centreAt = 0,
+      centreKey = '';
     const loop = (now: number) => {
       raf = requestAnimationFrame(loop);
       const dt = Math.min(0.1, (now - last) / 1000);
       last = now;
-      const e = engine(), c = canvas.current;
+      const e = engine(),
+        c = canvas.current;
       if (!e || !c) return;
       // The level cut (x-ray above the working level) is a per-view uniform: no re-meshing when it moves. The camera looks
       // at the level's floor.
@@ -245,14 +295,16 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         e.setLevelCut(p.current.cutY !== null || dim !== null ? { y: p.current.cutY ?? 1e6, dimBelow: dim } : null);
       }
       if (placed.current) e.rig.target.y = p.current.level + 1;
-      const w = c.clientWidth, h = c.clientHeight;
+      const w = c.clientWidth,
+        h = c.clientHeight;
       if (c.width !== w || c.height !== h) {
         c.width = w;
         c.height = h;
       }
       // Pan: keys, then the screen edge (only while the pointer is over the map and not dragging a box).
       const keys = p.current.keys.current;
-      let px = 0, pz = 0;
+      let px = 0,
+        pz = 0;
       for (const code of keys ?? []) {
         if (code === 'KeyW' || code === 'ArrowUp') pz -= 1;
         if (code === 'KeyS' || code === 'ArrowDown') pz += 1;
@@ -273,17 +325,26 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         } else e.rig.pan(-px * speed * (h / e.rig.isoZoom), -pz * speed * (h / e.rig.isoZoom), h);
       }
       const cam = e.camera;
-      mats.current = { view: cam.matrixWorldInverse.elements, proj: cam.projectionMatrix.elements, world: cam.matrixWorld.elements, projInv: cam.projectionMatrixInverse.elements, w, h };
+      mats.current = {
+        view: cam.matrixWorldInverse.elements,
+        proj: cam.projectionMatrix.elements,
+        world: cam.matrixWorld.elements,
+        projInv: cam.projectionMatrixInverse.elements,
+        w,
+        h,
+      };
       // Chests and workbenches near the view (a worker scan every few seconds).
       if (now - chests.current.at > 4000) {
         chests.current.at = now;
-        const t = e.rig.target, r = Math.min(64, e.rig.isoZoom);
+        const t = e.rig.target,
+          r = Math.min(64, e.rig.isoZoom);
         const lv = p.current.level;
         void e.runtime.host
           .scan(0, [t.x - r, lv - 12, t.z - r], [t.x + r, lv + 16, t.z + r], [54, 146, 58, 61, 62], 400)
           .then((s) => {
             const cells: Array<{ pos: V3; id: number }> = [];
-            for (let i = 0; i + 5 < s.length + 1; i += 6) cells.push({ pos: [s[i]!, s[i + 1]!, s[i + 2]!], id: s[i + 3]! });
+            for (let i = 0; i + 5 < s.length + 1; i += 6)
+              cells.push({ pos: [s[i]!, s[i + 1]!, s[i + 2]!], id: s[i + 3]! });
             chests.current.cells = cells;
           })
           .catch(() => undefined);
@@ -291,7 +352,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       // The centre column for the panels ("settles at", "move home here"), at most five times a second, once placed.
       if (placed.current && now - centreAt > 200) {
         centreAt = now;
-        const t = e.rig.target, cc: V3 = [Math.floor(t.x), p.current.level, Math.floor(t.z)];
+        const t = e.rig.target,
+          cc: V3 = [Math.floor(t.x), p.current.level, Math.floor(t.z)];
         const key = cc.join(',');
         if (key !== centreKey) {
           centreKey = key;
@@ -313,7 +375,10 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     const add = (name: string, pos: readonly number[] | null | undefined, kind: 'pawn' | 'ai') => {
       if (!pos) return;
       const prev = shown.current.get(name);
-      const next: V3 = prev && Math.hypot(prev[0] - pos[0]!, prev[2] - pos[2]!) < 12 ? [prev[0] + (pos[0]! - prev[0]) * k, prev[1] + (pos[1]! - prev[1]) * k, prev[2] + (pos[2]! - prev[2]) * k] : [pos[0]!, pos[1]!, pos[2]!];
+      const next: V3 =
+        prev && Math.hypot(prev[0] - pos[0]!, prev[2] - pos[2]!) < 12
+          ? [prev[0] + (pos[0]! - prev[0]) * k, prev[1] + (pos[1]! - prev[1]) * k, prev[2] + (pos[2]! - prev[2]) * k]
+          : [pos[0]!, pos[1]!, pos[2]!];
       shown.current.set(name, next);
       out.push({ key: name, at: m ? project(m, next[0], next[1] + 0.2, next[2]) : null, kind, pos: next });
     };
@@ -342,7 +407,10 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     const cell = 1 / upp; // px per block
     const cutY = props.cutY;
     const quad = (x1: number, z1: number, x2: number, z2: number, y: number): Pt[] | null => {
-      const a = project(m, x1, y, z1), b = project(m, x2, y, z1), cc = project(m, x2, y, z2), d = project(m, x1, y, z2);
+      const a = project(m, x1, y, z1),
+        b = project(m, x2, y, z1),
+        cc = project(m, x2, y, z2),
+        d = project(m, x1, y, z2);
       return a && b && cc && d ? [a, b, cc, d] : null;
     };
     const poly = (pts: Pt[]) => {
@@ -387,7 +455,7 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       ctx.stroke();
       ctx.setLineDash([]);
       if (home && cell > 3) {
-        const name = z.label || `House ${houseNo}`;
+        const name = z.name || z.label || `House ${houseNo}`;
         ctx.font = '600 11px system-ui, sans-serif';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'top';
@@ -462,11 +530,42 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       }
       // Angled: the top and the two faces toward the camera.
       const camPos = e.camera.position;
-      const faces: Array<Array<[number, number, number]>> = [[[x, y + 1, z], [x + 1, y + 1, z], [x + 1, y + 1, z + 1], [x, y + 1, z + 1]]];
-      if (camPos.x > x + 1) faces.push([[x + 1, y, z], [x + 1, y + 1, z], [x + 1, y + 1, z + 1], [x + 1, y, z + 1]]);
-      else if (camPos.x < x) faces.push([[x, y, z], [x, y + 1, z], [x, y + 1, z + 1], [x, y, z + 1]]);
-      if (camPos.z > z + 1) faces.push([[x, y, z + 1], [x + 1, y, z + 1], [x + 1, y + 1, z + 1], [x, y + 1, z + 1]]);
-      else if (camPos.z < z) faces.push([[x, y, z], [x + 1, y, z], [x + 1, y + 1, z], [x, y + 1, z]]);
+      const faces: Array<Array<[number, number, number]>> = [
+        [
+          [x, y + 1, z],
+          [x + 1, y + 1, z],
+          [x + 1, y + 1, z + 1],
+          [x, y + 1, z + 1],
+        ],
+      ];
+      if (camPos.x > x + 1)
+        faces.push([
+          [x + 1, y, z],
+          [x + 1, y + 1, z],
+          [x + 1, y + 1, z + 1],
+          [x + 1, y, z + 1],
+        ]);
+      else if (camPos.x < x)
+        faces.push([
+          [x, y, z],
+          [x, y + 1, z],
+          [x, y + 1, z + 1],
+          [x, y, z + 1],
+        ]);
+      if (camPos.z > z + 1)
+        faces.push([
+          [x, y, z + 1],
+          [x + 1, y, z + 1],
+          [x + 1, y + 1, z + 1],
+          [x, y + 1, z + 1],
+        ]);
+      else if (camPos.z < z)
+        faces.push([
+          [x, y, z],
+          [x + 1, y, z],
+          [x + 1, y + 1, z],
+          [x, y + 1, z],
+        ]);
       for (const f of faces) {
         const pts = f.map(([a, b, cc]) => project(m, a, b, cc));
         if (pts.some((q) => !q)) continue;
@@ -495,10 +594,29 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     for (const d of st?.designations ?? []) {
       const col = COLORS.designation[d.kind] ?? '#ffffff';
       const all = designationCells(d);
-      const cells = d.kind === 'chop' && all.length > 1 ? [all.reduce((a, b) => (b[1] > a[1] ? b : a))] : all.slice(0, 1);
+      const cells =
+        d.kind === 'chop' && all.length > 1 ? [all.reduce((a, b) => (b[1] > a[1] ? b : a))] : all.slice(0, 1);
       for (const b of cells) {
         const at = project(m, b[0] + 0.5, Math.min(b[1] + 1, cutY ?? 999), b[2] + 0.5);
         if (at) mark(d.kind, at, col, cell > 18 ? 14 : 11);
+        // A designation that keeps failing (the director's status / reason): a red ring, the reason when zoomed in.
+        if (at && (d.status === 'failed' || (d.fails ?? 0) > 0)) {
+          ctx.strokeStyle = d.status === 'failed' ? COLORS.danger : '#ffb35c';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(at.x, at.y, 11, 0, Math.PI * 2);
+          ctx.stroke();
+          if (d.status === 'failed' && d.reason && cell > 14) {
+            ctx.font = '600 10px system-ui, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'top';
+            ctx.fillStyle = 'rgba(10,12,16,0.75)';
+            const tw = Math.min(180, ctx.measureText(d.reason).width);
+            ctx.fillRect(at.x - tw / 2 - 3, at.y + 12, tw + 6, 13);
+            ctx.fillStyle = '#ffb3b3';
+            ctx.fillText(d.reason, at.x, at.y + 13, 180);
+          }
+        }
         if (d.pawn && at) {
           ctx.strokeStyle = pawnColor(d.pawn);
           ctx.lineWidth = 2;
@@ -509,7 +627,12 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       }
     }
     // Chests and workbenches: registered storage gets its mark and a priority pip; unregistered chests show faintly.
-    const storages = new Map((st?.storages ?? []).flatMap((s) => [[k3(s.chest), s] as const, ...(s.doubleWith ? [[k3(s.doubleWith), s] as const] : [])]));
+    const storages = new Map(
+      (st?.storages ?? []).flatMap((s) => [
+        [k3(s.chest), s] as const,
+        ...(s.doubleWith ? [[k3(s.doubleWith), s] as const] : []),
+      ]),
+    );
     const selChests = new Set(props.selection.chests.map(k3));
     const seen = new Set<string>();
     for (const { pos, id } of chests.current.cells) {
@@ -564,7 +687,9 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     for (const b of list) {
       if (!sel.has(b.key) || !b.at) continue;
       const pw = st?.pawns.find((x) => x.name === b.key);
-      const targets = [pw?.job?.target, ...(pw?.queue ?? []).map((o) => o.target)].map((t) => targetPos(t)).filter((t): t is [number, number, number] => !!t);
+      const targets = [pw?.job?.target, ...(pw?.queue ?? []).map((o) => o.target)]
+        .map((t) => targetPos(t))
+        .filter((t): t is [number, number, number] => !!t);
       let from = b.at;
       ctx.strokeStyle = COLORS.order;
       ctx.lineWidth = 1.5;
@@ -597,7 +722,12 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         const s = r + 5;
         ctx.beginPath();
         // corner brackets (the genre's selection mark, our own drawing)
-        for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const) {
+        for (const [sx, sy] of [
+          [-1, -1],
+          [1, -1],
+          [1, 1],
+          [-1, 1],
+        ] as const) {
           ctx.moveTo(x + sx * s, y + sy * (s - 5));
           ctx.lineTo(x + sx * s, y + sy * s);
           ctx.lineTo(x + sx * (s - 5), y + sy * s);
@@ -670,7 +800,9 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     } else if (tool.kind === 'design' && hover.current?.cell && !d) {
       // A design follows the cursor (Q/E turns it) on the working level.
       const a = startCellOf(hover.current);
-      if (a) for (const b of placeDesign(tool.blocks, a, props.build.facing).slice(0, 2500)) cube(b[0], b[1], b[2], '#7fd3ff', 0.38, false);
+      if (a)
+        for (const b of placeDesign(tool.blocks, a, props.build.facing).slice(0, 2500))
+          cube(b[0], b[1], b[2], '#7fd3ff', 0.38, false);
       if (a) label(ctx, hover.current.at, `${tool.name}: ${tool.blocks.length} blocks · click to queue`, true);
     } else if (tool.kind === 'build' && hover.current?.cell && !d) {
       // The placement ghost under the cursor before a drag starts.
@@ -698,14 +830,17 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
    * asks for them (one read in flight) and draws with what it has.
    */
   const formation = async (d: DragState, final: boolean): Promise<Formation | null> => {
-    const props = p.current, st = props.state, e = engine();
+    const props = p.current,
+      st = props.state,
+      e = engine();
     if (!st || !e || !d.startCell || !d.endCell) return null;
     const sel = new Set(props.selection.bodies);
     const pawns = st.pawns.filter((pw) => sel.has(pw.name) && pw.pos && pw.online !== false);
     const drafted = pawns.filter((pw) => pw.drafted);
     if (!drafted.length) return null;
     const level = props.level;
-    const a: P2 = { x: d.startCell[0] + 0.5, z: d.startCell[2] + 0.5 }, b: P2 = { x: d.endCell[0] + 0.5, z: d.endCell[2] + 0.5 };
+    const a: P2 = { x: d.startCell[0] + 0.5, z: d.startCell[2] + 0.5 },
+      b: P2 = { x: d.endCell[0] + 0.5, z: d.endCell[2] + 0.5 };
     const raw = lineSlots(a, b, drafted.length);
     const sc = stand.current;
     if (sc.level !== level) Object.assign(sc, { level, cols: new Map() });
@@ -714,7 +849,9 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     for (const s of raw)
       for (let dx = -SNAP_R; dx <= SNAP_R; dx++)
         for (let dz = -SNAP_R; dz <= SNAP_R; dz++) {
-          const x = Math.floor(s.x) + dx, z = Math.floor(s.z) + dz, k = `${x},${z}`;
+          const x = Math.floor(s.x) + dx,
+            z = Math.floor(s.z) + dz,
+            k = `${x},${z}`;
           if (!sc.cols.has(k) && !seen.has(k)) {
             seen.add(k);
             missing.push([x, z]);
@@ -743,7 +880,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   const readStand = async (e: WorldViewerEngine, cols: Array<[number, number]>, level: number): Promise<void> => {
     const sc = stand.current;
     sc.busy = true;
-    const y0 = level - 4, n = 11;
+    const y0 = level - 4,
+      n = 11;
     const pts: number[] = [];
     for (const [x, z] of cols) for (let j = 0; j < n; j++) pts.push(x, y0 + j, z);
     try {
@@ -764,7 +902,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   /** The formation preview: the dashed line and a ghost token (the pawn's colour and initials) on every slot. */
   const drawFormation = (ctx: CanvasRenderingContext2D, m: ViewMats, f: Formation) => {
     const y = p.current.level + 1.02;
-    const s1 = project(m, f.a.x, y, f.a.z), s2 = project(m, f.b.x, y, f.b.z);
+    const s1 = project(m, f.a.x, y, f.a.z),
+      s2 = project(m, f.b.x, y, f.b.z);
     if (s1 && s2) {
       ctx.strokeStyle = COLORS.order;
       ctx.lineWidth = 2;
@@ -800,7 +939,19 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     ctx.textBaseline = 'top';
   };
 
-  const GLYPH_OF: Record<string, string> = { chop: 'chop', mine: 'mine', harvest: 'harvest', cut: 'cut', haul: 'haul', hunt: 'hunt', build: 'build', deconstruct: 'deconstruct', attack: 'hunt', craft: 'bench', cook: 'bench' };
+  const GLYPH_OF: Record<string, string> = {
+    chop: 'chop',
+    mine: 'mine',
+    harvest: 'harvest',
+    cut: 'cut',
+    haul: 'haul',
+    hunt: 'hunt',
+    build: 'build',
+    deconstruct: 'deconstruct',
+    attack: 'hunt',
+    craft: 'bench',
+    cook: 'bench',
+  };
 
   const drawToolDrag = (
     ctx: CanvasRenderingContext2D,
@@ -813,17 +964,28 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   ) => {
     const props = p.current;
     const tool = props.tool;
-    const a = d.startCell!, b = d.endCell!;
+    const a = d.startCell!,
+      b = d.endCell!;
     const rect = cellRect(a, b);
     if (tool.kind === 'build') {
       const pv = buildPreview(buildItem(tool.id, a, b, { ...props.build, line: d.alt }));
       const col = pv.valid ? (pv.item.kind === 'remove' ? '#ff6b6b' : '#7fd3ff') : '#ff6b6b';
       for (const g of pv.blocks.slice(0, 1500)) cube(g[0], g[1], g[2], col, 0.42, false);
-      label(ctx, d.now, `${pv.blocks.length} block${pv.blocks.length === 1 ? '' : 's'}${pv.item.kind !== 'remove' ? ` · ${pv.cost} ${typeof pv.item.material === 'string' ? pv.item.material.replace(/_/g, ' ') : 'blocks'}` : ''}${pv.reason ? ` · ${pv.reason}` : ''}`, pv.valid);
+      label(
+        ctx,
+        d.now,
+        `${pv.blocks.length} block${pv.blocks.length === 1 ? '' : 's'}${pv.item.kind !== 'remove' ? ` · ${pv.cost} ${typeof pv.item.material === 'string' ? pv.item.material.replace(/_/g, ' ') : 'blocks'}` : ''}${pv.reason ? ` · ${pv.reason}` : ''}`,
+        pv.valid,
+      );
       return;
     }
     const q = quad(rect[0], rect[1], rect[2] + 1, rect[3] + 1, props.level + 1.02);
-    const col = tool.kind === 'designate' ? (COLORS.designation[tool.id] ?? '#ffffff') : tool.kind === 'zone' ? zoneColor(tool.id) : COLORS.chest;
+    const col =
+      tool.kind === 'designate'
+        ? (COLORS.designation[tool.id] ?? '#ffffff')
+        : tool.kind === 'zone'
+          ? zoneColor(tool.id)
+          : COLORS.chest;
     if (q) {
       poly(q);
       ctx.fillStyle = `${col}22`;
@@ -838,14 +1000,16 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         ctx.lineWidth = 1;
         ctx.beginPath();
         for (let x = rect[0] + 1; x <= rect[2]; x++) {
-          const s1 = project(m, x, props.level + 1.02, rect[1]), s2 = project(m, x, props.level + 1.02, rect[3] + 1);
+          const s1 = project(m, x, props.level + 1.02, rect[1]),
+            s2 = project(m, x, props.level + 1.02, rect[3] + 1);
           if (s1 && s2) {
             ctx.moveTo(s1.x, s1.y);
             ctx.lineTo(s2.x, s2.y);
           }
         }
         for (let z = rect[1] + 1; z <= rect[3]; z++) {
-          const s1 = project(m, rect[0], props.level + 1.02, z), s2 = project(m, rect[2] + 1, props.level + 1.02, z);
+          const s1 = project(m, rect[0], props.level + 1.02, z),
+            s2 = project(m, rect[2] + 1, props.level + 1.02, z);
           if (s1 && s2) {
             ctx.moveTo(s1.x, s1.y);
             ctx.lineTo(s2.x, s2.y);
@@ -922,7 +1086,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   };
 
   const pick = async (pt: Pt): Promise<(PickedBlock & { face: number }) | null> => {
-    const e = engine(), m = mats.current;
+    const e = engine(),
+      m = mats.current;
     if (!e || !m) return null;
     const r = rayAt(m, pt.x, pt.y);
     const hit = await e.runtime.host.pick(0, r.o, r.d, 400, e.pickCut()).catch(() => null);
@@ -956,7 +1121,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
 
   /** Rescans a designate drag's targets (one scan in flight; the latest rectangle wins). */
   const rescan = () => {
-    const d = drag.current, e = engine();
+    const d = drag.current,
+      e = engine();
     const tool = p.current.tool;
     if (!d || !e || !d.startCell || !d.endCell || tool.kind !== 'designate') return;
     const rect = cellRect(d.startCell, d.endCell);
@@ -992,7 +1158,10 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       .finally(() => {
         scan.current.busy = false;
         if (drag.current) {
-          const r2 = drag.current.startCell && drag.current.endCell ? cellRect(drag.current.startCell, drag.current.endCell).join(',') + tool.id + p.current.mineFilter : '';
+          const r2 =
+            drag.current.startCell && drag.current.endCell
+              ? cellRect(drag.current.startCell, drag.current.endCell).join(',') + tool.id + p.current.mineFilter
+              : '';
           if (r2 !== scan.current.key) rescan();
         }
       });
@@ -1006,13 +1175,34 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     if (ev.button === 2) {
       // The order menu on up; a right-drag with drafted pawns selected lines them up instead.
       const cell = groundCell(pt);
-      drag.current = { start: pt, now: pt, button: 2, shift: ev.shiftKey, alt: false, startCell: cell, endCell: cell, moved: false };
+      drag.current = {
+        start: pt,
+        now: pt,
+        button: 2,
+        shift: ev.shiftKey,
+        alt: false,
+        startCell: cell,
+        endCell: cell,
+        moved: false,
+      };
       stand.current = { level: p.current.level, cols: new Map(), busy: false };
       formationShown.current = null;
       return;
     }
-    const startCell = (p.current.tool.kind === 'build' || p.current.tool.kind === 'design') && hover.current ? startCellOf(hover.current) : groundCell(pt);
-    drag.current = { start: pt, now: pt, button: ev.button, shift: ev.shiftKey, alt: ev.altKey, startCell, endCell: startCell, moved: false };
+    const startCell =
+      (p.current.tool.kind === 'build' || p.current.tool.kind === 'design') && hover.current
+        ? startCellOf(hover.current)
+        : groundCell(pt);
+    drag.current = {
+      start: pt,
+      now: pt,
+      button: ev.button,
+      shift: ev.shiftKey,
+      alt: ev.altKey,
+      startCell,
+      endCell: startCell,
+      moved: false,
+    };
     scan.current = { key: '', busy: false, result: null };
   };
 
@@ -1023,7 +1213,8 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       // Middle-drag pans (Shift + middle-drag turns the angled view).
       const e = engine();
       if (e) {
-        const dx = pt.x - d.now.x, dy = pt.y - d.now.y;
+        const dx = pt.x - d.now.x,
+          dy = pt.y - d.now.y;
         if (ev.shiftKey && e.rig.mode === 'iso') e.rig.look(dx, dy);
         else e.rig.pan(dx, dy, canvas.current!.clientHeight);
       }
@@ -1046,7 +1237,12 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     if (tool.kind === 'build') {
       const h = hover.current;
       const c = h ? startCellOf(h) : null;
-      if (c && d.startCell) d.endCell = p.current.view === 'angled' && (tool.id === 'wall' || tool.id === 'floor' || tool.id === 'roof' || tool.id === 'fence') ? [c[0], d.startCell[1], c[2]] : c;
+      if (c && d.startCell)
+        d.endCell =
+          p.current.view === 'angled' &&
+          (tool.id === 'wall' || tool.id === 'floor' || tool.id === 'roof' || tool.id === 'fence')
+            ? [c[0], d.startCell[1], c[2]]
+            : c;
     } else d.endCell = groundCell(pt) ?? d.endCell;
     if (d.moved && tool.kind === 'designate') rescan();
   };
@@ -1080,9 +1276,17 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
     if (tool.kind === 'select') {
       if (d.moved) {
         const r: Rect = rectOf(d.start, pt);
-        const inBox = bodies(0).filter((b) => b.at && b.at.x >= r.x && b.at.x <= r.x + r.w && b.at.y >= r.y && b.at.y <= r.y + r.h);
+        const inBox = bodies(0).filter(
+          (b) => b.at && b.at.x >= r.x && b.at.x <= r.x + r.w && b.at.y >= r.y && b.at.y <= r.y + r.h,
+        );
         if (inBox.length) {
-          props.onSelect({ bodies: d.shift ? [...new Set([...props.selection.bodies, ...inBox.map((b) => b.key)])] : inBox.map((b) => b.key), chests: [], bench: null });
+          props.onSelect({
+            bodies: d.shift
+              ? [...new Set([...props.selection.bodies, ...inBox.map((b) => b.key)])]
+              : inBox.map((b) => b.key),
+            chests: [],
+            bench: null,
+          });
           return;
         }
         // No bodies: the chests in the box (edit their storage together).
@@ -1108,36 +1312,77 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
         : undefined;
       const hit = bodyAt(pt);
       if (bedHit && (!hit?.at || Math.hypot(hit.at.x - pt.x, hit.at.y - pt.y) > bedHit.d)) {
-        props.onSelect({ bodies: [], chests: [], bench: null, bed: [bedHit.b.pos[0], bedHit.b.pos[1], bedHit.b.pos[2]] });
+        props.onSelect({
+          bodies: [],
+          chests: [],
+          bench: null,
+          bed: [bedHit.b.pos[0], bedHit.b.pos[1], bedHit.b.pos[2]],
+        });
         return;
       }
       if (hit) {
         const now = performance.now();
         if (lastClick.current && lastClick.current.name === hit.key && now - lastClick.current.t < 350) {
-          const visible = bodies(0).filter((b) => b.kind === hit.kind && b.at && b.at.x >= 0 && b.at.y >= 0 && b.at.x <= canvas.current!.clientWidth && b.at.y <= canvas.current!.clientHeight);
-          props.onSelectSame(hit.kind, visible.map((b) => b.key));
+          const visible = bodies(0).filter(
+            (b) =>
+              b.kind === hit.kind &&
+              b.at &&
+              b.at.x >= 0 &&
+              b.at.y >= 0 &&
+              b.at.x <= canvas.current!.clientWidth &&
+              b.at.y <= canvas.current!.clientHeight,
+          );
+          props.onSelectSame(
+            hit.kind,
+            visible.map((b) => b.key),
+          );
           lastClick.current = null;
           return;
         }
         lastClick.current = { t: now, name: hit.key };
         const sel = props.selection;
         const has = sel.bodies.includes(hit.key);
-        props.onSelect({ bodies: ev.ctrlKey || ev.metaKey ? (has ? sel.bodies.filter((n) => n !== hit.key) : [...sel.bodies, hit.key]) : ev.shiftKey ? (has ? sel.bodies : [...sel.bodies, hit.key]) : [hit.key], chests: [], bench: null });
+        props.onSelect({
+          bodies:
+            ev.ctrlKey || ev.metaKey
+              ? has
+                ? sel.bodies.filter((n) => n !== hit.key)
+                : [...sel.bodies, hit.key]
+              : ev.shiftKey
+                ? has
+                  ? sel.bodies
+                  : [...sel.bodies, hit.key]
+                : [hit.key],
+          chests: [],
+          bench: null,
+        });
         return;
       }
       // A chest or a workbench under the cursor.
       const block = await pick(pt);
       if (block && (block.id === 54 || block.id === 146)) {
         const pos: V3 = [block.x, block.y, block.z];
-        const s = (props.state?.storages ?? []).find((x) => k3(x.chest) === k3(pos) || (x.doubleWith && k3(x.doubleWith) === k3(pos)));
-        const chest: V3 = s ? (s.chest) : pos;
+        const s = (props.state?.storages ?? []).find(
+          (x) => k3(x.chest) === k3(pos) || (x.doubleWith && k3(x.doubleWith) === k3(pos)),
+        );
+        const chest: V3 = s ? s.chest : pos;
         const sel = props.selection;
         const has = sel.chests.some((c) => k3(c) === k3(chest));
-        props.onSelect({ bodies: [], chests: ev.shiftKey ? (has ? sel.chests.filter((c) => k3(c) !== k3(chest)) : [...sel.chests, chest]) : [chest], bench: null });
+        props.onSelect({
+          bodies: [],
+          chests: ev.shiftKey
+            ? has
+              ? sel.chests.filter((c) => k3(c) !== k3(chest))
+              : [...sel.chests, chest]
+            : [chest],
+          bench: null,
+        });
         return;
       }
       if (block && block.id === 26) {
-        const bed = (props.state?.beds ?? []).find((b) => Math.abs(b.pos[0] - block.x) + Math.abs(b.pos[2] - block.z) <= 1 && Math.abs(b.pos[1] - block.y) <= 1);
+        const bed = (props.state?.beds ?? []).find(
+          (b) => Math.abs(b.pos[0] - block.x) + Math.abs(b.pos[2] - block.z) <= 1 && Math.abs(b.pos[1] - block.y) <= 1,
+        );
         if (bed) {
           props.onSelect({ bodies: [], chests: [], bench: null, bed: [bed.pos[0], bed.pos[1], bed.pos[2]] });
           return;
@@ -1165,7 +1410,9 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
           const ents = entitiesIn(t, rect, entityList());
           res = { rect, a: d.startCell, b: end, cells: [], entities: ents, count: ents.length };
         } else if (e && tool.id !== 'cancel') {
-          const s = await e.runtime.host.scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(tool.id), 6000).catch(() => []);
+          const s = await e.runtime.host
+            .scan(0, [rect[0], y[0], rect[1]], [rect[2], y[1], rect[3]], scanIds(tool.id), 6000)
+            .catch(() => []);
           const pv = previewTargets(tool.id, s, props.mineFilter);
           res = { rect, a: d.startCell, b: end, cells: pv.cells, entities: [], count: pv.count };
         } else res = { rect, a: d.startCell, b: end, cells: [], entities: [], count: 0 };
@@ -1174,7 +1421,10 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       props.onTool(res, ev.shiftKey);
       return;
     }
-    props.onTool({ rect: cellRect(d.startCell, end), a: d.startCell, b: end, cells: [], entities: [], count: 0 }, ev.shiftKey);
+    props.onTool(
+      { rect: cellRect(d.startCell, end), a: d.startCell, b: end, cells: [], entities: [], count: 0 },
+      ev.shiftKey,
+    );
   };
 
   /** What is under the cursor for the order menu: a ghost, a mob or a drop, a block, or bare ground. */
@@ -1193,7 +1443,16 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       if (dd > bd) continue;
       bd = dd;
       if (x.kind === 'item') best = { kind: 'item', entity: x.id, name: x.name ?? 'the drop', x: x.x, y: x.y, z: x.z };
-      else if (x.kind === 'mob') best = { kind: 'mob', entity: x.id, name: x.name ?? 'the mob', animal: [90, 91, 92, 93, 94, 95, 96, 98, 100, 101, 102, 103].includes(x.type), x: x.x, y: x.y, z: x.z };
+      else if (x.kind === 'mob')
+        best = {
+          kind: 'mob',
+          entity: x.id,
+          name: x.name ?? 'the mob',
+          animal: [90, 91, 92, 93, 94, 95, 96, 98, 100, 101, 102, 103].includes(x.type),
+          x: x.x,
+          y: x.y,
+          z: x.z,
+        };
     }
     if (best) return best;
     const cell = groundCell(pt);
@@ -1210,12 +1469,16 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   };
 
   const onWheel = (ev: React.WheelEvent<HTMLCanvasElement>) => {
-    const e = engine(), m = mats.current;
+    const e = engine(),
+      m = mats.current;
     if (!e || !m) return;
     const pt = local(ev);
     const r = rayAt(m, pt.x, pt.y);
     const at = rayPlaneY(r.o, r.d, e.rig.target.y) ?? [e.rig.target.x, 0, e.rig.target.z];
-    const z = zoomAt({ x: e.rig.target.x, z: e.rig.target.z }, e.rig.isoZoom, Math.sign(ev.deltaY), { x: at[0], z: at[2] });
+    const z = zoomAt({ x: e.rig.target.x, z: e.rig.target.z }, e.rig.isoZoom, Math.sign(ev.deltaY), {
+      x: at[0],
+      z: at[2],
+    });
     e.rig.isoZoom = z.zoom;
     e.rig.target.x = z.x;
     e.rig.target.z = z.z;
@@ -1247,7 +1510,10 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
       },
       ready: () => !!engine() && !!mats.current,
       bodies: () =>
-        [...shown.current].map(([name, pos]) => ({ name, ...(toPage(pos[0], pos[1] + 0.2, pos[2]) ?? { x: NaN, y: NaN }) })),
+        [...shown.current].map(([name, pos]) => ({
+          name,
+          ...(toPage(pos[0], pos[1] + 0.2, pos[2]) ?? { x: NaN, y: NaN }),
+        })),
       fps: () => engine()?.stats().fps,
       mode: () => engine()?.rig.mode,
       level: () => p.current.level,
@@ -1256,7 +1522,21 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   });
 
   const layers = useMemo(
-    () => ({ bots: false, entities: true, claims: false, places: false, points: false, plans: false, dangers: false, notes: false, weather: false, cutaway: false, staleness: false, changes: true, aids: false }),
+    () => ({
+      bots: false,
+      entities: true,
+      claims: false,
+      places: false,
+      points: false,
+      plans: false,
+      dangers: false,
+      notes: false,
+      weather: false,
+      cutaway: false,
+      staleness: false,
+      changes: true,
+      aids: false,
+    }),
     [],
   );
 
@@ -1264,7 +1544,18 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   return (
     <div ref={wrap} className="absolute inset-0 overflow-hidden bg-canvas" data-testid="story-map">
       {mod && source ? (
-        <mod.WorldViewer ref={viewer} source={source} dim={0} follow={null} layers={layers} cameraMode={props.view === 'top' ? 'top' : 'iso'} xray="off" drawDistance={112} hideHint className="absolute inset-0" />
+        <mod.WorldViewer
+          ref={viewer}
+          source={source}
+          dim={0}
+          follow={null}
+          layers={layers}
+          cameraMode={props.view === 'top' ? 'top' : 'iso'}
+          xray="off"
+          drawDistance={112}
+          hideHint
+          className="absolute inset-0"
+        />
       ) : (
         <DotMap follow={props.state?.pawns[0]?.name ?? ''} radius={40} className="absolute inset-0" label={false} />
       )}
@@ -1286,7 +1577,25 @@ export const StoryMap = forwardRef<StoryMapHandle, StoryMapProps>(function Story
   );
 });
 
-const BLOCK_LABELS: Record<number, string> = { 1: 'stone', 2: 'grass', 3: 'dirt', 4: 'cobblestone', 5: 'planks', 12: 'sand', 13: 'gravel', 14: 'gold ore', 15: 'iron ore', 16: 'coal ore', 17: 'log', 18: 'leaves', 20: 'glass', 56: 'diamond ore', 58: 'crafting table', 61: 'furnace', 54: 'chest' };
+const BLOCK_LABELS: Record<number, string> = {
+  1: 'stone',
+  2: 'grass',
+  3: 'dirt',
+  4: 'cobblestone',
+  5: 'planks',
+  12: 'sand',
+  13: 'gravel',
+  14: 'gold ore',
+  15: 'iron ore',
+  16: 'coal ore',
+  17: 'log',
+  18: 'leaves',
+  20: 'glass',
+  56: 'diamond ore',
+  58: 'crafting table',
+  61: 'furnace',
+  54: 'chest',
+};
 function blockLabel(id: number): string {
   return BLOCK_LABELS[id] ?? `block ${id}`;
 }

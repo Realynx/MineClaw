@@ -1,10 +1,11 @@
 /**
  * The Design Studio canvas in the browser: the same sandbox the bot holds (contracts designer.ts), local coordinates x, z
- * 0..63 and y 0..47, cells `[x, y, z, id, meta]` (id 0 = air). Every change, the AI's and the user's, goes through `apply`,
- * which returns what it really changed and the inverse, so one history covers both (undo of an AI op is a user edit the bot
- * then hears about). Door halves stay paired.
+ * 0..63 and y -16..47, cells `[x, y, z, id, meta]` (id 0 = air). y 0 is the first layer above the grass; under it (y < 0)
+ * is the ground: earth until dug. There id 0 digs the cell out and `EARTH` (-1) fills it back. Every change, the AI's and the
+ * user's, goes through `apply`, which returns what it really changed and the inverse, so one history covers both (undo of an
+ * AI op is a user edit the bot then hears about; undo of a dig fills it back). Door halves stay paired.
  */
-import { DESIGNER_PLOT, type DesignerCell } from '@mineclaw/contracts';
+import { DESIGNER_EARTH, DESIGNER_PLOT, type DesignerCell } from '@mineclaw/contracts';
 import { doorUpper, isDoor } from './facing';
 
 export type Cell = DesignerCell;
@@ -12,11 +13,17 @@ export type V3 = [number, number, number];
 
 export const SIZE = DESIGNER_PLOT.size;
 export const HEIGHT = DESIGNER_PLOT.height;
+/** Layers of ground under the grass (y -DEPTH..-1). */
+export const DEPTH = DESIGNER_PLOT.depth;
+/** Undisturbed ground (below y 0 only). */
+export const EARTH = DESIGNER_EARTH;
 
 export const inside = (x: number, y: number, z: number): boolean =>
-  x >= 0 && x < SIZE && z >= 0 && z < SIZE && y >= 0 && y < HEIGHT;
-export const keyOf = (x: number, y: number, z: number): number => x + SIZE * (z + SIZE * y);
-export const posOf = (k: number): V3 => [k % SIZE, Math.floor(k / (SIZE * SIZE)), Math.floor(k / SIZE) % SIZE];
+  x >= 0 && x < SIZE && z >= 0 && z < SIZE && y >= -DEPTH && y < HEIGHT;
+export const keyOf = (x: number, y: number, z: number): number => x + SIZE * (z + SIZE * (y + DEPTH));
+export const posOf = (k: number): V3 => [k % SIZE, Math.floor(k / (SIZE * SIZE)) - DEPTH, Math.floor(k / SIZE) % SIZE];
+/** Below the grass's top (the ground). */
+export const below = (y: number): boolean => y < 0;
 
 /** An applied change set: the cells as they became (`forward`) and as they were (`backward`). */
 export interface Change {
@@ -27,19 +34,29 @@ export interface Change {
 export class Canvas {
   /** key → id * 16 + meta. */
   readonly blocks = new Map<number, number>();
+  /** Keys of the cells below ground dug out to air (never a block's key). */
+  readonly dug = new Set<number>();
 
   get size(): number {
     return this.blocks.size;
   }
 
+  /** The state at a cell: a block, air ([0, 0]) or, below ground and not dug, earth ([EARTH, 0]). */
   get(x: number, y: number, z: number): [number, number] {
-    const v = this.blocks.get(keyOf(x, y, z));
-    return v === undefined ? [0, 0] : [v >> 4, v & 15];
+    const k = keyOf(x, y, z);
+    const v = this.blocks.get(k);
+    if (v !== undefined) return [v >> 4, v & 15];
+    return below(y) && !this.dug.has(k) ? [EARTH, 0] : [0, 0];
   }
 
+  /** The block id at a cell: 0 = air, `EARTH` = undisturbed ground (anything not 0 is solid to the tools). */
   id(x: number, y: number, z: number): number {
-    const v = this.blocks.get(keyOf(x, y, z));
-    return v === undefined ? 0 : v >> 4;
+    return this.get(x, y, z)[0];
+  }
+
+  /** Undisturbed ground: below the grass, no block, not dug. */
+  earth(x: number, y: number, z: number): boolean {
+    return below(y) && !this.blocks.has(keyOf(x, y, z)) && !this.dug.has(keyOf(x, y, z));
   }
 
   /** Every block as cells. */
@@ -52,10 +69,26 @@ export class Canvas {
     return out;
   }
 
-  load(cells: readonly Cell[]): void {
+  /** The dug cells as [x, y, z]. */
+  holes(): V3[] {
+    return [...this.dug].map(posOf);
+  }
+
+  load(cells: readonly Cell[], dug: readonly V3[] = []): void {
     this.blocks.clear();
+    this.dug.clear();
     for (const c of cells)
-      if (inside(c[0], c[1], c[2]) && c[3] !== 0) this.blocks.set(keyOf(c[0], c[1], c[2]), c[3] * 16 + (c[4] & 15));
+      if (inside(c[0], c[1], c[2]) && c[3] > 0) this.blocks.set(keyOf(c[0], c[1], c[2]), c[3] * 16 + (c[4] & 15));
+    for (const p of dug)
+      if (inside(p[0], p[1], p[2]) && below(p[1]) && !this.blocks.has(keyOf(p[0], p[1], p[2])))
+        this.dug.add(keyOf(p[0], p[1], p[2]));
+  }
+
+  /** A cell's state as one number: id * 16 + meta, 0 = air, -1 = earth. */
+  private state(k: number, y: number): number {
+    const v = this.blocks.get(k);
+    if (v !== undefined) return v;
+    return below(y) && !this.dug.has(k) ? -1 : 0;
   }
 
   /**
@@ -65,17 +98,24 @@ export class Canvas {
   apply(cells: readonly Cell[], pairDoors = true): Change {
     const before = new Map<number, number>();
     const touched: number[] = [];
+    const put = (k: number, y: number, next: number) => {
+      this.blocks.delete(k);
+      this.dug.delete(k);
+      if (next > 0) this.blocks.set(k, next);
+      else if (next === 0 && below(y)) this.dug.add(k);
+    };
     const set = (x: number, y: number, z: number, id: number, meta: number) => {
       if (!inside(x, y, z)) return;
       const k = keyOf(x, y, z);
-      const old = this.blocks.get(k) ?? 0;
-      const next = id === 0 ? 0 : id * 16 + (meta & 15);
+      const old = this.state(k, y);
+      // Air below ground is dug; earth above ground is plain air.
+      const next = id > 0 ? id * 16 + (meta & 15) : id === EARTH && below(y) ? -1 : 0;
       if (old === next) return;
       if (!before.has(k)) {
         before.set(k, old);
         touched.push(k);
       }
-      if (pairDoors && old !== 0 && isDoor(old >> 4) && id !== old >> 4) {
+      if (pairDoors && old > 0 && isDoor(old >> 4) && id !== old >> 4) {
         const oy = (old & 8) !== 0 ? y - 1 : y + 1;
         const ok = inside(x, oy, z) ? keyOf(x, oy, z) : -1;
         const other = ok >= 0 ? this.blocks.get(ok) : undefined;
@@ -84,35 +124,36 @@ export class Canvas {
             before.set(ok, other);
             touched.push(ok);
           }
-          this.blocks.delete(ok);
+          put(ok, oy, 0);
         }
       }
-      if (next === 0) this.blocks.delete(k);
-      else this.blocks.set(k, next);
+      put(k, y, next);
     };
     for (const c of cells) {
       set(c[0], c[1], c[2], c[3], c[4]);
-      if (pairDoors && c[3] !== 0 && isDoor(c[3]) && (c[4] & 8) === 0) set(c[0], c[1] + 1, c[2], c[3], doorUpper(c[4]));
+      if (pairDoors && c[3] > 0 && isDoor(c[3]) && (c[4] & 8) === 0) set(c[0], c[1] + 1, c[2], c[3], doorUpper(c[4]));
     }
     const forward: Cell[] = [];
     const backward: Cell[] = [];
+    const cell = (x: number, y: number, z: number, v: number): Cell =>
+      v < 0 ? [x, y, z, EARTH, 0] : [x, y, z, v >> 4, v & 15];
     for (const k of touched) {
       const [x, y, z] = posOf(k);
-      const now = this.blocks.get(k) ?? 0;
+      const now = this.state(k, y);
       const was = before.get(k)!;
       if (now === was) continue;
-      forward.push([x, y, z, now >> 4, now & 15]);
-      backward.push([x, y, z, was >> 4, was & 15]);
+      forward.push(cell(x, y, z, now));
+      backward.push(cell(x, y, z, was));
     }
     return { forward, backward };
   }
 
-  /** The blocks' box, or null when empty. */
+  /** The box of the blocks and the dug cells, or null when empty. */
   bounds(): { min: V3; max: V3 } | null {
-    if (this.blocks.size === 0) return null;
+    if (this.blocks.size === 0 && this.dug.size === 0) return null;
     const min: V3 = [SIZE, HEIGHT, SIZE];
-    const max: V3 = [-1, -1, -1];
-    for (const k of this.blocks.keys()) {
+    const max: V3 = [-1, -DEPTH - 1, -1];
+    for (const k of [...this.blocks.keys(), ...this.dug]) {
       const p = posOf(k);
       for (let i = 0; i < 3; i++) {
         if (p[i]! < min[i]!) min[i] = p[i]!;
@@ -211,7 +252,7 @@ export function boxOf(a: V3, b: V3): { min: V3; max: V3 } {
 
 export const clampV = (p: V3): V3 => [
   Math.max(0, Math.min(SIZE - 1, p[0])),
-  Math.max(0, Math.min(HEIGHT - 1, p[1])),
+  Math.max(-DEPTH, Math.min(HEIGHT - 1, p[1])),
   Math.max(0, Math.min(SIZE - 1, p[2])),
 ];
 
@@ -224,24 +265,25 @@ export function inSel(s: Selection, x: number, y: number, z: number): boolean {
   return !s.mask || s.mask.has(keyOf(x, y, z));
 }
 
-/** The canvas blocks inside a selection. */
-export function selected(c: Canvas, s: Selection): Cell[] {
+/** The canvas blocks inside a selection; with `holes`, its dug cells too (as air cells: they move and copy with it). */
+export function selected(c: Canvas, s: Selection, holes = false): Cell[] {
   const out: Cell[] = [];
-  if (s.mask) {
-    for (const k of s.mask) {
-      const v = c.blocks.get(k);
-      if (v === undefined) continue;
+  const at = (k: number) => {
+    const v = c.blocks.get(k);
+    if (v !== undefined) {
       const [x, y, z] = posOf(k);
       out.push([x, y, z, v >> 4, v & 15]);
+    } else if (holes && c.dug.has(k)) {
+      const [x, y, z] = posOf(k);
+      out.push([x, y, z, 0, 0]);
     }
+  };
+  if (s.mask) {
+    for (const k of s.mask) at(k);
     return out;
   }
   for (let y = s.min[1]; y <= s.max[1]; y++)
-    for (let z = s.min[2]; z <= s.max[2]; z++)
-      for (let x = s.min[0]; x <= s.max[0]; x++) {
-        const v = c.blocks.get(keyOf(x, y, z));
-        if (v !== undefined) out.push([x, y, z, v >> 4, v & 15]);
-      }
+    for (let z = s.min[2]; z <= s.max[2]; z++) for (let x = s.min[0]; x <= s.max[0]; x++) at(keyOf(x, y, z));
   return out;
 }
 
@@ -273,7 +315,7 @@ export function invert(c: Canvas, s: Selection | null): Selection | null {
 
 export function maskSelection(mask: Set<number>): Selection {
   const min: V3 = [SIZE, HEIGHT, SIZE];
-  const max: V3 = [-1, -1, -1];
+  const max: V3 = [-1, -DEPTH - 1, -1];
   for (const k of mask) {
     const p = posOf(k);
     for (let i = 0; i < 3; i++) {

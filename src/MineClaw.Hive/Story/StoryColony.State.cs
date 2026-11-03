@@ -36,8 +36,9 @@ public sealed partial class StoryColony
                 ["pawns"] = new JsonArray(Pawns.Values.Select(p => (JsonNode)PawnJson(p)).ToArray()),
                 ["zones"] = new JsonArray(Zones.Where(z => New(z.Rev)).Select(z => (JsonNode)new JsonObject
                 {
-                    ["id"] = z.Id, ["kind"] = z.Kind, ["area"] = z.Area.Json(),
+                    ["id"] = z.Id, ["kind"] = z.Kind, ["area"] = z.Area.Json(), ["name"] = z.Name,
                 }).ToArray()),
+                ["beds"] = BedsJson(),
                 ["designations"] = new JsonArray(Designations.Where(d => New(d.Rev)).Select(d => (JsonNode)DesignationJson(d)).ToArray()),
                 ["orders"] = new JsonArray(Pawns.Values.Where(p => New(p.Rev)).SelectMany(p => p.Queue.Select(q => (JsonNode)OrderJson(q, p.Name))).ToArray()),
                 ["alerts"] = new JsonArray(Alerts.Where(a => New(a.Rev)).TakeLast(50).Select(a => (JsonNode)new JsonObject
@@ -128,7 +129,7 @@ public sealed partial class StoryColony
         ["id"] = d.Id, ["kind"] = d.Kind, ["work_type"] = WorkOf(d.Kind) is { Length: > 0 } w ? w : null,
         ["target"] = d.Entity is { } e ? new JsonObject { ["entity"] = e } : d.At?.Json(),
         ["blocks"] = d.Blocks == null ? null : new JsonArray(d.Blocks.Select(b => (JsonNode)b.Json()).ToArray()),
-        ["label"] = d.Label, ["created"] = d.Created,
+        ["label"] = d.Label, ["created"] = d.Created, ["status"] = d.Status, ["reason"] = d.Reason, ["fails"] = d.Fails,
     };
 
     private static JsonObject BillJson(BillState b) => new()

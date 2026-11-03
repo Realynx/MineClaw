@@ -14,6 +14,9 @@ public sealed record DesignerSaveResult(bool Ok, long DesignId, int Rev, int Blo
 /// player; and a design's newest revision loads onto a canvas. Saving never locks anything (a trusted saver's touch opens the
 /// design for requested edits, as a capture does). A studio design has no site: the bot builds a copy where it is asked
 /// (<c>design build{id, at}</c>), so its record keeps no origin unless it was loaded from a design that stands in the world.
+/// Below ground: the canvas's dug cells are drawn '.' (forced air: a build digs them out of the terrain) and the layers under the
+/// canvas's y 0 are the design's <c>ground N</c> (a site puts layer N one above its ground block); undug ground is '_' (left as
+/// it is). Loading puts that layer back on y 0 and the design's air under it back as dug cells.
 /// </summary>
 public static partial class DesignerSave
 {
@@ -36,9 +39,21 @@ public static partial class DesignerSave
             snap = new DesignSnapshot();
             foreach (var b in plan.Blocks.Values) snap.Blocks[b.Pos] = (b.Id, b.Meta);
         }
-        var (canvas, off) = DesignerCanvas.FromSnapshot(snap);
+        var (canvas, off) = DesignerCanvas.FromSnapshot(snap, GradeY(s, rec));
         if (canvas.Count < snap.Count) return (canvas, off, rec, $"#{id} is bigger than the plot: {snap.Count - canvas.Count} blocks left out");
         return (canvas, off, rec, null);
+    }
+
+    /// <summary>The y (in the design's revision coordinates) of its first layer above the ground, for a design that digs into it
+    /// (<c>ground N</c>); null = none (its lowest block stands on the ground).</summary>
+    internal static int? GradeY(BlueprintService s, BlueprintRecord rec)
+    {
+        try
+        {
+            if (s.PlanOf(rec, out _) is not { } plan || plan.Blueprint.Ground <= 0) return null;
+            return s.AsBuilt(rec, plan).Origin.Y + plan.Blueprint.Ground;
+        }
+        catch (Exception) { return null; }
     }
 
     public static DesignerSaveResult Save(BlueprintService s, DesignerSessionRecord session, string name, string? summary, string requester, bool asNew,
@@ -55,19 +70,24 @@ public static partial class DesignerSave
         bool placed = existing?.Origin != null;
         // A studio design has no site: it is drawn standing on a ground at y 63 (any height in the world works; the copy's site decides).
         var off = existing != null ? session.Offset : default;
-        if (!placed) off = new BlockPos(off.X, off.Y - 64, off.Z);
+        if (!placed) off = new BlockPos(off.X, -64, off.Z); // canvas y 0 = design y 64 (a basement fits under it)
         var snap = new DesignSnapshot();
         foreach (var (p, st) in canvas.Blocks) snap.Blocks[new BlockPos(p.X - off.X, p.Y - off.Y, p.Z - off.Z)] = st;
+        // The canvas's y 0 in design coordinates: below it is ground, air there only where it was dug.
+        int grade = -off.Y;
+        var dug = canvas.Dug.Select(p => new BlockPos(p.X - off.X, p.Y - off.Y, p.Z - off.Z)).ToHashSet();
         var box = snap.Box!.Value;
         for (int y = box.Min.Y; y <= box.Max.Y; y++)
             for (int z = box.Min.Z; z <= box.Max.Z; z++)
                 for (int x = box.Min.X; x <= box.Max.X; x++)
                 {
                     var p = new BlockPos(x, y, z);
-                    if (!snap.Blocks.ContainsKey(p)) snap.Air.Add(p);
+                    if (!snap.Blocks.ContainsKey(p) && (y >= grade || dug.Contains(p))) snap.Air.Add(p);
                 }
+        snap.Air.UnionWith(dug);
         var air = DesignHistory.InteriorAir(snap);
-        var (dsl, min, bad, why) = DesignHistory.Draw(name, snap, air, ChunkColumn.SizeY);
+        air.UnionWith(dug);
+        var (dsl, min, bad, why) = DesignHistory.Draw(name, snap, air, ChunkColumn.SizeY, dug.Count > 0 || snap.Blocks.Keys.Any(p => p.Y < grade) ? grade : null);
         if (dsl == null) return Fail($"can't save it as a design: {why}");
         if (!placed) dsl = OriginLine().Replace(dsl, "");
         dsl = CaptureComment().Replace(dsl, "# drawn in the Design Studio\n", 1);
@@ -80,6 +100,8 @@ public static partial class DesignerSave
         var line = string.Create(CultureInfo.InvariantCulture, $"{name} {w}×{d}×{hgt}, {snap.Count} blocks (palette: {palette})");
         var msg = string.IsNullOrWhiteSpace(summary) ? $"saved from the Design Studio by {requester}" : summary.Trim();
         bool created = existing == null;
+        int depth = dug.Count == 0 && box.Min.Y >= grade ? 0 : grade - Math.Min(box.Min.Y, dug.Count > 0 ? dug.Min(p => p.Y) : grade);
+        if (depth > 0) line += string.Create(CultureInfo.InvariantCulture, $", {depth} below ground");
         var rec = existing ?? s.Store.Insert(new BlueprintRecord
         {
             Name = name, Description = string.IsNullOrWhiteSpace(summary) ? $"designed in the Design Studio by {requester}" : summary.Trim(),

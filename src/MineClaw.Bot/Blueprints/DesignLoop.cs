@@ -183,7 +183,7 @@ public sealed class DesignLoop(IBlueprintAuthor author, IDesignCritic? critic, B
         var (bp, issues) = BlueprintParser.Parse(dsl);
         if (issues.Any(i => i.Level == IssueLevel.Error && i.Code == "size")) return new DesignVersion { N = n, Dsl = dsl, Structural = issues };
         var (fx, fz) = bp.Footprint;
-        var origin = new BlockPos(req.Site.X - fx / 2, req.Site.Y + 1, req.Site.Z - fz / 2);
+        var origin = bp.OriginOn(req.Site);
         if (req.Extent is { } ext)
         {
             // Snap onto the referenced floor: its corner when the footprint matches, else centred on it (and flagged).

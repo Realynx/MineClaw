@@ -85,6 +85,85 @@ public static class StoryBlocks
                 }
     }
 
+    /// <summary>Rooted: the block under a trunk's lowest log is ground (not a log, a leaf or air), so it's a tree's base and not a branch.</summary>
+    public static bool Rooted(IStoryWorld w, P3 log)
+    {
+        int below = w.Block(log.X, log.Y - 1, log.Z).Id;
+        return below != 0 && !Logs.Contains(below) && !Leaves.Contains(below) && !Liquids.Contains(below);
+    }
+
+    /// <summary>
+    /// The trunk base of the tree a block belongs to: a log (down its trunk), a branch log (to the trunk carrying it) or a leaf, the
+    /// canopy top a top-down map click lands on (the nearest log of its crown, then down). A bounded search through the tree's own logs
+    /// and leaves, within <paramref name="reach"/> sideways and <paramref name="down"/> below. Air right above the canopy counts too (the
+    /// click's block). Null = no tree there.
+    /// </summary>
+    public static P3? TreeBaseOf(IStoryWorld w, P3 p, int reach = 5, int down = 32, int budget = 6000)
+    {
+        bool Wood(P3 q) => w.Block(q.X, q.Y, q.Z).Id is var id && (Logs.Contains(id) || Leaves.Contains(id));
+        var start = p;
+        if (!Wood(start)) { start = p.Add(0, -1, 0); if (!Wood(start)) return null; }
+        var seen = new HashSet<P3> { start };
+        var todo = new Queue<P3>();
+        todo.Enqueue(start);
+        var tried = new HashSet<P3>();
+        while (todo.Count > 0 && seen.Count <= budget)
+        {
+            var q = todo.Dequeue();
+            if (Logs.Contains(w.Block(q.X, q.Y, q.Z).Id))
+            {
+                var b = q;
+                for (int i = 0; i < 48 && b.Y > 0 && Logs.Contains(w.Block(b.X, b.Y - 1, b.Z).Id); i++) b = b.Add(0, -1, 0);
+                if (tried.Add(b) && Rooted(w, b)) return b;
+            }
+            foreach (var n in new[] { q.Add(0, -1, 0), q.Add(1, 0, 0), q.Add(-1, 0, 0), q.Add(0, 0, 1), q.Add(0, 0, -1), q.Add(0, 1, 0) })
+            {
+                if (n.Y < 0 || n.Y < p.Y - down || n.Y > p.Y + 2 || Math.Abs(n.X - p.X) > reach || Math.Abs(n.Z - p.Z) > reach) continue;
+                if (!seen.Contains(n) && Wood(n)) { seen.Add(n); todo.Enqueue(n); }
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// The trees in an area, by their trunk bases: any log or leaf in the area's columns (from <paramref name="below"/> under its bottom,
+    /// so a box drawn over the canopy still finds the trunks) resolves to its tree's base, one per tree. Branches and crowns never count
+    /// as trees of their own.
+    /// </summary>
+    public static List<P3> TreesIn(IStoryWorld w, Area a, int below = 32, int max = 512, int maxScan = 600_000)
+    {
+        var bases = new List<P3>();
+        var covered = new HashSet<P3>();
+        int y1 = Math.Max(0, a.Y1 - below), y2 = Math.Min(w.Height - 1, a.Y2);
+        long scanned = 0;
+        int resolved = 0;
+        bool Near(P3 q) => bases.Any(b => Math.Abs(b.X - q.X) <= 4 && Math.Abs(b.Z - q.Z) <= 4 && q.Y >= b.Y);
+        for (int x = a.X1; x <= a.X2; x++)
+            for (int z = a.Z1; z <= a.Z2; z++)
+                for (int y = y1; y <= y2; y++)
+                {
+                    if (++scanned > maxScan || bases.Count >= max) return bases;
+                    int id = w.Block(x, y, z).Id;
+                    bool log = Logs.Contains(id);
+                    if (!log && !Leaves.Contains(id)) continue;
+                    var q = new P3(x, y, z);
+                    // Every log standing on ground is a trunk (as before: each column of a 2x2 trunk too); the rest (branches, the
+                    // crown, leaves) resolves to the trunk that carries it, unless that tree was found already.
+                    if (log && Rooted(w, q)) { Add(q); continue; }
+                    if (covered.Contains(q) || !log && Near(q)) continue;
+                    if (++resolved > 512) continue;
+                    if (TreeBaseOf(w, q) is { } b) Add(b);
+                }
+        return bases;
+
+        void Add(P3 b)
+        {
+            if (bases.Contains(b)) return;
+            bases.Add(b);
+            foreach (var l in TreeFrom(w, b, 64)) covered.Add(l);
+        }
+    }
+
     /// <summary>The mine tool's filter: all | ores | stone | soil.</summary>
     public static bool MineMatch(int id, string? filter) => !Undiggable.Contains(id) && (filter ?? "all") switch
     {

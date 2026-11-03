@@ -170,6 +170,15 @@ public sealed partial class StoryColony : IStoryPort
                     if (cur.Lease != null) _leases[cur.Lease] = (body, Now + LeaseTtl);
                     if (p != null) p.Rev = Bump();
                     return true;
+                case "done" when p != null && cur.Source == "designation" && StillThere(cur) is { } left:
+                    // Live 11-03: harvest and cut designations vanished with no line in the log: the script's dig on a block out of
+                    // its view did nothing and said ok. A designation is done only when the world agrees.
+                    _current.Remove(body);
+                    Release(cur);
+                    Failed(p, cur, $"reported done, but {left}");
+                    _lastSource[body] = "failed";
+                    p.Rev = Bump();
+                    return true;
                 case "done":
                     _current.Remove(body);
                     Release(cur);
@@ -213,11 +222,39 @@ public sealed partial class StoryColony : IStoryPort
         }
     }
 
-    /// <summary>New work (a build, a designation, a bill, a zone, a storage, priorities): idle pawns stop waiting and pick again.</summary>
-    internal void WakeIdle()
+    /// <summary>
+    /// New work (a build, a designation, a bill, a zone, a storage, priorities). An idle hold is a few seconds and the pawn picks again
+    /// by itself, so nothing is cut here; the next <see cref="Tick"/> only cuts a pawn stuck in a long idle (walking home from far) that
+    /// has work now, at most once per <see cref="WakeCooldown"/>. Live 11-03: cutting every idle pawn's script on every priority click
+    /// restarted ten scripts per click ("cancelled ... (new work)" several times a second) and none of them got anywhere.
+    /// </summary>
+    internal void WakeIdle() => _wakePending = true;
+
+    private bool _wakePending;
+    private readonly Dictionary<string, DateTimeOffset> _woken = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>An idle hold younger than this ends by itself (the pawn then picks the new work): it isn't cut.</summary>
+    public static readonly TimeSpan WakeAfter = TimeSpan.FromSeconds(8);
+    /// <summary>A pawn is woken for new work at most this often.</summary>
+    public static readonly TimeSpan WakeCooldown = TimeSpan.FromSeconds(30);
+
+    internal const string NothingToDo = "idle: nothing to do";
+
+    private void WakeNow()
     {
+        if (!_wakePending) return;
+        _wakePending = false;
+        if (Meta.Paused || !Meta.Active) return;
         foreach (var p in Pawns.Values)
-            if (!p.Drafted && _current.TryGetValue(p.Name, out var cur) && cur.Source == "none" && cur.Kind is "idle" or "hold") Supersede(p, "new work");
+        {
+            if (p.Drafted || !_current.TryGetValue(p.Name, out var cur) || cur.Source != "none" || cur.Label != NothingToDo) continue;
+            if (Now - cur.Since < WakeAfter) continue;
+            if (_woken.TryGetValue(p.Name, out var at) && Now - at < WakeCooldown) continue;
+            var live = Host.Live(p.Name);
+            if (!live.Online || Work(p, live) == null) continue;
+            _woken[p.Name] = Now;
+            Supersede(p, "new work");
+        }
     }
 
     /// <summary>The current job of a pawn (null = none).</summary>
@@ -234,7 +271,7 @@ public sealed partial class StoryColony : IStoryPort
     /// <summary>Once a second or so: expired leases go back, a pawn whose script ended is restarted, benches are found, state saved.</summary>
     public void Tick()
     {
-        List<string> restart = new();
+        List<string> restart = new(), joined = new();
         lock (_lock)
         {
             foreach (var k in _leases.Where(l => l.Value.Until <= Now).Select(l => l.Key).ToList())
@@ -254,7 +291,16 @@ public sealed partial class StoryColony : IStoryPort
                     restart.Add(p.Name);
                 }
             if (Now - _benchScan > TimeSpan.FromSeconds(30)) { _benchScan = Now; ScanBenches(); RetrySuspended(); } // missing ingredients may be stored by now
+            WakeNow();
+            // A pawn that (re)joined: brought home when it came online far away (founding, resume, a reconnect).
+            foreach (var p in Pawns.Values)
+            {
+                bool online = Host.Live(p.Name).Online;
+                if (online && _online.Add(p.Name)) joined.Add(p.Name);
+                else if (!online) _online.Remove(p.Name);
+            }
         }
+        if (joined.Count > 0 && Meta.Active) BringHome("joined", joined);
         foreach (var name in restart)
         {
             string? err;
@@ -306,6 +352,132 @@ public sealed partial class StoryColony : IStoryPort
     {
         lock (_lock)
             foreach (var p in Pawns.Keys) StoryPorts.Unbind(p, this);
+    }
+
+    // ================================================================ home
+
+    private readonly HashSet<string> _online = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTimeOffset> _broughtHome = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTimeOffset> _homeAlert = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>A pawn farther than this from home when it joins (or when home moves) is brought there.</summary>
+    public const double HomeRange = 48;
+    /// <summary>One pawn is brought home at most this often (the teleport takes a moment to show in its position).</summary>
+    public static readonly TimeSpan BringHomeCooldown = TimeSpan.FromSeconds(60);
+
+    /// <summary>Moves the colony's home (persisted) and brings the pawns that are far from it there.</summary>
+    public void SetHome(P3 home)
+    {
+        lock (_lock)
+        {
+            Meta.Home = home;
+            Touch();
+            _broughtHome.Clear(); // a new home: every far pawn goes, whatever it did a minute ago
+        }
+        Alert("info", $"home moved to {home}");
+        Save(force: true);
+        BringHome("home moved");
+    }
+
+    /// <summary>
+    /// Pawns more than <see cref="HomeRange"/> from home (or in another dimension) get there: the colony owner founded the colony or set
+    /// its home, so the bot (op) teleports each to a standable spot at home (<see cref="SafeSpot"/>) through the host's op command path,
+    /// whose blocklist still applies. Where that can't be done (b1.8.1's /tp takes no coordinates, the gate refused) the pawn gets a
+    /// move order home instead. A pawn in another dimension can't be teleported across: an alert says so. One log line per pawn moved.
+    /// Returns how many were sent home.
+    /// </summary>
+    public int BringHome(string why, IReadOnlyCollection<string>? only = null)
+    {
+        var moves = new List<(PawnState P, P3 To, double Dist)>();
+        lock (_lock)
+        {
+            if (Home() is not { } home || World is not { } w || !Meta.Active) return 0;
+            P3? spot = null;
+            bool looked = false;
+            foreach (var p in Pawns.Values)
+            {
+                if (only != null && !only.Contains(p.Name, StringComparer.OrdinalIgnoreCase)) continue;
+                var live = Host.Live(p.Name);
+                if (!live.Online) continue;
+                if (_broughtHome.TryGetValue(p.Name, out var at) && Now - at < BringHomeCooldown) continue;
+                if (live.Dim != w.Dimension)
+                {
+                    if (!_homeAlert.TryGetValue("dim:" + p.Name, out var last) || Now - last > TimeSpan.FromMinutes(10))
+                    {
+                        _homeAlert["dim:" + p.Name] = Now;
+                        Alert("warn", $"{p.Display} is in another dimension and can't be brought home from there: walk it through a portal", p.Name);
+                    }
+                    continue;
+                }
+                double dist = home.Dist(live.X, live.Y, live.Z);
+                if (dist <= HomeRange) continue;
+                if (!looked) { looked = true; spot = SafeSpot(w, home); }
+                if (spot is not { } to)
+                {
+                    if (!_homeAlert.TryGetValue("spot", out var last) || Now - last > TimeSpan.FromMinutes(5))
+                    {
+                        _homeAlert["spot"] = Now;
+                        Alert("warn", $"no safe spot to bring pawns to at home {home} (not loaded in the bot's view, or no ground there)");
+                    }
+                    return 0;
+                }
+                _broughtHome[p.Name] = Now;
+                moves.Add((p, to, dist));
+            }
+        }
+        foreach (var (p, to, dist) in moves)
+        {
+            string? err;
+            try { err = Host.Teleport(p.Name, to, $"story {Id}: {why}"); } catch (Exception ex) { err = ex.Message; }
+            lock (_lock)
+            {
+                if (err == null)
+                {
+                    Supersede(p, "brought home"); // whatever it was doing over there is cut; it picks again at home
+                    Alert("info", $"{p.Display} brought home to {to} from {dist:0} blocks away ({why})", p.Name);
+                }
+                else
+                {
+                    // Walk it there instead: a move order runs before any work.
+                    if (!p.Queue.Any(o => o.Kind == "move" && o.At == to))
+                    {
+                        p.Queue.Insert(0, new Order { Id = NextId("o"), Kind = "move", At = to, Given = Now });
+                        p.Rev = Touch();
+                        Supersede(p, "walking home");
+                    }
+                    Alert("info", $"{p.Display} walks home to {to} from {dist:0} blocks away ({why}; no teleport: {err})", p.Name);
+                }
+            }
+        }
+        return moves.Count;
+    }
+
+    /// <summary>
+    /// A standable spot at home: solid ground (not a leaf, liquid, fire or cactus) under two free cells, the home cell itself when it is
+    /// one (a cave or a floor), else the open-sky surface of the nearest column around it. Null when nothing around is loaded or standable.
+    /// </summary>
+    internal static P3? SafeSpot(IStoryWorld w, P3 home, int radius = 4)
+    {
+        bool Free(int x, int y, int z) => w.Block(x, y, z).Id is var id && (id == 0 || StoryBlocks.Plants.Contains(id) || id is 50 or 78);
+        bool Floor(int x, int y, int z) => w.Block(x, y, z).Id is var id && !Free(x, y, z) && !StoryBlocks.Liquids.Contains(id)
+            && !StoryBlocks.Leaves.Contains(id) && id is not (51 or 81 or 30 or 10 or 11);
+        bool Standable(int x, int y, int z) => y > 0 && y < w.Height - 1 && Floor(x, y - 1, z) && Free(x, y, z) && Free(x, y + 1, z)
+            && !StoryBlocks.Liquids.Contains(w.Block(x, y, z).Id);
+        for (int r = 0; r <= radius; r++)
+            for (int dx = -r; dx <= r; dx++)
+                for (int dz = -r; dz <= r; dz++)
+                {
+                    if (Math.Max(Math.Abs(dx), Math.Abs(dz)) != r) continue;
+                    int x = home.X + dx, z = home.Z + dz;
+                    if (!w.Loaded(x, z)) continue;
+                    for (int dy = 0; dy <= 2; dy++) // the home cell itself, or just above it
+                        if (Standable(x, home.Y + dy, z)) return new P3(x, home.Y + dy, z);
+                    // The open-sky surface: the first block down from the top that isn't free.
+                    int y = w.Height - 2;
+                    while (y > 0 && Free(x, y, z)) y--;
+                    if (y > 0 && Standable(x, y + 1, z)) return new P3(x, y + 1, z);
+                }
+        return null;
     }
 
     /// <summary>The colony's home point: its setting, else the first home zone's centre, else the first pawn's spot.</summary>

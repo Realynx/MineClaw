@@ -92,10 +92,29 @@ public sealed partial class MinecraftClient
         if (md.Get(EntityMeta.Flags)?.AsInt() is { } flags) OnSelfFlags(flags);
     }
 
+    /// <summary>
+    /// The op permission level the server granted this account (0 = not op, 1..4), or null = unknown. 1.12.2 tells it on login and on
+    /// every /op or /deop: Entity Status 24..28 for the player itself (<c>PlayerList.updatePermissionLevel</c> → level + 24). b1.8.1 has
+    /// no such packet: unknown there.
+    /// </summary>
+    public int? OpLevel { get; private set; }
+
+    /// <summary>Op enough for server commands like /time and /tp (level 2+), or null when the server never said.</summary>
+    public bool? IsOp => OpLevel is { } l ? l >= 2 : null;
+
+    /// <summary>The op level an Entity Status value for our own player carries (24..28 → 0..4), else null.</summary>
+    public static int? OpLevelOf(int status) => status is >= 24 and <= 28 ? status - 24 : null;
+
     /// <summary>Statuses for our own entity: 30 the shield was disabled (an axe; <c>EntityPlayer.disableShield</c>), 35 a totem of
-    /// undying saved us (<c>EntityLivingBase.checkTotemDeathProtection</c>).</summary>
+    /// undying saved us (<c>EntityLivingBase.checkTotemDeathProtection</c>), 24..28 our op level.</summary>
     private void OnSelfStatus(int status)
     {
+        if (OpLevelOf(status) is { } op)
+        {
+            if (OpLevel != op) Log($"server: my op level is {op}{(op >= 2 ? " (op)" : op == 0 ? " (not op)" : "")}");
+            OpLevel = op;
+            return;
+        }
         switch (status)
         {
             case 30:

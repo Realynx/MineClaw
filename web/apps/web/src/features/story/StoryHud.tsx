@@ -5,13 +5,46 @@
  * click to jump, long-press and drag to reorder), the alerts stack, the toast, the right-click order menu, the clock / pause /
  * view / level cluster and the active tool's options bar. Panels are plain DOM over the canvas: no blur, cheap to draw.
  */
-import { storyClock, STORY_MATERIALS, tickClock, type StoryAiBody, type StoryAlert, type StoryPawn, type StoryTimeControl } from '@mineclaw/contracts';
-import { AlertTriangle, ArrowDown, ArrowUp, Box, Eye, EyeOff, Info, Layers, Moon, Pause, Play, RotateCcw, RotateCw, Sun, X } from 'lucide-react';
+import {
+  storyClock,
+  STORY_MATERIALS,
+  tickClock,
+  type StoryAiBody,
+  type StoryAlert,
+  type StoryPawn,
+  type StoryTimeControl,
+} from '@mineclaw/contracts';
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  Box,
+  Eye,
+  EyeOff,
+  Info,
+  Layers,
+  Moon,
+  Pause,
+  Play,
+  RotateCcw,
+  RotateCw,
+  Sun,
+  X,
+} from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Kbd } from '@/components/ui/primitives';
 import { cn } from '@/lib/utils';
 import { pawnMood, reorderNames, type PawnMood } from './model';
-import { DESIGNATE_TOOLS, FURNITURE_TOOLS, MINE_FILTERS, STRUCTURE_TOOLS, ZONE_TOOLS, storeyOf, type BuildOpts, type MenuItem } from './tools';
+import {
+  DESIGNATE_TOOLS,
+  FURNITURE_TOOLS,
+  MINE_FILTERS,
+  STRUCTURE_TOOLS,
+  ZONE_TOOLS,
+  storeyOf,
+  type BuildOpts,
+  type MenuItem,
+} from './tools';
 import type { MapTool } from './StoryMap';
 import { AiMark, Avatar, ToolIcon } from './visuals';
 
@@ -52,13 +85,25 @@ export function barBodies(pawns: readonly StoryPawn[], ai: readonly StoryAiBody[
       food: a.food ?? 20,
       job: a.task ?? a.brainState ?? 'AI',
       drafted: false,
-      mood: pawnMood({ hp: a.hp, food: a.food, state: a.online === false ? 'offline' : 'working', drafted: false, online: a.online }),
+      mood: pawnMood({
+        hp: a.hp,
+        food: a.food,
+        state: a.online === false ? 'offline' : 'working',
+        drafted: false,
+        online: a.online,
+      }),
       pos: a.pos ?? null,
     })),
   ];
 }
 
-const MOOD_COLOR: Record<PawnMood, string> = { danger: 'bg-danger', idle: 'bg-warn', busy: 'bg-ok', drafted: 'bg-[#ff9f43]', offline: 'bg-subtle' };
+const MOOD_COLOR: Record<PawnMood, string> = {
+  danger: 'bg-danger',
+  idle: 'bg-warn',
+  busy: 'bg-ok',
+  drafted: 'bg-[#ff9f43]',
+  offline: 'bg-subtle',
+};
 
 export function ColonistBar({
   bodies,
@@ -82,14 +127,26 @@ export function ColonistBar({
   const [lift, setLift] = useState<{ name: string; x: number; top: number; height: number } | null>(null);
   const [pressing, setPressing] = useState(false);
   const [hover, setHover] = useState<string | null>(null);
-  const press = useRef<{ name: string; x: number; y: number; t: number; timer: ReturnType<typeof setTimeout> | null; lifted: boolean; moved: boolean; shift: boolean; ctrl: boolean; id: number } | null>(null);
+  const press = useRef<{
+    name: string;
+    x: number;
+    y: number;
+    t: number;
+    timer: ReturnType<typeof setTimeout> | null;
+    lifted: boolean;
+    moved: boolean;
+    shift: boolean;
+    ctrl: boolean;
+    id: number;
+  } | null>(null);
   const last = useRef<{ name: string; t: number } | null>(null);
   const sel = new Set(selected);
   const pawns = bodies.filter((b) => b.kind === 'pawn');
   const ai = bodies.filter((b) => b.kind === 'ai');
 
   const covered = (x0: number, x1: number) => {
-    const lo = Math.min(x0, x1), hi = Math.max(x0, x1);
+    const lo = Math.min(x0, x1),
+      hi = Math.max(x0, x1);
     return [...(row.current?.querySelectorAll<HTMLElement>('[data-portrait]') ?? [])]
       .filter((el) => {
         const r = el.getBoundingClientRect();
@@ -101,7 +158,18 @@ export function ColonistBar({
   const down = (e: React.PointerEvent, name: string) => {
     if (e.button !== 0) return;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    const p = { name, x: e.clientX, y: e.clientY, t: e.timeStamp, timer: null as ReturnType<typeof setTimeout> | null, lifted: false, moved: false, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, id: e.pointerId };
+    const p = {
+      name,
+      x: e.clientX,
+      y: e.clientY,
+      t: e.timeStamp,
+      timer: null as ReturnType<typeof setTimeout> | null,
+      lifted: false,
+      moved: false,
+      shift: e.shiftKey,
+      ctrl: e.ctrlKey || e.metaKey,
+      id: e.pointerId,
+    };
     // Hold still for a moment to lift the portrait (then drag to reorder); a quick drag box-selects.
     p.timer = setTimeout(() => {
       if (press.current === p && !p.moved && bodies.find((b) => b.name === name)?.kind === 'pawn') {
@@ -135,13 +203,17 @@ export function ColonistBar({
     if (p.lifted) {
       if (!p.moved) return;
       // Drop before the portrait under the pointer.
-      const target = [...(row.current?.querySelectorAll<HTMLElement>('[data-portrait][data-kind="pawn"]') ?? [])].find((el) => {
-        const r = el.getBoundingClientRect();
-        return e.clientX < r.left + r.width / 2;
-      });
+      const target = [...(row.current?.querySelectorAll<HTMLElement>('[data-portrait][data-kind="pawn"]') ?? [])].find(
+        (el) => {
+          const r = el.getBoundingClientRect();
+          return e.clientX < r.left + r.width / 2;
+        },
+      );
       const names = order.length ? order : pawns.map((b) => b.name);
       const full = [...names, ...pawns.map((b) => b.name).filter((n) => !names.includes(n))];
-      onOrder(reorderNames(full, p.name, target?.dataset.portrait === p.name ? null : (target?.dataset.portrait ?? null)));
+      onOrder(
+        reorderNames(full, p.name, target?.dataset.portrait === p.name ? null : (target?.dataset.portrait ?? null)),
+      );
       return;
     }
     if (p.moved) {
@@ -182,25 +254,60 @@ export function ColonistBar({
           lift?.name === b.name && 'opacity-40',
         )}
       >
-        <div className={cn('relative overflow-hidden rounded-[5px] ring-1', b.kind === 'ai' ? 'ring-[#a78bfa]' : 'ring-black/30', b.mood === 'offline' && 'grayscale')}>
+        <div
+          className={cn(
+            'relative overflow-hidden rounded-[5px] ring-1',
+            b.kind === 'ai' ? 'ring-[#a78bfa]' : 'ring-black/30',
+            b.mood === 'offline' && 'grayscale',
+          )}
+        >
           <Avatar name={b.name} size={b.kind === 'ai' ? 28 : 34} ai={b.kind === 'ai'} />
           {b.kind === 'ai' ? (
-            <span className="absolute -right-0.5 -bottom-0.5 grid size-3.5 place-items-center rounded-sm bg-[#a78bfa] text-[#1b1530]" title="AI-driven">
+            <span
+              className="absolute -right-0.5 -bottom-0.5 grid size-3.5 place-items-center rounded-sm bg-[#a78bfa] text-[#1b1530]"
+              title="AI-driven"
+            >
               <AiMark className="size-2.5" />
             </span>
           ) : null}
-          {b.drafted ? <span className="absolute top-0 left-0 rounded-br bg-[#ff9f43] px-0.5 text-[8px] leading-3 font-bold text-[#2a1600]">D</span> : null}
+          {b.drafted ? (
+            <span className="absolute top-0 left-0 rounded-br bg-[#ff9f43] px-0.5 text-[8px] leading-3 font-bold text-[#2a1600]">
+              D
+            </span>
+          ) : null}
         </div>
-        <span className={cn('absolute top-1 right-1 size-2 rounded-full ring-1 ring-black/40', MOOD_COLOR[b.mood])} aria-hidden />
-        <span className={cn('max-w-full truncate text-[10px] leading-tight font-semibold', b.mood === 'danger' ? 'text-danger' : 'text-fg')}>{b.label}</span>
-        <span className="block h-1 w-full overflow-hidden rounded-full bg-black/25" title={`Health ${b.hp}/20`}>
-          <span className="block h-full bg-[#e5484d]" style={{ width: `${Math.max(0, Math.min(1, b.hp / 20)) * 100}%` }} />
+        <span
+          className={cn('absolute top-1 right-1 size-2 rounded-full ring-1 ring-black/40', MOOD_COLOR[b.mood])}
+          aria-hidden
+        />
+        <span
+          className={cn(
+            'max-w-full truncate text-[10px] leading-tight font-semibold',
+            b.mood === 'danger' ? 'text-danger' : 'text-fg',
+          )}
+        >
+          {b.label}
         </span>
-        <span className="block h-1 w-full overflow-hidden rounded-full bg-black/25" title={`Food ${Math.round(b.food)}/20`}>
-          <span className="block h-full bg-[#e2a336]" style={{ width: `${Math.max(0, Math.min(1, b.food / 20)) * 100}%` }} />
+        <span className="block h-1 w-full overflow-hidden rounded-full bg-black/25" title={`Health ${b.hp}/20`}>
+          <span
+            className="block h-full bg-[#e5484d]"
+            style={{ width: `${Math.max(0, Math.min(1, b.hp / 20)) * 100}%` }}
+          />
+        </span>
+        <span
+          className="block h-1 w-full overflow-hidden rounded-full bg-black/25"
+          title={`Food ${Math.round(b.food)}/20`}
+        >
+          <span
+            className="block h-full bg-[#e2a336]"
+            style={{ width: `${Math.max(0, Math.min(1, b.food / 20)) * 100}%` }}
+          />
         </span>
         {hover === b.name && !pressing ? (
-          <div className="pointer-events-none absolute top-full left-1/2 z-30 mt-1 w-max max-w-56 -translate-x-1/2 rounded-md border border-border bg-surface px-2 py-1 text-left text-[11px] shadow-pop" role="tooltip">
+          <div
+            className="pointer-events-none absolute top-full left-1/2 z-30 mt-1 w-max max-w-56 -translate-x-1/2 rounded-md border border-border bg-surface px-2 py-1 text-left text-[11px] shadow-pop"
+            role="tooltip"
+          >
             <div className="font-semibold">
               {b.label} {b.kind === 'ai' ? <span className="text-[#a78bfa]">· AI</span> : null}
             </div>
@@ -212,7 +319,15 @@ export function ColonistBar({
   };
 
   return (
-    <div className={cn(panel, 'pointer-events-auto relative flex max-w-full flex-wrap items-start justify-center gap-1 px-1.5 py-1')} ref={row} data-testid="colonist-bar" aria-label="Colonists">
+    <div
+      className={cn(
+        panel,
+        'pointer-events-auto relative flex max-w-full flex-wrap items-start justify-center gap-1 px-1.5 py-1',
+      )}
+      ref={row}
+      data-testid="colonist-bar"
+      aria-label="Colonists"
+    >
       {pawns.map(portrait)}
       {ai.length ? <div className="mx-1 w-px self-stretch bg-border" aria-hidden /> : null}
       {ai.map(portrait)}
@@ -223,7 +338,10 @@ export function ColonistBar({
         />
       ) : null}
       {lift ? (
-        <div className="pointer-events-none fixed z-40 w-0.5 bg-[#f5c542]" style={{ left: lift.x, top: lift.top, height: lift.height }} />
+        <div
+          className="pointer-events-none fixed z-40 w-0.5 bg-[#f5c542]"
+          style={{ left: lift.x, top: lift.top, height: lift.height }}
+        />
       ) : null}
     </div>
   );
@@ -265,21 +383,27 @@ export function ControlCluster({
   /** Extra rows (the time of day control). */
   children?: ReactNode;
 }) {
-  const night = (hour !== null && hour !== undefined) && hour >= 13 && hour < 23;
+  const night = hour !== null && hour !== undefined && hour >= 13 && hour < 23;
   return (
     <div className={cn(panel, 'pointer-events-auto flex flex-col gap-1.5 p-2 text-xs')} data-testid="story-controls">
       <div className="flex items-center gap-2">
         <span className="max-w-36 truncate text-[13px] font-semibold">{name}</span>
-        <span className="flex items-center gap-1 tabular-nums text-muted" title="Colony time (the server owns the clock)">
+        <span
+          className="flex items-center gap-1 tabular-nums text-muted"
+          title="Colony time (the server owns the clock)"
+        >
           {night ? <Moon className="size-3.5" /> : <Sun className="size-3.5 text-warn" />}
-          {(hour !== null && hour !== undefined) ? storyClock(hour) : '–'}
+          {hour !== null && hour !== undefined ? storyClock(hour) : '–'}
         </span>
         <button
           type="button"
           onClick={onPause}
           disabled={!canWrite}
           aria-pressed={paused}
-          className={cn('ml-auto inline-flex h-6 items-center gap-1 rounded px-1.5 font-medium', paused ? 'bg-warn-soft text-warn' : 'hover:bg-surface-2')}
+          className={cn(
+            'ml-auto inline-flex h-6 items-center gap-1 rounded px-1.5 font-medium',
+            paused ? 'bg-warn-soft text-warn' : 'hover:bg-surface-2',
+          )}
           title="Pause the colony: every pawn holds (Space)"
         >
           {paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
@@ -287,25 +411,59 @@ export function ControlCluster({
         </button>
       </div>
       <div className="flex items-center gap-1.5">
-        <button type="button" onClick={onView} className="inline-flex h-6 items-center gap-1 rounded bg-surface-2 px-1.5 font-medium hover:bg-surface-3" title="Top-down ↔ angled view (V)" aria-label={view === 'top' ? 'Switch to the angled view' : 'Switch to the top-down view'}>
+        <button
+          type="button"
+          onClick={onView}
+          className="inline-flex h-6 items-center gap-1 rounded bg-surface-2 px-1.5 font-medium hover:bg-surface-3"
+          title="Top-down ↔ angled view (V)"
+          aria-label={view === 'top' ? 'Switch to the angled view' : 'Switch to the top-down view'}
+        >
           {view === 'top' ? <Box className="size-3.5" /> : <Layers className="size-3.5" />}
           {view === 'top' ? 'Top-down' : 'Angled'}
         </button>
         <div className="flex items-center rounded bg-surface-2" data-testid="level-widget">
-          <button type="button" onClick={() => onLevel(-1)} className="grid size-6 place-items-center rounded hover:bg-surface-3" aria-label="Level down (PgDn)" title="Level down (PgDn; Shift: one block)">
+          <button
+            type="button"
+            onClick={() => onLevel(-1)}
+            className="grid size-6 place-items-center rounded hover:bg-surface-3"
+            aria-label="Level down (PgDn)"
+            title="Level down (PgDn; Shift: one block)"
+          >
             <ArrowDown className="size-3.5" />
           </button>
           <span className="px-1 tabular-nums" aria-live="polite">
             Storey {storeyOf(level, ground, height)} · Y {level}
           </span>
-          <button type="button" onClick={() => onLevel(1)} className="grid size-6 place-items-center rounded hover:bg-surface-3" aria-label="Level up (PgUp)" title="Level up (PgUp; Shift: one block)">
+          <button
+            type="button"
+            onClick={() => onLevel(1)}
+            className="grid size-6 place-items-center rounded hover:bg-surface-3"
+            aria-label="Level up (PgUp)"
+            title="Level up (PgUp; Shift: one block)"
+          >
             <ArrowUp className="size-3.5" />
           </button>
         </div>
-        <button type="button" onClick={onXray} aria-pressed={xray} className={cn('grid size-6 place-items-center rounded', xray ? 'bg-accent-soft text-accent' : 'hover:bg-surface-2')} title={xray ? 'Roofs x-rayed (X)' : 'Show everything above this level (X)'} aria-label="X-ray above the level">
+        <button
+          type="button"
+          onClick={onXray}
+          aria-pressed={xray}
+          className={cn(
+            'grid size-6 place-items-center rounded',
+            xray ? 'bg-accent-soft text-accent' : 'hover:bg-surface-2',
+          )}
+          title={xray ? 'Roofs x-rayed (X)' : 'Show everything above this level (X)'}
+          aria-label="X-ray above the level"
+        >
           {xray ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
         </button>
-        <button type="button" onClick={onHelp} className="grid size-6 place-items-center rounded hover:bg-surface-2" title="Controls (?)" aria-label="Controls">
+        <button
+          type="button"
+          onClick={onHelp}
+          className="grid size-6 place-items-center rounded hover:bg-surface-2"
+          title="Controls (?)"
+          aria-label="Controls"
+        >
           <Info className="size-3.5" />
         </button>
       </div>
@@ -327,7 +485,17 @@ const DAY_MARKS: Array<[number, string]> = [
  * would set and commits once on release (debounced), through the bot's op account. Without one it stays disabled with the
  * reason.
  */
-export function TimeSlider({ tod, control, canWrite, onSet }: { tod: number | null | undefined; control: StoryTimeControl | null | undefined; canWrite: boolean; onSet: (tick: number) => Promise<unknown> }) {
+export function TimeSlider({
+  tod,
+  control,
+  canWrite,
+  onSet,
+}: {
+  tod: number | null | undefined;
+  control: StoryTimeControl | null | undefined;
+  canWrite: boolean;
+  onSet: (tick: number) => Promise<unknown>;
+}) {
   const [held, setHeld] = useState<number | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const live = useRef<number | null>(null);
@@ -344,7 +512,11 @@ export function TimeSlider({ tod, control, canWrite, onSet }: { tod: number | nu
       void onSet(t).finally(() => setHeld((h) => (h === t ? null : h)));
     }, 300);
   };
-  const hint = !available ? 'No op account — op the main bot to change time' : !canWrite ? 'Changing the time needs the story role' : `Set the time of day via ${control?.by ?? 'the main bot'} (op)`;
+  const hint = !available
+    ? 'No op account — op the main bot to change time'
+    : !canWrite
+      ? 'Changing the time needs the story role'
+      : `Set the time of day via ${control?.by ?? 'the main bot'} (op)`;
   return (
     <div className="space-y-0.5" data-testid="time-control" title={hint}>
       <div className="flex items-center gap-2">
@@ -370,7 +542,11 @@ export function TimeSlider({ tod, control, canWrite, onSet }: { tod: number | nu
       </div>
       <div className="relative ml-12 h-3 text-[9.5px] text-subtle" aria-hidden>
         {DAY_MARKS.map(([t, name]) => (
-          <span key={name} className="absolute -translate-x-1/2 whitespace-nowrap first:translate-x-0" style={{ left: `${(t / 24000) * 100}%` }}>
+          <span
+            key={name}
+            className="absolute -translate-x-1/2 whitespace-nowrap first:translate-x-0"
+            style={{ left: `${(t / 24000) * 100}%` }}
+          >
             {name}
           </span>
         ))}
@@ -409,11 +585,11 @@ export function OptionsBar({
           ? 'Register chests'
           : tool.kind === 'home'
             ? 'Set home'
-          : tool.kind === 'design'
-            ? `Design: ${tool.name}`
-          : tool.id.startsWith('furniture:')
-            ? FURNITURE_TOOLS.find((f) => `furniture:${f.id}` === tool.id)?.label
-            : STRUCTURE_TOOLS.find((s) => s.id === tool.id)?.label;
+            : tool.kind === 'design'
+              ? `Design: ${tool.name}`
+              : tool.id.startsWith('furniture:')
+                ? FURNITURE_TOOLS.find((f) => `furniture:${f.id}` === tool.id)?.label
+                : STRUCTURE_TOOLS.find((s) => s.id === tool.id)?.label;
   const hint =
     tool.kind === 'designate'
       ? `${DESIGNATE_TOOLS.find((t) => t.id === tool.id)?.hint}. Drag a box; Shift keeps the tool.`
@@ -423,19 +599,40 @@ export function OptionsBar({
           ? 'Drag over chests to make them storage'
           : tool.kind === 'home'
             ? 'Click where home should be: the colony migrates there (you confirm first)'
+            : tool.kind === 'design'
+              ? `${tool.blocks.length} blocks: click to queue it here (Q/E turns, PgUp/PgDn changes the level)`
+              : 'Drag to paint the zone';
+  const icon =
+    tool.kind === 'designate'
+      ? tool.id
+      : tool.kind === 'build'
+        ? tool.id.replace('furniture:', '')
+        : tool.kind === 'storage'
+          ? 'storage'
           : tool.kind === 'design'
-            ? `${tool.blocks.length} blocks: click to queue it here (Q/E turns, PgUp/PgDn changes the level)`
-            : 'Drag to paint the zone';
-  const icon = tool.kind === 'designate' ? tool.id : tool.kind === 'build' ? tool.id.replace('furniture:', '') : tool.kind === 'storage' ? 'storage' : tool.kind === 'design' ? 'block' : tool.kind === 'home' ? 'home' : 'zone';
+            ? 'block'
+            : tool.kind === 'home'
+              ? 'home'
+              : 'zone';
   const isStructure = tool.kind === 'build' && !tool.id.startsWith('furniture:');
   const matKey = (m: BuildOpts['material']) => (Array.isArray(m) ? m.join(':') : m);
   return (
-    <div className={cn(panel, 'pointer-events-auto flex flex-wrap items-center gap-2 px-2.5 py-1.5 text-xs')} data-testid="tool-options" role="toolbar" aria-label={`${name} options`}>
+    <div
+      className={cn(panel, 'pointer-events-auto flex flex-wrap items-center gap-2 px-2.5 py-1.5 text-xs')}
+      data-testid="tool-options"
+      role="toolbar"
+      aria-label={`${name} options`}
+    >
       <ToolIcon id={icon} className="size-4 text-accent" />
       <span className="font-semibold">{name}</span>
       <span className="text-muted">{hint}</span>
       {tool.kind === 'designate' && tool.id === 'mine' ? (
-        <select aria-label="Mine filter" value={mineFilter} onChange={(e) => onMineFilter(e.target.value as never)} className="h-6 rounded border border-border bg-surface-2 px-1">
+        <select
+          aria-label="Mine filter"
+          value={mineFilter}
+          onChange={(e) => onMineFilter(e.target.value as never)}
+          className="h-6 rounded border border-border bg-surface-2 px-1"
+        >
           {MINE_FILTERS.map((f) => (
             <option key={f.id} value={f.id}>
               {f.label}
@@ -447,8 +644,15 @@ export function OptionsBar({
         <>
           <label className="flex items-center gap-1">
             Material
-            <select aria-label="Material" value={matKey(build.material)} onChange={(e) => onBuild({ material: e.target.value })} className="h-6 rounded border border-border bg-surface-2 px-1">
-              {STORY_MATERIALS.filter((m) => !['crafting_table', 'furnace', 'chest', 'bed', 'torch'].includes(m.name)).map((m) => (
+            <select
+              aria-label="Material"
+              value={matKey(build.material)}
+              onChange={(e) => onBuild({ material: e.target.value })}
+              className="h-6 rounded border border-border bg-surface-2 px-1"
+            >
+              {STORY_MATERIALS.filter(
+                (m) => !['crafting_table', 'furnace', 'chest', 'bed', 'torch'].includes(m.name),
+              ).map((m) => (
                 <option key={m.name} value={m.name}>
                   {m.label}
                   {stock.has(`${m.id}:${m.meta}`) ? ` (${stock.get(`${m.id}:${m.meta}`)})` : ''}
@@ -459,34 +663,55 @@ export function OptionsBar({
           {tool.id === 'wall' || tool.id === 'roof' ? (
             <span className="flex items-center gap-1" title="Wall height (+ / −)">
               Height
-              <button type="button" className="grid size-5 place-items-center rounded bg-surface-2 hover:bg-surface-3" aria-label="Lower" onClick={() => onBuild({ height: Math.max(1, build.height - 1) })}>
+              <button
+                type="button"
+                className="grid size-5 place-items-center rounded bg-surface-2 hover:bg-surface-3"
+                aria-label="Lower"
+                onClick={() => onBuild({ height: Math.max(1, build.height - 1) })}
+              >
                 −
               </button>
               <span className="w-4 text-center tabular-nums" data-testid="wall-height">
                 {build.height}
               </span>
-              <button type="button" className="grid size-5 place-items-center rounded bg-surface-2 hover:bg-surface-3" aria-label="Higher" onClick={() => onBuild({ height: Math.min(12, build.height + 1) })}>
+              <button
+                type="button"
+                className="grid size-5 place-items-center rounded bg-surface-2 hover:bg-surface-3"
+                aria-label="Higher"
+                onClick={() => onBuild({ height: Math.min(12, build.height + 1) })}
+              >
                 +
               </button>
             </span>
           ) : null}
           {tool.id === 'roof' ? (
             <>
-              <select aria-label="Roof style" value={build.roof} onChange={(e) => onBuild({ roof: e.target.value as never })} className="h-6 rounded border border-border bg-surface-2 px-1">
+              <select
+                aria-label="Roof style"
+                value={build.roof}
+                onChange={(e) => onBuild({ roof: e.target.value as never })}
+                className="h-6 rounded border border-border bg-surface-2 px-1"
+              >
                 <option value="flat">Flat</option>
                 <option value="slab">Slab</option>
                 <option value="gable">Gable</option>
                 <option value="none">No roof</option>
               </select>
               <label className="flex items-center gap-1">
-                <input type="checkbox" checked={build.overhang} onChange={(e) => onBuild({ overhang: e.target.checked })} aria-label="Overhang" />
+                <input
+                  type="checkbox"
+                  checked={build.overhang}
+                  onChange={(e) => onBuild({ overhang: e.target.checked })}
+                  aria-label="Overhang"
+                />
                 Overhang
               </label>
             </>
           ) : null}
         </>
       ) : null}
-      {(tool.kind === 'build' && (tool.id === 'door' || tool.id === 'stairs' || tool.id.startsWith('furniture:'))) || tool.kind === 'design' ? (
+      {(tool.kind === 'build' && (tool.id === 'door' || tool.id === 'stairs' || tool.id.startsWith('furniture:'))) ||
+      tool.kind === 'design' ? (
         <span className="flex items-center gap-1" title="Facing (Q / E)">
           <RotateCcw className="size-3.5 text-muted" />
           <span className="w-4 text-center font-semibold uppercase" data-testid="facing">
@@ -495,7 +720,12 @@ export function OptionsBar({
           <RotateCw className="size-3.5 text-muted" />
         </span>
       ) : null}
-      <button type="button" onClick={onClose} className="ml-1 grid size-5 place-items-center rounded hover:bg-surface-2" aria-label="Put the tool down (Esc or right-click)">
+      <button
+        type="button"
+        onClick={onClose}
+        className="ml-1 grid size-5 place-items-center rounded hover:bg-surface-2"
+        aria-label="Put the tool down (Esc or right-click)"
+      >
         <X className="size-3.5" />
       </button>
     </div>
@@ -504,7 +734,15 @@ export function OptionsBar({
 
 // ------------------------------------------------------------------ alerts, toast, menu, help
 
-export function AlertsStack({ alerts, onPick, onDismiss }: { alerts: readonly StoryAlert[]; onPick: (a: StoryAlert) => void; onDismiss: (id: string) => void }) {
+export function AlertsStack({
+  alerts,
+  onPick,
+  onDismiss,
+}: {
+  alerts: readonly StoryAlert[];
+  onPick: (a: StoryAlert) => void;
+  onDismiss: (id: string) => void;
+}) {
   const list = [...alerts].reverse().slice(0, 7);
   if (!list.length) return null;
   return (
@@ -513,12 +751,34 @@ export function AlertsStack({ alerts, onPick, onDismiss }: { alerts: readonly St
         const id = String(a.id ?? `${a.at}|${a.text}`);
         const tone = a.level === 'danger' ? 'border-l-danger' : a.level === 'warn' ? 'border-l-warn' : 'border-l-info';
         return (
-          <li key={id} className={cn(panel, 'group flex items-start gap-1.5 border-l-4 px-2 py-1.5 text-[11.5px] leading-snug', tone)}>
-            <button type="button" onClick={() => onPick(a)} className="flex min-w-0 flex-1 items-start gap-1.5 text-left">
-              {a.level === 'info' ? <Info className="mt-0.5 size-3.5 shrink-0 text-info" /> : <AlertTriangle className={cn('mt-0.5 size-3.5 shrink-0', a.level === 'danger' ? 'text-danger' : 'text-warn')} />}
+          <li
+            key={id}
+            className={cn(
+              panel,
+              'group flex items-start gap-1.5 border-l-4 px-2 py-1.5 text-[11.5px] leading-snug',
+              tone,
+            )}
+          >
+            <button
+              type="button"
+              onClick={() => onPick(a)}
+              className="flex min-w-0 flex-1 items-start gap-1.5 text-left"
+            >
+              {a.level === 'info' ? (
+                <Info className="mt-0.5 size-3.5 shrink-0 text-info" />
+              ) : (
+                <AlertTriangle
+                  className={cn('mt-0.5 size-3.5 shrink-0', a.level === 'danger' ? 'text-danger' : 'text-warn')}
+                />
+              )}
               <span className="min-w-0">{a.text}</span>
             </button>
-            <button type="button" onClick={() => onDismiss(id)} className="opacity-0 group-hover:opacity-100" aria-label="Dismiss">
+            <button
+              type="button"
+              onClick={() => onDismiss(id)}
+              className="opacity-0 group-hover:opacity-100"
+              aria-label="Dismiss"
+            >
               <X className="size-3 text-muted" />
             </button>
           </li>
@@ -531,13 +791,29 @@ export function AlertsStack({ alerts, onPick, onDismiss }: { alerts: readonly St
 export function Toast({ text, tone = 'ok' }: { text: string | null; tone?: 'ok' | 'warn' }) {
   if (!text) return null;
   return (
-    <div role="status" data-testid="story-toast" className={cn(panel, 'pointer-events-none px-3 py-1.5 text-xs font-medium', tone === 'warn' && 'text-warn')}>
+    <div
+      role="status"
+      data-testid="story-toast"
+      className={cn(panel, 'pointer-events-none px-3 py-1.5 text-xs font-medium', tone === 'warn' && 'text-warn')}
+    >
       {text}
     </div>
   );
 }
 
-export function ContextMenu({ at, title, items, onPick, onClose }: { at: { x: number; y: number }; title: string; items: MenuItem[]; onPick: (item: MenuItem, queue: boolean) => void; onClose: () => void }) {
+export function ContextMenu({
+  at,
+  title,
+  items,
+  onPick,
+  onClose,
+}: {
+  at: { x: number; y: number };
+  title: string;
+  items: MenuItem[];
+  onPick: (item: MenuItem, queue: boolean) => void;
+  onClose: () => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const away = (e: PointerEvent) => {
@@ -547,12 +823,28 @@ export function ContextMenu({ at, title, items, onPick, onClose }: { at: { x: nu
     return () => window.removeEventListener('pointerdown', away, true);
   }, [onClose]);
   return (
-    <div ref={ref} className={cn(panel, 'pointer-events-auto fixed z-40 min-w-48 py-1 text-[13px]')} style={{ left: at.x + 2, top: at.y + 2 }} role="menu" aria-label={title} data-testid="order-menu">
+    <div
+      ref={ref}
+      className={cn(panel, 'pointer-events-auto fixed z-40 min-w-48 py-1 text-[13px]')}
+      style={{ left: at.x + 2, top: at.y + 2 }}
+      role="menu"
+      aria-label={title}
+      data-testid="order-menu"
+    >
       <div className="px-3 pt-0.5 pb-1 text-[11px] font-semibold tracking-wide text-subtle uppercase">{title}</div>
       {items.length === 0 ? <div className="px-3 py-1 text-muted">Select pawns first</div> : null}
       {items.map((it) => (
-        <button key={it.id} type="button" role="menuitem" onClick={(e) => onPick(it, e.shiftKey)} className="flex w-full items-center gap-2 px-3 py-1 text-left hover:bg-accent-soft">
-          <ToolIcon id={it.order?.kind === 'attack' ? 'hunt' : (it.order?.kind ?? it.action ?? 'block')} className="size-3.5 text-muted" />
+        <button
+          key={it.id}
+          type="button"
+          role="menuitem"
+          onClick={(e) => onPick(it, e.shiftKey)}
+          className="flex w-full items-center gap-2 px-3 py-1 text-left hover:bg-accent-soft"
+        >
+          <ToolIcon
+            id={it.order?.kind === 'attack' ? 'hunt' : (it.order?.kind ?? it.action ?? 'block')}
+            className="size-3.5 text-muted"
+          />
           {it.label}
         </button>
       ))}
@@ -571,7 +863,10 @@ export function HelpOverlay({ onClose }: { onClose: () => void }) {
     [<Kbd key="6">Space</Kbd>, 'Pause the colony'],
     [<Kbd key="7">WASD · arrows · edge · middle-drag</Kbd>, 'Pan'],
     [<Kbd key="8">Wheel</Kbd>, 'Zoom to the cursor'],
-    [<Kbd key="9">C G H M L N K Z F J</Kbd>, 'Chop, cut, harvest, mine, haul, hunt, deconstruct, cancel, forbid, allow'],
+    [
+      <Kbd key="9">C G H M L N K Z F J</Kbd>,
+      'Chop, cut, harvest, mine, haul, hunt, deconstruct, cancel, forbid, allow',
+    ],
     [<Kbd key="10">B P Y U O I</Kbd>, 'Architect, work, schedule, queue, directives, colony'],
     [<Kbd key="11">PgUp / PgDn</Kbd>, 'Change storey (Shift: one block) · X x-ray above it'],
     [<Kbd key="12">Q / E · + / −</Kbd>, 'Turn a door or stairs · wall height'],

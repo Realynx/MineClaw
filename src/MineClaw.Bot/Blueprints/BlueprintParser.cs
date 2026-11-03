@@ -11,6 +11,7 @@ namespace MineClaw.Bot.Blueprints;
 /// blueprint small cobble hut
 /// size 5x4x5            # W (x) × H (y) × D (z)
 /// origin 10,64,-3       # optional world min corner (else the site decides)
+/// ground 3              # optional: layers 0-2 are dug into the ground (a basement); layer 3 stands on the site's surface
 /// facing south          # where the front points; drawings put the front on the bottom row (south)
 /// light                 # optional: the interior must be lit
 /// palette C=cobblestone P=planks G=glass_pane D=door:south S=cobblestone_stairs:north T=torch W=wool:red
@@ -111,6 +112,11 @@ public static partial class BlueprintParser
                     if (P3(rest) is { } o) bp.Origin = new BlockPos(o.X, o.Y, o.Z);
                     else Err(ln, "origin", "origin must be x,y,z");
                     break;
+                case "ground":
+                    if (int.TryParse(rest.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var g) && g >= 0 && g < MaxHeight)
+                        bp.Ground = g;
+                    else Err(ln, "ground", $"ground must be the number of layers below the surface (0..{MaxHeight - 1})");
+                    break;
                 case "facing" or "front":
                     if (Dirs.Parse(rest) is { } f) bp.Facing = f;
                     else Err(ln, "facing", "facing must be north, east, south or west");
@@ -167,6 +173,7 @@ public static partial class BlueprintParser
             }
             else Err(0, "size", "missing 'size WxHxD'");
         }
+        if (bp.Ground > 0 && bp.H > 0 && bp.Ground > bp.H) Err(0, "ground", $"ground {bp.Ground} is deeper than the design (size is {bp.H} high)");
         // Settle the drawn front now (doors drawn on the facing side = not turned) so the footprint is right before normalizing.
         if (bp.Facing != Dir.South && bp.W > 0 && bp.H > 0 && bp.D > 0 && bp.W <= MaxSide && bp.D <= MaxSide && bp.H <= MaxHeight)
             BlueprintNormalizer.Normalize(bp);
@@ -175,7 +182,7 @@ public static partial class BlueprintParser
 
     private static readonly HashSet<string> Statements = new(StringComparer.OrdinalIgnoreCase)
     {
-        "blueprint", "name", "size", "origin", "facing", "front", "light", "lit", "palette", "layer", "layers", "box", "fill", "hollow", "walls", "wall",
+        "blueprint", "name", "size", "origin", "ground", "facing", "front", "light", "lit", "palette", "layer", "layers", "box", "fill", "hollow", "walls", "wall",
         "floor", "clear", "air", "pillar", "door", "window", "stairs", "roof",
     };
 

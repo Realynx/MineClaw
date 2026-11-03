@@ -73,20 +73,20 @@ work, so viewers can watch). JSON is snake_case with nulls written. Errors are `
 
 | Method | Path | Body / result |
 |---|---|---|
-| GET | `/api/story` | `{colonies:[{id, name, created, paused, active, pawns:[name], version}], ai:[Ai], directives:[Directive]}` |
+| GET | `/api/story` | `{colonies:[{id, name, created, paused, active, pawns:[name], version}], ai:[Ai], directives:[Directive], time_control:{available, by}}` |
+| POST | `/api/story/time` | `{time: 0..23999}` (whole number) → `{time, by}`; 400 on a bad body, 409 `{error:"no op account"}` when no account the bot controls is op, 429 for more than one change a second. See "Time of day" |
 | POST | `/api/story/colonies` | `{name (1..40 chars), pawns (1..12), home?:{x,y,z}}` → `{id}` (`story-<n>`). Spawns script-only bodies running `story_pawn` |
 | POST | `/api/story/colonies/{id}/release` | `{}` → `{id, released}`. The pawns deposit and log out; the saved state is kept (`active:false`) |
 | POST | `/api/story/colonies/{id}/resume` | `{}` → `{id, pawns, note}`. A released colony spawns its pawns again, their old accounts first |
 | POST | `/api/story/colonies/{id}/pause` | `{paused}` → `{paused}` |
-| POST | `/api/story/time` | `{time: 0..23999}` → `{time, by}`. Sets the world time of day through the bot's op account (`by`); 400 bad body, 409 `{error:"no op account"}`, 429 above about once a second. `time_control:{available, by}` in `GET /api/story` and the colony state says whether it can |
-| POST | `/api/story/colonies/{id}/home` | `{home:{x,y,z}}` → `{home:[x,y,z]}` (400 bad body, 404 unknown colony). Moves home; pawns far from it are brought there |
+| POST | `/api/story/colonies/{id}/home` | `{home:{x,y,z}}` (whole numbers) → `{home:[x,y,z]}`; 400 on a bad body, 404 for an unknown colony. Moves and saves the colony's home; pawns far from it are brought there (see "Home") |
 | GET | `/api/story/colonies/{id}?since=rev` | The state (below): full, or a delta when `since` is given |
 | POST | `/api/story/colonies/{id}/priorities` | `{pawns:[name], work:{type: 0..4}}` (0 = off) → `{ok}` |
 | POST | `/api/story/colonies/{id}/schedule` | `{pawns:[name], hours:{"0".."23": "work"|"sleep"|"anything"|"free"}}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/draft` | `{pawns:[name], drafted}` → `{ok}` |
 | POST | `/api/story/colonies/{id}/orders` | `{pawns:[name], order:{kind: move|attack|chop|mine|haul|build|hold|stop, target?:{x,y,z}|{entity:id}|{area:[x1,y1,z1,x2,y2,z2]}, design?:id}, queue?:bool}` → `{ids:[order id]}` |
-| POST | `/api/story/colonies/{id}/zones` | `{op: add|remove, kind: chop|mine|farm|home|forbidden, area, label?}` → add: `{id}`; remove: `{removed:[id]}` (every zone of that kind, or of any kind, that overlaps the area); `{op: rename, id, label}` names one zone (houses are home zones). **Bot side: `rename` and `label` are web-side so far** |
-| POST | `/api/story/colonies/{id}/beds` | `{op:"assign", bed:{x,y,z}, pawn}` (the pawn's other bed is freed) or `{op:"unassign", bed:{x,y,z}}` → `{beds:[{pos, dim, pawn, zone}]}`. The state carries `beds` (in full when sent) |
+| POST | `/api/story/colonies/{id}/zones` | `{op: add, kind: chop|mine|farm|home|forbidden, area, name?}` → `{id}`; `{op: remove, kind?, area}` → `{removed:[id]}` (every zone of that kind, or of any kind, that overlaps the area); `{op: remove, id}` → `{removed:[id]}`; `{op: rename, id, name}` → `{id, name}` (name ≤ 40 chars, empty clears it) |
+| POST | `/api/story/colonies/{id}/beds` | `{op:"assign", bed:{x,y,z}, pawn}` or `{op:"unassign", bed:{x,y,z}}` → `{beds:[Bed]}`; 400 on a bad body or no bed there, 404 for an unknown colony or pawn. See "Homes and beds" |
 | POST | `/api/story/colonies/{id}/designations` | See "Designations" → `{count, targets}` or `{count, removed}` |
 | POST | `/api/story/colonies/{id}/builds` | See "Construction" |
 | POST | `/api/story/colonies/{id}/storage` | See "Storage" |
@@ -103,9 +103,10 @@ storage is chests (see "Storage").
 ```
 {id, rev, since, full, at, time_of_day, hour, paused, active, home:[x,y,z]|null, tie_break: "column"|"skill", version,
  work_types:[guard, doctor, cook, hunt, build, farm, mine, chop, craft, haul],
- pawns:[Pawn], zones:[{id, kind, area}], designations:[Designation], orders:[{id, pawn, kind, target, design, given, left}],
+ pawns:[Pawn], zones:[{id, kind, area, name}], beds:[{pos:[x,y,z], dim, pawn, zone}], designations:[Designation], orders:[{id, pawn, kind, target, design, given, left}],
  alerts:[{at, level: info|warn, text, pawn}], builds:[Build], ghosts:{rev, blocks:[[x,y,z,id,meta,build_id,state]]},
  storages:[Storage], workbenches:[Workbench], categories:[Category] (full only), ai:[Ai], directives:[Directive],
+ time_control:{available: bool, by: account|null},
  removed:{zones:[id], designations:[id], builds:[id], storages:["x,y,z"]} (delta only)}
 ```
 
@@ -145,8 +146,55 @@ The **Pawn** object:
 
 Every target is leased: `b:x,y,z`, `e:<entity>`, `g:<build>|x,y,z` or `bench:x,y,z`.
 - A lease lasts 90 s and progress reports renew it. It goes back when the job ends, fails or times out.
-- A failed target is skipped for 30 s.
-- A designation that failed 3 times is dropped, with an alert.
+- A pawn keeps its job until it is done, fails, or an order (or draft, pause, stop) replaces it. New work never cuts a working pawn.
+- A failed target rests before anyone takes it again: 30 s, then 1 min, then 10 min after each further failure. A failed delivery
+  rests the same way for that pawn.
+- A pawn whose last 3 jobs failed within 20 s rests 15 s before it picks again (orders and urgent needs still come first).
+- A designation that failed is kept on the map with `reason` and `fails`. Its first failure raises an alert saying why. After 3
+  failures its `status` is `failed` and an alert says so (again every 3 failures). It is still retried after its rest until it is
+  done or cancelled.
+- A designation is done only when the colony's view agrees: the trunk's base log is gone (chop), the plant is gone (cut), the crop
+  isn't ripe any more (harvest), the block is gone (mine, deconstruct), or the drop or animal is gone (haul, hunt). Otherwise a "done"
+  report counts as a failure. Live 11-03: harvest and cut designations vanished without a line in the log. The script's dig on a block
+  outside the pawn's view did nothing and said ok.
+- The pawn script walks to a far target before working on it, because a block outside its body's view reads as air. A chop goes at
+  exactly the designated tree (`chop_tree` with `at:"x,y,z only"`) and never at the next free tree near the pawn. The director already
+  gave each pawn its own tree.
+- Hunger and storage alerts never hold work back. A hungry pawn with no food anywhere keeps working. Loot that no chest accepts stays
+  with the pawn.
+- New work (a designation, zone, build, bill, storage, or priorities that really changed) doesn't restart idle pawns' scripts: an
+  idle hold lasts a few seconds and the pawn picks again by itself. Only a pawn held idle for 8 s or more (walking home from far)
+  is cut for it, at most once every 30 s. (Live 11-03: cutting every idle script on each work-panel click restarted ten scripts per
+  click, several "cancelled … (new work)" lines a second, and no pawn got anywhere.)
+
+### Homes and beds
+
+- **Homes.** A colony has one primary home (its anchor: `home`, moved with `POST …/home`, which is a migration: far pawns are
+  brought there) and any number of houses, which are zones of kind `home`. They can be added, renamed and removed at any time. "At
+  home" means inside any home zone's columns, or within 24 blocks of the primary home. Guarding and hauling loose drops use that union;
+  so do workbench and bed finding. Pawns work in a far house by walking there. Only a migration or a rejoin teleports them.
+- **Beds.** Beds are found in every home zone and within 32 blocks of the primary home, rescanned at most every 10 s. A bed's two
+  halves are one bed, named by its foot. Bed: `{pos, dim, pawn, zone}`, where `zone` is the home zone it stands in (null = by the
+  primary home) and `pawn` is who sleeps there. One pawn per bed and one bed per pawn: assigning a pawn moves it from its old bed,
+  and takes the bed from whoever had it. Assignments are saved with the colony. The head half's position works as the bed too.
+- **Sleep.** In a pawn's `sleep` hours it goes to its own bed (while that is still a bed), else to the nearest free one (leased, so
+  two pawns don't take the same one). At night it lies down in it (`use_block`), and by day it rests by it. With no bed it rests at
+  home, and the colony hears "X has no bed" once.
+
+### Time of day
+
+The minecraft server owns the clock, but an op account can set it. `time_control` (in `GET /api/story` and in every colony state)
+is `{available, by}`. It is available when an account this bot controls is op: main first, else the first op body. `by` names it.
+
+- **Op detection.** A 1.12.2 server tells each account its op level as Entity Status 24..28 on its own player, on login and on
+  every /op and /deop (level = status − 24). Op means level 2 or more. A b1.8.1 server never says, so there an account is op only
+  when `Supervisor:Viewer:OpAccounts` lists it. Otherwise it's unknown, and an unknown account doesn't count.
+- **Main not op.** Main should be op, because it runs the whitelist. When the server says main isn't, the bot logs a warning once and
+  each colony gets one alert.
+- **The command.** `POST /api/story/time {time}` sends `/time set <time>` from that account. Main's goes through the command gate's
+  scoped exception (only that exact shape, never when the config blocks `/time`, audited), and another body's after the same
+  blocklist check, audited. The request is the authenticated story-role owner's. At most one change a second (429 otherwise,
+  with `Retry-After: 1`). Each change logs one line.
 
 ### Pawn bodies and the pawn script
 
@@ -187,7 +235,33 @@ The area expands at designation time to the matching targets in the bot's world 
 | deconstruct | Blocks the world doesn't make by itself (planks, glass, doors…) | build |
 | forbid / allow | Drops and doors pawns may not use, or may use again | — |
 
-Designation: `{id, kind, work_type, target:[x,y,z]|{entity}, blocks, label, created}`.
+Designation: `{id, kind, work_type, target:[x,y,z]|{entity}, blocks, label, created, status: open|failed, reason, fails}`.
+
+A chop designation, order or zone means whole trees. Any log or leaf of a tree stands for it: the canopy top a top-down click lands
+on (or the air just above it), a branch, or a box drawn only over the crowns. Each resolves to the tree's trunk base (the lowest log
+standing on ground), and the box's columns are searched 32 blocks below its bottom for the trunks. Branches and crowns are never trees
+of their own.
+
+A chop job also carries `wood` (the version's log item names), `wood_blocks`, `planks` and `logs` (the tree's logs, lowest first).
+`story_pawn` uses them to work a tree from an empty inventory. It fells what it can reach. If some logs came down but not all, it
+crafts planks from them in the 2x2 grid (clutch and pillar blocks for the work up high) and goes once more at the lowest log still
+standing. The fall-safety rules of `chop_tree` are unchanged. Logs still out of reach after that make a partial job: reported done
+with a note starting `partial:`. The designation leaves the map and an alert says what was left.
+
+### Home
+
+The colony's home is set at founding (`home`) or moved with `POST …/home`. A pawn farther than 48 blocks from home (or in another
+dimension) when it joins, when the colony is founded or resumed, or when the home moves, is brought there:
+- **1.12.2.** Main sends `/tp <pawn> x y z`, at most once a minute per pawn, to a standable spot at home: solid ground (never
+  leaves, liquid, fire or cactus) under two free cells. That is the home cell itself when it is one, else the open-sky surface of the
+  nearest column within 4 blocks that main's view has loaded. The line is armed in the command gate's scoped exception, which takes
+  only that exact shape, only for the hive's own managed `maid_` accounts, and never when the config blocks `/tp`. It is audited with
+  the reason. The pawn's current job is cut, and it picks again at home. The colony owner's founding or home move is the request.
+- **b1.8.1, or when the gate refuses.** b1.8.1's `/tp` takes no coordinates, so the pawn gets a move order home that runs before
+  any work.
+- **Another dimension.** A pawn can't be teleported across dimensions, so an alert asks for it to be walked through a portal.
+
+Each pawn moved logs one line (an alert): "X brought home to x,y,z from N blocks away (why)".
 
 ## Construction
 
@@ -198,7 +272,7 @@ Designation: `{id, kind, work_type, target:[x,y,z]|{entity}, blocks, label, crea
 
 Item: `{kind: wall|floor|roof|door|window|stairs|fence|block|remove|crafting_table|furnace|chest|bed|torch, area?:[x1,y1,z1,x2,y2,z2],
 blocks?:[[x,y,z]], material?: <block name> | [id,meta], height?:1..12, roof?:{style: flat|slab|gable|none, material?, overhang?:0|1},
-facing?: n|e|s|w, level?:y, name?}`.
+facing?: n|e|s|w, level?:y, name?, group?}`.
 
 - **wall / fence:** the rectangle's perimeter (corners included) × height, from the area's y1 up. Walls default to 3 high,
   fences to 1. A wall with `roof` also gets its roof, one above its top.
@@ -215,6 +289,9 @@ facing?: n|e|s|w, level?:y, name?}`.
 - **stairs:** a staircase rising toward `facing`, from y1 to y2.
 - **Furniture** (crafting_table, furnace, chest, bed, torch): each block. A bed is two.
 - **remove:** every diggable block in the area becomes a dig job.
+- **group:** the items of one placed design. A design with a basement (Design Studio dug cells) is queued as a `remove`
+  item of its dug cells first, then its block items, all with the same `group`: its blocks wait until that dig is done.
+  The design's ground floor goes on the clicked level and the basement under it.
 
 Build: `{id, kind, label, status: queued|active|paused|blocked|done, reason, blocks_total, blocks_done, material, order, created}`.
 Ghosts: `[x,y,z,id,meta,build_id,state]`, with state `todo|leased|done|blocked`.
@@ -223,6 +300,8 @@ Execution:
 - Every ghost is one job for a pawn with Build on, by the picker and lease rules.
 - Order: the first unpaused build in queue order gives out its jobs, only from its lowest unfinished level (support first).
   Blocks touching something solid go first, then the nearest. When all of those are leased, the next build's jobs go out.
+  A build that only digs goes top-down instead (a buried cell opens once the one above it is gone). A build of a `group`
+  waits while an earlier build of that group still has cells to dig (a dig that keeps failing doesn't hold it).
 - Never a block where a player stands.
 - Material: the pawn uses its own, or fetches it from the nearest storage that holds it. With none anywhere, the build is
   `blocked` with `reason:"need 34 wooden planks"` and an alert. It goes on by itself once some is stored (a Chop, Mine or Haul

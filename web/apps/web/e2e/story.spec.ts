@@ -36,24 +36,32 @@ async function openStory(page: Page) {
 }
 
 /** Calls one of the map's test hooks (`window.__story`, mock mode only). */
-function story<K extends keyof StoryDebug>(page: Page, method: K, ...args: Parameters<StoryDebug[K]>): Promise<ReturnType<StoryDebug[K]>> {
+function story<K extends keyof StoryDebug>(
+  page: Page,
+  method: K,
+  ...args: Parameters<StoryDebug[K]>
+): Promise<ReturnType<StoryDebug[K]>> {
   return page.evaluate(
     ([m, a]) => (window as unknown as { __story: Record<string, (...x: unknown[]) => unknown> }).__story[m]!(...a),
     [method, args] as const,
   ) as Promise<ReturnType<StoryDebug[K]>>;
 }
-const pageAt = async (page: Page, x: number, z: number, dy = 1) => (await story(page, 'toPage', x, (await story(page, 'level')) + dy, z))!;
+const pageAt = async (page: Page, x: number, z: number, dy = 1) =>
+  (await story(page, 'toPage', x, (await story(page, 'level')) + dy, z))!;
 
 async function foundColony(page: Page, pawns = 4) {
   const count = page.getByLabel('Number of pawns');
   while (Number(await count.textContent()) !== pawns)
-    await page.getByRole('button', { name: Number(await count.textContent()) < pawns ? 'More pawns' : 'Fewer pawns' }).click();
+    await page
+      .getByRole('button', { name: Number(await count.textContent()) < pawns ? 'More pawns' : 'Fewer pawns' })
+      .click();
   await page.getByRole('button', { name: 'Found colony' }).click();
   await expect(page.getByTestId('colonist-bar').locator('[data-kind="pawn"]')).toHaveCount(pawns);
   await page.waitForTimeout(1500); // the camera settles over home, tokens interpolate in
 }
 
-const post = (page: Page, path: RegExp) => page.waitForRequest((r: Request) => r.method() === 'POST' && path.test(new URL(r.url()).pathname));
+const post = (page: Page, path: RegExp) =>
+  page.waitForRequest((r: Request) => r.method() === 'POST' && path.test(new URL(r.url()).pathname));
 const body = (r: Request) => r.postDataJSON() as Record<string, unknown>;
 
 /** A left drag on the map between two world cells on the level's floor plane. */
@@ -68,7 +76,9 @@ async function dragCells(page: Page, a: [number, number, number], b: [number, nu
   return { pa, pb };
 }
 
-test('found a colony, box-select, right-click a tree to chop, priorities, a schedule, draft, the top bar', async ({ page }) => {
+test('found a colony, box-select, right-click a tree to chop, priorities, a schedule, draft, the top bar', async ({
+  page,
+}) => {
   await signIn(page, true);
   await openStory(page);
   // With no colony the map settles over the main bot (the fixture's Alice, renamed maid_chan, circles the island centre 10
@@ -118,8 +128,10 @@ test('found a colony, box-select, right-click a tree to chop, priorities, a sche
   await page.keyboard.press('y');
   const sched = page.getByTestId('schedule-panel');
   await sched.getByRole('button', { name: 'Sleep' }).click();
-  const from = sched.locator(`[data-hour="${first}:2"]`), to = sched.locator(`[data-hour="${first}:4"]`);
-  const fb = (await from.boundingBox())!, tb = (await to.boundingBox())!;
+  const from = sched.locator(`[data-hour="${first}:2"]`),
+    to = sched.locator(`[data-hour="${first}:4"]`);
+  const fb = (await from.boundingBox())!,
+    tb = (await to.boundingBox())!;
   const paint = post(page, /\/schedule$/);
   await page.mouse.move(fb.x + 5, fb.y + 5);
   await page.mouse.down();
@@ -134,7 +146,10 @@ test('found a colony, box-select, right-click a tree to chop, priorities, a sche
   const d1 = post(page, /\/draft$/);
   await page.keyboard.press('r');
   expect(body(await d1)).toMatchObject({ drafted: true });
-  await expect(page.getByTestId('colonist-bar').locator(`[data-portrait="${first}"]`)).toHaveAttribute('data-drafted', 'true');
+  await expect(page.getByTestId('colonist-bar').locator(`[data-portrait="${first}"]`)).toHaveAttribute(
+    'data-drafted',
+    'true',
+  );
   const d2 = post(page, /\/draft$/);
   await page.keyboard.press('r');
   expect(body(await d2)).toMatchObject({ drafted: false });
@@ -174,7 +189,11 @@ test('found a colony, box-select, right-click a tree to chop, priorities, a sche
   await expect(bedPanel).toBeVisible();
   const assigned = post(page, /\/api\/story\/colonies\/[^/]+\/beds$/);
   await bedPanel.getByLabel('Set owner').selectOption(bodies[0]!.name);
-  expect(body(await assigned)).toEqual({ op: 'assign', bed: { x: bed.pos[0], y: bed.pos[1], z: bed.pos[2] }, pawn: bodies[0]!.name });
+  expect(body(await assigned)).toEqual({
+    op: 'assign',
+    bed: { x: bed.pos[0], y: bed.pos[1], z: bed.pos[2] },
+    pawn: bodies[0]!.name,
+  });
   await expect(bedPanel.getByLabel('Set owner')).toHaveValue(bodies[0]!.name);
   if (shots) await page.screenshot({ path: `${shots}/story-bed.png` });
   await bar.locator(`[data-portrait="${bodies[0]!.name}"]`).click();
@@ -201,7 +220,9 @@ test('drafted pawns line up along a right-drag; the time of day slider', async (
   await openStory(page);
   await foundColony(page, 3);
   const bar = page.getByTestId('colonist-bar');
-  const names = await bar.locator('[data-kind="pawn"]').evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.portrait!));
+  const names = await bar
+    .locator('[data-kind="pawn"]')
+    .evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.portrait!));
   expect(names).toHaveLength(3);
   await bar.locator(`[data-portrait="${names[0]}"]`).click();
   for (const n of names.slice(1)) await bar.locator(`[data-portrait="${n}"]`).click({ modifiers: ['Shift'] });
@@ -219,7 +240,8 @@ test('drafted pawns line up along a right-drag; the time of day slider', async (
   const pb = (await story(page, 'toPage', b[0] + 0.5, lv + 1, b[1] + 0.5))!;
   const orders: Request[] = [];
   page.on('request', (r) => {
-    if (r.method() === 'POST' && /\/api\/story\/colonies\/[^/]+\/orders$/.test(new URL(r.url()).pathname)) orders.push(r);
+    if (r.method() === 'POST' && /\/api\/story\/colonies\/[^/]+\/orders$/.test(new URL(r.url()).pathname))
+      orders.push(r);
   });
   await page.mouse.move(pa.x, pa.y);
   await page.mouse.down({ button: 'right' });
@@ -230,7 +252,10 @@ test('drafted pawns line up along a right-drag; the time of day slider', async (
   await page.mouse.up({ button: 'right' });
   await expect.poll(() => orders.length).toBe(3);
   await expect(page.getByTestId('order-menu')).toHaveCount(0);
-  const bodies = orders.map(body) as Array<{ pawns: string[]; order: { kind: string; target: { x: number; y: number; z: number } } }>;
+  const bodies = orders.map(body) as Array<{
+    pawns: string[];
+    order: { kind: string; target: { x: number; y: number; z: number } };
+  }>;
   expect(bodies.map((o) => o.pawns.length)).toEqual([1, 1, 1]);
   expect(bodies.map((o) => o.pawns[0]).sort()).toEqual([...names].sort());
   expect(bodies.every((o) => o.order.kind === 'move')).toBe(true);
@@ -292,7 +317,9 @@ test('designate tools: chop a grove for a pawn and main, haul a drop, cancel; ch
   await page.mouse.up();
   expect(body(await des)).toMatchObject({ op: 'add', kind: 'chop' });
   expect(body(await dir)).toMatchObject({ bots: ['maid_chan'], directive: { kind: 'chop' } });
-  await expect(page.getByTestId('story-toast')).toContainText(/Chop wood: 3 trees · colony: designated · sent to maid_chan \(AI\)/);
+  await expect(page.getByTestId('story-toast')).toContainText(
+    /Chop wood: 3 trees · colony: designated · sent to maid_chan \(AI\)/,
+  );
   await page.waitForTimeout(1200);
   if (shots) await page.screenshot({ path: `${shots}/story-chop-marked.png` });
 
@@ -400,7 +427,10 @@ test('storage, bills, the build queue and the angled view', async ({ page }) => 
   await bills.locator('[data-bill]').nth(1).dragTo(bills.locator('[data-bill]').nth(0));
   expect(body(await reorder)).toMatchObject({ op: 'reorder' });
   const pause = post(page, /\/bills$/);
-  await bills.getByRole('button', { name: /^Pause / }).first().click();
+  await bills
+    .getByRole('button', { name: /^Pause / })
+    .first()
+    .click();
   expect(body(await pause)).toMatchObject({ op: 'pause' });
   if (shots) await page.screenshot({ path: `${shots}/story-bills.png` });
 
@@ -424,7 +454,10 @@ test('storage, bills, the build queue and the angled view', async ({ page }) => 
   const roof = post(page, /\/builds$/);
   await dragCells(page, [-8, lv, 2], [-4, lv, 6]);
   await page.mouse.up();
-  expect((body(await roof) as { items: Array<{ kind: string; roof: unknown }> }).items[0]).toMatchObject({ kind: 'roof', roof: { style: 'flat' } });
+  expect((body(await roof) as { items: Array<{ kind: string; roof: unknown }> }).items[0]).toMatchObject({
+    kind: 'roof',
+    roof: { style: 'flat' },
+  });
   await page.waitForTimeout(1200);
   if (shots) await page.screenshot({ path: `${shots}/story-ghosts.png` });
   // Reorder two builds in the queue panel.
@@ -433,7 +466,10 @@ test('storage, bills, the build queue and the angled view', async ({ page }) => 
   const queue = page.getByTestId('queue-panel');
   await expect(queue.locator('[data-build]')).toHaveCount(3);
   const re = post(page, /\/builds$/);
-  await queue.getByRole('button', { name: /^Build .* first$/ }).last().click();
+  await queue
+    .getByRole('button', { name: /^Build .* first$/ })
+    .last()
+    .click();
   expect(body(await re)).toMatchObject({ op: 'reorder' });
   if (shots) await page.screenshot({ path: `${shots}/story-queue.png` });
 
@@ -450,7 +486,9 @@ test('storage, bills, the build queue and the angled view', async ({ page }) => 
   await page.waitForTimeout(400);
   const one = post(page, /\/builds$/);
   await page.mouse.click(at.x, at.y);
-  expect((body(await one) as { items: Array<{ kind: string; blocks: number[][] }> }).items[0]).toMatchObject({ kind: 'block' });
+  expect((body(await one) as { items: Array<{ kind: string; blocks: number[][] }> }).items[0]).toMatchObject({
+    kind: 'block',
+  });
   if (shots) await page.screenshot({ path: `${shots}/story-angled.png` });
   await page.keyboard.press('v');
   await expect.poll(() => story(page, 'mode')).toBe('top');
@@ -468,7 +506,10 @@ test('a design from the design pages is placed on the map and queued (/story?des
   if (shots) await page.screenshot({ path: `${shots}/story-design.png` });
   const queued = post(page, /\/builds$/);
   await page.mouse.click(at.x, at.y);
-  const b = body(await queued) as { op: string; items: Array<{ kind: string; blocks: number[][]; material: number[] }> };
+  const b = body(await queued) as {
+    op: string;
+    items: Array<{ kind: string; blocks: number[][]; material: number[] }>;
+  };
   expect(b.op).toBe('add');
   expect(b.items.every((i) => i.kind === 'block' && i.blocks.length > 0)).toBe(true);
   // The mock design: a 5×5 hut, walls 3 high with a 2-high doorway, a plank roof.
