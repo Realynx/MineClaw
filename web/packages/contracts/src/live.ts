@@ -335,6 +335,45 @@ export type WorldPlan = z.infer<typeof WorldPlan>;
 
 export const DimQuery = z.object({ dim: QInt.default(0) });
 
+/** GET /api/world/blocks?since=rev[&dim]: per-block world changes since a revision (dim omitted = every dimension). */
+export const WorldBlocksQuery = z.object({ since: QInt.min(0).default(0), dim: QInt.optional() });
+export type WorldBlocksQuery = z.infer<typeof WorldBlocksQuery>;
+
+/** One changed block [x, y, z, id, meta]. */
+export const WorldBlockChange = z.tuple([z.number().int(), z.number().int(), z.number().int(), z.number().int(), z.number().int()]);
+export type WorldBlockChange = z.infer<typeof WorldBlockChange>;
+
+/**
+ * A column event of the block feed: `loaded` = (re)fetch this column through /api/world/chunks (on b1.8.1 it can also mean a
+ * partial chunk update), `unloaded` = it left live view (keep it as remembered).
+ */
+export const WorldColumnChange = z.object({
+  rev: z.number().int(),
+  at: UnixMs,
+  dim: DimId,
+  cx: z.number().int(),
+  cz: z.number().int(),
+  kind: z.enum(['loaded', 'unloaded']),
+});
+export type WorldColumnChange = z.infer<typeof WorldColumnChange>;
+
+/**
+ * GET /api/world/blocks?since=rev[&dim] (the bot's BlockDeltaLog) and the `blocks` SSE payload. Pass `rev` back as `since`.
+ * `blocks` is grouped per dimension (key = the dim id as a string, "0" / "-1"), in rev order; a later entry for the same cell
+ * wins. `more: true` = the page was capped, ask again at once. `full: true` (lists empty) = the cursor is unusable (since=0, newer
+ * than the log after a bot restart, older than the ring, or after an idle gap): fall back to the hash-diff refetch
+ * (/api/world/index + /api/world/chunks). The bot only records while someone read in the last 2 min, so a first call is `full`.
+ */
+export const WorldBlockDeltas = z.object({
+  at: UnixMs,
+  rev: z.number().int(),
+  full: z.boolean(),
+  more: z.boolean(),
+  blocks: z.record(z.string(), z.array(WorldBlockChange)),
+  columns: z.array(WorldColumnChange),
+});
+export type WorldBlockDeltas = z.infer<typeof WorldBlockDeltas>;
+
 /** GET /api/world/overlays?dim. */
 export const WorldOverlays = z.object({
   at: IsoDateTime,

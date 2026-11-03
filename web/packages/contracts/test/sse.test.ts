@@ -12,6 +12,14 @@ describe('SSE catalogue', () => {
     entities: live.worldEntities,
     hive: live.hiveTree,
     memoryActivity: live.memoryActivity,
+    blocks: {
+      at: 1762077600000,
+      rev: 42,
+      full: false,
+      more: false,
+      blocks: { '0': [[3, 64, -2, 4, 0]], '-1': [[1, 70, 2, 87, 0]] },
+      columns: [{ rev: 41, at: 1762077599000, dim: 0, cx: 0, cz: -1, kind: 'loaded' }],
+    },
     status: { at: '2026-11-02T10:00:00Z', upstream: 'connected', bot: 'up', latency_ms: 4.2 },
   };
 
@@ -27,7 +35,7 @@ describe('SSE catalogue', () => {
   it('ignores unknown events and parses topics', () => {
     expect(C.parseSseFrame('nope', {})).toBeNull();
     expect(C.parseTopics('feed,now,bogus')).toEqual(['feed', 'now']);
-    expect(C.parseTopics(undefined)).toHaveLength(7);
+    expect(C.parseTopics(undefined)).toHaveLength(8);
   });
 
   it('decays heat by half-life', () => {

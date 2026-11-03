@@ -38,6 +38,11 @@ export const ChatAccepted = z.object({
     .union([z.string(), z.number().int()])
     .describe('feed correlation id: the `viewer` FeedLine for this text carries it'),
   note: z.string().nullish().describe('why not accepted (rate limited, viewer chat disabled, player not trusted…)'),
+  feedSeq: z
+    .number()
+    .int()
+    .nullish()
+    .describe('seq of the `viewer` FeedLine the bot recorded for this text (the bridge adds it; the line also carries requestId)'),
 });
 export type ChatAccepted = z.infer<typeof ChatAccepted>;
 
