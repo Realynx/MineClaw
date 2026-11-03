@@ -204,3 +204,9 @@ entity and overlay data plus the runtime-generated texture atlas. No world image
 - `/v1/render/tile/{bot}.png` is deprecated and unused by the UI.
 - Vision sheet PNGs remain. They are the exact images a model was sent, kept as a debugging record rather than a view
   of the world.
+- **Shared world data across views.**
+  - Every view (the main pane and all the thumbnails) shares one world store per dimension: each column is fetched and
+    decoded once. Each section is meshed once and its geometry is uploaded once.
+  - Materials, the atlas texture, and the entity and overlay meshes are single shared instances.
+  - A view owns only its camera, viewport and per-view uniforms (cutaway or x-ray through clipping uniforms, not
+    rebuilt geometry). Interest regions are refcounted across views, so bots near each other share sections.
