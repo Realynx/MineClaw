@@ -8,7 +8,8 @@ public sealed record WorldColumnInfo(int Cx, int Cz, long Hash, long Seen, strin
 
 /// <summary>A hive bot for the live viewer: pose (yaw/pitch when known), vitals, job, held item, claims.</summary>
 public sealed record WorldBot(string Name, string Short, bool Main, int Dim, double X, double Y, double Z, float? Yaw, float? Pitch,
-    double? PoseAge, int Hp, int Food, string? Job, string? Brain, string? Held, IReadOnlyList<string> Claims, bool Live, double AgeSeconds);
+    double? PoseAge, int Hp, int Food, string? Job, string? Brain, string? Held, IReadOnlyList<string> Claims, bool Live, double AgeSeconds,
+    string? Kind = null, string? Owner = null, bool? Online = null);
 
 /// <summary>Anything else to draw (players, mobs, items, and objects: paintings, item frames, armour stands, arrows, boats,
 /// minecarts, falling blocks, primed TNT, xp orbs, ender crystals, fireworks) the hive knows of, merged across every body. Items

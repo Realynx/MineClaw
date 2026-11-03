@@ -9,7 +9,7 @@ namespace MineClaw.ViewerBridge.Live;
 
 /// <summary>
 /// <c>GET /v1/live/stream</c>: the bridge polls the supervisor on loopback only while at least one client is connected
-/// (status 1 Hz, events 2 Hz, viewer/feed 2 Hz, viewer/now 2 Hz per online bot, entity deltas 5 Hz, hive/tree every 3 s,
+/// (status 1 Hz, events 2 Hz, viewer/feed 2 Hz, viewer/now 2 Hz per online bot (1 Hz per subhive body), entity deltas 5 Hz, hive/tree every 3 s,
 /// viewer/memory-activity 1 Hz, world/blocks 5 Hz) and emits the typed events of api.md §5 (<c>bots</c>, <c>event</c>, <c>feed</c>, <c>now</c>,
 /// <c>entities</c>, <c>hive</c>, <c>memoryActivity</c>, <c>blocks</c>) as <c>event/id/data</c> frames with increasing ids. The last 256 frames
 /// are kept for <c>Last-Event-ID</c> resume; a fresh client first gets the latest state frames (bots, hive, one now per bot).
@@ -31,6 +31,8 @@ public sealed class LiveHub : IDisposable
     private long _nextId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     private CancellationTokenSource? _polling;
     private IReadOnlyList<string> _onlineBots = [];
+    /// <summary>The online subhive bodies (no brain or stream of their own; their hive reports them once a second): <c>now</c> at 1 Hz.</summary>
+    private IReadOnlySet<string> _slowBots = new HashSet<string>();
 
     public LiveHub(SupervisorClient sup, MemoryActivityStore memory, ILogger<LiveHub> log)
     {
@@ -229,8 +231,10 @@ public sealed class LiveHub : IDisposable
         {
             var node = await GetJson("api/status", TimeSpan.FromSeconds(4), ct);
             if (node is not JsonObject o) return;
-            _onlineBots = (o["bots"] as JsonArray ?? []).OfType<JsonObject>()
-                .Where(b => (string?)b["status"] == "online").Select(b => (string?)b["name"]).OfType<string>().ToList();
+            var online = (o["bots"] as JsonArray ?? []).OfType<JsonObject>().Where(b => (string?)b["status"] == "online").ToList();
+            _onlineBots = online.Select(b => (string?)b["name"]).OfType<string>().ToList();
+            _slowBots = online.Where(b => (string?)b["kind"] == "subhive").Select(b => (string?)b["name"]).OfType<string>()
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
             var key = Normalized(o, "at", "age_seconds", "updated_at");
             if (key == prev) return;
             prev = key;
@@ -277,10 +281,14 @@ public sealed class LiveHub : IDisposable
     private Func<CancellationToken, Task> PollNow()
     {
         var prev = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        long tick = 0;
         return async ct =>
         {
+            bool slowTick = tick++ % 2 == 0;
+            var slow = _slowBots;
             foreach (var bot in _onlineBots.ToList())
             {
+                if (!slowTick && slow.Contains(bot)) continue; // a subhive body: every other tick (1 Hz)
                 JsonNode? node;
                 try { node = await GetJson($"api/viewer/now?bot={Uri.EscapeDataString(bot)}", TimeSpan.FromSeconds(3), ct); }
                 catch (SupervisorUnavailableException) { continue; }

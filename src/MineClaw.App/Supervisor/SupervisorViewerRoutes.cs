@@ -27,7 +27,7 @@ public sealed class SupervisorViewerOptions
 
 /// <summary>"What is it doing right now" for one bot (<c>/api/viewer/now</c>); every part is null when unknown.</summary>
 public sealed record ViewerNow(string Bot, DateTimeOffset At, string? BrainState, ViewerInFlight? InFlight, ViewerThought? Thought, ViewerTool? Tool,
-    string? Task, ViewerScript? Script, ViewerBody? Body);
+    string? Task, ViewerScript? Script, ViewerBody? Body, string? Kind = null, string? Owner = null);
 public sealed record ViewerInFlight(string Purpose, string Model, DateTimeOffset Since);
 public sealed record ViewerThought(string Text, string Thinking, DateTimeOffset At);
 public sealed record ViewerTool(string Name, string ArgsShort, DateTimeOffset At);

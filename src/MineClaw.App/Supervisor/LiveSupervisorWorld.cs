@@ -165,8 +165,13 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
         _columns = new WorldColumnSource(Bodies, () => hub.WorldStore, _time);
     }
 
+    /// <summary>Every body this process controls (a hive's subhive bodies too: their snapshot positions); null = the hub's hive
+    /// bots and the in-process bodies only, as before.</summary>
+    public HiveBodyList? AllBodies { get; init; }
+
     /// <summary>The routes for the host: main + every in-process body (<see cref="BotHost.Bodies"/>), the shared memory.</summary>
-    public static SupervisorWorldRoutes Routes(VisionHub hub, BotHost bot, Func<WorldState> world, string main, SupervisorOptions o, ILogger? log)
+    public static SupervisorWorldRoutes Routes(VisionHub hub, BotHost bot, Func<WorldState> world, string main, SupervisorOptions o, ILogger? log,
+        HiveBodyList? all = null)
     {
         IReadOnlyList<LiveBody> Bodies()
         {
@@ -183,7 +188,7 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
             list.Insert(0, new LiveBody(main, "main", true, world(), () => bot.Runtime.Activities.Describe()));
             return list;
         }
-        return new SupervisorWorldRoutes(new LiveSupervisorWorld(hub, world, main, Bodies, bot.Runtime, () => bot.Blueprints?.Service, o, log));
+        return new SupervisorWorldRoutes(new LiveSupervisorWorld(hub, world, main, Bodies, bot.Runtime, () => bot.Blueprints?.Service, o, log) { AllBodies = all });
     }
 
     private IReadOnlyList<LiveBody> Bodies()
@@ -296,6 +301,19 @@ public sealed class LiveSupervisorWorld : ISupervisorWorld
         }
         foreach (var lb in live.Values)
             if (seen.Add(lb.Name)) list.Add(LiveBot(lb, null, Claims(lb.Name)));
+        if (AllBodies is not { } all) return list;
+        IReadOnlyList<BodyRow> rows = [];
+        try { rows = all.Rows(); } catch (Exception ex) { _log?.LogDebug(ex, "supervisor world: body list unavailable"); }
+        var byName = rows.GroupBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < list.Count; i++)
+            if (byName.TryGetValue(list[i].Name, out var r)) list[i] = list[i] with { Kind = r.Kind, Owner = r.Owner, Online = r.Online };
+            else if (list[i].Main) list[i] = list[i] with { Kind = "main", Online = true };
+        // a hive's subhive bodies (their hive streams their positions with its snapshot) and bodies whose position is known but
+        // that the hub doesn't list; a body with no position yet isn't drawn
+        foreach (var r in rows)
+            if (r.HasPos && seen.Add(r.Name))
+                list.Add(new WorldBot(r.Name, r.Short, r.IsMain, r.Dim, R(r.X), R(r.Y), R(r.Z), null, null, null, r.Hp, r.Food, r.Job, r.Brain, null,
+                    Claims(r.Name), false, Math.Round(Math.Max(0, (now - r.At).TotalSeconds), 1), r.Kind, r.Owner, r.Online));
         return list;
     }
 

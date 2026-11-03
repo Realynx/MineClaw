@@ -7,8 +7,9 @@ using MineClaw.Scripting;
 namespace MineClaw.App.Supervisor;
 
 /// <summary>A body that runs a script right now (the Live Hive tiles' "script" badge).</summary>
+/// <param name="Owner">The owning hive's login for a hive's subhive body (null otherwise).</param>
 public sealed record LiveScriptRow(string Body, string Short, string Script, string Status, int Line = 0, bool Paused = false, int? Version = null,
-    string? Role = null);
+    string? Role = null, string? Owner = null);
 
 /// <summary>What the script routes read: the saved library, one version, the live debugger snapshot of a body, who runs what.</summary>
 public interface IScriptSupervisorData

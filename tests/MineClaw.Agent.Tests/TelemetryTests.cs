@@ -224,5 +224,30 @@ public class TelemetryTests(ITestOutputHelper output)
         Assert.Equal(".#.", back.Viewport!.Top[1]);
         Assert.Equal("kiwi", back.Viewport.Markers[0].Name);
         Assert.Equal(1.5m, back.Usage!.Today[0].Usd);
+        Assert.Null(back.Bodies);
+        Assert.DoesNotContain("\"bodies\"", json); // additive: absent unless a hive hosts bodies
+    }
+
+    [Fact]
+    public void BotSnapshot_carries_a_hives_subhive_bodies()
+    {
+        var snap = new BotSnapshot
+        {
+            Name = "maid_chan_109", Status = BotStatus.Online,
+            Bodies =
+            [
+                new BodyBrief { Name = "maid_chan_102", Dimension = 0, X = 10.5, Y = 64, Z = -3.25, Hp = 17, Food = 12, Task = "chop", Playing = true,
+                    At = DateTimeOffset.UnixEpoch, Script = new BodyScriptBrief("chop_crew", "running", 14, false, 3) },
+                new BodyBrief { Name = "maid_chan_114", Playing = false },
+            ],
+        };
+        var json = snap.ToJson();
+        Assert.Contains("\"bodies\":[{\"name\":\"maid_chan_102\",\"dimension\":0,\"x\":10.5", json);
+        Assert.Contains("\"script\":{\"name\":\"chop_crew\",\"status\":\"running\",\"line\":14,\"paused\":false,\"version\":3}", json);
+        var back = BotSnapshot.FromJson(json)!;
+        Assert.Equal(2, back.Bodies!.Count);
+        Assert.Equal(snap.Bodies[0], back.Bodies[0]);
+        Assert.False(back.Bodies[1].Playing);
+        Assert.Null(back.Bodies[1].Script);
     }
 }

@@ -360,16 +360,20 @@ public static class AppHost
         if (mainHive?.Supervisor is { } sup)
             sup.Notice += e => feed.Add("hive", e.Format(), e.Priority >= Agent.Events.EventPriority.Normal ? "warn" : "info");
         Supervisor.BlockDeltaLog.Process = new Supervisor.BlockDeltaLog(); // /api/world/blocks: every attached world of this process
+        // Every body this process controls (main, hives, their subhive bodies, nodes still spawning) for every list below.
+        var allBodies = Supervisor.HiveBodyList.For(hub, bot, main, () => mainHive?.Supervisor, () => mainHive?.Hierarchy?.Tree);
         var data = new Supervisor.LiveSupervisorData(hub, () => client.World, main, sources, () => mainHive?.Supervisor, feed, o, log)
         {
             Blueprints = () => bot.Blueprints?.Service, // /view/blueprint/{id}, /api/blueprints: designs + preview + bill
+            Bodies = allBodies,
         };
+        var scriptData = new Supervisor.LiveScriptData(bot, main, () => mainHive?.Supervisor, log) { Bodies = allBodies };
         var server = new Supervisor.SupervisorServer(o, data, log)
         {
-            World = Supervisor.LiveSupervisorWorld.Routes(hub, bot, () => client.World, main, o, log), // Live Hive: /api/world/*
+            World = Supervisor.LiveSupervisorWorld.Routes(hub, bot, () => client.World, main, o, log, allBodies), // Live Hive: /api/world/*
             Admin = Supervisor.SupervisorAdminService.Create(o, bot.Runtime, main, log), // /api/admin/*: only with AllowAdminWrites + Token
             // /api/scripts*, /api/bodies/{name}/script: the saved library and the live script debugger (read-only, token or 403)
-            Scripts = new Supervisor.SupervisorScriptRoutes(new Supervisor.LiveScriptData(bot, main, () => mainHive?.Supervisor, log), o.Token),
+            Scripts = new Supervisor.SupervisorScriptRoutes(scriptData, o.Token),
         };
         // /api/bodies/{name}/vision*: the sheets each body's models got (clones over IPC) and on-demand renders (token or 403)
         server.HiveTree = () => mainHive?.Hierarchy?.Snapshot(); // the Explorer's Live Hive tree (owner → children, kind, brain)
@@ -384,8 +388,7 @@ public static class AppHost
             var viewerFeed = new Supervisor.ViewerFeed();
             var memory = new Supervisor.ViewerMemoryActivity();
             Supervisor.ViewerTaps.Enable(viewerFeed, memory);
-            var viewer = new Supervisor.LiveViewerData(bot, main, sources, () => mainHive?.Supervisor, controller,
-                new Supervisor.LiveScriptData(bot, main, () => mainHive?.Supervisor, log), log);
+            var viewer = new Supervisor.LiveViewerData(bot, main, sources, () => mainHive?.Supervisor, controller, scriptData, log) { Bodies = allBodies };
             server.Viewer = new Supervisor.SupervisorViewerRoutes(o, viewer, viewerFeed, memory);
         }
         try

@@ -289,7 +289,9 @@ public static class CloneMode
         public string Name => game.Username;
         public bool IsPlaying => game.IsPlaying;
         public IInventoryPort Inventory => inventory;
-        public BotSnapshot Snapshot(bool full) => source.Snapshot(full);
+        // A hive's subhive bodies ride along (main's supervisor lists every body: the web viewer's hive grid).
+        public BotSnapshot Snapshot(bool full) =>
+            subhives?.Registry is { } reg && MineClaw.App.Supervisor.BodyBriefs.Of(reg.All) is { } bodies ? source.Snapshot(full) with { Bodies = bodies } : source.Snapshot(full);
 
         public event Action<PromptUsageRecord>? UsageRecorded
         {

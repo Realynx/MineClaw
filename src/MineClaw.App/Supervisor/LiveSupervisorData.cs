@@ -47,11 +47,18 @@ public sealed class LiveSupervisorData : ISupervisorData
         _camera = new CameraRenderer(world, main, () => hub.WorldStore, hub.Atlas, _time, o.CameraDistance, o.CameraMaxWidth, o.CameraMaxHeight);
     }
 
+    /// <summary>Every body this process controls (main, hives, their subhive bodies, spawning nodes); null = the hub's hive bots
+    /// only (main and the hive clones), as before.</summary>
+    public HiveBodyList? Bodies { get; init; }
+
     private HiveBotState? Find(string bot)
     {
         var bots = _hub.HiveBots();
         return bots.FirstOrDefault(b => b.Name.Equals(bot, StringComparison.OrdinalIgnoreCase) || b.Short.Equals(bot, StringComparison.OrdinalIgnoreCase))
-            ?? (bot.Equals("main", StringComparison.OrdinalIgnoreCase) ? bots.FirstOrDefault(b => b.IsMain) : null);
+            ?? (bot.Equals("main", StringComparison.OrdinalIgnoreCase) ? bots.FirstOrDefault(b => b.IsMain) : null)
+            // a hive's subhive body: its last snapshot position (no eye pose over IPC: it isn't a slot of main's)
+            ?? (Bodies?.Find(bot) is { IsMain: false, HasPos: true } r
+                ? new HiveBotState(r.Name, r.Dim, r.X, r.Y, r.Z, r.Job, r.Hp, r.Food, r.At, false, r.Brain) : null);
     }
 
     public IReadOnlyList<BotTile> Bots()
@@ -59,6 +66,11 @@ public sealed class LiveSupervisorData : ISupervisorData
         var now = _time.GetUtcNow();
         IReadOnlyList<HiveLease> leases = [];
         try { leases = _hub.Hive?.Leases() ?? []; } catch (Exception ex) { _log?.LogDebug(ex, "supervisor: leases unavailable"); }
+        IReadOnlyList<string> Claims(string name) =>
+            leases.Where(l => l.Owner.Equals(name, StringComparison.OrdinalIgnoreCase)).Select(l => HiveVision.Lease(l.Key).Text).ToList();
+        if (Bodies is { } all)
+            return all.Rows().Select(r => new BotTile(r.Name, r.Short, r.IsMain, r.Dim, r.X, r.Y, r.Z, r.Hp, r.Food, r.Job, r.Brain,
+                Math.Round(Math.Max(0, (now - r.At).TotalSeconds), 1), Claims(r.Name), r.Kind, r.Owner, r.Script, r.Online, r.State)).ToList();
         return _hub.HiveBots().Select(b => new BotTile(b.Name, b.Short, b.IsMain, b.Dim, Math.Round(b.X, 2), Math.Round(b.Y, 2), Math.Round(b.Z, 2), b.Hp, b.Food,
             b.Job, b.Brain, Math.Round(Math.Max(0, (now - b.At).TotalSeconds), 1),
             leases.Where(l => l.Owner.Equals(b.Name, StringComparison.OrdinalIgnoreCase)).Select(l => HiveVision.Lease(l.Key).Text).ToList())).ToList();
@@ -181,15 +193,31 @@ public sealed class LiveSupervisorData : ISupervisorData
     public object Status(string? selected)
     {
         var bots = new List<object>();
-        foreach (var s in _sources)
+        IReadOnlyList<BodyRow> rows = [];
+        try { rows = Bodies?.Rows() ?? []; } catch (Exception ex) { _log?.LogDebug(ex, "supervisor: body list unavailable"); }
+        var sources = Bodies?.Sources(_sources) ?? _sources;
+        var byName = new Dictionary<string, IBotTelemetrySource>(StringComparer.OrdinalIgnoreCase);
+        foreach (var s in sources) byName.TryAdd(s.Name, s);
+        bool Selected(string name) => selected != null && (name.Equals(selected, StringComparison.OrdinalIgnoreCase)
+            || HiveVision.ShortName(name).Equals(selected, StringComparison.OrdinalIgnoreCase)
+            || (selected.Equals("main", StringComparison.OrdinalIgnoreCase) && name.Equals(_main, StringComparison.OrdinalIgnoreCase)));
+        object FromSource(IBotTelemetrySource s, BodyRow? row)
         {
-            bool full = selected != null && (s.Name.Equals(selected, StringComparison.OrdinalIgnoreCase)
-                || HiveVision.ShortName(s.Name).Equals(selected, StringComparison.OrdinalIgnoreCase)
-                || (selected.Equals("main", StringComparison.OrdinalIgnoreCase) && s.Name.Equals(_main, StringComparison.OrdinalIgnoreCase)));
+            bool full = Selected(s.Name);
             BotSnapshot snap;
             try { snap = s.Snapshot(full); } catch (Exception) { snap = BotSnapshot.Offline(s.Name); }
-            bots.Add(BotStatusView(snap, full));
+            return BotStatusView(snap, full, row);
         }
+        // every body in the body list's order (main first), from its telemetry source when it has one (main, hive clones)
+        var done = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var r in rows)
+        {
+            var name = r.IsMain ? _main : r.Name;
+            if (!done.Add(name)) continue;
+            bots.Add(byName.TryGetValue(name, out var s) ? FromSource(s, r) : RowStatusView(r));
+        }
+        foreach (var s in sources) // configured clones that aren't in game (the fixed roster)
+            if (done.Add(s.Name)) bots.Add(FromSource(s, null));
         object? hive = null;
         if (_hive() is { } sup)
         {
@@ -219,8 +247,32 @@ public sealed class LiveSupervisorData : ISupervisorData
         };
     }
 
+    /// <summary>A body with no telemetry source of its own (a hive's subhive body, a node still spawning): what the body list knows.</summary>
+    public static object RowStatusView(BodyRow r) => new
+    {
+        name = r.Name,
+        status = r.Online ? "online" : r.State == "spawning" ? "connecting" : "offline",
+        at = r.At,
+        pos = r.HasPos ? new BotPos(r.X, r.Y, r.Z).ToString() : null,
+        dim = r.Dim,
+        hp = r.Hp,
+        food = r.Food,
+        task = r.Job,
+        brain = r.Brain,
+        budget_mode = "Normal",
+        chat = Array.Empty<string>(),
+        @short = r.Short,
+        kind = r.Kind,
+        owner = r.Owner,
+        script = r.Script,
+        state = r.State,
+    };
+
     /// <summary>The TUI's per-bot data minus the heavy viewport/voxel volumes.</summary>
-    public static object BotStatusView(BotSnapshot s, bool full) => new
+    public static object BotStatusView(BotSnapshot s, bool full) => BotStatusView(s, full, null);
+
+    /// <summary><see cref="BotStatusView(BotSnapshot, bool)"/> plus the body list's short name, kind, owner and script.</summary>
+    public static object BotStatusView(BotSnapshot s, bool full, BodyRow? row) => new
     {
         name = s.Name,
         status = s.Status.ToString().ToLowerInvariant(),
@@ -242,5 +294,10 @@ public sealed class LiveSupervisorData : ISupervisorData
         } : null,
         thought = full ? s.Thought : null,
         chat = s.Chat.TakeLast(full ? 60 : 12).ToList(),
+        @short = row?.Short ?? HiveVision.ShortName(s.Name),
+        kind = row?.Kind,
+        owner = row?.Owner,
+        script = row?.Script,
+        state = row?.State,
     };
 }

@@ -3,9 +3,14 @@ using System.Text.Json.Serialization;
 
 namespace MineClaw.App.Supervisor;
 
-/// <summary>One live tile: a hive bot (main or an online clone) with its job, vitals and claims.</summary>
+/// <summary>One live tile: a body (main, a hive clone, a subhive body) with its job, vitals and claims.</summary>
+/// <param name="Kind">"main" | "hive" | "subhive" | "script" (null = an older list that didn't say).</param>
+/// <param name="Owner">The owner's login (null for main; main's login for its direct children; a hive's login for its bodies).</param>
+/// <param name="Online">In game now; false = spawning, logging in or gone (the position may be unknown, then 0,0,0).</param>
+/// <param name="State">The ownership tree's state ("spawning" | "running" | "releasing"), null when the tree doesn't know it.</param>
 public sealed record BotTile(string Name, string Short, bool Main, int Dim, double X, double Y, double Z, int Hp, int Food, string? Job,
-    string? Brain, double AgeSeconds, IReadOnlyList<string> Claims);
+    string? Brain, double AgeSeconds, IReadOnlyList<string> Claims, string? Kind = null, string? Owner = null,
+    MineClaw.Agent.Telemetry.BodyScriptBrief? Script = null, bool Online = true, string? State = null);
 
 /// <summary>A rendered view: the PNG bytes as the brain/perception would get them, plus the text that rides with them.</summary>
 public sealed record ViewImage(byte[] Png, int Width, int Height, int Tokens, string Legend, IReadOnlyList<string> Facts, string? Seen = null,

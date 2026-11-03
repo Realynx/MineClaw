@@ -86,6 +86,9 @@ public sealed record BotSnapshot
     public long? VoxelsSeq { get; init; }
     /// <summary>Recent chat lines (oldest first, capped).</summary>
     public IReadOnlyList<string> Chat { get; init; } = [];
+    /// <summary>The subhive bodies this process hosts (a hive clone's own bodies), so main's supervisor lists every body. Additive
+    /// (null = none or an older clone).</summary>
+    public IReadOnlyList<BodyBrief>? Bodies { get; init; }
 
     public static BotSnapshot Offline(string name) => new() { Name = name, Status = BotStatus.Offline, At = DateTimeOffset.UtcNow };
 
@@ -97,6 +100,29 @@ public sealed record BotSnapshot
 
     public string ToJson() => JsonSerializer.Serialize(this, Json);
     public static BotSnapshot? FromJson(string json) => JsonSerializer.Deserialize<BotSnapshot>(json, Json);
+}
+
+/// <summary>The script a body runs right now: name, status ("running", "paused", ...), the current line, version.</summary>
+public sealed record BodyScriptBrief(string Name, string Status, int Line, bool Paused, int? Version);
+
+/// <summary>
+/// One subhive body in a <see cref="BotSnapshot.Bodies"/> list: where it is, its vitals, job and script. Cheap: no thought, no
+/// viewport (the body has no brain of its own; its hive's brain drives it).
+/// </summary>
+public sealed record BodyBrief
+{
+    public string Name { get; init; } = "";
+    public int Dimension { get; init; }
+    public double X { get; init; }
+    public double Y { get; init; }
+    public double Z { get; init; }
+    public int Hp { get; init; }
+    public int Food { get; init; }
+    public string? Task { get; init; }
+    /// <summary>In game now (false = still logging in, or gone).</summary>
+    public bool Playing { get; init; }
+    public DateTimeOffset At { get; init; }
+    public BodyScriptBrief? Script { get; init; }
 }
 
 /// <summary>

@@ -40,6 +40,9 @@ public sealed class LiveScriptData : IScriptSupervisorData
         _log = log;
     }
 
+    /// <summary>Every body this process controls: a hive's subhive bodies' scripts (from its snapshot) join <see cref="Running"/>.</summary>
+    public HiveBodyList? Bodies { get; init; }
+
     private AgentRuntime Rt => _bot.Runtime;
     private ScriptBridge? Bridge => ScriptTools.Of(Rt);
 
@@ -137,6 +140,9 @@ public sealed class LiveScriptData : IScriptSupervisorData
             catch (Exception ex) when (ex is not OperationCanceledException) { _log?.LogDebug(ex, "supervisor scripts: clone {Clone} snapshot failed", clone); }
             return new BodyScriptReply(Short(clone), snap is { Live: true }, snap, snap == null ? "no script on this clone (or it didn't answer)" : null);
         }
+        if (Bodies?.Find(body) is { IsMain: false } r) // a hive's own body: its hive streams the script's name and line, not the debugger
+            return new BodyScriptReply(r.Short, r.Script is { Status: "running" or "paused" or "starting" }, null,
+                r.Script == null ? "no script on this body" : $"{r.Short} runs {r.Script.Name} (line {r.Script.Line}); its live debugger stays in its hive ({(r.Owner == null ? "main" : Short(r.Owner))})");
         return null;
     }
 
@@ -169,6 +175,18 @@ public sealed class LiveScriptData : IScriptSupervisorData
                 list.Add(new LiveScriptRow(slot.Name, Short(slot.Name), bm.Groups["name"].Value, bm.Groups["paused"].Success ? "paused" : "running",
                     Paused: bm.Groups["paused"].Success));
             }
+        if (Bodies is { } all)
+        {
+            IReadOnlyList<BodyRow> rows = [];
+            try { rows = all.Rows(); } catch (Exception ex) { _log?.LogDebug(ex, "supervisor scripts: body list unavailable"); }
+            var byName = rows.GroupBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < list.Count; i++)
+                if (byName.TryGetValue(list[i].Body, out var r) && !r.IsMain) list[i] = list[i] with { Owner = r.Owner };
+            // a hive's subhive bodies: the script each one runs, from the snapshot its hive streams (name, status, line)
+            foreach (var r in rows)
+                if (!r.IsMain && r.Online && r.Script is { } s && !list.Any(x => x.Body.Equals(r.Name, StringComparison.OrdinalIgnoreCase)))
+                    list.Add(new LiveScriptRow(r.Name, r.Short, s.Name, s.Status, s.Line, s.Paused, s.Version, Owner: r.Owner));
+        }
         return list;
     }
 

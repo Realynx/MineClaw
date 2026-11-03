@@ -46,6 +46,9 @@ public sealed class LiveViewerData : IViewerData
         _log = log;
     }
 
+    /// <summary>Every body this process controls (a hive's subhive bodies, dynamic hive accounts' sources); null = the fixed sources only.</summary>
+    public HiveBodyList? Bodies { get; init; }
+
     private AgentRuntime Rt => _bot.Runtime;
 
     public IReadOnlyCollection<string> TrustedPlayers => Rt.Options.Self.TrustedPlayers;
@@ -57,7 +60,8 @@ public sealed class LiveViewerData : IViewerData
         if (n.Equals("main", StringComparison.OrdinalIgnoreCase) || n.Equals(_main, StringComparison.OrdinalIgnoreCase)) return _main;
         if (_bot.Bodies?.Find(n) is { } b) return b.IsMain ? _main : b.Name;
         if (_hive()?.Resolve(n) is { } clone) return clone;
-        return _sources.FirstOrDefault(s => s.Name.Equals(n, StringComparison.OrdinalIgnoreCase))?.Name;
+        return _sources.FirstOrDefault(s => s.Name.Equals(n, StringComparison.OrdinalIgnoreCase))?.Name
+            ?? Bodies?.Find(n)?.Name; // a hive's own subhive body (its hive's router takes the line)
     }
 
     public async Task<bool> SendAsync(RemoteChat chat, CancellationToken ct)
@@ -122,10 +126,12 @@ public sealed class LiveViewerData : IViewerData
     {
         try
         {
-            var source = _sources.FirstOrDefault(s => s.Name.Equals(bot, StringComparison.OrdinalIgnoreCase));
+            var source = Bodies?.SourceFor(bot, _sources) ?? _sources.FirstOrDefault(s => s.Name.Equals(bot, StringComparison.OrdinalIgnoreCase));
             var snap = source?.Snapshot(full: true);
             var info = await _controller.ControllerAsync(IsMain(bot) ? "main" : bot, ct).ConfigureAwait(false);
-            if (snap == null && info == null) return null;
+            // A hive's subhive body has no telemetry source and isn't a slot of main's: what its hive streams about it.
+            var br = Bodies?.Find(bot);
+            if (snap == null && info == null && br == null) return null;
 
             ViewerInFlight? inFlight = null;
             if (info?.Brain is { } brain)
@@ -147,9 +153,14 @@ public sealed class LiveViewerData : IViewerData
             ViewerBody? body = snap is { Status: not BotStatus.Offline }
                 ? new ViewerBody(snap.Hp, snap.Food, snap.Pos is { } p ? string.Create(CultureInfo.InvariantCulture, $"{Math.Floor(p.X):0},{Math.Floor(p.Y):0},{Math.Floor(p.Z):0}") : null,
                     snap.Dimension, snap.Header is { } h && HeldIn.Match(h) is { Success: true } hm ? hm.Groups["held"].Value : null)
-                : null;
-            return new ViewerNow(bot, DateTimeOffset.UtcNow, snap?.Brain, inFlight, thought, tool != null ? new ViewerTool(tool.Name, tool.Args, tool.At) : null,
-                snap?.Task, row != null ? new ViewerScript(row.Script, row.Version, row.Status, row.Line, row.Paused) : null, body);
+                : br is { Online: true, HasPos: true }
+                    ? new ViewerBody(br.Hp, br.Food, string.Create(CultureInfo.InvariantCulture, $"{Math.Floor(br.X):0},{Math.Floor(br.Y):0},{Math.Floor(br.Z):0}"), br.Dim, null)
+                    : null;
+            var script = row != null ? new ViewerScript(row.Script, row.Version, row.Status, row.Line, row.Paused)
+                : br?.Script is { } bs ? new ViewerScript(bs.Name, bs.Version, bs.Status, bs.Line, bs.Paused) : null;
+            bool hiveBody = snap == null && br is { IsMain: false }; // no stream of its own: its brain is its owner's
+            return new ViewerNow(bot, DateTimeOffset.UtcNow, snap?.Brain ?? br?.Brain, hiveBody ? null : inFlight, thought,
+                tool != null ? new ViewerTool(tool.Name, tool.Args, tool.At) : null, snap?.Task ?? br?.Job, script, body, br?.Kind, br?.Owner);
         }
         catch (Exception ex)
         {
