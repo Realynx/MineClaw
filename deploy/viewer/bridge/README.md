@@ -7,24 +7,28 @@ admin routes.
 
 ## Install
 
+Scripted: `pwsh deploy/deploy-web.ps1 -Install` once (runs `deploy/viewer/install-ct114.sh` in the CT), then
+`pwsh deploy/deploy-web.ps1` for every release. Runbook: `docs/web/deploy.md`. The manual equivalent:
+
 ```sh
 # 1. user: its own account, in the bot's group (reads /etc/mineclaw/appsettings.json and the db)
 useradd --system --no-create-home --shell /usr/sbin/nologin --gid mineclaw mineclaw-bridge
 
-# 2. binaries (on Fox's PC: dotnet publish tools/ViewerBridge -c Release -r linux-x64 --self-contained -o out/bridge)
+# 2. binaries (on Fox's PC: dotnet publish tools/ViewerBridge -c Release -r linux-x64 --self-contained -p:PublishSingleFile=true
+#    -o out/bridge, plus shards/defaults copied to out/bridge/shards/defaults: the unit points Bridge:PacksDir there)
 install -d -o root -g root -m 0755 /opt/mineclaw-bridge/releases/<id>
 cp -r out/bridge/* /opt/mineclaw-bridge/releases/<id>/
 ln -sfn /opt/mineclaw-bridge/releases/<id> /opt/mineclaw-bridge/current
 
-# 3. the HMAC key (the same value Nest has as Bridge:Key; ≥ 32 chars). Never commit or print it.
-install -d -o root -g mineclaw -m 0750 /etc/mineclaw-bridge
-umask 027; openssl rand -hex 32 | sed 's/.*/{"Bridge":{"Key":"&"}}/' > /etc/mineclaw-bridge/bridge.json
-chown root:mineclaw /etc/mineclaw-bridge/bridge.json; chmod 0640 /etc/mineclaw-bridge/bridge.json
-#    (or MINECLAW_BRIDGE_KEY=... in /etc/mineclaw-bridge/bridge.env, 0600 root: systemd reads it before dropping privileges)
+# 3. the HMAC key (the same value Nest has in /etc/mineclaw-web/bridge.key; ≥ 32 chars). Never commit or print it.
+#    Root-only on disk; the unit hands it to the service as a systemd credential (LoadCredential + MINECLAW_Bridge__KeyFile).
+install -d -o root -g root -m 0700 /etc/mineclaw-bridge
+umask 077; printf '{"Bridge":{"Key":"%s"}}\n' "$(cat /etc/mineclaw-web/bridge.key)" > /etc/mineclaw-bridge/bridge.json
 
-# 4. the bot must have the viewer routes and a token: in /etc/mineclaw/appsettings.json
-#      "Supervisor": { "Enabled": true, "Bind": "127.0.0.1" (or the CT IP), "Token": "<secret>", "AllowAdminWrites": true,
+# 4. the bot must have the viewer routes and a token (deploy-web.ps1 -BotConfig [-Apply] does this, dry run first):
+#      "Supervisor": { "Enabled": true, "Bind": "*" or "127.0.0.1", "Token": "<secret>", "AllowAdminWrites": true,
 #                      "Viewer": { "Enabled": true, "AllowCommands": false } }
+#    With Bind = the CT IP the Supervisor doesn't answer on loopback: then set MINECLAW_Bridge__SupervisorUrl in bridge.env.
 
 # 5. unit
 cp deploy/viewer/bridge/mineclaw-bridge.service /etc/systemd/system/
@@ -33,7 +37,7 @@ journalctl -u mineclaw-bridge -f
 ```
 
 The start line names where every setting came from (never a value): `config: bot config /etc/mineclaw/appsettings.json, key file
-/etc/mineclaw-bridge/bridge.json; key: key file; supervisor token: config; embeddings: configured (deployment …)`. A missing or
+/run/credentials/mineclaw-bridge.service/bridge.json; key: key file; supervisor token: config; embeddings: configured (deployment …)`. A missing or
 short key exits with code 2 (the unit does not restart it).
 
 ## Configuration keys

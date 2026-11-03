@@ -17,12 +17,18 @@ LogsDirectory=mineclaw-bridge
 LogsDirectoryMode=0750
 # The bot's env file carries the embeddings key search needs (MINECLAW_Agent__Embeddings__ApiKey); systemd reads it as root.
 EnvironmentFile=-/etc/mineclaw/mineclaw.env
-# The bridge's own secret (MINECLAW_BRIDGE_KEY=...) if not in /etc/mineclaw-bridge/bridge.json.
+# The HMAC key shared with Nest: /etc/mineclaw-bridge/bridge.json ({"Bridge":{"Key":"<hex>"}}) is 0600 root on disk and handed
+# to the service as a systemd credential (deploy/viewer/install-ct114.sh writes it; never in env or argv, never printed).
+LoadCredential=bridge.json:/etc/mineclaw-bridge/bridge.json
+Environment=MINECLAW_Bridge__KeyFile=%d/bridge.json
+# Optional local overrides (e.g. MINECLAW_Bridge__SupervisorUrl=http://10.1.2.73:8765 when the bot's Supervisor:Bind is the CT IP).
 EnvironmentFile=-/etc/mineclaw-bridge/bridge.env
 Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
 Environment=DOTNET_ENVIRONMENT=Production
 Environment=MINECLAW_Bridge__DataDir=/var/lib/mineclaw
-Environment=MINECLAW_Bridge__PacksDir=/opt/mineclaw/current/shards/defaults
+# The default knowledge packs ship with the bridge release (deploy/deploy-web.ps1 copies shards/defaults); the bot's release
+# does not carry them.
+Environment=MINECLAW_Bridge__PacksDir=/opt/mineclaw-bridge/current/shards/defaults
 ExecStart=/opt/mineclaw-bridge/current/MineClaw.ViewerBridge
 SyslogIdentifier=mineclaw-bridge
 StandardOutput=journal
