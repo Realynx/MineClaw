@@ -1,0 +1,34 @@
+{
+  "Web": {
+    "Port": 8080,
+    "Bind": "0.0.0.0",
+    "NextUrl": "http://127.0.0.1:3000",
+    "ProxyNext": true,
+    "AllowedOrigins": ["http://10.1.2.73:8080", "http://claudechan:8080"],
+    "TrustProxy": false,
+    "TrustedProxies": [],
+    "CloudflareAccess": null,
+    "UsersFile": "/etc/mineclaw-web/users.json",
+    "DataDir": "/var/lib/mineclaw-web",
+    "SessionIdleHours": 12,
+    "SessionAbsoluteDays": 7,
+    "CookieSecure": "auto",
+    "LogLevel": "info",
+    "ValidateResponses": "off",
+    "BodyLimitBytes": 1048576,
+    "ChatRate": { "Burst": 5, "PerMinute": 20 },
+    "Login": {
+      "UserThreshold": 5,
+      "IpThreshold": 20,
+      "LockoutBaseSeconds": 30,
+      "LockoutMaxSeconds": 3600,
+      "IpAttemptsPerMinute": 30
+    },
+    "Csp": { "Scripts": "nonce", "ReportOnly": false },
+    "MaxSseClients": 200
+  },
+  "Bridge": {
+    "Url": "http://127.0.0.1:8766",
+    "TimeoutMs": 15000
+  }
+}

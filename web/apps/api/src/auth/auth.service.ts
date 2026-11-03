@@ -1,0 +1,303 @@
+/**
+ * Nest-native auth (docs/web/api.md §2): CSRF pre-sessions, password + TOTP login with lockout, logout, `me`, and TOTP
+ * enrolment. Errors are generic: a wrong password, an unknown user, a missing or wrong TOTP code and a disabled account all
+ * answer the same 401 "invalid credentials", so the login form should always offer the code field.
+ */
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { StatementSync } from 'node:sqlite';
+import type {
+  CsrfResponse,
+  LoginRequest,
+  LoginResponse,
+  Me,
+  TotpEnrollRequest,
+  TotpEnrollResponse,
+  TotpVerifyRequest,
+  TotpVerifyResponse,
+} from '@mineclaw/contracts';
+import type { AuditService } from '../audit/audit.service.js';
+import type { Clock } from '../common/clock.js';
+import { Errors } from '../common/errors.js';
+import { header, type RequestContext } from '../common/http.js';
+import type { Logger } from '../common/logger.js';
+import type { WebDb } from '../db/web-db.js';
+import type { PasswordVerifier } from './passwords.js';
+import { LoginLimiter, WindowLimiter } from './rate-limit.js';
+import type { Session, SessionService } from './sessions.js';
+import { newTotpSecret, otpauthUrl, verifyTotp } from './totp.js';
+import { credFingerprint, normalizeUsername, type UserRecord, type UsersStore } from './users-store.js';
+
+export interface AuthState {
+  /** The request's session (anonymous pre-session or signed in). */
+  session?: Session;
+  /** Set only for a signed-in session whose user still exists, is enabled and has the same password. */
+  user?: UserRecord;
+}
+
+const TOTP_PENDING_MS = 10 * 60_000;
+
+export class AuthService {
+  private readonly attempts: WindowLimiter;
+  private readonly preSessions: WindowLimiter;
+  private readonly q: Record<'pendingGet' | 'pendingPut' | 'pendingDel' | 'usedGet' | 'usedPut', StatementSync>;
+
+  constructor(
+    private readonly users: UsersStore,
+    readonly sessions: SessionService,
+    private readonly limiter: LoginLimiter,
+    private readonly passwords: PasswordVerifier,
+    private readonly audit: AuditService,
+    db: WebDb,
+    private readonly clock: Clock,
+    private readonly log: Logger,
+    ipAttemptsPerMinute: number,
+  ) {
+    this.attempts = new WindowLimiter(clock, ipAttemptsPerMinute, 60_000);
+    this.preSessions = new WindowLimiter(clock, 60, 60_000);
+    this.q = {
+      pendingGet: db.db.prepare('select secret, expires_at from totp_pending where username = ?'),
+      pendingPut: db.db.prepare(
+        'insert into totp_pending (username, secret, expires_at) values (?, ?, ?) on conflict(username) do update set secret = excluded.secret, expires_at = excluded.expires_at',
+      ),
+      pendingDel: db.db.prepare('delete from totp_pending where username = ?'),
+      usedGet: db.db.prepare('select step from totp_used where username = ?'),
+      usedPut: db.db.prepare(
+        'insert into totp_used (username, step) values (?, ?) on conflict(username) do update set step = excluded.step',
+      ),
+    };
+  }
+
+  /** Resolves the session and user of a request; stale sessions (user removed, disabled, password reset) are ended. */
+  resolve(req: IncomingMessage, ctx: RequestContext): AuthState {
+    const session = this.sessions.read(req, ctx.https);
+    if (!session) return {};
+    if (session.username === null) return { session };
+    const user = this.users.get(session.username);
+    if (!user || user.disabled || session.cred !== credFingerprint(user)) {
+      this.sessions.destroy(session);
+      return {};
+    }
+    this.sessions.touch(session);
+    ctx.username = user.username;
+    return { session, user };
+  }
+
+  me(state: Required<AuthState>): Me {
+    const s = state.session;
+    return {
+      username: state.user.username,
+      player: state.user.player ?? null,
+      roles: [...state.user.roles],
+      totpEnrolled: Boolean(state.user.totp),
+      sessionCreatedAt: new Date(s.createdAt).toISOString(),
+      idleExpiresAt: new Date(Math.min(s.lastSeenAt + s.idleMs, s.absoluteExpiresAt)).toISOString(),
+      absoluteExpiresAt: new Date(s.absoluteExpiresAt).toISOString(),
+    };
+  }
+
+  /** GET /api/auth/csrf: the token of the current session, creating an anonymous pre-session when there is none. */
+  csrf(res: ServerResponse, req: IncomingMessage, ctx: RequestContext, state: AuthState): CsrfResponse {
+    if (state.session) return { csrfToken: state.session.csrf };
+    const wait = this.preSessions.hit(ctx.ip);
+    if (wait > 0) throw Errors.rateLimited(wait);
+    const { id, session } = this.sessions.createAnonymous({ ip: ctx.ip, userAgent: header(req, 'user-agent') });
+    this.sessions.setCookie(res, id, session, ctx.https);
+    return { csrfToken: session.csrf };
+  }
+
+  async login(
+    res: ServerResponse,
+    req: IncomingMessage,
+    ctx: RequestContext,
+    state: AuthState,
+    body: LoginRequest,
+  ): Promise<LoginResponse> {
+    const username = normalizeUsername(body.username);
+    const ua = header(req, 'user-agent');
+    const base = { ip: ctx.ip, userAgent: ua, method: 'POST', route: 'auth.login', requestId: ctx.requestId };
+    const auditName = this.users.get(username) ? username : null;
+
+    const wait = this.attempts.hit(ctx.ip);
+    if (wait > 0) throw Errors.rateLimited(wait, 'too many login attempts');
+
+    const k = LoginLimiter.keys(ctx.ip, username);
+    const keys = [k.ip, k.user];
+    const lockedMs = this.limiter.lockedFor(keys);
+    if (lockedMs > 0) {
+      this.audit.record({
+        ...base,
+        kind: 'login_failed',
+        ok: false,
+        username: auditName,
+        status: 423,
+        summary: `locked out (${username})`,
+      });
+      throw Errors.locked(lockedMs);
+    }
+
+    const user = this.users.get(username);
+    let ok = await this.passwords.verify(user?.passwordHash, body.password);
+    if (ok && user?.disabled) ok = false;
+    let totpStepUsed: number | null = null;
+    if (ok && user?.totp) {
+      totpStepUsed = body.totp ? verifyTotp(user.totp.secret, body.totp, this.clock.now()) : null;
+      const last = (this.q.usedGet.get(user.username) as { step: number } | undefined)?.step ?? -1;
+      if (totpStepUsed === null || totpStepUsed <= last) ok = false;
+    }
+
+    if (!ok || !user) {
+      const { newlyLocked, lockMs } = this.limiter.fail(keys);
+      this.audit.record({
+        ...base,
+        kind: 'login_failed',
+        ok: false,
+        username: auditName,
+        status: 401,
+        summary: `failed login as "${username}"`,
+      });
+      if (newlyLocked.length > 0) {
+        this.audit.record({
+          ...base,
+          kind: 'lockout',
+          ok: false,
+          username: auditName,
+          status: 423,
+          summary: `lockout ${Math.round(lockMs / 1000)} s on ${newlyLocked.map((x) => x.split(':')[0]).join(' + ')} (${username})`,
+        });
+        this.log.warn({ ip: ctx.ip, lockMs }, 'login lockout');
+      }
+      throw Errors.invalidCredentials();
+    }
+
+    this.limiter.reset(keys);
+    if (totpStepUsed !== null) this.q.usedPut.run(user.username, totpStepUsed);
+    // Rotate: the pre-session (or an older session) is gone; a fresh id and CSRF token are issued.
+    this.sessions.destroy(state.session);
+    const { id, session } = this.sessions.createUser(user.username, credFingerprint(user), {
+      ip: ctx.ip,
+      userAgent: ua,
+    });
+    this.sessions.setCookie(res, id, session, ctx.https);
+    ctx.username = user.username;
+    this.audit.record({
+      ...base,
+      kind: 'login',
+      ok: true,
+      username: user.username,
+      player: user.player,
+      status: 200,
+      summary: 'signed in',
+    });
+    return { user: this.me({ session, user }), csrfToken: session.csrf };
+  }
+
+  logout(res: ServerResponse, req: IncomingMessage, ctx: RequestContext, state: Required<AuthState>): { ok: true } {
+    this.sessions.destroy(state.session);
+    this.sessions.clearCookie(res, ctx.https);
+    this.audit.record({
+      kind: 'logout',
+      ok: true,
+      ip: ctx.ip,
+      userAgent: header(req, 'user-agent'),
+      username: state.user.username,
+      player: state.user.player,
+      method: 'POST',
+      route: 'auth.logout',
+      status: 200,
+      summary: 'signed out',
+      requestId: ctx.requestId,
+    });
+    return { ok: true };
+  }
+
+  async totpEnroll(
+    req: IncomingMessage,
+    ctx: RequestContext,
+    state: Required<AuthState>,
+    body: TotpEnrollRequest,
+  ): Promise<TotpEnrollResponse> {
+    const user = state.user;
+    const k = LoginLimiter.keys(ctx.ip, user.username);
+    const keys = [k.ip, k.user];
+    const lockedMs = this.limiter.lockedFor(keys);
+    if (lockedMs > 0) throw Errors.locked(lockedMs);
+    const base = {
+      ip: ctx.ip,
+      userAgent: header(req, 'user-agent'),
+      username: user.username,
+      player: user.player,
+      method: 'POST',
+      route: 'auth.totpEnroll',
+      requestId: ctx.requestId,
+    };
+    if (!(await this.passwords.verify(user.passwordHash, body.password))) {
+      this.limiter.fail(keys);
+      this.audit.record({
+        ...base,
+        kind: 'totp_enroll',
+        ok: false,
+        status: 401,
+        summary: 'TOTP enrolment: wrong password',
+      });
+      throw Errors.invalidCredentials();
+    }
+    const secret = newTotpSecret();
+    const expiresAt = this.clock.now() + TOTP_PENDING_MS;
+    this.q.pendingPut.run(user.username, secret, expiresAt);
+    this.audit.record({ ...base, kind: 'totp_enroll', ok: true, status: 200, summary: 'TOTP enrolment started' });
+    return { otpauthUrl: otpauthUrl(secret, user.username), secret, expiresAt: new Date(expiresAt).toISOString() };
+  }
+
+  totpVerify(
+    req: IncomingMessage,
+    ctx: RequestContext,
+    state: Required<AuthState>,
+    body: TotpVerifyRequest,
+  ): TotpVerifyResponse {
+    const user = state.user;
+    const k = LoginLimiter.keys(ctx.ip, user.username);
+    const keys = [k.ip, k.user];
+    const lockedMs = this.limiter.lockedFor(keys);
+    if (lockedMs > 0) throw Errors.locked(lockedMs);
+    const base = {
+      ip: ctx.ip,
+      userAgent: header(req, 'user-agent'),
+      username: user.username,
+      player: user.player,
+      method: 'POST',
+      route: 'auth.totpVerify',
+      requestId: ctx.requestId,
+    };
+    const pending = this.q.pendingGet.get(user.username) as { secret: string; expires_at: number } | undefined;
+    const now = this.clock.now();
+    const step = pending && pending.expires_at > now ? verifyTotp(pending.secret, body.code, now) : null;
+    if (!pending || step === null) {
+      if (pending) this.limiter.fail(keys);
+      this.audit.record({
+        ...base,
+        kind: 'totp_verify',
+        ok: false,
+        status: 200,
+        summary: pending ? 'wrong TOTP code' : 'no pending TOTP enrolment',
+      });
+      return { ok: false, totpEnrolled: Boolean(user.totp) };
+    }
+    this.users.update(user.username, (u) => ({
+      ...u,
+      totp: { secret: pending.secret, enrolledAt: new Date(now).toISOString() },
+    }));
+    this.q.pendingDel.run(user.username);
+    this.q.usedPut.run(user.username, step);
+    this.limiter.reset([k.user]);
+    this.audit.record({ ...base, kind: 'totp_verify', ok: true, status: 200, summary: 'TOTP activated' });
+    return { ok: true, totpEnrolled: true };
+  }
+
+  /** For long-lived streams: is the session still signed in (not expired, logged out, user removed or password reset)? */
+  stillSignedIn(idHash: string): boolean {
+    const s = this.sessions.byHash(idHash);
+    if (!s?.username) return false;
+    const u = this.users.get(s.username);
+    return Boolean(u && !u.disabled && s.cred === credFingerprint(u));
+  }
+}
