@@ -35,6 +35,12 @@ public sealed class Blueprint
     public BlockPos? Origin { get; set; }
     public Dir Facing { get; set; } = Dir.South;
     public bool Light { get; set; }
+    /// <summary>
+    /// Layers dug into the ground (<c>ground N</c>, 0 = none): layer N is the first one above the site's surface, layers 0..N-1
+    /// are below it (a basement, a cellar, a foundation). A site places layer N on the ground block's y + 1, so the design's
+    /// '.' cells under that are dug out of the terrain and its blocks there replace it.
+    /// </summary>
+    public int Ground { get; set; }
     public Dictionary<char, PaletteEntry> Palette { get; } = new();
     /// <summary>Layer index → rows (north first), each W chars.</summary>
     public SortedDictionary<int, (List<string> Rows, int Line)> Layers { get; } = new();
@@ -59,6 +65,10 @@ public sealed class Blueprint
     public (int Wx, int Dz) Footprint => Quarters % 2 == 0 ? (W, D) : (D, W);
 
     public string SizeText => string.Create(CultureInfo.InvariantCulture, $"{Footprint.Wx}×{Footprint.Dz}×{H}");
+
+    /// <summary>The origin (min corner) that stands this design centred on <paramref name="ground"/> (the site's ground block):
+    /// layer <see cref="Ground"/> one above it, the dug layers below.</summary>
+    public BlockPos OriginOn(BlockPos ground) => new(ground.X - Footprint.Wx / 2, ground.Y + 1 - Ground, ground.Z - Footprint.Dz / 2);
 }
 
 /// <summary>A block of the normalized plan, in world coordinates, with its meta already rotated.</summary>

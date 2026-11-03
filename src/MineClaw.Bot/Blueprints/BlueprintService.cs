@@ -393,8 +393,7 @@ public sealed class BlueprintService
             Name = source.Name, Description = source.Description, Requester = by, Bot = source.Bot, Dsl = StripOrigin(source.Dsl),
             Status = DesignStatus.Accepted, Dim = Dimension(), Site = site.Ground,
         });
-        var (fx, fz) = bp.Footprint;
-        var (plan, issues) = BlueprintNormalizer.Normalize(bp, new BlockPos(site.Ground.X - fx / 2, site.Ground.Y + 1, site.Ground.Z - fz / 2), WorldHeight());
+        var (plan, issues) = BlueprintNormalizer.Normalize(bp, bp.OriginOn(site.Ground), WorldHeight());
         if (plan == null) return (null, "error: the saved design doesn't parse any more");
         var eval = DesignChecks.Evaluate(plan, Site(), issues);
         copy.Origin = plan.Origin;
@@ -679,12 +678,18 @@ public sealed class BlueprintService
 
     // ------------------------------------------------------------------ construction
 
+    /// <summary>
+    /// The ground a design without an origin stands on: its site, or, for one that has no site yet (a Design Studio design) and
+    /// digs deeper than the world's floor allows from there, a ground at y 63 (any height works: a copy's site decides).
+    /// </summary>
+    internal static BlockPos UnsitedGround(BlueprintRecord rec, Blueprint bp) =>
+        rec.Site.Y + 1 - bp.Ground < 1 ? rec.Site with { Y = 63 } : rec.Site;
+
     /// <summary>The plan of a saved design at its origin.</summary>
     public VoxelPlan? PlanOf(BlueprintRecord rec, out string? error)
     {
         var (bp, issues) = BlueprintParser.Parse(rec.Dsl);
-        var (fx, fz) = bp.Footprint;
-        var origin = rec.Origin ?? new BlockPos(rec.Site.X - fx / 2, rec.Site.Y + 1, rec.Site.Z - fz / 2);
+        var origin = rec.Origin ?? bp.OriginOn(UnsitedGround(rec, bp));
         bp.Origin ??= origin;
         var (plan, more) = BlueprintNormalizer.Normalize(bp, origin, WorldHeight());
         issues.AddRange(more);

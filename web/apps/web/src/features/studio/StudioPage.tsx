@@ -8,8 +8,15 @@
  *
  * Controls (mouse locked in the world): left breaks / acts, right places / acts, middle picks the block; 1–9 the hotbar, B the
  * palette, R turns the placement facing, T or Enter the chat, Ctrl+Z / Ctrl+Y undo / redo, V select, X box, L line, G brush,
- * F face fill, U extrude, O anchor, P build; with a selection: arrows / PgUp / PgDn move it (Shift ×5), [ ] rotate, Delete
- * erases, Ctrl+C / Ctrl+V / Ctrl+D copy, paste, duplicate, Ctrl+A select all, Ctrl+I invert.
+ * F face fill, U extrude, O anchor, P build, K underground; with a selection: arrows / PgUp / PgDn move it (Shift ×5), [ ]
+ * rotate, Delete erases, Ctrl+C / Ctrl+V / Ctrl+D copy, paste, duplicate, Ctrl+A select all, Ctrl+I invert.
+ *
+ * Underground (K): the plot's ground (canvas y -16..-1, grass at -1) becomes editable: breaking, box / line removal, the
+ * brush and Delete dig it out (the build digs those cells), and the view cuts away everything above a level (the slider) so
+ * the basement can be seen and built from above. Off, the grassland behaves as before (only blocks and dug cells are edited).
+ *
+ * Leaving with unsaved changes asks first (lib/navGuard: in-app links, back / forward, the command palette; the browser's
+ * prompt on reload or close).
  */
 import type { AimTarget, WorldViewerHandle } from '@mineclaw/world-viewer';
 import type { DesignerModel, DesignerSession, DesignRevision } from '@mineclaw/contracts';
@@ -31,6 +38,7 @@ import {
   Redo2,
   RotateCcw,
   RotateCw,
+  Shovel,
   Slash,
   Trash2,
   Undo2,
@@ -43,14 +51,15 @@ import { api, errorText } from '@/lib/api/client';
 import { useApi } from '@/lib/api/query';
 import { useAuth } from '@/lib/auth';
 import { cn, newRequestId } from '@/lib/utils';
+import { useNavigationGuard } from '@/lib/navGuard';
 import { isTyping } from '@/features/world/directives';
 import { Crosshair } from '@/features/world/InWorld';
 import { Hotbar, PaletteDrawer, type IconOf } from './BlockBar';
 import {
   boxOf,
   connected,
+  DEPTH,
   extend,
-  inside,
   invert,
   maskSelection,
   type Selection,
@@ -60,11 +69,13 @@ import {
   type Cell,
 } from './canvas';
 import { ChatPanel, type ChatPanelHandle } from './ChatPanel';
-import { dirOfMcYaw, type Dir, FACE_NORMAL, hasFacing, placeMeta, turn, type Version } from './facing';
+import { dirOfMcYaw, type Dir, hasFacing, placeMeta, turn, type Version } from './facing';
 import { defaultHotbar, type PaletteEntry } from './palette';
 import { Studio, type StudioApi, type StudioSnapshot } from './studio';
 import type * as ViewerMod from './studio-viewer';
 import {
+  aimHit,
+  type Hit,
   boxCells,
   brush,
   type BrushMode,
@@ -84,6 +95,8 @@ import {
   replaceIn,
   rotate,
   selectionShape,
+  toggleUnder,
+  underCut,
 } from './tools';
 
 type Mod = typeof ViewerMod;
@@ -136,8 +149,6 @@ const LAYERS = {
   aids: false,
 };
 
-const BASE_Y = 64;
-
 /** The API the studio uses, over the typed client. */
 const realApi: StudioApi = {
   message: (id, body) => api('designer.message', { params: { id }, body }),
@@ -145,21 +156,7 @@ const realApi: StudioApi = {
   save: (id, body) => api('designer.save', { params: { id }, body }),
 };
 
-interface Hit {
-  /** The block hit (canvas coordinates), null on the ground or outside the plot. */
-  hit: V3 | null;
-  /** The free cell in front of the hit face. */
-  place: V3 | null;
-  face: number;
-}
-
-function hitOf(t: AimTarget | null): Hit | null {
-  if (!t || t.kind !== 'block') return null;
-  const y = t.y - BASE_Y;
-  const n = FACE_NORMAL[t.face] ?? [0, 1, 0];
-  const place: V3 = [t.x + n[0], y + n[1], t.z + n[2]];
-  return { hit: inside(t.x, y, t.z) ? [t.x, y, t.z] : null, place: inside(...place) ? place : null, face: t.face };
-}
+const hitOf = aimHit;
 
 export function StudioPage() {
   const params = useSearchParams();
@@ -269,6 +266,8 @@ function StudioBody({
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [hud, setHud] = useState(true);
   const [grid, setGrid] = useState(true);
+  /** Underground mode: null = off, else the highest layer still shown (canvas y; everything above it is cut away). */
+  const [under, setUnder] = useState<number | null>(null);
   const [withSel, setWithSel] = useState(true);
   const [model, setModel] = useState(session.model || defaultModel || 'main');
   const [clip, setClip] = useState<Clip | null>(null);
@@ -329,6 +328,7 @@ function StudioBody({
     snap,
     aim,
     version,
+    under,
   });
   useEffect(() => {
     st.current = {
@@ -347,6 +347,7 @@ function StudioBody({
       snap,
       aim,
       version,
+      under,
     };
   });
   const [lookNow, setLookNow] = useState<Dir>('north');
@@ -396,6 +397,15 @@ function StudioBody({
   useEffect(() => overlay.setSelection(snap.selection), [overlay, snap.selection]);
   useEffect(() => overlay.setAnchor(snap.anchor), [overlay, snap.anchor]);
   useEffect(() => overlay.setGrid(grid), [overlay, grid]);
+  // Underground: the view cuts away every layer above the chosen one (the pick looks through the cut too).
+  useEffect(() => {
+    const e = ready ? viewer.current?.engine() : null;
+    e?.setLevelCut(underCut(under));
+  }, [ready, under]);
+
+  // Leaving with unsaved changes asks first (Save and leave / Leave / Stay).
+  const saveRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
+  useNavigationGuard(snap.dirty, { save: () => saveRef.current(), what: "the design's unsaved changes" });
 
   useEffect(() => {
     const onLock = () =>
@@ -412,8 +422,8 @@ function StudioBody({
   // ------------------------------------------------------------------ previews (drag box, brush, paste ghost)
 
   useEffect(() => {
-    const h = hitOf(aim);
     const s = st.current;
+    const h = hitOf(aim, studio.canvas, s.under !== null);
     if (drag && h) {
       const b = (drag.button === 2 && (tool === 'box' || tool === 'line') ? h.place : (h.hit ?? h.place)) ?? drag.a;
       const box = boxOf(drag.a, b);
@@ -440,7 +450,7 @@ function StudioBody({
     } else overlay.setBrush(null);
     if (pasting && clip && h?.place) overlay.setGhost(pasteCells(clip, h.place));
     else overlay.setGhost(null);
-  }, [aim, drag, tool, brushSize, brushShape, pasting, clip, overlay]);
+  }, [aim, drag, tool, brushSize, brushShape, pasting, clip, overlay, studio]);
 
   // ------------------------------------------------------------------ actions
 
@@ -510,7 +520,17 @@ function StudioBody({
       const centre = (mode === 'add' ? h.place : h.hit) ?? h.place;
       if (!centre) return;
       studio.edit(
-        brush(studio.canvas, centre, s.brushSize, s.brushShape, mode, e?.id ?? 4, e?.meta ?? 0, target),
+        brush(
+          studio.canvas,
+          centre,
+          s.brushSize,
+          s.brushShape,
+          mode,
+          e?.id ?? 4,
+          e?.meta ?? 0,
+          target,
+          s.under !== null,
+        ),
         'brush',
         `brush ${mode}`,
         group,
@@ -522,8 +542,8 @@ function StudioBody({
   const down = useCallback(
     async (button: number, mods: { shift: boolean; ctrl: boolean }) => {
       const t = (await viewer.current?.engine()?.aimNow()) ?? null;
-      const h = hitOf(t);
       const s = st.current;
+      const h = hitOf(t, studio.canvas, s.under !== null);
       if (!h) return;
       if (button === 1) return pick(h);
       if (s.pasting && s.clip) {
@@ -558,7 +578,7 @@ function StudioBody({
             void viewer.current
               ?.engine()
               ?.aimNow()
-              .then((tt) => brushAt(hitOf(tt), button, group, target));
+              .then((tt) => brushAt(hitOf(tt, studio.canvas, st.current.under !== null), button, group, target));
           }, 140);
           stroke.current = { button, group, target, timer };
           return;
@@ -599,8 +619,8 @@ function StudioBody({
       if (!d || d.button !== button) return;
       setDrag(null);
       const t = (await viewer.current?.engine()?.aimNow()) ?? null;
-      const h = hitOf(t);
       const s = st.current;
+      const h = hitOf(t, studio.canvas, s.under !== null);
       const e = s.slots[s.active];
       const b = (button === 2 ? h?.place : (h?.hit ?? h?.place)) ?? d.a;
       if (s.tool === 'select') {
@@ -813,7 +833,7 @@ function StudioBody({
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (studio.selection) {
           stop();
-          studio.edit(erase(studio.canvas, studio.selection), 'remove', 'deleted the selection');
+          studio.edit(erase(studio.canvas, studio.selection, s.under !== null), 'remove', 'deleted the selection');
         }
         return;
       }
@@ -844,6 +864,7 @@ function StudioBody({
         return setPaletteOpen((v) => !v);
       }
       if (e.code === 'KeyH') return setGrid((v) => !v);
+      if (e.code === 'KeyK') return setUnder(toggleUnder);
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
@@ -859,8 +880,11 @@ function StudioBody({
   );
 
   const doSave = useCallback(
-    async (asNew: boolean) => {
-      if (!saveName.trim()) return setNotice('Give the design a name first.');
+    async (asNew: boolean): Promise<boolean> => {
+      if (!saveName.trim()) {
+        setNotice('Give the design a name first.');
+        return false;
+      }
       setSaving(true);
       setNotice(null);
       try {
@@ -870,14 +894,19 @@ function StudioBody({
         invalidate();
         const fresh = await api('designer.get', { params: { id: studio.id } }).catch(() => null);
         if (fresh) setRevisions(fresh.revisions);
+        return true;
       } catch (e) {
         setNotice(errorText(e));
+        return false;
       } finally {
         setSaving(false);
       }
     },
     [studio, saveName, saveSummary, invalidate],
   );
+  useEffect(() => {
+    saveRef.current = () => (canWrite ? doSave(false) : Promise.resolve(false));
+  }, [canWrite, doSave]);
 
   const askBot = useCallback(async () => {
     if (!saved || !mainBot) return;
@@ -899,7 +928,7 @@ function StudioBody({
 
   // ------------------------------------------------------------------ render
 
-  const h = hitOf(aim);
+  const h = hitOf(aim, studio.canvas, under !== null);
   const selSize = sel ? sizeOf(sel) : null;
   const selBlocks = useMemo(
     () =>
@@ -937,7 +966,14 @@ function StudioBody({
   }, [sel, studio, session.palette, snap.rev]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="studio" data-blocks={snap.blocks} data-rev={snap.rev}>
+    <div
+      className="flex h-full min-h-0 flex-col"
+      data-testid="studio"
+      data-blocks={snap.blocks}
+      data-rev={snap.rev}
+      data-dirty={snap.dirty ? '1' : '0'}
+      data-under={under ?? ''}
+    >
       <header className="flex flex-wrap items-center gap-2 border-b border-border bg-surface px-3 py-2">
         <Link href="/designs" className="text-sm text-muted hover:text-fg">
           Designs
@@ -1075,8 +1111,12 @@ function StudioBody({
               data-testid="studio-hud"
             >
               <div className="rounded bg-black/55 px-2 py-0.5">
-                {h?.hit ? `${h.hit.join(', ')}` : h?.place ? `ground · ${h.place.join(', ')}` : '—'} · facing{' '}
-                {facing ?? `${lookNow} (look)`} · {TOOLS.find((t) => t.id === tool)?.label.split(' (')[0]}
+                {h?.hit
+                  ? `${h.hit.join(', ')}${h.hit[1] < 0 ? ' (underground)' : ''}`
+                  : h?.place
+                    ? `ground · ${h.place.join(', ')}`
+                    : '—'}{' '}
+                · facing {facing ?? `${lookNow} (look)`} · {TOOLS.find((t) => t.id === tool)?.label.split(' (')[0]}
                 {tool === 'box'
                   ? ` (${boxMode})`
                   : tool === 'brush'
@@ -1155,6 +1195,19 @@ function StudioBody({
             </button>
             <button
               type="button"
+              onClick={() => setUnder(toggleUnder)}
+              aria-pressed={under !== null}
+              aria-label="Underground"
+              title="Underground: dig the ground and see below it [K]"
+              className={cn(
+                'grid size-8 place-items-center rounded text-white',
+                under !== null ? 'bg-accent' : 'bg-black/55 hover:bg-black/75',
+              )}
+            >
+              <Shovel className="size-4" />
+            </button>
+            <button
+              type="button"
               onClick={() => void stage.current?.requestFullscreen?.().catch(() => undefined)}
               aria-label="Full screen"
               className="grid size-8 place-items-center rounded bg-black/55 text-white"
@@ -1164,6 +1217,23 @@ function StudioBody({
           </div>
           {/* Tool options and the selection's actions */}
           <div className="absolute top-3 right-3 flex max-w-[52%] flex-col items-end gap-1.5 text-[11px] text-white">
+            {under !== null ? (
+              <label
+                className="flex items-center gap-1.5 rounded bg-black/55 px-2 py-1"
+                title="Layers above this one are cut away"
+              >
+                Underground: show to y
+                <input
+                  type="range"
+                  min={-DEPTH}
+                  max={0}
+                  value={under}
+                  onChange={(e) => setUnder(Number(e.target.value))}
+                  aria-label="Underground level"
+                />
+                <span className="w-6 text-right tabular-nums">{under}</span>
+              </label>
+            ) : null}
             {tool === 'box' ? (
               <Seg
                 label="Box"

@@ -129,8 +129,16 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
         {
             if (revisions.Resolve(rec.Id, parts[0]) is not { } a || revisions.Resolve(rec.Id, parts[1]) is not { } b) return $"no such revision ({what}); design log{{id={rec.Id}}} lists them";
             if (a.Rev > b.Rev) (a, b) = (b, a);
-            var d = DesignDiff.Between(revisions.Snapshot(rec.Id, a.Rev)!, revisions.Snapshot(rec.Id, b.Rev)!);
-            return $"r{a.Rev}→r{b.Rev}: {d.Text()}" + (d.Empty ? "" : "; " + d.Cells(6));
+            var (sa, sb) = (revisions.Snapshot(rec.Id, a.Rev)!, revisions.Snapshot(rec.Id, b.Rev)!);
+            // Both on the same ground: a revision that dug a basement under the design moved its drawing's bottom, not the house.
+            var (ga, gb) = (GradeOf(rec, a), GradeOf(rec, b));
+            if (ga != gb) sb = Shifted(sb, ga - gb);
+            var d = DesignDiff.Between(sa, sb);
+            var dug = sb.Air.Count(p => p.Y < ga && !sa.Air.Contains(p) && !sb.Blocks.ContainsKey(p));
+            var filled = sa.Air.Count(p => p.Y < ga && !sb.Air.Contains(p) && !sb.Blocks.ContainsKey(p));
+            var ground = (dug > 0 ? $", dug {dug} below ground" : "") + (filled > 0 ? $", filled {filled} back" : "");
+            if (d.Empty && ground.Length > 0) return $"r{a.Rev}→r{b.Rev}: {ground[2..]}";
+            return $"r{a.Rev}→r{b.Rev}: {d.Text()}{ground}" + (d.Empty ? "" : "; " + d.Cells(6));
         }
         var spec = parts.FirstOrDefault();
         if (revisions.Resolve(rec.Id, spec) is not { } r) return $"no such revision '{spec}'; design log{{id={rec.Id}}} lists them";
@@ -138,6 +146,23 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
         var dw = aw.Diff;
         var who = !dw.Empty && Causes?.Invoke(rec.Id, dw) is { Length: > 0 } c ? $" ({c})" : "";
         return $"r{r.Rev}→world: {dw.Text()}{who}" + (dw.Empty ? "" : "; " + dw.Cells(6)) + (dw.Unknown > 0 ? $"; {dw.Unknown} not loaded" : "");
+    }
+
+    /// <summary>A revision's ground level in its own coordinates: the y of the first layer above the ground (<c>ground N</c> over
+    /// its origin; a design that doesn't dig stands its bottom layer there).</summary>
+    private int GradeOf(BlueprintRecord rec, DesignRevision r)
+    {
+        var (bp, _) = BlueprintParser.Parse(r.Dsl);
+        var origin = r.Origin ?? bp.OriginOn(BlueprintService.UnsitedGround(rec, bp));
+        return origin.Y + bp.Ground;
+    }
+
+    private static DesignSnapshot Shifted(DesignSnapshot s, int dy)
+    {
+        var t = new DesignSnapshot();
+        foreach (var (p, st) in s.Blocks) t.Blocks[p with { Y = p.Y + dy }] = st;
+        foreach (var p in s.Air) t.Air.Add(p with { Y = p.Y + dy });
+        return t;
     }
 
     // ------------------------------------------------------------------ commit
@@ -254,9 +279,11 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
 
     /// <summary>
     /// The DSL that draws <paramref name="snap"/> as it stands (origin = its min corner), <paramref name="air"/> drawn '.'; parsed
-    /// back and compared cell by cell. Null + why when it can't be drawn (over 32 a side, nothing buildable).
+    /// back and compared cell by cell. Null + why when it can't be drawn (over 32 a side, nothing buildable). With
+    /// <paramref name="gradeY"/> (the y of the first layer above the ground) the layers under it are written <c>ground N</c>.
     /// </summary>
-    internal static (string? Dsl, BlockPos Min, int Mismatched, string? Why) Draw(string name, DesignSnapshot snap, IReadOnlySet<BlockPos> air, int height)
+    internal static (string? Dsl, BlockPos Min, int Mismatched, string? Why) Draw(string name, DesignSnapshot snap, IReadOnlySet<BlockPos> air, int height,
+        int? gradeY = null)
     {
         var cells = snap.Blocks.Keys.Concat(air).ToList();
         if (snap.Blocks.Count == 0) return (null, default, 0, "nothing buildable left in it");
@@ -269,6 +296,12 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
         foreach (var (p, s) in snap.Blocks) r.Cells[p] = s;
         foreach (var p in air) if (!snap.Blocks.ContainsKey(p)) r.Air.Add(p);
         var dsl = StructureCapture.Dsl(r);
+        if (gradeY is { } g && g > min.Y)
+        {
+            int at = dsl.IndexOf("\nfacing ", StringComparison.Ordinal);
+            var line = string.Create(CultureInfo.InvariantCulture, $"\nground {Math.Min(g - min.Y, hy)}");
+            dsl = at >= 0 ? dsl.Insert(at, line) : dsl + line.TrimStart('\n') + "\n";
+        }
         var (bp, issues) = BlueprintParser.Parse(dsl);
         if (issues.FirstOrDefault(i => i.Level == IssueLevel.Error) is { } perr) return (null, min, 0, "it doesn't draw as a design: " + perr);
         var (plan, more) = BlueprintNormalizer.Normalize(bp, min, height);
@@ -283,7 +316,11 @@ public sealed class DesignHistory(BlueprintService service, DesignRevisions revi
         string? tag, Func<DesignRevision, string> text, string? accept = null)
     {
         int height = World()?.WorldHeight ?? ChunkColumn.SizeY;
-        var (dsl, min, bad, why) = Draw(rec.Name, next, air, height);
+        // A design dug into the ground keeps its ground level, and its air down there stays dug (not only the interior).
+        var grade = DesignerSave.GradeY(service, rec);
+        if (grade is { } g && next.Box is { } nb)
+            air.UnionWith(next.Air.Where(p => p.Y < g && p.X >= nb.Min.X && p.X <= nb.Max.X && p.Z >= nb.Min.Z && p.Z <= nb.Max.Z));
+        var (dsl, min, bad, why) = Draw(rec.Name, next, air, height, grade);
         if (dsl == null) return (false, $"can't save #{rec.Id} as a revision: {why}");
         rec.Dsl = dsl;
         rec.Origin = min;
