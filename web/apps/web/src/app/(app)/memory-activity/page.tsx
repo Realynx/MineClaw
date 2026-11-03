@@ -1,10 +1,13 @@
 'use client';
 
 import { toNumber, type GraphLayout, type GraphNode } from '@mineclaw/contracts';
-import { Activity, Pause, Play, Radio } from 'lucide-react';
+import { Activity, Loader2, Pause, Play, Radio } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Button, EmptyState, ErrorState, Select, Skeleton } from '@/components/ui/primitives';
+import type { CloudCanvasHandle } from '@/features/memory-activity/cloud/CloudCanvas';
+import { CloudView } from '@/features/memory-activity/cloud/CloudView';
+import { cloudParents } from '@/features/memory-activity/cloud/cloudStyle';
 import { Segmented } from '@/components/ui/overlays';
 import { GraphCanvas, type GraphCanvasHandle, type NodeStyle } from '@/features/graph/GraphCanvas';
 import { indexGraph } from '@/features/graph/geometry';
@@ -25,14 +28,18 @@ import {
   type LastAccess,
   type Staleness,
 } from '@/features/memory-activity/heat';
-import { NodeDetail } from '@/features/raptor/NodeDetail';
+import { NodeDetail } from '@/features/memory-activity/NodeDetail';
 import { useApi } from '@/lib/api/query';
 import { useMemoryActivity } from '@/lib/live/hooks';
 import { useTicker } from '@/lib/live/ticker';
-import { usePrefs } from '@/lib/prefs';
+import { resolvedTheme, usePrefs } from '@/lib/prefs';
 import { ago, clock, duration } from '@/lib/utils';
 
 const WINDOWS = [5, 15, 30, 60] as const;
+/** The map layouts (server-laid-out RAPTOR graph) plus the memory cloud (UMAP over the leaf embeddings). */
+type View = GraphLayout | 'cloud';
+const VIEWS: readonly View[] = ['radial', 'icicle', 'nodelink', 'cloud'];
+const DIGITS = /^[0-9]+$/;
 const LAYER_GLOW = [1, 0.75, 0.4, 0.22];
 
 function Scrubber({
@@ -128,19 +135,38 @@ function Scrubber({
 function ActivityInner() {
   const params = useSearchParams();
   const router = useRouter();
-  const { devDetails } = usePrefs();
+  const { devDetails, theme: themePref } = usePrefs();
+  const theme = typeof window === 'undefined' ? 'dark' : resolvedTheme(themePref);
   const whoKey = params.get('who') ?? 'all';
   const filter = useMemo(() => parseFilter(whoKey), [whoKey]);
-  const layout = (params.get('layout') as GraphLayout | null) ?? 'radial';
+  const layoutParam = params.get('layout') as View | null;
+  const layout: View = layoutParam && VIEWS.includes(layoutParam) ? layoutParam : 'radial';
+  const isCloud = layout === 'cloud';
+  const nodeParam = params.get('node');
+  const selected = nodeParam !== null && DIGITS.test(nodeParam) ? Number(nodeParam) : null;
+  const hits = useMemo(() => new Set((params.get('hits') ?? '').split(',').filter((x) => DIGITS.test(x)).map(Number)), [params]);
   const windowMin = Number(params.get('window') ?? 15) as (typeof WINDOWS)[number];
-  const setParam = (k: string, v: string | null) => {
+  const setParams = (patch: Record<string, string | null>) => {
     const sp = new URLSearchParams(params.toString());
-    if (v === null) sp.delete(k);
-    else sp.set(k, v);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === null) sp.delete(k);
+      else sp.set(k, v);
+    }
     router.replace(`/memory-activity?${sp.toString()}`, { scroll: false });
   };
+  const setParam = (k: string, v: string | null) => setParams({ [k]: v });
+  const setSelected = (id: number | null) => setParam('node', id === null ? null : String(id));
 
-  const graph = useApi('raptor.graph', { query: { layout, colorBy: 'kind' } });
+  const graph = useApi('raptor.graph', { query: { layout: isCloud ? 'radial' : layout, colorBy: 'kind' } }, { enabled: !isCloud });
+  const cloud = useApi(
+    'memoryActivity.cloud',
+    {},
+    {
+      enabled: isCloud,
+      // The bridge lays the cloud out in the background: poll while it does.
+      refetchInterval: (q) => (q.state.data?.status === 'computing' ? 2000 : 60_000),
+    },
+  );
   const heat = useApi(
     'memoryActivity.heat',
     { query: { windowS: windowMin * 60, ...(filter.kind === 'brain' ? { brain: filter.brain } : {}) } },
@@ -149,12 +175,25 @@ function ActivityInner() {
   const activity = useMemoryActivity();
   const [replayT, setReplayT] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
-  const [selected, setSelected] = useState<number | null>(null);
   const [hover, setHover] = useState<{ n: GraphNode; x: number; y: number } | null>(null);
   const canvasRef = useRef<GraphCanvasHandle>(null);
+  const cloudRef = useRef<CloudCanvasHandle>(null);
+  const reveal = (id: number) => (isCloud ? cloudRef.current?.reveal(id) : canvasRef.current?.reveal(id));
   const now = useTicker(1000);
 
-  const idx = useMemo(() => (graph.data ? indexGraph(graph.data) : null), [graph.data]);
+  const idx = useMemo(() => (graph.data && !isCloud ? indexGraph(graph.data) : null), [graph.data, isCloud]);
+  const cloudIdx = useMemo(() => {
+    const c = isCloud ? cloud.data : undefined;
+    if (!c) return null;
+    const info = new Map<number, { label: string; layer: number }>();
+    c.points.id.forEach((id, i) => info.set(id, { label: c.points.title[i]!, layer: 0 }));
+    c.summaries.id.forEach((id, i) => {
+      const cl = c.summaries.cluster[i]!;
+      info.set(id, { label: `L${c.summaries.layer[i]} · ${cl >= 0 ? (c.clusters[cl]?.label ?? '') : 'summary'}`, layer: c.summaries.layer[i]! });
+    });
+    return { parents: cloudParents(c), info };
+  }, [cloud.data, isCloud]);
+  const parents = isCloud ? cloudIdx?.parents : idx?.parents;
   const events = useMemo(() => activity.data?.events ?? [], [activity.data]);
   const brains = useMemo(() => [...new Set([...(heat.data?.brains ?? []), ...events.map((e) => e.brain)])].sort(), [heat.data, events]);
   const bodies = useMemo(() => [...new Set(events.map((e) => e.body).filter((b): b is string => !!b))].sort(), [events]);
@@ -180,10 +219,10 @@ function ActivityInner() {
   }, [playing, from]);
 
   const last = useMemo(() => {
-    if (!idx) return new Map<number, LastAccess>();
-    const fromEvents = lastAccessFromEvents(events, idx.parents, t, filter);
+    if (!parents) return new Map<number, LastAccess>();
+    const fromEvents = lastAccessFromEvents(events, parents, t, filter);
     return replayT === null ? mergeLast(lastAccessFromServer(heat.data, filter, bodyBrain), fromEvents) : fromEvents;
-  }, [idx, events, t, replayT, heat.data, filter, bodyBrain]);
+  }, [parents, events, t, replayT, heat.data, filter, bodyBrain]);
   const stale = useMemo(
     () => (replayT === null ? stalenessByNode(activity.data?.inContext ?? [], now, filter, bodyBrain) : new Map<number, Staleness>()),
     [activity.data, now, replayT, filter, bodyBrain],
@@ -209,11 +248,15 @@ function ActivityInner() {
   const hottest = useMemo(
     () =>
       [...last.entries()]
-        .map(([id, la]) => ({ id, la, h: heatAt(la, t, hl), n: idx?.byId.get(id) }))
-        .filter((x) => x.n && x.n.layer <= 1 && x.h > 0.05)
+        .map(([id, la]) => {
+          const g = idx?.byId.get(id);
+          const n = isCloud ? cloudIdx?.info.get(id) : g ? { label: g.label, layer: g.layer } : undefined;
+          return { id, la, h: heatAt(la, t, hl), n };
+        })
+        .filter((x) => x.n && x.n.layer <= (isCloud ? 0 : 1) && x.h > 0.05)
         .sort((a, b) => b.h - a.h)
         .slice(0, 8),
-    [last, t, hl, idx],
+    [last, t, hl, idx, cloudIdx, isCloud],
   );
   const selectedAccesses = useMemo(
     () => (selected === null ? [] : events.filter((e) => e.raptorNodeId === selected).slice(-8).reverse()),
@@ -257,21 +300,58 @@ function ActivityInner() {
             </option>
           ))}
         </Select>
-        <Segmented<GraphLayout>
+        <Segmented<View>
           label="Layout"
           size="sm"
           value={layout}
-          onChange={(v) => setParam('layout', v)}
+          onChange={(v) => setParam('layout', v === 'radial' ? null : v)}
           options={[
             { value: 'radial', label: 'Radial' },
             { value: 'icicle', label: 'Icicle' },
             { value: 'nodelink', label: 'Node-link' },
+            { value: 'cloud', label: 'Cloud' },
           ]}
         />
       </div>
 
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="relative flex min-h-[28rem] flex-col">
+          {isCloud ? (
+            <div className="relative min-h-0 flex-1">
+              {cloud.isPending ? (
+                <Skeleton className="absolute inset-6 rounded-xl" />
+              ) : cloud.error ? (
+                <ErrorState error={cloud.error} onRetry={() => void cloud.refetch()} className="absolute inset-0" />
+              ) : cloud.data.status === 'empty' ? (
+                <EmptyState title="No RAPTOR tree yet" hint={cloud.data.note ?? undefined} className="absolute inset-0" />
+              ) : cloud.data.points.id.length === 0 ? (
+                <EmptyState
+                  icon={cloud.data.status === 'error' ? undefined : <Loader2 className="size-5 animate-spin" />}
+                  title={cloud.data.status === 'error' ? 'The memory cloud could not be laid out' : 'Laying out the memory cloud…'}
+                  hint={cloud.data.status === 'error' ? (cloud.data.note ?? undefined) : 'The bridge projects every memory once per RAPTOR build; it takes a few seconds.'}
+                  className="absolute inset-0"
+                />
+              ) : (
+                <CloudView
+                  cloud={cloud.data}
+                  last={last}
+                  t={t}
+                  halfLifeS={hl}
+                  windowMs={windowMin * 60_000}
+                  live={replayT === null}
+                  events={events}
+                  filter={filter}
+                  theme={theme}
+                  selected={selected}
+                  onSelect={setSelected}
+                  hits={hits}
+                  hitQuery={params.get('q')}
+                  onClearHits={() => setParams({ hits: null, q: null })}
+                  canvasRef={cloudRef}
+                />
+              )}
+            </div>
+          ) : (
           <div className="relative min-h-0 flex-1 bg-canvas">
             {graph.isPending ? (
               <Skeleton className="absolute inset-6 rounded-xl" />
@@ -335,6 +415,7 @@ function ActivityInner() {
               </div>
             ) : null}
           </div>
+          )}
           <Scrubber
             from={from}
             to={now}
@@ -360,7 +441,7 @@ function ActivityInner() {
               id={selected}
               onNavigate={(id) => {
                 setSelected(id);
-                canvasRef.current?.reveal(id);
+                reveal(id);
               }}
               extra={
                 selectedAccesses.length ? (
@@ -398,7 +479,7 @@ function ActivityInner() {
                       <button
                         onClick={() => {
                           setSelected(id);
-                          canvasRef.current?.reveal(id);
+                          reveal(id);
                         }}
                         className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-surface-2"
                       >

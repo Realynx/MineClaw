@@ -73,8 +73,8 @@ function Detail({ kind, id, onClose }: { kind: MemoryKindKey; id: string; onClos
               <Copy className="size-3.5" /> Copy row
             </Button>
             {d.data.row.raptorLeaf !== null && d.data.row.raptorLeaf !== undefined ? (
-              <Link href={`/raptor?view=tree&node=${d.data.row.raptorLeaf}`} className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-xs font-medium text-fg shadow-card hover:bg-surface-2">
-                <Network className="size-3.5" /> Show in tree (leaf #{d.data.row.raptorLeaf})
+              <Link href={`/memory-activity?layout=cloud&node=${d.data.row.raptorLeaf}`} className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-xs font-medium text-fg shadow-card hover:bg-surface-2">
+                <Network className="size-3.5" /> Show in memory activity (leaf #{d.data.row.raptorLeaf})
               </Link>
             ) : null}
             {d.data.people.map((p) => (

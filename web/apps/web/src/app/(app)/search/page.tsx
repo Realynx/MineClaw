@@ -43,7 +43,7 @@ function Hit({ h, hits, q }: { h: SearchHit; hits: number[]; q: string }) {
           {h.raptorPath.map((c, i) => (
             <span key={c.index} className="inline-flex items-center gap-1">
               {i > 0 ? <span className="text-subtle">›</span> : null}
-              <Link href={`/raptor?view=tree&node=${c.index}`} className="max-w-44 truncate rounded px-1 text-muted hover:bg-surface-2 hover:text-fg">
+              <Link href={`/memory-activity?node=${c.index}`} className="max-w-44 truncate rounded px-1 text-muted hover:bg-surface-2 hover:text-fg">
                 {c.label}
               </Link>
             </span>
@@ -56,10 +56,10 @@ function Hit({ h, hits, q }: { h: SearchHit; hits: number[]; q: string }) {
         </Button>
         {grand ? (
           <Link
-            href={`/raptor?focus=${grand.index}&node=${h.raptorLeaf ?? grand.index}&hits=${hits.join(',')}&q=${encodeURIComponent(q)}`}
+            href={`/memory-activity?layout=cloud&node=${h.raptorLeaf ?? grand.index}&hits=${hits.join(',')}&q=${encodeURIComponent(q)}`}
             className="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-fg"
           >
-            <Network className="size-3.5" /> Show in graph
+            <Network className="size-3.5" /> Show in the memory cloud
           </Link>
         ) : null}
       </div>
@@ -164,7 +164,7 @@ function SearchInner() {
                   {res.data.treeHits.map((t, i) => (
                     <li key={i} className="flex items-center gap-3 px-4 py-2">
                       <Badge>{t.list}</Badge>
-                      <Link href={`/raptor?view=tree&node=${t.index}`} className="w-20 text-muted hover:text-fg">
+                      <Link href={`/memory-activity?node=${t.index}`} className="w-20 text-muted hover:text-fg">
                         {t.layer === 0 ? `leaf #${t.index}` : `L${t.layer} #${t.index}`}
                       </Link>
                       <span className="tabular w-14 text-subtle">{toNumber(t.score).toFixed(3)}</span>
