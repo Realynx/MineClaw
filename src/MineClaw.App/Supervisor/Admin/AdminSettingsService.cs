@@ -95,8 +95,11 @@ public sealed class AdminSettingsService
     private static object? ValueOf(SettingDef d, IReadOnlyDictionary<string, object> roots) =>
         SettingsRegistry.PathOf(d.Key) is { } path && roots.TryGetValue(d.Key.Split(':')[0], out var root) ? SettingsRegistry.Read(root, path) : null;
 
-    private static object? DefaultOf(SettingDef d) =>
-        SettingsRegistry.PathOf(d.Key) is { } path ? SettingsRegistry.Read(Activator.CreateInstance(SettingsRegistry.Roots[d.Key.Split(':')[0]])!, path) : null;
+    /// <summary>One fresh (unbound) options object per root: the built-in defaults.</summary>
+    private static readonly Lazy<Dictionary<string, object>> Defaults = new(() =>
+        SettingsRegistry.Roots.ToDictionary(kv => kv.Key, kv => Activator.CreateInstance(kv.Value)!, StringComparer.OrdinalIgnoreCase));
+
+    private static object? DefaultOf(SettingDef d) => ValueOf(d, Defaults.Value);
 
     /// <summary>A JSON-friendly copy of an options value (string arrays as lists, decimals as numbers).</summary>
     public static object? Plain(object? v) => v switch

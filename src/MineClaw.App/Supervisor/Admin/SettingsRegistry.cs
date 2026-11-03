@@ -74,15 +74,16 @@ public static class SettingsRegistry
     private static IEnumerable<SettingDef> Tier(string tier, string name, string role)
     {
         var p = $"Agent:Llm:{tier}";
-        yield return new($"{p}Provider", "models", "Tiers", $"{name} provider", $"Where the {role} runs: Anthropic (Claude) or the Ollama server.", SettingKind.Enum)
+        var section = $"{name} tier";
+        yield return new($"{p}Provider", "models", section, "Provider", $"Where the {role} runs: Anthropic (Claude) or the Ollama server.", SettingKind.Enum)
             { Options = Providers };
-        yield return new($"{p}Model", "models", "Tiers", $"{name} model", $"The {role}'s model. Claude ids are limited to the 5.5 generation; on Ollama, a model tag from the server.",
+        yield return new($"{p}Model", "models", section, "Model", $"The {role}'s model. Claude ids are limited to the 5.5 generation; on Ollama, a model tag from the server.",
             SettingKind.Model) { ProviderKey = $"{p}Provider" };
-        yield return new($"{p}MaxTokens", "models", "Tiers", $"{name} max output tokens", $"Output ceiling of one {role} call.", SettingKind.Int, Live: true)
+        yield return new($"{p}MaxTokens", "models", section, "Max output tokens", $"Output ceiling of one {role} call.", SettingKind.Int, Live: true)
             { Min = 64, Max = LlmOptions.ModelMaxOutputTokens, Unit = "tokens" };
-        yield return new($"{p}Effort", "models", "Tiers", $"{name} effort", "Claude output effort (empty = not sent). Lower keeps replies terse and cheap.", SettingKind.Enum, Live: true)
+        yield return new($"{p}Effort", "models", section, "Effort", "Claude output effort (empty = not sent). Lower keeps replies terse and cheap.", SettingKind.Enum, Live: true)
             { Options = Efforts };
-        yield return new($"{p}Thinking", "models", "Tiers", $"{name} thinking", "off = the cheapest setting the model accepts; adaptive = the model decides; omit = send nothing.",
+        yield return new($"{p}Thinking", "models", section, "Thinking", "off = the cheapest setting the model accepts; adaptive = the model decides; omit = send nothing.",
             SettingKind.Enum, Live: true) { Options = Thinking };
     }
 
@@ -93,10 +94,10 @@ public static class SettingsRegistry
         var l = new List<SettingDef>
         {
             // ---------------------------------------------------------------- models: Anthropic
-            new("Agent:Llm:ApiKey", "models", "Anthropic", "Anthropic API key", "The key every Claude call uses (the startup check proves it).", SettingKind.Secret),
-            new("Agent:Llm:BaseUrl", "models", "Anthropic", "Anthropic base URL", "A gateway or proxy in front of the Anthropic API; empty = api.anthropic.com.", SettingKind.Url),
+            new("Agent:Llm:ApiKey", "models", "Anthropic", "API key", "The key every Claude call uses (the startup check proves it).", SettingKind.Secret),
+            new("Agent:Llm:BaseUrl", "models", "Anthropic", "Base URL", "A gateway or proxy in front of the Anthropic API; empty = api.anthropic.com.", SettingKind.Url),
             new("Agent:Llm:MaxRetries", "models", "Anthropic", "Retries", "How often a failed Claude call is retried.", SettingKind.Int) { Min = 0, Max = 10 },
-            new("Agent:Llm:TimeoutSeconds", "models", "Anthropic", "Call timeout", "Whole-call timeout of an ordinary Claude call.", SettingKind.Int) { Min = 5, Max = 600, Unit = "s" },
+            new("Agent:Llm:TimeoutSeconds", "models", "Anthropic", "Timeout", "Whole-call timeout of an ordinary Claude call.", SettingKind.Int) { Min = 5, Max = 600, Unit = "s" },
             new("Agent:Llm:PrefixCacheTtl", "models", "Anthropic", "Prompt cache lifetime", "How long the brain's stable prompt prefix stays cached (1h survives idle gaps; 5m is cheaper to write).",
                 SettingKind.Enum) { Options = ["1h", "5m"] },
         };
@@ -112,23 +113,23 @@ public static class SettingsRegistry
             new("Agent:Llm:AuthorMaxUsd", "models", "Authoring", "Author cost cap", "USD cap of one authoring job (all its versions).", SettingKind.Number, Live: true)
                 { Min = 0.05, Max = 50, Unit = "USD" },
             // ---------------------------------------------------------------- models: Ollama
-            new("Agent:Llm:Ollama:Endpoint", "models", "Ollama", "Ollama endpoint", "The Ollama server (it also proxies its cloud models); empty = no Ollama anywhere.", SettingKind.Url),
-            new("Agent:Llm:Ollama:ApiKey", "models", "Ollama", "Ollama bearer token", "Only for a proxy in front of Ollama.", SettingKind.Secret),
+            new("Agent:Llm:Ollama:Endpoint", "models", "Ollama", "Endpoint", "The Ollama server (it also proxies its cloud models); empty = no Ollama anywhere.", SettingKind.Url),
+            new("Agent:Llm:Ollama:ApiKey", "models", "Ollama", "Bearer token", "Only for a proxy in front of Ollama.", SettingKind.Secret),
             new("Agent:Llm:Ollama:DefaultNumCtx", "models", "Ollama", "Context size", "options.num_ctx (0 = the server's default; too small silently cuts the prompt's head).", SettingKind.Int)
                 { Min = 0, Max = 1_048_576, Unit = "tokens" },
             new("Agent:Llm:Ollama:KeepAlive", "models", "Ollama", "Keep alive", "How long Ollama keeps the model loaded (\"30m\", \"-1\"; empty = server default).", SettingKind.String),
-            new("Agent:Llm:Ollama:TimeoutSeconds", "models", "Ollama", "Call timeout", "Per call, streams included (0 = 120 s).", SettingKind.Int) { Min = 0, Max = 3600, Unit = "s" },
+            new("Agent:Llm:Ollama:TimeoutSeconds", "models", "Ollama", "Timeout", "Per call, streams included (0 = 120 s).", SettingKind.Int) { Min = 0, Max = 3600, Unit = "s" },
             new("Agent:Llm:Ollama:MaxRetries", "models", "Ollama", "Retries", "How often a failed Ollama call is retried.", SettingKind.Int) { Min = 0, Max = 10 },
             new("Agent:Llm:Ollama:VisionModels", "models", "Ollama", "Vision models", "Ollama models that accept images (besides those whose capabilities say vision).", SettingKind.List),
             // ---------------------------------------------------------------- models: vision (perception)
-            new("Agent:Llm:Perception:Provider", "models", "Vision", "Vision provider", "Who looks at the bot's pictures for the brain.", SettingKind.Enum)
+            new("Agent:Llm:Perception:Provider", "models", "Vision", "Provider", "Who looks at the bot's pictures for the brain.", SettingKind.Enum)
                 { Options = ["anthropic", "azure-openai", "openai", "ollama"] },
-            new("Agent:Llm:Perception:Model", "models", "Vision", "Vision model", "The perception model (Claude: 5.5 generation only).", SettingKind.Model) { ProviderKey = "Agent:Llm:Perception:Provider" },
-            new("Agent:Llm:Perception:Endpoint", "models", "Vision", "Vision endpoint", "Azure/OpenAI base URL; Ollama: empty = the Ollama endpoint above.", SettingKind.Url),
-            new("Agent:Llm:Perception:ApiKey", "models", "Vision", "Vision API key", "Azure/OpenAI key or Ollama bearer; Anthropic: empty = the Anthropic key above.", SettingKind.Secret),
-            new("Agent:Llm:Perception:Mode", "models", "Vision", "Vision mode", "perception = the vision model answers in a few words; direct = the picture goes to the caller's model.",
+            new("Agent:Llm:Perception:Model", "models", "Vision", "Model", "The perception model (Claude: 5.5 generation only).", SettingKind.Model) { ProviderKey = "Agent:Llm:Perception:Provider" },
+            new("Agent:Llm:Perception:Endpoint", "models", "Vision", "Endpoint", "Azure/OpenAI base URL; Ollama: empty = the Ollama endpoint above.", SettingKind.Url),
+            new("Agent:Llm:Perception:ApiKey", "models", "Vision", "API key", "Azure/OpenAI key or Ollama bearer; Anthropic: empty = the Anthropic key above.", SettingKind.Secret),
+            new("Agent:Llm:Perception:Mode", "models", "Vision", "Mode", "perception = the vision model answers in a few words; direct = the picture goes to the caller's model.",
                 SettingKind.Enum) { Options = ["perception", "direct"] },
-            new("Agent:Llm:Perception:PerHour", "models", "Vision", "Vision calls per hour", "Per bot; over it the bot falls back to the text map.", SettingKind.Int) { Min = 0, Max = 1000 },
+            new("Agent:Llm:Perception:PerHour", "models", "Vision", "Calls per hour", "Per bot; over it the bot falls back to the text map.", SettingKind.Int) { Min = 0, Max = 1000 },
             // ---------------------------------------------------------------- models: budget
             new("Agent:Budget:DailyCapUsd", "models", "Budget", "Daily cap", "Model spend per day before the bot pauses its models; 0 = none.",
                 SettingKind.Number, Live: true) { Min = 0, Max = 10_000, Unit = "USD" },
