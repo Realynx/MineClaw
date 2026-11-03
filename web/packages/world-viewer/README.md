@@ -42,7 +42,7 @@ JSON may come snake_case (supervisor) or camelCase (Nest): `normalize*` accept b
 | `follow` | bot name or short key the follow/iso cameras track and the x-ray keeps in sight |
 | `layers` | `bots entities claims places points plans dangers notes weather cutaway staleness changes` (all on by default) |
 | `cameraMode` | `follow` (orbit), `fly` (WASD/QE + mouse, pointer lock, Shift fast, wheel = speed), `iso` (narrow-FOV dolly; Q/E rotate, Shift/right-drag pans) |
-| `xray` | `auto` (cone only when the bot is hidden or the camera is inside terrain), `on`, `off` |
+| `xray` | `auto` (silhouettes of hidden bots and players; the cone only when the camera is inside terrain), `on` (silhouettes and the cone), `off` |
 | `drawDistance` | blocks, 32..256 (default 128) |
 | `onSelectBot(name)` / `onPick(block)` / `onStats(stats)` / `onCameraModeChange` / `onError(route, e)` | callbacks |
 | `options` | runtime tuning when there is no provider (poll periods, `maxSections`, `createWorker`, `pixelRatio`, `adaptiveResolution`) |
@@ -188,12 +188,24 @@ Changed blocks glow briefly (`layers.changes`).
   `anim.png` (interpolated where flagged); b1.8.1 water, lava, fire and portal cells run the procedural TextureFX
   recurrences. `animHz` lowers the rate, `animCellsPerTick` caps the uploads per tick (round-robin), and
   `setVisible(cells)` limits them to cells the visible sections sample (`SectionMesh.animCells`).
-- **X-ray.** The cone is `ViewCut`, applied per fragment toward the followed bot, or toward up to two bots in front when
-  flying. The roof cut removes cells above the bot's head within 9 blocks when it is under cover and the camera looks down.
-  Both are per-view uniforms.
-  - **Cap pass.** The cut-away cap pass draws back faces after the solids. Each fragment walks its ray to where it leaves the
-    cut volume and writes a hatched wall there with `gl_FragDepth`: the cone's subject plane or floor, the roof cut's floor
-    or side. The result is a true section wall at the cut surface, never a hole.
+- **X-ray.** Seeing bodies behind blocks is a silhouette, not a cut. Each view ray-tests its bots and players a few times
+  a second in the worker (opaque blocks and leaves hide; plants, glass and water don't). Hidden ones are flagged for a
+  ghost pass: the same model instances again, drawn after the world and before the entities with depth `GREATER` and no
+  depth write. It paints only the parts the world really covers: a tint (followed bot, other bots, players) with a bright
+  rim, faded in and out, never over a visible part. Labels stay on top. Thumbnails get it too.
+  - **Cone.** The cone is `ViewCut`, applied per fragment toward the followed bot, or toward up to two bots in front when
+    flying. `auto` opens it only when the camera is buried in rock; `on` always.
+  - **Roof cut.** It removes cells above the bot's head within 9 blocks when an opaque roof covers it and the camera
+    looks down. A tree canopy is not a roof.
+  - **Uniforms.** The cone and the roof cut are per-view uniforms.
+  - **Cap pass.** The cut-away cap pass draws back faces after the solids, depth `LESS` at their own depth. A back face that
+    passes is the first surface behind the cut, so the ray runs inside a solid the cut opened. Each fragment walks its ray
+    to where it leaves the cut volume (the cone's subject plane or floor, the roof cut's floor or side) and paints the hatched
+    wall as it looks there. The depth is not moved to that exit: doing so would also paint over visible ground beyond an
+    exit in open air, and it costs early depth rejection on software renderers.
+    - Only closed solids take part. The mesher lists cut-out, two-sided and overlay quads after `capIndex`, and the cap
+      mesh's draw range stops there. A leaf's back face shows through its own holes, and a plant's is its mirror twin, so
+      painting either would speckle every tree and field while a cut is active.
   - **Follow camera.** It is pulled in front of solid blocks between it and the bot, like vanilla's third person. Blocks the
     roof cut removes don't count, so with the bot in a tunnel the camera stays up and looks down into it.
 - **Entity light.** Each entity model takes the sky/block light of its cell, which the worker reports a few times a

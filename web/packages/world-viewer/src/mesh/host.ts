@@ -23,6 +23,8 @@ export interface MeshHost {
   mesh(dim: number, sections: Dirty, cut: CutParams | null): Promise<SectionMesh[]>;
   pick(dim: number, o: V3, d: V3, max: number, cut: CutParams | null): Promise<PickHit | null>;
   viewInfo(dim: number, cam: V3, body: V3 | null, cut: CutParams | null): Promise<ViewInfo>;
+  /** Per body (feet x, y, z triples): hidden from the camera by opaque blocks or leaves (the silhouette test). */
+  occluded(dim: number, cam: V3, bodies: number[]): Promise<boolean[]>;
   /** Stores block entities per column; resolves to the sections to re-mesh. */
   setBlockEntities(dim: number, cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }>): Promise<Dirty>;
   /** Packed light (sky << 4 | block, -1 unknown) at points [x, y, z, x, y, z, …]. */
@@ -51,6 +53,7 @@ export class InlineMeshHost implements MeshHost {
   mesh(dim: number, sections: Dirty, cut: CutParams | null) { return this.run(() => this.engine.mesh(dim, sections, cut)); }
   pick(dim: number, o: V3, d: V3, max: number, cut: CutParams | null) { return this.run(() => this.engine.pick(dim, o, d, max, cut)); }
   viewInfo(dim: number, cam: V3, body: V3 | null, cut: CutParams | null) { return this.run(() => this.engine.viewInfo(dim, cam, body, cut)); }
+  occluded(dim: number, cam: V3, bodies: number[]) { return this.run(() => this.engine.occluded(dim, cam, bodies)); }
   lights(dim: number, pts: number[]) { return this.run(() => this.engine.lights(dim, pts)); }
   blocksAt(dim: number, pts: number[]) { return this.run(() => this.engine.blocksAt(dim, pts)); }
   setBlockEntities(dim: number, cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }>) { return this.run(() => this.engine.setBlockEntities(dim, cols)); }
@@ -102,6 +105,7 @@ export class WorkerMeshHost implements MeshHost {
   mesh(dim: number, sections: Dirty, cut: CutParams | null) { return this.send<SectionMesh[]>({ op: 'mesh', dim, sections, cut }); }
   pick(dim: number, o: V3, d: V3, max: number, cut: CutParams | null) { return this.send<PickHit | null>({ op: 'pick', dim, o, d, max, cut }); }
   viewInfo(dim: number, cam: V3, body: V3 | null, cut: CutParams | null) { return this.send<ViewInfo>({ op: 'view', dim, cam, body, cut }); }
+  occluded(dim: number, cam: V3, bodies: number[]) { return this.send<boolean[]>({ op: 'occluded', dim, cam, bodies }); }
   lights(dim: number, pts: number[]) { return this.send<number[]>({ op: 'lights', dim, pts }); }
   blocksAt(dim: number, pts: number[]) { return this.send<number[]>({ op: 'blocksAt', dim, pts }); }
   setBlockEntities(dim: number, cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }>) { return this.send<Dirty>({ op: 'blockEntities', dim, cols }); }

@@ -7,6 +7,9 @@
 //   light u8×4   sky×17, block×17, ambient occlusion factor×255, light flags (LF_*)
 //   cell  u8×4   the block's section-local cell (x, y, z) for the x-ray cone, 0
 // Quads become two triangles (0,1,2)+(0,2,3), or (1,2,3)+(1,3,0) when `flip` (AO-aware diagonal).
+// The index buffer lists closed quads first and open ones (cut-out textures, two-sided planes, overlays) after them:
+// `capIndex` is where the open ones start, so the cut-away cap pass draws only the closed solids' back faces (an open
+// quad's back is visible through its own holes or is its mirror twin, and would paint the cap over leaves and plants).
 
 export const TEX_TEXTURED = 1;
 export const TEX_WRAP = 2;
@@ -31,6 +34,8 @@ export interface MeshArrays {
   cell: Uint8Array;
   index: Uint16Array | Uint32Array;
   quads: number;
+  /** Indices of the closed quads (the prefix of `index` the cap pass draws). */
+  capIndex: number;
 }
 
 export class VertexSink {
@@ -43,10 +48,13 @@ export class VertexSink {
   light = new Uint8Array(this.cap * 4);
   cell = new Uint8Array(this.cap * 4);
   private flips: number[] = [];
+  /** Per quad: 1 = open (no cap). */
+  private open: number[] = [];
 
   reset(): void {
     this.n = 0;
     this.flips.length = 0;
+    this.open.length = 0;
   }
 
   get quads(): number {
@@ -69,10 +77,11 @@ export class VertexSink {
     this.cap = cap;
   }
 
-  /** Starts a quad; returns the first vertex index. */
-  begin(flip = false): number {
+  /** Starts a quad; returns the first vertex index. `open`: not part of a closed solid (kept out of the cap pass). */
+  begin(flip = false, open = false): number {
     if (this.n + 4 > this.cap) this.grow();
     this.flips.push(flip ? 1 : 0);
+    this.open.push(open ? 1 : 0);
     const v = this.n;
     this.n += 4;
     return v;
@@ -114,7 +123,8 @@ export class VertexSink {
 
   /** Copies the quad starting at v with the opposite winding (two-sided geometry under back-face culling). */
   mirror(v: number): void {
-    const m = this.begin(this.flips[v >> 2] === 1);
+    this.open[v >> 2] = 1;
+    const m = this.begin(this.flips[v >> 2] === 1, true);
     const order = [0, 3, 2, 1];
     for (let k = 0; k < 4; k++) {
       const s = v + order[k], d = m + k;
@@ -133,8 +143,11 @@ export class VertexSink {
     const n = this.n;
     const q = n >> 2;
     const index = n > 65535 ? new Uint32Array(q * 6) : new Uint16Array(q * 6);
+    let closed = 0;
+    for (let i = 0; i < q; i++) closed += 1 - this.open[i];
+    let ci = 0, oi = closed;
     for (let i = 0; i < q; i++) {
-      const b = i * 4, o = i * 6;
+      const b = i * 4, o = (this.open[i] ? oi++ : ci++) * 6;
       if (this.flips[i]) {
         index[o] = b + 1; index[o + 1] = b + 2; index[o + 2] = b + 3;
         index[o + 3] = b + 1; index[o + 4] = b + 3; index[o + 5] = b;
@@ -152,6 +165,7 @@ export class VertexSink {
       cell: this.cell.slice(0, n * 4),
       index,
       quads: q,
+      capIndex: closed * 6,
     };
   }
 }

@@ -17,11 +17,12 @@ export type WorkerRequest =
   | { id: number; op: 'mesh'; dim: number; sections: Array<[number, number, number]>; cut: CutParams | null }
   | { id: number; op: 'pick'; dim: number; o: V3; d: V3; max: number; cut: CutParams | null }
   | { id: number; op: 'view'; dim: number; cam: V3; body: V3 | null; cut: CutParams | null }
+  | { id: number; op: 'occluded'; dim: number; cam: V3; bodies: number[] }
   | { id: number; op: 'lights'; dim: number; pts: number[] }
   | { id: number; op: 'blocksAt'; dim: number; pts: number[] }
   | { id: number; op: 'blockEntities'; dim: number; cols: Array<{ cx: number; cz: number; entities: BlockEntityDto[] }> }
   | { id: number; op: 'clear' };
 
 export type WorkerResponse =
-  | { id: number; ok: true; result: null | ApplyResult | SectionMesh[] | PickHit | ViewInfo | Array<[number, number, number]> | PatchResult | number[] }
+  | { id: number; ok: true; result: null | ApplyResult | SectionMesh[] | PickHit | ViewInfo | Array<[number, number, number]> | PatchResult | number[] | boolean[] }
   | { id: number; ok: false; error: string };
