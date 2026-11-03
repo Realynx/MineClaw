@@ -12,6 +12,8 @@ function App() {
     () =>
       createFixtureSource({
         radius: 8,
+        version: params.get('version') === '1.12.2' ? '1.12.2' : 'b1.8.1', // [entity models] ?version=1.12.2
+        zoo: params.get('zoo') !== '0', // [entity models] every mob type (?zoo=0 off)
         ticksPerSecond: 400,
         startTime: 23000,
         rain: rain ? 1 : 0,

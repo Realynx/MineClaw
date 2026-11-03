@@ -24,6 +24,7 @@ import { SectionManager, type Centre } from './sections';
 import { WeatherLayer } from './weather';
 import { ChangeFlash } from './changeFlash';
 import { BlockDeltaFeed } from '../world/deltas';
+import { loadBundle } from '../assets/bundle'; // entity models (entity layer)
 
 export interface RuntimeOptions {
   /** Device pixel ratio cap for the primary view (default min(2, devicePixelRatio)). */
@@ -176,6 +177,7 @@ export class WorldRuntime {
     this.scene.add(sun);
     this.uniforms = createChunkUniforms();
     this.materials = createChunkMaterials(this.uniforms);
+    this.entities.setWorldUniforms(this.uniforms); // [entity models] entities light and fog like the sections
     this.host = opts.inlineMesher ? new InlineMeshHost() : createMeshHost(opts.createWorker);
     this.scene.add(this.entities.group, this.overlays.group, this.weather.object, this.flashes.mesh);
     this.sync = this.makeSync();
@@ -380,9 +382,23 @@ export class WorldRuntime {
     if (key === this.configKey) return;
     this.configKey = key;
     this.version = v;
+    this.loadEntityBundle(v); // [entity models]
     this.uniforms.uTextured.value = atlas && this.atlasTex ? 1 : 0;
     await this.host.configure(v, atlas);
     for (const s of this.sections.values()) s.clear();
+  }
+
+  // [entity models] The entity layer textures its models from the bundled sheets of the world's version.
+  private entityBundle: GameVersion | null = null;
+  private loadEntityBundle(v: GameVersion): void {
+    this.entities.setVersion(v);
+    if (this.entityBundle === v) return;
+    this.entityBundle = v;
+    loadBundle(v)
+      .then((b) => {
+        if (!this.disposed && this.entityBundle === v) this.entities.setBundle(b);
+      })
+      .catch((e) => this.opts.onError?.('bundle', e));
   }
 
   private async loadAtlas(): Promise<void> {
@@ -550,7 +566,7 @@ export class WorldRuntime {
       sec.group.visible = dim === s.dim;
       if (dim === s.dim) sec.showAround(s.centre.x, s.centre.z, s.drawDistance);
     }
-    this.entities.showFor(s.dim, cam, { bots: s.layers.bots, entities: s.layers.entities, labels: s.labels, selected: s.selected });
+    this.entities.showFor(s.dim, cam, { bots: s.layers.bots, entities: s.layers.entities, labels: s.labels, selected: s.selected, drawDistance: s.drawDistance, fov: s.camera.fov });
     this.overlays.group.visible = s.overlays;
     this.flashes.showFor(s.dim, now, s.layers.changes);
     r.setViewport(0, 0, w, h);

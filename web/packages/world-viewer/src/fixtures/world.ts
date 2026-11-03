@@ -25,7 +25,25 @@ export interface FixtureOptions {
   /** Build plan blocks placed per second (0 = frozen). */
   buildRate?: number;
   atlas?: () => Promise<AtlasResource | null>;
+  /** [entity models] A parade of every mob type of the version, drops of several kinds, objects and an XP orb. */
+  zoo?: boolean;
 }
+
+// [entity models] Mob types per version for the zoo (b1.8.1 has 50–60 and 90–95), with Mob16 variants worth showing.
+const ZOO_BETA: Array<[number, number?]> = [[50], [51], [52], [53], [54], [55, 2], [56], [57], [58], [59], [60], [90, 1], [91, 14], [91, 16], [92], [93], [94], [95], [95, 4]];
+const ZOO_1122: Array<[number, number?]> = [
+  ...ZOO_BETA.filter(([t]) => t !== 53 && t !== 56),
+  [4], [5], [6], [23], [27], [28], [29], [31], [32], [34], [35], [36], [37], [61], [62, 2], [64], [65], [66], [67], [68], [69], [96], [97], [98], [98, 4], [99], [100], [101], [102], [103], [105], [120],
+];
+/** [entity models] Objects (not sent by the supervisor today: the fixture exercises their render paths). */
+const ZOO_OBJECTS: Array<Partial<EntityDto>> = [
+  { kind: 'object', type: 1 },
+  { kind: 'object', type: 10 },
+  { kind: 'object', type: 60 },
+  { kind: 'object', type: 70, item: 12 },
+  { kind: 'object', type: 50 },
+  { kind: 'xp_orb', count: 20 },
+];
 
 const SEA = 62;
 
@@ -240,6 +258,24 @@ export function createFixtureSource(opts: FixtureOptions = {}): WorldSource & { 
       out.push({ kind: 'mob', name: null, dim: 0, x, y: surface(Math.floor(x), Math.floor(z)) + 1, z, id: 100 + i, type: i % 2 ? 92 : 54, yaw: (a * 57) % 360 });
     }
     out.push({ kind: 'item', name: 'cobblestone', dim: 0, x: 3.5, y: surface(3, 0) + 1, z: 0.5, id: 200, item: 4, count: 12, age: s });
+    if (opts.zoo) {
+      // [entity models] Mobs in rows south of the island centre (+z), every other one walking a small circle.
+      const types = world.version === '1.12.2' ? ZOO_1122 : ZOO_BETA;
+      types.forEach(([type, variant], i) => {
+        const walk = i % 2 === 0, a = s / 3 + i;
+        const x = -14 + (i % 10) * 3 + (walk ? Math.cos(a) * 0.8 : 0), z = 18 + Math.floor(i / 10) * 5 + (walk ? Math.sin(a) * 0.8 : 0);
+        const yaw = walk ? ((((a + Math.PI / 2) * 180) / Math.PI) + 90) % 360 : (i * 40) % 360;
+        const fly = type === 56 || type === 65 || type === 63 ? 4 : 0;
+        out.push({ kind: 'mob', name: null, dim: 0, x, y: surface(Math.floor(x), Math.floor(z)) + 1 + fly, z, id: 1000 + i, type, variant: variant ?? 0, yaw, age: s, flags: type === 57 && i % 3 === 0 ? 1 : 0 });
+      });
+      // Drops: a block item, a tool, a flat item, a flower; and objects.
+      [[1, 64], [278, 1], [264, 5], [38, 1], [5, 30], [50, 3]].forEach(([item, count], i) =>
+        out.push({ kind: 'item', name: null, dim: 0, x: -6 + i * 1.5, y: surface(-6 + i * 1.5, -12) + 1, z: -12, id: 2000 + i, item, count, age: s + i * 3 }),
+      );
+      ZOO_OBJECTS.forEach((o, i) =>
+        out.push({ name: null, dim: 0, x: 6 + i * 2.5, y: surface(6 + i * 2.5, -12) + 1, z: -12, id: 3000 + i, yaw: 30 * i, age: s, ...o, kind: o.kind! }),
+      );
+    }
     out.push({ kind: 'player', name: 'poofimafox', dim: 0, x: -2, y: surface(-2, 12) + 1, z: 12, id: 300, yaw: 180 });
     return out;
   };
