@@ -7,7 +7,7 @@ using MineClaw.Protocol.Packets;
 namespace MineClaw.App.Tests;
 
 /// <summary>Op detection: a 1.12.2 server tells the account its op level as Entity Status 24..28 on its own player (on login, /op, /deop).</summary>
-[Collection("Release1122World")]
+[Collection(GameDataDefaultCollection.Name)]
 public sealed class StoryOpLevelTests
 {
     private static async Task<bool> Until(Func<bool> cond, int ms)

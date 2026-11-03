@@ -228,7 +228,8 @@ public sealed class AdminSettingsTests : IDisposable
     [Fact]
     public async Task Only_5_5_generation_claude_models_are_accepted()
     {
-        var rig = Make();
+        // No Ollama endpoint, whatever the machine's own appsettings.json beside the binaries says.
+        var rig = Make(new Dictionary<string, string?> { ["MINECLAW_Agent__Llm__Ollama__Endpoint"] = "" });
         var bad = await rig.Server.HandleAsync(Req("PUT", "/api/admin/settings", Save(("Agent:Llm:MainModel", "claude-3-opus-20240229"))));
         Assert.Equal(400, bad.Status);
         Assert.Contains("Agent:Llm:MainModel", bad.Text);
@@ -452,7 +453,11 @@ public sealed class AdminSettingsTests : IDisposable
         Assert.Equal(["x"], cfg.GetSection("Agent:Chat:Aliases").Get<string[]>());
         File.WriteAllText(_override, "{ not json");
         var broken = Config();
-        Assert.Equal(["a", "b", "c"], broken.GetSection("Agent:Chat:Aliases").Get<string[]>());
+        // A broken override is ignored: the result equals the config without any override layer (the machine's own
+        // appsettings.json beside the binaries may add aliases, so compare against that rather than a literal list).
+        var none = AppConfig.Build(AppCli.Parse(["--config", _base]), _dir, new Dictionary<string, string?> { [SettingsOverrideFile.EnvVar] = "off" });
+        Assert.Equal(none.GetSection("Agent:Chat:Aliases").Get<string[]>(), broken.GetSection("Agent:Chat:Aliases").Get<string[]>());
+        Assert.Contains("a", broken.GetSection("Agent:Chat:Aliases").Get<string[]>()!);
         Assert.NotNull(SettingsOverrideFile.Of(broken)!.LoadError);
         // A fake environment without MINECLAW_SETTINGS_OVERRIDE gets no override layer (tests stay deterministic).
         Assert.Null(SettingsOverrideFile.Of(AppConfig.Build(AppCli.Parse(["--config", _base]), _dir, new Dictionary<string, string?>())));

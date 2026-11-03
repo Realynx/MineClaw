@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace MineClaw.App.Tests;
 
 /// <summary>Multi-version P0 (docs/design/multi-version.md): the composition root's version decision.</summary>
+[Collection(GameDataDefaultCollection.Name)]
 public class VersionSetupTests : IDisposable
 {
     private readonly string _dir = Directory.CreateTempSubdirectory("mineclaw-version-").FullName;
@@ -14,6 +15,7 @@ public class VersionSetupTests : IDisposable
     public void Dispose()
     {
         try { Directory.Delete(_dir, recursive: true); } catch (IOException) { }
+        GameDataDefaultCollection.Restore(); // VersionSetup sets the process-wide default
     }
 
     private static IConfiguration Config(string? version) =>

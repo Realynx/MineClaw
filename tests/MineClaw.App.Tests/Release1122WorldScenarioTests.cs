@@ -25,7 +25,7 @@ namespace MineClaw.App.Tests;
 /// before dusk, fights a zombie with the 1.12.2 attack cooldown, and eats. Every step runs the real tools, skills, client and
 /// 1.12.2 wire; the LLM is the only fake.
 /// </summary>
-[Collection("Release1122World")]
+[Collection(GameDataDefaultCollection.Name)]
 public sealed class Release1122WorldScenarioTests(ITestOutputHelper output) : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "mineclaw-p6-" + Guid.NewGuid().ToString("N")[..8]);
@@ -35,6 +35,7 @@ public sealed class Release1122WorldScenarioTests(ITestOutputHelper output) : ID
     {
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
         try { Directory.Delete(_root, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        GameDataDefaultCollection.Restore(); // the app host sets the process-wide default to 1.12.2
     }
 
     private static string Root()

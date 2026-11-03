@@ -32,7 +32,7 @@ namespace MineClaw.App.Tests;
 /// real <see cref="HiveSupervisor"/> over the in-memory link: spawn, task, result, the logout gate, the watchdog and containment, on
 /// b1.8.1 and on 1.12.2 alike.
 /// </summary>
-[Collection("Release1122World")]
+[Collection(GameDataDefaultCollection.Name)]
 public sealed class InProcHiveTests(ITestOutputHelper output) : IDisposable
 {
     private const string Clone = "maid_chan_101";

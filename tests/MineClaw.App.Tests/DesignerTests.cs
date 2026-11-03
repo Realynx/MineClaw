@@ -11,6 +11,7 @@ namespace MineClaw.App.Tests;
 
 /// <summary>The Design Studio: models from config, sessions over a sandbox canvas with a (fake) model's tool calls, saves through
 /// the designs history, loading a design, budget accounting and the route gate.</summary>
+[Collection(GameDataDefaultCollection.Name)]
 public class DesignerTests
 {
     private const string Token = "s3cret-token";

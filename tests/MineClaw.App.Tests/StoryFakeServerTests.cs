@@ -29,7 +29,7 @@ namespace MineClaw.App.Tests;
 /// hands out the work. Each body has its own fake server (block changes mirrored between the pawns' servers), so the colony sees
 /// through its first pawn's world; in real play there is one server.
 /// </summary>
-[Collection("Release1122World")]
+[Collection(GameDataDefaultCollection.Name)]
 public sealed class StoryFakeServerTests(ITestOutputHelper output)
 {
     private static readonly P3 WoodChest = new(8, 64, 12), FoodChest = new(5, 64, 12), Table = new(11, 64, 12);

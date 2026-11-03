@@ -33,7 +33,7 @@ namespace MineClaw.App.Tests;
 /// coordinator started by C# with no brain turn; the brain's first call is the crew's result, which it reports. The hive's own
 /// <c>hive spawn bodies=1 script=crew_job</c> brings a further body in straight onto the script.
 /// </summary>
-[Collection("Release1122World")]
+[Collection(GameDataDefaultCollection.Name)]
 public sealed class HiveCrewSpawnTests(ITestOutputHelper output) : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "mineclaw-hive-crew", Guid.NewGuid().ToString("N"));

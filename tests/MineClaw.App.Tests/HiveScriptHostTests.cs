@@ -27,7 +27,7 @@ namespace MineClaw.App.Tests;
 /// those three as they arrive: the first is done before the last logs in, and the last still gets its lane. When the script ends,
 /// every body deposits, logs out and leaves the whitelist; main's brain hears one line. Main's own crews never see those bodies.
 /// </summary>
-[Collection("Release1122World")]
+[Collection(GameDataDefaultCollection.Name)]
 public sealed class HiveScriptHostTests(ITestOutputHelper output)
 {
     private static readonly string[] BodyNames = ["maid_chan_101", "maid_chan_102", "maid_chan_103"];

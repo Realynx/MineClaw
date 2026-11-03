@@ -30,7 +30,7 @@ namespace MineClaw.App.Tests;
 /// brain runs a saved crew script, and the three bodies chop in parallel lanes, each on its own connection; releasing the hive
 /// logs its bodies out first (deposit, then logout, then main's whitelist remove).
 /// </summary>
-[Collection("Release1122World")]
+[Collection(GameDataDefaultCollection.Name)]
 public sealed class SubhiveHostTests(ITestOutputHelper output)
 {
     private const string Me = "maid_chan_101";

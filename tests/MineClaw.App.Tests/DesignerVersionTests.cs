@@ -13,6 +13,7 @@ namespace MineClaw.App.Tests;
 /// a design opened in its own version and converted for a world of the other one, and the AI's vocabulary (find_blocks, any
 /// block by name, "did you mean") at a prompt that never lists every block.
 /// </summary>
+[Collection(GameDataDefaultCollection.Name)]
 public class DesignerVersionTests
 {
     private const string Token = "s3cret-token";
