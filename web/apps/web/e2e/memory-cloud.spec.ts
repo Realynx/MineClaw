@@ -45,7 +45,7 @@ test('the RAPTOR tree page redirects into Memory activity, keeping the node', as
   await page.goto('/raptor?view=tree&node=481');
   await page.waitForURL(/\/memory-activity\?.*node=481/);
   await expect(page.getByRole('link', { name: 'RAPTOR tree' })).toHaveCount(0);
-  await expect(page.locator('aside').getByText('#481')).toBeVisible();
+  await expect(page.locator('aside').getByText('#481', { exact: true })).toBeVisible();
 });
 
 test('cloud: hover shows a tooltip, click opens detail, the hive filter changes brightness, lasso lists memories', async ({ page }) => {
@@ -65,7 +65,7 @@ test('cloud: hover shows a tooltip, click opens detail, the hive filter changes 
   await page.mouse.click(x, y);
   await page.waitForURL(/node=\d+/);
   const id = Number(new URL(page.url()).searchParams.get('node'));
-  await expect(page.locator('aside').getByText(`#${id}`)).toBeVisible();
+  await expect(page.locator('aside').getByText(`#${id}`, { exact: true })).toBeVisible();
 
   // brightness follows the hive filter: every brain lights more than one brain alone (or a different set)
   const lit = page.getByTestId('memory-cloud');

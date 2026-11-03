@@ -133,7 +133,7 @@ export function CloudView({
   const hoverLast = hoverId !== null ? last.get(hoverId) : undefined;
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-lit={lit} data-testid="memory-cloud">
+    <div className="absolute inset-0 flex min-h-0 flex-col" data-lit={lit} data-testid="memory-cloud">
       <div className="flex min-h-10 flex-wrap items-center gap-2 border-b border-border bg-surface px-4 py-1.5">
         <div className="relative">
           <Search className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-subtle" />
