@@ -5,9 +5,25 @@ import { memoryCloudMock, type CloudMockNode } from '../src/testing.js';
 /** 2 roots → 8 L2 → 32 L1 → 320 leaves. */
 function tree(): CloudMockNode[] {
   const out: CloudMockNode[] = [];
-  for (let i = 0; i < 320; i++) out.push({ id: i, layer: 0, parents: [400 + Math.floor(i / 10)], title: `memory ${i}`, kind: i % 3 ? 'episode' : 'fact' });
-  for (let j = 0; j < 32; j++) out.push({ id: 400 + j, layer: 1, parents: [500 + Math.floor(j / 4)], title: `L1 ${j}`, kind: 'summary' });
-  for (let k = 0; k < 8; k++) out.push({ id: 500 + k, layer: 2, parents: [600 + Math.floor(k / 4)], title: `L2 ${k}`, kind: 'summary', terms: [`topic${k}`, 'x'] });
+  for (let i = 0; i < 320; i++)
+    out.push({
+      id: i,
+      layer: 0,
+      parents: [400 + Math.floor(i / 10)],
+      title: `memory ${i}`,
+      kind: i % 3 ? 'episode' : 'fact',
+    });
+  for (let j = 0; j < 32; j++)
+    out.push({ id: 400 + j, layer: 1, parents: [500 + Math.floor(j / 4)], title: `L1 ${j}`, kind: 'summary' });
+  for (let k = 0; k < 8; k++)
+    out.push({
+      id: 500 + k,
+      layer: 2,
+      parents: [600 + Math.floor(k / 4)],
+      title: `L2 ${k}`,
+      kind: 'summary',
+      terms: [`topic${k}`, 'x'],
+    });
   for (let m = 0; m < 2; m++) out.push({ id: 600 + m, layer: 3, parents: [], title: `root ${m}`, kind: 'summary' });
   return out;
 }

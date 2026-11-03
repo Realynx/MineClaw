@@ -53,7 +53,13 @@ export function memoryCloudMock(tree: readonly CloudMockNode[], o: CloudMockOpti
   for (let i = 0; i < extra && l1.length; i++) {
     const p = l1[Math.floor(r() * l1.length)]!;
     const sib = leavesOf.get(p.id)?.[Math.floor(r() * (leavesOf.get(p.id)?.length ?? 1))];
-    const leaf: CloudMockNode = { id: extraFrom + i, layer: 0, parents: [p.id], title: sib ? `${sib.title} (${i % 97})` : `memory ${extraFrom + i}`, kind: sib?.kind ?? 'fact' };
+    const leaf: CloudMockNode = {
+      id: extraFrom + i,
+      layer: 0,
+      parents: [p.id],
+      title: sib ? `${sib.title} (${i % 97})` : `memory ${extraFrom + i}`,
+      kind: sib?.kind ?? 'fact',
+    };
     nodes.push(leaf);
     byId.set(leaf.id, leaf);
   }
@@ -69,7 +75,8 @@ export function memoryCloudMock(tree: readonly CloudMockNode[], o: CloudMockOpti
   // The primary ancestor chain: first parent each step.
   const ancestorAt = (n: CloudMockNode, layer: number): CloudMockNode | undefined => {
     let cur: CloudMockNode | undefined = n;
-    for (let guard = 0; cur && cur.layer < layer && guard < 32; guard++) cur = cur.parents.length ? byId.get(cur.parents[0]!) : undefined;
+    for (let guard = 0; cur && cur.layer < layer && guard < 32; guard++)
+      cur = cur.parents.length ? byId.get(cur.parents[0]!) : undefined;
     return cur && cur.layer === layer ? cur : undefined;
   };
   const leaves = nodes.filter((n) => n.layer === 0).sort((a, b) => a.id - b.id);
@@ -101,7 +108,9 @@ export function memoryCloudMock(tree: readonly CloudMockNode[], o: CloudMockOpti
     clusterOfLeaf.set(l.id, c.id);
     sizes.set(c.id, (sizes.get(c.id) ?? 0) + 1);
   }
-  const ordered = clusterNodes.filter((c) => sizes.get(c.id)).sort((a, b) => sizes.get(b.id)! - sizes.get(a.id)! || a.id - b.id);
+  const ordered = clusterNodes
+    .filter((c) => sizes.get(c.id))
+    .sort((a, b) => sizes.get(b.id)! - sizes.get(a.id)! || a.id - b.id);
   const slot = new Map(ordered.map((c, i) => [c.id, i]));
   const kinds: string[] = [];
   const kindIx = (k: string) => {
@@ -149,7 +158,15 @@ export function memoryCloudMock(tree: readonly CloudMockNode[], o: CloudMockOpti
     summaries.parents.push([...s.parents]);
     for (const p of s.parents) add(p, x, y);
   }
-  const points: MemoryCloudResponse['points'] = { id: [], xy: [], cluster: [], kind: [], title: [], parents: [], inserted: [] };
+  const points: MemoryCloudResponse['points'] = {
+    id: [],
+    xy: [],
+    cluster: [],
+    kind: [],
+    title: [],
+    parents: [],
+    inserted: [],
+  };
   for (const l of leaves) {
     const c = clusterOfLeaf.get(l.id);
     points.id.push(l.id);
