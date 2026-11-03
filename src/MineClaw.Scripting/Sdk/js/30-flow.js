@@ -1,4 +1,4 @@
-// module: flow | loops, retries and behaviour-tree helpers (deterministic; every helper runs at once and returns a result)
+// module: flow | loops, retries and behaviour-tree helpers (deterministic)
 (H, def) => {
   const isObj = v => v !== null && typeof v === 'object';
   const failed = r => r === false || r === null || (isObj(r) && r.ok === false);

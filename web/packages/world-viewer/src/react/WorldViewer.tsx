@@ -3,6 +3,7 @@ import { WorldViewerEngine, type EngineOptions } from '../render/engine';
 import type { CameraMode, Dim, LayerToggles, PickedBlock, ViewerStats, WorldSource, XRayMode } from '../types';
 import type { BotView } from '../world/entities';
 import type { AimTarget } from '../render/aim';
+import type { BubbleKind, ShownBubble } from '../render/bubbles';
 import { useWorldRuntime } from './WorldThumbnail';
 
 export interface WorldViewerProps {
@@ -55,6 +56,10 @@ export interface WorldViewerHandle {
   lock(): void;
   /** Whether the mouse is locked to this view. */
   locked(): boolean;
+  /** A chat bubble over the bot or player called `name`, in every view of the runtime (thumbnails too). */
+  say(name: string, text: string, opts?: { kind?: BubbleKind }): boolean;
+  /** The chat bubbles this view drew in its last frame: speaker, anchor in CSS pixels of the view, lines. */
+  bubbles(): readonly ShownBubble[];
   /** The underlying engine (advanced use). */
   engine(): WorldViewerEngine | null;
 }
@@ -147,6 +152,8 @@ export const WorldViewer = forwardRef<WorldViewerHandle, WorldViewerProps>(funct
         void Promise.resolve(s.requestPointerLock?.()).catch(() => undefined);
       },
       locked: () => engine.current?.locked() ?? false,
+      say: (name, text, opts) => engine.current?.say(name, text, opts) ?? false,
+      bubbles: () => engine.current?.bubbles() ?? [],
       engine: () => engine.current,
     }),
     [],

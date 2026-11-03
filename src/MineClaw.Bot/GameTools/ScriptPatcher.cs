@@ -45,7 +45,7 @@ public sealed class ScriptPatcher : IInterruptPatcher
 
     public bool Wants(ScriptSession s, ScriptInterrupt i)
     {
-        if (!_o.Patches) return false;
+        if (!_o.Patches || s.Request.NoModel) return false; // a Story Mode pawn: never a model call
         // Someone else's danger (a warning about another player) needs the brain's voice, not a patch.
         if (i.IsDanger && i.Player != null) return false;
         if (HasLearned(s.Name, i.Kind)) return true;

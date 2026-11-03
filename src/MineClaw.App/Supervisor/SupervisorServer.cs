@@ -69,6 +69,8 @@ public sealed class SupervisorServer : IAsyncDisposable
     public SupervisorViewerRoutes? Viewer { get; set; }
     /// <summary>The Design Studio's routes (<c>/api/designer/*</c>: sandbox canvas sessions with an AI, saved as designs); null = 404.</summary>
     public DesignerRoutes? Designer { get; set; }
+    /// <summary>Story Mode (<c>/api/story/*</c>, the viewer's gate + AllowStory for writes); null = 404.</summary>
+    public SupervisorStoryRoutes? Story { get; set; }
     /// <summary><c>/api/hive/tree</c>: the hive's ownership tree (main → children: kind, brain, state, task); null = main alone.</summary>
     public Func<object?>? HiveTree { get; set; }
     public string? Prefix { get; private set; }
@@ -115,7 +117,8 @@ public sealed class SupervisorServer : IAsyncDisposable
                     foreach (var k in nv.AllKeys) if (k != null && nv[k] is { } v) q[k] = v;
                     var body = await SupervisorAdminRoutes.ReadBodyAsync(ctx.Request, ct, _o).ConfigureAwait(false)
                         ?? await SupervisorViewerRoutes.ReadBodyAsync(ctx.Request, _o, ct).ConfigureAwait(false)
-                        ?? await DesignerRoutes.ReadBodyAsync(ctx.Request, _o, ct).ConfigureAwait(false);
+                        ?? await DesignerRoutes.ReadBodyAsync(ctx.Request, _o, ct).ConfigureAwait(false)
+                        ?? await SupervisorStoryRoutes.ReadBodyAsync(ctx.Request, _o, ct).ConfigureAwait(false);
                     var req = new SupervisorRequest(ctx.Request.HttpMethod, ctx.Request.Url?.AbsolutePath ?? "/", q, ctx.Request.Headers["X-Supervisor-Token"], body);
                     reply = await HandleAsync(req, ct).ConfigureAwait(false);
                 }
@@ -147,6 +150,8 @@ public sealed class SupervisorServer : IAsyncDisposable
             return Viewer != null ? await Viewer.TryHandleAsync(r, ct).ConfigureAwait(false) ?? Json(404, new { error = "not found" }) : Json(404, new { error = "not found" });
         if (DesignerRoutes.IsDesignerPath(r.Path)) // the Design Studio: Viewer:Enabled + Viewer:Designer:Enabled (else 404) + the token header
             return Designer != null ? await Designer.TryHandleAsync(r, ct).ConfigureAwait(false) ?? Json(404, new { error = "not found" }) : Json(404, new { error = "not found" });
+        if (SupervisorStoryRoutes.IsStoryPath(r.Path)) // the viewer's gate (404/403) + AllowStory for writes
+            return Story != null ? await Story.TryHandleAsync(r, ct).ConfigureAwait(false) ?? Json(404, new { error = "not found" }) : Json(404, new { error = "not found" });
         bool get = r.Method.Equals("GET", StringComparison.OrdinalIgnoreCase) || r.Method.Equals("HEAD", StringComparison.OrdinalIgnoreCase);
         if (!get) return Json(405, new { error = "read-only: GET only" }, new Dictionary<string, string> { ["Allow"] = "GET, HEAD" });
         var path = r.Path.TrimEnd('/');
@@ -304,5 +309,6 @@ public sealed class SupervisorServer : IAsyncDisposable
         if (_loop != null) { try { await _loop.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch (Exception) { } }
         Gate.Dispose();
         (Admin as IDisposable)?.Dispose();
+        Story?.Colonies.Dispose(); // the colony tick stops; each colony saves
     }
 }

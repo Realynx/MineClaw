@@ -453,6 +453,59 @@ public sealed class HiveHierarchy : IHiveAccounts
             $"(release {id} stops it)" + (got.Count < asked ? $"; only {got.Count} of {asked}: {why}" : "");
     }
 
+    // ================================================================ groups (Story Mode colonies: docs/web/story-mode.md)
+
+    /// <summary>
+    /// <paramref name="n"/> script-only bodies of a named group owned by main, in main's process (a Story Mode colony, "story-1"):
+    /// each allocated (accounts it had before first: <paramref name="prefer"/>, so a colony resuming after a restart keeps its pawns),
+    /// whitelisted before its login and logged in by main's subhive host with no job; the group's director starts each one's lane.
+    /// The tree records them as group members (<see cref="HiveNode.Crew"/> = the group), so main's brain and crews never drive them
+    /// and a release goes through the usual deposit → logout → whitelist remove.
+    /// </summary>
+    public (IReadOnlyList<string> Accounts, string? Why) SpawnGroup(string group, int n, string script, IReadOnlyList<string>? prefer = null)
+    {
+        if (Bodies is not { } b) return ([], "hive is off");
+        if (Subhives is null) return ([], "subhive bodies aren't available here (Hive:Subhives:Enabled is off)");
+        var got = new List<string>();
+        string? why = null;
+        var want = new Queue<string>((prefer ?? []).Where(p => !string.IsNullOrWhiteSpace(p)));
+        int target = Math.Min(Math.Max(1, n), Math.Max(1, MaxBodiesPerSpawn));
+        while (got.Count < target)
+        {
+            if (Resources?.CanAdd(0, 1) is { Ok: false } full) { why = full.Why; break; }
+            Allocation a;
+            string name;
+            lock (_lock)
+            {
+                a = _allocator.Allocate(Facts(b));
+                if (!a.Ok) { why = a.Error; break; }
+                name = a.Name!;
+                // The room is there; a pawn account the colony had before takes it when it is free (not in the tree, not online).
+                var online = b.Slots().Online;
+                while (want.Count > 0)
+                {
+                    var p = want.Dequeue();
+                    if (Tree.Get(p) == null && !online.Contains(p, StringComparer.OrdinalIgnoreCase) && Managed.Get(p) is not { Active: true }) { name = p; break; }
+                }
+                Managed.Upsert(name, x => x);
+                Tree.Put(new HiveNode(name, CloneKind.Subhive, null, HiveTree.Root) { Task = "story " + group, Script = script, Since = DateTimeOffset.UtcNow, Crew = group });
+                Managed.MarkActive(name, HiveKinds.Name(CloneKind.Script), null, HiveTree.Root);
+            }
+            try { Allocated?.Invoke(name); } catch (Exception ex) { _log.LogDebug(ex, "hive: allocated hook failed"); }
+            var t = Subhives.Spawn(HiveTree.Root, name, null, null); // no job of its own: the director starts its lane once it is in
+            if (!t.StartsWith("ok", StringComparison.Ordinal)) { why = t; Released(name, "not spawned: " + t); break; }
+            got.Add(name);
+        }
+        if (got.Count > 0) _log.LogInformation("hive: group {Group}: {N} script-only bodies ({Names})", group, got.Count, string.Join(", ", got));
+        return (got, got.Count < n ? why ?? (n > target ? $"max {target} per spawn" : null) : null);
+    }
+
+    /// <summary>A group's bodies deposit and log out (whitelist remove follows each logout). Returns how many go.</summary>
+    public int ReleaseGroup(string group, string reason = "released") => ReleaseMembers(group, reason);
+
+    /// <summary>The accounts a group (or hive script) owns now, any state.</summary>
+    public IReadOnlyList<string> GroupMembers(string group) => Members(group);
+
     /// <summary>The accounts a hive script owns (any state).</summary>
     private List<string> Members(string id) =>
         Tree.All().Where(n => string.Equals(n.Crew, id, StringComparison.OrdinalIgnoreCase)).Select(n => n.Account).ToList();

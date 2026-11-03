@@ -6,6 +6,7 @@ export { WorldViewerEngine, type EngineOptions } from './render/engine';
 export { aimAt, botAlong, rayBox, outlineOf, type AimTarget, type AimBot } from './render/aim';
 export { WorldRuntime, type RuntimeOptions, type RuntimeMemory, type RuntimeView, type ViewSetup } from './render/runtime';
 export { registerThumbnail, ThumbnailView, type ThumbnailViewOptions, type ThumbnailHandle } from './render/thumbnails';
+export { BubbleLayer, ChatBubbles, BUBBLE, wrapText, cleanText, holdMs, bubbleAlpha, findSpeaker, linePx, stackOffsets, type BubbleKind, type BubbleMode, type BubbleMessage, type ShownBubble, type Speaker } from './render/bubbles';
 export * from './types';
 export { loadBundle, bundleUrls, type AssetBundle, type Pack, type Pack1122, type PackBeta, type PackAnim, type PackBiome } from './assets/bundle';
 export { normalizeIndex, normalizeEntities, normalizeOverlays, camelize } from './wire/normalize';

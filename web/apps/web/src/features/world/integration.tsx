@@ -12,7 +12,9 @@
  */
 import { useQueryClient } from '@tanstack/react-query';
 import type { WorldSource } from '@mineclaw/world-viewer';
+import type { Me } from '@mineclaw/contracts';
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { qk } from '@/lib/api/query';
 import { DotMap } from './DotMap';
 import type * as ViewerModule from './viewer-module';
 import { createWorldSource } from './WorldSource';
@@ -59,7 +61,10 @@ export function WorldHost({ children }: { children: ReactNode }) {
     void (async () => {
       const mod = await loadWorldViewer();
       let source: WorldSource | null = null;
-      if (mod) source = MOCK && process.env.NEXT_PUBLIC_MOCK_REAL_WORLD !== '1' ? await mod.loadMockSource() : createWorldSource(qc);
+      // Chat bubbles show whispers only when the signed-in user's player sent them (read from the auth query at the time of
+      // the line; lib/auth imports this module, so it is not imported back).
+      const getPlayer = () => qc.getQueryData<Me>(qk('auth.me'))?.player ?? null;
+      if (mod) source = MOCK && process.env.NEXT_PUBLIC_MOCK_REAL_WORLD !== '1' ? await mod.loadMockSource(getPlayer) : createWorldSource(qc, { player: getPlayer });
       if (live) setState({ mod, source, ready: true });
     })();
     return () => {

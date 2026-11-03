@@ -1972,6 +1972,17 @@ export class EntityLayer {
     return n;
   }
 
+  /** World height of the name label the last `showFor` left visible over a bot (by name) or a player (entity key); 0 = none.
+   * Chat bubbles sit above it. */
+  labelLift(key: string, bot: boolean): number {
+    if (bot) {
+      const o = this.botObjs.get(key);
+      return o?.label && o.label.visible && o.root.visible ? o.label.scale.y : 0;
+    }
+    const l = this.entLabels.get(key);
+    return l && l.sprite.visible ? l.sprite.scale.y : 0;
+  }
+
   /** Whether the last `showFor` drew `key` as a full model (true) or a LOD box (false); null = not drawn. */
   detailOf(key: string): boolean | null {
     return this.drawn.get(key)?.detail ?? null;

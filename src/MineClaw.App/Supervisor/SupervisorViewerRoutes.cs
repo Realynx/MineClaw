@@ -25,6 +25,8 @@ public sealed class SupervisorViewerOptions
     public int PerMinute { get; set; } = 12;
     /// <summary>The Design Studio (<c>/api/designer/*</c>, <see cref="DesignerRoutes"/>): on with the viewer unless turned off here.</summary>
     public MineClaw.Bot.Blueprints.DesignerOptions Designer { get; set; } = new();
+    /// <summary>Story Mode writes (<c>POST /api/story/*</c>, docs/web/story-mode.md); null = on whenever the viewer is.</summary>
+    public bool? AllowStory { get; set; }
 }
 
 /// <summary>"What is it doing right now" for one bot (<c>/api/viewer/now</c>); every part is null when unknown.</summary>

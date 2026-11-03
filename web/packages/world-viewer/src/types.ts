@@ -331,6 +331,18 @@ export interface WorldSource {
   /** Push hook (the bridge's SSE `blocks` event): call `onBlocks` per delta, and `onReconnect` after the stream dropped and came
    * back (the viewer then refetches through the index). Returns an unsubscribe function. */
   subscribe?(onBlocks: (d: BlockDeltas) => void, onReconnect?: () => void): () => void;
+  /** Push hook for chat bubbles: call `onSay` for every line a player or bot says (already filtered: no private speech, no
+   * system lines). The viewer shows it as a speech bubble over the body of that name in every view. Returns an unsubscribe
+   * function. Optional: `WorldRuntime.say` does the same imperatively. */
+  chat?(onSay: (line: ChatSay) => void): () => void;
+}
+
+/** One spoken line for a chat bubble: the speaker's name (bot name or short key, or a player's username; any case). */
+export interface ChatSay {
+  from: string;
+  text: string;
+  /** chat (a player in game), said (a bot), whisper, viewer (sent from the web as the linked player). Default chat. */
+  kind?: 'chat' | 'said' | 'whisper' | 'viewer';
 }
 
 /** follow (orbit), fly, iso (narrow-FOV dolly, 35° down), top (the same looking straight down, north up: the C# top panel). */
@@ -359,6 +371,8 @@ export interface LayerToggles {
   changes: boolean;
   /** Reading aids around the followed bot: ground grid with coordinate rulers, distance rings, compass. */
   aids: boolean;
+  /** Chat bubbles over the heads of bots and players that speak. */
+  bubbles: boolean;
 }
 
 export const DEFAULT_LAYERS: LayerToggles = {
@@ -375,6 +389,7 @@ export const DEFAULT_LAYERS: LayerToggles = {
   staleness: true,
   changes: true,
   aids: false,
+  bubbles: true,
 };
 
 /** What `onPick` reports for a clicked block. */
