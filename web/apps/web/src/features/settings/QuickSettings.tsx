@@ -6,9 +6,10 @@
  */
 import { Gauge } from 'lucide-react';
 import Link from 'next/link';
+import { useContext } from 'react';
 import { Popover } from 'radix-ui';
 import { Button } from '@/components/ui/primitives';
-import { Segmented, Switch } from '@/components/ui/overlays';
+import { PortalContainer, Segmented, Switch } from '@/components/ui/overlays';
 import { cn } from '@/lib/utils';
 import { PRESET_LABELS, concreteFields, type Preset } from './schema';
 import { detectedProfile, setField, setPerfOverlay, setPreset, useRendererProbe, useViewerSettings, useViewerStatus } from './store';
@@ -16,6 +17,7 @@ import { detectedProfile, setField, setPerfOverlay, setPreset, useRendererProbe,
 const QUICK: Preset[] = ['auto', 'low', 'medium', 'high'];
 
 export function ViewerQualityButton({ compact, className }: { compact?: boolean; className?: string }) {
+  const container = useContext(PortalContainer) ?? undefined; // inside a full-screen view (Story Mode), else document.body
   return (
     <Popover.Root>
       <Popover.Trigger asChild>
@@ -34,7 +36,7 @@ export function ViewerQualityButton({ compact, className }: { compact?: boolean;
           </Button>
         )}
       </Popover.Trigger>
-      <Popover.Portal>
+      <Popover.Portal container={container}>
         <Popover.Content
           align="start"
           sideOffset={6}
