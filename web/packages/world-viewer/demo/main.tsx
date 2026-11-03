@@ -1,7 +1,14 @@
 import { StrictMode, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { WorldThumbnail, WorldViewer, WorldViewerProvider, type CameraMode, type LayerToggles, type PickedBlock, type ViewerStats, type WorldViewerHandle, type XRayMode, DEFAULT_LAYERS } from '../src';
+import { WorldThumbnail, WorldViewer, WorldViewerProvider, setViewerQuality, type CameraMode, type LayerToggles, type PickedBlock, type ViewerStats, type WorldViewerHandle, type XRayMode, DEFAULT_LAYERS } from '../src';
 import { createFixtureSource } from '../src/testing';
+
+// ?q={"entityDistance":48,...} applies viewer settings (scripts/perf.mjs --settings); window.__quality changes them live.
+{
+  const q = new URLSearchParams(location.search).get('q');
+  if (q) setViewerQuality(JSON.parse(q));
+  (window as unknown as { __quality: typeof setViewerQuality }).__quality = setViewerQuality;
+}
 
 function App() {
   const params = new URLSearchParams(location.search);

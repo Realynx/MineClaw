@@ -16,6 +16,9 @@ import { usePrefs } from '@/lib/prefs';
 import { bytes, cn, dimName, num } from '@/lib/utils';
 import { Button, Checkbox, Input, Select } from '@/components/ui/primitives';
 import { Segmented, Tooltip } from '@/components/ui/overlays';
+import { ViewerQualityButton } from '@/features/settings/QuickSettings';
+import { concreteFields } from '@/features/settings/schema';
+import { detectedProfile, setField, useRendererProbe, useViewerSettings } from '@/features/settings/store';
 import { DotMap } from './DotMap';
 import { useWorldHost } from './integration';
 import { ChatOverlay, Crosshair as AimCross, SelectionBar, TargetReadout } from './InWorld';
@@ -79,7 +82,11 @@ export function WorldPane({
   const viewer = useRef<WorldViewerHandle>(null);
   const [mode, setMode] = useState<CameraMode>(follow ? 'follow' : 'fly');
   const [xray, setXray] = useState<XRayMode>('auto');
-  const [distance, setDistance] = useState(128);
+  // The draw distance is the device's viewer setting (Settings → Viewer quality): this slider edits it for every view.
+  const viewerSettings = useViewerSettings();
+  const probe = useRendererProbe();
+  const distance = concreteFields(viewerSettings, detectedProfile(probe)).drawDistance;
+  const setDistance = (v: number) => setField('drawDistance', v, probe);
   const [layers, setLayers] = useState<Partial<LayerToggles>>({});
   const [hud, setHud] = useState(true);
   const [picked, setPicked] = useState<PickedBlock | null>(null);
@@ -320,13 +327,14 @@ export function WorldPane({
               </div>
               <div>
                 <label className="mb-1 flex justify-between text-xs text-muted" htmlFor="dist">
-                  Draw distance <span className="tabular text-fg">{distance} blocks</span>
+                  Draw distance (all views) <span className="tabular text-fg">{distance} blocks</span>
                 </label>
                 <input id="dist" type="range" min={32} max={256} step={16} value={distance} onChange={(e) => setDistance(Number(e.target.value))} className="w-full accent-[var(--accent)]" />
               </div>
             </Popover.Content>
           </Popover.Portal>
         </Popover.Root>
+        <ViewerQualityButton />
         <form onSubmit={(e) => void go(e)} className="flex items-center gap-1">
           <Input
             value={gotoText}
@@ -366,7 +374,6 @@ export function WorldPane({
           layers={layers}
           cameraMode={mode}
           xray={xray}
-          drawDistance={distance}
           onPick={setPicked}
           onStats={devDetails ? setStats : undefined}
           onCameraModeChange={setMode}

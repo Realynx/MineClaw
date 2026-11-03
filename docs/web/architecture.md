@@ -319,3 +319,58 @@ server.
   - Software rendering is detected automatically and selects a profile tuned by a frame-time controller that aims for
     25 ms per frame.
   - Benchmarks run in Chromium with `--disable-gpu`.
+
+## Viewer settings (added 2026-11-03)
+
+One per-device panel decides how every world view of the site renders: Settings (the sidebar footer's gear, the command
+palette, `/settings` → "Viewer quality"), plus a quick popover in the viewers' own toolbars (the Live world pane's "Quality",
+the gauge in Story Mode's control cluster) that links to it. Graphics depend on the machine, so the settings live in
+`localStorage` (`mcx-viewer-settings`), never on the server; every access is guarded and the defaults apply for the session
+when storage is unavailable. Other tabs follow through the `storage` event.
+- **One source of truth.** `apps/web/src/features/settings/schema.ts`: a zod schema, versioned (`v: 1`). An unknown (newer)
+  version falls back to the defaults, an unversioned flat object is read as Custom fields, and each field is validated and
+  clamped on its own (a bad field takes its default, the rest are kept). `store.ts` persists it and pushes the resolved values
+  into the viewer's module-level quality store (`setViewerQuality`, `@mineclaw/world-viewer/settings`: no three.js, so the
+  panel never loads the renderer). Every `WorldRuntime` of the page (the hive runtime, Story Mode's view, the Studio's private
+  runtime) re-reads that store at the start of its next frame when its revision moved: changes apply live, no reload.
+- **Presets.** Auto (the default) is the adaptive profile the viewer detects (software WebGL or GPU) with entities as far as
+  the ground; Low, Medium and High are fixed field sets; editing any field switches to Custom (from the values shown, so the
+  picture never jumps). The panel recommends Auto on software WebGL and High with a GPU.
+- **The settings and how each is applied.**
+  - Draw distance (32–256, Auto 128): the draw distance of interactive perspective views, and the quality controller's
+    `maxDraw`. A view's own `drawDistance` prop is now only a cap below it (Story Mode 112, the Studio 96). The Live pane's
+    old slider edits this setting.
+  - Map ground cover (64–192, Auto 192): the cap of `CameraRig.groundCover` for top-down / iso views (192 is also the most the
+    section store holds comfortably).
+  - Entity distance: "Same as ground" (default) or 16–256 blocks. Top-down / iso views measure it across the ground from the
+    point they look at (their camera hangs hundreds of blocks above it, so the old camera distance hid every mob of a
+    zoomed-out map); other views from the camera. "Same as ground" is the picture's cover in top-down / iso and the drawn
+    distance otherwise; a number never reaches past the ground. Far entities stay cheap: LOD boxes (one instanced draw)
+    beyond the model distance, frustum culling per view, and at most 1500 far boxes per view (bots always drawn).
+  - Item drops and XP orbs: hidden from every view when off.
+  - Render scale (0.5–2 render pixels per CSS pixel, never above the screen's ratio; Auto: 1 software, 2 GPU): the profile's
+    `pixelRatioCap`; the adaptive controller scales below it.
+  - Frame rate cap (30 / 40 / 60 / unlimited): whole animation frames are skipped by a frame limiter (average held at the cap,
+    no burst after a stall).
+  - Adaptive quality: whether the controller may lower resolution, then distance, to hold its target (off: full resolution and
+    distance, always).
+  - Animated textures (the atlas animation pass stops on its current frame), clouds (Auto: off in software), weather (rain,
+    snow, the rainy sky), ambient occlusion (a `uAo` shader uniform over the mesher's corner term: no re-mesh), fog (pushed out
+    of reach), detailed models (the entity layer's model distance; Auto 24 software / 64 GPU), name tags, chat bubbles, x-ray
+    silhouettes.
+  - Frame rate overlay: a small fps / frame time / resolution / distance / entity count readout in the top-right corner of
+    every interactive view (`WorldViewer`). The panel also shows the measured fps of the last interactive view and whether
+    WebGL is software-rendered (`WEBGL_debug_renderer_info`: SwiftShader, llvmpipe and the like).
+  - Smooth lighting and antialiasing are not offered: the first is baked into the meshes in the worker, the second is fixed when
+    the WebGL context is created.
+- **Per-view overrides.** Bot-card thumbnails keep their own 40-block distance and low rate (the entity distance and draw
+  distance settings only ever lower them; the effect toggles apply). The Design Studio canvas caps its draw distance at 96 (its
+  plot is 64 × 64). Story Mode caps its perspective distance at 112; its top-down picture is governed by the ground cover.
+- **Debug hook.** In mock mode `window.__mcxViewer` exposes the applied quality, the stored settings and the live viewer status
+  (fps, entity reach, entities drawn) for the e2e (`e2e/settings.spec.ts`).
+- **Measured** (`scripts/perf.mjs --profile software`, Chromium with SwiftShader, dense b1.8.1 fixture, 1280 × 800, Auto,
+  2026-11-03): Live follow view 48 fps (p10 45); Story top view at the default zoom (44) 59 fps with every mob drawn; Story
+  at the farthest zoom (112) with entities "Same as ground" 32 fps with 20 mobs and 30 fps with 200 (205 entities drawn, reach
+  102 blocks), against 29.6 fps with the entity distance at 16: the entities cost nothing measurable there. The farthest zoom
+  stays under 40 fps on software WebGL because of the ground it draws (214k triangles, 579 draws), as before this change
+  (33 fps measured when the ground cover was introduced); a lower map ground cover or the Low preset trades picture for it.
