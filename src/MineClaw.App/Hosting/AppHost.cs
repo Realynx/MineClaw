@@ -39,6 +39,9 @@ public static class AppHost
             return ExitCodes.Config;
         }
         var settings = AppSettings.Bind(config, root);
+        // Hive processes started from here read the same override file (the web's Administration page writes it).
+        if (cli.CloneName == null && SettingsOverrideFile.Of(config) is { } overrideLayer)
+            Environment.SetEnvironmentVariable(SettingsOverrideFile.EnvVar, overrideLayer.FilePath);
         var (mc, agentOptions, botOptions, host, hive) = (settings.Mc, settings.Agent, settings.Bot, settings.Host, settings.Hive);
         var (telemetryOptions, supervisorOptions, bodiesOptions) = (settings.Telemetry, settings.Supervisor, settings.Bodies);
         var (logDir, telemetryDir) = (settings.LogDir, settings.TelemetryDir);
@@ -70,9 +73,12 @@ public static class AppHost
         var fileLog = new FileLoggerProvider(logDir);
         var ring = new RingLoggerProvider();
         var format = AppLogging.ResolveFormat(host.LogFormat, TerminalDetect.UnderJournal());
+        AppLogging.SetConsoleLevel(host.ConsoleLogLevel);
         var loggers = AppLogging.Create(useTui, format, fileLog, ring);
         var log = loggers.CreateLogger("MineClaw.App");
         using var signals = new ShutdownSignals(sig => log.LogInformation("{Signal}: shutting down", sig));
+        // The web's Administration page (Supervisor/Admin): the config it edits on top of, and its graceful restart (systemd restarts us).
+        if (cli.CloneName == null) Supervisor.Admin.AdminSettingsWiring.Configure(config, settings, signals.Request);
         log.LogInformation("MineClaw starting (root {Root}, data {Data}, log {Log}, console {Mode}: {Why})", root, agentOptions.DataDirectory, logDir,
             useTui ? "tui" : "headless/" + format, why);
         using var minutesTimer = cli.Minutes is { } minutes ? new Timer(_ => signals.Request("--minutes elapsed"), null, TimeSpan.FromMinutes(minutes), Timeout.InfiniteTimeSpan) : null;
@@ -379,6 +385,8 @@ public static class AppHost
             // /api/scripts*, /api/bodies/{name}/script: the saved library and the live script debugger (read-only, token or 403)
             Scripts = new Supervisor.SupervisorScriptRoutes(scriptData, o.Token),
         };
+        // /api/admin/settings*, /api/admin/ollama/*, /api/admin/restart*: the web's Administration page (AllowAdminWrites + token + admin identity)
+        server.Settings = Supervisor.Admin.AdminSettingsWiring.Routes(o, bot, client, allBodies, main, log);
         // /api/bodies/{name}/vision*: the sheets each body's models got (clones over IPC) and on-demand renders (token or 403)
         server.HiveTree = () => mainHive?.Hierarchy?.Snapshot(); // the Explorer's Live Hive tree (owner → children, kind, brain)
         server.Vision = new Supervisor.SupervisorVisionRoutes(new Supervisor.LiveVisionData(hub, bot, main, () => mainHive?.Supervisor, log), o.Token, server.Gate);

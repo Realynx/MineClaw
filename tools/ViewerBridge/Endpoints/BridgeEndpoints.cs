@@ -274,6 +274,9 @@ public static class BridgeEndpoints
             return Json(await AdminViews.GroomAsync(await banks.GetAsync(ctx.RequestAborted), cfg, body, ctx.RequestAborted));
         });
 
+        // ---------------- administration: the bot's own settings, per node (admin role; identity forwarded) ----------------
+        SettingsProxy.Map(v1);
+
         // ---------------- supervisor writes with identity ----------------
         v1.MapPost("/sup/viewer/chat", async (HttpContext ctx, SupervisorClient sup) =>
         {

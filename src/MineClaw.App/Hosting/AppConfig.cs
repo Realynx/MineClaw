@@ -14,6 +14,9 @@ public sealed class HostSettings
     public double PreLogoutSeconds { get; set; } = 0;
     /// <summary>auto | simple | systemd | json (auto = systemd under journald, else simple; colours only on a TTY).</summary>
     public string LogFormat { get; set; } = "auto";
+    /// <summary>Lowest level written to the console/journal: Trace | Debug | Information | Warning | Error (the file log keeps Debug).
+    /// Changeable live from the web's Administration page.</summary>
+    public string ConsoleLogLevel { get; set; } = "Information";
     public TuiSettings Tui { get; set; } = new();
 }
 
@@ -28,7 +31,8 @@ public sealed class TuiSettings
 /// <summary>
 /// Layered configuration. Lowest to highest: appsettings.json next to the exe → src/MineClaw.App/appsettings.json in a
 /// repo checkout → <c>--config</c> file (or env MINECLAW_CONFIG) → plain env vars (legacy, e.g. Agent__Llm__ApiKey) →
-/// <c>MINECLAW_</c>-prefixed env vars (e.g. MINECLAW_Agent__Llm__ApiKey; what a systemd EnvironmentFile sets) → CLI paths.
+/// <c>MINECLAW_</c>-prefixed env vars (e.g. MINECLAW_Agent__Llm__ApiKey; what a systemd EnvironmentFile sets) → the web
+/// Administration page's override file (<see cref="SettingsOverrideFile"/>; the admin's latest choice wins over env) → CLI paths.
 /// </summary>
 public static class AppConfig
 {
@@ -46,6 +50,8 @@ public static class AppConfig
         if (configPath != null) b.AddJsonFile(configPath, optional: false);
         if (env == null) b.AddEnvironmentVariables().AddEnvironmentVariables("MINECLAW_");
         else b.AddInMemoryCollection(Prefixed(env));
+        if (SettingsOverrideFile.ResolvePath(Get(env, SettingsOverrideFile.EnvVar), cli.DataDir, b.Build(), root, testSeam: env != null) is { } overridePath)
+            b.Add(new SettingsOverrideSource(overridePath));
         var overrides = new Dictionary<string, string?>();
         if (cli.DataDir != null) overrides["Agent:DataDirectory"] = cli.DataDir;
         if (cli.LogDir != null) overrides["Host:LogDirectory"] = cli.LogDir;

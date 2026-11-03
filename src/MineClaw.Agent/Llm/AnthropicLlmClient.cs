@@ -26,6 +26,7 @@ public sealed class AnthropicLlmClient : ILlmClient
     {
         _options = options;
         IAnthropicClient baseClient = string.IsNullOrEmpty(options.ApiKey) ? new AnthropicClient() : new AnthropicClient { ApiKey = options.ApiKey };
+        if (!string.IsNullOrWhiteSpace(options.BaseUrl)) baseClient = baseClient.WithOptions(o => o with { BaseUrl = options.BaseUrl.Trim() });
         if (http != null) baseClient = baseClient.WithOptions(o => o with { HttpClient = http });
         _client = baseClient.WithOptions(o => o with
         {

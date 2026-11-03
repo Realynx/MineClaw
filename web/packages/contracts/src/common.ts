@@ -77,6 +77,7 @@ export const ApiError = z.object({
       'upstream_error',
       'busy',
       'internal',
+      'step_up_required',
     ])
     .optional(),
   retryAfterMs: z.number().int().nonnegative().optional().describe('set on 429/503 together with a Retry-After header'),

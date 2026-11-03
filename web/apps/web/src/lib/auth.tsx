@@ -94,7 +94,8 @@ export function AuthGate({
   useEffect(
     () =>
       onUnauthorized((route) => {
-        if (route === 'auth.login' || route === 'auth.csrf') return;
+        // A wrong step-up code is a 401 too, but the session is fine.
+        if (route === 'auth.login' || route === 'auth.csrf' || route === 'auth.stepUp') return;
         if (qc.getQueryData(meKey)) setExpired(true);
       }),
     [qc],

@@ -99,6 +99,9 @@ public sealed class LlmOptions
     /// <summary>API key; null means the SDK default (ANTHROPIC_API_KEY env var).</summary>
     public string? ApiKey { get; set; }
 
+    /// <summary>Anthropic API base URL (a gateway or proxy in front of the API); empty = the SDK default (api.anthropic.com).</summary>
+    public string? BaseUrl { get; set; }
+
     public int MaxRetries { get; set; } = 2;
     public int TimeoutSeconds { get; set; } = 60;
     /// <summary>

@@ -10,6 +10,7 @@ import {
   Radio,
   Search,
   ShieldCheck,
+  SlidersHorizontal,
   Smile,
   type LucideIcon,
 } from 'lucide-react';
@@ -60,6 +61,14 @@ export const NAV: NavGroup[] = [
     label: 'Admin',
     items: [
       { href: '/admin', label: 'Edits & audit', icon: ShieldCheck, description: 'Rebuilds, backups and audit logs', access: 'admin', keywords: ['audit', 'rebuild', 'backup'] },
+      {
+        href: '/administration',
+        label: 'Administration',
+        icon: SlidersHorizontal,
+        description: "The bot's own settings: API keys, models, Ollama, restart",
+        access: 'admin',
+        keywords: ['settings', 'api keys', 'models', 'ollama', 'restart', 'config'],
+      },
     ],
   },
 ];

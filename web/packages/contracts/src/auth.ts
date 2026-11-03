@@ -47,8 +47,31 @@ export const Me = z.object({
   sessionCreatedAt: IsoDateTime,
   idleExpiresAt: IsoDateTime.describe('12 h idle timeout, slides on activity'),
   absoluteExpiresAt: IsoDateTime.describe('7 d absolute timeout'),
+  stepUpUntil: IsoDateTime.nullish().describe('a fresh step-up (re-entered TOTP or password) is valid until then; null = none'),
 });
 export type Me = z.infer<typeof Me>;
+
+/** How long a step-up lasts: admin settings writes, provider tests and restarts need one this fresh. */
+export const STEP_UP_MS = 5 * 60_000;
+
+/**
+ * POST /api/auth/step-up: re-confirms the signed-in user before a sensitive action. With TOTP enrolled the current `code`
+ * is required (a password is refused); without TOTP the `password`. Rate limited and locked out like login.
+ */
+export const StepUpRequest = z
+  .object({
+    code: z
+      .string()
+      .regex(/^\d{6}$/)
+      .optional(),
+    password: z.string().min(1).max(256).optional(),
+  })
+  .strict()
+  .refine((b) => (b.code === undefined) !== (b.password === undefined), { message: 'send either code or password' });
+export type StepUpRequest = z.infer<typeof StepUpRequest>;
+
+export const StepUpResponse = z.object({ ok: z.literal(true), stepUpUntil: IsoDateTime });
+export type StepUpResponse = z.infer<typeof StepUpResponse>;
 
 /** GET /api/auth/csrf: the token to send as `X-CSRF-Token` on every non-GET. Creates an anonymous pre-session if needed. */
 export const CsrfResponse = z.object({ csrfToken: z.string().min(16) });
@@ -158,6 +181,8 @@ export const WebAuditKind = z.enum([
   'admin_other',
   'design',
   'story',
+  'step_up',
+  'admin_settings',
 ]);
 export type WebAuditKind = z.infer<typeof WebAuditKind>;
 

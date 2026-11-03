@@ -25,6 +25,22 @@ import {
   RebuildStarted,
 } from './admin.js';
 import {
+  AdminNodeParams,
+  AdminNodesResponse,
+  AdminSettingsResponse,
+  AdminSettingsSaveRequest,
+  AdminSettingsSaveResponse,
+  OllamaModelsQuery,
+  OllamaModelsResponse,
+  ProviderTestRequest,
+  ProviderTestResponse,
+  RestartRequest,
+  RestartResponse,
+  RestartSafety,
+  SettingsAuditQuery,
+  SettingsAuditResponse,
+} from './adminSettings.js';
+import {
   CsrfResponse,
   LoginRequest,
   LoginResponse,
@@ -33,6 +49,8 @@ import {
   type RouteAccess,
   SetupRequest,
   SetupStatus,
+  StepUpRequest,
+  StepUpResponse,
   TotpEnrollRequest,
   TotpEnrollResponse,
   TotpVerifyRequest,
@@ -222,6 +240,11 @@ export interface RouteDef {
   readonly summary: string;
   /** Nest → bridge timeout when it isn't `Bridge:TimeoutMs` (a Design Studio message runs a model tool loop). */
   readonly timeoutMs?: number;
+  /**
+   * Needs a fresh step-up (`POST /api/auth/step-up` within `STEP_UP_MS`) on top of the role: 403 `step_up_required` otherwise.
+   * The web audit records only the keys and the reason of such a call, never a value.
+   */
+  readonly stepUp?: boolean;
 }
 
 const NATIVE = 'bridge-native';
@@ -323,6 +346,17 @@ export const ROUTES = {
     supervisor: null,
     audit: 'totp_verify',
     summary: 'Verifies a code and activates the pending TOTP secret.',
+  }),
+  'auth.stepUp': post('/api/auth/step-up', {
+    access: 'authenticated',
+    body: StepUpRequest,
+    response: StepUpResponse,
+    responseKind: 'json',
+    bridge: null,
+    supervisor: null,
+    audit: 'step_up',
+    summary:
+      'Re-confirms the user (the TOTP code, or the password without TOTP) for 5 minutes of sensitive actions; rate limited and locked out like login.',
   }),
   'audit.list': get('/api/audit', {
     access: 'admin',
@@ -694,6 +728,99 @@ export const ROUTES = {
     supervisor: NATIVE,
     audit: 'admin_other',
     summary: 'Dry run of the grooming pipeline (optional LLM rewrite). Phase 2: may 501 until the bridge ports it.',
+  }),
+
+  // ---------- administration: the bot's own settings, per node (supervisor through the bridge's node proxy) ----------
+  'admin.nodes': get('/api/admin/nodes', {
+    access: 'admin',
+    response: AdminNodesResponse,
+    responseKind: 'json',
+    bridge: b('/v1/admin/nodes'),
+    supervisor: '/api/admin/settings/node',
+    audit: null,
+    summary: "The bot nodes this explorer administers (one today: `local`, the bridge's supervisor).",
+  }),
+  'admin.settings': get('/api/admin/nodes/:node/settings', {
+    access: 'admin',
+    params: AdminNodeParams,
+    response: AdminSettingsResponse,
+    responseKind: 'json',
+    bridge: b('/v1/admin/nodes/{node}/settings'),
+    supervisor: '/api/admin/settings',
+    audit: null,
+    summary: 'The settings registry with running values, sources and live/restart; secrets only as set + last four.',
+  }),
+  'admin.settingsSave': post('/api/admin/nodes/:node/settings', {
+    access: 'admin',
+    stepUp: true,
+    params: AdminNodeParams,
+    body: AdminSettingsSaveRequest,
+    response: AdminSettingsSaveResponse,
+    responseKind: 'json',
+    bridge: b('/v1/admin/nodes/{node}/settings', 'POST'),
+    supervisor: 'PUT /api/admin/settings',
+    audit: 'admin_settings',
+    summary:
+      'All-or-nothing: validates every change, writes the override file (backup first), applies live settings; lists what needs a restart.',
+  }),
+  'admin.settingsTest': post('/api/admin/nodes/:node/settings/test', {
+    access: 'admin',
+    stepUp: true,
+    params: AdminNodeParams,
+    body: ProviderTestRequest,
+    response: ProviderTestResponse,
+    responseKind: 'json',
+    bridge: b('/v1/admin/nodes/{node}/settings/test', 'POST'),
+    supervisor: '/api/admin/settings/test',
+    audit: 'admin_settings',
+    timeoutMs: 45_000,
+    summary: 'Tests a provider without saving: an Anthropic key against a 5.5-generation model (free models call), an Ollama endpoint (`/api/tags`).',
+  }),
+  'admin.ollamaModels': get('/api/admin/nodes/:node/ollama/models', {
+    access: 'admin',
+    params: AdminNodeParams,
+    query: OllamaModelsQuery,
+    response: OllamaModelsResponse,
+    responseKind: 'json',
+    bridge: b('/v1/admin/nodes/{node}/ollama/models'),
+    supervisor: '/api/admin/ollama/models',
+    audit: null,
+    timeoutMs: 30_000,
+    summary: "An Ollama endpoint's models (`/api/tags`, capabilities from `/api/show`); the running endpoint when none is given.",
+  }),
+  'admin.restartSafety': get('/api/admin/nodes/:node/restart/safety', {
+    access: 'admin',
+    params: AdminNodeParams,
+    response: RestartSafety,
+    responseKind: 'json',
+    bridge: b('/v1/admin/nodes/{node}/restart/safety'),
+    supervisor: '/api/admin/restart/safety',
+    audit: null,
+    summary: 'Whether a restart is safe now: no body exposed at night, none at a ledge on a high build.',
+  }),
+  'admin.restart': post('/api/admin/nodes/:node/restart', {
+    access: 'admin',
+    stepUp: true,
+    params: AdminNodeParams,
+    body: RestartRequest,
+    response: RestartResponse,
+    responseKind: 'json',
+    status: 202,
+    bridge: b('/v1/admin/nodes/{node}/restart', 'POST'),
+    supervisor: '/api/admin/restart',
+    audit: 'admin_settings',
+    summary: 'Graceful restart (systemd starts it again); 409 while unsafe unless `force` with a reason.',
+  }),
+  'admin.settingsAudit': get('/api/admin/nodes/:node/audit', {
+    access: 'admin',
+    params: AdminNodeParams,
+    query: SettingsAuditQuery,
+    response: SettingsAuditResponse,
+    responseKind: 'json',
+    bridge: b('/v1/admin/nodes/{node}/audit'),
+    supervisor: '/api/admin/settings/audit',
+    audit: null,
+    summary: "The node's settings audit: who changed which keys when (never values), tests and restarts.",
   }),
 
   // ---------- live hive (supervisor pass-through) ----------

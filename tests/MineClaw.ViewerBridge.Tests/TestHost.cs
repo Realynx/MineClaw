@@ -15,7 +15,8 @@ using MineClaw.ViewerBridge.Security;
 namespace MineClaw.ViewerBridge.Tests;
 
 /// <summary>A request the fake supervisor saw.</summary>
-public sealed record SeenRequest(string Method, string Target, string? Token, string Body);
+/// <param name="User">The identity headers the node proxy forwards (<c>X-MCX-User</c>, <c>X-MCX-Roles</c>); null when absent.</param>
+public sealed record SeenRequest(string Method, string Target, string? Token, string Body, string? User = null, string? Roles = null);
 
 /// <summary>
 /// A stand-in for the bot's Supervisor on a free loopback port: canned replies per path (status, viewer routes, admin, world) and
@@ -48,7 +49,8 @@ public sealed class FakeSupervisor : IAsyncDisposable
             using var sr = new StreamReader(ctx.Request.Body);
             var body = await sr.ReadToEndAsync();
             var target = ctx.Request.Path.Value + ctx.Request.QueryString.Value;
-            self!.Seen.Enqueue(new SeenRequest(ctx.Request.Method, target, ctx.Request.Headers["X-Supervisor-Token"].FirstOrDefault(), body));
+            self!.Seen.Enqueue(new SeenRequest(ctx.Request.Method, target, ctx.Request.Headers["X-Supervisor-Token"].FirstOrDefault(), body,
+                ctx.Request.Headers["X-MCX-User"].FirstOrDefault(), ctx.Request.Headers["X-MCX-Roles"].FirstOrDefault()));
             if (self.Routes.TryGetValue(ctx.Request.Path.Value ?? "", out var h))
             {
                 var (status, type, bytes) = h(ctx.Request);

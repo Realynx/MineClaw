@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const MIGRATIONS: Record<number, string> = {
   1: `
@@ -61,6 +61,10 @@ const MIGRATIONS: Record<number, string> = {
     );
     create index web_audit_kind on web_audit(kind, id);
     create index web_audit_user on web_audit(username, id);
+  `,
+  // Step-up (re-entered TOTP or password) for admin settings writes: when this session last confirmed its user.
+  2: `
+    alter table sessions add column step_up_at integer;
   `,
 };
 

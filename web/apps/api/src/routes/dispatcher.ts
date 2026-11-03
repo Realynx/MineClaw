@@ -10,6 +10,7 @@ import {
   REQUEST_OPAQUE_KEYS,
   ROUTES,
   ViewMeta,
+  adminSettingsAuditSummary,
   bridgePath,
   hasRole,
   parseBridgeJson,
@@ -127,6 +128,7 @@ export class RouteDispatcher {
         d.auth.totpEnroll(req, ctx, signed(state), input.body as never),
       'auth.totpVerify': (req, _res, ctx, state, input) =>
         Promise.resolve(d.auth.totpVerify(req, ctx, signed(state), input.body as never)),
+      'auth.stepUp': (req, _res, ctx, state, input) => d.auth.stepUp(req, ctx, signed(state), input.body as never),
       'audit.list': (_req, _res, _ctx, _state, input) => Promise.resolve(d.audit.list(input.query as never)),
     };
     for (const id of Object.keys(ROUTES) as RouteId[]) {
@@ -142,6 +144,8 @@ export class RouteDispatcher {
       const state = this.d.auth.resolve(req, ctx);
       this.checkAccess(route, state);
       if (route.method !== 'GET') this.checkCsrf(req, state);
+      // Admin settings writes, provider tests and restarts: a fresh step-up on top of the role (after CSRF, before the body).
+      if (route.stepUp && !this.d.auth.steppedUp(state)) throw Errors.stepUpRequired();
       const input = await this.parseInput(route, req);
       if (route.bridge === null) {
         const out = await this.native[id]!(req, res, ctx, state, input);
@@ -265,6 +269,8 @@ export class RouteDispatcher {
 
   private auditSummary(id: RouteId, input: Input): string {
     if (id === 'bots.chat') return (input.body as { text: string }).text;
+    // Step-up routes may carry secrets (API keys): only the keys and the reason are recorded, never a value.
+    if (ROUTES[id].stepUp) return clip(`${id} ${adminSettingsAuditSummary(input.body)}`);
     const body = input.body === undefined ? '' : ` ${JSON.stringify(input.body)}`;
     return clip(`${id}${body}`);
   }

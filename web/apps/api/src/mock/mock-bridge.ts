@@ -4,7 +4,7 @@
  * snake→camel, validation) runs exactly as against the real bridge.
  *
  * - Verifies every request's HMAC signature, skew and nonce (401 otherwise) and enforces the bridge's identity rules
- *   (admin role for `/v1/sup/admin/*`, a player for chat, no `player`/`allow_commands` in the chat body).
+ *   (admin role for `/v1/sup/admin/*` and `/v1/admin/nodes*`, a player for chat, no `player`/`allow_commands` in the chat body).
  * - Routes are generated from the contracts `ROUTES` bridge targets, so new routes are served without code changes:
  *   data comes from the contracts test fixtures (snake_case, realistic) or, when a route has none, is generated from its
  *   response schema. Binary routes serve real PNGs, MCWC v1 chunk replies and a `.mcshard` zip.
@@ -656,7 +656,7 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
         const path = url.pathname;
         if (path === '/v1/health') return send(res, { json: { ok: true, version: 'mock', supervisor: 'up' } });
         if (path === '/v1/live/stream' && req.method === 'GET') return stream(req, res);
-        if (path.startsWith('/v1/sup/admin/') && !v.identity.roles.split(',').includes('admin')) {
+        if ((path.startsWith('/v1/sup/admin/') || path.startsWith('/v1/admin/nodes')) && !v.identity.roles.split(',').includes('admin')) {
           return send(res, { status: 403, json: { error: 'admin role required', code: 'forbidden' } });
         }
         for (const m of matchers) {

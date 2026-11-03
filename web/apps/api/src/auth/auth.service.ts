@@ -5,15 +5,18 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { StatementSync } from 'node:sqlite';
-import type {
-  CsrfResponse,
-  LoginRequest,
-  LoginResponse,
-  Me,
-  TotpEnrollRequest,
-  TotpEnrollResponse,
-  TotpVerifyRequest,
-  TotpVerifyResponse,
+import {
+  STEP_UP_MS,
+  type CsrfResponse,
+  type LoginRequest,
+  type LoginResponse,
+  type Me,
+  type StepUpRequest,
+  type StepUpResponse,
+  type TotpEnrollRequest,
+  type TotpEnrollResponse,
+  type TotpVerifyRequest,
+  type TotpVerifyResponse,
 } from '@mineclaw/contracts';
 import type { AuditService } from '../audit/audit.service.js';
 import type { Clock } from '../common/clock.js';
@@ -92,7 +95,65 @@ export class AuthService {
       sessionCreatedAt: new Date(s.createdAt).toISOString(),
       idleExpiresAt: new Date(Math.min(s.lastSeenAt + s.idleMs, s.absoluteExpiresAt)).toISOString(),
       absoluteExpiresAt: new Date(s.absoluteExpiresAt).toISOString(),
+      stepUpUntil: this.sessions.steppedUp(s, STEP_UP_MS) ? new Date(s.stepUpAt! + STEP_UP_MS).toISOString() : null,
     };
+  }
+
+  /** Whether the request's session has a fresh step-up (routes with `stepUp` need one). */
+  steppedUp(state: AuthState): boolean {
+    return this.sessions.steppedUp(state.session, STEP_UP_MS);
+  }
+
+  /**
+   * POST /api/auth/step-up: re-confirms the signed-in user for `STEP_UP_MS`. With TOTP enrolled only the current code counts
+   * (a password is refused, so a stolen session + password is not enough); without TOTP the password. Failures count toward
+   * the same lockout as login; every attempt is audited (never the code or the password).
+   */
+  async stepUp(req: IncomingMessage, ctx: RequestContext, state: Required<AuthState>, body: StepUpRequest): Promise<StepUpResponse> {
+    const user = state.user;
+    const wait = this.attempts.hit(ctx.ip);
+    if (wait > 0) throw Errors.rateLimited(wait, 'too many attempts');
+    const k = LoginLimiter.keys(ctx.ip, user.username);
+    const keys = [k.ip, k.user];
+    const lockedMs = this.limiter.lockedFor(keys);
+    if (lockedMs > 0) throw Errors.locked(lockedMs);
+    const base = {
+      ip: ctx.ip,
+      userAgent: header(req, 'user-agent'),
+      username: user.username,
+      player: user.player,
+      method: 'POST',
+      route: 'auth.stepUp',
+      requestId: ctx.requestId,
+    };
+    let ok = false;
+    let step: number | null = null;
+    if (user.totp) {
+      if (body.code) {
+        step = verifyTotp(user.totp.secret, body.code, this.clock.now());
+        const last = (this.q.usedGet.get(user.username) as { step: number } | undefined)?.step ?? -1;
+        ok = step !== null && step > last;
+      }
+    } else if (body.password) {
+      ok = await this.passwords.verify(user.passwordHash, body.password);
+    }
+    if (!ok) {
+      this.limiter.fail(keys);
+      this.audit.record({
+        ...base,
+        kind: 'step_up',
+        ok: false,
+        status: 401,
+        summary: user.totp ? (body.code ? 'step-up: wrong code' : 'step-up: a code is required') : 'step-up: wrong password',
+      });
+      throw Errors.invalidCredentials();
+    }
+    if (step !== null) this.q.usedPut.run(user.username, step);
+    this.limiter.reset([k.user]);
+    const now = this.clock.now();
+    this.sessions.setStepUp(state.session, now);
+    this.audit.record({ ...base, kind: 'step_up', ok: true, status: 200, summary: `step-up (${user.totp ? 'TOTP' : 'password'})` });
+    return { ok: true, stepUpUntil: new Date(now + STEP_UP_MS).toISOString() };
   }
 
   /** GET /api/auth/csrf: the token of the current session, creating an anonymous pre-session when there is none. */
