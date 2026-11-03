@@ -117,5 +117,7 @@ export const BotNow = z.object({
       held: z.string().nullish(),
     })
     .nullish(),
+  kind: z.enum(['main', 'hive', 'subhive', 'script']).nullish(),
+  owner: z.string().nullish().describe('the owning hive account; a subhive body has no brain of its own (its owner thinks for it)'),
 });
 export type BotNow = z.infer<typeof BotNow>;

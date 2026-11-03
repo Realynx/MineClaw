@@ -72,7 +72,16 @@ export function Vitals({ hp, food, compact }: { hp: number; food: number; compac
   );
 }
 
-export function ScriptBadge({ script, onClick }: { script: NonNullable<BotNow['script']>; onClick?: () => void }) {
+/** A running script as the bot lists and `now` carry it. */
+export interface ScriptBrief {
+  name: string;
+  version?: number | null;
+  status?: string | null;
+  line?: number | null;
+  paused?: boolean | null;
+}
+
+export function ScriptBadge({ script, onClick }: { script: ScriptBrief; onClick?: () => void }) {
   const content = (
     <>
       {script.paused ? <Pause className="size-3" /> : <Code2 className="size-3" />}

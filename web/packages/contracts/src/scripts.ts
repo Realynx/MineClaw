@@ -194,6 +194,7 @@ export const BodyScriptRow = z.object({
   paused: z.boolean().nullish(),
   version: z.number().int().nullish(),
   role: z.string().nullish(),
+  owner: z.string().nullish().describe('the owning hive account (subhive bodies of a hive clone)'),
 });
 export type BodyScriptRow = z.infer<typeof BodyScriptRow>;
 

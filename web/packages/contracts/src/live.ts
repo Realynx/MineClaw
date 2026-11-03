@@ -7,6 +7,28 @@ import { DimId, Double, IsoDateTime, JsonValue, QBool, QInt, UnixMs, Vec3i } fro
 
 export const BotParams = z.object({ bot: z.string().min(1).max(64).describe('name, short ("67") or "main"') });
 
+/** What a body is in the hive tree: main, a hive (own brain), a subhive body (driven by its owner hive's brain), script-only. */
+export const HiveBodyKind = z.enum(['main', 'hive', 'subhive', 'script']);
+export type HiveBodyKind = z.infer<typeof HiveBodyKind>;
+
+/** The script a body runs right now (additive on the bot lists; the full debugger is /api/bodies/{name}/script). */
+export const BodyScriptBrief = z.object({
+  name: z.string(),
+  status: z.string().nullish().describe('"running" | "paused" | …'),
+  line: z.number().int().nullish(),
+  paused: z.boolean().nullish(),
+  version: z.number().int().nullish(),
+});
+export type BodyScriptBrief = z.infer<typeof BodyScriptBrief>;
+
+/** Additive hierarchy fields every bot list row carries (absent on older bots: fall back to the hive tree). */
+const BodyPlace = {
+  kind: HiveBodyKind.nullish(),
+  owner: z.string().nullish().describe('the owning hive account (main’s login for main’s own children); null for main'),
+  script: BodyScriptBrief.nullish(),
+  state: z.string().nullish().describe('the hive tree state: "spawning" | "running" | "releasing"'),
+};
+
 /** C# BotTile. */
 export const BotTile = z.object({
   name: z.string(),
@@ -22,6 +44,8 @@ export const BotTile = z.object({
   brain: z.string().nullish(),
   ageSeconds: Double,
   claims: z.array(z.string()),
+  ...BodyPlace,
+  online: z.boolean().nullish().describe('false = in the hive tree but not in game yet (spawning) or gone'),
 });
 export type BotTile = z.infer<typeof BotTile>;
 
@@ -106,17 +130,19 @@ export const BotStatusView = z.object({
   usage: BotUsage.nullish(),
   thought: ThoughtSnapshot.nullish().describe('selected bot only'),
   chat: z.array(z.string()).describe('last 60 (selected) or 12 raw lines, "HH:mm:ss " prefixed'),
+  short: z.string().nullish().describe('"main", "67"'),
+  ...BodyPlace,
 });
 export type BotStatusView = z.infer<typeof BotStatusView>;
 
 export const HiveSlot = z.object({
   name: z.string(),
-  number: z.number().int(),
+  number: z.union([z.number().int(), z.string()]).describe('the clone number; the bot sends it as a string ("111")'),
   state: z.string(),
   connected: z.boolean(),
   task: z.string().nullish(),
-  pending: z.number().int().nullish(),
-  progress: z.string().nullish(),
+  pending: z.union([z.boolean(), z.number().int()]).nullish().describe('the bot sends a bool (a task waiting)'),
+  progress: z.union([z.string(), z.number()]).nullish(),
   lastProgress: z.union([IsoDateTime, z.number()]).nullish(),
   result: z.string().nullish(),
   deaths: z.number().int().nullish(),
@@ -262,6 +288,9 @@ export const WorldBot = z.object({
   claims: z.array(z.string()),
   live: z.boolean(),
   ageSeconds: Double,
+  kind: HiveBodyKind.nullish(),
+  owner: z.string().nullish(),
+  online: z.boolean().nullish(),
 });
 export type WorldBot = z.infer<typeof WorldBot>;
 

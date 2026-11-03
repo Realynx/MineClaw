@@ -6,7 +6,7 @@ import { Suspense, useMemo, useState } from 'react';
 import { PageBody } from '@/components/shell/Shell';
 import { Card, CardHeader, EmptyState, ErrorState, PageHeader, Select, Skeleton } from '@/components/ui/primitives';
 import { Segmented } from '@/components/ui/overlays';
-import { BotCard } from '@/features/live/BotCard';
+import { HiveGrid } from '@/features/live/HiveGrid';
 import { useHiveIndex } from '@/features/live/common';
 import { HiveTreeView } from '@/features/live/HiveTreeView';
 import { WorldHost } from '@/features/world/integration';
@@ -86,11 +86,15 @@ function LiveInner() {
         </Card>
       ) : view === 'grid' ? (
         <WorldHost>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-            {status.isPending
-              ? Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-[23rem] rounded-card" />)
-              : bots.map((b) => <BotCard key={b.name} bot={b} node={hive.get(b.name)} />)}
-          </div>
+          {status.isPending ? (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+              {Array.from({ length: 4 }, (_, i) => (
+                <Skeleton key={i} className="h-[23rem] rounded-card" />
+              ))}
+            </div>
+          ) : (
+            <HiveGrid bots={bots} main={status.data?.main ?? ''} tree={hive} />
+          )}
           {!status.isPending && bots.length === 0 ? (
             <Card>
               <EmptyState title="No bots online" hint="Bodies appear here as soon as they connect." />

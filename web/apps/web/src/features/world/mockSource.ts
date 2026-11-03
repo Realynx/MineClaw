@@ -18,6 +18,19 @@ function extras(bots: BotDto[]): BotDto[] {
   return [
     { ...a, name: 'maid_chan_68', short: '68', main: false, x: a.x - 6, z: a.z + 5, yaw: ((a.yaw ?? 0) + 120) % 360, job: 'tending the wheat farm', held: 'iron hoe' },
     { ...a, name: 'maid_chan_70', short: '70', main: false, x: a.x + 4, z: a.z - 7, yaw: ((a.yaw ?? 0) + 240) % 360, job: 'sorting chests', held: 'chest' },
+    { ...a, name: 'maid_chan_109', short: '109', main: false, x: a.x - 3, z: a.z - 4, yaw: ((a.yaw ?? 0) + 60) % 360, job: 'running the crew', held: 'iron axe' },
+    // maid_chan_109's lumberjack crew (the mock hive's subhive bodies)
+    ...['102', '114', '124', '126', '131', '135'].map((short, i) => ({
+      ...a,
+      name: `maid_chan_${short}`,
+      short,
+      main: false,
+      x: a.x - 8 + (i % 3) * 3,
+      z: a.z - 2 + Math.floor(i / 3) * 3,
+      yaw: (i * 70) % 360,
+      job: 'chopping birch',
+      held: 'iron axe',
+    })),
   ];
 }
 

@@ -29,6 +29,8 @@ import {
 import { SignatureVerifier, type BridgeIdentity } from '../bridge/signing.js';
 import { makeMcwc, makePng, makeZip } from './binary.js';
 import { generate } from './generate.js';
+import { MockHive } from './hive.js';
+import { Replay } from './replay.js';
 
 type Obj = Record<string, unknown>;
 type Fixtures = Record<'db' | 'tools' | 'live', Obj>;
@@ -190,11 +192,16 @@ class MockWorld {
   eventId = 1000;
   activitySeq = 100;
   entitiesRev = 6000;
+  blocksRev = 900;
   tick = 0;
+  readonly hive = new MockHive();
   readonly feed: Obj[] = [];
   private readonly listeners = new Set<(event: SseEventName, data: unknown) => void>();
 
-  constructor(private readonly fx: Fixtures) {
+  constructor(
+    private readonly fx: Fixtures,
+    readonly replay: Replay | null = Replay.fromEnv(),
+  ) {
     const lines = (fx.live.feed as { lines?: Obj[] } | undefined)?.lines ?? [];
     for (const l of lines) this.pushFeed({ ...clone(l) }, false);
   }
@@ -227,60 +234,39 @@ class MockWorld {
   }
 
   botNames(): string[] {
-    const bots = (this.fx.live.bots as { bots?: Array<{ name: string }> } | undefined)?.bots ?? [];
-    return bots.length ? bots.map((b) => b.name) : ['maid_chan'];
+    const replayed = this.replay?.get('status')?.bots as Array<{ name: string }> | undefined;
+    return replayed?.length ? replayed.map((b) => b.name) : this.hive.names();
   }
 
   now(bot: string): Obj {
-    const base = clone<Obj>((this.fx.live.now as Obj | undefined) ?? toSnake<Obj>(generate(SSE_EVENTS.now)));
+    const replayed = this.replay?.get('now');
+    if (replayed) return { ...replayed, bot, at: iso() };
     const t = THOUGHTS[(this.tick + bot.length) % THOUGHTS.length]!;
-    const at = iso();
-    const i = this.botNames().indexOf(bot);
-    return {
-      ...base,
-      bot,
-      at,
-      thought: { text: t.text, thinking: t.thinking, at },
-      tool: { name: t.tool, args_short: t.args, at },
-      task: t.task,
-      script: { ...(base.script ?? { name: 'cobble_loop', status: 'running' }), line: t.line },
-      body: {
-        ...(base.body ?? {}),
-        hp: 20 - ((this.tick + i) % 4),
-        food: 18 - (Math.floor(this.tick / 5) % 3),
-        pos: [4.5 + Math.sin(this.tick / 3) * 3, 64, 6.5 + Math.cos(this.tick / 3) * 3],
-        dim: i === 1 ? -1 : 0,
-      },
-    };
+    const n = this.hive.now(bot, t);
+    if (n) return n;
+    const base = clone<Obj>((this.fx.live.now as Obj | undefined) ?? toSnake<Obj>(generate(SSE_EVENTS.now)));
+    return { ...base, bot, at: iso() };
   }
 
   status(): Obj {
-    const s = clone<Obj>((this.fx.live.status as Obj | undefined) ?? toSnake<Obj>(generate(SSE_EVENTS.bots)));
-    const at = iso();
-    s.at = at;
-    const bots = (s.bots as Obj[] | undefined) ?? [];
-    bots.forEach((b, i) => {
-      b.at = at;
-      b.hp = 20 - ((this.tick + i) % 4);
-      b.task = THOUGHTS[(this.tick + i) % THOUGHTS.length]!.task;
-    });
-    return s;
+    const replayed = this.replay?.get('status');
+    if (replayed) return { ...replayed, at: iso() };
+    const fixture = (this.fx.live.status as { bots?: Obj[] } | undefined)?.bots?.[0];
+    return this.hive.status(fixture ? clone(fixture) : undefined);
+  }
+
+  tree(): Obj {
+    return this.replay?.get('tree') ?? this.hive.tree();
   }
 
   entities(): Obj {
-    const e = clone<Obj>(
-      (this.fx.live.worldEntities as Obj | undefined) ?? toSnake<Obj>(generate(SSE_EVENTS.entities)),
-    );
-    e.at = Date.now();
-    e.rev = ++this.entitiesRev;
-    e.full = false;
-    const list = (e.entities as Obj[] | undefined) ?? [];
-    for (const m of list) {
-      if (typeof m.x === 'number') m.x = m.x + Math.sin(this.tick / 2) * 0.5;
-      if (typeof m.z === 'number') m.z = m.z + Math.cos(this.tick / 2) * 0.5;
-    }
-    e.removed = [];
-    return e;
+    const replayed = this.replay?.get('entities');
+    if (replayed) return { ...replayed, at: Date.now(), rev: ++this.entitiesRev, full: true, removed: [] };
+    return this.hive.entities(++this.entitiesRev);
+  }
+
+  blocks(): Obj {
+    return this.hive.blocks(++this.blocksRev);
   }
 
   event(): Obj {
@@ -373,9 +359,37 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
       if (inm === etag) return { status: 304, raw: '', headers: { ETag: etag } };
       return { bytes, type, headers: { ETag: etag, ...headers } };
     };
+    const replay = world.replay;
+    if (replay) {
+      const cols = () => (query.get('cols') ?? '0,0').split(';').map((p) => p.split(',').map(Number) as [number, number]);
+      const dim = Number(query.get('dim') ?? 0);
+      const captured: Partial<Record<RouteId, string>> = {
+        'bots.list': 'bots',
+        'bodies.scripts': 'scripts',
+        'world.overlays': 'overlays',
+        events: 'events',
+      };
+      const name = captured[id];
+      if (name && replay.get(name)) return { json: replay.get(name) };
+      if (id === 'world.index' && replay.text('index')) return { raw: replay.text('index') };
+      if (id === 'world.chunks') return conditional(replay.chunks(dim, cols()), 'application/octet-stream');
+      if (id === 'world.blockEntities') return { json: replay.blockEntityColumns(dim, cols()) };
+    }
     switch (id) {
       case 'bots.now':
         return { json: world.now(params.bot ?? query.get('bot') ?? 'maid_chan') };
+      case 'bots.list':
+        return { json: world.hive.tiles() };
+      case 'status':
+        return { json: world.status() };
+      case 'hive.tree':
+        return { json: world.tree() };
+      case 'bodies.scripts':
+        return { json: world.hive.scripts() };
+      case 'world.entities':
+        return { json: { ...world.entities(), full: true } };
+      case 'world.blocks':
+        return { json: { at: Date.now(), rev: world.blocksRev, full: true, more: false, blocks: {}, columns: [] } };
       case 'feed':
         return { json: world.feedSince(Number(query.get('since') ?? 0)) };
       case 'bots.chat': {
@@ -401,7 +415,7 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
             origin: 'game',
             reply_to: line.seq,
           });
-        }, 1500);
+        }, Number(process.env.MOCK_CHAT_REPLY_MS) || 1500); // a slow bot: MOCK_CHAT_REPLY_MS
         t.unref();
         return { status: 202, json: { accepted: true, id: line.seq, feed_seq: line.seq } };
       }
@@ -503,20 +517,31 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
     };
     res.write('retry: 2000\n\n');
     frame('bots', world.status());
-    frame('hive', fx.live.hiveTree ?? toSnake(generate(SSE_EVENTS.hive)));
+    frame('hive', world.tree());
     for (const b of world.botNames()) frame('now', world.now(b));
     const off = world.on(frame);
+    // Production rates (the bridge's pollers): entities and blocks 5 Hz, `now` 2 Hz per body, bots 1 Hz, events and memory
+    // activity 2 Hz, the hive tree every 3 s; feed lines and pings as the bot makes them. `interval` = one second of mock time.
+    let n = 0;
     const timer = setInterval(() => {
+      n++;
+      world.hive.advance();
+      if (n % 2 === 0) {
+        frame('entities', world.entities());
+        frame('blocks', world.blocks());
+      }
+      if (n % 5 === 0) {
+        for (const b of world.botNames()) frame('now', world.now(b));
+        frame('event', world.event());
+        frame('memoryActivity', world.activity());
+      }
+      if (n % 30 === 0) frame('hive', world.tree());
+      if (n % 10 !== 0) return;
       world.tick++;
       const t = world.tick;
-      if (t % 2 === 0) frame('bots', world.status());
-      for (const b of world.botNames()) if ((t + b.length) % 2 === 0) frame('now', world.now(b));
-      frame('entities', world.entities());
-      if (t % 4 === 0) frame('event', world.event());
-      if (t % 3 === 0) frame('memoryActivity', world.activity());
-      if (t % 10 === 0) frame('hive', fx.live.hiveTree ?? toSnake(generate(SSE_EVENTS.hive)));
+      frame('bots', world.status());
       if (t % 9 === 0)
-        world.pushFeed({ bot: 'maid_chan_67', kind: 'chat', from: 'kiwi', text: 'the sand pit is past the oak tree' });
+        world.pushFeed({ bot: 'maid_chan_109', kind: 'chat', from: 'kiwi', text: 'the sand pit is past the oak tree' });
       if (t % 7 === 0)
         world.pushFeed({
           bot: 'maid_chan',
@@ -525,7 +550,7 @@ export async function startMockBridge(key: string, opts: { streamIntervalMs?: nu
           text: '(the chest by the door is nearly full)',
         });
       if (t % 15 === 0) res.write(': ping\n\n');
-    }, interval);
+    }, Math.max(1, interval / 10));
     const stop = () => {
       clearInterval(timer);
       off();

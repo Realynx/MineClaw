@@ -38,7 +38,9 @@ export default function BotPage() {
   const n = now.data;
   const brain = node?.brain ?? view?.brain ?? null;
   const pos = parsePos(n?.body?.pos ?? view?.pos);
-  const aliases = node ? [node.id] : [];
+  const aliases = node ? [node.id] : view?.short ? [view.short] : [];
+  const kind = view?.kind ?? now.data?.kind ?? node?.kind;
+  const owner = view?.owner ?? now.data?.owner ?? node?.owner;
 
   if (now.error?.status === 404) {
     return (
@@ -59,7 +61,8 @@ export default function BotPage() {
         </Link>
         <StatusDot status={view?.status} />
         <h1 className="text-lg font-semibold tracking-tight text-fg">{bot}</h1>
-        {node ? <Badge>{KIND_LABEL[node.kind]}</Badge> : null}
+        {kind ? <Badge>{KIND_LABEL[kind]}</Badge> : null}
+        {owner && kind !== 'main' ? <Link href={`/live/${encodeURIComponent(owner)}`} className="text-xs text-muted hover:text-fg">of {owner}</Link> : null}
         {n?.brainState ? <span className="text-sm text-muted">{n.brainState}</span> : null}
         <div className="ml-auto flex flex-wrap items-center gap-1.5">
           <Segmented<Pane>
@@ -123,7 +126,7 @@ export default function BotPage() {
                   ) : n?.thought?.text ? (
                     <p className="text-[17px] leading-relaxed text-pretty text-fg">{n.thought.text}</p>
                   ) : (
-                    <p className="text-muted">{node?.kind === 'script' ? 'This body runs a script only; it has no brain of its own.' : 'No thought yet.'}</p>
+                    <p className="text-muted">{kind === 'script' ? 'This body runs a script only; it has no brain of its own.' : 'No thought yet.'}</p>
                   )}
                   {n?.thought?.thinking ? (
                     <div className="mt-3">
@@ -166,7 +169,7 @@ export default function BotPage() {
                   <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted">
                     <span>{dimName(n?.body?.dim ?? view?.dim)}</span>
                     {devDetails && pos ? <span className="tabular">{pos.map((v) => Math.floor(v)).join(', ')}</span> : null}
-                    {node?.kind === 'subhive' && node.owner ? <span>Driven by {node.owner}’s brain</span> : null}
+                    {kind === 'subhive' && owner ? <span>Driven by {owner}’s brain</span> : null}
                   </div>
                 </div>
               </Card>
@@ -182,7 +185,7 @@ export default function BotPage() {
         onOpenChange={(o) => !o && setHistory(false)}
         brain={brain}
         body={bot}
-        subhive={node?.kind === 'subhive'}
+        subhive={kind === 'subhive'}
         initialTab={history || 'turns'}
       />
       <VisionDrawer open={vision} onOpenChange={setVision} body={bot} />

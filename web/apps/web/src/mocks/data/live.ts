@@ -160,6 +160,51 @@ export const BOTS: MockBot[] = [
   },
 ];
 
+/** A second hive (an Opus brain) with a lumberjack crew of subhive bodies: the grid's multi-body group. */
+export const CREW = ['102', '114', '124', '126', '131', '135'];
+BOTS.push(
+  {
+    name: 'maid_chan_109',
+    short: '109',
+    main: false,
+    kind: 'hive',
+    brain: 'maid_chan_109',
+    owner: 'maid_chan',
+    dim: 0,
+    pos: [-10, 64, 14],
+    hp: 19,
+    food: 17,
+    task: 'Running the lumberjack crew',
+    held: 'iron axe',
+    status: 'online',
+    script: null,
+    thoughts: ['The crew is spread over the birch grove. 114 is low on food; sending it back to the chest first.', 'Twelve stacks of logs so far.'],
+    thinking: ['Bodies 102–135 run chop_crew; I only step in when one gets stuck.'],
+    tools: [['hive', 'status bodies=all']],
+    claims: ['birch grove'],
+  },
+  ...CREW.map((short, i): MockBot => ({
+    name: `maid_chan_${short}`,
+    short,
+    main: false,
+    kind: 'subhive',
+    brain: null,
+    owner: 'maid_chan_109',
+    dim: 0,
+    pos: [-14 + (i % 3) * 4, 64, 18 + Math.floor(i / 3) * 4],
+    hp: i === 1 ? 7 : 20 - i,
+    food: i === 1 ? 4 : 18 - i,
+    task: ['Chopping birch', 'Heading to the food chest', 'Hauling logs', 'Replanting saplings', 'Chopping birch', 'Stripping the tall oak'][i]!,
+    held: i === 2 ? 'birch log' : 'iron axe',
+    status: i === 5 ? 'connecting' : 'online',
+    script: i === 5 ? null : { name: 'chop_crew', version: 3, line: 6 + i * 4, lines: 0, status: 'running', paused: false },
+    thoughts: [],
+    thinking: [],
+    tools: [],
+    claims: [],
+  })),
+);
+
 for (const b of BOTS) {
   if (b.script) b.script.lines = (SCRIPT_CODE[b.script.name]?.[b.script.version] ?? '').split('\n').length;
 }
@@ -307,6 +352,12 @@ export const sim: Sim = {
 
 // ---------- route bodies ----------
 
+function brainStateOf(b: MockBot, inflight: unknown): string {
+  if (b.kind === 'script') return 'script-only';
+  if (b.kind === 'subhive') return `driven by ${b.owner === 'maid_chan' ? 'main' : (findBot(b.owner ?? '')?.short ?? b.owner)}`;
+  return inflight ? 'thinking' : b.script ? `awake · script ${b.script.name}` : 'awake';
+}
+
 export function botNow(b: MockBot): BotNow {
   const ti = sim.thoughtIdx[b.name] ?? 0;
   const inflight = sim.inFlight[b.name];
@@ -314,7 +365,7 @@ export function botNow(b: MockBot): BotNow {
   return {
     bot: b.name,
     at: nowIso(),
-    brainState: b.kind === 'script' ? 'script-only' : inflight ? 'thinking' : b.script ? `awake · script ${b.script.name}` : 'awake',
+    brainState: brainStateOf(b, inflight),
     inFlight: inflight ? { purpose: inflight.purpose, model: inflight.model, since: iso(inflight.since) } : null,
     thought: b.thoughts.length
       ? {
@@ -329,6 +380,8 @@ export function botNow(b: MockBot): BotNow {
       ? { name: b.script.name, version: b.script.version, status: b.script.status, line: b.script.line, paused: b.script.paused }
       : null,
     body: { hp: b.hp, food: b.food, pos: [b.pos[0], b.pos[1], b.pos[2]], dim: b.dim, held: b.held },
+    kind: b.kind,
+    owner: b.owner,
   };
 }
 
@@ -368,6 +421,10 @@ export function statusResponse(selected?: string): StatusResponse {
           : null,
         thought: null,
         chat: [],
+        short: b.short,
+        kind: b.kind,
+        owner: b.owner,
+        script: b.script ? { name: b.script.name, version: b.script.version, status: b.script.status, line: b.script.line, paused: b.script.paused } : null,
       };
     }),
     hive: {
@@ -400,8 +457,8 @@ export function hiveTree(): HiveTreeNode {
     task: b.task,
     children,
   });
-  const [main, h67, s68, s70] = BOTS as [MockBot, MockBot, MockBot, MockBot];
-  return node(main, [node(h67), node(s68), node(s70)]);
+  const build = (b: MockBot): HiveTreeNode => node(b, BOTS.filter((c) => c.owner === b.name).map(build));
+  return { ...build(BOTS[0]!), id: 'main' };
 }
 
 export function eventsSince(since: number): EventsResponse {
@@ -433,6 +490,8 @@ export function worldBots() {
     claims: b.claims,
     live: true,
     ageSeconds: 0.3,
+    kind: b.kind,
+    owner: b.owner,
   }));
 }
 
@@ -506,6 +565,7 @@ export function bodyScripts(): LiveScriptsResponse {
       paused: b.script?.paused ?? null,
       version: b.script?.version ?? null,
       role: b.kind === 'subhive' ? 'farmer' : null,
+      owner: b.owner,
     })),
   };
 }
