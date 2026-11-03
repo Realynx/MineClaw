@@ -224,10 +224,8 @@ export class WorldRuntime {
     this.overlayPoller = new Poller(() => this.pollOverlays(), opts.overlayPollMs ?? 4000, (e) => this.opts.onError?.('overlays', e));
     void this.configure();
     void this.loadAtlas();
-    this.sync.start();
-    this.deltas.start();
-    this.entityPoller.start();
-    this.overlayPoller.start();
+    // The network loops start with the first view (and pause when the last one leaves).
+    this.paused = true;
     this.raf = requestAnimationFrame(this.tick);
   }
 
@@ -245,11 +243,14 @@ export class WorldRuntime {
 
   addView(v: RuntimeView): void {
     this.views.set(v.id, v);
+    if (this.paused) this.resume();
     this.overlayPoller.kick();
   }
 
   removeView(v: RuntimeView): void {
     this.views.delete(v.id);
+    // No views left (e.g. between pages, persistent runtime): stop the network loops, keep the world.
+    if (!this.views.size) this.pause();
     this.renderedAt.delete(v.id);
     if (this.primary?.view === v) {
       this.canvas.remove();
@@ -273,6 +274,46 @@ export class WorldRuntime {
     return this.views.size;
   }
 
+  private paused = false;
+
+  private pause(): void {
+    if (this.paused || this.disposed) return;
+    this.paused = true;
+    this.sync.stop();
+    this.deltas.stop();
+    this.entityPoller.stop();
+    this.overlayPoller.stop();
+  }
+
+  private resume(): void {
+    if (!this.paused || this.disposed) return;
+    this.paused = false;
+    this.sync.start();
+    this.deltas.fallback(); // changes may have been missed while paused: the index hash-diff catches up
+    this.deltas.start();
+    this.entityPoller.start();
+    this.overlayPoller.start();
+  }
+
+  /**
+   * Swaps in a new source object for the same world (a page recreated its fetch wrapper) without dropping the store, the
+   * meshes or the entities: the loops are rebuilt around the existing cache. Use `setSource` for a different world.
+   */
+  replaceSource(src: WorldSource): void {
+    if (src === this.source || this.disposed) return;
+    this.sync.stop();
+    this.deltas.stop();
+    this.source = src;
+    const rev = this.deltas.rev;
+    this.sync = this.makeSync();
+    this.deltas = this.makeDeltas();
+    this.deltas.rev = rev;
+    if (!this.paused) {
+      this.sync.start();
+      this.deltas.start();
+    }
+  }
+
   setSource(src: WorldSource): void {
     if (src === this.source) return;
     this.sync.stop();
@@ -291,10 +332,12 @@ export class WorldRuntime {
     this.configKey = '';
     void this.configure();
     void this.loadAtlas();
-    this.sync.start();
-    this.deltas.start();
-    this.entityPoller.start();
-    this.overlayPoller.start();
+    if (!this.paused) {
+      this.sync.start();
+      this.deltas.start();
+      this.entityPoller.start();
+      this.overlayPoller.start();
+    }
   }
 
   dispose(): void {

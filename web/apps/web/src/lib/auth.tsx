@@ -6,6 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api, ApiError, onUnauthorized, setCsrfToken } from './api/client';
 import { qk } from './api/query';
+import { disposeWorld } from '@/features/world/integration';
 
 interface AuthValue {
   me: Me;
@@ -98,6 +99,7 @@ export function AuthGate({
     }
     setCsrfToken(null);
     qc.clear();
+    disposeWorld(); // the persistent world runtime belongs to the signed-in session
     router.replace('/login');
   }, [qc, router]);
 

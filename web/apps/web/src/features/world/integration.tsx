@@ -6,7 +6,9 @@
  * placeholder, so pages never break or shift layout.
  *
  * `<WorldHost>` wraps an area in the viewer's `WorldViewerProvider`: ONE WebGL context, one world store and one set of section
- * meshes for every thumbnail and pane inside it.
+ * meshes for every thumbnail and pane inside it. The provider attaches to the package's persistent runtime ("hive"), so
+ * moving between pages (hive grid → bot view) keeps the world, the meshes and the context; `disposeWorld()` (sign-out)
+ * drops it.
  */
 import { useQueryClient } from '@tanstack/react-query';
 import type { WorldSource } from '@mineclaw/world-viewer';
@@ -67,7 +69,18 @@ export function WorldHost({ children }: { children: ReactNode }) {
   const value = useMemo(() => state, [state]);
   const inner = <Ctx.Provider value={value}>{children}</Ctx.Provider>;
   const { mod, source } = state;
-  return mod && source ? <mod.WorldViewerProvider source={source}>{inner}</mod.WorldViewerProvider> : inner;
+  return mod && source ? (
+    <mod.WorldViewerProvider source={source} persist="hive">
+      {inner}
+    </mod.WorldViewerProvider>
+  ) : (
+    inner
+  );
+}
+
+/** Drops the persistent world runtime (WebGL context, worker, store); call on sign-out. No-op if the viewer never loaded. */
+export function disposeWorld(): void {
+  void loading?.then((mod) => mod?.disposeWorldRuntimes());
 }
 
 /** A bot card's live 3D thumbnail (shared renderer, a few fps, paused offscreen), or the dot map until it loads. */

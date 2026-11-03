@@ -100,11 +100,16 @@ export class WorkerMeshHost implements MeshHost {
   }
 }
 
-/** The default worker (bundlers emit it beside the library). Falls back to the in-thread engine where workers fail. */
+/**
+ * The default worker. The published package is plain ESM (tsc output), so this `new Worker(new URL('./worker.js',
+ * import.meta.url))` reaches the app's bundler verbatim and Next/Turbopack, webpack and Vite each bundle the worker
+ * themselves (Vite's dev server resolves the .js specifier to worker.ts). Falls back to the in-thread engine where
+ * workers fail.
+ */
 export function createMeshHost(createWorker?: () => Worker): MeshHost {
   try {
     if (typeof Worker === 'undefined') return new InlineMeshHost();
-    const w = createWorker ? createWorker() : new Worker(new URL('./worker.ts', import.meta.url), { type: 'module', name: 'mineclaw-mesher' });
+    const w = createWorker ? createWorker() : new Worker(new URL('./worker.js', import.meta.url), { type: 'module', name: 'mineclaw-mesher' });
     return new WorkerMeshHost(w);
   } catch {
     return new InlineMeshHost();

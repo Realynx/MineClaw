@@ -8,20 +8,15 @@
     "node": ">=22"
   },
   "scripts": {
-    "predev": "node scripts/copy-viewer-worker.mjs",
     "dev": "next dev --turbopack -p 3000",
-    "predev:mock": "node scripts/copy-viewer-worker.mjs",
     "dev:mock": "node scripts/with-mock.mjs next dev --turbopack -p 3000",
-    "prebuild": "node scripts/copy-viewer-worker.mjs",
     "build": "next build --turbopack",
-    "prebuild:mock": "node scripts/copy-viewer-worker.mjs",
     "build:mock": "node scripts/with-mock.mjs next build --turbopack",
     "start": "next start -p 3000 -H 127.0.0.1",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "pretest:e2e": "node scripts/copy-viewer-worker.mjs",
     "test:e2e": "playwright test",
     "screenshots": "node scripts/screenshots.mjs",
     "msw:init": "msw init public --no-save"

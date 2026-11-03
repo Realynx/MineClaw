@@ -3,8 +3,8 @@
   "compilerOptions": {
     "noEmit": false,
     "declaration": true,
-    "emitDeclarationOnly": true,
-    "declarationDir": "dist/types",
+    "sourceMap": true,
+    "outDir": "dist",
     "rootDir": "src",
     "types": ["vite/client"]
   },
