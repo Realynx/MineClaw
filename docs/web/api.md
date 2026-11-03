@@ -324,6 +324,7 @@ Notes on specific routes:
 | `world.blockEntities` | `GET /api/world/blockentities` | viewer | query `WorldBlockEntitiesQuery` | `WorldBlockEntities` | `GET /v1/sup/world/blockentities` | /api/world/blockentities | – |
 | `bots.tile` | `GET /api/bots/:bot/tile.png` | viewer | params `BotParams`<br>query `TileQuery` | png | `GET /v1/render/tile/{bot}.png` | /view/{bot}?mode&radius&xray | – |
 | `bots.now` | `GET /api/bots/:bot/now` | viewer | params `BotParams` | `BotNow` | `GET /v1/sup/viewer/now?bot={bot}` | /api/viewer/now?bot= | – |
+| `bots.inventory` | `GET /api/bots/:bot/inventory` | viewer | params `BotParams` | `BodyInventory` | `GET /v1/sup/viewer/bodies/{bot}/inventory` | /api/viewer/bodies/{name}/inventory | – |
 | `bots.chat` | `POST /api/bots/:bot/chat` | chat | params `BotParams`<br>body `ChatRequest` | `ChatAccepted` (202) | `POST /v1/sup/viewer/chat` | /api/viewer/chat (bridge adds bot, player from X-MCX-Player, allow_commands from X-MCX-Roles) | chat |
 | `feed` | `GET /api/feed` | viewer | query `FeedQuery` | `FeedResponse` | `GET /v1/sup/viewer/feed` | /api/viewer/feed | – |
 | `blueprints.list` | `GET /api/blueprints` | viewer | – | `BlueprintsResponse` | `GET /v1/sup/blueprints` | /api/blueprints | – |
@@ -512,6 +513,34 @@ These are the bot-side additions from architecture.md, in their wire form. They 
     `FontRenderer` (a colour resets the styles; no colour = the sign's black). `lines` stays plain for older readers.
   - Still not on the wire: player skins and capes (offline server). Horse coats and villager professions are always sent on
     1.12.2 (`look`); b1.8.1 has neither mob.
+
+- **`GET /api/viewer/bodies/{name}/inventory`** (`BodyInventory`, added 2026-11-03; public `GET /api/bots/:bot/inventory`,
+  role `viewer`). One body's inventory, read-only. `{name}` is a login or a short name (`main`, `102`). Every body whose client
+  runs in the bot's process answers: main, in-process hives, every subhive body and Story pawn (each client registers with
+  `Supervisor/BodyInventories` when it is built). Response:
+
+  ```
+  {name, version: "b1.8.1"|"1.12.2", held_slot: 0-8,
+   slots:[{slot, id, meta, count, name, display, durability:{max, left}|null, enchanted}],
+   armor:[head, chest, legs, feet],      // each a slot object or null
+   offhand: slot|null,                   // 1.12.2 only; always null on b1.8.1
+   at: unix_ms, online}
+  ```
+
+  - **Slot numbers** are vanilla's `InventoryPlayer` indices, the same in both versions: `0–8` hotbar, `9–35` main (three
+    rows of nine, top row first), `36` feet, `37` legs, `38` chest, `39` head, `40` off hand. `slots` lists only non-empty
+    hotbar and main slots, in that order (hotbar first). From the player window (b1.8.1: 45 slots; 1.12.2: 46): hotbar `i` ←
+    window `36+i`, main `9–35` ← window `9–35`, armour head..feet ← window `5..8`, off hand ← window `45`. The crafting grid
+    (window `0–4`) and the cursor are never sent.
+  - `name` keeps the variant (`red_wool`, `diamond_pickaxe`); `display` is the game's name (a renamed 1.12.2 item: its own);
+    `durability` only for damageable items (`left = max − meta`); `enchanted` is the NBT glint rule of "World looks" above
+    (b1.8.1: always false; items that glint by id the viewer knows).
+  - **Offline.** `online: false` = the body is not in game; the reply is its last snapshot (taken while it played, or when
+    it disconnected) with that snapshot's `at`. A body the process never saw, or one whose client runs in another process
+    (a process hive), is 404 `{error, online: false}`.
+  - **Cost.** A read is one copy of the player window under the inventory's own lock, never on or waiting for the game tick;
+    viewers asking within 500 ms share one snapshot. The web polls it only while a body's panel is open (2 s, paused while
+    the tab is hidden).
 
 - **`GET /api/viewer/memory-activity?since&brain`** (`MemoryActivityResponse`). Response:
 
