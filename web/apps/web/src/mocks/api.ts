@@ -48,6 +48,53 @@ const USERS: MockUser[] = [
   { username: 'guest', password: 'guest', player: null, roles: ['viewer'], totp: null },
 ];
 
+/**
+ * First-run setup mode: `sessionStorage['mcx-mock-setup']` set (any value; the e2e sets '1') starts the mock with NO users,
+ * like an empty users file. The accounts created through /setup are kept in that key as JSON, so they survive reloads.
+ */
+const SETUP_KEY = 'mcx-mock-setup';
+let memorySetup: MockUser[] | null = null;
+
+function setupStore(): MockUser[] | null {
+  try {
+    const raw = sessionStorage.getItem(SETUP_KEY);
+    if (raw === null) return null;
+    const v = JSON.parse(raw) as unknown;
+    return Array.isArray(v) ? (v as MockUser[]) : [];
+  } catch {
+    return memorySetup;
+  }
+}
+
+function saveSetupUsers(list: MockUser[]): void {
+  memorySetup = list;
+  try {
+    sessionStorage.setItem(SETUP_KEY, JSON.stringify(list));
+  } catch {
+    /* node test env */
+  }
+}
+
+/** For tests: start (true) or leave (false) first-run setup mode. */
+export function mockSetupMode(on: boolean): void {
+  memorySetup = on ? [] : null;
+  try {
+    if (on) sessionStorage.setItem(SETUP_KEY, '[]');
+    else sessionStorage.removeItem(SETUP_KEY);
+  } catch {
+    /* node test env */
+  }
+}
+
+function users(): MockUser[] {
+  return setupStore() ?? USERS;
+}
+
+/** Persists a changed `users()` list (setup-mode users live in sessionStorage; the built-in ones in memory). */
+function persistUsers(list: MockUser[]): void {
+  if (list !== USERS) saveSetupUsers(list);
+}
+
 const SESSION_KEY = 'mcx-mock-session';
 let memorySession: { username: string; created: number } | null = null;
 let csrf = randomToken();
@@ -82,7 +129,7 @@ export function mockSignIn(username: string | null): void {
 
 function me(): Me | null {
   const s = readSession();
-  const u = s && USERS.find((x) => x.username === s.username);
+  const u = s && users().find((x) => x.username === s.username);
   if (!s || !u) return null;
   return {
     username: u.username,
@@ -117,9 +164,20 @@ const num = (v: unknown) => Number(v);
 export const resolvers: Partial<Record<RouteId, Resolver>> = {
   health: () => ({ ok: true, version: 'mock-0.1.0', bridge: 'up' }),
   'auth.csrf': () => ({ csrfToken: csrf }),
+  'setup.status': () => ({ needed: users().length === 0, allowedHere: true }),
+  'setup.create': ({ body }) => {
+    const b = body as { username: string; password: string; player?: string | null; roles: Role[] };
+    if (users().length > 0) throw new MockError(409, 'setup is already complete', 'conflict');
+    const roles = [...new Set(b.roles)].sort();
+    saveSetupUsers([{ username: b.username, password: b.password, player: b.player ?? null, roles, totp: null }]);
+    writeSession({ username: b.username, created: Date.now() });
+    csrf = randomToken();
+    return { user: me(), csrfToken: csrf };
+  },
   'auth.login': ({ body }) => {
     const b = body as { username: string; password: string; totp?: string };
-    const u = USERS.find((x) => x.username === b.username && x.password === b.password);
+    if (users().length === 0) throw new MockError(409, 'first-run setup is not complete; open /setup', 'conflict');
+    const u = users().find((x) => x.username === b.username && x.password === b.password);
     if (!u) throw new MockError(401, 'Invalid credentials', 'unauthorized');
     if (u.totp && !b.totp) throw new MockError(401, 'Enter the code from your authenticator', 'unauthorized', { details: [{ path: 'totp', message: 'required' }] });
     if (u.totp && b.totp !== u.totp) throw new MockError(401, 'Invalid credentials', 'unauthorized');
@@ -134,15 +192,17 @@ export const resolvers: Partial<Record<RouteId, Resolver>> = {
   },
   'auth.me': () => me(),
   'auth.totpEnroll': ({ body }) => {
-    const u = USERS.find((x) => x.username === me()?.username);
+    const u = users().find((x) => x.username === me()?.username);
     if (!u || u.password !== (body as { password: string }).password) throw new MockError(401, 'Invalid credentials', 'unauthorized');
     return { otpauthUrl: `otpauth://totp/MineClaw:${u.username}?secret=JBSWY3DPEHPK3PXP&issuer=MineClaw`, secret: 'JBSWY3DPEHPK3PXP', expiresAt: iso(Date.now() + 600_000) };
   },
   'auth.totpVerify': ({ body }) => {
-    const u = USERS.find((x) => x.username === me()?.username);
+    const list = users();
+    const u = list.find((x) => x.username === me()?.username);
     if (!u) throw new MockError(401, 'Not signed in', 'unauthorized');
     if ((body as { code: string }).code !== '123456') throw new MockError(400, 'That code did not match', 'bad_request');
     u.totp = '123456';
+    persistUsers(list);
     return { ok: true, totpEnrolled: true };
   },
   'audit.list': ({ query }) => {

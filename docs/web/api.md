@@ -110,6 +110,21 @@ All three new processes run on CT 114 beside the bot:
 - **TOTP.**
   1. `enroll` re-checks the password and returns a pending `otpauth://` URL and secret, shown once and never logged.
   2. `verify` activates it.
+- **First-run setup** (`setup.status`, `setup.create`).
+  - `GET /api/setup` → `SetupStatus {needed, allowedHere}`. `needed` is true while the users file is missing or holds no
+    users (a file that does not parse never counts as empty). `allowedHere` says whether this request may complete it.
+  - While `needed`: Nest redirects every page (not `/api`, `/_next` or files) to `/setup` with a 302, and login answers 409.
+    Once any user exists, `/setup` redirects to `/login`.
+  - `POST /api/setup` takes `SetupRequest {username, password, player, roles}` (username lower-cased; password
+    `PASSWORD_MIN_LENGTH` = 12 to 256 chars, the same rule as the users CLI). It needs CSRF + `Origin` like every write, and
+    answers like login: `LoginResponse {user: Me, csrfToken}` with a rotated session. TOTP then uses the normal
+    `auth.totpEnroll` / `auth.totpVerify` routes.
+  - Refused with 403 when the request is not a direct LAN/loopback client: the peer is in `Web:TrustedProxies`, it carries
+    Cloudflare headers (`CF-Connecting-IP`, `CF-Ray`, `CDN-Loop`…), it carries `X-Forwarded-For` / `Forwarded` from a
+    non-loopback peer, or the peer is not a LAN address. `Web:Setup:AllowProxied` lifts this.
+  - 409 once any user exists: `UsersStore.createFirst` re-reads the file under an O_EXCL lock file and writes it (temp +
+    rename, 0600) only if it holds no users, so of two simultaneous setups exactly one wins.
+  - 429 past `Web:Setup:AttemptsPerMinute` per IP. Every attempt that reaches the handler is audited as `setup`.
 - **Web audit.** Nest records every login (ok or failed), lockout, chat line and write in `web.db`, as a `WebAuditEntry` with
   kind `WebAuditKind`. Admins read it at `GET /api/audit`. The Audit page also shows the bot's own trail from
   `GET /api/admin/audit`.
@@ -223,12 +238,14 @@ Notes on specific routes:
 - **`groom.preview`** is phase 2. The bridge may answer 501 until it ports the grooming pipeline.
 
 <!-- routes:begin -->
-### Auth and web audit (Nest-native)
+### Setup, auth and web audit (Nest-native)
 
 | Route id | Public route | Role | Request | Response | Bridge `/v1` | Supervisor | Audit |
 |---|---|---|---|---|---|---|---|
 | `health` | `GET /api/health` | public | – | `HealthResponse` | Nest-native | – | – |
 | `auth.csrf` | `GET /api/auth/csrf` | public | – | `CsrfResponse` | Nest-native | – | – |
+| `setup.status` | `GET /api/setup` | public | – | `SetupStatus` | Nest-native | – | – |
+| `setup.create` | `POST /api/setup` | public | body `SetupRequest` | `LoginResponse` | Nest-native | – | setup |
 | `auth.login` | `POST /api/auth/login` | public | body `LoginRequest` | `LoginResponse` | Nest-native | – | login |
 | `auth.logout` | `POST /api/auth/logout` | authenticated | body `Empty` | `LogoutResponse` | Nest-native | – | logout |
 | `auth.me` | `GET /api/auth/me` | authenticated | – | `Me` | Nest-native | – | – |

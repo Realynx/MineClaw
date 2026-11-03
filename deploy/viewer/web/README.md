@@ -16,9 +16,9 @@ browser ──HTTP :8080 (LAN now) / HTTPS via cloudflared (later)──▶ mine
 | --------------------------------------------- | ----------------------------- | -------------------------------------------------------- |
 | `/etc/systemd/system/mineclaw-web-api.service` | 0644 root                     | from `mineclaw-web-api.service`                          |
 | `/etc/systemd/system/mineclaw-web-ui.service`  | 0644 root                     | from `mineclaw-web-ui.service`                           |
-| `/etc/mineclaw-web/`                          | 0750 mineclaw-web             | config dir (the API rewrites `users.json` on TOTP verify) |
+| `/etc/mineclaw-web/`                          | 0750 mineclaw-web             | config dir (the API writes `users.json` for the first-run setup and on TOTP verify) |
 | `/etc/mineclaw-web/config.json`               | 0640 mineclaw-web             | from `config.example.json`                               |
-| `/etc/mineclaw-web/users.json`                | 0600 mineclaw-web             | managed by the users CLI only                            |
+| `/etc/mineclaw-web/users.json`                | 0600 mineclaw-web             | first account from the setup page, then the users CLI    |
 | `/etc/mineclaw-web/bridge.key`                | 0600 root                     | HMAC key shared with the bridge (systemd credential)     |
 | `/etc/mineclaw-web/mineclaw-web.env`          | 0640 root:mineclaw-web        | optional overrides, from `mineclaw-web.env.example`      |
 | `/var/lib/mineclaw-web/web.db`                | 0600 mineclaw-web (StateDir)  | sessions, login counters, pending TOTP, web audit        |
@@ -36,18 +36,38 @@ A release (`/opt/mineclaw-web/releases/<id>`, `current` symlink) holds `apps/api
 `node_modules` (installed for linux-x64 glibc on the dev box) and `apps/web/.next/standalone` with `.next/static` and `public/`
 copied beside `server.js`. There is no workspace root in it, so the users CLI runs through a wrapper.
 
-Users (no self-signup; passwords are prompted without echo or read from stdin, never from argv).
-`/usr/local/sbin/mineclaw-web-users` runs `apps/api/dist/cli/users.js` as `mineclaw-web` with the right config:
+### First account: the setup page
+
+After the first deploy, open **http://10.1.2.73:8080** and complete the setup page. While `users.json` has no users the app
+is in setup mode: every page redirects to `/setup`, sign-in is off, and the page creates the first account (username,
+password, linked Minecraft player, roles preset to admin + chat + commands + viewer), offers an optional authenticator (QR
+code drawn in the browser, then a code to confirm), and signs you straight in. Whoever completes it first becomes the admin,
+so do it right after the deploy.
+
+- **LAN only.** `POST /api/setup` is refused (403, audited) for a request through a trusted proxy (`Web:TrustedProxies`), one
+  that carries Cloudflare or forwarding headers, or one from a non-LAN address (loopback, RFC 1918, link-local, CGNAT/Tailscale
+  and ULA count as LAN). `Web:Setup:AllowProxied=true` lifts this; leave it off.
+- **Once.** The account is created by an atomic create-if-empty under the users file's lock file
+  (`/etc/mineclaw-web/.users.json.lock`), so two simultaneous setups can't both win (the loser gets 409). As soon as any user
+  exists, `/setup` redirects to `/login` and `POST /api/setup` answers 409, checked on every request.
+- **Audited** as kind `setup` (refusals too), rate limited per IP (`Web:Setup:AttemptsPerMinute`), and `users.json` stays
+  0600. Removing every user with the CLI re-opens setup mode.
+
+### More users: the users CLI
+
+For everything after the first account (and whenever you prefer the terminal): no self-signup; passwords are prompted
+without echo or read from stdin, never from argv. `/usr/local/sbin/mineclaw-web-users` runs `apps/api/dist/cli/users.js` as
+`mineclaw-web` with the right config. Call it by its full path (`pct exec`'s PATH has no `/usr/local/sbin`) and from a real
+terminal (`ssh -t`): the password prompt needs a TTY, and the TOTP secret must not land in an agent transcript.
 
 ```sh
-ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users add fox --roles admin,chat,commands,viewer --player poofimafox
 ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users add robin --roles chat,viewer --player kiwi
-ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users totp fox enroll      # prints the otpauth URL once, asks for a code
+ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users totp robin enroll    # prints the otpauth URL once, asks for a code
 ssh -t alice pct exec 114 -- /usr/local/sbin/mineclaw-web-users passwd|roles|player|disable|enable|remove|list ...
 ```
 
 `passwd`, `disable` and `remove` end that user's sessions; role and player changes apply on the next request. Users can
-also enrol TOTP themselves (`POST /api/auth/totp/enroll` + `verify`).
+also enrol TOTP themselves (`POST /api/auth/totp/enroll` + `verify`, the account menu).
 
 ## Config keys
 
@@ -74,6 +94,7 @@ appsettings; env overrides are `MINECLAW_WEB_<Section>__<Key>`.
 | + `Web:Login:{UserThreshold,IpThreshold,LockoutBaseSeconds,LockoutMaxSeconds,IpAttemptsPerMinute}` | 5, 20, 30, 3600, 30 | lockout = base·2^(failures−threshold), capped |
 | + `Web:Csp:{Scripts,ReportOnly}`       | nonce / false                    | `unsafe-inline` is the fallback if pages cannot render dynamically |
 | + `Web:MaxSseClients`                  | 200                              | also 12 streams per user |
+| + `Web:Setup:{AllowProxied,AttemptsPerMinute}` | false / 10               | first-run setup: allow it through a proxy or tunnel (leave off); `POST /api/setup` attempts per IP per minute |
 | `Bridge:Url`                           | http://127.0.0.1:8766            | loopback, plain HTTP |
 | `Bridge:Key`                           | required, ≥ 32 chars             | env `MINECLAW_BRIDGE_KEY`, or a file: `Bridge:KeyFile` / env `MINECLAW_BRIDGE_KEY_FILE` (the unit uses a systemd credential). Never logged. |
 | `Bridge:TimeoutMs`                     | 15000                            | time to response headers and max idle on a body |
@@ -122,15 +143,22 @@ Then set `Web:TrustProxy=true`, `Web:TrustedProxies=["127.0.0.1","::1"]` (the tu
 `https://` hostname to `Web:AllowedOrigins`, and optionally put the hostname behind a Cloudflare Access application and
 set `Web:CloudflareAccess:{TeamDomain,Aud}` (the AUD tag from the Access app). The SSE stream sends
 `Cache-Control: no-cache, no-transform` and `X-Accel-Buffering: no` and is never compressed, so the tunnel streams it as is.
-Keep port 8080 closed to anything but the LAN in OPNsense once the tunnel is the public way in.
+Keep port 8080 closed to anything but the LAN in OPNsense once the tunnel is the public way in. Finish the first-run setup on
+the LAN before the tunnel goes live: the setup page refuses tunnelled requests anyway, but an open setup page is still a
+page anyone could load.
 
 ## Dev on Fox's PC
 
 ```sh
 cd web && npm install && npm run build
-npm run users -w @mineclaw/api -- add fox --roles admin,chat,commands,viewer --player poofimafox --dev   # writes apps/api/.data/users.json
 npm run dev -w @mineclaw/api -- --mock-bridge          # Nest on 127.0.0.1:4000 with fixture data, no bot needed
+npm run dev -w @mineclaw/web                           # Next on :3000: with no users yet the first visit is the setup page
+# or create the account from the terminal (writes apps/api/.data/users.json):
+npm run users -w @mineclaw/api -- add fox --roles admin,chat,commands,viewer --player poofimafox --dev
 ```
+
+The web app's mock mode (`npm run dev:mock -w @mineclaw/web`, no Nest at all) shows the setup page when
+`sessionStorage['mcx-mock-setup']` is set (to `[]`) in the browser tab.
 
 `--mock-bridge` serves every route from the contracts fixtures (or schema-generated samples) through a real signed
 loopback bridge, and a synthetic live stream (vitals drift, thoughts cycle, mobs move, chat lines get a bot reply ~1.5 s

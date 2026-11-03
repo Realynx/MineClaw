@@ -420,9 +420,13 @@ if ($Smoke) {
         $root = & $get "$base/"
         $results.Add("GET / (via Nest -> Next) -> $($root.Status)$(if ($root.Location) { " Location $($root.Location)" })")
         if ($root.Status -eq 0 -or $root.Status -ge 500) { $failed = $true }
-        $login = & $get "$base/login"
+        # The smoke run has no users, so it is in first-run setup mode: /login redirects to /setup, which must render.
+        $toSetup = & $get "$base/login"
+        $results.Add("GET /login (via Nest, no users) -> $($toSetup.Status) Location $($toSetup.Location)")
+        if ($toSetup.Status -ne 302 -or $toSetup.Location -ne '/setup') { $failed = $true }
+        $login = & $get "$base/setup"
         $nonce = $login.Csp -match "'nonce-"
-        $results.Add("GET /login (via Nest -> Next) -> $($login.Status), $($login.Body.Length) bytes, CSP nonce: $nonce")
+        $results.Add("GET /setup (via Nest -> Next) -> $($login.Status), $($login.Body.Length) bytes, CSP nonce: $nonce")
         if ($login.Status -ne 200 -or -not $nonce) { $failed = $true }
         $asset = [regex]::Match($login.Body, '/_next/static/[^"''\s]+\.(js|css)').Value
         if ($asset) {
@@ -430,7 +434,7 @@ if ($Smoke) {
             $results.Add("GET $asset (copied .next/static) -> $($a.Status), $($a.Body.Length) bytes")
             if ($a.Status -ne 200) { $failed = $true }
         }
-        else { $results.Add('no /_next/static asset referenced by /login'); $failed = $true }
+        else { $results.Add('no /_next/static asset referenced by /setup'); $failed = $true }
         $worker = Get-ChildItem (Join-Path $uiDir 'public/assets') -Filter 'worker-*.js' -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($worker) {
             $w = & $get "$base/assets/$($worker.Name)"
@@ -473,6 +477,10 @@ if ($rc -ne 0) { throw "web deploy of $id finished with errors (exit $rc). Roll 
 try {
     $lan = Invoke-RestMethod "http://${CtIp}:8080/api/health" -TimeoutSec 5
     Write-Host "LAN: http://${CtIp}:8080/api/health -> ok=$($lan.ok) bridge=$($lan.bridge) version=$($lan.version)"
+    $setup = try { Invoke-RestMethod "http://${CtIp}:8080/api/setup" -TimeoutSec 5 } catch { $null }
+    if ($setup -and $setup.needed) {
+        Write-Host "FIRST-RUN SETUP IS OPEN: open http://${CtIp}:8080 now and create your account (whoever completes it first becomes the admin)." -ForegroundColor Yellow
+    }
 }
 catch {
     Write-Warning "LAN: http://${CtIp}:8080 is not reachable from this PC ($($_.Exception.Message)). Healthy inside the CT; is the CT 114 firewall rule for TCP 8080 in place? (docs/web/deploy.md)"

@@ -84,8 +84,50 @@ export type TotpVerifyRequest = z.infer<typeof TotpVerifyRequest>;
 export const TotpVerifyResponse = z.object({ ok: z.boolean(), totpEnrolled: z.boolean() });
 export type TotpVerifyResponse = z.infer<typeof TotpVerifyResponse>;
 
+/** Usernames: lower case, 1-64 chars of a-z 0-9 _ . - (the users file and the CLI use the same rule). */
+export const USERNAME_PATTERN = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
+/** Minecraft player names: 1-16 chars of A-Z a-z 0-9 _. */
+export const PLAYER_PATTERN = /^[A-Za-z0-9_]{1,16}$/;
+/** One password rule for the setup page and the users CLI. */
+export const PASSWORD_MIN_LENGTH = 12;
+export const PASSWORD_MAX_LENGTH = 256;
+
+/**
+ * GET /api/setup: first-run setup. `needed` is true while the users file holds no users; the app is then in setup mode
+ * (every page goes to `/setup`, sign-in is off). `allowedHere` says whether this request may complete it: only a direct
+ * LAN or loopback client, never one through a trusted proxy or a tunnel, unless `Web:Setup:AllowProxied`.
+ */
+export const SetupStatus = z.object({
+  needed: z.boolean(),
+  allowedHere: z.boolean().describe('false through cloudflared / a trusted proxy or from a non-LAN address'),
+});
+export type SetupStatus = z.infer<typeof SetupStatus>;
+
+/** POST /api/setup: creates the first account (atomically: only while there are no users) and signs it in. */
+export const SetupRequest = z
+  .object({
+    username: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .regex(USERNAME_PATTERN, 'usernames are 1-64 characters of a-z 0-9 _ . - and start with a letter or digit'),
+    password: z
+      .string()
+      .min(PASSWORD_MIN_LENGTH, `at least ${PASSWORD_MIN_LENGTH} characters`)
+      .max(PASSWORD_MAX_LENGTH),
+    player: z
+      .string()
+      .regex(PLAYER_PATTERN, 'Minecraft names are 1-16 characters of A-Z a-z 0-9 _')
+      .nullish()
+      .describe('linked Minecraft player; null = cannot chat'),
+    roles: z.array(Role).min(1).max(4),
+  })
+  .strict();
+export type SetupRequest = z.infer<typeof SetupRequest>;
+
 /** What the web audit log records (web.db). */
 export const WebAuditKind = z.enum([
+  'setup',
   'login',
   'login_failed',
   'logout',

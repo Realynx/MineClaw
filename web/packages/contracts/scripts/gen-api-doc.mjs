@@ -14,7 +14,7 @@ for (const [k, v] of Object.entries(C)) if (v instanceof z.ZodType && !names.has
 const n = (s) => (s ? `\`${names.get(s) ?? '(inline)'}\`` : '');
 
 const groups = [
-  ['Auth and web audit (Nest-native)', (id) => id === 'health' || id.startsWith('auth.') || id.startsWith('audit.')],
+  ['Setup, auth and web audit (Nest-native)', (id) => id === 'health' || id.startsWith('setup.') || id.startsWith('auth.') || id.startsWith('audit.')],
   [
     'Db reads (bridge-native)',
     (id) => /^(overview|memory\.|search|raptor\.|personality|shards\.|scripts\.|designs\.)/.test(id),

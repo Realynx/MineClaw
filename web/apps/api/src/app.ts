@@ -1,7 +1,8 @@
 /**
  * Builds the gateway: services (web.db, users, sessions, audit, bridge client, live hub), the Nest app with the generated
  * route-table controller, and the Express middleware chain:
- *   request context (id, client IP, scheme) → access log → Cloudflare Access gate → security headers → Next proxy → /api
+ *   request context (id, client IP, scheme) → access log → Cloudflare Access gate → security headers → setup gate → Next proxy
+ *   → /api
  * Used by `main.ts` and by the tests (each test gets its own app on an ephemeral port).
  */
 import 'reflect-metadata';
@@ -17,6 +18,7 @@ import { AuthService } from './auth/auth.service.js';
 import { PasswordVerifier } from './auth/passwords.js';
 import { LoginLimiter, TokenBucket } from './auth/rate-limit.js';
 import { SessionService } from './auth/sessions.js';
+import { SetupService } from './auth/setup.service.js';
 import { UsersStore } from './auth/users-store.js';
 import { BridgeClient } from './bridge/bridge-client.js';
 import { BridgeHealth } from './bridge/bridge-health.js';
@@ -57,6 +59,7 @@ export interface ApiApp {
     users: UsersStore;
     sessions: SessionService;
     auth: AuthService;
+    setup: SetupService;
     audit: AuditService;
     bridge: BridgeClient;
     hub: LiveHub;
@@ -110,8 +113,11 @@ export async function createApp(config: ApiConfig, opts: CreateAppOptions = {}):
     validate: config.web.validateResponses,
     ...opts.hub,
   });
+  const trusted = new TrustedProxies(config.web);
+  const setup = new SetupService(users, sessions, auth, audit, trusted, config.web.setup, clock, log);
   const dispatcher = new RouteDispatcher({
     auth,
+    setup,
     audit,
     bridge,
     health,
@@ -139,7 +145,6 @@ export async function createApp(config: ApiConfig, opts: CreateAppOptions = {}):
   express.disable('x-powered-by');
   express.set('etag', false);
 
-  const trusted = new TrustedProxies(config.web);
   const cf = config.web.cloudflareAccess
     ? new CloudflareAccess(config.web.cloudflareAccess, opts.cfAccessJwks)
     : undefined;
@@ -185,6 +190,7 @@ export async function createApp(config: ApiConfig, opts: CreateAppOptions = {}):
     });
   }
   app.use(securityHeaders(config.web.csp));
+  app.use(setup.gate());
   const nextProxy = config.web.proxyNext ? createNextProxy(config.web.nextUrl, config.web.csp, log) : undefined;
   if (nextProxy) app.use(nextProxy.middleware);
   app.useGlobalFilters(new ApiExceptionFilter(log));
@@ -220,7 +226,7 @@ export async function createApp(config: ApiConfig, opts: CreateAppOptions = {}):
     server,
     config,
     log,
-    services: { db, users, sessions, auth, audit, bridge, hub, mock },
+    services: { db, users, sessions, auth, setup, audit, bridge, hub, mock },
     async listen(port = config.web.port, host = config.web.bind) {
       await app.listen(port, host);
       const addr = server.address() as AddressInfo;

@@ -191,3 +191,9 @@ echo "ceiling leaves room for the web units (mineclaw-viewer-config shows the cu
 echo
 echo "done. Next: the bot config step (dry run first): pct exec 114 -- /usr/local/sbin/mineclaw-viewer-config   (then --apply)"
 echo "      then the first deploy from the dev box: pwsh deploy/deploy-web.ps1   (docs/web/deploy.md)"
+if [[ -s /etc/mineclaw-web/users.json ]] && grep -q '"username"' /etc/mineclaw-web/users.json; then
+    echo "      web users exist; manage them with /usr/local/sbin/mineclaw-web-users (from a real terminal: ssh -t)"
+else
+    echo "      then open http://10.1.2.73:8080 on the LAN and complete the setup page: it creates the first (admin) account."
+    echo "      Whoever completes it first becomes the admin, so do it right after the first deploy."
+fi
