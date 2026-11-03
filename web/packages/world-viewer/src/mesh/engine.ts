@@ -1,12 +1,12 @@
 // The worker-side world: decoded columns + the state table + the mesher and queries. Runs inside the Web Worker, or on the
 // calling thread (InlineMeshHost) where workers are unavailable (tests, SSR-less fallbacks).
 
-import type { AtlasMap } from '../atlas/types';
 import type { GameVersion } from '../world/blocks';
 import { ColumnStore, type ApplyResult } from './columns';
 import { meshSection, type CutParams, type SectionMesh } from './mesher';
 import { pick, viewInfo, type PickHit, type V3, type ViewInfo } from './query';
 import { buildStateTable, type StateTable } from './states';
+import type { MeshAssets } from './source';
 
 export interface PatchResult {
   dirty: Array<[number, number, number]>;
@@ -26,9 +26,10 @@ export class MeshEngine {
   readonly store = new ColumnStore();
   table: StateTable = buildStateTable('b1.8.1', null);
 
-  configure(version: GameVersion, atlas: AtlasMap | null): void {
+  /** The version and its bundled block assets (null = flat palette shapes); `textured` = quads sample the block atlas. */
+  configure(version: GameVersion, assets: MeshAssets | null, textured = assets != null): void {
     this.store.version = version;
-    this.table = buildStateTable(version, atlas && atlas.format === 'mineclaw-atlas' ? atlas : null);
+    this.table = buildStateTable(version, assets && (assets.kind === version ? assets : null), textured);
   }
 
   apply(buf: ArrayBuffer): Promise<ApplyResult> {

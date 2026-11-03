@@ -30,7 +30,15 @@ export interface PackBiome {
 export interface Pack1122 {
   version: '1.12.2';
   tileSize: number;
-  blocks: { columns: number; rows: number; tiles: Record<string, [number, number]> };
+  /** `info`: per texture [alpha coverage 0..1, semi-transparent 0/1, average 0xRRGGBB]; `sheets`: tile-entity textures
+   * (chests, beds, signs, banners, skulls, shulker boxes) appended to blocks.png at native size: [col, row, wCells, hCells]. */
+  blocks: {
+    columns: number;
+    rows: number;
+    tiles: Record<string, [number, number]>;
+    info: Record<string, [number, number, number]>;
+    sheets: Record<string, [number, number, number, number]>;
+  };
   items: { columns: number; rows: number; tiles: Record<string, [number, number]> };
   anims: PackAnim[];
   /** Entity textures (path under textures/, e.g. "entity/zombie/zombie", "models/armor/iron_layer_1") → [x, y, w, h] px. */
@@ -46,7 +54,8 @@ export interface Pack1122 {
 export interface PackBeta {
   version: 'b1.8.1';
   tileSize: number;
-  terrain: { columns: number; rows: number };
+  /** `info`: per tile index [alpha coverage, semi-transparent, average rgb]. */
+  terrain: { columns: number; rows: number; info?: Array<[number, number, number]> };
   items: { columns: number; rows: number };
   entity: { width: number; height: number; rects: Record<string, [number, number, number, number]> };
   env: string[];

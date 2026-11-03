@@ -1,4 +1,5 @@
-// The section shader: atlas cell + cell-local UV → texel (wrapping for procedural liquids), vanilla light levels resolved per
+// The section shader: atlas cell + cell-local UV → texel (wrapping for procedural liquids; tile-entity quads address a
+// w×h-cell sheet given in the tile attribute's 4th component), vanilla light levels resolved per
 // fragment from the baked sky/block light and the time of day (World.k as a uniform), ambient occlusion, remembered-column
 // dimming and distance fog around a centre (the camera, or the iso target).
 // Cut-aways are per-view uniforms, never geometry: the x-ray cone (ViewCut.Hides per fragment) and the roof cut (cells above a
@@ -85,23 +86,27 @@ bool hidden(vec3 c) {
   return false;
 }
 
+vec4 texel() {
+  float tf = vTile.z;
+  if (uTextured < 0.5 || !flag(tf, 1.0)) return vec4(1.0);
+  vec2 span = vTile.w > 0.5 ? vec2(floor(vTile.w / 256.0), mod(vTile.w, 256.0)) : vec2(1.0);
+  vec2 luv = flag(tf, 2.0) ? fract(vUv) : vUv;
+  luv = clamp(luv, vec2(uInset), span - vec2(uInset));
+  return texture2D(uAtlas, (vTile.xy + luv) / uGrid);
+}
+
 void main() {
   if (hidden(floor(vCell) + 0.5)) discard;
   if (uCap > 0.5) {
+    // [blocks] cut-out texels open no cut: the back of a plant, rail or pane is not a wall.
+    if (texel().a < 0.5) discard;
     float s = step(0.5, fract((vWorld.x + vWorld.y + vWorld.z) * 2.0));
     vec3 cap = mix(vec3(0.36, 0.42, 0.5), vec3(0.43, 0.5, 0.6), s);
     float f = smoothstep(uFogRange.x, uFogRange.y, length(vWorld.xz - uFogCentre.xz));
     gl_FragColor = vec4(mix(cap, uFogColor, f), 1.0);
     return;
   }
-  vec4 c = vColor;
-  float tf = vTile.z;
-  if (uTextured > 0.5 && flag(tf, 1.0)) {
-    vec2 span = flag(tf, 4.0) ? vec2(4.0, 2.0) : vec2(1.0);
-    vec2 luv = flag(tf, 2.0) ? fract(vUv) : vUv;
-    luv = clamp(luv, vec2(uInset), span - vec2(uInset));
-    c *= texture2D(uAtlas, (vTile.xy + luv) / uGrid);
-  }
+  vec4 c = vColor * texel();
   if (c.a < uAlphaTest) discard;
   bool emissive = flag(vFlags, 1.0);
   float b = emissive ? 1.0 : bright(max(vLight.y, vLight.x - uSkySub));

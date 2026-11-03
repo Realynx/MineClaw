@@ -2,12 +2,12 @@ import { StrictMode, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { WorldThumbnail, WorldViewer, WorldViewerProvider, type CameraMode, type LayerToggles, type PickedBlock, type ViewerStats, type WorldViewerHandle, type XRayMode, DEFAULT_LAYERS } from '../src';
 import { createFixtureSource } from '../src/testing';
-import { makeDemoAtlas } from './demoAtlas';
 
 function App() {
   const params = new URLSearchParams(location.search);
   const [textured, setTextured] = useState(params.get('atlas') !== '0');
   const [rain, setRain] = useState(params.get('rain') === '1');
+  const version = params.get('version') === '1.12.2' ? '1.12.2' : 'b1.8.1';
   const source = useMemo(
     () =>
       createFixtureSource({
@@ -17,9 +17,9 @@ function App() {
         rain: rain ? 1 : 0,
         thunder: rain ? 1 : 0,
         buildRate: 1,
-        atlas: textured ? async () => makeDemoAtlas() : undefined,
+        version,
       }),
-    [textured, rain],
+    [textured, rain, version],
   );
   const viewer = useRef<WorldViewerHandle>(null);
   (window as unknown as { __viewer: typeof viewer }).__viewer = viewer; // for poking at it from devtools
@@ -33,7 +33,7 @@ function App() {
 
   return (
     // One provider: the big view and the thumbnails share one WebGL context, one world store and one mesh per section.
-    <WorldViewerProvider source={source}>
+    <WorldViewerProvider key={textured ? 'tex' : 'flat'} source={source} options={{ textures: textured }}>
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', height: '100vh', font: '13px system-ui, sans-serif', background: '#11151c', color: '#dde' }}>
       <div style={{ position: 'relative' }}>
         <WorldViewer
@@ -87,7 +87,7 @@ function App() {
             </label>
           ))}
           <label style={{ display: 'block' }}>
-            <input type="checkbox" checked={textured} onChange={(e) => setTextured(e.target.checked)} /> procedural atlas
+            <input type="checkbox" checked={textured} onChange={(e) => setTextured(e.target.checked)} /> bundled textures (?atlas=0 flat, ?version=1.12.2)
           </label>
           <label style={{ display: 'block' }}>
             <input type="checkbox" checked={rain} onChange={(e) => setRain(e.target.checked)} /> thunderstorm

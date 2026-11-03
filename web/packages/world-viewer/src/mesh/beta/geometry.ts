@@ -1,0 +1,641 @@
+// b1.8.1 block geometry on terrain.png, ported in our own words from the C# BlockGeometry (RenderBlocks per render type:
+// 0 cube, 1 crossed squares, 2 torch, 3 fire, 4 fluids, 5 redstone wire, 6 crops, 7 door, 8 ladder, 9 rail, 10 stairs,
+// 11 fence, 12 lever, 13 cactus, 14 bed, 15 repeater, 16/17 piston, 18 pane, 19 stem, 20 vine, 21 fence gate, signs via
+// their tile-entity model) and BlockTextures (tiles, chest halves via ChestTile, the grass side overlay). Beyond the C#:
+// repeaters carry their two torches, redstone wire picks its line tile and trims the dot to its connections, and portals
+// use the animated portal tile.
+
+import { flatColour, Layer } from '../../world/blocks';
+import { chain, fixedTint, makeQuad, rotate, scale, transformQuad, translate, type M4, type Quad, TINT_NONE } from '../quad';
+import { fluidQuads, isFluid } from '../fluids';
+import type { Nb } from '../models/states';
+import { emissiveBeta, NO_TILE, tileFor, FOLIAGE_TINT, TILE_FIRE_A, TILE_FIRE_B, TILE_LAVA_FLOW, TILE_LAVA_STILL, TILE_PORTAL, TILE_WATER_FLOW, TILE_WATER_STILL, type TileRef } from './textures';
+
+/** RenderBlocks render type of a b1.8.1 id (0 = standard cube; -1 = tile-entity model or invisible). */
+export function renderType(id: number): number {
+  switch (id) {
+    case 0: return -1;
+    case 6: case 30: case 31: case 32: case 37: case 38: case 39: case 40: case 83: return 1;
+    case 50: case 75: case 76: return 2;
+    case 51: return 3;
+    case 8: case 9: case 10: case 11: return 4;
+    case 55: return 5;
+    case 59: return 6;
+    case 64: case 71: return 7;
+    case 65: return 8;
+    case 66: case 27: case 28: return 9;
+    case 53: case 67: case 108: case 109: return 10;
+    case 85: return 11;
+    case 69: return 12;
+    case 81: return 13;
+    case 26: return 14;
+    case 93: case 94: return 15;
+    case 29: case 33: return 16;
+    case 34: return 17;
+    case 101: case 102: return 18;
+    case 104: case 105: return 19;
+    case 106: return 20;
+    case 107: return 21;
+    case 63: case 68: case 36: return -1;
+    default: return 0;
+  }
+}
+
+const PARTIAL_CUBE = new Set([44, 78, 70, 72, 60, 96, 92, 77, 90]);
+
+export const enum BetaShape {
+  Air = 0,
+  Cube = 1,
+  CutoutCube = 2,
+  TranslucentCube = 3,
+  Custom = 4,
+}
+
+export function classifyBeta(id: number): BetaShape {
+  if (id === 0) return BetaShape.Air;
+  if (id === 18 || id === 20 || id === 52) return BetaShape.CutoutCube;
+  if (id === 79) return BetaShape.TranslucentCube;
+  if (renderType(id) !== 0 || PARTIAL_CUBE.has(id) || id === 63 || id === 68) return BetaShape.Custom;
+  return BetaShape.Cube;
+}
+
+/** Opaque full cube (Block.opaqueCubeLookup). */
+export const opaqueBeta = (id: number) => id > 0 && id < 256 && classifyBeta(id) === BetaShape.Cube;
+
+/** Per-tile untextured colours (pack terrain.info averages); null → the palette. */
+export type TileAverage = (tile: number) => number | null;
+
+const E = 1 / 16;
+
+export class BetaBuilder {
+  private out: Quad[] = [];
+  private id = 0;
+  private meta = 0;
+  constructor(
+    private readonly textured: boolean,
+    private readonly avg: TileAverage,
+  ) {}
+
+  private flatOf(tile: number, f: number): number {
+    if (tile >= 0) {
+      const a = this.avg(tile);
+      if (a != null && tile !== TILE_WATER_STILL && tile !== TILE_WATER_FLOW && tile !== TILE_LAVA_STILL && tile !== TILE_LAVA_FLOW && tile !== TILE_FIRE_A && tile !== TILE_FIRE_B && tile !== TILE_PORTAL) return a;
+    }
+    if (this.id === 51) return 0xff9a20;
+    if (this.id === 90) return 0x7a2bd9;
+    return flatColour('b1.8.1', this.id, this.meta, f === 1);
+  }
+
+  private tinted(t: number): number {
+    return t ? fixedTint(t) : TINT_NONE;
+  }
+
+  /** A box with vanilla per-face UVs; faces whose bit is in `cull` are culled against an opaque neighbour. */
+  box(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, tile: (f: number) => TileRef, layer = Layer.Opaque, cull = 0, xf: M4 | null = null, shade = true): Quad[] {
+    const made: Quad[] = [];
+    for (let f = 0; f < 6; f++) {
+      let p: number[];
+      switch (f) {
+        case 1: p = [x0, y1, z0, x0, y1, z1, x1, y1, z1, x1, y1, z0]; break;
+        case 0: p = [x0, y0, z1, x0, y0, z0, x1, y0, z0, x1, y0, z1]; break;
+        case 2: p = [x1, y1, z0, x1, y0, z0, x0, y0, z0, x0, y1, z0]; break;
+        case 3: p = [x0, y1, z1, x0, y0, z1, x1, y0, z1, x1, y1, z1]; break;
+        case 4: p = [x0, y1, z0, x0, y0, z0, x0, y0, z1, x0, y1, z1]; break;
+        default: p = [x1, y1, z1, x1, y0, z1, x1, y0, z0, x1, y1, z0];
+      }
+      const uv: number[] = [];
+      for (let k = 0; k < 4; k++) uv.push(...uvOn(f, p[k * 3], p[k * 3 + 1], p[k * 3 + 2]));
+      const t = tile(f);
+      const q = makeQuad(p, uv, {
+        c: t.tile >= 0 ? t.tile & 15 : 0,
+        r: t.tile >= 0 ? t.tile >> 4 : 0,
+        tint: this.tinted(t.tint),
+        ovC: t.overlay >= 0 ? t.overlay & 15 : -1,
+        ovR: t.overlay >= 0 ? t.overlay >> 4 : -1,
+        ovTint: this.tinted(t.overlayTint),
+        layer,
+        cull: (cull >> f) & 1 ? f : -1,
+        emissive: emissiveBeta(this.id),
+        flat: this.flatOf(t.tile, f),
+        textured: this.textured && t.tile >= 0,
+        shade: shade ? undefined : 1,
+      });
+      if (xf) transformQuad(q, xf, !shade);
+      made.push(q);
+      this.out.push(q);
+    }
+    return made;
+  }
+
+  /** A two-sided plane a, b, c, d with tile UV (0,0) at a, (1,0) at d (uvA..uvC the rectangle). */
+  plane(p: number[], tile: number, tint: number, layer = Layer.Cutout, shade = 1, uvA: [number, number] = [0, 0], uvC: [number, number] = [1, 1]): Quad {
+    const uv = [uvA[0], uvA[1], uvA[0], uvC[1], uvC[0], uvC[1], uvC[0], uvA[1]];
+    const q = makeQuad(p, uv, {
+      c: tile & 15,
+      r: tile >> 4,
+      tint: this.tinted(tint),
+      layer,
+      shade,
+      twoSided: true,
+      emissive: emissiveBeta(this.id),
+      flat: this.flatOf(tile, 2),
+      textured: this.textured,
+      dir: -1,
+    });
+    this.out.push(q);
+    return q;
+  }
+
+  build(id: number, meta: number, nb: Nb, out: Quad[]): void {
+    this.out = out;
+    this.id = id;
+    this.meta = meta;
+    // Faces tagged in a cull mask are culled by the mesher against an opaque neighbour on that side (the C# `skip`).
+    const skip = 0b111111;
+    const N = [[0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0]];
+    const std = (f: number) => tileFor(id, meta, f);
+    switch (renderType(id)) {
+      case 1: return this.crossed(nb, id, meta);
+      case 2: return this.torch(id, meta);
+      case 3: return this.fire();
+      case 4: return this.fluid(nb, id);
+      case 5: return this.wire(nb, meta);
+      case 6: return this.crops(meta);
+      case 7: return this.door(id, meta);
+      case 8: {
+        const o = 0.05;
+        const t = 83;
+        switch (meta) {
+          case 5: this.plane([o, 1, 1, o, 0, 1, o, 0, 0, o, 1, 0], t, 0); break;
+          case 4: this.plane([1 - o, 1, 0, 1 - o, 0, 0, 1 - o, 0, 1, 1 - o, 1, 1], t, 0); break;
+          case 3: this.plane([0, 1, o, 0, 0, o, 1, 0, o, 1, 1, o], t, 0); break;
+          default: this.plane([1, 1, 1 - o, 1, 0, 1 - o, 0, 0, 1 - o, 0, 1, 1 - o], t, 0);
+        }
+        return;
+      }
+      case 9: return this.rail(id, meta);
+      case 10: return this.stairs(id, meta, skip);
+      case 11: return this.fence(nb);
+      case 12: return this.lever(meta);
+      case 13: {
+        // Top and bottom from the box; the sides are planes 1/16 inside the cell (the spines are transparent texels).
+        this.box(0, 0, 0, 1, 1, 1, std, Layer.Opaque, skip & 0b000011);
+        out.splice(out.length - 4, 4);
+        this.plane([1, 1, E, 1, 0, E, 0, 0, E, 0, 1, E], 70, 0, Layer.Cutout, 0.8);
+        this.plane([0, 1, 1 - E, 0, 0, 1 - E, 1, 0, 1 - E, 1, 1, 1 - E], 70, 0, Layer.Cutout, 0.8);
+        this.plane([E, 1, 0, E, 0, 0, E, 0, 1, E, 1, 1], 70, 0, Layer.Cutout, 0.6);
+        this.plane([1 - E, 1, 1, 1 - E, 0, 1, 1 - E, 0, 0, 1 - E, 1, 0], 70, 0, Layer.Cutout, 0.6);
+        return;
+      }
+      case 14: return this.bed(meta, skip);
+      case 15: return this.repeater(id, meta, skip);
+      case 16: {
+        const facing = meta & 7, ext = (meta & 8) !== 0;
+        this.box(0, 0, 0, 1, 1, 1, (f) => ref1(f === facing ? (ext ? 110 : id === 29 ? 106 : 107) : f === (facing ^ 1) ? 109 : 108), Layer.Opaque, skip);
+        return;
+      }
+      case 17: {
+        const [nx, ny, nz] = N[meta & 7];
+        const x0 = nx > 0 ? 0.75 : 0, x1 = nx < 0 ? 0.25 : 1, y0 = ny > 0 ? 0.75 : 0, y1 = ny < 0 ? 0.25 : 1, z0 = nz > 0 ? 0.75 : 0, z1 = nz < 0 ? 0.25 : 1;
+        this.box(x0, y0, z0, x1, y1, z1, () => ref1(107));
+        return;
+      }
+      case 18: return this.pane(nb, id);
+      case 19: {
+        const h = Math.min(1, (meta * 2 + 2) / 16);
+        const tint = ((meta * 32) << 16) | ((255 - meta * 8) << 8) | (meta * 4);
+        this.crossAt(0.5, 0, 0.5, h, 111, tint, [0, 1 - h], [1, 1]);
+        return;
+      }
+      case 20: return this.vine(meta);
+      case 21: return this.gate(meta);
+    }
+    if (id === 63 || id === 68) return this.sign(id, meta);
+    switch (id) {
+      case 36: return;
+      case 44:
+        if ((meta & 8) !== 0) this.box(0, 0.5, 0, 1, 1, 1, std, Layer.Opaque, skip & ~1);
+        else this.box(0, 0, 0, 1, 0.5, 1, std, Layer.Opaque, skip & ~2);
+        return;
+      case 78:
+        this.box(0, 0, 0, 1, ((meta & 7) + 1) / 8, 1, std, Layer.Opaque, skip & ~2);
+        return;
+      case 70:
+      case 72: {
+        const h = meta === 1 ? 1 / 32 : 1 / 16;
+        this.box(E, 0, E, 15 * E, h, 15 * E, std, Layer.Opaque, skip & 1);
+        return;
+      }
+      case 60:
+        this.box(0, 0, 0, 1, 15 * E, 1, std, Layer.Opaque, skip & ~2);
+        return;
+      case 96: {
+        const t = 3 * E;
+        if ((meta & 4) === 0) this.box(0, 0, 0, 1, t, 1, std, Layer.Cutout, skip & 1);
+        else
+          switch (meta & 3) {
+            case 0: this.box(0, 0, 1 - t, 1, 1, 1, std, Layer.Cutout); break;
+            case 1: this.box(0, 0, 0, 1, 1, t, std, Layer.Cutout); break;
+            case 2: this.box(1 - t, 0, 0, 1, 1, 1, std, Layer.Cutout); break;
+            default: this.box(0, 0, 0, t, 1, 1, std, Layer.Cutout);
+          }
+        return;
+      }
+      case 92: {
+        const x0 = (1 + meta * 2) / 16;
+        this.box(x0, 0, E, 15 * E, 0.5, 15 * E, (f) => ref1(f === 1 ? 121 : f === 0 ? 124 : f === 4 && meta > 0 ? 123 : 122), Layer.Cutout, skip & 1);
+        return;
+      }
+      case 77: {
+        const i1 = meta & 7;
+        const f3 = (meta & 8) !== 0 ? E : 0.125;
+        const a = 0.375, b = 0.625, c = 0.1875;
+        const bx: Record<number, number[]> = { 1: [0, a, 0.5 - c, f3, b, 0.5 + c], 2: [1 - f3, a, 0.5 - c, 1, b, 0.5 + c], 3: [0.5 - c, a, 0, 0.5 + c, b, f3] };
+        const v = bx[i1] ?? [0.5 - c, a, 1 - f3, 0.5 + c, b, 1];
+        this.box(v[0], v[1], v[2], v[3], v[4], v[5], () => ref1(1));
+        return;
+      }
+      case 90: {
+        const n = (dx: number) => nb.id(dx, 0, 0);
+        const alongX = n(-1) === 90 || n(-1) === 49 || n(1) === 90 || n(1) === 49;
+        const t = () => ref1(TILE_PORTAL);
+        if (alongX) this.box(0, 0, 0.375, 1, 1, 0.625, t, Layer.Translucent, skip);
+        else this.box(0.375, 0, 0, 0.625, 1, 1, t, Layer.Translucent, skip);
+        return;
+      }
+    }
+    // A full cube; glass/ice/spawners are culled against themselves by the mesher's self-cull flag.
+    const shape = classifyBeta(id);
+    const layer = shape === BetaShape.CutoutCube ? Layer.Cutout : shape === BetaShape.TranslucentCube ? Layer.Translucent : Layer.Opaque;
+    const tf = id === 54 ? (f: number) => ref1(chestTile(nb, f)) : std;
+    const qs = this.box(0, 0, 0, 1, 1, 1, tf, layer, skip);
+    if (id === 79 && !this.textured) for (const q of qs) q.alpha = 0.62;
+  }
+
+  // ------------------------------------------------------------------------------------------------------------ shapes
+
+  private crossAt(cx: number, y0: number, cz: number, h: number, tile: number, tint: number, uvA?: [number, number], uvC?: [number, number]): Quad[] {
+    const a = cx - 0.45, b = cx + 0.45, c = cz - 0.45, d = cz + 0.45;
+    return [
+      this.plane([a, y0 + h, c, a, y0, c, b, y0, d, b, y0 + h, d], tile, tint, Layer.Cutout, 1, uvA, uvC),
+      this.plane([a, y0 + h, d, a, y0, d, b, y0, c, b, y0 + h, c], tile, tint, Layer.Cutout, 1, uvA, uvC),
+    ];
+  }
+
+  private crossed(nb: Nb, id: number, meta: number): void {
+    const t = tileFor(id, meta, 2);
+    let cx = 0.5, cy = 0, cz = 0.5;
+    if (id === 31) {
+      // renderBlockReed: tall grass jittered by a position hash (64-bit, like the client's long arithmetic).
+      let l = BigInt.asIntN(64, (BigInt(Math.imul(nb.wx, 0x2fc20f)) ^ (BigInt(nb.wz) * 0x6ebfff5n)) ^ BigInt(nb.wy));
+      l = BigInt.asIntN(64, l * l * 0x285b825n + l * 11n);
+      const nib = (s: bigint) => Number((l >> s) & 15n);
+      cx += (nib(16n) / 15 - 0.5) * 0.5;
+      cy += (nib(20n) / 15 - 1) * 0.2;
+      cz += (nib(24n) / 15 - 0.5) * 0.5;
+    }
+    this.crossAt(cx, cy, cz, 1, t.tile < 0 ? 15 : t.tile, t.tint);
+  }
+
+  private fire(): void {
+    const qs = this.crossAt(0.5, 0, 0.5, 1.4, TILE_FIRE_A, 0, [0, 0], [1, 1]);
+    qs[1].c = TILE_FIRE_B & 15;
+    qs[1].r = TILE_FIRE_B >> 4;
+    for (const q of qs) q.emissive = true;
+  }
+
+  private fluid(nb: Nb, id: number): void {
+    const water = id === 8 || id === 9;
+    fluidQuads(
+      nb,
+      id,
+      {
+        stillC: (water ? TILE_WATER_STILL : TILE_LAVA_STILL) & 15,
+        stillR: (water ? TILE_WATER_STILL : TILE_LAVA_STILL) >> 4,
+        flowC: (water ? TILE_WATER_FLOW : TILE_LAVA_FLOW) & 15,
+        flowR: (water ? TILE_WATER_FLOW : TILE_LAVA_FLOW) >> 4,
+        beta: true,
+        tint: TINT_NONE,
+        flat: water ? 0x2f5cff : 0xf55a10,
+        textured: this.textured,
+      },
+      (dx, dy, dz) => opaqueBeta(nb.id(dx, dy, dz)),
+      this.out,
+    );
+  }
+
+  private torch(id: number, meta: number): void {
+    const d = 0.4, d1 = 0.1, d2 = 0.2;
+    let bx = 0, by = 0, bz = 0, tx = 0, tz = 0;
+    switch (meta) {
+      case 1: bx = -d1; by = d2; tx = -d; break;
+      case 2: bx = d1; by = d2; tx = d; break;
+      case 3: bz = -d1; by = d2; tz = -d; break;
+      case 4: bz = d1; by = d2; tz = d; break;
+    }
+    this.torchAt(id === 75 ? 115 : id === 76 ? 99 : 80, bx + 0.5, by, bz + 0.5, tx, tz, id !== 75);
+  }
+
+  /** renderTorchAtAngle: four 1/16-off planes of the full tile leaning by (dx, dz) at the foot, and the 2×2 px cap. */
+  private torchAt(tile: number, x: number, y: number, z: number, dx: number, dz: number, lit: boolean): void {
+    const e = E, cap = 0.625;
+    const cx = x + dx * (1 - cap), cz = z + dz * (1 - cap);
+    const top = makeQuad([cx - e, y + cap, cz - e, cx - e, y + cap, cz + e, cx + e, y + cap, cz + e, cx + e, y + cap, cz - e], [7 / 16, 6 / 16, 7 / 16, 8 / 16, 9 / 16, 8 / 16, 9 / 16, 6 / 16], {
+      c: tile & 15, r: tile >> 4, layer: Layer.Cutout, twoSided: true, emissive: lit, flat: 0xffd84a, textured: this.textured, shade: 1,
+    });
+    this.out.push(top);
+    const yt = y + 1;
+    const side = (ax: number, az: number, bx: number, bz: number) => {
+      const q = makeQuad([ax, yt, az, ax + dx, yt - 1, az + dz, bx + dx, yt - 1, bz + dz, bx, yt, bz], [0, 0, 0, 1, 1, 1, 1, 0], {
+        c: tile & 15, r: tile >> 4, layer: Layer.Cutout, twoSided: true, emissive: lit, flat: this.flatOf(tile, 2), textured: this.textured, shade: 1, dir: -1,
+      });
+      this.out.push(q);
+    };
+    side(x - e, z - 0.5, x - e, z + 0.5);
+    side(x + e, z + 0.5, x + e, z - 0.5);
+    side(x + 0.5, z - e, x - 0.5, z - e);
+    side(x - 0.5, z + e, x + 0.5, z + e);
+  }
+
+  /** renderBlockRedstoneWire: the dot trimmed to its connections, or the line tile along one axis; power-coloured. */
+  private wire(nb: Nb, meta: number): void {
+    const p = meta / 15;
+    const r = meta === 0 ? 0.3 : p * 0.6 + 0.4, g = Math.max(0, p * p * 0.7 - 0.5), b = Math.max(0, p * p * 0.6 - 0.7);
+    const tint = ((r * 255) << 16) | ((g * 255) << 8) | (b * 255);
+    const attracts = (id: number) => id === 55 || id === 75 || id === 76 || id === 69 || id === 70 || id === 72 || id === 77 || id === 93 || id === 94;
+    const conn = (dx: number, dz: number) => {
+      if (attracts(nb.id(dx, 0, dz))) return true;
+      if (!opaqueBeta(nb.id(dx, 0, dz)) && nb.id(dx, -1, dz) === 55) return true;
+      return !opaqueBeta(nb.id(0, 1, 0)) && opaqueBeta(nb.id(dx, 0, dz)) && nb.id(dx, 1, dz) === 55;
+    };
+    const w = conn(-1, 0), e = conn(1, 0), n = conn(0, -1), s = conn(0, 1);
+    const h = 1 / 64;
+    let shape = 0;
+    if ((w || e) && !n && !s) shape = 1;
+    if ((n || s) && !e && !w) shape = 2;
+    const opts = { tint: fixedTint(tint), layer: Layer.Cutout, flat: 0x8a0a0a, textured: this.textured, shade: 1, twoSided: true };
+    if (shape === 0) {
+      let x0 = 0, x1 = 1, z0 = 0, z1 = 1;
+      if (w || e || n || s) {
+        if (!w) x0 += 0.3125;
+        if (!e) x1 -= 0.3125;
+        if (!n) z0 += 0.3125;
+        if (!s) z1 -= 0.3125;
+      }
+      this.out.push(makeQuad([x0, h, z0, x0, h, z1, x1, h, z1, x1, h, z0], [x0, z0, x0, z1, x1, z1, x1, z0], { ...opts, c: 164 & 15, r: 164 >> 4 }));
+    } else if (shape === 1) this.out.push(makeQuad([0, h, 0, 0, h, 1, 1, h, 1, 1, h, 0], [0, 0, 0, 1, 1, 1, 1, 0], { ...opts, c: 165 & 15, r: 165 >> 4 }));
+    else this.out.push(makeQuad([0, h, 0, 0, h, 1, 1, h, 1, 1, h, 0], [0, 1, 1, 1, 1, 0, 0, 0], { ...opts, c: 165 & 15, r: 165 >> 4 }));
+    // Climbing up the faces of opaque neighbours.
+    if (!opaqueBeta(nb.id(0, 1, 0))) {
+      const o = 1 / 64;
+      const climb = (dx: number, dz: number, p: number[]) => {
+        if (opaqueBeta(nb.id(dx, 0, dz)) && nb.id(dx, 1, dz) === 55) this.out.push(makeQuad(p, [1, 0, 1, 1, 0, 1, 0, 0], { ...opts, c: 165 & 15, r: 165 >> 4, dir: -1 }));
+      };
+      climb(-1, 0, [o, 1, 1, o, 0, 1, o, 0, 0, o, 1, 0]);
+      climb(1, 0, [1 - o, 1, 0, 1 - o, 0, 0, 1 - o, 0, 1, 1 - o, 1, 1]);
+      climb(0, -1, [0, 1, o, 0, 0, o, 1, 0, o, 1, 1, o]);
+      climb(0, 1, [1, 1, 1 - o, 1, 0, 1 - o, 0, 0, 1 - o, 0, 1, 1 - o]);
+    }
+  }
+
+  private crops(meta: number): void {
+    const tile = 88 + Math.max(0, Math.min(7, meta));
+    const y0 = -E, y1 = 1 - E;
+    for (const p of [0.25, 0.75]) {
+      this.plane([p, y1, 0, p, y0, 0, p, y0, 1, p, y1, 1], tile, 0);
+      this.plane([0, y1, p, 0, y0, p, 1, y0, p, 1, y1, p], tile, 0);
+    }
+  }
+
+  /** BlockDoor: state = (meta & 4) == 0 ? (meta − 1) & 3 : meta & 3, 3/16 thick on that side; mirrored faces flip u. */
+  private door(id: number, meta: number): void {
+    const st = (meta & 4) === 0 ? (meta - 1) & 3 : meta & 3;
+    const f = 0.1875;
+    const [x0, z0, x1, z1] = st === 0 ? [0, 0, 1, f] : st === 1 ? [1 - f, 0, 1, 1] : st === 2 ? [0, 1 - f, 1, 1] : [0, 0, f, 1];
+    const baseTile = id === 71 ? 98 : 97;
+    const qs = this.box(x0, 0, z0, x1, 1, z1, (side) => ref1(Math.abs(doorTex(baseTile, side, meta))), Layer.Cutout);
+    qs.forEach((q, side) => {
+      if (doorTex(baseTile, side, meta) < 0) for (let k = 0; k < 4; k++) q.uv[k * 2] = 1 - q.uv[k * 2];
+    });
+  }
+
+  private rail(id: number, meta: number): void {
+    let m = meta;
+    if (id !== 66) m &= 7;
+    const tile = id === 27 ? ((meta & 8) !== 0 ? 179 : 163) : id === 28 ? 195 : m >= 6 ? 112 : 128;
+    let vx = [1, 1, 0, 0], vz = [0, 1, 1, 0];
+    if (m === 1 || m === 2 || m === 3 || m === 7) {
+      vx = [1, 0, 0, 1];
+      vz = [1, 1, 0, 0];
+    } else if (m === 8) {
+      vx = [0, 0, 1, 1];
+      vz = [1, 0, 0, 1];
+    } else if (m === 9) {
+      vx = [0, 1, 1, 0];
+      vz = [0, 0, 1, 1];
+    }
+    const h = E;
+    const vy = [h, h, h, h];
+    if (m === 2 || m === 4) {
+      vy[0] += 1;
+      vy[3] += 1;
+    }
+    if (m === 3 || m === 5) {
+      vy[1] += 1;
+      vy[2] += 1;
+    }
+    const q = makeQuad([vx[0], vy[0], vz[0], vx[1], vy[1], vz[1], vx[2], vy[2], vz[2], vx[3], vy[3], vz[3]], [1, 0, 1, 1, 0, 1, 0, 0], {
+      c: tile & 15, r: tile >> 4, layer: Layer.Cutout, twoSided: true, flat: this.flatOf(tile, 1), textured: this.textured, shade: 1, dir: -1,
+    });
+    this.out.push(q);
+  }
+
+  /** b1.8.1 stairs (meta 0 high side east, 1 west, 2 south, 3 north): two standard boxes. */
+  private stairs(id: number, meta: number, skip: number): void {
+    const t = (f: number) => tileFor(id, meta, f);
+    switch (meta & 3) {
+      case 0: this.box(0, 0, 0, 0.5, 0.5, 1, t, Layer.Opaque, skip & 0b011101); this.box(0.5, 0, 0, 1, 1, 1, t, Layer.Opaque, skip & 0b101111); break;
+      case 1: this.box(0, 0, 0, 0.5, 1, 1, t, Layer.Opaque, skip & 0b011111); this.box(0.5, 0, 0, 1, 0.5, 1, t, Layer.Opaque, skip & 0b101101); break;
+      case 2: this.box(0, 0, 0, 1, 0.5, 0.5, t, Layer.Opaque, skip & 0b110101); this.box(0, 0, 0.5, 1, 1, 1, t, Layer.Opaque, skip & 0b111011); break;
+      default: this.box(0, 0, 0, 1, 1, 0.5, t, Layer.Opaque, skip & 0b110111); this.box(0, 0, 0.5, 1, 0.5, 1, t, Layer.Opaque, skip & 0b111001);
+    }
+  }
+
+  private fence(nb: Nb): void {
+    const t = () => ref1(4);
+    this.box(0.375, 0, 0.375, 0.625, 1, 0.625, t);
+    const like = (id: number) => id === 85 || id === 107;
+    const wv = like(nb.id(-1, 0, 0)), ev = like(nb.id(1, 0, 0)), nv = like(nb.id(0, 0, -1)), sv = like(nb.id(0, 0, 1));
+    const a = 0.4375, b = 0.5625;
+    for (const [y0, y1] of [[0.75, 0.9375], [0.375, 0.5625]]) {
+      if (wv || ev) this.box(wv ? 0 : a, y0, a, ev ? 1 : b, y1, b, t);
+      if (nv || sv) this.box(a, y0, nv ? 0 : a, b, y1, sv ? 1 : b, t);
+    }
+  }
+
+  private gate(meta: number): void {
+    const t = () => ref1(4);
+    const alongX = (meta & 3) === 0 || (meta & 3) === 2;
+    const open = (meta & 4) !== 0;
+    const p0 = 7 / 16, p1 = 9 / 16;
+    if (alongX) {
+      this.box(0, 5 / 16, p0, 2 / 16, 1, p1, t);
+      this.box(14 / 16, 5 / 16, p0, 1, 1, p1, t);
+      if (!open) for (const [y0, y1] of [[6 / 16, 9 / 16], [12 / 16, 15 / 16]]) this.box(2 / 16, y0, p0, 14 / 16, y1, p1, t);
+    } else {
+      this.box(p0, 5 / 16, 0, p1, 1, 2 / 16, t);
+      this.box(p0, 5 / 16, 14 / 16, p1, 1, 1, t);
+      if (!open) for (const [y0, y1] of [[6 / 16, 9 / 16], [12 / 16, 15 / 16]]) this.box(p0, y0, 2 / 16, p1, y1, 14 / 16, t);
+    }
+  }
+
+  private lever(meta: number): void {
+    const m = meta & 7, on = (meta & 8) !== 0;
+    const cob = () => ref1(16);
+    const rad = 0.7 * (180 / Math.PI);
+    let stick: M4;
+    switch (m) {
+      case 1: this.box(0, 0.3125, 0.25, 0.1875, 0.6875, 0.75, cob); stick = chain(translate(0.19, 0.5, 0.5), rotate(on ? -rad : rad, 'z')); break;
+      case 2: this.box(0.8125, 0.3125, 0.25, 1, 0.6875, 0.75, cob); stick = chain(translate(0.81, 0.5, 0.5), rotate(on ? rad : -rad, 'z')); break;
+      case 3: this.box(0.25, 0.3125, 0, 0.75, 0.6875, 0.1875, cob); stick = chain(translate(0.5, 0.5, 0.19), rotate(on ? rad : -rad, 'x')); break;
+      case 4: this.box(0.25, 0.3125, 0.8125, 0.75, 0.6875, 1, cob); stick = chain(translate(0.5, 0.5, 0.81), rotate(on ? -rad : rad, 'x')); break;
+      default: this.box(0.3125, 0, 0.25, 0.6875, 0.1875, 0.75, cob); stick = chain(translate(0.5, 0.1, 0.5), rotate(on ? rad : -rad, 'x'));
+    }
+    // The handle points out of the base (local +y): turn it onto the base's outward axis first.
+    const align = m === 1 ? rotate(-90, 'z') : m === 2 ? rotate(90, 'z') : m === 3 ? rotate(90, 'x') : m === 4 ? rotate(-90, 'x') : translate(0, 0, 0);
+    this.box(-E, 0, -E, E, 10 * E, E, () => ref1(96), Layer.Cutout, 0, chain(stick, align));
+  }
+
+  private bed(meta: number, skip: number): void {
+    const head = (meta & 8) !== 0;
+    const qs = this.box(0, 3 / 16, 0, 1, 9 / 16, 1, (f) => ref1(f === 1 ? (head ? 135 : 134) : f === 0 ? 4 : head ? 151 : 150), Layer.Cutout, skip & 1);
+    rotateTopUv(qs[1], [2, 3, 0, 1][meta & 3]);
+  }
+
+  private repeater(id: number, meta: number, skip: number): void {
+    const tile = id === 94 ? 147 : 131;
+    const qs = this.box(0, 0, 0, 1, 2 / 16, 1, (f) => ref1(f === 1 ? tile : 1), Layer.Opaque, skip & 1);
+    rotateTopUv(qs[1], meta & 3);
+    // renderBlockRepeater's two torches: the fixed one at the back, the delay one moving with meta >> 2.
+    const offs = [-0.0625, 0.0625, 0.1875, 0.3125];
+    const dir = meta & 3, delay = (meta >> 2) & 3;
+    let d1 = 0, d2 = 0, d3 = 0, d4 = 0;
+    switch (dir) {
+      case 0: d4 = -0.3125; d2 = offs[delay]; break;
+      case 2: d4 = 0.3125; d2 = -offs[delay]; break;
+      case 3: d3 = -0.3125; d1 = offs[delay]; break;
+      default: d3 = 0.3125; d1 = -offs[delay];
+    }
+    const t = id === 94 ? 99 : 115;
+    this.torchAt(t, 0.5 + d1, -0.1875, 0.5 + d2, 0, 0, id === 94);
+    this.torchAt(t, 0.5 + d3, -0.1875, 0.5 + d4, 0, 0, id === 94);
+  }
+
+  /** Panes / iron bars: arms toward panes, glass and opaque cubes; no neighbour = both full arms (vanilla). */
+  private pane(nb: Nb, id: number): void {
+    const tile = id === 101 ? 85 : 49;
+    const c = (n: number) => n === id || n === 20 || opaqueBeta(n);
+    let wv = c(nb.id(-1, 0, 0)), ev = c(nb.id(1, 0, 0)), nv = c(nb.id(0, 0, -1)), sv = c(nb.id(0, 0, 1));
+    if (!wv && !ev && !nv && !sv) wv = ev = nv = sv = true;
+    const a = 7 / 16, b = 9 / 16;
+    const t = () => ref1(tile);
+    if (wv || ev) this.box(wv ? 0 : a, 0, a, ev ? 1 : b, 1, b, t, Layer.Cutout);
+    if (nv || sv) this.box(a, 0, nv ? 0 : a, b, 1, sv ? 1 : b, t, Layer.Cutout);
+  }
+
+  private vine(meta: number): void {
+    const o = 0.05, t = 143, tint = FOLIAGE_TINT;
+    if (meta & 1) this.plane([0, 1, 1 - o, 0, 0, 1 - o, 1, 0, 1 - o, 1, 1, 1 - o], t, tint);
+    if (meta & 2) this.plane([o, 1, 0, o, 0, 0, o, 0, 1, o, 1, 1], t, tint);
+    if (meta & 4) this.plane([1, 1, o, 1, 0, o, 0, 0, o, 0, 1, o], t, tint);
+    if (meta & 8) this.plane([1 - o, 1, 1, 1 - o, 0, 1, 1 - o, 0, 0, 1 - o, 1, 0], t, tint);
+    if (meta === 0) this.plane([0, 1 - o, 0, 0, 1 - o, 1, 1, 1 - o, 1, 1, 1 - o, 0], t, tint);
+  }
+
+  /** TileEntitySignRenderer + ModelSign: a 24×12×2 px board (+ 2×14 stick standing) at 2/3 scale, planks and log tiles. */
+  private sign(id: number, meta: number): void {
+    const s = 0.6666667 / 16;
+    let m: M4;
+    if (id === 63) m = chain(translate(0.5, 0.5, 0.5), rotate((-meta * 360) / 16, 'y'), scale(s, -s, -s));
+    else {
+      const ang = meta === 2 ? 180 : meta === 4 ? 90 : meta === 5 ? -90 : 0;
+      m = chain(translate(0.5, 0.5, 0.5), rotate(-ang, 'y'), translate(0, -0.3125, -0.4375), scale(s, -s, -s));
+    }
+    const full = (qs: Quad[]) => {
+      for (const q of qs) {
+        q.uv = [0, 0, 0, 1, 1, 1, 1, 0];
+        q.cull = -1;
+      }
+    };
+    full(this.box(-12, -14, -1, 12, -2, 1, () => ref1(4), Layer.Opaque, 0, m));
+    if (id === 63) full(this.box(-1, -2, -1, 1, 12, 1, () => ref1(20), Layer.Opaque, 0, m));
+  }
+}
+
+const ref1 = (tile: number): TileRef => (tile < 0 ? NO_TILE : { tile, tint: 0, overlay: -1, overlayTint: 0 });
+
+function uvOn(f: number, x: number, y: number, z: number): [number, number] {
+  switch (f) {
+    case 0: case 1: return [x, z];
+    case 2: return [1 - x, 1 - y];
+    case 3: return [x, 1 - y];
+    case 4: return [z, 1 - y];
+    default: return [1 - z, 1 - y];
+  }
+}
+
+/** Turns a top quad's UVs by quarter turns (repeater/bed tops). */
+function rotateTopUv(q: Quad | undefined, quarter: number): void {
+  if (!q) return;
+  for (let r = 0; r < quarter; r++) q.uv = [q.uv[2], q.uv[3], q.uv[4], q.uv[5], q.uv[6], q.uv[7], q.uv[0], q.uv[1]];
+}
+
+function doorTex(idx: number, side: number, meta: number): number {
+  if (side === 0 || side === 1) return idx;
+  const k = (meta & 4) === 0 ? (meta - 1) & 3 : meta & 3;
+  const tile = idx - (meta & 8) * 2;
+  if ((k === 0 || k === 2) !== side <= 3) return tile;
+  let l = ((k / 2) | 0) + ((side & 1) ^ k);
+  l += (meta & 4) / 4;
+  return (l & 1) !== 0 ? -tile : tile;
+}
+
+/** BlockChest.getBlockTexture(world, x, y, z, side): singles face away from an opaque neighbour, pairs show the wide
+ * front (41/42) and back (57/58) halves. */
+export function chestTile(nb: Nb, l: number): number {
+  const idx = 26, id = 54;
+  if (l === 0 || l === 1) return idx - 1;
+  const B = (dx: number, dz: number) => nb.id(dx, 0, dz);
+  const op = (v: number) => opaqueBeta(v);
+  const i1 = B(0, -1), j1 = B(0, 1), k1 = B(-1, 0), l1 = B(1, 0);
+  if (i1 === id || j1 === id) {
+    if (l === 2 || l === 3) return idx;
+    let i2 = 0;
+    if (i1 === id) i2 = -1;
+    const k2 = B(-1, i1 !== id ? 1 : -1), i3 = B(1, i1 !== id ? 1 : -1);
+    if (l === 4) i2 = -1 - i2;
+    let b1 = 5;
+    if ((op(k1) || op(k2)) && !op(l1) && !op(i3)) b1 = 5;
+    if ((op(l1) || op(i3)) && !op(k1) && !op(k2)) b1 = 4;
+    return (l !== b1 ? idx + 32 : idx + 16) + i2;
+  }
+  if (k1 === id || l1 === id) {
+    if (l === 4 || l === 5) return idx;
+    let j2 = 0;
+    if (k1 === id) j2 = -1;
+    const l2 = B(k1 !== id ? 1 : -1, -1), j3 = B(k1 !== id ? 1 : -1, 1);
+    if (l === 3) j2 = -1 - j2;
+    let b2 = 3;
+    if ((op(i1) || op(l2)) && !op(j1) && !op(j3)) b2 = 3;
+    if ((op(j1) || op(j3)) && !op(i1) && !op(l2)) b2 = 2;
+    return (l !== b2 ? idx + 32 : idx + 16) + j2;
+  }
+  let b0 = 3;
+  if (op(i1) && !op(j1)) b0 = 3;
+  if (op(j1) && !op(i1)) b0 = 2;
+  if (op(k1) && !op(l1)) b0 = 5;
+  if (op(l1) && !op(k1)) b0 = 4;
+  return l !== b0 ? idx : idx + 1;
+}
+
+export { isFluid };

@@ -7,7 +7,6 @@ Hive free camera. It reads the supervisor's world routes through an injected `Wo
 - the entity delta stream
 - overlays
 - block deltas
-- an optional texture atlas
 
 It decodes and meshes every chunk in a Web Worker and renders everything in the browser. No server-side pictures are used.
 
@@ -21,7 +20,6 @@ const source: WorldSource = {
   chunks: (dim, cols) => api.getBinary(`/api/world/chunks?dim=${dim}&cols=${cols.map((c) => c.join(',')).join(';')}&light=1`),
   entities: (since) => api.get(`/api/world/entities${since ? `?since=${since}` : ''}`),
   overlays: (dim) => api.get(`/api/world/overlays?dim=${dim}`),
-  atlas: async () => ({ image: await loadBitmap('/api/world/atlas.png'), map: await api.get('/api/world/atlas.json') }),
   blocks: (since) => api.get(`/api/world/blocks${since ? `?since=${since}` : ''}`),       // optional
   subscribe: (onBlocks, onReconnect) => sse.on('blocks', onBlocks, onReconnect),           // optional (push instead of poll)
 };
@@ -122,16 +120,38 @@ Patched columns pick up their new light when their changed hash brings them in a
 
 - **Versions.** b1.8.1 and 1.12.2 block ids and meta are both supported. The version comes from the index's `version`, else
   256-high columns mean 1.12.2.
-- **Meshing.** Faces are culled against opaque neighbours (and same-id glass, ice and fluids). Each vertex gets smooth sky and
-  block light from the payload plus ambient occlusion. Light is stored raw, so day/night (world time from the index, advanced
+- **Meshing.** Every block becomes the quads of its version's geometry (below). A quad with a cull face is dropped against an
+  opaque full-cube neighbour (and same-id glass, ice, slime). Axis-aligned quads get smooth sky and block light plus ambient
+  occlusion from the face plane they lie in (interpolated to the vertex, so slabs, stairs and model elements are smooth too);
+  rotated quads (plants) take their cell's light. Model `ambientocclusion: false` and light-emitting blocks skip the occlusion. Light is stored raw, so day/night (world time from the index, advanced
   at 20 ticks/s) and rain/thunder darkening are uniforms, never a remesh. Remembered columns without light estimate sky above
   the opaque top.
-- **Passes.** The solid pass covers opaque blocks and alpha-tested cut-outs (leaves, glass, plants). The translucent pass
-  covers water, ice and stained glass.
-- **Shapes.** Slabs, stairs, fences, panes, walls, doors, trapdoors, torches, plants, ladders, vines, rails, plates and snow
-  layers have their own shapes. Double chests pair by the `ChestPairs` rule.
-- **Textures.** With an atlas (format in [ATLAS.md](ATLAS.md)) blocks are textured exactly as the C# freecam; without one,
-  the flat palette is used.
+- **Passes.** The solid pass covers opaque blocks and alpha-tested cut-outs (leaves, glass, plants, b1.8.1 glass). The
+  translucent pass covers water, ice, stained glass (+ panes), slime and portals.
+- **1.12.2 geometry** (`src/mesh/models/`, ported from the C# `BlockStates1122`/`BlockStateFile`/`ModelBaker`/`BlockModels1122`):
+  id/meta → blockstate with the neighbour-dependent properties (stair shapes incl. inner/outer corners, fence/pane/wall/bar
+  connections, door halves and hinges, snowy grass, vine tops, stems, redstone sides/climbs, fire, double plants) → variants
+  or multipart → models with parent inheritance, elements, element rotation (+ rescale), x/y rotation, uvlock, face uv and
+  rotation, cullface, tintindex (biome grass/foliage/water blended over 3×3 columns from the chunk's biome bytes; redstone
+  power; stems; spruce/birch/lily pad), shade and `ambientocclusion`, baked once per state. Tile-entity blocks have our own
+  ports of their entity models: chests (large chests drawn half per cell), trapped/ender chests, beds, signs, banners,
+  skulls, shulker boxes (defaults where the chunk can't tell: red bed, white banner, skeleton skull).
+- **b1.8.1 geometry** (`src/mesh/beta/`, ported from the C# `BlockGeometry`/`BlockTextures`): every render type (torches
+  leaning, crossed plants, crops, doors, ladders, rails incl. curves/slopes, stairs, fences, levers, cactus, beds,
+  repeaters with their torches, pistons, panes, stems, vines, fence gates, signs, redstone lines), chest halves via
+  `ChestTile`, the grass side overlay, fixed b1.8.1 tints.
+- **Fluids** (both): vanilla corner heights from the levels, the flowing texture turned to the flow angle on sloped tops,
+  the still texture on flat ones, sides to the corner heights, the top drawn from below too; water translucent (biome
+  tinted in 1.12.2), lava opaque and full bright.
+- **Textures.** The bundled atlas (`generated/<version>/`, `loadBundle`) replaces the bridge's atlas: 1.12.2 `blocks.png`
+  (with the tile-entity sheets appended; a quad's tile attribute `w` gives the sheet size in cells) or b1.8.1 `terrain.png`.
+  `RuntimeOptions.textures = false` (demo `?atlas=0`) meshes flat colours (each texture's average). `WorldSource.atlas` is
+  deprecated and ignored.
+- **Animated textures.** `BlockAtlas` (`src/render/blockAtlas.ts`) rewrites only the animated cells in place
+  (`copyTextureToTexture`, a 16×16 sub-upload each) at the game tick rate: 1.12.2 cells follow their `.mcmeta` timing from
+  `anim.png` (interpolated where flagged); b1.8.1 water, lava, fire and portal cells run the procedural TextureFX
+  recurrences. `animHz` lowers the rate, `animCellsPerTick` caps the uploads per tick (round-robin), and
+  `setVisible(cells)` limits them to cells the visible sections sample (`SectionMesh.animCells`).
 - **X-ray.** The cone is `ViewCut`: per fragment, toward the followed bot, or toward up to two bots in front when flying. The
   roof cut removes cells above the bot's head within 9 blocks when it is under cover and the camera looks down. The faces a
   cut opens are hatched.
@@ -144,7 +164,7 @@ Patched columns pick up their new light when their changed hash brings them in a
 
 ```
 npm install        # package-local; .npmrc sets legacy-peer-deps (npm 10.9 crashes on vitest's optional peers)
-npm run dev        # demo at http://localhost:5178 (fixture world, no bot needed): ?atlas=0 flat colours, ?thumbs=0, ?rain=1
+npm run dev        # demo at http://localhost:5178 (fixture world, no bot needed): ?atlas=0 flat colours, ?version=1.12.2, ?thumbs=0, ?rain=1 (block gallery at x 8..30, z -40..-26)
 npm run build      # d.ts (tsc) + ES library with the worker emitted beside it (vite)
 npm test           # vitest
 ```
@@ -153,7 +173,11 @@ npm test           # vitest
   - MCWC decoding against payloads written by the production C# encoders: `test/fixtures/csharp-payload.json`, regenerated
     with `dotnet run --project web/packages/world-viewer/test/fixtures/gen`. This covers both inflate paths, hashes and
     error cases.
-  - Mesher face counts.
+  - Mesher face counts (both versions, against the committed packs).
+  - 1.12.2 blockstates: multipart (fences, redstone), stair shapes, door halves, variant rotations + uvlock, AO flags, tints,
+    chest pairs and the tile-entity blocks.
+  - b1.8.1 render-type shapes, fluid corner heights and flow, `.mcmeta` timing and interpolation, the atlas animation
+    budget and visible-only filter, the TextureFX ranges.
   - Entity interpolation.
   - Hash-diff fetching.
   - Shared meshing: N views mesh each section once.

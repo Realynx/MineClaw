@@ -18,7 +18,7 @@ async function handle(m: WorkerRequest): Promise<void> {
   try {
     switch (m.op) {
       case 'configure':
-        engine.configure(m.version, m.atlas);
+        engine.configure(m.version, m.assets, m.textured);
         return reply({ id: m.id, ok: true, result: null });
       case 'apply':
         return reply({ id: m.id, ok: true, result: await engine.apply(m.buf) });

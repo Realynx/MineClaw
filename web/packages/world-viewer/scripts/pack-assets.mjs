@@ -83,6 +83,69 @@ function gridAtlas(dir, prefix, cols, anims, animFrames) {
   return { png, tiles, cols, rows };
 }
 
+/** Per-tile alpha coverage (fraction of texels with alpha ≥ 128), semi-transparency (any alpha in 9..246) and the average
+ * opaque colour: the mesher's cube classification (opaque / cut-out / blended) and the untextured palette. */
+function tileInfo(png, cx, cy) {
+  let n = 0, r = 0, g = 0, b = 0, semi = 0;
+  for (let y = 0; y < 16; y++)
+    for (let x = 0; x < 16; x++) {
+      const o = ((cy + y) * png.width + cx + x) * 4, a = png.data[o + 3];
+      if (a > 8 && a < 247) semi = 1;
+      if (a < 128) continue;
+      n++;
+      r += png.data[o];
+      g += png.data[o + 1];
+      b += png.data[o + 2];
+    }
+  const avg = n ? (Math.round(r / n) << 16) | (Math.round(g / n) << 8) | Math.round(b / n) : 0;
+  return [Math.round((n / 256) * 1000) / 1000, semi, avg];
+}
+
+/** Grows a grid atlas by whole rows and shelf-packs extra textures (sizes multiples of 16) into them: [col, row, wCells, hCells]. */
+function appendSheets(atlas, sheets) {
+  const cols = atlas.cols;
+  const items = sheets.filter((s) => s.png).map((s) => ({ ...s, wc: Math.ceil(s.png.width / 16), hc: Math.ceil(s.png.height / 16) }));
+  items.sort((a, b) => b.hc - a.hc || b.wc - a.wc);
+  let c = 0, r = atlas.rows, shelf = 0;
+  const out = {};
+  for (const it of items) {
+    if (c + it.wc > cols) {
+      c = 0;
+      r += shelf;
+      shelf = 0;
+    }
+    it.at = [c, r];
+    out[it.name] = [c, r, it.wc, it.hc];
+    c += it.wc;
+    shelf = Math.max(shelf, it.hc);
+  }
+  const rows = r + shelf;
+  const png = new PNG({ width: cols * 16, height: rows * 16 });
+  png.data.fill(0);
+  blit(png, atlas.png, 0, 0, atlas.png.width, atlas.png.height, 0, 0);
+  for (const it of items) blit(png, it.png, 0, 0, it.png.width, it.png.height, it.at[0] * 16, it.at[1] * 16);
+  atlas.png = png;
+  atlas.rows = rows;
+  return out;
+}
+
+/** Source-over composite of b onto a (same size), b multiplied by an rgb tint. */
+function over(a, b, tint = 0xffffff) {
+  const p = new PNG({ width: a.width, height: a.height });
+  a.data.copy(p.data);
+  const tr = (tint >> 16) & 255, tg = (tint >> 8) & 255, tb = tint & 255;
+  for (let i = 0; i < p.data.length; i += 4) {
+    const sa = b.data[i + 3] / 255, da = p.data[i + 3] / 255, oa = sa + da * (1 - sa);
+    if (oa <= 0) continue;
+    const mix = (s, d) => Math.round((s * sa + d * da * (1 - sa)) / oa);
+    p.data[i] = mix((b.data[i] * tr) / 255, p.data[i]);
+    p.data[i + 1] = mix((b.data[i + 1] * tg) / 255, p.data[i + 1]);
+    p.data[i + 2] = mix((b.data[i + 2] * tb) / 255, p.data[i + 2]);
+    p.data[i + 3] = Math.round(oa * 255);
+  }
+  return p;
+}
+
 function animSheet(animFrames) {
   const w = Math.max(1, ...animFrames.map((s) => s.length)) * 16;
   const png = new PNG({ width: w, height: Math.max(1, animFrames.length) * 16 });
@@ -144,6 +207,22 @@ function pack1122() {
   mkdirSync(dest, { recursive: true });
   const anims = [], animFrames = [];
   const blocks = gridAtlas(join(src, 'textures', 'blocks'), 'blocks/', 32, anims, animFrames);
+  const info = {};
+  for (const [name, [c, r]] of Object.entries(blocks.tiles)) info[name] = tileInfo(blocks.png, c * 16, r * 16);
+  // Tile-entity textures the section mesher draws block geometry with (chests, beds, signs, banners, skulls, shulker boxes),
+  // appended to the block atlas at their native size so one texture serves every section pass.
+  const tex = (n) => (existsSync(join(src, 'textures', n + '.png')) ? readPng(join(src, 'textures', n + '.png')) : null);
+  const colours = 'white orange magenta light_blue yellow lime pink gray silver cyan purple blue brown green red black'.split(' ');
+  const sheetList = [
+    ...['normal', 'trapped', 'ender', 'normal_double', 'trapped_double'].map((k) => ({ name: `entity/chest/${k}`, png: tex(`entity/chest/${k}`) })),
+    ...colours.map((c) => ({ name: `entity/bed/${c}`, png: tex(`entity/bed/${c}`) })),
+    ...colours.map((c) => ({ name: `entity/shulker/shulker_${c}`, png: tex(`entity/shulker/shulker_${c}`) })),
+    { name: 'entity/sign', png: tex('entity/sign') },
+    ...['skeleton/skeleton', 'skeleton/wither_skeleton', 'zombie/zombie', 'creeper/creeper', 'steve'].map((k) => ({ name: `entity/${k}`, png: tex(`entity/${k}`) })),
+  ];
+  const bannerBase = tex('entity/banner_base'), bannerMask = tex('entity/banner/base');
+  if (bannerBase && bannerMask) sheetList.push({ name: 'mineclaw/banner_white', png: over(bannerBase, bannerMask, 0xffffff) });
+  const sheets = appendSheets(blocks, sheetList);
   const itemAnims = [];
   const items = gridAtlas(join(src, 'textures', 'items'), 'items/', 32, itemAnims, animFrames);
   writePng(join(dest, 'blocks.png'), blocks.png);
@@ -160,7 +239,7 @@ function pack1122() {
   const packJson = {
     version: '1.12.2',
     tileSize: 16,
-    blocks: { columns: blocks.cols, rows: blocks.rows, tiles: blocks.tiles },
+    blocks: { columns: blocks.cols, rows: blocks.rows, tiles: blocks.tiles, info, sheets },
     items: { columns: items.cols, rows: items.rows, tiles: items.tiles },
     anims: anims.map((a) => ({ ...a, atlas: 'blocks' })).concat(itemAnims.map((a) => ({ ...a, atlas: 'items' }))),
     entity: { width: ent.width, height: ent.height, rects: ent.rects },
@@ -181,13 +260,16 @@ function packBeta() {
   rmSync(dest, { recursive: true, force: true });
   mkdirSync(dest, { recursive: true });
   writeFileSync(join(dest, 'terrain.png'), readFileSync(join(src, 'terrain.png')));
+  const terrain = readPng(join(src, 'terrain.png'));
+  const terrainInfo = [];
+  for (let i = 0; i < 256; i++) terrainInfo.push(tileInfo(terrain, (i % 16) * 16, Math.floor(i / 16) * 16));
   writeFileSync(join(dest, 'items.png'), readFileSync(join(src, 'gui', 'items.png')));
   const files = [...walk(join(src, 'mob')), ...walk(join(src, 'armor')), join(src, 'char.png')].filter((f) => f.endsWith('.png') && existsSync(f));
   const ent = shelfPack(files, src, 1024);
   writePng(join(dest, 'entity.png'), ent.png);
   const env = copyEnv(join(src, 'environment'), join(dest, 'env'));
   for (const m of ['misc']) if (existsSync(join(src, m))) for (const f of walk(join(src, m))) if (/(water|grasscolor|foliagecolor)\.png$/.test(f)) writeFileSync(join(dest, 'env', f.split(/[\\/]/).pop()), readFileSync(f));
-  writeFileSync(join(dest, 'pack.json'), JSON.stringify({ version: 'b1.8.1', tileSize: 16, terrain: { columns: 16, rows: 16 }, items: { columns: 16, rows: 16 }, entity: { width: ent.width, height: ent.height, rects: ent.rects }, env }));
+  writeFileSync(join(dest, 'pack.json'), JSON.stringify({ version: 'b1.8.1', tileSize: 16, terrain: { columns: 16, rows: 16, info: terrainInfo }, items: { columns: 16, rows: 16 }, entity: { width: ent.width, height: ent.height, rects: ent.rects }, env }));
   report(dest);
 }
 
