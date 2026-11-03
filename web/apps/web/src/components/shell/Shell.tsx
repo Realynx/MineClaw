@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useAuth } from '@/lib/auth';
+import { NavigationGuardHost } from '@/lib/navGuard';
 import { setPrefs, usePrefs } from '@/lib/prefs';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/primitives';
@@ -42,7 +43,9 @@ function SidebarNav({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?
         return (
           <div key={group.label} className="mt-4 first:mt-1">
             {!collapsed ? (
-              <div className="px-2.5 pb-1.5 text-[11px] font-semibold tracking-wider text-subtle uppercase">{group.label}</div>
+              <div className="px-2.5 pb-1.5 text-[11px] font-semibold tracking-wider text-subtle uppercase">
+                {group.label}
+              </div>
             ) : (
               <div className="mx-3 mb-2 border-t border-border" />
             )}
@@ -61,8 +64,14 @@ function SidebarNav({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?
                       collapsed && 'justify-center px-0',
                     )}
                   >
-                    <Icon className={cn('size-4 shrink-0', active ? 'text-accent' : 'text-subtle group-hover:text-muted')} />
-                    {!collapsed ? <span className="truncate">{item.label}</span> : <span className="sr-only">{item.label}</span>}
+                    <Icon
+                      className={cn('size-4 shrink-0', active ? 'text-accent' : 'text-subtle group-hover:text-muted')}
+                    />
+                    {!collapsed ? (
+                      <span className="truncate">{item.label}</span>
+                    ) : (
+                      <span className="sr-only">{item.label}</span>
+                    )}
                   </Link>
                 );
                 return (
@@ -174,7 +183,13 @@ export function Shell({ children }: { children: ReactNode }) {
         <Header
           onOpenPalette={() => setPaletteOpen(true)}
           menuButton={
-            <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setMobileOpen(true)} aria-label="Open navigation">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="md:hidden"
+              onClick={() => setMobileOpen(true)}
+              aria-label="Open navigation"
+            >
               <Menu className="size-5" />
             </Button>
           }
@@ -184,11 +199,16 @@ export function Shell({ children }: { children: ReactNode }) {
         </main>
       </div>
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
+      <NavigationGuardHost />
     </div>
   );
 }
 
 /** Standard page padding + max width. Full-bleed pages (graphs, bot view) skip it. */
 export function PageBody({ children, className, wide }: { children: ReactNode; className?: string; wide?: boolean }) {
-  return <div className={cn('mx-auto w-full px-4 py-6 sm:px-6', wide ? 'max-w-[110rem]' : 'max-w-7xl', className)}>{children}</div>;
+  return (
+    <div className={cn('mx-auto w-full px-4 py-6 sm:px-6', wide ? 'max-w-[110rem]' : 'max-w-7xl', className)}>
+      {children}
+    </div>
+  );
 }

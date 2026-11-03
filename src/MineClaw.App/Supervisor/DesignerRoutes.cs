@@ -207,12 +207,12 @@ public sealed class DesignerRoutes
             : [];
         return new
         {
-            id = s.Id, owner = s.Owner, model = s.Model, design_id = s.DesignId, name = s.Name, rev = s.Canvas.Rev, blocks = s.Canvas.Wire(),
+            id = s.Id, owner = s.Owner, model = s.Model, design_id = s.DesignId, name = s.Name, rev = s.Canvas.Rev, blocks = s.Canvas.Wire(), dug = s.Canvas.DugWire(),
             anchor = s.Anchor is { } a ? new[] { a.X, a.Y, a.Z } : null,
             messages = _store.Messages(s.Id).Select(MessageJson),
             cost_usd = (double)s.CostUsd, calls = s.Calls, version = GameData.Current.VersionId,
             palette = DesignerCanvas.Palette().Select(p => new { id = p.Id, meta = p.Meta, name = p.Name, facing = p.Facing }),
-            plot = new { size = DesignerCanvas.Size, height = DesignerCanvas.Height },
+            plot = new { size = DesignerCanvas.Size, height = DesignerCanvas.Height, depth = DesignerCanvas.Depth },
             revisions = revs,
             created = s.Created.ToUnixTimeMilliseconds(), updated = s.Updated.ToUnixTimeMilliseconds(),
         };

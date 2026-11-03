@@ -4,8 +4,11 @@
  * `/api/designer/*` (src/MineClaw.App/Supervisor/DesignerRoutes.cs), passed through by the bridge (`/v1/sup/designer/*`): reads
  * for any signed-in user, writes for the `design` (or `admin`) role, the designer's identity added by the bridge.
  *
- * Coordinates are canvas-local: x, z 0..63, y 0..47, y = 0 standing on the plot's grass (+x east, +z south).
- * A cell is `[x, y, z, id, meta]` in the server version's own ids (id 0 = air).
+ * Coordinates are canvas-local: x, z 0..63 (+x east, +z south) and y -16..47: y = 0 is the first layer above the plot's
+ * grass, y = -1 the grass layer and y -16..-1 the ground under it, solid earth until it is dug (a basement, a cellar).
+ * A cell is `[x, y, z, id, meta]` in the server version's own ids: id 0 = air (below ground: dug out), id -1
+ * (`DESIGNER_EARTH`) = undisturbed ground again (a dug cell filled back; below ground only). A session lists its blocks and
+ * its dug cells; a save draws the dug cells as forced air (a build digs them) and the depth as the design's `ground N`.
  */
 import { z } from 'zod';
 import { QInt, UnixMs, Vec3i } from './common.js';
@@ -20,7 +23,9 @@ export const DesignerCell = z.tuple([
 ]);
 export type DesignerCell = z.infer<typeof DesignerCell>;
 
-export const DESIGNER_PLOT = { size: 64, height: 48 } as const;
+export const DESIGNER_PLOT = { size: 64, height: 48, depth: 16 } as const;
+/** The cell id of undisturbed ground (below y 0 only): a dug cell filled back in. */
+export const DESIGNER_EARTH = -1;
 
 export const DesignerModel = z.object({
   id: z.string().describe('"main" | "worker" | "cheap" (the bot\'s tiers) or "profile:<name>"'),
@@ -95,13 +100,19 @@ export const DesignerSession = z.object({
   name: z.string(),
   rev: z.number().int().describe('canvas revision (bumped by every applied change set)'),
   blocks: z.array(DesignerCell),
+  dug: z
+    .array(Vec3i)
+    .nullish()
+    .describe(
+      'cells below ground (y < 0) dug out to air: the basement the build digs; every other cell under y 0 is earth',
+    ),
   anchor: Vec3i.nullish().describe('the design\'s anchor cell ("move origin"); null = the footprint centre'),
   messages: z.array(DesignerMessage),
   costUsd: z.number(),
   calls: z.number().int(),
   version: z.string(),
   palette: z.array(DesignerPaletteEntry),
-  plot: z.object({ size: z.number().int(), height: z.number().int() }),
+  plot: z.object({ size: z.number().int(), height: z.number().int(), depth: z.number().int().nullish() }),
   revisions: z.array(DesignRevision).describe("the saved design's revisions, newest first"),
   created: UnixMs.nullish(),
   updated: UnixMs.nullish(),
@@ -418,11 +429,13 @@ export interface MockSavedDesign {
   name: string;
   requester: string;
   blocks: DesignerCell[];
+  /** Dug cells below ground as "x,y,z" keys. */
+  dug?: string[];
   revisions: DesignRevision[];
   updated: number;
 }
 
-type MockSession = DesignerSession & { cells: Map<string, DesignerCell> };
+type MockSession = DesignerSession & { cells: Map<string, DesignerCell>; holes: Set<string> };
 
 /**
  * The whole studio in memory for the mock modes (MSW and Nest's mock bridge share it; Nest snake-cases its replies): sessions,
@@ -442,18 +455,28 @@ export function createDesignerMock(firstDesignId = 100) {
         c[0] >= DESIGNER_PLOT.size ||
         c[2] < 0 ||
         c[2] >= DESIGNER_PLOT.size ||
-        c[1] < 0 ||
+        c[1] < -DESIGNER_PLOT.depth ||
         c[1] >= DESIGNER_PLOT.height
       )
         continue;
       const k = key(c);
       const old = s.cells.get(k);
-      if (c[3] === 0) {
-        if (!old) continue;
+      const below = c[1] < 0;
+      if (c[3] === 0 || c[3] === DESIGNER_EARTH) {
+        // Below ground: air digs the cell out, earth fills it back; above it both are air.
+        const dig = below && c[3] === 0;
+        const was = old ? 'block' : below && !s.holes.has(k) ? 'earth' : 'air';
+        const now = dig ? 'air' : below ? 'earth' : 'air';
+        if (was === now) continue;
         s.cells.delete(k);
+        if (dig) s.holes.add(k);
+        else s.holes.delete(k);
+        changed.push([c[0], c[1], c[2], below && !dig ? DESIGNER_EARTH : 0, 0]);
+        continue;
       } else {
         if (old && old[3] === c[3] && old[4] === c[4]) continue;
         s.cells.set(k, [c[0], c[1], c[2], c[3], c[4]]);
+        s.holes.delete(k);
       }
       changed.push([c[0], c[1], c[2], c[3], c[4]]);
     }
@@ -461,11 +484,12 @@ export function createDesignerMock(firstDesignId = 100) {
     return changed;
   };
   const view = (s: MockSession): DesignerSession => {
-    const { cells, ...rest } = s;
+    const { cells, holes, ...rest } = s;
     const d = saved.find((x) => x.id === s.designId);
     return {
       ...rest,
       blocks: [...cells.values()].sort((a, b) => a[1] - b[1] || a[2] - b[2] || a[0] - b[0]),
+      dug: [...holes].map((h) => h.split(',').map(Number) as [number, number, number]),
       revisions: d ? [...d.revisions] : [],
       messages: [...s.messages],
     };
@@ -512,6 +536,7 @@ export function createDesignerMock(firstDesignId = 100) {
       created: Date.now(),
       updated: Date.now(),
       cells: new Map<string, DesignerCell>(),
+      holes: new Set<string>(d?.dug ?? []),
     };
     if (d) for (const c of d.blocks) s.cells.set(key(c), c);
     sessions.set(id, s);
@@ -597,7 +622,7 @@ export function createDesignerMock(firstDesignId = 100) {
       owner: string,
     ): DesignerSaveResponse => {
       const s = get(id);
-      if (s.cells.size === 0) throw new Error('the canvas is empty');
+      if (s.cells.size === 0 && s.holes.size === 0) throw new Error('the canvas is empty');
       let d = !body.asNew && s.designId ? saved.find((x) => x.id === s.designId) : undefined;
       const created = !d;
       if (!d) {
@@ -606,6 +631,7 @@ export function createDesignerMock(firstDesignId = 100) {
       }
       d.name = body.name;
       d.blocks = [...s.cells.values()];
+      d.dug = [...s.holes];
       d.updated = Date.now();
       const rev = (d.revisions[0]?.rev ?? 0) + 1;
       d.revisions.unshift({

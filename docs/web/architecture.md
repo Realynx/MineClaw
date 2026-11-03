@@ -237,6 +237,18 @@ it touches the world, and a save is an ordinary design, so the bot can build it 
 - **Canvas.** The world viewer over an in-memory `WorldSource` (`features/studio/studioWorld.ts`): a flat grassland of 8×8
   columns at noon whose middle 64×64 is the plot, its own private runtime. Edits are pushed as block deltas, so only the
   touched sections re-mesh; column hashes never change.
+- **Below ground (added 2026-11-03).** The canvas reaches 16 layers under the grass (canvas y -16..-1; y 0 is still the first
+  layer above the grass, y -1 the grass itself), solid earth until dug. Dug cells are design data: kept per session, saved as
+  forced air with the design's `ground N` (so save, revisions, diff, revert and every builder see them), loaded back as dug
+  cells. The Underground toggle (K, the shovel) makes the ground editable (break, box / line removal, brush, Delete dig it;
+  any block placed there replaces it) and cuts the view away above a level (the slider, y -16..0; the engine's level cut,
+  which the aim looks through). Off, the grassland behaves as before: only blocks and already-dug cells are edited. A box
+  selection's move / rotate / mirror / copy carries its dug cells and fills the ground it leaves back in.
+- **Leaving unsaved work.** The studio tracks every cell changed since the last save (or since it opened: an untouched new
+  design is clean; an undo back to the saved state is clean). While dirty, `lib/navGuard` (generic, installed by the shell)
+  asks "Leave without saving?" (Save and leave / Leave / Stay) on in-app links (a capture-phase click listener ahead of
+  Next's `<Link>`), on browser back / forward (a duplicate history entry of the page sits on top while dirty) and on the
+  command palette (`guardedNavigate`); reload, tab close and external links get the browser's `beforeunload` prompt.
 - **Creative controls.** Fly camera, the vanilla crosshair with the mouse locked: left breaks, right places (facing from the
   look, R turns it), middle picks; hotbar 1–9 with icons drawn from the bundled textures (`blockIconUrl`), B opens the
   searchable palette, Ctrl+Z / Ctrl+Y undo and redo AI and user ops alike, a grid and a coordinate HUD. T / Enter opens the

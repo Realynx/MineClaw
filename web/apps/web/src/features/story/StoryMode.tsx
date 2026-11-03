@@ -21,7 +21,7 @@ import { AlertsStack, barBodies, ColonistBar, ContextMenu, ControlCluster, HelpO
 import { AiInspector, BillsInspector, GroupInspector, PawnInspector, StorageInspector } from './StoryInspector';
 import { StoryMap, type DragResult, type MapTool, type StoryMapHandle } from './StoryMap';
 import { ArchitectPanel, ColonyPanel, DirectivesPanel, NewColony, QueuePanel, SchedulePanel, TabBar, WorkPanel, type TabId } from './StoryPanels';
-import { buildItem, clampHeight, contextMenu, countLabel, designBlocks, designationBody, designationDirective, designItems, DESIGNATE_TOOLS, placeDesign, keyAction, levelCutY, nextLevel, orderBody, PAN_KEYS, preview, rotateFacing, toolArea, toolYRange, type BuildOpts, type MenuItem, type Target } from './tools';
+import { buildItem, clampHeight, contextMenu, countLabel, designBlocks, designationBody, designationDirective, designCells, designItems, DESIGNATE_TOOLS, placeDesign, keyAction, levelCutY, nextLevel, orderBody, PAN_KEYS, preview, rotateFacing, toolArea, toolYRange, type BuildOpts, type MenuItem, type Target } from './tools';
 import type { StorageClip } from './storage';
 import { colonyKey, useColonies, useColony, useStoryWrite } from './useStory';
 import { setItemIconSource } from './visuals';
@@ -370,7 +370,8 @@ export function StoryMode() {
       let blocks = designBlocks(await api('blueprints.get', { params: { id } }).catch(() => null));
       if (!blocks.length) blocks = designBlocks(await api('buildplans.get', { params: { id } }).catch(() => null));
       // The Design Studio opens a design's newest revision as cells: the reliable source when the account may design.
-      if (!blocks.length && can('design')) blocks = designBlocks((await api('designer.create', { body: { designId: id } }).catch(() => null))?.blocks ?? null);
+      // (with its dug cells: a basement goes under the clicked level).
+      if (!blocks.length && can('design')) blocks = designCells(await api('designer.create', { body: { designId: id } }).catch(() => null));
       if (!blocks.length) return say(`${name} has no block list the colony can build from`, 'warn');
       setTool({ kind: 'design', id, name, blocks });
       say(`${name}: move to a spot and click to queue it (Q/E turns)`);

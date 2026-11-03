@@ -5,6 +5,7 @@ import { Bot, Boxes, Bug, Code2, FileText, Moon, Search, Sun } from 'lucide-reac
 import { useRouter } from 'next/navigation';
 import { Dialog as D } from 'radix-ui';
 import { useDeferredValue, useEffect, useState, type ReactNode } from 'react';
+import { guardedNavigate } from '@/lib/navGuard';
 import { useApi } from '@/lib/api/query';
 import { useAuth } from '@/lib/auth';
 import { useStatus } from '@/lib/live/hooks';
@@ -17,7 +18,19 @@ const itemClass =
 const groupClass =
   '[&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:pt-3 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-subtle [&_[cmdk-group-heading]]:uppercase';
 
-function Item({ onSelect, icon, children, hint, value }: { onSelect: () => void; icon: ReactNode; children: ReactNode; hint?: ReactNode; value: string }) {
+function Item({
+  onSelect,
+  icon,
+  children,
+  hint,
+  value,
+}: {
+  onSelect: () => void;
+  icon: ReactNode;
+  children: ReactNode;
+  hint?: ReactNode;
+  value: string;
+}) {
   return (
     <Command.Item value={value} onSelect={onSelect} className={itemClass}>
       <span className="text-subtle">{icon}</span>
@@ -51,7 +64,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
 
   const go = (href: string) => {
     onOpenChange(false);
-    router.push(href);
+    guardedNavigate(() => router.push(href));
   };
 
   return (
@@ -79,7 +92,12 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
 
               {dq.length >= 3 ? (
                 <Command.Group heading="Memories" className={groupClass}>
-                  <Item value={`search memories ${dq}`} icon={<Search className="size-4" />} onSelect={() => go(`/search?q=${encodeURIComponent(dq)}`)} hint="recall search">
+                  <Item
+                    value={`search memories ${dq}`}
+                    icon={<Search className="size-4" />}
+                    onSelect={() => go(`/search?q=${encodeURIComponent(dq)}`)}
+                    hint="recall search"
+                  >
                     Search memories for “{dq}”
                   </Item>
                   {(memories.data?.hits ?? []).map((h) => (
@@ -89,7 +107,11 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
                       icon={<FileText className="size-4" />}
                       hint={h.kind}
                       onSelect={() =>
-                        go(h.raptorLeaf !== null && h.raptorLeaf !== undefined ? `/raptor?node=${h.raptorLeaf}` : `/search?q=${encodeURIComponent(dq)}`)
+                        go(
+                          h.raptorLeaf !== null && h.raptorLeaf !== undefined
+                            ? `/raptor?node=${h.raptorLeaf}`
+                            : `/search?q=${encodeURIComponent(dq)}`,
+                        )
                       }
                     >
                       {h.title}
@@ -100,7 +122,13 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
 
               <Command.Group heading="Bots" className={groupClass}>
                 {(status.data?.bots ?? []).map((b) => (
-                  <Item key={b.name} value={`bot ${b.name} ${b.task ?? ''}`} icon={<Bot className="size-4" />} hint={b.status} onSelect={() => go(`/live/${encodeURIComponent(b.name)}`)}>
+                  <Item
+                    key={b.name}
+                    value={`bot ${b.name} ${b.task ?? ''}`}
+                    icon={<Bot className="size-4" />}
+                    hint={b.status}
+                    onSelect={() => go(`/live/${encodeURIComponent(b.name)}`)}
+                  >
                     {b.name}
                   </Item>
                 ))}
@@ -110,7 +138,13 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
                 {NAV_ITEMS.filter((i) => !i.access || can(i.access)).map((i) => {
                   const Icon = i.icon;
                   return (
-                    <Item key={i.href} value={`page ${i.label} ${i.description} ${(i.keywords ?? []).join(' ')}`} icon={<Icon className="size-4" />} hint={i.description} onSelect={() => go(i.href)}>
+                    <Item
+                      key={i.href}
+                      value={`page ${i.label} ${i.description} ${(i.keywords ?? []).join(' ')}`}
+                      icon={<Icon className="size-4" />}
+                      hint={i.description}
+                      onSelect={() => go(i.href)}
+                    >
                       {i.label}
                     </Item>
                   );
@@ -120,7 +154,13 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
               {scripts.data?.scripts.length ? (
                 <Command.Group heading="Scripts" className={groupClass}>
                   {scripts.data.scripts.map((s) => (
-                    <Item key={s.name} value={`script ${s.name} ${s.purpose ?? ''}`} icon={<Code2 className="size-4" />} hint={`v${s.version} · ${s.lang}`} onSelect={() => go(`/scripts?name=${encodeURIComponent(s.name)}`)}>
+                    <Item
+                      key={s.name}
+                      value={`script ${s.name} ${s.purpose ?? ''}`}
+                      icon={<Code2 className="size-4" />}
+                      hint={`v${s.version} · ${s.lang}`}
+                      onSelect={() => go(`/scripts?name=${encodeURIComponent(s.name)}`)}
+                    >
                       {s.name}
                     </Item>
                   ))}
@@ -130,7 +170,13 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
               {designs.data?.items.length ? (
                 <Command.Group heading="Designs" className={groupClass}>
                   {designs.data.items.map((d) => (
-                    <Item key={d.id} value={`design ${d.id} ${d.name} ${d.requester ?? ''}`} icon={<Boxes className="size-4" />} hint={`#${d.id} · r${d.rev}`} onSelect={() => go(`/designs?id=${d.id}`)}>
+                    <Item
+                      key={d.id}
+                      value={`design ${d.id} ${d.name} ${d.requester ?? ''}`}
+                      icon={<Boxes className="size-4" />}
+                      hint={`#${d.id} · r${d.rev}`}
+                      onSelect={() => go(`/designs?id=${d.id}`)}
+                    >
                       {d.name}
                     </Item>
                   ))}
@@ -140,7 +186,9 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
               <Command.Group heading="Actions" className={groupClass}>
                 <Item
                   value="toggle theme dark light"
-                  icon={resolvedTheme(prefs.theme) === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
+                  icon={
+                    resolvedTheme(prefs.theme) === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />
+                  }
                   onSelect={() => {
                     setPrefs({ theme: resolvedTheme(prefs.theme) === 'dark' ? 'light' : 'dark' });
                     onOpenChange(false);

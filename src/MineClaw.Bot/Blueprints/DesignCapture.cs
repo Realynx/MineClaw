@@ -105,7 +105,7 @@ public static partial class DesignCapture
         var (bp, _) = BlueprintParser.Parse(source.Dsl);
         var (fx, fz) = bp.Footprint;
         if (fx < 1 || fz < 1 || bp.H < 1) return null;
-        var n = new BlockPos(ground.X - fx / 2, ground.Y + 1, ground.Z - fz / 2);
+        var n = bp.OriginOn(ground);
         bool overlap = n.X <= o.X + fx - 1 && o.X <= n.X + fx - 1 && n.Y <= o.Y + bp.H - 1 && o.Y <= n.Y + bp.H - 1 && n.Z <= o.Z + fz - 1 && o.Z <= n.Z + fz - 1;
         return overlap
             ? string.Create(CultureInfo.InvariantCulture,

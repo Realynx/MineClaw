@@ -1,13 +1,14 @@
 /**
  * The Design Studio's world: an in-memory editable `WorldSource` for @mineclaw/world-viewer. A flat grassland (8×8 columns,
- * grass at y 63) whose middle 64×64 is the canvas (canvas y 0 = world y 64), noon, no weather, no bots. Edits are pushed as
+ * grass at y 63, three dirt layers, stone) whose middle 64×64 is the canvas (canvas y 0 = world y 64, canvas y -1 the grass):
+ * the canvas's dug cells are air in the ground, its blocks below y 0 replace the ground, noon, no weather, no bots. Edits are pushed as
  * block deltas through `subscribe`, so the viewer patches its store and re-meshes only the touched sections; the column
  * hashes never change (a refetch, if the viewer evicts a column, encodes the current canvas).
  */
 import type { BlockDeltas, EntityDelta, Overlays, WorldIndex, WorldSource } from '@mineclaw/world-viewer';
 import { cellIndex } from '@mineclaw/world-viewer';
 import { encodeColumn, encodeMcwc, lightSections, type EncodeEntry } from '@mineclaw/world-viewer/testing';
-import type { Canvas, Cell } from './canvas';
+import { EARTH, posOf, type Canvas, type Cell } from './canvas';
 import type { Version } from './facing';
 
 /** World y of canvas y 0 (the grass is one below). */
@@ -21,6 +22,12 @@ const GRASS = 2,
   DIRT = 3,
   STONE = 1,
   BEDROCK = 7;
+
+/** The untouched ground at a world y: grass on top (63), three dirt layers, stone, bedrock at 0; air above. */
+export function groundAt(y: number): number {
+  const top = BASE_Y - 1;
+  return y > top ? 0 : y === top ? GRASS : y >= top - 3 ? DIRT : y > 0 ? STONE : BEDROCK;
+}
 
 /** Transparent ids for the sky light estimate (air, glass, panes, fences, doors, torches, ladders, slabs, stairs…). */
 const CLEAR = new Set([
@@ -114,7 +121,9 @@ export class StudioWorld {
       rev: this.rev,
       full: false,
       blocks: {
-        '0': cells.map(([x, y, z, id, meta]): [number, number, number, number, number] => [x, y + BASE_Y, z, id, meta]),
+        '0': cells.map(([x, y, z, id, meta]): [number, number, number, number, number] =>
+          id === EARTH ? [x, y + BASE_Y, z, groundAt(y + BASE_Y), 0] : [x, y + BASE_Y, z, id, meta],
+        ),
       },
       columns: [],
     };
@@ -134,16 +143,20 @@ export class StudioWorld {
         for (let y = ground - 3; y < ground; y++) ids[cellIndex(lx, y, lz)] = DIRT;
         ids[cellIndex(lx, ground, lz)] = GRASS;
       }
-    if (cx >= 0 && cx <= 3 && cz >= 0 && cz <= 3)
+    if (cx >= 0 && cx <= 3 && cz >= 0 && cz <= 3) {
+      for (const k of this.canvas.dug) {
+        const [x, y, z] = posOf(k);
+        if (x >> 4 !== cx || z >> 4 !== cz) continue;
+        ids[cellIndex(x & 15, y + BASE_Y, z & 15)] = 0;
+      }
       for (const [k, v] of this.canvas.blocks) {
-        const x = k % 64,
-          z = Math.floor(k / 64) % 64,
-          y = Math.floor(k / 4096);
+        const [x, y, z] = posOf(k);
         if (x >> 4 !== cx || z >> 4 !== cz) continue;
         const i = cellIndex(x & 15, y + BASE_Y, z & 15);
         ids[i] = v >> 4;
         meta[i] = v & 15;
       }
+    }
     const tops = new Int16Array(256);
     for (let lx = 0; lx < 16; lx++)
       for (let lz = 0; lz < 16; lz++) {

@@ -127,8 +127,13 @@ public sealed partial class StoryColony
                 b.Status = "done"; b.Rev = Touch();
                 continue;
             }
-            // Support first: a level waits for the one below, blocked blocks included (it never builds over a gap).
-            int lowest = b.Ghosts.Where(g => g.Job && g.State is "todo" or "leased" or "blocked").Min(g => g.At.Y);
+            // A design placed with a basement: its blocks wait until the ground is dug out (dig, then place).
+            if (DigFirst(b)) continue;
+            // Support first: a level waits for the one below, blocked blocks included (it never builds over a gap). Digging goes
+            // the other way: top-down (a buried cell opens once the one above it is gone).
+            var left = b.Ghosts.Where(g => g.Job && g.State is "todo" or "leased" or "blocked").ToList();
+            bool digs = left.All(g => g.Remove);
+            int lowest = digs ? left.Max(g => g.At.Y) : left.Min(g => g.At.Y);
             var open = todo.Where(g => g.State == "todo" && g.At.Y == lowest).ToList();
             foreach (var g in StoryConstruction.Ordered(open, Solid, from))
             {
@@ -173,6 +178,19 @@ public sealed partial class StoryColony
             nextBuild:;
         }
         return null;
+    }
+
+    /// <summary>
+    /// A build of a placed design (items sharing a <c>group</c>, the dig item queued first) whose ground isn't dug out yet: an
+    /// earlier build of its group still has cells to remove.
+    /// </summary>
+    private bool DigFirst(BuildState b)
+    {
+        static string? Group(BuildState x) => x.Spec?["group"] is JsonValue v && v.TryGetValue<string>(out var s) && s.Length > 0 ? s : null;
+        if (Group(b) is not { } group || b.Ghosts.All(g => g.Remove)) return false;
+        // A dig that keeps failing (blocked) doesn't hold the build forever: a placement digs its own cell anyway.
+        return Builds.Any(o => o != b && o.Order < b.Order && o.Status != "done" && Group(o) == group
+                               && o.Ghosts.Any(g => g.Remove && g.State is "todo" or "leased"));
     }
 
     /// <summary>A spot just outside the build's footprint, on its ground level, nearest the block (null for a single block).</summary>

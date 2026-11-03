@@ -4,9 +4,16 @@
  * replace material), face tools (flood a face area, extrude / push-pull it) and transforms (move, rotate 90° around Y,
  * mirror X/Z, copy / paste) with block facing turned per family (./facing). Each returns the cells to apply; the page applies
  * them through `Canvas.apply`, so everything lands in one history and one op stream to the bot.
+ *
+ * Below ground (y < 0) the canvas is earth until dug: air there digs, `EARTH` fills back. Tools that only "remove what is
+ * there" dig earth only when asked (`dig`, the studio's underground mode), so the flat grassland behaves as before; transforms
+ * of a box selection carry its dug cells along (the vacated ground filled back in).
  */
 import {
+  below,
   boxOf,
+  DEPTH,
+  EARTH,
   type Canvas,
   type Cell,
   inSel,
@@ -18,6 +25,7 @@ import {
   type Selection,
   type V3,
 } from './canvas';
+import type { AimTarget } from '@mineclaw/world-viewer';
 import { FACE_NORMAL, mirrorMeta, rotateMeta, type Version } from './facing';
 
 export type BoxMode = 'fill' | 'hollow' | 'walls' | 'outline';
@@ -98,11 +106,13 @@ export function brush(
   id: number,
   meta: number,
   target?: number,
+  dig = false,
 ): Cell[] {
   const cells = brushCells(centre, size, shape);
   const out: Cell[] = [];
   for (const [x, y, z] of cells) {
     const cur = c.id(x, y, z);
+    if (cur === EARTH && !dig) continue; // the ground is only sculpted in underground mode
     switch (mode) {
       case 'add':
         if (cur === 0) out.push([x, y, z, id, meta]);
@@ -240,10 +250,15 @@ export interface Transformed {
   selection: Selection | null;
 }
 
-function relocate(blocks: Cell[], s: Selection, map: (b: Cell) => Cell): Transformed {
+/**
+ * The old places cleared, then the cells at their new places. A box selection moves its dug cells too (`holes`): what it
+ * leaves below ground is filled back with earth; a block moved out of a hand-picked selection leaves air (dug, below ground).
+ * Moved dug cells that land above ground are just air there (dropped).
+ */
+function relocate(blocks: Cell[], s: Selection, map: (b: Cell) => Cell, holes = !s.mask): Transformed {
   if (blocks.length === 0) return { cells: [], selection: s };
-  const moved = blocks.map(map);
-  const cells: Cell[] = blocks.map((b): Cell => [b[0], b[1], b[2], 0, 0]);
+  const moved = blocks.map(map).filter((m) => m[3] !== 0 || below(m[1]));
+  const cells: Cell[] = blocks.map((b): Cell => [b[0], b[1], b[2], holes && below(b[1]) ? EARTH : 0, 0]);
   for (const m of moved) cells.push(m);
   const corners = [s.min, s.max, [s.min[0], s.min[1], s.max[2]] as V3, [s.max[0], s.min[1], s.min[2]] as V3].map(
     (p) => {
@@ -267,7 +282,7 @@ function relocate(blocks: Cell[], s: Selection, map: (b: Cell) => Cell): Transfo
 
 /** Move the selected blocks by d (the selection follows). */
 export function move(c: Canvas, s: Selection, d: V3): Transformed {
-  return relocate(selected(c, s), s, (b) => [b[0] + d[0], b[1] + d[1], b[2] + d[2], b[3], b[4]]);
+  return relocate(selected(c, s, !s.mask), s, (b) => [b[0] + d[0], b[1] + d[1], b[2] + d[2], b[3], b[4]]);
 }
 
 /**
@@ -278,7 +293,7 @@ export function rotate(c: Canvas, s: Selection, quarters: number, version: Versi
   const q = ((quarters % 4) + 4) % 4;
   const px = Math.floor((s.min[0] + s.max[0]) / 2),
     pz = Math.floor((s.min[2] + s.max[2]) / 2);
-  return relocate(selected(c, s), s, (b) => {
+  return relocate(selected(c, s, !s.mask), s, (b) => {
     let dx = b[0] - px,
       dz = b[2] - pz;
     for (let i = 0; i < q; i++) [dx, dz] = [-dz, dx];
@@ -288,7 +303,7 @@ export function rotate(c: Canvas, s: Selection, quarters: number, version: Versi
 
 /** Mirror the selected blocks across x (east ↔ west) or z (north ↔ south), in place. */
 export function mirrorSel(c: Canvas, s: Selection, axis: 'x' | 'z'): Transformed {
-  return relocate(selected(c, s), s, (b) =>
+  return relocate(selected(c, s, !s.mask), s, (b) =>
     axis === 'x'
       ? [s.min[0] + s.max[0] - b[0], b[1], b[2], b[3], mirrorMeta(b[3], b[4], 'x')]
       : [b[0], b[1], s.min[2] + s.max[2] - b[2], b[3], mirrorMeta(b[3], b[4], 'z')],
@@ -302,7 +317,7 @@ export interface Clip {
 }
 
 export function copy(c: Canvas, s: Selection): Clip | null {
-  const blocks = selected(c, s);
+  const blocks = selected(c, s, !s.mask);
   if (!blocks.length) return null;
   const min: V3 = [
     Math.min(...blocks.map((b) => b[0])),
@@ -324,12 +339,17 @@ export function copy(c: Canvas, s: Selection): Clip | null {
 export function pasteCells(clip: Clip, at: V3): Cell[] {
   return clip.cells
     .map((b): Cell => [b[0] + at[0], b[1] + at[1], b[2] + at[2], b[3], b[4]])
-    .filter((b) => inside(b[0], b[1], b[2]));
+    .filter((b) => inside(b[0], b[1], b[2]) && (b[3] !== 0 || below(b[1])));
 }
 
-/** Delete the selected blocks. */
-export function erase(c: Canvas, s: Selection): Cell[] {
-  return selected(c, s).map((b): Cell => [b[0], b[1], b[2], 0, 0]);
+/** Delete the selected blocks; with `dig` (underground mode) a box selection's earth is dug out too. */
+export function erase(c: Canvas, s: Selection, dig = false): Cell[] {
+  const out = selected(c, s).map((b): Cell => [b[0], b[1], b[2], 0, 0]);
+  if (dig && !s.mask)
+    for (let y = s.min[1]; y <= Math.min(-1, s.max[1]); y++)
+      for (let z = s.min[2]; z <= s.max[2]; z++)
+        for (let x = s.min[0]; x <= s.max[0]; x++) if (c.earth(x, y, z)) out.push([x, y, z, 0, 0]);
+  return out;
 }
 
 /** A selection of explicit cells (for tests and select-connected). */
@@ -340,3 +360,39 @@ export function keysOf(cells: Iterable<V3>): Set<number> {
 }
 
 export { posOf };
+
+// ---------------------------------------------------------------------------------------------------------- aim and underground
+
+/** World y of canvas y 0 (the studio world's grass is one below). */
+export const CANVAS_BASE_Y = 64;
+
+export interface Hit {
+  /** The block hit (canvas coordinates), null on the ground or outside the plot. */
+  hit: V3 | null;
+  /** The free cell in front of the hit face. */
+  place: V3 | null;
+  face: number;
+}
+
+/**
+ * What the aim points at on the canvas. Undisturbed ground counts as a block to edit only underground (`dig`); otherwise it is
+ * "the ground" (hit null, the cell in front of it to place in), as on the plain grassland.
+ */
+export function aimHit(t: AimTarget | null, c: Canvas, dig: boolean): Hit | null {
+  if (!t || t.kind !== 'block') return null;
+  const y = t.y - CANVAS_BASE_Y;
+  const n = FACE_NORMAL[t.face] ?? [0, 1, 0];
+  const place: V3 = [t.x + n[0], y + n[1], t.z + n[2]];
+  const hit = inside(t.x, y, t.z) && (dig || c.id(t.x, y, t.z) !== EARTH);
+  return { hit: hit ? [t.x, y, t.z] : null, place: inside(...place) ? place : null, face: t.face };
+}
+
+/** Underground mode's first level: everything above the grass's layer cut away. */
+export const UNDER_DEFAULT = -1;
+
+/** The underground toggle: off → the default level, on → off. */
+export const toggleUnder = (level: number | null): number | null => (level === null ? UNDER_DEFAULT : null);
+
+/** The view's level cut for an underground level (world y; every layer above `level` is cut away), null when off. */
+export const underCut = (level: number | null): { y: number } | null =>
+  level === null ? null : { y: CANVAS_BASE_Y + Math.max(-DEPTH, Math.min(0, level)) + 1 };

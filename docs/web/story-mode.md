@@ -195,7 +195,7 @@ Designation: `{id, kind, work_type, target:[x,y,z]|{entity}, blocks, label, crea
 
 Item: `{kind: wall|floor|roof|door|window|stairs|fence|block|remove|crafting_table|furnace|chest|bed|torch, area?:[x1,y1,z1,x2,y2,z2],
 blocks?:[[x,y,z]], material?: <block name> | [id,meta], height?:1..12, roof?:{style: flat|slab|gable|none, material?, overhang?:0|1},
-facing?: n|e|s|w, level?:y, name?}`.
+facing?: n|e|s|w, level?:y, name?, group?}`.
 
 - **wall / fence:** the rectangle's perimeter (corners included) × height, from the area's y1 up. Walls default to 3 high,
   fences to 1. A wall with `roof` also gets its roof, one above its top.
@@ -212,6 +212,9 @@ facing?: n|e|s|w, level?:y, name?}`.
 - **stairs:** a staircase rising toward `facing`, from y1 to y2.
 - **Furniture** (crafting_table, furnace, chest, bed, torch): each block. A bed is two.
 - **remove:** every diggable block in the area becomes a dig job.
+- **group:** the items of one placed design. A design with a basement (Design Studio dug cells) is queued as a `remove`
+  item of its dug cells first, then its block items, all with the same `group`: its blocks wait until that dig is done.
+  The design's ground floor goes on the clicked level and the basement under it.
 
 Build: `{id, kind, label, status: queued|active|paused|blocked|done, reason, blocks_total, blocks_done, material, order, created}`.
 Ghosts: `[x,y,z,id,meta,build_id,state]`, with state `todo|leased|done|blocked`.
@@ -220,6 +223,8 @@ Execution:
 - Every ghost is one job for a pawn with Build on, by the picker and lease rules.
 - Order: the first unpaused build in queue order gives out its jobs, only from its lowest unfinished level (support first).
   Blocks touching something solid go first, then the nearest. When all of those are leased, the next build's jobs go out.
+  A build that only digs goes top-down instead (a buried cell opens once the one above it is gone). A build of a `group`
+  waits while an earlier build of that group still has cells to dig (a dig that keeps failing doesn't hold it).
 - Never a block where a player stands.
 - Material: the pawn uses its own, or fetches it from the nearest storage that holds it. With none anywhere, the build is
   `blocked` with `reason:"need 34 wooden planks"` and an alert. It goes on by itself once some is stored (a Chop, Mine or Haul

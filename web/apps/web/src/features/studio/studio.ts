@@ -2,6 +2,9 @@
  * The Design Studio's state outside React: the canvas, one undo/redo history for AI and user ops, the user's edits waiting
  * to reach the bot (`POST …/canvas`, debounced; or carried by the next message), the selection, and the calls to the
  * designer routes. The page renders from `snapshot()` and calls the methods; the world and the 3D overlay listen to `onCells`.
+ *
+ * Unsaved work (`dirty`): every cell whose state differs from what it was at the last successful save (or when the session
+ * opened: a new design's empty plot, a loaded revision). Tracked per cell, so an undo back to the saved state is clean again.
  */
 import type {
   DesignerEdit,
@@ -14,7 +17,18 @@ import type {
   DesignerCanvasRequest,
   DesignerCanvasResponse,
 } from '@mineclaw/contracts';
-import { Canvas, type Cell, History, type OpGroup, type Selection, type V3 } from './canvas';
+import {
+  Canvas,
+  type Cell,
+  type Change,
+  EARTH,
+  History,
+  keyOf,
+  type OpGroup,
+  posOf,
+  type Selection,
+  type V3,
+} from './canvas';
 
 /** The routes the studio calls (the app passes the typed client; tests pass fakes and read the bodies). */
 export interface StudioApi {
@@ -39,7 +53,12 @@ export interface StudioSnapshot {
   designId: number | null;
   name: string;
   error: string | null;
+  /** Cells changed since the last save (or since the session opened): leaving now would lose them. */
+  dirty: boolean;
 }
+
+/** A cell's state as one number (id * 16 + meta; air 0, earth -1), to compare with the saved one. */
+const stateOf = (c: Cell): number => (c[3] === EARTH ? -1 : c[3] * 16 + (c[4] & 15));
 
 const MAX_CELLS_PER_EDIT = 20_000;
 
@@ -61,13 +80,17 @@ export class Studio {
   name = 'new design';
   error: string | null = null;
   private lastGroup: string | null = null;
+  /** Cell key → its state at the last save, for every cell touched since. */
+  private saved = new Map<number, number>();
+  /** Keys of the touched cells whose state differs from the saved one. */
+  private diverged = new Set<number>();
 
   constructor(
     readonly session: DesignerSession,
     private readonly api: StudioApi,
     readonly flushMs = 400,
   ) {
-    this.canvas.load(session.blocks);
+    this.canvas.load(session.blocks, session.dug ?? []);
     this.rev = session.rev;
     this.messages = [...session.messages];
     this.costUsd = session.costUsd;
@@ -113,7 +136,36 @@ export class Studio {
       designId: this.designId,
       name: this.name,
       error: this.error,
+      dirty: this.diverged.size > 0,
     };
+  }
+
+  /** Whether leaving now would lose canvas changes. */
+  get dirty(): boolean {
+    return this.diverged.size > 0;
+  }
+
+  /** Records an applied change against the saved state (forward[i] and backward[i] are the same cell). */
+  private track(ch: Change): void {
+    ch.forward.forEach((f, i) => {
+      const k = keyOf(f[0], f[1], f[2]);
+      if (!this.saved.has(k)) this.saved.set(k, stateOf(ch.backward[i]!));
+      if (this.saved.get(k) === stateOf(f)) this.diverged.delete(k);
+      else this.diverged.add(k);
+    });
+  }
+
+  private stateAt(k: number): number {
+    const [x, y, z] = posOf(k);
+    const [id, meta] = this.canvas.get(x, y, z);
+    return id === EARTH ? -1 : id * 16 + meta;
+  }
+
+  /** The canvas as it is now counts as saved. */
+  markSaved(): void {
+    this.saved.clear();
+    this.diverged.clear();
+    this.changed();
   }
 
   private changed(): void {
@@ -132,6 +184,7 @@ export class Studio {
   edit(cells: readonly Cell[], kind: string, label: string, group?: string): Cell[] {
     const ch = this.canvas.apply(cells);
     if (ch.forward.length === 0) return [];
+    this.track(ch);
     const g: OpGroup = { label, by: 'user', forward: ch.forward, backward: ch.backward };
     if (group && group === this.lastGroup) this.history.merge(g);
     else this.history.push(g);
@@ -149,6 +202,7 @@ export class Studio {
     for (const op of ops) {
       const ch = this.canvas.apply(op.cells, false);
       if (ch.forward.length === 0) continue;
+      this.track(ch);
       this.history.push({ label: op.label, by: 'ai', forward: ch.forward, backward: ch.backward });
       all.push(...ch.forward);
     }
@@ -169,6 +223,7 @@ export class Studio {
     if (!g) return null;
     this.lastGroup = null;
     const ch = this.canvas.apply(g[dir], false);
+    this.track(ch);
     if (ch.forward.length) {
       this.emit(ch.forward, 'user');
       this.queue(word, `${word} ${g.label}`, ch.forward);
@@ -305,7 +360,14 @@ export class Studio {
       ...(summary?.trim() ? { summary: summary.trim() } : {}),
       ...(asNew ? { asNew: true } : {}),
     };
+    // What is on the canvas as the save goes out is what the save holds (edits made meanwhile stay unsaved).
+    const at = new Map([...this.diverged].map((k) => [k, this.stateAt(k)]));
     const r = await this.api.save(this.id, body);
+    for (const [k, v] of at) {
+      const now = this.stateAt(k);
+      this.saved.set(k, v);
+      if (now === v) this.diverged.delete(k);
+    }
     this.designId = r.designId;
     this.name = r.name;
     this.messages = [

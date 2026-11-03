@@ -11,7 +11,8 @@ public sealed record DesignerOp(string Kind, string Label, IReadOnlyList<CanvasC
 
 /// <summary>
 /// The Design Studio AI's tool set over the sandbox canvas (never the world): place, box (fill / hollow / walls), line, remove,
-/// replace, clear, describe. Blocks are spelled as in a blueprint palette ("planks", "cobblestone_stairs:north", "wooden_door:south",
+/// replace, clear, describe. Below the grass (y &lt; 0) the canvas is solid ground: remove (air) digs it out, the block "earth"
+/// fills it back, any block placed there replaces the ground. Blocks are spelled as in a blueprint palette ("planks", "cobblestone_stairs:north", "wooden_door:south",
 /// "wool:red", "log:spruce", "torch:5") and resolved by <see cref="BlueprintParser.Resolve"/>, so whatever lands on the canvas is
 /// something a design can hold. Descriptions are short on purpose (they ride in the cached prefix of every call).
 /// </summary>
@@ -33,19 +34,21 @@ public static class DesignerTools
         new("box", "Box from..to (inclusive). mode fill (default) | hollow (shell, inside air) | walls (4 sides, inside air, no floor/roof).",
             Obj("\"b\":" + Str0 + ",\"from\":" + P3 + ",\"to\":" + P3 + ",\"mode\":{\"type\":\"string\",\"enum\":[\"fill\",\"hollow\",\"walls\"]}", "b", "from", "to")),
         new("line", "Straight line of blocks from..to.", Obj("\"b\":" + Str0 + ",\"from\":" + P3 + ",\"to\":" + P3, "b", "from", "to")),
-        new("remove", "Set a box to air.", Obj("\"from\":" + P3 + ",\"to\":" + P3, "from", "to")),
+        new("remove", "Set a box to air (below ground: dig it out).", Obj("\"from\":" + P3 + ",\"to\":" + P3, "from", "to")),
         new("replace", "Replace block a (or \"any\") with b, in a box (default: everything).",
             Obj("\"a\":" + Str0 + ",\"b\":" + Str0 + ",\"from\":" + P3 + ",\"to\":" + P3, "a", "b")),
         new("clear", "Empty the whole canvas.", Obj("")),
         new("describe", "Canvas summary, or one layer y as rows with a legend.", Obj("\"y\":{\"type\":\"integer\"}")),
     ];
 
-    /// <summary>The cached system prompt (≈330 tokens): the plot, the conventions and the palette.</summary>
+    /// <summary>The cached system prompt (≈400 tokens): the plot, the ground, the conventions and the palette.</summary>
     public static string System(string? player) =>
         $"You are the Design Studio builder: you co-design a Minecraft {GameData.Current.VersionId} build with {player ?? "the player"} on a sandbox " +
-        "canvas (not the world; nothing is spent). Plot: x,z 0..63, y 0..47; y=0 sits on flat grass; +x east, +z south (north = -z); the " +
-        "view starts at the centre (32,0,32). Edit only with the tools, coordinates inclusive. Prefer few big calls (box, line) over many " +
-        "places. A saved design is at most 32 wide/deep and 32 high: stay inside that. Blocks (design palette only): stone cobblestone " +
+        "canvas (not the world; nothing is spent). Plot: x,z 0..63, y -16..47; +x east, +z south (north = -z); the view starts at the " +
+        "centre (32,0,32). y=0 is the first layer above flat grass; y=-1 is the grass layer and y -16..-1 is solid ground: dig it with " +
+        "remove (that air is dug out when built), then build floors, walls, stairs or ladders down there (basements, cellars, " +
+        "foundations); \"earth\" fills dug cells back. Edit only with the tools, coordinates inclusive. Prefer few big calls (box, line) " +
+        "over many places. A saved design is at most 32 wide/deep and 32 high, dug layers included: stay inside that. Blocks (design palette only): stone cobblestone " +
         "mossy_cobblestone planks log:oak|spruce|birch sandstone bricks stone_bricks:mossy|cracked obsidian glass glass_pane wool:<colour> " +
         "glowstone bookshelf clay netherrack snow_block fence fence_gate iron_bars ladder:<wall side> torch:1-4 (on a wall: 1 west 2 east 3 north " +
         "4 south of it) torch:5 (floor) trapdoor slab:stone|sandstone|wood|cobble|brick|stonebrick wooden_stairs cobblestone_stairs brick_stairs " +
@@ -75,7 +78,7 @@ public static class DesignerTools
                         var (id, meta) = Block(input, "b");
                         if (!input.TryGetProperty("at", out var at) || at.ValueKind != JsonValueKind.Array) throw new ArgumentException("at: [[x,y,z],...]");
                         var cells = at.EnumerateArray().Select(e => V(e)).Select(p => new CanvasCell(p.X, p.Y, p.Z, id, meta)).ToList();
-                        return Done(canvas, "place", $"placed {BuildBlocks.Name(id, meta)}", canvas.Apply(cells, out var rej), rej);
+                        return Done(canvas, "place", $"placed {Name(id, meta)}", canvas.Apply(cells, out var rej), rej);
                     }
                 case "box":
                     {
@@ -93,25 +96,25 @@ public static class DesignerTools
                         var cells = mode is "hollow" or "walls"
                             ? Cells(a, b, (x, yy, z) => true, 0, 0).Select(c => shell(c.X, c.Y, c.Z) ? c with { Id = id, Meta = meta } : c)
                             : Cells(a, b, shell, id, meta);
-                        return Done(canvas, mode == "fill" ? "fill" : mode, $"{(mode == "fill" ? "filled" : mode)} {Box(a, b)} with {BuildBlocks.Name(id, meta)}", canvas.Apply(cells, out var rej), rej);
+                        return Done(canvas, mode == "fill" ? "fill" : mode, $"{(mode == "fill" ? "filled" : mode)} {Box(a, b)} with {Name(id, meta)}", canvas.Apply(cells, out var rej), rej);
                     }
                 case "line":
                     {
                         var (id, meta) = Block(input, "b");
                         var (a, b) = (P(input, "from"), P(input, "to"));
-                        return Done(canvas, "line", $"line of {BuildBlocks.Name(id, meta)}", canvas.Apply(Line(a, b).Select(p => new CanvasCell(p.X, p.Y, p.Z, id, meta)), out var rej), rej);
+                        return Done(canvas, "line", $"line of {Name(id, meta)}", canvas.Apply(Line(a, b).Select(p => new CanvasCell(p.X, p.Y, p.Z, id, meta)), out var rej), rej);
                     }
                 case "replace":
                     {
                         var aSpec = Str(input, "a");
                         (int Id, int Meta)? from = aSpec.Equals("any", StringComparison.OrdinalIgnoreCase) ? null : Block(input, "a");
                         var (id, meta) = Block(input, "b");
-                        ((int X, int Y, int Z) Lo, (int X, int Y, int Z) Hi) box = input.TryGetProperty("from", out _) ? Norm(P(input, "from"), P(input, "to")) : ((0, 0, 0), (DesignerCanvas.Size - 1, DesignerCanvas.Height - 1, DesignerCanvas.Size - 1));
+                        ((int X, int Y, int Z) Lo, (int X, int Y, int Z) Hi) box = input.TryGetProperty("from", out _) ? Norm(P(input, "from"), P(input, "to")) : ((0, -DesignerCanvas.Depth, 0), (DesignerCanvas.Size - 1, DesignerCanvas.Height - 1, DesignerCanvas.Size - 1));
                         var (lo, hi) = (box.Lo, box.Hi);
                         var cells = canvas.Blocks.Where(kv => kv.Key.X >= lo.X && kv.Key.X <= hi.X && kv.Key.Y >= lo.Y && kv.Key.Y <= hi.Y && kv.Key.Z >= lo.Z && kv.Key.Z <= hi.Z)
                             .Where(kv => from == null ? !(BuildBlocks.KindOf(kv.Value.Id) == BuildKind.Door) : kv.Value.Id == from.Value.Id && (BuildBlocks.HasVariants(kv.Value.Id) ? kv.Value.Meta == from.Value.Meta : true))
                             .Select(kv => new CanvasCell(kv.Key.X, kv.Key.Y, kv.Key.Z, id, BuildBlocks.Directional(id) && BuildBlocks.KindOf(kv.Value.Id) == BuildBlocks.KindOf(id) ? kv.Value.Meta : meta)).ToList();
-                        return Done(canvas, "replace", $"replaced {aSpec} with {BuildBlocks.Name(id, meta)}", canvas.Apply(cells, out var rej), rej);
+                        return Done(canvas, "replace", $"replaced {aSpec} with {Name(id, meta)}", canvas.Apply(cells, out var rej), rej);
                     }
             }
             return ($"error: no tool '{name}'", null, true);
@@ -129,6 +132,8 @@ public static class DesignerTools
         return ($"ok, {changed.Count} cells changed (r{canvas.Rev}){tail}", new DesignerOp(kind, label, changed), false);
     }
 
+    private static string Name(int id, int meta) => id == DesignerCanvas.Earth ? "ground" : BuildBlocks.Name(id, meta);
+
     // ------------------------------------------------------------------ argument parsing
 
     private static string Str(JsonElement e, string k) =>
@@ -140,6 +145,8 @@ public static class DesignerTools
     public static (int Id, int Meta) Resolve(string spec)
     {
         var s = spec.Trim().ToLowerInvariant().Replace(' ', '_');
+        // Undisturbed ground (below y 0 only): a dug cell filled back in.
+        if (s is "earth" or "ground" or "fill_ground") return (DesignerCanvas.Earth, 0);
         var parts = s.Split(':', 2);
         var (entry, why) = BlueprintParser.Resolve('X', parts[0], parts.Length > 1 ? parts[1] : null, s);
         if (entry == null) throw new ArgumentException(why ?? $"unknown block '{spec}'");
