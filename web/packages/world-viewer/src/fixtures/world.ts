@@ -245,6 +245,42 @@ export class FixtureWorld {
           if (Math.abs(dx) + Math.abs(dz) + Math.max(0, dy - 4) * 2 > 3 || (dx === 0 && dz === 0 && dy <= 5)) continue;
           local(6 + dx, tb + dy, 6 + dz, 18);
         }
+    // A birch and a spruce, and a wheat field with tall grass and flowers (on Alice's round: foliage between the camera and
+    // a bot).
+    const canopy = (x: number, z: number, wood: number) => {
+      const b = surface(x, z);
+      for (let y = 1; y <= 5; y++) local(x, b + y, z, 17, wood);
+      for (let dx = -2; dx <= 2; dx++)
+        for (let dz = -2; dz <= 2; dz++)
+          for (let dy = 3; dy <= 6; dy++) {
+            if (Math.abs(dx) + Math.abs(dz) + Math.max(0, dy - 4) * 2 > 3 || (dx === 0 && dz === 0 && dy <= 5)) continue;
+            local(x + dx, b + dy, z + dz, 18, wood);
+          }
+    };
+    canopy(-8, -2, 2);
+    const sb = surface(3, -12);
+    for (let y = 1; y <= 7; y++) local(3, sb + y, -12, 17, 1);
+    for (let dy = 2; dy <= 8; dy++) {
+      const r = dy >= 8 ? 0 : dy % 2 ? 1 : 2;
+      for (let dx = -r; dx <= r; dx++)
+        for (let dz = -r; dz <= r; dz++) if ((dx || dz || dy >= 8) && Math.abs(dx) + Math.abs(dz) <= r + 1) local(3 + dx, sb + dy, -12 + dz, 18, 1);
+    }
+    for (let x = 8; x <= 13; x++)
+      for (let z = -6; z <= -1; z++) {
+        const fb = surface(x, z);
+        if (z === -4) {
+          local(x, fb, z, 9);
+          continue;
+        }
+        local(x, fb, z, 60, 7);
+        local(x, fb + 1, z, 59, (x + z * 3) & 7);
+      }
+    for (let x = 8; x <= 15; x++)
+      for (let z = -12; z <= -8; z++) {
+        const k = (x * 5 + z * 3) % 4;
+        if (k === 0 || k === 2) local(x, surface(x, z) + 1, z, 31, 1);
+        else if (k === 1 || k === -1) local(x, surface(x, z) + 1, z, (x & 1) ? 37 : 38);
+      }
     // A glass house with a planks floor and a torch.
     const hb = surface(-8, 10);
     for (let x = -11; x <= -5; x++)
@@ -370,7 +406,9 @@ function hashString(t: string): number {
   return h >>> 0;
 }
 
-export function createFixtureSource(opts: FixtureOptions = {}): WorldSource & { world: FixtureWorld; calls: { index: number; chunks: number; columns: number } } {
+export function createFixtureSource(
+  opts: FixtureOptions = {},
+): WorldSource & { world: FixtureWorld; calls: { index: number; chunks: number; columns: number }; pin(name: string, at: { x: number; y: number; z: number; yaw?: number } | null): void } {
   const world = new FixtureWorld(opts.version ?? 'b1.8.1', opts.radius ?? 6);
   world.dense = !!opts.dense;
   const now = opts.now ?? (() => Date.now());
@@ -408,16 +446,23 @@ export function createFixtureSource(opts: FixtureOptions = {}): WorldSource & { 
     return e;
   };
 
+  // Screenshot / test hook: hold a bot at a fixed spot.
+  const pins = new Map<string, { x: number; y: number; z: number; yaw?: number }>();
   const bots = (): BotDto[] => {
     const s = (now() - t0) / 1000;
     const a = s / 8;
     const ax = Math.cos(a) * 10, az = Math.sin(a) * 10;
     const ty = tunnelY();
     const bx = 22 + ((Math.sin(s / 5) + 1) / 2) * 18;
-    return [
+    const list: BotDto[] = [
       { name: 'Alice', short: 'main', main: true, dim: 0, x: ax, y: surface(Math.floor(ax), Math.floor(az)) + 1, z: az, yaw: ((a * 180) / Math.PI + 180) % 360, hp: 20, food: 18, job: 'patrolling the island', held: 'stone pickaxe', claims: ['island'], live: true },
       { name: 'Bob', short: '67', main: false, dim: 0, x: bx, y: ty, z: TUNNEL.z + 0.5, yaw: Math.cos(s / 5) > 0 ? 270 : 90, hp: 6, food: 12, job: 'mining the tunnel', held: 'torch', claims: [], live: true },
     ];
+    for (const b of list) {
+      const p = pins.get(b.name);
+      if (p) Object.assign(b, { x: p.x, y: p.y, z: p.z, yaw: p.yaw ?? b.yaw });
+    }
+    return list;
   };
 
   // [entity models] Scheduled entity events, emitted with the delta that covers their time.
@@ -493,6 +538,10 @@ export function createFixtureSource(opts: FixtureOptions = {}): WorldSource & { 
   return {
     world,
     calls,
+    pin(name, at) {
+      if (at) pins.set(name, at);
+      else pins.delete(name);
+    },
     async index(dim, x, z, r): Promise<WorldIndex> {
       calls.index++;
       syncPlan();

@@ -24,7 +24,7 @@ import { BOX_SLOT, buildModel, type BuiltModel } from './entities/builder';
 import { Lightning, Particles } from './entities/effects';
 import { facingYaw, minecartBlock, motive, paintingSheet } from './entities/hanging';
 import { isHandheld, itemLookById, itemLookByName, itemName, parseHeld, type ItemLook } from './entities/items';
-import { createEntityMaterials, defaultWorldUniforms, sheetTexture, type EntityMaterials, type WorldUniforms } from './entities/material';
+import { createEntityMaterials, GHOST_FLAG, GHOST_LEVEL, GHOST_PLAYER, GHOST_SELECTED, defaultWorldUniforms, sheetTexture, type EntityMaterials, type WorldUniforms } from './entities/material';
 import { cubeGeometry, InstancedDraw, modelGeometry, ShadowDraw, spriteGeometry, type InstanceData } from './entities/meshes';
 import { attackOffProgress, attackProgress, DEATH_GONE_MS, DEATH_SHRINK_MS, deathAngle, deathScale, eatProgress, hurtAmount, newMotion, stepMotion, wrapDeg, type Motion } from './entities/motion';
 import { identity, invert, mul, partLocal, rootMatrix, ROW_FLOATS, Skeleton, type Affine } from './entities/pose';
@@ -242,6 +242,16 @@ export interface EntityShowOptions {
   drawDistance?: number;
   /** The view's vertical field of view (degrees): narrow (iso) views see far entities large, so detail reaches further. */
   fov?: number;
+  /** Occluded-body silhouettes: strength 0..1 per entity key (bot name, player "dim:id"); absent = none. */
+  ghosts?: ReadonlyMap<string, number> | null;
+}
+
+/** A body the silhouette test considers: its key and feet. */
+export interface GhostCandidate {
+  key: string;
+  x: number;
+  y: number;
+  z: number;
 }
 
 export class EntityLayer {
@@ -342,7 +352,7 @@ export class EntityLayer {
 
   /** Shares the world's per-view uniforms (time of day, fog) so entities light and fog like the sections. */
   setWorldUniforms(u: WorldUniforms): void {
-    for (const m of [this.mats.model, this.mats.modelTranslucent, this.mats.tile, this.mats.shadow])
+    for (const m of [this.mats.model, this.mats.modelTranslucent, this.mats.tile, this.mats.shadow, this.mats.ghost])
       for (const k of Object.keys(u) as Array<keyof WorldUniforms>) if (m.uniforms[k]) m.uniforms[k] = u[k];
   }
 
@@ -1260,6 +1270,8 @@ export class EntityLayer {
     for (const s of this.skullDraws.values()) s.reset();
     this.elytraDraw?.reset();
     this.visibleBots.length = 0;
+    this.ghostMap = opts.ghosts ?? null;
+    this.ghostSelected = opts.selected ?? null;
     const far = (opts.drawDistance ?? 1e9) + 8, detail = this.detailDistance;
     const want = new Set<string>();
     let n = 0;
@@ -1332,7 +1344,37 @@ export class EntityLayer {
     i.b = ((d.colour & 255) / 255) * d.bright;
     i.flags |= F_FLAT;
     i.tex = [0, 0, 1, 1];
+    this.ghostFlags(d, i, this.boxModel.opaque);
     this.boxModel.opaque.push(i);
+  }
+
+  // ------------------------------------------------------------------------------------------------------- silhouettes
+
+  private ghostMap: ReadonlyMap<string, number> | null = null;
+  private ghostSelected: string | null = null;
+
+  /** Bots and players in `dim` within `max` blocks of `cam` (not invisible): what a view tests for occlusion. */
+  ghostCandidates(dim: number, cam: THREE.Vector3, max: number): GhostCandidate[] {
+    const out: GhostCandidate[] = [];
+    for (const d of this.list) {
+      if (d.dim !== dim || d.invisible || d.display || d.motion.deadAt) continue;
+      if (!d.bot && d.ent?.kind !== 'player') continue;
+      if (Math.hypot(d.x - cam.x, d.y - cam.y, d.z - cam.z) > max) continue;
+      out.push({ key: d.key, x: d.x, y: d.y, z: d.z });
+    }
+    return out;
+  }
+
+  /** Flags the body's base instance for the silhouette pass (when this view found it hidden) and makes the draw's ghost twin. */
+  private ghostFlags(d: Drawn, i: InstanceData, draw: InstancedDraw): void {
+    const a = this.ghostMap?.get(d.key) ?? 0;
+    if (a < 0.02 || d.invisible || (!d.bot && d.ent?.kind !== 'player')) return;
+    const sel = this.ghostSelected;
+    const selected = d.bot && !!sel && (d.key === sel || this.botObjs.get(d.key)?.root.userData.short === sel);
+    i.flags |= GHOST_FLAG | (d.bot ? (selected ? GHOST_SELECTED : 0) : GHOST_PLAYER);
+    i.flags += Math.max(1, Math.min(15, Math.round(a * 15))) * GHOST_LEVEL;
+    const g = draw.ghostMesh(this.mats.ghost);
+    if (g.created) this.group.add(g.mesh);
   }
 
   private rect(key: string): [number, number, number, number] | null {
@@ -1357,6 +1399,7 @@ export class EntityLayer {
         const i = this.base(d, 0, 0);
         i.tex = tex;
         tint(i, look.tint, d.bright);
+        if (!look.translucent) this.ghostFlags(d, i, e.opaque);
         (look.translucent ? this.translucentOf(e) : e.opaque).push(i);
         for (const l of look.layers ?? []) {
           const lt = this.rect(l.texture);

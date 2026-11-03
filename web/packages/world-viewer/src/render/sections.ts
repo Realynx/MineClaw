@@ -1,6 +1,6 @@
 // Section meshes of one dimension on the GPU, shared by every view: what to (re)mesh next (dirty and in range of any view,
-// nearest first), the meshes themselves (ONE BufferGeometry per pass per section; the cut cap reuses the solid geometry with
-// the cap material, no copy), per-view visibility by draw distance, and eviction (everything far beyond every view, then
+// nearest first), the meshes themselves (ONE set of vertex buffers per pass per section; the cut cap reuses the solid
+// buffers with the cap material and a draw range over the closed quads only, no copy), per-view visibility by draw distance, and eviction (everything far beyond every view, then
 // least recently rendered). The worker keeps the blocks, so an evicted section is simply meshed again when it comes back.
 
 import * as THREE from 'three';
@@ -37,6 +37,18 @@ export interface Centre {
 }
 
 const skey = (cx: number, sy: number, cz: number) => `${cx},${sy},${cz}`;
+
+/** A geometry over the same attribute and index buffers (uploaded once: three keys GPU buffers by attribute) drawing only
+ * the first `count` indices. */
+export function capGeometry(g: THREE.BufferGeometry, count: number): THREE.BufferGeometry {
+  const c = new THREE.BufferGeometry();
+  for (const [k, a] of Object.entries(g.attributes)) c.setAttribute(k, a);
+  c.setIndex(g.index);
+  c.setDrawRange(0, count);
+  c.boundingSphere = g.boundingSphere;
+  c.boundingBox = g.boundingBox;
+  return c;
+}
 const SPHERE = new THREE.Sphere(new THREE.Vector3(8, 8, 8), 14);
 
 export class SectionManager {
@@ -123,6 +135,7 @@ export class SectionManager {
   private release(e: Entry): void {
     for (const m of [e.solid, e.cap, e.trans]) if (m) this.group.remove(m);
     e.solid?.geometry.dispose();
+    e.cap?.geometry.dispose();
     e.trans?.geometry.dispose();
     this.gpuBytes -= e.bytes;
     e.bytes = 0;
@@ -277,7 +290,8 @@ export class SectionManager {
     if (m.solid) {
       const g = this.geometry(m.solid, e);
       e.solid = this.mesh(g, this.mats.solid, e, 0, m.solid.quads);
-      e.cap = this.mesh(g, this.mats.cap, e, 1, 0); // the same geometry, back faces only
+      // The same buffers, back faces of the closed quads only (cut-out and two-sided quads are listed after capIndex).
+      if (m.solid.capIndex > 0) e.cap = this.mesh(capGeometry(g, m.solid.capIndex), this.mats.cap, e, 1, 0);
     }
     if (m.translucent) e.trans = this.mesh(this.geometry(m.translucent, e), this.mats.translucent, e, 2, m.translucent.quads);
   }

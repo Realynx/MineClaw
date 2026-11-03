@@ -4,7 +4,7 @@
 import type { GameVersion } from '../world/blocks';
 import { ColumnStore, type ApplyResult } from './columns';
 import { meshSection, type CutParams, type SectionMesh } from './mesher';
-import { pick, viewInfo, type PickHit, type V3, type ViewInfo } from './query';
+import { occluded, pick, viewInfo, type PickHit, type V3, type ViewInfo } from './query';
 import { buildStateTable, type StateTable } from './states';
 import { sectionVisibility } from './visibility';
 import { lightPacked } from '../wire/chunk';
@@ -94,6 +94,10 @@ export class MeshEngine {
 
   viewInfo(dim: number, cam: V3, body: V3 | null, cut: CutParams | null): ViewInfo {
     return viewInfo(this.store, this.table, dim, cam, body, cut);
+  }
+
+  occluded(dim: number, cam: V3, bodies: number[]): boolean[] {
+    return occluded(this.store, this.table, dim, cam, bodies);
   }
 
   /** Stores block entities per column; the sections they sit in are returned for re-meshing. */

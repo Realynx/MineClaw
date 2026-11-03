@@ -4,6 +4,11 @@
 
 import * as THREE from 'three';
 import type { BuiltModel } from './builder';
+import { GHOST_FLAG } from './material';
+
+/** Entity draws come after the world and its silhouette pass (sections 0, cut cap 1, ghosts 1.5). */
+export const ENTITY_ORDER = 2;
+export const GHOST_ORDER = 1.5;
 
 const INSTANCE_ATTRS: Array<[string, number]> = [
   ['aBone', 3],
@@ -41,6 +46,10 @@ export class InstancedDraw {
   private arrays: Record<string, Float32Array> = {};
   private attrs: Record<string, THREE.InstancedBufferAttribute> = {};
   count = 0;
+  /** Instances flagged GHOST_FLAG this view. */
+  ghosts = 0;
+  /** The silhouette twin (same geometry and instances, the ghost material), made on first use by `ghostMesh`. */
+  ghost: THREE.Mesh | null = null;
 
   constructor(
     base: THREE.BufferGeometry,
@@ -54,6 +63,7 @@ export class InstancedDraw {
     this.mesh.name = name;
     this.mesh.frustumCulled = false;
     this.mesh.visible = false;
+    this.mesh.renderOrder = ENTITY_ORDER;
     this.grow(8);
   }
 
@@ -76,11 +86,25 @@ export class InstancedDraw {
 
   reset(): void {
     this.count = 0;
+    this.ghosts = 0;
+  }
+
+  /** The silhouette twin, created on first use (the caller adds it to the scene). */
+  ghostMesh(material: THREE.Material): { mesh: THREE.Mesh; created: boolean } {
+    if (this.ghost) return { mesh: this.ghost, created: false };
+    const g = new THREE.Mesh(this.geometry, material);
+    g.name = `${this.mesh.name} (silhouette)`;
+    g.frustumCulled = false;
+    g.visible = false;
+    g.renderOrder = GHOST_ORDER;
+    this.ghost = g;
+    return { mesh: g, created: true };
   }
 
   push(d: InstanceData): void {
     if (this.count >= this.cap) this.grow(this.count + 1);
     const i = this.count++;
+    if (d.flags & GHOST_FLAG) this.ghosts++;
     const a = this.arrays;
     a.aBone.set([d.row, d.slot, d.layer], i * 3);
     const t = a.aTex;
@@ -113,6 +137,7 @@ export class InstancedDraw {
   commit(): void {
     this.geometry.instanceCount = this.count;
     this.mesh.visible = this.count > 0;
+    if (this.ghost) this.ghost.visible = this.ghosts > 0;
     if (!this.count) return;
     for (const [k, size] of this.tile ? [...INSTANCE_ATTRS, ...TILE_ATTRS] : INSTANCE_ATTRS) {
       const attr = this.attrs[k];

@@ -281,7 +281,8 @@ function emit(q: Quad, x: number, y: number, z: number, p: number, id: number, s
   const rgb = mul(q.textured ? tint : mulRgb(q.flat, tint), q.shade);
   const tex = q.textured ? TEX_TEXTURED | (q.wrap ? TEX_WRAP : 0) | (q.fx ?? 0) : 0;
   const flip = vl[2] + vl[8] < vl[5] + vl[11];
-  const v = sink.begin(flip);
+  // Only closed, fully covered geometry has a meaningful inside for the cut-away cap (see VertexSink).
+  const v = sink.begin(flip, q.layer !== Layer.Opaque || q.twoSided);
   for (let k = 0; k < 4; k++) {
     sink.vertex(v + k, x + pts[k * 3], y + pts[k * 3 + 1], z + pts[k * 3 + 2], q.uv[k * 2], q.uv[k * 2 + 1]);
     sink.lightAt(v + k, vl[k * 3], vl[k * 3 + 1], vl[k * 3 + 2], lf);
@@ -294,7 +295,7 @@ function emit(q: Quad, x: number, y: number, z: number, p: number, id: number, s
   }
   if (q.ovC >= 0 && q.textured) {
     const os = q.layer === Layer.Translucent ? trans : solid;
-    const w = os.begin(flip);
+    const w = os.begin(flip, true); // the fringe over its host face: the host closes the solid
     for (let k = 0; k < 4; k++) {
       os.vertex(w + k, x + pts[k * 3], y + pts[k * 3 + 1], z + pts[k * 3 + 2], q.uv[k * 2], q.uv[k * 2 + 1]);
       os.lightAt(w + k, vl[k * 3], vl[k * 3 + 1], vl[k * 3 + 2], lf);
