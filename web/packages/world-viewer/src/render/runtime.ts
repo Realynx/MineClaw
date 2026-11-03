@@ -209,6 +209,7 @@ export class WorldRuntime {
     this.scene.add(sun);
     this.uniforms = createChunkUniforms();
     this.materials = createChunkMaterials(this.uniforms);
+    this.entities.setWorldUniforms(this.uniforms); // [entity models] entities light and fog like the sections
     this.host = opts.inlineMesher ? new InlineMeshHost() : createMeshHost(opts.createWorker);
     this.scene.add(this.aids.group, this.sky.group, this.entities.group, this.overlays.group, this.weather.object, this.flashes.mesh);
     this.sync = this.makeSync();
@@ -479,9 +480,23 @@ export class WorldRuntime {
         this.sky.setBundle(b);
       })
       .catch((e) => this.opts.onError?.('assets', e));
+    this.loadEntityBundle(v); // [entity models]
     this.uniforms.uTextured.value = atlas && this.atlasTex ? 1 : 0;
     await this.host.configure(v, atlas);
     for (const s of this.sections.values()) s.clear();
+  }
+
+  // [entity models] The entity layer textures its models from the bundled sheets of the world's version.
+  private entityBundle: GameVersion | null = null;
+  private loadEntityBundle(v: GameVersion): void {
+    this.entities.setVersion(v);
+    if (this.entityBundle === v) return;
+    this.entityBundle = v;
+    loadBundle(v)
+      .then((b) => {
+        if (!this.disposed && this.entityBundle === v) this.entities.setBundle(b);
+      })
+      .catch((e) => this.opts.onError?.('bundle', e));
   }
 
   private async loadAtlas(): Promise<void> {
@@ -668,7 +683,8 @@ export class WorldRuntime {
           translucentDistance: this.quality.state.profile.translucentDistance,
         });
     }
-    this.entities.showFor(s.dim, cam, { bots: s.layers.bots, entities: s.layers.entities, labels: s.labels, selected: s.selected });
+    this.entities.detailDistance = this.quality.state.profile.entityDetailDistance; // posed models near, boxes beyond
+    this.entities.showFor(s.dim, cam, { bots: s.layers.bots, entities: s.layers.entities, labels: s.labels, selected: s.selected, drawDistance: s.drawDistance, fov: s.camera.fov });
     this.overlays.group.visible = s.overlays;
     if (s.overlays) this.showOverlays(s.dim);
     this.flashes.showFor(s.dim, now, s.layers.changes);

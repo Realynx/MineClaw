@@ -78,8 +78,9 @@ The world exists once in memory, whatever number of views draw it:
 
   Cut-aways are uniforms: the shader discards cut cells, and the cap pass hatches what they open. Geometry is never rebuilt
   per view.
-- **Entities and overlays.** There is one entity store and one entity layer (bots, plus a single `InstancedMesh` for mobs,
-  players and drops) and one overlay layer. Labels show only in views that want them.
+- **Entities and overlays.** There is one entity store and one entity layer: entities are posed once per frame into one
+  bone texture, and each view only picks instances (one instanced draw per model kind; see [Entity models](#entity-models)).
+  There is one overlay layer. Labels show only in views that want them.
 
 The interactive `<WorldViewer>` renders straight into the shared canvas, placed in its own container. The thumbnails render
 into a corner of that canvas in the same frame and are copied into their own 2D canvases:
@@ -192,6 +193,51 @@ culled sections.
 and measures sustained fps at the follow camera over the dense fixture world (lava lake, water channel, glass pillars,
 20 mobs). It prints one JSON line per run and exits non-zero when software rendering falls under 40 fps.
 
+### Entity models
+
+Bots, players, mobs, drops and objects are drawn as vanilla-shaped box models, textured from the bundled entity sheet
+(`generated/<version>/entity.png`; `loadBundle`). This covers both versions and every mob type the wire can report, plus
+the layers: spider and enderman eyes, sheep wool in its colour, pig saddle, the stray overlay, the wolf collar, slime gel
+and dragon eyes.
+
+- **Data.** The models are our own data files in `src/render/entities/models/`; `types.ts` documents the format. A model
+  has named parts with a pivot, a rest rotation and children. Each part holds cuboids (origin, size, inflate, mirror, texture
+  offset or per-face rectangles), and the model has a texture size, an optional layer per part and a pose function (the
+  vanilla `setRotationAngles`). `builder.ts` turns a model into geometry, and `registry.ts` maps a mob type, Mob16
+  variant, object type or player to a model, a skin and its layers.
+- **GPU skinning.** Every frame each entity's part matrices are written into one row of a float texture. A vertex fetches
+  its part's matrix (`texelFetch`). A view only fills small per-instance arrays, so there is one draw call per model kind
+  in view, plus item sprites, item cubes, shadows and LOD boxes. A skin and its layers are instances of the same geometry;
+  a layer instance draws only the parts tagged with its layer. With 20 walking mobs on SwiftShader at 1280×800, the models
+  cost about 1.5 ms over plain boxes (`/models.html?n=20`, `__gallery.bench()`).
+- **Animation.** All of these are driven by data the wire already has:
+  - Limb swing comes from the distance walked (the vanilla limb-swing filter) and runs faster while sprinting.
+  - The body yaw turns toward the walk direction and keeps the head within 75°.
+  - Bots get head yaw and pitch; mobs have one yaw on the wire.
+  - Arms sway when idle. Players crouch while sneaking.
+  - A creeper flashes while fusing and primed TNT flashes.
+  - Burning entities (flag 0x01) show fire.
+  - A bot flashes red when its hp drops and falls over at hp 0.
+- **Hooks.** `swing(key)`, `hurt(key)` and `kill(key)` drive what the wire does not report yet.
+- **Detail.** Beyond `detailDistance` (default 48 blocks; the perf controller sets it), entities draw as plain coloured
+  boxes and are not posed. The distance is scaled by the view's field of view, so iso views keep detail further out.
+- **Light.** Entities take the world's time-of-day light and fog uniforms (`setWorldUniforms`). `lightAt(dim, x, y, z)` is
+  the hook for per-entity sky and block light once that is queryable on the main thread.
+- **Items.** A bot's held item comes from its `held` name; a player's comes from its held item id. Held items and drops
+  resolve to an item sprite or a block cube: on 1.12.2 through the packed item models and textures, on b1.8.1 through the
+  `items.png` icons and terrain tiles. Drops bob and spin with vanilla's stack copies. XP orbs, boats, minecarts, arrows,
+  falling blocks and primed TNT have render paths, but the supervisor sends only players, mobs and drops today.
+- **Not on the wire today.** These render paths exist but get no data:
+  - equipment and armour (the layer reads an optional DTO `armor: [helmet, chest, legs, boots]`)
+  - skins (bots wear Steve; other players get Steve or Alex by a name hash)
+  - mob health and hurt events, mob deaths and arm swings
+  - separate mob head yaw
+  - villager professions and horse coats (picked by entity id)
+  - baby flags
+- **Gallery.** `/models.html` in the dev server shows every model on a flat floor. It takes `?version=b1.8.1`, `?walk=0`,
+  `?spin=1` and `?n=20` (the perf scene). The fixture world has a zoo of every mob type south of the island (`?zoo=0` turns
+  it off; `?version=1.12.2` switches the version).
+
 ## Development
 
 ```
@@ -222,6 +268,8 @@ Vite bundle the mesh worker and emit the atlases themselves, with no copy step.
     error cases.
   - Mesher face counts.
   - Entity interpolation.
+  - Entity models: every model builds inside its texture, every mob type has a model and existing textures in both
+    versions, poses from walking, yaw and pitch, LOD, and held and dropped item resolution.
   - Hash-diff fetching.
   - Shared meshing: N views mesh each section once.
   - Block deltas: exact dirty sections, burst coalescing, fallbacks and local relighting.

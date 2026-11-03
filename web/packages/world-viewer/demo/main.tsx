@@ -15,6 +15,7 @@ function App() {
         version: params.get('version') === '1.12.2' ? '1.12.2' : 'b1.8.1',
         dense: params.get('dense') === '1',
         mobs: Number(params.get('mobs') ?? 5),
+        zoo: params.get('zoo') !== '0' && params.get('dense') !== '1', // every mob type (?zoo=0 off; off in the benchmark)
         ticksPerSecond: 400,
         startTime: 23000,
         rain: rain ? 1 : 0,

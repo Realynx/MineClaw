@@ -1,0 +1,143 @@
+// Entity model gallery (`npm run dev`, then /models.html): every model the entity layer has, on a flat floor, walking back
+// and forth, for checking geometry, textures, layers and animation without a world. Drag = orbit, right-drag = pan,
+// wheel = zoom.
+//   ?version=1.12.2|b1.8.1  ?walk=0 (stand still)  ?spin=1 (turn around)  ?cols=10  ?detail=48  ?labels=0
+//   ?n=20 (perf: n walking zombies and nothing else)
+
+import * as THREE from 'three';
+import { loadBundle } from '../src/assets/bundle';
+import { EntityLayer } from '../src/render/entityLayer';
+import { MOB_NAMES } from '../src/render/entities/registry';
+import type { EntityDto } from '../src/types';
+import type { BotView, EntityView } from '../src/world/entities';
+
+const q = new URLSearchParams(location.search);
+const version = q.get('version') === 'b1.8.1' ? 'b1.8.1' : '1.12.2';
+const walk = q.get('walk') !== '0';
+const cols = Number(q.get('cols') ?? 10);
+const perf = Number(q.get('n') ?? 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x78a7ff);
+scene.add(new THREE.Mesh(new THREE.PlaneGeometry(400, 400).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x6a8a4a })));
+const grid = new THREE.GridHelper(400, 400, 0x557040, 0x557040);
+grid.position.y = 0.001;
+scene.add(grid);
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 500);
+const layer = new EntityLayer();
+if (q.get('detail')) layer.detailDistance = Number(q.get('detail'));
+scene.add(layer.group);
+
+const BETA_TYPES = [50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 90, 91, 92, 93, 94, 95];
+const types = perf ? Array<number>(perf).fill(54) : version === 'b1.8.1' ? BETA_TYPES : Object.keys(MOB_NAMES).map(Number);
+const variants: Record<number, number[]> = { 55: [2], 62: [2], 90: [1], 91: [14, 16], 95: [4, 2], 98: [4] };
+const entries: Array<Partial<EntityDto>> = [];
+for (const t of types) for (const v of perf ? [0] : (variants[t] ?? [0])) entries.push({ kind: 'mob', type: t, variant: v });
+if (!perf) {
+  for (const [item, count] of [[1, 64], [278, 1], [264, 5], [38, 1], [50, 3], [17, 2], [2, 1], [35, 14]]) entries.push({ kind: 'item', item, count });
+  entries.push(
+    { kind: 'object', type: 1 },
+    { kind: 'object', type: 10 },
+    { kind: 'object', type: 60 },
+    { kind: 'object', type: 70, item: 12 },
+    { kind: 'object', type: 50 },
+    { kind: 'xp_orb', count: 20 },
+    { kind: 'player', name: 'Steve' },
+    { kind: 'player', name: 'alexa', item: 276 },
+    { kind: 'mob', type: 54, flags: 1 },
+    // Armour is not on the wire today; the DTO field the layer reads when it is.
+    { kind: 'player', name: 'Knight', armor: ['iron', 'diamond', 'gold', 'leather'] } as Partial<EntityDto>,
+    { kind: 'mob', type: 51, armor: ['chainmail', null, null, 'iron'] } as Partial<EntityDto>,
+  );
+}
+const spacing = 4;
+const hud = document.getElementById('hud')!;
+const t0 = performance.now();
+let frames = 0, fpsAt = t0;
+
+function views(now: number): { bots: BotView[]; ents: EntityView[] } {
+  const s = (now - t0) / 1000;
+  const ents: EntityView[] = entries.map((e, i) => {
+    const gx = (i % cols) * spacing, gz = Math.floor(i / cols) * spacing;
+    const phase = walk ? Math.sin(s * 1.2 + i) * 0.6 : 0;
+    const dto = { dim: 0, x: gx, y: 0, z: gz, id: i, ...e } as EntityDto;
+    const flying = dto.kind === 'mob' && [56, 63, 64, 65].includes(dto.type ?? 0) ? 2 : 0;
+    const yaw = q.get('spin') === '1' ? (s * 40) % 360 : walk ? (Math.cos(s * 1.2 + i) >= 0 ? 0 : 180) : 0;
+    return { key: `0:${i}`, id: i, dim: 0, kind: dto.kind, name: dto.name ?? null, type: dto.type ?? -1, item: dto.item ?? 0, count: dto.count ?? 1, x: gx, y: flying, z: gz + phase, yaw, ageTicks: s * 20, flags: dto.flags ?? 0, dto };
+  });
+  const bot = (name: string, z: number, yaw: number, held: string, hp: number, pitch = 0): BotView => ({
+    name, dim: 0, x: -spacing, y: 0, z, yaw, dto: { name, short: name, main: name === 'Alice', dim: 0, x: 0, y: 0, z, hp, food: 20, held, pitch },
+  });
+  const bots = perf ? [] : [bot('Alice', 0, (s * 30) % 360, 'stone pickaxe', 20, 20 * Math.sin(s)), bot('Bob', spacing, 0, 'cobblestone x12', Math.floor(s) % 6 === 0 ? 4 : 10), bot('Cleo', spacing * 2, 90, 'torch', 20)];
+  return { bots, ents };
+}
+
+const rows = Math.ceil(entries.length / cols);
+const centre = new THREE.Vector3(((cols - 1) * spacing) / 2, 0, ((rows - 1) * spacing) / 2);
+let camYaw = 0.6, camDist = Math.max(20, rows * spacing * 1.1), camPitch = 0.6;
+addEventListener('mousemove', (e) => {
+  if (e.buttons & 1) {
+    camYaw -= e.movementX * 0.005;
+    camPitch = Math.max(0.05, Math.min(1.5, camPitch + e.movementY * 0.005));
+  }
+  if (e.buttons & 2) centre.x -= e.movementX * 0.05;
+  if (e.buttons & 2) centre.z -= e.movementY * 0.05;
+});
+addEventListener('contextmenu', (e) => e.preventDefault());
+addEventListener('wheel', (e) => (camDist = Math.max(2, camDist * (e.deltaY > 0 ? 1.1 : 0.9))));
+addEventListener('resize', () => {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+});
+(window as unknown as Record<string, unknown>).__gallery = {
+  layer,
+  camera,
+  /** Times `n` full frames (update + showFor + render + gl.finish), ms per frame. */
+  bench(n = 60) {
+    const gl = renderer.getContext();
+    const px = new Uint8Array(4);
+    const t = performance.now();
+    for (let k = 0; k < n; k++) {
+      const now = t + k * 16;
+      const { bots, ents } = views(now);
+      layer.update(bots, ents, now, new Set());
+      layer.showFor(0, camera.position, { bots: true, entities: true, labels: false, fov: camera.fov });
+      renderer.render(scene, camera);
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); // waits for the frame (finish alone may not)
+    }
+    return (performance.now() - t) / n;
+  },
+  /** Look at (x, z) from yaw/pitch (radians) and distance. */
+  set(yaw: number, pitch: number, dist: number, x?: number, z?: number, y = 0) {
+    camYaw = yaw;
+    camPitch = pitch;
+    camDist = dist;
+    if (x != null) centre.set(x, y, z ?? 0);
+  },
+  cell: (i: number) => [(i % cols) * spacing, Math.floor(i / cols) * spacing],
+  entries,
+};
+
+void loadBundle(version).then((b) => layer.setBundle(b));
+function frame(now: number) {
+  requestAnimationFrame(frame);
+  const { bots, ents } = views(now);
+  layer.update(bots, ents, now, new Set(['Alice']));
+  camera.position.set(centre.x + Math.sin(camYaw) * Math.cos(camPitch) * camDist, centre.y + Math.sin(camPitch) * camDist, centre.z + Math.cos(camYaw) * Math.cos(camPitch) * camDist);
+  camera.lookAt(centre);
+  layer.showFor(0, camera.position, { bots: true, entities: true, labels: q.get('labels') !== '0', selected: 'Alice', fov: camera.fov });
+  renderer.render(scene, camera);
+  frames++;
+  if (now - fpsAt > 1000) {
+    const fps = (frames * 1000) / (now - fpsAt);
+    frames = 0;
+    fpsAt = now;
+    hud.textContent = `${version} · ${entries.length} entities · ${fps.toFixed(0)} fps · ${renderer.info.render.calls} calls · ${renderer.info.render.triangles} tris`;
+  }
+}
+requestAnimationFrame(frame);

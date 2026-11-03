@@ -9,7 +9,8 @@
 //   env/*.png    sun, moon phases, clouds, rain, snow (copied)
 //   pack.json    { tiles, items, anims, entity, blockstates, models, itemModels, biomes, colormaps }
 // b1.8.1
-//   terrain.png, items.png (copied: already 16×16-tile atlases), entity.png (mob/*, char.png, armor/*), env/*.png, pack.json
+//   terrain.png, items.png (copied: already 16×16-tile atlases), entity.png (mob/*, char.png, armor/*, item/{boat,cart,arrows,xporb}),
+//   env/*.png, pack.json
 //
 //   node scripts/pack-assets.mjs            (both versions)
 
@@ -182,7 +183,9 @@ function packBeta() {
   mkdirSync(dest, { recursive: true });
   writeFileSync(join(dest, 'terrain.png'), readFileSync(join(src, 'terrain.png')));
   writeFileSync(join(dest, 'items.png'), readFileSync(join(src, 'gui', 'items.png')));
-  const files = [...walk(join(src, 'mob')), ...walk(join(src, 'armor')), join(src, 'char.png')].filter((f) => f.endsWith('.png') && existsSync(f));
+  // Entity models' textures: mobs, armour, and the object textures the entity layer draws (boat, minecart, arrows, XP orb).
+  const objects = ['boat', 'cart', 'arrows', 'xporb'].map((n) => join(src, 'item', `${n}.png`));
+  const files = [...walk(join(src, 'mob')), ...walk(join(src, 'armor')), join(src, 'char.png'), ...objects].filter((f) => f.endsWith('.png') && existsSync(f));
   const ent = shelfPack(files, src, 1024);
   writePng(join(dest, 'entity.png'), ent.png);
   const env = copyEnv(join(src, 'environment'), join(dest, 'env'));
