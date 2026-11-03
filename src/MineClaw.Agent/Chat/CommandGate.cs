@@ -248,7 +248,7 @@ public sealed class CommandGate
     {
         var t = (line ?? "").TrimStart();
         if (t.Length == 0 || t[0] != '/') return true;
-        if (TakeManagedWhitelist(t.Trim())) return true;
+        if (TakeManagedWhitelist(t.Trim()) || TakeStoryArmed(t.Trim())) return true;
         if (IsAlwaysAllowed(t) && !IsBlocked(t)) return true;
         lock (_lock)
         {
@@ -309,6 +309,76 @@ public sealed class CommandGate
             _hiveArmed.RemoveAt(i);
         }
         Audit(line, "hive account manager");
+        return true;
+    }
+
+    // ---------------------------------------------------------------- Story Mode's scoped /tp exception
+
+    private static readonly Regex ManagedTeleportLine = new(@"^/tp (?<name>[A-Za-z0-9_]{3,16}) -?\d{1,8} -?\d{1,3} -?\d{1,8}$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private readonly List<(string Line, string By, DateTimeOffset Until)> _tpArmed = new();
+
+    /// <summary>
+    /// Arms exactly one <c>/tp &lt;name&gt; x y z</c> for Story Mode: the colony owner founded the colony or moved its home (an
+    /// authenticated request on the viewer), so its pawns are brought there. Only that exact shape (whole-number coordinates, one
+    /// account), only an account <see cref="ManagedAccount"/> accepts (the hive's own <c>maid_</c> bodies: never a player, never main),
+    /// and never when the config blocks <c>/tp</c>. C# only: the model can't reach it. <paramref name="by"/> goes to the audit.
+    /// </summary>
+    public bool ArmManagedTeleport(string line, string by)
+    {
+        var t = (line ?? "").Trim();
+        var m = ManagedTeleportLine.Match(t);
+        if (!m.Success || IsBlocked(t) || ManagedAccount is not { } managed || !managed(m.Groups["name"].Value))
+        {
+            _log.LogWarning("story teleport refused (not a managed account, or /tp blocked): {Line}", t);
+            return false;
+        }
+        lock (_lock)
+        {
+            var now = _time.GetUtcNow();
+            _tpArmed.RemoveAll(a => a.Until < now);
+            _tpArmed.Add((t, by, now + TimeSpan.FromSeconds(15)));
+        }
+        return true;
+    }
+
+    private static readonly Regex StoryTimeLine = new(@"^/time set \d{1,5}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Arms exactly one <c>/time set &lt;n&gt;</c> for Story Mode's time slider (the authenticated story-role owner's request on the
+    /// viewer). Only that shape, never when the config blocks <c>/time</c>. C# only; <paramref name="by"/> goes to the audit.
+    /// </summary>
+    public bool ArmStoryTime(string line, string by)
+    {
+        var t = (line ?? "").Trim();
+        if (!StoryTimeLine.IsMatch(t) || IsBlocked(t))
+        {
+            _log.LogWarning("story time command refused (wrong shape, or /time blocked): {Line}", t);
+            return false;
+        }
+        lock (_lock)
+        {
+            var now = _time.GetUtcNow();
+            _tpArmed.RemoveAll(a => a.Until < now);
+            _tpArmed.Add((t, by, now + TimeSpan.FromSeconds(15)));
+        }
+        return true;
+    }
+
+    private bool TakeStoryArmed(string line)
+    {
+        if (!line.StartsWith("/tp ", StringComparison.OrdinalIgnoreCase) && !line.StartsWith("/time ", StringComparison.OrdinalIgnoreCase)) return false;
+        string by;
+        lock (_lock)
+        {
+            var now = _time.GetUtcNow();
+            _tpArmed.RemoveAll(a => a.Until < now);
+            int i = _tpArmed.FindIndex(a => string.Equals(a.Line, line, StringComparison.Ordinal));
+            if (i < 0 || IsBlocked(line)) return false;
+            by = _tpArmed[i].By;
+            _tpArmed.RemoveAt(i);
+        }
+        Audit(line, by);
         return true;
     }
 

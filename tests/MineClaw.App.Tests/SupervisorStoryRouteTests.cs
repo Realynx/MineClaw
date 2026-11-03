@@ -269,4 +269,182 @@ public sealed class SupervisorStoryRouteTests
         await using var none = new SupervisorServer(new SupervisorOptions { Token = Token }, new FakeSupervisorData());
         Assert.Equal(404, (await none.HandleAsync(new SupervisorRequest("GET", "/api/story", new Dictionary<string, string>(), Token))).Status);
     }
+
+    [Fact]
+    public async Task Home_moves_a_colony_home_with_the_exact_wire_shape()
+    {
+        var (r, _, _, _, _) = Make();
+        var id = await Colony(r);
+        var (s, j) = await Call(r, "POST", $"/api/story/colonies/{id}/home", new { home = new { x = 69, y = 64, z = 215 } });
+        Assert.Equal(200, s);
+        Assert.Equal("""{"home":[69,64,215]}""", j!.ToJsonString());
+        var (_, st) = await Call(r, "GET", $"/api/story/colonies/{id}");
+        Assert.Equal(new[] { 69, 64, 215 }, st!["home"]!.AsArray().Select(n => n!.GetValue<int>()).ToArray());
+        Assert.Equal(new P3(69, 64, 215), r.Colonies.Get(id)!.Meta.Home);
+        // The pawns were far from the new home: no teleport on this host, so each walks there (a move order before any work).
+        Assert.All(r.Colonies.Get(id)!.Pawns.Values, p => Assert.Contains(p.Queue, o => o.Kind == "move" && o.At == new P3(69, 64, 215)));
+
+        Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/home", new { })).Status);
+        Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/home", new { home = new { x = 1, y = 64 } })).Status);
+        Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/home", new { home = new { x = "a", y = 64, z = 1 } })).Status);
+        Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/home", new { home = new[] { 1, 64, 1 } })).Status);
+        Assert.Equal(400, (await Call(r, "POST", $"/api/story/colonies/{id}/home", new { home = new { x = 1, y = 9999, z = 1 } })).Status);
+        Assert.Equal(404, (await Call(r, "POST", "/api/story/colonies/story-9/home", new { home = new { x = 1, y = 64, z = 1 } })).Status);
+        Assert.Equal(405, (await Call(r, "GET", $"/api/story/colonies/{id}/home")).Status);
+    }
+
+    [Fact]
+    public void The_gate_arms_one_story_teleport_for_a_managed_account_only_and_the_blocklist_still_applies()
+    {
+        var gate = new MineClaw.Agent.Chat.CommandGate(new MineClaw.Agent.Chat.CommandOptions(), () => ["poofimafox"])
+        {
+            ManagedAccount = n => n.StartsWith("maid_chan_", StringComparison.Ordinal),
+        };
+        Assert.False(gate.AllowOutgoing("/tp maid_chan_101 69 64 215")); // not armed
+        Assert.True(gate.ArmManagedTeleport("/tp maid_chan_101 69 64 215", "story story-1: home moved"));
+        Assert.True(gate.AllowOutgoing("/tp maid_chan_101 69 64 215"));
+        Assert.False(gate.AllowOutgoing("/tp maid_chan_101 69 64 215")); // one arm, one send
+        Assert.False(gate.ArmManagedTeleport("/tp poofimafox 69 64 215", "x"));          // a player: never
+        Assert.False(gate.ArmManagedTeleport("/tp maid_chan_101 poofimafox", "x"));      // only coordinates
+        Assert.False(gate.ArmManagedTeleport("/tp maid_chan_101 1 2 3 4", "x"));
+        Assert.False(gate.ArmManagedTeleport("/tp maid_chan_101 ~ 64 ~", "x"));
+        Assert.False(gate.ArmManagedTeleport("/op maid_chan_101", "x"));
+        Assert.False(gate.AllowOutgoing("/tp maid_chan_102 1 64 1"));
+        var strict = new MineClaw.Agent.Chat.CommandGate(new MineClaw.Agent.Chat.CommandOptions { Blocked = ["/tp"] }, () => ["poofimafox"])
+        {
+            ManagedAccount = _ => true,
+        };
+        Assert.False(strict.ArmManagedTeleport("/tp maid_chan_101 1 64 1", "x")); // the config blocks /tp: never
+        var none = new MineClaw.Agent.Chat.CommandGate(new MineClaw.Agent.Chat.CommandOptions(), () => ["poofimafox"]);
+        Assert.False(none.ArmManagedTeleport("/tp maid_chan_101 1 64 1", "x")); // no hive: no exception
+    }
+
+    private sealed class Ticker : TimeProvider
+    {
+        public DateTimeOffset Now = DateTimeOffset.Parse("2026-11-03T12:00:00Z");
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    [Fact]
+    public async Task Time_is_set_from_an_op_account_main_first_one_change_a_second()
+    {
+        var accounts = new List<OpAccount> { new("maid_chan", true, null), new("maid_chan_101", false, true) };
+        var sent = new List<(string Account, string Line)>();
+        var clock = new Ticker();
+        var tc = new StoryTimeControl(() => accounts, (a, line, _) => { sent.Add((a, line)); return Task.FromResult<string?>(null); }, clock);
+        var o = new SupervisorOptions { Token = Token, Viewer = { Enabled = true } };
+        var r = new SupervisorStoryRoutes(o, new StoryColonies(new Host(new World())), timeControl: tc);
+
+        // main's op level unknown, a body is op: that body.
+        var (_, list) = await Call(r, "GET", "/api/story");
+        Assert.Equal("""{"available":true,"by":"maid_chan_101"}""", list!["time_control"]!.ToJsonString());
+        var (s, j) = await Call(r, "POST", "/api/story/time", new { time = 18000 });
+        Assert.Equal(200, s);
+        Assert.Equal("""{"time":18000,"by":"maid_chan_101"}""", j!.ToJsonString());
+        Assert.Equal(("maid_chan_101", "/time set 18000"), Assert.Single(sent));
+
+        // More than one a second: 429; a second later it goes, and main (op now) is preferred.
+        accounts[0] = new("maid_chan", true, true);
+        Assert.Equal(429, (await Call(r, "POST", "/api/story/time", new { time = 1000 })).Status);
+        clock.Now += StoryTimeControl.MinGap;
+        (s, j) = await Call(r, "POST", "/api/story/time", new { time = 0 });
+        Assert.Equal(200, s);
+        Assert.Equal("maid_chan", j!["by"]!.GetValue<string>());
+        Assert.Equal(2, sent.Count);
+
+        // Bad bodies.
+        clock.Now += StoryTimeControl.MinGap;
+        foreach (var bad in new object[] { new { }, new { time = -1 }, new { time = 24000 }, new { time = "noon" }, new { time = 1.5 } })
+            Assert.Equal(400, (await Call(r, "POST", "/api/story/time", bad)).Status);
+        Assert.Equal(405, (await Call(r, "GET", "/api/story/time")).Status);
+        Assert.Equal(2, sent.Count);
+
+        // Nobody op: 409, and the state says so.
+        accounts[0] = new("maid_chan", true, false);
+        accounts[1] = new("maid_chan_101", false, null);
+        (s, j) = await Call(r, "POST", "/api/story/time", new { time = 6000 });
+        Assert.Equal(409, s);
+        Assert.Equal("no op account", j!["error"]!.GetValue<string>());
+        var (_, again) = await Call(r, "GET", "/api/story");
+        Assert.Equal("""{"available":false,"by":null}""", again!["time_control"]!.ToJsonString());
+        // main known not op: the colony state carries an alert (once) and the same time_control.
+        var (_, made) = await Call(r, "POST", "/api/story/colonies", new { name = "A", pawns = 1 });
+        var id = made!["id"]!.GetValue<string>();
+        var (_, st) = await Call(r, "GET", $"/api/story/colonies/{id}");
+        Assert.Equal("""{"available":false,"by":null}""", st!["time_control"]!.ToJsonString());
+        Assert.Contains(st["alerts"]!.AsArray(), a => a!["text"]!.GetValue<string>().Contains("maid_chan (main) isn't op"));
+        await Call(r, "GET", $"/api/story/colonies/{id}");
+        Assert.Single(r.Colonies.Get(id)!.Alerts, a => a.Text.Contains("isn't op"));
+
+        // No time control wired at all: 409 too.
+        var (plain, _, _, _, _) = Make();
+        Assert.Equal(409, (await Call(plain, "POST", "/api/story/time", new { time = 6000 })).Status);
+        Assert.Equal("""{"available":false,"by":null}""", (await Call(plain, "GET", "/api/story")).Json!["time_control"]!.ToJsonString());
+    }
+
+    [Fact]
+    public void The_gate_arms_one_story_time_set_and_nothing_else()
+    {
+        var gate = new MineClaw.Agent.Chat.CommandGate(new MineClaw.Agent.Chat.CommandOptions(), () => ["poofimafox"]);
+        Assert.False(gate.AllowOutgoing("/time set 6000"));
+        Assert.True(gate.ArmStoryTime("/time set 6000", "story time slider (poofimafox)"));
+        Assert.True(gate.AllowOutgoing("/time set 6000"));
+        Assert.False(gate.AllowOutgoing("/time set 6000"));
+        Assert.False(gate.ArmStoryTime("/time add 6000", "x"));
+        Assert.False(gate.ArmStoryTime("/time set day", "x"));
+        Assert.False(gate.ArmStoryTime("/time set 6000; /op x", "x"));
+        var strict = new MineClaw.Agent.Chat.CommandGate(new MineClaw.Agent.Chat.CommandOptions { Blocked = ["/time"] }, () => ["poofimafox"]);
+        Assert.False(strict.ArmStoryTime("/time set 6000", "x"));
+    }
+
+    [Theory]
+    [InlineData(24, 0)] [InlineData(25, 1)] [InlineData(26, 2)] [InlineData(27, 3)] [InlineData(28, 4)]
+    public void An_op_level_comes_from_entity_status_24_to_28(int status, int level)
+    {
+        Assert.Equal(level, MineClaw.Client.MinecraftClient.OpLevelOf(status));
+        Assert.False(MineClaw.Protocol.Release1122.EntityIds1122.IsHurtStatus(status)); // the 1.12.2 decode passes it through unchanged
+    }
+
+    [Theory]
+    [InlineData(2)] [InlineData(9)] [InlineData(23)] [InlineData(29)] [InlineData(35)]
+    public void Other_statuses_carry_no_op_level(int status) => Assert.Null(MineClaw.Client.MinecraftClient.OpLevelOf(status));
+
+    [Fact]
+    public async Task Beds_are_assigned_and_unassigned_with_the_exact_wire_shape_and_zones_rename()
+    {
+        var (r, _, w, _, _) = Make();
+        var id = await Colony(r);
+        w.Blocks[new P3(3, 64, 3)] = (26, 0);
+        w.Blocks[new P3(3, 64, 4)] = (26, 8);
+        var b = $"/api/story/colonies/{id}/";
+        var pawn = r.Colonies.Get(id)!.Pawns.Keys.First();
+        var (s, j) = await Call(r, "POST", b + "beds", new { op = "assign", bed = new { x = 3, y = 64, z = 4 }, pawn });
+        Assert.Equal(200, s);
+        Assert.Equal($$"""{"beds":[{"pos":[3,64,3],"dim":0,"pawn":"{{pawn}}","zone":null}]}""", j!.ToJsonString());
+        var (_, st) = await Call(r, "GET", b.TrimEnd('/'));
+        Assert.Equal(pawn, st!["beds"]![0]!["pawn"]!.GetValue<string>());
+        (s, j) = await Call(r, "POST", b + "beds", new { op = "unassign", bed = new { x = 3, y = 64, z = 3 } });
+        Assert.Equal(200, s);
+        Assert.Null(j!["beds"]![0]!["pawn"]);
+        Assert.Equal(400, (await Call(r, "POST", b + "beds", new { op = "sleep", bed = new { x = 3, y = 64, z = 3 }, pawn })).Status);
+        Assert.Equal(400, (await Call(r, "POST", b + "beds", new { op = "assign", pawn })).Status);
+        Assert.Equal(400, (await Call(r, "POST", b + "beds", new { op = "assign", bed = new { x = 9, y = 64, z = 9 }, pawn })).Status); // not a bed
+        Assert.Equal(400, (await Call(r, "POST", b + "beds", new { op = "assign", bed = new { x = 3, y = 64, z = 3 } })).Status);
+        Assert.Equal(404, (await Call(r, "POST", b + "beds", new { op = "assign", bed = new { x = 3, y = 64, z = 3 }, pawn = "nobody" })).Status);
+        Assert.Equal(404, (await Call(r, "POST", "/api/story/colonies/story-9/beds", new { op = "unassign", bed = new { x = 3, y = 64, z = 3 } })).Status);
+
+        // Houses: home zones with names, renamed and removed by id.
+        (s, j) = await Call(r, "POST", b + "zones", new { op = "add", kind = "home", area = new[] { 100, 60, 100, 110, 70, 110 }, name = "Farmhouse" });
+        Assert.Equal(200, s);
+        var zid = j!["id"]!.GetValue<string>();
+        (s, j) = await Call(r, "POST", b + "zones", new { op = "rename", id = zid, name = "Old farmhouse" });
+        Assert.Equal(200, s);
+        Assert.Equal("Old farmhouse", j!["name"]!.GetValue<string>());
+        (_, st) = await Call(r, "GET", b.TrimEnd('/'));
+        Assert.Equal("Old farmhouse", st!["zones"]!.AsArray().Single()!["name"]!.GetValue<string>());
+        Assert.Equal(400, (await Call(r, "POST", b + "zones", new { op = "rename", id = "z999", name = "x" })).Status);
+        (s, j) = await Call(r, "POST", b + "zones", new { op = "remove", id = zid });
+        Assert.Equal(200, s);
+        Assert.Equal(zid, j!["removed"]![0]!.GetValue<string>());
+    }
 }

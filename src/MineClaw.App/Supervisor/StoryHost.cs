@@ -93,6 +93,30 @@ public sealed class StoryHost : IStoryHost
         return null;
     }
 
+    /// <summary>
+    /// The op command path for Story Mode's teleports (<see cref="Teleport"/>): arms the line in the command gate's scoped exception and
+    /// sends it on main's chat (the gate's blocklist still applies). Returns null when sent, else why not. Null = no such path.
+    /// </summary>
+    public Func<string, string, Task<string?>>? OpCommand { get; init; }
+
+    public string? Teleport(string account, P3 to, string why)
+    {
+        if (OpCommand is not { } send) return "no op command path";
+        // b1.8.1's /tp (mc-dev ServerConfigurationManager) takes two player names, never coordinates: the pawn walks.
+        if (World?.Version == "b1.8.1") return "b1.8.1's /tp takes no coordinates";
+        if (Find(account) is not { State: BodyState.Online }) return "not online";
+        var line = $"/tp {account} {to.X} {to.Y} {to.Z}";
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                if (await send(line, why).ConfigureAwait(false) is { } err) _log.LogWarning("story: {Line} not sent: {Err}", line, err);
+            }
+            catch (Exception ex) { _log.LogWarning(ex, "story: {Line} failed", line); }
+        });
+        return null;
+    }
+
     public void Interrupt(string account, string why)
     {
         if (Find(account)?.ScriptBridge?.Controller.Current is { } s) s.Stop(why);

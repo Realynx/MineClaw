@@ -199,6 +199,8 @@ public sealed class ZoneState
     /// <summary>chop | mine | farm | home | forbidden (storage is chests: see <see cref="StorageState"/>).</summary>
     public string Kind { get; set; } = "";
     public Area Area { get; set; }
+    /// <summary>A name the browser gives it ("Main house", "Farmhouse"); null = none.</summary>
+    public string? Name { get; set; }
     public long Rev { get; set; }
 }
 
@@ -216,6 +218,11 @@ public sealed class DesignationState
     public string? Label { get; set; }
     public DateTimeOffset Created { get; set; }
     public int Fails { get; set; }
+    /// <summary>open | failed (it failed <see cref="StoryColony.DesignationFailLimit"/> times: kept on the map with its <see cref="Reason"/>,
+    /// retried after a rest; cancel it to drop it).</summary>
+    public string Status { get; set; } = "open";
+    /// <summary>Why it last failed (null while it hasn't).</summary>
+    public string? Reason { get; set; }
     public long Rev { get; set; }
 }
 
@@ -330,4 +337,6 @@ public sealed class ColonyMeta
     /// <summary>column (genre default: ties by column order) | skill (ties by the pawn's skill first).</summary>
     public string TieBreak { get; set; } = "column";
     public int Seq { get; set; }
+    /// <summary>Bed assignments: a bed's foot ("x,y,z") → the pawn that sleeps there (one bed per pawn, one pawn per bed).</summary>
+    public Dictionary<string, string> Beds { get; set; } = new();
 }

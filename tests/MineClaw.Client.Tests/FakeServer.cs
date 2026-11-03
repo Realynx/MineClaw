@@ -115,6 +115,10 @@ internal sealed partial class FakeServer : IDisposable
     public ConcurrentDictionary<int, (double X, double Y, double Z, ItemStack Item)> Drops { get; } = new();
     /// <summary>Drop an item entity here whenever a block is dug.</summary>
     public bool DropOnDig { get; set; }
+
+    /// <summary>Hardness-0 blocks (b1.8.1 and 1.12.2 ids): saplings, tall grass, ferns, dead bushes, flowers, mushrooms, torches,
+    /// wheat, sugar cane, nether wart, carrots, potatoes, double plants, beetroot.</summary>
+    public static readonly HashSet<int> InstantBreak = [6, 31, 32, 37, 38, 39, 40, 50, 59, 83, 115, 141, 142, 175, 207];
     /// <summary>Pickups use mc-dev's vertical box overlap too (EntityHuman.java:308), not just a loose 1.5 height window.</summary>
     public bool StrictPickup { get; set; }
     /// <summary>Block metadata (wood type of logs/leaves...); sent in chunks and block changes.</summary>
@@ -311,7 +315,10 @@ internal sealed partial class FakeServer : IDisposable
                 _heldSlot = hc.Slot;
                 break;
             case PlayerDiggingPacket dig:
-                if (BreakOnFinish && dig.Status == PlayerDiggingPacket.StatusFinished)
+                // A block with no hardness (grass, flowers, crops, saplings, torches) breaks on the start packet, as on a real server:
+                // the client never sends a finish for it.
+                if (BreakOnFinish && (dig.Status == PlayerDiggingPacket.StatusFinished
+                    || dig.Status == PlayerDiggingPacket.StatusStarted && InstantBreak.Contains(Blocks.GetValueOrDefault((dig.X, dig.Y, dig.Z)))))
                 {
                     Blocks.TryGetValue((dig.X, dig.Y, dig.Z), out int was);
                     Metas.Remove((dig.X, dig.Y, dig.Z), out int wasMeta);

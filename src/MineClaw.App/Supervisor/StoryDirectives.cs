@@ -121,7 +121,7 @@ public sealed class StoryDirectives(IViewerData data, ViewerFeed? feed, TimeProv
         {
             var list = kind switch
             {
-                "chop" => StoryBlocks.TreeBases(w, area).Take(512).Select(p => (JsonNode)p.Json()).ToList(),
+                "chop" => StoryBlocks.TreesIn(w, area).Select(p => (JsonNode)p.Json()).ToList(),
                 "harvest" => area.Volume <= 262_144 ? area.Blocks().Where(p => StoryBlocks.Crop(w, p.X, p.Y, p.Z) is { Ripe: true }).Take(2048).Select(p => (JsonNode)p.Json()).ToList() : null,
                 "haul" => w.Entities().Where(e => e.Kind == "item" && area.Contains(e.Block)).Select(e => (JsonNode)JsonValue.Create(e.Id)).ToList(),
                 "hunt" => w.Entities().Where(e => e.Kind == "mob" && !e.Hostile && area.Contains(e.Block)).Select(e => (JsonNode)JsonValue.Create(e.Id)).ToList(),

@@ -246,6 +246,7 @@ public sealed partial class MinecraftClient : IAsyncDisposable
         _signs.Clear();
         _vehicleId = -1;
         _entityStatusSeq.Clear();
+        OpLevel = null; // the server tells it again on this login (1.12.2)
         _wasDead = false;
         _lastHealth = -1;
         _lastFood = -1;

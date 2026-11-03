@@ -31,6 +31,8 @@ public sealed record TreeChopOptions
     /// <summary>Live 10-27 (L6): a worker chopped 10 trees and replanted none. After this many consecutive chops that felled a
     /// tree without replanting it, chop_tree refuses until a replant works again (0 = never refuse).</summary>
     public int MaxUnreplantedChops { get; init; } = 2;
+    /// <summary>A named tree (<c>at</c>) only: when another body holds it, fail instead of taking the next free tree near it.</summary>
+    public bool OnlyThisTree { get; init; }
     public static TreeChopOptions Default { get; } = new();
 }
 
@@ -296,6 +298,11 @@ public sealed partial class MinecraftClient
             if (tree.Logs.All(EditBlocked)) { why = $"tree at {Fmt(p)} is inside spawn protection (the server undid my digs there; needs op)"; return null; }
             if (TreeTaken(tree, skip) is { } holder)
             {
+                if (o.OnlyThisTree)
+                {
+                    why = $"the {tree.WoodName} tree at {Fmt(tree.Base)} is {holder}'s right now (only that tree was asked for)";
+                    return null;
+                }
                 Log($"chop: {tree} is {holder}'s; taking the next free tree near {Fmt(p)}");
                 around = p.Center;
                 tree = null;

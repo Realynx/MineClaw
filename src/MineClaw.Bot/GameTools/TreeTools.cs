@@ -33,6 +33,10 @@ public static class TreeTools
                 ToolResult With(ToolResult r) => clutch == null ? r : r with { Text = clutch + "; " + r.Text };
                 if (string.IsNullOrEmpty(spec) || spec is "nearest" or "tree" or "the tree") return With(GameToolSet.R(await chopper.ChopTreeAsync(null, null, ct)));
                 if (TreeScan.ParseWood(spec) is { } wood) return With(GameToolSet.R(await chopper.ChopTreeAsync(null, wood, ct)));
+                // "x,y,z only" (Story Mode's pawn script): exactly that tree, never the next free one near it. No schema change: the
+                // brain's tool prefix stays as it was.
+                if (spec.EndsWith(" only", StringComparison.OrdinalIgnoreCase) && GameToolSet.Resolve(spec[..^5].Trim(), places) is { } only)
+                    return With(GameToolSet.R(await chopper.ChopThisTreeAsync(only, ct)));
                 if (GameToolSet.Resolve(spec, places) is { } p) return With(GameToolSet.R(await chopper.ChopTreeAsync(p, null, ct)));
                 return ToolResult.Error($"unknown tree '{spec}' (x,y,z, a saved name, or oak/birch/spruce)");
             }, longRunning: true);
